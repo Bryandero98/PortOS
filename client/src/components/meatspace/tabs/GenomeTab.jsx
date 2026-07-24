@@ -56,6 +56,7 @@ async function parseZipText(arrayBuffer, ext = '.txt') {
 }
 import * as api from '../../../services/api';
 import { ATTACHMENT_MAX_FILE_SIZE } from '../../../utils/fileUpload';
+import { formatBytes } from '../../../utils/formatters';
 import GenomeCategoryCard from '../GenomeCategoryCard';
 import EpigeneticTracker from '../EpigeneticTracker';
 import ProvenanceChip from '../../ui/ProvenanceChip';
@@ -193,7 +194,7 @@ export default function GenomeTab() {
   const handleFileUpload = useCallback(async (file) => {
     if (!file) return;
     if (file.size > ATTACHMENT_MAX_FILE_SIZE) {
-      toast.error('File too large (max 50MB)');
+      toast.error(`File too large (max ${formatBytes(ATTACHMENT_MAX_FILE_SIZE)})`);
       return;
     }
 
@@ -370,7 +371,6 @@ export default function GenomeTab() {
             onDrop={handleDrop}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
-            ariaLabel="Upload your 23andMe raw data file"
             className="block border-2 border-dashed border-port-border rounded-lg p-12 text-center transition-colors hover:border-gray-500"
           >
             {uploading ? (

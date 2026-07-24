@@ -398,7 +398,6 @@ function StepUpload({ uploading, fileMeta, onFile, onBack }) {
         onChange={(e) => onFile(e.target.files?.[0])}
         onDragOver={(e) => e.preventDefault()}
         onDrop={handleDrop}
-        ariaLabel="Choose a ChatGPT export file to import"
         className="block border-2 border-dashed border-port-border rounded-lg p-8 text-center hover:border-port-accent hover:bg-port-card/40 transition-colors"
       >
         <FileJson size={32} className="text-gray-500 mx-auto mb-3" aria-hidden="true" />

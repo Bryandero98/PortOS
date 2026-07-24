@@ -76,7 +76,14 @@ const FilePickerButton = forwardRef(function FilePickerButton({
   };
 
   return (
-    <>
+    // `display: contents` wrapper, NOT a fragment: Tailwind compiles `peer-*` to
+    // the GENERAL sibling combinator (`.peer:focus-visible ~ *`), so with a bare
+    // fragment two pickers in one row (see TaskAddForm's Screenshot + Attach)
+    // would light up BOTH labels when either input is focused — the first
+    // input's `~ *` reaches the second label. Scoping each input/label pair to
+    // its own DOM parent cuts that reach, and `contents` generates no box, so
+    // the label is still a direct flex/grid item of the caller's container.
+    <span className="contents">
       <input
         id={inputId}
         name={name}
@@ -96,7 +103,7 @@ const FilePickerButton = forwardRef(function FilePickerButton({
       >
         {children}
       </label>
-    </>
+    </span>
   );
 });
 

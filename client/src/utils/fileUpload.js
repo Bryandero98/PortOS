@@ -55,8 +55,13 @@ export const JSON_UPLOAD_MAX_FILE_SIZE = 41 * 1024 * 1024;
  */
 export const IMAGE_ACCEPT = 'image/png,image/jpeg,image/webp';
 
-// Default max file size: 10MB
-const DEFAULT_MAX_FILE_SIZE = 10 * 1024 * 1024;
+/**
+ * Max screenshot size. Screenshots are pasted/dragged UI captures, so this sits
+ * well below the wire limit by product choice, not by encoding math. Mirror of
+ * `MAX_SCREENSHOT_BYTES` in `server/lib/uploadLimits.js`; `uploadLimits.test.js`
+ * keeps the two in step.
+ */
+export const SCREENSHOT_MAX_FILE_SIZE = 10 * 1024 * 1024;
 
 /**
  * Read a File as a base64 string (without the data URL prefix)
@@ -88,7 +93,7 @@ export function readFileAsBase64(file) {
  */
 export async function processScreenshotUploads(files, options = {}) {
   const {
-    maxFileSize = DEFAULT_MAX_FILE_SIZE,
+    maxFileSize = SCREENSHOT_MAX_FILE_SIZE,
     onSuccess,
     onError
   } = options;

@@ -2,10 +2,26 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import FilePickerButton from './FilePickerButton';
 
+/**
+ * Simulate picking files, modelling the DOM coupling the component exists to
+ * work around: setting `value = ''` also EMPTIES `files`. jsdom doesn't
+ * implement that link (and its `value` is `''` from birth), so asserting
+ * `input.value === ''` against a plain jsdom input passes whether or not the
+ * component ever clears it — a vacuous test. Wiring the setter here means the
+ * assertions below fail if the clear is removed or fires too early.
+ */
 const pick = (input, files) => {
-  Object.defineProperty(input, 'files', { value: files, configurable: true });
+  let current = files;
+  Object.defineProperty(input, 'files', { configurable: true, get: () => current });
+  Object.defineProperty(input, 'value', {
+    configurable: true,
+    get: () => (current.length ? `C:\\fakepath\\${current[0].name}` : ''),
+    set: (v) => { if (v === '') current = []; },
+  });
   fireEvent.change(input);
 };
+
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 const file = (name) => new File(['x'], name, { type: 'image/png' });
 
@@ -36,13 +52,16 @@ describe('FilePickerButton', () => {
     expect(input.multiple).toBe(true);
   });
 
-  it('clears the input after a sync handler so the same file can be re-picked', () => {
+  it('clears the input after a sync handler so the same file can be re-picked', async () => {
     const onChange = vi.fn();
     render(<FilePickerButton onChange={onChange} ariaLabel="Pick">Pick</FilePickerButton>);
     const input = screen.getByLabelText('Pick');
     pick(input, [file('a.png')]);
     expect(onChange).toHaveBeenCalledTimes(1);
+    expect(input.value).not.toBe('');   // not cleared yet — the clear is a microtask
+    await flush();
     expect(input.value).toBe('');
+    expect(input.files.length).toBe(0);
   });
 
   it('waits for an async handler to settle before clearing the input', async () => {
@@ -54,10 +73,17 @@ describe('FilePickerButton', () => {
     render(<FilePickerButton onChange={onChange} multiple ariaLabel="Pick">Pick</FilePickerButton>);
     const input = screen.getByLabelText('Pick');
     pick(input, [file('a.png'), file('b.png')]);
-    // Still readable mid-flight — clearing `value` would empty `files`.
+
+    // Let any premature clear land before the handler settles. A component that
+    // cleared synchronously (or with `.finally()` off a resolved promise) would
+    // have emptied `files` by now and `seen` would come back [0].
+    await flush();
+    expect(input.files.length).toBe(2);
+
     release();
-    await Promise.resolve();
-    expect(seen).toEqual([2]);
+    await flush();
+    expect(seen).toEqual([2]);          // the handler read the files it was given
+    expect(input.files.length).toBe(0); // …and only then were they cleared
   });
 
   it('clears the input on a rejecting handler without an unhandled rejection', () => {
@@ -70,7 +96,7 @@ describe('FilePickerButton', () => {
     render(<FilePickerButton onChange={onChange} ariaLabel="Pick">Pick</FilePickerButton>);
     const input = screen.getByLabelText('Pick');
     pick(input, [file('a.png')]);
-    return new Promise((resolve) => setTimeout(resolve, 0)).then(() => {
+    return flush().then(() => {
       process.off('unhandledRejection', unhandled);
       expect(unhandled).not.toHaveBeenCalled();
       expect(input.value).toBe('');

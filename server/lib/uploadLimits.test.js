@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import {
@@ -58,13 +58,41 @@ describe('uploadLimits', () => {
 
   it('is the only place per-route upload caps are written', () => {
     // A route that re-derives its own byte cap is how uploads.js and
-    // attachments.js drifted to unreachable 100MB/50MB claims.
-    for (const route of ['uploads.js', 'attachments.js', 'brainSongbook.js', 'screenshots.js']) {
-      const src = read(`../routes/${route}`);
-      expect(src, `${route} should import its cap from lib/uploadLimits.js`)
-        .toContain("from '../lib/uploadLimits.js'");
-      expect(src, `${route} re-derives a raw byte cap instead of importing one`)
-        .not.toMatch(/const MAX_(FILE_SIZE|ATTACHMENT_SIZE)\s*=\s*\d+\s*\*/);
+    // attachments.js drifted to unreachable 100MB/50MB claims. Discover the
+    // routes rather than listing them, so a NEW upload route added later is
+    // covered too — a hardcoded list would leave it unguarded.
+    // Detect the base64-in-JSON transport specifically — decoding a base64 body
+    // or handing one to saveBase64Upload. Routes that take RAW bytes via
+    // express.raw() (imageClean.js) carry their own limit and are correctly out
+    // of scope: no ×4/3 inflation applies to them.
+    const routesDir = join(HERE, '../routes');
+    const uploadRoutes = readdirSync(routesDir)
+      .filter((f) => f.endsWith('.js') && !f.endsWith('.test.js'))
+      .filter((f) => /Buffer\.from\([^)]*'base64'\)|saveBase64Upload/
+        .test(readFileSync(join(routesDir, f), 'utf8')));
+    expect(uploadRoutes.length, 'no upload routes discovered — did the detection heuristic break?')
+      .toBeGreaterThanOrEqual(4);
+
+    for (const route of uploadRoutes) {
+      const src = readFileSync(join(routesDir, route), 'utf8');
+      // Assert the route USES a shared constant (positive), rather than
+      // pattern-matching for the absence of one literal spelling — a route
+      // could hardcode `= 52428800` under any name and slip past that.
+      expect(src, `${route} must take its cap from lib/uploadLimits.js`)
+        .toMatch(/MAX_BASE64_UPLOAD_BYTES|MAX_SCREENSHOT_BYTES/);
+      // Belt-and-braces: no raw MB-shaped byte literal left in an upload route.
+      expect(src, `${route} still hardcodes a raw byte cap`)
+        .not.toMatch(/=\s*\d+\s*\*\s*1024\s*\*\s*1024/);
     }
+  });
+
+  it('matches the client mirror of the screenshot cap', () => {
+    // Screenshots have their own (smaller, product-chosen) cap. It is mirrored
+    // client-side too, so it needs the same drift guard as the wire limit —
+    // otherwise raising one side silently leaves the other rejecting.
+    const clientSrc = read('../../client/src/utils/fileUpload.js');
+    const match = clientSrc.match(/SCREENSHOT_MAX_FILE_SIZE = (\d+) \* 1024 \* 1024/);
+    expect(match, 'client screenshot mirror not found — did SCREENSHOT_MAX_FILE_SIZE move?').toBeTruthy();
+    expect(Number(match[1]) * 1024 * 1024).toBe(MAX_SCREENSHOT_BYTES);
   });
 });
