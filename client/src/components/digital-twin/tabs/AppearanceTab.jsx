@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState } from 'react';
 import {
   Camera,
   RefreshCw,
@@ -12,6 +12,7 @@ import * as api from '../../../services/api';
 import toast from '../../ui/Toast';
 import useProviderModels from '../../../hooks/useProviderModels';
 import ProviderModelSelector from '../../ProviderModelSelector';
+import FilePickerButton from '../../ui/FilePickerButton';
 
 // Cap the uploaded image so the base64 data URL stays well under the server's
 // JSON body limit and vision providers don't choke on huge payloads.
@@ -36,7 +37,6 @@ export default function AppearanceTab({ onRefresh }) {
     setSelectedProviderId, setSelectedModel, loading: providersLoading
   } = useProviderModels();
 
-  const fileInputRef = useRef(null);
   const [imageDataUrl, setImageDataUrl] = useState('');
   const [analyzing, setAnalyzing] = useState(false);
   const [result, setResult] = useState(null);
@@ -70,7 +70,6 @@ export default function AppearanceTab({ onRefresh }) {
     setResult(null);
     setDocDraft('');
     setSaved(false);
-    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const handleAnalyze = async () => {
@@ -156,27 +155,21 @@ export default function AppearanceTab({ onRefresh }) {
           )}
 
           <div>
-            <label htmlFor="appearance-image" className="block text-sm font-medium text-gray-300 mb-1">
+            {/* A <span>, not a <label>: the file input only exists in the
+                no-photo branch below, so a second `htmlFor` would dangle once a
+                photo is chosen. */}
+            <span className="block text-sm font-medium text-gray-300 mb-1">
               Photo
-            </label>
-            <input
-              id="appearance-image"
-              ref={fileInputRef}
-              type="file"
-              accept={ACCEPT_ATTR}
-              onChange={(e) => handleFile(e.target.files?.[0])}
-              disabled={analyzing}
-              className="hidden"
-            />
+            </span>
             {!imageDataUrl ? (
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
+              <FilePickerButton
+                accept={ACCEPT_ATTR}
+                onChange={(e) => handleFile(e.target.files?.[0])}
                 disabled={analyzing}
-                className="flex items-center gap-2 px-4 py-3 min-h-[48px] w-full justify-center border border-dashed border-port-border rounded-lg text-gray-400 hover:border-port-accent hover:text-white transition-colors disabled:opacity-50"
+                className="flex items-center gap-2 px-4 py-3 min-h-[48px] w-full justify-center border border-dashed border-port-border rounded-lg text-gray-400 hover:border-port-accent hover:text-white transition-colors"
               >
                 <Upload size={18} /> Choose a photo (max 10MB)
-              </button>
+              </FilePickerButton>
             ) : (
               <div className="relative inline-block">
                 <img

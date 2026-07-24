@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Clock, Image, X, Info } from 'lucide-react';
 import toast from '../components/ui/Toast';
+import FilePickerButton from '../components/ui/FilePickerButton';
 import * as api from '../services/api';
 import socket from '../services/socket';
 import { processScreenshotUploads } from '../utils/fileUpload';
@@ -26,7 +27,6 @@ export function RunnerPage() {
   const [allowedCommands, setAllowedCommands] = useState([]);
   const [screenshots, setScreenshots] = useState([]);
   const [continueContext, setContinueContext] = useState(null);
-  const fileInputRef = useRef(null);
   const outputRef = useRef(null);
   const continueWorkspaceRef = useRef(location.state?.continueFrom?.workspacePath ?? null);
 
@@ -235,7 +235,6 @@ ${prompt.trim()}`;
       onSuccess: (fileInfo) => setScreenshots(prev => [...prev, fileInfo]),
       onError: (msg) => toast.error(msg)
     });
-    e.target.value = '';
   };
 
   const removeScreenshot = (id) => {
@@ -395,23 +394,16 @@ ${prompt.trim()}`;
             </div>
 
             {/* Screenshot Upload */}
-            <button
-              onClick={() => fileInputRef.current?.click()}
+            <FilePickerButton
+              accept="image/*"
+              multiple
+              onChange={handleFileSelect}
+              ariaLabel="Add screenshots"
               className="flex items-center gap-2 px-3 py-2 bg-port-bg border border-port-border rounded-lg text-gray-400 hover:text-white text-sm"
             >
               <Image size={16} />
               Add Screenshot
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              multiple
-              onChange={handleFileSelect}
-              className="sr-only"
-              tabIndex={-1}
-              aria-hidden="true"
-            />
+            </FilePickerButton>
           </>
         )}
       </div>

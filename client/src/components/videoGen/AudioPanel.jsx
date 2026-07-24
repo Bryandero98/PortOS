@@ -7,6 +7,7 @@
  */
 import { Upload, Music } from 'lucide-react';
 import { formatBytes } from '../../utils/formatters';
+import FilePickerButton from '../ui/FilePickerButton';
 
 export default function AudioPanel({ audioFile, numFrames, fps, hasCompatibleModel, onPick, onClear }) {
   return (
@@ -24,16 +25,14 @@ export default function AudioPanel({ audioFile, numFrames, fps, hasCompatibleMod
           <span className="text-gray-500">{formatBytes(audioFile.size, 2)}</span>
         </div>
       ) : (
-        <label className="flex items-center gap-2 text-[11px] text-gray-400 cursor-pointer hover:text-white">
+        <FilePickerButton
+          accept="audio/*"
+          onChange={(e) => onPick(e.target.files?.[0] || null)}
+          className="flex items-center gap-2 text-[11px] text-gray-400 hover:text-white"
+        >
           <Upload className="w-3.5 h-3.5" />
           <span className="truncate">Upload audio (WAV / MP3 / M4A)</span>
-          <input
-            type="file"
-            accept="audio/*"
-            onChange={(e) => onPick(e.target.files?.[0] || null)}
-            className="hidden"
-          />
-        </label>
+        </FilePickerButton>
       )}
       <p className="text-[10px] text-gray-500 leading-snug">
         Audio length should match {`${(numFrames / fps).toFixed(1)}s`} (frames ÷ fps). Longer clips are trimmed to fit; shorter clips fail.

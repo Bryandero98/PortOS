@@ -15,6 +15,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, Sparkles, Wand2, Mic, Music, Upload, Trash2, ListMusic } from 'lucide-react';
 import toast from '../../ui/Toast';
 import InlineConfirmRow from '../../ui/InlineConfirmRow';
+import FilePickerButton from '../../ui/FilePickerButton';
 import VoicePicker from '../../voice/VoicePicker';
 import {
   extractPipelineAudioLines,
@@ -86,7 +87,6 @@ export default function AudioStage({ issue, onStageUpdate }) {
   // reveals [Cancel] [Delete] for that row only. Stored as the filename so
   // only one row shows the confirm at a time.
   const [pendingLibraryDelete, setPendingLibraryDelete] = useState(null);
-  const fileInputRef = useRef(null);
 
   // Local-OSS music generation (Phase 4c.2). The generators list is fetched
   // lazily when the user opens the Generate panel; `ready` gates the prompt box
@@ -954,26 +954,18 @@ export default function AudioStage({ issue, onStageUpdate }) {
             </div>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            <input
-              ref={fileInputRef}
-              type="file"
+            <FilePickerButton
               accept="audio/mpeg,audio/mp3,audio/wav,audio/x-wav,audio/mp4,audio/m4a,audio/ogg,audio/flac,.mp3,.wav,.m4a,.ogg,.flac"
               onChange={(e) => {
                 const file = e.target.files?.[0];
-                e.target.value = '';
                 if (file) void handleMusicUpload(file);
               }}
-              className="hidden"
-            />
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
               disabled={musicUploading}
-              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-card border border-port-border text-white text-sm hover:border-port-accent/50 disabled:opacity-40"
+              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-card border border-port-border text-white text-sm hover:border-port-accent/50"
             >
               {musicUploading ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
               Upload track
-            </button>
+            </FilePickerButton>
             <button
               type="button"
               onClick={() => (musicPickerOpen ? setMusicPickerOpen(false) : openMusicPicker())}

@@ -14,6 +14,12 @@
  *      with no on/off state. `components/ToggleSwitch.jsx` is the shared
  *      widget; hand-rolled tracks must at least carry `role="switch"` +
  *      `aria-checked`.
+ *   3. A `<input type="file">` hidden with `hidden`/`aria-hidden`/`tabIndex={-1}`
+ *      and driven by a programmatic `ref.current.click()`. That is unreachable
+ *      by keyboard and screen reader, and the synthetic click doesn't open the
+ *      picker at all in WebKit-as-installed-PWA — the shape PortOS is opened in
+ *      from a second machine over the tailnet. `components/ui/FilePickerButton.jsx`
+ *      is the shared widget (sr-only input + native `<label for>` activation).
  *
  * Scoped to git-tracked `.jsx` under `client/src` so an untracked scratch file
  * can't fail the suite.
@@ -100,6 +106,49 @@ describe('a11y conventions', () => {
       }
     }
     expect(offenders, `Toggle-switch button without role="switch" + aria-checked — prefer components/ToggleSwitch.jsx:\n${offenders.join('\n')}`).toEqual([]);
+  });
+
+  it('keeps every file input focusable and label-activated', () => {
+    // Two failures ride on the same markup, and neither reproduces for the
+    // author: `display:none` (Tailwind `hidden`) drops the input from the tab
+    // order AND the a11y tree, and a `<button onClick={ref.current.click()}>`
+    // paired with it is a synthetic click several engines refuse to honor —
+    // notably WebKit with PortOS installed as a standalone PWA, which is how it
+    // gets opened from a second machine over the tailnet. The picker simply
+    // never appears. components/ui/FilePickerButton.jsx is the shared fix
+    // (sr-only input + a real <label for>); this test is what stops the old
+    // idiom from creeping back in one component at a time.
+    const offenders = [];
+    for (const file of trackedJsxFiles()) {
+      const src = readFileSync(join(CLIENT_ROOT, file), 'utf8');
+      const re = /<input\b/g;
+      let m;
+      while ((m = re.exec(src))) {
+        const tag = openingTagAt(src, m.index, '<input'.length);
+        if (!tag || !/type="file"/.test(tag)) continue;
+        const hidden = /className="[^"]*\bhidden\b[^"]*"/.test(tag);
+        const ariaHidden = /aria-hidden/.test(tag);
+        const untabbable = /tabIndex=\{-1\}/.test(tag);
+        if (!hidden && !ariaHidden && !untabbable) continue;
+        offenders.push(`${file}:${lineOf(src, m.index)}`);
+      }
+    }
+    expect(offenders, `File input hidden from keyboard/AT — use components/ui/FilePickerButton.jsx (sr-only input + native <label for> activation), never className="hidden" / aria-hidden / tabIndex={-1}:\n${offenders.join('\n')}`).toEqual([]);
+  });
+
+  it('never opens a file picker with a programmatic ref click', () => {
+    // The other half of the same bug: even a correctly-focusable input is
+    // unopenable in those engines if a button reaches over and clicks it.
+    const offenders = [];
+    for (const file of trackedJsxFiles()) {
+      const src = readFileSync(join(CLIENT_ROOT, file), 'utf8');
+      const re = /\.current\??\.click\(\)/g;
+      let m;
+      while ((m = re.exec(src))) {
+        offenders.push(`${file}:${lineOf(src, m.index)}`);
+      }
+    }
+    expect(offenders, `Programmatic .click() on a ref — if it targets a file input the picker never opens in WebKit/PWA. Use components/ui/FilePickerButton.jsx:\n${offenders.join('\n')}`).toEqual([]);
   });
 
   it('gives every role="switch" an aria-checked state', () => {

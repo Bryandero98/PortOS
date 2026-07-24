@@ -16,6 +16,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Plus, Loader2, Trash2, Save, Upload, Music2, Library } from 'lucide-react';
 import toast from '../ui/Toast';
+import FilePickerButton from '../ui/FilePickerButton';
 import { formatTimecode } from '../../utils/formatters';
 import ArtistPicker from './ArtistPicker';
 import MusicGenPanel from './MusicGenPanel';
@@ -87,7 +88,6 @@ export default function TracksManager() {
   // that already carries a score opens on the chiptune panel.
   const [genMode, setGenMode] = useState('audio');
   const remixNonceRef = useRef(0);
-  const fileInputRef = useRef(null);
   // Mirrors `selectedId` so async audio handlers can detect a selection change
   // that happened while their server round-trip was in flight (the server write
   // still targets the original track id; only the open form must not be clobbered
@@ -207,7 +207,6 @@ export default function TracksManager() {
 
   const handleAudioFile = async (e) => {
     const file = e.target.files?.[0];
-    if (e.target) e.target.value = '';
     if (!file || !requireSaved()) return;
     if (file.size > AUDIO_MAX_BYTES) { toast.error(`Audio exceeds ${Math.round(AUDIO_MAX_BYTES / 1024 / 1024)}MB`); return; }
     const targetId = persisted.id; // server write targets THIS track
@@ -486,14 +485,17 @@ export default function TracksManager() {
                       Renders{renders.length ? ` (${renders.length})` : ''}
                     </span>
                     <div className="flex items-center gap-2 flex-wrap">
-                      <button
-                        type="button"
-                        onClick={() => (requireSaved() ? fileInputRef.current?.click() : null)}
+                      {/* `handleAudioFile` re-checks `requireSaved()` itself, so the
+                          picker needs no gate of its own. */}
+                      <FilePickerButton
+                        accept="audio/*,.mp3,.wav,.m4a,.ogg,.flac"
+                        onChange={handleAudioFile}
                         disabled={uploading}
-                        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-bg border border-port-border text-white text-sm hover:border-port-accent disabled:opacity-50"
+                        ariaLabel="Upload track audio"
+                        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-bg border border-port-border text-white text-sm hover:border-port-accent"
                       >
                         {uploading ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} Upload
-                      </button>
+                      </FilePickerButton>
                       <button
                         type="button"
                         onClick={openLibrary}
@@ -501,7 +503,6 @@ export default function TracksManager() {
                       >
                         <Library size={14} /> From library
                       </button>
-                      <input ref={fileInputRef} type="file" accept="audio/*,.mp3,.wav,.m4a,.ogg,.flac" onChange={handleAudioFile} className="hidden" />
                     </div>
                   </div>
 

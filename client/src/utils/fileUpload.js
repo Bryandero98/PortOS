@@ -4,15 +4,56 @@
  */
 
 import * as api from '../services/api';
+import { formatBytes } from './formatters';
 
 // Allowed attachment extensions (should match server)
-const ALLOWED_ATTACHMENT_EXTENSIONS = [
+export const ALLOWED_ATTACHMENT_EXTENSIONS = [
   '.txt', '.md', '.json', '.csv', '.xml', '.yaml', '.yml',
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg',
   '.pdf',
   '.js', '.ts', '.jsx', '.tsx', '.py', '.sh', '.sql', '.html', '.css',
   '.zip', '.tar', '.gz'
 ];
+
+/**
+ * `accept` value for attachment pickers.
+ *
+ * Extensions alone are not enough: iOS/iPadOS pickers only understand MIME
+ * types and UTIs, so an extension-only `accept` greys out every file in the
+ * Files app — the picker opens but nothing can be selected. Pairing the
+ * extensions with the corresponding MIME types keeps desktop filtering precise
+ * while leaving mobile pickers usable. `processAttachmentUploads` still
+ * validates by extension, so a broader picker filter can't widen what uploads.
+ */
+export const ATTACHMENT_ACCEPT = [
+  ...ALLOWED_ATTACHMENT_EXTENSIONS,
+  'text/*',
+  'image/*',
+  'application/pdf',
+  'application/json',
+  'application/zip',
+  'application/gzip',
+  'application/x-tar'
+].join(',');
+
+/**
+ * Largest raw file the server can accept. Every helper here POSTs its payload
+ * base64-encoded inside a JSON body, so the express body limit is the real
+ * ceiling — advertising anything larger just produces an opaque 413.
+ *
+ * Mirror of `MAX_BASE64_UPLOAD_BYTES` in `server/lib/uploadLimits.js`, which
+ * owns the derivation and the rationale (the client can't import server
+ * modules). Change it there first.
+ */
+export const JSON_UPLOAD_MAX_FILE_SIZE = 41 * 1024 * 1024;
+
+/**
+ * `accept` for the raster-image pickers (reference images, init images, LoRA
+ * dataset uploads, sprite seeds, ImageClean). These are all fed to image-gen
+ * backends that decode PNG/JPEG/WebP only — a broader `image/*` would let a
+ * HEIC or SVG through to a confusing server-side failure.
+ */
+export const IMAGE_ACCEPT = 'image/png,image/jpeg,image/webp';
 
 // Default max file size: 10MB
 const DEFAULT_MAX_FILE_SIZE = 10 * 1024 * 1024;
@@ -60,8 +101,7 @@ export async function processScreenshotUploads(files, options = {}) {
 
     // Check file size
     if (file.size > maxFileSize) {
-      const sizeMB = Math.round(maxFileSize / (1024 * 1024));
-      onError?.(`File "${file.name}" exceeds ${sizeMB}MB limit`);
+      onError?.(`File "${file.name}" exceeds the ${formatBytes(maxFileSize)} limit`);
       continue;
     }
 
@@ -128,8 +168,9 @@ export async function uploadScreenshotFile(file, options = {}) {
   });
 }
 
-// Max file size for attachments: 50MB
-export const ATTACHMENT_MAX_FILE_SIZE = 50 * 1024 * 1024;
+// Max file size for attachments. Capped by the base64-in-JSON wire limit, not
+// by any attachment-specific rule — see JSON_UPLOAD_MAX_FILE_SIZE.
+export const ATTACHMENT_MAX_FILE_SIZE = JSON_UPLOAD_MAX_FILE_SIZE;
 
 /**
  * Check if a file extension is allowed for attachments
@@ -162,7 +203,7 @@ function isImageFile(filename) {
  *
  * @param {FileList|File[]} files - Files to process
  * @param {Object} options - Upload options
- * @param {number} options.maxFileSize - Max file size in bytes (default: 50MB)
+ * @param {number} options.maxFileSize - Max file size in bytes (default: ATTACHMENT_MAX_FILE_SIZE)
  * @param {Function} options.onSuccess - Callback for successful upload (receives uploaded file info)
  * @param {Function} options.onError - Callback for errors (receives error message)
  * @returns {Promise<void>}
@@ -186,8 +227,7 @@ export async function processAttachmentUploads(files, options = {}) {
 
     // Check file size
     if (file.size > maxFileSize) {
-      const sizeMB = Math.round(maxFileSize / (1024 * 1024));
-      onError?.(`File "${file.name}" exceeds ${sizeMB}MB limit`);
+      onError?.(`File "${file.name}" exceeds the ${formatBytes(maxFileSize)} limit`);
       continue;
     }
 

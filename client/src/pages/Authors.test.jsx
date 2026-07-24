@@ -136,7 +136,9 @@ describe('Authors headshot generation', () => {
 
     // The async job is in flight — a manual headshot change would be clobbered
     // on completion, so Upload / gallery / URL are locked until it settles.
-    expect(screen.getByRole('button', { name: 'Upload' }).disabled).toBe(true);
+    // Upload is a <label> + file input (native picker activation) — matched by
+    // its accessible label rather than a button role.
+    expect(screen.getByLabelText('Upload author headshot').disabled).toBe(true);
     expect(screen.getByRole('button', { name: 'Choose from gallery' }).disabled).toBe(true);
     expect(screen.getByPlaceholderText(/https:/i).disabled).toBe(true);
   });

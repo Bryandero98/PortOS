@@ -3,7 +3,8 @@ import { Plus, Image, X, ChevronDown, ChevronRight, Sparkles, Loader2, Paperclip
 import toast from '../ui/Toast';
 import AppContextPicker from '../AppContextPicker';
 import * as api from '../../services/api';
-import { processScreenshotUploads, processAttachmentUploads } from '../../utils/fileUpload';
+import { processScreenshotUploads, processAttachmentUploads, ATTACHMENT_ACCEPT } from '../../utils/fileUpload';
+import FilePickerButton from '../ui/FilePickerButton';
 import { formatBytes } from '../../utils/formatters';
 import { filterSelectableModels, isTuiProvider, isCliProvider, isProcessProvider, isCodexProvider, effortLevelsForProvider } from '../../utils/providers';
 import { DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE } from './constants';
@@ -37,8 +38,6 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
   const [showTemplateSave, setShowTemplateSave] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submittingRef = useRef(false);
-  const fileInputRef = useRef(null);
-  const attachmentInputRef = useRef(null);
 
   // Fetch templates
   useEffect(() => {
@@ -201,7 +200,6 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
       onSuccess: (fileInfo) => setScreenshots(prev => [...prev, fileInfo]),
       onError: (msg) => toast.error(msg)
     });
-    e.target.value = '';
   };
 
   const removeScreenshot = (id) => {
@@ -214,7 +212,6 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
       onSuccess: (fileInfo) => setAttachments(prev => [...prev, fileInfo]),
       onError: (msg) => toast.error(msg)
     });
-    e.target.value = '';
   };
 
   const removeAttachment = (id) => {
@@ -595,42 +592,26 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
         )}
         {/* Screenshot and Attachment Upload */}
         <div className="flex items-center gap-3 flex-wrap">
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
+          <FilePickerButton
+            accept="image/*"
+            multiple
+            onChange={handleFileSelect}
+            ariaLabel="Attach screenshots"
             className="flex items-center gap-2 px-3 py-2 bg-port-bg border border-port-border rounded-lg text-gray-400 hover:text-white text-sm transition-colors min-h-[44px]"
           >
             <Image size={16} aria-hidden="true" />
             Screenshot
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
+          </FilePickerButton>
+          <FilePickerButton
+            accept={ATTACHMENT_ACCEPT}
             multiple
-            onChange={handleFileSelect}
-            className="sr-only"
-            tabIndex={-1}
-            aria-hidden="true"
-          />
-          <button
-            type="button"
-            onClick={() => attachmentInputRef.current?.click()}
+            onChange={handleAttachmentSelect}
+            ariaLabel="Attach files"
             className="flex items-center gap-2 px-3 py-2 bg-port-bg border border-port-border rounded-lg text-gray-400 hover:text-white text-sm transition-colors min-h-[44px]"
           >
             <Paperclip size={16} aria-hidden="true" />
             Attach
-          </button>
-          <input
-            ref={attachmentInputRef}
-            type="file"
-            accept=".txt,.md,.json,.csv,.xml,.yaml,.yml,.png,.jpg,.jpeg,.gif,.webp,.svg,.pdf,.js,.ts,.jsx,.tsx,.py,.sh,.sql,.html,.css,.zip,.tar,.gz"
-            multiple
-            onChange={handleAttachmentSelect}
-            className="sr-only"
-            tabIndex={-1}
-            aria-hidden="true"
-          />
+          </FilePickerButton>
           {screenshots.length > 0 && (
             <span className="text-xs text-gray-500">{screenshots.length} screenshot{screenshots.length > 1 ? 's' : ''}</span>
           )}

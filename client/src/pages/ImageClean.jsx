@@ -1,6 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { Eraser, Upload, Download, ShieldCheck, Sparkles, Brush, Square, Undo2, X, Cpu, Zap, Save } from 'lucide-react';
 import toast from '../components/ui/Toast';
+import FilePickerButton from '../components/ui/FilePickerButton';
+import { IMAGE_ACCEPT } from '../utils/fileUpload';
 import BrailleSpinner from '../components/BrailleSpinner';
 import IgnoreZonePainter from '../components/media/IgnoreZonePainter';
 import * as api from '../services/api';
@@ -58,7 +60,6 @@ export default function ImageClean() {
   const [feather, setFeather] = useState(3);
   const [hasMask, setHasMask] = useState(false);
   const painterRef = useRef(null);
-  const fileInputRef = useRef(null);
   const requestIdRef = useRef(0);
   const previewUrlRef = useRef(null);
   const resultUrlRef = useRef(null);
@@ -313,9 +314,6 @@ export default function ImageClean() {
       URL.revokeObjectURL(resultUrlRef.current);
       resultUrlRef.current = null;
     }
-    // Clear the input so picking the same file again still fires onChange
-    // (browsers suppress onChange when the value is unchanged).
-    if (fileInputRef.current) fileInputRef.current.value = '';
     setOriginal(null);
     setResult(null);
     setBusy(false);
@@ -416,30 +414,18 @@ export default function ImageClean() {
           onDragOver={handleDrag}
           onDrop={handleDrop}
         >
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/png,image/jpeg,image/webp"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              e.target.value = '';
-              handleFile(file);
-            }}
-            className="sr-only"
-            tabIndex={-1}
-            aria-hidden="true"
-          />
           <Upload size={40} className={`mx-auto mb-4 ${dragActive ? 'text-port-accent' : 'text-gray-500'}`} />
           <p className="text-white mb-2">
             {dragActive ? 'Drop image here' : 'Drag and drop an image here'}
           </p>
           <p className="text-gray-500 text-sm mb-4">PNG, JPEG, or WebP</p>
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="px-4 py-2 bg-port-accent/20 hover:bg-port-accent/30 text-port-accent rounded-lg transition-colors"
+          <FilePickerButton
+            accept={IMAGE_ACCEPT}
+            onChange={(e) => handleFile(e.target.files?.[0])}
+            className="inline-block px-4 py-2 bg-port-accent/20 hover:bg-port-accent/30 text-port-accent rounded-lg transition-colors"
           >
             Browse File
-          </button>
+          </FilePickerButton>
         </div>
       )}
 

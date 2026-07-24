@@ -3,6 +3,7 @@ import { X, CheckCircle, AlertCircle, RotateCcw, Image, Loader2 } from 'lucide-r
 import { processScreenshotUploads } from '../../../utils/fileUpload';
 import toast from '../../ui/Toast';
 import Modal from '../../ui/Modal';
+import FilePickerButton from '../../ui/FilePickerButton';
 import { FormField } from '../../ui/FormField';
 import { filterSelectableModels } from '../../../utils/providers';
 
@@ -41,14 +42,12 @@ export default function ResumeAgentModal({ agent, taskType = 'user', providers, 
   });
   const [screenshots, setScreenshots] = useState([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const fileInputRef = useRef(null);
 
   const handleFileSelect = async (e) => {
     await processScreenshotUploads(e.target.files, {
       onSuccess: (fileInfo) => setScreenshots(prev => [...prev, fileInfo]),
       onError: (msg) => toast.error(msg)
     });
-    e.target.value = '';
   };
 
   const removeScreenshot = (id) => {
@@ -148,24 +147,16 @@ export default function ResumeAgentModal({ agent, taskType = 'user', providers, 
           {/* Screenshot Upload */}
           <div>
             <div className="flex items-center gap-3 flex-wrap">
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
+              <FilePickerButton
+                accept="image/*"
+                multiple
+                onChange={handleFileSelect}
+                ariaLabel="Add screenshots"
                 className="flex items-center gap-2 px-3 py-2 bg-port-bg border border-port-border rounded-lg text-gray-400 hover:text-white text-sm transition-colors"
               >
                 <Image size={16} aria-hidden="true" />
                 Add Screenshot
-              </button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                multiple
-                onChange={handleFileSelect}
-                className="sr-only"
-                tabIndex={-1}
-                aria-hidden="true"
-              />
+              </FilePickerButton>
               {screenshots.length > 0 && (
                 <span className="text-xs text-gray-500">{screenshots.length} screenshot{screenshots.length > 1 ? 's' : ''}</span>
               )}

@@ -12,6 +12,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Plus, Loader2, Trash2, Save, Upload, ImageIcon, Sparkles, X, ArrowUp, ArrowDown } from 'lucide-react';
 import toast from '../ui/Toast';
+import FilePickerButton from '../ui/FilePickerButton';
 import GalleryImagePicker from '../imageGen/GalleryImagePicker';
 import useMediaJobProgress from '../../hooks/useMediaJobProgress';
 import { DEFAULT_NEGATIVE_PROMPT } from '../../lib/imageGenDefaults';
@@ -80,7 +81,6 @@ export default function AlbumsManager() {
   const [uploadingCover, setUploadingCover] = useState(false);
   const [startingGen, setStartingGen] = useState(false);
   const [genJobId, setGenJobId] = useState(null);
-  const fileInputRef = useRef(null);
   const genRequestRef = useRef(0);
 
   const gen = useMediaJobProgress(genJobId);
@@ -163,7 +163,6 @@ export default function AlbumsManager() {
 
   const handleCoverFile = async (e) => {
     const file = e.target.files?.[0];
-    if (e.target) e.target.value = '';
     if (!file) return;
     if (!file.type.startsWith('image/')) { toast.error('Please choose an image file'); return; }
     if (file.size > COVER_MAX_BYTES) { toast.error(`Image exceeds ${Math.round(COVER_MAX_BYTES / 1024 / 1024)}MB`); return; }
@@ -345,13 +344,12 @@ export default function AlbumsManager() {
                     <button type="button" onClick={handleGenerateCover} disabled={isGenerating || uploadingCover || !canGenerate} title={canGenerate ? 'Generate a cover' : 'Add a title, genre, or description first'} className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-bg border border-port-border text-white text-sm hover:border-port-accent disabled:opacity-50">
                       {isGenerating ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} Generate cover
                     </button>
-                    <button type="button" onClick={() => fileInputRef.current?.click()} disabled={uploadingCover || isGenerating} className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-bg border border-port-border text-white text-sm hover:border-port-accent disabled:opacity-50">
+                    <FilePickerButton accept="image/*" onChange={handleCoverFile} disabled={uploadingCover || isGenerating} ariaLabel="Upload album cover" className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-bg border border-port-border text-white text-sm hover:border-port-accent">
                       {uploadingCover ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} Upload
-                    </button>
+                    </FilePickerButton>
                     <button type="button" onClick={() => setGalleryOpen(true)} disabled={isGenerating} className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-bg border border-port-border text-white text-sm hover:border-port-accent disabled:opacity-50">
                       <ImageIcon size={14} /> Gallery
                     </button>
-                    <input ref={fileInputRef} type="file" accept="image/*" onChange={handleCoverFile} className="hidden" />
                   </div>
                 </div>
               </div>
