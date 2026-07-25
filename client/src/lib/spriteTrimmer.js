@@ -140,6 +140,12 @@ export function buildTrimmerSources(walk, assets = []) {
       direction: run.direction || null,
       label: `${run.direction || run.id} · ${run.status || 'run'}`,
       stripPath,
+      // The strip's cache-busting token (#3020) has to be carried through this
+      // flattener, not read off the run downstream: the trimmer only ever sees
+      // this object, so a token left behind here silently leaves it slicing a
+      // stale strip. Absent on a run packed before the token existed, which
+      // renders as the un-versioned URL it used to get.
+      stripVersion: run.stripPreview.stripVersion,
       frameCount,
       fps,
       // Any run with a packed strip can be re-trimmed — the service resolves it

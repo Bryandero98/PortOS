@@ -20,7 +20,7 @@ import { FolderOpen, RefreshCw, Scissors, Sparkles, Film, FileJson, NotebookPen 
 import AssetInspector from './AssetInspector.jsx';
 import CorrectionNote from './CorrectionNote.jsx';
 import SpritePreview from './SpritePreview.jsx';
-import { hasSpritePreview } from './spriteAssets.js';
+import { hasSpritePreview, assetVersionToken } from './spriteAssets.js';
 import { groupSpriteAssetsByRole } from '../../lib/spriteFacets.js';
 import { formatBytes } from '../../utils/formatters.js';
 
@@ -72,7 +72,7 @@ function AssetCard({ recordId, asset, actions, corrections, onCorrectionChange, 
         title={asset.path}
       >
         {hasSpritePreview(asset) && (
-          <SpritePreview recordId={recordId} path={asset.path} className="h-20 rounded" />
+          <SpritePreview recordId={recordId} path={asset.path} version={assetVersionToken(asset)} className="h-20 rounded" />
         )}
         <span className="block text-[10px] text-gray-500 truncate">{name}</span>
         <span className="flex items-center gap-1 text-[10px] text-gray-600">

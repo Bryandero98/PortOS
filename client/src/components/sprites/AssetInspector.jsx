@@ -14,7 +14,7 @@ import { Download, ClipboardCopy, ExternalLink, Trash2, X } from 'lucide-react';
 import Modal from '../ui/Modal.jsx';
 import SpritePreview from './SpritePreview.jsx';
 import AssetPromptSection from './AssetPromptSection.jsx';
-import { spriteAssetUrl, hasSpritePreview, isVideoAsset } from './spriteAssets.js';
+import { spriteAssetUrl, hasSpritePreview, isVideoAsset, assetVersionToken } from './spriteAssets.js';
 import { isRuntimeVersionPath, isRuntimeSidecarManifest } from '../../lib/spriteFacets.js';
 import { formatBytes, timeAgo } from '../../utils/formatters.js';
 import { copyToClipboard } from '../../lib/clipboard.js';
@@ -46,7 +46,7 @@ export default function AssetInspector({ recordId, asset, onClose, onDeleted = n
 
   if (!asset) return null;
 
-  const url = spriteAssetUrl(recordId, asset.path);
+  const url = spriteAssetUrl(recordId, asset.path, assetVersionToken(asset));
   const fileName = asset.path.split('/').pop();
   const previewable = hasSpritePreview(asset);
   // A runtime version lives in `runtime/vN/` as an atlas PNG + its sidecar
@@ -96,6 +96,7 @@ export default function AssetInspector({ recordId, asset, onClose, onDeleted = n
           <SpritePreview
             recordId={recordId}
             path={asset.path}
+            version={assetVersionToken(asset)}
             className="rounded border border-port-border p-2"
             imgClassName="mx-auto max-w-full max-h-[55vh] object-contain"
             cell={10}

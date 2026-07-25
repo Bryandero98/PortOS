@@ -809,8 +809,15 @@ export async function runWalkPostprocess({
   };
   await atomicWrite(join(generatedAbs, manifestName), manifest);
 
+  // `stripSha256` mirrors the manifest's hash so the client can version the
+  // strip's URL (#3020). The packer rewrites this path IN PLACE, so without a
+  // content token in the URL the browser keeps painting the strip it already
+  // decoded — reprocessing 8f → 12f applies the new stepped geometry to the old
+  // 8-cell image and the sprite reads as a jumpy, mis-centered toggle until a
+  // manual reload.
   const stripPreview = {
     stripPath: `${generatedRel}/${stripName}`,
+    stripSha256,
     frameCount: targetFrames,
     fps: playbackFps,
     cellWidth: WALK_CELL_SIZE,

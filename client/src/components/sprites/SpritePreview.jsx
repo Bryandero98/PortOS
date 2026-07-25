@@ -18,6 +18,10 @@ import SpriteLightbox from './SpriteLightbox.jsx';
 export default function SpritePreview({
   recordId,
   path,
+  // Cache-busting token (#3020) for an asset that can be rewritten in place —
+  // pass `assetVersionToken(asset)` when rendering a row from listSpriteAssets.
+  // Omitted for a write-once/versioned path, which renders the bare URL.
+  version,
   alt,
   className = '',
   imgClassName = 'w-full h-full object-contain',
@@ -32,7 +36,7 @@ export default function SpritePreview({
   const [zoomed, setZoomed] = useState(false);
   const img = (
     <img
-      src={spriteAssetUrl(recordId, path)}
+      src={spriteAssetUrl(recordId, path, version)}
       alt={alt ?? path}
       loading={loading}
       className={imgClassName}
@@ -60,7 +64,7 @@ export default function SpritePreview({
         {img}
       </button>
       {zoomed && (
-        <SpriteLightbox recordId={recordId} path={path} alt={alt} onClose={() => setZoomed(false)} />
+        <SpriteLightbox recordId={recordId} path={path} version={version} alt={alt} onClose={() => setZoomed(false)} />
       )}
     </>
   );
