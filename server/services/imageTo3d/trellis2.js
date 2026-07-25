@@ -21,7 +21,7 @@
 import { existsSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import { killWithEscalation } from '../../lib/killWithEscalation.js';
 
 const HOME = homedir();
@@ -84,6 +84,131 @@ export function isTrellis2Installed({ base, exists = existsSync } = {}) {
 }
 
 /**
+ * The Python modules `generate.py`'s Metal texture-baking path needs. It gates the
+ * high-quality bake on `o_voxel.postprocess._BACKEND === 'metal' && _HAS_DR`, which
+ * in turn requires `mtldiffrast` (the Metal rasterizer) and `mtlbvh` to have built.
+ * When ANY is missing it silently falls back to a pure-Python KDTree/xatlas baker —
+ * see `TRELLIS2_FALLBACK_BAKE_HELP` for why that fallback is unusable.
+ */
+export const TRELLIS2_METAL_BAKE_MODULES = ['o_voxel', 'mtldiffrast', 'mtlbvh'];
+
+/**
+ * `flex_gemm` (from `mtlgemm`) is not required for the Metal bake, but the baker
+ * prefers its sparse grid-sample over a `torch.nn.functional` fallback — upstream
+ * notes the fallback produces concentric ring artifacts on curved surfaces. Absent
+ * ⇒ the bake still runs, just a notch lower quality.
+ */
+export const TRELLIS2_BAKE_QUALITY_MODULES = ['flex_gemm'];
+
+/**
+ * Why a degraded install matters, in the user's terms. `setup.sh` installs the four
+ * Metal packages with `|| echo "… continuing without …"` and still exits 0, so a
+ * host missing the Xcode **Metal Toolchain** (the packages compile `.metal` sources)
+ * completes the install "successfully" and every later render silently takes the
+ * KDTree/xatlas fallback baker.
+ *
+ * That fallback is not merely lower quality — it is unusable on TRELLIS.2 output. It
+ * UV-unwraps the mesh *after* decimating to 200k triangles, into a 1024² atlas: a
+ * median of **~1.9 texels per triangle**, with a quarter of all triangles landing on
+ * less than a single texel (measured on the #2952 reference render). Its hole-fill
+ * then blurs unfilled black texels back over every chart edge. The geometry comes out
+ * correct; the surface comes out as dark colored confetti.
+ */
+export const TRELLIS2_FALLBACK_BAKE_HELP = 'TRELLIS.2 is installed, but its Metal '
+  + 'texture-baking backend is missing, so renders fall back to a low-resolution '
+  + 'baker that produces correct geometry with a scrambled, speckled surface. Install '
+  + 'the Xcode Metal Toolchain (`xcodebuild -downloadComponent MetalToolchain`), then '
+  + 're-run the TRELLIS.2 install to rebuild the Metal backends.';
+
+/** The shell probe that reports which bake modules resolve inside the venv. */
+const BAKE_PROBE_SOURCE = 'import importlib.util as u,json,sys;'
+  + 'print(json.dumps({m: u.find_spec(m) is not None for m in sys.argv[1:]}))';
+
+/**
+ * Probe whether the venv can take `generate.py`'s Metal texture-baking path.
+ *
+ * Uses `importlib.util.find_spec`, which resolves a module WITHOUT importing it — so
+ * the probe costs ~20 ms and never pulls in torch. That is cheap enough to run on
+ * every `/targets` request, and it keys on exactly the modules the `use_metal` gate
+ * needs, so it cannot drift from what `generate.py` actually checks.
+ *
+ * Returns `quality: 'metal'` (good), `'fallback'` (installed but will produce the
+ * confetti surface described in `TRELLIS2_FALLBACK_BAKE_HELP`), or `'unknown'` when
+ * the probe itself could not run — deliberately distinct from `'fallback'` so a
+ * broken probe never renders a scary warning about a possibly-fine install
+ * (CLAUDE.md sentinel rule: "failed to determine" ≠ "determined to be bad").
+ *
+ * @param {{base?: string, execFileImpl?: Function, exists?: (p: string) => boolean}} [opts]
+ * @returns {Promise<{quality: 'metal'|'fallback'|'unknown', modules: Record<string, boolean>,
+ *                    missing: string[], degradedQuality: string[], help?: string}>}
+ */
+export async function probeTrellis2TextureBake({
+  base,
+  execFileImpl = execFile,
+  exists = existsSync,
+} = {}) {
+  const python = trellis2VenvPython(base);
+  if (!exists(python)) {
+    return { quality: 'unknown', modules: {}, missing: [], degradedQuality: [] };
+  }
+  const probed = [...TRELLIS2_METAL_BAKE_MODULES, ...TRELLIS2_BAKE_QUALITY_MODULES];
+  // Subprocess boundary outside the request lifecycle — a probe failure must degrade
+  // to 'unknown', never reject into the route (CLAUDE.md child-process exception).
+  const modules = await new Promise((resolve) => {
+    execFileImpl(python, ['-c', BAKE_PROBE_SOURCE, ...probed], { timeout: 15000 }, (err, stdout) => {
+      if (err) return resolve(null);
+      const parsed = JSON.parse(String(stdout || '').trim() || 'null');
+      resolve(parsed && typeof parsed === 'object' ? parsed : null);
+    });
+  }).catch(() => null);
+
+  if (!modules) return { quality: 'unknown', modules: {}, missing: [], degradedQuality: [] };
+
+  const missing = TRELLIS2_METAL_BAKE_MODULES.filter((m) => !modules[m]);
+  const degradedQuality = TRELLIS2_BAKE_QUALITY_MODULES.filter((m) => !modules[m]);
+  return {
+    quality: missing.length ? 'fallback' : 'metal',
+    modules,
+    missing,
+    degradedQuality,
+    ...(missing.length ? { help: TRELLIS2_FALLBACK_BAKE_HELP } : {}),
+  };
+}
+
+/**
+ * Whether the Xcode Metal Toolchain is present — the prerequisite `setup.sh`
+ * documents for building `mtldiffrast`/`mtlbvh`/`mtlgemm`. Checked BEFORE a ~15 GB
+ * install so the user can fix it first, instead of discovering an hour later that
+ * every render bakes garbage. Absent ⇒ the install still works, it just degrades.
+ *
+ * Non-macOS hosts report `available: null` (the check does not apply) rather than
+ * `false`, so a Linux/Windows caller never sees a macOS-only warning.
+ *
+ * @param {{execFileImpl?: Function, platformImpl?: () => string}} [opts]
+ * @returns {Promise<{available: boolean|null, hint?: string}>}
+ */
+export async function probeMetalToolchain({
+  execFileImpl = execFile,
+  platformImpl = platform,
+} = {}) {
+  if (platformImpl() !== 'darwin') return { available: null };
+  const available = await new Promise((resolve) => {
+    execFileImpl('xcrun', ['-sdk', 'macosx', 'metal', '--version'], { timeout: 15000 }, (err) => {
+      resolve(!err);
+    });
+  }).catch(() => false);
+  return available
+    ? { available: true }
+    : { available: false, hint: TRELLIS2_METAL_TOOLCHAIN_HINT };
+}
+
+/** Actionable one-liner for a missing Metal Toolchain. */
+export const TRELLIS2_METAL_TOOLCHAIN_HINT = 'The Xcode Metal Toolchain is not '
+  + 'installed, so TRELLIS.2\'s Metal texture-baking backends cannot build and renders '
+  + 'will produce a scrambled surface. Run `xcodebuild -downloadComponent '
+  + 'MetalToolchain` (a one-time ~2 GB download) before installing.';
+
+/**
  * The install as an ordered list of `{stage, command, args, cwd?}` steps: shallow-
  * clone the port, then run its `setup.sh` (which builds the venv + fetches weights).
  * Keeping the plan a data structure makes it assertable without running it.
@@ -123,17 +248,49 @@ export function trellis2OutputStem(outputPath) {
 }
 
 /**
- * The generate invocation: `<venv-python> generate.py <image> [--output <stem>]`.
+ * `generate.py --texture-size` accepts only these three values (an argparse
+ * `choices=` list) — anything else aborts the render before it starts.
+ */
+export const TRELLIS2_TEXTURE_SIZES = [512, 1024, 2048];
+
+/**
+ * PortOS asks for the largest atlas the port offers, overriding `generate.py`'s
+ * 1024 default. The bake UV-unwraps a 200k-triangle mesh into a single atlas, so
+ * texel budget per triangle is the binding constraint on surface quality: at 1024²
+ * that is a median ~1.9 texels/triangle, and 2048² quadruples it. This matters most
+ * on the KDTree fallback baker (see `TRELLIS2_FALLBACK_BAKE_HELP`) but helps the
+ * Metal path too, and costs only bake time plus a larger texture in the GLB.
+ */
+export const TRELLIS2_DEFAULT_TEXTURE_SIZE = 2048;
+
+/**
+ * The generate invocation:
+ * `<venv-python> generate.py <image> [--output <stem>] --texture-size <n>`.
+ *
  * Pure. Throws when no source image is given (a render with no input is a bug, not
- * an empty run). `outputPath` is the desired `.glb` disk path; it is reduced to the
- * stem the port expects (see `trellis2OutputStem`).
- * @param {{imagePath: string, outputPath?: string, base?: string}} opts
+ * an empty run), and when `textureSize` is not one of the port's accepted `choices`
+ * — better to fail here than to have argparse abort a job we already queued.
+ * `outputPath` is the desired `.glb` disk path; it is reduced to the stem the port
+ * expects (see `trellis2OutputStem`).
+ *
+ * @param {{imagePath: string, outputPath?: string, base?: string, textureSize?: number}} opts
  * @returns {{command: string, args: string[]}}
  */
-export function buildGenerateArgs({ imagePath, outputPath, base } = {}) {
+export function buildGenerateArgs({
+  imagePath,
+  outputPath,
+  base,
+  textureSize = TRELLIS2_DEFAULT_TEXTURE_SIZE,
+} = {}) {
   if (!imagePath) throw new Error('buildGenerateArgs: imagePath is required');
+  if (!TRELLIS2_TEXTURE_SIZES.includes(textureSize)) {
+    throw new Error(
+      `buildGenerateArgs: textureSize must be one of ${TRELLIS2_TEXTURE_SIZES.join(', ')}`,
+    );
+  }
   const args = [trellis2GenerateScript(base), imagePath];
   if (outputPath) args.push('--output', trellis2OutputStem(outputPath));
+  args.push('--texture-size', String(textureSize));
   return { command: trellis2VenvPython(base), args };
 }
 
@@ -253,9 +410,16 @@ export const isTransientInstallError = textMatcher([
  * settings reaches the child, not just one exported into the server's own env).
  * Omitted → the child inherits `process.env` as before.
  *
+ * **Post-install verification.** After the last step the install probes whether the
+ * Metal texture-baking backends actually built (`probeBake`, injectable) and emits a
+ * `verify` log frame before the terminal `complete`. This is load-bearing, not
+ * cosmetic: `setup.sh` installs those packages with `|| echo "… continuing without …"`
+ * and still exits 0, so without it a host lacking the Xcode Metal Toolchain gets a
+ * clean "installed" and every later render bakes a scrambled surface (#2952).
+ *
  * @param {{base?: string, onEvent?: (ev: object) => void, spawnImpl?: Function,
  *          maxRetries?: number, sleep?: (ms: number) => Promise<void>,
- *          env?: NodeJS.ProcessEnv}} [opts]
+ *          env?: NodeJS.ProcessEnv, probeBake?: Function}} [opts]
  * @returns {{promise: Promise<{ok: true}>, kill: () => void}}
  */
 export function installTrellis2({
@@ -266,6 +430,7 @@ export function installTrellis2({
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
   exists = existsSync,
   env,
+  probeBake = probeTrellis2TextureBake,
 } = {}) {
   // `exists` lets the clone step be skipped when the repo is already on disk (resume
   // after a setup-stage failure) — see buildInstallSteps.
@@ -343,6 +508,16 @@ export function installTrellis2({
       }
       await runStepWithRetry(step);
     }
+    // `setup.sh` exits 0 even when its Metal texture-baking backends failed to
+    // build, so a bare success would report an install that silently renders
+    // scrambled surfaces (#2952). Verify what actually landed and say so — BEFORE
+    // the terminal `complete` frame, which closes the client's EventSource.
+    const bake = await probeBake({ base });
+    if (bake.quality === 'fallback') {
+      onEvent({ type: 'log', stage: 'verify', message: `⚠️ ${bake.help}` });
+    } else if (bake.quality === 'metal') {
+      onEvent({ type: 'log', stage: 'verify', message: '✅ Metal texture baking is available.' });
+    }
     onEvent({ type: 'complete', message: 'TRELLIS.2 installed.' });
     return { ok: true };
   })();
@@ -409,7 +584,7 @@ const HF_AUTH_HELP = 'TRELLIS.2 could not download a gated model dependency from
  * it in — this function stays synchronous so its `{ promise, kill }` contract holds.
  * Omitted → the child inherits `process.env` as before.
  *
- * @param {{imagePath: string, outputPath?: string, base?: string,
+ * @param {{imagePath: string, outputPath?: string, base?: string, textureSize?: number,
  *          onProgress?: (frame: object) => void,
  *          spawnImpl?: Function, exists?: (p: string) => boolean,
  *          env?: NodeJS.ProcessEnv}} opts
@@ -419,6 +594,7 @@ export function runTrellis2Generate({
   imagePath,
   outputPath,
   base,
+  textureSize,
   onProgress,
   spawnImpl = spawn,
   exists = existsSync,
@@ -429,7 +605,7 @@ export function runTrellis2Generate({
     err.code = 'TRELLIS2_NOT_INSTALLED';
     return { promise: Promise.reject(err), kill: () => {} };
   }
-  const { command, args } = buildGenerateArgs({ imagePath, outputPath, base });
+  const { command, args } = buildGenerateArgs({ imagePath, outputPath, base, textureSize });
   // Child-process boundary — errors surface via the 'error'/'close' events, not a
   // throw into the request lifecycle (CLAUDE.md child-process exception).
   const child = spawnImpl(command, args, { cwd: trellis2Root(base), ...(env ? { env } : {}) });

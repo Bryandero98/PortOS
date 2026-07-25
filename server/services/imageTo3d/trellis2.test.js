@@ -14,6 +14,14 @@ import {
   installTrellis2,
   isTransientInstallError,
   isHfAuthError,
+  probeTrellis2TextureBake,
+  probeMetalToolchain,
+  TRELLIS2_METAL_BAKE_MODULES,
+  TRELLIS2_BAKE_QUALITY_MODULES,
+  TRELLIS2_FALLBACK_BAKE_HELP,
+  TRELLIS2_METAL_TOOLCHAIN_HINT,
+  TRELLIS2_DEFAULT_TEXTURE_SIZE,
+  TRELLIS2_TEXTURE_SIZES,
 } from './trellis2.js';
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -86,19 +94,117 @@ describe('trellis2OutputStem', () => {
 });
 
 describe('buildGenerateArgs', () => {
-  it('invokes the venv python with generate.py and the image', () => {
+  it('invokes the venv python with generate.py, the image, and the default texture size', () => {
     const { command, args } = buildGenerateArgs({ imagePath: '/data/images/x.png', base: BASE });
     expect(command).toBe(trellis2VenvPython(BASE));
-    expect(args).toEqual([trellis2GenerateScript(BASE), '/data/images/x.png']);
+    expect(args).toEqual([
+      trellis2GenerateScript(BASE), '/data/images/x.png',
+      '--texture-size', String(TRELLIS2_DEFAULT_TEXTURE_SIZE),
+    ]);
   });
 
   it('passes --output as a STEM — the port appends .glb, so a full path would double it', () => {
     const { args } = buildGenerateArgs({ imagePath: 'in.png', outputPath: '/out/model.glb', base: BASE });
-    expect(args).toEqual([trellis2GenerateScript(BASE), 'in.png', '--output', '/out/model']);
+    expect(args.slice(0, 4)).toEqual([trellis2GenerateScript(BASE), 'in.png', '--output', '/out/model']);
+  });
+
+  it('defaults to the largest atlas the port offers (texel budget per triangle is the binding constraint)', () => {
+    expect(TRELLIS2_DEFAULT_TEXTURE_SIZE).toBe(2048);
+    expect(TRELLIS2_TEXTURE_SIZES).toContain(TRELLIS2_DEFAULT_TEXTURE_SIZE);
+  });
+
+  it('honors an explicit texture size', () => {
+    const { args } = buildGenerateArgs({ imagePath: 'in.png', base: BASE, textureSize: 1024 });
+    expect(args).toEqual([trellis2GenerateScript(BASE), 'in.png', '--texture-size', '1024']);
+  });
+
+  it('rejects a texture size outside the port\'s argparse choices instead of letting the render abort', () => {
+    expect(() => buildGenerateArgs({ imagePath: 'in.png', base: BASE, textureSize: 4096 }))
+      .toThrow(/textureSize must be one of/);
   });
 
   it('throws when no source image is given', () => {
     expect(() => buildGenerateArgs({ base: BASE })).toThrow(/imagePath is required/);
+  });
+});
+
+describe('probeTrellis2TextureBake', () => {
+  // The probe shells to the venv python with an importlib.util.find_spec one-liner.
+  // Fake execFile lets us assert each outcome without a real venv.
+  const fakeExec = (payload, err = null) => vi.fn((_cmd, _args, _opts, cb) => {
+    cb(err, payload === null ? '' : JSON.stringify(payload), '');
+  });
+  const allPresent = Object.fromEntries(
+    [...TRELLIS2_METAL_BAKE_MODULES, ...TRELLIS2_BAKE_QUALITY_MODULES].map((m) => [m, true]),
+  );
+
+  it('reports metal quality when every Metal bake module resolves', async () => {
+    const result = await probeTrellis2TextureBake({
+      base: BASE, exists: () => true, execFileImpl: fakeExec(allPresent),
+    });
+    expect(result.quality).toBe('metal');
+    expect(result.missing).toEqual([]);
+    expect(result.help).toBeUndefined();
+  });
+
+  it('reports fallback quality with actionable help when a Metal module is missing', async () => {
+    // The real #2952 failure: setup.sh could not compile the Metal packages (no
+    // Xcode Metal Toolchain) but swallowed each error and exited 0.
+    const result = await probeTrellis2TextureBake({
+      base: BASE,
+      exists: () => true,
+      execFileImpl: fakeExec({ ...allPresent, mtldiffrast: false, mtlbvh: false }),
+    });
+    expect(result.quality).toBe('fallback');
+    expect(result.missing).toEqual(['mtldiffrast', 'mtlbvh']);
+    expect(result.help).toBe(TRELLIS2_FALLBACK_BAKE_HELP);
+  });
+
+  it('treats a missing quality-only module as still metal-capable', () => expect(
+    probeTrellis2TextureBake({
+      base: BASE, exists: () => true, execFileImpl: fakeExec({ ...allPresent, flex_gemm: false }),
+    }),
+  ).resolves.toMatchObject({ quality: 'metal', degradedQuality: ['flex_gemm'] }));
+
+  it('reports unknown — NOT fallback — when the probe itself fails', async () => {
+    // A broken probe must never render a scary "degraded" warning about an install
+    // that is probably fine (sentinel rule: could-not-determine ≠ determined-bad).
+    const result = await probeTrellis2TextureBake({
+      base: BASE, exists: () => true, execFileImpl: fakeExec(null, new Error('boom')),
+    });
+    expect(result.quality).toBe('unknown');
+    expect(result.help).toBeUndefined();
+  });
+
+  it('reports unknown without spawning anything when the venv python is absent', async () => {
+    const execFileImpl = fakeExec(allPresent);
+    const result = await probeTrellis2TextureBake({ base: BASE, exists: () => false, execFileImpl });
+    expect(result.quality).toBe('unknown');
+    expect(execFileImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe('probeMetalToolchain', () => {
+  it('is available when `xcrun metal --version` succeeds', () => expect(
+    probeMetalToolchain({
+      platformImpl: () => 'darwin',
+      execFileImpl: vi.fn((_c, _a, _o, cb) => cb(null, '', '')),
+    }),
+  ).resolves.toEqual({ available: true }));
+
+  it('is unavailable with a hint when the toolchain component is missing', async () => {
+    const result = await probeMetalToolchain({
+      platformImpl: () => 'darwin',
+      execFileImpl: vi.fn((_c, _a, _o, cb) => cb(new Error('missing Metal Toolchain'))),
+    });
+    expect(result).toEqual({ available: false, hint: TRELLIS2_METAL_TOOLCHAIN_HINT });
+  });
+
+  it('does not apply off macOS — null, not false, so no macOS-only warning is shown', async () => {
+    const execFileImpl = vi.fn();
+    expect(await probeMetalToolchain({ platformImpl: () => 'linux', execFileImpl }))
+      .toEqual({ available: null });
+    expect(execFileImpl).not.toHaveBeenCalled();
   });
 });
 
@@ -185,7 +291,7 @@ describe('runTrellis2Generate', () => {
     });
     expect(spawnImpl).toHaveBeenCalledWith(
       trellis2VenvPython(BASE),
-      [trellis2GenerateScript(BASE), 'a.png'],
+      [trellis2GenerateScript(BASE), 'a.png', '--texture-size', String(TRELLIS2_DEFAULT_TEXTURE_SIZE)],
       { cwd: trellis2Root(BASE) },
     );
     child.stdout.emit('data', 'Generating 3D model (pipeline=512, seed=42)...\n');
@@ -278,7 +384,7 @@ describe('runTrellis2Generate', () => {
     const { promise } = runTrellis2Generate({ imagePath: 'a.png', base: BASE, exists: installed, spawnImpl, env });
     expect(spawnImpl).toHaveBeenCalledWith(
       trellis2VenvPython(BASE),
-      [trellis2GenerateScript(BASE), 'a.png'],
+      [trellis2GenerateScript(BASE), 'a.png', '--texture-size', String(TRELLIS2_DEFAULT_TEXTURE_SIZE)],
       { cwd: trellis2Root(BASE), env },
     );
     child.emit('close', null); // settle the run so its rejection isn't left dangling
@@ -396,6 +502,45 @@ describe('installTrellis2', () => {
     await expect(promise).resolves.toEqual({ ok: true });
 
     expect(events.filter((e) => e.type === 'stage').map((e) => e.stage)).toEqual(['clone', 'setup']);
+    expect(events.at(-1)).toMatchObject({ type: 'complete' });
+  });
+
+  // `setup.sh` swallows a failed Metal-backend build and still exits 0, so the
+  // install must verify what landed and report it BEFORE the terminal `complete`
+  // frame — which closes the client's EventSource (#2952).
+  const runToCompletion = async (probeBake) => {
+    const children = [makeChild(), makeChild()];
+    let i = 0;
+    const events = [];
+    const { promise } = installTrellis2({
+      base: BASE, spawnImpl: () => children[i++], onEvent: (e) => events.push(e), probeBake,
+    });
+    children[0].emit('close', 0);
+    await flush();
+    children[1].emit('close', 0);
+    await promise;
+    return events;
+  };
+
+  it('warns about a degraded Metal bake BEFORE the terminal complete frame', async () => {
+    const events = await runToCompletion(async () => ({
+      quality: 'fallback', missing: ['mtldiffrast'], help: TRELLIS2_FALLBACK_BAKE_HELP,
+    }));
+    const verifyIdx = events.findIndex((e) => e.stage === 'verify');
+    const completeIdx = events.findIndex((e) => e.type === 'complete');
+    expect(verifyIdx).toBeGreaterThan(-1);
+    expect(verifyIdx).toBeLessThan(completeIdx);
+    expect(events[verifyIdx].message).toContain(TRELLIS2_FALLBACK_BAKE_HELP);
+  });
+
+  it('confirms a healthy Metal bake on a good install', async () => {
+    const events = await runToCompletion(async () => ({ quality: 'metal', missing: [] }));
+    expect(events.find((e) => e.stage === 'verify')?.message).toMatch(/Metal texture baking is available/);
+  });
+
+  it('stays silent when the bake probe could not determine anything', async () => {
+    const events = await runToCompletion(async () => ({ quality: 'unknown', missing: [] }));
+    expect(events.find((e) => e.stage === 'verify')).toBeUndefined();
     expect(events.at(-1)).toMatchObject({ type: 'complete' });
   });
 
