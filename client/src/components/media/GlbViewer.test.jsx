@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { BoxGeometry, Group, Mesh, MeshStandardMaterial } from 'three';
 
@@ -11,6 +11,8 @@ vi.mock('@react-three/fiber', () => ({ Canvas: () => <div data-testid="glb-canva
 vi.mock('@react-three/drei', () => ({
   Canvas: () => null,
   OrbitControls: () => null,
+  Environment: ({ children }) => children,
+  Lightformer: () => null,
   Bounds: ({ children }) => children,
   useGLTF: Object.assign(() => ({ scene: {} }), { clear: vi.fn() }),
 }));
@@ -29,6 +31,18 @@ describe('GlbViewer', () => {
     const link = screen.getByRole('link', { name: /Download \.glb/i });
     expect(link).toHaveAttribute('href', '/data/models3d/robot-a1b2.glb');
     expect(link).toHaveAttribute('download', 'robot-a1b2.glb');
+  });
+
+  it('lets the user change the mesh preview background', () => {
+    render(<GlbViewer src="/data/models3d/robot-a1b2.glb" />);
+    const picker = screen.getByLabelText('Mesh preview background');
+    expect(picker).toHaveValue('#050505');
+
+    fireEvent.change(picker, { target: { value: '#f5f5f5' } });
+
+    expect(picker).toHaveValue('#f5f5f5');
+    expect(screen.getByTestId('glb-preview-surface'))
+      .toHaveStyle({ backgroundColor: '#f5f5f5' });
   });
 
   it('honors an explicit downloadName over the derived one', () => {

@@ -21,6 +21,7 @@
 import { existsSync } from 'node:fs';
 import { homedir, platform, totalmem } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawn, execFile } from 'node:child_process';
 import { killWithEscalation } from '../../lib/killWithEscalation.js';
 import { rewriteGlbMaterialsOpaque } from './glbMaterials.js';
@@ -72,6 +73,11 @@ export function trellis2VenvPython(base) {
 /** The port's single-image entrypoint (`python generate.py <image>`). */
 export function trellis2GenerateScript(base) {
   return join(trellis2Root(base), 'generate.py');
+}
+
+/** PortOS adapter that exposes the upstream exporter's supported 4K atlas size. */
+export function trellis2GenerateRunnerScript() {
+  return fileURLToPath(new URL('./trellis2GenerateRunner.py', import.meta.url));
 }
 
 /**
@@ -310,10 +316,11 @@ export function trellis2OutputStem(outputPath) {
 }
 
 /**
- * `generate.py --texture-size` accepts only these three values (an argparse
- * `choices=` list) — anything else aborts the render before it starts.
+ * trellis-mac exposes the first three sizes directly. For high-memory machines,
+ * PortOS's runner also exposes the underlying TRELLIS.2 exporter's supported 4K
+ * bake without forking the generation pipeline.
  */
-export const TRELLIS2_TEXTURE_SIZES = [512, 1024, 2048];
+export const TRELLIS2_TEXTURE_SIZES = [512, 1024, 2048, 4096];
 
 /**
  * `generate.py` supports a fast 512 pipeline and two higher-resolution variants.
@@ -346,21 +353,33 @@ export function selectTrellis2PipelineType(unifiedMemoryGb) {
 }
 
 /**
- * PortOS asks for the largest atlas the port offers, overriding `generate.py`'s
- * 1024 default. The bake UV-unwraps a 200k-triangle mesh into a single atlas, so
- * texel budget per triangle is the binding constraint on surface quality: at 1024²
- * that is a median ~1.9 texels/triangle, and 2048² quadruples it. This matters most
- * on the KDTree fallback baker (see `TRELLIS2_FALLBACK_BAKE_HELP`) but helps the
- * Metal path too, and costs only bake time plus a larger texture in the GLB.
+ * PortOS asks for at least a 2K atlas, overriding `generate.py`'s 1K default. The
+ * bake UV-unwraps a 200k-triangle mesh into a single atlas, so texel budget per
+ * triangle is the binding constraint on surface quality. Hosts with the same
+ * conservative memory headroom used for 1024-cascade get a 4K bake (four times
+ * the 2K texel budget); supported 24 GB hosts stay on the proven 2K path.
  */
 export const TRELLIS2_DEFAULT_TEXTURE_SIZE = 2048;
+export const TRELLIS2_HIGH_QUALITY_TEXTURE_SIZE = 4096;
+
+/**
+ * Pick the UV-atlas resolution from physical unified memory.
+ *
+ * @param {number} unifiedMemoryGb
+ * @returns {2048|4096}
+ */
+export function selectTrellis2TextureSize(unifiedMemoryGb) {
+  return Number(unifiedMemoryGb) >= TRELLIS2_HIGH_QUALITY_MIN_MEMORY_GB
+    ? TRELLIS2_HIGH_QUALITY_TEXTURE_SIZE
+    : TRELLIS2_DEFAULT_TEXTURE_SIZE;
+}
 
 /**
  * The generate invocation:
- * `<venv-python> generate.py <image> [--output <stem>] --texture-size <n>`.
+ * `<venv-python> [4k-adapter] generate.py <image> [--output <stem>] --texture-size <n>`.
  *
  * Pure. Throws when no source image is given (a render with no input is a bug, not
- * an empty run), and when `textureSize` is not one of the port's accepted `choices`
+ * an empty run), and when `textureSize` is not one of PortOS's accepted values
  * — better to fail here than to have argparse abort a job we already queued.
  * `outputPath` is the desired `.glb` disk path; it is reduced to the stem the port
  * expects (see `trellis2OutputStem`).
@@ -387,7 +406,10 @@ export function buildGenerateArgs({
       `buildGenerateArgs: pipelineType must be one of ${TRELLIS2_PIPELINE_TYPES.join(', ')}`,
     );
   }
-  const args = [trellis2GenerateScript(base), imagePath];
+  const generateScript = trellis2GenerateScript(base);
+  const args = textureSize === TRELLIS2_HIGH_QUALITY_TEXTURE_SIZE
+    ? [trellis2GenerateRunnerScript(), generateScript, imagePath]
+    : [generateScript, imagePath];
   if (outputPath) args.push('--output', trellis2OutputStem(outputPath));
   args.push('--pipeline-type', pipelineType);
   args.push('--texture-size', String(textureSize));
@@ -742,11 +764,12 @@ export function runTrellis2Generate({
     return { promise: Promise.reject(err), kill: () => {} };
   }
   const resolvedPipelineType = pipelineType ?? selectTrellis2PipelineType(unifiedMemoryGb);
+  const resolvedTextureSize = textureSize ?? selectTrellis2TextureSize(unifiedMemoryGb);
   const { command, args } = buildGenerateArgs({
     imagePath,
     outputPath,
     base,
-    textureSize,
+    textureSize: resolvedTextureSize,
     pipelineType: resolvedPipelineType,
   });
   // Child-process boundary — errors surface via the 'error'/'close' events, not a
