@@ -121,8 +121,16 @@ export const NON_COMMITTING_COORDINATOR_TASK_TYPES = new Set([
  * the backfill sanitizer skipped them and the migration's purge could be undone (#2696,
  * codex review). Matching extractTaskType keeps the criterion, the bucket, and the sanitizer
  * consistent across both task shapes.
+ *
+ * PR follow-ups (`metadata.reviewLoopFollowUp`, spawned by agentWorktreeCleanup)
+ * are the same shape without being a scheduled type: they deliver a reviewed
+ * and/or merged PR as a side effect, and the happy path makes NO commit at all —
+ * a merge-only follow-up on an already-green PR just merges it, and even a review
+ * follow-up commits nothing when every reviewer comes back clean. Commit-checking
+ * them would record each successful run as a failure, the #2696 artifact again.
  */
 export function isNonCommittingCoordinatorTask(task) {
+  if (task?.metadata?.reviewLoopFollowUp === true || task?.metadata?.reviewLoopFollowUp === 'true') return true;
   const type = task?.metadata?.analysisType || task?.metadata?.taskAnalysisType || task?.taskType || null;
   return NON_COMMITTING_COORDINATOR_TASK_TYPES.has(type);
 }

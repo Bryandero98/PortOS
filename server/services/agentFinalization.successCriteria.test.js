@@ -279,6 +279,21 @@ describe('evaluateSuccessCriteria — gh/git coordinator exemption (#2696)', () 
     expect(checkForTaskCommit).not.toHaveBeenCalled();
   });
 
+  it('declares NO commit criterion for a PR follow-up (review-loop or merge-only)', async () => {
+    // The happy path makes no commit at all: a merge-only follow-up on an already-green
+    // PR just merges it, and a review follow-up commits nothing when every reviewer is
+    // clean. Commit-checking them would score every successful run a failure (#2696 again).
+    for (const metadata of [
+      { reviewLoopFollowUp: true },
+      { reviewLoopFollowUp: true, reviewLoopMergeOnly: true },
+      { reviewLoopFollowUp: 'true' },
+    ]) {
+      const task = { id: 'sys-rl-1', taskType: 'internal', metadata };
+      expect(await evaluateSuccessCriteria({ task, workspacePath: '/w', success: true })).toBeNull();
+    }
+    expect(checkForTaskCommit).not.toHaveBeenCalled();
+  });
+
   it('STILL commit-checks committing self-improve types (jira-sprint-manager, do-replan)', async () => {
     // jira-sprint-manager commits + opens MRs; do-replan commits PLAN.md edits — their commit
     // criterion is real, so exempting them would MASK genuine failures. Must stay checked.
