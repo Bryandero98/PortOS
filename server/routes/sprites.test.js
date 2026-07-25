@@ -27,14 +27,6 @@ vi.mock('../services/sprites/assetPrompt.js', () => ({
   resolveSpriteAssetPrompt: vi.fn(async () => ({ prompt: 'the built prompt', designPrompt: 'a knight', source: 'candidate' })),
 }));
 
-vi.mock('../services/sprites/referenceRevision.js', () => ({
-  unlockDirectionalAnchor: vi.fn(async () => ({
-    manifest: { status: 'in-progress' },
-    candidates: [],
-    walkInvalidated: true,
-  })),
-}));
-
 vi.mock('../services/sprites/walk.js', () => ({
   getWalkState: vi.fn(async () => ({ runs: [], selection: null, walkSet: null })),
   startWalkGeneration: vi.fn(async () => ({ jobId: 'v1', runId: 'walk-east-0a1b2c3d', direction: 'east', duration: 6 })),
@@ -47,6 +39,11 @@ vi.mock('../services/sprites/walk.js', () => ({
     selection: { status: 'in-progress' },
     walkSet: null,
     walkTarget: { track: 'walk', frameCount: 14, fps: 8, source: 'set' },
+  })),
+  unlockDirectionalAnchor: vi.fn(async () => ({
+    manifest: { status: 'in-progress' },
+    candidates: [],
+    walkInvalidated: true,
   })),
   getWalkSourceFrames: vi.fn(async () => ({
     available: true,
@@ -81,7 +78,6 @@ vi.mock('../services/sprites/assets.js', () => ({
 import * as records from '../services/sprites/records.js';
 import * as importer from '../services/sprites/importer.js';
 import * as reference from '../services/sprites/reference.js';
-import * as referenceRevision from '../services/sprites/referenceRevision.js';
 import * as assetPrompt from '../services/sprites/assetPrompt.js';
 import * as walk from '../services/sprites/walk.js';
 import * as walkTrims from '../services/sprites/walkTrims.js';
@@ -357,11 +353,11 @@ describe('sprites routes', () => {
     const unlocked = await request(app).post('/api/sprites/pioneer/reference/unlock').send({ direction: 'east' });
     expect(unlocked.status).toBe(200);
     expect(unlocked.body.walkInvalidated).toBe(true);
-    expect(referenceRevision.unlockDirectionalAnchor).toHaveBeenCalledWith('pioneer', { direction: 'east' });
+    expect(walk.unlockDirectionalAnchor).toHaveBeenCalledWith('pioneer', { direction: 'east' });
 
     const south = await request(app).post('/api/sprites/pioneer/reference/unlock').send({ direction: 'south' });
     expect(south.status).toBe(400);
-    expect(referenceRevision.unlockDirectionalAnchor).toHaveBeenCalledTimes(1);
+    expect(walk.unlockDirectionalAnchor).toHaveBeenCalledTimes(1);
   });
 
   it('PATCH /:id accepts the three standard chroma keys and null, delegating to the lock-aware patch', async () => {

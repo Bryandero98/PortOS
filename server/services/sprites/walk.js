@@ -35,7 +35,9 @@ import {
   runDirOfPath, resolveDriftTolerantRel, isSourcePipelinePath, SOURCE_CLIP_NAME,
   rawFramesRelOf, RAW_FRAME_NAME,
 } from './paths.js';
-import { requireCharacter, loadManifest } from './reference.js';
+import {
+  requireCharacter, loadManifest, assertReferenceAnchorUnlockable, unlockReferenceAnchor,
+} from './reference.js';
 import { SPRITE_DIRECTIONS, anchorIdForDirection, buildWalkVideoPrompt } from './prompts.js';
 import {
   prepareWalkAnchorChromaInput, runWalkPostprocess, extractVideoFrames,
@@ -1538,6 +1540,21 @@ export function reopenWalkDirection(recordId, { direction }) {
  */
 export function invalidateWalkDirectionForAnchorRevision(recordId, { direction }) {
   return walkWriteTail(recordId, () => invalidateWalkDirectionForAnchorRevisionImpl(recordId, direction));
+}
+
+/**
+ * Reopen a directional anchor and invalidate the walk conditioned on it.
+ *
+ * Preflight before touching the dependent selection, then remove the stale
+ * approval before clearing the anchor pointer. If the reference write fails,
+ * the safe partial state has no approved walk claiming a stale source; rendered
+ * runs and the old locked anchor file both remain recoverable.
+ */
+export async function unlockDirectionalAnchor(recordId, { direction }) {
+  await assertReferenceAnchorUnlockable(recordId, { direction });
+  const walkInvalidated = await invalidateWalkDirectionForAnchorRevision(recordId, { direction });
+  const reference = await unlockReferenceAnchor(recordId, { direction });
+  return { ...reference, walkInvalidated };
 }
 
 async function invalidateWalkDirectionForAnchorRevisionImpl(recordId, direction) {

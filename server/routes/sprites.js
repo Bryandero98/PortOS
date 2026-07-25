@@ -44,10 +44,9 @@ import {
   listReferenceSources, listSpriteThumbnails, forkSprite,
 } from '../services/sprites/reference.js';
 import { resolveSpriteAssetPrompt } from '../services/sprites/assetPrompt.js';
-import { unlockDirectionalAnchor } from '../services/sprites/referenceRevision.js';
 import {
   getWalkState, startWalkGeneration, approveWalkDirection, rerunWalkPostprocess, unlockWalkSet,
-  reopenWalkDirection, setWalkTarget, getWalkSourceFrames,
+  reopenWalkDirection, setWalkTarget, getWalkSourceFrames, unlockDirectionalAnchor,
 } from '../services/sprites/walk.js';
 import { saveLoopTrim } from '../services/sprites/walkTrims.js';
 import { compileAtlas, getAtlasState } from '../services/sprites/atlas.js';

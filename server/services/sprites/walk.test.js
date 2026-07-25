@@ -111,7 +111,8 @@ const { listSpriteAssets } = await import('./paths.js');
 const { lockReference } = await import('./reference.js');
 const {
   getWalkState, startWalkGeneration, attachTuiWalkResult, approveWalkDirection, rerunWalkPostprocess, unlockWalkSet,
-  reopenWalkDirection, invalidateWalkDirectionForAnchorRevision, setWalkTarget, importedWalkDirections, getWalkSourceFrames,
+  reopenWalkDirection, invalidateWalkDirectionForAnchorRevision, unlockDirectionalAnchor,
+  setWalkTarget, importedWalkDirections, getWalkSourceFrames,
 } = await import('./walk.js');
 const { SPRITE_DIRECTIONS, ANCHOR_DIRECTIONS } = await import('./prompts.js');
 
@@ -899,6 +900,24 @@ describe('reopenWalkDirection', () => {
 });
 
 describe('invalidateWalkDirectionForAnchorRevision', () => {
+  it('invalidates the dependent walk before reopening the anchor for regeneration', async () => {
+    const id = await characterWithLockedAnchors(newId(), ['east']);
+    const { runId } = await makeCandidateRun(id, 'east');
+    await approveWalkDirection(id, { direction: 'east', runId });
+
+    const result = await unlockDirectionalAnchor(id, { direction: 'east' });
+    const state = await getWalkState(id);
+    expect(result.walkInvalidated).toBe(true);
+    expect(result.manifest.anchors.find((anchor) => anchor.direction === 'east')).toMatchObject({
+      status: 'pending',
+    });
+    expect(state.selection.directions.east).toBeUndefined();
+    expect(state.runs.find((run) => run.id === runId)).toMatchObject({
+      status: 'superseded-anchor',
+      supersededReason: 'directional-anchor-revised',
+    });
+  });
+
   it('un-finalizes the set, drops only the stale approval, and preserves every rendered run', async () => {
     const id = await characterWithLockedAnchors(newId(), ANCHOR_DIRECTIONS);
     const runIds = {};
