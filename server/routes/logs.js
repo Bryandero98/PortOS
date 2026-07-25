@@ -48,6 +48,8 @@ router.get('/:processName', asyncHandler(async (req, res) => {
     return res.json({ processName: safeProcessName, lines, logs });
   }
 
+  const pm2Home = await appsService.resolvePm2HomeForProcess(safeProcessName);
+
   // SSE streaming — shared header boilerplate via openSseStream; this route
   // emits named `event:` frames directly so it uses safeEnd but not send.
   const { safeEnd } = openSseStream(res);
@@ -57,7 +59,10 @@ router.get('/:processName', asyncHandler(async (req, res) => {
 
   // Spawn pm2 logs with --raw flag for clean output
   // Security: safeProcessName is validated above to only contain safe characters
-  const logProcess = spawnPm2(['logs', safeProcessName, '--raw', '--lines', String(lines)]);
+  const logProcess = spawnPm2(
+    ['logs', safeProcessName, '--raw', '--lines', String(lines)],
+    { env: pm2Service.buildEnv(pm2Home) }
+  );
 
   let buffer = '';
 
@@ -115,7 +120,7 @@ router.get('/app/:appId', asyncHandler(async (req, res) => {
   const results = {};
 
   for (const processName of app.pm2ProcessNames || []) {
-    results[processName] = await pm2Service.getLogs(processName, lines)
+    results[processName] = await pm2Service.getLogs(processName, lines, app.pm2Home)
       .catch(err => `Error: ${err.message}`);
   }
 

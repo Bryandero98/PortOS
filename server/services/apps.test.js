@@ -34,7 +34,7 @@ vi.mock('./pm2.js', () => ({
 import { atomicWrite, readJSONFile } from '../lib/fileUtils.js';
 import { listProcessesStrict } from './pm2.js';
 import { resetExecutionHistory } from './taskSchedule.js';
-import { annotateExpectedExit, createApp, getAppStatuses, getAppStatusSummary, getDesktopProcessNames, getReservedPorts, invalidateCache, PORTOS_APP_ID, updateAppTaskTypeOverride } from './apps.js';
+import { annotateExpectedExit, createApp, getAppStatuses, getAppStatusSummary, getDesktopProcessNames, getReservedPorts, invalidateCache, PORTOS_APP_ID, resolvePm2HomeForProcess, updateAppTaskTypeOverride } from './apps.js';
 
 describe('pr-watcher cooldown reset', () => {
   beforeEach(() => {
@@ -365,6 +365,35 @@ describe('portless / desktop apps (#2991)', () => {
 
       expect(await getDesktopProcessNames()).toEqual(new Set(['the-game']));
     });
+  });
+});
+
+describe('resolvePm2HomeForProcess', () => {
+  beforeEach(() => {
+    invalidateCache();
+    vi.clearAllMocks();
+  });
+
+  it('returns the owning app custom home for a registered process', async () => {
+    readJSONFile.mockResolvedValue({
+      apps: {
+        [PORTOS_APP_ID]: { name: 'PortOS', type: 'express', pm2ProcessNames: ['portos-server'] },
+        'custom-home': { name: 'Example App', pm2Home: '/tmp/example-pm2', pm2ProcessNames: ['example-api'] },
+      },
+    });
+
+    await expect(resolvePm2HomeForProcess('example-api')).resolves.toBe('/tmp/example-pm2');
+  });
+
+  it('returns null when the matching app uses the default PM2 home', async () => {
+    readJSONFile.mockResolvedValue({
+      apps: {
+        [PORTOS_APP_ID]: { name: 'PortOS', type: 'express', pm2ProcessNames: ['portos-server'] },
+        'default-home': { name: 'Example App', pm2ProcessNames: ['example-api'] },
+      },
+    });
+
+    await expect(resolvePm2HomeForProcess('example-api')).resolves.toBeNull();
   });
 });
 

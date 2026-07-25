@@ -213,7 +213,7 @@ export default function AppDetailView() {
       case 'gsd':
         return <GsdTab appId={appId} repoPath={app.repoPath} />;
       case 'processes':
-        return <ProcessesTab pm2ProcessNames={app.pm2ProcessNames} />;
+        return <ProcessesTab appId={app.id} pm2ProcessNames={app.pm2ProcessNames} />;
       case 'references':
         return <ReferencesTab appId={appId} appName={app.name} />;
       case 'update':
