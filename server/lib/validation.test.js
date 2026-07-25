@@ -38,7 +38,6 @@ import {
   databaseSwitchSchema,
   databaseBackendSchema,
   databaseExportSchema,
-  spriteAnimationTrackSchema,
   spriteTrackFrameCountSchema,
   spriteTrackFpsSchema,
   spriteRuntimeContractSchema,
@@ -1435,14 +1434,6 @@ describe('ad-hoc route schemas (#2521)', () => {
   });
 
   describe('animation-track-aware sprite bounds (#3015)', () => {
-    it('accepts a known track id and rejects an unknown one by name', () => {
-      expect(spriteAnimationTrackSchema.safeParse('walk').success).toBe(true);
-      const bad = spriteAnimationTrackSchema.safeParse('scanner');
-      expect(bad.success).toBe(false);
-      expect(JSON.stringify(bad.error.issues)).toMatch(/unknown animation track/);
-      expect(JSON.stringify(bad.error.issues)).toMatch(/walk/);
-    });
-
     it('builds the walk range from the registry row, unchanged from pre-#3015', () => {
       const frames = spriteTrackFrameCountSchema('walk');
       expect(frames.safeParse(6).success).toBe(true);

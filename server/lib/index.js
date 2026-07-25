@@ -255,6 +255,7 @@ export * from './openapiSpec.js';
 export * from './shellQuote.js';
 export * from './sidecarProcess.js';
 export * from './singleFlight.js';
+export * from './staticImportGraph.js';
 export * from './streamBackpressure.js';
 export * from './sseUtils.js';
 export * from './uploadLimits.js';

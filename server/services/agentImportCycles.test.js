@@ -19,6 +19,7 @@ import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { staticImportSpecifiers } from '../lib/staticImportGraph.js';
 
 const SERVICES_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -40,26 +41,22 @@ const CLUSTER = [
   'agentRunnerOutputBatchers.js',
 ];
 
-// Matches `import … from './x.js'`, `export … from './x.js'`, and bare
-// `import './x.js'` at the start of a line. Deliberately does NOT match
-// `await import('./x.js')` (dynamic) or the same string inside a comment,
-// because a comment never starts with `import`/`export`.
-const STATIC_FROM = /^\s*(?:import|export)\b[^;]*?from\s*['"]\.\/([\w.\-/]+\.js)['"]/gm;
-const STATIC_BARE = /^\s*import\s*['"]\.\/([\w.\-/]+\.js)['"]/gm;
-
+// The static-import scan itself lives in `server/lib/staticImportGraph.js` so
+// this guard and the sprites sharp-free guard share ONE parser — two copies is
+// how a structural guard rots (a fix to one silently under-reports in the
+// other). It matches static `import`/`export … from` and bare side-effect
+// imports only, never `await import()` (deferred to call time, so it can't
+// produce a load-time cycle) and never a specifier inside a comment.
 function buildStaticGraph() {
   const files = readdirSync(SERVICES_DIR).filter(f => f.endsWith('.js') && !f.includes('.test.'));
   const known = new Set(files);
   const graph = new Map();
   for (const file of files) {
-    const src = readFileSync(join(SERVICES_DIR, file), 'utf-8');
     const deps = new Set();
-    for (const re of [STATIC_FROM, STATIC_BARE]) {
-      re.lastIndex = 0;
-      let match;
-      while ((match = re.exec(src)) !== null) {
-        if (known.has(match[1])) deps.add(match[1]);
-      }
+    for (const spec of staticImportSpecifiers(join(SERVICES_DIR, file))) {
+      // Same-directory siblings only — this guard is scoped to the services dir.
+      const sibling = spec.startsWith('./') ? spec.slice(2) : null;
+      if (sibling && known.has(sibling)) deps.add(sibling);
     }
     graph.set(file, [...deps]);
   }

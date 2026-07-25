@@ -37,13 +37,11 @@ import {
 // here; the registry owns the value now, so the two can never disagree.
 export { WALK_TRACK };
 
-const intInRange = (v, min, max) => (Number.isInteger(v) && v >= min && v <= max ? v : null);
-// Range readers bound to ONE track's row. Out-of-range values read as `null`
+// Range readers against one track's row. Out-of-range values read as `null`
 // (absent) rather than being clamped — see resolveAnimationTarget's contract.
-const trackReaders = (row) => ({
-  readFrameCount: (v) => intInRange(v, row.minFrameCount, row.maxFrameCount),
-  readFps: (v) => intInRange(v, row.minFps, row.maxFps),
-});
+const intInRange = (v, min, max) => (Number.isInteger(v) && v >= min && v <= max ? v : null);
+const readFrameCount = (row, v) => intInRange(v, row.minFrameCount, row.maxFrameCount);
+const readFps = (row, v) => intInRange(v, row.minFps, row.maxFps);
 
 /**
  * Resolve one track's pinned target from the precedence chain, newest authority
@@ -68,9 +66,8 @@ const trackReaders = (row) => ({
  *
  * `track` selects which persisted entry to read AND which registry row supplies
  * the bounds, the defaults, and the `runtimeContract` field names — all three
- * were walk-specific before #3015. An absent track resolves to `walk`
- * (preserving every existing call site); an UNRECOGNIZED one throws rather than
- * silently validating against walk's range.
+ * were walk-specific before #3015. Absent/unrecognized handling is
+ * `getAnimationTrack`'s (absent ⇒ the default track, unrecognized ⇒ throws).
  *
  * @param {object}   input
  * @param {string}   [input.track]            Track id from `animationTracks.js` (default 'walk').
@@ -82,28 +79,26 @@ const trackReaders = (row) => ({
  *            frameCountLocked: boolean, fpsLocked: boolean}}
  */
 export function resolveAnimationTarget({
-  track = WALK_TRACK,
+  track,
   runtimeContract = null,
   animationTargets = null,
   packagedCycles = [],
 } = {}) {
-  // Throws on an unrecognized track — an explicit error beats silently
-  // range-checking a scanner action against the walk's 6–16.
+  // Absent → the default track; unrecognized → throws (see getAnimationTrack).
   const row = getAnimationTrack(track);
-  const { readFrameCount, readFps } = trackReaders(row);
 
   // The bound app's declared expectation for its own atlas (#2982) — a stronger
   // authority than any per-render pick. Read defensively: that field lands
   // independently of this module, so an absent contract just falls through.
-  const appCount = readFrameCount(runtimeContract?.[row.contractFrameCountField]);
-  const appFps = readFps(runtimeContract?.[row.contractFpsField]);
+  const appCount = readFrameCount(row, runtimeContract?.[row.contractFrameCountField]);
+  const appFps = row.contractFpsField ? readFps(row, runtimeContract?.[row.contractFpsField]) : null;
 
   const pinned = animationTargets?.[row.id] || null;
-  const setCount = readFrameCount(pinned?.frameCount);
-  const setFps = readFps(pinned?.fps);
+  const setCount = readFrameCount(row, pinned?.frameCount);
+  const setFps = readFps(row, pinned?.fps);
 
-  const derivedCount = firstDefined(packagedCycles, (c) => readFrameCount(c?.frameCount));
-  const derivedFps = firstDefined(packagedCycles, (c) => readFps(c?.fps));
+  const derivedCount = firstDefined(packagedCycles, (c) => readFrameCount(row, c?.frameCount));
+  const derivedFps = firstDefined(packagedCycles, (c) => readFps(row, c?.fps));
 
   let source = 'default';
   if (derivedCount !== null || derivedFps !== null) source = 'derived';
@@ -137,10 +132,9 @@ function firstDefined(list, read) {
  * later PortOS) may have written a `scanner` / ambient entry this build knows
  * nothing about, and a naive `{ walk: … }` overwrite would silently drop it.
  *
- * The track being WRITTEN must be one this build knows (#3015) — an unrecognized
- * write target is a bug, not a forward-compat case, and would persist a row
- * nothing can range-check. Sibling keys are untouched either way: preserving
- * what a newer peer wrote and writing a bogus key are different things.
+ * The track being WRITTEN must be one this build knows (#3015) — preserving what
+ * a newer peer wrote and minting a bogus key are different things, so an
+ * unrecognized write target throws while sibling keys are untouched either way.
  */
 export function withTrackTarget(animationTargets, track, { frameCount, fps, source }) {
   const row = getAnimationTrack(track);
@@ -161,10 +155,10 @@ export function withTrackTarget(animationTargets, track, { frameCount, fps, sour
  * to the default track when the caller passed a bare `{ frameCount, fps }`.
  */
 export function targetDrift(target, packagedCycles = []) {
-  const { readFrameCount, readFps } = trackReaders(getAnimationTrack(target?.track));
+  const row = getAnimationTrack(target?.track);
   return (packagedCycles || []).flatMap((cycle) => {
-    const frameCount = readFrameCount(cycle?.frameCount);
-    const fps = readFps(cycle?.fps);
+    const frameCount = readFrameCount(row, cycle?.frameCount);
+    const fps = readFps(row, cycle?.fps);
     if (frameCount === null && fps === null) return [];
     const countDrifts = frameCount !== null && frameCount !== target.frameCount;
     const fpsDrifts = fps !== null && fps !== target.fps;

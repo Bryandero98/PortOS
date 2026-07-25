@@ -35,9 +35,13 @@
 import { basename } from 'path';
 import { ATLAS_IDLE_COLUMN, ATLAS_SCANNER_COLUMN } from './walkBounds.js';
 // The track id the sidecar names its walk span with — read from the registry
-// (#3015) so the layout descriptor and `animationTargets.walk` can never key the
-// same track differently. animationTracks imports nothing, so this keeps the
-// module dependency-free.
+// (#3015) rather than restated as a local literal, so the descriptor and
+// `animationTargets.walk` agree on how the walk span is spelled. Note the two
+// namespaces are NOT otherwise unified: `deriveTracks` still mints track names
+// straight from column labels (`idle`, `scanner`), which are not registry ids,
+// and `walkColumnsOf` still defines walk as "everything that isn't idle or
+// scanner". Reconciling those is the second track's job, not this import's.
+// animationTracks imports nothing, so this keeps the module dependency-free.
 import { WALK_TRACK } from './animationTracks.js';
 
 // Bump only on a breaking shape change. Adding a field (or a new track) is

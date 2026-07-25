@@ -44,7 +44,8 @@ export const WALK_TRACK = 'walk';
  * - `contractFrameCountField` / `contractFpsField` — the field names this track
  *   occupies in an app's `publishBinding.runtimeContract` (#2982). Named here so
  *   the app rung of the precedence chain is track-driven rather than hard-coded
- *   to `walkFrameCount`.
+ *   to `walkFrameCount`. `contractFpsField` may be `null` for a track whose
+ *   speed an app has no say in.
  */
 export const ANIMATION_TRACKS = Object.freeze({
   [WALK_TRACK]: Object.freeze({
@@ -58,12 +59,46 @@ export const ANIMATION_TRACKS = Object.freeze({
     maxFps: 24,
     defaultFps: 10,
     contractFrameCountField: 'walkFrameCount',
+    // `spriteRuntimeContractSchema` deliberately declares no fps key (a
+    // distance-driven consumer has no animation-fps concept), so today this is
+    // reachable only by a legacy/hand-built contract object — kept, not
+    // nulled, because dropping it would change resolution behavior for those.
+    // A second track copying this row should decide its own answer.
     contractFpsField: 'walkFps',
   }),
 });
 
 /** Known track ids, in registry order. */
 export const ANIMATION_TRACK_IDS = Object.freeze(Object.keys(ANIMATION_TRACKS));
+
+// Fail fast at module load, the way navManifest.js and catalogTypes.js guard
+// their registries: a row missing a bound would otherwise boot clean and
+// surface much later as `NaN` out of a Math.min, or as `z.number().min(
+// undefined)` throwing at the first sprite render. A bad row should block boot
+// with a message naming the field, not corrupt a render hours later.
+for (const id of ANIMATION_TRACK_IDS) {
+  const row = ANIMATION_TRACKS[id];
+  if (row.id !== id) throw new Error(`animationTracks: row '${id}' declares mismatched id '${row.id}'`);
+  if (typeof row.label !== 'string' || !row.label) throw new Error(`animationTracks: track '${id}' needs a label`);
+  if (typeof row.directional !== 'boolean') throw new Error(`animationTracks: track '${id}' needs a boolean 'directional'`);
+  for (const field of ['minFrameCount', 'maxFrameCount', 'defaultFrameCount', 'minFps', 'maxFps', 'defaultFps']) {
+    if (!Number.isInteger(row[field])) throw new Error(`animationTracks: track '${id}' needs an integer '${field}'`);
+  }
+  if (typeof row.contractFrameCountField !== 'string' || !row.contractFrameCountField) {
+    throw new Error(`animationTracks: track '${id}' needs a contractFrameCountField`);
+  }
+  if (row.contractFpsField !== null && (typeof row.contractFpsField !== 'string' || !row.contractFpsField)) {
+    throw new Error(`animationTracks: track '${id}' needs a contractFpsField (or null)`);
+  }
+  for (const [min, def, max] of [
+    ['minFrameCount', 'defaultFrameCount', 'maxFrameCount'],
+    ['minFps', 'defaultFps', 'maxFps'],
+  ]) {
+    if (!(row[min] <= row[def] && row[def] <= row[max])) {
+      throw new Error(`animationTracks: track '${id}' needs ${min} <= ${def} <= ${max}`);
+    }
+  }
+}
 
 /** True when `id` names a track this build knows. */
 export function isAnimationTrack(id) {
@@ -85,18 +120,23 @@ export function getAnimationTrack(id) {
   return ANIMATION_TRACKS[key];
 }
 
+// Round-then-clamp, with unusable input (NaN, non-numeric) falling back to the
+// knob's default rather than to a bound — the two knobs differ only in which
+// three row fields they read.
+const clampInto = (n, min, max, fallback) => {
+  const v = Math.round(Number(n));
+  if (!Number.isFinite(v)) return fallback;
+  return Math.max(min, Math.min(max, v));
+};
+
 /** Clamp a requested frame count into `track`'s authoring range. */
 export function clampTrackFrameCount(n, track) {
   const row = getAnimationTrack(track);
-  const v = Math.round(Number(n));
-  if (!Number.isFinite(v)) return row.defaultFrameCount;
-  return Math.max(row.minFrameCount, Math.min(row.maxFrameCount, v));
+  return clampInto(n, row.minFrameCount, row.maxFrameCount, row.defaultFrameCount);
 }
 
 /** Clamp a requested playback fps into `track`'s authoring range. */
 export function clampTrackFps(n, track) {
   const row = getAnimationTrack(track);
-  const v = Math.round(Number(n));
-  if (!Number.isFinite(v)) return row.defaultFps;
-  return Math.max(row.minFps, Math.min(row.maxFps, v));
+  return clampInto(n, row.minFps, row.maxFps, row.defaultFps);
 }

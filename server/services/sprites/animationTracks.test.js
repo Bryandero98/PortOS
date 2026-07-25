@@ -9,15 +9,25 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
-import { dirname, join, resolve } from 'path';
+import { dirname, join } from 'path';
 import {
   WALK_TRACK, ANIMATION_TRACKS, ANIMATION_TRACK_IDS,
   isAnimationTrack, getAnimationTrack, clampTrackFrameCount, clampTrackFps,
 } from './animationTracks.js';
+import {
+  staticImportSpecifiers, staticImportClosure, specifierMatchesPackage,
+} from '../../lib/staticImportGraph.js';
+import {
+  WALK_DEFAULT_FRAME_COUNT as CLIENT_DEFAULT_FRAME_COUNT,
+  WALK_DEFAULT_FPS as CLIENT_DEFAULT_FPS,
+  WALK_FRAME_COUNT_OPTIONS as CLIENT_FRAME_COUNT_OPTIONS,
+  walkFpsOptionsFor as clientWalkFpsOptionsFor,
+} from '../../../client/src/lib/spriteTrimmer.js';
 
 const SPRITES_DIR = dirname(fileURLToPath(import.meta.url));
+const SERVER_DIR = dirname(dirname(SPRITES_DIR));
 
 describe('the registry rows', () => {
   it('reproduces the walk track\'s historical bounds and defaults exactly', () => {
@@ -37,9 +47,9 @@ describe('the registry rows', () => {
   });
 
   it('describes every declared track completely', () => {
-    // A row missing a bound would fall through as `undefined` into a Math.min
-    // (→ NaN) or a Zod .min() (→ throw at boot); assert the shape up front so
-    // adding a track can't half-land.
+    // Mirrors the module-load guard in animationTracks.js (which is what
+    // actually blocks boot on a bad row) so a shape violation reads as a named
+    // assertion here rather than only as an import-time throw somewhere else.
     for (const id of ANIMATION_TRACK_IDS) {
       const row = ANIMATION_TRACKS[id];
       expect(row.id, `${id}.id must match its registry key`).toBe(id);
@@ -146,71 +156,84 @@ describe('walkBounds re-reads the walk row (no call-site churn)', () => {
   });
 });
 
-// Matches `import … from './x.js'` / `export … from './x.js'` / bare
-// `import './x.js'` at the start of a line — the same static-only scan
-// agentImportCycles.test.js uses. Deliberately does NOT match `await import()`
-// (deferred to call time) or the string inside a comment.
-const STATIC_FROM = /^\s*(?:import|export)\b[^;]*?from\s*['"]([^'"]+)['"]/gm;
-const STATIC_BARE = /^\s*import\s*['"]([^'"]+)['"]/gm;
-
-function staticSpecifiers(file) {
-  const src = readFileSync(file, 'utf-8');
-  const out = [];
-  for (const re of [STATIC_FROM, STATIC_BARE]) {
-    re.lastIndex = 0;
-    let match;
-    while ((match = re.exec(src)) !== null) out.push(match[1]);
-  }
-  return out;
-}
-
-/** Every module statically reachable from `entry`, plus the bare packages hit. */
-function importClosure(entry) {
-  const seen = new Set();
-  const packages = new Set();
-  const walk = (file) => {
-    if (seen.has(file)) return;
-    seen.add(file);
-    for (const spec of staticSpecifiers(file)) {
-      if (!spec.startsWith('.')) { packages.add(spec); continue; }
-      const next = resolve(dirname(file), spec);
-      if (existsSync(next)) walk(next);
-    }
-  };
-  walk(entry);
-  return { files: seen, packages };
-}
-
 describe('sharp-free leaf property', () => {
-  // server/lib/validation.js builds its sprite frame-count/fps ranges from this
-  // registry. If the registry (or anything it reaches) ever imports sharp, the
-  // native image graph lands in the request-validation graph — the exact
-  // regression walkBounds.js was split out to prevent, now one level deeper.
+  // The property that actually matters is on `server/lib/validation.js`: it
+  // builds its sprite frame-count/fps ranges from this registry, and the whole
+  // reason walkBounds.js was split out (and now animationTracks.js beneath it)
+  // is to keep the native image graph out of REQUEST VALIDATION. Asserting only
+  // the three leaves would pass while someone routed sharp into validation.js
+  // through any of its ~90 other closure members, so validation.js is the first
+  // entry point here, not an afterthought.
   const NATIVE = ['sharp', 'canvas', 'fluent-ffmpeg', '@ffmpeg-installer/ffmpeg'];
 
   it.each([
-    ['animationTracks.js'],
-    ['walkBounds.js'],
-    ['animationTargets.js'],
-  ])('%s reaches no native image/video dependency', (file) => {
-    const { packages } = importClosure(join(SPRITES_DIR, file));
-    const offending = [...packages].filter((p) => NATIVE.some((n) => p === n || p.startsWith(`${n}/`)));
-    expect(offending, `${file} must not reach ${offending.join(', ')}`).toEqual([]);
+    ['the request-validation graph', join(SERVER_DIR, 'lib', 'validation.js')],
+    ['animationTracks.js', join(SPRITES_DIR, 'animationTracks.js')],
+    ['walkBounds.js', join(SPRITES_DIR, 'walkBounds.js')],
+    ['animationTargets.js', join(SPRITES_DIR, 'animationTargets.js')],
+  ])('%s reaches no native image/video dependency', (_label, entry) => {
+    const { packages } = staticImportClosure(entry);
+    const offending = [...packages].filter((p) => NATIVE.some((n) => specifierMatchesPackage(p, n)));
+    expect(offending, `must not reach ${offending.join(', ')}`).toEqual([]);
   });
 
   it('keeps animationTracks.js a true leaf — it imports nothing at all', () => {
-    expect(staticSpecifiers(join(SPRITES_DIR, 'animationTracks.js'))).toEqual([]);
+    expect(staticImportSpecifiers(join(SPRITES_DIR, 'animationTracks.js'))).toEqual([]);
   });
 
   it('actually walks the graph (positive control — the guard is not vacuous)', () => {
-    // Two ways this assertion could pass for the wrong reason: the closure
-    // never follows relative imports, or it never records bare packages. Pin
-    // both against a module that genuinely reaches sharp.
-    const walkBounds = importClosure(join(SPRITES_DIR, 'walkBounds.js'));
+    // Three ways the assertions above could pass for the wrong reason: the walk
+    // never follows relative imports, it never records bare packages, or an
+    // unresolvable specifier silently truncates it. Pin the first two against a
+    // module that genuinely reaches sharp.
+    const walkBounds = staticImportClosure(join(SPRITES_DIR, 'walkBounds.js'));
     expect([...walkBounds.files]).toContain(join(SPRITES_DIR, 'animationTracks.js'));
 
-    const packer = importClosure(join(SPRITES_DIR, 'walkPostprocess.js'));
+    const packer = staticImportClosure(join(SPRITES_DIR, 'walkPostprocess.js'));
     expect([...packer.packages], 'walkPostprocess is the native-graph module this split exists to fence off')
       .toContain('sharp');
+
+    // …and that validation.js's closure is genuinely large, so a resolver gap
+    // can't make its clean result meaningless.
+    expect(staticImportClosure(join(SERVER_DIR, 'lib', 'validation.js')).files.size).toBeGreaterThan(20);
+  });
+});
+
+describe('client mirror parity', () => {
+  // `client/src/lib/spriteTrimmer.js` restates walk's bounds as literals so the
+  // pickers can seed their option lists without importing a server module. The
+  // registry is now the source of truth for a SET of ranges, so the first real
+  // per-track bounds change — the entire motivation for #3015 — would silently
+  // desync the picker from the server's Zod range and surface as a 400 with no
+  // field-level explanation. Same guard shape as catalogTypes.parity.test.js.
+  const walk = getAnimationTrack(WALK_TRACK);
+
+  it('mirrors the walk defaults', () => {
+    expect(CLIENT_DEFAULT_FRAME_COUNT).toBe(walk.defaultFrameCount);
+    expect(CLIENT_DEFAULT_FPS).toBe(walk.defaultFps);
+  });
+
+  it('seeds the frame-count picker from the walk row\'s full range', () => {
+    expect(CLIENT_FRAME_COUNT_OPTIONS[0]).toBe(walk.minFrameCount);
+    expect(CLIENT_FRAME_COUNT_OPTIONS.at(-1)).toBe(walk.maxFrameCount);
+  });
+
+  it('seeds the fps picker within the walk row\'s range', () => {
+    // The list is even-stepped, so it need not END on the max — but it must
+    // start at the floor and never offer a value the server would reject.
+    const options = clientWalkFpsOptionsFor(walk.defaultFps);
+    expect(options[0]).toBe(walk.minFps);
+    expect(Math.max(...options)).toBeLessThanOrEqual(walk.maxFps);
+  });
+
+  it('keeps the publish form\'s hard-coded frame-count bounds in step', () => {
+    // PublishWorkflow.jsx is a React component (not importable under the server
+    // runner), so its two mirrored literals are asserted as source text.
+    const src = readFileSync(
+      join(SERVER_DIR, '..', 'client', 'src', 'components', 'sprites', 'PublishWorkflow.jsx'),
+      'utf-8',
+    );
+    expect(src).toContain(`const WALK_MIN_FRAME_COUNT = ${walk.minFrameCount};`);
+    expect(src).toContain(`const WALK_MAX_FRAME_COUNT = ${walk.maxFrameCount};`);
   });
 });

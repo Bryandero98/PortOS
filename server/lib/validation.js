@@ -5,9 +5,7 @@ import { WORK_TRACKERS } from './workTracker.js';
 import { SPRITE_ID_PATTERN, SPRITE_RECORD_KINDS } from '../services/sprites/recordsLogic.js';
 import { ANCHOR_DIRECTIONS, SPRITE_DIRECTIONS, TURNAROUND_ID } from '../services/sprites/prompts.js';
 import { CHROMA_KEY_HEXES } from '../services/sprites/chromaKey.js';
-import {
-  WALK_TRACK, ANIMATION_TRACK_IDS, isAnimationTrack, getAnimationTrack,
-} from '../services/sprites/animationTracks.js';
+import { WALK_TRACK, getAnimationTrack } from '../services/sprites/animationTracks.js';
 import { QUEUEABLE_IMAGE_MODES } from '../services/imageGen/modes.js';
 
 // gpt-image-2 (codex backend) caps at 3840px per edge and 8,294,400 total
@@ -957,23 +955,22 @@ export const videoDownloadSchema = z.object({
 });
 
 // Animation-track-aware bounds (#3015). Frame-count / fps ranges are per track,
-// not global, so the schema factories below take a track id and build the range
-// from that track's registry row. `walk` is the default, which is what keeps
-// every pre-#3015 call site behaving identically. An unrecognized id throws out
-// of `getAnimationTrack` at schema-construction time (a wiring bug, caught at
-// boot) rather than degrading to walk's range; a track id arriving in a REQUEST
-// is validated by `spriteAnimationTrackSchema`, which rejects it with a message
-// naming the known tracks.
-export const spriteAnimationTrackSchema = z.string().refine(isAnimationTrack, {
-  message: `unknown animation track — expected one of: ${ANIMATION_TRACK_IDS.join(', ')}`,
-});
-
-export function spriteTrackFrameCountSchema(track = WALK_TRACK) {
+// not global, so the factories below take a track id and build the range from
+// that track's registry row. An absent id is the default (walk) track, which is
+// what keeps every pre-#3015 schema identical; an unrecognized one throws out of
+// `getAnimationTrack` at schema-CONSTRUCTION time, so a mis-keyed track is a
+// boot failure naming the known tracks rather than a range that silently
+// validates a scanner action against walk's 6–16.
+//
+// There is deliberately no exported `track` field schema yet: no request shape
+// carries a track id until the first second track lands, and an exported-but-
+// unwired validator is false confidence.
+export function spriteTrackFrameCountSchema(track) {
   const row = getAnimationTrack(track);
   return z.number().int().min(row.minFrameCount).max(row.maxFrameCount);
 }
 
-export function spriteTrackFpsSchema(track = WALK_TRACK) {
+export function spriteTrackFpsSchema(track) {
   const row = getAnimationTrack(track);
   return z.number().int().min(row.minFps).max(row.maxFps);
 }
@@ -1026,10 +1023,10 @@ const spriteRepoRelativePath = z.string().min(1).max(1024)
 // have no animation-fps concept, so PortOS's fps is preview-only and never
 // part of the contract.
 export const spriteRuntimeContractSchema = z.object({
-  // Field name and range both come from the walk registry row (#3015) — the
-  // row names the contract field it occupies, so a second track declaring its
-  // own contract field can't drift from what resolveAnimationTarget reads.
-  [getAnimationTrack(WALK_TRACK).contractFrameCountField]: spriteTrackFrameCountSchema(WALK_TRACK),
+  // Range from the walk registry row (#3015). The KEY stays a literal so
+  // `grep walkFrameCount` still finds the schema that validates it — the row's
+  // `contractFrameCountField` is asserted to agree in animationTargets.test.js.
+  walkFrameCount: spriteTrackFrameCountSchema(WALK_TRACK),
   cellSize: z.number().int().min(16).max(1024).nullable().optional(),
   columnCount: z.number().int().min(1).max(256).nullable().optional(),
 });
