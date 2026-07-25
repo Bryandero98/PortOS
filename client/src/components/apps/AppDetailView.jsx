@@ -445,10 +445,7 @@ export default function AppDetailView() {
 
       {/* Tab Content */}
       <div className="flex-1 overflow-auto p-4 sm:p-6 space-y-4">
-        {/* Desktop launch output. Suppressed on the Processes tab: the server keeps
-            ONE log stream per socket, so two mounted tails would clobber each other
-            and the tab's own expanded-process view is the better surface there. */}
-        {launchProcess && effectiveTab !== 'processes' && (
+        {launchProcess && (
           <DesktopLaunchProgress
             appId={appId}
             processName={launchProcess}

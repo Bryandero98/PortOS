@@ -29,6 +29,13 @@ export const logsSubscribeSchema = z.object({
   appId: z.string().min(1).optional()
 });
 
+// logs:unsubscribe — scoped cleanup for one live PM2 stream. The empty legacy
+// payload remains valid so an older client can retain the former "unsubscribe
+// everything" behavior while newer clients release only their own process.
+export const logsUnsubscribeSchema = z.object({
+  processName: z.string().min(1, 'processName is required').optional()
+}).default({});
+
 // error:recover — error code and context
 export const errorRecoverSchema = z.object({
   code: z.string().min(1, 'error code is required'),
