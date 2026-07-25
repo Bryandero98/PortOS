@@ -10,6 +10,7 @@
     "lint": "eslint src --ext .js,.jsx",
     "preview": "vite preview",
     "test": "vitest run",
+    "test:ci": "vitest run --bail=1 --reporter=default --reporter=github-actions",
     "test:watch": "vitest"
   },
   "dependencies": {

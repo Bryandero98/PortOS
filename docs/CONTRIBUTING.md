@@ -101,9 +101,22 @@ PortOS/
 # Run server tests
 cd server && npm test
 
+# Run client tests
+cd client && npm test
+
+# Provision and run the isolated DB-backed suites
+npm run setup:db:test
+npm run test:db
+
 # Watch mode
 cd server && npm run test:watch
 ```
+
+Pull requests run the tests for affected feature directories, with conservative
+fallbacks to Vitest related-test mode or the complete suite. Pushes to `main`,
+nightly CI, manual CI runs, and releases always run the complete server, client,
+DB, lint, build, and smoke checks. Release publication is blocked until that
+full CI gate succeeds.
 
 ## API Documentation
 
