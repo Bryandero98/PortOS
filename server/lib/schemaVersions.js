@@ -499,7 +499,19 @@ export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // permissive `metadata` map and round-trips the markdown store like any other
   // metadata, so no new top-level wire field is added — only the status vocab
   // widened. Per-category gate → only cos-tasks sync pauses with old peers.
-  cosTasks: 2,
+  // v3 = the PR-follow-up disposition markers `reviewLoopMergeOnly` /
+  // `reviewLoopLeaveOpen`. This is an EXECUTION-semantics break, not a shape
+  // change: both ride the permissive `metadata` map, so a ≤v2 receiver validates
+  // and stores the task fine — and then MIS-RUNS it. Its prompt builder doesn't
+  // know either marker, so it re-defaults the deliberately-empty reviewer list
+  // back to `[copilot]` and runs a review the task explicitly disabled; on a
+  // GitLab MR (the copilot-only fallback) it emits GitHub-only commands that
+  // cannot land the MR, orphaning it; and on a JIRA hand-off it merges a PR that
+  // must stay open. A claimed-and-mis-run task then LWW-pushes its damaged state
+  // back onto the v3 peer, which is exactly the bump trigger (see the
+  // `creativeDirectorProjects` 2→3 precedent). Per-category gate → only cos-tasks
+  // sync pauses until the peer upgrades.
+  cosTasks: 3,
   // NOTE: `videoHistory` is intentionally NOT listed here. The version gate
   // rejects the ENTIRE snapshot/push payload on ANY ahead-mismatch (the
   // comparator walks the union of keys), so declaring a brand-new key would

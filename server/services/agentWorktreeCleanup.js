@@ -22,6 +22,8 @@ import { removeWorktree } from './worktreeManager.js';
 import { isTruthyMeta } from './agentState.js';
 import { PATHS } from '../lib/fileUtils.js';
 import { RECOVERY_TASK_PREFIX } from './recoveryTasks.js';
+import { detectForgeCli } from '../lib/gitForge.js';
+import { leavesPrForHuman } from '../lib/prDisposition.js';
 import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, MODEL_CAPABLE_CLI_REVIEWERS, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers } from '../lib/validation.js';
 
 /**
@@ -168,23 +170,39 @@ export async function cleanupAgentWorktree(agentId, success, { openPR = false, r
       // at copilot's turn (so a failed pre-request or copilot-only config still gets a
       // review pass) and invokes the CLI reviewers itself. The only reviewer dropped is
       // copilot on a non-GitHub forge, handled centrally in spawnReviewLoopFollowUp.
-      const canSpawnFollowUp = shouldRequestCopilot && reviewerList.length > 0;
-      if (canSpawnFollowUp) {
+      //
+      // A follow-up is spawned for a PR PortOS opened, because something has to
+      // land it. `spawnReviewLoopFollowUp` picks the mode from what actually
+      // survives reviewer resolution: reviewers left → review-then-merge; none left
+      // (Review Loop off, or copilot-only on a GitLab forge) → merge on green CI.
+      // Deciding it there rather than here is what keeps a stripped reviewer list
+      // from silently producing an orphaned PR.
+      //
+      // A JIRA-tracked task (see lib/prDisposition.js) hands its PR to a human —
+      // its ticket is already "In Review" and nothing here can transition it — so
+      // the follow-up must NOT merge. It still RUNS the configured reviewers when
+      // there are any (leaving the PR open is about the merge, not the review);
+      // with no reviewers there is nothing for a follow-up to do at all.
+      const leaveOpen = leavesPrForHuman(originalTask);
+      if (leaveOpen && !shouldRequestCopilot) {
+        emitLog('info', `🤝 Leaving ${prResult.url} open for a human — JIRA-tracked task, no reviewers configured`, { agentId, prUrl: prResult.url });
+      } else {
         await spawnReviewLoopFollowUp({
           originalAgentId: agentId,
           originalTask,
           prUrl: prResult.url,
           prBranch: worktreeBranch,
           sourceWorkspace,
-          reviewers: reviewerList,
-          usernames,
-          optionalReviewers,
+          reviewers: shouldRequestCopilot ? reviewerList : [],
+          usernames: shouldRequestCopilot ? usernames : [],
+          optionalReviewers: shouldRequestCopilot ? optionalReviewers : [],
           reviewStopMode,
           reviewerApplies,
-          reviewerModels
+          reviewerModels,
+          leaveOpen
         }).catch(err => {
-          emitLog('warn', `🤖 Failed to spawn review-loop follow-up for ${prResult.url}: ${err.message}`, { agentId, prUrl: prResult.url });
-          warnings.push(`Review-loop follow-up spawn failed for ${prResult.url}: ${err.message}`);
+          emitLog('warn', `🤖 Failed to spawn PR follow-up for ${prResult.url}: ${err.message}`, { agentId, prUrl: prResult.url });
+          warnings.push(`PR follow-up spawn failed for ${prResult.url}: ${err.message}`);
         });
       }
 
@@ -231,24 +249,35 @@ export async function cleanupAgentWorktree(agentId, success, { openPR = false, r
  * runs each in order — invoking the CLI reviewers itself and requesting Copilot at
  * its turn — honoring `reviewStopMode` (`all`/`on-findings`/`on-clean`) and
  * `reviewerApplies`. Copilot is GitHub-only, so it is stripped here on non-GitHub
- * forges; if that empties the list AND no `usernames` are configured, no follow-up
- * is spawned. `usernames` are arbitrary GitHub reviewer usernames the follow-up
+ * forges. `usernames` are arbitrary GitHub reviewer usernames the follow-up
  * requests as PR reviewers to gate the merge — forge-agnostic, so never stripped.
+ *
+ * **Mode is derived, not passed.** When nothing survives reviewer resolution —
+ * the task's Review Loop was off (caller passes an explicitly empty list), or
+ * copilot was the only reviewer and this is a GitLab MR — the follow-up runs in
+ * **merge-only** mode: no review, just land the PR (wait for CI, fix a failing
+ * check or a conflict, merge). Deriving it here means there is no combination
+ * that spawns nothing and leaves the PR open forever, which is what used to
+ * happen both with the Review Loop off and with copilot-only on GitLab.
  *
  * The follow-up task uses an isolated worktree attached to the existing PR
  * branch (via createWorktree's `existingBranch` option) so it can fix-and-push
  * without trampling concurrent agents.
  */
-export async function spawnReviewLoopFollowUp({ originalAgentId, originalTask, prUrl, prBranch, sourceWorkspace, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, reviewerModels = null }) {
+export async function spawnReviewLoopFollowUp({ originalAgentId, originalTask, prUrl, prBranch, sourceWorkspace, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, reviewerModels = null, leaveOpen = false }) {
   if (!prUrl || !prBranch) return null;
 
   const parsedPr = git.parsePullRequestUrl(prUrl);
   // Copilot is GitHub-only; CLI-based reviewers (claude/antigravity/codex/grok) work on any
-  // forge because the agent invokes the CLI directly. On a non-GitHub forge, drop
-  // copilot from the list — if nothing's left (and no username reviewers), there's
-  // no review to run.
-  const isNonGithubForge = parsedPr && parsedPr.host && parsedPr.host !== 'github.com';
-  const reviewerList = normalizeReviewers({ reviewers });
+  // forge because the agent invokes the CLI directly. On a GitLab forge, drop
+  // copilot from the list. Classify with the shared detector rather than
+  // `host !== 'github.com'` — a GitHub Enterprise host still has Copilot, and
+  // misreading it as non-GitHub would strip the only reviewer and silently
+  // downgrade the run to merge-only.
+  const isNonGithubForge = !!parsedPr?.host && detectForgeCli(parsedPr.host) !== 'gh';
+  // An EXPLICITLY empty list means "no review was requested" and must stay empty —
+  // normalizeReviewers' `[copilot]` default would otherwise resurrect a reviewer.
+  const reviewerList = (Array.isArray(reviewers) && reviewers.length === 0) ? [] : normalizeReviewers({ reviewers });
   const effectiveReviewers = isNonGithubForge ? reviewerList.filter(r => r !== DEFAULT_REVIEWER) : reviewerList;
   // GitHub reviewer usernames are forge-agnostic requested reviewers, so they are
   // NOT stripped on a non-GitHub forge — a username reviewer alone can drive the
@@ -257,7 +286,12 @@ export async function spawnReviewLoopFollowUp({ originalAgentId, originalTask, p
   // Non-blocking (`~opt`) marker set — forge-agnostic, threaded verbatim so the
   // follow-up's `--review-with` marks the same reviewers optional.
   const effectiveOptionalReviewers = normalizeOptionalReviewers(optionalReviewers) || [];
-  if (effectiveReviewers.length === 0 && effectiveUsernames.length === 0) return null;
+  // Nothing left to review → this follow-up's only job is to land the PR.
+  const mergeOnly = effectiveReviewers.length === 0 && effectiveUsernames.length === 0;
+  // ...and with nothing to review AND nothing to merge there is no follow-up at
+  // all (a JIRA-tracked task whose reviewers were all stripped). The caller
+  // normally catches this; the guard keeps the invariant local to this function.
+  if (mergeOnly && leaveOpen) return null;
 
   // Reviewer-keyed CLI model map, narrowed to the model-capable reviewers actually
   // in this loop's list (e.g. `{ codex: 'gpt-5.6-sol', claude: 'qwen2.5:7b' }`); the
@@ -268,10 +302,36 @@ export async function spawnReviewLoopFollowUp({ originalAgentId, originalTask, p
     if (MODEL_CAPABLE_CLI_REVIEWERS.includes(r) && reviewerModels?.[r]) narrowedReviewerModels[r] = reviewerModels[r];
   }
 
+  // One place that names the mode, so the title, the log line, and the warning
+  // can't drift apart as the two follow-up kinds evolve.
+  const kind = mergeOnly
+    ? { title: 'Merge', label: 'merge', reviewers: 'merge on green CI, no review' }
+    : { title: 'Review Loop', label: 'review-loop', reviewers: [...effectiveReviewers, ...effectiveUsernames.map(u => `@${u}`)].join(', ') };
+
+  // Inherit the source task's provider/model/effort pins. A follow-up runs a
+  // coding harness (it fixes checks, resolves conflicts, drives reviewer CLIs),
+  // so an install whose ACTIVE provider is api-only would permanently reject an
+  // unpinned follow-up for lacking a harness — and the PR it was spawned to land
+  // would sit open forever. Only copy what's actually pinned; an unpinned source
+  // task still resolves through the normal active-provider path.
+  //
+  // The model pin rides ONLY with its provider: a bare `model` would be treated as
+  // explicit against whatever provider resolution later picks, handing e.g. a
+  // Claude model id to Codex. Effort is provider-agnostic, so it travels alone.
+  const sourceMeta = originalTask?.metadata || {};
+  const pinnedProvider = sourceMeta.provider || sourceMeta.providerId || null;
+  const providerPins = {};
+  if (pinnedProvider) {
+    providerPins.provider = pinnedProvider;
+    providerPins.providerId = pinnedProvider;
+    if (sourceMeta.model) providerPins.model = sourceMeta.model;
+  }
+  if (sourceMeta.effort) providerPins.effort = sourceMeta.effort;
+
   const appId = originalTask?.metadata?.app || null;
   const sourceTaskDesc = originalTask?.description || 'CoS automated task';
   const firstLine = sourceTaskDesc.split(/[\r\n]/).find(l => l.trim()) || sourceTaskDesc;
-  const followUpTitle = `[Review Loop] ${firstLine.trim().substring(0, 80)} (${prUrl})`;
+  const followUpTitle = `[${kind.title}] ${firstLine.trim().substring(0, 80)} (${prUrl})`;
 
   const followUpTaskId = `sys-rl-${Date.now().toString(36)}`;
   const followUpTask = {
@@ -282,6 +342,7 @@ export async function spawnReviewLoopFollowUp({ originalAgentId, originalTask, p
     description: followUpTitle,
     metadata: {
       app: appId,
+      ...providerPins,
       // useWorktree is required so the follow-up runs in isolation; existingBranch
       // tells createWorktree to attach to the PR branch instead of cutting a new one.
       useWorktree: true,
@@ -293,6 +354,10 @@ export async function spawnReviewLoopFollowUp({ originalAgentId, originalTask, p
       simplify: false,
       // Marker flags consumed by the agent prompt + completion handler
       reviewLoopFollowUp: true,
+      // Merge-only run: no reviewers, the prompt is a CI-gate-and-merge procedure.
+      reviewLoopMergeOnly: mergeOnly,
+      // Review, but do NOT merge — the PR is a human's to land (JIRA hand-off).
+      reviewLoopLeaveOpen: leaveOpen,
       reviewLoopPRUrl: prUrl,
       reviewLoopPRBranch: prBranch,
       reviewLoopPRNumber: parsedPr?.number ?? null,
@@ -325,8 +390,7 @@ export async function spawnReviewLoopFollowUp({ originalAgentId, originalTask, p
   };
 
   await addTask(followUpTask, 'internal', { raw: true });
-  const reviewLoopLabel = [...effectiveReviewers, ...effectiveUsernames.map(u => `@${u}`)].join(', ');
-  emitLog('info', `🔁 Spawned review-loop follow-up task ${followUpTaskId} (${reviewLoopLabel}) for PR ${prUrl}`, {
+  emitLog('info', `🔁 Spawned ${kind.label} follow-up task ${followUpTaskId} (${kind.reviewers}) for PR ${prUrl}`, {
     taskId: followUpTaskId, prUrl, prBranch, sourceAgentId: originalAgentId, sourceTaskId: originalTask?.id
   });
   return followUpTask;
