@@ -403,7 +403,9 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).toMatch(/gh pr create --fill --base main/);
       expect(prompt).toMatch(/gh pr checks "<PR_URL>" --watch --fail-fast/);
       expect(prompt).toMatch(/gh pr merge "<PR_URL>" --merge --delete-branch/);
-      expect(prompt).toMatch(/glab mr merge "<MR_URL>" --yes --remove-source-branch/);
+      // `glab mr merge` selects by IID or source branch — never by URL.
+      expect(prompt).toMatch(/glab mr merge <MR_NUMBER> --yes --remove-source-branch/);
+      expect(prompt).not.toMatch(/glab mr merge "?http/);
       expect(prompt).toMatch(/gh pr view "<PR_URL>" --json state -q \.state/);
       expect(prompt).not.toMatch(/do NOT merge it yourself/);
     });
@@ -650,10 +652,32 @@ describe('buildLightContextPrompt', () => {
         { branchName: 'b', worktreePath: '/tmp/wt' },
         isTruthyMeta);
       expect(prompt).toMatch(/## Merge Follow-up/);
-      expect(prompt).toMatch(/glab mr merge "https:\/\/gitlab\.com\/g\/p\/-\/merge_requests\/5" --yes --remove-source-branch/);
+      // Addressed by MR IID — `glab mr merge` does not accept a URL.
+      expect(prompt).toMatch(/glab mr merge 5 --yes --remove-source-branch/);
       expect(prompt).toMatch(/glab ci status/);
+      expect(prompt).toMatch(/glab mr view 5/);
       expect(prompt).not.toMatch(/gh pr merge/);
       expect(prompt).not.toMatch(/gh pr checks/);
+    });
+
+    it('a merge-only follow-up on GitHub Enterprise keeps gh commands', () => {
+      // Regression: classifying "host !== github.com" as GitLab handed a GHES PR
+      // glab commands that cannot merge it.
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: {
+          reviewLoopFollowUp: true,
+          reviewLoopMergeOnly: true,
+          reviewLoopPRUrl: 'https://github.example.com/o/r/pull/7',
+          reviewLoopPRBranch: 'b',
+          reviewLoopPRNumber: 7,
+          reviewLoopPRHost: 'github.example.com',
+          sourceTaskId: 'task-src-4',
+        }}),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta);
+      expect(prompt).toMatch(/gh pr merge "https:\/\/github\.example\.com\/o\/r\/pull\/7" --merge --delete-branch/);
+      expect(prompt).not.toMatch(/glab/);
     });
 
     it('threads a non-default reviewer (claude) into the follow-up block via --review-with', () => {

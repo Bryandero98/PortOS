@@ -20,6 +20,7 @@ import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, LOCAL_LL
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { isOpencodeCommand } from '../lib/providerModels.js';
 import { shellQuote } from '../lib/shellQuote.js';
+import { detectForgeCli } from '../lib/gitForge.js';
 import * as jiraService from './jira.js';
 import { emitLog } from './cosEvents.js';
 import { PORTOS_APP_ID } from './apps.js';
@@ -573,16 +574,20 @@ ${cliReviewerProcedure}${(rprBody && (hasCopilot || hasGithubUser)) ? `\n### /do
  *
  * @param {number} startStep - number of the first emitted step.
  * @param {Object} opts
- * @param {string} opts.prRef - how to address the PR in commands, already
+ * @param {string} opts.prRef - how to address the PR in `gh` commands, already
  *   quoted: the `"<PR_URL>"` placeholder before the PR exists, or the real URL.
+ * @param {string} [opts.mrRef] - how to address the MR in `glab` commands.
+ *   **`glab mr merge` selects by MR IID or source branch — NOT by URL**, so this
+ *   is the number (or a `<MR_NUMBER>` placeholder), never `prRef`.
  * @param {'github'|'gitlab'|'unknown'} [opts.forge] - which CLI to name. PortOS
  *   opens GitLab MRs too (`git.createPR` falls back to `glab`), so a follow-up
- *   whose PR host is known non-GitHub must not be handed `gh` commands it can't
- *   run. `unknown` (the agent's own completion workflow, which runs before the
- *   PR exists) emits both, commented.
+ *   whose PR host is a GitLab instance must not be handed `gh` commands it can't
+ *   run. Callers derive this with `detectForgeCli` — a GitHub Enterprise host is
+ *   `github`, not "not github.com". `unknown` (the agent's own completion
+ *   workflow, which runs before the PR exists) emits both, commented.
  * @returns {{lines: string[], nextStep: number}}
  */
-function buildCiMergeGateSteps(startStep, { prRef, forge = 'github' }) {
+function buildCiMergeGateSteps(startStep, { prRef, mrRef = '<MR_NUMBER>', forge = 'github' }) {
   const gh = forge !== 'gitlab';
   const glab = forge !== 'github';
   const both = gh && glab;
@@ -590,18 +595,19 @@ function buildCiMergeGateSteps(startStep, { prRef, forge = 'github' }) {
     ? `\`gh pr checks ${prRef} --watch --fail-fast --interval 30\`${glab ? ' (GitLab: `glab ci status`)' : ''}`
     : '`glab ci status`';
   const mergeableCmd = gh
-    ? `\`gh pr view ${prRef} --json mergeable -q .mergeable\` reports \`CONFLICTING\``
-    : 'the MR reports a conflict with its target branch';
+    ? `\`gh pr view ${prRef} --json mergeable -q .mergeable\` reports \`CONFLICTING\`${glab ? ' (GitLab: `glab mr view ' + mrRef + '` shows a conflict)' : ''}`
+    : `\`glab mr view ${mrRef}\` shows a conflict with the target branch`;
   const stateCmd = gh
-    ? `\`gh pr view ${prRef} --json state -q .state\` must return \`MERGED\``
-    : '`glab mr view` must show it merged';
+    ? `\`gh pr view ${prRef} --json state -q .state\` must return \`MERGED\`${glab ? ' (GitLab: `glab mr view ' + mrRef + '` must show it merged)' : ''}`
+    : `\`glab mr view ${mrRef}\` must show it merged`;
   const lines = [
     `${startStep}. **Wait for CI to finish**: ${checksCmd}. A repo with no checks configured reports "no checks reported" — treat that as green.`,
-    `${startStep + 1}. **Clear whatever blocks the merge, then re-check.** If a check failed, read the failing job's log (\`gh run view --log-failed\` on GitHub), fix the cause here, run the project's tests, commit (\`fix:\` prefix, no Co-Authored-By), push, and go back to the previous step — cap this at 5 rounds. If ${mergeableCmd}, \`git fetch origin\`, rebase onto the base branch, resolve the conflicts keeping BOTH sides' intent, re-run the tests, \`git push --force-with-lease\`, and re-check.`,
+    `${startStep + 1}. **Clear whatever blocks the merge, then re-check.** If a check failed, read the failing job's log (${gh ? `\`gh run view --log-failed\`${glab ? ' on GitHub, `glab ci trace` on GitLab' : ''}` : '`glab ci trace`'}), fix the cause here, run the project's tests, commit (\`fix:\` prefix, no Co-Authored-By), push, and go back to the previous step — cap this at 5 rounds. If ${mergeableCmd}, \`git fetch origin\`, rebase onto the base branch, resolve the conflicts keeping BOTH sides' intent, re-run the tests, \`git push --force-with-lease\`, and re-check.`,
     `${startStep + 2}. **Merge** with exactly these flags, nothing else — a true merge commit keeps the branch tip in the base branch's history so automated worktree cleanup can prove the branch is merged, and any merge-deferral flag leaves the PR open after you exit. If it is already merged (a saved \`/do:pr\` default can merge it for you), skip to the next step:`,
     '   ```bash',
     gh ? `   ${both ? '# GitHub:  ' : ''}gh pr merge ${prRef} --merge --delete-branch` : null,
-    glab ? `   ${both ? '# GitLab:  ' : ''}glab mr merge ${both ? '"<MR_URL>"' : prRef} --yes --remove-source-branch` : null,
+    // `glab mr merge` takes an MR IID or source branch — a URL is not accepted.
+    glab ? `   ${both ? '# GitLab:  ' : ''}glab mr merge ${mrRef} --yes --remove-source-branch` : null,
     '   ```',
     `${startStep + 3}. **Confirm the merge before exiting**: ${stateCmd}. If it is still open or was closed unmerged, investigate (failing check, merge conflict, branch protection), fix, and retry. Leave it open ONLY if CI stays red after a genuine fix attempt, or a conflict needs a human decision — and say so explicitly in your completion summary.`,
   ].filter(Boolean);
@@ -618,11 +624,14 @@ function buildCiMergeGateSteps(startStep, { prRef, forge = 'github' }) {
  * @returns {string}
  */
 function buildMergeFollowUpSection({ prUrl, prBranch, prNumber = '', prOwner = '', prRepo = '', prHost = '', sourceTaskId = 'unknown', verbose = false }) {
-  // PortOS opens GitLab MRs via `glab` too, so a non-GitHub host must not be
-  // handed `gh` commands (the host is persisted by spawnReviewLoopFollowUp).
+  // PortOS opens GitLab MRs via `glab` too, so a GitLab host must not be handed
+  // `gh` commands (the host is persisted by spawnReviewLoopFollowUp). Classify
+  // with the shared detector — a GitHub Enterprise host is still `gh`, which a
+  // bare `host !== 'github.com'` test would get wrong.
   const gate = buildCiMergeGateSteps(1, {
     prRef: `"${prUrl}"`,
-    forge: (prHost && prHost !== 'github.com') ? 'gitlab' : 'github',
+    mrRef: prNumber !== '' ? `${prNumber}` : '<MR_NUMBER>',
+    forge: detectForgeCli(prHost) === 'glab' ? 'gitlab' : 'github',
   });
   const steps = [
     ...gate.lines,

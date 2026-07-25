@@ -535,6 +535,34 @@ describe('cleanupAgentWorktree - openPR path', () => {
     expect(removeWorktree).toHaveBeenCalled();
   });
 
+  it('leaves a jira-sprint-manager PR open — no follow-up merges behind the board', async () => {
+    // That task type transitions its ticket to "In Review" and hands the PR to a
+    // human; merging here would land the work while JIRA still shows it in review,
+    // and nothing in this path knows the ticket key to move it to Done.
+    git.push.mockResolvedValue(undefined);
+    git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/77' });
+
+    await cleanupAgentWorktree('agent-1', true, {
+      openPR: true, requestCopilotReview: false, description: 'X',
+      originalTask: { id: 'task-orig', metadata: { analysisType: 'jira-sprint-manager' }, description: 'X' }
+    });
+
+    expect(addTask).not.toHaveBeenCalled();
+    expect(removeWorktree).toHaveBeenCalled();
+  });
+
+  it('leaves a JIRA-ticketed task PR open regardless of task type', async () => {
+    git.push.mockResolvedValue(undefined);
+    git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/78' });
+
+    await cleanupAgentWorktree('agent-1', true, {
+      openPR: true, requestCopilotReview: false, description: 'X',
+      originalTask: { id: 'task-orig', metadata: { jiraTicketId: 'PROJ-1' }, description: 'X' }
+    });
+
+    expect(addTask).not.toHaveBeenCalled();
+  });
+
   it('spawns a merge-only follow-up on non-GitHub forges when copilot was the only reviewer', async () => {
     // Copilot can't review a GitLab MR, so the review loop has nothing to run — but
     // the MR still has to land, so the follow-up degrades to merge-only rather than

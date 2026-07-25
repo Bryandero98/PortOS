@@ -22,7 +22,29 @@ import { removeWorktree } from './worktreeManager.js';
 import { isTruthyMeta } from './agentState.js';
 import { PATHS } from '../lib/fileUtils.js';
 import { RECOVERY_TASK_PREFIX } from './recoveryTasks.js';
+import { detectForgeCli } from '../lib/gitForge.js';
 import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, MODEL_CAPABLE_CLI_REVIEWERS, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers } from '../lib/validation.js';
+
+/**
+ * Scheduled task types whose prompt deliberately hands the PR to a human and
+ * records that hand-off somewhere PortOS can't update afterwards. For
+ * `jira-sprint-manager` that's the ticket it transitions to "In Review": merging
+ * the PR here would land the work while the board still shows it in review, and
+ * nothing in this path knows the ticket key to transition it to Done.
+ *
+ * Keep this list tiny — the default for an opened PR is that something lands it.
+ */
+const PR_STAYS_OPEN_TASK_TYPES = new Set(['jira-sprint-manager']);
+
+/**
+ * True when a task's PR must be left open for a human rather than merged by a
+ * follow-up: an exempt task type, or any task carrying a JIRA ticket (the ticket
+ * status is the hand-off, and this path can't transition it).
+ */
+function leavesPrForHuman(task) {
+  const analysisType = task?.metadata?.analysisType;
+  return (!!analysisType && PR_STAYS_OPEN_TASK_TYPES.has(analysisType)) || !!task?.metadata?.jiraTicketId;
+}
 
 /**
  * Clean up a worktree for a completed agent.
@@ -169,28 +191,37 @@ export async function cleanupAgentWorktree(agentId, success, { openPR = false, r
       // review pass) and invokes the CLI reviewers itself. The only reviewer dropped is
       // copilot on a non-GitHub forge, handled centrally in spawnReviewLoopFollowUp.
       //
-      // A follow-up is ALWAYS spawned for a PR PortOS opened, because something has
-      // to land it. `spawnReviewLoopFollowUp` picks the mode from what actually
+      // A follow-up is spawned for a PR PortOS opened, because something has to
+      // land it. `spawnReviewLoopFollowUp` picks the mode from what actually
       // survives reviewer resolution: reviewers left → review-then-merge; none left
-      // (Review Loop off, or copilot-only on a non-GitHub forge) → merge on green CI.
+      // (Review Loop off, or copilot-only on a GitLab forge) → merge on green CI.
       // Deciding it there rather than here is what keeps a stripped reviewer list
       // from silently producing an orphaned PR.
-      await spawnReviewLoopFollowUp({
-        originalAgentId: agentId,
-        originalTask,
-        prUrl: prResult.url,
-        prBranch: worktreeBranch,
-        sourceWorkspace,
-        reviewers: shouldRequestCopilot ? reviewerList : [],
-        usernames: shouldRequestCopilot ? usernames : [],
-        optionalReviewers: shouldRequestCopilot ? optionalReviewers : [],
-        reviewStopMode,
-        reviewerApplies,
-        reviewerModels
-      }).catch(err => {
-        emitLog('warn', `🤖 Failed to spawn PR follow-up for ${prResult.url}: ${err.message}`, { agentId, prUrl: prResult.url });
-        warnings.push(`PR follow-up spawn failed for ${prResult.url}: ${err.message}`);
-      });
+      //
+      // The exception is a JIRA-tracked task (see PR_STAYS_OPEN_TASK_TYPES): its
+      // prompt moves the ticket to "In Review" and hands the PR to a human, and
+      // nothing here can transition the ticket afterwards — merging behind the
+      // board's back would leave the work merged but permanently "In Review".
+      if (leavesPrForHuman(originalTask)) {
+        emitLog('info', `🤝 Leaving ${prResult.url} open for a human — JIRA-tracked task keeps its ticket in review`, { agentId, prUrl: prResult.url });
+      } else {
+        await spawnReviewLoopFollowUp({
+          originalAgentId: agentId,
+          originalTask,
+          prUrl: prResult.url,
+          prBranch: worktreeBranch,
+          sourceWorkspace,
+          reviewers: shouldRequestCopilot ? reviewerList : [],
+          usernames: shouldRequestCopilot ? usernames : [],
+          optionalReviewers: shouldRequestCopilot ? optionalReviewers : [],
+          reviewStopMode,
+          reviewerApplies,
+          reviewerModels
+        }).catch(err => {
+          emitLog('warn', `🤖 Failed to spawn PR follow-up for ${prResult.url}: ${err.message}`, { agentId, prUrl: prResult.url });
+          warnings.push(`PR follow-up spawn failed for ${prResult.url}: ${err.message}`);
+        });
+      }
 
       const result = await removeWorktree(agentId, sourceWorkspace, worktreeBranch, { merge: false }).catch(err => {
         emitLog('warn', `🌳 Worktree cleanup failed for ${agentId}: ${err.message}`, { agentId });
@@ -255,9 +286,12 @@ export async function spawnReviewLoopFollowUp({ originalAgentId, originalTask, p
 
   const parsedPr = git.parsePullRequestUrl(prUrl);
   // Copilot is GitHub-only; CLI-based reviewers (claude/antigravity/codex/grok) work on any
-  // forge because the agent invokes the CLI directly. On a non-GitHub forge, drop
-  // copilot from the list.
-  const isNonGithubForge = parsedPr && parsedPr.host && parsedPr.host !== 'github.com';
+  // forge because the agent invokes the CLI directly. On a GitLab forge, drop
+  // copilot from the list. Classify with the shared detector rather than
+  // `host !== 'github.com'` — a GitHub Enterprise host still has Copilot, and
+  // misreading it as non-GitHub would strip the only reviewer and silently
+  // downgrade the run to merge-only.
+  const isNonGithubForge = !!parsedPr?.host && detectForgeCli(parsedPr.host) !== 'gh';
   // An EXPLICITLY empty list means "no review was requested" and must stay empty —
   // normalizeReviewers' `[copilot]` default would otherwise resurrect a reviewer.
   const reviewerList = (Array.isArray(reviewers) && reviewers.length === 0) ? [] : normalizeReviewers({ reviewers });
