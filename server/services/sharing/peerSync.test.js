@@ -371,28 +371,23 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  // Drain in-flight fire-and-forget pushes before tearing down the tmpdir —
-  // otherwise persistPushSuccess can race the rm and leave ENOTEMPTY.
-  // Drain BOTH writeTails (peerSync's subscription state AND the tombstone
-  // cursor module's separate writeTail, since initCursor writes happen
-  // outside peerSync's lock). Three drain cycles with a 5ms macrotask
-  // delay between them — pushes scheduled by an earlier drain (e.g.
-  // ackDeletesUpTo from a settled push) only enqueue on the next tick, so
-  // we need more than one pass to fully quiesce the writeTail chains.
-  // __drainForTests double-awaits writeTail (one tick apart) so the
-  // persistPushSuccess that enqueues after peerFetch resolves is captured.
-  for (let i = 0; i < 3; i++) {
+  try {
+    // The peer-sync drain owns every fire-and-forget push/listener promise;
+    // cursor writes are serialized on a separate tail. One deterministic pass
+    // replaces the former fixed sleeps and prevents late writes racing rm.
     await __drainForTests();
     await __drainCursors();
-    await new Promise((r) => setTimeout(r, 5));
+    await __resetForTests();
+    await rm(tmp, { recursive: true, force: true });
+  } finally {
+    // Restore shared PATHS even when teardown itself fails so one test cannot
+    // leak its temporary data root into the rest of the suite.
+    PATHS.data = originalDataPath;
+    PATHS.images = originalImagesPath;
+    PATHS.imageRefs = originalImageRefsPath;
+    PATHS.videos = originalVideosPath;
+    PATHS.music = originalMusicPath;
   }
-  await __resetForTests();
-  await rm(tmp, { recursive: true, force: true });
-  PATHS.data = originalDataPath;
-  PATHS.images = originalImagesPath;
-  PATHS.imageRefs = originalImageRefsPath;
-  PATHS.videos = originalVideosPath;
-  PATHS.music = originalMusicPath;
 });
 
 describe('peerSync', () => {
@@ -432,6 +427,28 @@ describe('peerSync', () => {
       expect(second.created).toBe(false);
       const all = await listPeerSubscriptions();
       expect(all).toHaveLength(1);
+    });
+
+    it('drains a non-blocking initial push before teardown', async () => {
+      vi.mocked(getUniverse).mockResolvedValue({ id: 'u1', name: 'Foo', updatedAt: '2026-01-01T00:00:00Z' });
+      let resolveFetch;
+      vi.mocked(peerFetch).mockImplementation(() => new Promise((resolve) => {
+        resolveFetch = resolve;
+      }));
+
+      await subscribePeer({ peerId: 'peer-a', recordKind: 'universe', recordId: 'u1' });
+      await vi.waitFor(() => expect(peerFetch).toHaveBeenCalledTimes(1));
+
+      let drained = false;
+      const drain = __drainForTests().then(() => { drained = true; });
+      await Promise.resolve();
+      expect(drained).toBe(false);
+
+      resolveFetch({ ok: true, json: async () => ({ missingAssets: [] }) });
+      await drain;
+
+      const persisted = await findPeerSubscription('peer-a', 'universe', 'u1');
+      expect(persisted.lastPushedAt).toBeTruthy();
     });
 
     it('does NOT re-push on idempotent re-subscribe (existing sub keeps its lastPushedAt)', async () => {

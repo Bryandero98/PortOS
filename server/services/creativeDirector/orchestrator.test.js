@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { nextPendingScene, nextTaskKind, buildTimelineClips } from './orchestrator.js';
 import { presetToRenderParams } from '../../lib/creativeDirectorPresets.js';
 
@@ -272,6 +272,11 @@ describe('advanceAfterSceneSettled', () => {
     mockListJobs.mockReset().mockReturnValue([]);
     // Clear the module-level dedup sets so a test that leaves a seed-frame
     // defer armed can't bleed its deferKey into a later test.
+    __resetInflightState();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
     __resetInflightState();
   });
 
@@ -662,6 +667,7 @@ describe('advanceAfterSceneSettled', () => {
     });
 
     it('renders after the seed frame job completes and sourceImageFile lands', async () => {
+      vi.useFakeTimers();
       const project = seedProject('cd-seed-completes');
       const projectWithFrame = seedProject('cd-seed-completes', {
         treatment: {
@@ -686,8 +692,7 @@ describe('advanceAfterSceneSettled', () => {
 
       // Fire the completion event — the defer listener re-advances.
       mockMediaJobEvents.emit('completed', seedJob(project.id, 'scene-1', 'completed'));
-      // Let the async poll + re-advance settle.
-      await new Promise((r) => setTimeout(r, 400));
+      await vi.advanceTimersByTimeAsync(400);
 
       expect(mockRunSceneRender).toHaveBeenCalledTimes(1);
       const [, sceneArg] = mockRunSceneRender.mock.calls[0];
@@ -696,6 +701,7 @@ describe('advanceAfterSceneSettled', () => {
     });
 
     it('renders text-to-video when the seed frame job fails (frame never lands)', async () => {
+      vi.useFakeTimers();
       const project = seedProject('cd-seed-fails');
       localMod.getProject.mockResolvedValue(project);
       mockListJobs.mockReturnValue([seedJob(project.id, 'scene-1')]);
@@ -707,8 +713,8 @@ describe('advanceAfterSceneSettled', () => {
       // queued/running, so the re-advance won't re-defer.
       mockListJobs.mockReturnValue([seedJob(project.id, 'scene-1', 'failed')]);
       mockMediaJobEvents.emit('failed', seedJob(project.id, 'scene-1', 'failed'));
-      // Poll runs to the deadline (no sourceImageFile ever) then renders.
-      await new Promise((r) => setTimeout(r, 3200));
+      // Advance the bounded attach schedule without waiting on real time.
+      await vi.advanceTimersByTimeAsync(2000);
 
       expect(mockRunSceneRender).toHaveBeenCalledTimes(1);
       expect(mockRunSceneRender.mock.calls[0][1].sceneId).toBe('scene-1');

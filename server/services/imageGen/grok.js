@@ -60,6 +60,8 @@ const GROK_TIMEOUT_MS = (() => {
 })();
 
 const DEFAULT_BIN = 'grok';
+const DEFAULT_HARVEST_TIMEOUT_MS = 5000;
+let harvestTimeoutMs = DEFAULT_HARVEST_TIMEOUT_MS;
 
 // Aspect ratios grok's image_gen/image_edit tools accept. Width/height from
 // PortOS callers are mapped to the closest of these; a configured default
@@ -340,7 +342,7 @@ async function runGrok(job, jobId, bin, args, {
       // exit, but poll a few seconds in case of flush lag on slow disks. The
       // harvest signature-sniffs the bytes so a text error, truncated file,
       // or non-image payload is never accepted into the gallery as a PNG.
-      const harvested = await harvestStagedImage(stagingPath, 5000);
+      const harvested = await harvestStagedImage(stagingPath, harvestTimeoutMs);
       if (!harvested.found) {
         removeScratch();
         const prefix = harvested.invalid ? 'Grok wrote a non-image file at the directed path. ' : '';
@@ -421,7 +423,8 @@ async function harvestStagedImage(stagingPath, timeoutMs) {
         sawInvalid = true;
       }
     }
-    await new Promise((r) => setTimeout(r, 250));
+    const remainingMs = Math.max(1, deadline - Date.now());
+    await new Promise((r) => setTimeout(r, Math.min(250, remainingMs)));
   }
   return { found: false, invalid: sawInvalid };
 }
@@ -431,4 +434,9 @@ export const _internals = {
   harvestStagedImage,
   deriveAspectRatio,
   buildGrokPrompt,
+  setHarvestTimeoutForTests: (timeoutMs = DEFAULT_HARVEST_TIMEOUT_MS) => {
+    harvestTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? timeoutMs
+      : DEFAULT_HARVEST_TIMEOUT_MS;
+  },
 };

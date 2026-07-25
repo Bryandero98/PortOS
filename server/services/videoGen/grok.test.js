@@ -79,11 +79,14 @@ const MP4_BYTES = Buffer.concat([
 beforeEach(async () => {
   spawnCalls.length = 0;
   videoGenEvents.removeAllListeners();
+  grok._internals.setHarvestTimeoutForTests(10);
   await rm(TEST_ROOT, { recursive: true, force: true }).catch(() => {});
   await mkdir(FAKE_DATA_DIR, { recursive: true });
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
+  grok._internals.setHarvestTimeoutForTests();
   await rm(TEST_ROOT, { recursive: true, force: true }).catch(() => {});
 });
 
@@ -186,25 +189,18 @@ describe('videoGen/grok — harvest and finalize', () => {
     const job = await grok.generateVideo({ prompt: 'a fox' });
     await mkdir(scratchDirFor(job.jobId), { recursive: true });
     await writeFile(stagingPathFor(job.jobId), 'Error: render failed');
-    await closeChild(0, 0);
-
-    const deadline = Date.now() + 13000;
-    while (Date.now() < deadline && failed.mock.calls.length === 0) {
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    expect(failed).toHaveBeenCalledTimes(1);
+    spawnCalls[0].child.exitCode = 0;
+    spawnCalls[0].child.emit('close', 0, null);
+    await vi.waitFor(() => expect(failed).toHaveBeenCalledTimes(1));
     expect(failed.mock.calls[0][0].error).toMatch(/non-MP4 file/);
     expect(existsSync(join(FAKE_VIDEOS_DIR, job.filename))).toBe(false);
     // Scratch-dir removal is fire-and-forget alongside the 'failed' event
     // (not awaited before it), so give it a moment to land on disk rather
     // than racing it.
     const scratchDir = scratchDirFor(job.jobId);
-    const scratchDeadline = Date.now() + 3000;
-    while (Date.now() < scratchDeadline && existsSync(scratchDir)) {
-      await new Promise((r) => setTimeout(r, 50));
-    }
+    await vi.waitFor(() => expect(existsSync(scratchDir)).toBe(false));
     expect(existsSync(scratchDir)).toBe(false);
-  }, 16000);
+  });
 
   it('fails with the narration tail when grok exits 0 with no file', async () => {
     const failed = vi.fn();
@@ -212,17 +208,13 @@ describe('videoGen/grok — harvest and finalize', () => {
 
     await grok.generateVideo({ prompt: 'a fox' });
     spawnCalls[0].child.stdout.emit('data', Buffer.from('I cannot animate that.\n'));
-    await closeChild(0, 0);
-
-    const deadline = Date.now() + 13000;
-    while (Date.now() < deadline && failed.mock.calls.length === 0) {
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    expect(failed).toHaveBeenCalledTimes(1);
+    spawnCalls[0].child.exitCode = 0;
+    spawnCalls[0].child.emit('close', 0, null);
+    await vi.waitFor(() => expect(failed).toHaveBeenCalledTimes(1));
     expect(failed.mock.calls[0][0].error).toMatch(/I cannot animate that/);
     // Video-flavored wording, not the image provider's.
     expect(failed.mock.calls[0][0].error).toMatch(/video/i);
-  }, 16000);
+  });
 
   it('fails with the stderr tail on non-zero exit', async () => {
     const failed = vi.fn();

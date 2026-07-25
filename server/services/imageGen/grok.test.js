@@ -61,11 +61,14 @@ const closeChild = async (i = 0, code = 1) => {
 beforeEach(async () => {
   spawnCalls.length = 0;
   imageGenEvents.removeAllListeners();
+  grok._internals.setHarvestTimeoutForTests(10);
   await rm(TEST_ROOT, { recursive: true, force: true }).catch(() => {});
   await mkdir(TEST_ROOT, { recursive: true });
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
+  grok._internals.setHarvestTimeoutForTests();
   await rm(TEST_ROOT, { recursive: true, force: true }).catch(() => {});
 });
 
@@ -245,25 +248,18 @@ describe('grok provider — directed-path harvest', () => {
     // Grok wrote a text error where the PNG should be.
     await mkdir(join(tmpdir(), `portos-grok-${job.jobId}`), { recursive: true });
     await writeFile(stagingPathFor(job.jobId), 'Error: could not generate');
-    await closeChild(0, 0);
-
-    const deadline = Date.now() + 8000;
-    while (Date.now() < deadline && failedListener.mock.calls.length === 0) {
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    expect(failedListener).toHaveBeenCalledTimes(1);
+    spawnCalls[0].child.exitCode = 0;
+    spawnCalls[0].child.emit('close', 0, null);
+    await vi.waitFor(() => expect(failedListener).toHaveBeenCalledTimes(1));
     expect(failedListener.mock.calls[0][0].error).toMatch(/non-image file/);
     // The rejected junk never reaches the gallery. Scratch-dir removal is
     // fire-and-forget alongside the 'failed' event (not awaited before it),
     // so give it a moment to land on disk rather than racing it.
     expect(existsSync(join(FAKE_IMAGES_DIR, job.filename))).toBe(false);
     const scratchDir = join(tmpdir(), `portos-grok-${job.jobId}`);
-    const scratchDeadline = Date.now() + 3000;
-    while (Date.now() < scratchDeadline && existsSync(scratchDir)) {
-      await new Promise((r) => setTimeout(r, 50));
-    }
+    await vi.waitFor(() => expect(existsSync(scratchDir)).toBe(false));
     expect(existsSync(scratchDir)).toBe(false);
-  }, 12000);
+  });
 
   it('fails with the stdout narration when grok exits 0 but wrote no file', async () => {
     const failedListener = vi.fn();
@@ -272,16 +268,11 @@ describe('grok provider — directed-path harvest', () => {
     await grok.generateImage({ prompt: 'a fox' });
     const child = spawnCalls[0].child;
     child.stdout.emit('data', Buffer.from('I cannot generate that image.\n'));
-    await closeChild(0, 0);
-
-    // Wait out the harvest poll window (5s) plus a buffer.
-    const deadline = Date.now() + 8000;
-    while (Date.now() < deadline && failedListener.mock.calls.length === 0) {
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    expect(failedListener).toHaveBeenCalledTimes(1);
+    child.exitCode = 0;
+    child.emit('close', 0, null);
+    await vi.waitFor(() => expect(failedListener).toHaveBeenCalledTimes(1));
     expect(failedListener.mock.calls[0][0].error).toMatch(/I cannot generate that image/);
-  }, 12000);
+  });
 
   it('fails with the stderr tail on a non-zero exit', async () => {
     const failedListener = vi.fn();
