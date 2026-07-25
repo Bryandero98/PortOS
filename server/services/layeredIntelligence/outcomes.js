@@ -13,7 +13,7 @@ import { formatRejectionReasons, formatRejectionReason, REJECTION_REASONS } from
 import { formatExecutionFailures } from '../layeredIntelligenceExecutionFailures.js';
 import {
   LOW_MERGE_RATE_MIN_SAMPLE, LOW_MERGE_RATE_THRESHOLD, LI_DEGRADED_MIN_SAMPLE,
-  LI_DEGRADED_SUCCESS_THRESHOLD, LI_HARD_GATE_EXECUTION_THRESHOLD, CLOSED_SUPPRESSION_MS,
+  LI_DEGRADED_SUCCESS_THRESHOLD, LI_DELIVERY_MIN_SAMPLE, LI_HARD_GATE_EXECUTION_THRESHOLD, CLOSED_SUPPRESSION_MS,
 } from './constants.js';
 import { normalizeSlug, extractSlugFromBody, isIssueWithinDedupWindow } from './dedup.js';
 import { computePostApprovalCompletion, scopeKeyOf } from './awareness.js';
@@ -416,30 +416,44 @@ export function describeSuppressedIssue(issue, reasonBySlug = null) {
  * @returns {string} the liSelfEval block body.
  */
 /**
- * Resolve LI's own EXECUTION HEALTH — the loop's reasoning-run success rate — into a
- * single structured read, so every consumer (the selfEval Signal 3 line AND the hard
- * exclusion gate, #2824) judges LI's health off the SAME number instead of each
- * re-deriving it and risking drift. Reads the LI-task metrics bucket
+ * Resolve LI's independent health signals into one structured read: the loop's own
+ * reasoning-run success rate and approved-proposal delivery rate. Every consumer (the
+ * selfEval Signal 3 line and the hard exclusion gate) reads the same values instead of
+ * re-deriving either rate and risking drift. Run health reads the LI-task metrics bucket
  * (readLiTaskMetrics) through the effective (recency-windowed-or-lifetime) success
- * rate, exactly as Signal 3 did inline.
+ * rate; delivery health composes the #3014 outcome metrics.
  *
  * @param {{ read: boolean, metrics: Object|null }|null} liTaskStats - from
  *   readLiTaskMetrics. `null`/`read:false` = the learning store was unreadable;
  *   `read:true, metrics:null` = read fine and LI has simply never run a task.
+ * @param {Array} [outcomes] - the app's li-outcomes records used for approval →
+ *   completion delivery health. Omit to preserve the former run-health behavior.
  * @param {{ now?: number }} [opts] - clock seam forwarded to computeEffectiveSuccessRate.
- * @returns {{ rate: number|null, sample: number, source: string|null, confident: boolean }}
+ * @returns {{ rate: number|null, sample: number, source: string|null, confident: boolean,
+ *   deliveryRate: number|null, deliverySample: number, deliveryConfident: boolean }}
  *   `rate` is null when health is UNKNOWN (store unreadable, no runs, or no completed
  *   runs). `confident` is true only at >= LI_DEGRADED_MIN_SAMPLE runs — the floor
- *   below which a rate (0-of-1 vs 0-of-N) is not yet evidence.
+ *   below which a rate (0-of-1 vs 0-of-N) is not yet evidence. Delivery fields keep
+ *   that same absent-versus-empty distinction: no approved proposals report a null
+ *   deliveryRate, never a misleading 0%.
  */
-export function computeLiExecutionHealth(liTaskStats = null, { now = Date.now() } = {}) {
+export function computeLiExecutionHealth(liTaskStats = null, outcomes = [], { now = Date.now() } = {}) {
+  const delivery = computeProposalOutcomeMetrics(outcomes);
+  const deliveryRate = delivery.approvalToCompletionRate;
+  const deliverySample = delivery.totalApproved;
+  const deliveryHealth = {
+    deliveryRate,
+    deliverySample,
+    deliveryConfident: deliveryRate !== null && deliverySample >= LI_DELIVERY_MIN_SAMPLE
+  };
+
   if (!liTaskStats?.read || !liTaskStats.metrics) {
-    return { rate: null, sample: 0, source: null, confident: false };
+    return { rate: null, sample: 0, source: null, confident: false, ...deliveryHealth };
   }
   const { successRate, source, windowedCompleted } = computeEffectiveSuccessRate(liTaskStats.metrics, { now });
-  if (successRate === null) return { rate: null, sample: 0, source: null, confident: false };
+  if (successRate === null) return { rate: null, sample: 0, source: null, confident: false, ...deliveryHealth };
   const sample = source === 'windowed' ? windowedCompleted : (liTaskStats.metrics.completed || 0);
-  return { rate: successRate, sample, source, confident: sample >= LI_DEGRADED_MIN_SAMPLE };
+  return { rate: successRate, sample, source, confident: sample >= LI_DEGRADED_MIN_SAMPLE, ...deliveryHealth };
 }
 
 export function computeSelfEvalSummary({
@@ -527,6 +541,7 @@ export function computeSelfEvalSummary({
   // it mirrors the cosMetrics source, which is likewise install-wide.
   let taskSignal = false;
   let liDegraded = false;
+  const health = computeLiExecutionHealth(liTaskStats, outcomes, { now });
   if (!liTaskStats?.read) {
     lines.push('- LI execution health: UNAVAILABLE — the CoS learning store could not be read.');
   } else if (!liTaskStats.metrics) {
@@ -537,7 +552,6 @@ export function computeSelfEvalSummary({
     // never disagree about LI's own success rate. Without `now` computeEffectiveSuccessRate
     // would read the real wall clock while the suppression-window branch above uses the
     // injected one — the same summary reasoning against two different "nows".
-    const health = computeLiExecutionHealth(liTaskStats, { now });
     if (health.rate === null) {
       lines.push('- LI execution health: no completed LI runs recorded yet — success rate unknown.');
     } else {
@@ -548,6 +562,21 @@ export function computeSelfEvalSummary({
         + `${taskSignal ? '' : ' — too small a sample to judge'}${liDegraded ? ' — DEGRADED' : ''}.`
       );
     }
+  }
+
+  // Delivery is intentionally reported beside LI's own run success rather than
+  // blended into it. A healthy reasoning loop can still leave approved proposals
+  // undelivered, and vice versa; keeping both lines lets the reasoner see which
+  // signal actually armed a hard gate.
+  if (!Array.isArray(outcomes)) {
+    lines.push('- LI approval-to-completion delivery health: UNAVAILABLE — no outcome history was gathered this run.');
+  } else if (health.deliveryRate === null) {
+    lines.push('- LI approval-to-completion delivery health: no approved LI proposals yet — delivery rate unknown.');
+  } else {
+    lines.push(
+      `- LI approval-to-completion delivery health: ${Math.round(health.deliveryRate)}% of ${health.deliverySample} approved LI proposals completed`
+      + `${health.deliveryConfident ? '' : ' — too small a sample to judge'}.`
+    );
   }
 
   // --- Confidence: how much do I actually know about myself? ------------------
