@@ -73,7 +73,18 @@ router.get('/targets', asyncHandler(async (_req, res) => {
   // reporting a flat "Ready" (#2952). Skipped when it isn't installed — there is
   // nothing to probe, and the venv Python doesn't exist yet.
   const trellis2 = targets.find((t) => t.id === 'trellis2');
-  if (trellis2?.installed) trellis2.textureBake = await probeTrellis2TextureBake();
+  if (trellis2?.installed) {
+    const bake = await probeTrellis2TextureBake();
+    // A degraded bake has two very different remedies, and the card must not offer
+    // the wrong one: when the Metal Toolchain is merely missing, Repair install
+    // fetches it and rebuilds (#3041); when only the Command Line Tools are active
+    // there is nothing PortOS can run, and the user has to install Xcode first.
+    // Only probe the toolchain when degraded — a healthy install needs no remedy.
+    const toolchain = bake.quality === 'fallback' ? await probeMetalToolchain() : null;
+    trellis2.textureBake = toolchain?.blocker
+      ? { ...bake, repairable: false, blocker: toolchain.blocker, help: toolchain.hint }
+      : { ...bake, ...(bake.quality === 'fallback' ? { repairable: true } : {}) };
+  }
   res.json({ capabilities, targets });
 }));
 
@@ -128,14 +139,19 @@ router.get('/trellis2/install', asyncHandler(async (req, res) => {
   const emit = (event) => { installLog.onEvent(event); send(event); };
   installLog.start();
 
-  // Pre-flight the Metal Toolchain. `setup.sh` builds its Metal texture-baking
-  // backends from `.metal` sources but swallows each failure and still exits 0, so
-  // without this the user waits ~15 GB and an hour-long render to discover the
-  // surface is scrambled. Warn only — the install is still worth running (geometry
-  // is unaffected) and the toolchain can be added and the install re-run to repair.
+  // Resolve the Metal Toolchain situation before spawning anything. `setup.sh`
+  // compiles its texture-baking backends from `.metal` sources but swallows each
+  // failure and still exits 0, so a host missing the toolchain would otherwise
+  // finish "successfully" and render scrambled surfaces forever (#2952). When it's
+  // missing but fetchable, the install downloads it as a leading optional step
+  // (#3041); when only the Command Line Tools are active nothing we can run fixes
+  // it, so warn and install anyway — geometry is unaffected and the `verify` step
+  // reports the degraded bake.
   const toolchain = await probeMetalToolchain();
-  if (toolchain.available === false) {
-    emit({ type: 'log', stage: 'preflight', message: `⚠️ ${toolchain.hint}` });
+  if (toolchain.blocker) emit({ type: 'log', stage: 'preflight', message: `⚠️ ${toolchain.hint}` });
+  const installMetalToolchain = toolchain.available === false && toolchain.installable === true;
+  if (installMetalToolchain) {
+    emit({ type: 'log', stage: 'preflight', message: `ℹ️ ${toolchain.hint}` });
   }
 
   // Disconnect bookkeeping wired BEFORE the token-resolution await below (the
@@ -176,6 +192,7 @@ router.get('/trellis2/install', asyncHandler(async (req, res) => {
   const { promise, kill } = installTrellis2({
     onEvent: emit,
     env: installEnv,
+    installMetalToolchain,
   });
   currentKill = kill;
   trellis2InstallInFlight = promise;

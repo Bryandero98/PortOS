@@ -104,6 +104,24 @@ describe('Media3D — models & install', () => {
     expect(screen.getByRole('button', { name: /repair install/i })).toBeInTheDocument();
   });
 
+  // #3041: on a Command-Line-Tools-only host, Repair install would fail the same
+  // way — so flag the problem but don't offer a button that can't fix it.
+  it('flags a degraded bake but offers no Repair button when the server says it is not repairable', async () => {
+    getImageTo3dTargets.mockResolvedValue({
+      targets: [target({
+        installed: true,
+        textureBake: {
+          quality: 'fallback', missing: ['mtldiffrast'], repairable: false,
+          blocker: 'requires-xcode', help: 'Install Xcode from the App Store.',
+        },
+      })],
+    });
+    renderAt();
+    expect(await screen.findByText(/degraded textures/i)).toBeInTheDocument();
+    expect(screen.getByText('Install Xcode from the App Store.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /install/i })).toBeNull();
+  });
+
   it('stays plain Ready when the bake probe could not determine anything', async () => {
     // A probe that failed must not cry wolf about an install that is probably fine.
     getImageTo3dTargets.mockResolvedValue({

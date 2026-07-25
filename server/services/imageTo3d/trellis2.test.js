@@ -20,6 +20,7 @@ import {
   TRELLIS2_BAKE_QUALITY_MODULES,
   TRELLIS2_FALLBACK_BAKE_HELP,
   TRELLIS2_METAL_TOOLCHAIN_HINT,
+  TRELLIS2_REQUIRES_XCODE_HINT,
   TRELLIS2_DEFAULT_TEXTURE_SIZE,
   TRELLIS2_TEXTURE_SIZES,
 } from './trellis2.js';
@@ -65,6 +66,33 @@ describe('buildInstallSteps', () => {
     expect(steps[0].args).toContain(TRELLIS2_REPO);
     expect(steps[0].args).toContain(trellis2Root(BASE));
     expect(steps[1]).toMatchObject({ command: 'bash', args: ['setup.sh'], cwd: trellis2Root(BASE) });
+  });
+
+  // #3041: setup.sh compiles the Metal packages from .metal sources, so the
+  // toolchain must land BEFORE it runs or those builds fail silently.
+  it('leads with the Metal Toolchain step when the toolchain is missing but fetchable', () => {
+    const steps = buildInstallSteps(BASE, { exists: () => false, installMetalToolchain: true });
+    expect(steps.map((s) => s.stage)).toEqual(['metal-toolchain', 'clone', 'setup']);
+    expect(steps[0]).toMatchObject({ command: 'xcodebuild', args: ['-downloadComponent', 'MetalToolchain'] });
+  });
+
+  it('marks the toolchain step optional — a missing bake degrades output, it does not break it', () => {
+    const [toolchainStep] = buildInstallSteps(BASE, { exists: () => false, installMetalToolchain: true });
+    expect(toolchainStep.optional).toBe(true);
+    // The required steps stay required, or a real failure would be swallowed.
+    expect(buildInstallSteps(BASE, { exists: () => false }).every((s) => !s.optional)).toBe(true);
+  });
+
+  it('omits the toolchain step by default (already present / not macOS / not fetchable)', () => {
+    expect(buildInstallSteps(BASE, { exists: () => false }).map((s) => s.stage))
+      .toEqual(['clone', 'setup']);
+  });
+
+  it('does not let a caller mutate the shared toolchain step template', () => {
+    const [step] = buildInstallSteps(BASE, { exists: () => false, installMetalToolchain: true });
+    step.args.push('--tampered');
+    const [fresh] = buildInstallSteps(BASE, { exists: () => false, installMetalToolchain: true });
+    expect(fresh.args).toEqual(['-downloadComponent', 'MetalToolchain']);
   });
 
   it('skips the clone step and resumes at setup.sh when the repo is already present', () => {
@@ -185,19 +213,42 @@ describe('probeTrellis2TextureBake', () => {
 });
 
 describe('probeMetalToolchain', () => {
+  // Dispatch on the probed command: `xcrun metal` reports presence, `xcode-select -p`
+  // distinguishes full Xcode (can fetch the toolchain) from Command Line Tools only.
+  const exec = ({ metal, developerDir }) => vi.fn((cmd, _args, _opts, cb) => {
+    if (cmd === 'xcrun') return metal ? cb(null, 'Apple metal version 32023', '') : cb(new Error('missing Metal Toolchain'));
+    return developerDir ? cb(null, developerDir, '') : cb(new Error('no developer dir'));
+  });
+
   it('is available when `xcrun metal --version` succeeds', () => expect(
-    probeMetalToolchain({
-      platformImpl: () => 'darwin',
-      execFileImpl: vi.fn((_c, _a, _o, cb) => cb(null, '', '')),
-    }),
+    probeMetalToolchain({ platformImpl: () => 'darwin', execFileImpl: exec({ metal: true }) }),
   ).resolves.toEqual({ available: true }));
 
-  it('is unavailable with a hint when the toolchain component is missing', async () => {
+  it('is missing-but-installable on a host with full Xcode', async () => {
     const result = await probeMetalToolchain({
       platformImpl: () => 'darwin',
-      execFileImpl: vi.fn((_c, _a, _o, cb) => cb(new Error('missing Metal Toolchain'))),
+      execFileImpl: exec({ metal: false, developerDir: '/Applications/Xcode.app/Contents/Developer\n' }),
     });
-    expect(result).toEqual({ available: false, hint: TRELLIS2_METAL_TOOLCHAIN_HINT });
+    expect(result).toEqual({ available: false, installable: true, hint: TRELLIS2_METAL_TOOLCHAIN_HINT });
+  });
+
+  it('is blocked — not merely missing — when only the Command Line Tools are active', async () => {
+    // `xcodebuild -downloadComponent` ships with full Xcode, so queueing the fetch
+    // here would be a step guaranteed to fail; the hint must name Xcode instead.
+    const result = await probeMetalToolchain({
+      platformImpl: () => 'darwin',
+      execFileImpl: exec({ metal: false, developerDir: '/Library/Developer/CommandLineTools\n' }),
+    });
+    expect(result).toMatchObject({ available: false, installable: false, blocker: 'requires-xcode' });
+    expect(result.hint).toBe(TRELLIS2_REQUIRES_XCODE_HINT);
+  });
+
+  it('treats an unreadable developer dir as blocked rather than assuming Xcode', async () => {
+    const result = await probeMetalToolchain({
+      platformImpl: () => 'darwin',
+      execFileImpl: exec({ metal: false, developerDir: null }),
+    });
+    expect(result).toMatchObject({ installable: false, blocker: 'requires-xcode' });
   });
 
   it('does not apply off macOS — null, not false, so no macOS-only warning is shown', async () => {
@@ -521,6 +572,91 @@ describe('installTrellis2', () => {
     await promise;
     return events;
   };
+
+  // #3041: the caller (the route) resolves the toolchain situation and passes a
+  // plain boolean, so installTrellis2 keeps returning { promise, kill } synchronously.
+  it('downloads the Metal Toolchain first when the caller says it is needed', async () => {
+    const children = [makeChild(), makeChild(), makeChild()];
+    let i = 0;
+    const spawnImpl = vi.fn(() => children[i++]);
+    const { promise } = installTrellis2({
+      base: BASE,
+      spawnImpl,
+      installMetalToolchain: true,
+      probeBake: async () => ({ quality: 'metal', missing: [] }),
+    });
+    expect(spawnImpl).toHaveBeenNthCalledWith(1, 'xcodebuild', ['-downloadComponent', 'MetalToolchain'], {});
+    children[0].emit('close', 0);
+    await flush();
+    expect(spawnImpl).toHaveBeenNthCalledWith(2, 'git', expect.arrayContaining(['clone']), {});
+    children[1].emit('close', 0);
+    await flush();
+    children[2].emit('close', 0);
+    await expect(promise).resolves.toEqual({ ok: true });
+  });
+
+  it('continues the install when the optional toolchain step fails, and still verifies', async () => {
+    // Geometry is unaffected by a missing bake, so a host that cannot fetch the
+    // toolchain must still end up with a working (if degraded) install.
+    const children = [makeChild(), makeChild(), makeChild()];
+    let i = 0;
+    const events = [];
+    const { promise } = installTrellis2({
+      base: BASE,
+      spawnImpl: () => children[i++],
+      onEvent: (e) => events.push(e),
+      installMetalToolchain: true,
+      probeBake: async () => ({ quality: 'fallback', missing: ['mtldiffrast'], help: 'degraded' }),
+    });
+    children[0].emit('close', 1); // toolchain download failed
+    await flush();
+    children[1].emit('close', 0);
+    await flush();
+    children[2].emit('close', 0);
+    await expect(promise).resolves.toEqual({ ok: true });
+    expect(events.find((e) => e.stage === 'metal-toolchain' && /Optional step/.test(e.message || ''))).toBeTruthy();
+    expect(events.find((e) => e.stage === 'verify')?.message).toContain('degraded');
+  });
+
+  it('retries a TRANSIENT optional-step failure before giving up on it', async () => {
+    // Optional-ness must not short-circuit the retry path — a dropped connection
+    // during the toolchain download deserves the same retries as any other step.
+    const children = [makeChild(), makeChild(), makeChild(), makeChild()];
+    let i = 0;
+    const spawnImpl = vi.fn(() => children[i++]);
+    const { promise } = installTrellis2({
+      base: BASE,
+      spawnImpl,
+      installMetalToolchain: true,
+      maxRetries: 1,
+      sleep: async () => {},
+      probeBake: async () => ({ quality: 'fallback', missing: ['mtldiffrast'], help: 'degraded' }),
+    });
+    children[0].stderr.emit('data', 'fatal: early EOF');
+    children[0].emit('close', 128);
+    await flush();
+    // Retried the toolchain step rather than moving straight on to the clone.
+    expect(spawnImpl).toHaveBeenNthCalledWith(2, 'xcodebuild', ['-downloadComponent', 'MetalToolchain'], {});
+    children[1].emit('close', 128); // retry exhausted → continue as optional
+    await flush();
+    expect(spawnImpl).toHaveBeenNthCalledWith(3, 'git', expect.arrayContaining(['clone']), {});
+    children[2].emit('close', 0);
+    await flush();
+    children[3].emit('close', 0);
+    await expect(promise).resolves.toEqual({ ok: true });
+  });
+
+  it('still aborts when a REQUIRED step fails, so optional-ness is not blanket', async () => {
+    const children = [makeChild(), makeChild()];
+    let i = 0;
+    const { promise } = installTrellis2({
+      base: BASE,
+      spawnImpl: () => children[i++],
+      maxRetries: 0,
+    });
+    children[0].emit('close', 1); // clone failed — not optional
+    await expect(promise).rejects.toMatchObject({ code: 'TRELLIS2_INSTALL_FAILED', stage: 'clone' });
+  });
 
   it('warns about a degraded Metal bake BEFORE the terminal complete frame', async () => {
     const events = await runToCompletion(async () => ({
