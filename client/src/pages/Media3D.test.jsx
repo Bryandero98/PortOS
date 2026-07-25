@@ -7,11 +7,13 @@ const getImageTo3dTargets = vi.fn();
 const createImageTo3dModel = vi.fn();
 const getImageTo3dModel = vi.fn();
 const listImageTo3dModels = vi.fn();
+const getHfTokenStatus = vi.fn();
 vi.mock('../services/api', () => ({
   getImageTo3dTargets: (...a) => getImageTo3dTargets(...a),
   createImageTo3dModel: (...a) => createImageTo3dModel(...a),
   getImageTo3dModel: (...a) => getImageTo3dModel(...a),
   listImageTo3dModels: (...a) => listImageTo3dModels(...a),
+  getHfTokenStatus: (...a) => getHfTokenStatus(...a),
 }));
 
 // Stub the shared install modal so the test doesn't open a real EventSource;
@@ -65,7 +67,11 @@ function renderAt(entry = '/media/3d', extra = null) {
 }
 
 describe('Media3D — models & install', () => {
-  beforeEach(() => { vi.clearAllMocks(); listImageTo3dModels.mockResolvedValue([]); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    listImageTo3dModels.mockResolvedValue([]);
+    getHfTokenStatus.mockResolvedValue({ hfTokenPresent: false, source: 'none' });
+  });
 
   it('shows an Install button for an available, not-installed target and opens the modal', async () => {
     getImageTo3dTargets.mockResolvedValue({ capabilities: {}, targets: [target()] });
@@ -107,6 +113,7 @@ describe('Media3D — generation workspace', () => {
     vi.clearAllMocks();
     listImageTo3dModels.mockResolvedValue([]);
     getImageTo3dTargets.mockResolvedValue({ targets: [target({ installed: true })] });
+    getHfTokenStatus.mockResolvedValue({ hfTokenPresent: false, source: 'none' });
   });
 
   it('shows the source image from the ?image= deep link', async () => {
@@ -144,11 +151,48 @@ describe('Media3D — generation workspace', () => {
     expect(screen.queryByTestId('glb-viewer')).toBeNull();
   });
 
-  it('shows the Hugging Face gated-model prerequisite for the TRELLIS.2 target', async () => {
+  it('offers inline token entry, not terminal instructions, when no HF token is stored', async () => {
     renderAt('/media/3d?image=example-robot.png');
     expect(await screen.findByText(/needs a free Hugging Face account/i)).toBeInTheDocument();
+    // The fix for #3032: a paste-and-save field, not a "run huggingface-cli login" nag.
+    expect(screen.getByPlaceholderText('hf_…')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /save token/i })).toBeInTheDocument();
+    expect(screen.queryByText(/huggingface-cli login/i)).toBeNull();
+    // Both gated repos stay linked — terms acceptance is separate from having a token.
     expect(screen.getByRole('link', { name: /dinov3-vitl16-pretrain-lvd1689m/i })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /RMBG-2\.0/i })).toBeInTheDocument();
+  });
+
+  it('collapses to a confirmation naming the source when a token already exists', async () => {
+    // The user's real complaint: an HF_TOKEN set for imagegen/local-LLM downloads was
+    // ignored here, so the page kept demanding a terminal login.
+    getHfTokenStatus.mockResolvedValue({ hfTokenPresent: true, source: 'env' });
+    renderAt('/media/3d?image=example-robot.png');
+    expect(await screen.findByText(/Hugging Face token configured/i)).toBeInTheDocument();
+    expect(screen.getByText(/HF_TOKEN environment variable/i)).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('hf_…')).toBeNull();
+    // Terms links persist — a token alone doesn't grant gated access.
+    expect(screen.getByRole('link', { name: /dinov3-vitl16-pretrain-lvd1689m/i })).toBeInTheDocument();
+  });
+
+  it('lets a user with a configured token reach the paste form to replace a stale one', async () => {
+    // The runner's HF-auth guidance also fires on `401` / `Invalid user token` and
+    // tells the user to add a token on THIS page — so the form must stay reachable
+    // when one is already configured, or that instruction can't be followed here.
+    getHfTokenStatus.mockResolvedValue({ hfTokenPresent: true, source: 'stored' });
+    renderAt('/media/3d?image=example-robot.png');
+    fireEvent.click(await screen.findByRole('button', { name: /use a different token/i }));
+    expect(screen.getByPlaceholderText('hf_…')).toBeInTheDocument();
+  });
+
+  it('shows neither the banner nor the confirmation while token status is still unknown', async () => {
+    // Absent-vs-failed: a pending/failed status must not flash "add a token" at a user
+    // who has one (nor claim one is configured).
+    getHfTokenStatus.mockRejectedValue(new Error('offline'));
+    renderAt('/media/3d?image=example-robot.png');
+    await screen.findByRole('button', { name: /Generate 3D/i });
+    expect(screen.queryByPlaceholderText('hf_…')).toBeNull();
+    expect(screen.queryByText(/Hugging Face token configured/i)).toBeNull();
   });
 
   it('keeps Generate disabled and explains why when no image is picked', async () => {

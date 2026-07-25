@@ -8,6 +8,8 @@ import { nameFromImageFilename, timeAgo } from '../utils/formatters';
 import RuntimeInstallModal from '../components/install/RuntimeInstallModal';
 import GalleryImagePicker from '../components/imageGen/GalleryImagePicker';
 import GlbViewer from '../components/media/GlbViewer';
+import HfTokenBanner, { GatedModelList, HF_SOURCE_LABEL } from '../components/imageGen/HfTokenBanner';
+import { useHfTokenStatus } from '../hooks/useHfTokenStatus';
 import MediaImage from '../components/MediaImage';
 import { imageTo3dStatusMeta } from '../components/media/imageTo3dStatus';
 
@@ -25,29 +27,50 @@ const HF_GATED_MODELS = {
   ],
 };
 
-// Prerequisite notice for a target that needs gated Hugging Face access. Shown once
-// the gated target is selectable so the user accepts terms + signs in up front.
-function HfAccessNotice({ models }) {
+// Prerequisite notice for a target that needs gated Hugging Face access. Driven by
+// the CENTRAL token store (GET /image-gen/setup/hf-token-status) — the same one the
+// Image Gen page writes — so a user who already pasted a token isn't told to go set
+// one up in a terminal. With no token, the inline paste-and-save banner appears
+// instead of instructions. Either way the gated repos stay listed: a token doesn't
+// grant access until their terms are accepted on the user's HF account.
+function HfAccessNotice({ models, tokenPresent, tokenSource, onSaved }) {
+  // Escape hatch for the stale/invalid-token case: `isHfAuthError` in the runner
+  // also matches `401` / `Invalid user token`, and its guidance now says to add a
+  // token *on this page* — so the paste form has to stay reachable even when one is
+  // already configured, or that instruction is impossible to follow here. Mirrors
+  // MidiGatedModal's "Use a different token".
+  const [replacing, setReplacing] = useState(false);
+
   if (!models?.length) return null;
+  // Status still loading (null) — don't flash a "needs setup" banner at a user who
+  // already has a token.
+  if (tokenPresent === null) return null;
+
+  const handleSaved = () => { setReplacing(false); onSaved?.(); };
+
+  if (!tokenPresent || replacing) {
+    return <HfTokenBanner models={models} onSaved={handleSaved} />;
+  }
+
   return (
-    <div className="rounded-lg border border-port-warning/40 bg-port-warning/10 p-3 text-xs text-gray-300">
-      <div className="mb-1 flex items-center gap-1.5 font-medium text-port-warning">
-        <KeyRound className="h-3.5 w-3.5" /> Needs a free Hugging Face account
+    <div className="rounded-lg border border-port-border bg-port-bg/40 p-3 text-xs text-gray-400">
+      <div className="flex items-center gap-1.5 font-medium text-port-success">
+        <KeyRound className="h-3.5 w-3.5" />
+        Hugging Face token configured
+        {HF_SOURCE_LABEL[tokenSource] ? ` (${HF_SOURCE_LABEL[tokenSource]})` : ''}
       </div>
-      <p className="text-gray-400">
-        On first render this downloads two <strong>gated</strong> models. Accept their terms (signed in to Hugging Face), then
-        authenticate the machine with <code className="rounded bg-port-bg px-1">huggingface-cli login</code> or an{' '}
-        <code className="rounded bg-port-bg px-1">HF_TOKEN</code>:
+      <p className="mt-1">
+        Accept the terms for these gated models on your Hugging Face account if you haven’t — a token alone
+        doesn’t grant access:
       </p>
-      <ul className="mt-1.5 space-y-1">
-        {models.map((m) => (
-          <li key={m.url}>
-            <a href={m.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-port-accent hover:underline">
-              <ExternalLink className="h-3 w-3" /> {m.label}
-            </a>
-          </li>
-        ))}
-      </ul>
+      <GatedModelList models={models} linkClassName="text-port-accent hover:underline" />
+      <button
+        type="button"
+        onClick={() => setReplacing(true)}
+        className="mt-2 text-xs underline text-gray-400 hover:text-white"
+      >
+        Use a different token
+      </button>
     </div>
   );
 }
@@ -168,6 +191,9 @@ export default function Media3D() {
   // Existing image-to-3D records (newest-first) so the page doubles as a library:
   // each links to its `/media/3d/:id` detail view.
   const [records, setRecords] = useState([]);
+  // Central HF-token status (stored / env / cli) for the gated-model notice. `present`
+  // is tri-state — see useHfTokenStatus; `null` means unknown, not absent.
+  const { present: hfTokenPresent, source: hfTokenSource, refresh: refreshHfToken } = useHfTokenStatus();
   const mountedRef = useMounted(); // gate setState after the create/poll awaits
 
   const load = useCallback(() => {
@@ -354,7 +380,14 @@ export default function Media3D() {
             )}
           </div>
 
-          {gatedHfModels && <HfAccessNotice models={gatedHfModels} />}
+          {gatedHfModels && (
+            <HfAccessNotice
+              models={gatedHfModels}
+              tokenPresent={hfTokenPresent}
+              tokenSource={hfTokenSource}
+              onSaved={refreshHfToken}
+            />
+          )}
 
           <div className="mt-auto flex flex-col items-start gap-2">
             <button
@@ -472,7 +505,7 @@ export default function Media3D() {
         runtime={installTarget?.id}
         label={installTarget?.label}
         installUrlBase="/api/image-to-3d/trellis2/install"
-        description="Cloning the TRELLIS.2 (Apple Silicon) port and installing its Python environment (~15 GB on first run). It also pulls two gated Hugging Face models on first render — accept their terms and sign in with huggingface-cli login / HF_TOKEN (see the note on the 3D page)."
+        description="Cloning the TRELLIS.2 (Apple Silicon) port and installing its Python environment (~15 GB on first run). It also pulls two gated Hugging Face models on first render — accept their terms and add a Hugging Face token above (see the note on the 3D page)."
         onClose={() => setInstallTarget(null)}
         onComplete={() => { setInstallTarget(null); load(); }}
       />

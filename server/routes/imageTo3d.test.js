@@ -35,6 +35,13 @@ vi.mock('../services/imageTo3d/trellis2.js', () => ({
   }),
 }));
 
+// The install route resolves the central HF token into the child env (#3032).
+// Mock it so the suite never reads the host's real settings.json or
+// ~/.cache/huggingface/token, and so the resolution-failure branch is drivable.
+vi.mock('../lib/hfToken.js', () => ({
+  hfTokenEnv: vi.fn(async () => ({ HF_TOKEN: 'hf_test', HUGGINGFACE_HUB_TOKEN: 'hf_test' })),
+}));
+
 vi.mock('../services/imageTo3d/models.js', () => ({
   listModels: vi.fn(),
   getModel: vi.fn(),
@@ -47,6 +54,7 @@ vi.mock('../services/imageTo3d/models.js', () => ({
 import * as targets from '../services/imageTo3d/targets.js';
 import * as trellis2 from '../services/imageTo3d/trellis2.js';
 import * as models from '../services/imageTo3d/models.js';
+import { hfTokenEnv } from '../lib/hfToken.js';
 import routes from './imageTo3d.js';
 
 const makeApp = () => {
@@ -82,6 +90,35 @@ describe('GET /trellis2/install (SSE)', () => {
     expect(frames).toContainEqual({ type: 'stage', stage: 'clone', message: 'git clone …' });
     expect(frames.at(-1)).toMatchObject({ type: 'complete' });
     expect(trellis2.installTrellis2).toHaveBeenCalled();
+  });
+
+  it('hands the resolved HF token env to the install child', async () => {
+    // #3032: the install must carry the CENTRAL token (settings-stored included),
+    // not just whatever the server process happened to be launched with.
+    trellis2.installTrellis2.mockClear();
+    trellis2.isTrellis2Installed.mockReturnValueOnce(false);
+    targets.isTargetAvailable.mockReturnValueOnce(true);
+    await request(makeApp()).get('/api/image-to-3d/trellis2/install');
+    expect(trellis2.installTrellis2).toHaveBeenCalledWith(expect.objectContaining({
+      env: expect.objectContaining({ HF_TOKEN: 'hf_test', HUGGINGFACE_HUB_TOKEN: 'hf_test' }),
+    }));
+  });
+
+  it('emits a terminal error frame — not a half-open stream — when the token env cannot be resolved', async () => {
+    // The SSE headers are already flushed by this point, so a throw here can't
+    // reach the error middleware as JSON; it has to surface as an error frame.
+    trellis2.installTrellis2.mockClear();
+    trellis2.isTrellis2Installed.mockReturnValueOnce(false);
+    targets.isTargetAvailable.mockReturnValueOnce(true);
+    hfTokenEnv.mockRejectedValueOnce(new Error('settings.json is not valid JSON'));
+    const res = await request(makeApp()).get('/api/image-to-3d/trellis2/install');
+    const frames = sseFrames(res.text);
+    expect(frames.at(-1)).toMatchObject({
+      type: 'error',
+      message: expect.stringMatching(/Hugging Face token/i),
+    });
+    // And no multi-GB install is started on a failed resolve.
+    expect(trellis2.installTrellis2).not.toHaveBeenCalled();
   });
 
   it('short-circuits with complete when already installed (no install spawned)', async () => {

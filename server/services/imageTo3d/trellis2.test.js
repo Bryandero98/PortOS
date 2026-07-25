@@ -268,6 +268,34 @@ describe('runTrellis2Generate', () => {
     await expect(promise).rejects.toMatchObject({ code: 'TRELLIS2_GENERATE_FAILED' });
   });
 
+  it('spawns under the caller-supplied env so the stored HF token reaches the child', async () => {
+    // The pipeline pulls gated HF repos at load time. models.js resolves the token
+    // env (settings-stored token included) and hands it down — assert it lands on the
+    // spawn instead of relying on the server process having HF_TOKEN exported.
+    const child = makeChild();
+    const spawnImpl = vi.fn(() => child);
+    const env = { PATH: '/usr/bin', HF_TOKEN: 'hf_test', HUGGINGFACE_HUB_TOKEN: 'hf_test' };
+    const { promise } = runTrellis2Generate({ imagePath: 'a.png', base: BASE, exists: installed, spawnImpl, env });
+    expect(spawnImpl).toHaveBeenCalledWith(
+      trellis2VenvPython(BASE),
+      [trellis2GenerateScript(BASE), 'a.png'],
+      { cwd: trellis2Root(BASE), env },
+    );
+    child.emit('close', null); // settle the run so its rejection isn't left dangling
+    await expect(promise).rejects.toMatchObject({ code: 'TRELLIS2_GENERATE_FAILED' });
+  });
+
+  it('omits env entirely when the caller passes none, so the child inherits process.env', async () => {
+    // Back-compat: an absent token must not degrade to `env: {}`, which would strip
+    // PATH and a CLI-authenticated ~/.cache/huggingface/token from the child.
+    const child = makeChild();
+    const spawnImpl = vi.fn(() => child);
+    const { promise } = runTrellis2Generate({ imagePath: 'a.png', base: BASE, exists: installed, spawnImpl });
+    expect(spawnImpl.mock.calls[0][2]).toEqual({ cwd: trellis2Root(BASE) });
+    child.emit('close', null);
+    await expect(promise).rejects.toMatchObject({ code: 'TRELLIS2_GENERATE_FAILED' });
+  });
+
   it('kill() SIGTERMs the running child so a deleted render terminates promptly', async () => {
     const child = makeChild();
     const { promise, kill } = runTrellis2Generate({
@@ -369,6 +397,22 @@ describe('installTrellis2', () => {
 
     expect(events.filter((e) => e.type === 'stage').map((e) => e.stage)).toEqual(['clone', 'setup']);
     expect(events.at(-1)).toMatchObject({ type: 'complete' });
+  });
+
+  it('spawns install steps under the caller-supplied env, alongside each step cwd', async () => {
+    const children = [makeChild(), makeChild()];
+    let i = 0;
+    const spawnImpl = vi.fn(() => children[i++]);
+    const env = { PATH: '/usr/bin', HF_TOKEN: 'hf_test' };
+    const { promise } = installTrellis2({ base: BASE, spawnImpl, env });
+
+    // The clone step has no cwd — env must still be applied, and must not invent one.
+    expect(spawnImpl).toHaveBeenNthCalledWith(1, 'git', expect.arrayContaining(['clone']), { env });
+    children[0].emit('close', 0);
+    await flush();
+    expect(spawnImpl).toHaveBeenNthCalledWith(2, 'bash', ['setup.sh'], { cwd: trellis2Root(BASE), env });
+    children[1].emit('close', 0);
+    await expect(promise).resolves.toEqual({ ok: true });
   });
 
   it('forwards subprocess output as log events', async () => {

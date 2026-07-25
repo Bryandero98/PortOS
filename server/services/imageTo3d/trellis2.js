@@ -248,8 +248,14 @@ export const isTransientInstallError = textMatcher([
  * A non-transient failure (bad config, unsupported host, real setup error) is NOT
  * retried — it fails fast. `sleep` is injectable so tests don't wait on real backoff.
  *
+ * **`env`** (optional) is the child environment to spawn under — the caller resolves
+ * it (PortOS passes `safeChildProcessEnv(await hfTokenEnv())` so a token stored in
+ * settings reaches the child, not just one exported into the server's own env).
+ * Omitted → the child inherits `process.env` as before.
+ *
  * @param {{base?: string, onEvent?: (ev: object) => void, spawnImpl?: Function,
- *          maxRetries?: number, sleep?: (ms: number) => Promise<void>}} [opts]
+ *          maxRetries?: number, sleep?: (ms: number) => Promise<void>,
+ *          env?: NodeJS.ProcessEnv}} [opts]
  * @returns {{promise: Promise<{ok: true}>, kill: () => void}}
  */
 export function installTrellis2({
@@ -259,6 +265,7 @@ export function installTrellis2({
   maxRetries = 3,
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
   exists = existsSync,
+  env,
 } = {}) {
   // `exists` lets the clone step be skipped when the repo is already on disk (resume
   // after a setup-stage failure) — see buildInstallSteps.
@@ -270,7 +277,10 @@ export function installTrellis2({
     onEvent({ type: 'stage', stage: step.stage, message: `${step.command} ${step.args.join(' ')}` });
     // Child-process boundary — outcomes flow through events, not a throw into the
     // request lifecycle (CLAUDE.md child-process exception).
-    const child = spawnImpl(step.command, step.args, step.cwd ? { cwd: step.cwd } : {});
+    const child = spawnImpl(step.command, step.args, {
+      ...(step.cwd ? { cwd: step.cwd } : {}),
+      ...(env ? { env } : {}),
+    });
     currentChild = child;
     // Retain a bounded tail of combined output so a non-zero exit can be classified
     // as transient-network vs. a real failure (the clue is in the subprocess text,
@@ -368,11 +378,18 @@ export const isHfAuthError = textMatcher([
   '401 Client Error', 'Invalid user token', 'Repo .* is gated',
 ]);
 
-/** Human-actionable guidance for the gated-dependency failure above. */
+/**
+ * Human-actionable guidance for the gated-dependency failure above. Points at the
+ * in-app token field first — PortOS injects its stored Hugging Face token into the
+ * render's environment (see `runTrellis2Generate`'s `env`), so pasting one on the 3D
+ * page is the fix; the CLI/env route is the fallback for someone already set up that
+ * way. Terms acceptance is a separate step a token alone doesn't cover.
+ */
 const HF_AUTH_HELP = 'TRELLIS.2 could not download a gated model dependency from '
   + 'Hugging Face. Accept the terms for facebook/dinov3-vitl16-pretrain-lvd1689m at '
-  + 'https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m, then authenticate '
-  + '(set HF_TOKEN or run `huggingface-cli login`) and try again.';
+  + 'https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m, then add your '
+  + 'Hugging Face token on the 3D page (or set HF_TOKEN / run `huggingface-cli login`) '
+  + 'and try again.';
 
 /**
  * Run a single image→GLB generation. The one real-subprocess boundary — GUARDED:
@@ -386,9 +403,16 @@ const HF_AUTH_HELP = 'TRELLIS.2 could not download a gated model dependency from
  * `killWithEscalation` (SIGTERM, then SIGKILL after a grace window if the child
  * ignored it), the same cancel convention every other spawn-based media job uses.
  *
+ * **`env`** (optional) is the child environment to spawn under. The pipeline pulls
+ * gated Hugging Face repos at load time, so the caller resolves the token env
+ * (`safeChildProcessEnv(await hfTokenEnv())` in `models.js#executeRender`) and passes
+ * it in — this function stays synchronous so its `{ promise, kill }` contract holds.
+ * Omitted → the child inherits `process.env` as before.
+ *
  * @param {{imagePath: string, outputPath?: string, base?: string,
  *          onProgress?: (frame: object) => void,
- *          spawnImpl?: Function, exists?: (p: string) => boolean}} opts
+ *          spawnImpl?: Function, exists?: (p: string) => boolean,
+ *          env?: NodeJS.ProcessEnv}} opts
  * @returns {{promise: Promise<{assetPath: string}>, kill: () => void}}
  */
 export function runTrellis2Generate({
@@ -398,6 +422,7 @@ export function runTrellis2Generate({
   onProgress,
   spawnImpl = spawn,
   exists = existsSync,
+  env,
 } = {}) {
   if (!isTrellis2Installed({ base, exists })) {
     const err = new Error('TRELLIS.2 is not installed — install it before generating.');
@@ -407,7 +432,7 @@ export function runTrellis2Generate({
   const { command, args } = buildGenerateArgs({ imagePath, outputPath, base });
   // Child-process boundary — errors surface via the 'error'/'close' events, not a
   // throw into the request lifecycle (CLAUDE.md child-process exception).
-  const child = spawnImpl(command, args, { cwd: trellis2Root(base) });
+  const child = spawnImpl(command, args, { cwd: trellis2Root(base), ...(env ? { env } : {}) });
   let assetPath = outputPath || null;
   // Retain a bounded tail of combined output so a non-zero exit can be classified
   // (HF auth/gated-repo vs. a real crash) — the clue is in the text, not the code.

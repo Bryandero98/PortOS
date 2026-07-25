@@ -19,6 +19,8 @@ import { randomUUID } from 'crypto';
 import { join } from 'node:path';
 import { rm } from 'node:fs/promises';
 import { ServerError } from '../../lib/errorHandler.js';
+import { hfTokenEnv } from '../../lib/hfToken.js';
+import { safeChildProcessEnv } from '../../lib/processEnv.js';
 import { PATHS, resolveGalleryImage, ensureDir } from '../../lib/fileUtils.js';
 import { slugifyForFilename } from '../../lib/civitai.js';
 import { detectHostCapabilities, resolveTarget, DEFAULT_IMAGE_TO_3D_TARGET } from './targets.js';
@@ -35,9 +37,13 @@ const activeRenders = new Map();
 /**
  * Per-target install-probe + runner. One dispatch point so registering a new
  * image→3D backend is an entry here, not new branches through create/generate.
- * A runner takes `{ imagePath, outputPath, onProgress }` and returns a
+ * A runner takes `{ imagePath, outputPath, onProgress, env }` and returns a
  * `{ promise, kill }` pair — `promise` resolves `{ assetPath }`; `kill` SIGTERMs the
  * render so a mid-flight delete can terminate it (see `runTrellis2Generate`).
+ * `env` is a LOCAL-lane concern (the child-process environment, carrying the HF
+ * token); a future hosted-API runner should ignore it, and when one lands this is
+ * the seam to generalize into a per-runner credential declaration rather than a
+ * spawn-shaped bag every target receives.
  */
 const TARGET_RUNNERS = {
   trellis2: { isInstalled: isTrellis2Installed, run: runTrellis2Generate },
@@ -126,12 +132,18 @@ async function executeRender({ id, operationId, runner, sourcePath }) {
   let lastPersistedPercent = -1;
   try {
     await ensureDir(join(PATHS.imageTo3d, id));
+    // The pipeline pulls gated HF repos (DINOv3, RMBG-2.0) at load time, so hand the
+    // child our resolved token — settings.imageGen.hfToken first, then the env/CLI
+    // fallbacks. Resolving HERE (an async caller) keeps the runner synchronous so its
+    // { promise, kill } contract holds.
+    const env = safeChildProcessEnv(await hfTokenEnv());
     // The runner returns a { promise, kill } pair (see runTrellis2Generate) — retain
     // the kill handle so deleteModel can SIGTERM this render if the record is deleted
     // mid-flight.
     const { promise, kill } = runner.run({
       imagePath: sourcePath,
       outputPath,
+      env,
       onProgress: (frame) => {
         // Sparse, low-frequency render progress — persist only when the whole
         // percent actually advances so a chatty parser can't hot-write the row.
