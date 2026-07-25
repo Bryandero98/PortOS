@@ -134,10 +134,27 @@ const walkColumnsOf = (columns) =>
 
 /**
  * Walk frame count for a compiled atlas. Pointers written before #2970 have no
- * `walkFrameCount`, so fall back to counting the walk columns themselves.
+ * `walkFrameCount`, so fall back to the track descriptor and, failing that, to
+ * counting the walk columns themselves.
+ *
+ * The descriptor is consulted BEFORE the column count because "every non-anchor
+ * column is a walk frame" is only true of the single-track world this module
+ * ends: for a grid it can now build — `{ idle:{0,1}, walk:{1,12}, scanner:{13,4} }`
+ * — counting columns would report 16 walk frames. That matters as soon as a
+ * second track is registered (#3018), because a character carrying only that
+ * track would stamp `walkFrameCount: null` and the column heuristic would then
+ * publish a fabricated walk length in the sidecar and compare an app's runtime
+ * contract against it.
  */
 export function resolveWalkFrameCount(geometry) {
   if (Number.isInteger(geometry?.walkFrameCount)) return geometry.walkFrameCount;
+  // A PRESENT descriptor is authoritative and terminal: if it names no walk
+  // track, the answer is "none", not whatever the column heuristic would
+  // invent. Only an ABSENT one falls through to counting columns.
+  if (geometry?.tracks && typeof geometry.tracks === 'object' && !Array.isArray(geometry.tracks)) {
+    const span = geometry.tracks[WALK_TRACK];
+    return Number.isInteger(span?.count) ? span.count : null;
+  }
   if (!Array.isArray(geometry?.columns)) return null;
   return walkColumnsOf(geometry.columns).length;
 }
@@ -293,7 +310,8 @@ export function compiledGridUpToDate(current, expected) {
  * injectable so this leaf stays free of the error-handler import — callers pass
  * the 422-shaped `compileError`. `defaultFps` covers a track whose historical
  * manifests predate the fps field and must keep resolving to the exact value
- * they always did. Returns `{ id, frameCount, fps, labels }`.
+ * they always did. Returns `{ id, frameCount, fps }` — deliberately NOT the
+ * column labels, which `buildAtlasGrid` derives itself so the two can't disagree.
  */
 export function resolveTrackUniformity(trackId, rows, {
   tracks = ANIMATION_TRACKS,
@@ -333,5 +351,5 @@ export function resolveTrackUniformity(trackId, rows, {
       throw error(`Direction ${direction} plays at ${rowFps} fps but the set uses ${fps} — reprocess all directions to the same speed before compiling`);
     }
   }
-  return { id: trackId, frameCount, fps, labels: trackColumnLabels(trackId, frameCount) };
+  return { id: trackId, frameCount, fps };
 }

@@ -179,6 +179,25 @@ describe('deriveTracks', () => {
       .toThrow(/must be an object of column spans/);
   });
 
+  it('spans the walk by position, so positional frame-NN labels group too', () => {
+    // A grid whose columns are `frame-00…` rather than the named gait phases
+    // must still describe ONE walk track, not ten singletons.
+    expect(deriveTracks(['idle', ...walkPhaseLabels(10)], 10).walk).toEqual({ start: 1, count: 10 });
+    // …and a pre-#2986 grid still describes its scanner placeholder honestly
+    // rather than folding it into the walk span.
+    expect(deriveTracks(['idle', ...walkPhaseLabels(6), 'scanner'], 6)).toEqual({
+      idle: { start: 0, count: 1 },
+      walk: { start: 1, count: 6 },
+      scanner: { start: 7, count: 1 },
+    });
+    // Any repeated non-walk column groups into its own span too.
+    expect(deriveTracks(['idle', 'w0', 'w1', 'scan-a', 'scan-a', 'scan-a'], 2)).toEqual({
+      idle: { start: 0, count: 1 },
+      walk: { start: 1, count: 2 },
+      'scan-a': { start: 3, count: 3 },
+    });
+  });
+
   it('reports an undescribable grid rather than lying about it', () => {
     expect(() => deriveTracks(['idle', 'scanner', 'idle'], 0)).toThrow(/non-contiguously/);
     expect(() => deriveTracks([], 0)).toThrow(/no column list/);
@@ -253,9 +272,8 @@ describe('compiledGridUpToDate', () => {
 
 describe('resolveTrackUniformity', () => {
   it('resolves a track from its per-direction rows', () => {
-    expect(resolveTrackUniformity('walk', rowsFor(12, 10))).toEqual({
-      id: 'walk', frameCount: 12, fps: 10, labels: walkPhaseLabels(12),
-    });
+    // Labels are NOT returned — buildAtlasGrid derives them, so the two can't disagree.
+    expect(resolveTrackUniformity('walk', rowsFor(12, 10))).toEqual({ id: 'walk', frameCount: 12, fps: 10 });
   });
 
   it('enforces uniformity WITHIN a track', () => {
@@ -279,7 +297,6 @@ describe('resolveTrackUniformity', () => {
     expect(walk.frameCount).toBe(12);
     expect(scanner.frameCount).toBe(4);
     expect(scanner.fps).toBe(6);
-    expect(scanner.labels).toEqual(['scanner-00', 'scanner-01', 'scanner-02', 'scanner-03']);
     // 4 frames would be rejected outright by the walk row it used to share.
     expect(getAnimationTrack('walk').minFrameCount).toBeGreaterThan(scanner.frameCount);
     expect(() => resolveTrackUniformity('walk', rowsFor(4, 6)))
@@ -315,10 +332,30 @@ describe('resolveTrackUniformity', () => {
 });
 
 describe('resolveWalkFrameCount', () => {
-  it('prefers the declared count and falls back to counting non-anchor columns', () => {
+  it('prefers the declared count, then the descriptor, then the column count', () => {
     expect(resolveWalkFrameCount({ walkFrameCount: 12 })).toBe(12);
+    // Pre-#2970 pointers carry no walkFrameCount…
     expect(resolveWalkFrameCount({ columns: ['idle', 'a', 'b'] })).toBe(2);
+    // …and a pre-#2986 one is counted without its scanner placeholder.
     expect(resolveWalkFrameCount({ columns: ['idle', 'a', 'b', 'scanner'] })).toBe(2);
     expect(resolveWalkFrameCount({})).toBeNull();
+  });
+
+  it('reads a multi-track grid off the descriptor instead of counting columns', () => {
+    // "Every non-anchor column is a walk frame" is only true of a one-track
+    // grid. Once a second track exists, a character carrying only that track
+    // stamps no walkFrameCount, and counting columns would publish a fabricated
+    // walk length in the sidecar for an app's runtime contract to be checked
+    // against.
+    const grid = buildAtlasGrid(
+      [{ id: 'walk', frameCount: 12 }, { id: 'scanner', frameCount: 4 }],
+      TWO_TRACK_REGISTRY,
+    );
+    expect(resolveWalkFrameCount({ columns: grid.columns })).toBe(16);
+    expect(resolveWalkFrameCount({ columns: grid.columns, tracks: grid.tracks })).toBe(12);
+    // A grid with no walk track at all reports nothing rather than inventing one.
+    const scannerOnly = buildAtlasGrid([{ id: 'scanner', frameCount: 4 }], TWO_TRACK_REGISTRY);
+    expect(resolveWalkFrameCount({ columns: scannerOnly.columns, tracks: scannerOnly.tracks }))
+      .toBeNull();
   });
 });

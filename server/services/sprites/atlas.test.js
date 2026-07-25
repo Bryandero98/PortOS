@@ -43,7 +43,9 @@ const records = await import('./records.js');
 const { lockReference, loadManifest } = await import('./reference.js');
 const { compileAtlas, getAtlasState, ATLAS_COLUMNS, DEFAULT_ATLAS_GEOMETRY } = await import('./atlas.js');
 const { SPRITE_DIRECTIONS } = await import('./prompts.js');
-const { WALK_PHASES, walkPhaseLabels } = await import('./walkPostprocess.js');
+const { WALK_PHASES, walkPhaseLabels, WALK_FPS } = await import('./walkPostprocess.js');
+const { buildAtlasGrid, compiledGridUpToDate } = await import('./atlasGrid.js');
+const { getAnimationTrack } = await import('./animationTracks.js');
 
 let seq = 0;
 const newId = () => `atlas-char-${++seq}`;
@@ -302,9 +304,28 @@ describe('compileAtlas', () => {
     delete pointer.geometry.tracks;
     await writeFile(pointerAbs, JSON.stringify(pointer));
 
+    // Assert the PRE-PIXEL predicate against the real on-disk geometry, not just
+    // the compile's return value: `created: false` also holds via the
+    // post-encode sha compare, so a test that only checked that would pass even
+    // with the legacy fallback deleted — i.e. while the pixel pipeline ran in
+    // full on every compile, which is the exact regression this guards.
+    const grid = buildAtlasGrid([{ id: 'walk', frameCount: WALK_PHASES.length }]);
+    expect(compiledGridUpToDate(pointer.geometry, { ...DEFAULT_ATLAS_GEOMETRY, ...grid })).toBe(true);
+
     const again = await compileAtlas(id);
     expect(again.created).toBe(false);
     expect(again.version).toBe(first.version);
+  });
+
+  it('compiles a pre-fps run manifest at the legacy extraction rate, not the track default', async () => {
+    // Older run manifests carry no `frameRate` at all. The fallback must stay
+    // the rate their frames were extracted at (12), NOT the walk track's
+    // authoring default (10) — otherwise upgrading silently re-stamps every
+    // newly-compiled legacy set's geometry and its published previewFps.
+    const id = await finalizedCharacter();
+    const result = await compileAtlas(id);
+    expect(result.geometry.walkFps).toBe(WALK_FPS);
+    expect(WALK_FPS).not.toBe(getAnimationTrack('walk').defaultFps);
   });
 
   it('refuses to compile a set whose directions disagree on frame count', async () => {

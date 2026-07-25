@@ -8,10 +8,10 @@ import {
   buildAtlasLayout, layoutSidecarPath, runtimeContractMismatch, ATLAS_LAYOUT_SCHEMA_VERSION,
 } from './atlasLayout.js';
 import { walkPhaseLabels } from './walkBounds.js';
-// The span math moved to atlasGrid.js (#3016) — one public path, no re-export
-// shim. The cases below exercise it through SIDECAR-shaped geometry fixtures;
-// atlasGrid.test.js owns the module's own unit coverage.
-import { buildAtlasGrid, deriveTracks, resolveWalkFrameCount } from './atlasGrid.js';
+// The span math moved to atlasGrid.js (#3016) and is unit-tested there. This
+// file asserts it only THROUGH `buildAtlasLayout`, i.e. as the sidecar a
+// consumer actually reads.
+import { buildAtlasGrid } from './atlasGrid.js';
 import { ANIMATION_TRACKS } from './animationTracks.js';
 
 const DIRECTIONS = ['S', 'SE', 'E', 'NE', 'N', 'NW', 'W', 'SW'];
@@ -39,55 +39,6 @@ describe('layoutSidecarPath', () => {
     expect(layoutSidecarPath('assets/sprites/hero/hero-atlas.png'))
       .toBe('assets/sprites/hero/hero-atlas.layout.json');
     expect(layoutSidecarPath('assets/HERO.PNG')).toBe('assets/HERO.layout.json');
-  });
-});
-
-describe('resolveWalkFrameCount', () => {
-  it('prefers the declared count and falls back to counting non-anchor columns', () => {
-    expect(resolveWalkFrameCount(geometryFor(12))).toBe(12);
-    expect(resolveWalkFrameCount(legacyGeometryFor(12))).toBe(12);
-    // Pre-#2970 pointers carry no walkFrameCount.
-    expect(resolveWalkFrameCount({ columns: ['idle', 'a', 'b'] })).toBe(2);
-    // …and a pre-#2986 one is counted without its scanner placeholder.
-    expect(resolveWalkFrameCount({ columns: ['idle', 'a', 'b', 'c', 'scanner'] })).toBe(3);
-    expect(resolveWalkFrameCount({})).toBeNull();
-  });
-});
-
-describe('deriveTracks', () => {
-  it('collapses the walk columns into one span and gives every other column its own', () => {
-    // The compiled grid is idle + walk only (#2986) — no third track.
-    expect(deriveTracks(['idle', ...walkPhaseLabels(6)], 6)).toEqual({
-      idle: { start: 0, count: 1 },
-      walk: { start: 1, count: 6 },
-    });
-    // A pre-#2986 grid still describes its scanner placeholder honestly rather
-    // than folding it into the walk span.
-    expect(deriveTracks(['idle', ...walkPhaseLabels(6), 'scanner'], 6)).toEqual({
-      idle: { start: 0, count: 1 },
-      walk: { start: 1, count: 6 },
-      scanner: { start: 7, count: 1 },
-    });
-  });
-
-  it('spans the walk by position, so positional frame-NN labels group too', () => {
-    // A grid whose columns are `frame-00…` rather than the named gait phases
-    // must still describe ONE walk track, not ten singletons.
-    const columns = ['idle', ...walkPhaseLabels(10)];
-    expect(deriveTracks(columns, 10).walk).toEqual({ start: 1, count: 10 });
-  });
-
-  it('describes a future multi-frame track as a span', () => {
-    const columns = ['idle', 'w0', 'w1', 'scan-a', 'scan-a', 'scan-a'];
-    expect(deriveTracks(columns, 2)).toEqual({
-      idle: { start: 0, count: 1 },
-      walk: { start: 1, count: 2 },
-      'scan-a': { start: 3, count: 3 },
-    });
-  });
-
-  it('refuses a grid whose track columns are not contiguous', () => {
-    expect(() => deriveTracks(['idle', 'scanner', 'idle'], 0)).toThrow(/non-contiguously/);
   });
 });
 
