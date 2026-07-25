@@ -40,13 +40,14 @@ import { requireCharacter, loadManifest } from './reference.js';
 import { SPRITE_DIRECTIONS } from './prompts.js';
 import { keyChannelSplit } from './chromaKey.js';
 import {
-  WALK_PHASES, walkPhaseLabels, WALK_MIN_FRAME_COUNT, WALK_MAX_FRAME_COUNT,
-  WALK_MIN_FPS, WALK_MAX_FPS, WALK_FPS,
+  WALK_PHASES, WALK_FPS,
   pyRound, pyRoundTo, median, decodeRgbaFrame, premultipliedResize,
   sampleBorderKey, validateMeasuredKey, recoverAlphaFrame, despillKeyFrame,
   alphaBbox, compositeOnto, sha256Buffer,
 } from './walkPostprocess.js';
 import { ATLAS_IDLE_COLUMN } from './walkBounds.js';
+import { WALK_TRACK, ANIMATION_TRACK_IDS } from './animationTracks.js';
+import { buildAtlasGrid, resolveTrackUniformity, compiledGridUpToDate } from './atlasGrid.js';
 import {
   withWalkWriteTail, walkSetRelPath, importedWalkDirections,
 } from './walk.js';
@@ -56,21 +57,29 @@ import { verifyPackagedFrames } from './walkFrames.js';
 // pivot (48,88) — silhouette centered on x=48, feet on the y=88 ground line —
 // content bounded to 86×74 so nothing touches a cell edge.
 //
-// The runtime grid is `idle` + the N walk-phase columns. N is the walk set's
-// frame count (variable-frame walks: #sprite-walk-variable-frames); it is read
-// from the approved run manifests, not hardcoded, so the atlas width
-// grows/shrinks with the chosen count. ATLAS_COLUMNS is the historical 8-frame
-// layout, kept as the default/fallback; atlasColumns(labels) builds the actual
-// column list a given compile uses.
+// The runtime grid is `idle` followed by one variable-length column span per
+// animation track, in registry-registration order (#3016). Each track's length
+// is read from its approved run manifests, not hardcoded, so the atlas width
+// grows and shrinks with what was actually authored — and two tracks may
+// legally differ in length, which is what makes a four-frame action beside a
+// twelve-frame walk expressible. The span math lives in the sharp-free
+// atlasGrid.js so the compiler that WRITES the grid and the sidecar that
+// DESCRIBES it (atlasLayout.js) share one definition.
+//
+// `atlasGrid(specs)` returns both the flat column list and the `{ start, count }`
+// track descriptor; `atlasColumns(specs)` is the column half, kept under its
+// historical name. ATLAS_COLUMNS remains the historical walk-only 8-frame
+// layout, used as the default/fallback.
 //
 // A trailing `scanner` column used to follow the walk phases — a verbatim copy
 // of the idle cell that no consumer ever sampled (#2986). It is no longer
-// compiled: an action animation is its own named track (per-track spans in the
-// layout sidecar, atlasLayout.js), not a column bolted onto the walk cycle.
-// Imported/legacy atlases and manifests that still carry the column keep
-// loading and displaying unchanged — this is a write-side change only.
-export const atlasColumns = (walkLabels) => [ATLAS_IDLE_COLUMN, ...walkLabels];
-export const ATLAS_COLUMNS = atlasColumns(WALK_PHASES);
+// compiled: an action animation is its own named track, not a column bolted
+// onto the walk cycle. Imported/legacy atlases and manifests that still carry
+// the column keep loading and displaying unchanged — this is a write-side
+// change only.
+export const atlasGrid = (trackSpecs) => buildAtlasGrid(trackSpecs);
+export const atlasColumns = (trackSpecs) => buildAtlasGrid(trackSpecs).columns;
+export const ATLAS_COLUMNS = atlasColumns([{ id: WALK_TRACK, frameCount: WALK_PHASES.length }]);
 export const DEFAULT_ATLAS_GEOMETRY = {
   cellSize: 96,
   pivot: [48, 88],
@@ -257,11 +266,14 @@ export async function validateForCompile(recordId) {
   }
 
   const runs = {};
-  // Resolved from the first approved direction, then enforced identical across
-  // the rest (see the loop body). null until the first direction is read.
-  let frameCount = null;
-  let walkFps = null;
-  let walkLabels = null;
+  // Per-direction rows for the WALK track, collected in direction order and
+  // resolved together below. Uniformity is a WITHIN-track rule (#3016): all 8
+  // facings of one track must share a frame count and speed because the atlas is
+  // a rectangular grid, but a second track is free to differ from this one — so
+  // the rows are keyed by track rather than reduced into one set-wide number.
+  // Only `walk` is registered today; a second track adds a sibling row list here
+  // plus its own resolveTrackUniformity call, with no change to the shape.
+  const trackRows = { [WALK_TRACK]: [] };
   for (const direction of SPRITE_DIRECTIONS) {
     const entry = walkSet.directions?.[direction];
     if (!entry || entry.status !== 'approved') throw compileError(`Direction ${direction} is not approved`);
@@ -275,36 +287,12 @@ export async function validateForCompile(recordId) {
     if (!manifest || manifest.direction !== direction) {
       throw compileError(`Run manifest for ${direction} is unreadable or mislabeled`);
     }
-    const frames = manifest.frames || [];
-    // Frame count is variable, but every direction in ONE atlas MUST share it —
-    // the atlas is a rectangular grid, so a ragged set can't compile. The first
-    // approved direction sets N; the rest must match. N must also be in range and
-    // agree with the manifest's declared frameCount.
-    if (frameCount === null) {
-      frameCount = frames.length;
-      if (!Number.isInteger(frameCount)
-        || frameCount < WALK_MIN_FRAME_COUNT || frameCount > WALK_MAX_FRAME_COUNT) {
-        throw compileError(`Direction ${direction} has ${frames.length} frames — outside the supported ${WALK_MIN_FRAME_COUNT}–${WALK_MAX_FRAME_COUNT} range`);
-      }
-      walkLabels = walkPhaseLabels(frameCount);
-    } else if (frames.length !== frameCount) {
-      throw compileError(`Direction ${direction} has ${frames.length} frames but the set uses ${frameCount} — reprocess all directions to the same frame count before compiling`);
-    }
-    if (Number.isInteger(manifest.frameCount) && manifest.frameCount !== frames.length) {
-      throw compileError(`Direction ${direction} manifest declares ${manifest.frameCount} frames but carries ${frames.length}`);
-    }
-    // Playback fps likewise must agree across directions so the whole walk set
-    // animates at one speed. Range-checked; falls back to the legacy 12 for
-    // pre-fps manifests so older sets still compile.
-    const dirFps = Number.isFinite(manifest.frameRate) ? manifest.frameRate : WALK_FPS;
-    if (dirFps < WALK_MIN_FPS || dirFps > WALK_MAX_FPS) {
-      throw compileError(`Direction ${direction} playback fps ${dirFps} is outside the supported ${WALK_MIN_FPS}–${WALK_MAX_FPS} range`);
-    }
-    if (walkFps === null) {
-      walkFps = dirFps;
-    } else if (dirFps !== walkFps) {
-      throw compileError(`Direction ${direction} plays at ${dirFps} fps but the set uses ${walkFps} — reprocess all directions to the same speed before compiling`);
-    }
+    trackRows[WALK_TRACK].push({
+      direction,
+      frameCount: (manifest.frames || []).length,
+      declaredFrameCount: manifest.frameCount,
+      fps: manifest.frameRate,
+    });
     // Same frame-validity definition the approve gate uses (verifyPackagedFrames),
     // here in its byte-verifying mode: existence + per-frame sha256 + gait-phase/
     // order, reading each frame's bytes exactly once for read-once-verify-in-memory.
@@ -314,6 +302,19 @@ export async function validateForCompile(recordId) {
     runs[direction] = { runId: entry.runId, manifestPath: entry.runManifest, manifest, frameBytes };
   }
 
+  // Registration order, so the compiled grid's span order is stable regardless
+  // of the order the rows happened to be collected in.
+  const tracks = ANIMATION_TRACK_IDS
+    .filter((id) => trackRows[id]?.length)
+    .map((id) => resolveTrackUniformity(id, trackRows[id], {
+      error: compileError,
+      // Pre-fps manifests fall back to the legacy source-extraction rate (12),
+      // not to the track's authoring default, so older sets compile to exactly
+      // the same atlas they always did.
+      defaultFps: id === WALK_TRACK ? WALK_FPS : undefined,
+    }));
+  const walk = tracks.find((t) => t.id === WALK_TRACK);
+
   return {
     walkSet,
     walkSetPath: walkSetRel,
@@ -322,9 +323,10 @@ export async function validateForCompile(recordId) {
     chromaKey,
     anchors,
     runs,
-    walkFrameCount: frameCount,
-    walkFps,
-    walkLabels,
+    tracks,
+    walkFrameCount: walk?.frameCount ?? null,
+    walkFps: walk?.fps ?? null,
+    walkLabels: walk?.labels ?? null,
   };
 }
 
@@ -434,20 +436,26 @@ export async function compileAtlasInTail(recordId, { geometry: geometryOverride 
   const validated = await validateForCompile(recordId);
   const dir = spriteDir(recordId);
 
-  // Columns/width follow the set's actual frame count, not the historical 8.
-  const columns = atlasColumns(validated.walkLabels);
+  // Columns/width follow the set's actual per-track frame counts, not the
+  // historical 8 — and `tracks` names each track's `{ start, count }` span, so
+  // the grid, the manifest geometry and the published sidecar can never
+  // disagree about where a track's columns are.
+  const { columns, tracks } = atlasGrid(
+    validated.tracks.map(({ id, frameCount, labels }) => ({ id, frameCount, labels })),
+  );
 
   // Pre-pixel idempotency: the compile is deterministic, so an unchanged
   // walk set + identical geometry means identical bytes by construction —
   // skip the whole pixel pipeline. The evidence chain was still revalidated
   // above; the post-encode sha comparison below stays as the fallback for a
   // pointer whose geometry fields predate a shape change.
-  // The COLUMN LIST is part of that geometry comparison, not just the cell
-  // metrics: a grid-shape change (#2986 dropping the trailing scanner column)
-  // leaves every cell metric identical, so without it a pre-#2986 pointer would
-  // be returned as up-to-date and the stale wider atlas would never recompile.
-  // A pointer predating the columns field at all (undefined) also falls through,
-  // which is correct — the post-encode sha compare then decides.
+  // `compiledGridUpToDate` compares the GRID, not just the cell metrics: a
+  // grid-shape change (#2986 dropping the trailing scanner column) leaves every
+  // cell metric identical, and a track-SET change can leave even the column
+  // count identical, so both the column list and the track spans are part of
+  // the comparison (#3016). A pointer predating either field is described the
+  // legacy way rather than treated as a mismatch, so upgrading an install
+  // doesn't condemn every existing atlas to recompile its pixels forever.
   // Both idempotent early-returns require the pointed-at atlas file to still
   // exist — otherwise a deleted runtime/vN PNG would loop forever ("recompile"
   // → pointer returned untouched → still missing); falling through re-writes
@@ -458,18 +466,28 @@ export async function compileAtlasInTail(recordId, { geometry: geometryOverride 
     current
     && currentAtlasOnDisk
     && current.walkSetSha256 === validated.walkSetSha256
-    && current.geometry?.cellSize === geometry.cellSize
-    && JSON.stringify(current.geometry?.pivot) === JSON.stringify(geometry.pivot)
-    && current.geometry?.targetMaxHeight === geometry.targetMaxHeight
-    && current.geometry?.targetMaxWidth === geometry.targetMaxWidth
-    && JSON.stringify(current.geometry?.columns) === JSON.stringify(columns)
+    && compiledGridUpToDate(current.geometry, { ...geometry, columns, tracks })
   ) {
     return { ...current, created: false };
   }
 
   const rows = [];
   for (const direction of SPRITE_DIRECTIONS) {
-    rows.push(await compileDirectionRow(recordId, direction, validated, geometry));
+    const row = await compileDirectionRow(recordId, direction, validated, geometry);
+    // The grid is built from the registry's track spans while each row's cells
+    // come from that direction's run manifests, so the two are only guaranteed
+    // to line up if we say so. Before #3016 a single hardcoded `['idle', ...walk]`
+    // made the agreement structural; with variable-length spans a track whose
+    // pipeline emitted the wrong labels would otherwise composite silently into
+    // the wrong columns and ship an atlas that contradicts its own descriptor.
+    if (row.cells.length !== columns.length) {
+      throw compileError(`Direction ${direction} compiled ${row.cells.length} cells but the grid has ${columns.length} columns`);
+    }
+    const misplaced = row.cells.findIndex((cell, c) => cell.column !== columns[c]);
+    if (misplaced >= 0) {
+      throw compileError(`Direction ${direction} column ${misplaced} is "${row.cells[misplaced].column}" but the grid expects "${columns[misplaced]}"`);
+    }
+    rows.push(row);
   }
 
   const { cellSize } = geometry;
@@ -547,6 +565,11 @@ export async function compileAtlasInTail(recordId, { geometry: geometryOverride 
     atlasSha256,
     geometry: {
       columns,
+      // Each track's `{ start, count }` column span (#3016). Additive: readers
+      // that predate it (and every atlas compiled before it) fall back to the
+      // legacy column-name derivation in atlasGrid.deriveTracks, so no migration
+      // is needed and imported/pre-#2986 grids keep describing themselves.
+      tracks,
       directionOrder: SPRITE_DIRECTIONS,
       rows: SPRITE_DIRECTIONS.length,
       cellSize,

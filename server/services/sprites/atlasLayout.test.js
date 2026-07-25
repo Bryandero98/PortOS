@@ -9,6 +9,7 @@ import {
   runtimeContractMismatch, ATLAS_LAYOUT_SCHEMA_VERSION,
 } from './atlasLayout.js';
 import { walkPhaseLabels } from './walkBounds.js';
+import { buildAtlasGrid } from './atlasGrid.js';
 
 const DIRECTIONS = ['S', 'SE', 'E', 'NE', 'N', 'NW', 'W', 'SW'];
 // The grid the compiler emits today: idle + N walk phases (#2986 dropped the
@@ -131,6 +132,49 @@ describe('buildAtlasLayout', () => {
     expect(layout.columnCount).toBe(10);
     expect(layout.walkFrameCount).toBe(8);
     expect(layout.tracks.scanner).toEqual({ start: 9, count: 1 });
+  });
+
+  it('describes a two-track grid whose tracks differ in length (#3016)', () => {
+    // Built through the compiler's own span builder, against a SYNTHETIC
+    // registration order — only `walk` is registered today, so shipping a real
+    // second track is #3018's job (see atlasGrid.test.js for why the synthetic
+    // fixture is the point rather than a shortcut).
+    const grid = buildAtlasGrid(
+      [{ id: 'walk', frameCount: 12 }, { id: 'scanner', frameCount: 4 }],
+      ['walk', 'scanner'],
+    );
+    const layout = buildAtlasLayout({
+      characterId: 'example-character',
+      geometry: geometryFor(12, { columns: grid.columns, tracks: grid.tracks }),
+      atlasSha256: 'abc123',
+      version: 7,
+      atlasDestPath: 'assets/sprites/hero/hero-atlas.png',
+    });
+    expect(layout.tracks).toEqual({
+      idle: { start: 0, count: 1 },
+      walk: { start: 1, count: 12 },
+      scanner: { start: 13, count: 4 },
+    });
+    // columns, tracks and the atlas width stay mutually consistent: the spans
+    // tile the column list exactly, so a consumer sampling by span lands on the
+    // pixels the PNG's width accounts for.
+    expect(layout.columnCount).toBe(17);
+    expect(layout.columns).toHaveLength(layout.columnCount);
+    expect(Object.values(layout.tracks).reduce((n, s) => n + s.count, 0)).toBe(layout.columnCount);
+    // The walk span is still recoverable by name for a consumer that only knows
+    // about walk — a second track is additive, not a re-read.
+    expect(layout.walkFrameCount).toBe(12);
+  });
+
+  it('refuses a persisted descriptor that contradicts its own column list', () => {
+    // A sidecar whose spans disagree with its columns would silently point a
+    // consumer at the wrong pixels — the exact failure #2982 exists to prevent.
+    expect(() => buildAtlasLayout({
+      characterId: 'example-character',
+      geometry: geometryFor(8, { tracks: { idle: { start: 0, count: 1 }, walk: { start: 1, count: 3 } } }),
+      atlasSha256: 'abc123',
+      atlasDestPath: 'assets/sprites/hero/hero-atlas.png',
+    })).toThrow(/describe 4 of 9 columns/);
   });
 
   it('refuses geometry with no column list', () => {

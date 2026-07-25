@@ -27,22 +27,26 @@
  * it rides along as `previewFps`, explicitly labeled as authoring metadata the
  * consumer must ignore.
  *
- * Pure and dependency-free (no image graph, no state): publish.js builds the
- * payload before taking any write lock, and the shape is unit-testable on its
- * own.
+ * Pure and free of the image graph (no sharp, no fs, no state): publish.js
+ * builds the payload before taking any write lock, and the shape is
+ * unit-testable on its own.
+ *
+ * The span math itself lives one level down in `atlasGrid.js` (#3016), because
+ * the compiler that WRITES the grid imports sharp and this module must not —
+ * so the single definition of a column span has to sit below both. Since #3016
+ * the two namespaces ARE unified: a track's span is named for its registry id
+ * (#3015), the compiler persists that descriptor into the manifest geometry, and
+ * `deriveTracks` prefers it. Only a *legacy* grid (compiled before #3016, or
+ * imported) still falls back to minting a name from a column label, which is
+ * what keeps a pre-#2986 `scanner` placeholder describable.
  */
 
 import { basename } from 'path';
-import { ATLAS_IDLE_COLUMN, ATLAS_SCANNER_COLUMN } from './walkBounds.js';
-// The track id the sidecar names its walk span with — read from the registry
-// (#3015) rather than restated as a local literal, so the descriptor and
-// `animationTargets.walk` agree on how the walk span is spelled. Note the two
-// namespaces are NOT otherwise unified: `deriveTracks` still mints track names
-// straight from column labels (`idle`, `scanner`), which are not registry ids,
-// and `walkColumnsOf` still defines walk as "everything that isn't idle or
-// scanner". Reconciling those is the second track's job, not this import's.
-// animationTracks imports nothing, so this keeps the module dependency-free.
-import { WALK_TRACK } from './animationTracks.js';
+import { deriveTracks, resolveWalkFrameCount } from './atlasGrid.js';
+
+// Re-exported so the sidecar's public surface is unchanged for its consumers
+// and tests: atlasGrid.js is where they live, atlasLayout.js is where they were.
+export { deriveTracks, resolveWalkFrameCount } from './atlasGrid.js';
 
 // Bump only on a breaking shape change. Adding a field (or a new track) is
 // additive — consumers read `tracks`/`columns` by name, not by position.
@@ -63,60 +67,6 @@ export const PREVIEW_FPS_NOTE = 'Authoring metadata only — the speed PortOS pr
 export function layoutSidecarPath(atlasDestPath) {
   const stem = atlasDestPath.replace(/\.png$/i, '');
   return `${stem}.layout.json`;
-}
-
-/**
- * The walk-phase columns of a compiled grid: everything that is neither the
- * idle anchor nor a legacy scanner placeholder. Derived from the ACTUAL column
- * names rather than from `walkPhaseLabels(count)`, so a grid whose columns are
- * positional (`frame-00…`) groups into one walk span just like the named
- * 8-frame gait phases. The compiler no longer emits a scanner column (#2986),
- * but imported/pre-#2986 grids still carry one, so it stays filtered here —
- * otherwise their walk-frame count would come back one too high.
- */
-const walkColumnsOf = (columns) =>
-  columns.filter((c) => c !== ATLAS_IDLE_COLUMN && c !== ATLAS_SCANNER_COLUMN);
-
-/**
- * Walk frame count for a compiled atlas. Pointers written before #2970 have no
- * `walkFrameCount`, so fall back to counting the walk columns themselves.
- */
-export function resolveWalkFrameCount(geometry) {
-  if (Number.isInteger(geometry?.walkFrameCount)) return geometry.walkFrameCount;
-  if (!Array.isArray(geometry?.columns)) return null;
-  return walkColumnsOf(geometry.columns).length;
-}
-
-/**
- * Group the flat column list into named tracks of contiguous column spans:
- * `{ idle: { start: 0, count: 1 }, walk: { start: 1, count: 8 } }`. The walk
- * track is the `walkFrameCount` columns following the idle anchor — positional,
- * per the grid contract, so it doesn't care whether those columns carry named
- * gait phases or positional `frame-NN` labels. Every other column becomes a
- * track of its own named for the column, so a future four-frame scanner action
- * lands as `scanner: { start, count: 4 }` with no shape change on either side
- * of the boundary — and so a legacy grid's one-column `scanner` placeholder is
- * still described honestly rather than folded into the walk span.
- */
-export function deriveTracks(columns, walkFrameCount) {
-  const walkStart = columns[0] === ATLAS_IDLE_COLUMN ? 1 : 0;
-  const walkEnd = walkStart + (Number.isInteger(walkFrameCount) ? walkFrameCount : 0);
-  const tracks = {};
-  columns.forEach((column, index) => {
-    const name = index >= walkStart && index < walkEnd ? WALK_TRACK : column;
-    const existing = tracks[name];
-    if (!existing) {
-      tracks[name] = { start: index, count: 1 };
-      return;
-    }
-    if (existing.start + existing.count !== index) {
-      // A track split across non-adjacent columns can't be described as a
-      // span — refuse rather than emit a layout that lies about the grid.
-      throw new Error(`Atlas column "${column}" repeats non-contiguously — the grid cannot be described as tracks`);
-    }
-    existing.count += 1;
-  });
-  return tracks;
 }
 
 /**
@@ -149,7 +99,10 @@ export function buildAtlasLayout({
     rowOrder: Array.isArray(geometry.directionOrder) ? [...geometry.directionOrder] : null,
     columns: [...columns],
     columnCount: columns.length,
-    tracks: deriveTracks(columns, walkFrameCount),
+    // Prefer the descriptor the compiler persisted (#3016) — the only thing
+    // that can describe two tracks of differing length — and fall back to the
+    // legacy column-name derivation for a grid compiled before it existed.
+    tracks: deriveTracks(columns, walkFrameCount, geometry.tracks ?? null),
     walkFrameCount,
     previewFps: Number.isFinite(geometry.walkFps) ? geometry.walkFps : null,
     previewFpsNote: PREVIEW_FPS_NOTE,
