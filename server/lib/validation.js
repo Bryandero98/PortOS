@@ -7,6 +7,16 @@ import { ANCHOR_DIRECTIONS, SPRITE_DIRECTIONS, TURNAROUND_ID } from '../services
 import { CHROMA_KEY_HEXES } from '../services/sprites/chromaKey.js';
 import { WALK_TRACK, getAnimationTrack } from '../services/sprites/animationTracks.js';
 import { QUEUEABLE_IMAGE_MODES } from '../services/imageGen/modes.js';
+import { GROK_VIDEO_DURATIONS } from './grokVideoClip.js';
+
+// Clip lengths grok's image_to_video delivers, as a Zod union built from the
+// single shared list (see grokVideoClip.js). `z.literal` per value rather than
+// `z.number().refine()` keeps the "expected 6 | 10" error message the
+// hand-written union produced. Exported so routes/videoGen.js validates
+// `grokDuration` against this same schema instead of rebuilding the union.
+export const grokVideoDurationSchema = z.union(
+  GROK_VIDEO_DURATIONS.map((d) => z.literal(d)),
+);
 
 // gpt-image-2 (codex backend) caps at 3840px per edge and 8,294,400 total
 // pixels. Mirror the ceiling for every image-gen route. Local mflux can
@@ -1161,12 +1171,10 @@ const spriteWalkFpsSchema = spriteTrackFpsSchema(WALK_TRACK);
 
 export const spriteWalkGenerateSchema = z.object({
   direction: spriteWalkDirectionSchema,
-  // Clip length in seconds. grok's image_to_video only honors its documented
-  // 6s/10s options and clamps anything shorter to ~6s, so only those two are
-  // accepted; the service defaults to 6s when omitted. Clip length only affects
-  // how much source footage the packer can choose from — the cycle's look is set
-  // by frameCount/fps below.
-  duration: z.union([z.literal(6), z.literal(10)]).optional(),
+  // Clip length in seconds; the service defaults to 6s when omitted. Only
+  // affects how much source footage the packer can choose from — the cycle's
+  // look is set by frameCount/fps below.
+  duration: grokVideoDurationSchema.optional(),
   // Deterministic-postprocess knobs (not grok's): how many frames the packed
   // cycle holds and how fast it plays back. Omitted → the set's pinned cycle
   // target; a value that DISAGREES with that target is refused with 409
