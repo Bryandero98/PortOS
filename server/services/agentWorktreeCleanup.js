@@ -308,6 +308,19 @@ export async function spawnReviewLoopFollowUp({ originalAgentId, originalTask, p
     ? { title: 'Merge', label: 'merge', reviewers: 'merge on green CI, no review' }
     : { title: 'Review Loop', label: 'review-loop', reviewers: [...effectiveReviewers, ...effectiveUsernames.map(u => `@${u}`)].join(', ') };
 
+  // Inherit the source task's provider/model/effort pins. A follow-up runs a
+  // coding harness (it fixes checks, resolves conflicts, drives reviewer CLIs),
+  // so an install whose ACTIVE provider is api-only would permanently reject an
+  // unpinned follow-up for lacking a harness — and the PR it was spawned to land
+  // would sit open forever. Only copy what's actually pinned; an unpinned source
+  // task still resolves through the normal active-provider path.
+  const sourceMeta = originalTask?.metadata || {};
+  const providerPins = {};
+  if (sourceMeta.provider) providerPins.provider = sourceMeta.provider;
+  if (sourceMeta.providerId) providerPins.providerId = sourceMeta.providerId;
+  if (sourceMeta.model) providerPins.model = sourceMeta.model;
+  if (sourceMeta.effort) providerPins.effort = sourceMeta.effort;
+
   const appId = originalTask?.metadata?.app || null;
   const sourceTaskDesc = originalTask?.description || 'CoS automated task';
   const firstLine = sourceTaskDesc.split(/[\r\n]/).find(l => l.trim()) || sourceTaskDesc;
@@ -322,6 +335,7 @@ export async function spawnReviewLoopFollowUp({ originalAgentId, originalTask, p
     description: followUpTitle,
     metadata: {
       app: appId,
+      ...providerPins,
       // useWorktree is required so the follow-up runs in isolation; existingBranch
       // tells createWorktree to attach to the PR branch instead of cutting a new one.
       useWorktree: true,

@@ -535,6 +535,30 @@ describe('cleanupAgentWorktree - openPR path', () => {
     expect(removeWorktree).toHaveBeenCalled();
   });
 
+  it('inherits the source task provider/model pins so the follow-up can actually run', async () => {
+    // A follow-up needs a coding harness. On an install whose ACTIVE provider is
+    // api-only, an unpinned follow-up is permanently rejected and the PR it was
+    // spawned to land never merges.
+    git.push.mockResolvedValue(undefined);
+    git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/99' });
+    addTask.mockResolvedValue({ id: 'sys-rl-p' });
+
+    await cleanupAgentWorktree('agent-1', true, {
+      openPR: true, requestCopilotReview: false, description: 'X',
+      originalTask: {
+        id: 'task-orig',
+        metadata: { provider: 'claude-code', providerId: 'claude-code', model: 'claude-opus-5', effort: 'high' },
+        description: 'X'
+      }
+    });
+
+    const [followUp] = addTask.mock.calls[0];
+    expect(followUp.metadata.provider).toBe('claude-code');
+    expect(followUp.metadata.providerId).toBe('claude-code');
+    expect(followUp.metadata.model).toBe('claude-opus-5');
+    expect(followUp.metadata.effort).toBe('high');
+  });
+
   it('leaves a jira-sprint-manager PR open — no follow-up merges behind the board', async () => {
     // That task type transitions its ticket to "In Review" and hands the PR to a
     // human; merging here would land the work while JIRA still shows it in review,
@@ -598,6 +622,8 @@ describe('cleanupAgentWorktree - openPR path', () => {
     expect(addTask).toHaveBeenCalledTimes(1);
     const [followUp] = addTask.mock.calls[0];
     expect(followUp.metadata.reviewLoopMergeOnly).toBe(true);
+    // Unpinned source task → no provider pins to inherit.
+    expect(followUp.metadata.provider).toBeUndefined();
     // No reviewer may be defaulted back in — this PR was never meant to be reviewed.
     expect(followUp.metadata.reviewLoopReviewers).toEqual([]);
     expect(followUp.metadata.reviewLoopReviewerUsernames).toEqual([]);

@@ -328,6 +328,9 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).toMatch(/gh pr checks "<PR_URL>" --watch --fail-fast/);
       // A repo that disallows merge commits must not dead-end the flow.
       expect(prompt).toMatch(/mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed/);
+      // "no checks reported" is ambiguous on a just-opened PR — merging on it races CI.
+      expect(prompt).toMatch(/AMBIGUOUS/);
+      expect(prompt).toMatch(/gh workflow list/);
       expect(prompt).toMatch(/gh pr merge "<PR_URL>" --merge --delete-branch/);
       expect(prompt).not.toMatch(/gh pr merge[^\n]*--auto/);
       expect(prompt).toMatch(/gh pr view "<PR_URL>" --json state -q \.state/);
