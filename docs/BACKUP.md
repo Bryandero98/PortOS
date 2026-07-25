@@ -32,6 +32,12 @@ A backup run (`runBackup` in `server/services/backup.js`) writes to:
 
 The effective exclude list is computed by the pure `computeEffectiveExcludes()` helper (unit-tested in `backup.test.js`). The scheduled cron handler in `backupScheduler.js` re-reads settings on every run, so `destPath`, `excludePaths`, `disabledDefaultExcludes`, and `enabled` all take effect on the next run without a restart.
 
+#### Why every exclude must be anchored with a leading `/`
+
+`DEFAULT_EXCLUDES` is **rsync filter syntax** — the leading `/` means "relative to the transfer root". Without the anchor, `loras/*.safetensors` also matches any `loras/` directory nested anywhere under `data/`, silently dropping unrelated user data (e.g. `brain/.../loras/`). An unanchored pattern is a data-loss bug, not a style nit.
+
+The two `overridable` tiers are enforced, not advisory. A hand-edited `settings.json` that lists a non-overridable path in `disabledDefaultExcludes` is silently dropped server-side; `computeEffectiveExcludes()` enforces both the overridable allow-list and `Array.isArray` guards for hand-edited settings. The Backup tab's toggle UI uses a `shadowsDefault()` helper that also catches broader custom patterns (`loras/`, `loras/**`, `/cos/`) so the "included" state never lies about rsync's actual behavior.
+
 ## The Postgres dump is mandatory, not optional
 
 `dumpPostgres()` runs `pg_dump --no-owner --no-acl --clean --if-exists` and returns an explicit status (no silent failure):
