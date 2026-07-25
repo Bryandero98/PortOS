@@ -347,6 +347,34 @@ describe('startReferenceGeneration', () => {
     expect(call.params.spriteRef.correctionPrompt).toBe('no pocket on the right sleeve');
   });
 
+  it('re-processes a specific turnaround candidate as the i2i seed with a correction', async () => {
+    const id = newId();
+    await createCharacter(id);
+    const candidate = await placeCandidate(id, 'turnaround', 'turnaround-candidate-01.png');
+    await startReferenceGeneration(id, {
+      target: 'turnaround',
+      initImageCandidate: candidate,
+      correctionPrompt: 'add the missing pocket to the right sleeve',
+    });
+    const call = enqueueJob.mock.calls[0][0];
+    expect(call.params.initImagePath).toBe(join(TEST_ROOT, 'sprites', id, candidate));
+    expect(call.params.initImageStrength).toBe(0.65);
+    expect(call.params.prompt).toContain('Important correction — apply this over the attached turnaround: add the missing pocket to the right sleeve');
+    expect(call.params.spriteRef).toMatchObject({
+      designReferencePath: candidate,
+      correctionPrompt: 'add the missing pocket to the right sleeve',
+    });
+  });
+
+  it('rejects a non-turnaround candidate as a turnaround seed', async () => {
+    const id = newId();
+    await createCharacter(id);
+    const candidate = await placeCandidate(id, 'east', 'walk-east-candidate-01.png');
+    await expect(startReferenceGeneration(id, {
+      target: 'turnaround', initImageCandidate: candidate,
+    })).rejects.toMatchObject({ code: 'CANDIDATE_TARGET_MISMATCH', status: 400 });
+  });
+
   it('omits the correction from the tag when blank', async () => {
     const id = newId();
     await createCharacter(id);

@@ -45,7 +45,7 @@ function SpriteImg({ recordId, path, className }) {
 // Candidate thumbnail with an inline lock confirm. Locking freezes this
 // version and its downstream workflow until the relevant explicit unlock, so
 // the consequential action stays visible in an inline confirm row.
-function CandidateTile({ recordId, candidate, locking, onLock, clipRisk }) {
+function CandidateTile({ recordId, candidate, locking, onLock, clipRisk, correction, onCorrectionChange, onReprocess, reprocessing }) {
   const [confirming, setConfirming] = useState(false);
   return (
     <div className="flex min-w-0 flex-col gap-2 rounded-lg border border-port-border bg-port-card p-2">
@@ -57,6 +57,27 @@ function CandidateTile({ recordId, candidate, locking, onLock, clipRisk }) {
       <p className="truncate px-0.5 text-[10px] text-gray-500" title={candidate.path}>
         {candidate.path.split('/').pop()}{candidate.mode ? ` · ${candidate.mode}` : ''}
       </p>
+      {candidate.target === 'turnaround' && onCorrectionChange && (
+        <CorrectionNote
+          direction={candidate.path}
+          value={correction}
+          onValueChange={onCorrectionChange}
+          placeholder="Correction for this attempt, e.g. add the missing sleeve pocket"
+          className="text-[10px]"
+        />
+      )}
+      {candidate.target === 'turnaround' && onReprocess && (
+        <button
+          type="button"
+          onClick={onReprocess}
+          disabled={reprocessing || !correction?.trim()}
+          title="Render this turnaround again with the correction note"
+          className="flex min-h-8 w-full items-center justify-center gap-1 rounded border border-port-border bg-port-bg px-1.5 py-1 text-xs text-gray-300 hover:border-port-accent disabled:opacity-50"
+        >
+          <RefreshCw className={`h-3 w-3 ${reprocessing ? 'animate-spin' : ''}`} />
+          {reprocessing ? 'Re-processing…' : 'Re-process with note'}
+        </button>
+      )}
       {clipRisk ? (
         <div className="mt-auto space-y-1 text-[10px]">
           <p className="text-port-warning">{clipRisk}</p>
@@ -236,7 +257,9 @@ export default function ReferenceWorkflow({ record, reference, renders, correcti
   const [spritePickerOpen, setSpritePickerOpen] = useState(false);
   const [forkOpen, setForkOpen] = useState(false);
   const [turnaroundUnlockConfirming, setTurnaroundUnlockConfirming] = useState(false);
+  const [turnaroundCorrections, setTurnaroundCorrections] = useState({});
   useEffect(() => { setTurnaroundUnlockConfirming(false); }, [recordId]);
+  useEffect(() => { setTurnaroundCorrections({}); }, [recordId]);
 
   // Revoke the previous upload's object URL whenever the source changes or the
   // component unmounts (cleanup runs with the prior closure).
@@ -282,6 +305,24 @@ export default function ReferenceWorkflow({ record, reference, renders, correcti
     } catch (err) {
       cancelSubmit(target);
       toast.error(err?.message || `Failed to queue ${target} render`);
+    }
+  };
+
+  const reprocessTurnaround = async (candidate) => {
+    const correctionPrompt = turnaroundCorrections[candidate.path]?.trim();
+    if (!correctionPrompt) return;
+    beginSubmit('turnaround');
+    try {
+      const { jobId } = await generateSpriteReference(recordId, {
+        target: 'turnaround',
+        ...(mode ? { mode } : {}),
+        initImageCandidate: candidate.path,
+        correctionPrompt,
+      }, { silent: true });
+      resolveSubmit('turnaround', jobId);
+    } catch (err) {
+      cancelSubmit('turnaround');
+      toast.error(err?.message || 'Failed to re-process turnaround');
     }
   };
 
@@ -629,6 +670,10 @@ export default function ReferenceWorkflow({ record, reference, renders, correcti
                         locking={locking}
                         clipRisk={clipRisks[candidate.path]}
                         onLock={(picked, accept) => lock('turnaround', picked, accept)}
+                        correction={turnaroundCorrections[candidate.path]}
+                        onCorrectionChange={(value) => setTurnaroundCorrections((prev) => ({ ...prev, [candidate.path]: value }))}
+                        onReprocess={() => reprocessTurnaround(candidate)}
+                        reprocessing={Boolean(pendingJobs.turnaround)}
                       />
                     ))}
                   </div>

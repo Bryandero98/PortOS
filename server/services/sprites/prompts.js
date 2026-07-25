@@ -140,7 +140,7 @@ export const TURNAROUND_ID = 'turnaround';
  * panels of the SAME character, so the model that later draws a back or side
  * anchor has actually been shown that side instead of inventing it.
  */
-export function buildTurnaroundPrompt({ name, designPrompt, chromaKey }) {
+export function buildTurnaroundPrompt({ name, designPrompt, chromaKey, correctionPrompt }) {
   const description = (typeof designPrompt === 'string' && designPrompt.trim())
     ? designPrompt.trim()
     : 'Use the attached visual reference as the character design.';
@@ -157,6 +157,9 @@ export function buildTurnaroundPrompt({ name, designPrompt, chromaKey }) {
   const panelRules = TURNAROUND_VIEWS
     .map((view, i) => `Panel ${i + 1} (${REFERENCE_FACING[view] || view}): ${viewGeometryClause(view)}`)
     .join(' ');
+  const correction = (typeof correctionPrompt === 'string' && correctionPrompt.trim())
+    ? ` Important correction — apply this over the attached turnaround: ${correctionPrompt.trim()}`
+    : '';
   return (
     `Create a character turnaround model sheet for a game character named ${name}. `
     + `Character design: ${description} `
@@ -187,6 +190,7 @@ export function buildTurnaroundPrompt({ name, designPrompt, chromaKey }) {
     + `reference on a plain exact ${keyColorPhrase(chromaKey)} background. No panel borders, `
     + 'labels, captions, arrows, grid, shadows, scenery, wireframe, or extra characters. '
     + 'Return exactly one PNG.'
+    + correction
   );
 }
 

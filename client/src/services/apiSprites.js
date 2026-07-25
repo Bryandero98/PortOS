@@ -62,7 +62,8 @@ export const importSprites = (body, options = {}) => request('/sprites/import', 
 
 // Queue one reference candidate render. `referenceImageFile` (main target
 // only) switches the POST to multipart so the design reference uploads with
-// the fields. Returns { jobId, mode, target, anchorId }.
+// the fields. `initImageCandidate` re-processes one turnaround candidate with
+// a correctionPrompt. Returns { jobId, mode, target, anchorId }.
 export const generateSpriteReference = (id, { referenceImageFile, ...fields }, options = {}) => {
   let body;
   if (referenceImageFile) {

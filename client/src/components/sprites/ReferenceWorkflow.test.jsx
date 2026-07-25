@@ -27,6 +27,7 @@ vi.mock('./SpritePreview.jsx', () => ({
 
 import ReferenceWorkflow from './ReferenceWorkflow.jsx';
 import {
+  generateSpriteReference,
   unlockSpriteReferenceAnchor, unlockSpriteTurnaround,
 } from '../../services/apiSprites.js';
 
@@ -143,5 +144,21 @@ describe('ReferenceWorkflow workspace', () => {
       'example-pioneer',
       { silent: true },
     );
+  });
+
+  it('re-processes one turnaround attempt with its own correction note', async () => {
+    const user = userEvent.setup();
+    generateSpriteReference.mockClear();
+    renderWorkflow();
+    const turnaround = screen.getByRole('region', { name: 'Turnaround sheet' });
+    const note = within(turnaround).getByPlaceholderText(/Correction for this attempt/);
+    await user.type(note, 'add the missing sleeve pocket');
+    await user.click(within(turnaround).getByRole('button', { name: 'Re-process with note' }));
+    expect(generateSpriteReference).toHaveBeenCalledWith('example-pioneer', {
+      target: 'turnaround',
+      mode: 'codex',
+      initImageCandidate: 'reference/example-pioneer-turnaround-candidate-01.png',
+      correctionPrompt: 'add the missing sleeve pocket',
+    }, { silent: true });
   });
 });

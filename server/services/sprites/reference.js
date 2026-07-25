@@ -242,6 +242,21 @@ async function nextCandidateName(candidatesDir, anchorId) {
   return `${anchorId}-candidate-${String(max + 1).padStart(2, '0')}.png`;
 }
 
+async function requireTurnaroundCandidatePath(recordId, candidatePath) {
+  if (typeof candidatePath !== 'string' || !candidatePath.startsWith('reference/candidates/')) {
+    throw new ServerError('Turnaround seed must be a reference candidate', { status: 400, code: 'INVALID_CANDIDATE' });
+  }
+  const name = candidatePath.slice('reference/candidates/'.length);
+  if (!TURNAROUND_CANDIDATE_RE.test(name)) {
+    throw new ServerError('Turnaround seed must be a turnaround candidate', { status: 400, code: 'CANDIDATE_TARGET_MISMATCH' });
+  }
+  const abs = resolveSpriteAssetPath(recordId, candidatePath);
+  if (!await pathExists(abs)) {
+    throw new ServerError('Turnaround candidate file is missing on disk', { status: 404, code: 'CANDIDATE_NOT_FOUND' });
+  }
+  return abs;
+}
+
 function findAnchor(manifest, anchorId) {
   return manifest.anchors.find((a) => a.id === anchorId) || null;
 }
@@ -376,6 +391,7 @@ async function startReferenceGenerationImpl(recordId, body, upload = null) {
     // prompt, an uploaded image, a gallery pick, another sprite's reference —
     // or, on a legacy record, the locked main this backfill expands.
     if (!designPrompt && !upload && !body.initImageGalleryFile && !body.initImageSpriteId
+        && !body.initImageCandidate
         && !manifest.mainReference.locked) {
       throw new ServerError('Provide a design prompt and/or a reference image', { status: 400, code: 'DESIGN_INPUT_REQUIRED' });
     }
@@ -384,8 +400,15 @@ async function startReferenceGenerationImpl(recordId, body, upload = null) {
       name: record.name,
       designPrompt: designPrompt || manifest.designPrompt,
       chromaKey: genKey,
+      correctionPrompt: body.correctionPrompt,
     });
-    ({ initImagePath, designReferencePath } = await resolveSeedSource(recordId, body, upload));
+    correctionPrompt = typeof body.correctionPrompt === 'string' ? body.correctionPrompt.trim() : '';
+    if (body.initImageCandidate) {
+      initImagePath = await requireTurnaroundCandidatePath(recordId, body.initImageCandidate);
+      designReferencePath = body.initImageCandidate;
+    } else {
+      ({ initImagePath, designReferencePath } = await resolveSeedSource(recordId, body, upload));
+    }
     // Legacy backfill: no explicit seed, but a frozen main exists — expand the
     // one view we already have into the full sheet rather than inventing a new
     // character from text.

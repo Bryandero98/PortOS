@@ -1118,6 +1118,8 @@ export const spriteReferenceGenerateSchema = z.object({
   // seeds this one (the "fork"/derive-from case). Ignored for anchor targets.
   initImageGalleryFile: z.string().trim().max(300).optional(),
   initImageSpriteId: z.string().trim().max(200).optional(),
+  // Re-process one turnaround candidate as the i2i seed (turnaround target only).
+  initImageCandidate: z.string().trim().max(300).optional(),
 });
 
 // Fork a new character from an existing sprite's locked main reference: create
