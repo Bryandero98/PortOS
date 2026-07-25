@@ -16,6 +16,45 @@ import toast from '../ui/Toast';
 import apiCore from '../../services/apiCore';
 
 /**
+ * Where a resolved token came from, phrased for the user — keyed by the `source`
+ * `server/lib/hfToken.js` reports. Shared so every gated surface names the same
+ * command: three separate copies had drifted, and one still told users to run the
+ * deprecated `huggingface-cli login` while its neighbor said `hf auth login`.
+ */
+export const HF_SOURCE_LABEL = {
+  stored: 'stored in settings',
+  env: 'from the HF_TOKEN environment variable',
+  cli: 'from `hf auth login`',
+};
+
+/**
+ * The gated repos whose terms must be accepted, as deep links. Rendered wherever
+ * gated access is explained — including the token-present case, since a token alone
+ * doesn't grant access. `linkClassName` lets a caller match its surrounding box
+ * (warning banner vs. neutral confirmation) without forking the markup.
+ * @param {{models: {label: string, url: string}[], linkClassName?: string}} props
+ */
+export function GatedModelList({ models, linkClassName = 'underline text-white' }) {
+  if (!models?.length) return null;
+  return (
+    <ul className="mt-1.5 space-y-1">
+      {models.map((m) => (
+        <li key={m.url}>
+          <a
+            href={m.url}
+            target="_blank"
+            rel="noreferrer"
+            className={`inline-flex items-center gap-1 ${linkClassName}`}
+          >
+            <ExternalLink className="h-3 w-3" /> {m.label}
+          </a>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
  * @param {object} props
  * @param {string} [props.modelLabel] Single gated model's display name.
  * @param {string} [props.licenseUrl] That model's HF license page.
@@ -59,15 +98,7 @@ export default function HfTokenBanner({ modelLabel, licenseUrl, models, onSaved 
             This needs a free Hugging Face account. Accept the terms for each gated model below (signed in to
             Hugging Face), then create a read token at {tokenLink} and paste it here.
           </div>
-          <ul className="mt-1.5 space-y-1">
-            {models.map((m) => (
-              <li key={m.url}>
-                <a href={m.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 underline text-white">
-                  <ExternalLink className="h-3 w-3" /> {m.label}
-                </a>
-              </li>
-            ))}
-          </ul>
+          <GatedModelList models={models} />
         </div>
       ) : (
         <div>

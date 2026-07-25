@@ -40,6 +40,10 @@ const activeRenders = new Map();
  * A runner takes `{ imagePath, outputPath, onProgress, env }` and returns a
  * `{ promise, kill }` pair — `promise` resolves `{ assetPath }`; `kill` SIGTERMs the
  * render so a mid-flight delete can terminate it (see `runTrellis2Generate`).
+ * `env` is a LOCAL-lane concern (the child-process environment, carrying the HF
+ * token); a future hosted-API runner should ignore it, and when one lands this is
+ * the seam to generalize into a per-runner credential declaration rather than a
+ * spawn-shaped bag every target receives.
  */
 const TARGET_RUNNERS = {
   trellis2: { isInstalled: isTrellis2Installed, run: runTrellis2Generate },

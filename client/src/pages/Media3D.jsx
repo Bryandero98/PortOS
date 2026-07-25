@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Boxes, CheckCircle2, Download, AlertTriangle, Loader2, ExternalLink, ImagePlus, Sparkles, KeyRound } from 'lucide-react';
-import { getImageTo3dTargets, createImageTo3dModel, getImageTo3dModel, listImageTo3dModels, getHfTokenStatus } from '../services/api';
+import { getImageTo3dTargets, createImageTo3dModel, getImageTo3dModel, listImageTo3dModels } from '../services/api';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
 import useMounted from '../hooks/useMounted';
 import { nameFromImageFilename, timeAgo } from '../utils/formatters';
 import RuntimeInstallModal from '../components/install/RuntimeInstallModal';
 import GalleryImagePicker from '../components/imageGen/GalleryImagePicker';
 import GlbViewer from '../components/media/GlbViewer';
-import HfTokenBanner from '../components/imageGen/HfTokenBanner';
+import HfTokenBanner, { GatedModelList, HF_SOURCE_LABEL } from '../components/imageGen/HfTokenBanner';
+import { useHfTokenStatus } from '../hooks/useHfTokenStatus';
 import MediaImage from '../components/MediaImage';
 import { imageTo3dStatusMeta } from '../components/media/imageTo3dStatus';
 
@@ -24,15 +25,6 @@ const HF_GATED_MODELS = {
     { label: 'facebook/dinov3-vitl16-pretrain-lvd1689m', url: 'https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m' },
     { label: 'briaai/RMBG-2.0', url: 'https://huggingface.co/briaai/RMBG-2.0' },
   ],
-};
-
-// How the resolved token reached us, for the "already configured" line. PortOS
-// injects whichever one it found into the render's environment, so all three are
-// equally good — naming the source just tells the user where to change it.
-const HF_SOURCE_LABEL = {
-  stored: 'saved in PortOS',
-  env: 'from the HF_TOKEN environment variable',
-  cli: 'from huggingface-cli login',
 };
 
 // Prerequisite notice for a target that needs gated Hugging Face access. Driven by
@@ -62,15 +54,7 @@ function HfAccessNotice({ models, tokenPresent, tokenSource, onSaved }) {
         Accept the terms for these gated models on your Hugging Face account if you haven’t — a token alone
         doesn’t grant access:
       </p>
-      <ul className="mt-1.5 space-y-1">
-        {models.map((m) => (
-          <li key={m.url}>
-            <a href={m.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-port-accent hover:underline">
-              <ExternalLink className="h-3 w-3" /> {m.label}
-            </a>
-          </li>
-        ))}
-      </ul>
+      <GatedModelList models={models} linkClassName="text-port-accent hover:underline" />
     </div>
   );
 }
@@ -191,10 +175,9 @@ export default function Media3D() {
   // Existing image-to-3D records (newest-first) so the page doubles as a library:
   // each links to its `/media/3d/:id` detail view.
   const [records, setRecords] = useState([]);
-  // Central HF-token status (stored / env / cli), for the gated-model notice.
-  // `null` = not fetched yet — distinct from `false` (fetched, genuinely absent), so
-  // a slow status call can't flash the "add a token" banner at a user who has one.
-  const [hfToken, setHfToken] = useState({ present: null, source: null });
+  // Central HF-token status (stored / env / cli) for the gated-model notice. `present`
+  // is tri-state — see useHfTokenStatus; `null` means unknown, not absent.
+  const { present: hfTokenPresent, source: hfTokenSource, refresh: refreshHfToken } = useHfTokenStatus();
   const mountedRef = useMounted(); // gate setState after the create/poll awaits
 
   const load = useCallback(() => {
@@ -220,20 +203,8 @@ export default function Media3D() {
       : [record, ...prev]));
   }, [mountedRef]);
 
-  // Read-only presence check against the shared store — no LLM/provider call, so it
-  // is safe to run on mount. A failure leaves `present: null`, which renders nothing
-  // rather than nagging on a transient blip.
-  const loadHfToken = useCallback(() => {
-    getHfTokenStatus()
-      .then((data) => {
-        if (mountedRef.current) setHfToken({ present: !!data?.hfTokenPresent, source: data?.source || null });
-      })
-      .catch(() => { /* leave unknown — the notice stays hidden rather than lying */ });
-  }, [mountedRef]);
-
   useEffect(() => { load(); }, [load]);
   useEffect(() => { loadRecords(); }, [loadRecords]);
-  useEffect(() => { loadHfToken(); }, [loadHfToken]);
 
   const selectedImage = useMemo(
     () => (imageFromRoute
@@ -396,9 +367,9 @@ export default function Media3D() {
           {gatedHfModels && (
             <HfAccessNotice
               models={gatedHfModels}
-              tokenPresent={hfToken.present}
-              tokenSource={hfToken.source}
-              onSaved={loadHfToken}
+              tokenPresent={hfTokenPresent}
+              tokenSource={hfTokenSource}
+              onSaved={refreshHfToken}
             />
           )}
 
