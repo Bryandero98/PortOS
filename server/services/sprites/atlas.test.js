@@ -43,7 +43,9 @@ const records = await import('./records.js');
 const { lockReference, loadManifest } = await import('./reference.js');
 const { compileAtlas, getAtlasState, ATLAS_COLUMNS, DEFAULT_ATLAS_GEOMETRY } = await import('./atlas.js');
 const { SPRITE_DIRECTIONS } = await import('./prompts.js');
-const { WALK_PHASES, walkPhaseLabels } = await import('./walkPostprocess.js');
+const { WALK_PHASES, walkPhaseLabels, WALK_FPS } = await import('./walkPostprocess.js');
+const { buildAtlasGrid, compiledGridUpToDate } = await import('./atlasGrid.js');
+const { getAnimationTrack } = await import('./animationTracks.js');
 
 let seq = 0;
 const newId = () => `atlas-char-${++seq}`;
@@ -233,6 +235,97 @@ describe('compileAtlas', () => {
     expect(again.version).toBe(first.version + 1);
     expect(again.geometry.columns).toEqual(['idle', ...WALK_PHASES]);
     expect(again.geometry.widthPx).toBe(DEFAULT_ATLAS_GEOMETRY.cellSize * 9);
+  });
+
+  it('records each track\'s column span in the compiled geometry (#3016)', async () => {
+    const id = newId();
+    await lockAllAnchors(id);
+    await buildFinalizedWalkSet(id, { frameCount: 12, fps: 8 });
+    const result = await compileAtlas(id);
+
+    const manifest = JSON.parse(await readFile(join(TEST_ROOT, 'sprites', id, result.manifestPath), 'utf8'));
+    expect(manifest.geometry.tracks).toEqual({
+      idle: { start: 0, count: 1 },
+      walk: { start: 1, count: 12 },
+    });
+    // The descriptor, the column list and the emitted PNG width all describe
+    // the same grid — a consumer resolving a track by span lands on the pixels
+    // the width accounts for.
+    const spanned = Object.values(manifest.geometry.tracks).reduce((n, s) => n + s.count, 0);
+    expect(spanned).toBe(manifest.geometry.columns.length);
+    expect(manifest.geometry.widthPx).toBe(DEFAULT_ATLAS_GEOMETRY.cellSize * spanned);
+    // The pointer carries the same geometry, so the publish path sees it too.
+    expect(result.geometry.tracks).toEqual(manifest.geometry.tracks);
+  });
+
+  it('recompiles a set whose pointer describes a DIFFERENT track set over the same columns', async () => {
+    const id = await finalizedCharacter();
+    const first = await compileAtlas(id);
+
+    // #2986's lesson one level up: a grid-shape change can leave every cell
+    // metric identical, and a TRACK-SET change can leave even the column list
+    // identical. Here the pointer keeps its exact column names and count but
+    // re-partitions them into three tracks — a different grid that must
+    // recompile. Only the atlas hash is falsified, so if the cheap pre-pixel
+    // check failed to notice the track change it would return the stale pointer
+    // untouched instead of writing a new version.
+    const pointerAbs = join(TEST_ROOT, 'sprites', id, 'runtime/current.json');
+    const pointer = JSON.parse(await readFile(pointerAbs, 'utf8'));
+    expect(pointer.geometry.tracks).toEqual({ idle: { start: 0, count: 1 }, walk: { start: 1, count: 8 } });
+    pointer.atlasSha256 = 'f'.repeat(64);
+    pointer.geometry = {
+      ...pointer.geometry,
+      tracks: {
+        idle: { start: 0, count: 1 },
+        walk: { start: 1, count: 4 },
+        scanner: { start: 5, count: 4 },
+      },
+    };
+    await writeFile(pointerAbs, JSON.stringify(pointer));
+
+    const again = await compileAtlas(id);
+    expect(again.created).toBe(true);
+    expect(again.version).toBe(first.version + 1);
+    expect(again.geometry.columns).toEqual(['idle', ...WALK_PHASES]);
+    expect(again.geometry.tracks).toEqual({ idle: { start: 0, count: 1 }, walk: { start: 1, count: 8 } });
+  });
+
+  it('stays idempotent for a legacy pointer written before the tracks descriptor existed', async () => {
+    const id = await finalizedCharacter();
+    const first = await compileAtlas(id);
+
+    // Every atlas compiled before #3016 has no `geometry.tracks`. It must still
+    // read as up to date, or upgrading an install re-runs the whole pixel
+    // pipeline on every compile of every existing character, forever (the
+    // pointer is never rewritten on the identical-bytes path, so it would never
+    // gain the field and never stop).
+    const pointerAbs = join(TEST_ROOT, 'sprites', id, 'runtime/current.json');
+    const pointer = JSON.parse(await readFile(pointerAbs, 'utf8'));
+    delete pointer.geometry.tracks;
+    await writeFile(pointerAbs, JSON.stringify(pointer));
+
+    // Assert the PRE-PIXEL predicate against the real on-disk geometry, not just
+    // the compile's return value: `created: false` also holds via the
+    // post-encode sha compare, so a test that only checked that would pass even
+    // with the legacy fallback deleted — i.e. while the pixel pipeline ran in
+    // full on every compile, which is the exact regression this guards.
+    const grid = buildAtlasGrid([{ id: 'walk', frameCount: WALK_PHASES.length }]);
+    expect(compiledGridUpToDate(pointer.geometry, { ...DEFAULT_ATLAS_GEOMETRY, ...grid })).toBe(true);
+
+    const again = await compileAtlas(id);
+    expect(again.created).toBe(false);
+    expect(again.version).toBe(first.version);
+  });
+
+  it('compiles a pre-fps run manifest at the legacy extraction rate, not the track default', async () => {
+    // Older run manifests carry no `frameRate` at all. The fallback must stay
+    // the rate their frames were extracted at (12), NOT the walk track's
+    // authoring default (10) — otherwise upgrading silently re-stamps every
+    // newly-compiled legacy set's geometry and its published previewFps.
+    const id = await finalizedCharacter();
+    const result = await compileAtlas(id);
+    expect(result.geometry.walkFps).toBe(WALK_FPS);
+    expect(WALK_FPS).not.toBe(getAnimationTrack('walk').defaultFps);
   });
 
   it('refuses to compile a set whose directions disagree on frame count', async () => {
