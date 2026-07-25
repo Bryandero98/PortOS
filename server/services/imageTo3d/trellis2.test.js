@@ -5,6 +5,7 @@ import {
   trellis2Root,
   trellis2VenvPython,
   trellis2GenerateScript,
+  trellis2GenerateRunnerScript,
   isTrellis2Installed,
   buildInstallSteps,
   trellis2OutputStem,
@@ -22,12 +23,14 @@ import {
   TRELLIS2_METAL_TOOLCHAIN_HINT,
   TRELLIS2_REQUIRES_XCODE_HINT,
   TRELLIS2_DEFAULT_TEXTURE_SIZE,
+  TRELLIS2_HIGH_QUALITY_TEXTURE_SIZE,
   TRELLIS2_TEXTURE_SIZES,
   TRELLIS2_PIPELINE_TYPES,
   TRELLIS2_BASELINE_PIPELINE_TYPE,
   TRELLIS2_HIGH_QUALITY_PIPELINE_TYPE,
   TRELLIS2_HIGH_QUALITY_MIN_MEMORY_GB,
   selectTrellis2PipelineType,
+  selectTrellis2TextureSize,
 } from './trellis2.js';
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -39,6 +42,7 @@ describe('trellis2 path resolution', () => {
     expect(trellis2Root(BASE)).toBe('/tmp/portos-test-home/trellis2');
     expect(trellis2VenvPython(BASE)).toMatch(/trellis2\/\.venv\/(bin\/python3|Scripts\/python\.exe)$/);
     expect(trellis2GenerateScript(BASE)).toBe('/tmp/portos-test-home/trellis2/generate.py');
+    expect(trellis2GenerateRunnerScript()).toMatch(/trellis2GenerateRunner\.py$/);
   });
 });
 
@@ -142,7 +146,7 @@ describe('buildGenerateArgs', () => {
     expect(args.slice(0, 4)).toEqual([trellis2GenerateScript(BASE), 'in.png', '--output', '/out/model']);
   });
 
-  it('defaults to the largest atlas the port offers (texel budget per triangle is the binding constraint)', () => {
+  it('defaults direct command building to the proven 2K atlas', () => {
     expect(TRELLIS2_DEFAULT_TEXTURE_SIZE).toBe(2048);
     expect(TRELLIS2_TEXTURE_SIZES).toContain(TRELLIS2_DEFAULT_TEXTURE_SIZE);
   });
@@ -156,8 +160,17 @@ describe('buildGenerateArgs', () => {
     ]);
   });
 
-  it('rejects a texture size outside the port\'s argparse choices instead of letting the render abort', () => {
-    expect(() => buildGenerateArgs({ imagePath: 'in.png', base: BASE, textureSize: 4096 }))
+  it('uses the compatibility runner for the underlying exporter\'s 4K atlas size', () => {
+    const { args } = buildGenerateArgs({ imagePath: 'in.png', base: BASE, textureSize: 4096 });
+    expect(args).toEqual([
+      trellis2GenerateRunnerScript(), trellis2GenerateScript(BASE), 'in.png',
+      '--pipeline-type', TRELLIS2_BASELINE_PIPELINE_TYPE,
+      '--texture-size', '4096',
+    ]);
+  });
+
+  it('rejects a texture size outside the supported baker sizes instead of letting the render abort', () => {
+    expect(() => buildGenerateArgs({ imagePath: 'in.png', base: BASE, textureSize: 8192 }))
       .toThrow(/textureSize must be one of/);
   });
 
@@ -186,6 +199,18 @@ describe('selectTrellis2PipelineType', () => {
     expect(selectTrellis2PipelineType(TRELLIS2_HIGH_QUALITY_MIN_MEMORY_GB))
       .toBe(TRELLIS2_HIGH_QUALITY_PIPELINE_TYPE);
     expect(TRELLIS2_PIPELINE_TYPES).toContain(TRELLIS2_HIGH_QUALITY_PIPELINE_TYPE);
+  });
+});
+
+describe('selectTrellis2TextureSize', () => {
+  it('keeps supported 24 GB hosts on the proven 2K atlas', () => {
+    expect(selectTrellis2TextureSize(24)).toBe(TRELLIS2_DEFAULT_TEXTURE_SIZE);
+  });
+
+  it('uses a 4K atlas when the host has conservative memory headroom', () => {
+    expect(selectTrellis2TextureSize(TRELLIS2_HIGH_QUALITY_MIN_MEMORY_GB))
+      .toBe(TRELLIS2_HIGH_QUALITY_TEXTURE_SIZE);
+    expect(TRELLIS2_TEXTURE_SIZES).toContain(TRELLIS2_HIGH_QUALITY_TEXTURE_SIZE);
   });
 });
 
@@ -422,7 +447,7 @@ describe('runTrellis2Generate', () => {
     expect(frames.map((f) => f.percent)).toEqual([10, 30, 50, 92]);
   });
 
-  it('selects the 1024-cascade texture model on a high-memory host', async () => {
+  it('selects the high-quality pipeline and 4K atlas on a high-memory host', async () => {
     const child = makeChild();
     const spawnImpl = vi.fn(() => child);
     const { promise } = runTrellis2Generate({
@@ -434,7 +459,13 @@ describe('runTrellis2Generate', () => {
       spawnImpl,
       postprocessGlb: vi.fn(async () => {}),
     });
-    expect(spawnImpl.mock.calls[0][1]).toContain(TRELLIS2_HIGH_QUALITY_PIPELINE_TYPE);
+    const args = spawnImpl.mock.calls[0][1];
+    expect(args).toContain(TRELLIS2_HIGH_QUALITY_PIPELINE_TYPE);
+    expect(args).toContain(String(TRELLIS2_HIGH_QUALITY_TEXTURE_SIZE));
+    expect(args.slice(0, 2)).toEqual([
+      trellis2GenerateRunnerScript(),
+      trellis2GenerateScript(BASE),
+    ]);
     child.emit('close', 0);
     await expect(promise).resolves.toEqual({ assetPath: '/out/a.glb' });
   });

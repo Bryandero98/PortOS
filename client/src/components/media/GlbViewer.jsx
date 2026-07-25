@@ -1,7 +1,15 @@
-import { Suspense, useEffect, useMemo } from 'react';
+import { Suspense, useEffect, useId, useMemo, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { Bounds, OrbitControls, useGLTF } from '@react-three/drei';
+import {
+  Bounds,
+  Environment,
+  Lightformer,
+  OrbitControls,
+  useGLTF,
+} from '@react-three/drei';
 import { Download, Rotate3d } from 'lucide-react';
+
+const DEFAULT_BACKGROUND = '#050505';
 
 // Reusable viewer for a generated `.glb` mesh: drei `useGLTF` loads the model,
 // `Bounds fit` frames it regardless of the source's scale, `OrbitControls` lets
@@ -75,7 +83,10 @@ export default function GlbViewer({
   downloadName,
   className = '',
   forceOpaque = false,
+  initialBackground = DEFAULT_BACKGROUND,
 }) {
+  const backgroundInputId = useId();
+  const [background, setBackground] = useState(initialBackground);
   if (!src) return null;
   const href = downloadHref || src;
   // With an explicit download endpoint the server's Content-Disposition wins, so
@@ -83,14 +94,52 @@ export default function GlbViewer({
   const download = downloadHref ? '' : (downloadName || filenameFromSrc(src));
   return (
     <div className={`overflow-hidden rounded-xl border border-port-border bg-port-bg ${className}`}>
-      <div className="relative aspect-square w-full">
-        {/* No environment/HDR preset here on purpose — those fetch from a CDN and
-            would fail on an offline / air-gapped install. Two plain lights are
-            enough to read an untextured or PBR mesh. */}
+      <div
+        data-testid="glb-preview-surface"
+        className="relative aspect-square w-full"
+        style={{ backgroundColor: background }}
+      >
+        <div className="absolute right-2 top-2 z-10 flex items-center gap-2 rounded-lg border border-white/20 bg-black/70 px-2 py-1.5 text-xs text-white shadow-lg backdrop-blur-sm">
+          <label htmlFor={backgroundInputId}>Background</label>
+          <input
+            id={backgroundInputId}
+            type="color"
+            value={background}
+            onChange={(event) => setBackground(event.target.value)}
+            aria-label="Mesh preview background"
+            className="h-7 w-9 cursor-pointer rounded border border-white/30 bg-transparent p-0.5"
+          />
+        </div>
         <Canvas camera={{ position: [0, 0, 3], fov: 45 }} dpr={[1, 2]}>
+          <color attach="background" args={[background]} />
           <ambientLight intensity={0.9} />
           <directionalLight position={[4, 6, 5]} intensity={1.1} />
           <directionalLight position={[-4, -2, -5]} intensity={0.4} />
+          {/* A procedural environment keeps metallic PBR textures readable without
+              downloading an HDR preset — PortOS installs can be fully offline. */}
+          <Environment resolution={128}>
+            <Lightformer
+              form="rect"
+              intensity={3}
+              position={[0, 4, 4]}
+              rotation-x={Math.PI / 2}
+              scale={[5, 5, 1]}
+            />
+            <Lightformer
+              form="rect"
+              intensity={1.5}
+              position={[-4, 1, 2]}
+              rotation-y={Math.PI / 2}
+              scale={[3, 5, 1]}
+            />
+            <Lightformer
+              form="rect"
+              intensity={1}
+              position={[4, -1, -2]}
+              rotation-y={-Math.PI / 2}
+              scale={[3, 5, 1]}
+            />
+          </Environment>
           <Suspense fallback={null}>
             <Bounds fit clip observe margin={1.2}>
               <GlbModel src={src} forceOpaque={forceOpaque} />
