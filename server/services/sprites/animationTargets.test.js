@@ -5,7 +5,7 @@
  * walk.test.js; this file pins the rules those depend on.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   WALK_TRACK, resolveAnimationTarget, withTrackTarget, targetDrift, describeTargetSource,
 } from './animationTargets.js';
@@ -90,6 +90,31 @@ describe('resolveAnimationTarget precedence', () => {
       track: WALK_TRACK,
       runtimeContract: { [row.contractFrameCountField]: 16, [row.contractFpsField]: 24 },
     })).toMatchObject({ frameCount: 16, fps: 24, source: 'app' });
+  });
+
+  it('ignores the contract\'s fps entirely for a track that declares no fps field', async () => {
+    // A registry row may set `contractFpsField: null` — a track whose speed an
+    // app has no say in. The app rung must then fall through to
+    // set/derived/default and report fpsLocked:false rather than reading some
+    // other track's contract key. Only one track exists today, so stand up a
+    // null-fps row via a scoped module mock to keep that branch covered.
+    vi.resetModules();
+    const real = await vi.importActual('./animationTracks.js');
+    const nullFpsRow = { ...real.ANIMATION_TRACKS.walk, contractFpsField: null };
+    vi.doMock('./animationTracks.js', () => ({
+      ...real,
+      ANIMATION_TRACKS: { walk: nullFpsRow },
+      getAnimationTrack: (id) => {
+        if (id === undefined || id === null || id === real.WALK_TRACK) return nullFpsRow;
+        throw new Error(`Unknown animation track '${String(id)}'`);
+      },
+    }));
+    const { resolveAnimationTarget: resolveWithNullFps } = await import('./animationTargets.js');
+    expect(resolveWithNullFps({
+      runtimeContract: { walkFrameCount: 16, walkFps: 24 },
+    })).toMatchObject({ frameCount: 16, fps: 10, source: 'app', fpsLocked: false });
+    vi.doUnmock('./animationTracks.js');
+    vi.resetModules();
   });
 
   it('rejects an unrecognized track instead of resolving it against walk\'s range', () => {

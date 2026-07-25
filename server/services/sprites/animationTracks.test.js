@@ -56,7 +56,10 @@ describe('the registry rows', () => {
       expect(typeof row.label).toBe('string');
       expect(typeof row.directional).toBe('boolean');
       expect(typeof row.contractFrameCountField).toBe('string');
-      expect(typeof row.contractFpsField).toBe('string');
+      // `null` is legal here — a track whose speed an app has no say in — so
+      // this must stay as permissive as the module-load guard, or the first row
+      // that uses the null form goes red while booting perfectly fine.
+      expect(row.contractFpsField === null || typeof row.contractFpsField === 'string').toBe(true);
       for (const field of ['minFrameCount', 'maxFrameCount', 'defaultFrameCount', 'minFps', 'maxFps', 'defaultFps']) {
         expect(Number.isInteger(row[field]), `${id}.${field} must be an integer`).toBe(true);
       }
@@ -67,6 +70,17 @@ describe('the registry rows', () => {
       expect(row.defaultFps).toBeGreaterThanOrEqual(row.minFps);
       expect(row.defaultFps).toBeLessThanOrEqual(row.maxFps);
     }
+  });
+
+  it('never lets two tracks claim the same runtimeContract field', () => {
+    // A second row copy-pasted from walk's would make resolveAnimationTarget
+    // read the WALK's contract value for that track and report it as locked.
+    // The module-load guard rejects it; this pins the property as a named case.
+    const claimed = ANIMATION_TRACK_IDS.flatMap((id) => [
+      ANIMATION_TRACKS[id].contractFrameCountField,
+      ANIMATION_TRACKS[id].contractFpsField,
+    ]).filter((f) => f !== null);
+    expect(new Set(claimed).size).toBe(claimed.length);
   });
 
   it('is frozen so a caller cannot mutate the shared bounds', () => {
@@ -219,11 +233,16 @@ describe('client mirror parity', () => {
   });
 
   it('seeds the fps picker within the walk row\'s range', () => {
-    // The list is even-stepped, so it need not END on the max — but it must
-    // start at the floor and never offer a value the server would reject.
+    // The list is even-stepped, so it need not END exactly on the max — but it
+    // must start at the floor, never offer a value the server would reject, AND
+    // stay within one step of the ceiling. Without that upper pin the guard
+    // passes in precisely the scenario it exists for: raise the row's maxFps and
+    // the client's hard-coded 24 still satisfies "≤ max" while the picker
+    // silently stops offering speeds the server now accepts.
     const options = clientWalkFpsOptionsFor(walk.defaultFps);
     expect(options[0]).toBe(walk.minFps);
     expect(Math.max(...options)).toBeLessThanOrEqual(walk.maxFps);
+    expect(walk.maxFps - Math.max(...options)).toBeLessThan(2);
   });
 
   it('keeps the publish form\'s hard-coded frame-count bounds in step', () => {

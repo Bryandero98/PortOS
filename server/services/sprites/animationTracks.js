@@ -76,6 +76,7 @@ export const ANIMATION_TRACK_IDS = Object.freeze(Object.keys(ANIMATION_TRACKS));
 // surface much later as `NaN` out of a Math.min, or as `z.number().min(
 // undefined)` throwing at the first sprite render. A bad row should block boot
 // with a message naming the field, not corrupt a render hours later.
+const claimedContractFields = new Map();
 for (const id of ANIMATION_TRACK_IDS) {
   const row = ANIMATION_TRACKS[id];
   if (row.id !== id) throw new Error(`animationTracks: row '${id}' declares mismatched id '${row.id}'`);
@@ -97,6 +98,20 @@ for (const id of ANIMATION_TRACK_IDS) {
     if (!(row[min] <= row[def] && row[def] <= row[max])) {
       throw new Error(`animationTracks: track '${id}' needs ${min} <= ${def} <= ${max}`);
     }
+  }
+  // Two tracks must not claim the same runtimeContract field. The anticipated
+  // failure is a second row copy-pasted from walk's: `resolveAnimationTarget`
+  // would then read the WALK's `walkFrameCount` for the scanner and, whenever
+  // that value happens to land inside the scanner's range, return it with
+  // `frameCountLocked: true` — silently pinning one track to another's contract
+  // and throwing a lock error citing a binding that never mentioned it.
+  for (const field of [row.contractFrameCountField, row.contractFpsField]) {
+    if (field === null) continue;
+    const owner = claimedContractFields.get(field);
+    if (owner) {
+      throw new Error(`animationTracks: contract field '${field}' is claimed by both '${owner}' and '${id}'`);
+    }
+    claimedContractFields.set(field, id);
   }
 }
 
