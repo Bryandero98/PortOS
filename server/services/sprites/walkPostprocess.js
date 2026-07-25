@@ -76,6 +76,10 @@ const KEY_REPAIR_RADIUS = 8;         // despill neighbor-search chebyshev radius
 const OPAQUE_EDGE_ALPHA = 245;       // alpha at/above this counts as clean/opaque
 const BBOX_ALPHA_THRESHOLD = 24;     // alpha_bbox visibility threshold
 const ROOT_ALPHA_THRESHOLD = 48;     // root_x band pixel threshold
+// How many opaque pixels a row needs to count as the character's sole rather
+// than a stray speck (#3021). A real sole is tens of pixels wide at these
+// scales; a despill survivor or shadow remnant is one or two.
+export const ROBUST_BASELINE_MIN_PIXELS = 3;
 const SIGNATURE_SIZE = 48;
 const SIGNATURE_BACKGROUND = { r: 48, g: 52, b: 54 };
 const MIN_CYCLE_MOTION = 0.75;
@@ -375,6 +379,31 @@ export function selectCycleIndices(signatures, frameCount = WALK_FRAME_COUNT) {
   };
 }
 
+/**
+ * The frame's baseline: the lowest row carrying at least `minRun` opaque pixels,
+ * returned as a height (exclusive bottom) so it drops into the same arithmetic
+ * as `resized.height`.
+ *
+ * Using the raw bbox bottom made vertical registration hostage to a single
+ * pixel (#3021) — one surviving despill speck or a soft shadow below the feet
+ * extended the bbox, and pinning that to the baseline lifted the entire body by
+ * that much. Requiring a short RUN of opaque pixels ignores stragglers while
+ * still finding the real sole, which is many pixels wide. Falls back to the
+ * bbox bottom when no row qualifies (a very small or very sparse frame), so a
+ * legitimate thin sprite still registers rather than throwing.
+ */
+export function robustBottomRow(frame, threshold = BBOX_ALPHA_THRESHOLD, minRun = ROBUST_BASELINE_MIN_PIXELS) {
+  const { data, width, height } = frame;
+  for (let y = height - 1; y >= 0; y--) {
+    let count = 0;
+    for (let x = 0; x < width; x++) {
+      if (data[(y * width + x) * 4 + 3] > threshold && ++count >= minRun) return y + 1;
+    }
+  }
+  const bbox = alphaBbox(frame, threshold);
+  return bbox ? bbox.bottom : height;
+}
+
 /** Tight bbox of visible (alpha > threshold) pixels; exclusive right/bottom. */
 export function alphaBbox(frame, threshold = BBOX_ALPHA_THRESHOLD) {
   const { data, width, height } = frame;
@@ -471,6 +500,19 @@ export async function alignFrames(frames) {
   const maxWidth = Math.max(...bboxes.map((b) => b.right - b.left));
   const maxHeight = Math.max(...bboxes.map((b) => b.bottom - b.top));
   const scale = Math.min(1, (WALK_CELL_SIZE * 0.78) / maxWidth, (WALK_CELL_SIZE * 0.82) / maxHeight);
+
+  // ONE hip anchor for the whole direction (#3021). Anchoring x per frame made
+  // the body slide: `rootX` is the median of the hip/leg band, so it migrates as
+  // the legs scissor, and being a float median of an even-sized set it lands on
+  // .5 often enough that banker's rounding alternates the result by 1px on
+  // consecutive frames — a toggle locked to frame parity. A walk cycle rendered
+  // in place has a constant hip x by definition, so the median ACROSS frames is
+  // both the physically correct model and immune to per-frame silhouette noise.
+  // Per-frame values stay in the manifest (`hipOffsets`) for diagnostics.
+  const sourceRootXs = frames.map((f, i) => (rootX(f, bboxes[i]) - bboxes[i].left) * scale);
+  const sharedRootX = median(sourceRootXs);
+  const dx = pyRound(WALK_PIVOT[0] - sharedRootX);
+
   const aligned = [];
   const translations = [];
   for (let i = 0; i < frames.length; i++) {
@@ -478,9 +520,11 @@ export async function alignFrames(frames) {
     const cropped = cropFrame(frames[i], bbox);
     const size = [Math.max(1, pyRound(cropped.width * scale)), Math.max(1, pyRound(cropped.height * scale))];
     const resized = await premultipliedResize(cropped, size[0], size[1]);
-    const sourceRootX = (rootX(frames[i], bbox) - bbox.left) * scale;
-    const dx = pyRound(WALK_PIVOT[0] - sourceRootX);
-    const dy = pyRound(WALK_PIVOT[1] - resized.height);
+    // Feet land on the baseline by the frame's ROBUST bottom, not its bbox
+    // bottom. `alphaBbox` extends to a single surviving despill speck or a
+    // dropped shadow, and pinning that to y=352 lifted the whole body by
+    // however far the speck sat below the feet.
+    const dy = pyRound(WALK_PIVOT[1] - robustBottomRow(resized));
     const canvas = blankFrame(WALK_CELL_SIZE, WALK_CELL_SIZE);
     compositeOnto(canvas, resized, dx, dy);
     aligned.push(canvas);
@@ -492,7 +536,14 @@ export async function alignFrames(frames) {
       cellSize: WALK_CELL_SIZE,
       fixedScale: pyRoundTo(scale, 8),
       targetPivot: WALK_PIVOT,
-      operation: 'one-fixed-scale-plus-per-frame-translation',
+      // Renamed from 'one-fixed-scale-plus-per-frame-translation': x is now
+      // shared across the direction, so only y varies per frame. The shared x
+      // itself is not stored separately — it IS every entry of `translations`.
+      operation: 'one-fixed-scale-shared-hip-x-plus-per-frame-baseline-y',
+      // The per-frame hip measurements the shared anchor was taken from. Kept
+      // for diagnostics: their spread is the drift this alignment cancels, so a
+      // regression shows up as translations moving with them again.
+      hipOffsets: sourceRootXs.map((v) => pyRoundTo(v, 4)),
       translations,
     },
   };
