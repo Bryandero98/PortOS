@@ -9,6 +9,7 @@ all model loading, sampling, UV unwrapping, baking, and export remain upstream.
 import argparse
 import runpy
 import sys
+from pathlib import Path
 
 
 UPSTREAM_TEXTURE_SIZES = [512, 1024, 2048]
@@ -20,6 +21,12 @@ def main():
         raise RuntimeError("trellis2GenerateRunner.py requires the upstream generate.py path")
 
     generate_script = sys.argv[1]
+    generate_dir = str(Path(generate_script).resolve().parent)
+    if generate_dir not in sys.path:
+        # Direct `python generate.py` execution places the script directory first
+        # on sys.path. Preserve that contract when the adapter uses runpy so the
+        # upstream script can import its sibling packages.
+        sys.path.insert(0, generate_dir)
     original_add_argument = argparse.ArgumentParser.add_argument
 
     def add_argument(parser, *name_or_flags, **kwargs):
