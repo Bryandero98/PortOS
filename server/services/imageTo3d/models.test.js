@@ -32,6 +32,13 @@ vi.mock('./trellis2.js', () => ({
   })),
 }));
 
+// The render spawns with the central HF token in its env (#3032). Mock the resolver
+// so the suite doesn't pull in the real settings store (which needs PATHS.data, and
+// this suite mocks fileUtils down to `imageTo3d` alone).
+vi.mock('../../lib/hfToken.js', () => ({
+  hfTokenEnv: vi.fn(async () => ({ HF_TOKEN: 'hf_from_store', HUGGINGFACE_HUB_TOKEN: 'hf_from_store' })),
+}));
+
 vi.mock('./db.js', () => ({
   listModels: vi.fn(),
   getModel: vi.fn(),
@@ -126,6 +133,9 @@ describe('image-to-3D model orchestration', () => {
     expect(runTrellis2Generate).toHaveBeenCalledWith(expect.objectContaining({
       imagePath: '/mock/data/images/example.png',
       outputPath: expect.stringMatching(/image-to-3d\/image3d-example\/model\.glb$/),
+      // #3032: the resolved HF token (settings-stored included) rides into the child,
+      // merged over process.env — without it, gated DINOv3/RMBG-2.0 pulls 401.
+      env: expect.objectContaining({ HF_TOKEN: 'hf_from_store', HUGGINGFACE_HUB_TOKEN: 'hf_from_store' }),
     }));
     expect(current.assetPath).toBe('/data/image-to-3d/image3d-example/model.glb');
     expect(current.generationOperationId).toBeNull();

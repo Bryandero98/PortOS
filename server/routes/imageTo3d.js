@@ -20,6 +20,8 @@ import {
   getModelAsset,
 } from '../services/imageTo3d/models.js';
 import { createInstallLogger } from '../lib/installLogger.js';
+import { hfTokenEnv } from '../lib/hfToken.js';
+import { safeChildProcessEnv } from '../lib/processEnv.js';
 import { openSseStream } from '../lib/sseDownload.js';
 
 const router = Router();
@@ -99,7 +101,12 @@ router.get('/trellis2/install', asyncHandler(async (req, res) => {
   const emit = (event) => { installLog.onEvent(event); send(event); };
   installLog.start();
 
-  const { promise, kill } = installTrellis2({ onEvent: emit });
+  // Carry the stored HF token into the install too: setup.sh doesn't pull gated
+  // weights today, but a future prefetch step would, and one env source beats two.
+  const { promise, kill } = installTrellis2({
+    onEvent: emit,
+    env: safeChildProcessEnv(await hfTokenEnv()),
+  });
   trellis2InstallInFlight = promise;
   promise
     .then(() => installLog.success())

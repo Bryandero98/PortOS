@@ -11,11 +11,20 @@
  */
 
 import { useState } from 'react';
-import { Key, Loader2 } from 'lucide-react';
+import { ExternalLink, Key, Loader2 } from 'lucide-react';
 import toast from '../ui/Toast';
 import apiCore from '../../services/apiCore';
 
-export default function HfTokenBanner({ modelLabel, licenseUrl, onSaved }) {
+/**
+ * @param {object} props
+ * @param {string} [props.modelLabel] Single gated model's display name.
+ * @param {string} [props.licenseUrl] That model's HF license page.
+ * @param {{label: string, url: string}[]} [props.models] Several gated repos (the
+ *   3D page's TRELLIS.2 pulls two). Takes precedence over modelLabel/licenseUrl —
+ *   the terms must be accepted on EACH repo, so all of them are listed.
+ * @param {() => void} [props.onSaved] Re-check token status after a successful save.
+ */
+export default function HfTokenBanner({ modelLabel, licenseUrl, models, onSaved }) {
   const [token, setToken] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -34,20 +43,41 @@ export default function HfTokenBanner({ modelLabel, licenseUrl, onSaved }) {
   };
 
   const licenseLinkText = licenseUrl?.replace(/^https?:\/\//, '');
+  const multi = Array.isArray(models) && models.length > 0;
+
+  const tokenLink = (
+    <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noreferrer" className="underline text-white">
+      huggingface.co/settings/tokens
+    </a>
+  );
 
   return (
     <div className="rounded-lg border border-port-warning/40 bg-port-warning/10 px-3 py-3 text-xs text-port-warning space-y-2">
-      <div>
-        {modelLabel} is a gated model. Accept the license at{' '}
-        <a href={licenseUrl} target="_blank" rel="noreferrer" className="underline text-white">
-          {licenseLinkText}
-        </a>
-        , then create a read token at{' '}
-        <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noreferrer" className="underline text-white">
-          huggingface.co/settings/tokens
-        </a>{' '}
-        and paste it below.
-      </div>
+      {multi ? (
+        <div>
+          <div>
+            This needs a free Hugging Face account. Accept the terms for each gated model below (signed in to
+            Hugging Face), then create a read token at {tokenLink} and paste it here.
+          </div>
+          <ul className="mt-1.5 space-y-1">
+            {models.map((m) => (
+              <li key={m.url}>
+                <a href={m.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 underline text-white">
+                  <ExternalLink className="h-3 w-3" /> {m.label}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : (
+        <div>
+          {modelLabel} is a gated model. Accept the license at{' '}
+          <a href={licenseUrl} target="_blank" rel="noreferrer" className="underline text-white">
+            {licenseLinkText}
+          </a>
+          , then create a read token at {tokenLink} and paste it below.
+        </div>
+      )}
       <div className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center">
         <div className="flex items-center gap-1.5 flex-1 bg-port-bg border border-port-border rounded-lg px-2 py-1.5 focus-within:border-port-accent">
           <Key size={14} className="text-gray-400 flex-shrink-0" />
