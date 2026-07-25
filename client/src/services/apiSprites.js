@@ -113,9 +113,19 @@ export const generateSpriteWalk = (id, body, options = {}) => request(`/sprites/
   method: 'POST', body: JSON.stringify(body), ...options,
 });
 
+// Queue one user-requested scanner action. Its 2–8 frame, 2–12fps contract is
+// validated by the named scanner track on the server, independently of walk.
+export const generateSpriteScanner = (id, body, options = {}) => request(`/sprites/${encodeURIComponent(id)}/scanner/generate`, {
+  method: 'POST', body: JSON.stringify(body), ...options,
+});
+
 // Approve a packaged candidate run for its direction. Returns the updated
 // { runs, selection, walkSet } walk state.
 export const approveSpriteWalk = (id, body, options = {}) => request(`/sprites/${encodeURIComponent(id)}/walk/approve`, {
+  method: 'POST', body: JSON.stringify(body), ...options,
+});
+
+export const approveSpriteScanner = (id, body, options = {}) => request(`/sprites/${encodeURIComponent(id)}/scanner/approve`, {
   method: 'POST', body: JSON.stringify(body), ...options,
 });
 

@@ -111,6 +111,7 @@ export function buildAtlasLayout({
     // through `undefined` to re-trigger a default.
     tracks: deriveTracks(columns, walkFrameCount, geometry.tracks ?? null, rows ?? ATLAS_DEFAULT_ROWS),
     walkFrameCount,
+    ...(Number.isInteger(geometry.scannerFrameCount) ? { scannerFrameCount: geometry.scannerFrameCount } : {}),
     previewFps: Number.isFinite(geometry.walkFps) ? geometry.walkFps : null,
     previewFpsNote: PREVIEW_FPS_NOTE,
   };
@@ -131,7 +132,10 @@ export function runtimeContractMismatch(geometry, contract, appLabel = 'the boun
 
   const actualColumns = geometry.columns.length;
   const actualFrames = resolveWalkFrameCount(geometry);
-  const { walkFrameCount: expectedFrames, columnCount: expectedColumns, cellSize: expectedCellSize } = contract;
+  const {
+    walkFrameCount: expectedFrames, scannerFrameCount: expectedScannerFrames,
+    columnCount: expectedColumns, cellSize: expectedCellSize,
+  } = contract;
   const actualDesc = `Atlas has ${actualColumns} columns (${actualFrames} walk frames)`;
   const expectedDesc = Number.isInteger(expectedColumns)
     ? `${expectedColumns} (${expectedFrames} walk frames)`
@@ -147,6 +151,14 @@ export function runtimeContractMismatch(geometry, contract, appLabel = 'the boun
     return countMismatch(
       `The grid shape changed — update the app's expected column layout, or re-bind its runtime contract to ${actualColumns} columns before publishing.`,
     );
+  }
+  const actualScannerFrames = Number.isInteger(geometry.scannerFrameCount)
+    ? geometry.scannerFrameCount
+    : geometry.tracks?.scanner?.count ?? null;
+  if (Number.isInteger(expectedScannerFrames) && expectedScannerFrames !== actualScannerFrames) {
+    const actual = Number.isInteger(actualScannerFrames) ? actualScannerFrames : 'no';
+    return `Atlas has ${actual} scanner frame${actual === 1 ? '' : 's'} but ${appLabel} expects ${expectedScannerFrames}. `
+      + 'Approve a scanner set at that frame count, or update the app runtime contract before publishing.';
   }
   if (Number.isInteger(expectedCellSize) && expectedCellSize !== geometry.cellSize) {
     return `Atlas cells are ${geometry.cellSize}px but ${appLabel} expects ${expectedCellSize}px. `

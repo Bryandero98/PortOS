@@ -50,13 +50,14 @@ import {
   alphaBbox, robustBottomRow, rootX, rootBandForManifest, ROBUST_BASELINE_MIN_PIXELS, compositeOnto, sha256Buffer,
 } from './walkPostprocess.js';
 import { ATLAS_IDLE_COLUMN } from './walkBounds.js';
-import { WALK_TRACK, ANIMATION_TRACK_IDS } from './animationTracks.js';
+import { WALK_TRACK, SCANNER_TRACK, ANIMATION_TRACK_IDS } from './animationTracks.js';
 import {
   buildAtlasGrid, resolveTrackUniformity, compiledGridUpToDate, trackDirections,
 } from './atlasGrid.js';
 import {
   withWalkWriteTail, walkSetRelPath, importedWalkDirections, resolveChromaKey,
 } from './walk.js';
+import { scannerSetRelPath } from './scanner.js';
 import { verifyPackagedFrames } from './walkFrames.js';
 import { getRecord } from './records.js';
 
@@ -363,7 +364,27 @@ export async function validateForCompile(recordId) {
   // `trackDirections` is called ONCE per track and the result kept, so the
   // facings a track was collected against and the count it is later held to are
   // the same value rather than two derivations that could drift.
-  const trackDirs = { [WALK_TRACK]: trackDirections(WALK_TRACK, SPRITE_DIRECTIONS) };
+  const scannerSetRel = scannerSetRelPath(recordId);
+  const scannerSetBytes = await readFile(join(dir, scannerSetRel)).catch(() => null);
+  let scannerSet = null;
+  if (scannerSetBytes) {
+    try {
+      scannerSet = JSON.parse(scannerSetBytes);
+    } catch {
+      throw compileError('Scanner set manifest is unreadable');
+    }
+    if (scannerSet.kind !== 'finalized-eight-direction-scanner-set' || scannerSet.track !== SCANNER_TRACK
+      || scannerSet.status !== 'final' || scannerSet.characterId !== recordId
+      || JSON.stringify(scannerSet.directionOrder) !== JSON.stringify(SPRITE_DIRECTIONS)) {
+      throw compileError('Scanner set manifest is not a finalized directional scanner set');
+    }
+    await readVerified(scannerSet.selectionPath, scannerSet.selectionSha256, 'Scanner selection file');
+  }
+
+  const trackDirs = {
+    [WALK_TRACK]: trackDirections(WALK_TRACK, SPRITE_DIRECTIONS),
+    ...(scannerSet ? { [SCANNER_TRACK]: trackDirections(SCANNER_TRACK, SPRITE_DIRECTIONS) } : {}),
+  };
   const manifests = {};
   const trackRows = { [WALK_TRACK]: [] };
   for (const direction of trackDirs[WALK_TRACK]) {
@@ -388,6 +409,32 @@ export async function validateForCompile(recordId) {
     });
   }
 
+  if (scannerSet) {
+    manifests[SCANNER_TRACK] = {};
+    trackRows[SCANNER_TRACK] = [];
+    for (const direction of trackDirs[SCANNER_TRACK]) {
+      const entry = scannerSet.directions?.[direction];
+      if (!entry || entry.status !== 'approved') throw compileError(`Scanner direction ${direction} is not approved`);
+      const manifestBytes = await readVerified(entry.runManifest, entry.runManifestSha256, `Scanner run manifest for ${direction}`);
+      let manifest;
+      try {
+        manifest = JSON.parse(manifestBytes);
+      } catch {
+        manifest = null;
+      }
+      if (!manifest || manifest.track !== SCANNER_TRACK || manifest.direction !== direction) {
+        throw compileError(`Scanner run manifest for ${direction} is unreadable or mislabeled`);
+      }
+      manifests[SCANNER_TRACK][direction] = { entry, manifest };
+      trackRows[SCANNER_TRACK].push({
+        direction,
+        frameCount: (manifest.frames || []).length,
+        declaredFrameCount: manifest.frameCount,
+        fps: manifest.frameRate,
+      });
+    }
+  }
+
   // Registration order, so the compiled grid's span order is stable regardless
   // of the order the rows happened to be collected in.
   const tracks = ANIMATION_TRACK_IDS
@@ -400,6 +447,7 @@ export async function validateForCompile(recordId) {
       expectedRows: trackDirs[id].length,
     }));
   const walk = tracks.find((t) => t.id === WALK_TRACK);
+  const scanner = tracks.find((t) => t.id === SCANNER_TRACK);
 
   const runs = {};
   for (const direction of trackDirs[WALK_TRACK]) {
@@ -413,19 +461,33 @@ export async function validateForCompile(recordId) {
     runs[direction] = { runId: entry.runId, manifestPath: entry.runManifest, manifest, frameBytes };
   }
 
+  const scannerRuns = {};
+  if (scannerSet) {
+    for (const direction of trackDirs[SCANNER_TRACK]) {
+      const { entry, manifest } = manifests[SCANNER_TRACK][direction];
+      const { frameBytes } = await verifyPackagedFrames(recordId, manifest, { bytes: true, track: SCANNER_TRACK });
+      scannerRuns[direction] = { runId: entry.runId, manifestPath: entry.runManifest, manifest, frameBytes };
+    }
+  }
+
   return {
     walkSet,
     walkSetPath: walkSetRel,
     walkSetSha256: sha256Buffer(walkSetBytes),
+    scannerSet,
+    scannerSetPath: scannerSet ? scannerSetRel : null,
+    scannerSetSha256: scannerSetBytes ? sha256Buffer(scannerSetBytes) : null,
     referenceManifest,
     chromaKey,
     anchors,
     runs,
+    scannerRuns,
     tracks,
     // The walk view of `tracks`, kept because the published geometry names these
     // exact fields in the runtime contract (walkFrameCount / walkFps).
     walkFrameCount: walk?.frameCount ?? null,
     walkFps: walk?.fps ?? null,
+    scannerFrameCount: scanner?.frameCount ?? null,
   };
 }
 
@@ -521,6 +583,53 @@ async function compileDirectionRow(recordId, direction, validated, geometry) {
       sourcePath: frame.path,
       sourceSha256: frame.sha256,
     });
+  }
+
+  // Scanner is an independent short action: it gets its own named span and
+  // scale, while still sharing the directional row and baseline contract that
+  // keeps every animation grounded on the same atlas pivot.
+  const scannerRun = validated.scannerRuns?.[direction];
+  if (scannerRun) {
+    const scannerSources = [];
+    for (const bytes of scannerRun.frameBytes) {
+      scannerSources.push(await transparentSource(bytes, split, validated.chromaKey));
+    }
+    const scannerDims = scannerSources.map((source, index) => occupiedDimensions(
+      source, ALPHA_THRESHOLD, `${direction}-${scannerRun.manifest.frames[index].phase}`, true,
+    ));
+    const scannerScale = Math.min(
+      geometry.targetMaxHeight / Math.max(...scannerDims.map((dim) => dim.height)),
+      geometry.targetMaxWidth / Math.max(...scannerDims.map((dim) => dim.width)),
+    );
+    const scannerPivotX = Number(scannerRun.manifest.alignment?.targetPivot?.[0]);
+    const scannerAnchorX = Number.isFinite(scannerPivotX)
+      ? scannerPivotX
+      : (Number(scannerRun.manifest.alignment?.cellSize) || scannerSources[0].width) / 2;
+    const scannerScaled = [];
+    for (let i = 0; i < scannerSources.length; i++) {
+      scannerScaled.push(await scaleForCell(
+        scannerSources[i], scannerScale, `${direction}-${scannerRun.manifest.frames[i].phase}`,
+      ));
+    }
+    const scannerPasteX = sharedRowPasteX(
+      pyRound(geometry.pivot[0] - scannerAnchorX * scannerScale),
+      scannerScaled.map((item) => item.bounds), geometry,
+    );
+    for (let i = 0; i < scannerScaled.length; i++) {
+      const frame = scannerRun.manifest.frames[i];
+      const { scaled, bounds, baseline } = scannerScaled[i];
+      const normalized = placeCell(
+        scaled, bounds, baseline, scannerPasteX, `${direction}-${frame.phase}`, geometry, scannerScale,
+      );
+      cells.push({
+        column: frame.phase,
+        track: SCANNER_TRACK,
+        frameIndex: i,
+        ...normalized,
+        sourcePath: frame.path,
+        sourceSha256: frame.sha256,
+      });
+    }
   }
 
   return {
@@ -624,6 +733,7 @@ export async function compileAtlasInTail(recordId, { geometry: geometryOverride 
     current
     && currentAtlasOnDisk
     && current.walkSetSha256 === validated.walkSetSha256
+    && (current.scannerSetSha256 ?? null) === validated.scannerSetSha256
     && compiledGridUpToDate(current.geometry, { ...geometry, columns, tracks })
   ) {
     return { ...current, created: false };
@@ -683,7 +793,8 @@ export async function compileAtlasInTail(recordId, { geometry: geometryOverride 
     .toBuffer();
   const atlasSha256 = sha256Buffer(atlasBuffer);
 
-  if (current && currentAtlasOnDisk && current.walkSetSha256 === validated.walkSetSha256 && current.atlasSha256 === atlasSha256) {
+  if (current && currentAtlasOnDisk && current.walkSetSha256 === validated.walkSetSha256
+    && (current.scannerSetSha256 ?? null) === validated.scannerSetSha256 && current.atlasSha256 === atlasSha256) {
     return { ...current, created: false };
   }
 
@@ -724,6 +835,7 @@ export async function compileAtlasInTail(recordId, { geometry: geometryOverride 
       manifestPath: manifestRel,
       manifestSha256: sha256Buffer(survivingBuffer),
       walkSetSha256: validated.walkSetSha256,
+      ...(survivingManifest.scannerSetSha256 ? { scannerSetSha256: survivingManifest.scannerSetSha256 } : {}),
       geometry: survivingManifest.geometry,
       compiledAt: survivingManifest.createdAt,
     };
@@ -742,6 +854,10 @@ export async function compileAtlasInTail(recordId, { geometry: geometryOverride 
     compilerPath: 'server/services/sprites/atlas.js',
     walkSetPath: validated.walkSetPath,
     walkSetSha256: validated.walkSetSha256,
+    ...(validated.scannerSet ? {
+      scannerSetPath: validated.scannerSetPath,
+      scannerSetSha256: validated.scannerSetSha256,
+    } : {}),
     atlasPath: atlasRel,
     atlasSha256,
     geometry: {
@@ -763,6 +879,7 @@ export async function compileAtlasInTail(recordId, { geometry: geometryOverride 
       // walk row at the authored speed over the right number of columns.
       walkFrameCount: validated.walkFrameCount,
       walkFps: validated.walkFps,
+      ...(validated.scannerSet ? { scannerFrameCount: validated.scannerFrameCount } : {}),
     },
     directions: rows.map((row) => ({
       direction: row.direction,
@@ -798,6 +915,7 @@ export async function compileAtlasInTail(recordId, { geometry: geometryOverride 
     manifestPath: manifestRel,
     manifestSha256: sha256Buffer(manifestBuffer),
     walkSetSha256: validated.walkSetSha256,
+    ...(validated.scannerSet ? { scannerSetSha256: validated.scannerSetSha256 } : {}),
     geometry: manifest.geometry,
     compiledAt: manifest.createdAt,
   };

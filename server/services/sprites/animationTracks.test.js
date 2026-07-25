@@ -13,7 +13,7 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import {
-  WALK_TRACK, ANIMATION_TRACKS, ANIMATION_TRACK_IDS,
+  WALK_TRACK, SCANNER_TRACK, ANIMATION_TRACKS, ANIMATION_TRACK_IDS,
   isAnimationTrack, getAnimationTrack, clampTrackFrameCount, clampTrackFps,
   assertAnimationTrackRows, trackRowCount, tracksForKind, kindSupportsTrack,
 } from './animationTracks.js';
@@ -49,6 +49,22 @@ describe('the registry rows', () => {
       defaultFps: 10,
       contractFrameCountField: 'walkFrameCount',
       contractFpsField: 'walkFps',
+    });
+  });
+
+  it('registers the short scanner action independently of walk', () => {
+    expect(getAnimationTrack(SCANNER_TRACK)).toMatchObject({
+      id: SCANNER_TRACK,
+      directional: true,
+      kinds: ['character'],
+      minFrameCount: 2,
+      maxFrameCount: 8,
+      defaultFrameCount: 4,
+      minFps: 2,
+      maxFps: 12,
+      defaultFps: 6,
+      contractFrameCountField: 'scannerFrameCount',
+      contractFpsField: null,
     });
   });
 
@@ -153,12 +169,12 @@ describe('getAnimationTrack — absent vs unrecognized', () => {
     expect(getAnimationTrack(null).id).toBe(WALK_TRACK);
   });
 
-  it('throws on an unrecognized id instead of falling back to walk\'s range', () => {
+  it('keeps unknown ids distinct from the shipped scanner track', () => {
     // The sentinel rule: "not set" resolves to the default; "set to something
     // this build does not know" is an error. Silently handing back walk's 6–16
     // would reject a legitimate 4-frame action for reasons nothing explains.
-    expect(() => getAnimationTrack('scanner')).toThrow(/Unknown animation track 'scanner'/);
-    expect(() => getAnimationTrack('scanner')).toThrow(/known tracks: walk/);
+    expect(getAnimationTrack(SCANNER_TRACK).id).toBe(SCANNER_TRACK);
+    expect(() => getAnimationTrack('unknown')).toThrow(/Unknown animation track 'unknown'/);
   });
 
   it('treats an empty string as present-and-invalid, not absent', () => {
@@ -221,8 +237,8 @@ describe('directionality and record-kind support (#3017)', () => {
     expect(kindSupportsTrack('character', 'nope', MIXED)).toBe(false);
   });
 
-  it('keeps the shipped registry character-only, so no gate loosened today', () => {
-    expect(tracksForKind('character').map((r) => r.id)).toEqual([WALK_TRACK]);
+  it('keeps the shipped registry character-only while admitting walk and scanner', () => {
+    expect(tracksForKind('character').map((r) => r.id)).toEqual([WALK_TRACK, SCANNER_TRACK]);
     for (const kind of ['place', 'object', 'props']) {
       expect(tracksForKind(kind), `${kind} has no track yet`).toEqual([]);
     }
@@ -263,9 +279,11 @@ describe('per-track clamps', () => {
     expect(clampTrackFps(99)).toBe(24);
   });
 
-  it('refuses to clamp against an unrecognized track', () => {
-    expect(() => clampTrackFrameCount(8, 'scanner')).toThrow(/Unknown animation track/);
-    expect(() => clampTrackFps(8, 'scanner')).toThrow(/Unknown animation track/);
+  it('clamps scanner values against scanner bounds', () => {
+    expect(clampTrackFrameCount(99, SCANNER_TRACK)).toBe(8);
+    expect(clampTrackFrameCount(-1, SCANNER_TRACK)).toBe(2);
+    expect(clampTrackFps(99, SCANNER_TRACK)).toBe(12);
+    expect(clampTrackFps(-1, SCANNER_TRACK)).toBe(2);
   });
 });
 

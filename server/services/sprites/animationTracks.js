@@ -5,8 +5,9 @@
  * 4–24 range applied to every animation, because the walk cycle was the only
  * animation that existed. #2985 made the persisted target *track-keyed*
  * (`animationTargets.walk`), but nothing described what tracks exist or what
- * each one's legal range is — so a 3-frame ambient loop (a tree in the wind) or
- * a 4-frame scanner action was unrepresentable: both sit BELOW walk's floor.
+ * each one's legal range is — so a 3-frame ambient loop (a tree in the wind)
+ * was unrepresentable. The shipped 4-frame scanner action proves the registry
+ * supports a real non-walk range below walk's floor.
  *
  * This module is that description. One row per known track carries its own
  * bounds, defaults, directionality, and the `runtimeContract` field names it
@@ -41,6 +42,8 @@
 
 /** The default track — the only one that exists today. */
 export const WALK_TRACK = 'walk';
+/** The first short, directional character action (#3018). */
+export const SCANNER_TRACK = 'scanner';
 
 /**
  * Every known animation track.
@@ -84,6 +87,23 @@ export const ANIMATION_TRACKS = Object.freeze({
     // nulled, because dropping it would change resolution behavior for those.
     // A second track copying this row should decide its own answer.
     contractFpsField: 'walkFps',
+  }),
+  [SCANNER_TRACK]: Object.freeze({
+    id: SCANNER_TRACK,
+    label: 'Scanner action',
+    directional: true,
+    // A scanner pose is still one per character facing, so it reuses the
+    // locked directional anchors and fills all eight atlas rows.
+    kinds: Object.freeze(['character']),
+    minFrameCount: 2,
+    maxFrameCount: 8,
+    defaultFrameCount: 4,
+    minFps: 2,
+    maxFps: 12,
+    defaultFps: 6,
+    contractFrameCountField: 'scannerFrameCount',
+    // The game owns action timing; PortOS carries fps as preview provenance.
+    contractFpsField: null,
   }),
 });
 

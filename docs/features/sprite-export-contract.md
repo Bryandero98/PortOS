@@ -6,19 +6,19 @@ Publishing is the only sprite path that writes outside `data/`. Everything else 
 
 ## The atlas grid
 
-The compiler (`server/services/sprites/atlas.js`) produces one PNG: a fixed-cell grid of `idle + N walk phases` columns × 8 direction rows.
+The compiler (`server/services/sprites/atlas.js`) produces one PNG: a fixed-cell grid of `idle` plus one named span for every approved animation track, across 8 direction rows.
 
 | Property | Value |
 |---|---|
 | Cell size | 96 × 96 px (overridable per compile; the published geometry is whatever was compiled) |
 | Pivot | `(48, 88)` — silhouette centered on x, feet on the y ground line |
 | Rows | 8, in `directionOrder`: `south`, `south-east`, `east`, `north-east`, `north`, `north-west`, `west`, `south-west` |
-| Columns | `idle` at 0, then one contiguous span per animation track in registration order — the N walk phases from 1 |
+| Columns | `idle` at 0, then one contiguous span per approved animation track in registration order — walk begins at 1 and scanner follows it when approved |
 | N (walk frame count) | authorable, 6–16 (`animationTracks.js`); historically always 8 |
 
 `N` is read from the approved run manifests — every direction of a track must share it — so the atlas width tracks the authored count. **That makes the column layout a moving target for anything that hardcodes it.**
 
-Frame-count and fps uniformity is a **within-track** rule, never a between-track one: every facing of a given track shares a column span because the atlas is a rectangular grid, but two different tracks may legally differ in both length and speed (a four-frame action beside a twelve-frame walk). Each track's authoring range comes from its own row in `server/services/sprites/animationTracks.js`, and its column span is recorded in `geometry.tracks` and republished in the sidecar. Only `walk` is registered today.
+Frame-count and fps uniformity is a **within-track** rule, never a between-track one: every facing of a given track shares a column span because the atlas is a rectangular grid, but two different tracks may legally differ in both length and speed. The shipped directional `scanner` action is four frames at 6fps by default beside the 6–16-frame walk; its source video is generated only by an explicit scanner action, then packed and approved through its own evidence chain. Each track's authoring range comes from its own row in `server/services/sprites/animationTracks.js`, and its column span is recorded in `geometry.tracks` and republished in the sidecar.
 
 **Not every track has eight rows.** A track is *directional* (one row per facing — a character walk) or *non-directional* (one row, period — a tree moving in the wind, water, a flickering lamp, which have no facing at all). A non-directional track occupies **row 0** across its whole column span and leaves the remaining rows transparent. Its span says so: `rows: 1`. There is still exactly **one atlas per record** — a second image would double the publish and binding surface for no gain, and the transparent cells cost only file size, which PNG compresses to near nothing.
 
@@ -50,13 +50,15 @@ Nothing else crosses. The compile manifest, the run provenance, the trims, and t
   "cellSize": 96,
   "rows": 8,
   "rowOrder": ["south", "south-east", "east", "north-east", "north", "north-west", "west", "south-west"],
-  "columns": ["idle", "left-contact", "…", "right-up"],
-  "columnCount": 9,
+  "columns": ["idle", "left-contact", "…", "right-up", "scanner-00", "…", "scanner-03"],
+  "columnCount": 13,
   "tracks": {
     "idle": { "start": 0, "count": 1, "rows": 8 },
-    "walk": { "start": 1, "count": 8, "rows": 8 }
+    "walk": { "start": 1, "count": 8, "rows": 8 },
+    "scanner": { "start": 9, "count": 4, "rows": 8 }
   },
   "walkFrameCount": 8,
+  "scannerFrameCount": 4,
   "previewFps": 12,
   "previewFpsNote": "Authoring metadata only — …"
 }
@@ -85,7 +87,7 @@ Column layout is the one thing an app genuinely has to agree with PortOS about. 
 
 Two mechanisms guard that:
 
-- **`publishBinding.runtimeContract`** (optional): `{ walkFrameCount, cellSize?, columnCount? }` — the grid the app was built against. Set it from the **Runtime contract** group in the publish binding form (the sprite's Publish workflow) — a "Match current atlas" button fills it from the compiled atlas geometry, and a "Clear" affordance removes it — or via `PUT /api/sprites/:id/publish-binding` directly. Publishing an atlas whose compiled geometry disagrees fails with a **409** naming both the actual and expected numbers and both resolutions (change the app's constant, or reprocess the walk set). A binding with no contract publishes unchecked, exactly as before the field existed.
+- **`publishBinding.runtimeContract`** (optional): `{ walkFrameCount, scannerFrameCount?, cellSize?, columnCount? }` — the grid the app was built against. Set it from the **Runtime contract** group in the publish binding form (the sprite's Publish workflow) — a "Match current atlas" button fills it from the compiled atlas geometry, and a "Clear" affordance removes it — or via `PUT /api/sprites/:id/publish-binding` directly. Publishing an atlas whose compiled geometry disagrees fails with a **409** naming both the actual and expected numbers and both resolutions (change the app's constant, or reprocess the relevant set). A binding with no contract publishes unchecked, exactly as before the field existed.
 - **The sidecar**, so an app that reads it can fail loudly on its own terms instead of relying on PortOS to have been asked.
 
 `runtimeContract` follows absent-vs-null semantics: a saved binding that omits the key inherits the stored contract (saving the form with the contract group untouched omits it, so the stored contract survives an unrelated edit), while an explicit `null` — what the form's "Clear" sends — clears it. The inheritance is scoped to the same `appId` — re-pointing a character at a different app drops the old app's contract rather than holding the new one to it.

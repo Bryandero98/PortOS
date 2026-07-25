@@ -5,7 +5,7 @@ import { WORK_TRACKERS } from './workTracker.js';
 import { SPRITE_ID_PATTERN, SPRITE_RECORD_KINDS } from '../services/sprites/recordsLogic.js';
 import { ANCHOR_DIRECTIONS, SPRITE_DIRECTIONS, TURNAROUND_ID } from '../services/sprites/prompts.js';
 import { CHROMA_KEY_HEXES } from '../services/sprites/chromaKey.js';
-import { WALK_TRACK, getAnimationTrack } from '../services/sprites/animationTracks.js';
+import { WALK_TRACK, SCANNER_TRACK, getAnimationTrack } from '../services/sprites/animationTracks.js';
 import { QUEUEABLE_IMAGE_MODES } from '../services/imageGen/modes.js';
 import { GROK_VIDEO_DURATIONS } from './grokVideoClip.js';
 
@@ -1037,6 +1037,9 @@ export const spriteRuntimeContractSchema = z.object({
   // `grep walkFrameCount` still finds the schema that validates it — the row's
   // `contractFrameCountField` is asserted to agree in animationTargets.test.js.
   walkFrameCount: spriteTrackFrameCountSchema(WALK_TRACK),
+  // Optional because older consumers only know walk. A scanner-aware consumer
+  // can pin the named action span without relaxing its independent 2–8 range.
+  scannerFrameCount: spriteTrackFrameCountSchema(SCANNER_TRACK).optional(),
   cellSize: z.number().int().min(16).max(1024).nullable().optional(),
   columnCount: z.number().int().min(1).max(256).nullable().optional(),
 });
@@ -1171,6 +1174,8 @@ const spriteResolvableRunIdSchema = z.string().min(1).max(1024)
 // animationTracks pulls in no deps at all, native or otherwise.
 const spriteWalkFrameCountSchema = spriteTrackFrameCountSchema(WALK_TRACK);
 const spriteWalkFpsSchema = spriteTrackFpsSchema(WALK_TRACK);
+const spriteScannerFrameCountSchema = spriteTrackFrameCountSchema(SCANNER_TRACK);
+const spriteScannerFpsSchema = spriteTrackFpsSchema(SCANNER_TRACK);
 
 export const spriteWalkGenerateSchema = z.object({
   direction: spriteWalkDirectionSchema,
@@ -1185,6 +1190,21 @@ export const spriteWalkGenerateSchema = z.object({
   // the geometry.
   frameCount: spriteWalkFrameCountSchema.optional(),
   fps: spriteWalkFpsSchema.optional(),
+});
+
+// The scanner is a separate, short directional action. It deliberately has its
+// own bounds (2–8 frames, 2–12fps) rather than inheriting the walk cycle's
+// 6–16 / 4–24 shape.
+export const spriteScannerGenerateSchema = z.object({
+  direction: spriteWalkDirectionSchema,
+  duration: grokVideoDurationSchema.optional(),
+  frameCount: spriteScannerFrameCountSchema.optional(),
+  fps: spriteScannerFpsSchema.optional(),
+});
+
+export const spriteScannerApproveSchema = z.object({
+  direction: spriteWalkDirectionSchema,
+  runId: spriteResolvableRunIdSchema,
 });
 
 // Pin the walk track's cycle target at the SET level (#2985). Both knobs are

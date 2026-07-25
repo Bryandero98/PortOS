@@ -273,6 +273,27 @@ async function importedCharacter(id, perDirection) {
   return runIds;
 }
 
+describe('named-track isolation', () => {
+  it('does not surface or reprocess a scanner run through the walk workflow', async () => {
+    const id = await characterWithLockedAnchors(newId(), []);
+    const runId = 'scanner-east-00000001';
+    const runDir = join(TEST_ROOT, 'sprites', id, 'runs', runId);
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, 'animation-run.json'), JSON.stringify({
+      id: runId,
+      track: 'scanner',
+      status: 'rendering',
+      characterId: id,
+      direction: 'east',
+      createdAt: new Date().toISOString(),
+    }));
+
+    expect((await getWalkState(id)).runs).toEqual([]);
+    await expect(rerunWalkPostprocess(id, { runId, frameCount: 8, fps: 12 }))
+      .rejects.toMatchObject({ code: 'RUN_NOT_FOUND' });
+  });
+});
+
 beforeEach(() => {
   executeTuiRun.mockClear();
   executeTuiRun.mockImplementation(() => new Promise(() => {}));

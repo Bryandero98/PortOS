@@ -23,10 +23,12 @@ const fieldLabelClass = 'block text-xs text-gray-400 mb-1';
 // Mirrors of the server contract (server/services/sprites/walkBounds.js is the
 // single source of truth; kept as literals here rather than importing a server
 // module into the client bundle). WALK_MIN/MAX bound the walk-frame-count
-// input; IDLE/SCANNER name the non-walk columns so the "Match current atlas"
-// fallback can count walk columns the same way resolveWalkFrameCount does.
+// input; IDLE/SCANNER name the legacy non-walk columns so the "Match current
+// atlas" fallback can count walk columns the same way resolveWalkFrameCount does.
 const WALK_MIN_FRAME_COUNT = 6;
 const WALK_MAX_FRAME_COUNT = 16;
+const SCANNER_MIN_FRAME_COUNT = 2;
+const SCANNER_MAX_FRAME_COUNT = 8;
 const ATLAS_IDLE_COLUMN = 'idle';
 const ATLAS_SCANNER_COLUMN = 'scanner';
 
@@ -41,6 +43,11 @@ function walkFrameCountOf(geometry) {
   ).length;
 }
 
+function scannerFrameCountOf(geometry) {
+  if (Number.isInteger(geometry?.scannerFrameCount)) return geometry.scannerFrameCount;
+  return Number.isInteger(geometry?.tracks?.scanner?.count) ? geometry.tracks.scanner.count : null;
+}
+
 export default function PublishWorkflow({ record, walk, atlas, onChanged }) {
   const finalized = Boolean(walk?.walkSet);
   const current = atlas?.current || null;
@@ -52,6 +59,7 @@ export default function PublishWorkflow({ record, walk, atlas, onChanged }) {
   // The stored contract seeds them; walkFrameCount is the anchor field (an
   // empty walk-frame-count means "no contract").
   const seedFrames = savedContract?.walkFrameCount != null ? String(savedContract.walkFrameCount) : '';
+  const seedScanner = savedContract?.scannerFrameCount != null ? String(savedContract.scannerFrameCount) : '';
   const seedCell = savedContract?.cellSize != null ? String(savedContract.cellSize) : '';
   const seedCols = savedContract?.columnCount != null ? String(savedContract.columnCount) : '';
 
@@ -61,6 +69,7 @@ export default function PublishWorkflow({ record, walk, atlas, onChanged }) {
   const [codePath, setCodePath] = useState(saved?.codeBinding?.path || '');
   const [resourcePath, setResourcePath] = useState(saved?.codeBinding?.resourcePath || '');
   const [contractFrames, setContractFrames] = useState(seedFrames);
+  const [contractScanner, setContractScanner] = useState(seedScanner);
   const [contractCell, setContractCell] = useState(seedCell);
   const [contractCols, setContractCols] = useState(seedCols);
   // null → idle; 'publish' → normal confirm; 'overwrite' → the server
@@ -79,19 +88,22 @@ export default function PublishWorkflow({ record, walk, atlas, onChanged }) {
     setCodePath(saved?.codeBinding?.path || '');
     setResourcePath(saved?.codeBinding?.resourcePath || '');
     setContractFrames(seedFrames);
+    setContractScanner(seedScanner);
     setContractCell(seedCell);
     setContractCols(seedCols);
     setConfirmStage(null);
   }, [saved?.appId, saved?.atlasDestPath, saved?.codeBinding?.path, saved?.codeBinding?.resourcePath,
-    savedContract?.walkFrameCount, savedContract?.cellSize, savedContract?.columnCount,
-    seedFrames, seedCell, seedCols]);
+    savedContract?.walkFrameCount, savedContract?.scannerFrameCount, savedContract?.cellSize, savedContract?.columnCount,
+    seedFrames, seedScanner, seedCell, seedCols]);
 
-  // Parse the three contract inputs. walkFrameCount is the anchor: an empty
+  // Parse the four contract inputs. walkFrameCount is the anchor: an empty
   // field means "no contract". cellSize/columnCount are optional (empty → null).
   const framesRaw = contractFrames.trim();
+  const scannerRaw = contractScanner.trim();
   const cellRaw = contractCell.trim();
   const colsRaw = contractCols.trim();
   const framesNum = framesRaw === '' ? null : Number(framesRaw);
+  const scannerNum = scannerRaw === '' ? null : Number(scannerRaw);
   const cellNum = cellRaw === '' ? null : Number(cellRaw);
   const colsNum = colsRaw === '' ? null : Number(colsRaw);
   const hasContract = framesNum !== null;
@@ -100,7 +112,8 @@ export default function PublishWorkflow({ record, walk, atlas, onChanged }) {
   // binding). Used both for the dirty check and to scope the no-binding error
   // to a user who actually typed a contract — an untouched seeded contract must
   // not block an unbind (sending `binding: null` clears it server-side anyway).
-  const contractFieldsDirty = seedFrames !== framesRaw || seedCell !== cellRaw || seedCols !== colsRaw;
+  const contractFieldsDirty = seedFrames !== framesRaw || seedScanner !== scannerRaw
+    || seedCell !== cellRaw || seedCols !== colsRaw;
 
   const intInRange = (n, lo, hi) => Number.isInteger(n) && n >= lo && n <= hi;
   // Validate only what's populated; walkFrameCount is required whenever any
@@ -108,10 +121,12 @@ export default function PublishWorkflow({ record, walk, atlas, onChanged }) {
   // typed contract is also meaningless without an app + destination — the
   // binding it would ride on is null, so the value would be silently discarded.
   let contractError = null;
-  if (!hasContract && (cellRaw !== '' || colsRaw !== '')) {
+  if (!hasContract && (scannerRaw !== '' || cellRaw !== '' || colsRaw !== '')) {
     contractError = 'Walk frame count is required for a runtime contract.';
   } else if (hasContract && !intInRange(framesNum, WALK_MIN_FRAME_COUNT, WALK_MAX_FRAME_COUNT)) {
     contractError = `Walk frame count must be a whole number ${WALK_MIN_FRAME_COUNT}–${WALK_MAX_FRAME_COUNT}.`;
+  } else if (scannerNum !== null && !intInRange(scannerNum, SCANNER_MIN_FRAME_COUNT, SCANNER_MAX_FRAME_COUNT)) {
+    contractError = `Scanner frame count must be a whole number ${SCANNER_MIN_FRAME_COUNT}–${SCANNER_MAX_FRAME_COUNT}.`;
   } else if (cellNum !== null && !intInRange(cellNum, 16, 1024)) {
     contractError = 'Cell size must be a whole number 16–1024.';
   } else if (colsNum !== null && !intInRange(colsNum, 1, 256)) {
@@ -130,13 +145,16 @@ export default function PublishWorkflow({ record, walk, atlas, onChanged }) {
     const geometry = current?.geometry;
     if (!geometry) return;
     const frames = walkFrameCountOf(geometry);
+    const scannerFrames = scannerFrameCountOf(geometry);
     setContractFrames(frames != null ? String(frames) : '');
+    setContractScanner(scannerFrames != null ? String(scannerFrames) : '');
     setContractCell(Number.isInteger(geometry.cellSize) ? String(geometry.cellSize) : '');
     setContractCols(Array.isArray(geometry.columns) ? String(geometry.columns.length) : '');
   };
 
   const clearContract = () => {
     setContractFrames('');
+    setContractScanner('');
     setContractCell('');
     setContractCols('');
   };
@@ -163,7 +181,12 @@ export default function PublishWorkflow({ record, walk, atlas, onChanged }) {
     // dirty, a populated walkFrameCount sets it, an emptied one clears it (null).
     if (binding && contractDirty) {
       binding.runtimeContract = hasContract
-        ? { walkFrameCount: framesNum, cellSize: cellNum, columnCount: colsNum }
+        ? {
+          walkFrameCount: framesNum,
+          ...(scannerNum === null ? {} : { scannerFrameCount: scannerNum }),
+          cellSize: cellNum,
+          columnCount: colsNum,
+        }
         : null;
     }
     const result = await setSpritePublishBinding(record.id, binding, { silent: true });
@@ -246,15 +269,19 @@ export default function PublishWorkflow({ record, walk, atlas, onChanged }) {
   // fields runtimeContractMismatch compares server-side.
   const atlasGeom = current?.geometry || null;
   const atlasFrames = walkFrameCountOf(atlasGeom);
+  const atlasScannerFrames = scannerFrameCountOf(atlasGeom);
   const atlasCols = Array.isArray(atlasGeom?.columns) ? atlasGeom.columns.length : null;
   const atlasCell = Number.isInteger(atlasGeom?.cellSize) ? atlasGeom.cellSize : null;
   const atlasSummary = atlasGeom
-    ? `${atlasFrames ?? '?'} walk frames · ${atlasCols ?? '?'} cols${atlasCell != null ? ` · ${atlasCell}px` : ''}`
+    ? `${atlasFrames ?? '?'} walk frames${atlasScannerFrames != null ? ` · ${atlasScannerFrames} scanner frames` : ''} · ${atlasCols ?? '?'} cols${atlasCell != null ? ` · ${atlasCell}px` : ''}`
     : null;
   const savedContractMismatch = (() => {
     if (!savedContract || !atlasGeom) return null;
     if (Number.isInteger(savedContract.walkFrameCount) && savedContract.walkFrameCount !== atlasFrames) {
       return `contract expects ${savedContract.walkFrameCount} walk frames, atlas has ${atlasFrames ?? '?'}`;
+    }
+    if (Number.isInteger(savedContract.scannerFrameCount) && savedContract.scannerFrameCount !== atlasScannerFrames) {
+      return `contract expects ${savedContract.scannerFrameCount} scanner frames, atlas has ${atlasScannerFrames ?? 'none'}`;
     }
     if (Number.isInteger(savedContract.columnCount) && savedContract.columnCount !== atlasCols) {
       return `contract expects ${savedContract.columnCount} cols, atlas has ${atlasCols ?? '?'}`;
@@ -335,7 +362,7 @@ export default function PublishWorkflow({ record, walk, atlas, onChanged }) {
                 <button
                   type="button"
                   onClick={clearContract}
-                  disabled={framesRaw === '' && cellRaw === '' && colsRaw === ''}
+                  disabled={framesRaw === '' && scannerRaw === '' && cellRaw === '' && colsRaw === ''}
                   className="px-2 py-0.5 text-[11px] bg-port-bg border border-port-border rounded text-gray-300 hover:border-port-accent disabled:opacity-50"
                 >
                   Clear
@@ -346,7 +373,7 @@ export default function PublishWorkflow({ record, walk, atlas, onChanged }) {
               The grid a consuming app was built against. A publish whose compiled atlas disagrees is
               refused. Leave blank to publish unchecked; clearing removes a stored contract.
             </p>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2">
               <FormField label={`Walk frames (${WALK_MIN_FRAME_COUNT}–${WALK_MAX_FRAME_COUNT})`} labelClassName={fieldLabelClass}>
                 <input
                   type="number"
@@ -355,6 +382,17 @@ export default function PublishWorkflow({ record, walk, atlas, onChanged }) {
                   value={contractFrames}
                   onChange={(e) => setContractFrames(e.target.value)}
                   placeholder="12"
+                  className={inputClass}
+                />
+              </FormField>
+              <FormField label={`Scanner frames (${SCANNER_MIN_FRAME_COUNT}–${SCANNER_MAX_FRAME_COUNT}, optional)`} labelClassName={fieldLabelClass}>
+                <input
+                  type="number"
+                  min={SCANNER_MIN_FRAME_COUNT}
+                  max={SCANNER_MAX_FRAME_COUNT}
+                  value={contractScanner}
+                  onChange={(e) => setContractScanner(e.target.value)}
+                  placeholder="4"
                   className={inputClass}
                 />
               </FormField>

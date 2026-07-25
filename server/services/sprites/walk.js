@@ -25,7 +25,6 @@ import {
   ensureDir, atomicWrite, readJSONFile, pathExists, sha256File,
 } from '../../lib/fileUtils.js';
 import { ServerError } from '../../lib/errorHandler.js';
-import { createKeyCachedQueue } from '../../lib/createKeyCachedQueue.js';
 import { executeTuiRun } from '../../lib/tuiPromptRunner.js';
 import { GROK_TUI_ID } from '../../lib/grok.js';
 import { getSettings } from '../settings.js';
@@ -54,6 +53,10 @@ import {
 import { verifyPackagedFrames } from './walkFrames.js';
 import { probeVideoDuration } from '../../lib/ffmpeg.js';
 import { resolveGrokDuration } from '../../lib/grokVideoClip.js';
+import { withAnimationWriteTail, resolveChromaKey } from './animationWorkflow.js';
+import {
+  invalidateScannerDirectionForAnchorRevision, invalidateScannerForTurnaroundRevision,
+} from './scanner.js';
 
 // grok's walk render runs as an OBSERVABLE TUI session (issue: user wants to
 // watch/course-correct grok in the Shell) rather than a headless mediaJobQueue
@@ -88,9 +91,8 @@ const RUN_RECORD_NAME = 'animation-run.json';
 // same convention as reference.js's manifestWriteTail. Exported for
 // walkTrims.js so its scan-then-write version claim can't race an attach or
 // a concurrent trim.
-const walkWriteTail = createKeyCachedQueue();
-
-export const withWalkWriteTail = (recordId, fn) => walkWriteTail(recordId, fn);
+const walkWriteTail = (recordId, fn) => withAnimationWriteTail(recordId, fn);
+export const withWalkWriteTail = walkWriteTail;
 
 async function loadWalkSet(recordId) {
   return readJSONFile(join(spriteDir(recordId), walkSetRelPath(recordId)), null);
@@ -184,6 +186,16 @@ async function resolveRunAt(recordId, runDirRel) {
 }
 
 const resolveRunById = (recordId, runId) => resolveRunAt(recordId, runRelPath(runId));
+
+// The shared `runs/` tree now holds named tracks as well as walk. Legacy walk
+// records predate the field, so an absent track remains walk-compatible; a
+// declared non-walk track must never surface through, or be mutated by, the
+// walk endpoints.
+const isWalkRun = (run) => !run?.track || run.track === WALK_TRACK;
+async function resolveWalkRunById(recordId, runId) {
+  const found = await resolveRunById(recordId, runId);
+  return isWalkRun(found?.run) ? found : null;
+}
 
 async function saveRunRecordAt(recordId, run, runDirRel) {
   const dir = join(spriteDir(recordId), runDirRel);
@@ -676,7 +688,7 @@ export async function getWalkState(recordId) {
         return loadRunRecordAt(recordId, runDirRel)
           .then((run) => (run ? normalizeRunRecord(recordId, run, runDirRel) : null));
       }),
-  )).filter(Boolean)
+  )).filter(isWalkRun)
     // Second pass: a record whose own `id` differs from its directory name is
     // already covered by an entry that named it by id. Dedupe on id too, so a
     // run that somehow exists under both scan roots surfaces once.
@@ -863,9 +875,7 @@ async function setWalkTargetImpl(recordId, { frameCount, fps }) {
  * Returns null when no rung has one, so callers refuse explicitly rather than
  * handing `undefined` to a color parser.
  */
-export const resolveChromaKey = ({ manifest, record, run } = {}) => (
-  run?.chromaKey || manifest?.chromaKey || record?.chromaKey || null
-);
+export { resolveChromaKey } from './animationWorkflow.js';
 
 /**
  * The locked directional anchor for a direction, or null. Third copy of this
@@ -1241,7 +1251,7 @@ async function rerunWalkPostprocessImpl(recordId, runId, overrides) {
   await requireCharacter(recordId);
   // Layout-aware (#2993): an imported run commonly lives under `grok/<run-id>/`,
   // and its regenerated frames + record must go back to that same directory.
-  const found = await resolveRunById(recordId, runId);
+  const found = await resolveWalkRunById(recordId, runId);
   if (!found) throw new ServerError(`Unknown walk run: ${runId}`, { status: 404, code: 'RUN_NOT_FOUND' });
   const { run, runDirRel } = found;
   // One state read serves the re-derive gate and the target below.
@@ -1459,7 +1469,7 @@ export async function getWalkSourceFrames(recordId, runId, { extract = false } =
   // fallback below) — so pay for them once, concurrently.
   const [, found, state] = await Promise.all([
     requireCharacter(recordId),
-    resolveRunById(recordId, runId),
+    resolveWalkRunById(recordId, runId),
     getWalkState(recordId),
   ]);
   const { walkTarget, selection, walkSet } = state;
@@ -1816,8 +1826,9 @@ export function invalidateWalkDirectionForAnchorRevision(recordId, { direction }
 export async function unlockDirectionalAnchor(recordId, { direction }) {
   await assertReferenceAnchorUnlockable(recordId, { direction });
   const walkInvalidated = await invalidateWalkDirectionForAnchorRevision(recordId, { direction });
+  const scannerInvalidated = await invalidateScannerDirectionForAnchorRevision(recordId, { direction });
   const reference = await unlockReferenceAnchor(recordId, { direction });
-  return { ...reference, walkInvalidated };
+  return { ...reference, walkInvalidated, scannerInvalidated };
 }
 
 /**
@@ -1831,8 +1842,9 @@ export async function unlockDirectionalAnchor(recordId, { direction }) {
 export async function unlockTurnaroundReference(recordId) {
   await assertReferenceTurnaroundUnlockable(recordId);
   const walkInvalidatedDirections = await invalidateWalkForTurnaroundRevision(recordId);
+  const scannerInvalidatedDirections = await invalidateScannerForTurnaroundRevision(recordId);
   const reference = await unlockReferenceTurnaround(recordId);
-  return { ...reference, walkInvalidatedDirections };
+  return { ...reference, walkInvalidatedDirections, scannerInvalidatedDirections };
 }
 
 function invalidateWalkForTurnaroundRevision(recordId) {
@@ -1909,7 +1921,7 @@ async function approveWalkDirectionImpl(recordId, { direction, runId }) {
   await requireUnfinalized(recordId);
   // Layout-aware, like the rerun above: a re-derived import stays in the run
   // directory it was imported into, and its approval must record THAT path.
-  const found = await resolveRunById(recordId, runId);
+  const found = await resolveWalkRunById(recordId, runId);
   if (!found) throw new ServerError(`Unknown walk run: ${runId}`, { status: 404, code: 'RUN_NOT_FOUND' });
   const { run, runDirRel } = found;
   if (run.direction !== direction) {

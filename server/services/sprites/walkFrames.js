@@ -35,19 +35,20 @@ import {
   spriteDir, resolveSpriteAssetPath, toRecordRelativeAssetPath, resolveDriftTolerantRel,
 } from './paths.js';
 import { sha256Buffer } from './walkPostprocess.js';
-import { walkPhaseLabels } from './walkBounds.js';
+import { WALK_TRACK, getAnimationTrack } from './animationTracks.js';
+import { trackColumnLabels } from './atlasGrid.js';
 
 const compileFrameError = (message) =>
   new ServerError(message, { status: 422, code: 'ATLAS_COMPILE_INVALID' });
 
-export async function verifyPackagedFrames(recordId, manifest, { bytes = false } = {}) {
+export async function verifyPackagedFrames(recordId, manifest, { bytes = false, track = manifest?.track || WALK_TRACK } = {}) {
   const dir = spriteDir(recordId);
   const frames = Array.isArray(manifest?.frames) ? manifest.frames : [];
   const total = frames.length;
   // Compile checks each frame's gait-phase against the set's phase labels. The
   // set's frame count is enforced identical across directions before this runs
   // (atlas.js), so labels derived from THIS manifest's length match the set's.
-  const labels = bytes ? walkPhaseLabels(total) : null;
+  const labels = bytes ? trackColumnLabels(getAnimationTrack(track).id, total) : null;
   const frameBytes = bytes ? [] : null;
   let missing = 0;
 

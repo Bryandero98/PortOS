@@ -62,6 +62,12 @@ vi.mock('../services/sprites/walk.js', () => ({
   })),
 }));
 
+vi.mock('../services/sprites/scanner.js', () => ({
+  getScannerState: vi.fn(async () => ({ track: 'scanner', runs: [], selection: null, scannerSet: null })),
+  startScannerGeneration: vi.fn(async () => ({ runId: 'scanner-east-0a1b2c3d', direction: 'east', duration: 6 })),
+  approveScannerDirection: vi.fn(async () => ({ track: 'scanner', runs: [], selection: { status: 'in-progress' }, scannerSet: null })),
+}));
+
 vi.mock('../services/sprites/walkTrims.js', () => ({
   saveLoopTrim: vi.fn(async () => ({ strip: 'walk/trims/t-v001-strip.png', loop: 'walk/trims/t-v001.gif', manifest: 'walk/trims/t-v001.json', frameCount: 3, disabledFrameCount: 1 })),
 }));
@@ -85,6 +91,7 @@ import * as importer from '../services/sprites/importer.js';
 import * as reference from '../services/sprites/reference.js';
 import * as assetPrompt from '../services/sprites/assetPrompt.js';
 import * as walk from '../services/sprites/walk.js';
+import * as scanner from '../services/sprites/scanner.js';
 import * as walkTrims from '../services/sprites/walkTrims.js';
 import * as atlas from '../services/sprites/atlas.js';
 import * as publish from '../services/sprites/publish.js';
@@ -420,19 +427,22 @@ describe('sprites routes', () => {
     expect(assets.deleteSpriteAsset).not.toHaveBeenCalled();
   });
 
-  it('GET /:id includes the walk state for characters only', async () => {
+  it('GET /:id includes the walk and scanner states for characters only', async () => {
     records.getRecordWithAssets.mockResolvedValueOnce({
       record: { id: 'pioneer', kind: 'character' }, assets: [],
     });
     const r = await request(app).get('/api/sprites/pioneer');
     expect(r.body.walk).toEqual({ runs: [], selection: null, walkSet: null });
+    expect(r.body.scanner).toEqual({ track: 'scanner', runs: [], selection: null, scannerSet: null });
     expect(walk.getWalkState).toHaveBeenCalledWith('pioneer');
+    expect(scanner.getScannerState).toHaveBeenCalledWith('pioneer');
 
     records.getRecordWithAssets.mockResolvedValueOnce({
       record: { id: 'crates', kind: 'props' }, assets: [],
     });
     const props = await request(app).get('/api/sprites/crates');
     expect(props.body.walk).toBeNull();
+    expect(props.body.scanner).toBeNull();
   });
 
   it('POST /:id/walk/generate validates direction and duration', async () => {
@@ -461,6 +471,26 @@ describe('sprites routes', () => {
       .send({ direction: 'east', frameCount: 32 })).status).toBe(400);
     expect((await request(app).post('/api/sprites/pioneer/walk/generate')
       .send({ direction: 'east', fps: 99 })).status).toBe(400);
+  });
+
+  it('POST /:id/scanner/generate validates scanner-specific short bounds', async () => {
+    const r = await request(app).post('/api/sprites/pioneer/scanner/generate')
+      .send({ direction: 'east', frameCount: 4, fps: 6 });
+    expect(r.status).toBe(200);
+    expect(scanner.startScannerGeneration).toHaveBeenCalledWith('pioneer', { direction: 'east', frameCount: 4, fps: 6 });
+    expect((await request(app).post('/api/sprites/pioneer/scanner/generate')
+      .send({ direction: 'east', frameCount: 9 })).status).toBe(400);
+    expect((await request(app).post('/api/sprites/pioneer/scanner/generate')
+      .send({ direction: 'east', fps: 13 })).status).toBe(400);
+  });
+
+  it('POST /:id/scanner/approve forwards a reviewed scanner candidate', async () => {
+    const r = await request(app).post('/api/sprites/pioneer/scanner/approve')
+      .send({ direction: 'east', runId: 'scanner-east-0a1b2c3d' });
+    expect(r.status).toBe(200);
+    expect(scanner.approveScannerDirection).toHaveBeenCalledWith('pioneer', {
+      direction: 'east', runId: 'scanner-east-0a1b2c3d',
+    });
   });
 
   it('PUT /:id/walk/target pins the set-level cycle target and bounds it', async () => {
