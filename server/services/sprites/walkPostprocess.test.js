@@ -14,7 +14,7 @@ import {
   pyRound, pyRoundTo, median, sampleBorderKey, validateMeasuredKey,
   isUsableMeasuredKey, longestUsableSpan,
   recoverAlphaFrame, despillKeyFrame, imageDistance, selectCycleIndices,
-  alphaBbox, rootX, alignFrames, packStrip, validateFrames, buildContrastSheet,
+  alphaBbox, rootX, robustBottomRow, alignFrames, packStrip, validateFrames, buildContrastSheet,
   prepareWalkAnchorChromaInput, WALK_PHASES, WALK_CELL_SIZE, WALK_FRAME_COUNT,
 } from './walkPostprocess.js';
 import { keyChannelSplit } from './chromaKey.js';
@@ -216,7 +216,7 @@ describe('alignFrames / packStrip', () => {
     const { frames, alignment } = await alignFrames([frame]);
     expect(frames[0].width).toBe(WALK_CELL_SIZE);
     expect(alignment.fixedScale).toBe(1); // fits inside 299×314 unscaled
-    expect(alignment.operation).toBe('one-fixed-scale-plus-per-frame-translation');
+    expect(alignment.operation).toBe('one-fixed-scale-shared-hip-x-plus-per-frame-baseline-y');
     const [dx, dy] = alignment.translations[0];
     expect(dy).toBe(352 - 200); // feet on the baseline
     expect(dx).toBe(192 - 50);  // hip median (col 99.5 abs → 49.5 rel) → pyRound(192-49.5)=142
@@ -233,6 +233,63 @@ describe('alignFrames / packStrip', () => {
     const { alignment } = await alignFrames([frame]);
     expect(alignment.fixedScale).toBe(pyRoundTo(Math.min((384 * 0.78) / 400, (384 * 0.82) / 500), 8));
     expect(alignment.fixedScale).toBeLessThan(1);
+  });
+
+  // Registration is a relationship BETWEEN frames, so a single-frame call can't
+  // observe it — which is why the per-frame drift in #3021 went untested for so
+  // long. These build a synthetic direction whose frames differ only in ways a
+  // real gait differs, and assert the character doesn't move because of it.
+  describe('inter-frame registration (#3021)', () => {
+    // Torso/hips identical in every frame; only an arm swings. A viewer should
+    // see the arm move and the body stay put.
+    const swingingArm = (armX) => {
+      const frame = makeFrame(200, 300);
+      fillRect(frame, 80, 40, 120, 240, [80, 60, 40, 255]); // torso+legs, fixed
+      fillRect(frame, armX, 90, armX + 20, 130, [80, 60, 40, 255]); // arm, moves
+      return frame;
+    };
+
+    it('gives every frame the same x, so a swinging arm cannot slide the body', async () => {
+      const { alignment } = await alignFrames([swingingArm(50), swingingArm(80), swingingArm(120)]);
+      const xs = alignment.translations.map(([dx]) => dx);
+      expect(new Set(xs).size).toBe(1);
+      // The per-frame measurements are kept for diagnostics and DO still vary —
+      // pin that, so this test can't pass by the anchor becoming constant.
+      expect(new Set(alignment.hipOffsets).size).toBeGreaterThan(1);
+    });
+
+    it('keeps the baseline stable across frames of equal height', async () => {
+      const { alignment } = await alignFrames([swingingArm(50), swingingArm(80), swingingArm(120)]);
+      const ys = alignment.translations.map(([, dy]) => dy);
+      expect(Math.max(...ys) - Math.min(...ys)).toBeLessThanOrEqual(1);
+    });
+
+    // The single-pixel sensitivity that made the body bob: one speck below the
+    // feet used to extend the bbox and lift the whole frame by that distance.
+    it('ignores a stray speck below the feet when setting the baseline', async () => {
+      const clean = swingingArm(80);
+      const specked = swingingArm(80);
+      setPx(specked, 100, 260, [80, 60, 40, 255]); // 20px below the sole
+      const { alignment } = await alignFrames([clean, specked]);
+      const [, dyClean] = alignment.translations[0];
+      const [, dySpecked] = alignment.translations[1];
+      expect(dySpecked).toBe(dyClean);
+    });
+
+    it('still finds the sole when the character is genuinely thin', async () => {
+      // 4px wide — above the 3px run threshold, so it registers on its own sole
+      // rather than falling back.
+      const thin = makeFrame(60, 120);
+      fillRect(thin, 20, 10, 24, 100, [80, 60, 40, 255]);
+      expect(robustBottomRow(thin)).toBe(100);
+    });
+
+    it('falls back to the bbox bottom rather than throwing on a sub-threshold frame', async () => {
+      // 2px wide — never satisfies the run threshold on any row.
+      const sliver = makeFrame(40, 60);
+      fillRect(sliver, 10, 5, 12, 50, [80, 60, 40, 255]);
+      expect(robustBottomRow(sliver)).toBe(50);
+    });
   });
 
   it('packs 8 cells into one 3072×384 row', () => {

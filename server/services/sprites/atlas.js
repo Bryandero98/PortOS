@@ -4,8 +4,12 @@
  * Compiles the immutable runtime sprite-sheet from a finalized eight-direction
  * walk set: an (idle + N walk phases)-column × 8-row grid (× S/SE/E/
  * NE/N/NW/W/SW) of fixed-size cells, each frame scaled once per direction and
- * translated so its silhouette centers on the pivot x and its feet land exactly
- * on the pivot ground line. N (the walk frame count) is read from the approved
+ * translated so it anchors on the pivot x and its sole lands exactly on the
+ * pivot ground line. Placement is anchored on the HIP, not the silhouette
+ * centre, and shared across a direction's cells — a walk frame carries the
+ * packer's pivot through the scale, the idle anchor measures its own (#3021) —
+ * so a swinging limb cannot slide the character and idle→walk does not pop.
+ * N (the walk frame count) is read from the approved
  * run manifests — every direction must share it — so the atlas width tracks the
  * authored count (historically 8; variable per #sprite-walk-variable-frames).
  * Ports the source pipeline's
@@ -43,7 +47,7 @@ import {
   WALK_PHASES, WALK_FPS,
   pyRound, pyRoundTo, median, decodeRgbaFrame, premultipliedResize,
   sampleBorderKey, validateMeasuredKey, recoverAlphaFrame, despillKeyFrame,
-  alphaBbox, compositeOnto, sha256Buffer,
+  alphaBbox, robustBottomRow, rootX, ROBUST_BASELINE_MIN_PIXELS, compositeOnto, sha256Buffer,
 } from './walkPostprocess.js';
 import { ATLAS_IDLE_COLUMN } from './walkBounds.js';
 import { WALK_TRACK, ANIMATION_TRACK_IDS } from './animationTracks.js';
@@ -106,10 +110,27 @@ const atlasStem = (recordId) => `${recordId}-animation-atlas`;
 const compileError = (message, code = 'ATLAS_COMPILE_INVALID') =>
   new ServerError(message, { status: 422, code });
 
-function occupiedDimensions(frame, threshold, label) {
+/**
+ * The minimum opaque-pixel count a row needs to read as the sole rather than a
+ * stray speck, at a given resize factor. A cell is typically upscaled from the
+ * packer's frame, and the resize smears one source pixel across ~`scale` of
+ * them — so a fixed count would let an upscaled speck masquerade as a sole.
+ */
+const cellMinRun = (scale) => Math.max(ROBUST_BASELINE_MIN_PIXELS, Math.ceil(ROBUST_BASELINE_MIN_PIXELS * scale));
+
+/**
+ * `robust` measures height to the SOLE rather than to the lowest lit pixel
+ * (#3021). It matters here and not only at placement time: these dimensions set
+ * the direction's scale, so a single speck below the feet made one frame read
+ * taller, shrank the scale for the whole direction, and pushed the compiled idle
+ * height off the walk median it is asserted against. Off for the idle anchor,
+ * which is measured at the silhouette threshold on a raw reference.
+ */
+function occupiedDimensions(frame, threshold, label, robust = false) {
   const bounds = alphaBbox(frame, threshold);
   if (!bounds) throw compileError(`${label} has no visible pixels`);
-  return { width: bounds.right - bounds.left, height: bounds.bottom - bounds.top };
+  const bottom = robust ? robustBottomRow(frame, threshold) : bounds.bottom;
+  return { width: bounds.right - bounds.left, height: bottom - bounds.top };
 }
 
 /**
@@ -136,12 +157,12 @@ async function transparentSource(bytes, split, keyHex) {
 }
 
 /**
- * Scale a source frame once and translate it into a cell so the silhouette
- * centers on pivot x with its feet exactly on the pivot ground line —
- * translation-only placement, refusing any content that touches a cell edge.
+ * Scale a source frame once and measure what placement needs from it: the bbox
+ * the cell-edge guards test, and the sole the ground line is pinned to.
+ * Placement itself is `placeCell` — the two are split because a direction's x is
+ * SHARED, so every frame has to be measured before any of them can be placed.
  */
-async function normalizeCellFrame(source, scale, label, geometry) {
-  const { cellSize, pivot } = geometry;
+async function scaleForCell(source, scale, label) {
   const width = Math.max(1, pyRound(source.width * scale));
   const height = Math.max(1, pyRound(source.height * scale));
   const scaled = await premultipliedResize(source, width, height);
@@ -153,9 +174,30 @@ async function normalizeCellFrame(source, scale, label, geometry) {
   }
   const bounds = alphaBbox(scaled, ALPHA_THRESHOLD);
   if (!bounds) throw compileError(`${label} has no visible pixels after scaling`);
-  const centerX = (bounds.left + bounds.right - 1) / 2;
-  const pasteX = pyRound(pivot[0] - centerX);
-  const pasteY = pivot[1] - (bounds.bottom - 1);
+  // The SOLE, not the lowest lit pixel — vertical placement keys on this.
+  // Pinning the raw bbox bottom is what let a sub-sole speck set the ground line
+  // and bob the body (#3021), and fixing it only in the packer would have been
+  // undone right here: the packer would place the sole at its baseline, leaving
+  // the speck lower, and this stage would pin the SPECK to the ground line,
+  // landing the body exactly where it started.
+  //
+  // Measured on `scaled`, in the same space the ground-line assertion re-measures
+  // — but with the pixel threshold scaled to match. These cells are upscaled
+  // ~2.5x, and a lanczos upscale smears a single stray pixel into a blob several
+  // pixels wide, wide enough to clear a fixed threshold and be mistaken for a
+  // sole. Scaling the threshold keeps "a speck is a speck" true at any cell size.
+  const baseline = robustBottomRow(scaled, ALPHA_THRESHOLD, cellMinRun(scale));
+  return { scaled, bounds, baseline };
+}
+
+/**
+ * Translate an already-scaled frame into a cell at the given x, with its sole on
+ * the pivot ground line — translation-only placement, refusing any content that
+ * touches a cell edge.
+ */
+function placeCell(scaled, bounds, baseline, pasteX, label, geometry, scale) {
+  const { cellSize, pivot } = geometry;
+  const pasteY = pivot[1] - (baseline - 1);
   if (pasteX + bounds.left <= 0 || pasteY + bounds.top <= 0) {
     throw compileError(`${label} touches the top or left runtime cell edge`);
   }
@@ -164,11 +206,14 @@ async function normalizeCellFrame(source, scale, label, geometry) {
   }
   const cell = { data: Buffer.alloc(cellSize * cellSize * 4), width: cellSize, height: cellSize };
   compositeOnto(cell, scaled, pasteX, pasteY);
-  // Port-faithful belt-and-braces: re-measure the composed cell and verify
-  // the feet really sit on the ground line (runtime_publish.py does the same
-  // final _bounds check rather than trusting the placement math).
+  // Port-faithful belt-and-braces: re-measure the composed cell and verify the
+  // feet really sit on the ground line (runtime_publish.py does the same final
+  // _bounds check rather than trusting the placement math). Measured by the same
+  // robust rule that positioned it — asserting on the raw bbox would fail for
+  // any frame carrying a speck below the sole, which is precisely the case this
+  // is meant to tolerate.
   const final = alphaBbox(cell, ALPHA_THRESHOLD);
-  if (!final || final.bottom - 1 !== pivot[1]) {
+  if (!final || robustBottomRow(cell, ALPHA_THRESHOLD, cellMinRun(scale)) - 1 !== pivot[1]) {
     throw compileError(`${label} misses the runtime ground line y=${pivot[1]}`);
   }
   return {
@@ -184,6 +229,28 @@ async function normalizeCellFrame(source, scale, label, geometry) {
       },
     },
   };
+}
+
+/**
+ * The shared x every cell of one direction is placed at, and the correction (if
+ * any) needed to keep the whole row inside its cells.
+ *
+ * Anchoring on the packer's hip pivot rather than each cell's own silhouette
+ * centre is what preserves registration through compile (#3021) — but it also
+ * moves content off-centre by however far the hip sits from the silhouette
+ * middle, which for a wide sprite can be enough to touch a cell edge and turn a
+ * previously-successful compile into a hard 422. So the row is shifted back as a
+ * WHOLE when that happens: relative registration between frames is preserved
+ * exactly (the point of the fix), and only the row's absolute offset gives way.
+ * Per-frame correction would reintroduce the very drift being removed.
+ */
+function sharedRowPasteX(anchoredX, boundsList, geometry) {
+  const { cellSize } = geometry;
+  const minLeft = Math.min(...boundsList.map((b) => anchoredX + b.left));
+  const maxRight = Math.max(...boundsList.map((b) => anchoredX + b.right));
+  if (minLeft <= 0) return anchoredX + (1 - minLeft);
+  if (maxRight >= cellSize) return anchoredX - (maxRight - cellSize + 1);
+  return anchoredX;
 }
 
 /**
@@ -350,7 +417,7 @@ async function compileDirectionRow(recordId, direction, validated, geometry) {
   for (const bytes of frameBytes) {
     walkSources.push(await transparentSource(bytes, split, validated.chromaKey));
   }
-  const dims = walkSources.map((f, i) => occupiedDimensions(f, ALPHA_THRESHOLD, `${direction}-${manifest.frames[i].phase}`));
+  const dims = walkSources.map((f, i) => occupiedDimensions(f, ALPHA_THRESHOLD, `${direction}-${manifest.frames[i].phase}`, true));
   const directionScale = Math.min(
     geometry.targetMaxHeight / Math.max(...dims.map((d) => d.height)),
     geometry.targetMaxWidth / Math.max(...dims.map((d) => d.width)),
@@ -362,7 +429,21 @@ async function compileDirectionRow(recordId, direction, validated, geometry) {
   const idleDims = occupiedDimensions(idleSource, SILHOUETTE_ALPHA_THRESHOLD, `${direction}-idle`);
   const desiredIdleHeight = median(dims.map((d) => d.height)) * directionScale;
   const idleScale = Math.min(desiredIdleHeight / idleDims.height, geometry.targetMaxWidth / idleDims.width);
-  const idle = await normalizeCellFrame(idleSource, idleScale, `${direction}-idle`, geometry);
+  const idleLabel = `${direction}-idle`;
+  const idleScaled = await scaleForCell(idleSource, idleScale, idleLabel);
+  // The idle anchor is a raw reference with no packer alignment behind it, so
+  // its hip is measured directly — the same `rootX` band the packer uses. It
+  // must be hip-anchored like the walk cells rather than silhouette-centred: the
+  // two rules differ by however far the hip sits off centre, and with idle on one
+  // rule and walk on the other the character visibly pops sideways the instant
+  // the game starts or stops the gait (#3021). Measured at the silhouette
+  // threshold, matching how this cell's scale was derived.
+  const idleHipX = rootX(idleScaled.scaled, alphaBbox(idleScaled.scaled, SILHOUETTE_ALPHA_THRESHOLD) || idleScaled.bounds);
+  const idle = placeCell(
+    idleScaled.scaled, idleScaled.bounds, idleScaled.baseline,
+    sharedRowPasteX(pyRound(geometry.pivot[0] - idleHipX), [idleScaled.bounds], geometry),
+    idleLabel, geometry, idleScale,
+  );
   if (Math.abs(idle.meta.occupiedBounds.height - desiredIdleHeight) > IDLE_HEIGHT_TOLERANCE) {
     throw compileError(`${direction} idle height ${idle.meta.occupiedBounds.height} misses the walk median ${pyRoundTo(desiredIdleHeight, 2)}`);
   }
@@ -374,9 +455,32 @@ async function compileDirectionRow(recordId, direction, validated, geometry) {
     policy: 'locked-directional-reference-anchor',
   });
 
+  // The packer's pivot x, in the walk frame's own coordinates — the anchor every
+  // frame of this direction already shares (#3021). Read from the manifest so a
+  // future packer geometry change flows through instead of being duplicated
+  // here; a manifest predating `alignment.targetPivot` falls back to the cell
+  // centre, which is what WALK_PIVOT has always been.
+  const packerPivotX = Number(manifest.alignment?.targetPivot?.[0]);
+  const walkPivotX = Number.isFinite(packerPivotX)
+    ? packerPivotX
+    : (Number(manifest.alignment?.cellSize) || walkSources[0].width) / 2;
+
+  // Scale every walk frame BEFORE placing any of them: the row's x is shared, so
+  // it can only be corrected for cell-edge overflow once all the bounds are known.
+  const walkScaled = [];
   for (let i = 0; i < walkSources.length; i++) {
+    walkScaled.push(await scaleForCell(walkSources[i], directionScale, `${direction}-${manifest.frames[i].phase}`));
+  }
+  const walkPasteX = sharedRowPasteX(
+    pyRound(geometry.pivot[0] - walkPivotX * directionScale),
+    walkScaled.map((w) => w.bounds),
+    geometry,
+  );
+
+  for (let i = 0; i < walkScaled.length; i++) {
     const frame = manifest.frames[i];
-    const normalized = await normalizeCellFrame(walkSources[i], directionScale, `${direction}-${frame.phase}`, geometry);
+    const { scaled, bounds, baseline } = walkScaled[i];
+    const normalized = placeCell(scaled, bounds, baseline, walkPasteX, `${direction}-${frame.phase}`, geometry, directionScale);
     cells.push({ column: frame.phase, ...normalized, sourcePath: frame.path, sourceSha256: frame.sha256 });
   }
 
