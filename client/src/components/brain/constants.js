@@ -57,6 +57,11 @@ export const DESTINATIONS = {
     icon: BookOpen,
     color: 'bg-pink-500/20 text-pink-400 border-pink-500/30'
   },
+  links: {
+    label: 'Links',
+    icon: Link2,
+    color: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30'
+  },
   goals: {
     label: 'Goals',
     icon: Target,
@@ -73,6 +78,23 @@ export const DESTINATIONS = {
     color: 'bg-gray-500/20 text-gray-400 border-gray-500/30'
   }
 };
+
+// Destinations a user can file an inbox entry to by hand (Route / Fix pickers).
+// Mirrors the server's `manualDestinationEnum` — NOT `Object.keys(DESTINATIONS)`,
+// which also holds display-only entries (`links`, `goals`, `journals`) the
+// resolve/fix endpoints reject.
+export const MANUAL_DESTINATIONS = ['people', 'projects', 'ideas', 'admin', 'memories'];
+
+/**
+ * Display info for where an inbox entry ended up. `filed` wins over the
+ * classifier's guess — a URL capture is filed to Links with no classification at
+ * all, and a corrected entry lives in its new destination. An unmapped value
+ * (a peer on newer code can sync one) degrades to Unknown instead of crashing
+ * the list.
+ */
+export const destinationInfo = (entry) =>
+  DESTINATIONS[entry.filed?.destination || entry.classification?.destination || 'unknown']
+  || DESTINATIONS.unknown;
 
 // Inbox status colors
 export const STATUS_COLORS = {

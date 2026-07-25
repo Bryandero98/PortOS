@@ -4,7 +4,7 @@ import { Send, Sparkles } from 'lucide-react';
 import toast from './ui/Toast';
 import * as api from '../services/api';
 import { useLocalStorageBool } from '../hooks';
-import { isUrl as isUrlShared, normalizeUrl } from '../utils/urlNormalize';
+import { parseBareUrl } from '../lib/bareUrl';
 
 export default function QuickBrainCapture() {
   const [input, setInput] = useState('');
@@ -14,7 +14,9 @@ export default function QuickBrainCapture() {
   // creative thought captured here is flagged for the catalog the same way.
   const [creative, setCreative] = useLocalStorageBool('brain.captureCreative', false);
 
-  const isUrl = useMemo(() => isUrlShared(input), [input]);
+  // Mirrors the server's filing rule (client/src/lib/bareUrl.js) so the hint and
+  // the Creative lockout match where the capture actually lands.
+  const isUrl = useMemo(() => !!parseBareUrl(input), [input]);
 
   const handleSubmit = async (e) => {
     e?.preventDefault();
@@ -27,29 +29,18 @@ export default function QuickBrainCapture() {
     // Clear input immediately so user can keep typing
     setInput('');
 
-    if (isUrl) {
-      const url = normalizeUrl(text, { allowGit: true });
-      const result = await api.createBrainLink({ url }, { silent: true }).catch(err => {
-        if (err.message?.includes('already exists')) {
-          toast.error('This URL is already saved');
-        } else {
-          toast.error(err.message || 'Failed to save link');
-        }
-        setInput(prev => prev || text);
-        return null;
-      });
-      if (result) {
-        toast.success(result.isGitHubRepo ? 'GitHub repo added' : 'Link saved');
-      }
-    } else {
-      const result = await api.captureBrainThought(text, undefined, undefined, { creative }, { silent: true }).catch(err => {
-        toast.error(err.message || 'Failed to capture thought');
-        setInput(prev => prev || text);
-        return null;
-      });
-      if (result) {
-        toast.success(result.message || 'Thought captured');
-      }
+    // Everything goes through capture — the server files a text that is nothing
+    // but a URL straight to Links (re-pasting a saved URL reuses it instead of
+    // erroring), so this surface doesn't need its own link-vs-thought branch.
+    // It ignores the sticky Creative flag for a URL; dropping it here too keeps
+    // the request honest about what will be stored.
+    const result = await api.captureBrainThought(text, undefined, undefined, { creative: creative && !isUrl }, { silent: true }).catch(err => {
+      toast.error(err.message || 'Failed to capture');
+      setInput(prev => prev || text);
+      return null;
+    });
+    if (result) {
+      toast.success(result.message || 'Captured');
     }
     submittingRef.current = false;
     setIsSubmitting(false);

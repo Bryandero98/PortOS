@@ -51,6 +51,7 @@ export * from './goalFeatureMap.js';
 export * from './a11yKeyboard.js';
 export * from './applyManuscriptEdits.js';
 export * from './audioRecorder.js';
+export * from './bareUrl.js';
 export * from './boundedMap.js';
 export * from './clientErrorReporter.js';
 export * from './clinicianReport.js';
