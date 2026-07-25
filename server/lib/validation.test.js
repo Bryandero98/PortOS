@@ -299,6 +299,24 @@ describe('validation.js', () => {
       expect(result.success).toBe(true);
     });
 
+    it('accepts a safe native launch target and rejects an unsafe process name', () => {
+      const app = {
+        name: 'Mixed App',
+        repoPath: '/path',
+        nativeLaunch: {
+          label: 'Godot',
+          command: './scripts/game run',
+          processName: 'mixed-game'
+        }
+      };
+
+      expect(appSchema.safeParse(app).success).toBe(true);
+      expect(appSchema.safeParse({
+        ...app,
+        nativeLaunch: { ...app.nativeLaunch, processName: 'mixed game; bad' }
+      }).success).toBe(false);
+    });
+
     it('should accept valid devUiPort', () => {
       const app = { name: 'Test', repoPath: '/path', devUiPort: 5554 };
       const result = appSchema.safeParse(app);

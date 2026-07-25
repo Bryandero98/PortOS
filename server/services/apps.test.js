@@ -227,6 +227,32 @@ describe('portless / desktop apps (#2991)', () => {
     expect(stored.devUiPort).toBeNull();
   });
 
+  it('createApp preserves web ports when a separate native target is present', async () => {
+    readJSONFile.mockResolvedValue({ apps: { [PORTOS_APP_ID]: { name: 'PortOS' } } });
+    const nativeLaunch = {
+      label: 'Godot',
+      command: './scripts/game run',
+      processName: 'mixed-game',
+    };
+
+    const created = await createApp({
+      name: 'Mixed App',
+      repoPath: '/tmp/mixed-app',
+      type: 'express',
+      uiPort: 3000,
+      pm2ProcessNames: ['mixed-web'],
+      nativeLaunch,
+    });
+
+    expect(created).toMatchObject({
+      type: 'express',
+      uiPort: 3000,
+      pm2ProcessNames: ['mixed-web'],
+      nativeLaunch,
+    });
+    expect(atomicWrite.mock.calls.at(-1)?.[1].apps[created.id].nativeLaunch).toEqual(nativeLaunch);
+  });
+
   it('reports a portless desktop app from supervisor state alone (no HTTP probe)', async () => {
     readJSONFile.mockResolvedValue({
       apps: {
@@ -287,7 +313,23 @@ describe('portless / desktop apps (#2991)', () => {
       expect(names.has('portos-server')).toBe(false);
     });
 
-    it('is empty when no desktop app is registered', async () => {
+    it('also exempts a native target attached to a web app', async () => {
+      readJSONFile.mockResolvedValue({
+        apps: {
+          [PORTOS_APP_ID]: { name: 'PortOS', type: 'express', pm2ProcessNames: ['portos-server'] },
+          mixed: {
+            name: 'Mixed App',
+            type: 'express',
+            pm2ProcessNames: ['mixed-web'],
+            nativeLaunch: { label: 'Godot', command: './scripts/game run', processName: 'mixed-game' }
+          },
+        },
+      });
+
+      expect(await getDesktopProcessNames()).toEqual(new Set(['mixed-game']));
+    });
+
+    it('is empty when no desktop app or native target is registered', async () => {
       readJSONFile.mockResolvedValue({
         apps: { [PORTOS_APP_ID]: { name: 'PortOS', type: 'express', pm2ProcessNames: ['portos-server'] } },
       });
@@ -383,6 +425,21 @@ describe('resolvePm2HomeForProcess', () => {
     });
 
     await expect(resolvePm2HomeForProcess('example-api')).resolves.toBe('/tmp/example-pm2');
+  });
+
+  it('resolves the custom home for an app native launch process', async () => {
+    readJSONFile.mockResolvedValue({
+      apps: {
+        [PORTOS_APP_ID]: { name: 'PortOS', type: 'express' },
+        mixed: {
+          name: 'Mixed App',
+          pm2Home: '/tmp/example-pm2',
+          nativeLaunch: { label: 'Godot', command: './scripts/game run', processName: 'mixed-game' }
+        },
+      },
+    });
+
+    await expect(resolvePm2HomeForProcess('mixed-game')).resolves.toBe('/tmp/example-pm2');
   });
 
   it('returns null when the matching app uses the default PM2 home', async () => {

@@ -2,6 +2,8 @@
  * App runtime lifecycle: PM2 start/stop/restart, update, build, status, logs,
  * and ecosystem-config refresh.
  *
+ *   POST /:id/native-launch  → { success, processName, result }
+ *   GET  /:id/native-launch/status → { processName, status }
  *   POST /:id/start          → { success, results }
  *   POST /:id/stop           → { success, results }
  *   POST /:id/restart        → { success, results }  (self-restart for PortOS)
@@ -30,6 +32,61 @@ const router = Router();
 
 // Delay before restarting PortOS itself so the JSON response reaches the client
 const SELF_RESTART_RESPONSE_DELAY_MS = 500;
+
+// POST /api/apps/:id/native-launch - Launch an optional native/GUI target
+router.post('/:id/native-launch', loadApp, asyncHandler(async (req, res) => {
+  const app = req.loadedApp;
+  const target = app.nativeLaunch;
+  if (!target) {
+    throw new ServerError('No native launch target is configured', { status: 400, code: 'NATIVE_LAUNCH_NOT_CONFIGURED' });
+  }
+  if (!await pathExists(app.repoPath)) {
+    throw new ServerError('App repo path does not exist', { status: 400, code: 'PATH_NOT_FOUND' });
+  }
+
+  const current = await pm2Service.getAppStatus(target.processName, app.pm2Home).catch(() => null);
+  if (['online', 'launching'].includes(current?.status)) {
+    return res.json({
+      success: true,
+      processName: target.processName,
+      result: { success: true, alreadyRunning: true }
+    });
+  }
+
+  const result = await pm2Service.startWithCommand(
+    target.processName,
+    app.repoPath,
+    target.command,
+    { autorestart: false }
+  ).catch(err => ({ success: false, error: err.message }));
+  const success = result.success !== false;
+  await logAction('native-launch', app.id, app.name, { processName: target.processName, label: target.label }, success);
+  notifyAppsChanged('native-launch');
+
+  if (!success) {
+    throw new ServerError(`Could not launch ${target.label}: ${result.error}`, {
+      status: 500,
+      code: 'NATIVE_LAUNCH_FAILED'
+    });
+  }
+
+  res.json({ success: true, processName: target.processName, result });
+}));
+
+// GET /api/apps/:id/native-launch/status - Read the optional target's PM2 state
+router.get('/:id/native-launch/status', loadApp, asyncHandler(async (req, res) => {
+  const app = req.loadedApp;
+  const target = app.nativeLaunch;
+  if (!target) {
+    throw new ServerError('No native launch target is configured', { status: 400, code: 'NATIVE_LAUNCH_NOT_CONFIGURED' });
+  }
+
+  const current = await pm2Service.getAppStatus(target.processName, app.pm2Home).catch(() => null);
+  res.json({
+    processName: target.processName,
+    status: current?.status || 'not_started'
+  });
+}));
 
 // POST /api/apps/:id/start - Start app via PM2
 router.post('/:id/start', loadApp, asyncHandler(async (req, res) => {

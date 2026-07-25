@@ -55,6 +55,74 @@ describe('Apps Lifecycle Routes', () => {
     vi.clearAllMocks();
   });
 
+  describe('native launch target', () => {
+    const mockApp = {
+      id: 'app-001',
+      name: 'Mixed App',
+      type: 'express',
+      repoPath: '/tmp',
+      pm2ProcessNames: ['mixed-web'],
+      nativeLaunch: {
+        label: 'Godot',
+        command: './scripts/game run',
+        processName: 'mixed-game'
+      }
+    };
+
+    it('launches the native target without replacing the web lifecycle', async () => {
+      appsService.getAppById.mockResolvedValue(mockApp);
+      pm2Service.getAppStatus.mockResolvedValue({ status: 'stopped' });
+      pm2Service.startWithCommand.mockResolvedValue({ success: true });
+      history.logAction.mockResolvedValue();
+
+      const response = await request(app).post('/api/apps/app-001/native-launch');
+
+      expect(response.status).toBe(200);
+      expect(response.body.processName).toBe('mixed-game');
+      expect(pm2Service.startWithCommand).toHaveBeenCalledWith(
+        'mixed-game', '/tmp', './scripts/game run', { autorestart: false }
+      );
+      expect(pm2Service.startFromEcosystem).not.toHaveBeenCalled();
+      expect(history.logAction).toHaveBeenCalledWith(
+        'native-launch',
+        'app-001',
+        'Mixed App',
+        { processName: 'mixed-game', label: 'Godot' },
+        true
+      );
+    });
+
+    it('does not open a second native window while one is launching', async () => {
+      appsService.getAppById.mockResolvedValue(mockApp);
+      pm2Service.getAppStatus.mockResolvedValue({ status: 'launching' });
+
+      const response = await request(app).post('/api/apps/app-001/native-launch');
+
+      expect(response.status).toBe(200);
+      expect(response.body.result.alreadyRunning).toBe(true);
+      expect(pm2Service.startWithCommand).not.toHaveBeenCalled();
+    });
+
+    it('reports the native process status independently of the web app', async () => {
+      appsService.getAppById.mockResolvedValue(mockApp);
+      pm2Service.getAppStatus.mockResolvedValue({ status: 'online' });
+
+      const response = await request(app).get('/api/apps/app-001/native-launch/status');
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ processName: 'mixed-game', status: 'online' });
+    });
+
+    it('rejects native launch when the app has no target', async () => {
+      appsService.getAppById.mockResolvedValue({ ...mockApp, nativeLaunch: null });
+
+      const response = await request(app).post('/api/apps/app-001/native-launch');
+
+      expect(response.status).toBe(400);
+      expect(response.body.code).toBe('NATIVE_LAUNCH_NOT_CONFIGURED');
+    });
+  });
+
   describe('POST /api/apps/:id/start', () => {
     it('should start an app', async () => {
       const mockApp = {

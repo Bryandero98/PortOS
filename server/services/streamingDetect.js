@@ -1,6 +1,6 @@
 import { readFile, readdir, stat } from 'fs/promises';
 import { existsSync } from 'fs';
-import { join, basename } from 'path';
+import { join, basename, dirname } from 'path';
 import { homedir } from 'os';
 import { execPm2 } from './pm2.js';
 import { safeJSONParse, tryReadFile, atomicWrite } from '../lib/fileUtils.js';
@@ -21,6 +21,40 @@ export const DESKTOP_TYPES = new Set(['desktop']);
 
 /** Check if an app type is a portless GUI/desktop process. */
 export const isDesktopType = (type) => DESKTOP_TYPES.has(type);
+
+/**
+ * Detect an optional native Godot launch target alongside the repo's normal
+ * web-process configuration.
+ *
+ * Mixed repos keep their ecosystem/Vite ports as the standard browser Launch,
+ * while this target opens the game through a separate autorestart-off process.
+ */
+export function detectGodotNativeLaunch(dirPath) {
+  const launcherPath = join(dirPath, 'scripts', 'game');
+  const hasLauncher = existsSync(launcherPath);
+  let projectPath = null;
+  if (existsSync(join(dirPath, 'project.godot'))) {
+    projectPath = 'project.godot';
+  } else if (hasLauncher && existsSync(join(dirPath, 'game', 'project.godot'))) {
+    projectPath = join('game', 'project.godot');
+  }
+  if (!projectPath) return null;
+
+  const projectDir = dirname(projectPath);
+  const slug = basename(dirPath)
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+
+  return {
+    label: 'Godot',
+    command: hasLauncher
+      ? './scripts/game run'
+      : `godot --path ${projectDir === '.' ? '.' : projectDir}`,
+    processName: `${slug || 'godot'}-game`
+  };
+}
 
 /**
  * Ecosystem config filenames in the order they're resolved. The READER
@@ -1043,6 +1077,7 @@ export async function streamDetection(socket, dirPath) {
     processes: [],
     pm2Home: null,
     type: 'unknown',
+    nativeLaunch: null,
     appIconPath: null
   };
 
@@ -1070,6 +1105,7 @@ export async function streamDetection(socket, dirPath) {
   const entries = await readdir(dirPath, { withFileTypes: true }).catch(() => []);
   const files = entries.map(e => e.name);
   emit('files', 'done', { message: `Found ${files.length} files`, files: files.slice(0, 20) });
+  const godotNativeLaunch = detectGodotNativeLaunch(dirPath);
 
   // Detect Swift/Xcode projects from directory contents
   const hasXcodeproj = files.some(f => f.endsWith('.xcodeproj') || f.endsWith('.xcworkspace'));
@@ -1157,6 +1193,10 @@ export async function streamDetection(socket, dirPath) {
   } else {
     emit('package', 'done', { message: 'No package.json found' });
   }
+
+  // Native game launch is additive: web ports/processes remain the standard
+  // managed app while the game gets its own explicit action.
+  if (godotNativeLaunch) result.nativeLaunch = godotNativeLaunch;
 
   // Step 4: Check config files for ports
   emit('config', 'running', { message: 'Checking configuration files...' });

@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { FolderOpen, Terminal, Code, RefreshCw, Wrench, Archive, ArchiveRestore, Ticket, Download, Tag, AlertTriangle, Rocket, Camera, Image, Sparkles } from 'lucide-react';
+import { FolderOpen, Gamepad2, Terminal, Code, RefreshCw, Wrench, Archive, ArchiveRestore, Ticket, Download, Tag, AlertTriangle, Rocket, Camera, Image, Sparkles } from 'lucide-react';
 import toast from '../../ui/Toast';
 import { NON_PM2_TYPES } from '../constants';
 import BrailleSpinner from '../../BrailleSpinner';
@@ -197,6 +197,18 @@ export default function OverviewTab({ app, onRefresh }) {
                 <code className="text-sm text-cyan-300 font-mono break-all">{cmd}</code>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {app.nativeLaunch && (
+        <div>
+          <div className="text-xs text-gray-500 uppercase tracking-wide mb-2">Native Launch</div>
+          <div className="flex flex-wrap items-center gap-2 bg-port-card border border-port-border rounded-lg p-3">
+            <Gamepad2 size={14} className="text-port-success shrink-0" />
+            <span className="text-sm text-white">{app.nativeLaunch.label}</span>
+            <code className="text-sm text-cyan-300 font-mono break-all">{app.nativeLaunch.command}</code>
+            <span className="text-xs text-gray-500 font-mono">{app.nativeLaunch.processName}</span>
           </div>
         </div>
       )}

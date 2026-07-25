@@ -61,6 +61,10 @@ export default function EditAppDrawer({ app, onClose, onSave }) {
     buildCommand: app.buildCommand || '',
     startCommands: (app.startCommands || []).join('\n'),
     pm2ProcessNames: (app.pm2ProcessNames || []).join(', '),
+    nativeLaunchEnabled: !!app.nativeLaunch,
+    nativeLaunchLabel: app.nativeLaunch?.label || 'Desktop',
+    nativeLaunchCommand: app.nativeLaunch?.command || '',
+    nativeLaunchProcessName: app.nativeLaunch?.processName || '',
     editorCommand: app.editorCommand || 'code .',
     workTracker: app.workTracker || 'auto',
     defaultOpenPR: app.defaultOpenPR || false,
@@ -351,6 +355,25 @@ export default function EditAppDrawer({ app, onClose, onSave }) {
       }
     }
 
+    if (formData.nativeLaunchEnabled) {
+      const nativeFields = [
+        ['nativeLaunchLabel', 'Native button label'],
+        ['nativeLaunchProcessName', 'Native PM2 process name'],
+        ['nativeLaunchCommand', 'Native launch command']
+      ];
+      const missing = nativeFields.find(([key]) => !formData[key]?.trim());
+      if (missing) {
+        setActiveTab('commands');
+        setError(`${missing[1]} is required.`);
+        return;
+      }
+      if (!/^[a-zA-Z0-9._-]+$/.test(formData.nativeLaunchProcessName.trim())) {
+        setActiveTab('commands');
+        setError('Native PM2 process name may contain only letters, numbers, dots, underscores, and hyphens.');
+        return;
+      }
+    }
+
     setSaving(true);
 
     const data = {
@@ -366,6 +389,11 @@ export default function EditAppDrawer({ app, onClose, onSave }) {
       pm2ProcessNames: formData.pm2ProcessNames
         ? formData.pm2ProcessNames.split(',').map(s => s.trim()).filter(Boolean)
         : undefined,
+      nativeLaunch: formData.nativeLaunchEnabled ? {
+        label: formData.nativeLaunchLabel.trim(),
+        command: formData.nativeLaunchCommand.trim(),
+        processName: formData.nativeLaunchProcessName.trim()
+      } : null,
       editorCommand: formData.editorCommand || undefined,
       workTracker: formData.workTracker || 'auto',
       defaultUseWorktree: formData.defaultUseWorktree || formData.defaultOpenPR,
@@ -622,6 +650,62 @@ export default function EditAppDrawer({ app, onClose, onSave }) {
                   onChange={e => setFormData({ ...formData, pm2ProcessNames: e.target.value })}
                   className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
                 />
+              </div>
+
+              <div className="bg-port-bg/50 border border-port-border rounded-lg p-3 space-y-3">
+                <label htmlFor="edit-app-native-enabled" className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    id="edit-app-native-enabled"
+                    type="checkbox"
+                    checked={formData.nativeLaunchEnabled}
+                    onChange={e => setFormData(prev => ({ ...prev, nativeLaunchEnabled: e.target.checked }))}
+                    className="rounded border-port-border bg-port-bg text-port-accent focus:ring-port-accent"
+                  />
+                  <span className="text-sm text-white">Separate native launch action</span>
+                </label>
+                <p className="text-xs text-gray-500">
+                  Adds a button beside the standard web Launch. The native process runs once and stays stopped when its window closes.
+                </p>
+                {formData.nativeLaunchEnabled && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label htmlFor="edit-app-native-label" className="block text-sm text-gray-400 mb-1">Button Label</label>
+                      <input
+                        id="edit-app-native-label"
+                        type="text"
+                        value={formData.nativeLaunchLabel}
+                        onChange={e => setFormData(prev => ({ ...prev, nativeLaunchLabel: e.target.value }))}
+                        className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+                        placeholder="Godot"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="edit-app-native-process" className="block text-sm text-gray-400 mb-1">PM2 Process Name</label>
+                      <input
+                        id="edit-app-native-process"
+                        type="text"
+                        value={formData.nativeLaunchProcessName}
+                        onChange={e => setFormData(prev => ({ ...prev, nativeLaunchProcessName: e.target.value }))}
+                        className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+                        placeholder="my-app-game"
+                        required
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label htmlFor="edit-app-native-command" className="block text-sm text-gray-400 mb-1">Native Launch Command</label>
+                      <input
+                        id="edit-app-native-command"
+                        type="text"
+                        value={formData.nativeLaunchCommand}
+                        onChange={e => setFormData(prev => ({ ...prev, nativeLaunchCommand: e.target.value }))}
+                        className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden font-mono text-sm"
+                        placeholder="./scripts/game run"
+                        required
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div>

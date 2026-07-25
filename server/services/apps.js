@@ -177,7 +177,8 @@ export async function getActiveApps() {
 }
 
 /**
- * PM2 process names belonging to desktop (portless GUI) apps.
+ * PM2 process names whose exit is expected: desktop apps and optional native
+ * launch targets attached to otherwise web-based apps.
  *
  * A desktop process is launched with `autorestart: false` because the user
  * closing the window is a normal exit — but that alone does NOT stop every
@@ -196,8 +197,10 @@ export async function getDesktopProcessNames() {
   const apps = await getAllApps();
   const names = new Set();
   for (const app of apps) {
-    if (!isDesktopType(app.type)) continue;
-    for (const name of app.pm2ProcessNames || []) names.add(name);
+    if (isDesktopType(app.type)) {
+      for (const name of app.pm2ProcessNames || []) names.add(name);
+    }
+    if (app.nativeLaunch?.processName) names.add(app.nativeLaunch.processName);
   }
   return names;
 }
@@ -214,7 +217,10 @@ export async function getDesktopProcessNames() {
  */
 export async function resolvePm2HomeForProcess(processName) {
   const apps = await getAllApps();
-  const app = apps.find(candidate => candidate.pm2ProcessNames?.includes(processName));
+  const app = apps.find(candidate =>
+    candidate.pm2ProcessNames?.includes(processName)
+    || candidate.nativeLaunch?.processName === processName
+  );
   return app?.pm2Home || null;
 }
 
@@ -223,10 +229,11 @@ export async function resolvePm2HomeForProcess(processName) {
  * concept rather than each re-deriving it from a name set.
  *
  * `expectedExit: true` means "this process stopping is a normal outcome, not a
- * failure" — today that is exactly the desktop (GUI) apps, where the user
- * closing the window ends the process (cleanly as `stopped`, or as `errored`
- * on a force-quit / non-zero exit). Consumers that auto-restart or alert on
- * `errored` must skip these. Current consumers:
+ * failure" — today that covers desktop (GUI) app processes and the optional
+ * native launch targets attached to web apps. The user closing either window
+ * ends its process (cleanly as `stopped`, or as `errored` on a force-quit /
+ * non-zero exit). Consumers that auto-restart or alert on `errored` must skip
+ * these. Current consumers:
  *   - services/cosHealthMonitor.js   — auto-restarts errored processes
  *   - services/proactiveAlerts.js    — alerts on errored / crash-looping processes
  *   - routes/systemHealth.js         — drives overallHealth + the dashboard/city HUD
@@ -385,6 +392,7 @@ export async function createApp(appData) {
     buildCommand: appData.buildCommand || undefined,
     startCommands: appData.startCommands || ['npm run dev'],
     pm2ProcessNames: appData.pm2ProcessNames || [appData.name.toLowerCase().replace(/\s+/g, '-')],
+    nativeLaunch: appData.nativeLaunch || null,
     envFile: appData.envFile || '.env',
     icon: appData.icon || null,
     appIconPath: appData.appIconPath || null,
