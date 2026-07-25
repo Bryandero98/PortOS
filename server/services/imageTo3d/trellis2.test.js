@@ -32,6 +32,7 @@ import {
   selectTrellis2PipelineType,
   selectTrellis2TextureSize,
 } from './trellis2.js';
+import { getTarget } from './targets.js';
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -514,10 +515,16 @@ describe('runTrellis2Generate', () => {
       'huggingface_hub.errors.GatedRepoError: 401 Client Error. '
       + 'Access to model facebook/dinov3-vitl16-pretrain-lvd1689m is restricted.\n');
     child.emit('close', 1);
-    await expect(promise).rejects.toMatchObject({
+    const error = await promise.catch((err) => err);
+    const gatedRepos = getTarget('trellis2').gatedRepos;
+    expect(error).toMatchObject({
       code: 'TRELLIS2_HF_AUTH_REQUIRED',
       message: expect.stringMatching(/hugging face/i),
     });
+    for (const gatedRepo of gatedRepos) {
+      expect(error.message).toContain(gatedRepo.label);
+      expect(error.message).toContain(gatedRepo.url);
+    }
   });
 
   it('rejects when it exits 0 but never reported a .glb', async () => {

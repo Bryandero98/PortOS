@@ -31,11 +31,23 @@ describe('image-to-3d target registry', () => {
       outputKind: OUTPUT_KIND.GLB_MESH,
     });
     expect(t.requires).toMatchObject({ appleSilicon: true, minUnifiedMemoryGb: 24 });
+    expect(t.gatedRepos).toEqual([
+      {
+        label: 'facebook/dinov3-vitl16-pretrain-lvd1689m',
+        url: 'https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m',
+      },
+      {
+        label: 'briaai/RMBG-2.0',
+        url: 'https://huggingface.co/briaai/RMBG-2.0',
+      },
+    ]);
   });
 
   it('freezes the registry and its descriptors so a target cannot be mutated at runtime', () => {
     expect(Object.isFrozen(IMAGE_TO_3D_TARGETS)).toBe(true);
     expect(Object.isFrozen(IMAGE_TO_3D_TARGETS.trellis2)).toBe(true);
+    expect(Object.isFrozen(IMAGE_TO_3D_TARGETS.trellis2.gatedRepos)).toBe(true);
+    expect(Object.isFrozen(IMAGE_TO_3D_TARGETS.trellis2.gatedRepos[0])).toBe(true);
     expect(() => {
       IMAGE_TO_3D_TARGETS.trellis2.label = 'hacked';
     }).toThrow();
@@ -121,6 +133,7 @@ describe('listTargets', () => {
     expect(available.find((t) => t.id === 'trellis2')).toMatchObject({
       available: true,
       unavailableReason: null,
+      gatedRepos: IMAGE_TO_3D_TARGETS.trellis2.gatedRepos,
     });
 
     const blocked = listTargets(CUDA_BOX);

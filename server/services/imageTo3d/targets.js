@@ -69,6 +69,19 @@ export const IMAGE_TO_3D_TARGETS = Object.freeze({
     // Community MPS port that makes the CUDA-only upstream run on Apple Silicon.
     port: 'https://github.com/shivampkumar/trellis-mac',
     weightsRepo: 'microsoft/TRELLIS.2-4B',
+    // Optional user-actionable prerequisites. The target descriptor is the source
+    // for both the API/UI notice and runner auth guidance, so new targets do not
+    // need their gated Hugging Face dependencies duplicated in either consumer.
+    gatedRepos: Object.freeze([
+      Object.freeze({
+        label: 'facebook/dinov3-vitl16-pretrain-lvd1689m',
+        url: 'https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m',
+      }),
+      Object.freeze({
+        label: 'briaai/RMBG-2.0',
+        url: 'https://huggingface.co/briaai/RMBG-2.0',
+      }),
+    ]),
     // Wired in later phases (issue #2951); referenced by path, never imported here.
     installerModule: 'server/services/imageTo3d/trellis2Install.js',
     runnerModule: 'server/services/imageTo3d/trellis2.js',
