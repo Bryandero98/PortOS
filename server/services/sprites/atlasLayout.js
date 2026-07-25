@@ -44,10 +44,6 @@
 import { basename } from 'path';
 import { deriveTracks, resolveWalkFrameCount } from './atlasGrid.js';
 
-// Re-exported so the sidecar's public surface is unchanged for its consumers
-// and tests: atlasGrid.js is where they live, atlasLayout.js is where they were.
-export { deriveTracks, resolveWalkFrameCount } from './atlasGrid.js';
-
 // Bump only on a breaking shape change. Adding a field (or a new track) is
 // additive — consumers read `tracks`/`columns` by name, not by position.
 export const ATLAS_LAYOUT_SCHEMA_VERSION = 1;

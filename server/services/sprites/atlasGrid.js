@@ -32,14 +32,18 @@
  * state, or the image graph.
  *
  * **Only ONE track is registered today** (`walk`). The multi-track paths below
- * are proven against synthetic track rows and a synthetic registration order in
- * `atlasGrid.test.js` rather than by shipping a second track's artwork — that is
- * #3018's job, and it should land as a registry row plus its pipeline, with no
- * shape change here.
+ * are proven in `atlasGrid.test.js` against a synthetic REGISTRY TABLE rather
+ * than by shipping a second track's artwork. The registry table is the
+ * injection seam throughout — the same idiom `assertAnimationTrackRows(tracks)`
+ * uses — so a synthetic row flows through exactly the lookup, ordering and
+ * unknown-id boundary a real one would. Shipping a real second track is #3018's
+ * job, and it should land as a registry ROW plus its pipeline, with no shape
+ * change here.
  */
 
-import { ANIMATION_TRACK_IDS, WALK_TRACK, getAnimationTrack } from './animationTracks.js';
+import { ANIMATION_TRACKS, WALK_TRACK, getAnimationTrack } from './animationTracks.js';
 import { ATLAS_IDLE_COLUMN, ATLAS_SCANNER_COLUMN, walkPhaseLabels } from './walkBounds.js';
+import { canonicalStringify } from '../../lib/objects.js';
 
 /**
  * Column labels for one track's span.
@@ -57,6 +61,9 @@ import { ATLAS_IDLE_COLUMN, ATLAS_SCANNER_COLUMN, walkPhaseLabels } from './walk
  * what its non-contiguity guard reports as an undescribable grid.
  */
 export function trackColumnLabels(trackId, frameCount) {
+  // A structural bound, not an authoring one: a track occupies at least one
+  // column. Whether the count is *legal to author* is the registry's business
+  // and is checked by resolveTrackUniformity against the track's own row.
   if (!Number.isInteger(frameCount) || frameCount < 1) {
     throw new Error(`Atlas track '${trackId}' needs a positive integer frame count, got ${frameCount}`);
   }
@@ -65,7 +72,7 @@ export function trackColumnLabels(trackId, frameCount) {
 }
 
 /**
- * Build the atlas grid from a set of track specs (`{ id, frameCount, labels? }`).
+ * Build the atlas grid from a set of track specs (`{ id, frameCount }`).
  *
  * Returns `{ columns, tracks }` where `tracks` maps each track id to its
  * contiguous `{ start, count }` column span — mutually consistent by
@@ -73,16 +80,20 @@ export function trackColumnLabels(trackId, frameCount) {
  * sidecar's spans can never drift apart.
  *
  * `idle` is always column 0 and is described as a track of its own, matching
- * what the sidecar has always emitted. Specs are sorted into `trackOrder`
- * (the registry's registration order by default) rather than trusted in call
- * order, so two call sites that list tracks differently still produce the same
- * grid. `trackOrder` is injectable so the multi-track path can be proven against
- * a synthetic order while only `walk` is actually registered.
+ * what the sidecar has always emitted. Specs are sorted into the registry's
+ * registration order rather than trusted in call order, so two call sites that
+ * list tracks differently still produce the same grid, and an id the registry
+ * doesn't know is refused through `getAnimationTrack`'s own unknown-track
+ * boundary. The registry TABLE is the injection seam (the
+ * `assertAnimationTrackRows(tracks)` idiom) so the multi-track path can be
+ * proven against a synthetic table without a private lookup that would bypass
+ * that boundary.
  */
-export function buildAtlasGrid(specs, trackOrder = ANIMATION_TRACK_IDS) {
+export function buildAtlasGrid(specs, tracks = ANIMATION_TRACKS) {
   if (!Array.isArray(specs) || !specs.length) {
     throw new Error('Atlas grid needs at least one animation track');
   }
+  const order = Object.keys(tracks);
   const seen = new Set();
   for (const spec of specs) {
     const id = spec?.id;
@@ -92,24 +103,21 @@ export function buildAtlasGrid(specs, trackOrder = ANIMATION_TRACK_IDS) {
     }
     if (seen.has(id)) throw new Error(`Atlas grid lists track '${id}' twice`);
     seen.add(id);
-    if (!trackOrder.includes(id)) {
-      throw new Error(`Atlas grid lists unknown track '${id}' — known tracks: ${trackOrder.join(', ')}`);
-    }
+    getAnimationTrack(id, tracks);
   }
 
-  const ordered = [...specs].sort((a, b) => trackOrder.indexOf(a.id) - trackOrder.indexOf(b.id));
+  const ordered = [...specs].sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
   const columns = [ATLAS_IDLE_COLUMN];
-  const tracks = { [ATLAS_IDLE_COLUMN]: { start: 0, count: 1 } };
+  const spans = { [ATLAS_IDLE_COLUMN]: { start: 0, count: 1 } };
   for (const spec of ordered) {
-    const labels = Array.isArray(spec.labels) ? [...spec.labels] : trackColumnLabels(spec.id, spec.frameCount);
-    if (Number.isInteger(spec.frameCount) && labels.length !== spec.frameCount) {
-      throw new Error(`Atlas track '${spec.id}' declares ${spec.frameCount} frames but supplies ${labels.length} column labels`);
-    }
-    if (!labels.length) throw new Error(`Atlas track '${spec.id}' has no columns`);
-    tracks[spec.id] = { start: columns.length, count: labels.length };
+    // Labels are DERIVED, never supplied: trackColumnLabels is total and
+    // deterministic, so accepting them from the caller would only create a
+    // mismatch the builder then has to reconcile against itself.
+    const labels = trackColumnLabels(spec.id, spec.frameCount);
+    spans[spec.id] = { start: columns.length, count: labels.length };
     columns.push(...labels);
   }
-  return { columns, tracks };
+  return { columns, tracks: spans };
 }
 
 /**
@@ -199,7 +207,7 @@ export function deriveTracks(columns, walkFrameCount, compiledTracks = null) {
 }
 
 /** Non-throwing `deriveTracks` — `{ tracks }` or `{ error }`. */
-export function describeTracks(columns, walkFrameCount, compiledTracks = null) {
+function describeTracks(columns, walkFrameCount, compiledTracks = null) {
   if (!Array.isArray(columns) || !columns.length) {
     return { error: 'Compiled atlas geometry has no column list' };
   }
@@ -259,7 +267,14 @@ export function compiledGridUpToDate(current, expected) {
   if (JSON.stringify(current.columns) !== JSON.stringify(expected.columns)) return false;
   const described = describeTracks(current.columns, resolveWalkFrameCount(current), current.tracks ?? null);
   if (described.error) return false;
-  return JSON.stringify(described.tracks) === JSON.stringify(expected.tracks);
+  // canonicalStringify, NOT JSON.stringify: the two sides are built by three
+  // different producers with three different key-insertion orders
+  // (buildAtlasGrid inserts idle then registry order; validateCompiledTracks
+  // re-inserts sorted by start; the legacy branch inserts in column-index
+  // order). A key-order-sensitive compare would report "not up to date" forever
+  // and re-run the whole pixel pipeline on every compile — precisely the
+  // failure this predicate exists to avoid.
+  return canonicalStringify(described.tracks) === canonicalStringify(expected.tracks);
 }
 
 /**
@@ -273,14 +288,16 @@ export function compiledGridUpToDate(current, expected) {
  * check reads the named track's own registry row (#3015) instead of the global
  * walk-shaped 6–16 / 4–24 constants.
  *
- * `rows` are `{ direction, frameCount, declaredFrameCount, fps }`.
- * `trackRow` and `error` are injectable so the multi-track path can be proven
- * against a synthetic row while `walk` is the only registered track, and so this
- * leaf stays free of the error-handler import (callers pass the 422-shaped
- * `compileError`). Returns `{ id, frameCount, fps, labels }`.
+ * `rows` are `{ direction, frameCount, declaredFrameCount, fps }`. The registry
+ * `tracks` table is the injection seam (as in `buildAtlasGrid`), and `error` is
+ * injectable so this leaf stays free of the error-handler import — callers pass
+ * the 422-shaped `compileError`. `defaultFps` covers a track whose historical
+ * manifests predate the fps field and must keep resolving to the exact value
+ * they always did. Returns `{ id, frameCount, fps, labels }`.
  */
 export function resolveTrackUniformity(trackId, rows, {
-  trackRow = getAnimationTrack(trackId),
+  tracks = ANIMATION_TRACKS,
+  trackRow = getAnimationTrack(trackId, tracks),
   error = (message) => new Error(message),
   defaultFps = trackRow.defaultFps,
 } = {}) {

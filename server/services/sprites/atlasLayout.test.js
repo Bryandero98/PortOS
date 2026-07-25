@@ -5,11 +5,14 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  buildAtlasLayout, deriveTracks, layoutSidecarPath, resolveWalkFrameCount,
-  runtimeContractMismatch, ATLAS_LAYOUT_SCHEMA_VERSION,
+  buildAtlasLayout, layoutSidecarPath, runtimeContractMismatch, ATLAS_LAYOUT_SCHEMA_VERSION,
 } from './atlasLayout.js';
 import { walkPhaseLabels } from './walkBounds.js';
-import { buildAtlasGrid } from './atlasGrid.js';
+// The span math moved to atlasGrid.js (#3016) — one public path, no re-export
+// shim. The cases below exercise it through SIDECAR-shaped geometry fixtures;
+// atlasGrid.test.js owns the module's own unit coverage.
+import { buildAtlasGrid, deriveTracks, resolveWalkFrameCount } from './atlasGrid.js';
+import { ANIMATION_TRACKS } from './animationTracks.js';
 
 const DIRECTIONS = ['S', 'SE', 'E', 'NE', 'N', 'NW', 'W', 'SW'];
 // The grid the compiler emits today: idle + N walk phases (#2986 dropped the
@@ -141,7 +144,7 @@ describe('buildAtlasLayout', () => {
     // fixture is the point rather than a shortcut).
     const grid = buildAtlasGrid(
       [{ id: 'walk', frameCount: 12 }, { id: 'scanner', frameCount: 4 }],
-      ['walk', 'scanner'],
+      { ...ANIMATION_TRACKS, scanner: { ...ANIMATION_TRACKS.walk, id: 'scanner' } },
     );
     const layout = buildAtlasLayout({
       characterId: 'example-character',

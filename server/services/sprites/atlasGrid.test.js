@@ -3,7 +3,10 @@
  * pre-pixel up-to-date comparison. Pure module: no fs, no compiler, no sharp.
  *
  * Only ONE track (`walk`) is registered today, so every multi-track assertion
- * here runs against a SYNTHETIC track row and a synthetic registration order.
+ * here runs against a SYNTHETIC registry table — the same injected-table idiom
+ * `assertAnimationTrackRows(tracks)` uses, so a synthetic row flows through
+ * exactly the lookup, ordering and unknown-id boundary a real second row would.
+ *
  * That is deliberate: proving the multi-track path against the shipped
  * single-row table would only re-derive the implementation — the whole span
  * builder could collapse back to `['idle', ...walkLabels]` and such a test would
@@ -13,11 +16,11 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  trackColumnLabels, buildAtlasGrid, deriveTracks, describeTracks,
+  trackColumnLabels, buildAtlasGrid, deriveTracks,
   resolveWalkFrameCount, compiledGridUpToDate, resolveTrackUniformity,
 } from './atlasGrid.js';
 import { walkPhaseLabels } from './walkBounds.js';
-import { getAnimationTrack } from './animationTracks.js';
+import { getAnimationTrack, ANIMATION_TRACKS } from './animationTracks.js';
 
 // A second track that does NOT exist in the registry, shaped like a short
 // action animation: four frames, which sits BELOW walk's floor of 6 — the exact
@@ -35,7 +38,7 @@ const SCANNER_ROW = Object.freeze({
   contractFrameCountField: 'scannerFrameCount',
   contractFpsField: null,
 });
-const TWO_TRACK_ORDER = ['walk', 'scanner'];
+const TWO_TRACK_REGISTRY = Object.freeze({ walk: ANIMATION_TRACKS.walk, scanner: SCANNER_ROW });
 const DIRECTIONS = ['S', 'SE', 'E', 'NE', 'N', 'NW', 'W', 'SW'];
 
 const rowsFor = (frameCount, fps, overrides = {}) =>
@@ -80,7 +83,7 @@ describe('buildAtlasGrid', () => {
     // The whole point of #3016: a 4-frame action beside a 12-frame walk.
     const grid = buildAtlasGrid(
       [{ id: 'walk', frameCount: 12 }, { id: 'scanner', frameCount: 4 }],
-      TWO_TRACK_ORDER,
+      TWO_TRACK_REGISTRY,
     );
     expect(grid.columns).toEqual([
       'idle', ...walkPhaseLabels(12),
@@ -102,11 +105,11 @@ describe('buildAtlasGrid', () => {
   it('sorts specs into registration order rather than call order', () => {
     const asGiven = buildAtlasGrid(
       [{ id: 'scanner', frameCount: 4 }, { id: 'walk', frameCount: 6 }],
-      TWO_TRACK_ORDER,
+      TWO_TRACK_REGISTRY,
     );
     const reversed = buildAtlasGrid(
       [{ id: 'walk', frameCount: 6 }, { id: 'scanner', frameCount: 4 }],
-      TWO_TRACK_ORDER,
+      TWO_TRACK_REGISTRY,
     );
     expect(asGiven).toEqual(reversed);
     expect(asGiven.tracks.walk.start).toBeLessThan(asGiven.tracks.scanner.start);
@@ -117,13 +120,16 @@ describe('buildAtlasGrid', () => {
     expect(() => buildAtlasGrid([{ frameCount: 8 }])).toThrow(/needs an id/);
     expect(() => buildAtlasGrid([{ id: 'walk', frameCount: 8 }, { id: 'walk', frameCount: 6 }]))
       .toThrow(/lists track 'walk' twice/);
-    // `idle` is the anchor column, never a registrable track.
-    expect(() => buildAtlasGrid([{ id: 'idle', frameCount: 1 }], ['idle']))
+    // `idle` is the anchor column, never a registrable track — even if some
+    // future registry tried to claim it.
+    expect(() => buildAtlasGrid([{ id: 'idle', frameCount: 1 }], { idle: SCANNER_ROW }))
       .toThrow(/the idle anchor owns that column/);
+    // Unknown ids are refused through the registry's OWN boundary, so the grid
+    // can't develop a second, more permissive idea of what a track is.
     expect(() => buildAtlasGrid([{ id: 'scanner', frameCount: 4 }]))
-      .toThrow(/unknown track 'scanner'/);
-    expect(() => buildAtlasGrid([{ id: 'walk', frameCount: 8, labels: ['a', 'b'] }]))
-      .toThrow(/declares 8 frames but supplies 2 column labels/);
+      .toThrow(/Unknown animation track 'scanner'/);
+    expect(() => buildAtlasGrid([{ id: 'walk', frameCount: 0 }]))
+      .toThrow(/positive integer frame count/);
   });
 });
 
@@ -131,7 +137,7 @@ describe('deriveTracks', () => {
   it('prefers a persisted descriptor over the legacy column-name derivation', () => {
     const grid = buildAtlasGrid(
       [{ id: 'walk', frameCount: 6 }, { id: 'scanner', frameCount: 4 }],
-      TWO_TRACK_ORDER,
+      TWO_TRACK_REGISTRY,
     );
     expect(deriveTracks(grid.columns, 6, grid.tracks)).toEqual(grid.tracks);
     // …and the descriptor is genuinely load-bearing: without it the legacy
@@ -176,7 +182,6 @@ describe('deriveTracks', () => {
   it('reports an undescribable grid rather than lying about it', () => {
     expect(() => deriveTracks(['idle', 'scanner', 'idle'], 0)).toThrow(/non-contiguously/);
     expect(() => deriveTracks([], 0)).toThrow(/no column list/);
-    expect(describeTracks([], 0).error).toMatch(/no column list/);
   });
 });
 
@@ -270,7 +275,7 @@ describe('resolveTrackUniformity', () => {
     // never a between-track one. A 4-frame / 6 fps scanner sits below walk's
     // floor of 6 frames and is resolved against ITS OWN registry row.
     const walk = resolveTrackUniformity('walk', rowsFor(12, 10));
-    const scanner = resolveTrackUniformity('scanner', rowsFor(4, 6), { trackRow: SCANNER_ROW });
+    const scanner = resolveTrackUniformity('scanner', rowsFor(4, 6), { tracks: TWO_TRACK_REGISTRY });
     expect(walk.frameCount).toBe(12);
     expect(scanner.frameCount).toBe(4);
     expect(scanner.fps).toBe(6);
@@ -280,9 +285,9 @@ describe('resolveTrackUniformity', () => {
     expect(() => resolveTrackUniformity('walk', rowsFor(4, 6)))
       .toThrow(/outside the supported 6–16 range/);
     // …and 12 frames is out of range for the scanner's own row.
-    expect(() => resolveTrackUniformity('scanner', rowsFor(12, 6), { trackRow: SCANNER_ROW }))
+    expect(() => resolveTrackUniformity('scanner', rowsFor(12, 6), { tracks: TWO_TRACK_REGISTRY }))
       .toThrow(/outside the supported 2–8 range/);
-    expect(() => resolveTrackUniformity('scanner', rowsFor(4, 20), { trackRow: SCANNER_ROW }))
+    expect(() => resolveTrackUniformity('scanner', rowsFor(4, 20), { tracks: TWO_TRACK_REGISTRY }))
       .toThrow(/fps 20 is outside the supported 2–12 range/);
   });
 
@@ -296,7 +301,7 @@ describe('resolveTrackUniformity', () => {
   it('falls back to the supplied default fps for pre-fps manifests', () => {
     // Older run manifests carry no frameRate at all — they must keep compiling.
     expect(resolveTrackUniformity('walk', rowsFor(12, undefined), { defaultFps: 12 }).fps).toBe(12);
-    expect(resolveTrackUniformity('scanner', rowsFor(4, undefined), { trackRow: SCANNER_ROW }).fps)
+    expect(resolveTrackUniformity('scanner', rowsFor(4, undefined), { tracks: TWO_TRACK_REGISTRY }).fps)
       .toBe(SCANNER_ROW.defaultFps);
   });
 
