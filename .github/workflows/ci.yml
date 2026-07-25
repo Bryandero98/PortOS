@@ -5,25 +5,145 @@ on:
     branches: [main, release]
   push:
     branches: [main]
+  schedule:
+    - cron: '17 9 * * *'
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      full:
+        description: Run the complete server, client, DB, lint, build, and smoke suite
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  test:
+  impact:
+    name: Plan test impact
     runs-on: ubuntu-latest
-    # Skip if commit message contains [skip ci]
-    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    if: github.event_name != 'push' || !contains(github.event.head_commit.message, '[skip ci]')
+    outputs:
+      full: ${{ steps.plan.outputs.full }}
+      reason: ${{ steps.plan.outputs.reason }}
+      server_mode: ${{ steps.plan.outputs.server_mode }}
+      server_files: ${{ steps.plan.outputs.server_files }}
+      client_mode: ${{ steps.plan.outputs.client_mode }}
+      client_files: ${{ steps.plan.outputs.client_files }}
+      db: ${{ steps.plan.outputs.db }}
+      lint_mode: ${{ steps.plan.outputs.lint_mode }}
+      lint_files: ${{ steps.plan.outputs.lint_files }}
+      build: ${{ steps.plan.outputs.build }}
+      smoke: ${{ steps.plan.outputs.smoke }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
-    strategy:
-      matrix:
-        node-version: [24.x]
+      - name: Select affected test surfaces
+        id: plan
+        env:
+          CI_FORCE_FULL: ${{ github.event_name != 'pull_request' || inputs.full }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/ci-test-plan.js
 
-    # Postgres (with pgvector) for the DB-backed adapter suites. The image ships
-    # the `vector` extension that init-db.sql requires. The default `portos` DB
-    # exists so setup:db:test has a maintenance connection to CREATE portos_test
-    # from; the suites themselves only ever touch portos_test (the production
-    # `portos` name is hard-blocked by isTestDatabase()).
+      - name: Publish plan summary
+        env:
+          PLAN_REASON: ${{ steps.plan.outputs.reason }}
+          SERVER_MODE: ${{ steps.plan.outputs.server_mode }}
+          CLIENT_MODE: ${{ steps.plan.outputs.client_mode }}
+          DB_MODE: ${{ steps.plan.outputs.db }}
+          LINT_MODE: ${{ steps.plan.outputs.lint_mode }}
+          BUILD_MODE: ${{ steps.plan.outputs.build }}
+          SMOKE_MODE: ${{ steps.plan.outputs.smoke }}
+        run: |
+          {
+            echo "### CI impact plan"
+            echo
+            echo "- Reason: \`${PLAN_REASON}\`"
+            echo "- Server tests: \`${SERVER_MODE}\`"
+            echo "- Client tests: \`${CLIENT_MODE}\`"
+            echo "- DB tests: \`${DB_MODE}\`"
+            echo "- Client lint: \`${LINT_MODE}\`"
+            echo "- Client build: \`${BUILD_MODE}\`"
+            echo "- Server smoke: \`${SMOKE_MODE}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  server:
+    # Preserve the historical required-check context while branch protection
+    # transitions to the stable aggregate "CI Gate" check.
+    name: test (24.x)
+    needs: impact
+    if: needs.impact.outputs.server_mode != 'skip'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Use Node.js 24.x
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install server dependencies
+        run: npm ci --prefix server
+
+      - name: Check server entry-point syntax
+        run: node --check server/index.js
+
+      - name: Run server tests
+        env:
+          CI_TEST_MODE: ${{ needs.impact.outputs.server_mode }}
+          CI_TEST_FILES: ${{ needs.impact.outputs.server_files }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node scripts/run-ci-tests.js server
+
+  client:
+    name: Client tests and build
+    needs: impact
+    if: needs.impact.outputs.client_mode != 'skip' || needs.impact.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Use Node.js 24.x
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install client dependencies
+        run: npm ci --prefix client
+
+      - name: Run client tests
+        if: needs.impact.outputs.client_mode != 'skip'
+        env:
+          CI_TEST_MODE: ${{ needs.impact.outputs.client_mode }}
+          CI_TEST_FILES: ${{ needs.impact.outputs.client_files }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node scripts/run-ci-tests.js client
+
+      - name: Build client
+        if: needs.impact.outputs.build == 'true'
+        run: npm run build --prefix client
+
+  database:
+    name: DB tests and server smoke
+    needs: impact
+    if: needs.impact.outputs.db == 'true' || needs.impact.outputs.smoke == 'true'
+    runs-on: ubuntu-latest
     services:
       postgres:
         image: pgvector/pgvector:pg17
@@ -38,62 +158,11 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-
     env:
       PGHOST: localhost
       PGPORT: 5432
       PGUSER: portos
       PGPASSWORD: portos
-
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Use Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v7
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'npm'
-          cache-dependency-path: |
-            package-lock.json
-            server/package-lock.json
-            client/package-lock.json
-
-      - name: Install root dependencies
-        run: npm ci
-
-      - name: Install server dependencies
-        run: npm ci --prefix server
-
-      - name: Install client dependencies
-        run: npm ci --prefix client
-
-      # Main server suite runs WITHOUT PGDATABASE pointing at a test DB, so the
-      # DB-backed suites skip here (they'd see the non-test `portos` name). They
-      # run in their own serial step below against portos_test.
-      - name: Run server tests
-        run: npm run test:ci --prefix server
-
-      - name: Provision test database (portos_test)
-        run: npm run setup:db:test --prefix server
-
-      - name: Run DB-backed tests (portos_test)
-        run: npm run test:db:ci --prefix server
-        env:
-          PGDATABASE: portos_test
-
-      - name: Run client tests
-        run: npm test --prefix client
-
-      - name: Build client
-        run: npm run build --prefix client
-
-      - name: Smoke-boot server (fail if top-level init crashes)
-        run: npm run smoke
-
-  lint:
-    runs-on: ubuntu-latest
-    if: "!contains(github.event.head_commit.message, '[skip ci]')"
-
     steps:
       - uses: actions/checkout@v7
 
@@ -101,23 +170,78 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: 24.x
-          cache: 'npm'
-          cache-dependency-path: |
-            package-lock.json
-            server/package-lock.json
-            client/package-lock.json
-
-      - name: Install root dependencies
-        run: npm ci
+          cache: npm
+          cache-dependency-path: server/package-lock.json
 
       - name: Install server dependencies
         run: npm ci --prefix server
 
+      - name: Provision test database (portos_test)
+        if: needs.impact.outputs.db == 'true'
+        run: npm run setup:db:test --prefix server
+
+      - name: Run DB-backed tests (portos_test)
+        if: needs.impact.outputs.db == 'true'
+        run: npm run test:db:ci --prefix server
+        env:
+          PGDATABASE: portos_test
+
+      - name: Smoke-boot server
+        if: needs.impact.outputs.smoke == 'true'
+        run: npm run smoke
+
+  lint:
+    # Preserve the historical required-check context during the CI migration.
+    name: lint
+    needs: impact
+    if: needs.impact.outputs.lint_mode != 'skip'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Use Node.js 24.x
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
       - name: Install client dependencies
         run: npm ci --prefix client
 
-      - name: Check for syntax errors
-        run: node --check server/index.js
-
       - name: Lint client
-        run: npm run lint --prefix client
+        env:
+          CI_LINT_MODE: ${{ needs.impact.outputs.lint_mode }}
+          CI_LINT_FILES: ${{ needs.impact.outputs.lint_files }}
+        run: node scripts/run-ci-lint.js
+
+  gate:
+    name: CI Gate
+    if: always()
+    needs: [impact, server, client, database, lint]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every selected job to pass
+        env:
+          IMPACT_RESULT: ${{ needs.impact.result }}
+          SERVER_RESULT: ${{ needs.server.result }}
+          CLIENT_RESULT: ${{ needs.client.result }}
+          DATABASE_RESULT: ${{ needs.database.result }}
+          LINT_RESULT: ${{ needs.lint.result }}
+        run: |
+          node -e '
+            const results = {
+              impact: process.env.IMPACT_RESULT,
+              server: process.env.SERVER_RESULT,
+              client: process.env.CLIENT_RESULT,
+              database: process.env.DATABASE_RESULT,
+              lint: process.env.LINT_RESULT,
+            };
+            const failed = Object.entries(results)
+              .filter(([, result]) => !["success", "skipped"].includes(result));
+            if (failed.length) {
+              console.error("Selected CI jobs did not pass:", failed);
+              process.exit(1);
+            }
+            console.log("CI gate passed:", results);
+          '

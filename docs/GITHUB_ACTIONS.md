@@ -1,6 +1,7 @@
 # GitHub Actions Workflows
 
-PortOS uses two GitHub Actions workflows for CI and releases.
+PortOS uses a test-impact-aware CI workflow plus a release workflow that cannot
+publish until the complete CI suite passes.
 
 ## Branch Strategy
 
@@ -11,41 +12,85 @@ PortOS uses two GitHub Actions workflows for CI and releases.
 
 ## CI Workflow (`ci.yml`)
 
-Triggers on PRs to `main`/`release` and pushes to `main`. Runs two parallel jobs:
+PRs to `main`/`release` use `scripts/ci-test-plan.js` to classify the changed
+files before installing dependencies. Directory-scoped features run their
+server and client feature tests; flat modules fall back to Vitest's
+import-graph-aware `--changed` mode. The planner deliberately chooses full CI
+for shared composition roots, test configuration, dependency manifests,
+workflow changes, unknown artifacts, or wide diffs.
 
-### Test Job
+The selected work is split across parallel jobs:
 
-- Starts a PostgreSQL service container (`pgvector/pgvector:pg17`) and provisions the test database (`npm run setup:db:test`)
-- Installs root, server, and client dependencies
-- Runs server tests (`npm run test:ci --prefix server`) and DB-backed tests (`npm run test:db:ci --prefix server`)
-- Runs client tests (`npm test --prefix client`)
-- Builds client (`npm run build --prefix client`) and smoke-boots the server (`npm run smoke`)
-- Skips on `[skip ci]` commits (push events only; PR CI always runs)
+- **Server tests** — full, related, or explicit feature test files.
+- **Client tests and build** — affected client tests; production build whenever
+  client source changed.
+- **DB tests and server smoke** — provisions only the isolated `portos_test`
+  database and runs DB tests when database-sensitive files changed; smoke-boots
+  for server source changes.
+- **Client lint** — only changed JS/JSX files on targeted PRs, the complete
+  client tree during full CI.
+- **CI Gate** — always reports one stable required-check result and fails if any
+  selected job failed or was cancelled.
 
-### Lint Job
+No third-party change-filter action is used. The planner passes test paths as a
+JSON argument array to `spawnSync`, never through shell interpolation.
 
-- Checks server entry point for syntax errors (`node --check server/index.js`)
-- Runs client lint (`npm run lint --prefix client`)
+### Full CI
+
+The complete server, client, DB, lint, build, and smoke suite runs:
+
+- after every push to `main`;
+- nightly at 09:17 UTC;
+- from manual workflow dispatch;
+- as a reusable workflow called by every release.
+
+Changes to CI/test configuration also force the full suite on their own PR.
+`[skip ci]` remains honored for push events only; PR CI always runs.
+
+### Impact-planner safety rules
+
+- A directory feature such as `server/services/sprites/` selects tests carrying
+  the same feature segment across server and client, plus every test Vitest's
+  import graph relates to the changed files.
+- Directly changed tests and co-located sibling tests are always included.
+- Barrel/catalog guards are added when reusable `lib`, `hooks`, or `utils`
+  directories change; JSX changes include the global accessibility convention
+  guard.
+- Database adapters, DB scripts, and relevant migrations add the complete
+  serial DB suite.
+- Unmapped executable files use related-test mode. Unclassified artifacts,
+  shared roots/config, more than 30 executable changes, or more than 120
+  selected tests fail safe to full CI.
 
 ## Release Workflow (`release.yml`)
 
 Triggers on push to `release` branch. Steps:
 
-1. Reads version from `package.json`
-2. Checks if git tag already exists (skips if so)
-3. Looks for changelog file:
+1. Calls `ci.yml` with `full: true` and waits for the complete CI gate.
+2. Reads version from `package.json`.
+3. Checks if the git tag already exists (skips release creation if so).
+4. Looks for a changelog file:
    - First: `.changelog/v{version}.md` (exact match)
    - Then: `.changelog/v{major}.{minor}.x.md` (pattern match, replaces placeholders)
    - Fallback: generates changelog from commit messages
-4. Creates GitHub release with tag `v{version}`
-5. If a pattern changelog file (`.changelog/v{major}.{minor}.x.md`) was used, archives it on `main` (renames `.x.md` → exact version)
-6. If the archive step ran, fast-forwards `release` to match `main`
+5. Creates the GitHub release with tag `v{version}`.
+6. If a pattern changelog file (`.changelog/v{major}.{minor}.x.md`) was used,
+   archives it on `main` (renames `.x.md` to the exact version).
+7. If the archive step ran, fast-forwards `release` to match `main`.
 
 ## Working with CI
 
 ### Skip CI
 
-Add `[skip ci]` to commit messages for non-code changes (docs, configs). Auto-generated commits from the release workflow include this automatically.
+Add `[skip ci]` to push commit messages for generated documentation-only
+changes. Auto-generated commits from the release workflow include this
+automatically. Pull-request checks ignore this marker so a PR cannot bypass its
+required CI gate.
+
+### Force Full CI
+
+Use the workflow-dispatch button for an immediate full run. A PR also chooses
+full CI automatically when its impact cannot be classified safely.
 
 ### Rebase Before Push
 
