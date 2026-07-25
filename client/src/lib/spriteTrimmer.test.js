@@ -96,6 +96,28 @@ describe('buildTrimmerSources', () => {
     expect(out.find((s) => s.kind === 'trim').trimmable).toBe(false);
   });
 
+  // Regression (#3020): this flattener is the ONLY thing the Loop Trimmer sees,
+  // so a strip token left behind here leaves the trimmer slicing a stale strip
+  // with no other symptom — the first cut of that fix read the token off this
+  // object, which never carried it, and was silently inert.
+  it('carries the strip cache-busting token through to the trimmer source', () => {
+    const withToken = {
+      runs: [{
+        id: 'walk-east-1',
+        direction: 'east',
+        status: 'candidate',
+        stripPreview: {
+          stripPath: 'grok/walk-east-1/generated/strip.png', frameCount: 8, fps: 12, stripVersion: 'c432029004b5',
+        },
+      }],
+    };
+    expect(buildTrimmerSources(withToken, [])[0].stripVersion).toBe('c432029004b5');
+  });
+
+  it('leaves the token undefined for a run packed before it existed', () => {
+    expect(buildTrimmerSources(walk, assets)[0].stripVersion).toBeUndefined();
+  });
+
   it('derives a saved trim frame count from strip width / height', () => {
     const trim = buildTrimmerSources(walk, assets).find((s) => s.kind === 'trim');
     expect(trim.frameCount).toBe(4); // 1536 / 384

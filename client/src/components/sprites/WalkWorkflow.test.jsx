@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  render, screen, act, fireEvent,
+  render, screen, act, fireEvent, cleanup,
 } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
@@ -91,6 +91,33 @@ describe('WalkWorkflow loop preview', () => {
     const loop = renderWalk({ stripPath: 'grok/walk-east-abc/generated/strip.png' });
     expect(loop.style.animation).toContain('steps(8)');
     expect(loop.style.backgroundSize).toBe(`${CELL_PX * 8}px ${CELL_PX}px`);
+  });
+
+  // #3020: the packer rewrites the strip IN PLACE, and a CSS background-image at
+  // an unchanged URL is reused from the already-decoded image with no request —
+  // so the mount's ETag never revalidates. Reprocessing 8f → 12f then stepped the
+  // NEW geometry over the OLD 8-cell strip: a jumpy, mis-centered toggle until a
+  // manual reload. The content token in the URL is what forces the repaint.
+  describe('strip cache-busting', () => {
+    it('versions the strip URL with the token the server normalized onto it', () => {
+      const loop = renderWalk({ ...APPROVED_STRIP, stripVersion: 'c432029004b5' });
+      expect(loop.style.backgroundImage).toContain('?v=c432029004b5');
+    });
+
+    it('paints a different URL after a reprocess changes the strip bytes', () => {
+      // Unmount between renders — two mounted loops would both match the role
+      // query. This is the exact 8f → 12f reprocess the issue reported.
+      const before = renderWalk({ ...APPROVED_STRIP, frameCount: 8, stripVersion: 'aaaaaaaaaaaa' }).style.backgroundImage;
+      cleanup();
+      const after = renderWalk({ ...APPROVED_STRIP, frameCount: 12, stripVersion: 'bbbbbbbbbbbb' }).style.backgroundImage;
+      expect(before).not.toBe(after);
+    });
+
+    it('leaves a pre-token run on the un-versioned URL rather than ?v=undefined', () => {
+      const loop = renderWalk({ ...APPROVED_STRIP });
+      expect(loop.style.backgroundImage).toContain(APPROVED_STRIP.stripPath);
+      expect(loop.style.backgroundImage).not.toContain('?v=');
+    });
   });
 
   // A strip painted as a CSS background-image fires no onError, so a missing/404

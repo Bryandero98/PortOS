@@ -139,18 +139,17 @@ export default function LoopTrimmer({
     if (!source) return undefined;
     const image = new Image();
     image.onload = () => setImg(image);
-    image.src = spriteAssetUrl(recordId, source.stripPath);
+    image.src = spriteAssetUrl(recordId, source.stripPath, source.stripVersion);
     return () => { image.onload = null; };
-    // Geometry is in the deps, not just the path: a re-derive (#2980) repacks the
-    // strip at the SAME path, so nothing else here changes and the <img> would
-    // never be re-requested — it would keep painting the old column count. Keying
-    // on the refreshed frameCount/fps also sequences the reload correctly: it
-    // fires when the parent's new walk state lands, so `cellW` can never slice a
-    // freshly-loaded 12-column strip by the stale count of 8. (The asset mount
-    // serves max-age=0 with an ETag, so the re-request revalidates for free; a
-    // re-derive at unchanged geometry is deterministic and byte-identical, so
-    // skipping the reload there is correct rather than a missed refresh.)
-  }, [source?.id, source?.stripPath, recordId, frameCount, source?.fps]);
+    // Keyed on the strip's content token, not just its path: a re-derive (#2980)
+    // repacks at the SAME path, so without it nothing here changes and the image
+    // keeps painting the old column count. The token also covers a repack at
+    // unchanged geometry but different pixels (a new cycle window, different
+    // chroma settings), which the frameCount keying alone could not see.
+    // `frameCount` stays as the fallback for a run packed before the token
+    // existed; it also sequences the reload correctly, so `cellW` can never
+    // slice a freshly-loaded 12-column strip by the stale count of 8.
+  }, [source?.id, source?.stripPath, recordId, frameCount, source?.stripVersion]);
 
   const cellW = img && frameCount > 0 ? img.naturalWidth / frameCount : 0;
   const cellH = img ? img.naturalHeight : 0;
