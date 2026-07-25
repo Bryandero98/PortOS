@@ -5,10 +5,11 @@
  * walk.test.js; this file pins the rules those depend on.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   WALK_TRACK, resolveAnimationTarget, withTrackTarget, targetDrift, describeTargetSource,
 } from './animationTargets.js';
+import { getAnimationTrack } from './animationTracks.js';
 
 describe('resolveAnimationTarget precedence', () => {
   it('falls back to the documented defaults when nothing is pinned or packaged', () => {
@@ -80,6 +81,53 @@ describe('resolveAnimationTarget precedence', () => {
       animationTargets: { scanner: { frameCount: 6, fps: 4 } },
     })).toMatchObject({ frameCount: 12, fps: 10, source: 'default' });
   });
+
+  it('reads the app rung through the track\'s declared contract fields (#3015)', () => {
+    // The registry row names which runtimeContract fields the track occupies,
+    // so the app rung is track-driven rather than hard-coded to walkFrameCount.
+    const row = getAnimationTrack(WALK_TRACK);
+    expect(resolveAnimationTarget({
+      track: WALK_TRACK,
+      runtimeContract: { [row.contractFrameCountField]: 16, [row.contractFpsField]: 24 },
+    })).toMatchObject({ frameCount: 16, fps: 24, source: 'app' });
+  });
+
+  it('ignores the contract\'s fps entirely for a track that declares no fps field', async () => {
+    // A registry row may set `contractFpsField: null` — a track whose speed an
+    // app has no say in. The app rung must then fall through to
+    // set/derived/default and report fpsLocked:false rather than reading some
+    // other track's contract key. Only one track exists today, so stand up a
+    // null-fps row via a scoped module mock to keep that branch covered.
+    vi.resetModules();
+    const real = await vi.importActual('./animationTracks.js');
+    const nullFpsRow = { ...real.ANIMATION_TRACKS.walk, contractFpsField: null };
+    vi.doMock('./animationTracks.js', () => ({
+      ...real,
+      ANIMATION_TRACKS: { walk: nullFpsRow },
+      getAnimationTrack: (id) => {
+        if (id === undefined || id === null || id === real.WALK_TRACK) return nullFpsRow;
+        throw new Error(`Unknown animation track '${String(id)}'`);
+      },
+    }));
+    const { resolveAnimationTarget: resolveWithNullFps } = await import('./animationTargets.js');
+    // The literal `null` key is what makes this DISCRIMINATING: without the
+    // guard the code would evaluate `runtimeContract[null]`, which coerces to
+    // the string key "null" — so a contract carrying that key would resolve
+    // fps: 24 / fpsLocked: true. With the guard the rung is skipped entirely.
+    expect(resolveWithNullFps({
+      runtimeContract: { walkFrameCount: 16, walkFps: 24, null: 24 },
+    })).toMatchObject({ frameCount: 16, fps: 10, source: 'app', fpsLocked: false });
+    vi.doUnmock('./animationTracks.js');
+    vi.resetModules();
+  });
+
+  it('rejects an unrecognized track instead of resolving it against walk\'s range', () => {
+    // Sentinel discipline: absent ⇒ the default track; unrecognized ⇒ an error
+    // naming the known tracks, never a silent fall-through to 6–16 / 4–24.
+    expect(() => resolveAnimationTarget({ track: 'scanner' }))
+      .toThrow(/Unknown animation track 'scanner'/);
+    expect(resolveAnimationTarget({ track: undefined }).track).toBe(WALK_TRACK);
+  });
 });
 
 describe('withTrackTarget', () => {
@@ -103,6 +151,14 @@ describe('withTrackTarget', () => {
     expect(withTrackTarget(['nope'], WALK_TRACK, { frameCount: 12, fps: 10, source: 'set' }))
       .toEqual({ walk: { frameCount: 12, fps: 10, source: 'set' } });
   });
+
+  it('refuses to WRITE a track this build does not know (#3015)', () => {
+    // Preserving a sibling key a newer peer wrote and minting a bogus one are
+    // different things: the first is forward-compat, the second is a bug that
+    // would persist a row nothing can range-check.
+    expect(() => withTrackTarget({}, 'scanner', { frameCount: 4, fps: 6, source: 'set' }))
+      .toThrow(/Unknown animation track 'scanner'/);
+  });
 });
 
 describe('targetDrift', () => {
@@ -125,6 +181,18 @@ describe('targetDrift', () => {
 
   it('does not call a direction with no declared geometry "drifted"', () => {
     expect(targetDrift(target, [{ direction: 'south' }])).toEqual([]);
+  });
+
+  it('range-checks against the target\'s own track, defaulting when it carries none', () => {
+    // A bare `{ frameCount, fps }` target (every pre-#3015 caller) still reads
+    // against the walk row; an explicit track is honored.
+    expect(targetDrift({ ...target, track: WALK_TRACK }, [
+      { direction: 'east', frameCount: 8, fps: 10 },
+    ])).toEqual([{
+      direction: 'east', frameCount: 8, fps: 10, frameCountDrifts: true, fpsDrifts: false,
+    }]);
+    expect(() => targetDrift({ ...target, track: 'scanner' }, []))
+      .toThrow(/Unknown animation track 'scanner'/);
   });
 });
 

@@ -20,21 +20,28 @@
  * tracks of DIFFERING lengths into one atlas needs a column-span descriptor and
  * is deliberately out of scope here.
  *
- * Dependency-free apart from the sharp-free `walkBounds` leaf, so the service
- * layer and the (native-dep-free) validation graph can both reach it.
+ * Dependency-free apart from the sharp-free `animationTracks` registry, so the
+ * service layer and the (native-dep-free) validation graph can both reach it.
+ *
+ * Since #3015 the bounds this module range-checks against come from that
+ * registry PER TRACK, not from one global walk-shaped range — so a future
+ * 4-frame scanner action resolves against its own row instead of being rejected
+ * by walk's floor of 6.
  */
 
 import {
-  WALK_DEFAULT_FRAME_COUNT, WALK_DEFAULT_FPS,
-  WALK_MIN_FRAME_COUNT, WALK_MAX_FRAME_COUNT, WALK_MIN_FPS, WALK_MAX_FPS,
-} from './walkBounds.js';
+  WALK_TRACK, getAnimationTrack,
+} from './animationTracks.js';
 
-/** The only animation track that exists today. */
-export const WALK_TRACK = 'walk';
+// Re-exported so existing importers (walk.js) keep reaching the walk track id
+// here; the registry owns the value now, so the two can never disagree.
+export { WALK_TRACK };
 
+// Range readers against one track's row. Out-of-range values read as `null`
+// (absent) rather than being clamped — see resolveAnimationTarget's contract.
 const intInRange = (v, min, max) => (Number.isInteger(v) && v >= min && v <= max ? v : null);
-const readFrameCount = (v) => intInRange(v, WALK_MIN_FRAME_COUNT, WALK_MAX_FRAME_COUNT);
-const readFps = (v) => intInRange(v, WALK_MIN_FPS, WALK_MAX_FPS);
+const readFrameCount = (row, v) => intInRange(v, row.minFrameCount, row.maxFrameCount);
+const readFps = (row, v) => intInRange(v, row.minFps, row.maxFps);
 
 /**
  * Resolve one track's pinned target from the precedence chain, newest authority
@@ -48,7 +55,7 @@ const readFps = (v) => intInRange(v, WALK_MIN_FPS, WALK_MAX_FPS);
  *               rule atlas.js already applies), auto-pinned on first resolve so
  *               it stops being implicit. Persisted with `source: 'derived'` so a
  *               value PortOS inferred never masquerades as one the user chose.
- *   'default' — WALK_DEFAULT_FRAME_COUNT / WALK_DEFAULT_FPS.
+ *   'default' — the track's `defaultFrameCount` / `defaultFps`.
  *
  * Out-of-range or non-integer values at any rung are ignored rather than
  * clamped: a hand-edited record must not silently pin a value the packer would
@@ -57,14 +64,13 @@ const readFps = (v) => intInRange(v, WALK_MIN_FPS, WALK_MAX_FPS);
  * `source` names the highest rung that supplied EITHER knob, and
  * `frameCountLocked` / `fpsLocked` say precisely which the app nailed down.
  *
- * `track` selects which persisted entry to read. The CONTRACT fields and the
- * range checks below are walk-specific (the contract declares `walkFrameCount`,
- * and the bounds come from `walkBounds`) — a second track will need both
- * generalized at the same time, so parameterizing only one of them today would
- * be a false promise. The persisted shape is what has to be track-keyed now.
+ * `track` selects which persisted entry to read AND which registry row supplies
+ * the bounds, the defaults, and the `runtimeContract` field names — all three
+ * were walk-specific before #3015. Absent/unrecognized handling is
+ * `getAnimationTrack`'s (absent ⇒ the default track, unrecognized ⇒ throws).
  *
  * @param {object}   input
- * @param {string}   [input.track]            Track key (only 'walk' exists today).
+ * @param {string}   [input.track]            Track id from `animationTracks.js` (default 'walk').
  * @param {object}   [input.runtimeContract]  `publishBinding.runtimeContract`, if any.
  * @param {object}   [input.animationTargets] The selection record's block.
  * @param {Array<{direction?: string, frameCount?: number, fps?: number}>} [input.packagedCycles]
@@ -73,23 +79,26 @@ const readFps = (v) => intInRange(v, WALK_MIN_FPS, WALK_MAX_FPS);
  *            frameCountLocked: boolean, fpsLocked: boolean}}
  */
 export function resolveAnimationTarget({
-  track = WALK_TRACK,
+  track,
   runtimeContract = null,
   animationTargets = null,
   packagedCycles = [],
 } = {}) {
+  // Absent → the default track; unrecognized → throws (see getAnimationTrack).
+  const row = getAnimationTrack(track);
+
   // The bound app's declared expectation for its own atlas (#2982) — a stronger
   // authority than any per-render pick. Read defensively: that field lands
   // independently of this module, so an absent contract just falls through.
-  const appCount = readFrameCount(runtimeContract?.walkFrameCount);
-  const appFps = readFps(runtimeContract?.walkFps);
+  const appCount = readFrameCount(row, runtimeContract?.[row.contractFrameCountField]);
+  const appFps = row.contractFpsField ? readFps(row, runtimeContract?.[row.contractFpsField]) : null;
 
-  const pinned = animationTargets?.[track] || null;
-  const setCount = readFrameCount(pinned?.frameCount);
-  const setFps = readFps(pinned?.fps);
+  const pinned = animationTargets?.[row.id] || null;
+  const setCount = readFrameCount(row, pinned?.frameCount);
+  const setFps = readFps(row, pinned?.fps);
 
-  const derivedCount = firstDefined(packagedCycles, (c) => readFrameCount(c?.frameCount));
-  const derivedFps = firstDefined(packagedCycles, (c) => readFps(c?.fps));
+  const derivedCount = firstDefined(packagedCycles, (c) => readFrameCount(row, c?.frameCount));
+  const derivedFps = firstDefined(packagedCycles, (c) => readFps(row, c?.fps));
 
   let source = 'default';
   if (derivedCount !== null || derivedFps !== null) source = 'derived';
@@ -100,9 +109,9 @@ export function resolveAnimationTarget({
   if (appCount !== null || appFps !== null) source = 'app';
 
   return {
-    track,
-    frameCount: appCount ?? setCount ?? derivedCount ?? WALK_DEFAULT_FRAME_COUNT,
-    fps: appFps ?? setFps ?? derivedFps ?? WALK_DEFAULT_FPS,
+    track: row.id,
+    frameCount: appCount ?? setCount ?? derivedCount ?? row.defaultFrameCount,
+    fps: appFps ?? setFps ?? derivedFps ?? row.defaultFps,
     source,
     frameCountLocked: appCount !== null,
     fpsLocked: appFps !== null,
@@ -122,12 +131,17 @@ function firstDefined(list, read) {
  * disturbing sibling tracks. Load-bearing forward-compatibility: a peer (or a
  * later PortOS) may have written a `scanner` / ambient entry this build knows
  * nothing about, and a naive `{ walk: … }` overwrite would silently drop it.
+ *
+ * The track being WRITTEN must be one this build knows (#3015) — preserving what
+ * a newer peer wrote and minting a bogus key are different things, so an
+ * unrecognized write target throws while sibling keys are untouched either way.
  */
 export function withTrackTarget(animationTargets, track, { frameCount, fps, source }) {
+  const row = getAnimationTrack(track);
   const existing = (animationTargets && typeof animationTargets === 'object' && !Array.isArray(animationTargets))
     ? animationTargets
     : {};
-  return { ...existing, [track]: { frameCount, fps, source } };
+  return { ...existing, [row.id]: { frameCount, fps, source } };
 }
 
 /**
@@ -136,11 +150,15 @@ export function withTrackTarget(animationTargets, track, { frameCount, fps, sour
  * can badge exactly which ones need re-deriving, instead of the user discovering
  * it at atlas-compile time. A cycle with no usable geometry (an import that
  * never declared one) is not "drift" — there is nothing to compare.
+ *
+ * Range-checks each cycle against the TARGET's own track (#3015), falling back
+ * to the default track when the caller passed a bare `{ frameCount, fps }`.
  */
 export function targetDrift(target, packagedCycles = []) {
+  const row = getAnimationTrack(target?.track);
   return (packagedCycles || []).flatMap((cycle) => {
-    const frameCount = readFrameCount(cycle?.frameCount);
-    const fps = readFps(cycle?.fps);
+    const frameCount = readFrameCount(row, cycle?.frameCount);
+    const fps = readFps(row, cycle?.fps);
     if (frameCount === null && fps === null) return [];
     const countDrifts = frameCount !== null && frameCount !== target.frameCount;
     const fpsDrifts = fps !== null && fps !== target.fps;

@@ -38,6 +38,10 @@ import {
   databaseSwitchSchema,
   databaseBackendSchema,
   databaseExportSchema,
+  spriteTrackFrameCountSchema,
+  spriteTrackFpsSchema,
+  spriteRuntimeContractSchema,
+  spriteWalkGenerateSchema,
 } from './validation.js';
 import {
   telegramForwardTypesSchema,
@@ -1426,6 +1430,44 @@ describe('ad-hoc route schemas (#2521)', () => {
     });
     it('rejects non-string overrides', () => {
       expect(brainDigestRunSchema.safeParse({ providerOverride: 5 }).success).toBe(false);
+    });
+  });
+
+  describe('animation-track-aware sprite bounds (#3015)', () => {
+    it('builds the walk range from the registry row, unchanged from pre-#3015', () => {
+      const frames = spriteTrackFrameCountSchema('walk');
+      expect(frames.safeParse(6).success).toBe(true);
+      expect(frames.safeParse(16).success).toBe(true);
+      expect(frames.safeParse(5).success).toBe(false);
+      expect(frames.safeParse(17).success).toBe(false);
+      expect(frames.safeParse(12.5).success).toBe(false);
+      const fps = spriteTrackFpsSchema('walk');
+      expect(fps.safeParse(4).success).toBe(true);
+      expect(fps.safeParse(24).success).toBe(true);
+      expect(fps.safeParse(3).success).toBe(false);
+      expect(fps.safeParse(25).success).toBe(false);
+    });
+
+    it('defaults to the walk track when no track is named', () => {
+      expect(spriteTrackFrameCountSchema().safeParse(16).success).toBe(true);
+      expect(spriteTrackFpsSchema().safeParse(24).success).toBe(true);
+    });
+
+    it('throws at schema-construction time for an unrecognized track', () => {
+      // A wiring bug surfaces at boot rather than degrading to walk's range.
+      expect(() => spriteTrackFrameCountSchema('scanner')).toThrow(/Unknown animation track/);
+      expect(() => spriteTrackFpsSchema('scanner')).toThrow(/Unknown animation track/);
+    });
+
+    it('leaves the walk request/contract schemas behaving exactly as before', () => {
+      expect(spriteRuntimeContractSchema.safeParse({ walkFrameCount: 12 }).success).toBe(true);
+      expect(spriteRuntimeContractSchema.safeParse({ walkFrameCount: 5 }).success).toBe(false);
+      expect(spriteWalkGenerateSchema.safeParse({
+        direction: 'south', frameCount: 12, fps: 10,
+      }).success).toBe(true);
+      expect(spriteWalkGenerateSchema.safeParse({
+        direction: 'south', frameCount: 3,
+      }).success).toBe(false);
     });
   });
 
