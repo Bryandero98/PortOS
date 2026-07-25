@@ -79,7 +79,11 @@ function stripGeometry(stripPreview) {
 function StripLoop({ recordId, stripPreview }) {
   const { frameCount, fps, height } = stripGeometry(stripPreview);
   const scrub = CELL_PX * frameCount;
-  const url = spriteAssetUrl(recordId, stripPreview.stripPath);
+  // Content-token the URL (#3020) — a CSS background-image at an unchanged URL
+  // is reused from the already-decoded image without issuing a request, so a
+  // reprocessed strip would keep painting stale until a manual reload. See
+  // spriteAssets.js for the full why.
+  const url = spriteAssetUrl(recordId, stripPreview.stripPath, stripPreview.stripVersion);
   // The strip paints as a CSS background-image, which fires no onError — a
   // missing/404 file just renders blank. The server now surfaces a missing
   // strip as an error run (dropping stripPath so we never get here), but keep a

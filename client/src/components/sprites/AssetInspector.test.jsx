@@ -66,8 +66,10 @@ describe('AssetInspector', () => {
     expect(screen.getByText('png')).toBeInTheDocument();
     expect(screen.getByText('2 KB')).toBeInTheDocument();
 
+    // The href carries the asset's content token (#3020) so a re-download after
+    // an in-place rewrite fetches the current bytes rather than a cached copy.
     const download = screen.getByRole('link', { name: /download/i });
-    expect(download).toHaveAttribute('href', '/data/sprites/trail-hand/reference/main.png');
+    expect(download).toHaveAttribute('href', `/data/sprites/trail-hand/reference/main.png?v=${IMAGE.mtime}-${IMAGE.size}`);
     expect(download).toHaveAttribute('download', 'main.png');
 
     await userEvent.click(screen.getByRole('button', { name: /copy path/i }));
@@ -109,15 +111,16 @@ describe('AssetInspector', () => {
   });
 
   it('plays a walk run source clip inline instead of forcing a download', () => {
+    const clip = { path: 'grok/walk-east-abc/generated/source-video.mp4', size: 900, mtime: Date.now() };
     const { container } = render(
-      <AssetInspector
-        recordId="trail-hand"
-        asset={{ path: 'grok/walk-east-abc/generated/source-video.mp4', size: 900, mtime: Date.now() }}
-        onClose={() => {}}
-      />,
+      <AssetInspector recordId="trail-hand" asset={clip} onClose={() => {}} />,
     );
     const video = container.querySelector('video');
-    expect(video).toHaveAttribute('src', '/data/sprites/trail-hand/grok/walk-east-abc/generated/source-video.mp4');
+    // Same content token as every other asset URL (#3020). A run's clip is
+    // write-once per run directory so it can't actually go stale, but the
+    // inspector builds one URL for the download link and the inline player —
+    // keeping that single rather than special-casing by asset kind.
+    expect(video).toHaveAttribute('src', `/data/sprites/trail-hand/grok/walk-east-abc/generated/source-video.mp4?v=${clip.mtime}-${clip.size}`);
     expect(video).toHaveAttribute('controls');
   });
 

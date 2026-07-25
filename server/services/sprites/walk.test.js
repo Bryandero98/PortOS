@@ -1872,6 +1872,33 @@ describe('getWalkState', () => {
       // manifest does NOT land on postprocessManifest, which approve/trim
       // resolve as a packaged grok manifest (frames[] + alignment).
       expect(runs[0].postprocessManifest).toBeUndefined();
+
+      // A redraw manifest carries no strip hash, and this is a read path — so
+      // the strip's cache-busting token (#3020) is an mtime-size stand-in. It
+      // still has to be PRESENT and well-formed, or the client falls back to an
+      // un-versioned URL and an imported strip goes stale after a re-import.
+      // The client reads ONE field regardless of which server path produced it.
+      expect(runs[0].stripPreview.stripVersion).toMatch(/^\d+-\d+$/);
+    });
+
+    // The token must track the bytes: rewriting the strip at its stable path
+    // (what a re-import does) has to produce a different token, or the client
+    // keeps painting the strip it already decoded. Size is part of the token
+    // precisely because mtime resolution can be too coarse to catch a fast
+    // rewrite. (The absent-token fallback — a run predating the field — is
+    // covered client-side in spriteAssets.test.js, which is where the
+    // degradation to an un-versioned URL actually happens.)
+    it('changes the strip version when the strip is rewritten in place', async () => {
+      const id = newId();
+      await characterWithRedrawEast(id);
+      const before = (await getWalkState(id)).runs[0].stripPreview.stripVersion;
+
+      const stripAbs = join(TEST_ROOT, 'sprites', id, 'imagegen', 'v19', 'clean-alpha.png');
+      await writeFile(stripAbs, Buffer.alloc(4096, 7)); // same path, different bytes
+      const after = (await getWalkState(id)).runs[0].stripPreview.stripVersion;
+
+      expect(after).toMatch(/^\d+-\d+$/);
+      expect(after).not.toBe(before);
     });
 
     // Same importer-shape guard as the runs/ layout above: a copied redraw
