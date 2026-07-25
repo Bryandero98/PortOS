@@ -8,16 +8,21 @@ import { BoxGeometry, Group, Mesh, MeshStandardMaterial } from 'three';
 // <primitive>/<mesh> would surface unknown DOM elements and r3f hands back
 // HTMLElement refs without the three.js API. Canvas retains the lighting and
 // environment elements so their interactive wiring stays covered.
-vi.mock('@react-three/fiber', () => ({ Canvas: ({ children }) => <div data-testid="glb-canvas">{children}</div> }));
+// `mockScene` stands in for the three.js scene `useThree` hands the viewer, so
+// the environment-intensity assertions below check the value the component
+// actually writes onto the scene — not merely a prop handed to a mocked
+// <Environment>, which would stay green through the exact regression the
+// source guards against (memoizing the environment children).
+const { mockScene } = vi.hoisted(() => ({ mockScene: {} }));
+vi.mock('@react-three/fiber', () => ({
+  Canvas: ({ children }) => <div data-testid="glb-canvas">{children}</div>,
+  useThree: (selector) => selector({ scene: mockScene }),
+}));
 vi.mock('@react-three/drei', () => ({
   Canvas: () => null,
   OrbitControls: () => null,
-  Environment: ({ background, environmentIntensity, children }) => (
-    <div
-      data-testid="glb-environment"
-      data-background={background ? 'visible' : 'hidden'}
-      data-env-intensity={String(environmentIntensity)}
-    >
+  Environment: ({ background, children }) => (
+    <div data-testid="glb-environment" data-background={background ? 'visible' : 'hidden'}>
       {children}
     </div>
   ),
@@ -99,18 +104,20 @@ describe('GlbViewer', () => {
 
   // The image-based lighting drowned out the three light sliders at full
   // strength — dialing the environment down is what makes them visible.
-  it('drives the environment intensity from its own slider', () => {
+  it('writes the environment intensity onto the scene from its own slider', () => {
+    delete mockScene.environmentIntensity;
     render(<GlbViewer src="/data/models3d/robot-a1b2.glb" />);
     openControls();
 
     const environment = screen.getByLabelText('Environment light');
     expect(environment).toHaveValue('0.6');
-    expect(screen.getByTestId('glb-environment')).toHaveAttribute('data-env-intensity', '0.6');
+    expect(mockScene.environmentIntensity).toBe(0.6);
 
     fireEvent.change(environment, { target: { value: '0' } });
 
     expect(environment).toHaveValue('0');
-    expect(screen.getByTestId('glb-environment')).toHaveAttribute('data-env-intensity', '0');
+    // 0 is a meaningful value (lights-only), not an absent one.
+    expect(mockScene.environmentIntensity).toBe(0);
   });
 
   it('honors an explicit downloadName over the derived one', () => {

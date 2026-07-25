@@ -1,5 +1,5 @@
-import { Suspense, useEffect, useId, useMemo, useState } from 'react';
-import { Canvas } from '@react-three/fiber';
+import { Suspense, useEffect, useId, useLayoutEffect, useMemo, useState } from 'react';
+import { Canvas, useThree } from '@react-three/fiber';
 import {
   Bounds,
   Environment,
@@ -77,6 +77,37 @@ function GlbModel({ src, forceOpaque }) {
     };
   }, [forceOpaque, renderedScene]);
   return <primitive object={renderedScene} />;
+}
+
+// The environment's contents never change, so keep this element identity stable:
+// drei re-bakes the cube map (six render passes + a PMREM regeneration) every
+// time `children` changes identity, which for inline JSX is every render — i.e.
+// once per pointer-move while dragging any other control on the panel.
+const ENVIRONMENT_CONTENTS = (
+  <>
+    <mesh scale={100}>
+      <sphereGeometry args={[1, 32, 32]} />
+      <meshBasicMaterial color={ENVIRONMENT_BACKDROP} side={BackSide} />
+    </mesh>
+    <Lightformer form="rect" intensity={3} position={[0, 4, 4]} rotation-x={Math.PI / 2} scale={[5, 5, 1]} />
+    <Lightformer form="rect" intensity={1.5} position={[-4, 1, 2]} rotation-y={Math.PI / 2} scale={[3, 5, 1]} />
+    <Lightformer form="rect" intensity={1} position={[4, -1, -2]} rotation-y={-Math.PI / 2} scale={[3, 5, 1]} />
+  </>
+);
+
+// Own `scene.environmentIntensity` directly rather than passing drei's
+// `environmentIntensity` prop: drei applies it from an effect that doesn't
+// declare it as a dependency, so the prop only lands while `children` changes
+// identity every render — coupling a user-facing control to an upstream bug AND
+// to the re-bake cost above. drei's `applyProps` skips `undefined`, so omitting
+// the prop leaves this write untouched, and its save/restore reads back the
+// live value. Mounted after `<Environment>` so this layout effect runs last.
+function EnvironmentIntensity({ value }) {
+  const scene = useThree((state) => state.scene);
+  useLayoutEffect(() => {
+    scene.environmentIntensity = value;
+  }, [scene, value]);
+  return null;
 }
 
 function LightingControl({ label, max, value, onChange }) {
@@ -158,42 +189,11 @@ export default function GlbViewer({
           <directionalLight position={[4, 6, 5]} intensity={keyIntensity} />
           <directionalLight position={[-4, -2, -5]} intensity={fillIntensity} />
           {/* A procedural environment keeps metallic PBR textures readable without
-              downloading an HDR preset — PortOS installs can be fully offline.
-              Keep these children inline: drei applies `environmentIntensity`
-              from an effect that doesn't list it as a dependency, so the slider
-              only reaches the scene because inline children change identity on
-              every render. Memoizing them would silently freeze it. */}
-          <Environment
-            background={showEnvironmentBackground}
-            resolution={256}
-            environmentIntensity={environmentIntensity}
-          >
-            <mesh scale={100}>
-              <sphereGeometry args={[1, 32, 32]} />
-              <meshBasicMaterial color={ENVIRONMENT_BACKDROP} side={BackSide} />
-            </mesh>
-            <Lightformer
-              form="rect"
-              intensity={3}
-              position={[0, 4, 4]}
-              rotation-x={Math.PI / 2}
-              scale={[5, 5, 1]}
-            />
-            <Lightformer
-              form="rect"
-              intensity={1.5}
-              position={[-4, 1, 2]}
-              rotation-y={Math.PI / 2}
-              scale={[3, 5, 1]}
-            />
-            <Lightformer
-              form="rect"
-              intensity={1}
-              position={[4, -1, -2]}
-              rotation-y={-Math.PI / 2}
-              scale={[3, 5, 1]}
-            />
+              downloading an HDR preset — PortOS installs can be fully offline. */}
+          <Environment background={showEnvironmentBackground} resolution={256}>
+            {ENVIRONMENT_CONTENTS}
           </Environment>
+          <EnvironmentIntensity value={environmentIntensity} />
           <Suspense fallback={null}>
             <Bounds fit clip observe margin={1.2}>
               <GlbModel src={src} forceOpaque={forceOpaque} />
