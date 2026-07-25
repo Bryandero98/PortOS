@@ -42,6 +42,7 @@
 
 ## Managed apps
 
+- **[issue-3024] Live app logs can now appear in both the Processes tab and launch panel** — a managed desktop app no longer hides its launch-progress panel when you open **Processes**. Each panel now owns its named PM2 log stream, so closing one leaves the other tailing normally; replacing or closing a stream also cannot orphan a background `pm2 logs` process.
 - **[issue-2991] Starting a desktop app now shows what it's doing, and quitting it stays quit** — pressing **Start** on a managed desktop app (a game binary) opens a live panel showing the build output as it compiles and imports assets, so a launch that takes a minute before a window appears no longer looks like nothing happened. The panel switches from "Launching" to "Running" once the app is up, and you can dismiss it any time without stopping the app. Closing or force-quitting the app's window is now treated as the normal end of a session everywhere: PortOS will no longer silently relaunch the window you just closed, and quitting no longer shows up as an errored process, flips your dashboard or CyberCity health to critical, or raises a failure alert. An app that runs in its own PM2 instance streams its build output into that panel correctly, rather than showing it empty.
 
 ## Music studio

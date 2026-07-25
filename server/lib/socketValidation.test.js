@@ -3,6 +3,7 @@ import {
   detectStartSchema,
   standardizeStartSchema,
   logsSubscribeSchema,
+  logsUnsubscribeSchema,
   errorRecoverSchema,
   shellInputSchema,
   shellResizeSchema,
@@ -83,6 +84,23 @@ describe('socketValidation schemas', () => {
 
     it('rejects an empty appId rather than treating it as absent', () => {
       expect(logsSubscribeSchema.safeParse({ processName: 'game', appId: '' }).success).toBe(false);
+    });
+  });
+
+  describe('logsUnsubscribeSchema', () => {
+    it('accepts a named stream for scoped cleanup', () => {
+      expect(logsUnsubscribeSchema.safeParse({ processName: 'game' })).toMatchObject({
+        success: true,
+        data: { processName: 'game' }
+      });
+    });
+
+    it('defaults an omitted legacy payload to an all-stream cleanup', () => {
+      expect(logsUnsubscribeSchema.safeParse()).toMatchObject({ success: true, data: {} });
+    });
+
+    it('rejects an empty process name rather than silently sweeping streams', () => {
+      expect(logsUnsubscribeSchema.safeParse({ processName: '' }).success).toBe(false);
     });
   });
 

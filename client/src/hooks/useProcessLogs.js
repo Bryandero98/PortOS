@@ -20,11 +20,6 @@ const FLUSH_MS = 250;
  * line, and a stale frame from a just-unsubscribed process would otherwise be
  * appended to the new one's buffer.
  *
- * **One stream per socket.** The server calls `cleanupStream(socket.id)` on
- * every subscribe, so two mounted callers fight over the single slot and the
- * later mount wins. Only ever have one of these active at a time (the app detail
- * view's tabs are mutually exclusive, which is what makes that safe).
- *
  * @param {string|null} processName PM2 process to tail; falsy = unsubscribed/idle.
  * @param {object} [options]
  * @param {number} [options.lines=500] Tail depth requested on subscribe.

@@ -35,6 +35,7 @@ import {
   detectStartSchema,
   standardizeStartSchema,
   logsSubscribeSchema,
+  logsUnsubscribeSchema,
   errorRecoverSchema,
   shellInputSchema,
   shellResizeSchema,
@@ -51,22 +52,23 @@ import { registerVoiceHandlers } from '../sockets/voice.js';
 import { getBuildId } from '../lib/buildId.js';
 import { authEvents, extractToken, isAuthEnabled, verifySession } from './auth.js';
 
-// Store active log streams per socket
+// Store active log streams per socket/process pair.
 const activeStreams = new Map();
-// Monotonic per-socket subscribe generation. `logs:subscribe` awaits an app
+const streamKey = (socketId, processName) => `${socketId}:${processName}`;
+// Monotonic per-stream subscribe generation. `logs:subscribe` awaits an app
 // lookup before it can spawn `pm2 logs`, so the request it started for may be
-// obsolete by the time it resolves. Slot occupancy alone cannot tell the cases
+// obsolete by the time it resolves. Stream occupancy alone cannot tell the cases
 // apart: an `logs:unsubscribe` that lands mid-lookup leaves the slot EMPTY, so a
 // stale handler would spawn an orphan `pm2 logs` nothing ever kills; and when two
-// subscribes overlap, the OLDER one can fill the slot first, so the newer one
+// subscribes for the same process overlap, the OLDER one can fill the slot first, so the newer one
 // bails and its client waits forever for `logs:subscribed`. Every claim and
 // release bumps this counter and a handler only resumes while its own generation
 // is current — the server-side mirror of the `{ target, generation }`
 // pending-request convention in CLAUDE.md.
 const streamGenerations = new Map();
-const bumpStreamGeneration = (socketId) => {
-  const next = (streamGenerations.get(socketId) || 0) + 1;
-  streamGenerations.set(socketId, next);
+const bumpStreamGeneration = (key) => {
+  const next = (streamGenerations.get(key) || 0) + 1;
+  streamGenerations.set(key, next);
   return next;
 };
 // Store CoS subscribers
@@ -226,11 +228,12 @@ export function initSocket(io) {
       const data = validateSocketData(logsSubscribeSchema, rawData, socket, 'logs:subscribe');
       if (!data) return;
       const { processName, lines, appId } = data;
+      const key = streamKey(socket.id, processName);
 
-      // Clean up any existing stream for this socket, then claim this request.
+      // Clean up only this process's existing stream, then claim this request.
       // Claiming AFTER the cleanup bump is what makes this generation current.
-      cleanupStream(socket.id);
-      const generation = bumpStreamGeneration(socket.id);
+      cleanupStream(key);
+      const generation = bumpStreamGeneration(key);
 
       // Resolve the app's custom PM2_HOME (if it has one) so the stream tails the
       // home its processes actually run in. Runs outside the Express lifecycle, so
@@ -252,7 +255,7 @@ export function initSocket(io) {
       // Superseded or cancelled while the lookup was in flight. Covers both the
       // unsubscribe (slot left empty) and the two-overlapping-subscribes cases
       // that a bare `activeStreams.has()` check gets wrong in opposite directions.
-      if (streamGenerations.get(socket.id) !== generation) return;
+      if (streamGenerations.get(key) !== generation) return;
 
       console.log(`📜 Log stream started: ${processName} (${lines} lines)`);
 
@@ -264,7 +267,7 @@ export function initSocket(io) {
         { env: buildEnv(pm2Home) }
       );
 
-      activeStreams.set(socket.id, { process: logProcess, processName });
+      activeStreams.set(key, { process: logProcess, processName });
 
       let buffer = '';
 
@@ -310,18 +313,22 @@ export function initSocket(io) {
         // `activeStreams.delete` here would unregister the LIVE stream and leak
         // it (no later cleanupStream would find it to kill), while `logs:close`
         // would tell the client the stream it is watching had ended.
-        if (streamGenerations.get(socket.id) !== generation) return;
+        if (activeStreams.get(key)?.process !== logProcess) return;
         socket.emit('logs:close', { code, processName });
-        activeStreams.delete(socket.id);
+        activeStreams.delete(key);
+        streamGenerations.delete(key);
       });
 
       socket.emit('logs:subscribed', { processName, timestamp: Date.now() });
     });
 
     // Handle unsubscribe
-    socket.on('logs:unsubscribe', () => {
-      cleanupStream(socket.id);
-      socket.emit('logs:unsubscribed');
+    socket.on('logs:unsubscribe', (rawData) => {
+      const data = validateSocketData(logsUnsubscribeSchema, rawData, socket, 'logs:unsubscribe');
+      if (!data) return;
+      if (data.processName) cleanupStream(streamKey(socket.id, data.processName));
+      else cleanupSocketStreams(socket.id);
+      socket.emit('logs:unsubscribed', { processName: data.processName });
     });
 
     // CoS subscriptions
@@ -571,10 +578,7 @@ export function initSocket(io) {
     // Cleanup on disconnect — detach sessions, don't kill them
     socket.on('disconnect', () => {
       console.log(`🔌 Client disconnected: ${socket.id}`);
-      cleanupStream(socket.id);
-      // The bump inside cleanupStream already cancelled any in-flight subscribe;
-      // drop the counter so the map doesn't grow one entry per socket forever.
-      streamGenerations.delete(socket.id);
+      cleanupSocketStreams(socket.id);
       for (const set of ALL_SUBSCRIBER_SETS) set.delete(socket);
       const detached = shellService.detachSocketSessions(socket);
       if (detached > 0) {
@@ -720,15 +724,29 @@ function setupProactiveSpeechForwarding() {
   wireProactiveTriggers({ io: ioInstance });
 }
 
-function cleanupStream(socketId) {
+function cleanupStream(key) {
   // Bump unconditionally, even with no stream to kill: this is the cancellation
   // point for a `logs:subscribe` still awaiting its app lookup, which has not
   // claimed the slot yet and so would otherwise survive an unsubscribe.
-  bumpStreamGeneration(socketId);
-  const stream = activeStreams.get(socketId);
+  bumpStreamGeneration(key);
+  const stream = activeStreams.get(key);
   if (stream) {
     stream.process.kill('SIGTERM');
-    activeStreams.delete(socketId);
+    activeStreams.delete(key);
+  }
+}
+
+function cleanupSocketStreams(socketId) {
+  const prefix = `${socketId}:`;
+  for (const [key, stream] of activeStreams) {
+    if (!key.startsWith(prefix)) continue;
+    stream.process.kill('SIGTERM');
+    activeStreams.delete(key);
+  }
+  // Dropping a pending stream's generation invalidates an in-flight lookup
+  // without needing a synthetic process entry to represent it.
+  for (const key of streamGenerations.keys()) {
+    if (key.startsWith(prefix)) streamGenerations.delete(key);
   }
 }
 

@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
  */
 
 vi.mock('./pm2.js', () => ({
-  spawnPm2: vi.fn(() => ({ stdout: { on: vi.fn() }, stderr: { on: vi.fn() }, on: vi.fn() })),
+  spawnPm2: vi.fn(() => ({ stdout: { on: vi.fn() }, stderr: { on: vi.fn() }, on: vi.fn(), kill: vi.fn() })),
   buildEnv: vi.fn((pm2Home) => ({ PATH: '/usr/bin', ...(pm2Home ? { PM2_HOME: pm2Home } : {}) }))
 }));
 vi.mock('./streamingDetect.js', () => ({ streamDetection: vi.fn() }));
@@ -48,6 +48,7 @@ vi.mock('../lib/socketValidation.js', () => ({
   detectStartSchema: {},
   standardizeStartSchema: {},
   logsSubscribeSchema: {},
+  logsUnsubscribeSchema: {},
   errorRecoverSchema: {},
   shellInputSchema: {},
   shellResizeSchema: {},
@@ -478,7 +479,7 @@ describe('socket.js — initSocket', () => {
       const socket = makeSocket('logs-unsub-midlookup');
       io.connect(socket);
       vi.mocked(getAppById).mockImplementation(async () => {
-        socket.handlers['logs:unsubscribe']();
+        socket.handlers['logs:unsubscribe']({ processName: 'game' });
         return { id: 'app-1', pm2Home: '/opt/example/.pm2' };
       });
 
@@ -487,7 +488,7 @@ describe('socket.js — initSocket', () => {
       expect(vi.mocked(spawnPm2)).not.toHaveBeenCalled();
     });
 
-    it('lets the NEWER of two overlapping subscribes win', async () => {
+    it('lets the NEWER of two overlapping subscribes for the same process win', async () => {
       // The opposite failure of the same check: with two subscribes in flight the
       // older one can fill the slot first, so an occupancy check makes the NEWER
       // one bail — and its client never gets `logs:subscribed`, leaving the panel
@@ -499,18 +500,69 @@ describe('socket.js — initSocket', () => {
         () => new Promise(resolve => gates.push(() => resolve({ id: 'app-1', pm2Home: null })))
       );
 
-      const first = socket.handlers['logs:subscribe']({ processName: 'old', lines: 100, appId: 'app-1' });
-      const second = socket.handlers['logs:subscribe']({ processName: 'new', lines: 100, appId: 'app-1' });
+      const first = socket.handlers['logs:subscribe']({ processName: 'game', lines: 100, appId: 'app-1' });
+      const second = socket.handlers['logs:subscribe']({ processName: 'game', lines: 100, appId: 'app-1' });
       // Resolve them out of order: the older lookup finishes last.
       gates[1]();
       gates[0]();
       await Promise.all([first, second]);
 
       expect(vi.mocked(spawnPm2)).toHaveBeenCalledTimes(1);
-      expect(vi.mocked(spawnPm2).mock.calls[0][0]).toEqual(['logs', 'new', '--raw', '--lines', '100']);
+      expect(vi.mocked(spawnPm2).mock.calls[0][0]).toEqual(['logs', 'game', '--raw', '--lines', '100']);
       const subscribed = socket.emitted.filter(([ev]) => ev === 'logs:subscribed');
       expect(subscribed).toHaveLength(1);
-      expect(subscribed[0][1].processName).toBe('new');
+      expect(subscribed[0][1].processName).toBe('game');
+    });
+
+    it('keeps different process streams active and unsubscribes only the named process', async () => {
+      const socket = makeSocket('logs-multiplexed');
+      io.connect(socket);
+
+      await socket.handlers['logs:subscribe']({ processName: 'game', lines: 100 });
+      await socket.handlers['logs:subscribe']({ processName: 'portos-server', lines: 100 });
+
+      const gameStream = vi.mocked(spawnPm2).mock.results[0].value;
+      const serverStream = vi.mocked(spawnPm2).mock.results[1].value;
+      expect(vi.mocked(spawnPm2)).toHaveBeenCalledTimes(2);
+      expect(gameStream.kill).not.toHaveBeenCalled();
+
+      socket.handlers['logs:unsubscribe']({ processName: 'game' });
+
+      expect(gameStream.kill).toHaveBeenCalledWith('SIGTERM');
+      expect(serverStream.kill).not.toHaveBeenCalled();
+      expect(socket.emitted).toContainEqual(['logs:unsubscribed', { processName: 'game' }]);
+    });
+
+    it('keeps a replacement registered when its predecessor closes asynchronously', async () => {
+      const socket = makeSocket('logs-stale-close');
+      io.connect(socket);
+
+      await socket.handlers['logs:subscribe']({ processName: 'game', lines: 100 });
+      const predecessor = vi.mocked(spawnPm2).mock.results[0].value;
+      await socket.handlers['logs:subscribe']({ processName: 'game', lines: 100 });
+      const replacement = vi.mocked(spawnPm2).mock.results[1].value;
+      const onClose = predecessor.on.mock.calls.find(([event]) => event === 'close')[1];
+
+      onClose(0);
+      socket.handlers['logs:unsubscribe']({ processName: 'game' });
+
+      expect(predecessor.kill).toHaveBeenCalledWith('SIGTERM');
+      expect(replacement.kill).toHaveBeenCalledWith('SIGTERM');
+    });
+
+    it('reaps every process stream when its socket disconnects', async () => {
+      const socket = makeSocket('logs-disconnect-sweep');
+      io.connect(socket);
+
+      await socket.handlers['logs:subscribe']({ processName: 'game', lines: 100 });
+      await socket.handlers['logs:subscribe']({ processName: 'portos-server', lines: 100 });
+      const gameStream = vi.mocked(spawnPm2).mock.results[0].value;
+      const serverStream = vi.mocked(spawnPm2).mock.results[1].value;
+
+      socket.handlers.disconnect();
+
+      expect(gameStream.kill).toHaveBeenCalledWith('SIGTERM');
+      expect(serverStream.kill).toHaveBeenCalledWith('SIGTERM');
     });
   });
 });
