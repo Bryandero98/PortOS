@@ -1131,6 +1131,12 @@ export const spriteReferenceLockSchema = z.object({
   acceptClipRisk: z.boolean().optional(),
 });
 
+// Only the seven turnaround-derived anchors can be revised in place. The
+// turnaround and main remain frozen identity evidence, and south is the main.
+export const spriteReferenceUnlockSchema = z.object({
+  direction: z.enum(ANCHOR_DIRECTIONS),
+});
+
 // Phase 3 (issue #2897): walk-animation workflow. All 8 directions are
 // animatable (south's anchor is the frozen main itself).
 const spriteWalkDirectionSchema = z.enum(SPRITE_DIRECTIONS);

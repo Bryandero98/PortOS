@@ -40,6 +40,11 @@ vi.mock('../services/sprites/walk.js', () => ({
     walkSet: null,
     walkTarget: { track: 'walk', frameCount: 14, fps: 8, source: 'set' },
   })),
+  unlockDirectionalAnchor: vi.fn(async () => ({
+    manifest: { status: 'in-progress' },
+    candidates: [],
+    walkInvalidated: true,
+  })),
   getWalkSourceFrames: vi.fn(async () => ({
     available: true,
     reason: null,
@@ -342,6 +347,17 @@ describe('sprites routes', () => {
   it('POST /:id/reference/lock rejects a missing candidate', async () => {
     const r = await request(app).post('/api/sprites/pioneer/reference/lock').send({ target: 'east' });
     expect(r.status).toBe(400);
+  });
+
+  it('POST /:id/reference/unlock accepts only turnaround-derived directions', async () => {
+    const unlocked = await request(app).post('/api/sprites/pioneer/reference/unlock').send({ direction: 'east' });
+    expect(unlocked.status).toBe(200);
+    expect(unlocked.body.walkInvalidated).toBe(true);
+    expect(walk.unlockDirectionalAnchor).toHaveBeenCalledWith('pioneer', { direction: 'east' });
+
+    const south = await request(app).post('/api/sprites/pioneer/reference/unlock').send({ direction: 'south' });
+    expect(south.status).toBe(400);
+    expect(walk.unlockDirectionalAnchor).toHaveBeenCalledTimes(1);
   });
 
   it('PATCH /:id accepts the three standard chroma keys and null, delegating to the lock-aware patch', async () => {

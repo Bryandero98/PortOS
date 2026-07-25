@@ -36,7 +36,7 @@ const renderWalk = (stripPreview, props = {}) => {
   render(
     <WalkWorkflow
       record={{ id: 'example-walker' }}
-      reference={{ manifest: { mainReference: { locked: true }, anchors: [{ direction: 'east', status: 'locked' }] } }}
+      reference={{ manifest: { mainReference: { locked: true }, anchors: [{ direction: 'east', status: 'locked', path: 'reference/example-walker-east-v1.png' }] } }}
       walk={{
         runs: [run],
         selection: { directions: { east: { status: 'approved', runId: 'run-east' } } },
@@ -176,6 +176,80 @@ describe('WalkWorkflow loop preview', () => {
     // fills it, so the computed cell height is asserted on the parent.
     expect(loop.parentElement.style.height).toBe(`${CELL_PX / 2}px`);
     expect(loop.style.backgroundSize).toBe(`${CELL_PX * 8}px ${CELL_PX / 2}px`);
+  });
+});
+
+describe('WalkWorkflow idle anchor preview', () => {
+  it('shows the locked directional anchor until the direction has a packaged animation', () => {
+    render(
+      <MemoryRouter>
+        <WalkWorkflow
+          record={{ id: 'example-walker' }}
+          reference={{
+            manifest: {
+              mainReference: { locked: true },
+              anchors: [{ direction: 'north-east', status: 'locked', path: 'reference/example-walker-north-east-v1.png' }],
+            },
+          }}
+          walk={{ runs: [], selection: { directions: {} }, walkSet: null }}
+          renders={noRenders()}
+          duration={6}
+          onDurationChange={vi.fn()}
+          onGenerate={vi.fn()}
+          onChanged={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    const idle = screen.getByRole('img', { name: 'north-east reference idle pose' });
+    expect(idle.getAttribute('src')).toBe('/data/sprites/example-walker/reference/example-walker-north-east-v1.png');
+    expect(screen.getByText('reference idle')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Generate walk' })).toBeEnabled();
+  });
+
+  it('replaces the idle anchor with the packaged walk preview', () => {
+    renderWalk(APPROVED_STRIP);
+
+    expect(screen.queryByRole('img', { name: 'east reference idle pose' })).toBeNull();
+    expect(screen.getByRole('img', { name: 'walk loop preview' })).toBeInTheDocument();
+  });
+
+  it('returns to the current idle anchor when the previous walk used a superseded anchor', () => {
+    render(
+      <MemoryRouter>
+        <WalkWorkflow
+          record={{ id: 'example-walker' }}
+          reference={{
+            manifest: {
+              mainReference: { locked: true },
+              anchors: [{ direction: 'east', status: 'locked', path: 'reference/example-walker-east-v2.png' }],
+            },
+          }}
+          walk={{
+            runs: [{
+              id: 'run-east-old',
+              direction: 'east',
+              status: 'superseded-anchor',
+              stripPreview: APPROVED_STRIP,
+            }],
+            selection: { directions: {} },
+            walkSet: null,
+          }}
+          renders={noRenders()}
+          duration={6}
+          onDurationChange={vi.fn()}
+          onGenerate={vi.fn()}
+          onChanged={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole('img', { name: 'east reference idle pose' }).getAttribute('src'))
+      .toBe('/data/sprites/example-walker/reference/example-walker-east-v2.png');
+    expect(screen.getByText(/Previous walk kept in history/)).toBeInTheDocument();
+    expect(screen.queryByRole('img', { name: 'walk loop preview' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Edit in Loop Trimmer/ })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Generate walk' })).toBeEnabled();
   });
 });
 

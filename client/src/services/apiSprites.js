@@ -83,6 +83,12 @@ export const lockSpriteReference = (id, body, options = {}) => request(`/sprites
   method: 'POST', body: JSON.stringify(body), ...options,
 });
 
+// Re-open one turnaround-derived directional anchor. Its old PNG stays
+// versioned on disk; any approved walk for the direction is invalidated.
+export const unlockSpriteReferenceAnchor = (id, body, options = {}) => request(`/sprites/${encodeURIComponent(id)}/reference/unlock`, {
+  method: 'POST', body: JSON.stringify(body), ...options,
+});
+
 // Fork `id` into a new character seeded (image+text→image) from its locked main
 // reference. Body: { name, id?, designPrompt, mode?, model?, effort?,
 // initImageStrength? }. Returns { record, jobId, mode, target, anchorId }.

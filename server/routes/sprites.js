@@ -19,6 +19,7 @@ import {
   spriteCreateSchema,
   spriteReferenceGenerateSchema,
   spriteReferenceLockSchema,
+  spriteReferenceUnlockSchema,
   spriteForkSchema,
   spriteWalkGenerateSchema,
   spriteWalkApproveSchema,
@@ -45,7 +46,7 @@ import {
 import { resolveSpriteAssetPrompt } from '../services/sprites/assetPrompt.js';
 import {
   getWalkState, startWalkGeneration, approveWalkDirection, rerunWalkPostprocess, unlockWalkSet,
-  reopenWalkDirection, setWalkTarget, getWalkSourceFrames,
+  reopenWalkDirection, setWalkTarget, getWalkSourceFrames, unlockDirectionalAnchor,
 } from '../services/sprites/walk.js';
 import { saveLoopTrim } from '../services/sprites/walkTrims.js';
 import { compileAtlas, getAtlasState } from '../services/sprites/atlas.js';
@@ -146,6 +147,14 @@ router.post('/:id/reference/generate', referenceUpload, asyncHandler(async (req,
 router.post('/:id/reference/lock', asyncHandler(async (req, res) => {
   const body = validateRequest(spriteReferenceLockSchema, req.body);
   res.json(await lockReference(req.params.id, body));
+}));
+
+// Re-open one turnaround-derived directional anchor for correction. The old
+// versioned PNG remains on disk, and any approved walk conditioned on it is
+// reopened so stale animation cannot survive the reference revision.
+router.post('/:id/reference/unlock', asyncHandler(async (req, res) => {
+  const body = validateRequest(spriteReferenceUnlockSchema, req.body);
+  res.json(await unlockDirectionalAnchor(req.params.id, body));
 }));
 
 // Fork `:id` into a new character seeded (image+text→image) from its locked

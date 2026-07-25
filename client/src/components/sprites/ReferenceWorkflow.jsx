@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   Lock, Sparkles, RefreshCw, Upload, ChevronDown, ChevronRight,
-  Images, PersonStanding, GitFork, X,
+  Images, PersonStanding, GitFork, Unlock, X,
 } from 'lucide-react';
 import toast from '../ui/Toast';
-import { generateSpriteReference, lockSpriteReference, updateSpriteRecord } from '../../services/apiSprites.js';
+import {
+  generateSpriteReference, lockSpriteReference, unlockSpriteReferenceAnchor, updateSpriteRecord,
+} from '../../services/apiSprites.js';
 import { useAsyncAction } from '../../hooks/useAsyncAction.js';
 import SpritePreview from './SpritePreview.jsx';
 import GalleryImagePicker from '../imageGen/GalleryImagePicker.jsx';
@@ -45,24 +47,28 @@ function SpriteImg({ recordId, path, className }) {
 function CandidateTile({ recordId, candidate, locking, onLock, clipRisk }) {
   const [confirming, setConfirming] = useState(false);
   return (
-    <div className="bg-port-bg border border-port-border rounded p-1 space-y-1">
-      <SpriteImg recordId={recordId} path={candidate.path} className="w-full aspect-square object-contain" />
-      <p className="text-[10px] text-gray-500 truncate" title={candidate.path}>
+    <div className="flex min-w-0 flex-col gap-2 rounded-lg border border-port-border bg-port-card p-2">
+      <SpriteImg
+        recordId={recordId}
+        path={candidate.path}
+        className="w-full aspect-square rounded-md border border-port-border object-contain"
+      />
+      <p className="truncate px-0.5 text-[10px] text-gray-500" title={candidate.path}>
         {candidate.path.split('/').pop()}{candidate.mode ? ` · ${candidate.mode}` : ''}
       </p>
       {clipRisk ? (
-        <div className="space-y-1 text-[10px]">
+        <div className="mt-auto space-y-1 text-[10px]">
           <p className="text-port-warning">{clipRisk}</p>
           <button
             onClick={() => onLock(candidate, true)}
             disabled={locking}
-            className="w-full px-1.5 py-0.5 text-xs bg-port-warning/20 border border-port-warning rounded text-port-warning disabled:opacity-50"
+            className="w-full rounded border border-port-warning bg-port-warning/20 px-1.5 py-1 text-xs text-port-warning disabled:opacity-50"
           >
             Lock anyway
           </button>
         </div>
       ) : confirming ? (
-        <div className="flex items-center gap-1 text-xs">
+        <div className="mt-auto flex flex-wrap items-center gap-1 text-xs">
           <span className="text-port-warning">Freeze forever?</span>
           <button onClick={() => { setConfirming(false); onLock(candidate); }} disabled={locking} className="px-1.5 py-0.5 bg-port-accent text-white rounded disabled:opacity-50">Lock</button>
           <button onClick={() => setConfirming(false)} className="px-1.5 py-0.5 text-gray-400 hover:text-white">Cancel</button>
@@ -71,11 +77,97 @@ function CandidateTile({ recordId, candidate, locking, onLock, clipRisk }) {
         <button
           onClick={() => setConfirming(true)}
           disabled={locking}
-          className="flex items-center gap-1 w-full justify-center px-1.5 py-0.5 text-xs bg-port-card border border-port-border rounded text-gray-300 hover:border-port-accent disabled:opacity-50"
+          className="mt-auto flex w-full items-center justify-center gap-1 rounded border border-port-border bg-port-bg px-1.5 py-1 text-xs text-gray-300 hover:border-port-accent disabled:opacity-50"
         >
           <Lock className="w-3 h-3" /> Lock
         </button>
       )}
+    </div>
+  );
+}
+
+// A directional-anchor unlock is deliberately narrower than unlocking the
+// identity root: it preserves the old versioned PNG, reopens this card, and
+// invalidates only the walk that depended on it. Keep the consequential action
+// behind the same inline-confirm convention as locking.
+function LockedAnchor({ recordId, anchor, canUnlock, unlocking, onUnlock }) {
+  const [confirming, setConfirming] = useState(false);
+  const direction = anchor.direction;
+  return (
+    <div className="space-y-2">
+      <SpriteImg
+        recordId={recordId}
+        path={anchor.path}
+        className="w-full aspect-square rounded border border-port-border object-contain"
+      />
+      {canUnlock && (confirming ? (
+        <div className="rounded border border-port-warning/40 bg-port-warning/10 p-1.5 text-[10px]">
+          <p className="mb-1.5 text-port-warning">Regenerate {direction} from turnaround?</p>
+          <div className="flex gap-1">
+            <button
+              type="button"
+              aria-label={`Confirm unlock ${direction} anchor`}
+              onClick={() => { setConfirming(false); onUnlock(direction); }}
+              disabled={unlocking}
+              className="flex-1 rounded bg-port-warning px-1.5 py-1 font-medium text-black disabled:opacity-50"
+            >
+              Unlock
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirming(false)}
+              disabled={unlocking}
+              className="rounded px-1.5 py-1 text-gray-400 hover:text-white disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          aria-label={`Unlock ${direction} anchor`}
+          onClick={() => setConfirming(true)}
+          disabled={unlocking}
+          className="flex min-h-8 w-full items-center justify-center gap-1 rounded border border-port-border bg-port-card px-2 py-1 text-xs text-gray-400 hover:border-port-warning hover:text-port-warning disabled:opacity-50"
+        >
+          <Unlock className="h-3 w-3" /> Unlock anchor
+        </button>
+      ))}
+    </div>
+  );
+}
+
+const STEP_TONE = {
+  complete: 'border-port-success/40 bg-port-success/10 text-port-success',
+  active: 'border-port-accent/50 bg-port-accent/10 text-port-accent',
+  waiting: 'border-port-border bg-port-bg text-gray-500',
+};
+
+function StepSummary({ number, label, status, tone }) {
+  return (
+    <div className={`flex min-w-0 items-center gap-2 rounded-lg border px-2.5 py-2 ${STEP_TONE[tone]}`}>
+      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
+        {number}
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate text-[10px] uppercase tracking-wide">{label}</span>
+        <span className="block truncate text-[11px] font-medium">{status}</span>
+      </span>
+    </div>
+  );
+}
+
+function StageHeading({ id, number, title, status, statusTone = 'text-gray-500' }) {
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-port-border bg-port-bg text-xs font-semibold text-gray-300">
+        {number}
+      </span>
+      <div className="min-w-0">
+        <h4 id={id} className="truncate text-xs font-semibold uppercase tracking-wide text-gray-300">{title}</h4>
+        <p className={`text-[10px] ${statusTone}`}>{status}</p>
+      </div>
     </div>
   );
 }
@@ -102,6 +194,10 @@ export default function ReferenceWorkflow({ record, reference, renders, correcti
   // grid as the user left it.
   const anchorList = manifest?.anchors || [];
   const allAnchorsLocked = anchorList.length > 0 && anchorList.every((a) => a.status === 'locked');
+  const lockedAnchorCount = anchorList.filter((a) => a.status === 'locked').length;
+  const anchorProgress = anchorList.length > 0
+    ? `${lockedAnchorCount}/${anchorList.length} locked`
+    : 'Waiting for main';
   // A legacy character with every anchor already frozen has nothing left for a
   // sheet to improve — main and anchors are immutable — so the backfill stops
   // being a step it's missing and becomes an optional extra that only helps
@@ -211,6 +307,18 @@ export default function ReferenceWorkflow({ record, reference, renders, correcti
     onChanged();
   }, { errorMessage: 'Lock failed' });
 
+  const [unlockAnchor, anchorUnlocking] = useAsyncAction(async (direction) => {
+    const result = await unlockSpriteReferenceAnchor(
+      recordId,
+      { direction },
+      { silent: true },
+    );
+    toast.success(result.walkInvalidated
+      ? `${direction} anchor unlocked; its walk was reopened`
+      : `${direction} anchor unlocked`);
+    onChanged();
+  }, { errorMessage: 'Failed to unlock anchor' });
+
   const [setChromaKey, keySaving] = useAsyncAction(async (hex) => {
     await updateSpriteRecord(recordId, { chromaKey: hex }, { silent: true });
     // A key change invalidates any clip-risk warning the user was shown —
@@ -233,305 +341,433 @@ export default function ReferenceWorkflow({ record, reference, renders, correcti
       </select>
     </label>
   );
+  const turnaroundCandidates = candidatesByTarget.turnaround || [];
+  const mainCandidates = candidatesByTarget.main || [];
 
   return (
-    <div className="bg-port-card border border-port-border rounded-lg p-4 space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold text-white flex items-center gap-1.5">
-          <Sparkles className="w-4 h-4" /> Reference Set
-          <span className="text-xs font-normal text-gray-500">{manifest?.status || 'not started'}</span>
-        </h3>
+    <div className="@container space-y-4 rounded-lg border border-port-border bg-port-card p-3 sm:p-4">
+      <div className="flex flex-col gap-3 @4xl:flex-row @4xl:items-start">
+        <div className="min-w-[13rem] flex-1">
+          <h3 className="flex items-center gap-1.5 text-sm font-semibold text-white">
+            <Sparkles className="h-4 w-4" /> Reference Set
+            <span className="text-xs font-normal text-gray-500">{manifest?.status || 'not started'}</span>
+          </h3>
+          <p className="mt-1 max-w-xl text-[11px] text-gray-500">
+            Establish the character once, then derive every animation from the same locked identity.
+          </p>
+        </div>
+
+        <div className="grid flex-[1.4] grid-cols-1 gap-2 sm:grid-cols-3">
+          <StepSummary
+            number="1"
+            label="Turnaround"
+            status={turnaroundLocked ? 'Locked' : backfillOptional ? 'Optional backfill' : turnaroundCandidates.length > 0 ? 'Candidate ready' : 'Design'}
+            tone={turnaroundLocked ? 'complete' : 'active'}
+          />
+          <StepSummary
+            number="2"
+            label="Main"
+            status={mainLocked ? 'Locked' : turnaroundLocked ? 'Ready to derive' : 'Waiting'}
+            tone={mainLocked ? 'complete' : turnaroundLocked ? 'active' : 'waiting'}
+          />
+          <StepSummary
+            number="3"
+            label="Anchors"
+            status={anchorProgress}
+            tone={allAnchorsLocked ? 'complete' : mainLocked ? 'active' : 'waiting'}
+          />
+        </div>
+
         <div
-          className="flex items-center gap-1.5"
+          className="flex shrink-0 items-center gap-1.5 rounded-lg border border-port-border bg-port-bg px-2.5 py-2"
           title={keyFrozen
             ? 'Chroma key is frozen with the locked reference set'
             : 'Chroma key — auto-selected when the turnaround sheet locks; pin one of the three standard keys, or auto to let the lock decide'}
         >
-          <span className="text-xs text-gray-500">key</span>
+          <span className="mr-1 text-[10px] uppercase tracking-wide text-gray-500">Chroma key</span>
           <button
+            type="button"
             onClick={() => setChromaKey(null)}
             disabled={keySaving || keyFrozen}
-            className={`px-1.5 h-5 rounded-sm border text-[10px] ${!record.chromaKey ? 'border-white ring-1 ring-port-accent text-white' : 'border-port-border text-gray-400 opacity-60 hover:opacity-100'} disabled:opacity-40`}
+            className={`h-6 rounded-sm border px-2 text-[10px] ${!record.chromaKey ? 'border-white ring-1 ring-port-accent text-white' : 'border-port-border text-gray-400 opacity-60 hover:opacity-100'} disabled:opacity-40`}
           >
             auto
           </button>
           {CHROMA_KEYS.map((hex) => (
             <button
+              type="button"
               key={hex}
               onClick={() => setChromaKey(hex)}
               disabled={keySaving || keyFrozen}
               aria-label={`Set chroma key ${hex}`}
-              className={`w-5 h-5 rounded-sm border ${record.chromaKey === hex ? 'border-white ring-1 ring-port-accent' : 'border-port-border opacity-60 hover:opacity-100'} disabled:opacity-40`}
+              className={`h-6 w-6 rounded-sm border ${record.chromaKey === hex ? 'border-white ring-1 ring-port-accent' : 'border-port-border opacity-60 hover:opacity-100'} disabled:opacity-40`}
               style={{ backgroundColor: hex }}
             />
           ))}
         </div>
       </div>
+
       {manifest?.chromaKeyWarning && (
-        <p className="text-xs text-port-warning">{manifest.chromaKeyWarning}</p>
+        <p className="rounded-lg border border-port-warning/40 bg-port-warning/10 px-3 py-2 text-xs text-port-warning">
+          {manifest.chromaKeyWarning}
+        </p>
       )}
       {noBackend && (
-        <p className="text-xs text-port-warning">
+        <p className="rounded-lg border border-port-warning/40 bg-port-warning/10 px-3 py-2 text-xs text-port-warning">
           No image backend configured — enable Codex or Grok, or set a local Python path, in Settings → Image Gen to generate references.
         </p>
       )}
 
-      {/* Step 1 — the turnaround sheet, the identity root every later render
-          descends from. A character created before #2979 backfills one from its
-          already-locked main so its remaining anchors get all sides too. */}
-      <div className="space-y-2">
-        <h4 className="text-xs uppercase tracking-wide text-gray-500">
-          1 · Turnaround sheet
-          {turnaroundLocked && <span className="ml-1 text-[10px] text-port-success normal-case tracking-normal">· locked</span>}
-          {backfillOptional && <span className="ml-1 text-[10px] text-gray-600 normal-case tracking-normal">· optional</span>}
-        </h4>
-        {turnaroundLocked ? (
-          // The sheet is a square PNG (four figures in a 1:1 canvas), so render
-          // it as a large square — a fixed landscape box letterboxed it into a
-          // tiny center strip and wasted the sides. It's the identity root, so
-          // it gets more room than the single-figure anchors below.
-          <div className="flex flex-col sm:flex-row items-start gap-3">
-            <SpriteImg recordId={recordId} path={manifest.turnaround.path} className="w-full max-w-sm aspect-square object-contain bg-port-bg border border-port-border rounded" />
-            <p className="text-xs text-gray-500 flex items-center gap-1">
-              <Lock className="w-3 h-3" /> frozen · identity root
-            </p>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            <p className="text-[11px] text-gray-500">
-              {backfillOptional
-                ? 'This character predates turnaround sheets and its reference set is already complete, so a sheet won’t change any locked artifact. Generating one is optional — it only gives future forks of this character all four sides to work from.'
-                : backfilling
-                  ? 'This character was built before turnaround sheets. Generate one from its locked main reference — the remaining directional anchors will be drawn from it, so accessories stay on the same side of the body.'
-                  : 'One image, four views (front · right · back · left). Every later render is redrawn from it, so a bag or pocket keeps the same anatomical side from every angle.'}
-            </p>
-            <textarea
-              value={designPrompt}
-              onChange={(e) => setDesignPrompt(e.target.value)}
-              placeholder="Describe the character (or attach a design reference image)…"
-              rows={2}
-              className="w-full bg-port-bg border border-port-border rounded px-3 py-1.5 text-sm text-white"
-            />
-            {/* Reference image (optional, i2i seed) — pick ONE of three sources. */}
-            {refSource ? (
-              <div className="flex items-center gap-3 bg-port-bg border border-port-border rounded p-2">
-                {refSource.type === 'sprite' ? (
-                  <SpriteImg recordId={refSource.id} path={refSource.path} className="w-14 h-14 object-contain shrink-0" />
-                ) : (
-                  <img src={refSource.previewUrl} alt="reference" className="w-14 h-14 object-contain rounded shrink-0" />
-                )}
-                <div className="min-w-0 flex-1">
-                  <p className="text-xs text-gray-300 truncate">
-                    {refSource.type === 'upload' ? refSource.file.name
-                      : refSource.type === 'gallery' ? (refSource.label || 'gallery image')
-                        : refSource.name}
-                  </p>
-                  <p className="text-[10px] text-gray-500">
-                    {refSource.type === 'upload' ? 'uploaded image'
-                      : refSource.type === 'gallery' ? 'from render history'
-                        : 'from reference sprite'}
-                  </p>
-                  <label className="mt-1 flex items-center gap-2 text-[10px] text-gray-500">
-                    fidelity
-                    <input
-                      type="range" min="0" max="1" step="0.05" value={strength}
-                      onChange={(e) => setStrength(Number(e.target.value))}
-                      className="accent-port-accent"
-                      aria-label="Reference fidelity"
-                    />
-                    <span className="tabular-nums w-8">{strength.toFixed(2)}</span>
-                  </label>
-                </div>
-                <button
-                  type="button"
-                  onClick={clearSource}
-                  aria-label="Remove reference image"
-                  className="p-1 text-gray-400 hover:text-white shrink-0"
-                >
-                  <X className="w-4 h-4" />
-                </button>
+      <div className="grid items-start gap-4 @5xl:grid-cols-[minmax(0,1.65fr)_minmax(19rem,0.75fr)]">
+        {/* Step 1 — the turnaround sheet, the identity root every later render
+            descends from. On desktop, design controls and candidate review sit
+            beside each other instead of leaving the right side of the panel
+            empty; below that breakpoint they preserve the guided linear flow. */}
+        <section
+          aria-labelledby="sprite-turnaround-heading"
+          className="min-w-0 space-y-4 rounded-xl border border-port-border bg-port-bg/50 p-3 sm:p-4"
+        >
+          <StageHeading
+            id="sprite-turnaround-heading"
+            number="1"
+            title="Turnaround sheet"
+            status={turnaroundLocked ? 'Locked identity root' : backfillOptional ? 'Optional for future forks' : backfilling ? 'Backfill from the locked main' : 'Design the four-view identity root'}
+            statusTone={turnaroundLocked ? 'text-port-success' : backfillOptional ? 'text-gray-500' : 'text-port-accent'}
+          />
+
+          {turnaroundLocked ? (
+            <div className="grid items-start gap-4 @3xl:grid-cols-[minmax(16rem,1.15fr)_minmax(14rem,0.65fr)]">
+              <SpriteImg
+                recordId={recordId}
+                path={manifest.turnaround.path}
+                className="w-full aspect-square rounded-lg border border-port-border bg-port-bg object-contain"
+              />
+              <div className="rounded-lg border border-port-success/30 bg-port-success/10 p-3">
+                <p className="flex items-center gap-1.5 text-xs font-medium text-port-success">
+                  <Lock className="h-3.5 w-3.5" /> Frozen identity root
+                </p>
+                <p className="mt-2 text-[11px] leading-relaxed text-gray-500">
+                  The front, right, back, and left views are fixed. The main reference and every directional anchor derive from this sheet.
+                </p>
               </div>
-            ) : (
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs text-gray-500">Reference image (optional):</span>
-                <FilePickerButton
-                  accept={IMAGE_ACCEPT}
-                  onChange={(e) => pickUpload(e.target.files?.[0] || null)}
-                  ariaLabel="Upload a reference image"
-                  className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-port-card border border-port-border rounded text-gray-300 hover:border-port-accent"
-                >
-                  <Upload className="w-3.5 h-3.5" /> Upload
-                </FilePickerButton>
-                <button
-                  type="button"
-                  onClick={() => setGalleryOpen(true)}
-                  className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-port-card border border-port-border rounded text-gray-300 hover:border-port-accent"
-                >
-                  <Images className="w-3.5 h-3.5" /> From history
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSpritePickerOpen(true)}
-                  className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-port-card border border-port-border rounded text-gray-300 hover:border-port-accent"
-                >
-                  <PersonStanding className="w-3.5 h-3.5" /> From sprite
-                </button>
-              </div>
-            )}
-            <div className="flex flex-wrap items-center gap-3">
-              {modePicker}
-              <button
-                onClick={() => generate('turnaround')}
-                disabled={!mode || !!pendingJobs.turnaround || (!designPrompt.trim() && !refSource && !backfilling)}
-                className="flex items-center gap-1.5 px-3 py-1 bg-port-accent hover:bg-blue-600 disabled:opacity-50 text-white rounded text-sm"
-              >
-                {pendingJobs.turnaround ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-                {pendingJobs.turnaround ? 'Rendering…'
-                  : backfilling ? 'Generate from locked main'
-                    : (candidatesByTarget.turnaround || []).length ? 'Regenerate' : 'Generate candidate'}
-              </button>
             </div>
-            {(candidatesByTarget.turnaround || []).length > 0 && (
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                {candidatesByTarget.turnaround.map((c) => (
-                  <CandidateTile key={c.path} recordId={recordId} candidate={c} locking={locking} clipRisk={clipRisks[c.path]} onLock={(cand, accept) => lock('turnaround', cand, accept)} />
-                ))}
+          ) : (
+            <div className={`grid items-start gap-4 ${turnaroundCandidates.length > 0 ? '@3xl:grid-cols-[minmax(17rem,0.72fr)_minmax(20rem,1.28fr)]' : ''}`}>
+              <div className="min-w-0 space-y-3">
+                <p className="text-[11px] leading-relaxed text-gray-500">
+                  {backfillOptional
+                    ? 'This character predates turnaround sheets and its reference set is already complete, so a sheet won’t change any locked artifact. Generating one is optional — it only gives future forks of this character all four sides to work from.'
+                    : backfilling
+                      ? 'This character was built before turnaround sheets. Generate one from its locked main reference — the remaining directional anchors will be drawn from it, so accessories stay on the same side of the body.'
+                      : 'One image, four views (front · right · back · left). Every later render is redrawn from it, so a bag or pocket keeps the same anatomical side from every angle.'}
+                </p>
+
+                <div>
+                  <label htmlFor="sprite-turnaround-design-prompt" className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-gray-500">
+                    Character design
+                  </label>
+                  <textarea
+                    id="sprite-turnaround-design-prompt"
+                    value={designPrompt}
+                    onChange={(e) => setDesignPrompt(e.target.value)}
+                    placeholder="Describe the character (or attach a design reference image)…"
+                    rows={4}
+                    className="w-full resize-y rounded-lg border border-port-border bg-port-bg px-3 py-2 text-sm text-white"
+                  />
+                </div>
+
+                {/* Reference image (optional, i2i seed) — pick ONE of three sources. */}
+                {refSource ? (
+                  <div className="flex items-center gap-3 rounded-lg border border-port-border bg-port-bg p-2">
+                    {refSource.type === 'sprite' ? (
+                      <SpriteImg recordId={refSource.id} path={refSource.path} className="h-16 w-16 shrink-0 rounded object-contain" />
+                    ) : (
+                      <img src={refSource.previewUrl} alt="reference" className="h-16 w-16 shrink-0 rounded object-contain" />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-xs text-gray-300">
+                        {refSource.type === 'upload' ? refSource.file.name
+                          : refSource.type === 'gallery' ? (refSource.label || 'gallery image')
+                            : refSource.name}
+                      </p>
+                      <p className="text-[10px] text-gray-500">
+                        {refSource.type === 'upload' ? 'uploaded image'
+                          : refSource.type === 'gallery' ? 'from render history'
+                            : 'from reference sprite'}
+                      </p>
+                      <label className="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-gray-500">
+                        Fidelity
+                        <input
+                          type="range" min="0" max="1" step="0.05" value={strength}
+                          onChange={(e) => setStrength(Number(e.target.value))}
+                          className="min-w-24 flex-1 accent-port-accent"
+                          aria-label="Reference fidelity"
+                        />
+                        <span className="w-8 tabular-nums">{strength.toFixed(2)}</span>
+                      </label>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={clearSource}
+                      aria-label="Remove reference image"
+                      className="shrink-0 p-1 text-gray-400 hover:text-white"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <p className="text-[10px] font-medium uppercase tracking-wide text-gray-500">Reference image <span className="normal-case tracking-normal">(optional)</span></p>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 @3xl:grid-cols-1">
+                      <FilePickerButton
+                        accept={IMAGE_ACCEPT}
+                        onChange={(e) => pickUpload(e.target.files?.[0] || null)}
+                        ariaLabel="Upload a reference image"
+                        className="flex min-h-9 items-center justify-center gap-1.5 rounded border border-port-border bg-port-card px-2.5 py-1 text-xs text-gray-300 hover:border-port-accent"
+                      >
+                        <Upload className="h-3.5 w-3.5" /> Upload
+                      </FilePickerButton>
+                      <button
+                        type="button"
+                        onClick={() => setGalleryOpen(true)}
+                        className="flex min-h-9 items-center justify-center gap-1.5 rounded border border-port-border bg-port-card px-2.5 py-1 text-xs text-gray-300 hover:border-port-accent"
+                      >
+                        <Images className="h-3.5 w-3.5" /> History
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSpritePickerOpen(true)}
+                        className="flex min-h-9 items-center justify-center gap-1.5 rounded border border-port-border bg-port-card px-2.5 py-1 text-xs text-gray-300 hover:border-port-accent"
+                      >
+                        <PersonStanding className="h-3.5 w-3.5" /> Sprite
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex flex-col gap-2 border-t border-port-border pt-3 sm:flex-row sm:flex-wrap sm:items-end">
+                  {modePicker}
+                  <button
+                    type="button"
+                    onClick={() => generate('turnaround')}
+                    disabled={!mode || !!pendingJobs.turnaround || (!designPrompt.trim() && !refSource && !backfilling)}
+                    className="flex min-h-9 flex-1 items-center justify-center gap-1.5 rounded bg-port-accent px-3 py-1.5 text-sm text-white hover:bg-blue-600 disabled:opacity-50"
+                  >
+                    {pendingJobs.turnaround ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                    {pendingJobs.turnaround ? 'Rendering…'
+                      : backfilling ? 'Generate from locked main'
+                        : turnaroundCandidates.length ? 'Regenerate' : 'Generate candidate'}
+                  </button>
+                </div>
               </div>
-            )}
-          </div>
-        )}
+
+              {turnaroundCandidates.length > 0 && (
+                <div className="min-w-0 rounded-lg border border-port-border bg-port-bg p-3">
+                  <div className="mb-3 flex items-start justify-between gap-3">
+                    <div>
+                      <h5 className="text-xs font-semibold text-gray-300">Candidate review</h5>
+                      <p className="mt-0.5 text-[10px] text-gray-500">Inspect at full size, then freeze the identity you want to keep.</p>
+                    </div>
+                    <span className="rounded-full border border-port-border px-2 py-0.5 text-[10px] text-gray-500">
+                      {turnaroundCandidates.length}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,18rem),1fr))] gap-3">
+                    {turnaroundCandidates.map((candidate) => (
+                      <CandidateTile
+                        key={candidate.path}
+                        recordId={recordId}
+                        candidate={candidate}
+                        locking={locking}
+                        clipRisk={clipRisks[candidate.path]}
+                        onLock={(picked, accept) => lock('turnaround', picked, accept)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+
+        {/* Step 2 stays visible beside the active turnaround workspace on wide
+            screens. At narrower widths it follows step 1 in reading order. */}
+        <section
+          aria-labelledby="sprite-main-reference-heading"
+          className="min-w-0 space-y-4 rounded-xl border border-port-border bg-port-bg/50 p-3 sm:p-4"
+        >
+          <StageHeading
+            id="sprite-main-reference-heading"
+            number="2"
+            title="Main reference"
+            status={mainLocked ? 'Locked walk-south identity' : turnaroundLocked ? 'Ready to derive from the front view' : 'Waiting for the turnaround sheet'}
+            statusTone={mainLocked ? 'text-port-success' : turnaroundLocked ? 'text-port-accent' : 'text-gray-500'}
+          />
+
+          {mainLocked ? (
+            <div className="grid items-start gap-3 @3xl:grid-cols-[minmax(12rem,18rem)_1fr] @5xl:grid-cols-1">
+              <SpriteImg
+                recordId={recordId}
+                path={manifest.mainReference.path}
+                className="w-full aspect-square rounded-lg border border-port-border bg-port-bg object-contain"
+              />
+              <div className="space-y-3">
+                <p className="flex items-center gap-1.5 text-xs text-port-success">
+                  <Lock className="h-3.5 w-3.5" /> Frozen · immutable root
+                </p>
+                <p className="text-[11px] leading-relaxed text-gray-500">
+                  This front-facing reference seeds thumbnails and the walk-south identity. Fork to make a new editable version.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setForkOpen(true)}
+                  className="flex min-h-9 w-full items-center justify-center gap-1.5 rounded border border-port-border bg-port-card px-2.5 py-1.5 text-xs text-gray-300 hover:border-port-accent"
+                >
+                  <GitFork className="h-3.5 w-3.5" /> Fork from this reference
+                </button>
+              </div>
+            </div>
+          ) : turnaroundLocked ? (
+            <div className="space-y-3">
+              <p className="text-[11px] leading-relaxed text-gray-500">
+                Redrawn from the sheet&rsquo;s front panel — no separate design input.
+              </p>
+              <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-end @5xl:flex-col @5xl:items-stretch">
+                {modePicker}
+                <button
+                  type="button"
+                  onClick={() => generate('main')}
+                  disabled={!mode || !!pendingJobs.main}
+                  className="flex min-h-9 flex-1 items-center justify-center gap-1.5 rounded bg-port-accent px-3 py-1.5 text-sm text-white hover:bg-blue-600 disabled:opacity-50"
+                >
+                  {pendingJobs.main ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                  {pendingJobs.main ? 'Rendering…' : mainCandidates.length ? 'Regenerate' : 'Generate candidate'}
+                </button>
+              </div>
+              {mainCandidates.length > 0 && (
+                <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,11rem),1fr))] gap-3">
+                  {mainCandidates.map((candidate) => (
+                    <CandidateTile
+                      key={candidate.path}
+                      recordId={recordId}
+                      candidate={candidate}
+                      locking={locking}
+                      clipRisk={clipRisks[candidate.path]}
+                      onLock={(picked, accept) => lock('main', picked, accept)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex min-h-40 items-center justify-center rounded-lg border border-dashed border-port-border bg-port-bg px-4 text-center">
+              <p className="max-w-xs text-[11px] text-gray-600">Lock the turnaround sheet to unlock this stage.</p>
+            </div>
+          )}
+        </section>
       </div>
 
-      {/* Step 2 — the main reference: the sheet's front view, and the sprite's
-          canonical face (thumbnails, fork seeds, the walk-south anchor). */}
-      <div className="space-y-2">
-        <h4 className="text-xs uppercase tracking-wide text-gray-500">
-          2 · Main reference (walk-south)
-          {mainLocked && <span className="ml-1 text-[10px] text-port-success normal-case tracking-normal">· locked</span>}
-        </h4>
-        {mainLocked ? (
-          <div className="flex items-start gap-3">
-            <SpriteImg recordId={recordId} path={manifest.mainReference.path} className="w-32 h-32 object-contain bg-port-bg border border-port-border rounded" />
-            <div className="space-y-2">
-              <p className="text-xs text-gray-500 flex items-center gap-1"><Lock className="w-3 h-3" /> frozen · immutable root</p>
-              {/* A locked main can never be regenerated — to iterate on it, fork
-                  into a new character seeded from this reference (image+text→image). */}
+      {/* Step 3 spans the workspace because active anchors need repeatable card
+          width. A complete set stays collapsed and compact by default. */}
+      {mainLocked && (
+        <section
+          aria-labelledby="sprite-directional-anchors-heading"
+          className="space-y-3 rounded-xl border border-port-border bg-port-bg/50 p-3 sm:p-4"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <StageHeading
+              id="sprite-directional-anchors-heading"
+              number="3"
+              title="Directional anchors"
+              status={allAnchorsLocked ? `${anchorProgress} · complete` : anchorProgress}
+              statusTone={allAnchorsLocked ? 'text-port-success' : turnaroundLocked ? 'text-port-accent' : 'text-gray-500'}
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              {anchorsOpen && !allAnchorsLocked && modePicker}
               <button
                 type="button"
-                onClick={() => setForkOpen(true)}
-                className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-port-card border border-port-border rounded text-gray-300 hover:border-port-accent"
+                onClick={() => setAnchorsOpen((open) => !open)}
+                aria-expanded={anchorsOpen}
+                className="flex min-h-8 items-center gap-1 rounded border border-port-border bg-port-card px-2.5 py-1 text-xs text-gray-300 hover:border-port-accent"
               >
-                <GitFork className="w-3.5 h-3.5" /> Fork from this reference
+                {anchorsOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                {anchorsOpen ? 'Hide anchors' : 'Show anchors'}
               </button>
             </div>
           </div>
-        ) : turnaroundLocked ? (
-          <div className="space-y-2">
-            <p className="text-[11px] text-gray-500">Redrawn from the sheet&rsquo;s front panel — no separate design input.</p>
-            <div className="flex flex-wrap items-center gap-3">
-              {modePicker}
-              <button
-                onClick={() => generate('main')}
-                disabled={!mode || !!pendingJobs.main}
-                className="flex items-center gap-1.5 px-3 py-1 bg-port-accent hover:bg-blue-600 disabled:opacity-50 text-white rounded text-sm"
-              >
-                {pendingJobs.main ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-                {pendingJobs.main ? 'Rendering…' : (candidatesByTarget.main || []).length ? 'Regenerate' : 'Generate candidate'}
-              </button>
-            </div>
-            {(candidatesByTarget.main || []).length > 0 && (
-              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-2">
-                {candidatesByTarget.main.map((c) => (
-                  <CandidateTile key={c.path} recordId={recordId} candidate={c} locking={locking} clipRisk={clipRisks[c.path]} onLock={(cand, accept) => lock('main', cand, accept)} />
-                ))}
-              </div>
-            )}
-          </div>
-        ) : (
-          <p className="text-[11px] text-gray-600">Lock the turnaround sheet first.</p>
-        )}
-      </div>
 
-      {/* Step 3 — directional anchors, each redrawn from the sheet's panel for
-          that side (gated on the sheet even for pre-#2979 characters). */}
-      {mainLocked && (
-        <div className="space-y-2">
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() => setAnchorsOpen((o) => !o)}
-              aria-expanded={anchorsOpen}
-              className="flex items-center gap-1 text-xs uppercase tracking-wide text-gray-500 hover:text-gray-300"
-            >
-              {anchorsOpen ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-              3 · Directional anchors
-              {allAnchorsLocked && (
-                <span className="text-[10px] text-port-success normal-case tracking-normal flex items-center gap-0.5">
-                  · <Lock className="w-2.5 h-2.5" /> all locked
-                </span>
-              )}
-            </button>
-            {anchorsOpen && modePicker}
-          </div>
-          {!anchorsOpen && allAnchorsLocked && (
-            <p className="text-[10px] text-gray-600">Locked anchors are listed under “Reference set” below.</p>
+          {!anchorsOpen && (
+            <p className="text-[10px] text-gray-600">
+              {allAnchorsLocked
+                ? 'The frozen files remain available in the Reference set asset collection below.'
+                : 'Expand to generate, review, and lock each directional identity.'}
+            </p>
           )}
           {anchorsOpen && !allAnchorsLocked && (
             <p className="text-[10px] text-gray-600">
               {turnaroundLocked
-                ? 'Each anchor is redrawn from the turnaround sheet’s panel for that side.'
+                ? 'Each anchor is redrawn from the turnaround sheet’s matching side.'
                 : 'Blocked: generate and lock the turnaround sheet above first — anchors are drawn from it.'}
             </p>
           )}
           {anchorsOpen && (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            {manifest.anchors.map((anchor) => {
-              const cands = candidatesByTarget[anchor.direction] || [];
-              return (
-              <div key={anchor.id} className="bg-port-bg border border-port-border rounded p-2 space-y-1.5">
-                <p className="text-xs text-gray-400 flex items-center justify-between">
-                  {anchor.direction}
-                  {anchor.status === 'locked' && <Lock className="w-3 h-3 text-port-success" />}
-                </p>
-                {anchor.status === 'locked' ? (
-                  <SpriteImg recordId={recordId} path={anchor.path} className="w-full aspect-square object-contain" />
-                ) : (
-                  <div className="space-y-1.5">
-                    {/* Optional correction guidance re-appended to the prompt on
-                        each re-roll — without it, regenerating with the same
-                        inputs tends to reproduce the same mistake. Shared with
-                        the asset card so both surfaces write one source (#2964). */}
-                    <CorrectionNote
-                      direction={anchor.direction}
-                      value={corrections[anchor.direction]}
-                      onChange={onCorrectionChange}
-                      className="text-[11px]"
-                    />
-                    <button
-                      onClick={() => generate(anchor.direction)}
-                      // Gated on the sheet, matching the server's
-                      // TURNAROUND_NOT_LOCKED 409 and the note above — a
-                      // pre-#2979 character must backfill one first.
-                      disabled={!mode || !turnaroundLocked || !!pendingJobs[anchor.direction]}
-                      className="flex items-center gap-1 w-full justify-center px-2 py-1 text-xs bg-port-card border border-port-border rounded text-gray-300 hover:border-port-accent disabled:opacity-50"
-                    >
-                      {pendingJobs[anchor.direction]
-                        ? <><RefreshCw className="w-3 h-3 animate-spin" /> Rendering…</>
-                        : cands.length
-                          ? <><RefreshCw className="w-3 h-3" /> Regenerate</>
-                          : <><Sparkles className="w-3 h-3" /> Generate</>}
-                    </button>
-                    {cands.map((c) => (
-                      <CandidateTile key={c.path} recordId={recordId} candidate={c} locking={locking} clipRisk={clipRisks[c.path]} onLock={(cand, accept) => lock(anchor.direction, cand, accept)} />
-                    ))}
+            <div className={`grid grid-cols-2 gap-3 @3xl:grid-cols-4 ${allAnchorsLocked ? '@5xl:grid-cols-8' : ''}`}>
+              {manifest.anchors.map((anchor) => {
+                const anchorCandidates = candidatesByTarget[anchor.direction] || [];
+                return (
+                  <div key={anchor.id} className="min-w-0 space-y-2 rounded-lg border border-port-border bg-port-bg p-2">
+                    <h5 className="flex items-center justify-between text-xs capitalize text-gray-400">
+                      {anchor.direction}
+                      {anchor.status === 'locked' && <Lock className="h-3 w-3 text-port-success" />}
+                    </h5>
+                    {anchor.status === 'locked' ? (
+                      <LockedAnchor
+                        recordId={recordId}
+                        anchor={anchor}
+                        // South is the immutable main reference, not a
+                        // turnaround-derived directional anchor.
+                        canUnlock={turnaroundLocked && anchor.direction !== 'south'}
+                        unlocking={anchorUnlocking}
+                        onUnlock={unlockAnchor}
+                      />
+                    ) : (
+                      <div className="space-y-2">
+                        <CorrectionNote
+                          direction={anchor.direction}
+                          value={corrections[anchor.direction]}
+                          onChange={onCorrectionChange}
+                          className="text-[11px]"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => generate(anchor.direction)}
+                          disabled={!mode || !turnaroundLocked || !!pendingJobs[anchor.direction]}
+                          className="flex min-h-8 w-full items-center justify-center gap-1 rounded border border-port-border bg-port-card px-2 py-1 text-xs text-gray-300 hover:border-port-accent disabled:opacity-50"
+                        >
+                          {pendingJobs[anchor.direction]
+                            ? <><RefreshCw className="h-3 w-3 animate-spin" /> Rendering…</>
+                            : anchorCandidates.length
+                              ? <><RefreshCw className="h-3 w-3" /> Regenerate</>
+                              : <><Sparkles className="h-3 w-3" /> Generate</>}
+                        </button>
+                        {anchorCandidates.map((candidate) => (
+                          <CandidateTile
+                            key={candidate.path}
+                            recordId={recordId}
+                            candidate={candidate}
+                            locking={locking}
+                            clipRisk={clipRisks[candidate.path]}
+                            onLock={(picked, accept) => lock(anchor.direction, picked, accept)}
+                          />
+                        ))}
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
           )}
-        </div>
+        </section>
       )}
 
       {/* Reference-image source pickers + fork. Portal-based modals, so their
