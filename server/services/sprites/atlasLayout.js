@@ -34,6 +34,11 @@
 
 import { basename } from 'path';
 import { ATLAS_IDLE_COLUMN, ATLAS_SCANNER_COLUMN } from './walkBounds.js';
+// The track id the sidecar names its walk span with — read from the registry
+// (#3015) so the layout descriptor and `animationTargets.walk` can never key the
+// same track differently. animationTracks imports nothing, so this keeps the
+// module dependency-free.
+import { WALK_TRACK } from './animationTracks.js';
 
 // Bump only on a breaking shape change. Adding a field (or a new track) is
 // additive — consumers read `tracks`/`columns` by name, not by position.
@@ -44,8 +49,6 @@ export const ATLAS_LAYOUT_KIND = 'portos-sprite-atlas-layout';
 // rule travels with the value instead of living only in our docs.
 export const PREVIEW_FPS_NOTE = 'Authoring metadata only — the speed PortOS previews this walk at. '
   + 'The consuming app determines real playback (e.g. from movement distance); do not use this as a runtime frame rate.';
-
-const WALK_TRACK = 'walk';
 
 /**
  * Sidecar path for a published atlas: `…/hero-atlas.png` →

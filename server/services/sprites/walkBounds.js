@@ -9,7 +9,21 @@
  * Zod schema let the schema and the server-side clamp silently diverge. This
  * module is the single source of truth for both — see the recordsLogic.js
  * sharp-free split for the same pattern.
+ *
+ * Since #3015 the *numbers* live one level deeper, in the per-track registry
+ * (`animationTracks.js`), because a range that applies to every animation is
+ * walk-shaped by construction — a 4-frame scanner action sits below walk's
+ * floor of 6. What remains here is the WALK view of that registry: the exports
+ * below are thin re-reads of the `walk` row, kept so every existing importer
+ * (walkPostprocess, atlas, walk, validation, the client mirror) needs no churn.
+ * New track-aware code should reach for `animationTracks.js` directly.
  */
+
+import {
+  WALK_TRACK, getAnimationTrack, clampTrackFrameCount, clampTrackFps,
+} from './animationTracks.js';
+
+const WALK = getAnimationTrack(WALK_TRACK);
 
 // Source-pipeline gait phases (the historical 8-frame packing). Part of the
 // cross-install artifact contract — imported manifests carry these exact labels.
@@ -31,16 +45,17 @@ export const WALK_FRAME_COUNT = 8;
 export const ATLAS_IDLE_COLUMN = 'idle';
 export const ATLAS_SCANNER_COLUMN = 'scanner';
 
-// Configurable authoring range (#sprite-walk-variable-frames). The packer
+// Configurable authoring range (#sprite-walk-variable-frames), read from the
+// walk row of the track registry (#3015) rather than restated here. The packer
 // resamples the detected gait window DOWN to `frameCount` distinct source frames
 // (never upsamples), and playback fps is metadata — so a slower/smoother walk
 // needs no regeneration, only a reprocess of the on-disk clip at a new count/fps.
-export const WALK_DEFAULT_FRAME_COUNT = 12;
-export const WALK_DEFAULT_FPS = 10;
-export const WALK_MIN_FRAME_COUNT = 6;
-export const WALK_MAX_FRAME_COUNT = 16;
-export const WALK_MIN_FPS = 4;
-export const WALK_MAX_FPS = 24;
+export const WALK_DEFAULT_FRAME_COUNT = WALK.defaultFrameCount;
+export const WALK_DEFAULT_FPS = WALK.defaultFps;
+export const WALK_MIN_FRAME_COUNT = WALK.minFrameCount;
+export const WALK_MAX_FRAME_COUNT = WALK.maxFrameCount;
+export const WALK_MIN_FPS = WALK.minFps;
+export const WALK_MAX_FPS = WALK.maxFps;
 
 /**
  * Column/phase labels for an N-frame packed strip. The historical 8-frame
@@ -55,16 +70,12 @@ export function walkPhaseLabels(n) {
   return Array.from({ length: n }, (_, i) => `frame-${String(i).padStart(2, '0')}`);
 }
 
-/** Clamp a requested frame count into the supported authoring range. */
+/** Clamp a requested frame count into the WALK track's authoring range. */
 export function clampFrameCount(n) {
-  const v = Math.round(Number(n));
-  if (!Number.isFinite(v)) return WALK_DEFAULT_FRAME_COUNT;
-  return Math.max(WALK_MIN_FRAME_COUNT, Math.min(WALK_MAX_FRAME_COUNT, v));
+  return clampTrackFrameCount(n, WALK_TRACK);
 }
 
-/** Clamp a requested playback fps into the supported authoring range. */
+/** Clamp a requested playback fps into the WALK track's authoring range. */
 export function clampFps(n) {
-  const v = Math.round(Number(n));
-  if (!Number.isFinite(v)) return WALK_DEFAULT_FPS;
-  return Math.max(WALK_MIN_FPS, Math.min(WALK_MAX_FPS, v));
+  return clampTrackFps(n, WALK_TRACK);
 }

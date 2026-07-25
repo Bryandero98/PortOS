@@ -6,8 +6,8 @@ import { SPRITE_ID_PATTERN, SPRITE_RECORD_KINDS } from '../services/sprites/reco
 import { ANCHOR_DIRECTIONS, SPRITE_DIRECTIONS, TURNAROUND_ID } from '../services/sprites/prompts.js';
 import { CHROMA_KEY_HEXES } from '../services/sprites/chromaKey.js';
 import {
-  WALK_MIN_FRAME_COUNT, WALK_MAX_FRAME_COUNT, WALK_MIN_FPS, WALK_MAX_FPS,
-} from '../services/sprites/walkBounds.js';
+  WALK_TRACK, ANIMATION_TRACK_IDS, isAnimationTrack, getAnimationTrack,
+} from '../services/sprites/animationTracks.js';
 import { QUEUEABLE_IMAGE_MODES } from '../services/imageGen/modes.js';
 
 // gpt-image-2 (codex backend) caps at 3840px per edge and 8,294,400 total
@@ -956,6 +956,28 @@ export const videoDownloadSchema = z.object({
   url: z.string().url().max(2048)
 });
 
+// Animation-track-aware bounds (#3015). Frame-count / fps ranges are per track,
+// not global, so the schema factories below take a track id and build the range
+// from that track's registry row. `walk` is the default, which is what keeps
+// every pre-#3015 call site behaving identically. An unrecognized id throws out
+// of `getAnimationTrack` at schema-construction time (a wiring bug, caught at
+// boot) rather than degrading to walk's range; a track id arriving in a REQUEST
+// is validated by `spriteAnimationTrackSchema`, which rejects it with a message
+// naming the known tracks.
+export const spriteAnimationTrackSchema = z.string().refine(isAnimationTrack, {
+  message: `unknown animation track — expected one of: ${ANIMATION_TRACK_IDS.join(', ')}`,
+});
+
+export function spriteTrackFrameCountSchema(track = WALK_TRACK) {
+  const row = getAnimationTrack(track);
+  return z.number().int().min(row.minFrameCount).max(row.maxFrameCount);
+}
+
+export function spriteTrackFpsSchema(track = WALK_TRACK) {
+  const row = getAnimationTrack(track);
+  return z.number().int().min(row.minFps).max(row.maxFps);
+}
+
 // Sprite Manager (issue #2895, phase 1). Import runs against a local
 // filesystem path the user supplies (the source pipeline checkout); the
 // importer validates the tree shape server-side. The id pattern is owned by
@@ -1004,7 +1026,10 @@ const spriteRepoRelativePath = z.string().min(1).max(1024)
 // have no animation-fps concept, so PortOS's fps is preview-only and never
 // part of the contract.
 export const spriteRuntimeContractSchema = z.object({
-  walkFrameCount: z.number().int().min(WALK_MIN_FRAME_COUNT).max(WALK_MAX_FRAME_COUNT),
+  // Field name and range both come from the walk registry row (#3015) — the
+  // row names the contract field it occupies, so a second track declaring its
+  // own contract field can't drift from what resolveAnimationTarget reads.
+  [getAnimationTrack(WALK_TRACK).contractFrameCountField]: spriteTrackFrameCountSchema(WALK_TRACK),
   cellSize: z.number().int().min(16).max(1024).nullable().optional(),
   columnCount: z.number().int().min(1).max(256).nullable().optional(),
 });
@@ -1124,11 +1149,12 @@ const spriteWalkDirectionSchema = z.enum(SPRITE_DIRECTIONS);
 const spriteResolvableRunIdSchema = z.string().min(1).max(1024)
   .refine(isSafeSubdirFilter, { message: 'invalid run id' });
 
-// Walk-cycle authoring bounds — imported from the sharp-free walkBounds leaf so
-// the request schema and the server-side clamp share ONE range definition (a
-// bounds change can't silently diverge). walkBounds pulls in no native deps.
-const spriteWalkFrameCountSchema = z.number().int().min(WALK_MIN_FRAME_COUNT).max(WALK_MAX_FRAME_COUNT);
-const spriteWalkFpsSchema = z.number().int().min(WALK_MIN_FPS).max(WALK_MAX_FPS);
+// Walk-cycle authoring bounds — built from the walk row of the sharp-free
+// animation-track registry so the request schema and the server-side clamp
+// share ONE range definition (a bounds change can't silently diverge).
+// animationTracks pulls in no deps at all, native or otherwise.
+const spriteWalkFrameCountSchema = spriteTrackFrameCountSchema(WALK_TRACK);
+const spriteWalkFpsSchema = spriteTrackFpsSchema(WALK_TRACK);
 
 export const spriteWalkGenerateSchema = z.object({
   direction: spriteWalkDirectionSchema,
