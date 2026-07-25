@@ -50,6 +50,8 @@ const CODEX_TIMEOUT_MS = (() => {
 })();
 
 const DEFAULT_BIN = 'codex';
+const DEFAULT_HARVEST_TIMEOUT_MS = 5000;
+let harvestTimeoutMs = DEFAULT_HARVEST_TIMEOUT_MS;
 
 const codexImagesDir = (sessionId) =>
   join(homedir(), '.codex', 'generated_images', sessionId);
@@ -354,7 +356,7 @@ async function runCodex(job, jobId, bin, args, outputPath, filename, meta, { cle
       // Codex writes the PNG asynchronously while it's wrapping up the turn.
       // Empirically the file is on disk by the time `codex exec` exits, but
       // poll for a few seconds in case there's a flush lag on slow disks.
-      const harvested = await harvestGeneratedImage(sessionId, 5000);
+      const harvested = await harvestGeneratedImage(sessionId, harvestTimeoutMs);
       if (!harvested) {
         return finalizeError(job, jobId, proc, noImageReason(stdoutTail));
       }
@@ -430,7 +432,8 @@ async function harvestLatestImage(sessionId, timeoutMs) {
   while (Date.now() < deadline) {
     const latest = await latestGeneratedImageFile(sessionId);
     if (latest) return latest;
-    await new Promise((r) => setTimeout(r, 250));
+    const remainingMs = Math.max(1, deadline - Date.now());
+    await new Promise((r) => setTimeout(r, Math.min(250, remainingMs)));
   }
   return null;
 }
@@ -510,4 +513,9 @@ export const _internals = {
   harvestLatestImage,
   harvestSessionLogImage,
   harvestGeneratedImage,
+  setHarvestTimeoutForTests: (timeoutMs = DEFAULT_HARVEST_TIMEOUT_MS) => {
+    harvestTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? timeoutMs
+      : DEFAULT_HARVEST_TIMEOUT_MS;
+  },
 };

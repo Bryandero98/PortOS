@@ -216,6 +216,14 @@ const sseJobs = new Map();
 
 let workerStarted = false;
 let initPromise = null;
+const terminalOperations = new Set();
+
+function trackTerminalOperation(operation) {
+  const tracked = Promise.resolve(operation);
+  terminalOperations.add(tracked);
+  tracked.finally(() => terminalOperations.delete(tracked)).catch(() => {});
+  return tracked;
+}
 
 function findJob(jobId) {
   if (running && running.id === jobId) return running;
@@ -635,6 +643,8 @@ function makeGenDispatcher(emitter, job, handlers) {
 
 async function runJob(job) {
   const sseEntry = ensureSseEntry(job.id);
+  let resolveTerminalState;
+  const terminalState = new Promise((resolve) => { resolveTerminalState = resolve; });
   let progressPersistDirty = false;
   let progressPersistTimer = null;
   let progressPersisting = null;
@@ -699,6 +709,10 @@ async function runJob(job) {
     // (how far it got) — consumers gate the progress UI on status === 'running',
     // so the residual values are not displayed for terminal jobs.
     job.completedAt = new Date().toISOString();
+    // Wake the lane finalizer without polling. Some providers emit their
+    // terminal event just before their kickoff promise resolves; the promise
+    // retains that signal until runJob reaches the await below.
+    resolveTerminalState();
     const logPrefix = state === 'completed' ? '✅' : state === 'canceled' ? '🛑' : '❌';
     const logSuffix = state === 'failed' ? `: ${job.error}` : state === 'canceled' ? ' (was running)' : '';
     console.log(`${logPrefix} media-job [${job.id.slice(0, 8)}] ${state}${logSuffix}`);
@@ -727,24 +741,30 @@ async function runJob(job) {
       broadcastSse(sseEntry, payload);
     },
     completed: (payload) => {
-      terminate('completed', (j) => { j.result = payload; })
-        .catch((e) => console.log(`⚠️ media-job [${job.id.slice(0, 8)}] terminal handler failed: ${e.message}`));
+      trackTerminalOperation(
+        terminate('completed', (j) => { j.result = payload; })
+          .catch((e) => console.log(`⚠️ media-job [${job.id.slice(0, 8)}] terminal handler failed: ${e.message}`)),
+      );
     },
     failed: (payload) => {
       // If cancelJob() flagged this job before the underlying gen reported
       // failure, treat the SIGTERM-induced failure as a clean cancel rather
       // than an error so /api/media-jobs?status=canceled works.
       if (job.cancelRequested) {
-        terminate('canceled', (j) => {
-          // Persist the reason so a late SSE reconnect after the live entry
-          // is cleaned up still gets a meaningful terminal frame from the
-          // archived state, rather than the generic "Canceled" fallback.
-          j.error = 'Canceled while running';
-        }).catch((e) => console.log(`⚠️ media-job [${job.id.slice(0, 8)}] terminal handler failed: ${e.message}`));
+        trackTerminalOperation(
+          terminate('canceled', (j) => {
+            // Persist the reason so a late SSE reconnect after the live entry
+            // is cleaned up still gets a meaningful terminal frame from the
+            // archived state, rather than the generic "Canceled" fallback.
+            j.error = 'Canceled while running';
+          }).catch((e) => console.log(`⚠️ media-job [${job.id.slice(0, 8)}] terminal handler failed: ${e.message}`)),
+        );
         return;
       }
-      terminate('failed', (j) => { j.error = payload.error || 'unknown error'; })
-        .catch((e) => console.log(`⚠️ media-job [${job.id.slice(0, 8)}] terminal handler failed: ${e.message}`));
+      trackTerminalOperation(
+        terminate('failed', (j) => { j.error = payload.error || 'unknown error'; })
+          .catch((e) => console.log(`⚠️ media-job [${job.id.slice(0, 8)}] terminal handler failed: ${e.message}`)),
+      );
     },
   };
 
@@ -882,11 +902,10 @@ async function runJob(job) {
     handlers.failed({ error: err.message });
   }
 
-  // Wait for the underlying gen to settle (the gen modules emit completed/
-  // failed asynchronously after the proc closes — runJob's await above only
-  // gates the spawn, not the render finish). Handlers flip job.status to a
-  // terminal state; short-sleep poll so we don't busy-spin.
-  while (job.status === 'running') await sleep(100);
+  // The gen modules emit completed/failed asynchronously after kickoff. Await
+  // the explicit terminal signal rather than polling every 100ms; this makes
+  // lane release immediate and gives tests a deterministic lifecycle to drain.
+  await terminalState;
   dispatcher.detach();
 }
 
@@ -1077,4 +1096,19 @@ export function __resetForTests() {
   // Reset the persist chain so a leftover rejection from a previous test's
   // ENOENT writes doesn't poison subsequent persist() calls.
   persistChain = Promise.resolve();
+}
+
+// Test-only deterministic settle hook. EventEmitter terminal handlers and
+// persistence are intentionally fire-and-forget in production; tests use this
+// instead of sleeping for an arbitrary wall-clock window before inspecting or
+// removing their temporary data directory.
+export async function __drainForTests() {
+  while (terminalOperations.size > 0) {
+    await Promise.allSettled([...terminalOperations]);
+  }
+  await persistChain.catch(() => {});
+  // A settled terminal operation can schedule the archive snapshot in the
+  // lane-finalizer microtask. Yield once and capture that tail as well.
+  await Promise.resolve();
+  await persistChain.catch(() => {});
 }

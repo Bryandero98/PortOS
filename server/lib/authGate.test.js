@@ -11,6 +11,21 @@ vi.mock('../lib/fileUtils.js', async () => {
   return makeProxy(actual);
 });
 
+vi.mock('../../lib/portosAuthCore.js', async () => {
+  const actual = await vi.importActual('../../lib/portosAuthCore.js');
+  const testParams = { N: 1024, r: 8, p: 1, maxmem: 8 * 1024 * 1024 };
+  const hashPassword = (password, salt) =>
+    actual.__hashPasswordWithParamsForTests(password, salt, testParams);
+  return {
+    ...actual,
+    hashPassword,
+    verifyPasswordAgainst: async (auth, password) => {
+      if (!auth?.enabled || !auth.passwordHash || !auth.salt || typeof password !== 'string' || password.length === 0) return false;
+      return actual.constantEqual(await hashPassword(password, auth.salt), auth.passwordHash);
+    },
+  };
+});
+
 // Direct settings.json writes that also drop the getSettings() read cache —
 // see server/lib/settingsTestUtil.js for why the reset is required here
 // (a prior setPassword() warms the cache; a bypass-save() write leaves it stale).

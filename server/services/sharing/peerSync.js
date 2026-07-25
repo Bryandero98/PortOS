@@ -23,7 +23,7 @@
 import { peerBaseUrl } from '../../lib/peerUrl.js';
 import { peerFetch } from '../../lib/peerHttpClient.js';
 import { withAbortTimeout } from '../../lib/abortTimeout.js';
-import { withBaseHashFlushBatch } from '../../lib/conflictJournal.js';
+import { flushBaseHashes, withBaseHashFlushBatch } from '../../lib/conflictJournal.js';
 import { recordEvents, registerSubscriptionAdapter } from './recordEvents.js';
 import { getInstanceId, getPeers, enqueueReciprocalSync, UNKNOWN_INSTANCE_ID } from '../instances.js';
 import { peerSyncPushSchema } from '../../lib/validation.js';
@@ -98,6 +98,25 @@ export {
   syncCosTasksWithAllPeers,
 } from './peerCosSync.js';
 
+// Fire-and-forget work must remain non-blocking in production, but it still
+// needs an explicit lifecycle so shutdown/tests can wait for it. Without this
+// registry, an initial push can enqueue subscription/cursor writes after a
+// test has started removing its temporary PATHS.data tree, producing an
+// intermittent ENOTEMPTY teardown failure.
+const backgroundOperations = new Set();
+
+function trackBackgroundOperation(operation) {
+  const tracked = Promise.resolve(operation);
+  backgroundOperations.add(tracked);
+  tracked.finally(() => backgroundOperations.delete(tracked)).catch(() => {});
+  return tracked;
+}
+
+async function drainBackgroundOperations() {
+  while (backgroundOperations.size > 0) {
+    await Promise.allSettled([...backgroundOperations]);
+  }
+}
 
 // --- Subscription CRUD --------------------------------------------------
 
@@ -254,9 +273,9 @@ export async function subscribePeer({ peerId, recordKind, recordId }, opts = {})
   // result lastPushedHash will short-circuit anyway. Callers that need a
   // forced re-push can call pushRecordToPeer(sub) directly.
   if (created && !opts.adoptedFromReverse) {
-    const initialPush = pushRecordToPeer(sub).catch((err) => {
+    const initialPush = trackBackgroundOperation(pushRecordToPeer(sub).catch((err) => {
       console.log(`⚠️ peerSync: initial push failed for ${sub.id}: ${err.message}`);
-    });
+    }));
     // Fan-out callers await the push inside a flush batch so its base-hash
     // stamps land before the batch's terminal flush; the default path leaves it
     // fire-and-forget so a single subscribe never blocks on a slow peer.
@@ -637,9 +656,9 @@ export async function triggerPushForRecord(recordKind, recordId) {
       // (we'd be pushing for nothing), (3) a subsequent edit landed under a
       // newer hash. Reading the live record by id makes the debounced fire
       // safe against all three.
-      pushFromFreshSubscription(subId).catch((err) => {
+      trackBackgroundOperation(pushFromFreshSubscription(subId).catch((err) => {
         console.log(`⚠️ peerSync: scheduled push failed for ${subId}: ${err.message}`);
-      });
+      }));
     }, DEBOUNCE_MS);
     if (typeof t.unref === 'function') t.unref();
     pendingTimers.set(sub.id, t);
@@ -903,9 +922,9 @@ let onPeerOnline = null;
 export function installPeerSyncListener() {
   if (onUpdated) return;
   onUpdated = ({ recordKind, recordId }) => {
-    triggerPushForRecord(recordKind, recordId).catch((err) => {
+    trackBackgroundOperation(triggerPushForRecord(recordKind, recordId).catch((err) => {
       console.log(`⚠️ peerSync: listener error for ${recordKind}/${recordId}: ${err.message}`);
-    });
+    }));
   };
   recordEvents.on('updated', onUpdated);
   // ALSO listen for `deleted` events so soft-deletes propagate immediately via
@@ -922,9 +941,9 @@ export function installPeerSyncListener() {
   // excludes them once their sub is gone. See dataSync.getSnapshot's
   // `forPeerId` scoping.)
   onDeleted = ({ recordKind, recordId }) => {
-    triggerPushForRecord(recordKind, recordId).catch((err) => {
+    trackBackgroundOperation(triggerPushForRecord(recordKind, recordId).catch((err) => {
       console.log(`⚠️ peerSync: delete listener error for ${recordKind}/${recordId}: ${err.message}`);
-    });
+    }));
   };
   recordEvents.on('deleted', onDeleted);
   // On peer:online, drive the local subscription state to convergence with
@@ -948,7 +967,7 @@ export function installPeerSyncListener() {
   // both unconditionally per peer:online.
   onPeerOnline = (peer) => {
     if (!peer?.instanceId) return;
-    (async () => {
+    trackBackgroundOperation((async () => {
       // peerHasCategory owns the (kind → category) mapping and the fullSync
       // short-circuit, so iterate the kinds and let it decide.
       for (const kind of PEER_SUBSCRIBABLE_KINDS) {
@@ -970,7 +989,7 @@ export function installPeerSyncListener() {
       if (peer.fullSync === true && peer.id) {
         await enqueueReciprocalSync(peer.id).catch(() => {});
       }
-    })().catch(() => {});
+    })().catch(() => {}));
   };
   instanceEvents.on('peer:online', onPeerOnline);
 }
@@ -1000,20 +1019,27 @@ export function uninstallPeerSyncListener() {
  */
 export async function __resetForTests() {
   uninstallPeerSyncListener();
+  await drainBackgroundOperations();
+  // A record-event handler that was already running when the first uninstall
+  // happened may have scheduled a debounce before it settled. Clear that late
+  // timer too, then wait for any timer callback that already started.
+  uninstallPeerSyncListener();
+  await drainBackgroundOperations();
   await drainWriteTail();
+  await flushBaseHashes();
 }
 
 /**
  * Test-only: await the in-flight write/push tail WITHOUT resetting state or
  * detaching listeners, so a test can deterministically settle the fire-and-forget
- * pushes a `subscribePeer` kicks off before asserting on the network mock. Awaits
- * twice because a push's `persistPushSuccess` only enqueues on `writeTail` after
- * its `peerFetch` resolves — i.e. a tick after the subscribe returned.
+ * pushes a `subscribePeer` kicks off before asserting on the network mock.
  */
 export async function __drainForTests() {
+  await drainBackgroundOperations();
   await drainWriteTail();
-  await new Promise((r) => setTimeout(r, 0));
-  await drainWriteTail();
+  // pushRecordToPeer deliberately keeps this disk write off the request path;
+  // tests that redirect PATHS.data must still wait for it before rm.
+  await flushBaseHashes();
 }
 
 // Register the subscription-lifecycle implementation with the import-light

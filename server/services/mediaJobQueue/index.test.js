@@ -97,7 +97,10 @@ async function importFresh() {
   audioGenEvents = (await import('../audioGen/events.js')).audioGenEvents;
 }
 
-const flush = () => new Promise((r) => setTimeout(r, 250));
+const flush = async () => {
+  await Promise.resolve();
+  await mediaJobQueue?.__drainForTests();
+};
 
 beforeEach(async () => {
   tempDataDir = mkdtempSync(join(tmpdir(), 'mediaJobQueue-test-'));
@@ -115,6 +118,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await flush();
+  mediaJobQueue?.__resetForTests();
   if (tempDataDir && existsSync(tempDataDir)) {
     rmSync(tempDataDir, { recursive: true, force: true });
   }

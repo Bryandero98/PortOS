@@ -50,6 +50,8 @@ const GROK_VIDEO_TIMEOUT_MS = (() => {
 })();
 
 const DEFAULT_BIN = 'grok';
+const DEFAULT_HARVEST_TIMEOUT_MS = 10000;
+let harvestTimeoutMs = DEFAULT_HARVEST_TIMEOUT_MS;
 
 // The clip lengths this module gates on live in lib/grokVideoClip.js — the one
 // list the Zod schemas and the client picker also derive from (#3022).
@@ -256,7 +258,7 @@ async function runGrokVideo(job, jobId, bin, args, {
         removeUpload();
         return finalizeError(job, jobId, proc, `Grok video generation failed: ${reason}\n${tail}`);
       }
-      const harvested = await harvestStagedVideo(stagingPath, 10000);
+      const harvested = await harvestStagedVideo(stagingPath, harvestTimeoutMs);
       if (!harvested.found) {
         removeScratch();
         removeUpload();
@@ -332,7 +334,8 @@ async function harvestStagedVideo(stagingPath, timeoutMs) {
         sawInvalid = true;
       }
     }
-    await new Promise((r) => setTimeout(r, 250));
+    const remainingMs = Math.max(1, deadline - Date.now());
+    await new Promise((r) => setTimeout(r, Math.min(250, remainingMs)));
   }
   return { found: false, invalid: sawInvalid };
 }
@@ -342,4 +345,9 @@ export const _internals = {
   harvestStagedVideo,
   buildGrokVideoPrompt,
   isMp4Header,
+  setHarvestTimeoutForTests: (timeoutMs = DEFAULT_HARVEST_TIMEOUT_MS) => {
+    harvestTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? timeoutMs
+      : DEFAULT_HARVEST_TIMEOUT_MS;
+  },
 };
