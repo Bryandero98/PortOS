@@ -175,6 +175,16 @@ describe('Media3D — generation workspace', () => {
     expect(screen.getByRole('link', { name: /dinov3-vitl16-pretrain-lvd1689m/i })).toBeInTheDocument();
   });
 
+  it('lets a user with a configured token reach the paste form to replace a stale one', async () => {
+    // The runner's HF-auth guidance also fires on `401` / `Invalid user token` and
+    // tells the user to add a token on THIS page — so the form must stay reachable
+    // when one is already configured, or that instruction can't be followed here.
+    getHfTokenStatus.mockResolvedValue({ hfTokenPresent: true, source: 'stored' });
+    renderAt('/media/3d?image=example-robot.png');
+    fireEvent.click(await screen.findByRole('button', { name: /use a different token/i }));
+    expect(screen.getByPlaceholderText('hf_…')).toBeInTheDocument();
+  });
+
   it('shows neither the banner nor the confirmation while token status is still unknown', async () => {
     // Absent-vs-failed: a pending/failed status must not flash "add a token" at a user
     // who has one (nor claim one is configured).

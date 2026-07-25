@@ -101,6 +101,23 @@ router.get('/trellis2/install', asyncHandler(async (req, res) => {
   const emit = (event) => { installLog.onEvent(event); send(event); };
   installLog.start();
 
+  // Disconnect bookkeeping wired BEFORE the token-resolution await below (the
+  // same hazard `lib/sseDownload.js` documents): that await does a settings read
+  // plus a token-file read, and a client closing during it would otherwise land
+  // with no listener — the handler would go on to spawn a ~15 GB clone with no
+  // kill path, leaving `trellis2InstallInFlight` pinned until it finished on its
+  // own and blocking every later Install click.
+  let currentKill = null;
+  let aborted = false;
+  req.on('close', () => {
+    aborted = true;
+    installLog.cancel();
+    // `close` also fires on normal completion; only a live handle means an
+    // install was actually mid-flight.
+    if (currentKill) currentKill();
+    safeEnd();
+  });
+
   // Carry the stored HF token into the install too: setup.sh doesn't pull gated
   // weights today, but a future prefetch step would, and one env source beats two.
   // Guarded because the SSE headers are already flushed by this point — a throw
@@ -115,11 +132,15 @@ router.get('/trellis2/install', asyncHandler(async (req, res) => {
     emit({ type: 'error', message: `Could not read settings to resolve the Hugging Face token: ${err.message}` });
     return safeEnd();
   }
+  // The client hung up during the await — don't start a multi-GB install nobody
+  // is listening to.
+  if (aborted) return safeEnd();
 
   const { promise, kill } = installTrellis2({
     onEvent: emit,
     env: installEnv,
   });
+  currentKill = kill;
   trellis2InstallInFlight = promise;
   promise
     .then(() => installLog.success())
@@ -133,12 +154,10 @@ router.get('/trellis2/install', asyncHandler(async (req, res) => {
       emit({ type: 'error', message: `${err?.message || 'Install failed'}${hint}`, stage: err?.stage });
     })
     .finally(() => {
+      currentKill = null;
       trellis2InstallInFlight = null;
       safeEnd();
     });
-
-  // Cancel the (multi-GB) install if the client navigates away mid-bootstrap.
-  req.on('close', () => { installLog.cancel(); kill(); safeEnd(); });
 }));
 
 // ── Image-to-3D model records ─────────────────────────────────────────────

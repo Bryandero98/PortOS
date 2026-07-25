@@ -34,13 +34,22 @@ const HF_GATED_MODELS = {
 // instead of instructions. Either way the gated repos stay listed: a token doesn't
 // grant access until their terms are accepted on the user's HF account.
 function HfAccessNotice({ models, tokenPresent, tokenSource, onSaved }) {
+  // Escape hatch for the stale/invalid-token case: `isHfAuthError` in the runner
+  // also matches `401` / `Invalid user token`, and its guidance now says to add a
+  // token *on this page* — so the paste form has to stay reachable even when one is
+  // already configured, or that instruction is impossible to follow here. Mirrors
+  // MidiGatedModal's "Use a different token".
+  const [replacing, setReplacing] = useState(false);
+
   if (!models?.length) return null;
   // Status still loading (null) — don't flash a "needs setup" banner at a user who
   // already has a token.
   if (tokenPresent === null) return null;
 
-  if (!tokenPresent) {
-    return <HfTokenBanner models={models} onSaved={onSaved} />;
+  const handleSaved = () => { setReplacing(false); onSaved?.(); };
+
+  if (!tokenPresent || replacing) {
+    return <HfTokenBanner models={models} onSaved={handleSaved} />;
   }
 
   return (
@@ -55,6 +64,13 @@ function HfAccessNotice({ models, tokenPresent, tokenSource, onSaved }) {
         doesn’t grant access:
       </p>
       <GatedModelList models={models} linkClassName="text-port-accent hover:underline" />
+      <button
+        type="button"
+        onClick={() => setReplacing(true)}
+        className="mt-2 text-xs underline text-gray-400 hover:text-white"
+      >
+        Use a different token
+      </button>
     </div>
   );
 }
