@@ -23,28 +23,8 @@ import { isTruthyMeta } from './agentState.js';
 import { PATHS } from '../lib/fileUtils.js';
 import { RECOVERY_TASK_PREFIX } from './recoveryTasks.js';
 import { detectForgeCli } from '../lib/gitForge.js';
+import { leavesPrForHuman } from '../lib/prDisposition.js';
 import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, MODEL_CAPABLE_CLI_REVIEWERS, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers } from '../lib/validation.js';
-
-/**
- * Scheduled task types whose prompt deliberately hands the PR to a human and
- * records that hand-off somewhere PortOS can't update afterwards. For
- * `jira-sprint-manager` that's the ticket it transitions to "In Review": merging
- * the PR here would land the work while the board still shows it in review, and
- * nothing in this path knows the ticket key to transition it to Done.
- *
- * Keep this list tiny — the default for an opened PR is that something lands it.
- */
-const PR_STAYS_OPEN_TASK_TYPES = new Set(['jira-sprint-manager']);
-
-/**
- * True when a task's PR must be left open for a human rather than merged by a
- * follow-up: an exempt task type, or any task carrying a JIRA ticket (the ticket
- * status is the hand-off, and this path can't transition it).
- */
-function leavesPrForHuman(task) {
-  const analysisType = task?.metadata?.analysisType;
-  return (!!analysisType && PR_STAYS_OPEN_TASK_TYPES.has(analysisType)) || !!task?.metadata?.jiraTicketId;
-}
 
 /**
  * Clean up a worktree for a completed agent.
@@ -198,12 +178,14 @@ export async function cleanupAgentWorktree(agentId, success, { openPR = false, r
       // Deciding it there rather than here is what keeps a stripped reviewer list
       // from silently producing an orphaned PR.
       //
-      // The exception is a JIRA-tracked task (see PR_STAYS_OPEN_TASK_TYPES): its
-      // prompt moves the ticket to "In Review" and hands the PR to a human, and
-      // nothing here can transition the ticket afterwards — merging behind the
-      // board's back would leave the work merged but permanently "In Review".
-      if (leavesPrForHuman(originalTask)) {
-        emitLog('info', `🤝 Leaving ${prResult.url} open for a human — JIRA-tracked task keeps its ticket in review`, { agentId, prUrl: prResult.url });
+      // A JIRA-tracked task (see lib/prDisposition.js) hands its PR to a human —
+      // its ticket is already "In Review" and nothing here can transition it — so
+      // the follow-up must NOT merge. It still RUNS the configured reviewers when
+      // there are any (leaving the PR open is about the merge, not the review);
+      // with no reviewers there is nothing for a follow-up to do at all.
+      const leaveOpen = leavesPrForHuman(originalTask);
+      if (leaveOpen && !shouldRequestCopilot) {
+        emitLog('info', `🤝 Leaving ${prResult.url} open for a human — JIRA-tracked task, no reviewers configured`, { agentId, prUrl: prResult.url });
       } else {
         await spawnReviewLoopFollowUp({
           originalAgentId: agentId,
@@ -216,7 +198,8 @@ export async function cleanupAgentWorktree(agentId, success, { openPR = false, r
           optionalReviewers: shouldRequestCopilot ? optionalReviewers : [],
           reviewStopMode,
           reviewerApplies,
-          reviewerModels
+          reviewerModels,
+          leaveOpen
         }).catch(err => {
           emitLog('warn', `🤖 Failed to spawn PR follow-up for ${prResult.url}: ${err.message}`, { agentId, prUrl: prResult.url });
           warnings.push(`PR follow-up spawn failed for ${prResult.url}: ${err.message}`);
@@ -281,7 +264,7 @@ export async function cleanupAgentWorktree(agentId, success, { openPR = false, r
  * branch (via createWorktree's `existingBranch` option) so it can fix-and-push
  * without trampling concurrent agents.
  */
-export async function spawnReviewLoopFollowUp({ originalAgentId, originalTask, prUrl, prBranch, sourceWorkspace, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, reviewerModels = null }) {
+export async function spawnReviewLoopFollowUp({ originalAgentId, originalTask, prUrl, prBranch, sourceWorkspace, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, reviewerModels = null, leaveOpen = false }) {
   if (!prUrl || !prBranch) return null;
 
   const parsedPr = git.parsePullRequestUrl(prUrl);
@@ -305,6 +288,10 @@ export async function spawnReviewLoopFollowUp({ originalAgentId, originalTask, p
   const effectiveOptionalReviewers = normalizeOptionalReviewers(optionalReviewers) || [];
   // Nothing left to review → this follow-up's only job is to land the PR.
   const mergeOnly = effectiveReviewers.length === 0 && effectiveUsernames.length === 0;
+  // ...and with nothing to review AND nothing to merge there is no follow-up at
+  // all (a JIRA-tracked task whose reviewers were all stripped). The caller
+  // normally catches this; the guard keeps the invariant local to this function.
+  if (mergeOnly && leaveOpen) return null;
 
   // Reviewer-keyed CLI model map, narrowed to the model-capable reviewers actually
   // in this loop's list (e.g. `{ codex: 'gpt-5.6-sol', claude: 'qwen2.5:7b' }`); the
@@ -348,6 +335,8 @@ export async function spawnReviewLoopFollowUp({ originalAgentId, originalTask, p
       reviewLoopFollowUp: true,
       // Merge-only run: no reviewers, the prompt is a CI-gate-and-merge procedure.
       reviewLoopMergeOnly: mergeOnly,
+      // Review, but do NOT merge — the PR is a human's to land (JIRA hand-off).
+      reviewLoopLeaveOpen: leaveOpen,
       reviewLoopPRUrl: prUrl,
       reviewLoopPRBranch: prBranch,
       reviewLoopPRNumber: parsedPr?.number ?? null,

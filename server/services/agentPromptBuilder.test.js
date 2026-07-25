@@ -333,6 +333,67 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).not.toMatch(/review loop reports/);
     });
 
+    it('a jira-sprint-manager TUI task leaves its PR open instead of merging', () => {
+      // The task's prompt moves the ticket to "In Review" and a human lands both;
+      // merging here would leave the work merged and the board stuck in review.
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { simplify: true, openPR: true, analysisType: 'jira-sprint-manager' } }),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta,
+        { isTui: true });
+      expect(prompt).toMatch(/Leave the PR open — do NOT merge it/);
+      expect(prompt).toMatch(/tracked in JIRA/);
+      expect(prompt).not.toMatch(/gh pr merge/);
+      expect(prompt).not.toMatch(/gh pr checks/);
+    });
+
+    it('a JIRA-ticketed Claude Code CLI task leaves its PR open instead of merging', () => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, jiraTicketId: 'PROJ-9' } }),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta,
+        { isTui: false, providerId: 'claude-code' });
+      expect(prompt).toMatch(/`\/do:pr --review-with none`/);
+      expect(prompt).toMatch(/Leave the PR open — do NOT merge it/);
+      expect(prompt).not.toMatch(/gh pr merge/);
+    });
+
+    it('an OpenCode TUI JIRA task leaves its PR open instead of merging', () => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, analysisType: 'jira-sprint-manager' } }),
+        '/r',
+        { branchName: 'claim/x', worktreePath: '/tmp/wt', baseBranch: 'main' },
+        isTruthyMeta,
+        { isTui: true, providerId: 'opencode-ollama-tui', providerCommand: 'opencode' });
+      expect(prompt).toMatch(/gh pr create --fill/);
+      expect(prompt).toMatch(/do NOT merge it/);
+      expect(prompt).not.toMatch(/gh pr merge/);
+      expect(prompt).not.toMatch(/glab mr merge/);
+    });
+
+    it('a review-loop follow-up on a JIRA PR reviews but does not merge', () => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: {
+          reviewLoopFollowUp: true,
+          reviewLoopLeaveOpen: true,
+          reviewLoopPRUrl: 'https://github.com/o/r/pull/9',
+          reviewLoopPRBranch: 'b',
+          reviewLoopPRNumber: 9,
+          reviewLoopReviewers: ['codex'],
+          sourceTaskId: 'task-src-5',
+        }}),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta);
+      expect(prompt).toMatch(/## Review-Loop Follow-up/);
+      // The review still runs — only the merge is withheld.
+      expect(prompt).toMatch(/codex/);
+      expect(prompt).toMatch(/leave the PR open/i);
+      expect(prompt).not.toMatch(/gh pr merge/);
+    });
+
     it('TUI simplify step is provider-aware — non-Claude TUI (codex-tui) gets the inline equivalent, not /simplify', () => {
       // /simplify is a Claude Code TUI built-in; codex-tui / antigravity-tui can't run it.
       const prompt = buildLightContextPrompt(
