@@ -14,7 +14,7 @@ vi.mock('./pm2.js', () => ({
 }));
 vi.mock('./streamingDetect.js', () => ({ streamDetection: vi.fn() }));
 vi.mock('./cosEvents.js', () => ({ cosEvents: { on: vi.fn() }, emitLog: vi.fn() }));
-vi.mock('./apps.js', () => ({ appsEvents: { on: vi.fn() }, getAppById: vi.fn(), updateApp: vi.fn() }));
+vi.mock('./apps.js', () => ({ appsEvents: { on: vi.fn() }, getAppById: vi.fn(), resolvePm2HomeForProcess: vi.fn(), updateApp: vi.fn() }));
 vi.mock('../lib/errorHandler.js', () => ({ errorEvents: { on: vi.fn() } }));
 vi.mock('./autoFixer.js', () => ({ handleErrorRecovery: vi.fn() }));
 vi.mock('./pm2Standardizer.js', () => ({ analyzeApp: vi.fn(), createGitBackup: vi.fn(), applyStandardization: vi.fn(), runStandardizeFlow: vi.fn() }));
@@ -64,7 +64,7 @@ vi.mock('../sockets/voice.js', () => ({ registerVoiceHandlers: vi.fn() }));
 
 import { initSocket } from './socket.js';
 import { spawnPm2 } from './pm2.js';
-import { getAppById } from './apps.js';
+import { getAppById, resolvePm2HomeForProcess } from './apps.js';
 import { cosEvents } from './cosEvents.js';
 import { mediaJobEvents } from './mediaJobQueue/index.js';
 import { audioGenEvents } from './audioGen/events.js';
@@ -405,18 +405,35 @@ describe('socket.js — initSocket', () => {
     beforeEach(() => {
       vi.mocked(spawnPm2).mockClear();
       vi.mocked(getAppById).mockReset();
+      vi.mocked(resolvePm2HomeForProcess).mockReset();
+      vi.mocked(resolvePm2HomeForProcess).mockResolvedValue(null);
     });
 
-    it('streams from the default home when no appId is supplied', async () => {
+    it('streams from the default home when the process resolver finds no custom home', async () => {
       const socket = makeSocket('logs-default');
       io.connect(socket);
+      vi.mocked(resolvePm2HomeForProcess).mockResolvedValue(null);
 
       await socket.handlers['logs:subscribe']({ processName: 'portos-server', lines: 100 });
 
       expect(getAppById).not.toHaveBeenCalled();
+      expect(resolvePm2HomeForProcess).toHaveBeenCalledWith('portos-server');
       // buildEnv(null) is the default-home env — no PM2_HOME override.
       const [, opts] = vi.mocked(spawnPm2).mock.calls[0];
       expect(opts.env.PM2_HOME).toBeUndefined();
+    });
+
+    it('uses the process resolver for a custom home when no appId is supplied', async () => {
+      const socket = makeSocket('logs-resolved-home');
+      io.connect(socket);
+      vi.mocked(resolvePm2HomeForProcess).mockResolvedValue('/tmp/example-pm2');
+
+      await socket.handlers['logs:subscribe']({ processName: 'game', lines: 200 });
+
+      expect(getAppById).not.toHaveBeenCalled();
+      expect(resolvePm2HomeForProcess).toHaveBeenCalledWith('game');
+      const [, opts] = vi.mocked(spawnPm2).mock.calls[0];
+      expect(opts.env.PM2_HOME).toBe('/tmp/example-pm2');
     });
 
     it("streams from the app's custom PM2_HOME when it has one", async () => {
@@ -427,6 +444,7 @@ describe('socket.js — initSocket', () => {
       await socket.handlers['logs:subscribe']({ processName: 'game', lines: 200, appId: 'app-1' });
 
       expect(getAppById).toHaveBeenCalledWith('app-1');
+      expect(resolvePm2HomeForProcess).not.toHaveBeenCalled();
       const [args, opts] = vi.mocked(spawnPm2).mock.calls[0];
       expect(args).toEqual(['logs', 'game', '--raw', '--lines', '200']);
       expect(opts.env.PM2_HOME).toBe('/opt/example/.pm2');
