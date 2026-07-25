@@ -99,6 +99,41 @@ describe('image-to-3d routes', () => {
     expect(res.body.targets[0].textureBake).toMatchObject({ quality: 'fallback', help: 'fix it' });
   });
 
+  // #3041: the card must offer the right remedy — Repair install fetches the
+  // toolchain, but on a Command-Line-Tools-only host nothing PortOS runs can fix it.
+  it('GET /targets marks a degraded bake repairable when the toolchain is merely missing', async () => {
+    trellis2.isTrellis2Installed.mockReturnValueOnce(true);
+    trellis2.probeTrellis2TextureBake.mockResolvedValueOnce({
+      quality: 'fallback', missing: ['mtldiffrast'], degradedQuality: [], modules: {}, help: 'fix it',
+    });
+    trellis2.probeMetalToolchain.mockResolvedValueOnce({ available: false, installable: true });
+    const res = await request(makeApp()).get('/api/image-to-3d/targets');
+    expect(res.body.targets[0].textureBake).toMatchObject({ repairable: true, help: 'fix it' });
+  });
+
+  it('GET /targets marks a degraded bake NOT repairable when only Command Line Tools are active', async () => {
+    trellis2.isTrellis2Installed.mockReturnValueOnce(true);
+    trellis2.probeTrellis2TextureBake.mockResolvedValueOnce({
+      quality: 'fallback', missing: ['mtldiffrast'], degradedQuality: [], modules: {}, help: 'fix it',
+    });
+    trellis2.probeMetalToolchain.mockResolvedValueOnce({
+      available: false, installable: false, blocker: 'requires-xcode', hint: 'install Xcode',
+    });
+    const res = await request(makeApp()).get('/api/image-to-3d/targets');
+    expect(res.body.targets[0].textureBake).toMatchObject({
+      repairable: false, blocker: 'requires-xcode', help: 'install Xcode',
+    });
+  });
+
+  it('GET /targets does not probe the toolchain for a healthy bake', async () => {
+    trellis2.probeMetalToolchain.mockClear();
+    trellis2.isTrellis2Installed.mockReturnValueOnce(true);
+    const res = await request(makeApp()).get('/api/image-to-3d/targets');
+    expect(res.body.targets[0].textureBake).toMatchObject({ quality: 'metal' });
+    expect(res.body.targets[0].textureBake.repairable).toBeUndefined();
+    expect(trellis2.probeMetalToolchain).not.toHaveBeenCalled();
+  });
+
   it('GET /targets skips the bake probe entirely when trellis2 is not installed', async () => {
     trellis2.probeTrellis2TextureBake.mockClear();
     trellis2.isTrellis2Installed.mockReturnValueOnce(false);
@@ -119,26 +154,48 @@ describe('GET /trellis2/install (SSE)', () => {
     expect(trellis2.installTrellis2).toHaveBeenCalled();
   });
 
-  // Without this the user waits out a ~15 GB install and an hour-long render before
-  // discovering the Metal backends could never have built on this host (#2952).
-  it('pre-flights the Xcode Metal Toolchain and warns before starting the install', async () => {
+  // #3041: a missing-but-fetchable toolchain becomes a step of the install itself,
+  // rather than a command printed for the user to run.
+  it('tells the install to download the Metal Toolchain when it is missing but fetchable', async () => {
+    trellis2.installTrellis2.mockClear();
     trellis2.isTrellis2Installed.mockReturnValueOnce(false);
     targets.isTargetAvailable.mockReturnValueOnce(true);
-    trellis2.probeMetalToolchain.mockResolvedValueOnce({ available: false, hint: 'download it' });
+    trellis2.probeMetalToolchain.mockResolvedValueOnce({
+      available: false, installable: true, hint: 'it will be downloaded',
+    });
     const res = await request(makeApp()).get('/api/image-to-3d/trellis2/install');
-    const frames = sseFrames(res.text);
-    const warnIdx = frames.findIndex((f) => f.stage === 'preflight');
-    expect(warnIdx).toBeGreaterThan(-1);
-    expect(frames[warnIdx].message).toContain('download it');
-    // A warning, not a refusal — the install still runs (geometry is unaffected).
-    expect(trellis2.installTrellis2).toHaveBeenCalled();
+    expect(trellis2.installTrellis2).toHaveBeenCalledWith(
+      expect.objectContaining({ installMetalToolchain: true }),
+    );
+    expect(sseFrames(res.text).find((f) => f.stage === 'preflight')?.message).toContain('it will be downloaded');
   });
 
-  it('does not warn about the toolchain when it is present', async () => {
+  // Without this the user waits out a ~15 GB install and an hour-long render before
+  // discovering the Metal backends could never have built on this host (#2952).
+  it('warns but still installs when the toolchain cannot be fetched (Command Line Tools only)', async () => {
+    trellis2.installTrellis2.mockClear();
+    trellis2.isTrellis2Installed.mockReturnValueOnce(false);
+    targets.isTargetAvailable.mockReturnValueOnce(true);
+    trellis2.probeMetalToolchain.mockResolvedValueOnce({
+      available: false, installable: false, blocker: 'requires-xcode', hint: 'install Xcode',
+    });
+    const res = await request(makeApp()).get('/api/image-to-3d/trellis2/install');
+    expect(sseFrames(res.text).find((f) => f.stage === 'preflight')?.message).toContain('install Xcode');
+    // A warning, not a refusal — geometry is unaffected — and no step that would fail.
+    expect(trellis2.installTrellis2).toHaveBeenCalledWith(
+      expect.objectContaining({ installMetalToolchain: false }),
+    );
+  });
+
+  it('adds no toolchain step or warning when it is already present', async () => {
+    trellis2.installTrellis2.mockClear();
     trellis2.isTrellis2Installed.mockReturnValueOnce(false);
     targets.isTargetAvailable.mockReturnValueOnce(true);
     const res = await request(makeApp()).get('/api/image-to-3d/trellis2/install');
     expect(sseFrames(res.text).find((f) => f.stage === 'preflight')).toBeUndefined();
+    expect(trellis2.installTrellis2).toHaveBeenCalledWith(
+      expect.objectContaining({ installMetalToolchain: false }),
+    );
   });
 
   it('re-runs setup.sh on ?repair=1 instead of short-circuiting on "already installed"', async () => {

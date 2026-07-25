@@ -129,9 +129,12 @@ function TargetCard({ target, onInstall }) {
   // Install only applies to targets with a local install concept (installed is a
   // boolean); hosted targets report installed:null and are Ready when available.
   const canInstall = target.available && target.installed === false;
-  // Re-running Install is the documented repair for a degraded bake, so offer it on
-  // an already-installed target too when the probe says the Metal backends are gone.
   const degradedBake = target.textureBake?.quality === 'fallback';
+  // Repair install re-runs setup, which now downloads the Metal Toolchain itself
+  // (#3041) — but only offer it when the server says it can actually fix this. On a
+  // Command-Line-Tools-only host `repairable` is false and the remedy is installing
+  // Xcode, so a Repair button would just fail the same way and read as broken.
+  const canRepair = degradedBake && target.textureBake?.repairable !== false;
 
   return (
     <div className="rounded-lg border border-port-border bg-port-card p-4">
@@ -167,7 +170,7 @@ function TargetCard({ target, onInstall }) {
         </div>
         <div className="flex shrink-0 flex-col items-end gap-2">
           <StatusBadge target={target} />
-          {(canInstall || degradedBake) && (
+          {(canInstall || canRepair) && (
             <button
               onClick={() => onInstall(target)}
               className="inline-flex items-center gap-1.5 rounded-md bg-port-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-600"
@@ -529,8 +532,8 @@ export default function Media3D() {
         // Metal texture-baking backends once the Metal Toolchain is present (#2952).
         params={installTarget?.textureBake?.quality === 'fallback' ? { repair: '1' } : undefined}
         description={installTarget?.textureBake?.quality === 'fallback'
-          ? 'Re-running the TRELLIS.2 setup to rebuild its Metal texture-baking backends. Already-downloaded weights are kept. This only succeeds once the Xcode Metal Toolchain is installed (`xcodebuild -downloadComponent MetalToolchain`).'
-          : 'Cloning the TRELLIS.2 (Apple Silicon) port and installing its Python environment (~15 GB on first run). It also pulls two gated Hugging Face models on first render — accept their terms and add a Hugging Face token above (see the note on the 3D page).'}
+          ? 'Downloading the Xcode Metal Toolchain if it\'s missing, then re-running the TRELLIS.2 setup to rebuild its Metal texture-baking backends. Your already-downloaded models are kept, and no password is required.'
+          : 'Cloning the TRELLIS.2 (Apple Silicon) port and installing its Python environment (~15 GB on first run). If the Xcode Metal Toolchain is missing it is downloaded first, so textures bake at full quality. It also pulls two gated Hugging Face models on first render — accept their terms and add a Hugging Face token above (see the note on the 3D page).'}
         onClose={() => setInstallTarget(null)}
         onComplete={() => { setInstallTarget(null); load(); }}
       />

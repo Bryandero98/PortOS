@@ -116,9 +116,9 @@ export const TRELLIS2_BAKE_QUALITY_MODULES = ['flex_gemm'];
  */
 export const TRELLIS2_FALLBACK_BAKE_HELP = 'TRELLIS.2 is installed, but its Metal '
   + 'texture-baking backend is missing, so renders fall back to a low-resolution '
-  + 'baker that produces correct geometry with a scrambled, speckled surface. Install '
-  + 'the Xcode Metal Toolchain (`xcodebuild -downloadComponent MetalToolchain`), then '
-  + 're-run the TRELLIS.2 install to rebuild the Metal backends.';
+  + 'baker that produces correct geometry with a scrambled, speckled surface. Repair '
+  + 'install downloads the Xcode Metal Toolchain and rebuilds the Metal backends — '
+  + 'your downloaded models are kept.';
 
 /** The shell probe that reports which bake modules resolve inside the venv. */
 const BAKE_PROBE_SOURCE = 'import importlib.util as u,json,sys;'
@@ -184,29 +184,76 @@ export async function probeTrellis2TextureBake({
  * Non-macOS hosts report `available: null` (the check does not apply) rather than
  * `false`, so a Linux/Windows caller never sees a macOS-only warning.
  *
+ * **Missing is not the same as unfixable.** `xcodebuild -downloadComponent` ships
+ * with *full Xcode*; a host whose active developer dir is the Command Line Tools
+ * has no `xcodebuild` to run it with. Those two cases get different answers —
+ * `installable: true` means the install can just fetch it (see
+ * `TRELLIS2_METAL_TOOLCHAIN_STEP`), while `blocker: 'requires-xcode'` means no
+ * amount of retrying will help and the hint must name Xcode rather than a command
+ * that is guaranteed to fail.
+ *
  * @param {{execFileImpl?: Function, platformImpl?: () => string}} [opts]
- * @returns {Promise<{available: boolean|null, hint?: string}>}
+ * @returns {Promise<{available: boolean|null, installable?: boolean,
+ *                    blocker?: 'requires-xcode', hint?: string}>}
  */
 export async function probeMetalToolchain({
   execFileImpl = execFile,
   platformImpl = platform,
 } = {}) {
   if (platformImpl() !== 'darwin') return { available: null };
-  const available = await new Promise((resolve) => {
-    execFileImpl('xcrun', ['-sdk', 'macosx', 'metal', '--version'], { timeout: 15000 }, (err) => {
-      resolve(!err);
+  // Subprocess boundary outside the request lifecycle — every outcome resolves,
+  // nothing throws into the route (CLAUDE.md child-process exception).
+  const run = (command, args) => new Promise((resolve) => {
+    execFileImpl(command, args, { timeout: 15000 }, (err, stdout) => {
+      resolve(err ? null : String(stdout ?? ''));
     });
-  }).catch(() => false);
-  return available
-    ? { available: true }
-    : { available: false, hint: TRELLIS2_METAL_TOOLCHAIN_HINT };
+  }).catch(() => null);
+
+  if (await run('xcrun', ['-sdk', 'macosx', 'metal', '--version']) !== null) {
+    return { available: true };
+  }
+  // Only full Xcode carries `xcodebuild -downloadComponent`. `xcode-select -p`
+  // under the Command Line Tools resolves to /Library/Developer/CommandLineTools.
+  const developerDir = await run('xcode-select', ['-p']);
+  const hasXcode = !!developerDir && /Xcode.*\.app/i.test(developerDir);
+  return hasXcode
+    ? { available: false, installable: true, hint: TRELLIS2_METAL_TOOLCHAIN_HINT }
+    : { available: false, installable: false, blocker: 'requires-xcode', hint: TRELLIS2_REQUIRES_XCODE_HINT };
 }
 
-/** Actionable one-liner for a missing Metal Toolchain. */
+/** A missing-but-fetchable toolchain: the install can download it unattended. */
 export const TRELLIS2_METAL_TOOLCHAIN_HINT = 'The Xcode Metal Toolchain is not '
   + 'installed, so TRELLIS.2\'s Metal texture-baking backends cannot build and renders '
-  + 'will produce a scrambled surface. Run `xcodebuild -downloadComponent '
-  + 'MetalToolchain` (a one-time ~2 GB download) before installing.';
+  + 'would produce a scrambled surface. The install will download it automatically '
+  + '(a one-time ~2 GB download, no password required).';
+
+/**
+ * A missing toolchain on a host with only the Command Line Tools. Nothing PortOS
+ * can run fixes this, so the hint names the real prerequisite instead of a command
+ * that would fail.
+ */
+export const TRELLIS2_REQUIRES_XCODE_HINT = 'The Xcode Metal Toolchain is not '
+  + 'installed and cannot be downloaded, because only the Command Line Tools are '
+  + 'active on this host. Install Xcode from the App Store and run `sudo xcode-select '
+  + '--switch /Applications/Xcode.app`, then repair the TRELLIS.2 install. Until then '
+  + 'renders will produce correct geometry with a scrambled surface.';
+
+/**
+ * The step that fetches the Metal Toolchain. Verified on-device during #3041: it
+ * runs unattended — no sudo, no interactive prompt, exit 0 — and afterwards
+ * `xcrun metal` resolves and the port's four Metal packages compile.
+ *
+ * Marked `optional` because a missing texture bake degrades output but does not
+ * break it: geometry is unaffected, and the `verify` step reports the degraded
+ * result. A host that cannot fetch the toolchain must still be able to install and
+ * render, so this step warns and continues rather than aborting the install.
+ */
+export const TRELLIS2_METAL_TOOLCHAIN_STEP = Object.freeze({
+  stage: 'metal-toolchain',
+  command: 'xcodebuild',
+  args: ['-downloadComponent', 'MetalToolchain'],
+  optional: true,
+});
 
 /**
  * The install as an ordered list of `{stage, command, args, cwd?}` steps: shallow-
@@ -219,13 +266,27 @@ export const TRELLIS2_METAL_TOOLCHAIN_HINT = 'The Xcode Metal Toolchain is not '
  * re-running with an unconditional `git clone … <root>` would abort ("destination
  * path already exists and is not an empty directory") and never reach the idempotent
  * `setup.sh`. `exists` is injectable so the skip is deterministic in tests.
+ *
+ * **The Metal Toolchain step leads when `installMetalToolchain` is set.** Order is
+ * load-bearing: `setup.sh` compiles the Metal texture-baking packages from `.metal`
+ * sources, so the toolchain has to be on disk BEFORE it runs or those builds fail
+ * (silently — `setup.sh` swallows them and still exits 0) and the install completes
+ * with a bake that renders scrambled surfaces (#2952). The caller passes the flag
+ * from `probeMetalToolchain()`; a host that already has it, can't have it (Command
+ * Line Tools only), or isn't macOS gets no step.
+ *
  * @param {string} [base]
- * @param {{exists?: (p: string) => boolean}} [opts]
- * @returns {Array<{stage: string, command: string, args: string[], cwd?: string}>}
+ * @param {{exists?: (p: string) => boolean, installMetalToolchain?: boolean}} [opts]
+ * @returns {Array<{stage: string, command: string, args: string[], cwd?: string, optional?: boolean}>}
  */
-export function buildInstallSteps(base, { exists = existsSync } = {}) {
+export function buildInstallSteps(base, { exists = existsSync, installMetalToolchain = false } = {}) {
   const root = trellis2Root(base);
   const steps = [];
+  // Copy `args` too — a spread alone would share the frozen template's array across
+  // every call, so one caller mutating it would corrupt every later install plan.
+  if (installMetalToolchain) {
+    steps.push({ ...TRELLIS2_METAL_TOOLCHAIN_STEP, args: [...TRELLIS2_METAL_TOOLCHAIN_STEP.args] });
+  }
   if (!exists(join(root, '.git'))) {
     steps.push({ stage: 'clone', command: 'git', args: ['clone', '--depth', '1', TRELLIS2_REPO, root] });
   }
@@ -410,6 +471,14 @@ export const isTransientInstallError = textMatcher([
  * settings reaches the child, not just one exported into the server's own env).
  * Omitted → the child inherits `process.env` as before.
  *
+ * **Metal Toolchain step.** `setup.sh` compiles the Metal texture-baking packages
+ * from `.metal` sources, so when `installMetalToolchain` is set the install downloads
+ * the toolchain FIRST (#3041). Verified on-device: that download runs unattended (no
+ * sudo, no prompt), which is what makes auto-install viable instead of printing a
+ * command for the user to run. The step is `optional` — see
+ * `TRELLIS2_METAL_TOOLCHAIN_STEP`. The caller resolves the flag from
+ * `probeMetalToolchain()` (the route does, so this stays synchronous).
+ *
  * **Post-install verification.** After the last step the install probes whether the
  * Metal texture-baking backends actually built (`probeBake`, injectable) and emits a
  * `verify` log frame before the terminal `complete`. This is load-bearing, not
@@ -419,7 +488,7 @@ export const isTransientInstallError = textMatcher([
  *
  * @param {{base?: string, onEvent?: (ev: object) => void, spawnImpl?: Function,
  *          maxRetries?: number, sleep?: (ms: number) => Promise<void>,
- *          env?: NodeJS.ProcessEnv, probeBake?: Function}} [opts]
+ *          env?: NodeJS.ProcessEnv, probeBake?: Function, installMetalToolchain?: boolean}} [opts]
  * @returns {{promise: Promise<{ok: true}>, kill: () => void}}
  */
 export function installTrellis2({
@@ -431,10 +500,13 @@ export function installTrellis2({
   exists = existsSync,
   env,
   probeBake = probeTrellis2TextureBake,
+  installMetalToolchain = false,
 } = {}) {
-  // `exists` lets the clone step be skipped when the repo is already on disk (resume
-  // after a setup-stage failure) — see buildInstallSteps.
-  const steps = buildInstallSteps(base, { exists });
+  // `exists` lets the clone step self-skip when the repo is already on disk (resume
+  // after a setup-stage failure); `installMetalToolchain` is resolved by the CALLER
+  // from `probeMetalToolchain()` and passed in as a plain boolean, so this function
+  // keeps returning `{ promise, kill }` synchronously — see buildInstallSteps.
+  const steps = buildInstallSteps(base, { exists, installMetalToolchain });
   let currentChild = null;
   let canceled = false;
 
@@ -487,7 +559,23 @@ export function installTrellis2({
       } catch (err) {
         const canRetry = err?.code === 'TRELLIS2_INSTALL_FAILED'
           && err.transient && attempt < maxRetries && !canceled;
-        if (!canRetry) throw err;
+        if (!canRetry) {
+          // An `optional` step degrades the install rather than breaking it (the
+          // Metal Toolchain fetch: without it textures bake badly, but geometry
+          // renders fine and the `verify` step reports the degraded outcome). Warn
+          // and continue instead of aborting — checked AFTER the retry decision so
+          // a transient failure still burns its retries first, and scoped to a step
+          // failure so a cancel still propagates.
+          if (step.optional && err?.code === 'TRELLIS2_INSTALL_FAILED') {
+            onEvent({
+              type: 'log',
+              stage: step.stage,
+              message: `⚠️ Optional step '${step.stage}' failed (${err.message}) — continuing; textures may bake at reduced quality.`,
+            });
+            return;
+          }
+          throw err;
+        }
         const backoffMs = Math.min(30000, 2000 * 2 ** attempt);
         onEvent({
           type: 'log',
