@@ -103,9 +103,22 @@ router.get('/trellis2/install', asyncHandler(async (req, res) => {
 
   // Carry the stored HF token into the install too: setup.sh doesn't pull gated
   // weights today, but a future prefetch step would, and one env source beats two.
+  // Guarded because the SSE headers are already flushed by this point — a throw
+  // here (e.g. an unparseable settings.json) can't reach the error middleware as
+  // JSON, so it has to surface as a terminal `error` frame or the client hangs on
+  // a half-open stream.
+  let installEnv;
+  try {
+    installEnv = safeChildProcessEnv(await hfTokenEnv());
+  } catch (err) {
+    console.error(`❌ TRELLIS.2 install could not resolve the Hugging Face token env: ${err.message}`);
+    emit({ type: 'error', message: `Could not read settings to resolve the Hugging Face token: ${err.message}` });
+    return safeEnd();
+  }
+
   const { promise, kill } = installTrellis2({
     onEvent: emit,
-    env: safeChildProcessEnv(await hfTokenEnv()),
+    env: installEnv,
   });
   trellis2InstallInFlight = promise;
   promise
