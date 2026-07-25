@@ -629,6 +629,9 @@ function buildCiMergeGateSteps(startStep, { prRef, mrRef = '<MR_NUMBER>', forge 
     // `glab mr merge` takes an MR IID or source branch — a URL is not accepted.
     glab ? `   ${both ? '# GitLab:  ' : ''}glab mr merge ${mrRef} --yes --remove-source-branch` : null,
     '   ```',
+    // Not every repo allows merge commits; a repo restricted to squash/rebase
+    // rejects `--merge` outright, which would leave the PR open forever.
+    gh ? `   If that is rejected because this repo disallows merge commits, re-check what it allows (\`gh repo view --json mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed\`) and merge with an allowed method instead — \`--squash\` first, else \`--rebase\` — keeping \`--delete-branch\`.` : null,
     `${startStep + 3}. **Confirm the merge before exiting**: ${stateCmd}. If it is still open or was closed unmerged, investigate (failing check, merge conflict, branch protection), fix, and retry. Leave it open ONLY if CI stays red after a genuine fix attempt, or a conflict needs a human decision — and say so explicitly in your completion summary.`,
   ].filter(Boolean);
   return { lines, nextStep: startStep + 4 };
@@ -702,8 +705,15 @@ function buildMergeFollowUpSection({ prUrl, prBranch, prNumber = '', prOwner = '
 export function buildCompletionGuidelineBullet({
   isReadOnly, isTui, tuiCompletionCommand, slashdoFree = false,
   worktreeInfo, willOpenPR, willReviewLoop, discardWorktree = false, noCodeOutput = false,
-  leavePrOpen = false,
+  leavePrOpen = false, isPrFollowUp = false,
 }) {
+  // A PR follow-up (review-loop or merge-only) already carries its own PRIMARY
+  // OBJECTIVE section with the full procedure, and its cleanup runs with
+  // `skipMerge`. The generic "your branch is merged back automatically" bullet
+  // would contradict both — and a merge-only run legitimately makes no commit.
+  if (isPrFollowUp && !discardWorktree && !noCodeOutput && !isReadOnly) {
+    return 'Follow the follow-up section above — it is the whole task. Commit and push only fixes you actually make; the deliverable is the PR\'s final state, not a commit. Do NOT open a new PR, and do NOT expect this branch to be merged back for you.';
+  }
   if (discardWorktree) {
     return '**This is a reasoning-only task.** The worktree is discarded on exit — do NOT commit, push, merge, or open a PR. Write your result to the completion sentinel (see the Completion section) and stop.';
   }
@@ -1163,7 +1173,9 @@ ${skillSection ? `## Task-Type Skill Guidelines\n\n${skillSection}\n` : ''}${too
 3. Test your changes when possible
 4. ${discardWorktree
   ? 'Write your result to the completion sentinel (see the Completion section above) — do NOT commit, push, or open a PR; this worktree is discarded on exit'
-  : isTui
+  : isReviewLoopFollowUp
+    ? 'Follow the follow-up section above — push any fixes you make to the PR branch; a run that needed no fix makes no commit and that is a success, not a miss'
+    : isTui
     ? `Commit, push, and ${willOpenPR ? 'open the PR (see Completion Workflow above)' : 'push the branch (see Completion Workflow above)'}`
     : worktreeInfo && willOpenPR
       ? 'Commit your changes (see Git Hygiene below) — do NOT push, the system handles that on exit'
@@ -1183,6 +1195,7 @@ ${(() => {
     isTui, tuiCompletionCommand, slashdoFree: isTui && isOpencodeCommand(providerCommand),
     worktreeInfo, willOpenPR, willReviewLoop, discardWorktree, noCodeOutput,
     leavePrOpen: leavesPrForHuman(task),
+    isPrFollowUp: isReviewLoopFollowUp,
   });
   return bullet ? `- ${bullet}` : '';
 })()}
@@ -1193,7 +1206,9 @@ ${(() => {
 - **Only commit files YOU changed** for this task. Never use \`git add -A\` or \`git add .\` — always stage specific files by name.
 ${discardWorktree
   ? `- **Do NOT commit, push, or open a PR.** This worktree is discarded on exit — your only output is the completion sentinel (see the Completion section above).`
-  : isTui
+  : isReviewLoopFollowUp
+    ? `- **Push fixes straight to the PR branch you are on** (the follow-up section above is the procedure). Stage specific files, use a \`fix:\` prefix, no Co-Authored-By annotations. Do NOT open a new PR.`
+    : isTui
     ? `- **Use \`${tuiCompletionCommand}\` to ${willOpenPR ? 'commit, push, and open the PR' : 'commit and push the branch'}** — see the Completion Workflow section above. Stage specific files (no \`git add -A\`), use \`feat:\`/\`fix:\`/\`breaking:\` prefix in the commit message, no Co-Authored-By annotations.`
     : worktreeInfo && willOpenPR
       ? `- **Commit only — do NOT push.** Stage specific files, use \`feat:\`/\`fix:\`/\`breaking:\` prefix in the commit message, no Co-Authored-By annotations. The system will push your branch and open the PR after you exit, so do NOT run \`git push\` or \`/do:push\` yourself.`
@@ -1497,7 +1512,11 @@ function buildTuiCompletionSection({ willOpenPR, willReviewLoop, simplifyEnabled
   const reviewArgs = willOpenPR
     ? (willReviewLoop ? buildReviewWithArgs(reviewers, reviewStopMode, reviewerApplies, reviewUsernames, optionalReviewers) : '--review-with none')
     : '';
-  const reviewerArg = reviewArgs ? ` ${reviewArgs}` : '';
+  // A saved slashdo `merge: true` default would otherwise merge a PR that must
+  // stay open — dropping our own merge steps isn't enough, `/do:pr` has to be
+  // told not to merge (see lib/prDisposition.js).
+  const mergeArg = (willOpenPR && leavePrOpen) ? ' --no-merge' : '';
+  const reviewerArg = (reviewArgs ? ` ${reviewArgs}` : '') + mergeArg;
   const copilotOnly = reviewers.length === 1 && reviewers[0] === DEFAULT_REVIEWER && reviewUsernames.length === 0;
   const reviewerListLabel = [...reviewers, ...reviewUsernames.map(u => `@${u}`)].join(', ');
   const reviewSuffix = willOpenPR && willReviewLoop
@@ -1659,7 +1678,9 @@ function buildCliCompletionSection({ worktreeInfo, willOpenPR, willReviewLoop = 
     const reviewArgs = willReviewLoop
       ? buildReviewWithArgs(reviewers, reviewStopMode, reviewerApplies, reviewUsernames, optionalReviewers)
       : '--review-with none';
-    const reviewerArg = reviewArgs ? ` ${reviewArgs}` : '';
+    // `--no-merge` overrides a saved slashdo `merge: true` default, which would
+    // otherwise merge a PR this task must leave open (see lib/prDisposition.js).
+    const reviewerArg = (reviewArgs ? ` ${reviewArgs}` : '') + (leavePrOpen ? ' --no-merge' : '');
     const completionNote = willReviewLoop
       ? ((reviewers.length === 1 && reviewers[0] === DEFAULT_REVIEWER && reviewUsernames.length === 0)
           ? 'and drives the Copilot review loop until clean.'

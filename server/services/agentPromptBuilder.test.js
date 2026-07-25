@@ -326,6 +326,8 @@ describe('buildLightContextPrompt', () => {
       // Without a Review Loop nothing else will ever merge this PR, so the agent
       // merges it itself — gated on CI instead of on a review verdict.
       expect(prompt).toMatch(/gh pr checks "<PR_URL>" --watch --fail-fast/);
+      // A repo that disallows merge commits must not dead-end the flow.
+      expect(prompt).toMatch(/mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed/);
       expect(prompt).toMatch(/gh pr merge "<PR_URL>" --merge --delete-branch/);
       expect(prompt).not.toMatch(/gh pr merge[^\n]*--auto/);
       expect(prompt).toMatch(/gh pr view "<PR_URL>" --json state -q \.state/);
@@ -344,6 +346,8 @@ describe('buildLightContextPrompt', () => {
         { isTui: true });
       expect(prompt).toMatch(/Leave the PR open — do NOT merge it/);
       expect(prompt).toMatch(/tracked in JIRA/);
+      // Overrides a saved slashdo `merge: true` default.
+      expect(prompt).toMatch(/`\/do:pr --review-with none --no-merge`/);
       expect(prompt).not.toMatch(/gh pr merge/);
       expect(prompt).not.toMatch(/gh pr checks/);
     });
@@ -355,7 +359,9 @@ describe('buildLightContextPrompt', () => {
         { branchName: 'b', worktreePath: '/tmp/wt' },
         isTruthyMeta,
         { isTui: false, providerId: 'claude-code' });
-      expect(prompt).toMatch(/`\/do:pr --review-with none`/);
+      // `--no-merge` is required: a saved slashdo `merge: true` default would
+      // otherwise merge the PR before the "leave it open" step is ever reached.
+      expect(prompt).toMatch(/`\/do:pr --review-with none --no-merge`/);
       expect(prompt).toMatch(/Leave the PR open — do NOT merge it/);
       expect(prompt).not.toMatch(/gh pr merge/);
     });
@@ -1257,6 +1263,10 @@ describe('buildAgentPrompt — provider type routing', () => {
     // Agent must verify the PR is actually merged before exiting.
     expect(prompt).toMatch(/gh pr view "https:\/\/github\.com\/o\/r\/pull\/9" --json state -q \.state/);
     expect(prompt).toMatch(/MERGED/);
+    // The generic completion guidance must not contradict the follow-up section:
+    // its cleanup runs with skipMerge, and a clean run makes no commit at all.
+    expect(prompt).not.toMatch(/automatically merged back to the source branch/);
+    expect(prompt).toMatch(/Follow the follow-up section above/);
   });
 });
 
