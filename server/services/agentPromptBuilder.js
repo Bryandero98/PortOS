@@ -502,7 +502,8 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
   const closingSteps = leaveOpen
     ? [
       '4. When the reviewer list is exhausted (or the stop mode triggers), **leave the PR open** — do NOT merge it, and do NOT delete the branch. Its JIRA ticket is sitting in review and a human lands both together; merging here would leave the work merged and the ticket stuck in review.',
-      `5. Post a short PR comment summarising what the reviewers raised and what you fixed, so the human landing it knows the state: \`gh pr comment "${prUrl}" --body "<summary>"\`.`,
+      // Forge-aware: `gh pr comment` fails outright on a GitLab MR URL.
+      `5. Post a short comment on the ${detectForgeCli(metadata.reviewLoopPRHost) === 'glab' ? 'MR' : 'PR'} summarising what the reviewers raised and what you fixed, so the human landing it knows the state: ${detectForgeCli(metadata.reviewLoopPRHost) === 'glab' ? `\`glab mr note ${prNumber !== '' ? prNumber : '<MR_NUMBER>'} --message "<summary>"\`` : `\`gh pr comment "${prUrl}" --body "<summary>"\``}.`,
       '6. Exit. Do **not** run `/do:push` or open a new PR. The system will clean up your worktree on exit.',
     ]
     : [
@@ -701,6 +702,7 @@ function buildMergeFollowUpSection({ prUrl, prBranch, prNumber = '', prOwner = '
 export function buildCompletionGuidelineBullet({
   isReadOnly, isTui, tuiCompletionCommand, slashdoFree = false,
   worktreeInfo, willOpenPR, willReviewLoop, discardWorktree = false, noCodeOutput = false,
+  leavePrOpen = false,
 }) {
   if (discardWorktree) {
     return '**This is a reasoning-only task.** The worktree is discarded on exit — do NOT commit, push, merge, or open a PR. Write your result to the completion sentinel (see the Completion section) and stop.';
@@ -723,9 +725,11 @@ export function buildCompletionGuidelineBullet({
     return `On successful completion, YOU run ${howTo}, then write the sentinel and stop — PortOS closes the session once it sees the sentinel; do NOT run \`/quit\`.`;
   }
   if (worktreeInfo && willOpenPR) {
-    const reviewSuffix = willReviewLoop
-      ? ' For GitHub PRs, a Copilot code review will also be requested automatically (skipped on GitLab and other non-GitHub forges) — do NOT run `/do:rpr` or attempt to address review comments yourself; you will have already exited.'
-      : ' No review was requested for this task, so a follow-up agent merges the PR once CI is green — do NOT try to merge it yourself; you will have already exited.';
+    const reviewSuffix = leavePrOpen
+      ? ' This task is tracked in JIRA, so the PR is left OPEN for a human to land alongside the ticket — nothing merges it automatically.' + (willReviewLoop ? ' A follow-up agent still runs the configured reviewers against it.' : '')
+      : willReviewLoop
+        ? ' For GitHub PRs, a Copilot code review will also be requested automatically (skipped on GitLab and other non-GitHub forges) — do NOT run `/do:rpr` or attempt to address review comments yourself; you will have already exited.'
+        : ' No review was requested for this task, so a follow-up agent merges the PR once CI is green — do NOT try to merge it yourself; you will have already exited.';
     return `On successful completion, the system will push your branch and open a pull request — do NOT open a PR manually. (If the task fails, no PR is opened; the worktree is then cleaned up unless a safety check preserves it for manual recovery.)${reviewSuffix}`;
   }
   if (worktreeInfo) {
@@ -1178,6 +1182,7 @@ ${(() => {
     isReadOnly: isTruthyMetaFn(task.metadata?.readOnly),
     isTui, tuiCompletionCommand, slashdoFree: isTui && isOpencodeCommand(providerCommand),
     worktreeInfo, willOpenPR, willReviewLoop, discardWorktree, noCodeOutput,
+    leavePrOpen: leavesPrForHuman(task),
   });
   return bullet ? `- ${bullet}` : '';
 })()}

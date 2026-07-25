@@ -373,6 +373,25 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).not.toMatch(/glab mr merge/);
     });
 
+    it('a leave-open review follow-up on a GitLab MR comments with glab, not gh', () => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: {
+          reviewLoopFollowUp: true,
+          reviewLoopLeaveOpen: true,
+          reviewLoopPRUrl: 'https://gitlab.com/g/p/-/merge_requests/5',
+          reviewLoopPRBranch: 'b',
+          reviewLoopPRNumber: 5,
+          reviewLoopPRHost: 'gitlab.com',
+          reviewLoopReviewers: ['codex'],
+          sourceTaskId: 'task-src-6',
+        }}),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta);
+      expect(prompt).toMatch(/glab mr note 5 --message/);
+      expect(prompt).not.toMatch(/gh pr comment/);
+    });
+
     it('a review-loop follow-up on a JIRA PR reviews but does not merge', () => {
       const prompt = buildLightContextPrompt(
         makeTask({ metadata: {
@@ -1277,6 +1296,15 @@ describe('buildCompletionGuidelineBullet', () => {
       worktreeInfo: { worktreePath: '/wt' }, willOpenPR: true, willReviewLoop: false,
     });
     expect(prBullet).toMatch(/the system will push your branch and open a pull request/);
+    // Without a review loop, a follow-up merges on green CI...
+    expect(prBullet).toMatch(/merges the PR once CI is green/);
+    // ...unless the PR is a human's to land, where the bullet must not promise a merge.
+    const jiraBullet = buildCompletionGuidelineBullet({
+      isReadOnly: false, isTui: false, tuiCompletionCommand: '/do:pr',
+      worktreeInfo: { worktreePath: '/wt' }, willOpenPR: true, willReviewLoop: false, leavePrOpen: true,
+    });
+    expect(jiraBullet).toMatch(/left OPEN for a human/);
+    expect(jiraBullet).not.toMatch(/merges the PR once CI is green/);
     // No worktree, not TUI, not read-only → no bullet.
     const none = buildCompletionGuidelineBullet({
       isReadOnly: false, isTui: false, tuiCompletionCommand: '/do:push',
