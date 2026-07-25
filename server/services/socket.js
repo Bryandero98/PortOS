@@ -1,7 +1,7 @@
 import { spawnPm2, buildEnv } from './pm2.js';
 import { streamDetection } from './streamingDetect.js';
 import { cosEvents } from './cosEvents.js';
-import { appsEvents, getAppById } from './apps.js';
+import { appsEvents, getAppById, resolvePm2HomeForProcess } from './apps.js';
 import { errorEvents, sanitizeContext } from '../lib/errorHandler.js';
 import { handleErrorRecovery } from './autoFixer.js';
 import * as pm2Standardizer from './pm2Standardizer.js';
@@ -235,15 +235,23 @@ export function initSocket(io) {
       cleanupStream(key);
       const generation = bumpStreamGeneration(key);
 
-      // Resolve the app's custom PM2_HOME (if it has one) so the stream tails the
-      // home its processes actually run in. Runs outside the Express lifecycle, so
-      // a lookup failure must not throw — fall back to the default home.
+      // Resolve the app's custom PM2_HOME so the stream tails the home its
+      // processes actually run in. appId remains the disambiguating fast path;
+      // legacy callers without it fall back to the process-name registry lookup.
+      // This runs outside the Express lifecycle, so a lookup failure must not
+      // throw — fall back to the default home.
       let pm2Home = null;
       if (appId) {
         pm2Home = await getAppById(appId)
           .then(app => app?.pm2Home || null)
           .catch(err => {
             console.error(`❌ logs:subscribe could not resolve app ${appId}: ${err.message}`);
+            return null;
+          });
+      } else {
+        pm2Home = await resolvePm2HomeForProcess(processName)
+          .catch(err => {
+            console.error(`❌ logs:subscribe could not resolve ${processName}: ${err.message}`);
             return null;
           });
       }

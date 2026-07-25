@@ -18,7 +18,7 @@ const getStatusClasses = (status) => {
   }
 };
 
-export default function ProcessesTab({ pm2ProcessNames, filterFn }) {
+export default function ProcessesTab({ appId, pm2ProcessNames, filterFn }) {
   const [expandedProcess, setExpandedProcess] = useState(null);
   const [restarting, setRestarting] = useState({});
   const [tailLines, setTailLines] = useState(500);
@@ -28,7 +28,7 @@ export default function ProcessesTab({ pm2ProcessNames, filterFn }) {
 
   // Socket log lifecycle lives in the shared hook so this tab and the desktop
   // launch-progress panel can't drift.
-  const { logs, subscribed, clear: clearLogs } = useProcessLogs(expandedProcess, { lines: tailLines });
+  const { logs, subscribed, clear: clearLogs } = useProcessLogs(expandedProcess, { lines: tailLines, appId });
 
   // Let errors throw — `useAutoRefetch` preserves the last-good process list
   // on transient failures. `silent: true` is essential here because the 5s

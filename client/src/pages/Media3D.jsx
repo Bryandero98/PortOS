@@ -16,17 +16,6 @@ import { imageTo3dStatusMeta } from '../components/media/imageTo3dStatus';
 // Poll cadence while a render is in flight (a real TRELLIS.2 render is multi-minute).
 const POLL_INTERVAL_MS = 2500;
 
-// Targets that download gated Hugging Face models on first run. Keyed by target id
-// so the page can warn about the (free, one-time) HF sign-in + terms acceptance
-// BEFORE a render fails opaquely. TRELLIS.2 pulls DINOv3 (image conditioning) and
-// RMBG-2.0 (background removal), both gated Meta/BRIA repos.
-const HF_GATED_MODELS = {
-  trellis2: [
-    { label: 'facebook/dinov3-vitl16-pretrain-lvd1689m', url: 'https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m' },
-    { label: 'briaai/RMBG-2.0', url: 'https://huggingface.co/briaai/RMBG-2.0' },
-  ],
-};
-
 // Prerequisite notice for a target that needs gated Hugging Face access. Driven by
 // the CENTRAL token store (GET /image-gen/setup/hf-token-status) — the same one the
 // Image Gen page writes — so a user who already pasted a token isn't told to go set
@@ -333,7 +322,8 @@ export default function Media3D() {
     return null;
   })();
 
-  const gatedHfModels = selectedTarget?.available ? HF_GATED_MODELS[selectedTarget?.id] : null;
+  const gatedHfModels = selectedTarget?.available ? selectedTarget.gatedRepos : null;
+  const gatedRepoCount = installTarget?.gatedRepos?.length || 0;
 
   return (
     <div className="mx-auto max-w-4xl">
@@ -402,7 +392,7 @@ export default function Media3D() {
             )}
           </div>
 
-          {gatedHfModels && (
+          {gatedHfModels?.length > 0 && (
             <HfAccessNotice
               models={gatedHfModels}
               tokenPresent={hfTokenPresent}
@@ -533,7 +523,7 @@ export default function Media3D() {
         params={installTarget?.textureBake?.quality === 'fallback' ? { repair: '1' } : undefined}
         description={installTarget?.textureBake?.quality === 'fallback'
           ? 'Downloading the Xcode Metal Toolchain if it\'s missing, then re-running the TRELLIS.2 setup to rebuild its Metal texture-baking backends. Your already-downloaded models are kept, and no password is required.'
-          : 'Cloning the TRELLIS.2 (Apple Silicon) port and installing its Python environment (~15 GB on first run). If the Xcode Metal Toolchain is missing it is downloaded first, so textures bake at full quality. It also pulls two gated Hugging Face models on first render — accept their terms and add a Hugging Face token above (see the note on the 3D page).'}
+          : `Cloning the TRELLIS.2 (Apple Silicon) port and installing its Python environment (~15 GB on first run). If the Xcode Metal Toolchain is missing it is downloaded first, so textures bake at full quality.${gatedRepoCount ? ` It also pulls ${gatedRepoCount} gated Hugging Face ${gatedRepoCount === 1 ? 'model' : 'models'} on first render — accept their terms and add a Hugging Face token above (see the note on the 3D page).` : ''}`}
         onClose={() => setInstallTarget(null)}
         onComplete={() => { setInstallTarget(null); load(); }}
       />

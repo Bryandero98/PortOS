@@ -203,6 +203,22 @@ export async function getDesktopProcessNames() {
 }
 
 /**
+ * Resolve the custom PM2 home for a registered process name.
+ *
+ * Process-name-only log consumers use this as a backward-compatible fallback
+ * when they do not already have an app id. An app id remains the preferred
+ * disambiguator because process names may be reused across PM2 homes.
+ *
+ * @param {string} processName PM2 process name to look up
+ * @returns {Promise<string|null>} The owning app's custom PM2_HOME, if any
+ */
+export async function resolvePm2HomeForProcess(processName) {
+  const apps = await getAllApps();
+  const app = apps.find(candidate => candidate.pm2ProcessNames?.includes(processName));
+  return app?.pm2Home || null;
+}
+
+/**
  * Stamp `expectedExit` onto each PM2 process so supervisors can branch on the
  * concept rather than each re-deriving it from a name set.
  *

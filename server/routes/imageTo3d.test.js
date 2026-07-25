@@ -18,6 +18,13 @@ vi.mock('../services/imageTo3d/targets.js', () => ({
       outputKind: 'glb-mesh',
       available: caps.appleSilicon && caps.unifiedMemoryGb >= 24,
       unavailableReason: null,
+      gatedRepos: [
+        {
+          label: 'facebook/dinov3-vitl16-pretrain-lvd1689m',
+          url: 'https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m',
+        },
+        { label: 'briaai/RMBG-2.0', url: 'https://huggingface.co/briaai/RMBG-2.0' },
+      ],
     },
   ]),
   isTargetAvailable: vi.fn(() => true),
@@ -84,7 +91,18 @@ describe('image-to-3d routes', () => {
     expect(res.status).toBe(200);
     expect(res.body.capabilities).toMatchObject({ appleSilicon: true, unifiedMemoryGb: 128 });
     expect(Array.isArray(res.body.targets)).toBe(true);
-    expect(res.body.targets[0]).toMatchObject({ id: 'trellis2', available: true, installed: false });
+    expect(res.body.targets[0]).toMatchObject({
+      id: 'trellis2',
+      available: true,
+      installed: false,
+      gatedRepos: [
+        {
+          label: 'facebook/dinov3-vitl16-pretrain-lvd1689m',
+          url: 'https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m',
+        },
+        { label: 'briaai/RMBG-2.0', url: 'https://huggingface.co/briaai/RMBG-2.0' },
+      ],
+    });
   });
 
   // #2952: an installed TRELLIS.2 whose Metal bake is missing still renders, but
