@@ -19,7 +19,9 @@ vi.mock('../services/api', () => ({
 // Stub the shared install modal so the test doesn't open a real EventSource;
 // assert only that it's opened with the chosen target.
 vi.mock('../components/install/RuntimeInstallModal', () => ({
-  default: ({ open, runtime }) => (open ? <div data-testid="install-modal">installing {runtime}</div> : null),
+  default: ({ open, runtime, description }) => (open ? <div data-testid="install-modal">
+    installing {runtime}<span data-testid="install-description">{description}</span>
+  </div> : null),
 }));
 
 // GlbViewer wraps a WebGL canvas jsdom can't render — stub to a marker that
@@ -48,6 +50,13 @@ const target = (over = {}) => ({
   unavailableReason: null,
   upstream: 'https://github.com/microsoft/TRELLIS.2',
   port: 'https://github.com/shivampkumar/trellis-mac',
+  gatedRepos: [
+    {
+      label: 'facebook/dinov3-vitl16-pretrain-lvd1689m',
+      url: 'https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m',
+    },
+    { label: 'briaai/RMBG-2.0', url: 'https://huggingface.co/briaai/RMBG-2.0' },
+  ],
   ...over,
 });
 
@@ -79,6 +88,13 @@ describe('Media3D — models & install', () => {
     const btn = await screen.findByRole('button', { name: /install/i });
     fireEvent.click(btn);
     expect(await screen.findByTestId('install-modal')).toHaveTextContent('trellis2');
+  });
+
+  it('uses the selected target gated-repo count in the install description', async () => {
+    getImageTo3dTargets.mockResolvedValue({ capabilities: {}, targets: [target()] });
+    renderAt();
+    fireEvent.click(await screen.findByRole('button', { name: /install/i }));
+    expect(await screen.findByTestId('install-description')).toHaveTextContent('2 gated Hugging Face models');
   });
 
   it('shows Ready and no Install button when the target is installed', async () => {
@@ -206,6 +222,16 @@ describe('Media3D — generation workspace', () => {
     // Both gated repos stay linked — terms acceptance is separate from having a token.
     expect(screen.getByRole('link', { name: /dinov3-vitl16-pretrain-lvd1689m/i })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /RMBG-2\.0/i })).toBeInTheDocument();
+  });
+
+  it('renders no gated-access notice when the selected target omits gatedRepos', async () => {
+    getImageTo3dTargets.mockResolvedValue({ targets: [target({ gatedRepos: undefined, installed: true })] });
+    renderAt('/media/3d?image=example-robot.png');
+    await screen.findByRole('button', { name: /Generate 3D/i });
+    await waitFor(() => expect(getHfTokenStatus).toHaveBeenCalled());
+    expect(screen.queryByPlaceholderText('hf_…')).toBeNull();
+    expect(screen.queryByText(/Hugging Face token configured/i)).toBeNull();
+    expect(screen.queryByRole('link', { name: /dinov3-vitl16-pretrain-lvd1689m/i })).toBeNull();
   });
 
   it('collapses to a confirmation naming the source when a token already exists', async () => {

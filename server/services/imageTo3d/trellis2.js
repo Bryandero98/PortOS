@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn, execFile } from 'node:child_process';
 import { killWithEscalation } from '../../lib/killWithEscalation.js';
 import { rewriteGlbMaterialsOpaque } from './glbMaterials.js';
+import { getTarget } from './targets.js';
 
 const HOME = homedir();
 const IS_WIN = platform() === 'win32';
@@ -709,9 +710,12 @@ export const isHfAuthError = textMatcher([
  * page is the fix; the CLI/env route is the fallback for someone already set up that
  * way. Terms acceptance is a separate step a token alone doesn't cover.
  */
+const HF_AUTH_REPOS = getTarget('trellis2')?.gatedRepos ?? [];
+const HF_AUTH_REPO_HELP = HF_AUTH_REPOS
+  .map(({ label, url }) => `${label} at ${url}`)
+  .join(' and ') || 'the required model at https://huggingface.co';
 const HF_AUTH_HELP = 'TRELLIS.2 could not download a gated model dependency from '
-  + 'Hugging Face. Accept the terms for facebook/dinov3-vitl16-pretrain-lvd1689m at '
-  + 'https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m, then add your '
+  + `Hugging Face. Accept the terms for ${HF_AUTH_REPO_HELP}, then add your `
   + 'Hugging Face token on the 3D page (or set HF_TOKEN / run `huggingface-cli login`) '
   + 'and try again.';
 
