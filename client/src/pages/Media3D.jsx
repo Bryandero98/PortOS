@@ -105,6 +105,17 @@ function StatusBadge({ target }) {
     );
   }
   if (target.installed) {
+    // An installed target whose Metal texture bake is missing still renders — the
+    // geometry is fine — but the surface comes out scrambled, so "Ready" alone
+    // would be a lie. `quality:'unknown'` (the probe couldn't run) stays Ready
+    // rather than crying wolf about an install that is probably fine.
+    if (target.textureBake?.quality === 'fallback') {
+      return (
+        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-port-warning">
+          <AlertTriangle className="w-3.5 h-3.5" /> Ready · degraded textures
+        </span>
+      );
+    }
     return (
       <span className="inline-flex items-center gap-1.5 text-xs font-medium text-port-success">
         <CheckCircle2 className="w-3.5 h-3.5" /> Ready
@@ -118,6 +129,9 @@ function TargetCard({ target, onInstall }) {
   // Install only applies to targets with a local install concept (installed is a
   // boolean); hosted targets report installed:null and are Ready when available.
   const canInstall = target.available && target.installed === false;
+  // Re-running Install is the documented repair for a degraded bake, so offer it on
+  // an already-installed target too when the probe says the Metal backends are gone.
+  const degradedBake = target.textureBake?.quality === 'fallback';
 
   return (
     <div className="rounded-lg border border-port-border bg-port-card p-4">
@@ -153,16 +167,21 @@ function TargetCard({ target, onInstall }) {
         </div>
         <div className="flex shrink-0 flex-col items-end gap-2">
           <StatusBadge target={target} />
-          {canInstall && (
+          {(canInstall || degradedBake) && (
             <button
               onClick={() => onInstall(target)}
               className="inline-flex items-center gap-1.5 rounded-md bg-port-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-600"
             >
-              <Download className="w-3.5 h-3.5" /> Install
+              <Download className="w-3.5 h-3.5" /> {canInstall ? 'Install' : 'Repair install'}
             </button>
           )}
         </div>
       </div>
+      {degradedBake && target.textureBake?.help && (
+        <p className="mt-3 rounded border border-port-warning/40 bg-port-warning/10 p-2 text-[11px] leading-relaxed text-port-warning">
+          {target.textureBake.help}
+        </p>
+      )}
     </div>
   );
 }
@@ -505,7 +524,13 @@ export default function Media3D() {
         runtime={installTarget?.id}
         label={installTarget?.label}
         installUrlBase="/api/image-to-3d/trellis2/install"
-        description="Cloning the TRELLIS.2 (Apple Silicon) port and installing its Python environment (~15 GB on first run). It also pulls two gated Hugging Face models on first render — accept their terms and add a Hugging Face token above (see the note on the 3D page)."
+        // Repairing an already-installed target must re-run setup.sh rather than
+        // short-circuit on "already installed" — that re-run is what rebuilds the
+        // Metal texture-baking backends once the Metal Toolchain is present (#2952).
+        params={installTarget?.textureBake?.quality === 'fallback' ? { repair: '1' } : undefined}
+        description={installTarget?.textureBake?.quality === 'fallback'
+          ? 'Re-running the TRELLIS.2 setup to rebuild its Metal texture-baking backends. Already-downloaded weights are kept. This only succeeds once the Xcode Metal Toolchain is installed (`xcodebuild -downloadComponent MetalToolchain`).'
+          : 'Cloning the TRELLIS.2 (Apple Silicon) port and installing its Python environment (~15 GB on first run). It also pulls two gated Hugging Face models on first render — accept their terms and add a Hugging Face token above (see the note on the 3D page).'}
         onClose={() => setInstallTarget(null)}
         onComplete={() => { setInstallTarget(null); load(); }}
       />

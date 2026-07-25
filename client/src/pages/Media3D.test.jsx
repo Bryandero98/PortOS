@@ -88,6 +88,33 @@ describe('Media3D — models & install', () => {
     expect(screen.queryByRole('button', { name: /install/i })).toBeNull();
   });
 
+  // #2952: `setup.sh` exits 0 even when its Metal texture-baking backends failed to
+  // build, and such an install renders correct geometry with a scrambled surface —
+  // so a flat "Ready" would be a lie, and re-running Install is the repair.
+  it('flags a degraded texture bake and offers Repair install', async () => {
+    getImageTo3dTargets.mockResolvedValue({
+      targets: [target({
+        installed: true,
+        textureBake: { quality: 'fallback', missing: ['mtldiffrast'], help: 'Install the Metal Toolchain.' },
+      })],
+    });
+    renderAt();
+    expect(await screen.findByText(/degraded textures/i)).toBeInTheDocument();
+    expect(screen.getByText('Install the Metal Toolchain.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /repair install/i })).toBeInTheDocument();
+  });
+
+  it('stays plain Ready when the bake probe could not determine anything', async () => {
+    // A probe that failed must not cry wolf about an install that is probably fine.
+    getImageTo3dTargets.mockResolvedValue({
+      targets: [target({ installed: true, textureBake: { quality: 'unknown', missing: [] } })],
+    });
+    renderAt();
+    expect(await screen.findByText(/ready/i)).toBeInTheDocument();
+    expect(screen.queryByText(/degraded textures/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: /install/i })).toBeNull();
+  });
+
   it('shows the unsupported reason and no Install button when the host cannot run it', async () => {
     getImageTo3dTargets.mockResolvedValue({
       targets: [target({ available: false, unavailableReason: 'requires-apple-silicon' })],

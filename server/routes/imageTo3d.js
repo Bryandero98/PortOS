@@ -10,7 +10,13 @@ import {
   unavailableReason,
   IMAGE_TO_3D_TARGET_IDS,
 } from '../services/imageTo3d/targets.js';
-import { isTrellis2Installed, installTrellis2, trellis2Root } from '../services/imageTo3d/trellis2.js';
+import {
+  isTrellis2Installed,
+  installTrellis2,
+  trellis2Root,
+  probeTrellis2TextureBake,
+  probeMetalToolchain,
+} from '../services/imageTo3d/trellis2.js';
 import {
   listModels,
   getModel,
@@ -61,6 +67,13 @@ router.get('/targets', asyncHandler(async (_req, res) => {
     ...target,
     installed: targetInstalled(target.id),
   }));
+  // An installed TRELLIS.2 can still be silently degraded: `setup.sh` swallows a
+  // failed Metal-backend build and exits 0, after which every render bakes a
+  // scrambled surface. Surface that here so the target card can warn instead of
+  // reporting a flat "Ready" (#2952). Skipped when it isn't installed — there is
+  // nothing to probe, and the venv Python doesn't exist yet.
+  const trellis2 = targets.find((t) => t.id === 'trellis2');
+  if (trellis2?.installed) trellis2.textureBake = await probeTrellis2TextureBake();
   res.json({ capabilities, targets });
 }));
 
@@ -75,8 +88,22 @@ router.get('/targets', asyncHandler(async (_req, res) => {
 router.get('/trellis2/install', asyncHandler(async (req, res) => {
   const { send, safeEnd } = openSseStream(res);
 
-  if (isTrellis2Installed()) {
+  // `repair=1` re-runs `setup.sh` over an existing install. That is the documented
+  // fix for a degraded Metal texture bake: the clone step self-skips (the repo is
+  // present) and setup.sh's pip installs re-attempt the Metal packages that failed
+  // to compile the first time, while its `if [ ! -d ]` guards keep the ~15 GB of
+  // already-downloaded weights. Without this the "Repair install" button would hit
+  // the already-installed short-circuit below and do nothing (#2952).
+  const repair = req.query.repair === '1';
+
+  if (isTrellis2Installed() && !repair) {
     send({ type: 'stage', stage: 'verify', message: 'TRELLIS.2 already installed.' });
+    // "Installed" is not the same as "installed well" — tell the user when this one
+    // needs repairing rather than a bare "nothing to do".
+    const bake = await probeTrellis2TextureBake();
+    if (bake.quality === 'fallback') {
+      send({ type: 'log', stage: 'verify', message: `⚠️ ${bake.help}` });
+    }
     send({ type: 'complete', message: 'Already installed — nothing to do.' });
     return safeEnd();
   }
@@ -100,6 +127,16 @@ router.get('/trellis2/install', asyncHandler(async (req, res) => {
   const installLog = createInstallLogger({ installer: 'TRELLIS.2', target: trellis2Root() });
   const emit = (event) => { installLog.onEvent(event); send(event); };
   installLog.start();
+
+  // Pre-flight the Metal Toolchain. `setup.sh` builds its Metal texture-baking
+  // backends from `.metal` sources but swallows each failure and still exits 0, so
+  // without this the user waits ~15 GB and an hour-long render to discover the
+  // surface is scrambled. Warn only — the install is still worth running (geometry
+  // is unaffected) and the toolchain can be added and the install re-run to repair.
+  const toolchain = await probeMetalToolchain();
+  if (toolchain.available === false) {
+    emit({ type: 'log', stage: 'preflight', message: `⚠️ ${toolchain.hint}` });
+  }
 
   // Disconnect bookkeeping wired BEFORE the token-resolution await below (the
   // same hazard `lib/sseDownload.js` documents): that await does a settings read
@@ -143,6 +180,8 @@ router.get('/trellis2/install', asyncHandler(async (req, res) => {
   currentKill = kill;
   trellis2InstallInFlight = promise;
   promise
+    // `installTrellis2` emits its own post-install `verify` frame (Metal bake
+    // present or degraded) before the terminal `complete` — see #2952.
     .then(() => installLog.success())
     .catch((err) => {
       // A transient network drop that survived the in-install retries: the partial
