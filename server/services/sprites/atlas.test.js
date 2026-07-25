@@ -45,7 +45,7 @@ const { compileAtlas, getAtlasState, ATLAS_COLUMNS, DEFAULT_ATLAS_GEOMETRY } = a
 const { SPRITE_DIRECTIONS } = await import('./prompts.js');
 const { WALK_PHASES, walkPhaseLabels, WALK_FPS } = await import('./walkPostprocess.js');
 const { buildAtlasGrid, compiledGridUpToDate } = await import('./atlasGrid.js');
-const { getAnimationTrack } = await import('./animationTracks.js');
+const { getAnimationTrack, SCANNER_TRACK } = await import('./animationTracks.js');
 
 let seq = 0;
 const newId = () => `atlas-char-${++seq}`;
@@ -155,6 +155,64 @@ async function buildFinalizedWalkSet(recordId, {
   return { walkSet, selection };
 }
 
+async function buildFinalizedScannerSet(recordId, { frameCount = 4, fps = 6 } = {}) {
+  const manifest = await loadManifest(recordId);
+  const dir = join(TEST_ROOT, 'sprites', recordId);
+  const labels = Array.from({ length: frameCount }, (_, i) => `${SCANNER_TRACK}-${String(i).padStart(2, '0')}`);
+  const selection = {
+    schemaVersion: 1,
+    kind: 'reviewed-directional-scanner-selection',
+    track: SCANNER_TRACK,
+    characterId: recordId,
+    status: 'complete',
+    directions: {},
+  };
+  for (const direction of SPRITE_DIRECTIONS) {
+    const runId = `${SCANNER_TRACK}-${direction}-${(seq++).toString(16).padStart(8, '0')}`;
+    const generatedRel = `runs/${runId}/generated`;
+    const frames = [];
+    for (let i = 0; i < labels.length; i++) {
+      const rel = `${generatedRel}/frames/${String(i).padStart(2, '0')}-${labels[i]}.png`;
+      await walkFramePng(join(dir, rel), 36 + i * 12, 2 + i * 2);
+      frames.push({ outputIndex: i, phase: labels[i], path: rel, sha256: sha256(await readFile(join(dir, rel))) });
+    }
+    const runManifest = {
+      schemaVersion: 1,
+      kind: 'deterministically-packaged-grok-scanner-video',
+      track: SCANNER_TRACK,
+      characterId: recordId,
+      direction,
+      chromaKey: manifest.chromaKey,
+      frameCount,
+      frameRate: fps,
+      frames,
+    };
+    const manifestRel = `${generatedRel}/${recordId}-${SCANNER_TRACK}-${direction}-manifest.json`;
+    const manifestBytes = JSON.stringify(runManifest);
+    await writeFile(join(dir, manifestRel), manifestBytes);
+    selection.directions[direction] = {
+      status: 'approved', runId, runPath: `runs/${runId}`, runManifest: manifestRel,
+      runManifestSha256: sha256(Buffer.from(manifestBytes)), approvedAt: new Date().toISOString(),
+    };
+  }
+  await mkdir(join(dir, SCANNER_TRACK), { recursive: true });
+  const selectionRel = `${SCANNER_TRACK}/${recordId}-${SCANNER_TRACK}-selection-v1.json`;
+  const selectionBytes = JSON.stringify(selection);
+  await writeFile(join(dir, selectionRel), selectionBytes);
+  await writeFile(join(dir, `${SCANNER_TRACK}/${recordId}-${SCANNER_TRACK}-set-v1.json`), JSON.stringify({
+    schemaVersion: 1,
+    kind: 'finalized-eight-direction-scanner-set',
+    track: SCANNER_TRACK,
+    characterId: recordId,
+    status: 'final',
+    directionOrder: SPRITE_DIRECTIONS,
+    selectionPath: selectionRel,
+    selectionSha256: sha256(Buffer.from(selectionBytes)),
+    directions: selection.directions,
+    finalizedAt: new Date().toISOString(),
+  }));
+}
+
 async function finalizedCharacter() {
   const id = newId();
   await lockAllAnchors(id);
@@ -168,6 +226,24 @@ beforeEach(() => {
 afterAll(() => rmSync(TEST_ROOT, { recursive: true, force: true }));
 
 describe('compileAtlas', () => {
+  it('compiles an approved four-frame scanner span beside the walk span', async () => {
+    const id = newId();
+    await lockAllAnchors(id);
+    await buildFinalizedWalkSet(id, { frameCount: 12, fps: 10 });
+    await buildFinalizedScannerSet(id);
+    const result = await compileAtlas(id);
+    const manifest = JSON.parse(await readFile(join(TEST_ROOT, 'sprites', id, result.manifestPath), 'utf8'));
+    expect(manifest.geometry.columns).toEqual([
+      'idle', ...walkPhaseLabels(12), 'scanner-00', 'scanner-01', 'scanner-02', 'scanner-03',
+    ]);
+    expect(manifest.geometry.tracks.scanner).toMatchObject({ start: 13, count: 4, rows: 8 });
+    expect(manifest.geometry.scannerFrameCount).toBe(4);
+    expect(manifest.scannerSetSha256).toMatch(/^[0-9a-f]{64}$/);
+    for (const row of manifest.directions) {
+      expect(row.cells.filter((cell) => cell.column.startsWith('scanner-'))).toHaveLength(4);
+    }
+  });
+
   it('compiles the 9×8 player atlas with full provenance and a current pointer', async () => {
     const id = await finalizedCharacter();
     const result = await compileAtlas(id);

@@ -54,9 +54,11 @@ const newId = () => `frametest-${++seq}`;
  * root so re-anchoring is exercised.
  */
 async function makeFrames(id, {
-  count = 8, runId = 'run-abcdef', fileLayout = 'grok', declaredLayout = 'grok', anchored = false,
+  count = 8, runId = 'run-abcdef', fileLayout = 'grok', declaredLayout = 'grok', anchored = false, track = 'walk',
 } = {}) {
-  const labels = walkPhaseLabels(count);
+  const labels = track === 'walk'
+    ? walkPhaseLabels(count)
+    : Array.from({ length: count }, (_, i) => `${track}-${String(i).padStart(2, '0')}`);
   const frames = [];
   for (let i = 0; i < count; i++) {
     const bytes = Buffer.from(`frame-${id}-${i}`);
@@ -72,10 +74,16 @@ async function makeFrames(id, {
       sha256: sha256(bytes),
     });
   }
-  return { direction: 'east', characterId: id, frameCount: count, frames };
+  return { track, direction: 'east', characterId: id, frameCount: count, frames };
 }
 
 describe('verifyPackagedFrames — existence mode (approve gate)', () => {
+  it('uses the named scanner columns for a short scanner action', async () => {
+    const id = newId();
+    const manifest = await makeFrames(id, { track: 'scanner', count: 4 });
+    await expect(verifyPackagedFrames(id, manifest, { bytes: true, track: 'scanner' }))
+      .resolves.toMatchObject({ total: 4, missing: 0 });
+  });
   it('passes when every declared frame is on disk', async () => {
     const id = newId();
     const manifest = await makeFrames(id);

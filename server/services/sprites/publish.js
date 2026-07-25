@@ -109,8 +109,13 @@ function validateRuntimeContract(runtimeContract) {
     const field = issue?.path?.length ? `runtimeContract.${issue.path.join('.')}` : 'runtimeContract';
     throw bindingError(`${field}: ${issue?.message || 'invalid'}`, 'INVALID_RUNTIME_CONTRACT');
   }
-  const { walkFrameCount, cellSize, columnCount } = parsed.data;
-  return { walkFrameCount, cellSize: cellSize ?? null, columnCount: columnCount ?? null };
+  const { walkFrameCount, scannerFrameCount, cellSize, columnCount } = parsed.data;
+  return {
+    walkFrameCount,
+    ...(scannerFrameCount === undefined ? {} : { scannerFrameCount }),
+    cellSize: cellSize ?? null,
+    columnCount: columnCount ?? null,
+  };
 }
 
 /** Validate a publishBinding shape (null clears it). */

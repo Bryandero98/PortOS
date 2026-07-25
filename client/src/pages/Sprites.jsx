@@ -5,7 +5,7 @@ import toast from '../components/ui/Toast';
 import Modal from '../components/ui/Modal.jsx';
 import {
   listSpriteRecords, getSpriteRecord, importSprites, createSpriteRecord,
-  generateSpriteWalk, generateSpriteReference, listSpriteThumbnails,
+  generateSpriteWalk, generateSpriteScanner, generateSpriteReference, listSpriteThumbnails,
 } from '../services/apiSprites.js';
 import { getApps } from '../services/apiApps.js';
 import { getSettings } from '../services/apiSystem.js';
@@ -13,6 +13,7 @@ import { deriveAvailableBackends } from '../lib/imageGenBackends.js';
 import AppContextPicker from '../components/AppContextPicker.jsx';
 import ReferenceWorkflow from '../components/sprites/ReferenceWorkflow.jsx';
 import WalkWorkflow from '../components/sprites/WalkWorkflow.jsx';
+import ScannerWorkflow from '../components/sprites/ScannerWorkflow.jsx';
 import { GROK_VIDEO_DEFAULT_DURATION } from '../lib/grokVideoClip.js';
 import LoopTrimmer from '../components/sprites/LoopTrimmer.jsx';
 import PublishWorkflow from '../components/sprites/PublishWorkflow.jsx';
@@ -509,6 +510,8 @@ export default function Sprites() {
     };
     collect(detail?.walk?.selection?.directions);
     collect(detail?.walk?.walkSet?.directions);
+    collect(detail?.scanner?.selection?.directions);
+    collect(detail?.scanner?.scannerSet?.directions);
     return set;
   }, [detail]);
 
@@ -552,6 +555,21 @@ export default function Sprites() {
     // render. The server guard is the real backstop; this closes the UI gap.
     onWorkflowChanged,
   ), [id, duration, walkBegin, walkResolve, walkCancel, submitRender, onWorkflowChanged]);
+
+  // Scanner has its own server-side in-flight guard and independent named set;
+  // keeping its submit path separate means a scanner render never occupies the
+  // walk direction's optimistic reservation (both can legitimately be authored
+  // at once). It also owns its short default source clip instead of inheriting
+  // the walk duration picker. The immediate refetch persists the observable
+  // TUI run for polling.
+  const generateScanner = useCallback(async (direction) => {
+    try {
+      await generateSpriteScanner(id, { direction }, { silent: true });
+      onWorkflowChanged();
+    } catch (err) {
+      toast.error(err?.message || `Failed to queue ${direction} scanner action`);
+    }
+  }, [id, onWorkflowChanged]);
 
   // `mode` is the workflow-selected backend, threaded from the asset card via
   // buildCollectionActions (#2938) so a re-roll uses the same backend the
@@ -705,6 +723,13 @@ export default function Sprites() {
                         onDurationChange={setDuration}
                         onGenerate={generateWalk}
                         onOpenTrimmer={openTrimmer}
+                        onChanged={onWorkflowChanged}
+                      />
+                      <ScannerWorkflow
+                        record={detail.record}
+                        reference={detail.reference}
+                        scanner={detail.scanner}
+                        onGenerate={generateScanner}
                         onChanged={onWorkflowChanged}
                       />
                       {/* Keyed by record so form state and an armed publish/overwrite

@@ -9,7 +9,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   WALK_TRACK, resolveAnimationTarget, withTrackTarget, targetDrift, describeTargetSource,
 } from './animationTargets.js';
-import { getAnimationTrack } from './animationTracks.js';
+import { getAnimationTrack, SCANNER_TRACK } from './animationTracks.js';
 
 describe('resolveAnimationTarget precedence', () => {
   it('falls back to the documented defaults when nothing is pinned or packaged', () => {
@@ -121,11 +121,14 @@ describe('resolveAnimationTarget precedence', () => {
     vi.resetModules();
   });
 
-  it('rejects an unrecognized track instead of resolving it against walk\'s range', () => {
+  it('resolves scanner against its own range and rejects unknown tracks', () => {
     // Sentinel discipline: absent ⇒ the default track; unrecognized ⇒ an error
     // naming the known tracks, never a silent fall-through to 6–16 / 4–24.
-    expect(() => resolveAnimationTarget({ track: 'scanner' }))
-      .toThrow(/Unknown animation track 'scanner'/);
+    expect(resolveAnimationTarget({ track: SCANNER_TRACK })).toMatchObject({
+      track: SCANNER_TRACK, frameCount: 4, fps: 6, source: 'default',
+    });
+    expect(() => resolveAnimationTarget({ track: 'unknown' }))
+      .toThrow(/Unknown animation track 'unknown'/);
     expect(resolveAnimationTarget({ track: undefined }).track).toBe(WALK_TRACK);
   });
 });
@@ -156,8 +159,10 @@ describe('withTrackTarget', () => {
     // Preserving a sibling key a newer peer wrote and minting a bogus one are
     // different things: the first is forward-compat, the second is a bug that
     // would persist a row nothing can range-check.
-    expect(() => withTrackTarget({}, 'scanner', { frameCount: 4, fps: 6, source: 'set' }))
-      .toThrow(/Unknown animation track 'scanner'/);
+    expect(withTrackTarget({}, SCANNER_TRACK, { frameCount: 4, fps: 6, source: 'set' }))
+      .toEqual({ scanner: { frameCount: 4, fps: 6, source: 'set' } });
+    expect(() => withTrackTarget({}, 'unknown', { frameCount: 4, fps: 6, source: 'set' }))
+      .toThrow(/Unknown animation track 'unknown'/);
   });
 });
 
@@ -191,8 +196,9 @@ describe('targetDrift', () => {
     ])).toEqual([{
       direction: 'east', frameCount: 8, fps: 10, frameCountDrifts: true, fpsDrifts: false,
     }]);
-    expect(() => targetDrift({ ...target, track: 'scanner' }, []))
-      .toThrow(/Unknown animation track 'scanner'/);
+    expect(targetDrift({ ...target, track: SCANNER_TRACK }, [])).toEqual([]);
+    expect(() => targetDrift({ ...target, track: 'unknown' }, []))
+      .toThrow(/Unknown animation track 'unknown'/);
   });
 });
 

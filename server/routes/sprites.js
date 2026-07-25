@@ -22,6 +22,8 @@ import {
   spriteReferenceLockSchema,
   spriteReferenceUnlockSchema,
   spriteForkSchema,
+  spriteScannerGenerateSchema,
+  spriteScannerApproveSchema,
   spriteWalkGenerateSchema,
   spriteWalkApproveSchema,
   spriteWalkReopenSchema,
@@ -46,12 +48,13 @@ import {
   listReferenceSources, listSpriteThumbnails, forkSprite,
 } from '../services/sprites/reference.js';
 import { resolveSpriteAssetPrompt } from '../services/sprites/assetPrompt.js';
-import { WALK_TRACK, kindSupportsTrack, tracksForKind } from '../services/sprites/animationTracks.js';
+import { WALK_TRACK, SCANNER_TRACK, kindSupportsTrack, tracksForKind } from '../services/sprites/animationTracks.js';
 import {
   getWalkState, startWalkGeneration, approveWalkDirection, rerunWalkPostprocess, unlockWalkSet,
   reopenWalkDirection, setWalkTarget, getWalkSourceFrames,
   unlockDirectionalAnchor, unlockTurnaroundReference,
 } from '../services/sprites/walk.js';
+import { getScannerState, startScannerGeneration, approveScannerDirection } from '../services/sprites/scanner.js';
 import { saveLoopTrim } from '../services/sprites/walkTrims.js';
 import { compileAtlas, getAtlasState } from '../services/sprites/atlas.js';
 import { setPublishBinding, publishAtlas } from '../services/sprites/publish.js';
@@ -113,12 +116,14 @@ router.get('/:id', asyncHandler(async (req, res) => {
   // records the registry had just admitted.
   const { kind } = detail.record;
   const runsWalk = kindSupportsTrack(kind, WALK_TRACK);
-  const [reference, walk, atlas] = await Promise.all([
+  const runsScanner = kindSupportsTrack(kind, SCANNER_TRACK);
+  const [reference, walk, scanner, atlas] = await Promise.all([
     runsWalk ? getReferenceSet(req.params.id) : null,
     runsWalk ? getWalkState(req.params.id) : null,
+    runsScanner ? getScannerState(req.params.id) : null,
     tracksForKind(kind).length ? getAtlasState(req.params.id) : null,
   ]);
-  res.json({ ...detail, reference, walk, atlas });
+  res.json({ ...detail, reference, walk, scanner, atlas });
 }));
 
 // The generation prompt behind one on-disk asset (record-relative `path`) —
@@ -188,6 +193,19 @@ router.post('/:id/fork', asyncHandler(async (req, res) => {
 router.post('/:id/walk/generate', asyncHandler(async (req, res) => {
   const body = validateRequest(spriteWalkGenerateSchema, req.body);
   res.json(await startWalkGeneration(req.params.id, body));
+}));
+
+// The scanner action is a distinct named track with its own short bounds and
+// its own finalized set. This endpoint is the only path that starts its Grok
+// render, preserving the no-cold-bootstrap provider contract.
+router.post('/:id/scanner/generate', asyncHandler(async (req, res) => {
+  const body = validateRequest(spriteScannerGenerateSchema, req.body);
+  res.json(await startScannerGeneration(req.params.id, body));
+}));
+
+router.post('/:id/scanner/approve', asyncHandler(async (req, res) => {
+  const body = validateRequest(spriteScannerApproveSchema, req.body);
+  res.json(await approveScannerDirection(req.params.id, body));
 }));
 
 // Approve one direction's packaged candidate; the 8th approval freezes the

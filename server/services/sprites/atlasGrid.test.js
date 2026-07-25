@@ -174,10 +174,13 @@ describe('buildAtlasGrid', () => {
     // future registry tried to claim it.
     expect(() => buildAtlasGrid([{ id: 'idle', frameCount: 1 }], { idle: SCANNER_ROW }))
       .toThrow(/the idle anchor owns that column/);
-    // Unknown ids are refused through the registry's OWN boundary, so the grid
-    // can't develop a second, more permissive idea of what a track is.
-    expect(() => buildAtlasGrid([{ id: 'scanner', frameCount: 4 }]))
-      .toThrow(/Unknown animation track 'scanner'/);
+    // The first real non-walk track compiles through the shipped registry.
+    expect(buildAtlasGrid([{ id: 'scanner', frameCount: 4 }]).tracks.scanner)
+      .toEqual(span(1, 4));
+    // Unknown ids are still refused through the registry's OWN boundary, so the
+    // grid cannot develop a second, more permissive idea of what a track is.
+    expect(() => buildAtlasGrid([{ id: 'unknown', frameCount: 4 }]))
+      .toThrow(/Unknown animation track 'unknown'/);
     expect(() => buildAtlasGrid([{ id: 'walk', frameCount: 0 }]))
       .toThrow(/positive integer frame count/);
   });

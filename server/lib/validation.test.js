@@ -42,6 +42,7 @@ import {
   spriteTrackFpsSchema,
   spriteRuntimeContractSchema,
   spriteWalkGenerateSchema,
+  spriteScannerGenerateSchema,
 } from './validation.js';
 import {
   telegramForwardTypesSchema,
@@ -1453,14 +1454,18 @@ describe('ad-hoc route schemas (#2521)', () => {
       expect(spriteTrackFpsSchema().safeParse(24).success).toBe(true);
     });
 
-    it('throws at schema-construction time for an unrecognized track', () => {
+    it('uses the shipped scanner row and throws for an actually unknown track', () => {
       // A wiring bug surfaces at boot rather than degrading to walk's range.
-      expect(() => spriteTrackFrameCountSchema('scanner')).toThrow(/Unknown animation track/);
-      expect(() => spriteTrackFpsSchema('scanner')).toThrow(/Unknown animation track/);
+      expect(spriteTrackFrameCountSchema('scanner').safeParse(4).success).toBe(true);
+      expect(spriteTrackFpsSchema('scanner').safeParse(6).success).toBe(true);
+      expect(() => spriteTrackFrameCountSchema('unknown')).toThrow(/Unknown animation track/);
+      expect(() => spriteTrackFpsSchema('unknown')).toThrow(/Unknown animation track/);
     });
 
     it('leaves the walk request/contract schemas behaving exactly as before', () => {
       expect(spriteRuntimeContractSchema.safeParse({ walkFrameCount: 12 }).success).toBe(true);
+      expect(spriteRuntimeContractSchema.safeParse({ walkFrameCount: 12, scannerFrameCount: 4 }).success).toBe(true);
+      expect(spriteRuntimeContractSchema.safeParse({ walkFrameCount: 12, scannerFrameCount: 9 }).success).toBe(false);
       expect(spriteRuntimeContractSchema.safeParse({ walkFrameCount: 5 }).success).toBe(false);
       expect(spriteWalkGenerateSchema.safeParse({
         direction: 'south', frameCount: 12, fps: 10,
@@ -1468,6 +1473,8 @@ describe('ad-hoc route schemas (#2521)', () => {
       expect(spriteWalkGenerateSchema.safeParse({
         direction: 'south', frameCount: 3,
       }).success).toBe(false);
+      expect(spriteScannerGenerateSchema.safeParse({ direction: 'south', frameCount: 4, fps: 6 }).success).toBe(true);
+      expect(spriteScannerGenerateSchema.safeParse({ direction: 'south', frameCount: 9 }).success).toBe(false);
     });
   });
 

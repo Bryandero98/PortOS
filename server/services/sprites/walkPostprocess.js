@@ -33,8 +33,9 @@ import { keyChannelSplit, keyness, keyShareFn, hexToRgb } from './chromaKey.js';
 // consumers (walk.js, atlas.js) keep importing them from walkPostprocess.
 import {
   WALK_FRAME_COUNT, WALK_DEFAULT_FRAME_COUNT, WALK_DEFAULT_FPS,
-  walkPhaseLabels, clampFrameCount, clampFps,
 } from './walkBounds.js';
+import { WALK_TRACK, getAnimationTrack, clampTrackFrameCount, clampTrackFps } from './animationTracks.js';
+import { trackColumnLabels } from './atlasGrid.js';
 
 export {
   WALK_PHASES, WALK_FRAME_COUNT, WALK_DEFAULT_FRAME_COUNT, WALK_DEFAULT_FPS,
@@ -839,11 +840,12 @@ export async function prepareWalkAnchorChromaInput(anchorAbs, destAbs, chromaKey
  */
 export async function runWalkPostprocess({
   recordId, direction, chromaKey, runAbs, runRel, anchorRel, anchorAbs, videoAbs,
-  frameCount = WALK_DEFAULT_FRAME_COUNT, fps = WALK_DEFAULT_FPS,
+  frameCount = WALK_DEFAULT_FRAME_COUNT, fps = WALK_DEFAULT_FPS, track = WALK_TRACK,
 }) {
-  const targetFrames = clampFrameCount(frameCount);
-  const playbackFps = clampFps(fps);
-  const phaseLabels = walkPhaseLabels(targetFrames);
+  const trackRow = getAnimationTrack(track);
+  const targetFrames = clampTrackFrameCount(frameCount, track);
+  const playbackFps = clampTrackFps(fps, track);
+  const phaseLabels = trackColumnLabels(track, targetFrames);
   const split = keyChannelSplit(chromaKey);
   const generatedAbs = join(runAbs, 'generated');
   const generatedRel = `${runRel}/generated`;
@@ -904,19 +906,20 @@ export async function runWalkPostprocess({
     });
   }
 
-  const stripName = `${recordId}-walk-${direction}-strip.png`;
+  const stripName = `${recordId}-${track}-${direction}-strip.png`;
   const stripSha256 = await encodePngWithHash(packStrip(despilled), join(generatedAbs, stripName));
 
   const reviewDir = join(generatedAbs, 'review');
   await ensureDir(reviewDir);
-  const contrastName = `${recordId}-walk-${direction}-contrast-review.png`;
+  const contrastName = `${recordId}-${track}-${direction}-contrast-review.png`;
   const comparisonSha256 = await encodePngWithHash(await buildContrastSheet(despilled), join(reviewDir, contrastName), 3);
 
-  const manifestName = `${recordId}-walk-${direction}-manifest.json`;
+  const manifestName = `${recordId}-${track}-${direction}-manifest.json`;
   const manifest = {
     schemaVersion: 1,
-    kind: 'deterministically-packaged-grok-walk-video',
+    kind: `deterministically-packaged-grok-${track}-video`,
     status: 'candidate',
+    track: trackRow.id,
     characterId: recordId,
     direction,
     chromaKey,

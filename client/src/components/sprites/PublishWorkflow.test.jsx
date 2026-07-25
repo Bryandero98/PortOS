@@ -128,6 +128,15 @@ describe('PublishWorkflow runtime contract', () => {
     expect(screen.getByText('Save binding')).toBeDisabled();
   });
 
+  it('requires walk frames when a scanner contract is entered on its own', () => {
+    renderWorkflow({ appId: 'app-1', atlasDestPath: 'assets/hero.png', codeBinding: null });
+
+    fireEvent.change(screen.getByLabelText(/Scanner frames/), { target: { value: '4' } });
+
+    expect(screen.getByText(/Walk frame count is required/)).toBeInTheDocument();
+    expect(screen.getByText('Save binding')).toBeDisabled();
+  });
+
   it('MATCHES the current atlas geometry into the fields', () => {
     renderWorkflow({ appId: 'app-1', atlasDestPath: 'assets/hero.png', codeBinding: null });
 
@@ -136,6 +145,30 @@ describe('PublishWorkflow runtime contract', () => {
     expect(screen.getByLabelText(/Walk frames/).value).toBe('12');
     expect(screen.getByLabelText(/Cell size/).value).toBe('96');
     expect(screen.getByLabelText(/Column count/).value).toBe('13');
+  });
+
+  it('carries the scanner span into a runtime contract when the atlas has one', async () => {
+    const scannerAtlas = atlasWith({
+      current: {
+        version: 3,
+        compiledAt: '2026-07-01T00:00:00.000Z',
+        atlasPath: 'runtime/v3/a.png',
+        geometry: {
+          ...GEOMETRY,
+          scannerFrameCount: 4,
+          tracks: { scanner: { start: 13, count: 4, rows: 8 } },
+        },
+      },
+    });
+    renderWorkflow({ appId: 'app-1', atlasDestPath: 'assets/hero.png', codeBinding: null }, scannerAtlas);
+
+    fireEvent.click(screen.getByText('Match current atlas'));
+    expect(screen.getByLabelText(/Scanner frames/).value).toBe('4');
+    await act(async () => { fireEvent.click(screen.getByText('Save binding')); });
+
+    expect(lastBindingArg().runtimeContract).toEqual({
+      walkFrameCount: 12, scannerFrameCount: 4, cellSize: 96, columnCount: 13,
+    });
   });
 
   it('rejects an out-of-range walk frame count and blocks the save', () => {
