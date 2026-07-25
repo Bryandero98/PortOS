@@ -294,6 +294,19 @@ export function reconcileSplitContext(task) {
 }
 
 /**
+ * True when a follow-up task is a **merge-only** run: it has a PR to land but no
+ * reviewer to run (Review Loop off, or every configured reviewer was stripped —
+ * e.g. copilot on a GitLab MR). Tolerates the string `'true'` because task
+ * metadata round-trips through JSON/forms like every other CoS flag.
+ *
+ * Used both to pick the prompt section and to skip preloading the reviewer-only
+ * slashdo bodies (`/do:rpr`, the local-agent review loop) that section ignores.
+ */
+function isMergeOnlyFollowUp(metadata = {}) {
+  return metadata?.reviewLoopMergeOnly === true || metadata?.reviewLoopMergeOnly === 'true';
+}
+
+/**
  * Build the **review-loop follow-up** section — the instructions for the
  * agent spawned by `spawnReviewLoopFollowUp` to drive Copilot's review-and-fix
  * loop until the PR merges. Same 7-step procedure, same merge command, same
@@ -324,6 +337,15 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
   const prOwner = metadata.reviewLoopPROwner ?? '';
   const prRepo = metadata.reviewLoopPRRepo ?? '';
   const sourceTaskId = metadata.sourceTaskId || 'unknown';
+  // Merge-only follow-up (Review Loop off): no reviewer to wait on or invoke —
+  // the whole job is CI-gate → fix → merge. Branch before any reviewer defaulting
+  // below, which would otherwise resolve the empty list back to `[copilot]`.
+  if (isMergeOnlyFollowUp(metadata)) {
+    return buildMergeFollowUpSection({
+      prUrl, prBranch, prNumber, prOwner, prRepo, sourceTaskId, verbose,
+      prHost: metadata.reviewLoopPRHost ?? '',
+    });
+  }
   // Arbitrary GitHub reviewer usernames (gate-only PR reviewers), appended to
   // the review flow after the keyed reviewers.
   const usernames = normalizeReviewUsernames(metadata.reviewLoopReviewerUsernames);
@@ -534,6 +556,100 @@ ${cliReviewerProcedure}${(rprBody && (hasCopilot || hasGithubUser)) ? `\n### /do
 }
 
 /**
+ * The CI-gated merge procedure, in numbered steps starting at `startStep`.
+ *
+ * This is the single definition of "no reviewer is configured, so CI is the
+ * merge gate" — shared by every flow that reaches it: the agent's own completion
+ * workflow (slashdo TUI + Claude Code CLI via `buildPostPRMergeSteps`), the
+ * manual/OpenCode TUI workflow, and the merge follow-up agent PortOS spawns when
+ * it opened the PR itself. They differ only in how the PR is addressed and
+ * whether GitLab commands are offered, so those are parameters rather than three
+ * hand-written copies that drift.
+ *
+ * Ends on the same merge command + MERGED verification as the review-loop
+ * contract (`buildReviewLoopFollowUpSection`): a true merge commit keeps the
+ * branch tip in the base branch's history, which is what lets automated worktree
+ * cleanup prove the branch landed.
+ *
+ * @param {number} startStep - number of the first emitted step.
+ * @param {Object} opts
+ * @param {string} opts.prRef - how to address the PR in commands, already
+ *   quoted: the `"<PR_URL>"` placeholder before the PR exists, or the real URL.
+ * @param {'github'|'gitlab'|'unknown'} [opts.forge] - which CLI to name. PortOS
+ *   opens GitLab MRs too (`git.createPR` falls back to `glab`), so a follow-up
+ *   whose PR host is known non-GitHub must not be handed `gh` commands it can't
+ *   run. `unknown` (the agent's own completion workflow, which runs before the
+ *   PR exists) emits both, commented.
+ * @returns {{lines: string[], nextStep: number}}
+ */
+function buildCiMergeGateSteps(startStep, { prRef, forge = 'github' }) {
+  const gh = forge !== 'gitlab';
+  const glab = forge !== 'github';
+  const both = gh && glab;
+  const checksCmd = gh
+    ? `\`gh pr checks ${prRef} --watch --fail-fast --interval 30\`${glab ? ' (GitLab: `glab ci status`)' : ''}`
+    : '`glab ci status`';
+  const mergeableCmd = gh
+    ? `\`gh pr view ${prRef} --json mergeable -q .mergeable\` reports \`CONFLICTING\``
+    : 'the MR reports a conflict with its target branch';
+  const stateCmd = gh
+    ? `\`gh pr view ${prRef} --json state -q .state\` must return \`MERGED\``
+    : '`glab mr view` must show it merged';
+  const lines = [
+    `${startStep}. **Wait for CI to finish**: ${checksCmd}. A repo with no checks configured reports "no checks reported" — treat that as green.`,
+    `${startStep + 1}. **Clear whatever blocks the merge, then re-check.** If a check failed, read the failing job's log (\`gh run view --log-failed\` on GitHub), fix the cause here, run the project's tests, commit (\`fix:\` prefix, no Co-Authored-By), push, and go back to the previous step — cap this at 5 rounds. If ${mergeableCmd}, \`git fetch origin\`, rebase onto the base branch, resolve the conflicts keeping BOTH sides' intent, re-run the tests, \`git push --force-with-lease\`, and re-check.`,
+    `${startStep + 2}. **Merge** with exactly these flags, nothing else — a true merge commit keeps the branch tip in the base branch's history so automated worktree cleanup can prove the branch is merged, and any merge-deferral flag leaves the PR open after you exit. If it is already merged (a saved \`/do:pr\` default can merge it for you), skip to the next step:`,
+    '   ```bash',
+    gh ? `   ${both ? '# GitHub:  ' : ''}gh pr merge ${prRef} --merge --delete-branch` : null,
+    glab ? `   ${both ? '# GitLab:  ' : ''}glab mr merge ${both ? '"<MR_URL>"' : prRef} --yes --remove-source-branch` : null,
+    '   ```',
+    `${startStep + 3}. **Confirm the merge before exiting**: ${stateCmd}. If it is still open or was closed unmerged, investigate (failing check, merge conflict, branch protection), fix, and retry. Leave it open ONLY if CI stays red after a genuine fix attempt, or a conflict needs a human decision — and say so explicitly in your completion summary.`,
+  ].filter(Boolean);
+  return { lines, nextStep: startStep + 4 };
+}
+
+/**
+ * Build the **merge follow-up** section — the instructions for the agent
+ * `spawnReviewLoopFollowUp` spawns when no reviewer survived resolution (Review
+ * Loop off, or copilot-only on a non-GitHub forge). Nothing else will touch the
+ * PR, so the merge gate is CI alone (`buildCiMergeGateSteps`).
+ *
+ * @param {Object} opts - PR coordinates + `verbose` (full/api path) vs compact.
+ * @returns {string}
+ */
+function buildMergeFollowUpSection({ prUrl, prBranch, prNumber = '', prOwner = '', prRepo = '', prHost = '', sourceTaskId = 'unknown', verbose = false }) {
+  // PortOS opens GitLab MRs via `glab` too, so a non-GitHub host must not be
+  // handed `gh` commands (the host is persisted by spawnReviewLoopFollowUp).
+  const gate = buildCiMergeGateSteps(1, {
+    prRef: `"${prUrl}"`,
+    forge: (prHost && prHost !== 'github.com') ? 'gitlab' : 'github',
+  });
+  const steps = [
+    ...gate.lines,
+    `${gate.nextStep}. Exit. Do NOT run \`/do:push\`, do NOT open a new PR, and do NOT start a code review — landing this PR is the whole job.`,
+  ];
+  const prDetails = verbose ? [
+    '',
+    'PR Details:',
+    `- **URL**: ${prUrl}`,
+    `- **Branch**: \`${prBranch}\``,
+    prNumber !== '' ? `- **Number**: ${prNumber}` : null,
+    prOwner && prRepo ? `- **Repo**: ${prOwner}/${prRepo}` : null,
+    `- **Source task**: ${sourceTaskId}`,
+  ].filter(Boolean) : [];
+
+  return [
+    '## Merge Follow-up (PRIMARY OBJECTIVE)',
+    `A previous agent finished the work for source task **${sourceTaskId}** and opened **PR ${prUrl}** on \`${prBranch}\`. **No code review was requested for this task, so nothing else will merge this PR — your job is to land it once CI is green.**`,
+    '',
+    ...steps,
+    '',
+    '**Hard stop:** if CI is still red after 5 fix rounds, or a conflict needs a product decision you can\'t make, post a PR comment summarising exactly what is blocking the merge and exit with the PR left open. Do not force a merge over red CI.',
+    ...prDetails,
+  ].join('\n');
+}
+
+/**
  * Build the single "## Guidelines" completion-handoff bullet for the full
  * (api) prompt path. Mirrors the helper pattern the light path already uses
  * (`worktreeCommitGuidance`, `buildTuiCompletionSection`) — same 4-branch
@@ -581,7 +697,7 @@ export function buildCompletionGuidelineBullet({
   if (worktreeInfo && willOpenPR) {
     const reviewSuffix = willReviewLoop
       ? ' For GitHub PRs, a Copilot code review will also be requested automatically (skipped on GitLab and other non-GitHub forges) — do NOT run `/do:rpr` or attempt to address review comments yourself; you will have already exited.'
-      : '';
+      : ' No review was requested for this task, so a follow-up agent merges the PR once CI is green — do NOT try to merge it yourself; you will have already exited.';
     return `On successful completion, the system will push your branch and open a pull request — do NOT open a PR manually. (If the task fails, no PR is opened; the worktree is then cleaned up unless a safety check preserves it for manual recovery.)${reviewSuffix}`;
   }
   if (worktreeInfo) {
@@ -723,8 +839,12 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
   // Preload slashdo's local-agent review-loop recipe once for review-loop
   // follow-up tasks; both the light/TUI path (via lightOptions) and the full
   // path (the verbose builder below) reuse this single value to inline the exact
-  // CLI-reviewer invocation. Cheap + cached; only read for follow-ups.
-  const localAgentLoopBody = isTruthyMetaFn(task.metadata?.reviewLoopFollowUp)
+  // CLI-reviewer invocation. Cheap + cached; only read for follow-ups — and not
+  // for a merge-only follow-up, which has no reviewer to invoke and renders a
+  // section that ignores this body entirely.
+  const needsReviewerRecipes = isTruthyMetaFn(task.metadata?.reviewLoopFollowUp)
+    && !isMergeOnlyFollowUp(task.metadata || {});
+  const localAgentLoopBody = needsReviewerRecipes
     ? await loadSlashdoLib('local-agent-review-loop').catch(() => null)
     : null;
 
@@ -888,7 +1008,9 @@ After your task completes, the system will spawn a follow-up agent that runs the
   const isReviewLoopFollowUp = isTruthyMetaFn(task.metadata?.reviewLoopFollowUp);
   let reviewLoopFollowUpSection = '';
   if (isReviewLoopFollowUp) {
-    const rprBody = await loadSlashdoFile('rpr').catch(() => null);
+    // `/do:rpr` is the Copilot/@github comment-resolution procedure — a merge-only
+    // follow-up has no review to resolve, so skip the ~35KB read for it.
+    const rprBody = needsReviewerRecipes ? await loadSlashdoFile('rpr').catch(() => null) : null;
     // localAgentLoopBody (the CLI-reviewer recipe) was already preloaded at the
     // top of buildAgentPrompt under the same reviewLoopFollowUp guard — reuse it
     // rather than re-reading the lib a second time.
@@ -1274,8 +1396,26 @@ function worktreeCommitGuidance({ isTui, hasSlashdo, isWorktreeOnExistingBranch,
  * leaks. Mirrors the merge contract in the review-loop follow-up section so
  * both agent flows converge on the same final state. `reviewers` only colors
  * the wording — the merge step itself is reviewer-agnostic.
+ *
+ * With `willReviewLoop: false` the same two steps are emitted, but the merge
+ * gate is CI instead of a review verdict: nothing else will ever merge that PR
+ * (no review-loop follow-up is spawned), so "no reviewer configured" must mean
+ * "merge it yourself once the checks pass", not "leave it open forever".
  */
-function buildPostPRMergeSteps(startStep, { reviewers = DEFAULT_REVIEWERS, usernames = [], reviewStopMode = DEFAULT_REVIEW_STOP_MODE } = {}) {
+function buildPostPRMergeSteps(startStep, { willReviewLoop = true, reviewers = DEFAULT_REVIEWERS, usernames = [], reviewStopMode = DEFAULT_REVIEW_STOP_MODE } = {}) {
+  // No review loop → CI is the whole gate, so emit the shared CI procedure that
+  // the manual-TUI workflow and the merge follow-up agent also use. The PR URL
+  // isn't known when this prompt is written, hence the placeholder.
+  if (!willReviewLoop) {
+    const gate = buildCiMergeGateSteps(startStep, { prRef: '"<PR_URL>"', forge: 'unknown' });
+    return {
+      lines: [
+        '   **No review loop is configured for this task, so nothing and nobody else will merge this PR** — `/do:pr` opens it and exits. Capture the PR URL it printed, then:',
+        ...gate.lines,
+      ],
+      nextStep: gate.nextStep
+    };
+  }
   // Trailing space when present so the sentence reads "the Copilot review loop"
   // (lone copilot, no usernames) or "the review loop" (multi/CLI/username) —
   // never "the the review loop".
@@ -1309,9 +1449,10 @@ function buildPostPRMergeSteps(startStep, { reviewers = DEFAULT_REVIEWERS, usern
  */
 function buildTuiCompletionSection({ willOpenPR, willReviewLoop, simplifyEnabled, sentinelPath, providerId = null, slashdoFree = false, branchName = null, baseBranch = null, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false }) {
   if (slashdoFree) {
-    // The manual path never auto-merges (it opens the PR for review), so it
-    // doesn't need willReviewLoop — the review gate holds unconditionally.
-    return buildManualTuiCompletionSection({ willOpenPR, simplifyEnabled, sentinelPath, branchName, baseBranch });
+    // The manual path can't drive the reviewer CLIs, so with a review loop
+    // configured it opens the PR and stops. Without one, no reviewer and no
+    // follow-up is coming — it merges on green CI like every other flow.
+    return buildManualTuiCompletionSection({ willOpenPR, willReviewLoop, simplifyEnabled, sentinelPath, branchName, baseBranch });
   }
   const cmd = willOpenPR ? '/do:pr' : '/do:push';
   const reviewUsernames = normalizeReviewUsernames(usernames);
@@ -1337,8 +1478,10 @@ function buildTuiCompletionSection({ willOpenPR, willReviewLoop, simplifyEnabled
     ? (canRunSimplifyCommand ? '1. `/simplify`' : `1. Before committing, ${SIMPLIFY_INLINE_REVIEW} and fix any findings.`)
     : '1. (simplify disabled — skip)';
   const sentinelTail = willOpenPR ? '   ## PR\n   <PR URL>' : '   ## Branch\n   <branch name>';
-  const merge = willOpenPR && willReviewLoop
-    ? buildPostPRMergeSteps(3, { reviewers, usernames: reviewUsernames, reviewStopMode })
+  // A PR always gets merge steps — gated on the review verdict when a loop runs,
+  // on CI alone when it doesn't (nothing else merges a no-review-loop PR).
+  const merge = willOpenPR
+    ? buildPostPRMergeSteps(3, { willReviewLoop, reviewers, usernames: reviewUsernames, reviewStopMode })
     : { lines: [], nextStep: 3 };
   const sentinelStep = merge.nextStep;
 
@@ -1373,14 +1516,21 @@ function buildTuiCompletionSection({ willOpenPR, willReviewLoop, simplifyEnabled
  *
  * PortOS forces `openPR:false, skipMerge:true` on TUI worktree cleanup (see
  * agentTuiSpawning.js), so nothing happens after the agent exits — the agent owns
- * the push and the PR itself. It opens the PR/MR for review but does NOT merge:
+ * the push and the PR itself.
+ *
+ * With a review loop configured (`willReviewLoop`), it opens the PR/MR and stops:
  * this provider can't drive the reviewer CLIs (no slashdo `/do:pr` review loop)
- * and PortOS runs no post-exit review for a TUI, so auto-merging would ship
- * unreviewed work. A configured reviewer / human reviews and merges. Forge-aware
- * (GitHub `gh` + GitLab `glab`) to match the slashdo path; refs are shell-quoted
- * because a git ref can legally contain shell metacharacters.
+ * and PortOS runs no post-exit review for a TUI, so merging here would ship work
+ * the user asked to have reviewed. With the review loop OFF there is no reviewer
+ * and no follow-up coming, so leaving it open just leaks the PR — the agent
+ * merges it once CI is green, matching every other no-review-loop flow.
+ *
+ * Forge-aware (GitHub `gh` + GitLab `glab`) to match the slashdo path; refs are
+ * shell-quoted because a git ref can legally contain shell metacharacters.
  */
-function buildManualTuiCompletionSection({ willOpenPR, simplifyEnabled, sentinelPath, branchName = null, baseBranch = null }) {
+// `willReviewLoop` defaults to the conservative side (same as buildPostPRMergeSteps):
+// an omitted flag leaves the PR open for review rather than merging unreviewed work.
+function buildManualTuiCompletionSection({ willOpenPR, willReviewLoop = true, simplifyEnabled, sentinelPath, branchName = null, baseBranch = null }) {
   const branchRef = shellQuote(branchName || 'HEAD');
   // Pin the PR base to the worktree's base branch when known, so the forge CLI
   // doesn't guess (and a fork install targets the intended branch). `--fill`
@@ -1412,14 +1562,23 @@ function buildManualTuiCompletionSection({ willOpenPR, simplifyEnabled, sentinel
 
   let step = 4;
   if (willOpenPR) {
+    const openNote = willReviewLoop
+      ? '**Leave it open for review — do NOT merge it yourself.** This provider can\'t run the reviewer loop, and PortOS won\'t merge it for a TUI task, so a configured reviewer or a human reviews and merges it.'
+      : 'No review loop is configured for this task, so you merge it yourself in the next step — nothing else will.';
     lines.push(
-      `${step++}. Open a pull/merge request against the base branch using the CLI for this repo's forge (check \`git remote -v\`), and capture the URL it prints. **Leave it open for review — do NOT merge it yourself.** This provider can't run the reviewer loop, and PortOS won't merge it for a TUI task, so a configured reviewer or a human reviews and merges it.`,
+      `${step++}. Open a pull/merge request against the base branch using the CLI for this repo's forge (check \`git remote -v\`), and capture the URL it prints. ${openNote}`,
       '',
       '   ```bash',
       `   # GitHub:  gh pr create --fill${ghBaseArg}`,
       `   # GitLab:  glab mr create --fill${glabBaseArg}`,
       '   ```',
     );
+    if (!willReviewLoop) {
+      // Same CI-gate procedure the slashdo workflow and the merge follow-up use.
+      const gate = buildCiMergeGateSteps(step, { prRef: '"<PR_URL>"', forge: 'unknown' });
+      lines.push(...gate.lines);
+      step = gate.nextStep;
+    }
   }
 
   lines.push(
@@ -1469,11 +1628,9 @@ function buildCliCompletionSection({ worktreeInfo, willOpenPR, willReviewLoop = 
           : `and drives the review loop for ${[...reviewers, ...reviewUsernames.map(u => `@${u}`)].join(', ')} in order until clean.`)
       : 'with external review disabled.';
     lines.push(`${step++}. \`/do:pr${reviewerArg}\` — commits your changes, pushes the branch, and opens a pull request against the default branch ${completionNote}`);
-    const merge = willReviewLoop
-      ? buildPostPRMergeSteps(step, { reviewers, usernames: reviewUsernames, reviewStopMode })
-      : { lines: [], nextStep: step };
+    // Merge steps always follow — review-gated with a loop, CI-gated without one.
+    const merge = buildPostPRMergeSteps(step, { willReviewLoop, reviewers, usernames: reviewUsernames, reviewStopMode });
     lines.push(...merge.lines);
-    step = merge.nextStep;
     return lines.join('\n');
   }
   if (hasSlashdo && worktreeInfo) {

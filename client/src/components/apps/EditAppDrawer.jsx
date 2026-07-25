@@ -684,7 +684,7 @@ export default function EditAppDrawer({ app, onClose, onSave }) {
                   className="rounded border-port-border bg-port-bg text-port-accent focus:ring-port-accent disabled:opacity-40"
                 />
                 <GitPullRequest size={14} className="text-blue-400" />
-                <span className={`text-sm ${formData.defaultUseWorktree ? 'text-white' : 'text-gray-600'}`} title="When checked, agents open a PR to the default branch. When unchecked with worktree enabled, agents auto-merge to the default branch on completion.">Default to Open PR for new tasks</span>
+                <span className={`text-sm ${formData.defaultUseWorktree ? 'text-white' : 'text-gray-600'}`} title="When checked, agents open a PR to the default branch and merge it once it passes — the review loop if one is configured, CI alone if not. When unchecked with worktree enabled, agents merge the branch directly on completion.">Default to Open PR for new tasks</span>
               </label>
             </div>
           )}

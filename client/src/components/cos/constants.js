@@ -161,9 +161,9 @@ export const STATE_MESSAGES = {
 // Agent option toggles for task metadata (useWorktree, openPR, simplify, reviewLoop)
 export const AGENT_OPTIONS = [
   { field: 'useWorktree', label: 'Worktree', shortLabel: 'WT', description: 'Work in an isolated git worktree on a feature branch. If unchecked, commits directly to the default branch.' },
-  { field: 'openPR', label: 'Open PR', shortLabel: 'PR', description: 'Open a pull request to the default branch (implies worktree). If unchecked with worktree enabled, auto-merges to the default branch on completion.' },
+  { field: 'openPR', label: 'Open PR', shortLabel: 'PR', description: 'Open a pull request to the default branch (implies worktree). The PR is merged once it passes — the review loop when one is configured, CI alone when it is not. If unchecked with worktree enabled, auto-merges to the default branch on completion.' },
   { field: 'simplify', label: 'Run /simplify', shortLabel: '/s', description: 'Review code for reuse and quality before committing' },
-  { field: 'reviewLoop', label: 'Review Loop', shortLabel: 'RL', description: 'After the agent opens a PR during its run, keep iterating on review feedback until checks pass. Only applies when Open PR is not enabled (manual PR creation by agent).' }
+  { field: 'reviewLoop', label: 'Review Loop', shortLabel: 'RL', description: 'Run the configured reviewers against the PR and keep iterating on their feedback until they are satisfied, then merge. Needs Open PR — with it off, the PR is merged on green CI with no review.' }
 ];
 
 // Reviewer choices for the Review Loop. `copilot` requests a GitHub Copilot

@@ -535,23 +535,31 @@ describe('cleanupAgentWorktree - openPR path', () => {
     expect(removeWorktree).toHaveBeenCalled();
   });
 
-  it('should NOT spawn a review-loop follow-up on non-GitHub forges (Copilot is GitHub-only)', async () => {
+  it('spawns a merge-only follow-up on non-GitHub forges when copilot was the only reviewer', async () => {
+    // Copilot can't review a GitLab MR, so the review loop has nothing to run — but
+    // the MR still has to land, so the follow-up degrades to merge-only rather than
+    // not spawning (which left the MR open with no owner).
     git.push.mockResolvedValue(undefined);
     git.createPR.mockResolvedValue({ success: true, url: 'https://gitlab.com/group/proj/-/merge_requests/12' });
     git.requestCopilotReview.mockResolvedValue({ success: true, skipped: true });
+    addTask.mockResolvedValue({ id: 'sys-rl-gl' });
 
     await cleanupAgentWorktree('agent-1', true, {
       openPR: true, requestCopilotReview: true, description: 'X',
       originalTask: { id: 'task-orig', metadata: {}, description: 'X' }
     });
 
-    expect(addTask).not.toHaveBeenCalled();
+    expect(addTask).toHaveBeenCalledTimes(1);
+    expect(addTask.mock.calls[0][0].metadata.reviewLoopMergeOnly).toBe(true);
     expect(removeWorktree).toHaveBeenCalled();
   });
 
-  it('should NOT spawn a review-loop follow-up when requestCopilotReview is false', async () => {
+  it('spawns a MERGE-ONLY follow-up (no reviewers) when requestCopilotReview is false', async () => {
+    // Review Loop off: PortOS opened this PR and nothing else would ever merge it,
+    // so the follow-up runs in merge-only mode — CI gate, then merge.
     git.push.mockResolvedValue(undefined);
     git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/44' });
+    addTask.mockResolvedValue({ id: 'sys-rl-m' });
 
     await cleanupAgentWorktree('agent-1', true, {
       openPR: true, requestCopilotReview: false, description: 'X',
@@ -559,7 +567,16 @@ describe('cleanupAgentWorktree - openPR path', () => {
     });
 
     expect(git.requestCopilotReview).not.toHaveBeenCalled();
-    expect(addTask).not.toHaveBeenCalled();
+    expect(addTask).toHaveBeenCalledTimes(1);
+    const [followUp] = addTask.mock.calls[0];
+    expect(followUp.metadata.reviewLoopMergeOnly).toBe(true);
+    // No reviewer may be defaulted back in — this PR was never meant to be reviewed.
+    expect(followUp.metadata.reviewLoopReviewers).toEqual([]);
+    expect(followUp.metadata.reviewLoopReviewerUsernames).toEqual([]);
+    expect(followUp.description).toMatch(/^\[Merge\]/);
+    // Still attaches to the PR branch so it can fix a failing check before merging.
+    expect(followUp.metadata.existingBranch).toBe('cos/task-abc123');
+    expect(removeWorktree).toHaveBeenCalled();
   });
 
   // --- non-Copilot reviewer (--review-with claude/antigravity/codex) ---
@@ -757,13 +774,16 @@ describe('spawnReviewLoopFollowUp', () => {
     expect(addTask).not.toHaveBeenCalled();
   });
 
-  it('should skip spawning for GitLab MR URLs (Copilot is GitHub-only)', async () => {
+  it('falls back to a merge-only follow-up for GitLab MRs when copilot was the only reviewer', async () => {
+    // Copilot is GitHub-only, so nothing survives reviewer resolution here. Spawning
+    // nothing used to leave the MR open forever — the follow-up now just lands it.
     const result = await spawnReviewLoopFollowUp({
       originalAgentId: 'agent-1', originalTask: { id: 'task-1' },
       prUrl: 'https://gitlab.com/group/proj/-/merge_requests/5', prBranch: 'feat/x', sourceWorkspace: '/ws'
     });
-    expect(result).toBeNull();
-    expect(addTask).not.toHaveBeenCalled();
+    expect(result.metadata.reviewLoopMergeOnly).toBe(true);
+    expect(result.metadata.reviewLoopReviewers).toEqual([]);
+    expect(addTask).toHaveBeenCalledTimes(1);
   });
 
   it('should default priority to MEDIUM when originalTask omits it', async () => {

@@ -323,10 +323,14 @@ describe('buildLightContextPrompt', () => {
       // poll). The prompt only mentions /quit to tell the agent NOT to run it.
       expect(prompt).not.toMatch(/^\s*\d+\.\s*`\/quit`/m);
       expect(prompt).toMatch(/NOT run `\/quit`/);
-      // Without a Review Loop the task opens the PR for human follow-up and
-      // must not be told to auto-merge based on a review outcome.
-      expect(prompt).not.toMatch(/gh pr merge/);
-      expect(prompt).not.toMatch(/gh pr view "<PR_URL>" --json state/);
+      // Without a Review Loop nothing else will ever merge this PR, so the agent
+      // merges it itself — gated on CI instead of on a review verdict.
+      expect(prompt).toMatch(/gh pr checks "<PR_URL>" --watch --fail-fast/);
+      expect(prompt).toMatch(/gh pr merge "<PR_URL>" --merge --delete-branch/);
+      expect(prompt).not.toMatch(/gh pr merge[^\n]*--auto/);
+      expect(prompt).toMatch(/gh pr view "<PR_URL>" --json state -q \.state/);
+      // ...and the gate is CI, not a review-loop status.
+      expect(prompt).not.toMatch(/review loop reports/);
     });
 
     it('TUI simplify step is provider-aware — non-Claude TUI (codex-tui) gets the inline equivalent, not /simplify', () => {
@@ -352,13 +356,14 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).not.toMatch(/gh pr merge/);
     });
 
-    it('emits a slashdo-free, forge-aware Completion Workflow for an OpenCode TUI + openPR (opens PR, no auto-merge)', () => {
+    it('emits a slashdo-free, forge-aware Completion Workflow for an OpenCode TUI + openPR + Review Loop (opens PR, no auto-merge)', () => {
       // OpenCode TUI doesn't load Claude Code slash commands, so /do:pr / /do:push
       // would be uninvokable. The agent commits, pushes, opens the PR/MR for review,
-      // and writes the sentinel with plain git + the forge CLI. It must NOT auto-merge
-      // (it can't run the reviewer loop and PortOS runs no post-exit review for a TUI).
+      // and writes the sentinel with plain git + the forge CLI. With a Review Loop
+      // configured it must NOT auto-merge (it can't run the reviewer loop and PortOS
+      // runs no post-exit review for a TUI).
       const prompt = buildLightContextPrompt(
-        makeTask({ metadata: { simplify: true, openPR: true } }),
+        makeTask({ metadata: { simplify: true, openPR: true, reviewLoop: true } }),
         '/r',
         { branchName: 'claim/issue-1', worktreePath: '/tmp/wt', baseBranch: 'main' },
         isTruthyMeta,
@@ -384,6 +389,23 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).toMatch(/\.agent-done/);
       expect(prompt).toMatch(/NOT run `\/quit`/);
       expect(prompt).not.toMatch(/^\s*\d+\.\s*`\/quit`/m);
+    });
+
+    it('OpenCode TUI + openPR WITHOUT a Review Loop merges on green CI (forge-aware)', () => {
+      // No reviewer and no PortOS follow-up is coming for a TUI task, so leaving the
+      // PR open would leak it — the agent gates on CI and merges itself.
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { simplify: true, openPR: true } }),
+        '/r',
+        { branchName: 'claim/issue-1', worktreePath: '/tmp/wt', baseBranch: 'main' },
+        isTruthyMeta,
+        { isTui: true, providerId: 'opencode-ollama-tui', providerCommand: 'opencode' });
+      expect(prompt).toMatch(/gh pr create --fill --base main/);
+      expect(prompt).toMatch(/gh pr checks "<PR_URL>" --watch --fail-fast/);
+      expect(prompt).toMatch(/gh pr merge "<PR_URL>" --merge --delete-branch/);
+      expect(prompt).toMatch(/glab mr merge "<MR_URL>" --yes --remove-source-branch/);
+      expect(prompt).toMatch(/gh pr view "<PR_URL>" --json state -q \.state/);
+      expect(prompt).not.toMatch(/do NOT merge it yourself/);
     });
 
     it('OpenCode TUI without openPR pushes the branch but opens no PR', () => {
@@ -478,7 +500,7 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).toMatch(/MERGED/);
     });
 
-    it('disables external review and omits merge guidance for Claude Code CLI when Review Loop is off', () => {
+    it('disables external review but merges on green CI for Claude Code CLI when Review Loop is off', () => {
       const prompt = buildLightContextPrompt(
         makeTask({ metadata: { openPR: true, simplify: false } }),
         '/r',
@@ -488,8 +510,11 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).toMatch(/`\/do:pr --review-with none`/);
       expect(prompt).toMatch(/external review disabled/i);
       expect(prompt).not.toMatch(/Copilot review loop/i);
-      expect(prompt).not.toMatch(/gh pr merge/);
-      expect(prompt).not.toMatch(/gh pr view "<PR_URL>" --json state/);
+      // No review loop means nothing else merges the PR — the agent gates on CI.
+      expect(prompt).toMatch(/gh pr checks "<PR_URL>" --watch --fail-fast/);
+      expect(prompt).toMatch(/gh pr merge "<PR_URL>" --merge --delete-branch/);
+      expect(prompt).toMatch(/gh pr view "<PR_URL>" --json state -q \.state/);
+      expect(prompt).not.toMatch(/review loop reports/);
     });
 
     it('skips /simplify in the slashdo Completion block when simplify is disabled', () => {
@@ -574,6 +599,61 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).toMatch(/Challenge protocol/);
       expect(prompt).toMatch(/api\/cos\/tasks\/task-src-1\/challenge/);
       expect(prompt).toMatch(/challenge\/resolve/);
+    });
+
+    it('renders a merge-only follow-up block (no reviewers) when reviewLoopMergeOnly is set', () => {
+      // Review Loop off: PortOS opened the PR and spawned this follow-up purely to
+      // land it. The block must gate on CI, never invoke or wait for a reviewer.
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: {
+          reviewLoopFollowUp: true,
+          reviewLoopMergeOnly: true,
+          reviewLoopPRUrl: 'https://github.com/o/r/pull/9',
+          reviewLoopPRBranch: 'b',
+          reviewLoopPRNumber: 9,
+          reviewLoopPROwner: 'o',
+          reviewLoopPRRepo: 'r',
+          reviewLoopReviewers: [],
+          sourceTaskId: 'task-src-2',
+        }}),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta);
+      expect(prompt).toMatch(/## Merge Follow-up/);
+      expect(prompt).not.toMatch(/## Review-Loop Follow-up/);
+      // CI is the gate, and the merge command matches the review-loop contract.
+      expect(prompt).toMatch(/gh pr checks "https:\/\/github\.com\/o\/r\/pull\/9" --watch --fail-fast/);
+      expect(prompt).toMatch(/gh pr merge "https:\/\/github\.com\/o\/r\/pull\/9" --merge --delete-branch/);
+      expect(prompt).not.toMatch(/gh pr merge[^\n]*--auto/);
+      expect(prompt).toMatch(/gh pr view "https:\/\/github\.com\/o\/r\/pull\/9" --json state/);
+      expect(prompt).toMatch(/MERGED/);
+      // No reviewer defaulting may leak back in (normalizeReviewers would say copilot).
+      expect(prompt).not.toMatch(/copilot/i);
+      expect(prompt).not.toMatch(/Reviewers \(in order\)/);
+      expect(prompt).not.toMatch(/--review-with/);
+    });
+
+    it('a merge-only follow-up on a GitLab MR gets glab commands, not gh', () => {
+      // PortOS opens MRs via glab too, so a gh-only procedure would fail on the
+      // first command after a full agent spawn.
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: {
+          reviewLoopFollowUp: true,
+          reviewLoopMergeOnly: true,
+          reviewLoopPRUrl: 'https://gitlab.com/g/p/-/merge_requests/5',
+          reviewLoopPRBranch: 'b',
+          reviewLoopPRNumber: 5,
+          reviewLoopPRHost: 'gitlab.com',
+          sourceTaskId: 'task-src-3',
+        }}),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta);
+      expect(prompt).toMatch(/## Merge Follow-up/);
+      expect(prompt).toMatch(/glab mr merge "https:\/\/gitlab\.com\/g\/p\/-\/merge_requests\/5" --yes --remove-source-branch/);
+      expect(prompt).toMatch(/glab ci status/);
+      expect(prompt).not.toMatch(/gh pr merge/);
+      expect(prompt).not.toMatch(/gh pr checks/);
     });
 
     it('threads a non-default reviewer (claude) into the follow-up block via --review-with', () => {
