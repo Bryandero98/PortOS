@@ -14,9 +14,10 @@
  * renders into reference/candidates/); locking is deterministic sharp work
  * (normalize.js) plus the dynamic chroma-key selection (chromaKey.js).
  *
- * Immutability contract: a locked artifact is never regenerated or
- * overwritten — locked targets 409 on generate/lock, and versioned filenames
- * (`-vN`) always land on the first free version.
+ * Evidence contract: a locked artifact is never regenerated or overwritten.
+ * The turnaround and main remain frozen identity roots; a turnaround-derived
+ * directional anchor may be deliberately reopened, but its old versioned PNG
+ * stays on disk and the replacement lands at the next `-vN` filename.
  */
 
 import { join } from 'path';
@@ -140,7 +141,7 @@ function seedManifest(recordId) {
     status: 'needs-turnaround',
     characterFamily: recordId,
     projection: 'flat',
-    rule: 'Every reference descends from the frozen turnaround sheet: the main reference is its front view, and every directional anchor is redrawn from the panel that shows that side. Locked artifacts are immutable evidence. Walk cycles are conditioned only on a locked directional anchor plus the deterministic pose scaffold, never on prior walk output, and the identity anchor is never regenerated.',
+    rule: 'Every reference descends from the frozen turnaround sheet: the main reference is its front view, and every directional anchor is redrawn from the panel that shows that side. The turnaround and main are immutable identity evidence. A directional anchor can be reopened for correction without overwriting its prior version. Walk cycles are conditioned only on the current locked directional anchor plus the deterministic pose scaffold, never on prior walk output, and the identity root is never regenerated.',
     chromaKey: null,
     turnaround: {
       path: null, role: 'identity-root', background: 'chroma-key', locked: false, views: TURNAROUND_VIEWS,
@@ -167,8 +168,8 @@ export async function requireCharacter(recordId) {
 }
 
 // First free `-vN` filename — locked artifacts are never overwritten; a
-// correction after a crash (or a future unlock flow) lands on the next
-// version instead of replacing evidence.
+// correction after a crash or an anchor unlock lands on the next version
+// instead of replacing evidence.
 async function nextVersionPath(dir, base) {
   for (let n = 1; ; n++) {
     const rel = `${base}-v${n}.png`;
@@ -674,6 +675,63 @@ async function loadCandidateSidecar(candAbs) {
  */
 export function lockReference(recordId, args) {
   return manifestWriteTail(recordId, () => lockReferenceImpl(recordId, args));
+}
+
+/**
+ * Re-open one turnaround-derived directional anchor for correction.
+ *
+ * The old locked PNG remains immutable evidence on disk. Clearing only the
+ * manifest's active pointer makes generation available again, and
+ * `nextVersionPath` guarantees the next lock cannot overwrite that evidence.
+ * South is intentionally excluded because its anchor is the frozen main.
+ */
+export function unlockReferenceAnchor(recordId, args) {
+  return manifestWriteTail(recordId, () => unlockReferenceAnchorImpl(recordId, args));
+}
+
+async function loadUnlockableReferenceAnchor(recordId, direction) {
+  await requireCharacter(recordId);
+  if (!ANCHOR_DIRECTIONS.includes(direction)) {
+    throw new ServerError(`Direction ${direction} is not a revisable anchor`, { status: 400, code: 'INVALID_TARGET' });
+  }
+  const manifest = await loadManifest(recordId);
+  if (!manifest?.turnaround?.locked) {
+    throw new ServerError('Lock the turnaround sheet before revising its directional anchors', { status: 409, code: 'TURNAROUND_NOT_LOCKED' });
+  }
+  const anchor = findAnchor(manifest, anchorIdForDirection(direction));
+  if (anchor?.status !== 'locked') {
+    throw new ServerError(`Direction ${direction} is not locked`, { status: 409, code: 'ANCHOR_NOT_LOCKED' });
+  }
+  return { manifest, anchor };
+}
+
+// Read-only preflight for the cross-service revision coordinator. It prevents
+// dropping a walk approval before discovering that the reference cannot be
+// reopened; unlockReferenceAnchor repeats the check inside its write tail.
+export async function assertReferenceAnchorUnlockable(recordId, { direction }) {
+  await loadUnlockableReferenceAnchor(recordId, direction);
+}
+
+async function unlockReferenceAnchorImpl(recordId, { direction }) {
+  const { manifest, anchor } = await loadUnlockableReferenceAnchor(recordId, direction);
+  Object.assign(anchor, {
+    status: 'pending',
+    source: 'derive-from-turnaround',
+  });
+  delete anchor.path;
+  delete anchor.lockedFrom;
+  delete anchor.lockedAt;
+  delete anchor.sha256;
+  delete anchor.clipWarning;
+  manifest.status = 'in-progress';
+
+  // Record first, then manifest, matching the lock path's crash-recovery
+  // ordering: a stale status is cosmetic, while a manifest is the artifact
+  // authority. The orchestration layer may also invalidate a stale walk.
+  await updateRecord(recordId, { status: 'reference' });
+  await saveManifest(recordId, manifest);
+  console.log(`🔓 sprite reference anchor ${recordId}/${direction} unlocked`);
+  return getReferenceSet(recordId);
 }
 
 async function lockReferenceImpl(recordId, { target, candidate, acceptClipRisk = false }) {

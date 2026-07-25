@@ -111,7 +111,7 @@ const { listSpriteAssets } = await import('./paths.js');
 const { lockReference } = await import('./reference.js');
 const {
   getWalkState, startWalkGeneration, attachTuiWalkResult, approveWalkDirection, rerunWalkPostprocess, unlockWalkSet,
-  reopenWalkDirection, setWalkTarget, importedWalkDirections, getWalkSourceFrames,
+  reopenWalkDirection, invalidateWalkDirectionForAnchorRevision, setWalkTarget, importedWalkDirections, getWalkSourceFrames,
 } = await import('./walk.js');
 const { SPRITE_DIRECTIONS, ANCHOR_DIRECTIONS } = await import('./prompts.js');
 
@@ -131,6 +131,7 @@ async function characterWithLockedAnchors(id, directions = ['east']) {
 // byte-for-byte against pinned hashes. Readers must re-anchor at read time.
 async function makeCandidateRun(recordId, direction, {
   stripBytes = `strip-${direction}`, anchored = false, frameCount = 8, fps = 12,
+  anchorSha256,
 } = {}) {
   const runId = `walk-${direction}-${(seq++).toString(16).padStart(8, '0')}`;
   const runDir = join(TEST_ROOT, 'sprites', recordId, 'runs', runId, 'generated');
@@ -159,6 +160,7 @@ async function makeCandidateRun(recordId, direction, {
     characterId: recordId,
     direction,
     chromaKey: '#FF00FF',
+    ...(anchorSha256 ? { anchorSha256 } : {}),
     createdAt: new Date().toISOString(),
     postprocessManifest: anchor(manifestRel),
     // The run's i2v clip — imported alongside the run since #2984, and
@@ -718,6 +720,13 @@ describe('approveWalkDirection', () => {
       .rejects.toMatchObject({ code: 'RUN_STRIP_INVALID' });
   });
 
+  it('rejects a candidate rendered from a superseded anchor hash', async () => {
+    const id = await characterWithLockedAnchors(newId(), ['east']);
+    const { runId } = await makeCandidateRun(id, 'east', { anchorSha256: '0'.repeat(64) });
+    await expect(approveWalkDirection(id, { direction: 'east', runId }))
+      .rejects.toMatchObject({ code: 'RUN_ANCHOR_STALE' });
+  });
+
   it('records the approval in the selection', async () => {
     const id = await characterWithLockedAnchors(newId(), ['east']);
     const { runId, manifestRel } = await makeCandidateRun(id, 'east');
@@ -886,6 +895,38 @@ describe('reopenWalkDirection', () => {
     }));
     await expect(reopenWalkDirection(id, { direction: 'east' }))
       .rejects.toMatchObject({ code: 'LEGACY_IMPORTED_WALK_SET' });
+  });
+});
+
+describe('invalidateWalkDirectionForAnchorRevision', () => {
+  it('un-finalizes the set, drops only the stale approval, and preserves every rendered run', async () => {
+    const id = await characterWithLockedAnchors(newId(), ANCHOR_DIRECTIONS);
+    const runIds = {};
+    for (const direction of SPRITE_DIRECTIONS) {
+      const { runId } = await makeCandidateRun(id, direction);
+      runIds[direction] = runId;
+      await approveWalkDirection(id, { direction, runId });
+    }
+
+    const invalidated = await invalidateWalkDirectionForAnchorRevision(id, { direction: 'east' });
+    const state = await getWalkState(id);
+    expect(invalidated).toBe(true);
+    expect(state.walkSet).toBeNull();
+    expect(state.selection.status).toBe('in-progress');
+    expect(state.selection.directions.east).toBeUndefined();
+    expect(state.selection.directions.north.status).toBe('approved');
+    expect(state.runs.find((run) => run.id === runIds.east)).toMatchObject({
+      status: 'superseded-anchor',
+      supersededReason: 'directional-anchor-revised',
+    });
+    await expect(approveWalkDirection(id, { direction: 'east', runId: runIds.east }))
+      .rejects.toMatchObject({ code: 'RUN_NOT_CANDIDATE' });
+    expect((await records.getRecord(id)).status).toBe('reference');
+  });
+
+  it('is a no-op when the direction has no approved walk', async () => {
+    const id = await characterWithLockedAnchors(newId(), ['east']);
+    await expect(invalidateWalkDirectionForAnchorRevision(id, { direction: 'east' })).resolves.toBe(false);
   });
 });
 

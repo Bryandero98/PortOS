@@ -13,8 +13,9 @@
  *   walk/<id>-walk-selection-v1.json, walk/<id>-walk-set-v1.json
  *   walk/trims/<slug>-vNNN-{strip.png,.gif,.json}
  *
- * Immutability: a finalized walk set 409s generation/approval/postprocess —
- * revisions require a new character version, matching the reference contract.
+ * A finalized walk set 409s generation/approval/postprocess until deliberately
+ * reopened. Revising a directional anchor also removes the approval for the
+ * walk conditioned on that stale anchor while preserving its rendered run.
  */
 
 import { join } from 'path';
@@ -1479,9 +1480,9 @@ async function assertDirectionReDerivable(recordId, walkSet, entry, direction) {
 // crash mid-unfinalize can only leave a cosmetic stale status, never a
 // walk-complete record with no frozen set behind it. Shared by unlock (re-opens
 // all directions) and reopen (re-opens one).
-async function dropFinalizedWalkSet(recordId) {
+async function dropFinalizedWalkSet(recordId, recordStatus = 'reference-complete') {
   await rm(join(spriteDir(recordId), walkSetRelPath(recordId)), { force: true });
-  await updateRecord(recordId, { status: 'reference-complete' });
+  await updateRecord(recordId, { status: recordStatus });
 }
 
 async function unlockWalkSetImpl(recordId) {
@@ -1527,6 +1528,53 @@ export function reopenWalkDirection(recordId, { direction }) {
   return walkWriteTail(recordId, () => reopenWalkDirectionImpl(recordId, direction));
 }
 
+/**
+ * Drop the approval for a walk whose conditioning anchor is being revised.
+ *
+ * This differs from the user's "reopen walk" action: a stale walk must be
+ * discarded even when an imported run has no source clip, because the next
+ * valid action is a fresh generation from the replacement anchor. The old run
+ * stays on disk; only its approval pointer is removed.
+ */
+export function invalidateWalkDirectionForAnchorRevision(recordId, { direction }) {
+  return walkWriteTail(recordId, () => invalidateWalkDirectionForAnchorRevisionImpl(recordId, direction));
+}
+
+async function invalidateWalkDirectionForAnchorRevisionImpl(recordId, direction) {
+  await requireCharacter(recordId);
+  const [walkSet, loaded] = await Promise.all([loadWalkSet(recordId), loadSelection(recordId)]);
+  const approved = loaded?.directions?.[direction] || walkSet?.directions?.[direction];
+  if (approved?.status !== 'approved') return false;
+
+  const selection = loaded || {
+    ...seedSelection(recordId),
+    directions: { ...(walkSet?.directions || {}) },
+  };
+  if (walkSet) await dropFinalizedWalkSet(recordId, 'reference');
+  delete selection.directions[direction];
+  selection.status = 'in-progress';
+  await ensureDir(join(spriteDir(recordId), 'walk'));
+  await atomicWrite(join(spriteDir(recordId), selectionRelPath(recordId)), selection);
+  // Preserve the run as reviewable history, but remove its candidate status so
+  // the UI and approval endpoint cannot promote an animation conditioned on
+  // the superseded anchor. Redraw-manifest imports have no mutable run record;
+  // once their selection pointer is gone they are no longer addressable here.
+  const runDirRel = runDirOfPath(entryLayoutPath(recordId, approved));
+  if (runDirRel) {
+    const found = await resolveRunAt(recordId, runDirRel);
+    if (found?.run?.direction === direction) {
+      await saveRunRecordAt(recordId, {
+        ...found.run,
+        status: 'superseded-anchor',
+        supersededAt: new Date().toISOString(),
+        supersededReason: 'directional-anchor-revised',
+      }, found.runDirRel);
+    }
+  }
+  console.log(`♻️ sprite walk direction ${recordId}/${direction} invalidated after anchor revision`);
+  return true;
+}
+
 async function reopenWalkDirectionImpl(recordId, direction) {
   await requireCharacter(recordId);
   const [walkSet, loaded] = await Promise.all([loadWalkSet(recordId), loadSelection(recordId)]);
@@ -1562,6 +1610,23 @@ async function approveWalkDirectionImpl(recordId, { direction, runId }) {
   }
   if (run.status !== 'candidate' || !run.postprocessManifest) {
     throw new ServerError('Run has no packaged candidate to approve', { status: 409, code: 'RUN_NOT_CANDIDATE' });
+  }
+  // A candidate is valid only for the exact locked anchor that conditioned its
+  // render. Native runs carry the anchor hash; imported legacy runs may not, so
+  // retain their existing compatibility path while still requiring a current
+  // locked anchor. This backstops the revision flow even if an old candidate
+  // remains addressable outside the normal UI.
+  const referenceManifest = await loadManifest(recordId);
+  const currentAnchor = referenceManifest?.anchors?.find((anchor) => anchor.direction === direction);
+  if (currentAnchor?.status !== 'locked' || !currentAnchor.path) {
+    throw new ServerError(`Lock the ${anchorIdForDirection(direction)} anchor before approving its walk`, { status: 409, code: 'ANCHOR_NOT_LOCKED' });
+  }
+  if (run.anchorSha256) {
+    const currentAnchorSha256 = currentAnchor.sha256
+      || await sha256File(resolveSpriteAssetPath(recordId, currentAnchor.path));
+    if (run.anchorSha256 !== currentAnchorSha256) {
+      throw new ServerError('This walk was rendered from an older directional anchor — generate a new walk from the current anchor', { status: 409, code: 'RUN_ANCHOR_STALE' });
+    }
   }
   // Tamper check: the packaged manifest and strip must still be on disk with
   // self-consistent geometry before their approval is frozen into the selection.

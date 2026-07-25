@@ -9,6 +9,7 @@ import {
 } from '../../services/apiSprites.js';
 import ConfirmButtonPair from '../ui/ConfirmButtonPair.jsx';
 import CycleTarget from './CycleTarget.jsx';
+import SpritePreview from './SpritePreview.jsx';
 import { useAsyncAction } from '../../hooks/useAsyncAction.js';
 import { spriteAssetUrl, checkerboardStyle, PIXELATED } from './spriteAssets.js';
 import {
@@ -142,7 +143,7 @@ const driftRemedy = ({ approved, hasSourceClip, imported }) => {
 };
 
 function DirectionCard({
-  recordId, direction, anchorLocked, run, approved, finalized, pending,
+  recordId, direction, anchorLocked, anchorPath, run, approved, finalized, pending,
   onOpenTrimmer, onGenerate, onApprove, onRetry, onReprocess, onReopen,
   reprocessing, retrying, cycleLabel, drift, targetSaving, imported,
 }) {
@@ -154,6 +155,7 @@ function DirectionCard({
   // Generate (server truth, since the client pending flag drops once the run is
   // persisted). Only 'rendering' has a live Shell session to link to.
   const rendering = run?.status === 'rendering';
+  const supersededAnchor = run?.status === 'superseded-anchor';
   // `targetSaving` blocks the render actions without claiming the direction is
   // rendering: the set's cycle target is mid-PATCH, so a queue now would be
   // gated against a value the server hasn't persisted yet (409 target mismatch).
@@ -165,7 +167,13 @@ function DirectionCard({
   // imagegen redraw), so there's no vendor-directory coupling here anymore. The
   // link stands for approved and finalized runs too, since a trim is a
   // non-destructive derived artifact under `walk/trims/`.
-  const trimmable = Boolean(run?.stripPreview?.stripPath);
+  const trimmable = Boolean(run?.stripPreview?.stripPath) && !supersededAnchor;
+  // Before a packaged animation exists, keep the exact locked directional
+  // anchor visible in the card. It is the idle/source pose the walk will be
+  // conditioned on, and reviewing it here prevents spending a render on a
+  // direction whose identity or anatomy is already wrong. A candidate or
+  // approved strip replaces it as soon as there is an animation to inspect.
+  const hasWalkPreview = Boolean((approved || candidate) && run?.stripPreview?.stripPath);
   const hasSourceClip = hasClip(run);
   // The dead end: still packaged by the source pipeline AND no clip to re-derive
   // from. Everything the server refuses for this direction refuses on exactly
@@ -177,7 +185,8 @@ function DirectionCard({
   const statusLabel = approved ? 'approved'
     : (pending || rendering) ? 'rendering…'
       : run?.status === 'postprocessing' ? 'packaging…'
-        : run?.status || (anchorLocked ? 'ready' : 'anchor not locked');
+        : supersededAnchor ? 'anchor revised'
+          : run?.status || (anchorLocked ? 'ready' : 'anchor not locked');
 
   return (
     <div className="bg-port-bg border border-port-border rounded p-2 space-y-1.5">
@@ -188,8 +197,25 @@ function DirectionCard({
         </span>
       </p>
 
-      {(approved || candidate) && run?.stripPreview?.stripPath && (
+      {hasWalkPreview && (
         <StripLoop recordId={recordId} stripPreview={run.stripPreview} />
+      )}
+      {!hasWalkPreview && anchorLocked && anchorPath && (
+        <div className="flex items-end gap-2">
+          <SpritePreview
+            recordId={recordId}
+            path={anchorPath}
+            alt={`${direction} reference idle pose`}
+            className="h-24 w-24 shrink-0 rounded border border-port-border"
+            zoomable
+          />
+          <span className="pb-1 text-[9px] leading-tight text-gray-600">reference idle</span>
+        </div>
+      )}
+      {supersededAnchor && (
+        <p className="rounded border border-port-warning/40 px-1.5 py-1 text-[10px] leading-tight text-port-warning">
+          Previous walk kept in history · generate again from the current anchor.
+        </p>
       )}
 
       {/* This direction is packaged at a geometry the set is no longer targeting
@@ -628,6 +654,7 @@ export default function WalkWorkflow({
             recordId={recordId}
             direction={anchor.direction}
             anchorLocked={anchor.status === 'locked'}
+            anchorPath={anchor.path}
             run={latestRunByDirection[anchor.direction] || null}
             approved={selection?.directions?.[anchor.direction]?.status === 'approved'}
             finalized={finalized}

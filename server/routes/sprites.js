@@ -19,6 +19,7 @@ import {
   spriteCreateSchema,
   spriteReferenceGenerateSchema,
   spriteReferenceLockSchema,
+  spriteReferenceUnlockSchema,
   spriteForkSchema,
   spriteWalkGenerateSchema,
   spriteWalkApproveSchema,
@@ -43,6 +44,7 @@ import {
   listReferenceSources, listSpriteThumbnails, forkSprite,
 } from '../services/sprites/reference.js';
 import { resolveSpriteAssetPrompt } from '../services/sprites/assetPrompt.js';
+import { unlockDirectionalAnchor } from '../services/sprites/referenceRevision.js';
 import {
   getWalkState, startWalkGeneration, approveWalkDirection, rerunWalkPostprocess, unlockWalkSet,
   reopenWalkDirection, setWalkTarget, getWalkSourceFrames,
@@ -146,6 +148,14 @@ router.post('/:id/reference/generate', referenceUpload, asyncHandler(async (req,
 router.post('/:id/reference/lock', asyncHandler(async (req, res) => {
   const body = validateRequest(spriteReferenceLockSchema, req.body);
   res.json(await lockReference(req.params.id, body));
+}));
+
+// Re-open one turnaround-derived directional anchor for correction. The old
+// versioned PNG remains on disk, and any approved walk conditioned on it is
+// reopened so stale animation cannot survive the reference revision.
+router.post('/:id/reference/unlock', asyncHandler(async (req, res) => {
+  const body = validateRequest(spriteReferenceUnlockSchema, req.body);
+  res.json(await unlockDirectionalAnchor(req.params.id, body));
 }));
 
 // Fork `:id` into a new character seeded (image+text→image) from its locked

@@ -53,7 +53,7 @@ vi.mock('../settings.js', () => ({ getSettings: async () => settings }));
 const records = await import('./records.js');
 const {
   getReferenceSet, startReferenceGeneration, attachReferenceCandidate, lockReference, patchSpriteRecord,
-  listReferenceSources, listSpriteThumbnails, forkSprite,
+  unlockReferenceAnchor, listReferenceSources, listSpriteThumbnails, forkSprite,
 } = await import('./reference.js');
 
 let seq = 0;
@@ -756,6 +756,48 @@ describe('lockReference', () => {
     const result = await lockMain(id);
     expect(result.manifest.mainReference.path).toBe(`reference/${id}-walk-south-v2.png`);
     expect(await readFile(join(refDir, `${id}-walk-south-v1.png`), 'utf8')).toBe('stale-bytes');
+  });
+
+  it('reopens one anchor, preserves v1, derives from the turnaround, and locks the replacement as v2', async () => {
+    const id = newId();
+    await createCharacter(id);
+    await lockMain(id);
+    const firstCandidate = await placeCandidate(id, 'east', 'walk-east-candidate-01.png');
+    const firstLock = await lockReference(id, { target: 'east', candidate: firstCandidate });
+    const firstAnchor = firstLock.manifest.anchors.find((a) => a.direction === 'east');
+    const firstBytes = await readFile(join(TEST_ROOT, 'sprites', id, firstAnchor.path));
+
+    const reopened = await unlockReferenceAnchor(id, { direction: 'east' });
+    const pending = reopened.manifest.anchors.find((a) => a.direction === 'east');
+    expect(pending).toMatchObject({ status: 'pending', source: 'derive-from-turnaround' });
+    // loadManifest normalizes every anchor with a `path` key, so the cleared
+    // manifest pointer reads back as undefined rather than an absent property.
+    expect(pending.path).toBeUndefined();
+    expect(pending).not.toHaveProperty('sha256');
+    expect(reopened.manifest.status).toBe('in-progress');
+    expect(await readFile(join(TEST_ROOT, 'sprites', id, firstAnchor.path))).toEqual(firstBytes);
+    expect((await records.getRecord(id)).status).toBe('reference');
+
+    await startReferenceGeneration(id, { target: 'east' });
+    expect(enqueueJob.mock.calls[0][0].params.initImagePath).toBe(
+      join(TEST_ROOT, 'sprites', id, reopened.manifest.turnaround.path),
+    );
+
+    const secondCandidate = await placeCandidate(id, 'east', 'walk-east-candidate-02.png');
+    const secondLock = await lockReference(id, { target: 'east', candidate: secondCandidate });
+    expect(secondLock.manifest.anchors.find((a) => a.direction === 'east').path)
+      .toBe(`reference/${id}-walk-east-v2.png`);
+    expect(await readFile(join(TEST_ROOT, 'sprites', id, firstAnchor.path))).toEqual(firstBytes);
+  });
+
+  it('refuses to reopen south or an anchor that is already pending', async () => {
+    const id = newId();
+    await createCharacter(id);
+    await lockMain(id);
+    await expect(unlockReferenceAnchor(id, { direction: 'south' }))
+      .rejects.toMatchObject({ status: 400, code: 'INVALID_TARGET' });
+    await expect(unlockReferenceAnchor(id, { direction: 'east' }))
+      .rejects.toMatchObject({ status: 409, code: 'ANCHOR_NOT_LOCKED' });
   });
 
   it('completes the set when the last anchor locks', async () => {
