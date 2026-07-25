@@ -9,6 +9,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
 import { Sparkles, Save, Trash2, ArrowLeft, Loader2, ExternalLink, Plus, X, History, RotateCcw, Image as ImageIcon, Star, ChevronDown, Upload, Mic, Square } from 'lucide-react';
 import toast from '../components/ui/Toast';
+import FilePickerButton from '../components/ui/FilePickerButton';
 import Modal from '../components/ui/Modal.jsx';
 import {
   getCatalogIngredientDetails,
@@ -1087,7 +1088,6 @@ function MediaPanel({ media, missingMedia, onAttach, onSetPortrait, onDetach, on
   const [dragOver, setDragOver] = useState(false);
   const [busy, setBusy] = useState(false); // upload or transcription in flight
   const [recording, setRecording] = useState(false);
-  const fileInputRef = useRef(null);
   const recorderRef = useRef(null);
   const list = Array.isArray(media) ? media : [];
   const portrait = list.find((m) => m.kind === 'portrait');
@@ -1116,7 +1116,6 @@ function MediaPanel({ media, missingMedia, onAttach, onSetPortrait, onDetach, on
 
   const onFilePicked = (e) => {
     const file = e.target.files?.[0];
-    e.target.value = ''; // allow re-picking the same file
     if (file) doUpload(file);
   };
 
@@ -1158,10 +1157,10 @@ function MediaPanel({ media, missingMedia, onAttach, onSetPortrait, onDetach, on
             className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded border border-port-border text-gray-300 hover:text-white hover:border-port-accent">
             <Plus size={12} aria-hidden="true" /> Pick from gallery
           </button>
-          <button type="button" onClick={() => fileInputRef.current?.click()} disabled={busy || recording}
-            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded border border-port-border text-gray-300 hover:text-white hover:border-port-accent disabled:opacity-40">
+          <FilePickerButton accept="image/*,audio/*,video/*" onChange={onFilePicked} disabled={busy || recording}
+            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded border border-port-border text-gray-300 hover:text-white hover:border-port-accent">
             <Upload size={12} aria-hidden="true" /> Upload file
-          </button>
+          </FilePickerButton>
           {!recording ? (
             <button type="button" onClick={startRecording} disabled={busy}
               className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded border border-port-border text-gray-300 hover:text-white hover:border-port-accent disabled:opacity-40">
@@ -1173,7 +1172,6 @@ function MediaPanel({ media, missingMedia, onAttach, onSetPortrait, onDetach, on
               <Square size={12} aria-hidden="true" /> Stop &amp; transcribe
             </button>
           )}
-          <input ref={fileInputRef} type="file" accept="image/*,audio/*,video/*" onChange={onFilePicked} className="hidden" />
         </div>
       </div>
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Lock, Sparkles, RefreshCw, Upload, ChevronDown, ChevronRight,
   Images, PersonStanding, GitFork, X,
@@ -11,6 +11,8 @@ import GalleryImagePicker from '../imageGen/GalleryImagePicker.jsx';
 import SpriteReferencePicker from './SpriteReferencePicker.jsx';
 import ForkSpriteModal from './ForkSpriteModal.jsx';
 import CorrectionNote, { correctionPromptPayload } from './CorrectionNote.jsx';
+import FilePickerButton from '../ui/FilePickerButton';
+import { IMAGE_ACCEPT } from '../../utils/fileUpload';
 
 // Reference workflow (issues #2896, #2979): three ordered steps — generate a
 // turnaround sheet from text + an optional design image and freeze it, derive
@@ -136,7 +138,6 @@ export default function ReferenceWorkflow({ record, reference, renders, correcti
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [spritePickerOpen, setSpritePickerOpen] = useState(false);
   const [forkOpen, setForkOpen] = useState(false);
-  const fileInputRef = useRef(null);
 
   // Revoke the previous upload's object URL whenever the source changes or the
   // component unmounts (cleanup runs with the prior closure).
@@ -145,10 +146,7 @@ export default function ReferenceWorkflow({ record, reference, renders, correcti
     return () => { if (url) URL.revokeObjectURL(url); };
   }, [refSource]);
 
-  const clearSource = () => {
-    setRefSource(null);
-    if (fileInputRef.current) fileInputRef.current.value = '';
-  };
+  const clearSource = () => setRefSource(null);
   const pickUpload = (file) => {
     if (!file) return;
     setRefSource({ type: 'upload', file, previewUrl: URL.createObjectURL(file) });
@@ -314,15 +312,7 @@ export default function ReferenceWorkflow({ record, reference, renders, correcti
               rows={2}
               className="w-full bg-port-bg border border-port-border rounded px-3 py-1.5 text-sm text-white"
             />
-            {/* Reference image (optional, i2i seed) — pick ONE of three sources.
-                Hidden file input driven by the Upload button. */}
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/png,image/jpeg,image/webp"
-              className="hidden"
-              onChange={(e) => pickUpload(e.target.files?.[0] || null)}
-            />
+            {/* Reference image (optional, i2i seed) — pick ONE of three sources. */}
             {refSource ? (
               <div className="flex items-center gap-3 bg-port-bg border border-port-border rounded p-2">
                 {refSource.type === 'sprite' ? (
@@ -364,13 +354,14 @@ export default function ReferenceWorkflow({ record, reference, renders, correcti
             ) : (
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-xs text-gray-500">Reference image (optional):</span>
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
+                <FilePickerButton
+                  accept={IMAGE_ACCEPT}
+                  onChange={(e) => pickUpload(e.target.files?.[0] || null)}
+                  ariaLabel="Upload a reference image"
                   className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-port-card border border-port-border rounded text-gray-300 hover:border-port-accent"
                 >
                   <Upload className="w-3.5 h-3.5" /> Upload
-                </button>
+                </FilePickerButton>
                 <button
                   type="button"
                   onClick={() => setGalleryOpen(true)}

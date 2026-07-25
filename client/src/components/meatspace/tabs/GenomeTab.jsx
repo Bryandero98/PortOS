@@ -56,10 +56,11 @@ async function parseZipText(arrayBuffer, ext = '.txt') {
 }
 import * as api from '../../../services/api';
 import { ATTACHMENT_MAX_FILE_SIZE } from '../../../utils/fileUpload';
+import { formatBytes } from '../../../utils/formatters';
 import GenomeCategoryCard from '../GenomeCategoryCard';
 import EpigeneticTracker from '../EpigeneticTracker';
 import ProvenanceChip from '../../ui/ProvenanceChip';
-import { clickableProps } from '../../../lib/a11yKeyboard';
+import FilePickerButton from '../../ui/FilePickerButton';
 
 const CATEGORY_META = {
   longevity:          { emoji: '\u2728', label: 'Longevity',            color: 'purple' },
@@ -136,7 +137,6 @@ export default function GenomeTab() {
   const [clinvarExpanded, setClinvarExpanded] = useState({});
   const [clinvarFilter, setClinvarFilter] = useState('all');
   const [clinvarStarFilter, setClinvarStarFilter] = useState(0);
-  const fileInputRef = useRef(null);
   const dropRef = useRef(null);
   const notesTimerRef = useRef({});
   const jumpRef = useRef(null);
@@ -194,7 +194,7 @@ export default function GenomeTab() {
   const handleFileUpload = useCallback(async (file) => {
     if (!file) return;
     if (file.size > ATTACHMENT_MAX_FILE_SIZE) {
-      toast.error('File too large (max 50MB)');
+      toast.error(`File too large (max ${formatBytes(ATTACHMENT_MAX_FILE_SIZE)})`);
       return;
     }
 
@@ -362,16 +362,16 @@ export default function GenomeTab() {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-          {/* Drop zone */}
-          <div
+          {/* Drop zone — click opens the picker via FilePickerButton's native
+              label activation; the drag handlers ride along on the label. */}
+          <FilePickerButton
             ref={dropRef}
+            accept=".txt,.tsv,.csv,.zip,text/plain,text/csv,text/tab-separated-values,application/zip"
+            onChange={(e) => handleFileUpload(e.target.files?.[0])}
             onDrop={handleDrop}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
-            className="border-2 border-dashed border-port-border rounded-lg p-12 text-center transition-colors hover:border-gray-500 cursor-pointer focus:outline-none focus:border-port-accent"
-            onClick={() => fileInputRef.current?.click()}
-            {...clickableProps(() => fileInputRef.current?.click())}
-            aria-label="Upload your 23andMe raw data file — drag and drop or activate to browse"
+            className="block border-2 border-dashed border-port-border rounded-lg p-12 text-center transition-colors hover:border-gray-500"
           >
             {uploading ? (
               <div className="space-y-3">
@@ -386,16 +386,7 @@ export default function GenomeTab() {
                 <p className="text-xs text-gray-600">Accepts .zip or .txt files from 23andMe (typically 15-25MB)</p>
               </div>
             )}
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".txt,.tsv,.csv,.zip"
-              className="sr-only"
-              tabIndex={-1}
-              aria-hidden="true"
-              onChange={(e) => handleFileUpload(e.target.files[0])}
-            />
-          </div>
+          </FilePickerButton>
 
           <div className="p-3 rounded bg-port-card border border-port-border text-sm text-gray-400">
             <p className="flex items-start gap-2">

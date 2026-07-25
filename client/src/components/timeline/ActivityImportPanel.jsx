@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Upload, Loader2, CheckCircle2 } from 'lucide-react';
 import toast from '../ui/Toast';
+import FilePickerButton from '../ui/FilePickerButton';
 
 // Shared bulk-backfill importer panel for the timeline (#2160). Two-step flow:
 // pick a file → preview (parse-only, no write) → confirm import. The import is
@@ -108,11 +109,15 @@ export default function ActivityImportPanel({ icon: Icon, title, noun, help, imp
           {typeof controls === 'function' ? controls({ disabled: busy }) : controls}
 
           <div className="flex flex-wrap items-center gap-2">
-            <label className={`inline-flex items-center gap-2 rounded border border-port-border bg-port-bg px-3 py-1.5 text-sm text-gray-200 ${busy ? 'cursor-not-allowed opacity-40' : 'cursor-pointer hover:border-port-accent'}`}>
+            <FilePickerButton
+              accept={accept}
+              onChange={pickFile}
+              disabled={busy}
+              className="inline-flex items-center gap-2 rounded border border-port-border bg-port-bg px-3 py-1.5 text-sm text-gray-200 hover:border-port-accent"
+            >
               <Upload size={14} />
               <span>{file ? 'Change file' : 'Choose file'}</span>
-              <input type="file" accept={accept} onChange={pickFile} disabled={busy} className="hidden" />
-            </label>
+            </FilePickerButton>
             {file && <span className="truncate text-xs text-gray-400">{file.name}</span>}
           </div>
 

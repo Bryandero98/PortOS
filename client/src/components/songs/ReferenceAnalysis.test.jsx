@@ -404,7 +404,9 @@ describe('ReferenceAnalysis — stacked-mix extraction (#2121)', () => {
 describe('ReferenceAudioAttach', () => {
   it('offers upload + mic capture when no audio is attached', () => {
     render(<ReferenceAudioAttach reference={{ id: 'r', url: 'https://x.com' }} onUpdate={vi.fn()} />);
-    expect(screen.getByRole('button', { name: /upload audio/i })).toBeTruthy();
+    // The upload control is a <label> + file input (native picker activation),
+    // so it's found by its accessible label, not by button role.
+    expect(screen.getByLabelText(/upload audio/i)).toBeTruthy();
     expect(screen.getByRole('button', { name: /capture from mic/i })).toBeTruthy();
   });
 
@@ -439,7 +441,7 @@ describe('ReferenceAudioAttach', () => {
     refImport.state = { active: true, percent: 42, stage: null };
     render(<ReferenceAudioAttach reference={{ id: 'r', url: 'https://x.com' }} onUpdate={vi.fn()} />);
     expect(screen.getByText(/downloading 42%/i)).toBeTruthy();
-    expect(screen.getByRole('button', { name: /upload audio/i }).disabled).toBe(true);
+    expect(screen.getByLabelText(/upload audio/i).disabled).toBe(true);
     refImport.state = { active: false, percent: 0, stage: null }; // reset for other tests
   });
 });

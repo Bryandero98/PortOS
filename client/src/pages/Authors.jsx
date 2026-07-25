@@ -14,6 +14,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { FilePen, Plus, Loader2, Trash2, Save, Upload, ImageIcon, Sparkles, X } from 'lucide-react';
 import toast from '../components/ui/Toast';
+import FilePickerButton from '../components/ui/FilePickerButton';
 import GalleryImagePicker from '../components/imageGen/GalleryImagePicker';
 import useMediaJobProgress from '../hooks/useMediaJobProgress';
 import { DEFAULT_NEGATIVE_PROMPT } from '../lib/imageGenDefaults';
@@ -79,7 +80,6 @@ export default function Authors() {
   // completes. External SD-API renders synchronously and never sets genJobId.
   const [startingGen, setStartingGen] = useState(false);
   const [genJobId, setGenJobId] = useState(null);
-  const fileInputRef = useRef(null);
   // Bumped on every author switch / new-author. A generate request captures
   // this before its POST and bails if it changed by the time the POST resolves
   // — closes the pre-jobId round-trip window where `clearGeneration` alone
@@ -151,7 +151,6 @@ export default function Authors() {
 
   const handleHeadshotFile = async (e) => {
     const file = e.target.files?.[0];
-    if (e.target) e.target.value = ''; // allow re-picking the same file
     if (!file) return;
     if (!file.type.startsWith('image/')) { toast.error('Please choose an image file'); return; }
     if (file.size > HEADSHOT_MAX_BYTES) {
@@ -425,15 +424,16 @@ export default function Authors() {
                         {isGenerating ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
                         Generate
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => fileInputRef.current?.click()}
+                      <FilePickerButton
+                        accept="image/*"
+                        onChange={handleHeadshotFile}
                         disabled={uploadingHeadshot || isGenerating}
-                        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-bg border border-port-border text-white text-sm hover:border-port-accent disabled:opacity-50"
+                        ariaLabel="Upload author headshot"
+                        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-bg border border-port-border text-white text-sm hover:border-port-accent"
                       >
                         {uploadingHeadshot ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
                         Upload
-                      </button>
+                      </FilePickerButton>
                       <button
                         type="button"
                         onClick={() => setGalleryOpen(true)}
@@ -442,13 +442,6 @@ export default function Authors() {
                       >
                         <ImageIcon size={14} /> Choose from gallery
                       </button>
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        accept="image/*"
-                        onChange={handleHeadshotFile}
-                        className="hidden"
-                      />
                     </div>
                     <input
                       value={form.headshotImageUrl}

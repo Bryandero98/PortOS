@@ -5,13 +5,14 @@ import { join, resolve } from 'path';
 import { v4 as uuidv4 } from '../lib/uuid.js';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import { ensureDir, PATHS, sanitizeFilename, isPathInsideDir } from '../lib/fileUtils.js';
+import { MAX_SCREENSHOT_BYTES } from '../lib/uploadLimits.js';
 
 const SCREENSHOTS_DIR = PATHS.screenshots;
 
 const router = Router();
 
-// Max file size: 10MB
-const MAX_FILE_SIZE = 10 * 1024 * 1024;
+// Screenshots cap well below the wire limit on purpose — see lib/uploadLimits.js.
+const MAX_FILE_SIZE = MAX_SCREENSHOT_BYTES;
 
 /**
  * Validate image magic bytes

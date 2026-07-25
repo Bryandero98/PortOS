@@ -16,6 +16,7 @@ import * as api from '../../../services/api';
 import toast from '../../ui/Toast';
 import { FormField } from '../../ui/FormField';
 import { formatBytes } from '../../../utils/formatters';
+import FilePickerButton from '../../ui/FilePickerButton';
 
 const SOURCE_ICONS = {
   goodreads: BookOpen,
@@ -210,24 +211,23 @@ export default function ImportTab() {
 
           {/* File Upload */}
           <div className="mb-6">
-            <label className="block text-sm font-medium text-gray-400 mb-2">
+            <span className="block text-sm font-medium text-gray-400 mb-2">
               Upload {selectedSource.format} File
-            </label>
+            </span>
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-              <label className="flex-1 flex items-center justify-center px-4 py-8 border-2 border-dashed border-port-border rounded-lg cursor-pointer hover:border-port-accent transition-colors">
-                <input
-                  type="file"
-                  accept={selectedSource.format === 'CSV' ? '.csv' : selectedSource.format === 'JSON' ? '.json' : '.ics,.ical'}
-                  onChange={handleFileUpload}
-                  className="hidden"
-                />
+              <FilePickerButton
+                accept={selectedSource.format === 'CSV' ? '.csv,text/csv' : selectedSource.format === 'JSON' ? '.json,application/json' : '.ics,.ical,text/calendar'}
+                onChange={handleFileUpload}
+                ariaLabel={`Upload ${selectedSource.format} file`}
+                className="flex-1 flex items-center justify-center px-4 py-8 border-2 border-dashed border-port-border rounded-lg hover:border-port-accent transition-colors"
+              >
                 <div className="text-center">
                   <Upload className="w-8 h-8 text-gray-500 mx-auto mb-2" />
                   <span className="text-sm text-gray-400">
                     {fileContent ? 'File loaded - click to change' : `Click to upload ${selectedSource.format} file`}
                   </span>
                 </div>
-              </label>
+              </FilePickerButton>
             </div>
             {fileContent && (
               <div className="mt-2 flex items-center gap-2 text-sm text-port-success">

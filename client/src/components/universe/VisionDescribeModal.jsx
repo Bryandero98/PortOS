@@ -17,9 +17,10 @@
  * `onApplyFields(patch)`, and lets the parent write them into the entry.
  */
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback } from 'react';
 import { Loader2, ImagePlus, Images, Sparkles, X } from 'lucide-react';
 import Modal from '../ui/Modal';
+import FilePickerButton from '../ui/FilePickerButton';
 import toast from '../ui/Toast';
 import GalleryImagePicker from '../imageGen/GalleryImagePicker';
 import VisionProviderPicker from './VisionProviderPicker';
@@ -59,7 +60,6 @@ export default function VisionDescribeModal({
   const [fieldEdits, setFieldEdits] = useState({});
   // Optional "known context" the user can type to disambiguate the subject.
   const [context, setContext] = useState('');
-  const fileInputRef = useRef(null);
 
   // Current vision provider/model selection, lifted from VisionProviderPicker.
   const [vision, setVision] = useState({ providerId: '', model: '', hasProviders: false, noVisionModel: false });
@@ -231,14 +231,6 @@ export default function VisionDescribeModal({
 
           {/* Image picker + thumbnails */}
           <div>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              multiple
-              className="hidden"
-              onChange={(e) => { handleFiles(e.target.files); e.target.value = ''; }}
-            />
             <div className="flex flex-wrap gap-2">
               {images.map((img) => (
                 <div key={imageKey(img)} className="relative w-20 h-20">
@@ -260,15 +252,17 @@ export default function VisionDescribeModal({
               ))}
               {images.length < MAX_IMAGES ? (
                 <>
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
+                  <FilePickerButton
+                    accept="image/*"
+                    multiple
+                    onChange={(e) => handleFiles(e.target.files)}
                     disabled={uploading}
-                    className="w-20 h-20 flex flex-col items-center justify-center gap-1 rounded border border-dashed border-port-border text-gray-500 hover:text-port-accent hover:border-port-accent/50 disabled:opacity-50"
+                    ariaLabel="Upload reference images"
+                    className="w-20 h-20 flex flex-col items-center justify-center gap-1 rounded border border-dashed border-port-border text-gray-500 hover:text-port-accent hover:border-port-accent/50"
                   >
                     {uploading ? <Loader2 size={16} className="animate-spin" /> : <ImagePlus size={16} />}
                     <span className="text-[10px]">Upload</span>
-                  </button>
+                  </FilePickerButton>
                   <button
                     type="button"
                     onClick={() => setGalleryOpen(true)}

@@ -27,6 +27,7 @@ import {
 } from '../lib/brainValidation.js';
 import * as brainStorage from '../services/brainStorage.js';
 import { importSongFromUrl } from '../services/brainSongbookImport.js';
+import { MAX_BASE64_UPLOAD_BYTES } from '../lib/uploadLimits.js';
 import {
   pathExists, PATHS, sanitizeFilename, isPathInsideDir,
   SONGBOOK_ATTACHMENT_EXTENSIONS, saveBase64Upload, serveLocalFile,
@@ -34,12 +35,9 @@ import {
 
 const router = Router();
 
-// Max attachment size: 40MB. Uploads arrive base64-encoded in a JSON body
-// (×4/3 inflation), and the express.json limit is 55mb — so anything above
-// ~41MB raw can never reach this route. 40MB keeps the advertised cap
-// reachable. (routes/attachments.js still claims 50MB with the same latent
-// mismatch — tracked in PLAN.md's uploads-consolidation follow-up.)
-const MAX_ATTACHMENT_SIZE = 40 * 1024 * 1024;
+// Bounded by the JSON body limit, not by any songbook-specific rule — see
+// lib/uploadLimits.js.
+const MAX_ATTACHMENT_SIZE = MAX_BASE64_UPLOAD_BYTES;
 
 // Read lazily (not captured at module load) so test PATHS mocks with
 // per-suite temp roots resolve correctly.

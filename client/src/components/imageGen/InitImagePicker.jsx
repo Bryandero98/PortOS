@@ -10,6 +10,8 @@
 // image (shown as a required warning), regular i2i is optional.
 
 import { Image as ImageIcon, Images, X } from 'lucide-react';
+import FilePickerButton from '../ui/FilePickerButton';
+import { IMAGE_ACCEPT } from '../../utils/fileUpload';
 
 export default function InitImagePicker({
   initImage,
@@ -83,11 +85,15 @@ export default function InitImagePicker({
         </div>
       ) : (
         <div className="flex flex-col sm:flex-row gap-2">
-          <label className="flex-1 flex items-center justify-center gap-2 px-3 py-2 border border-dashed border-port-border rounded-lg text-xs text-gray-400 hover:text-white hover:border-port-accent cursor-pointer transition-colors">
+          <FilePickerButton
+            accept={IMAGE_ACCEPT}
+            onChange={onPick}
+            disabled={disabled}
+            className="flex-1 flex items-center justify-center gap-2 px-3 py-2 border border-dashed border-port-border rounded-lg text-xs text-gray-400 hover:text-white hover:border-port-accent transition-colors"
+          >
             <ImageIcon className="w-4 h-4" />
             Upload (PNG/JPG/WebP)
-            <input type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={onPick} disabled={disabled} />
-          </label>
+          </FilePickerButton>
           {onBrowse && (
             <button
               type="button"

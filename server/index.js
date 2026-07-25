@@ -141,6 +141,7 @@ import { initSocket } from './services/socket.js';
 import { bootstrapServices, runBootSequence, registerShutdownHandlers } from './services/bootstrap.js';
 import { errorMiddleware } from './lib/errorHandler.js';
 import { setHttpsEnabledAtBoot } from './lib/httpsState.js';
+import { JSON_BODY_LIMIT } from './lib/uploadLimits.js';
 import { wrWorksDir } from './services/writersRoom/_shared.js';
 import { createPortOSProviderRoutes } from './routes/providers.js';
 import { createPortOSRunsRoutes } from './routes/runs.js';
@@ -217,8 +218,9 @@ app.use(authGate);
 
 // Body limit is set slightly above the 50MB combined base64 cap enforced by sendMessageSchema
 // so the Zod validation (not the body parser) is the binding constraint for attachment payloads.
-app.use(express.json({ limit: '55mb' }));
-app.use(express.urlencoded({ limit: '55mb', extended: true }));
+// Every per-file upload cap is derived from this value — see lib/uploadLimits.js.
+app.use(express.json({ limit: JSON_BODY_LIMIT }));
+app.use(express.urlencoded({ limit: JSON_BODY_LIMIT, extended: true }));
 
 // API Routes
 app.use('/api/auth', authRoutes);

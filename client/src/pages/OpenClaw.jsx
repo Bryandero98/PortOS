@@ -32,11 +32,12 @@ import {
   ClipboardPaste
 } from 'lucide-react';
 import AppContextPicker from '../components/AppContextPicker';
+import FilePickerButton from '../components/ui/FilePickerButton';
 import SettingsTabsHeader from '../components/settings/SettingsTabsHeader';
 import * as api from '../services/apiOpenClaw';
 import * as coreApi from '../services/api';
 import { formatDateTime } from '../utils/formatters';
-import { useOpenClawAttachments } from '../hooks/useOpenClawAttachments';
+import { useOpenClawAttachments, OPENCLAW_ATTACHMENT_ACCEPT } from '../hooks/useOpenClawAttachments';
 import { useOpenClawStream } from '../hooks/useOpenClawStream';
 
 function getRuntimeState(status) {
@@ -140,7 +141,6 @@ export default function OpenClaw() {
     attachments,
     setAttachments,
     isDragActive,
-    fileInputRef,
     removeAttachment,
     handleAttachmentSelect,
     handlePaste,
@@ -632,15 +632,16 @@ export default function OpenClaw() {
                 <span>
                   {status?.configured && selectedSessionId ? 'Stream via PortOS · ⌘↵ / Ctrl↵ to send' : 'Select a configured session to send.'}
                 </span>
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
+                <FilePickerButton
+                  multiple
+                  accept={OPENCLAW_ATTACHMENT_ACCEPT}
+                  onChange={handleAttachmentSelect}
                   disabled={!status?.configured || !selectedSessionId || sending}
-                  className="inline-flex items-center gap-2 rounded-lg border border-port-border bg-port-card px-3 py-2 text-xs text-gray-200 hover:border-gray-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                  className="inline-flex items-center gap-2 rounded-lg border border-port-border bg-port-card px-3 py-2 text-xs text-gray-200 hover:border-gray-500 hover:text-white"
                 >
                   <Paperclip size={14} />
                   Add file/image
-                </button>
+                </FilePickerButton>
               </div>
               <div className="flex items-center gap-2">
                 {sending && (
@@ -664,14 +665,6 @@ export default function OpenClaw() {
               </div>
             </div>
 
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              accept="image/*,.txt,.md,.json,.csv,.pdf"
-              className="hidden"
-              onChange={handleAttachmentSelect}
-            />
           </form>
         </section>
       </div>

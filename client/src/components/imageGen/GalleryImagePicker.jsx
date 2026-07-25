@@ -16,6 +16,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Search, X, RefreshCw, Upload } from 'lucide-react';
 import Modal from '../ui/Modal';
+import FilePickerButton from '../ui/FilePickerButton';
 import MediaCard from '../media/MediaCard';
 import { normalizeImage } from '../media/normalize';
 import { listImageGallery } from '../../services/apiImageVideo';
@@ -64,7 +65,6 @@ export default function GalleryImagePicker({ open, onClose, onSelect, allowUploa
   // resulting `filename` resolves for createImageTo3dModel.
   const handleUpload = async (event) => {
     const file = event.target.files?.[0];
-    event.target.value = ''; // allow re-picking the same file after an error
     if (!file) return;
     setUploading(true);
     const base64 = await readFileAsBase64(file).catch(() => null);
@@ -118,21 +118,17 @@ export default function GalleryImagePicker({ open, onClose, onSelect, allowUploa
           )}
         </div>
         {allowUpload && (
-          <label
-            className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-port-border bg-port-bg px-2.5 py-1.5 text-xs text-gray-300 ${uploading ? 'cursor-wait opacity-60' : 'cursor-pointer hover:border-port-accent hover:text-white'}`}
+          <FilePickerButton
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            onChange={handleUpload}
+            disabled={uploading}
             title="Upload an image from your device"
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-port-border bg-port-bg px-2.5 py-1.5 text-xs text-gray-300 hover:border-port-accent hover:text-white"
           >
             {uploading
               ? <><RefreshCw className="h-3.5 w-3.5 animate-spin" /> Uploading…</>
               : <><Upload className="h-3.5 w-3.5" /> Upload</>}
-            <input
-              type="file"
-              accept="image/png,image/jpeg,image/webp,image/gif"
-              className="hidden"
-              disabled={uploading}
-              onChange={handleUpload}
-            />
-          </label>
+          </FilePickerButton>
         )}
         <button
           type="button"

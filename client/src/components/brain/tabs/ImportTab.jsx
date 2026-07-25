@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {Upload,
   ArrowLeft,
@@ -15,7 +15,7 @@ import toast from '../../ui/Toast';
 import Banner from '../../ui/Banner';
 import BrailleSpinner from '../../BrailleSpinner';
 import { formatBytes, formatDateShort } from '../../../utils/formatters';
-import { clickableProps } from '../../../lib/a11yKeyboard.js';
+import FilePickerButton from '../../ui/FilePickerButton';
 
 // Sources we plan to support. Only `available` ones are clickable.
 const SOURCES = [
@@ -135,7 +135,6 @@ function ChatGPTWizard({ onExit, navigate }) {
   const [skipEmpty, setSkipEmpty] = useState(true);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
-  const fileInputRef = useRef(null);
 
   const step = STEPS[stepIdx];
   const goNext = () => setStepIdx((i) => Math.min(i + 1, STEPS.length - 1));
@@ -247,9 +246,7 @@ function ChatGPTWizard({ onExit, navigate }) {
         <StepUpload
           uploading={uploading}
           fileMeta={fileMeta}
-          onPick={() => fileInputRef.current?.click()}
           onFile={handleFile}
-          fileInputRef={fileInputRef}
           onBack={goBack}
         />
       )}
@@ -382,7 +379,7 @@ function StepInstructions({ onNext }) {
   );
 }
 
-function StepUpload({ uploading, fileMeta, onPick, onFile, fileInputRef, onBack }) {
+function StepUpload({ uploading, fileMeta, onFile, onBack }) {
   const handleDrop = (e) => {
     e.preventDefault();
     const file = e.dataTransfer.files?.[0];
@@ -396,12 +393,12 @@ function StepUpload({ uploading, fileMeta, onPick, onFile, fileInputRef, onBack 
         The file stays on this device — nothing is uploaded to OpenAI or any third party.
       </p>
 
-      <div
-        onClick={onPick}
-        {...clickableProps(onPick)}
+      <FilePickerButton
+        accept=".zip,application/zip,.json,application/json"
+        onChange={(e) => onFile(e.target.files?.[0])}
         onDragOver={(e) => e.preventDefault()}
         onDrop={handleDrop}
-        className="border-2 border-dashed border-port-border rounded-lg p-8 text-center cursor-pointer hover:border-port-accent hover:bg-port-card/40 transition-colors"
+        className="block border-2 border-dashed border-port-border rounded-lg p-8 text-center hover:border-port-accent hover:bg-port-card/40 transition-colors"
       >
         <FileJson size={32} className="text-gray-500 mx-auto mb-3" aria-hidden="true" />
         {fileMeta ? (
@@ -420,14 +417,7 @@ function StepUpload({ uploading, fileMeta, onPick, onFile, fileInputRef, onBack 
             <BrailleSpinner /> Parsing…
           </div>
         )}
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".zip,application/zip,.json,application/json"
-          className="hidden"
-          onChange={(e) => onFile(e.target.files?.[0])}
-        />
-      </div>
+      </FilePickerButton>
 
       <div className="flex items-center justify-between pt-2">
         <button
