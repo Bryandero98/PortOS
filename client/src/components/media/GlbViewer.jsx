@@ -135,12 +135,14 @@ export default function GlbViewer({
         style={{ backgroundColor: background }}
       >
         {/* Settings live in a collapsed strip BELOW the canvas, not an overlay —
-            an always-on panel covered the upper-right quadrant of the model. */}
+            an always-on panel covered the upper-right quadrant of the model.
+            `aria-controls` is set only while the panel is mounted; the collapsed
+            state removes it, and a dangling IDREF is invalid ARIA. */}
         <button
           type="button"
           onClick={() => setControlsOpen((open) => !open)}
           aria-expanded={controlsOpen}
-          aria-controls={controlsPanelId}
+          aria-controls={controlsOpen ? controlsPanelId : undefined}
           aria-label="Preview display settings"
           title="Preview display settings"
           className={`absolute right-2 top-2 z-10 inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-white/20 bg-black/60 text-white backdrop-blur-sm hover:bg-black/80 focus-visible:ring-2 focus-visible:ring-port-accent sm:min-h-0 sm:min-w-0 sm:p-1.5 ${controlsOpen ? 'ring-1 ring-port-accent' : ''}`}
