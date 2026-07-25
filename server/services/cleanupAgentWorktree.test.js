@@ -559,6 +559,25 @@ describe('cleanupAgentWorktree - openPR path', () => {
     expect(followUp.metadata.effort).toBe('high');
   });
 
+  it('does not inherit a model pin without its provider', async () => {
+    // A bare model would be honored against whatever provider resolution later
+    // picks — handing e.g. a Claude model id to Codex and failing the run.
+    git.push.mockResolvedValue(undefined);
+    git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/100' });
+    addTask.mockResolvedValue({ id: 'sys-rl-q' });
+
+    await cleanupAgentWorktree('agent-1', true, {
+      openPR: true, requestCopilotReview: false, description: 'X',
+      originalTask: { id: 'task-orig', metadata: { model: 'claude-opus-5', effort: 'high' }, description: 'X' }
+    });
+
+    const [followUp] = addTask.mock.calls[0];
+    expect(followUp.metadata.model).toBeUndefined();
+    expect(followUp.metadata.provider).toBeUndefined();
+    // Effort is provider-agnostic, so it still travels.
+    expect(followUp.metadata.effort).toBe('high');
+  });
+
   it('leaves a jira-sprint-manager PR open — no follow-up merges behind the board', async () => {
     // That task type transitions its ticket to "In Review" and hands the PR to a
     // human; merging here would land the work while JIRA still shows it in review,

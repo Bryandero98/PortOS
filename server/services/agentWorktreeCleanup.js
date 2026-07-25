@@ -314,11 +314,18 @@ export async function spawnReviewLoopFollowUp({ originalAgentId, originalTask, p
   // unpinned follow-up for lacking a harness — and the PR it was spawned to land
   // would sit open forever. Only copy what's actually pinned; an unpinned source
   // task still resolves through the normal active-provider path.
+  //
+  // The model pin rides ONLY with its provider: a bare `model` would be treated as
+  // explicit against whatever provider resolution later picks, handing e.g. a
+  // Claude model id to Codex. Effort is provider-agnostic, so it travels alone.
   const sourceMeta = originalTask?.metadata || {};
+  const pinnedProvider = sourceMeta.provider || sourceMeta.providerId || null;
   const providerPins = {};
-  if (sourceMeta.provider) providerPins.provider = sourceMeta.provider;
-  if (sourceMeta.providerId) providerPins.providerId = sourceMeta.providerId;
-  if (sourceMeta.model) providerPins.model = sourceMeta.model;
+  if (pinnedProvider) {
+    providerPins.provider = pinnedProvider;
+    providerPins.providerId = pinnedProvider;
+    if (sourceMeta.model) providerPins.model = sourceMeta.model;
+  }
   if (sourceMeta.effort) providerPins.effort = sourceMeta.effort;
 
   const appId = originalTask?.metadata?.app || null;
