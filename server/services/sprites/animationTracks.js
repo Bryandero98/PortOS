@@ -134,24 +134,30 @@ export function assertAnimationTrackRows(tracks) {
 
 assertAnimationTrackRows(ANIMATION_TRACKS);
 
-/** True when `id` names a track this build knows. */
-export function isAnimationTrack(id) {
-  return typeof id === 'string' && Object.prototype.hasOwnProperty.call(ANIMATION_TRACKS, id);
+/** True when `id` names a track in `tracks` (the shipped registry by default). */
+export function isAnimationTrack(id, tracks = ANIMATION_TRACKS) {
+  return typeof id === 'string' && Object.prototype.hasOwnProperty.call(tracks, id);
 }
 
 /**
  * The registry row for `id`. Absent (`undefined`/`null`) resolves to the default
  * track; anything else unrecognized THROWS rather than falling back, so a typo
  * can never be validated against walk's range by accident.
+ *
+ * The table is a parameter — the same idiom `assertAnimationTrackRows(tracks)`
+ * uses — so a caller that must work across a *set* of tracks (the atlas grid,
+ * #3016) can be exercised against a synthetic multi-row table while the shipped
+ * registry has one row, WITHOUT that caller growing a private lookup that
+ * bypasses this unknown-id boundary.
  */
-export function getAnimationTrack(id) {
+export function getAnimationTrack(id, tracks = ANIMATION_TRACKS) {
   const key = id === undefined || id === null ? WALK_TRACK : id;
-  if (!isAnimationTrack(key)) {
+  if (!isAnimationTrack(key, tracks)) {
     throw new Error(
-      `Unknown animation track '${String(key)}' — known tracks: ${ANIMATION_TRACK_IDS.join(', ')}.`,
+      `Unknown animation track '${String(key)}' — known tracks: ${Object.keys(tracks).join(', ')}.`,
     );
   }
-  return ANIMATION_TRACKS[key];
+  return tracks[key];
 }
 
 // Round-then-clamp, with unusable input (NaN, non-numeric) falling back to the

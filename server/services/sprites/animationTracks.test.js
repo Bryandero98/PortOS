@@ -228,6 +228,12 @@ describe('sharp-free leaf property', () => {
     ['animationTracks.js', join(SPRITES_DIR, 'animationTracks.js')],
     ['walkBounds.js', join(SPRITES_DIR, 'walkBounds.js')],
     ['animationTargets.js', join(SPRITES_DIR, 'animationTargets.js')],
+    // #3016: the atlas grid is the ONE definition of a column span, shared by
+    // the compiler (which imports sharp) and the layout sidecar (which must
+    // not). If either of these two ever reaches sharp, that split has silently
+    // collapsed and the sidecar builder drags the native image graph along.
+    ['atlasGrid.js', join(SPRITES_DIR, 'atlasGrid.js')],
+    ['atlasLayout.js', join(SPRITES_DIR, 'atlasLayout.js')],
   ])('%s reaches no native image/video dependency', (_label, entry) => {
     const { packages } = staticImportClosure(entry);
     const offending = [...packages].filter((p) => NATIVE.some((n) => specifierMatchesPackage(p, n)));
