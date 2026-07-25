@@ -55,7 +55,14 @@ async function lockAllAnchors(id) {
 }
 
 /** Transparent 40×40 RGBA frame with an opaque 20×30 figure. */
-async function walkFramePng(path, tint) {
+/**
+ * `armX` (optional) adds a protruding block at that column — a stand-in for a
+ * swinging limb, so a direction's frames differ in SILHOUETTE and not just in
+ * tint. Registration bugs (#3021) only show up across differing silhouettes:
+ * with the identical-shape default, every placement rule agrees and an
+ * inter-cell assertion would pass vacuously.
+ */
+async function walkFramePng(path, tint, armX = null, speck = false) {
   const w = 40; const h = 40;
   const buf = Buffer.alloc(w * h * 4);
   for (let y = 5; y < 35; y++) {
@@ -63,11 +70,21 @@ async function walkFramePng(path, tint) {
       buf.set([tint, 107, 101, 255], (y * w + x) * 4);
     }
   }
+  if (armX !== null) {
+    for (let y = 12; y < 20; y++) {
+      for (let x = armX; x < armX + 6; x++) buf.set([tint, 107, 101, 255], (y * w + x) * 4);
+    }
+  }
+  // A lone opaque pixel below the sole — the despill survivor / dropped shadow
+  // that used to drag the whole frame's grounding down with it.
+  if (speck) buf.set([tint, 107, 101, 255], (35 * w + 20) * 4);
   await mkdir(join(path, '..'), { recursive: true });
   await sharp(buf, { raw: { width: w, height: h, channels: 4 } }).png().toFile(path);
 }
 
-async function buildFinalizedWalkSet(recordId, { frameCount = WALK_PHASES.length, fps } = {}) {
+async function buildFinalizedWalkSet(recordId, {
+  frameCount = WALK_PHASES.length, fps, varyArm = false, alignment = null, speckFrames = [],
+} = {}) {
   const manifest = await loadManifest(recordId);
   const chromaKey = manifest.chromaKey;
   const dir = join(TEST_ROOT, 'sprites', recordId);
@@ -86,7 +103,7 @@ async function buildFinalizedWalkSet(recordId, { frameCount = WALK_PHASES.length
     for (let i = 0; i < labels.length; i++) {
       const name = `${String(i).padStart(2, '0')}-${labels[i]}.png`;
       const rel = `${generatedRel}/frames/${name}`;
-      await walkFramePng(join(dir, rel), 20 + i * 8);
+      await walkFramePng(join(dir, rel), 20 + i * 8, varyArm ? 2 + (i % 4) * 2 : null, speckFrames.includes(i));
       frames.push({
         outputIndex: i,
         phase: labels[i],
@@ -102,6 +119,7 @@ async function buildFinalizedWalkSet(recordId, { frameCount = WALK_PHASES.length
       chromaKey,
       frameCount,
       ...(fps != null ? { frameRate: fps } : {}),
+      ...(alignment ? { alignment } : {}),
       frames,
     };
     const manifestRel = `${generatedRel}/${recordId}-walk-${direction}-manifest.json`;
@@ -188,6 +206,57 @@ describe('compileAtlas', () => {
     expect(state.current.version).toBe(1);
     expect(state.current.walkSetSha256).toMatch(/^[0-9a-f]{64}$/);
     expect(state.publications).toEqual([]);
+  });
+
+  // #3021: the compiler used to re-derive each cell's x from its own silhouette
+  // centre, discarding the shared hip anchor the packer had already established
+  // — so a swinging limb slid the whole character even when the strip was
+  // perfectly registered. The frames here differ in silhouette (varyArm), which
+  // is the only condition under which the two rules disagree.
+  it('preserves the packer hip anchor across a direction, so a swinging limb cannot slide the character', async () => {
+    const id = newId();
+    await lockAllAnchors(id);
+    await buildFinalizedWalkSet(id, {
+      varyArm: true,
+      alignment: { cellSize: 40, targetPivot: [20, 35] },
+    });
+    const result = await compileAtlas(id);
+    const manifest = JSON.parse(await readFile(join(TEST_ROOT, 'sprites', id, result.manifestPath), 'utf8'));
+
+    for (const row of manifest.directions) {
+      const walkCells = row.cells.filter((c) => c.column !== 'idle');
+      // Every walk cell of a direction lands on ONE x — that IS the preserved
+      // registration. (The idle cell is a raw anchor with no packer alignment
+      // behind it, so it keeps silhouette-centre placement and is excluded.)
+      expect(new Set(walkCells.map((c) => c.translation[0])).size).toBe(1);
+      // Guard against passing because the silhouettes came out identical after
+      // all: the varying limb must still be visible in the measured bounds.
+      expect(new Set(walkCells.map((c) => c.occupiedBounds.width)).size).toBeGreaterThan(1);
+      // The runtime ground-line contract is per-cell and still holds.
+      for (const cell of row.cells) {
+        expect(cell.occupiedBounds.top + cell.occupiedBounds.height - 1).toBe(DEFAULT_ATLAS_GEOMETRY.pivot[1]);
+      }
+    }
+  });
+
+  // The packer's robust baseline is only worth having if it survives compile.
+  // It nearly didn't: this stage pinned the raw bbox bottom at a FOUR TIMES more
+  // sensitive alpha threshold, so it re-pinned the speck to the ground line and
+  // landed the body exactly where the old code did — fixing the strip preview
+  // and nothing the game actually loads.
+  it('ignores a speck below the sole when grounding a compiled cell', async () => {
+    const id = newId();
+    await lockAllAnchors(id);
+    await buildFinalizedWalkSet(id, { speckFrames: [2], alignment: { cellSize: 40, targetPivot: [20, 35] } });
+    const result = await compileAtlas(id);
+    const manifest = JSON.parse(await readFile(join(TEST_ROOT, 'sprites', id, result.manifestPath), 'utf8'));
+
+    for (const row of manifest.directions) {
+      const walkCells = row.cells.filter((c) => c.column !== 'idle');
+      // The specked frame must sit at the same height as its neighbours: one
+      // stray pixel below the feet must not lift the body.
+      expect(new Set(walkCells.map((c) => c.translation[1])).size).toBe(1);
+    }
   });
 
   it('compiles a variable-frame (12-frame) walk set into a wider atlas + geometry', async () => {
