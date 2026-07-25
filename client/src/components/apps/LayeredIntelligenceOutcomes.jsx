@@ -82,7 +82,7 @@ export default function LayeredIntelligenceOutcomes({ appId }) {
     );
   }
 
-  const { stats, execution, rejections, recent, tracked = true } = state.data;
+  const { stats, execution, metrics, rejections, recent, tracked = true } = state.data;
 
   if (!stats || stats.total === 0) {
     return (
@@ -117,7 +117,15 @@ export default function LayeredIntelligenceOutcomes({ appId }) {
   // the API caps `recent` at a limit above what we render, so `recent.length` would
   // undercount the real remainder for an app with a long proposal history.
   const hiddenCount = Math.max(0, stats.total - visible.length);
-  const executionScopes = Object.entries(execution?.byScope || {});
+  // Per-scope rows come from `metrics.byScope`, not `execution.byScope`: the latter is
+  // built from approved records only, so a scope whose every proposal was rejected is
+  // missing from it entirely — and among this app's approved scopes, that is the one a
+  // reader most needs to see. No fallback to `execution.byScope`: its buckets carry
+  // neither `approvalToCompletionRate` nor `rejected`, so every row would render as
+  // "none approved" — worse than not rendering. The route always sends `metrics`
+  // alongside `execution` when `read` is true, and a falsy `read` already short-circuits
+  // to the error banner above, so there is no shape where only one of them arrives.
+  const executionScopes = Object.entries(metrics?.byScope || {});
 
   return (
     <div className="space-y-3 bg-port-bg border border-port-border rounded-lg px-3 py-3">
@@ -165,6 +173,18 @@ export default function LayeredIntelligenceOutcomes({ appId }) {
           <p className="text-xs text-gray-500">
             {execution.completed} completed · {execution.abandoned} abandoned · {execution.awaitingExecution} awaiting execution
           </p>
+          {/*
+            Approval → completion (#3014). Distinct from the rate above: this divides by
+            every APPROVED proposal, so approved work still sitting unexecuted drags it
+            down. A wide gap between the two is the "approved but never delivered" signal
+            — proposals being lost rather than rejected — so both are shown, never one.
+          */}
+          <p className="text-xs text-gray-500">
+            <span className="text-gray-300">
+              {execution.approvalToCompletionRate == null ? '—' : `${Math.round(execution.approvalToCompletionRate)}%`}
+            </span>
+            {' '}of approvals delivered ({execution.completed}/{execution.approved})
+          </p>
           {execution.duration?.count > 0 && (
             <p className="text-xs text-gray-500">
               Filed → completed: median {formatDurationMs(execution.duration.medianMs)} · p90 {formatDurationMs(execution.duration.p90Ms)}
@@ -176,7 +196,16 @@ export default function LayeredIntelligenceOutcomes({ appId }) {
                 <li key={scope} className="text-xs text-gray-500 flex justify-between gap-2">
                   <span className="min-w-0 break-all">{scope}</span>
                   <span className="shrink-0">
-                    {summary.completionRate == null ? 'awaiting' : `${Math.round(summary.completionRate)}%`} · {summary.completed}/{summary.attempted || 0}
+                    {/*
+                      Delivery against APPROVALS, so a scope sitting on unexecuted
+                      approvals reads as partial rather than as a perfect attempted-only
+                      score. `null` means nothing was approved here at all — say so
+                      instead of printing a rate over a zero denominator.
+                    */}
+                    {summary.approvalToCompletionRate == null
+                      ? 'none approved'
+                      : `${Math.round(summary.approvalToCompletionRate)}% · ${summary.completed}/${summary.approved}`}
+                    {summary.rejected > 0 && ` · ${summary.rejected} rejected`}
                   </span>
                 </li>
               ))}

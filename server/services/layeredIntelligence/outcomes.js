@@ -16,7 +16,7 @@ import {
   LI_DEGRADED_SUCCESS_THRESHOLD, LI_HARD_GATE_EXECUTION_THRESHOLD, CLOSED_SUPPRESSION_MS,
 } from './constants.js';
 import { normalizeSlug, extractSlugFromBody, isIssueWithinDedupWindow } from './dedup.js';
-import { computePostApprovalCompletion } from './awareness.js';
+import { computePostApprovalCompletion, scopeKeyOf } from './awareness.js';
 
 /**
  * Derive a resolved outcome for a filed proposal from its live tracker issue.
@@ -74,6 +74,131 @@ export function summarizeOutcomeStats(outcomes = []) {
   };
 }
 
+// The per-scope EXECUTION bucket used for a scope that has no approvals, so
+// `computePostApprovalCompletion` never built one for it (e.g. a scope whose every
+// proposal was rejected). Zeroed counts with NULL rates — "this scope has approved
+// nothing" is not "this scope completes 0% of what it approved".
+const EMPTY_SCOPE_EXECUTION = {
+  approved: 0,
+  completed: 0,
+  abandoned: 0,
+  awaitingExecution: 0,
+  attempted: 0,
+  completionRate: null,
+  approvalToCompletionRate: null
+};
+
+// A scope's zeroed FILING tally, shared by the accumulator's seed and the lookup
+// fallback below so the two can't drift apart.
+const emptyScopeFiling = () => ({ rejected: 0, abandonedAtFiling: 0, pending: 0 });
+
+/**
+ * Roll this app's outcome records into the single `li-outcomes` effectiveness metrics
+ * object (#3014) — the approval → completion signal LI had no way to read about
+ * itself. Pure + side-effect-free and DERIVED, not stored: every field comes from the
+ * per-proposal records the outcome store already persists (`data/cos/li-outcomes/`),
+ * so there is no second on-disk aggregate to drift from its source and no migration to
+ * keep in step. Callers that want it persisted should persist the records (already
+ * done), not this.
+ *
+ * WHY this exists when the route already returns `stats` + `execution`: neither can
+ * answer the question the issue was filed for — "are my approved proposals being
+ * REJECTED, or approved and then LOST?" — per scope. `summarizeOutcomeStats` has no
+ * per-scope breakdown at all, and `computePostApprovalCompletion.byScope` is built
+ * from APPROVED records only, so a scope whose every proposal was rejected does not
+ * appear in it. This is the union of the two, which is the only view where a scope's
+ * rejection count and its delivery rate sit side by side.
+ *
+ * Composes both existing aggregators rather than re-deriving either — the same "one
+ * place the math lives" rule `summarizeOutcomeStats` was extracted for, so the roll-up,
+ * the prompt block, and the dashboard can never disagree. Pass `stats`/`execution` when
+ * the caller has already computed them (the route has) to skip recomputing both.
+ *
+ * `totalCompleted` deliberately counts successful hand-offs of APPROVED proposals
+ * only: a hand-off that completed for a proposal the user later rejected is not
+ * evidence that approval leads to delivery, and letting it into the numerator could
+ * push `approvalToCompletionRate` above 100%.
+ *
+ * NAMING — "abandoned" is ambiguous in this domain, so this object never uses it bare.
+ * A proposal can be dropped on either side of the lifecycle, and the sibling
+ * `execution` block already spends the bare word on the second meaning:
+ *   - `abandonedAtFiling` / `totalAbandonedAtFiling` — the FILING-side `abandoned`
+ *     outcome: the tracker closed it for some reason other than merge or reject.
+ *     "The user dropped it."
+ *   - `failedExecution`   / `totalFailedExecution`   — the EXECUTION-side failure:
+ *     it was approved, handed off, and the hand-off failed. "LI couldn't implement it."
+ * (`computePostApprovalCompletion` returns the latter as plain `abandoned`, which is
+ * what `execution.abandoned` means in the same API payload. Rather than rename that
+ * established field and its consumers, this block avoids the collision by never
+ * exposing a bare `abandoned` of its own.)
+ *
+ * @param {Array} [outcomes] - the app's li-outcomes records (from listOutcomes).
+ * @param {object} [precomputed] - optional already-computed aggregates, to avoid a
+ *   second pass when the caller needs them separately anyway.
+ * @param {object} [precomputed.stats] - a `summarizeOutcomeStats(outcomes)` result.
+ * @param {object} [precomputed.execution] - a `computePostApprovalCompletion(...)` result.
+ * @returns {{ totalFiled: number, totalApproved: number, totalCompleted: number,
+ *   totalRejected: number, totalAbandonedAtFiling: number, totalPending: number,
+ *   totalAwaitingExecution: number, totalFailedExecution: number,
+ *   approvalToCompletionRate: number|null, completionRate: number|null,
+ *   duration: object, byScope: Object<string, object> }}
+ */
+export function computeProposalOutcomeMetrics(outcomes = [], { stats = null, execution = null } = {}) {
+  const { filed, total, merged, rejected, abandoned, pending } = stats || summarizeOutcomeStats(outcomes);
+  const postApproval = execution || computePostApprovalCompletion(filed);
+
+  // Filing-side per-scope tallies. Keyed the same way computePostApprovalCompletion
+  // keys its buckets ('unknown' for a scopeless record) so the two sides join.
+  const filingByScope = new Map();
+  for (const record of filed) {
+    const scope = scopeKeyOf(record);
+    const agg = filingByScope.get(scope) || emptyScopeFiling();
+    if (record.outcome === 'rejected') agg.rejected += 1;
+    else if (record.outcome === 'abandoned') agg.abandonedAtFiling += 1;
+    else if (!record.outcome) agg.pending += 1;
+    filingByScope.set(scope, agg);
+  }
+
+  // Null prototype for the same reason computeExecutionByDomain uses one: `scope` is
+  // an LLM-authored free string, so a literal "__proto__" key on a plain object would
+  // rewrite the prototype instead of adding a bucket.
+  const byScope = Object.create(null);
+  for (const scope of new Set([...Object.keys(postApproval.byScope), ...filingByScope.keys()])) {
+    const scopeExecution = postApproval.byScope[scope] || EMPTY_SCOPE_EXECUTION;
+    const filing = filingByScope.get(scope) || emptyScopeFiling();
+    byScope[scope] = {
+      approved: scopeExecution.approved,
+      completed: scopeExecution.completed,
+      rejected: filing.rejected,
+      abandonedAtFiling: filing.abandonedAtFiling,
+      failedExecution: scopeExecution.abandoned,
+      awaitingExecution: scopeExecution.awaitingExecution,
+      pending: filing.pending,
+      attempted: scopeExecution.attempted,
+      completionRate: scopeExecution.completionRate,
+      approvalToCompletionRate: scopeExecution.approvalToCompletionRate
+    };
+  }
+
+  return {
+    totalFiled: total,
+    totalApproved: merged,
+    totalCompleted: postApproval.completed,
+    totalRejected: rejected,
+    totalAbandonedAtFiling: abandoned,
+    // Filed but not yet judged by the tracker — awaiting triage, NOT a failure.
+    totalPending: pending,
+    // Approved but never handed off / still running: the "approved but LOST" bucket
+    // that `approvalToCompletionRate` counts against LI and a rejection tally misses.
+    totalAwaitingExecution: postApproval.awaitingExecution,
+    totalFailedExecution: postApproval.abandoned,
+    approvalToCompletionRate: postApproval.approvalToCompletionRate,
+    completionRate: postApproval.completionRate,
+    duration: postApproval.duration,
+    byScope
+  };
+}
+
 /**
  * Format the LI outcome-feedback report (#2428) from this app's recorded
  * proposals + their reconciled outcomes. Pure + side-effect-free: the LI hook
@@ -117,16 +242,30 @@ export function computeOutcomesReport({ outcomes = [], hasPlannedWork = false } 
     .sort((a, b) => b[1].approved - a[1].approved)
     .map(([scope, summary]) => {
       const rate = summary.completionRate == null ? 'no completed hand-offs yet' : `${Math.round(summary.completionRate)}% completed`;
+      // Approval → completion (#3014): the share of this scope's APPROVED proposals
+      // that actually landed. Sits alongside the attempted-only rate above so a scope
+      // whose few attempts all succeeded but whose approvals mostly sit unexecuted
+      // reads as the partial delivery it is, not as 100%.
+      const approvalRate = summary.approvalToCompletionRate == null
+        ? 'no approvals yet'
+        : `${Math.round(summary.approvalToCompletionRate)}% of approvals delivered`;
       const duration = summary.duration.medianMs == null
         ? 'no completion-time sample yet'
         : `median filed-to-completed ${formatDuration(summary.duration.medianMs)} (p90 ${formatDuration(summary.duration.p90Ms)})`;
-      return `- ${scope}: ${summary.completed} completed, ${summary.abandoned} abandoned, ${summary.awaitingExecution} awaiting execution; ${rate}; ${duration}`;
+      return `- ${scope}: ${summary.completed} completed, ${summary.abandoned} abandoned, ${summary.awaitingExecution} awaiting execution; ${rate}; ${approvalRate}; ${duration}`;
     });
   const postApprovalLines = postApproval.approved === 0 ? [] : [
     '',
     'Post-approval LI hand-off follow-through:',
     `- Approved proposals: ${postApproval.approved}; ${postApproval.completed} completed, ${postApproval.abandoned} abandoned, ${postApproval.awaitingExecution} awaiting execution.`,
     `- Completion rate: ${postApproval.completionRate == null ? 'no terminal hand-offs yet' : `${Math.round(postApproval.completionRate)}% (${postApproval.completed}/${postApproval.attempted} attempted)`}.`,
+    // The downstream-effectiveness read (#3014). Denominator is every APPROVED
+    // proposal, so work the user accepted but that was never handed off — or is still
+    // stuck — counts against LI here even though the attempted-only rate above ignores
+    // it. This is the number that answers "do my approved proposals actually land?",
+    // and a large gap between the two rates means proposals are being LOST, not rejected.
+    `- Approval → completion rate: ${postApproval.approvalToCompletionRate == null ? 'nothing approved yet' : `${Math.round(postApproval.approvalToCompletionRate)}% (${postApproval.completed}/${postApproval.approved} approved)`}.`
+      + `${postApproval.awaitingExecution > 0 ? ` ${postApproval.awaitingExecution} approved proposal(s) are still awaiting execution — approved work that has not been delivered. Prefer proposals a coding agent can finish over adding to that queue.` : ''}`,
     `- Filed-to-completed duration: ${postApproval.duration.medianMs == null ? 'no valid completion-time sample yet' : `average ${formatDuration(postApproval.duration.averageMs)}, median ${formatDuration(postApproval.duration.medianMs)}, p90 ${formatDuration(postApproval.duration.p90Ms)} (${postApproval.duration.count} completed)`}.`,
     '- By approved proposal scope:',
     ...(postApprovalScopeLines.length ? postApprovalScopeLines : ['- (none)'])

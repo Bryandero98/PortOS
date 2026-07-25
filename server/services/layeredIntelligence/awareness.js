@@ -27,6 +27,22 @@ export function clampScopeLabel(label) {
 }
 
 /**
+ * Resolve an outcome record's grouping key: its trimmed `scope`, or `fallback` when the
+ * record carries none. Every per-scope aggregator here needs this, and the `fallback`
+ * is the one thing they legitimately disagree on — a report that must not invent a
+ * bucket passes `null` and skips the record (computeExecutionByDomain,
+ * computeCrossReferenceAnalysis), while a breakdown that must account for every record
+ * passes the default `'unknown'` (computePostApprovalCompletion,
+ * computeProposalOutcomeMetrics). Keeping the predicate in one place means the four
+ * groupings can't drift on what counts as a scope — which would silently split one
+ * scope's records across two buckets.
+ */
+export function scopeKeyOf(record, fallback = 'unknown') {
+  const scope = record?.scope;
+  return typeof scope === 'string' && scope.trim() ? scope.trim() : fallback;
+}
+
+/**
  * Render an avoid/prefer prompt block from pre-classified item lists — the presentation
  * both scope-awareness signals share (#2760 install-wide task-type rates, #2765
  * per-proposal-domain execution rates). Owns the sort (worst-first avoid, best-first
@@ -155,7 +171,7 @@ export function computeExecutionByDomain(outcomes = []) {
   for (const r of Array.isArray(outcomes) ? outcomes : []) {
     if (!r || typeof r !== 'object') continue;
     if (!PROPOSAL_EXECUTION_OUTCOMES.includes(r.executionOutcome)) continue;
-    const scope = typeof r.scope === 'string' && r.scope.trim() ? r.scope.trim() : null;
+    const scope = scopeKeyOf(r, null);
     if (!scope) continue;
     if (!recordsByScope.has(scope)) recordsByScope.set(scope, []);
     recordsByScope.get(scope).push(r);
@@ -191,6 +207,19 @@ export function computeExecutionByDomain(outcomes = []) {
  * Duration is measured from filing to a successful hand-off completion. That is the
  * only timestamp pair available for every tracker and remains meaningful when the
  * coding hand-off finishes before the tracker issue is reconciled as merged.
+ *
+ * TWO completion rates, deliberately (#3014) — they answer different questions and
+ * conflating them hides the failure mode the metric exists to surface:
+ *   - `completionRate`           = completed / ATTEMPTED (completed + abandoned).
+ *     "Of the hand-offs that actually terminated, how many succeeded?" — the
+ *     execution-quality read, which excludes work still in flight.
+ *   - `approvalToCompletionRate` = completed / APPROVED (every merged proposal).
+ *     "Of everything the user approved, how much has actually landed?" — the
+ *     downstream-effectiveness read. It counts an approved proposal that was never
+ *     handed off, or is stuck awaiting execution, as NOT completed, which is exactly
+ *     the "approved but LOST" signal a rejection-only view cannot distinguish.
+ * Both are `null` (not 0) when their denominator is zero — the sentinel rule: "nothing
+ * has been approved / attempted yet" must not read as "everything failed".
  */
 export function computePostApprovalCompletion(outcomes = []) {
   const approved = (Array.isArray(outcomes) ? outcomes : []).filter(record =>
@@ -230,13 +259,17 @@ export function computePostApprovalCompletion(outcomes = []) {
       awaitingExecution: records.length - attempted,
       attempted,
       completionRate: attempted > 0 ? (completed / attempted) * 100 : null,
+      // Approval → completion (#3014): denominator is every APPROVED proposal, so a
+      // merged proposal that is stuck awaiting execution drags this down while leaving
+      // `completionRate` untouched. Division-by-zero yields null, never 0.
+      approvalToCompletionRate: records.length > 0 ? (completed / records.length) * 100 : null,
       duration
     };
   };
 
   const recordsByScope = new Map();
   for (const record of approved) {
-    const scope = typeof record.scope === 'string' && record.scope.trim() ? record.scope.trim() : 'unknown';
+    const scope = scopeKeyOf(record);
     const records = recordsByScope.get(scope) || [];
     records.push(record);
     recordsByScope.set(scope, records);
@@ -353,7 +386,7 @@ export function computeCrossReferenceAnalysis({ outcomes = [] } = {}) {
   const mergeByScope = new Map();
   for (const o of records) {
     if (!o || typeof o !== 'object') continue;
-    const scope = typeof o.scope === 'string' && o.scope.trim() ? o.scope.trim() : null;
+    const scope = scopeKeyOf(o, null);
     if (!scope) continue;
     if (!PROPOSAL_OUTCOMES.includes(o.outcome)) continue; // unresolved: no verdict yet
     const agg = mergeByScope.get(scope) || { merged: 0, resolved: 0 };
