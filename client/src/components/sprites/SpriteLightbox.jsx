@@ -15,7 +15,7 @@ import Modal from '../ui/Modal.jsx';
 import AssetPromptSection from './AssetPromptSection.jsx';
 import { checkerboardStyle, spriteAssetUrl, PIXELATED } from './spriteAssets.js';
 
-export default function SpriteLightbox({ recordId, path, alt, onClose }) {
+export default function SpriteLightbox({ recordId, path, version, alt, onClose }) {
   const fileName = path.split('/').pop();
   return (
     <Modal
@@ -43,7 +43,7 @@ export default function SpriteLightbox({ recordId, path, alt, onClose }) {
           style={checkerboardStyle(12)}
         >
           <img
-            src={spriteAssetUrl(recordId, path)}
+            src={spriteAssetUrl(recordId, path, version)}
             alt={alt ?? path}
             className="mx-auto max-w-full max-h-[75vh] object-contain"
             style={PIXELATED}

@@ -19,7 +19,7 @@
  */
 
 import { join } from 'path';
-import { readdir, rm } from 'fs/promises';
+import { readdir, rm, stat } from 'fs/promises';
 import { randomUUID } from 'crypto';
 import {
   ensureDir, atomicWrite, readJSONFile, pathExists, sha256File,
@@ -272,10 +272,33 @@ function normalizeStaleRendering(run) {
 // here, in memory, at read time instead. Never written back to disk.
 function normalizeStripPreview(recordId, run) {
   if (!run?.stripPreview) return run;
+  const patch = {};
+
   const raw = run.stripPreview.stripPath ?? run.stripPreview.path;
   const stripPath = toRecordRelativeAssetPath(recordId, raw);
-  if (!stripPath) return run;
-  return { ...run, stripPreview: { ...run.stripPreview, stripPath } };
+  if (stripPath) patch.stripPath = stripPath;
+
+  // Collapse the strip's cache-busting token to ONE field the client reads
+  // (#3020). The packer rewrites a strip in place at a stable path, so the URL
+  // needs a token that changes with the bytes — but the two run flavors can
+  // afford different tokens: a native run persists the real content hash, while
+  // a synthesized redraw run has no hash in its manifest and sets `stripVersion`
+  // itself from an mtime-size stat. Deriving the native case HERE — the one
+  // choke point every run reader passes through — means the client never learns
+  // that difference, and a strip consumer cannot silently paint a stale image by
+  // forgetting to apply the precedence rule by hand. (That is not hypothetical:
+  // the first cut of this fix resolved it client-side and the Loop Trimmer read
+  // a flattened object that never carried either field, so its half was inert.)
+  //
+  // Truncated to 12 chars because a sha256 is 64 and only needs to be unique
+  // across one file's own history; `stripVersion` is set verbatim by its
+  // producer, since a composite token can't be cut without losing a component.
+  if (!run.stripPreview.stripVersion && typeof run.stripPreview.stripSha256 === 'string' && run.stripPreview.stripSha256) {
+    patch.stripVersion = run.stripPreview.stripSha256.slice(0, 12);
+  }
+
+  if (!Object.keys(patch).length) return run;
+  return { ...run, stripPreview: { ...run.stripPreview, ...patch } };
 }
 
 // Same fixup as normalizeStripPreview, for the OTHER repo-anchored path fields
@@ -416,16 +439,29 @@ async function loadRedrawRun(recordId, direction, entry) {
   const frameCount = Number(cycle?.frameCount);
   if (!Number.isInteger(frameCount) || frameCount < 2) return null;
 
+  // `stat` answers BOTH questions in one syscall — does the strip exist, and
+  // what is its cache-busting token (#3020) — so this deliberately stats rather
+  // than calling pathExists and then stat-ing the winner again. A redraw
+  // manifest carries no strip hash, and this is a READ path (it runs on every
+  // walk-state load, per direction), so hashing a multi-MB PNG here would be a
+  // real per-request cost; mtime+size is the cheap stand-in that still changes
+  // whenever a re-import rewrites the strip at its stable path. Size matters
+  // alongside mtime because mtime resolution can be too coarse to catch a fast
+  // rewrite — which is also why this token must never be truncated.
   let stripPath = null;
+  let stripStat = null;
   for (const field of REDRAW_STRIP_FIELDS) {
     const rel = toRecordRelativeAssetPath(recordId, cycle[field]);
     // eslint-disable-next-line no-await-in-loop -- ordered preference: stop at the first strip that exists
-    if (rel && await pathExists(join(spriteDir(recordId), rel))) {
+    const found = rel && await stat(join(spriteDir(recordId), rel)).catch(() => null);
+    if (found) {
       stripPath = rel;
+      stripStat = found;
       break;
     }
   }
   if (!stripPath) return null;
+  const stripVersion = `${Math.round(stripStat.mtimeMs)}-${stripStat.size}`;
 
   const cellSize = Number(manifest.cellSize) > 0 ? Number(manifest.cellSize) : WALK_CELL_SIZE;
   const fps = Number(cycle.referenceFps) > 0 ? Number(cycle.referenceFps) : WALK_FPS;
@@ -454,6 +490,7 @@ async function loadRedrawRun(recordId, direction, entry) {
       ? { importedPackaging: true } : {}),
     stripPreview: {
       stripPath,
+      stripVersion,
       frameCount,
       fps,
       cellWidth: cellSize,

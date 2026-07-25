@@ -132,8 +132,16 @@ describe.skipIf(!ffmpegBin)('runWalkPostprocess e2e (synthetic keyed walk video)
     const preview = JSON.parse(await readFile(join(runAbs, 'generated', 'review-preview.json'), 'utf8'));
     expect(preview).toEqual({
       stripPath: 'grok/walk-east-fixture0/generated/fixture-hero-walk-east-strip.png',
+      // The client versions the strip's URL with this hash (#3020) — the packer
+      // rewrites the strip in place, so without it the browser keeps painting
+      // the previously-decoded image after a reprocess.
+      stripSha256: manifest.stripSha256,
       frameCount: n, fps: WALK_DEFAULT_FPS, cellWidth: 384, cellHeight: 384, row: 0, startColumn: 0,
     });
+    // Guard against the hash being echoed from a stale/empty source rather than
+    // the strip actually written — it must be a real sha256 of real content.
+    expect(preview.stripSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.stripPreview.stripSha256).toBe(manifest.stripSha256);
 
     // Determinism: same video, second run → byte-identical manifest & strip.
     const second = await runOnce('run-b', videoAbs, anchorAbs);
