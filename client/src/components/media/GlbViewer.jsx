@@ -100,13 +100,19 @@ const ENVIRONMENT_CONTENTS = (
 // declare it as a dependency, so the prop only lands while `children` changes
 // identity every render — coupling a user-facing control to an upstream bug AND
 // to the re-bake cost above. drei's `applyProps` skips `undefined`, so omitting
-// the prop leaves this write untouched, and its save/restore reads back the
-// live value. Mounted after `<Environment>` so this layout effect runs last.
-function EnvironmentIntensity({ value }) {
+// the prop leaves this write untouched when its effect *applies*.
+//
+// `reassertOn` exists because its *cleanup* does not: drei snapshots
+// `scene.environmentIntensity` before we ever write it (so the snapshot is
+// three's default 1) and restores that snapshot unconditionally when its effect
+// re-runs. Its only remaining live dependency is `background`, so pass the same
+// toggle here — otherwise ticking "Show HDRI background" silently returns the
+// IBL to full strength while the slider still reads the user's value.
+function EnvironmentIntensity({ value, reassertOn }) {
   const scene = useThree((state) => state.scene);
   useLayoutEffect(() => {
     scene.environmentIntensity = value;
-  }, [scene, value]);
+  }, [scene, value, reassertOn]);
   return null;
 }
 
@@ -193,7 +199,7 @@ export default function GlbViewer({
           <Environment background={showEnvironmentBackground} resolution={256}>
             {ENVIRONMENT_CONTENTS}
           </Environment>
-          <EnvironmentIntensity value={environmentIntensity} />
+          <EnvironmentIntensity value={environmentIntensity} reassertOn={showEnvironmentBackground} />
           <Suspense fallback={null}>
             <Bounds fit clip observe margin={1.2}>
               <GlbModel src={src} forceOpaque={forceOpaque} />

@@ -120,6 +120,25 @@ describe('GlbViewer', () => {
     expect(mockScene.environmentIntensity).toBe(0);
   });
 
+  // drei's Environment snapshots scene.environmentIntensity before we write it
+  // and restores that snapshot whenever its own effect re-runs — and toggling
+  // the HDRI background is the one thing that still re-runs it. Without a
+  // re-assert the IBL silently returns to full strength while the slider still
+  // reads the user's value. The mocked Environment can't perform the restore,
+  // so stand in for it by writing the pre-write default back onto the scene.
+  it('re-asserts the environment intensity when the HDRI background is toggled', () => {
+    delete mockScene.environmentIntensity;
+    render(<GlbViewer src="/data/models3d/robot-a1b2.glb" />);
+    openControls();
+    fireEvent.change(screen.getByLabelText('Environment light'), { target: { value: '0' } });
+    expect(mockScene.environmentIntensity).toBe(0);
+
+    mockScene.environmentIntensity = 1; // drei restoring its pre-write snapshot
+    fireEvent.click(screen.getByLabelText('Show HDRI background'));
+
+    expect(mockScene.environmentIntensity).toBe(0);
+  });
+
   it('honors an explicit downloadName over the derived one', () => {
     render(<GlbViewer src="/data/models3d/x.glb?v=2" downloadName="my-mesh.glb" />);
     expect(screen.getByRole('link', { name: /Download \.glb/i })).toHaveAttribute('download', 'my-mesh.glb');
