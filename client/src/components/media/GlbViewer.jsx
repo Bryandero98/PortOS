@@ -1,5 +1,5 @@
-import { Suspense, useEffect, useId, useMemo, useState } from 'react';
-import { Canvas } from '@react-three/fiber';
+import { Suspense, useEffect, useId, useLayoutEffect, useMemo, useState } from 'react';
+import { Canvas, useThree } from '@react-three/fiber';
 import {
   Bounds,
   Environment,
@@ -7,9 +7,15 @@ import {
   OrbitControls,
   useGLTF,
 } from '@react-three/drei';
-import { Download, Rotate3d } from 'lucide-react';
+import { Download, Rotate3d, SlidersHorizontal } from 'lucide-react';
+import { BackSide } from 'three';
 
 const DEFAULT_BACKGROUND = '#050505';
+// The procedural environment renders into a cube map whose unlit areas would
+// otherwise be pure black — so "Show HDRI background" produced hard-edged white
+// panels floating in a void, and the IBL only ever lit from three directions. An
+// inward-facing sphere fills the gaps so the environment reads as a studio.
+const ENVIRONMENT_BACKDROP = '#2b2b2b';
 
 // Reusable viewer for a generated `.glb` mesh: drei `useGLTF` loads the model,
 // `Bounds fit` frames it regardless of the source's scale, `OrbitControls` lets
@@ -73,10 +79,47 @@ function GlbModel({ src, forceOpaque }) {
   return <primitive object={renderedScene} />;
 }
 
+// The environment's contents never change, so keep this element identity stable:
+// drei re-bakes the cube map (six render passes + a PMREM regeneration) every
+// time `children` changes identity, which for inline JSX is every render — i.e.
+// once per pointer-move while dragging any other control on the panel.
+const ENVIRONMENT_CONTENTS = (
+  <>
+    <mesh scale={100}>
+      <sphereGeometry args={[1, 32, 32]} />
+      <meshBasicMaterial color={ENVIRONMENT_BACKDROP} side={BackSide} />
+    </mesh>
+    <Lightformer form="rect" intensity={3} position={[0, 4, 4]} rotation-x={Math.PI / 2} scale={[5, 5, 1]} />
+    <Lightformer form="rect" intensity={1.5} position={[-4, 1, 2]} rotation-y={Math.PI / 2} scale={[3, 5, 1]} />
+    <Lightformer form="rect" intensity={1} position={[4, -1, -2]} rotation-y={-Math.PI / 2} scale={[3, 5, 1]} />
+  </>
+);
+
+// Own `scene.environmentIntensity` directly rather than passing drei's
+// `environmentIntensity` prop: drei applies it from an effect that doesn't
+// declare it as a dependency, so the prop only lands while `children` changes
+// identity every render — coupling a user-facing control to an upstream bug AND
+// to the re-bake cost above. drei's `applyProps` skips `undefined`, so omitting
+// the prop leaves this write untouched when its effect *applies*.
+//
+// `reassertOn` exists because its *cleanup* does not: drei snapshots
+// `scene.environmentIntensity` before we ever write it (so the snapshot is
+// three's default 1) and restores that snapshot unconditionally when its effect
+// re-runs. Its only remaining live dependency is `background`, so pass the same
+// toggle here — otherwise ticking "Show HDRI background" silently returns the
+// IBL to full strength while the slider still reads the user's value.
+function EnvironmentIntensity({ value, reassertOn }) {
+  const scene = useThree((state) => state.scene);
+  useLayoutEffect(() => {
+    scene.environmentIntensity = value;
+  }, [scene, value, reassertOn]);
+  return null;
+}
+
 function LightingControl({ label, max, value, onChange }) {
   return (
-    <label className="mb-1 flex items-center gap-2 last:mb-0">
-      <span className="w-12">{label}</span>
+    <label className="flex items-center gap-2">
+      <span className="w-20">{label}</span>
       <input
         type="range"
         min="0"
@@ -87,7 +130,7 @@ function LightingControl({ label, max, value, onChange }) {
         aria-label={`${label} light`}
         className="min-w-0 flex-1 accent-port-accent"
       />
-      <output className="w-5 text-right tabular-nums text-gray-300">{value.toFixed(1)}</output>
+      <output className="w-7 text-right tabular-nums text-gray-300">{value.toFixed(1)}</output>
     </label>
   );
 }
@@ -105,11 +148,17 @@ export default function GlbViewer({
   initialBackground = DEFAULT_BACKGROUND,
 }) {
   const backgroundInputId = useId();
+  const controlsPanelId = useId();
   const [background, setBackground] = useState(initialBackground);
-  const [ambientIntensity, setAmbientIntensity] = useState(0.9);
-  const [keyIntensity, setKeyIntensity] = useState(1.1);
+  const [ambientIntensity, setAmbientIntensity] = useState(0.6);
+  const [keyIntensity, setKeyIntensity] = useState(1.2);
   const [fillIntensity, setFillIntensity] = useState(0.4);
+  // The image-based lighting is strong enough to flatten the three light
+  // sliders when left at full strength — exposing it as its own control is what
+  // makes Ambient/Key/Fill visibly matter (dial it to 0 for lights-only).
+  const [environmentIntensity, setEnvironmentIntensity] = useState(0.6);
   const [showEnvironmentBackground, setShowEnvironmentBackground] = useState(false);
+  const [controlsOpen, setControlsOpen] = useState(false);
   if (!src) return null;
   const href = downloadHref || src;
   // With an explicit download endpoint the server's Content-Disposition wins, so
@@ -122,64 +171,35 @@ export default function GlbViewer({
         className="relative aspect-square w-full"
         style={{ backgroundColor: background }}
       >
-        <div className="absolute right-2 top-2 z-10 w-52 rounded-lg border border-white/20 bg-black/70 p-2 text-xs text-white shadow-lg backdrop-blur-sm">
-          <div className="flex items-center justify-between gap-2">
-            <label htmlFor={backgroundInputId}>Background</label>
-            <input
-              id={backgroundInputId}
-              type="color"
-              value={background}
-              onChange={(event) => setBackground(event.target.value)}
-              aria-label="Mesh preview background"
-              className="h-7 w-9 cursor-pointer rounded border border-white/30 bg-transparent p-0.5"
-            />
-          </div>
-          <div className="mt-2 border-t border-white/15 pt-2">
-            <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-gray-300">Lighting</p>
-            <LightingControl label="Ambient" max={2} value={ambientIntensity} onChange={setAmbientIntensity} />
-            <LightingControl label="Key" max={3} value={keyIntensity} onChange={setKeyIntensity} />
-            <LightingControl label="Fill" max={2} value={fillIntensity} onChange={setFillIntensity} />
-            <label className="mt-2 flex items-center gap-2 border-t border-white/15 pt-2 text-gray-200">
-              <input
-                type="checkbox"
-                checked={showEnvironmentBackground}
-                onChange={(event) => setShowEnvironmentBackground(event.target.checked)}
-                className="accent-port-accent"
-              />
-              Show HDRI background
-            </label>
-          </div>
-        </div>
+        {/* Settings live in a collapsed strip BELOW the canvas, not an overlay —
+            an always-on panel covered the upper-right quadrant of the model.
+            `aria-controls` is set only while the panel is mounted; the collapsed
+            state removes it, and a dangling IDREF is invalid ARIA. */}
+        <button
+          type="button"
+          onClick={() => setControlsOpen((open) => !open)}
+          aria-expanded={controlsOpen}
+          aria-controls={controlsOpen ? controlsPanelId : undefined}
+          aria-label="Preview display settings"
+          title="Preview display settings"
+          className={`absolute right-2 top-2 z-10 inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-white/20 bg-black/60 text-white backdrop-blur-sm hover:bg-black/80 focus-visible:ring-2 focus-visible:ring-port-accent sm:min-h-0 sm:min-w-0 sm:p-1.5 ${controlsOpen ? 'ring-1 ring-port-accent' : ''}`}
+        >
+          <SlidersHorizontal className="h-4 w-4" />
+        </button>
+        {/* No `<color attach="background">`: r3f canvases are alpha-clear, so the
+            surface's CSS color already IS the backdrop. A scene-level color only
+            duplicates it while racing Environment's own scene.background
+            save/restore whenever the HDRI toggle or the picker changes. */}
         <Canvas camera={{ position: [0, 0, 3], fov: 45 }} dpr={[1, 2]}>
-          <color attach="background" args={[background]} />
           <ambientLight intensity={ambientIntensity} />
           <directionalLight position={[4, 6, 5]} intensity={keyIntensity} />
           <directionalLight position={[-4, -2, -5]} intensity={fillIntensity} />
           {/* A procedural environment keeps metallic PBR textures readable without
               downloading an HDR preset — PortOS installs can be fully offline. */}
-          <Environment background={showEnvironmentBackground} resolution={128}>
-            <Lightformer
-              form="rect"
-              intensity={3}
-              position={[0, 4, 4]}
-              rotation-x={Math.PI / 2}
-              scale={[5, 5, 1]}
-            />
-            <Lightformer
-              form="rect"
-              intensity={1.5}
-              position={[-4, 1, 2]}
-              rotation-y={Math.PI / 2}
-              scale={[3, 5, 1]}
-            />
-            <Lightformer
-              form="rect"
-              intensity={1}
-              position={[4, -1, -2]}
-              rotation-y={-Math.PI / 2}
-              scale={[3, 5, 1]}
-            />
+          <Environment background={showEnvironmentBackground} resolution={256}>
+            {ENVIRONMENT_CONTENTS}
           </Environment>
+          <EnvironmentIntensity value={environmentIntensity} reassertOn={showEnvironmentBackground} />
           <Suspense fallback={null}>
             <Bounds fit clip observe margin={1.2}>
               <GlbModel src={src} forceOpaque={forceOpaque} />
@@ -188,6 +208,42 @@ export default function GlbViewer({
           <OrbitControls makeDefault enablePan enableZoom enableRotate />
         </Canvas>
       </div>
+      {controlsOpen && (
+        <div
+          id={controlsPanelId}
+          className="grid gap-x-6 gap-y-2 border-t border-port-border bg-port-card px-3 py-2.5 text-xs text-gray-200 sm:grid-cols-2"
+        >
+          <LightingControl label="Ambient" max={2} value={ambientIntensity} onChange={setAmbientIntensity} />
+          <LightingControl label="Key" max={3} value={keyIntensity} onChange={setKeyIntensity} />
+          <LightingControl label="Fill" max={2} value={fillIntensity} onChange={setFillIntensity} />
+          <LightingControl
+            label="Environment"
+            max={2}
+            value={environmentIntensity}
+            onChange={setEnvironmentIntensity}
+          />
+          <div className="flex items-center gap-2">
+            <label htmlFor={backgroundInputId} className="w-20">Background</label>
+            <input
+              id={backgroundInputId}
+              type="color"
+              value={background}
+              onChange={(event) => setBackground(event.target.value)}
+              aria-label="Mesh preview background"
+              className="h-7 w-10 cursor-pointer rounded border border-port-border bg-transparent p-0.5"
+            />
+          </div>
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={showEnvironmentBackground}
+              onChange={(event) => setShowEnvironmentBackground(event.target.checked)}
+              className="accent-port-accent"
+            />
+            Show HDRI background
+          </label>
+        </div>
+      )}
       <div className="flex items-center justify-between gap-2 border-t border-port-border px-3 py-2">
         <span className="inline-flex items-center gap-1.5 text-xs text-gray-500">
           <Rotate3d className="h-3.5 w-3.5" /> Drag to orbit · scroll to zoom
