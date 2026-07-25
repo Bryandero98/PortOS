@@ -20,6 +20,11 @@ import {
   generatePostDrill, scorePostLlmDrill, getPostDrillCacheStatus, submitTrainingEntry,
 } from '../../../services/api';
 
+// Mode activation crosses cache-status and drill-generation promises before a
+// clue renders. Give that real async chain enough time when the full client
+// suite is competing for CI's event loop.
+const GENERATED_DRILL_TIMEOUT = 5_000;
+
 // The selected mode now lives in the URL (`/post/wordplay/:mode`) — PostTab
 // owns that param and passes it down. This harness stands in for that routing:
 // clicking a mode button calls onSelectMode, which sets the `mode` prop, and the
@@ -63,7 +68,7 @@ describe('WordplayTrainer — training-log persistence (issue #2097)', () => {
     fireEvent.click(await screen.findByText('Compound Chain'));
 
     // Drill generated — a single-challenge round keeps this test to one round.
-    await waitFor(() => expect(screen.getByText('fire')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('fire')).toBeInTheDocument(), { timeout: GENERATED_DRILL_TIMEOUT });
 
     const input = screen.getByPlaceholderText(/other half/i);
     fireEvent.change(input, { target: { value: 'firehouse' } });
@@ -118,7 +123,7 @@ describe('WordplayTrainer — training-log persistence (issue #2097)', () => {
     await screen.findByText('Bridge Word'); // back on the mode grid
 
     fireEvent.click(screen.getByText('Bridge Word')); // enter mode B
-    await waitFor(() => expect(screen.getByText('news___')).toBeInTheDocument()); // B generated, not wedged
+    await waitFor(() => expect(screen.getByText('news___')).toBeInTheDocument(), { timeout: GENERATED_DRILL_TIMEOUT }); // B generated, not wedged
   });
 
   it('ignores a superseded generation when the same mode is re-entered mid-generation (issue #2098)', async () => {
@@ -137,7 +142,7 @@ describe('WordplayTrainer — training-log persistence (issue #2097)', () => {
     fireEvent.click(screen.getAllByRole('button')[0]);         // back to grid (invalidates run #1)
     await screen.findByText('Compound Chain');
     fireEvent.click(screen.getByText('Compound Chain'));       // re-enter A → run #2 resolves
-    await waitFor(() => expect(screen.getByText('water')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('water')).toBeInTheDocument(), { timeout: GENERATED_DRILL_TIMEOUT });
 
     // The stale run #1 finally resolves — its token is superseded, so it must NOT
     // swap the drill out from under the live run #2.
@@ -164,7 +169,7 @@ describe('WordplayTrainer — training-log persistence (issue #2097)', () => {
 
     fireEvent.click(await screen.findByText('Bridge Word'));
 
-    await waitFor(() => expect(screen.getByText('news___')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('news___')).toBeInTheDocument(), { timeout: GENERATED_DRILL_TIMEOUT });
 
     // Answer the FIRST of two puzzles.
     fireEvent.change(screen.getByPlaceholderText(/bridge word is/i), { target: { value: 'wrongword' } });
@@ -208,7 +213,7 @@ describe('WordplayTrainer — training-log persistence (issue #2097)', () => {
     render(<TrainerHarness onBack={() => {}} config={{}} onConfigUpdate={() => {}} />);
 
     fireEvent.click(await screen.findByText('Bridge Word'));
-    await waitFor(() => expect(screen.getByText('news___')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('news___')).toBeInTheDocument(), { timeout: GENERATED_DRILL_TIMEOUT });
 
     const input = screen.getByPlaceholderText(/bridge word is/i);
     fireEvent.change(input, { target: { value: 'wrongword' } });
