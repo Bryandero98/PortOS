@@ -50,13 +50,8 @@ import {
   WALK_TRACK, resolveAnimationTarget, withTrackTarget, targetDrift, describeTargetSource,
 } from './animationTargets.js';
 import { verifyPackagedFrames } from './walkFrames.js';
-import { GROK_VIDEO_DURATIONS } from '../videoGen/grok.js';
-
-// grok's image_to_video honors only 6s/10s and clamps shorter requests to ~6s,
-// so 6 is both the floor and the sensible default: a 6s clip yields plenty of
-// source frames (~70) for the cycle selector, and the walk's look is tuned by
-// frame count + fps, not clip length.
-const WALK_DEFAULT_DURATION = 6;
+import { probeVideoDuration } from '../../lib/ffmpeg.js';
+import { resolveGrokDuration } from '../../lib/grokVideoClip.js';
 
 // grok's walk render runs as an OBSERVABLE TUI session (issue: user wants to
 // watch/course-correct grok in the Shell) rather than a headless mediaJobQueue
@@ -867,7 +862,10 @@ async function startWalkGenerationImpl(recordId, body) {
     prepareWalkAnchorChromaInput(anchorAbs, inputAbs, chromaKey),
     getSettings(),
   ]);
-  const duration = GROK_VIDEO_DURATIONS.includes(Number(body.duration)) ? Number(body.duration) : WALK_DEFAULT_DURATION;
+  // Clip length grok will actually deliver — a request it doesn't offer falls
+  // back to its shortest (see lib/grokVideoClip.js). The walk's look comes from
+  // frameCount/fps below, not from how much footage the packer had to pick from.
+  const duration = resolveGrokDuration(body.duration);
   // Frame count + playback fps are the deterministic-postprocess knobs, not the
   // grok clip's — grok animates the same clip regardless, and the packer
   // resamples/labels the cycle afterward. Resolved from the set target above and
@@ -1028,7 +1026,20 @@ async function packageRun(recordId, run, overrides = {}, location = {}) {
     // failure is CAPTURED onto the run record — a throw escaping here would
     // strand an attach at 'postprocessing' with no error text.
     const videoAbs = resolveSpriteAssetPath(recordId, run.sourceVideoPath);
-    const manifest = await loadManifest(recordId);
+    // What grok DELIVERED, as opposed to what `run.duration` asked for — the
+    // requested length is not a promise (see lib/grokVideoClip.js). Stamped
+    // here, shared by attach + rerun, so a reprocess backfills it onto an older
+    // run. Overlap the probe with the (independent) manifest read.
+    //
+    // probeVideoDuration returns null when ffprobe is missing or the file has no
+    // parseable duration; leave the field ABSENT in that case rather than
+    // stamping 0, so "unknown" never reads as "a zero-length clip". A previously
+    // stamped value survives — a probe that can't run is not evidence of change.
+    const [probedSeconds, manifest] = await Promise.all([
+      probeVideoDuration(videoAbs),
+      loadManifest(recordId),
+    ]);
+    if (probedSeconds) run.sourceVideoSeconds = Math.round(probedSeconds * 100) / 100;
     const anchor = manifest?.anchors?.find((a) => a.direction === run.direction);
     if (!anchor?.path) throw new Error(`No locked ${run.direction} anchor in the reference manifest`);
     const result = await runWalkPostprocess({

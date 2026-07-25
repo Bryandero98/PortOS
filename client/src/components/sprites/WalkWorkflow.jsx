@@ -12,6 +12,7 @@ import CycleTarget from './CycleTarget.jsx';
 import SpritePreview from './SpritePreview.jsx';
 import { useAsyncAction } from '../../hooks/useAsyncAction.js';
 import { spriteAssetUrl, checkerboardStyle, PIXELATED } from './spriteAssets.js';
+import { GROK_VIDEO_DURATIONS } from '../../lib/grokVideoClip.js';
 import {
   WALK_PHASES, WALK_DEFAULT_FRAME_COUNT, WALK_DEFAULT_FPS,
 } from '../../lib/spriteTrimmer.js';
@@ -28,14 +29,30 @@ const CELL_PX = 96; // preview cell size — the strip animates at 96px/frame
 // 8, an imported redraw cycle can pack 12 — #2924), so the single keyframe
 // rule reads it from a per-preview custom property instead of hardcoding 8.
 const LOOP_KEYFRAMES = '@keyframes sprite-walk-loop { to { background-position-x: var(--sprite-walk-loop-end) } }';
-// Grok image_to_video clip lengths. In practice grok's tool only honors its
-// documented 6s/10s options and clamps anything shorter to ~6s — so the picker
-// offers just those two rather than lying about 1/2/3s. A 6s clip yields plenty
-// of source frames for the packer; the CYCLE'S look (walk vs run) is set by the
-// frame-count + speed controls below, not the clip length. Exported so the
-// Sprites page can seed the lifted `duration` state with the same default.
-export const WALK_DURATIONS = [6, 10];
-export const WALK_DEFAULT_DURATION = 6;
+// Clip length only decides how much source footage the packer can choose from;
+// the CYCLE'S look (walk vs run) comes from the frame-count + speed controls.
+// The offered lengths live in lib/grokVideoClip.js — see there for why 6s/10s
+// are the only two (#3022).
+
+// Delivered clip length for a run, when the server managed to probe it
+// (`sourceVideoSeconds` is absent on older runs and when ffprobe is missing —
+// absent means UNKNOWN, so render nothing rather than implying a 0s clip).
+// A mismatch against the requested `duration` is worth surfacing: it is the
+// visible evidence that grok rendered something other than what was asked for.
+function clipLengthLabel(run) {
+  const delivered = Number(run?.sourceVideoSeconds);
+  if (!(delivered > 0)) return null;
+  const requested = Number(run?.duration);
+  const mismatch = requested > 0 && Math.abs(requested - delivered) >= 0.5;
+  // A truncated clip (a real but near-zero-length file) must not round to the
+  // "0.0s" that would read as the absent case handled above — give sub-0.05s
+  // lengths the extra digit so a broken clip looks broken, not unknown.
+  const shown = delivered.toFixed(delivered < 0.05 ? 2 : 1);
+  return {
+    text: `${shown}s clip${mismatch ? ` (asked ${requested}s)` : ''}`,
+    mismatch,
+  };
+}
 
 // The deterministic-postprocess authoring knobs (frame count + preview fps) and
 // their option lists moved to lib/spriteTrimmer.js (#2980) — the Loop Trimmer's
@@ -187,6 +204,10 @@ function DirectionCard({
       : run?.status === 'postprocessing' ? 'packaging…'
         : supersededAnchor ? 'anchor revised'
           : run?.status || (anchorLocked ? 'ready' : 'anchor not locked');
+  // What grok actually delivered, probed server-side — the durable answer to
+  // "does the clip length picker do anything?", which used to live only in
+  // contradicting code comments (#3022).
+  const clipLength = clipLengthLabel(run);
 
   return (
     <div className="bg-port-bg border border-port-border rounded p-2 space-y-1.5">
@@ -196,6 +217,17 @@ function DirectionCard({
           {approved && <Check className="w-3 h-3 inline mr-0.5" />}{statusLabel}
         </span>
       </p>
+
+      {clipLength && (
+        <p
+          className={`text-[10px] ${clipLength.mismatch ? 'text-port-warning' : 'text-gray-500'}`}
+          title={clipLength.mismatch
+            ? 'grok delivered a different clip length than requested — its image_to_video tool renders only 6s or 10s'
+            : 'Source clip length grok delivered (probed from the file)'}
+        >
+          {clipLength.text}
+        </p>
+      )}
 
       {hasWalkPreview && (
         <StripLoop recordId={recordId} stripPreview={run.stripPreview} />
@@ -622,7 +654,7 @@ export default function WalkWorkflow({
               onChanged={onChanged}
               onSavingChange={setTargetSaving}
             />
-            <label className="flex items-center gap-1.5 text-xs text-gray-400" htmlFor={`walk-clip-${recordId}`} title="grok renders 6s or 10s clips; length only affects how much source footage the packer has to choose from">
+            <label className="flex items-center gap-1.5 text-xs text-gray-400" htmlFor={`walk-clip-${recordId}`} title="grok renders 6s or 10s clips — these are the only lengths it offers, and a shorter request comes back as 6s. Length only affects how much source footage the packer has to choose from, not the walk's speed.">
               Clip
               <select
                 id={`walk-clip-${recordId}`}
@@ -630,7 +662,7 @@ export default function WalkWorkflow({
                 onChange={(e) => onDurationChange(Number(e.target.value))}
                 className="bg-port-bg border border-port-border rounded px-2 py-1 text-sm text-white"
               >
-                {WALK_DURATIONS.map((d) => <option key={d} value={d}>{d}s</option>)}
+                {GROK_VIDEO_DURATIONS.map((d) => <option key={d} value={d}>{d}s</option>)}
               </select>
             </label>
           </div>
