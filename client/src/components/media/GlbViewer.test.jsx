@@ -12,8 +12,14 @@ vi.mock('@react-three/fiber', () => ({ Canvas: ({ children }) => <div data-testi
 vi.mock('@react-three/drei', () => ({
   Canvas: () => null,
   OrbitControls: () => null,
-  Environment: ({ background, children }) => (
-    <div data-testid="glb-environment" data-background={background ? 'visible' : 'hidden'}>{children}</div>
+  Environment: ({ background, environmentIntensity, children }) => (
+    <div
+      data-testid="glb-environment"
+      data-background={background ? 'visible' : 'hidden'}
+      data-env-intensity={String(environmentIntensity)}
+    >
+      {children}
+    </div>
   ),
   Lightformer: () => null,
   Bounds: () => null,
@@ -21,6 +27,8 @@ vi.mock('@react-three/drei', () => ({
 }));
 
 import GlbViewer, { cloneGlbSceneWithOpaqueMaterials } from './GlbViewer';
+
+const openControls = () => fireEvent.click(screen.getByLabelText('Preview display settings'));
 
 describe('GlbViewer', () => {
   it('renders nothing without a src', () => {
@@ -36,8 +44,25 @@ describe('GlbViewer', () => {
     expect(link).toHaveAttribute('download', 'robot-a1b2.glb');
   });
 
+  // The controls used to be an always-mounted overlay pinned inside the canvas,
+  // which covered the upper-right quadrant of every model.
+  it('keeps the display controls collapsed and outside the render surface', () => {
+    render(<GlbViewer src="/data/models3d/robot-a1b2.glb" />);
+    expect(screen.queryByLabelText('Mesh preview background')).not.toBeInTheDocument();
+
+    openControls();
+
+    const picker = screen.getByLabelText('Mesh preview background');
+    expect(screen.getByTestId('glb-preview-surface')).not.toContainElement(picker);
+    expect(screen.getByLabelText('Preview display settings')).toHaveAttribute('aria-expanded', 'true');
+
+    openControls();
+    expect(screen.queryByLabelText('Mesh preview background')).not.toBeInTheDocument();
+  });
+
   it('lets the user change the mesh preview background', () => {
     render(<GlbViewer src="/data/models3d/robot-a1b2.glb" />);
+    openControls();
     const picker = screen.getByLabelText('Mesh preview background');
     expect(picker).toHaveValue('#050505');
 
@@ -50,12 +75,13 @@ describe('GlbViewer', () => {
 
   it('offers basic lighting controls and can show the HDRI environment as the background', () => {
     render(<GlbViewer src="/data/models3d/robot-a1b2.glb" />);
+    openControls();
 
     const ambient = screen.getByLabelText('Ambient light');
     const key = screen.getByLabelText('Key light');
     const fill = screen.getByLabelText('Fill light');
-    expect(ambient).toHaveValue('0.9');
-    expect(key).toHaveValue('1.1');
+    expect(ambient).toHaveValue('0.6');
+    expect(key).toHaveValue('1.2');
     expect(fill).toHaveValue('0.4');
     expect(screen.getByTestId('glb-environment')).toHaveAttribute('data-background', 'hidden');
 
@@ -69,6 +95,22 @@ describe('GlbViewer', () => {
     expect(fill).toHaveValue('0.8');
     expect(screen.getByLabelText('Show HDRI background')).toBeChecked();
     expect(screen.getByTestId('glb-environment')).toHaveAttribute('data-background', 'visible');
+  });
+
+  // The image-based lighting drowned out the three light sliders at full
+  // strength — dialing the environment down is what makes them visible.
+  it('drives the environment intensity from its own slider', () => {
+    render(<GlbViewer src="/data/models3d/robot-a1b2.glb" />);
+    openControls();
+
+    const environment = screen.getByLabelText('Environment light');
+    expect(environment).toHaveValue('0.6');
+    expect(screen.getByTestId('glb-environment')).toHaveAttribute('data-env-intensity', '0.6');
+
+    fireEvent.change(environment, { target: { value: '0' } });
+
+    expect(environment).toHaveValue('0');
+    expect(screen.getByTestId('glb-environment')).toHaveAttribute('data-env-intensity', '0');
   });
 
   it('honors an explicit downloadName over the derived one', () => {
