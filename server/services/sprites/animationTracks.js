@@ -71,49 +71,68 @@ export const ANIMATION_TRACKS = Object.freeze({
 /** Known track ids, in registry order. */
 export const ANIMATION_TRACK_IDS = Object.freeze(Object.keys(ANIMATION_TRACKS));
 
-// Fail fast at module load, the way navManifest.js and catalogTypes.js guard
-// their registries: a row missing a bound would otherwise boot clean and
-// surface much later as `NaN` out of a Math.min, or as `z.number().min(
-// undefined)` throwing at the first sprite render. A bad row should block boot
-// with a message naming the field, not corrupt a render hours later.
-const claimedContractFields = new Map();
-for (const id of ANIMATION_TRACK_IDS) {
-  const row = ANIMATION_TRACKS[id];
-  if (row.id !== id) throw new Error(`animationTracks: row '${id}' declares mismatched id '${row.id}'`);
-  if (typeof row.label !== 'string' || !row.label) throw new Error(`animationTracks: track '${id}' needs a label`);
-  if (typeof row.directional !== 'boolean') throw new Error(`animationTracks: track '${id}' needs a boolean 'directional'`);
-  for (const field of ['minFrameCount', 'maxFrameCount', 'defaultFrameCount', 'minFps', 'maxFps', 'defaultFps']) {
-    if (!Number.isInteger(row[field])) throw new Error(`animationTracks: track '${id}' needs an integer '${field}'`);
-  }
-  if (typeof row.contractFrameCountField !== 'string' || !row.contractFrameCountField) {
-    throw new Error(`animationTracks: track '${id}' needs a contractFrameCountField`);
-  }
-  if (row.contractFpsField !== null && (typeof row.contractFpsField !== 'string' || !row.contractFpsField)) {
-    throw new Error(`animationTracks: track '${id}' needs a contractFpsField (or null)`);
-  }
-  for (const [min, def, max] of [
-    ['minFrameCount', 'defaultFrameCount', 'maxFrameCount'],
-    ['minFps', 'defaultFps', 'maxFps'],
-  ]) {
-    if (!(row[min] <= row[def] && row[def] <= row[max])) {
-      throw new Error(`animationTracks: track '${id}' needs ${min} <= ${def} <= ${max}`);
+/**
+ * Validate a registry's rows, throwing on the first violation.
+ *
+ * Called at module load below (the navManifest.js / catalogTypes.js idiom): a
+ * row missing a bound would otherwise boot clean and surface much later as
+ * `NaN` out of a Math.min, or as `z.number().min(undefined)` throwing at the
+ * first sprite render. A bad row should block boot with a message naming the
+ * field, not corrupt a render hours later.
+ *
+ * Exported and pure — taking the table as an argument — so the guard can be
+ * proven against a synthetic multi-row fixture. Asserting set-uniqueness over
+ * the real (currently single-row) table would only re-derive the
+ * implementation: the whole guard could be deleted and such a test would stay
+ * green, which is exactly the regression it exists to prevent.
+ */
+export function assertAnimationTrackRows(tracks) {
+  const claimedContractFields = new Map();
+  for (const id of Object.keys(tracks)) {
+    const row = tracks[id];
+    if (row.id !== id) throw new Error(`animationTracks: row '${id}' declares mismatched id '${row.id}'`);
+    if (typeof row.label !== 'string' || !row.label) throw new Error(`animationTracks: track '${id}' needs a label`);
+    if (typeof row.directional !== 'boolean') throw new Error(`animationTracks: track '${id}' needs a boolean 'directional'`);
+    for (const field of ['minFrameCount', 'maxFrameCount', 'defaultFrameCount', 'minFps', 'maxFps', 'defaultFps']) {
+      if (!Number.isInteger(row[field])) throw new Error(`animationTracks: track '${id}' needs an integer '${field}'`);
     }
-  }
-  // Two tracks must not claim the same runtimeContract field. The anticipated
-  // failure is a second row copy-pasted from walk's: `resolveAnimationTarget`
-  // would then read the WALK's `walkFrameCount` for the scanner and, whenever
-  // that value happens to land inside the scanner's range, return it with
-  // `frameCountLocked: true` — silently pinning one track to another's contract
-  // and throwing a lock error citing a binding that never mentioned it.
-  for (const field of [row.contractFrameCountField, row.contractFpsField]) {
-    if (field === null) continue;
-    const owner = claimedContractFields.get(field);
-    if (owner) {
-      throw new Error(`animationTracks: contract field '${field}' is claimed by both '${owner}' and '${id}'`);
+    if (typeof row.contractFrameCountField !== 'string' || !row.contractFrameCountField) {
+      throw new Error(`animationTracks: track '${id}' needs a contractFrameCountField`);
     }
-    claimedContractFields.set(field, id);
+    if (row.contractFpsField !== null && (typeof row.contractFpsField !== 'string' || !row.contractFpsField)) {
+      throw new Error(`animationTracks: track '${id}' needs a contractFpsField (or null)`);
+    }
+    for (const [min, def, max] of [
+      ['minFrameCount', 'defaultFrameCount', 'maxFrameCount'],
+      ['minFps', 'defaultFps', 'maxFps'],
+    ]) {
+      if (!(row[min] <= row[def] && row[def] <= row[max])) {
+        throw new Error(`animationTracks: track '${id}' needs ${min} <= ${def} <= ${max}`);
+      }
+    }
+    // Two tracks must not claim the same runtimeContract field. The anticipated
+    // failure is a second row copy-pasted from walk's: `resolveAnimationTarget`
+    // would then read the WALK's `walkFrameCount` for that track and, whenever
+    // that value happens to land inside its range, return it with
+    // `frameCountLocked: true` — silently pinning one track to another's
+    // contract and throwing a lock error citing a binding that never mentioned
+    // it. The knob name rides along so a row that names ONE field for BOTH of
+    // its knobs doesn't report as "claimed by both 'walk' and 'walk'".
+    for (const knob of ['contractFrameCountField', 'contractFpsField']) {
+      const field = row[knob];
+      if (field === null) continue;
+      const owner = claimedContractFields.get(field);
+      if (owner) {
+        throw new Error(
+          `animationTracks: contract field '${field}' is claimed by both '${owner.id}.${owner.knob}' and '${id}.${knob}'`,
+        );
+      }
+      claimedContractFields.set(field, { id, knob });
+    }
   }
 }
+
+assertAnimationTrackRows(ANIMATION_TRACKS);
 
 /** True when `id` names a track this build knows. */
 export function isAnimationTrack(id) {

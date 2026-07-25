@@ -15,6 +15,7 @@ import { dirname, join } from 'path';
 import {
   WALK_TRACK, ANIMATION_TRACKS, ANIMATION_TRACK_IDS,
   isAnimationTrack, getAnimationTrack, clampTrackFrameCount, clampTrackFps,
+  assertAnimationTrackRows,
 } from './animationTracks.js';
 import {
   staticImportSpecifiers, staticImportClosure, specifierMatchesPackage,
@@ -72,20 +73,62 @@ describe('the registry rows', () => {
     }
   });
 
-  it('never lets two tracks claim the same runtimeContract field', () => {
-    // A second row copy-pasted from walk's would make resolveAnimationTarget
-    // read the WALK's contract value for that track and report it as locked.
-    // The module-load guard rejects it; this pins the property as a named case.
-    const claimed = ANIMATION_TRACK_IDS.flatMap((id) => [
-      ANIMATION_TRACKS[id].contractFrameCountField,
-      ANIMATION_TRACKS[id].contractFpsField,
-    ]).filter((f) => f !== null);
-    expect(new Set(claimed).size).toBe(claimed.length);
+  it('accepts the shipped registry', () => {
+    expect(() => assertAnimationTrackRows(ANIMATION_TRACKS)).not.toThrow();
   });
 
   it('is frozen so a caller cannot mutate the shared bounds', () => {
     expect(() => { ANIMATION_TRACKS.walk.minFrameCount = 1; }).toThrow();
     expect(ANIMATION_TRACKS.walk.minFrameCount).toBe(6);
+  });
+});
+
+describe('the module-load row guard', () => {
+  // Driven against SYNTHETIC rows, not the shipped table. Asserting properties
+  // of the (single-row) real registry would only re-derive the implementation:
+  // the guard could be deleted outright and such a test would stay green.
+  const walk = getAnimationTrack(WALK_TRACK);
+  const second = {
+    ...walk, id: 'scanner', label: 'Scanner', minFrameCount: 3, defaultFrameCount: 4, maxFrameCount: 8,
+    contractFrameCountField: 'scannerFrameCount', contractFpsField: 'scannerFps',
+  };
+  const twoRows = (overrides = {}) => ({ walk, scanner: { ...second, ...overrides } });
+
+  it('accepts a well-formed second row', () => {
+    expect(() => assertAnimationTrackRows(twoRows())).not.toThrow();
+  });
+
+  it('rejects a second row that copy-pastes walk\'s contract field', () => {
+    // The regression the guard exists for: resolveAnimationTarget would read
+    // the WALK's walkFrameCount for the scanner and report it frameCountLocked.
+    expect(() => assertAnimationTrackRows(twoRows({ contractFrameCountField: 'walkFrameCount' })))
+      .toThrow(/claimed by both 'walk\.contractFrameCountField' and 'scanner\.contractFrameCountField'/);
+  });
+
+  it('names both knobs when ONE row claims one field for both of them', () => {
+    expect(() => assertAnimationTrackRows({ scanner: { ...second, contractFpsField: 'scannerFrameCount' } }))
+      .toThrow(/'scanner\.contractFrameCountField' and 'scanner\.contractFpsField'/);
+  });
+
+  it('lets a row opt out of an fps contract field with null', () => {
+    expect(() => assertAnimationTrackRows(twoRows({ contractFpsField: null }))).not.toThrow();
+    // …and two such rows don't collide on "null".
+    expect(() => assertAnimationTrackRows({
+      walk: { ...walk, contractFpsField: null }, scanner: { ...second, contractFpsField: null },
+    })).not.toThrow();
+  });
+
+  it.each([
+    ['a mismatched id', { id: 'nope' }, /mismatched id/],
+    ['a missing label', { label: '' }, /needs a label/],
+    ['a non-boolean directional', { directional: 'yes' }, /boolean 'directional'/],
+    ['a non-integer bound', { maxFrameCount: 8.5 }, /integer 'maxFrameCount'/],
+    ['a default outside its range', { defaultFrameCount: 99 }, /minFrameCount <= defaultFrameCount <= maxFrameCount/],
+    ['a default fps outside its range', { defaultFps: 99 }, /minFps <= defaultFps <= maxFps/],
+    ['an empty contract frame-count field', { contractFrameCountField: '' }, /needs a contractFrameCountField/],
+    ['an undefined contract fps field', { contractFpsField: undefined }, /contractFpsField \(or null\)/],
+  ])('rejects %s', (_label, overrides, message) => {
+    expect(() => assertAnimationTrackRows(twoRows(overrides))).toThrow(message);
   });
 });
 
@@ -239,7 +282,13 @@ describe('client mirror parity', () => {
     // passes in precisely the scenario it exists for: raise the row's maxFps and
     // the client's hard-coded 24 still satisfies "≤ max" while the picker
     // silently stops offering speeds the server now accepts.
-    const options = clientWalkFpsOptionsFor(walk.defaultFps);
+    // Measure the ceiling against the UN-SPLICED base list: the helper splices a
+    // non-even current value into its options so the <select> never lies, so
+    // seeding it with `defaultFps` would let a row whose default sat near a
+    // raised max (maxFps 30, defaultFps 30) satisfy the pin via the spliced-in
+    // value while the picker still stopped at the client's hard-coded 24.
+    // A non-finite argument short-circuits the splice and returns the base list.
+    const options = clientWalkFpsOptionsFor(NaN);
     expect(options[0]).toBe(walk.minFps);
     expect(Math.max(...options)).toBeLessThanOrEqual(walk.maxFps);
     expect(walk.maxFps - Math.max(...options)).toBeLessThan(2);

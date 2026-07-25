@@ -110,8 +110,12 @@ describe('resolveAnimationTarget precedence', () => {
       },
     }));
     const { resolveAnimationTarget: resolveWithNullFps } = await import('./animationTargets.js');
+    // The literal `null` key is what makes this DISCRIMINATING: without the
+    // guard the code would evaluate `runtimeContract[null]`, which coerces to
+    // the string key "null" — so a contract carrying that key would resolve
+    // fps: 24 / fpsLocked: true. With the guard the rung is skipped entirely.
     expect(resolveWithNullFps({
-      runtimeContract: { walkFrameCount: 16, walkFps: 24 },
+      runtimeContract: { walkFrameCount: 16, walkFps: 24, null: 24 },
     })).toMatchObject({ frameCount: 16, fps: 10, source: 'app', fpsLocked: false });
     vi.doUnmock('./animationTracks.js');
     vi.resetModules();
