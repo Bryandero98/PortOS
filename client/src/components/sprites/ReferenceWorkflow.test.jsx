@@ -6,6 +6,9 @@ vi.mock('../../services/apiSprites.js', () => ({
   generateSpriteReference: vi.fn(() => Promise.resolve({ jobId: 'job-1' })),
   lockSpriteReference: vi.fn(() => Promise.resolve({})),
   unlockSpriteReferenceAnchor: vi.fn(() => Promise.resolve({ walkInvalidated: true })),
+  unlockSpriteTurnaround: vi.fn(() => Promise.resolve({
+    walkInvalidatedDirections: ['south', 'east'],
+  })),
   updateSpriteRecord: vi.fn(() => Promise.resolve({})),
 }));
 
@@ -23,7 +26,9 @@ vi.mock('./SpritePreview.jsx', () => ({
 }));
 
 import ReferenceWorkflow from './ReferenceWorkflow.jsx';
-import { unlockSpriteReferenceAnchor } from '../../services/apiSprites.js';
+import {
+  unlockSpriteReferenceAnchor, unlockSpriteTurnaround,
+} from '../../services/apiSprites.js';
 
 const DIRECTIONS = ['south', 'south-east', 'east', 'north-east', 'north', 'north-west', 'west', 'south-west'];
 
@@ -115,6 +120,27 @@ describe('ReferenceWorkflow workspace', () => {
     expect(unlockSpriteReferenceAnchor).toHaveBeenCalledWith(
       'example-pioneer',
       { direction: 'north' },
+      { silent: true },
+    );
+  });
+
+  it('confirms the dependent reset before unlocking a frozen turnaround', async () => {
+    const user = userEvent.setup();
+    unlockSpriteTurnaround.mockClear();
+    renderWorkflow({
+      turnaround: {
+        locked: true,
+        path: 'reference/example-pioneer-turnaround-v1.png',
+      },
+    });
+
+    const turnaround = screen.getByRole('region', { name: 'Turnaround sheet' });
+    await user.click(within(turnaround).getByRole('button', { name: 'Unlock turnaround' }));
+    expect(within(turnaround).getByText(/Reopen the turnaround, main, all 8 anchors/)).toBeInTheDocument();
+
+    await user.click(within(turnaround).getByRole('button', { name: 'Confirm unlock turnaround' }));
+    expect(unlockSpriteTurnaround).toHaveBeenCalledWith(
+      'example-pioneer',
       { silent: true },
     );
   });

@@ -45,6 +45,11 @@ vi.mock('../services/sprites/walk.js', () => ({
     candidates: [],
     walkInvalidated: true,
   })),
+  unlockTurnaroundReference: vi.fn(async () => ({
+    manifest: { status: 'needs-turnaround' },
+    candidates: [],
+    walkInvalidatedDirections: ['south', 'east'],
+  })),
   getWalkSourceFrames: vi.fn(async () => ({
     available: true,
     reason: null,
@@ -358,6 +363,16 @@ describe('sprites routes', () => {
     const south = await request(app).post('/api/sprites/pioneer/reference/unlock').send({ direction: 'south' });
     expect(south.status).toBe(400);
     expect(walk.unlockDirectionalAnchor).toHaveBeenCalledTimes(1);
+  });
+
+  it('POST /:id/reference/turnaround/unlock reopens the full dependent chain', async () => {
+    const unlocked = await request(app)
+      .post('/api/sprites/pioneer/reference/turnaround/unlock')
+      .send();
+    expect(unlocked.status).toBe(200);
+    expect(unlocked.body.manifest.status).toBe('needs-turnaround');
+    expect(unlocked.body.walkInvalidatedDirections).toEqual(['south', 'east']);
+    expect(walk.unlockTurnaroundReference).toHaveBeenCalledWith('pioneer');
   });
 
   it('PATCH /:id accepts the three standard chroma keys and null, delegating to the lock-aware patch', async () => {

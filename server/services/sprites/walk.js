@@ -36,7 +36,9 @@ import {
   rawFramesRelOf, RAW_FRAME_NAME,
 } from './paths.js';
 import {
-  requireCharacter, loadManifest, assertReferenceAnchorUnlockable, unlockReferenceAnchor,
+  requireCharacter, loadManifest,
+  assertReferenceAnchorUnlockable, unlockReferenceAnchor,
+  assertReferenceTurnaroundUnlockable, unlockReferenceTurnaround,
 } from './reference.js';
 import { SPRITE_DIRECTIONS, anchorIdForDirection, buildWalkVideoPrompt } from './prompts.js';
 import {
@@ -1603,6 +1605,33 @@ export async function unlockDirectionalAnchor(recordId, { direction }) {
   const walkInvalidated = await invalidateWalkDirectionForAnchorRevision(recordId, { direction });
   const reference = await unlockReferenceAnchor(recordId, { direction });
   return { ...reference, walkInvalidated };
+}
+
+/**
+ * Reopen the turnaround and invalidate every approved walk descended from it.
+ *
+ * The reference preflight runs before any dependent state is touched. Approved
+ * walks are then removed under one walk write tail before the reference layer
+ * clears the turnaround, main, and anchor pointers. Old reference PNGs, clips,
+ * packaged strips, and runtime atlases remain as versioned history.
+ */
+export async function unlockTurnaroundReference(recordId) {
+  await assertReferenceTurnaroundUnlockable(recordId);
+  const walkInvalidatedDirections = await invalidateWalkForTurnaroundRevision(recordId);
+  const reference = await unlockReferenceTurnaround(recordId);
+  return { ...reference, walkInvalidatedDirections };
+}
+
+function invalidateWalkForTurnaroundRevision(recordId) {
+  return walkWriteTail(recordId, async () => {
+    const invalidated = [];
+    for (const direction of SPRITE_DIRECTIONS) {
+      if (await invalidateWalkDirectionForAnchorRevisionImpl(recordId, direction)) {
+        invalidated.push(direction);
+      }
+    }
+    return invalidated;
+  });
 }
 
 async function invalidateWalkDirectionForAnchorRevisionImpl(recordId, direction) {

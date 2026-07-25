@@ -6,7 +6,8 @@
  * reference workflow — generate turnaround/main/anchor candidates through the
  * shared image-gen queue, review, then lock (normalize + dynamic chroma-key
  * selection). Generation is strictly user-triggered per the AI-provider policy;
- * locked artifacts are immutable (409 on regenerate/relock).
+ * locked artifacts are versioned and protected from overwrite; deliberate
+ * unlock actions reopen either one derived anchor or the full turnaround chain.
  */
 
 import { Router } from 'express';
@@ -47,7 +48,8 @@ import { resolveSpriteAssetPrompt } from '../services/sprites/assetPrompt.js';
 import { WALK_TRACK, kindSupportsTrack, tracksForKind } from '../services/sprites/animationTracks.js';
 import {
   getWalkState, startWalkGeneration, approveWalkDirection, rerunWalkPostprocess, unlockWalkSet,
-  reopenWalkDirection, setWalkTarget, getWalkSourceFrames, unlockDirectionalAnchor,
+  reopenWalkDirection, setWalkTarget, getWalkSourceFrames,
+  unlockDirectionalAnchor, unlockTurnaroundReference,
 } from '../services/sprites/walk.js';
 import { saveLoopTrim } from '../services/sprites/walkTrims.js';
 import { compileAtlas, getAtlasState } from '../services/sprites/atlas.js';
@@ -162,6 +164,13 @@ router.post('/:id/reference/lock', asyncHandler(async (req, res) => {
 router.post('/:id/reference/unlock', asyncHandler(async (req, res) => {
   const body = validateRequest(spriteReferenceUnlockSchema, req.body);
   res.json(await unlockDirectionalAnchor(req.params.id, body));
+}));
+
+// Re-open the turnaround identity root for regeneration. This deliberately
+// resets the main, all directional anchors, and every approved dependent walk;
+// versioned files remain on disk as history.
+router.post('/:id/reference/turnaround/unlock', asyncHandler(async (req, res) => {
+  res.json(await unlockTurnaroundReference(req.params.id));
 }));
 
 // Fork `:id` into a new character seeded (image+text→image) from its locked

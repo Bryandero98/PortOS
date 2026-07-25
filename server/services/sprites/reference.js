@@ -14,10 +14,11 @@
  * renders into reference/candidates/); locking is deterministic sharp work
  * (normalize.js) plus the dynamic chroma-key selection (chromaKey.js).
  *
- * Evidence contract: a locked artifact is never regenerated or overwritten.
- * The turnaround and main remain frozen identity roots; a turnaround-derived
- * directional anchor may be deliberately reopened, but its old versioned PNG
- * stays on disk and the replacement lands at the next `-vN` filename.
+ * Evidence contract: a locked artifact is never overwritten. A
+ * turnaround-derived directional anchor may be deliberately reopened on its
+ * own; the turnaround may also be deliberately reopened together with every
+ * artifact that descends from it. In either revision flow the old versioned
+ * PNG stays on disk and the replacement lands at the next `-vN` filename.
  */
 
 import { join } from 'path';
@@ -144,7 +145,7 @@ function seedManifest(recordId) {
     status: 'needs-turnaround',
     characterFamily: recordId,
     projection: 'flat',
-    rule: 'Every reference descends from the frozen turnaround sheet: the main reference is its front view, and every directional anchor is redrawn from the panel that shows that side. The turnaround and main are immutable identity evidence. A directional anchor can be reopened for correction without overwriting its prior version. Walk cycles are conditioned only on the current locked directional anchor plus the deterministic pose scaffold, never on prior walk output, and the identity root is never regenerated.',
+    rule: 'Every reference descends from the frozen turnaround sheet: the main reference is its front view, and every directional anchor is redrawn from the panel that shows that side. A directional anchor can be reopened alone; the turnaround can be reopened only by also reopening its main, every anchor, and every dependent walk. Prior versioned evidence is never overwritten. Walk cycles are conditioned only on the current locked directional anchor plus the deterministic pose scaffold, never on prior walk output.',
     chromaKey: null,
     turnaround: {
       path: null, role: 'identity-root', background: 'chroma-key', locked: false, views: TURNAROUND_VIEWS,
@@ -369,7 +370,7 @@ async function startReferenceGenerationImpl(recordId, body, upload = null) {
 
   if (target === TURNAROUND_ID) {
     if (turnaroundLocked) {
-      throw new ServerError('Turnaround sheet is locked — corrections require a new character version, never regeneration', { status: 409, code: 'REFERENCE_LOCKED' });
+      throw new ServerError('Turnaround sheet is locked — unlock the turnaround before regenerating it', { status: 409, code: 'REFERENCE_LOCKED' });
     }
     // The sheet establishes the character's look, so it needs SOME input: a
     // prompt, an uploaded image, a gallery pick, another sprite's reference —
@@ -403,7 +404,7 @@ async function startReferenceGenerationImpl(recordId, body, upload = null) {
     await saveManifest(recordId, manifest);
   } else if (target === 'main') {
     if (manifest.mainReference.locked) {
-      throw new ServerError('Main reference is locked — corrections require a new character version, never regeneration', { status: 409, code: 'REFERENCE_LOCKED' });
+      throw new ServerError('Main reference is locked — unlock the turnaround to rebuild its dependent reference chain', { status: 409, code: 'REFERENCE_LOCKED' });
     }
     // The main is always the sheet's front view: a manifest that reaches here
     // with no locked sheet was either seeded turnaround-first or upgraded to it
@@ -450,7 +451,7 @@ async function startReferenceGenerationImpl(recordId, body, upload = null) {
     anchorId = anchorIdForDirection(direction);
     const anchor = findAnchor(manifest, anchorId);
     if (anchor?.status === 'locked') {
-      throw new ServerError(`Anchor ${anchorId} is locked — locked anchors are immutable`, { status: 409, code: 'REFERENCE_LOCKED' });
+      throw new ServerError(`Anchor ${anchorId} is locked — unlock the anchor before regenerating it`, { status: 409, code: 'REFERENCE_LOCKED' });
     }
     // Optional user correction re-appended on every re-roll — diverges the
     // render from the previous candidate rather than reproducing its mistakes.
@@ -744,6 +745,19 @@ export function unlockReferenceAnchor(recordId, args) {
   return manifestWriteTail(recordId, () => unlockReferenceAnchorImpl(recordId, args));
 }
 
+/**
+ * Re-open the turnaround identity root and every reference artifact derived
+ * from it. The walk service coordinates dependent animation invalidation before
+ * calling this write; this layer owns only the reference manifest reset.
+ *
+ * Every old PNG remains on disk. Clearing the active pointers makes the next
+ * lock use `nextVersionPath`, so turnaround/main/anchors advance to v2+ rather
+ * than overwriting the evidence the user rejected.
+ */
+export function unlockReferenceTurnaround(recordId) {
+  return manifestWriteTail(recordId, () => unlockReferenceTurnaroundImpl(recordId));
+}
+
 async function loadUnlockableReferenceAnchor(recordId, direction) {
   await requireCharacter(recordId);
   if (!ANCHOR_DIRECTIONS.includes(direction)) {
@@ -767,6 +781,21 @@ export async function assertReferenceAnchorUnlockable(recordId, { direction }) {
   await loadUnlockableReferenceAnchor(recordId, direction);
 }
 
+async function loadUnlockableReferenceTurnaround(recordId) {
+  const record = await requireCharacter(recordId);
+  const manifest = await loadManifest(recordId);
+  if (!manifest?.turnaround?.locked) {
+    throw new ServerError('Turnaround sheet is not locked', { status: 409, code: 'TURNAROUND_NOT_LOCKED' });
+  }
+  return { record, manifest };
+}
+
+// Read-only preflight for the cross-service revision coordinator. Walk
+// approvals are removed before the reference pointers they depend on.
+export async function assertReferenceTurnaroundUnlockable(recordId) {
+  await loadUnlockableReferenceTurnaround(recordId);
+}
+
 async function unlockReferenceAnchorImpl(recordId, { direction }) {
   const { manifest, anchor } = await loadUnlockableReferenceAnchor(recordId, direction);
   Object.assign(anchor, {
@@ -786,6 +815,49 @@ async function unlockReferenceAnchorImpl(recordId, { direction }) {
   await updateRecord(recordId, { status: 'reference' });
   await saveManifest(recordId, manifest);
   console.log(`🔓 sprite reference anchor ${recordId}/${direction} unlocked`);
+  return getReferenceSet(recordId);
+}
+
+async function unlockReferenceTurnaroundImpl(recordId) {
+  const { record, manifest } = await loadUnlockableReferenceTurnaround(recordId);
+  const autoSelectedKey = manifest.chromaKeyAutoSelected === true;
+
+  manifest.turnaround = {
+    path: null,
+    role: 'identity-root',
+    background: 'chroma-key',
+    locked: false,
+    views: manifest.turnaround?.views || TURNAROUND_VIEWS,
+  };
+  manifest.mainReference = {
+    path: null,
+    role: 'immutable-root',
+    background: 'chroma-key',
+    locked: false,
+  };
+  manifest.anchors = SPRITE_DIRECTIONS.map((direction) => {
+    const previous = findAnchor(manifest, anchorIdForDirection(direction));
+    return {
+      id: anchorIdForDirection(direction),
+      kind: previous?.kind || 'walk-anchor',
+      direction,
+      status: 'pending',
+      source: direction === 'south' ? 'main-reference' : 'derive-from-turnaround',
+    };
+  });
+  manifest.status = 'needs-turnaround';
+  manifest.chromaKey = null;
+  delete manifest.chromaKeyAutoSelected;
+  delete manifest.chromaKeyWarning;
+
+  // Auto-selection belonged to the rejected sheet, so let its replacement pick
+  // afresh. An explicitly pinned key is user input and survives the reset.
+  await updateRecord(recordId, {
+    status: 'reference',
+    ...(autoSelectedKey && record.chromaKey ? { chromaKey: null } : {}),
+  });
+  await saveManifest(recordId, manifest);
+  console.log(`🔓 sprite turnaround ${recordId} unlocked with dependent references reset`);
   return getReferenceSet(recordId);
 }
 
