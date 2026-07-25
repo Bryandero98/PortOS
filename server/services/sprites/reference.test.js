@@ -53,7 +53,8 @@ vi.mock('../settings.js', () => ({ getSettings: async () => settings }));
 const records = await import('./records.js');
 const {
   getReferenceSet, startReferenceGeneration, attachReferenceCandidate, lockReference, patchSpriteRecord,
-  unlockReferenceAnchor, listReferenceSources, listSpriteThumbnails, forkSprite,
+  unlockReferenceAnchor, unlockReferenceTurnaround,
+  listReferenceSources, listSpriteThumbnails, forkSprite,
   requireCharacter, requireAnimatable,
 } = await import('./reference.js');
 
@@ -832,6 +833,58 @@ describe('lockReference', () => {
       .rejects.toMatchObject({ status: 400, code: 'INVALID_TARGET' });
     await expect(unlockReferenceAnchor(id, { direction: 'east' }))
       .rejects.toMatchObject({ status: 409, code: 'ANCHOR_NOT_LOCKED' });
+  });
+
+  it('reopens the full turnaround chain, preserves v1 evidence, and relocks the sheet as v2', async () => {
+    const id = newId();
+    await createCharacter(id);
+    const first = await lockMain(id);
+    const eastCandidate = await placeCandidate(id, 'east', 'walk-east-candidate-01.png');
+    const withEast = await lockReference(id, { target: 'east', candidate: eastCandidate });
+    const oldPaths = [
+      withEast.manifest.turnaround.path,
+      first.manifest.mainReference.path,
+      withEast.manifest.anchors.find((anchor) => anchor.direction === 'east').path,
+    ];
+    const oldBytes = await Promise.all(oldPaths.map(
+      (path) => readFile(join(TEST_ROOT, 'sprites', id, path)),
+    ));
+
+    const reopened = await unlockReferenceTurnaround(id);
+    expect(reopened.manifest).toMatchObject({
+      status: 'needs-turnaround',
+      chromaKey: null,
+      turnaround: { locked: false, path: null },
+      mainReference: { locked: false, path: null },
+    });
+    expect(reopened.manifest.anchors).toHaveLength(8);
+    expect(reopened.manifest.anchors.every((anchor) => anchor.status === 'pending')).toBe(true);
+    expect((await records.getRecord(id))).toMatchObject({ status: 'reference', chromaKey: null });
+    for (let i = 0; i < oldPaths.length; i++) {
+      expect(await readFile(join(TEST_ROOT, 'sprites', id, oldPaths[i]))).toEqual(oldBytes[i]);
+    }
+
+    const replacement = await placeCandidate(id, 'turnaround', 'turnaround-candidate-02.png');
+    const relocked = await lockReference(id, { target: 'turnaround', candidate: replacement });
+    expect(relocked.manifest.turnaround.path).toBe(`reference/${id}-turnaround-v2.png`);
+  });
+
+  it('preserves an explicitly pinned chroma key when reopening the turnaround', async () => {
+    const id = newId();
+    await createCharacter(id);
+    await records.updateRecord(id, { chromaKey: '#0000FF' });
+    await lockMain(id);
+
+    const reopened = await unlockReferenceTurnaround(id);
+    expect(reopened.manifest.chromaKey).toBeNull();
+    expect((await records.getRecord(id)).chromaKey).toBe('#0000FF');
+  });
+
+  it('refuses to reopen a turnaround that is not locked', async () => {
+    const id = newId();
+    await createCharacter(id);
+    await expect(unlockReferenceTurnaround(id))
+      .rejects.toMatchObject({ status: 409, code: 'TURNAROUND_NOT_LOCKED' });
   });
 
   it('completes the set when the last anchor locks', async () => {

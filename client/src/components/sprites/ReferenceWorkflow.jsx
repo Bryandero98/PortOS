@@ -5,7 +5,8 @@ import {
 } from 'lucide-react';
 import toast from '../ui/Toast';
 import {
-  generateSpriteReference, lockSpriteReference, unlockSpriteReferenceAnchor, updateSpriteRecord,
+  generateSpriteReference, lockSpriteReference,
+  unlockSpriteReferenceAnchor, unlockSpriteTurnaround, updateSpriteRecord,
 } from '../../services/apiSprites.js';
 import { useAsyncAction } from '../../hooks/useAsyncAction.js';
 import SpritePreview from './SpritePreview.jsx';
@@ -41,9 +42,9 @@ function SpriteImg({ recordId, path, className }) {
   return <SpritePreview recordId={recordId} path={path} className={className} zoomable />;
 }
 
-// Candidate thumbnail with an inline lock confirm (locking is irreversible —
-// per the repo's confirmation UX convention this is an inline confirm row,
-// not a browser dialog or a hidden two-click arm).
+// Candidate thumbnail with an inline lock confirm. Locking freezes this
+// version and its downstream workflow until the relevant explicit unlock, so
+// the consequential action stays visible in an inline confirm row.
 function CandidateTile({ recordId, candidate, locking, onLock, clipRisk }) {
   const [confirming, setConfirming] = useState(false);
   return (
@@ -69,7 +70,7 @@ function CandidateTile({ recordId, candidate, locking, onLock, clipRisk }) {
         </div>
       ) : confirming ? (
         <div className="mt-auto flex flex-wrap items-center gap-1 text-xs">
-          <span className="text-port-warning">Freeze forever?</span>
+          <span className="text-port-warning">Freeze this version?</span>
           <button onClick={() => { setConfirming(false); onLock(candidate); }} disabled={locking} className="px-1.5 py-0.5 bg-port-accent text-white rounded disabled:opacity-50">Lock</button>
           <button onClick={() => setConfirming(false)} className="px-1.5 py-0.5 text-gray-400 hover:text-white">Cancel</button>
         </div>
@@ -234,6 +235,8 @@ export default function ReferenceWorkflow({ record, reference, renders, correcti
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [spritePickerOpen, setSpritePickerOpen] = useState(false);
   const [forkOpen, setForkOpen] = useState(false);
+  const [turnaroundUnlockConfirming, setTurnaroundUnlockConfirming] = useState(false);
+  useEffect(() => { setTurnaroundUnlockConfirming(false); }, [recordId]);
 
   // Revoke the previous upload's object URL whenever the source changes or the
   // component unmounts (cleanup runs with the prior closure).
@@ -318,6 +321,16 @@ export default function ReferenceWorkflow({ record, reference, renders, correcti
       : `${direction} anchor unlocked`);
     onChanged();
   }, { errorMessage: 'Failed to unlock anchor' });
+
+  const [unlockTurnaround, turnaroundUnlocking] = useAsyncAction(async () => {
+    const result = await unlockSpriteTurnaround(recordId, { silent: true });
+    const invalidated = result.walkInvalidatedDirections?.length || 0;
+    toast.success(invalidated
+      ? `Turnaround unlocked; ${invalidated} dependent walks were reopened`
+      : 'Turnaround unlocked; dependent references were reopened');
+    setTurnaroundUnlockConfirming(false);
+    onChanged();
+  }, { errorMessage: 'Failed to unlock turnaround' });
 
   const [setChromaKey, keySaving] = useAsyncAction(async (hex) => {
     await updateSpriteRecord(recordId, { chromaKey: hex }, { silent: true });
@@ -447,8 +460,43 @@ export default function ReferenceWorkflow({ record, reference, renders, correcti
                   <Lock className="h-3.5 w-3.5" /> Frozen identity root
                 </p>
                 <p className="mt-2 text-[11px] leading-relaxed text-gray-500">
-                  The front, right, back, and left views are fixed. The main reference and every directional anchor derive from this sheet.
+                  The front, right, back, and left views are fixed while this version is active. The main reference and every directional anchor derive from this sheet.
                 </p>
+                {turnaroundUnlockConfirming ? (
+                  <div className="mt-3 rounded border border-port-warning/40 bg-port-warning/10 p-2 text-[11px]">
+                    <p className="text-port-warning">
+                      Reopen the turnaround, main, all 8 anchors, and any approved walks? Existing versioned files stay in history.
+                    </p>
+                    <div className="mt-2 flex gap-2">
+                      <button
+                        type="button"
+                        aria-label="Confirm unlock turnaround"
+                        onClick={unlockTurnaround}
+                        disabled={turnaroundUnlocking}
+                        className="flex-1 rounded bg-port-warning px-2 py-1.5 font-medium text-black disabled:opacity-50"
+                      >
+                        {turnaroundUnlocking ? 'Unlocking…' : 'Unlock for regeneration'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setTurnaroundUnlockConfirming(false)}
+                        disabled={turnaroundUnlocking}
+                        className="rounded px-2 py-1.5 text-gray-400 hover:text-white disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setTurnaroundUnlockConfirming(true)}
+                    disabled={turnaroundUnlocking}
+                    className="mt-3 flex min-h-9 w-full items-center justify-center gap-1.5 rounded border border-port-border bg-port-card px-2.5 py-1.5 text-xs text-gray-300 hover:border-port-warning hover:text-port-warning disabled:opacity-50"
+                  >
+                    <Unlock className="h-3.5 w-3.5" /> Unlock turnaround
+                  </button>
+                )}
               </div>
             </div>
           ) : (
@@ -613,10 +661,10 @@ export default function ReferenceWorkflow({ record, reference, renders, correcti
               />
               <div className="space-y-3">
                 <p className="flex items-center gap-1.5 text-xs text-port-success">
-                  <Lock className="h-3.5 w-3.5" /> Frozen · immutable root
+                  <Lock className="h-3.5 w-3.5" /> Frozen · turnaround-derived
                 </p>
                 <p className="text-[11px] leading-relaxed text-gray-500">
-                  This front-facing reference seeds thumbnails and the walk-south identity. Fork to make a new editable version.
+                  This front-facing reference seeds thumbnails and the walk-south identity. Fork for a separate character, or reopen the turnaround to rebuild this reference chain.
                 </p>
                 <button
                   type="button"

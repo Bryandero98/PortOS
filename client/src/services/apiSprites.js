@@ -89,6 +89,13 @@ export const unlockSpriteReferenceAnchor = (id, body, options = {}) => request(`
   method: 'POST', body: JSON.stringify(body), ...options,
 });
 
+// Re-open the turnaround identity root and its full dependent chain. Old
+// versioned references, walks, and atlases remain available as history.
+export const unlockSpriteTurnaround = (id, options = {}) => request(
+  `/sprites/${encodeURIComponent(id)}/reference/turnaround/unlock`,
+  { method: 'POST', ...options },
+);
+
 // Fork `id` into a new character seeded (image+text→image) from its locked main
 // reference. Body: { name, id?, designPrompt, mode?, model?, effort?,
 // initImageStrength? }. Returns { record, jobId, mode, target, anchorId }.

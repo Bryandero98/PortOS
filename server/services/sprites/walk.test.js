@@ -121,7 +121,8 @@ const { listSpriteAssets } = await import('./paths.js');
 const { lockReference } = await import('./reference.js');
 const {
   getWalkState, startWalkGeneration, attachTuiWalkResult, approveWalkDirection, rerunWalkPostprocess, unlockWalkSet,
-  reopenWalkDirection, invalidateWalkDirectionForAnchorRevision, unlockDirectionalAnchor,
+  reopenWalkDirection, invalidateWalkDirectionForAnchorRevision,
+  unlockDirectionalAnchor, unlockTurnaroundReference,
   setWalkTarget, importedWalkDirections, getWalkSourceFrames,
 } = await import('./walk.js');
 const { SPRITE_DIRECTIONS, ANCHOR_DIRECTIONS } = await import('./prompts.js');
@@ -988,6 +989,35 @@ describe('invalidateWalkDirectionForAnchorRevision', () => {
   it('is a no-op when the direction has no approved walk', async () => {
     const id = await characterWithLockedAnchors(newId(), ['east']);
     await expect(invalidateWalkDirectionForAnchorRevision(id, { direction: 'east' })).resolves.toBe(false);
+  });
+
+  it('reopens the turnaround only after invalidating every dependent approval', async () => {
+    const id = await characterWithLockedAnchors(newId(), ANCHOR_DIRECTIONS);
+    const runIds = {};
+    for (const direction of SPRITE_DIRECTIONS) {
+      const { runId } = await makeCandidateRun(id, direction);
+      runIds[direction] = runId;
+      await approveWalkDirection(id, { direction, runId });
+    }
+
+    const result = await unlockTurnaroundReference(id);
+    const state = await getWalkState(id);
+    expect(result.walkInvalidatedDirections).toEqual(SPRITE_DIRECTIONS);
+    expect(result.manifest).toMatchObject({
+      status: 'needs-turnaround',
+      turnaround: { locked: false, path: null },
+      mainReference: { locked: false, path: null },
+    });
+    expect(result.manifest.anchors.every((anchor) => anchor.status === 'pending')).toBe(true);
+    expect(state.walkSet).toBeNull();
+    expect(state.selection.directions).toEqual({});
+    for (const runId of Object.values(runIds)) {
+      expect(state.runs.find((run) => run.id === runId)).toMatchObject({
+        status: 'superseded-anchor',
+        supersededReason: 'directional-anchor-revised',
+      });
+    }
+    expect((await records.getRecord(id)).status).toBe('reference');
   });
 });
 
