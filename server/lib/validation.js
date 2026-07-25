@@ -8,6 +8,7 @@ import { CHROMA_KEY_HEXES } from '../services/sprites/chromaKey.js';
 import { WALK_TRACK, SCANNER_TRACK, getAnimationTrack } from '../services/sprites/animationTracks.js';
 import { QUEUEABLE_IMAGE_MODES } from '../services/imageGen/modes.js';
 import { GROK_VIDEO_DURATIONS } from './grokVideoClip.js';
+import { PR_COMPLETION_VALUES } from './prDisposition.js';
 
 // Clip lengths grok's image_to_video delivers, as a Zod union built from the
 // single shared list (see grokVideoClip.js). `z.literal` per value rather than
@@ -242,6 +243,7 @@ export const appSchema = z.object({
   })).optional(), // Per-task overrides: { [taskType]: { enabled, interval, intervalMs, providerId, model, taskMetadata } }
   defaultUseWorktree: z.boolean().optional(),
   defaultOpenPR: z.boolean().optional(),
+  defaultPrCompletion: z.enum(PR_COMPLETION_VALUES).optional(),
   jira: jiraConfigSchema.optional().nullable(),
   datadog: datadogConfigSchema.optional().nullable(),
   // Where this app's autonomous work items live (single source per app).

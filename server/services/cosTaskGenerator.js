@@ -40,6 +40,7 @@ import { isRecoveryTask } from './recoveryTasks.js';
 import { getCodeReviewDefaults } from './codeReview.js';
 import { isHeldByOther, getClaimOwner } from './cosTaskClaim.js';
 import { ensureInstanceId } from './instances.js';
+import { PR_COMPLETION_VALUES } from '../lib/prDisposition.js';
 
 /**
  * Block a task that has exceeded the max spawn limit. Returns true if blocked.
@@ -1611,6 +1612,13 @@ export function applyAppWorktreeDefault(metadata, app) {
     metadata.useWorktree = true;
   } else if (finalWorktreeOff) {
     metadata.openPR = false;
+  }
+
+  // Legacy apps without this field keep resolving their persisted reviewLoop
+  // metadata. Once an app explicitly configures a default, stamp it onto new
+  // PR tasks so the policy survives later app-default changes.
+  if (finalOpenPR && metadata.prCompletion === undefined && PR_COMPLETION_VALUES.includes(app.defaultPrCompletion)) {
+    metadata.prCompletion = app.defaultPrCompletion;
   }
 }
 
