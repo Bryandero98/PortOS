@@ -19,6 +19,8 @@ import { runPromptThroughProvider } from '../lib/promptRunner.js';
 import { getDomainAutonomyMode } from './cosState.js';
 import { getDomainBudgetStatus, recordDomainUsage } from './domainUsage.js';
 import { deleteMemoryAssets } from './chatgptImport.js';
+import * as githubCloner from './githubCloner.js';
+import { parseBareUrl } from '../lib/bareUrl.js';
 import {
   classifierOutputSchema,
   digestOutputSchema,
@@ -134,6 +136,16 @@ function safeParseJsonResponse(content) {
  * AI classification runs in the background and emits a socket event on completion.
  */
 export async function captureThought(text, providerOverride, modelOverride, { creative = false } = {}) {
+  // A capture that is nothing but a URL is a bookmark, not a thought: file it
+  // straight to Links exactly as the Links tab would, and skip the classifier
+  // LLM call entirely. This outranks the creative flag — a bare URL carries no
+  // prose for the Catalog to work from — so both capture boxes disable the
+  // Creative toggle for a URL rather than the two rules disagreeing.
+  const bareUrl = parseBareUrl(text);
+  if (bareUrl) {
+    return captureUrlAsLink(bareUrl, text);
+  }
+
   const meta = await storage.loadMeta();
   const provider = providerOverride || meta.defaultProvider;
   const model = modelOverride || meta.defaultModel;
@@ -191,6 +203,40 @@ export async function captureThought(text, providerOverride, modelOverride, { cr
     message: mode === 'dry-run'
       ? 'Thought captured! AI is suggesting a classification (dry-run — confirm to file).'
       : 'Thought captured! AI is classifying...'
+  };
+}
+
+/**
+ * File a bare-URL capture to the links collection and log it as an already-filed
+ * inbox entry (so the capture is still auditable from the inbox, showing where
+ * it went). Re-pasting a URL that's already saved reuses that link instead of
+ * failing the capture — the inbox entry then points at the existing bookmark.
+ */
+async function captureUrlAsLink(url, capturedText) {
+  const existing = await storage.getLinkByUrl(url);
+  const link = existing || await createLinkFromUrl(url);
+
+  // No `classification` block: nothing classified this — the destination was
+  // decided by shape, not by a model, so there is no confidence or extraction to
+  // record. That also keeps the entry safe on a federated peer running older
+  // code (inbox records sync): its inbox renders `classification.destination`
+  // through a fixed destination map, so an absent classification degrades to the
+  // existing "Unknown" badge instead of an unmapped value it can't render.
+  const inboxEntry = await storage.createInboxLog({
+    capturedText,
+    source: 'brain_ui',
+    status: 'filed',
+    filed: { destination: 'links', destinationId: link.id }
+  });
+
+  console.log(`🔗 Captured URL filed to links: ${link.id}${existing ? ' (existing)' : ''} via ${inboxEntry.id}`);
+
+  return {
+    inboxLog: inboxEntry,
+    link,
+    message: existing
+      ? 'Already saved in Links.'
+      : (link.isGitHubRepo ? 'GitHub repo saved to Links!' : 'Saved to Links!')
   };
 }
 
@@ -388,6 +434,18 @@ async function fileToDestination(destination, extracted, title) {
 }
 
 /**
+ * Title to file an inbox entry under. Not every entry carries a classification —
+ * a URL filed to Links skipped the classifier, and so does every capture taken
+ * while auto-classify is off — so fall back to the captured text (bounded to the
+ * 200-char record-title limit) before the last-resort placeholder.
+ */
+function entryTitle(inboxLog) {
+  return inboxLog.classification?.title
+    || inboxLog.capturedText?.trim().slice(0, 200)
+    || 'Untitled';
+}
+
+/**
  * Resolve a needs_review inbox item
  */
 export async function resolveReview(inboxLogId, destination, editedExtracted) {
@@ -402,7 +460,7 @@ export async function resolveReview(inboxLogId, destination, editedExtracted) {
 
   // Merge extracted data with edits
   const extracted = { ...inboxLog.classification?.extracted, ...editedExtracted };
-  const title = inboxLog.classification?.title || 'Untitled';
+  const title = entryTitle(inboxLog);
 
   // File to destination
   const filedRecord = await fileToDestination(destination, extracted, title);
@@ -448,7 +506,7 @@ export async function fixClassification(inboxLogId, newDestination, updatedField
 
   // Create new record in new destination
   const extracted = { ...inboxLog.classification?.extracted, ...updatedFields };
-  const title = inboxLog.classification?.title || 'Untitled';
+  const title = entryTitle(inboxLog);
   const newRecord = await fileToDestination(newDestination, extracted, title);
 
   // Mark old record as archived (soft delete by adding archived flag)
@@ -482,6 +540,14 @@ export async function fixClassification(inboxLogId, newDestination, updatedField
  * Archive a record (soft delete)
  */
 async function archiveRecord(destination, id) {
+  // A bookmark has no archived state — the Links tab renders every record — so
+  // correcting a bare-URL capture into a real destination removes the link it
+  // auto-created, rather than leaving it behind in Links.
+  if (destination === 'links') {
+    await storage.deleteLink(id);
+    return;
+  }
+
   const updateFn = {
     people: storage.updatePerson,
     projects: storage.updateProject,
@@ -812,10 +878,10 @@ export async function deleteMemoryEntry(id) {
 export const getLinks = storage.getLinks;
 export const getLinkById = storage.getLinkById;
 export const getLinkByUrl = storage.getLinkByUrl;
-export const createLink = storage.createLink;
 export const updateLink = storage.updateLink;
 export const reorderLinks = storage.reorderLinks;
 export const deleteLink = storage.deleteLink;
+
 export const getBuckets = storage.getBuckets;
 export const getBucketById = storage.getBucketById;
 export const createBucket = storage.createBucket;
@@ -847,4 +913,85 @@ export async function deleteBucketAndUnlinkChildren(id) {
   }
   await storage.deleteBucket(id);
   return { deleted: true, unassigned };
+}
+
+/**
+ * Extract a clean hostname from a URL (strip a leading www.), or null if unparseable.
+ */
+function hostnameFromUrl(url) {
+  return URL.parse(url)?.hostname.replace(/^www\./, '') ?? null;
+}
+
+/**
+ * Clone a GitHub repo in the background, tracking progress on the link record.
+ * Runs outside the request lifecycle, so every failure is caught and recorded
+ * on the link rather than left to bubble.
+ */
+export async function cloneRepoInBackground(linkId, url) {
+  await storage.updateLink(linkId, { cloneStatus: 'cloning' });
+
+  githubCloner.cloneRepo(url)
+    .then(async (result) => {
+      await storage.updateLink(linkId, {
+        localPath: result.localPath,
+        cloneStatus: 'cloned',
+        cloneError: null
+      });
+      console.log(`✅ Background clone complete: ${linkId}`);
+    })
+    .catch(async (err) => {
+      await storage.updateLink(linkId, {
+        cloneStatus: 'failed',
+        cloneError: err.message
+      });
+      console.error(`❌ Background clone failed: ${linkId} - ${err.message}`);
+    });
+}
+
+/**
+ * Create a link from a URL: derives the GitHub metadata + a readable default
+ * title and kicks off the background clone for a repo. Shared by the Links
+ * route's quick-add and the bare-URL capture short-circuit so a URL pasted into
+ * the Brain inbox lands exactly as it would from the Links tab.
+ *
+ * Callers own duplicate handling (the route 409s; capture reuses the existing
+ * link) — this always creates.
+ */
+export async function createLinkFromUrl(url, {
+  title, description, linkType, tags, bucketId, bucketOrder, autoClone
+} = {}) {
+  const parsed = githubCloner.parseGitHubUrl(url);
+  const isGitHubRepo = !!parsed;
+  const shouldClone = isGitHubRepo && autoClone !== false;
+
+  // Derive a readable default title: repo slug for GitHub, hostname for plain
+  // URLs (so quick-added bucket chips read "example.com" instead of the full URL).
+  const defaultTitle = parsed
+    ? `${parsed.owner}/${parsed.repo}`
+    : (hostnameFromUrl(url) || url);
+
+  const link = await storage.createLink({
+    url,
+    title: title || defaultTitle,
+    description: description || '',
+    linkType: linkType || (isGitHubRepo ? 'github' : 'other'),
+    tags: tags || [],
+    isGitHubRepo,
+    gitHubOwner: parsed?.owner,
+    gitHubRepo: parsed?.repo,
+    localPath: null,
+    cloneStatus: shouldClone ? 'pending' : 'none',
+    cloneError: null,
+    ...(bucketId !== undefined ? { bucketId } : {}),
+    ...(bucketOrder !== undefined ? { bucketOrder } : {})
+  });
+  console.log(`🔗 Created link: ${link.id} (${isGitHubRepo ? 'GitHub repo' : 'regular URL'})`);
+
+  if (shouldClone) {
+    cloneRepoInBackground(link.id, url).catch(err => {
+      console.error(`❌ Background clone setup failed for ${link.id}: ${err.message}`);
+    });
+  }
+
+  return link;
 }
