@@ -172,6 +172,18 @@ export const LI_DEGRADED_MIN_SAMPLE = 4;
 // CONFIDENT read (>= LI_DEGRADED_MIN_SAMPLE runs) — a cold loop is never locked out.
 export const LI_HARD_GATE_EXECUTION_THRESHOLD = 75;
 
+// Approved proposals need a separate evidence floor from LI's own reasoning runs:
+// a single accepted proposal that is still awaiting execution is not enough evidence
+// to lock the loop out of self-directed work. Once five approvals exist, a poor
+// approval → completion rate is a real delivery signal rather than cold-start noise.
+export const LI_DELIVERY_MIN_SAMPLE = 5;
+
+// LI's approval → completion rate (%) below which the hard pre-filing exclusion gate
+// also arms. This is intentionally independent of LI_HARD_GATE_EXECUTION_THRESHOLD:
+// a loop can complete its reasoning runs reliably while its approved proposals fail
+// to reach delivery, and neither rate is allowed to mask the other.
+export const LI_HARD_GATE_DELIVERY_THRESHOLD = 50;
+
 // The resolved outcomes a filed proposal can reach (the feedback loop, #2428).
 // A record with a null outcome is still open/unresolved. All three are
 // auto-derived from the tracker's closed state by deriveOutcome: completed →

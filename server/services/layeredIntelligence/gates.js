@@ -3,7 +3,11 @@
  * (#2842 split of layeredIntelligence.js).
  */
 
-import { PORTOS_ONLY_SCOPES, LI_HARD_GATE_EXECUTION_THRESHOLD } from './constants.js';
+import {
+  PORTOS_ONLY_SCOPES,
+  LI_HARD_GATE_EXECUTION_THRESHOLD,
+  LI_HARD_GATE_DELIVERY_THRESHOLD
+} from './constants.js';
 import { computeLiExecutionHealth } from './outcomes.js';
 import { computeExecutionByDomain, isAvoidDomain, formatDominantFailureCause, clampScopeLabel } from './awareness.js';
 
@@ -14,6 +18,19 @@ import { computeExecutionByDomain, isAvoidDomain, formatDominantFailureCause, cl
 // definition so "self-improve scope" can never drift from "the PortOS-only scopes".
 export const SELF_IMPROVE_SCOPES = PORTOS_ONLY_SCOPES;
 
+function computeArmedHealthSignals(health) {
+  const execution = health.confident && health.rate < LI_HARD_GATE_EXECUTION_THRESHOLD;
+  const delivery = health.deliveryConfident && health.deliveryRate < LI_HARD_GATE_DELIVERY_THRESHOLD;
+  return { execution, delivery, armed: execution || delivery };
+}
+
+function formatArmedHealthSignals(health, signals, comparison = '<') {
+  return [
+    signals.execution && `LI run execution health ${health.rate}% (${comparison} ${LI_HARD_GATE_EXECUTION_THRESHOLD}%)`,
+    signals.delivery && `LI approval-to-completion delivery health ${Math.round(health.deliveryRate)}% (${comparison} ${LI_HARD_GATE_DELIVERY_THRESHOLD}%; ${health.deliverySample} approved)`
+  ].filter(Boolean).join(' and ');
+}
+
 /**
  * Deterministic HARD PRE-FILING EXCLUSION gate (#2824). Given a validated proposal,
  * LI's own execution-health stats, and the app's outcome records, decides whether the
@@ -23,10 +40,11 @@ export const SELF_IMPROVE_SCOPES = PORTOS_ONLY_SCOPES;
  * (computeHardExclusionNotice): even when the reasoner "wants" to file, this gate drops
  * the proposal to null.
  *
- * Pure + side-effect-free like the sibling compute* gates. Two independent exclusion
- * rules, both ARMED only when LI's execution health is CONFIDENTLY below
- * LI_HARD_GATE_EXECUTION_THRESHOLD (75%) — unknown or below-sample-floor health leaves
- * the gate DISARMED, so a cold loop with no track record is never locked out:
+ * Pure + side-effect-free like the sibling compute* gates. The gate arms when EITHER
+ * independent health signal is confidently below its threshold: LI run success below
+ * LI_HARD_GATE_EXECUTION_THRESHOLD (75%), or approved-proposal delivery below
+ * LI_HARD_GATE_DELIVERY_THRESHOLD (50%). Unknown or below-sample-floor signals leave
+ * that signal disarmed, so a cold loop with no track record is never locked out:
  *   1. Self-improve scope — any proposal in a SELF_IMPROVE_SCOPES scope (loop-meta /
  *      portos-self) is excluded regardless of domain. A degraded loop cannot repair
  *      itself; that work is deferred to a human.
@@ -45,17 +63,18 @@ export const SELF_IMPROVE_SCOPES = PORTOS_ONLY_SCOPES;
 export function computeHardExclusionGate({ proposal, liTaskStats = null, outcomes = [], now = Date.now() } = {}) {
   if (!proposal || typeof proposal !== 'object') return { excluded: false, reason: null };
 
-  // The gate is ARMED only on a confident read of degraded execution health. Unknown
-  // health (store unreadable / no runs) or a below-floor sample disarms it — the same
-  // 0-of-1-vs-0-of-N reasoning as LI_DEGRADED_MIN_SAMPLE. A healthy loop (>= 75%) files
-  // exactly as before this gate existed.
-  const health = computeLiExecutionHealth(liTaskStats, { now });
-  if (!health.confident || health.rate >= LI_HARD_GATE_EXECUTION_THRESHOLD) {
+  // Each signal has its own evidence floor: unreadable / empty run history leaves the
+  // execution signal disarmed, while no approved proposals or fewer than five approvals
+  // leaves the delivery signal disarmed. A good rate on one side never masks a bad rate
+  // on the other.
+  const health = computeLiExecutionHealth(liTaskStats, outcomes, { now });
+  const signals = computeArmedHealthSignals(health);
+  if (!signals.armed) {
     return { excluded: false, reason: null };
   }
 
   const scope = typeof proposal.scope === 'string' && proposal.scope.trim() ? proposal.scope.trim() : null;
-  const healthClause = `LI execution health ${health.rate}% (< ${LI_HARD_GATE_EXECUTION_THRESHOLD}%)`;
+  const healthClause = formatArmedHealthSignals(health, signals);
 
   // Rule 1: self-improve scope — excluded wholesale while armed.
   if (scope && SELF_IMPROVE_SCOPES.includes(scope)) {
@@ -94,11 +113,12 @@ export function computeHardExclusionGate({ proposal, liTaskStats = null, outcome
  * carries the explicit GATE CHECK step the reasoner must run before committing.
  */
 export function computeHardExclusionNotice({ liTaskStats = null, outcomes = [], now = Date.now() } = {}) {
-  const health = computeLiExecutionHealth(liTaskStats, { now });
-  if (!health.confident || health.rate >= LI_HARD_GATE_EXECUTION_THRESHOLD) return '';
+  const health = computeLiExecutionHealth(liTaskStats, outcomes, { now });
+  const signals = computeArmedHealthSignals(health);
+  if (!signals.armed) return '';
 
   const lines = [
-    `HARD EXCLUSION GATE ARMED — your execution health is ${health.rate}% (below ${LI_HARD_GATE_EXECUTION_THRESHOLD}%). The following work is EXCLUDED this run and will be dropped BEFORE filing even if your reasoning leads you to it:`,
+    `HARD EXCLUSION GATE ARMED — ${formatArmedHealthSignals(health, signals, 'below')}. The following work is EXCLUDED this run and will be dropped BEFORE filing even if your reasoning leads you to it:`,
     `- Any self-improve-scoped proposal (${SELF_IMPROVE_SCOPES.join(', ')}). A degraded loop cannot repair itself — that work is deferred to a human.`
   ];
 

@@ -1,5 +1,9 @@
 # Unreleased
 
+## Layered Intelligence
+
+- **[issue-3019] Layered Intelligence now notices when approved work is not being delivered** — its self-check now tracks approval-to-completion separately from reasoning-run success, so a loop that completes its own runs but repeatedly leaves approved proposals unfinished stops filing self-improvement work until delivery recovers. A five-approval floor keeps a fresh loop from being gated on cold-start noise, and the reasoner-facing notice identifies whether run health, delivery health, or both caused the guardrail.
+
 ## 3D
 
 - **Mesh preview display controls moved out of the render, and the lighting sliders now actually change the lighting** — the settings panel was an always-mounted overlay pinned inside the canvas, covering the upper-right quadrant of every model; it now lives behind a small toggle in the corner and expands as a strip *below* the render, so it can never occlude the mesh. Two of the controls it exposed were also effectively inert. The procedural studio environment lit the model at full strength and drowned out Ambient/Key/Fill — a new **Environment** slider dials the image-based lighting down (to 0 for lights-only), and the three light defaults were rebalanced against it. **Show HDRI background** revealed a cube map whose unlit areas were pure black, so the studio read as hard-edged white panels floating in a void (and only ever lit the model from three directions); an inward-facing backdrop sphere fills the gaps, and the map is rendered at 256 instead of 128. The scene-level background color was dropped in favor of the surface's CSS color it duplicated — a scene background raced the environment's own `scene.background` save/restore every time the HDRI toggle or the color picker changed.

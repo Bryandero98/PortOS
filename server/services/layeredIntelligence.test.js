@@ -43,6 +43,8 @@ import {
   rejectionReasonBySlug,
   LI_DEGRADED_SUCCESS_THRESHOLD,
   LI_DEGRADED_MIN_SAMPLE,
+  LI_DELIVERY_MIN_SAMPLE,
+  LI_HARD_GATE_DELIVERY_THRESHOLD,
   computeScopeAwareness,
   computeExecutionByDomain,
   computePostApprovalCompletion,
@@ -871,7 +873,10 @@ describe('computeLiExecutionHealth (#2824)', () => {
   const stats = (over = {}) => ({ read: true, metrics: { completed: 10, succeeded: 3, failed: 7, successRate: 30, recentOutcomes: [], ...over } });
 
   it('reports UNKNOWN (rate null) when the store is unreadable or has no runs', () => {
-    expect(computeLiExecutionHealth(null)).toEqual({ rate: null, sample: 0, source: null, confident: false });
+    expect(computeLiExecutionHealth(null)).toEqual({
+      rate: null, sample: 0, source: null, confident: false,
+      deliveryRate: null, deliverySample: 0, deliveryConfident: false
+    });
     expect(computeLiExecutionHealth({ read: false })).toMatchObject({ rate: null, confident: false });
     expect(computeLiExecutionHealth({ read: true, metrics: null })).toMatchObject({ rate: null, confident: false });
   });
@@ -881,6 +886,22 @@ describe('computeLiExecutionHealth (#2824)', () => {
     expect(health.rate).toBe(30);
     expect(health.sample).toBe(10);
     expect(health.confident).toBe(true);
+  });
+
+  it('keeps run health independent from approval-to-completion delivery health', () => {
+    const outcomes = [
+      { outcome: 'merged', executionOutcome: 'success' },
+      ...Array.from({ length: 4 }, () => ({ outcome: 'merged', executionOutcome: null }))
+    ];
+    const health = computeLiExecutionHealth(stats({ succeeded: 9, failed: 1, successRate: 90 }), outcomes);
+    expect(health).toMatchObject({
+      rate: 90,
+      sample: 10,
+      confident: true,
+      deliveryRate: 20,
+      deliverySample: 5,
+      deliveryConfident: true
+    });
   });
 
   it('is NOT confident below LI_DEGRADED_MIN_SAMPLE runs', () => {
@@ -898,6 +919,10 @@ describe('computeHardExclusionGate (#2824)', () => {
   const healthy = { read: true, metrics: { completed: 10, succeeded: 9, failed: 1, successRate: 90, recentOutcomes: [] } };
   // Below the sample floor even though 0%.
   const thinSample = { read: true, metrics: { completed: 2, succeeded: 0, failed: 2, successRate: 0, recentOutcomes: [] } };
+  const poorDelivery = [
+    { outcome: 'merged', executionOutcome: 'success' },
+    ...Array.from({ length: 4 }, () => ({ outcome: 'merged', executionOutcome: null }))
+  ];
 
   it('never excludes a null/invalid proposal', () => {
     expect(computeHardExclusionGate({ proposal: null, liTaskStats: degraded })).toEqual({ excluded: false, reason: null });
@@ -909,6 +934,28 @@ describe('computeHardExclusionGate (#2824)', () => {
     expect(computeHardExclusionGate({ proposal: p, liTaskStats: null }).excluded).toBe(false);
     expect(computeHardExclusionGate({ proposal: p, liTaskStats: healthy }).excluded).toBe(false);
     expect(computeHardExclusionGate({ proposal: p, liTaskStats: thinSample }).excluded).toBe(false);
+  });
+
+  it('arms on a confidently-low delivery rate even when LI runs are healthy', () => {
+    const res = computeHardExclusionGate({
+      proposal: { scope: 'loop-meta' },
+      liTaskStats: healthy,
+      outcomes: poorDelivery
+    });
+    expect(res.excluded).toBe(true);
+    expect(res.rule).toBe('self-improve-scope');
+    expect(res.reason).toContain('approval-to-completion delivery health 20%');
+    expect(res.reason).toContain(`< ${LI_HARD_GATE_DELIVERY_THRESHOLD}%`);
+  });
+
+  it('does not arm the delivery signal with no approvals or fewer than its sample floor', () => {
+    const p = { scope: 'loop-meta' };
+    expect(computeHardExclusionGate({ proposal: p, liTaskStats: healthy, outcomes: [] }).excluded).toBe(false);
+    expect(computeHardExclusionGate({
+      proposal: p,
+      liTaskStats: healthy,
+      outcomes: Array.from({ length: LI_DELIVERY_MIN_SAMPLE - 1 }, () => ({ outcome: 'merged', executionOutcome: null }))
+    }).excluded).toBe(false);
   });
 
   it('excludes EVERY self-improve scope when armed, regardless of domain history', () => {
@@ -963,6 +1010,10 @@ describe('computeHardExclusionGate (#2824)', () => {
 describe('computeHardExclusionNotice (#2824)', () => {
   const degraded = { read: true, metrics: { completed: 10, succeeded: 3, failed: 7, successRate: 30, recentOutcomes: [] } };
   const healthy = { read: true, metrics: { completed: 10, succeeded: 9, failed: 1, successRate: 90, recentOutcomes: [] } };
+  const poorDelivery = [
+    { outcome: 'merged', executionOutcome: 'success' },
+    ...Array.from({ length: 4 }, () => ({ outcome: 'merged', executionOutcome: null }))
+  ];
 
   it('is empty when the gate is disarmed (healthy / unknown health)', () => {
     expect(computeHardExclusionNotice({ liTaskStats: healthy })).toBe('');
@@ -987,6 +1038,12 @@ describe('computeHardExclusionNotice (#2824)', () => {
     const notice = computeHardExclusionNotice({ liTaskStats: degraded, outcomes });
     expect(notice).toContain('chronically-failing execution domain');
     expect(notice).toContain('app-improvement');
+  });
+
+  it('names delivery health when that independent signal arms the gate', () => {
+    const notice = computeHardExclusionNotice({ liTaskStats: healthy, outcomes: poorDelivery });
+    expect(notice).toContain('approval-to-completion delivery health 20%');
+    expect(notice).toContain(`below ${LI_HARD_GATE_DELIVERY_THRESHOLD}%`);
   });
 });
 
@@ -1764,6 +1821,18 @@ describe('computeSelfEvalSummary (#2700)', () => {
     expect(report).not.toContain('execution is degraded');
   });
 
+  it('reports approval-to-completion delivery alongside LI run health', () => {
+    const report = computeSelfEvalSummary({
+      liTaskStats: liMetrics(),
+      outcomes: [
+        { outcome: 'merged', executionOutcome: 'success' },
+        ...Array.from({ length: 4 }, () => ({ outcome: 'merged', executionOutcome: null }))
+      ]
+    });
+    expect(report).toContain('80% of 10 lifetime LI runs succeeded');
+    expect(report).toContain('20% of 5 approved LI proposals completed');
+  });
+
   it('does not fire the degraded warning below the sample floor', () => {
     const report = computeSelfEvalSummary({
       liTaskStats: liMetrics({ completed: 1, succeeded: 0, failed: 1, successRate: 0 })
@@ -1810,6 +1879,8 @@ describe('computeSelfEvalSummary (#2700)', () => {
   it('exposes the degraded thresholds', () => {
     expect(LI_DEGRADED_SUCCESS_THRESHOLD).toBe(50);
     expect(LI_DEGRADED_MIN_SAMPLE).toBe(4);
+    expect(LI_DELIVERY_MIN_SAMPLE).toBe(5);
+    expect(LI_HARD_GATE_DELIVERY_THRESHOLD).toBe(50);
   });
 
   it('honors the injected clock when ageing the LI run window', () => {
