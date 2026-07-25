@@ -88,6 +88,21 @@ describe('DesktopLaunchProgress', () => {
     expect(screen.queryByText(/Building and importing assets/)).not.toBeInTheDocument();
   });
 
+  it('names the separate native action in the relaunch copy', () => {
+    const { rerender } = renderPanel({ online: true, relaunchLabel: 'Godot' });
+    rerender(
+      <DesktopLaunchProgress
+        appId="app-1"
+        processName="game"
+        online={false}
+        relaunchLabel="Godot"
+        onDismiss={() => {}}
+      />
+    );
+
+    expect(screen.getByText(/press Godot to launch it again/)).toBeInTheDocument();
+  });
+
   it('dismisses without stopping the app', () => {
     const onDismiss = vi.fn();
     renderPanel({ onDismiss });
@@ -117,6 +132,7 @@ describe('desktop type mirror', () => {
     expect(isDesktopType('express')).toBe(false);
     expect(isDesktopType(undefined)).toBe(false);
   });
+
 });
 
 // The start endpoint answers 200 `{ success: true, results }` even when every

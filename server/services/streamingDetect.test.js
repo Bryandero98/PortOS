@@ -1,8 +1,39 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { parseEcosystemConfig, rewriteEcosystemPorts, rewriteEcosystemPortsByProcess, writeEcosystemPorts, writeEcosystemPortsByProcess, writeEcosystemPortEdits, DESKTOP_TYPES, NON_PM2_TYPES } from './streamingDetect.js';
+import { detectGodotNativeLaunch, parseEcosystemConfig, rewriteEcosystemPorts, rewriteEcosystemPortsByProcess, writeEcosystemPorts, writeEcosystemPortsByProcess, writeEcosystemPortEdits, DESKTOP_TYPES, NON_PM2_TYPES } from './streamingDetect.js';
+
+describe('detectGodotNativeLaunch', () => {
+  let dir;
+  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); dir = null; });
+
+  it('prefers the repo game launcher for a nested Godot project', () => {
+    dir = mkdtempSync(join(tmpdir(), 'godot-desktop-'));
+    const appDir = join(dir, 'ExampleProject');
+    mkdirSync(join(appDir, 'game'), { recursive: true });
+    mkdirSync(join(appDir, 'scripts'), { recursive: true });
+    writeFileSync(join(appDir, 'game', 'project.godot'), '[application]\n');
+    writeFileSync(join(appDir, 'scripts', 'game'), '#!/usr/bin/env bash\n');
+
+    expect(detectGodotNativeLaunch(appDir)).toEqual({
+      label: 'Godot',
+      command: './scripts/game run',
+      processName: 'example-project-game'
+    });
+  });
+
+  it('falls back for a root Godot project without misclassifying an unlaunched nested demo', () => {
+    dir = mkdtempSync(join(tmpdir(), 'godot-fallback-'));
+    writeFileSync(join(dir, 'project.godot'), '[application]\n');
+
+    expect(detectGodotNativeLaunch(dir)?.command).toBe('godot --path .');
+    rmSync(join(dir, 'project.godot'));
+    mkdirSync(join(dir, 'game'), { recursive: true });
+    writeFileSync(join(dir, 'game', 'project.godot'), '[application]\n');
+    expect(detectGodotNativeLaunch(dir)).toBeNull();
+  });
+});
 
 describe('parseEcosystemConfig', () => {
   it('captures arbitrary *_PORT env vars and labels them by camelCased stem', () => {

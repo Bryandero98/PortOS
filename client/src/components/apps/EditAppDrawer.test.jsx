@@ -151,6 +151,37 @@ describe('EditAppDrawer work tracker selector', () => {
   });
 });
 
+describe('EditAppDrawer native launch target', () => {
+  it('edits the separate native action without changing standard web fields', async () => {
+    renderDrawer({
+      app: {
+        ...APP,
+        uiPort: 3000,
+        nativeLaunch: {
+          label: 'Godot',
+          command: './scripts/game run',
+          processName: 'my-app-game'
+        }
+      }
+    });
+    await openTab('Commands');
+
+    expect(screen.getByLabelText('Separate native launch action')).toBeChecked();
+    fireEvent.change(screen.getByLabelText('Button Label'), { target: { value: 'Play Game' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+    await waitFor(() => expect(api.updateApp).toHaveBeenCalled());
+    expect(api.updateApp.mock.calls[0][1]).toMatchObject({
+      uiPort: 3000,
+      nativeLaunch: {
+        label: 'Play Game',
+        command: './scripts/game run',
+        processName: 'my-app-game'
+      }
+    });
+  });
+});
+
 describe('EditAppDrawer required-field validation across tabs', () => {
   // The required Name/Repository Path inputs live on the General tab and are
   // unmounted while another tab is active, so browser `required` validation

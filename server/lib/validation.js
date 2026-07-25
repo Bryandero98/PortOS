@@ -205,6 +205,12 @@ export const layeredIntelligenceSettingsSchema = z.object({
   trustShellSources: z.boolean().optional()
 });
 
+export const nativeLaunchSchema = z.object({
+  label: z.string().trim().min(1).max(40),
+  command: z.string().trim().min(1).max(500),
+  processName: z.string().regex(/^[a-zA-Z0-9._-]+$/).max(120)
+});
+
 export const appSchema = z.object({
   name: z.string().min(1).max(100),
   repoPath: z.string().min(1),
@@ -220,6 +226,9 @@ export const appSchema = z.object({
   uiUrl: z.string().url().optional(),
   startCommands: z.array(z.string()).optional(),
   pm2ProcessNames: z.array(z.string()).optional(),
+  // Optional native/GUI action shown alongside the standard browser Launch.
+  // Its PM2 process exits normally when the user closes the app window.
+  nativeLaunch: nativeLaunchSchema.nullable().optional(),
   processes: z.array(processSchema).optional(), // Per-process port configs from ecosystem.config
   envFile: z.string().optional(),
   icon: z.string().nullable().optional(),

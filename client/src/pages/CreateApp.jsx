@@ -52,6 +52,7 @@ export default function CreateApp() {
   const [startCommands, setStartCommands] = useState('');
   const [pm2Names, setPm2Names] = useState('');
   const [pm2Status, setPm2Status] = useState(null);
+  const [nativeLaunch, setNativeLaunch] = useState(null);
   const [icon, setIcon] = useState('package');
   const [appIconPath, setAppIconPath] = useState(null);
   const [appType, setAppType] = useState('unknown');
@@ -118,6 +119,7 @@ export default function CreateApp() {
         if (result.buildCommand) setBuildCommand(result.buildCommand);
         if (result.startCommands?.length) setStartCommands(result.startCommands.join('\n'));
         if (result.pm2ProcessNames?.length) setPm2Names(result.pm2ProcessNames.join(', '));
+        setNativeLaunch(result.nativeLaunch || null);
         if (result.appIconPath) setAppIconPath(result.appIconPath);
       } else if (err) {
         setError(err);
@@ -198,7 +200,8 @@ export default function CreateApp() {
         ? []
         : pm2Names
           ? pm2Names.split(',').map(s => s.trim()).filter(Boolean)
-          : [name.toLowerCase().replace(/[^a-z0-9]/g, '-')]
+          : [name.toLowerCase().replace(/[^a-z0-9]/g, '-')],
+      nativeLaunch
     };
 
     const result = await api.createApp(data).catch(err => {
@@ -224,6 +227,7 @@ export default function CreateApp() {
     setStartCommands('');
     setPm2Names('');
     setPm2Status(null);
+    setNativeLaunch(null);
     setIcon('package');
     setAppIconPath(null);
     setError(null);
@@ -406,6 +410,15 @@ export default function CreateApp() {
                     {isNonPm2 ? 'Command to build the project.' : 'Command to build the production UI. Enables the Build button.'}
                   </p>
                 </div>
+
+                {nativeLaunch && (
+                  <Banner tone="info" size="md">
+                    <p className="font-medium">Separate {nativeLaunch.label} action detected</p>
+                    <p className="text-xs text-gray-400 mt-1">
+                      Standard Launch will keep opening the web UI. A second button will run <code>{nativeLaunch.command}</code>.
+                    </p>
+                  </Banner>
+                )}
 
                 {/* PM2 process names - only for PM2/server apps */}
                 {!isNonPm2 && (

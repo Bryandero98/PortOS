@@ -35,6 +35,10 @@ export const updateApp = (id, data) => request(`/apps/${id}`, {
 export const deleteApp = (id) => request(`/apps/${id}`, { method: 'DELETE' });
 
 // App actions
+export const launchNativeApp = (id, options = {}) =>
+  request(`/apps/${id}/native-launch`, { method: 'POST', ...options });
+export const getNativeLaunchStatus = (id, options = {}) =>
+  request(`/apps/${id}/native-launch/status`, options);
 export const startApp = (id) => request(`/apps/${id}/start`, { method: 'POST' });
 export const stopApp = (id) => request(`/apps/${id}/stop`, { method: 'POST' });
 export const restartApp = (id) => request(`/apps/${id}/restart`, { method: 'POST' });

@@ -5,7 +5,7 @@ import ProcessLogLines from '../ui/ProcessLogLines';
 import { useProcessLogs } from '../../hooks/useProcessLogs';
 
 /**
- * Live build/launch output for a desktop (portless GUI) app.
+ * Live build/launch output for a desktop app or native GUI launch target.
  *
  * A web server binds its port in milliseconds; a desktop app's start command
  * compiles the project and imports assets first, so the window can be tens of
@@ -23,9 +23,10 @@ import { useProcessLogs } from '../../hooks/useProcessLogs';
  * @param {boolean} props.online Whether the process is up — drives the header
  *   copy through launching → running → exited so a finished launch reads as done
  *   and a closed window reads as a normal end rather than a launch still running.
+ * @param {string} [props.relaunchLabel='Start'] Button label used in exited copy.
  * @param {() => void} props.onDismiss Close the panel (does not stop the app).
  */
-export default function DesktopLaunchProgress({ appId, processName, online, onDismiss }) {
+export default function DesktopLaunchProgress({ appId, processName, online, relaunchLabel = 'Start', onDismiss }) {
   const { logs, subscribed } = useProcessLogs(processName, { lines: 200, appId });
   const scrollRef = useRef(null);
   // `online` is two-state, but the panel has three phases. Without remembering
@@ -64,7 +65,7 @@ export default function DesktopLaunchProgress({ appId, processName, online, onDi
         {phase === 'running'
           ? 'The app is running. Closing its window stops it — that is a normal exit, not a crash.'
           : phase === 'exited'
-            ? 'The app has exited. Closing its window is a normal end to a session — press Start to launch it again.'
+            ? `The app has exited. Closing its window is a normal end to a session — press ${relaunchLabel} to launch it again.`
             : 'Building and importing assets. The window opens when this finishes — this can take a while on a cold build.'}
       </p>
 
