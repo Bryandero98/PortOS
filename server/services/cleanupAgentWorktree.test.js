@@ -606,6 +606,23 @@ describe('cleanupAgentWorktree - openPR path', () => {
     expect(addTask).not.toHaveBeenCalled();
   });
 
+  it('leaves an explicitly leave-open PR without spawning a follow-up', async () => {
+    git.push.mockResolvedValue(undefined);
+    git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/79' });
+
+    await cleanupAgentWorktree('agent-1', true, {
+      openPR: true,
+      prCompletion: 'leave-open',
+      reviewers: ['copilot'],
+      description: 'X',
+      originalTask: { id: 'task-orig', metadata: {}, description: 'X' }
+    });
+
+    expect(git.requestCopilotReview).not.toHaveBeenCalled();
+    expect(addTask).not.toHaveBeenCalled();
+    expect(removeWorktree).toHaveBeenCalled();
+  });
+
   it('spawns a merge-only follow-up on non-GitHub forges when copilot was the only reviewer', async () => {
     // Copilot can't review a GitLab MR, so the review loop has nothing to run — but
     // the MR still has to land, so the follow-up degrades to merge-only rather than

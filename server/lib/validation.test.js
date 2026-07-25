@@ -370,6 +370,12 @@ describe('validation.js', () => {
       expect(result.data).not.toHaveProperty('archived');
       expect(result.data).not.toHaveProperty('defaultUseWorktree');
       expect(result.data).not.toHaveProperty('defaultOpenPR');
+      expect(result.data).not.toHaveProperty('defaultPrCompletion');
+    });
+
+    it('accepts only known app PR completion defaults', () => {
+      expect(appUpdateSchema.safeParse({ defaultPrCompletion: 'leave-open' }).success).toBe(true);
+      expect(appUpdateSchema.safeParse({ defaultPrCompletion: 'later' }).success).toBe(false);
     });
 
     it('preserves per-app taskTypeOverrides scheduling fields (intervalMs/providerId/model/taskMetadata)', () => {
@@ -686,6 +692,14 @@ describe('validation.js', () => {
         .toEqual({ useWorktree: true, openPR: true, simplify: true, reviewLoop: false });
     });
 
+    it('should accept only known PR completion metadata', () => {
+      expect(sanitizeTaskMetadata({ prCompletion: 'review-then-merge' }))
+        .toEqual({ prCompletion: 'review-then-merge' });
+      expect(sanitizeTaskMetadata({ prCompletion: 'leave-open' }))
+        .toEqual({ prCompletion: 'leave-open' });
+      expect(sanitizeTaskMetadata({ prCompletion: 'later' })).toBeNull();
+    });
+
     it('should drop non-boolean values for allowed keys', () => {
       expect(sanitizeTaskMetadata({ useWorktree: 'yes' })).toBeNull();
       expect(sanitizeTaskMetadata({ simplify: 1 })).toBeNull();
@@ -983,6 +997,11 @@ describe('validation.js', () => {
   });
 
   describe('createCosTaskSchema reviewers fields', () => {
+    it('accepts an explicit PR completion policy and rejects unknown values', () => {
+      expect(createCosTaskSchema.safeParse({ description: 'inspect', prCompletion: 'leave-open' }).success).toBe(true);
+      expect(createCosTaskSchema.safeParse({ description: 'inspect', prCompletion: 'later' }).success).toBe(false);
+    });
+
     it('accepts reviewers/reviewStopMode/reviewerApplies', () => {
       const parsed = createCosTaskSchema.safeParse({
         description: 'do a thing',
