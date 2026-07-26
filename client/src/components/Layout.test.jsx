@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, within, act } from '@testing-library/react';
+import { render, screen, within, act, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { PINNED_KEY } from '../utils/navWorkingSet.js';
 
@@ -164,5 +164,15 @@ describe('Layout — persistent mobile touch targets', () => {
       expect(toggle.className).not.toContain('sm:min-w-0');
       expect(toggle.className).not.toContain('sm:min-h-0');
     });
+  });
+
+  it('expands section children when the mobile sidebar opens from a collapsed desktop preference', async () => {
+    localStorage.setItem('portos-sidebar-collapsed', 'true');
+    await renderLayout('/');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open navigation menu' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    expect(screen.getByRole('link', { name: 'Authors' })).toHaveAttribute('href', '/authors');
   });
 });
