@@ -257,4 +257,46 @@ describe('useUniverseDraft', () => {
     });
     expect(apiMocks.updateUniverse.mock.calls.at(-1)).toEqual(['u2', { styleReferences: [] }, { silent: true }]);
   });
+
+  it('reconciles a save that resolves after an A -> B -> A round trip, instead of losing it (codex review finding)', async () => {
+    const universeTwo = { ...universe, id: 'u2', name: 'Second Universe', styleReferences: [] };
+    apiMocks.getUniverse.mockImplementation(async (id) => (id === 'u2' ? universeTwo : { ...universe, styleReferences: [] }));
+
+    const goToWorld = vi.fn();
+    const { result, rerender } = renderHook(
+      ({ selectedId }) => useUniverseDraft({ selectedId, goToWorld }),
+      { initialProps: { selectedId: 'u1' } },
+    );
+    await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+
+    // Start a save on u1 and hold its response open.
+    let resolveU1Save;
+    apiMocks.updateUniverse.mockImplementationOnce(() => new Promise((resolve) => { resolveU1Save = resolve; }));
+    const refX = { id: 'style-ref-x', title: 'Ref X', prompt: 'x', imageRefs: ['x.png'] };
+    const pendingSave = result.current.persistStyleReference({ reference: refX, adopt: false });
+
+    // u1 -> u2 -> u1, all before the save resolves.
+    await act(async () => { rerender({ selectedId: 'u2' }); });
+    await waitFor(() => expect(result.current.draft.id).toBe('u2'));
+    await act(async () => { rerender({ selectedId: 'u1' }); });
+    await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+    // Re-hydration reflects the server's pre-save state (the save is still
+    // in flight from the server's perspective too).
+    expect(result.current.draft.styleReferences).toEqual([]);
+
+    // Now the save resolves — since the user is back on u1, its result must
+    // be reconciled into the displayed draft, not discarded.
+    await act(async () => {
+      resolveU1Save({ ...universe, styleReferences: [refX] });
+      await pendingSave;
+    });
+    expect(result.current.draft.id).toBe('u1');
+    expect(result.current.draft.styleReferences).toEqual([refX]);
+
+    // The next mutation on u1 must build from the reconciled [refX], not from
+    // a stale empty snapshot left over from before the round trip.
+    await act(async () => { await result.current.removeStyleReference(refX.id); });
+    expect(apiMocks.updateUniverse.mock.calls.at(-1)).toEqual(['u1', { styleReferences: [] }, { silent: true }]);
+    expect(result.current.draft.styleReferences).toEqual([]);
+  });
 });
