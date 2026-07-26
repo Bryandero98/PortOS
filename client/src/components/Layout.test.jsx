@@ -171,7 +171,7 @@ describe('Layout — persistent mobile touch targets', () => {
     await renderLayout('/');
 
     fireEvent.click(screen.getByRole('button', { name: 'Open navigation menu' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Create' }));
 
     expect(screen.getByRole('link', { name: 'Authors' })).toHaveAttribute('href', '/authors');
   });
