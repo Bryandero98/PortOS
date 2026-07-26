@@ -18,6 +18,15 @@ export default function useUniverseRender({
   defaultMode,
   runs,
   setRuns,
+  // Same contract as `useUniverseAction`'s `preflight`: runs after the cheap
+  // guards, owns its own error toast, and a falsy return aborts the action.
+  // Required here rather than optional — `/render` compiles prompts from the
+  // SERVER's copy of the universe while every count/label in the scope comes
+  // from the in-memory draft, so skipping the flush renders an unsaved
+  // variation's stale prompt, or 400s with WORLD_BUILDER_EMPTY ("No prompts to
+  // render") on one the UI is showing. A caller that forgets it should fail
+  // loudly, not silently regress.
+  preflight,
 }) {
   const [rendering, setRendering] = useState(false);
   const [renderOpts, setRenderOpts] = useLocalStoragePersisted(
@@ -48,6 +57,8 @@ export default function useUniverseRender({
       toast.error('Configure an image-gen backend first');
       return;
     }
+    // After the cheap guards so a doomed click doesn't trigger a write.
+    if (!(await preflight())) return;
     const effectiveMode = renderOpts.mode || defaultMode || undefined;
     const numericOrUndefined = (value) => {
       if (value === '' || value == null) return undefined;

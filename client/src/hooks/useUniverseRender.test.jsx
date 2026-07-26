@@ -38,7 +38,7 @@ beforeEach(() => {
   apiMocks.listWorldRuns.mockResolvedValue([{ id: 'run-2' }]);
 });
 
-const renderUniverseRender = (availableBackends = [{ id: 'local' }]) => {
+const renderUniverseRender = (availableBackends = [{ id: 'local' }], preflight = async () => true) => {
   const setRuns = vi.fn();
   const hook = renderHook(() => useUniverseRender({
     selectedId: 'u1',
@@ -47,6 +47,7 @@ const renderUniverseRender = (availableBackends = [{ id: 'local' }]) => {
     defaultMode: 'local',
     runs: [],
     setRuns,
+    preflight,
   }));
   return { ...hook, setRuns };
 };
@@ -74,5 +75,39 @@ describe('useUniverseRender', () => {
 
     expect(apiMocks.renderWorld).not.toHaveBeenCalled();
     expect(toastMock.error).toHaveBeenCalledWith('Configure an image-gen backend first');
+  });
+
+  // /render compiles from the PERSISTED universe, so an unsaved variation the
+  // UI already counts would 400 with WORLD_BUILDER_EMPTY ("No prompts to
+  // render") — the preflight persists it first.
+  it('runs the preflight before POSTing the render', async () => {
+    const preflight = vi.fn().mockResolvedValue(true);
+    const { result } = renderUniverseRender([{ id: 'local' }], preflight);
+    await act(async () => {
+      await result.current.handleRender({ promptMode: 'variations', selection: { heroes: 'all' } });
+    });
+
+    expect(preflight).toHaveBeenCalledTimes(1);
+    expect(apiMocks.renderWorld).toHaveBeenCalledTimes(1);
+    expect(preflight.mock.invocationCallOrder[0])
+      .toBeLessThan(apiMocks.renderWorld.mock.invocationCallOrder[0]);
+  });
+
+  it('aborts the render when the preflight fails', async () => {
+    const preflight = vi.fn().mockResolvedValue(false);
+    const { result } = renderUniverseRender([{ id: 'local' }], preflight);
+    await act(async () => {
+      await result.current.handleRender({ promptMode: 'variations', selection: { heroes: 'all' } });
+    });
+
+    expect(apiMocks.renderWorld).not.toHaveBeenCalled();
+  });
+
+  it('skips the preflight entirely when the guards reject the render', async () => {
+    const preflight = vi.fn().mockResolvedValue(true);
+    const { result } = renderUniverseRender([], preflight);
+    await act(async () => { await result.current.handleRender(); });
+
+    expect(preflight).not.toHaveBeenCalled();
   });
 });
