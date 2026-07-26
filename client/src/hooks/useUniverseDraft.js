@@ -205,6 +205,13 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
         };
         setDraft(hydrated);
         markDraftSaved(hydrated);
+        // Refresh this universe's styleReferences snapshot from the server on
+        // every successful hydration — a stale map entry from an earlier
+        // local mutation (or absence of one, on first visit) must not shadow
+        // changes made while this universe wasn't selected (peer sync, the
+        // image-delete purge route). The next add/remove needs this fresh
+        // baseline, not a leftover cache (codex review finding).
+        styleReferenceSnapshotsRef.current.set(selectedId, hydrated.styleReferences);
       }
       setRuns(nextRuns);
     });

@@ -299,4 +299,37 @@ describe('useUniverseDraft', () => {
     expect(apiMocks.updateUniverse.mock.calls.at(-1)).toEqual(['u1', { styleReferences: [] }, { silent: true }]);
     expect(result.current.draft.styleReferences).toEqual([]);
   });
+
+  it('refreshes the cached snapshot from the server on re-hydration, so an external change is not shadowed (codex review finding)', async () => {
+    const universeTwo = { ...universe, id: 'u2', name: 'Second Universe', styleReferences: [] };
+    const refOld = { id: 'style-ref-old', title: 'Old', prompt: 'old', imageRefs: ['old.png'] };
+    const refExternal = { id: 'style-ref-external', title: 'External', prompt: 'external', imageRefs: ['external.png'] };
+    // First visit to u1 returns refOld; a peer sync / image-delete purge then
+    // changes u1's references server-side WHILE the user is on u2, so the
+    // second fetch of u1 returns refExternal instead.
+    let u1FetchCount = 0;
+    apiMocks.getUniverse.mockImplementation(async (id) => {
+      if (id === 'u2') return universeTwo;
+      u1FetchCount += 1;
+      return { ...universe, styleReferences: u1FetchCount === 1 ? [refOld] : [refExternal] };
+    });
+
+    const goToWorld = vi.fn();
+    const { result, rerender } = renderHook(
+      ({ selectedId }) => useUniverseDraft({ selectedId, goToWorld }),
+      { initialProps: { selectedId: 'u1' } },
+    );
+    await waitFor(() => expect(result.current.draft.styleReferences).toEqual([refOld]));
+
+    await act(async () => { rerender({ selectedId: 'u2' }); });
+    await waitFor(() => expect(result.current.draft.id).toBe('u2'));
+
+    await act(async () => { rerender({ selectedId: 'u1' }); });
+    await waitFor(() => expect(result.current.draft.styleReferences).toEqual([refExternal]));
+
+    // A removal now must target the freshly re-hydrated refExternal, not the
+    // stale cached refOld from before the external change.
+    await act(async () => { await result.current.removeStyleReference(refExternal.id); });
+    expect(apiMocks.updateUniverse.mock.calls.at(-1)).toEqual(['u1', { styleReferences: [] }, { silent: true }]);
+  });
 });
