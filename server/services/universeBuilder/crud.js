@@ -17,7 +17,7 @@ import {
 } from '../../lib/storyBible.js';
 import { store } from './storeFacade.js';
 import {
-  sanitizeTemplate, sanitizeRun, sanitizeImageRefFilename,
+  sanitizeTemplate, sanitizeRun, sanitizeImageRefFilename, resolveInfluences,
   makeErr, UNIVERSE_ID_RE,
   ERR_NOT_FOUND, ERR_VALIDATION, ERR_DUPLICATE, ERR_HAS_LIVE_SERIES,
   NAME_MAX_LENGTH, CURRENT_SCHEMA_VERSION, ENTRY_REF_KIND, IMAGE_REFS_PER_ENTRY_MAX,
@@ -75,6 +75,41 @@ export async function listUniverses({ includeDeleted = false } = {}) {
   const filtered = includeDeleted ? universes : universes.filter((u) => !u.deleted);
   // Newest first — matches user expectation for a "your universes" list.
   return [...filtered].sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+}
+
+/**
+ * Every live universe as `{ id, name, influences: { embrace[], avoid[] } }` —
+ * the style tokens and nothing else.
+ *
+ * Backs the ad-hoc "style this render like universe X" pickers (the Quick Image
+ * dashboard widget) that need a universe's look but none of its canon. The PG
+ * backend projects in SQL, so this never ships the bibles / categories /
+ * composite sheets that make `listUniverses()` a multi-megabyte read — which is
+ * the whole reason to reach for this instead.
+ *
+ * The row keeps `universe.influences`' own nesting so a caller can hand it
+ * straight to `universeStylePreset(...)` like any full universe record.
+ * `resolveInfluences` is the SAME derivation `sanitizeTemplate` applies, so a
+ * projected record can't report different tokens than a full read — including
+ * for a pre-v3 record (or one synced from an older peer) whose style still
+ * lives in the legacy prose fields.
+ *
+ * Universes with no style tokens at all are dropped — selecting one would be a
+ * no-op. Newest-first, matching `listUniverses()`; ordering lives here rather
+ * than in either backend so the two can't drift.
+ */
+export async function listUniverseStyles() {
+  const rows = await store().listStyles();
+  return rows
+    .flatMap((r) => {
+      const name = trimTo(r?.name, NAME_MAX_LENGTH);
+      if (!isStr(r?.id) || !r.id || !name) return [];
+      const influences = resolveInfluences(r);
+      if (!influences.embrace.length && !influences.avoid.length) return [];
+      return [{ id: r.id, name, influences, createdAt: r.createdAt || '' }];
+    })
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
+    .map((r) => ({ id: r.id, name: r.name, influences: r.influences }));
 }
 
 /**

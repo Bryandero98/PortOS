@@ -1,9 +1,13 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Sparkles, Pencil, ChevronDown, ChevronRight } from 'lucide-react';
-import { generateImage } from '../services/api';
+import { generateImage, listUniverseStyles } from '../services/api';
 import { DEFAULT_NEGATIVE_PROMPT } from '../lib/imageGenDefaults';
 import { RESOLUTIONS, MAX_IMAGE_EDGE, MAX_IMAGE_PIXELS } from '../lib/imageGenResolutions';
+import { composeStyledPrompt } from '../lib/composeStyledPrompt';
+import { universeStylePreset } from '../lib/universeStylePreset';
+import { useLocalStoragePersisted } from '../hooks/useLocalStorageBool';
+import useMounted from '../hooks/useMounted';
 import ResolutionField from './media/ResolutionField';
 import MediaJobThumb from './pipeline/MediaJobThumb';
 import toast from './ui/Toast';
@@ -20,6 +24,9 @@ export default function QuickImagePrompt() {
   const [showNegative, setShowNegative] = useState(false);
   const [width, setWidth] = useState(1024);
   const [height, setHeight] = useState(1024);
+  const [universeStyles, setUniverseStyles] = useState([]);
+  const [universeId, setUniverseId] = useLocalStoragePersisted('dashboard.quickImage.universeId', '');
+  const mountedRef = useMounted();
   // The current/last submission. `jobId` set → async backend (local/codex):
   // render the live MediaJobThumb so the user sees the diffusion spinner →
   // final image, exactly like the Universe asset slots. `filename` only →
@@ -28,6 +35,28 @@ export default function QuickImagePrompt() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submittingRef = useRef(false);
   const navigate = useNavigate();
+
+  // Every row is selectable — the endpoint already drops universes with no
+  // style tokens. Failure is non-fatal: the picker stays hidden and the widget
+  // behaves exactly as it did before.
+  useEffect(() => {
+    listUniverseStyles({ silent: true })
+      .then((rows) => { if (mountedRef.current) setUniverseStyles(Array.isArray(rows) ? rows : []); })
+      .catch(() => { /* non-fatal — widget degrades to un-styled quick renders */ });
+  }, [mountedRef]);
+
+  // The selected universe's `{ prompt, negativePrompt }` preset, or null when
+  // nothing is selected — including when the saved id no longer resolves, so a
+  // deleted universe can't keep silently styling renders.
+  const stylePreset = useMemo(() => {
+    const match = universeId ? universeStyles.find((u) => u.id === universeId) : null;
+    return match ? universeStylePreset(match) : null;
+  }, [universeId, universeStyles]);
+
+  // Same composition the Universe Builder's canon renders use: the universe's
+  // embrace tokens PREFIX the user prompt (diffusion weights earlier tokens
+  // heaviest) and its avoid tokens append to the negative.
+  const composeForSubmit = (text) => composeStyledPrompt(text, negativePrompt, stylePreset);
 
   const handleResolution = (w, h) => { setWidth(w); setHeight(h); };
 
@@ -47,9 +76,10 @@ export default function QuickImagePrompt() {
     // empty as "no negative prompt"). Preserve the input on failure so the
     // user doesn't have to retype after a server error (the API helper toasts
     // on its own).
+    const styled = composeForSubmit(text);
     const result = await generateImage({
-      prompt: text,
-      negativePrompt,
+      prompt: styled.prompt,
+      negativePrompt: styled.negativePrompt,
       width,
       height,
     }).catch(() => null);
@@ -77,10 +107,13 @@ export default function QuickImagePrompt() {
     // ImageGen page's remix-param effect reads ?prompt=…&width=…&height=… on
     // mount and strips them from the URL, so the widget can hand off the
     // current prompt + size + negative prompt without coupling to the form's
-    // internal state.
+    // internal state. Hand off the STYLED prompt so the editor opens with what
+    // Generate would have submitted — the Image Gen page has no universe picker
+    // of its own, so an un-styled handoff would silently drop the selection.
+    const styled = composeForSubmit(text);
     const params = new URLSearchParams();
-    if (text) params.set('prompt', text);
-    if (negativePrompt) params.set('negativePrompt', negativePrompt);
+    if (styled.prompt) params.set('prompt', styled.prompt);
+    if (styled.negativePrompt) params.set('negativePrompt', styled.negativePrompt);
     params.set('width', String(width));
     params.set('height', String(height));
     const qs = params.toString();
@@ -110,6 +143,33 @@ export default function QuickImagePrompt() {
           rows={3}
           className="flex-1 min-h-[60px] px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm resize-none"
         />
+
+        {/* Universe styling. Hidden entirely when no universe carries style
+            tokens — an empty dropdown is noise on a compact widget. */}
+        {universeStyles.length > 0 && (
+          <div className="shrink-0">
+            <label htmlFor="quick-image-universe" className="block text-xs font-medium text-gray-400 mb-1">
+              Universe style
+            </label>
+            <select
+              id="quick-image-universe"
+              value={universeId}
+              onChange={(e) => setUniverseId(e.target.value)}
+              disabled={isSubmitting}
+              className={`${inputCls} disabled:opacity-50`}
+            >
+              <option value="">None</option>
+              {universeStyles.map((u) => (
+                <option key={u.id} value={u.id}>{u.name}</option>
+              ))}
+            </select>
+            {stylePreset?.prompt ? (
+              <p className="mt-1 text-[11px] text-gray-500 line-clamp-2" title={stylePreset.prompt}>
+                Prefixed with: {stylePreset.prompt}
+              </p>
+            ) : null}
+          </div>
+        )}
 
         {/* Shared preset dropdown + "Custom…" width/height inputs. Reuses the
             same control as the full Image Gen page so the quick widget offers

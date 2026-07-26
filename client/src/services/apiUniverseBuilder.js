@@ -19,6 +19,12 @@ export const WORLD_INFLUENCES_PER_LIST_MAX = 30;
 export const listUniverses = (options = {}) => request('/universe-builder', options);
 export const getUniverse = (id, options = {}) => request(`/universe-builder/${encodeURIComponent(id)}`, options);
 
+// `[{ id, name, influences: { embrace[], avoid[] } }]` for every live universe
+// that has style tokens. Use this instead of `listUniverses()` whenever a
+// surface only needs to layer a universe's look onto a prompt — the full list
+// ships every canon bible and category.
+export const listUniverseStyles = (options = {}) => request('/universe-builder/styles', options);
+
 export const createUniverse = (data, options = {}) => request('/universe-builder', {
   method: 'POST',
   body: JSON.stringify(data),

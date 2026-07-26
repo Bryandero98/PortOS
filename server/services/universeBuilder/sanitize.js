@@ -414,6 +414,24 @@ export const mergeLegacyPromptsIntoInfluences = (rawInfluences, legacyStylePromp
   };
 };
 
+/**
+ * Derive a record's `{ embrace[], avoid[] }` style tokens from ANY raw universe
+ * shape. THE single definition of that derivation — `sanitizeTemplate` (full
+ * read) and `listUniverseStyles` (the style-token projection) both call it, so
+ * a projected record can never report different tokens than a full read of the
+ * same row.
+ *
+ * Legacy v2 universes carried prose `stylePrompt` / `negativePrompt` fields
+ * alongside influences. v3 collapses both into the chip-based influences
+ * editor: split each prose field on commas/newlines and append to the matching
+ * list. `sanitizeInfluenceList` handles trim, cap, and case-insensitive dedupe
+ * so a token that already exists as a chip is not re-added by the migration.
+ * The fold MUST run before the sanitize — that ordering is the contract.
+ */
+export const resolveInfluences = (raw) => sanitizeInfluences(
+  mergeLegacyPromptsIntoInfluences(raw?.influences, raw?.stylePrompt, raw?.negativePrompt),
+);
+
 // Build a refined influences object that honors per-list locks. Locked lists
 // take their value from `fallback` (originals); unlocked lists take from
 // `fresh` (the LLM output), falling back to `fallback` ONLY when the LLM
@@ -650,15 +668,7 @@ export const sanitizeTemplate = (raw) => {
   const styleNotes = trimTo(raw.styleNotes, STYLE_NOTES_MAX);
   const categories = sanitizeCategories(raw.categories || {});
   const compositeSheets = sanitizeCompositeSheets(raw.compositeSheets || []);
-  // Legacy v2 universes carried prose stylePrompt / negativePrompt fields
-  // alongside influences. v3 collapses both into the chip-based influences
-  // editor: split each prose field on commas/newlines and append to the
-  // matching list. sanitizeInfluenceList handles trim, cap, and
-  // case-insensitive dedupe so a token that already exists as a chip is not
-  // re-added by the migration.
-  const influences = sanitizeInfluences(
-    mergeLegacyPromptsIntoInfluences(raw.influences, raw.stylePrompt, raw.negativePrompt),
-  );
+  const influences = resolveInfluences(raw);
   const locked = sanitizeLocked(raw.locked);
   // Canon registries. Two passes:
   //   1. foldRetiredCharactersBucket — Phase A retirement contract. ALWAYS

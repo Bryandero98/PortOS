@@ -136,6 +136,45 @@ describe("universeBuilder service", () => {
     expect(await svc.listUniverses()).toEqual([]);
   });
 
+  describe("listUniverseStyles", () => {
+    it("projects to style tokens only — no categories / canon / sheets", async () => {
+      const w = await seedWorld();
+      const styles = await svc.listUniverseStyles();
+      expect(styles).toEqual([{
+        id: w.id,
+        name: "Moebius SciFi",
+        influences: {
+          embrace: ["moebius linework", "scavengers reign palette"],
+          avoid: ["blurry", "lowres"],
+        },
+      }]);
+    });
+
+    it("drops universes with no style tokens — selecting one would be a no-op", async () => {
+      await svc.createUniverse({ name: "Blank Slate" });
+      expect(await svc.listUniverseStyles()).toEqual([]);
+    });
+
+    it("folds the legacy v2 prose stylePrompt/negativePrompt into the token lists", async () => {
+      // A pre-v3 record (or one synced from an older peer) carries prose
+      // instead of chips — sanitizeTemplate splits it on read, so the
+      // projection must too or those universes look style-less.
+      await seedState({
+        universes: [{
+          id: "legacy-1",
+          name: "Legacy World",
+          stylePrompt: "ink wash, muted palette",
+          negativePrompt: "blurry",
+        }],
+      });
+      expect(await svc.listUniverseStyles()).toEqual([{
+        id: "legacy-1",
+        name: "Legacy World",
+        influences: { embrace: ["ink wash", "muted palette"], avoid: ["blurry"] },
+      }]);
+    });
+  });
+
   it("createUniverse persists with sanitized categories + kind tags", async () => {
     const w = await seedWorld();
     expect(w.id).toBe(mockUuid(1));
@@ -739,6 +778,16 @@ describe("universeBuilder service", () => {
       // includeDeleted mirrors listUniverses's own option, tombstones and all.
       expect(await svc.countUniverses({ includeDeleted: true }))
         .toBe((await svc.listUniverses({ includeDeleted: true })).length);
+    });
+
+    it("listUniverseStyles excludes tombstones", async () => {
+      const live = await seedWorld();
+      const doomed = await seedWorld({ name: "Doomed World" });
+      expect((await svc.listUniverseStyles()).map((u) => u.id).sort())
+        .toEqual([live.id, doomed.id].sort());
+
+      await svc.deleteUniverse(doomed.id);
+      expect((await svc.listUniverseStyles()).map((u) => u.id)).toEqual([live.id]);
     });
 
     it("getUniverse returns 404 for tombstoned, includeDeleted exposes it", async () => {

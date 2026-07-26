@@ -957,6 +957,27 @@ describe('universe-builder routes', () => {
     });
   });
 
+  describe('GET /styles', () => {
+    it('returns style tokens only, and is not swallowed by /:id', async () => {
+      const app = buildApp();
+      const created = await request(app).post('/api/universe-builder').send({
+        name: 'Styled World',
+        logline: 'a logline that must NOT ship in the styles projection',
+        influences: { embrace: ['inky linework'], avoid: ['lowres'] },
+      });
+      expect(created.status).toBe(201);
+
+      const res = await request(app).get('/api/universe-builder/styles');
+      expect(res.status).toBe(200);
+      const row = res.body.find((u) => u.id === created.body.id);
+      expect(row).toEqual({
+        id: created.body.id,
+        name: 'Styled World',
+        influences: { embrace: ['inky linework'], avoid: ['lowres'] },
+      });
+    });
+  });
+
   describe('duplicate resolution routes', () => {
     it('GET /duplicates returns { groups: [] } (static path not swallowed by /:id)', async () => {
       const res = await request(buildApp()).get('/api/universe-builder/duplicates');
