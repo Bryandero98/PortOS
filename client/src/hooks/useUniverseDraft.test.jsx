@@ -64,6 +64,21 @@ const renderDraft = () => {
   return { ...hook, goToWorld };
 };
 
+// A second universe to navigate to, for the tests that exercise a selection
+// switch. Overridden per-test where the switch target needs its own references.
+const universeTwo = { ...universe, id: 'u2', name: 'Second Universe', styleReferences: [] };
+
+// Same as renderDraft, but with `selectedId` driven by rerender props so a test
+// can switch universes mid-flight.
+const renderSelectable = () => {
+  const goToWorld = vi.fn();
+  const hook = renderHook(
+    ({ selectedId }) => useUniverseDraft({ selectedId, goToWorld }),
+    { initialProps: { selectedId: 'u1' } },
+  );
+  return { ...hook, goToWorld };
+};
+
 describe('useUniverseDraft', () => {
   it('hydrates the selected universe and its run history', async () => {
     const { result } = renderDraft();
@@ -212,19 +227,13 @@ describe('useUniverseDraft', () => {
   });
 
   it('does not let a stale in-flight save for one universe overwrite a different, now-selected universe (codex review finding)', async () => {
-    const universeTwo = {
-      ...universe,
-      id: 'u2',
-      name: 'Second Universe',
+    const universeTwoWithRef = {
+      ...universeTwo,
       styleReferences: [{ id: 'style-ref-b2', title: 'Ref B2', prompt: 'b2', imageRefs: ['b2.png'] }],
     };
-    apiMocks.getUniverse.mockImplementation(async (id) => (id === 'u2' ? universeTwo : universe));
+    apiMocks.getUniverse.mockImplementation(async (id) => (id === 'u2' ? universeTwoWithRef : universe));
 
-    const goToWorld = vi.fn();
-    const { result, rerender } = renderHook(
-      ({ selectedId }) => useUniverseDraft({ selectedId, goToWorld }),
-      { initialProps: { selectedId: 'u1' } },
-    );
+    const { result, rerender } = renderSelectable();
     await waitFor(() => expect(result.current.draft.id).toBe('u1'));
 
     // Start a save for u1 but hold its PATCH response open — simulates the
@@ -238,7 +247,7 @@ describe('useUniverseDraft', () => {
     // Switch to u2 while u1's save is still pending.
     await act(async () => { rerender({ selectedId: 'u2' }); });
     await waitFor(() => expect(result.current.draft.id).toBe('u2'));
-    expect(result.current.draft.styleReferences).toEqual(universeTwo.styleReferences);
+    expect(result.current.draft.styleReferences).toEqual(universeTwoWithRef.styleReferences);
 
     // Now let u1's stale save resolve.
     await act(async () => {
@@ -248,25 +257,20 @@ describe('useUniverseDraft', () => {
 
     // u2's displayed draft must be untouched by u1's stale, now-resolved response.
     expect(result.current.draft.id).toBe('u2');
-    expect(result.current.draft.styleReferences).toEqual(universeTwo.styleReferences);
+    expect(result.current.draft.styleReferences).toEqual(universeTwoWithRef.styleReferences);
 
     // A subsequent removal on u2 must build its PATCH from u2's OWN
     // references, not from u1's stale snapshot.
     await act(async () => {
-      await result.current.removeStyleReference(universeTwo.styleReferences[0].id);
+      await result.current.removeStyleReference(universeTwoWithRef.styleReferences[0].id);
     });
     expect(apiMocks.updateUniverse.mock.calls.at(-1)).toEqual(['u2', { styleReferences: [] }, { silent: true }]);
   });
 
   it('reconciles a save that resolves after an A -> B -> A round trip, instead of losing it (codex review finding)', async () => {
-    const universeTwo = { ...universe, id: 'u2', name: 'Second Universe', styleReferences: [] };
     apiMocks.getUniverse.mockImplementation(async (id) => (id === 'u2' ? universeTwo : { ...universe, styleReferences: [] }));
 
-    const goToWorld = vi.fn();
-    const { result, rerender } = renderHook(
-      ({ selectedId }) => useUniverseDraft({ selectedId, goToWorld }),
-      { initialProps: { selectedId: 'u1' } },
-    );
+    const { result, rerender } = renderSelectable();
     await waitFor(() => expect(result.current.draft.id).toBe('u1'));
 
     // Start a save on u1 and hold its response open.
@@ -301,7 +305,6 @@ describe('useUniverseDraft', () => {
   });
 
   it('refreshes the cached snapshot from the server on re-hydration, so an external change is not shadowed (codex review finding)', async () => {
-    const universeTwo = { ...universe, id: 'u2', name: 'Second Universe', styleReferences: [] };
     const refOld = { id: 'style-ref-old', title: 'Old', prompt: 'old', imageRefs: ['old.png'] };
     const refExternal = { id: 'style-ref-external', title: 'External', prompt: 'external', imageRefs: ['external.png'] };
     // First visit to u1 returns refOld; a peer sync / image-delete purge then
@@ -314,11 +317,7 @@ describe('useUniverseDraft', () => {
       return { ...universe, styleReferences: u1FetchCount === 1 ? [refOld] : [refExternal] };
     });
 
-    const goToWorld = vi.fn();
-    const { result, rerender } = renderHook(
-      ({ selectedId }) => useUniverseDraft({ selectedId, goToWorld }),
-      { initialProps: { selectedId: 'u1' } },
-    );
+    const { result, rerender } = renderSelectable();
     await waitFor(() => expect(result.current.draft.styleReferences).toEqual([refOld]));
 
     await act(async () => { rerender({ selectedId: 'u2' }); });
@@ -334,7 +333,6 @@ describe('useUniverseDraft', () => {
   });
 
   it('keeps a mutation that resolves BEFORE the re-hydration GET it raced (codex review finding)', async () => {
-    const universeTwo = { ...universe, id: 'u2', name: 'Second Universe', styleReferences: [] };
     const refX = { id: 'style-ref-x', title: 'Ref X', prompt: 'x', imageRefs: ['x.png'] };
     // The re-hydration fetch on the return to u1 is held open so it can be
     // resolved AFTER the mutation, with the PRE-mutation body the server would
@@ -348,11 +346,7 @@ describe('useUniverseDraft', () => {
       return { ...universe, styleReferences: [] };
     });
 
-    const goToWorld = vi.fn();
-    const { result, rerender } = renderHook(
-      ({ selectedId }) => useUniverseDraft({ selectedId, goToWorld }),
-      { initialProps: { selectedId: 'u1' } },
-    );
+    const { result, rerender } = renderSelectable();
     await waitFor(() => expect(result.current.draft.id).toBe('u1'));
 
     // Mutation M on u1, held open.
