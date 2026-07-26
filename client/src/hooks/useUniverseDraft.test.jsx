@@ -64,6 +64,21 @@ const renderDraft = () => {
   return { ...hook, goToWorld };
 };
 
+// A second universe to navigate to, for the tests that exercise a selection
+// switch. Overridden per-test where the switch target needs its own references.
+const universeTwo = { ...universe, id: 'u2', name: 'Second Universe', styleReferences: [] };
+
+// Same as renderDraft, but with `selectedId` driven by rerender props so a test
+// can switch universes mid-flight.
+const renderSelectable = () => {
+  const goToWorld = vi.fn();
+  const hook = renderHook(
+    ({ selectedId }) => useUniverseDraft({ selectedId, goToWorld }),
+    { initialProps: { selectedId: 'u1' } },
+  );
+  return { ...hook, goToWorld };
+};
+
 describe('useUniverseDraft', () => {
   it('hydrates the selected universe and its run history', async () => {
     const { result } = renderDraft();
@@ -212,19 +227,13 @@ describe('useUniverseDraft', () => {
   });
 
   it('does not let a stale in-flight save for one universe overwrite a different, now-selected universe (codex review finding)', async () => {
-    const universeTwo = {
-      ...universe,
-      id: 'u2',
-      name: 'Second Universe',
+    const universeTwoWithRef = {
+      ...universeTwo,
       styleReferences: [{ id: 'style-ref-b2', title: 'Ref B2', prompt: 'b2', imageRefs: ['b2.png'] }],
     };
-    apiMocks.getUniverse.mockImplementation(async (id) => (id === 'u2' ? universeTwo : universe));
+    apiMocks.getUniverse.mockImplementation(async (id) => (id === 'u2' ? universeTwoWithRef : universe));
 
-    const goToWorld = vi.fn();
-    const { result, rerender } = renderHook(
-      ({ selectedId }) => useUniverseDraft({ selectedId, goToWorld }),
-      { initialProps: { selectedId: 'u1' } },
-    );
+    const { result, rerender } = renderSelectable();
     await waitFor(() => expect(result.current.draft.id).toBe('u1'));
 
     // Start a save for u1 but hold its PATCH response open — simulates the
@@ -238,7 +247,7 @@ describe('useUniverseDraft', () => {
     // Switch to u2 while u1's save is still pending.
     await act(async () => { rerender({ selectedId: 'u2' }); });
     await waitFor(() => expect(result.current.draft.id).toBe('u2'));
-    expect(result.current.draft.styleReferences).toEqual(universeTwo.styleReferences);
+    expect(result.current.draft.styleReferences).toEqual(universeTwoWithRef.styleReferences);
 
     // Now let u1's stale save resolve.
     await act(async () => {
@@ -248,25 +257,20 @@ describe('useUniverseDraft', () => {
 
     // u2's displayed draft must be untouched by u1's stale, now-resolved response.
     expect(result.current.draft.id).toBe('u2');
-    expect(result.current.draft.styleReferences).toEqual(universeTwo.styleReferences);
+    expect(result.current.draft.styleReferences).toEqual(universeTwoWithRef.styleReferences);
 
     // A subsequent removal on u2 must build its PATCH from u2's OWN
     // references, not from u1's stale snapshot.
     await act(async () => {
-      await result.current.removeStyleReference(universeTwo.styleReferences[0].id);
+      await result.current.removeStyleReference(universeTwoWithRef.styleReferences[0].id);
     });
     expect(apiMocks.updateUniverse.mock.calls.at(-1)).toEqual(['u2', { styleReferences: [] }, { silent: true }]);
   });
 
   it('reconciles a save that resolves after an A -> B -> A round trip, instead of losing it (codex review finding)', async () => {
-    const universeTwo = { ...universe, id: 'u2', name: 'Second Universe', styleReferences: [] };
     apiMocks.getUniverse.mockImplementation(async (id) => (id === 'u2' ? universeTwo : { ...universe, styleReferences: [] }));
 
-    const goToWorld = vi.fn();
-    const { result, rerender } = renderHook(
-      ({ selectedId }) => useUniverseDraft({ selectedId, goToWorld }),
-      { initialProps: { selectedId: 'u1' } },
-    );
+    const { result, rerender } = renderSelectable();
     await waitFor(() => expect(result.current.draft.id).toBe('u1'));
 
     // Start a save on u1 and hold its response open.
@@ -301,7 +305,6 @@ describe('useUniverseDraft', () => {
   });
 
   it('refreshes the cached snapshot from the server on re-hydration, so an external change is not shadowed (codex review finding)', async () => {
-    const universeTwo = { ...universe, id: 'u2', name: 'Second Universe', styleReferences: [] };
     const refOld = { id: 'style-ref-old', title: 'Old', prompt: 'old', imageRefs: ['old.png'] };
     const refExternal = { id: 'style-ref-external', title: 'External', prompt: 'external', imageRefs: ['external.png'] };
     // First visit to u1 returns refOld; a peer sync / image-delete purge then
@@ -314,11 +317,7 @@ describe('useUniverseDraft', () => {
       return { ...universe, styleReferences: u1FetchCount === 1 ? [refOld] : [refExternal] };
     });
 
-    const goToWorld = vi.fn();
-    const { result, rerender } = renderHook(
-      ({ selectedId }) => useUniverseDraft({ selectedId, goToWorld }),
-      { initialProps: { selectedId: 'u1' } },
-    );
+    const { result, rerender } = renderSelectable();
     await waitFor(() => expect(result.current.draft.styleReferences).toEqual([refOld]));
 
     await act(async () => { rerender({ selectedId: 'u2' }); });
@@ -331,5 +330,197 @@ describe('useUniverseDraft', () => {
     // stale cached refOld from before the external change.
     await act(async () => { await result.current.removeStyleReference(refExternal.id); });
     expect(apiMocks.updateUniverse.mock.calls.at(-1)).toEqual(['u1', { styleReferences: [] }, { silent: true }]);
+  });
+
+  it('keeps a mutation that resolves BEFORE the re-hydration GET it raced (codex review finding)', async () => {
+    // u1 starts with refA already saved, so the post-mutation list ([refA, refX])
+    // and G's stale list ([refA]) differ in a way the FINAL removal payload can
+    // discriminate — with an empty starting list both branches would emit the
+    // same `{ styleReferences: [] }` and the assertion would prove nothing.
+    const refA = { id: 'style-ref-a', title: 'Ref A', prompt: 'a', imageRefs: ['a.png'] };
+    const refX = { id: 'style-ref-x', title: 'Ref X', prompt: 'x', imageRefs: ['x.png'] };
+    // The re-hydration fetch on the return to u1 is held open so it can be
+    // resolved AFTER the mutation, with the PRE-mutation body the server would
+    // have returned had it read before the PATCH landed.
+    let u1Fetches = 0;
+    let resolveU1Hydration;
+    apiMocks.getUniverse.mockImplementation(async (id) => {
+      if (id === 'u2') return universeTwo;
+      u1Fetches += 1;
+      if (u1Fetches === 2) return new Promise((resolve) => { resolveU1Hydration = resolve; });
+      return { ...universe, styleReferences: [refA] };
+    });
+
+    const { result, rerender } = renderSelectable();
+    await waitFor(() => expect(result.current.draft.styleReferences).toEqual([refA]));
+
+    // Adopt mutation M on u1, held open — adopt so the assertions also cover the
+    // style guide the same PATCH writes, not just the references.
+    let resolveU1Save;
+    apiMocks.updateUniverse.mockImplementationOnce(() => new Promise((resolve) => { resolveU1Save = resolve; }));
+    const pendingSave = result.current.persistStyleReference({
+      reference: refX,
+      proposed: { styleNotes: 'Adopted notes', influences: { embrace: ['ink'], avoid: [] } },
+      adopt: true,
+    });
+
+    // u1 -> u2 -> u1; the return issues re-hydration GET G, which stays pending.
+    await act(async () => { rerender({ selectedId: 'u2' }); });
+    await waitFor(() => expect(result.current.draft.id).toBe('u2'));
+    await act(async () => { rerender({ selectedId: 'u1' }); });
+    await waitFor(() => expect(resolveU1Hydration).toBeTypeOf('function'));
+
+    // M resolves FIRST — the reordering this guard exists for.
+    await act(async () => {
+      resolveU1Save({
+        ...universe,
+        styleReferences: [refA, refX],
+        styleNotes: 'Adopted notes',
+        influences: { embrace: ['ink'], avoid: [] },
+      });
+      await pendingSave;
+    });
+
+    // ...then G resolves carrying the stale, pre-mutation body.
+    await act(async () => {
+      resolveU1Hydration({ ...universe, styleReferences: [refA], styleNotes: '' });
+      await Promise.resolve();
+    });
+
+    // G must not have reverted M: the displayed draft still shows refX, and the
+    // style guide the SAME adopt PATCH wrote survives alongside it.
+    await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+    expect(result.current.draft.styleReferences).toEqual([refA, refX]);
+    expect(result.current.draft.styleNotes).toBe('Adopted notes');
+    // markDraftSaved banked the overridden values, so the adopted guidance is
+    // not silently re-saved as the stale '' on the next general Save.
+    expect(result.current.isDraftDirty()).toBe(false);
+
+    // The next mutation builds from [refA, refX], not G's stale [refA] — with a
+    // stale base this PATCH would emit `{ styleReferences: [] }` and leave refX
+    // lingering server-side.
+    await act(async () => { await result.current.removeStyleReference(refA.id); });
+    expect(apiMocks.updateUniverse.mock.calls.at(-1)).toEqual(['u1', { styleReferences: [refX] }, { silent: true }]);
+    expect(result.current.draft.styleReferences).toEqual([refX]);
+  });
+
+  it('drops an adopt\'s stashed guidance once an un-raced hydration supersedes it (agy review finding)', async () => {
+    const refX = { id: 'style-ref-x', title: 'Ref X', prompt: 'x', imageRefs: ['x.png'] };
+    // u1's server body after the adopt, then again after a peer changes the
+    // style guide externally while the user is away.
+    let u1Fetches = 0;
+    let resolveLateHydration;
+    apiMocks.getUniverse.mockImplementation(async (id) => {
+      if (id === 'u2') return universeTwo;
+      u1Fetches += 1;
+      if (u1Fetches === 1) return { ...universe, styleReferences: [], styleNotes: '' };
+      // Fetch 2 is the un-raced hydration that confirms the adopt server-side.
+      if (u1Fetches === 2) return { ...universe, styleReferences: [refX], styleNotes: 'Adopted notes' };
+      // Fetch 3 races a later plain mutation and carries a PEER's newer notes.
+      return new Promise((resolve) => { resolveLateHydration = resolve; });
+    });
+
+    const { result, rerender } = renderSelectable();
+    await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+
+    // Adopt on u1 — stashes { styleNotes: 'Adopted notes', … } as guidance.
+    await act(async () => {
+      await result.current.persistStyleReference({
+        reference: refX,
+        proposed: { styleNotes: 'Adopted notes', influences: { embrace: [], avoid: [] } },
+        adopt: true,
+      });
+    });
+
+    // u1 -> u2 -> u1, with nothing in flight: hydration fetch 2 wins un-raced,
+    // so the server has confirmed the adopt and the stash is spent.
+    await act(async () => { rerender({ selectedId: 'u2' }); });
+    await waitFor(() => expect(result.current.draft.id).toBe('u2'));
+    await act(async () => { rerender({ selectedId: 'u1' }); });
+    await waitFor(() => expect(result.current.draft.styleNotes).toBe('Adopted notes'));
+
+    // Now: a plain removal races hydration fetch 3, which carries a peer's
+    // newer notes. The removal writes no guidance of its own.
+    await act(async () => { rerender({ selectedId: 'u2' }); });
+    await waitFor(() => expect(result.current.draft.id).toBe('u2'));
+    await act(async () => { rerender({ selectedId: 'u1' }); });
+    await waitFor(() => expect(resolveLateHydration).toBeTypeOf('function'));
+
+    let resolveRemoval;
+    apiMocks.updateUniverse.mockImplementationOnce(() => new Promise((resolve) => { resolveRemoval = resolve; }));
+    // removeStyleReference chains onto the per-universe queue, so its PATCH is
+    // issued a microtask later — wait for the mock to be entered before resolving.
+    const pendingRemoval = result.current.removeStyleReference(refX.id);
+    await waitFor(() => expect(resolveRemoval).toBeTypeOf('function'));
+    await act(async () => {
+      resolveRemoval({ ...universe, styleReferences: [], styleNotes: 'Peer notes' });
+      await pendingRemoval;
+    });
+    await act(async () => {
+      resolveLateHydration({ ...universe, styleReferences: [refX], styleNotes: 'Peer notes' });
+      await Promise.resolve();
+    });
+
+    // The removal still wins on references (it wrote them)...
+    await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+    expect(result.current.draft.styleReferences).toEqual([]);
+    // ...but must NOT resurrect the spent 'Adopted notes' over the peer's newer
+    // value, which the removal's PATCH never wrote.
+    expect(result.current.draft.styleNotes).toBe('Peer notes');
+  });
+
+  it('does not let a plain mutation resurrect an older adopt over a newer peer edit the GET carries (codex review finding)', async () => {
+    const refX = { id: 'style-ref-x', title: 'Ref X', prompt: 'x', imageRefs: ['x.png'] };
+    // Same class as the test above, but with NO hydration landing between the
+    // adopt and the racing mutation — so the guard cannot rely on a winning
+    // hydration to retire the stashed guidance. Only the guidance's own epoch
+    // stamp distinguishes "written after this GET" from "the GET already has it."
+    let u1Fetches = 0;
+    let resolveLateHydration;
+    apiMocks.getUniverse.mockImplementation(async (id) => {
+      if (id === 'u2') return universeTwo;
+      u1Fetches += 1;
+      if (u1Fetches === 1) return { ...universe, styleReferences: [], styleNotes: '' };
+      return new Promise((resolve) => { resolveLateHydration = resolve; });
+    });
+
+    const { result, rerender } = renderSelectable();
+    await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+
+    // Adopt on u1 — stashes guidance at the epoch it was written.
+    await act(async () => {
+      await result.current.persistStyleReference({
+        reference: refX,
+        proposed: { styleNotes: 'Adopted notes', influences: { embrace: [], avoid: [] } },
+        adopt: true,
+      });
+    });
+
+    // u1 -> u2 -> u1 with the adopt already settled. The return's GET reads a
+    // peer's newer style notes; it is issued AFTER the adopt, so it already
+    // contains the adopted state plus the peer's later edit.
+    await act(async () => { rerender({ selectedId: 'u2' }); });
+    await waitFor(() => expect(result.current.draft.id).toBe('u2'));
+    await act(async () => { rerender({ selectedId: 'u1' }); });
+    await waitFor(() => expect(resolveLateHydration).toBeTypeOf('function'));
+
+    // A plain removal races that GET and wins on references — but it wrote no
+    // style guide, so it must not drag the older adopt's notes along with it.
+    let resolveRemoval;
+    apiMocks.updateUniverse.mockImplementationOnce(() => new Promise((resolve) => { resolveRemoval = resolve; }));
+    const pendingRemoval = result.current.removeStyleReference(refX.id);
+    await waitFor(() => expect(resolveRemoval).toBeTypeOf('function'));
+    await act(async () => {
+      resolveRemoval({ ...universe, styleReferences: [], styleNotes: 'Peer notes' });
+      await pendingRemoval;
+    });
+    await act(async () => {
+      resolveLateHydration({ ...universe, styleReferences: [refX], styleNotes: 'Peer notes' });
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+    expect(result.current.draft.styleReferences).toEqual([]);
+    expect(result.current.draft.styleNotes).toBe('Peer notes');
   });
 });

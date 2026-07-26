@@ -18,3 +18,7 @@
 
 - [issue-3103] Any Cast, Place, or Object entry in a Universe's bible can now take a corrective reference image: upload or pick a photo/render that shows what it should actually look like, and a vision model compares it against the entry's current description and proposes a correction. Reviewing and applying it both fixes the description and pins the image as that entry's reference image, so future renders for it are visually anchored to the correction instead of starting from scratch each time.
 - Reference-image pinning (the star toggle on a canon entry's thumbnail) now feeds every future render of that entry, not just its thumbnail — if you'd already pinned a reference image before this update, its next render will be visually anchored to that image too.
+
+## Universe art references
+
+- **[issue-3099] Adding or removing an art reference no longer flickers back when you navigate away and return mid-save** — if you changed a universe's art references and switched to another universe and back before the change finished saving, a slower page refresh could briefly restore the pre-change list on screen, making the next add or remove operate on the wrong set. The saved change now always wins over the older refresh it raced.
