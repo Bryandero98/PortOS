@@ -332,4 +332,60 @@ describe('useUniverseDraft', () => {
     await act(async () => { await result.current.removeStyleReference(refExternal.id); });
     expect(apiMocks.updateUniverse.mock.calls.at(-1)).toEqual(['u1', { styleReferences: [] }, { silent: true }]);
   });
+
+  it('keeps a mutation that resolves BEFORE the re-hydration GET it raced (codex review finding)', async () => {
+    const universeTwo = { ...universe, id: 'u2', name: 'Second Universe', styleReferences: [] };
+    const refX = { id: 'style-ref-x', title: 'Ref X', prompt: 'x', imageRefs: ['x.png'] };
+    // The re-hydration fetch on the return to u1 is held open so it can be
+    // resolved AFTER the mutation, with the PRE-mutation body the server would
+    // have returned had it read before the PATCH landed.
+    let u1Fetches = 0;
+    let resolveU1Hydration;
+    apiMocks.getUniverse.mockImplementation(async (id) => {
+      if (id === 'u2') return universeTwo;
+      u1Fetches += 1;
+      if (u1Fetches === 2) return new Promise((resolve) => { resolveU1Hydration = resolve; });
+      return { ...universe, styleReferences: [] };
+    });
+
+    const goToWorld = vi.fn();
+    const { result, rerender } = renderHook(
+      ({ selectedId }) => useUniverseDraft({ selectedId, goToWorld }),
+      { initialProps: { selectedId: 'u1' } },
+    );
+    await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+
+    // Mutation M on u1, held open.
+    let resolveU1Save;
+    apiMocks.updateUniverse.mockImplementationOnce(() => new Promise((resolve) => { resolveU1Save = resolve; }));
+    const pendingSave = result.current.persistStyleReference({ reference: refX, adopt: false });
+
+    // u1 -> u2 -> u1; the return issues re-hydration GET G, which stays pending.
+    await act(async () => { rerender({ selectedId: 'u2' }); });
+    await waitFor(() => expect(result.current.draft.id).toBe('u2'));
+    await act(async () => { rerender({ selectedId: 'u1' }); });
+    await waitFor(() => expect(resolveU1Hydration).toBeTypeOf('function'));
+
+    // M resolves FIRST — the reordering this guard exists for.
+    await act(async () => {
+      resolveU1Save({ ...universe, styleReferences: [refX] });
+      await pendingSave;
+    });
+
+    // ...then G resolves carrying the stale, pre-mutation reference list.
+    await act(async () => {
+      resolveU1Hydration({ ...universe, styleReferences: [] });
+      await Promise.resolve();
+    });
+
+    // G must not have reverted M: the displayed draft still shows refX...
+    await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+    expect(result.current.draft.styleReferences).toEqual([refX]);
+
+    // ...and the next mutation builds from [refX], not G's empty snapshot —
+    // otherwise this PATCH would be a no-op and refX would linger server-side.
+    await act(async () => { await result.current.removeStyleReference(refX.id); });
+    expect(apiMocks.updateUniverse.mock.calls.at(-1)).toEqual(['u1', { styleReferences: [] }, { silent: true }]);
+    expect(result.current.draft.styleReferences).toEqual([]);
+  });
 });
