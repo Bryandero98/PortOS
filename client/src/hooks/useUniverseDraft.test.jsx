@@ -15,6 +15,7 @@ const apiMocks = vi.hoisted(() => ({
   WORLD_CATEGORY_KEY_MAX: 64,
   WORLD_CATEGORIES: ['characters', 'places', 'objects'],
   WORLD_LOCKABLE_FIELDS: ['starterPrompt', 'logline', 'premise', 'styleNotes'],
+  WORLD_STYLE_REFERENCES_MAX: 20,
   ensureInfluences: (value) => ({
     embrace: Array.isArray(value?.embrace) ? value.embrace : [],
     avoid: Array.isArray(value?.avoid) ? value.avoid : [],
@@ -37,6 +38,7 @@ const universe = {
   categories: { heroes: { kind: 'characters', variations: [] } },
   compositeSheets: [],
   influences: { embrace: ['ink'], avoid: [] },
+  styleReferences: [],
   locked: {},
   llm: { provider: null, model: null },
   characters: [{ name: 'Stale Draft Character' }],
@@ -107,5 +109,57 @@ describe('useUniverseDraft', () => {
       'New Character',
     ]);
     expect(payload.characters).not.toContainEqual({ name: 'Stale Draft Character' });
+  });
+
+  it('atomically adds a reference and adopted guidance without clearing unrelated dirty edits', async () => {
+    const { result } = renderDraft();
+    await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+    act(() => result.current.updateDraft({ premise: 'Unsaved concurrent premise' }));
+
+    const reference = {
+      id: 'style-ref-1',
+      title: 'Ink wash',
+      prompt: 'Granular ink wash',
+      imageRefs: ['reference.png'],
+    };
+    await act(async () => {
+      await result.current.persistStyleReference({
+        reference,
+        proposed: {
+          styleNotes: 'Tactile and muted',
+          influences: { embrace: ['ink wash'], avoid: ['gloss'] },
+        },
+        adopt: true,
+      });
+    });
+
+    const payload = apiMocks.updateUniverse.mock.calls.at(-1)[1];
+    expect(payload).toEqual({
+      styleReferences: [reference],
+      styleNotes: 'Tactile and muted',
+      influences: { embrace: ['ink wash'], avoid: ['gloss'] },
+    });
+    expect(result.current.draft).toMatchObject({
+      premise: 'Unsaved concurrent premise',
+      styleNotes: 'Tactile and muted',
+      styleReferences: [reference],
+    });
+    expect(result.current.isDraftDirty()).toBe(true);
+  });
+
+  it('removes one style reference through its targeted patch', async () => {
+    const reference = {
+      id: 'style-ref-1',
+      title: 'Ink wash',
+      prompt: 'Granular ink wash',
+      imageRefs: ['reference.png'],
+    };
+    apiMocks.getUniverse.mockResolvedValueOnce({ ...universe, styleReferences: [reference] });
+    const { result } = renderDraft();
+    await waitFor(() => expect(result.current.draft.styleReferences).toEqual([reference]));
+
+    await act(async () => { await result.current.removeStyleReference(reference.id); });
+    expect(apiMocks.updateUniverse.mock.calls.at(-1)[1]).toEqual({ styleReferences: [] });
+    expect(result.current.draft.styleReferences).toEqual([]);
   });
 });

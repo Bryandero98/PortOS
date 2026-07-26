@@ -13,6 +13,7 @@ export const WORLD_STYLE_NOTES_MAX = 4000;
 // enforcement and to bound paste-floods of refs.
 export const WORLD_INFLUENCE_ENTRY_MAX = 120;
 export const WORLD_INFLUENCES_PER_LIST_MAX = 30;
+export const WORLD_STYLE_REFERENCES_MAX = 20;
 
 // `options` lets a caller that owns its own error toast pass `{ silent: true }`
 // so request() doesn't also toast — see CLAUDE.md "Custom catch ⇒ silent: true".
@@ -74,6 +75,19 @@ export const describeEntityFromImages = ({
 } = {}, options = {}) => request('/universe-builder/describe-from-images', {
   method: 'POST',
   body: JSON.stringify({ kind, name, context, images, providerId, model }),
+  ...options,
+});
+
+// Analyze one peer-syncable gallery image as a universe-bible art reference.
+// Returns a proposed reference plus a before/after style-guidance diff; this
+// endpoint is review-only and does not mutate the universe.
+export const analyzeUniverseStyleReference = ({
+  image, title, prompt, styleNotes, influences, locked, providerId, model,
+} = {}, options = {}) => request('/universe-builder/analyze-style-reference', {
+  method: 'POST',
+  body: JSON.stringify({
+    image, title, prompt, styleNotes, influences, locked, providerId, model,
+  }),
   ...options,
 });
 

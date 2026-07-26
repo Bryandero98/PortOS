@@ -385,6 +385,38 @@ describe("universeBuilder service", () => {
     expect(w.styleImageRefs).toEqual([]);
   });
 
+  it("persists analyzed style references and patches the list wholesale", async () => {
+    const reference = {
+      id: "style-ref-example",
+      title: "Dust-lit ink wash",
+      prompt: "Granular ink wash, muted ochre, weathered silhouettes",
+      imageRefs: ["reference.png"],
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    const w = await svc.createUniverse({
+      name: "Reference Bible",
+      styleReferences: [reference, { ...reference, id: "style-ref-duplicate" }],
+    });
+    expect(w.styleReferences).toHaveLength(2);
+    expect(w.styleReferences[0]).toEqual(reference);
+
+    const patched = await svc.updateUniverse(w.id, { styleReferences: [reference] });
+    expect(patched.styleReferences).toEqual([reference]);
+    expect((await svc.getUniverse(w.id)).styleReferences).toEqual([reference]);
+  });
+
+  it("drops invalid style references and defaults the field to an empty list", async () => {
+    const w = await svc.createUniverse({
+      name: "Reference Validation",
+      styleReferences: [
+        { title: "Missing prompt", imageRefs: ["reference.png"] },
+        { title: "Missing image", prompt: "Prompt", imageRefs: [] },
+        { title: "Traversal", prompt: "Prompt", imageRefs: ["../secret.png"] },
+      ],
+    });
+    expect(w.styleReferences).toEqual([]);
+  });
+
   it("createUniverse trims bible fields to their max length", async () => {
     const w = await seedWorld({
       logline: "x".repeat(svc.LOGLINE_MAX + 50),
@@ -1931,6 +1963,23 @@ describe("universeBuilder service", () => {
   });
 
   describe("categories→canon backfill", () => {
+    it("upgrades v4 to v5 without re-folding exploratory categories into canon", () => {
+      const w = svc.sanitizeTemplate({
+        id: "world-v4",
+        name: "Already backfilled",
+        schemaVersion: 4,
+        categories: {
+          landscapes: { kind: "places", variations: [{ label: "New Vista", prompt: "exploratory" }] },
+        },
+        characters: [],
+        places: [],
+        objects: [],
+      });
+      expect(w.schemaVersion).toBe(svc.CURRENT_SCHEMA_VERSION);
+      expect(w.places).toEqual([]);
+      expect(w.styleReferences).toEqual([]);
+    });
+
     it("backfills canon arrays from categories on first read + stamps the current schema version", async () => {
       await seedState({
         universes: [

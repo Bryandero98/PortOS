@@ -126,7 +126,7 @@ export async function countUniverses({ includeDeleted = false } = {}) {
 export async function writeRaw(id, record) {
   const now = new Date().toISOString();
   const createdAt = mirrorTimestamp(record?.createdAt, now);
-  const schemaVersion = Number.isInteger(record?.schemaVersion) ? record.schemaVersion : 4;
+  const schemaVersion = Number.isInteger(record?.schemaVersion) ? record.schemaVersion : 5;
   await query(
     `INSERT INTO universes (id, name, data, schema_version, ephemeral, created_at, updated_at, deleted, deleted_at)
      VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9)
