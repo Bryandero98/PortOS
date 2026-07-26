@@ -90,6 +90,15 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
   const savedDraftSnapshotRef = useRef(universeDraftSnapshot(createEmptyUniverseDraft()));
   const savedStyleSnapshotRef = useRef(ensureInfluences(createEmptyUniverseDraft().influences));
   const pendingCanonAdditionsRef = useRef(emptyPendingCanon());
+  // Serializes removeStyleReference calls and tracks the array across them —
+  // draftRef only syncs after a React effect, which can still be one render
+  // behind when two removals fire before either PATCH resolves; both would
+  // otherwise derive their replacement array from the same stale list and the
+  // second request's wholesale-replace PATCH would silently restore the item
+  // the first request just removed. Reset whenever the selected universe
+  // changes (see the selectedId-load effect below).
+  const styleReferenceQueueRef = useRef(Promise.resolve());
+  const styleReferenceSnapshotRef = useRef(null);
 
   useEffect(() => () => { mountedRef.current = false; }, []);
   useEffect(() => { draftRef.current = draft; }, [draft]);
@@ -147,6 +156,11 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
     setPendingDeleteId(null);
     setCanonDirty(false);
     clearPendingCanonAdditions();
+    // A new selection means any in-flight removeStyleReference chain belongs
+    // to the PREVIOUS universe — reset so the next removal seeds its snapshot
+    // from the freshly-hydrated draft instead of a stale/foreign one.
+    styleReferenceQueueRef.current = Promise.resolve();
+    styleReferenceSnapshotRef.current = null;
     if (!selectedId) {
       const empty = createEmptyUniverseDraft();
       setDraft(empty);
@@ -334,23 +348,36 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
     return true;
   }, [draft, markStyleGuidanceSaved, selectedId]);
 
-  const removeStyleReference = useCallback(async (referenceId) => {
-    if (!selectedId) return false;
-    const current = draftRef.current || draft;
-    const styleReferences = (current.styleReferences || []).filter((item) => item.id !== referenceId);
-    const updated = await updateUniverse(selectedId, { styleReferences }, { silent: true }).catch((error) => {
-      toast.error(`Reference removal failed: ${error.message}`);
-      return null;
+  const removeStyleReference = useCallback((referenceId) => {
+    if (!selectedId) return Promise.resolve(false);
+    // Chain onto the queue so a second removal clicked before the first PATCH
+    // resolves derives its replacement array from the FIRST removal's actual
+    // result (tracked in styleReferenceSnapshotRef), not from draftRef — which
+    // only syncs one React effect later and would still show both items present.
+    const task = styleReferenceQueueRef.current.then(async () => {
+      const base = styleReferenceSnapshotRef.current
+        ?? (draftRef.current || draft).styleReferences
+        ?? [];
+      const styleReferences = base.filter((item) => item.id !== referenceId);
+      const updated = await updateUniverse(selectedId, { styleReferences }, { silent: true }).catch((error) => {
+        toast.error(`Reference removal failed: ${error.message}`);
+        return null;
+      });
+      if (!updated) return false;
+      styleReferenceSnapshotRef.current = updated.styleReferences || [];
+      setDraft((latest) => ({
+        ...latest,
+        styleReferences: updated.styleReferences || [],
+        updatedAt: updated.updatedAt,
+      }));
+      setWorlds((previous) => upsertByIdPrepend(previous, updated));
+      toast.success('Art reference removed');
+      return true;
     });
-    if (!updated) return false;
-    setDraft((latest) => ({
-      ...latest,
-      styleReferences: updated.styleReferences || [],
-      updatedAt: updated.updatedAt,
-    }));
-    setWorlds((previous) => upsertByIdPrepend(previous, updated));
-    toast.success('Art reference removed');
-    return true;
+    // Keep the queue alive even if this removal failed, so the NEXT removal
+    // still runs (in its turn) rather than inheriting a rejected chain.
+    styleReferenceQueueRef.current = task.catch(() => {});
+    return task;
   }, [draft, selectedId]);
 
   const handleCanonChange = useCallback((updated) => {

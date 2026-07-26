@@ -162,4 +162,27 @@ describe('useUniverseDraft', () => {
     expect(apiMocks.updateUniverse.mock.calls.at(-1)[1]).toEqual({ styleReferences: [] });
     expect(result.current.draft.styleReferences).toEqual([]);
   });
+
+  it('removes both references when two removals are triggered before either PATCH resolves', async () => {
+    const refA = { id: 'style-ref-a', title: 'Ref A', prompt: 'moody', imageRefs: ['a.png'] };
+    const refB = { id: 'style-ref-b', title: 'Ref B', prompt: 'bright', imageRefs: ['b.png'] };
+    apiMocks.getUniverse.mockResolvedValueOnce({ ...universe, styleReferences: [refA, refB] });
+    const { result } = renderDraft();
+    await waitFor(() => expect(result.current.draft.styleReferences).toEqual([refA, refB]));
+
+    // Both removals derive their PATCH from the ARRAY THE SERVER LAST CONFIRMED
+    // (the queue's tracked snapshot), not from a shared stale `draft` read at
+    // call time — otherwise the second request's wholesale-replace payload
+    // would still include refA (or refB) and silently restore it on resolve.
+    await act(async () => {
+      const first = result.current.removeStyleReference(refA.id);
+      const second = result.current.removeStyleReference(refB.id);
+      await Promise.all([first, second]);
+    });
+
+    expect(apiMocks.updateUniverse).toHaveBeenCalledTimes(2);
+    expect(apiMocks.updateUniverse.mock.calls[0][1]).toEqual({ styleReferences: [refB] });
+    expect(apiMocks.updateUniverse.mock.calls[1][1]).toEqual({ styleReferences: [] });
+    expect(result.current.draft.styleReferences).toEqual([]);
+  });
 });

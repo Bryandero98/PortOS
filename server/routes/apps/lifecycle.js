@@ -53,7 +53,7 @@ async function launchDesktopProcess(app, processName, command) {
     processName,
     app.repoPath,
     command,
-    { autorestart: false }
+    { autorestart: false, pm2Home: app.pm2Home }
   ).catch(err => ({ success: false, error: err.message }));
 }
 
@@ -150,7 +150,7 @@ router.post('/:id/start', loadApp, asyncHandler(async (req, res) => {
         results[name] = await launchDesktopProcess(app, name, command);
         continue;
       }
-      const result = await pm2Service.startWithCommand(name, app.repoPath, command, {})
+      const result = await pm2Service.startWithCommand(name, app.repoPath, command, { pm2Home: app.pm2Home })
         .catch(err => ({ success: false, error: err.message }));
       results[name] = result;
     }

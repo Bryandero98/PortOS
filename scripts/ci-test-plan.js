@@ -205,7 +205,10 @@ export function buildCiTestPlan(changedFiles, { trackedFiles = [], forceFull = f
     return fullPlan(changed, `wide change (${executable.length} executable files)`);
   }
 
-  const directTests = executable.filter(isTestFile);
+  // `changed` includes deleted paths (diff-filter ACMRD), but a deleted test
+  // file passed as an exact Vitest selector makes the runner exit non-zero on
+  // an otherwise-valid deletion PR — trackedSet (git ls-files) excludes it.
+  const directTests = executable.filter(isTestFile).filter((path) => trackedSet.has(path));
   const sourceFiles = executable.filter((path) => !isTestFile(path));
   const unsupportedSources = sourceFiles.filter((path) => (
     !isServerRunnerFile(path) && !path.startsWith('client/')
@@ -260,8 +263,10 @@ export function buildCiTestPlan(changedFiles, { trackedFiles = [], forceFull = f
     client,
     db: executable.some((path) => DB_RISK_RULES.some((rule) => rule.test(path))),
     lint: {
-      mode: changed.some((path) => CLIENT_LINT_RE.test(path)) ? 'files' : 'skip',
-      files: changed.filter((path) => CLIENT_LINT_RE.test(path)),
+      // Same deleted-path guard as directTests above — ESLint given a
+      // nonexistent explicit path exits non-zero instead of skipping it.
+      mode: changed.some((path) => CLIENT_LINT_RE.test(path) && trackedSet.has(path)) ? 'files' : 'skip',
+      files: changed.filter((path) => CLIENT_LINT_RE.test(path) && trackedSet.has(path)),
     },
     build: hasClientSource,
     smoke: hasServerSource,

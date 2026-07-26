@@ -13,8 +13,10 @@ const TRACKED = [
   'server/services/sprites/atlasGrid.test.js',
   'server/services/sprites/atlasLayout.test.js',
   'client/src/a11yConventions.test.js',
+  'client/src/components/catalog/CatalogCard.jsx',
   'client/src/components/catalog/CatalogCard.test.jsx',
   'client/src/components/sprites/WalkWorkflow.test.jsx',
+  'client/src/lib/catalogLinks.js',
   'client/src/lib/index.test.js',
   'client/src/services/apiSprites.test.js',
   'scripts/migrations/210-example.test.js',
@@ -147,6 +149,26 @@ describe('CI test impact planner', () => {
       mode: 'related',
       files: ['scripts/migrations/210-example.test.js'],
     });
+  });
+
+  it('excludes a deleted test file from the exact server selector list, and a deleted client file from lint', () => {
+    // `changed` includes deleted paths (diff-filter ACMRD), but neither
+    // `TRACKED` (git ls-files) nor the trackedFiles fixture below lists them
+    // — a deletion-only PR must not hand a nonexistent path to Vitest/ESLint
+    // as an exact selector, which exits non-zero on a perfectly valid PR.
+    const plan = buildCiTestPlan([
+      'server/services/sprites/atlas.test.js', // deleted alongside its source
+      'client/src/components/catalog/CatalogCard.test.jsx', // deleted test
+      'client/src/lib/catalogLinks.js', // deleted lint-relevant client file
+    ], { trackedFiles: TRACKED.filter((path) => ![
+      'server/services/sprites/atlas.test.js',
+      'client/src/components/catalog/CatalogCard.test.jsx',
+      'client/src/lib/catalogLinks.js',
+    ].includes(path)) });
+
+    expect(plan.full).toBe(false);
+    expect(plan.server.files).not.toContain('server/services/sprites/atlas.test.js');
+    expect(plan.lint.files).not.toContain('client/src/lib/catalogLinks.js');
   });
 
   it('falls back to full CI for unknown artifacts and wide changes', () => {

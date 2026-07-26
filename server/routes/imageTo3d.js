@@ -132,6 +132,20 @@ async function handleTargetInstall(targetId, req, res) {
   // finished on its own and blocking every later Install click.
   let currentKill = null;
   let aborted = false;
+  // `adapter.install()` itself can run an async preflight (e.g. a toolchain
+  // probe) BEFORE returning { promise, kill } — during that window `currentKill`
+  // is still null, so a naive close handler would release the slot even though
+  // the adapter may already be spawning its first child. Track that window
+  // explicitly so the slot is held through it, and release exactly once via a
+  // single guarded function — never eagerly in the close handler for a window
+  // where nothing is killable yet AND an install may already be starting.
+  let installStarting = false;
+  let slotReleased = false;
+  const releaseSlot = () => {
+    if (slotReleased) return;
+    slotReleased = true;
+    installsInFlight.delete(targetId);
+  };
   req.on('close', () => {
     aborted = true;
     installLog.cancel();
@@ -142,17 +156,18 @@ async function handleTargetInstall(targetId, req, res) {
       // terminate, but let the install promise's own `.finally()` (below)
       // release the slot once the kill actually lands — releasing it here,
       // before the child has exited, would let a second install for the same
-      // target start while the first is still shutting down, and this
-      // handler's own delete would then race the first install's delayed
-      // `.finally()`, which could clobber the second install's slot when it
-      // settles.
+      // target start while the first is still shutting down.
       currentKill();
-    } else {
-      // Nothing has spawned yet (still resolving env / adapter preflight) —
-      // the code below will see `aborted` and bail without ever registering
-      // a `.finally()`, so release the slot here or it would leak forever.
-      installsInFlight.delete(targetId);
+    } else if (!installStarting) {
+      // Nothing has spawned yet (still resolving env) — the code below will
+      // see `aborted` and bail without ever registering a `.finally()`, so
+      // release the slot here or it would leak forever.
+      releaseSlot();
     }
+    // Else: `adapter.install()`'s own preflight is in flight and `kill` isn't
+    // available yet — do NOT release here. The code right after that await
+    // (below) sees `aborted` and calls `kill()` + `releaseSlot()` itself once
+    // it actually has something to kill.
     safeEnd();
   });
 
@@ -167,18 +182,24 @@ async function handleTargetInstall(targetId, req, res) {
   } catch (err) {
     console.error(`❌ ${target.label} install could not resolve its environment: ${err.message}`);
     emit({ type: 'error', message: `Could not prepare the ${target.label} install environment: ${err.message}` });
-    installsInFlight.delete(targetId);
+    releaseSlot();
     return safeEnd();
   }
   // The client hung up during the await — don't start a multi-GB install nobody
   // is listening to.
   if (aborted) return safeEnd();
 
+  installStarting = true;
   const { promise, kill } = await adapter.install({ onEvent: emit, env: installEnv });
   // The client may have hung up while the adapter ran its own async preflight
   // (e.g. a toolchain probe) — terminate whatever it just spawned rather than
-  // let an orphaned install run unattended.
-  if (aborted) return kill();
+  // let an orphaned install run unattended, and release the slot now that we
+  // finally have something to kill (the close handler deliberately did not).
+  if (aborted) {
+    kill();
+    releaseSlot();
+    return;
+  }
   currentKill = kill;
   promise
     .then(() => installLog.success())
@@ -193,7 +214,7 @@ async function handleTargetInstall(targetId, req, res) {
     })
     .finally(() => {
       currentKill = null;
-      installsInFlight.delete(targetId);
+      releaseSlot();
       safeEnd();
     });
 }

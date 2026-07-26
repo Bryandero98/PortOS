@@ -489,13 +489,21 @@ export async function getLogs(name, lines = 100, pm2Home = null) {
  *   restart-tuning fields (max_restarts/min_uptime/restart_delay) are omitted in
  *   that mode since they only apply when autorestart is on.
  * @param {number} [options.maxRestarts=10] Restart cap when autorestart is on.
+ * @param {string} [options.pm2Home=null] Custom PM2_HOME. When set, starts via
+ *   CLI (like deleteApp/getAppStatus) instead of the default-daemon Node API —
+ *   otherwise the process would launch under PortOS's own PM2 daemon and be
+ *   invisible to every subsequent status/log/delete call that targets pm2Home.
  */
 export async function startWithCommand(name, cwd, command, options = {}) {
-  const { autorestart = true, maxRestarts = 10 } = options;
+  const { autorestart = true, maxRestarts = 10, pm2Home = null } = options;
   // Parse with quote-awareness so `node --opt "arg with spaces"` survives;
   // a bare split(' ') would shred quoted segments. PM2 accepts `args` as an
   // array, which avoids re-joining and re-splitting on the way through.
   const [script, ...args] = parseCommandArgs(command);
+
+  if (pm2Home) {
+    return spawnPm2StartCommand(name, cwd, script, args, { autorestart, maxRestarts, pm2Home });
+  }
 
   return connectAndRun((pm2) => {
     return new Promise((resolve, reject) => {
@@ -529,6 +537,34 @@ export async function startWithCommand(name, cwd, command, options = {}) {
         resolve({ success: true, process: proc });
       });
     });
+  });
+}
+
+/**
+ * CLI-based counterpart to startWithCommand's Node-API path, used whenever a
+ * custom pm2Home is given. `min_uptime` has no CLI flag equivalent — it only
+ * tunes the autorestart=true nursing behavior, which no current caller uses
+ * together with a custom pm2Home.
+ */
+function spawnPm2StartCommand(name, cwd, script, args, { autorestart, maxRestarts, pm2Home }) {
+  return new Promise((resolve, reject) => {
+    const cliArgs = ['start', script, '--name', name, '--cwd', cwd];
+    if (!isJsScript(script)) cliArgs.push('--interpreter', 'none');
+    if (autorestart) {
+      cliArgs.push('--max-restarts', String(maxRestarts), '--restart-delay', '5000', '--max-memory-restart', '500M');
+    } else {
+      cliArgs.push('--no-autorestart');
+    }
+    if (args.length > 0) cliArgs.push('--', ...args);
+
+    const child = spawnPm2(cliArgs, { env: buildEnv(pm2Home) });
+    let stderr = '';
+    child.stderr.on('data', (data) => { stderr += data.toString(); });
+    child.on('close', (code) => {
+      if (code !== 0) return reject(new Error(stderr || `pm2 start exited with code ${code}`));
+      resolve({ success: true });
+    });
+    child.on('error', reject);
   });
 }
 

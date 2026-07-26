@@ -589,8 +589,14 @@ export async function setCanonKindLockAll(universeId, kind, locked) {
 
 /**
  * Strip a filename from every `imageRefs[]` across every universe's
- * characters/places/objects. Mirror of the series-side purge so the image-
- * delete route can clean both stores in one pass.
+ * characters/places/objects, and from every top-level `styleReferences[]`
+ * entry. Mirror of the series-side purge so the image-delete route can clean
+ * both stores in one pass.
+ *
+ * A style reference's `imageRefs` is capped to exactly one image
+ * (`sanitizeStyleReference`), and the sanitizer drops the whole entry when
+ * that array is empty — so purging the image removes the entire reference
+ * rather than leaving a dangling title/prompt with no picture to show.
  */
 export async function purgeImageRefFromAllUniverses(filename) {
   if (!filename || typeof filename !== 'string') return { removed: 0 };
@@ -619,6 +625,17 @@ export async function purgeImageRefFromAllUniverses(filename) {
           return { ...entry, imageRefs: trimmed };
         });
         if (keyTouched) patch[key] = nextList;
+      }
+      const styleReferences = Array.isArray(cur.styleReferences) ? cur.styleReferences : null;
+      if (styleReferences) {
+        const nextStyleReferences = styleReferences.filter((ref) => {
+          const refs = Array.isArray(ref?.imageRefs) ? ref.imageRefs : [];
+          return !refs.includes(filename);
+        });
+        if (nextStyleReferences.length !== styleReferences.length) {
+          perUniverse += styleReferences.length - nextStyleReferences.length;
+          patch.styleReferences = nextStyleReferences;
+        }
       }
       return Object.keys(patch).length > 0 ? patch : null;
     });

@@ -97,6 +97,21 @@ describe('Apps Lifecycle Routes', () => {
       );
     });
 
+    it('starts the native target in the app\'s own PM2 home', async () => {
+      appsService.getAppById.mockResolvedValue({ ...mockApp, pm2Home: '/tmp/example-pm2' });
+      pm2Service.getAppStatus.mockResolvedValue({ status: 'stopped' });
+      pm2Service.deleteApp.mockResolvedValue({ success: true });
+      pm2Service.startWithCommand.mockResolvedValue({ success: true });
+      history.logAction.mockResolvedValue();
+
+      const response = await request(app).post('/api/apps/app-001/native-launch');
+
+      expect(response.status).toBe(200);
+      expect(pm2Service.startWithCommand).toHaveBeenCalledWith(
+        'mixed-game', '/tmp', './scripts/game run', { autorestart: false, pm2Home: '/tmp/example-pm2' }
+      );
+    });
+
     it('does not open a second native window while one is launching', async () => {
       appsService.getAppById.mockResolvedValue(mockApp);
       pm2Service.getAppStatus.mockResolvedValue({ status: 'launching' });
@@ -176,6 +191,27 @@ describe('Apps Lifecycle Routes', () => {
       const response = await request(app).post('/api/apps/app-999/start');
 
       expect(response.status).toBe(404);
+    });
+
+    it('starts a command-based app (no ecosystem config) in its own PM2 home', async () => {
+      const mockApp = {
+        id: 'app-001',
+        name: 'Test App',
+        repoPath: '/path/to/repo',
+        pm2ProcessNames: ['test-app'],
+        startCommands: ['npm run dev'],
+        pm2Home: '/tmp/example-pm2'
+      };
+      appsService.getAppById.mockResolvedValue(mockApp);
+      pm2Service.startWithCommand.mockResolvedValue({ success: true });
+      history.logAction.mockResolvedValue();
+
+      const response = await request(app).post('/api/apps/app-001/start');
+
+      expect(response.status).toBe(200);
+      expect(pm2Service.startWithCommand).toHaveBeenCalledWith(
+        'test-app', '/path/to/repo', 'npm run dev', { pm2Home: '/tmp/example-pm2' }
+      );
     });
 
     it('launches a desktop app from its startCommands with autorestart OFF (#2991)', async () => {
