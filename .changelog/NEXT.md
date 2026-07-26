@@ -5,6 +5,10 @@
 - **[issue-3061] Healthy agent-created pull requests now merge on the watcher tick instead of spending another agent lane** — when PortOS opens a GitHub PR with no review loop, the scheduled PR watcher now reads its CI and merge state: a clean PR whose checks are all green merges directly, while an actual validation failure or merge conflict still starts the same merge-only follow-up agent as before. PRs waiting on CI remain quiet for a bounded number of checks; if they never settle, PortOS stops polling them and posts a high-priority notice with a link to the PR.
 - **[issue-3019] Layered Intelligence now notices when approved work is not being delivered** — its self-check now tracks approval-to-completion separately from reasoning-run success, so a loop that completes its own runs but repeatedly leaves approved proposals unfinished stops filing self-improvement work until delivery recovers. A five-approval floor keeps a fresh loop from being gated on cold-start noise, and the reasoner-facing notice identifies whether run health, delivery health, or both caused the guardrail.
 
+## Universes
+
+- **Upload an art reference to a universe bible and decide whether its style should shape the world** — a new Art style references section accepts an image from the gallery or your device, asks a vision-capable model for an editable title and recreation prompt, and previews the exact style-notes and positive/negative guidance diff before anything changes. You can keep the analyzed image as a reference without changing the guide, or adopt the proposed style and add the reference together in one save. References and their gallery images travel with the universe across supported sync peers.
+
 ## 3D
 
 - **[issue-3033] 3D setup notices now stay in sync with each model's Hugging Face requirements** — the server now describes which gated repositories each image-to-3D target needs, so the 3D page, install guidance, and render-error help all draw from the same source. Adding a target with different (or no) gated dependencies no longer risks showing stale setup instructions.

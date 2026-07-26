@@ -148,6 +148,7 @@ export async function createUniverse(input = {}) {
       categories: input.categories || {},
       compositeSheets: input.compositeSheets || [],
       influences: input.influences || {},
+      styleReferences: input.styleReferences || [],
       styleImageRefs: input.styleImageRefs || [],
       locked: input.locked || {},
       // Canon registries — let callers seed a universe at creation time
@@ -363,6 +364,8 @@ export async function updateUniverse(id, patchOrMutator = {}, options = {}) {
     const PATCHABLE_SCALARS = [
       'name', 'starterPrompt',
       'logline', 'premise', 'styleNotes', 'compositeSheets',
+      // Uploaded, analyzed bible references — patched wholesale.
+      'styleReferences',
       // Base style-probe render refs — patched wholesale (sanitizer re-caps).
       'styleImageRefs',
       // Canon entity arrays — patched wholesale (the sanitizer reruns

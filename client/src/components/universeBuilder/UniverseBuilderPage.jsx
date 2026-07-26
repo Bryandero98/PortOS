@@ -139,7 +139,9 @@ export default function UniverseBuilder() {
     providerLabel,
     providerModels,
     providers,
+    persistStyleReference,
     removeCategory,
+    removeStyleReference,
     runs,
     saving,
     setCanonDirty,
@@ -561,6 +563,9 @@ export default function UniverseBuilder() {
             onPreview={openPreviewByFilename}
             onStyleProbeRenderComplete={bumpGalleryRefresh}
             styleProbeDirty={styleProbeDirty}
+            saved={!!selectedId}
+            onPersistStyleReference={persistStyleReference}
+            onRemoveStyleReference={removeStyleReference}
           />
         )}
 

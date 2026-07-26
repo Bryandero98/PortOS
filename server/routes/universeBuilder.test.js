@@ -51,6 +51,22 @@ const refineWorldPromptsMock = vi.fn(async (args) => ({
 vi.mock('../services/universeBuilderRefine.js', () => ({
   refineWorldPrompts: (...args) => refineWorldPromptsMock(...args),
 }));
+const analyzeUniverseStyleReferenceMock = vi.fn(async (args) => ({
+  reference: {
+    id: 'style-ref-test',
+    title: args.title || 'Analyzed style',
+    prompt: args.prompt || 'Analyzed recreation prompt',
+    imageRefs: [args.imageFilename],
+    createdAt: '2026-01-01T00:00:00.000Z',
+  },
+  proposed: { styleNotes: 'proposed', influences: { embrace: ['ink'], avoid: ['gloss'] } },
+  diff: { hasChanges: true },
+  rationale: 'mock rationale',
+  llm: { provider: 'mock', model: null },
+}));
+vi.mock('../services/universeStyleReference.js', () => ({
+  analyzeUniverseStyleReference: (...args) => analyzeUniverseStyleReferenceMock(...args),
+}));
 
 // Both mocks needed: vitest.setup.js's global `instances.js` mock uses importOriginal, which leaves the per-file `peerSync.js` mock unable to suppress the createUniverse dynamic-import hoist error alone.
 vi.mock('../services/instances.js', () => mockNoPeers());
@@ -1120,6 +1136,49 @@ describe('universe-builder routes', () => {
         .send({ kind: 'character', images: [{ source: 'upload', filename: '../secrets.png' }] });
       expect(res.status).toBe(400);
       expect(res.body.code).toBe('VALIDATION_ERROR');
+    });
+  });
+
+  describe('POST /analyze-style-reference', () => {
+    it('resolves the gallery image and forwards supplied metadata and guidance', async () => {
+      const res = await request(buildApp())
+        .post('/api/universe-builder/analyze-style-reference')
+        .send({
+          image: 'g.png',
+          title: 'Supplied title',
+          prompt: 'Supplied prompt',
+          styleNotes: 'Current notes',
+          influences: { embrace: ['ink'], avoid: ['gloss'] },
+        });
+      expect(res.status).toBe(200);
+      expect(res.body.reference.title).toBe('Supplied title');
+      expect(analyzeUniverseStyleReferenceMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          imagePath: '/mock/data/images/g.png',
+          imageFilename: 'g.png',
+          styleNotes: 'Current notes',
+        }),
+      );
+    });
+
+    it('rejects a missing gallery image before invoking vision', async () => {
+      analyzeUniverseStyleReferenceMock.mockClear();
+      const res = await request(buildApp())
+        .post('/api/universe-builder/analyze-style-reference')
+        .send({ image: 'missing.png' });
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('GALLERY_IMAGE_NOT_FOUND');
+      expect(analyzeUniverseStyleReferenceMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects path-bearing image names instead of silently normalizing them', async () => {
+      analyzeUniverseStyleReferenceMock.mockClear();
+      const res = await request(buildApp())
+        .post('/api/universe-builder/analyze-style-reference')
+        .send({ image: '../g.png' });
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('VALIDATION_ERROR');
+      expect(analyzeUniverseStyleReferenceMock).not.toHaveBeenCalled();
     });
   });
 

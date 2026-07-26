@@ -12,6 +12,7 @@ import {
   listWorldRuns,
   updateUniverse,
   WORLD_LOCKABLE_FIELDS,
+  WORLD_STYLE_REFERENCES_MAX,
   ensureInfluences,
 } from '../services/api';
 import { deriveAvailableBackends, IMAGE_GEN_MODE } from '../lib/imageGenBackends';
@@ -35,12 +36,14 @@ export const createEmptyUniverseDraft = () => ({
   categories: ensureDraftCategories(),
   compositeSheets: [],
   influences: { embrace: [], avoid: [] },
+  styleReferences: [],
   locked: {},
   llm: { provider: null, model: null },
 });
 
-// Stable serialization of the fields the general Save action owns. Canon is
-// excluded because its targeted editors persist those arrays independently.
+// Stable serialization of the fields the general Save action owns. Canon and
+// styleReferences are excluded because targeted editors persist those
+// arrays independently.
 export const universeDraftSnapshot = (draft = {}) => JSON.stringify({
   name: (draft.name || '').trim(),
   starterPrompt: draft.starterPrompt || '',
@@ -100,6 +103,17 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
     savedStyleSnapshotRef.current = ensureInfluences(snapshotSource?.influences);
   }, []);
 
+  // Mark only the style-guide fields as saved after an atomic reference-adopt
+  // PATCH. Replacing the entire baseline here would incorrectly clear dirty
+  // state for unrelated edits made while the vision request was in flight.
+  const markStyleGuidanceSaved = useCallback((snapshotSource) => {
+    const saved = JSON.parse(savedDraftSnapshotRef.current);
+    saved.styleNotes = snapshotSource?.styleNotes || '';
+    saved.influences = ensureInfluences(snapshotSource?.influences);
+    savedDraftSnapshotRef.current = JSON.stringify(saved);
+    savedStyleSnapshotRef.current = ensureInfluences(snapshotSource?.influences);
+  }, []);
+
   const isDraftDirty = useCallback(
     () => savedDraftSnapshotRef.current !== universeDraftSnapshot(draftRef.current || draft),
     [draft],
@@ -155,6 +169,7 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
           premise: universe.premise || '',
           styleNotes: universe.styleNotes || '',
           influences: ensureInfluences(universe.influences),
+          styleReferences: universe.styleReferences || [],
           locked: universe.locked || {},
           llm: universe.llm || { provider: null, model: null },
         };
@@ -260,6 +275,71 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
   };
 
   const updateDraft = useCallback((patch) => setDraft((current) => ({ ...current, ...patch })), []);
+
+  const persistStyleReference = useCallback(async ({ reference, proposed, adopt }) => {
+    if (!selectedId || !reference) return false;
+    const current = draftRef.current || draft;
+    const capturedStyle = {
+      styleNotes: current.styleNotes || '',
+      influences: ensureInfluences(current.influences),
+    };
+    if ((current.styleReferences || []).length >= WORLD_STYLE_REFERENCES_MAX) {
+      toast.error(`A universe can hold up to ${WORLD_STYLE_REFERENCES_MAX} art references`);
+      return false;
+    }
+    const styleReferences = [
+      ...(Array.isArray(current.styleReferences) ? current.styleReferences : []),
+      reference,
+    ];
+    const patch = {
+      styleReferences,
+      ...(adopt ? {
+        styleNotes: proposed?.styleNotes || '',
+        influences: ensureInfluences(proposed?.influences),
+      } : {}),
+    };
+    const updated = await updateUniverse(selectedId, patch, { silent: true }).catch((error) => {
+      toast.error(`Reference save failed: ${error.message}`);
+      return null;
+    });
+    if (!updated) return false;
+    if (adopt) markStyleGuidanceSaved(updated);
+    setDraft((latest) => {
+      const styleUnchangedDuringSave = latest.styleNotes === capturedStyle.styleNotes
+        && sameJsonShape(ensureInfluences(latest.influences), capturedStyle.influences);
+      return {
+        ...latest,
+        styleReferences: updated.styleReferences || [],
+        updatedAt: updated.updatedAt,
+        ...(adopt && styleUnchangedDuringSave ? {
+          styleNotes: updated.styleNotes || '',
+          influences: ensureInfluences(updated.influences),
+        } : {}),
+      };
+    });
+    setWorlds((previous) => upsertByIdPrepend(previous, updated));
+    toast.success(adopt ? 'Art reference added and style guide updated' : 'Art reference added');
+    return true;
+  }, [draft, markStyleGuidanceSaved, selectedId]);
+
+  const removeStyleReference = useCallback(async (referenceId) => {
+    if (!selectedId) return false;
+    const current = draftRef.current || draft;
+    const styleReferences = (current.styleReferences || []).filter((item) => item.id !== referenceId);
+    const updated = await updateUniverse(selectedId, { styleReferences }, { silent: true }).catch((error) => {
+      toast.error(`Reference removal failed: ${error.message}`);
+      return null;
+    });
+    if (!updated) return false;
+    setDraft((latest) => ({
+      ...latest,
+      styleReferences: updated.styleReferences || [],
+      updatedAt: updated.updatedAt,
+    }));
+    setWorlds((previous) => upsertByIdPrepend(previous, updated));
+    toast.success('Art reference removed');
+    return true;
+  }, [draft, selectedId]);
 
   const handleCanonChange = useCallback((updated) => {
     if (!updated) return;
@@ -404,7 +484,9 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
     providerLabel,
     providerModels,
     providers,
+    persistStyleReference,
     removeCategory,
+    removeStyleReference,
     runs,
     saving,
     setCanonDirty,

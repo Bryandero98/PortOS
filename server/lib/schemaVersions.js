@@ -33,8 +33,8 @@ import { PATHS, tryReadFile, safeJSONParse } from './fileUtils.js';
 
 export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // Type-level (storage layout) version for `data/universes/{id}/index.json`.
-  // v5 = post-split. Migration 034 introduced it. The per-record-shape version
-  // stays at 4 (stamped inside each record by `sanitizeTemplate`).
+  // v5 = post-split. Migration 034 introduced it. The independent per-record
+  // shape is currently v5 (stamped inside each record by `sanitizeTemplate`).
   // v6 = canon characters gained `relationshipLinks[]` (structured
   // character-to-character links + opposing-force tags, #1287). Additive +
   // gracefully degrading, but version-gated for the same reason as
@@ -60,7 +60,9 @@ export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // sync with version-mismatched peers for one additive field, the heavier
   // tradeoff this project has chosen against for additive bible fields. The
   // `universes` gate above already protects the canonical (embedded) copy.
-  universes: 7,
+  // v8 adds shared styleReferences[]. Older peers must not sanitize the field
+  // away and LWW-sync that loss back to a newer install.
+  universes: 8,
   // v1 = post-split. Migrations 035/036 introduced the pipeline collection
   // layout for issues and series.
   // v2 = `stages.audio.audioMode` + `stages.audio.cues[]` added (whole-episode
