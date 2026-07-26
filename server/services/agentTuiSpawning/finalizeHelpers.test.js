@@ -136,7 +136,9 @@ describe('finalizeHelpers', () => {
       const result = await resolveErrorAnalysis({
         finalSuccess: false, rawFile: p, fallbackText: 'buf', task, model: 'm',
       });
-      expect(analyzeAgentFailure).toHaveBeenCalledWith('PTY TAIL OUTPUT', task, 'm');
+      expect(analyzeAgentFailure).toHaveBeenCalledWith('PTY TAIL OUTPUT', task, 'm', {
+        completionReason: undefined, completionError: undefined,
+      });
       expect(result).toEqual({ classification: 'x' });
     });
 
@@ -147,8 +149,26 @@ describe('finalizeHelpers', () => {
         task: {}, model: 'm',
       });
       // Missing file → readFileTail null → `?? fallbackText` supplies the buffer.
-      expect(analyzeAgentFailure).toHaveBeenCalledWith('BUFFER FALLBACK', {}, 'm');
+      expect(analyzeAgentFailure).toHaveBeenCalledWith('BUFFER FALLBACK', {}, 'm', {
+        completionReason: undefined, completionError: undefined,
+      });
       expect(result).toEqual({ classification: 'fb' });
+    });
+
+    it('forwards the finalize path\'s own completion verdict to the analyzer', async () => {
+      // The idle reaper / max-runtime timer already knows WHY the run ended;
+      // that structural signal must reach analyzeAgentFailure so a stray keyword
+      // in the transcript can't outrank it.
+      const p = join(dir, 'raw.txt');
+      await writeFile(p, 'PTY TAIL OUTPUT');
+      vi.mocked(analyzeAgentFailure).mockReturnValue({ classification: 'reaped' });
+      await resolveErrorAnalysis({
+        finalSuccess: false, rawFile: p, fallbackText: 'buf', task: { id: 't' }, model: 'm',
+        completionReason: 'idle-no-changes', completionError: 'idled out with zero changes',
+      });
+      expect(analyzeAgentFailure).toHaveBeenCalledWith('PTY TAIL OUTPUT', { id: 't' }, 'm', {
+        completionReason: 'idle-no-changes', completionError: 'idled out with zero changes',
+      });
     });
   });
 });

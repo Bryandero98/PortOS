@@ -7,6 +7,9 @@ vi.mock('./cos.js', () => ({ addTask: vi.fn(), updateTask: vi.fn(), getAllTasks:
 
 import {
   analyzeAgentFailure,
+  COMPLETION_REASON_ANALYSES,
+  ERROR_PATTERNS,
+  SNIPPET_RAW_MAX_CHARS,
   resolveFailedTaskDecision,
   resolveTypeFailureSignal,
   maybeCreateInvestigationTask,
@@ -631,6 +634,116 @@ describe('analyzeAgentFailure — snippet & escalation enrichment', () => {
   it('leaves escalation null for categories without custom prose', () => {
     const analysis = analyzeAgentFailure(withLead('API Error: 429 Too Many Requests, please slow down'), { id: 't' }, 'x');
     expect(analysis.escalation).toBeNull();
+  });
+});
+
+// A TUI transcript is a SCREEN, not a log: ANSI cursor-addressing repaints mean a
+// multi-hundred-KB PTY spool can carry almost no newlines. Regression cover for the
+// incident where that collapsed the "last 200 lines" window onto a whole 17-minute
+// session — a `grep max_tokens` the agent itself ran classified an idle-reaper kill
+// as `context-length` (actionable → task blocked + investigation filed), and the
+// "matched line" snippet persisted 816KB of escape codes into metadata.json.
+describe('analyzeAgentFailure — PTY transcript windowing', () => {
+  // Cursor-addressed repaint: no newline anywhere, escapes between every token.
+  const repaint = (text) => `\x1B[H\x1B[2J\x1B[38;2;215;119;87m${text}\x1B[39m\x1B[24;1H`;
+
+  it('bounds the analysis window by characters so a newline-free transcript cannot match its own head', () => {
+    const stale = repaint('Bash(grep -rn "budget\\|maxTokens\\|max_tokens\\|cost" server/services/)');
+    const filler = repaint('Synthesizing… ').repeat(3000); // ≫ FAILURE_WINDOW_MAX_CHARS of escapes+text
+    const analysis = analyzeAgentFailure(stale + filler, { id: 't' }, 'x');
+    expect(analysis.category).not.toBe('context-length');
+  });
+
+  it('caps the captured snippet instead of persisting the whole newline-free buffer', () => {
+    // Match sits deep inside a single newline-free line — the snippet must be a
+    // bounded window around it, not the line (i.e. the whole transcript).
+    const analysis = analyzeAgentFailure(
+      repaint(`${'noise '.repeat(1000)}API Error: 401 Unauthorized${' trailing'.repeat(1000)}`),
+      { id: 't' }, 'x'
+    );
+    expect(analysis.category).toBe('auth-error');
+    expect(analysis.snippet.length).toBeLessThanOrEqual(SNIPPET_RAW_MAX_CHARS);
+    expect(analysis.snippet).toContain('API Error: 401');
+  });
+
+  it('strips escape sequences out of the snippet', () => {
+    const analysis = analyzeAgentFailure(withLead(repaint('API Error: 401 Unauthorized')), { id: 't' }, 'x');
+    expect(analysis.snippet).not.toMatch(/\x1B/);
+  });
+
+  it('treats an all-escape transcript as a startup failure rather than scanning garbage', () => {
+    const analysis = analyzeAgentFailure('\x1B[H\x1B[2J\x1B[?25l\x1B[24;1H'.repeat(200), { id: 't' }, 'x');
+    expect(analysis.category).toBe('startup-failure');
+    expect(analysis.origin).toBe('runner');
+  });
+});
+
+describe('analyzeAgentFailure — runner completion reason (COMPLETION_REASON_ANALYSES)', () => {
+  // The transcript the real incident produced: a keyword the AGENT typed, with the
+  // run actually ended by the idle reaper.
+  const noisyTranscript = withLead('Bash(grep -rn "maxTokens\\|max_tokens\\|cost" server/services/)');
+
+  it('prefers the runner verdict over a loose output-scan match', () => {
+    const analysis = analyzeAgentFailure(noisyTranscript, { id: 't' }, 'x', {
+      completionReason: 'idle-no-changes',
+      completionError: 'TUI agent idled out with zero uncommitted file changes',
+    });
+    expect(analysis.category).toBe('no-changes');
+    expect(analysis.actionable).toBe(false);
+    expect(analysis.origin).toBe('runner');
+    expect(analysis.completionReason).toBe('idle-no-changes');
+    // The runner's own prose is the snippet — never the escape-laden transcript.
+    expect(analysis.snippet).toContain('idled out');
+  });
+
+  it('still yields to a STRUCTURED provider signal in the transcript', () => {
+    const analysis = analyzeAgentFailure(withLead('API Error: 429 Too Many Requests — backing off'), { id: 't' }, 'x', {
+      completionReason: 'idle-no-changes',
+    });
+    expect(analysis.category).toBe('rate-limit');
+    expect(analysis.origin).toBe('provider');
+  });
+
+  it('keeps scanning past a loose match so a later structured one still wins', () => {
+    // `context-length` (output-scan) matches earlier in the text than the
+    // structured 401; discarding the loose match must not abort the sweep.
+    const output = [
+      'Initializing agent session and preparing the working directory.',
+      'Checked the max_tokens budget helper in server/lib/',
+      'API Error: 401 Unauthorized',
+    ].join('\n');
+    const analysis = analyzeAgentFailure(output, { id: 't' }, 'x', { completionReason: 'idle-no-changes' });
+    expect(analysis.category).toBe('auth-error');
+    expect(analysis.origin).toBe('provider');
+  });
+
+  it('applies the runner verdict when nothing in the transcript matches at all', () => {
+    const analysis = analyzeAgentFailure(withLead('Reviewed the reference commits and recorded proposals.'), { id: 't' }, 'x', {
+      completionReason: 'max-runtime-timeout',
+      completionError: 'TUI agent exceeded max runtime',
+    });
+    expect(analysis.category).toBe('timeout');
+    expect(analysis.completionReason).toBe('max-runtime-timeout');
+  });
+
+  it('applies the runner verdict when the transcript is empty', () => {
+    const analysis = analyzeAgentFailure('', { id: 't' }, 'x', { completionReason: 'idle-no-activity' });
+    expect(analysis.category).toBe('startup-failure');
+    expect(analysis.completionReason).toBe('idle-no-activity');
+  });
+
+  it('ignores an unrecognized reason and classifies from the output as before', () => {
+    const analysis = analyzeAgentFailure(withLead('API Error: 429 Too Many Requests'), { id: 't' }, 'x', {
+      completionReason: 'agent-signaled-done',
+    });
+    expect(analysis.category).toBe('rate-limit');
+  });
+
+  it('maps every reason to a category ERROR_PATTERNS already produces (no orphan taxonomy tokens)', () => {
+    const known = new Set([...ERROR_PATTERNS.map(p => p.category), 'startup-failure']);
+    for (const [reason, def] of Object.entries(COMPLETION_REASON_ANALYSES)) {
+      expect(known.has(def.category), `${reason} → ${def.category}`).toBe(true);
+    }
   });
 });
 

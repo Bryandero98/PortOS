@@ -437,10 +437,11 @@ export async function spawnTuiAgent({
     // record for long runs. The append-only stream is the authoritative copy.
     //
     // For failure analysis: resolveErrorAnalysis reads only the tail of the raw
-    // PTY spool (the analyzer's window is the last ~200 lines) and falls back to
-    // the capped output buffer if the spool is missing/unreadable. Successful
-    // runs skip the read entirely. raw.txt stays in agentDir alongside
-    // output.txt as the persistent record of the agent's full PTY transcript.
+    // PTY spool (the analyzer strips ANSI and windows it to the last ~200 lines /
+    // 16K chars) and falls back to the capped output buffer if the spool is
+    // missing/unreadable. Successful runs skip the read entirely. raw.txt stays
+    // in agentDir alongside output.txt as the persistent record of the agent's
+    // full PTY transcript.
     const errorAnalysis = await resolveErrorAnalysis({
       finalSuccess,
       rawFile,
@@ -448,6 +449,10 @@ export async function spawnTuiAgent({
       task,
       model,
       immediateFallbackAnalysis,
+      // The finalize path's own verdict outranks a keyword sweep of the
+      // transcript when the analyzer recognizes it (COMPLETION_REASON_ANALYSES).
+      completionReason: reason,
+      completionError: finalError,
     });
 
     // try/finally so a throw from finalizeAgent (e.g. processAgentCompletion

@@ -13,11 +13,13 @@ import { open, stat as fsStat, writeFile } from 'fs/promises';
 import * as git from '../git.js';
 import { analyzeAgentFailure } from '../agentErrorAnalysis.js';
 
-// Tail-read window for raw.txt at failure analysis. analyzeAgentFailure only
-// inspects the last ~200 lines, so reading the whole file (which has no upper
-// bound for long-running agents) would reintroduce the OOM risk the disk
-// spool was meant to avoid. 1MB easily contains the last 200 lines of any
-// realistic PTY stream while keeping peak finalize memory bounded.
+// Tail-read window for raw.txt at failure analysis. analyzeAgentFailure narrows
+// further (ANSI-stripped, last ~200 lines AND ≤16K chars), so reading the whole
+// file (which has no upper bound for long-running agents) would reintroduce the
+// OOM risk the disk spool was meant to avoid. 1MB comfortably covers the
+// analyzer's window on any realistic PTY stream — including a repaint-heavy TUI
+// transcript, where escape sequences dominate the byte count — while keeping
+// peak finalize memory bounded.
 export const RAW_TAIL_ANALYSIS_BYTES = 1024 * 1024;
 
 /**
@@ -103,10 +105,17 @@ export async function captureWorktreeDiff(workspacePath, agentDir) {
  * notices). An immediate-fallback signal, if one was detected mid-stream,
  * short-circuits the analysis entirely.
  *
+ * `completionReason` / `completionError` carry the finalize path's OWN verdict
+ * (idle reaper, max runtime, spawn failure). The analyzer prefers that structural
+ * signal over a loose keyword match in the transcript — a repaint-driven PTY
+ * transcript is a whole session's worth of text, and any keyword in it (including
+ * ones the agent itself typed) would otherwise classify the failure.
+ *
  * @returns {Promise<object|null>} The error-analysis object, or null on success.
  */
-export async function resolveErrorAnalysis({ finalSuccess, rawFile, fallbackText, task, model, immediateFallbackAnalysis }) {
+export async function resolveErrorAnalysis({ finalSuccess, rawFile, fallbackText, task, model, immediateFallbackAnalysis, completionReason, completionError }) {
   if (finalSuccess) return null;
   const rawAnalysisText = await readFileTail(rawFile, RAW_TAIL_ANALYSIS_BYTES);
-  return immediateFallbackAnalysis || analyzeAgentFailure(rawAnalysisText ?? fallbackText, task, model);
+  return immediateFallbackAnalysis
+    || analyzeAgentFailure(rawAnalysisText ?? fallbackText, task, model, { completionReason, completionError });
 }

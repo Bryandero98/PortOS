@@ -10,6 +10,7 @@ import { addTask, updateTask, getAllTasks } from './cos.js';
 import { cosEvents } from './cosEvents.js';
 import { MAX_TOTAL_SPAWNS } from '../lib/validation.js';
 import { redactOutput } from '../lib/commandSecurity.js';
+import { stripAnsi } from '../lib/ansiStrip.js';
 import { isTruthyMeta } from './agentState.js';
 
 // Max retries before blocking a task
@@ -53,12 +54,29 @@ export function redactFailureSnippet(text) {
   return out.length > SNIPPET_MAX_CHARS ? `${out.slice(0, SNIPPET_MAX_CHARS)}…` : out;
 }
 
+// Hard ceiling on the raw snippet captured off the analysis window. The
+// human-facing body re-truncates to SNIPPET_MAX_CHARS, but the analysis object
+// itself is PERSISTED verbatim into the agent's metadata.json — an unbounded
+// snippet wrote an 816KB blob into a single failed TUI agent's record (a 1.28MB
+// metadata.json) because a repaint-driven PTY transcript has almost no newlines,
+// so "the line containing the match" was the whole session. Keep enough context
+// to read the failure, never enough to bloat the record.
+export const SNIPPET_RAW_MAX_CHARS = 400;
+
 // Extract the single output line containing `index` — the matched failure line
-// makes the most useful snippet without dragging in surrounding noise.
+// makes the most useful snippet without dragging in surrounding noise. Bounded
+// on BOTH sides of the match so a newline-free buffer (raw PTY output) yields a
+// readable excerpt instead of the entire stream.
 function snippetAround(text, index) {
-  const start = text.lastIndexOf('\n', index) + 1; // -1 → 0 (first line)
+  const lineStart = text.lastIndexOf('\n', index) + 1; // -1 → 0 (first line)
   const nl = text.indexOf('\n', index);
-  const end = nl === -1 ? text.length : nl;
+  const lineEnd = nl === -1 ? text.length : nl;
+  // Anchor the window on the match itself, not the line start: on a very long
+  // line the match can sit thousands of chars in, and a head-anchored slice
+  // would cut away the very text that classified the failure.
+  const half = Math.floor(SNIPPET_RAW_MAX_CHARS / 2);
+  const start = Math.max(lineStart, index - half);
+  const end = Math.min(lineEnd, start + SNIPPET_RAW_MAX_CHARS);
   return text.slice(start, end).trim();
 }
 
@@ -494,12 +512,33 @@ export const ERROR_PATTERNS = [
   }
 ];
 
+// Analysis-window bounds. The line cap is the primary "only look at the tail"
+// rule; the char cap is the backstop that makes it hold for PTY transcripts.
+export const FAILURE_WINDOW_MAX_LINES = 200;
+export const FAILURE_WINDOW_MAX_CHARS = 16000;
+
+/**
+ * Reduce raw agent output to the tail worth classifying.
+ *
+ * A TUI transcript is a *screen*, not a log: it arrives as ANSI cursor-addressing
+ * and repaints, so a raw 838KB PTY spool can collapse to ~14 `\n`-delimited
+ * "lines". That defeated a line-only window entirely — the "last 200 lines" was
+ * the WHOLE 17-minute session, so a keyword anywhere in it (in the pasted prompt,
+ * or in a `grep -rn "maxTokens\|max_tokens"` the agent itself ran) classified the
+ * failure. That is exactly how an idle-reaper kill got labelled `context-length`.
+ *
+ * So: strip escape sequences, treat CR as a line break (repaints overwrite a
+ * line rather than starting one), drop blanks, then bound by lines AND by
+ * characters. Pure.
+ */
 function getFailureAnalysisWindow(output) {
-  return output
+  const windowed = stripAnsi(output)
+    .replace(/\r\n?/g, '\n')
     .split('\n')
     .filter(l => l.trim())
-    .slice(-200)
+    .slice(-FAILURE_WINDOW_MAX_LINES)
     .join('\n');
+  return windowed.length > FAILURE_WINDOW_MAX_CHARS ? windowed.slice(-FAILURE_WINDOW_MAX_CHARS) : windowed;
 }
 
 /**
@@ -523,11 +562,105 @@ function resolvePatternOrigin(errorDef, analysisOutput) {
 }
 
 /**
- * Analyze agent failure output and categorize the error.
+ * Runner-resolved completion reasons → the failure they actually describe.
+ *
+ * When the spawner's own finalize path already KNOWS why a run ended (the idle
+ * reaper fired, max runtime elapsed, the shell session never came up), that is a
+ * structural signal about the process — strictly better evidence than a regex
+ * sweep over the transcript. Keyed by the `reason` each `finish()` call passes;
+ * see `server/services/agentTuiSpawning.js`. Categories are deliberately reused
+ * from ERROR_PATTERNS so downstream taxonomies (task-learning metrics,
+ * layeredIntelligenceExecutionFailures) keep classifying them without a new token.
  */
-export function analyzeAgentFailure(output, task, model) {
-  // Agent produced no meaningful output — likely failed to start
-  if (!output || output.trim().length < 50) {
+export const COMPLETION_REASON_ANALYSES = {
+  'idle-no-changes': {
+    category: 'no-changes',
+    actionable: false,
+    message: 'Agent idled out with no file changes',
+    suggestedFix: 'The agent stopped producing output before writing any files. Check the raw transcript for where it stalled — a provider retry loop or a long-running command can outlast the idle reaper.'
+  },
+  'idle-no-activity': {
+    category: 'startup-failure',
+    actionable: false,
+    message: 'Agent idled out before any work started',
+    suggestedFix: 'The prompt likely never submitted — no working indicator ever appeared. Check the TUI paste/submit path and provider availability.'
+  },
+  'review-loop-idle-timeout': {
+    category: 'timeout',
+    actionable: false,
+    message: 'Agent idled out inside the multi-reviewer loop',
+    suggestedFix: 'A reviewer may have hung or the wait exceeded budget. Check the PR review/merge state and finish it manually.'
+  },
+  'merge-queue-idle-timeout': {
+    category: 'timeout',
+    actionable: false,
+    message: 'Agent idled out waiting on the merge queue',
+    suggestedFix: 'The merge queue wait exceeded budget. Check the PR merge state and finish it manually.'
+  },
+  'max-runtime-timeout': {
+    category: 'timeout',
+    actionable: false,
+    message: 'Agent exceeded its maximum runtime',
+    suggestedFix: 'Task took longer than the configured max runtime. Break it into smaller subtasks or raise the runtime budget.'
+  },
+  'command-not-found': {
+    category: 'spawn-error',
+    actionable: true,
+    escalation: 'Confirm the required CLI/tool is installed and on PATH for the agent user (or fix the command), then approve the retry.',
+    message: 'TUI command not found',
+    suggestedFix: 'The configured provider CLI is not installed or not on PATH. Install it or correct the provider command.'
+  },
+  'spawn-error': {
+    category: 'spawn-error',
+    actionable: true,
+    escalation: 'Confirm the required CLI/tool is installed and on PATH for the agent user (or fix the command), then approve the retry.',
+    message: 'Failed to start the agent session',
+    suggestedFix: 'The shell/PTY session could not be created. Check system resources and the provider command configuration.'
+  }
+};
+
+/**
+ * Build the analysis object for a runner-resolved completion reason. The
+ * snippet comes from the runner's own error prose — clean, already-scoped text —
+ * never from the escape-laden transcript.
+ */
+function structuralReasonAnalysis(def, completionReason, completionError) {
+  return {
+    category: def.category,
+    actionable: def.actionable,
+    // Structural runner signal (#2642): the spawner observed the process end
+    // this way, so it stays eligible for environmental diversion.
+    origin: 'runner',
+    snippet: typeof completionError === 'string' ? completionError.trim().slice(0, SNIPPET_RAW_MAX_CHARS) : '',
+    escalation: def.escalation || null,
+    completionReason,
+    message: def.message,
+    suggestedFix: def.suggestedFix
+  };
+}
+
+/**
+ * Analyze agent failure output and categorize the error.
+ *
+ * `options.completionReason` / `options.completionError` carry the spawner's own
+ * verdict when it has one (see COMPLETION_REASON_ANALYSES). A recognized reason
+ * becomes the default classification, and only a STRUCTURED provider/runner
+ * signal in the transcript (an `API Error: NNN` line, a Node error code) may
+ * override it — a loose output-scan keyword match may not. Without that gate an
+ * idle-reaper kill was labelled `context-length` (actionable → task blocked +
+ * investigation filed) purely because the agent had run a grep for `max_tokens`
+ * fifteen minutes earlier.
+ */
+export function analyzeAgentFailure(output, task, model, options = {}) {
+  const completionReason = options?.completionReason || null;
+  const structuralDef = completionReason ? COMPLETION_REASON_ANALYSES[completionReason] : null;
+  const analysisOutput = getFailureAnalysisWindow(output || '');
+
+  // Agent produced no meaningful output — likely failed to start. Measured on
+  // the CLEANED window: a transcript that is nothing but cursor repaints carries
+  // no more signal than an empty one.
+  if (analysisOutput.trim().length < 50) {
+    if (structuralDef) return structuralReasonAnalysis(structuralDef, completionReason, options?.completionError);
     return {
       category: 'startup-failure',
       actionable: false,
@@ -536,41 +669,47 @@ export function analyzeAgentFailure(output, task, model) {
       origin: 'runner',
       message: 'Agent failed to start or produced no output',
       suggestedFix: 'Agent process exited immediately. Check system resources and provider availability.',
-      snippet: (output || '').trim(),
+      snippet: analysisOutput.trim(),
       escalation: null
     };
   }
 
-  const analysisOutput = getFailureAnalysisWindow(output);
-
   for (const errorDef of ERROR_PATTERNS) {
     const match = analysisOutput.match(errorDef.pattern);
     if (match) {
+      // Provenance (#2642): 'provider'/'runner' only when a structured marker
+      // is present in the failure window; a loose keyword match stays 'output-scan'.
+      const origin = resolvePatternOrigin(errorDef, analysisOutput);
+      // Keep scanning (not `break`) so a structured match later in the list can
+      // still beat the runner's verdict — only the loose match is discarded.
+      if (structuralDef && origin === 'output-scan') continue;
       const extracted = errorDef.extract(match, analysisOutput, task, model);
       return {
         category: errorDef.category,
         actionable: errorDef.actionable,
-        // Provenance (#2642): 'provider'/'runner' only when a structured marker
-        // is present in the failure window; a loose keyword match stays 'output-scan'.
-        origin: resolvePatternOrigin(errorDef, analysisOutput),
+        origin,
         // Captured for the human-facing investigation body; redacted at embed time.
         snippet: snippetAround(analysisOutput, match.index ?? 0),
         // Optional category-specific "what to approve" prose (may be undefined).
         escalation: errorDef.escalation || null,
+        ...(completionReason ? { completionReason } : {}),
         ...extracted
       };
     }
   }
 
-  // No pattern matched — extract meaningful context from the output
-  const lines = output.split('\n').filter(l => l.trim());
-  const lastLines = lines.slice(-20);
+  if (structuralDef) return structuralReasonAnalysis(structuralDef, completionReason, options?.completionError);
+
+  // No pattern matched — extract meaningful context from the cleaned window
+  // (NOT the raw output: on a PTY transcript the raw tail is escape codes).
+  const lastLines = analysisOutput.split('\n').slice(-20);
 
   const errorKeywords = /\b(error|fail|exception|fatal|panic|abort|crash|denied|refused|invalid|cannot|could not|unable to)\b/i;
   const errorLines = lastLines.filter(l => errorKeywords.test(l)).slice(0, 5);
 
-  const contextLines = errorLines.length > 0 ? errorLines : lastLines.slice(-5);
-  const summary = contextLines[0]?.trim().substring(0, 120) || 'Agent failed with unrecognized error';
+  const contextLines = (errorLines.length > 0 ? errorLines : lastLines.slice(-5))
+    .map(l => l.trim().slice(0, SNIPPET_RAW_MAX_CHARS));
+  const summary = contextLines[0]?.substring(0, 120) || 'Agent failed with unrecognized error';
 
   return {
     category: 'unknown',
@@ -579,9 +718,10 @@ export function analyzeAgentFailure(output, task, model) {
     // environmental (and 'unknown' isn't an environmental category anyway).
     origin: 'output-scan',
     message: summary,
-    details: contextLines.map(l => l.trim()).join('\n'),
-    snippet: contextLines.map(l => l.trim()).join(' '),
+    details: contextLines.join('\n'),
+    snippet: contextLines.join(' ').slice(0, SNIPPET_RAW_MAX_CHARS),
     escalation: null,
+    ...(completionReason ? { completionReason } : {}),
     suggestedFix: 'Error did not match known patterns. Review the details or agent output logs.'
   };
 }
