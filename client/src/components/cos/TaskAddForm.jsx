@@ -431,7 +431,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
             showRepoPath
           />
         )}
-        <div className="grid grid-cols-2 sm:flex sm:items-center gap-x-4 gap-y-1 sm:flex-wrap">
+        <div className="grid grid-cols-1 sm:flex sm:items-center gap-x-4 gap-y-1 sm:flex-wrap">
           <label className="flex items-center gap-2 cursor-pointer select-none py-1">
             <input
               type="checkbox"
