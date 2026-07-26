@@ -123,13 +123,13 @@ export default function UniverseBuilder() {
     defaultMode,
     draft,
     draftRef,
+    flushDraftIfDirty,
     handleCanonChange,
     handleCreateNamed,
     handleDelete,
     handleSave,
     imageCfg,
     imageModels,
-    isDraftDirty,
     loading,
     markDraftSaved,
     mountedRef,
@@ -172,6 +172,7 @@ export default function UniverseBuilder() {
     defaultMode,
     runs,
     setRuns,
+    preflight: flushDraftIfDirty,
   });
   const { expanding, handleExpand, refine } = useUniverseExpand({
     selectedId,
@@ -241,14 +242,6 @@ export default function UniverseBuilder() {
   // single atomic patch server-side so the universe ends up consistent or
   // unchanged. Renames the LLM suggests are surfaced in the toast but not
   // auto-applied (the user can rename manually if they want it).
-  // Returns true when the draft is clean or save succeeded; false (with
-  // handleSave's own error toast already raised) when save failed.
-  const flushDraftIfDirty = useCallback(async () => {
-    if (!isDraftDirty()) return true;
-    const saved = await handleSave();
-    return !!saved;
-  }, [isDraftDirty]);
-
   const handleAutoSort = () => runUniverseAction({
     ref: autoSortingRef,
     setBusy: setAutoSorting,

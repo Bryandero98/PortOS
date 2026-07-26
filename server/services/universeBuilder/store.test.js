@@ -59,6 +59,25 @@ describe('universe store facade — file backend', () => {
     expect(all.every((r) => !('_sanitized' in r))).toBe(true); // raw, not sanitized
   });
 
+  it('listStyles projects to the style fields and drops tombstones', async () => {
+    const s = getUniverseStore(passthroughSanitize);
+    await s.writeRecord('u-1', {
+      id: 'u-1', name: 'A', logline: 'nope', createdAt: '2026-01-01T00:00:00.000Z',
+      influences: { embrace: ['ink'], avoid: [] },
+    });
+    await s.writeRecord('u-2', { id: 'u-2', name: 'B', deleted: true });
+    // Same row keys db.listStyles returns — the service derives tokens from
+    // them, so the two backends must hand it the identical shape.
+    expect(await s.listStyles()).toEqual([{
+      id: 'u-1',
+      name: 'A',
+      influences: { embrace: ['ink'], avoid: [] },
+      stylePrompt: undefined,
+      negativePrompt: undefined,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    }]);
+  });
+
   it('deleteRecord removes the record', async () => {
     const s = getUniverseStore(passthroughSanitize);
     await s.writeRecord('u-1', { id: 'u-1', name: 'X' });

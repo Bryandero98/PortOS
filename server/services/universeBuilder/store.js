@@ -101,6 +101,24 @@ function makeFileBackend(dir) {
       const records = await listRaw();
       return includeDeleted ? records.length : records.filter((r) => r?.deleted !== true).length;
     },
+    // The file layout can't actually project — `deleted` and the style fields
+    // both live inside each record, so knowing which rows are live means
+    // reading them all (same constraint as countUniverses above). The `.map`
+    // is shape parity with db.listStyles, not a saving: both backends must
+    // hand the service the same row keys. Unordered — the service sorts.
+    listStyles: async () => {
+      const records = await listRaw();
+      return records
+        .filter((r) => r && r.deleted !== true)
+        .map((r) => ({
+          id: r.id,
+          name: r.name,
+          influences: r.influences,
+          stylePrompt: r.stylePrompt,
+          negativePrompt: r.negativePrompt,
+          createdAt: r.createdAt,
+        }));
+    },
     writeRaw: (id, record) => cs.saveOneNow(id, record),
     deleteRaw: (id) => cs.deleteOneNow(id),
     loadRuns: async (universeId = null) => {
@@ -139,6 +157,7 @@ function makePgBackend(db) {
     listIds: db.listIds,
     listRaw: db.listRaw,
     countUniverses: db.countUniverses,
+    listStyles: db.listStyles,
     writeRaw: db.writeRaw,
     deleteRaw: db.deleteRaw,
     loadRuns: db.loadRuns,
@@ -196,6 +215,7 @@ function createFacade({ dir, sanitizeRecord }) {
     listIds: async () => (await getBackend()).listIds(),
     listRaw: async () => (await getBackend()).listRaw(),
     countUniverses: async (opts) => (await getBackend()).countUniverses(opts),
+    listStyles: async () => (await getBackend()).listStyles(),
     loadOneRaw: async (id) => (await getBackend()).readRaw(id),
     loadOne: async (id) => {
       const raw = await (await getBackend()).readRaw(id);

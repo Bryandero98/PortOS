@@ -226,6 +226,18 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
     return result;
   };
 
+  // Preflight for any server action that reads the PERSISTED universe (the LLM
+  // actions, batch render): persist a dirty draft first, so the server operates
+  // on what the user is looking at rather than the last-saved snapshot. Lives
+  // here — beside the `isDraftDirty` / `handleSave` pair it is derived from —
+  // so every consumer shares one definition of the contract.
+  // Returns true when the draft is clean or the save succeeded; false (with
+  // handleSave's own error toast already raised) when the save failed.
+  const flushDraftIfDirty = async () => {
+    if (!isDraftDirty()) return true;
+    return !!(await handleSave());
+  };
+
   const handleCreateNamed = async (rawName) => {
     const name = (rawName || '').trim();
     if (!name) {
@@ -388,6 +400,7 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
     defaultMode,
     draft,
     draftRef,
+    flushDraftIfDirty,
     handleCanonChange,
     handleCreateNamed,
     handleDelete,

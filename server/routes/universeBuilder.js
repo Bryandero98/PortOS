@@ -518,6 +518,12 @@ router.get('/duplicates', asyncHandler(async (_req, res) => {
   res.json({ groups: await findDuplicateUniverseGroups() });
 }));
 
+// Style tokens only (see svc.listUniverseStyles). Must stay ahead of `/:id` so
+// the wildcard doesn't catch "styles" as a universe id.
+router.get('/styles', asyncHandler(async (_req, res) => {
+  res.json(await svc.listUniverseStyles());
+}));
+
 router.post('/merge/preview', asyncHandler(async (req, res) => {
   const body = validateRequest(mergeSchema, req.body ?? {});
   const preview = await mergeUniverses(body.survivorId, body.loserId, body.fieldChoices, { dryRun: true, fieldOverrides: body.fieldOverrides })
