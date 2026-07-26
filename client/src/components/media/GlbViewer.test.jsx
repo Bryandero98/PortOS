@@ -1,6 +1,8 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { BoxGeometry, Group, Mesh, MeshStandardMaterial } from 'three';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 // The three.js stack can't run in jsdom (no WebGL context) and none of it is
 // under test here — this file covers the chrome AROUND the canvas (the download
@@ -21,12 +23,16 @@ vi.mock('@react-three/fiber', () => ({
 vi.mock('@react-three/drei', () => ({
   Canvas: () => null,
   OrbitControls: () => null,
-  Environment: ({ background, children }) => (
-    <div data-testid="glb-environment" data-background={background ? 'visible' : 'hidden'}>
+  Environment: ({ background, backgroundBlurriness, files, children }) => (
+    <div
+      data-testid="glb-environment"
+      data-background={background ? 'visible' : 'hidden'}
+      data-background-blurriness={backgroundBlurriness}
+      data-files={files}
+    >
       {children}
     </div>
   ),
-  Lightformer: () => null,
   Bounds: () => null,
   useGLTF: Object.assign(() => ({ scene: {} }), { clear: vi.fn() }),
 }));
@@ -78,7 +84,7 @@ describe('GlbViewer', () => {
       .toHaveStyle({ backgroundColor: '#f5f5f5' });
   });
 
-  it('offers basic lighting controls and can show the HDRI environment as the background', () => {
+  it('loads the bundled HDRI as a softly blurred background by default', () => {
     render(<GlbViewer src="/data/models3d/robot-a1b2.glb" />);
     openControls();
 
@@ -88,7 +94,16 @@ describe('GlbViewer', () => {
     expect(ambient).toHaveValue('0.6');
     expect(key).toHaveValue('1.2');
     expect(fill).toHaveValue('0.4');
-    expect(screen.getByTestId('glb-environment')).toHaveAttribute('data-background', 'hidden');
+    expect(screen.getByTestId('glb-environment')).toHaveAttribute(
+      'data-files',
+      '/hdri/studio-small-08-1k.hdr',
+    );
+    expect(screen.getByTestId('glb-environment')).toHaveAttribute('data-background', 'visible');
+    expect(screen.getByTestId('glb-environment')).toHaveAttribute(
+      'data-background-blurriness',
+      '0.2',
+    );
+    expect(screen.getByLabelText('Show HDRI background')).toBeChecked();
 
     fireEvent.change(ambient, { target: { value: '1.4' } });
     fireEvent.change(key, { target: { value: '2.2' } });
@@ -98,8 +113,14 @@ describe('GlbViewer', () => {
     expect(ambient).toHaveValue('1.4');
     expect(key).toHaveValue('2.2');
     expect(fill).toHaveValue('0.8');
-    expect(screen.getByLabelText('Show HDRI background')).toBeChecked();
-    expect(screen.getByTestId('glb-environment')).toHaveAttribute('data-background', 'visible');
+    expect(screen.getByLabelText('Show HDRI background')).not.toBeChecked();
+    expect(screen.getByTestId('glb-environment')).toHaveAttribute('data-background', 'hidden');
+  });
+
+  it('ships the referenced environment as a Radiance HDR asset', () => {
+    const hdriPath = resolve(process.cwd(), 'public/hdri/studio-small-08-1k.hdr');
+    const header = readFileSync(hdriPath).subarray(0, 128).toString('ascii');
+    expect(header).toMatch(/^#\?RADIANCE/);
   });
 
   // The image-based lighting drowned out the three light sliders at full

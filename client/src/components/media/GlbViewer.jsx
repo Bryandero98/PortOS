@@ -3,19 +3,14 @@ import { Canvas, useThree } from '@react-three/fiber';
 import {
   Bounds,
   Environment,
-  Lightformer,
   OrbitControls,
   useGLTF,
 } from '@react-three/drei';
 import { Download, Rotate3d, SlidersHorizontal } from 'lucide-react';
-import { BackSide } from 'three';
 
 const DEFAULT_BACKGROUND = '#050505';
-// The procedural environment renders into a cube map whose unlit areas would
-// otherwise be pure black — so "Show HDRI background" produced hard-edged white
-// panels floating in a void, and the IBL only ever lit from three directions. An
-// inward-facing sphere fills the gaps so the environment reads as a studio.
-const ENVIRONMENT_BACKDROP = '#2b2b2b';
+const ENVIRONMENT_HDRI = '/hdri/studio-small-08-1k.hdr';
+const ENVIRONMENT_BACKGROUND_BLUR = 0.2;
 
 // Reusable viewer for a generated `.glb` mesh: drei `useGLTF` loads the model,
 // `Bounds fit` frames it regardless of the source's scale, `OrbitControls` lets
@@ -79,28 +74,10 @@ function GlbModel({ src, forceOpaque }) {
   return <primitive object={renderedScene} />;
 }
 
-// The environment's contents never change, so keep this element identity stable:
-// drei re-bakes the cube map (six render passes + a PMREM regeneration) every
-// time `children` changes identity, which for inline JSX is every render — i.e.
-// once per pointer-move while dragging any other control on the panel.
-const ENVIRONMENT_CONTENTS = (
-  <>
-    <mesh scale={100}>
-      <sphereGeometry args={[1, 32, 32]} />
-      <meshBasicMaterial color={ENVIRONMENT_BACKDROP} side={BackSide} />
-    </mesh>
-    <Lightformer form="rect" intensity={3} position={[0, 4, 4]} rotation-x={Math.PI / 2} scale={[5, 5, 1]} />
-    <Lightformer form="rect" intensity={1.5} position={[-4, 1, 2]} rotation-y={Math.PI / 2} scale={[3, 5, 1]} />
-    <Lightformer form="rect" intensity={1} position={[4, -1, -2]} rotation-y={-Math.PI / 2} scale={[3, 5, 1]} />
-  </>
-);
-
 // Own `scene.environmentIntensity` directly rather than passing drei's
 // `environmentIntensity` prop: drei applies it from an effect that doesn't
-// declare it as a dependency, so the prop only lands while `children` changes
-// identity every render — coupling a user-facing control to an upstream bug AND
-// to the re-bake cost above. drei's `applyProps` skips `undefined`, so omitting
-// the prop leaves this write untouched when its effect *applies*.
+// declare it as a dependency. drei's `applyProps` skips `undefined`, so omitting
+// the prop leaves this write untouched when its effect applies.
 //
 // `reassertOn` exists because its *cleanup* does not: drei snapshots
 // `scene.environmentIntensity` before we ever write it (so the snapshot is
@@ -157,7 +134,7 @@ export default function GlbViewer({
   // sliders when left at full strength — exposing it as its own control is what
   // makes Ambient/Key/Fill visibly matter (dial it to 0 for lights-only).
   const [environmentIntensity, setEnvironmentIntensity] = useState(0.6);
-  const [showEnvironmentBackground, setShowEnvironmentBackground] = useState(false);
+  const [showEnvironmentBackground, setShowEnvironmentBackground] = useState(true);
   const [controlsOpen, setControlsOpen] = useState(false);
   if (!src) return null;
   const href = downloadHref || src;
@@ -194,13 +171,15 @@ export default function GlbViewer({
           <ambientLight intensity={ambientIntensity} />
           <directionalLight position={[4, 6, 5]} intensity={keyIntensity} />
           <directionalLight position={[-4, -2, -5]} intensity={fillIntensity} />
-          {/* A procedural environment keeps metallic PBR textures readable without
-              downloading an HDR preset — PortOS installs can be fully offline. */}
-          <Environment background={showEnvironmentBackground} resolution={256}>
-            {ENVIRONMENT_CONTENTS}
-          </Environment>
-          <EnvironmentIntensity value={environmentIntensity} reassertOn={showEnvironmentBackground} />
           <Suspense fallback={null}>
+            {/* Keep the HDRI in public/ instead of using drei's remote presets:
+                preview lighting and the default backdrop must work offline. */}
+            <Environment
+              files={ENVIRONMENT_HDRI}
+              background={showEnvironmentBackground}
+              backgroundBlurriness={ENVIRONMENT_BACKGROUND_BLUR}
+            />
+            <EnvironmentIntensity value={environmentIntensity} reassertOn={showEnvironmentBackground} />
             <Bounds fit clip observe margin={1.2}>
               <GlbModel src={src} forceOpaque={forceOpaque} />
             </Bounds>
