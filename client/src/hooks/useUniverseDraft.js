@@ -179,7 +179,12 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
     if (state.epoch !== issuedEpoch) {
       return { styleReferences: state.references, ...(state.guidance || {}) };
     }
-    styleReferenceStatesRef.current.set(id, { ...state, references });
+    // This GET won, so its body IS the new baseline — including the style
+    // guide. Drop the stashed guidance: it describes an older PATCH the server
+    // has since confirmed, so carrying it past this point would let a LATER
+    // plain add/remove (which contributes no guidance of its own) overlay
+    // those spent values over a genuinely newer server styleNotes/influences.
+    styleReferenceStatesRef.current.set(id, { ...state, references, guidance: null });
     return { styleReferences: references };
   }, [styleReferenceState]);
 
