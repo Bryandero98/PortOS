@@ -21,9 +21,9 @@ const require = createRequire(import.meta.url);
 const PM2_BIN = join(dirname(require.resolve('pm2/package.json')), 'bin', 'pm2');
 
 /**
- * Check if a script path is a JS file that PM2 can fork directly.
- * On Windows, non-JS scripts (npm, npx, vite, etc.) resolve to .cmd batch files
- * which PM2's fork mode tries to require() as JavaScript — causing SyntaxError.
+ * Check if a script path is a JS file that PM2 can fork through Node.
+ * Other executable commands (including shell scripts) must run directly so PM2
+ * does not try to parse them as JavaScript.
  */
 function isJsScript(script) {
   return /\.(?:js|mjs|cjs|ts)$/i.test(script);
@@ -169,8 +169,9 @@ export async function startApp(name, options = {}) {
         windowsHide: IS_WIN
       };
 
-      // On Windows, non-JS scripts (.cmd batch files) can't be fork'd by PM2
-      if (IS_WIN && !isJsScript(script)) {
+      // Non-JS commands must run directly: PM2 otherwise forks them through
+      // Node, which parses shell scripts as JavaScript on every platform.
+      if (!isJsScript(script)) {
         startOptions.interpreter = 'none';
       }
 
@@ -517,8 +518,9 @@ export async function startWithCommand(name, cwd, command, options = {}) {
         windowsHide: IS_WIN
       };
 
-      // On Windows, non-JS scripts (.cmd batch files) can't be fork'd by PM2
-      if (IS_WIN && !isJsScript(script)) {
+      // PM2 defaults to Node for command scripts. Run executables directly so
+      // native launchers such as `./scripts/game` honor their shebang.
+      if (!isJsScript(script)) {
         opts.interpreter = 'none';
       }
 

@@ -150,6 +150,7 @@
 
 ## Fixed
 
+- **Godot launch actions now run their shell launcher correctly** — managed games launched from Apps no longer hand their game script to Node, so their normal shell setup and Godot launch sequence can start.
 - **CoS Codex review loops now parse Claude and Ollama verdicts deterministically** — Claude review logs are accepted as clean only when they contain the exact `NO FINDINGS` sentinel and no findings; otherwise Codex extracts only complete structured `FINDING N:` blocks to apply. Mixed, incomplete, or absent Claude verdicts are explicitly inconclusive instead of being guessed clean. Local Ollama/LM Studio review responses now extract and validate the JSON `.findings` field before use, surfacing the provider error when it is missing or malformed and terminating the failed review step nonzero. This prevents a text/JSON handoff mismatch from silently dropping reviewer findings or letting an ambiguous pass merge.
 
 - **[issue-3059] Wordplay training checks now stay reliable during busy CI runs** — the test suite gives a newly selected word game time to finish its normal loading path, preventing intermittent build failures without weakening coverage.

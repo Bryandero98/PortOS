@@ -16,6 +16,7 @@ vi.mock('../../services/pm2.js', () => ({
   getAppStatus: vi.fn(),
   startFromEcosystem: vi.fn(),
   startWithCommand: vi.fn(),
+  deleteApp: vi.fn(),
   stopApp: vi.fn(),
   restartApp: vi.fn(),
   getLogs: vi.fn()
@@ -72,6 +73,7 @@ describe('Apps Lifecycle Routes', () => {
     it('launches the native target without replacing the web lifecycle', async () => {
       appsService.getAppById.mockResolvedValue(mockApp);
       pm2Service.getAppStatus.mockResolvedValue({ status: 'stopped' });
+      pm2Service.deleteApp.mockResolvedValue({ success: true });
       pm2Service.startWithCommand.mockResolvedValue({ success: true });
       history.logAction.mockResolvedValue();
 
@@ -82,6 +84,9 @@ describe('Apps Lifecycle Routes', () => {
       expect(pm2Service.startWithCommand).toHaveBeenCalledWith(
         'mixed-game', '/tmp', './scripts/game run', { autorestart: false }
       );
+      expect(pm2Service.deleteApp).toHaveBeenCalledWith('mixed-game', undefined);
+      expect(pm2Service.deleteApp.mock.invocationCallOrder[0])
+        .toBeLessThan(pm2Service.startWithCommand.mock.invocationCallOrder[0]);
       expect(pm2Service.startFromEcosystem).not.toHaveBeenCalled();
       expect(history.logAction).toHaveBeenCalledWith(
         'native-launch',
@@ -101,6 +106,27 @@ describe('Apps Lifecycle Routes', () => {
       expect(response.status).toBe(200);
       expect(response.body.result.alreadyRunning).toBe(true);
       expect(pm2Service.startWithCommand).not.toHaveBeenCalled();
+      expect(pm2Service.deleteApp).not.toHaveBeenCalled();
+    });
+
+    it('does not launch a replacement when removing stale PM2 metadata fails', async () => {
+      appsService.getAppById.mockResolvedValue(mockApp);
+      pm2Service.getAppStatus.mockResolvedValue({ status: 'errored' });
+      pm2Service.deleteApp.mockResolvedValue({ success: false, error: 'PM2 unavailable' });
+      history.logAction.mockResolvedValue();
+
+      const response = await request(app).post('/api/apps/app-001/native-launch');
+
+      expect(response.status).toBe(500);
+      expect(response.body.code).toBe('NATIVE_LAUNCH_FAILED');
+      expect(pm2Service.startWithCommand).not.toHaveBeenCalled();
+      expect(history.logAction).toHaveBeenCalledWith(
+        'native-launch',
+        'app-001',
+        'Mixed App',
+        { processName: 'mixed-game', label: 'Godot' },
+        false
+      );
     });
 
     it('reports the native process status independently of the web app', async () => {
@@ -163,6 +189,7 @@ describe('Apps Lifecycle Routes', () => {
       };
       appsService.getAppById.mockResolvedValue(mockApp);
       pm2Service.getAppStatus.mockResolvedValue({ status: 'stopped' }); // not running yet
+      pm2Service.deleteApp.mockResolvedValue({ success: true });
       pm2Service.startWithCommand.mockResolvedValue({ success: true });
       history.logAction.mockResolvedValue();
 
@@ -175,6 +202,7 @@ describe('Apps Lifecycle Routes', () => {
       expect(pm2Service.startWithCommand).toHaveBeenCalledWith(
         'the-game', '/tmp', './scripts/game run', { autorestart: false }
       );
+      expect(pm2Service.deleteApp).toHaveBeenCalledWith('the-game', undefined);
     });
 
     it('does not spawn a second instance when the desktop app is already online (#2991)', async () => {
