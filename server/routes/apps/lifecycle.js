@@ -33,6 +33,30 @@ const router = Router();
 // Delay before restarting PortOS itself so the JSON response reaches the client
 const SELF_RESTART_RESPONSE_DELAY_MS = 500;
 
+async function launchDesktopProcess(app, processName, command) {
+  const current = await pm2Service.getAppStatus(processName, app.pm2Home).catch(() => null);
+  if (['online', 'launching'].includes(current?.status)) {
+    return { success: true, alreadyRunning: true };
+  }
+
+  // PM2 keeps a stopped process's original interpreter. Recreate only inactive
+  // desktop targets so a corrected shell launcher is not still forked by Node.
+  if (['stopped', 'errored'].includes(current?.status)) {
+    const removal = await pm2Service.deleteApp(processName, app.pm2Home)
+      .catch(err => ({ success: false, error: err.message }));
+    if (removal.success === false) {
+      return { success: false, error: `Could not replace the previous launch: ${removal.error}` };
+    }
+  }
+
+  return pm2Service.startWithCommand(
+    processName,
+    app.repoPath,
+    command,
+    { autorestart: false }
+  ).catch(err => ({ success: false, error: err.message }));
+}
+
 // POST /api/apps/:id/native-launch - Launch an optional native/GUI target
 router.post('/:id/native-launch', loadApp, asyncHandler(async (req, res) => {
   const app = req.loadedApp;
@@ -44,21 +68,15 @@ router.post('/:id/native-launch', loadApp, asyncHandler(async (req, res) => {
     throw new ServerError('App repo path does not exist', { status: 400, code: 'PATH_NOT_FOUND' });
   }
 
-  const current = await pm2Service.getAppStatus(target.processName, app.pm2Home).catch(() => null);
-  if (['online', 'launching'].includes(current?.status)) {
+  const result = await launchDesktopProcess(app, target.processName, target.command);
+  if (result.alreadyRunning) {
     return res.json({
       success: true,
       processName: target.processName,
-      result: { success: true, alreadyRunning: true }
+      result
     });
   }
 
-  const result = await pm2Service.startWithCommand(
-    target.processName,
-    app.repoPath,
-    target.command,
-    { autorestart: false }
-  ).catch(err => ({ success: false, error: err.message }));
   const success = result.success !== false;
   await logAction('native-launch', app.id, app.name, { processName: target.processName, label: target.label }, success);
   notifyAppsChanged('native-launch');
@@ -128,18 +146,11 @@ router.post('/:id/start', loadApp, asyncHandler(async (req, res) => {
     for (let i = 0; i < processNames.length; i++) {
       const name = processNames[i];
       const command = commands[i] || commands[0];
-      // Single instance: a desktop/GUI process that is already up — or in the
-      // transient `launching` state a slow game build sits in — must not be
-      // relaunched into a second window. Matching more than the steady `online`
-      // is what stops a click during a slow launch from spawning a duplicate.
       if (desktop) {
-        const current = await pm2Service.getAppStatus(name, app.pm2Home).catch(() => null);
-        if (['online', 'launching'].includes(current?.status)) {
-          results[name] = { success: true, alreadyRunning: true };
-          continue;
-        }
+        results[name] = await launchDesktopProcess(app, name, command);
+        continue;
       }
-      const result = await pm2Service.startWithCommand(name, app.repoPath, command, desktop ? { autorestart: false } : {})
+      const result = await pm2Service.startWithCommand(name, app.repoPath, command, {})
         .catch(err => ({ success: false, error: err.message }));
       results[name] = result;
     }
