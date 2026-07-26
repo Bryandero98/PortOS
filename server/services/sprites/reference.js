@@ -40,6 +40,7 @@ import { getRecord, updateRecord, listRecords, createCharacter } from './records
 import { spriteDir, resolveSpriteAssetPath, listSpriteAssets } from './paths.js';
 import {
   SPRITE_DIRECTIONS, ANCHOR_DIRECTIONS, anchorIdForDirection, TURNAROUND_VIEWS, TURNAROUND_ID,
+  SPRITE_REFERENCE_CANVAS_SIZE,
   buildMainReferencePrompt, buildAmbientReferencePrompt, buildAnchorPrompt, buildTurnaroundPrompt,
 } from './prompts.js';
 import { pickChromaKey, keyProximityWarning, CHROMA_KEY_HEXES, DEFAULT_CHROMA_KEY } from './chromaKey.js';
@@ -523,6 +524,10 @@ async function startReferenceGenerationImpl(recordId, body, upload = null) {
       : null;
   const baseParams = {
     prompt,
+    // Codex ImageGen otherwise selects an arbitrary native aspect ratio. The
+    // review candidates must already match the square frame locked anchors use.
+    width: SPRITE_REFERENCE_CANVAS_SIZE,
+    height: SPRITE_REFERENCE_CANVAS_SIZE,
     ...(initImagePath ? { initImagePath, initImageStrength } : {}),
     cleanC2PA,
     denoise,
