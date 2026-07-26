@@ -106,22 +106,32 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
   // entry so back-to-back removals on one universe never overlap; different
   // universes' queues are independent.
   //
-  // Each entry is `{ references, epoch }`, where `epoch` counts the MUTATION
-  // responses folded into `references` so far. The epoch version-gates the
-  // other writer — the hydration effect's `getUniverse` — against the last
-  // reordering race: a mutation M issued before the user navigates away and
-  // back, and the re-hydration GET G issued on the return. When M resolves
-  // first, G's body is a PRE-mutation read, so letting it write would silently
-  // revert M client-side. G captures the epoch when it is ISSUED and writes its
-  // own array back only if no mutation landed while it was in flight.
+  // Each entry is `{ references, guidance, epoch }`, where `epoch` counts the
+  // MUTATION responses folded in so far. The epoch version-gates the other
+  // writer — the hydration effect's `getUniverse` — against the last reordering
+  // race: a mutation M issued before the user navigates away and back, and the
+  // re-hydration GET G issued on the return. When M resolves first, G's body is
+  // a PRE-mutation read, so letting it write would silently revert M
+  // client-side. G captures the epoch when it is ISSUED and keeps its own body
+  // only if no mutation landed while it was in flight.
+  //
+  // `guidance` is `{ styleNotes, influences }` when the mutation was an ADOPT —
+  // that PATCH writes the style guide in the SAME request as the references, so
+  // both halves are equally stale in a losing G. Overriding only the references
+  // would let G revert the adopted guidance AND (via markDraftSaved) bank the
+  // reverted values as the saved baseline, so the draft reads clean and the
+  // next general Save pushes the stale guidance back server-side — a worse
+  // outcome than the client-only revert this guard exists to stop. The override
+  // is scoped to exactly the fields the winning PATCH wrote; every other field
+  // still comes from G, which may legitimately be fresher (peer sync, canon).
   //
   // The guard is deliberately "a mutation always beats a concurrent GET", not a
   // monotonic issued-at sequence shared by all writers: G is issued AFTER M yet
   // reads state the server may not have written M into yet, so ordering by
   // issue time would make a late-resolving M lose to an earlier-issued G —
   // reintroducing the A → B → A loss fixed above. Keeping `epoch` in the same
-  // record as `references` is what makes "the epoch moves whenever the array
-  // does" structural rather than a convention writers must remember.
+  // record as the values it guards is what makes "the epoch moves whenever
+  // those values do" structural rather than a convention writers must remember.
   const styleReferenceQueuesRef = useRef(new Map());
   const styleReferenceStatesRef = useRef(new Map());
   // Mirrors `selectedId` synchronously during render (not via a passive
@@ -142,25 +152,35 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
   }, []);
 
   const styleReferenceState = useCallback(
-    (id) => styleReferenceStatesRef.current.get(id) ?? { references: null, epoch: 0 },
+    (id) => styleReferenceStatesRef.current.get(id) ?? { references: null, guidance: null, epoch: 0 },
     [],
   );
 
-  // Record a mutation's confirmed styleReferences for `id`, bumping its epoch so
-  // any hydration GET still in flight for that universe knows its body is stale.
-  const applyStyleReferenceMutation = useCallback((id, references) => {
-    styleReferenceStatesRef.current.set(id, { references, epoch: styleReferenceState(id).epoch + 1 });
+  // Record a mutation's confirmed values for `id`, bumping its epoch so any
+  // hydration GET still in flight for that universe knows its body is stale.
+  // `guidance` is null for a mutation that didn't write the style guide; the
+  // previous entry's guidance carries forward so a later plain add/remove
+  // doesn't drop an earlier adopt's confirmed values.
+  const applyStyleReferenceMutation = useCallback((id, references, guidance = null) => {
+    const previous = styleReferenceState(id);
+    styleReferenceStatesRef.current.set(id, {
+      references,
+      guidance: guidance ?? previous.guidance,
+      epoch: previous.epoch + 1,
+    });
   }, [styleReferenceState]);
 
   // Fold a hydration GET's styleReferences into `id`'s state, unless a mutation
-  // resolved while the GET was in flight (epoch moved) — in which case the
-  // mutation's result stands. Returns whichever array is authoritative, so the
-  // hydrated draft renders that one rather than the stale server read.
+  // resolved while the GET was in flight (epoch moved) — in which case that
+  // mutation's values stand. Returns the draft fields the winning writer owns,
+  // to be spread LAST over the hydrated draft so they override the server read.
   const applyStyleReferenceHydration = useCallback((id, issuedEpoch, references) => {
-    const { references: current, epoch } = styleReferenceState(id);
-    if (epoch !== issuedEpoch) return current;
-    styleReferenceStatesRef.current.set(id, { references, epoch });
-    return references;
+    const state = styleReferenceState(id);
+    if (state.epoch !== issuedEpoch) {
+      return { styleReferences: state.references, ...(state.guidance || {}) };
+    }
+    styleReferenceStatesRef.current.set(id, { ...state, references });
+    return { styleReferences: references };
   }, [styleReferenceState]);
 
   const markDraftSaved = useCallback((snapshotSource) => {
@@ -232,19 +252,6 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
     ]).then(([universe, nextRuns]) => {
       if (cancelled) return;
       if (universe) {
-        // Refresh this universe's styleReferences snapshot from the server on
-        // every successful hydration — a stale map entry from an earlier
-        // local mutation (or absence of one, on first visit) must not shadow
-        // changes made while this universe wasn't selected (peer sync, the
-        // image-delete purge route). The next add/remove needs this fresh
-        // baseline, not a leftover cache (codex review finding) — except when
-        // a mutation resolved while this GET was in flight, which the epoch
-        // guard defers to (see styleReferenceStatesRef).
-        const styleReferences = applyStyleReferenceHydration(
-          selectedId,
-          issuedEpoch,
-          universe.styleReferences || [],
-        );
         const hydrated = {
           ...universe,
           categories: ensureDraftCategories(universe.categories),
@@ -253,9 +260,21 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
           premise: universe.premise || '',
           styleNotes: universe.styleNotes || '',
           influences: ensureInfluences(universe.influences),
-          styleReferences,
+          styleReferences: universe.styleReferences || [],
           locked: universe.locked || {},
           llm: universe.llm || { provider: null, model: null },
+          // Refresh this universe's styleReferences snapshot from the server on
+          // every successful hydration — a stale map entry from an earlier
+          // local mutation (or absence of one, on first visit) must not shadow
+          // changes made while this universe wasn't selected (peer sync, the
+          // image-delete purge route). The next add/remove needs this fresh
+          // baseline, not a leftover cache (codex review finding) — except when
+          // a mutation resolved while this GET was in flight, in which case
+          // this spread overrides the fields THAT PATCH wrote with its newer
+          // confirmed values (see styleReferenceStatesRef). Spread LAST so it
+          // wins over the server read above; markDraftSaved then banks the
+          // overridden values, not the stale ones.
+          ...applyStyleReferenceHydration(selectedId, issuedEpoch, universe.styleReferences || []),
         };
         setDraft(hydrated);
         markDraftSaved(hydrated);
@@ -408,8 +427,13 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
     // user navigates away and back) must build from this result, not a
     // pre-save list (codex review finding: an A→B→A round trip must not lose
     // A's in-flight save). The epoch bump invalidates any re-hydration GET for
-    // targetId still in flight — see styleReferenceStatesRef.
-    applyStyleReferenceMutation(targetId, updated.styleReferences || []);
+    // targetId still in flight — see styleReferenceStatesRef. On the adopt
+    // path the SAME PATCH wrote the style guide, so hand that over too or a
+    // losing GET reverts the adopted guidance while the references survive.
+    applyStyleReferenceMutation(targetId, updated.styleReferences || [], adopt ? {
+      styleNotes: updated.styleNotes || '',
+      influences: ensureInfluences(updated.influences),
+    } : null);
     // But only touch the currently DISPLAYED draft if the user is still on
     // targetId — applying it otherwise would poison a DIFFERENT, now-selected
     // universe's state with targetId's references (codex review finding).

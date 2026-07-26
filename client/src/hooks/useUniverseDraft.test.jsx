@@ -333,6 +333,11 @@ describe('useUniverseDraft', () => {
   });
 
   it('keeps a mutation that resolves BEFORE the re-hydration GET it raced (codex review finding)', async () => {
+    // u1 starts with refA already saved, so the post-mutation list ([refA, refX])
+    // and G's stale list ([refA]) differ in a way the FINAL removal payload can
+    // discriminate — with an empty starting list both branches would emit the
+    // same `{ styleReferences: [] }` and the assertion would prove nothing.
+    const refA = { id: 'style-ref-a', title: 'Ref A', prompt: 'a', imageRefs: ['a.png'] };
     const refX = { id: 'style-ref-x', title: 'Ref X', prompt: 'x', imageRefs: ['x.png'] };
     // The re-hydration fetch on the return to u1 is held open so it can be
     // resolved AFTER the mutation, with the PRE-mutation body the server would
@@ -343,16 +348,21 @@ describe('useUniverseDraft', () => {
       if (id === 'u2') return universeTwo;
       u1Fetches += 1;
       if (u1Fetches === 2) return new Promise((resolve) => { resolveU1Hydration = resolve; });
-      return { ...universe, styleReferences: [] };
+      return { ...universe, styleReferences: [refA] };
     });
 
     const { result, rerender } = renderSelectable();
-    await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+    await waitFor(() => expect(result.current.draft.styleReferences).toEqual([refA]));
 
-    // Mutation M on u1, held open.
+    // Adopt mutation M on u1, held open — adopt so the assertions also cover the
+    // style guide the same PATCH writes, not just the references.
     let resolveU1Save;
     apiMocks.updateUniverse.mockImplementationOnce(() => new Promise((resolve) => { resolveU1Save = resolve; }));
-    const pendingSave = result.current.persistStyleReference({ reference: refX, adopt: false });
+    const pendingSave = result.current.persistStyleReference({
+      reference: refX,
+      proposed: { styleNotes: 'Adopted notes', influences: { embrace: ['ink'], avoid: [] } },
+      adopt: true,
+    });
 
     // u1 -> u2 -> u1; the return issues re-hydration GET G, which stays pending.
     await act(async () => { rerender({ selectedId: 'u2' }); });
@@ -362,24 +372,35 @@ describe('useUniverseDraft', () => {
 
     // M resolves FIRST — the reordering this guard exists for.
     await act(async () => {
-      resolveU1Save({ ...universe, styleReferences: [refX] });
+      resolveU1Save({
+        ...universe,
+        styleReferences: [refA, refX],
+        styleNotes: 'Adopted notes',
+        influences: { embrace: ['ink'], avoid: [] },
+      });
       await pendingSave;
     });
 
-    // ...then G resolves carrying the stale, pre-mutation reference list.
+    // ...then G resolves carrying the stale, pre-mutation body.
     await act(async () => {
-      resolveU1Hydration({ ...universe, styleReferences: [] });
+      resolveU1Hydration({ ...universe, styleReferences: [refA], styleNotes: '' });
       await Promise.resolve();
     });
 
-    // G must not have reverted M: the displayed draft still shows refX...
+    // G must not have reverted M: the displayed draft still shows refX, and the
+    // style guide the SAME adopt PATCH wrote survives alongside it.
     await waitFor(() => expect(result.current.draft.id).toBe('u1'));
-    expect(result.current.draft.styleReferences).toEqual([refX]);
+    expect(result.current.draft.styleReferences).toEqual([refA, refX]);
+    expect(result.current.draft.styleNotes).toBe('Adopted notes');
+    // markDraftSaved banked the overridden values, so the adopted guidance is
+    // not silently re-saved as the stale '' on the next general Save.
+    expect(result.current.isDraftDirty()).toBe(false);
 
-    // ...and the next mutation builds from [refX], not G's empty snapshot —
-    // otherwise this PATCH would be a no-op and refX would linger server-side.
-    await act(async () => { await result.current.removeStyleReference(refX.id); });
-    expect(apiMocks.updateUniverse.mock.calls.at(-1)).toEqual(['u1', { styleReferences: [] }, { silent: true }]);
-    expect(result.current.draft.styleReferences).toEqual([]);
+    // The next mutation builds from [refA, refX], not G's stale [refA] — with a
+    // stale base this PATCH would emit `{ styleReferences: [] }` and leave refX
+    // lingering server-side.
+    await act(async () => { await result.current.removeStyleReference(refA.id); });
+    expect(apiMocks.updateUniverse.mock.calls.at(-1)).toEqual(['u1', { styleReferences: [refX] }, { silent: true }]);
+    expect(result.current.draft.styleReferences).toEqual([refX]);
   });
 });
