@@ -184,6 +184,7 @@ describe('startReferenceGeneration', () => {
     expect(call.kind).toBe('image');
     expect(call.params.mode).toBe('codex');
     expect(call.params.model).toBe('gpt-5.6-luna');
+    expect(call.params).toMatchObject({ width: 1024, height: 1024 });
     expect(call.params.prompt).toContain('named Hero');
     expect(call.params.prompt).toContain('a wiry ranger');
     expect(call.params.prompt).toContain('magenta (#FF00FF)');
@@ -249,6 +250,7 @@ describe('startReferenceGeneration', () => {
     const call = enqueueJob.mock.calls[0][0];
     expect(call.params.initImagePath).toContain(`${id}-turnaround-v1.png`);
     expect(call.params.initImageStrength).toBe(0.8);
+    expect(call.params).toMatchObject({ width: 1024, height: 1024 });
     expect(call.params.prompt).toContain('turnaround model sheet');
     expect(call.params.prompt).toContain('facing the viewer (front)');
     // The design prompt persists from the turnaround step — the main render

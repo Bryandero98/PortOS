@@ -62,6 +62,10 @@ export function keyColorPhrase(hex) {
 // read a given facing from.
 export const TURNAROUND_VIEWS = ['south', 'east', 'north', 'west'];
 
+// Reference candidates are reviewed before their foreground is normalized onto
+// the locked square frame, so generation itself must hold the sprite canvas.
+export const SPRITE_REFERENCE_CANVAS_SIZE = 1024;
+
 // --- View geometry (issue #3004) -------------------------------------------
 // The turnaround's dominant failure mode is that the model MIRRORS the front
 // figure instead of rotating the character: a hip bag worn on the FRONT of the
@@ -187,7 +191,7 @@ export function buildTurnaroundPrompt({ name, designPrompt, chromaKey, correctio
     + 'it is visible at all in a given panel is decided by that panel\'s rule below. '
     + `${panelRules} `
     + 'Flat non-isometric pixel-art game sprite '
-    + `reference on a plain exact ${keyColorPhrase(chromaKey)} background. No panel borders, `
+    + `reference on a plain exact ${keyColorPhrase(chromaKey)} background on a square 1:1 canvas. No panel borders, `
     + 'labels, captions, arrows, grid, shadows, scenery, wireframe, or extra characters. '
     + 'Return exactly one PNG.'
     + correction
@@ -251,7 +255,7 @@ export function buildMainReferencePrompt({ name, designPrompt, chromaKey, fromTu
     + 'level on one baseline, arms relaxed, with a clear readable silhouette. Match the '
     + 'attached visual reference when provided. Preserve physical-left and physical-right '
     + `accessories exactly. ${geometryRule('south')}Flat non-isometric pixel-art game sprite reference, centered on `
-    + `a plain exact ${keyColorPhrase(chromaKey)} background. No motion, labels, grid, shadows, scenery, `
+    + `a plain exact ${keyColorPhrase(chromaKey)} background on a square 1:1 canvas. No motion, labels, grid, shadows, scenery, `
     + 'wireframe, or extra figures. Return exactly one PNG.'
   );
 }
@@ -268,7 +272,7 @@ export function buildAmbientReferencePrompt({ name, kind, designPrompt, chromaKe
   return (
     `Create one centered game-sprite ${kind} named ${name}. Design: ${description} `
     + 'Show its at-rest state with a clear readable silhouette. Match the attached visual reference when provided. '
-    + `Use a plain exact ${keyColorPhrase(chromaKey)} background. No people, scenery, text, labels, grid, `
+    + `Use a plain exact ${keyColorPhrase(chromaKey)} background on a square 1:1 canvas. No people, scenery, text, labels, grid, `
     + 'camera angle, shadows, wireframe, or extra objects. Return exactly one PNG.'
   );
 }
@@ -327,9 +331,11 @@ export function buildAnchorPrompt({ name, direction, chromaKey, correctionPrompt
     + `Redraw the attached ${name} character as one `
     + `full-body figure in a neutral standing pose, ${facing}. Keep the exact same `
     + 'identity, proportions, palette, clothing, hairstyle, and accessories/straps on the '
-    + 'same anatomical side as the attached reference. This is a rotation of the character, '
+    + 'same anatomical side as the attached reference. Treat the turnaround panels as the source of truth: '
+    + 'identify each accessory\'s anatomical side and depth placement there, then draw it only where this '
+    + 'facing can physically reveal it. This is a rotation of the character, '
     + `not a mirrored copy of the reference. ${geometryRule(direction)}Flat, non-isometric view; a `
-    + `single centered figure; plain flat ${keyColorPhrase(chromaKey)} background; no labels, no `
+    + `single centered figure on a square 1:1 canvas; plain flat ${keyColorPhrase(chromaKey)} background; no labels, no `
     + 'grid lines, no wireframe or guide colors. Return exactly one PNG.'
     + correction
   );

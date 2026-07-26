@@ -2,10 +2,14 @@ import { describe, it, expect } from 'vitest';
 import {
   SPRITE_DIRECTIONS, ANCHOR_DIRECTIONS, REFERENCE_FACING, anchorIdForDirection,
   keyColorPhrase, buildMainReferencePrompt, buildAnchorPrompt, buildTurnaroundPrompt,
-  buildWalkVideoPrompt, viewGeometryClause, TURNAROUND_VIEWS,
+  buildWalkVideoPrompt, viewGeometryClause, TURNAROUND_VIEWS, SPRITE_REFERENCE_CANVAS_SIZE,
 } from './prompts.js';
 
 describe('sprite direction contracts', () => {
+  it('uses a square canvas for reviewable reference candidates', () => {
+    expect(SPRITE_REFERENCE_CANVAS_SIZE).toBe(1024);
+  });
+
   it('exposes the canonical 8-direction order starting at south', () => {
     expect(SPRITE_DIRECTIONS).toHaveLength(8);
     expect(SPRITE_DIRECTIONS[0]).toBe('south');
@@ -68,6 +72,8 @@ describe('buildAnchorPrompt', () => {
     expect(p).toContain('facing due east, a strict right-facing side profile');
     expect(p).toContain('magenta (#FF00FF) background');
     expect(p).toContain('attached Scout character');
+    expect(p).toContain('square 1:1 canvas');
+    expect(p).toContain('Treat the turnaround panels as the source of truth');
   });
 
   it('appends a trimmed correction clause when provided', () => {
@@ -100,6 +106,7 @@ describe('buildTurnaroundPrompt (#2979)', () => {
     // The constraint the sheet exists to enforce.
     expect(p).toContain('SAME anatomical side');
     expect(p).toContain('green (#00FF00) background');
+    expect(p).toContain('square 1:1 canvas');
   });
 
   it('falls back to the attached reference when no design prompt is given', () => {
