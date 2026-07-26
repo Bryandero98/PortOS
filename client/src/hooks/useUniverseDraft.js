@@ -102,6 +102,14 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
   // selectedId-load effect below).
   const styleReferenceQueueRef = useRef(Promise.resolve());
   const styleReferenceSnapshotRef = useRef(null);
+  // Bumped every time the selection changes (see the selectedId-load effect
+  // below). A pending add/remove for universe A can resolve AFTER the user
+  // has already switched to universe B — without this, A's stale response
+  // would repopulate styleReferenceSnapshotRef and get sent as B's next
+  // wholesale styleReferences PATCH, silently replacing B's real references.
+  // Each mutator captures the generation before its await and only applies
+  // its result if the generation is still current on resolve.
+  const universeSelectionGenerationRef = useRef(0);
 
   useEffect(() => () => { mountedRef.current = false; }, []);
   useEffect(() => { draftRef.current = draft; }, [draft]);
@@ -161,9 +169,13 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
     clearPendingCanonAdditions();
     // A new selection means any in-flight removeStyleReference chain belongs
     // to the PREVIOUS universe — reset so the next removal seeds its snapshot
-    // from the freshly-hydrated draft instead of a stale/foreign one.
+    // from the freshly-hydrated draft instead of a stale/foreign one. Bumping
+    // the generation also stops a still-pending add/remove for the OLD
+    // universe from applying its result once it resolves (see
+    // universeSelectionGenerationRef above).
     styleReferenceQueueRef.current = Promise.resolve();
     styleReferenceSnapshotRef.current = null;
+    universeSelectionGenerationRef.current += 1;
     if (!selectedId) {
       const empty = createEmptyUniverseDraft();
       setDraft(empty);
@@ -307,6 +319,7 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
 
   const persistStyleReference = useCallback(async ({ reference, proposed, adopt }) => {
     if (!selectedId || !reference) return false;
+    const generation = universeSelectionGenerationRef.current;
     const current = draftRef.current || draft;
     const capturedStyle = {
       styleNotes: current.styleNotes || '',
@@ -335,25 +348,33 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
       return null;
     });
     if (!updated) return false;
-    // Keep the shared snapshot current so a later removeStyleReference call
-    // builds its replacement array from a list that includes this addition —
-    // otherwise a stale post-removal snapshot would silently drop it (codex
-    // review finding).
-    styleReferenceSnapshotRef.current = updated.styleReferences || [];
-    if (adopt) markStyleGuidanceSaved(updated);
-    setDraft((latest) => {
-      const styleUnchangedDuringSave = latest.styleNotes === capturedStyle.styleNotes
-        && sameJsonShape(ensureInfluences(latest.influences), capturedStyle.influences);
-      return {
-        ...latest,
-        styleReferences: updated.styleReferences || [],
-        updatedAt: updated.updatedAt,
-        ...(adopt && styleUnchangedDuringSave ? {
-          styleNotes: updated.styleNotes || '',
-          influences: ensureInfluences(updated.influences),
-        } : {}),
-      };
-    });
+    // The user may have switched to a different universe while this PATCH was
+    // in flight. `updated` is still a legitimate save FOR THIS UNIVERSE, so
+    // the worlds list (setWorlds, below) always reflects it — but applying it
+    // to the shared snapshot/open draft now would poison the NEWLY selected
+    // universe's state with THIS universe's references (codex review
+    // finding), so those two are gated on the selection being unchanged.
+    if (universeSelectionGenerationRef.current === generation) {
+      // Keep the shared snapshot current so a later removeStyleReference call
+      // builds its replacement array from a list that includes this addition
+      // — otherwise a stale post-removal snapshot would silently drop it
+      // (codex review finding).
+      styleReferenceSnapshotRef.current = updated.styleReferences || [];
+      if (adopt) markStyleGuidanceSaved(updated);
+      setDraft((latest) => {
+        const styleUnchangedDuringSave = latest.styleNotes === capturedStyle.styleNotes
+          && sameJsonShape(ensureInfluences(latest.influences), capturedStyle.influences);
+        return {
+          ...latest,
+          styleReferences: updated.styleReferences || [],
+          updatedAt: updated.updatedAt,
+          ...(adopt && styleUnchangedDuringSave ? {
+            styleNotes: updated.styleNotes || '',
+            influences: ensureInfluences(updated.influences),
+          } : {}),
+        };
+      });
+    }
     setWorlds((previous) => upsertByIdPrepend(previous, updated));
     toast.success(adopt ? 'Art reference added and style guide updated' : 'Art reference added');
     return true;
@@ -361,26 +382,44 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
 
   const removeStyleReference = useCallback((referenceId) => {
     if (!selectedId) return Promise.resolve(false);
+    const generation = universeSelectionGenerationRef.current;
+    const targetId = selectedId;
     // Chain onto the queue so a second removal clicked before the first PATCH
     // resolves derives its replacement array from the FIRST removal's actual
     // result (tracked in styleReferenceSnapshotRef), not from draftRef — which
     // only syncs one React effect later and would still show both items present.
     const task = styleReferenceQueueRef.current.then(async () => {
+      // This task can be dequeued well after the user switched away from
+      // targetId (a prior queued removal for the SAME universe can still be
+      // pending across the switch). At that point styleReferenceSnapshotRef/
+      // draftRef hold the NEWLY selected universe's data, not targetId's — so
+      // computing `base` here would derive a replacement array from the wrong
+      // universe entirely and send it TO targetId, corrupting it (codex
+      // review finding: the queue reset alone doesn't stop an
+      // already-in-flight chained task from running). Abort rather than risk
+      // that; the user has moved on from this removal's universe anyway.
+      if (universeSelectionGenerationRef.current !== generation) return false;
       const base = styleReferenceSnapshotRef.current
         ?? (draftRef.current || draft).styleReferences
         ?? [];
       const styleReferences = base.filter((item) => item.id !== referenceId);
-      const updated = await updateUniverse(selectedId, { styleReferences }, { silent: true }).catch((error) => {
+      const updated = await updateUniverse(targetId, { styleReferences }, { silent: true }).catch((error) => {
         toast.error(`Reference removal failed: ${error.message}`);
         return null;
       });
       if (!updated) return false;
-      styleReferenceSnapshotRef.current = updated.styleReferences || [];
-      setDraft((latest) => ({
-        ...latest,
-        styleReferences: updated.styleReferences || [],
-        updatedAt: updated.updatedAt,
-      }));
+      // Same cross-selection guard as persistStyleReference: the worlds list
+      // always reflects this (correct) save, but the shared snapshot/open
+      // draft must not be overwritten with a DIFFERENT, now-selected
+      // universe's state (codex review finding).
+      if (universeSelectionGenerationRef.current === generation) {
+        styleReferenceSnapshotRef.current = updated.styleReferences || [];
+        setDraft((latest) => ({
+          ...latest,
+          styleReferences: updated.styleReferences || [],
+          updatedAt: updated.updatedAt,
+        }));
+      }
       setWorlds((previous) => upsertByIdPrepend(previous, updated));
       toast.success('Art reference removed');
       return true;

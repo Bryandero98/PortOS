@@ -210,4 +210,51 @@ describe('useUniverseDraft', () => {
     expect(apiMocks.updateUniverse.mock.calls.at(-1)[1]).toEqual({ styleReferences: [refC] });
     expect(result.current.draft.styleReferences).toEqual([refC]);
   });
+
+  it('does not let a stale in-flight save for one universe overwrite a different, now-selected universe (codex review finding)', async () => {
+    const universeTwo = {
+      ...universe,
+      id: 'u2',
+      name: 'Second Universe',
+      styleReferences: [{ id: 'style-ref-b2', title: 'Ref B2', prompt: 'b2', imageRefs: ['b2.png'] }],
+    };
+    apiMocks.getUniverse.mockImplementation(async (id) => (id === 'u2' ? universeTwo : universe));
+
+    const goToWorld = vi.fn();
+    const { result, rerender } = renderHook(
+      ({ selectedId }) => useUniverseDraft({ selectedId, goToWorld }),
+      { initialProps: { selectedId: 'u1' } },
+    );
+    await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+
+    // Start a save for u1 but hold its PATCH response open — simulates the
+    // user switching universes before this request resolves. Not wrapped in
+    // act(): nothing synchronous before its first await touches React state.
+    let resolveU1Save;
+    apiMocks.updateUniverse.mockImplementationOnce(() => new Promise((resolve) => { resolveU1Save = resolve; }));
+    const referenceForU1 = { id: 'style-ref-stale', title: 'Stale', prompt: 'stale', imageRefs: ['stale.png'] };
+    const staleSave = result.current.persistStyleReference({ reference: referenceForU1, adopt: false });
+
+    // Switch to u2 while u1's save is still pending.
+    await act(async () => { rerender({ selectedId: 'u2' }); });
+    await waitFor(() => expect(result.current.draft.id).toBe('u2'));
+    expect(result.current.draft.styleReferences).toEqual(universeTwo.styleReferences);
+
+    // Now let u1's stale save resolve.
+    await act(async () => {
+      resolveU1Save({ ...universe, styleReferences: [referenceForU1] });
+      await staleSave;
+    });
+
+    // u2's displayed draft must be untouched by u1's stale, now-resolved response.
+    expect(result.current.draft.id).toBe('u2');
+    expect(result.current.draft.styleReferences).toEqual(universeTwo.styleReferences);
+
+    // A subsequent removal on u2 must build its PATCH from u2's OWN
+    // references, not from u1's stale snapshot.
+    await act(async () => {
+      await result.current.removeStyleReference(universeTwo.styleReferences[0].id);
+    });
+    expect(apiMocks.updateUniverse.mock.calls.at(-1)).toEqual(['u2', { styleReferences: [] }, { silent: true }]);
+  });
 });
