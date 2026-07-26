@@ -468,4 +468,59 @@ describe('useUniverseDraft', () => {
     // value, which the removal's PATCH never wrote.
     expect(result.current.draft.styleNotes).toBe('Peer notes');
   });
+
+  it('does not let a plain mutation resurrect an older adopt over a newer peer edit the GET carries (codex review finding)', async () => {
+    const refX = { id: 'style-ref-x', title: 'Ref X', prompt: 'x', imageRefs: ['x.png'] };
+    // Same class as the test above, but with NO hydration landing between the
+    // adopt and the racing mutation — so the guard cannot rely on a winning
+    // hydration to retire the stashed guidance. Only the guidance's own epoch
+    // stamp distinguishes "written after this GET" from "the GET already has it."
+    let u1Fetches = 0;
+    let resolveLateHydration;
+    apiMocks.getUniverse.mockImplementation(async (id) => {
+      if (id === 'u2') return universeTwo;
+      u1Fetches += 1;
+      if (u1Fetches === 1) return { ...universe, styleReferences: [], styleNotes: '' };
+      return new Promise((resolve) => { resolveLateHydration = resolve; });
+    });
+
+    const { result, rerender } = renderSelectable();
+    await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+
+    // Adopt on u1 — stashes guidance at the epoch it was written.
+    await act(async () => {
+      await result.current.persistStyleReference({
+        reference: refX,
+        proposed: { styleNotes: 'Adopted notes', influences: { embrace: [], avoid: [] } },
+        adopt: true,
+      });
+    });
+
+    // u1 -> u2 -> u1 with the adopt already settled. The return's GET reads a
+    // peer's newer style notes; it is issued AFTER the adopt, so it already
+    // contains the adopted state plus the peer's later edit.
+    await act(async () => { rerender({ selectedId: 'u2' }); });
+    await waitFor(() => expect(result.current.draft.id).toBe('u2'));
+    await act(async () => { rerender({ selectedId: 'u1' }); });
+    await waitFor(() => expect(resolveLateHydration).toBeTypeOf('function'));
+
+    // A plain removal races that GET and wins on references — but it wrote no
+    // style guide, so it must not drag the older adopt's notes along with it.
+    let resolveRemoval;
+    apiMocks.updateUniverse.mockImplementationOnce(() => new Promise((resolve) => { resolveRemoval = resolve; }));
+    const pendingRemoval = result.current.removeStyleReference(refX.id);
+    await waitFor(() => expect(resolveRemoval).toBeTypeOf('function'));
+    await act(async () => {
+      resolveRemoval({ ...universe, styleReferences: [], styleNotes: 'Peer notes' });
+      await pendingRemoval;
+    });
+    await act(async () => {
+      resolveLateHydration({ ...universe, styleReferences: [refX], styleNotes: 'Peer notes' });
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+    expect(result.current.draft.styleReferences).toEqual([]);
+    expect(result.current.draft.styleNotes).toBe('Peer notes');
+  });
 });

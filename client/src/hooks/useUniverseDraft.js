@@ -125,6 +125,13 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
   // is scoped to exactly the fields the winning PATCH wrote; every other field
   // still comes from G, which may legitimately be fresher (peer sync, canon).
   //
+  // The guide carries its OWN `guidanceEpoch` rather than riding the reference
+  // epoch, because the two move independently: a plain add/remove bumps `epoch`
+  // without writing the guide. Overlaying on the reference epoch alone would
+  // let such a mutation resurrect a long-settled adopt over a newer peer edit
+  // that G legitimately carries. Overlay only when a PATCH wrote the guide
+  // AFTER G was issued.
+  //
   // The guard is deliberately "a mutation always beats a concurrent GET", not a
   // monotonic issued-at sequence shared by all writers: G is issued AFTER M yet
   // reads state the server may not have written M into yet, so ordering by
@@ -152,21 +159,27 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
   }, []);
 
   const styleReferenceState = useCallback(
-    (id) => styleReferenceStatesRef.current.get(id) ?? { references: null, guidance: null, epoch: 0 },
+    (id) => styleReferenceStatesRef.current.get(id)
+      ?? { references: null, guidance: null, guidanceEpoch: 0, epoch: 0 },
     [],
   );
 
   // Record a mutation's confirmed values for `id`, bumping its epoch so any
   // hydration GET still in flight for that universe knows its body is stale.
   // `guidance` is null for a mutation that didn't write the style guide; the
-  // previous entry's guidance carries forward so a later plain add/remove
-  // doesn't drop an earlier adopt's confirmed values.
+  // previous entry's guidance carries forward (so an adopt followed by a plain
+  // add/remove during one GET doesn't drop the adopted values) but keeps its
+  // ORIGINAL `guidanceEpoch` — the epoch at which a PATCH last actually wrote
+  // the style guide. That stamp is what lets the hydration arbiter tell "this
+  // guidance is newer than the GET" from "the GET already contains it."
   const applyStyleReferenceMutation = useCallback((id, references, guidance = null) => {
     const previous = styleReferenceState(id);
+    const epoch = previous.epoch + 1;
     styleReferenceStatesRef.current.set(id, {
       references,
+      epoch,
       guidance: guidance ?? previous.guidance,
-      epoch: previous.epoch + 1,
+      guidanceEpoch: guidance ? epoch : previous.guidanceEpoch,
     });
   }, [styleReferenceState]);
 
@@ -177,14 +190,19 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
   const applyStyleReferenceHydration = useCallback((id, issuedEpoch, references) => {
     const state = styleReferenceState(id);
     if (state.epoch !== issuedEpoch) {
-      return { styleReferences: state.references, ...(state.guidance || {}) };
+      // References always come from the winning mutation. The style guide only
+      // does when a PATCH actually wrote it AFTER this GET was issued
+      // (`guidanceEpoch > issuedEpoch`) — otherwise this GET already read that
+      // guidance back from the server, and overlaying the stashed copy would
+      // clobber a genuinely newer value the GET carries (a peer edit made while
+      // the user was on another universe) and — via markDraftSaved — bank the
+      // clobbered value so a later general Save pushes it back server-side.
+      return {
+        styleReferences: state.references,
+        ...(state.guidanceEpoch > issuedEpoch ? state.guidance : null),
+      };
     }
-    // This GET won, so its body IS the new baseline — including the style
-    // guide. Drop the stashed guidance: it describes an older PATCH the server
-    // has since confirmed, so carrying it past this point would let a LATER
-    // plain add/remove (which contributes no guidance of its own) overlay
-    // those spent values over a genuinely newer server styleNotes/influences.
-    styleReferenceStatesRef.current.set(id, { ...state, references, guidance: null });
+    styleReferenceStatesRef.current.set(id, { ...state, references });
     return { styleReferences: references };
   }, [styleReferenceState]);
 
