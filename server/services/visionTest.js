@@ -12,6 +12,7 @@ import { PATHS, resolveScreenshot } from '../lib/fileUtils.js';
 import { fetchWithTimeout } from '../lib/fetchWithTimeout.js';
 import { ensureProviderReady as ensureOllamaProviderReady } from './ollamaManager.js';
 import { describeImageViaCli } from './visionCli.js';
+import { assertSecretEndpoint, evaluateSecretEndpoint } from '../lib/aiToolkit/internal/endpointGuard.js';
 
 const SCREENSHOTS_DIR = PATHS.screenshots;
 const DEFAULT_VISION_TIMEOUT_MS = 60000;
@@ -69,7 +70,11 @@ async function loadImageAsBase64(imagePath) {
  *   truncates mid-output and fails to parse.
  * @returns {Promise<Object>} - API response
  */
-async function callVisionAPI({ endpoint, apiKey, model, imageDataUrl, prompt, timeout = DEFAULT_VISION_TIMEOUT_MS, maxTokens = 500 }) {
+async function callVisionAPI({ endpoint, apiKey, allowCustomEndpoint, model, imageDataUrl, prompt, timeout = DEFAULT_VISION_TIMEOUT_MS, maxTokens = 500 }) {
+  // Never send the API key to an arbitrary/metadata host (SSRF / key
+  // exfiltration). Keyless local-LLM calls skip this guard entirely.
+  assertSecretEndpoint(endpoint, { hasSecret: Boolean(apiKey), allowCustomEndpoint: allowCustomEndpoint === true });
+
   await ensureOllamaProviderReady({ endpoint }).then((ready) => {
     if (!ready.success) throw new Error(`Ollama is not running and PortOS could not start it: ${ready.error || 'unknown error'}`);
   });
@@ -177,6 +182,7 @@ export async function testVision({ imagePath, prompt, expectedContent, providerI
   const apiResponse = await callVisionAPI({
     endpoint: provider.endpoint,
     apiKey: provider.apiKey,
+    allowCustomEndpoint: provider.allowCustomEndpoint,
     model: testModel,
     imageDataUrl,
     prompt,
@@ -279,6 +285,7 @@ export async function describeImageDataUrlDetailed({ dataUrl, prompt, providerId
   const apiResponse = await callVisionAPI({
     endpoint: provider.endpoint,
     apiKey: provider.apiKey,
+    allowCustomEndpoint: provider.allowCustomEndpoint,
     model: visionModel,
     imageDataUrl: dataUrl,
     prompt: prompt || 'Describe what you see in this image.',
@@ -391,6 +398,19 @@ export async function checkVisionHealth(providerId = 'lmstudio') {
 
   if (provider.type !== 'api') {
     return { available: false, error: 'Vision requires API provider' };
+  }
+
+  // Never send the API key to an arbitrary/metadata host (SSRF / key
+  // exfiltration). Keyless local-LLM calls skip this guard entirely. This
+  // function's convention is to return { available: false, error } rather
+  // than throw, so evaluate (not assert) the guard.
+  if (provider.apiKey) {
+    const guard = evaluateSecretEndpoint(provider.endpoint, {
+      allowCustomEndpoint: provider.allowCustomEndpoint === true,
+    });
+    if (!guard.allowed) {
+      return { available: false, error: `Provider endpoint blocked: ${guard.reason}` };
+    }
   }
 
   // Check if endpoint is reachable

@@ -133,6 +133,11 @@ async function neutralizeDirectionEntries(recDir, id, directions) {
 }
 
 // True when any JSON state under the record still names `sprites/<id>/grok/`.
+// Also scans runtime/vN/ atlas manifests — a crash between step 3 (walk-set
+// rewritten) and step 4 (runtime manifests) would otherwise leave selection/
+// walk-set/runs/ clean while the compiled-atlas provenance is still stale,
+// and this gate reading only those would report "no residue" and skip the
+// record forever.
 async function hasGrokResidue(recDir, id) {
   const selAbs = join(recDir, 'walk', `${id}-walk-selection-v1.json`);
   const wsAbs = join(recDir, 'walk', `${id}-walk-set-v1.json`);
@@ -144,6 +149,14 @@ async function hasGrokResidue(recDir, id) {
   for (const abs of await listJsonFiles(join(recDir, NEUTRAL_DIR))) {
     // eslint-disable-next-line no-await-in-loop -- short-circuits on first hit
     if ((await readFile(abs, 'utf8').catch(() => '')).includes(marker)) return true;
+  }
+  for (const vDir of await readdir(join(recDir, 'runtime'), { withFileTypes: true }).catch(() => [])) {
+    if (!vDir.isDirectory() || !/^v\d+$/.test(vDir.name)) continue;
+    // eslint-disable-next-line no-await-in-loop -- short-circuits on first hit
+    for (const abs of await listJsonFiles(join(recDir, 'runtime', vDir.name))) {
+      // eslint-disable-next-line no-await-in-loop -- short-circuits on first hit
+      if ((await readFile(abs, 'utf8').catch(() => '')).includes(marker)) return true;
+    }
   }
   return false;
 }

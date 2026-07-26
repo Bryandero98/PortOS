@@ -42,10 +42,13 @@
  * are `runtime/…`, no `grok/`); reference anchors (`reference/…`).
  *
  * Idempotency: gated per record on the presence of a `grok/` directory OR any
- * residual `grok/` string in the selection/walk-set (crash-recovery of a run
- * that moved the dirs but not the strings). A second run finds neither and
- * skips. A move-target collision (`runs/<runId>` already exists) throws for
- * that record — the run is left in `grok/` (still readable via the layout-
+ * residual `grok/` string in the selection/walk-set/runtime-atlas manifests
+ * (crash-recovery of a run that moved the dirs but not all of the strings —
+ * including a crash between the walk-set rewrite and the runtime-manifest
+ * rewrite, which would otherwise read as "already migrated" and strand the
+ * runtime manifests). A second run finds none of these and skips. A
+ * move-target collision (`runs/<runId>` already exists) throws for that
+ * record — the run is left in `grok/` (still readable via the layout-
  * agnostic reader) and the migration stays PENDING for a retry, mirroring
  * migration 200's per-record aggregate-throw.
  */
@@ -103,6 +106,22 @@ async function listJsonFiles(dir) {
   return out;
 }
 
+// True if any compiled-atlas manifest under runtime/vN/ still embeds a
+// `grok/` path. Guards a crash between step 4 (walk-set rewritten, so
+// selText/wsText already read clean) and step 5 (runtime manifests) from
+// making the top-of-record gate see "already migrated" and skip the record
+// forever, leaving stale grok/ provenance in the runtime manifests.
+async function runtimeHasGrokResidue(runtimeDir) {
+  for (const vDir of await readdir(runtimeDir, { withFileTypes: true }).catch(() => [])) {
+    if (!vDir.isDirectory() || !/^v\d+$/.test(vDir.name)) continue;
+    for (const abs of await listJsonFiles(join(runtimeDir, vDir.name))) {
+      const text = await readFile(abs, 'utf8').catch(() => '');
+      if (text.includes(`${LEGACY_DIR}/`)) return true;
+    }
+  }
+  return false;
+}
+
 // Rewrite `grok/`→`runs/` in one JSON file, writing only when it changed.
 async function neutralizeJsonFile(abs) {
   const obj = await readJson(abs);
@@ -142,7 +161,12 @@ async function migrateRecord(recDir, recordId) {
   const hasGrokDir = await exists(grokDir);
   const selText = await readFile(selAbs, 'utf8').catch(() => '');
   const wsText = await readFile(wsAbs, 'utf8').catch(() => '');
-  if (!hasGrokDir && !selText.includes(`${LEGACY_DIR}/`) && !wsText.includes(`${LEGACY_DIR}/`)) {
+  if (
+    !hasGrokDir &&
+    !selText.includes(`${LEGACY_DIR}/`) &&
+    !wsText.includes(`${LEGACY_DIR}/`) &&
+    !(await runtimeHasGrokResidue(runtimeDir))
+  ) {
     return false; // nothing native/grok here (imported/redraw-only, or already migrated)
   }
 

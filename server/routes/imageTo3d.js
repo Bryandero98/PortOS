@@ -137,8 +137,22 @@ async function handleTargetInstall(targetId, req, res) {
     installLog.cancel();
     // `close` also fires on normal completion; only a live handle means an
     // install was actually mid-flight.
-    if (currentKill) currentKill();
-    installsInFlight.delete(targetId);
+    if (currentKill) {
+      // A real install is tracked in installsInFlight. Ask the child to
+      // terminate, but let the install promise's own `.finally()` (below)
+      // release the slot once the kill actually lands — releasing it here,
+      // before the child has exited, would let a second install for the same
+      // target start while the first is still shutting down, and this
+      // handler's own delete would then race the first install's delayed
+      // `.finally()`, which could clobber the second install's slot when it
+      // settles.
+      currentKill();
+    } else {
+      // Nothing has spawned yet (still resolving env / adapter preflight) —
+      // the code below will see `aborted` and bail without ever registering
+      // a `.finally()`, so release the slot here or it would leak forever.
+      installsInFlight.delete(targetId);
+    }
     safeEnd();
   });
 

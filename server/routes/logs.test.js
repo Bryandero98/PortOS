@@ -71,6 +71,16 @@ describe('log routes PM2_HOME resolution', () => {
     expect(pm2Service.getLogs).toHaveBeenCalledWith('example-api', 100, undefined);
   });
 
+  it('fetches static logs for a process from its resolved custom PM2 home', async () => {
+    appsService.resolvePm2HomeForProcess.mockResolvedValue('/tmp/example-pm2');
+
+    const response = await request(createApp()).get('/api/logs/example-api?lines=50');
+
+    expect(response.status).toBe(200);
+    expect(appsService.resolvePm2HomeForProcess).toHaveBeenCalledWith('example-api');
+    expect(pm2Service.getLogs).toHaveBeenCalledWith('example-api', 50, '/tmp/example-pm2');
+  });
+
   it('follows a process from its resolved custom PM2 home', async () => {
     appsService.resolvePm2HomeForProcess.mockResolvedValue('/tmp/example-pm2');
 

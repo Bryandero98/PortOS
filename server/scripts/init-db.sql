@@ -1354,6 +1354,8 @@ DROP TRIGGER IF EXISTS trg_threejs_models_audit ON threejs_models;
 CREATE TRIGGER trg_threejs_models_audit AFTER UPDATE OR DELETE ON threejs_models FOR EACH ROW EXECUTE FUNCTION record_audit_log();
 DROP TRIGGER IF EXISTS trg_image_to_3d_models_audit ON image_to_3d_models;
 CREATE TRIGGER trg_image_to_3d_models_audit AFTER UPDATE OR DELETE ON image_to_3d_models FOR EACH ROW EXECUTE FUNCTION record_audit_log();
+DROP TRIGGER IF EXISTS trg_sprite_records_audit ON sprite_records;
+CREATE TRIGGER trg_sprite_records_audit AFTER UPDATE OR DELETE ON sprite_records FOR EACH ROW EXECUTE FUNCTION record_audit_log();
 DROP TRIGGER IF EXISTS trg_mood_boards_audit ON mood_boards;
 CREATE TRIGGER trg_mood_boards_audit AFTER UPDATE OR DELETE ON mood_boards FOR EACH ROW EXECUTE FUNCTION record_audit_log();
 DROP TRIGGER IF EXISTS trg_lora_training_runs_audit ON lora_training_runs;

@@ -41,14 +41,14 @@ router.get('/:processName', asyncHandler(async (req, res) => {
     throw new ServerError('Invalid process name', { status: 400, code: 'INVALID_PROCESS_NAME' });
   }
 
+  const pm2Home = await appsService.resolvePm2HomeForProcess(safeProcessName);
+
   if (!follow) {
     // Static log fetch
-    const logs = await pm2Service.getLogs(safeProcessName, lines)
+    const logs = await pm2Service.getLogs(safeProcessName, lines, pm2Home)
       .catch(err => `Error: ${err.message}`);
     return res.json({ processName: safeProcessName, lines, logs });
   }
-
-  const pm2Home = await appsService.resolvePm2HomeForProcess(safeProcessName);
 
   // SSE streaming — shared header boilerplate via openSseStream; this route
   // emits named `event:` frames directly so it uses safeEnd but not send.

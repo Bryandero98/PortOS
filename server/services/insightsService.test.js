@@ -63,6 +63,40 @@ describe('insightsService.callProviderAISimple — non-JSON-body guard', () => {
   });
 });
 
+describe('insightsService.callProviderAISimple — endpoint guard (SSRF / key-exfiltration)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('blocks a keyed provider pointed at a non-allowlisted endpoint and never calls fetch', async () => {
+    const result = await callProviderAISimple(
+      { ...PROVIDER, apiKey: 'secret-key', endpoint: 'https://not-an-allowlisted-host.example' },
+      'm', 'prompt',
+    );
+    expect(result.error).toContain('Provider endpoint blocked');
+    expect(fetchWithTimeout).not.toHaveBeenCalled();
+  });
+
+  it('allows a keyed provider on a non-allowlisted host through when allowCustomEndpoint is true', async () => {
+    fetchWithTimeout.mockResolvedValue(mockJsonResponse({ choices: [{ message: { content: 'hello' } }] }));
+    const result = await callProviderAISimple(
+      { ...PROVIDER, apiKey: 'secret-key', endpoint: 'https://not-an-allowlisted-host.example', allowCustomEndpoint: true },
+      'm', 'prompt',
+    );
+    expect(result).toEqual({ text: 'hello' });
+    expect(fetchWithTimeout).toHaveBeenCalled();
+  });
+
+  it('allows a keyless provider on a non-allowlisted host through (guard only applies when apiKey is set)', async () => {
+    fetchWithTimeout.mockResolvedValue(mockJsonResponse({ choices: [{ message: { content: 'hello' } }] }));
+    const result = await callProviderAISimple(
+      { ...PROVIDER, endpoint: 'https://not-an-allowlisted-host.example' },
+      'm', 'prompt',
+    );
+    expect(result).toEqual({ text: 'hello' });
+  });
+});
+
 // Enforces the no-cold-bootstrap trigger contract documented at the generation
 // entry points: the cached-read paths the Insights page mounts with must be
 // disk-only and NEVER reach an AI provider. Only the user-triggered *refresh*
