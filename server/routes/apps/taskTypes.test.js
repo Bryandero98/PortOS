@@ -77,7 +77,7 @@ describe('Apps Task-Type Routes', () => {
       listOutcomesResult.mockResolvedValue({
         read: true,
         outcomes: [
-          { slug: 'add-metrics', scope: 'app-improvement', outcome: 'merged', rejectionReason: null, issueRef: '#10', tracker: 'github', filedAt: '2026-07-04T00:00:00.000Z', outcomeAt: '2026-07-05T00:00:00.000Z' },
+          { slug: 'add-metrics', scope: 'app-improvement', outcome: 'merged', executionOutcome: 'success', executionAt: '2026-07-04T01:00:00.000Z', rejectionReason: null, issueRef: '#10', tracker: 'github', filedAt: '2026-07-04T00:00:00.000Z', outcomeAt: '2026-07-05T00:00:00.000Z' },
           { slug: 'drop-feature', scope: 'app-improvement', outcome: 'rejected', rejectionReason: 'user-rejected', issueRef: '#11', tracker: 'github', filedAt: '2026-07-03T00:00:00.000Z', outcomeAt: '2026-07-04T00:00:00.000Z' },
           { slug: 'vague-idea', scope: 'app-data-gap', outcome: 'abandoned', rejectionReason: 'unknown-reason', issueRef: '#12', tracker: 'github', filedAt: '2026-07-02T00:00:00.000Z', outcomeAt: '2026-07-03T00:00:00.000Z' },
           { slug: 'open-one', scope: 'app-improvement', outcome: null, rejectionReason: null, issueRef: '#13', tracker: 'github', filedAt: '2026-07-01T00:00:00.000Z', outcomeAt: null }
@@ -90,6 +90,25 @@ describe('Apps Task-Type Routes', () => {
       expect(response.body.read).toBe(true);
       expect(response.body.stats).toMatchObject({ total: 4, merged: 1, rejected: 1, abandoned: 1, pending: 1, resolved: 3 });
       expect(response.body.stats.mergeRate).toBeCloseTo(100 / 3, 5);
+      expect(response.body.execution).toMatchObject({
+        approved: 1, completed: 1, abandoned: 0, awaitingExecution: 0, attempted: 1, completionRate: 100,
+        duration: { count: 1, medianMs: 3_600_000 }
+      });
+      expect(response.body.execution.byScope['app-improvement']).toMatchObject({ completed: 1, completionRate: 100 });
+      // The composed li-outcomes effectiveness roll-up (#3014): approval → completion
+      // alongside the filing-side verdicts, with a per-scope breakdown that keeps a
+      // scope whose only proposal was abandoned rather than dropping it.
+      expect(response.body.metrics).toMatchObject({
+        totalFiled: 4, totalApproved: 1, totalCompleted: 1, totalRejected: 1,
+        totalAbandonedAtFiling: 1, totalPending: 1, totalAwaitingExecution: 0,
+        totalFailedExecution: 0, approvalToCompletionRate: 100
+      });
+      expect(response.body.metrics.byScope['app-improvement']).toMatchObject({
+        approved: 1, completed: 1, rejected: 1, pending: 1, approvalToCompletionRate: 100
+      });
+      expect(response.body.metrics.byScope['app-data-gap']).toMatchObject({
+        approved: 0, abandonedAtFiling: 1, approvalToCompletionRate: null
+      });
       // Real diagnoses only in entries; the undiagnosed abandoned row is `unknown`.
       expect(response.body.rejections.entries).toEqual([{ reason: 'user-rejected', count: 1 }]);
       expect(response.body.rejections.unknown).toBe(1);
@@ -121,6 +140,10 @@ describe('Apps Task-Type Routes', () => {
       expect(response.status).toBe(200);
       expect(response.body.read).toBe(false);
       expect(response.body.stats).toBeNull();
+      expect(response.body.execution).toBeNull();
+      // Null, not a zeroed roll-up: an unreadable store must not read as "LI has
+      // approved nothing and delivered nothing" — the same sentinel rule as `stats`.
+      expect(response.body.metrics).toBeNull();
       expect(response.body.recent).toEqual([]);
     });
 

@@ -14,6 +14,7 @@ import MoodBoardReferenceStrip from '../moodBoard/MoodBoardReferenceStrip';
 import StyleProbeImage from '../universe/StyleProbeImage';
 import VisionProviderPicker from '../universe/VisionProviderPicker';
 import InfluenceChipsInput from './InfluenceChipsInput';
+import UniverseStyleReferences from './UniverseStyleReferences';
 
 function LockButton({ field, locked, onToggle, label }) {
   const isLocked = !!locked?.[field];
@@ -107,6 +108,9 @@ export default function BibleTab({
   onPreview,
   onStyleProbeRenderComplete = null,
   styleProbeDirty = false,
+  saved = false,
+  onPersistStyleReference,
+  onRemoveStyleReference,
 }) {
   const { providers, providerModels, providerLabel, activeProviderId } = llm;
   const {
@@ -351,6 +355,12 @@ export default function BibleTab({
           onChange={(next) => updateDraft({ influences: next })}
           locked={draft.locked}
           onToggleLock={toggleLock}
+        />
+        <UniverseStyleReferences
+          universe={draft}
+          saved={saved}
+          onPersist={onPersistStyleReference}
+          onRemove={onRemoveStyleReference}
         />
         <div className="mt-4 pt-4 border-t border-port-border">
           {/* StyleProbeImage persists styleImageRefs server-side itself; merge

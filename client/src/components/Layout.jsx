@@ -92,9 +92,13 @@ import {
   Music,
   Workflow as WorkflowIcon,
   ChartGantt,
-  Clapperboard
+  Clapperboard,
+  PersonStanding,
+  Box,
+  Boxes
 } from 'lucide-react';
 /* global __APP_VERSION__ */
+import { safeReadStorage, safeWriteStorage } from '../lib/safeStorage';
 import Logo from './Logo';
 import { useErrorNotifications } from '../hooks/useErrorNotifications';
 import { useNotifications } from '../hooks/useNotifications';
@@ -216,6 +220,7 @@ const navItems = [
     icon: Sparkles,
     defaultTo: '/media',
     children: [
+      { to: '/media/3d', label: '3D', icon: Boxes },
       { to: '/authors', label: 'Authors', icon: FilePen },
       { to: '/catalog', label: 'Catalog', icon: Sparkles },
       { to: '/creative-commission', label: 'Creative Commissions', icon: CalendarClock },
@@ -229,8 +234,10 @@ const navItems = [
       { to: '/rounds', label: 'Rounds', icon: Music },
       { to: '/pipeline', label: 'Series Pipeline', icon: WorkflowIcon, dynamic: 'pipelineSeries' },
       { to: '/sharing', label: 'Sharing', icon: Share2 },
+      { to: '/sprites', label: 'Sprites', icon: PersonStanding },
       { to: '/start-story', label: 'Start a Story', icon: Rocket },
       { to: '/story-builder', label: 'Story Builder', icon: Wand2 },
+      { to: '/media/threejs', label: 'Three.js Models', icon: Box },
       { to: '/universes', label: 'Universes', icon: Globe, dynamic: 'universes' },
       { to: '/writers-room', label: 'Writers Room', icon: NotebookPen },
     ],
@@ -455,10 +462,7 @@ export function SingleNavRow({ item, collapsed, active, badgeCount, pinned, onTo
 export default function Layout() {
   const location = useLocation();
   const navigate = useNavigate();
-  const [collapsed, setCollapsed] = useState(() => {
-    const saved = localStorage.getItem(SIDEBAR_KEY);
-    return saved === 'true';
-  });
+  const [collapsed, setCollapsed] = useState(() => safeReadStorage(SIDEBAR_KEY) === 'true');
   const [mobileOpen, setMobileOpen] = useState(false);
   const [expandedSections, setExpandedSections] = useState({});
   // Collapsed-sidebar flyout: hovering or focusing a section icon opens a
@@ -559,7 +563,7 @@ export default function Layout() {
   }, [manifestNav]);
 
   useEffect(() => {
-    localStorage.setItem(SIDEBAR_KEY, String(collapsed));
+    safeWriteStorage(SIDEBAR_KEY, String(collapsed));
   }, [collapsed]);
 
   // Build dynamic nav items with app children + pipeline series.

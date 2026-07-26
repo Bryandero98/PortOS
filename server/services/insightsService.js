@@ -23,6 +23,7 @@ import { stripCodeFences, parseLLMJSON } from '../lib/aiProvider.js';
 import { fetchWithTimeout } from '../lib/fetchWithTimeout.js';
 import { readResponseJson } from '../lib/readResponseJson.js';
 import { ensureProviderReady as ensureOllamaProviderReady } from './ollamaManager.js';
+import { evaluateSecretEndpoint } from '../lib/aiToolkit/internal/endpointGuard.js';
 
 const DEFAULT_AI_TIMEOUT_MS = 300000;
 
@@ -176,6 +177,17 @@ export async function callProviderAISimple(provider, model, prompt, { temperatur
     const ready = await ensureOllamaProviderReady(provider).catch((err) => ({ success: false, error: err.message }));
     if (!ready.success) {
       return { error: `Ollama is not running and PortOS could not start it: ${ready.error || 'unknown error'}` };
+    }
+
+    // Never send the API key to an arbitrary/metadata host (SSRF / key
+    // exfiltration). Keyless local-LLM calls skip this guard entirely.
+    if (provider.apiKey) {
+      const guard = evaluateSecretEndpoint(provider.endpoint, {
+        allowCustomEndpoint: provider.allowCustomEndpoint === true,
+      });
+      if (!guard.allowed) {
+        return { error: `Provider endpoint blocked: ${guard.reason}` };
+      }
     }
 
     const headers = { 'Content-Type': 'application/json' };

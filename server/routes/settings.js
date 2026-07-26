@@ -10,7 +10,7 @@ import {
 } from '../services/mediaJobQueue/index.js';
 import { asyncHandler } from '../lib/errorHandler.js';
 import { isPlainObject } from '../lib/objects.js';
-import { backupConfigSchema, sharingSettingsPatchSchema, featureProviderConfigSchema, autofixerSettingsSchema, codeReviewSettingsSchema, locationSettingsSchema, settingsEmbeddingsSchema, citySnapshotConfigSchema, imessageConfigSchema, signalConfigSchema, spotifyConfigSchema, youtubeConfigSchema, apiAccessSettingsSchema, loraTrainingConfigSchema, pipelineEditorialChecksSettingsSchema, creativeDirectorSettingsSchema, privacySettingsSchema, seriesAutopilotSettingsSchema, layeredIntelligenceSettingsSchema, validateRequest } from '../lib/validation.js';
+import { backupConfigSchema, sharingSettingsPatchSchema, featureProviderConfigSchema, autofixerSettingsSchema, codeReviewSettingsSchema, locationSettingsSchema, settingsEmbeddingsSchema, citySnapshotConfigSchema, imessageConfigSchema, signalConfigSchema, spotifyConfigSchema, youtubeConfigSchema, apiAccessSettingsSchema, loraTrainingConfigSchema, pipelineEditorialChecksSettingsSchema, creativeDirectorSettingsSchema, musicSettingsSchema, privacySettingsSchema, seriesAutopilotSettingsSchema, layeredIntelligenceSettingsSchema, imageGenGrokSettingsSchema, validateRequest } from '../lib/validation.js';
 
 const router = Router();
 
@@ -139,6 +139,10 @@ router.put('/', asyncHandler(async (req, res) => {
   if (req.body?.creativeDirector !== undefined) {
     validateRequest(creativeDirectorSettingsSchema.partial(), req.body.creativeDirector);
   }
+  // Music studio slice (#2911) — the chiptune provider pin + publish prefs.
+  if (req.body?.music !== undefined) {
+    validateRequest(musicSettingsSchema.partial(), req.body.music);
+  }
   // Home location ({ lat, lon }) read by the weather_now voice tool. The schema
   // already makes both fields optional + nullable (clearing falls back to the
   // tool default), and the refine enforces both-or-neither — so validate the
@@ -204,6 +208,13 @@ router.put('/', asyncHandler(async (req, res) => {
   // `.partial()` so a PUT that only carries { schedules } still validates.
   if (req.body?.seriesAutopilot !== undefined) {
     validateRequest(seriesAutopilotSettingsSchema.partial(), req.body.seriesAutopilot);
+  }
+  // Grok Imagegen settings slice (#2859) — validate when present so a malformed
+  // save can't write a bad aspect ratio (which lands verbatim in the grok
+  // prompt) or a non-boolean enabled gate to disk. The imageGen parent stays
+  // polymorphic; only the grok sub-slice has a schema here.
+  if (req.body?.imageGen?.grok !== undefined) {
+    validateRequest(imageGenGrokSettingsSchema.partial(), req.body.imageGen.grok);
   }
   // Install-level Layered Intelligence settings (#2515) — validate the slice when
   // present so a malformed `trustShellSources` can't persist and silently unlock

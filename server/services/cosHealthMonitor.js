@@ -13,6 +13,7 @@ import { safeJSONParse } from '../lib/fileUtils.js';
 import { getMemoryStats } from '../lib/memoryStats.js';
 import { loadState, saveState, withStateLock, isDaemonRunning } from './cosState.js';
 import { cosEvents, emitLog } from './cosEvents.js';
+import { annotateExpectedExit } from './apps.js';
 
 const _execFileAsync = promisify(execFile);
 const execFileAsync = (cmd, args, opts) => _execFileAsync(cmd, args, { ...opts, windowsHide: true });
@@ -47,12 +48,31 @@ export async function runHealthCheck() {
   const pm2Json = jsonStart >= 0 ? pm2Output.slice(jsonStart) : '[]';
   const pm2Processes = safeJSONParse(pm2Json, [], { logError: true, context: 'pm2 process list' });
 
-  const erroredProcesses = pm2Processes.filter(p => p.pm2_env?.status === 'errored');
+  // A process whose stopping is a normal outcome (a desktop app the user closed)
+  // must not be auto-restarted — that would reopen the window they just closed,
+  // the same relaunch loop `autorestart: false` prevents, arriving by another
+  // path. See issue #2991.
+  const annotated = await annotateExpectedExit(pm2Processes);
+  const supervised = annotated.filter(p => !p.expectedExit);
+
+  const erroredProcesses = supervised.filter(p => p.pm2_env?.status === 'errored');
+  // Reported on its own rather than folded into `errored` (which would degrade
+  // health for a normal user action) or dropped from the totals. Counted from
+  // the expected-exit processes only, so it never overlaps `errored`/`stopped`
+  // below — those now count supervised processes exclusively.
+  const desktopExited = annotated.filter(
+    p => p.expectedExit && ['errored', 'stopped'].includes(p.pm2_env?.status)
+  ).length;
+  // `online` counts EVERY process, exempt or not: the exemption is about exit
+  // semantics, not liveness, so a running desktop app must still report as online
+  // (otherwise it lands in `total` and in no bucket, and the metric reads the same
+  // whether the game is running or quit).
   metrics.pm2 = {
     total: pm2Processes.length,
-    online: pm2Processes.filter(p => p.pm2_env?.status === 'online').length,
+    online: annotated.filter(p => p.pm2_env?.status === 'online').length,
     errored: erroredProcesses.length,
-    stopped: pm2Processes.filter(p => p.pm2_env?.status === 'stopped').length
+    stopped: supervised.filter(p => p.pm2_env?.status === 'stopped').length,
+    desktopExited
   };
 
   // Check for runaway processes (too many)

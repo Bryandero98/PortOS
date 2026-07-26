@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Link, useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Play, Square, RotateCcw, ExternalLink, Hammer, RefreshCw, Pencil, AlertTriangle, Sparkles } from 'lucide-react';
+import { ArrowLeft, Play, Square, RotateCcw, ExternalLink, Gamepad2, Hammer, RefreshCw, Pencil, AlertTriangle, Sparkles } from 'lucide-react';
 import DeployPanel from './DeployPanel';
 import EditAppDrawer from './EditAppDrawer';
 import toast from '../ui/Toast';
@@ -9,7 +9,8 @@ import StatusBadge from '../StatusBadge';
 import * as api from '../../services/api';
 import { getLaunchUrls } from '../../services/appUrls';
 import socket from '../../services/socket';
-import { APP_DETAIL_TABS, NON_PM2_TYPES, getAppTypeLabel } from './constants';
+import { APP_DETAIL_TABS, NON_PM2_TYPES, getAppTypeLabel, resolveLaunchPanelProcess } from './constants';
+import DesktopLaunchProgress from './DesktopLaunchProgress';
 import OverviewTab from './tabs/OverviewTab';
 import TasksTab from './tabs/TasksTab';
 import AutomationTab from './tabs/AutomationTab';
@@ -31,6 +32,10 @@ export default function AppDetailView() {
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [actionLoading, setActionLoading] = useState(null);
+  // PM2 process whose live output the desktop launch panel is tailing (null = hidden).
+  const [launchProcess, setLaunchProcess] = useState(null);
+  const [nativeLaunchLoading, setNativeLaunchLoading] = useState(false);
+  const [nativeLaunchOnline, setNativeLaunchOnline] = useState(false);
   const [buildLoading, setBuildLoading] = useState(false);
   const [editing, setEditing] = useState(false);
   // Vite Dev-UI host guard: when an online app exposes a Vite dev server, check
@@ -84,13 +89,57 @@ export default function AppDetailView() {
 
   const handleStart = async () => {
     setActionLoading('start');
-    await api.startApp(appId).catch(() => null);
+    const result = await api.startApp(appId).catch(() => null);
+    // A desktop app's start command builds and imports assets before a window
+    // appears, so the POST returning tells the user almost nothing. Open the live
+    // log panel so the slow launch is visibly progressing rather than hung — but
+    // only for a process that actually started (see resolveLaunchPanelProcess).
+    const launchTarget = resolveLaunchPanelProcess(app, result);
+    if (launchTarget) setLaunchProcess(launchTarget);
     setActionLoading(null);
   };
+
+  const handleNativeLaunch = async () => {
+    setNativeLaunchLoading(true);
+    const result = await api.launchNativeApp(appId).catch(() => null);
+    setNativeLaunchLoading(false);
+    if (!result?.processName) return;
+    setLaunchProcess(result.processName);
+    setNativeLaunchOnline(true);
+  };
+
+  // Native launch status is independent of the web app's overall PM2 state.
+  // Poll only while its live-output panel is open so closing the game moves the
+  // panel from Running to Exited without disturbing the standard web controls.
+  useEffect(() => {
+    if (!launchProcess || launchProcess !== app?.nativeLaunch?.processName) return;
+    let cancelled = false;
+    const refresh = () => {
+      api.getNativeLaunchStatus(appId, { silent: true })
+        .then(result => {
+          if (cancelled) return;
+          if (['online', 'launching'].includes(result?.status)) {
+            setNativeLaunchOnline(true);
+          } else if (['stopped', 'errored', 'not_found', 'not_started'].includes(result?.status)) {
+            setNativeLaunchOnline(false);
+          }
+        })
+        // A failed status read is unknown, not evidence that the game exited.
+        .catch(() => {});
+    };
+    refresh();
+    const timer = setInterval(refresh, 1500);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [appId, app?.nativeLaunch?.processName, launchProcess]);
 
   const handleStop = async () => {
     setActionLoading('stop');
     await api.stopApp(appId).catch(() => null);
+    // The stream would keep tailing a dead process; drop the panel with the app.
+    setLaunchProcess(null);
     setActionLoading(null);
   };
 
@@ -202,7 +251,7 @@ export default function AppDetailView() {
       case 'gsd':
         return <GsdTab appId={appId} repoPath={app.repoPath} />;
       case 'processes':
-        return <ProcessesTab pm2ProcessNames={app.pm2ProcessNames} />;
+        return <ProcessesTab appId={app.id} pm2ProcessNames={app.pm2ProcessNames} />;
       case 'references':
         return <ReferencesTab appId={appId} appName={app.name} />;
       case 'update':
@@ -346,6 +395,18 @@ export default function AppDetailView() {
                 </div>
               );
             })()}
+            {app.nativeLaunch && (
+              <button
+                onClick={handleNativeLaunch}
+                disabled={nativeLaunchLoading}
+                className="px-2 py-1 bg-port-success/20 text-port-success enabled:hover:bg-port-success/30 transition-colors rounded-lg border border-port-border flex items-center gap-1 disabled:opacity-50"
+                aria-label={`Launch ${app.nativeLaunch.label} for ${app.name}`}
+                aria-busy={nativeLaunchLoading}
+              >
+                <Gamepad2 size={14} />
+                <span className="text-xs">{nativeLaunchLoading ? 'Launching…' : app.nativeLaunch.label}</span>
+              </button>
+            )}
             {app.buildCommand && (
               <button
                 onClick={handleBuild}
@@ -433,7 +494,20 @@ export default function AppDetailView() {
       </div>
 
       {/* Tab Content */}
-      <div className="flex-1 overflow-auto p-4 sm:p-6">
+      <div className="flex-1 overflow-auto p-4 sm:p-6 space-y-4">
+        {launchProcess && (
+          <DesktopLaunchProgress
+            appId={appId}
+            processName={launchProcess}
+            online={launchProcess === app.nativeLaunch?.processName
+              ? nativeLaunchOnline
+              : app.overallStatus === 'online'}
+            relaunchLabel={launchProcess === app.nativeLaunch?.processName
+              ? app.nativeLaunch.label
+              : 'Start'}
+            onDismiss={() => setLaunchProcess(null)}
+          />
+        )}
         {renderTab()}
       </div>
 

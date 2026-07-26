@@ -27,6 +27,7 @@ import {
   ArrowLeft, AudioLines, Download, Flag, FlagOff, Layers, Loader2, Mic, Music, Play, Plus, Square, Trash2, Upload, Wand2, X,
 } from 'lucide-react';
 import toast from '../ui/Toast';
+import FilePickerButton from '../ui/FilePickerButton';
 import ScoreSheet from './ScoreSheet.jsx';
 import { uploadFile, getUploadUrl } from '../../services/api';
 import {
@@ -95,7 +96,6 @@ export function ReferenceAudioAttach({ reference, onUpdate }) {
   // quality/speed). Read fresh inside startRequest — useSseJobSlot invokes the
   // latest closure each kickoff, so a change here applies to the next run.
   const [midiModel, setMidiModel] = useState(DEFAULT_MUSCRIPTOR_MODEL);
-  const fileRef = useRef(null);
   const handleRef = useRef(null);
 
   // "Download audio from URL" (#2120) — best-effort yt-dlp fetch straight onto
@@ -140,7 +140,6 @@ export function ReferenceAudioAttach({ reference, onUpdate }) {
 
   const onFile = useCallback(async (e) => {
     const file = e.target.files?.[0];
-    e.target.value = ''; // allow re-picking the same file
     if (!file) return;
     if (file.size > MAX_AUDIO_BYTES) {
       toast.error(`Audio file too large (max ${Math.round(MAX_AUDIO_BYTES / 1024 / 1024)} MB)`);
@@ -265,15 +264,15 @@ export function ReferenceAudioAttach({ reference, onUpdate }) {
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex flex-wrap items-center gap-2">
-        <input ref={fileRef} type="file" accept="audio/*" onChange={onFile} className="hidden" aria-label="Upload reference audio file" />
-        <button
-          type="button"
-          onClick={() => fileRef.current?.click()}
+        <FilePickerButton
+          accept="audio/*"
+          onChange={onFile}
           disabled={busy || recording || downloading}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg border border-port-border text-gray-300 hover:text-white hover:bg-port-border/50 disabled:opacity-50"
+          ariaLabel="Upload audio file"
+          className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg border border-port-border text-gray-300 hover:text-white hover:bg-port-border/50"
         >
           {busy ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} Upload audio
-        </button>
+        </FilePickerButton>
         {recording ? (
           <button type="button" onClick={stopRecord} className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg bg-port-error text-white hover:bg-port-error/90 animate-pulse">
             <Square size={14} /> Stop capture

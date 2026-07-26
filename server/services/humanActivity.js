@@ -22,6 +22,7 @@
  */
 import { v4 as uuidv4 } from '../lib/uuid.js';
 import { ensureSchema, query } from '../lib/db.js';
+import { normalizeIdentifier } from '../lib/tribeMatch.js';
 import { getUserTimezone, getLocalParts, getUtcOffsetMs, todayInTimezone } from '../lib/timezone.js';
 
 // ---------------------------------------------------------------------------
@@ -162,13 +163,29 @@ export function summarizeCounts(events) {
 
 function participantEmail(p) {
   if (!p) return '';
-  return String((typeof p === 'string' ? p : p.email) || '').trim().toLowerCase();
+  return normalizeIdentifier(typeof p === 'string' ? p : p.email);
+}
+
+// Lowercase + trim + dedupe a list of email addresses, dropping empties. Shares
+// `normalizeIdentifier` with the Tribe matcher so owner-address comparison here
+// can't drift from the identity matching that consumes these events.
+export function normalizeEmailList(list) {
+  return [...new Set((Array.isArray(list) ? list : []).map(normalizeIdentifier).filter(Boolean))];
 }
 
 // Map an account's cached messages to activity candidates. Direction (sent vs
 // received) is derived deterministically from the sender vs the account owner.
 export function messageActivityCandidates(account, messages = []) {
   const selfEmail = String(account?.email || '').trim().toLowerCase();
+  // Owner-address set: the primary account email PLUS every Gmail "send-as" alias
+  // (#2831). A received 1:1 message delivered to an alias (not account.email) would
+  // otherwise keep the alias as a second participant, making the thread look like a
+  // group and suppressing its Tribe-outreach nudge. Aliases are refreshed on sync
+  // (messageGmailSync → messageAccounts.sendAsAliases); absent/failed fetch leaves the
+  // set as just the primary email, i.e. today's behavior.
+  const ownerEmails = new Set(
+    normalizeEmailList([selfEmail, ...(Array.isArray(account?.sendAsAliases) ? account.sendAsAliases : [])])
+  );
   const source = account?.type || 'message';
   const accountId = account?.id || null;
   const out = [];
@@ -191,7 +208,7 @@ export function messageActivityCandidates(account, messages = []) {
       message.from,
       ...(message.to || []),
       ...(message.cc || []),
-    ]).filter((p) => !(p.email && p.email === selfEmail));
+    ]).filter((p) => !(p.email && ownerEmails.has(p.email)));
     out.push({
       source,
       accountId,
@@ -217,6 +234,17 @@ export function messageActivityCandidates(account, messages = []) {
     });
   }
   return out;
+}
+
+// Owner addresses present in `next` but not in `previous` — the aliases an
+// account just LEARNED (#2855). Only these can appear as a stale participant on
+// already-stored rows, so the backfill repairs exactly this set; a removed alias
+// needs no repair, and an unchanged set means there is nothing to do (which keeps
+// every routine sync from re-UPDATEing the whole table). Lowercased + deduped so
+// a casing-only refresh doesn't read as a change.
+export function newlyLearnedAliases(previous, next) {
+  const before = new Set(normalizeEmailList(previous));
+  return normalizeEmailList(next).filter((e) => !before.has(e));
 }
 
 // Resolve a calendar time value to a UTC instant, interpreting OFFSET-LESS
@@ -361,6 +389,71 @@ async function insertActivityChunk(rows) {
     values,
   );
   return result.rowCount || 0;
+}
+
+// Repair already-stored events whose participants still list an owner address
+// (#2855, follow-up to #2831). `messageActivityCandidates` strips every owner
+// address at INSERT time, but rows written BEFORE an account's send-as aliases
+// were learned kept the alias as a second participant — and since re-syncs are
+// no-ops (`ON CONFLICT (source, dedupe_key) DO NOTHING`, a deliberate contract
+// shared with `tribe_touchpoints`), they never self-correct. A 1:1 message
+// delivered to an alias therefore keeps looking like a group conversation to
+// `findUnansweredTribeThreads` until it ages out of the 14-day window.
+//
+// This is a SCOPED backfill, not a change to the insert contract: it rewrites
+// only rows for one account+source that actually contain one of the named
+// alias emails, and only removes those participant entries. `metadata.handle`
+// (the counterpart sender) is left untouched. Returns the number of rows
+// repaired. Emails are compared lowercased (participants are stored that way).
+//
+// `client` (optional) runs the rewrite on a caller-supplied pg transaction client
+// instead of the pool — the boot db-migration that repairs already-known alias
+// sets passes its transaction client so the repair shares the migration's
+// all-or-nothing semantics, without re-stating the statement.
+//
+// The EXISTS gate keeps the rewrite off rows that don't need it (so a re-run is a
+// genuine no-op and reports 0 rows), and jsonb_agg over the filtered elements
+// rebuilds the array. COALESCE covers the all-owner row: jsonb_agg returns NULL
+// over an empty set, which would null the column.
+//
+// The predicate is deliberately stated twice (positive in EXISTS, negated in the
+// rebuild) rather than shared via one LATERAL unnest: Postgres rejects an
+// `UPDATE t … FROM LATERAL (… t.col …)` with "invalid reference to FROM-clause
+// entry", so the target row's participants can't be expanded once and reused.
+const STRIP_OWNER_PARTICIPANTS_SQL = `
+  UPDATE human_activity_events
+     SET participants = COALESCE((
+           SELECT jsonb_agg(p)
+             FROM jsonb_array_elements(participants) AS p
+            WHERE lower(COALESCE(p->>'email', '')) <> ALL($3::text[])
+         ), '[]'::jsonb)
+   WHERE account_id = $1
+     AND source = $2
+     AND EXISTS (
+           SELECT 1
+             FROM jsonb_array_elements(participants) AS p
+            WHERE lower(COALESCE(p->>'email', '')) = ANY($3::text[])
+         )`;
+
+export async function stripParticipantsForAccount(accountId, source, aliasEmails = [], { client } = {}) {
+  const emails = normalizeEmailList(aliasEmails);
+  if (!accountId || !source || emails.length === 0) return 0;
+  const params = [String(accountId), String(source), emails];
+  let result;
+  if (client) {
+    // The migration runner ensures the base schema before applying migrations,
+    // so ensureReady() (which would go through the pool) is neither needed nor
+    // safe to run inside someone else's transaction.
+    result = await client.query(STRIP_OWNER_PARTICIPANTS_SQL, params);
+  } else {
+    await ensureReady();
+    result = await query(STRIP_OWNER_PARTICIPANTS_SQL, params);
+  }
+  const repaired = result.rowCount || 0;
+  if (repaired > 0) {
+    console.log(`🗓️  Repaired ${repaired} activity event(s) for account ${accountId} (${emails.length} owner alias(es) stripped)`);
+  }
+  return repaired;
 }
 
 // Query events with optional filters. `from`/`to` are ISO timestamps (inclusive

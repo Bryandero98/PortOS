@@ -23,7 +23,8 @@ import { buildStyleClause, purgeReferenceSheetFromAllUniverses } from './univers
 import { getImageModels } from '../lib/mediaModels.js';
 import { enqueueJob, mediaJobEvents } from './mediaJobQueue/index.js';
 import { buildUniverseRunTag } from './universeRunTag.js';
-import { IMAGE_GEN_MODE, CODEX_IMAGEGEN_DEFAULT_MODEL } from './imageGen/modes.js';
+import { IMAGE_GEN_MODE } from './imageGen/modes.js';
+import { resolveCloudProviderConfig } from './imageGen/cloudProviderConfig.js';
 import {
   flattenStats, flattenPalette, flattenWardrobes, flattenProps, flattenNamedList,
 } from '../lib/canonPrompt.js';
@@ -441,16 +442,11 @@ export async function renderCharacterReferenceSheet(universeId, entryId, options
 
   let modelId = null;
   let params;
-  if (activeMode === IMAGE_GEN_MODE.CODEX) {
-    const c = settings.imageGen?.codex || {};
-    if (!c.enabled) {
-      throw new ServerError(
-        'Codex Imagegen is disabled — enable it in Settings → Image Gen first',
-        { status: 400, code: 'CODEX_IMAGEGEN_DISABLED' },
-      );
-    }
-    modelId = c.model || CODEX_IMAGEGEN_DEFAULT_MODEL;
-    params = { ...baseParams, codexPath: c.codexPath, model: c.model, effort: c.effort };
+  const cloud = resolveCloudProviderConfig(settings, activeMode);
+  if (cloud) {
+    if (!cloud.enabled) throw cloud.disabledError;
+    modelId = cloud.modelId;
+    params = { ...baseParams, ...cloud.providerParams };
   } else if (activeMode === IMAGE_GEN_MODE.LOCAL) {
     const allModels = getImageModels();
     modelId = resolveSheetModelId({ override: options.modelId, settings, allModels });

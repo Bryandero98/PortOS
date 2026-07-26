@@ -49,7 +49,7 @@ vi.mock('./agentRunTracking.js', () => ({ completeAgentRun: vi.fn().mockResolved
 // pulling in the real worktreeManager → instances module graph. Default: no
 // owner-matched account → empty overlay (ambient gh auth untouched).
 vi.mock('./git.js', () => ({ resolveForgeTokenEnv: vi.fn().mockResolvedValue({}) }));
-vi.mock('./agentLifecycle.js', () => ({
+vi.mock('./agentFinalization.js', () => ({
   finalizeAgent: vi.fn().mockResolvedValue(undefined),
   releaseAgentLane: vi.fn(),
 }));
@@ -456,7 +456,7 @@ describe('stream error containment', () => {
     cosAgentsMocks.appendAgentOutput.mockResolvedValue(undefined);
     cosAgentsMocks.appendAgentOutputLines.mockResolvedValue(undefined);
     (await import('./agentRunTracking.js')).completeAgentRun.mockResolvedValue(undefined);
-    (await import('./agentLifecycle.js')).finalizeAgent.mockResolvedValue(undefined);
+    (await import('./agentFinalization.js')).finalizeAgent.mockResolvedValue(undefined);
     minimalArgs.cleanupWorktreeFn.mockResolvedValue(undefined);
     // Reset the resolve+wrap helper to its POSIX passthrough before each test
     // (afterEach's restoreAllMocks can clear the factory implementation).
@@ -464,6 +464,7 @@ describe('stream error containment', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -682,19 +683,19 @@ describe('stream error containment', () => {
 
   describe('initialization timeout — 3-second phase transition', () => {
     it('calls updateAgent with working phase after 3s when agent has not started working', async () => {
+      vi.useFakeTimers();
       const { activeAgents } = await import('./agentState.js');
       const agents = cosAgentsMocks;
 
       const spawnPromise = spawnDirectly(minimalArgs);
       // Yield two microtask rounds so the getClaudeSettingsEnv await resolves and
       // the setTimeout is registered before we seed activeAgents.
-      await new Promise((r) => setTimeout(r, 10));
+      await vi.advanceTimersByTimeAsync(10);
 
       // Manually seed the activeAgents map so the guard inside the timeout passes.
       activeAgents.set(minimalArgs.agentId, { process: fakeProcess });
 
-      // Wait past the 3-second threshold using real timers.
-      await new Promise((r) => setTimeout(r, 3100));
+      await vi.advanceTimersByTimeAsync(3000);
 
       expect(agents.updateAgent).toHaveBeenCalledWith(
         minimalArgs.agentId,
@@ -705,9 +706,10 @@ describe('stream error containment', () => {
       activeAgents.delete(minimalArgs.agentId);
       fakeProcess.emit('close', 0);
       await spawnPromise.catch(() => {});
-    }, 10000);
+    });
 
     it('does NOT crash when updateAgent rejects inside the timeout callback', async () => {
+      vi.useFakeTimers();
       const { activeAgents } = await import('./agentState.js');
       // spawnDirectly calls updateAgent once synchronously (PID update at line ~406)
       // before the 3-second setTimeout fires. Allow that first call to resolve
@@ -723,12 +725,13 @@ describe('stream error containment', () => {
       process.on('unhandledRejection', onUnhandled);
 
       const spawnPromise = spawnDirectly(minimalArgs);
-      await new Promise((r) => setTimeout(r, 10));
+      await vi.advanceTimersByTimeAsync(10);
 
       activeAgents.set(minimalArgs.agentId, { process: fakeProcess });
 
-      // Wait for the timeout to fire and its async body to finish.
-      await new Promise((r) => setTimeout(r, 3100));
+      // Advance the initialization threshold and let the callback's rejected
+      // update settle without burning three seconds of wall clock.
+      await vi.advanceTimersByTimeAsync(3000);
 
       process.off('unhandledRejection', onUnhandled);
 
@@ -742,7 +745,7 @@ describe('stream error containment', () => {
       fakeProcess.emit('close', 0);
       await spawnPromise.catch(() => {});
       consoleSpy.mockRestore();
-    }, 10000);
+    });
   });
 
   it('threads the ordered reviewers list (not a stale singular `reviewer`) into worktree cleanup', async () => {

@@ -2,10 +2,11 @@ import { useState, useEffect, useRef, Fragment } from 'react';
 import { Maximize2, X } from 'lucide-react';
 import * as api from '../../../services/api';
 import { executeCommand } from '../../../services/api';
-import socket from '../../../services/socket';
 import BrailleSpinner from '../../BrailleSpinner';
 import { FormField } from '../../ui/FormField';
+import ProcessLogLines from '../../ui/ProcessLogLines';
 import { useAutoRefetch } from '../../../hooks/useAutoRefetch';
+import { useProcessLogs } from '../../../hooks/useProcessLogs';
 import { formatBytes, formatDurationMs } from '../../../utils/formatters';
 
 const getStatusClasses = (status) => {
@@ -17,15 +18,17 @@ const getStatusClasses = (status) => {
   }
 };
 
-export default function ProcessesTab({ pm2ProcessNames, filterFn }) {
+export default function ProcessesTab({ appId, pm2ProcessNames, filterFn }) {
   const [expandedProcess, setExpandedProcess] = useState(null);
-  const [logs, setLogs] = useState([]);
   const [restarting, setRestarting] = useState({});
   const [tailLines, setTailLines] = useState(500);
-  const [subscribed, setSubscribed] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const logsRef = useRef(null);
   const fullscreenLogsRef = useRef(null);
+
+  // Socket log lifecycle lives in the shared hook so this tab and the desktop
+  // launch-progress panel can't drift.
+  const { logs, subscribed, clear: clearLogs } = useProcessLogs(expandedProcess, { lines: tailLines, appId });
 
   // Let errors throw — `useAutoRefetch` preserves the last-good process list
   // on transient failures. `silent: true` is essential here because the 5s
@@ -36,56 +39,13 @@ export default function ProcessesTab({ pm2ProcessNames, filterFn }) {
   );
   const processes = data ?? [];
 
+  // Pin both log panes to the bottom as lines arrive. Driven off `logs` rather
+  // than the socket frame so it also fires on the initial tail replay.
   useEffect(() => {
-    if (!expandedProcess) {
-      setLogs([]);
-      setSubscribed(false);
-      return;
+    for (const ref of [logsRef, fullscreenLogsRef]) {
+      if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
     }
-
-    socket.emit('logs:subscribe', { processName: expandedProcess, lines: tailLines });
-
-    const handleLog = (data) => {
-      if (data.processName === expandedProcess) {
-        setLogs(prev => [...prev.slice(-1000), {
-          line: data.line,
-          type: data.type,
-          timestamp: data.timestamp
-        }]);
-        setTimeout(() => {
-          if (logsRef.current) {
-            logsRef.current.scrollTop = logsRef.current.scrollHeight;
-          }
-          if (fullscreenLogsRef.current) {
-            fullscreenLogsRef.current.scrollTop = fullscreenLogsRef.current.scrollHeight;
-          }
-        }, 10);
-      }
-    };
-
-    const handleSubscribed = (data) => {
-      if (data.processName === expandedProcess) {
-        setSubscribed(true);
-      }
-    };
-
-    const handleError = (data) => {
-      if (data.processName === expandedProcess) {
-        setLogs(prev => [...prev, { line: `Error: ${data.error}`, type: 'stderr', timestamp: Date.now() }]);
-      }
-    };
-
-    socket.on('logs:line', handleLog);
-    socket.on('logs:subscribed', handleSubscribed);
-    socket.on('logs:error', handleError);
-
-    return () => {
-      socket.emit('logs:unsubscribe', { processName: expandedProcess });
-      socket.off('logs:line', handleLog);
-      socket.off('logs:subscribed', handleSubscribed);
-      socket.off('logs:error', handleError);
-    };
-  }, [expandedProcess, tailLines]);
+  }, [logs]);
 
   const pm2Action = async (action, name) => {
     setRestarting(prev => ({ ...prev, [name]: true }));
@@ -96,9 +56,10 @@ export default function ProcessesTab({ pm2ProcessNames, filterFn }) {
     }, 2000);
   };
 
+  // No explicit clear here — useProcessLogs resets its buffer whenever
+  // processName changes, so the new process never shows the old one's tail.
   const toggleExpand = (name) => {
     setExpandedProcess(prev => prev === name ? null : name);
-    setLogs([]);
   };
 
   const filteredProcesses = filterFn
@@ -146,6 +107,8 @@ export default function ProcessesTab({ pm2ProcessNames, filterFn }) {
                     <td className="px-4 py-3">
                       <button
                         onClick={() => toggleExpand(proc.name)}
+                        aria-expanded={expandedProcess === proc.name}
+                        aria-label={`${expandedProcess === proc.name ? 'Collapse' : 'Expand'} details for ${proc.name}`}
                         className="text-gray-400 hover:text-white transition-transform"
                       >
                         <span className={`inline-block transition-transform ${expandedProcess === proc.name ? 'rotate-90' : ''}`}>▶</span>
@@ -213,10 +176,7 @@ export default function ProcessesTab({ pm2ProcessNames, filterFn }) {
                               <FormField className="flex items-center gap-2" label="Tail lines:" labelClassName="text-xs text-gray-500">
                                 <select
                                   value={tailLines}
-                                  onChange={(e) => {
-                                    setTailLines(Number(e.target.value));
-                                    setLogs([]);
-                                  }}
+                                  onChange={(e) => setTailLines(Number(e.target.value))}
                                   className="px-2 py-1 text-xs bg-port-card border border-port-border rounded text-white"
                                 >
                                   <option value={100}>100</option>
@@ -228,7 +188,7 @@ export default function ProcessesTab({ pm2ProcessNames, filterFn }) {
                               </FormField>
                               <span className="text-xs text-gray-600">{logs.length} lines</span>
                               <button
-                                onClick={() => setLogs([])}
+                                onClick={clearLogs}
                                 className="text-xs text-gray-500 hover:text-white"
                               >
                                 Clear
@@ -247,23 +207,7 @@ export default function ProcessesTab({ pm2ProcessNames, filterFn }) {
                             ref={logsRef}
                             className="h-[32rem] overflow-auto p-3 font-mono text-xs"
                           >
-                            {logs.length === 0 ? (
-                              <div className="text-gray-500">
-                                {subscribed ? 'No logs yet...' : 'Connecting to log stream...'}
-                              </div>
-                            ) : (
-                              logs.map((log, i) => (
-                                <div
-                                  key={i}
-                                  className={`py-0.5 ${log.type === 'stderr' ? 'text-port-error' : 'text-gray-300'}`}
-                                >
-                                  <span className="text-gray-600 mr-2">
-                                    {new Date(log.timestamp).toLocaleTimeString()}
-                                  </span>
-                                  {log.line}
-                                </div>
-                              ))
-                            )}
+                            <ProcessLogLines logs={logs} subscribed={subscribed} showTimestamps />
                           </div>
                         </div>
                       </td>
@@ -297,10 +241,7 @@ export default function ProcessesTab({ pm2ProcessNames, filterFn }) {
               <FormField className="flex items-center gap-2" label="Tail lines:" labelClassName="text-sm text-gray-500">
                 <select
                   value={tailLines}
-                  onChange={(e) => {
-                    setTailLines(Number(e.target.value));
-                    setLogs([]);
-                  }}
+                  onChange={(e) => setTailLines(Number(e.target.value))}
                   className="px-2 py-1 text-sm bg-port-bg border border-port-border rounded text-white"
                 >
                   <option value={100}>100</option>
@@ -312,7 +253,7 @@ export default function ProcessesTab({ pm2ProcessNames, filterFn }) {
               </FormField>
               <span className="text-sm text-gray-600">{logs.length} lines</span>
               <button
-                onClick={() => setLogs([])}
+                onClick={clearLogs}
                 className="text-sm text-gray-500 hover:text-white"
               >
                 Clear
@@ -330,23 +271,7 @@ export default function ProcessesTab({ pm2ProcessNames, filterFn }) {
             ref={fullscreenLogsRef}
             className="flex-1 overflow-auto p-4 font-mono text-sm"
           >
-            {logs.length === 0 ? (
-              <div className="text-gray-500">
-                {subscribed ? 'No logs yet...' : 'Connecting to log stream...'}
-              </div>
-            ) : (
-              logs.map((log, i) => (
-                <div
-                  key={i}
-                  className={`py-0.5 ${log.type === 'stderr' ? 'text-port-error' : 'text-gray-300'}`}
-                >
-                  <span className="text-gray-600 mr-3">
-                    {new Date(log.timestamp).toLocaleTimeString()}
-                  </span>
-                  {log.line}
-                </div>
-              ))
-            )}
+            <ProcessLogLines logs={logs} subscribed={subscribed} showTimestamps timestampGap="mr-3" />
           </div>
         </div>
       )}

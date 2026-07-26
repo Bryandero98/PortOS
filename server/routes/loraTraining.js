@@ -10,7 +10,7 @@ import { Router } from 'express';
 import { rm } from 'fs/promises';
 import { join } from 'path';
 import { z } from 'zod';
-import { asyncHandler, ServerError } from '../lib/errorHandler.js';
+import { asyncHandler, sendErrorResponse, ServerError } from '../lib/errorHandler.js';
 import { startTrainingRunSchema, validateRequest } from '../lib/validation.js';
 import { assertSafeFilename } from '../lib/fileUtils.js';
 import { resolveFlux2Python, isFlux2VenvHealthy, resolveMfluxPython } from '../lib/pythonSetup.js';
@@ -155,8 +155,22 @@ router.get('/runs/:id/samples', asyncHandler(async (req, res) => {
 router.get('/runs/:id/samples/:filename', asyncHandler(async (req, res) => {
   const run = await getRunRequired(req.params.id);
   assertSafeFilename(req.params.filename, { extensions: ['.png'], subject: 'sample filename' });
+  // The sendFile callback fires outside asyncHandler's catch (the handler's
+  // promise has already resolved), so a throw here would have nothing to bubble
+  // to — build the standard envelope directly instead.
   res.sendFile(join(runSamplesDir(run.id), req.params.filename), (err) => {
-    if (err && !res.headersSent) res.status(404).json({ error: 'Sample not found' });
+    if (!err) return;
+    // Client cancelled (routine when the gallery unmounts an <img>) or the body
+    // was already streaming when the read failed — nothing left to say, just
+    // drop the socket rather than logging a false failure.
+    if (err.code === 'ECONNABORTED' || res.headersSent) {
+      res.destroy();
+      return;
+    }
+    // A real I/O failure (EACCES/EIO) reads the same as a missing file to the
+    // client — log the cause so it isn't invisible server-side.
+    console.error(`❌ Sample send failed [${req.params.id}/${req.params.filename}]: ${err.message}`);
+    sendErrorResponse(res, new ServerError('Sample not found', { status: 404 }));
   });
 }));
 

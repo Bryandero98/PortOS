@@ -723,6 +723,61 @@ describe('executeTuiRun', () => {
       }));
     });
 
+    it('still resolves the run promise exactly once when a step inside finish() throws synchronously', async () => {
+      // unregisterExternalSession is invoked un-awaited inside finish()'s try
+      // block, with no per-call try/catch of its own — unlike the PTY kill
+      // (own try/catch) and finalizeRunRecord (own .catch()). If it throws,
+      // finish()'s outer try/catch/finally must still guarantee `resolve()`
+      // fires — otherwise executeTuiRun's promise hangs forever and any
+      // caller awaiting it (pipeline stages, /runs) wedges.
+      shellMocks.unregisterExternalSession.mockImplementationOnce(() => {
+        throw new Error('boom: session registry corrupted');
+      });
+      const provider = { id: 'claude', type: 'tui', command: 'echo' };
+      const onComplete = vi.fn();
+      const promise = executeTuiRun({ runId: 'run-finish-throws', provider, prompt: 'a prompt long enough', workspacePath: '/cwd', onComplete, timeout: 60000 });
+      await flushAsync();
+
+      ptyInstances[0].emitExit({ exitCode: 0 });
+
+      await expect(promise).resolves.toBeUndefined();
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining('finish() failed'));
+      // The throw happens before onComplete is reached in finish()'s normal
+      // path, but resolving the inner promise alone is not enough: the sole
+      // caller (executeProviderRunOnce) settles its OUTER promise only via
+      // onComplete (→ safeReject) or a rejected promise. Since finish() always
+      // resolves, the catch must still surface the failure through onComplete
+      // with failure metadata, or the pipeline/central-prompt caller hangs
+      // forever despite the inner promise settling.
+      expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({
+        success: false,
+        error: expect.stringContaining('finish() failed'),
+      }));
+      expect(onComplete).toHaveBeenCalledTimes(1);
+      // The PTY must still be torn down on the throw path — the failure we
+      // report spins up a fallback provider in the real caller, and a
+      // never-killed original PTY would run alongside it (two live runs).
+      expect(ptyInstances[0].kill).toHaveBeenCalled();
+    });
+
+    it('does not re-invoke onComplete when onComplete itself throws inside finish()', async () => {
+      // When the throw source is onComplete AFTER it has already been reached,
+      // the catch must NOT call onComplete a second time — that would violate
+      // the once-only completion contract and could emit a contradictory
+      // success-then-failure. The run promise must still resolve exactly once.
+      const provider = { id: 'claude', type: 'tui', command: 'echo' };
+      const onComplete = vi.fn(() => { throw new Error('boom: caller onComplete blew up'); });
+      const promise = executeTuiRun({ runId: 'run-oncomplete-throws', provider, prompt: 'a prompt long enough', workspacePath: '/cwd', onComplete, timeout: 60000 });
+      await flushAsync();
+
+      ptyInstances[0].emitExit({ exitCode: 0 });
+
+      await expect(promise).resolves.toBeUndefined();
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining('finish() failed'));
+      // Reached exactly once (the normal-path call), never re-invoked by the catch.
+      expect(onComplete).toHaveBeenCalledTimes(1);
+    });
+
     it('finishes with reason "killed" and surfaces the signal in the error when the PTY is terminated', async () => {
       const provider = { id: 'claude', type: 'tui', command: 'echo' };
       const promise = executeTuiRun({ runId: 'run-killed', provider, prompt: 'a prompt long enough', workspacePath: '/cwd', onData: undefined, onComplete: undefined, timeout: 60000 });

@@ -9,6 +9,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Sparkles, Loader2, CheckCircle2, AlertCircle, ArrowLeft, RotateCcw, Circle, Upload, Link2, FileText, Mic, Square } from 'lucide-react';
 import toast from '../components/ui/Toast';
+import FilePickerButton from '../components/ui/FilePickerButton';
 import socket from '../services/socket';
 import { startMemoRecording } from '../lib/audioRecorder';
 import {
@@ -88,7 +89,6 @@ export default function CatalogIngest() {
   const [url, setUrl] = useState('');
   const [recording, setRecording] = useState(false);
   const recorderRef = useRef(null);
-  const fileInputRef = useRef(null);
   const brainHandledRef = useRef(false);
   // Creative inbox note ids handed off from the Brain batch-send. Once the
   // commit below succeeds we stamp these consumed so they drop out of the
@@ -267,7 +267,6 @@ export default function CatalogIngest() {
 
   const handleFilePicked = async (e) => {
     const file = e.target.files?.[0];
-    e.target.value = ''; // allow re-picking the same file
     if (!file) return;
     const name = (file.name || '').toLowerCase();
     if (name.endsWith('.pdf')) {
@@ -515,12 +514,11 @@ export default function CatalogIngest() {
                 className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm border ${sourceMode === 'url' ? 'border-port-accent text-white bg-port-accent/10' : 'border-port-border text-gray-300 hover:text-white'}`}>
                 <Link2 size={14} aria-hidden="true" /> URL
               </button>
-              <button type="button" onClick={() => fileInputRef.current?.click()} disabled={submitting}
-                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm border border-port-border text-gray-300 hover:text-white disabled:opacity-50">
+              <FilePickerButton accept=".txt,.md,.markdown,text/plain,text/markdown"
+                onChange={handleFilePicked} disabled={submitting} ariaLabel="Ingest a text or markdown file"
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm border border-port-border text-gray-300 hover:text-white">
                 <FileText size={14} aria-hidden="true" /> File
-              </button>
-              <input ref={fileInputRef} type="file" accept=".txt,.md,.markdown,text/plain,text/markdown"
-                onChange={handleFilePicked} className="hidden" aria-hidden="true" tabIndex={-1} />
+              </FilePickerButton>
               {!recording ? (
                 <button type="button" onClick={startRecording} disabled={submitting}
                   className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm border border-port-border text-gray-300 hover:text-white disabled:opacity-50">

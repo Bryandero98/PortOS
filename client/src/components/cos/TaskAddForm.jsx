@@ -1,12 +1,14 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Plus, Image, X, ChevronDown, ChevronRight, Sparkles, Loader2, Paperclip, FileText, Zap, Bookmark, Ticket, GitBranch, GitPullRequest, Wand2, RefreshCw } from 'lucide-react';
+import { Plus, Image, X, ChevronDown, ChevronRight, Sparkles, Loader2, Paperclip, FileText, Zap, Bookmark, Ticket, GitBranch, GitPullRequest, Wand2 } from 'lucide-react';
 import toast from '../ui/Toast';
 import AppContextPicker from '../AppContextPicker';
 import * as api from '../../services/api';
-import { processScreenshotUploads, processAttachmentUploads } from '../../utils/fileUpload';
+import { processScreenshotUploads, processAttachmentUploads, ATTACHMENT_ACCEPT } from '../../utils/fileUpload';
+import FilePickerButton from '../ui/FilePickerButton';
 import { formatBytes } from '../../utils/formatters';
 import { filterSelectableModels, isTuiProvider, isCliProvider, isProcessProvider, isCodexProvider, effortLevelsForProvider } from '../../utils/providers';
-import { DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE } from './constants';
+import { DEFAULT_PR_COMPLETION, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, PR_COMPLETION_OPTIONS } from './constants';
+import { clickableProps } from '../../lib/a11yKeyboard';
 import ReviewerPicker from './ReviewerPicker';
 
 export default function TaskAddForm({ providers, apps, onTaskAdded, compact = false, defaultExpanded = false, defaultApp = '' }) {
@@ -17,7 +19,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
   const [useWorktree, setUseWorktree] = useState(false);
   const [openPR, setOpenPR] = useState(false);
   const [simplify, setSimplify] = useState(true);
-  const [reviewLoop, setReviewLoop] = useState(false);
+  const [prCompletion, setPrCompletion] = useState(DEFAULT_PR_COMPLETION);
   const [reviewers, setReviewers] = useState(DEFAULT_REVIEWERS);
   const [reviewUsernames, setReviewUsernames] = useState([]);
   const [optionalReviewers, setOptionalReviewers] = useState([]);
@@ -36,8 +38,6 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
   const [showTemplateSave, setShowTemplateSave] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submittingRef = useRef(false);
-  const fileInputRef = useRef(null);
-  const attachmentInputRef = useRef(null);
 
   // Fetch templates
   useEffect(() => {
@@ -104,7 +104,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
   // `apps` array reference) so periodic re-fetches in the parent don't
   // stomp manual checkbox toggles between renders.
   const appDefaultsSig = useMemo(() => selectedApp
-    ? `${selectedApp.id}|${!!selectedApp.defaultOpenPR}|${!!selectedApp.defaultUseWorktree}|${!!selectedApp.jira?.enabled}`
+    ? `${selectedApp.id}|${!!selectedApp.defaultOpenPR}|${selectedApp.defaultPrCompletion || DEFAULT_PR_COMPLETION}|${!!selectedApp.defaultUseWorktree}|${!!selectedApp.jira?.enabled}`
     : `none:${newTask.app || ''}`,
     [selectedApp, newTask.app]
   );
@@ -114,6 +114,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
     setCreateJiraTicket(!!selectedApp?.jira?.enabled);
     setUseWorktree(defaultUseWorktree);
     setOpenPR(defaultOpenPR);
+    setPrCompletion(selectedApp?.defaultPrCompletion || DEFAULT_PR_COMPLETION);
   }, [appDefaultsSig]);
 
   // Get models for selected provider
@@ -200,7 +201,6 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
       onSuccess: (fileInfo) => setScreenshots(prev => [...prev, fileInfo]),
       onError: (msg) => toast.error(msg)
     });
-    e.target.value = '';
   };
 
   const removeScreenshot = (id) => {
@@ -213,7 +213,6 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
       onSuccess: (fileInfo) => setAttachments(prev => [...prev, fileInfo]),
       onError: (msg) => toast.error(msg)
     });
-    e.target.value = '';
   };
 
   const removeAttachment = (id) => {
@@ -262,12 +261,12 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
       useWorktree,
       openPR: useWorktree && openPR,
       simplify,
-      reviewLoop,
-      reviewers: reviewLoop ? reviewers : undefined,
-      usernames: reviewLoop ? reviewUsernames : undefined,
-      optionalReviewers: reviewLoop ? optionalReviewers : undefined,
-      reviewStopMode: reviewLoop ? reviewStopMode : undefined,
-      reviewerApplies: reviewLoop ? reviewerApplies : undefined,
+      prCompletion: useWorktree && openPR ? prCompletion : undefined,
+      reviewers: openPR && prCompletion === 'review-then-merge' ? reviewers : undefined,
+      usernames: openPR && prCompletion === 'review-then-merge' ? reviewUsernames : undefined,
+      optionalReviewers: openPR && prCompletion === 'review-then-merge' ? optionalReviewers : undefined,
+      reviewStopMode: openPR && prCompletion === 'review-then-merge' ? reviewStopMode : undefined,
+      reviewerApplies: openPR && prCompletion === 'review-then-merge' ? reviewerApplies : undefined,
       screenshots: screenshots.length > 0 ? screenshots.map(s => s.path) : undefined,
       attachments: attachments.length > 0 ? attachments.map(a => ({
         filename: a.filename,
@@ -374,10 +373,8 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
               {templates.map(template => (
                 <div
                   key={template.id}
-                  role="button"
-                  tabIndex={0}
                   onClick={() => applyTemplate(template)}
-                  onKeyDown={(e) => e.key === 'Enter' && applyTemplate(template)}
+                  {...clickableProps(() => applyTemplate(template))}
                   className="group relative flex items-center gap-1.5 px-3 py-1.5 bg-port-card border border-port-border rounded-lg text-sm text-gray-300 hover:text-white hover:border-port-accent/50 transition-colors cursor-pointer"
                   title={template.description}
                 >
@@ -434,7 +431,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
             showRepoPath
           />
         )}
-        <div className="grid grid-cols-2 sm:flex sm:items-center gap-x-4 gap-y-1 sm:flex-wrap">
+        <div className="grid grid-cols-1 sm:flex sm:items-center gap-x-4 gap-y-1 sm:flex-wrap">
           <label className="flex items-center gap-2 cursor-pointer select-none py-1">
             <input
               type="checkbox"
@@ -491,19 +488,23 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
               Simplify
             </span>
           </label>
-          <label className="flex items-center gap-2 cursor-pointer select-none whitespace-nowrap py-1">
-            <input
-              type="checkbox"
-              checked={reviewLoop}
-              onChange={(e) => setReviewLoop(e.target.checked)}
-              className="w-4 h-4 rounded border-port-border bg-port-bg text-port-accent focus:ring-port-accent focus:ring-offset-0"
-            />
-            <span className="flex items-center gap-1.5 text-sm text-gray-400" title="After the agent opens a PR during its run, keep iterating on review feedback until checks pass.">
-              <RefreshCw size={14} className="text-amber-400" />
-              Review Loop
-            </span>
-          </label>
-          {reviewLoop && (
+          {openPR && (
+            <label htmlFor="task-pr-completion" className="flex items-center gap-2 py-1 basis-full sm:basis-auto">
+              <span className="text-sm text-gray-400">After opening PR</span>
+              <select
+                id="task-pr-completion"
+                value={prCompletion}
+                title={PR_COMPLETION_OPTIONS.find(option => option.value === prCompletion)?.description}
+                onChange={(e) => setPrCompletion(e.target.value)}
+                className="min-w-44 rounded border border-port-border bg-port-bg px-2 py-1 text-sm text-white focus:border-port-accent focus:outline-hidden"
+              >
+                {PR_COMPLETION_OPTIONS.map(option => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </label>
+          )}
+          {openPR && prCompletion === 'review-then-merge' && (
             <div className="basis-full mt-1">
               <ReviewerPicker
                 reviewers={reviewers}
@@ -596,42 +597,26 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
         )}
         {/* Screenshot and Attachment Upload */}
         <div className="flex items-center gap-3 flex-wrap">
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
+          <FilePickerButton
+            accept="image/*"
+            multiple
+            onChange={handleFileSelect}
+            ariaLabel="Attach screenshots"
             className="flex items-center gap-2 px-3 py-2 bg-port-bg border border-port-border rounded-lg text-gray-400 hover:text-white text-sm transition-colors min-h-[44px]"
           >
             <Image size={16} aria-hidden="true" />
             Screenshot
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
+          </FilePickerButton>
+          <FilePickerButton
+            accept={ATTACHMENT_ACCEPT}
             multiple
-            onChange={handleFileSelect}
-            className="sr-only"
-            tabIndex={-1}
-            aria-hidden="true"
-          />
-          <button
-            type="button"
-            onClick={() => attachmentInputRef.current?.click()}
+            onChange={handleAttachmentSelect}
+            ariaLabel="Attach files"
             className="flex items-center gap-2 px-3 py-2 bg-port-bg border border-port-border rounded-lg text-gray-400 hover:text-white text-sm transition-colors min-h-[44px]"
           >
             <Paperclip size={16} aria-hidden="true" />
             Attach
-          </button>
-          <input
-            ref={attachmentInputRef}
-            type="file"
-            accept=".txt,.md,.json,.csv,.xml,.yaml,.yml,.png,.jpg,.jpeg,.gif,.webp,.svg,.pdf,.js,.ts,.jsx,.tsx,.py,.sh,.sql,.html,.css,.zip,.tar,.gz"
-            multiple
-            onChange={handleAttachmentSelect}
-            className="sr-only"
-            tabIndex={-1}
-            aria-hidden="true"
-          />
+          </FilePickerButton>
           {screenshots.length > 0 && (
             <span className="text-xs text-gray-500">{screenshots.length} screenshot{screenshots.length > 1 ? 's' : ''}</span>
           )}

@@ -104,6 +104,33 @@ describe.skipIf(!dbReady)('universeBuilder DB adapter round-trip', () => {
     expect(all.find((r) => r.id === 'u-1').logline).toBe('x');
   });
 
+  it('listStyles projects the live set down to name + style fields', async () => {
+    await db.writeRaw('live', U('live', {
+      logline: 'a logline that must not ship',
+      influences: { embrace: ['inky linework'], avoid: ['lowres'] },
+    }));
+    await db.writeRaw('dead', U('dead', { deleted: true, deletedAt: '2026-02-02T00:00:00.000Z' }));
+    await db.writeRaw('legacy', U('legacy', { stylePrompt: 'ink wash', negativePrompt: 'blurry' }));
+
+    const rows = await db.listStyles();
+    expect(rows.map((r) => r.id).sort()).toEqual(['legacy', 'live']);
+
+    const live = rows.find((r) => r.id === 'live');
+    expect(live.name).toBe('live');
+    expect(live.influences).toEqual({ embrace: ['inky linework'], avoid: ['lowres'] });
+    // The projection is the whole point — nothing else comes back. Keys must
+    // also match the file backend's row exactly (store.test.js pins that side).
+    expect(Object.keys(live).sort())
+      .toEqual(['createdAt', 'id', 'influences', 'name', 'negativePrompt', 'stylePrompt']);
+    expect(live.logline).toBeUndefined();
+
+    // Legacy v2 prose fields ride along so the service can fold them into tokens.
+    const legacy = rows.find((r) => r.id === 'legacy');
+    expect(legacy.stylePrompt).toBe('ink wash');
+    expect(legacy.negativePrompt).toBe('blurry');
+    expect(legacy.influences).toBeNull();
+  });
+
   it('countUniverses counts the live set without materializing it', async () => {
     // The cheap tally the character skill registry reads (#2729). It counts the
     // `deleted` MIRROR COLUMN, while the service filters listUniverses() on the

@@ -33,8 +33,8 @@ import { PATHS, tryReadFile, safeJSONParse } from './fileUtils.js';
 
 export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // Type-level (storage layout) version for `data/universes/{id}/index.json`.
-  // v5 = post-split. Migration 034 introduced it. The per-record-shape version
-  // stays at 4 (stamped inside each record by `sanitizeTemplate`).
+  // v5 = post-split. Migration 034 introduced it. The independent per-record
+  // shape is currently v5 (stamped inside each record by `sanitizeTemplate`).
   // v6 = canon characters gained `relationshipLinks[]` (structured
   // character-to-character links + opposing-force tags, #1287). Additive +
   // gracefully degrading, but version-gated for the same reason as
@@ -60,7 +60,9 @@ export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // sync with version-mismatched peers for one additive field, the heavier
   // tradeoff this project has chosen against for additive bible fields. The
   // `universes` gate above already protects the canonical (embedded) copy.
-  universes: 7,
+  // v8 adds shared styleReferences[]. Older peers must not sanitize the field
+  // away and LWW-sync that loss back to a newer install.
+  universes: 8,
   // v1 = post-split. Migrations 035/036 introduced the pipeline collection
   // layout for issues and series.
   // v2 = `stages.audio.audioMode` + `stages.audio.cues[]` added (whole-episode
@@ -224,7 +226,18 @@ export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // only track sync pauses with old peers; artists/albums keep flowing. The
   // backfill itself needs no migration — `sanitizeTrack` synthesizes a render
   // from the legacy active pointer on read (see services/tracks/logic.js).
-  tracks: 2,
+  // tracks v3 = `track.chiptuneScore`/`chiptunePrompt` (#2911, the LLM-composed
+  // looping 8-bit score). Version-gated for the identical strip-and-push-back
+  // reason as v2: a ≤v2 peer re-sanitizing through its chiptune-unaware
+  // `sanitizeTrack` would silently drop the score and LWW the loss back onto
+  // the composing peer. (As of #2912 the fields DO participate in the
+  // conflict-journal content hash, version-gated so it doesn't retroactively
+  // invalidate a base hash stamped before they existed — see
+  // lib/conflictJournal.js HASH_FIELDS, whose own version number for this
+  // field was chosen to match this one for a human reading both files; the
+  // two mechanisms are otherwise independent — HASH_FIELDS gates a purely
+  // local hash-store concern, not cross-peer wire compatibility.)
+  tracks: 3,
   // v1 = creative ingredients catalog (Postgres tables: catalog_scraps,
   // catalog_ingredients, catalog_ingredient_sources, catalog_ingredient_refs).
   // v2 = `catalog_ingredients.search_tsv` expanded to also index the
@@ -488,7 +501,19 @@ export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // permissive `metadata` map and round-trips the markdown store like any other
   // metadata, so no new top-level wire field is added — only the status vocab
   // widened. Per-category gate → only cos-tasks sync pauses with old peers.
-  cosTasks: 2,
+  // v3 = the PR-follow-up disposition markers `reviewLoopMergeOnly` /
+  // `reviewLoopLeaveOpen`. This is an EXECUTION-semantics break, not a shape
+  // change: both ride the permissive `metadata` map, so a ≤v2 receiver validates
+  // and stores the task fine — and then MIS-RUNS it. Its prompt builder doesn't
+  // know either marker, so it re-defaults the deliberately-empty reviewer list
+  // back to `[copilot]` and runs a review the task explicitly disabled; on a
+  // GitLab MR (the copilot-only fallback) it emits GitHub-only commands that
+  // cannot land the MR, orphaning it; and on a JIRA hand-off it merges a PR that
+  // must stay open. A claimed-and-mis-run task then LWW-pushes its damaged state
+  // back onto the v3 peer, which is exactly the bump trigger (see the
+  // `creativeDirectorProjects` 2→3 precedent). Per-category gate → only cos-tasks
+  // sync pauses until the peer upgrades.
+  cosTasks: 3,
   // NOTE: `videoHistory` is intentionally NOT listed here. The version gate
   // rejects the ENTIRE snapshot/push payload on ANY ahead-mismatch (the
   // comparator walks the union of keys), so declaring a brand-new key would

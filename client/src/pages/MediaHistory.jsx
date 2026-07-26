@@ -132,7 +132,7 @@ export default function MediaHistory() {
   // the cleaned image to the top of the local list) is page-specific —
   // wired through `onCleanComplete` so the cleaned record lands in `items`
   // without a full gallery refetch.
-  const { handleRemix, handleSendToImage, handleSendToVideo, handleContinue, handleClean, handleRemoveWatermark } = useMediaPreviewActions({
+  const { handleRemix, handleSendToImage, handleSendToVideo, handleSendTo3d, handleContinue, handleClean, handleRemoveWatermark } = useMediaPreviewActions({
     onCleanComplete: (cleaned) => {
       const normalized = normalizeImage(cleaned);
       setItems((prev) => [normalized, ...prev.filter((x) => x.key !== normalized.key)]);
@@ -155,6 +155,7 @@ export default function MediaHistory() {
     }
   };
 
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -165,6 +166,7 @@ export default function MediaHistory() {
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
+              aria-label="Search media history"
               placeholder="Search prompt, model, character, place…"
               className="w-full pl-7 pr-7 py-1 bg-port-bg border border-port-border rounded text-xs text-white placeholder-gray-500 focus:outline-none focus:border-port-accent"
             />
@@ -254,6 +256,7 @@ export default function MediaHistory() {
                 onRemix={!stitchMode ? handleRemix : undefined}
                 onSendToImage={!stitchMode ? handleSendToImage : undefined}
                 onSendToVideo={!stitchMode ? handleSendToVideo : undefined}
+                onSendTo3d={!stitchMode ? handleSendTo3d : undefined}
                 onContinue={!stitchMode ? handleContinue : undefined}
                 onUpscale={!stitchMode && it.kind === 'video' ? handleUpscale : undefined}
                 onDelete={!stitchMode ? handleDelete : undefined}
@@ -279,6 +282,7 @@ export default function MediaHistory() {
         onRemix={handleRemix}
         onSendToImage={handleSendToImage}
         onSendToVideo={handleSendToVideo}
+        onSendTo3d={handleSendTo3d}
         onContinue={handleContinue}
         onClean={(item) => handleClean(item?.raw)}
         onRemoveWatermark={(item) => handleRemoveWatermark(item?.raw)}

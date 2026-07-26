@@ -105,6 +105,22 @@ describe('Vision Test Service', () => {
       expect(result.error).toContain('No model specified');
     });
 
+    it('blocks a keyed provider pointed at a non-allowlisted endpoint and never calls fetch', async () => {
+      getProviderById.mockResolvedValue({
+        ...mockProvider,
+        endpoint: 'https://not-an-allowlisted-host.example',
+      });
+      resolveScreenshot.mockReturnValue('/mock/screenshots/image.png');
+      readFile.mockResolvedValue(mockImageBuffer);
+
+      await expect(testVision({
+        imagePath: '/test/image.png',
+        prompt: 'Describe this image',
+        expectedContent: ['test'],
+      })).rejects.toThrow('Blocked outbound API-key request');
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
     it('should successfully test vision when API returns expected content', async () => {
       getProviderById.mockResolvedValue(mockProvider);
       resolveScreenshot.mockReturnValue('/mock/screenshots/image.png');
@@ -414,6 +430,46 @@ describe('Vision Test Service', () => {
 
       expect(result.available).toBe(false);
       expect(result.error).toContain('not reachable');
+    });
+
+    it('blocks a keyed provider pointed at a cloud-metadata endpoint and never calls fetch', async () => {
+      getProviderById.mockResolvedValue({
+        ...mockProvider,
+        endpoint: 'http://169.254.169.254/latest/meta-data/',
+      });
+
+      const result = await checkVisionHealth('lmstudio');
+
+      expect(result.available).toBe(false);
+      expect(result.error).toContain('Provider endpoint blocked');
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('blocks a keyed provider on a non-allowlisted host when allowCustomEndpoint is not set', async () => {
+      getProviderById.mockResolvedValue({
+        ...mockProvider,
+        endpoint: 'https://not-an-allowlisted-host.example',
+      });
+
+      const result = await checkVisionHealth('lmstudio');
+
+      expect(result.available).toBe(false);
+      expect(result.error).toContain('Provider endpoint blocked');
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('allows a keyed provider on a non-allowlisted host through when allowCustomEndpoint is true', async () => {
+      getProviderById.mockResolvedValue({
+        ...mockProvider,
+        endpoint: 'https://not-an-allowlisted-host.example',
+        allowCustomEndpoint: true,
+      });
+      global.fetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({ data: [] }) });
+
+      const result = await checkVisionHealth('lmstudio');
+
+      expect(result.available).toBe(true);
+      expect(global.fetch).toHaveBeenCalled();
     });
   });
 });

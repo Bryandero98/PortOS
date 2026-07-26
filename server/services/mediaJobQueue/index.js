@@ -9,7 +9,7 @@
  * an immediate `queued` ack and watch progress via SSE.
  *
  * Lanes: GPU jobs (video + local image) drain serially through `running` since
- * they share the MLX runtime. Codex image jobs run in a parallel `codexRunning`
+ * they share the MLX runtime. Codex image jobs run in a parallel `cloudRunning`
  * lane — they shell out to an external CLI and don't compete for GPU memory,
  * so a long video render never blocks a Codex storyboard generation.
  *
@@ -45,9 +45,18 @@ import { imageGenEvents } from '../imageGenEvents.js';
 import { trainingEvents } from '../loraTraining/events.js';
 import { audioGenEvents } from '../audioGen/events.js';
 import { getSettings } from '../settings.js';
-import { IMAGE_GEN_MODE } from '../imageGen/modes.js';
+import { IMAGE_GEN_MODE, CLOUD_IMAGE_GEN_MODES } from '../imageGen/modes.js';
 
-const isCodexJob = (j) => j.kind === 'image' && j.params?.mode === IMAGE_GEN_MODE.CODEX;
+// Cloud-CLI jobs (codex/grok images, grok videos) share one parallel lane —
+// each render
+// shells out to its own external child spending remote quota, so they don't
+// serialize on the MLX runtime the way GPU jobs do. The lane's slot count is
+// `codexParallelLimit` (settings key `imageGen.codex.parallelLimit`, kept
+// under the codex name for backward compat — it now bounds codex + grok
+// renders combined).
+const isCloudImageJob = (j) =>
+  (j.kind === 'image' && CLOUD_IMAGE_GEN_MODES.includes(j.params?.mode))
+  || (j.kind === 'video' && j.params?.mode === IMAGE_GEN_MODE.GROK);
 
 const JOBS_FILE = join(PATHS.data, 'media-jobs.json');
 const COMPLETED_TTL_MS = 24 * 60 * 60 * 1000;
@@ -123,10 +132,12 @@ export const JOB_STATUSES = Object.freeze(['queued', 'running', 'completed', 'fa
 // of provider-dispatch truth — used by the watchdog, runJob, and cancelJob
 // so a new provider addition is one edit instead of three.
 function getGenModuleForJob(job) {
+  if (job.kind === 'video' && job.params?.mode === IMAGE_GEN_MODE.GROK) return import('../videoGen/grok.js');
   if (job.kind === 'video') return import('../videoGen/local.js');
   if (job.kind === 'training') return import('../loraTraining/index.js');
   if (job.kind === 'audio') return import('../audioGen/local.js');
   if (job.kind === 'image' && job.params?.mode === IMAGE_GEN_MODE.CODEX) return import('../imageGen/codex.js');
+  if (job.kind === 'image' && job.params?.mode === IMAGE_GEN_MODE.GROK) return import('../imageGen/grok.js');
   if (job.kind === 'image') return import('../imageGen/local.js');
   return Promise.resolve(null);
 }
@@ -151,8 +162,8 @@ async function resolveLiveParams(job, safeParams) {
   // mflux training runs in the same venv as local image renders, so the
   // live settings pythonPath wins there too. flux2 training resolves its
   // own venv (resolveFlux2Python) inside runTraining — skip it here.
-  const usesLocalPython = job.kind === 'video'
-    || (job.kind === 'image' && job.params?.mode !== IMAGE_GEN_MODE.CODEX)
+  const usesLocalPython = (job.kind === 'video' && job.params?.mode !== IMAGE_GEN_MODE.GROK)
+    || (job.kind === 'image' && !CLOUD_IMAGE_GEN_MODES.includes(job.params?.mode))
     || (job.kind === 'training' && job.params?.runtime === 'mflux');
   if (!usesLocalPython) return;
   const live = await getSettings().catch(() => null);
@@ -166,14 +177,14 @@ async function resolveLiveParams(job, safeParams) {
 export const mediaJobEvents = new EventEmitter();
 
 // GPU lane: serialized — `running` holds at most one job (the MLX runtime can't
-// share VRAM). Codex lane: up to `codexParallelLimit` jobs in `codexRunning[]`
+// share VRAM). Codex lane: up to `codexParallelLimit` jobs in `cloudRunning[]`
 // since each call shells out to its own external child process. `queue` is
 // shared submission order. `archive` is recently-finished jobs (~24h TTL),
 // including canceled ones so /api/media-jobs?status=canceled and the recent-
 // reel UI can still find them within the 24h window.
 const queue = [];
 let running = null;
-const codexRunning = [];
+const cloudRunning = [];
 const archive = [];
 
 export const CODEX_PARALLEL_MIN = 1;
@@ -205,10 +216,18 @@ const sseJobs = new Map();
 
 let workerStarted = false;
 let initPromise = null;
+const terminalOperations = new Set();
+
+function trackTerminalOperation(operation) {
+  const tracked = Promise.resolve(operation);
+  terminalOperations.add(tracked);
+  tracked.finally(() => terminalOperations.delete(tracked)).catch(() => {});
+  return tracked;
+}
 
 function findJob(jobId) {
   if (running && running.id === jobId) return running;
-  const codexHit = codexRunning.find((j) => j.id === jobId);
+  const codexHit = cloudRunning.find((j) => j.id === jobId);
   if (codexHit) return codexHit;
   const inQueue = queue.find((j) => j.id === jobId);
   if (inQueue) return inQueue;
@@ -222,7 +241,7 @@ export function getJob(jobId) {
 export function listJobs({ status, kind, owner } = {}) {
   const all = [
     ...(running ? [running] : []),
-    ...codexRunning,
+    ...cloudRunning,
     ...queue,
     ...archive,
   ];
@@ -257,7 +276,7 @@ async function persistImpl() {
   archive.push(...trimmedArchive);
   const live = [
     ...(running ? [running] : []),
-    ...codexRunning,
+    ...cloudRunning,
     ...queue,
     ...archive,
   ];
@@ -347,11 +366,11 @@ export async function initMediaJobQueue() {
     // event report accurate slots. Positions are lane-scoped: Codex image
     // jobs and GPU jobs each get their own counter so a queued Codex job
     // behind a running GPU job is restored as position 1 (not position 2).
-    let codexCounter = 0;
+    let cloudCounter = 0;
     let gpuCounter = 0;
     for (const q of queue) {
-      if (isCodexJob(q)) {
-        q.position = ++codexCounter;
+      if (isCloudImageJob(q)) {
+        q.position = ++cloudCounter;
       } else {
         q.position = ++gpuCounter;
       }
@@ -399,10 +418,10 @@ function startWorker() {
 // running job. This lets a Codex job that arrives while a GPU render is in
 // flight be picked up immediately on the next 150 ms tick instead of having
 // to wait for the entire GPU job to finish first.
-function startLaneJob(job, { isCodex }) {
+function startLaneJob(job, { isCloud }) {
   // If the job isn't in the queue, it was already promoted (e.g. by a parallel
   // runJobNow). Skip — promoting again would double-start the job and corrupt
-  // the lane (push it onto codexRunning/running twice). Silently splice(-1)
+  // the lane (push it onto cloudRunning/running twice). Silently splice(-1)
   // would also lop the wrong job off the queue.
   const idx = queue.indexOf(job);
   if (idx < 0) {
@@ -415,18 +434,17 @@ function startLaneJob(job, { isCodex }) {
   job.position = 1;
   job.progress = typeof job.progress === 'number' && Number.isFinite(job.progress) ? job.progress : 0;
   job.statusMsg = job.statusMsg || 'Starting';
-  if (isCodex) {
-    codexRunning.push(job);
+  if (isCloud) {
+    cloudRunning.push(job);
   } else {
     running = job;
   }
   recomputeQueuePositions();
-  persist().catch((e) => console.log(`⚠️ mediaJobQueue persist on ${isCodex ? 'codex' : 'gpu'} start failed: ${e.message}`));
+  const label = isCloud ? (job.params?.mode || 'cloud') : job.kind;
+  persist().catch((e) => console.log(`⚠️ mediaJobQueue persist on ${label} start failed: ${e.message}`));
   broadcastSse(ensureSseEntry(job.id), { type: 'started', kind: job.kind });
   mediaJobEvents.emit('started', job);
-  console.log(`▶️  media-job [${job.id.slice(0, 8)}] ${isCodex ? 'codex' : job.kind} started`);
-
-  const label = isCodex ? 'codex' : job.kind;
+  console.log(`▶️  media-job [${job.id.slice(0, 8)}] ${label} started`);
   (async () => {
     try {
       await runJob(job);
@@ -443,9 +461,9 @@ function startLaneJob(job, { isCodex }) {
         mediaJobEvents.emit('failed', job);
       }
     }
-    if (isCodex) {
-      const idx = codexRunning.indexOf(job);
-      if (idx >= 0) codexRunning.splice(idx, 1);
+    if (isCloud) {
+      const idx = cloudRunning.indexOf(job);
+      if (idx >= 0) cloudRunning.splice(idx, 1);
     } else {
       running = null;
     }
@@ -463,19 +481,19 @@ async function drainLoop() {
     // Single queue scan, promote eligible codex jobs while there's room and a
     // GPU job if the lane is open. Stops cleanly on an empty queue.
     let gpuOpen = !running;
-    let codexSlots = codexParallelLimit - codexRunning.length;
-    if ((gpuOpen || codexSlots > 0) && queue.length > 0) {
+    let cloudSlots = codexParallelLimit - cloudRunning.length;
+    if ((gpuOpen || cloudSlots > 0) && queue.length > 0) {
       for (const job of queue.slice()) {
-        if (isCodexJob(job)) {
-          if (codexSlots > 0) {
-            startLaneJob(job, { isCodex: true });
-            codexSlots -= 1;
+        if (isCloudImageJob(job)) {
+          if (cloudSlots > 0) {
+            startLaneJob(job, { isCloud: true });
+            cloudSlots -= 1;
           }
         } else if (gpuOpen) {
-          startLaneJob(job, { isCodex: false });
+          startLaneJob(job, { isCloud: false });
           gpuOpen = false;
         }
-        if (!gpuOpen && codexSlots <= 0) break;
+        if (!gpuOpen && cloudSlots <= 0) break;
       }
     }
     await sleep(150);
@@ -504,15 +522,16 @@ export function removeArchivedJob(jobId) {
   return true;
 }
 
-// "Run now" bypass — start a queued codex job immediately even if the lane is
-// at its limit. GPU jobs are rejected (single MLX runtime would OOM).
+// "Run now" bypass — start a queued cloud-CLI (codex/grok) job immediately
+// even if the lane is at its limit. GPU jobs are rejected (single MLX runtime
+// would OOM). The rejection code stays 'NOT_CODEX' for client back-compat.
 export function runJobNow(jobId) {
   const job = queue.find((j) => j.id === jobId);
   if (!job) return { ok: false, code: 'NOT_FOUND', error: 'Job not found in queue' };
-  if (!isCodexJob(job)) {
-    return { ok: false, code: 'NOT_CODEX', error: 'Only Codex image jobs can be run-now; GPU jobs serialize on the MLX runtime' };
+  if (!isCloudImageJob(job)) {
+    return { ok: false, code: 'NOT_CODEX', error: 'Only cloud-CLI (Codex/Grok) image jobs can be run-now; GPU jobs serialize on the MLX runtime' };
   }
-  startLaneJob(job, { isCodex: true });
+  startLaneJob(job, { isCloud: true });
   return { ok: true, status: 'running' };
 }
 
@@ -522,11 +541,11 @@ export function runJobNow(jobId) {
 // /:jobId/events would keep showing the position from its original enqueue
 // frame even after the line ahead of it cleared.
 function recomputeQueuePositions() {
-  const codexJobs = queue.filter(isCodexJob);
-  const gpuJobs = queue.filter((j) => !isCodexJob(j));
+  const cloudJobs = queue.filter(isCloudImageJob);
+  const gpuJobs = queue.filter((j) => !isCloudImageJob(j));
 
-  codexJobs.forEach((q, i) => {
-    const newPosition = i + 1 + codexRunning.length;
+  cloudJobs.forEach((q, i) => {
+    const newPosition = i + 1 + cloudRunning.length;
     if (q.position !== newPosition) {
       q.position = newPosition;
       const entry = sseJobs.get(q.id);
@@ -624,6 +643,8 @@ function makeGenDispatcher(emitter, job, handlers) {
 
 async function runJob(job) {
   const sseEntry = ensureSseEntry(job.id);
+  let resolveTerminalState;
+  const terminalState = new Promise((resolve) => { resolveTerminalState = resolve; });
   let progressPersistDirty = false;
   let progressPersistTimer = null;
   let progressPersisting = null;
@@ -688,6 +709,10 @@ async function runJob(job) {
     // (how far it got) — consumers gate the progress UI on status === 'running',
     // so the residual values are not displayed for terminal jobs.
     job.completedAt = new Date().toISOString();
+    // Wake the lane finalizer without polling. Some providers emit their
+    // terminal event just before their kickoff promise resolves; the promise
+    // retains that signal until runJob reaches the await below.
+    resolveTerminalState();
     const logPrefix = state === 'completed' ? '✅' : state === 'canceled' ? '🛑' : '❌';
     const logSuffix = state === 'failed' ? `: ${job.error}` : state === 'canceled' ? ' (was running)' : '';
     console.log(`${logPrefix} media-job [${job.id.slice(0, 8)}] ${state}${logSuffix}`);
@@ -716,24 +741,30 @@ async function runJob(job) {
       broadcastSse(sseEntry, payload);
     },
     completed: (payload) => {
-      terminate('completed', (j) => { j.result = payload; })
-        .catch((e) => console.log(`⚠️ media-job [${job.id.slice(0, 8)}] terminal handler failed: ${e.message}`));
+      trackTerminalOperation(
+        terminate('completed', (j) => { j.result = payload; })
+          .catch((e) => console.log(`⚠️ media-job [${job.id.slice(0, 8)}] terminal handler failed: ${e.message}`)),
+      );
     },
     failed: (payload) => {
       // If cancelJob() flagged this job before the underlying gen reported
       // failure, treat the SIGTERM-induced failure as a clean cancel rather
       // than an error so /api/media-jobs?status=canceled works.
       if (job.cancelRequested) {
-        terminate('canceled', (j) => {
-          // Persist the reason so a late SSE reconnect after the live entry
-          // is cleaned up still gets a meaningful terminal frame from the
-          // archived state, rather than the generic "Canceled" fallback.
-          j.error = 'Canceled while running';
-        }).catch((e) => console.log(`⚠️ media-job [${job.id.slice(0, 8)}] terminal handler failed: ${e.message}`));
+        trackTerminalOperation(
+          terminate('canceled', (j) => {
+            // Persist the reason so a late SSE reconnect after the live entry
+            // is cleaned up still gets a meaningful terminal frame from the
+            // archived state, rather than the generic "Canceled" fallback.
+            j.error = 'Canceled while running';
+          }).catch((e) => console.log(`⚠️ media-job [${job.id.slice(0, 8)}] terminal handler failed: ${e.message}`)),
+        );
         return;
       }
-      terminate('failed', (j) => { j.error = payload.error || 'unknown error'; })
-        .catch((e) => console.log(`⚠️ media-job [${job.id.slice(0, 8)}] terminal handler failed: ${e.message}`));
+      trackTerminalOperation(
+        terminate('failed', (j) => { j.error = payload.error || 'unknown error'; })
+          .catch((e) => console.log(`⚠️ media-job [${job.id.slice(0, 8)}] terminal handler failed: ${e.message}`)),
+      );
     },
   };
 
@@ -779,10 +810,13 @@ async function runJob(job) {
   // imageGen/videoGen/local.js#handleLine emits 'activity' which resets
   // lastActivityAt; only true hangs (process wedged, no output) trip it.
   const idleTimeoutMs = (() => {
+    // Cloud check first — a grok VIDEO job must take the cloud watchdog, not
+    // the chunk-scaled local-video one (the provider emits 'activity' on
+    // stdout so a long-but-active render never trips the idle cap).
+    if (isCloudImageJob(job)) return WATCHDOG_CODEX_MS;
     if (job.kind === 'video') return WATCHDOG_VIDEO_MS * Math.max(1, Number(safeParams.chunks) || 1);
     if (job.kind === 'training') return WATCHDOG_TRAINING_MS;
     if (job.kind === 'audio') return WATCHDOG_AUDIO_MS;
-    if (isCodexJob(job)) return WATCHDOG_CODEX_MS;
     return WATCHDOG_IMAGE_MS;
   })();
   let lastActivityAt = Date.now();
@@ -868,11 +902,10 @@ async function runJob(job) {
     handlers.failed({ error: err.message });
   }
 
-  // Wait for the underlying gen to settle (the gen modules emit completed/
-  // failed asynchronously after the proc closes — runJob's await above only
-  // gates the spawn, not the render finish). Handlers flip job.status to a
-  // terminal state; short-sleep poll so we don't busy-spin.
-  while (job.status === 'running') await sleep(100);
+  // The gen modules emit completed/failed asynchronously after kickoff. Await
+  // the explicit terminal signal rather than polling every 100ms; this makes
+  // lane release immediate and gives tests a deterministic lifecycle to drain.
+  await terminalState;
   dispatcher.detach();
 }
 
@@ -892,9 +925,9 @@ export function enqueueJob({ kind, params, owner = null }) {
     // same lane occupies slot 1, then same-lane queued jobs follow. Codex
     // jobs only count Codex ahead-of-them; GPU jobs only count GPU jobs.
     position: (() => {
-      const isCodex = isCodexJob({ kind, params });
-      const laneQueue = queue.filter((j) => isCodexJob(j) === isCodex);
-      return laneQueue.length + (isCodex ? codexRunning.length : (running ? 1 : 0)) + 1;
+      const isCloud = isCloudImageJob({ kind, params });
+      const laneQueue = queue.filter((j) => isCloudImageJob(j) === isCloud);
+      return laneQueue.length + (isCloud ? cloudRunning.length : (running ? 1 : 0)) + 1;
     })(),
   };
   queue.push(job);
@@ -968,7 +1001,7 @@ export async function cancelJob(jobId) {
   }
   // Cancel-while-running — check the GPU slot and every parallel codex slot.
   const runningJob = (running?.id === jobId ? running : null)
-    ?? codexRunning.find((j) => j.id === jobId)
+    ?? cloudRunning.find((j) => j.id === jobId)
     ?? null;
   if (runningJob) {
     // A terminal transition already started (completed/failed/watchdog): its
@@ -1050,9 +1083,9 @@ export function attachSseClient(jobId, res) {
 export function __resetForTests() {
   queue.length = 0;
   running = null;
-  // `codexRunning` is a const array — clear it in place rather than reassigning,
+  // `cloudRunning` is a const array — clear it in place rather than reassigning,
   // which would throw TypeError and break `findJob()` (.find on null).
-  codexRunning.length = 0;
+  cloudRunning.length = 0;
   archive.length = 0;
   sseJobs.clear();
   workerStarted = false;
@@ -1063,4 +1096,19 @@ export function __resetForTests() {
   // Reset the persist chain so a leftover rejection from a previous test's
   // ENOENT writes doesn't poison subsequent persist() calls.
   persistChain = Promise.resolve();
+}
+
+// Test-only deterministic settle hook. EventEmitter terminal handlers and
+// persistence are intentionally fire-and-forget in production; tests use this
+// instead of sleeping for an arbitrary wall-clock window before inspecting or
+// removing their temporary data directory.
+export async function __drainForTests() {
+  while (terminalOperations.size > 0) {
+    await Promise.allSettled([...terminalOperations]);
+  }
+  await persistChain.catch(() => {});
+  // A settled terminal operation can schedule the archive snapshot in the
+  // lane-finalizer microtask. Yield once and capture that tail as well.
+  await Promise.resolve();
+  await persistChain.catch(() => {});
 }

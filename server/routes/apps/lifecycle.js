@@ -2,6 +2,8 @@
  * App runtime lifecycle: PM2 start/stop/restart, update, build, status, logs,
  * and ecosystem-config refresh.
  *
+ *   POST /:id/native-launch  → { success, processName, result }
+ *   GET  /:id/native-launch/status → { processName, status }
  *   POST /:id/start          → { success, results }
  *   POST /:id/stop           → { success, results }
  *   POST /:id/restart        → { success, results }  (self-restart for PortOS)
@@ -22,7 +24,7 @@ import * as appUpdater from '../../services/appUpdater.js';
 import * as appBuilder from '../../services/appBuilder.js';
 import { logAction } from '../../services/history.js';
 import { asyncHandler, ServerError } from '../../lib/errorHandler.js';
-import { parseEcosystemFromPath, usesPm2 } from '../../services/streamingDetect.js';
+import { parseEcosystemFromPath, usesPm2, isDesktopType } from '../../services/streamingDetect.js';
 import { detectAppIcon, isUsableSvg } from '../../services/appIconDetect.js';
 import { loadApp, pathExists, deriveUiPort } from './shared.js';
 
@@ -30,6 +32,79 @@ const router = Router();
 
 // Delay before restarting PortOS itself so the JSON response reaches the client
 const SELF_RESTART_RESPONSE_DELAY_MS = 500;
+
+async function launchDesktopProcess(app, processName, command) {
+  const current = await pm2Service.getAppStatus(processName, app.pm2Home).catch(() => null);
+  if (['online', 'launching'].includes(current?.status)) {
+    return { success: true, alreadyRunning: true };
+  }
+
+  // PM2 keeps a stopped process's original interpreter. Recreate only inactive
+  // desktop targets so a corrected shell launcher is not still forked by Node.
+  if (['stopped', 'errored'].includes(current?.status)) {
+    const removal = await pm2Service.deleteApp(processName, app.pm2Home)
+      .catch(err => ({ success: false, error: err.message }));
+    if (removal.success === false) {
+      return { success: false, error: `Could not replace the previous launch: ${removal.error}` };
+    }
+  }
+
+  return pm2Service.startWithCommand(
+    processName,
+    app.repoPath,
+    command,
+    { autorestart: false, pm2Home: app.pm2Home }
+  ).catch(err => ({ success: false, error: err.message }));
+}
+
+// POST /api/apps/:id/native-launch - Launch an optional native/GUI target
+router.post('/:id/native-launch', loadApp, asyncHandler(async (req, res) => {
+  const app = req.loadedApp;
+  const target = app.nativeLaunch;
+  if (!target) {
+    throw new ServerError('No native launch target is configured', { status: 400, code: 'NATIVE_LAUNCH_NOT_CONFIGURED' });
+  }
+  if (!await pathExists(app.repoPath)) {
+    throw new ServerError('App repo path does not exist', { status: 400, code: 'PATH_NOT_FOUND' });
+  }
+
+  const result = await launchDesktopProcess(app, target.processName, target.command);
+  if (result.alreadyRunning) {
+    return res.json({
+      success: true,
+      processName: target.processName,
+      result
+    });
+  }
+
+  const success = result.success !== false;
+  await logAction('native-launch', app.id, app.name, { processName: target.processName, label: target.label }, success);
+  notifyAppsChanged('native-launch');
+
+  if (!success) {
+    throw new ServerError(`Could not launch ${target.label}: ${result.error}`, {
+      status: 500,
+      code: 'NATIVE_LAUNCH_FAILED'
+    });
+  }
+
+  res.json({ success: true, processName: target.processName, result });
+}));
+
+// GET /api/apps/:id/native-launch/status - Read the optional target's PM2 state
+router.get('/:id/native-launch/status', loadApp, asyncHandler(async (req, res) => {
+  const app = req.loadedApp;
+  const target = app.nativeLaunch;
+  if (!target) {
+    throw new ServerError('No native launch target is configured', { status: 400, code: 'NATIVE_LAUNCH_NOT_CONFIGURED' });
+  }
+
+  const current = await pm2Service.getAppStatus(target.processName, app.pm2Home).catch(() => null);
+  res.json({
+    processName: target.processName,
+    status: current?.status || 'not_started'
+  });
+}));
 
 // POST /api/apps/:id/start - Start app via PM2
 router.post('/:id/start', loadApp, asyncHandler(async (req, res) => {
@@ -41,11 +116,18 @@ router.post('/:id/start', loadApp, asyncHandler(async (req, res) => {
 
   const processNames = app.pm2ProcessNames || [app.name.toLowerCase().replace(/\s+/g, '-')];
 
-  // Check if ecosystem config exists - prefer using it for proper env var handling
+  // Desktop/GUI apps (a game window) are driven from their own startCommands with
+  // autorestart OFF — never wrapped in a web-server ecosystem config. A window
+  // closing is a normal exit, and relaunching it would loop forever.
+  const desktop = isDesktopType(app.type);
+
+  // Check if ecosystem config exists - prefer using it for proper env var handling.
+  // A desktop app is command-launched even if the repo also ships an ecosystem
+  // config for its (unrelated) web processes.
   const ecosystemChecks = await Promise.all(
     ['ecosystem.config.cjs', 'ecosystem.config.js'].map(f => pathExists(`${app.repoPath}/${f}`))
   );
-  const hasEcosystem = ecosystemChecks.some(Boolean);
+  const hasEcosystem = !desktop && ecosystemChecks.some(Boolean);
 
   let results = {};
 
@@ -64,7 +146,11 @@ router.post('/:id/start', loadApp, asyncHandler(async (req, res) => {
     for (let i = 0; i < processNames.length; i++) {
       const name = processNames[i];
       const command = commands[i] || commands[0];
-      const result = await pm2Service.startWithCommand(name, app.repoPath, command)
+      if (desktop) {
+        results[name] = await launchDesktopProcess(app, name, command);
+        continue;
+      }
+      const result = await pm2Service.startWithCommand(name, app.repoPath, command, { pm2Home: app.pm2Home })
         .catch(err => ({ success: false, error: err.message }));
       results[name] = result;
     }

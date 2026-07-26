@@ -50,6 +50,7 @@ toasts on throw). **Custom catch ⇒ `silent: true`** — otherwise toasts fire 
 | `apiLogs.js` | PM2 system logs: fetch a process's recent log tail (process list comes from `apiCommands.getProcessesList`). |
 | `apiPorts.js` | Port forwarding / allocation. |
 | `apiProviders.js` | AI provider config. |
+| `apiPrompts.js` | Prompt Manager: stage templates, variables, and job-skill templates (providers list reuses `apiProviders.getProviders`). |
 | `apiReferenceRepos.js` | Per-app reference-repo registry. |
 | `apiReview.js` | Review hub. |
 | `apiCodeReview.js` | Code Review Defaults (Review Loop reviewer chain + per-backend local-LLM model). |
@@ -95,6 +96,9 @@ toasts on throw). **Custom catch ⇒ `silent: true`** — otherwise toasts fire 
 | `apiCreativeDirector.js` | Creative Director (video production). |
 | `apiCreativeCommission.js` | Creative Commissions (Autonomous Creation Engine — standing recurring briefs). |
 | `apiMusicVideo.js` | Music Video projects + scene board + audio analysis. |
+| `apiSprites.js` | Sprite Manager records, asset library, production-set import (#2895), reference workflow: create/generate/lock (#2896), directional walk and scanner-track generation/approval, trim/postprocess, and per-run source-frame listing for the Loop Trimmer's re-derive (#2980). |
+| `apiThreejsModels.js` | Procedural Three.js model workspaces: gallery-image generation, refinement, source export, and deletion. |
+| `apiImageTo3d.js` | Image-to-3D (`/media/3d`): selectable targets (TRELLIS.2) with host availability/install status, and per-image model records — create/list/get/generate/delete + GLB asset URL. |
 | `apiPipeline.js` | Pipeline (issues + stages + canon). |
 | `apiUniverseBuilder.js` | Universe Builder (generate + edit + commit). |
 | `apiAuthors.js` | Author personas (name, writing style, bio, headshot description/style). |

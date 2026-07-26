@@ -11,7 +11,7 @@ const CORS_SNIPPET = `app.use((req, res, next) => {
   next();
 });`;
 
-export async function scaffoldPortOS(repoPath, name, dirName, uiPort, apiPort, addStep) {
+export async function scaffoldPortOS({ repoPath, name, dirName, uiPort, apiPort, addStep }) {
   const clientDir = join(repoPath, 'client');
   const serverDir = join(repoPath, 'server');
   const workflowsDir = join(repoPath, '.github/workflows');
@@ -347,11 +347,11 @@ export default defineConfig({
         type: 'cli',
         command: 'claude',
         args: ['--print'],
-        models: ['claude-haiku-4-5', 'claude-sonnet-5', 'claude-opus-4-8'],
-        defaultModel: 'claude-opus-4-8',
+        models: ['claude-haiku-4-5', 'claude-sonnet-5', 'claude-opus-5'],
+        defaultModel: 'claude-opus-5',
         lightModel: 'claude-haiku-4-5',
         mediumModel: 'claude-sonnet-5',
-        heavyModel: 'claude-opus-4-8',
+        heavyModel: 'claude-opus-5',
         timeout: 300000,
         enabled: true,
         envVars: {}

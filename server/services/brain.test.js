@@ -61,6 +61,13 @@ vi.mock('./brainStorage.js', () => {
   };
 });
 
+// Mock githubCloner — the bare-URL capture path derives GitHub metadata and can
+// kick off a background clone; stub it so no test ever shells out to git.
+vi.mock('./githubCloner.js', () => ({
+  parseGitHubUrl: vi.fn(() => null),
+  cloneRepo: vi.fn()
+}));
+
 // Mock chatgptImport — brain.js's deleteMemoryEntry wrapper delegates the
 // on-disk asset cleanup to deleteMemoryAssets; stub it so the wrapper test
 // asserts the wiring (gating + survivor computation) without touching the FS.
@@ -120,6 +127,7 @@ assertProvider: (provider, { message, code, status = 503 } = {}) => {
 }));
 
 import { runPromptThroughProvider } from '../lib/promptRunner.js';
+import * as githubCloner from './githubCloner.js';
 import * as storage from './brainStorage.js';
 import { deleteMemoryAssets } from './chatgptImport.js';
 import { getProviderById } from './providers.js';
@@ -135,7 +143,8 @@ import {
   updateInboxEntry,
   deleteInboxEntry,
   deleteMemoryEntry,
-  recoverStuckClassifications
+  recoverStuckClassifications,
+  createLinkFromUrl
 } from './brain.js';
 
 describe('brain service', () => {
@@ -219,6 +228,143 @@ describe('brain service', () => {
       expect(storage.createInboxLog).toHaveBeenCalledWith(
         expect.not.objectContaining({ creative: expect.anything() })
       );
+    });
+  });
+
+  // ===========================================================================
+  // captureThought — bare-URL short-circuit (files to links, no classifier)
+  // ===========================================================================
+
+  describe('captureThought (bare URL)', () => {
+    beforeEach(() => {
+      // mockReturnValue survives clearAllMocks — reset to "not a GitHub URL".
+      githubCloner.parseGitHubUrl.mockReturnValue(null);
+      storage.getLinkByUrl.mockResolvedValue(null);
+      storage.createLink.mockImplementation(async (data) => ({ id: 'link-001', ...data }));
+      storage.createInboxLog.mockImplementation(async (entry) => ({ id: 'inbox-url-1', ...entry }));
+    });
+
+    it('saves a pasted URL to links and logs it as already filed', async () => {
+      const result = await captureThought('https://example.com/parks');
+
+      expect(storage.createLink).toHaveBeenCalledWith(expect.objectContaining({
+        url: 'https://example.com/parks',
+        title: 'example.com',
+        linkType: 'other'
+      }));
+      expect(storage.createInboxLog).toHaveBeenCalledWith(expect.objectContaining({
+        capturedText: 'https://example.com/parks',
+        status: 'filed',
+        filed: { destination: 'links', destinationId: 'link-001' }
+      }));
+      expect(result.link.id).toBe('link-001');
+      expect(result.inboxLog.filed.destination).toBe('links');
+    });
+
+    it('never calls the classifier for a URL capture, and records no classification', async () => {
+      await captureThought('https://example.com');
+      expect(runPromptThroughProvider).not.toHaveBeenCalled();
+      // No `ai`/`classification` block: an older federated peer renders the
+      // entry as Unknown instead of choking on a destination it can't map.
+      expect(storage.createInboxLog).toHaveBeenCalledWith(
+        expect.not.objectContaining({ ai: expect.anything() })
+      );
+      expect(storage.createInboxLog).toHaveBeenCalledWith(
+        expect.not.objectContaining({ classification: expect.anything() })
+      );
+    });
+
+    it('normalizes a scheme-less URL before saving', async () => {
+      await captureThought('example.com');
+      expect(storage.createLink).toHaveBeenCalledWith(
+        expect.objectContaining({ url: 'https://example.com' })
+      );
+    });
+
+    it('reuses an existing link instead of failing on a re-paste', async () => {
+      storage.getLinkByUrl.mockResolvedValue({ id: 'link-existing', title: 'example.com' });
+
+      const result = await captureThought('https://example.com');
+
+      expect(storage.createLink).not.toHaveBeenCalled();
+      expect(result.link.id).toBe('link-existing');
+      expect(result.message).toMatch(/already saved/i);
+      expect(storage.createInboxLog).toHaveBeenCalledWith(expect.objectContaining({
+        filed: { destination: 'links', destinationId: 'link-existing' }
+      }));
+    });
+
+    it('clones a captured GitHub repo the same way the Links tab does', async () => {
+      githubCloner.parseGitHubUrl.mockReturnValue({ owner: 'acme', repo: 'widgets', isGitHub: true });
+      githubCloner.cloneRepo.mockResolvedValue({ localPath: '/repos/acme/widgets' });
+
+      await captureThought('https://github.com/acme/widgets');
+
+      expect(storage.createLink).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'acme/widgets',
+        linkType: 'github',
+        isGitHubRepo: true,
+        cloneStatus: 'pending'
+      }));
+      expect(storage.updateLink).toHaveBeenCalledWith('link-001', { cloneStatus: 'cloning' });
+    });
+
+    it('files a URL to Links even when the creative flag is set', async () => {
+      await captureThought('https://example.com', undefined, undefined, { creative: true });
+
+      expect(storage.createLink).toHaveBeenCalled();
+      expect(storage.createInboxLog).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'filed',
+        filed: { destination: 'links', destinationId: 'link-001' }
+      }));
+      expect(storage.createInboxLog).toHaveBeenCalledWith(
+        expect.not.objectContaining({ creative: expect.anything() })
+      );
+    });
+
+    it('treats a URL wrapped in prose as an ordinary thought', async () => {
+      await captureThought('read this later https://example.com');
+
+      expect(storage.createLink).not.toHaveBeenCalled();
+      expect(storage.createInboxLog).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'classifying' })
+      );
+    });
+  });
+
+  // ===========================================================================
+  // createLinkFromUrl (shared by the Links route and URL capture)
+  // ===========================================================================
+
+  describe('createLinkFromUrl', () => {
+    beforeEach(() => {
+      // mockReturnValue survives clearAllMocks — reset to "not a GitHub URL".
+      githubCloner.parseGitHubUrl.mockReturnValue(null);
+      storage.createLink.mockImplementation(async (data) => ({ id: 'link-002', ...data }));
+    });
+
+    it('derives a hostname title (www stripped) for a plain URL', async () => {
+      await createLinkFromUrl('https://www.example.com/parks');
+      expect(storage.createLink).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'example.com',
+        isGitHubRepo: false,
+        cloneStatus: 'none'
+      }));
+    });
+
+    it('honors explicit overrides and skips the clone when autoClone is false', async () => {
+      githubCloner.parseGitHubUrl.mockReturnValue({ owner: 'acme', repo: 'widgets', isGitHub: true });
+
+      await createLinkFromUrl('https://github.com/acme/widgets', {
+        title: 'My Widgets', bucketId: 'bucket-1', autoClone: false
+      });
+
+      expect(storage.createLink).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'My Widgets',
+        bucketId: 'bucket-1',
+        cloneStatus: 'none'
+      }));
+      expect(storage.updateLink).not.toHaveBeenCalled();
     });
   });
 
@@ -1121,6 +1267,25 @@ describe('brain service', () => {
         expect(storage[updateFns[dest]]).toHaveBeenCalledWith('old-001', { archived: true });
       });
     }
+
+    it('deletes the bookmark when a URL capture is corrected to another destination', async () => {
+      storage.getInboxLogById.mockResolvedValue({
+        id: 'inbox-002',
+        status: 'filed',
+        capturedText: 'https://example.com',
+        filed: { destination: 'links', destinationId: 'link-001' }
+      });
+      storage.createIdea.mockResolvedValue({ id: 'idea-001' });
+      storage.updateInboxLog.mockResolvedValue({});
+
+      await fixClassification('inbox-002', 'ideas', undefined, 'not a bookmark');
+
+      expect(storage.deleteLink).toHaveBeenCalledWith('link-001');
+      // No classification to draw a title from — the captured text stands in.
+      expect(storage.createIdea).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'https://example.com' })
+      );
+    });
   });
 
   // ===========================================================================

@@ -29,7 +29,10 @@ import { sanitizeSoftDeleteFields } from '../../lib/syncWire.js';
 //        trunks (characters/places/objects/other); the default `characters`
 //        category is retired and any variations get folded into canon
 //        characters[]. See "Categories vs canon — decision" in PLAN.md.
-export const CURRENT_SCHEMA_VERSION = 4;
+//   v5 — styleReferences stores uploaded visual references with their
+//        vision-authored title and recreation prompt.
+export const CURRENT_SCHEMA_VERSION = 5;
+const CANON_CATEGORY_SCHEMA_VERSION = 4;
 
 export const ERR_NOT_FOUND = 'NOT_FOUND';
 export const ERR_VALIDATION = 'VALIDATION_ERROR';
@@ -87,6 +90,9 @@ export const ENTRY_REF_KIND = Object.freeze({
 // per-variation prompt at render-compile time.
 export const INFLUENCE_ENTRY_MAX = 120;
 export const INFLUENCES_PER_LIST_MAX = 30;
+export const STYLE_REFERENCE_TITLE_MAX = 120;
+export const STYLE_REFERENCE_PROMPT_MAX = 4000;
+export const STYLE_REFERENCES_MAX = 20;
 
 // Top-level fields the user can lock against AI-driven changes (refine /
 // expand). When a field is locked, both the refiner and the expansion-merge
@@ -247,6 +253,35 @@ const sanitizeEntryImageRefs = (raw) => {
   return out.length > IMAGE_REFS_PER_ENTRY_MAX
     ? out.slice(-IMAGE_REFS_PER_ENTRY_MAX)
     : out;
+};
+
+export const sanitizeStyleReference = (raw) => {
+  if (!raw || typeof raw !== 'object') return null;
+  const title = trimTo(raw.title, STYLE_REFERENCE_TITLE_MAX);
+  const prompt = trimTo(raw.prompt, STYLE_REFERENCE_PROMPT_MAX);
+  const imageRefs = sanitizeEntryImageRefs(raw.imageRefs).slice(-1);
+  if (!title || !prompt || imageRefs.length === 0) return null;
+  return {
+    id: ensureEntryId(raw.id, 'style-ref-'),
+    title,
+    prompt,
+    imageRefs,
+    createdAt: isStr(raw.createdAt) ? raw.createdAt : new Date().toISOString(),
+  };
+};
+
+export const sanitizeStyleReferences = (raw) => {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const candidate of raw) {
+    const reference = sanitizeStyleReference(candidate);
+    if (!reference || seen.has(reference.id)) continue;
+    seen.add(reference.id);
+    out.push(reference);
+    if (out.length >= STYLE_REFERENCES_MAX) break;
+  }
+  return out;
 };
 
 const sanitizeVariation = (raw) => {
@@ -413,6 +448,24 @@ export const mergeLegacyPromptsIntoInfluences = (rawInfluences, legacyStylePromp
     avoid: [...baseAvoid, ...extraAvoid],
   };
 };
+
+/**
+ * Derive a record's `{ embrace[], avoid[] }` style tokens from ANY raw universe
+ * shape. THE single definition of that derivation — `sanitizeTemplate` (full
+ * read) and `listUniverseStyles` (the style-token projection) both call it, so
+ * a projected record can never report different tokens than a full read of the
+ * same row.
+ *
+ * Legacy v2 universes carried prose `stylePrompt` / `negativePrompt` fields
+ * alongside influences. v3 collapses both into the chip-based influences
+ * editor: split each prose field on commas/newlines and append to the matching
+ * list. `sanitizeInfluenceList` handles trim, cap, and case-insensitive dedupe
+ * so a token that already exists as a chip is not re-added by the migration.
+ * The fold MUST run before the sanitize — that ordering is the contract.
+ */
+export const resolveInfluences = (raw) => sanitizeInfluences(
+  mergeLegacyPromptsIntoInfluences(raw?.influences, raw?.stylePrompt, raw?.negativePrompt),
+);
 
 // Build a refined influences object that honors per-list locks. Locked lists
 // take their value from `fallback` (originals); unlocked lists take from
@@ -581,12 +634,12 @@ function foldRetiredCharactersBucket(raw, canon) {
 function backfillCanonFromCategories(raw, existingCanon) {
   // v4 hot path — already backfilled. Sanitize through the kind sanitizers
   // once and return; no category scan needed.
-  if (raw.schemaVersion >= CURRENT_SCHEMA_VERSION) {
+  if (raw.schemaVersion >= CANON_CATEGORY_SCHEMA_VERSION) {
     return {
       characters: sanitizeBibleList(existingCanon.characters, BIBLE_KIND.CHARACTER),
       places: sanitizeBibleList(existingCanon.places, BIBLE_KIND.PLACE),
       objects: sanitizeBibleList(existingCanon.objects, BIBLE_KIND.OBJECT),
-      schemaVersion: raw.schemaVersion,
+      schemaVersion: CURRENT_SCHEMA_VERSION,
     };
   }
 
@@ -650,15 +703,7 @@ export const sanitizeTemplate = (raw) => {
   const styleNotes = trimTo(raw.styleNotes, STYLE_NOTES_MAX);
   const categories = sanitizeCategories(raw.categories || {});
   const compositeSheets = sanitizeCompositeSheets(raw.compositeSheets || []);
-  // Legacy v2 universes carried prose stylePrompt / negativePrompt fields
-  // alongside influences. v3 collapses both into the chip-based influences
-  // editor: split each prose field on commas/newlines and append to the
-  // matching list. sanitizeInfluenceList handles trim, cap, and
-  // case-insensitive dedupe so a token that already exists as a chip is not
-  // re-added by the migration.
-  const influences = sanitizeInfluences(
-    mergeLegacyPromptsIntoInfluences(raw.influences, raw.stylePrompt, raw.negativePrompt),
-  );
+  const influences = resolveInfluences(raw);
   const locked = sanitizeLocked(raw.locked);
   // Canon registries. Two passes:
   //   1. foldRetiredCharactersBucket — Phase A retirement contract. ALWAYS
@@ -709,6 +754,10 @@ export const sanitizeTemplate = (raw) => {
     categories,
     compositeSheets,
     influences,
+    // Shared, user-selected visual references. Their nested imageRefs are
+    // discovered by federation/export asset collection so the image bytes
+    // travel with the universe.
+    styleReferences: sanitizeStyleReferences(raw.styleReferences),
     // Base "style probe" renders — images generated from the raw style preset
     // (influences embrace/avoid + styleNotes) with NO subject, so the user can
     // see the world's base visual emphasis. Additive + regenerable; sanitized

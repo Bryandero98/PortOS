@@ -12,10 +12,10 @@ import toast from '../../ui/Toast';
 import { FormField } from '../../ui/FormField';
 
 import {
-  DESTINATIONS,
   STATUS_COLORS,
-  getConfidenceColor
+  destinationInfo
 } from '../constants';
+import ConfidenceBadge from '../ConfidenceBadge';
 import { timeAgo } from '../../../utils/formatters';
 
 export default function TrustTab({ onRefresh }) {
@@ -237,9 +237,10 @@ export default function TrustTab({ onRefresh }) {
         ) : (
           entries.map(entry => {
             const isExpanded = expandedId === entry.id;
-            const destInfo = DESTINATIONS[entry.classification?.destination || 'unknown'];
+            const destInfo = destinationInfo(entry);
             const DestIcon = destInfo.icon;
-            const confidence = entry.classification?.confidence || 0;
+            // Absent for an entry no model classified (a URL filed to Links).
+            const confidence = entry.classification?.confidence;
 
             return (
               <div
@@ -257,9 +258,7 @@ export default function TrustTab({ onRefresh }) {
                         <DestIcon size={10} />
                         {destInfo.label}
                       </span>
-                      <span className={`text-xs ${getConfidenceColor(confidence)}`}>
-                        {Math.round(confidence * 100)}%
-                      </span>
+                      <ConfidenceBadge confidence={confidence} />
                       <span className="text-xs text-gray-500">
                         {timeAgo(entry.capturedAt)}
                       </span>

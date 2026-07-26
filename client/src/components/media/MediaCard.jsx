@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Trash2, Download, Film, Image as ImageIcon, Sparkles, Eye, EyeOff, Maximize2, Wand2, Star, MessageSquare, Pencil } from 'lucide-react';
+import { Trash2, Download, Film, Image as ImageIcon, Sparkles, Eye, EyeOff, Maximize2, Wand2, Star, MessageSquare, Pencil, Box } from 'lucide-react';
 import MediaImage from '../MediaImage';
 import AddToCollectionMenu from './AddToCollectionMenu';
 import PinToMoodBoardMenu from './PinToMoodBoardMenu';
@@ -18,6 +18,7 @@ export default function MediaCard({
   onRemix,
   onSendToImage,
   onSendToVideo,
+  onSendTo3d,
   onContinue,
   onUpscale,
   onDelete,
@@ -166,6 +167,17 @@ export default function MediaCard({
                 title="Send to Video"
               >
                 <Film className="w-3 h-3" />
+              </button>
+            )}
+            {!isVideo && onSendTo3d && (
+              <button
+                type="button"
+                onClick={() => onSendTo3d(item)}
+                className="shrink-0 px-1.5 py-1 bg-purple-600/20 hover:bg-purple-600/40 text-purple-300 text-[10px] rounded flex items-center justify-center"
+                title="Send this image to the 3D page to generate a mesh"
+                aria-label="Send to 3D"
+              >
+                <Box className="w-3 h-3" />
               </button>
             )}
             {isVideo && onContinue && (

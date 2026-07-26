@@ -16,6 +16,7 @@ import os from 'os';
 import { getGoals } from './identity.js';
 import { getPerformanceSummary, getLearningSummary } from './taskLearning.js';
 import { listProcesses } from './pm2.js';
+import { annotateExpectedExit } from './apps.js';
 import { getUsage } from './usage.js';
 import { getCareSummary } from './tribe.js';
 import { findUnansweredTribeThreads } from './tribeOutreach.js';
@@ -123,21 +124,24 @@ async function checkSystemHealth() {
     });
   }
 
-  // PM2 process errors
+  // PM2 process errors. Processes whose exit is expected (a desktop app the user
+  // quit) are excluded: that is a normal end to a session, and alerting on it
+  // would report every play session as a failure. See issue #2991.
   const processes = await listProcesses().catch(() => []);
-  const errored = processes.filter(p => p.status === 'errored').length;
+  const alertable = (await annotateExpectedExit(processes)).filter(p => !p.expectedExit);
+  const errored = alertable.filter(p => p.status === 'errored').length;
   if (errored > 0) {
     alerts.push({
       type: 'process_error',
       severity: 'high',
       title: `${errored} errored process${errored > 1 ? 'es' : ''}`,
-      detail: `${errored} of ${processes.length} processes in error state`,
+      detail: `${errored} of ${alertable.length} processes in error state`,
       link: '/apps',
-      metadata: { errored, total: processes.length }
+      metadata: { errored, total: alertable.length }
     });
   }
 
-  const crashing = processes.filter(p => (p.unstableRestarts || 0) > 0);
+  const crashing = alertable.filter(p => (p.unstableRestarts || 0) > 0);
   if (crashing.length > 0) {
     const total = crashing.reduce((sum, p) => sum + (p.unstableRestarts || 0), 0);
     alerts.push({

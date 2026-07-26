@@ -18,7 +18,8 @@ import { buildUniverseRunTag } from './universeRunTag.js';
 import { registerUniverseBuilderRun } from './universeBuilderCollectionHook.js';
 import { getImageModels, isFlux2 } from '../lib/mediaModels.js';
 import { usesDiffusersRunner } from '../lib/runners.js';
-import { IMAGE_GEN_MODE } from './imageGen/modes.js';
+import { IMAGE_GEN_MODE, QUEUEABLE_IMAGE_MODES } from './imageGen/modes.js';
+import { resolveCloudProviderConfig } from './imageGen/cloudProviderConfig.js';
 import { resolveImageCleaners } from './imageGen/index.js';
 import { getStylePresetById } from '../lib/writersRoomStylePresets.js';
 import { ServerError } from '../lib/errorHandler.js';
@@ -63,21 +64,17 @@ export async function renderUniverseJobs(universeId, body, mapServiceError) {
   // Reject `external` mode upfront — batch rendering against a remote SD-API
   // would block this request for the entire batch, and we don't want to leave
   // an orphaned media collection behind when we discover this mid-loop below.
-  if (mode !== IMAGE_GEN_MODE.LOCAL && mode !== IMAGE_GEN_MODE.CODEX) {
+  if (!QUEUEABLE_IMAGE_MODES.includes(mode)) {
     throw new ServerError(
-      'Batch render requires local or codex mode — switch image-gen mode in Settings → Image Gen',
+      'Batch render requires local, codex, or grok mode — switch image-gen mode in Settings → Image Gen',
       { status: 400, code: 'WORLD_BUILDER_EXTERNAL_UNSUPPORTED' },
     );
   }
 
   // Mirror the upfront validation /api/image-gen/generate does so a doomed
   // batch fails before any jobs land in the queue.
-  if (mode === IMAGE_GEN_MODE.CODEX && !settings.imageGen?.codex?.enabled) {
-    throw new ServerError(
-      'Codex Imagegen is disabled — enable it in Settings → Image Gen first',
-      { status: 400, code: 'CODEX_IMAGEGEN_DISABLED' },
-    );
-  }
+  const cloud = resolveCloudProviderConfig(settings, mode);
+  if (cloud && !cloud.enabled) throw cloud.disabledError;
   if (mode === IMAGE_GEN_MODE.LOCAL) {
     const py = settings.imageGen?.local?.pythonPath || null;
     const allModels = getImageModels();
@@ -180,11 +177,10 @@ export async function renderUniverseJobs(universeId, body, mapServiceError) {
     // settings apply to Universe Builder batch renders the same way they
     // do for /api/image-gen/generate and pipeline renders.
     const { cleanC2PA, denoise } = resolveImageCleaners(undefined, settings, mode);
-    if (mode === IMAGE_GEN_MODE.CODEX) {
-      const c = settings.imageGen?.codex || {};
+    if (cloud) {
       queued = enqueueJob({
         kind: 'image',
-        params: { mode: IMAGE_GEN_MODE.CODEX, codexPath: c.codexPath, model: c.model, effort: c.effort, cleanC2PA, denoise, ...params },
+        params: { ...cloud.jobParams, cleanC2PA, denoise, ...params },
       });
     } else {
       // mode === IMAGE_GEN_MODE.LOCAL (validated upfront).

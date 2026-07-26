@@ -8,6 +8,7 @@
  *   DELETE /api/universe-builder/:id                    → { id }
  *   POST   /api/universe-builder/expand                 → { logline, premise, styleNotes, influences, categories, compositeSheets, characters, places, objects, llm }
  *   POST   /api/universe-builder/describe-from-images   → { description, llm }
+ *   POST   /api/universe-builder/analyze-style-reference → { reference, proposed, diff, rationale, llm }
  *   POST   /api/universe-builder/:id/characters/:entryId/expand-from-images → { fields, updatedFields, llm }
  *   POST   /api/universe-builder/:id/render             → { runId, collectionId, jobIds, promptCount }
  *   GET    /api/universe-builder/:id/runs               → Run[]
@@ -30,6 +31,7 @@ import { getUniverseCanonUsage, listLinkedSeriesNames } from '../services/canonU
 import { expandWorldTemplate, generateCategoryVariations } from '../services/universeBuilderExpand.js';
 import { describeEntityFromImages, VISION_KINDS, VISION_MAX_IMAGES } from '../services/universeVisionDescribe.js';
 import { expandEntityFromImages, VISION_EXPAND_MAX_IMAGES } from '../services/universeVisionExpand.js';
+import { analyzeUniverseStyleReference } from '../services/universeStyleReference.js';
 import { sanitizeFilename, PATHS, resolveGalleryImage } from '../lib/fileUtils.js';
 import { existsSync } from 'fs';
 import { join } from 'path';
@@ -125,6 +127,14 @@ const influencesSchema = z.object({
   embrace: z.array(influenceEntrySchema).max(svc.INFLUENCES_PER_LIST_MAX).optional().default([]),
   avoid: z.array(influenceEntrySchema).max(svc.INFLUENCES_PER_LIST_MAX).optional().default([]),
 }).strict();
+const styleReferenceSchema = z.object({
+  id: entryIdField,
+  title: z.string().trim().min(1).max(svc.STYLE_REFERENCE_TITLE_MAX),
+  prompt: z.string().trim().min(1).max(svc.STYLE_REFERENCE_PROMPT_MAX),
+  imageRefs: z.array(entryImageRefField).min(1).max(1),
+  createdAt: z.string().trim().min(1).max(64).optional(),
+}).strict();
+const styleReferencesField = z.array(styleReferenceSchema).max(svc.STYLE_REFERENCES_MAX).optional();
 
 // Legacy prose prompts: the v2 universe template carried `stylePrompt` /
 // `negativePrompt` as comma-separated prose strings; v3 collapses them into
@@ -155,6 +165,7 @@ const createSchema = z.object({
   categories: categoriesSchema.optional(),
   compositeSheets: z.array(compositeSheetSchema).max(svc.COMPOSITE_SHEETS_MAX).optional(),
   influences: influencesSchema.optional(),
+  styleReferences: styleReferencesField,
   // Base "style probe" render filenames — sanitized + capped server-side.
   // Match the sanitizer cap so over-the-cap requests get a loud 400 instead
   // of a silent 200 with N entries dropped (sanitizer keeps the most recent
@@ -188,6 +199,7 @@ const patchSchema = z.object({
   categories: categoriesSchema.optional(),
   compositeSheets: z.array(compositeSheetSchema).max(svc.COMPOSITE_SHEETS_MAX).optional(),
   influences: influencesSchema.optional(),
+  styleReferences: styleReferencesField,
   // Base "style probe" render filenames — sanitized + capped server-side.
   // Match the sanitizer cap so over-the-cap requests get a loud 400 instead
   // of a silent 200 with N entries dropped (sanitizer keeps the most recent
@@ -469,6 +481,43 @@ router.post('/describe-from-images', asyncHandler(async (req, res) => {
   res.json(result);
 }));
 
+const analyzeStyleReferenceSchema = z.object({
+  image: z.string().trim().min(1).max(300),
+  title: z.string().trim().max(svc.STYLE_REFERENCE_TITLE_MAX).optional(),
+  prompt: z.string().trim().max(svc.STYLE_REFERENCE_PROMPT_MAX).optional(),
+  styleNotes: z.string().trim().max(svc.STYLE_NOTES_MAX).optional().default(''),
+  influences: influencesSchema.optional().default({ embrace: [], avoid: [] }),
+  locked: lockedSchema.optional().default({}),
+  providerId: z.string().trim().max(80).optional(),
+  model: z.string().trim().max(200).optional(),
+});
+
+// Stateless review step: analyze the image and return a proposed record plus a
+// diff. Persistence only happens after the user chooses reference-only or
+// reference-and-adopt in the client.
+router.post('/analyze-style-reference', asyncHandler(async (req, res) => {
+  const body = validateRequest(analyzeStyleReferenceSchema, req.body ?? {});
+  const imageFilename = sanitizeFilename(body.image);
+  if (imageFilename !== body.image) {
+    throw new ServerError(`Invalid gallery image filename: ${body.image}`, {
+      status: 400,
+      code: 'VALIDATION_ERROR',
+    });
+  }
+  const imagePath = resolveGalleryImage(imageFilename);
+  if (!imagePath) {
+    throw new ServerError(`Gallery image not found: ${imageFilename} — upload it again and retry.`, {
+      status: 400,
+      code: 'GALLERY_IMAGE_NOT_FOUND',
+    });
+  }
+  res.json(await analyzeUniverseStyleReference({
+    ...body,
+    imagePath,
+    imageFilename,
+  }));
+}));
+
 // Refines the 3 top-level prompts (starter / style / negative) based on
 // user feedback. Stateless — the caller decides whether to write the
 // result back to a saved universe. Keep ahead of `/:id`.
@@ -516,6 +565,12 @@ const mergeAIResolveSchema = z.object({
 
 router.get('/duplicates', asyncHandler(async (_req, res) => {
   res.json({ groups: await findDuplicateUniverseGroups() });
+}));
+
+// Style tokens only (see svc.listUniverseStyles). Must stay ahead of `/:id` so
+// the wildcard doesn't catch "styles" as a universe id.
+router.get('/styles', asyncHandler(async (_req, res) => {
+  res.json(await svc.listUniverseStyles());
 }));
 
 router.post('/merge/preview', asyncHandler(async (req, res) => {

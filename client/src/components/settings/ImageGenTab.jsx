@@ -20,20 +20,24 @@ import { isLoopbackHost } from '../../lib/loopbackHost.js';
 import {
   getSettings, updateSettings, getImageGenStatus, generateImage,
   registerTool, updateTool, getToolsList,
-  getHfTokenStatus, saveHfToken, clearHfToken,
+  saveHfToken, clearHfToken,
 } from '../../services/api';
-import { IMAGE_GEN_MODE } from '../../lib/imageGenBackends';
+import { isCloudCliMode, IMAGE_GEN_MODE, CODEX_IMAGEGEN_DEFAULT_EFFORT, GROK_ASPECT_RATIOS } from '../../lib/imageGenBackends';
 import { resolveCleanersFromConfig } from '../../lib/imageCleaners';
 import { useMediaJobSse } from '../../hooks/useMediaJobSse';
+import { useHfTokenStatus } from '../../hooks/useHfTokenStatus';
 import { CODEX_EFFORT_LEVELS } from '../../utils/providers';
 
 const SDAPI_TOOL_ID = 'sdapi';
 const CODEX_TOOL_ID = 'codex-imagegen';
+const GROK_TOOL_ID = 'grok-imagegen';
 // Mirror of server/services/imageGen/modes.js — shown as placeholder/default
 // hints so the user sees what a blank Model / Effort field will actually use.
-// The server owns the real default; these are display-only.
+// The server owns the real default; these are display-only. The effort default
+// lives in the shared imageGenBackends lib (imported above) so the Render Queue
+// and this settings form don't drift; the model default stays local (only used
+// here as a placeholder string).
 const CODEX_IMAGEGEN_DEFAULT_MODEL = 'gpt-5.6-luna';
-const CODEX_IMAGEGEN_DEFAULT_EFFORT = 'low';
 const DEFAULT_TEST_PROMPT = 'a small cyberpunk fox sitting on a neon-lit rooftop at night, cinematic, highly detailed';
 const normalizeUrl = (url) => (url || '').trim().replace(/\/+$/, '');
 
@@ -54,6 +58,7 @@ const MEDIA_TABS = [
   { id: 'external', label: 'External', icon: Cloud },
   { id: 'local', label: 'Local', icon: Cpu },
   { id: 'codex', label: 'Codex CLI', icon: Terminal },
+  { id: 'grok', label: 'Grok CLI', icon: Sparkles },
   { id: 'tokens', label: 'Tokens', icon: Key },
   { id: 'expose', label: 'Expose', icon: Globe },
   { id: 'test', label: 'Test', icon: Sparkles },
@@ -94,6 +99,13 @@ export function ImageGenTab() {
   // Empty = use the shipped default effort (CODEX_IMAGEGEN_DEFAULT_EFFORT).
   const [codexEffort, setCodexEffort] = useState('');
   const [codexParallelLimit, setCodexParallelLimit] = useState(1);
+  // Grok Build CLI provider config — gated by `grokEnabled` the same way as
+  // Codex (renders spend the user's Grok quota). No model/effort fields:
+  // grok's image tools run on xAI's fixed image backend.
+  const [grokEnabled, setGrokEnabled] = useState(false);
+  const [grokPath, setGrokPath] = useState('');
+  // Empty = let the caller's width/height (or the tool default) decide.
+  const [grokAspectRatio, setGrokAspectRatio] = useState('');
   // Per-provider cleaner toggles. Both run after the PNG lands and before
   // the SSE complete event so subscribers see the cleaned bytes. SynthID
   // (the gpt-image / Imagen / Gemini pixel-level watermark) is unaffected
@@ -103,8 +115,8 @@ export function ImageGenTab() {
   //     provenance chunk. Lossless — pixels untouched.
   //   - denoise   (default OFF): median(3) + sharpen pass for AI-artifact
   //     reduction. LOSSY: blurs annotation text and small details.
-  const [cleanC2PAByMode, setCleanC2PAByMode] = useState({ external: true, local: true, codex: true });
-  const [denoiseByMode, setDenoiseByMode] = useState({ external: false, local: false, codex: false });
+  const [cleanC2PAByMode, setCleanC2PAByMode] = useState({ external: true, local: true, codex: true, grok: false });
+  const [denoiseByMode, setDenoiseByMode] = useState({ external: false, local: false, codex: false, grok: false });
   const setCleanC2PAFor = (m) => (v) => setCleanC2PAByMode((p) => ({ ...p, [m]: v }));
   const setDenoiseFor = (m) => (v) => setDenoiseByMode((p) => ({ ...p, [m]: v }));
   // Raw string held while the user is typing in the parallel-limit input.
@@ -120,19 +132,23 @@ export function ImageGenTab() {
   const codexModelId = useId();
   const codexEffortId = useId();
   const codexParallelId = useId();
+  const grokPathId = useId();
+  const grokRatioId = useId();
 
   // Snapshot of saved values so we can show the "dirty" state
   const [saved, setSaved] = useState({
     mode: IMAGE_GEN_MODE.EXTERNAL, sdapiUrl: '', pythonPath: '', exposeA1111: false,
     codexEnabled: false, codexPath: '', codexModel: '', codexEffort: '', codexParallelLimit: 1,
-    cleanC2PAByMode: { external: true, local: true, codex: true },
-    denoiseByMode: { external: false, local: false, codex: false },
+    grokEnabled: false, grokPath: '', grokAspectRatio: '',
+    cleanC2PAByMode: { external: true, local: true, codex: true, grok: false },
+    denoiseByMode: { external: false, local: false, codex: false, grok: false },
   });
 
   const [status, setStatus] = useState(null);
   const [checking, setChecking] = useState(false);
   const [toolRegistered, setToolRegistered] = useState(false);
   const [codexToolRegistered, setCodexToolRegistered] = useState(false);
+  const [grokToolRegistered, setGrokToolRegistered] = useState(false);
 
   const [testPrompt, setTestPrompt] = useState(DEFAULT_TEST_PROMPT);
   const [rendering, setRendering] = useState(false);
@@ -146,18 +162,12 @@ export function ImageGenTab() {
   // applies to local Flux models regardless of which backend is active.
   // `source` is 'stored' | 'env' | 'cli' | 'none'; only 'stored' tokens can be
   // cleared from the UI (env/CLI come from outside settings.json).
-  const [hfTokenInfo, setHfTokenInfo] = useState({ hfTokenPresent: null, source: null });
+  const { present: hfTokenPresent, source: hfTokenSource, refresh: refreshHfTokenStatus } = useHfTokenStatus();
   const [hfTokenInput, setHfTokenInput] = useState('');
   // One busy flag covers both save and clear since they're mutually exclusive
   // (both disable the form + buttons). `busy` is the in-flight verb so the
   // Clear button can still show a Trash icon while the spinner is on Save.
   const [hfTokenBusy, setHfTokenBusy] = useState(null); // null | 'saving' | 'clearing'
-
-  useEffect(() => {
-    getHfTokenStatus()
-      .then((s) => { if (s) setHfTokenInfo({ hfTokenPresent: !!s.hfTokenPresent, source: s.source || null }); })
-      .catch((err) => { console.warn(`⚠️ Failed to load HF token status: ${err?.message || err}`); });
-  }, []);
 
   const handleSaveHfToken = async () => {
     const trimmed = hfTokenInput.trim();
@@ -167,7 +177,7 @@ export function ImageGenTab() {
     setHfTokenBusy(null);
     if (!result?.ok) return;
     setHfTokenInput('');
-    setHfTokenInfo({ hfTokenPresent: true, source: result.source || 'stored' });
+    refreshHfTokenStatus();
     toast.success('HuggingFace token saved');
   };
 
@@ -176,7 +186,7 @@ export function ImageGenTab() {
     const result = await clearHfToken().catch(() => null);
     setHfTokenBusy(null);
     if (!result?.ok) return;
-    setHfTokenInfo({ hfTokenPresent: !!result.hfTokenPresent, source: result.source || 'none' });
+    refreshHfTokenStatus();
     toast.success(result.hfTokenPresent ? 'Stored token cleared (env / CLI token still active)' : 'HuggingFace token cleared');
   };
 
@@ -202,13 +212,18 @@ export function ImageGenTab() {
           : PARALLEL_FALLBACK;
         setParallelBounds(bounds);
         const cxParallel = clampParallel(cx.parallelLimit, bounds);
+        const gk = ig.grok || {};
+        const gkEnabled = gk.enabled === true;
+        const gkPath = gk.grokPath || '';
+        const gkRatio = gk.aspectRatio || '';
         // Per-mode cleaner reads via the shared helper (mirrored from
         // server/lib/imageClean.js).
         const codexClean = resolveCleanersFromConfig(cx, IMAGE_GEN_MODE.CODEX);
+        const grokClean = resolveCleanersFromConfig(gk, IMAGE_GEN_MODE.GROK);
         const localClean = resolveCleanersFromConfig(ig.local, IMAGE_GEN_MODE.LOCAL);
         const externalClean = resolveCleanersFromConfig(ig.external, IMAGE_GEN_MODE.EXTERNAL);
-        const c2 = { codex: codexClean.cleanC2PA, local: localClean.cleanC2PA, external: externalClean.cleanC2PA };
-        const dn = { codex: codexClean.denoise, local: localClean.denoise, external: externalClean.denoise };
+        const c2 = { codex: codexClean.cleanC2PA, grok: grokClean.cleanC2PA, local: localClean.cleanC2PA, external: externalClean.cleanC2PA };
+        const dn = { codex: codexClean.denoise, grok: grokClean.denoise, local: localClean.denoise, external: externalClean.denoise };
         setMode(m);
         setSdapiUrl(url);
         setPythonPath(py);
@@ -219,16 +234,21 @@ export function ImageGenTab() {
         setCodexEffort(cxEffort);
         setCodexParallelLimit(cxParallel);
         setParallelLimitDraft(String(cxParallel));
+        setGrokEnabled(gkEnabled);
+        setGrokPath(gkPath);
+        setGrokAspectRatio(gkRatio);
         setCleanC2PAByMode(c2);
         setDenoiseByMode(dn);
         setSaved({
           mode: m, sdapiUrl: url, pythonPath: py, exposeA1111: expose,
           codexEnabled: cxEnabled, codexPath: cxPath, codexModel: cxModel, codexEffort: cxEffort,
           codexParallelLimit: cxParallel,
+          grokEnabled: gkEnabled, grokPath: gkPath, grokAspectRatio: gkRatio,
           cleanC2PAByMode: c2, denoiseByMode: dn,
         });
         setToolRegistered(tools.some((t) => t.id === SDAPI_TOOL_ID));
         setCodexToolRegistered(tools.some((t) => t.id === CODEX_TOOL_ID));
+        setGrokToolRegistered(tools.some((t) => t.id === GROK_TOOL_ID));
       })
       .catch(() => toast.error('Failed to load image gen settings'))
       .finally(() => setLoading(false));
@@ -251,6 +271,11 @@ export function ImageGenTab() {
     || codexModel !== saved.codexModel
     || codexEffort !== saved.codexEffort
     || codexParallelLimit !== saved.codexParallelLimit
+    || grokEnabled !== saved.grokEnabled
+    || grokPath !== saved.grokPath
+    || grokAspectRatio !== saved.grokAspectRatio
+    || cleanC2PAByMode.grok !== saved.cleanC2PAByMode.grok
+    || denoiseByMode.grok !== saved.denoiseByMode.grok
     || cleanC2PAByMode.codex !== saved.cleanC2PAByMode.codex
     || cleanC2PAByMode.local !== saved.cleanC2PAByMode.local
     || cleanC2PAByMode.external !== saved.cleanC2PAByMode.external
@@ -265,6 +290,8 @@ export function ImageGenTab() {
     const cxModel = codexModel?.trim() || undefined;
     const cxEffort = codexEffort?.trim() || undefined;
     const cxParallel = clampParallel(codexParallelLimit, parallelBounds);
+    const gkPath = grokPath?.trim() || undefined;
+    const gkRatio = grokAspectRatio?.trim() || undefined;
     const patch = {
       imageGen: {
         mode,
@@ -273,6 +300,10 @@ export function ImageGenTab() {
         codex: {
           enabled: codexEnabled, codexPath: cxPath, model: cxModel, effort: cxEffort, parallelLimit: cxParallel,
           cleanC2PA: cleanC2PAByMode.codex, denoise: denoiseByMode.codex,
+        },
+        grok: {
+          enabled: grokEnabled, grokPath: gkPath, aspectRatio: gkRatio,
+          cleanC2PA: cleanC2PAByMode.grok, denoise: denoiseByMode.grok,
         },
         expose: { a1111: exposeA1111 },
         // Keep the legacy field populated so anything still reading
@@ -290,6 +321,7 @@ export function ImageGenTab() {
         mode, sdapiUrl: url || '', pythonPath, exposeA1111,
         codexEnabled, codexPath: cxPath || '', codexModel: cxModel || '', codexEffort: cxEffort || '',
         codexParallelLimit: cxParallel,
+        grokEnabled, grokPath: gkPath || '', grokAspectRatio: gkRatio || '',
         cleanC2PAByMode, denoiseByMode,
       });
       if (cxParallel !== codexParallelLimit) {
@@ -301,6 +333,8 @@ export function ImageGenTab() {
       if (cxPath !== codexPath) setCodexPath(cxPath || '');
       if (cxModel !== codexModel) setCodexModel(cxModel || '');
       if (cxEffort !== codexEffort) setCodexEffort(cxEffort || '');
+      if (gkPath !== grokPath) setGrokPath(gkPath || '');
+      if (gkRatio !== grokAspectRatio) setGrokAspectRatio(gkRatio || '');
       toast.success('Image gen settings saved');
     } catch (err) {
       toast.error(err.message || 'Failed to save settings');
@@ -318,6 +352,14 @@ export function ImageGenTab() {
       enabled: sdEnabled,
       config: { mode, sdapiUrl: url, pythonPath },
       promptHints: 'Use POST /api/image-gen/generate with { prompt, negativePrompt, width, height, steps }. Use POST /api/image-gen/avatar for character portraits.',
+    };
+    const grokToolData = {
+      name: 'Grok Imagegen',
+      category: 'image-generation',
+      description: 'Generate images via the Grok Build CLI built-in image_gen tool. Requires a Grok plan that includes image generation.',
+      enabled: grokEnabled,
+      config: { grokPath: gkPath, aspectRatio: gkRatio },
+      promptHints: 'Use POST /api/image-gen/generate with { prompt, mode: "grok" } — or call the image_generate voice tool with provider: "grok".',
     };
     const codexToolData = {
       name: 'Codex Imagegen',
@@ -353,6 +395,11 @@ export function ImageGenTab() {
         shouldCreate: codexEnabled, onCreated: () => setCodexToolRegistered(true),
         errLabel: 'Codex Imagegen tool',
       }),
+      syncTool({
+        id: GROK_TOOL_ID, registered: grokToolRegistered, data: grokToolData,
+        shouldCreate: grokEnabled, onCreated: () => setGrokToolRegistered(true),
+        errLabel: 'Grok Imagegen tool',
+      }),
     ]);
 
     setSaving(false);
@@ -375,7 +422,7 @@ export function ImageGenTab() {
       // mark the render complete on the `complete` event (or fail on
       // `error`). External mode awaits internally and the file is on disk
       // by the time generateImage resolves, so we can short-circuit.
-      const isAsync = (result?.mode === IMAGE_GEN_MODE.LOCAL || result?.mode === IMAGE_GEN_MODE.CODEX);
+      const isAsync = (result?.mode === IMAGE_GEN_MODE.LOCAL || isCloudCliMode(result?.mode));
       if (isAsync && result?.generationId) {
         const jobResult = await attachRenderSse(result.generationId, {
           onError: (msg) => new Error(msg.error || 'Generation failed'),
@@ -445,7 +492,7 @@ export function ImageGenTab() {
           generation locally with mflux on this Mac. Pick whichever fits — you can also
           expose this PortOS as an A1111-compatible endpoint for other tailnet boxes.
         </p>
-        <div className={`grid grid-cols-1 sm:grid-cols-2 ${codexEnabled ? 'lg:grid-cols-3' : ''} gap-3`}>
+        <div className={`grid grid-cols-1 sm:grid-cols-2 ${(codexEnabled || grokEnabled) ? 'lg:grid-cols-3' : ''} gap-3`}>
           <button
             type="button"
             onClick={() => setMode(IMAGE_GEN_MODE.EXTERNAL)}
@@ -479,6 +526,19 @@ export function ImageGenTab() {
                 <span className="font-medium text-sm">Codex CLI</span>
               </div>
               <p className="text-xs text-gray-500 mt-1">Route through the Codex CLI built-in image_gen tool. Counts against your Codex plan.</p>
+            </button>
+          )}
+          {grokEnabled && (
+            <button
+              type="button"
+              onClick={() => setMode(IMAGE_GEN_MODE.GROK)}
+              className={`text-left p-4 rounded-lg border transition-colors ${mode === IMAGE_GEN_MODE.GROK ? 'border-port-accent bg-port-accent/10 text-white' : 'border-port-border text-gray-400 hover:bg-port-border/30 hover:text-white'}`}
+            >
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4" />
+                <span className="font-medium text-sm">Grok CLI</span>
+              </div>
+              <p className="text-xs text-gray-500 mt-1">Route through the Grok Build CLI built-in image_gen tool. Counts against your Grok plan.</p>
             </button>
           )}
         </div>
@@ -641,6 +701,85 @@ export function ImageGenTab() {
       </div>
       )}
 
+      {/* Grok Build CLI config — mirrors the Codex section's enable-gate
+          pattern. Grok appears as a backend tile only after the user flips
+          this on. Simpler than the Codex form: grok's image tools expose no
+          model/effort knobs, so it's just the binary path + a default aspect
+          ratio + the cleaner toggles. */}
+      {mediaTab === 'grok' && (
+      <div className="bg-port-card border border-port-border rounded-xl p-6 space-y-4">
+        <div className="flex items-center gap-2 text-white">
+          <Sparkles size={18} />
+          <h2 className="text-lg font-semibold">Grok CLI Imagegen</h2>
+        </div>
+        <p className="text-xs text-gray-500">
+          Route image generation through the Grok Build CLI's built-in
+          <code className="text-gray-400"> image_gen </code> tool (and
+          <code className="text-gray-400"> image_edit </code> for image-to-image) — invoked headlessly.
+          Uses your logged-in Grok session, no XAI_API_KEY required. Not every Grok plan includes
+          image generation; if yours doesn't, leave this off.
+        </p>
+        <label className="flex items-center gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={grokEnabled}
+            onChange={(e) => {
+              const v = e.target.checked;
+              setGrokEnabled(v);
+              // Disabling Grok while it's the active backend would leave the
+              // saved mode pointing at a disabled provider — same fallback
+              // order as the Codex toggle: local if configured, else external.
+              if (!v && mode === IMAGE_GEN_MODE.GROK) {
+                const hasLocal = !!pythonPath?.trim();
+                setMode(hasLocal ? IMAGE_GEN_MODE.LOCAL : IMAGE_GEN_MODE.EXTERNAL);
+              }
+            }}
+            className="rounded"
+          />
+          <span className="text-sm text-gray-300">Enable Grok Imagegen</span>
+        </label>
+        {grokEnabled && (
+          <div className="space-y-3 pl-6 border-l-2 border-port-border">
+            <div>
+              <label htmlFor={grokPathId} className="block text-xs font-medium text-gray-400 mb-1">Grok binary path (optional)</label>
+              <input
+                id={grokPathId}
+                type="text"
+                value={grokPath}
+                onChange={(e) => setGrokPath(e.target.value)}
+                className="w-full bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-port-accent"
+                placeholder="grok (uses $PATH)"
+              />
+              <p className="text-xs text-gray-500 mt-1">Leave empty to invoke <code>grok</code> from $PATH.</p>
+            </div>
+            <div>
+              <label htmlFor={grokRatioId} className="block text-xs font-medium text-gray-400 mb-1">Default aspect ratio (optional)</label>
+              <select
+                id={grokRatioId}
+                value={grokAspectRatio}
+                onChange={(e) => setGrokAspectRatio(e.target.value)}
+                className="w-full bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-port-accent"
+              >
+                <option value="">Auto (from requested size)</option>
+                {GROK_ASPECT_RATIOS.map((r) => (
+                  <option key={r} value={r}>{r}</option>
+                ))}
+              </select>
+              <p className="text-xs text-gray-500 mt-1">
+                Applied when a render doesn't specify dimensions. A render's width/height maps to the nearest supported ratio automatically.
+              </p>
+            </div>
+            <CleanersToggles
+              cleanC2PA={cleanC2PAByMode.grok}
+              denoise={denoiseByMode.grok}
+              onCleanC2PAChange={setCleanC2PAFor(IMAGE_GEN_MODE.GROK)}
+              onDenoiseChange={setDenoiseFor(IMAGE_GEN_MODE.GROK)}
+            />
+          </div>
+        )}
+      </div>
+      )}
+
       {/* HuggingFace token — used by local Flux models (FLUX.1-dev, FLUX.2-klein).
           Independent of the mode picker because the token persists in settings
           and applies whenever local image gen runs. */}
@@ -659,16 +798,16 @@ export function ImageGenTab() {
           <code className="text-gray-400">HF_TOKEN</code> env var or <code className="text-gray-400">~/.cache/huggingface/token</code>.
         </p>
 
-        {hfTokenInfo.hfTokenPresent === null ? (
+        {hfTokenPresent === null ? (
           <div className="text-xs text-gray-500"><BrailleSpinner text="Checking token status" /></div>
-        ) : hfTokenInfo.hfTokenPresent ? (
+        ) : hfTokenPresent ? (
           <div className="flex items-center gap-2 text-xs text-port-success">
             <Check size={14} />
             <span>
               Token configured
-              {hfTokenInfo.source === 'env' && ' (from HF_TOKEN environment variable)'}
-              {hfTokenInfo.source === 'cli' && ' (from ~/.cache/huggingface/token — set via `hf auth login`)'}
-              {hfTokenInfo.source === 'stored' && ' (stored in settings.json)'}
+              {hfTokenSource === 'env' && ' (from HF_TOKEN environment variable)'}
+              {hfTokenSource === 'cli' && ' (from ~/.cache/huggingface/token — set via `hf auth login`)'}
+              {hfTokenSource === 'stored' && ' (stored in settings.json)'}
             </span>
           </div>
         ) : (
@@ -680,7 +819,7 @@ export function ImageGenTab() {
 
         <div>
           <label htmlFor="hf-token-input" className="block text-xs font-medium text-gray-400 mb-1">
-            {hfTokenInfo.source === 'stored' ? 'Replace stored token' : 'Paste a token'}
+            {hfTokenSource === 'stored' ? 'Replace stored token' : 'Paste a token'}
           </label>
           <div className="flex flex-col sm:flex-row gap-2">
             <input
@@ -707,7 +846,7 @@ export function ImageGenTab() {
           </div>
         </div>
 
-        {hfTokenInfo.source === 'stored' && (
+        {hfTokenSource === 'stored' && (
           <button
             type="button"
             onClick={handleClearHfToken}

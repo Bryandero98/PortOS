@@ -26,42 +26,6 @@ import * as cos from '../services/cos.js';
 
 const router = Router();
 
-/**
- * Extract a clean hostname from a URL (strip a leading www.), or null if unparseable.
- */
-function hostnameFromUrl(url) {
-  try {
-    return new URL(url).hostname.replace(/^www\./, '');
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Clone repo in background and update link record
- */
-async function cloneRepoInBackground(linkId, url) {
-  // Update status to cloning
-  await brainService.updateLink(linkId, { cloneStatus: 'cloning' });
-
-  githubCloner.cloneRepo(url)
-    .then(async (result) => {
-      await brainService.updateLink(linkId, {
-        localPath: result.localPath,
-        cloneStatus: 'cloned',
-        cloneError: null
-      });
-      console.log(`✅ Background clone complete: ${linkId}`);
-    })
-    .catch(async (err) => {
-      await brainService.updateLink(linkId, {
-        cloneStatus: 'failed',
-        cloneError: err.message
-      });
-      console.error(`❌ Background clone failed: ${linkId} - ${err.message}`);
-    });
-}
-
 // =============================================================================
 // LINKS CRUD
 // =============================================================================
@@ -134,7 +98,7 @@ router.get('/links/:id', asyncHandler(async (req, res) => {
  * Create a new link (quick-add with URL)
  */
 router.post('/links', asyncHandler(async (req, res) => {
-  const { url, title, description, linkType, tags, bucketId, bucketOrder, autoClone } = validateRequest(linkInputSchema, req.body);
+  const { url, ...options } = validateRequest(linkInputSchema, req.body);
 
   // Check if URL already exists
   const existing = await brainService.getLinkByUrl(url);
@@ -146,43 +110,10 @@ router.post('/links', asyncHandler(async (req, res) => {
     });
   }
 
-  // Parse GitHub URL if applicable
-  const parsed = githubCloner.parseGitHubUrl(url);
-  const isGitHubRepo = !!parsed;
-
-  // Derive a readable default title: repo slug for GitHub, hostname for plain
-  // URLs (so quick-added bucket chips read "example.com" instead of the full URL).
-  const defaultTitle = parsed
-    ? `${parsed.owner}/${parsed.repo}`
-    : (hostnameFromUrl(url) || url);
-
-  // Create initial link record
-  const linkData = {
-    url,
-    title: title || defaultTitle,
-    description: description || '',
-    linkType: linkType || (isGitHubRepo ? 'github' : 'other'),
-    tags: tags || [],
-    isGitHubRepo,
-    gitHubOwner: parsed?.owner,
-    gitHubRepo: parsed?.repo,
-    localPath: null,
-    cloneStatus: isGitHubRepo && autoClone !== false ? 'pending' : 'none',
-    cloneError: null,
-    ...(bucketId !== undefined ? { bucketId } : {}),
-    ...(bucketOrder !== undefined ? { bucketOrder } : {})
-  };
-
-  const link = await brainService.createLink(linkData);
-  console.log(`🔗 Created link: ${link.id} (${isGitHubRepo ? 'GitHub repo' : 'regular URL'})`);
-
-  // If GitHub repo and auto-clone enabled, start clone in background
-  if (isGitHubRepo && autoClone !== false) {
-    cloneRepoInBackground(link.id, url).catch(err => {
-      console.error(`❌ Background clone setup failed for ${link.id}: ${err.message}`);
-    });
-  }
-
+  // Title derivation, GitHub metadata, and the background clone all live in the
+  // service so a URL captured in the Brain inbox lands identically (see
+  // captureUrlAsLink in services/brain.js).
+  const link = await brainService.createLinkFromUrl(url, options);
   res.status(201).json(link);
 }));
 
@@ -263,7 +194,7 @@ router.post('/links/:id/clone', asyncHandler(async (req, res) => {
   }
 
   // Start clone in background
-  cloneRepoInBackground(link.id, link.url);
+  brainService.cloneRepoInBackground(link.id, link.url);
 
   res.json({ message: 'Clone started', linkId: link.id });
 }));

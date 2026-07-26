@@ -3,6 +3,7 @@ import {
   detectStartSchema,
   standardizeStartSchema,
   logsSubscribeSchema,
+  logsUnsubscribeSchema,
   errorRecoverSchema,
   shellInputSchema,
   shellResizeSchema,
@@ -66,6 +67,40 @@ describe('socketValidation schemas', () => {
       expect(logsSubscribeSchema.safeParse({ processName: 'p', lines: 0 }).success).toBe(false);
       expect(logsSubscribeSchema.safeParse({ processName: 'p', lines: -1 }).success).toBe(false);
       expect(logsSubscribeSchema.safeParse({ processName: 'p', lines: 1.5 }).success).toBe(false);
+    });
+
+    // appId scopes the stream to an app's custom PM2_HOME (issue #2991).
+    it('accepts an optional appId', () => {
+      const result = logsSubscribeSchema.safeParse({ processName: 'game', appId: 'app-1' });
+      expect(result.success).toBe(true);
+      expect(result.data.appId).toBe('app-1');
+    });
+
+    it('leaves appId absent when omitted (default PM2_HOME)', () => {
+      const result = logsSubscribeSchema.safeParse({ processName: 'game' });
+      expect(result.success).toBe(true);
+      expect(result.data.appId).toBeUndefined();
+    });
+
+    it('rejects an empty appId rather than treating it as absent', () => {
+      expect(logsSubscribeSchema.safeParse({ processName: 'game', appId: '' }).success).toBe(false);
+    });
+  });
+
+  describe('logsUnsubscribeSchema', () => {
+    it('accepts a named stream for scoped cleanup', () => {
+      expect(logsUnsubscribeSchema.safeParse({ processName: 'game' })).toMatchObject({
+        success: true,
+        data: { processName: 'game' }
+      });
+    });
+
+    it('defaults an omitted legacy payload to an all-stream cleanup', () => {
+      expect(logsUnsubscribeSchema.safeParse()).toMatchObject({ success: true, data: {} });
+    });
+
+    it('rejects an empty process name rather than silently sweeping streams', () => {
+      expect(logsUnsubscribeSchema.safeParse({ processName: '' }).success).toBe(false);
     });
   });
 

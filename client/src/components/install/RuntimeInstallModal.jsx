@@ -22,9 +22,14 @@ export default function RuntimeInstallModal({
   onComplete,
   installUrlBase = '/api/video-gen/setup/runtime-install',
   description = 'Cloning repo and installing python packages (large download on first run)...',
+  // Extra query params for installers that support modes beyond a first-time run
+  // (e.g. TRELLIS.2's `repair=1`, which re-runs setup.sh over an existing install
+  // to rebuild backends that failed to compile the first time — #2952).
+  params,
 }) {
   const [confirmingCancel, setConfirmingCancel] = useState(false);
-  const url = open && runtime ? `${installUrlBase}?runtime=${encodeURIComponent(runtime)}` : null;
+  const query = new URLSearchParams({ runtime: runtime ?? '', ...(params || {}) });
+  const url = open && runtime ? `${installUrlBase}?${query}` : null;
   const { logs, done, error, streamStarted, logsEndRef, close } = useInstallStream(
     url,
     { enabled: open && !!runtime, onComplete, maxLogLines: MAX_LOG_LINES, flushMs: 100 },

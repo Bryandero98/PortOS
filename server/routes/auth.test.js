@@ -13,6 +13,21 @@ vi.mock('../lib/fileUtils.js', async () => {
   return makeProxy(actual);
 });
 
+vi.mock('../../lib/portosAuthCore.js', async () => {
+  const actual = await vi.importActual('../../lib/portosAuthCore.js');
+  const testParams = { N: 1024, r: 8, p: 1, maxmem: 8 * 1024 * 1024 };
+  const hashPassword = (password, salt) =>
+    actual.__hashPasswordWithParamsForTests(password, salt, testParams);
+  return {
+    ...actual,
+    hashPassword,
+    verifyPasswordAgainst: async (auth, password) => {
+      if (!auth?.enabled || !auth.passwordHash || !auth.salt || typeof password !== 'string' || password.length === 0) return false;
+      return actual.constantEqual(await hashPassword(password, auth.salt), auth.passwordHash);
+    },
+  };
+});
+
 // Reset settings.json through the shared helper so the getSettings() read cache
 // is dropped on every reset — see server/lib/settingsTestUtil.js. This suite
 // passes today only because buildApp()'s vi.resetModules() incidentally discards

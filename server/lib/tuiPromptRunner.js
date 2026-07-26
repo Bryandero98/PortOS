@@ -99,12 +99,18 @@ const PTY_ROWS = 50;
  *   AFTER this fires.
  * @param {number} [options.timeout] — hard cap on a single run (ms). Falls back to
  *   `provider.timeout`, then `DEFAULT_TIMEOUT_MS`.
+ * @param {number} [options.idleMs] — response-complete idle threshold (ms) for
+ *   THIS call, overriding `provider.tuiOneShotIdleMs` and the 8s default. The
+ *   default suits a chatty text reply that goes quiet within seconds; a task
+ *   that streams sparse output during a long operation (e.g. a multi-minute
+ *   grok `image_to_video` render) needs a larger value so a mid-work lull isn't
+ *   mistaken for completion. Pair with a larger `timeout`.
  * @param {string} [options.label] — human label for the live Shell view (the
  *   run `source`, e.g. `'pipeline-manuscript-completeness'`). Surfaced in the
  *   Shell page's session tab; falls back to `command · model` when absent.
  * @returns {Promise<void>}
  */
-export async function executeTuiRun({ runId, provider, prompt, workspacePath, onData, onComplete, timeout, label }) {
+export async function executeTuiRun({ runId, provider, prompt, workspacePath, onData, onComplete, timeout, idleMs, label }) {
   if (!provider || typeof provider !== 'object') {
     throw new Error('executeTuiRun: provider is required');
   }
@@ -114,7 +120,7 @@ export async function executeTuiRun({ runId, provider, prompt, workspacePath, on
 
   const { command, args } = buildTuiInvocation(provider, provider.defaultModel);
   const promptDelayMs = provider.tuiPromptDelayMs ?? DEFAULT_TUI_PROMPT_DELAY_MS;
-  const idleThresholdMs = provider.tuiOneShotIdleMs ?? DEFAULT_ONE_SHOT_IDLE_MS;
+  const idleThresholdMs = idleMs ?? provider.tuiOneShotIdleMs ?? DEFAULT_ONE_SHOT_IDLE_MS;
   const totalTimeoutMs = timeout ?? provider.timeout ?? DEFAULT_TIMEOUT_MS;
   const workingDir = (typeof workspacePath === 'string' && workspacePath) ? workspacePath : PATHS.root;
 
@@ -279,43 +285,89 @@ ${prompt}`;
     const finish = async ({ success, exitCode = 0, error = null, reason = 'completed' }) => {
       if (finalized) return;
       finalized = true;
-      cleanupTimers();
-      unregisterActiveRun(runId);
-      // Drop the live Shell view the moment the run ends (notifies any attached
-      // viewer via shell:exit). Idempotent — safe even if no viewer ever
-      // attached. Runs before the kill below so the session disappears from the
-      // list immediately rather than waiting on PTY teardown.
-      unregisterExternalSession(runId, { exitCode });
+      // Tracks whether the normal-path onComplete was reached, so the catch
+      // below re-surfaces failure ONLY when a step BEFORE onComplete threw —
+      // never re-invoking onComplete when onComplete itself was the throw
+      // source (that would violate the once-only completion contract).
+      let onCompleteInvoked = false;
+      // finish() is invoked fire-and-forget from PTY/timer callbacks outside the
+      // request lifecycle (onData, onExit, sendPrompt's write-catch,
+      // responseFileWatchTimer, hardTimeoutTimer) — none of them await or
+      // .catch() this call. try/finally guarantees `resolve` below always fires
+      // exactly once even if a step throws (including the caller-supplied
+      // `onComplete` callback), so executeTuiRun's Promise can never hang forever.
+      try {
+        cleanupTimers();
+        unregisterActiveRun(runId);
+        // Drop the live Shell view the moment the run ends (notifies any attached
+        // viewer via shell:exit). Idempotent — safe even if no viewer ever
+        // attached. Runs before the kill below so the session disappears from the
+        // list immediately rather than waiting on PTY teardown.
+        unregisterExternalSession(runId, { exitCode });
 
-      // Kill the PTY if still alive — one-shot runs don't leave a session
-      // behind for the user to interact with.
-      try { if (ptyProcess && !ptyProcess.killed) ptyProcess.kill(); } catch { /* already gone */ }
+        // Kill the PTY if still alive — one-shot runs don't leave a session
+        // behind for the user to interact with.
+        try { if (ptyProcess && !ptyProcess.killed) ptyProcess.kill(); } catch { /* already gone */ }
 
-      // Prefer the response file the TUI was directed to write; fall back
-      // to the ANSI-stripped screen scrape when the file is missing/empty
-      // or the run didn't succeed. Logic lives in `resolveTuiResponseText`
-      // so it can be unit-tested without a live PTY.
-      const { text: responseText, usedResponseFile } = await resolveTuiResponseText({
-        success, responseFilePath, outputBuffer, wrappedPrompt,
-      });
+        // Prefer the response file the TUI was directed to write; fall back
+        // to the ANSI-stripped screen scrape when the file is missing/empty
+        // or the run didn't succeed. Logic lives in `resolveTuiResponseText`
+        // so it can be unit-tested without a live PTY.
+        const { text: responseText, usedResponseFile } = await resolveTuiResponseText({
+          success, responseFilePath, outputBuffer, wrappedPrompt,
+        });
 
-      // Delegate run-record finalization (output.txt + metadata.json merge
-      // + onRunCompleted/onRunFailed hooks + toolkit error analysis) to the
-      // shared runner helper. `completionReason` lands in `extras` so it
-      // gets persisted to metadata.json BEFORE the write (was previously
-      // set post-write and never made it to disk → /runs replay missed it).
-      const metadata = await finalizeRunRecord({
-        runId, output: responseText, exitCode, success, error, startTime,
-        extras: { completionReason: reason, usedResponseFile, outputTruncated: outputBufferTruncated },
-      }).catch((err) => {
-        console.error(`❌ TUI run ${runId} finalize failed: ${err.message}`);
-        return {
-          exitCode, success, error: error || err.message,
-          duration: Date.now() - startTime, completionReason: reason,
-        };
-      });
-      onComplete?.({ ...metadata, text: responseText, usedResponseFile, outputTruncated: outputBufferTruncated });
-      resolve();
+        // Delegate run-record finalization (output.txt + metadata.json merge
+        // + onRunCompleted/onRunFailed hooks + toolkit error analysis) to the
+        // shared runner helper. `completionReason` lands in `extras` so it
+        // gets persisted to metadata.json BEFORE the write (was previously
+        // set post-write and never made it to disk → /runs replay missed it).
+        const metadata = await finalizeRunRecord({
+          runId, output: responseText, exitCode, success, error, startTime,
+          extras: { completionReason: reason, usedResponseFile, outputTruncated: outputBufferTruncated },
+        }).catch((err) => {
+          console.error(`❌ TUI run ${runId} finalize failed: ${err.message}`);
+          return {
+            exitCode, success, error: error || err.message,
+            duration: Date.now() - startTime, completionReason: reason,
+          };
+        });
+        onCompleteInvoked = true;
+        onComplete?.({ ...metadata, text: responseText, usedResponseFile, outputTruncated: outputBufferTruncated });
+      } catch (err) {
+        console.error(`❌ TUI run ${runId} finish() failed: ${err?.message || err}`);
+        // Ensure the original PTY is torn down even when a cleanup step BEFORE
+        // the kill above threw (e.g. unregisterExternalSession). Otherwise the
+        // failure we report below rejects executeProviderRunOnce and spins up a
+        // fallback provider while the original PTY keeps running — two live runs
+        // for one request. Idempotent: no-op if the kill above already fired.
+        try { if (ptyProcess && !ptyProcess.killed) ptyProcess.kill(); } catch { /* already gone */ }
+        // A step BEFORE onComplete threw, so the caller's onComplete-driven
+        // settle never fired. executeProviderRunOnce (promptRunner.js) settles
+        // its OUTER Promise only via onComplete (→ safeReject) or the returned
+        // promise rejecting — and our try/finally always resolves (never
+        // rejects), so `.catch(safeReject)` won't fire either. Without this,
+        // resolving the inner promise leaves the central-prompt/pipeline caller
+        // pending forever — the exact hang this patch exists to prevent. Deliver
+        // failure metadata so onComplete → safeReject settles the caller. Skip
+        // this when onComplete itself was the throw source (onCompleteInvoked) —
+        // re-invoking it would break the once-only completion contract and could
+        // emit a contradictory success-then-failure. Guard the callback so a
+        // throw here doesn't escape finish() (un-awaited → unhandled rejection)
+        // and still fall through to resolve().
+        if (!onCompleteInvoked) {
+          try {
+            onComplete?.({
+              runId, success: false, exitCode, error: `finish() failed: ${err?.message || err}`,
+              duration: Date.now() - startTime, completionReason: reason,
+            });
+          } catch (cbErr) {
+            console.error(`❌ TUI run ${runId} onComplete threw during finish() error handling: ${cbErr?.message || cbErr}`);
+          }
+        }
+      } finally {
+        resolve();
+      }
     };
 
     ptyProcess.onData((data) => {

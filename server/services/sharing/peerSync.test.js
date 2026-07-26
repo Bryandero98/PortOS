@@ -371,28 +371,23 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  // Drain in-flight fire-and-forget pushes before tearing down the tmpdir —
-  // otherwise persistPushSuccess can race the rm and leave ENOTEMPTY.
-  // Drain BOTH writeTails (peerSync's subscription state AND the tombstone
-  // cursor module's separate writeTail, since initCursor writes happen
-  // outside peerSync's lock). Three drain cycles with a 5ms macrotask
-  // delay between them — pushes scheduled by an earlier drain (e.g.
-  // ackDeletesUpTo from a settled push) only enqueue on the next tick, so
-  // we need more than one pass to fully quiesce the writeTail chains.
-  // __drainForTests double-awaits writeTail (one tick apart) so the
-  // persistPushSuccess that enqueues after peerFetch resolves is captured.
-  for (let i = 0; i < 3; i++) {
+  try {
+    // The peer-sync drain owns every fire-and-forget push/listener promise;
+    // cursor writes are serialized on a separate tail. One deterministic pass
+    // replaces the former fixed sleeps and prevents late writes racing rm.
     await __drainForTests();
     await __drainCursors();
-    await new Promise((r) => setTimeout(r, 5));
+    await __resetForTests();
+    await rm(tmp, { recursive: true, force: true });
+  } finally {
+    // Restore shared PATHS even when teardown itself fails so one test cannot
+    // leak its temporary data root into the rest of the suite.
+    PATHS.data = originalDataPath;
+    PATHS.images = originalImagesPath;
+    PATHS.imageRefs = originalImageRefsPath;
+    PATHS.videos = originalVideosPath;
+    PATHS.music = originalMusicPath;
   }
-  await __resetForTests();
-  await rm(tmp, { recursive: true, force: true });
-  PATHS.data = originalDataPath;
-  PATHS.images = originalImagesPath;
-  PATHS.imageRefs = originalImageRefsPath;
-  PATHS.videos = originalVideosPath;
-  PATHS.music = originalMusicPath;
 });
 
 describe('peerSync', () => {
@@ -432,6 +427,28 @@ describe('peerSync', () => {
       expect(second.created).toBe(false);
       const all = await listPeerSubscriptions();
       expect(all).toHaveLength(1);
+    });
+
+    it('drains a non-blocking initial push before teardown', async () => {
+      vi.mocked(getUniverse).mockResolvedValue({ id: 'u1', name: 'Foo', updatedAt: '2026-01-01T00:00:00Z' });
+      let resolveFetch;
+      vi.mocked(peerFetch).mockImplementation(() => new Promise((resolve) => {
+        resolveFetch = resolve;
+      }));
+
+      await subscribePeer({ peerId: 'peer-a', recordKind: 'universe', recordId: 'u1' });
+      await vi.waitFor(() => expect(peerFetch).toHaveBeenCalledTimes(1));
+
+      let drained = false;
+      const drain = __drainForTests().then(() => { drained = true; });
+      await Promise.resolve();
+      expect(drained).toBe(false);
+
+      resolveFetch({ ok: true, json: async () => ({ missingAssets: [] }) });
+      await drain;
+
+      const persisted = await findPeerSubscription('peer-a', 'universe', 'u1');
+      expect(persisted.lastPushedAt).toBeTruthy();
     });
 
     it('does NOT re-push on idempotent re-subscribe (existing sub keeps its lastPushedAt)', async () => {
@@ -880,8 +897,10 @@ describe('peerSync', () => {
       // in-memory map and would pass even if the terminal flush never wrote. A
       // present-on-disk entry proves the batch's coalesced write actually ran
       // inside the awaited fan-out (no drain).
+      // On-disk entries are `{ h, v }` (#2912 — the hash-fields version travels
+      // with the hash it was computed under); `.h` is the plain hash string.
       const onDisk = JSON.parse(await readFile(join(tmp, 'sharing', 'sync_base_hashes.json'), 'utf8'));
-      expect(onDisk['universe:u1']).toBe(contentHashForRecord('universe', { id: 'u1', name: 'U1' }));
+      expect(onDisk['universe:u1'].h).toBe(contentHashForRecord('universe', { id: 'u1', name: 'U1' }));
     });
   });
 
@@ -1033,9 +1052,10 @@ describe('peerSync', () => {
       // Both records' stamps are in the single on-disk file — read it directly
       // (not getSyncBaseHash's in-memory map) so the assertion proves the
       // coalesced terminal flush wrote all N stamps before the helper returned.
+      // On-disk entries are `{ h, v }` (#2912) — `.h` is the plain hash string.
       const onDisk = JSON.parse(await readFile(join(tmp, 'sharing', 'sync_base_hashes.json'), 'utf8'));
-      expect(onDisk['universe:u1']).toBe(contentHashForRecord('universe', { id: 'u1', name: 'U1' }));
-      expect(onDisk['universe:u2']).toBe(contentHashForRecord('universe', { id: 'u2', name: 'U2' }));
+      expect(onDisk['universe:u1'].h).toBe(contentHashForRecord('universe', { id: 'u1', name: 'U1' }));
+      expect(onDisk['universe:u2'].h).toBe(contentHashForRecord('universe', { id: 'u2', name: 'U2' }));
     });
 
     it('drops ephemeral records before computing the set-diff', async () => {
@@ -3470,17 +3490,17 @@ describe('peerSync', () => {
 
     describe('receiver — applyIncomingPush', () => {
       it('rejects when sender schemaVersions.universes is AHEAD of local code', async () => {
-        // Local code is at universes:7 (see server/lib/schemaVersions.js).
-        // A push from a sender on universes:8 must NOT touch local state.
+        // Local code is at universes:8 (see server/lib/schemaVersions.js).
+        // A push from a sender on universes:9 must NOT touch local state.
         const rejection = await applyIncomingPush({
           kind: 'universe',
           record: { id: 'u1', name: 'Foo' },
           assetManifest: [],
           sourceInstanceId: 'peer-a',
-          portosMeta: { portosVersion: '99.0.0', schemaVersions: { universes: 8 } },
+          portosMeta: { portosVersion: '99.0.0', schemaVersions: { universes: 9 } },
         }).catch((err) => err);
         expect(rejection.code).toBe('PEER_SYNC_SCHEMA_VERSION_AHEAD');
-        expect(rejection.details.ahead).toEqual([{ category: 'universes', senderV: 8, receiverV: 7 }]);
+        expect(rejection.details.ahead).toEqual([{ category: 'universes', senderV: 9, receiverV: 8 }]);
         expect(rejection.details.senderPortosVersion).toBe('99.0.0');
         // Receiver MUST stamp its OWN PortOS version so the sender can show
         // the user "peer X is on PortOS vY" — without this, the sender would
@@ -3721,7 +3741,7 @@ describe('peerSync', () => {
         expect(call).toBeDefined();
         const body = JSON.parse(call[1].body);
         expect(body.portosMeta).toBeDefined();
-        expect(body.portosMeta.schemaVersions.universes).toBe(7);
+        expect(body.portosMeta.schemaVersions.universes).toBe(8);
         expect(typeof body.portosMeta.portosVersion).toBe('string');
       });
 

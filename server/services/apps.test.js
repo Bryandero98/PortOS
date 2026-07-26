@@ -34,7 +34,7 @@ vi.mock('./pm2.js', () => ({
 import { atomicWrite, readJSONFile } from '../lib/fileUtils.js';
 import { listProcessesStrict } from './pm2.js';
 import { resetExecutionHistory } from './taskSchedule.js';
-import { getAppStatuses, getAppStatusSummary, getReservedPorts, invalidateCache, PORTOS_APP_ID, updateAppTaskTypeOverride } from './apps.js';
+import { annotateExpectedExit, createApp, getAppStatuses, getAppStatusSummary, getDesktopProcessNames, getReservedPorts, invalidateCache, PORTOS_APP_ID, resolvePm2HomeForProcess, updateAppTaskTypeOverride } from './apps.js';
 
 describe('pr-watcher cooldown reset', () => {
   beforeEach(() => {
@@ -166,6 +166,291 @@ describe('getReservedPorts', () => {
     expect(reserved).not.toContain(70000);
     expect(reserved).not.toContain(-1);
     expect(reserved.every(p => Number.isInteger(p) && p >= 1 && p <= 65535)).toBe(true);
+  });
+});
+
+describe('portless / desktop apps (#2991)', () => {
+  beforeEach(() => {
+    invalidateCache();
+    vi.clearAllMocks();
+  });
+
+  it('never lets a portless desktop app contribute a port to the reserved set', async () => {
+    // A desktop/GUI app (a game binary) has no HTTP port at all: all top-level
+    // port fields are null and its supervised process carries no ports map.
+    readJSONFile.mockResolvedValue({
+      apps: {
+        [PORTOS_APP_ID]: { name: 'PortOS', uiPort: 5555, apiPort: 5555, devUiPort: 5554 },
+        'the-game': {
+          name: 'The Game',
+          type: 'desktop',
+          uiPort: null,
+          apiPort: null,
+          devUiPort: null,
+          tlsPort: null,
+          pm2ProcessNames: ['the-game'],
+          processes: [{ name: 'the-game' }], // no `port` / `ports` — portless
+        },
+      },
+    });
+
+    const reserved = await getReservedPorts();
+    // Only PortOS baseline ports — the desktop app added nothing.
+    expect(reserved).toContain(5555);
+    expect(reserved).toContain(5554);
+    expect(reserved).not.toContain(null);
+    expect(reserved.every(p => Number.isInteger(p) && p >= 1 && p <= 65535)).toBe(true);
+    expect(reserved).toEqual([5554, 5555]);
+  });
+
+  it('createApp stores a desktop app with null ports (no port ever synthesized)', async () => {
+    readJSONFile.mockResolvedValue({ apps: { [PORTOS_APP_ID]: { name: 'PortOS' } } });
+
+    const created = await createApp({
+      name: 'The Game',
+      repoPath: '/tmp/the-game',
+      type: 'desktop',
+      startCommands: ['./scripts/game run'],
+    });
+
+    expect(created.type).toBe('desktop');
+    expect(created.uiPort).toBeNull();
+    expect(created.apiPort).toBeNull();
+    expect(created.devUiPort).toBeNull();
+    expect(created.startCommands).toEqual(['./scripts/game run']);
+
+    // The persisted record carries no numeric port anywhere.
+    const persisted = atomicWrite.mock.calls.at(-1)?.[1];
+    const stored = persisted.apps[created.id];
+    expect(stored.uiPort).toBeNull();
+    expect(stored.apiPort).toBeNull();
+    expect(stored.devUiPort).toBeNull();
+  });
+
+  it('createApp preserves web ports when a separate native target is present', async () => {
+    readJSONFile.mockResolvedValue({ apps: { [PORTOS_APP_ID]: { name: 'PortOS' } } });
+    const nativeLaunch = {
+      label: 'Godot',
+      command: './scripts/game run',
+      processName: 'mixed-game',
+    };
+
+    const created = await createApp({
+      name: 'Mixed App',
+      repoPath: '/tmp/mixed-app',
+      type: 'express',
+      uiPort: 3000,
+      pm2ProcessNames: ['mixed-web'],
+      nativeLaunch,
+    });
+
+    expect(created).toMatchObject({
+      type: 'express',
+      uiPort: 3000,
+      pm2ProcessNames: ['mixed-web'],
+      nativeLaunch,
+    });
+    expect(atomicWrite.mock.calls.at(-1)?.[1].apps[created.id].nativeLaunch).toEqual(nativeLaunch);
+  });
+
+  it('reports a portless desktop app from supervisor state alone (no HTTP probe)', async () => {
+    readJSONFile.mockResolvedValue({
+      apps: {
+        [PORTOS_APP_ID]: { name: 'PortOS', type: 'express', pm2ProcessNames: ['portos-server'] },
+        'the-game': {
+          name: 'The Game',
+          type: 'desktop',
+          uiPort: null,
+          pm2ProcessNames: ['the-game'],
+        },
+      },
+    });
+    // A clean quit exits 0 → PM2 reports the process 'stopped', not 'errored'.
+    listProcessesStrict.mockResolvedValue([
+      { name: 'portos-server', status: 'online' },
+      { name: 'the-game', status: 'stopped' },
+    ]);
+
+    const statuses = await getAppStatuses();
+    const game = statuses.find(s => s.name === 'The Game');
+    expect(game).toBeDefined();
+    expect(game.managed).toBe(true); // supervised, not 'n/a'
+    expect(game.overallStatus).toBe('stopped'); // reflects supervisor, never "unreachable"
+  });
+
+  it('renders a running desktop app as online purely from the supervisor', async () => {
+    readJSONFile.mockResolvedValue({
+      apps: {
+        [PORTOS_APP_ID]: { name: 'PortOS', type: 'express', pm2ProcessNames: ['portos-server'] },
+        'the-game': { name: 'The Game', type: 'desktop', uiPort: null, pm2ProcessNames: ['the-game'] },
+      },
+    });
+    listProcessesStrict.mockResolvedValue([
+      { name: 'portos-server', status: 'online' },
+      { name: 'the-game', status: 'online' },
+    ]);
+
+    const statuses = await getAppStatuses();
+    const game = statuses.find(s => s.name === 'The Game');
+    expect(game.overallStatus).toBe('online');
+  });
+
+  // The set the CoS health monitor and proactive alerts consult so a quit game
+  // window is never auto-restarted or reported as a failure.
+  describe('getDesktopProcessNames', () => {
+    it('collects every PM2 name owned by a desktop app', async () => {
+      readJSONFile.mockResolvedValue({
+        apps: {
+          [PORTOS_APP_ID]: { name: 'PortOS', type: 'express', pm2ProcessNames: ['portos-server'] },
+          'the-game': { name: 'The Game', type: 'desktop', pm2ProcessNames: ['the-game', 'the-game-alt'] },
+        },
+      });
+
+      const names = await getDesktopProcessNames();
+
+      expect(names).toEqual(new Set(['the-game', 'the-game-alt']));
+      // Web processes stay auto-restartable.
+      expect(names.has('portos-server')).toBe(false);
+    });
+
+    it('also exempts a native target attached to a web app', async () => {
+      readJSONFile.mockResolvedValue({
+        apps: {
+          [PORTOS_APP_ID]: { name: 'PortOS', type: 'express', pm2ProcessNames: ['portos-server'] },
+          mixed: {
+            name: 'Mixed App',
+            type: 'express',
+            pm2ProcessNames: ['mixed-web'],
+            nativeLaunch: { label: 'Godot', command: './scripts/game run', processName: 'mixed-game' }
+          },
+        },
+      });
+
+      expect(await getDesktopProcessNames()).toEqual(new Set(['mixed-game']));
+    });
+
+    it('is empty when no desktop app or native target is registered', async () => {
+      readJSONFile.mockResolvedValue({
+        apps: { [PORTOS_APP_ID]: { name: 'PortOS', type: 'express', pm2ProcessNames: ['portos-server'] } },
+      });
+
+      expect(await getDesktopProcessNames()).toEqual(new Set());
+    });
+
+    it('tolerates a desktop app with no process names', async () => {
+      readJSONFile.mockResolvedValue({
+        apps: {
+          [PORTOS_APP_ID]: { name: 'PortOS', type: 'express' },
+          'the-game': { name: 'The Game', type: 'desktop' },
+        },
+      });
+
+      expect(await getDesktopProcessNames()).toEqual(new Set());
+    });
+
+    it('annotates processes with expectedExit so supervisors branch on the concept', async () => {
+      readJSONFile.mockResolvedValue({
+        apps: {
+          [PORTOS_APP_ID]: { name: 'PortOS', type: 'express', pm2ProcessNames: ['portos-server'] },
+          'the-game': { name: 'The Game', type: 'desktop', pm2ProcessNames: ['the-game'] },
+        },
+      });
+
+      const annotated = await annotateExpectedExit([
+        { name: 'the-game', status: 'errored' },
+        { name: 'portos-server', status: 'errored' },
+      ]);
+
+      expect(annotated).toEqual([
+        { name: 'the-game', status: 'errored', expectedExit: true },
+        { name: 'portos-server', status: 'errored', expectedExit: false },
+      ]);
+    });
+
+    it('annotates raw pm2 jlist entries too (both shapes carry a top-level name)', async () => {
+      readJSONFile.mockResolvedValue({
+        apps: {
+          [PORTOS_APP_ID]: { name: 'PortOS', type: 'express' },
+          'the-game': { name: 'The Game', type: 'desktop', pm2ProcessNames: ['the-game'] },
+        },
+      });
+
+      const annotated = await annotateExpectedExit([
+        { name: 'the-game', pm2_env: { status: 'errored' } },
+      ]);
+
+      expect(annotated[0].expectedExit).toBe(true);
+      expect(annotated[0].pm2_env).toEqual({ status: 'errored' });
+    });
+
+    it('fails open — a registry read error exempts nothing', async () => {
+      readJSONFile.mockRejectedValue(new Error('registry unreadable'));
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const annotated = await annotateExpectedExit([{ name: 'the-game', status: 'errored' }]);
+
+      // Nothing marked expected → the pre-existing auto-restart/alert behavior
+      // stands rather than silently exempting every process.
+      expect(annotated[0].expectedExit).toBe(false);
+      errorSpy.mockRestore();
+    });
+
+    it('still exempts an archived desktop app whose PM2 entry outlived the archive', async () => {
+      // Archiving hides the app from the UI but does not delete its PM2 process;
+      // a leftover entry must not become auto-restartable as a side effect.
+      readJSONFile.mockResolvedValue({
+        apps: {
+          [PORTOS_APP_ID]: { name: 'PortOS', type: 'express' },
+          'the-game': { name: 'The Game', type: 'desktop', archived: true, pm2ProcessNames: ['the-game'] },
+        },
+      });
+
+      expect(await getDesktopProcessNames()).toEqual(new Set(['the-game']));
+    });
+  });
+});
+
+describe('resolvePm2HomeForProcess', () => {
+  beforeEach(() => {
+    invalidateCache();
+    vi.clearAllMocks();
+  });
+
+  it('returns the owning app custom home for a registered process', async () => {
+    readJSONFile.mockResolvedValue({
+      apps: {
+        [PORTOS_APP_ID]: { name: 'PortOS', type: 'express', pm2ProcessNames: ['portos-server'] },
+        'custom-home': { name: 'Example App', pm2Home: '/tmp/example-pm2', pm2ProcessNames: ['example-api'] },
+      },
+    });
+
+    await expect(resolvePm2HomeForProcess('example-api')).resolves.toBe('/tmp/example-pm2');
+  });
+
+  it('resolves the custom home for an app native launch process', async () => {
+    readJSONFile.mockResolvedValue({
+      apps: {
+        [PORTOS_APP_ID]: { name: 'PortOS', type: 'express' },
+        mixed: {
+          name: 'Mixed App',
+          pm2Home: '/tmp/example-pm2',
+          nativeLaunch: { label: 'Godot', command: './scripts/game run', processName: 'mixed-game' }
+        },
+      },
+    });
+
+    await expect(resolvePm2HomeForProcess('mixed-game')).resolves.toBe('/tmp/example-pm2');
+  });
+
+  it('returns null when the matching app uses the default PM2 home', async () => {
+    readJSONFile.mockResolvedValue({
+      apps: {
+        [PORTOS_APP_ID]: { name: 'PortOS', type: 'express', pm2ProcessNames: ['portos-server'] },
+        'default-home': { name: 'Example App', pm2ProcessNames: ['example-api'] },
+      },
+    });
+
+    await expect(resolvePm2HomeForProcess('example-api')).resolves.toBeNull();
   });
 });
 

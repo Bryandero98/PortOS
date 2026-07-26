@@ -88,9 +88,8 @@ by `/do:replan --issues`:
   `routes/attachments.js` + `routes/brainSongbook.js`). Left out of the SongBook
   pass because uploads.js has a different response shape and uses the full
   `EXTENSION_MIME_MAP` rather than an allowlist.
-  Also fix while there: `routes/attachments.js`'s 50MB cap is unreachable —
-  base64 ×4/3 inflation exceeds the 55mb express.json body limit above ~41MB
-  (same latent mismatch fixed in `routes/brainSongbook.js`, which now caps at 40MB).
+  (The unreachable-cap half of this item is done: every route now derives its
+  byte cap from `server/lib/uploadLimits.js`.)
 - [ ] SongBook practice/spaced-rep integration (SM-2 style, cf.
   `meatspacePostMemory`) — the `stage` field on `songs` records is manual in v1
   (`server/lib/brainValidation.js` `songStageEnum`).
@@ -256,3 +255,66 @@ The `kimi-cli`/`kimi-tui` providers shipped without a live `kimi` binary in the 
 - [ ] **Structured-output contamination.** If plain `kimi --print` interleaves intermediate tool/assistant activity with the final message, a pipeline stage parsing stdout as JSON could choke on the chatter. If the live `kimi` exposes a "final message only" flag, add it to `ensureKimiHeadlessArgs` in `server/lib/kimi.js`. NOT added blind: an unrecognized flag would make every headless run fail at startup.
 - [ ] **Confirm the TUI auto-approve + print flags.** Verify `--yolo` (TUI auto-approve), `--print`/`--afk` (headless), and `--prompt`/`-p` (prompt value) are the real flag names, and that `--print` implies `--afk`. Adjust `ensureKimiTuiArgs`/`ensureKimiHeadlessArgs` if the CLI differs.
 - [ ] **Kimi usage/quota family (out of scope of issue-2815).** Once the `kimi` usage command is confirmed, add a `FAMILIES` entry in `server/services/providerUsage.js` so the provider surfaces a quota card (currently maps to no family, like ollama-backed wrappers).
+
+### Loading-skeleton rollout follow-ups (#2843)
+
+- [ ] **Chief of Staff has no dimension-reserving skeleton** (`client/src/pages/ChiefOfStaff.jsx` ~line 587). It still shows a centered `BrailleSpinner` because it is a bespoke two-pane shell (`lg:grid-cols-[320px_1fr]` avatar panel + chat pane), not the list/detail shape `PageSkeleton` models — a card skeleton there would misrepresent the layout worse than the spinner does. Wants either a two-pane `layout` mode on `PageSkeleton` or a local `CoSSkeleton`.
+- [ ] **`/data` (Data Manager) is a self-scrolling `h-full` shell nested in Layout's padded scrolling main** (`client/src/pages/DataManager.jsx` ~line 374; `/data` is absent from the `isFullWidth` list in `client/src/components/Layout.jsx` ~line 1148). The loaded page renders its own bar + `flex-1 overflow-auto` body inside `overflow-auto p-4 md:p-6`, so it double-pads and nests two scroll containers. The skeleton mirrors the page faithfully, so this is pre-existing, not introduced by #2843. Fix by either adding `/data` to `isFullWidth` or dropping the page's `h-full` shell — then drop `padded`/`fullHeight`/`barClassName` from its `PageSkeleton` call accordingly. Raised in the #2843 review, deferred to keep that PR scoped to skeletons.
+- [ ] **Sub-region spinners are untouched by #2843.** Tab bodies that refetch (`Brain`/`Goals`/`DigitalTwin` Suspense fallbacks, `Apps` per-app expansion, `DataManager` category detail, `UsagePage` provider-quota section, `CharacterSheet` sync panels) still render bare `BrailleSpinner`s. Lower value than first-paint (the surrounding layout is already reserved), but the taller ones could take a scoped skeleton.
+
+### CoS long-text clamping follow-ups
+
+Deferred from the PR that clamped CoS task text (`client/src/components/ui/CollapsibleText.jsx`).
+
+- [ ] **Consolidate `AgentCard`'s duplicate collapse affordance** (`client/src/components/cos/tabs/AgentCard.jsx` ~line 80). `TaskDescription` is a second "long task text with a Show more toggle" implementation one directory over, using a `text.length > 200` heuristic + `max-h-[3.5rem]` + gradient fade instead of measured `line-clamp-2`, and its toggle carries no `aria-expanded`/`aria-controls`. Not consolidated in that PR because `AgentCard` renders *markdown blocks* via `MarkdownOutput`, which `line-clamp` can't clamp — `CollapsibleText` would need a `children`-based max-height variant, and switching would visibly change that card's fade treatment. Wants a deliberate design call on which affordance wins.
+- [ ] **`metadata.context` is overloaded** — the same key carries a one-line human note (`server/routes/cosJobRoutes.js` ~line 182, `server/services/cosTaskStore.js` ~line 920 escalation context) and a multi-thousand-character agent prompt (`server/services/cosTaskGenerator.js` ~lines 1357-1378, `server/routes/cosTaskRoutes.js` ~line 197). The prompt lives there because `generateTasksMarkdown` flattens `description` to one line and `parseTasksMarkdown` only matches a `- [ ]` block's first line, so newlines in `description` corrupt COS-TASKS.md. Splitting into `metadata.prompt` (payload) + `metadata.context` (note) would touch the markdown round-trip, `LEGACY_DIRECT_FIELDS` in `cosTaskStore.js` ~line 52, `cosTaskMerge.js` ~line 200, the agent prompt builder, and every on-disk task — i.e. a migration. Deferred as disproportionate to what was a presentational problem; the UI clamp handles both shapes correctly today.
+
+### Ollama-backed provider refresh follow-ups (post-install/delete auto-refresh)
+
+Deferred from the fix that makes `server/services/localLlm.js#installModel`/`deleteModel` push a live `refreshProviderModels` call to every Ollama-backed provider after a successful install/delete (`refreshOllamaBackedProviders`, ~line 811).
+
+- [ ] **Dedup the refresh fan-out by daemon base URL instead of by provider.** When N providers (the built-in `ollama` provider plus one or more Claude/Codex/Gemini-over-Ollama CLI/TUI providers) all resolve to the same Ollama daemon (commonly the shared `http://localhost:11434` default — see `ollamaBaseFromProvider` in `server/lib/aiToolkit/providers.js` ~line 124), `refreshOllamaBackedProviders`'s `Promise.all` currently calls `refreshProviderModels(p.id)` once per provider, each independently re-fetching `/api/tags` and re-running the full per-model `/api/show` tool-capability probe against the identical daemon/model set. Fix by grouping providers by normalized base URL, computing the tool-capable model list once per unique base, and applying it to every provider sharing that base. Flagged by the `/simplify` efficiency review — deferred because it needs a "compute without persisting" variant exposed from `server/lib/aiToolkit/providers.js` (see next item), which is a larger surface change than a `localLlm.js`-only fix.
+- [ ] **`refreshProviderModels` does one full `providers.json` write per call — batch writes when refreshing multiple providers.** `server/lib/aiToolkit/providers.js#refreshProviderModels` (~line 646) does `loadProviders()` → mutate → `saveProviders(data)` per call, and `saveProviders` invalidates the provider cache and `atomicWrite`s the entire file. `refreshOllamaBackedProviders`'s concurrent fan-out means N Ollama-backed providers produce N full-file writes landing in quick succession (each superseded by the next) and N cache invalidate/repopulate cycles for any concurrent `getAllProviders()`/`getProviderById()` reader. Fix by adding a batch-refresh entry point to the toolkit's provider service that computes all the new model lists first, then applies + persists once. Flagged by the `/simplify` efficiency review — deferred as an `aiToolkit/providers.js` API change, out of scope for the triggering bug fix.
+
+### Accessibility: unlabeled form controls outside `FormField` (audit pass 4 backlog)
+
+The 2026-07-23 audit pass fixed the toggle-switch, icon-button, focus-indicator, and
+lightbox-dialog gaps, plus ~20 unlabeled controls on the highest-traffic pages
+(RunnerPage, Review, Wiki, Tribe, Loras, MediaHistory, MediaCollections,
+PromptManager). What remains is the long tail of standalone `<select>`/`<input>`/
+`<textarea>` that sit in toolbars and inline rows rather than inside a labeling
+wrapper (`client/src/components/ui/FormField.jsx`, or a local `Field` that wraps
+children in a `<label>`). A placeholder is not a label — it disappears on input and
+is not reliably announced.
+
+- [ ] **Sweep the remaining unlabeled controls.** The scan that produced this list
+  is: for every git-tracked `client/src/**/*.jsx`, parse each `<input|select|textarea>`
+  opening tag (brace-aware, so `className={`…`}` containing `>` doesn't truncate it);
+  skip tags carrying `aria-label`/`aria-labelledby`/`type="hidden"`, tags whose `id`
+  is targeted by an `htmlFor` in the same file, and tags whose preceding ~14 lines
+  contain `<FormField`/`<label`/`<Field`/`label=`/`sr-only`. That yields ~400 hits,
+  but the true-positive rate is roughly half — the rest are `<img>`/`<select>`
+  mentions inside comments and wrappers the lookback window missed. **Verify each
+  candidate by reading its context before labeling it**; do not mass-apply. Highest
+  value first: `Instances.jsx` (~10), `PipelineSeries.jsx`, `VideoTimelineEditor.jsx`,
+  `CatalogIngredient.jsx`, `CharacterSheet.jsx`, `GitHub.jsx`, `Sharing.jsx`,
+  `MoodBoardDetail.jsx`, `OpenClaw.jsx`, `LoraDatasetDetail.jsx`, `Browser.jsx`.
+  Prefer wrapping in `FormField` (visible label + `htmlFor`/`id` pairing) over an
+  `aria-label` when the surface has room for a visible label.
+- [ ] **Consider `eslint-plugin-jsx-a11y` in `client/eslint.config.js`.** It would
+  enforce this class automatically instead of relying on periodic audits. Skipped in
+  this pass because enabling it surfaces hundreds of findings at once and would fail
+  CI until the backlog above is drained — sequence it after the sweep, and start with
+  only the rules the repo already honors (`jsx-a11y/alt-text`,
+  `jsx-a11y/aria-props`, `jsx-a11y/role-has-required-aria-props`,
+  `jsx-a11y/label-has-associated-control`) rather than the full `recommended` set.
+
+
+### Factor the "bump a seeded Claude provider tier" migration skeleton into `_lib.js`
+
+- [ ] `scripts/migrations/206-claude-default-opus-5.js` is the fourth hand-copy of the same shape (032 → 058 → 153 → 206): `diff 153-claude-default-sonnet-5.js 206-claude-default-opus-5.js` is identical apart from the data and comment prose — `POINTER_KEYS`, `sameArray`, the pointer-swap helper, and the entire `up()` body (read → ENOENT skip → `JSON.parse` guard → providers-map guard → three-way `touched`/`alreadyCurrent`/`customized` classification → conditional write → log) are byte-for-byte the same. Their co-located test files are ~200 structurally identical lines each. `scripts/migrations/_lib.js` is the documented home for exactly this — it already exports `makePromptReplaceMigration` ("every one from 003 onward collapses onto ~50 lines") and `makeSplitMigration` ("034/035/036/059 share the same skeleton and differ only in a handful of config values"), with `_testHelpers.js#runPromptMigrationTests` supplying the shared test cases. Add a `makeSeededProviderTierMigration({ targets, tierLabel })` plus a matching shared test runner so the *next* model bump is a ~25-line data table instead of ~370 re-cloned lines. Skipped in the opus-5 PR because migrations are append-only and frozen (a shipped migration must keep working against the shape it was written for), so this pays off from the migration *after* 206 forward and should not retro-edit 032/058/153 — which put it well outside that diff. Surfaced by two independent `/simplify` reviewers on the opus-5 change.
+- [ ] `server/lib/modelPricing.js` — all five `claude-opus-*` rows in `EXACT_RATES` carry an identical `[5.0, 25.0]`, so the `{ test: /opus/i, rateModel: '<latest opus>' }` line in `FAMILY_RULES` must be re-pointed at every model bump for zero behavioral effect (it only relabels the reported `rateModel` for *unrecognized* opus ids). A shared `const OPUS_TIER_RATES = [5.0, 25.0]`, or letting a family rule yield rates directly instead of pointing at a peer `EXACT_RATES` key, would retire that per-bump edit. Low value, listed for completeness.
+
+### Migrate the bespoke gallery-upload callers onto `GalleryImagePicker allowUpload`
+
+- [ ] `client/src/components/imageGen/GalleryImagePicker.jsx` gained an `allowUpload` prop (#2953) that encapsulates the file → `readFileAsBase64` → `uploadGalleryImage` → normalize → select flow inside the shared picker. Three existing callers still roll their own upload path with a separate file `<input>` + `toast` alongside the picker: `client/src/components/music/AlbumsManager.jsx:177`, `client/src/components/music/ArtistsManager.jsx:147`, and `client/src/pages/Authors.jsx:167`. Migrate each to `<GalleryImagePicker allowUpload>` and delete the bespoke upload handlers so the duplication the prop was designed to end actually collapses. Deferred from #2953 (adjacent files outside that issue's scope). Surfaced by the /simplify altitude review.

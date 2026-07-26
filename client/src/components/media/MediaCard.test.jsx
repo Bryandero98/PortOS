@@ -75,4 +75,29 @@ describe('MediaCard', () => {
     // Action row is restored, so the trash button is available again.
     expect(screen.getByTitle('Delete')).toBeInTheDocument();
   });
+
+  it('offers the image-to-Three.js handoff only when its handler is provided', () => {
+    const onSendTo3d = vi.fn();
+    const { rerender } = render(
+      <MediaCard
+        item={imageItem}
+        onSendTo3d={onSendTo3d}
+        showCollectionMenu={false}
+        showMoodBoardMenu={false}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send to 3D' }));
+    expect(onSendTo3d).toHaveBeenCalledWith(imageItem);
+
+    rerender(
+      <MediaCard
+        item={{ ...imageItem, kind: 'video' }}
+        onSendTo3d={onSendTo3d}
+        showCollectionMenu={false}
+        showMoodBoardMenu={false}
+      />
+    );
+    expect(screen.queryByRole('button', { name: 'Send to 3D' })).toBeNull();
+  });
 });

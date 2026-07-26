@@ -22,7 +22,7 @@ grep -i "what you want to do" client/src/utils/README.md
 
 | Module | Purpose |
 |---|---|
-| `formatters` | Date/time/duration/byte/word formatters (`formatBytes`, `formatCompactCount`, `timeAgo`, `formatTimecode`, `formatDurationMs`, `formatDateShort`, `parseTimeoutMs`, `formatCooldown`, `parseSizeGb`, `recommendedRamGb`, …) plus timeout-input bounds and `getAppName`. Do not re-define formatters inside components. |
+| `formatters` | Date/time/duration/byte/word formatters (`formatBytes`, `formatCompactCount`, `timeAgo`, `formatTimecode`, `formatDurationMs`, `formatDateShort`, `parseTimeoutMs`, `formatCooldown`, `parseSizeGb`, `recommendedRamGb`, `nameFromImageFilename`, …) plus timeout-input bounds and `getAppName`. Do not re-define formatters inside components. |
 | `cronHelpers` | Cron preset list, `isCronExpression` detection, and `describeCron` human-readable rendering. |
 | `timeWindow` | Time-of-day window math (`isInTimeWindow`, `timeStringToMinutes`) and morning-layout auto-switch helpers (`pickActiveLayoutId`, `recordManualLayoutPick`). |
 | `timezone` | Timezone day-key helpers (`dayKeyInTimezone`, `todayKeyInTimezone`) — browser mirror of the server's `todayInTimezone`, so date-scoped POST surfaces derive "today" in the user's configured timezone and agree with the server (#2681). |
@@ -35,6 +35,7 @@ grep -i "what you want to do" client/src/utils/README.md
 | `coalesce` | Trailing-edge coalescer: wraps a function so rapid calls collapse into one deferred invocation. |
 | `easing` | `smoothstep` interpolation easing curve. |
 | `hashString` | Deterministic string → 32-bit hash (stable colors, keys, seeds). |
+| `sleep` | `sleep(ms)` — promise-returning `setTimeout` for retry backoffs and race timeouts. Use instead of re-declaring a local `delay`. |
 | `urlNormalize` | `isUrl` detection, `normalizeUrl` (optional git/`requireDot` modes), and `isHttpUrl` (explicit http(s) only — safe-href check). |
 | `platform` | `isMac` detection and `modKey` (⌘/Ctrl) for keyboard-shortcut display. |
 | `navWorkingSet` | Recent/pinned nav persistence (`recordVisit`, `togglePin`, `isPinned`) plus `resolveRecentNavEntries` for mapping stored deep links back to their longest matching nav-manifest entry. |
@@ -52,7 +53,7 @@ grep -i "what you want to do" client/src/utils/README.md
 
 | Module | Purpose |
 |---|---|
-| `fileUpload` | Screenshot/attachment upload helpers: base64 read plus `processScreenshotUploads` / `processAttachmentUploads` and their single-file variants. |
+| `fileUpload` | Screenshot/attachment upload helpers: base64 read plus `processScreenshotUploads` / `processAttachmentUploads` and their single-file variants. Also the shared upload constants — `JSON_UPLOAD_MAX_FILE_SIZE` (max file size / wire limit, mirrors `server/lib/uploadLimits.js`), `ATTACHMENT_MAX_FILE_SIZE`, `ALLOWED_ATTACHMENT_EXTENSIONS`, and the `accept` strings `ATTACHMENT_ACCEPT` / `IMAGE_ACCEPT`. |
 
 ## CyberCity — character & avatar
 

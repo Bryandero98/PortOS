@@ -541,4 +541,27 @@ describe('universeCanon — purgeImageRefFromAllUniverses', () => {
     expect(await canonSvc.purgeImageRefFromAllUniverses('')).toEqual({ removed: 0 });
     expect(await canonSvc.purgeImageRefFromAllUniverses(null)).toEqual({ removed: 0 });
   });
+
+  it('removes an art style reference whose sole image is deleted, so no dangling reference survives', async () => {
+    const w = await svc.createUniverse({
+      name: 'Test Universe',
+      starterPrompt: 'test seed',
+      stylePrompt: 'test style',
+    });
+    // sanitizeStyleReference caps imageRefs to exactly one image, so purging
+    // it must drop the whole entry — a title/prompt with no picture is dead.
+    await svc.updateUniverse(w.id, {
+      styleReferences: [
+        { title: 'Ref A', prompt: 'moody lighting', imageRefs: ['shared.png'] },
+        { title: 'Ref B', prompt: 'bright palette', imageRefs: ['other.png'] },
+      ],
+    });
+
+    const result = await canonSvc.purgeImageRefFromAllUniverses('shared.png');
+    expect(result.removed).toBe(1);
+
+    const reread = (await svc.listUniverses()).find((u) => u.id === w.id);
+    expect(reread.styleReferences).toHaveLength(1);
+    expect(reread.styleReferences[0].title).toBe('Ref B');
+  });
 });

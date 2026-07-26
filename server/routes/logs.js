@@ -41,9 +41,11 @@ router.get('/:processName', asyncHandler(async (req, res) => {
     throw new ServerError('Invalid process name', { status: 400, code: 'INVALID_PROCESS_NAME' });
   }
 
+  const pm2Home = await appsService.resolvePm2HomeForProcess(safeProcessName);
+
   if (!follow) {
     // Static log fetch
-    const logs = await pm2Service.getLogs(safeProcessName, lines)
+    const logs = await pm2Service.getLogs(safeProcessName, lines, pm2Home)
       .catch(err => `Error: ${err.message}`);
     return res.json({ processName: safeProcessName, lines, logs });
   }
@@ -57,7 +59,10 @@ router.get('/:processName', asyncHandler(async (req, res) => {
 
   // Spawn pm2 logs with --raw flag for clean output
   // Security: safeProcessName is validated above to only contain safe characters
-  const logProcess = spawnPm2(['logs', safeProcessName, '--raw', '--lines', String(lines)]);
+  const logProcess = spawnPm2(
+    ['logs', safeProcessName, '--raw', '--lines', String(lines)],
+    { env: pm2Service.buildEnv(pm2Home) }
+  );
 
   let buffer = '';
 
@@ -115,7 +120,7 @@ router.get('/app/:appId', asyncHandler(async (req, res) => {
   const results = {};
 
   for (const processName of app.pm2ProcessNames || []) {
-    results[processName] = await pm2Service.getLogs(processName, lines)
+    results[processName] = await pm2Service.getLogs(processName, lines, app.pm2Home)
       .catch(err => `Error: ${err.message}`);
   }
 

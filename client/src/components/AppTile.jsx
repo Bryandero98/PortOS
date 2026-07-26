@@ -13,12 +13,17 @@ const AppTile = memo(function AppTile({ app, onUpdate }) {
   const handleAction = async (action) => {
     setLoading(action);
     const actionFn = {
+      native: api.launchNativeApp,
       start: api.startApp,
       stop: api.stopApp,
       restart: api.restartApp
     }[action];
 
-    const result = await actionFn(app.id);
+    const result = await actionFn(app.id).catch(() => null);
+    if (!result) {
+      setLoading(null);
+      return;
+    }
 
     if (result?.selfRestart) {
       api.handleSelfRestart();
@@ -95,6 +100,18 @@ const AppTile = memo(function AppTile({ app, onUpdate }) {
           >
             Open
           </a>
+        )}
+
+        {app.nativeLaunch && (
+          <button
+            onClick={() => handleAction('native')}
+            disabled={loading === 'native'}
+            className="px-2.5 py-1 text-xs rounded bg-port-success hover:bg-port-success/80 text-white transition-colors disabled:opacity-50"
+            aria-label={`Launch ${app.nativeLaunch.label} for ${app.name}`}
+            aria-busy={loading === 'native'}
+          >
+            {loading === 'native' ? '...' : app.nativeLaunch.label}
+          </button>
         )}
 
         {!isOnline && isDegraded && (

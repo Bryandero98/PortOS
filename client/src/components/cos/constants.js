@@ -158,13 +158,20 @@ export const STATE_MESSAGES = {
   ideating: "Analyzing options...",
 };
 
-// Agent option toggles for task metadata (useWorktree, openPR, simplify, reviewLoop)
+// Agent option toggles for task metadata (useWorktree, openPR, simplify).
 export const AGENT_OPTIONS = [
   { field: 'useWorktree', label: 'Worktree', shortLabel: 'WT', description: 'Work in an isolated git worktree on a feature branch. If unchecked, commits directly to the default branch.' },
-  { field: 'openPR', label: 'Open PR', shortLabel: 'PR', description: 'Open a pull request to the default branch (implies worktree). If unchecked with worktree enabled, auto-merges to the default branch on completion.' },
-  { field: 'simplify', label: 'Run /simplify', shortLabel: '/s', description: 'Review code for reuse and quality before committing' },
-  { field: 'reviewLoop', label: 'Review Loop', shortLabel: 'RL', description: 'After the agent opens a PR during its run, keep iterating on review feedback until checks pass. Only applies when Open PR is not enabled (manual PR creation by agent).' }
+  { field: 'openPR', label: 'Open PR', shortLabel: 'PR', description: 'Open a pull request to the default branch (implies worktree). Choose whether PortOS reviews and merges it, merges on green CI, or leaves it open. If unchecked with worktree enabled, auto-merges to the default branch on completion.' },
+  { field: 'simplify', label: 'Run /simplify', shortLabel: '/s', description: 'Review code for reuse and quality before committing' }
 ];
+
+export const PR_COMPLETION_OPTIONS = [
+  { value: 'review-then-merge', label: 'Review then merge', description: 'Run the configured reviewer chain, then merge when it is clean.' },
+  { value: 'merge-on-green', label: 'Merge on green CI', description: 'Skip external review and merge after required checks pass.' },
+  { value: 'leave-open', label: 'Leave PR open', description: 'Open the PR and stop so you can inspect and merge it yourself.' }
+];
+
+export const DEFAULT_PR_COMPLETION = 'review-then-merge';
 
 // Reviewer choices for the Review Loop. `copilot` requests a GitHub Copilot
 // review via the native reviewer API; CLI reviewers (claude/antigravity/codex/grok)

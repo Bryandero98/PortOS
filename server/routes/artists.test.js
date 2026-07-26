@@ -43,6 +43,32 @@ describe('artists routes', () => {
     expect(r.body).toEqual([{ id: 'artist-1', name: 'Nova' }]);
   });
 
+  // Regression guard: every client caller (ArtistsManager, ArtistPicker) calls
+  // listArtists() with no query params. If this ever returns an envelope instead
+  // of a bare array, those lists silently render empty.
+  it('GET / without pagination params returns the unbounded bare array', async () => {
+    artists.listArtists.mockResolvedValueOnce(
+      Array.from({ length: 120 }, (_, i) => ({ id: `artist-${i}`, name: `N${i}` }))
+    );
+    const r = await request(app).get('/api/artists');
+    expect(r.status).toBe(200);
+    expect(Array.isArray(r.body)).toBe(true);
+    expect(r.body).toHaveLength(120);
+  });
+
+  it('GET / returns a bounded envelope when pagination is requested', async () => {
+    artists.listArtists.mockResolvedValueOnce(
+      Array.from({ length: 5 }, (_, i) => ({ id: `artist-${i}`, name: `N${i}` }))
+    );
+    const r = await request(app).get('/api/artists?limit=2&offset=1');
+    expect(r.status).toBe(200);
+    expect(r.body.items).toHaveLength(2);
+    expect(r.body.items[0].id).toBe('artist-1');
+    expect(r.body.total).toBe(5);
+    expect(r.body.limit).toBe(2);
+    expect(r.body.offset).toBe(1);
+  });
+
   it('POST / creates an artist', async () => {
     const r = await request(app).post('/api/artists').send({ name: 'Nova', genre: 'indie folk' });
     expect(r.status).toBe(201);

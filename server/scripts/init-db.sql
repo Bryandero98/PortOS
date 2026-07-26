@@ -687,6 +687,38 @@ CREATE TABLE IF NOT EXISTS creative_director_projects (
 -- Partial index for the live-list filter (deleted = FALSE).
 CREATE INDEX IF NOT EXISTS idx_creative_director_projects_live ON creative_director_projects (deleted) WHERE deleted = FALSE;
 
+-- Three.js procedural models. Image bytes stay in data/images; each row owns
+-- the validated declarative scene spec, provider/model attribution, generation
+-- state, and refinement history.
+CREATE TABLE IF NOT EXISTS threejs_models (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'draft',
+  data JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  deleted BOOLEAN DEFAULT FALSE,
+  deleted_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_threejs_models_live_updated ON threejs_models (updated_at DESC) WHERE deleted = FALSE;
+
+-- Image-to-3D models (issue #2952). Neural image→GLB records — distinct from
+-- threejs_models above (procedural JS source vs. a real .glb mesh). The GLB
+-- binary stays on disk at data/image-to-3d/<id>/model.glb; each row owns the
+-- source gallery image reference, selected target, generation state, run
+-- history, and the exported GLB's served path. Not federated in this phase.
+CREATE TABLE IF NOT EXISTS image_to_3d_models (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'draft',
+  data JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  deleted BOOLEAN DEFAULT FALSE,
+  deleted_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_image_to_3d_models_live_updated ON image_to_3d_models (updated_at DESC) WHERE deleted = FALSE;
+
 -- Music Video projects (issue #1760). The director scene board's db-primary
 -- record: id/status/created_at/updated_at mirrored as columns, the full project
 -- (track link, cached audioAnalysis, scenes[]) in `data` JSONB — same shape as
@@ -704,6 +736,24 @@ CREATE TABLE IF NOT EXISTS music_video_projects (
 );
 -- Partial index for the live-list filter (deleted = FALSE).
 CREATE INDEX IF NOT EXISTS idx_music_video_projects_live ON music_video_projects (deleted) WHERE deleted = FALSE;
+
+-- Sprite records (issue #2895, phase 1). One row per sprite subject — a
+-- character or a props atlas family; the full record (spec, chromaKey,
+-- publishBinding, importedFrom) in `data` JSONB with kind/status mirrored for
+-- queries. Binary assets live under data/sprites/<id>/. Not federated in
+-- phase 1; the tombstone trio keeps peer-sync additive later. Mirrors the
+-- sprite_records block in db/schema/media.js.
+CREATE TABLE IF NOT EXISTS sprite_records (
+  id TEXT PRIMARY KEY,
+  kind VARCHAR(16) NOT NULL DEFAULT 'character',
+  status VARCHAR(32) NOT NULL DEFAULT 'draft',
+  data JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  deleted BOOLEAN DEFAULT FALSE,
+  deleted_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_sprite_records_live ON sprite_records (deleted) WHERE deleted = FALSE;
 
 -- Mood boards (issue #911). A dedicated inspiration/mood-board canvas, distinct
 -- from raw Media History, for collecting visual + textual references that feed
@@ -1300,6 +1350,12 @@ DROP TRIGGER IF EXISTS trg_catalog_user_types_audit ON catalog_user_types;
 CREATE TRIGGER trg_catalog_user_types_audit AFTER UPDATE OR DELETE ON catalog_user_types FOR EACH ROW EXECUTE FUNCTION record_audit_log();
 DROP TRIGGER IF EXISTS trg_creative_director_projects_audit ON creative_director_projects;
 CREATE TRIGGER trg_creative_director_projects_audit AFTER UPDATE OR DELETE ON creative_director_projects FOR EACH ROW EXECUTE FUNCTION record_audit_log();
+DROP TRIGGER IF EXISTS trg_threejs_models_audit ON threejs_models;
+CREATE TRIGGER trg_threejs_models_audit AFTER UPDATE OR DELETE ON threejs_models FOR EACH ROW EXECUTE FUNCTION record_audit_log();
+DROP TRIGGER IF EXISTS trg_image_to_3d_models_audit ON image_to_3d_models;
+CREATE TRIGGER trg_image_to_3d_models_audit AFTER UPDATE OR DELETE ON image_to_3d_models FOR EACH ROW EXECUTE FUNCTION record_audit_log();
+DROP TRIGGER IF EXISTS trg_sprite_records_audit ON sprite_records;
+CREATE TRIGGER trg_sprite_records_audit AFTER UPDATE OR DELETE ON sprite_records FOR EACH ROW EXECUTE FUNCTION record_audit_log();
 DROP TRIGGER IF EXISTS trg_mood_boards_audit ON mood_boards;
 CREATE TRIGGER trg_mood_boards_audit AFTER UPDATE OR DELETE ON mood_boards FOR EACH ROW EXECUTE FUNCTION record_audit_log();
 DROP TRIGGER IF EXISTS trg_lora_training_runs_audit ON lora_training_runs;

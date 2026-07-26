@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdir, rm, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { createProviderService } from './providers.js';
+import { createProviderService, isOllamaBackedProvider } from './providers.js';
 
 const TEST_DATA_DIR = join(process.cwd(), 'test-data');
 
@@ -783,6 +783,28 @@ describe('Provider Service', () => {
       const result = await providerService.refreshProviderModels(p.id);
       expect(result).toBeNull();
     });
+
+    it('persists a legitimately empty model list rather than treating it as a failed fetch', async () => {
+      // The last installed Ollama model was just deleted — /api/tags succeeds
+      // with zero entries. This must NOT collapse into the same `null` result
+      // as an unreachable endpoint, or a deleted model stays stuck in the
+      // provider's persisted list forever.
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ models: [] }),
+      }));
+
+      const p = await providerService.createProvider({
+        name: 'Ollama',
+        type: 'api',
+        endpoint: 'http://localhost:11434',
+        models: ['llama3.2'], // stale — the model was just deleted
+      });
+
+      const updated = await providerService.refreshProviderModels(p.id);
+      expect(updated).not.toBeNull();
+      expect(updated.models).toEqual([]);
+    });
   });
 
   describe('reserved-key prototype safety (#2521)', () => {
@@ -798,5 +820,32 @@ describe('Provider Service', () => {
       const { activeProvider } = await providerService.getAllProviders();
       expect(['__proto__', 'constructor', 'toString', 'hasOwnProperty']).not.toContain(activeProvider);
     });
+  });
+});
+
+describe('isOllamaBackedProvider', () => {
+  it('matches the built-in ollama API provider by id, regardless of endpoint/envVars', () => {
+    expect(isOllamaBackedProvider({ id: 'ollama', type: 'api', endpoint: 'http://localhost:11434/v1', envVars: {} })).toBe(true);
+  });
+
+  it('matches an api-type provider whose endpoint points at an Ollama daemon', () => {
+    expect(isOllamaBackedProvider({ id: 'local-llm', type: 'api', endpoint: 'http://192.168.1.5:11434/v1' })).toBe(true);
+    expect(isOllamaBackedProvider({ id: 'renamed', type: 'api', endpoint: 'https://my-ollama-box.example.com/v1' })).toBe(true);
+  });
+
+  it('matches a cli/tui provider carrying the ollamaBacked marker or an Ollama ANTHROPIC_BASE_URL', () => {
+    expect(isOllamaBackedProvider({ id: 'claude-ollama', type: 'tui', ollamaBacked: true })).toBe(true);
+    expect(isOllamaBackedProvider({ id: 'claude', type: 'cli', envVars: { ANTHROPIC_BASE_URL: 'http://localhost:11434' } })).toBe(true);
+  });
+
+  it('does not match a cloud provider with an unrelated endpoint', () => {
+    expect(isOllamaBackedProvider({ id: 'anthropic', type: 'api', endpoint: 'https://api.anthropic.com' })).toBe(false);
+    expect(isOllamaBackedProvider({ id: 'openai', type: 'api', endpoint: 'https://api.openai.com/v1' })).toBe(false);
+  });
+
+  it('handles missing/null provider input without throwing', () => {
+    expect(isOllamaBackedProvider(null)).toBe(false);
+    expect(isOllamaBackedProvider(undefined)).toBe(false);
+    expect(isOllamaBackedProvider({})).toBe(false);
   });
 });

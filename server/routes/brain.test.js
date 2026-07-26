@@ -59,7 +59,8 @@ vi.mock('../services/brain.js', () => ({
   getLinks: vi.fn(),
   getLinkById: vi.fn(),
   getLinkByUrl: vi.fn(),
-  createLink: vi.fn(),
+  createLinkFromUrl: vi.fn(),
+  cloneRepoInBackground: vi.fn(),
   updateLink: vi.fn(),
   reorderLinks: vi.fn(),
   deleteLink: vi.fn(),
@@ -1511,18 +1512,25 @@ describe('Brain Routes', () => {
     });
   });
 
-  describe('POST /api/brain/links (bucket + title derivation)', () => {
-    it('derives a hostname title for a plain URL and stores bucketId', async () => {
+  describe('POST /api/brain/links', () => {
+    it('delegates creation to the shared service with the validated options', async () => {
       brainService.getLinkByUrl.mockResolvedValue(null);
-      brainService.createLink.mockImplementation(async (data) => ({ id: 'l9', ...data }));
+      brainService.createLinkFromUrl.mockImplementation(async (url, opts) => ({ id: 'l9', url, ...opts }));
       const res = await request(app)
         .post('/api/brain/links')
         .send({ url: 'https://www.example.com/parks', bucketId: '11111111-1111-4111-8111-111111111111' });
       expect(res.status).toBe(201);
-      expect(brainService.createLink).toHaveBeenCalledWith(expect.objectContaining({
-        title: 'example.com',
-        bucketId: '11111111-1111-4111-8111-111111111111'
-      }));
+      expect(brainService.createLinkFromUrl).toHaveBeenCalledWith(
+        'https://www.example.com/parks',
+        expect.objectContaining({ bucketId: '11111111-1111-4111-8111-111111111111' })
+      );
+    });
+
+    it('409s on a duplicate URL without creating anything', async () => {
+      brainService.getLinkByUrl.mockResolvedValue({ id: 'l1' });
+      const res = await request(app).post('/api/brain/links').send({ url: 'https://example.com' });
+      expect(res.status).toBe(409);
+      expect(brainService.createLinkFromUrl).not.toHaveBeenCalled();
     });
   });
 });

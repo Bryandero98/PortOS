@@ -4,25 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
+Non-obvious invocations only — everything else is in `package.json` scripts.
+
 ```bash
-# Install all dependencies
-npm run install:all
+npm run install:all   # includes git submodule update --init --recursive
 
-# Start (builds client, serves production UI + API on port 5555)
-npm start
-
-# Development (Vite hot-reload on 5554, API on 5555)
-npm run dev
-
-# Run tests
-cd server && npm test
-cd server && npm run test:watch  # Watch mode
+# Tests are PER WORKSPACE — there is no root `npm test` that runs both
+cd server && npm test            # Node test runner
 cd client && npm test            # Vitest (jsdom) — component/unit tests
-
-# PM2 management
-pm2 start ecosystem.config.cjs
-pm2 stop ecosystem.config.cjs
-pm2 logs
+npm run test:db                  # DB-backed suites → portos_test ONLY (see Security Model)
 ```
 
 ## Security Model
@@ -63,7 +53,7 @@ See `server/services/meatspacePostDrillCache.js` (`initDrillCache` / `requestCac
 
 ## Architecture
 
-PortOS is a monorepo with Express.js server (always user-facing on `:5555`, HTTP or HTTPS) and React/Vite client (Vite dev server on `:5554` in `npm run dev`; in `npm start` the built client is served from `:5555` directly). PM2 manages app lifecycles. Data persists to JSON files in `./data/`.
+The server is always user-facing on `:5555` (HTTP or HTTPS). The client runs on the Vite dev server at `:5554` under `npm run dev`; under `npm start` the built client is served from `:5555` directly. PM2 manages app lifecycles. Where a given record persists (Postgres vs a `data/` file) is decided by the storage-classification contract in `docs/STORAGE.md`.
 
 ### Port Allocation
 
@@ -71,19 +61,12 @@ PortOS uses ports 5553–5561 (system PostgreSQL on 5432, Docker PostgreSQL on 5
 
 Define ports in the top-level `PORTS` object in `ecosystem.config.cjs` (canonical re-export at `server/lib/ports.js`). See `docs/PORTS.md` for the full guide and diagram.
 
-### Server (`server/`)
-- **Routes**: HTTP handlers with Zod validation
-- **Services**: Business logic, PM2/file/Socket.IO operations
-- **Lib**: Shared validation schemas
+### Per-directory conventions
 
-### Client (`client/src/`)
-- **Pages**: Route-based components
-- **Components**: Reusable UI elements
-- **Services**: `api.js` (HTTP) and `socket.js` (WebSocket)
-- **Hooks**: `useErrorNotifications.js` subscribes to server errors, shows toast notifications
+Client-specific and server-specific conventions live in nested memory files that load when you work in those trees:
 
-### Data Flow
-Client → HTTP/WebSocket → Routes (validate) → Services (logic) → JSON files/PM2
+- `client/src/CLAUDE.md` — UI conventions, routing/deep-linking, the shared `Drawer` convention
+- `server/CLAUDE.md` — schema parity, write serialization, peer fan-out in tests, prompt-template migrations
 
 ### AI Toolkit (`server/lib/aiToolkit/`)
 
@@ -91,29 +74,9 @@ Vendored in-tree provider/runner/prompt toolkit (self-contained — no imports o
 
 ### Command Palette & Voice Nav — shared backbone (`server/lib/navManifest.js`)
 
-PortOS has a single source of truth for navigation: `server/lib/navManifest.js` exports `NAV_COMMANDS` (every navigable page: `{ id, path, label, section, aliases, keywords }`) and `resolveNavCommand()` (the fuzzy resolver). It is consumed by:
+`server/lib/navManifest.js` is the single source of truth for navigation: `NAV_COMMANDS` + `resolveNavCommand()`, consumed by both the `⌘K` palette and the voice agent's `ui_navigate` tool. **Adding a `<Route>` without a `NAV_COMMANDS` entry leaves the page unreachable from `⌘K` and un-navigable by voice.**
 
-- The **`⌘K` Command Palette** (`client/src/components/CmdKSearch.jsx`) via `GET /api/palette/manifest`.
-- The **voice agent's `ui_navigate` tool** (`server/services/voice/tools.js`) — so "take me to tasks" resolves through the same map the palette uses.
-
-**When adding a new page, you MUST also add an entry to `NAV_COMMANDS`.** Adding only a `<Route>` in `App.jsx` and a sidebar link in `Layout.jsx` will leave the page unreachable from `⌘K` and un-navigable by voice. Entry shape:
-
-```js
-{ id: 'nav.<section>.<slug>', path: '/foo/bar', label: 'Bar', section: 'Foo',
-  aliases: ['foo-bar', 'bar'], keywords: ['synonyms', 'context'] }
-```
-
-- `id` — stable, dotted (`nav.brain.inbox`). Must be unique.
-- `path` — exact route the client router matches; must start with `/`.
-- `section` — matches the sidebar group label so the palette and sidebar stay visually aligned.
-- `aliases` — short spoken/typed tokens the user is likely to say. The voice agent's fuzzy resolver tries each alias with tiered matching; more aliases = more forgiving voice navigation.
-- `keywords` — extra terms used only by the palette's in-UI scorer (synonyms, feature names).
-
-Fail-fast guards at module load catch missing fields, non-slash paths, and duplicate ids — so a bad entry blocks server boot instead of silently breaking palette/voice.
-
-**For NEW voice-tool-style actions that should appear in `⌘K`:** add the tool to `server/services/voice/tools.js` (it's the single source of action schemas), then whitelist its `id` in the `PALETTE_ACTIONS` array in `server/routes/palette.js` with a `section` + `label`. Do not duplicate the tool's description or parameters — the palette route hydrates them from `getToolSpecs()` at request time. DOM-driving tools (`ui_click`, `ui_fill`, etc.) stay off the palette whitelist because the palette has no live DOM context.
-
-**Tests:** `server/lib/navManifest.test.js` asserts shape invariants + alias resolution; `server/routes/palette.test.js` asserts the manifest endpoint + action dispatch + whitelist enforcement. Any new entry is automatically covered by the shape-invariant tests.
+**Invoke the `portos-add-page` skill** for the entry shape, palette-action wiring, and the fail-fast guards.
 
 ### Dashboard Widgets & Layouts (`client/src/components/dashboard/`)
 
@@ -121,23 +84,13 @@ Widgets are registered in `widgetRegistry.jsx` (`{ id, label, Component, width, 
 
 ### Backup Service (`server/services/backup.js`)
 
-`DEFAULT_EXCLUDES` is **rsync filter syntax** — every path must be anchored with a leading `/` (rsync's "relative to the transfer root"). Without the anchor, `loras/*.safetensors` also matches any `loras/` directory nested anywhere under `data/`, silently dropping unrelated user data (e.g. `brain/.../loras/`). Each entry carries an `overridable` flag:
-
-- `false` — ephemeral/cache data that must never be backed up. A hand-edited `settings.json` listing the path in `disabledDefaultExcludes` is silently dropped server-side.
-- `true` — re-downloadable assets the user can opt back in via the Backup tab toggle. The toggle UI uses a `shadowsDefault()` helper that also catches broader custom patterns (`loras/`, `loras/**`, `/cos/`) so the "included" state never lies about rsync's actual behavior.
-
-The pure `computeEffectiveExcludes()` helper enforces both rules (overridable allow-list + `Array.isArray` guards for hand-edited settings) and is unit-tested in `backup.test.js`.
-
-The scheduled-cron handler in `backupScheduler.js` re-reads settings on every invocation — `destPath`, `excludePaths`, `disabledDefaultExcludes`, and `enabled` all take effect on the next run without a server restart. Only the cron expression itself is captured at registration.
+`DEFAULT_EXCLUDES` is **rsync filter syntax** — every path must be anchored with a leading `/`. An unanchored pattern silently drops unrelated user data and is a data-loss bug, not a style nit. See `docs/BACKUP.md` for the anchoring failure mode, the `overridable` tiers, and `computeEffectiveExcludes()`.
 
 ### Slashdo Commands (`lib/slashdo`)
 
 PortOS bundles [slashdo](https://github.com/atomantic/slashdo) as a git submodule at `lib/slashdo`. This provides slash commands (`/do:next`, `/do:review`, `/do:pr`, `/do:push`, `/do:release`, etc.) and shared libraries without requiring a separate global install. `/do:next` is the slashdo replacement for the former repo-local `/claim` command — claim the next PLAN.md item (or GitHub issue with `--issues`) in an isolated worktree and ship a PR.
 
 **Key points:**
-- Submodule lives at `lib/slashdo`, symlinked into `.claude/commands/do/` and `.claude/lib/`
-- `npm run install:all` runs `git submodule update --init --recursive` automatically
-- To update slashdo: `git submodule update --remote lib/slashdo`
 - CoS agents can use `loadSlashdoCommand(name)` from `subAgentSpawner.js` to inline command content into prompts (resolves `!cat` lib includes automatically)
 - The `.claude/commands/do/` symlinks make all `/do:*` commands available as project-level Claude Code slash commands
 
@@ -231,28 +184,13 @@ This complements the Security Model (which governs the deployed product) — thi
 ## Code Conventions
 
 - **No try/catch** - errors bubble to centralized middleware. **Exception:** PTY/child-process/`setTimeout`/`setInterval` callbacks and any code that runs *outside* the Express request lifecycle. An uncaught throw there crashes the Node process (there is no `next(err)` to bubble to). At those boundaries, wrap hook invocation in try/catch and log via the emoji-prefixed `console.error` style. Async event handlers that mutate shared module-level state (e.g. the TUI spawner's `handleData`) must also be serialized — chain them onto a per-session/per-actor `Promise.resolve()` queue rather than firing concurrently, otherwise interleaved awaits race on shared buffers.
-- **No window.alert/confirm** - use inline confirmations or toast notifications
-- **Form labels need `htmlFor`/`id` pairing** - when adding a settings/config form field, wire `<label htmlFor="...">` to an `id="..."` on the input — screen readers and click-to-focus both depend on the association. The visual `block`/`mb-1` styling alone doesn't establish it.
-- **Linkable routes for all views** - tabbed pages use URL params, not local state (e.g., `/devtools/history` not `/devtools` with tab state)
-- **ID-based deep linking for every selectable UI element** - any view that opens/selects a specific record (a project, item, scene, detail, editor, or master-detail selection) MUST encode that selection in the URL via a route param (`/media/music-video/:projectId`, `/media/timeline/:projectId`, `/media/creative-director/:id/:tab`) — never in local `useState`/`selectedId`. The URL is the single source of truth for "what is open," so every element is directly shareable, bookmarkable, and reachable from ⌘K, voice nav, and media job-completion hooks. Selection handlers `navigate()` to the id'd route; deletes/clears `navigate()` back to the index; render a "not found" fallback for stale/deleted ids. Add both the bare index route and the `:id` detail route in `App.jsx`, and keep the base path registered in `NAV_COMMANDS`.
 - **Functional programming** - no classes, use hooks in React
 - **Zod validation** - all route inputs validated via `lib/validation.js`
 - **Command allowlist** - shell execution restricted to approved commands only
-- **Mobile responsive** - all pages should be mobile responsive friendly
-- **Above the fold** - keep actionable content and info above the fold and design pages for maximum information and access without scrolling
-- **No hardcoded localhost** - use `window.location.hostname` for URLs; app accessed via Tailscale remotely
-- **Alphabetical navigation** - sidebar nav items in `Layout.jsx` are alphabetically ordered after the Dashboard+CyberCity top section and separator; children within collapsible sections are also alphabetical
-- **Every new page registers in the nav manifest** - when adding a `<Route>` + sidebar link, also add a `NAV_COMMANDS` entry in `server/lib/navManifest.js`. This makes the page reachable via `⌘K` and voice (`ui_navigate`) automatically. See the "Command Palette & Voice Nav" section above for the entry shape.
-- **New page → pick the right Layout scroll mode.** `Layout.jsx` has an `isFullWidth` route list: matched routes get a bare `relative overflow-hidden` `<main>` (the PAGE must own an internal `overflow-y-auto`, like the editor's `<section>`); unmatched routes get the default `overflow-auto p-4 md:p-6` scrolling+padded main. A list/index page (e.g. `/universes`, `/pipeline`) should usually be a plain `<div>` and stay OUT of `isFullWidth` so the main scrolls it; only full-bleed editors that manage their own scroll belong in the list. Match `/route/` (trailing slash) to scope full-width to detail/editor sub-routes without catching the bare index. A full-width page with no internal scroll container silently clips below the fold.
-- **Config drawers → the shared tabbed `Drawer` convention.** Slide-in "settings over a feature page" surfaces use the shared `client/src/components/Drawer.jsx` primitive — never a hand-rolled `fixed inset-y-0 right-0` clone. Follow this convention instead of dumping another page-length flat scroll into a narrow panel (the epic #1966 redesign):
-  - **Size.** Pass `size` (`sm` 520px · `md` 640px · `lg` 720→880px · `xl` up to 1100px). Widen for genuinely large forms so they can lay out in columns on desktop; keep small dialogs at `sm`. Mobile is always `w-full` (full-screen sheet) regardless of `size` — mobile-responsive is non-negotiable. `widthClass` is a back-compat escape hatch that overrides `size`.
-  - **When to tab.** A large config surface (many fields / logical groups, e.g. Edit App's ~25 fields) should group its fields into `tabs={[{ id, label, icon?, count? }]}` + `activeTab` / `onTabChange` and render only the active tab's fields as `children` — not one page-length scroll. A *medium* form that should stay fully visible above the fold uses the child's own labeled sections instead (e.g. `ImageGenSettingsForm`'s `grouped` prop in the pipeline image-gen drawers), because tabs hide inactive fields behind a click.
-  - **Per-tab scroll.** The drawer gives each tab its own scroll region that resets on switch (`key={currentTab}` remounts the panel) — so no single tab is ever page-length. Because the body remounts per tab, **all mutable form state must live above the Drawer body** in the parent component, never in an uncontrolled input inside the form, or it resets on tab switch (see `EditAppDrawer.jsx`'s state-hoisting comment). Validate fields on tabs that may be unmounted at Save time explicitly, and `setActiveTab()` to the offending tab to surface the error.
-  - **Mobile `<select>` fallback + `TabPills`.** The tab bar is `client/src/components/ui/TabPills.jsx` (`mobileDropdown` collapses it to a `<select>` under `sm`) — **reuse it, never roll a new tab bar.** The `Drawer tabs` layout wires TabPills for you; a surface hosted in *both* a drawer and a page (like `ImageGenTab`) renders its own internal `<TabPills variant="pills" mobileDropdown>` instead so the same grouping works in either host.
-  - **Deep-linkable active tab.** Drive `activeTab` from a URL search param via `useDrawerTab(paramName, defaultTab, tabIds)` (`client/src/hooks/useDrawerTab.js`) so the open section is shareable/bookmarkable/reload-safe — the same "URL is the source of truth for what's open" rule as routed views. The caller owns the param name (`appTab`, `mediaTab`, …) so a page can host more than one drawer; pass the id list so a stale deep link degrades to `defaultTab` instead of a blank panel.
-  - **Long-lived forms** opt out of accidental dismissal with `closeOnEsc={false}` / `closeOnBackdrop={false}` so an Esc keystroke mid-edit doesn't discard the form.
-  - **Worked examples:** `client/src/components/apps/EditAppDrawer.jsx` (built-in `tabs` layout, `size="lg"`, `useDrawerTab('appTab', …)`) and `client/src/components/settings/ImageGenTab.jsx` (internal `TabPills variant="pills"` sub-tabs, `useDrawerTab('mediaTab', …)`). The primitive is `Drawer.jsx`; the design record is `docs/plans/2026-07-01-drawer-ux-redesign.md`.
-- **Reactive UI updates** - after mutations (delete, create, update), update local state directly instead of refetching the entire list from the server. Use `setState(prev => prev.filter(...))` or similar patterns for immediate feedback
+- **Every new page registers in the nav manifest** - when adding a `<Route>` + sidebar link, also add a `NAV_COMMANDS` entry in `server/lib/navManifest.js`. This makes the page reachable via `⌘K` and voice (`ui_navigate`) automatically. Invoke the `portos-add-page` skill for the entry shape.
+- **Selection lives in the URL, never in local state** - any view that opens/selects a specific record encodes it as a route param, so it's shareable, bookmarkable, and reachable from ⌘K and voice. Full contract (index + `:id` routes, not-found fallback, Layout scroll mode) in `client/src/CLAUDE.md`.
+- **Client UI conventions** (`client/src/CLAUDE.md`, loads when working under `client/src/`) - no `alert`/`confirm`, `htmlFor`/`id` label pairing, mobile responsive, above the fold, no hardcoded localhost, alphabetical nav, reactive local-state updates after mutations, and the shared tabbed `Drawer` convention.
+- **Socket-driven UI** - invoke the `portos-socket-ui` skill before wiring or debugging a socket-driven view (event-driven state swaps, single-subscriber resources, pending-request tracking, deferred-work guards).
 - **Single-line logging** - use emoji prefixes and string interpolation, never log full JSON blobs or arrays
   ```js
   console.log(`🚀 Server started on port ${PORT}`);
@@ -264,29 +202,10 @@ This complements the Security Model (which governs the deployed product) — thi
   - Arrays/objects: gate on `Array.isArray(parsed?.field)` / `typeof parsed?.field === 'object'` before deciding to fall back to the original.
   - Keep server-side merges and the client's `pick` helpers mirrored — a one-sided change breaks the round-trip.
 - **Sentinel + validate to distinguish "not set / failed" from "present-but-empty / valid".** The `.length`-truthiness footgun above is one instance of a broader rule: never let *absent*, *failed-to-fetch*, or *invalid* collapse into the same value as *fetched-and-legitimately-empty* or *valid*. Use an explicit sentinel and validate before falling through — not `x.length` or `x || fallback`-on-mere-presence. Canonical examples in the local-LLM backends: model-list caches use `null = not fetched` vs `[] = cached-empty`, so a zero-model backend still caches instead of re-hitting the API every call (`server/services/ollamaManager.js` `installedModels`, `lmStudioManager.js` `availableModels`); `getBackend()` validates the `.env` marker first and only then falls back to `process.env`, so a stale/invalid `.env` value can't mask a valid runtime env override (`server/services/localLlm.js`); and a reachable-but-list-failed backend surfaces an explicit `modelsError` rather than reporting `0 models` (`lmStudioManager.js` `getLastListError`).
-- **Schema parity when adding fields.** When you add a field to a sanitizer, `createXxx`, or a payload shape, update the corresponding Zod schema (`server/lib/aiToolkit/validation.js` for toolkit shapes, `server/lib/validation.js` for PortOS routes) in the same change. Wire validation into POST and PUT (PUT can use `schema.partial()`); the PortOS convention is *all* inputs validated — an exported-but-unwired sub-schema creates false confidence. For polymorphic stores like `PUT /api/settings` that accept any sub-object, validate the relevant slice with `schema.partial()` when its key is present in the request body (see `server/routes/settings.js` for the `backupConfigSchema.partial()` pattern). Tolerate UI sentinels (`endpoint: ''` for CLI providers) with `z.preprocess(v => v === '' ? undefined : v, …)`. When a service migrates legacy keys on read, the schema must still accept the legacy shape so older clients don't 400 before the migration runs.
 - **Silent vs. toasting API requests.** The `request()` helper in `client/src/services/apiCore.js` toasts errors by default. When a caller already owns its own error UI — either via `useAsyncAction` (which toasts on throw) or a `.catch(() => fallback)` that intentionally swallows the failure — pass `{ silent: true }` to the API helper so the toast only fires from one layer. Add an `options` parameter to new API wrappers so callers can opt into silent mode. **Custom catch ⇒ `silent: true`.** When you have a custom error toast in `.catch()`, you MUST pass `{ silent: true }` — otherwise both the helper and your custom catch fire and the user sees two toasts back-to-back. If you DON'T have a custom toast, omit `silent` and let the helper handle it (single layer wins either way).
 - **"Run Now" actions must gate on saved state, not the form input.** When a settings page has a companion "Run this now" button that triggers a server action reading server-side settings (not the local form values), the button must be gated on the *saved* value, not the in-memory input. Track a parallel `saved*` state for each setting the action depends on, update it on successful save, and use it for the action's enabled gate. Disable the action while the form is dirty *or* a save is in flight — a tooltip-only warning is missed on touch and produces surprising "I edited X and ran, but X didn't apply" bugs.
 - **In-flight saves must gate dependent actions, not just the form.** When a field's PATCH is async and a button triggers server-side work that reads that field (auto-run, regenerate, etc.), the button must disable while the PATCH is in flight — not just while the input is "dirty." Otherwise the user picks a new value, the input clears, and they click the action before the server has the new value persisted. Track a `<field>Saving` boolean alongside the action's other disable predicates, set it before the PATCH and clear it in `.finally()`. See `PipelineIssue.jsx` `lengthProfileSaving` for the canonical example.
-- **Async PATCH races on shared records — serialize writes server-side.** When two write paths can mutate the same record concurrently (e.g. a blur-save plus an explicit "Render" button against `stages.comicPages.cover`), client-side guards (refs, `onMouseDown`, status checks) are unreliable — keyboard activation, status==='unknown' stalls, and `loadState → modify → saveState` interleaving all defeat them. The correct fix is to serialize writes at the *file* level on the server (every PATCH awaits the previous one to settle before reading state, so it merges against the freshest persisted record). See `issueWriteTail` in `server/services/pipeline/issues.js`. A `Map<recordId, Promise>` is *not* enough — two writes to different record ids share the same JSON state file and can still clobber each other; collapse the queue to a single tail per shared file.
-- **Stage-prompt template changes need a migration.** `scripts/setup-data.js` only copies *missing* prompt files to `data/prompts/stages/` — existing installs keep their old templates. When you add a `{{template.variable}}` reference to a `data.reference/prompts/stages/*.md` file, also add an entry to `scripts/migrations/NNN-…js` that updates the corresponding installed prompt when its hash still matches the pre-change shipped version. Normalize line endings (`\r\n` → `\n`, bare `\r` → `\n`) before hashing so the comparison is correct on Windows checkouts. The drift warning in `scripts/setup-data.js` distinguishes auto-updatable (matches old shipped hash) from customized (matches neither) — when adding to the migrated list, mirror both `OLD_SHIPPED_MD5` and `NEW_SHIPPED_MD5` there too so the warning stays actionable. Migration scripts live in `scripts/migrations/`; the per-install applied-list is `data/migrations.applied.json` (gitignored runtime state). See `scripts/migrations/003-update-pipeline-stage-prompts.js`.
-- **High-frequency state writes must batch.** Per-line state mutations that round-trip through `withStateLock → loadState → saveState` (e.g. `appendAgentOutput` in `cosAgents.js`) are fine for human-pace events but catastrophic when called from a hot loop — PTY output streams, AI tool-call streams, or any producer that can emit dozens of events per second. When wiring a new streaming producer, add a batched variant that takes an array (see `appendAgentOutputLines` for the pattern) and flush from the caller on a ~250ms debounce. Always drain the pending buffer in the producer's `finish`/`cleanup` path before the final state write so completion events don't beat the last output batch to disk.
-- **Record-creating tests and peer fan-out.** Record create/update paths reach peer-sync only through the subscription adapter in `server/services/sharing/recordEvents.js` (`autoSubscribeRecordToAllPeers` etc.) — a silent no-op until `peerSync.js` registers the real implementation at module load. A suite that never loads `peerSync.js` therefore gets no fan-out without mocking anything. Suites that DO load the peer-sync graph (importing `peerSync.js` or `sharing/index.js`, directly or transitively) must still mock `services/instances.js` with `mockNoPeers()` from `server/lib/mockPathsDataRoot.js` and `services/sharing/peerSync.js` with `mockNoPeerSync()` — the mock keeps the real module's registration side effect from wiring live fan-out into the adapter. To assert auto-subscribe behavior in a domain test, register a test double via `registerSubscriptionAdapter({...})` and clean up with `__resetSubscriptionAdapter()`.
-- **Socket event-driven state — don't pre-clear before the server confirms.** When swapping which entity a socket-driven UI is showing (shell session, agent run, etc.), wait for the server's success event to drive the swap atomically; the error event is the recovery point. Pre-clearing the local `*Ref` / visible state up front leaves the UI stranded on a dead URL when the success event never arrives (target died mid-request, server rejected the switch). Pair every `socket.on('X:error')` that follows a stateful request with a recovery branch that restores the previously-displayed state or falls back to a live alternative.
-- **Single-subscriber socket resources need notify + recipient-relative advertise + filter + claim.** Some server-side resources (PTY shell sessions, etc.) intentionally store one attached socket and fan output to it. The contract: (1) emit `<resource>:detached` on the previous socket when a new socket takes over so the displaced client can drop its local view; (2) include an `attached: boolean` field on each list-entry payload, computed *relative to the recipient socket* (true only when bound to a different socket) — a globally-truthy `attached` makes a client's own sessions look unavailable to itself; (3) broadcast list updates from both attach AND detach paths; (4) auto-pick paths send `claim: true` and the server refuses to displace a different socket. Manual paths (tab click, deep-link URL) default to `claim: false` so explicit intent still wins. See `server/services/shell.js` for the canonical implementation.
-- **Pending socket-request tracking — `{ target, generation }` ref.** When a stateful socket operation is in flight, track it as `{ target, generation }` and increment `generation` on every change. Response handlers gate on strict equality with `target` — null/stale/cancelled all fall through, so a cancelled-mid-flight response can't re-activate after the user moved on. Deferred work (`setTimeout` fallbacks) captures `generation` and aborts if it advanced. Pair every cancellation path with explicit `cancelPendingAttach()`-style helpers rather than overloading a `clearActiveSession()` helper — clearing the displayed entity and cancelling an in-flight request are *separate* concerns, and conflating them cancels user-initiated switches when an unrelated session dies. See `client/src/pages/Shell.jsx` `pendingAttachRef` for the pattern.
-- **Server-correlate every async response, then filter display.** When the server emits `<resource>:error` in response to a client request, include the original `sessionId` / request id in the payload so the client can match against its pending state. Drop stale errors silently and gate the red-error display on correlation — rendering before classification flashes noise in the UI for requests the user has already moved past (rapid tab clicks, expected `claim:true` race rejections). Passive errors against the currently-displayed resource (e.g. `shell:input` to a now-dead session) should still display, but must not mutate pending state.
-- **Distinguish intentional idle from passive idle.** A "no entity displayed" state can come from a user action (Stop / dismiss) or from passive circumstance (initial load found everything in-use elsewhere). Recovery branches that auto-adopt the next free entity must gate on a `userIdle*Ref` flag set by explicit user-clear paths and cleared by every user-initiated start/attach. The gate needs to cover every reconnect-triggered re-init path, not just the initial-load branch — a transient disconnect resets initialization flags, and an empty-list auto-start or survivor adoption can otherwise undo an explicit Stop on reconnect.
-- **Deferred work must respect both staleness and unmount.** Any `setTimeout`-scheduled side effect that emits to the network or mutates shared state needs two guards: (1) a generation counter check so user actions during the delay window abort it, and (2) a `mountedRef` so a navigation-away unmount stops it from firing into the void. Pattern: `const mountedRef = useRef(true); useEffect(() => () => { mountedRef.current = false; }, []);` — never reset to `true` (handles dev-mode double-mount cleanly). Without the unmount guard, a deferred socket emit can claim a resource (e.g. shell session) with no listener left to render it.
-
-## Tailwind Design Tokens
-
-```
-port-bg: #0f0f0f       port-card: #1a1a1a
-port-border: #2a2a2a   port-accent: #3b82f6
-port-success: #22c55e  port-warning: #f59e0b
-port-error: #ef4444
-```
+- **Server conventions** (`server/CLAUDE.md`, loads when working under `server/`) - schema parity when adding fields, serializing async PATCH races on shared records, batching high-frequency state writes, peer fan-out in record-creating tests, and stage-prompt template migrations.
 
 ## Git Workflow
 
@@ -296,11 +215,7 @@ port-error: #ef4444
 - **Changelog**: Append entries to `.changelog/NEXT.md` during development; `/do:release` (Claude Code slash command) finalizes it into a versioned file
 - **Versioning**: Version in `package.json` reflects the last release. Do not bump during development — `/do:release` handles version bumps
 - After each feature or bug fix, run `/simplify` and then commit and push code
-- **Capture deferred work before finishing.** If during a task you identify a refactor, cleanup, abstraction, or enhancement that you decide *not* to do (out of scope, risk, time), append it to `PLAN.md` as a `- [ ]` item under the most relevant section (or a new sub-heading) with enough specificity that it can be picked up cold — file paths, line numbers, why it was skipped. Examples: code-review findings rated "skip for this PR," `/simplify` items deferred for scope, "we should also do X but later." Don't end a session with these living only in chat — they evaporate.
-- **Decide, don't defer — avoid decision-blocked issues (`future` / `needs-input`).** A cluster of open issues that each wait on a human decision is worse than a shipped best-guess the user can iterate on. When you would file a follow-up (or claim one) whose only obstacle is an **undecided design choice** — "option A vs B", "which API shape", "is this in scope" — **make the call yourself**: pick the most reasonable option, state it as *the decision* in the issue body (with a one-line rationale), and file it **ready-to-work**, not parked. The user has explicitly accepted the tradeoff — they would rather iterate on top of a wrong-but-shipped choice than accumulate issues that need decisions. Default to your own recommendation; do not punt the decision back to a human.
-  - **Ready-to-work is the default.** Label an issue for its kind (`bug`, `enhancement`, `code-quality`, `plan`) and write a decision-complete body — the problem, the chosen approach, affected files/paths, and acceptance criteria — so another agent can pick it up cold and ship it. `plan` marks the claimable queue that `/do:next --issues` drains.
-  - **`future` is almost never correct.** Do NOT use it to park a choice you could make yourself. The narrow legitimate park is work a **human must personally drive** — a real fidelity/validation run only they can judge, or a step that needs **specific hardware/credentials** the agent doesn't have (e.g. a CUDA box, an Apple-Silicon-only validation). Mark those `blocked` (skipped by autonomous claim runs), not `future`, and say in the body exactly what human action unblocks it. `blocked` also covers a genuine dependency on another unshipped issue/PR.
-  - **`needs-input` is a last resort, not a reflex.** When claiming an ambiguous issue, prefer proceeding on your best interpretation and shipping it. Fall back to `needs-input` only when proceeding would be **destructive/irreversible** or genuinely requires the human (hardware, credentials, a personal judgment call) — never merely because more than one reasonable reading exists.
+- **Capture deferred work, and decide rather than park it.** Deferred refactors/cleanups go into `PLAN.md` as `- [ ]` items (or a filed issue) specific enough to pick up cold — never left only in chat. When the sole obstacle is an undecided design choice, **make the call yourself** and file it ready-to-work; `future` / `needs-input` are last resorts. Invoke the `portos-file-issue` skill for the full labeling contract.
 - **Never link to AI conversation sessions in PR descriptions.** Do not paste `claude.ai`, `chatgpt.com`/`chat.openai.com`, or any other AI chat/session share URL (or a "generated by / view this conversation" link) into a PR description, commit message, issue, or review comment. These links leak session context, aren't durable references, and read as AI attribution — the PR must stand on its own with a Summary and Test plan. Reference durable artifacts instead: issue/PR numbers, commit SHAs, and file paths.
 - If we have created enough commits to wrap up a feature or issue to warrant a production release, pull the latest main and release branches and then run `/do:release` from main
 - **Archive approved design plans.** When a plan is approved out of plan mode, copy the finalized plan from `~/.claude/plans/` to `./docs/plans/YYYY-MM-DD-<slug>.md` (date of approval) as a design record before implementing. See `docs/plans/README.md`.

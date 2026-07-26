@@ -136,6 +136,45 @@ describe("universeBuilder service", () => {
     expect(await svc.listUniverses()).toEqual([]);
   });
 
+  describe("listUniverseStyles", () => {
+    it("projects to style tokens only — no categories / canon / sheets", async () => {
+      const w = await seedWorld();
+      const styles = await svc.listUniverseStyles();
+      expect(styles).toEqual([{
+        id: w.id,
+        name: "Moebius SciFi",
+        influences: {
+          embrace: ["moebius linework", "scavengers reign palette"],
+          avoid: ["blurry", "lowres"],
+        },
+      }]);
+    });
+
+    it("drops universes with no style tokens — selecting one would be a no-op", async () => {
+      await svc.createUniverse({ name: "Blank Slate" });
+      expect(await svc.listUniverseStyles()).toEqual([]);
+    });
+
+    it("folds the legacy v2 prose stylePrompt/negativePrompt into the token lists", async () => {
+      // A pre-v3 record (or one synced from an older peer) carries prose
+      // instead of chips — sanitizeTemplate splits it on read, so the
+      // projection must too or those universes look style-less.
+      await seedState({
+        universes: [{
+          id: "legacy-1",
+          name: "Legacy World",
+          stylePrompt: "ink wash, muted palette",
+          negativePrompt: "blurry",
+        }],
+      });
+      expect(await svc.listUniverseStyles()).toEqual([{
+        id: "legacy-1",
+        name: "Legacy World",
+        influences: { embrace: ["ink wash", "muted palette"], avoid: ["blurry"] },
+      }]);
+    });
+  });
+
   it("createUniverse persists with sanitized categories + kind tags", async () => {
     const w = await seedWorld();
     expect(w.id).toBe(mockUuid(1));
@@ -344,6 +383,38 @@ describe("universeBuilder service", () => {
   it("defaults styleImageRefs to [] when absent", async () => {
     const w = await svc.createUniverse({ name: "NoProbe" });
     expect(w.styleImageRefs).toEqual([]);
+  });
+
+  it("persists analyzed style references and patches the list wholesale", async () => {
+    const reference = {
+      id: "style-ref-example",
+      title: "Dust-lit ink wash",
+      prompt: "Granular ink wash, muted ochre, weathered silhouettes",
+      imageRefs: ["reference.png"],
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    const w = await svc.createUniverse({
+      name: "Reference Bible",
+      styleReferences: [reference, { ...reference, id: "style-ref-duplicate" }],
+    });
+    expect(w.styleReferences).toHaveLength(2);
+    expect(w.styleReferences[0]).toEqual(reference);
+
+    const patched = await svc.updateUniverse(w.id, { styleReferences: [reference] });
+    expect(patched.styleReferences).toEqual([reference]);
+    expect((await svc.getUniverse(w.id)).styleReferences).toEqual([reference]);
+  });
+
+  it("drops invalid style references and defaults the field to an empty list", async () => {
+    const w = await svc.createUniverse({
+      name: "Reference Validation",
+      styleReferences: [
+        { title: "Missing prompt", imageRefs: ["reference.png"] },
+        { title: "Missing image", prompt: "Prompt", imageRefs: [] },
+        { title: "Traversal", prompt: "Prompt", imageRefs: ["../secret.png"] },
+      ],
+    });
+    expect(w.styleReferences).toEqual([]);
   });
 
   it("createUniverse trims bible fields to their max length", async () => {
@@ -739,6 +810,16 @@ describe("universeBuilder service", () => {
       // includeDeleted mirrors listUniverses's own option, tombstones and all.
       expect(await svc.countUniverses({ includeDeleted: true }))
         .toBe((await svc.listUniverses({ includeDeleted: true })).length);
+    });
+
+    it("listUniverseStyles excludes tombstones", async () => {
+      const live = await seedWorld();
+      const doomed = await seedWorld({ name: "Doomed World" });
+      expect((await svc.listUniverseStyles()).map((u) => u.id).sort())
+        .toEqual([live.id, doomed.id].sort());
+
+      await svc.deleteUniverse(doomed.id);
+      expect((await svc.listUniverseStyles()).map((u) => u.id)).toEqual([live.id]);
     });
 
     it("getUniverse returns 404 for tombstoned, includeDeleted exposes it", async () => {
@@ -1882,6 +1963,23 @@ describe("universeBuilder service", () => {
   });
 
   describe("categories→canon backfill", () => {
+    it("upgrades v4 to v5 without re-folding exploratory categories into canon", () => {
+      const w = svc.sanitizeTemplate({
+        id: "world-v4",
+        name: "Already backfilled",
+        schemaVersion: 4,
+        categories: {
+          landscapes: { kind: "places", variations: [{ label: "New Vista", prompt: "exploratory" }] },
+        },
+        characters: [],
+        places: [],
+        objects: [],
+      });
+      expect(w.schemaVersion).toBe(svc.CURRENT_SCHEMA_VERSION);
+      expect(w.places).toEqual([]);
+      expect(w.styleReferences).toEqual([]);
+    });
+
     it("backfills canon arrays from categories on first read + stamps the current schema version", async () => {
       await seedState({
         universes: [

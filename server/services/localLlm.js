@@ -28,14 +28,14 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { pipeline } from 'stream/promises'
 import { Readable } from 'stream'
-import { PATHS, atomicWrite, ensureDir, pathExists } from '../lib/fileUtils.js'
+import { PATHS, atomicWrite, ensureDir, pathExists, sleep } from '../lib/fileUtils.js'
 import { compareSemver } from '../lib/versionUtils.js'
 import { isBackend, mapModelToBackend } from '../lib/localLlmCatalog.js'
 import { sanitizeOllamaName } from '../lib/localLlmDisk.js'
-import { recommendEditorialModel, isVisionModel, isVisionCapableCliProvider } from '../lib/localModelHeuristics.js'
+import { recommendEditorialModel, isVisionModel, isVisionCapableCliProvider, isToolUseModel } from '../lib/localModelHeuristics.js'
 import * as ollamaManager from './ollamaManager.js'
 import * as lmStudioManager from './lmStudioManager.js'
-import { getProviderById, getAllProviders, updateProvider } from './providers.js'
+import { getProviderById, getAllProviders, updateProvider, refreshProviderModels, isOllamaBackedProvider } from './providers.js'
 
 const execFileAsync = promisify(execFile)
 const ENV_PATH = join(PATHS.root, '.env')
@@ -412,7 +412,7 @@ async function waitForOllamaVersion(timeoutMs = 30_000) {
   while (Date.now() < deadline) {
     const v = await readOllamaVersion()
     if (v) return v
-    await new Promise((resolve) => setTimeout(resolve, 500))
+    await sleep(500)
   }
   return null
 }
@@ -475,7 +475,7 @@ async function upgradeOllamaMacApp(emit) {
   await runStreaming('pkill', ['-x', 'Ollama'], () => {}, 10_000).catch(() => null)
   await runStreaming('pkill', ['-x', 'ollama'], () => {}, 10_000).catch(() => null)
   // Brief settle so the OS releases the bundle before we replace it.
-  await new Promise((resolve) => setTimeout(resolve, 1500))
+  await sleep(1500)
 
   emit('Extracting…')
   const unzip = await runStreaming('unzip', ['-q', '-o', zipPath, '-d', tmpDir], emit, 5 * 60 * 1000)
@@ -614,6 +614,37 @@ export async function controlOllamaServer(action) {
   return { success: false, error: `Unknown Ollama action: ${action}` }
 }
 
+// Ollama's /api/show reports capabilities in its own vocabulary
+// (completion/tools/vision/embedding/thinking/insert). Map the ones that have
+// a home onto the badge vocabulary the Models catalog cards already render
+// (CAPABILITY_META in LocalLlmTab.jsx: chat/code/reasoning/vision/embeddings/
+// tools/audio) so installed models can show the same icons. Only capabilities
+// the daemon actually reported are surfaced — nothing is guessed here.
+const OLLAMA_CAPABILITY_BADGES = {
+  completion: 'chat',
+  tools: 'tools',
+  vision: 'vision',
+  embedding: 'embeddings',
+  thinking: 'reasoning'
+}
+
+function ollamaBadgeCapabilities(rawCapabilities) {
+  return (Array.isArray(rawCapabilities) ? rawCapabilities : [])
+    .map((c) => OLLAMA_CAPABILITY_BADGES[String(c).toLowerCase()])
+    .filter(Boolean)
+}
+
+// LM Studio's native model list tags each model's `type` (`llm` / `vlm` /
+// `embeddings`) — authoritative for chat/vision/embeddings. It reports no
+// tool-calling flag, so fall back to the shared id heuristic for `tools`.
+function lmStudioBadgeCapabilities(m) {
+  const type = m?.type ? String(m.type).toLowerCase() : null
+  const caps = type === 'embeddings' ? ['embeddings'] : ['chat']
+  if (type === 'vlm') caps.push('vision')
+  if (type !== 'embeddings' && isToolUseModel(m?.id)) caps.push('tools')
+  return caps
+}
+
 /** Normalize each backend's installed-model shape into one card shape. */
 function normalizeModels(backend, models) {
   if (backend === 'ollama') {
@@ -626,7 +657,8 @@ function normalizeModels(backend, models) {
       // path, or the listVisionModels enrichment below) prefer it; otherwise
       // fall back to the id heuristic. Passing the object lets a vision-capable
       // MoE like `qwen3.6:35b` (no `vl`/`vision` token in its id) resolve true.
-      vision: isVisionModel(Array.isArray(m.capabilities) ? { id: m.id, capabilities: m.capabilities } : m.id)
+      vision: isVisionModel(Array.isArray(m.capabilities) ? { id: m.id, capabilities: m.capabilities } : m.id),
+      capabilities: ollamaBadgeCapabilities(m.capabilities)
     }))
   }
   return models.map((m) => ({
@@ -635,7 +667,8 @@ function normalizeModels(backend, models) {
     contextLength: m.maxContextLength ?? null,
     // LM Studio's native model list tags vision models `type: 'vlm'` — prefer
     // that over the id regex.
-    vision: isVisionModel(m)
+    vision: isVisionModel(m),
+    capabilities: lmStudioBadgeCapabilities(m)
   }))
 }
 
@@ -755,7 +788,7 @@ export async function listVisionModels() {
 /**
  * Vision-capable CLI providers (codex / claude-code), expanded to one entry per
  * configured model so the caption picker can offer e.g. "codex / gpt-5" or
- * "claude-code / claude-opus-4-8". A disabled provider is skipped. Each entry
+ * "claude-code / claude-opus-5". A disabled provider is skipped. Each entry
  * mirrors the local-backend shape with `backend: 'cli'`. Best-effort: a load
  * failure yields no CLI entries rather than breaking the whole picker.
  */
@@ -776,13 +809,36 @@ async function listVisionCliModels() {
 // ---- install / delete --------------------------------------------------------
 
 /**
+ * Push a live model-list refresh to every provider backed by the Ollama daemon,
+ * so an install/delete on the Local LLMs tab is immediately reflected in every
+ * provider/model picker (task scheduler, pipeline stages, etc.) without the user
+ * having to find and click "Refresh Models" on the AI Providers page. Fire-and-
+ * forget from the caller's perspective — the install/delete response shouldn't
+ * wait on an extra round-trip to Ollama per matching provider. Best-effort per
+ * provider — one failing refresh (e.g. Ollama briefly unreachable mid-pull)
+ * must not block the others.
+ */
+function refreshOllamaBackedProviders() {
+  getAllProviders().then(({ providers }) => {
+    const targets = (providers || []).filter(isOllamaBackedProvider)
+    return Promise.all(targets.map((p) => refreshProviderModels(p.id).catch((err) => {
+      console.error(`⚠️ Failed to refresh models for provider ${p.id} after Ollama model change: ${err.message}`)
+    })))
+  }).catch((err) => {
+    console.error(`⚠️ Failed to list providers for post-install Ollama refresh: ${err.message}`)
+  })
+}
+
+/**
  * Install (pull/download) a model on a backend.
  * @param {(p) => void} [onProgress] - streaming progress (Ollama only)
  */
 export async function installModel(backend, modelId, onProgress) {
   if (!isBackend(backend)) return { success: false, error: `Unknown backend: ${backend}` }
   if (backend === 'ollama') {
-    return ollamaManager.pullModel(modelId, onProgress)
+    const result = await ollamaManager.pullModel(modelId, onProgress)
+    if (result.success) refreshOllamaBackedProviders()
+    return result
   }
   // LM Studio: prefer the `lms` CLI (real, blocking download), fall back to the
   // REST hook.
@@ -809,7 +865,9 @@ export async function installModel(backend, modelId, onProgress) {
 export async function deleteModel(backend, modelId) {
   if (!isBackend(backend)) return { success: false, error: `Unknown backend: ${backend}` }
   if (backend === 'ollama') {
-    return ollamaManager.deleteModel(modelId)
+    const result = await ollamaManager.deleteModel(modelId)
+    if (result.success) refreshOllamaBackedProviders()
+    return result
   }
   // LM Studio has no delete in its REST API and the `lms` CLI has no `rm`
   // command — deleteModel removes the model's on-disk folder directly.

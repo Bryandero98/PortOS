@@ -10,13 +10,15 @@ import { join, resolve } from 'path';
 import { v4 as uuidv4 } from '../lib/uuid.js';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import { ensureDir, PATHS, RISKY_MIME_TYPES, sanitizeFilename, getFileExtension, getMimeType, isPathInsideDir } from '../lib/fileUtils.js';
+import { MAX_BASE64_UPLOAD_BYTES } from '../lib/uploadLimits.js';
 
 const UPLOADS_DIR = PATHS.uploads;
 
 const router = Router();
 
-// Max file size: 100MB for general uploads
-const MAX_FILE_SIZE = 100 * 1024 * 1024;
+// Bounded by the JSON body limit, not by any uploads-specific rule — see
+// lib/uploadLimits.js.
+const MAX_FILE_SIZE = MAX_BASE64_UPLOAD_BYTES;
 
 /**
  * Format file size for display

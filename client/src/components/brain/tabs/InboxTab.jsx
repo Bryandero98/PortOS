@@ -26,14 +26,30 @@ import { useLocalStorageBool } from '../../../hooks';
 
 import {
   DESTINATIONS,
-  getConfidenceColor
+  MANUAL_DESTINATIONS,
+  destinationInfo
 } from '../constants';
+import ConfidenceBadge from '../ConfidenceBadge';
 import { timeAgo } from '../../../utils/formatters';
+import { parseBareUrl } from '../../../lib/bareUrl';
 import VoiceCapture from '../VoiceCapture';
+
+// Where a filed entry's "View" button points. A bare-URL capture is filed to the
+// links collection (see captureUrlAsLink) and lives in the Links tab; every
+// other destination is a Memory record.
+const filedRecordHref = (filed) => filed.destination === 'links'
+  ? '/brain/links'
+  : `/brain/memory?type=${filed.destination}&id=${filed.destinationId}`;
+
+const filedRecordTitle = (filed) => filed.destination === 'links' ? 'View in Links' : 'View in Memory';
 
 export default function InboxTab({ onRefresh, settings }) {
   const navigate = useNavigate();
   const [inputText, setInputText] = useState('');
+  // Previews the server's filing decision with the mirrored predicate it uses
+  // (client/src/lib/bareUrl.js), so the hint and the Creative lockout can't
+  // promise a destination the server won't pick.
+  const inputIsUrl = !!parseBareUrl(inputText);
   // Sticky "Creative" capture mode (shared localStorage key with Quick Capture):
   // when on, captured thoughts are flagged so they can later be batch-sent to the
   // creative catalog (vs todos/refs that stay out).
@@ -95,18 +111,21 @@ export default function InboxTab({ onRefresh, settings }) {
     if (lastText === text) return;
     if (inputRef.current) inputRef.current.dataset.lastSubmit = text;
 
+    // The server files a URL to Links regardless of the sticky Creative flag;
+    // dropping it here keeps the optimistic entry matching what gets stored.
+    const asCreative = creative && !inputIsUrl;
     const tempId = `_pending_${++tempIdCounter.current}`;
     const optimisticEntry = {
       id: tempId,
       capturedText: text,
       status: 'classifying',
       capturedAt: new Date().toISOString(),
-      ...(creative ? { creative: true } : {})
+      ...(asCreative ? { creative: true } : {})
     };
     setInputText('');
     setEntries(prev => [optimisticEntry, ...prev]);
 
-    const result = await api.captureBrainThought(text, undefined, undefined, { creative }, { silent: true }).catch(err => {
+    const result = await api.captureBrainThought(text, undefined, undefined, { creative: asCreative }, { silent: true }).catch(err => {
       toast.error(err.message || 'Failed to capture thought');
       setEntries(prev => prev.filter(e => e.id !== tempId));
       return null;
@@ -116,6 +135,9 @@ export default function InboxTab({ onRefresh, settings }) {
 
     if (result) {
       setEntries(prev => prev.map(e => e.id === tempId ? result.inboxLog : e));
+      // A capture that was just a URL is filed to Links synchronously — no
+      // brain:classified event follows, so announce the outcome here.
+      if (result.link) toast.success(result.message || 'Saved to Links');
       onRefresh?.();
     }
   };
@@ -299,10 +321,13 @@ export default function InboxTab({ onRefresh, settings }) {
             onClick={() => setCreative(v => !v)}
             aria-pressed={creative}
             aria-label="Toggle creative capture mode"
-            className={`px-3 py-3 rounded-lg border transition-colors flex items-center gap-1.5 text-sm ${creative
+            disabled={inputIsUrl}
+            className={`px-3 py-3 rounded-lg border transition-colors flex items-center gap-1.5 text-sm disabled:opacity-40 disabled:cursor-not-allowed ${creative
               ? 'bg-port-accent-2/20 text-port-accent-2 border-port-accent-2/40'
               : 'bg-port-card text-gray-400 border-port-border hover:text-gray-200'}`}
-            title="Creative mode: flag captures as creative ideas you can send to the Catalog"
+            title={inputIsUrl
+              ? 'URLs are saved as links, not creative ideas'
+              : 'Creative mode: flag captures as creative ideas you can send to the Catalog'}
           >
             <Sparkles className="w-4 h-4" />
             <span className="hidden sm:inline">Creative</span>
@@ -318,7 +343,8 @@ export default function InboxTab({ onRefresh, settings }) {
         </div>
         <p className="mt-2 text-xs text-gray-500">
           Capture a thought — type or use the mic. AI will classify and route it automatically.
-          {creative && <span className="text-port-accent-2"> Creative mode on — captures are flagged for the Catalog.</span>}
+          {inputIsUrl && <span className="text-cyan-400"> That&rsquo;s a URL — it will be saved to Links.</span>}
+          {!inputIsUrl && creative && <span className="text-port-accent-2"> Creative mode on — captures are flagged for the Catalog.</span>}
           {settings?.confidenceThreshold && (
             <span> Confidence threshold: {Math.round(settings.confidenceThreshold * 100)}%</span>
           )}
@@ -473,7 +499,7 @@ export default function InboxTab({ onRefresh, settings }) {
                     ) : editingId !== entry.id && (
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-xs text-gray-500">Route to:</span>
-                        {['people', 'projects', 'ideas', 'admin', 'memories'].map(dest => {
+                        {MANUAL_DESTINATIONS.map(dest => {
                           const destInfo = DESTINATIONS[dest];
                           const Icon = destInfo.icon;
                           return (
@@ -653,9 +679,9 @@ export default function InboxTab({ onRefresh, settings }) {
           {showFiled && (
             <div className="space-y-2">
               {filedEntries.map(entry => {
-                const destInfo = DESTINATIONS[entry.classification?.destination || 'unknown'];
+                const destInfo = destinationInfo(entry);
                 const DestIcon = destInfo.icon;
-                const confidence = entry.classification?.confidence || 0;
+                const confidence = entry.classification?.confidence;
                 const isCorrected = entry.status === 'corrected';
 
                 return (
@@ -720,9 +746,7 @@ export default function InboxTab({ onRefresh, settings }) {
                         {destInfo.label}
                       </span>
 
-                      <span className={`text-xs ${getConfidenceColor(confidence)}`}>
-                        {Math.round(confidence * 100)}%
-                      </span>
+                      <ConfidenceBadge confidence={confidence} />
 
                       {isCorrected && (
                         <span className="text-xs text-blue-400">
@@ -732,12 +756,9 @@ export default function InboxTab({ onRefresh, settings }) {
 
                       {entry.filed?.destinationId && (
                         <button
-                          onClick={() => {
-                            // Navigate to the record in memory tab
-                            window.location.href = `/brain/memory?type=${entry.filed.destination}&id=${entry.filed.destinationId}`;
-                          }}
+                          onClick={() => navigate(filedRecordHref(entry.filed))}
                           className="flex items-center gap-1 px-2 py-1 text-xs rounded border border-port-border text-gray-400 hover:text-white transition-colors"
-                          title="View in Memory"
+                          title={filedRecordTitle(entry.filed)}
                         >
                           <ExternalLink size={12} />
                           View
@@ -764,7 +785,7 @@ export default function InboxTab({ onRefresh, settings }) {
                             title="Select new destination"
                           >
                             <option value="">Select...</option>
-                            {['people', 'projects', 'ideas', 'admin', 'memories']
+                            {MANUAL_DESTINATIONS
                               .filter(d => d !== entry.filed?.destination)
                               .map(d => (
                                 <option key={d} value={d}>{DESTINATIONS[d].label}</option>
@@ -822,7 +843,7 @@ export default function InboxTab({ onRefresh, settings }) {
             {showDone && (
               <div className="space-y-2">
                 {doneEntries.map(entry => {
-                  const destInfo = DESTINATIONS[entry.classification?.destination || 'unknown'];
+                  const destInfo = destinationInfo(entry);
                   const DestIcon = destInfo.icon;
 
                   return (
@@ -871,11 +892,9 @@ export default function InboxTab({ onRefresh, settings }) {
                         </span>
                         {entry.filed?.destinationId && (
                           <button
-                            onClick={() => {
-                              window.location.href = `/brain/memory?type=${entry.filed.destination}&id=${entry.filed.destinationId}`;
-                            }}
+                            onClick={() => navigate(filedRecordHref(entry.filed))}
                             className="flex items-center gap-1 px-2 py-1 text-xs rounded border border-port-border text-gray-500 hover:text-white transition-colors"
-                            title="View in Memory"
+                            title={filedRecordTitle(entry.filed)}
                           >
                             <ExternalLink size={12} />
                             View

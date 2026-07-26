@@ -67,11 +67,14 @@ const flush = () => new Promise((r) => setImmediate(r));
 beforeEach(async () => {
   spawnCalls.length = 0;
   imageGenEvents.removeAllListeners();
+  codex._internals.setHarvestTimeoutForTests(10);
   await rm(TEST_HOME, { recursive: true, force: true }).catch(() => {});
   await mkdir(TEST_HOME, { recursive: true });
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
+  codex._internals.setHarvestTimeoutForTests();
   await rm(TEST_HOME, { recursive: true, force: true }).catch(() => {});
 });
 
@@ -382,14 +385,9 @@ describe('codex provider — image harvest', () => {
     child.exitCode = 0;
     child.emit('close', 0, null);
 
-    // Wait out the harvest poll window (5s) plus a buffer.
-    const deadline = Date.now() + 6000;
-    while (Date.now() < deadline && failedListener.mock.calls.length === 0) {
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    expect(failedListener).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(failedListener).toHaveBeenCalledTimes(1));
     expect(failedListener.mock.calls[0][0].error).toMatch(/no image|account may not allow/i);
-  }, 10000);
+  });
 
   it('captures the session id even when banner + long prompt echo arrive in a single >4KB stderr chunk', async () => {
     // Regression: with multi-KB comic-pipeline prompts, codex flushes the

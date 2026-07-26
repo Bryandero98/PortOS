@@ -15,6 +15,8 @@
 // caller can run EXIF orientation normalization before storing the File.
 
 import { Image as ImageIcon, Images, X } from 'lucide-react';
+import FilePickerButton from '../ui/FilePickerButton';
+import { IMAGE_ACCEPT } from '../../utils/fileUpload';
 
 export default function ReferenceImagePicker({
   referenceImages = [],
@@ -69,21 +71,17 @@ export default function ReferenceImagePicker({
                 </>
               ) : (
                 <div className="flex flex-col gap-1">
-                  <label
-                    htmlFor={slotId}
-                    className="flex flex-col items-center justify-center gap-1 h-[64px] border border-dashed border-port-border rounded text-[10px] text-gray-500 hover:text-white hover:border-port-accent cursor-pointer transition-colors"
+                  <FilePickerButton
+                    id={slotId}
+                    accept={IMAGE_ACCEPT}
+                    onChange={(e) => onPick(i, e)}
+                    disabled={disabled}
+                    ariaLabel={`Upload reference image ${i + 1}`}
+                    className="flex flex-col items-center justify-center gap-1 h-[64px] border border-dashed border-port-border rounded text-[10px] text-gray-500 hover:text-white hover:border-port-accent transition-colors"
                   >
                     <ImageIcon className="w-4 h-4" />
                     Upload
-                    <input
-                      id={slotId}
-                      type="file"
-                      accept="image/png,image/jpeg,image/webp"
-                      className="hidden"
-                      onChange={(e) => onPick(i, e)}
-                      disabled={disabled}
-                    />
-                  </label>
+                  </FilePickerButton>
                   {onBrowse && (
                     <button
                       type="button"

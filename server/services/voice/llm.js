@@ -7,6 +7,7 @@
 // provider is missing, not API-type, or the toolkit hasn't warmed yet.
 
 import { getProviderById } from '../providers.js';
+import { assertSecretEndpoint } from '../../lib/aiToolkit/internal/endpointGuard.js';
 
 // Legacy env-based LM Studio default. Returns the OpenAI-compatible API base
 // INCLUDING the version path, so callers append `/models` / `/chat/completions`.
@@ -25,8 +26,21 @@ export const resolveLlmEndpoint = async (providerId = 'lmstudio') => {
     // lmstudio provider, so installs that pointed it at another host keep
     // working without re-saving the provider endpoint.
     const useEnv = provider.id === 'lmstudio' && process.env.LM_STUDIO_URL;
+    const apiBase = (useEnv ? LM_STUDIO_API_BASE() : provider.endpoint).replace(/\/+$/, '');
+    // Guard before attaching the provider's API key to the /models and
+    // /chat/completions fetches below — a hostile/mistyped endpoint could
+    // otherwise harvest a paid LLM key or reach a cloud-metadata service
+    // (SSRF). This no-ops when no key is attached, so the built-in local
+    // `lmstudio`/`ollama` fallbacks (normally keyless) are unaffected at any
+    // host; only a key-bearing request to a metadata / non-allowlisted host is
+    // blocked — keeping this path consistent with askService and
+    // localLlmPlayground, which never exempted lmstudio.
+    assertSecretEndpoint(apiBase, {
+      hasSecret: Boolean(provider.apiKey),
+      allowCustomEndpoint: provider.allowCustomEndpoint === true,
+    });
     return {
-      apiBase: (useEnv ? LM_STUDIO_API_BASE() : provider.endpoint).replace(/\/+$/, ''),
+      apiBase,
       apiKey: provider.apiKey || '',
       defaultModel: provider.defaultModel || null,
       providerName: provider.name || providerId,

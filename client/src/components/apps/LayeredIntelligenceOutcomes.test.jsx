@@ -12,6 +12,29 @@ const ready = (overrides = {}) => ({
   read: true,
   tracked: true,
   stats: { total: 4, merged: 1, rejected: 1, abandoned: 1, pending: 1, resolved: 3, mergeRate: 100 / 3 },
+  execution: {
+    approved: 1, completed: 1, abandoned: 0, awaitingExecution: 0, attempted: 1, completionRate: 100,
+    approvalToCompletionRate: 100,
+    duration: { count: 1, averageMs: 3_600_000, medianMs: 3_600_000, p90Ms: 3_600_000, minMs: 3_600_000, maxMs: 3_600_000 },
+    byScope: {
+      'app-improvement': {
+        approved: 1, completed: 1, abandoned: 0, awaitingExecution: 0, attempted: 1, completionRate: 100,
+        approvalToCompletionRate: 100,
+        duration: { count: 1, averageMs: 3_600_000, medianMs: 3_600_000, p90Ms: 3_600_000, minMs: 3_600_000, maxMs: 3_600_000 }
+      }
+    }
+  },
+  metrics: {
+    totalFiled: 4, totalApproved: 1, totalCompleted: 1, totalRejected: 1,
+    totalAbandonedAtFiling: 1, totalPending: 1, totalAwaitingExecution: 0,
+    totalFailedExecution: 0, approvalToCompletionRate: 100, completionRate: 100,
+    byScope: {
+      'app-improvement': {
+        approved: 1, completed: 1, rejected: 0, abandonedAtFiling: 0, failedExecution: 0,
+        awaitingExecution: 0, pending: 0, attempted: 1, completionRate: 100, approvalToCompletionRate: 100
+      }
+    }
+  },
   rejections: { entries: [{ reason: 'user-rejected', count: 1 }], unknown: 1, unclassified: 0, diagnosed: 1, total: 2 },
   recent: [
     { slug: 'add-metrics', scope: 'app-improvement', outcome: 'merged', rejectionReason: null, filedAt: '2026-07-04T00:00:00.000Z', outcomeAt: '2026-07-05T00:00:00.000Z' },
@@ -41,7 +64,68 @@ describe('LayeredIntelligenceOutcomes', () => {
     expect(screen.getByText(/closed with no recorded reason/)).toBeInTheDocument();
     expect(screen.getByText('add-metrics')).toBeInTheDocument();
     expect(screen.getByText('drop-feature')).toBeInTheDocument();
+    expect(screen.getByText('post-approval hand-off completion')).toBeInTheDocument();
+    expect(screen.getByText(/of approvals delivered \(1\/1\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Filed → completed: median 1h 0m/)).toBeInTheDocument();
+    expect(screen.getByText('app-improvement')).toBeInTheDocument();
     expect(getAppLayeredIntelligenceOutcomes).toHaveBeenCalledWith('app-001');
+  });
+
+  it('shows approval → completion separately from the attempted-only rate', async () => {
+    // 2 approved, 1 delivered, 1 still awaiting execution: the attempted-only rate is a
+    // perfect 100% while only half the approved work has landed. Both must be visible —
+    // showing only the first would hide that a proposal was approved and then lost.
+    getAppLayeredIntelligenceOutcomes.mockResolvedValue(ready({
+      execution: {
+        approved: 2, completed: 1, abandoned: 0, awaitingExecution: 1, attempted: 1,
+        completionRate: 100, approvalToCompletionRate: 50,
+        duration: { count: 0, averageMs: null, medianMs: null, p90Ms: null, minMs: null, maxMs: null },
+        byScope: {}
+      }
+    }));
+    render(<LayeredIntelligenceOutcomes appId="app-001" />);
+
+    expect(await screen.findByText('100%')).toBeInTheDocument();
+    expect(screen.getByText('50%')).toBeInTheDocument();
+    expect(screen.getByText(/of approvals delivered \(1\/2\)/)).toBeInTheDocument();
+  });
+
+  it('lists a scope whose proposals were only ever rejected', async () => {
+    // `execution.byScope` is built from approved records only, so this scope is absent
+    // from it — it appears solely because the per-scope list reads `metrics.byScope`.
+    // Showing it is the point: a scope that only ever gets rejected is the one a reader
+    // most needs to see, and dropping it silently overstates the app's record.
+    getAppLayeredIntelligenceOutcomes.mockResolvedValue(ready({
+      metrics: {
+        ...ready().metrics,
+        byScope: {
+          ...ready().metrics.byScope,
+          'loop-meta': {
+            approved: 0, completed: 0, rejected: 2, abandonedAtFiling: 0, failedExecution: 0,
+            awaitingExecution: 0, pending: 0, attempted: 0, completionRate: null, approvalToCompletionRate: null
+          }
+        }
+      }
+    }));
+    render(<LayeredIntelligenceOutcomes appId="app-001" />);
+
+    expect(await screen.findByText('loop-meta')).toBeInTheDocument();
+    expect(screen.getByText(/none approved · 2 rejected/)).toBeInTheDocument();
+  });
+
+  it('omits per-scope rows rather than mislabelling them when no metrics block arrives', async () => {
+    // The route always sends `metrics` beside `execution`, so this shape is not
+    // reachable in practice — but if it ever were, `execution.byScope` carries no
+    // `approvalToCompletionRate`, and reading it would render a scope with 1/1 delivered
+    // as "none approved". Rendering nothing is the honest failure.
+    getAppLayeredIntelligenceOutcomes.mockResolvedValue(ready({ metrics: undefined }));
+    render(<LayeredIntelligenceOutcomes appId="app-001" />);
+
+    // The surrounding post-approval block still renders...
+    expect(await screen.findByText('post-approval hand-off completion')).toBeInTheDocument();
+    // ...but no scope row claims this app approved nothing.
+    expect(screen.queryByText('app-improvement')).not.toBeInTheDocument();
+    expect(screen.queryByText(/none approved/)).not.toBeInTheDocument();
   });
 
   it('shows a dash for the merge rate when nothing has resolved yet', async () => {

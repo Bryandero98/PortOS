@@ -1,9 +1,10 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { Upload, Download, FileJson, HeartPulse, CheckCircle, AlertCircle } from 'lucide-react';
 import * as api from '../../../services/api';
 import socket from '../../../services/socket';
 import BrailleSpinner from '../../BrailleSpinner';
 import Banner from '../../ui/Banner';
+import FilePickerButton from '../../ui/FilePickerButton';
 
 export default function SettingsTab({ onRefresh }) {
   // JSON import state
@@ -11,7 +12,6 @@ export default function SettingsTab({ onRefresh }) {
   const [jsonResult, setJsonResult] = useState(null);
   const [jsonError, setJsonError] = useState(null);
   const [jsonFileName, setJsonFileName] = useState(null);
-  const jsonFileInputRef = useRef(null);
 
   // XML import state
   const [xmlImporting, setXmlImporting] = useState(false);
@@ -19,7 +19,6 @@ export default function SettingsTab({ onRefresh }) {
   const [xmlResult, setXmlResult] = useState(null);
   const [xmlError, setXmlError] = useState(null);
   const [xmlFileName, setXmlFileName] = useState(null);
-  const xmlFileInputRef = useRef(null);
 
   // WebSocket listeners for XML import progress
   useEffect(() => {
@@ -151,19 +150,12 @@ export default function SettingsTab({ onRefresh }) {
         </p>
 
         <div className="flex items-center gap-4">
-          <input
-            ref={jsonFileInputRef}
-            type="file"
-            accept=".json"
+          <FilePickerButton
+            accept=".json,application/json"
             onChange={handleJsonFileSelect}
-            className="sr-only"
-            tabIndex={-1}
-            aria-hidden="true"
-          />
-          <button
-            onClick={() => jsonFileInputRef.current?.click()}
             disabled={jsonImporting}
-            className="flex items-center gap-2 px-4 py-2 bg-port-accent text-white rounded-lg hover:bg-port-accent/80 disabled:opacity-50 transition-colors"
+            ariaLabel="Choose JSON file to import"
+            className="flex items-center gap-2 px-4 py-2 bg-port-accent text-white rounded-lg hover:bg-port-accent/80 transition-colors"
           >
             {jsonImporting ? (
               <BrailleSpinner text="Importing" />
@@ -173,7 +165,7 @@ export default function SettingsTab({ onRefresh }) {
                 Choose JSON File
               </>
             )}
-          </button>
+          </FilePickerButton>
           {jsonFileName && !jsonImporting && !jsonResult && (
             <span className="text-sm text-gray-400">{jsonFileName}</span>
           )}
@@ -230,19 +222,12 @@ export default function SettingsTab({ onRefresh }) {
         </p>
 
         <div className="flex items-center gap-4">
-          <input
-            ref={xmlFileInputRef}
-            type="file"
-            accept=".xml,.zip"
+          <FilePickerButton
+            accept=".xml,.zip,text/xml,application/xml,application/zip"
             onChange={handleXmlFileSelect}
-            className="sr-only"
-            tabIndex={-1}
-            aria-hidden="true"
-          />
-          <button
-            onClick={() => xmlFileInputRef.current?.click()}
             disabled={xmlImporting}
-            className="flex items-center gap-2 px-4 py-2 bg-port-accent text-white rounded-lg hover:bg-port-accent/80 disabled:opacity-50 transition-colors"
+            ariaLabel="Choose XML or ZIP file to import"
+            className="flex items-center gap-2 px-4 py-2 bg-port-accent text-white rounded-lg hover:bg-port-accent/80 transition-colors"
           >
             {xmlImporting ? (
               <BrailleSpinner text="Importing" />
@@ -252,7 +237,7 @@ export default function SettingsTab({ onRefresh }) {
                 Choose XML or ZIP File
               </>
             )}
-          </button>
+          </FilePickerButton>
           {xmlFileName && !xmlImporting && !xmlResult && (
             <span className="text-sm text-gray-400">{xmlFileName}</span>
           )}

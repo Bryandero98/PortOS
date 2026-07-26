@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { ExternalLink, Play, Square, RotateCcw, FolderOpen, Terminal, Code, RefreshCw, Wrench, Archive, ArchiveRestore, Ticket, Download, Hammer, Smartphone } from 'lucide-react';
+import { ExternalLink, Gamepad2, Play, Square, RotateCcw, FolderOpen, Terminal, Code, RefreshCw, Wrench, Archive, ArchiveRestore, Ticket, Download, Hammer, Smartphone } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import ConfirmButtonPair from '../components/ui/ConfirmButtonPair';
 import AppIcon from '../components/AppIcon';
 import BrailleSpinner from '../components/BrailleSpinner';
+import PageSkeleton from '../components/ui/PageSkeleton';
 import KanbanBoard from '../components/KanbanBoard';
 import StatusBadge from '../components/StatusBadge';
 import ActivityLog from '../components/apps/ActivityLog';
@@ -20,6 +21,7 @@ export default function Apps() {
   const [confirmingDelete, setConfirmingDelete] = useState(null);
   const [expandedId, setExpandedId] = useState(null);
   const [actionLoading, setActionLoading] = useState({});
+  const [nativeLaunchLoading, setNativeLaunchLoading] = useState({});
   const [refreshingConfig, setRefreshingConfig] = useState({});
   const [building, setBuilding] = useState({});
   const [archiving, setArchiving] = useState({});
@@ -75,6 +77,13 @@ export default function Apps() {
       return;
     }
     setActionLoading(prev => ({ ...prev, [app.id]: null }));
+  };
+
+  const handleNativeLaunch = async (app) => {
+    setNativeLaunchLoading(prev => ({ ...prev, [app.id]: true }));
+    const result = await api.launchNativeApp(app.id).catch(() => null);
+    setNativeLaunchLoading(prev => ({ ...prev, [app.id]: false }));
+    if (result?.success) toast.success(`${app.nativeLaunch.label} is running`);
   };
 
   const handleUpdate = (app) => startUpdate(app.id);
@@ -136,11 +145,7 @@ export default function Apps() {
     .slice().sort((a, b) => a.name.localeCompare(b.name));
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <BrailleSpinner text="Loading apps" />
-      </div>
-    );
+    return <PageSkeleton label="Loading apps" titleWidthClass="w-24" showSubtitle cards={4} sidebar={false} />;
   }
 
   return (
@@ -320,9 +325,9 @@ export default function Apps() {
                     )}
 
                     {/* Launch buttons grouped together */}
-                    {app.overallStatus === 'online' && (app.uiPort || app.devUiPort) && (
+                    {(app.nativeLaunch || (app.overallStatus === 'online' && (app.uiPort || app.devUiPort))) && (
                       <div className="inline-flex rounded-lg overflow-hidden border border-port-border divide-x divide-port-border">
-                        {app.uiPort && (
+                        {app.overallStatus === 'online' && app.uiPort && (
                           <button
                             onClick={() => window.open(`${window.location.protocol}//${window.location.hostname}:${app.uiPort}`, '_blank')}
                             className="px-3 py-1.5 min-h-[40px] sm:min-h-0 bg-port-accent/20 text-port-accent enabled:hover:bg-port-accent/30 transition-colors flex items-center gap-1"
@@ -332,7 +337,7 @@ export default function Apps() {
                             <span className="text-xs">Launch</span>
                           </button>
                         )}
-                        {app.devUiPort && (
+                        {app.overallStatus === 'online' && app.devUiPort && (
                           <button
                             onClick={() => window.open(`${window.location.protocol}//${window.location.hostname}:${app.devUiPort}`, '_blank')}
                             className="px-3 py-1.5 min-h-[40px] sm:min-h-0 bg-port-warning/20 text-port-warning enabled:hover:bg-port-warning/30 transition-colors flex items-center gap-1"
@@ -340,6 +345,20 @@ export default function Apps() {
                           >
                             <ExternalLink size={14} aria-hidden="true" />
                             <span className="text-xs">Dev UI</span>
+                          </button>
+                        )}
+                        {app.nativeLaunch && (
+                          <button
+                            onClick={() => handleNativeLaunch(app)}
+                            disabled={nativeLaunchLoading[app.id]}
+                            className="px-3 py-1.5 min-h-[40px] sm:min-h-0 bg-port-success/20 text-port-success enabled:hover:bg-port-success/30 transition-colors flex items-center gap-1 disabled:opacity-50"
+                            aria-label={`Launch ${app.nativeLaunch.label} for ${app.name}`}
+                            aria-busy={nativeLaunchLoading[app.id]}
+                          >
+                            <Gamepad2 size={14} aria-hidden="true" />
+                            <span className="text-xs">
+                              {nativeLaunchLoading[app.id] ? 'Launching…' : app.nativeLaunch.label}
+                            </span>
                           </button>
                         )}
                       </div>
@@ -609,4 +628,3 @@ export default function Apps() {
     </div>
   );
 }
-

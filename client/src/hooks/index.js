@@ -85,6 +85,7 @@ export * from './useArcCanvasSync.js';
 export * from './useImageGenProgress.js';
 export * from './useImporterProgress.js';
 export * from './useInstallStream.js';
+export * from './useProcessLogs.js';
 export * from './useOpenClawStream.js';
 export * from './usePipelineProgress.js';
 export * from './useReaderPanel.js';
@@ -94,6 +95,8 @@ export * from './useModelDownloadStatus.js';
 
 // === Media (annotations, completion, attachments) ===
 export * from './useMediaAnnotations.js';
+export * from './useSpritePendingRenders.js';
+export { default as useSpriteRecordCrud } from './useSpriteRecordCrud.js';
 export * from './useMediaCompletionRefresh.js';
 export * from './useOpenClawAttachments.js';
 
@@ -116,6 +119,7 @@ export * from './useAutoRefetch.js';
 export * from './useCmdKSearch.js';
 export * from './useCooldownTick.js';
 export { default as useDrawerTab } from './useDrawerTab.js';
+export * from './useHfTokenStatus.js';
 export * from './useKeyboardHelp.js';
 export * from './useLockToggle.js';
 export * from './useScrollLock.js';
@@ -150,4 +154,5 @@ export * from './useSyncIntegrity.js';
 export * from './useTwinEvaluationSuite.js';
 export * from './useUniverseNav.js';
 export * from './useVideoFileSrc.js';
+export * from './useVideoGenQueue.js';
 export * from './useVoiceUiSync.js';

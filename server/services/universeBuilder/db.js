@@ -51,6 +51,30 @@ export async function listRaw() {
 }
 
 /**
+ * Live universes projected down to the style-bearing fields, unordered — the
+ * raw input `listUniverseStyles` derives its token lists from. See that
+ * function for what the projection is for and which fields feed it.
+ *
+ * `deleted = FALSE` on the mirror column, for the same reasons spelled out on
+ * `countUniverses` below (exact mirror of the JSONB flag, and the form
+ * `idx_universes_live` can serve). `name` reads the mirror column too — every
+ * `writeRaw` binds it from the same `record.name` that lands in `data`.
+ * Ordering is the service's job so both backends can't drift on it.
+ */
+export async function listStyles() {
+  const { rows } = await query(
+    `SELECT id, name,
+            data->'influences' AS influences,
+            data->>'stylePrompt' AS "stylePrompt",
+            data->>'negativePrompt' AS "negativePrompt",
+            data->>'createdAt' AS "createdAt"
+       FROM universes
+      WHERE deleted = FALSE`,
+  );
+  return rows;
+}
+
+/**
  * Cheap live-universe tally (#2729) — the count listUniverses().length used to
  * pay for by materializing every JSONB record AND the whole run history.
  *
@@ -102,7 +126,7 @@ export async function countUniverses({ includeDeleted = false } = {}) {
 export async function writeRaw(id, record) {
   const now = new Date().toISOString();
   const createdAt = mirrorTimestamp(record?.createdAt, now);
-  const schemaVersion = Number.isInteger(record?.schemaVersion) ? record.schemaVersion : 4;
+  const schemaVersion = Number.isInteger(record?.schemaVersion) ? record.schemaVersion : 5;
   await query(
     `INSERT INTO universes (id, name, data, schema_version, ephemeral, created_at, updated_at, deleted, deleted_at)
      VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9)

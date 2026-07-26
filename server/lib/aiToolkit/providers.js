@@ -108,15 +108,23 @@ const TOOL_USE_RE = new RegExp([
 ].join('|'), 'i');
 
 /**
- * A `claude` CLI/TUI provider is "Ollama-backed" — the Claude Ollama
- * pattern — when it carries the `ollamaBacked` marker or its ANTHROPIC_BASE_URL
- * points at an Ollama daemon. Such a provider runs the full Claude Code harness
- * but generates tokens from a local model, so its model list must come from
- * Ollama (filtered to tool-use-capable models) rather than the static Anthropic list.
+ * Whether `provider` is served by an Ollama daemon rather than its nominal
+ * cloud/CLI backend. Covers three shapes: the built-in `ollama` API provider
+ * itself (id match — its `endpoint` carries the daemon URL, not `envVars`);
+ * an `api`-type provider whose `endpoint` points at Ollama (generic local
+ * setups); and the Claude-Ollama CLI/TUI pattern — a `claude` process that
+ * carries the `ollamaBacked` marker or an `ANTHROPIC_BASE_URL` pointed at
+ * Ollama, running the full Claude Code harness but generating tokens from a
+ * local model, so its model list must come from Ollama (filtered to
+ * tool-use-capable models) rather than the static Anthropic list. Exported
+ * (re-exported by `server/services/providers.js`) so hosts can classify
+ * providers the same way this module's own refresh dispatch does, instead of
+ * re-deriving the shape check and risking drift.
  */
-function isOllamaBackedProvider(provider) {
+export function isOllamaBackedProvider(provider) {
+  if (provider?.id === 'ollama') return true;
   if (provider?.ollamaBacked === true) return true;
-  const base = String(provider?.envVars?.ANTHROPIC_BASE_URL || '');
+  const base = String(provider?.envVars?.ANTHROPIC_BASE_URL || provider?.endpoint || '');
   return /:11434\b/.test(base) || /ollama/i.test(base);
 }
 
@@ -651,7 +659,14 @@ export function createProviderService(config = {}) {
         return null;
       }
 
-      let models = [];
+      // `null` = no refreshable branch matched below (provider type/shape isn't
+      // refreshable — the pre-existing no-op case); an array = a completed
+      // fetch, which may legitimately be empty (e.g. an Ollama-backed provider
+      // whose only installed model was just deleted). Only the `null` sentinel
+      // means "nothing to persist" — a `.length === 0` check here would also
+      // swallow that legitimate empty result and leave a deleted model stuck
+      // in the provider's persisted list.
+      let models = null;
 
       try {
         if (provider.type === 'api') {
@@ -669,7 +684,7 @@ export function createProviderService(config = {}) {
         return null;
       }
 
-      if (!models || models.length === 0) {
+      if (models === null) {
         return null;
       }
 
@@ -784,6 +799,7 @@ export function createProviderService(config = {}) {
 
     async _fetchAnthropicModels(_provider) {
       return [
+        'claude-opus-5',
         'claude-opus-4-8',
         'claude-opus-4-7',
         'claude-sonnet-5',

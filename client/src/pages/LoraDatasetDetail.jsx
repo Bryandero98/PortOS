@@ -7,12 +7,14 @@
  * single source of truth; rendering images poll-refresh until they land.
  */
 
-import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, Upload, Wand2, Scissors, Tags, RefreshCw, AlertTriangle, Images, Replace, Lightbulb, Eraser,
 } from 'lucide-react';
 import toast from '../components/ui/Toast';
+import FilePickerButton from '../components/ui/FilePickerButton';
+import { IMAGE_ACCEPT } from '../utils/fileUpload';
 import Modal from '../components/ui/Modal';
 import { useSseProgress } from '../hooks/useSseProgress';
 import DatasetImageGrid from '../components/loraTraining/DatasetImageGrid';
@@ -290,7 +292,6 @@ export default function LoraDatasetDetail() {
   // unsaved caption drafts the rewrite superseded — otherwise a stale draft
   // blur-saves the old text back, undoing the strip.
   const [captionDraftResetToken, setCaptionDraftResetToken] = useState(0);
-  const fileInputRef = useRef(null);
 
   const refresh = useCallback(() => getLoraDataset(datasetId)
     .then((d) => { setDataset(d); return d; })
@@ -437,7 +438,6 @@ export default function LoraDatasetDetail() {
       toast.success(`Added ${images.length} image${images.length === 1 ? '' : 's'}`);
     } finally {
       setUploading(false);
-      e.target.value = '';
     }
   };
 
@@ -564,14 +564,16 @@ export default function LoraDatasetDetail() {
         >
           <Wand2 className="w-4 h-4" /> Generate
         </button>
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
+        <FilePickerButton
+          accept={IMAGE_ACCEPT}
+          multiple
+          onChange={onUpload}
           disabled={uploading}
-          className="px-3 py-2 text-sm rounded bg-port-card border border-port-border text-gray-300 hover:text-white flex items-center gap-2 disabled:opacity-50"
+          ariaLabel="Upload dataset images"
+          className="px-3 py-2 text-sm rounded bg-port-card border border-port-border text-gray-300 hover:text-white flex items-center gap-2"
         >
           {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />} Upload
-        </button>
+        </FilePickerButton>
         <button
           type="button"
           onClick={() => setShowImport(true)}
@@ -579,14 +581,6 @@ export default function LoraDatasetDetail() {
         >
           <Images className="w-4 h-4" /> From gallery
         </button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/png,image/jpeg,image/webp"
-          multiple
-          className="hidden"
-          onChange={onUpload}
-        />
         <button
           type="button"
           onClick={() => setShowSlice(true)}

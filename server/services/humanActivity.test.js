@@ -16,6 +16,8 @@ import {
   summarizeCounts,
   messageActivityCandidates,
   calendarActivityCandidates,
+  newlyLearnedAliases,
+  stripParticipantsForAccount,
 } from './humanActivity.js';
 
 describe('shortSummary', () => {
@@ -185,6 +187,29 @@ describe('messageActivityCandidates', () => {
     // Sent turns carry no counterpart handle (mirrors iMessage); email groups by threadId.
     expect(sent.metadata.handle).toBeNull();
   });
+  it('excludes send-as aliases from participants so a received 1:1-to-alias stays 1:1 (#2831)', () => {
+    // A 1:1 email delivered to the owner's alias (not account.email). Without alias
+    // filtering the alias survives as a second participant and the thread looks like a
+    // group, suppressing its outreach nudge.
+    const aliasAccount = { id: 'acct-1', type: 'gmail', email: 'me@example.com', sendAsAliases: ['alias@example.com'] };
+    const [c] = messageActivityCandidates(aliasAccount, [
+      { externalId: 'e1', date: '2026-07-04T10:00:00Z', from: 'friend@x.io', to: ['Alias@example.com'], subject: 'Hey' },
+    ]);
+    const emails = c.participants.map((p) => p.email);
+    expect(emails).toEqual(['friend@x.io']); // exactly one counterpart — a true 1:1
+    expect(emails).not.toContain('alias@example.com');
+    expect(c.metadata.handle).toBe('friend@x.io');
+  });
+  it('still filters only the primary email when no aliases are stored (back-compat, #2831)', () => {
+    // Absent sendAsAliases → today's behavior: only account.email is dropped.
+    const [c] = messageActivityCandidates(account, [
+      { externalId: 'e1', date: '2026-07-04T10:00:00Z', from: 'friend@x.io', to: ['me@example.com', 'alias@example.com'], subject: 'Hey' },
+    ]);
+    const emails = c.participants.map((p) => p.email);
+    expect(emails).toContain('friend@x.io');
+    expect(emails).toContain('alias@example.com'); // not a known alias → kept
+    expect(emails).not.toContain('me@example.com');
+  });
   it('classifies a reply as sent via the Gmail SENT label even from a send-as alias (#2796)', () => {
     // From (alias@example.com) != account owner (me@example.com), but the SENT label
     // is authoritative — without it the reply is misclassified received and never
@@ -236,5 +261,46 @@ describe('calendarActivityCandidates', () => {
       { externalId: 'ad2', title: 'Zoomed', startTime: '2026-07-04T09:00:00Z', endTime: '2026-07-04T09:30:00Z' },
     ], nowLate, 'America/Los_Angeles');
     expect(z.happenedAt).toBe('2026-07-04T09:00:00.000Z');
+  });
+});
+
+describe('newlyLearnedAliases (#2855)', () => {
+  it('returns only the aliases added since the previous set', () => {
+    expect(newlyLearnedAliases(['a@x.io'], ['a@x.io', 'b@x.io'])).toEqual(['b@x.io']);
+  });
+  it('treats a first-ever fetch (no prior set) as all-new', () => {
+    expect(newlyLearnedAliases(undefined, ['a@x.io', 'b@x.io'])).toEqual(['a@x.io', 'b@x.io']);
+    expect(newlyLearnedAliases([], ['a@x.io'])).toEqual(['a@x.io']);
+  });
+  it('is empty for an unchanged set, so a routine sync does no repair work', () => {
+    expect(newlyLearnedAliases(['a@x.io', 'b@x.io'], ['b@x.io', 'a@x.io'])).toEqual([]);
+  });
+  it('ignores casing and whitespace so a cosmetic refresh is not a change', () => {
+    expect(newlyLearnedAliases(['A@x.io'], [' a@X.io '])).toEqual([]);
+  });
+  it('ignores removals — a dropped alias needs no backfill', () => {
+    expect(newlyLearnedAliases(['a@x.io', 'b@x.io'], ['a@x.io'])).toEqual([]);
+  });
+  it('dedupes and drops empty entries', () => {
+    expect(newlyLearnedAliases([], ['a@x.io', 'a@x.io', '', null])).toEqual(['a@x.io']);
+  });
+  it('returns [] for non-array input', () => {
+    expect(newlyLearnedAliases(null, null)).toEqual([]);
+  });
+});
+
+describe('stripParticipantsForAccount guards (#2855)', () => {
+  // The DB round-trip lives in humanActivity.db.test.js; these cases never reach
+  // the database at all — they assert the early return that keeps a pointless
+  // UPDATE (and a pool connection) off every routine sync.
+  const noDbClient = { query: () => { throw new Error('should not query'); } };
+  it('no-ops when the alias list is empty or normalizes to empty', async () => {
+    expect(await stripParticipantsForAccount('acct-1', 'gmail', [], { client: noDbClient })).toBe(0);
+    expect(await stripParticipantsForAccount('acct-1', 'gmail', ['', null], { client: noDbClient })).toBe(0);
+    expect(await stripParticipantsForAccount('acct-1', 'gmail', 'not-an-array', { client: noDbClient })).toBe(0);
+  });
+  it('no-ops when the account or source scope is missing', async () => {
+    expect(await stripParticipantsForAccount(null, 'gmail', ['a@x.io'], { client: noDbClient })).toBe(0);
+    expect(await stripParticipantsForAccount('acct-1', '', ['a@x.io'], { client: noDbClient })).toBe(0);
   });
 });

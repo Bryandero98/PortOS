@@ -6,7 +6,9 @@ import {
   errorEvents,
   errorMiddleware,
   createServiceErrorMapper,
-  asyncHandler
+  asyncHandler,
+  buildErrorEnvelope,
+  sendErrorResponse
 } from './errorHandler.js';
 
 // Build a fake Express req/res pair. `res.status()` and `res.json()` are
@@ -210,6 +212,33 @@ describe('errorHandler.js', () => {
       const body = res.json.mock.calls[0][0];
       expect(body).not.toHaveProperty('context');
     });
+
+    // A streaming/SSE route that fails mid-response has no envelope left to
+    // write — delegate to Express's finalhandler so it destroys the socket
+    // rather than leaving the request hanging until a timeout.
+    it('delegates to next(err) when the response is already streaming', () => {
+      const res = makeRes();
+      res.headersSent = true;
+      const next = vi.fn();
+      const err = new ServerError('mid-stream', { status: 500 });
+      errorMiddleware(err, makeReq(), res, next);
+
+      expect(res.json).not.toHaveBeenCalled();
+      // The normalized error is forwarded, so a falsy throw can't read as success.
+      expect(next).toHaveBeenCalledWith(err);
+    });
+
+    it('does not delegate to next when the envelope was written', () => {
+      const res = makeRes();
+      // Express flips headersSent once the body is written — mirror that so the
+      // middleware can't mistake its own write for a mid-stream failure.
+      res.json = vi.fn(() => { res.headersSent = true; return res; });
+      const next = vi.fn();
+      errorMiddleware(new ServerError('nope', { status: 400 }), makeReq(), res, next);
+
+      expect(res.json).toHaveBeenCalled();
+      expect(next).not.toHaveBeenCalled();
+    });
   });
 
   describe('emitErrorEvent', () => {
@@ -357,6 +386,37 @@ describe('errorHandler.js', () => {
       expect(body.error).toBe('kaboom');
     });
 
+    // Mid-stream the envelope can't land, so the catch hands off to the error
+    // chain WITHOUT reporting locally — errorMiddleware logs/emits it once and
+    // then lets finalhandler destroy the socket.
+    it('delegates to next() without reporting when the handler throws mid-stream', async () => {
+      const io = { emit: vi.fn() };
+      const { req, res } = makeReqRes(io);
+      res.headersSent = true;
+      const next = vi.fn();
+      const boom = new ServerError('mid-stream', { status: 500 });
+
+      await asyncHandler(async () => { throw boom; })(req, res, next);
+      await flushMicrotasks();
+
+      expect(res.json).not.toHaveBeenCalled();
+      expect(io.emit).not.toHaveBeenCalled();
+      expect(next).toHaveBeenCalledWith(boom);
+    });
+
+    // `throw null` must not reach next() as a falsy value — Express would read
+    // that as "no error" and keep routing, hanging the request.
+    it('normalizes a falsy throw before delegating mid-stream', async () => {
+      const { req, res } = makeReqRes(null);
+      res.headersSent = true;
+      const next = vi.fn();
+
+      await asyncHandler(async () => { throw null; })(req, res, next);
+      await flushMicrotasks();
+
+      expect(next).toHaveBeenCalledWith(expect.any(ServerError));
+    });
+
     it('does not touch res when the wrapped handler resolves successfully', async () => {
       const { req, res } = makeReqRes({ emit: vi.fn() });
 
@@ -380,6 +440,69 @@ describe('errorHandler.js', () => {
       expect(res.status).toHaveBeenCalledWith(404);
       // status→code derivation still runs even without an io channel.
       expect(res.json.mock.calls[0][0].code).toBe('NOT_FOUND');
+    });
+  });
+
+  describe('sendErrorResponse', () => {
+    const makeRes = (overrides = {}) => {
+      const res = { headersSent: false, ...overrides };
+      res.status = vi.fn(() => res);
+      res.json = vi.fn(() => res);
+      return res;
+    };
+
+    it('emits the standard envelope for callers outside a handler catch', () => {
+      const res = makeRes();
+      sendErrorResponse(res, new ServerError('Sample not found', { status: 404 }));
+
+      expect(res.status).toHaveBeenCalledWith(404);
+      const body = res.json.mock.calls[0][0];
+      expect(body.error).toBe('Sample not found');
+      expect(body.code).toBe('NOT_FOUND');
+      expect(typeof body.timestamp).toBe('number');
+    });
+
+    it('normalizes a plain Error and returns the ServerError to the caller', () => {
+      const res = makeRes();
+      const error = sendErrorResponse(res, new Error('kaboom'));
+
+      expect(error).toBeInstanceOf(ServerError);
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json.mock.calls[0][0].code).toBe('INTERNAL_ERROR');
+    });
+
+    it('does not write once headers are already sent', () => {
+      const res = makeRes({ headersSent: true });
+      sendErrorResponse(res, new ServerError('too late', { status: 404 }));
+
+      expect(res.status).not.toHaveBeenCalled();
+      expect(res.json).not.toHaveBeenCalled();
+    });
+
+    it('emits the socket event with the sanitized context when io is supplied', () => {
+      const res = makeRes();
+      const io = { emit: vi.fn() };
+      // `errorEvents` is an EventEmitter — an 'error' emit with no listener
+      // re-throws, so subscribe for the duration of this assertion.
+      const listener = vi.fn();
+      errorEvents.on('error', listener);
+      sendErrorResponse(
+        res,
+        new ServerError('boom', { status: 400, context: { modelId: 'm', apiKey: 'secret' } }),
+        { io }
+      );
+
+      const payload = io.emit.mock.calls.find(([event]) => event === 'error:occurred')[1];
+      expect(payload.context).toEqual({ modelId: 'm' });
+      expect(res.json.mock.calls[0][0].context).toEqual({ modelId: 'm' });
+      errorEvents.off('error', listener);
+    });
+  });
+
+  describe('buildErrorEnvelope', () => {
+    it('omits context when the sanitized context is empty', () => {
+      const body = buildErrorEnvelope(new ServerError('nope', { status: 400 }), {});
+      expect(body).toEqual({ error: 'nope', code: 'BAD_REQUEST', timestamp: expect.any(Number) });
     });
   });
 });

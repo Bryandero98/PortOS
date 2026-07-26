@@ -1,8 +1,39 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { parseEcosystemConfig, rewriteEcosystemPorts, rewriteEcosystemPortsByProcess, writeEcosystemPorts, writeEcosystemPortsByProcess, writeEcosystemPortEdits } from './streamingDetect.js';
+import { detectGodotNativeLaunch, parseEcosystemConfig, rewriteEcosystemPorts, rewriteEcosystemPortsByProcess, writeEcosystemPorts, writeEcosystemPortsByProcess, writeEcosystemPortEdits, DESKTOP_TYPES, NON_PM2_TYPES } from './streamingDetect.js';
+
+describe('detectGodotNativeLaunch', () => {
+  let dir;
+  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); dir = null; });
+
+  it('prefers the repo game launcher for a nested Godot project', () => {
+    dir = mkdtempSync(join(tmpdir(), 'godot-desktop-'));
+    const appDir = join(dir, 'ExampleProject');
+    mkdirSync(join(appDir, 'game'), { recursive: true });
+    mkdirSync(join(appDir, 'scripts'), { recursive: true });
+    writeFileSync(join(appDir, 'game', 'project.godot'), '[application]\n');
+    writeFileSync(join(appDir, 'scripts', 'game'), '#!/usr/bin/env bash\n');
+
+    expect(detectGodotNativeLaunch(appDir)).toEqual({
+      label: 'Godot',
+      command: './scripts/game run',
+      processName: 'example-project-game'
+    });
+  });
+
+  it('falls back for a root Godot project without misclassifying an unlaunched nested demo', () => {
+    dir = mkdtempSync(join(tmpdir(), 'godot-fallback-'));
+    writeFileSync(join(dir, 'project.godot'), '[application]\n');
+
+    expect(detectGodotNativeLaunch(dir)?.command).toBe('godot --path .');
+    rmSync(join(dir, 'project.godot'));
+    mkdirSync(join(dir, 'game'), { recursive: true });
+    writeFileSync(join(dir, 'game', 'project.godot'), '[application]\n');
+    expect(detectGodotNativeLaunch(dir)).toBeNull();
+  });
+});
 
 describe('parseEcosystemConfig', () => {
   it('captures arbitrary *_PORT env vars and labels them by camelCased stem', () => {
@@ -915,5 +946,29 @@ module.exports = { apps: [
     const result = await writeEcosystemPortEdits(dir, [], []);
     expect(result.changed).toBe(false);
     expect(readFileSync(join(dir, 'ecosystem.config.cjs'), 'utf-8')).toBe(original);
+  });
+});
+
+// The client mirrors these two Sets by hand in
+// client/src/components/apps/constants.js, and drives its portless UI branches
+// (Open UI hidden, the desktop launch panel) off the copy. A server-side
+// addition that never reaches the mirror silently regresses those branches back
+// to the web-app path.
+//
+// The assertion lives HERE, not in a client test, and the direction matters: the
+// client module is dependency-free so a server test can import it, whereas
+// streamingDetect.js reaches `pm2.js` → the `pm2` package, which does not
+// resolve from the client workspace in CI (only via root hoisting locally). A
+// client-side version of this test therefore passes on a dev machine and fails
+// in CI. Keep the import one-way.
+describe('client mirror of the app-type sets', () => {
+  it('matches DESKTOP_TYPES', async () => {
+    const client = await import('../../client/src/components/apps/constants.js');
+    expect([...client.DESKTOP_TYPES].sort()).toEqual([...DESKTOP_TYPES].sort());
+  });
+
+  it('matches NON_PM2_TYPES', async () => {
+    const client = await import('../../client/src/components/apps/constants.js');
+    expect([...client.NON_PM2_TYPES].sort()).toEqual([...NON_PM2_TYPES].sort());
   });
 });

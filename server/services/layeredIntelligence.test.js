@@ -43,8 +43,12 @@ import {
   rejectionReasonBySlug,
   LI_DEGRADED_SUCCESS_THRESHOLD,
   LI_DEGRADED_MIN_SAMPLE,
+  LI_DELIVERY_MIN_SAMPLE,
+  LI_HARD_GATE_DELIVERY_THRESHOLD,
   computeScopeAwareness,
   computeExecutionByDomain,
+  computePostApprovalCompletion,
+  computeProposalOutcomeMetrics,
   computeProposalExecutionAwareness,
   computeCrossReferenceAnalysis,
   computeHandoffRouting,
@@ -506,6 +510,185 @@ describe('computeExecutionByDomain (#2765)', () => {
   });
 });
 
+describe('computePostApprovalCompletion (#2944)', () => {
+  it('separates approved hand-off completion states and summarizes duration by scope', () => {
+    const out = computePostApprovalCompletion([
+      {
+        scope: 'app-improvement', outcome: 'merged', executionOutcome: 'success',
+        filedAt: '2026-07-01T00:00:00.000Z', executionAt: '2026-07-01T01:00:00.000Z'
+      },
+      {
+        scope: 'app-improvement', outcome: 'merged', executionOutcome: 'failure',
+        filedAt: '2026-07-01T00:00:00.000Z', executionAt: '2026-07-01T02:00:00.000Z'
+      },
+      {
+        scope: 'app-data-gap', outcome: 'merged', executionOutcome: null,
+        filedAt: '2026-07-01T00:00:00.000Z'
+      },
+      // Rejected proposals never enter the post-approval denominator.
+      {
+        scope: 'app-improvement', outcome: 'rejected', executionOutcome: 'success',
+        filedAt: '2026-07-01T00:00:00.000Z', executionAt: '2026-07-01T03:00:00.000Z'
+      },
+      // Invalid chronology must not poison duration telemetry.
+      {
+        scope: 'loop-meta', outcome: 'merged', executionOutcome: 'success',
+        filedAt: '2026-07-02T00:00:00.000Z', executionAt: '2026-07-01T00:00:00.000Z'
+      }
+    ]);
+
+    expect(out).toMatchObject({
+      approved: 4,
+      completed: 2,
+      abandoned: 1,
+      awaitingExecution: 1,
+      attempted: 3
+    });
+    expect(out.completionRate).toBeCloseTo(200 / 3, 10);
+    expect(out.duration).toEqual({
+      count: 1,
+      averageMs: 3_600_000,
+      medianMs: 3_600_000,
+      p90Ms: 3_600_000,
+      minMs: 3_600_000,
+      maxMs: 3_600_000
+    });
+    expect(out.byScope['app-improvement']).toMatchObject({
+      approved: 2, completed: 1, abandoned: 1, awaitingExecution: 0, attempted: 2, completionRate: 50
+    });
+    expect(out.byScope['app-data-gap']).toMatchObject({
+      approved: 1, completed: 0, abandoned: 0, awaitingExecution: 1, attempted: 0, completionRate: null
+    });
+  });
+
+  it('calculates median and p90 from the completed duration distribution', () => {
+    const filedAt = '2026-07-01T00:00:00.000Z';
+    const out = computePostApprovalCompletion([1, 2, 3, 4].map(hours => ({
+      scope: 'app-data-gap', outcome: 'merged', executionOutcome: 'success', filedAt,
+      executionAt: `2026-07-01T${String(hours).padStart(2, '0')}:00:00.000Z`
+    })));
+
+    expect(out.duration).toEqual({
+      count: 4,
+      averageMs: 9_000_000,
+      medianMs: 9_000_000,
+      p90Ms: 14_400_000,
+      minMs: 3_600_000,
+      maxMs: 14_400_000
+    });
+  });
+
+  it('divides approvalToCompletionRate by APPROVED, not attempted, and nulls it at zero approvals', () => {
+    // 2 approved, 1 completed, 1 still awaiting execution: the attempted-only rate
+    // reads a perfect 100% while only half the approved work has actually landed.
+    const out = computePostApprovalCompletion([
+      { scope: 'app-improvement', outcome: 'merged', executionOutcome: 'success', filedAt: '2026-07-01T00:00:00.000Z', executionAt: '2026-07-01T01:00:00.000Z' },
+      { scope: 'app-improvement', outcome: 'merged', executionOutcome: null, filedAt: '2026-07-01T00:00:00.000Z' }
+    ]);
+    expect(out.completionRate).toBe(100);
+    expect(out.approvalToCompletionRate).toBe(50);
+    expect(out.byScope['app-improvement'].approvalToCompletionRate).toBe(50);
+
+    // Nothing approved → null, never 0 (the division-by-zero sentinel).
+    const none = computePostApprovalCompletion([{ scope: 'loop-meta', outcome: 'rejected' }]);
+    expect(none.approved).toBe(0);
+    expect(none.approvalToCompletionRate).toBeNull();
+  });
+});
+
+describe('computeProposalOutcomeMetrics (#3014)', () => {
+  const RECORDS = [
+    // Approved and delivered.
+    { scope: 'app-improvement', outcome: 'merged', executionOutcome: 'success', filedAt: '2026-07-01T00:00:00.000Z', executionAt: '2026-07-01T01:00:00.000Z' },
+    // Approved, handed off, hand-off failed.
+    { scope: 'app-improvement', outcome: 'merged', executionOutcome: 'failure', filedAt: '2026-07-01T00:00:00.000Z', executionAt: '2026-07-01T02:00:00.000Z' },
+    // Approved but LOST — never executed. The bucket a rejection tally can't see.
+    { scope: 'app-data-gap', outcome: 'merged', executionOutcome: null, filedAt: '2026-07-01T00:00:00.000Z' },
+    // Rejected outright, in a scope that never had an approval at all.
+    { scope: 'loop-meta', outcome: 'rejected', filedAt: '2026-07-01T00:00:00.000Z' },
+    // Closed for some other reason (filing-side abandonment).
+    { scope: 'loop-meta', outcome: 'abandoned', filedAt: '2026-07-01T00:00:00.000Z' },
+    // Still open — awaiting triage, not a failure.
+    { scope: 'app-data-gap', outcome: null, filedAt: '2026-07-01T00:00:00.000Z' }
+  ];
+
+  it('rolls filing and execution outcomes into one metrics object', () => {
+    const out = computeProposalOutcomeMetrics(RECORDS);
+    expect(out).toMatchObject({
+      totalFiled: 6,
+      totalApproved: 3,
+      totalCompleted: 1,
+      totalRejected: 1,
+      totalAbandonedAtFiling: 1,
+      totalPending: 1,
+      totalAwaitingExecution: 1,
+      totalFailedExecution: 1
+    });
+    // 1 of 3 approved actually delivered — while the attempted-only rate reads 50%.
+    expect(out.approvalToCompletionRate).toBeCloseTo(100 / 3, 10);
+    expect(out.completionRate).toBe(50);
+  });
+
+  it('breaks down by scope, keeping scopes that were only ever rejected', () => {
+    const { byScope } = computeProposalOutcomeMetrics(RECORDS);
+    expect(byScope['app-improvement']).toMatchObject({
+      approved: 2, completed: 1, rejected: 0, abandonedAtFiling: 0, failedExecution: 1,
+      awaitingExecution: 0, attempted: 2, completionRate: 50, approvalToCompletionRate: 50
+    });
+    expect(byScope['app-data-gap']).toMatchObject({
+      approved: 1, completed: 0, awaitingExecution: 1, pending: 1,
+      completionRate: null, approvalToCompletionRate: 0
+    });
+    // A never-approved scope still appears, with null rates rather than a fake 0%.
+    expect(byScope['loop-meta']).toMatchObject({
+      approved: 0, completed: 0, rejected: 1, abandonedAtFiling: 1,
+      completionRate: null, approvalToCompletionRate: null
+    });
+  });
+
+  it('never counts a non-approved proposal towards completion (rate stays <= 100%)', () => {
+    // A hand-off that succeeded for a REJECTED proposal is not evidence that approval
+    // leads to delivery — letting it into the numerator would exceed 100%.
+    const out = computeProposalOutcomeMetrics([
+      { scope: 'app-improvement', outcome: 'merged', executionOutcome: 'success', filedAt: '2026-07-01T00:00:00.000Z', executionAt: '2026-07-01T01:00:00.000Z' },
+      { scope: 'app-improvement', outcome: 'rejected', executionOutcome: 'success', filedAt: '2026-07-01T00:00:00.000Z', executionAt: '2026-07-01T01:00:00.000Z' }
+    ]);
+    expect(out.totalApproved).toBe(1);
+    expect(out.totalCompleted).toBe(1);
+    expect(out.approvalToCompletionRate).toBe(100);
+  });
+
+  it('returns zeroed totals with null rates for an empty or invalid history', () => {
+    for (const input of [[], null, undefined]) {
+      const out = computeProposalOutcomeMetrics(input);
+      expect(out).toMatchObject({
+        totalFiled: 0, totalApproved: 0, totalCompleted: 0, totalRejected: 0,
+        totalAbandonedAtFiling: 0, totalPending: 0, approvalToCompletionRate: null, completionRate: null
+      });
+      expect(Object.keys(out.byScope)).toEqual([]);
+    }
+  });
+
+  it('produces the same result whether or not the caller pre-computes the aggregates', () => {
+    // The route hands in the `stats`/`execution` it already computed to avoid a second
+    // pass. That shortcut must stay a pure optimization — if it ever diverges from
+    // recomputing, the API's three blocks silently disagree about the same records.
+    const stats = summarizeOutcomeStats(RECORDS);
+    const execution = computePostApprovalCompletion(stats.filed);
+    expect(computeProposalOutcomeMetrics(RECORDS, { stats, execution }))
+      .toEqual(computeProposalOutcomeMetrics(RECORDS));
+  });
+
+  it('buckets a "__proto__" scope as data rather than rewriting the prototype', () => {
+    const { byScope } = computeProposalOutcomeMetrics([
+      { scope: '__proto__', outcome: 'merged', executionOutcome: 'success', filedAt: '2026-07-01T00:00:00.000Z', executionAt: '2026-07-01T01:00:00.000Z' }
+    ]);
+    expect(Object.keys(byScope)).toContain('__proto__');
+    expect(byScope['__proto__'].approvalToCompletionRate).toBe(100);
+    expect({}.approvalToCompletionRate).toBeUndefined();
+  });
+});
+
 describe('computeProposalExecutionAwareness (#2765)', () => {
   const execRecords = (scope, successes, failures) => [
     ...Array.from({ length: successes }, () => ({ scope, executionOutcome: 'success' })),
@@ -690,7 +873,10 @@ describe('computeLiExecutionHealth (#2824)', () => {
   const stats = (over = {}) => ({ read: true, metrics: { completed: 10, succeeded: 3, failed: 7, successRate: 30, recentOutcomes: [], ...over } });
 
   it('reports UNKNOWN (rate null) when the store is unreadable or has no runs', () => {
-    expect(computeLiExecutionHealth(null)).toEqual({ rate: null, sample: 0, source: null, confident: false });
+    expect(computeLiExecutionHealth(null)).toEqual({
+      rate: null, sample: 0, source: null, confident: false,
+      deliveryRate: null, deliverySample: 0, deliveryConfident: false
+    });
     expect(computeLiExecutionHealth({ read: false })).toMatchObject({ rate: null, confident: false });
     expect(computeLiExecutionHealth({ read: true, metrics: null })).toMatchObject({ rate: null, confident: false });
   });
@@ -700,6 +886,22 @@ describe('computeLiExecutionHealth (#2824)', () => {
     expect(health.rate).toBe(30);
     expect(health.sample).toBe(10);
     expect(health.confident).toBe(true);
+  });
+
+  it('keeps run health independent from approval-to-completion delivery health', () => {
+    const outcomes = [
+      { outcome: 'merged', executionOutcome: 'success' },
+      ...Array.from({ length: 4 }, () => ({ outcome: 'merged', executionOutcome: null }))
+    ];
+    const health = computeLiExecutionHealth(stats({ succeeded: 9, failed: 1, successRate: 90 }), outcomes);
+    expect(health).toMatchObject({
+      rate: 90,
+      sample: 10,
+      confident: true,
+      deliveryRate: 20,
+      deliverySample: 5,
+      deliveryConfident: true
+    });
   });
 
   it('is NOT confident below LI_DEGRADED_MIN_SAMPLE runs', () => {
@@ -717,6 +919,10 @@ describe('computeHardExclusionGate (#2824)', () => {
   const healthy = { read: true, metrics: { completed: 10, succeeded: 9, failed: 1, successRate: 90, recentOutcomes: [] } };
   // Below the sample floor even though 0%.
   const thinSample = { read: true, metrics: { completed: 2, succeeded: 0, failed: 2, successRate: 0, recentOutcomes: [] } };
+  const poorDelivery = [
+    { outcome: 'merged', executionOutcome: 'success' },
+    ...Array.from({ length: 4 }, () => ({ outcome: 'merged', executionOutcome: null }))
+  ];
 
   it('never excludes a null/invalid proposal', () => {
     expect(computeHardExclusionGate({ proposal: null, liTaskStats: degraded })).toEqual({ excluded: false, reason: null });
@@ -728,6 +934,28 @@ describe('computeHardExclusionGate (#2824)', () => {
     expect(computeHardExclusionGate({ proposal: p, liTaskStats: null }).excluded).toBe(false);
     expect(computeHardExclusionGate({ proposal: p, liTaskStats: healthy }).excluded).toBe(false);
     expect(computeHardExclusionGate({ proposal: p, liTaskStats: thinSample }).excluded).toBe(false);
+  });
+
+  it('arms on a confidently-low delivery rate even when LI runs are healthy', () => {
+    const res = computeHardExclusionGate({
+      proposal: { scope: 'loop-meta' },
+      liTaskStats: healthy,
+      outcomes: poorDelivery
+    });
+    expect(res.excluded).toBe(true);
+    expect(res.rule).toBe('self-improve-scope');
+    expect(res.reason).toContain('approval-to-completion delivery health 20%');
+    expect(res.reason).toContain(`< ${LI_HARD_GATE_DELIVERY_THRESHOLD}%`);
+  });
+
+  it('does not arm the delivery signal with no approvals or fewer than its sample floor', () => {
+    const p = { scope: 'loop-meta' };
+    expect(computeHardExclusionGate({ proposal: p, liTaskStats: healthy, outcomes: [] }).excluded).toBe(false);
+    expect(computeHardExclusionGate({
+      proposal: p,
+      liTaskStats: healthy,
+      outcomes: Array.from({ length: LI_DELIVERY_MIN_SAMPLE - 1 }, () => ({ outcome: 'merged', executionOutcome: null }))
+    }).excluded).toBe(false);
   });
 
   it('excludes EVERY self-improve scope when armed, regardless of domain history', () => {
@@ -782,6 +1010,10 @@ describe('computeHardExclusionGate (#2824)', () => {
 describe('computeHardExclusionNotice (#2824)', () => {
   const degraded = { read: true, metrics: { completed: 10, succeeded: 3, failed: 7, successRate: 30, recentOutcomes: [] } };
   const healthy = { read: true, metrics: { completed: 10, succeeded: 9, failed: 1, successRate: 90, recentOutcomes: [] } };
+  const poorDelivery = [
+    { outcome: 'merged', executionOutcome: 'success' },
+    ...Array.from({ length: 4 }, () => ({ outcome: 'merged', executionOutcome: null }))
+  ];
 
   it('is empty when the gate is disarmed (healthy / unknown health)', () => {
     expect(computeHardExclusionNotice({ liTaskStats: healthy })).toBe('');
@@ -806,6 +1038,12 @@ describe('computeHardExclusionNotice (#2824)', () => {
     const notice = computeHardExclusionNotice({ liTaskStats: degraded, outcomes });
     expect(notice).toContain('chronically-failing execution domain');
     expect(notice).toContain('app-improvement');
+  });
+
+  it('names delivery health when that independent signal arms the gate', () => {
+    const notice = computeHardExclusionNotice({ liTaskStats: healthy, outcomes: poorDelivery });
+    expect(notice).toContain('approval-to-completion delivery health 20%');
+    expect(notice).toContain(`below ${LI_HARD_GATE_DELIVERY_THRESHOLD}%`);
   });
 });
 
@@ -1216,6 +1454,28 @@ describe('computeOutcomesReport', () => {
     expect(report).toContain('Why non-merged proposals were closed: already tracked elsewhere (duplicate) (1)');
   });
 
+  it('adds post-approval completion rates and filed-to-completed duration distribution (#2944)', () => {
+    const report = computeOutcomesReport({
+      outcomes: [
+        {
+          scope: 'app-improvement', outcome: 'merged', executionOutcome: 'success',
+          filedAt: '2026-07-01T00:00:00.000Z', executionAt: '2026-07-01T01:00:00.000Z'
+        },
+        {
+          scope: 'app-improvement', outcome: 'merged', executionOutcome: 'failure',
+          filedAt: '2026-07-01T00:00:00.000Z', executionAt: '2026-07-01T02:00:00.000Z'
+        },
+        { scope: 'app-data-gap', outcome: 'merged', executionOutcome: null }
+      ]
+    });
+
+    expect(report).toContain('Post-approval LI hand-off follow-through:');
+    expect(report).toContain('Approved proposals: 3; 1 completed, 1 abandoned, 1 awaiting execution.');
+    expect(report).toContain('Completion rate: 50% (1/2 attempted).');
+    expect(report).toContain('average 1h 0m, median 1h 0m, p90 1h 0m (1 completed)');
+    expect(report).toContain('app-improvement: 1 completed, 1 abandoned, 0 awaiting execution; 50% completed');
+  });
+
   it('surfaces the execution-failure taxonomy line only when a hand-off has failed (#2764 §1)', () => {
     // A clean execution record shows no failure line…
     const clean = computeOutcomesReport({
@@ -1561,6 +1821,18 @@ describe('computeSelfEvalSummary (#2700)', () => {
     expect(report).not.toContain('execution is degraded');
   });
 
+  it('reports approval-to-completion delivery alongside LI run health', () => {
+    const report = computeSelfEvalSummary({
+      liTaskStats: liMetrics(),
+      outcomes: [
+        { outcome: 'merged', executionOutcome: 'success' },
+        ...Array.from({ length: 4 }, () => ({ outcome: 'merged', executionOutcome: null }))
+      ]
+    });
+    expect(report).toContain('80% of 10 lifetime LI runs succeeded');
+    expect(report).toContain('20% of 5 approved LI proposals completed');
+  });
+
   it('does not fire the degraded warning below the sample floor', () => {
     const report = computeSelfEvalSummary({
       liTaskStats: liMetrics({ completed: 1, succeeded: 0, failed: 1, successRate: 0 })
@@ -1607,6 +1879,8 @@ describe('computeSelfEvalSummary (#2700)', () => {
   it('exposes the degraded thresholds', () => {
     expect(LI_DEGRADED_SUCCESS_THRESHOLD).toBe(50);
     expect(LI_DEGRADED_MIN_SAMPLE).toBe(4);
+    expect(LI_DELIVERY_MIN_SAMPLE).toBe(5);
+    expect(LI_HARD_GATE_DELIVERY_THRESHOLD).toBe(50);
   });
 
   it('honors the injected clock when ageing the LI run window', () => {

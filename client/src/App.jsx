@@ -50,6 +50,10 @@ const MediaCollectionDetail = lazyWithReload(() => import('./pages/MediaCollecti
 const MediaCollectionSyncView = lazyWithReload(() => import('./pages/MediaCollectionSyncView'));
 const SyncView = lazyWithReload(() => import('./pages/SyncView'));
 const MediaModels = lazyWithReload(() => import('./pages/MediaModels'));
+const ThreejsModels = lazyWithReload(() => import('./pages/ThreejsModels'));
+const Media3D = lazyWithReload(() => import('./pages/Media3D'));
+const Media3DDetail = lazyWithReload(() => import('./pages/Media3DDetail'));
+const ThreejsModelDetail = lazyWithReload(() => import('./pages/ThreejsModelDetail'));
 const Loras = lazyWithReload(() => import('./pages/Loras'));
 const LoraTraining = lazyWithReload(() => import('./pages/LoraTraining'));
 const LoraDatasetDetail = lazyWithReload(() => import('./pages/LoraDatasetDetail'));
@@ -73,6 +77,7 @@ const CreativeDirectorDetail = lazyWithReload(() => import('./pages/CreativeDire
 const CreativeCommissions = lazyWithReload(() => import('./pages/CreativeCommissions'));
 const CreativeCommissionDetail = lazyWithReload(() => import('./pages/CreativeCommissionDetail'));
 const MusicVideo = lazyWithReload(() => import('./pages/MusicVideo'));
+const Sprites = lazyWithReload(() => import('./pages/Sprites'));
 const MoodBoards = lazyWithReload(() => import('./pages/MoodBoards'));
 const MoodBoardDetail = lazyWithReload(() => import('./pages/MoodBoardDetail'));
 const CreateApp = lazyWithReload(() => import('./pages/CreateApp'));
@@ -164,15 +169,20 @@ function UniverseRouteRedirect({ fromPrefix, canon = false }) {
   return <Navigate to={target} replace />;
 }
 
-// Redirect legacy /media/creative-director/* deep-links to the top-level
-// /creative-director/* route (Creative Director moved out of the Media Gen
-// tabs into its own Create page). Preserves the trailing path (id + tab),
-// query string, and hash.
-function CreativeDirectorLegacyRedirect() {
+// Rebase a legacy route prefix onto its current one, preserving the trailing
+// path (ids, tabs), query string, and hash. Every page promoted out of the
+// Media Gen tab shell into its own Create page needs exactly this — Creative
+// Director (`/media/creative-director/:id/:tab`) and Sprites
+// (`/media/sprites/:id`) so far — so it's parameterized rather than copied per
+// move. `from` must be an anchored regex so it can only match the prefix.
+function PrefixRedirect({ from, to }) {
   const { pathname, search, hash } = useLocation();
-  const rest = pathname.replace(/^\/media\/creative-director/, '');
-  return <Navigate to={`/creative-director${rest}${search}${hash}`} replace />;
+  const rest = pathname.replace(from, '');
+  return <Navigate to={`${to}${rest}${search}${hash}`} replace />;
 }
+
+const MEDIA_CREATIVE_DIRECTOR_PREFIX = /^\/media\/creative-director/;
+const MEDIA_SPRITES_PREFIX = /^\/media\/sprites/;
 
 // Normalize a tab-less /creative-director/:id URL to its overview tab while
 // preserving any query string + hash. A bare `<Navigate to="overview">` would
@@ -322,13 +332,22 @@ export default function App() {
                 (Create sidebar link). These redirects keep legacy
                 /media/creative-director bookmarks + in-app deep-links working. */}
             <Route path="creative-director" element={<RedirectWithSearch to="/creative-director" />} />
-            <Route path="creative-director/:id" element={<CreativeDirectorLegacyRedirect />} />
-            <Route path="creative-director/:id/:tab" element={<CreativeDirectorLegacyRedirect />} />
+            <Route path="creative-director/:id" element={<PrefixRedirect from={MEDIA_CREATIVE_DIRECTOR_PREFIX} to="/creative-director" />} />
+            <Route path="creative-director/:id/:tab" element={<PrefixRedirect from={MEDIA_CREATIVE_DIRECTOR_PREFIX} to="/creative-director" />} />
             <Route path="music-video" element={<MusicVideo />} />
             <Route path="music-video/:projectId" element={<MusicVideo />} />
+            {/* Sprites live at /sprites (Create sidebar link). These redirects
+                keep legacy /media/sprites bookmarks working after the MediaGen
+                tab was removed. */}
+            <Route path="sprites" element={<PrefixRedirect from={MEDIA_SPRITES_PREFIX} to="/sprites" />} />
+            <Route path="sprites/:id" element={<PrefixRedirect from={MEDIA_SPRITES_PREFIX} to="/sprites" />} />
             <Route path="timeline" element={<VideoTimeline />} />
             <Route path="timeline/:projectId" element={<VideoTimelineEditor />} />
             <Route path="models" element={<MediaModels />} />
+            <Route path="threejs" element={<ThreejsModels />} />
+            <Route path="threejs/:id" element={<ThreejsModelDetail />} />
+            <Route path="3d" element={<Media3D />} />
+            <Route path="3d/:id" element={<Media3DDetail />} />
             <Route path="loras" element={<Loras />} />
             <Route path="training" element={<LoraTraining />} />
             <Route path="training/:datasetId" element={<LoraDatasetDetail />} />
@@ -339,6 +358,11 @@ export default function App() {
             <Route path="universe-builder/:universeId" element={<UniverseRouteRedirect fromPrefix={/^\/media\/universe-builder/} />} />
             <Route path="universe-builder/:universeId/canon" element={<UniverseRouteRedirect fromPrefix={/^\/media\/universe-builder/} canon />} />
           </Route>
+          {/* Sprite Manager — a top-level Create page (moved out of the Media
+              Gen tabs). The record id is the URL, per the ID-based deep-linking
+              convention. */}
+          <Route path="sprites" element={<Sprites />} />
+          <Route path="sprites/:id" element={<Sprites />} />
           {/* Creative Director — a top-level Create page (moved out of the
               Media Gen tabs). :id with no tab redirects to the overview tab,
               carrying any query string + hash (relative Navigate preserves the

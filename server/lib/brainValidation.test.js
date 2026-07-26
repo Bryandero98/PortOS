@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   destinationEnum,
+  manualDestinationEnum,
+  classifierOutputSchema,
   projectStatusEnum,
   ideaStatusEnum,
   adminStatusEnum,
@@ -50,6 +52,27 @@ describe('brainValidation.js', () => {
     it('should reject invalid destinations', () => {
       expect(destinationEnum.safeParse('invalid').success).toBe(false);
       expect(destinationEnum.safeParse('').success).toBe(false);
+    });
+
+    it('accepts links as a filed destination (bare-URL captures)', () => {
+      expect(destinationEnum.safeParse('links').success).toBe(true);
+      expect(filedSchema.safeParse({
+        destination: 'links',
+        destinationId: '11111111-1111-4111-8111-111111111111'
+      }).success).toBe(true);
+    });
+
+    it('keeps links out of the hand-filed destinations and the classifier menu', () => {
+      expect(manualDestinationEnum.safeParse('links').success).toBe(false);
+      expect(classifierOutputSchema.safeParse({
+        destination: 'links', confidence: 1, title: 'x', extracted: {}
+      }).success).toBe(false);
+      expect(resolveReviewInputSchema.safeParse({
+        inboxLogId: '11111111-1111-4111-8111-111111111111', destination: 'links'
+      }).success).toBe(false);
+      expect(fixInputSchema.safeParse({
+        inboxLogId: '11111111-1111-4111-8111-111111111111', newDestination: 'links'
+      }).success).toBe(false);
     });
   });
 

@@ -38,6 +38,12 @@ import {
   databaseSwitchSchema,
   databaseBackendSchema,
   databaseExportSchema,
+  spriteTrackFrameCountSchema,
+  spriteTrackFpsSchema,
+  spriteRuntimeContractSchema,
+  spriteWalkGenerateSchema,
+  spriteScannerGenerateSchema,
+  spriteAmbientGenerateSchema,
 } from './validation.js';
 import {
   telegramForwardTypesSchema,
@@ -293,6 +299,24 @@ describe('validation.js', () => {
       expect(result.success).toBe(true);
     });
 
+    it('accepts a safe native launch target and rejects an unsafe process name', () => {
+      const app = {
+        name: 'Mixed App',
+        repoPath: '/path',
+        nativeLaunch: {
+          label: 'Godot',
+          command: './scripts/game run',
+          processName: 'mixed-game'
+        }
+      };
+
+      expect(appSchema.safeParse(app).success).toBe(true);
+      expect(appSchema.safeParse({
+        ...app,
+        nativeLaunch: { ...app.nativeLaunch, processName: 'mixed game; bad' }
+      }).success).toBe(false);
+    });
+
     it('should accept valid devUiPort', () => {
       const app = { name: 'Test', repoPath: '/path', devUiPort: 5554 };
       const result = appSchema.safeParse(app);
@@ -364,6 +388,12 @@ describe('validation.js', () => {
       expect(result.data).not.toHaveProperty('archived');
       expect(result.data).not.toHaveProperty('defaultUseWorktree');
       expect(result.data).not.toHaveProperty('defaultOpenPR');
+      expect(result.data).not.toHaveProperty('defaultPrCompletion');
+    });
+
+    it('accepts only known app PR completion defaults', () => {
+      expect(appUpdateSchema.safeParse({ defaultPrCompletion: 'leave-open' }).success).toBe(true);
+      expect(appUpdateSchema.safeParse({ defaultPrCompletion: 'later' }).success).toBe(false);
     });
 
     it('preserves per-app taskTypeOverrides scheduling fields (intervalMs/providerId/model/taskMetadata)', () => {
@@ -680,6 +710,14 @@ describe('validation.js', () => {
         .toEqual({ useWorktree: true, openPR: true, simplify: true, reviewLoop: false });
     });
 
+    it('should accept only known PR completion metadata', () => {
+      expect(sanitizeTaskMetadata({ prCompletion: 'review-then-merge' }))
+        .toEqual({ prCompletion: 'review-then-merge' });
+      expect(sanitizeTaskMetadata({ prCompletion: 'leave-open' }))
+        .toEqual({ prCompletion: 'leave-open' });
+      expect(sanitizeTaskMetadata({ prCompletion: 'later' })).toBeNull();
+    });
+
     it('should drop non-boolean values for allowed keys', () => {
       expect(sanitizeTaskMetadata({ useWorktree: 'yes' })).toBeNull();
       expect(sanitizeTaskMetadata({ simplify: 1 })).toBeNull();
@@ -977,6 +1015,11 @@ describe('validation.js', () => {
   });
 
   describe('createCosTaskSchema reviewers fields', () => {
+    it('accepts an explicit PR completion policy and rejects unknown values', () => {
+      expect(createCosTaskSchema.safeParse({ description: 'inspect', prCompletion: 'leave-open' }).success).toBe(true);
+      expect(createCosTaskSchema.safeParse({ description: 'inspect', prCompletion: 'later' }).success).toBe(false);
+    });
+
     it('accepts reviewers/reviewStopMode/reviewerApplies', () => {
       const parsed = createCosTaskSchema.safeParse({
         description: 'do a thing',
@@ -1426,6 +1469,55 @@ describe('ad-hoc route schemas (#2521)', () => {
     });
     it('rejects non-string overrides', () => {
       expect(brainDigestRunSchema.safeParse({ providerOverride: 5 }).success).toBe(false);
+    });
+  });
+
+  describe('animation-track-aware sprite bounds (#3015)', () => {
+    it('builds the walk range from the registry row, unchanged from pre-#3015', () => {
+      const frames = spriteTrackFrameCountSchema('walk');
+      expect(frames.safeParse(6).success).toBe(true);
+      expect(frames.safeParse(16).success).toBe(true);
+      expect(frames.safeParse(5).success).toBe(false);
+      expect(frames.safeParse(17).success).toBe(false);
+      expect(frames.safeParse(12.5).success).toBe(false);
+      const fps = spriteTrackFpsSchema('walk');
+      expect(fps.safeParse(4).success).toBe(true);
+      expect(fps.safeParse(24).success).toBe(true);
+      expect(fps.safeParse(3).success).toBe(false);
+      expect(fps.safeParse(25).success).toBe(false);
+    });
+
+    it('defaults to the walk track when no track is named', () => {
+      expect(spriteTrackFrameCountSchema().safeParse(16).success).toBe(true);
+      expect(spriteTrackFpsSchema().safeParse(24).success).toBe(true);
+    });
+
+    it('uses the shipped scanner row and throws for an actually unknown track', () => {
+      // A wiring bug surfaces at boot rather than degrading to walk's range.
+      expect(spriteTrackFrameCountSchema('scanner').safeParse(4).success).toBe(true);
+      expect(spriteTrackFpsSchema('scanner').safeParse(6).success).toBe(true);
+      expect(() => spriteTrackFrameCountSchema('unknown')).toThrow(/Unknown animation track/);
+      expect(() => spriteTrackFpsSchema('unknown')).toThrow(/Unknown animation track/);
+    });
+
+    it('keeps the walk schemas stable and admits the ambient contract shape', () => {
+      expect(spriteRuntimeContractSchema.safeParse({ walkFrameCount: 12 }).success).toBe(true);
+      expect(spriteRuntimeContractSchema.safeParse({ walkFrameCount: 12, scannerFrameCount: 4 }).success).toBe(true);
+      expect(spriteRuntimeContractSchema.safeParse({ walkFrameCount: 12, scannerFrameCount: 9 }).success).toBe(false);
+      expect(spriteRuntimeContractSchema.safeParse({ walkFrameCount: 5 }).success).toBe(false);
+      expect(spriteRuntimeContractSchema.safeParse({ ambientFrameCount: 3 }).success).toBe(true);
+      expect(spriteRuntimeContractSchema.safeParse({ ambientFrameCount: 7 }).success).toBe(false);
+      expect(spriteRuntimeContractSchema.safeParse({ scannerFrameCount: 4 }).success).toBe(false);
+      expect(spriteWalkGenerateSchema.safeParse({
+        direction: 'south', frameCount: 12, fps: 10,
+      }).success).toBe(true);
+      expect(spriteWalkGenerateSchema.safeParse({
+        direction: 'south', frameCount: 3,
+      }).success).toBe(false);
+      expect(spriteScannerGenerateSchema.safeParse({ direction: 'south', frameCount: 4, fps: 6 }).success).toBe(true);
+      expect(spriteScannerGenerateSchema.safeParse({ direction: 'south', frameCount: 9 }).success).toBe(false);
+      expect(spriteAmbientGenerateSchema.safeParse({ frameCount: 3, fps: 4 }).success).toBe(true);
+      expect(spriteAmbientGenerateSchema.safeParse({ frameCount: 7 }).success).toBe(false);
     });
   });
 

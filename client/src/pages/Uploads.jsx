@@ -1,11 +1,13 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Upload, Trash2, Download, FileText, Image, File, FolderOpen, RefreshCw } from 'lucide-react';
 import { useConfirmDelete } from '../hooks/useConfirmDelete';
 import ConfirmButtonPair from '../components/ui/ConfirmButtonPair';
-import { formatDateTime } from '../utils/formatters';
+import { formatDateTime, formatBytes } from '../utils/formatters';
 import toast from '../components/ui/Toast';
-import BrailleSpinner from '../components/BrailleSpinner';
+import PageSkeleton from '../components/ui/PageSkeleton';
+import FilePickerButton from '../components/ui/FilePickerButton';
 import * as api from '../services/api';
+import { JSON_UPLOAD_MAX_FILE_SIZE } from '../utils/fileUpload';
 
 // File type icons based on MIME type
 function getFileIcon(mimeType) {
@@ -29,7 +31,6 @@ export default function Uploads() {
   const [dragActive, setDragActive] = useState(false);
   const [confirmingDeleteAll, setConfirmingDeleteAll] = useState(false);
   const { isConfirming, requestDelete, cancelDelete, confirmDelete } = useConfirmDelete();
-  const fileInputRef = useRef(null);
 
   const fetchUploads = useCallback(async () => {
     const data = await api.listUploads({ silent: true }).catch(err => {
@@ -52,9 +53,8 @@ export default function Uploads() {
     const fileArray = Array.from(files);
 
     for (const file of fileArray) {
-      // Check file size (100MB limit)
-      if (file.size > 100 * 1024 * 1024) {
-        toast.error(`File "${file.name}" exceeds 100MB limit`);
+      if (file.size > JSON_UPLOAD_MAX_FILE_SIZE) {
+        toast.error(`File "${file.name}" exceeds the ${formatBytes(JSON_UPLOAD_MAX_FILE_SIZE)} limit`);
         continue;
       }
 
@@ -142,11 +142,7 @@ export default function Uploads() {
   };
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <BrailleSpinner text="Loading uploads" />
-      </div>
-    );
+    return <PageSkeleton label="Loading uploads" titleWidthClass="w-44" showSubtitle cards={4} sidebar={false} />;
   }
 
   return (
@@ -202,31 +198,22 @@ export default function Uploads() {
         onDragOver={handleDrag}
         onDrop={handleDrop}
       >
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          onChange={(e) => handleFileUpload(e.target.files)}
-          className="sr-only"
-          tabIndex={-1}
-          aria-hidden="true"
-        />
-
         <Upload size={40} className={`mx-auto mb-4 ${dragActive ? 'text-port-accent' : 'text-gray-500'}`} />
 
         <p className="text-white mb-2">
           {dragActive ? 'Drop files here' : 'Drag and drop files here'}
         </p>
         <p className="text-gray-500 text-sm mb-4">or</p>
-        <button
-          onClick={() => fileInputRef.current?.click()}
+        <FilePickerButton
+          multiple
           disabled={uploading}
-          className="px-4 py-2 bg-port-accent/20 hover:bg-port-accent/30 text-port-accent rounded-lg transition-colors disabled:opacity-50"
+          onChange={(e) => handleFileUpload(e.target.files)}
+          className="inline-block px-4 py-2 bg-port-accent/20 hover:bg-port-accent/30 text-port-accent rounded-lg transition-colors"
         >
           {uploading ? 'Uploading...' : 'Browse Files'}
-        </button>
+        </FilePickerButton>
         <p className="text-gray-500 text-xs mt-4">
-          Maximum file size: 100MB
+          Maximum file size: {formatBytes(JSON_UPLOAD_MAX_FILE_SIZE)}
         </p>
       </div>
 

@@ -46,7 +46,16 @@ const mocks = vi.hoisted(() => ({
   providers: {
     getProviderById: vi.fn(async () => ({ id: 'ollama', enabled: false })),
     getAllProviders: vi.fn(async () => ({ providers: [] })),
-    updateProvider: vi.fn(async () => ({}))
+    updateProvider: vi.fn(async () => ({})),
+    refreshProviderModels: vi.fn(async (id) => ({ id, models: [] })),
+    // Mirrors the real aiToolkit/providers.js predicate (not a spy — tests
+    // assert against refreshProviderModels calls, not this classification).
+    isOllamaBackedProvider: (provider) => {
+      if (provider?.id === 'ollama') return true;
+      if (provider?.ollamaBacked === true) return true;
+      const base = String(provider?.envVars?.ANTHROPIC_BASE_URL || provider?.endpoint || '');
+      return /:11434\b/.test(base) || /ollama/i.test(base);
+    }
   }
 }));
 vi.mock('./ollamaManager.js', () => mocks.ollama);
@@ -90,6 +99,11 @@ const fakeChild = ({ code = 0, lines = [] } = {}) => {
 };
 
 const writeEnv = (content) => fs.writeFileSync(path.join(state.root, '.env'), content);
+
+// A `setTimeout` macrotask always fires after every microtask queued before
+// it — including chained promise `.then()`s a fire-and-forget call kicked off
+// — so this reliably waits out an unwaited async chain in tests.
+const flushMicrotasks = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 let svc;
 beforeEach(async () => {
@@ -176,6 +190,43 @@ describe('localLlm', () => {
     });
     it('rejects an unknown backend', async () => {
       expect((await svc.installModel('nope', 'x')).success).toBe(false);
+    });
+    it('refreshes Ollama-backed providers after a successful install', async () => {
+      mocks.providers.getAllProviders.mockResolvedValueOnce({
+        providers: [
+          { id: 'ollama' },
+          { id: 'claude-ollama', type: 'tui', ollamaBacked: true },
+          { id: 'anthropic', type: 'api', endpoint: 'https://api.anthropic.com' }
+        ]
+      });
+      const result = await svc.installModel('ollama', 'llama3.2');
+      expect(result.success).toBe(true);
+      // The refresh is fire-and-forget (doesn't block the install response) —
+      // flush the microtask queue so the async chain it kicks off has settled.
+      await flushMicrotasks();
+      expect(mocks.providers.refreshProviderModels).toHaveBeenCalledWith('ollama');
+      expect(mocks.providers.refreshProviderModels).toHaveBeenCalledWith('claude-ollama');
+      expect(mocks.providers.refreshProviderModels).not.toHaveBeenCalledWith('anthropic');
+    });
+    it('refreshes Ollama-backed providers after a successful delete', async () => {
+      mocks.providers.getAllProviders.mockResolvedValueOnce({ providers: [{ id: 'ollama' }] });
+      await svc.deleteModel('ollama', 'llama3.2');
+      await flushMicrotasks();
+      expect(mocks.providers.refreshProviderModels).toHaveBeenCalledWith('ollama');
+    });
+    it('does not refresh providers when the Ollama pull fails', async () => {
+      mocks.ollama.pullModel.mockResolvedValueOnce({ success: false, error: 'boom' });
+      mocks.providers.getAllProviders.mockResolvedValueOnce({ providers: [{ id: 'ollama' }] });
+      await svc.installModel('ollama', 'llama3.2');
+      await flushMicrotasks();
+      expect(mocks.providers.refreshProviderModels).not.toHaveBeenCalled();
+    });
+    it('does not fail install when a provider refresh throws', async () => {
+      mocks.providers.getAllProviders.mockResolvedValueOnce({ providers: [{ id: 'ollama' }] });
+      mocks.providers.refreshProviderModels.mockRejectedValueOnce(new Error('unreachable'));
+      const result = await svc.installModel('ollama', 'llama3.2');
+      expect(result.success).toBe(true);
+      await flushMicrotasks(); // let the rejection be caught internally, not surface as unhandled
     });
   });
 
@@ -373,6 +424,36 @@ describe('localLlm', () => {
       } finally {
         Object.defineProperty(process, 'platform', orig);
       }
+    });
+  });
+
+  describe('listModels capability badges', () => {
+    it('maps Ollama /api/show capabilities onto the catalog badge vocabulary', async () => {
+      mocks.ollama.getInstalledModels.mockResolvedValueOnce([
+        { id: 'qwen3.6:35b', name: 'qwen3.6:35b', capabilities: ['completion', 'tools', 'vision', 'thinking'] },
+        { id: 'nomic-embed-text', name: 'nomic-embed-text', capabilities: ['embedding'] },
+        { id: 'legacy-model', name: 'legacy-model' },
+      ]);
+      const models = await svc.listModels('ollama');
+      expect(models.find((m) => m.id === 'qwen3.6:35b').capabilities.sort())
+        .toEqual(['chat', 'reasoning', 'tools', 'vision']);
+      expect(models.find((m) => m.id === 'nomic-embed-text').capabilities).toEqual(['embeddings']);
+      // No reported capabilities → no guessed badges (unlike the vision id heuristic).
+      expect(models.find((m) => m.id === 'legacy-model').capabilities).toEqual([]);
+    });
+
+    it('derives LM Studio badges from the native `type` field plus the shared tool-use id heuristic', async () => {
+      mocks.lmstudio.getAvailableModels.mockResolvedValueOnce([
+        { id: 'qwen2.5-7b-instruct', type: 'llm' },
+        { id: 'llava-1.5-7b', type: 'vlm' },
+        { id: 'nomic-embed-text', type: 'embeddings' },
+      ]);
+      const models = await svc.listModels('lmstudio');
+      expect(models.find((m) => m.id === 'qwen2.5-7b-instruct').capabilities.sort())
+        .toEqual(['chat', 'tools']);
+      expect(models.find((m) => m.id === 'llava-1.5-7b').capabilities.sort())
+        .toEqual(['chat', 'vision']);
+      expect(models.find((m) => m.id === 'nomic-embed-text').capabilities).toEqual(['embeddings']);
     });
   });
 

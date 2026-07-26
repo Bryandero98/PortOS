@@ -11,6 +11,7 @@ import useDrawerTab from '../../hooks/useDrawerTab';
 import { copyToClipboard } from '../../lib/clipboard';
 import LayeredIntelligenceTab, { buildLayeredIntelligenceUpdate, buildLayeredIntelligenceScheduleUpdate } from './LayeredIntelligenceTab';
 import { PROVIDER_TYPES } from '../../utils/providers';
+import { DEFAULT_PR_COMPLETION, PR_COMPLETION_OPTIONS } from '../cos/constants';
 
 const WORK_TRACKER_OPTIONS = [
   { value: 'auto', label: 'Auto (detect from git origin)' },
@@ -60,9 +61,14 @@ export default function EditAppDrawer({ app, onClose, onSave }) {
     buildCommand: app.buildCommand || '',
     startCommands: (app.startCommands || []).join('\n'),
     pm2ProcessNames: (app.pm2ProcessNames || []).join(', '),
+    nativeLaunchEnabled: !!app.nativeLaunch,
+    nativeLaunchLabel: app.nativeLaunch?.label || 'Desktop',
+    nativeLaunchCommand: app.nativeLaunch?.command || '',
+    nativeLaunchProcessName: app.nativeLaunch?.processName || '',
     editorCommand: app.editorCommand || 'code .',
     workTracker: app.workTracker || 'auto',
     defaultOpenPR: app.defaultOpenPR || false,
+    defaultPrCompletion: app.defaultPrCompletion || DEFAULT_PR_COMPLETION,
     defaultUseWorktree: app.defaultUseWorktree || app.defaultOpenPR || false,
     jiraEnabled: app.jira?.enabled || false,
     jiraInstanceId: app.jira?.instanceId || '',
@@ -349,6 +355,25 @@ export default function EditAppDrawer({ app, onClose, onSave }) {
       }
     }
 
+    if (formData.nativeLaunchEnabled) {
+      const nativeFields = [
+        ['nativeLaunchLabel', 'Native button label'],
+        ['nativeLaunchProcessName', 'Native PM2 process name'],
+        ['nativeLaunchCommand', 'Native launch command']
+      ];
+      const missing = nativeFields.find(([key]) => !formData[key]?.trim());
+      if (missing) {
+        setActiveTab('commands');
+        setError(`${missing[1]} is required.`);
+        return;
+      }
+      if (!/^[a-zA-Z0-9._-]+$/.test(formData.nativeLaunchProcessName.trim())) {
+        setActiveTab('commands');
+        setError('Native PM2 process name may contain only letters, numbers, dots, underscores, and hyphens.');
+        return;
+      }
+    }
+
     setSaving(true);
 
     const data = {
@@ -364,10 +389,16 @@ export default function EditAppDrawer({ app, onClose, onSave }) {
       pm2ProcessNames: formData.pm2ProcessNames
         ? formData.pm2ProcessNames.split(',').map(s => s.trim()).filter(Boolean)
         : undefined,
+      nativeLaunch: formData.nativeLaunchEnabled ? {
+        label: formData.nativeLaunchLabel.trim(),
+        command: formData.nativeLaunchCommand.trim(),
+        processName: formData.nativeLaunchProcessName.trim()
+      } : null,
       editorCommand: formData.editorCommand || undefined,
       workTracker: formData.workTracker || 'auto',
       defaultUseWorktree: formData.defaultUseWorktree || formData.defaultOpenPR,
       defaultOpenPR: formData.defaultOpenPR,
+      defaultPrCompletion: formData.defaultPrCompletion,
       jira: formData.jiraEnabled ? {
         enabled: true,
         instanceId: formData.jiraInstanceId || undefined,
@@ -621,6 +652,62 @@ export default function EditAppDrawer({ app, onClose, onSave }) {
                 />
               </div>
 
+              <div className="bg-port-bg/50 border border-port-border rounded-lg p-3 space-y-3">
+                <label htmlFor="edit-app-native-enabled" className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    id="edit-app-native-enabled"
+                    type="checkbox"
+                    checked={formData.nativeLaunchEnabled}
+                    onChange={e => setFormData(prev => ({ ...prev, nativeLaunchEnabled: e.target.checked }))}
+                    className="rounded border-port-border bg-port-bg text-port-accent focus:ring-port-accent"
+                  />
+                  <span className="text-sm text-white">Separate native launch action</span>
+                </label>
+                <p className="text-xs text-gray-500">
+                  Adds a button beside the standard web Launch. The native process runs once and stays stopped when its window closes.
+                </p>
+                {formData.nativeLaunchEnabled && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label htmlFor="edit-app-native-label" className="block text-sm text-gray-400 mb-1">Button Label</label>
+                      <input
+                        id="edit-app-native-label"
+                        type="text"
+                        value={formData.nativeLaunchLabel}
+                        onChange={e => setFormData(prev => ({ ...prev, nativeLaunchLabel: e.target.value }))}
+                        className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+                        placeholder="Godot"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="edit-app-native-process" className="block text-sm text-gray-400 mb-1">PM2 Process Name</label>
+                      <input
+                        id="edit-app-native-process"
+                        type="text"
+                        value={formData.nativeLaunchProcessName}
+                        onChange={e => setFormData(prev => ({ ...prev, nativeLaunchProcessName: e.target.value }))}
+                        className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+                        placeholder="my-app-game"
+                        required
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label htmlFor="edit-app-native-command" className="block text-sm text-gray-400 mb-1">Native Launch Command</label>
+                      <input
+                        id="edit-app-native-command"
+                        type="text"
+                        value={formData.nativeLaunchCommand}
+                        onChange={e => setFormData(prev => ({ ...prev, nativeLaunchCommand: e.target.value }))}
+                        className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden font-mono text-sm"
+                        placeholder="./scripts/game run"
+                        required
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <div>
                 <label htmlFor="edit-app-editor-command" className="block text-sm text-gray-400 mb-1">Editor Command</label>
                 <input
@@ -684,8 +771,25 @@ export default function EditAppDrawer({ app, onClose, onSave }) {
                   className="rounded border-port-border bg-port-bg text-port-accent focus:ring-port-accent disabled:opacity-40"
                 />
                 <GitPullRequest size={14} className="text-blue-400" />
-                <span className={`text-sm ${formData.defaultUseWorktree ? 'text-white' : 'text-gray-600'}`} title="When checked, agents open a PR to the default branch. When unchecked with worktree enabled, agents auto-merge to the default branch on completion.">Default to Open PR for new tasks</span>
+                <span className={`text-sm ${formData.defaultUseWorktree ? 'text-white' : 'text-gray-600'}`} title="When checked, agents open a PR to the default branch. Choose below whether new PRs are reviewed and merged, merged on green CI, or left open. When unchecked with worktree enabled, agents merge the branch directly on completion.">Default to Open PR for new tasks</span>
               </label>
+              <div className="ml-6 mt-2 max-w-sm">
+                <label htmlFor="edit-app-default-pr-completion" className={`block text-sm mb-1 ${formData.defaultOpenPR ? 'text-gray-400' : 'text-gray-600'}`}>Default PR completion</label>
+                <select
+                  id="edit-app-default-pr-completion"
+                  value={formData.defaultPrCompletion}
+                  disabled={!formData.defaultOpenPR}
+                  onChange={e => setFormData(prev => ({ ...prev, defaultPrCompletion: e.target.value }))}
+                  className="w-full rounded border border-port-border bg-port-bg px-3 py-2 text-sm text-white focus:border-port-accent focus:outline-hidden disabled:opacity-40"
+                >
+                  {PR_COMPLETION_OPTIONS.map(option => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-gray-500">
+                  {PR_COMPLETION_OPTIONS.find(option => option.value === formData.defaultPrCompletion)?.description}
+                </p>
+              </div>
             </div>
           )}
 
@@ -767,6 +871,7 @@ export default function EditAppDrawer({ app, onClose, onSave }) {
                               <button
                                 type="button"
                                 onClick={() => selectProject('')}
+                                aria-label="Clear JIRA project"
                                 className="absolute right-2 top-8 text-gray-500 hover:text-white text-sm"
                               >
                                 x

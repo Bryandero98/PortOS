@@ -29,6 +29,7 @@ import toast from '../components/ui/Toast';
 import TabPills from '../components/ui/TabPills';
 import TribeCircleMap from '../components/tribe/TribeCircleMap.jsx';
 import { copyToClipboard } from '../lib/clipboard.js';
+import { safeReadStorage, safeRemoveStorage } from '../lib/safeStorage.js';
 import {
   RINGS,
   ENERGY,
@@ -82,21 +83,11 @@ function parseStoredContacts(value) {
 }
 
 function getLegacyContacts() {
-  if (typeof window === 'undefined') return [];
-  try {
-    return parseStoredContacts(window.localStorage.getItem(STORAGE_KEY));
-  } catch {
-    return [];
-  }
+  return parseStoredContacts(safeReadStorage(STORAGE_KEY));
 }
 
 function clearLegacyContacts() {
-  if (typeof window === 'undefined') return;
-  try {
-    window.localStorage.removeItem(STORAGE_KEY);
-  } catch {
-    // Storage can be unavailable in restricted browser contexts.
-  }
+  safeRemoveStorage(STORAGE_KEY);
 }
 
 function StatTile({ icon: Icon, label, value, detail, className = '' }) {
@@ -433,6 +424,7 @@ function MemoryLinksPanel({ personId }) {
       </div>
       <div className="mt-3 grid gap-2">
         <select
+          aria-label="Brain memory"
           value={memoryId}
           onChange={(event) => setMemoryId(event.target.value)}
           className="w-full rounded border border-port-border bg-port-bg px-3 py-2 text-sm text-white outline-none focus:border-port-accent"
@@ -445,6 +437,7 @@ function MemoryLinksPanel({ personId }) {
         <input
           value={note}
           onChange={(event) => setNote(event.target.value)}
+          aria-label="Why this memory matters"
           className="w-full rounded border border-port-border bg-port-bg px-3 py-2 text-sm text-white outline-none focus:border-port-accent"
           placeholder="Why this memory matters"
         />

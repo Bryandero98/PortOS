@@ -19,41 +19,26 @@
 import { useEffect, useState } from 'react';
 import { KeyRound, Loader2, RotateCw } from 'lucide-react';
 import Modal from '../ui/Modal';
-import HfTokenBanner from '../imageGen/HfTokenBanner';
-import { getHfTokenStatus } from '../../services/api';
-
-const SOURCE_LABEL = {
-  stored: 'stored in settings',
-  env: 'from the HF_TOKEN environment variable',
-  cli: 'from `hf auth login`',
-};
+import HfTokenBanner, { HF_SOURCE_LABEL } from '../imageGen/HfTokenBanner';
+import { useHfTokenStatus } from '../../hooks/useHfTokenStatus';
 
 export default function MidiGatedModal({ open, repo, onSaved, onClose }) {
   const licenseUrl = repo ? `https://huggingface.co/${repo}` : 'https://huggingface.co';
   const licenseLinkText = licenseUrl.replace(/^https?:\/\//, '');
 
-  // null = still checking; then { hfTokenPresent, source }. Re-checked each time
-  // the modal opens so a token saved on a prior pass is reflected.
-  const [tokenStatus, setTokenStatus] = useState(null);
+  // Re-checked each time the modal opens (the hook resets to unknown while closed)
+  // so a token saved on a prior pass is reflected. `errorAs: 'absent'` because this
+  // modal only opens AFTER a gated-repo 403 — if the status call itself fails, the
+  // paste form is the more useful guess than showing nothing.
+  const { present: tokenPresent, source: tokenSource } = useHfTokenStatus({ enabled: open, errorAs: 'absent' });
   // Escape hatch: when a token IS present but the license-accept + retry still
   // 403s, the stored token may be invalid — let the user drop to the paste form.
   const [forceTokenEntry, setForceTokenEntry] = useState(false);
 
-  useEffect(() => {
-    if (!open) {
-      setTokenStatus(null);
-      setForceTokenEntry(false);
-      return;
-    }
-    let cancelled = false;
-    getHfTokenStatus()
-      .then((s) => { if (!cancelled) setTokenStatus({ hfTokenPresent: !!s?.hfTokenPresent, source: s?.source || 'none' }); })
-      .catch(() => { if (!cancelled) setTokenStatus({ hfTokenPresent: false, source: 'none' }); });
-    return () => { cancelled = true; };
-  }, [open]);
+  useEffect(() => { if (!open) setForceTokenEntry(false); }, [open]);
 
-  const checking = tokenStatus === null;
-  const hasToken = !!tokenStatus?.hfTokenPresent;
+  const checking = tokenPresent === null;
+  const hasToken = tokenPresent === true;
   // Show the license-only view when a token is already configured and the user
   // hasn't explicitly asked to replace it.
   const licenseOnly = hasToken && !forceTokenEntry;
@@ -87,7 +72,7 @@ export default function MidiGatedModal({ open, repo, onSaved, onClose }) {
           <div className="rounded-lg border border-port-warning/40 bg-port-warning/10 px-3 py-3 text-xs text-port-warning space-y-3">
             <div>
               Your HuggingFace token is already configured
-              {SOURCE_LABEL[tokenStatus.source] ? ` (${SOURCE_LABEL[tokenStatus.source]})` : ''} — but you
+              {HF_SOURCE_LABEL[tokenSource] ? ` (${HF_SOURCE_LABEL[tokenSource]})` : ''} — but you
               haven&apos;t accepted the license for{' '}
               <a href={licenseUrl} target="_blank" rel="noreferrer" className="underline text-white">
                 {licenseLinkText}

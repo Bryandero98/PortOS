@@ -11,13 +11,15 @@ import {
   pathExists, PATHS, sanitizeFilename, getFileExtension, getMimeType,
   ATTACHMENT_ALLOWED_EXTENSIONS, isPathInsideDir, saveBase64Upload, serveLocalFile,
 } from '../lib/fileUtils.js';
+import { MAX_BASE64_UPLOAD_BYTES } from '../lib/uploadLimits.js';
 
 const ATTACHMENTS_DIR = PATHS.cosAttachments;
 
 const router = Router();
 
-// Max file size: 50MB (larger than screenshots to accommodate documents)
-const MAX_FILE_SIZE = 50 * 1024 * 1024;
+// Bounded by the JSON body limit, not by any attachment-specific rule — a
+// larger cap here is unreachable (see lib/uploadLimits.js).
+const MAX_FILE_SIZE = MAX_BASE64_UPLOAD_BYTES;
 
 // POST /api/attachments - Upload a file attachment (base64)
 router.post('/', asyncHandler(async (req, res) => {

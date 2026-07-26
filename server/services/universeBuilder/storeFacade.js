@@ -8,7 +8,7 @@
  * `sanitizeTemplate` on read — and defers backend selection into each method, so
  * this service keeps calling `store()` exactly as it did the collectionStore.
  * Methods used here: loadOne / loadOneRaw / listIds / listRaw / countUniverses /
- * queueRecordWrite / writeRecord(id, rec) / deleteRecord(id) / loadRuns /
+ * listStyles / queueRecordWrite / writeRecord(id, rec) / deleteRecord(id) / loadRuns /
  * appendRun / removeRunsForUniverses. `writeRecord`/`deleteRecord` replace the inline
  * ensureDir+atomicWrite(recordPath) / rm(recordDir) the file layout used, and
  * bump the mutation epoch so dataSync re-sends the universe snapshot to peers

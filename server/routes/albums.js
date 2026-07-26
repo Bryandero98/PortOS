@@ -1,7 +1,8 @@
 /**
  * Music album routes.
  *
- *   GET    /api/albums        → Album[]   (live, sorted by title)
+ *   GET    /api/albums        → Album[]   (live, sorted by title; `?limit`/`?offset`
+ *                                          switches to the bounded envelope)
  *   POST   /api/albums        → Album
  *   GET    /api/albums/:id     → Album
  *   PATCH  /api/albums/:id     → Album
@@ -14,7 +15,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
-import { validateRequest } from '../lib/validation.js';
+import { validateRequest, isPaginationRequested, paginateArray } from '../lib/validation.js';
 import * as albums from '../services/albums/index.js';
 import * as tracks from '../services/tracks/index.js';
 
@@ -104,8 +105,13 @@ async function reconcileAlbumMembership(album) {
   }));
 }
 
-router.get('/', asyncHandler(async (_req, res) => {
-  res.json(await albums.listAlbums());
+// Backward-compatible by default: returns the full albums array. When a client
+// passes `limit`/`offset`, the response becomes the bounded
+// `{ items, total, limit, offset }` envelope every paginated PortOS list shares.
+router.get('/', asyncHandler(async (req, res) => {
+  const list = await albums.listAlbums();
+  if (!isPaginationRequested(req.query)) return res.json(list);
+  res.json(paginateArray(list, req.query, { defaultLimit: 50, maxLimit: 500 }));
 }));
 
 router.post('/', asyncHandler(async (req, res) => {

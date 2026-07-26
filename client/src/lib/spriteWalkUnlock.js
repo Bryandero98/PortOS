@@ -1,0 +1,71 @@
+// The user-facing explanation of a BLOCKED walk re-open (#3043/#3044), in one
+// place because the set-wide Unlock, per-direction Reopen, and Loop Trimmer
+// describe the same server-stamped block. Two hand-written copies drifted within
+// the same change ("one new grok render each" vs "…per direction"), which is
+// exactly how a user meets two different accounts of one irreversible-ish action
+// depending on which panel they happened to open.
+//
+// Pure: takes the stamped block, returns strings. No React, no I/O.
+
+// The three facts a blocked walk re-open has to convey, assembled once.
+//
+// `blocked: false` returns null — the caller renders its ordinary action. A
+// blocked-but-`acknowledgeable` scope gets the regeneration offer and the
+// `acknowledgeNoClips` flag that carries the user's consent to the server; a
+// blocked and NON-acknowledgeable scope gets the dead-end explanation and no
+// action, because there is genuinely nothing to offer.
+export function walkUnlockCopy(unlock, { mode = 'unlock', direction = null } = {}) {
+  if (!unlock?.blocked) return null;
+  const reopening = mode === 'reopen';
+  const stranded = unlock.stranded || [];
+  const one = stranded.length === 1;
+  const who = stranded.length
+    ? `${stranded.join(', ')} ${one ? 'was' : 'were'} imported from the source pipeline without ${one ? 'its source clip' : 'their source clips'}, so ${one ? 'it' : 'they'} cannot be re-derived at a new frame count.`
+    : 'This walk set was imported from the source pipeline with no directions that can be re-derived here.';
+
+  if (!unlock.acknowledgeable) {
+    // Cause-NEUTRAL on purpose. `acknowledgeable: false` collapses three
+    // distinct blockers — an unlocked anchor, a locked anchor whose file is
+    // gone, and a record with no chroma key on any rung — and naming only the
+    // first would hand the other two a confidently wrong diagnosis. The server
+    // stamps a boolean, not a reason, so the copy says exactly what the boolean
+    // means and no more.
+    return {
+      text: `${who} It also cannot be regenerated here — the reference set is missing something a fresh render needs (a locked anchor, its image on disk, or the frozen chroma key). Re-import this character, or create a new character version to revise it.`,
+      action: null,
+      prompt: null,
+      acknowledgeNoClips: false,
+      toast: null,
+    };
+  }
+  // Scoped to the stranded list on purpose: the server verifies locked anchors
+  // for THOSE directions only (`resolveUnlockBlock` probes `stranded`), so a
+  // blanket "each of the 8 can be regenerated" would claim more than it checked
+  // — a non-stranded direction whose anchor happens to be unlocked is not
+  // covered by the gate, and telling the user otherwise is the same
+  // promise-more-than-you-proved mistake the gate itself avoids.
+  if (reopening) {
+    const target = direction || stranded[0] || 'this direction';
+    return {
+      text: `${who} Reopening anyway lets ${target} be regenerated from its locked anchor — one new grok render. Nothing on disk is deleted, but this direction's approval is dropped and the set stops compiling until it is approved again.`,
+      action: 'Reopen anyway',
+      prompt: `Re-open ${target} for regeneration?`,
+      acknowledgeNoClips: true,
+      toast: `Walk ${target} reopened — regenerate it from its locked anchor`,
+    };
+  }
+  const regenerated = stranded.length
+    ? `${stranded.join(', ')} can be regenerated from ${one ? 'its' : 'their'} locked anchor — one new grok render ${one ? 'for it' : 'each'}`
+    : 'each direction can be regenerated from its locked anchor — one new grok render per direction';
+  return {
+    text: `${who} Unlocking anyway re-opens all 8 directions and ${regenerated}. Nothing on disk is deleted, but every approval is dropped and the set stops compiling until all 8 are approved again.`,
+    action: 'Unlock anyway',
+    prompt: 'Re-open all 8 for regeneration?',
+    acknowledgeNoClips: true,
+    toast: 'Walk set unlocked — regenerate each direction from its locked anchor',
+  };
+}
+
+// What an ordinary (unblocked) unlock reports on success. Lives here so the two
+// surfaces' success toasts stay in step with the blocked one above.
+export const WALK_UNLOCK_TOAST = 'Walk set unlocked — directions are editable again';

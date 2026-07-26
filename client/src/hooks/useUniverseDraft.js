@@ -12,6 +12,7 @@ import {
   listWorldRuns,
   updateUniverse,
   WORLD_LOCKABLE_FIELDS,
+  WORLD_STYLE_REFERENCES_MAX,
   ensureInfluences,
 } from '../services/api';
 import { deriveAvailableBackends, IMAGE_GEN_MODE } from '../lib/imageGenBackends';
@@ -35,12 +36,14 @@ export const createEmptyUniverseDraft = () => ({
   categories: ensureDraftCategories(),
   compositeSheets: [],
   influences: { embrace: [], avoid: [] },
+  styleReferences: [],
   locked: {},
   llm: { provider: null, model: null },
 });
 
-// Stable serialization of the fields the general Save action owns. Canon is
-// excluded because its targeted editors persist those arrays independently.
+// Stable serialization of the fields the general Save action owns. Canon and
+// styleReferences are excluded because targeted editors persist those
+// arrays independently.
 export const universeDraftSnapshot = (draft = {}) => JSON.stringify({
   name: (draft.name || '').trim(),
   starterPrompt: draft.starterPrompt || '',
@@ -87,6 +90,32 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
   const savedDraftSnapshotRef = useRef(universeDraftSnapshot(createEmptyUniverseDraft()));
   const savedStyleSnapshotRef = useRef(ensureInfluences(createEmptyUniverseDraft().influences));
   const pendingCanonAdditionsRef = useRef(emptyPendingCanon());
+  // Authoritative per-universe styleReferences state, keyed by universe id —
+  // both persistStyleReference (add) and removeStyleReference (remove) read
+  // their base array from and write their result back to the entry for the
+  // universe they're actually mutating (`targetId`, captured at call time),
+  // never a single shared slot. draftRef only syncs after a React effect,
+  // which can still be one render behind when two mutations fire before
+  // either PATCH resolves — reading a single shared "current" snapshot would
+  // let the slower response's wholesale-replace PATCH undo the other
+  // mutation's change, and — the reason this is keyed by id rather than a
+  // single ref reset on every selection change — a switch away and back
+  // (A → B → A) would otherwise permanently lose A's in-flight state instead
+  // of correctly reconciling with it once it resolves. removeStyleReference
+  // additionally serializes same-universe calls through the matching queue
+  // entry so back-to-back removals on one universe never overlap; different
+  // universes' queues are independent.
+  const styleReferenceQueuesRef = useRef(new Map());
+  const styleReferenceSnapshotsRef = useRef(new Map());
+  // Mirrors `selectedId` synchronously during render (not via a passive
+  // effect, which runs one tick later and would leave a window where a
+  // resolving PATCH still sees the OLD selection as current). Mutators
+  // compare against this — not the `selectedId` closure value — to decide
+  // whether their result should still touch the currently DISPLAYED draft;
+  // the per-id snapshot/queue writes above always apply regardless, so a
+  // save for a universe the user has navigated away from is never lost.
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
 
   useEffect(() => () => { mountedRef.current = false; }, []);
   useEffect(() => { draftRef.current = draft; }, [draft]);
@@ -97,6 +126,17 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
 
   const markDraftSaved = useCallback((snapshotSource) => {
     savedDraftSnapshotRef.current = universeDraftSnapshot(snapshotSource);
+    savedStyleSnapshotRef.current = ensureInfluences(snapshotSource?.influences);
+  }, []);
+
+  // Mark only the style-guide fields as saved after an atomic reference-adopt
+  // PATCH. Replacing the entire baseline here would incorrectly clear dirty
+  // state for unrelated edits made while the vision request was in flight.
+  const markStyleGuidanceSaved = useCallback((snapshotSource) => {
+    const saved = JSON.parse(savedDraftSnapshotRef.current);
+    saved.styleNotes = snapshotSource?.styleNotes || '';
+    saved.influences = ensureInfluences(snapshotSource?.influences);
+    savedDraftSnapshotRef.current = JSON.stringify(saved);
     savedStyleSnapshotRef.current = ensureInfluences(snapshotSource?.influences);
   }, []);
 
@@ -133,6 +173,10 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
     setPendingDeleteId(null);
     setCanonDirty(false);
     clearPendingCanonAdditions();
+    // No styleReference queue/snapshot reset needed here — both are keyed by
+    // universe id (see styleReferenceQueuesRef/styleReferenceSnapshotsRef
+    // above), so switching away and back naturally finds each universe's own
+    // state exactly as it left it.
     if (!selectedId) {
       const empty = createEmptyUniverseDraft();
       setDraft(empty);
@@ -155,11 +199,19 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
           premise: universe.premise || '',
           styleNotes: universe.styleNotes || '',
           influences: ensureInfluences(universe.influences),
+          styleReferences: universe.styleReferences || [],
           locked: universe.locked || {},
           llm: universe.llm || { provider: null, model: null },
         };
         setDraft(hydrated);
         markDraftSaved(hydrated);
+        // Refresh this universe's styleReferences snapshot from the server on
+        // every successful hydration — a stale map entry from an earlier
+        // local mutation (or absence of one, on first visit) must not shadow
+        // changes made while this universe wasn't selected (peer sync, the
+        // image-delete purge route). The next add/remove needs this fresh
+        // baseline, not a leftover cache (codex review finding).
+        styleReferenceSnapshotsRef.current.set(selectedId, hydrated.styleReferences);
       }
       setRuns(nextRuns);
     });
@@ -226,6 +278,18 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
     return result;
   };
 
+  // Preflight for any server action that reads the PERSISTED universe (the LLM
+  // actions, batch render): persist a dirty draft first, so the server operates
+  // on what the user is looking at rather than the last-saved snapshot. Lives
+  // here — beside the `isDraftDirty` / `handleSave` pair it is derived from —
+  // so every consumer shares one definition of the contract.
+  // Returns true when the draft is clean or the save succeeded; false (with
+  // handleSave's own error toast already raised) when the save failed.
+  const flushDraftIfDirty = async () => {
+    if (!isDraftDirty()) return true;
+    return !!(await handleSave());
+  };
+
   const handleCreateNamed = async (rawName) => {
     const name = (rawName || '').trim();
     if (!name) {
@@ -260,6 +324,117 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
   };
 
   const updateDraft = useCallback((patch) => setDraft((current) => ({ ...current, ...patch })), []);
+
+  const persistStyleReference = useCallback(async ({ reference, proposed, adopt }) => {
+    if (!selectedId || !reference) return false;
+    const targetId = selectedId;
+    const current = draftRef.current || draft;
+    const capturedStyle = {
+      styleNotes: current.styleNotes || '',
+      influences: ensureInfluences(current.influences),
+    };
+    // Per-universe snapshot removeStyleReference also reads/writes — reading
+    // draftRef here instead would miss a removal still settling for the same
+    // universe and could resurrect the item it just removed once this add's
+    // wholesale-replace PATCH lands.
+    const baseStyleReferences = styleReferenceSnapshotsRef.current.get(targetId)
+      ?? (targetId === current.id && Array.isArray(current.styleReferences) ? current.styleReferences : []);
+    if (baseStyleReferences.length >= WORLD_STYLE_REFERENCES_MAX) {
+      toast.error(`A universe can hold up to ${WORLD_STYLE_REFERENCES_MAX} art references`);
+      return false;
+    }
+    const styleReferences = [...baseStyleReferences, reference];
+    const patch = {
+      styleReferences,
+      ...(adopt ? {
+        styleNotes: proposed?.styleNotes || '',
+        influences: ensureInfluences(proposed?.influences),
+      } : {}),
+    };
+    const updated = await updateUniverse(targetId, patch, { silent: true }).catch((error) => {
+      toast.error(`Reference save failed: ${error.message}`);
+      return null;
+    });
+    if (!updated) return false;
+    // Keep targetId's own snapshot current regardless of what's currently
+    // selected — a later add/remove for targetId (including one after the
+    // user navigates away and back) must build from this result, not a
+    // pre-save list (codex review finding: an A→B→A round trip must not lose
+    // A's in-flight save).
+    styleReferenceSnapshotsRef.current.set(targetId, updated.styleReferences || []);
+    // But only touch the currently DISPLAYED draft if the user is still on
+    // targetId — applying it otherwise would poison a DIFFERENT, now-selected
+    // universe's state with targetId's references (codex review finding).
+    // selectedIdRef mirrors selectedId synchronously during render (not via a
+    // passive effect), so there is no timing window where a resolving PATCH
+    // sees a stale "current selection".
+    if (selectedIdRef.current === targetId) {
+      if (adopt) markStyleGuidanceSaved(updated);
+      setDraft((latest) => {
+        const styleUnchangedDuringSave = latest.styleNotes === capturedStyle.styleNotes
+          && sameJsonShape(ensureInfluences(latest.influences), capturedStyle.influences);
+        return {
+          ...latest,
+          styleReferences: updated.styleReferences || [],
+          updatedAt: updated.updatedAt,
+          ...(adopt && styleUnchangedDuringSave ? {
+            styleNotes: updated.styleNotes || '',
+            influences: ensureInfluences(updated.influences),
+          } : {}),
+        };
+      });
+    }
+    setWorlds((previous) => upsertByIdPrepend(previous, updated));
+    toast.success(adopt ? 'Art reference added and style guide updated' : 'Art reference added');
+    return true;
+  }, [draft, markStyleGuidanceSaved, selectedId]);
+
+  const removeStyleReference = useCallback((referenceId) => {
+    if (!selectedId) return Promise.resolve(false);
+    const targetId = selectedId;
+    const current = draftRef.current || draft;
+    // Chain onto targetId's OWN queue (not a shared one) so two removals on
+    // the SAME universe never overlap, while removals on a DIFFERENT
+    // universe are unaffected — this task can be dequeued well after the user
+    // has switched away from and even back to targetId, so it must resolve
+    // its base from targetId's own tracked state, never from whatever
+    // universe happens to be selected when its turn comes up.
+    const queue = styleReferenceQueuesRef.current.get(targetId) ?? Promise.resolve();
+    const task = queue.then(async () => {
+      const base = styleReferenceSnapshotsRef.current.get(targetId)
+        ?? (targetId === current.id && Array.isArray(current.styleReferences) ? current.styleReferences : []);
+      const styleReferences = base.filter((item) => item.id !== referenceId);
+      const updated = await updateUniverse(targetId, { styleReferences }, { silent: true }).catch((error) => {
+        toast.error(`Reference removal failed: ${error.message}`);
+        return null;
+      });
+      if (!updated) return false;
+      // Keep targetId's own snapshot current regardless of what's currently
+      // selected (codex review finding: an A→B→A round trip must not lose
+      // A's in-flight removal).
+      styleReferenceSnapshotsRef.current.set(targetId, updated.styleReferences || []);
+      // Only touch the currently DISPLAYED draft if the user is still on
+      // targetId — selectedIdRef mirrors selectedId synchronously during
+      // render, so there is no passive-effect timing window where a
+      // resolving PATCH sees a stale "current selection" (codex review
+      // finding).
+      if (selectedIdRef.current === targetId) {
+        setDraft((latest) => ({
+          ...latest,
+          styleReferences: updated.styleReferences || [],
+          updatedAt: updated.updatedAt,
+        }));
+      }
+      setWorlds((previous) => upsertByIdPrepend(previous, updated));
+      toast.success('Art reference removed');
+      return true;
+    });
+    // Keep targetId's queue alive even if this removal failed, so the NEXT
+    // removal on the SAME universe still runs (in its turn) rather than
+    // inheriting a rejected chain.
+    styleReferenceQueuesRef.current.set(targetId, task.catch(() => {}));
+    return task;
+  }, [draft, selectedId]);
 
   const handleCanonChange = useCallback((updated) => {
     if (!updated) return;
@@ -388,6 +563,7 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
     defaultMode,
     draft,
     draftRef,
+    flushDraftIfDirty,
     handleCanonChange,
     handleCreateNamed,
     handleDelete,
@@ -404,7 +580,9 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
     providerLabel,
     providerModels,
     providers,
+    persistStyleReference,
     removeCategory,
+    removeStyleReference,
     runs,
     saving,
     setCanonDirty,

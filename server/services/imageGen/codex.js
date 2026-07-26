@@ -33,7 +33,8 @@ import { imageGenEvents } from '../imageGenEvents.js';
 import { broadcastSse, attachSseClient as attachSse, closeJobAfterDelay } from '../../lib/sseUtils.js';
 import { killWithEscalation } from '../../lib/killWithEscalation.js';
 import { buildCodexStartupArgs, buildEffortArgs, CODEX_EFFORT_LEVELS } from '../../lib/providerModels.js';
-import { IMAGE_GEN_MODE, CODEX_IMAGEGEN_DEFAULT_MODEL, CODEX_IMAGEGEN_DEFAULT_EFFORT } from './modes.js';
+import { IMAGE_GEN_MODE, CODEX_IMAGEGEN_DEFAULT_MODEL, CODEX_IMAGEGEN_DEFAULT_EFFORT, describeFidelity } from './modes.js';
+import { buildNoImageReason } from './noImageReason.js';
 
 // 20 minutes — built-in `image_gen` typically returns in 30–90s, but with the
 // parallel codex lane several renders share OpenAI throughput and a single
@@ -49,6 +50,8 @@ const CODEX_TIMEOUT_MS = (() => {
 })();
 
 const DEFAULT_BIN = 'codex';
+const DEFAULT_HARVEST_TIMEOUT_MS = 5000;
+let harvestTimeoutMs = DEFAULT_HARVEST_TIMEOUT_MS;
 
 const codexImagesDir = (sessionId) =>
   join(homedir(), '.codex', 'generated_images', sessionId);
@@ -119,17 +122,6 @@ export async function checkConnection({ codexPath } = {}) {
 
 const SESSION_ID_RE = /^session id:\s*([0-9a-f-]{36})/im;
 
-// Codex CLI exposes no numeric i2i denoise knob, so map the local-runner-style
-// strength (0..1, lower = more faithful to the source) onto a phrase the model
-// reliably honors inside `$imagegen`. Mirrors PROOF_AS_BASE_DEFAULT_STRENGTH
-// (0.25) defaulting toward composition-preserving edits.
-const describeFidelity = (strength) => {
-  const n = Number.isFinite(strength) ? Math.max(0, Math.min(1, Number(strength))) : 0.25;
-  if (n <= 0.2) return 'preserve composition, characters, and layout exactly — only refine detail and resolution';
-  if (n <= 0.4) return 'preserve composition and characters while adding rendered detail at higher fidelity';
-  if (n <= 0.7) return 'use the attached image as a strong reference while refining art and detail';
-  return 'use the attached image as a loose reference; you may reinterpret freely';
-};
 
 // When `initImagePath` is set we attach the file via codex CLI's `-i <FILE>`
 // flag and reshape the prompt so the `$imagegen` skill feeds the attachment
@@ -251,28 +243,24 @@ export async function generateImage({
 // into the most useful error we can — surfacing the model's own words (#imagegen
 // declines, content refusals, "generated" claims with no file) instead of a
 // fixed guess. The legacy account/enablement hint is kept as a fallback when
-// codex said nothing usable.
-// eslint-disable-next-line no-control-regex
-const ANSI_RE = /\u001b\[[0-9;]*m/g;
+// codex said nothing usable. The line walk itself lives in the shared
+// `buildNoImageReason` so the codex and grok narrations cannot drift.
 const CODEX_NO_IMAGE_HINT =
   'Codex returned no image — your Codex account may not allow image_gen, or the model declined. Check Settings → Image Gen → Enable Codex Imagegen.';
-export function noImageReason(stdoutTail = '') {
-  const clean = String(stdoutTail).replace(ANSI_RE, '').trim();
-  // Keep the model's last few non-empty narration lines, dropping codex's own
-  // structural labels (`codex`, `user`, `tokens used`, dashed rules).
-  const lines = clean.split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l && !/^(codex|user|-{2,})$/i.test(l) && !/^tokens used\b/i.test(l) && !/^[\d,]+$/.test(l));
-  const said = lines.slice(-4).join(' ').slice(-600);
-  if (!said) return CODEX_NO_IMAGE_HINT;
-  // Codex claims success but no file landed → the image tool wasn't actually
-  // run (image-gen unavailable / rate-limited on the account), even though the
-  // turn narrated a generation. Call that out specifically.
-  if (/\b(generated|created|here(?:'|’)s|i(?:'|’)ve (?:made|generated))\b/i.test(said)) {
-    return `Codex reported success but wrote no image file — the built-in image tool likely didn't run (image generation may be unavailable or rate-limited on your account, even though the feature is enabled). Codex said: "${said}"`;
-  }
-  return `Codex did not produce an image. Codex said: "${said}"`;
-}
+export const noImageReason = (stdoutTail = '') => buildNoImageReason(stdoutTail, {
+  hint: CODEX_NO_IMAGE_HINT,
+  // Codex's own structural labels, on top of the shared dashed-rule /
+  // bare-token-count filter.
+  dropLine: (l) => /^(codex|user)$/i.test(l) || /^tokens used\b/i.test(l),
+  describe: (said) => (
+    // Codex claims success but no file landed → the image tool wasn't actually
+    // run (image-gen unavailable / rate-limited on the account), even though the
+    // turn narrated a generation. Call that out specifically.
+    /\b(generated|created|here(?:'|’)s|i(?:'|’)ve (?:made|generated))\b/i.test(said)
+      ? `Codex reported success but wrote no image file — the built-in image tool likely didn't run (image generation may be unavailable or rate-limited on your account, even though the feature is enabled). Codex said: "${said}"`
+      : `Codex did not produce an image. Codex said: "${said}"`
+  ),
+});
 
 async function runCodex(job, jobId, bin, args, outputPath, filename, meta, { cleanC2PA = false, denoise = false } = {}) {
   const proc = spawn(bin, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -368,7 +356,7 @@ async function runCodex(job, jobId, bin, args, outputPath, filename, meta, { cle
       // Codex writes the PNG asynchronously while it's wrapping up the turn.
       // Empirically the file is on disk by the time `codex exec` exits, but
       // poll for a few seconds in case there's a flush lag on slow disks.
-      const harvested = await harvestGeneratedImage(sessionId, 5000);
+      const harvested = await harvestGeneratedImage(sessionId, harvestTimeoutMs);
       if (!harvested) {
         return finalizeError(job, jobId, proc, noImageReason(stdoutTail));
       }
@@ -444,7 +432,8 @@ async function harvestLatestImage(sessionId, timeoutMs) {
   while (Date.now() < deadline) {
     const latest = await latestGeneratedImageFile(sessionId);
     if (latest) return latest;
-    await new Promise((r) => setTimeout(r, 250));
+    const remainingMs = Math.max(1, deadline - Date.now());
+    await new Promise((r) => setTimeout(r, Math.min(250, remainingMs)));
   }
   return null;
 }
@@ -524,4 +513,9 @@ export const _internals = {
   harvestLatestImage,
   harvestSessionLogImage,
   harvestGeneratedImage,
+  setHarvestTimeoutForTests: (timeoutMs = DEFAULT_HARVEST_TIMEOUT_MS) => {
+    harvestTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? timeoutMs
+      : DEFAULT_HARVEST_TIMEOUT_MS;
+  },
 };

@@ -30,6 +30,7 @@ import {
   ExternalLink, Paperclip, Upload, FileX2,
 } from 'lucide-react';
 import toast from '../components/ui/Toast';
+import FilePickerButton from '../components/ui/FilePickerButton';
 import PageHeader from '../components/PageHeader';
 import ConfirmButtonPair from '../components/ui/ConfirmButtonPair';
 import AutoSizeTextarea from '../components/ui/AutoSizeTextarea';
@@ -50,17 +51,11 @@ import { VOICING_INSTRUMENTS, toVoicingInstrument } from '../lib/chordShapes.js'
 import { safeReadStorage, safeWriteStorage } from '../lib/safeStorage.js';
 import { formatBytes } from '../utils/formatters';
 import { isHttpUrl } from '../utils/urlNormalize';
-import { readFileAsBase64 } from '../utils/fileUpload';
+import { readFileAsBase64, JSON_UPLOAD_MAX_FILE_SIZE } from '../utils/fileUpload';
 import {
   getSong, updateSong, deleteSong,
   listSongAttachments, uploadSongAttachment, deleteSongAttachment, songAttachmentUrl,
 } from '../services/api';
-
-// Mirrors MAX_ATTACHMENT_SIZE in server/routes/brainSongbook.js — 40MB, the
-// largest raw payload that survives base64 ×4/3 inflation under the server's
-// 55mb express.json limit. Deliberately NOT utils/fileUpload's
-// ATTACHMENT_MAX_FILE_SIZE (50MB) — other surfaces still use that cap.
-const SONGBOOK_MAX_FILE_SIZE = 40 * 1024 * 1024;
 
 const TRANSPOSE_MIN = -11;
 const TRANSPOSE_MAX = 11;
@@ -260,11 +255,10 @@ export default function SongBookViewer() {
   ), [confirmDelete, id, navigate]);
 
   // --- Attachments
-  const fileInputRef = useRef(null);
   const [uploadFiles, uploading] = useAsyncAction(async (files) => {
     for (const file of Array.from(files)) {
-      if (file.size > SONGBOOK_MAX_FILE_SIZE) {
-        toast.error(`"${file.name}" exceeds ${Math.round(SONGBOOK_MAX_FILE_SIZE / 1024 / 1024)}MB limit`);
+      if (file.size > JSON_UPLOAD_MAX_FILE_SIZE) {
+        toast.error(`"${file.name}" exceeds the ${formatBytes(JSON_UPLOAD_MAX_FILE_SIZE)} limit`);
         continue;
       }
       const data = await readFileAsBase64(file);
@@ -562,7 +556,7 @@ export default function SongBookViewer() {
                 id="song-stage"
                 value={song.stage || 'new'}
                 onChange={(e) => onStageChange(e.target.value)}
-                className={`text-xs rounded-full border px-2 py-2 min-h-[44px] focus:outline-none ${stageClass}`}
+                className={`text-xs rounded-full border px-2 py-2 min-h-[44px] focus:outline-none focus-visible:ring-2 focus-visible:ring-port-accent ${stageClass}`}
               >
                 {SONG_STAGES.map((s) => <option key={s.id} value={s.id} className="bg-port-card text-white">{s.label}</option>)}
               </select>
@@ -617,23 +611,16 @@ export default function SongBookViewer() {
                   Attachments
                 </h2>
                 <div>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
+                  <FilePickerButton
                     multiple
-                    className="hidden"
-                    aria-label="Upload attachment"
-                    onChange={(e) => { if (e.target.files?.length) uploadFiles(e.target.files); e.target.value = ''; }}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
+                    onChange={(e) => uploadFiles(e.target.files)}
                     disabled={uploading}
-                    className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg border border-port-border text-gray-300 hover:text-white hover:bg-port-border/50 disabled:opacity-50"
+                    ariaLabel="Upload attachment"
+                    className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg border border-port-border text-gray-300 hover:text-white hover:bg-port-border/50"
                   >
                     <Upload size={13} />
                     {uploading ? 'Uploading…' : 'Upload'}
-                  </button>
+                  </FilePickerButton>
                 </div>
               </div>
               {attachments === null ? (

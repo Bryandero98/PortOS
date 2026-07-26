@@ -13,25 +13,29 @@
  */
 
 import { getSettings } from '../settings.js';
-import { ServerError } from '../../lib/errorHandler.js';
 import { resolveCleanersFromConfig } from '../../lib/imageClean.js';
 import * as external from './external.js';
 import * as local from './local.js';
 import * as codex from './codex.js';
-import { IMAGE_GEN_MODE, IMAGE_GEN_MODES } from './modes.js';
+import * as grok from './grok.js';
+import { IMAGE_GEN_MODE, IMAGE_GEN_MODES, CLOUD_IMAGE_GEN_MODES } from './modes.js';
+import { resolveCloudProviderConfig } from './cloudProviderConfig.js';
+
+// Cloud-CLI provider modules keyed by mode, so the shared gate in
+// checkConnection/generateImage dispatches without a per-provider branch.
+const CLOUD_PROVIDERS = { [IMAGE_GEN_MODE.CODEX]: codex, [IMAGE_GEN_MODE.GROK]: grok };
 
 // Re-export the enum + array so the existing import surface from this module
 // keeps working. `IMAGE_GEN_MODE.X` is the preferred form at dispatch sites
 // (server + client); `IMAGE_GEN_MODES` is the alphabet for Zod / OpenAI
 // tool-spec enums. Defined in `./modes.js` to avoid a circular import with
 // the provider modules above.
-export { IMAGE_GEN_MODE, IMAGE_GEN_MODES };
+export { IMAGE_GEN_MODE, IMAGE_GEN_MODES, CLOUD_IMAGE_GEN_MODES };
 const DEFAULT_MODE = IMAGE_GEN_MODE.EXTERNAL;
 
 const cfg = (s) => s?.imageGen || {};
 const sdapiUrl = (s) => cfg(s).external?.sdapiUrl || cfg(s).sdapiUrl || null;
 const pythonPath = (s) => cfg(s).local?.pythonPath || null;
-const codexCfg = (s) => cfg(s).codex || {};
 
 // Resolve the cleaner flags from body overrides + saved per-mode settings.
 // Body fields win when explicit (per-render checkbox); otherwise inherit
@@ -59,10 +63,10 @@ export async function checkConnection({ mode: modeOverride } = {}) {
     if (!py) return { connected: false, mode, reason: 'Python path not configured' };
     return { connected: true, mode, model: 'mflux/local', pythonPath: py };
   }
-  if (mode === IMAGE_GEN_MODE.CODEX) {
-    const c = codexCfg(s);
-    if (!c.enabled) return { connected: false, mode, reason: 'Codex Imagegen is disabled in settings' };
-    return codex.checkConnection({ codexPath: c.codexPath });
+  const cloudCheck = resolveCloudProviderConfig(s, mode);
+  if (cloudCheck) {
+    if (!cloudCheck.enabled) return { connected: false, mode, reason: cloudCheck.connectionReason };
+    return CLOUD_PROVIDERS[mode].checkConnection(cloudCheck.providerParams);
   }
   const status = await external.checkConnection(sdapiUrl(s));
   return { ...status, mode };
@@ -81,10 +85,11 @@ export async function generateImage(params) {
   }
   // Strip the dispatcher-only `mode` field — providers don't expect it.
   delete normalized.mode;
-  // i2i is supported by local (mflux/diffusers --image-path) and codex
-  // (gpt-image-2 image-edit via codex CLI's -i flag). External SD-API has no
-  // i2i wiring in this codebase, so drop the init image there rather than
-  // failing the whole render — the prompt still produces a useful txt2img.
+  // i2i is supported by local (mflux/diffusers --image-path), codex
+  // (gpt-image-2 image-edit via codex CLI's -i flag), and grok (image_edit).
+  // External SD-API has no i2i wiring in this codebase, so drop the init
+  // image there rather than failing the whole render — the prompt still
+  // produces a useful txt2img.
   if (mode === IMAGE_GEN_MODE.EXTERNAL && (normalized.initImagePath || normalized.initImageStrength != null)) {
     delete normalized.initImagePath;
     delete normalized.initImageStrength;
@@ -97,17 +102,14 @@ export async function generateImage(params) {
   delete normalized.cleanC2PA;
   delete normalized.denoise;
   delete normalized.autoClean; // legacy body field — accept-and-ignore
-  if (mode === IMAGE_GEN_MODE.CODEX) {
-    const c = codexCfg(s);
-    if (!c.enabled) {
-      throw new ServerError(
-        'Codex Imagegen is disabled — enable it in Settings → Image Gen first',
-        { status: 400, code: 'CODEX_IMAGEGEN_DISABLED' },
-      );
-    }
-    // model/effort default to the cheap gpt-5.6-luna / low path inside
-    // codex.generateImage when unset here; a saved override wins.
-    return codex.generateImage({ codexPath: c.codexPath, model: c.model, effort: c.effort, cleanC2PA, denoise, ...normalized });
+  // Cloud CLIs (codex, grok) share one gate + param bundle — the per-provider
+  // knobs (codexPath/model/effort vs grokPath/aspectRatio) come from the
+  // resolver's spec, so a saved override always wins over the provider's own
+  // internal defaults.
+  const cloud = resolveCloudProviderConfig(s, mode);
+  if (cloud) {
+    if (!cloud.enabled) throw cloud.disabledError;
+    return CLOUD_PROVIDERS[mode].generateImage({ ...cloud.providerParams, cleanC2PA, denoise, ...normalized });
   }
   if (mode === IMAGE_GEN_MODE.LOCAL) {
     return local.generateImage({ pythonPath: pythonPath(s), cleanC2PA, denoise, ...normalized });
@@ -150,7 +152,7 @@ export async function generateAvatar({ name, characterClass, prompt }) {
 // Callers wanting all of them can read individual providers via the
 // re-exports below.
 export async function getActiveJob() {
-  const jobs = [local.getActiveJob(), external.getActiveJob(), codex.getActiveJob()].filter(Boolean);
+  const jobs = [local.getActiveJob(), external.getActiveJob(), codex.getActiveJob(), grok.getActiveJob()].filter(Boolean);
   if (!jobs.length) return null;
   return jobs.sort((a, b) => {
     const ta = a.createdAt ? Date.parse(a.createdAt) : 0;
@@ -165,22 +167,24 @@ export async function getActiveJob() {
 export const attachSseClient = (jobId, res) => {
   if (local.attachSseClient(jobId, res)) return true;
   if (codex.attachSseClient(jobId, res)) return true;
+  if (grok.attachSseClient(jobId, res)) return true;
   return false;
 };
 
 export const cancel = () => {
   // The "stop everything" dispatcher — invoked by routes/imageGen.js's
   // `/cancel` fallback when no specific jobId or queue entry is targeted.
-  // local has at most one in-flight, codex can have N (parallel lane), so
-  // codex's bulk variant is the right one here. Return whether anything
-  // was actually cancelled — short-circuiting on the first hit would
-  // orphan a codex job whenever local is also active.
+  // local has at most one in-flight, codex/grok can have N (parallel cloud
+  // lane), so their bulk variants are the right ones here. Return whether
+  // anything was actually cancelled — short-circuiting on the first hit
+  // would orphan a cloud job whenever local is also active.
   const localCancelled = local.cancel();
   const codexCancelled = codex.cancelAll();
-  return localCancelled || codexCancelled;
+  const grokCancelled = grok.cancelAll();
+  return localCancelled || codexCancelled || grokCancelled;
 };
 
 // Re-exports so routes can hit a specific backend directly when the request
 // is shape-specific (gallery, LoRAs). The dispatcher is for the generic
 // generate/status flow used by all modes.
-export { local, external, codex };
+export { local, external, codex, grok };

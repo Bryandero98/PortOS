@@ -238,6 +238,21 @@ describe('resolveLlmEndpoint', () => {
     expect(ep.apiBase).toBe('http://10.0.0.5:1234/v1');
   });
 
+  it('blocks a key-bearing lmstudio provider pointed at a cloud-metadata host', async () => {
+    getProviderById.mockResolvedValue({
+      id: 'lmstudio', type: 'api', endpoint: 'http://169.254.169.254/v1', apiKey: 'leaked',
+    });
+    await expect(resolveLlmEndpoint('lmstudio')).rejects.toThrow(/Blocked outbound API-key request/);
+  });
+
+  it('allows a keyless lmstudio provider at any host (guard no-ops without a key)', async () => {
+    getProviderById.mockResolvedValue({
+      id: 'lmstudio', type: 'api', endpoint: 'http://192.0.2.10:1234/v1', apiKey: '',
+    });
+    const ep = await resolveLlmEndpoint('lmstudio');
+    expect(ep.apiBase).toBe('http://192.0.2.10:1234/v1');
+  });
+
   it('does NOT apply the env override to non-lmstudio providers', async () => {
     process.env.LM_STUDIO_URL = 'http://10.0.0.5:1234';
     getProviderById.mockResolvedValue({ id: 'ollama', type: 'api', endpoint: 'http://localhost:11434/v1', apiKey: '' });

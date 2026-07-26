@@ -15,7 +15,7 @@ vi.mock('./agentRunTracking.js', () => ({
   completeAgentRun: vi.fn(),
 }));
 
-import { evaluateSuccessCriteria, resolveProgrammaticIoVerdict, withOutputHookTimeout } from './agentLifecycle.js';
+import { evaluateSuccessCriteria, resolveProgrammaticIoVerdict, withOutputHookTimeout } from './agentFinalization.js';
 import { checkForTaskCommit } from './agentRunTracking.js';
 
 describe('evaluateSuccessCriteria (#2344)', () => {
@@ -274,6 +274,21 @@ describe('evaluateSuccessCriteria — gh/git coordinator exemption (#2696)', () 
     // git/gh/external side effect, never a [task-<id>] commit.
     for (const analysisType of ['branch-reconcile', 'issue-reconcile', 'branch-cleanup', 'jira-status-report']) {
       const task = { id: 't1', taskType: 'internal', metadata: { analysisType } };
+      expect(await evaluateSuccessCriteria({ task, workspacePath: '/w', success: true })).toBeNull();
+    }
+    expect(checkForTaskCommit).not.toHaveBeenCalled();
+  });
+
+  it('declares NO commit criterion for a PR follow-up (review-loop or merge-only)', async () => {
+    // The happy path makes no commit at all: a merge-only follow-up on an already-green
+    // PR just merges it, and a review follow-up commits nothing when every reviewer is
+    // clean. Commit-checking them would score every successful run a failure (#2696 again).
+    for (const metadata of [
+      { reviewLoopFollowUp: true },
+      { reviewLoopFollowUp: true, reviewLoopMergeOnly: true },
+      { reviewLoopFollowUp: 'true' },
+    ]) {
+      const task = { id: 'sys-rl-1', taskType: 'internal', metadata };
       expect(await evaluateSuccessCriteria({ task, workspacePath: '/w', success: true })).toBeNull();
     }
     expect(checkForTaskCommit).not.toHaveBeenCalled();

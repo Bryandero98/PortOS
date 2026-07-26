@@ -25,12 +25,11 @@ import { autoCleanGeneratedImage } from '../../lib/imageClean.js';
 import { imageGenEvents } from '../imageGenEvents.js';
 import { broadcastSse, attachSseClient as attachSse, closeJobAfterDelay, PYTHON_NOISE_RE } from '../../lib/sseUtils.js';
 import { resolveFlux2Python, FLUX2_VENV_DEFAULT } from '../../lib/pythonSetup.js';
-import { hfTokenEnv } from '../../lib/hfToken.js';
+import { hfChildEnv } from '../../lib/hfToken.js';
 import { extractGatedRepo, isGatedRepoError } from '../../lib/hfErrors.js';
-import { safeChildProcessEnv } from '../../lib/processEnv.js';
 import { killWithEscalation } from '../../lib/killWithEscalation.js';
 import { createLineReader } from '../../lib/streamLines.js';
-import { IMAGE_GEN_MODE } from './modes.js';
+import { IMAGE_GEN_MODE, LOCAL_IMAGEGEN_DEFAULT_MODEL } from './modes.js';
 import { computePixelDelta } from './regen.js';
 import { parseByteProgress, formatDownloadMessage } from '../videoGen/generateVideoHelpers.js';
 
@@ -456,7 +455,7 @@ export function resolveOutputPlacement(outputTarget) {
   return { outputDir, skipSidecar, isGallery };
 }
 
-export async function generateImage({ pythonPath, prompt = '', negativePrompt = '', modelId = 'dev', width = 1024, height = 1024, steps, guidance, seed, quantize = '8', loraFilenames = [], loraPaths = [], loraScales = [], initImagePath = null, initImageStrength = null, referenceImagePaths = [], referenceImageStrengths = [], jobId: providedJobId = null, cleanC2PA = false, denoise = false, regenOf = null, upscaleTo = null, outputTarget = null }) {
+export async function generateImage({ pythonPath, prompt = '', negativePrompt = '', modelId = LOCAL_IMAGEGEN_DEFAULT_MODEL, width = 1024, height = 1024, steps, guidance, seed, quantize = '8', loraFilenames = [], loraPaths = [], loraScales = [], initImagePath = null, initImageStrength = null, referenceImagePaths = [], referenceImageStrengths = [], jobId: providedJobId = null, cleanC2PA = false, denoise = false, regenOf = null, upscaleTo = null, outputTarget = null }) {
   // Empty prompt is allowed: img2img / edit / unconditional renders are driven
   // by the init image (or run unconditionally), so text isn't required. The
   // mflux/diffusers runners accept an empty `--prompt` — the regen pass (#912)
@@ -547,7 +546,7 @@ export async function generateImage({ pythonPath, prompt = '', negativePrompt = 
   imageGenEvents.emit('started', { generationId: jobId, totalSteps: actualSteps });
   activeJob = { ...meta, generationId: jobId, totalSteps: actualSteps, step: 0, progress: 0, currentImage: null, mode: IMAGE_GEN_MODE.LOCAL };
 
-  const proc = spawn(bin, args, { env: safeChildProcessEnv(await hfTokenEnv()), stdio: ['ignore', 'pipe', 'pipe'] });
+  const proc = spawn(bin, args, { env: await hfChildEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
   activeProcess = proc;
   // Spawn ENOENT (missing/non-executable pythonPath) fires BOTH 'error' and
   // 'close' on Node — without this guard, a typo'd pythonPath emits two

@@ -15,7 +15,7 @@ import {
   sortableKeyboardCoordinates,
   useSortable,
 } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
+import { dndTransformToCss } from '../../lib/dndTransform';
 import { WORLD_INFLUENCE_ENTRY_MAX, WORLD_INFLUENCES_PER_LIST_MAX } from '../../services/api';
 
 const TONE_CLASS = {
@@ -94,7 +94,9 @@ export default function InfluenceChipsInput({
     onChange(arrayMove(safe, oldIdx, newIdx));
   };
 
-  const containerCls = `flex flex-wrap items-center gap-1.5 p-2 bg-port-bg border border-port-border rounded ${readOnly ? 'opacity-70' : ''}`;
+  // focus-within carries the focus indicator for the borderless inner input,
+  // which sets `focus:outline-none` to blend into the chip row.
+  const containerCls = `flex flex-wrap items-center gap-1.5 p-2 bg-port-bg border border-port-border rounded focus-within:border-port-accent ${readOnly ? 'opacity-70' : ''}`;
 
   // Read-only path: no DnD wrapper, no input, no remove buttons — just chips.
   if (readOnly) {
@@ -162,7 +164,7 @@ export default function InfluenceChipsInput({
 function SortableChip({ token, toneClass, onRemove }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: token });
   const style = {
-    transform: CSS.Transform.toString(transform),
+    transform: dndTransformToCss(transform),
     transition,
     opacity: isDragging ? 0.5 : 1,
     zIndex: isDragging ? 10 : 'auto',
@@ -177,7 +179,7 @@ function SortableChip({ token, toneClass, onRemove }) {
         type="button"
         {...attributes}
         {...listeners}
-        className="cursor-grab active:cursor-grabbing text-current/60 hover:text-current focus:outline-none"
+        className="cursor-grab active:cursor-grabbing text-current/60 hover:text-current focus:outline-none focus-visible:ring-1 focus-visible:ring-port-accent rounded"
         aria-label={`Drag ${token} to reorder`}
         title="Drag to reorder"
       >

@@ -10,6 +10,7 @@
  * gallery change).
  */
 import { Upload } from 'lucide-react';
+import FilePickerButton from '../ui/FilePickerButton';
 import ImagePreview from './ImagePreview';
 
 export default function FramePanel({
@@ -59,16 +60,14 @@ export default function FramePanel({
               <option key={img.filename} value={img.filename}>{img.filename}</option>
             ))}
           </select>
-          <label className="flex items-center gap-2 text-[11px] text-gray-400 cursor-pointer hover:text-white">
+          <FilePickerButton
+            accept="image/*"
+            onChange={(e) => onUpload(e.target.files?.[0] || null)}
+            className="flex items-center gap-2 text-[11px] text-gray-400 hover:text-white"
+          >
             <Upload className="w-3.5 h-3.5" />
             <span className="truncate">Upload an image</span>
-            <input
-              type="file"
-              accept="image/*"
-              onChange={(e) => onUpload(e.target.files?.[0] || null)}
-              className="hidden"
-            />
-          </label>
+          </FilePickerButton>
         </div>
       )}
       {advisoryNote && (

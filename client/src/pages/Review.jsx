@@ -25,7 +25,7 @@ import {
   Activity,
   DatabaseBackup
 } from 'lucide-react';
-import BrailleSpinner from '../components/BrailleSpinner';
+import PageSkeleton from '../components/ui/PageSkeleton';
 import MarkdownOutput from '../components/cos/MarkdownOutput';
 import { timeAgo, formatDateTime } from '../utils/formatters';
 import { coalesce } from '../utils/coalesce';
@@ -263,11 +263,15 @@ export default function Review() {
     }), [pendingItems]);
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <BrailleSpinner text="Loading review hub" />
-      </div>
-    );
+    return <PageSkeleton
+        label="Loading review hub"
+        headerRowClass="flex flex-col lg:flex-row lg:items-center justify-between gap-3"
+        padded
+        fullHeight
+        titleWidthClass="w-40"
+        cards={4}
+        sidebar={false}
+      />;
   }
 
   // Cheap derivations off the memoized `pendingItems`/`actionableItems` — plain
@@ -292,6 +296,7 @@ export default function Review() {
           </h2>
           <div className="flex items-center gap-2 flex-wrap">
             <select
+              aria-label="Filter review items by status"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
               className="bg-port-card border border-port-border rounded-lg px-3 py-2 text-sm text-gray-300"
@@ -376,6 +381,7 @@ export default function Review() {
             type="text"
             value={newTodo}
             onChange={(e) => setNewTodo(e.target.value)}
+            aria-label="Quick add todo"
             placeholder="Quick add todo..."
             className="flex-1 bg-port-card border border-port-border rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-port-accent"
           />
@@ -635,7 +641,7 @@ function QueueRow({ item, onDrill, onDismiss, onResolve, onPromoteAsk, resolving
                 onPromoteAsk(item, 'goal', goalId);
                 e.target.value = '';
               }}
-              className="px-2 py-1 rounded-md text-xs font-medium text-port-accent bg-port-accent/10 hover:bg-port-accent/20 border border-port-accent/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none"
+              className="px-2 py-1 rounded-md text-xs font-medium text-port-accent bg-port-accent/10 hover:bg-port-accent/20 border border-port-accent/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-port-accent"
               title="Promote the latest answer into a goal's progress"
             >
               <option value="">→ Goal…</option>
@@ -707,12 +713,14 @@ function ReviewItem({ item, config, isEditing, onComplete, onDismiss, onDelete, 
               type="text"
               value={editTitle}
               onChange={(e) => setEditTitle(e.target.value)}
+              aria-label="Title"
               className="w-full bg-port-bg border border-port-border rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-port-accent"
               autoFocus
             />
             <textarea
               value={editDescription}
               onChange={(e) => setEditDescription(e.target.value)}
+              aria-label="Description"
               placeholder="Description (optional)"
               rows={2}
               className="w-full bg-port-bg border border-port-border rounded px-2 py-1 text-sm text-gray-300 focus:outline-none focus:border-port-accent resize-none"

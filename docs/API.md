@@ -239,7 +239,7 @@ PortOS is designed for personal/developer use on trusted networks. It implements
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/brain/capture` | Capture and classify thought |
+| POST | `/brain/capture` | Capture and classify thought (a text that is only a URL is filed straight to `/brain/links` — no classifier call — and returns the `link` alongside the inbox entry) |
 | GET | `/brain/inbox` | List inbox log with filters |
 | POST | `/brain/review/resolve` | Resolve needs_review item |
 | POST | `/brain/fix` | Correct misclassified item |

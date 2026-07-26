@@ -1,8 +1,19 @@
 import { z } from 'zod';
 import { partialWithoutDefaults } from './zodCompat.js';
 
-// Destination enum
-export const destinationEnum = z.enum(['people', 'projects', 'ideas', 'admin', 'memories', 'unknown']);
+// Destination enum. `links` is reachable only from the bare-URL capture
+// short-circuit (a pasted URL is filed straight to the links collection) — the
+// classifier never picks it and the manual resolve/fix paths exclude it, since
+// filing an arbitrary note as a bookmark needs a URL it doesn't have.
+export const destinationEnum = z.enum(['people', 'projects', 'ideas', 'admin', 'memories', 'links', 'unknown']);
+
+// Destinations the classifier may pick — everything but `links`, which needs a
+// URL no model extracted. A hallucinated one falls to needs_review instead of
+// reaching fileToDestination.
+export const classifierDestinationEnum = destinationEnum.exclude(['links']);
+
+// Destinations a user can file to by hand from the inbox (see fileToDestination).
+export const manualDestinationEnum = classifierDestinationEnum.exclude(['unknown']);
 
 // Project status enum
 export const projectStatusEnum = z.enum(['active', 'waiting', 'blocked', 'someday', 'done']);
@@ -46,7 +57,7 @@ export const filedSchema = z.object({
 export const correctionSchema = z.object({
   correctedAt: z.string().datetime(),
   previousDestination: destinationEnum,
-  newDestination: destinationEnum.exclude(['unknown']),
+  newDestination: manualDestinationEnum,
   note: z.string().max(500).optional()
 });
 
@@ -189,14 +200,14 @@ export const captureInputSchema = z.object({
 // Resolve review input schema
 export const resolveReviewInputSchema = z.object({
   inboxLogId: z.string().guid(),
-  destination: destinationEnum.exclude(['unknown']),
+  destination: manualDestinationEnum,
   editedExtracted: z.record(z.unknown()).optional()
 });
 
 // Fix classification input schema
 export const fixInputSchema = z.object({
   inboxLogId: z.string().guid(),
-  newDestination: destinationEnum.exclude(['unknown']),
+  newDestination: manualDestinationEnum,
   updatedFields: z.record(z.unknown()).optional(),
   note: z.string().max(500).optional()
 });
@@ -327,7 +338,7 @@ export const extractedMemorySchema = z.object({
 
 // AI Classifier output schema (what we expect from the AI)
 export const classifierOutputSchema = z.object({
-  destination: destinationEnum,
+  destination: classifierDestinationEnum,
   confidence: z.number().min(0).max(1),
   title: z.string().min(1).max(200),
   cleanedUp: z.string().max(10000).optional().default(''),

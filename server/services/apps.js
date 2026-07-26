@@ -2,7 +2,7 @@ import { join } from 'path';
 import { v4 as uuidv4 } from '../lib/uuid.js';
 import EventEmitter from 'events';
 import { atomicWrite, ensureDir, readJSONFile, PATHS } from '../lib/fileUtils.js';
-import { NON_PM2_TYPES, usesPm2 } from './streamingDetect.js';
+import { NON_PM2_TYPES, usesPm2, isDesktopType } from './streamingDetect.js';
 import { listProcessesStrict } from './pm2.js';
 import { SELF_IMPROVEMENT_TASK_TYPES } from './taskSchedule.js';
 import { sanitizeTaskMetadata } from '../lib/validation.js';
@@ -177,6 +177,92 @@ export async function getActiveApps() {
 }
 
 /**
+ * PM2 process names whose exit is expected: desktop apps and optional native
+ * launch targets attached to otherwise web-based apps.
+ *
+ * A desktop process is launched with `autorestart: false` because the user
+ * closing the window is a normal exit — but that alone does NOT stop every
+ * relaunch path. Anything that reacts to an `errored` PM2 status by restarting
+ * it (the CoS health monitor) would reopen the game window, and anything that
+ * alerts on `errored` (proactive alerts) would report a quit as a failure.
+ * A force-quit or a non-zero exit lands in exactly that state, so those
+ * supervisors consult this set and skip desktop processes. See issue #2991.
+ *
+ * Archived apps are included: their PM2 entries can outlive the archive, and a
+ * stale entry must not become auto-restartable just because the app was hidden.
+ *
+ * @returns {Promise<Set<string>>} Process names to exempt from auto-restart/alerts.
+ */
+export async function getDesktopProcessNames() {
+  const apps = await getAllApps();
+  const names = new Set();
+  for (const app of apps) {
+    if (isDesktopType(app.type)) {
+      for (const name of app.pm2ProcessNames || []) names.add(name);
+    }
+    if (app.nativeLaunch?.processName) names.add(app.nativeLaunch.processName);
+  }
+  return names;
+}
+
+/**
+ * Resolve the custom PM2 home for a registered process name.
+ *
+ * Process-name-only log consumers use this as a backward-compatible fallback
+ * when they do not already have an app id. An app id remains the preferred
+ * disambiguator because process names may be reused across PM2 homes.
+ *
+ * @param {string} processName PM2 process name to look up
+ * @returns {Promise<string|null>} The owning app's custom PM2_HOME, if any
+ */
+export async function resolvePm2HomeForProcess(processName) {
+  const apps = await getAllApps();
+  const app = apps.find(candidate =>
+    candidate.pm2ProcessNames?.includes(processName)
+    || candidate.nativeLaunch?.processName === processName
+  );
+  return app?.pm2Home || null;
+}
+
+/**
+ * Stamp `expectedExit` onto each PM2 process so supervisors can branch on the
+ * concept rather than each re-deriving it from a name set.
+ *
+ * `expectedExit: true` means "this process stopping is a normal outcome, not a
+ * failure" — today that covers desktop (GUI) app processes and the optional
+ * native launch targets attached to web apps. The user closing either window
+ * ends its process (cleanly as `stopped`, or as `errored` on a force-quit /
+ * non-zero exit). Consumers that auto-restart or alert on `errored` must skip
+ * these. Current consumers:
+ *   - services/cosHealthMonitor.js   — auto-restarts errored processes
+ *   - services/proactiveAlerts.js    — alerts on errored / crash-looping processes
+ *   - routes/systemHealth.js         — drives overallHealth + the dashboard/city HUD
+ *   - services/voice/tools/system.js — `pm2_status` reads "issues" back aloud
+ * A further consumer that reacts to `errored` needs this too; naming the concept
+ * here is what makes that discoverable (see issue #2991).
+ *
+ * What NONE of them exempt is *liveness*. `expectedExit` says a process
+ * STOPPING is a normal outcome, so only the failure-bearing counts filter on
+ * it — an `online` count must still include an exempt process, or a *running*
+ * desktop app lands in `total` and in no status bucket at all.
+ *
+ * Fails open: if the registry can't be read, nothing is marked expected, so the
+ * pre-existing behavior stands rather than silently exempting every process.
+ * Accepts either shape of process object — raw `pm2 jlist` entries or `mapProcess`
+ * output — since both carry a top-level `name`.
+ *
+ * @param {Array<{name: string}>} processes
+ * @returns {Promise<Array<object>>} the same processes, each with `expectedExit`.
+ */
+export async function annotateExpectedExit(processes) {
+  const desktopNames = await getDesktopProcessNames().catch(err => {
+    console.error(`❌ Could not read the app registry for process supervision: ${err.message}`);
+    return new Set();
+  });
+  return processes.map(p => ({ ...p, expectedExit: desktopNames.has(p?.name) }));
+}
+
+/**
  * Summarize PM2-managed app status for dashboards.
  *
  * Only counts apps whose `type` is PM2-runnable (Express services, etc.).
@@ -306,6 +392,7 @@ export async function createApp(appData) {
     buildCommand: appData.buildCommand || undefined,
     startCommands: appData.startCommands || ['npm run dev'],
     pm2ProcessNames: appData.pm2ProcessNames || [appData.name.toLowerCase().replace(/\s+/g, '-')],
+    nativeLaunch: appData.nativeLaunch || null,
     envFile: appData.envFile || '.env',
     icon: appData.icon || null,
     appIconPath: appData.appIconPath || null,

@@ -181,6 +181,11 @@ vi.mock('./git.js', () => ({
   })
 }));
 
+const queuePendingMergeMock = vi.fn();
+vi.mock('./prWatcher.js', () => ({
+  queuePendingMerge: (...args) => queuePendingMergeMock(...args)
+}));
+
 vi.mock('./runner.js', () => ({
   executeApiRun: vi.fn(),
   executeCliRun: vi.fn(),
@@ -211,6 +216,7 @@ function mockWorktreeAgent(overrides = {}) {
 describe('cleanupAgentWorktree - openPR path', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    queuePendingMergeMock.mockResolvedValue(false);
     // Default: agent is a worktree agent with valid metadata
     getAgent.mockResolvedValue(mockWorktreeAgent());
     git.getRepoBranches.mockResolvedValue({ baseBranch: 'main', devBranch: null });
@@ -535,23 +541,119 @@ describe('cleanupAgentWorktree - openPR path', () => {
     expect(removeWorktree).toHaveBeenCalled();
   });
 
-  it('should NOT spawn a review-loop follow-up on non-GitHub forges (Copilot is GitHub-only)', async () => {
+  it('inherits the source task provider/model pins so the follow-up can actually run', async () => {
+    // A follow-up needs a coding harness. On an install whose ACTIVE provider is
+    // api-only, an unpinned follow-up is permanently rejected and the PR it was
+    // spawned to land never merges.
     git.push.mockResolvedValue(undefined);
-    git.createPR.mockResolvedValue({ success: true, url: 'https://gitlab.com/group/proj/-/merge_requests/12' });
-    git.requestCopilotReview.mockResolvedValue({ success: true, skipped: true });
+    git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/99' });
+    addTask.mockResolvedValue({ id: 'sys-rl-p' });
 
     await cleanupAgentWorktree('agent-1', true, {
-      openPR: true, requestCopilotReview: true, description: 'X',
-      originalTask: { id: 'task-orig', metadata: {}, description: 'X' }
+      openPR: true, requestCopilotReview: false, description: 'X',
+      originalTask: {
+        id: 'task-orig',
+        metadata: { provider: 'claude-code', providerId: 'claude-code', model: 'claude-opus-5', effort: 'high' },
+        description: 'X'
+      }
+    });
+
+    const [followUp] = addTask.mock.calls[0];
+    expect(followUp.metadata.provider).toBe('claude-code');
+    expect(followUp.metadata.providerId).toBe('claude-code');
+    expect(followUp.metadata.model).toBe('claude-opus-5');
+    expect(followUp.metadata.effort).toBe('high');
+  });
+
+  it('does not inherit a model pin without its provider', async () => {
+    // A bare model would be honored against whatever provider resolution later
+    // picks — handing e.g. a Claude model id to Codex and failing the run.
+    git.push.mockResolvedValue(undefined);
+    git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/100' });
+    addTask.mockResolvedValue({ id: 'sys-rl-q' });
+
+    await cleanupAgentWorktree('agent-1', true, {
+      openPR: true, requestCopilotReview: false, description: 'X',
+      originalTask: { id: 'task-orig', metadata: { model: 'claude-opus-5', effort: 'high' }, description: 'X' }
+    });
+
+    const [followUp] = addTask.mock.calls[0];
+    expect(followUp.metadata.model).toBeUndefined();
+    expect(followUp.metadata.provider).toBeUndefined();
+    // Effort is provider-agnostic, so it still travels.
+    expect(followUp.metadata.effort).toBe('high');
+  });
+
+  it('leaves a jira-sprint-manager PR open — no follow-up merges behind the board', async () => {
+    // That task type transitions its ticket to "In Review" and hands the PR to a
+    // human; merging here would land the work while JIRA still shows it in review,
+    // and nothing in this path knows the ticket key to move it to Done.
+    git.push.mockResolvedValue(undefined);
+    git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/77' });
+
+    await cleanupAgentWorktree('agent-1', true, {
+      openPR: true, requestCopilotReview: false, description: 'X',
+      originalTask: { id: 'task-orig', metadata: { analysisType: 'jira-sprint-manager' }, description: 'X' }
     });
 
     expect(addTask).not.toHaveBeenCalled();
     expect(removeWorktree).toHaveBeenCalled();
   });
 
-  it('should NOT spawn a review-loop follow-up when requestCopilotReview is false', async () => {
+  it('leaves a JIRA-ticketed task PR open regardless of task type', async () => {
+    git.push.mockResolvedValue(undefined);
+    git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/78' });
+
+    await cleanupAgentWorktree('agent-1', true, {
+      openPR: true, requestCopilotReview: false, description: 'X',
+      originalTask: { id: 'task-orig', metadata: { jiraTicketId: 'PROJ-1' }, description: 'X' }
+    });
+
+    expect(addTask).not.toHaveBeenCalled();
+  });
+
+  it('leaves an explicitly leave-open PR without spawning a follow-up', async () => {
+    git.push.mockResolvedValue(undefined);
+    git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/79' });
+
+    await cleanupAgentWorktree('agent-1', true, {
+      openPR: true,
+      prCompletion: 'leave-open',
+      reviewers: ['copilot'],
+      description: 'X',
+      originalTask: { id: 'task-orig', metadata: {}, description: 'X' }
+    });
+
+    expect(git.requestCopilotReview).not.toHaveBeenCalled();
+    expect(addTask).not.toHaveBeenCalled();
+    expect(removeWorktree).toHaveBeenCalled();
+  });
+
+  it('spawns a merge-only follow-up on non-GitHub forges when copilot was the only reviewer', async () => {
+    // Copilot can't review a GitLab MR, so the review loop has nothing to run — but
+    // the MR still has to land, so the follow-up degrades to merge-only rather than
+    // not spawning (which left the MR open with no owner).
+    git.push.mockResolvedValue(undefined);
+    git.createPR.mockResolvedValue({ success: true, url: 'https://gitlab.com/group/proj/-/merge_requests/12' });
+    git.requestCopilotReview.mockResolvedValue({ success: true, skipped: true });
+    addTask.mockResolvedValue({ id: 'sys-rl-gl' });
+
+    await cleanupAgentWorktree('agent-1', true, {
+      openPR: true, requestCopilotReview: true, description: 'X',
+      originalTask: { id: 'task-orig', metadata: {}, description: 'X' }
+    });
+
+    expect(addTask).toHaveBeenCalledTimes(1);
+    expect(addTask.mock.calls[0][0].metadata.reviewLoopMergeOnly).toBe(true);
+    expect(removeWorktree).toHaveBeenCalled();
+  });
+
+  it('spawns a MERGE-ONLY follow-up (no reviewers) when requestCopilotReview is false', async () => {
+    // Review Loop off: PortOS opened this PR and nothing else would ever merge it,
+    // so the follow-up runs in merge-only mode — CI gate, then merge.
     git.push.mockResolvedValue(undefined);
     git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/44' });
+    addTask.mockResolvedValue({ id: 'sys-rl-m' });
 
     await cleanupAgentWorktree('agent-1', true, {
       openPR: true, requestCopilotReview: false, description: 'X',
@@ -559,7 +661,45 @@ describe('cleanupAgentWorktree - openPR path', () => {
     });
 
     expect(git.requestCopilotReview).not.toHaveBeenCalled();
+    expect(addTask).toHaveBeenCalledTimes(1);
+    const [followUp] = addTask.mock.calls[0];
+    expect(followUp.metadata.reviewLoopMergeOnly).toBe(true);
+    // Unpinned source task → no provider pins to inherit.
+    expect(followUp.metadata.provider).toBeUndefined();
+    // No reviewer may be defaulted back in — this PR was never meant to be reviewed.
+    expect(followUp.metadata.reviewLoopReviewers).toEqual([]);
+    expect(followUp.metadata.reviewLoopReviewerUsernames).toEqual([]);
+    expect(followUp.description).toMatch(/^\[Merge\]/);
+    // Still attaches to the PR branch so it can fix a failing check before merging.
+    expect(followUp.metadata.existingBranch).toBe('cos/task-abc123');
+    expect(removeWorktree).toHaveBeenCalled();
+  });
+
+  it('queues a managed GitHub merge-only PR for the watcher instead of consuming an agent lane', async () => {
+    git.push.mockResolvedValue(undefined);
+    git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/61', cli: 'gh' });
+    queuePendingMergeMock.mockResolvedValue(true);
+
+    await cleanupAgentWorktree('agent-1', true, {
+      openPR: true,
+      requestCopilotReview: false,
+      description: 'Build with deterministic merge',
+      originalTask: {
+        id: 'task-orig',
+        priority: 'HIGH',
+        metadata: { app: 'managed-app', provider: 'codex', providerId: 'codex', model: 'gpt-5.6', effort: 'high' },
+        description: 'Build with deterministic merge'
+      }
+    });
+
+    expect(queuePendingMergeMock).toHaveBeenCalledWith('managed-app', expect.objectContaining({
+      prNumber: 61,
+      prBranch: 'cos/task-abc123',
+      sourceAgentId: 'agent-1',
+      sourceTask: expect.objectContaining({ id: 'task-orig', priority: 'HIGH' })
+    }));
     expect(addTask).not.toHaveBeenCalled();
+    expect(removeWorktree).toHaveBeenCalledWith('agent-1', '/mock/workspace', 'cos/task-abc123', { merge: false });
   });
 
   // --- non-Copilot reviewer (--review-with claude/antigravity/codex) ---
@@ -757,13 +897,16 @@ describe('spawnReviewLoopFollowUp', () => {
     expect(addTask).not.toHaveBeenCalled();
   });
 
-  it('should skip spawning for GitLab MR URLs (Copilot is GitHub-only)', async () => {
+  it('falls back to a merge-only follow-up for GitLab MRs when copilot was the only reviewer', async () => {
+    // Copilot is GitHub-only, so nothing survives reviewer resolution here. Spawning
+    // nothing used to leave the MR open forever — the follow-up now just lands it.
     const result = await spawnReviewLoopFollowUp({
       originalAgentId: 'agent-1', originalTask: { id: 'task-1' },
       prUrl: 'https://gitlab.com/group/proj/-/merge_requests/5', prBranch: 'feat/x', sourceWorkspace: '/ws'
     });
-    expect(result).toBeNull();
-    expect(addTask).not.toHaveBeenCalled();
+    expect(result.metadata.reviewLoopMergeOnly).toBe(true);
+    expect(result.metadata.reviewLoopReviewers).toEqual([]);
+    expect(addTask).toHaveBeenCalledTimes(1);
   });
 
   it('should default priority to MEDIUM when originalTask omits it', async () => {

@@ -17,6 +17,19 @@ const ALLOWED_ATTACHMENT_MIME_TYPES = new Set([
 ]);
 const ALLOWED_ATTACHMENT_EXTENSIONS = new Set(['.txt', '.md', '.json', '.csv', '.pdf']);
 
+/**
+ * `accept` for the composer's file picker, derived from the same allowlists
+ * `isAllowedAttachmentType` enforces — so the picker can never offer a file the
+ * hook then rejects (or hide one it would have taken). Extensions AND MIME
+ * types, because iOS/iPadOS pickers only understand the latter and grey out
+ * everything given an extension-only filter.
+ */
+export const OPENCLAW_ATTACHMENT_ACCEPT = [
+  ...ALLOWED_ATTACHMENT_MIME_PREFIXES.map((p) => `${p}*`),
+  ...ALLOWED_ATTACHMENT_MIME_TYPES,
+  ...ALLOWED_ATTACHMENT_EXTENSIONS
+].join(',');
+
 function getAttachmentKind(file) {
   return file.type.startsWith('image/') ? 'image' : 'file';
 }
@@ -59,7 +72,6 @@ export function useOpenClawAttachments({ sending, onError = () => {} } = {}) {
   const [attachments, setAttachments] = useState([]);
   const [isDragActive, setIsDragActive] = useState(false);
   const dragCounterRef = useRef(0);
-  const fileInputRef = useRef(null);
   const attachmentsRef = useRef(attachments);
 
   useEffect(() => {
@@ -147,7 +159,6 @@ export function useOpenClawAttachments({ sending, onError = () => {} } = {}) {
   const handleAttachmentSelect = async (event) => {
     const files = Array.from(event.target.files || []);
     await appendFiles(files);
-    event.target.value = '';
   };
 
   const handlePaste = async (event) => {
@@ -199,7 +210,6 @@ export function useOpenClawAttachments({ sending, onError = () => {} } = {}) {
     attachments,
     setAttachments,
     isDragActive,
-    fileInputRef,
     appendFiles,
     removeAttachment,
     handleAttachmentSelect,

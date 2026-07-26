@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { rmSync } from 'fs';
 import { mockPathsDataRoot } from '../lib/mockPathsDataRoot.js';
 
@@ -7,6 +7,25 @@ const { tempRoot, makeProxy, cleanup } = mockPathsDataRoot({ prefix: 'portos-aut
 vi.mock('../lib/fileUtils.js', async () => {
   const actual = await vi.importActual('../lib/fileUtils.js');
   return makeProxy(actual);
+});
+
+// High-level auth tests exercise state/session behavior, not production KDF
+// throughput. Keep the real scrypt implementation with a small test cost;
+// lib/sidecarAuthGate.test.js retains the production-parameter compatibility
+// path shared by the main server and sidecars.
+vi.mock('../../lib/portosAuthCore.js', async () => {
+  const actual = await vi.importActual('../../lib/portosAuthCore.js');
+  const testParams = { N: 1024, r: 8, p: 1, maxmem: 8 * 1024 * 1024 };
+  const hashPassword = (password, salt) =>
+    actual.__hashPasswordWithParamsForTests(password, salt, testParams);
+  return {
+    ...actual,
+    hashPassword,
+    verifyPasswordAgainst: async (auth, password) => {
+      if (!auth?.enabled || !auth.passwordHash || !auth.salt || typeof password !== 'string' || password.length === 0) return false;
+      return actual.constantEqual(await hashPassword(password, auth.salt), auth.passwordHash);
+    },
+  };
 });
 
 // Reset settings.json between tests so a password-set in one test doesn't bleed
@@ -29,6 +48,10 @@ beforeEach(() => {
 
 afterAll(() => {
   cleanup();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe('auth service', () => {
@@ -162,16 +185,14 @@ describe('auth service', () => {
   });
 
   it('emits sessions:revoked-all on every auth-state change so the socket layer can kick connections', async () => {
+    vi.useFakeTimers();
     const auth = await import('./auth.js');
     const events = [];
     auth.authEvents.on('sessions:revoked-all', () => events.push('event'));
     await auth.setPassword({ newPassword: 'correct-horse' });             // first-time enable
     await auth.setPassword({ newPassword: 'new-horse', currentPassword: 'correct-horse' }); // rotate
     await auth.clearPassword({ currentPassword: 'new-horse' });           // disable
-    // The emit is deferred via setImmediate so the response cookie can
-    // flush first — let the event loop tick before asserting.
-    // Kick event is deferred ~500ms so the response cookie can flush first.
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    await vi.advanceTimersByTimeAsync(500);
     expect(events.length).toBe(3);
   });
 
@@ -221,22 +242,23 @@ describe('auth service', () => {
   });
 
   it('emits sessions:revoked-all on single-token logout too (kicks the tab\'s sockets)', async () => {
+    vi.useFakeTimers();
     const auth = await import('./auth.js');
     await auth.setPassword({ newPassword: 'correct-horse' });
     const { token } = await auth.createSession();
     // Drain the setPassword's deferred-kick timer before we attach the
     // listener so it doesn't get counted against this test's expectation.
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    await vi.advanceTimersByTimeAsync(500);
     const events = [];
     auth.authEvents.on('sessions:revoked-all', () => events.push('event'));
     await auth.revokeSession(token);
     // Kick event is deferred ~500ms so the response cookie can flush first.
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    await vi.advanceTimersByTimeAsync(500);
     expect(events.length).toBe(1);
     // Revoking an unknown token must NOT fire — no state changed.
     await auth.revokeSession('not-a-real-token');
     // Kick event is deferred ~500ms so the response cookie can flush first.
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    await vi.advanceTimersByTimeAsync(500);
     expect(events.length).toBe(1);
   });
 });

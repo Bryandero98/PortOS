@@ -11,6 +11,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Plus, Loader2, Trash2, Save, Upload, ImageIcon, Sparkles, X } from 'lucide-react';
 import toast from '../ui/Toast';
+import FilePickerButton from '../ui/FilePickerButton';
 import GalleryImagePicker from '../imageGen/GalleryImagePicker';
 import useMediaJobProgress from '../../hooks/useMediaJobProgress';
 import { DEFAULT_NEGATIVE_PROMPT } from '../../lib/imageGenDefaults';
@@ -73,7 +74,6 @@ export default function ArtistsManager() {
   const [uploadingPortrait, setUploadingPortrait] = useState(false);
   const [startingGen, setStartingGen] = useState(false);
   const [genJobId, setGenJobId] = useState(null);
-  const fileInputRef = useRef(null);
   // Bumped on every artist switch / new-artist so a stale generate response
   // can't write the wrong persona's portrait (mirrors Authors' genRequestRef).
   const genRequestRef = useRef(0);
@@ -132,7 +132,6 @@ export default function ArtistsManager() {
 
   const handlePortraitFile = async (e) => {
     const file = e.target.files?.[0];
-    if (e.target) e.target.value = '';
     if (!file) return;
     if (!file.type.startsWith('image/')) { toast.error('Please choose an image file'); return; }
     if (file.size > PORTRAIT_MAX_BYTES) {
@@ -404,15 +403,16 @@ export default function ArtistsManager() {
                         {isGenerating ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
                         Generate
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => fileInputRef.current?.click()}
+                      <FilePickerButton
+                        accept="image/*"
+                        onChange={handlePortraitFile}
                         disabled={uploadingPortrait || isGenerating}
-                        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-bg border border-port-border text-white text-sm hover:border-port-accent disabled:opacity-50"
+                        ariaLabel="Upload artist portrait"
+                        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-bg border border-port-border text-white text-sm hover:border-port-accent"
                       >
                         {uploadingPortrait ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
                         Upload
-                      </button>
+                      </FilePickerButton>
                       <button
                         type="button"
                         onClick={() => setGalleryOpen(true)}
@@ -421,13 +421,6 @@ export default function ArtistsManager() {
                       >
                         <ImageIcon size={14} /> Choose from gallery
                       </button>
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        accept="image/*"
-                        onChange={handlePortraitFile}
-                        className="hidden"
-                      />
                     </div>
                     <input
                       value={form.portraitImageUrl}

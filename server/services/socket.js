@@ -1,7 +1,7 @@
-import { spawnPm2 } from './pm2.js';
+import { spawnPm2, buildEnv } from './pm2.js';
 import { streamDetection } from './streamingDetect.js';
 import { cosEvents } from './cosEvents.js';
-import { appsEvents } from './apps.js';
+import { appsEvents, getAppById, resolvePm2HomeForProcess } from './apps.js';
 import { errorEvents, sanitizeContext } from '../lib/errorHandler.js';
 import { handleErrorRecovery } from './autoFixer.js';
 import * as pm2Standardizer from './pm2Standardizer.js';
@@ -35,6 +35,7 @@ import {
   detectStartSchema,
   standardizeStartSchema,
   logsSubscribeSchema,
+  logsUnsubscribeSchema,
   errorRecoverSchema,
   shellInputSchema,
   shellResizeSchema,
@@ -51,8 +52,25 @@ import { registerVoiceHandlers } from '../sockets/voice.js';
 import { getBuildId } from '../lib/buildId.js';
 import { authEvents, extractToken, isAuthEnabled, verifySession } from './auth.js';
 
-// Store active log streams per socket
+// Store active log streams per socket/process pair.
 const activeStreams = new Map();
+const streamKey = (socketId, processName) => `${socketId}:${processName}`;
+// Monotonic per-stream subscribe generation. `logs:subscribe` awaits an app
+// lookup before it can spawn `pm2 logs`, so the request it started for may be
+// obsolete by the time it resolves. Stream occupancy alone cannot tell the cases
+// apart: an `logs:unsubscribe` that lands mid-lookup leaves the slot EMPTY, so a
+// stale handler would spawn an orphan `pm2 logs` nothing ever kills; and when two
+// subscribes for the same process overlap, the OLDER one can fill the slot first, so the newer one
+// bails and its client waits forever for `logs:subscribed`. Every claim and
+// release bumps this counter and a handler only resumes while its own generation
+// is current — the server-side mirror of the `{ target, generation }`
+// pending-request convention in CLAUDE.md.
+const streamGenerations = new Map();
+const bumpStreamGeneration = (key) => {
+  const next = (streamGenerations.get(key) || 0) + 1;
+  streamGenerations.set(key, next);
+  return next;
+};
 // Store CoS subscribers
 const cosSubscribers = new Set();
 // Store error subscribers for auto-fix notifications
@@ -206,20 +224,58 @@ export function initSocket(io) {
     });
 
     // Handle log streaming requests
-    socket.on('logs:subscribe', (rawData) => {
+    socket.on('logs:subscribe', async (rawData) => {
       const data = validateSocketData(logsSubscribeSchema, rawData, socket, 'logs:subscribe');
       if (!data) return;
-      const { processName, lines } = data;
+      const { processName, lines, appId } = data;
+      const key = streamKey(socket.id, processName);
 
-      // Clean up any existing stream for this socket
-      cleanupStream(socket.id);
+      // Clean up only this process's existing stream, then claim this request.
+      // Claiming AFTER the cleanup bump is what makes this generation current.
+      cleanupStream(key);
+      const generation = bumpStreamGeneration(key);
+
+      // Resolve the app's custom PM2_HOME so the stream tails the home its
+      // processes actually run in. appId remains the disambiguating fast path;
+      // legacy callers without it fall back to the process-name registry lookup.
+      // This runs outside the Express lifecycle, so a lookup failure must not
+      // throw — fall back to the default home.
+      let pm2Home = null;
+      if (appId) {
+        pm2Home = await getAppById(appId)
+          .then(app => app?.pm2Home || null)
+          .catch(err => {
+            console.error(`❌ logs:subscribe could not resolve app ${appId}: ${err.message}`);
+            return null;
+          });
+      } else {
+        pm2Home = await resolvePm2HomeForProcess(processName)
+          .catch(err => {
+            console.error(`❌ logs:subscribe could not resolve ${processName}: ${err.message}`);
+            return null;
+          });
+      }
+
+      // The await above yields, so a disconnect, an unsubscribe, or a newer
+      // subscribe may have landed in the meantime. Bail if this socket is gone
+      // rather than spawning an orphan `pm2 logs` nothing will ever clean up.
+      if (socket.disconnected) return;
+      // Superseded or cancelled while the lookup was in flight. Covers both the
+      // unsubscribe (slot left empty) and the two-overlapping-subscribes cases
+      // that a bare `activeStreams.has()` check gets wrong in opposite directions.
+      if (streamGenerations.get(key) !== generation) return;
 
       console.log(`📜 Log stream started: ${processName} (${lines} lines)`);
 
       // Spawn pm2 logs with --raw flag
-      const logProcess = spawnPm2(['logs', processName, '--raw', '--lines', String(lines)]);
+      // buildEnv(null) is the default-home case, so this is unconditional —
+      // matching every other buildEnv call site in pm2.js.
+      const logProcess = spawnPm2(
+        ['logs', processName, '--raw', '--lines', String(lines)],
+        { env: buildEnv(pm2Home) }
+      );
 
-      activeStreams.set(socket.id, { process: logProcess, processName });
+      activeStreams.set(key, { process: logProcess, processName });
 
       let buffer = '';
 
@@ -260,17 +316,27 @@ export function initSocket(io) {
       });
 
       logProcess.on('close', (code) => {
+        // A SIGTERM'd predecessor's `close` fires asynchronously — after the
+        // replacement stream has already registered — so an unscoped
+        // `activeStreams.delete` here would unregister the LIVE stream and leak
+        // it (no later cleanupStream would find it to kill), while `logs:close`
+        // would tell the client the stream it is watching had ended.
+        if (activeStreams.get(key)?.process !== logProcess) return;
         socket.emit('logs:close', { code, processName });
-        activeStreams.delete(socket.id);
+        activeStreams.delete(key);
+        streamGenerations.delete(key);
       });
 
       socket.emit('logs:subscribed', { processName, timestamp: Date.now() });
     });
 
     // Handle unsubscribe
-    socket.on('logs:unsubscribe', () => {
-      cleanupStream(socket.id);
-      socket.emit('logs:unsubscribed');
+    socket.on('logs:unsubscribe', (rawData) => {
+      const data = validateSocketData(logsUnsubscribeSchema, rawData, socket, 'logs:unsubscribe');
+      if (!data) return;
+      if (data.processName) cleanupStream(streamKey(socket.id, data.processName));
+      else cleanupSocketStreams(socket.id);
+      socket.emit('logs:unsubscribed', { processName: data.processName });
     });
 
     // CoS subscriptions
@@ -520,7 +586,7 @@ export function initSocket(io) {
     // Cleanup on disconnect — detach sessions, don't kill them
     socket.on('disconnect', () => {
       console.log(`🔌 Client disconnected: ${socket.id}`);
-      cleanupStream(socket.id);
+      cleanupSocketStreams(socket.id);
       for (const set of ALL_SUBSCRIBER_SETS) set.delete(socket);
       const detached = shellService.detachSocketSessions(socket);
       if (detached > 0) {
@@ -666,11 +732,29 @@ function setupProactiveSpeechForwarding() {
   wireProactiveTriggers({ io: ioInstance });
 }
 
-function cleanupStream(socketId) {
-  const stream = activeStreams.get(socketId);
+function cleanupStream(key) {
+  // Bump unconditionally, even with no stream to kill: this is the cancellation
+  // point for a `logs:subscribe` still awaiting its app lookup, which has not
+  // claimed the slot yet and so would otherwise survive an unsubscribe.
+  bumpStreamGeneration(key);
+  const stream = activeStreams.get(key);
   if (stream) {
     stream.process.kill('SIGTERM');
-    activeStreams.delete(socketId);
+    activeStreams.delete(key);
+  }
+}
+
+function cleanupSocketStreams(socketId) {
+  const prefix = `${socketId}:`;
+  for (const [key, stream] of activeStreams) {
+    if (!key.startsWith(prefix)) continue;
+    stream.process.kill('SIGTERM');
+    activeStreams.delete(key);
+  }
+  // Dropping a pending stream's generation invalidates an in-flight lookup
+  // without needing a synthetic process entry to represent it.
+  for (const key of streamGenerations.keys()) {
+    if (key.startsWith(prefix)) streamGenerations.delete(key);
   }
 }
 

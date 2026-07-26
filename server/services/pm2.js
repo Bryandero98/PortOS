@@ -21,9 +21,9 @@ const require = createRequire(import.meta.url);
 const PM2_BIN = join(dirname(require.resolve('pm2/package.json')), 'bin', 'pm2');
 
 /**
- * Check if a script path is a JS file that PM2 can fork directly.
- * On Windows, non-JS scripts (npm, npx, vite, etc.) resolve to .cmd batch files
- * which PM2's fork mode tries to require() as JavaScript — causing SyntaxError.
+ * Check if a script path is a JS file that PM2 can fork through Node.
+ * Other executable commands (including shell scripts) must run directly so PM2
+ * does not try to parse them as JavaScript.
  */
 function isJsScript(script) {
   return /\.(?:js|mjs|cjs|ts)$/i.test(script);
@@ -81,11 +81,16 @@ export function execPm2(pm2Args, opts = {}) {
 }
 
 /**
- * Build environment object with optional custom PM2_HOME
+ * Build environment object with optional custom PM2_HOME.
+ *
+ * Exported because the log-stream socket handler spawns `pm2 logs` directly
+ * (not through spawnPm2Cli) and must target the same home the app's processes
+ * live in — otherwise an app with its own PM2 instance streams an empty log.
+ *
  * @param {string} pm2Home Optional custom PM2_HOME path
  * @returns {object} Environment variables
  */
-function buildEnv(pm2Home) {
+export function buildEnv(pm2Home) {
   const env = { ...process.env };
   if (pm2Home) {
     env.PM2_HOME = pm2Home;
@@ -164,8 +169,9 @@ export async function startApp(name, options = {}) {
         windowsHide: IS_WIN
       };
 
-      // On Windows, non-JS scripts (.cmd batch files) can't be fork'd by PM2
-      if (IS_WIN && !isJsScript(script)) {
+      // Non-JS commands must run directly: PM2 otherwise forks them through
+      // Node, which parses shell scripts as JavaScript on every platform.
+      if (!isJsScript(script)) {
         startOptions.interpreter = 'none';
       }
 
@@ -476,12 +482,28 @@ export async function getLogs(name, lines = 100, pm2Home = null) {
  * @param {string} name PM2 process name
  * @param {string} cwd Working directory
  * @param {string} command Command to run (e.g., "npm run dev")
+ * @param {object} [options]
+ * @param {boolean} [options.autorestart=true] When false, PM2 will NOT relaunch
+ *   the process after it exits. Portless/desktop apps (a game window) pass false:
+ *   the user closing the window is a normal exit, not a crash to loop on. The
+ *   restart-tuning fields (max_restarts/min_uptime/restart_delay) are omitted in
+ *   that mode since they only apply when autorestart is on.
+ * @param {number} [options.maxRestarts=10] Restart cap when autorestart is on.
+ * @param {string} [options.pm2Home=null] Custom PM2_HOME. When set, starts via
+ *   CLI (like deleteApp/getAppStatus) instead of the default-daemon Node API —
+ *   otherwise the process would launch under PortOS's own PM2 daemon and be
+ *   invisible to every subsequent status/log/delete call that targets pm2Home.
  */
-export async function startWithCommand(name, cwd, command) {
+export async function startWithCommand(name, cwd, command, options = {}) {
+  const { autorestart = true, maxRestarts = 10, pm2Home = null } = options;
   // Parse with quote-awareness so `node --opt "arg with spaces"` survives;
   // a bare split(' ') would shred quoted segments. PM2 accepts `args` as an
   // array, which avoids re-joining and re-splitting on the way through.
   const [script, ...args] = parseCommandArgs(command);
+
+  if (pm2Home) {
+    return spawnPm2StartCommand(name, cwd, script, args, { autorestart, maxRestarts, pm2Home });
+  }
 
   return connectAndRun((pm2) => {
     return new Promise((resolve, reject) => {
@@ -491,16 +513,22 @@ export async function startWithCommand(name, cwd, command) {
         args,
         cwd,
         watch: false,
-        autorestart: true,
-        max_restarts: 10,
-        min_uptime: '10s',
-        restart_delay: 5000,
-        max_memory_restart: '500M',
+        autorestart,
+        // Restart tuning only matters when autorestart is on; a desktop process
+        // exiting cleanly should stay stopped, not be nursed back up. This
+        // includes max_memory_restart: PM2's memory monitor relaunches the
+        // process independently of autorestart, so leaving a 500M cap on a
+        // desktop app (a game window routinely exceeds it) would kill and
+        // respawn the live window — exactly the relaunch loop this avoids.
+        ...(autorestart
+          ? { max_restarts: maxRestarts, min_uptime: '10s', restart_delay: 5000, max_memory_restart: '500M' }
+          : {}),
         windowsHide: IS_WIN
       };
 
-      // On Windows, non-JS scripts (.cmd batch files) can't be fork'd by PM2
-      if (IS_WIN && !isJsScript(script)) {
+      // PM2 defaults to Node for command scripts. Run executables directly so
+      // native launchers such as `./scripts/game` honor their shebang.
+      if (!isJsScript(script)) {
         opts.interpreter = 'none';
       }
 
@@ -509,6 +537,34 @@ export async function startWithCommand(name, cwd, command) {
         resolve({ success: true, process: proc });
       });
     });
+  });
+}
+
+/**
+ * CLI-based counterpart to startWithCommand's Node-API path, used whenever a
+ * custom pm2Home is given. `min_uptime` has no CLI flag equivalent — it only
+ * tunes the autorestart=true nursing behavior, which no current caller uses
+ * together with a custom pm2Home.
+ */
+function spawnPm2StartCommand(name, cwd, script, args, { autorestart, maxRestarts, pm2Home }) {
+  return new Promise((resolve, reject) => {
+    const cliArgs = ['start', script, '--name', name, '--cwd', cwd];
+    if (!isJsScript(script)) cliArgs.push('--interpreter', 'none');
+    if (autorestart) {
+      cliArgs.push('--max-restarts', String(maxRestarts), '--restart-delay', '5000', '--max-memory-restart', '500M');
+    } else {
+      cliArgs.push('--no-autorestart');
+    }
+    if (args.length > 0) cliArgs.push('--', ...args);
+
+    const child = spawnPm2(cliArgs, { env: buildEnv(pm2Home) });
+    let stderr = '';
+    child.stderr.on('data', (data) => { stderr += data.toString(); });
+    child.on('close', (code) => {
+      if (code !== 0) return reject(new Error(stderr || `pm2 start exited with code ${code}`));
+      resolve({ success: true });
+    });
+    child.on('error', reject);
   });
 }
 
