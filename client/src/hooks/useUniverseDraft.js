@@ -90,13 +90,16 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
   const savedDraftSnapshotRef = useRef(universeDraftSnapshot(createEmptyUniverseDraft()));
   const savedStyleSnapshotRef = useRef(ensureInfluences(createEmptyUniverseDraft().influences));
   const pendingCanonAdditionsRef = useRef(emptyPendingCanon());
-  // Serializes removeStyleReference calls and tracks the array across them —
-  // draftRef only syncs after a React effect, which can still be one render
-  // behind when two removals fire before either PATCH resolves; both would
-  // otherwise derive their replacement array from the same stale list and the
-  // second request's wholesale-replace PATCH would silently restore the item
-  // the first request just removed. Reset whenever the selected universe
-  // changes (see the selectedId-load effect below).
+  // Shared authoritative snapshot of styleReferences that both
+  // persistStyleReference (add) and removeStyleReference (remove) read from
+  // and write back to — draftRef only syncs after a React effect, which can
+  // still be one render behind when two mutations fire before either PATCH
+  // resolves; both would otherwise derive their replacement array from the
+  // same stale list and the slower request's wholesale-replace PATCH would
+  // silently undo the other's change. removeStyleReference additionally
+  // serializes through styleReferenceQueueRef so back-to-back removals never
+  // overlap. Reset whenever the selected universe changes (see the
+  // selectedId-load effect below).
   const styleReferenceQueueRef = useRef(Promise.resolve());
   const styleReferenceSnapshotRef = useRef(null);
 
@@ -309,14 +312,17 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
       styleNotes: current.styleNotes || '',
       influences: ensureInfluences(current.influences),
     };
-    if ((current.styleReferences || []).length >= WORLD_STYLE_REFERENCES_MAX) {
+    // Same authoritative snapshot removeStyleReference maintains — reading
+    // draftRef here instead would miss a removal still settling and could
+    // resurrect the item it just removed once this add's wholesale-replace
+    // PATCH lands.
+    const baseStyleReferences = styleReferenceSnapshotRef.current
+      ?? (Array.isArray(current.styleReferences) ? current.styleReferences : []);
+    if (baseStyleReferences.length >= WORLD_STYLE_REFERENCES_MAX) {
       toast.error(`A universe can hold up to ${WORLD_STYLE_REFERENCES_MAX} art references`);
       return false;
     }
-    const styleReferences = [
-      ...(Array.isArray(current.styleReferences) ? current.styleReferences : []),
-      reference,
-    ];
+    const styleReferences = [...baseStyleReferences, reference];
     const patch = {
       styleReferences,
       ...(adopt ? {
@@ -329,6 +335,11 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
       return null;
     });
     if (!updated) return false;
+    // Keep the shared snapshot current so a later removeStyleReference call
+    // builds its replacement array from a list that includes this addition —
+    // otherwise a stale post-removal snapshot would silently drop it (codex
+    // review finding).
+    styleReferenceSnapshotRef.current = updated.styleReferences || [];
     if (adopt) markStyleGuidanceSaved(updated);
     setDraft((latest) => {
       const styleUnchangedDuringSave = latest.styleNotes === capturedStyle.styleNotes

@@ -185,4 +185,29 @@ describe('useUniverseDraft', () => {
     expect(apiMocks.updateUniverse.mock.calls[1][1]).toEqual({ styleReferences: [] });
     expect(result.current.draft.styleReferences).toEqual([]);
   });
+
+  it('keeps a reference added between two removals (remove A, add C, remove B)', async () => {
+    const refA = { id: 'style-ref-a', title: 'Ref A', prompt: 'moody', imageRefs: ['a.png'] };
+    const refB = { id: 'style-ref-b', title: 'Ref B', prompt: 'bright', imageRefs: ['b.png'] };
+    const refC = { id: 'style-ref-c', title: 'Ref C', prompt: 'sunlit', imageRefs: ['c.png'] };
+    apiMocks.getUniverse.mockResolvedValueOnce({ ...universe, styleReferences: [refA, refB] });
+    const { result } = renderDraft();
+    await waitFor(() => expect(result.current.draft.styleReferences).toEqual([refA, refB]));
+
+    await act(async () => { await result.current.removeStyleReference(refA.id); });
+    expect(apiMocks.updateUniverse.mock.calls.at(-1)[1]).toEqual({ styleReferences: [refB] });
+
+    await act(async () => {
+      await result.current.persistStyleReference({ reference: refC, adopt: false });
+    });
+    // persistStyleReference must build its PATCH from the post-removal
+    // snapshot (refB), not a stale pre-removal draft read.
+    expect(apiMocks.updateUniverse.mock.calls.at(-1)[1]).toEqual({ styleReferences: [refB, refC] });
+
+    await act(async () => { await result.current.removeStyleReference(refB.id); });
+    // Regression: removeStyleReference's snapshot must have picked up refC
+    // from the add above, or this PATCH would silently drop refC too.
+    expect(apiMocks.updateUniverse.mock.calls.at(-1)[1]).toEqual({ styleReferences: [refC] });
+    expect(result.current.draft.styleReferences).toEqual([refC]);
+  });
 });
