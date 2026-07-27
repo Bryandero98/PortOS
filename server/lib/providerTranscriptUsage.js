@@ -76,13 +76,18 @@ const toEpoch = (value) => {
 };
 
 /**
- * True when `ts` falls inside `[from, to]`. A null bound is open; a null `ts`
- * is treated as inside the window — a line whose timestamp we can't read is
- * better attributed to the run we're reconciling (the file was located by cwd
- * slug) than silently dropped, which would under-count.
+ * True when `ts` falls inside `[from, to]`. A null bound is open.
+ *
+ * A message with NO readable timestamp is EXCLUDED whenever a bound is supplied.
+ * Counting it would be worse than dropping it: a bounded window means the caller
+ * is attributing one run's share of a possibly long-lived session, and a
+ * timestamp-less line can't be placed in any run — so accepting it hands the same
+ * tokens to every run that ever reads this file, turning one unparseable line
+ * into permanent double-billing on every completion. With no bounds at all
+ * (a whole-file read) there is nothing to double-count against, so it's kept.
  */
 const inWindow = (ts, from, to) => {
-  if (ts == null) return true;
+  if (ts == null) return from == null && to == null;
   if (from != null && ts < from) return false;
   if (to != null && ts > to) return false;
   return true;
@@ -104,18 +109,26 @@ const inWindow = (ts, from, to) => {
  * the same account, and PortOS records one run per parent invocation.
  *
  * @param {string} jsonlText raw file contents (may end mid-line)
- * @param {{ from?: number|null, to?: number|null }} [window] epoch-ms bounds;
- *   assistant messages outside the window are excluded (used to attribute a
- *   long-lived CLI session to one PortOS run).
+ * @param {{ from?: number|null, to?: number|null, exclude?: Set<string>|null }} [opts]
+ *   `from`/`to` are epoch-ms bounds; assistant messages outside the window are
+ *   excluded (used to attribute a long-lived CLI session to one PortOS run).
+ *   `exclude` is a set of message keys already billed to another run — those are
+ *   skipped, and the keys this call DID count come back as `countedKeys` so the
+ *   caller can claim them. Without this, two runs whose windows overlap both
+ *   fold the same messages and the cost doubles.
  * @returns {{ sessionId: string|null, cwd: string|null, model: string|null,
- *   models: string[], messages: number, tokensIn: number, tokensOut: number,
- *   cacheReadTokens: number, cacheWriteTokens: number,
- *   firstTs: string|null, lastTs: string|null }}
+ *   models: string[], byModel: object, messages: number, tokensIn: number,
+ *   tokensOut: number, cacheReadTokens: number, cacheWriteTokens: number,
+ *   countedKeys: string[], firstTs: string|null, lastTs: string|null }}
  */
-export function parseClaudeTranscript(jsonlText, { from = null, to = null } = {}) {
+export function parseClaudeTranscript(jsonlText, { from = null, to = null, exclude = null } = {}) {
   const totals = emptyTotals();
   const seen = new Set();
   const modelCounts = new Map();
+  // Per-model token buckets, so a session that switched models mid-run
+  // (`/model`, or a fallback) can be priced at each model's own rate instead of
+  // billing the whole aggregate at whichever model happened to run most.
+  const byModel = new Map();
   let sessionId = null;
   let cwd = null;
   let firstTs = null;
@@ -135,6 +148,9 @@ export function parseClaudeTranscript(jsonlText, { from = null, to = null } = {}
     const dedupeKey = entry.message?.id || entry.uuid;
     if (dedupeKey) {
       if (seen.has(dedupeKey)) continue;
+      // Already billed to another run whose window also covers this message —
+      // skip it so overlapping runs can't each claim the same tokens.
+      if (exclude?.has(dedupeKey)) continue;
       seen.add(dedupeKey);
     }
 
@@ -145,7 +161,16 @@ export function parseClaudeTranscript(jsonlText, { from = null, to = null } = {}
     totals.cacheWriteTokens += num(usage.cache_creation_input_tokens);
 
     const model = typeof entry.message?.model === 'string' ? entry.message.model : null;
-    if (model) modelCounts.set(model, (modelCounts.get(model) || 0) + 1);
+    if (model) {
+      modelCounts.set(model, (modelCounts.get(model) || 0) + 1);
+      if (!byModel.has(model)) byModel.set(model, emptyTotals());
+      const bucket = byModel.get(model);
+      bucket.messages += 1;
+      bucket.tokensIn += num(usage.input_tokens);
+      bucket.tokensOut += num(usage.output_tokens);
+      bucket.cacheReadTokens += num(usage.cache_read_input_tokens);
+      bucket.cacheWriteTokens += num(usage.cache_creation_input_tokens);
+    }
 
     if (typeof entry.timestamp === 'string' && entry.timestamp) {
       if (!firstTs || entry.timestamp < firstTs) firstTs = entry.timestamp;
@@ -154,13 +179,27 @@ export function parseClaudeTranscript(jsonlText, { from = null, to = null } = {}
   }
 
   // A session can switch models mid-run (/model, or a fallback). Report every
-  // model seen, plus the most-used one as the single `model` attribution.
+  // model seen, plus the most-used one as the single `model` attribution — and
+  // `byModel`, so a caller can price each model's own tokens at its own rate
+  // rather than billing the whole aggregate at the majority model.
   const models = [...modelCounts.keys()];
   const model = models.length
     ? [...modelCounts.entries()].sort((a, b) => b[1] - a[1])[0][0]
     : null;
 
-  return { sessionId, cwd, model, models, ...totals, firstTs, lastTs };
+  return {
+    sessionId,
+    cwd,
+    model,
+    models,
+    byModel: Object.fromEntries(byModel),
+    // The message keys this call counted — the caller claims them so a later,
+    // overlapping run can pass them back as `exclude` instead of re-billing.
+    countedKeys: [...seen],
+    ...totals,
+    firstTs,
+    lastTs
+  };
 }
 
 /**
@@ -215,7 +254,14 @@ export function parseCodexRollout(jsonlText, { from = null, to = null } = {}) {
     if (entry.type === 'turn_context' && typeof payload?.model === 'string') {
       model ??= payload.model;
     }
-    if (payload?.type === 'agent_message') messages += 1;
+    // Count assistant messages only inside the window, the same way the token
+    // totals below are windowed. A rollout can span several PortOS runs, so
+    // counting every `agent_message` in the file would hand each later run the
+    // earlier runs' message counts while its tokens are correctly a delta.
+    if (payload?.type === 'agent_message') {
+      if (inWindow(toEpoch(entry.timestamp), from, to)) messages += 1;
+      continue;
+    }
     if (payload?.type !== 'token_count') continue;
 
     const total = payload.info?.total_token_usage;
@@ -236,7 +282,7 @@ export function parseCodexRollout(jsonlText, { from = null, to = null } = {}) {
   }
 
   if (!latest) {
-    return { sessionId, cwd, model, models: model ? [model] : [], ...emptyTotals(), firstTs, lastTs };
+    return { sessionId, cwd, model, models: model ? [model] : [], byModel: {}, ...emptyTotals(), firstTs, lastTs };
   }
 
   // Cumulative delta against the pre-window baseline (0 when unwindowed).
@@ -244,11 +290,7 @@ export function parseCodexRollout(jsonlText, { from = null, to = null } = {}) {
   const cachedIn = delta('cached_input_tokens');
   const totalIn = delta('input_tokens');
 
-  return {
-    sessionId,
-    cwd,
-    model,
-    models: model ? [model] : [],
+  const totals = {
     // Codex reports no per-message split; a rollout is one recorded exchange
     // when it produced any assistant message.
     messages: messages || 1,
@@ -257,7 +299,19 @@ export function parseCodexRollout(jsonlText, { from = null, to = null } = {}) {
     tokensIn: Math.max(0, totalIn - cachedIn),
     tokensOut: delta('output_tokens'),
     cacheReadTokens: cachedIn,
-    cacheWriteTokens: 0,
+    cacheWriteTokens: 0
+  };
+
+  return {
+    sessionId,
+    cwd,
+    model,
+    models: model ? [model] : [],
+    // Codex reports one model per rollout (no mid-session switch in the format),
+    // so the whole delta is that model's — mirrored into `byModel` for shape
+    // parity with the Claude parser so callers need no per-family branch.
+    byModel: model ? { [model]: { ...totals } } : {},
+    ...totals,
     firstTs,
     lastTs
   };

@@ -12,7 +12,8 @@ const {
   transcriptFamily,
   readMeasuredUsage,
   reconcileRunUsage,
-  recordCompletedRunUsage
+  recordCompletedRunUsage,
+  __resetUsageClaims
 } = await import('./usageReconciler.js');
 
 // Fake HOME per test so the parsers read fixtures, never the developer's real
@@ -79,6 +80,9 @@ const writeCodexRollout = async (dateParts, file, text) => {
 beforeEach(async () => {
   home = await mkdtemp(join(tmpdir(), 'portos-usage-'));
   vi.clearAllMocks();
+  // The claim ledger is module-level, so a stale claim from a prior test would
+  // make a later read skip messages it should count.
+  __resetUsageClaims();
 });
 
 afterEach(async () => {
@@ -245,7 +249,8 @@ describe('reconcileRunUsage', () => {
     // must not blend it in.
     const result = await reconcileRunUsage(run, { tokensIn: 30, tokensOut: 9999 }, { home });
 
-    expect(result).toEqual({
+    // One model in the transcript → one record, carrying PortOS's model id.
+    expect(result).toEqual([{
       providerId: 'claude-code-tui',
       model: 'claude-opus-5',
       messages: 2,
@@ -254,7 +259,30 @@ describe('reconcileRunUsage', () => {
       cacheReadTokens: 1500,
       cacheWriteTokens: 120,
       source: 'measured'
-    });
+    }]);
+  });
+
+  // A session that switched models must be split, or the whole run prices at
+  // whichever model happened to run most — e.g. Haiku tokens billed at Opus.
+  it('splits a model switch into one record per model', async () => {
+    await writeClaudeSession('a.jsonl', [
+      claudeAssistant({ id: 'm1', timestamp: '2026-07-01T10:05:00.000Z', model: 'claude-opus-5', output: 50, cacheRead: 1000, cacheWrite: 100, input: 10 }),
+      claudeAssistant({ id: 'm2', timestamp: '2026-07-01T10:06:00.000Z', model: 'claude-haiku-4-5', output: 25, cacheRead: 500, cacheWrite: 20, input: 5 })
+    ]);
+
+    const result = await reconcileRunUsage(run, { tokensIn: 1, tokensOut: 1 }, { home });
+    expect(Array.isArray(result)).toBe(true);
+    expect(result).toHaveLength(2);
+
+    const byModel = Object.fromEntries(result.map((r) => [r.model, r]));
+    expect(byModel['claude-opus-5']).toMatchObject({ tokensOut: 50, cacheReadTokens: 1000, cacheWriteTokens: 100, source: 'measured' });
+    expect(byModel['claude-haiku-4-5']).toMatchObject({ tokensOut: 25, cacheReadTokens: 500, cacheWriteTokens: 20, source: 'measured' });
+    // With >1 model the transcript's own ids win — PortOS recorded only the
+    // launch-time model, which would misattribute the other one's tokens.
+    expect(byModel['claude-haiku-4-5'].model).toBe('claude-haiku-4-5');
+    // Split records must still sum to the session totals — no tokens lost.
+    expect(result.reduce((s, r) => s + r.tokensOut, 0)).toBe(75);
+    expect(result.reduce((s, r) => s + r.cacheReadTokens, 0)).toBe(1500);
   });
 
   it('falls back to the estimate when no transcript matches', async () => {
@@ -289,8 +317,9 @@ describe('reconcileRunUsage', () => {
     // A Bedrock-prefixed id is what the pricing table needs to resolve.
     const bedrock = { ...run, model: 'global.anthropic.claude-opus-5[1m]' };
     const result = await reconcileRunUsage(bedrock, { tokensIn: 1, tokensOut: 1 }, { home });
-    expect(result.model).toBe('global.anthropic.claude-opus-5[1m]');
-    expect(result.source).toBe('measured');
+    expect(result).toHaveLength(1);
+    expect(result[0].model).toBe('global.anthropic.claude-opus-5[1m]');
+    expect(result[0].source).toBe('measured');
   });
 });
 
@@ -310,11 +339,10 @@ describe('recordCompletedRunUsage', () => {
     }, 'some captured output', { home });
 
     expect(recordRunUsage).toHaveBeenCalledTimes(1);
-    expect(recordRunUsage.mock.calls[0][0]).toMatchObject({
-      source: 'measured',
-      tokensOut: 50,
-      cacheReadTokens: 1000
-    });
+    // One model → an array of one (recordRunUsage accepts either shape).
+    expect(recordRunUsage.mock.calls[0][0]).toEqual([
+      expect.objectContaining({ source: 'measured', tokensOut: 50, cacheReadTokens: 1000 })
+    ]);
   });
 
   it('records the estimate when no transcript exists rather than recording nothing', async () => {
@@ -353,3 +381,69 @@ describe('recordCompletedRunUsage', () => {
 });
 
 
+
+describe('overlapping runs must not double-bill one transcript', () => {
+  // PortOS runs are NOT serialized per cwd (the runner allows several
+  // concurrent), and WINDOW_SLACK_MS widens each window by a minute — measured
+  // against real run history, 39 same-cwd run pairs genuinely overlap and 144 do
+  // once slack is applied. Without a claim, each overlapping run folds the whole
+  // overlap and the reported cost doubles.
+  const runA = {
+    providerId: 'claude-code-tui',
+    model: 'claude-opus-5',
+    workspacePath: WORKSPACE,
+    startTime: '2026-07-01T10:00:00.000Z',
+    endTime: '2026-07-01T10:10:00.000Z'
+  };
+  const runB = { ...runA, startTime: '2026-07-01T10:02:00.000Z', endTime: '2026-07-01T10:12:00.000Z' };
+
+  it('bills each message exactly once across two overlapping runs', async () => {
+    await writeClaudeSession('a.jsonl', [
+      claudeAssistant({ id: 'm1', timestamp: '2026-07-01T10:05:00.000Z', output: 50, cacheRead: 1000, cacheWrite: 100, input: 10 }),
+      claudeAssistant({ id: 'm2', timestamp: '2026-07-01T10:06:00.000Z', output: 25, cacheRead: 500, cacheWrite: 20, input: 5 })
+    ]);
+
+    const first = await readMeasuredUsage({ ...runA, family: 'claude', home });
+    const second = await readMeasuredUsage({ ...runB, family: 'claude', home });
+
+    // The first run takes both messages; the second finds them already claimed
+    // and reports nothing rather than re-billing them.
+    expect(first.tokensOut).toBe(75);
+    expect(first.cacheReadTokens).toBe(1500);
+    expect(second).toBeNull();
+
+    // The union across both runs equals the transcript, not double it.
+    const billedOut = (first?.tokensOut || 0) + (second?.tokensOut || 0);
+    expect(billedOut).toBe(75);
+  });
+
+  it('lets a second run claim only the messages the first did not', async () => {
+    await writeClaudeSession('a.jsonl', [
+      claudeAssistant({ id: 'early', timestamp: '2026-07-01T10:05:00.000Z', output: 50, cacheRead: 0, cacheWrite: 0, input: 0 }),
+      claudeAssistant({ id: 'late', timestamp: '2026-07-01T10:11:00.000Z', output: 25, cacheRead: 0, cacheWrite: 0, input: 0 })
+    ]);
+
+    // runA's window ends at 10:10 (+60s slack → 10:11), so it takes both.
+    // Narrow runA so only `early` is in range, leaving `late` for runB.
+    const narrowA = { ...runA, endTime: '2026-07-01T10:06:00.000Z' };
+    const first = await readMeasuredUsage({ ...narrowA, family: 'claude', home });
+    const second = await readMeasuredUsage({ ...runB, family: 'claude', home });
+
+    expect(first.tokensOut).toBe(50);
+    expect(second.tokensOut).toBe(25);
+    // Together they account for the session exactly once.
+    expect(first.tokensOut + second.tokensOut).toBe(75);
+  });
+
+  it('does not double-bill a codex rollout read by two overlapping runs', async () => {
+    await writeCodexRollout(['2026', '07', '01'], 'rollout-1.jsonl', codexRollout({
+      timestamp: '2026-07-01T10:05:00.000Z', input: 3000, cached: 2400, output: 250
+    }));
+
+    const first = await readMeasuredUsage({ ...runA, family: 'codex', home });
+    const second = await readMeasuredUsage({ ...runB, family: 'codex', home });
+
+    expect(first.tokensOut).toBe(250);
+    expect(second).toBeNull();
+  });
+});

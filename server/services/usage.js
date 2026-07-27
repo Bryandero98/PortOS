@@ -1,6 +1,6 @@
 import { join } from 'path';
 import { atomicWrite, ensureDir, PATHS, readJSONFile } from '../lib/fileUtils.js';
-import { resolveModelRates, isFreeProvider, estimateCostUsd, PRICING_AS_OF } from '../lib/modelPricing.js';
+import { resolveModelRates, isFreeProvider, isFreeModelId, estimateCostUsd, PRICING_AS_OF } from '../lib/modelPricing.js';
 
 const DATA_DIR = PATHS.data;
 const USAGE_FILE = join(DATA_DIR, 'usage.json');
@@ -358,11 +358,23 @@ export async function recordMessages(providerId, model, messageCount, outputToke
  * primitive (and the API route's path) for callers with nothing but a token
  * count.
  *
+ * Accepts a single record OR an array of them — a run whose session switched
+ * models mid-flight yields one record per model, so each is priced at its own
+ * rate rather than the whole aggregate at the launch-time model.
+ *
  * @param {{ providerId: string|null, model: string|null, messages?: number,
  *   tokensIn?: number, tokensOut?: number, cacheReadTokens?: number,
- *   cacheWriteTokens?: number, source?: 'measured'|'estimate' }} record
+ *   cacheWriteTokens?: number, source?: 'measured'|'estimate' }
+ *   | Array<object>} record
  */
 export async function recordRunUsage(record) {
+  // A single run can produce several records when its session switched models
+  // mid-flight (see usageReconciler.reconcileRunUsage) — record each so every
+  // model's tokens are priced at that model's own rate.
+  if (Array.isArray(record)) {
+    for (const entry of record) await recordRunUsage(entry);
+    return;
+  }
   const {
     providerId = null,
     model = null,
@@ -646,8 +658,15 @@ export function buildUsageReport(dailyActivity, { from = null, to = null, provid
     let providerCost = 0;
 
     for (const [model, m] of p.byModel.entries()) {
-      const rates = free ? null : resolveModelRates(pid, model);
-      const cost = free ? 0 : estimateCostUsd(m.tokensIn, m.tokensOut, rates, m);
+      // The MODEL can be free even when the provider isn't: a Claude-Code-flavored
+      // CLI pointed at a local Ollama/LM Studio backend keeps its `claude-*`
+      // provider id (which `isFreeProvider` correctly reads as paid) while running
+      // `qwen3.6:35b`. Without this per-model check the row resolves through the
+      // `claude` provider default and invents cost for free local inference —
+      // measured at $131 for one day of it.
+      const freeModel = free || isFreeModelId(model);
+      const rates = freeModel ? null : resolveModelRates(pid, model);
+      const cost = freeModel ? 0 : estimateCostUsd(m.tokensIn, m.tokensOut, rates, m);
       providerCost += cost;
       models.push({
         model,
@@ -660,7 +679,7 @@ export function buildUsageReport(dailyActivity, { from = null, to = null, provid
         source: m.source || 'estimate',
         estimatedCost: roundCents(cost),
         rateModel: rates?.rateModel ?? null,
-        rateMatch: free ? 'free' : rates.matched,
+        rateMatch: freeModel ? 'free' : rates.matched,
         inputPer1M: rates?.inputPer1M ?? 0,
         outputPer1M: rates?.outputPer1M ?? 0,
         cacheReadPer1M: rates?.cacheReadPer1M ?? 0,

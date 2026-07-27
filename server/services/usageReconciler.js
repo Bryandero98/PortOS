@@ -40,10 +40,29 @@ import { recordRunUsage } from './usage.js';
 
 // Widen the correlation window past the recorded run bounds: the CLI writes its
 // first line slightly before PortOS stamps startTime, and flushes its last
-// after the process exits. A minute of slack captures both without reaching
-// into a neighbouring run (PortOS runs of the same provider in the same cwd are
-// serialized well outside this margin).
+// after the process exits. A minute of slack captures both.
+//
+// The slack does NOT make attribution exclusive: PortOS runs are NOT serialized
+// per cwd (the runner allows several concurrent), and measured against this
+// install's run history there are 39 genuinely overlapping same-cwd run pairs —
+// 144 once this slack is applied. Two overlapping runs would each fold the whole
+// overlap and double-bill it, so exclusivity is enforced separately by the
+// per-message claim below, not by the window.
 const WINDOW_SLACK_MS = 60_000;
+
+// Messages already billed to a run, keyed `<transcript-key>:<message-key>`.
+// A transcript message must be counted exactly ONCE across every run that can
+// see it: without this, two concurrent runs in the same cwd (or one run whose
+// window overlaps a neighbour's through WINDOW_SLACK_MS) each fold the same
+// tokens and the cost report doubles. Process-local by design — it guards the
+// live completion path, which is the only writer; a restart loses the ledger,
+// but a run that already completed is never reconciled again.
+const claimedMessages = new Set();
+
+/** Test-only: forget every claim so suites start from a clean ledger. */
+export function __resetUsageClaims() {
+  claimedMessages.clear();
+}
 
 // A run is attributed only to transcripts whose cwd matches. A CoS agent works
 // in a git worktree under the install's data dir, so the worktree path — not the
@@ -147,6 +166,10 @@ export async function readMeasuredUsage({ workspacePath, startTime, endTime, fam
     cacheWriteTokens: 0
   };
   const modelCounts = new Map();
+  // Per-model token buckets across every folded session, so a run that switched
+  // models is priced at each model's own rate rather than billing the whole
+  // aggregate at the majority model.
+  const byModel = new Map();
 
   const fold = (parsed) => {
     if (!parsed || totalTranscriptTokens(parsed) === 0) return;
@@ -159,6 +182,33 @@ export async function readMeasuredUsage({ workspacePath, startTime, endTime, fam
     for (const model of parsed.models?.length ? parsed.models : [parsed.model]) {
       if (model) modelCounts.set(model, (modelCounts.get(model) || 0) + 1);
     }
+    for (const [model, bucket] of Object.entries(parsed.byModel || {})) {
+      if (!byModel.has(model)) {
+        byModel.set(model, { messages: 0, tokensIn: 0, tokensOut: 0, cacheReadTokens: 0, cacheWriteTokens: 0 });
+      }
+      const target = byModel.get(model);
+      target.messages += bucket.messages || 0;
+      target.tokensIn += bucket.tokensIn || 0;
+      target.tokensOut += bucket.tokensOut || 0;
+      target.cacheReadTokens += bucket.cacheReadTokens || 0;
+      target.cacheWriteTokens += bucket.cacheWriteTokens || 0;
+    }
+  };
+
+  // Keys counted by THIS call, claimed only once the whole read succeeds — so a
+  // mid-read failure can't strand messages as billed-to-nobody.
+  const toClaim = [];
+  // Per-file view of the global ledger: a message key is only meaningful within
+  // its own transcript, so scope the claim by file path to avoid a same-id
+  // collision across two different sessions.
+  const excludeFor = (fileKey) => {
+    const prefix = `${fileKey}:`;
+    return {
+      has: (messageKey) => claimedMessages.has(prefix + messageKey)
+    };
+  };
+  const claimFrom = (fileKey, parsed) => {
+    for (const key of parsed.countedKeys || []) toClaim.push(`${fileKey}:${key}`);
   };
 
   if (family === 'claude') {
@@ -167,27 +217,39 @@ export async function readMeasuredUsage({ workspacePath, startTime, endTime, fam
     const projectDir = join(home, '.claude', 'projects', claudeProjectSlug(workspacePath));
     for (const file of await listDir(projectDir)) {
       if (!file.endsWith('.jsonl')) continue;
-      const text = await tryReadFile(join(projectDir, file));
+      const path = join(projectDir, file);
+      const text = await tryReadFile(path);
       if (!text) continue;
-      fold(parseClaudeTranscript(text, { from, to }));
+      const parsed = parseClaudeTranscript(text, { from, to, exclude: excludeFor(path) });
+      claimFrom(path, parsed);
+      fold(parsed);
     }
   } else {
     const sessionsRoot = join(home, '.codex', 'sessions');
     for (const dir of codexDateDirs(sessionsRoot, from ?? Date.now(), to ?? from ?? Date.now())) {
       for (const file of await listDir(dir)) {
         if (!file.startsWith('rollout-') || !file.endsWith('.jsonl')) continue;
-        const text = await tryReadFile(join(dir, file));
+        const path = join(dir, file);
+        const text = await tryReadFile(path);
         if (!text) continue;
         // Rollouts are filed by date, not cwd — confirm the cwd before folding.
         const parsed = parseCodexRollout(text, { from, to });
         if (!cwdMatches(parsed.cwd, workspacePath)) continue;
+        // A Codex rollout is billed as a cumulative DELTA, so its claim is the
+        // end snapshot it consumed: a second overlapping run that reads the same
+        // rollout must not re-bill the same delta.
+        const snapshotKey = `${path}:${parsed.lastTs || ''}`;
+        if (claimedMessages.has(snapshotKey)) continue;
+        toClaim.push(snapshotKey);
         fold(parsed);
       }
     }
   }
 
   if (totals.sessions === 0) return null;
+  for (const key of toClaim) claimedMessages.add(key);
   totals.model = [...modelCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  totals.byModel = Object.fromEntries(byModel);
   return totals;
 }
 
@@ -200,10 +262,15 @@ export async function readMeasuredUsage({ workspacePath, startTime, endTime, fam
  * @param {object} run PortOS run metadata (`providerId`, `model`,
  *   `workspacePath`, `startTime`, `endTime`)
  * @param {{ tokensIn: number, tokensOut: number }} estimate fallback counts
+ * Returns a single record, or an ARRAY of them when the transcript names more
+ * than one model (a mid-run `/model` switch or a fallback) — `recordRunUsage`
+ * accepts either, and splitting is what keeps each model priced at its own rate.
+ *
  * @param {{ home?: string }} [opts]
  * @returns {Promise<{ providerId: string|null, model: string|null, messages: number,
  *   tokensIn: number, tokensOut: number, cacheReadTokens: number,
- *   cacheWriteTokens: number, source: 'measured'|'estimate' }>}
+ *   cacheWriteTokens: number, source: 'measured'|'estimate' }
+ *   | Array<object>>}
  */
 export async function reconcileRunUsage(run, estimate, { home = homedir() } = {}) {
   const fallback = {
@@ -233,6 +300,28 @@ export async function reconcileRunUsage(run, estimate, { home = homedir() } = {}
     return null;
   });
   if (!measured) return fallback;
+
+  // A session can switch models mid-run, so split the record per model the
+  // transcript actually names — billing every token at the launch-time model
+  // would price a run that started on Opus and finished on Haiku entirely at
+  // Opus rates. `byModel` is authoritative when present; fall back to one
+  // aggregate record when the transcript named no model at all.
+  const perModel = Object.entries(measured.byModel || {});
+  if (perModel.length > 0) {
+    return perModel.map(([model, bucket]) => ({
+      providerId: run?.providerId ?? null,
+      // Keep PortOS's recorded model id when the transcript agrees on the single
+      // model it ran — PortOS's id carries the provider's own shape (e.g. a
+      // Bedrock prefix the pricing table resolves) that the transcript strips.
+      model: perModel.length === 1 ? (run?.model ?? model) : model,
+      messages: bucket.messages || 0,
+      tokensIn: bucket.tokensIn,
+      tokensOut: bucket.tokensOut,
+      cacheReadTokens: bucket.cacheReadTokens,
+      cacheWriteTokens: bucket.cacheWriteTokens,
+      source: 'measured'
+    }));
+  }
 
   return {
     providerId: run?.providerId ?? null,

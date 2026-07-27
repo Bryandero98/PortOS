@@ -1039,3 +1039,68 @@ describe('buildUsageReport — cache pricing and source reporting', () => {
 });
 
 
+
+describe('buildUsageReport — local models under a paid provider', () => {
+  // A Claude-Code-flavored CLI can be pointed at a local Ollama backend. Its
+  // provider id stays `claude-*` (correctly PAID to isFreeProvider) while the
+  // model is `qwen3.6:35b`. Before the per-model check, that row resolved
+  // through the `claude` provider default and invented ~$131 of cost for a day
+  // of free local inference. This test bills through the REPORT, not the
+  // predicate, so it fails if the wiring is ever dropped.
+  const paidClaudeProvider = [{ id: 'claude-code-tui', name: 'Claude Code TUI', type: 'cli', command: 'claude' }];
+  const dayWith = (model) => ({
+    '2026-07-01': {
+      sessions: 1, messages: 1,
+      byProvider: {
+        'claude-code-tui': {
+          name: 'Claude Code TUI', sessions: 1, messages: 1,
+          tokensIn: 5000, tokensOut: 100_000,
+          cacheReadTokens: 370_000_000, cacheWriteTokens: 5_000_000,
+          source: 'measured',
+          byModel: {
+            [model]: {
+              sessions: 1, messages: 1, tokensIn: 5000, tokensOut: 100_000,
+              cacheReadTokens: 370_000_000, cacheWriteTokens: 5_000_000, source: 'measured'
+            }
+          }
+        }
+      }
+    }
+  });
+
+  it('prices a local model at zero even under a paid provider id', () => {
+    const report = buildUsageReport(dayWith('qwen3.6:35b'), { providers: paidClaudeProvider });
+    expect(report.totals.estimatedCost).toBe(0);
+    expect(report.providers[0].models[0].rateMatch).toBe('free');
+    // The tokens are still reported — only the cost is zero.
+    expect(report.totals.cacheReadTokens).toBe(370_000_000);
+  });
+
+  it('still bills a hosted model on the same provider', () => {
+    const report = buildUsageReport(dayWith('claude-opus-5'), { providers: paidClaudeProvider });
+    expect(report.totals.estimatedCost).toBeGreaterThan(100);
+    expect(report.providers[0].models[0].rateMatch).toBe('exact');
+  });
+
+  it('bills only the hosted half of a mixed local/hosted day', () => {
+    const daily = {
+      '2026-07-01': {
+        sessions: 2, messages: 2,
+        byProvider: {
+          'claude-code-tui': {
+            name: 'Claude Code TUI', sessions: 2, messages: 2,
+            tokensIn: 0, tokensOut: 2_000_000, cacheReadTokens: 0, cacheWriteTokens: 0,
+            source: 'measured',
+            byModel: {
+              'qwen3.6:35b': { sessions: 1, messages: 1, tokensIn: 0, tokensOut: 1_000_000, cacheReadTokens: 0, cacheWriteTokens: 0, source: 'measured' },
+              'claude-opus-5': { sessions: 1, messages: 1, tokensIn: 0, tokensOut: 1_000_000, cacheReadTokens: 0, cacheWriteTokens: 0, source: 'measured' }
+            }
+          }
+        }
+      }
+    };
+    const report = buildUsageReport(daily, { providers: paidClaudeProvider });
+    // 1M output on claude-opus-5 = $25; the local million is free.
+    expect(report.totals.estimatedCost).toBeCloseTo(25, 2);
+  });
+});

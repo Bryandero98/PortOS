@@ -285,3 +285,80 @@ describe('totalTranscriptTokens', () => {
     expect(totalTranscriptTokens(null)).toBe(0);
   });
 });
+
+describe('windowing excludes un-placeable messages', () => {
+  // A line with no readable timestamp can't be placed in any run. Accepting it
+  // under a bounded window would hand the same tokens to EVERY run that reads
+  // the file — one unparseable line becoming permanent double-billing.
+  it('excludes a timestamp-less Claude message when a window is supplied', () => {
+    const noTs = JSON.parse(claudeLine({ id: 'no-ts' }));
+    delete noTs.timestamp;
+    const text = [
+      JSON.stringify(noTs),
+      claudeLine({ id: 'in-window', timestamp: '2026-07-01T10:05:00.000Z' })
+    ].join('\n');
+
+    const windowed = parseClaudeTranscript(text, {
+      from: Date.parse('2026-07-01T10:00:00.000Z'),
+      to: Date.parse('2026-07-01T10:10:00.000Z')
+    });
+    expect(windowed.messages).toBe(1);
+    expect(windowed.tokensOut).toBe(50);
+  });
+
+  it('still counts a timestamp-less message on an UNBOUNDED read', () => {
+    const noTs = JSON.parse(claudeLine({ id: 'no-ts' }));
+    delete noTs.timestamp;
+    // No window means no other run to double-count against, so keeping it is
+    // strictly better than dropping real tokens.
+    expect(parseClaudeTranscript(JSON.stringify(noTs)).messages).toBe(1);
+  });
+
+  it('windows Codex agent_message counts alongside the token delta', () => {
+    const text = [
+      codexMeta(),
+      JSON.stringify({ timestamp: '2026-07-01T09:00:00.000Z', type: 'event_msg', payload: { type: 'agent_message', message: 'earlier run' } }),
+      codexTokenCount({ timestamp: '2026-07-01T09:00:01.000Z', input: 1000, cached: 800, output: 100 }),
+      JSON.stringify({ timestamp: '2026-07-01T12:00:00.000Z', type: 'event_msg', payload: { type: 'agent_message', message: 'this run' } }),
+      codexTokenCount({ timestamp: '2026-07-01T12:00:01.000Z', input: 3000, cached: 2400, output: 250 })
+    ].join('\n');
+
+    // The later run's tokens are a delta, so its message count must be too —
+    // otherwise it also claims the earlier run's messages.
+    const result = parseCodexRollout(text, { from: Date.parse('2026-07-01T11:00:00.000Z') });
+    expect(result.messages).toBe(1);
+    expect(result.tokensOut).toBe(150);
+  });
+});
+
+describe('per-model token buckets', () => {
+  it('splits a model switch into per-model buckets that sum to the totals', () => {
+    const text = [
+      claudeLine({ id: 'a', model: 'claude-opus-5', output: 50, cacheRead: 1000, input: 10, cacheWrite: 100 }),
+      claudeLine({ id: 'b', model: 'claude-haiku-4-5', output: 25, cacheRead: 500, input: 5, cacheWrite: 20 })
+    ].join('\n');
+
+    const result = parseClaudeTranscript(text);
+    expect(Object.keys(result.byModel).sort()).toEqual(['claude-haiku-4-5', 'claude-opus-5']);
+    expect(result.byModel['claude-opus-5']).toMatchObject({ messages: 1, tokensOut: 50, cacheReadTokens: 1000, cacheWriteTokens: 100 });
+    expect(result.byModel['claude-haiku-4-5']).toMatchObject({ messages: 1, tokensOut: 25, cacheReadTokens: 500, cacheWriteTokens: 20 });
+    // No tokens invented or lost by the split.
+    const sum = (field) => Object.values(result.byModel).reduce((s, b) => s + b[field], 0);
+    expect(sum('tokensOut')).toBe(result.tokensOut);
+    expect(sum('tokensIn')).toBe(result.tokensIn);
+    expect(sum('cacheReadTokens')).toBe(result.cacheReadTokens);
+    expect(sum('cacheWriteTokens')).toBe(result.cacheWriteTokens);
+  });
+
+  it('mirrors the Codex rollout total into byModel for shape parity', () => {
+    const text = [
+      codexMeta(),
+      codexTokenCount({ timestamp: '2026-07-01T10:00:01.000Z', input: 3000, cached: 2400, output: 250 })
+    ].join('\n');
+
+    const result = parseCodexRollout(text);
+    expect(result.byModel['gpt-5.3-codex']).toMatchObject({
+      tokensIn: 600, cacheReadTokens: 2400, tokensOut: 250, cacheWriteTokens: 0
+    });
+  });
+});
