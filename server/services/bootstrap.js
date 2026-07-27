@@ -157,7 +157,6 @@ export const bootstrapServices = async ({ io, dataDir, dataReferenceDir, serverD
       });
     },
     onRunCompleted: (metadata, output) => {
-      if (!metadata.providerId) return;
       const estimatedTokens = estimateTokens(output);
       const inputTokens = estimateTokensFromChars(metadata.promptLength);
       recordMessages(metadata.providerId, metadata.model, 1, estimatedTokens, inputTokens).catch(err => {

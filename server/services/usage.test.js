@@ -236,13 +236,34 @@ describe('usage.js — streak calculations', () => {
     it('keeps estimatedCost all-time when the visible report is range-filtered', async () => {
       readJSONFile.mockResolvedValueOnce(makeUsage({
         '2025-05-01': { sessions: 1, messages: 1, tokens: 1_000_000 },
-        '2025-06-01': { sessions: 1, messages: 1, tokens: 500_000 }
+        '2025-06-01': {
+          sessions: 1,
+          messages: 1,
+          tokens: 500_000,
+          byProvider: {
+            codex: {
+              name: 'Codex',
+              sessions: 1,
+              messages: 1,
+              tokensIn: 0,
+              tokensOut: 500_000,
+              byModel: {
+                'gpt-5.3-codex': {
+                  sessions: 1,
+                  messages: 1,
+                  tokensIn: 0,
+                  tokensOut: 500_000
+                }
+              }
+            }
+          }
+        }
       }));
       await loadUsage();
 
       const summary = getUsageSummary({ from: '2025-06-01', to: '2025-06-01' });
-      expect(summary.report.totals.estimatedCost).toBe(7.5);
-      expect(summary.estimatedCost).toBe(22.5);
+      expect(summary.report.totals.estimatedCost).toBe(7);
+      expect(summary.estimatedCost).toBe(22);
     });
   });
 
@@ -426,6 +447,19 @@ describe('usage.js — streak calculations', () => {
         estimatedCost: 15,
         rateMatch: 'fallback'
       });
+    });
+
+    it('reports the actual breakdown start even when the visible range begins later', () => {
+      const report = buildUsageReport({
+        '2025-06-01': nestedDay('codex', 'Codex', 'gpt-5.3-codex'),
+        '2025-07-01': nestedDay('codex', 'Codex', 'gpt-5.3-codex')
+      }, {
+        from: '2025-07-01',
+        to: '2025-07-31'
+      });
+
+      expect(report.breakdownSince).toBe('2025-06-01');
+      expect(report.totals.sessions).toBe(1);
     });
 
     it('folds legacy monthly buckets into the requested range', () => {

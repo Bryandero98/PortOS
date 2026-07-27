@@ -428,11 +428,13 @@ export function buildUsageReport(dailyActivity, { from = null, to = null, provid
   const fromMonth = from ? from.slice(0, 7) : null;
   const toMonth = to ? to.slice(0, 7) : null;
   for (const [month, bucket] of Object.entries(monthlyActivity || {})) {
-    if (fromMonth && month < fromMonth) continue;
-    if (toMonth && month > toMonth) continue;
     if (bucket?.byProvider) {
       const monthStart = `${month}-01`;
       if (!breakdownSince || monthStart < breakdownSince) breakdownSince = monthStart;
+    }
+    if (fromMonth && month < fromMonth) continue;
+    if (toMonth && month > toMonth) continue;
+    if (bucket?.byProvider) {
       foldBucket(bucket);
     } else if (bucket) {
       foldLegacyBucket(bucket);
@@ -440,10 +442,10 @@ export function buildUsageReport(dailyActivity, { from = null, to = null, provid
   }
 
   for (const [date, day] of Object.entries(dailyActivity || {})) {
+    if (day?.byProvider && (!breakdownSince || date < breakdownSince)) breakdownSince = date;
     if (from && date < from) continue;
     if (to && date > to) continue;
     if (day?.byProvider) {
-      if (!breakdownSince || date < breakdownSince) breakdownSince = date;
       foldBucket(day);
     } else if (day) {
       foldLegacyBucket(day);
