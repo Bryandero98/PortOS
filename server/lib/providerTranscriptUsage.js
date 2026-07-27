@@ -142,7 +142,12 @@ export function parseClaudeTranscript(jsonlText, { from = null, to = null, exclu
   let firstTs = null;
   let lastTs = null;
 
+  // Position of the current line within the file, so a line carrying no
+  // identifier at all still gets a stable key (see `dedupeKey` below).
+  let lineIndex = -1;
+
   for (const entry of parseJsonLines(jsonlText)) {
+    lineIndex += 1;
     if (!sessionId && typeof entry.sessionId === 'string') sessionId = entry.sessionId;
     if (!cwd && typeof entry.cwd === 'string') cwd = entry.cwd;
 
@@ -153,14 +158,18 @@ export function parseClaudeTranscript(jsonlText, { from = null, to = null, exclu
     if (!inWindow(ts, from, to)) continue;
 
     // One response spans multiple lines with identical usage — count it once.
-    const dedupeKey = entry.message?.id || entry.uuid;
-    if (dedupeKey) {
-      if (seen.has(dedupeKey)) continue;
-      // Already billed to another run whose window also covers this message —
-      // skip it so overlapping runs can't each claim the same tokens.
-      if (exclude?.has(dedupeKey)) continue;
-      seen.add(dedupeKey);
-    }
+    //
+    // EVERY counted line needs a key, including one carrying neither
+    // `message.id` nor `uuid`: a keyless line is invisible to the cross-run
+    // claim ledger, so two overlapping runs each bill it (measured: 100 billed
+    // for 50 reported). Fall back to the line's position, which is stable for an
+    // append-only transcript — the `@` prefix can't collide with a real id.
+    const dedupeKey = entry.message?.id || entry.uuid || `@line-${lineIndex}`;
+    if (seen.has(dedupeKey)) continue;
+    // Already billed to another run whose window also covers this message —
+    // skip it so overlapping runs can't each claim the same tokens.
+    if (exclude?.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
 
     totals.messages += 1;
     totals.tokensIn += num(usage.input_tokens);

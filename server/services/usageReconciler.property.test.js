@@ -117,17 +117,23 @@ describe('property: Claude claim ledger', () => {
         for (let i = 0, n = 1 + pick(4); i < n; i++) {
           const output = 10 + pick(100);
           reportedOut += output;
-          lines.push(JSON.stringify({
+          // Vary WHICH identifiers the line carries. A line with neither
+          // `message.id` nor `uuid` was invisible to the claim ledger and got
+          // double-billed — a shape the first version of this generator could not
+          // produce, so it is generated explicitly now.
+          const identifiers = pick(4);
+          const record = {
             type: 'assistant',
-            uuid: `u${file}-${i}`,
             cwd: WORKSPACE,
             timestamp: iso(pick(40)),
             message: {
-              id: `m${file}-${i}`,
               model: 'claude-opus-5',
               usage: { input_tokens: 1, output_tokens: output, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
             }
-          }));
+          };
+          if (identifiers !== 1 && identifiers !== 3) record.message.id = `m${file}-${i}`;
+          if (identifiers !== 2 && identifiers !== 3) record.uuid = `u${file}-${i}`;
+          lines.push(JSON.stringify(record));
         }
         await writeFile(join(dir, `session-${file}.jsonl`), lines.join('\n'));
       }

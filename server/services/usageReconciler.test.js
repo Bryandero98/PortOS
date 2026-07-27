@@ -823,3 +823,47 @@ describe('Codex attribution across every window ordering', () => {
     expect(late?.tokensOut).toBe(150);
   });
 });
+
+describe('assistant lines carrying no identifier', () => {
+  // A line with usage but neither `message.id` nor `uuid` had no key, so it was
+  // invisible to the cross-run claim ledger and two overlapping runs each billed
+  // it (measured: 100 billed for 50 reported).
+  const keyless = (timestamp, output) => JSON.stringify({
+    type: 'assistant',
+    cwd: WORKSPACE,
+    timestamp,
+    message: {
+      model: 'claude-opus-5',
+      usage: { input_tokens: 1, output_tokens: output, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+    }
+  });
+
+  it('bills an unidentified line exactly once across two overlapping runs', async () => {
+    await writeClaudeSession('a.jsonl', [keyless('2026-07-01T10:05:00.000Z', 50)]);
+
+    const first = await readMeasuredUsage({
+      workspacePath: WORKSPACE, startTime: '2026-07-01T10:00:00.000Z', endTime: '2026-07-01T10:10:00.000Z', family: 'claude', home
+    });
+    const second = await readMeasuredUsage({
+      workspacePath: WORKSPACE, startTime: '2026-07-01T10:02:00.000Z', endTime: '2026-07-01T10:12:00.000Z', family: 'claude', home
+    });
+
+    expect(first?.tokensOut).toBe(50);
+    expect(second).toBeNull();
+    expect((first?.tokensOut || 0) + (second?.tokensOut || 0)).toBe(50);
+  });
+
+  it('still counts several distinct unidentified lines separately', async () => {
+    // Positional keys must not collapse two different keyless lines into one.
+    await writeClaudeSession('a.jsonl', [
+      keyless('2026-07-01T10:05:00.000Z', 50),
+      keyless('2026-07-01T10:06:00.000Z', 25)
+    ]);
+
+    const result = await readMeasuredUsage({
+      workspacePath: WORKSPACE, startTime: '2026-07-01T10:00:00.000Z', endTime: '2026-07-01T10:10:00.000Z', family: 'claude', home
+    });
+    expect(result.tokensOut).toBe(75);
+    expect(result.messages).toBe(2);
+  });
+});
