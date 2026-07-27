@@ -1,4 +1,4 @@
-import { OctagonX, ClipboardPaste, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, CornerDownLeft } from 'lucide-react';
+import { OctagonX, ChevronsLeft, ClipboardPaste, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, CornerDownLeft } from 'lucide-react';
 
 // Hot buttons for arrow / Enter entry — handy on touch devices and for driving TUI
 // apps or scrolling shell history without a hardware keyboard. Arrow keys carry the
@@ -15,12 +15,21 @@ export const NAV_KEYS = [
 ];
 
 // Touch-friendly TUI-driving controls shared by the inline quick-commands toolbar
-// and the fullscreen control bar: Ctrl+C, Paste (+ fallback paste input), and the
-// arrow / Enter hot buttons. The Ctrl+C / Paste text labels collapse below `sm` so
+// and the fullscreen control bar: Ctrl+B/C, Paste (+ fallback paste input), and the
+// arrow / Enter hot buttons. The Ctrl+B/C / Paste text labels collapse below `sm` so
 // the cluster stays narrow on a phone; the icons always show.
-export default function TerminalHotKeys({ sendCtrlC, handlePaste, sendNavKey, showPasteInput, setShowPasteInput, pasteInputRef, handlePasteInputEvent }) {
+export default function TerminalHotKeys({ sendCtrlB, sendCtrlC, handlePaste, sendNavKey, showPasteInput, setShowPasteInput, pasteInputRef, handlePasteInputEvent }) {
   return (
     <>
+      <button
+        onClick={sendCtrlB}
+        className="flex items-center gap-1.5 px-3 py-1.5 bg-port-card hover:bg-port-border text-gray-300 hover:text-white rounded text-xs font-mono transition-colors border border-port-border min-h-[40px] shrink-0"
+        title="Send Ctrl+B"
+        aria-label="Send Ctrl+B"
+      >
+        <ChevronsLeft size={14} />
+        <span className="hidden sm:inline">Ctrl+B</span>
+      </button>
       <button
         onClick={sendCtrlC}
         className="flex items-center gap-1.5 px-3 py-1.5 bg-port-error/15 hover:bg-port-error/25 text-port-error hover:text-port-error/80 rounded text-xs font-mono transition-colors border border-port-error/30 min-h-[40px] shrink-0"

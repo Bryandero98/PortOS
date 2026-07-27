@@ -153,6 +153,7 @@ export function useShellSession({ isFullscreen } = {}) {
   }, [socket]);
 
   const sendCommand = useCallback((cmd) => emitShellInput(cmd + '\n'), [emitShellInput]);
+  const sendCtrlB = useCallback(() => emitShellInput('\x02'), [emitShellInput]);
   const sendCtrlC = useCallback(() => emitShellInput('\x03'), [emitShellInput]);
   // Arrow keys send CSI or SS3 based on the terminal's DECCKM state (see NAV_KEYS);
   // Enter and any other literal-`seq` keys pass through unchanged. focus:false keeps the
@@ -790,6 +791,7 @@ export function useShellSession({ isFullscreen } = {}) {
     isLiveRun,
     emitShellInput,
     sendCommand,
+    sendCtrlB,
     sendCtrlC,
     sendNavKey,
     restartSession,
