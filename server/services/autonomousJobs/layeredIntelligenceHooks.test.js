@@ -64,6 +64,7 @@ vi.mock('../layeredIntelligence.js', () => ({
     delivery: { totalApproved: 3, totalDelivered: 0, currentDeliveryRate: 0 },
     deliveryByScope: { 'app-improvement': { approved: 3, delivered: 0 } }
   })),
+  formatDeliveryThrottleGuidance: vi.fn(() => 'LI proposal throttle: unavailable — no delivery data'),
   renderCosMetricsSource: vi.fn(() => 'RE-RENDERED COS METRICS'),
   // selfEval (#2700). The summary's own semantics (signal sentinels, confidence,
   // degraded guidance) are unit-tested in layeredIntelligence.test.js; these are
@@ -89,6 +90,10 @@ vi.mock('../layeredIntelligence.js', () => ({
   // path is unaffected.
   computeHardExclusionGate: vi.fn(() => ({ excluded: false, reason: null })),
   computeHardExclusionNotice: vi.fn(() => ''),
+  computeLiExecutionHealth: vi.fn(() => ({
+    rate: null, sample: 0, source: null, confident: false,
+    deliveryRate: null, deliverySample: 0, deliveryConfident: false
+  })),
   readLiTaskMetrics: vi.fn().mockResolvedValue({ read: true, metrics: null }),
   // The predicate's own semantics (listing vs. either sentinel) are unit-tested in
   // layeredIntelligence.test.js; here it's a spy so the hook's WIRING can be
@@ -392,7 +397,17 @@ describe('buildTaskInput', () => {
     expect(li.computeHardExclusionNotice).toHaveBeenCalledWith(expect.objectContaining({
       liTaskStats: expect.objectContaining({ read: true })
     }));
-    expect(li.buildPrompt).toHaveBeenCalledWith(expect.objectContaining({ selfEvalReport: '' }));
+    // The delivery throttle is not part of the optional selfEval source: every LI
+    // prompt gets it, including this source-off run (#3160).
+    expect(li.computeLiExecutionHealth).toHaveBeenCalledWith(
+      expect.objectContaining({ read: true }),
+      []
+    );
+    expect(li.formatDeliveryThrottleGuidance).toHaveBeenCalled();
+    expect(li.buildPrompt).toHaveBeenCalledWith(expect.objectContaining({
+      selfEvalReport: '',
+      deliveryThrottleReport: expect.stringContaining('LI proposal throttle')
+    }));
   });
 
   it('folds the selfEval summary into the prompt when enabled (#2700)', async () => {

@@ -50,6 +50,8 @@ import {
   computePostApprovalCompletion,
   computeProposalOutcomeMetrics,
   computeDeliveryMetrics,
+  computeDeliveryThrottle,
+  formatDeliveryThrottleGuidance,
   renderCosMetricsSource,
   COS_METRICS_MAX_CHARS,
   computeProposalExecutionAwareness,
@@ -996,6 +998,48 @@ describe('computeHandoffRouting (#2764 §4)', () => {
   });
 });
 
+describe('computeDeliveryThrottle (#3160)', () => {
+  const health = (deliveryRate, deliverySample) => ({ deliveryRate, deliverySample });
+
+  it('returns null when delivery data is unavailable', () => {
+    expect(computeDeliveryThrottle(null)).toBeNull();
+    expect(computeDeliveryThrottle(health(null, 0))).toBeNull();
+    expect(computeDeliveryThrottle(health(Number.NaN, 5))).toBeNull();
+  });
+
+  it('stops below the evidence floor regardless of the observed rate', () => {
+    expect(computeDeliveryThrottle(health(100, LI_DELIVERY_MIN_SAMPLE - 1))).toBe(0);
+    expect(computeDeliveryThrottle(health(0, 1))).toBe(0);
+  });
+
+  it('stops a sufficiently-sampled delivery rate below 20%', () => {
+    expect(computeDeliveryThrottle(health(0, LI_DELIVERY_MIN_SAMPLE))).toBe(0);
+    expect(computeDeliveryThrottle(health(19.99, LI_DELIVERY_MIN_SAMPLE))).toBe(0);
+  });
+
+  it('scales proportionally from 0% to full throttle at 75%', () => {
+    expect(computeDeliveryThrottle(health(20, LI_DELIVERY_MIN_SAMPLE))).toBeCloseTo(20 / 75);
+    expect(computeDeliveryThrottle(health(50, 12))).toBeCloseTo(2 / 3);
+    expect(computeDeliveryThrottle(health(75, 12))).toBe(1);
+    expect(computeDeliveryThrottle(health(100, 12))).toBe(1);
+  });
+
+  it('formats full, degraded, stopped, cold-start, and unavailable prompt guidance', () => {
+    expect(formatDeliveryThrottleGuidance(health(75, 12)))
+      .toContain('LI proposal throttle: full — based on 75% delivery rate from 12 approved proposals');
+    expect(formatDeliveryThrottleGuidance(health(50, 12)))
+      .toContain('LI proposal throttle: 67% — based on 50% delivery rate from 12 approved proposals');
+    expect(formatDeliveryThrottleGuidance(health(0, 12)))
+      .toContain('LI proposal throttle: stopped — based on 0% delivery rate from 12 approved proposals');
+    expect(formatDeliveryThrottleGuidance(health(0, 12))).toContain('return proposal: null');
+    expect(formatDeliveryThrottleGuidance(health(19.99, 12))).toContain('return proposal: null');
+    expect(formatDeliveryThrottleGuidance(health(100, LI_DELIVERY_MIN_SAMPLE - 1)))
+      .toContain(`at least ${LI_DELIVERY_MIN_SAMPLE} approvals are required before filing resumes`);
+    expect(formatDeliveryThrottleGuidance(health(null, 0)))
+      .toContain('LI proposal throttle: unavailable');
+  });
+});
+
 describe('computeLiExecutionHealth (#2824)', () => {
   const stats = (over = {}) => ({ read: true, metrics: { completed: 10, succeeded: 3, failed: 7, successRate: 30, recentOutcomes: [], ...over } });
 
@@ -1471,6 +1515,18 @@ describe('buildPrompt', () => {
     expect(withReport).toContain('### liSelfEval');
     expect(withReport).toContain('Reasoning confidence: low');
     expect(withReport).toContain('Filing nothing (proposal: null) is a legitimate');
+  });
+
+  it('injects delivery-throttle guidance under its own prompt heading (#3160)', () => {
+    const base = { app, isPortos: false, config: { allowedScopes: ['app-improvement'], rules: '' } };
+    expect(buildPrompt(base)).not.toContain('### liDeliveryThrottle');
+    const withThrottle = buildPrompt({
+      ...base,
+      deliveryThrottleReport: 'LI proposal throttle: stopped — based on 0% delivery rate from 12 approved proposals. Return proposal: null.'
+    });
+    expect(withThrottle).toContain('### liDeliveryThrottle');
+    expect(withThrottle).toContain('LI proposal throttle: stopped');
+    expect(withThrottle).toContain('Return proposal: null');
   });
 
   it('renders selfEval and outcomes as independent blocks (either can stand alone)', () => {

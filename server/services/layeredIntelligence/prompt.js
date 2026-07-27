@@ -30,6 +30,8 @@ const BESPOKE_SOURCE_BLOCK_KEYS = new Set(['plannedWork', 'scopeGuidance']);
  * the TRUE per-proposal-domain execution record #2760 could only approximate (#2765).
  * `crossReferenceReport` (from computeCrossReferenceAnalysis) is injected as a
  * `liCrossReference` block that names domains LI proposes well but executes poorly (#2764 §3).
+ * `deliveryThrottleReport` is injected as an always-on `liDeliveryThrottle` signal
+ * by the LI hook, independent of the optional self-evaluation source (#3160).
  * `hardExclusionNotice` (from computeHardExclusionNotice, #2824) is injected as a
  * prominent `liHardExclusions` block ABOVE the allowed scopes when LI's execution
  * health is degraded — the reasoner-facing mirror of the deterministic filing gate.
@@ -37,7 +39,7 @@ const BESPOKE_SOURCE_BLOCK_KEYS = new Set(['plannedWork', 'scopeGuidance']);
  * appended: the a-priori scope/task-type/goal rule set LI needs from run one, before
  * any per-app outcome data exists.
  */
-export function buildPrompt({ app, config, sources = {}, openIssues = [], isPortos = false, outcomesReport = '', selfEvalReport = '', proposalExecutionReport = '', crossReferenceReport = '', hardExclusionNotice = '' }) {
+export function buildPrompt({ app, config, sources = {}, openIssues = [], isPortos = false, outcomesReport = '', selfEvalReport = '', deliveryThrottleReport = '', proposalExecutionReport = '', crossReferenceReport = '', hardExclusionNotice = '' }) {
   const allowed = (config.allowedScopes || []).filter(s =>
     isScopeAllowed({ scope: s, allowedScopes: config.allowedScopes, isPortos })
   );
@@ -92,6 +94,14 @@ export function buildPrompt({ app, config, sources = {}, openIssues = [], isPort
   // and its guidance is conditional on what the signals actually say.
   const selfEvalBlock = (typeof selfEvalReport === 'string' && selfEvalReport.trim())
     ? `\n### liSelfEval\n${selfEvalReport.trim()}\n\nWeigh this against the sources above before you commit to a proposal. Filing nothing (proposal: null) is a legitimate, and sometimes the correct, outcome — a marginal issue costs the user triage time and lowers your merge rate further.\n`
+    : '';
+
+  // Delivery throttle (#3160): a single numeric filing signal derived from LI's
+  // approval-to-completion health. The hook supplies it on every run, even when the
+  // optional selfEval source is off, so a source toggle cannot silently restore full
+  // proposal volume while downstream delivery is stopped.
+  const deliveryThrottleBlock = (typeof deliveryThrottleReport === 'string' && deliveryThrottleReport.trim())
+    ? `\n### liDeliveryThrottle\n${deliveryThrottleReport.trim()}\n`
     : '';
 
   // Scope-awareness (#2760): install-wide completion rates by CoS task TYPE — directional
@@ -157,7 +167,7 @@ ${openList}
 
 Gathered sources:
 ${sourceBlocks || (plannedWorkBlock ? '(no other sources available — you may propose an app-data-gap to add telemetry)' : '(no sources available — you may propose an app-data-gap to add telemetry)')}
-${plannedWorkBlock}${outcomesBlock}${selfEvalBlock}${scopeGuidanceBlock}${proposalExecutionBlock}${crossReferenceBlock}${playbookBlock}
+${plannedWorkBlock}${outcomesBlock}${selfEvalBlock}${deliveryThrottleBlock}${scopeGuidanceBlock}${proposalExecutionBlock}${crossReferenceBlock}${playbookBlock}
 Respond with JSON only (no markdown fences):
 {
   "analysis": "brief reasoning summary",
