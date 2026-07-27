@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, within, act, fireEvent } from '@testing-library/react';
+import { render, screen, within, act, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { PINNED_KEY } from '../utils/navWorkingSet.js';
+import * as api from '../services/api';
 
 // This suite locks the *integration* path that SingleNavRow.test.jsx can't reach:
 // pinning a top-level `single: true` row (Dashboard `/`, Review Hub `/review`,
@@ -87,6 +88,8 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  api.listPipelineSeries.mockResolvedValue([]);
+  api.listUniverses.mockResolvedValue([]);
 });
 
 describe('Layout — pinned single nav rows', () => {
@@ -174,5 +177,32 @@ describe('Layout — persistent mobile touch targets', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Expand Create' }));
 
     expect(screen.getByRole('link', { name: 'Authors' })).toHaveAttribute('href', '/authors');
+  });
+});
+
+describe('Layout — dynamic third-level navigation', () => {
+  it('collapses and expands the Series and Universes children', async () => {
+    api.listPipelineSeries.mockResolvedValue([{ id: 'series-1', name: 'Example Series' }]);
+    api.listUniverses.mockResolvedValue([{ id: 'universe-1', name: 'Example Universe' }]);
+
+    await renderLayout('/media');
+
+    await waitFor(() => {
+      expect(screen.getByRole('link', { name: 'Example Series' })).toHaveAttribute('href', '/pipeline/series/series-1');
+      expect(screen.getByRole('link', { name: 'Example Universe' })).toHaveAttribute('href', '/universes/universe-1');
+    });
+
+    const collapseSeries = screen.getByRole('button', { name: 'Collapse Series Pipeline' });
+    const collapseUniverses = screen.getByRole('button', { name: 'Collapse Universes' });
+    fireEvent.click(collapseSeries);
+    fireEvent.click(collapseUniverses);
+    expect(screen.queryByRole('link', { name: 'Example Series' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Example Universe' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Series Pipeline' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Universes' }));
+    expect(screen.getByRole('link', { name: 'Example Series' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Example Universe' })).toBeTruthy();
+
   });
 });

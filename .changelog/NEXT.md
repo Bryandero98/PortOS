@@ -1,5 +1,9 @@
 # Unreleased Changes
 
+## Navigation
+
+- Third-level Create navigation for Series and Universes can now be collapsed and expanded independently.
+
 ## Client linting
 
 - Client linting now uses ESLint 10 with the maintained ESLint React rule set, preserving PortOS's key React correctness checks without relying on the unmaintained `eslint-plugin-react` compatibility range.
