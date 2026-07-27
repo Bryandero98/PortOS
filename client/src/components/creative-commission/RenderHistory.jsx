@@ -72,19 +72,28 @@ export default function RenderHistory({ runs, feedback, projectsById, projectsLo
             id={`commission-run-${r.id}`}
             className={`bg-port-card border rounded-lg overflow-hidden flex flex-col ${focused ? 'border-port-accent ring-1 ring-port-accent' : 'border-port-border'}`}
           >
-            {/* Produced-media preview (or a status-only placeholder). */}
+            {/* Produced-media preview (or a status-only placeholder). Width-capped,
+                not height-capped: ProjectPreview's box derives its height from an
+                aspect-ratio class, so clamping height with overflow-hidden crops
+                it — and pushes ProjectPreview's absolutely-centered play button
+                and bottom label below the visible area for any non-16:9 ratio.
+                Constraining width instead lets aspect-ratio derive a height that
+                already fits, matching previewMaxWidthClass's documented approach
+                in lib/creativeDirectorPreview.js. */}
             {project ? (
-              <div className="overflow-hidden" style={{ maxHeight: '160px' }}>
-                  <ProjectPreview project={project} to={`/creative-director/${encodeURIComponent(r.projectId)}`} />
+              <div className="max-w-[220px] mx-auto">
+                <ProjectPreview project={project} to={`/creative-director/${encodeURIComponent(r.projectId)}`} />
               </div>
             ) : (
               // `project` is null in this branch, so the placeholder falls back to
               // the default 16:9 box. Distinguish the transient load window (project
               // list still fetching) from a genuinely pruned/missing render — a real
               // render must not flash "unavailable" before the fetch resolves.
-              <div className="h-[120px] bg-port-bg flex flex-col items-center justify-center gap-1 text-gray-600 text-xs">
-                <Film className="w-4 h-4 opacity-50" aria-hidden="true" />
-                <span>{r.projectId ? (projectsLoading ? 'loading…' : 'render unavailable') : 'no render'}</span>
+              <div className="max-w-[220px] mx-auto">
+                <div className={`${previewAspectClass()} bg-port-bg flex flex-col items-center justify-center gap-1 text-gray-600 text-xs`}>
+                  <Film className="w-4 h-4 opacity-50" aria-hidden="true" />
+                  <span>{r.projectId ? (projectsLoading ? 'loading…' : 'render unavailable') : 'no render'}</span>
+                </div>
               </div>
             )}
 
