@@ -51,19 +51,26 @@
  * defaulting to the grid's row count is what keeps existing atlases idempotent
  * instead of condemning them to recompile their pixels forever.
  *
- * **Only ONE track is registered today** (`walk`). The multi-track paths below
- * are proven in `atlasGrid.test.js` against a synthetic REGISTRY TABLE rather
- * than by shipping a second track's artwork. The registry table is the
+ * **Only ONE track is COMPILED IN** (`walk`); every other row — including the
+ * seeded `scanner`/`ambient` — comes from the user-defined store (#3152), which
+ * is why the default `tracks` table below is `getEffectiveAnimationTracks()`
+ * rather than the compiled constant. The multi-track paths are still proven in
+ * `atlasGrid.test.js` against a synthetic REGISTRY TABLE rather than against
+ * whatever a given install happens to have stored: the registry table is the
  * injection seam throughout — the same idiom `assertAnimationTrackRows(tracks)`
  * uses — so a synthetic row flows through exactly the lookup, ordering and
- * unknown-id boundary a real one would. Shipping a real second track is #3018's
- * job, and it should land as a registry ROW plus its pipeline, with no shape
- * change here.
+ * unknown-id boundary a real one would, and the suite doesn't depend on a user's
+ * data.
  */
 
-import {
-  ANIMATION_TRACKS, WALK_TRACK, getAnimationTrack, trackRowCount,
-} from './animationTracks.js';
+import { WALK_TRACK, getAnimationTrack, trackRowCount } from './animationTracks.js';
+// #3152 — the DEFAULT table is now the effective one (compiled `walk` + the
+// user-defined store) rather than the compiled constant, so a user's track gets a
+// span and a row count here without every caller learning to pass one. Each
+// default is evaluated per CALL (default params are lazy), so the store's cached
+// read happens on first use rather than at this module's load. `tracks` stays an
+// explicit parameter — it is still the injection seam the multi-track tests use.
+import { getEffectiveAnimationTracks } from './animationTrackStore.js';
 import { ATLAS_IDLE_COLUMN, ATLAS_SCANNER_COLUMN, walkPhaseLabels } from './walkBounds.js';
 import { SPRITE_DIRECTIONS } from './prompts.js';
 import { canonicalStringify } from '../../lib/objects.js';
@@ -93,7 +100,7 @@ export const ATLAS_DEFAULT_ROWS = SPRITE_DIRECTIONS.length;
  * manifest, and `reference.js`'s eight anchors, all still hardcode the facing
  * list, and generalizing them is the job of the track that needs it (#3045).
  */
-export function trackDirections(trackId, directions = SPRITE_DIRECTIONS, tracks = ANIMATION_TRACKS) {
+export function trackDirections(trackId, directions = SPRITE_DIRECTIONS, tracks = getEffectiveAnimationTracks()) {
   if (!Array.isArray(directions) || !directions.length) {
     throw new Error(`Atlas track '${trackId}' needs a non-empty direction list`);
   }
@@ -149,7 +156,7 @@ export function trackColumnLabels(trackId, frameCount) {
  * proven against a synthetic table without a private lookup that would bypass
  * that boundary.
  */
-export function buildAtlasGrid(specs, tracks = ANIMATION_TRACKS) {
+export function buildAtlasGrid(specs, tracks = getEffectiveAnimationTracks()) {
   if (!Array.isArray(specs) || !specs.length) {
     throw new Error('Atlas grid needs at least one animation track');
   }
@@ -425,7 +432,7 @@ export function compiledGridUpToDate(current, expected) {
  * column labels, which `buildAtlasGrid` derives itself so the two can't disagree.
  */
 export function resolveTrackUniformity(trackId, rows, {
-  tracks = ANIMATION_TRACKS,
+  tracks = getEffectiveAnimationTracks(),
   trackRow = getAnimationTrack(trackId, tracks),
   error = (message) => new Error(message),
   defaultFps = trackRow.defaultFps,

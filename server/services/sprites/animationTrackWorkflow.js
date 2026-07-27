@@ -51,6 +51,10 @@ import { requireTrack, loadManifest } from './reference.js';
 import { anchorIdForDirection } from './prompts.js';
 import { buildTrackVideoPrompt } from './trackPrompts.js';
 import { clampTrackFrameCount, clampTrackFps, getAnimationTrack, sourceReferenceFor } from './animationTracks.js';
+// #3152 — this workflow drives ANY row, so every registry lookup resolves against
+// the effective table (compiled `walk` + the user-defined store); a user's own
+// track reaches generate/approve through exactly this path with no new code.
+import { getEffectiveAnimationTracks } from './animationTrackStore.js';
 import { trackDirections } from './atlasGrid.js';
 import { spriteDir, resolveSpriteAssetPath, SOURCE_CLIP_NAME } from './paths.js';
 import { prepareWalkAnchorChromaInput, runWalkPostprocess } from './walkPostprocess.js';
@@ -130,7 +134,7 @@ async function trackRuns(trackId, recordId) {
  * spellings (`scannerSet`/`ambientSet`) went away with the clones.
  */
 export async function getTrackState(trackId, recordId) {
-  const row = getAnimationTrack(trackId);
+  const row = getAnimationTrack(trackId, getEffectiveAnimationTracks());
   const [selection, set, runs] = await Promise.all([
     loadSelection(row.id, recordId), loadSet(row.id, recordId), trackRuns(row.id, recordId),
   ]);
@@ -153,7 +157,7 @@ export async function getTrackState(trackId, recordId) {
  * different answer from "frozen but gone", handled by the caller's disk check.
  */
 function trackSourceFor(row, manifest, direction) {
-  if (sourceReferenceFor(row.id) === 'main') {
+  if (sourceReferenceFor(row.id, getEffectiveAnimationTracks()) === 'main') {
     const main = lockedMainFor(manifest);
     return {
       label: 'main reference',
@@ -209,7 +213,7 @@ export function startTrackGeneration(trackId, recordId, body) {
 }
 
 async function startTrackGenerationImpl(trackId, recordId, body) {
-  const row = getAnimationTrack(trackId);
+  const row = getAnimationTrack(trackId, getEffectiveAnimationTracks());
   const [record, reference, existingSet, existingRuns] = await Promise.all([
     requireTrack(recordId, row.id), loadManifest(recordId), loadSet(row.id, recordId), trackRuns(row.id, recordId),
   ]);
@@ -233,8 +237,8 @@ async function startTrackGenerationImpl(trackId, recordId, body) {
     );
   }
 
-  const frameCount = clampTrackFrameCount(body.frameCount, row.id);
-  const fps = clampTrackFps(body.fps, row.id);
+  const frameCount = clampTrackFrameCount(body.frameCount, row.id, getEffectiveAnimationTracks());
+  const fps = clampTrackFps(body.fps, row.id, getEffectiveAnimationTracks());
   // Optional re-roll note (#3134) — blank leaves the prompt and the run record
   // exactly as a blind regenerate would.
   const correctionPrompt = typeof body.correctionPrompt === 'string' ? body.correctionPrompt.trim() : '';
@@ -320,7 +324,7 @@ async function runTrackTuiRender(row, recordId, { runId, direction, generatedAbs
 }
 
 export async function attachTrackTuiResult(trackId, recordId, runId, videoAbs) {
-  const row = getAnimationTrack(trackId);
+  const row = getAnimationTrack(trackId, getEffectiveAnimationTracks());
   const run = await loadRun(recordId, runId);
   if (!run || run.track !== row.id || await loadSet(row.id, recordId)) return;
   const selection = await loadSelection(row.id, recordId);
@@ -360,8 +364,8 @@ async function packageTrackRun(row, recordId, run) {
       anchorRel: source.locked.path,
       anchorAbs: resolveSpriteAssetPath(recordId, source.locked.path),
       videoAbs: resolveSpriteAssetPath(recordId, run.sourceVideoPath),
-      frameCount: clampTrackFrameCount(run.frameCount, row.id),
-      fps: clampTrackFps(run.fps, row.id),
+      frameCount: clampTrackFrameCount(run.frameCount, row.id, getEffectiveAnimationTracks()),
+      fps: clampTrackFps(run.fps, row.id, getEffectiveAnimationTracks()),
     });
     run.frameCount = result.manifest.frameCount;
     run.fps = result.manifest.frameRate;
@@ -382,7 +386,7 @@ export function approveTrackRun(trackId, recordId, args) {
 }
 
 async function approveTrackRunImpl(trackId, recordId, { direction: requested, runId }) {
-  const row = getAnimationTrack(trackId);
+  const row = getAnimationTrack(trackId, getEffectiveAnimationTracks());
   await requireTrack(recordId, row.id);
   if (await loadSet(row.id, recordId)) throw setFinalError(row);
   const direction = resolveTrackDirection(row, requested);
@@ -476,7 +480,7 @@ export function invalidateTrackForTurnaroundRevision(trackId, recordId) {
 }
 
 async function invalidateTrackDirectionImpl(trackId, recordId, direction) {
-  const row = getAnimationTrack(trackId);
+  const row = getAnimationTrack(trackId, getEffectiveAnimationTracks());
   const [finalizedSet, loaded] = await Promise.all([loadSet(row.id, recordId), loadSelection(row.id, recordId)]);
   const approved = loaded?.directions?.[direction] || finalizedSet?.directions?.[direction];
   if (approved?.status !== 'approved') return false;

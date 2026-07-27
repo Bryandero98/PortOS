@@ -52,8 +52,15 @@ import {
   spriteTrackGenerateSchema,
 } from './validation.js';
 import {
-  WALK_TRACK, ANIMATION_TRACK_IDS, getAnimationTrack, tracksForKind,
+  WALK_TRACK, getAnimationTrack, tracksForKind,
 } from '../services/sprites/animationTracks.js';
+// #3152 — the contract schema is built from the EFFECTIVE table (compiled `walk` +
+// the user-defined store), so these assertions must enumerate the same set the
+// schema did; walking the compiled ids would narrow them to `walk` alone and stop
+// covering the seeded `scanner`/`ambient` fields entirely.
+import {
+  getEffectiveAnimationTracks, getEffectiveAnimationTrackIds,
+} from '../services/sprites/animationTrackStore.js';
 import {
   telegramForwardTypesSchema,
 } from './telegramValidation.js';
@@ -1920,8 +1927,8 @@ describe('ad-hoc route schemas (#2521)', () => {
       // STRIPPED by Zod and the app rung of the target-precedence chain went
       // dead for it with no error anywhere. Derived from the registry, every
       // registered row's field is accepted at its own bounds by construction.
-      for (const id of ANIMATION_TRACK_IDS) {
-        const row = getAnimationTrack(id);
+      for (const id of getEffectiveAnimationTrackIds()) {
+        const row = getAnimationTrack(id, getEffectiveAnimationTracks());
         // Pair a non-primary track's field with walk's so the contract is
         // publishable — this asserts the FIELD is known, not the primacy rule
         // (covered below).
@@ -1941,13 +1948,14 @@ describe('ad-hoc route schemas (#2521)', () => {
       // track on an existing kind (scanner) describes no publishable atlas,
       // because the compiler requires the primary's finalized set before it
       // emits anything at all.
-      const primaries = ANIMATION_TRACK_IDS.filter(
-        (id) => getAnimationTrack(id).kinds.some((kind) => tracksForKind(kind)[0]?.id === id),
+      const effective = getEffectiveAnimationTracks();
+      const primaries = getEffectiveAnimationTrackIds().filter(
+        (id) => effective[id].kinds.some((kind) => tracksForKind(kind, effective)[0]?.id === id),
       );
       expect(primaries).toEqual([WALK_TRACK, 'ambient']);
       for (const id of primaries) {
         expect(spriteRuntimeContractSchema.safeParse({
-          [getAnimationTrack(id).contractFrameCountField]: getAnimationTrack(id).defaultFrameCount,
+          [effective[id].contractFrameCountField]: effective[id].defaultFrameCount,
         }).success, `${id} alone is a publishable contract`).toBe(true);
       }
       expect(spriteRuntimeContractSchema.safeParse({ scannerFrameCount: 4 }).success).toBe(false);

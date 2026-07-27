@@ -7,12 +7,13 @@
  * with a correct hash chain.
  */
 
-import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 import sharp from 'sharp';
-import { mkdir, writeFile, readFile } from 'fs/promises';
+import { mkdir, writeFile, readFile, rm } from 'fs/promises';
 import { createHash } from 'crypto';
 import { lockAllAnchors as lockAllAnchorsFixture, placeCandidate, trackSpan as fullSpan } from './spriteTestFixtures.js';
 
@@ -46,6 +47,9 @@ const { SPRITE_DIRECTIONS } = await import('./prompts.js');
 const { WALK_PHASES, walkPhaseLabels, WALK_FPS } = await import('./walkPostprocess.js');
 const { buildAtlasGrid, compiledGridUpToDate } = await import('./atlasGrid.js');
 const { getAnimationTrack, SCANNER_TRACK, AMBIENT_TRACK } = await import('./animationTracks.js');
+const { __resetAnimationTrackStore } = await import('./animationTrackStore.js');
+
+const SPRITES_DIR = dirname(fileURLToPath(import.meta.url));
 
 let seq = 0;
 const newId = () => `atlas-char-${++seq}`;
@@ -323,6 +327,67 @@ describe('compileAtlas', () => {
     for (const row of manifest.directions) {
       expect(row.cells.filter((cell) => cell.column.startsWith('scanner-'))).toHaveLength(4);
     }
+  });
+
+  // #3152's stated "regression that matters": `scanner`/`ambient` stopped being
+  // compiled rows and became rows in `data/sprites/animation-tracks.json`. The
+  // cases above prove the PRE-migration state compiles (no store file → the
+  // data.reference seed answers). These two prove the POST-migration state does
+  // too, with a real user-owned store on disk — which is the shape every upgraded
+  // install actually runs, and the one where a broken store→registry hand-off
+  // would surface as "unknown animation track 'scanner'" on a record that
+  // compiled fine yesterday.
+  describe('after migration 211 materializes the user-owned store (#3152)', () => {
+    // A byte copy of the shipped seed, exactly as the migration writes it — so
+    // this asserts the migration's OUTPUT is sufficient, not merely that some
+    // hand-written store works.
+    const installUserStore = async () => {
+      const seed = await readFile(join(SPRITES_DIR, '..', '..', '..', 'data.reference', 'sprites', 'animation-tracks.json'), 'utf-8');
+      await mkdir(join(TEST_ROOT, 'sprites'), { recursive: true });
+      await writeFile(join(TEST_ROOT, 'sprites', 'animation-tracks.json'), seed);
+      __resetAnimationTrackStore();
+    };
+    // Restore the seed-fallback state the rest of this file compiles under, so
+    // ordering between suites can't matter.
+    afterEach(async () => {
+      await rm(join(TEST_ROOT, 'sprites', 'animation-tracks.json'), { force: true });
+      __resetAnimationTrackStore();
+    });
+
+    it('still compiles an approved scanner set beside the walk span', async () => {
+      const id = newId();
+      await lockAllAnchors(id);
+      await buildFinalizedWalkSet(id, { frameCount: 12, fps: 10 });
+      await buildFinalizedScannerSet(id);
+      await installUserStore();
+
+      const result = await compileAtlas(id);
+      const manifest = JSON.parse(await readFile(join(TEST_ROOT, 'sprites', id, result.manifestPath), 'utf8'));
+      // Identical geometry to the compiled-row era: the span order, the column
+      // labels, and the frame count all still resolve from the (now stored) row.
+      expect(manifest.geometry.columns).toEqual([
+        'idle', ...walkPhaseLabels(12), 'scanner-00', 'scanner-01', 'scanner-02', 'scanner-03',
+      ]);
+      expect(manifest.geometry.tracks.scanner).toMatchObject({ start: 13, count: 4, rows: 8 });
+      expect(manifest.geometry.scannerFrameCount).toBe(4);
+    });
+
+    it('still compiles an approved ambient loop for a place record', async () => {
+      const id = await finalizedAmbientPlace();
+      await installUserStore();
+
+      const result = await compileAtlas(id);
+      const manifest = JSON.parse(await readFile(join(TEST_ROOT, 'sprites', id, result.manifestPath), 'utf8'));
+      // The ambient dispatch runs off `primaryTrackForKind('place')`, which is
+      // now answered by a STORED row — a compiled-table lookup there returns null
+      // and silently routes a place into the walk evidence chain, failing with
+      // "No finalized walk set" on a record that has no walk at all.
+      expect(manifest.kind).toBe('reviewed-ambient-set-runtime-atlas');
+      expect(manifest.geometry).toMatchObject({
+        columns: ['idle', 'ambient-00', 'ambient-01', 'ambient-02'],
+        ambientFrameCount: 3,
+      });
+    });
   });
 
   it('compiles the 9×8 player atlas with full provenance and a current pointer', async () => {

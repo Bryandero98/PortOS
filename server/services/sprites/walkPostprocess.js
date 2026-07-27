@@ -35,6 +35,9 @@ import {
   WALK_FRAME_COUNT, WALK_DEFAULT_FRAME_COUNT, WALK_DEFAULT_FPS,
 } from './walkBounds.js';
 import { WALK_TRACK, getAnimationTrack, clampTrackFrameCount, clampTrackFps } from './animationTracks.js';
+// #3152 — the packer runs for any track the generic workflow drives, including a
+// user-defined one, so its bounds come from the effective table.
+import { getEffectiveAnimationTracks } from './animationTrackStore.js';
 import { trackColumnLabels } from './atlasGrid.js';
 
 export {
@@ -884,9 +887,10 @@ export async function runWalkPostprocess({
   recordId, direction, chromaKey, runAbs, runRel, anchorRel, anchorAbs, videoAbs,
   frameCount = WALK_DEFAULT_FRAME_COUNT, fps = WALK_DEFAULT_FPS, track = WALK_TRACK,
 }) {
-  const trackRow = getAnimationTrack(track);
-  const targetFrames = clampTrackFrameCount(frameCount, track);
-  const playbackFps = clampTrackFps(fps, track);
+  const effectiveTracks = getEffectiveAnimationTracks();
+  const trackRow = getAnimationTrack(track, effectiveTracks);
+  const targetFrames = clampTrackFrameCount(frameCount, track, effectiveTracks);
+  const playbackFps = clampTrackFps(fps, track, effectiveTracks);
   const phaseLabels = trackColumnLabels(track, targetFrames);
   const split = keyChannelSplit(chromaKey);
   const generatedAbs = join(runAbs, 'generated');

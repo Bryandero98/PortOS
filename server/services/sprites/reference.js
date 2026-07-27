@@ -46,8 +46,14 @@ import {
 } from './prompts.js';
 import { pickChromaKey, keyProximityWarning, CHROMA_KEY_HEXES, DEFAULT_CHROMA_KEY } from './chromaKey.js';
 import {
-  WALK_TRACK, ANIMATION_TRACK_IDS, kindSupportsTrack, tracksForKind,
+  WALK_TRACK, kindSupportsTrack, tracksForKind,
 } from './animationTracks.js';
+// #3152 — the gates below ask the EFFECTIVE table (compiled `walk` + the
+// user-defined store) so a record kind a user's own track admits gets the same
+// animation path a seeded one does.
+import {
+  getEffectiveAnimationTracks, getEffectiveAnimationTrackIds,
+} from './animationTrackStore.js';
 import {
   analyzeForeground, paletteFromAnalysis, normalizeFromAnalysis, recompositeOnKey,
 } from './normalize.js';
@@ -189,9 +195,10 @@ function seedManifest(recordId, { directional = true } = {}) {
 export async function requireTrack(recordId, trackId = null) {
   const record = await getRecord(recordId);
   if (!record) throw new ServerError('Sprite record not found', { status: 404, code: 'NOT_FOUND' });
+  const effectiveTracks = getEffectiveAnimationTracks();
   const supported = trackId
-    ? kindSupportsTrack(record.kind, trackId)
-    : tracksForKind(record.kind).length > 0;
+    ? kindSupportsTrack(record.kind, trackId, effectiveTracks)
+    : tracksForKind(record.kind, effectiveTracks).length > 0;
   if (!supported) {
     // The walk gate keeps its historical message and code — callers (and
     // reference.test.js) match on NOT_A_CHARACTER, and walk is character-only,
@@ -200,7 +207,7 @@ export async function requireTrack(recordId, trackId = null) {
       throw new ServerError('Reference workflow applies to character records only', { status: 400, code: 'NOT_A_CHARACTER' });
     }
     throw new ServerError(
-      `No animation track applies to ${record.kind} records — the registered tracks are: ${ANIMATION_TRACK_IDS.join(', ')}`,
+      `No animation track applies to ${record.kind} records — the registered tracks are: ${getEffectiveAnimationTrackIds().join(', ')}`,
       { status: 400, code: 'NOT_ANIMATABLE' },
     );
   }
@@ -366,7 +373,7 @@ export function startReferenceGeneration(recordId, body, upload = null) {
 
 async function startReferenceGenerationImpl(recordId, body, upload = null) {
   const record = await requireTrack(recordId);
-  const directional = kindSupportsTrack(record.kind, WALK_TRACK);
+  const directional = kindSupportsTrack(record.kind, WALK_TRACK, getEffectiveAnimationTracks());
   const manifest = (await loadManifest(recordId)) || seedManifest(recordId, { directional });
   const target = body.target;
   if (!directional && target !== 'main') {
@@ -663,7 +670,7 @@ export async function listReferenceSources() {
     // Same question requireCharacter asks — a reference set exists only for a
     // kind that carries the walk track — so a row admitting another kind is
     // picked up here too instead of this list silently staying character-only.
-    if (r.deleted || !kindSupportsTrack(r.kind, WALK_TRACK)) continue;
+    if (r.deleted || !kindSupportsTrack(r.kind, WALK_TRACK, getEffectiveAnimationTracks())) continue;
     const manifest = await loadManifest(r.id);
     // Same picker resolveSourceReference uses, so the advertised image is
     // exactly the one a seed will attach.
@@ -700,7 +707,7 @@ export async function listSpriteThumbnails() {
     // Registry-driven for the same reason as listReferenceSources: a locked
     // main reference is a property of carrying the walk track, not of the
     // literal kind name.
-    if (tracksForKind(r.kind).length) {
+    if (tracksForKind(r.kind, getEffectiveAnimationTracks()).length) {
       const manifest = await loadManifest(r.id);
       const main = manifest?.mainReference;
       if (main?.locked && main.path) return { id: r.id, path: main.path };
@@ -980,7 +987,7 @@ async function unlockReferenceTurnaroundImpl(recordId) {
 
 async function lockReferenceImpl(recordId, { target, candidate, acceptClipRisk = false }) {
   const record = await requireTrack(recordId);
-  const directional = kindSupportsTrack(record.kind, WALK_TRACK);
+  const directional = kindSupportsTrack(record.kind, WALK_TRACK, getEffectiveAnimationTracks());
   // Seed on demand — a candidate may predate the manifest (e.g. files placed
   // by an import or a crash-recovered tree); the lock is what makes it real.
   const manifest = (await loadManifest(recordId)) || seedManifest(recordId, { directional });

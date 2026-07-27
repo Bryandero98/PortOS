@@ -51,9 +51,17 @@ import {
 } from './walkPostprocess.js';
 import { ATLAS_IDLE_COLUMN } from './walkBounds.js';
 import {
-  WALK_TRACK, SCANNER_TRACK, AMBIENT_TRACK, ANIMATION_TRACK_IDS,
+  WALK_TRACK, SCANNER_TRACK, AMBIENT_TRACK,
   kindSupportsTrack, getAnimationTrack, primaryTrackForKind,
 } from './animationTracks.js';
+// #3152 — `scanner` and `ambient` are now STORED rows, not compiled ones, so the
+// two bespoke evidence chains below (which still name them, because existing
+// on-disk sets carry their exact `setKind` strings) must resolve through the
+// effective table or every lookup would throw as unknown. The span-order sweep
+// likewise walks the effective id list, so a user's track gets a stable span.
+import {
+  getEffectiveAnimationTracks, getEffectiveAnimationTrackIds,
+} from './animationTrackStore.js';
 import {
   buildAtlasGrid, resolveTrackUniformity, compiledGridUpToDate, trackDirections,
 } from './atlasGrid.js';
@@ -272,7 +280,7 @@ export async function validateForCompile(recordId) {
   // (`primaryTrackForKind`) rather than spelled as "ambient-and-not-walk", so it
   // is the same definition `spriteRuntimeContractSchema` requires a frame count
   // for; the two used to agree only by coincidence.
-  if (recordForTrack && primaryTrackForKind(recordForTrack.kind)?.id === AMBIENT_TRACK) {
+  if (recordForTrack && primaryTrackForKind(recordForTrack.kind, getEffectiveAnimationTracks())?.id === AMBIENT_TRACK) {
     return validateAmbientForCompile(recordId, recordForTrack);
   }
   // Every hashed input is read exactly once: verify the bytes in memory and
@@ -388,7 +396,7 @@ export async function validateForCompile(recordId) {
     // `setKind` comes from the registry row (#3136) rather than a literal, so
     // the track that WRITES the set and the compiler that re-verifies it share
     // one definition — the same single-source rule the contract fields follow.
-    if (scannerSet.kind !== getAnimationTrack(SCANNER_TRACK).setKind || scannerSet.track !== SCANNER_TRACK
+    if (scannerSet.kind !== getAnimationTrack(SCANNER_TRACK, getEffectiveAnimationTracks()).setKind || scannerSet.track !== SCANNER_TRACK
       || scannerSet.status !== 'final' || scannerSet.characterId !== recordId
       || JSON.stringify(scannerSet.directionOrder) !== JSON.stringify(SPRITE_DIRECTIONS)) {
       throw compileError('Scanner set manifest is not a finalized directional scanner set');
@@ -452,7 +460,7 @@ export async function validateForCompile(recordId) {
 
   // Registration order, so the compiled grid's span order is stable regardless
   // of the order the rows happened to be collected in.
-  const tracks = ANIMATION_TRACK_IDS
+  const tracks = getEffectiveAnimationTrackIds()
     .filter((id) => trackRows[id]?.length)
     .map((id) => resolveTrackUniformity(id, trackRows[id], {
       error: compileError,
@@ -525,7 +533,7 @@ async function validateAmbientForCompile(recordId, record) {
   } catch {
     throw compileError('Ambient set manifest is unreadable');
   }
-  if (ambientSet.kind !== getAnimationTrack(AMBIENT_TRACK).setKind || ambientSet.track !== AMBIENT_TRACK
+  if (ambientSet.kind !== getAnimationTrack(AMBIENT_TRACK, getEffectiveAnimationTracks()).setKind || ambientSet.track !== AMBIENT_TRACK
     || ambientSet.status !== 'final' || ambientSet.characterId !== recordId
     || JSON.stringify(ambientSet.directionOrder) !== JSON.stringify(['south'])) {
     throw compileError('Ambient set manifest is not a finalized single-row ambient set');

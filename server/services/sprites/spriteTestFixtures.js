@@ -114,4 +114,11 @@ export const AMBIENT_TRACK_ROW = Object.freeze({
   setKind: 'finalized-single-row-ambient-set',
   finalErrorCode: 'AMBIENT_SET_FINAL',
   standaloneContract: true,
+  // #3152 — `builtin: true` because this fixture stands in for a COMPILED row in
+  // the injected-table tests: those exercise the readers' row-handling, not the
+  // store's loading, and a `builtin: false` row would additionally have to carry
+  // a `promptTemplate` (which `assertAnimationTrackRows` requires of a stored row)
+  // for reasons that have nothing to do with what they assert. The store's own
+  // user-defined-row shape is exercised in `animationTrackStore.test.js`.
+  builtin: true,
 });

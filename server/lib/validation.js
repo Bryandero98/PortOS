@@ -5,9 +5,15 @@ import { WORK_TRACKERS } from './workTracker.js';
 import { SPRITE_ID_PATTERN, SPRITE_RECORD_KINDS } from '../services/sprites/recordsLogic.js';
 import { ANCHOR_DIRECTIONS, SPRITE_DIRECTIONS, TURNAROUND_ID } from '../services/sprites/prompts.js';
 import { CHROMA_KEY_HEXES } from '../services/sprites/chromaKey.js';
+import { WALK_TRACK, getAnimationTrack } from '../services/sprites/animationTracks.js';
+// #3152 — the EFFECTIVE table (compiled `walk` + the user-defined store), so a
+// user's track validates against its own bounds and occupies its own contract
+// field with no schema edit. The store reads one small JSON config synchronously
+// (see its header for why sync is the right answer here), which is what lets the
+// schemas below stay module-load constants rather than becoming lazily-built.
 import {
-  WALK_TRACK, ANIMATION_TRACK_IDS, getAnimationTrack,
-} from '../services/sprites/animationTracks.js';
+  getEffectiveAnimationTracks, getEffectiveAnimationTrackIds,
+} from '../services/sprites/animationTrackStore.js';
 import { QUEUEABLE_IMAGE_MODES } from '../services/imageGen/modes.js';
 import { GROK_VIDEO_DURATIONS } from './grokVideoClip.js';
 import { PR_COMPLETION_VALUES } from './prDisposition.js';
@@ -990,12 +996,12 @@ export const videoDownloadSchema = z.object({
 // carries a track id until the first second track lands, and an exported-but-
 // unwired validator is false confidence.
 export function spriteTrackFrameCountSchema(track) {
-  const row = getAnimationTrack(track);
+  const row = getAnimationTrack(track, getEffectiveAnimationTracks());
   return z.number().int().min(row.minFrameCount).max(row.maxFrameCount);
 }
 
 export function spriteTrackFpsSchema(track) {
-  const row = getAnimationTrack(track);
+  const row = getAnimationTrack(track, getEffectiveAnimationTracks());
   return z.number().int().min(row.minFps).max(row.maxFps);
 }
 
@@ -1054,10 +1060,8 @@ const spriteRepoRelativePath = z.string().min(1).max(1024)
 // here — and forgetting meant the field was silently stripped by Zod and the
 // app rung of the target-precedence chain went dead for that track.
 const spriteTrackContractFields = Object.fromEntries(
-  ANIMATION_TRACK_IDS.map((id) => {
-    const row = getAnimationTrack(id);
-    return [row.contractFrameCountField, spriteTrackFrameCountSchema(id).optional()];
-  }),
+  Object.values(getEffectiveAnimationTracks())
+    .map((row) => [row.contractFrameCountField, spriteTrackFrameCountSchema(row.id).optional()]),
 );
 
 // The tracks whose frame count is enough ON ITS OWN to make a contract
@@ -1067,9 +1071,9 @@ const spriteTrackContractFields = Object.fromEntries(
 // historical "walkFrameCount or ambientFrameCount" rule and stays correct for a
 // user-defined track. It is the same field `atlas.js` dispatches its compile
 // evidence chain on, so publish validation and compile can't disagree.
-const SPRITE_STANDALONE_CONTRACT_FIELDS = ANIMATION_TRACK_IDS
-  .filter((id) => getAnimationTrack(id).standaloneContract)
-  .map((id) => getAnimationTrack(id).contractFrameCountField);
+const SPRITE_STANDALONE_CONTRACT_FIELDS = Object.values(getEffectiveAnimationTracks())
+  .filter((row) => row.standaloneContract)
+  .map((row) => row.contractFrameCountField);
 
 export const spriteRuntimeContractSchema = z.object({
   // Ranges come from each track's registry row (#3015/#3136). `walkFrameCount`
@@ -1276,7 +1280,7 @@ const buildSpriteTrackGenerateSchema = (track) => z.object({
 // derive-from-the-registry idiom `spriteTrackContractFields` uses, rather than
 // re-allocating six Zod objects on every generate request.
 const SPRITE_TRACK_GENERATE_SCHEMAS = Object.fromEntries(
-  ANIMATION_TRACK_IDS.map((id) => [id, buildSpriteTrackGenerateSchema(id)]),
+  getEffectiveAnimationTrackIds().map((id) => [id, buildSpriteTrackGenerateSchema(id)]),
 );
 
 /**
