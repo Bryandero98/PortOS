@@ -456,6 +456,14 @@ describe('tuiHandshake.inferTuiCommand', () => {
     ['anthropic-claude-code', 'claude'],
     ['kimi-tui', 'kimi'],
     ['moonshot-kimi-2', 'kimi'],
+    // grok / opencode were missing, so a blank-command provider under either id
+    // silently resolved to `claude` — which also told it (via
+    // resolveSlashdoStyle's spawner posture) to type `/do:pr` commands its real
+    // binary doesn't have.
+    ['grok-tui', 'grok'],
+    ['xai-grok-2', 'grok'],
+    ['opencode-tui', 'opencode'],
+    ['opencode-ollama-tui', 'opencode'],
   ])('inferTuiCommand(%p) → %p', (id, expected) => {
     expect(inferTuiCommand(id)).toBe(expected);
   });

@@ -21,7 +21,6 @@ import {
   bucketReorderSchema
 } from '../lib/brainValidation.js';
 import * as githubCloner from '../services/githubCloner.js';
-import { loadSlashdoCommand } from '../services/subAgentSpawner.js';
 import * as cos from '../services/cos.js';
 
 const router = Router();
@@ -273,26 +272,20 @@ router.post('/links/:id/scan', asyncHandler(async (req, res) => {
     });
   }
 
-  const scanCommand = await loadSlashdoCommand('scan');
-  if (!scanCommand) {
-    throw new ServerError('Failed to load do:scan command', {
-      status: 500,
-      code: 'COMMAND_LOAD_FAILED'
-    });
-  }
-
   const repoLabel = link.title || link.url;
-  const description = `Malware scan: ${repoLabel} (do:scan)`;
-  const context = `Run the /do:scan workflow against the cloned repository at: \`${link.localPath}\`
+  const description = `Malware scan: ${repoLabel}`;
+  // Carry the BARE command (`metadata.slashdoCommand`) rather than inlining the
+  // ~65KB expanded body here: the prompt builder renders the right invocation
+  // shape once the provider is known AND inlines the body then (a codex host gets
+  // a skill, not `/do:scan`). Inlining here also persisted the whole body as one
+  // line of TASKS.md, rewritten on every task mutation and shipped in each
+  // peer-sync payload. Matches POST /api/cos/tasks/slashdo (#3114).
+  const context = `Run the scan workflow against the cloned repository at: \`${link.localPath}\`
 
-Use that path as SCAN_DIR. Adhere to every Operational Invariant in the command body — this is a hostile-until-proven-safe audit. The full markdown report will be written to ~/.claude/scans/. When complete, summarize the verdict (CLEAN / CAUTION / DANGEROUS) and the top findings in your final response so the report can be surfaced in the UI.
-
----
-
-${scanCommand}`;
+Use that path as SCAN_DIR. Adhere to every Operational Invariant in the workflow body — this is a hostile-until-proven-safe audit. The full markdown report will be written to ~/.claude/scans/. When complete, summarize the verdict (CLEAN / CAUTION / DANGEROUS) and the top findings in your final response so the report can be surfaced in the UI.`;
 
   const result = await cos.addTask(
-    { description, context, useWorktree: false, openPR: false, simplify: false, reviewLoop: false },
+    { description, context, slashdoCommand: 'scan', useWorktree: false, openPR: false, simplify: false, reviewLoop: false },
     'user'
   );
   if (result?.duplicate) {

@@ -19,6 +19,12 @@
 - When the system already knows why a run ended — the idle watchdog fired, the runtime budget ran out, the provider CLI wasn't installed — that is now what gets reported. Only a genuine provider or system error in the transcript can override it.
 - Failure snippets shown on an agent's record are now short, readable excerpts centered on the actual error instead of raw terminal escape codes. One failed run had been writing an 816KB blob of control characters into its own record.
 
+## Agent Operations — one workflow catalog
+
+- **[issue-3114] Every bundled slashdo workflow is now offered everywhere it should be.** An app's Overview and the CoS quick templates kept separate lists of which workflows you could launch, and they had drifted: Overview was missing Plan Task, Prune Dependencies, Safety Scan and Replan, while the quick templates were missing Commit and Push and the SwiftUI audit. Both surfaces now read one list, so all ten workflows appear in both.
+- **A non-Claude agent is no longer told to run a command it can't type.** A Codex, Antigravity, Grok, or Kimi terminal agent was handed `/do:pr` in its completion instructions even though those CLIs expose the workflows as skills rather than slash commands — so the last step of its run pointed at nothing. Those agents now get the plain `git`/`gh` finish sequence instead.
+- **A custom-named agent running the real Claude binary now gets the workflow it was denied.** If you configured a provider under your own name (or pointed it at a `claude` install by path), it was treated as a non-Claude CLI: told to just commit and let PortOS push. It now correctly drives its own `/simplify` and PR, and — importantly — the cleanup step agrees, so PortOS no longer tries to open a second pull request for the one the agent already opened.
+
 ## Agent Operations — `/do:next` run settings
 
 - **`/do:next` on a managed app now asks before it runs.** Clicking it on an app's Overview opens a settings drawer instead of queuing immediately: let the agent pick the next eligible item as before, or **pick a specific one** from a live list of that app's claimable work — PLAN.md items, GitHub or GitLab issues, or current-sprint JIRA tickets, whichever the app's Work Tracker resolves to. A picked item is pinned into the claim prompt, which still honors every safety check (already assigned, blocked, in flight, an epic → exit cleanly).

@@ -7,10 +7,11 @@ import { z } from 'zod';
 import * as cos from '../services/cos.js';
 import * as taskWatcher from '../services/taskWatcher.js';
 import { enhanceTaskPrompt } from '../services/taskEnhancer.js';
-import { loadSlashdoCommand } from '../services/subAgentSpawner.js';
 import { buildClaimWorkTask, buildJiraTicketTask } from '../services/cosTaskGenerator.js';
 import { getAppById } from '../services/apps.js';
 import { workTrackerLabel } from '../lib/workTracker.js';
+import { getSlashdoWorkflow, slashdoWorkflowAppliesTo, SLASHDO_COMMAND_NAMES } from '../lib/slashdoCatalog.js';
+import { NON_PM2_TYPES } from '../services/streamingDetect.js';
 import { asyncHandler, ServerError, failValidation } from '../lib/errorHandler.js';
 import {
   createCosTaskSchema,
@@ -34,16 +35,6 @@ const jiraTicketTaskSchema = z.object({
   app: z.string().min(1),
   ticketKey: z.string().trim().regex(/^[A-Za-z][A-Za-z0-9]*-\d+$/, 'Invalid JIRA ticket key'),
 });
-
-const SLASHDO_COMMANDS = {
-  push:           { label: 'Push', description: 'Commit and push all work with changelog' },
-  review:         { label: 'Review', description: 'Deep code review of changed files' },
-  replan:         { label: 'Replan', description: 'Audit PLAN.md, archive completed items, prune stale work' },
-  next:           { label: 'Next', description: 'Claim the next unclaimed work item (per the app\'s Work Tracker) and ship a PR' },
-  release:        { label: 'Release', description: 'Create a release PR' },
-  better:         { label: 'Better', description: 'Unified DevSecOps audit and remediation' },
-  'better-swift': { label: 'Better Swift', description: 'SwiftUI DevSecOps audit and remediation' }
-};
 
 const router = Router();
 
@@ -124,55 +115,93 @@ router.post('/tasks/enhance', asyncHandler(async (req, res) => {
 // provider/model/effort pin and `simplify` apply to every command; `target`,
 // `issueAuthorFilter`, and the reviewer choices are `/do:next`-only (they shape
 // the claim prompt, which self-manages its own PR + review loop).
+//
+// The launchable-command allowlist is the shared catalog in
+// `server/lib/slashdoCatalog.js` (#3114) — the CoS quick templates read the same
+// source, so the two surfaces can't drift.
 router.post('/tasks/slashdo', asyncHandler(async (req, res) => {
   const {
     command, app, provider, model, effort, simplify,
     target, issueAuthorFilter, reviewers, usernames, optionalReviewers
   } = validateRequest(slashdoTaskSchema, req.body);
 
-  if (!SLASHDO_COMMANDS[command]) {
-    throw new ServerError(`Invalid slashdo command. Allowed: ${Object.keys(SLASHDO_COMMANDS).join(', ')}`, { status: 400, code: 'VALIDATION_ERROR' });
+  const workflow = getSlashdoWorkflow(command);
+  if (!workflow) {
+    throw new ServerError(`Invalid slashdo command. Allowed: ${SLASHDO_COMMAND_NAMES.join(', ')}`, { status: 400, code: 'VALIDATION_ERROR' });
   }
 
-  const meta = SLASHDO_COMMANDS[command];
+  // Resolved for EVERY command, not just `next` — so the queue row names the app
+  // the way the user does, and an unknown app 404s uniformly instead of only on
+  // the `next` branch.
+  const appObj = await getAppById(app);
+  if (!appObj) {
+    throw new ServerError(`App not found: ${app}`, { status: 404, code: 'APP_NOT_FOUND' });
+  }
 
-  // `/do:next` is the work-claim consumer: route it through the same
-  // workTracker-aware logic the scheduled `claim-work` flow uses, so the manual
-  // button honors the app's per-app Work Tracker (PLAN.md / GitHub / GitLab /
-  // JIRA) instead of always draining PLAN.md. Every other command inlines its
-  // raw slashdo body verbatim.
-  let context;
-  let taskMetadata = { useWorktree: false, openPR: false };
-  let description;
+  // Enforce the catalog's stack gate server-side. The Agent Operations panel only
+  // offers the applicable one of `better` / `better-swift`, but the API must not
+  // trust that — queuing a SwiftUI audit against a web app (or vice versa) burns
+  // an agent run on a workflow that can't apply.
+  if (!slashdoWorkflowAppliesTo(workflow, NON_PM2_TYPES.has(appObj.type))) {
+    throw new ServerError(
+      `${workflow.label} does not apply to ${appObj.name} (app type: ${appObj.type || 'unknown'})`,
+      { status: 400, code: 'WORKFLOW_APP_TYPE_MISMATCH' }
+    );
+  }
+
+  // Two task shapes, produced whole so the either/or is visible rather than
+  // assembled from separately-mutated locals:
+  //
+  // - `/do:next` is the work-claim consumer and is genuinely special: it routes
+  //   through the same workTracker-aware logic the scheduled `claim-work` flow
+  //   uses, so the manual button honors the app's per-app Work Tracker (PLAN.md /
+  //   GitHub / GitLab / JIRA) instead of always draining PLAN.md. Its assembled
+  //   claim prompt IS the context, so it carries NO `slashdoCommand` — adding one
+  //   would append the whole `/do:next` body on top of the claim prompt.
+  // - Every other command carries only the bare `slashdoCommand` and lets the
+  //   prompt builder render the invocation + inline the body once the provider is
+  //   known (`applySlashdoInvocation`). Eagerly inlining the body here — and
+  //   hardcoding `Run /do:<cmd>` into the description — assumed a Claude host that
+  //   can type slash commands; a codex/grok agent gets Agent Skills instead, so
+  //   the rendered string was wrong for it (#3089's whole point).
+  //
+  // `workflow.settings` is the catalog's run-shape posture (see
+  // WORKFLOW_OWNS_ITS_OWN_GIT) — read from it rather than restating false/false,
+  // so a future entry that genuinely wants a PortOS-managed worktree gets one.
+  // `simplify` comes from the request (the run drawer's toggle), not the catalog.
+  const { useWorktree, openPR } = workflow.settings;
+  let shape;
   if (command === 'next') {
-    const appObj = await getAppById(app);
-    if (!appObj) {
-      throw new ServerError(`App not found: ${app}`, { status: 404, code: 'APP_NOT_FOUND' });
-    }
     const claim = await buildClaimWorkTask(appObj, { target, issueAuthorFilter, reviewers, usernames, optionalReviewers });
-    context = claim.prompt;
-    // claim.taskMetadata overrides the false/false default only where it carries
-    // a key. All current claim flows (plan-task / claim-issue / claim-issue-gitlab
-    // / claim-issue-jira) self-manage their worktree + MR/PR, so false/false
-    // stands; the spread stays for a future delegated type that needs CoS-managed
-    // isolation.
-    taskMetadata = { ...taskMetadata, ...claim.taskMetadata };
     const scope = claim.target
       ? `claim ${workTrackerLabel(claim.tracker)} item ${claim.target}`
       : `claim next ${workTrackerLabel(claim.tracker)} item`;
-    description = `Run /do:next for ${appObj.name} — ${scope} and ship a PR`;
+    shape = {
+      description: `${workflow.label} for ${appObj.name} — ${scope} and ship a PR`,
+      context: claim.prompt,
+      // claim.taskMetadata overrides the catalog posture only where it carries a
+      // key. All current claim flows (plan-task / claim-issue / claim-issue-gitlab
+      // / claim-issue-jira) self-manage their worktree + MR/PR, so false/false
+      // stands; the spread stays for a future delegated type that needs
+      // CoS-managed isolation.
+      taskMetadata: { useWorktree, openPR, ...claim.taskMetadata },
+    };
   } else {
-    context = await loadSlashdoCommand(command);
-    if (!context) {
-      throw new ServerError(`Failed to load slashdo command: ${command}`, { status: 500, code: 'COMMAND_LOAD_FAILED' });
-    }
-    description = `Run /do:${command} for ${app} — ${meta.description}`;
+    shape = {
+      description: `${workflow.label} for ${appObj.name} — ${workflow.description}`,
+      slashdoCommand: command,
+      taskMetadata: { useWorktree, openPR },
+    };
   }
 
   // `reviewLoop` stays off for every slashdo task: each `/do:*` body owns its own
   // review/PR sequence, so a CoS-managed loop on top would double-review.
   const taskData = {
-    description, app, context, ...taskMetadata,
+    description: shape.description,
+    app,
+    context: shape.context,
+    slashdoCommand: shape.slashdoCommand,
+    ...shape.taskMetadata,
     provider, model, effort,
     simplify: simplify === true,
     reviewLoop: false

@@ -909,15 +909,20 @@ describe('CoS Routes', () => {
   });
 
   describe('POST /api/cos/tasks/slashdo', () => {
+    // The catalog's full launchable set (#3114) — `push`/`better-swift` used to
+    // exist only in this route's registry and `plan-task`/`depfree`/`scan` only in
+    // the quick templates; both surfaces now read one list.
     it.each([
+      'plan-task',
       'push',
       'review',
       'replan',
       'release',
       'better',
-      'better-swift'
+      'depfree',
+      'scan'
     ])('should create a task from slashdo command %s', async (command) => {
-      loadSlashdoCommand.mockResolvedValue('command content');
+      getAppById.mockResolvedValue({ id: 'my-app', name: 'MyApp', type: 'web', repoPath: '/repo' });
       cos.addTask.mockResolvedValue({ id: `task-sd-${command}`, status: 'pending' });
 
       const response = await request(app)
@@ -926,7 +931,58 @@ describe('CoS Routes', () => {
 
       expect(response.status).toBe(200);
       expect(response.body.id).toBe(`task-sd-${command}`);
-      expect(loadSlashdoCommand).toHaveBeenCalledWith(command);
+      // The route persists the BARE command and lets the prompt builder render
+      // the invocation + inline the body once the provider is known — it no
+      // longer eagerly loads the body or hardcodes `/do:` into the description
+      // (both assumed a Claude host that can type slash commands).
+      const [taskData] = cos.addTask.mock.calls.at(-1);
+      expect(taskData.slashdoCommand).toBe(command);
+      expect(taskData.context).toBeUndefined();
+      expect(taskData.description).not.toContain('/do:');
+      // The app's display NAME, not its id slug — matching the `next` branch.
+      expect(taskData.description).toContain('MyApp');
+      expect(loadSlashdoCommand).not.toHaveBeenCalled();
+    });
+
+    it('queues the SwiftUI audit for a Swift app', async () => {
+      getAppById.mockResolvedValue({ id: 'my-ios', name: 'MyPhone', type: 'ios-native', repoPath: '/repo' });
+      cos.addTask.mockResolvedValue({ id: 'task-sd-swift', status: 'pending' });
+
+      const response = await request(app)
+        .post('/api/cos/tasks/slashdo')
+        .send({ command: 'better-swift', app: 'my-ios' });
+
+      expect(response.status).toBe(200);
+      expect(cos.addTask.mock.calls.at(-1)[0].slashdoCommand).toBe('better-swift');
+    });
+
+    // The panel only offers the applicable one of better / better-swift, but the
+    // API must not trust that — a mismatched audit burns an agent run on a
+    // workflow that can't apply to the app's stack.
+    it.each([
+      ['better-swift', 'web'],
+      ['better', 'ios-native']
+    ])('rejects %s against an app of type %s', async (command, type) => {
+      getAppById.mockResolvedValue({ id: 'a', name: 'App', type, repoPath: '/repo' });
+
+      const response = await request(app)
+        .post('/api/cos/tasks/slashdo')
+        .send({ command, app: 'a' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.code).toBe('WORKFLOW_APP_TYPE_MISMATCH');
+      expect(cos.addTask).not.toHaveBeenCalled();
+    });
+
+    it('404s an unknown app for every command, not just next', async () => {
+      getAppById.mockResolvedValue(null);
+
+      const response = await request(app)
+        .post('/api/cos/tasks/slashdo')
+        .send({ command: 'push', app: 'ghost-app' });
+
+      expect(response.status).toBe(404);
+      expect(cos.addTask).not.toHaveBeenCalled();
     });
 
     it('routes /do:next through the app Work Tracker instead of the raw command', async () => {
@@ -952,6 +1008,11 @@ describe('CoS Routes', () => {
       const [taskData] = cos.addTask.mock.calls.at(-1);
       expect(taskData.context).toBe('CLAIM ISSUE PROMPT');
       expect(taskData.description).toContain('GitHub Issues');
+      // `next` is the one genuinely special command: its claim prompt IS the
+      // context, so it must NOT also carry a slashdoCommand (which would make the
+      // prompt builder append the whole /do:next body on top of the claim prompt).
+      expect(taskData.slashdoCommand).toBeUndefined();
+      expect(taskData.description).not.toContain('/do:');
     });
 
     it('threads the run drawer settings — target/author-filter/reviewers into the claim prompt, provider/model/effort/simplify onto the task', async () => {
@@ -1033,7 +1094,7 @@ describe('CoS Routes', () => {
     });
 
     it('should return 409 for duplicate task', async () => {
-      loadSlashdoCommand.mockResolvedValue('command content');
+      getAppById.mockResolvedValue({ id: 'my-app', name: 'MyApp', type: 'web', repoPath: '/repo' });
       cos.addTask.mockResolvedValue({ duplicate: true, status: 'pending' });
 
       const response = await request(app)

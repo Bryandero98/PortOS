@@ -23,6 +23,9 @@ vi.mock('fs', () => ({
   existsSync: vi.fn().mockReturnValue(true)
 }));
 
+// Not mocked — the shared launchable-workflow catalog is a pure constant list.
+const { SLASHDO_COMMAND_NAMES } = await import('../lib/slashdoCatalog.js');
+
 // Import after mocking
 const { readJSONFile } = await import('../lib/fileUtils.js');
 const { writeFile } = await import('fs/promises');
@@ -241,15 +244,16 @@ describe('taskTemplates service', () => {
   });
 
   describe('slashdo built-ins (#3089)', () => {
-    it('ships one template per bundled slashdo workflow, with implied settings', async () => {
+    it('ships one template per catalog workflow, with implied settings', async () => {
       readJSONFile.mockResolvedValue(null);
 
       const templates = await getAllTemplates();
       const slashdo = templates.filter(t => t.slashdoCommand);
 
-      expect(slashdo.map(t => t.slashdoCommand).sort()).toEqual(
-        ['better', 'depfree', 'next', 'plan-task', 'release', 'replan', 'review', 'scan']
-      );
+      // Derived from the shared catalog (#3114), so the assertion is convergence
+      // with it — not a hand-copied list that can drift the way the route's
+      // registry and this set already had (`push`/`better-swift` were missing here).
+      expect(slashdo.map(t => t.slashdoCommand)).toEqual([...SLASHDO_COMMAND_NAMES]);
       // Every one of these either writes no code at all or manages its own
       // worktree/PR, so none of them want PortOS to wrap another one around it.
       for (const t of slashdo) {
@@ -258,6 +262,15 @@ describe('taskTemplates service', () => {
       // The BARE command name is what is stored — a rendered `/do:x` string
       // would be Claude-only, and the provider is unknown at pick time.
       expect(slashdo.every(t => !t.slashdoCommand.includes('/'))).toBe(true);
+      // Each carries the display fields the quick-template chips render.
+      for (const t of slashdo) {
+        expect(t.id).toBe(`builtin-do-${t.slashdoCommand}`);
+        expect(t.name).toBeTruthy();
+        expect(t.icon).toBeTruthy();
+        expect(t.description).toBeTruthy();
+        expect(t.category).toBe('slashdo');
+        expect(t.isBuiltin).toBe(true);
+      }
     });
 
     it('drops the generic phrase stubs the slashdo set replaced', async () => {

@@ -542,6 +542,57 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).not.toMatch(/git push -u origin weird;rm/);
     });
 
+    // #3114 acceptance criteria — the completion gates derive from
+    // `resolveSlashdoStyle`, so the two behaviors the old inline provider-id
+    // allowlists got wrong are now asserted.
+    it('a codex TUI gets the plain git/gh completion workflow, never /do:pr', () => {
+      // codex installs slashdo as Agent Skills, not slash commands, so telling it
+      // to run `/do:pr` handed it an uninvokable line. The old `tuiSlashdoFree`
+      // gate only recognized OpenCode + lean mode, so codex fell through to the
+      // slashdo path.
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, reviewLoop: true } }),
+        '/r',
+        { branchName: 'claim/x', worktreePath: '/tmp/wt', baseBranch: 'main' },
+        isTruthyMeta,
+        { isTui: true, providerId: 'codex-tui', providerCommand: 'codex' });
+      expect(prompt).toMatch(/## Completion Workflow/);
+      expect(prompt).toMatch(/does NOT have slashdo/);
+      expect(prompt).not.toMatch(/`\/do:pr`/);
+      expect(prompt).not.toMatch(/`\/do:push`/);
+      // Plain git + forge CLI instead.
+      expect(prompt).toMatch(/git push -u origin claim\/x/);
+      expect(prompt).toMatch(/gh pr create --fill --base main/);
+      expect(prompt).toMatch(/\.agent-done/);
+    });
+
+    it('a path-configured claude binary under a custom provider id gets the slashdo workflow', () => {
+      // The old `hasSlashdo` gate was an id allowlist (`claude-code` /
+      // `claude-code-bedrock`), so a renamed or path-configured claude provider
+      // was denied `/simplify` + `/do:pr` even though it launches claude.
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, simplify: true } }),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta,
+        { isTui: false, providerId: 'my-custom-agent', providerCommand: '/opt/homebrew/bin/claude' });
+      expect(prompt).toMatch(/^## Completion$/m);
+      expect(prompt).toMatch(/`\/simplify`/);
+      expect(prompt).toMatch(/`\/do:pr/);
+      expect(prompt).not.toMatch(/PortOS will push and open the PR/);
+    });
+
+    it('an antigravity TUI also drops out of the slashdo workflow', () => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: false } }),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta,
+        { isTui: true, providerId: 'antigravity-tui', providerCommand: 'agy' });
+      expect(prompt).not.toMatch(/`\/do:push`/);
+      expect(prompt).toMatch(/git push -u origin b/);
+    });
+
     it('a non-OpenCode TUI (claude-code-tui) keeps the slashdo /do:pr workflow', () => {
       // providerCommand is the gate — a claude TUI must NOT fall into the manual path.
       const prompt = buildLightContextPrompt(
@@ -561,7 +612,7 @@ describe('buildLightContextPrompt', () => {
         '/r',
         { branchName: 'b', worktreePath: '/tmp/wt' },
         isTruthyMeta,
-        { isTui: false });
+        { isTui: false, providerId: 'codex', providerCommand: 'codex' });
       expect(prompt).toMatch(/^## Completion$/m);
       expect(prompt).not.toMatch(/`\/do:pr`/);
       expect(prompt).not.toMatch(/`\/quit`/);
@@ -577,11 +628,26 @@ describe('buildLightContextPrompt', () => {
         '/r',
         { branchName: 'b', worktreePath: '/tmp/wt' },
         isTruthyMeta,
-        { isTui: false }); // no providerId → not Claude → no slashdo
+        { isTui: false, providerId: 'antigravity-cli', providerCommand: 'agy' });
       expect(prompt).toMatch(/^## Completion$/m);
       expect(prompt).not.toMatch(/`\/simplify`/);
       expect(prompt).toMatch(/review your changed code for reuse, quality, and efficiency/i);
       expect(prompt).toMatch(/PortOS will push and open the PR/);
+    });
+
+    // #3114 — the gates now derive from `resolveSlashdoStyle` with the spawners'
+    // blank-command posture, so a CLI provider with NO id and NO command reads as
+    // Claude: `buildCliSpawnConfig`'s default branch launches `claude`, and the
+    // session that actually runs does have `/do:pr` / `/simplify`.
+    it('treats a blank CLI provider as Claude Code, matching what the spawner launches', () => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, simplify: true } }),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta,
+        { isTui: false });
+      expect(prompt).toMatch(/`\/simplify`/);
+      expect(prompt).toMatch(/`\/do:pr/);
     });
 
     it('emits a slashdo Completion block (/simplify + /do:pr) for Claude Code CLI + openPR', () => {
