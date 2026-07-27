@@ -41,14 +41,18 @@ import { trackColumnLabels } from './atlasGrid.js';
 const compileFrameError = (message) =>
   new ServerError(message, { status: 422, code: 'ATLAS_COMPILE_INVALID' });
 
-export async function verifyPackagedFrames(recordId, manifest, { bytes = false, track = manifest?.track || WALK_TRACK } = {}) {
+export async function verifyPackagedFrames(recordId, manifest, {
+  bytes = false,
+  track = manifest?.track || WALK_TRACK,
+  tracks,
+} = {}) {
   const dir = spriteDir(recordId);
   const frames = Array.isArray(manifest?.frames) ? manifest.frames : [];
   const total = frames.length;
   // Compile checks each frame's gait-phase against the set's phase labels. The
   // set's frame count is enforced identical across directions before this runs
   // (atlas.js), so labels derived from THIS manifest's length match the set's.
-  const labels = bytes ? trackColumnLabels(getAnimationTrack(track).id, total) : null;
+  const labels = bytes ? trackColumnLabels(getAnimationTrack(track, tracks).id, total) : null;
   const frameBytes = bytes ? [] : null;
   let missing = 0;
 
