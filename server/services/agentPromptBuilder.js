@@ -18,8 +18,7 @@ import { runPromptThroughProvider } from '../lib/promptRunner.js';
 import { readJSONFile, loadSlashdoFile, loadSlashdoLib, PATHS, tryReadFile } from '../lib/fileUtils.js';
 import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, LOCAL_LLM_REVIEWERS, MODEL_CAPABLE_CLI_REVIEWERS, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers, resolveReviewUsernames, resolveOptionalReviewers, resolveKeyedReviewers, buildReviewWithArgs } from '../lib/validation.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
-import { isOpencodeCommand } from '../lib/providerModels.js';
-import { resolveSlashdoInvocation, buildSlashdoSection } from '../lib/slashdoInvocation.js';
+import { canTypeSlashCommands, resolveSlashdoInvocation, buildSlashdoSection } from '../lib/slashdoInvocation.js';
 import { shellQuote } from '../lib/shellQuote.js';
 import { detectForgeCli } from '../lib/gitForge.js';
 import { PR_COMPLETIONS, leavesPrForHuman, resolvePrCompletion } from '../lib/prDisposition.js';
@@ -893,14 +892,19 @@ export function buildActionOutputCompletionSection({ isTui = false, sentinelPath
  * @param {Function} isTruthyMetaFn - isTruthyMeta function (passed to avoid circular dep)
  * @param {Object} options
  * @param {string} [options.providerType='api'] - `'tui' | 'cli' | 'api'`
- * @param {string} [options.providerId] - Provider id (e.g. `'claude-code'`). When the
- *   CLI provider has access to the project's slashdo commands (Claude Code), the
- *   light prompt instructs the agent to run `/simplify` and `/do:pr` itself
- *   instead of relying on PortOS's post-exit push+PR. The spawner must then
- *   pass `openPR: false` to `cleanupAgentWorktree` to avoid double-firing.
- * @param {string} [options.providerCommand] - Provider launch command (e.g. `'opencode'`).
- *   Used to detect a slashdo-free TUI (OpenCode): such a TUI can't run `/do:pr` / `/do:push`,
- *   so its completion workflow falls back to plain `git`/`gh` commands.
+ * `providerId` + `providerCommand` + `leanMode` together decide whether the
+ * session can TYPE a Claude Code slash command (`canTypeSlashCommands`, #3114):
+ * a capable session is instructed to drive its own `/simplify` + `/do:pr` /
+ * `/do:push`, and everything else gets plain `git`/`gh` (TUI) or PortOS's
+ * post-exit push+PR (CLI). `agentCompletionCleanup.js` derives the same predicate
+ * from the agent record so it passes `openPR: false` and avoids double-firing.
+ *
+ * @param {string} [options.providerId] - Provider id (e.g. `'claude-code'`). Not an
+ *   allowlist: it only matters when `providerCommand` is blank, where the
+ *   spawners' `inferTuiCommand` fallback resolves the command from it.
+ * @param {string} [options.providerCommand] - Provider launch command (e.g.
+ *   `'claude'`, `'codex'`, `'opencode'`) — the primary signal, so a
+ *   path-configured or renamed binary is recognised.
  * @param {boolean} [options.leanMode] - Ollama-backed Claude session launched with
  *   `--bare` (see `applyLeanClaudeArgs`): the completion workflow drops slashdo
  *   commands (bare mode skips command discovery) in favor of plain `git`/`gh`.
@@ -1023,10 +1027,17 @@ Use the findings from the previous stage to inform your work. If the previous st
   // section above. TUI agents own the full simplify+push+PR sequence in the
   // Completion Workflow section below, so this section is suppressed for TUI.
   const simplifyEnabled = isTruthyMetaFn(task.metadata?.simplify);
-  // `/simplify` is a Claude Code built-in slash command — only Claude providers
-  // can run it. Everyone else (API/CLI) gets the inline equivalent describing the
-  // same reuse/quality/efficiency self-review so the pass still happens.
-  const canRunSlashCommands = providerId === 'claude-code' || providerId === 'claude-code-bedrock';
+  // `/simplify` is a Claude Code built-in slash command — only a Claude session
+  // that loaded its commands can run it. Everyone else (API/CLI) gets the inline
+  // equivalent describing the same reuse/quality/efficiency self-review so the
+  // pass still happens. Same predicate as the `/do:pr` gates (#3114) — a
+  // path-configured `claude` binary qualifies; a lean `--bare` session doesn't.
+  // `assumeClaudeWhenUnknown: false` because only HTTP-API providers reach this
+  // path (tui/cli return early above): an unidentified API provider is not a
+  // latent local `claude` the way a blank CLI/TUI provider is.
+  const canRunSlashCommands = canTypeSlashCommands({
+    providerId, providerCommand, leanMode, assumeClaudeWhenUnknown: false,
+  });
   const simplifyInstruction = canRunSlashCommands
     ? 'run `/simplify` to review the changed code for reuse, quality, and efficiency'
     : SIMPLIFY_INLINE_REVIEW;
@@ -1074,7 +1085,17 @@ After completing your work and before committing, ${simplifyInstruction}. Fix an
       ? buildActionOutputCompletionSection({ isTui, sentinelPath })
       : isTui
         ? buildTuiCompletionSection({
-            willOpenPR, prCompletion, simplifyEnabled, providerId,
+            willOpenPR, prCompletion, simplifyEnabled,
+            // Unreachable today — every `tui`/`cli` provider returns early at the
+            // LIGHT_CONTEXT gate above, so `isTui` is always false on this path
+            // (same situation as buildCompletionGuidelineBullet's `isTui` arm).
+            // Kept provider-aware anyway so it can't be the ONE call site that
+            // silently promises `/do:pr` to a host that can't type it if the
+            // routing ever changes — this arm previously passed no slashdoFree at
+            // all, which is how gates like this drift (#3114).
+            slashdoFree: !canRunSlashCommands,
+            branchName: worktreeInfo?.branchName || null,
+            baseBranch: worktreeInfo?.baseBranch || null,
             sentinelPath,
             leavePrOpen: leavesPrForHuman(task),
             reviewers: taskReviewers,
@@ -1252,7 +1273,7 @@ ${skillSection ? `## Task-Type Skill Guidelines\n\n${skillSection}\n` : ''}${too
 ${(() => {
   const bullet = buildCompletionGuidelineBullet({
     isReadOnly: isTruthyMetaFn(task.metadata?.readOnly),
-    isTui, tuiCompletionCommand, slashdoFree: isTui && isOpencodeCommand(providerCommand),
+    isTui, tuiCompletionCommand, slashdoFree: isTui && !canRunSlashCommands,
     worktreeInfo, willOpenPR, prCompletion, discardWorktree, noCodeOutput,
     leavePrOpen: leavesPrForHuman(task),
     isPrFollowUp: isReviewLoopFollowUp,
@@ -1354,26 +1375,25 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   const lightReviewerApplies = task.metadata?.reviewerApplies !== undefined
     ? isTruthyMetaFn(task.metadata?.reviewerApplies)
     : (codeReviewDefaults?.reviewerApplies === true);
-  // Claude Code CLI providers can drive `/simplify` + `/do:pr` themselves
-  // (the slashdo submodule mounts those as project-level slash commands).
-  // Other CLI providers (codex, antigravity) can't — they get the legacy
-  // commit-only block where PortOS handles push+PR on exit.
-  //
-  // Deliberately NOT `resolveSlashdoStyle` (slashdoInvocation.js): that resolver
-  // refuses to read a blank command as Claude, while these two gates depend on
-  // the opposite posture — the TUI spawner's `inferTuiCommand` resolves a blank
-  // command to `claude`, so an unidentified TUI is slashdo-capable here. The two
-  // questions ("can this host TYPE /do:pr" vs "how do I PHRASE a workflow
-  // invocation") only look alike. Converging them is issue #3114.
-  const hasSlashdo = !isTui && (providerId === 'claude-code' || providerId === 'claude-code-bedrock');
-  // A TUI that does NOT load Claude Code slash commands can't run `/do:pr` /
-  // `/do:push`, so its completion workflow uses plain git/gh instead. Two ways
-  // to land here: an OpenCode TUI (keyed on the launch command, not the id, so
-  // a path-configured or renamed OpenCode provider is still recognised —
-  // mirrors the arg-builder gate), or a lean-mode Claude session (`--bare`
-  // skips project command discovery, and the small local models lean mode
-  // targets fumble multi-step slashdo flows anyway).
-  const tuiSlashdoFree = isTui && (isOpencodeCommand(providerCommand) || leanMode);
+  // Can this session TYPE a Claude Code slash command (`/do:pr`, `/do:push`,
+  // `/simplify`)? One predicate, both prompt paths (#3114): `canTypeSlashCommands`
+  // derives from `resolveSlashdoStyle` with the spawners' blank-command posture,
+  // replacing three inline provider-id allowlists that had already drifted apart
+  // (a codex TUI used to be told to run `/do:pr`, which it cannot; a
+  // path-configured `claude` binary under a custom provider id used to be denied
+  // the slashdo workflow).
+  const canTypeSlash = canTypeSlashCommands({ providerId, providerCommand, leanMode });
+  // CLI (non-TUI): a Claude Code session drives `/simplify` + `/do:pr` itself
+  // (the slashdo submodule mounts those as project-level slash commands). Other
+  // CLI providers (codex, antigravity, grok, opencode) get the legacy commit-only
+  // block where PortOS handles push+PR on exit.
+  const hasSlashdo = !isTui && canTypeSlash;
+  // TUI: a session that does NOT load Claude Code slash commands can't run
+  // `/do:pr` / `/do:push`, so its completion workflow uses plain git/gh instead
+  // — an OpenCode TUI, a codex/antigravity/grok TUI, or a lean-mode Claude
+  // session (`--bare` skips project command discovery, and the small local models
+  // lean mode targets fumble multi-step slashdo flows anyway).
+  const tuiSlashdoFree = isTui && !canTypeSlash;
 
   const taskSections = [];
   const contractSections = [];
@@ -1464,7 +1484,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
     sections.push(buildReviewLoopFollowUpSection(task.metadata || {}, { verbose: false, localAgentLoopBody }));
   } else if (isTui) {
     sections.push(buildTuiCompletionSection({
-      willOpenPR, prCompletion, simplifyEnabled, providerId, slashdoFree: tuiSlashdoFree,
+      willOpenPR, prCompletion, simplifyEnabled, slashdoFree: tuiSlashdoFree,
       sentinelPath: `${worktreeInfo?.worktreePath || workspaceDir}/.agent-done`,
       branchName: worktreeInfo?.branchName || null,
       baseBranch: worktreeInfo?.baseBranch || null,
@@ -1558,11 +1578,15 @@ function buildPostPRMergeSteps(startStep, { prCompletion = PR_COMPLETIONS.REVIEW
  * TUI completion-workflow block. The TUI owns its own commit → push → PR
  * pipeline via slashdo commands and signals "done" with a sentinel file.
  *
- * When `slashdoFree` is set (an OpenCode TUI, which does not load Claude Code
- * slash commands), the agent can't run `/do:pr` / `/do:push`, so it delegates to
- * the plain-git/`gh` variant below — same sentinel handshake, no slashdo.
+ * When `slashdoFree` is set — any TUI that does NOT load Claude Code slash
+ * commands: OpenCode, codex/antigravity/grok/kimi, or a lean `--bare` Claude
+ * session — the agent can't run `/do:pr` / `/do:push`, so it delegates to the
+ * plain-git/`gh` variant below (same sentinel handshake, no slashdo). The caller
+ * resolves that flag once via `canTypeSlashCommands` (#3114); past the early
+ * return this IS a Claude session, so `/simplify` and `/do:pr` are both safe to
+ * emit without a second provider check.
  */
-function buildTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.MERGE_ON_GREEN, simplifyEnabled, sentinelPath, providerId = null, slashdoFree = false, branchName = null, baseBranch = null, leavePrOpen = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false }) {
+function buildTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.MERGE_ON_GREEN, simplifyEnabled, sentinelPath, slashdoFree = false, branchName = null, baseBranch = null, leavePrOpen = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false }) {
   const policyLeavesOpen = prCompletion === PR_COMPLETIONS.LEAVE_OPEN;
   const runsReviewLoop = prCompletion === PR_COMPLETIONS.REVIEW_THEN_MERGE;
   if (slashdoFree) {
@@ -1591,13 +1615,9 @@ function buildTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.M
         ? ' — `/do:pr` runs the Copilot review loop after the PR opens.'
         : ` — \`/do:pr\` runs the review loop for ${reviewerListLabel} in order after the PR opens.`)
     : (willOpenPR ? ' — external review is disabled for this task.' : '');
-  // `/simplify` is a Claude Code TUI built-in. Non-Claude TUI providers
-  // (codex-tui, antigravity-tui) can't run it, so give them the inline equivalent.
-  // Default (no providerId) stays Claude-shaped for backward compatibility.
-  const canRunSimplifyCommand = !providerId || /claude/i.test(providerId);
-  const simplifyStep = simplifyEnabled
-    ? (canRunSimplifyCommand ? '1. `/simplify`' : `1. Before committing, ${SIMPLIFY_INLINE_REVIEW} and fix any findings.`)
-    : '1. (simplify disabled — skip)';
+  // Reached only for a Claude TUI (a non-Claude one took the slashdoFree branch
+  // above), so `/simplify` — a Claude Code built-in — is invokable here.
+  const simplifyStep = simplifyEnabled ? '1. `/simplify`' : '1. (simplify disabled — skip)';
   const sentinelTail = willOpenPR ? '   ## PR\n   <PR URL>' : '   ## Branch\n   <branch name>';
   // A PR gets merge steps — gated on the review verdict when a loop runs, on CI
   // alone when it doesn't (nothing else merges a no-review-loop PR). The one

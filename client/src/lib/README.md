@@ -44,6 +44,7 @@ grep -i "what you want to do" client/src/lib/README.md
 | `grokVideoClip.js` | Mirror of `server/lib/grokVideoClip.js` — `GROK_VIDEO_DURATIONS` (`[6, 10]`) + `GROK_VIDEO_DEFAULT_DURATION`, the clip lengths grok's `image_to_video` actually delivers. |
 | `imageCleaners.js` | Mirror of `resolveCleanersFromConfig` from `server/lib/imageClean.js`. Reads `{cleanC2PA, denoise}` off a per-mode settings record. `cleanC2PA` defaults are mode-aware (on for `codex` + `external` — the backends that emit C2PA chunks today — off otherwise, as an allow-list rather than a deny-list); `denoise` defaults off everywhere (lossy, opt-in only). |
 | `runnerFamilies.js` | Mirror of `server/lib/runners.js`. |
+| `slashdoCatalog.js` | Mirror of `server/lib/slashdoCatalog.js` — the launchable slashdo workflows (`SLASHDO_WORKFLOWS`, `slashdoWorkflowsForApp(isSwiftApp)`, `SLASHDO_APP_TYPES`) driving the app-overview Agent Operations buttons. Adds only the per-button Tailwind classes; pinned by `server/lib/slashdoCatalog.test.js`. |
 | `issueLength.js` | Mirror of `server/lib/issueLength.js`. |
 
 ## Pipeline / image-gen defaults

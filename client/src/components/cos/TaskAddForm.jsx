@@ -9,6 +9,7 @@ import { formatBytes } from '../../utils/formatters';
 import { filterSelectableModels, isTuiProvider, isCliProvider, isProcessProvider, isCodexProvider } from '../../utils/providers';
 import { DEFAULT_PR_COMPLETION, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, PR_COMPLETION_OPTIONS } from './constants';
 import { clickableProps } from '../../lib/a11yKeyboard';
+import { slashdoLabel } from '../../lib/slashdoCatalog';
 import ReviewerPicker from './ReviewerPicker';
 import EffortSelect from './EffortSelect';
 
@@ -417,14 +418,14 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
                   onClick={() => applyTemplate(template)}
                   {...clickableProps(() => applyTemplate(template))}
                   className="group relative flex items-center gap-1.5 px-3 py-1.5 bg-port-card border border-port-border rounded-lg text-sm text-gray-300 hover:text-white hover:border-port-accent/50 transition-colors cursor-pointer"
-                  title={template.slashdoCommand ? `/do:${template.slashdoCommand} \u2014 ${template.context || template.description}` : template.description}
+                  title={template.slashdoCommand ? `${slashdoLabel(template.slashdoCommand)} \u2014 ${template.context || template.description}` : template.description}
                 >
                   <span>{template.icon || '\ud83d\udcdd'}</span>
                   <span className="max-w-[120px] truncate">{template.name}</span>
                   {/* The Claude-Code form of the command, as a recognizable label.
                       The actual invocation is resolved server-side per provider. */}
                   {template.slashdoCommand && (
-                    <span className="hidden sm:inline text-xs text-port-accent/80 font-mono">/do:{template.slashdoCommand}</span>
+                    <span className="hidden sm:inline text-xs text-port-accent/80 font-mono">{slashdoLabel(template.slashdoCommand)}</span>
                   )}
                   {template.useCount > 0 && (
                     <span className="text-xs text-gray-600">({template.useCount})</span>

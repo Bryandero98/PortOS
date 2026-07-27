@@ -795,12 +795,27 @@ export const RAW_SPOOL_MAX_BYTES = 256 * 1024 * 1024;
 
 // ─── Command + args helpers ───────────────────────────────────────────────
 
+/**
+ * The launch command a TUI provider gets when it names none — the spawners'
+ * blank-`provider.command` fallback (`buildTuiSpawnConfig`, and mirrored by
+ * `buildCliSpawnConfig`'s default branch). An unrecognized id resolves to
+ * `claude`, matching `isClaudeCommand`'s blank-is-Claude policy.
+ *
+ * Also read by `resolveSlashdoStyle`'s `assumeClaudeWhenUnknown` posture, which
+ * asks "which command will actually be spawned?" before deciding whether the
+ * session can type `/do:pr` — so a missing signature here means a provider is
+ * told to run slash commands its real binary doesn't have.
+ * @param {string|null|undefined} id - provider id
+ * @returns {string}
+ */
 export function inferTuiCommand(id) {
   if (!id) return 'claude';
   if (id.includes('codex')) return 'codex';
   if (id.includes('antigravity')) return 'agy';
   if (id.includes('gemini')) return 'gemini';
   if (id.includes('kimi')) return 'kimi';
+  if (id.includes('grok')) return 'grok';
+  if (id.includes('opencode')) return 'opencode';
   return 'claude';
 }
 

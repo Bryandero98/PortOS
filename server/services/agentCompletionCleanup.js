@@ -29,6 +29,7 @@ import { isTruthyMeta } from './agentState.js';
 import { resolveReviewLoopOptions } from './codeReview.js';
 import { cleanupAgentWorktree, spawnMergeRecoveryTask } from './agentWorktreeCleanup.js';
 import { resolvePrCompletion } from '../lib/prDisposition.js';
+import { canTypeSlashCommands } from '../lib/slashdoInvocation.js';
 
 const ROOT_DIR = PATHS.root;
 
@@ -307,7 +308,21 @@ export async function runAgentCompletionCleanup({ agentId, task, agent, effectiv
     // branch and open the PR on their own. Mirror the TUI cleanup contract
     // so PortOS doesn't double-fire `gh pr create` ("a pull request already
     // exists" would preserve the worktree as a false-positive failure).
-    const agentOwnsPR = taskOpenPR && (agent.providerId === 'claude-code' || agent.providerId === 'claude-code-bedrock');
+    //
+    // Derived from the SAME `canTypeSlashCommands` predicate the prompt's
+    // `hasSlashdo` gate uses (#3114) — these two must agree or the double-fire
+    // this comment describes is exactly what happens. An id allowlist here would
+    // miss a path-configured `claude` under a custom provider id (told to run
+    // `/do:pr`, then PortOS opens a second PR) and would wrongly claim a lean
+    // `--bare` session owns a PR it was never told to open. `providerCommand` /
+    // `leanMode` are persisted on the agent record for this; a pre-upgrade record
+    // carries neither, and a blank command reads as `claude` — which is what the
+    // old id allowlist effectively assumed for the claude-code ids anyway.
+    const agentOwnsPR = taskOpenPR && canTypeSlashCommands({
+      providerId: agent.providerId,
+      providerCommand: agent.providerCommand,
+      leanMode: agent.leanMode === true,
+    });
     // Merge per-task reviewer metadata with the user's Code Review Defaults
     // (AI Providers → Code Review Defaults panel). Settings I/O is cached
     // inside the resolver, so this is effectively free even when invoked
