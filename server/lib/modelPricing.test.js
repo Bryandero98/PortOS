@@ -185,8 +185,27 @@ describe('cache-tier rates on resolveModelRates', () => {
 
 describe('isFreeModelId', () => {
   it('treats Ollama/LM Studio family:tag ids as local (free)', () => {
-    for (const id of ['qwen3.6:35b', 'llama3.1:8b-instruct-q8_0', 'gpt-oss:120b', 'deepseek-r1:7b']) {
+    for (const id of ['qwen3.6:35b', 'llama3.1:8b-instruct-q8_0', 'deepseek-r1:7b', 'codestral:latest', 'mistral-small3.2:24b']) {
       expect(isFreeModelId(id)).toBe(true);
+    }
+  });
+
+  // A tagged id that still resolves to a KNOWN hosted family is not free — the
+  // `gpt-oss` rule prices it at its Cerebras host rate, so treating the Ollama
+  // tag as authoritative would zero out a real bill.
+  it('defers to a known hosted family over the local-tag shape', () => {
+    expect(isFreeModelId('gpt-oss:120b')).toBe(false);
+  });
+
+  // Regression: Bedrock model ids carry a `:0` version suffix, so a bare
+  // "contains a colon" test priced real paid Bedrock usage at $0.
+  it('does NOT treat a Bedrock versioned id as local, despite the colon', () => {
+    for (const id of [
+      'us.anthropic.claude-opus-4-5-20251101-v1:0',
+      'anthropic.claude-sonnet-4-5-20250929-v1:0',
+      'us.anthropic.claude-haiku-4-5-20251001-v1:0'
+    ]) {
+      expect(isFreeModelId(id)).toBe(false);
     }
   });
 

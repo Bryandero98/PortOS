@@ -222,19 +222,29 @@ export function resolveModelRates(providerId, model) {
 const LOCALHOST_ENDPOINT = /^(https?:\/\/)?(localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?)(:|\/|$)/i;
 const FREE_ID = /ollama|lmstudio|lm-studio/i;
 
-// Ollama/LM Studio name their models `family:tag` (`qwen3.6:35b`,
-// `llama3.1:8b-instruct-q8_0`) or `org/repo` for a pulled GGUF. No hosted
-// model id in EXACT_RATES contains a colon, so the tag is an unambiguous
-// local-inference marker.
-const LOCAL_MODEL_ID = /:|^[\w.-]+\/[\w.-]+$/;
+// Ollama/LM Studio name their models `family:tag` — `qwen3.6:35b`,
+// `llama3.1:8b-instruct-q8_0` — or `org/repo` for a pulled GGUF.
+//
+// A bare `:` test is NOT safe: Bedrock model ids carry a `:0` version suffix
+// (`us.anthropic.claude-opus-4-5-20251101-v1:0`), so matching any colon would
+// price real, paid Bedrock usage at $0. The distinguishing feature is what
+// follows the colon — an Ollama tag is a size/quantization label
+// (`qwen3.6:35b`, `llama3.1:8b-instruct-q8_0`), never a bare integer version
+// the way a Bedrock `-v1:0` suffix is. Requiring at least one letter after the
+// colon separates the two. (Ollama family names may contain dots — `qwen3.6` —
+// so the prefix must allow them.)
+const LOCAL_TAGGED_MODEL = /^[\w.-]+:[\w.-]*[a-z][\w.-]*$/i;
+const LOCAL_REPO_MODEL = /^[\w.-]+\/[\w.-]+$/;
 
 /**
  * True when a MODEL id is local-inference (free), independent of which provider
  * ran it. Needed because a Claude-Code-flavored CLI can be pointed at an Ollama
  * backend: its transcript records `qwen3.6:35b`, which would otherwise resolve
- * through the `claude` provider default and be billed at Sonnet rates. Used by
- * the transcript backfill, where the model id is the only attribution available
- * (a transcript does not record which PortOS provider config invoked it).
+ * through the `claude` provider default and be billed at Sonnet rates.
+ *
+ * Deliberately conservative — a hosted id we can't classify must fall through to
+ * normal (paid) pricing, because under-billing a paid model is the more
+ * expensive mistake for a report whose whole purpose is "what did this cost".
  * @param {string|null|undefined} model
  * @returns {boolean}
  */
@@ -243,7 +253,11 @@ export function isFreeModelId(model) {
   if (!id) return false;
   // A hosted id we have a real rate for is never local, whatever its shape.
   if (EXACT_RATES[id]) return false;
-  return FREE_ID.test(id) || LOCAL_MODEL_ID.test(id);
+  // Nor is one that resolves to a known hosted family (covers Bedrock-prefixed
+  // and suffixed variants of every id in the table).
+  if (resolveModelRates(null, id).matched !== 'fallback') return false;
+  if (FREE_ID.test(id)) return true;
+  return LOCAL_TAGGED_MODEL.test(id) || LOCAL_REPO_MODEL.test(id);
 }
 
 /**

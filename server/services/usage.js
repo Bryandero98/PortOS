@@ -381,68 +381,6 @@ export async function recordRunUsage(record) {
 }
 
 /**
- * REPLACE a given day's measured provider/model buckets with `records` — the
- * write half of the transcript backfill (`usageReconciler.backfillMeasuredUsage`).
- *
- * Replace, not add, so re-running the backfill is idempotent: a second pass over
- * the same transcripts must not double the day. Only the buckets named in
- * `records` are touched — a provider whose usage that day came from somewhere
- * else (a local model, an API provider) keeps its existing estimate.
- *
- * The day's flat `sessions`/`messages`/`tokens` fields are deliberately left
- * alone: they are the legacy all-time-ish counters the report already reconciles
- * as residuals, and rewriting them from a partial (transcript-only) view of the
- * day would drop the providers this pass cannot see.
- *
- * @param {string} dayKey `YYYY-MM-DD`
- * @param {Array<{ providerId: string, model: string|null, sessions?: number,
- *   messages?: number, tokensIn?: number, tokensOut?: number,
- *   cacheReadTokens?: number, cacheWriteTokens?: number }>} records
- */
-export async function replaceMeasuredDayUsage(dayKey, records) {
-  if (!usageData) await loadUsage();
-  if (!DAY_KEY_RE.test(dayKey || '') || !Array.isArray(records) || records.length === 0) return;
-
-  if (!usageData.dailyActivity[dayKey]) {
-    usageData.dailyActivity[dayKey] = { sessions: 0, messages: 0, tokens: 0 };
-  }
-  const day = usageData.dailyActivity[dayKey];
-
-  // Reset only the buckets this pass will rewrite, so a partial re-run can't
-  // leave a stale half-count behind.
-  for (const { providerId, model } of records) {
-    const providerDay = providerDayBucket(day, providerId, null);
-    const target = model ? modelDayBucket(providerDay, model) : providerDay;
-    for (const bucket of new Set([providerDay, target])) {
-      bucket.sessions = 0;
-      bucket.messages = 0;
-      bucket.tokensIn = 0;
-      bucket.tokensOut = 0;
-      bucket.cacheReadTokens = 0;
-      bucket.cacheWriteTokens = 0;
-      bucket.source = null;
-    }
-  }
-
-  for (const record of records) {
-    const providerDay = providerDayBucket(day, record.providerId, null);
-    const apply = (bucket) => {
-      bucket.sessions += record.sessions || 0;
-      bucket.messages += record.messages || 0;
-      bucket.tokensIn += record.tokensIn || 0;
-      bucket.tokensOut += record.tokensOut || 0;
-      bucket.cacheReadTokens += record.cacheReadTokens || 0;
-      bucket.cacheWriteTokens += record.cacheWriteTokens || 0;
-      bucket.source = mergeSource(bucket.source, 'measured');
-    };
-    apply(providerDay);
-    if (record.model) apply(modelDayBucket(providerDay, record.model));
-  }
-
-  await saveUsage();
-}
-
-/**
  * Record tool calls
  */
 export async function recordToolCalls(count) {

@@ -30,14 +30,13 @@ import { join } from 'path';
 import { readdir } from 'fs/promises';
 import { tryReadFile } from '../lib/fileUtils.js';
 import { estimateTokens, estimateTokensFromChars } from '../lib/contextBudget.js';
-import { isFreeModelId } from '../lib/modelPricing.js';
 import {
   claudeProjectSlug,
   parseClaudeTranscript,
   parseCodexRollout,
   totalTranscriptTokens
 } from '../lib/providerTranscriptUsage.js';
-import { recordRunUsage, replaceMeasuredDayUsage } from './usage.js';
+import { recordRunUsage } from './usage.js';
 
 // Widen the correlation window past the recorded run bounds: the CLI writes its
 // first line slightly before PortOS stamps startTime, and flushes its last
@@ -60,17 +59,6 @@ const cwdMatches = (transcriptCwd, workspacePath) => {
 const CLAUDE_ID = /claude/i;
 const CODEX_ID = /codex/i;
 
-// A transcript records the CLI that wrote it, not which PortOS provider config
-// invoked it (a single CLI backs several: `claude-code`, `claude-code-tui`,
-// `claude-code-tui-bedrock`, …). The backfill therefore attributes to one
-// stable per-CLI id rather than guessing a config. These ids intentionally match
-// the canonical provider ids so `resolveModelRates`/`isFreeProvider` classify
-// them correctly, and a later per-run reconcile refines the attribution.
-const CLAUDE_BACKFILL_PROVIDER = 'claude-code';
-const CODEX_BACKFILL_PROVIDER = 'codex';
-// Where a transcript whose model id is local inference gets attributed, so
-// `isFreeProvider` prices it at $0 instead of the hosted provider's rates.
-const FREE_LOCAL_PROVIDER = 'ollama';
 
 /**
  * Which transcript family a provider writes, or null for providers that write
@@ -291,127 +279,4 @@ export async function recordCompletedRunUsage(metadata, output, { home = homedir
     .catch((err) => {
       console.error(`❌ Failed to record usage: ${err.message}`);
     });
-}
-
-/**
- * Re-read every readable transcript in the retained window and REPLACE the
- * recorded per-provider/per-model day buckets with the measured counts.
- *
- * Reconciliation normally happens per-run at completion, so this exists for the
- * history recorded before that landed — an install upgrading to #3124 Phase 2
- * has months of estimated buckets it can now correct in place.
- *
- * **Explicitly user-triggered only.** Reading local JSONL spends no tokens and
- * makes no provider call, so this does not engage the AI-provider policy — but a
- * from-zero bulk pass over a large `~/.claude/projects` tree is slow and
- * rewrites recorded history, so it must never run from boot or a schedule. The
- * only caller is `POST /api/usage/backfill`.
- *
- * Buckets are keyed by the transcript's own day, so a session is attributed to
- * the day it ran rather than today. Days with no transcript keep their existing
- * estimate untouched.
- *
- * @param {{ home?: string, since?: string|null }} [opts] `since` is an inclusive
- *   `YYYY-MM-DD` floor; transcripts older than it are skipped.
- * @returns {Promise<{ days: number, sessions: number, tokensIn: number,
- *   tokensOut: number, cacheReadTokens: number, cacheWriteTokens: number,
- *   families: string[] }>}
- */
-export async function backfillMeasuredUsage({ home = homedir(), since = null } = {}) {
-  const byDay = new Map(); // 'YYYY-MM-DD' -> Map<providerKey, totals>
-  const families = new Set();
-  const summary = {
-    days: 0,
-    sessions: 0,
-    tokensIn: 0,
-    tokensOut: 0,
-    cacheReadTokens: 0,
-    cacheWriteTokens: 0,
-    families: []
-  };
-
-  const collect = (parsed, family, providerId) => {
-    if (!parsed || totalTranscriptTokens(parsed) === 0) return;
-    // Attribute to the day the session ENDED — the same day PortOS's own
-    // recording would have used, since it records at run completion.
-    const day = (parsed.lastTs || parsed.firstTs || '').slice(0, 10);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return;
-    if (since && day < since) return;
-
-    families.add(family);
-    if (!byDay.has(day)) byDay.set(day, new Map());
-    const dayMap = byDay.get(day);
-    const model = parsed.model || null;
-    // A Claude-Code-flavored CLI can be pointed at a local Ollama/LM Studio
-    // backend, and the transcript then records the LOCAL model id
-    // (`qwen3.6:35b`). Attributing that to `claude-code` would bill free local
-    // inference at Anthropic rates — measured against a real install, ~$166 of
-    // cost that was never incurred. Route it to `ollama`, which
-    // `isFreeProvider` prices at $0. The model id is the only signal available
-    // here: a transcript does not record which PortOS provider invoked it.
-    const effectiveProvider = isFreeModelId(model) ? FREE_LOCAL_PROVIDER : providerId;
-    const key = `${effectiveProvider} ${model ?? ''}`;
-    if (!dayMap.has(key)) {
-      dayMap.set(key, {
-        providerId: effectiveProvider,
-        model,
-        sessions: 0,
-        messages: 0,
-        tokensIn: 0,
-        tokensOut: 0,
-        cacheReadTokens: 0,
-        cacheWriteTokens: 0
-      });
-    }
-    const bucket = dayMap.get(key);
-    bucket.sessions += 1;
-    bucket.messages += parsed.messages || 0;
-    bucket.tokensIn += parsed.tokensIn || 0;
-    bucket.tokensOut += parsed.tokensOut || 0;
-    bucket.cacheReadTokens += parsed.cacheReadTokens || 0;
-    bucket.cacheWriteTokens += parsed.cacheWriteTokens || 0;
-  };
-
-  // Claude Code — every project directory, since a PortOS install drives runs in
-  // the repo, its worktrees, and its subdirectories, each a separate slug.
-  const projectsRoot = join(home, '.claude', 'projects');
-  for (const project of await listDir(projectsRoot)) {
-    for (const file of await listDir(join(projectsRoot, project))) {
-      if (!file.endsWith('.jsonl')) continue;
-      const text = await tryReadFile(join(projectsRoot, project, file));
-      if (!text) continue;
-      collect(parseClaudeTranscript(text), 'claude', CLAUDE_BACKFILL_PROVIDER);
-    }
-  }
-
-  // Codex — walk the YYYY/MM/DD tree rather than guessing dates.
-  const sessionsRoot = join(home, '.codex', 'sessions');
-  for (const year of await listDir(sessionsRoot)) {
-    for (const month of await listDir(join(sessionsRoot, year))) {
-      for (const dayDir of await listDir(join(sessionsRoot, year, month))) {
-        const dir = join(sessionsRoot, year, month, dayDir);
-        for (const file of await listDir(dir)) {
-          if (!file.startsWith('rollout-') || !file.endsWith('.jsonl')) continue;
-          const text = await tryReadFile(join(dir, file));
-          if (!text) continue;
-          collect(parseCodexRollout(text), 'codex', CODEX_BACKFILL_PROVIDER);
-        }
-      }
-    }
-  }
-
-  for (const [day, dayMap] of byDay) {
-    await replaceMeasuredDayUsage(day, [...dayMap.values()]);
-    summary.days += 1;
-    for (const bucket of dayMap.values()) {
-      summary.sessions += bucket.sessions;
-      summary.tokensIn += bucket.tokensIn;
-      summary.tokensOut += bucket.tokensOut;
-      summary.cacheReadTokens += bucket.cacheReadTokens;
-      summary.cacheWriteTokens += bucket.cacheWriteTokens;
-    }
-  }
-  summary.families = [...families];
-  console.log(`📊 Usage backfill: ${summary.sessions} sessions across ${summary.days} days from ${summary.families.join(', ') || 'no'} transcripts`);
-  return summary;
 }

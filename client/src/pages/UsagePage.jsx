@@ -1,12 +1,10 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { RefreshCw, Clock, AlertTriangle, FileSearch } from 'lucide-react';
+import { RefreshCw, Clock, AlertTriangle } from 'lucide-react';
 import * as api from '../services/api';
 import BrailleSpinner from '../components/BrailleSpinner';
 import PageSkeleton from '../components/ui/PageSkeleton';
 import Pill from '../components/ui/Pill';
-import { useAsyncAction } from '../hooks/useAsyncAction';
-import toast from '../components/ui/Toast';
 import { formatCompactCount } from '../utils/formatters';
 
 const PERIOD_OPTIONS = [
@@ -349,8 +347,6 @@ function InternalUsageMetrics() {
 
   const [usage, setUsage] = useState(null);
   const [loading, setLoading] = useState(true);
-  // Bumped after a backfill so the effect below re-reads the corrected buckets.
-  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -367,20 +363,8 @@ function InternalUsageMetrics() {
         setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [period, from, to, isCustom, reloadKey]);
+  }, [period, from, to, isCustom]);
 
-  // Re-read the provider CLIs' local transcripts and replace estimated counts
-  // with measured ones. `silent: true` because useAsyncAction owns the error
-  // toast (the custom-catch ⇒ silent convention).
-  const [runBackfill, backfilling] = useAsyncAction(async () => {
-    const summary = await api.backfillUsage({ silent: true });
-    const measured = summary?.sessions || 0;
-    toast.success(measured
-      ? `Measured ${measured.toLocaleString()} sessions across ${summary.days} days from ${summary.families.join(' + ')} transcripts.`
-      : 'No provider transcripts found to measure — counts stay estimated.');
-    setReloadKey((n) => n + 1);
-    return summary;
-  }, { errorMessage: 'Failed to read provider transcripts' });
 
   const setPeriod = (id) => {
     setSearchParams((prev) => {
@@ -458,18 +442,7 @@ function InternalUsageMetrics() {
             <span className="text-xl font-bold text-port-success">{formatCost(report?.totals?.estimatedCost)}</span>
           </div>
         </div>
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <CostReportFilters period={period} from={from} to={to} isCustom={isCustom} onPeriod={setPeriod} onRange={setRange} />
-          <button
-            onClick={runBackfill}
-            disabled={backfilling}
-            className="flex items-center gap-1.5 px-3 py-1 rounded-full text-xs sm:text-sm border border-port-border text-gray-400 hover:text-white disabled:opacity-50"
-            title="Re-read the provider CLIs' local transcripts to replace estimated token counts with measured ones. Reads local files only — no AI provider call."
-          >
-            <FileSearch size={14} className={backfilling ? 'animate-pulse' : ''} />
-            {backfilling ? 'Reading transcripts…' : 'Measure from transcripts'}
-          </button>
-        </div>
+        <CostReportFilters period={period} from={from} to={to} isCustom={isCustom} onPeriod={setPeriod} onRange={setRange} />
         <CostReportTable report={report} />
         <p className="text-[10px] sm:text-xs text-gray-500">
           Informational estimate of what this usage would have cost under API billing (PortOS runs on subscriptions).

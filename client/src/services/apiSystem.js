@@ -115,11 +115,6 @@ export const getUsage = (params = {}) => {
 export const getUsageRaw = () => request('/usage/raw');
 export const resetUsage = () => request('/usage', { method: 'DELETE' });
 
-// Re-read the provider CLIs' local transcripts and replace estimated token
-// counts with measured ones. Explicit user action only (see the route comment).
-// `since` is an optional inclusive YYYY-MM-DD floor.
-export const backfillUsage = ({ since = null, ...options } = {}) =>
-  request('/usage/backfill', { method: 'POST', body: JSON.stringify({ since }), ...options });
 
 // Subscription-quota status for every enabled provider family (claude, codex,
 // agy, grok). Callers own their inline error UI — silent by default.

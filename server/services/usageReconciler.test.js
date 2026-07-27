@@ -4,17 +4,15 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 vi.mock('./usage.js', () => ({
-  recordRunUsage: vi.fn().mockResolvedValue(undefined),
-  replaceMeasuredDayUsage: vi.fn().mockResolvedValue(undefined)
+  recordRunUsage: vi.fn().mockResolvedValue(undefined)
 }));
 
-const { recordRunUsage, replaceMeasuredDayUsage } = await import('./usage.js');
+const { recordRunUsage } = await import('./usage.js');
 const {
   transcriptFamily,
   readMeasuredUsage,
   reconcileRunUsage,
-  recordCompletedRunUsage,
-  backfillMeasuredUsage
+  recordCompletedRunUsage
 } = await import('./usageReconciler.js');
 
 // Fake HOME per test so the parsers read fixtures, never the developer's real
@@ -354,114 +352,4 @@ describe('recordCompletedRunUsage', () => {
   });
 });
 
-describe('backfillMeasuredUsage', () => {
-  it('attributes each session to the day it ran and reports a summary', async () => {
-    await writeClaudeSession('a.jsonl', [
-      claudeAssistant({ id: 'm1', timestamp: '2026-07-01T10:05:00.000Z' })
-    ]);
-    await writeClaudeSession('b.jsonl', [
-      claudeAssistant({ id: 'm2', timestamp: '2026-07-02T10:05:00.000Z', output: 25 })
-    ]);
 
-    const summary = await backfillMeasuredUsage({ home });
-
-    expect(summary).toMatchObject({ days: 2, sessions: 2, tokensOut: 75, families: ['claude'] });
-    const days = replaceMeasuredDayUsage.mock.calls.map(([day]) => day).sort();
-    expect(days).toEqual(['2026-07-01', '2026-07-02']);
-    // Provider attribution is the canonical per-CLI id, since a transcript does
-    // not record which PortOS provider config invoked it.
-    expect(replaceMeasuredDayUsage.mock.calls[0][1][0]).toMatchObject({ providerId: 'claude-code' });
-  });
-
-  it('honors the since floor', async () => {
-    await writeClaudeSession('a.jsonl', [
-      claudeAssistant({ id: 'old', timestamp: '2026-06-01T10:00:00.000Z' })
-    ]);
-    await writeClaudeSession('b.jsonl', [
-      claudeAssistant({ id: 'new', timestamp: '2026-07-02T10:00:00.000Z' })
-    ]);
-
-    const summary = await backfillMeasuredUsage({ home, since: '2026-07-01' });
-    expect(summary.days).toBe(1);
-    expect(replaceMeasuredDayUsage.mock.calls.map(([day]) => day)).toEqual(['2026-07-02']);
-  });
-
-  it('walks every project directory, not just the current workspace', async () => {
-    await writeClaudeSession('a.jsonl', [
-      claudeAssistant({ id: 'm1', timestamp: '2026-07-01T10:00:00.000Z' })
-    ], '-work-repo-one');
-    await writeClaudeSession('b.jsonl', [
-      claudeAssistant({ id: 'm2', timestamp: '2026-07-01T11:00:00.000Z' })
-    ], '-work-repo-two');
-
-    const summary = await backfillMeasuredUsage({ home });
-    expect(summary.sessions).toBe(2);
-  });
-
-  it('includes codex rollouts alongside claude sessions', async () => {
-    await writeClaudeSession('a.jsonl', [
-      claudeAssistant({ id: 'm1', timestamp: '2026-07-01T10:00:00.000Z' })
-    ]);
-    await writeCodexRollout(['2026', '07', '01'], 'rollout-1.jsonl', codexRollout({
-      timestamp: '2026-07-01T11:00:00.000Z', input: 1000, cached: 400, output: 60
-    }));
-
-    const summary = await backfillMeasuredUsage({ home });
-    expect(summary.sessions).toBe(2);
-    expect(summary.families.sort()).toEqual(['claude', 'codex']);
-    const records = replaceMeasuredDayUsage.mock.calls[0][1];
-    expect(records.map((r) => r.providerId).sort()).toEqual(['claude-code', 'codex']);
-  });
-
-  it('is a clean no-op on a home with no transcripts', async () => {
-    const summary = await backfillMeasuredUsage({ home });
-    expect(summary).toMatchObject({ days: 0, sessions: 0, families: [] });
-    expect(replaceMeasuredDayUsage).not.toHaveBeenCalled();
-  });
-
-  it('ignores transcripts with zero measurable tokens', async () => {
-    await writeClaudeSession('empty.jsonl', [
-      JSON.stringify({ type: 'user', cwd: WORKSPACE, sessionId: 'sess-1' })
-    ]);
-    const summary = await backfillMeasuredUsage({ home });
-    expect(summary.sessions).toBe(0);
-  });
-});
-
-describe('backfillMeasuredUsage — local-model attribution (regression)', () => {
-  // A Claude-Code-flavored CLI pointed at an Ollama backend writes its
-  // transcript under ~/.claude/projects but records the LOCAL model id.
-  // Attributing that to `claude-code` billed free inference at Anthropic rates.
-  it('routes a local model id to the free ollama provider, not claude-code', async () => {
-    await writeClaudeSession('local.jsonl', [
-      claudeAssistant({ id: 'm1', timestamp: '2026-07-01T10:00:00.000Z', model: 'qwen3.6:35b' })
-    ]);
-
-    await backfillMeasuredUsage({ home });
-    const records = replaceMeasuredDayUsage.mock.calls[0][1];
-    expect(records).toHaveLength(1);
-    expect(records[0]).toMatchObject({ providerId: 'ollama', model: 'qwen3.6:35b' });
-  });
-
-  it('still attributes hosted models to their own CLI provider', async () => {
-    await writeClaudeSession('hosted.jsonl', [
-      claudeAssistant({ id: 'm1', timestamp: '2026-07-01T10:00:00.000Z', model: 'claude-opus-5' })
-    ]);
-
-    await backfillMeasuredUsage({ home });
-    expect(replaceMeasuredDayUsage.mock.calls[0][1][0]).toMatchObject({ providerId: 'claude-code' });
-  });
-
-  it('splits a day that mixed local and hosted models into separate rows', async () => {
-    await writeClaudeSession('local.jsonl', [
-      claudeAssistant({ id: 'm1', timestamp: '2026-07-01T10:00:00.000Z', model: 'qwen3.6:35b' })
-    ]);
-    await writeClaudeSession('hosted.jsonl', [
-      claudeAssistant({ id: 'm2', timestamp: '2026-07-01T11:00:00.000Z', model: 'claude-opus-5' })
-    ]);
-
-    await backfillMeasuredUsage({ home });
-    const records = replaceMeasuredDayUsage.mock.calls[0][1];
-    expect(records.map((r) => r.providerId).sort()).toEqual(['claude-code', 'ollama']);
-  });
-});

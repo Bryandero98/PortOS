@@ -707,15 +707,6 @@ export const usageMessagesSchema = z.object({
   inputTokenCount: z.number().int().nonnegative().optional().default(0)
 });
 
-/**
- * Body for POST /api/usage/backfill — re-read the provider CLIs' on-disk
- * transcripts and replace estimated day buckets with measured counts. `since`
- * bounds how far back to walk (inclusive YYYY-MM-DD); omitted means every
- * transcript on disk.
- */
-export const usageBackfillSchema = z.object({
-  since: isoDay.nullish()
-});
 
 // =============================================================================
 // PORTS

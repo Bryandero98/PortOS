@@ -20,7 +20,7 @@ tryReadFile: vi.fn().mockResolvedValue(null),
 }));
 
 import { atomicWrite, readJSONFile } from '../lib/fileUtils.js';
-import { loadUsage, getUsageSummary, getUsage, recordSession, recordMessages, recordTokens, recordRunUsage, replaceMeasuredDayUsage, buildUsageReport, rollupOldDailyActivity } from './usage.js';
+import { loadUsage, getUsageSummary, getUsage, recordSession, recordMessages, recordTokens, recordRunUsage, buildUsageReport, rollupOldDailyActivity } from './usage.js';
 
 // Helper: produce a date string N days ago (relative to today)
 function daysAgo(n) {
@@ -1038,60 +1038,4 @@ describe('buildUsageReport — cache pricing and source reporting', () => {
   });
 });
 
-describe('replaceMeasuredDayUsage', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
 
-  it('is idempotent — a second identical backfill does not double the day', async () => {
-    readJSONFile.mockResolvedValueOnce(makeUsage({}));
-    await loadUsage();
-
-    const records = [{
-      providerId: 'claude-code',
-      model: 'claude-opus-5',
-      sessions: 2,
-      messages: 5,
-      tokensIn: 100,
-      tokensOut: 200,
-      cacheReadTokens: 9000,
-      cacheWriteTokens: 300
-    }];
-
-    await replaceMeasuredDayUsage('2026-07-01', records);
-    await replaceMeasuredDayUsage('2026-07-01', records);
-
-    const bucket = getUsage().dailyActivity['2026-07-01'].byProvider['claude-code'];
-    expect(bucket).toMatchObject({
-      sessions: 2, messages: 5, tokensIn: 100, tokensOut: 200,
-      cacheReadTokens: 9000, cacheWriteTokens: 300, source: 'measured'
-    });
-    expect(bucket.byModel['claude-opus-5']).toMatchObject({ tokensOut: 200, cacheReadTokens: 9000 });
-  });
-
-  it('leaves other providers in the same day untouched', async () => {
-    readJSONFile.mockResolvedValueOnce(makeUsage({
-      '2026-07-01': {
-        sessions: 1, messages: 1, tokens: 40,
-        byProvider: { ollama: { name: 'Ollama', sessions: 1, messages: 1, tokensIn: 5, tokensOut: 40, byModel: {} } }
-      }
-    }));
-    await loadUsage();
-
-    await replaceMeasuredDayUsage('2026-07-01', [
-      { providerId: 'claude-code', model: null, sessions: 1, messages: 1, tokensOut: 10 }
-    ]);
-
-    const day = getUsage().dailyActivity['2026-07-01'];
-    expect(day.byProvider.ollama).toMatchObject({ tokensOut: 40, tokensIn: 5 });
-    expect(day.byProvider['claude-code'].source).toBe('measured');
-  });
-
-  it('rejects a malformed day key or empty record list', async () => {
-    readJSONFile.mockResolvedValueOnce(makeUsage({}));
-    await loadUsage();
-    await replaceMeasuredDayUsage('not-a-day', [{ providerId: 'claude-code' }]);
-    await replaceMeasuredDayUsage('2026-07-01', []);
-    expect(Object.keys(getUsage().dailyActivity)).toHaveLength(0);
-  });
-});
