@@ -801,6 +801,8 @@ export default function Sprites() {
                         key={detail.record.id}
                         record={detail.record}
                         walk={detail.walk}
+                        tracks={detail.tracks}
+                        trackDefinitions={detail.trackDefinitions}
                         atlas={detail.atlas}
                         onChanged={onWorkflowChanged}
                       />
@@ -824,7 +826,8 @@ export default function Sprites() {
                         key={detail.record.id}
                         record={detail.record}
                         walk={detail.walk}
-                        ambient={detail.tracks?.ambient}
+                        tracks={detail.tracks}
+                        trackDefinitions={detail.trackDefinitions}
                         atlas={detail.atlas}
                         onChanged={onWorkflowChanged}
                       />

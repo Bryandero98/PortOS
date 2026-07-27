@@ -46,6 +46,7 @@
 
 import { basename } from 'path';
 import { deriveTracks, resolveWalkFrameCount, ATLAS_DEFAULT_ROWS } from './atlasGrid.js';
+import { ANIMATION_TRACKS, WALK_TRACK } from './animationTracks.js';
 
 // Bump only on a breaking shape change. Adding a field (or a new track) is
 // additive — consumers read `tracks`/`columns` by name, not by position.
@@ -128,46 +129,35 @@ export function buildAtlasLayout({
  * Callers pass describable geometry (a column list); publish.js asserts that
  * once, up front, for both this and `buildAtlasLayout`.
  */
-export function runtimeContractMismatch(geometry, contract, appLabel = 'the bound app') {
+export function runtimeContractMismatch(
+  geometry,
+  contract,
+  appLabel = 'the bound app',
+  tracks = ANIMATION_TRACKS,
+) {
   if (!contract) return null;
 
   const actualColumns = geometry.columns.length;
-  const actualFrames = resolveWalkFrameCount(geometry);
-  const {
-    walkFrameCount: expectedFrames, scannerFrameCount: expectedScannerFrames, ambientFrameCount: expectedAmbientFrames,
-    columnCount: expectedColumns, cellSize: expectedCellSize,
-  } = contract;
-  const actualDesc = `Atlas has ${actualColumns} columns (${actualFrames} walk frames)`;
-  const expectedDesc = Number.isInteger(expectedColumns)
-    ? `${expectedColumns} (${expectedFrames} walk frames)`
-    : `${expectedFrames} walk frames`;
-  const countMismatch = (resolution) => `${actualDesc} but ${appLabel} expects ${expectedDesc}. ${resolution}`;
+  const { columnCount: expectedColumns, cellSize: expectedCellSize } = contract;
 
-  if (Number.isInteger(expectedFrames) && expectedFrames !== actualFrames) {
-    return countMismatch(
-      `Update the game's walk-frame constant and its cycle distance, or reprocess this walk set to ${expectedFrames} frames before publishing.`,
-    );
+  for (const definition of Object.values(tracks)) {
+    const expected = contract[definition.contractFrameCountField];
+    if (!Number.isInteger(expected)) continue;
+    const direct = geometry[definition.contractFrameCountField];
+    const spanCount = geometry.tracks?.[definition.id]?.count;
+    // Walk alone predates the per-track descriptor; preserve its imported-grid
+    // column fallback while every current/new track uses the generic two-rung
+    // field/span lookup.
+    const actual = definition.id === WALK_TRACK
+      ? resolveWalkFrameCount(geometry)
+      : (Number.isInteger(direct) ? direct : (Number.isInteger(spanCount) ? spanCount : null));
+    if (expected === actual) continue;
+    return `Atlas has ${actual ?? 'no'} ${definition.label.toLowerCase()} frame${actual === 1 ? '' : 's'} but ${appLabel} expects ${expected}. `
+      + `Approve the ${definition.label.toLowerCase()} set at that frame count, or update the app runtime contract before publishing.`;
   }
   if (Number.isInteger(expectedColumns) && expectedColumns !== actualColumns) {
-    return countMismatch(
-      `The grid shape changed — update the app's expected column layout, or re-bind its runtime contract to ${actualColumns} columns before publishing.`,
-    );
-  }
-  const actualScannerFrames = Number.isInteger(geometry.scannerFrameCount)
-    ? geometry.scannerFrameCount
-    : geometry.tracks?.scanner?.count ?? null;
-  if (Number.isInteger(expectedScannerFrames) && expectedScannerFrames !== actualScannerFrames) {
-    const actual = Number.isInteger(actualScannerFrames) ? actualScannerFrames : 'no';
-    return `Atlas has ${actual} scanner frame${actual === 1 ? '' : 's'} but ${appLabel} expects ${expectedScannerFrames}. `
-      + 'Approve a scanner set at that frame count, or update the app runtime contract before publishing.';
-  }
-  const actualAmbientFrames = Number.isInteger(geometry.ambientFrameCount)
-    ? geometry.ambientFrameCount
-    : geometry.tracks?.ambient?.count ?? null;
-  if (Number.isInteger(expectedAmbientFrames) && expectedAmbientFrames !== actualAmbientFrames) {
-    const actual = Number.isInteger(actualAmbientFrames) ? actualAmbientFrames : 'no';
-    return `Atlas has ${actual} ambient frame${actual === 1 ? '' : 's'} but ${appLabel} expects ${expectedAmbientFrames}. `
-      + 'Approve an ambient loop at that frame count, or update the app runtime contract before publishing.';
+    return `Atlas has ${actualColumns} columns but ${appLabel} expects ${expectedColumns}. `
+      + `The grid shape changed — update the app's expected column layout, or re-bind its runtime contract to ${actualColumns} columns before publishing.`;
   }
   if (Number.isInteger(expectedCellSize) && expectedCellSize !== geometry.cellSize) {
     return `Atlas cells are ${geometry.cellSize}px but ${appLabel} expects ${expectedCellSize}px. `

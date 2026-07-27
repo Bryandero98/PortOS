@@ -185,7 +185,12 @@ router.get('/:id', asyncHandler(async (req, res) => {
     ...genericTracks.map((row) => getTrackState(row.id, req.params.id)),
   ]);
   const tracks = Object.fromEntries(genericTracks.map((row, index) => [row.id, trackStates[index]]));
-  res.json({ ...detail, reference, walk, tracks, atlas });
+  // PublishWorkflow needs the COMPLETE applicable registry slice, including
+  // walk (whose bespoke state does not carry `definition`). Keep it separate
+  // from `tracks`, which remains the generic non-walk authoring-state map.
+  res.json({
+    ...detail, reference, walk, tracks, trackDefinitions: kindTracks, atlas,
+  });
 }));
 
 // The generation prompt behind one on-disk asset (record-relative `path`) —

@@ -94,8 +94,8 @@ async function requireAppRepo(appId, status) {
  * parses, so a non-route caller (importer, peer sync, a test) can't persist a
  * contract the route would have rejected.
  *
- * A walk or ambient frame count is required once a contract is present;
- * `cellSize` and `columnCount` are optional extra
+ * A registry-declared standalone track count is required once a contract is
+ * present; `cellSize` and `columnCount` are optional extra
  * assertions. The fields are NOT cross-checked against each other: what counts
  * as a consistent column layout is the compiler's business and changes with the
  * grid (#2986 drops the scanner column), so a stale count surfaces at publish
@@ -109,13 +109,12 @@ function validateRuntimeContract(runtimeContract) {
     const field = issue?.path?.length ? `runtimeContract.${issue.path.join('.')}` : 'runtimeContract';
     throw bindingError(`${field}: ${issue?.message || 'invalid'}`, 'INVALID_RUNTIME_CONTRACT');
   }
-  const {
-    walkFrameCount, scannerFrameCount, ambientFrameCount, cellSize, columnCount,
-  } = parsed.data;
+  const { cellSize, columnCount, ...trackFrameCounts } = parsed.data;
   return {
-    ...(walkFrameCount === undefined ? {} : { walkFrameCount }),
-    ...(scannerFrameCount === undefined ? {} : { scannerFrameCount }),
-    ...(ambientFrameCount === undefined ? {} : { ambientFrameCount }),
+    // The schema builds these keys from the track registry. Preserve the
+    // parsed sparse map wholesale so a newly registered track round-trips
+    // without another publish-service branch.
+    ...trackFrameCounts,
     cellSize: cellSize ?? null,
     columnCount: columnCount ?? null,
   };

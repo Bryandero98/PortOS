@@ -457,6 +457,12 @@ describe('sprites routes', () => {
     const r = await request(app).get('/api/sprites/pioneer');
     expect(r.body.walk).toEqual({ runs: [], selection: null, walkSet: null });
     expect(walk.getWalkState).toHaveBeenCalledWith('pioneer');
+    expect(r.body.trackDefinitions.map(({ id }) => id)).toEqual(['walk', 'scanner']);
+    expect(r.body.trackDefinitions[0]).toMatchObject({
+      id: 'walk',
+      contractFrameCountField: 'walkFrameCount',
+      standaloneContract: true,
+    });
     // A character carries scanner but NOT ambient, so only scanner is keyed —
     // and each state passes through with the `definition` (registry row) the
     // service resolved, so the client renders the track's label/bounds from data
@@ -475,6 +481,7 @@ describe('sprites routes', () => {
     // A props family has no gait, so no walk — and ambient, not scanner. The
     // whole point of keying by id: neither kind needs a route-level branch.
     expect(props.body.walk).toBeNull();
+    expect(props.body.trackDefinitions.map(({ id }) => id)).toEqual(['ambient']);
     expect(Object.keys(props.body.tracks)).toEqual(['ambient']);
     expect(props.body.tracks.ambient).toMatchObject({
       track: 'ambient', definition: { id: 'ambient', directional: false },
