@@ -125,12 +125,17 @@ export const generateSpriteWalk = (id, body, options = {}) => request(`/sprites/
   method: 'POST', body: JSON.stringify(body), ...options,
 });
 
-// Queue one user-requested scanner action. Its 2–8 frame, 2–12fps contract is
-// validated by the named scanner track on the server, independently of walk.
-// Takes the same optional `correctionPrompt` as the walk render.
-export const generateSpriteScanner = (id, body, options = {}) => request(`/sprites/${encodeURIComponent(id)}/scanner/generate`, {
-  method: 'POST', body: JSON.stringify(body), ...options,
-});
+// Queue one user-requested render for ANY non-walk animation track (#3136) —
+// `scanner`, `ambient`, or a user-defined one. Each track's frame/fps range,
+// facing count and prompt are resolved server-side from its registry row, so
+// this one wrapper replaces the per-track pairs (`generateSpriteScanner` /
+// `generateSpriteAmbient`) that would otherwise have grown one per type. Takes
+// the same optional `correctionPrompt` as the walk render; `direction` is
+// required for a directional track and derived server-side for a single-row one.
+export const generateSpriteTrack = (id, trackId, body = {}, options = {}) => request(
+  `/sprites/${encodeURIComponent(id)}/tracks/${encodeURIComponent(trackId)}/generate`,
+  { method: 'POST', body: JSON.stringify(body), ...options },
+);
 
 // Approve a packaged candidate run for its direction. Returns the updated
 // { runs, selection, walkSet } walk state.
@@ -138,19 +143,12 @@ export const approveSpriteWalk = (id, body, options = {}) => request(`/sprites/$
   method: 'POST', body: JSON.stringify(body), ...options,
 });
 
-export const approveSpriteScanner = (id, body, options = {}) => request(`/sprites/${encodeURIComponent(id)}/scanner/approve`, {
-  method: 'POST', body: JSON.stringify(body), ...options,
-});
-
-// Queue the one non-directional ambient loop. Also takes the optional
-// `correctionPrompt` (#3134).
-export const generateSpriteAmbient = (id, body = {}, options = {}) => request(`/sprites/${encodeURIComponent(id)}/ambient/generate`, {
-  method: 'POST', body: JSON.stringify(body), ...options,
-});
-
-export const approveSpriteAmbient = (id, body, options = {}) => request(`/sprites/${encodeURIComponent(id)}/ambient/approve`, {
-  method: 'POST', body: JSON.stringify(body), ...options,
-});
+// Approve one packaged candidate for a non-walk track. Returns that track's
+// updated `{ track, bounds, selection, set, runs }` state.
+export const approveSpriteTrack = (id, trackId, body = {}, options = {}) => request(
+  `/sprites/${encodeURIComponent(id)}/tracks/${encodeURIComponent(trackId)}/approve`,
+  { method: 'POST', body: JSON.stringify(body), ...options },
+);
 
 // Re-run the deterministic postprocess on a run whose video already landed.
 export const postprocessSpriteWalk = (id, body, options = {}) => request(`/sprites/${encodeURIComponent(id)}/walk/postprocess`, {

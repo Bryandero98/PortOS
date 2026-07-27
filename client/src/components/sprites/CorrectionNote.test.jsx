@@ -4,8 +4,8 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import CorrectionNote, {
   CorrectionNoteToggle, correctionPromptPayload,
-  anchorCorrectionKey, walkCorrectionKey, scannerCorrectionKey,
-  MAIN_CORRECTION_KEY, AMBIENT_REFERENCE_CORRECTION_KEY, AMBIENT_LOOP_CORRECTION_KEY,
+  anchorCorrectionKey, walkCorrectionKey, trackCorrectionKey,
+  MAIN_CORRECTION_KEY, AMBIENT_REFERENCE_CORRECTION_KEY,
 } from './CorrectionNote.jsx';
 
 // The shared anchor-correction module (#2964). `correctionPromptPayload` is the
@@ -49,10 +49,14 @@ describe('correction keys are namespaced per surface (#3134)', () => {
     const keys = [
       anchorCorrectionKey('east'),
       walkCorrectionKey('east'),
-      scannerCorrectionKey('east'),
+      // Any non-walk track's clip, for any facing (#3136) — one generic key
+      // replacing the per-track spellings.
+      trackCorrectionKey('scanner', 'east'),
+      trackCorrectionKey('ambient', 'south'),
+      // …and a track this build has never heard of gets a distinct key too.
+      trackCorrectionKey('jetpack', 'east'),
       MAIN_CORRECTION_KEY,
       AMBIENT_REFERENCE_CORRECTION_KEY,
-      AMBIENT_LOOP_CORRECTION_KEY,
     ];
     expect(new Set(keys).size).toBe(keys.length);
   });
@@ -62,7 +66,7 @@ describe('correction keys are namespaced per surface (#3134)', () => {
     expect(correctionPromptPayload(corrections, anchorCorrectionKey('east')))
       .toEqual({ correctionPrompt: 'no pocket on the right sleeve' });
     expect(correctionPromptPayload(corrections, walkCorrectionKey('east'))).toEqual({});
-    expect(correctionPromptPayload(corrections, scannerCorrectionKey('east'))).toEqual({});
+    expect(correctionPromptPayload(corrections, trackCorrectionKey('scanner', 'east'))).toEqual({});
   });
 
   it('keeps each direction\'s walk note separate', () => {

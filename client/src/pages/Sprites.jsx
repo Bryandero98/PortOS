@@ -5,7 +5,7 @@ import toast from '../components/ui/Toast';
 import Modal from '../components/ui/Modal.jsx';
 import {
   listSpriteRecords, getSpriteRecord, importSprites, createSpriteRecord,
-  generateSpriteWalk, generateSpriteScanner, generateSpriteAmbient, generateSpriteReference, listSpriteThumbnails,
+  generateSpriteWalk, generateSpriteTrack, generateSpriteReference, listSpriteThumbnails,
 } from '../services/apiSprites.js';
 import { getApps } from '../services/apiApps.js';
 import { getSettings } from '../services/apiSystem.js';
@@ -13,15 +13,15 @@ import { deriveAvailableBackends } from '../lib/imageGenBackends.js';
 import AppContextPicker from '../components/AppContextPicker.jsx';
 import ReferenceWorkflow from '../components/sprites/ReferenceWorkflow.jsx';
 import WalkWorkflow from '../components/sprites/WalkWorkflow.jsx';
-import ScannerWorkflow from '../components/sprites/ScannerWorkflow.jsx';
+import TrackWorkflow from '../components/sprites/TrackWorkflow.jsx';
 import AmbientWorkflow from '../components/sprites/AmbientWorkflow.jsx';
 import { GROK_VIDEO_DEFAULT_DURATION } from '../lib/grokVideoClip.js';
 import LoopTrimmer from '../components/sprites/LoopTrimmer.jsx';
 import PublishWorkflow from '../components/sprites/PublishWorkflow.jsx';
 import AssetCollection from '../components/sprites/AssetCollection.jsx';
 import {
-  correctionPromptPayload, anchorCorrectionKey, walkCorrectionKey, scannerCorrectionKey,
-  AMBIENT_REFERENCE_CORRECTION_KEY, AMBIENT_LOOP_CORRECTION_KEY,
+  correctionPromptPayload, anchorCorrectionKey, walkCorrectionKey,
+  AMBIENT_REFERENCE_CORRECTION_KEY,
 } from '../components/sprites/CorrectionNote.jsx';
 import SpriteCatalog from '../components/sprites/SpriteCatalog.jsx';
 import SpriteDetailHeader from '../components/sprites/SpriteDetailHeader.jsx';
@@ -518,8 +518,12 @@ export default function Sprites() {
     };
     collect(detail?.walk?.selection?.directions);
     collect(detail?.walk?.walkSet?.directions);
-    collect(detail?.scanner?.selection?.directions);
-    collect(detail?.scanner?.scannerSet?.directions);
+    // Every non-walk track's approvals, keyed by track id (#3136) — so a
+    // user-defined track's approved runs badge correctly with nothing added here.
+    for (const state of Object.values(detail?.tracks || {})) {
+      collect(state?.selection?.directions);
+      collect(state?.set?.directions);
+    }
     return set;
   }, [detail]);
 
@@ -573,21 +577,30 @@ export default function Sprites() {
     onWorkflowChanged,
   ), [id, duration, corrections, walkBegin, walkResolve, walkCancel, submitRender, onWorkflowChanged]);
 
-  // Scanner has its own server-side in-flight guard and independent named set;
-  // keeping its submit path separate means a scanner render never occupies the
-  // walk direction's optimistic reservation (both can legitimately be authored
-  // at once). It also owns its short default source clip instead of inheriting
-  // the walk duration picker. The immediate refetch persists the observable
-  // TUI run for polling.
-  const generateScanner = useCallback(async (direction) => {
+  // ONE submit path for every non-walk track (#3136) — the track id is a
+  // parameter, so a user-defined track needs no new handler here.
+  //
+  // Kept separate from `generateWalk` for the same reason the scanner clone was:
+  // each track has its own server-side in-flight guard and its own finalized set,
+  // so a track render must not occupy the walk direction's optimistic
+  // reservation (both can legitimately be authored at once), and each owns its
+  // short default source clip rather than inheriting the walk duration picker.
+  // The immediate refetch persists the observable TUI run for polling.
+  // The caller supplies both the request `direction` (present only for a
+  // directional track) and the `correctionKey` for the card that was clicked —
+  // TrackWorkflow already holds the definition and the facing, so deciding both
+  // there keeps this handler dependency-light and therefore stable across the 4s
+  // detail poll, which replaces `detail` wholesale and would otherwise churn
+  // every memoized track section.
+  const generateTrack = useCallback(async (trackId, { direction, correctionKey }) => {
     try {
-      await generateSpriteScanner(id, {
-        direction,
-        ...correctionPromptPayload(corrections, scannerCorrectionKey(direction)),
+      await generateSpriteTrack(id, trackId, {
+        ...(direction ? { direction } : {}),
+        ...correctionPromptPayload(corrections, correctionKey),
       }, { silent: true });
       onWorkflowChanged();
     } catch (err) {
-      toast.error(err?.message || `Failed to queue ${direction} scanner action`);
+      toast.error(err?.message || `Failed to queue the ${trackId} render`);
     }
   }, [id, corrections, onWorkflowChanged]);
 
@@ -605,16 +618,25 @@ export default function Sprites() {
     onWorkflowChanged,
   ), [id, imageMode, corrections, refBegin, refResolve, refCancel, submitRender, onWorkflowChanged]);
 
-  const generateAmbient = useCallback(async () => {
-    try {
-      await generateSpriteAmbient(id, {
-        ...correctionPromptPayload(corrections, AMBIENT_LOOP_CORRECTION_KEY),
-      }, { silent: true });
-      onWorkflowChanged();
-    } catch (err) {
-      toast.error(err?.message || 'Failed to queue ambient loop');
-    }
-  }, [id, corrections, onWorkflowChanged]);
+  // One section per non-walk track this record's kind carries (#3136), rendered
+  // in registry order from the server's keyed `tracks` payload. The list is DATA,
+  // so a user-defined track appears here without a page edit — which is the
+  // client-side half of "an animation type is a row, not a code path". Keyed by
+  // track id so switching records can't carry one track's card state into
+  // another's.
+  const trackSections = useMemo(() => Object.entries(detail?.tracks || {}).map(([trackId, state]) => (
+    <TrackWorkflow
+      key={trackId}
+      record={detail.record}
+      reference={detail.reference}
+      state={state}
+      onGenerate={generateTrack}
+      onChanged={onWorkflowChanged}
+      corrections={corrections}
+      onCorrectionChange={setCorrections}
+    />
+  )), [detail?.tracks, detail?.record, detail?.reference, generateTrack, onWorkflowChanged, corrections]);
+
 
   // `mode` is the workflow-selected backend, threaded from the asset card via
   // buildCollectionActions (#2938) so a re-roll uses the same backend the
@@ -772,15 +794,7 @@ export default function Sprites() {
                         corrections={corrections}
                         onCorrectionChange={setCorrections}
                       />
-                      <ScannerWorkflow
-                        record={detail.record}
-                        reference={detail.reference}
-                        scanner={detail.scanner}
-                        onGenerate={generateScanner}
-                        onChanged={onWorkflowChanged}
-                        corrections={corrections}
-                        onCorrectionChange={setCorrections}
-                      />
+                      {trackSections}
                       {/* Keyed by record so form state and an armed publish/overwrite
                           confirmation never survive switching characters. */}
                       <PublishWorkflow
@@ -792,26 +806,25 @@ export default function Sprites() {
                       />
                     </>
                   )}
-                  {detail.record.kind !== 'character' && detail.ambient && (
+                  {detail.record.kind !== 'character' && (
                     <>
                       <AmbientWorkflow
                         record={detail.record}
                         reference={detail.reference}
-                        ambient={detail.ambient}
                         renders={referenceRenders}
                         hasBackend={hasImageBackend}
                         mode={imageMode}
                         onGenerateReference={generateAmbientReference}
-                        onGenerateAmbient={generateAmbient}
                         onChanged={onWorkflowChanged}
                         corrections={corrections}
                         onCorrectionChange={setCorrections}
                       />
+                      {trackSections}
                       <PublishWorkflow
                         key={detail.record.id}
                         record={detail.record}
                         walk={detail.walk}
-                        ambient={detail.ambient}
+                        ambient={detail.tracks?.ambient}
                         atlas={detail.atlas}
                         onChanged={onWorkflowChanged}
                       />

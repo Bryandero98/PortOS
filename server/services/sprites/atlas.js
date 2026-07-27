@@ -51,7 +51,8 @@ import {
 } from './walkPostprocess.js';
 import { ATLAS_IDLE_COLUMN } from './walkBounds.js';
 import {
-  WALK_TRACK, SCANNER_TRACK, AMBIENT_TRACK, ANIMATION_TRACK_IDS, kindSupportsTrack,
+  WALK_TRACK, SCANNER_TRACK, AMBIENT_TRACK, ANIMATION_TRACK_IDS,
+  kindSupportsTrack, getAnimationTrack, primaryTrackForKind,
 } from './animationTracks.js';
 import {
   buildAtlasGrid, resolveTrackUniformity, compiledGridUpToDate, trackDirections,
@@ -59,8 +60,7 @@ import {
 import {
   withWalkWriteTail, walkSetRelPath, importedWalkDirections, resolveChromaKey,
 } from './walk.js';
-import { scannerSetRelPath } from './scanner.js';
-import { ambientSetRelPath } from './ambient.js';
+import { trackSetRelPath } from './animationTrackWorkflow.js';
 import { verifyPackagedFrames } from './walkFrames.js';
 import { getRecord } from './records.js';
 
@@ -267,8 +267,12 @@ function sharedRowPasteX(anchoredX, boundsList, geometry) {
  */
 export async function validateForCompile(recordId) {
   const recordForTrack = await getRecord(recordId);
-  if (recordForTrack && kindSupportsTrack(recordForTrack.kind, AMBIENT_TRACK)
-    && !kindSupportsTrack(recordForTrack.kind, WALK_TRACK)) {
+  // Which evidence chain a record compiles through follows its PRIMARY track —
+  // the one whose finalized set it can't publish without. Asked of the registry
+  // (`primaryTrackForKind`) rather than spelled as "ambient-and-not-walk", so it
+  // is the same definition `spriteRuntimeContractSchema` requires a frame count
+  // for; the two used to agree only by coincidence.
+  if (recordForTrack && primaryTrackForKind(recordForTrack.kind)?.id === AMBIENT_TRACK) {
     return validateAmbientForCompile(recordId, recordForTrack);
   }
   // Every hashed input is read exactly once: verify the bytes in memory and
@@ -372,7 +376,7 @@ export async function validateForCompile(recordId) {
   // `trackDirections` is called ONCE per track and the result kept, so the
   // facings a track was collected against and the count it is later held to are
   // the same value rather than two derivations that could drift.
-  const scannerSetRel = scannerSetRelPath(recordId);
+  const scannerSetRel = trackSetRelPath(SCANNER_TRACK, recordId);
   const scannerSetBytes = await readFile(join(dir, scannerSetRel)).catch(() => null);
   let scannerSet = null;
   if (scannerSetBytes) {
@@ -381,7 +385,10 @@ export async function validateForCompile(recordId) {
     } catch {
       throw compileError('Scanner set manifest is unreadable');
     }
-    if (scannerSet.kind !== 'finalized-eight-direction-scanner-set' || scannerSet.track !== SCANNER_TRACK
+    // `setKind` comes from the registry row (#3136) rather than a literal, so
+    // the track that WRITES the set and the compiler that re-verifies it share
+    // one definition — the same single-source rule the contract fields follow.
+    if (scannerSet.kind !== getAnimationTrack(SCANNER_TRACK).setKind || scannerSet.track !== SCANNER_TRACK
       || scannerSet.status !== 'final' || scannerSet.characterId !== recordId
       || JSON.stringify(scannerSet.directionOrder) !== JSON.stringify(SPRITE_DIRECTIONS)) {
       throw compileError('Scanner set manifest is not a finalized directional scanner set');
@@ -509,7 +516,7 @@ async function validateAmbientForCompile(recordId, record) {
     return bytes;
   };
   const dir = spriteDir(recordId);
-  const setRel = ambientSetRelPath(recordId);
+  const setRel = trackSetRelPath(AMBIENT_TRACK, recordId);
   const setBytes = await readFile(join(dir, setRel)).catch(() => null);
   if (!setBytes) throw compileError('No finalized ambient loop — approve its single row first', 'AMBIENT_SET_REQUIRED');
   let ambientSet;
@@ -518,7 +525,7 @@ async function validateAmbientForCompile(recordId, record) {
   } catch {
     throw compileError('Ambient set manifest is unreadable');
   }
-  if (ambientSet.kind !== 'finalized-single-row-ambient-set' || ambientSet.track !== AMBIENT_TRACK
+  if (ambientSet.kind !== getAnimationTrack(AMBIENT_TRACK).setKind || ambientSet.track !== AMBIENT_TRACK
     || ambientSet.status !== 'final' || ambientSet.characterId !== recordId
     || JSON.stringify(ambientSet.directionOrder) !== JSON.stringify(['south'])) {
     throw compileError('Ambient set manifest is not a finalized single-row ambient set');

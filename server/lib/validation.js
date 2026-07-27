@@ -5,7 +5,9 @@ import { WORK_TRACKERS } from './workTracker.js';
 import { SPRITE_ID_PATTERN, SPRITE_RECORD_KINDS } from '../services/sprites/recordsLogic.js';
 import { ANCHOR_DIRECTIONS, SPRITE_DIRECTIONS, TURNAROUND_ID } from '../services/sprites/prompts.js';
 import { CHROMA_KEY_HEXES } from '../services/sprites/chromaKey.js';
-import { WALK_TRACK, SCANNER_TRACK, AMBIENT_TRACK, getAnimationTrack } from '../services/sprites/animationTracks.js';
+import {
+  WALK_TRACK, ANIMATION_TRACK_IDS, getAnimationTrack,
+} from '../services/sprites/animationTracks.js';
 import { QUEUEABLE_IMAGE_MODES } from '../services/imageGen/modes.js';
 import { GROK_VIDEO_DURATIONS } from './grokVideoClip.js';
 import { PR_COMPLETION_VALUES } from './prDisposition.js';
@@ -1042,23 +1044,60 @@ const spriteRepoRelativePath = z.string().min(1).max(1024)
 // A directional consumer names `walkFrameCount`; an ambient-only consumer names
 // `ambientFrameCount`. Playback speed is deliberately absent: consumers own
 // timing, so PortOS's fps is preview-only and never part of the contract.
+//
+// The per-track frame-count keys are BUILT from the registry (#3136) rather than
+// named one by one: each row already declares the `contractFrameCountField` it
+// occupies, and `assertAnimationTrackRows` refuses two rows claiming the same
+// one, so deriving the schema from those declarations is what lets a
+// user-defined track's contract field validate against ITS bounds with no schema
+// edit. Before this, adding a track meant remembering to add a fourth literal
+// here — and forgetting meant the field was silently stripped by Zod and the
+// app rung of the target-precedence chain went dead for that track.
+const spriteTrackContractFields = Object.fromEntries(
+  ANIMATION_TRACK_IDS.map((id) => {
+    const row = getAnimationTrack(id);
+    return [row.contractFrameCountField, spriteTrackFrameCountSchema(id).optional()];
+  }),
+);
+
+// The tracks whose frame count is enough ON ITS OWN to make a contract
+// meaningful — a record can't be published without one of these authored, so a
+// contract that pins none of them describes no atlas that could ever exist. The
+// registry DECLARES this per row (`standaloneContract`), which reproduces the
+// historical "walkFrameCount or ambientFrameCount" rule and stays correct for a
+// user-defined track. It is the same field `atlas.js` dispatches its compile
+// evidence chain on, so publish validation and compile can't disagree.
+const SPRITE_STANDALONE_CONTRACT_FIELDS = ANIMATION_TRACK_IDS
+  .filter((id) => getAnimationTrack(id).standaloneContract)
+  .map((id) => getAnimationTrack(id).contractFrameCountField);
+
 export const spriteRuntimeContractSchema = z.object({
-  // Range from the walk registry row (#3015). The KEY stays a literal so
-  // `grep walkFrameCount` still finds the schema that validates it — the row's
-  // `contractFrameCountField` is asserted to agree in animationTargets.test.js.
-  walkFrameCount: spriteTrackFrameCountSchema(WALK_TRACK).optional(),
-  // Optional because older consumers only know walk. A scanner-aware consumer
-  // can pin the named action span without relaxing its independent 2–8 range.
-  scannerFrameCount: spriteTrackFrameCountSchema(SCANNER_TRACK).optional(),
-  ambientFrameCount: spriteTrackFrameCountSchema(AMBIENT_TRACK).optional(),
+  // Ranges come from each track's registry row (#3015/#3136). `walkFrameCount`
+  // and its siblings are spread in from `spriteTrackContractFields` above —
+  // `grep walkFrameCount` finds the row in animationTracks.js that names it.
+  ...spriteTrackContractFields,
   cellSize: z.number().int().min(16).max(1024).nullable().optional(),
   columnCount: z.number().int().min(1).max(256).nullable().optional(),
 }).superRefine((value, ctx) => {
-  if (value.walkFrameCount === undefined && value.ambientFrameCount === undefined) {
+  // An empty set means no registered track is a publishable baseline. The boot
+  // guard in `assertAnimationTrackRows` makes that unreachable today (it
+  // requires exactly one per record kind), but this schema must not silently
+  // become "any contract passes" if that ever changes — with `[0]` undefined,
+  // `path: [undefined]` and an empty message would report a rejection nothing
+  // could act on. Refuse the whole contract with a message naming the cause.
+  if (!SPRITE_STANDALONE_CONTRACT_FIELDS.length) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      path: ['walkFrameCount'],
-      message: 'walkFrameCount or ambientFrameCount is required for a runtime contract',
+      path: [],
+      message: 'No animation track declares itself a publishable baseline (standaloneContract) — a runtime contract cannot be validated',
+    });
+    return;
+  }
+  if (SPRITE_STANDALONE_CONTRACT_FIELDS.every((field) => value[field] === undefined)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [SPRITE_STANDALONE_CONTRACT_FIELDS[0]],
+      message: `${SPRITE_STANDALONE_CONTRACT_FIELDS.join(' or ')} is required for a runtime contract`,
     });
   }
 });
@@ -1193,10 +1232,6 @@ const spriteResolvableRunIdSchema = z.string().min(1).max(1024)
 // animationTracks pulls in no deps at all, native or otherwise.
 const spriteWalkFrameCountSchema = spriteTrackFrameCountSchema(WALK_TRACK);
 const spriteWalkFpsSchema = spriteTrackFpsSchema(WALK_TRACK);
-const spriteScannerFrameCountSchema = spriteTrackFrameCountSchema(SCANNER_TRACK);
-const spriteScannerFpsSchema = spriteTrackFpsSchema(SCANNER_TRACK);
-const spriteAmbientFrameCountSchema = spriteTrackFrameCountSchema(AMBIENT_TRACK);
-const spriteAmbientFpsSchema = spriteTrackFpsSchema(AMBIENT_TRACK);
 
 export const spriteWalkGenerateSchema = z.object({
   direction: spriteWalkDirectionSchema,
@@ -1217,33 +1252,55 @@ export const spriteWalkGenerateSchema = z.object({
   correctionPrompt: z.string().max(4000).optional(),
 });
 
-// The scanner is a separate, short directional action. It deliberately has its
-// own bounds (2–8 frames, 2–12fps) rather than inheriting the walk cycle's
-// 6–16 / 4–24 shape.
-export const spriteScannerGenerateSchema = z.object({
-  direction: spriteWalkDirectionSchema,
+// Non-walk animation tracks share ONE generate/approve request shape, built per
+// track from its registry row (#3136) — `scanner` gets 2–8 frames / 2–12fps and
+// `ambient` gets 2–6 / 2–12 from the same factory, so a user-defined track needs
+// no schema edit at all. Two facts make one shape work for both:
+//
+//   - `direction` is OPTIONAL here even for a directional track, because the
+//     route builds the schema for the track it resolved and a non-directional
+//     one derives row 0 server-side. The route requires it (below) exactly when
+//     the resolved row is directional, so a directional generate can't slip
+//     through without a facing — that check reads the same registry the bounds
+//     came from, rather than being restated as a second enum.
+//   - the remaining knobs are already registry-derived.
+const buildSpriteTrackGenerateSchema = (track) => z.object({
+  direction: spriteWalkDirectionSchema.optional(),
   duration: grokVideoDurationSchema.optional(),
-  frameCount: spriteScannerFrameCountSchema.optional(),
-  fps: spriteScannerFpsSchema.optional(),
+  frameCount: spriteTrackFrameCountSchema(track).optional(),
+  fps: spriteTrackFpsSchema(track).optional(),
   correctionPrompt: z.string().max(4000).optional(),
 });
 
-export const spriteScannerApproveSchema = z.object({
-  direction: spriteWalkDirectionSchema,
+// One schema per registered track, built at module load — the same
+// derive-from-the-registry idiom `spriteTrackContractFields` uses, rather than
+// re-allocating six Zod objects on every generate request.
+const SPRITE_TRACK_GENERATE_SCHEMAS = Object.fromEntries(
+  ANIMATION_TRACK_IDS.map((id) => [id, buildSpriteTrackGenerateSchema(id)]),
+);
+
+/**
+ * The generate schema for one track. Unregistered ids build on demand so the
+ * unknown-track error still comes from `getAnimationTrack` (naming the known
+ * tracks) rather than reading as "no schema" — though the route validates
+ * `trackId` against the registry first, so that path is defense in depth.
+ */
+export function spriteTrackGenerateSchema(track) {
+  return SPRITE_TRACK_GENERATE_SCHEMAS[track] || buildSpriteTrackGenerateSchema(track);
+}
+
+export const spriteTrackApproveSchema = z.object({
+  direction: spriteWalkDirectionSchema.optional(),
   runId: spriteResolvableRunIdSchema,
 });
 
-// One non-directional row lives at the first atlas row, so no user-supplied
-// direction can drift from the registry's `trackDirections()` result.
-export const spriteAmbientGenerateSchema = z.object({
-  duration: grokVideoDurationSchema.optional(),
-  frameCount: spriteAmbientFrameCountSchema.optional(),
-  fps: spriteAmbientFpsSchema.optional(),
-  correctionPrompt: z.string().max(4000).optional(),
-});
-
-export const spriteAmbientApproveSchema = z.object({
-  runId: spriteResolvableRunIdSchema,
+// The `:trackId` path param. Shape gate only — whether the id names a REGISTERED
+// track (and whether this record's kind may carry it) is the service's job, so
+// the 404/400 names the known tracks instead of a regex failure. The charset
+// matches the registry's slug ids and, load-bearingly, can never contain a `/`
+// or `.` that would let the id widen the route's path.
+export const spriteTrackParamsSchema = z.object({
+  trackId: z.string().min(1).max(64).regex(/^[a-z0-9][a-z0-9-]*$/, 'invalid animation track id'),
 });
 
 // Pin the walk track's cycle target at the SET level (#2985). Both knobs are

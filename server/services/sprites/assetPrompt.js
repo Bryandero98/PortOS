@@ -33,10 +33,10 @@ import { getRecord } from './records.js';
 import { loadManifest } from './reference.js';
 import {
   buildMainReferencePrompt, buildAmbientReferencePrompt, buildAnchorPrompt,
-  buildWalkVideoPrompt, buildAmbientVideoPrompt, buildScannerPrompt,
   buildTurnaroundPrompt, TURNAROUND_ID,
 } from './prompts.js';
-import { AMBIENT_TRACK, SCANNER_TRACK } from './animationTracks.js';
+import { buildTrackVideoPrompt, hasTrackVideoPrompt } from './trackPrompts.js';
+import { WALK_TRACK } from './animationTracks.js';
 import { DEFAULT_CHROMA_KEY } from './chromaKey.js';
 
 const CANDIDATE_RE = /^reference\/candidates\/(.+)\.png$/i;
@@ -178,16 +178,25 @@ export async function resolveSpriteAssetPrompt(recordId, relPath) {
     const runRecord = await readJSONFile(join(spriteDir(recordId), run[0], 'animation-run.json'), null);
     if (runRecord?.direction) {
       const { chromaKey, correctionPrompt, track } = runRecord;
-      const rebuild = () => {
-        if (track === AMBIENT_TRACK) return buildAmbientVideoPrompt({ name, kind: record.kind, chromaKey, correctionPrompt });
-        if (track === SCANNER_TRACK) return buildScannerPrompt({ name, direction: runRecord.direction, chromaKey, correctionPrompt });
-        return buildWalkVideoPrompt({ name, direction: runRecord.direction, chromaKey, correctionPrompt });
-      };
-      return {
-        prompt: typeof runRecord.prompt === 'string' && runRecord.prompt ? runRecord.prompt : rebuild(),
-        designPrompt: null,
-        source: track === AMBIENT_TRACK ? 'ambient' : track === SCANNER_TRACK ? 'scanner' : 'walk',
-      };
+      // One dispatch through `buildTrackVideoPrompt` (#3136) rather than a
+      // per-track branch here — so a user-defined track's provenance rebuilds
+      // with its own prompt instead of silently falling through to walk's.
+      // An UNREGISTERED track (a run written by a newer peer, or one whose row
+      // the user has since deleted) can't be rebuilt at all: report the prompt
+      // the run itself stamped, and otherwise null, rather than mislabelling it
+      // as a walk. `source` is the track id, which is what it always was for
+      // the shipped rows.
+      const rebuild = () => (
+        hasTrackVideoPrompt(track ?? WALK_TRACK)
+          ? buildTrackVideoPrompt(track ?? WALK_TRACK, {
+            name, kind: record.kind, direction: runRecord.direction, chromaKey, correctionPrompt,
+          })
+          : null
+      );
+      const stamped = typeof runRecord.prompt === 'string' && runRecord.prompt ? runRecord.prompt : null;
+      const prompt = stamped ?? rebuild();
+      if (!prompt) return null;
+      return { prompt, designPrompt: null, source: track ?? WALK_TRACK };
     }
   }
 

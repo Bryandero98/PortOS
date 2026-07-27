@@ -88,6 +88,11 @@ export const trackSpan = (start, count, rows = SPRITE_DIRECTIONS.length) => ({ s
  * character-only, so a test written against it alone could not tell "reads the
  * row" from "hardcodes 8 / hardcodes 'character'". Same injected-table idiom
  * `assertAnimationTrackRows(tracks)` uses. Shipping the real row is #3045.
+ *
+ * Deliberately kept as its own literal rather than re-exporting the now-shipped
+ * `ANIMATION_TRACKS.ambient`: the injected-table tests exist to prove callers
+ * read the row they were HANDED, and sourcing the fixture from the shipped table
+ * would let a caller that secretly reads the global registry pass anyway.
  */
 export const AMBIENT_TRACK_ROW = Object.freeze({
   id: 'ambient',
@@ -102,4 +107,11 @@ export const AMBIENT_TRACK_ROW = Object.freeze({
   defaultFps: 4,
   contractFrameCountField: 'ambientFrameCount',
   contractFpsField: null,
+  // #3136 workflow shape. Its on-disk kinds must not collide with any other row
+  // this fixture is combined with, and it is `place`/`object`'s standalone
+  // baseline — those kinds have no walk, so this is what they publish off.
+  selectionKind: 'reviewed-single-row-ambient-selection',
+  setKind: 'finalized-single-row-ambient-set',
+  finalErrorCode: 'AMBIENT_SET_FINAL',
+  standaloneContract: true,
 });

@@ -49,9 +49,11 @@ import {
   spriteTrackFpsSchema,
   spriteRuntimeContractSchema,
   spriteWalkGenerateSchema,
-  spriteScannerGenerateSchema,
-  spriteAmbientGenerateSchema,
+  spriteTrackGenerateSchema,
 } from './validation.js';
+import {
+  WALK_TRACK, ANIMATION_TRACK_IDS, getAnimationTrack, tracksForKind,
+} from '../services/sprites/animationTracks.js';
 import {
   telegramForwardTypesSchema,
 } from './telegramValidation.js';
@@ -1903,10 +1905,52 @@ describe('ad-hoc route schemas (#2521)', () => {
       expect(spriteWalkGenerateSchema.safeParse({
         direction: 'south', frameCount: 3,
       }).success).toBe(false);
-      expect(spriteScannerGenerateSchema.safeParse({ direction: 'south', frameCount: 4, fps: 6 }).success).toBe(true);
-      expect(spriteScannerGenerateSchema.safeParse({ direction: 'south', frameCount: 9 }).success).toBe(false);
-      expect(spriteAmbientGenerateSchema.safeParse({ frameCount: 3, fps: 4 }).success).toBe(true);
-      expect(spriteAmbientGenerateSchema.safeParse({ frameCount: 7 }).success).toBe(false);
+      // One generate shape, built per track from its own row (#3136) — so the
+      // scanner's 2–8 and the ambient's 2–6 are enforced by the same factory
+      // that a user-defined track's schema will come from.
+      expect(spriteTrackGenerateSchema('scanner').safeParse({ direction: 'south', frameCount: 4, fps: 6 }).success).toBe(true);
+      expect(spriteTrackGenerateSchema('scanner').safeParse({ direction: 'south', frameCount: 9 }).success).toBe(false);
+      expect(spriteTrackGenerateSchema('ambient').safeParse({ frameCount: 3, fps: 4 }).success).toBe(true);
+      expect(spriteTrackGenerateSchema('ambient').safeParse({ frameCount: 7 }).success).toBe(false);
+    });
+
+    it('builds every registered track\'s contract field into the runtime contract (#3136)', () => {
+      // The regression this replaces: each track's `contractFrameCountField` was
+      // a hand-written literal in the schema, so a new row's field was silently
+      // STRIPPED by Zod and the app rung of the target-precedence chain went
+      // dead for it with no error anywhere. Derived from the registry, every
+      // registered row's field is accepted at its own bounds by construction.
+      for (const id of ANIMATION_TRACK_IDS) {
+        const row = getAnimationTrack(id);
+        // Pair a non-primary track's field with walk's so the contract is
+        // publishable — this asserts the FIELD is known, not the primacy rule
+        // (covered below).
+        const base = { walkFrameCount: 12 };
+        expect(spriteRuntimeContractSchema.safeParse({
+          ...base, [row.contractFrameCountField]: row.defaultFrameCount,
+        }).success, `${id}.${row.contractFrameCountField} at its default`).toBe(true);
+        expect(spriteRuntimeContractSchema.safeParse({
+          ...base, [row.contractFrameCountField]: row.maxFrameCount + 1,
+        }).success, `${id}.${row.contractFrameCountField} above its max`).toBe(false);
+      }
+    });
+
+    it('requires a PRIMARY track\'s frame count, not just any track\'s (#3136)', () => {
+      // A primary track is the first registered one for some record kind — walk
+      // for a character, ambient for a place. A contract naming only a SECOND
+      // track on an existing kind (scanner) describes no publishable atlas,
+      // because the compiler requires the primary's finalized set before it
+      // emits anything at all.
+      const primaries = ANIMATION_TRACK_IDS.filter(
+        (id) => getAnimationTrack(id).kinds.some((kind) => tracksForKind(kind)[0]?.id === id),
+      );
+      expect(primaries).toEqual([WALK_TRACK, 'ambient']);
+      for (const id of primaries) {
+        expect(spriteRuntimeContractSchema.safeParse({
+          [getAnimationTrack(id).contractFrameCountField]: getAnimationTrack(id).defaultFrameCount,
+        }).success, `${id} alone is a publishable contract`).toBe(true);
+      }
+      expect(spriteRuntimeContractSchema.safeParse({ scannerFrameCount: 4 }).success).toBe(false);
     });
   });
 

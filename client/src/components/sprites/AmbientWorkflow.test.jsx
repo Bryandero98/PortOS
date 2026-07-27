@@ -1,15 +1,16 @@
 import { describe, it, expect, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 
-// The place/object surface has two independent regeneration actions — the at-rest
-// identity still and the image-to-video loop — and #3134 gave each its own
-// correction note in the shared page-owned map. The load-bearing behavior here is
-// that the two notes stay separate (a reference fix must not ride the loop
-// prompt) and that the reference note is ADDITIVE to the design prompt rather
-// than a replacement for it.
+// The place/object IDENTITY-REFERENCE surface: describe it, render a candidate,
+// freeze it. #3134 gave the reference render its own correction note in the shared
+// page-owned map; the load-bearing behavior here is that the note is ADDITIVE to
+// the design prompt rather than a replacement for it.
+//
+// Since #3136 the ambient LOOP is no longer this component's concern — it is one
+// animation track among any number the user may define, and it renders through
+// the generic `TrackWorkflow` (see `TrackWorkflow.test.jsx` for the loop note).
 
 vi.mock('../../services/apiSprites.js', () => ({
-  approveSpriteAmbient: vi.fn(() => Promise.resolve({})),
   lockSpriteReference: vi.fn(() => Promise.resolve({})),
 }));
 
@@ -22,18 +23,16 @@ const renderAmbient = (props = {}) => render(
   <AmbientWorkflow
     record={record}
     reference={{ manifest: { mainReference: { locked: false } }, candidates: [CANDIDATE] }}
-    ambient={{ runs: [], selection: null, ambientSet: null }}
     renders={{ pendingJobs: {} }}
     hasBackend
     mode="codex"
     onGenerateReference={vi.fn()}
-    onGenerateAmbient={vi.fn()}
     onChanged={vi.fn()}
     {...props}
   />,
 );
 
-// A locked main flips the panel from the reference step to the loop step.
+// A locked main means this surface is DONE — the animation tracks take over.
 const lockedReference = { manifest: { mainReference: { locked: true, path: 'reference/example-grove-main-v1.png' } }, candidates: [] };
 
 describe('AmbientWorkflow correction notes (#3134)', () => {
@@ -60,41 +59,19 @@ describe('AmbientWorkflow correction notes (#3134)', () => {
     expect(screen.queryByRole('button', { name: /correction note/i })).toBeNull();
   });
 
-  it('gives the loop its own note, distinct from the reference note', () => {
-    const onCorrectionChange = vi.fn();
-    renderAmbient({ reference: lockedReference, corrections: {}, onCorrectionChange });
-    fireEvent.click(screen.getByRole('button', { name: /Show correction note for ambient loop/i }));
-    fireEvent.change(screen.getByLabelText(/Correction guidance for the ambient loop/i), {
-      target: { value: 'the branches barely move' },
-    });
-    const merged = onCorrectionChange.mock.calls[0][0]({ 'ambient-reference': 'keep me' });
-    expect(merged['ambient-reference']).toBe('keep me');
-    expect(merged).toHaveProperty('ambient-loop');
-  });
-
-  it('prefills an existing loop note so a set correction is never invisible', () => {
-    renderAmbient({
-      reference: lockedReference,
-      corrections: { 'ambient-loop': 'the branches barely move' },
-      onCorrectionChange: vi.fn(),
-    });
-    expect(screen.getByLabelText(/Correction guidance for the ambient loop/i))
-      .toHaveValue('the branches barely move');
-  });
-
   it('omits every affordance when the page supplies no writer', () => {
-    renderAmbient({ reference: lockedReference });
+    renderAmbient();
     expect(screen.queryByRole('button', { name: /correction note/i })).toBeNull();
   });
 
-  it('hides the loop note once the ambient set is finalized', () => {
-    renderAmbient({
-      reference: lockedReference,
-      ambient: { runs: [], selection: null, ambientSet: { status: 'final' } },
-      corrections: {},
-      onCorrectionChange: vi.fn(),
+  it('retires itself once the identity reference is frozen (#3136)', () => {
+    // The reference step is one-and-done; leaving it on screen would offer a
+    // Freeze for an already-frozen still. Everything after this point is an
+    // animation track, rendered by TrackWorkflow.
+    const { container } = renderAmbient({
+      reference: lockedReference, corrections: {}, onCorrectionChange: vi.fn(),
     });
-    expect(screen.queryByRole('button', { name: /correction note/i })).toBeNull();
+    expect(container).toBeEmptyDOMElement();
   });
 });
 

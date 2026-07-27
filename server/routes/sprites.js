@@ -22,10 +22,9 @@ import {
   spriteReferenceLockSchema,
   spriteReferenceUnlockSchema,
   spriteForkSchema,
-  spriteScannerGenerateSchema,
-  spriteScannerApproveSchema,
-  spriteAmbientGenerateSchema,
-  spriteAmbientApproveSchema,
+  spriteTrackGenerateSchema,
+  spriteTrackApproveSchema,
+  spriteTrackParamsSchema,
   spriteWalkGenerateSchema,
   spriteWalkApproveSchema,
   spriteWalkReopenSchema,
@@ -50,14 +49,17 @@ import {
   listReferenceSources, listSpriteThumbnails, forkSprite,
 } from '../services/sprites/reference.js';
 import { resolveSpriteAssetPrompt } from '../services/sprites/assetPrompt.js';
-import { WALK_TRACK, SCANNER_TRACK, AMBIENT_TRACK, kindSupportsTrack, tracksForKind } from '../services/sprites/animationTracks.js';
+import {
+  WALK_TRACK, ANIMATION_TRACK_IDS,
+  isAnimationTrack, kindSupportsTrack, tracksForKind,
+  getAnimationTrack as getAnimationTrackRow,
+} from '../services/sprites/animationTracks.js';
 import {
   getWalkState, startWalkGeneration, approveWalkDirection, rerunWalkPostprocess, unlockWalkSet,
   reopenWalkDirection, setWalkTarget, getWalkSourceFrames,
   unlockDirectionalAnchor, unlockMainReference, unlockTurnaroundReference,
 } from '../services/sprites/walk.js';
-import { getScannerState, startScannerGeneration, approveScannerDirection } from '../services/sprites/scanner.js';
-import { getAmbientState, startAmbientGeneration, approveAmbientLoop } from '../services/sprites/ambient.js';
+import { getTrackState, startTrackGeneration, approveTrackRun } from '../services/sprites/animationTrackWorkflow.js';
 import { saveLoopTrim } from '../services/sprites/walkTrims.js';
 import { compileAtlas, getAtlasState } from '../services/sprites/atlas.js';
 import { setPublishBinding, publishAtlas } from '../services/sprites/publish.js';
@@ -67,6 +69,55 @@ const router = Router();
 
 const MAX_REFERENCE_UPLOAD_BYTES = 20 * 1024 * 1024;
 const ACCEPTED_REFERENCE_MIME = new Set(['image/png', 'image/jpeg', 'image/webp']);
+
+/**
+ * Validate + resolve the `:trackId` path param to a registered track id (#3136).
+ *
+ * Two distinct rejections, deliberately not collapsed: a malformed id is a 400
+ * from the shape schema, while a well-formed id that names no registered track is
+ * a 404 that LISTS the tracks — because "there is no such animation type" is a
+ * fact about the registry the user can act on, and a bare 400 would read as "your
+ * request was malformed" for a perfectly-formed one.
+ *
+ * `walk` is refused here on purpose: it keeps its own `/:id/walk/*` routes with
+ * reprocess, trims, per-direction reopen and set targets that the generic
+ * workflow does not implement, so accepting it would 404-on-disk later (walk
+ * writes `walk/<id>-walk-set-v1.json` through walk.js, not through this path)
+ * instead of failing here with a message that explains where to go.
+ */
+function resolveTrackParam(params) {
+  const { trackId } = validateRequest(spriteTrackParamsSchema, params);
+  if (trackId === WALK_TRACK) {
+    throw new ServerError(
+      'The walk cycle has its own endpoints (/walk/generate, /walk/approve) — it carries reprocessing, trims, and set targets the generic track routes do not',
+      { status: 400, code: 'WALK_NOT_GENERIC' },
+    );
+  }
+  if (!isAnimationTrack(trackId)) {
+    throw new ServerError(
+      `Unknown animation track '${trackId}' — the registered tracks are: ${ANIMATION_TRACK_IDS.join(', ')}`,
+      { status: 404, code: 'UNKNOWN_ANIMATION_TRACK' },
+    );
+  }
+  return trackId;
+}
+
+/**
+ * A directional track needs a facing; a non-directional one derives row 0 itself.
+ *
+ * The generic request schema marks `direction` optional because ONE shape serves
+ * both, so this is where the requirement lands — asking the registry rather than
+ * restating which tracks are directional. Without it a directional generate with
+ * no `direction` would fall through to the service and 409 "lock the undefined
+ * anchor", blaming the reference set for a missing request field.
+ */
+function requireDirectionForTrack(trackId, body) {
+  if (!getAnimationTrackRow(trackId).directional || body.direction) return;
+  throw new ServerError(
+    `The ${trackId} track is directional — name the facing to animate`,
+    { status: 400, code: 'DIRECTION_REQUIRED' },
+  );
+}
 
 const referenceUpload = optionalUploadFields(['referenceImage'], {
   limits: { fileSize: MAX_REFERENCE_UPLOAD_BYTES },
@@ -118,17 +169,23 @@ router.get('/:id', asyncHandler(async (req, res) => {
   // as `kind === 'character'` would have left the UI blank for exactly the
   // records the registry had just admitted.
   const { kind } = detail.record;
+  const kindTracks = tracksForKind(kind);
   const runsWalk = kindSupportsTrack(kind, WALK_TRACK);
-  const runsScanner = kindSupportsTrack(kind, SCANNER_TRACK);
-  const runsAmbient = kindSupportsTrack(kind, AMBIENT_TRACK);
-  const [reference, walk, scanner, ambient, atlas] = await Promise.all([
-    tracksForKind(kind).length ? getReferenceSet(req.params.id) : null,
+  // Every non-walk track this record's kind may carry, resolved from the registry
+  // (#3136) instead of one hand-written `runsScanner`/`runsAmbient` flag per
+  // track. Each state carries its own `definition` (the registry row), so the
+  // client renders a track's label, facing count and bounds from data rather than
+  // mirroring them as component copy — which is what lets ONE workflow component
+  // serve a track the client has never heard of.
+  const genericTracks = kindTracks.filter((row) => row.id !== WALK_TRACK);
+  const [reference, walk, atlas, ...trackStates] = await Promise.all([
+    kindTracks.length ? getReferenceSet(req.params.id) : null,
     runsWalk ? getWalkState(req.params.id) : null,
-    runsScanner ? getScannerState(req.params.id) : null,
-    runsAmbient ? getAmbientState(req.params.id) : null,
-    tracksForKind(kind).length ? getAtlasState(req.params.id) : null,
+    kindTracks.length ? getAtlasState(req.params.id) : null,
+    ...genericTracks.map((row) => getTrackState(row.id, req.params.id)),
   ]);
-  res.json({ ...detail, reference, walk, scanner, ambient, atlas });
+  const tracks = Object.fromEntries(genericTracks.map((row, index) => [row.id, trackStates[index]]));
+  res.json({ ...detail, reference, walk, tracks, atlas });
 }));
 
 // The generation prompt behind one on-disk asset (record-relative `path`) —
@@ -207,28 +264,27 @@ router.post('/:id/walk/generate', asyncHandler(async (req, res) => {
   res.json(await startWalkGeneration(req.params.id, body));
 }));
 
-// The scanner action is a distinct named track with its own short bounds and
-// its own finalized set. This endpoint is the only path that starts its Grok
-// render, preserving the no-cold-bootstrap provider contract.
-router.post('/:id/scanner/generate', asyncHandler(async (req, res) => {
-  const body = validateRequest(spriteScannerGenerateSchema, req.body);
-  res.json(await startScannerGeneration(req.params.id, body));
+// Every non-walk animation track — the shipped `scanner`/`ambient` rows and any
+// later user-defined one — generates and approves through ONE pair of routes
+// (#3136). What used to be `/:id/scanner/generate` and `/:id/ambient/generate`
+// (two hand-written pairs that would have become N pairs) is now
+// `/:id/tracks/:trackId/generate`, with the track's bounds, facing count, source
+// reference, and prompt all resolved from its registry row.
+//
+// Generation stays the only path that starts a Grok render, preserving the
+// no-cold-bootstrap provider contract.
+router.post('/:id/tracks/:trackId/generate', asyncHandler(async (req, res) => {
+  const trackId = resolveTrackParam(req.params);
+  const body = validateRequest(spriteTrackGenerateSchema(trackId), req.body ?? {});
+  requireDirectionForTrack(trackId, body);
+  res.json(await startTrackGeneration(trackId, req.params.id, body));
 }));
 
-router.post('/:id/scanner/approve', asyncHandler(async (req, res) => {
-  const body = validateRequest(spriteScannerApproveSchema, req.body);
-  res.json(await approveScannerDirection(req.params.id, body));
-}));
-
-// One user-requested image-to-video clip for the non-directional ambient row.
-router.post('/:id/ambient/generate', asyncHandler(async (req, res) => {
-  const body = validateRequest(spriteAmbientGenerateSchema, req.body);
-  res.json(await startAmbientGeneration(req.params.id, body));
-}));
-
-router.post('/:id/ambient/approve', asyncHandler(async (req, res) => {
-  const body = validateRequest(spriteAmbientApproveSchema, req.body);
-  res.json(await approveAmbientLoop(req.params.id, body));
+router.post('/:id/tracks/:trackId/approve', asyncHandler(async (req, res) => {
+  const trackId = resolveTrackParam(req.params);
+  const body = validateRequest(spriteTrackApproveSchema, req.body);
+  requireDirectionForTrack(trackId, body);
+  res.json(await approveTrackRun(trackId, req.params.id, body));
 }));
 
 // Approve one direction's packaged candidate; the 8th approval freezes the

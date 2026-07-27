@@ -59,7 +59,10 @@ function ambientFrameCountOf(geometry) {
 }
 
 export default function PublishWorkflow({ record, walk, ambient, atlas, onChanged }) {
-  const finalized = Boolean(walk?.walkSet || ambient?.ambientSet);
+  // `ambient` is the generic track state since #3136, whose finalized set is
+  // `set` for every track (the per-track `ambientSet` key went away with the
+  // clone, and the client ships with the server that produces it).
+  const finalized = Boolean(walk?.walkSet || ambient?.set);
   const current = atlas?.current || null;
   const publications = atlas?.publications || [];
   const saved = record.publishBinding || null;

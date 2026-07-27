@@ -19,6 +19,7 @@
 
 ## Sprites
 
+- **[issue-3136] Every animation type beyond the walk cycle now runs through one shared workflow.** The Scanner action and Ambient loop used to be two separate, hardcoded surfaces with their own buttons, endpoints, and copy; they are now the same generate/review/approve flow, each reading its own label, frame count, playback speed, and facing count from a single description of that animation type. Nothing changes about the sprites, atlases, or approvals you already have — but a future release can add a new animation sequence (a chest opening, a flower blossoming, a jetpack burst) as a definition rather than as new code, and it will appear with its own workflow automatically. Places and objects now show their identity reference and their animation loop as two clear steps rather than one panel that swapped contents.
 - Locked main references can now be explicitly reopened from Sprite Manager while keeping the turnaround and the other directional anchors intact. Reopening the main preserves versioned evidence, clears only the south identity, and reopens its dependent walk/scanner approvals so a better turnaround-derived main can be reviewed and locked as the next version.
 - Sprite turnaround and directional-reference candidates now request a square canvas from image generation and explicitly treat the locked turnaround as the source of truth for accessory side and occlusion. This prevents arbitrary Codex ImageGen candidate aspect ratios and reduces mirrored hip-bag drift before an anchor is locked.
 

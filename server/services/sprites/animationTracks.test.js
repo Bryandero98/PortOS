@@ -16,6 +16,7 @@ import {
   WALK_TRACK, SCANNER_TRACK, AMBIENT_TRACK, ANIMATION_TRACKS, ANIMATION_TRACK_IDS,
   isAnimationTrack, getAnimationTrack, clampTrackFrameCount, clampTrackFps,
   assertAnimationTrackRows, trackRowCount, tracksForKind, kindSupportsTrack,
+  sourceReferenceFor, primaryTrackForKind,
 } from './animationTracks.js';
 import { SPRITE_RECORD_KINDS } from './recordsLogic.js';
 import { AMBIENT_TRACK_ROW } from './spriteTestFixtures.js';
@@ -130,6 +131,15 @@ describe('the module-load row guard', () => {
   const second = {
     ...walk, id: 'scanner', label: 'Scanner', minFrameCount: 3, defaultFrameCount: 4, maxFrameCount: 8,
     contractFrameCountField: 'scannerFrameCount', contractFpsField: 'scannerFps',
+    // #3136: the on-disk `kind` discriminators are per-row unique for the same
+    // reason the contract fields are, so a row copy-pasted from walk's must
+    // rename them too or the guard (correctly) refuses it.
+    selectionKind: 'reviewed-directional-scanner-selection',
+    setKind: 'finalized-eight-direction-scanner-set',
+    finalErrorCode: 'SCANNER_SET_FINAL',
+    // Walk is `character`'s standalone baseline, so a SECOND character track must
+    // not also claim it — exactly one per record kind (asserted below).
+    standaloneContract: false,
   };
   const twoRows = (overrides = {}) => ({ walk, scanner: { ...second, ...overrides } });
 
@@ -174,8 +184,70 @@ describe('the module-load row guard', () => {
     ['a default fps outside its range', { defaultFps: 99 }, /minFps <= defaultFps <= maxFps/],
     ['an empty contract frame-count field', { contractFrameCountField: '' }, /needs a contractFrameCountField/],
     ['an undefined contract fps field', { contractFpsField: undefined }, /contractFpsField \(or null\)/],
+    // #3136 — the workflow shape the generic track service dispatches on.
+    ['a missing selectionKind', { selectionKind: '' }, /needs a non-empty 'selectionKind'/],
+    ['a missing setKind', { setKind: undefined }, /needs a non-empty 'setKind'/],
+    ['a missing finalErrorCode', { finalErrorCode: '' }, /needs a non-empty 'finalErrorCode'/],
+    ['a non-boolean standaloneContract', { standaloneContract: 'yes' }, /boolean 'standaloneContract'/],
   ])('rejects %s', (_label, overrides, message) => {
     expect(() => assertAnimationTrackRows(twoRows(overrides))).toThrow(message);
+  });
+
+  it('requires exactly one standaloneContract track per record kind (#3136)', () => {
+    // Zero means a record of that kind can be authored but never published: the
+    // publish contract would require no field and the compiler would have no
+    // evidence chain to demand. Two means "which set must be finalized before
+    // compiling?" has two answers — and the publish schema would accept either
+    // track's frame count alone as describing the atlas.
+    expect(() => assertAnimationTrackRows(twoRows({ standaloneContract: true })))
+      .toThrow(/record kind 'character' needs exactly one standaloneContract track, has 2 \(walk, scanner\)/);
+    expect(() => assertAnimationTrackRows({
+      walk: { ...walk, standaloneContract: false }, scanner: second,
+    })).toThrow(/record kind 'character' needs exactly one standaloneContract track, has 0/);
+  });
+
+  it('rejects a second row that copy-pastes walk\'s on-disk set kind (#3136)', () => {
+    // The mirror of the contract-field collision, one layer down: the atlas
+    // compiler validates a finalized set by its `kind`, so two tracks sharing
+    // one would let this track's set satisfy the OTHER's evidence check and
+    // compile the wrong frames into its span.
+    expect(() => assertAnimationTrackRows(twoRows({ setKind: 'finalized-eight-direction-walk-set' })))
+      .toThrow(/claimed by both 'walk\.setKind' and 'scanner\.setKind'/);
+    expect(() => assertAnimationTrackRows(twoRows({ selectionKind: 'reviewed-directional-walk-selection' })))
+      .toThrow(/claimed by both 'walk\.selectionKind' and 'scanner\.selectionKind'/);
+  });
+
+});
+
+describe('registry-derived source reference and primacy (#3136)', () => {
+  it('derives the seeding reference from directionality, never declaring it', () => {
+    // Only one pairing can work, which is why this is derived rather than a row
+    // field: a directional track seeded from the single `main` would render the
+    // SAME south-facing clip for all eight facings and pass every later check
+    // (nothing downstream re-reads which facing was asked for), and a
+    // non-directional one has no anchor to read at all — a place record never
+    // generates directional anchors.
+    expect(sourceReferenceFor(WALK_TRACK)).toBe('anchor');
+    expect(sourceReferenceFor(SCANNER_TRACK)).toBe('anchor');
+    expect(sourceReferenceFor(AMBIENT_TRACK)).toBe('main');
+    // Reads the row it's HANDED, not the shipped table.
+    expect(sourceReferenceFor('ambient', { ambient: AMBIENT_TRACK_ROW })).toBe('main');
+    expect(() => sourceReferenceFor('unknown')).toThrow(/Unknown animation track/);
+  });
+
+  it('answers which track a record kind publishes off', () => {
+    // ONE definition, shared by the publish-contract schema (which field is
+    // required) and the compile dispatch (which evidence chain to validate).
+    expect(primaryTrackForKind('character')?.id).toBe(WALK_TRACK);
+    expect(primaryTrackForKind('place')?.id).toBe(AMBIENT_TRACK);
+    expect(primaryTrackForKind('object')?.id).toBe(AMBIENT_TRACK);
+    expect(primaryTrackForKind('props')?.id).toBe(AMBIENT_TRACK);
+    // A short action a record can't publish off alone is never the primary.
+    expect(primaryTrackForKind('character')?.id).not.toBe(SCANNER_TRACK);
+    // Absent/unknown answers null rather than defaulting to a kind.
+    expect(primaryTrackForKind('nope')).toBeNull();
+    expect(primaryTrackForKind('')).toBeNull();
+    expect(primaryTrackForKind(undefined)).toBeNull();
   });
 });
 
