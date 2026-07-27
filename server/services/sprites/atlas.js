@@ -51,8 +51,8 @@ import {
 } from './walkPostprocess.js';
 import { ATLAS_IDLE_COLUMN } from './walkBounds.js';
 import {
-  WALK_TRACK, SCANNER_TRACK, AMBIENT_TRACK, ANIMATION_TRACK_IDS,
-  kindSupportsTrack, getAnimationTrack, primaryTrackForKind,
+  WALK_TRACK, SCANNER_TRACK, AMBIENT_TRACK, ANIMATION_TRACKS,
+  tracksForKind, primaryTrackForKind,
 } from './animationTracks.js';
 import {
   buildAtlasGrid, resolveTrackUniformity, compiledGridUpToDate, trackDirections,
@@ -261,20 +261,22 @@ function sharedRowPasteX(anchoredX, boundsList, geometry) {
 }
 
 /**
- * Revalidate the full evidence chain: finalized walk set → selection →
- * per-direction run manifests → packaged frame bytes, plus the locked
- * reference set's anchors. Returns everything the compiler consumes.
+ * Revalidate every registered track's evidence chain: finalized set →
+ * selection → run manifests → packaged frame bytes, plus the locked reference
+ * source. Returns everything the compiler consumes.
  */
-export async function validateForCompile(recordId) {
-  const recordForTrack = await getRecord(recordId);
-  // Which evidence chain a record compiles through follows its PRIMARY track —
-  // the one whose finalized set it can't publish without. Asked of the registry
-  // (`primaryTrackForKind`) rather than spelled as "ambient-and-not-walk", so it
-  // is the same definition `spriteRuntimeContractSchema` requires a frame count
-  // for; the two used to agree only by coincidence.
-  if (recordForTrack && primaryTrackForKind(recordForTrack.kind)?.id === AMBIENT_TRACK) {
-    return validateAmbientForCompile(recordId, recordForTrack);
+export async function validateForCompile(recordId, animationTracks = ANIMATION_TRACKS) {
+  return validateForCompileWithTracks(recordId, animationTracks);
+}
+
+async function validateForCompileWithTracks(recordId, animationTracks) {
+  const record = await getRecord(recordId);
+  const primary = primaryTrackForKind(record?.kind, animationTracks);
+  const registryRows = tracksForKind(record?.kind, animationTracks);
+  if (!primary || !registryRows.length) {
+    throw compileError(`Sprite kind '${String(record?.kind)}' has no animation track to compile`);
   }
+
   // Every hashed input is read exactly once: verify the bytes in memory and
   // hand those same bytes to the compiler, so the pixels compiled are
   // provably the pixels verified (no re-read between check and use). Paths
@@ -289,517 +291,310 @@ export async function validateForCompile(recordId) {
   };
 
   const dir = spriteDir(recordId);
-  const walkSetRel = walkSetRelPath(recordId);
-  const walkSetBytes = await readFile(join(dir, walkSetRel)).catch(() => null);
-  if (!walkSetBytes) throw compileError('No finalized walk set — approve all 8 directions first', 'WALK_SET_REQUIRED');
-  let walkSet;
-  try {
-    walkSet = JSON.parse(walkSetBytes);
-  } catch {
-    throw compileError('Walk set manifest is unreadable');
+  const loaded = {};
+  for (const row of registryRows) {
+    const setPath = row.id === WALK_TRACK ? walkSetRelPath(recordId) : trackSetRelPath(row.id, recordId);
+    // eslint-disable-next-line no-await-in-loop -- registry order is the compiled span order
+    const setBytes = await readFile(join(dir, setPath)).catch(() => null);
+    if (!setBytes) {
+      if (row.id !== primary.id) continue;
+      if (row.id === WALK_TRACK) {
+        throw compileError('No finalized walk set — approve all 8 directions first', 'WALK_SET_REQUIRED');
+      }
+      if (row.id === AMBIENT_TRACK) {
+        throw compileError('No finalized ambient loop — approve its single row first', 'AMBIENT_SET_REQUIRED');
+      }
+      throw compileError(`No finalized ${row.label.toLowerCase()} set`, 'TRACK_SET_REQUIRED');
+    }
+    let set;
+    try {
+      set = JSON.parse(setBytes);
+    } catch {
+      throw compileError(`${row.label} set manifest is unreadable`);
+    }
+    const directions = trackDirections(row.id, SPRITE_DIRECTIONS, animationTracks);
+    const trackMatches = row.id === WALK_TRACK ? (!set.track || set.track === row.id) : set.track === row.id;
+    if (set.kind !== row.setKind || !trackMatches || set.status !== 'final' || set.characterId !== recordId
+      || JSON.stringify(set.directionOrder) !== JSON.stringify(directions)) {
+      throw compileError(`${row.label} set manifest is not a finalized ${row.directional ? 'directional' : 'single-row'} set`);
+    }
+    if (row.id === WALK_TRACK) {
+      const stale = importedWalkDirections(set);
+      if (stale.length || isSourcePipelinePath(set.selectionPath)) {
+        const which = stale.length ? `${stale.join(', ')} ${stale.length === 1 ? 'is' : 'are'}` : 'This walk set is';
+        throw new ServerError(
+          `${which} still packaged by the source pipeline, whose per-frame images were not imported — PortOS cannot compile from them. `
+          + 'Reopen each such direction and reprocess it from its imported clip to re-derive the frames here, then compile. '
+          + 'A direction with no imported clip cannot be re-derived at all — re-import the character to bring its clips across. '
+          + 'The imported runtime atlases remain available in the asset library.',
+          { status: 409, code: 'LEGACY_IMPORTED_WALK_SET' },
+        );
+      }
+    }
+    // eslint-disable-next-line no-await-in-loop -- validate each set before its run graph
+    await readVerified(set.selectionPath, set.selectionSha256, `${row.label} selection file`);
+    loaded[row.id] = {
+      id: row.id,
+      definition: row,
+      set,
+      setPath,
+      setSha256: sha256Buffer(setBytes),
+      directions,
+    };
   }
-  if (walkSet.kind !== 'finalized-eight-direction-walk-set' || walkSet.status !== 'final') {
-    throw compileError('Walk set manifest is not a finalized eight-direction walk set');
-  }
-  if (walkSet.characterId !== recordId) throw compileError('Walk set characterId mismatch');
-  // A direction still packaged by the source pipeline is copied verbatim: its
-  // paths are repo-root (`art-source/sprites/<id>/…`) and — decisively — its
-  // per-frame PNGs were never imported (the importer skips frames/ to minimize
-  // copies). Compiling from it is structurally impossible; say so plainly
-  // instead of the misleading tamper error the sha check below would produce.
-  //
-  // Unlike the original guard this is per-direction (#2993), because a direction
-  // CAN now leave that state: re-deriving it from its imported clip regenerates
-  // the frames here and re-approving rewrites its entry record-relative, so a set
-  // whose directions have all been re-derived compiles like any native one. Only
-  // the directions still carrying source-pipeline provenance block the compile,
-  // and the message names them so the remedy is per-direction too. Their
-  // already-published runtime atlases were imported and remain browsable.
-  // `isImportedWalkSet` expanded so the direction list is built once. The
-  // selectionPath disjunct is the set-level marker on its own — a set that is
-  // imported but lists no source-packaged direction.
-  const stale = importedWalkDirections(walkSet);
-  if (stale.length || isSourcePipelinePath(walkSet.selectionPath)) {
-    const which = stale.length ? `${stale.join(', ')} ${stale.length === 1 ? 'is' : 'are'}` : 'This walk set is';
-    throw new ServerError(
-      `${which} still packaged by the source pipeline, whose per-frame images were not imported — PortOS cannot compile from them. `
-      + 'Reopen each such direction and reprocess it from its imported clip to re-derive the frames here, then compile. '
-      + 'A direction with no imported clip cannot be re-derived at all — re-import the character to bring its clips across. '
-      + 'The imported runtime atlases remain available in the asset library.',
-      { status: 409, code: 'LEGACY_IMPORTED_WALK_SET' },
-    );
-  }
-  if (JSON.stringify(walkSet.directionOrder) !== JSON.stringify(SPRITE_DIRECTIONS)) {
-    throw compileError('Walk set direction order does not match the runtime contract');
-  }
-  await readVerified(walkSet.selectionPath, walkSet.selectionSha256, 'Walk selection file');
 
-  const [referenceManifest, record] = await Promise.all([loadManifest(recordId), getRecord(recordId)]);
-  if (!referenceManifest || referenceManifest.status !== 'complete') {
-    throw compileError('Reference set is not complete — all 8 anchors must be locked', 'REFERENCE_INCOMPLETE');
-  }
-  // manifest → record, the same rung order the generate and postprocess paths
-  // use. Reading the manifest alone made the atlas uncompilable for every
-  // source-pipeline import — the importer stamps the key on the RECORD and
-  // copies a manifest carrying none — so the recovery path #3043 opens (unlock →
-  // regenerate all 8 → approve → freeze) would have dead-ended here, at a 409,
-  // AFTER the user paid for eight renders.
+  const referenceManifest = await loadManifest(recordId);
   const chromaKey = resolveChromaKey({ manifest: referenceManifest, record });
   if (!chromaKey) throw compileError('Reference manifest has no frozen chroma key');
-
   const anchors = {};
-  for (const direction of SPRITE_DIRECTIONS) {
-    const anchor = (referenceManifest.anchors || []).find((a) => a.direction === direction);
-    if (!anchor || anchor.status !== 'locked' || !anchor.path) {
-      throw compileError(`Anchor for ${direction} is not locked`);
+  let mainReference = null;
+  if (primary.directional) {
+    if (!referenceManifest || referenceManifest.status !== 'complete') {
+      throw compileError('Reference set is not complete — all 8 anchors must be locked', 'REFERENCE_INCOMPLETE');
     }
-    const bytes = await readVerified(anchor.path, anchor.sha256, `Anchor for ${direction}`);
-    anchors[direction] = { ...anchor, bytes };
+    for (const direction of SPRITE_DIRECTIONS) {
+      const anchor = (referenceManifest.anchors || []).find((item) => item.direction === direction);
+      if (!anchor || anchor.status !== 'locked' || !anchor.path) {
+        throw compileError(`Anchor for ${direction} is not locked`);
+      }
+      // eslint-disable-next-line no-await-in-loop -- read-once evidence verification
+      const bytes = await readVerified(anchor.path, anchor.sha256, `Anchor for ${direction}`);
+      anchors[direction] = { ...anchor, bytes };
+    }
+  } else {
+    const main = referenceManifest?.mainReference;
+    if (!main?.locked || !main.path || !main.sha256) {
+      throw compileError('Main reference is not locked', 'REFERENCE_INCOMPLETE');
+    }
+    mainReference = {
+      ...main,
+      bytes: await readVerified(main.path, main.sha256, 'Locked main reference'),
+    };
   }
 
-  // TWO PASSES, cheap first. Pass 1 reads the (small) run manifests and resolves
-  // each track's frame count and fps; pass 2 does the expensive per-frame byte
-  // verification. Doing it the other way round would byte-verify 8 directions
-  // (48–128 PNGs read and hashed) before noticing a frame count that was out of
-  // range or ragged — and verifyPackagedFrames documents the frame count as
-  // already agreed across directions when it runs.
-  //
-  // Rows are keyed by TRACK because uniformity is a within-track rule (#3016):
-  // every facing of one track must share a frame count and speed since the
-  // atlas is a rectangular grid, but a second track is free to differ. HOW MANY
-  // facings a track has is per-track too (#3017) — `trackDirections` answers it
-  // from the registry, so a non-directional track is authored and approved as
-  // one row rather than being held to eight. Only `walk` is registered today
-  // (directional, so this is exactly SPRITE_DIRECTIONS); a second track adds a
-  // sibling row list here and is resolved by the same loop.
-  //
-  // `trackDirections` is called ONCE per track and the result kept, so the
-  // facings a track was collected against and the count it is later held to are
-  // the same value rather than two derivations that could drift.
-  const scannerSetRel = trackSetRelPath(SCANNER_TRACK, recordId);
-  const scannerSetBytes = await readFile(join(dir, scannerSetRel)).catch(() => null);
-  let scannerSet = null;
-  if (scannerSetBytes) {
-    try {
-      scannerSet = JSON.parse(scannerSetBytes);
-    } catch {
-      throw compileError('Scanner set manifest is unreadable');
-    }
-    // `setKind` comes from the registry row (#3136) rather than a literal, so
-    // the track that WRITES the set and the compiler that re-verifies it share
-    // one definition — the same single-source rule the contract fields follow.
-    if (scannerSet.kind !== getAnimationTrack(SCANNER_TRACK).setKind || scannerSet.track !== SCANNER_TRACK
-      || scannerSet.status !== 'final' || scannerSet.characterId !== recordId
-      || JSON.stringify(scannerSet.directionOrder) !== JSON.stringify(SPRITE_DIRECTIONS)) {
-      throw compileError('Scanner set manifest is not a finalized directional scanner set');
-    }
-    await readVerified(scannerSet.selectionPath, scannerSet.selectionSha256, 'Scanner selection file');
-  }
-
-  const trackDirs = {
-    [WALK_TRACK]: trackDirections(WALK_TRACK, SPRITE_DIRECTIONS),
-    ...(scannerSet ? { [SCANNER_TRACK]: trackDirections(SCANNER_TRACK, SPRITE_DIRECTIONS) } : {}),
-  };
-  const manifests = {};
-  const trackRows = { [WALK_TRACK]: [] };
-  for (const direction of trackDirs[WALK_TRACK]) {
-    const entry = walkSet.directions?.[direction];
-    if (!entry || entry.status !== 'approved') throw compileError(`Direction ${direction} is not approved`);
-    const manifestBytes = await readVerified(entry.runManifest, entry.runManifestSha256, `Run manifest for ${direction}`);
-    let manifest;
-    try {
-      manifest = JSON.parse(manifestBytes);
-    } catch {
-      manifest = null;
-    }
-    if (!manifest || manifest.direction !== direction) {
-      throw compileError(`Run manifest for ${direction} is unreadable or mislabeled`);
-    }
-    manifests[direction] = { entry, manifest };
-    trackRows[WALK_TRACK].push({
-      direction,
-      frameCount: (manifest.frames || []).length,
-      declaredFrameCount: manifest.frameCount,
-      fps: manifest.frameRate,
-    });
-  }
-
-  if (scannerSet) {
-    manifests[SCANNER_TRACK] = {};
-    trackRows[SCANNER_TRACK] = [];
-    for (const direction of trackDirs[SCANNER_TRACK]) {
-      const entry = scannerSet.directions?.[direction];
-      if (!entry || entry.status !== 'approved') throw compileError(`Scanner direction ${direction} is not approved`);
-      const manifestBytes = await readVerified(entry.runManifest, entry.runManifestSha256, `Scanner run manifest for ${direction}`);
+  // Two passes per track: agree on shape using the small manifests first, then
+  // read and hash every frame. A malformed row therefore fails before the
+  // expensive pixel graph is loaded.
+  for (const row of registryRows) {
+    const track = loaded[row.id];
+    if (!track) continue;
+    const pendingRuns = {};
+    const rows = [];
+    for (const direction of track.directions) {
+      const entry = track.set.directions?.[direction];
+      if (!entry || entry.status !== 'approved') {
+        throw compileError(`${row.label} direction ${direction} is not approved`);
+      }
+      // eslint-disable-next-line no-await-in-loop -- evidence chain is ordered per facing
+      const manifestBytes = await readVerified(
+        entry.runManifest,
+        entry.runManifestSha256,
+        `${row.label} run manifest for ${direction}`,
+      );
       let manifest;
       try {
         manifest = JSON.parse(manifestBytes);
       } catch {
         manifest = null;
       }
-      if (!manifest || manifest.track !== SCANNER_TRACK || manifest.direction !== direction) {
-        throw compileError(`Scanner run manifest for ${direction} is unreadable or mislabeled`);
+      const manifestTrackMatches = row.id === WALK_TRACK
+        ? (!manifest?.track || manifest.track === row.id)
+        : manifest?.track === row.id;
+      if (!manifest || !manifestTrackMatches || manifest.direction !== direction) {
+        throw compileError(`${row.label} run manifest for ${direction} is unreadable or mislabeled`);
       }
-      manifests[SCANNER_TRACK][direction] = { entry, manifest };
-      trackRows[SCANNER_TRACK].push({
+      pendingRuns[direction] = { entry, manifest };
+      rows.push({
         direction,
         frameCount: (manifest.frames || []).length,
         declaredFrameCount: manifest.frameCount,
         fps: manifest.frameRate,
       });
     }
-  }
-
-  // Registration order, so the compiled grid's span order is stable regardless
-  // of the order the rows happened to be collected in.
-  const tracks = ANIMATION_TRACK_IDS
-    .filter((id) => trackRows[id]?.length)
-    .map((id) => resolveTrackUniformity(id, trackRows[id], {
+    const uniform = resolveTrackUniformity(row.id, rows, {
+      tracks: animationTracks,
       error: compileError,
-      defaultFps: LEGACY_MANIFEST_FPS[id],
-      // The exact facing list this loop collected against — not a second
-      // derivation that could disagree with it.
-      expectedRows: trackDirs[id].length,
-    }));
-  const walk = tracks.find((t) => t.id === WALK_TRACK);
-  const scanner = tracks.find((t) => t.id === SCANNER_TRACK);
-
-  const runs = {};
-  for (const direction of trackDirs[WALK_TRACK]) {
-    const { entry, manifest } = manifests[direction];
-    // Same frame-validity definition the approve gate uses (verifyPackagedFrames),
-    // here in its byte-verifying mode: existence + per-frame sha256 + gait-phase/
-    // order, reading each frame's bytes exactly once for read-once-verify-in-memory.
-    // Approve runs the existence-only prefix, so a set that passed approve cannot
-    // fail this for frame-existence reasons (#3001).
-    const { frameBytes } = await verifyPackagedFrames(recordId, manifest, { bytes: true });
-    runs[direction] = { runId: entry.runId, manifestPath: entry.runManifest, manifest, frameBytes };
-  }
-
-  const scannerRuns = {};
-  if (scannerSet) {
-    for (const direction of trackDirs[SCANNER_TRACK]) {
-      const { entry, manifest } = manifests[SCANNER_TRACK][direction];
-      const { frameBytes } = await verifyPackagedFrames(recordId, manifest, { bytes: true, track: SCANNER_TRACK });
-      scannerRuns[direction] = { runId: entry.runId, manifestPath: entry.runManifest, manifest, frameBytes };
+      defaultFps: LEGACY_MANIFEST_FPS[row.id],
+      expectedRows: track.directions.length,
+    });
+    const runs = {};
+    for (const direction of track.directions) {
+      const { entry, manifest } = pendingRuns[direction];
+      // eslint-disable-next-line no-await-in-loop -- read-once frame verification
+      const { frameBytes } = await verifyPackagedFrames(recordId, manifest, {
+        bytes: true,
+        track: row.id,
+        tracks: animationTracks,
+      });
+      runs[direction] = {
+        runId: entry.runId,
+        manifestPath: entry.runManifest,
+        manifest,
+        frameBytes,
+      };
     }
+    loaded[row.id] = {
+      ...track,
+      rows,
+      runs,
+      frameCount: uniform.frameCount,
+      fps: uniform.fps,
+    };
   }
 
+  const walk = loaded[WALK_TRACK];
+  const scanner = loaded[SCANNER_TRACK];
+  const ambient = loaded[AMBIENT_TRACK];
   return {
-    walkSet,
-    walkSetPath: walkSetRel,
-    walkSetSha256: sha256Buffer(walkSetBytes),
-    scannerSet,
-    scannerSetPath: scannerSet ? scannerSetRel : null,
-    scannerSetSha256: scannerSetBytes ? sha256Buffer(scannerSetBytes) : null,
+    primaryTrackId: primary.id,
     referenceManifest,
     chromaKey,
     anchors,
-    runs,
-    scannerRuns,
-    tracks,
-    // The walk view of `tracks`, kept because the published geometry names these
-    // exact fields in the runtime contract (walkFrameCount / walkFps).
+    mainReference,
+    tracks: loaded,
+    // Legacy views remain additive compatibility fields for existing runtime
+    // pointers and consumers. The generic compiler itself reads `tracks`.
+    walkSet: walk?.set || null,
+    walkSetPath: walk?.setPath || null,
+    walkSetSha256: walk?.setSha256 || null,
+    scannerSet: scanner?.set || null,
+    scannerSetPath: scanner?.setPath || null,
+    scannerSetSha256: scanner?.setSha256 || null,
+    ambientSet: ambient?.set || null,
+    ambientSetPath: ambient?.setPath || null,
+    ambientSetSha256: ambient?.setSha256 || null,
     walkFrameCount: walk?.frameCount ?? null,
     walkFps: walk?.fps ?? null,
     scannerFrameCount: scanner?.frameCount ?? null,
+    ambientFrameCount: ambient?.frameCount ?? null,
   };
 }
 
-/** Validate the one-main-reference / one-row evidence chain for ambient-only records. */
-async function validateAmbientForCompile(recordId, record) {
-  const readVerified = async (relPath, expectedSha, label) => {
-    const bytes = await readFile(resolveSpriteAssetPath(recordId, relPath)).catch(() => null);
-    if (!bytes || sha256Buffer(bytes) !== expectedSha) {
-      throw compileError(`${label} no longer matches its recorded sha256`);
-    }
-    return bytes;
-  };
-  const dir = spriteDir(recordId);
-  const setRel = trackSetRelPath(AMBIENT_TRACK, recordId);
-  const setBytes = await readFile(join(dir, setRel)).catch(() => null);
-  if (!setBytes) throw compileError('No finalized ambient loop — approve its single row first', 'AMBIENT_SET_REQUIRED');
-  let ambientSet;
-  try {
-    ambientSet = JSON.parse(setBytes);
-  } catch {
-    throw compileError('Ambient set manifest is unreadable');
+async function prepareTrackCells(track, direction, validated, geometry, split) {
+  const run = track.runs[direction];
+  const sources = [];
+  for (const bytes of run.frameBytes) {
+    // eslint-disable-next-line no-await-in-loop -- sharp transforms preserve frame order
+    sources.push(await transparentSource(bytes, split, validated.chromaKey));
   }
-  if (ambientSet.kind !== getAnimationTrack(AMBIENT_TRACK).setKind || ambientSet.track !== AMBIENT_TRACK
-    || ambientSet.status !== 'final' || ambientSet.characterId !== recordId
-    || JSON.stringify(ambientSet.directionOrder) !== JSON.stringify(['south'])) {
-    throw compileError('Ambient set manifest is not a finalized single-row ambient set');
-  }
-  await readVerified(ambientSet.selectionPath, ambientSet.selectionSha256, 'Ambient selection file');
-  const referenceManifest = await loadManifest(recordId);
-  const main = referenceManifest?.mainReference;
-  if (!main?.locked || !main.path || !main.sha256) {
-    throw compileError('Main reference is not locked', 'REFERENCE_INCOMPLETE');
-  }
-  const chromaKey = resolveChromaKey({ manifest: referenceManifest, record });
-  if (!chromaKey) throw compileError('Reference manifest has no frozen chroma key');
-  const mainBytes = await readVerified(main.path, main.sha256, 'Locked main reference');
-  const entry = ambientSet.directions?.south;
-  if (!entry || entry.status !== 'approved') throw compileError('Ambient row is not approved');
-  const manifestBytes = await readVerified(entry.runManifest, entry.runManifestSha256, 'Ambient run manifest');
-  let manifest;
-  try {
-    manifest = JSON.parse(manifestBytes);
-  } catch {
-    manifest = null;
-  }
-  if (!manifest || manifest.track !== AMBIENT_TRACK || manifest.direction !== 'south') {
-    throw compileError('Ambient run manifest is unreadable or mislabeled');
-  }
-  const ambient = resolveTrackUniformity(AMBIENT_TRACK, [{
-    direction: 'south',
-    frameCount: (manifest.frames || []).length,
-    declaredFrameCount: manifest.frameCount,
-    fps: manifest.frameRate,
-  }], { error: compileError, expectedRows: 1 });
-  const { frameBytes } = await verifyPackagedFrames(recordId, manifest, { bytes: true, track: AMBIENT_TRACK });
-  return {
-    ambientOnly: true,
-    scannerSet: null,
-    scannerSetSha256: null,
-    ambientSet,
-    ambientSetPath: setRel,
-    ambientSetSha256: sha256Buffer(setBytes),
-    referenceManifest,
-    chromaKey,
-    mainReference: { ...main, bytes: mainBytes },
-    ambientRun: { runId: entry.runId, manifestPath: entry.runManifest, manifest, frameBytes },
-    tracks: [ambient],
-    walkFrameCount: null,
-    walkFps: null,
-    scannerFrameCount: null,
-    ambientFrameCount: ambient.frameCount,
-  };
-}
-
-async function compileAmbientRow(validated, geometry) {
-  const split = keyChannelSplit(validated.chromaKey);
-  const { manifest, runId, manifestPath, frameBytes } = validated.ambientRun;
-  const ambientSources = [];
-  for (const bytes of frameBytes) ambientSources.push(await transparentSource(bytes, split, validated.chromaKey));
-  const dims = ambientSources.map((source, index) => occupiedDimensions(
-    source, ALPHA_THRESHOLD, `ambient-${manifest.frames[index].phase}`, true,
+  const dims = sources.map((source, index) => occupiedDimensions(
+    source,
+    ALPHA_THRESHOLD,
+    `${direction}-${run.manifest.frames[index].phase}`,
+    true,
   ));
-  const ambientScale = Math.min(
+  const scale = Math.min(
     geometry.targetMaxHeight / Math.max(...dims.map((dim) => dim.height)),
     geometry.targetMaxWidth / Math.max(...dims.map((dim) => dim.width)),
   );
-  const cells = [];
-  const idleSource = await transparentSource(validated.mainReference.bytes, split, validated.chromaKey);
-  const idleDims = occupiedDimensions(idleSource, SILHOUETTE_ALPHA_THRESHOLD, 'ambient-idle');
-  const desiredIdleHeight = median(dims.map((dim) => dim.height)) * ambientScale;
-  const idleScale = Math.min(desiredIdleHeight / idleDims.height, geometry.targetMaxWidth / idleDims.width);
-  const idleScaled = await scaleForCell(idleSource, idleScale, 'ambient-idle');
-  const idle = placeCell(
-    idleScaled.scaled,
-    idleScaled.bounds,
-    idleScaled.baseline,
-    sharedRowPasteX(pyRound((geometry.cellSize - idleScaled.scaled.width) / 2), [idleScaled.bounds], geometry),
-    'ambient-idle',
-    geometry,
-    idleScale,
-  );
-  cells.push({
-    column: ATLAS_IDLE_COLUMN,
-    track: ATLAS_IDLE_COLUMN,
-    frameIndex: 0,
-    ...idle,
-    sourcePath: validated.mainReference.path,
-    sourceSha256: validated.mainReference.sha256,
-    policy: 'locked-main-reference',
-  });
-  const pivotX = Number(manifest.alignment?.targetPivot?.[0]);
+  const pivotX = Number(run.manifest.alignment?.targetPivot?.[0]);
   const sourcePivotX = Number.isFinite(pivotX)
     ? pivotX
-    : (Number(manifest.alignment?.cellSize) || ambientSources[0].width) / 2;
+    : (Number(run.manifest.alignment?.cellSize) || sources[0].width) / 2;
   const scaled = [];
-  for (let index = 0; index < ambientSources.length; index++) {
-    scaled.push(await scaleForCell(ambientSources[index], ambientScale, `ambient-${manifest.frames[index].phase}`));
+  for (let index = 0; index < sources.length; index++) {
+    // eslint-disable-next-line no-await-in-loop -- frame order is the atlas order
+    scaled.push(await scaleForCell(
+      sources[index],
+      scale,
+      `${direction}-${run.manifest.frames[index].phase}`,
+    ));
   }
   const pasteX = sharedRowPasteX(
-    pyRound(geometry.pivot[0] - sourcePivotX * ambientScale),
+    pyRound(geometry.pivot[0] - sourcePivotX * scale),
     scaled.map((item) => item.bounds),
     geometry,
   );
-  for (let index = 0; index < scaled.length; index++) {
-    const frame = manifest.frames[index];
+  const cells = scaled.map((item, index) => {
+    const frame = run.manifest.frames[index];
     const normalized = placeCell(
-      scaled[index].scaled, scaled[index].bounds, scaled[index].baseline,
-      pasteX, `ambient-${frame.phase}`, geometry, ambientScale,
+      item.scaled,
+      item.bounds,
+      item.baseline,
+      pasteX,
+      `${direction}-${frame.phase}`,
+      geometry,
+      scale,
     );
-    cells.push({
+    return {
       column: frame.phase,
-      track: AMBIENT_TRACK,
+      track: track.id,
       frameIndex: index,
       ...normalized,
       sourcePath: frame.path,
       sourceSha256: frame.sha256,
-    });
-  }
-  return {
-    direction: 'south',
-    runId,
-    runManifestPath: manifestPath,
-    ambientScale: pyRoundTo(ambientScale, 8),
-    idleScale: pyRoundTo(idleScale, 8),
-    idlePolicy: 'locked-main-reference',
-    cells,
-  };
+    };
+  });
+  return { track, run, dims, scale, cells };
 }
 
-async function compileDirectionRow(recordId, direction, validated, geometry) {
+async function compileTrackRow(direction, validated, geometry) {
   const split = keyChannelSplit(validated.chromaKey);
-  const { manifest, runId, manifestPath, frameBytes } = validated.runs[direction];
-
-  const walkSources = [];
-  for (const bytes of frameBytes) {
-    walkSources.push(await transparentSource(bytes, split, validated.chromaKey));
+  const prepared = [];
+  for (const track of Object.values(validated.tracks)) {
+    if (!track.runs[direction]) continue;
+    // eslint-disable-next-line no-await-in-loop -- preserve registry and cell order
+    prepared.push(await prepareTrackCells(track, direction, validated, geometry, split));
   }
-  const dims = walkSources.map((f, i) => occupiedDimensions(f, ALPHA_THRESHOLD, `${direction}-${manifest.frames[i].phase}`, true));
-  const directionScale = Math.min(
-    geometry.targetMaxHeight / Math.max(...dims.map((d) => d.height)),
-    geometry.targetMaxWidth / Math.max(...dims.map((d) => d.width)),
-  );
+  const primary = prepared.find((item) => item.track.id === validated.primaryTrackId) || prepared[0];
+  if (!primary) throw compileError(`No animation track occupies atlas row ${direction}`);
 
-  const cells = [];
-  const anchor = validated.anchors[direction];
-  const idleSource = await transparentSource(anchor.bytes, split, validated.chromaKey);
-  const idleDims = occupiedDimensions(idleSource, SILHOUETTE_ALPHA_THRESHOLD, `${direction}-idle`);
-  const desiredIdleHeight = median(dims.map((d) => d.height)) * directionScale;
-  const idleScale = Math.min(desiredIdleHeight / idleDims.height, geometry.targetMaxWidth / idleDims.width);
+  const source = validated.anchors[direction] || validated.mainReference;
+  const sourcePolicy = validated.anchors[direction]
+    ? 'locked-directional-reference-anchor'
+    : 'locked-main-reference';
   const idleLabel = `${direction}-idle`;
+  const idleSource = await transparentSource(source.bytes, split, validated.chromaKey);
+  const idleDims = occupiedDimensions(idleSource, SILHOUETTE_ALPHA_THRESHOLD, idleLabel);
+  const desiredIdleHeight = median(primary.dims.map((dim) => dim.height)) * primary.scale;
+  const idleScale = Math.min(desiredIdleHeight / idleDims.height, geometry.targetMaxWidth / idleDims.width);
   const idleScaled = await scaleForCell(idleSource, idleScale, idleLabel);
-  // The idle anchor is a raw reference with no packer alignment behind it, so
-  // its torso is measured directly — the same `rootX` band the packer uses. It
-  // must be torso-anchored like the walk cells rather than silhouette-centred: the
-  // two rules differ by however far the torso sits off centre, and with idle on one
-  // rule and walk on the other the character visibly pops sideways the instant
-  // the game starts or stops the gait (#3021). Measured at the silhouette
-  // threshold, matching how this cell's scale was derived.
-  // …with the band THIS manifest's frames were packed on. #3049 moved the
-  // packer from the hip band to the torso band, but a set compiled WITHOUT
-  // reprocessing its runs still has hip-packed frames; measuring their idle as
-  // torso would anchor the two columns on different landmarks and reintroduce
-  // exactly the idle-to-walk pop this rule exists to prevent.
-  const idleBand = rootBandForManifest(manifest);
-  const idleTorsoX = rootX(idleScaled.scaled, alphaBbox(idleScaled.scaled, SILHOUETTE_ALPHA_THRESHOLD) || idleScaled.bounds, idleBand);
+  const idlePasteX = validated.anchors[direction]
+    ? pyRound(
+      geometry.pivot[0]
+      - rootX(
+        idleScaled.scaled,
+        alphaBbox(idleScaled.scaled, SILHOUETTE_ALPHA_THRESHOLD) || idleScaled.bounds,
+        rootBandForManifest(primary.run.manifest),
+      ),
+    )
+    : pyRound((geometry.cellSize - idleScaled.scaled.width) / 2);
   const idle = placeCell(
-    idleScaled.scaled, idleScaled.bounds, idleScaled.baseline,
-    sharedRowPasteX(pyRound(geometry.pivot[0] - idleTorsoX), [idleScaled.bounds], geometry),
-    idleLabel, geometry, idleScale,
+    idleScaled.scaled,
+    idleScaled.bounds,
+    idleScaled.baseline,
+    sharedRowPasteX(idlePasteX, [idleScaled.bounds], geometry),
+    idleLabel,
+    geometry,
+    idleScale,
   );
-  if (Math.abs(idle.meta.occupiedBounds.height - desiredIdleHeight) > IDLE_HEIGHT_TOLERANCE) {
-    throw compileError(`${direction} idle height ${idle.meta.occupiedBounds.height} misses the walk median ${pyRoundTo(desiredIdleHeight, 2)}`);
+  if (validated.anchors[direction]
+    && Math.abs(idle.meta.occupiedBounds.height - desiredIdleHeight) > IDLE_HEIGHT_TOLERANCE) {
+    throw compileError(
+      `${direction} idle height ${idle.meta.occupiedBounds.height} misses the animation median ${pyRoundTo(desiredIdleHeight, 2)}`,
+    );
   }
-  cells.push({
+  const cells = [{
     column: ATLAS_IDLE_COLUMN,
-    // `track` + `frameIndex` are what place this cell in the grid: the compiler
-    // looks the pair up in the track spans rather than trusting the order cells
-    // happen to be pushed in (#3017). The idle anchor is a one-column track of
-    // its own, exactly as the sidecar has always described it.
     track: ATLAS_IDLE_COLUMN,
     frameIndex: 0,
     ...idle,
-    sourcePath: anchor.path,
-    sourceSha256: anchor.sha256,
-    policy: 'locked-directional-reference-anchor',
-  });
-
-  // The packer's pivot x, in the walk frame's own coordinates — the anchor every
-  // frame of this direction already shares (#3021). Read from the manifest so a
-  // future packer geometry change flows through instead of being duplicated
-  // here; a manifest predating `alignment.targetPivot` falls back to the cell
-  // centre, which is what WALK_PIVOT has always been.
-  const packerPivotX = Number(manifest.alignment?.targetPivot?.[0]);
-  const walkPivotX = Number.isFinite(packerPivotX)
-    ? packerPivotX
-    : (Number(manifest.alignment?.cellSize) || walkSources[0].width) / 2;
-
-  // Scale every walk frame BEFORE placing any of them: the row's x is shared, so
-  // it can only be corrected for cell-edge overflow once all the bounds are known.
-  const walkScaled = [];
-  for (let i = 0; i < walkSources.length; i++) {
-    walkScaled.push(await scaleForCell(walkSources[i], directionScale, `${direction}-${manifest.frames[i].phase}`));
-  }
-  const walkPasteX = sharedRowPasteX(
-    pyRound(geometry.pivot[0] - walkPivotX * directionScale),
-    walkScaled.map((w) => w.bounds),
-    geometry,
+    sourcePath: source.path,
+    sourceSha256: source.sha256,
+    policy: sourcePolicy,
+  }, ...prepared.flatMap((item) => item.cells)];
+  const trackScales = Object.fromEntries(
+    prepared.map((item) => [item.track.id, pyRoundTo(item.scale, 8)]),
   );
-
-  for (let i = 0; i < walkScaled.length; i++) {
-    const frame = manifest.frames[i];
-    const { scaled, bounds, baseline } = walkScaled[i];
-    const normalized = placeCell(scaled, bounds, baseline, walkPasteX, `${direction}-${frame.phase}`, geometry, directionScale);
-    cells.push({
-      column: frame.phase,
-      track: WALK_TRACK,
-      frameIndex: i,
-      ...normalized,
-      sourcePath: frame.path,
-      sourceSha256: frame.sha256,
-    });
-  }
-
-  // Scanner is an independent short action: it gets its own named span and
-  // scale, while still sharing the directional row and baseline contract that
-  // keeps every animation grounded on the same atlas pivot.
-  const scannerRun = validated.scannerRuns?.[direction];
-  if (scannerRun) {
-    const scannerSources = [];
-    for (const bytes of scannerRun.frameBytes) {
-      scannerSources.push(await transparentSource(bytes, split, validated.chromaKey));
-    }
-    const scannerDims = scannerSources.map((source, index) => occupiedDimensions(
-      source, ALPHA_THRESHOLD, `${direction}-${scannerRun.manifest.frames[index].phase}`, true,
-    ));
-    const scannerScale = Math.min(
-      geometry.targetMaxHeight / Math.max(...scannerDims.map((dim) => dim.height)),
-      geometry.targetMaxWidth / Math.max(...scannerDims.map((dim) => dim.width)),
-    );
-    const scannerPivotX = Number(scannerRun.manifest.alignment?.targetPivot?.[0]);
-    const scannerAnchorX = Number.isFinite(scannerPivotX)
-      ? scannerPivotX
-      : (Number(scannerRun.manifest.alignment?.cellSize) || scannerSources[0].width) / 2;
-    const scannerScaled = [];
-    for (let i = 0; i < scannerSources.length; i++) {
-      scannerScaled.push(await scaleForCell(
-        scannerSources[i], scannerScale, `${direction}-${scannerRun.manifest.frames[i].phase}`,
-      ));
-    }
-    const scannerPasteX = sharedRowPasteX(
-      pyRound(geometry.pivot[0] - scannerAnchorX * scannerScale),
-      scannerScaled.map((item) => item.bounds), geometry,
-    );
-    for (let i = 0; i < scannerScaled.length; i++) {
-      const frame = scannerRun.manifest.frames[i];
-      const { scaled, bounds, baseline } = scannerScaled[i];
-      const normalized = placeCell(
-        scaled, bounds, baseline, scannerPasteX, `${direction}-${frame.phase}`, geometry, scannerScale,
-      );
-      cells.push({
-        column: frame.phase,
-        track: SCANNER_TRACK,
-        frameIndex: i,
-        ...normalized,
-        sourcePath: frame.path,
-        sourceSha256: frame.sha256,
-      });
-    }
-  }
-
   return {
     direction,
-    runId,
-    runManifestPath: manifestPath,
-    walkDirectionScale: pyRoundTo(directionScale, 8),
+    runId: primary.run.runId,
+    runManifestPath: primary.run.manifestPath,
+    walkDirectionScale: trackScales[WALK_TRACK],
+    ambientScale: trackScales[AMBIENT_TRACK],
+    trackScales,
     idleScale: pyRoundTo(idleScale, 8),
-    idlePolicy: 'locked-directional-reference-anchor',
+    idlePolicy: sourcePolicy,
     cells,
   };
 }
@@ -855,7 +650,33 @@ export function compileAtlas(recordId, options = {}) {
   return withWalkWriteTail(recordId, () => compileAtlasInTail(recordId, options));
 }
 
-export async function compileAtlasInTail(recordId, { geometry: geometryOverride } = {}) {
+const trackSetSha256s = (validated) => Object.fromEntries(
+  Object.values(validated.tracks).map((track) => [track.id, track.setSha256]),
+);
+
+const persistedTrackSetSha256s = (persisted) => {
+  if (persisted?.trackSetSha256s && typeof persisted.trackSetSha256s === 'object'
+    && !Array.isArray(persisted.trackSetSha256s)) {
+    return persisted.trackSetSha256s;
+  }
+  return {
+    ...(persisted?.walkSetSha256 ? { [WALK_TRACK]: persisted.walkSetSha256 } : {}),
+    ...(persisted?.scannerSetSha256 ? { [SCANNER_TRACK]: persisted.scannerSetSha256 } : {}),
+    ...(persisted?.ambientSetSha256 ? { [AMBIENT_TRACK]: persisted.ambientSetSha256 } : {}),
+  };
+};
+
+const trackSetsUpToDate = (persisted, validated) => {
+  const current = persistedTrackSetSha256s(persisted);
+  const expected = trackSetSha256s(validated);
+  const ids = new Set([...Object.keys(current), ...Object.keys(expected)]);
+  return [...ids].every((id) => current[id] === expected[id]);
+};
+
+export async function compileAtlasInTail(recordId, {
+  geometry: geometryOverride,
+  tracks: animationTracks = ANIMATION_TRACKS,
+} = {}) {
   // The track-presence gate (#3017), not a literal kind check: a record may
   // compile an atlas when its kind carries at least one registered animation
   // track. Walk is character-only, so this refuses exactly what it always did —
@@ -863,17 +684,21 @@ export async function compileAtlasInTail(recordId, { geometry: geometryOverride 
   // unlocks those records here with no edit to this line.
   await requireAnimatable(recordId);
   const geometry = mergeGeometry(geometryOverride);
-  const validated = await validateForCompile(recordId);
+  const validated = await validateForCompile(recordId, animationTracks);
   const dir = spriteDir(recordId);
 
   // Columns/width follow the set's actual per-track frame counts, not the
   // historical 8 — and `tracks` names each track's `{ start, count }` span, so
   // the grid, the manifest geometry and the published sidecar can never
   // disagree about where a track's columns are.
-  const { columns, tracks } = buildAtlasGrid(validated.tracks);
+  const trackSpecs = Object.values(validated.tracks).map((track) => ({
+    id: track.id,
+    frameCount: track.frameCount,
+  }));
+  const { columns, tracks } = buildAtlasGrid(trackSpecs, animationTracks);
 
-  // Pre-pixel idempotency: the compile is deterministic, so an unchanged
-  // walk set + identical geometry means identical bytes by construction —
+  // Pre-pixel idempotency: the compile is deterministic, so unchanged track
+  // sets + identical geometry mean identical bytes by construction —
   // skip the whole pixel pipeline. The evidence chain was still revalidated
   // above; the post-encode sha comparison below stays as the fallback for a
   // pointer whose geometry fields predate a shape change.
@@ -893,25 +718,19 @@ export async function compileAtlasInTail(recordId, { geometry: geometryOverride 
   if (
     current
     && currentAtlasOnDisk
-    && current.walkSetSha256 === validated.walkSetSha256
-    && (current.scannerSetSha256 ?? null) === validated.scannerSetSha256
-    && (current.ambientSetSha256 ?? null) === (validated.ambientSetSha256 ?? null)
+    && trackSetsUpToDate(current, validated)
     && compiledGridUpToDate(current.geometry, { ...geometry, columns, tracks })
   ) {
     return { ...current, created: false };
   }
 
-  // compileDirectionRow still emits `idle` + this direction's walk frames, and
-  // verifyPackagedFrames has already asserted each frame's phase against the
-  // walk labels. What #3017 changes is that placement no longer *assumes* that:
-  // every cell states its `track` and `frameIndex` and is placed through the
-  // grid's spans, so a track that occupies fewer columns or fewer rows lands
-  // where the sidecar says it does or the compile fails loudly. Producing the
-  // frames for a second track is still #3018's job; this is the grid contract
-  // that track will slot into.
-  const rows = validated.ambientOnly
-    ? [await compileAmbientRow(validated, geometry)]
-    : await Promise.all(SPRITE_DIRECTIONS.map((direction) => compileDirectionRow(recordId, direction, validated, geometry)));
+  // Each row emits its idle reference plus every registered track occupying
+  // that facing. Cells carry their track and frame index into the compositor,
+  // so variable-width and single-row spans land exactly where the grid says.
+  const rowCount = Math.max(...Object.values(validated.tracks).map((track) => track.directions.length));
+  const rows = await Promise.all(
+    SPRITE_DIRECTIONS.slice(0, rowCount).map((direction) => compileTrackRow(direction, validated, geometry)),
+  );
 
   // Resolve one cell's place in the grid from its track's span, once, and stamp
   // the answer on the cell so the manifest below reports where the pixels
@@ -954,9 +773,7 @@ export async function compileAtlasInTail(recordId, { geometry: geometryOverride 
     .toBuffer();
   const atlasSha256 = sha256Buffer(atlasBuffer);
 
-  if (current && currentAtlasOnDisk && current.walkSetSha256 === validated.walkSetSha256
-    && (current.scannerSetSha256 ?? null) === validated.scannerSetSha256
-    && (current.ambientSetSha256 ?? null) === (validated.ambientSetSha256 ?? null)
+  if (current && currentAtlasOnDisk && trackSetsUpToDate(current, validated)
     && current.atlasSha256 === atlasSha256) {
     return { ...current, created: false };
   }
@@ -1000,6 +817,7 @@ export async function compileAtlasInTail(recordId, { geometry: geometryOverride 
       ...(validated.walkSet ? { walkSetSha256: validated.walkSetSha256 } : {}),
       ...(survivingManifest.scannerSetSha256 ? { scannerSetSha256: survivingManifest.scannerSetSha256 } : {}),
       ...(survivingManifest.ambientSetSha256 ? { ambientSetSha256: survivingManifest.ambientSetSha256 } : {}),
+      trackSetSha256s: persistedTrackSetSha256s(survivingManifest),
       geometry: survivingManifest.geometry,
       compiledAt: survivingManifest.createdAt,
     };
@@ -1010,7 +828,11 @@ export async function compileAtlasInTail(recordId, { geometry: geometryOverride 
 
   const manifest = {
     schemaVersion: 1,
-    kind: validated.ambientOnly ? 'reviewed-ambient-set-runtime-atlas' : 'reviewed-walk-set-runtime-atlas',
+    kind: validated.primaryTrackId === AMBIENT_TRACK
+      ? 'reviewed-ambient-set-runtime-atlas'
+      : validated.primaryTrackId === WALK_TRACK
+        ? 'reviewed-walk-set-runtime-atlas'
+        : 'reviewed-animation-set-runtime-atlas',
     characterId: recordId,
     version,
     createdAt: new Date().toISOString(),
@@ -1028,6 +850,13 @@ export async function compileAtlasInTail(recordId, { geometry: geometryOverride 
       ambientSetPath: validated.ambientSetPath,
       ambientSetSha256: validated.ambientSetSha256,
     } : {}),
+    trackSets: Object.fromEntries(
+      Object.values(validated.tracks).map((track) => [
+        track.id,
+        { setPath: track.setPath, setSha256: track.setSha256 },
+      ]),
+    ),
+    trackSetSha256s: trackSetSha256s(validated),
     atlasPath: atlasRel,
     atlasSha256,
     geometry: {
@@ -1057,6 +886,7 @@ export async function compileAtlasInTail(recordId, { geometry: geometryOverride 
       runId: row.runId,
       runManifestPath: row.runManifestPath,
       walkDirectionScale: row.walkDirectionScale,
+      trackScales: row.trackScales,
       idleScale: row.idleScale,
       idlePolicy: row.idlePolicy,
       // The index the compositor stamped on, so the manifest cannot claim a
@@ -1088,6 +918,7 @@ export async function compileAtlasInTail(recordId, { geometry: geometryOverride 
     ...(validated.walkSet ? { walkSetSha256: validated.walkSetSha256 } : {}),
     ...(validated.scannerSet ? { scannerSetSha256: validated.scannerSetSha256 } : {}),
     ...(validated.ambientSet ? { ambientSetSha256: validated.ambientSetSha256 } : {}),
+    trackSetSha256s: trackSetSha256s(validated),
     geometry: manifest.geometry,
     compiledAt: manifest.createdAt,
   };
