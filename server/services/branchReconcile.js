@@ -343,18 +343,60 @@ export function filterActionable(inFlight, actions) {
   });
 }
 
-/** Per-state one-line instruction to the coordinator/sub-agent. */
-export function desiredEndState(state, actions) {
+// The terminal state of an auto-mergeable branch is MERGED — not "PR opened",
+// not "PR green and waiting". Every drive-to-merge instruction ends with this
+// tail so the agent waits CI out IN-SESSION instead of handing back an open PR
+// (the miss that left a green, MERGEABLE PR sitting open after a NEEDS_PR run:
+// the agent opened it and signaled done 51s later). GitHub-native `--auto` is
+// deliberately not the answer on its own — the agent exits the moment it
+// finishes, so a queued auto-merge that later goes red has nobody left to fix
+// it, and the branch silently stays in-flight until the next recheck.
+//
+// `pr` is the PR's number when the branch already has one, else the `<num>`
+// placeholder the agent fills in after opening it.
+const driveToMerge = (pr) => [
+  'Opening (or approving) the PR is NOT the end state — a green PR left open is still an unfinished branch that this task will simply re-drive on its next run.',
+  `Wait for CI in-session by re-polling \`gh pr checks ${pr} --required\` every 30s — each poll prints output, which keeps this run clear of the idle reaper the way a silent \`--watch\` does not. Budget 15 minutes for the run; past that, leave the PR open and report that CI was still pending.`,
+  'If a required check FAILS, fix it on the branch, push, and re-poll (max 3 rounds); if it is still red after that, leave the PR open and report exactly which check failed.',
+  `Once every required check is green AND the PR is MERGEABLE, merge it — from the repo root, NOT from inside the branch's worktree (\`gh\` can't delete a branch that is checked out elsewhere): \`gh pr merge ${pr} --merge --delete-branch\`. Repos differ in which methods they allow, so on a "not allowed" error retry with \`--squash\`, then \`--rebase\`. Never \`--auto\`: a queued auto-merge outlives this run, so a check that goes red afterward has nobody left to fix it.`,
+  'After the merge, remove the branch\'s worktree first, then delete the local branch — the delete fails while a worktree still has it checked out.'
+].join(' ');
+
+/**
+ * Per-state instruction to the coordinator/sub-agent.
+ * @param {string} state
+ * @param {object} actions - per-app action toggles
+ * @param {{ prNumber?: number }} [ctx] - the branch's open PR number, when it has one
+ */
+export function desiredEndState(state, actions, { prNumber } = {}) {
+  const pr = prNumber ? String(prNumber) : '<num>';
   if (state === 'NEEDS_PR') {
-    return 'Verify the branch\'s work is complete and ready (tests pass, no stubs/TODO markers, changelog present). If ready, run `/do:pr`. If NOT ready, report it as incomplete and leave the branch untouched — do not open a half-baked PR.';
+    const verify = 'Verify the branch\'s work is complete and ready (tests pass, no stubs/TODO markers, changelog present). If NOT ready, report it as incomplete and leave the branch untouched — do not open a half-baked PR.';
+    // `--no-merge` is passed explicitly on BOTH paths — not to disable merging,
+    // but to keep the merge decision here rather than inside slashdo. Under
+    // `--merge`, /do:pr first tries GitHub-native auto-merge and reports the PR
+    // as "queued", ending the run with CI still pending — the same unattended
+    // exit this whole change exists to close. So /do:pr runs its reviewer loop
+    // and opens the PR; the merge gate below is what finishes the branch. The
+    // flag is also stated explicitly so this machine's saved slashdo defaults
+    // (which may set `merge: true`) can't decide it either way.
+    const openPr = '`/do:pr --no-merge` — its reviewer loop runs, and the PR is left for the gate below rather than queued for auto-merge (by hand, if slash commands aren\'t available in your context: self-review the diff and fix what you find, `git push -u origin <branch>`, then `gh pr create` with a Summary + Test plan)';
+    if (!actionOn(actions, 'autoMerge')) {
+      return `${verify} If ready, ship it with ${openPr}. Do NOT merge (auto-merge is disabled) — stop once the PR is open and report its URL.`;
+    }
+    return `${verify} If ready, ship it with ${openPr}. ${driveToMerge(pr)}`;
   }
   if (state === 'CONFLICTED') {
     return 'Rebase the branch onto the default branch, resolve all conflicts, run the tests, and push.';
   }
   // IN_REVIEW
   const canMerge = actionOn(actions, 'autoMerge');
+  // The Copilot gate is time-boxed for the same reason the merge waits on CI
+  // in-session: a repo without Copilot review enabled never produces one, and an
+  // unbounded "await the review" leaves a green PR open forever. 10 minutes
+  // mirrors the claim-issue flow's Copilot poll.
   return `Drive the open PR toward green: request/await the Copilot review and address feedback.${canMerge
-    ? ' Then MERGE it (`gh pr merge --merge --delete-branch`) ONLY when it is MERGEABLE, CI is fully green, and the LATEST Copilot review reports "0 comments" (pre-resolved threads do NOT count; a PR over 20k lines is exempt from the Copilot check and needs only CI-green + mergeable). After merging, delete the local branch and remove its worktree.'
+    ? ` Merge ONLY when the LATEST Copilot review reports "0 comments" (pre-resolved threads do NOT count; a PR over 20k lines is exempt from the Copilot check and needs only CI-green + mergeable). If no Copilot review lands within 10 minutes of requesting it, the Copilot gate is satisfied — this repo may not have Copilot review enabled — and CI-green + MERGEABLE is the whole gate. ${driveToMerge(pr)}`
     : ' Do NOT merge (auto-merge is disabled) — stop once the PR is green and ready for the user to merge.'}`;
 }
 
@@ -390,7 +432,7 @@ export function formatInFlightForPrompt(inFlight, { defaultBranch, actions }) {
     const pr = b.openPr ? ` — PR #${b.openPr.number} (${b.openPr.mergeable})${b.openPr.url ? ` ${b.openPr.url}` : ''}` : ' — no PR';
     lines.push(`### \`${b.branch}\` [${b.state}]${pr}`);
     if (b.worktreePath) lines.push(`- Worktree: \`${b.worktreePath}\``);
-    lines.push(`- Do: ${desiredEndState(b.state, actions)}`);
+    lines.push(`- Do: ${desiredEndState(b.state, actions, { prNumber: b.openPr?.number })}`);
     lines.push('');
   }
   return lines.join('\n');

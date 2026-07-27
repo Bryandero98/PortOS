@@ -315,13 +315,73 @@ describe('filterActionable', () => {
 
 describe('desiredEndState', () => {
   it('tells IN_REVIEW to merge only when autoMerge is on', () => {
-    expect(desiredEndState('IN_REVIEW', {})).toContain('gh pr merge --merge --delete-branch');
+    expect(desiredEndState('IN_REVIEW', {})).toContain('gh pr merge <num> --merge --delete-branch');
     expect(desiredEndState('IN_REVIEW', { autoMerge: false })).toContain('Do NOT merge');
   });
 
   it('gives NEEDS_PR a completeness gate and CONFLICTED a rebase instruction', () => {
     expect(desiredEndState('NEEDS_PR', {})).toContain('/do:pr');
     expect(desiredEndState('CONFLICTED', {})).toContain('Rebase');
+  });
+
+  // The miss this pins: a NEEDS_PR run opened a PR, reported "left open for
+  // review", and exited 51s later — while CI was still running on a branch the
+  // task was supposed to finish. "PR opened" is a step, not the end state.
+  it('drives NEEDS_PR past the PR to a merge when autoMerge is on', () => {
+    const instruction = desiredEndState('NEEDS_PR', {});
+    expect(instruction).toContain('gh pr checks <num> --required');
+    expect(instruction).toContain('gh pr merge <num> --merge --delete-branch');
+    expect(instruction).toContain('NOT the end state');
+  });
+
+  it('stops NEEDS_PR at an open PR when autoMerge is off', () => {
+    const instruction = desiredEndState('NEEDS_PR', { autoMerge: false });
+    expect(instruction).toContain('Do NOT merge');
+    expect(instruction).not.toContain('gh pr merge');
+  });
+
+  // `/do:pr --merge` hands the merge to slashdo, which tries GitHub-native
+  // auto-merge first and reports the PR as "queued" — ending the run with CI
+  // still pending, the exact unattended exit this instruction closes. So the PR
+  // is always opened with `--no-merge` and the merge gate stays in the Do: line.
+  it('always opens the PR with --no-merge so the merge gate stays in-session', () => {
+    for (const actions of [{}, { autoMerge: false }]) {
+      const instruction = desiredEndState('NEEDS_PR', actions);
+      expect(instruction).toContain('/do:pr --no-merge');
+      expect(instruction).not.toContain('/do:pr --merge');
+    }
+  });
+
+  it('makes both merge-bound states wait for CI in-session and forbid queued auto-merge', () => {
+    for (const state of ['NEEDS_PR', 'IN_REVIEW']) {
+      const instruction = desiredEndState(state, {});
+      expect(instruction).toContain('gh pr checks <num> --required');
+      expect(instruction).toContain('Never `--auto`');
+    }
+  });
+
+  // branch-reconcile runs against ANY managed app; a repo that disallows merge
+  // commits would strand the branch on a hardcoded `--merge`.
+  it('gives the merge a method fallback and keeps it out of the branch worktree', () => {
+    const instruction = desiredEndState('IN_REVIEW', {});
+    expect(instruction).toContain('`--squash`');
+    expect(instruction).toContain('`--rebase`');
+    expect(instruction).toContain('NOT from inside the branch\'s worktree');
+    // Worktree first, then the branch — the delete fails while it's checked out.
+    expect(instruction).toContain('remove the branch\'s worktree first, then delete the local branch');
+  });
+
+  it('names the real PR number when the branch already has one', () => {
+    const instruction = desiredEndState('IN_REVIEW', {}, { prNumber: 42 });
+    expect(instruction).toContain('gh pr checks 42 --required');
+    expect(instruction).toContain('gh pr merge 42 --merge --delete-branch');
+    expect(instruction).not.toContain('<num>');
+  });
+
+  // A repo without Copilot review enabled never produces one — an unbounded
+  // "await the review" would strand a green PR open forever.
+  it('time-boxes the IN_REVIEW Copilot gate', () => {
+    expect(desiredEndState('IN_REVIEW', {})).toContain('within 10 minutes');
   });
 });
 

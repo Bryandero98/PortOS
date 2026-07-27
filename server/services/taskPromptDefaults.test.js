@@ -150,4 +150,23 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(outgoing).not.toContain('{worktreesRoot}');
     expect(outgoing).not.toBe(current);
   });
+
+  // branch-reconcile v2: "PR opened" is a completed STEP, not a completed
+  // branch. v1's blanket "never merge unreviewed work" rule read as a veto on
+  // the per-branch merge instruction, so a coordinator opened a PR and exited
+  // while CI was still running — leaving a green, MERGEABLE PR sitting open.
+  it('branch-reconcile v2 makes merged (not PR-opened) the end state, preserving the v1 default', () => {
+    const current = DEFAULT_TASK_PROMPTS['branch-reconcile'];
+    expect(current).toContain('not finished until it IS merged');
+    expect(current).not.toContain('never merge unreviewed work');
+    expect(PROMPT_VERSIONS['branch-reconcile']).toBe(2);
+
+    // The outgoing v1 default carried the blanket ban and no CI-wait rule; it is
+    // preserved verbatim so installs holding it are recognized and upgraded.
+    const previous = PREVIOUS_DEFAULT_PROMPTS['branch-reconcile'];
+    const v1 = previous[previous.length - 1];
+    expect(v1).toContain('never merge unreviewed work');
+    expect(v1).not.toContain('not finished until it IS merged');
+    expect(v1).not.toBe(current);
+  });
 });

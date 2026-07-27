@@ -4828,6 +4828,30 @@ Summarize:
 
 IMPORTANT: Always use \`git pull --rebase --autostash\` before pushing (dev branch gets auto-bumped by CI). Never use \`git push\` alone.`,
   ],
+  'branch-reconcile': [
+    // v1 default — superseded by v2, whose Rules make "merged" (not "PR opened")
+    // the terminal state for an auto-mergeable branch. v1's blanket "never merge
+    // unreviewed work" rule read as a veto on the per-branch merge instruction,
+    // so a NEEDS_PR branch ended with a green PR left sitting open.
+    `[Improvement: {appName}] Branch & PR Reconciliation
+
+You are the coordinator for finishing {appName}'s unfinished local git work. The scheduler has already run the deterministic pass (removed fully-merged, orphaned local branches + their worktrees) and handed you ONLY the branches that need judgment.
+
+Repository: {repoPath}
+
+Each branch listed below is a LOCAL branch in THIS clone of {appName}. On a machine that is a federated sync peer, branches created on OTHER machines exist here only as remote-tracking refs (\`origin/*\`) and are deliberately NOT listed — never open, rebase, or merge anything that is not in the list below.
+
+{inFlightBranches}
+
+Spawn ONE sub-agent per branch (they are independent — run them in parallel) to carry out that branch's "Do:" instruction, each working in the branch's existing worktree when it has one.
+
+## Rules
+- Work ONLY on the branches listed above. Never touch a branch that is not listed.
+- Never force-push the default branch and never merge unreviewed work.
+- If a sub-agent reports a branch is incomplete or blocked, leave it as-is and note it in your summary.
+- Summarize what each branch ended up doing (PR opened / conflicts resolved / merged / left incomplete).`,
+  ],
+
   'issue-reconcile': [
     // v1 default (GitHub-only) — superseded by the forge-aware v2 body (gh/glab).
     `[Improvement: {appName}] Zombie Issue Reconciliation
