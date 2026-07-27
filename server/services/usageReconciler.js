@@ -61,10 +61,11 @@ const WINDOW_SLACK_MS = 60_000;
 // but a run that already completed is never reconciled again.
 const claimedMessages = new Set();
 
-// Highest cumulative boundary (epoch ms of the billed end snapshot) already
-// charged per Codex rollout path. Codex bills as a cumulative delta, so a
-// per-snapshot claim can't stop a GROWN rollout from re-including an earlier
-// run's tokens — only a high-water mark can.
+// Cumulative token totals already charged per Codex rollout path. Codex bills as
+// a cumulative delta, so a per-snapshot claim can't stop a GROWN rollout from
+// re-including an earlier run's tokens. Keyed on TOTALS rather than a timestamp
+// because several `token_count` snapshots can share one epoch millisecond — a
+// timestamp boundary would either re-bill them or drop a later one entirely.
 const codexHighWater = new Map();
 
 /** Test-only: forget every claim so suites start from a clean ledger. */
@@ -99,8 +100,15 @@ const CODEX_ID = /codex/i;
  * "Agree" is tested by resolving both through the rate table — that treats
  * `global.anthropic.claude-opus-5[1m]` and `claude-opus-5` as the same model
  * (both resolve to `claude-opus-5`) while catching a genuine substitution.
- * A bucket with no model name at all resolves to null so the caller prices it
- * at the provider default.
+ * A model-less bucket (`UNKNOWN_MODEL`) resolves to null so the caller prices it
+ * at the provider default — EXCEPT when it is the run's only bucket, where the
+ * recorded model is used instead. That case is a deliberate choice, not an
+ * oversight: with one bucket and no name in the transcript, PortOS's launch-time
+ * model is real evidence of what ran, while the provider default is a guess that
+ * is often a different model entirely (a Bedrock Opus run defaults to Sonnet
+ * rates — $3/$15 instead of $5/$25, understating the very cost this feature
+ * exists to measure). With SEVERAL buckets the unnamed one can't be pinned to
+ * the recorded model (some other bucket already holds it), so it stays null.
  */
 function attributedModel(recordedModel, transcriptModel, singleModel) {
   const fromTranscript = transcriptModel === UNKNOWN_MODEL ? null : transcriptModel;
@@ -110,8 +118,13 @@ function attributedModel(recordedModel, transcriptModel, singleModel) {
   // A local model can never be an alias of a hosted one — always trust the
   // transcript there, or free inference gets billed at the launch model's rate.
   if (isFreeModelId(fromTranscript) !== isFreeModelId(recordedModel)) return fromTranscript;
-  const sameFamily = resolveModelRates(null, recordedModel).rateModel
-    === resolveModelRates(null, fromTranscript).rateModel;
+  const recordedRate = resolveModelRates(null, recordedModel).rateModel;
+  const transcriptRate = resolveModelRates(null, fromTranscript).rateModel;
+  // A null rateModel means "nothing in the table recognized this id", and two
+  // unrecognized ids are NOT thereby the same model — treating null === null as
+  // agreement would keep the launch-time id for a genuine substitution between
+  // two unknown models. Require a resolved family to claim they match.
+  const sameFamily = recordedRate != null && recordedRate === transcriptRate;
   return sameFamily ? recordedModel : fromTranscript;
 }
 
@@ -295,25 +308,51 @@ export async function readMeasuredUsage({ workspacePath, startTime, endTime, fam
         // baseline before both runs) re-includes what the first run already
         // billed. Track the highest cumulative boundary billed per file and
         // re-parse from there, so each run charges only the genuinely new part.
-        const billedTo = codexHighWater.get(path);
-        // Start strictly AFTER the billed boundary: the window is inclusive, so
-        // passing `billedTo` itself would make the already-billed snapshot the
-        // window's end state instead of its baseline, and its whole cumulative
-        // total would be charged again.
-        const windowFrom = billedTo != null ? Math.max(from ?? 0, billedTo + 1) : from;
         // Rollouts are filed by date, not cwd — confirm the cwd before folding.
-        const parsed = parseCodexRollout(text, { from: windowFrom, to });
+        const parsed = parseCodexRollout(text, { from, to });
         if (!cwdMatches(parsed.cwd, workspacePath)) continue;
-        if (totalTranscriptTokens(parsed) === 0) continue;
-        const boundary = Date.parse(parsed.lastTs || '');
-        if (Number.isNaN(boundary)) continue;
-        if (billedTo != null && boundary <= billedTo) continue;
-        // Advance the high-water mark before the next `await`, for the same
-        // reason the Claude claim reserves per file: two overlapping runs must
-        // not both read the pre-update boundary.
-        codexHighWater.set(path, boundary);
-        codexReserved.push([path, billedTo]);
-        fold(parsed);
+
+        // Subtract whatever was already billed for this rollout. The high-water
+        // mark is the CUMULATIVE TOTAL charged so far, not a timestamp: several
+        // `token_count` snapshots can share one epoch millisecond, so a
+        // timestamp boundary would either re-bill them or (excluding the whole
+        // millisecond) silently drop a later snapshot's tokens. Subtracting
+        // totals is exact regardless of how the snapshots are stamped.
+        const billed = codexHighWater.get(path);
+        const net = billed
+          ? {
+              ...parsed,
+              messages: Math.max(0, (parsed.messages || 0) - billed.messages),
+              tokensIn: Math.max(0, parsed.tokensIn - billed.tokensIn),
+              tokensOut: Math.max(0, parsed.tokensOut - billed.tokensOut),
+              cacheReadTokens: Math.max(0, parsed.cacheReadTokens - billed.cacheReadTokens),
+              cacheWriteTokens: Math.max(0, parsed.cacheWriteTokens - billed.cacheWriteTokens)
+            }
+          : parsed;
+        if (totalTranscriptTokens(net) === 0) continue;
+
+        // Advance the mark before the next `await`, for the same reason the
+        // Claude claim reserves per file: two overlapping runs must not both
+        // read the pre-update value.
+        codexHighWater.set(path, {
+          messages: (billed?.messages || 0) + (net.messages || 0),
+          tokensIn: (billed?.tokensIn || 0) + net.tokensIn,
+          tokensOut: (billed?.tokensOut || 0) + net.tokensOut,
+          cacheReadTokens: (billed?.cacheReadTokens || 0) + net.cacheReadTokens,
+          cacheWriteTokens: (billed?.cacheWriteTokens || 0) + net.cacheWriteTokens
+        });
+        codexReserved.push([path, billed]);
+        // `byModel` must carry the NET tokens too, or the per-model records the
+        // caller bills from would re-charge the already-billed portion.
+        fold(net.byModel && Object.keys(net.byModel).length === 1
+          ? { ...net, byModel: { [Object.keys(net.byModel)[0]]: {
+              messages: net.messages,
+              tokensIn: net.tokensIn,
+              tokensOut: net.tokensOut,
+              cacheReadTokens: net.cacheReadTokens,
+              cacheWriteTokens: net.cacheWriteTokens
+            } } }
+          : net);
       }
     }
   }

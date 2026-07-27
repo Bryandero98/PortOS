@@ -580,3 +580,126 @@ describe('model attribution when the transcript disagrees', () => {
     expect(record.tokensOut).toBe(50);
   });
 });
+
+describe('Codex high-water mark tracks totals, not timestamps', () => {
+  const runA = {
+    providerId: 'codex-tui', model: 'gpt-5.3-codex', workspacePath: WORKSPACE,
+    startTime: '2026-07-01T10:00:00.000Z', endTime: '2026-07-01T10:10:00.000Z'
+  };
+  const runB = { ...runA, startTime: '2026-07-01T10:02:00.000Z', endTime: '2026-07-01T10:12:00.000Z' };
+
+  const rollout = (snaps) => [
+    JSON.stringify({ timestamp: '2026-07-01T10:00:00.000Z', type: 'session_meta', payload: { id: 'rollout-1', cwd: WORKSPACE, model: 'gpt-5.3-codex' } }),
+    ...snaps.map(([timestamp, input, cached, output]) => JSON.stringify({
+      timestamp, type: 'event_msg',
+      payload: { type: 'token_count', info: { total_token_usage: { input_tokens: input, cached_input_tokens: cached, output_tokens: output, total_tokens: input + output } } }
+    }))
+  ].join('\n');
+
+  // Regression: a timestamp-based boundary either re-billed snapshots sharing a
+  // millisecond or, when excluding the whole millisecond, dropped the later
+  // one's tokens outright. Totals are exact regardless of stamping.
+  it('does not lose a delta when two snapshots share an epoch millisecond', async () => {
+    const SAME_MS = '2026-07-01T10:05:00.000Z';
+    await writeCodexRollout(['2026', '07', '01'], 'rollout-1.jsonl', rollout([[SAME_MS, 1000, 0, 100]]));
+    const first = await readMeasuredUsage({ ...runA, family: 'codex', home });
+    expect(first.tokensOut).toBe(100);
+
+    // The rollout grows, and the new snapshot carries the SAME timestamp.
+    await writeCodexRollout(['2026', '07', '01'], 'rollout-1.jsonl', rollout([
+      [SAME_MS, 1000, 0, 100],
+      [SAME_MS, 3000, 0, 250]
+    ]));
+    const second = await readMeasuredUsage({ ...runB, family: 'codex', home });
+
+    // The additional 150 must still be billed — not dropped, not doubled.
+    expect(second?.tokensOut).toBe(150);
+    expect(first.tokensOut + second.tokensOut).toBe(250);
+  });
+
+  it('reports nothing when an unchanged rollout is re-read', async () => {
+    await writeCodexRollout(['2026', '07', '01'], 'rollout-1.jsonl', rollout([
+      ['2026-07-01T10:05:00.000Z', 1000, 0, 100]
+    ]));
+    const first = await readMeasuredUsage({ ...runA, family: 'codex', home });
+    expect(first.tokensOut).toBe(100);
+    expect(await readMeasuredUsage({ ...runB, family: 'codex', home })).toBeNull();
+  });
+
+  it('nets the per-model bucket too, so records never re-charge the billed part', async () => {
+    await writeCodexRollout(['2026', '07', '01'], 'rollout-1.jsonl', rollout([
+      ['2026-07-01T10:05:00.000Z', 1000, 0, 100]
+    ]));
+    await readMeasuredUsage({ ...runA, family: 'codex', home });
+
+    await writeCodexRollout(['2026', '07', '01'], 'rollout-1.jsonl', rollout([
+      ['2026-07-01T10:05:00.000Z', 1000, 0, 100],
+      ['2026-07-01T10:11:00.000Z', 3000, 0, 250]
+    ]));
+    const second = await readMeasuredUsage({ ...runB, family: 'codex', home });
+    // The model bucket must equal the NET, matching the aggregate.
+    expect(second.byModel['gpt-5.3-codex'].tokensOut).toBe(second.tokensOut);
+    expect(second.byModel['gpt-5.3-codex'].tokensOut).toBe(150);
+  });
+});
+
+describe('attributedModel with unrecognized ids', () => {
+  const run = {
+    providerId: 'claude-code-tui', workspacePath: WORKSPACE,
+    startTime: '2026-07-01T10:00:00.000Z', endTime: '2026-07-01T10:10:00.000Z'
+  };
+
+  // Two unknown ids both resolve to rateModel null. Treating null === null as
+  // "same family" kept the launch id for a real substitution.
+  it('defers to the transcript when neither id resolves to a known family', async () => {
+    await writeClaudeSession('a.jsonl', [
+      claudeAssistant({ id: 'm1', timestamp: '2026-07-01T10:05:00.000Z', model: 'totally-other-beta' })
+    ]);
+    const [record] = await reconcileRunUsage(
+      { ...run, model: 'some-preview-alpha' }, { tokensIn: 1, tokensOut: 1 }, { home }
+    );
+    expect(record.model).toBe('totally-other-beta');
+  });
+});
+
+describe('model-less bucket attribution (deliberate single-bucket choice)', () => {
+  const run = {
+    providerId: 'claude-code-tui-bedrock',
+    model: 'global.anthropic.claude-opus-5[1m]',
+    workspacePath: WORKSPACE,
+    startTime: '2026-07-01T10:00:00.000Z',
+    endTime: '2026-07-01T10:10:00.000Z'
+  };
+  const unnamed = (id, timestamp, output) => {
+    const line = JSON.parse(claudeAssistant({ id, timestamp, output, cacheRead: 0, cacheWrite: 0, input: 1 }));
+    delete line.message.model;
+    return JSON.stringify(line);
+  };
+
+  // With SEVERAL buckets the unnamed one can't be pinned to the recorded model
+  // (a named bucket already holds it), so it prices at the provider default.
+  it('leaves the unnamed bucket unattributed when another bucket is named', async () => {
+    await writeClaudeSession('a.jsonl', [
+      claudeAssistant({ id: 'named', timestamp: '2026-07-01T10:05:00.000Z', model: 'claude-opus-5', output: 100, cacheRead: 0, cacheWrite: 0, input: 1 }),
+      unnamed('anon', '2026-07-01T10:06:00.000Z', 500)
+    ]);
+
+    const records = await reconcileRunUsage(run, { tokensIn: 1, tokensOut: 1 }, { home });
+    const models = records.map((r) => r.model);
+    expect(models).toContain('claude-opus-5');
+    expect(models).toContain(null);
+    // Critically: nothing is dropped — the unnamed message's tokens are recorded.
+    expect(records.reduce((s, r) => s + r.tokensOut, 0)).toBe(600);
+  });
+
+  // With ONE bucket, PortOS's launch-time model is better evidence than the
+  // provider default (which for a Bedrock Opus run is Sonnet — $3/$15 vs $5/$25,
+  // understating the cost this feature exists to measure).
+  it('uses the recorded model when the unnamed bucket is the only one', async () => {
+    await writeClaudeSession('a.jsonl', [unnamed('anon', '2026-07-01T10:05:00.000Z', 500)]);
+    const records = await reconcileRunUsage(run, { tokensIn: 1, tokensOut: 1 }, { home });
+    expect(records).toHaveLength(1);
+    expect(records[0].model).toBe('global.anthropic.claude-opus-5[1m]');
+    expect(records[0].tokensOut).toBe(500);
+  });
+});
