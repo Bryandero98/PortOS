@@ -454,6 +454,14 @@ describe('sprites routes', () => {
     records.getRecordWithAssets.mockResolvedValueOnce({
       record: { id: 'pioneer', kind: 'character' }, assets: [],
     });
+    atlas.getAtlasState.mockResolvedValueOnce({
+      current: {
+        geometry: {
+          columns: ['idle', 'walk-00', 'walk-01', 'walk-02', 'scanner'],
+        },
+      },
+      publications: [],
+    });
     const r = await request(app).get('/api/sprites/pioneer');
     expect(r.body.walk).toEqual({ runs: [], selection: null, walkSet: null });
     expect(walk.getWalkState).toHaveBeenCalledWith('pioneer');
@@ -463,6 +471,7 @@ describe('sprites routes', () => {
       contractFrameCountField: 'walkFrameCount',
       standaloneContract: true,
     });
+    expect(r.body.atlas.current.geometry.walkFrameCount).toBe(3);
     // A character carries scanner but NOT ambient, so only scanner is keyed —
     // and each state passes through with the `definition` (registry row) the
     // service resolved, so the client renders the track's label/bounds from data
