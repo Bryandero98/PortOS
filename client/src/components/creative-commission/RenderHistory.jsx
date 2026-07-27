@@ -80,22 +80,20 @@ export default function RenderHistory({ runs, feedback, projectsById, projectsLo
                 Constraining width instead lets aspect-ratio derive a height that
                 already fits, matching previewMaxWidthClass's documented approach
                 in lib/creativeDirectorPreview.js. */}
-            {project ? (
-              <div className="max-w-[220px] mx-auto">
+            <div className="max-w-[220px] mx-auto">
+              {project ? (
                 <ProjectPreview project={project} to={`/creative-director/${encodeURIComponent(r.projectId)}`} />
-              </div>
-            ) : (
-              // `project` is null in this branch, so the placeholder falls back to
-              // the default 16:9 box. Distinguish the transient load window (project
-              // list still fetching) from a genuinely pruned/missing render — a real
-              // render must not flash "unavailable" before the fetch resolves.
-              <div className="max-w-[220px] mx-auto">
+              ) : (
+                // `project` is null in this branch, so the placeholder falls back to
+                // the default 16:9 box. Distinguish the transient load window (project
+                // list still fetching) from a genuinely pruned/missing render — a real
+                // render must not flash "unavailable" before the fetch resolves.
                 <div className={`${previewAspectClass()} bg-port-bg flex flex-col items-center justify-center gap-1 text-gray-600 text-xs`}>
                   <Film className="w-4 h-4 opacity-50" aria-hidden="true" />
                   <span>{r.projectId ? (projectsLoading ? 'loading…' : 'render unavailable') : 'no render'}</span>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
 
             <div className="p-3 flex flex-col gap-2 flex-1">
               <div className="flex items-center justify-between gap-2 text-xs">
