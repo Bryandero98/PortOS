@@ -145,7 +145,7 @@ export const approveSpriteWalk = (id, body, options = {}) => request(`/sprites/$
 
 // Approve one packaged candidate for a non-walk track. Returns that track's
 // updated `{ track, bounds, selection, set, runs }` state.
-export const approveSpriteTrack = (id, trackId, body, options = {}) => request(
+export const approveSpriteTrack = (id, trackId, body = {}, options = {}) => request(
   `/sprites/${encodeURIComponent(id)}/tracks/${encodeURIComponent(trackId)}/approve`,
   { method: 'POST', body: JSON.stringify(body), ...options },
 );

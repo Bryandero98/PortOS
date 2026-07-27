@@ -1078,6 +1078,20 @@ export const spriteRuntimeContractSchema = z.object({
   cellSize: z.number().int().min(16).max(1024).nullable().optional(),
   columnCount: z.number().int().min(1).max(256).nullable().optional(),
 }).superRefine((value, ctx) => {
+  // An empty set means no registered track is a publishable baseline. The boot
+  // guard in `assertAnimationTrackRows` makes that unreachable today (it
+  // requires exactly one per record kind), but this schema must not silently
+  // become "any contract passes" if that ever changes — with `[0]` undefined,
+  // `path: [undefined]` and an empty message would report a rejection nothing
+  // could act on. Refuse the whole contract with a message naming the cause.
+  if (!SPRITE_STANDALONE_CONTRACT_FIELDS.length) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [],
+      message: 'No animation track declares itself a publishable baseline (standaloneContract) — a runtime contract cannot be validated',
+    });
+    return;
+  }
   if (SPRITE_STANDALONE_CONTRACT_FIELDS.every((field) => value[field] === undefined)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,

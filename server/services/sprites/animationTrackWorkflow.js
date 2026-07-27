@@ -6,12 +6,15 @@
  * source reference → prepare a chroma matte → start ONE user-requested Grok
  * image-to-video render → package it deterministically → review → approve →
  * freeze the set. Nothing about that sequence is scanner-shaped or ambient
- * shaped; they differed only in three registry facts (#3136 promoted each to a
- * field on the track row):
+ * shaped; they differed only in facts the track registry now carries:
  *
- *   - `sourceReference`  which locked image seeds the render (`anchor` per
- *                        facing, or the one `main`)
- *   - `directional`      how many facings must be approved before the set freezes
+ *   - `directional`      how many facings the track is authored across (and so
+ *                        how many must be approved before the set freezes) AND —
+ *                        derived from it via `sourceReferenceFor` — which locked
+ *                        image seeds the render: this facing's own anchor, or the
+ *                        one main reference. Derived rather than declared because
+ *                        only one pairing can work; a row that claimed the other
+ *                        would render one facing's clip for every row.
  *   - `selectionKind` / `setKind` / `finalErrorCode`
  *                        the on-disk discriminators and the 409 code
  *
@@ -21,10 +24,6 @@
  * carries reprocess, loop trims, per-direction reopen, source-frame extraction
  * and set-level targets that no other track has, and folding those in would make
  * this module the union of every track's features rather than their intersection.
- *
- * Note `sourceReference` is DERIVED (`sourceReferenceFor`) rather than a row
- * field: only one pairing with `directional` can work, so declaring it would let
- * a row claim a combination that renders the same clip for every facing.
  *
  * **On-disk compatibility is exact, not approximate.** Every path, `kind`
  * string, run field, error code and message this writes is byte-identical to
@@ -74,13 +73,6 @@ const RUN_RECORD_NAME = 'animation-run.json';
  * `trackDirections`'s own header says it exists to prevent.
  */
 export const trackAuthoringDirections = (trackId) => trackDirections(trackId);
-
-/**
- * The one facing a non-directional track is authored at — its own single row,
- * read off the same slice rather than restated as `'south'`, so the authoring
- * side and the compiled grid can never disagree about which row that is.
- */
-const soleDirectionOf = (trackId) => trackAuthoringDirections(trackId)[0];
 
 // The on-disk layout, per track. `<track>/` subdirectory and `-<track>-` infix,
 // which is exactly what scanner.js and ambient.js each spelled for themselves.
@@ -181,6 +173,31 @@ function trackSourceFor(row, manifest, direction) {
   };
 }
 
+/**
+ * The facing a request is for, resolved against the track's OWN facing list.
+ *
+ * A non-directional track occupies exactly its single row, so its facing is
+ * derived from the registry rather than accepted from the request — no
+ * user-supplied direction can drift from what the compiler will later expect.
+ *
+ * A directional track's facing must be one the TRACK has, not merely one the
+ * sprite grid has: the route's Zod enum accepts all eight facings, but
+ * `trackAuthoringDirections` is a per-track slice, so a future track with fewer
+ * facings would otherwise accept a render for a row it doesn't occupy — which
+ * would author a set the compiler refuses, after the render was already paid for.
+ */
+function resolveTrackDirection(row, requested) {
+  const authored = trackAuthoringDirections(row.id);
+  if (!row.directional) return authored[0];
+  if (!authored.includes(requested)) {
+    throw new ServerError(
+      `The ${row.id} track has no '${String(requested)}' facing — it is authored across: ${authored.join(', ')}`,
+      { status: 400, code: 'TRACK_DIRECTION_INVALID' },
+    );
+  }
+  return requested;
+}
+
 /** The 409 for a render/approval whose source reference isn't frozen yet. */
 const notLockedError = (source, row, verb) => new ServerError(
   `Lock the ${source.label} before ${verb} its ${row.label.toLowerCase()}`,
@@ -197,10 +214,7 @@ async function startTrackGenerationImpl(trackId, recordId, body) {
     requireTrack(recordId, row.id), loadManifest(recordId), loadSet(row.id, recordId), trackRuns(row.id, recordId),
   ]);
   if (existingSet) throw setFinalError(row);
-  // A non-directional track occupies exactly row 0, so its facing is derived
-  // from the registry rather than accepted from the request — no user-supplied
-  // direction can drift from what `trackDirections()` will later compile.
-  const direction = row.directional ? body.direction : soleDirectionOf(row.id);
+  const direction = resolveTrackDirection(row, body.direction);
   const source = trackSourceFor(row, reference, direction);
   if (!source.locked) throw notLockedError(source, row, 'generating');
   const chromaKey = resolveChromaKey({ manifest: reference, record });
@@ -371,7 +385,7 @@ async function approveTrackRunImpl(trackId, recordId, { direction: requested, ru
   const row = getAnimationTrack(trackId);
   await requireTrack(recordId, row.id);
   if (await loadSet(row.id, recordId)) throw setFinalError(row);
-  const direction = row.directional ? requested : soleDirectionOf(row.id);
+  const direction = resolveTrackDirection(row, requested);
   const label = row.label.toLowerCase();
   const run = await loadRun(recordId, runId);
   if (!run || run.track !== row.id) throw new ServerError(`Unknown ${label} run: ${runId}`, { status: 404, code: 'RUN_NOT_FOUND' });

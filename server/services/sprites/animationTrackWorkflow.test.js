@@ -259,6 +259,28 @@ describe.each(TRACKS)('the generic workflow drives the $id track', (track) => {
     await expect(approveTrackRun(track.id, id, { ...track.body, runId: 'no-such-run' }))
       .rejects.toMatchObject({ status: 404, code: 'RUN_NOT_FOUND' });
   });
+
+  it('resolves the facing against the TRACK\'s own list, not the grid\'s', async () => {
+    const id = await track.seed(newId());
+    if (row().directional) {
+      // The route's Zod enum accepts all eight grid facings, but a track is
+      // authored across its OWN slice — so a facing outside it must be refused
+      // here rather than authoring a set the compiler will later refuse, after
+      // the render was already paid for.
+      await expect(startTrackGeneration(track.id, id, { ...track.body, direction: 'nowhere' }))
+        .rejects.toMatchObject({ status: 400, code: 'TRACK_DIRECTION_INVALID' });
+      await expect(startTrackGeneration(track.id, id, { ...track.body, direction: undefined }))
+        .rejects.toMatchObject({ status: 400, code: 'TRACK_DIRECTION_INVALID' });
+      expect(executeTuiRun).not.toHaveBeenCalled();
+    } else {
+      // A single-row track derives its facing, so a bogus request value is
+      // ignored rather than trusted — it can't drift from what the compiler
+      // will expect.
+      const { runId } = await startTrackGeneration(track.id, id, { ...track.body, direction: 'nowhere' });
+      const { runs } = await getTrackState(track.id, id);
+      expect(runs.find((r) => r.id === runId).direction).toBe(track.expectedDirection);
+    }
+  });
 });
 
 describe('registry-derived authoring shape (#3136)', () => {
