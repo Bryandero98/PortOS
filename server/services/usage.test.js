@@ -19,8 +19,8 @@ tryReadFile: vi.fn().mockResolvedValue(null),
   readJSONFile: vi.fn()
 }));
 
-import { readJSONFile } from '../lib/fileUtils.js';
-import { loadUsage, getUsageSummary, getUsage, recordSession, recordMessages, buildUsageReport, rollupOldDailyActivity } from './usage.js';
+import { atomicWrite, readJSONFile } from '../lib/fileUtils.js';
+import { loadUsage, getUsageSummary, getUsage, recordSession, recordMessages, recordTokens, buildUsageReport, rollupOldDailyActivity } from './usage.js';
 
 // Helper: produce a date string N days ago (relative to today)
 function daysAgo(n) {
@@ -208,13 +208,62 @@ describe('usage.js — streak calculations', () => {
       expect(typeof today.label).toBe('string');
     });
 
-    it('estimatedCost keeps its all-time legacy-blended semantics ($3/$15 per 1M)', async () => {
-      readJSONFile.mockResolvedValueOnce(makeUsage({}, {
-        totalTokens: { input: 1_000_000, output: 500_000 }
+    it('estimatedCost agrees with the unbounded report total', async () => {
+      readJSONFile.mockResolvedValueOnce(makeUsage({
+        '2025-05-01': { sessions: 1, messages: 1, tokens: 500_000 },
+        '2025-06-01': {
+          sessions: 1,
+          messages: 1,
+          tokens: 1_000_000,
+          byProvider: {
+            codex: {
+              name: 'Codex',
+              sessions: 1,
+              messages: 1,
+              tokensIn: 1_000_000,
+              tokensOut: 1_000_000,
+              byModel: {}
+            }
+          }
+        }
       }));
       await loadUsage();
       const summary = getUsageSummary();
-      expect(summary.estimatedCost).toBeCloseTo(10.5); // 1M×$3 + 0.5M×$15
+      expect(summary.estimatedCost).toBe(summary.report.totals.estimatedCost);
+      expect(summary.estimatedCost).toBeCloseTo(23.25);
+    });
+
+    it('keeps estimatedCost all-time when the visible report is range-filtered', async () => {
+      readJSONFile.mockResolvedValueOnce(makeUsage({
+        '2025-05-01': { sessions: 1, messages: 1, tokens: 1_000_000 },
+        '2025-06-01': {
+          sessions: 1,
+          messages: 1,
+          tokens: 500_000,
+          byProvider: {
+            codex: {
+              name: 'Codex',
+              sessions: 1,
+              messages: 1,
+              tokensIn: 0,
+              tokensOut: 500_000,
+              byModel: {
+                'gpt-5.3-codex': {
+                  sessions: 1,
+                  messages: 1,
+                  tokensIn: 0,
+                  tokensOut: 500_000
+                }
+              }
+            }
+          }
+        }
+      }));
+      await loadUsage();
+
+      const summary = getUsageSummary({ from: '2025-06-01', to: '2025-06-01' });
+      expect(summary.report.totals.estimatedCost).toBe(7);
+      expect(summary.estimatedCost).toBe(22);
     });
   });
 
@@ -239,6 +288,98 @@ describe('usage.js — streak calculations', () => {
       expect(day.byProvider['claude-code'].byModel.opus.sessions).toBe(1);
     });
 
+    it('attributes missing provider ids to a named unknown bucket', async () => {
+      readJSONFile.mockResolvedValueOnce(makeUsage({}));
+      await loadUsage();
+      await recordSession(undefined, undefined, null);
+      await recordMessages(undefined, null, 1, 40, 10);
+
+      const usage = getUsage();
+      expect(usage.byProvider.undefined).toBeUndefined();
+      expect(usage.byProvider.unknown).toMatchObject({
+        name: 'Unknown provider',
+        sessions: 1,
+        messages: 1,
+        tokens: 40
+      });
+      const day = usage.dailyActivity[daysAgo(0)];
+      expect(day.byProvider.unknown).toMatchObject({
+        name: 'Unknown provider',
+        sessions: 1,
+        messages: 1,
+        tokensIn: 10,
+        tokensOut: 40
+      });
+    });
+
+    it('normalizes a persisted string "undefined" provider in reports', () => {
+      const report = buildUsageReport({
+        [daysAgo(0)]: {
+          sessions: 1,
+          messages: 1,
+          tokens: 20,
+          byProvider: {
+            undefined: {
+              sessions: 1,
+              messages: 1,
+              tokensIn: 10,
+              tokensOut: 20,
+              byModel: {}
+            }
+          }
+        }
+      });
+      expect(report.providers).toEqual([
+        expect.objectContaining({
+          id: 'unknown',
+          name: 'Unknown provider',
+          sessions: 1
+        })
+      ]);
+    });
+
+    it('normalizes persisted undefined provider buckets while loading', async () => {
+      readJSONFile.mockResolvedValueOnce(makeUsage({
+        [daysAgo(0)]: {
+          sessions: 1,
+          messages: 1,
+          tokens: 20,
+          byProvider: {
+            undefined: { sessions: 1, messages: 1, tokensIn: 10, tokensOut: 20, byModel: {} }
+          }
+        }
+      }, {
+        byProvider: {
+          undefined: { sessions: 1, messages: 1, tokens: 20 }
+        }
+      }));
+
+      await loadUsage();
+
+      expect(getUsage().byProvider.undefined).toBeUndefined();
+      expect(getUsage().byProvider.unknown.name).toBe('Unknown provider');
+      expect(getUsage().dailyActivity[daysAgo(0)].byProvider.undefined).toBeUndefined();
+      expect(atomicWrite).toHaveBeenCalled();
+    });
+
+    it('deep-merges model usage while normalizing undefined provider buckets', async () => {
+      readJSONFile.mockResolvedValueOnce(makeUsage({
+        [daysAgo(0)]: {
+          byProvider: {
+            unknown: { byModel: { current: { sessions: 2, tokensOut: 20 } } },
+            undefined: { byModel: { legacy: { sessions: 1, tokensOut: 10 } } }
+          }
+        }
+      }));
+
+      await loadUsage();
+
+      expect(getUsage().dailyActivity[daysAgo(0)].byProvider.unknown.byModel).toEqual({
+        current: { sessions: 2, tokensOut: 20 },
+        legacy: { sessions: 1, tokensOut: 10 }
+      });
+    });
+
     it('recordMessages attributes input and output tokens to provider, model, and day', async () => {
       readJSONFile.mockResolvedValueOnce(makeUsage({}));
       await loadUsage();
@@ -253,6 +394,22 @@ describe('usage.js — streak calculations', () => {
       expect(usage.byModel.opus).toMatchObject({ tokens: 400 });
       const modelDay = usage.dailyActivity[daysAgo(0)].byProvider['claude-code'].byModel.opus;
       expect(modelDay).toMatchObject({ messages: 1, tokensIn: 1200, tokensOut: 400 });
+    });
+
+    it('attributes directly recorded tokens to reportable unknown usage', async () => {
+      readJSONFile.mockResolvedValueOnce(makeUsage({}));
+      await loadUsage();
+      await recordTokens(1_000_000, 500_000);
+
+      const report = getUsageSummary().report;
+      expect(report.providers).toEqual([
+        expect.objectContaining({
+          id: 'unknown',
+          tokensIn: 1_000_000,
+          tokensOut: 500_000
+        })
+      ]);
+      expect(report.totals.estimatedCost).toBeGreaterThan(0);
     });
 
     it('recordMessages accumulates onto legacy all-time entries without reshaping them', async () => {
@@ -331,16 +488,115 @@ describe('usage.js — streak calculations', () => {
       expect(report.totals.estimatedCost).toBe(0);
     });
 
-    it('reports breakdownSince as the earliest day with a provider split, ignoring legacy days', () => {
+    it('includes legacy days in a fallback-priced row without changing breakdownSince', () => {
       const daily = {
-        '2025-05-01': { sessions: 3, messages: 3, tokens: 100 }, // legacy — no byProvider
+        '2025-05-01': { sessions: 3, messages: 3, tokens: 1_000_000 }, // legacy — no byProvider
         '2025-06-03': nestedDay('codex', 'Codex', 'gpt-5.3-codex', { tokensOut: 10 }),
         '2025-06-01': nestedDay('codex', 'Codex', 'gpt-5.3-codex', { tokensOut: 10 })
       };
       const report = buildUsageReport(daily, {});
       expect(report.breakdownSince).toBe('2025-06-01');
-      // legacy day contributes nothing to the breakdown
-      expect(report.totals.sessions).toBe(2);
+      expect(report.totals.sessions).toBe(5);
+      expect(report.totals.tokensOut).toBe(1_000_020);
+      expect(report.providers.find((provider) => provider.id === 'legacy')).toMatchObject({
+        name: 'Pre-breakdown (legacy)',
+        sessions: 3,
+        tokensOut: 1_000_000,
+        estimatedCost: 15,
+        rateMatch: 'fallback'
+      });
+    });
+
+    it('reports the actual breakdown start even when the visible range begins later', () => {
+      const report = buildUsageReport({
+        '2025-06-01': nestedDay('codex', 'Codex', 'gpt-5.3-codex'),
+        '2025-07-01': nestedDay('codex', 'Codex', 'gpt-5.3-codex')
+      }, {
+        from: '2025-07-01',
+        to: '2025-07-31'
+      });
+
+      expect(report.breakdownSince).toBe('2025-06-01');
+      expect(report.totals.sessions).toBe(1);
+    });
+
+    it('folds legacy monthly buckets into the requested range', () => {
+      const report = buildUsageReport({}, {
+        from: '2024-05-01',
+        to: '2024-07-31',
+        monthlyActivity: {
+          '2024-01': { sessions: 1, messages: 1, tokens: 10 },
+          '2024-06': { sessions: 2, messages: 3, tokens: 500 }
+        }
+      });
+      expect(report.providers).toEqual([
+        expect.objectContaining({
+          id: 'legacy',
+          sessions: 2,
+          messages: 3,
+          tokensOut: 500
+        })
+      ]);
+    });
+
+    it('keeps flat legacy residuals in a mixed-shape monthly bucket', () => {
+      const report = buildUsageReport({}, {
+        monthlyActivity: {
+          '2025-06': {
+            sessions: 3,
+            messages: 3,
+            tokens: 300,
+            byProvider: {
+              codex: {
+                sessions: 1,
+                messages: 1,
+                tokensIn: 10,
+                tokensOut: 100,
+                byModel: {}
+              }
+            }
+          }
+        }
+      });
+
+      expect(report.providers.find((provider) => provider.id === 'codex')).toMatchObject({
+        sessions: 1,
+        tokensOut: 100
+      });
+      expect(report.providers.find((provider) => provider.id === 'legacy')).toMatchObject({
+        sessions: 2,
+        messages: 2,
+        tokensOut: 200
+      });
+      expect(report.totals).toMatchObject({
+        sessions: 3,
+        messages: 3,
+        tokensOut: 300
+      });
+    });
+
+    it('allocates historical direct-token residuals without double-counting buckets', () => {
+      const report = buildUsageReport({
+        '2025-06-01': {
+          tokens: 500_000,
+          byProvider: {
+            codex: {
+              tokensIn: 100_000,
+              tokensOut: 500_000,
+              byModel: {}
+            }
+          }
+        }
+      }, {
+        totalTokens: { input: 1_000_000, output: 1_500_000 }
+      });
+
+      expect(report.totals.tokensIn).toBe(1_000_000);
+      expect(report.totals.tokensOut).toBe(1_500_000);
+      expect(report.providers.find((provider) => provider.id === 'legacy')).toMatchObject({
+        tokensIn: 900_000,
+        tokensOut: 1_000_000
+      });
     });
 
     it('prices provider-level tokens missing a model split at the provider default', () => {

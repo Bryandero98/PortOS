@@ -13,6 +13,36 @@ const ROLLUP_RETENTION_DAYS = 400;
 const DAY_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 let usageData = null;
+const UNKNOWN_PROVIDER_ID = 'unknown';
+const UNKNOWN_PROVIDER_NAME = 'Unknown provider';
+const LEGACY_PROVIDER_ID = 'legacy';
+const LEGACY_PROVIDER_NAME = 'Pre-breakdown (legacy)';
+
+const normalizeProvider = (providerId, providerName = null) => {
+  const id = typeof providerId === 'string' && providerId.trim() && providerId.trim() !== 'undefined'
+    ? providerId.trim()
+    : UNKNOWN_PROVIDER_ID;
+  return {
+    id,
+    name: id === UNKNOWN_PROVIDER_ID
+      ? UNKNOWN_PROVIDER_NAME
+      : (providerName || id)
+  };
+};
+
+const normalizeUndefinedProviderBucket = (byProvider) => {
+  if (!byProvider || typeof byProvider !== 'object' || !Object.hasOwn(byProvider, 'undefined')) {
+    return false;
+  }
+  const stale = byProvider.undefined || {};
+  const current = byProvider[UNKNOWN_PROVIDER_ID] || {};
+  const merged = {};
+  deepSumInto(merged, stale);
+  deepSumInto(merged, current);
+  byProvider[UNKNOWN_PROVIDER_ID] = { ...merged, name: UNKNOWN_PROVIDER_NAME };
+  delete byProvider.undefined;
+  return true;
+};
 
 /**
  * Initialize usage data structure
@@ -107,9 +137,17 @@ export async function loadUsage() {
   if (!usageData.monthlyActivity || typeof usageData.monthlyActivity !== 'object') {
     usageData.monthlyActivity = {};
   }
+  let normalizedProviders = normalizeUndefinedProviderBucket(usageData.byProvider);
+  for (const bucket of Object.values(usageData.dailyActivity)) {
+    normalizedProviders = normalizeUndefinedProviderBucket(bucket?.byProvider) || normalizedProviders;
+  }
+  for (const bucket of Object.values(usageData.monthlyActivity)) {
+    normalizedProviders = normalizeUndefinedProviderBucket(bucket?.byProvider) || normalizedProviders;
+  }
   const rolledUp = rollupOldDailyActivity(usageData.dailyActivity, usageData.monthlyActivity);
-  if (rolledUp) {
-    console.log(`📊 Rolled up old daily usage into ${Object.keys(usageData.monthlyActivity).length} monthly buckets`);
+  if (rolledUp || normalizedProviders) {
+    if (normalizedProviders) console.log('📊 Normalized undefined usage providers to unknown');
+    if (rolledUp) console.log(`📊 Rolled up old daily usage into ${Object.keys(usageData.monthlyActivity).length} monthly buckets`);
     await saveUsage();
   }
 
@@ -134,15 +172,16 @@ export function getUsage() {
 
 /**
  * Per-day per-provider per-model bucket inside dailyActivity — the additive
- * shape that makes arbitrary-period cost breakdowns possible. Legacy day
- * buckets (pre-upgrade) lack `byProvider`; breakdown reports are forward-only
- * from the first day that has it (see `breakdownSince`).
+ * shape that makes arbitrary-period cost breakdowns possible. Missing provider
+ * ids are attributed to a named `unknown` bucket rather than becoming the
+ * JavaScript property string "undefined".
  */
 function providerDayBucket(day, providerId, providerName) {
+  const provider = normalizeProvider(providerId, providerName);
   if (!day.byProvider) day.byProvider = {};
-  if (!day.byProvider[providerId]) {
-    day.byProvider[providerId] = {
-      name: providerName || providerId,
+  if (!day.byProvider[provider.id]) {
+    day.byProvider[provider.id] = {
+      name: provider.name,
       sessions: 0,
       messages: 0,
       tokensIn: 0,
@@ -150,7 +189,7 @@ function providerDayBucket(day, providerId, providerName) {
       byModel: {}
     };
   }
-  return day.byProvider[providerId];
+  return day.byProvider[provider.id];
 }
 
 function modelDayBucket(providerDay, model) {
@@ -173,14 +212,15 @@ function todayBucket() {
  */
 export async function recordSession(providerId, providerName, model) {
   if (!usageData) await loadUsage();
+  const provider = normalizeProvider(providerId, providerName);
 
   usageData.totalSessions++;
 
   // Track by provider
-  if (!usageData.byProvider[providerId]) {
-    usageData.byProvider[providerId] = { name: providerName, sessions: 0, messages: 0, tokens: 0 };
+  if (!usageData.byProvider[provider.id]) {
+    usageData.byProvider[provider.id] = { name: provider.name, sessions: 0, messages: 0, tokens: 0 };
   }
-  usageData.byProvider[providerId].sessions++;
+  usageData.byProvider[provider.id].sessions++;
 
   // Track by model
   if (model) {
@@ -193,7 +233,7 @@ export async function recordSession(providerId, providerName, model) {
   // Track daily activity (with the per-provider/per-model split)
   const day = todayBucket();
   day.sessions++;
-  const providerDay = providerDayBucket(day, providerId, providerName);
+  const providerDay = providerDayBucket(day, provider.id, provider.name);
   providerDay.sessions++;
   if (model) modelDayBucket(providerDay, model).sessions++;
 
@@ -212,6 +252,7 @@ export async function recordSession(providerId, providerName, model) {
  */
 export async function recordMessages(providerId, model, messageCount, outputTokens = 0, inputTokens = 0) {
   if (!usageData) await loadUsage();
+  const provider = normalizeProvider(providerId);
 
   usageData.totalMessages += messageCount;
 
@@ -225,10 +266,11 @@ export async function recordMessages(providerId, model, messageCount, outputToke
   // Track by provider / by model (the legacy all-time entries keep their
   // output-only `tokens` field for old readers — the in/out split lives only
   // in the day buckets, which is what the cost report aggregates)
-  if (usageData.byProvider[providerId]) {
-    usageData.byProvider[providerId].messages += messageCount;
-    usageData.byProvider[providerId].tokens = (usageData.byProvider[providerId].tokens || 0) + outputTokens;
+  if (!usageData.byProvider[provider.id]) {
+    usageData.byProvider[provider.id] = { name: provider.name, sessions: 0, messages: 0, tokens: 0 };
   }
+  usageData.byProvider[provider.id].messages += messageCount;
+  usageData.byProvider[provider.id].tokens = (usageData.byProvider[provider.id].tokens || 0) + outputTokens;
   if (model && usageData.byModel[model]) {
     usageData.byModel[model].messages += messageCount;
     usageData.byModel[model].tokens = (usageData.byModel[model].tokens || 0) + outputTokens;
@@ -244,8 +286,8 @@ export async function recordMessages(providerId, model, messageCount, outputToke
   const day = todayBucket();
   day.messages = (day.messages || 0) + messageCount;
   day.tokens = (day.tokens || 0) + outputTokens;
-  const providerName = usageData.byProvider[providerId]?.name;
-  const providerDay = providerDayBucket(day, providerId, providerName);
+  const providerName = usageData.byProvider[provider.id]?.name;
+  const providerDay = providerDayBucket(day, provider.id, providerName);
   bumpDayBucket(providerDay);
   if (model) bumpDayBucket(modelDayBucket(providerDay, model));
 
@@ -268,6 +310,11 @@ export async function recordTokens(inputTokens, outputTokens) {
   if (!usageData) await loadUsage();
   usageData.totalTokens.input += inputTokens;
   usageData.totalTokens.output += outputTokens;
+  const day = todayBucket();
+  day.tokens = (day.tokens || 0) + outputTokens;
+  const providerDay = providerDayBucket(day, UNKNOWN_PROVIDER_ID, UNKNOWN_PROVIDER_NAME);
+  providerDay.tokensIn += inputTokens;
+  providerDay.tokensOut += outputTokens;
   await saveUsage();
 }
 
@@ -342,11 +389,6 @@ function findLongestStreak(dailyActivity) {
 
 const roundCents = (n) => Math.round(n * 100) / 100;
 
-// The historical flat blended rate the all-time `estimatedCost` field has
-// always used — kept so that field's meaning doesn't silently change for
-// existing consumers. The accurate per-model number is `report.totals`.
-const LEGACY_BLENDED_RATES = { inputPer1M: 3.0, outputPer1M: 15.0 };
-
 /**
  * Aggregate the per-day per-provider per-model buckets over a date range into
  * a cost report. `from`/`to` are inclusive `YYYY-MM-DD` strings (null = open
@@ -362,22 +404,37 @@ const LEGACY_BLENDED_RATES = { inputPer1M: 3.0, outputPer1M: 15.0 };
  * is whole-month-granular: it is included whenever its month overlaps
  * `[from, to]` (rolled-up months are far older than any day-precise range).
  */
-export function buildUsageReport(dailyActivity, { from = null, to = null, providers = [], monthlyActivity = null } = {}) {
+export function buildUsageReport(dailyActivity, { from = null, to = null, providers = [], monthlyActivity = null, totalTokens = null } = {}) {
   const configById = new Map((providers || []).map((p) => [p.id, p]));
   const agg = new Map(); // providerId -> { name, sessions, messages, tokensIn, tokensOut, byModel: Map }
   let breakdownSince = null;
 
-  // Fold one bucket's per-provider/per-model splits into the running aggregate.
+  const ensureAggregate = (pid, name) => {
+    if (!agg.has(pid)) {
+      agg.set(pid, { name, sessions: 0, messages: 0, tokensIn: 0, tokensOut: 0, byModel: new Map() });
+    }
+    return agg.get(pid);
+  };
+
+  // Fold a bucket's provider/model splits and any residual flat legacy counts.
+  // Monthly rollups can contain both shapes when their source month straddled
+  // the provider-breakdown rollout.
   const foldBucket = (bucket) => {
-    for (const [pid, pDay] of Object.entries(bucket.byProvider)) {
-      if (!agg.has(pid)) {
-        agg.set(pid, { name: pDay.name || pid, sessions: 0, messages: 0, tokensIn: 0, tokensOut: 0, byModel: new Map() });
-      }
-      const p = agg.get(pid);
+    let representedSessions = 0;
+    let representedMessages = 0;
+    let representedTokensIn = 0;
+    let representedTokensOut = 0;
+    for (const [pid, pDay] of Object.entries(bucket.byProvider || {})) {
+      const normalized = normalizeProvider(pid, pDay.name);
+      const p = ensureAggregate(normalized.id, normalized.name);
       p.sessions += pDay.sessions || 0;
       p.messages += pDay.messages || 0;
       p.tokensIn += pDay.tokensIn || 0;
       p.tokensOut += pDay.tokensOut || 0;
+      representedSessions += pDay.sessions || 0;
+      representedMessages += pDay.messages || 0;
+      representedTokensIn += pDay.tokensIn || 0;
+      representedTokensOut += pDay.tokensOut || 0;
       for (const [model, mDay] of Object.entries(pDay.byModel || {})) {
         if (!p.byModel.has(model)) {
           p.byModel.set(model, { sessions: 0, messages: 0, tokensIn: 0, tokensOut: 0 });
@@ -389,6 +446,18 @@ export function buildUsageReport(dailyActivity, { from = null, to = null, provid
         m.tokensOut += mDay.tokensOut || 0;
       }
     }
+    const residualSessions = Math.max(0, (bucket.sessions || 0) - representedSessions);
+    const residualMessages = Math.max(0, (bucket.messages || 0) - representedMessages);
+    const residualTokensIn = Math.max(0, (bucket.tokensIn || 0) - representedTokensIn);
+    const bucketTokensOut = typeof bucket.tokensOut === 'number' ? bucket.tokensOut : (bucket.tokens || 0);
+    const residualTokensOut = Math.max(0, bucketTokensOut - representedTokensOut);
+    if (residualSessions || residualMessages || residualTokensIn || residualTokensOut) {
+      const legacy = ensureAggregate(LEGACY_PROVIDER_ID, LEGACY_PROVIDER_NAME);
+      legacy.sessions += residualSessions;
+      legacy.messages += residualMessages;
+      legacy.tokensIn += residualTokensIn;
+      legacy.tokensOut += residualTokensOut;
+    }
   };
 
   // Rolled-up monthly buckets first, so `breakdownSince` reflects the earliest
@@ -397,20 +466,37 @@ export function buildUsageReport(dailyActivity, { from = null, to = null, provid
   const fromMonth = from ? from.slice(0, 7) : null;
   const toMonth = to ? to.slice(0, 7) : null;
   for (const [month, bucket] of Object.entries(monthlyActivity || {})) {
-    if (!bucket?.byProvider) continue;
-    const monthStart = `${month}-01`;
-    if (!breakdownSince || monthStart < breakdownSince) breakdownSince = monthStart;
+    if (bucket?.byProvider) {
+      const monthStart = `${month}-01`;
+      if (!breakdownSince || monthStart < breakdownSince) breakdownSince = monthStart;
+    }
     if (fromMonth && month < fromMonth) continue;
     if (toMonth && month > toMonth) continue;
-    foldBucket(bucket);
+    if (bucket) foldBucket(bucket);
   }
 
   for (const [date, day] of Object.entries(dailyActivity || {})) {
-    if (!day?.byProvider) continue;
-    if (!breakdownSince || date < breakdownSince) breakdownSince = date;
+    if (day?.byProvider && (!breakdownSince || date < breakdownSince)) breakdownSince = date;
     if (from && date < from) continue;
     if (to && date > to) continue;
-    foldBucket(day);
+    if (day) foldBucket(day);
+  }
+
+  // The legacy POST /usage/tokens path historically updated only all-time
+  // totals. On an unbounded report, retain any portion not already represented
+  // by day/month buckets without double-counting normal recorded messages.
+  if (totalTokens) {
+    const represented = [...agg.values()].reduce((sum, provider) => ({
+      input: sum.input + provider.tokensIn,
+      output: sum.output + provider.tokensOut
+    }), { input: 0, output: 0 });
+    const residualIn = Math.max(0, (totalTokens.input || 0) - represented.input);
+    const residualOut = Math.max(0, (totalTokens.output || 0) - represented.output);
+    if (residualIn > 0 || residualOut > 0) {
+      const legacy = ensureAggregate(LEGACY_PROVIDER_ID, LEGACY_PROVIDER_NAME);
+      legacy.tokensIn += residualIn;
+      legacy.tokensOut += residualOut;
+    }
   }
 
   const totals = { sessions: 0, messages: 0, tokensIn: 0, tokensOut: 0, estimatedCost: 0 };
@@ -419,6 +505,7 @@ export function buildUsageReport(dailyActivity, { from = null, to = null, provid
   for (const [pid, p] of agg.entries()) {
     const config = configById.get(pid);
     const free = isFreeProvider(config || pid);
+    const providerRates = free ? null : resolveModelRates(pid === LEGACY_PROVIDER_ID ? null : pid, null);
     const models = [];
     let providerCost = 0;
 
@@ -448,7 +535,7 @@ export function buildUsageReport(dailyActivity, { from = null, to = null, provid
     const unattributedIn = Math.max(0, p.tokensIn - modelTokensIn);
     const unattributedOut = Math.max(0, p.tokensOut - modelTokensOut);
     if (!free && (unattributedIn > 0 || unattributedOut > 0)) {
-      providerCost += estimateCostUsd(unattributedIn, unattributedOut, resolveModelRates(pid, null));
+      providerCost += estimateCostUsd(unattributedIn, unattributedOut, providerRates);
     }
 
     totals.sessions += p.sessions;
@@ -466,6 +553,11 @@ export function buildUsageReport(dailyActivity, { from = null, to = null, provid
       tokensIn: p.tokensIn,
       tokensOut: p.tokensOut,
       estimatedCost: roundCents(providerCost),
+      rateMatch: pid === LEGACY_PROVIDER_ID
+        ? 'fallback'
+        : (models.some((model) => model.rateMatch !== 'exact' && model.rateMatch !== 'free') || unattributedIn > 0 || unattributedOut > 0
+            ? (providerRates?.matched || 'fallback')
+            : (free ? 'free' : 'exact')),
       models
     });
   }
@@ -529,14 +621,30 @@ export function getUsageSummary({ from = null, to = null, providers = [] } = {})
   const currentStreak = calculateStreak(usageData.dailyActivity);
   const longestStreak = findLongestStreak(usageData.dailyActivity);
 
-  const report = buildUsageReport(usageData.dailyActivity, { from, to, providers, monthlyActivity: usageData.monthlyActivity });
+  const report = buildUsageReport(usageData.dailyActivity, {
+    from,
+    to,
+    providers,
+    monthlyActivity: usageData.monthlyActivity,
+    totalTokens: from || to ? null : usageData.totalTokens
+  });
+  const allTimeReport = from || to
+    ? buildUsageReport(usageData.dailyActivity, {
+        providers,
+        monthlyActivity: usageData.monthlyActivity,
+        totalTokens: usageData.totalTokens
+      })
+    : report;
 
   return {
     totalSessions: usageData.totalSessions,
     totalMessages: usageData.totalMessages,
     totalToolCalls: usageData.totalToolCalls,
     totalTokens: usageData.totalTokens,
-    estimatedCost: roundCents(estimateCostUsd(usageData.totalTokens.input, usageData.totalTokens.output, LEGACY_BLENDED_RATES)),
+    // Backward-compatible field, now sourced from the same complete,
+    // per-model/fallback-priced report as the headline instead of a second
+    // contradictory blended-rate calculation.
+    estimatedCost: allTimeReport.totals.estimatedCost,
     currentStreak,
     longestStreak,
     last7Days,

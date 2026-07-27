@@ -1,5 +1,9 @@
 # Unreleased Changes
 
+## Usage cost reporting
+
+- **[issue-3124] Usage cost estimates now include pre-breakdown history** — Older activity is grouped as legacy usage, conflicting totals agree, missing provider IDs are labeled clearly, and the report explains which token costs remain uncounted.
+
 ## Navigation
 
 - Third-level Create navigation for Series and Universes can now be collapsed and expanded independently.
