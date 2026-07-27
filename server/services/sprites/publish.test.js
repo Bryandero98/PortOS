@@ -151,10 +151,12 @@ describe('validatePublishBinding / setPublishBinding', () => {
     const { id } = await characterWithAtlas();
     const saved = await setPublishBinding(id, {
       ...BINDING,
-      runtimeContract: { walkFrameCount: 8, cellSize: 96, columnCount: 9 },
+      runtimeContract: {
+        walkFrameCount: 8, scannerFrameCount: 4, cellSize: 96, columnCount: 9,
+      },
     });
     expect(saved.publishBinding.runtimeContract).toEqual({
-      walkFrameCount: 8, cellSize: 96, columnCount: 9,
+      walkFrameCount: 8, scannerFrameCount: 4, cellSize: 96, columnCount: 9,
     });
 
     const ambient = await setPublishBinding(id, {
@@ -475,8 +477,8 @@ describe('runtime contract guard (#2982)', () => {
       runtimeContract: { walkFrameCount: 8, cellSize: 96, columnCount: 9 },
     });
     await expect(publishAtlas(id)).rejects.toMatchObject({ status: 409, code: 'PUBLISH_CONTRACT_MISMATCH' });
-    await expect(publishAtlas(id)).rejects.toThrow(/13 columns \(12 walk frames\).*expects 9 \(8 walk frames\)/s);
-    await expect(publishAtlas(id)).rejects.toThrow(/reprocess this walk set to 8 frames/);
+    await expect(publishAtlas(id)).rejects.toThrow(/12 walk cycle frames.*expects 8/s);
+    await expect(publishAtlas(id)).rejects.toThrow(/Approve the walk cycle set at that frame count/);
     // Nothing landed in the game repo — not the atlas, not the sidecar.
     expect(await readFile(join(APP_REPO, BINDING.atlasDestPath)).catch(() => null)).toBeNull();
     expect(await readFile(join(APP_REPO, sidecarPath(BINDING.atlasDestPath))).catch(() => null)).toBeNull();
