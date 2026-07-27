@@ -60,6 +60,14 @@ function parseJsonLines(text) {
 
 const num = (value) => (typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0);
 
+/**
+ * `byModel` key for a billable message whose line names no model. Callers price
+ * from `byModel`, so these tokens need a bucket of their own or they vanish from
+ * the recorded total; a caller that sees this key prices it at the provider's
+ * default rate (`resolveModelRates(providerId, null)`).
+ */
+export const UNKNOWN_MODEL = '(unknown model)';
+
 const emptyTotals = () => ({
   messages: 0,
   tokensIn: 0,
@@ -161,16 +169,20 @@ export function parseClaudeTranscript(jsonlText, { from = null, to = null, exclu
     totals.cacheWriteTokens += num(usage.cache_creation_input_tokens);
 
     const model = typeof entry.message?.model === 'string' ? entry.message.model : null;
-    if (model) {
-      modelCounts.set(model, (modelCounts.get(model) || 0) + 1);
-      if (!byModel.has(model)) byModel.set(model, emptyTotals());
-      const bucket = byModel.get(model);
-      bucket.messages += 1;
-      bucket.tokensIn += num(usage.input_tokens);
-      bucket.tokensOut += num(usage.output_tokens);
-      bucket.cacheReadTokens += num(usage.cache_read_input_tokens);
-      bucket.cacheWriteTokens += num(usage.cache_creation_input_tokens);
-    }
+    if (model) modelCounts.set(model, (modelCounts.get(model) || 0) + 1);
+    // Bucket EVERY billable message, including one whose line carries no
+    // `message.model` — callers price from `byModel`, so leaving an unnamed
+    // message out of it would silently drop its tokens from the recorded total
+    // (measured: 500 output tokens lost on a two-message fixture). The
+    // UNKNOWN_MODEL key keeps them attributable at the provider's default rate.
+    const bucketKey = model ?? UNKNOWN_MODEL;
+    if (!byModel.has(bucketKey)) byModel.set(bucketKey, emptyTotals());
+    const bucket = byModel.get(bucketKey);
+    bucket.messages += 1;
+    bucket.tokensIn += num(usage.input_tokens);
+    bucket.tokensOut += num(usage.output_tokens);
+    bucket.cacheReadTokens += num(usage.cache_read_input_tokens);
+    bucket.cacheWriteTokens += num(usage.cache_creation_input_tokens);
 
     if (typeof entry.timestamp === 'string' && entry.timestamp) {
       if (!firstTs || entry.timestamp < firstTs) firstTs = entry.timestamp;
@@ -290,10 +302,14 @@ export function parseCodexRollout(jsonlText, { from = null, to = null } = {}) {
   const cachedIn = delta('cached_input_tokens');
   const totalIn = delta('input_tokens');
 
+  const bounded = from != null || to != null;
   const totals = {
-    // Codex reports no per-message split; a rollout is one recorded exchange
-    // when it produced any assistant message.
-    messages: messages || 1,
+    // Codex reports no per-message split, so an UNBOUNDED read of a rollout that
+    // produced tokens counts as one exchange. A BOUNDED read must keep a genuine
+    // zero: a rollout whose only `agent_message` predates this run's window has
+    // an in-window token delta but no in-window message, and synthesizing one
+    // there would inflate the message count of every later overlapping run.
+    messages: bounded ? messages : (messages || 1),
     // `input_tokens` INCLUDES the cached portion — split it so each tier is
     // priced at its own rate instead of billing cache reads as fresh input.
     tokensIn: Math.max(0, totalIn - cachedIn),

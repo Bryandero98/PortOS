@@ -209,8 +209,14 @@ describe('isFreeModelId', () => {
     }
   });
 
-  it('treats an org/repo GGUF reference as local', () => {
-    expect(isFreeModelId('unsloth/Qwen3-30B')).toBe(true);
+  // An `org/repo` id is NOT self-evidently local: paid hosted catalogs use the
+  // same shape (`cohere/command-r`, OpenRouter's `provider/model`), and calling
+  // an unknown one free would under-bill real usage. Locality for that shape has
+  // to come from the provider (isFreeProvider), not the model syntax.
+  it('does NOT infer local from a bare org/repo shape', () => {
+    for (const id of ['unsloth/Qwen3-30B', 'cohere/command-r', 'meta-llama/Llama-3-70B', 'mistralai/Mistral-Large']) {
+      expect(isFreeModelId(id)).toBe(false);
+    }
   });
 
   it('does NOT treat hosted model ids as local', () => {

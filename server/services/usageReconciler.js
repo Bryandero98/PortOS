@@ -30,7 +30,9 @@ import { join } from 'path';
 import { readdir } from 'fs/promises';
 import { tryReadFile } from '../lib/fileUtils.js';
 import { estimateTokens, estimateTokensFromChars } from '../lib/contextBudget.js';
+import { isFreeModelId, resolveModelRates } from '../lib/modelPricing.js';
 import {
+  UNKNOWN_MODEL,
   claudeProjectSlug,
   parseClaudeTranscript,
   parseCodexRollout,
@@ -59,9 +61,16 @@ const WINDOW_SLACK_MS = 60_000;
 // but a run that already completed is never reconciled again.
 const claimedMessages = new Set();
 
+// Highest cumulative boundary (epoch ms of the billed end snapshot) already
+// charged per Codex rollout path. Codex bills as a cumulative delta, so a
+// per-snapshot claim can't stop a GROWN rollout from re-including an earlier
+// run's tokens — only a high-water mark can.
+const codexHighWater = new Map();
+
 /** Test-only: forget every claim so suites start from a clean ledger. */
 export function __resetUsageClaims() {
   claimedMessages.clear();
+  codexHighWater.clear();
 }
 
 // A run is attributed only to transcripts whose cwd matches. A CoS agent works
@@ -77,6 +86,34 @@ const cwdMatches = (transcriptCwd, workspacePath) => {
 
 const CLAUDE_ID = /claude/i;
 const CODEX_ID = /codex/i;
+
+/**
+ * Which model id to record for a measured bucket.
+ *
+ * PortOS's own id is preferable when the two AGREE, because it carries the
+ * provider's shape (a Bedrock prefix, a `[1m]` suffix) that the transcript
+ * strips but the pricing table resolves. It must NOT win when they disagree:
+ * a run launched as `claude-opus-5` that actually fell back to a local
+ * `qwen3.6:35b` would otherwise be priced at Opus rates instead of $0.
+ *
+ * "Agree" is tested by resolving both through the rate table — that treats
+ * `global.anthropic.claude-opus-5[1m]` and `claude-opus-5` as the same model
+ * (both resolve to `claude-opus-5`) while catching a genuine substitution.
+ * A bucket with no model name at all resolves to null so the caller prices it
+ * at the provider default.
+ */
+function attributedModel(recordedModel, transcriptModel, singleModel) {
+  const fromTranscript = transcriptModel === UNKNOWN_MODEL ? null : transcriptModel;
+  if (!singleModel || !recordedModel) return fromTranscript;
+  if (!fromTranscript) return recordedModel;
+  if (recordedModel === fromTranscript) return recordedModel;
+  // A local model can never be an alias of a hosted one — always trust the
+  // transcript there, or free inference gets billed at the launch model's rate.
+  if (isFreeModelId(fromTranscript) !== isFreeModelId(recordedModel)) return fromTranscript;
+  const sameFamily = resolveModelRates(null, recordedModel).rateModel
+    === resolveModelRates(null, fromTranscript).rateModel;
+  return sameFamily ? recordedModel : fromTranscript;
+}
 
 
 /**
@@ -195,9 +232,11 @@ export async function readMeasuredUsage({ workspacePath, startTime, endTime, fam
     }
   };
 
-  // Keys counted by THIS call, claimed only once the whole read succeeds — so a
-  // mid-read failure can't strand messages as billed-to-nobody.
-  const toClaim = [];
+  // Keys reserved by THIS call, so a failed/empty read can release them.
+  const reserved = [];
+  // Codex high-water marks advanced by this call, as [path, previousValue], so
+  // an empty read restores the prior boundary instead of stranding it.
+  const codexReserved = [];
   // Per-file view of the global ledger: a message key is only meaningful within
   // its own transcript, so scope the claim by file path to avoid a same-id
   // collision across two different sessions.
@@ -207,8 +246,26 @@ export async function readMeasuredUsage({ workspacePath, startTime, endTime, fam
       has: (messageKey) => claimedMessages.has(prefix + messageKey)
     };
   };
-  const claimFrom = (fileKey, parsed) => {
-    for (const key of parsed.countedKeys || []) toClaim.push(`${fileKey}:${key}`);
+  // Reserve IMMEDIATELY after each file is parsed, before the next `await`.
+  // Deferring every claim to the end of the read would reopen the race the
+  // ledger exists to close: this function awaits once per file, so two
+  // overlapping runs could both parse file A, both see it unclaimed, and both
+  // bill it. Reserving synchronously per file means the second run's read of
+  // file A already sees the first run's claim.
+  const reserveFrom = (fileKey, parsed) => {
+    for (const key of parsed.countedKeys || []) {
+      const claimKey = `${fileKey}:${key}`;
+      claimedMessages.add(claimKey);
+      reserved.push(claimKey);
+    }
+  };
+  // Nothing was attributable after all — release so a later run can claim it.
+  const releaseReserved = () => {
+    for (const key of reserved) claimedMessages.delete(key);
+    for (const [path, previous] of codexReserved) {
+      if (previous == null) codexHighWater.delete(path);
+      else codexHighWater.set(path, previous);
+    }
   };
 
   if (family === 'claude') {
@@ -221,7 +278,7 @@ export async function readMeasuredUsage({ workspacePath, startTime, endTime, fam
       const text = await tryReadFile(path);
       if (!text) continue;
       const parsed = parseClaudeTranscript(text, { from, to, exclude: excludeFor(path) });
-      claimFrom(path, parsed);
+      reserveFrom(path, parsed);
       fold(parsed);
     }
   } else {
@@ -232,22 +289,39 @@ export async function readMeasuredUsage({ workspacePath, startTime, endTime, fam
         const path = join(dir, file);
         const text = await tryReadFile(path);
         if (!text) continue;
+        // A Codex rollout bills as a cumulative DELTA, so a timestamp claim is
+        // not enough: a rollout that GROWS between two overlapping runs presents
+        // a later snapshot under a different key, and its delta (measured from a
+        // baseline before both runs) re-includes what the first run already
+        // billed. Track the highest cumulative boundary billed per file and
+        // re-parse from there, so each run charges only the genuinely new part.
+        const billedTo = codexHighWater.get(path);
+        // Start strictly AFTER the billed boundary: the window is inclusive, so
+        // passing `billedTo` itself would make the already-billed snapshot the
+        // window's end state instead of its baseline, and its whole cumulative
+        // total would be charged again.
+        const windowFrom = billedTo != null ? Math.max(from ?? 0, billedTo + 1) : from;
         // Rollouts are filed by date, not cwd — confirm the cwd before folding.
-        const parsed = parseCodexRollout(text, { from, to });
+        const parsed = parseCodexRollout(text, { from: windowFrom, to });
         if (!cwdMatches(parsed.cwd, workspacePath)) continue;
-        // A Codex rollout is billed as a cumulative DELTA, so its claim is the
-        // end snapshot it consumed: a second overlapping run that reads the same
-        // rollout must not re-bill the same delta.
-        const snapshotKey = `${path}:${parsed.lastTs || ''}`;
-        if (claimedMessages.has(snapshotKey)) continue;
-        toClaim.push(snapshotKey);
+        if (totalTranscriptTokens(parsed) === 0) continue;
+        const boundary = Date.parse(parsed.lastTs || '');
+        if (Number.isNaN(boundary)) continue;
+        if (billedTo != null && boundary <= billedTo) continue;
+        // Advance the high-water mark before the next `await`, for the same
+        // reason the Claude claim reserves per file: two overlapping runs must
+        // not both read the pre-update boundary.
+        codexHighWater.set(path, boundary);
+        codexReserved.push([path, billedTo]);
         fold(parsed);
       }
     }
   }
 
-  if (totals.sessions === 0) return null;
-  for (const key of toClaim) claimedMessages.add(key);
+  if (totals.sessions === 0) {
+    releaseReserved();
+    return null;
+  }
   totals.model = [...modelCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
   totals.byModel = Object.fromEntries(byModel);
   return totals;
@@ -310,10 +384,7 @@ export async function reconcileRunUsage(run, estimate, { home = homedir() } = {}
   if (perModel.length > 0) {
     return perModel.map(([model, bucket]) => ({
       providerId: run?.providerId ?? null,
-      // Keep PortOS's recorded model id when the transcript agrees on the single
-      // model it ran — PortOS's id carries the provider's own shape (e.g. a
-      // Bedrock prefix the pricing table resolves) that the transcript strips.
-      model: perModel.length === 1 ? (run?.model ?? model) : model,
+      model: attributedModel(run?.model ?? null, model, perModel.length === 1),
       messages: bucket.messages || 0,
       tokensIn: bucket.tokensIn,
       tokensOut: bucket.tokensOut,

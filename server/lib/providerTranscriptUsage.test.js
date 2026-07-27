@@ -3,7 +3,8 @@ import {
   claudeProjectSlug,
   parseClaudeTranscript,
   parseCodexRollout,
-  totalTranscriptTokens
+  totalTranscriptTokens,
+  UNKNOWN_MODEL
 } from './providerTranscriptUsage.js';
 
 // Fixtures are hand-authored to match the real formats (verified against a live
@@ -360,5 +361,53 @@ describe('per-model token buckets', () => {
     expect(result.byModel['gpt-5.3-codex']).toMatchObject({
       tokensIn: 600, cacheReadTokens: 2400, tokensOut: 250, cacheWriteTokens: 0
     });
+  });
+});
+
+describe('no billable tokens are dropped from byModel', () => {
+  // Callers price from `byModel`, so a billable message whose line carries no
+  // `message.model` must still get a bucket — otherwise its tokens vanish from
+  // the recorded total (measured: 500 output tokens lost on a 2-message file).
+  it('buckets a model-less message under UNKNOWN_MODEL', () => {
+    const noModel = JSON.parse(claudeLine({ id: 'm2', output: 500, cacheRead: 2000, input: 5, cacheWrite: 0 }));
+    delete noModel.message.model;
+    const text = [
+      claudeLine({ id: 'm1', model: 'claude-opus-5', output: 100, cacheRead: 1000, input: 10, cacheWrite: 0 }),
+      JSON.stringify(noModel)
+    ].join('\n');
+
+    const result = parseClaudeTranscript(text);
+    expect(result.byModel[UNKNOWN_MODEL]).toMatchObject({ tokensOut: 500, cacheReadTokens: 2000 });
+    // byModel must account for the whole aggregate — nothing dropped.
+    const sum = (f) => Object.values(result.byModel).reduce((s, b) => s + b[f], 0);
+    expect(sum('tokensOut')).toBe(result.tokensOut);
+    expect(sum('tokensIn')).toBe(result.tokensIn);
+    expect(sum('cacheReadTokens')).toBe(result.cacheReadTokens);
+    expect(sum('messages')).toBe(result.messages);
+  });
+});
+
+describe('Codex message count under a window', () => {
+  // Synthesizing a message for a bounded read would inflate every later
+  // overlapping run's message total.
+  it('keeps zero when the window contains a token delta but no agent_message', () => {
+    const text = [
+      codexMeta(),
+      JSON.stringify({ timestamp: '2026-07-01T09:00:00.000Z', type: 'event_msg', payload: { type: 'agent_message', message: 'before the window' } }),
+      codexTokenCount({ timestamp: '2026-07-01T09:00:01.000Z', input: 1000, cached: 800, output: 100 }),
+      codexTokenCount({ timestamp: '2026-07-01T12:00:00.000Z', input: 3000, cached: 2400, output: 250 })
+    ].join('\n');
+
+    const result = parseCodexRollout(text, { from: Date.parse('2026-07-01T11:00:00.000Z') });
+    expect(result.messages).toBe(0);
+    expect(result.tokensOut).toBe(150); // the delta is still billed
+  });
+
+  it('still synthesizes one on an unbounded read that produced tokens', () => {
+    const text = [
+      codexMeta(),
+      codexTokenCount({ timestamp: '2026-07-01T10:00:01.000Z', input: 1000, cached: 0, output: 60 })
+    ].join('\n');
+    expect(parseCodexRollout(text).messages).toBe(1);
   });
 });

@@ -234,7 +234,13 @@ const FREE_ID = /ollama|lmstudio|lm-studio/i;
 // colon separates the two. (Ollama family names may contain dots — `qwen3.6` —
 // so the prefix must allow them.)
 const LOCAL_TAGGED_MODEL = /^[\w.-]+:[\w.-]*[a-z][\w.-]*$/i;
-const LOCAL_REPO_MODEL = /^[\w.-]+\/[\w.-]+$/;
+
+// The `org/repo` GGUF form is NOT a local marker on its own: paid hosted
+// catalogs use the same shape (`cohere/command-r`, OpenRouter's
+// `provider/model`), and pricing an unknown one at $0 under-bills real usage.
+// Only the tagged form above is self-evidently an Ollama/LM Studio id, so a
+// slash-form id needs corroborating evidence from the PROVIDER — which is what
+// `isFreeProvider` already supplies — rather than being inferred from syntax.
 
 /**
  * True when a MODEL id is local-inference (free), independent of which provider
@@ -257,7 +263,7 @@ export function isFreeModelId(model) {
   // and suffixed variants of every id in the table).
   if (resolveModelRates(null, id).matched !== 'fallback') return false;
   if (FREE_ID.test(id)) return true;
-  return LOCAL_TAGGED_MODEL.test(id) || LOCAL_REPO_MODEL.test(id);
+  return LOCAL_TAGGED_MODEL.test(id);
 }
 
 /**

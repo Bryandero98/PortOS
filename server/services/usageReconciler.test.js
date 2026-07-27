@@ -447,3 +447,136 @@ describe('overlapping runs must not double-bill one transcript', () => {
     expect(second).toBeNull();
   });
 });
+
+describe('claim ledger — concurrency and cumulative rollouts', () => {
+  const runA = {
+    providerId: 'claude-code-tui',
+    model: 'claude-opus-5',
+    workspacePath: WORKSPACE,
+    startTime: '2026-07-01T10:00:00.000Z',
+    endTime: '2026-07-01T10:10:00.000Z'
+  };
+  const runB = { ...runA, startTime: '2026-07-01T10:02:00.000Z', endTime: '2026-07-01T10:12:00.000Z' };
+
+  // The reads interleave at every `await` (one per transcript file), so a ledger
+  // that only claims AFTER the whole read finishes lets both runs bill the same
+  // messages. Reserving per file closes that window.
+  it('bills each message once when two overlapping reads run CONCURRENTLY', async () => {
+    // Several files, so each read awaits more than once and truly interleaves.
+    await writeClaudeSession('a.jsonl', [claudeAssistant({ id: 'm1', timestamp: '2026-07-01T10:05:00.000Z', output: 50, cacheRead: 0, cacheWrite: 0, input: 0 })]);
+    await writeClaudeSession('b.jsonl', [claudeAssistant({ id: 'm2', timestamp: '2026-07-01T10:06:00.000Z', output: 25, cacheRead: 0, cacheWrite: 0, input: 0 })]);
+    await writeClaudeSession('c.jsonl', [claudeAssistant({ id: 'm3', timestamp: '2026-07-01T10:07:00.000Z', output: 10, cacheRead: 0, cacheWrite: 0, input: 0 })]);
+
+    const [first, second] = await Promise.all([
+      readMeasuredUsage({ ...runA, family: 'claude', home }),
+      readMeasuredUsage({ ...runB, family: 'claude', home })
+    ]);
+
+    const billed = (first?.tokensOut || 0) + (second?.tokensOut || 0);
+    expect(billed).toBe(85); // the transcript total, NOT 170
+  });
+
+  // A Codex rollout bills as a cumulative delta. If it GROWS between two runs,
+  // a per-snapshot claim doesn't help: the later snapshot has a different key and
+  // its delta re-includes the first run's tokens.
+  it('bills only the new part of a rollout that grew between two runs', async () => {
+    const rollout = (entries) => [
+      JSON.stringify({ timestamp: '2026-07-01T10:00:00.000Z', type: 'session_meta', payload: { id: 'rollout-1', cwd: WORKSPACE, model: 'gpt-5.3-codex' } }),
+      ...entries
+    ].join('\n');
+    const snap = (timestamp, input, cached, output) => JSON.stringify({
+      timestamp, type: 'event_msg',
+      payload: { type: 'token_count', info: { total_token_usage: { input_tokens: input, cached_input_tokens: cached, output_tokens: output, total_tokens: input + output } } }
+    });
+
+    // First run sees cumulative output 100.
+    await writeCodexRollout(['2026', '07', '01'], 'rollout-1.jsonl', rollout([
+      snap('2026-07-01T10:05:00.000Z', 1000, 0, 100)
+    ]));
+    const first = await readMeasuredUsage({ ...runA, family: 'codex', home });
+    expect(first.tokensOut).toBe(100);
+
+    // The rollout grows to cumulative 250 before the second (overlapping) run.
+    await writeCodexRollout(['2026', '07', '01'], 'rollout-1.jsonl', rollout([
+      snap('2026-07-01T10:05:00.000Z', 1000, 0, 100),
+      snap('2026-07-01T10:11:00.000Z', 3000, 0, 250)
+    ]));
+    const second = await readMeasuredUsage({ ...runB, family: 'codex', home });
+
+    // Only the 150 that is genuinely new — not the full 250.
+    expect(second.tokensOut).toBe(150);
+    expect(first.tokensOut + second.tokensOut).toBe(250);
+  });
+
+  it('releases its reservations when nothing was attributable', async () => {
+    // Another repo's session: reserved during the read, then released because
+    // this run folded nothing — so a run that DOES own it can still bill it.
+    await writeClaudeSession('a.jsonl', [
+      claudeAssistant({ id: 'm1', timestamp: '2026-07-01T10:05:00.000Z' })
+    ], '-work-some-other-repo');
+
+    // This run's own project dir is empty, so it folds nothing and returns null.
+    const miss = await readMeasuredUsage({ ...runA, family: 'claude', home });
+    expect(miss).toBeNull();
+
+    // The repo that actually owns that session still bills it — proving the
+    // failed read released whatever it had reserved instead of stranding it.
+    const real = await readMeasuredUsage({
+      workspacePath: '/work/some-other-repo',
+      startTime: runA.startTime, endTime: runA.endTime, family: 'claude', home
+    });
+    expect(real?.tokensOut).toBe(50);
+
+    // …and a SECOND read by the true owner is now correctly blocked (claimed).
+    expect(await readMeasuredUsage({
+      workspacePath: '/work/some-other-repo',
+      startTime: runA.startTime, endTime: runA.endTime, family: 'claude', home
+    })).toBeNull();
+  });
+});
+
+describe('model attribution when the transcript disagrees', () => {
+  const run = {
+    providerId: 'claude-code-tui-bedrock',
+    model: 'global.anthropic.claude-opus-5[1m]',
+    workspacePath: WORKSPACE,
+    startTime: '2026-07-01T10:00:00.000Z',
+    endTime: '2026-07-01T10:10:00.000Z'
+  };
+
+  it('keeps the recorded Bedrock id when it resolves to the same model', async () => {
+    await writeClaudeSession('a.jsonl', [
+      claudeAssistant({ id: 'm1', timestamp: '2026-07-01T10:05:00.000Z', model: 'claude-opus-5' })
+    ]);
+    const [record] = await reconcileRunUsage(run, { tokensIn: 1, tokensOut: 1 }, { home });
+    // The Bedrock prefix/suffix carries provider shape the transcript strips.
+    expect(record.model).toBe('global.anthropic.claude-opus-5[1m]');
+  });
+
+  // A run launched as Opus that actually fell back to a local model must NOT be
+  // billed at Opus rates.
+  it('prefers the transcript when the run fell back to a local model', async () => {
+    await writeClaudeSession('a.jsonl', [
+      claudeAssistant({ id: 'm1', timestamp: '2026-07-01T10:05:00.000Z', model: 'qwen3.6:35b' })
+    ]);
+    const [record] = await reconcileRunUsage(run, { tokensIn: 1, tokensOut: 1 }, { home });
+    expect(record.model).toBe('qwen3.6:35b');
+  });
+
+  it('prefers the transcript when it names a different hosted model', async () => {
+    await writeClaudeSession('a.jsonl', [
+      claudeAssistant({ id: 'm1', timestamp: '2026-07-01T10:05:00.000Z', model: 'claude-haiku-4-5' })
+    ]);
+    const [record] = await reconcileRunUsage(run, { tokensIn: 1, tokensOut: 1 }, { home });
+    expect(record.model).toBe('claude-haiku-4-5');
+  });
+
+  it('falls back to the recorded model for a model-less transcript bucket', async () => {
+    const noModel = JSON.parse(claudeAssistant({ id: 'm1', timestamp: '2026-07-01T10:05:00.000Z' }));
+    delete noModel.message.model;
+    await writeClaudeSession('a.jsonl', [JSON.stringify(noModel)]);
+    const [record] = await reconcileRunUsage(run, { tokensIn: 1, tokensOut: 1 }, { home });
+    expect(record.model).toBe('global.anthropic.claude-opus-5[1m]');
+    expect(record.tokensOut).toBe(50);
+  });
+});
