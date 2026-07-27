@@ -297,32 +297,35 @@ export default function CreativeCommissionDetail() {
         </div>
       </div>
 
-      {/* Renders — the headline: what this commission has actually produced. */}
-      <section className="space-y-3">
-        <h2 className="text-sm font-semibold text-gray-200">Renders</h2>
-        <RenderHistory
-          runs={commission.runs}
-          feedback={commission.feedback}
-          projectsById={projectsById}
-          projectsLoading={projectsLoading}
-          focusRunId={focusRunId}
-          onRate={handleRate}
-        />
-      </section>
-
-      {/* Configuration — the editable brief/schedule/generation. */}
-      <section className="space-y-3 border-t border-port-border pt-6">
-        <h2 className="text-sm font-semibold text-gray-200">Configuration</h2>
-        <div className="bg-port-card border border-port-border rounded-lg p-4 max-w-2xl">
-          <CommissionConfigForm
-            form={form}
-            patchForm={patchForm}
-            saving={saving}
-            onSave={handleSave}
-            saveLabel="Save changes"
+      {/* Renders + Config — side-by-side on desktop, stacked on mobile. */}
+      <div className="flex flex-col lg:flex-row gap-6">
+        {/* Renders — the headline: what this commission has actually produced. */}
+        <section className="flex-1 space-y-3 min-w-0">
+          <h2 className="text-sm font-semibold text-gray-200">Renders</h2>
+          <RenderHistory
+            runs={commission.runs}
+            feedback={commission.feedback}
+            projectsById={projectsById}
+            projectsLoading={projectsLoading}
+            focusRunId={focusRunId}
+            onRate={handleRate}
           />
-        </div>
-      </section>
+        </section>
+
+        {/* Configuration — the editable brief/schedule/generation. */}
+        <aside className="w-full lg:w-[380px] shrink-0 space-y-3">
+          <h2 className="text-sm font-semibold text-gray-200">Configuration</h2>
+          <div className="bg-port-card border border-port-border rounded-lg p-4 max-w-none">
+            <CommissionConfigForm
+              form={form}
+              patchForm={patchForm}
+              saving={saving}
+              onSave={handleSave}
+              saveLabel="Save changes"
+            />
+          </div>
+        </aside>
+      </div>
     </div>
   );
 }
