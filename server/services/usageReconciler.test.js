@@ -867,3 +867,68 @@ describe('assistant lines carrying no identifier', () => {
     expect(result.messages).toBe(2);
   });
 });
+
+describe('keyless-line claims survive the file changing shape', () => {
+  const keyless = (output, ts) => JSON.stringify({
+    type: 'assistant',
+    cwd: WORKSPACE,
+    timestamp: ts,
+    message: {
+      model: 'claude-opus-5',
+      usage: { input_tokens: 1, output_tokens: output, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+    }
+  });
+  const read = (startTime, endTime) => readMeasuredUsage({
+    workspacePath: WORKSPACE, startTime, endTime, family: 'claude', home
+  });
+  const A = ['2026-07-01T10:00:00.000Z', '2026-07-01T10:10:00.000Z'];
+  const B = ['2026-07-01T10:02:00.000Z', '2026-07-01T10:12:00.000Z'];
+
+  // Regression: a POSITIONAL fallback key shifts when anything is prepended, so
+  // the shifted key read as unclaimed and the line was billed twice (measured:
+  // 100 billed for 70 reported). A content-derived key is stable.
+  it('does not re-bill a keyless line after a line is prepended', async () => {
+    await writeClaudeSession('a.jsonl', [keyless(50, '2026-07-01T10:05:00.000Z')]);
+    const first = await read(...A);
+
+    // A new line lands BEFORE the existing one, shifting its index.
+    await writeClaudeSession('a.jsonl', [
+      keyless(20, '2026-07-01T10:04:00.000Z'),
+      keyless(50, '2026-07-01T10:05:00.000Z')
+    ]);
+    const second = await read(...B);
+
+    expect((first?.tokensOut || 0) + (second?.tokensOut || 0)).toBe(70);
+  });
+
+  it('does not re-bill after the file is reordered', async () => {
+    await writeClaudeSession('a.jsonl', [
+      keyless(50, '2026-07-01T10:05:00.000Z'),
+      keyless(30, '2026-07-01T10:06:00.000Z')
+    ]);
+    const first = await read(...A);
+
+    await writeClaudeSession('a.jsonl', [
+      keyless(30, '2026-07-01T10:06:00.000Z'),
+      keyless(50, '2026-07-01T10:05:00.000Z')
+    ]);
+    const second = await read(...B);
+
+    expect((first?.tokensOut || 0) + (second?.tokensOut || 0)).toBe(80);
+  });
+
+  // The content key must not collapse two genuinely distinct lines that happen
+  // to carry identical content.
+  it('counts two identical keyless lines separately, once each', async () => {
+    await writeClaudeSession('a.jsonl', [
+      keyless(50, '2026-07-01T10:05:00.000Z'),
+      keyless(50, '2026-07-01T10:05:00.000Z')
+    ]);
+    const first = await read(...A);
+    expect(first.tokensOut).toBe(100);
+
+    // …and an overlapping run re-bills neither.
+    const second = await read(...B);
+    expect((first?.tokensOut || 0) + (second?.tokensOut || 0)).toBe(100);
+  });
+});

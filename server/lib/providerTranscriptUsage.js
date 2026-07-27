@@ -68,6 +68,26 @@ const num = (value) => (typeof value === 'number' && Number.isFinite(value) && v
  */
 export const UNKNOWN_MODEL = '(unknown model)';
 
+/**
+ * Stable identity for an assistant line that carries NO `message.id` and no
+ * `uuid`. Derived from the fields that describe the billable event — its
+ * timestamp, request id, model, and token counts — so the key survives any
+ * reordering of the file. A POSITIONAL key does not: prepending or inserting a
+ * line shifts every index after it, the shifted key reads as unclaimed, and the
+ * cross-run double-bill reopens (measured: 100 billed for 70 after a prepend).
+ */
+function contentKey(entry, usage) {
+  return [
+    entry.timestamp || '',
+    entry.requestId || '',
+    entry.message?.model || '',
+    num(usage.input_tokens),
+    num(usage.output_tokens),
+    num(usage.cache_read_input_tokens),
+    num(usage.cache_creation_input_tokens)
+  ].join('|');
+}
+
 const emptyTotals = () => ({
   messages: 0,
   tokensIn: 0,
@@ -142,12 +162,11 @@ export function parseClaudeTranscript(jsonlText, { from = null, to = null, exclu
   let firstTs = null;
   let lastTs = null;
 
-  // Position of the current line within the file, so a line carrying no
-  // identifier at all still gets a stable key (see `dedupeKey` below).
-  let lineIndex = -1;
+  // Occurrence counter per content key, so two genuinely distinct lines with
+  // identical content still get distinct keys (see `dedupeKey` below).
+  const contentSeen = new Map();
 
   for (const entry of parseJsonLines(jsonlText)) {
-    lineIndex += 1;
     if (!sessionId && typeof entry.sessionId === 'string') sessionId = entry.sessionId;
     if (!cwd && typeof entry.cwd === 'string') cwd = entry.cwd;
 
@@ -160,11 +179,24 @@ export function parseClaudeTranscript(jsonlText, { from = null, to = null, exclu
     // One response spans multiple lines with identical usage — count it once.
     //
     // EVERY counted line needs a key, including one carrying neither
-    // `message.id` nor `uuid`: a keyless line is invisible to the cross-run
-    // claim ledger, so two overlapping runs each bill it (measured: 100 billed
-    // for 50 reported). Fall back to the line's position, which is stable for an
-    // append-only transcript — the `@` prefix can't collide with a real id.
-    const dedupeKey = entry.message?.id || entry.uuid || `@line-${lineIndex}`;
+    // `message.id` nor `uuid`: a keyless line is invisible to the cross-run claim
+    // ledger, so two overlapping runs each bill it (measured: 100 billed for 50
+    // reported). The fallback is derived from the line's CONTENT, not its
+    // position: a positional key shifts if anything is ever prepended or
+    // inserted, which re-opens the double-bill (measured: 100 billed for 70 after
+    // a prepend). Content is stable under any reordering, and the `@` prefix
+    // can't collide with a real id. The trailing `#<occurrence>` is only a
+    // tiebreaker so two genuinely distinct lines with identical content don't
+    // collapse into one — it is not part of the identity.
+    let dedupeKey = entry.message?.id || entry.uuid;
+    if (!dedupeKey) {
+      const content = contentKey(entry, usage);
+      // Nth occurrence of this exact content within this file — deterministic and
+      // unaffected by lines added elsewhere.
+      const occurrence = contentSeen.get(content) ?? 0;
+      contentSeen.set(content, occurrence + 1);
+      dedupeKey = `@${content}#${occurrence}`;
+    }
     if (seen.has(dedupeKey)) continue;
     // Already billed to another run whose window also covers this message —
     // skip it so overlapping runs can't each claim the same tokens.
