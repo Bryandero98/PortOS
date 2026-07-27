@@ -19,6 +19,14 @@ import { normalizeSlug, extractSlugFromBody, isIssueWithinDedupWindow } from './
 import { computePostApprovalCompletion, scopeKeyOf } from './awareness.js';
 import { formatApprovalFunnelLines } from './approvalFunnel.js';
 
+// Delivery throttle thresholds (#3160). Below 20% there is enough evidence that
+// LI should stop filing; 75% is the healthy line where its filing budget is fully
+// restored. Between those points the score remains deliveryRate / 75, preserving
+// the issue's requested proportional 0%-to-75% scale (with the explicit <20% stop
+// overriding its otherwise-small non-zero score).
+const LI_DELIVERY_THROTTLE_STOP_THRESHOLD = 20;
+const LI_DELIVERY_THROTTLE_FULL_THRESHOLD = 75;
+
 /**
  * Derive a resolved outcome for a filed proposal from its live tracker issue.
  * Pure — the reconciler feeds it a `{ state, stateReason, closedAt }` issue:
@@ -255,6 +263,51 @@ export function computeDeliveryMetrics(outcomes = []) {
     },
     deliveryByScope
   };
+}
+
+/**
+ * Translate LI's approval-to-completion health into a proposal-filing throttle
+ * (#3160). Accepts `computeLiExecutionHealth` output directly.
+ *
+ * `null` preserves the unavailable-data sentinel. A real but undersized sample is
+ * deliberately different: it returns 0, so LI does not expand its proposal queue
+ * before it has enough delivery evidence. At/above the sample floor, delivery under
+ * 20% is stopped; otherwise the score scales linearly to full throttle at 75%.
+ *
+ * @param {{ deliveryRate?: number|null, deliverySample?: number }|null} deliveryHealth
+ * @returns {number|null} 0..1, or null when delivery health is unavailable.
+ */
+export function computeDeliveryThrottle(deliveryHealth) {
+  const rate = deliveryHealth?.deliveryRate;
+  const sample = deliveryHealth?.deliverySample;
+  if (!Number.isFinite(rate) || !Number.isFinite(sample) || sample < 0) return null;
+  if (sample < LI_DELIVERY_MIN_SAMPLE || rate < LI_DELIVERY_THROTTLE_STOP_THRESHOLD) return 0;
+  return Math.min(1, Math.max(0, rate / LI_DELIVERY_THROTTLE_FULL_THRESHOLD));
+}
+
+/**
+ * Render the numeric delivery throttle as direct prompt guidance. Kept beside the
+ * computation so the label and the score cannot drift apart across prompt callers.
+ */
+export function formatDeliveryThrottleGuidance(deliveryHealth) {
+  const score = computeDeliveryThrottle(deliveryHealth);
+  if (score === null) {
+    return 'LI proposal throttle: unavailable — no approval-to-completion delivery data is available this run. Do not assume the delivery pipeline is healthy.';
+  }
+
+  const rawRate = deliveryHealth.deliveryRate;
+  const rate = Math.round(rawRate);
+  const sample = deliveryHealth.deliverySample;
+  const status = score === 0 ? 'stopped' : score === 1 ? 'full' : `${Math.round(score * 100)}%`;
+  const basis = `based on ${rate}% delivery rate from ${sample} approved proposal${sample === 1 ? '' : 's'}`;
+
+  if (sample < LI_DELIVERY_MIN_SAMPLE) {
+    return `LI proposal throttle: ${status} — ${basis}; at least ${LI_DELIVERY_MIN_SAMPLE} approvals are required before filing resumes. Return proposal: null rather than adding work without a reliable delivery sample.`;
+  }
+  if (rawRate < LI_DELIVERY_THROTTLE_STOP_THRESHOLD) {
+    return `LI proposal throttle: ${status} — ${basis}. Delivery is below ${LI_DELIVERY_THROTTLE_STOP_THRESHOLD}%; return proposal: null rather than adding to the undelivered queue.`;
+  }
+  return `LI proposal throttle: ${status} — ${basis}. Use this as the filing budget for this run.`;
 }
 
 /**

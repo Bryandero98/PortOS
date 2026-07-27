@@ -35,7 +35,12 @@ export const WALK_PHASES = [
 // Legacy default / fallback frame count for manifests (or clients) that omit it.
 export const WALK_FRAME_COUNT = 8;
 
-// The non-walk columns of the runtime atlas grid, named once so the compiler
+// Legacy compiled-grid column names, kept so readers can describe imported and
+// pre-#2986 atlases. They are grid vocabulary, not animation-track definitions:
+// the current compiler emits neither an idle track row nor a scanner track from
+// these constants.
+//
+// Named once so the compiler
 // that WRITES them (atlas.js `atlasColumns`) and the layout sidecar that
 // DESCRIBES them (atlasLayout.js) can never disagree on a column's identity —
 // the same reason walkPhaseLabels lives here. `scanner` is READ-ONLY now: the

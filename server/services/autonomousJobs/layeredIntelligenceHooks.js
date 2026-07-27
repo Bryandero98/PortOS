@@ -54,6 +54,7 @@ import {
   applyJiraBlockingLabel,
   computeOutcomesReport,
   computeDeliveryMetrics,
+  formatDeliveryThrottleGuidance,
   renderCosMetricsSource,
   computeSelfEvalSummary,
   computeProposalExecutionAwareness,
@@ -61,6 +62,7 @@ import {
   computeHandoffRouting,
   computeHardExclusionGate,
   computeHardExclusionNotice,
+  computeLiExecutionHealth,
   readLiTaskMetrics,
   hasPlannedWorkListing
 } from '../layeredIntelligence.js'
@@ -427,8 +429,15 @@ export async function buildTaskInput({ app } = {}) {
     ? outcomes
     : await listOutcomes({ appId: app.id }).catch(() => [])
   const hardExclusionNotice = computeHardExclusionNotice({ liTaskStats, outcomes: noticeOutcomes })
+  // Delivery throttle (#3160): unlike the optional selfEval report, this signal is
+  // present on every LI prompt. It reads the same direct outcome snapshot as the hard
+  // exclusion notice, so turning off the outcomes/selfEval prompt sources cannot hide
+  // a stopped delivery pipeline from the reasoner.
+  const deliveryThrottleReport = formatDeliveryThrottleGuidance(
+    computeLiExecutionHealth(liTaskStats, noticeOutcomes)
+  )
 
-  const prompt = buildPrompt({ app, config, sources, openIssues, isPortos, outcomesReport, selfEvalReport, proposalExecutionReport, crossReferenceReport, hardExclusionNotice }) + buildCompletionContract()
+  const prompt = buildPrompt({ app, config, sources, openIssues, isPortos, outcomesReport, selfEvalReport, deliveryThrottleReport, proposalExecutionReport, crossReferenceReport, hardExclusionNotice }) + buildCompletionContract()
   // Option A: surface the fully-resolved LI agent provider/model (from
   // resolveLiAgentProvider — per-app override, else the resolved schedule pin) so
   // the generator pins the AGENT to it. Resolving the pin HERE (not delegating it

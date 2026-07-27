@@ -68,6 +68,7 @@ import {
 import { getTrackState, startTrackGeneration, approveTrackRun } from '../services/sprites/animationTrackWorkflow.js';
 import { saveLoopTrim } from '../services/sprites/walkTrims.js';
 import { compileAtlas, getAtlasState } from '../services/sprites/atlas.js';
+import { resolveWalkFrameCount } from '../services/sprites/atlasGrid.js';
 import { setPublishBinding, publishAtlas } from '../services/sprites/publish.js';
 import { deleteSpriteAsset } from '../services/sprites/assets.js';
 
@@ -191,8 +192,19 @@ router.get('/:id', asyncHandler(async (req, res) => {
     kindTracks.length ? getAtlasState(req.params.id) : null,
     ...genericTracks.map((row) => getTrackState(row.id, req.params.id)),
   ]);
+  // Imported/pre-#3016 walk pointers may carry only their legacy column list.
+  // Normalize that compatibility shape at the API boundary so every client
+  // track reader can stay on the generic field/span contract.
+  if (runsWalk && atlas?.current?.geometry) {
+    atlas.current.geometry.walkFrameCount = resolveWalkFrameCount(atlas.current.geometry);
+  }
   const tracks = Object.fromEntries(genericTracks.map((row, index) => [row.id, trackStates[index]]));
-  res.json({ ...detail, reference, walk, tracks, atlas });
+  // PublishWorkflow needs the COMPLETE applicable registry slice, including
+  // walk (whose bespoke state does not carry `definition`). Keep it separate
+  // from `tracks`, which remains the generic non-walk authoring-state map.
+  res.json({
+    ...detail, reference, walk, tracks, trackDefinitions: kindTracks, atlas,
+  });
 }));
 
 // The generation prompt behind one on-disk asset (record-relative `path`) —

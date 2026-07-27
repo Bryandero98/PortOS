@@ -552,14 +552,16 @@ describe('client mirror parity', () => {
     expect(walk.maxFps - Math.max(...options)).toBeLessThan(2);
   });
 
-  it('keeps the publish form\'s hard-coded frame-count bounds in step', () => {
+  it('keeps the publish form registry-driven instead of mirroring walk bounds', () => {
     // PublishWorkflow.jsx is a React component (not importable under the server
-    // runner), so its two mirrored literals are asserted as source text.
+    // runner), so assert the source consumes each served definition's bounds
+    // and cannot drift through reintroduced walk-specific constants.
     const src = readFileSync(
       join(SERVER_DIR, '..', 'client', 'src', 'components', 'sprites', 'PublishWorkflow.jsx'),
       'utf-8',
     );
-    expect(src).toContain(`const WALK_MIN_FRAME_COUNT = ${walk.minFrameCount};`);
-    expect(src).toContain(`const WALK_MAX_FRAME_COUNT = ${walk.maxFrameCount};`);
+    expect(src).toContain('min={definition.minFrameCount}');
+    expect(src).toContain('max={definition.maxFrameCount}');
+    expect(src).not.toMatch(/WALK_(?:MIN|MAX)_FRAME_COUNT/);
   });
 });

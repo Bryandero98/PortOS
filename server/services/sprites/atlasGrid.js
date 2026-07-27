@@ -71,6 +71,8 @@ import { WALK_TRACK, getAnimationTrack, trackRowCount } from './animationTracks.
 // read happens on first use rather than at this module's load. `tracks` stays an
 // explicit parameter — it is still the injection seam the multi-track tests use.
 import { getEffectiveAnimationTracks } from './animationTrackStore.js';
+// These two names describe columns found in imported/legacy compiled grids;
+// neither declares an animation track in the registry.
 import { ATLAS_IDLE_COLUMN, ATLAS_SCANNER_COLUMN, walkPhaseLabels } from './walkBounds.js';
 import { SPRITE_DIRECTIONS } from './prompts.js';
 import { canonicalStringify } from '../../lib/objects.js';

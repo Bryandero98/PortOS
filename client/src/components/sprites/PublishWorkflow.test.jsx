@@ -29,19 +29,63 @@ const GEOMETRY = {
   walkFrameCount: 12,
 };
 
+const WALK_DEFINITION = {
+  id: 'walk',
+  label: 'Walk cycle',
+  minFrameCount: 6,
+  maxFrameCount: 16,
+  defaultFrameCount: 12,
+  contractFrameCountField: 'walkFrameCount',
+  standaloneContract: true,
+};
+const SCANNER_DEFINITION = {
+  id: 'scanner',
+  label: 'Scanner action',
+  minFrameCount: 2,
+  maxFrameCount: 8,
+  defaultFrameCount: 4,
+  contractFrameCountField: 'scannerFrameCount',
+  standaloneContract: false,
+};
+const AMBIENT_DEFINITION = {
+  id: 'ambient',
+  label: 'Ambient loop',
+  minFrameCount: 2,
+  maxFrameCount: 6,
+  defaultFrameCount: 3,
+  contractFrameCountField: 'ambientFrameCount',
+  standaloneContract: true,
+};
+const JETPACK_DEFINITION = {
+  id: 'jetpack',
+  label: 'Jetpack burst',
+  minFrameCount: 3,
+  maxFrameCount: 7,
+  defaultFrameCount: 5,
+  contractFrameCountField: 'jetpackFrameCount',
+  standaloneContract: false,
+};
+
 const atlasWith = (extra = {}) => ({
   current: { version: 3, compiledAt: '2026-07-01T00:00:00.000Z', atlasPath: 'runtime/v3/a.png', geometry: GEOMETRY },
   publications: [],
   ...extra,
 });
 
-const renderWorkflow = (publishBinding, atlas = atlasWith()) => render(
+const renderWorkflow = (
+  publishBinding,
+  atlas = atlasWith(),
+  props = {},
+) => render(
   <MemoryRouter>
     <PublishWorkflow
       record={{ id: 'example-walker', publishBinding }}
       walk={{ walkSet: { imported: false } }}
+      tracks={{}}
+      trackDefinitions={[WALK_DEFINITION, SCANNER_DEFINITION]}
       atlas={atlas}
       onChanged={vi.fn()}
+      {...props}
     />
   </MemoryRouter>,
 );
@@ -61,7 +105,7 @@ describe('PublishWorkflow runtime contract', () => {
   it('SETS the contract from a populated field group', async () => {
     renderWorkflow({ appId: 'app-1', atlasDestPath: 'assets/hero.png', codeBinding: null });
 
-    fireEvent.change(screen.getByLabelText(/Walk frames/), { target: { value: '12' } });
+    fireEvent.change(screen.getByLabelText(/Walk cycle frames/), { target: { value: '12' } });
     fireEvent.change(screen.getByLabelText(/Cell size/), { target: { value: '96' } });
     fireEvent.change(screen.getByLabelText(/Column count/), { target: { value: '13' } });
 
@@ -122,7 +166,7 @@ describe('PublishWorkflow runtime contract', () => {
   it('blocks a contract with no app/destination and explains why', () => {
     renderWorkflow(null, atlasWith());
 
-    fireEvent.change(screen.getByLabelText(/Walk frames/), { target: { value: '12' } });
+    fireEvent.change(screen.getByLabelText(/Walk cycle frames/), { target: { value: '12' } });
 
     expect(screen.getByText(/Bind an app and destination/)).toBeInTheDocument();
     expect(screen.getByText('Save binding')).toBeDisabled();
@@ -131,9 +175,9 @@ describe('PublishWorkflow runtime contract', () => {
   it('requires a track frame count when a scanner contract is entered on its own', () => {
     renderWorkflow({ appId: 'app-1', atlasDestPath: 'assets/hero.png', codeBinding: null });
 
-    fireEvent.change(screen.getByLabelText(/Scanner frames/), { target: { value: '4' } });
+    fireEvent.change(screen.getByLabelText(/Scanner action frames/), { target: { value: '4' } });
 
-    expect(screen.getByText(/Walk or ambient frame count is required/)).toBeInTheDocument();
+    expect(screen.getByText(/Walk cycle frame count is required/)).toBeInTheDocument();
     expect(screen.getByText('Save binding')).toBeDisabled();
   });
 
@@ -142,7 +186,7 @@ describe('PublishWorkflow runtime contract', () => {
 
     fireEvent.click(screen.getByText('Match current atlas'));
 
-    expect(screen.getByLabelText(/Walk frames/).value).toBe('12');
+    expect(screen.getByLabelText(/Walk cycle frames/).value).toBe('12');
     expect(screen.getByLabelText(/Cell size/).value).toBe('96');
     expect(screen.getByLabelText(/Column count/).value).toBe('13');
   });
@@ -163,7 +207,7 @@ describe('PublishWorkflow runtime contract', () => {
     renderWorkflow({ appId: 'app-1', atlasDestPath: 'assets/hero.png', codeBinding: null }, scannerAtlas);
 
     fireEvent.click(screen.getByText('Match current atlas'));
-    expect(screen.getByLabelText(/Scanner frames/).value).toBe('4');
+    expect(screen.getByLabelText(/Scanner action frames/).value).toBe('4');
     await act(async () => { fireEvent.click(screen.getByText('Save binding')); });
 
     expect(lastBindingArg().runtimeContract).toEqual({
@@ -190,7 +234,8 @@ describe('PublishWorkflow runtime contract', () => {
       <MemoryRouter>
         <PublishWorkflow
           record={{ id: 'example-tree', publishBinding: { appId: 'app-1', atlasDestPath: 'assets/tree.png', codeBinding: null } }}
-          ambient={{ set: {} }}
+          tracks={{ ambient: { definition: AMBIENT_DEFINITION, set: {} } }}
+          trackDefinitions={[AMBIENT_DEFINITION]}
           atlas={ambientAtlas}
           onChanged={vi.fn()}
         />
@@ -198,8 +243,8 @@ describe('PublishWorkflow runtime contract', () => {
     );
 
     fireEvent.click(screen.getByText('Match current atlas'));
-    expect(screen.getByLabelText(/Walk frames/).value).toBe('');
-    expect(screen.getByLabelText(/Ambient frames/).value).toBe('3');
+    expect(screen.queryByLabelText(/Walk cycle frames/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/Ambient loop frames/).value).toBe('3');
     await act(async () => { fireEvent.click(screen.getByText('Save binding')); });
     expect(lastBindingArg().runtimeContract).toEqual({ ambientFrameCount: 3, cellSize: 96, columnCount: 4 });
   });
@@ -207,9 +252,98 @@ describe('PublishWorkflow runtime contract', () => {
   it('rejects an out-of-range walk frame count and blocks the save', () => {
     renderWorkflow({ appId: 'app-1', atlasDestPath: 'assets/hero.png', codeBinding: null });
 
-    fireEvent.change(screen.getByLabelText(/Walk frames/), { target: { value: '99' } });
+    fireEvent.change(screen.getByLabelText(/Walk cycle frames/), { target: { value: '99' } });
 
-    expect(screen.getByText(/Walk frame count must be/)).toBeInTheDocument();
+    expect(screen.getByText(/Walk cycle frame count must be/)).toBeInTheDocument();
     expect(screen.getByText('Save binding')).toBeDisabled();
+  });
+
+  it('renders, range-checks, fills, and saves a user-defined track from its definition', async () => {
+    const jetpackAtlas = atlasWith({
+      current: {
+        version: 3,
+        compiledAt: '2026-07-01T00:00:00.000Z',
+        atlasPath: 'runtime/v3/a.png',
+        geometry: {
+          ...GEOMETRY,
+          tracks: {
+            walk: { start: 1, count: 12, rows: 8 },
+            jetpack: { start: 13, count: 5, rows: 8 },
+          },
+        },
+      },
+    });
+    renderWorkflow(
+      { appId: 'app-1', atlasDestPath: 'assets/hero.png', codeBinding: null },
+      jetpackAtlas,
+      { trackDefinitions: [WALK_DEFINITION, JETPACK_DEFINITION] },
+    );
+
+    expect(screen.getByLabelText(/Jetpack burst frames/)).toHaveAttribute('min', '3');
+    expect(screen.getByLabelText(/Jetpack burst frames/)).toHaveAttribute('max', '7');
+    fireEvent.change(screen.getByLabelText(/Walk cycle frames/), { target: { value: '12' } });
+    fireEvent.change(screen.getByLabelText(/Jetpack burst frames/), { target: { value: '8' } });
+    expect(screen.getByText(/Jetpack burst frame count must be a whole number 3–7/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Match current atlas'));
+    expect(screen.getByLabelText(/Jetpack burst frames/).value).toBe('5');
+    await act(async () => { fireEvent.click(screen.getByText('Save binding')); });
+    expect(lastBindingArg().runtimeContract).toEqual({
+      walkFrameCount: 12,
+      jetpackFrameCount: 5,
+      cellSize: 96,
+      columnCount: 13,
+    });
+  });
+
+  it('derives the required primary-track gate and mismatch summary from definitions', () => {
+    const glimmer = {
+      ...JETPACK_DEFINITION,
+      id: 'glimmer',
+      label: 'Glimmer loop',
+      contractFrameCountField: 'glimmerFrameCount',
+      standaloneContract: true,
+    };
+    const pulse = {
+      ...JETPACK_DEFINITION,
+      id: 'pulse',
+      label: 'Pulse action',
+      contractFrameCountField: 'pulseFrameCount',
+    };
+    renderWorkflow(
+      {
+        appId: 'app-1',
+        atlasDestPath: 'assets/glimmer.png',
+        codeBinding: null,
+        runtimeContract: { glimmerFrameCount: 5, pulseFrameCount: 4 },
+      },
+      atlasWith({
+        current: {
+          version: 3,
+          compiledAt: '2026-07-01T00:00:00.000Z',
+          atlasPath: 'runtime/v3/a.png',
+          geometry: {
+            columns: ['idle', 'glimmer-00', 'glimmer-01', 'glimmer-02', 'glimmer-03', 'glimmer-04'],
+            tracks: {
+              glimmer: { start: 1, count: 5, rows: 1 },
+              pulse: { start: 6, count: 3, rows: 1 },
+            },
+            cellSize: 96,
+          },
+        },
+      }),
+      {
+        walk: null,
+        tracks: {
+          glimmer: { definition: glimmer, set: {} },
+          pulse: { definition: pulse, set: {} },
+        },
+        trackDefinitions: [glimmer, pulse],
+      },
+    );
+
+    expect(screen.getByText(/contract expects 4 pulse action frames, atlas has 3/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/Glimmer loop frames/), { target: { value: '' } });
+    expect(screen.getByText(/Glimmer loop frame count is required/)).toBeInTheDocument();
   });
 });

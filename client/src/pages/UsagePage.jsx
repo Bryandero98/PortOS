@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { RefreshCw, Clock, AlertTriangle } from 'lucide-react';
+import { RefreshCw, Clock, AlertTriangle, DatabaseZap } from 'lucide-react';
 import * as api from '../services/api';
 import BrailleSpinner from '../components/BrailleSpinner';
 import PageSkeleton from '../components/ui/PageSkeleton';
 import Pill from '../components/ui/Pill';
 import { formatCompactCount } from '../utils/formatters';
+import { useAsyncAction } from '../hooks/useAsyncAction';
 
 const PERIOD_OPTIONS = [
   { id: '7d', label: '7 days' },
@@ -347,6 +348,7 @@ function InternalUsageMetrics() {
 
   const [usage, setUsage] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [backfill, setBackfill] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -364,6 +366,45 @@ function InternalUsageMetrics() {
       });
     return () => { cancelled = true; };
   }, [period, from, to, isCustom]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.getUsageBackfillStatus({ silent: true })
+      .then((status) => { if (!cancelled) setBackfill(status); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  const [startBackfill, startingBackfill] = useAsyncAction(async () => {
+    const status = await api.startUsageBackfill({ silent: true });
+    setBackfill(status);
+  }, { errorMessage: 'Failed to start historical usage reconciliation' });
+
+  useEffect(() => {
+    if (backfill?.status !== 'running') return undefined;
+    let cancelled = false;
+    let timer = null;
+    const poll = () => {
+      api.getUsageBackfillStatus({ silent: true })
+        .then(async (status) => {
+          if (cancelled) return;
+          setBackfill(status);
+          if (status?.status === 'complete') {
+            const params = isCustom ? { from, to } : { period };
+            const refreshed = await api.getUsage(params);
+            if (!cancelled) setUsage(refreshed);
+          } else if (status?.status === 'running') {
+            timer = setTimeout(poll, 1000);
+          }
+        })
+        .catch(() => {});
+    };
+    timer = setTimeout(poll, 1000);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [backfill?.status, isCustom, from, to, period]);
 
 
   const setPeriod = (id) => {
@@ -409,6 +450,40 @@ function InternalUsageMetrics() {
   return (
     <div className="space-y-6">
       <h2 className="text-lg font-semibold text-white">PortOS AI Usage</h2>
+
+      <div className="bg-port-card border border-port-border rounded-xl p-3 sm:p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2 text-sm font-medium text-white">
+            <DatabaseZap size={16} className="text-port-accent" />
+            Reconcile historical usage
+          </div>
+          <p className="text-xs text-gray-500 mt-1">
+            Re-read PortOS run transcripts to replace older token estimates. This changes recorded history but makes no provider calls.
+          </p>
+          {backfill?.status === 'running' && (
+            <p className="text-xs text-port-accent mt-1" role="status">
+              Processing {backfill.processed || 0} of {backfill.total || 0} runs…
+            </p>
+          )}
+          {backfill?.status === 'complete' && (
+            <p className="text-xs text-port-success mt-1" role="status">
+              Corrected {backfill.corrected || 0} run{backfill.corrected === 1 ? '' : 's'}.
+            </p>
+          )}
+          {backfill?.status === 'error' && (
+            <p className="text-xs text-port-error mt-1" role="alert">{backfill.error}</p>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={startBackfill}
+          disabled={startingBackfill || backfill?.status === 'running'}
+          className="shrink-0 inline-flex items-center justify-center gap-2 rounded-lg border border-port-border px-3 py-2 text-sm text-white hover:border-port-accent disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {(startingBackfill || backfill?.status === 'running') ? <BrailleSpinner /> : <DatabaseZap size={15} />}
+          {backfill?.status === 'running' ? 'Reconciling…' : 'Reconcile now'}
+        </button>
+      </div>
 
       {/* Summary Stats (all-time) */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">

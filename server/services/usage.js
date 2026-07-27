@@ -217,6 +217,164 @@ function modelDayBucket(providerDay, model) {
   return providerDay.byModel[model];
 }
 
+const countFields = ['messages', 'tokensIn', 'tokensOut', 'cacheReadTokens', 'cacheWriteTokens'];
+
+const recordTotals = (records) => (Array.isArray(records) ? records : [records]).reduce((total, record) => {
+  for (const field of countFields) total[field] += Math.max(0, record?.[field] || 0);
+  return total;
+}, { messages: 0, tokensIn: 0, tokensOut: 0, cacheReadTokens: 0, cacheWriteTokens: 0 });
+
+const adjustCounts = (bucket, counts, direction) => {
+  if (!bucket) return;
+  for (const field of countFields) {
+    const next = (bucket[field] || 0) + direction * Math.max(0, counts?.[field] || 0);
+    bucket[field] = Math.max(0, next);
+  }
+};
+
+const hasUsageCounts = (bucket) => countFields.some((field) => (bucket?.[field] || 0) > 0);
+const BACKFILL_YIELD_INTERVAL = 25;
+const yieldToEventLoop = () => new Promise((resolve) => setImmediate(resolve));
+
+const rebuildDayTotals = (day) => {
+  const providers = Object.values(day.byProvider || {});
+  day.sessions = providers.reduce((sum, provider) => sum + (provider.sessions || 0), 0);
+  day.messages = providers.reduce((sum, provider) => sum + (provider.messages || 0), 0);
+  day.tokensIn = providers.reduce((sum, provider) => sum + (provider.tokensIn || 0), 0);
+  day.tokensOut = providers.reduce((sum, provider) => sum + (provider.tokensOut || 0), 0);
+  day.tokens = day.tokensOut;
+};
+
+/**
+ * Run ids whose completion accounting has already landed. Kept with usage.json
+ * so a historical pass remains idempotent even when a run's metadata marker
+ * could not be written.
+ */
+export function getReconciledUsageRunIds() {
+  return Object.keys(usageData?.reconciledRuns || {});
+}
+
+export async function markUsageRunReconciled(runId) {
+  if (!runId) return;
+  if (!usageData) await loadUsage();
+  usageData.reconciledRuns ??= {};
+  if (usageData.reconciledRuns[runId]) return;
+  usageData.reconciledRuns[runId] = new Date().toISOString();
+  await saveUsage();
+}
+
+/**
+ * Replace historical per-run estimates with transcript measurements.
+ *
+ * The original estimate is subtracted from the exact configured provider/model
+ * bucket that received it, then the measured records are added. Flat day totals
+ * are rebuilt from the provider split so report residual reconciliation cannot
+ * resurrect the removed estimate as a synthetic legacy row.
+ */
+export async function applyHistoricalUsageCorrections(corrections = []) {
+  if (!usageData) await loadUsage();
+  usageData.reconciledRuns ??= {};
+  let corrected = 0;
+  const correctedRunIds = [];
+  const eligible = corrections.filter((correction) => {
+    const { runId, day: dayKey, providerId } = correction || {};
+    return runId && !usageData.reconciledRuns[runId] && dayKey && providerId
+      && usageData.dailyActivity?.[dayKey]?.byProvider?.[providerId];
+  });
+  const providerScopes = new Map();
+  const modelScopes = new Map();
+  for (const [index, correction] of eligible.entries()) {
+    if (index > 0 && index % BACKFILL_YIELD_INTERVAL === 0) await yieldToEventLoop();
+    const providerKey = `${correction.day}\u0000${correction.providerId}`;
+    const providerDay = usageData.dailyActivity[correction.day].byProvider[correction.providerId];
+    if (!providerScopes.has(providerKey)) {
+      providerScopes.set(providerKey, { bucket: providerDay, original: recordTotals([providerDay]), removed: recordTotals([]) });
+    }
+    adjustCounts(providerScopes.get(providerKey).removed, correction.estimate, 1);
+    if (correction.model && providerDay.byModel?.[correction.model]) {
+      const modelKey = `${providerKey}\u0000${correction.model}`;
+      const modelDay = providerDay.byModel[correction.model];
+      if (!modelScopes.has(modelKey)) {
+        modelScopes.set(modelKey, { bucket: modelDay, original: recordTotals([modelDay]), removed: recordTotals([]) });
+      }
+      adjustCounts(modelScopes.get(modelKey).removed, correction.estimate, 1);
+    }
+  }
+
+  for (const [index, correction] of eligible.entries()) {
+    if (index > 0 && index % BACKFILL_YIELD_INTERVAL === 0) await yieldToEventLoop();
+    const { runId, day: dayKey, providerId, model, estimate, measured } = correction || {};
+    const day = usageData.dailyActivity?.[dayKey];
+    const providerDay = day?.byProvider?.[providerId];
+
+    const measuredRecords = Array.isArray(measured) ? measured : [measured];
+    const measuredTotals = recordTotals(measuredRecords);
+    const oldModelDay = model ? providerDay.byModel?.[model] : null;
+
+    adjustCounts(providerDay, estimate, -1);
+    if (oldModelDay) {
+      adjustCounts(oldModelDay, estimate, -1);
+    }
+
+    for (const record of measuredRecords) {
+      adjustCounts(providerDay, record, 1);
+      if (record?.model) {
+        const target = modelDayBucket(providerDay, record.model);
+        const hadCounts = hasUsageCounts(target);
+        adjustCounts(target, record, 1);
+        target.source = hadCounts ? mergeSource(target.source, 'measured') : 'measured';
+      }
+    }
+
+    const delta = {
+      messages: measuredTotals.messages - (estimate?.messages || 0),
+      tokensIn: measuredTotals.tokensIn + measuredTotals.cacheReadTokens + measuredTotals.cacheWriteTokens
+        - (estimate?.tokensIn || 0),
+      tokensOut: measuredTotals.tokensOut - (estimate?.tokensOut || 0)
+    };
+    usageData.totalMessages = Math.max(0, (usageData.totalMessages || 0) + delta.messages);
+    usageData.totalTokens.input = Math.max(0, (usageData.totalTokens.input || 0) + delta.tokensIn);
+    usageData.totalTokens.output = Math.max(0, (usageData.totalTokens.output || 0) + delta.tokensOut);
+
+    const allProvider = usageData.byProvider?.[providerId];
+    if (allProvider) {
+      allProvider.messages = Math.max(0, (allProvider.messages || 0) + delta.messages);
+      allProvider.tokens = Math.max(0, (allProvider.tokens || 0) + delta.tokensOut);
+    }
+    if (model && usageData.byModel?.[model]) {
+      usageData.byModel[model].messages = Math.max(0, (usageData.byModel[model].messages || 0) - (estimate?.messages || 0));
+      usageData.byModel[model].tokens = Math.max(0, (usageData.byModel[model].tokens || 0) - (estimate?.tokensOut || 0));
+    }
+    for (const record of measuredRecords) {
+      if (!record?.model) continue;
+      usageData.byModel[record.model] ??= { sessions: 0, messages: 0, tokens: 0 };
+      usageData.byModel[record.model].messages += record.messages || 0;
+      usageData.byModel[record.model].tokens += record.tokensOut || 0;
+    }
+
+    rebuildDayTotals(day);
+    usageData.reconciledRuns[runId] = new Date().toISOString();
+    corrected++;
+    correctedRunIds.push(runId);
+  }
+
+  const hasResidual = ({ original, removed }) => countFields
+    .some((field) => (original[field] || 0) > (removed[field] || 0));
+  for (const scope of providerScopes.values()) {
+    scope.bucket.source = hasUsageCounts(scope.bucket)
+      ? (hasResidual(scope) ? 'mixed' : 'measured')
+      : null;
+  }
+  for (const scope of modelScopes.values()) {
+    scope.bucket.source = hasUsageCounts(scope.bucket)
+      ? (hasResidual(scope) ? 'mixed' : 'measured')
+      : null;
+  }
+
+  if (corrected > 0) await saveUsage();
+  return { corrected, correctedRunIds };
+}
+
 /**
  * Merge a new measurement source into a bucket's existing one. A bucket that has
  * only ever seen one kind keeps that kind; mixing measured and estimated counts
