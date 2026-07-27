@@ -354,12 +354,11 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
   // now-selected universe's draft. Nothing is lost by dropping it: the change
   // is already persisted, and the server owns the array now.
   //
-  // `adopt` is true when the same request also wrote the style guide, in which
-  // case the guide fields are folded in too (and banked as saved) unless the
-  // user edited them while the request was in flight.
   // `capturedStyle` is the style guide as it read when an ADOPT request was
-  // issued; passing it is what marks the response as an adopt. A plain add or
-  // remove passes nothing, because it wrote no guidance to fold in.
+  // issued; passing it is what marks the response as an adopt, so the guide
+  // fields are folded in too (and banked as saved) — unless the user edited them
+  // while the request was in flight. A plain add or remove passes nothing,
+  // because it wrote no guidance to fold in.
   const applyStyleReferenceResult = useCallback((targetId, updated, capturedStyle = null) => {
     noteUniverseUpdated(targetId, updated.updatedAt);
     if (selectedIdRef.current === targetId) {

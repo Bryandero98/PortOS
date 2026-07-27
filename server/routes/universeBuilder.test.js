@@ -563,6 +563,14 @@ describe('universe-builder routes', () => {
     expect(again.body.styleReferences.map((r) => r.id)).toEqual(['style-ref-b']);
   });
 
+  it('DELETE /:id/style-references rejects an over-long referenceId', async () => {
+    const app = buildApp();
+    const c = await request(app).post('/api/universe-builder').send({ name: 'Refs' });
+    const res = await request(app)
+      .delete(`/api/universe-builder/${c.body.id}/style-references/${'x'.repeat(81)}`);
+    expect(res.status).toBe(400);
+  });
+
   it('PATCH /:id still accepts a wholesale styleReferences replace (older clients + peer imports)', async () => {
     const app = buildApp();
     const c = await request(app).post('/api/universe-builder').send({

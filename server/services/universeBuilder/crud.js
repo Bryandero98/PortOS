@@ -684,8 +684,8 @@ export async function addStyleReference(id, reference, { adopt = null } = {}) {
         influences: resolveInfluences(adopt),
       } : {}),
     };
-    // A styleReferences (+ style-guide) patch carries no canon key, so skip the
-    // per-entry catalog projection the mutator path would otherwise run.
+    // The patch above carries no canon key, so skip the per-entry catalog
+    // projection the mutator path would otherwise run.
   }, { touchesCanon: false });
 }
 

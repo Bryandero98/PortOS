@@ -921,8 +921,15 @@ router.post('/:id/style-references', asyncHandler(async (req, res) => {
   res.json(w);
 }));
 
+// The id is only ever compared against stored reference ids (never used as a
+// path/SQL operand), but validate it anyway so an absurdly long param is a 400
+// here rather than a silent no-op deeper in.
+const removeStyleReferenceParamsSchema = z.object({
+  referenceId: entryIdField.unwrap(),
+});
 router.delete('/:id/style-references/:referenceId', asyncHandler(async (req, res) => {
-  const w = await svc.removeStyleReference(req.params.id, req.params.referenceId)
+  const { referenceId } = validateRequest(removeStyleReferenceParamsSchema, req.params);
+  const w = await svc.removeStyleReference(req.params.id, referenceId)
     .catch((err) => { throw mapServiceError(err); });
   res.json(w);
 }));
