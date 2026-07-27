@@ -46,13 +46,11 @@ export const deleteUniverse = (id, options = {}) => request(`/universe-builder/$
   ...options,
 });
 
-// Add / remove ONE art style reference. These are deltas, not a wholesale
-// array replace — the server applies them inside the universe record's write
-// queue against the freshest persisted list, so the browser never has to hold
-// a base array that a concurrent mutation, a peer sync, or the image-delete
-// purge can invalidate under it. Both resolve with the full updated universe.
-// `adopt` is `{ styleNotes, influences }` when the user chose "Adopt style +
-// add" — the server writes it in the same queued write as the reference.
+// Add / remove ONE art style reference — deltas, not a wholesale array replace
+// (see `addStyleReference` in server/services/universeBuilder/crud.js for why).
+// Both resolve with the full updated universe. `adopt` is
+// `{ styleNotes, influences }` when the user chose "Adopt style + add"; the
+// server writes it in the same queued write as the reference.
 export const addUniverseStyleReference = (id, { reference, adopt } = {}, options = {}) => request(
   `/universe-builder/${encodeURIComponent(id)}/style-references`,
   { method: 'POST', body: JSON.stringify({ reference, ...(adopt ? { adopt } : {}) }), ...options },

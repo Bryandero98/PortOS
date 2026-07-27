@@ -22,7 +22,7 @@ import {
   makeErr, UNIVERSE_ID_RE,
   ERR_NOT_FOUND, ERR_VALIDATION, ERR_DUPLICATE, ERR_HAS_LIVE_SERIES,
   NAME_MAX_LENGTH, CURRENT_SCHEMA_VERSION, ENTRY_REF_KIND, IMAGE_REFS_PER_ENTRY_MAX,
-  STYLE_REFERENCES_MAX,
+  STYLE_REFERENCES_MAX, STYLE_NOTES_MAX,
 } from './sanitize.js';
 import {
   emitRecordUpdated, emitRecordDeleted,
@@ -347,7 +347,20 @@ export async function updateUniverse(id, patchOrMutator = {}, options = {}) {
   // "restore mine" path so a faithful restore of the archived snapshot drops a
   // category the live record gained since the conflict, rather than resurrecting
   // it under the normal additive-PATCH semantics (see `mergedCategories` below).
-  const { silent = false, canonProjectionGuard = null, replaceCategories = false } = options;
+  // `options.touchesCanon: false` asserts this write cannot have changed the canon
+  // arrays, so the (per-entry, serial) catalog projection and the removed-character
+  // diff below are skipped. Needed because those are gated on `isMutator` — a
+  // conservative "a mutator could have touched anything" — while projectToCatalog
+  // issues one catalog SELECT per canon entry INSIDE the queued critical section, so
+  // on a 50-character universe a scalar-only mutator would stall the record's write
+  // queue behind 50 round-trips for no reason. Only set it from a mutator whose patch
+  // provably carries no canon key (see addStyleReference / removeStyleReference); a
+  // literal-object PATCH doesn't need it, its own `'characters' in patch` checks are
+  // already precise.
+  const {
+    silent = false, canonProjectionGuard = null, replaceCategories = false,
+    touchesCanon = true,
+  } = options;
   const s = store();
   const { merged, nameChanged, skipped, removedCharacterIds, prevEphemeral, nextEphemeral } = await s.queueRecordWrite(id, async () => {
     const cur = await s.loadOne(id);
@@ -553,7 +566,7 @@ export async function updateUniverse(id, patchOrMutator = {}, options = {}) {
     // the import/call anyway — this runs inside the queued write critical
     // section and an uncaught throw here would reject the whole save. Skipped
     // when the patch can't have touched canon arrays (rename/scalar PATCH).
-    if (isMutator || 'characters' in patch || 'places' in patch || 'objects' in patch) {
+    if (touchesCanon && (isMutator || 'characters' in patch || 'places' in patch || 'objects' in patch)) {
       try {
         const { projectToCatalog } = await import('../catalogCanonProjection.js');
         await projectToCatalog(id, mergedRecord, { guardToken: canonProjectionGuard });
@@ -566,7 +579,7 @@ export async function updateUniverse(id, patchOrMutator = {}, options = {}) {
     // literal-PATCH carrying `characters`) — rename/scalar PATCHes are the
     // common case and skip the Set construction entirely.
     let removedCharacterIds = null;
-    if (isMutator || 'characters' in patch) {
+    if (touchesCanon && (isMutator || 'characters' in patch)) {
       const idsOf = (arr) => (Array.isArray(arr)
         ? arr.filter((c) => c?.id).map((c) => c.id) : []);
       const prevIds = new Set(idsOf(cur.characters));
@@ -667,11 +680,13 @@ export async function addStyleReference(id, reference, { adopt = null } = {}) {
     return {
       styleReferences: [...current, sanitized],
       ...(adopt ? {
-        styleNotes: isStr(adopt.styleNotes) ? adopt.styleNotes : '',
+        styleNotes: trimTo(adopt.styleNotes, STYLE_NOTES_MAX),
         influences: resolveInfluences(adopt),
       } : {}),
     };
-  });
+    // A styleReferences (+ style-guide) patch carries no canon key, so skip the
+    // per-entry catalog projection the mutator path would otherwise run.
+  }, { touchesCanon: false });
 }
 
 /**
@@ -687,7 +702,7 @@ export async function removeStyleReference(id, referenceId) {
     const next = current.filter((ref) => ref?.id !== referenceId);
     if (next.length === current.length) return null;
     return { styleReferences: next };
-  });
+  }, { touchesCanon: false });
 }
 
 export async function deleteUniverse(id) {

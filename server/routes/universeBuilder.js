@@ -893,27 +893,30 @@ router.get('/:id/series-names', asyncHandler(async (req, res) => {
 
 // ---- Art style references (delta endpoints, #3109) ----
 //
-// Add/remove one reference at a time instead of PATCHing the whole array. The
-// wholesale-replace `{ styleReferences: [...] }` field on PATCH /:id stays
-// accepted (older clients, peer imports, the sharing importer) — these routes
-// just move the read half of the read-modify-write inside the record's write
-// queue, so a client no longer has to own a base array that a concurrent
-// mutation, peer sync, or the image-delete purge can invalidate under it.
+// Add/remove one reference at a time instead of PATCHing the whole array; see
+// `addStyleReference` in services/universeBuilder/crud.js for the rationale.
+// The wholesale-replace `{ styleReferences: [...] }` field on PATCH /:id stays
+// accepted (older clients, peer imports, the sharing importer).
 const addStyleReferenceSchema = z.object({
   // `id` is required here (unlike the wholesale-replace field, where the
   // sanitizer mints one): the id is what makes a re-sent add idempotent
-  // server-side, and /analyze-style-reference always returns one.
-  reference: styleReferenceSchema.extend({ id: z.string().trim().min(1).max(80) }),
+  // server-side, and /analyze-style-reference always returns one. `required`
+  // only drops the `.optional()` — the trim/length rules stay defined once, on
+  // the shared `entryIdField`.
+  reference: styleReferenceSchema.required({ id: true }),
   // Present when the user chose "Adopt style + add" — written in the SAME
-  // queued write as the reference so the pair can't half-land.
+  // queued write as the reference so the pair can't half-land. Both fields
+  // default, so `adopt: {}` reads as "adopt an empty guide" (an explicit clear)
+  // instead of reaching the service as `undefined` and clearing influences by
+  // accident — matching analyzeStyleReferenceSchema's choice for the same pair.
   adopt: z.object({
     styleNotes: z.string().trim().max(svc.STYLE_NOTES_MAX).optional().default(''),
-    influences: influencesSchema.optional(),
+    influences: influencesSchema.optional().default({ embrace: [], avoid: [] }),
   }).optional(),
 });
 router.post('/:id/style-references', asyncHandler(async (req, res) => {
   const body = validateRequest(addStyleReferenceSchema, req.body ?? {});
-  const w = await svc.addStyleReference(req.params.id, body.reference, { adopt: body.adopt || null })
+  const w = await svc.addStyleReference(req.params.id, body.reference, { adopt: body.adopt })
     .catch((err) => { throw mapServiceError(err); });
   res.json(w);
 }));

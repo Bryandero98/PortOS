@@ -92,32 +92,47 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
   const savedStyleSnapshotRef = useRef(ensureInfluences(createEmptyUniverseDraft().influences));
   const pendingCanonAdditionsRef = useRef(emptyPendingCanon());
   // Mirrors `selectedId` synchronously during render (not via a passive
-  // effect, which runs one tick later and would leave a window where a
-  // resolving request still sees the OLD selection as current). The style
-  // reference mutators compare against this — not the `selectedId` closure
-  // value — to decide whether their result should still touch the currently
-  // DISPLAYED draft, so a response for a universe the user has navigated away
-  // from is dropped from the view instead of poisoning a different universe's
-  // draft. Nothing is lost by dropping it: the mutation is already persisted
-  // server-side, and returning to that universe re-reads it (#3109 — the
-  // client no longer caches a base array that would need reconciling).
+  // effect, which runs one tick later and would leave a window where a resolving
+  // request still sees the OLD selection as current). Mutators compare against
+  // this — not the `selectedId` closure — to decide whether their result should
+  // still touch the currently DISPLAYED draft, so a response for a universe the
+  // user has navigated away from is dropped instead of poisoning a different
+  // universe's draft. Dropping it loses nothing: the write is already persisted
+  // and returning re-reads it.
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
-  // Per-universe count of style-reference mutations that have landed. The
-  // hydration GET captures it before it is issued and RE-READS if it moved
-  // while the GET was in flight, because such a GET may carry a body the
-  // server read before that mutation committed — applying it would blank the
-  // reference the user just added (client-side only; the server has it).
+  // The freshest `updatedAt` this hook has seen CONFIRMED for each universe —
+  // stamped from every mutation response, whatever field it wrote. The hydration
+  // GET compares its own body against it and re-reads when the body is older,
+  // because a GET issued before a write's response landed can still carry the
+  // pre-write record: applying it would visibly revert the change the user just
+  // made (client-side only — the server has it).
   //
-  // This is a read-again gate, not the value cache it replaced: the client
-  // holds no references array of its own, so "who wins" is never decided
-  // locally — the re-read simply asks the server again, which is why it also
-  // covers writers the client can't see (peer sync, the image-delete purge).
-  const styleMutationSeqRef = useRef(new Map());
-  const styleMutationSeq = useCallback((id) => styleMutationSeqRef.current.get(id) || 0, []);
-  const bumpStyleMutationSeq = useCallback((id) => {
-    styleMutationSeqRef.current.set(id, styleMutationSeq(id) + 1);
-  }, [styleMutationSeq]);
+  // Keyed on the server's own clock rather than a per-feature counter so it
+  // covers every writer that stamps through `noteUniverseUpdated`, not just
+  // style references — a mutation added to this hook is protected by recording
+  // its response, with no separate marker to remember. And because it decides
+  // only "re-ask the server", never "use my cached value", it also covers
+  // writers the client cannot see at all (peer sync, the image-delete purge) —
+  // which is exactly what the per-universe value cache it replaced could not
+  // do (#3109).
+  const lastSeenUpdatedAtRef = useRef(new Map());
+  const universeIsStale = useCallback((id, updatedAt) => {
+    const seen = lastSeenUpdatedAtRef.current.get(id);
+    if (!seen) return false;
+    // A body with no `updatedAt` is unorderable — treat it as stale so the
+    // re-read decides, rather than letting it silently win.
+    if (!updatedAt) return true;
+    return Date.parse(updatedAt) < Date.parse(seen);
+  }, []);
+  const noteUniverseUpdated = useCallback((id, updatedAt) => {
+    if (!id || !updatedAt) return;
+    const seen = lastSeenUpdatedAtRef.current.get(id);
+    // Monotonic — a slow response that resolves after a newer one must not roll
+    // the watermark backwards.
+    if (seen && Date.parse(seen) >= Date.parse(updatedAt)) return;
+    lastSeenUpdatedAtRef.current.set(id, updatedAt);
+  }, []);
 
   useEffect(() => () => { mountedRef.current = false; }, []);
   useEffect(() => { draftRef.current = draft; }, [draft]);
@@ -183,22 +198,24 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
       return undefined;
     }
     let cancelled = false;
-    // Captured before the fetch is issued — see styleMutationSeqRef.
-    const issuedSeq = styleMutationSeq(selectedId);
     Promise.all([
       getUniverse(selectedId).catch(() => null),
       listWorldRuns(selectedId).catch(() => []),
     ]).then(async ([fetched, nextRuns]) => {
       if (cancelled) return;
-      // A style-reference mutation landed while this GET was in flight, so its
-      // body may predate that write. Re-read instead of applying it — the
-      // second read is issued after the mutation's response, so it necessarily
-      // reflects the committed write.
-      const universe = (fetched && styleMutationSeq(selectedId) !== issuedSeq)
-        ? await getUniverse(selectedId).catch(() => fetched)
+      // This body predates a mutation we already have confirmed — re-read rather
+      // than apply it. The second read is issued after that mutation's response,
+      // so it necessarily reflects the committed write. Comparing the body's own
+      // clock (not merely "did a write happen") means the common case where the
+      // GET already contains the write costs no extra request. On a re-read
+      // failure, keep the draft as the mutation left it rather than applying the
+      // body we just judged stale.
+      const universe = (fetched && universeIsStale(selectedId, fetched.updatedAt))
+        ? await getUniverse(selectedId).catch(() => null)
         : fetched;
       if (cancelled) return;
       if (universe) {
+        noteUniverseUpdated(selectedId, universe.updatedAt);
         const hydrated = {
           ...universe,
           categories: ensureDraftCategories(universe.categories),
@@ -217,7 +234,7 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
       setRuns(nextRuns);
     });
     return () => { cancelled = true; };
-  }, [selectedId, styleMutationSeq]);
+  }, [selectedId, universeIsStale, noteUniverseUpdated]);
 
   const handleSave = async () => {
     if (!draft.name?.trim()) {
@@ -273,6 +290,11 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
       clearPendingCanonAdditions();
     }
     markDraftSaved(payload);
+    // Watermark this save so a re-hydration GET it raced (navigate away and back
+    // mid-save) re-reads instead of showing the pre-save record — the same guard
+    // the style-reference mutators get, which is why it keys on the server's
+    // clock rather than on anything style-reference-specific.
+    noteUniverseUpdated(result.id, result.updatedAt);
     toast.success(selectedId ? 'World updated' : 'World created');
     setWorlds((previous) => upsertByIdPrepend(previous, result));
     if (result.id !== selectedId) goToWorld(result.id);
@@ -335,19 +357,22 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
   // `adopt` is true when the same request also wrote the style guide, in which
   // case the guide fields are folded in too (and banked as saved) unless the
   // user edited them while the request was in flight.
-  const applyStyleReferenceResult = useCallback((targetId, updated, { adopt = false, capturedStyle = null } = {}) => {
-    bumpStyleMutationSeq(targetId);
+  // `capturedStyle` is the style guide as it read when an ADOPT request was
+  // issued; passing it is what marks the response as an adopt. A plain add or
+  // remove passes nothing, because it wrote no guidance to fold in.
+  const applyStyleReferenceResult = useCallback((targetId, updated, capturedStyle = null) => {
+    noteUniverseUpdated(targetId, updated.updatedAt);
     if (selectedIdRef.current === targetId) {
-      if (adopt) markStyleGuidanceSaved(updated);
+      if (capturedStyle) markStyleGuidanceSaved(updated);
       setDraft((latest) => {
-        const styleUnchangedDuringSave = !capturedStyle
-          || (latest.styleNotes === capturedStyle.styleNotes
-            && sameJsonShape(ensureInfluences(latest.influences), capturedStyle.influences));
+        const styleUnchangedDuringSave = capturedStyle
+          && latest.styleNotes === capturedStyle.styleNotes
+          && sameJsonShape(ensureInfluences(latest.influences), capturedStyle.influences);
         return {
           ...latest,
           styleReferences: updated.styleReferences || [],
           updatedAt: updated.updatedAt,
-          ...(adopt && styleUnchangedDuringSave ? {
+          ...(styleUnchangedDuringSave ? {
             styleNotes: updated.styleNotes || '',
             influences: ensureInfluences(updated.influences),
           } : {}),
@@ -355,13 +380,11 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
       });
     }
     setWorlds((previous) => upsertByIdPrepend(previous, updated));
-  }, [bumpStyleMutationSeq, markStyleGuidanceSaved]);
+  }, [noteUniverseUpdated, markStyleGuidanceSaved]);
 
-  // Add one art reference. The request carries ONLY the addition — the server
-  // appends it to the freshest persisted list inside the universe record's
-  // write queue (#3109), so this never needs a base array and can't lose a
-  // concurrent removal, a peer edit, or the image-delete purge. The cap is
-  // enforced there too, against real state rather than a client cache.
+  // Add one art reference. Sends ONLY the addition — see `addStyleReference` in
+  // server/services/universeBuilder/crud.js for why (#3109). The cap is enforced
+  // there too, against persisted state rather than a client cache.
   const persistStyleReference = useCallback(async ({ reference, proposed, adopt }) => {
     if (!selectedId || !reference) return false;
     const targetId = selectedId;
@@ -381,14 +404,13 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
       return null;
     });
     if (!updated) return false;
-    applyStyleReferenceResult(targetId, updated, { adopt: !!adopt, capturedStyle });
+    applyStyleReferenceResult(targetId, updated, adopt ? capturedStyle : null);
     toast.success(adopt ? 'Art reference added and style guide updated' : 'Art reference added');
     return true;
   }, [applyStyleReferenceResult, draft, selectedId]);
 
-  // Remove one art reference by id. Also a delta, so back-to-back removals on
-  // one universe no longer need a client-side queue — the server's record
-  // write queue serializes them and each filters the freshest persisted list.
+  // Remove one art reference by id. Also a delta, so back-to-back removals need
+  // no client-side queue — the server's record write queue serializes them.
   const removeStyleReference = useCallback(async (referenceId) => {
     if (!selectedId) return false;
     const targetId = selectedId;

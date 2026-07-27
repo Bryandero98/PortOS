@@ -483,6 +483,25 @@ describe("universeBuilder service", () => {
     })).rejects.toThrow(/up to 20 art references/);
   });
 
+  it("style-reference deltas leave canon untouched (so the projection opt-out is sound)", async () => {
+    // Guard for `touchesCanon: false`: these deltas skip the per-entry
+    // canon→catalog projection the mutator path normally runs, which is only
+    // sound because their patch carries no canon key. If either ever starts
+    // writing one, this fails and the opt-out has to go.
+    const w = await svc.createUniverse({
+      name: "Canon Untouched",
+      characters: [{ name: "Jean", physicalDescription: "tall" }],
+    });
+    const before = (await svc.getUniverse(w.id)).characters;
+    expect(before).toHaveLength(1);
+
+    const reference = { id: "style-ref-x", title: "X", prompt: "x", imageRefs: ["x.png"] };
+    const added = await svc.addStyleReference(w.id, reference);
+    expect(added.characters).toEqual(before);
+    const removed = await svc.removeStyleReference(w.id, reference.id);
+    expect(removed.characters).toEqual(before);
+  });
+
   it("removeStyleReference drops one by id and no-ops on an id that is already gone", async () => {
     const refA = { id: "style-ref-a", title: "A", prompt: "a", imageRefs: ["a.png"] };
     const refB = { id: "style-ref-b", title: "B", prompt: "b", imageRefs: ["b.png"] };

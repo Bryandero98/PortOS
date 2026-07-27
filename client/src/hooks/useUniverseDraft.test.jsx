@@ -17,7 +17,6 @@ const apiMocks = vi.hoisted(() => ({
   WORLD_CATEGORY_KEY_MAX: 64,
   WORLD_CATEGORIES: ['characters', 'places', 'objects'],
   WORLD_LOCKABLE_FIELDS: ['starterPrompt', 'logline', 'premise', 'styleNotes'],
-  WORLD_STYLE_REFERENCES_MAX: 20,
   ensureInfluences: (value) => ({
     embrace: Array.isArray(value?.embrace) ? value.embrace : [],
     avoid: Array.isArray(value?.avoid) ? value.avoid : [],
@@ -46,6 +45,7 @@ const universe = {
   characters: [{ name: 'Stale Draft Character' }],
   places: [],
   objects: [],
+  updatedAt: '2026-01-01T00:00:00.000Z',
 };
 
 // Stand-in for the server's authoritative styleReferences list, keyed by
@@ -55,9 +55,19 @@ const universe = {
 let serverReferences;
 const serverRefsFor = (id) => serverReferences.get(id) ?? [];
 
+// The server's `updatedAt` clock. Every write bumps it, and the hook keys its
+// "is this GET body older than a write I already saw?" watermark on it — so the
+// mock has to advance it or the ordering under test isn't modelled at all.
+let serverClock;
+const tickServerClock = () => {
+  serverClock += 1;
+  return `2026-01-01T00:00:${String(serverClock).padStart(2, '0')}.000Z`;
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   serverReferences = new Map();
+  serverClock = 0;
   apiMocks.listUniverses.mockResolvedValue([universe]);
   apiMocks.getProviders.mockResolvedValue({ providers: [], activeProvider: null });
   apiMocks.listImageModels.mockResolvedValue([]);
@@ -65,16 +75,20 @@ beforeEach(() => {
   apiMocks.getSettings.mockResolvedValue({ imageGen: {} });
   apiMocks.getUniverse.mockResolvedValue(universe);
   apiMocks.listWorldRuns.mockResolvedValue([{ id: 'run-1' }]);
-  apiMocks.updateUniverse.mockImplementation(async (id, payload) => ({ ...universe, id, ...payload }));
+  apiMocks.updateUniverse.mockImplementation(async (id, payload) => ({
+    ...universe, id, ...payload, updatedAt: tickServerClock(),
+  }));
   apiMocks.addUniverseStyleReference.mockImplementation(async (id, { reference, adopt } = {}) => {
     const next = [...serverRefsFor(id), reference];
     serverReferences.set(id, next);
-    return { ...universe, id, styleReferences: next, ...(adopt || {}) };
+    return {
+      ...universe, id, styleReferences: next, ...(adopt || {}), updatedAt: tickServerClock(),
+    };
   });
   apiMocks.removeUniverseStyleReference.mockImplementation(async (id, referenceId) => {
     const next = serverRefsFor(id).filter((ref) => ref.id !== referenceId);
     serverReferences.set(id, next);
-    return { ...universe, id, styleReferences: next };
+    return { ...universe, id, styleReferences: next, updatedAt: tickServerClock() };
   });
 });
 
@@ -261,7 +275,6 @@ describe('useUniverseDraft', () => {
   it('does not let an in-flight mutation for one universe touch a different, now-selected universe', async () => {
     const refB2 = { id: 'style-ref-b2', title: 'Ref B2', prompt: 'b2', imageRefs: ['b2.png'] };
     const universeTwoWithRef = { ...universeTwo, styleReferences: [refB2] };
-    serverReferences.set('u2', [refB2]);
     apiMocks.getUniverse.mockImplementation(async (id) => (id === 'u2' ? universeTwoWithRef : universe));
 
     const { result, rerender } = renderSelectable();
@@ -303,13 +316,19 @@ describe('useUniverseDraft', () => {
     // returned had it read before the add landed. The client can't tell that
     // from the response alone — hence the re-read.
     let serverStyleNotes = '';
+    let serverUpdatedAt = universe.updatedAt;
     let u1Fetches = 0;
     let resolveU1Hydration;
     apiMocks.getUniverse.mockImplementation(async (id) => {
       if (id === 'u2') return universeTwo;
       u1Fetches += 1;
       if (u1Fetches === 2) return new Promise((resolve) => { resolveU1Hydration = resolve; });
-      return { ...universe, styleReferences: serverRefsFor('u1'), styleNotes: serverStyleNotes };
+      return {
+        ...universe,
+        styleReferences: serverRefsFor('u1'),
+        styleNotes: serverStyleNotes,
+        updatedAt: serverUpdatedAt,
+      };
     });
 
     const { result, rerender } = renderSelectable();
@@ -331,15 +350,19 @@ describe('useUniverseDraft', () => {
     await act(async () => { rerender({ selectedId: 'u1' }); });
     await waitFor(() => expect(resolveU1Hydration).toBeTypeOf('function'));
 
-    // The add resolves first — the reordering this guard exists for.
+    // The add resolves first — the reordering this guard exists for. It advances
+    // the server clock, which is what makes G's older body detectable.
+    const addUpdatedAt = tickServerClock();
     await act(async () => {
       serverReferences.set('u1', [refA, refX]);
       serverStyleNotes = 'Adopted notes';
+      serverUpdatedAt = addUpdatedAt;
       resolveU1Add({
         ...universe,
         styleReferences: [refA, refX],
         styleNotes: 'Adopted notes',
         influences: { embrace: ['ink'], avoid: [] },
+        updatedAt: addUpdatedAt,
       });
       await pendingAdd;
     });
@@ -348,7 +371,9 @@ describe('useUniverseDraft', () => {
     // re-reads (fetch 3, which sees the committed write) rather than applying
     // it, so both the reference AND the guidance the same write adopted stand.
     await act(async () => {
-      resolveU1Hydration({ ...universe, styleReferences: [refA], styleNotes: '' });
+      resolveU1Hydration({
+        ...universe, styleReferences: [refA], styleNotes: '', updatedAt: universe.updatedAt,
+      });
       await Promise.resolve();
     });
 
@@ -357,6 +382,84 @@ describe('useUniverseDraft', () => {
     // markDraftSaved banked the re-read values, so the adopted guidance is not
     // silently re-saved as the stale '' on the next general Save.
     expect(result.current.isDraftDirty()).toBe(false);
+  });
+
+  it('does not re-read when the hydration GET already contains the mutation', async () => {
+    // The other half of the gate: it compares the BODY's clock against the newest
+    // write seen, not merely "did a write happen" — so the common overlap, where
+    // the GET was served after the write committed, costs no extra round-trip.
+    const refX = { id: 'style-ref-x', title: 'Ref X', prompt: 'x', imageRefs: ['x.png'] };
+    let serverUpdatedAt = universe.updatedAt;
+    apiMocks.getUniverse.mockImplementation(async (id) => (id === 'u2'
+      ? universeTwo
+      : { ...universe, styleReferences: serverRefsFor('u1'), updatedAt: serverUpdatedAt }));
+
+    const { result, rerender } = renderSelectable();
+    await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+    apiMocks.addUniverseStyleReference.mockImplementationOnce(async (id, { reference }) => {
+      serverReferences.set(id, [...serverRefsFor(id), reference]);
+      serverUpdatedAt = tickServerClock();
+      return { ...universe, id, styleReferences: serverRefsFor(id), updatedAt: serverUpdatedAt };
+    });
+    await act(async () => {
+      await result.current.persistStyleReference({ reference: refX, adopt: false });
+    });
+
+    const fetchesBefore = apiMocks.getUniverse.mock.calls.length;
+    await act(async () => { rerender({ selectedId: 'u2' }); });
+    await waitFor(() => expect(result.current.draft.id).toBe('u2'));
+    await act(async () => { rerender({ selectedId: 'u1' }); });
+    await waitFor(() => expect(result.current.draft.styleReferences).toEqual([refX]));
+
+    // One GET for u2, one for u1 — no third (re-read) call.
+    expect(apiMocks.getUniverse.mock.calls.length).toBe(fetchesBefore + 2);
+  });
+
+  it('re-reads after a general Save that a hydration GET raced, not just a reference mutation', async () => {
+    // The stale-GET guard keys on the server's clock rather than on anything
+    // style-reference-specific, so every writer that stamps its response is
+    // covered — including handleSave. Without that, a save → navigate away →
+    // back round trip could show the pre-save record.
+    let serverPremise = 'Original premise';
+    let serverUpdatedAt = universe.updatedAt;
+    let u1Fetches = 0;
+    let resolveU1Hydration;
+    apiMocks.getUniverse.mockImplementation(async (id) => {
+      if (id === 'u2') return universeTwo;
+      u1Fetches += 1;
+      if (u1Fetches === 2) return new Promise((resolve) => { resolveU1Hydration = resolve; });
+      return { ...universe, premise: serverPremise, updatedAt: serverUpdatedAt };
+    });
+
+    const { result, rerender } = renderSelectable();
+    await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+    act(() => result.current.updateDraft({ premise: 'Saved premise' }));
+
+    // handleSave sets `saving` synchronously before its first await, so the call
+    // itself has to be inside act() (unlike the reference mutators).
+    let resolveSave;
+    let pendingSave;
+    apiMocks.updateUniverse.mockImplementationOnce(() => new Promise((resolve) => { resolveSave = resolve; }));
+    await act(async () => { pendingSave = result.current.handleSave(); });
+
+    await act(async () => { rerender({ selectedId: 'u2' }); });
+    await waitFor(() => expect(result.current.draft.id).toBe('u2'));
+    await act(async () => { rerender({ selectedId: 'u1' }); });
+    await waitFor(() => expect(resolveU1Hydration).toBeTypeOf('function'));
+
+    const savedAt = tickServerClock();
+    await act(async () => {
+      serverPremise = 'Saved premise';
+      serverUpdatedAt = savedAt;
+      resolveSave({ ...universe, premise: 'Saved premise', updatedAt: savedAt });
+      await pendingSave;
+    });
+    await act(async () => {
+      resolveU1Hydration({ ...universe, premise: 'Original premise', updatedAt: universe.updatedAt });
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(result.current.draft.premise).toBe('Saved premise'));
   });
 
   it('lets an un-raced hydration carry a peer edit the client never wrote', async () => {
