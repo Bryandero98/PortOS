@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import toast from '../components/ui/Toast';
 import {
+  addUniverseStyleReference,
   createUniverse,
   deleteUniverse,
   getProviders,
@@ -10,9 +11,9 @@ import {
   listLorasFull,
   listUniverses,
   listWorldRuns,
+  removeUniverseStyleReference,
   updateUniverse,
   WORLD_LOCKABLE_FIELDS,
-  WORLD_STYLE_REFERENCES_MAX,
   ensureInfluences,
 } from '../services/api';
 import { deriveAvailableBackends, IMAGE_GEN_MODE } from '../lib/imageGenBackends';
@@ -90,66 +91,33 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
   const savedDraftSnapshotRef = useRef(universeDraftSnapshot(createEmptyUniverseDraft()));
   const savedStyleSnapshotRef = useRef(ensureInfluences(createEmptyUniverseDraft().influences));
   const pendingCanonAdditionsRef = useRef(emptyPendingCanon());
-  // Authoritative per-universe styleReferences state, keyed by universe id —
-  // both persistStyleReference (add) and removeStyleReference (remove) read
-  // their base array from and write their result back to the entry for the
-  // universe they're actually mutating (`targetId`, captured at call time),
-  // never a single shared slot. draftRef only syncs after a React effect,
-  // which can still be one render behind when two mutations fire before
-  // either PATCH resolves — reading a single shared "current" snapshot would
-  // let the slower response's wholesale-replace PATCH undo the other
-  // mutation's change, and — the reason this is keyed by id rather than a
-  // single ref reset on every selection change — a switch away and back
-  // (A → B → A) would otherwise permanently lose A's in-flight state instead
-  // of correctly reconciling with it once it resolves. removeStyleReference
-  // additionally serializes same-universe calls through the matching queue
-  // entry so back-to-back removals on one universe never overlap; different
-  // universes' queues are independent.
-  //
-  // Each entry is `{ references, guidance, epoch }`, where `epoch` counts the
-  // MUTATION responses folded in so far. The epoch version-gates the other
-  // writer — the hydration effect's `getUniverse` — against the last reordering
-  // race: a mutation M issued before the user navigates away and back, and the
-  // re-hydration GET G issued on the return. When M resolves first, G's body is
-  // a PRE-mutation read, so letting it write would silently revert M
-  // client-side. G captures the epoch when it is ISSUED and keeps its own body
-  // only if no mutation landed while it was in flight.
-  //
-  // `guidance` is `{ styleNotes, influences }` when the mutation was an ADOPT —
-  // that PATCH writes the style guide in the SAME request as the references, so
-  // both halves are equally stale in a losing G. Overriding only the references
-  // would let G revert the adopted guidance AND (via markDraftSaved) bank the
-  // reverted values as the saved baseline, so the draft reads clean and the
-  // next general Save pushes the stale guidance back server-side — a worse
-  // outcome than the client-only revert this guard exists to stop. The override
-  // is scoped to exactly the fields the winning PATCH wrote; every other field
-  // still comes from G, which may legitimately be fresher (peer sync, canon).
-  //
-  // The guide carries its OWN `guidanceEpoch` rather than riding the reference
-  // epoch, because the two move independently: a plain add/remove bumps `epoch`
-  // without writing the guide. Overlaying on the reference epoch alone would
-  // let such a mutation resurrect a long-settled adopt over a newer peer edit
-  // that G legitimately carries. Overlay only when a PATCH wrote the guide
-  // AFTER G was issued.
-  //
-  // The guard is deliberately "a mutation always beats a concurrent GET", not a
-  // monotonic issued-at sequence shared by all writers: G is issued AFTER M yet
-  // reads state the server may not have written M into yet, so ordering by
-  // issue time would make a late-resolving M lose to an earlier-issued G —
-  // reintroducing the A → B → A loss fixed above. Keeping `epoch` in the same
-  // record as the values it guards is what makes "the epoch moves whenever
-  // those values do" structural rather than a convention writers must remember.
-  const styleReferenceQueuesRef = useRef(new Map());
-  const styleReferenceStatesRef = useRef(new Map());
   // Mirrors `selectedId` synchronously during render (not via a passive
   // effect, which runs one tick later and would leave a window where a
-  // resolving PATCH still sees the OLD selection as current). Mutators
-  // compare against this — not the `selectedId` closure value — to decide
-  // whether their result should still touch the currently DISPLAYED draft;
-  // the per-id snapshot/queue writes above always apply regardless, so a
-  // save for a universe the user has navigated away from is never lost.
+  // resolving request still sees the OLD selection as current). The style
+  // reference mutators compare against this — not the `selectedId` closure
+  // value — to decide whether their result should still touch the currently
+  // DISPLAYED draft, so a response for a universe the user has navigated away
+  // from is dropped from the view instead of poisoning a different universe's
+  // draft. Nothing is lost by dropping it: the mutation is already persisted
+  // server-side, and returning to that universe re-reads it (#3109 — the
+  // client no longer caches a base array that would need reconciling).
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
+  // Per-universe count of style-reference mutations that have landed. The
+  // hydration GET captures it before it is issued and RE-READS if it moved
+  // while the GET was in flight, because such a GET may carry a body the
+  // server read before that mutation committed — applying it would blank the
+  // reference the user just added (client-side only; the server has it).
+  //
+  // This is a read-again gate, not the value cache it replaced: the client
+  // holds no references array of its own, so "who wins" is never decided
+  // locally — the re-read simply asks the server again, which is why it also
+  // covers writers the client can't see (peer sync, the image-delete purge).
+  const styleMutationSeqRef = useRef(new Map());
+  const styleMutationSeq = useCallback((id) => styleMutationSeqRef.current.get(id) || 0, []);
+  const bumpStyleMutationSeq = useCallback((id) => {
+    styleMutationSeqRef.current.set(id, styleMutationSeq(id) + 1);
+  }, [styleMutationSeq]);
 
   useEffect(() => () => { mountedRef.current = false; }, []);
   useEffect(() => { draftRef.current = draft; }, [draft]);
@@ -157,54 +125,6 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
   const clearPendingCanonAdditions = useCallback(() => {
     pendingCanonAdditionsRef.current = emptyPendingCanon();
   }, []);
-
-  const styleReferenceState = useCallback(
-    (id) => styleReferenceStatesRef.current.get(id)
-      ?? { references: null, guidance: null, guidanceEpoch: 0, epoch: 0 },
-    [],
-  );
-
-  // Record a mutation's confirmed values for `id`, bumping its epoch so any
-  // hydration GET still in flight for that universe knows its body is stale.
-  // `guidance` is null for a mutation that didn't write the style guide; the
-  // previous entry's guidance carries forward (so an adopt followed by a plain
-  // add/remove during one GET doesn't drop the adopted values) but keeps its
-  // ORIGINAL `guidanceEpoch` — the epoch at which a PATCH last actually wrote
-  // the style guide. That stamp is what lets the hydration arbiter tell "this
-  // guidance is newer than the GET" from "the GET already contains it."
-  const applyStyleReferenceMutation = useCallback((id, references, guidance = null) => {
-    const previous = styleReferenceState(id);
-    const epoch = previous.epoch + 1;
-    styleReferenceStatesRef.current.set(id, {
-      references,
-      epoch,
-      guidance: guidance ?? previous.guidance,
-      guidanceEpoch: guidance ? epoch : previous.guidanceEpoch,
-    });
-  }, [styleReferenceState]);
-
-  // Fold a hydration GET's styleReferences into `id`'s state, unless a mutation
-  // resolved while the GET was in flight (epoch moved) — in which case that
-  // mutation's values stand. Returns the draft fields the winning writer owns,
-  // to be spread LAST over the hydrated draft so they override the server read.
-  const applyStyleReferenceHydration = useCallback((id, issuedEpoch, references) => {
-    const state = styleReferenceState(id);
-    if (state.epoch !== issuedEpoch) {
-      // References always come from the winning mutation. The style guide only
-      // does when a PATCH actually wrote it AFTER this GET was issued
-      // (`guidanceEpoch > issuedEpoch`) — otherwise this GET already read that
-      // guidance back from the server, and overlaying the stashed copy would
-      // clobber a genuinely newer value the GET carries (a peer edit made while
-      // the user was on another universe) and — via markDraftSaved — bank the
-      // clobbered value so a later general Save pushes it back server-side.
-      return {
-        styleReferences: state.references,
-        ...(state.guidanceEpoch > issuedEpoch ? state.guidance : null),
-      };
-    }
-    styleReferenceStatesRef.current.set(id, { ...state, references });
-    return { styleReferences: references };
-  }, [styleReferenceState]);
 
   const markDraftSaved = useCallback((snapshotSource) => {
     savedDraftSnapshotRef.current = universeDraftSnapshot(snapshotSource);
@@ -255,10 +175,6 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
     setPendingDeleteId(null);
     setCanonDirty(false);
     clearPendingCanonAdditions();
-    // No styleReference queue/snapshot reset needed here — both are keyed by
-    // universe id (see styleReferenceQueuesRef/styleReferenceStatesRef
-    // above), so switching away and back naturally finds each universe's own
-    // state exactly as it left it.
     if (!selectedId) {
       const empty = createEmptyUniverseDraft();
       setDraft(empty);
@@ -267,12 +183,20 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
       return undefined;
     }
     let cancelled = false;
-    // Captured BEFORE the fetch is issued — see styleReferenceStatesRef.
-    const issuedEpoch = styleReferenceState(selectedId).epoch;
+    // Captured before the fetch is issued — see styleMutationSeqRef.
+    const issuedSeq = styleMutationSeq(selectedId);
     Promise.all([
       getUniverse(selectedId).catch(() => null),
       listWorldRuns(selectedId).catch(() => []),
-    ]).then(([universe, nextRuns]) => {
+    ]).then(async ([fetched, nextRuns]) => {
+      if (cancelled) return;
+      // A style-reference mutation landed while this GET was in flight, so its
+      // body may predate that write. Re-read instead of applying it — the
+      // second read is issued after the mutation's response, so it necessarily
+      // reflects the committed write.
+      const universe = (fetched && styleMutationSeq(selectedId) !== issuedSeq)
+        ? await getUniverse(selectedId).catch(() => fetched)
+        : fetched;
       if (cancelled) return;
       if (universe) {
         const hydrated = {
@@ -286,18 +210,6 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
           styleReferences: universe.styleReferences || [],
           locked: universe.locked || {},
           llm: universe.llm || { provider: null, model: null },
-          // Refresh this universe's styleReferences snapshot from the server on
-          // every successful hydration — a stale map entry from an earlier
-          // local mutation (or absence of one, on first visit) must not shadow
-          // changes made while this universe wasn't selected (peer sync, the
-          // image-delete purge route). The next add/remove needs this fresh
-          // baseline, not a leftover cache (codex review finding) — except when
-          // a mutation resolved while this GET was in flight, in which case
-          // this spread overrides the fields THAT PATCH wrote with its newer
-          // confirmed values (see styleReferenceStatesRef). Spread LAST so it
-          // wins over the server read above; markDraftSaved then banks the
-          // overridden values, not the stale ones.
-          ...applyStyleReferenceHydration(selectedId, issuedEpoch, universe.styleReferences || []),
         };
         setDraft(hydrated);
         markDraftSaved(hydrated);
@@ -305,7 +217,7 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
       setRuns(nextRuns);
     });
     return () => { cancelled = true; };
-  }, [selectedId, applyStyleReferenceHydration, styleReferenceState]);
+  }, [selectedId, styleMutationSeq]);
 
   const handleSave = async () => {
     if (!draft.name?.trim()) {
@@ -414,60 +326,23 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
 
   const updateDraft = useCallback((patch) => setDraft((current) => ({ ...current, ...patch })), []);
 
-  const persistStyleReference = useCallback(async ({ reference, proposed, adopt }) => {
-    if (!selectedId || !reference) return false;
-    const targetId = selectedId;
-    const current = draftRef.current || draft;
-    const capturedStyle = {
-      styleNotes: current.styleNotes || '',
-      influences: ensureInfluences(current.influences),
-    };
-    // Per-universe snapshot removeStyleReference also reads/writes — reading
-    // draftRef here instead would miss a removal still settling for the same
-    // universe and could resurrect the item it just removed once this add's
-    // wholesale-replace PATCH lands.
-    const baseStyleReferences = styleReferenceState(targetId).references
-      ?? (targetId === current.id && Array.isArray(current.styleReferences) ? current.styleReferences : []);
-    if (baseStyleReferences.length >= WORLD_STYLE_REFERENCES_MAX) {
-      toast.error(`A universe can hold up to ${WORLD_STYLE_REFERENCES_MAX} art references`);
-      return false;
-    }
-    const styleReferences = [...baseStyleReferences, reference];
-    const patch = {
-      styleReferences,
-      ...(adopt ? {
-        styleNotes: proposed?.styleNotes || '',
-        influences: ensureInfluences(proposed?.influences),
-      } : {}),
-    };
-    const updated = await updateUniverse(targetId, patch, { silent: true }).catch((error) => {
-      toast.error(`Reference save failed: ${error.message}`);
-      return null;
-    });
-    if (!updated) return false;
-    // Keep targetId's own snapshot current regardless of what's currently
-    // selected — a later add/remove for targetId (including one after the
-    // user navigates away and back) must build from this result, not a
-    // pre-save list (codex review finding: an A→B→A round trip must not lose
-    // A's in-flight save). The epoch bump invalidates any re-hydration GET for
-    // targetId still in flight — see styleReferenceStatesRef. On the adopt
-    // path the SAME PATCH wrote the style guide, so hand that over too or a
-    // losing GET reverts the adopted guidance while the references survive.
-    applyStyleReferenceMutation(targetId, updated.styleReferences || [], adopt ? {
-      styleNotes: updated.styleNotes || '',
-      influences: ensureInfluences(updated.influences),
-    } : null);
-    // But only touch the currently DISPLAYED draft if the user is still on
-    // targetId — applying it otherwise would poison a DIFFERENT, now-selected
-    // universe's state with targetId's references (codex review finding).
-    // selectedIdRef mirrors selectedId synchronously during render (not via a
-    // passive effect), so there is no timing window where a resolving PATCH
-    // sees a stale "current selection".
+  // Fold one style-reference mutation's response (the full updated universe)
+  // into the DISPLAYED draft — but only when the user is still on the universe
+  // that was mutated; otherwise applying it would poison a different,
+  // now-selected universe's draft. Nothing is lost by dropping it: the change
+  // is already persisted, and the server owns the array now.
+  //
+  // `adopt` is true when the same request also wrote the style guide, in which
+  // case the guide fields are folded in too (and banked as saved) unless the
+  // user edited them while the request was in flight.
+  const applyStyleReferenceResult = useCallback((targetId, updated, { adopt = false, capturedStyle = null } = {}) => {
+    bumpStyleMutationSeq(targetId);
     if (selectedIdRef.current === targetId) {
       if (adopt) markStyleGuidanceSaved(updated);
       setDraft((latest) => {
-        const styleUnchangedDuringSave = latest.styleNotes === capturedStyle.styleNotes
-          && sameJsonShape(ensureInfluences(latest.influences), capturedStyle.influences);
+        const styleUnchangedDuringSave = !capturedStyle
+          || (latest.styleNotes === capturedStyle.styleNotes
+            && sameJsonShape(ensureInfluences(latest.influences), capturedStyle.influences));
         return {
           ...latest,
           styleReferences: updated.styleReferences || [],
@@ -480,57 +355,53 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
       });
     }
     setWorlds((previous) => upsertByIdPrepend(previous, updated));
-    toast.success(adopt ? 'Art reference added and style guide updated' : 'Art reference added');
-    return true;
-  }, [applyStyleReferenceMutation, draft, markStyleGuidanceSaved, selectedId, styleReferenceState]);
+  }, [bumpStyleMutationSeq, markStyleGuidanceSaved]);
 
-  const removeStyleReference = useCallback((referenceId) => {
-    if (!selectedId) return Promise.resolve(false);
+  // Add one art reference. The request carries ONLY the addition — the server
+  // appends it to the freshest persisted list inside the universe record's
+  // write queue (#3109), so this never needs a base array and can't lose a
+  // concurrent removal, a peer edit, or the image-delete purge. The cap is
+  // enforced there too, against real state rather than a client cache.
+  const persistStyleReference = useCallback(async ({ reference, proposed, adopt }) => {
+    if (!selectedId || !reference) return false;
     const targetId = selectedId;
     const current = draftRef.current || draft;
-    // Chain onto targetId's OWN queue (not a shared one) so two removals on
-    // the SAME universe never overlap, while removals on a DIFFERENT
-    // universe are unaffected — this task can be dequeued well after the user
-    // has switched away from and even back to targetId, so it must resolve
-    // its base from targetId's own tracked state, never from whatever
-    // universe happens to be selected when its turn comes up.
-    const queue = styleReferenceQueuesRef.current.get(targetId) ?? Promise.resolve();
-    const task = queue.then(async () => {
-      const base = styleReferenceState(targetId).references
-        ?? (targetId === current.id && Array.isArray(current.styleReferences) ? current.styleReferences : []);
-      const styleReferences = base.filter((item) => item.id !== referenceId);
-      const updated = await updateUniverse(targetId, { styleReferences }, { silent: true }).catch((error) => {
+    const capturedStyle = {
+      styleNotes: current.styleNotes || '',
+      influences: ensureInfluences(current.influences),
+    };
+    const updated = await addUniverseStyleReference(targetId, {
+      reference,
+      adopt: adopt ? {
+        styleNotes: proposed?.styleNotes || '',
+        influences: ensureInfluences(proposed?.influences),
+      } : undefined,
+    }, { silent: true }).catch((error) => {
+      toast.error(`Reference save failed: ${error.message}`);
+      return null;
+    });
+    if (!updated) return false;
+    applyStyleReferenceResult(targetId, updated, { adopt: !!adopt, capturedStyle });
+    toast.success(adopt ? 'Art reference added and style guide updated' : 'Art reference added');
+    return true;
+  }, [applyStyleReferenceResult, draft, selectedId]);
+
+  // Remove one art reference by id. Also a delta, so back-to-back removals on
+  // one universe no longer need a client-side queue — the server's record
+  // write queue serializes them and each filters the freshest persisted list.
+  const removeStyleReference = useCallback(async (referenceId) => {
+    if (!selectedId) return false;
+    const targetId = selectedId;
+    const updated = await removeUniverseStyleReference(targetId, referenceId, { silent: true })
+      .catch((error) => {
         toast.error(`Reference removal failed: ${error.message}`);
         return null;
       });
-      if (!updated) return false;
-      // Keep targetId's own snapshot current regardless of what's currently
-      // selected (codex review finding: an A→B→A round trip must not lose
-      // A's in-flight removal). The epoch bump invalidates any re-hydration
-      // GET for targetId still in flight — see styleReferenceStatesRef.
-      applyStyleReferenceMutation(targetId, updated.styleReferences || []);
-      // Only touch the currently DISPLAYED draft if the user is still on
-      // targetId — selectedIdRef mirrors selectedId synchronously during
-      // render, so there is no passive-effect timing window where a
-      // resolving PATCH sees a stale "current selection" (codex review
-      // finding).
-      if (selectedIdRef.current === targetId) {
-        setDraft((latest) => ({
-          ...latest,
-          styleReferences: updated.styleReferences || [],
-          updatedAt: updated.updatedAt,
-        }));
-      }
-      setWorlds((previous) => upsertByIdPrepend(previous, updated));
-      toast.success('Art reference removed');
-      return true;
-    });
-    // Keep targetId's queue alive even if this removal failed, so the NEXT
-    // removal on the SAME universe still runs (in its turn) rather than
-    // inheriting a rejected chain.
-    styleReferenceQueuesRef.current.set(targetId, task.catch(() => {}));
-    return task;
-  }, [applyStyleReferenceMutation, draft, selectedId, styleReferenceState]);
+    if (!updated) return false;
+    applyStyleReferenceResult(targetId, updated);
+    toast.success('Art reference removed');
+    return true;
+  }, [applyStyleReferenceResult, selectedId]);
 
   const handleCanonChange = useCallback((updated) => {
     if (!updated) return;

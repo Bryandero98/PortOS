@@ -14,6 +14,8 @@
  *   POST   /api/universe-builder/:id/canon/:kind/:entryId/apply-image-correction → { universe, entry }
  *   POST   /api/universe-builder/:id/render             → { runId, collectionId, jobIds, promptCount }
  *   GET    /api/universe-builder/:id/runs               → Run[]
+ *   POST   /api/universe-builder/:id/style-references                 → Universe
+ *   DELETE /api/universe-builder/:id/style-references/:referenceId    → Universe
  */
 
 import { Router } from 'express';
@@ -887,6 +889,39 @@ router.get('/:id/series-names', asyncHandler(async (req, res) => {
   const result = await listLinkedSeriesNames(req.params.id)
     .catch((err) => { throw mapServiceError(err); });
   res.json(result);
+}));
+
+// ---- Art style references (delta endpoints, #3109) ----
+//
+// Add/remove one reference at a time instead of PATCHing the whole array. The
+// wholesale-replace `{ styleReferences: [...] }` field on PATCH /:id stays
+// accepted (older clients, peer imports, the sharing importer) — these routes
+// just move the read half of the read-modify-write inside the record's write
+// queue, so a client no longer has to own a base array that a concurrent
+// mutation, peer sync, or the image-delete purge can invalidate under it.
+const addStyleReferenceSchema = z.object({
+  // `id` is required here (unlike the wholesale-replace field, where the
+  // sanitizer mints one): the id is what makes a re-sent add idempotent
+  // server-side, and /analyze-style-reference always returns one.
+  reference: styleReferenceSchema.extend({ id: z.string().trim().min(1).max(80) }),
+  // Present when the user chose "Adopt style + add" — written in the SAME
+  // queued write as the reference so the pair can't half-land.
+  adopt: z.object({
+    styleNotes: z.string().trim().max(svc.STYLE_NOTES_MAX).optional().default(''),
+    influences: influencesSchema.optional(),
+  }).optional(),
+});
+router.post('/:id/style-references', asyncHandler(async (req, res) => {
+  const body = validateRequest(addStyleReferenceSchema, req.body ?? {});
+  const w = await svc.addStyleReference(req.params.id, body.reference, { adopt: body.adopt || null })
+    .catch((err) => { throw mapServiceError(err); });
+  res.json(w);
+}));
+
+router.delete('/:id/style-references/:referenceId', asyncHandler(async (req, res) => {
+  const w = await svc.removeStyleReference(req.params.id, req.params.referenceId)
+    .catch((err) => { throw mapServiceError(err); });
+  res.json(w);
 }));
 
 // Lock toggle for canon entries. Locked entries are protected from AI rewrite

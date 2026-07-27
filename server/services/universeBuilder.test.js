@@ -405,6 +405,103 @@ describe("universeBuilder service", () => {
     expect((await svc.getUniverse(w.id)).styleReferences).toEqual([reference]);
   });
 
+  it("addStyleReference appends inside the queued mutator so concurrent adds compose (#3109)", async () => {
+    const refFor = (n) => ({
+      id: `style-ref-${n}`,
+      title: `Ref ${n}`,
+      prompt: `Prompt ${n}`,
+      imageRefs: [`ref-${n}.png`],
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const w = await svc.createUniverse({ name: "Delta Adds" });
+
+    // Fired without awaiting the first — the record write queue serializes
+    // them and each reads the freshest persisted list, so neither is lost.
+    // A wholesale-replace PATCH pair built from the same base would drop one.
+    await Promise.all([
+      svc.addStyleReference(w.id, refFor(1)),
+      svc.addStyleReference(w.id, refFor(2)),
+    ]);
+    const fresh = await svc.getUniverse(w.id);
+    expect(fresh.styleReferences.map((r) => r.id).sort()).toEqual([
+      "style-ref-1",
+      "style-ref-2",
+    ]);
+  });
+
+  it("addStyleReference writes adopted style guidance in the SAME queued write", async () => {
+    const w = await svc.createUniverse({ name: "Adopt", influences: { embrace: ["old"], avoid: [] } });
+    const updated = await svc.addStyleReference(w.id, {
+      id: "style-ref-adopt",
+      title: "Ink wash",
+      prompt: "Granular ink wash",
+      imageRefs: ["adopt.png"],
+    }, {
+      adopt: { styleNotes: "Tactile and muted", influences: { embrace: ["ink wash"], avoid: ["gloss"] } },
+    });
+    expect(updated.styleReferences).toHaveLength(1);
+    expect(updated.styleNotes).toBe("Tactile and muted");
+    expect(updated.influences).toEqual({ embrace: ["ink wash"], avoid: ["gloss"] });
+    // Persisted together — the pair can't half-land.
+    const fresh = await svc.getUniverse(w.id);
+    expect(fresh.styleNotes).toBe("Tactile and muted");
+    expect(fresh.styleReferences).toHaveLength(1);
+  });
+
+  it("addStyleReference is idempotent on a re-sent id and rejects an invalid reference", async () => {
+    const reference = {
+      id: "style-ref-once",
+      title: "Once",
+      prompt: "Prompt",
+      imageRefs: ["once.png"],
+    };
+    const w = await svc.createUniverse({ name: "Idempotent" });
+    await svc.addStyleReference(w.id, reference);
+    // A retried request / double-click is a no-op, not a duplicate.
+    const again = await svc.addStyleReference(w.id, reference);
+    expect(again.styleReferences).toHaveLength(1);
+    await expect(svc.addStyleReference(w.id, { title: "No prompt", imageRefs: ["x.png"] }))
+      .rejects.toThrow(/Invalid style reference/);
+  });
+
+  it("addStyleReference enforces the cap against the PERSISTED list", async () => {
+    const w = await svc.createUniverse({
+      name: "At Cap",
+      styleReferences: Array.from({ length: svc.STYLE_REFERENCES_MAX }, (_, i) => ({
+        id: `style-ref-${i}`,
+        title: `Ref ${i}`,
+        prompt: `Prompt ${i}`,
+        imageRefs: [`ref-${i}.png`],
+      })),
+    });
+    expect(w.styleReferences).toHaveLength(svc.STYLE_REFERENCES_MAX);
+    await expect(svc.addStyleReference(w.id, {
+      id: "style-ref-overflow",
+      title: "Overflow",
+      prompt: "Prompt",
+      imageRefs: ["overflow.png"],
+    })).rejects.toThrow(/up to 20 art references/);
+  });
+
+  it("removeStyleReference drops one by id and no-ops on an id that is already gone", async () => {
+    const refA = { id: "style-ref-a", title: "A", prompt: "a", imageRefs: ["a.png"] };
+    const refB = { id: "style-ref-b", title: "B", prompt: "b", imageRefs: ["b.png"] };
+    const w = await svc.createUniverse({ name: "Delta Removes", styleReferences: [refA, refB] });
+
+    // Concurrent removals: each filters the freshest list, so both land — the
+    // case a pair of wholesale-replace PATCHes needed client-side queuing for.
+    await Promise.all([
+      svc.removeStyleReference(w.id, refA.id),
+      svc.removeStyleReference(w.id, refB.id),
+    ]);
+    expect((await svc.getUniverse(w.id)).styleReferences).toEqual([]);
+
+    // Already gone (a duplicate delete, or one that raced the image-delete
+    // purge) resolves with the unchanged record instead of throwing.
+    const noop = await svc.removeStyleReference(w.id, refA.id);
+    expect(noop.styleReferences).toEqual([]);
+  });
+
   it("drops invalid style references and defaults the field to an empty list", async () => {
     const w = await svc.createUniverse({
       name: "Reference Validation",
