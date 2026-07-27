@@ -62,7 +62,7 @@ export default function RenderHistory({ runs, feedback, projectsById, projectsLo
   }
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
       {orderedRuns.map((r) => {
         const project = r.projectId ? projectsById.get(r.projectId) : null;
         const focused = r.id === focusRunId;
@@ -74,13 +74,15 @@ export default function RenderHistory({ runs, feedback, projectsById, projectsLo
           >
             {/* Produced-media preview (or a status-only placeholder). */}
             {project ? (
-              <ProjectPreview project={project} to={`/creative-director/${encodeURIComponent(r.projectId)}`} />
+              <div className="overflow-hidden" style={{ maxHeight: '160px' }}>
+                  <ProjectPreview project={project} to={`/creative-director/${encodeURIComponent(r.projectId)}`} />
+              </div>
             ) : (
               // `project` is null in this branch, so the placeholder falls back to
               // the default 16:9 box. Distinguish the transient load window (project
               // list still fetching) from a genuinely pruned/missing render — a real
               // render must not flash "unavailable" before the fetch resolves.
-              <div className={`${previewAspectClass()} bg-port-bg flex flex-col items-center justify-center gap-1 text-gray-600 text-xs`}>
+              <div className="h-[120px] bg-port-bg flex flex-col items-center justify-center gap-1 text-gray-600 text-xs">
                 <Film className="w-4 h-4 opacity-50" aria-hidden="true" />
                 <span>{r.projectId ? (projectsLoading ? 'loading…' : 'render unavailable') : 'no render'}</span>
               </div>
