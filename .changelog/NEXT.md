@@ -1,12 +1,5 @@
 # Unreleased Changes
 
-## Branch & PR Reconciliation
-
-- **Work an agent left uncommitted is no longer invisible.** When a CoS agent exits before committing — it finished, crashed, or hit the idle reaper — the whole deliverable stays uncommitted in its worktree while its branch still points at the commit it started from. Branch Reconciliation read that branch as "already merged," correctly refused to delete a worktree with unsaved changes, and reported nothing further, so every run announced "no branches in flight" while real work sat there. Three such branches had accumulated on one install. These are now surfaced as in-flight and handed to the reconciliation agent, which reads the uncommitted changes, commits and ships them if the work is finished, and reports what's missing if it isn't — and never deletes them either way.
-- A worktree whose agent is still running is untouched, as before. So is a human `/claim` worktree, a locked worktree, and anything outside the machine-owned `agent-*` namespace. If the running-agent list can't be determined, every worktree stays protected rather than being assumed abandoned.
-- The new behavior can be turned off per app with the `finishAbandoned` action toggle, alongside the existing cleanup/PR/conflict/merge toggles.
-- When Branch Reconciliation parks with nothing to do, the log now says whether branches were held back by a protection guard or skipped because one of those toggles is off, instead of a bare "nothing in-flight."
-
 ## Client linting
 
 - Client linting now uses ESLint 10 with the maintained ESLint React rule set, preserving PortOS's key React correctness checks without relying on the unmaintained `eslint-plugin-react` compatibility range.
@@ -40,6 +33,10 @@
 
 ## CoS branch reconciliation
 
+- **Work an agent left uncommitted is no longer invisible.** When a CoS agent exits before committing — it finished, crashed, or hit the idle reaper — the whole deliverable stays uncommitted in its worktree while its branch still points at the commit it started from. Branch Reconciliation read that branch as "already merged," correctly refused to delete a worktree with unsaved changes, and reported nothing further, so every run announced "no branches in flight" while real work sat there. Three such branches had accumulated on one install. These are now surfaced as in-flight and handed to the reconciliation agent, which reads the uncommitted changes, commits and ships them if the work is finished, and reports what's missing if it isn't — and never deletes them either way.
+- A worktree whose agent is still running is untouched, as before. So is a human `/claim` worktree, a locked worktree, and anything outside the machine-owned `agent-*` namespace. If the running-agent list can't be determined, every worktree stays protected rather than being assumed abandoned.
+- The new behavior can be turned off per app with the `finishAbandoned` action toggle, alongside the existing cleanup/PR/conflict/merge toggles.
+- When Branch Reconciliation parks with nothing to do, the log now says whether branches were held back by a protection guard or skipped because one of those toggles is off, instead of a bare "nothing in-flight."
 - **A branch the reconciler picks up is now driven all the way to merged, not just to "PR opened."** When the task verified a branch was ready and opened its pull request, it reported success and exited within a minute — while CI was still running. The pull request then sat green and mergeable until the next scheduled run noticed it again. The agent now waits out the check run in-session, fixes what goes red, and merges once every required check passes and the pull request is mergeable.
 - The reconciler's blanket "never merge unreviewed work" rule read as a veto on the merge step it was supposed to perform, so it has been replaced by the explicit gate each branch already carries (required CI green, mergeable, and the review it names). Merging still only ever happens through `gh pr merge` on a branch the task was handed.
 - Waiting for a Copilot review on an in-review pull request is now time-boxed to 10 minutes — on a repository without Copilot review enabled, the old unbounded wait could strand a green pull request open indefinitely.
