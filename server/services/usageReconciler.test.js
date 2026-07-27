@@ -761,3 +761,65 @@ describe('Codex watermark is in absolute rollout units', () => {
     expect(await read('2026-07-01T10:00:00.000Z', '2026-07-01T10:10:00.000Z')).toBeNull();
   });
 });
+
+describe('Codex attribution across every window ordering', () => {
+  // One rollout, two snapshots: cumulative out 100 at 10:05, 250 at 10:20.
+  const GROWN = [
+    ['2026-07-01T10:05:00.000Z', 1000, 0, 100],
+    ['2026-07-01T10:20:00.000Z', 3000, 0, 250]
+  ];
+  const rollout = (snaps) => [
+    JSON.stringify({ timestamp: '2026-07-01T10:00:00.000Z', type: 'session_meta', payload: { id: 'rollout-1', cwd: WORKSPACE, model: 'gpt-5.3-codex' } }),
+    ...snaps.map(([timestamp, input, cached, output]) => JSON.stringify({
+      timestamp, type: 'event_msg',
+      payload: { type: 'token_count', info: { total_token_usage: { input_tokens: input, cached_input_tokens: cached, output_tokens: output, total_tokens: input + output } } }
+    }))
+  ].join('\n');
+  const write = (snaps) => writeCodexRollout(['2026', '07', '01'], 'rollout-1.jsonl', rollout(snaps));
+  const read = (startTime, endTime) => readMeasuredUsage({
+    workspacePath: WORKSPACE, startTime, endTime, family: 'codex', home
+  });
+  const EARLY = ['2026-07-01T10:00:00.000Z', '2026-07-01T10:10:00.000Z'];
+  const LATE = ['2026-07-01T10:15:00.000Z', '2026-07-01T10:25:00.000Z'];
+
+  // Regression: reading the file UNWINDOWED let an early run bill growth
+  // generated after its own window and advance the watermark past it, so the run
+  // that actually produced those tokens got nothing (measured: 250 / 0).
+  it('does not let an early run claim growth from after its window', async () => {
+    await write(GROWN); // already grown before the early run reads it
+    const early = await read(...EARLY);
+    const late = await read(...LATE);
+
+    expect(early?.tokensOut).toBe(100);
+    expect(late?.tokensOut).toBe(150);
+    expect((early?.tokensOut || 0) + (late?.tokensOut || 0)).toBe(250);
+  });
+
+  it('bills the whole rollout once when the later run reads first', async () => {
+    await write(GROWN);
+    const late = await read(...LATE);
+    const early = await read(...EARLY);
+
+    // The late run's window end covers both snapshots, so it takes all 250;
+    // the early run then finds nothing unbilled. Total is still exactly 250.
+    expect(late?.tokensOut).toBe(250);
+    expect(early).toBeNull();
+  });
+
+  it('never double-bills two overlapping windows', async () => {
+    await write(GROWN);
+    const a = await read('2026-07-01T10:00:00.000Z', '2026-07-01T10:22:00.000Z');
+    const b = await read('2026-07-01T10:10:00.000Z', '2026-07-01T10:25:00.000Z');
+    expect((a?.tokensOut || 0) + (b?.tokensOut || 0)).toBe(250);
+  });
+
+  it('splits correctly when the rollout grows between the two reads', async () => {
+    await write([GROWN[0]]);
+    const early = await read(...EARLY);
+    await write(GROWN);
+    const late = await read(...LATE);
+
+    expect(early?.tokensOut).toBe(100);
+    expect(late?.tokensOut).toBe(150);
+  });
+});

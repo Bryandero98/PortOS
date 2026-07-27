@@ -310,17 +310,22 @@ export async function readMeasuredUsage({ workspacePath, startTime, endTime, fam
         // baseline before both runs) re-includes what the first run already
         // billed. Track the highest cumulative boundary billed per file and
         // re-parse from there, so each run charges only the genuinely new part.
-        // Read the rollout's ABSOLUTE cumulative position (no window), then bill
-        // the difference from what was already charged. The watermark must be in
-        // absolute rollout units, not "tokens billed": a windowed parse already
-        // excludes the earlier snapshot as its baseline, so subtracting the
-        // billed amount from an already-delta'd figure double-subtracts (measured:
-        // a later run billed 50 instead of 150). Absolute totals also make the
-        // arithmetic immune to several snapshots sharing one epoch millisecond,
-        // which is why the timestamp boundary this replaced was unsound.
-        const absolute = parseCodexRollout(text);
+        // Read the rollout's cumulative position AS OF THIS RUN'S WINDOW END —
+        // absolute (no lower bound) so the watermark arithmetic below is a plain
+        // subtraction, but capped at `to` so a run only ever bills through its
+        // own end. Both halves are load-bearing:
+        //   - Absolute (no `from`): a windowed parse already nets out the earlier
+        //     snapshot as its baseline, so subtracting the watermark from it would
+        //     double-subtract (measured: a later run billed 50, not 150). It also
+        //     keeps the math immune to several snapshots sharing one epoch ms,
+        //     which is why the timestamp boundary this replaced was unsound.
+        //   - Capped at `to`: without it, an EARLY run reading the file after it
+        //     grew would bill growth generated after its own window and advance
+        //     the watermark past it, leaving the run that actually produced those
+        //     tokens with nothing (measured: early run billed 250, late run 0).
+        const absolute = parseCodexRollout(text, { to });
         if (!cwdMatches(absolute.cwd, workspacePath)) continue;
-        // Still require the run's own window to overlap this rollout at all, so a
+        // Require the run's own window to overlap this rollout at all, so a
         // rollout from an unrelated period isn't attributed to this run.
         if (totalTranscriptTokens(parseCodexRollout(text, { from, to })) === 0) continue;
 
