@@ -465,6 +465,7 @@ export default function Layout() {
   const [collapsed, setCollapsed] = useState(() => safeReadStorage(SIDEBAR_KEY) === 'true');
   const [mobileOpen, setMobileOpen] = useState(false);
   const [expandedSections, setExpandedSections] = useState({});
+  const [expandedSubSections, setExpandedSubSections] = useState({});
   // Collapsed-sidebar flyout: hovering or focusing a section icon opens a
   // fixed-position popover to the right listing the section's children, so the
   // user can reach siblings (e.g. Writers Room from Create) without expanding
@@ -657,6 +658,15 @@ export default function Layout() {
         if (isChildActive) {
           setExpandedSections(prev => ({ ...prev, [item.label]: true }));
         }
+        item.children.forEach(child => {
+          const grandChildren = Array.isArray(child.grandChildren) ? child.grandChildren : [];
+          if (grandChildren.some(grandChild => {
+            const prefix = grandChild.activePathPrefix || grandChild.to;
+            return location.pathname === prefix || location.pathname.startsWith(prefix + '/');
+          })) {
+            setExpandedSubSections(prev => ({ ...prev, [child.to]: true }));
+          }
+        });
       }
     });
   }, [location.pathname, resolvedNavItems]);
@@ -670,6 +680,13 @@ export default function Layout() {
     setExpandedSections(prev => ({
       ...prev,
       [label]: !prev[label]
+    }));
+  };
+
+  const toggleSubSection = (path) => {
+    setExpandedSubSections(prev => ({
+      ...prev,
+      [path]: prev[path] === false,
     }));
   };
 
@@ -863,17 +880,33 @@ export default function Layout() {
                 ? location.pathname === child.to
                 : isActive(child.to);
               const grandChildren = Array.isArray(child.grandChildren) ? child.grandChildren : [];
+              const grandChildrenExpanded = expandedSubSections[child.to] !== false;
               const childIsPinned = isPinned(child.to);
               return (
                 <div key={child.to} className="min-w-0">
-                  <WorkingSetRow
-                    entry={{ path: child.to, label: child.label, icon: ChildIcon, end: child.end }}
-                    pinned={childIsPinned}
-                    onTogglePin={() => (childIsPinned ? unpin(child.to) : pin(child.to))}
-                    onNavigate={() => setMobileOpen(false)}
-                    isActive={childActive}
-                  />
-                  {grandChildren.length > 0 && (
+                  <div className="flex items-center min-w-0">
+                    <div className="min-w-0 flex-1">
+                      <WorkingSetRow
+                        entry={{ path: child.to, label: child.label, icon: ChildIcon, end: child.end }}
+                        pinned={childIsPinned}
+                        onTogglePin={() => (childIsPinned ? unpin(child.to) : pin(child.to))}
+                        onNavigate={() => setMobileOpen(false)}
+                        isActive={childActive}
+                      />
+                    </div>
+                    {grandChildren.length > 0 && (
+                      <button
+                        type="button"
+                        aria-label={grandChildrenExpanded ? `Collapse ${child.label}` : `Expand ${child.label}`}
+                        aria-expanded={grandChildrenExpanded}
+                        onClick={() => toggleSubSection(child.to)}
+                        className="px-2 py-2 text-gray-500 hover:text-white hover:bg-port-border/50 rounded-lg"
+                      >
+                        {grandChildrenExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                      </button>
+                    )}
+                  </div>
+                  {grandChildren.length > 0 && grandChildrenExpanded && (
                     <div className="ml-6 mt-0.5 mb-1 border-l border-port-border/50 pl-2 min-w-0">
                       {grandChildren.map((gc) => {
                         // Prefer the explicit prefix (e.g. `/pipeline/issues/<id>`)
