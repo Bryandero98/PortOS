@@ -184,23 +184,32 @@ export async function forceRemoveWorktreeDir(repo, worktreePath, { label, log = 
  * lockfile churn. Pure (testable) — callers decide what to do with the result.
  *
  * @param {string} porcelain - raw `git status --porcelain` stdout
- * @returns {{ clean: boolean, lockfileOnly: boolean, lockfilePaths: string[], hasRealChanges: boolean }}
+ * @returns {{ clean: boolean, lockfileOnly: boolean, lockfilePaths: string[], realChangePaths: string[], hasRealChanges: boolean }}
  *   - clean: no changes at all
  *   - lockfileOnly: every change is an auto-generated lockfile (safe to discard)
  *   - lockfilePaths: paths of those lockfiles (strip the porcelain `XY ` status prefix)
+ *   - realChangePaths: paths of the NON-lockfile changes, same prefix stripping.
+ *     Branch reconciliation intersects these with what the default branch has
+ *     touched since the branch diverged, to spot work that may have been
+ *     superseded while it sat uncommitted.
  *   - hasRealChanges: at least one non-lockfile change (worktree must be preserved)
  */
 export function classifyWorktreeDirt(porcelain) {
   const lines = (porcelain || '').split('\n').map(l => l.trim()).filter(Boolean);
   if (lines.length === 0) {
-    return { clean: true, lockfileOnly: false, lockfilePaths: [], hasRealChanges: false };
+    return { clean: true, lockfileOnly: false, lockfilePaths: [], realChangePaths: [], hasRealChanges: false };
   }
-  const lockfileLines = lines.filter(line => AUTO_GENERATED_LOCKFILES.some(f => line.endsWith(f)));
+  const isLockfile = (line) => AUTO_GENERATED_LOCKFILES.some(f => line.endsWith(f));
+  // `R old -> new` (rename) names two paths; the post-rename path is the one
+  // that exists on disk and the one a diff against the default branch reports.
+  const toPath = (line) => line.replace(/^\s*\S+\s+/, '').split(' -> ').pop();
+  const lockfileLines = lines.filter(isLockfile);
   const lockfileOnly = lockfileLines.length === lines.length;
   return {
     clean: false,
     lockfileOnly,
-    lockfilePaths: lockfileLines.map(line => line.replace(/^\s*\S+\s+/, '')),
+    lockfilePaths: lockfileLines.map(toPath),
+    realChangePaths: lines.filter((line) => !isLockfile(line)).map(toPath),
     hasRealChanges: !lockfileOnly
   };
 }

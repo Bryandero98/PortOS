@@ -260,7 +260,7 @@ describe('Auto-generated Lockfile Detection', () => {
 
 describe('classifyWorktreeDirt (real exported helper)', () => {
   it('reports clean for empty / whitespace-only porcelain', () => {
-    expect(classifyWorktreeDirt('')).toEqual({ clean: true, lockfileOnly: false, lockfilePaths: [], hasRealChanges: false });
+    expect(classifyWorktreeDirt('')).toEqual({ clean: true, lockfileOnly: false, lockfilePaths: [], realChangePaths: [], hasRealChanges: false });
     expect(classifyWorktreeDirt('  \n  ').clean).toBe(true);
     expect(classifyWorktreeDirt(null).clean).toBe(true);
   });
@@ -283,6 +283,15 @@ describe('classifyWorktreeDirt (real exported helper)', () => {
     const r = classifyWorktreeDirt(' M package-lock.json\n M src/app.js');
     expect(r.lockfileOnly).toBe(false);
     expect(r.hasRealChanges).toBe(true);
+  });
+
+  // realChangePaths feeds branch reconciliation's supersession check — it
+  // intersects them with what the default branch changed since the branch
+  // diverged, so the paths must be bare and lockfile-free.
+  it('extracts the non-lockfile paths, excluding lockfiles and untangling renames', () => {
+    const r = classifyWorktreeDirt(' M package-lock.json\n M src/app.js\n?? src/new.js\nR  src/old.js -> src/renamed.js');
+    expect(r.realChangePaths).toEqual(['src/app.js', 'src/new.js', 'src/renamed.js']);
+    expect(r.realChangePaths).not.toContain('package-lock.json');
   });
 
   it('handles a trimmed first line (no leading status space)', () => {

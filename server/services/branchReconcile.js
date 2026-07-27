@@ -192,14 +192,91 @@ export function isAbandonedAgentWorktree({ path, locked, activeAgentIds }) {
 }
 
 /**
+ * A worktree's real (non-lockfile) uncommitted paths, or [] when clean/unreadable.
+ * @param {string} worktreePath
+ * @returns {Promise<string[]>}
+ */
+async function worktreeDirtyPaths(worktreePath) {
+  const { stdout } = await execGit(['status', '--porcelain'], worktreePath, { ignoreExitCode: true })
+    .catch(() => ({ stdout: '' }));
+  const dirt = classifyWorktreeDirt(stdout);
+  return dirt.hasRealChanges ? (dirt.realChangePaths || []) : [];
+}
+
+/**
  * Is a worktree's working tree carrying real (non-lockfile) uncommitted changes?
  * @param {string} worktreePath
  * @returns {Promise<boolean>}
  */
 async function isWorktreeDirty(worktreePath) {
-  const { stdout } = await execGit(['status', '--porcelain'], worktreePath, { ignoreExitCode: true })
-    .catch(() => ({ stdout: '' }));
-  return classifyWorktreeDirt(stdout).hasRealChanges;
+  return (await worktreeDirtyPaths(worktreePath)).length > 0;
+}
+
+/** Newline-separated git stdout → trimmed non-empty lines. */
+const gitLines = (stdout) => (stdout || '').split('\n').map((l) => l.trim()).filter(Boolean);
+
+// Files nearly every branch touches. They collide constantly and are real merge
+// conflicts, so they stay in the collision list — but they never carry evidence
+// that a feature was reimplemented, so they sort last and don't crowd out the
+// source files that do. Without this the changelog leads the list alphabetically
+// on virtually every branch.
+const CHURN_COLLISION_RE = /(^|\/)(\.changelog\/|CHANGELOG|README|package-lock\.json$|package\.json$|PLAN\.md$)/i;
+
+/** Sort collisions so supersession-bearing source files come before churn files. */
+const byCollisionSignal = (a, b) => {
+  const rank = (p) => (CHURN_COLLISION_RE.test(p) ? 1 : 0);
+  return rank(a) - rank(b) || a.localeCompare(b);
+};
+
+/**
+ * How far a branch has drifted from the default branch, and — the part that
+ * matters — WHICH of the files it touches the default branch has ALSO changed
+ * since the two diverged.
+ *
+ * That intersection is the deterministic evidence for "is this work still
+ * needed?". A branch that sat for a hundred commits may hold a feature someone
+ * solved a different (usually better) way on the default branch in the meantime;
+ * merging it then REGRESSES the default branch rather than adding to it. Neither
+ * `git status` nor the branch's own changelog entry shows this — both look like
+ * healthy work-in-progress. The collision set does, and it points the agent at
+ * exactly the files to read before it commits to anything.
+ *
+ * Covers uncommitted work too: for an abandoned worktree the branch has no
+ * commits of its own, so the dirty paths ARE the change set, and a `merge-tree`
+ * probe against the branch tip would report a clean merge while the real
+ * collision sits in the working tree.
+ *
+ * Every field degrades to a safe unknown (`null` counts, `[]` collisions) rather
+ * than a wrong answer — a git failure here must not read as "no drift".
+ *
+ * @param {string} repoPath
+ * @param {string} branch
+ * @param {string} defaultBranch
+ * @param {string[]} [dirtyPaths] - uncommitted paths from the branch's worktree
+ * @returns {Promise<{ behind:number|null, ahead:number|null, collisionPaths:string[] }>}
+ */
+export async function gatherDivergence(repoPath, branch, defaultBranch, dirtyPaths = []) {
+  const counts = await execGit(
+    ['rev-list', '--left-right', '--count', `${defaultBranch}...${branch}`], repoPath, { ignoreExitCode: true }
+  ).catch(() => null);
+  const [behindRaw, aheadRaw] = (counts?.stdout || '').trim().split(/\s+/);
+  const behind = Number.isFinite(Number(behindRaw)) && behindRaw !== '' ? Number(behindRaw) : null;
+  const ahead = Number.isFinite(Number(aheadRaw)) && aheadRaw !== '' ? Number(aheadRaw) : null;
+
+  const base = await execGit(['merge-base', branch, defaultBranch], repoPath, { ignoreExitCode: true })
+    .catch(() => null);
+  const mergeBase = (base?.stdout || '').trim();
+  if (!mergeBase) return { behind, ahead, collisionPaths: [] };
+
+  const [defaultChanged, branchChanged] = await Promise.all([
+    execGit(['diff', '--name-only', mergeBase, defaultBranch], repoPath, { ignoreExitCode: true }).catch(() => null),
+    execGit(['diff', '--name-only', mergeBase, branch], repoPath, { ignoreExitCode: true }).catch(() => null)
+  ]);
+  const defaultSet = new Set(gitLines(defaultChanged?.stdout));
+  if (defaultSet.size === 0) return { behind, ahead, collisionPaths: [] };
+
+  const touched = new Set([...gitLines(branchChanged?.stdout), ...dirtyPaths]);
+  return { behind, ahead, collisionPaths: [...touched].filter((p) => defaultSet.has(p)).sort(byCollisionSignal) };
 }
 
 /**
@@ -226,7 +303,8 @@ async function worktreeAgeMs(worktreePath) {
  *   distinguishes a live agent's worktree from an abandoned one (see
  *   `isAbandonedAgentWorktree`); omitting it leaves every agent worktree protected.
  * @returns {Promise<object[]>} one entry per candidate branch:
- *   { branch, hasUpstream, isMerged, hasWorktree, worktreePath, worktreeDirty, abandonedAgentWorktree, openPr }
+ *   { branch, hasUpstream, isMerged, hasWorktree, worktreePath, worktreeDirty, dirtyPaths,
+ *     behind, ahead, collisionPaths, abandonedAgentWorktree, openPr }
  */
 export async function gatherBranchState(repoPath, { defaultBranch, activeAgentIds = null }) {
   const protectedSet = new Set([...PROTECTED_BRANCHES, defaultBranch]);
@@ -254,7 +332,9 @@ export async function gatherBranchState(repoPath, { defaultBranch, activeAgentId
     const worktreePath = wt?.path || null;
     const worktreeLocked = Boolean(wt?.locked);
     const worktreeAge = worktreePath ? await worktreeAgeMs(worktreePath) : null;
-    const worktreeDirty = worktreePath ? await isWorktreeDirty(worktreePath) : false;
+    const dirtyPaths = worktreePath ? await worktreeDirtyPaths(worktreePath) : [];
+    const worktreeDirty = dirtyPaths.length > 0;
+    const divergence = await gatherDivergence(repoPath, b.name, defaultBranch, dirtyPaths);
     // getBranches' `merged` is ancestor-based (misses squash/rebase); confirm
     // the harder cases via isBranchMergedInto (covers squash + rebase). Short
     // -circuit when the cheap check already proved it merged.
@@ -268,6 +348,10 @@ export async function gatherBranchState(repoPath, { defaultBranch, activeAgentId
       worktreeLocked,
       worktreeAgeMs: worktreeAge,
       worktreeDirty,
+      dirtyPaths,
+      behind: divergence.behind,
+      ahead: divergence.ahead,
+      collisionPaths: divergence.collisionPaths,
       abandonedAgentWorktree: isAbandonedAgentWorktree({ path: worktreePath, locked: worktreeLocked, activeAgentIds }),
       openPr: prsByHead.get(b.name) || null
     });
@@ -388,6 +472,53 @@ export function filterActionable(inFlight, actions) {
   });
 }
 
+// A branch is only worth finishing if its work is still NEEDED. Anything that
+// sat while the default branch moved may hold a feature that was since solved a
+// different way there — merging it then REGRESSES the default branch instead of
+// adding to it, and it is the one failure a "verify the work is complete" gate
+// cannot catch, because the work IS complete; it is just no longer wanted.
+//
+// The tell is never `git status` or the branch's own changelog entry — both read
+// as healthy WIP. It is the collision set: the files this branch touches that the
+// default branch has also changed since they diverged. So the deterministic pass
+// hands the agent that list, and this gate makes reading it step one, BEFORE any
+// commit, rebase, or conflict resolution. Resolving a conflict is the trap —
+// mechanically reconcilable and semantically wrong, it launders a regression into
+// a merge that looks intentional.
+//
+// Precedent: a branch 101 commits behind held "merge a task's PR on green CI when
+// no reviewer is configured", whose collision files (agentWorktreeCleanup.js,
+// the CoS constants) had meanwhile grown a strictly richer three-way completion
+// policy on the default branch. Its tests passed and its changelog entry read
+// fine; only the collision files showed it had been superseded.
+const supersessionGate = ({ collisionPaths = [], behind } = {}) => {
+  const drift = typeof behind === 'number' && behind > 0
+    ? `This branch is ${behind} commit(s) behind the default branch.`
+    : 'This branch may have drifted from the default branch.';
+  if (!collisionPaths.length) {
+    return `${drift} Nothing it touches has changed on the default branch since it diverged, so supersession is unlikely — but if a rebase does surface a conflict, treat it as the signal below rather than something to mechanically resolve.`;
+  }
+  // The full set already has its own line in the prompt block; the prose needs
+  // only enough to make the instruction concrete. Collisions are ranked
+  // signal-first, so the head of the list is the part worth naming inline.
+  const shown = collisionPaths.slice(0, 6);
+  const more = collisionPaths.length > shown.length ? ` (+${collisionPaths.length - shown.length} more, listed above)` : '';
+  return [
+    `${drift} **Before anything else, check the work is still needed.**`,
+    `The default branch has ALSO changed these files since this branch diverged: ${shown.map((p) => `\`${p}\``).join(', ')}${more}.`,
+    'For each, read the default branch\'s current version and compare it to what this branch does there. You are looking for one thing: has the default branch already solved this branch\'s problem, by any means? A differently-named function, a policy object where this branch has a boolean, a scheduled tick where this branch has a watcher — all count. It does not need to look like this branch\'s approach to have replaced it.',
+    'If it HAS been solved there, this branch is SUPERSEDED: stop, do not commit, rebase, resolve, or merge anything, and report it as superseded naming the file(s) and what on the default branch replaced it. Merging it would undo work already shipped. Say so plainly rather than resolving the conflict — a conflict you can resolve is exactly how a regression gets in looking deliberate.',
+    'Only once you have confirmed the work is still needed, continue.'
+  ].join(' ');
+};
+
+// Nothing reaches a PR unverified. `/do:pr` runs its own reviewer loop, but the
+// branch has to be sound BEFORE that — a rebase onto a default branch that moved
+// can break code that passed on the old base, and CI failing on an already-open
+// PR costs a whole round trip. Rebase first (so the PR is conflict-free by
+// construction), then run the touched workspaces' suites locally.
+const verifyGate = 'Rebase onto the default branch before opening or updating a PR, so the PR is conflict-free by construction rather than needing a merge fixed up later. Then run the test suites for the workspaces the diff touches (`cd server && npm test`, `cd client && npm test`) plus lint, and read the result — the rebase can break code that passed on the old base. If anything fails, fix it on the branch and re-run; if you cannot get it green, stop and report which suite fails and why. Never push a branch whose tests you have not seen pass.';
+
 // The terminal state of an auto-mergeable branch is MERGED — not "PR opened",
 // not "PR green and waiting". Every drive-to-merge instruction ends with this
 // tail so the agent waits CI out IN-SESSION instead of handing back an open PR
@@ -411,12 +542,14 @@ const driveToMerge = (pr) => [
  * Per-state instruction to the coordinator/sub-agent.
  * @param {string} state
  * @param {object} actions - per-app action toggles
- * @param {{ prNumber?: number, worktreePath?: string }} [ctx] - the branch's open PR
- *   number (when it has one) and its worktree path (ABANDONED_WIP needs it — the
- *   uncommitted work only exists there, never in the primary checkout)
+ * @param {{ prNumber?: number, worktreePath?: string, collisionPaths?: string[], behind?: number }} [ctx]
+ *   the branch's open PR number (when it has one), its worktree path
+ *   (ABANDONED_WIP needs it — the uncommitted work only exists there, never in
+ *   the primary checkout), and the drift facts feeding the supersession gate
  */
-export function desiredEndState(state, actions, { prNumber, worktreePath } = {}) {
+export function desiredEndState(state, actions, { prNumber, worktreePath, collisionPaths, behind } = {}) {
   const pr = prNumber ? String(prNumber) : '<num>';
+  const stillNeeded = supersessionGate({ collisionPaths, behind });
   if (state === 'ABANDONED_WIP') {
     // The branch has NO commits of its own — the entire deliverable is the
     // uncommitted tree. So the first move is to READ it, and the loudest rule is
@@ -429,12 +562,12 @@ export function desiredEndState(state, actions, { prNumber, worktreePath } = {})
     const bail = 'If it is NOT finished, do not commit it and do not delete it — leave every file exactly as it is and report what the work appears to be, how far it got, and what is missing, so a human can decide whether to finish or discard it.';
     const commit = 'If it IS finished, commit it on this branch (a message that states what changed and why — never a bare "wip"), then ship it with `/do:pr --no-merge` (by hand, if slash commands are unavailable: self-review the diff, `git push -u origin <branch>`, then `gh pr create` with a Summary + Test plan).';
     if (!actionOn(actions, 'autoMerge')) {
-      return `${assess} ${bail} ${commit} Do NOT merge (auto-merge is disabled) — stop once the PR is open and report its URL.`;
+      return `${stillNeeded} ${assess} ${bail} ${commit} ${verifyGate} Do NOT merge (auto-merge is disabled) — stop once the PR is open and report its URL.`;
     }
-    return `${assess} ${bail} ${commit} ${driveToMerge(pr)}`;
+    return `${stillNeeded} ${assess} ${bail} ${commit} ${verifyGate} ${driveToMerge(pr)}`;
   }
   if (state === 'NEEDS_PR') {
-    const verify = 'Verify the branch\'s work is complete and ready (tests pass, no stubs/TODO markers, changelog present). If NOT ready, report it as incomplete and leave the branch untouched — do not open a half-baked PR.';
+    const verify = `${stillNeeded} Verify the branch's work is complete and ready (tests pass, no stubs/TODO markers, changelog present). If NOT ready, report it as incomplete and leave the branch untouched — do not open a half-baked PR.`;
     // `--no-merge` is passed explicitly on BOTH paths — not to disable merging,
     // but to keep the merge decision here rather than inside slashdo. Under
     // `--merge`, /do:pr first tries GitHub-native auto-merge and reports the PR
@@ -445,12 +578,16 @@ export function desiredEndState(state, actions, { prNumber, worktreePath } = {})
     // (which may set `merge: true`) can't decide it either way.
     const openPr = '`/do:pr --no-merge` — its reviewer loop runs, and the PR is left for the gate below rather than queued for auto-merge (by hand, if slash commands aren\'t available in your context: self-review the diff and fix what you find, `git push -u origin <branch>`, then `gh pr create` with a Summary + Test plan)';
     if (!actionOn(actions, 'autoMerge')) {
-      return `${verify} If ready, ship it with ${openPr}. Do NOT merge (auto-merge is disabled) — stop once the PR is open and report its URL.`;
+      return `${verify} If ready, ship it with ${openPr}. ${verifyGate} Do NOT merge (auto-merge is disabled) — stop once the PR is open and report its URL.`;
     }
-    return `${verify} If ready, ship it with ${openPr}. ${driveToMerge(pr)}`;
+    return `${verify} If ready, ship it with ${openPr}. ${verifyGate} ${driveToMerge(pr)}`;
   }
   if (state === 'CONFLICTED') {
-    return 'Rebase the branch onto the default branch, resolve all conflicts, run the tests, and push.';
+    // The conflict IS the supersession signal here — this PR has already been
+    // told by GitHub that it collides with the default branch, so "resolve the
+    // conflicts" without first asking whether the work is still wanted is
+    // precisely how a superseded branch gets merged looking deliberate.
+    return `${stillNeeded} If it is still needed: rebase the branch onto the default branch, resolve all conflicts, run the tests, and push. ${verifyGate}`;
   }
   // IN_REVIEW
   const canMerge = actionOn(actions, 'autoMerge');
@@ -495,7 +632,20 @@ export function formatInFlightForPrompt(inFlight, { defaultBranch, actions }) {
     const pr = b.openPr ? ` — PR #${b.openPr.number} (${b.openPr.mergeable})${b.openPr.url ? ` ${b.openPr.url}` : ''}` : ' — no PR';
     lines.push(`### \`${b.branch}\` [${b.state}]${pr}`);
     if (b.worktreePath) lines.push(`- Worktree: \`${b.worktreePath}\`${b.state === 'ABANDONED_WIP' ? ' (holds UNCOMMITTED work — read it before doing anything)' : ''}`);
-    lines.push(`- Do: ${desiredEndState(b.state, actions, { prNumber: b.openPr?.number, worktreePath: b.worktreePath })}`);
+    if (typeof b.behind === 'number') {
+      lines.push(`- Drift: ${b.behind} commit(s) behind \`${defaultBranch}\`${typeof b.ahead === 'number' ? `, ${b.ahead} ahead` : ''}`);
+    }
+    // Listed as their own line, not just inside the prose instruction, so the
+    // agent can act on the set directly (open these files) without re-deriving it.
+    if (b.collisionPaths?.length) {
+      lines.push(`- Also changed on \`${defaultBranch}\` since this branch diverged (**read these first — they are where supersession shows up**): ${b.collisionPaths.map((p) => `\`${p}\``).join(', ')}`);
+    }
+    lines.push(`- Do: ${desiredEndState(b.state, actions, {
+      prNumber: b.openPr?.number,
+      worktreePath: b.worktreePath,
+      collisionPaths: b.collisionPaths,
+      behind: b.behind
+    })}`);
     lines.push('');
   }
   return lines.join('\n');

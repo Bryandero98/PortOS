@@ -155,18 +155,37 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // branch. v1's blanket "never merge unreviewed work" rule read as a veto on
   // the per-branch merge instruction, so a coordinator opened a PR and exited
   // while CI was still running — leaving a green, MERGEABLE PR sitting open.
-  it('branch-reconcile v2 makes merged (not PR-opened) the end state, preserving the v1 default', () => {
+  it('branch-reconcile keeps merged (not PR-opened) as the end state', () => {
     const current = DEFAULT_TASK_PROMPTS['branch-reconcile'];
     expect(current).toContain('not finished until it IS merged');
     expect(current).not.toContain('never merge unreviewed work');
-    expect(PROMPT_VERSIONS['branch-reconcile']).toBe(2);
 
-    // The outgoing v1 default carried the blanket ban and no CI-wait rule; it is
+    // The v1 default carried the blanket ban and no CI-wait rule; it is
     // preserved verbatim so installs holding it are recognized and upgraded.
-    const previous = PREVIOUS_DEFAULT_PROMPTS['branch-reconcile'];
-    const v1 = previous[previous.length - 1];
+    const [v1] = PREVIOUS_DEFAULT_PROMPTS['branch-reconcile'];
     expect(v1).toContain('never merge unreviewed work');
     expect(v1).not.toContain('not finished until it IS merged');
     expect(v1).not.toBe(current);
+  });
+
+  // branch-reconcile v3: a branch can be finished, correct, and still unwanted —
+  // its problem solved a different way on the default branch while it sat. v2 had
+  // nowhere to put that: every branch was merge-or-blocked, so the coordinator's
+  // only route for a superseded branch was to resolve its conflicts and merge a
+  // regression. The tell is the conflict itself, which is why the prompt has to
+  // say outright that a resolvable conflict proves nothing.
+  it('branch-reconcile v3 makes SUPERSEDED an outcome and denies conflicts as evidence, preserving the v2 default', () => {
+    const current = DEFAULT_TASK_PROMPTS['branch-reconcile'];
+    expect(current).toContain('SUPERSEDED');
+    expect(current).toContain('not evidence the work is still needed');
+    expect(current).toContain('Nothing reaches a PR unverified');
+    expect(PROMPT_VERSIONS['branch-reconcile']).toBe(3);
+
+    const previous = PREVIOUS_DEFAULT_PROMPTS['branch-reconcile'];
+    const v2 = previous[previous.length - 1];
+    // v2 already drove branches to merged, but had no supersession concept.
+    expect(v2).toContain('not finished until it IS merged');
+    expect(v2).not.toContain('SUPERSEDED');
+    expect(v2).not.toBe(current);
   });
 });
