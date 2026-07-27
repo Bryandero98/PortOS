@@ -3,6 +3,7 @@
 ## Usage cost reporting
 
 - **[issue-3124] Usage cost estimates now include pre-breakdown history** — Older activity is grouped as legacy usage, conflicting totals agree, missing provider IDs are labeled clearly, and the report explains which token costs remain uncounted.
+- **[issue-3124] The cost report now measures real token usage instead of guessing at it.** Claude Code and Codex runs read their actual per-message token counts — full conversation context plus prompt-cache reads and writes — from the transcripts those tools already keep on your machine, so nothing is sent anywhere and no AI credits are spent. Cache reads and writes are priced at their own published rates and shown in their own columns. Since repeated context and cache traffic are the bulk of what agentic coding actually costs, the report was previously understating real spend by roughly ten times. Every row is now labeled Measured or Estimated, so a figure that still rests on guesswork says so. Runs on local models stay correctly free. Measurement applies to runs from here on; activity already recorded keeps its original estimate.
 
 ## Quota-burn automation
 

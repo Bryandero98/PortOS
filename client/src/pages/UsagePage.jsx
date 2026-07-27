@@ -189,18 +189,40 @@ function ProviderQuotaSection() {
 // Approximate-rate marker: anything other than an exact model-id rate match.
 const approxMark = (rateMatch) => (rateMatch === 'exact' || rateMatch === 'free' ? '' : '~');
 
+// How a row's token counts were obtained. `measured` rows are summed from the
+// provider CLI's own transcript; `estimate` rows are derived from prompt length
+// and captured stdout and understate real usage substantially. Distinguishing
+// them is the point of #3124 — a headline figure that mixes the two silently is
+// what made the old report unusable.
+const SOURCE_LABELS = {
+  measured: { label: 'Measured', tone: 'success', title: 'Token counts read from the provider CLI’s own transcript' },
+  mixed: { label: 'Part est.', tone: 'warning', title: 'Some counts measured from the provider transcript, some estimated' },
+  estimate: { label: 'Estimated', tone: 'context', title: 'Estimated from prompt length and captured output — understates per-turn context and cache traffic' }
+};
+
+function SourcePill({ source, className = '' }) {
+  const meta = SOURCE_LABELS[source] || SOURCE_LABELS.estimate;
+  return (
+    <Pill tone={meta.tone} size="xs" className={className} title={meta.title}>{meta.label}</Pill>
+  );
+}
+
 function CostReportTable({ report }) {
   if (!report?.providers?.length) {
     return <div className="text-gray-500 text-sm py-4">No per-provider usage recorded in this period.</div>;
   }
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-sm min-w-[560px]">
+      <table className="w-full text-sm min-w-[680px]">
         <thead>
           <tr className="text-left text-xs text-gray-500 border-b border-port-border">
             <th className="py-2 pr-2 font-medium">Provider / Model</th>
             <th className="py-2 px-2 font-medium text-right">Sessions</th>
             <th className="py-2 px-2 font-medium text-right">Tokens In</th>
+            {/* Cache columns collapse below md — the mobile-responsive rule; the
+                per-row title attributes keep the numbers reachable there. */}
+            <th className="py-2 px-2 font-medium text-right hidden md:table-cell">Cache Read</th>
+            <th className="py-2 px-2 font-medium text-right hidden md:table-cell">Cache Write</th>
             <th className="py-2 px-2 font-medium text-right">Tokens Out</th>
             <th className="py-2 pl-2 font-medium text-right">Est. API Cost</th>
           </tr>
@@ -215,6 +237,8 @@ function CostReportTable({ report }) {
             <td className="py-2 pr-2">Total</td>
             <td className="py-2 px-2 text-right">{formatNumber(report.totals.sessions)}</td>
             <td className="py-2 px-2 text-right">{formatNumber(report.totals.tokensIn)}</td>
+            <td className="py-2 px-2 text-right hidden md:table-cell">{formatNumber(report.totals.cacheReadTokens)}</td>
+            <td className="py-2 px-2 text-right hidden md:table-cell">{formatNumber(report.totals.cacheWriteTokens)}</td>
             <td className="py-2 px-2 text-right">{formatNumber(report.totals.tokensOut)}</td>
             <td className="py-2 pl-2 text-right text-port-success">{formatCost(report.totals.estimatedCost)}</td>
           </tr>
@@ -223,6 +247,11 @@ function CostReportTable({ report }) {
     </div>
   );
 }
+
+// Cache token counts, with the hidden-on-mobile columns' values folded into a
+// title so the numbers stay reachable when the columns collapse.
+const cacheTitle = (row) =>
+  `Cache read ${(row.cacheReadTokens ?? 0).toLocaleString()} · cache write ${(row.cacheWriteTokens ?? 0).toLocaleString()} tokens`;
 
 function ProviderCostRows({ provider }) {
   return (
@@ -233,9 +262,12 @@ function ProviderCostRows({ provider }) {
           {provider.free && (
             <Pill tone="success" size="xs" className="ml-2 uppercase tracking-wide">Local — free</Pill>
           )}
+          {!provider.free && <SourcePill source={provider.source} className="ml-2" />}
         </td>
-        <td className="py-2 px-2 text-right">{formatNumber(provider.sessions)}</td>
-        <td className="py-2 px-2 text-right">{formatNumber(provider.tokensIn)}</td>
+        <td className="py-2 px-2 text-right" title={cacheTitle(provider)}>{formatNumber(provider.sessions)}</td>
+        <td className="py-2 px-2 text-right" title={cacheTitle(provider)}>{formatNumber(provider.tokensIn)}</td>
+        <td className="py-2 px-2 text-right hidden md:table-cell">{formatNumber(provider.cacheReadTokens)}</td>
+        <td className="py-2 px-2 text-right hidden md:table-cell">{formatNumber(provider.cacheWriteTokens)}</td>
         <td className="py-2 px-2 text-right">{formatNumber(provider.tokensOut)}</td>
         <td
           className="py-2 pl-2 text-right"
@@ -246,11 +278,18 @@ function ProviderCostRows({ provider }) {
       </tr>
       {provider.models.map((m) => (
         <tr key={m.model} className="text-gray-400">
-          <td className="py-1.5 pr-2 pl-4 sm:pl-6 font-mono text-xs truncate max-w-[220px]" title={m.rateModel ? `Priced as ${m.rateModel} ($${m.inputPer1M}/$${m.outputPer1M} per 1M)` : undefined}>
+          <td
+            className="py-1.5 pr-2 pl-4 sm:pl-6 font-mono text-xs truncate max-w-[220px]"
+            title={m.rateModel
+              ? `Priced as ${m.rateModel} ($${m.inputPer1M}/$${m.outputPer1M} per 1M in/out; $${m.cacheReadPer1M}/$${m.cacheWritePer1M} per 1M cache read/write)`
+              : undefined}
+          >
             {m.model}
           </td>
           <td className="py-1.5 px-2 text-right text-xs">{formatNumber(m.sessions)}</td>
-          <td className="py-1.5 px-2 text-right text-xs">{formatNumber(m.tokensIn)}</td>
+          <td className="py-1.5 px-2 text-right text-xs" title={cacheTitle(m)}>{formatNumber(m.tokensIn)}</td>
+          <td className="py-1.5 px-2 text-right text-xs hidden md:table-cell">{formatNumber(m.cacheReadTokens)}</td>
+          <td className="py-1.5 px-2 text-right text-xs hidden md:table-cell">{formatNumber(m.cacheWriteTokens)}</td>
           <td className="py-1.5 px-2 text-right text-xs">{formatNumber(m.tokensOut)}</td>
           <td className="py-1.5 pl-2 text-right text-xs" title={approxMark(m.rateMatch) ? 'Approximate — no exact published rate for this model id' : undefined}>
             {approxMark(m.rateMatch)}{formatCost(m.estimatedCost)}
@@ -326,6 +365,7 @@ function InternalUsageMetrics() {
     return () => { cancelled = true; };
   }, [period, from, to, isCustom]);
 
+
   const setPeriod = (id) => {
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
@@ -397,14 +437,21 @@ function InternalUsageMetrics() {
               </p>
             )}
           </div>
-          <span className="text-xl font-bold text-port-success">{formatCost(report?.totals?.estimatedCost)}</span>
+          <div className="flex items-center gap-2">
+            {report?.totals?.source && <SourcePill source={report.totals.source} />}
+            <span className="text-xl font-bold text-port-success">{formatCost(report?.totals?.estimatedCost)}</span>
+          </div>
         </div>
         <CostReportFilters period={period} from={from} to={to} isCustom={isCustom} onPeriod={setPeriod} onRange={setRange} />
         <CostReportTable report={report} />
         <p className="text-[10px] sm:text-xs text-gray-500">
           Informational estimate of what this usage would have cost under API billing (PortOS runs on subscriptions).
-          Current token counts estimate each run from its initial prompt and captured output; repeated per-turn context and prompt-cache reads/writes are not counted.
-          Rates are as of {report?.pricingAsOf || 'the last update'} and exclude cache tiers, batch pricing, and long-context tiers.
+          {' '}<span className="text-gray-400">Measured</span> rows are the provider CLI&rsquo;s own per-message counts, read from its local
+          transcript — full per-turn input, output, and prompt-cache reads/writes, each priced at its own rate.
+          {' '}<span className="text-gray-400">Estimated</span> rows are runs with no readable transcript (local models, or a provider
+          that writes none): input is approximated from the initial prompt only and cache traffic is not counted, so those rows
+          understate real usage substantially.
+          Rates are as of {report?.pricingAsOf || 'the last update'} and exclude batch and long-context tiers.
           {' '}Rows marked ~ use an approximated rate.
         </p>
       </div>

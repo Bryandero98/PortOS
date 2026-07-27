@@ -7,10 +7,10 @@
 import { join } from 'path';
 import { writeFile, mkdir } from 'fs/promises';
 import { v4 as uuidv4 } from '../lib/uuid.js';
-import { recordSession, recordMessages } from './usage.js';
+import { recordSession } from './usage.js';
+import { recordCompletedRunUsage } from './usageReconciler.js';
 import { bufferedSpawn } from '../lib/bufferedSpawn.js';
 import { atomicWrite, ensureDir, pathExists, readJSONFile, PATHS } from '../lib/fileUtils.js';
-import { estimateTokens, estimateTokensFromChars } from '../lib/contextBudget.js';
 
 const RUNS_DIR = PATHS.runs;
 
@@ -142,13 +142,13 @@ export async function completeAgentRun(runId, output, exitCode, duration, errorA
   await atomicWrite(metaPath, metadata);
   await writeFile(join(runDir, 'output.txt'), output || '');
 
-  // Record usage for successful CoS agent runs (token counts are estimated)
+  // Record usage for successful CoS agent runs. Prefers the provider CLI's own
+  // per-message token counts (read from its on-disk transcript, including the
+  // prompt-cache tiers) and falls back to the prompt-length/stdout estimate.
+  // `metadata` already carries the endTime stamped above, which bounds the
+  // transcript window. Owns its own error handling.
   if (exitCode === 0 && metadata.providerId && metadata.model) {
-    const estimatedTokens = estimateTokens(output);
-    const inputTokens = estimateTokensFromChars(metadata.promptLength);
-    recordMessages(metadata.providerId, metadata.model, 1, estimatedTokens, inputTokens).catch(err => {
-      console.error(`❌ Failed to record usage: ${err.message}`);
-    });
+    recordCompletedRunUsage(metadata, output);
   }
 }
 
