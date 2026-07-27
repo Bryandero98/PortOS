@@ -26,9 +26,14 @@ vi.mock('../services/claudeCodeUsage.js', () => ({
   getClaudeCodeUsage: vi.fn()
 }));
 
+vi.mock('../services/usageReconciler.js', () => ({
+  backfillMeasuredUsage: vi.fn()
+}));
+
 import * as usage from '../services/usage.js';
 import { getAllProviders } from '../services/providers.js';
 import { getProviderQuotas } from '../services/providerUsage.js';
+import { backfillMeasuredUsage } from '../services/usageReconciler.js';
 import usageRoutes from './usage.js';
 
 const buildApp = () => {
@@ -169,5 +174,43 @@ describe('usage routes', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ success: true });
     expect(usage.resetUsage).toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/usage/backfill', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('runs the transcript backfill and returns its summary', async () => {
+    backfillMeasuredUsage.mockResolvedValue({
+      days: 3, sessions: 12, tokensIn: 100, tokensOut: 200,
+      cacheReadTokens: 900, cacheWriteTokens: 50, families: ['claude']
+    });
+
+    const res = await request(buildApp()).post('/api/usage/backfill').send({});
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ days: 3, sessions: 12, families: ['claude'] });
+    expect(backfillMeasuredUsage).toHaveBeenCalledWith({ since: null });
+  });
+
+  it('passes an explicit since floor through', async () => {
+    backfillMeasuredUsage.mockResolvedValue({ days: 1, sessions: 1, families: ['codex'] });
+    const res = await request(buildApp()).post('/api/usage/backfill').send({ since: '2026-07-01' });
+    expect(res.status).toBe(200);
+    expect(backfillMeasuredUsage).toHaveBeenCalledWith({ since: '2026-07-01' });
+  });
+
+  it('works with no body at all', async () => {
+    backfillMeasuredUsage.mockResolvedValue({ days: 0, sessions: 0, families: [] });
+    const res = await request(buildApp()).post('/api/usage/backfill');
+    expect(res.status).toBe(200);
+    expect(backfillMeasuredUsage).toHaveBeenCalledWith({ since: null });
+  });
+
+  it('rejects a malformed since date', async () => {
+    const res = await request(buildApp()).post('/api/usage/backfill').send({ since: 'yesterday' });
+    expect(res.status).toBe(400);
+    expect(backfillMeasuredUsage).not.toHaveBeenCalled();
   });
 });

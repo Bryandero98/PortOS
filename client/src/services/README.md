@@ -58,7 +58,7 @@ toasts on throw). **Custom catch ⇒ `silent: true`** — otherwise toasts fire 
 | `apiRuns.js` | Agent run history. |
 | `apiScaffold.js` | App scaffolding templates. |
 | `apiSchedules.js` | Automation schedules. |
-| `apiSystem.js` | System info (CPU/memory/ports/alerts) + D&D-style character sheet getter. |
+| `apiSystem.js` | System info (CPU/memory/ports/alerts) + D&D-style character sheet getter, plus the usage cost report (`getUsage`/`getUsageRaw`/`resetUsage`, `getProviderUsage`, and `backfillUsage` — re-reads the provider CLIs' local transcripts to replace estimated token counts with measured ones). |
 | `apiAuth.js` | Optional login password — status, login/logout, set/clear password. |
 | `apiLoops.js` | Scheduled loops. |
 

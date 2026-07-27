@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveModelRates, isFreeProvider, estimateCostUsd, PRICING_AS_OF } from './modelPricing.js';
+import { resolveModelRates, isFreeProvider, isFreeModelId, estimateCostUsd, PRICING_AS_OF } from './modelPricing.js';
 
 describe('resolveModelRates', () => {
   it('matches exact model ids', () => {
@@ -118,5 +118,103 @@ describe('estimateCostUsd', () => {
   it('treats missing counts and rates as zero', () => {
     expect(estimateCostUsd(null, undefined, { inputPer1M: 3, outputPer1M: 15 })).toBe(0);
     expect(estimateCostUsd(1000, 1000, null)).toBe(0);
+  });
+
+  it('prices cache read and cache write at their own per-1M rates', () => {
+    const rates = { inputPer1M: 5, outputPer1M: 25, cacheReadPer1M: 0.5, cacheWritePer1M: 6.25 };
+    const cost = estimateCostUsd(0, 0, rates, { cacheReadTokens: 1_000_000, cacheWriteTokens: 1_000_000 });
+    expect(cost).toBeCloseTo(0.5 + 6.25);
+  });
+
+  it('omits cache cost entirely when the 4th argument is absent (back-compat)', () => {
+    const rates = resolveModelRates('claude-code', 'claude-opus-5');
+    expect(estimateCostUsd(1_000_000, 0, rates)).toBeCloseTo(5);
+  });
+
+  it('bills a cache read at 10% of the input rate for an Anthropic model', () => {
+    const rates = resolveModelRates('claude-code', 'claude-opus-5');
+    const inputCost = estimateCostUsd(1_000_000, 0, rates);
+    const cacheReadCost = estimateCostUsd(0, 0, rates, { cacheReadTokens: 1_000_000 });
+    expect(cacheReadCost).toBeCloseTo(inputCost * 0.1);
+    expect(cacheReadCost).toBeCloseTo(0.5); // $5/MTok input → $0.50/MTok cache hit
+  });
+
+  it('bills a 5-minute cache write at 1.25x the input rate', () => {
+    const rates = resolveModelRates('claude-code', 'claude-opus-5');
+    expect(estimateCostUsd(0, 0, rates, { cacheWriteTokens: 1_000_000 })).toBeCloseTo(6.25);
+  });
+
+  // The #3124 regression in one assertion: charging cache reads at the standard
+  // input rate overstates them 10x, and not counting them at all understates the
+  // whole run by ~90% of its real input volume.
+  it('prices a cache-heavy agentic run far below the same volume as fresh input', () => {
+    const rates = resolveModelRates('claude-code', 'claude-opus-5');
+    const asCacheReads = estimateCostUsd(0, 0, rates, { cacheReadTokens: 10_000_000 });
+    const asFreshInput = estimateCostUsd(10_000_000, 0, rates);
+    expect(asCacheReads).toBeCloseTo(asFreshInput * 0.1);
+    // …but is emphatically NOT free, which is what omitting the tier implied.
+    expect(asCacheReads).toBeGreaterThan(0);
+  });
+});
+
+describe('cache-tier rates on resolveModelRates', () => {
+  it('derives both cache tiers from the input rate on every match tier', () => {
+    for (const [providerId, model] of [
+      ['claude-code', 'claude-opus-5'],        // exact
+      ['claude-code', 'opus'],                 // family
+      ['claude-code', 'no-such-model'],        // providerDefault
+      ['who-knows', 'no-such-model']           // fallback
+    ]) {
+      const rates = resolveModelRates(providerId, model);
+      expect(rates.cacheReadPer1M).toBeCloseTo(rates.inputPer1M * 0.1);
+      expect(rates.cacheWritePer1M).toBeCloseTo(rates.inputPer1M * 1.25);
+    }
+  });
+
+  it('uses xAI\'s higher published cached-input ratio for grok', () => {
+    const rates = resolveModelRates('grok', 'grok-4.5');
+    expect(rates.inputPer1M).toBe(2);
+    expect(rates.cacheReadPer1M).toBeCloseTo(0.3); // 0.15x per docs.x.ai
+  });
+
+  it('keeps the OpenAI/Codex 10% cached-input ratio', () => {
+    const rates = resolveModelRates('codex', 'gpt-5.3-codex');
+    expect(rates.cacheReadPer1M).toBeCloseTo(rates.inputPer1M * 0.1);
+  });
+});
+
+describe('isFreeModelId', () => {
+  it('treats Ollama/LM Studio family:tag ids as local (free)', () => {
+    for (const id of ['qwen3.6:35b', 'llama3.1:8b-instruct-q8_0', 'gpt-oss:120b', 'deepseek-r1:7b']) {
+      expect(isFreeModelId(id)).toBe(true);
+    }
+  });
+
+  it('treats an org/repo GGUF reference as local', () => {
+    expect(isFreeModelId('unsloth/Qwen3-30B')).toBe(true);
+  });
+
+  it('does NOT treat hosted model ids as local', () => {
+    for (const id of [
+      'claude-opus-5', 'claude-fable-5', 'gpt-5.3-codex', 'grok-4.5',
+      'gemini-3.1-pro-preview', 'global.anthropic.claude-opus-5', 'opus', 'sonnet'
+    ]) {
+      expect(isFreeModelId(id)).toBe(false);
+    }
+  });
+
+  it('is false for empty/nullish input', () => {
+    expect(isFreeModelId(null)).toBe(false);
+    expect(isFreeModelId('')).toBe(false);
+    expect(isFreeModelId(undefined)).toBe(false);
+  });
+
+  // Regression: a Claude-Code CLI pointed at an Ollama backend records the LOCAL
+  // model id in its transcript. Billing it through the `claude` provider default
+  // invented ~$166 of cost on a real install.
+  it('keeps a local model free even when it arrives via a claude provider', () => {
+    expect(isFreeModelId('qwen3.6:35b')).toBe(true);
+    // The provider-level check can't catch this on its own — hence the model check.
+    expect(isFreeProvider('claude-code')).toBe(false);
   });
 });

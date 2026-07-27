@@ -20,7 +20,7 @@ tryReadFile: vi.fn().mockResolvedValue(null),
 }));
 
 import { atomicWrite, readJSONFile } from '../lib/fileUtils.js';
-import { loadUsage, getUsageSummary, getUsage, recordSession, recordMessages, recordTokens, buildUsageReport, rollupOldDailyActivity } from './usage.js';
+import { loadUsage, getUsageSummary, getUsage, recordSession, recordMessages, recordTokens, recordRunUsage, replaceMeasuredDayUsage, buildUsageReport, rollupOldDailyActivity } from './usage.js';
 
 // Helper: produce a date string N days ago (relative to today)
 function daysAgo(n) {
@@ -819,5 +819,279 @@ describe('usage.js — loadUsage rollup integration', () => {
     expect(data.monthlyActivity[oldKey.slice(0, 7)].tokens).toBe(500);
     // Top-level totals are independent of bucket rollup — unchanged.
     expect(data.totalSessions).toBe(7);
+  });
+});
+
+describe('usage.js — cache tiers and measured/estimate provenance (#3124 Phase 2)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(FIXED_DATE);
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const today = '2025-06-11';
+
+  it('records cache tokens and a measured source through recordRunUsage', async () => {
+    readJSONFile.mockResolvedValueOnce(makeUsage({}));
+    await loadUsage();
+    await recordSession('claude-code', 'Claude Code', 'claude-opus-5');
+    await recordRunUsage({
+      providerId: 'claude-code',
+      model: 'claude-opus-5',
+      messages: 3,
+      tokensIn: 1500,
+      tokensOut: 800,
+      cacheReadTokens: 3_500_000,
+      cacheWriteTokens: 280_000,
+      source: 'measured'
+    });
+
+    const providerDay = getUsage().dailyActivity[today].byProvider['claude-code'];
+    expect(providerDay).toMatchObject({
+      messages: 3,
+      tokensIn: 1500,
+      tokensOut: 800,
+      cacheReadTokens: 3_500_000,
+      cacheWriteTokens: 280_000,
+      source: 'measured'
+    });
+    expect(providerDay.byModel['claude-opus-5']).toMatchObject({
+      cacheReadTokens: 3_500_000,
+      source: 'measured'
+    });
+  });
+
+  it('counts every billable input tier in the all-time input total', () => {
+    // A cache read is an input token the user was charged for — the headline
+    // "Tokens" figure must not omit it (that was the #3124 understatement).
+    expect(getUsage().totalTokens.input).toBe(1500 + 3_500_000 + 280_000);
+  });
+
+  it('defaults recordMessages to an estimate source with no cache tokens', async () => {
+    readJSONFile.mockResolvedValueOnce(makeUsage({}));
+    await loadUsage();
+    await recordMessages('codex', 'gpt-5.3-codex', 1, 400, 30);
+
+    expect(getUsage().dailyActivity[today].byProvider.codex).toMatchObject({
+      tokensIn: 30,
+      tokensOut: 400,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      source: 'estimate'
+    });
+  });
+
+  it('downgrades a bucket to mixed when measured and estimated counts land together', async () => {
+    readJSONFile.mockResolvedValueOnce(makeUsage({}));
+    await loadUsage();
+    await recordRunUsage({ providerId: 'claude-code', model: 'claude-opus-5', tokensOut: 10, source: 'measured' });
+    await recordRunUsage({ providerId: 'claude-code', model: 'claude-opus-5', tokensOut: 10, source: 'estimate' });
+
+    expect(getUsage().dailyActivity[today].byProvider['claude-code'].source).toBe('mixed');
+  });
+
+  it('accumulates cache tokens onto a legacy bucket that predates the fields', async () => {
+    readJSONFile.mockResolvedValueOnce(makeUsage({
+      [today]: {
+        sessions: 1,
+        messages: 1,
+        tokens: 100,
+        // Pre-#3124 shape: no cacheReadTokens/cacheWriteTokens/source at all.
+        byProvider: { 'claude-code': { name: 'Claude Code', sessions: 1, messages: 1, tokensIn: 20, tokensOut: 100, byModel: {} } }
+      }
+    }));
+    await loadUsage();
+    await recordRunUsage({
+      providerId: 'claude-code',
+      model: null,
+      tokensOut: 50,
+      cacheReadTokens: 900,
+      source: 'measured'
+    });
+
+    const bucket = getUsage().dailyActivity[today].byProvider['claude-code'];
+    expect(bucket.cacheReadTokens).toBe(900);
+    expect(bucket.tokensOut).toBe(150);
+    // The pre-existing 100 output tokens were estimates, so the merged bucket
+    // must not claim to be purely measured.
+    expect(bucket.source).toBe('mixed');
+  });
+});
+
+describe('buildUsageReport — cache pricing and source reporting', () => {
+  const providers = [{ id: 'claude-code', name: 'Claude Code', type: 'cli', command: 'claude' }];
+
+  it('prices cache read and write tiers into the estimated cost', () => {
+    const daily = {
+      '2026-07-01': {
+        sessions: 1,
+        messages: 1,
+        byProvider: {
+          'claude-code': {
+            name: 'Claude Code',
+            sessions: 1,
+            messages: 1,
+            tokensIn: 0,
+            tokensOut: 0,
+            cacheReadTokens: 1_000_000,
+            cacheWriteTokens: 1_000_000,
+            source: 'measured',
+            byModel: {
+              'claude-opus-5': {
+                sessions: 1, messages: 1, tokensIn: 0, tokensOut: 0,
+                cacheReadTokens: 1_000_000, cacheWriteTokens: 1_000_000, source: 'measured'
+              }
+            }
+          }
+        }
+      }
+    };
+
+    const report = buildUsageReport(daily, { providers });
+    // claude-opus-5: $5/MTok input → $0.50 cache read + $6.25 cache write.
+    expect(report.totals.estimatedCost).toBeCloseTo(6.75, 2);
+    expect(report.totals.cacheReadTokens).toBe(1_000_000);
+    expect(report.totals.cacheWriteTokens).toBe(1_000_000);
+    expect(report.totals.source).toBe('measured');
+    expect(report.providers[0].source).toBe('measured');
+    expect(report.providers[0].models[0]).toMatchObject({
+      cacheReadTokens: 1_000_000,
+      cacheWritePer1M: 6.25,
+      cacheReadPer1M: 0.5
+    });
+  });
+
+  it('reports legacy buckets with no source field as estimates', () => {
+    const daily = {
+      '2026-07-01': {
+        sessions: 1,
+        messages: 1,
+        byProvider: {
+          'claude-code': {
+            name: 'Claude Code', sessions: 1, messages: 1, tokensIn: 10, tokensOut: 100, byModel: {}
+          }
+        }
+      }
+    };
+
+    const report = buildUsageReport(daily, { providers });
+    expect(report.providers[0].source).toBe('estimate');
+    expect(report.providers[0].cacheReadTokens).toBe(0);
+    expect(report.totals.source).toBe('estimate');
+  });
+
+  it('marks a range spanning legacy and measured buckets as mixed', () => {
+    const daily = {
+      '2026-07-01': {
+        sessions: 1, messages: 1,
+        byProvider: { 'claude-code': { name: 'Claude Code', sessions: 1, messages: 1, tokensIn: 10, tokensOut: 100, byModel: {} } }
+      },
+      '2026-07-02': {
+        sessions: 1, messages: 1,
+        byProvider: { 'claude-code': { name: 'Claude Code', sessions: 1, messages: 1, tokensIn: 10, tokensOut: 100, cacheReadTokens: 500, source: 'measured', byModel: {} } }
+      }
+    };
+
+    const report = buildUsageReport(daily, { providers });
+    expect(report.providers[0].source).toBe('mixed');
+  });
+
+  it('never charges a free local provider for cache tokens', () => {
+    const daily = {
+      '2026-07-01': {
+        sessions: 1, messages: 1,
+        byProvider: { ollama: { name: 'Ollama', sessions: 1, messages: 1, tokensIn: 100, tokensOut: 100, cacheReadTokens: 5_000_000, source: 'measured', byModel: {} } }
+      }
+    };
+
+    const report = buildUsageReport(daily, { providers: [{ id: 'ollama', name: 'Ollama' }] });
+    expect(report.totals.estimatedCost).toBe(0);
+  });
+
+  it('does not re-add measured cache tokens as a legacy residual', () => {
+    // totalTokens.input includes the cache tiers, so the residual reconciliation
+    // must count them as represented or it double-bills them as legacy.
+    const daily = {
+      '2026-07-01': {
+        sessions: 1, messages: 1,
+        byProvider: {
+          'claude-code': {
+            name: 'Claude Code', sessions: 1, messages: 1,
+            tokensIn: 1000, tokensOut: 500,
+            cacheReadTokens: 2_000_000, cacheWriteTokens: 100_000,
+            source: 'measured', byModel: {}
+          }
+        }
+      }
+    };
+
+    const report = buildUsageReport(daily, {
+      providers,
+      totalTokens: { input: 1000 + 2_000_000 + 100_000, output: 500 }
+    });
+
+    expect(report.providers.find((p) => p.id === 'legacy')).toBeUndefined();
+  });
+});
+
+describe('replaceMeasuredDayUsage', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('is idempotent — a second identical backfill does not double the day', async () => {
+    readJSONFile.mockResolvedValueOnce(makeUsage({}));
+    await loadUsage();
+
+    const records = [{
+      providerId: 'claude-code',
+      model: 'claude-opus-5',
+      sessions: 2,
+      messages: 5,
+      tokensIn: 100,
+      tokensOut: 200,
+      cacheReadTokens: 9000,
+      cacheWriteTokens: 300
+    }];
+
+    await replaceMeasuredDayUsage('2026-07-01', records);
+    await replaceMeasuredDayUsage('2026-07-01', records);
+
+    const bucket = getUsage().dailyActivity['2026-07-01'].byProvider['claude-code'];
+    expect(bucket).toMatchObject({
+      sessions: 2, messages: 5, tokensIn: 100, tokensOut: 200,
+      cacheReadTokens: 9000, cacheWriteTokens: 300, source: 'measured'
+    });
+    expect(bucket.byModel['claude-opus-5']).toMatchObject({ tokensOut: 200, cacheReadTokens: 9000 });
+  });
+
+  it('leaves other providers in the same day untouched', async () => {
+    readJSONFile.mockResolvedValueOnce(makeUsage({
+      '2026-07-01': {
+        sessions: 1, messages: 1, tokens: 40,
+        byProvider: { ollama: { name: 'Ollama', sessions: 1, messages: 1, tokensIn: 5, tokensOut: 40, byModel: {} } }
+      }
+    }));
+    await loadUsage();
+
+    await replaceMeasuredDayUsage('2026-07-01', [
+      { providerId: 'claude-code', model: null, sessions: 1, messages: 1, tokensOut: 10 }
+    ]);
+
+    const day = getUsage().dailyActivity['2026-07-01'];
+    expect(day.byProvider.ollama).toMatchObject({ tokensOut: 40, tokensIn: 5 });
+    expect(day.byProvider['claude-code'].source).toBe('measured');
+  });
+
+  it('rejects a malformed day key or empty record list', async () => {
+    readJSONFile.mockResolvedValueOnce(makeUsage({}));
+    await loadUsage();
+    await replaceMeasuredDayUsage('not-a-day', [{ providerId: 'claude-code' }]);
+    await replaceMeasuredDayUsage('2026-07-01', []);
+    expect(Object.keys(getUsage().dailyActivity)).toHaveLength(0);
   });
 });

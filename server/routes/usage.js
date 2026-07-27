@@ -4,7 +4,8 @@ import { getClaudeCodeUsage } from '../services/claudeCodeUsage.js';
 import { getProviderQuotas } from '../services/providerUsage.js';
 import { getAllProviders } from '../services/providers.js';
 import { asyncHandler } from '../lib/errorHandler.js';
-import { validateRequest, usageQuerySchema, usageMessagesSchema } from '../lib/validation.js';
+import { validateRequest, usageQuerySchema, usageMessagesSchema, usageBackfillSchema } from '../lib/validation.js';
+import { backfillMeasuredUsage } from '../services/usageReconciler.js';
 import { resolveUsageRange } from '../lib/usageRange.js';
 
 const router = Router();
@@ -56,6 +57,18 @@ router.post('/messages', asyncHandler(async (req, res) => {
   const { providerId, model, messageCount, tokenCount, inputTokenCount } = validateRequest(usageMessagesSchema, req.body);
   await usage.recordMessages(providerId, model, messageCount, tokenCount, inputTokenCount);
   res.json({ success: true });
+}));
+
+// POST /api/usage/backfill - Re-read the provider CLIs' on-disk transcripts and
+// replace estimated day buckets with their measured token counts (input, output,
+// and the prompt-cache tiers). Reads local JSONL only — no provider call, no
+// tokens spent — but it rewrites recorded history and can walk a large tree, so
+// it is reachable ONLY from this explicit user action (never boot, never a
+// schedule).
+router.post('/backfill', asyncHandler(async (req, res) => {
+  const { since } = validateRequest(usageBackfillSchema, req.body ?? {});
+  const summary = await backfillMeasuredUsage({ since: since ?? null });
+  res.json(summary);
 }));
 
 // POST /api/usage/tokens - Record token usage

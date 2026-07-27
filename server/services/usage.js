@@ -186,6 +186,16 @@ function providerDayBucket(day, providerId, providerName) {
       messages: 0,
       tokensIn: 0,
       tokensOut: 0,
+      // Prompt-cache tiers, captured only for providers whose CLI writes a
+      // transcript we can read (see services/usageReconciler.js). Additive:
+      // absent on every bucket written before #3124 and read as 0.
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      // How this bucket's counts were obtained. `measured` = summed from the
+      // provider's own transcript; `estimate` = derived from prompt length and
+      // captured stdout. A bucket that accumulated both is `mixed`, so the
+      // report never claims a partially-estimated row is measured.
+      source: null,
       byModel: {}
     };
   }
@@ -194,9 +204,34 @@ function providerDayBucket(day, providerId, providerName) {
 
 function modelDayBucket(providerDay, model) {
   if (!providerDay.byModel[model]) {
-    providerDay.byModel[model] = { sessions: 0, messages: 0, tokensIn: 0, tokensOut: 0 };
+    providerDay.byModel[model] = {
+      sessions: 0,
+      messages: 0,
+      tokensIn: 0,
+      tokensOut: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      source: null
+    };
   }
   return providerDay.byModel[model];
+}
+
+/**
+ * Merge a new measurement source into a bucket's existing one. A bucket that has
+ * only ever seen one kind keeps that kind; mixing measured and estimated counts
+ * downgrades it to `mixed` so the UI can't present a partly-estimated row as
+ * ground truth. Absent (legacy buckets) is treated as `estimate` — that is what
+ * every pre-#3124 bucket actually holds.
+ */
+function mergeSource(existing, incoming) {
+  if (!incoming) return existing ?? null;
+  // `null` = a bucket we just created that holds no counts yet, so the incoming
+  // source becomes its source outright. `undefined` = a bucket written before
+  // this field existed, whose counts are estimates by definition.
+  const current = existing === null ? null : (existing ?? 'estimate');
+  if (!current) return incoming;
+  return current === incoming ? current : 'mixed';
 }
 
 function todayBucket() {
@@ -249,18 +284,30 @@ export async function recordSession(providerId, providerName, model) {
  * Record messages in a session. `outputTokens`/`inputTokens` are estimates
  * (or real counts when the runner reports them) attributed to the provider,
  * model, and current day.
+ *
+ * `extra` carries the prompt-cache tiers and provenance a transcript-reconciled
+ * run supplies (`recordRunUsage`). It is optional and defaults to "no cache
+ * tokens, estimated" so every existing caller — and the
+ * `POST /api/usage/messages` route — keeps its current behavior.
  */
-export async function recordMessages(providerId, model, messageCount, outputTokens = 0, inputTokens = 0) {
+export async function recordMessages(providerId, model, messageCount, outputTokens = 0, inputTokens = 0, extra = {}) {
   if (!usageData) await loadUsage();
   const provider = normalizeProvider(providerId);
+  const cacheReadTokens = Math.max(0, extra?.cacheReadTokens || 0);
+  const cacheWriteTokens = Math.max(0, extra?.cacheWriteTokens || 0);
+  const source = extra?.source === 'measured' ? 'measured' : 'estimate';
 
   usageData.totalMessages += messageCount;
 
   if (outputTokens > 0) {
     usageData.totalTokens.output += outputTokens;
   }
-  if (inputTokens > 0) {
-    usageData.totalTokens.input += inputTokens;
+  // All-time input counts every billable input tier — a cache read is an input
+  // token the user was charged for, so omitting it from the headline "Tokens"
+  // figure would reproduce the #3124 understatement one level up.
+  const totalInputTokens = inputTokens + cacheReadTokens + cacheWriteTokens;
+  if (totalInputTokens > 0) {
+    usageData.totalTokens.input += totalInputTokens;
   }
 
   // Track by provider / by model (the legacy all-time entries keep their
@@ -282,6 +329,12 @@ export async function recordMessages(providerId, model, messageCount, outputToke
     bucket.messages += messageCount;
     bucket.tokensIn += inputTokens;
     bucket.tokensOut += outputTokens;
+    // `??= 0` seeds the field on buckets created before it existed, so a
+    // pre-#3124 install starts accumulating cache counts without a migration
+    // pass over its whole history.
+    bucket.cacheReadTokens = (bucket.cacheReadTokens ?? 0) + cacheReadTokens;
+    bucket.cacheWriteTokens = (bucket.cacheWriteTokens ?? 0) + cacheWriteTokens;
+    bucket.source = mergeSource(bucket.source, source);
   };
   const day = todayBucket();
   day.messages = (day.messages || 0) + messageCount;
@@ -290,6 +343,101 @@ export async function recordMessages(providerId, model, messageCount, outputToke
   const providerDay = providerDayBucket(day, provider.id, providerName);
   bumpDayBucket(providerDay);
   if (model) bumpDayBucket(modelDayBucket(providerDay, model));
+
+  await saveUsage();
+}
+
+/**
+ * Record one completed AI run from a reconciled usage record — the shape
+ * `services/usageReconciler.reconcileRunUsage` returns, carrying either the
+ * provider's own measured counts or the caller's estimate, tagged with which.
+ *
+ * This is the preferred entry point for run-completion hooks: it keeps the
+ * cache tiers and the `measured`/`estimate` provenance together, so a row in
+ * the cost report can say whether it was measured. `recordMessages` remains the
+ * primitive (and the API route's path) for callers with nothing but a token
+ * count.
+ *
+ * @param {{ providerId: string|null, model: string|null, messages?: number,
+ *   tokensIn?: number, tokensOut?: number, cacheReadTokens?: number,
+ *   cacheWriteTokens?: number, source?: 'measured'|'estimate' }} record
+ */
+export async function recordRunUsage(record) {
+  const {
+    providerId = null,
+    model = null,
+    messages = 1,
+    tokensIn = 0,
+    tokensOut = 0,
+    cacheReadTokens = 0,
+    cacheWriteTokens = 0,
+    source = 'estimate'
+  } = record || {};
+  await recordMessages(providerId, model, messages, tokensOut, tokensIn, {
+    cacheReadTokens,
+    cacheWriteTokens,
+    source
+  });
+}
+
+/**
+ * REPLACE a given day's measured provider/model buckets with `records` — the
+ * write half of the transcript backfill (`usageReconciler.backfillMeasuredUsage`).
+ *
+ * Replace, not add, so re-running the backfill is idempotent: a second pass over
+ * the same transcripts must not double the day. Only the buckets named in
+ * `records` are touched — a provider whose usage that day came from somewhere
+ * else (a local model, an API provider) keeps its existing estimate.
+ *
+ * The day's flat `sessions`/`messages`/`tokens` fields are deliberately left
+ * alone: they are the legacy all-time-ish counters the report already reconciles
+ * as residuals, and rewriting them from a partial (transcript-only) view of the
+ * day would drop the providers this pass cannot see.
+ *
+ * @param {string} dayKey `YYYY-MM-DD`
+ * @param {Array<{ providerId: string, model: string|null, sessions?: number,
+ *   messages?: number, tokensIn?: number, tokensOut?: number,
+ *   cacheReadTokens?: number, cacheWriteTokens?: number }>} records
+ */
+export async function replaceMeasuredDayUsage(dayKey, records) {
+  if (!usageData) await loadUsage();
+  if (!DAY_KEY_RE.test(dayKey || '') || !Array.isArray(records) || records.length === 0) return;
+
+  if (!usageData.dailyActivity[dayKey]) {
+    usageData.dailyActivity[dayKey] = { sessions: 0, messages: 0, tokens: 0 };
+  }
+  const day = usageData.dailyActivity[dayKey];
+
+  // Reset only the buckets this pass will rewrite, so a partial re-run can't
+  // leave a stale half-count behind.
+  for (const { providerId, model } of records) {
+    const providerDay = providerDayBucket(day, providerId, null);
+    const target = model ? modelDayBucket(providerDay, model) : providerDay;
+    for (const bucket of new Set([providerDay, target])) {
+      bucket.sessions = 0;
+      bucket.messages = 0;
+      bucket.tokensIn = 0;
+      bucket.tokensOut = 0;
+      bucket.cacheReadTokens = 0;
+      bucket.cacheWriteTokens = 0;
+      bucket.source = null;
+    }
+  }
+
+  for (const record of records) {
+    const providerDay = providerDayBucket(day, record.providerId, null);
+    const apply = (bucket) => {
+      bucket.sessions += record.sessions || 0;
+      bucket.messages += record.messages || 0;
+      bucket.tokensIn += record.tokensIn || 0;
+      bucket.tokensOut += record.tokensOut || 0;
+      bucket.cacheReadTokens += record.cacheReadTokens || 0;
+      bucket.cacheWriteTokens += record.cacheWriteTokens || 0;
+      bucket.source = mergeSource(bucket.source, 'measured');
+    };
+    apply(providerDay);
+    if (record.model) apply(modelDayBucket(providerDay, record.model));
+  }
 
   await saveUsage();
 }
@@ -403,6 +551,10 @@ const roundCents = (n) => Math.round(n * 100) / 100;
  * keeps long-range totals accurate across the rollup boundary. A month bucket
  * is whole-month-granular: it is included whenever its month overlaps
  * `[from, to]` (rolled-up months are far older than any day-precise range).
+ *
+ * Every row carries `cacheReadTokens`/`cacheWriteTokens` (priced at their own
+ * per-1M tiers) and a `source` of `measured` | `estimate` | `mixed` — buckets
+ * written before #3124 report `estimate`, since that is what their counts are.
  */
 export function buildUsageReport(dailyActivity, { from = null, to = null, providers = [], monthlyActivity = null, totalTokens = null } = {}) {
   const configById = new Map((providers || []).map((p) => [p.id, p]));
@@ -411,7 +563,17 @@ export function buildUsageReport(dailyActivity, { from = null, to = null, provid
 
   const ensureAggregate = (pid, name) => {
     if (!agg.has(pid)) {
-      agg.set(pid, { name, sessions: 0, messages: 0, tokensIn: 0, tokensOut: 0, byModel: new Map() });
+      agg.set(pid, {
+        name,
+        sessions: 0,
+        messages: 0,
+        tokensIn: 0,
+        tokensOut: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        source: null,
+        byModel: new Map()
+      });
     }
     return agg.get(pid);
   };
@@ -431,19 +593,40 @@ export function buildUsageReport(dailyActivity, { from = null, to = null, provid
       p.messages += pDay.messages || 0;
       p.tokensIn += pDay.tokensIn || 0;
       p.tokensOut += pDay.tokensOut || 0;
+      p.cacheReadTokens += pDay.cacheReadTokens || 0;
+      p.cacheWriteTokens += pDay.cacheWriteTokens || 0;
+      // A bucket with counts but no `source` predates the field — those counts
+      // are estimates, so fold it in as such rather than leaving the row
+      // unlabeled and letting the UI imply it was measured.
+      if ((pDay.tokensIn || pDay.tokensOut || pDay.cacheReadTokens || pDay.cacheWriteTokens || pDay.messages) && !pDay.source) {
+        p.source = mergeSource(p.source, 'estimate');
+      } else {
+        p.source = mergeSource(p.source, pDay.source);
+      }
       representedSessions += pDay.sessions || 0;
       representedMessages += pDay.messages || 0;
       representedTokensIn += pDay.tokensIn || 0;
       representedTokensOut += pDay.tokensOut || 0;
       for (const [model, mDay] of Object.entries(pDay.byModel || {})) {
         if (!p.byModel.has(model)) {
-          p.byModel.set(model, { sessions: 0, messages: 0, tokensIn: 0, tokensOut: 0 });
+          p.byModel.set(model, {
+            sessions: 0,
+            messages: 0,
+            tokensIn: 0,
+            tokensOut: 0,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+            source: null
+          });
         }
         const m = p.byModel.get(model);
         m.sessions += mDay.sessions || 0;
         m.messages += mDay.messages || 0;
         m.tokensIn += mDay.tokensIn || 0;
         m.tokensOut += mDay.tokensOut || 0;
+        m.cacheReadTokens += mDay.cacheReadTokens || 0;
+        m.cacheWriteTokens += mDay.cacheWriteTokens || 0;
+        m.source = mergeSource(m.source, mDay.source || (mDay.tokensIn || mDay.tokensOut || mDay.messages ? 'estimate' : null));
       }
     }
     const residualSessions = Math.max(0, (bucket.sessions || 0) - representedSessions);
@@ -457,6 +640,8 @@ export function buildUsageReport(dailyActivity, { from = null, to = null, provid
       legacy.messages += residualMessages;
       legacy.tokensIn += residualTokensIn;
       legacy.tokensOut += residualTokensOut;
+      // Flat legacy counts predate cache capture by definition.
+      legacy.source = mergeSource(legacy.source, 'estimate');
     }
   };
 
@@ -487,7 +672,11 @@ export function buildUsageReport(dailyActivity, { from = null, to = null, provid
   // by day/month buckets without double-counting normal recorded messages.
   if (totalTokens) {
     const represented = [...agg.values()].reduce((sum, provider) => ({
-      input: sum.input + provider.tokensIn,
+      // `totalTokens.input` counts every billable input tier (see
+      // recordMessages), so the represented side must include the cache tiers
+      // too — otherwise a measured run's cache reads look unaccounted-for and
+      // get re-added as a legacy residual, double-billing them.
+      input: sum.input + provider.tokensIn + provider.cacheReadTokens + provider.cacheWriteTokens,
       output: sum.output + provider.tokensOut
     }), { input: 0, output: 0 });
     const residualIn = Math.max(0, (totalTokens.input || 0) - represented.input);
@@ -496,10 +685,19 @@ export function buildUsageReport(dailyActivity, { from = null, to = null, provid
       const legacy = ensureAggregate(LEGACY_PROVIDER_ID, LEGACY_PROVIDER_NAME);
       legacy.tokensIn += residualIn;
       legacy.tokensOut += residualOut;
+      legacy.source = mergeSource(legacy.source, 'estimate');
     }
   }
 
-  const totals = { sessions: 0, messages: 0, tokensIn: 0, tokensOut: 0, estimatedCost: 0 };
+  const totals = {
+    sessions: 0,
+    messages: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    estimatedCost: 0
+  };
   const providerRows = [];
 
   for (const [pid, p] of agg.entries()) {
@@ -511,7 +709,7 @@ export function buildUsageReport(dailyActivity, { from = null, to = null, provid
 
     for (const [model, m] of p.byModel.entries()) {
       const rates = free ? null : resolveModelRates(pid, model);
-      const cost = free ? 0 : estimateCostUsd(m.tokensIn, m.tokensOut, rates);
+      const cost = free ? 0 : estimateCostUsd(m.tokensIn, m.tokensOut, rates, m);
       providerCost += cost;
       models.push({
         model,
@@ -519,11 +717,16 @@ export function buildUsageReport(dailyActivity, { from = null, to = null, provid
         messages: m.messages,
         tokensIn: m.tokensIn,
         tokensOut: m.tokensOut,
+        cacheReadTokens: m.cacheReadTokens,
+        cacheWriteTokens: m.cacheWriteTokens,
+        source: m.source || 'estimate',
         estimatedCost: roundCents(cost),
         rateModel: rates?.rateModel ?? null,
         rateMatch: free ? 'free' : rates.matched,
         inputPer1M: rates?.inputPer1M ?? 0,
-        outputPer1M: rates?.outputPer1M ?? 0
+        outputPer1M: rates?.outputPer1M ?? 0,
+        cacheReadPer1M: rates?.cacheReadPer1M ?? 0,
+        cacheWritePer1M: rates?.cacheWritePer1M ?? 0
       });
     }
     models.sort((a, b) => b.estimatedCost - a.estimatedCost || b.tokensOut - a.tokensOut);
@@ -532,16 +735,25 @@ export function buildUsageReport(dailyActivity, { from = null, to = null, provid
     // toward the provider row; price them at the provider-default rate.
     const modelTokensIn = models.reduce((s, m) => s + m.tokensIn, 0);
     const modelTokensOut = models.reduce((s, m) => s + m.tokensOut, 0);
+    const modelCacheRead = models.reduce((s, m) => s + m.cacheReadTokens, 0);
+    const modelCacheWrite = models.reduce((s, m) => s + m.cacheWriteTokens, 0);
     const unattributedIn = Math.max(0, p.tokensIn - modelTokensIn);
     const unattributedOut = Math.max(0, p.tokensOut - modelTokensOut);
-    if (!free && (unattributedIn > 0 || unattributedOut > 0)) {
-      providerCost += estimateCostUsd(unattributedIn, unattributedOut, providerRates);
+    const unattributedCacheRead = Math.max(0, p.cacheReadTokens - modelCacheRead);
+    const unattributedCacheWrite = Math.max(0, p.cacheWriteTokens - modelCacheWrite);
+    if (!free && (unattributedIn > 0 || unattributedOut > 0 || unattributedCacheRead > 0 || unattributedCacheWrite > 0)) {
+      providerCost += estimateCostUsd(unattributedIn, unattributedOut, providerRates, {
+        cacheReadTokens: unattributedCacheRead,
+        cacheWriteTokens: unattributedCacheWrite
+      });
     }
 
     totals.sessions += p.sessions;
     totals.messages += p.messages;
     totals.tokensIn += p.tokensIn;
     totals.tokensOut += p.tokensOut;
+    totals.cacheReadTokens += p.cacheReadTokens;
+    totals.cacheWriteTokens += p.cacheWriteTokens;
     totals.estimatedCost += providerCost;
 
     providerRows.push({
@@ -552,6 +764,9 @@ export function buildUsageReport(dailyActivity, { from = null, to = null, provid
       messages: p.messages,
       tokensIn: p.tokensIn,
       tokensOut: p.tokensOut,
+      cacheReadTokens: p.cacheReadTokens,
+      cacheWriteTokens: p.cacheWriteTokens,
+      source: p.source || 'estimate',
       estimatedCost: roundCents(providerCost),
       rateMatch: pid === LEGACY_PROVIDER_ID
         ? 'fallback'
@@ -564,6 +779,10 @@ export function buildUsageReport(dailyActivity, { from = null, to = null, provid
 
   providerRows.sort((a, b) => b.estimatedCost - a.estimatedCost || b.tokensOut - a.tokensOut);
   totals.estimatedCost = roundCents(totals.estimatedCost);
+  // Report-level provenance: `measured` only when every row that carries counts
+  // was read from a provider transcript, so the UI can state plainly whether the
+  // headline figure rests on measurements or estimates.
+  totals.source = providerRows.reduce((acc, row) => mergeSource(acc, row.source), null) || 'estimate';
 
   return {
     range: { from, to },

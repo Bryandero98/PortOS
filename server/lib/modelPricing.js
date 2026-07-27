@@ -4,10 +4,18 @@
  * informational only — they answer "what would the recorded usage have cost
  * under API billing," never an actual bill.
  *
- * Rates are USD per 1M tokens (standard input/output only — prompt-caching,
- * batch, and long-context tier discounts are deliberately ignored; PortOS does
- * not capture cache hits, and the UI discloses the approximation). Verified
- * against the official pricing pages on PRICING_AS_OF:
+ * Rates are USD per 1M tokens. Standard input/output come from the table below;
+ * the prompt-cache tiers are derived from the input rate by the multipliers in
+ * `CACHE_MULTIPLIERS` (every vendor publishes caching as a fixed ratio of the
+ * base input rate, so one multiplier per family beats 4 hand-maintained numbers
+ * per model). Batch and long-context tier discounts are still ignored, and the
+ * UI discloses the approximation.
+ *
+ * Cache tiers are NOT a rounding detail: for agentic CLI use, cache reads are
+ * >90% of input volume, so pricing them at the standard input rate (or, as
+ * PortOS did before #3124, not counting the tokens at all) is the single largest
+ * source of error in the estimate. Verified against the official pricing pages
+ * on PRICING_AS_OF:
  *   - https://platform.claude.com/docs/en/about-claude/pricing
  *   - https://developers.openai.com/api/docs/pricing
  *   - https://docs.x.ai/docs/pricing
@@ -118,17 +126,67 @@ const PROVIDER_DEFAULT_RULES = [
 // provider/model pair nothing above recognizes.
 const FALLBACK_RATES = { rateModel: null, inputPer1M: 3.0, outputPer1M: 15.0 };
 
-const toRates = (rateModel) => ({
+/**
+ * Prompt-cache rates as multipliers of a model's BASE INPUT rate. Every vendor
+ * publishes caching as a fixed ratio rather than a standalone number, so one
+ * pair per family stays correct when a model's input rate changes and avoids
+ * four hand-maintained columns per row in EXACT_RATES.
+ *
+ * `read` is a cache hit; `write` is the surcharge for first storing content.
+ * Verified on PRICING_AS_OF against the pages listed in the header:
+ *   - Anthropic: 0.1x read, 1.25x 5-minute write (2x for the 1-hour TTL, which
+ *     Claude Code does not use — `cache_creation_input_tokens` is 5-minute).
+ *   - OpenAI: 0.1x cached input; only gpt-5.6 lists a separate cache-write rate
+ *     (~1.25x), and Codex reports no cache-write tokens at all.
+ *   - xAI: cached prompt tokens run 0.15-0.20x depending on the model (0.15x on
+ *     grok-4.5); no published cache-write surcharge.
+ *   - Google: 0.1x cached input, plus an hourly storage fee we do not model
+ *     (PortOS records no cache duration to price it against).
+ *
+ * The default matches Anthropic/OpenAI (0.1x / 1.25x), which covers every
+ * provider that actually reports cache tokens to PortOS today — Claude Code and
+ * Codex are the only CLIs that write per-message cache counts to disk (see
+ * `lib/providerTranscriptUsage.js`), so any other family's multiplier applies to
+ * a token count that is currently always 0.
+ */
+const DEFAULT_CACHE_MULTIPLIERS = { read: 0.1, write: 1.25 };
+const CACHE_MULTIPLIER_RULES = [
+  { test: /^grok/, read: 0.15, write: 1.25 },
+];
+
+const cacheMultipliers = (rateModel) => {
+  const id = typeof rateModel === 'string' ? rateModel : '';
+  return CACHE_MULTIPLIER_RULES.find((rule) => rule.test.test(id)) || DEFAULT_CACHE_MULTIPLIERS;
+};
+
+/**
+ * Expand a base input/output rate pair with its derived cache-tier rates. Used
+ * for both table hits and the generic fallback so every rate object carries the
+ * same four fields — a caller can price cache tokens without checking which
+ * tier answered.
+ */
+const withCacheRates = (rates) => {
+  const { read, write } = cacheMultipliers(rates.rateModel);
+  return {
+    ...rates,
+    cacheReadPer1M: rates.inputPer1M * read,
+    cacheWritePer1M: rates.inputPer1M * write,
+  };
+};
+
+const toRates = (rateModel) => withCacheRates({
   rateModel,
   inputPer1M: EXACT_RATES[rateModel][0],
   outputPer1M: EXACT_RATES[rateModel][1],
 });
 
 /**
- * Resolve billing rates for a (providerId, model) pair.
+ * Resolve billing rates for a (providerId, model) pair. `cacheReadPer1M` /
+ * `cacheWritePer1M` are derived from the input rate (see CACHE_MULTIPLIER_RULES).
  * @param {string|null|undefined} providerId
  * @param {string|null|undefined} model
  * @returns {{ rateModel: string|null, inputPer1M: number, outputPer1M: number,
+ *   cacheReadPer1M: number, cacheWritePer1M: number,
  *   matched: 'exact'|'family'|'providerDefault'|'fallback' }}
  */
 export function resolveModelRates(providerId, model) {
@@ -154,7 +212,7 @@ export function resolveModelRates(providerId, model) {
       return { ...toRates(rule.rateModel), matched: 'providerDefault' };
     }
   }
-  return { ...FALLBACK_RATES, matched: 'fallback' };
+  return { ...withCacheRates(FALLBACK_RATES), matched: 'fallback' };
 }
 
 // Mirrors promptRunner.js's LOCAL_ENDPOINT_RE (scheme optional, unbracketed
@@ -163,6 +221,30 @@ export function resolveModelRates(providerId, model) {
 // stay a leaf module — promptRunner pulls in the whole runner/provider graph.
 const LOCALHOST_ENDPOINT = /^(https?:\/\/)?(localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?)(:|\/|$)/i;
 const FREE_ID = /ollama|lmstudio|lm-studio/i;
+
+// Ollama/LM Studio name their models `family:tag` (`qwen3.6:35b`,
+// `llama3.1:8b-instruct-q8_0`) or `org/repo` for a pulled GGUF. No hosted
+// model id in EXACT_RATES contains a colon, so the tag is an unambiguous
+// local-inference marker.
+const LOCAL_MODEL_ID = /:|^[\w.-]+\/[\w.-]+$/;
+
+/**
+ * True when a MODEL id is local-inference (free), independent of which provider
+ * ran it. Needed because a Claude-Code-flavored CLI can be pointed at an Ollama
+ * backend: its transcript records `qwen3.6:35b`, which would otherwise resolve
+ * through the `claude` provider default and be billed at Sonnet rates. Used by
+ * the transcript backfill, where the model id is the only attribution available
+ * (a transcript does not record which PortOS provider config invoked it).
+ * @param {string|null|undefined} model
+ * @returns {boolean}
+ */
+export function isFreeModelId(model) {
+  const id = typeof model === 'string' ? model.trim() : '';
+  if (!id) return false;
+  // A hosted id we have a real rate for is never local, whatever its shape.
+  if (EXACT_RATES[id]) return false;
+  return FREE_ID.test(id) || LOCAL_MODEL_ID.test(id);
+}
 
 /**
  * True when a provider's usage is free — local inference (Ollama, LM Studio,
@@ -185,13 +267,25 @@ export function isFreeProvider(providerOrId) {
 /**
  * Estimated USD cost for a token count under the given rates. Returns the raw
  * float — callers round for display.
- * @param {number} tokensIn
+ *
+ * `tokensIn` is the UNCACHED input only; cache reads and writes are billed at
+ * their own tiers via the optional 4th argument. Passing them as `tokensIn`
+ * would overcharge a cache read by 10x — for agentic CLI runs, where cache reads
+ * are >90% of input volume, that dwarfs every other error in the estimate.
+ *
+ * The cache argument is optional so the three-positional-argument form keeps
+ * working for records that predate cache capture (absent = 0, no cache cost).
+ *
+ * @param {number} tokensIn uncached input tokens
  * @param {number} tokensOut
- * @param {{inputPer1M: number, outputPer1M: number}} rates
+ * @param {{inputPer1M: number, outputPer1M: number, cacheReadPer1M?: number, cacheWritePer1M?: number}} rates
+ * @param {{cacheReadTokens?: number, cacheWriteTokens?: number}} [cache]
  * @returns {number}
  */
-export function estimateCostUsd(tokensIn, tokensOut, rates) {
-  const input = ((tokensIn || 0) / 1_000_000) * (rates?.inputPer1M || 0);
-  const output = ((tokensOut || 0) / 1_000_000) * (rates?.outputPer1M || 0);
-  return input + output;
+export function estimateCostUsd(tokensIn, tokensOut, rates, cache = null) {
+  const perMillion = (tokens, rate) => ((tokens || 0) / 1_000_000) * (rate || 0);
+  return perMillion(tokensIn, rates?.inputPer1M)
+    + perMillion(tokensOut, rates?.outputPer1M)
+    + perMillion(cache?.cacheReadTokens, rates?.cacheReadPer1M)
+    + perMillion(cache?.cacheWriteTokens, rates?.cacheWritePer1M);
 }

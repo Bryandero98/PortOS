@@ -20,7 +20,6 @@
  * every scheduler here is off by default or user-configured.
  */
 import { join } from 'path';
-import { estimateTokens, estimateTokensFromChars } from '../lib/contextBudget.js';
 import { resolveInstallRoot } from '../lib/dataRoot.js';
 import { PORTS } from '../lib/ports.js';
 import { getSelfHost } from '../lib/peerSelfHost.js';
@@ -34,7 +33,8 @@ import { runMigrations } from '../../scripts/run-migrations.js';
 
 import { ensureBackendProvider, getBackend as getLocalLlmBackend } from './localLlm.js';
 import { ensureProviderReady as ensureOllamaProviderReady, ensureRunning as ensureOllamaRunning } from './ollamaManager.js';
-import { recordSession, recordMessages } from './usage.js';
+import { recordSession } from './usage.js';
+import { recordCompletedRunUsage } from './usageReconciler.js';
 import { setAIToolkit as setProvidersToolkit } from './providers.js';
 import { setAIToolkit as setRunnerToolkit, executeCliRun as executeCliRunFixed } from './runner.js';
 import { setAIToolkit as setPromptsToolkit } from './promptService.js';
@@ -157,11 +157,11 @@ export const bootstrapServices = async ({ io, dataDir, dataReferenceDir, serverD
       });
     },
     onRunCompleted: (metadata, output) => {
-      const estimatedTokens = estimateTokens(output);
-      const inputTokens = estimateTokensFromChars(metadata.promptLength);
-      recordMessages(metadata.providerId, metadata.model, 1, estimatedTokens, inputTokens).catch(err => {
-        console.error(`❌ Failed to record usage: ${err.message}`);
-      });
+      // Reads the provider CLI's own transcript for real token counts (including
+      // the prompt-cache tiers that dominate cost), falling back to the
+      // prompt-length/stdout estimate when none is found. Owns its own error
+      // handling — a usage-accounting failure must not fail the run.
+      recordCompletedRunUsage(metadata, output);
     },
     onRunFailed: (metadata, error) => {
       const errorMessage = error?.message ?? String(error);
