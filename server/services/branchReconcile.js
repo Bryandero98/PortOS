@@ -356,10 +356,10 @@ export function filterActionable(inFlight, actions) {
 // placeholder the agent fills in after opening it.
 const driveToMerge = (pr) => [
   'Opening (or approving) the PR is NOT the end state — a green PR left open is still an unfinished branch that this task will simply re-drive on its next run.',
-  `Wait for CI in-session: \`gh pr checks ${pr} --required --watch --fail-fast\`, or re-poll \`gh pr checks ${pr}\` every 30s — allow up to 20 minutes for the run to finish.`,
+  `Wait for CI in-session by re-polling \`gh pr checks ${pr} --required\` every 30s — each poll prints output, which keeps this run clear of the idle reaper the way a silent \`--watch\` does not. Budget 15 minutes for the run; past that, leave the PR open and report that CI was still pending.`,
   'If a required check FAILS, fix it on the branch, push, and re-poll (max 3 rounds); if it is still red after that, leave the PR open and report exactly which check failed.',
-  `Once every required check is green AND the PR is MERGEABLE, merge it: \`gh pr merge ${pr} --merge --delete-branch\`.`,
-  'After the merge, delete the local branch and remove its worktree.'
+  `Once every required check is green AND the PR is MERGEABLE, merge it — from the repo root, NOT from inside the branch's worktree (\`gh\` can't delete a branch that is checked out elsewhere): \`gh pr merge ${pr} --merge --delete-branch\`. Repos differ in which methods they allow, so on a "not allowed" error retry with \`--squash\`, then \`--rebase\`. Never \`--auto\`: a queued auto-merge outlives this run, so a check that goes red afterward has nobody left to fix it.`,
+  'After the merge, remove the branch\'s worktree first, then delete the local branch — the delete fails while a worktree still has it checked out.'
 ].join(' ');
 
 /**
@@ -372,15 +372,19 @@ export function desiredEndState(state, actions, { prNumber } = {}) {
   const pr = prNumber ? String(prNumber) : '<num>';
   if (state === 'NEEDS_PR') {
     const verify = 'Verify the branch\'s work is complete and ready (tests pass, no stubs/TODO markers, changelog present). If NOT ready, report it as incomplete and leave the branch untouched — do not open a half-baked PR.';
-    // `--merge` / `--no-merge` are passed explicitly rather than inherited from
-    // this machine's saved slashdo defaults, so the task's own autoMerge toggle
-    // decides the outcome on every install. A spawned sub-agent can't always
-    // expand a slash command, hence the by-hand equivalent.
-    const byHand = 'by hand, if slash commands aren\'t available in your context: self-review the diff, `git push -u origin <branch>`, then `gh pr create` with a Summary + Test plan';
+    // `--no-merge` is passed explicitly on BOTH paths — not to disable merging,
+    // but to keep the merge decision here rather than inside slashdo. Under
+    // `--merge`, /do:pr first tries GitHub-native auto-merge and reports the PR
+    // as "queued", ending the run with CI still pending — the same unattended
+    // exit this whole change exists to close. So /do:pr runs its reviewer loop
+    // and opens the PR; the merge gate below is what finishes the branch. The
+    // flag is also stated explicitly so this machine's saved slashdo defaults
+    // (which may set `merge: true`) can't decide it either way.
+    const openPr = '`/do:pr --no-merge` — its reviewer loop runs, and the PR is left for the gate below rather than queued for auto-merge (by hand, if slash commands aren\'t available in your context: self-review the diff and fix what you find, `git push -u origin <branch>`, then `gh pr create` with a Summary + Test plan)';
     if (!actionOn(actions, 'autoMerge')) {
-      return `${verify} If ready, ship it with \`/do:pr --no-merge\` (${byHand}). Do NOT merge (auto-merge is disabled) — stop once the PR is open and report its URL.`;
+      return `${verify} If ready, ship it with ${openPr}. Do NOT merge (auto-merge is disabled) — stop once the PR is open and report its URL.`;
     }
-    return `${verify} If ready, ship it end-to-end with \`/do:pr --merge\` (${byHand}). ${driveToMerge(pr)}`;
+    return `${verify} If ready, ship it with ${openPr}. ${driveToMerge(pr)}`;
   }
   if (state === 'CONFLICTED') {
     return 'Rebase the branch onto the default branch, resolve all conflicts, run the tests, and push.';

@@ -1274,7 +1274,7 @@ Spawn ONE sub-agent per branch (they are independent — run them in parallel) t
 - Work ONLY on the branches listed above. Never touch a branch that is not listed.
 - Never force-push the default branch.
 - **A branch whose "Do:" line ends in a merge is not finished until it IS merged.** Its sub-agent stays alive through CI — waiting out the check run, fixing what goes red, then merging — and reports back only when the PR is merged or a specific check/review is blocking it. "PR opened, left open for review" is a completed STEP, not a completed branch: the PR just sits green until the next run re-drives it. Do not end your own run while a sub-agent is still waiting on CI.
-- Merging is gated by the "Do:" line itself (required CI green + MERGEABLE + the review it names) — that gate, not a blanket ban, is what keeps unreviewed work out of the default branch. Merge only via \`gh pr merge\`, never a local \`git merge\` into the default branch.
+- Merging is gated by the "Do:" line itself — required CI green, MERGEABLE, and the review that branch's flow ran (\`/do:pr\`'s reviewer loop for a PR this task opens; the named review for one already in review). That gate, not a blanket ban, is what keeps unreviewed work out of the default branch. Merge only via \`gh pr merge\`, never a local \`git merge\` into the default branch.
 - If a sub-agent reports a branch is incomplete or blocked, leave it as-is and note it in your summary.
 - Summarize what each branch ended up doing (merged / PR opened but blocked on <what> / conflicts resolved / left incomplete). When a PR is left open, name the check or review that blocked it.`,
 
