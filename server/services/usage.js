@@ -30,6 +30,26 @@ const normalizeProvider = (providerId, providerName = null) => {
   };
 };
 
+const normalizeUndefinedProviderBucket = (byProvider) => {
+  if (!byProvider || typeof byProvider !== 'object' || !Object.hasOwn(byProvider, 'undefined')) {
+    return false;
+  }
+  const stale = byProvider.undefined || {};
+  const current = byProvider[UNKNOWN_PROVIDER_ID] || {};
+  byProvider[UNKNOWN_PROVIDER_ID] = {
+    ...stale,
+    ...current,
+    name: UNKNOWN_PROVIDER_NAME,
+    sessions: (stale.sessions || 0) + (current.sessions || 0),
+    messages: (stale.messages || 0) + (current.messages || 0),
+    tokens: (stale.tokens || 0) + (current.tokens || 0),
+    tokensIn: (stale.tokensIn || 0) + (current.tokensIn || 0),
+    tokensOut: (stale.tokensOut || 0) + (current.tokensOut || 0)
+  };
+  delete byProvider.undefined;
+  return true;
+};
+
 /**
  * Initialize usage data structure
  */
@@ -123,9 +143,17 @@ export async function loadUsage() {
   if (!usageData.monthlyActivity || typeof usageData.monthlyActivity !== 'object') {
     usageData.monthlyActivity = {};
   }
+  let normalizedProviders = normalizeUndefinedProviderBucket(usageData.byProvider);
+  for (const bucket of Object.values(usageData.dailyActivity)) {
+    normalizedProviders = normalizeUndefinedProviderBucket(bucket?.byProvider) || normalizedProviders;
+  }
+  for (const bucket of Object.values(usageData.monthlyActivity)) {
+    normalizedProviders = normalizeUndefinedProviderBucket(bucket?.byProvider) || normalizedProviders;
+  }
   const rolledUp = rollupOldDailyActivity(usageData.dailyActivity, usageData.monthlyActivity);
-  if (rolledUp) {
-    console.log(`📊 Rolled up old daily usage into ${Object.keys(usageData.monthlyActivity).length} monthly buckets`);
+  if (rolledUp || normalizedProviders) {
+    if (normalizedProviders) console.log('📊 Normalized undefined usage providers to unknown');
+    if (rolledUp) console.log(`📊 Rolled up old daily usage into ${Object.keys(usageData.monthlyActivity).length} monthly buckets`);
     await saveUsage();
   }
 
@@ -288,6 +316,11 @@ export async function recordTokens(inputTokens, outputTokens) {
   if (!usageData) await loadUsage();
   usageData.totalTokens.input += inputTokens;
   usageData.totalTokens.output += outputTokens;
+  const day = todayBucket();
+  day.tokens = (day.tokens || 0) + outputTokens;
+  const providerDay = providerDayBucket(day, UNKNOWN_PROVIDER_ID, UNKNOWN_PROVIDER_NAME);
+  providerDay.tokensIn += inputTokens;
+  providerDay.tokensOut += outputTokens;
   await saveUsage();
 }
 

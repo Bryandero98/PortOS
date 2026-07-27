@@ -19,8 +19,8 @@ tryReadFile: vi.fn().mockResolvedValue(null),
   readJSONFile: vi.fn()
 }));
 
-import { readJSONFile } from '../lib/fileUtils.js';
-import { loadUsage, getUsageSummary, getUsage, recordSession, recordMessages, buildUsageReport, rollupOldDailyActivity } from './usage.js';
+import { atomicWrite, readJSONFile } from '../lib/fileUtils.js';
+import { loadUsage, getUsageSummary, getUsage, recordSession, recordMessages, recordTokens, buildUsageReport, rollupOldDailyActivity } from './usage.js';
 
 // Helper: produce a date string N days ago (relative to today)
 function daysAgo(n) {
@@ -338,6 +338,30 @@ describe('usage.js — streak calculations', () => {
       ]);
     });
 
+    it('normalizes persisted undefined provider buckets while loading', async () => {
+      readJSONFile.mockResolvedValueOnce(makeUsage({
+        [daysAgo(0)]: {
+          sessions: 1,
+          messages: 1,
+          tokens: 20,
+          byProvider: {
+            undefined: { sessions: 1, messages: 1, tokensIn: 10, tokensOut: 20, byModel: {} }
+          }
+        }
+      }, {
+        byProvider: {
+          undefined: { sessions: 1, messages: 1, tokens: 20 }
+        }
+      }));
+
+      await loadUsage();
+
+      expect(getUsage().byProvider.undefined).toBeUndefined();
+      expect(getUsage().byProvider.unknown.name).toBe('Unknown provider');
+      expect(getUsage().dailyActivity[daysAgo(0)].byProvider.undefined).toBeUndefined();
+      expect(atomicWrite).toHaveBeenCalled();
+    });
+
     it('recordMessages attributes input and output tokens to provider, model, and day', async () => {
       readJSONFile.mockResolvedValueOnce(makeUsage({}));
       await loadUsage();
@@ -352,6 +376,22 @@ describe('usage.js — streak calculations', () => {
       expect(usage.byModel.opus).toMatchObject({ tokens: 400 });
       const modelDay = usage.dailyActivity[daysAgo(0)].byProvider['claude-code'].byModel.opus;
       expect(modelDay).toMatchObject({ messages: 1, tokensIn: 1200, tokensOut: 400 });
+    });
+
+    it('attributes directly recorded tokens to reportable unknown usage', async () => {
+      readJSONFile.mockResolvedValueOnce(makeUsage({}));
+      await loadUsage();
+      await recordTokens(1_000_000, 500_000);
+
+      const report = getUsageSummary().report;
+      expect(report.providers).toEqual([
+        expect.objectContaining({
+          id: 'unknown',
+          tokensIn: 1_000_000,
+          tokensOut: 500_000
+        })
+      ]);
+      expect(report.totals.estimatedCost).toBeGreaterThan(0);
     });
 
     it('recordMessages accumulates onto legacy all-time entries without reshaping them', async () => {
