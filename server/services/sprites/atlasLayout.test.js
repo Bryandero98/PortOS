@@ -215,4 +215,22 @@ describe('runtimeContractMismatch', () => {
       jetpack,
     )).toMatch(/5 jetpack burst frames.*expects 7/);
   });
+
+  it('checks the STORED tracks\' contract fields with no table injected (#3152)', () => {
+    // The case the injected-table test above cannot cover. `scanner`/`ambient` are
+    // no longer compiled rows, so this function's DEFAULT table has to be the
+    // effective registry (compiled + store). With the compiled-only default it
+    // returns null here — every stored track's `contractFrameCountField` is simply
+    // absent from the loop, so a scanner span that disagrees with the app's
+    // contract publishes unchecked, which is exactly the mismatch this refuses.
+    const geometry = {
+      ...geometryFor(8),
+      columns: ['idle', ...walkPhaseLabels(8), 'scanner-00', 'scanner-01', 'scanner-02', 'scanner-03'],
+      tracks: { idle: span(0, 1, 8), walk: span(1, 8, 8), scanner: span(9, 4, 8) },
+      scannerFrameCount: 4,
+    };
+    expect(runtimeContractMismatch(geometry, { walkFrameCount: 8, scannerFrameCount: 4 })).toBeNull();
+    expect(runtimeContractMismatch(geometry, { walkFrameCount: 8, scannerFrameCount: 6 }, 'Example App'))
+      .toMatch(/4 scanner action frames.*expects 6/);
+  });
 });

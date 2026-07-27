@@ -39,6 +39,7 @@ vi.mock('../../lib/fileUtils.js', async (importOriginal) => {
 const {
   getEffectiveAnimationTracks, getEffectiveAnimationTrackIds, __resetAnimationTrackStore,
   animationTrackStorePath, animationTrackSeedPath, ANIMATION_TRACK_STORE_SCHEMA_VERSION,
+  classifyStoreReadError,
 } = await import('./animationTrackStore.js');
 const { ANIMATION_TRACKS, WALK_TRACK } = await import('./animationTracks.js');
 
@@ -189,6 +190,37 @@ describe('absent vs. empty vs. corrupt (the sentinel rules)', () => {
     // that reads as "my tracks vanished".
     writeStore('{ "tracks": [ oops ');
     expect(() => getEffectiveAnimationTracks()).toThrow(/is not valid JSON/);
+  });
+
+  it('reports a real IO failure with the path named', () => {
+    // A store that exists but cannot be read is a real user-facing problem, so it
+    // must throw naming the file rather than silently serving shipped defaults —
+    // the same sentinel rule as the unparseable case above. Provoked with a
+    // directory where a file is expected, which produces a genuine errno (EISDIR).
+    mkdirSync(STORE_PATH, { recursive: true });
+    try {
+      expect(() => getEffectiveAnimationTracks()).toThrow(/cannot read/);
+    } finally {
+      rmSync(STORE_PATH, { recursive: true, force: true });
+    }
+  });
+
+  it('degrades to walk alone when the read never reached a filesystem', () => {
+    // Why this matters: `server/lib/validation.js` builds its sprite Zod ranges from
+    // the effective registry at MODULE LOAD, and nearly every route and service
+    // imports validation.js — so this store gets resolved inside suites that have
+    // nothing to do with sprites, including ones that stub `fs` with a partial
+    // factory (`vi.mock('fs', () => ({ existsSync }))`). Such a read throws a
+    // TypeError with NO errno; classifying that as "no store" is what keeps those
+    // suites from failing at import time over a file they never asked about, and it
+    // cannot mask a real install problem because an install always has `fs`.
+    //
+    // Asserted on the classifier rather than by re-mocking `fs` here: the store
+    // binds `readFileSync` at import, so a namespace spy in this file would not
+    // intercept it and the test would pass without exercising anything.
+    expect(classifyStoreReadError(new TypeError('readFileSync is not a function'))).toBe('no-filesystem');
+    expect(classifyStoreReadError(Object.assign(new Error('nope'), { code: 'EACCES' }))).toBe('io-error');
+    expect(classifyStoreReadError(Object.assign(new Error('nope'), { code: 'ENOENT' }))).toBe('absent');
   });
 });
 

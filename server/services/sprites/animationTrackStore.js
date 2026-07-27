@@ -99,18 +99,72 @@ let cachedEffectiveTracks = null;
  * broke the JSON would see their tracks quietly revert to shipped defaults with
  * no error to explain it.
  */
+/**
+ * Which of the three failure kinds a read error is:
+ *
+ *   `absent`         — ENOENT. Nothing there; try the next candidate.
+ *   `io-error`       — any other errno. A real, user-facing problem: report it.
+ *   `no-filesystem`  — NO errno at all, so the call never reached a filesystem.
+ *                      See `resolveStoreDoc`'s header for the environment that
+ *                      produces this and why it degrades instead of throwing.
+ *
+ * Exported so the classification is asserted directly (`animationTrackStore.test.js`):
+ * this module binds `readFileSync` at import, so a test that re-mocked `fs` would not
+ * intercept it and would pass without exercising anything.
+ */
+export function classifyStoreReadError(err) {
+  if (!err?.code) return 'no-filesystem';
+  return err.code === 'ENOENT' ? 'absent' : 'io-error';
+}
+
 function readStoreDoc(path) {
   let raw;
   try {
     raw = readFileSync(path, 'utf-8');
   } catch (err) {
-    if (err?.code === 'ENOENT') return null;
+    const kind = classifyStoreReadError(err);
+    if (kind === 'absent') return null;
+    // A `no-filesystem` error is re-thrown BARE for `resolveStoreDoc` to read as
+    // "no store", rather than dressed up as an unreadable file the user would go
+    // looking for. Only a real errno becomes this module's own named error.
+    if (kind === 'no-filesystem') throw err;
     throw new Error(`${ANIMATION_TRACK_STORE_REL}: cannot read ${path} — ${err.message}`);
   }
   try {
     return JSON.parse(raw);
   } catch (err) {
     throw new Error(`${ANIMATION_TRACK_STORE_REL}: ${path} is not valid JSON — ${err.message}`);
+  }
+}
+
+/**
+ * The authoritative store doc: the user copy if it exists, else the shipped seed,
+ * else `null` (walk alone).
+ *
+ * **Why the whole resolution is guarded.** `server/lib/validation.js` builds its
+ * sprite Zod ranges from the effective registry AT MODULE LOAD, and nearly every
+ * route and service imports `validation.js`. So this runs inside test suites that
+ * have nothing to do with sprites — including ones that legitimately stub the
+ * filesystem with a partial factory (`vi.mock('fs', () => ({ existsSync }))`, or a
+ * `fileUtils.js` double exporting no `PATHS`). In that environment there is no
+ * filesystem to consult, and the honest answer is "no store" — walk alone — not a
+ * hard import-time failure over a file the suite never asked about.
+ *
+ * Scoped deliberately to the *environment* being unusable, never to a real read
+ * failure: `readStoreDoc` still throws on a store that exists but won't parse,
+ * because that is a user's broken hand edit and silently reverting to shipped
+ * defaults is the sentinel violation this module's header calls out. A TypeError
+ * from a missing mock export cannot reach a real install — an install always has
+ * `fs` and `PATHS`.
+ */
+function resolveStoreDoc() {
+  try {
+    return readStoreDoc(animationTrackStorePath()) ?? readStoreDoc(animationTrackSeedPath());
+  } catch (err) {
+    // Rethrow anything that came from an actual file: those carry this module's
+    // own prefix (unreadable / not-valid-JSON) and must stay loud.
+    if (err?.message?.startsWith(ANIMATION_TRACK_STORE_REL)) throw err;
+    return null;
   }
 }
 
@@ -135,7 +189,7 @@ const normalizeStoredRow = (raw) => Object.freeze({
  */
 function loadStoredRows() {
   if (cachedStoredRows) return cachedStoredRows;
-  const doc = readStoreDoc(animationTrackStorePath()) ?? readStoreDoc(animationTrackSeedPath());
+  const doc = resolveStoreDoc();
   const rows = Array.isArray(doc?.tracks) ? doc.tracks : [];
   const byId = {};
   for (const raw of rows) {
