@@ -4,10 +4,11 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 vi.mock('./usage.js', () => ({
+  markUsageRunReconciled: vi.fn().mockResolvedValue(undefined),
   recordRunUsage: vi.fn().mockResolvedValue(undefined)
 }));
 
-const { recordRunUsage } = await import('./usage.js');
+const { markUsageRunReconciled, recordRunUsage } = await import('./usage.js');
 const {
   transcriptFamily,
   readMeasuredUsage,
@@ -343,6 +344,20 @@ describe('recordCompletedRunUsage', () => {
     expect(recordRunUsage.mock.calls[0][0]).toEqual([
       expect.objectContaining({ source: 'measured', tokensOut: 50, cacheReadTokens: 1000 })
     ]);
+  });
+
+  it('durably marks a completed run so a later backfill skips it', async () => {
+    await recordCompletedRunUsage({
+      id: 'run-example-live',
+      providerId: 'ollama',
+      model: 'llama3',
+      workspacePath: WORKSPACE,
+      promptLength: 40,
+      startTime: '2026-07-01T10:00:00.000Z',
+      endTime: '2026-07-01T10:10:00.000Z'
+    }, 'captured output');
+
+    expect(markUsageRunReconciled).toHaveBeenCalledWith('run-example-live');
   });
 
   it('records the estimate when no transcript exists rather than recording nothing', async () => {

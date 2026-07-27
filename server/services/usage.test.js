@@ -20,7 +20,18 @@ tryReadFile: vi.fn().mockResolvedValue(null),
 }));
 
 import { atomicWrite, readJSONFile } from '../lib/fileUtils.js';
-import { loadUsage, getUsageSummary, getUsage, recordSession, recordMessages, recordTokens, recordRunUsage, buildUsageReport, rollupOldDailyActivity } from './usage.js';
+import {
+  applyHistoricalUsageCorrections,
+  buildUsageReport,
+  getUsage,
+  getUsageSummary,
+  loadUsage,
+  recordMessages,
+  recordRunUsage,
+  recordSession,
+  recordTokens,
+  rollupOldDailyActivity
+} from './usage.js';
 
 // Helper: produce a date string N days ago (relative to today)
 function daysAgo(n) {
@@ -1035,6 +1046,100 @@ describe('buildUsageReport — cache pricing and source reporting', () => {
     });
 
     expect(report.providers.find((p) => p.id === 'legacy')).toBeUndefined();
+  });
+});
+
+describe('usage.js — historical transcript corrections (#3156)', () => {
+  const dayKey = '2026-07-01';
+  const providerId = 'claude-code-tui';
+  const model = 'claude-opus-5';
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    readJSONFile.mockResolvedValueOnce(makeUsage({
+      [dayKey]: {
+        sessions: 1,
+        messages: 1,
+        tokens: 50,
+        byProvider: {
+          [providerId]: {
+            name: 'Claude Code TUI',
+            sessions: 1,
+            messages: 1,
+            tokensIn: 20,
+            tokensOut: 50,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+            source: 'estimate',
+            byModel: {
+              [model]: {
+                sessions: 1,
+                messages: 1,
+                tokensIn: 20,
+                tokensOut: 50,
+                cacheReadTokens: 0,
+                cacheWriteTokens: 0,
+                source: 'estimate'
+              }
+            }
+          }
+        }
+      }
+    }, {
+      totalSessions: 1,
+      totalMessages: 1,
+      totalTokens: { input: 20, output: 50 },
+      byProvider: { [providerId]: { name: 'Claude Code TUI', sessions: 1, messages: 1, tokens: 50 } },
+      byModel: { [model]: { sessions: 1, messages: 1, tokens: 50 } }
+    }));
+    await loadUsage();
+  });
+
+  it('replaces the configured-provider estimate, rebuilds flat totals, and is idempotent', async () => {
+    const correction = {
+      runId: 'run-example-1',
+      day: dayKey,
+      providerId,
+      model,
+      estimate: { messages: 1, tokensIn: 20, tokensOut: 50 },
+      measured: [{
+        providerId,
+        model,
+        messages: 2,
+        tokensIn: 100,
+        tokensOut: 200,
+        cacheReadTokens: 1000,
+        cacheWriteTokens: 10,
+        source: 'measured'
+      }]
+    };
+
+    expect(await applyHistoricalUsageCorrections([correction])).toMatchObject({ corrected: 1 });
+    const afterFirst = structuredClone(getUsage());
+    expect(await applyHistoricalUsageCorrections([correction])).toMatchObject({ corrected: 0 });
+    expect(getUsage()).toEqual(afterFirst);
+
+    const day = getUsage().dailyActivity[dayKey];
+    expect(day).toMatchObject({ sessions: 1, messages: 2, tokens: 200, tokensIn: 100, tokensOut: 200 });
+    expect(day.byProvider[providerId]).toMatchObject({
+      messages: 2,
+      tokensIn: 100,
+      tokensOut: 200,
+      cacheReadTokens: 1000,
+      cacheWriteTokens: 10,
+      source: 'measured'
+    });
+    expect(day.byProvider['claude-code']).toBeUndefined();
+
+    const report = buildUsageReport(getUsage().dailyActivity, {
+      providers: [{ id: providerId, name: 'Claude Code TUI' }],
+      totalTokens: getUsage().totalTokens
+    });
+    expect(report.providers.find((provider) => provider.id === providerId)?.models[0]).toMatchObject({
+      tokensIn: 100,
+      tokensOut: 200
+    });
+    expect(report.providers.some((provider) => provider.id === 'legacy')).toBe(false);
   });
 });
 
