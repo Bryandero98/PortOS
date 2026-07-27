@@ -343,18 +343,56 @@ export function filterActionable(inFlight, actions) {
   });
 }
 
-/** Per-state one-line instruction to the coordinator/sub-agent. */
-export function desiredEndState(state, actions) {
+// The terminal state of an auto-mergeable branch is MERGED — not "PR opened",
+// not "PR green and waiting". Every drive-to-merge instruction ends with this
+// tail so the agent waits CI out IN-SESSION instead of handing back an open PR
+// (the miss that left a green, MERGEABLE PR sitting open after a NEEDS_PR run:
+// the agent opened it and signaled done 51s later). GitHub-native `--auto` is
+// deliberately not the answer on its own — the agent exits the moment it
+// finishes, so a queued auto-merge that later goes red has nobody left to fix
+// it, and the branch silently stays in-flight until the next recheck.
+//
+// `pr` is the PR's number when the branch already has one, else the `<num>`
+// placeholder the agent fills in after opening it.
+const driveToMerge = (pr) => [
+  'Opening (or approving) the PR is NOT the end state — a green PR left open is still an unfinished branch that this task will simply re-drive on its next run.',
+  `Wait for CI in-session: \`gh pr checks ${pr} --required --watch --fail-fast\`, or re-poll \`gh pr checks ${pr}\` every 30s — allow up to 20 minutes for the run to finish.`,
+  'If a required check FAILS, fix it on the branch, push, and re-poll (max 3 rounds); if it is still red after that, leave the PR open and report exactly which check failed.',
+  `Once every required check is green AND the PR is MERGEABLE, merge it: \`gh pr merge ${pr} --merge --delete-branch\`.`,
+  'After the merge, delete the local branch and remove its worktree.'
+].join(' ');
+
+/**
+ * Per-state instruction to the coordinator/sub-agent.
+ * @param {string} state
+ * @param {object} actions - per-app action toggles
+ * @param {{ prNumber?: number }} [ctx] - the branch's open PR number, when it has one
+ */
+export function desiredEndState(state, actions, { prNumber } = {}) {
+  const pr = prNumber ? String(prNumber) : '<num>';
   if (state === 'NEEDS_PR') {
-    return 'Verify the branch\'s work is complete and ready (tests pass, no stubs/TODO markers, changelog present). If ready, run `/do:pr`. If NOT ready, report it as incomplete and leave the branch untouched — do not open a half-baked PR.';
+    const verify = 'Verify the branch\'s work is complete and ready (tests pass, no stubs/TODO markers, changelog present). If NOT ready, report it as incomplete and leave the branch untouched — do not open a half-baked PR.';
+    // `--merge` / `--no-merge` are passed explicitly rather than inherited from
+    // this machine's saved slashdo defaults, so the task's own autoMerge toggle
+    // decides the outcome on every install. A spawned sub-agent can't always
+    // expand a slash command, hence the by-hand equivalent.
+    const byHand = 'by hand, if slash commands aren\'t available in your context: self-review the diff, `git push -u origin <branch>`, then `gh pr create` with a Summary + Test plan';
+    if (!actionOn(actions, 'autoMerge')) {
+      return `${verify} If ready, ship it with \`/do:pr --no-merge\` (${byHand}). Do NOT merge (auto-merge is disabled) — stop once the PR is open and report its URL.`;
+    }
+    return `${verify} If ready, ship it end-to-end with \`/do:pr --merge\` (${byHand}). ${driveToMerge(pr)}`;
   }
   if (state === 'CONFLICTED') {
     return 'Rebase the branch onto the default branch, resolve all conflicts, run the tests, and push.';
   }
   // IN_REVIEW
   const canMerge = actionOn(actions, 'autoMerge');
+  // The Copilot gate is time-boxed for the same reason the merge waits on CI
+  // in-session: a repo without Copilot review enabled never produces one, and an
+  // unbounded "await the review" leaves a green PR open forever. 10 minutes
+  // mirrors the claim-issue flow's Copilot poll.
   return `Drive the open PR toward green: request/await the Copilot review and address feedback.${canMerge
-    ? ' Then MERGE it (`gh pr merge --merge --delete-branch`) ONLY when it is MERGEABLE, CI is fully green, and the LATEST Copilot review reports "0 comments" (pre-resolved threads do NOT count; a PR over 20k lines is exempt from the Copilot check and needs only CI-green + mergeable). After merging, delete the local branch and remove its worktree.'
+    ? ` Merge ONLY when the LATEST Copilot review reports "0 comments" (pre-resolved threads do NOT count; a PR over 20k lines is exempt from the Copilot check and needs only CI-green + mergeable). If no Copilot review lands within 10 minutes of requesting it, the Copilot gate is satisfied — this repo may not have Copilot review enabled — and CI-green + MERGEABLE is the whole gate. ${driveToMerge(pr)}`
     : ' Do NOT merge (auto-merge is disabled) — stop once the PR is green and ready for the user to merge.'}`;
 }
 
@@ -390,7 +428,7 @@ export function formatInFlightForPrompt(inFlight, { defaultBranch, actions }) {
     const pr = b.openPr ? ` — PR #${b.openPr.number} (${b.openPr.mergeable})${b.openPr.url ? ` ${b.openPr.url}` : ''}` : ' — no PR';
     lines.push(`### \`${b.branch}\` [${b.state}]${pr}`);
     if (b.worktreePath) lines.push(`- Worktree: \`${b.worktreePath}\``);
-    lines.push(`- Do: ${desiredEndState(b.state, actions)}`);
+    lines.push(`- Do: ${desiredEndState(b.state, actions, { prNumber: b.openPr?.number })}`);
     lines.push('');
   }
   return lines.join('\n');
