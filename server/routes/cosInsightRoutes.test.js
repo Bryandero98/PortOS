@@ -142,6 +142,10 @@ describe('CoS Insight Routes', () => {
       expect(response.body.hasActionableItems).toBe(true);
       expect(response.body.insights.length).toBeGreaterThan(0);
       expect(response.body.insights[0].type).toBe('approval');
+      expect(response.body.insights[0]).toMatchObject({
+        action: { label: 'Approve' },
+        tasks: [{ id: 'a1', description: 'Approve me' }],
+      });
     });
 
     it('should handle errors gracefully in parallel calls', async () => {

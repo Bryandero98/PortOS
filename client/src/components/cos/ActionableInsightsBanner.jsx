@@ -98,6 +98,7 @@ const PRIORITY_STYLES = {
 export default function ActionableInsightsBanner({ insights, onTaskUnblocked, onRefresh }) {
   const [dismissed, setDismissed] = useState([]);
   const [expanded, setExpanded] = useState({});
+  const [approvingTaskId, setApprovingTaskId] = useState(null);
   const navigate = useNavigate();
 
   const handleDismiss = (type) => {
@@ -105,6 +106,10 @@ export default function ActionableInsightsBanner({ insights, onTaskUnblocked, on
   };
 
   const handleAction = (insight) => {
+    if (insight.type === 'approval' && insight.tasks?.[0]) {
+      handleApproveTask(insight.tasks[0]);
+      return;
+    }
     // For blocked insights, toggle expand to show individual tasks
     if (insight.type === 'blocked' && insight.tasks?.length > 0) {
       setExpanded(prev => ({ ...prev, [insight.type]: !prev[insight.type] }));
@@ -113,6 +118,18 @@ export default function ActionableInsightsBanner({ insights, onTaskUnblocked, on
     if (insight.action?.route) {
       navigate(insight.action.route);
     }
+  };
+
+  const handleApproveTask = async (task) => {
+    setApprovingTaskId(task.id);
+    const result = await api.approveCosTask(task.id, { silent: true }).catch(err => {
+      toast.error(err.message);
+      return null;
+    });
+    setApprovingTaskId(null);
+    if (!result) return;
+    toast.success('Task approved');
+    onRefresh?.();
   };
 
   const handleUnblockTask = async (taskId, taskType) => {
@@ -146,6 +163,7 @@ export default function ActionableInsightsBanner({ insights, onTaskUnblocked, on
   const Icon = ICON_MAP[primaryInsight.icon] || AlertCircle;
   const isExpanded = expanded[primaryInsight.type];
   const hasBlockedTasks = primaryInsight.type === 'blocked' && primaryInsight.tasks?.length > 0;
+  const approvalTask = primaryInsight.type === 'approval' ? primaryInsight.tasks?.[0] : null;
 
   return (
     <div className={`${styles.bg} border ${styles.border} rounded-lg p-3 mb-4 transition-all`}>
@@ -209,12 +227,15 @@ export default function ActionableInsightsBanner({ insights, onTaskUnblocked, on
           {primaryInsight.action && (
             <button
               onClick={() => handleAction(primaryInsight)}
+              disabled={Boolean(approvalTask && approvingTaskId === approvalTask.id)}
               className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium bg-white/10 hover:bg-white/20 text-white rounded transition-colors min-h-[32px]"
             >
-              {hasBlockedTasks ? (isExpanded ? 'Collapse' : 'View Tasks') : primaryInsight.action.label}
+              {approvalTask && approvingTaskId === approvalTask.id
+                ? 'Approving…'
+                : hasBlockedTasks ? (isExpanded ? 'Collapse' : 'View Tasks') : primaryInsight.action.label}
               {hasBlockedTasks
                 ? (isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />)
-                : <ChevronRight size={12} />
+                : !approvalTask && <ChevronRight size={12} />
               }
             </button>
           )}

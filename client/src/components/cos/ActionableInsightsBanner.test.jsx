@@ -35,7 +35,7 @@ describe('ActionableInsightsBanner insightProvenance', () => {
 // parent trigger that refetches CoS data refreshes the banner for free. These
 // tests pin the prop-driven render, the null/empty gating, and the unblock path
 // calling `onRefresh` up instead of owning its own poll.
-const api = vi.hoisted(() => ({ updateCosTask: vi.fn() }));
+const api = vi.hoisted(() => ({ updateCosTask: vi.fn(), approveCosTask: vi.fn() }));
 vi.mock('../../services/api', () => api);
 vi.mock('../ui/Toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
 
@@ -84,6 +84,22 @@ describe('ActionableInsightsBanner (presentational)', () => {
     });
     fireEvent.click(screen.getByTitle('Dismiss'));
     expect(screen.queryByText('3 approvals waiting')).not.toBeInTheDocument();
+  });
+
+  it('approves the surfaced task directly from the banner', async () => {
+    api.approveCosTask.mockResolvedValue({ id: 'a1' });
+    const onRefresh = vi.fn();
+    renderBanner({
+      insights: [{
+        type: 'approval', priority: 'high', icon: 'AlertCircle', title: '1 approval waiting',
+        action: { label: 'Approve' }, tasks: [{ id: 'a1', description: 'Investigate a failure' }],
+      }],
+      onRefresh,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(api.approveCosTask).toHaveBeenCalledWith('a1', { silent: true }));
+    expect(onRefresh).toHaveBeenCalledTimes(1);
   });
 
   it('unblocks a task and calls onRefresh + onTaskUnblocked up (no self-poll)', async () => {
