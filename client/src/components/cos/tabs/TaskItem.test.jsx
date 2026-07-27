@@ -46,8 +46,8 @@ describe('TaskItem task source', () => {
     ));
   });
 
-  it('updates an approval-gated task in the internal queue when changing status', async () => {
-    render(<TaskItem task={task} awaitingApproval onRefresh={vi.fn()} providers={providers} />);
+  it('updates an approval-gated system task in the internal queue when changing status', async () => {
+    render(<TaskItem task={{ ...task, approvalRequired: true }} isSystem onRefresh={vi.fn()} providers={providers} />);
 
     fireEvent.click(screen.getByRole('button', { name: /Status: pending/i }));
 
@@ -135,12 +135,7 @@ describe('TaskItem long-text clamping', () => {
     expect(screen.queryByRole('button', { name: /Show more/ })).not.toBeInTheDocument();
   });
 
-  it('scopes the text ids so an approval-gated task rendered twice does not collide', () => {
-    // TasksTab renders `pendingSystemTasks` (status === 'pending') AND the
-    // "Awaiting Approval" subset (approvalRequired && pending), so one
-    // approval-gated task mounts two cards. Unscoped ids would duplicate, and
-    // aria-controls resolves by first match — pointing the approval card's
-    // toggle at the pending card's paragraph.
+  it('renders an approval-gated system task once with an inline approval action', async () => {
     forceOverflow();
     const gated = {
       ...task,
@@ -148,16 +143,15 @@ describe('TaskItem long-text clamping', () => {
       approvalRequired: true,
       metadata: { context: longPrompt },
     };
-    const { container: pending } = render(
-      <TaskItem task={gated} isSystem onRefresh={vi.fn()} providers={providers} />);
-    const { container: approval } = render(
-      <TaskItem task={gated} awaitingApproval onRefresh={vi.fn()} providers={providers} />);
+    api.approveCosTask.mockResolvedValue({ ...gated, approvalRequired: false });
+    const onRefresh = vi.fn();
+    const { container } = render(
+      <TaskItem task={gated} isSystem onRefresh={onRefresh} providers={providers} />);
 
-    const pendingId = pending.querySelector('[id^="task-context-"]').id;
-    const approvalId = approval.querySelector('[id^="task-context-"]').id;
-    expect(pendingId).not.toBe(approvalId);
-    expect(document.querySelectorAll(`[id="${pendingId}"]`)).toHaveLength(1);
-    expect(document.querySelectorAll(`[id="${approvalId}"]`)).toHaveLength(1);
+    expect(container.querySelectorAll('[id^="task-context-"]')).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Approve task sys-gated' }));
+    await waitFor(() => expect(api.approveCosTask).toHaveBeenCalledWith('sys-gated', { silent: true }));
+    expect(onRefresh).toHaveBeenCalled();
   });
 
   it('edits the context in a multi-line textarea, not a single-line input', () => {
