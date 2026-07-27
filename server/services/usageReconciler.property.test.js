@@ -18,7 +18,10 @@ import { mkdtemp, mkdir, writeFile, rm } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-vi.mock('./usage.js', () => ({ recordRunUsage: vi.fn() }));
+vi.mock('./usage.js', () => ({
+  markUsageRunReconciled: vi.fn(),
+  recordRunUsage: vi.fn()
+}));
 const { readMeasuredUsage, __resetUsageClaims } = await import('./usageReconciler.js');
 
 const WORKSPACE = '/work/example-repo';
