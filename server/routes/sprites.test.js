@@ -68,10 +68,13 @@ vi.mock('../services/sprites/walk.js', () => ({
   })),
 }));
 
-vi.mock('../services/sprites/scanner.js', () => ({
-  getScannerState: vi.fn(async () => ({ track: 'scanner', runs: [], selection: null, scannerSet: null })),
-  startScannerGeneration: vi.fn(async () => ({ runId: 'scanner-east-0a1b2c3d', direction: 'east', duration: 6 })),
-  approveScannerDirection: vi.fn(async () => ({ track: 'scanner', runs: [], selection: { status: 'in-progress' }, scannerSet: null })),
+// One mock for every non-walk track (#3136) — the generic workflow the
+// `/:id/tracks/:trackId/*` routes drive, echoing the track it was asked for so a
+// test can assert the route resolved the right one.
+vi.mock('../services/sprites/animationTrackWorkflow.js', () => ({
+  getTrackState: vi.fn(async (track) => ({ track, runs: [], selection: null, set: null })),
+  startTrackGeneration: vi.fn(async (track) => ({ runId: `${track}-east-0a1b2c3d`, direction: 'east', duration: 6 })),
+  approveTrackRun: vi.fn(async (track) => ({ track, runs: [], selection: { status: 'in-progress' }, set: null })),
 }));
 
 vi.mock('../services/sprites/walkTrims.js', () => ({
@@ -97,7 +100,7 @@ import * as importer from '../services/sprites/importer.js';
 import * as reference from '../services/sprites/reference.js';
 import * as assetPrompt from '../services/sprites/assetPrompt.js';
 import * as walk from '../services/sprites/walk.js';
-import * as scanner from '../services/sprites/scanner.js';
+import * as trackWorkflow from '../services/sprites/animationTrackWorkflow.js';
 import * as walkTrims from '../services/sprites/walkTrims.js';
 import * as atlas from '../services/sprites/atlas.js';
 import * as publish from '../services/sprites/publish.js';
@@ -442,22 +445,34 @@ describe('sprites routes', () => {
     expect(assets.deleteSpriteAsset).not.toHaveBeenCalled();
   });
 
-  it('GET /:id includes the walk and scanner states for characters only', async () => {
+  it('GET /:id keys every non-walk track state by track id, per record kind (#3136)', async () => {
     records.getRecordWithAssets.mockResolvedValueOnce({
       record: { id: 'pioneer', kind: 'character' }, assets: [],
     });
     const r = await request(app).get('/api/sprites/pioneer');
     expect(r.body.walk).toEqual({ runs: [], selection: null, walkSet: null });
-    expect(r.body.scanner).toEqual({ track: 'scanner', runs: [], selection: null, scannerSet: null });
     expect(walk.getWalkState).toHaveBeenCalledWith('pioneer');
-    expect(scanner.getScannerState).toHaveBeenCalledWith('pioneer');
+    // A character carries scanner but NOT ambient, so only scanner is keyed —
+    // and the payload carries the registry row so the client renders the track's
+    // label/bounds from data rather than mirroring them.
+    expect(Object.keys(r.body.tracks)).toEqual(['scanner']);
+    expect(r.body.tracks.scanner).toMatchObject({
+      track: 'scanner', runs: [], selection: null, set: null,
+      definition: { id: 'scanner', label: 'Scanner action', directional: true },
+    });
+    expect(trackWorkflow.getTrackState).toHaveBeenCalledWith('scanner', 'pioneer');
 
     records.getRecordWithAssets.mockResolvedValueOnce({
       record: { id: 'crates', kind: 'props' }, assets: [],
     });
     const props = await request(app).get('/api/sprites/crates');
+    // A props family has no gait, so no walk — and ambient, not scanner. The
+    // whole point of keying by id: neither kind needs a route-level branch.
     expect(props.body.walk).toBeNull();
-    expect(props.body.scanner).toBeNull();
+    expect(Object.keys(props.body.tracks)).toEqual(['ambient']);
+    expect(props.body.tracks.ambient).toMatchObject({
+      track: 'ambient', definition: { id: 'ambient', directional: false },
+    });
   });
 
   it('POST /:id/walk/generate validates direction and duration', async () => {
@@ -488,22 +503,56 @@ describe('sprites routes', () => {
       .send({ direction: 'east', fps: 99 })).status).toBe(400);
   });
 
-  it('POST /:id/scanner/generate validates scanner-specific short bounds', async () => {
-    const r = await request(app).post('/api/sprites/pioneer/scanner/generate')
+  it('POST /:id/tracks/:trackId/generate bounds each track against its OWN row (#3136)', async () => {
+    trackWorkflow.startTrackGeneration.mockClear();
+    const r = await request(app).post('/api/sprites/pioneer/tracks/scanner/generate')
       .send({ direction: 'east', frameCount: 4, fps: 6 });
     expect(r.status).toBe(200);
-    expect(scanner.startScannerGeneration).toHaveBeenCalledWith('pioneer', { direction: 'east', frameCount: 4, fps: 6 });
-    expect((await request(app).post('/api/sprites/pioneer/scanner/generate')
+    expect(trackWorkflow.startTrackGeneration).toHaveBeenCalledWith('scanner', 'pioneer', { direction: 'east', frameCount: 4, fps: 6 });
+    // Scanner's own 2–8 / 2–12, not walk's 6–16 / 4–24.
+    expect((await request(app).post('/api/sprites/pioneer/tracks/scanner/generate')
       .send({ direction: 'east', frameCount: 9 })).status).toBe(400);
-    expect((await request(app).post('/api/sprites/pioneer/scanner/generate')
+    expect((await request(app).post('/api/sprites/pioneer/tracks/scanner/generate')
       .send({ direction: 'east', fps: 13 })).status).toBe(400);
+    // …and the SAME route bounds ambient against ITS 2–6, which is the property
+    // that makes a user-defined track's schema come for free.
+    expect((await request(app).post('/api/sprites/crates/tracks/ambient/generate')
+      .send({ frameCount: 3 })).status).toBe(200);
+    expect((await request(app).post('/api/sprites/crates/tracks/ambient/generate')
+      .send({ frameCount: 7 })).status).toBe(400);
   });
 
-  it('POST /:id/scanner/approve forwards a reviewed scanner candidate', async () => {
-    const r = await request(app).post('/api/sprites/pioneer/scanner/approve')
+  it('POST /:id/tracks/:trackId/generate requires a facing only for a directional track', async () => {
+    // Without this the service would 409 "lock the undefined anchor", blaming
+    // the reference set for a missing request field.
+    expect((await request(app).post('/api/sprites/pioneer/tracks/scanner/generate').send({})).status).toBe(400);
+    // A non-directional track derives row 0 server-side, so no facing is needed.
+    expect((await request(app).post('/api/sprites/crates/tracks/ambient/generate').send({})).status).toBe(200);
+  });
+
+  it('POST /:id/tracks/:trackId/* refuses an unknown track and walk itself', async () => {
+    trackWorkflow.startTrackGeneration.mockClear();
+    // Well-formed but unregistered → 404 naming the known tracks, not a bare 400
+    // that reads as "your request was malformed".
+    const unknown = await request(app).post('/api/sprites/pioneer/tracks/jetpack/generate').send({ direction: 'east' });
+    expect(unknown.status).toBe(404);
+    expect(unknown.body.error).toMatch(/Unknown animation track 'jetpack'/);
+    // Malformed id → 400 from the shape schema.
+    expect((await request(app).post('/api/sprites/pioneer/tracks/Bad_Id/generate').send({ direction: 'east' })).status).toBe(400);
+    // Walk keeps its own endpoints (reprocess/trims/targets live there), so the
+    // generic route refuses it rather than writing walk state through a service
+    // that doesn't implement any of that.
+    const asWalk = await request(app).post('/api/sprites/pioneer/tracks/walk/generate').send({ direction: 'east' });
+    expect(asWalk.status).toBe(400);
+    expect(asWalk.body.error).toMatch(/walk cycle has its own endpoints/);
+    expect(trackWorkflow.startTrackGeneration).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/tracks/:trackId/approve forwards a reviewed candidate', async () => {
+    const r = await request(app).post('/api/sprites/pioneer/tracks/scanner/approve')
       .send({ direction: 'east', runId: 'scanner-east-0a1b2c3d' });
     expect(r.status).toBe(200);
-    expect(scanner.approveScannerDirection).toHaveBeenCalledWith('pioneer', {
+    expect(trackWorkflow.approveTrackRun).toHaveBeenCalledWith('scanner', 'pioneer', {
       direction: 'east', runId: 'scanner-east-0a1b2c3d',
     });
   });

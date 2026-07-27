@@ -55,9 +55,10 @@ import { verifyPackagedFrames } from './walkFrames.js';
 import { probeVideoDuration } from '../../lib/ffmpeg.js';
 import { resolveGrokDuration } from '../../lib/grokVideoClip.js';
 import { withAnimationWriteTail, resolveChromaKey } from './animationWorkflow.js';
+import { SCANNER_TRACK } from './animationTracks.js';
 import {
-  invalidateScannerDirectionForAnchorRevision, invalidateScannerForTurnaroundRevision,
-} from './scanner.js';
+  invalidateTrackDirectionForAnchorRevision, invalidateTrackForTurnaroundRevision,
+} from './animationTrackWorkflow.js';
 
 // grok's walk render runs as an OBSERVABLE TUI session (issue: user wants to
 // watch/course-correct grok in the Shell) rather than a headless mediaJobQueue
@@ -1883,7 +1884,7 @@ export function invalidateWalkDirectionForAnchorRevision(recordId, { direction }
 export async function unlockDirectionalAnchor(recordId, { direction }) {
   await assertReferenceAnchorUnlockable(recordId, { direction });
   const walkInvalidated = await invalidateWalkDirectionForAnchorRevision(recordId, { direction });
-  const scannerInvalidated = await invalidateScannerDirectionForAnchorRevision(recordId, { direction });
+  const scannerInvalidated = await invalidateTrackDirectionForAnchorRevision(SCANNER_TRACK, recordId, { direction });
   const reference = await unlockReferenceAnchor(recordId, { direction });
   return { ...reference, walkInvalidated, scannerInvalidated };
 }
@@ -1896,7 +1897,7 @@ export async function unlockMainReference(recordId) {
   await assertReferenceMainUnlockable(recordId);
   const direction = 'south';
   const walkInvalidated = await invalidateWalkDirectionForAnchorRevision(recordId, { direction });
-  const scannerInvalidated = await invalidateScannerDirectionForAnchorRevision(recordId, { direction });
+  const scannerInvalidated = await invalidateTrackDirectionForAnchorRevision(SCANNER_TRACK, recordId, { direction });
   const reference = await unlockReferenceMain(recordId);
   return { ...reference, walkInvalidated, scannerInvalidated };
 }
@@ -1912,7 +1913,7 @@ export async function unlockMainReference(recordId) {
 export async function unlockTurnaroundReference(recordId) {
   await assertReferenceTurnaroundUnlockable(recordId);
   const walkInvalidatedDirections = await invalidateWalkForTurnaroundRevision(recordId);
-  const scannerInvalidatedDirections = await invalidateScannerForTurnaroundRevision(recordId);
+  const scannerInvalidatedDirections = await invalidateTrackForTurnaroundRevision(SCANNER_TRACK, recordId);
   const reference = await unlockReferenceTurnaround(recordId);
   return { ...reference, walkInvalidatedDirections, scannerInvalidatedDirections };
 }

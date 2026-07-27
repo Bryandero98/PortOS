@@ -130,6 +130,12 @@ describe('the module-load row guard', () => {
   const second = {
     ...walk, id: 'scanner', label: 'Scanner', minFrameCount: 3, defaultFrameCount: 4, maxFrameCount: 8,
     contractFrameCountField: 'scannerFrameCount', contractFpsField: 'scannerFps',
+    // #3136: the on-disk `kind` discriminators are per-row unique for the same
+    // reason the contract fields are, so a row copy-pasted from walk's must
+    // rename them too or the guard (correctly) refuses it.
+    selectionKind: 'reviewed-directional-scanner-selection',
+    setKind: 'finalized-eight-direction-scanner-set',
+    finalErrorCode: 'SCANNER_SET_FINAL',
   };
   const twoRows = (overrides = {}) => ({ walk, scanner: { ...second, ...overrides } });
 
@@ -174,8 +180,39 @@ describe('the module-load row guard', () => {
     ['a default fps outside its range', { defaultFps: 99 }, /minFps <= defaultFps <= maxFps/],
     ['an empty contract frame-count field', { contractFrameCountField: '' }, /needs a contractFrameCountField/],
     ['an undefined contract fps field', { contractFpsField: undefined }, /contractFpsField \(or null\)/],
+    // #3136 — the workflow shape the generic track service dispatches on.
+    ['an unrecognized sourceReference', { sourceReference: 'turnaround' }, /sourceReference of anchor or main/],
+    ['a missing sourceReference', { sourceReference: undefined }, /sourceReference of anchor or main/],
+    ['a missing selectionKind', { selectionKind: '' }, /needs a non-empty 'selectionKind'/],
+    ['a missing setKind', { setKind: undefined }, /needs a non-empty 'setKind'/],
+    ['a missing finalErrorCode', { finalErrorCode: '' }, /needs a non-empty 'finalErrorCode'/],
+    ['a non-boolean builtin', { builtin: 'yes' }, /boolean 'builtin'/],
   ])('rejects %s', (_label, overrides, message) => {
     expect(() => assertAnimationTrackRows(twoRows(overrides))).toThrow(message);
+  });
+
+  it('rejects a second row that copy-pastes walk\'s on-disk set kind (#3136)', () => {
+    // The mirror of the contract-field collision, one layer down: the atlas
+    // compiler validates a finalized set by its `kind`, so two tracks sharing
+    // one would let this track's set satisfy the OTHER's evidence check and
+    // compile the wrong frames into its span.
+    expect(() => assertAnimationTrackRows(twoRows({ setKind: 'finalized-eight-direction-walk-set' })))
+      .toThrow(/claimed by both 'walk\.setKind' and 'scanner\.setKind'/);
+    expect(() => assertAnimationTrackRows(twoRows({ selectionKind: 'reviewed-directional-walk-selection' })))
+      .toThrow(/claimed by both 'walk\.selectionKind' and 'scanner\.selectionKind'/);
+  });
+
+  it('binds sourceReference to directionality (#3136)', () => {
+    // A directional track seeded from the single `main` would render the SAME
+    // south-facing clip for all eight facings and pass every later check, since
+    // nothing downstream re-reads which facing was asked for. The inverse has no
+    // anchor to read at all — a place record never generates directional anchors.
+    expect(() => assertAnimationTrackRows(twoRows({ sourceReference: 'main' })))
+      .toThrow(/directional track 'scanner' must seed from the anchor reference/);
+    expect(() => assertAnimationTrackRows(twoRows({ directional: false, sourceReference: 'anchor' })))
+      .toThrow(/non-directional track 'scanner' must seed from the main reference/);
+    // …and the well-formed non-directional pairing is accepted.
+    expect(() => assertAnimationTrackRows(twoRows({ directional: false, sourceReference: 'main' }))).not.toThrow();
   });
 });
 

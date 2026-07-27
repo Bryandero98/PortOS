@@ -38,6 +38,16 @@
  * (`tracksForKind` / `kindSupportsTrack`) instead of naming a kind. Walk stays
  * character-only, so behavior is unchanged today; a row that lists `place` is
  * all it takes to unlock those records, with no gate edit anywhere.
+ *
+ * **The per-track WORKFLOW is registry data too (#3136).** `scanner` and
+ * `ambient` each shipped as a ~300-line clone of walk's state/start/package/
+ * approve/invalidate stack — identical control flow differing only in which
+ * reference image seeds the render, what the on-disk selection/set files are
+ * called, and which prompt text goes to the provider. Those three differences
+ * are now FIELDS on the row (`sourceReference`, `selectionKind`/`setKind`, and
+ * the workflow's prompt builder key), and `animationTrackWorkflow.js` is the one
+ * implementation both drive. A user-defined track is therefore a row plus a
+ * prompt template — no new service module, no new routes.
  */
 
 /** The default track — the only one that exists today. */
@@ -46,6 +56,15 @@ export const WALK_TRACK = 'walk';
 export const SCANNER_TRACK = 'scanner';
 /** The first non-directional environment loop (#3045). */
 export const AMBIENT_TRACK = 'ambient';
+
+/**
+ * The locked reference artifacts a track's image-to-video render may be seeded
+ * from (#3136). A closed set: the generic workflow dispatches on it to decide
+ * which lock to require and which file to hand the provider, so an unrecognized
+ * spelling is a boot failure rather than a render that 409s on an artifact
+ * nothing declared.
+ */
+export const SOURCE_REFERENCES = Object.freeze(['anchor', 'main']);
 
 /**
  * Every known animation track.
@@ -66,6 +85,22 @@ export const AMBIENT_TRACK = 'ambient';
  *   the app rung of the precedence chain is track-driven rather than hard-coded
  *   to `walkFrameCount`. `contractFpsField` may be `null` for a track whose
  *   speed an app has no say in.
+ * - `sourceReference` (#3136) — which locked reference image the i2v render is
+ *   seeded from: `'anchor'` (this facing's locked directional anchor) or
+ *   `'main'` (the one locked main reference). A directional track needs a per
+ *   facing anchor; a non-directional one has only the main to work from, which
+ *   is why the two clones differed on this line and nowhere else structurally.
+ * - `selectionKind` / `setKind` (#3136) — the `kind` discriminators the track's
+ *   on-disk review selection and finalized set carry. Registry data because the
+ *   atlas compiler VALIDATES them (`atlas.js`), so a track's on-disk contract
+ *   and the compiler's expectation cannot drift.
+ * - `finalErrorCode` (#3136) — the `code` on the 409 a finalized set answers
+ *   generate/approve with. Named per row so an existing client that matches on
+ *   `SCANNER_SET_FINAL` keeps working after the clone collapsed.
+ * - `builtin` (#3136) — true for a row compiled into this module. `walk` is the
+ *   mandatory character baseline and can never be removed or edited; the other
+ *   rows are ordinary registry data that a later phase moves into a
+ *   user-editable store (see #3136's remaining children).
  */
 export const ANIMATION_TRACKS = Object.freeze({
   [WALK_TRACK]: Object.freeze({
@@ -89,6 +124,15 @@ export const ANIMATION_TRACKS = Object.freeze({
     // nulled, because dropping it would change resolution behavior for those.
     // A second track copying this row should decide its own answer.
     contractFpsField: 'walkFps',
+    // Walk predates the generic workflow and keeps its own bespoke service
+    // (walk.js — reprocess, trims, per-direction reopen, source-frame
+    // extraction, set-level targets), so these describe its on-disk contract
+    // for the compiler's benefit without routing it through the generic module.
+    sourceReference: 'anchor',
+    selectionKind: 'reviewed-directional-walk-selection',
+    setKind: 'finalized-eight-direction-walk-set',
+    finalErrorCode: 'WALK_SET_FINAL',
+    builtin: true,
   }),
   [SCANNER_TRACK]: Object.freeze({
     id: SCANNER_TRACK,
@@ -106,6 +150,16 @@ export const ANIMATION_TRACKS = Object.freeze({
     contractFrameCountField: 'scannerFrameCount',
     // The game owns action timing; PortOS carries fps as preview provenance.
     contractFpsField: null,
+    // Every facing renders from its own locked anchor, so the run is seeded per
+    // direction exactly like walk's.
+    sourceReference: 'anchor',
+    // The historical on-disk spellings, kept verbatim: an already-approved
+    // scanner set on any install must keep validating after the clone collapsed
+    // into the generic workflow, and the compiler matches these exact strings.
+    selectionKind: 'reviewed-directional-scanner-selection',
+    setKind: 'finalized-eight-direction-scanner-set',
+    finalErrorCode: 'SCANNER_SET_FINAL',
+    builtin: true,
   }),
   [AMBIENT_TRACK]: Object.freeze({
     id: AMBIENT_TRACK,
@@ -124,6 +178,14 @@ export const ANIMATION_TRACKS = Object.freeze({
     // Ambient cadence belongs to the consuming app. PortOS keeps fps only as
     // authoring-preview provenance, like scanner.
     contractFpsField: null,
+    // A place has no facing and therefore no directional anchor — its one
+    // locked main reference is both the idle cell and the i2v source. This ONE
+    // field is the whole structural difference the ambient clone existed for.
+    sourceReference: 'main',
+    selectionKind: 'reviewed-single-row-ambient-selection',
+    setKind: 'finalized-single-row-ambient-set',
+    finalErrorCode: 'AMBIENT_SET_FINAL',
+    builtin: true,
   }),
 });
 
@@ -147,6 +209,7 @@ export const ANIMATION_TRACK_IDS = Object.freeze(Object.keys(ANIMATION_TRACKS));
  */
 export function assertAnimationTrackRows(tracks) {
   const claimedContractFields = new Map();
+  const claimedOnDiskKinds = new Map();
   for (const id of Object.keys(tracks)) {
     const row = tracks[id];
     if (row.id !== id) throw new Error(`animationTracks: row '${id}' declares mismatched id '${row.id}'`);
@@ -168,6 +231,46 @@ export function assertAnimationTrackRows(tracks) {
     }
     if (row.contractFpsField !== null && (typeof row.contractFpsField !== 'string' || !row.contractFpsField)) {
       throw new Error(`animationTracks: track '${id}' needs a contractFpsField (or null)`);
+    }
+    // #3136 — the workflow shape. `sourceReference` is a closed set because the
+    // generic workflow dispatches on it: a third spelling would silently resolve
+    // to no reference at all and every render would 409 "not locked" naming an
+    // artifact the row never asked for.
+    if (!SOURCE_REFERENCES.includes(row.sourceReference)) {
+      throw new Error(
+        `animationTracks: track '${id}' needs a sourceReference of ${SOURCE_REFERENCES.join(' or ')}, got '${String(row.sourceReference)}'`,
+      );
+    }
+    // A directional track renders one clip per facing, so it must seed from that
+    // facing's own anchor — seeding eight directional rows from the single main
+    // reference would render the same south-facing clip eight times and pass
+    // every later check, since the packer never sees which facing it was asked
+    // for. The inverse (a non-directional track pointed at 'anchor') has no
+    // anchor to read: a place record never generates directional anchors at all.
+    const expectedSource = row.directional ? 'anchor' : 'main';
+    if (row.sourceReference !== expectedSource) {
+      throw new Error(
+        `animationTracks: ${row.directional ? 'directional' : 'non-directional'} track '${id}' must seed from the ${expectedSource} reference, not '${row.sourceReference}'`,
+      );
+    }
+    for (const field of ['selectionKind', 'setKind', 'finalErrorCode']) {
+      if (typeof row[field] !== 'string' || !row[field]) {
+        throw new Error(`animationTracks: track '${id}' needs a non-empty '${field}'`);
+      }
+    }
+    if (typeof row.builtin !== 'boolean') throw new Error(`animationTracks: track '${id}' needs a boolean 'builtin'`);
+    // Two tracks sharing a selection/set `kind` is the same class of bug as two
+    // sharing a contract field: the compiler validates a set by its `kind`, so a
+    // duplicate would let one track's finalized set satisfy the other's evidence
+    // check and compile the wrong frames into its span.
+    for (const knob of ['selectionKind', 'setKind']) {
+      const owner = claimedOnDiskKinds.get(row[knob]);
+      if (owner) {
+        throw new Error(
+          `animationTracks: on-disk kind '${row[knob]}' is claimed by both '${owner.id}.${owner.knob}' and '${id}.${knob}'`,
+        );
+      }
+      claimedOnDiskKinds.set(row[knob], { id, knob });
     }
     for (const [min, def, max] of [
       ['minFrameCount', 'defaultFrameCount', 'maxFrameCount'],

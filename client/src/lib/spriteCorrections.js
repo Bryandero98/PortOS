@@ -27,12 +27,30 @@ export const anchorCorrectionKey = (direction) => direction;
 export const MAIN_CORRECTION_KEY = 'main';
 /** The walk-cycle video for a direction — shared by WalkWorkflow and the asset card. */
 export const walkCorrectionKey = (direction) => `walk:${direction}`;
+/**
+ * Any non-walk animation track's clip, for one facing (#3136).
+ *
+ * Generalizes what `scanner:<dir>`/`ambient-loop` each spelled by hand, so a
+ * user-defined track's note gets a namespaced key with nothing to add here. The
+ * facing is part of the key for the same reason it is for walk: a directional
+ * track's eight clips are eight separate re-rolls, and a note about one must not
+ * ride the next.
+ *
+ * Deliberately NOT byte-compatible with the two old keys — `corrections` is
+ * transient page state (typed in this session, never persisted), so there is no
+ * stored note to migrate; the aliases below exist for call-site readability, not
+ * for on-disk compatibility.
+ */
+export const trackCorrectionKey = (trackId, direction) => `${trackId}:${direction}`;
 /** The scanner action video for a direction. */
-export const scannerCorrectionKey = (direction) => `scanner:${direction}`;
+export const scannerCorrectionKey = (direction) => trackCorrectionKey('scanner', direction);
 /** A place/object's at-rest identity still. */
 export const AMBIENT_REFERENCE_CORRECTION_KEY = 'ambient-reference';
-/** A place/object's image-to-video ambient loop. */
-export const AMBIENT_LOOP_CORRECTION_KEY = 'ambient-loop';
+/**
+ * A place/object's image-to-video ambient loop. Its facing is the single row 0,
+ * so the generic key resolves to one value rather than eight.
+ */
+export const AMBIENT_LOOP_CORRECTION_KEY = trackCorrectionKey('ambient', 'south');
 
 /**
  * Build the re-roll request fragment for one correction key. Returns

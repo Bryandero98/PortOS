@@ -23,7 +23,7 @@ import { useState } from 'react';
 import { NotebookPen } from 'lucide-react';
 
 export {
-  anchorCorrectionKey, walkCorrectionKey, scannerCorrectionKey,
+  anchorCorrectionKey, walkCorrectionKey, scannerCorrectionKey, trackCorrectionKey,
   MAIN_CORRECTION_KEY, AMBIENT_REFERENCE_CORRECTION_KEY, AMBIENT_LOOP_CORRECTION_KEY,
   correctionPromptPayload,
 } from '../../lib/spriteCorrections.js';
