@@ -362,6 +362,24 @@ describe('usage.js — streak calculations', () => {
       expect(atomicWrite).toHaveBeenCalled();
     });
 
+    it('deep-merges model usage while normalizing undefined provider buckets', async () => {
+      readJSONFile.mockResolvedValueOnce(makeUsage({
+        [daysAgo(0)]: {
+          byProvider: {
+            unknown: { byModel: { current: { sessions: 2, tokensOut: 20 } } },
+            undefined: { byModel: { legacy: { sessions: 1, tokensOut: 10 } } }
+          }
+        }
+      }));
+
+      await loadUsage();
+
+      expect(getUsage().dailyActivity[daysAgo(0)].byProvider.unknown.byModel).toEqual({
+        current: { sessions: 2, tokensOut: 20 },
+        legacy: { sessions: 1, tokensOut: 10 }
+      });
+    });
+
     it('recordMessages attributes input and output tokens to provider, model, and day', async () => {
       readJSONFile.mockResolvedValueOnce(makeUsage({}));
       await loadUsage();
@@ -519,6 +537,30 @@ describe('usage.js — streak calculations', () => {
           tokensOut: 500
         })
       ]);
+    });
+
+    it('allocates historical direct-token residuals without double-counting buckets', () => {
+      const report = buildUsageReport({
+        '2025-06-01': {
+          tokens: 500_000,
+          byProvider: {
+            codex: {
+              tokensIn: 100_000,
+              tokensOut: 500_000,
+              byModel: {}
+            }
+          }
+        }
+      }, {
+        totalTokens: { input: 1_000_000, output: 1_500_000 }
+      });
+
+      expect(report.totals.tokensIn).toBe(1_000_000);
+      expect(report.totals.tokensOut).toBe(1_500_000);
+      expect(report.providers.find((provider) => provider.id === 'legacy')).toMatchObject({
+        tokensIn: 900_000,
+        tokensOut: 1_000_000
+      });
     });
 
     it('prices provider-level tokens missing a model split at the provider default', () => {

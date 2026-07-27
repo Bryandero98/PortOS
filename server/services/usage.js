@@ -36,16 +36,10 @@ const normalizeUndefinedProviderBucket = (byProvider) => {
   }
   const stale = byProvider.undefined || {};
   const current = byProvider[UNKNOWN_PROVIDER_ID] || {};
-  byProvider[UNKNOWN_PROVIDER_ID] = {
-    ...stale,
-    ...current,
-    name: UNKNOWN_PROVIDER_NAME,
-    sessions: (stale.sessions || 0) + (current.sessions || 0),
-    messages: (stale.messages || 0) + (current.messages || 0),
-    tokens: (stale.tokens || 0) + (current.tokens || 0),
-    tokensIn: (stale.tokensIn || 0) + (current.tokensIn || 0),
-    tokensOut: (stale.tokensOut || 0) + (current.tokensOut || 0)
-  };
+  const merged = {};
+  deepSumInto(merged, stale);
+  deepSumInto(merged, current);
+  byProvider[UNKNOWN_PROVIDER_ID] = { ...merged, name: UNKNOWN_PROVIDER_NAME };
   delete byProvider.undefined;
   return true;
 };
@@ -410,7 +404,7 @@ const roundCents = (n) => Math.round(n * 100) / 100;
  * is whole-month-granular: it is included whenever its month overlaps
  * `[from, to]` (rolled-up months are far older than any day-precise range).
  */
-export function buildUsageReport(dailyActivity, { from = null, to = null, providers = [], monthlyActivity = null } = {}) {
+export function buildUsageReport(dailyActivity, { from = null, to = null, providers = [], monthlyActivity = null, totalTokens = null } = {}) {
   const configById = new Map((providers || []).map((p) => [p.id, p]));
   const agg = new Map(); // providerId -> { name, sessions, messages, tokensIn, tokensOut, byModel: Map }
   let breakdownSince = null;
@@ -482,6 +476,23 @@ export function buildUsageReport(dailyActivity, { from = null, to = null, provid
       foldBucket(day);
     } else if (day) {
       foldLegacyBucket(day);
+    }
+  }
+
+  // The legacy POST /usage/tokens path historically updated only all-time
+  // totals. On an unbounded report, retain any portion not already represented
+  // by day/month buckets without double-counting normal recorded messages.
+  if (totalTokens) {
+    const represented = [...agg.values()].reduce((sum, provider) => ({
+      input: sum.input + provider.tokensIn,
+      output: sum.output + provider.tokensOut
+    }), { input: 0, output: 0 });
+    const residualIn = Math.max(0, (totalTokens.input || 0) - represented.input);
+    const residualOut = Math.max(0, (totalTokens.output || 0) - represented.output);
+    if (residualIn > 0 || residualOut > 0) {
+      const legacy = ensureAggregate(LEGACY_PROVIDER_ID, LEGACY_PROVIDER_NAME);
+      legacy.tokensIn += residualIn;
+      legacy.tokensOut += residualOut;
     }
   }
 
@@ -607,9 +618,19 @@ export function getUsageSummary({ from = null, to = null, providers = [] } = {})
   const currentStreak = calculateStreak(usageData.dailyActivity);
   const longestStreak = findLongestStreak(usageData.dailyActivity);
 
-  const report = buildUsageReport(usageData.dailyActivity, { from, to, providers, monthlyActivity: usageData.monthlyActivity });
+  const report = buildUsageReport(usageData.dailyActivity, {
+    from,
+    to,
+    providers,
+    monthlyActivity: usageData.monthlyActivity,
+    totalTokens: from || to ? null : usageData.totalTokens
+  });
   const allTimeReport = from || to
-    ? buildUsageReport(usageData.dailyActivity, { providers, monthlyActivity: usageData.monthlyActivity })
+    ? buildUsageReport(usageData.dailyActivity, {
+        providers,
+        monthlyActivity: usageData.monthlyActivity,
+        totalTokens: usageData.totalTokens
+      })
     : report;
 
   return {
