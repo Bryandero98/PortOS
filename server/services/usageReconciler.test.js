@@ -703,3 +703,61 @@ describe('model-less bucket attribution (deliberate single-bucket choice)', () =
     expect(records[0].tokensOut).toBe(500);
   });
 });
+
+describe('Codex watermark is in absolute rollout units', () => {
+  const rollout = (snaps) => [
+    JSON.stringify({ timestamp: '2026-07-01T10:00:00.000Z', type: 'session_meta', payload: { id: 'rollout-1', cwd: WORKSPACE, model: 'gpt-5.3-codex' } }),
+    ...snaps.map(([timestamp, input, cached, output]) => JSON.stringify({
+      timestamp, type: 'event_msg',
+      payload: { type: 'token_count', info: { total_token_usage: { input_tokens: input, cached_input_tokens: cached, output_tokens: output, total_tokens: input + output } } }
+    }))
+  ].join('\n');
+  const read = (startTime, endTime) => readMeasuredUsage({
+    workspacePath: WORKSPACE, startTime, endTime, family: 'codex', home
+  });
+
+  // Regression: storing "tokens we billed" and subtracting it from a WINDOWED
+  // parse double-subtracts, because the window already excludes the earlier
+  // snapshot as its baseline. Measured: the later run billed 50, not 150.
+  it('bills the full new delta when the later run starts after the billed snapshot', async () => {
+    await writeCodexRollout(['2026', '07', '01'], 'rollout-1.jsonl', rollout([
+      ['2026-07-01T10:05:00.000Z', 1000, 0, 100]
+    ]));
+    const first = await read('2026-07-01T10:00:00.000Z', '2026-07-01T10:06:00.000Z');
+    expect(first.tokensOut).toBe(100);
+
+    // Grows to cumulative 250; the second run's window starts AFTER 10:05, so a
+    // windowed parse alone would already report 150.
+    await writeCodexRollout(['2026', '07', '01'], 'rollout-1.jsonl', rollout([
+      ['2026-07-01T10:05:00.000Z', 1000, 0, 100],
+      ['2026-07-01T10:20:00.000Z', 3000, 0, 250]
+    ]));
+    const second = await read('2026-07-01T10:15:00.000Z', '2026-07-01T10:25:00.000Z');
+
+    expect(second?.tokensOut).toBe(150);
+    expect(first.tokensOut + second.tokensOut).toBe(250);
+    // The per-model bucket must equal the netted aggregate, or records re-charge.
+    expect(second.byModel['gpt-5.3-codex'].tokensOut).toBe(second.tokensOut);
+  });
+
+  it('does not re-bill a rollout that was truncated or rewritten smaller', async () => {
+    await writeCodexRollout(['2026', '07', '01'], 'rollout-1.jsonl', rollout([
+      ['2026-07-01T10:05:00.000Z', 1000, 0, 100]
+    ]));
+    expect((await read('2026-07-01T10:00:00.000Z', '2026-07-01T10:10:00.000Z')).tokensOut).toBe(100);
+
+    // Rewritten with LOWER cumulative totals — the mark must not move backwards.
+    await writeCodexRollout(['2026', '07', '01'], 'rollout-1.jsonl', rollout([
+      ['2026-07-01T10:05:00.000Z', 500, 0, 40]
+    ]));
+    expect(await read('2026-07-01T10:00:00.000Z', '2026-07-01T10:30:00.000Z')).toBeNull();
+  });
+
+  it('ignores a rollout whose activity falls entirely outside the run window', async () => {
+    await writeCodexRollout(['2026', '07', '01'], 'rollout-1.jsonl', rollout([
+      ['2026-07-01T02:00:00.000Z', 1000, 0, 100]
+    ]));
+    // The absolute read sees tokens, but none of them are in this run's window.
+    expect(await read('2026-07-01T10:00:00.000Z', '2026-07-01T10:10:00.000Z')).toBeNull();
+  });
+});

@@ -61,11 +61,13 @@ const WINDOW_SLACK_MS = 60_000;
 // but a run that already completed is never reconciled again.
 const claimedMessages = new Set();
 
-// Cumulative token totals already charged per Codex rollout path. Codex bills as
-// a cumulative delta, so a per-snapshot claim can't stop a GROWN rollout from
-// re-including an earlier run's tokens. Keyed on TOTALS rather than a timestamp
-// because several `token_count` snapshots can share one epoch millisecond — a
-// timestamp boundary would either re-bill them or drop a later one entirely.
+// The ABSOLUTE cumulative position of each Codex rollout that has already been
+// billed, keyed by file path. Codex reports cumulative totals, so a rollout that
+// grows between two runs would otherwise re-include the earlier run's tokens.
+// Stored in absolute rollout units (not "tokens we billed") so the delta is a
+// plain subtraction: a windowed parse already nets out the earlier snapshot, so
+// mixing the two would double-subtract. Absolute totals are also immune to
+// several snapshots sharing one epoch millisecond.
 const codexHighWater = new Map();
 
 /** Test-only: forget every claim so suites start from a clean ledger. */
@@ -308,44 +310,51 @@ export async function readMeasuredUsage({ workspacePath, startTime, endTime, fam
         // baseline before both runs) re-includes what the first run already
         // billed. Track the highest cumulative boundary billed per file and
         // re-parse from there, so each run charges only the genuinely new part.
-        // Rollouts are filed by date, not cwd — confirm the cwd before folding.
-        const parsed = parseCodexRollout(text, { from, to });
-        if (!cwdMatches(parsed.cwd, workspacePath)) continue;
+        // Read the rollout's ABSOLUTE cumulative position (no window), then bill
+        // the difference from what was already charged. The watermark must be in
+        // absolute rollout units, not "tokens billed": a windowed parse already
+        // excludes the earlier snapshot as its baseline, so subtracting the
+        // billed amount from an already-delta'd figure double-subtracts (measured:
+        // a later run billed 50 instead of 150). Absolute totals also make the
+        // arithmetic immune to several snapshots sharing one epoch millisecond,
+        // which is why the timestamp boundary this replaced was unsound.
+        const absolute = parseCodexRollout(text);
+        if (!cwdMatches(absolute.cwd, workspacePath)) continue;
+        // Still require the run's own window to overlap this rollout at all, so a
+        // rollout from an unrelated period isn't attributed to this run.
+        if (totalTranscriptTokens(parseCodexRollout(text, { from, to })) === 0) continue;
 
-        // Subtract whatever was already billed for this rollout. The high-water
-        // mark is the CUMULATIVE TOTAL charged so far, not a timestamp: several
-        // `token_count` snapshots can share one epoch millisecond, so a
-        // timestamp boundary would either re-bill them or (excluding the whole
-        // millisecond) silently drop a later snapshot's tokens. Subtracting
-        // totals is exact regardless of how the snapshots are stamped.
         const billed = codexHighWater.get(path);
-        const net = billed
-          ? {
-              ...parsed,
-              messages: Math.max(0, (parsed.messages || 0) - billed.messages),
-              tokensIn: Math.max(0, parsed.tokensIn - billed.tokensIn),
-              tokensOut: Math.max(0, parsed.tokensOut - billed.tokensOut),
-              cacheReadTokens: Math.max(0, parsed.cacheReadTokens - billed.cacheReadTokens),
-              cacheWriteTokens: Math.max(0, parsed.cacheWriteTokens - billed.cacheWriteTokens)
-            }
-          : parsed;
+        const delta = (field) => Math.max(0, (absolute[field] || 0) - (billed?.[field] || 0));
+        const net = {
+          ...absolute,
+          messages: delta('messages'),
+          tokensIn: delta('tokensIn'),
+          tokensOut: delta('tokensOut'),
+          cacheReadTokens: delta('cacheReadTokens'),
+          cacheWriteTokens: delta('cacheWriteTokens')
+        };
         if (totalTranscriptTokens(net) === 0) continue;
 
-        // Advance the mark before the next `await`, for the same reason the
-        // Claude claim reserves per file: two overlapping runs must not both
-        // read the pre-update value.
+        // Advance the mark to the absolute position just read, before the next
+        // `await` — for the same reason the Claude claim reserves per file: two
+        // overlapping runs must not both act on the pre-update value. `Math.max`
+        // guards a rollout that was truncated/rewritten smaller, so the mark
+        // never moves backwards and re-bills what it already charged.
         codexHighWater.set(path, {
-          messages: (billed?.messages || 0) + (net.messages || 0),
-          tokensIn: (billed?.tokensIn || 0) + net.tokensIn,
-          tokensOut: (billed?.tokensOut || 0) + net.tokensOut,
-          cacheReadTokens: (billed?.cacheReadTokens || 0) + net.cacheReadTokens,
-          cacheWriteTokens: (billed?.cacheWriteTokens || 0) + net.cacheWriteTokens
+          messages: Math.max(billed?.messages || 0, absolute.messages || 0),
+          tokensIn: Math.max(billed?.tokensIn || 0, absolute.tokensIn || 0),
+          tokensOut: Math.max(billed?.tokensOut || 0, absolute.tokensOut || 0),
+          cacheReadTokens: Math.max(billed?.cacheReadTokens || 0, absolute.cacheReadTokens || 0),
+          cacheWriteTokens: Math.max(billed?.cacheWriteTokens || 0, absolute.cacheWriteTokens || 0)
         });
         codexReserved.push([path, billed]);
-        // `byModel` must carry the NET tokens too, or the per-model records the
-        // caller bills from would re-charge the already-billed portion.
-        fold(net.byModel && Object.keys(net.byModel).length === 1
-          ? { ...net, byModel: { [Object.keys(net.byModel)[0]]: {
+        // Mirror the net into `byModel` — callers bill from the per-model records,
+        // so leaving them at absolute totals would re-charge the billed portion.
+        // Codex reports one model per rollout, so the whole net is that model's.
+        const modelKey = Object.keys(absolute.byModel || {})[0];
+        fold(modelKey
+          ? { ...net, byModel: { [modelKey]: {
               messages: net.messages,
               tokensIn: net.tokensIn,
               tokensOut: net.tokensOut,
