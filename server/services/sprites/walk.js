@@ -54,19 +54,25 @@ import {
 import { verifyPackagedFrames } from './walkFrames.js';
 import { probeVideoDuration } from '../../lib/ffmpeg.js';
 import { resolveGrokDuration } from '../../lib/grokVideoClip.js';
-import { withAnimationWriteTail, resolveChromaKey } from './animationWorkflow.js';
-import { SCANNER_TRACK } from './animationTracks.js';
+import {
+  withAnimationWriteTail, resolveChromaKey, lockedAnchorFor,
+  GROK_TUI_IDLE_MS, GROK_TUI_TIMEOUT_MS, grokTuiProvider, buildGrokI2vTask,
+} from './animationWorkflow.js';
+import {
+  ANIMATION_TRACKS, SCANNER_TRACK, sourceReferenceFor,
+} from './animationTracks.js';
 import {
   invalidateTrackDirectionForAnchorRevision, invalidateTrackForTurnaroundRevision,
 } from './animationTrackWorkflow.js';
 
 // grok's walk render runs as an OBSERVABLE TUI session (issue: user wants to
 // watch/course-correct grok in the Shell) rather than a headless mediaJobQueue
-// spawn. The idle threshold must be long enough that grok's narration lulls
-// during the multi-minute image_to_video render aren't mistaken for completion;
-// the hard cap mirrors the old headless GROK_VIDEO_TIMEOUT_MS.
-const WALK_TUI_IDLE_MS = 90_000;
-const WALK_TUI_TIMEOUT_MS = 30 * 60_000;
+// spawn. The thresholds and their rationale live in animationWorkflow.js, shared
+// with every other animation track, so raising the lull tolerance can't fix one
+// render path and leave the rest reaping early. Local aliases keep the ~6 call
+// sites (including RENDER_STALE_MS below) reading as walk's own.
+const WALK_TUI_IDLE_MS = GROK_TUI_IDLE_MS;
+const WALK_TUI_TIMEOUT_MS = GROK_TUI_TIMEOUT_MS;
 
 const selectionRelPath = (id) => `walk/${id}-walk-selection-v1.json`;
 // Exported: atlas.js (phase 4) reads the finalized walk set as compile input.
@@ -899,17 +905,6 @@ async function setWalkTargetImpl(recordId, { frameCount, fps }) {
  */
 export { resolveChromaKey } from './animationWorkflow.js';
 
-/**
- * The locked directional anchor for a direction, or null. Third copy of this
- * `.find` + locked/path pair when it was extracted (generate, approve, and the
- * regenerability probe below all ask the same question), and the definition of
- * "usable anchor" drifting between them is how a gate ends up promising a render
- * the render path then refuses.
- */
-const lockedAnchorFor = (manifest, direction) => {
-  const anchor = manifest?.anchors?.find((a) => a.direction === direction);
-  return anchor?.status === 'locked' && anchor.path ? anchor : null;
-};
 
 /**
  * Whether a fresh walk render is possible for ONE direction: its anchor must be
@@ -1069,24 +1064,12 @@ async function startWalkGenerationImpl(recordId, body) {
   // Completion re-enters the tail via attachTuiWalkResult; errors are captured
   // onto the run record (no request lifecycle to bubble to).
   runWalkTuiRender(recordId, {
-    runId, direction, grokPath, task: buildWalkTuiTask({ prompt, inputAbs, videoAbs, duration }),
+    runId, direction, grokPath, task: buildGrokI2vTask({ prompt, inputAbs, videoAbs, duration }),
     generatedAbs, videoAbs,
   }).catch((err) => console.error(`❌ sprite walk grok-tui render crashed ${recordId}/${runId}: ${err?.message || err}`));
 
   console.log(`🚶 sprite walk grok-tui render started ${recordId}/${runId} (shell session ${runId})`);
   return { runId, direction, duration, shellSession: runId };
-}
-
-// The single-turn TUI task: reuse the shared motion/matte prompt, then point
-// grok at the concrete input path and the exact MP4 output path. executeTuiRun
-// wraps this with its "write your final response to the response file when done"
-// instruction, so grok saves the MP4 first and its completion signal is the
-// response file (with the long idle threshold as a backstop).
-function buildWalkTuiTask({ prompt, inputAbs, videoAbs, duration }) {
-  return `${prompt}\n\n`
-    + `Use your built-in image_to_video tool to animate the image at this exact path for ${duration} seconds:\n${inputAbs}\n\n`
-    + `Save the resulting animation as an MP4 file at exactly this path:\n${videoAbs}\n\n`
-    + 'Do not create or modify any other files, and do not run any tools beyond what is needed to render and save that MP4.';
 }
 
 /**
@@ -1096,9 +1079,7 @@ function buildWalkTuiTask({ prompt, inputAbs, videoAbs, duration }) {
  * outcome from whether the directed MP4 actually landed on disk.
  */
 async function runWalkTuiRender(recordId, { runId, direction, grokPath, task, generatedAbs, videoAbs }) {
-  // args:[] is intentional — buildTuiInvocation → applyCommandDefaults routes a
-  // grok command through ensureGrokTuiArgs (adds --permission-mode bypassPermissions).
-  const provider = { id: GROK_TUI_ID, type: 'tui', command: grokPath || 'grok', args: [] };
+  const provider = grokTuiProvider(grokPath);
   await executeTuiRun({
     runId,
     provider,
@@ -1884,10 +1865,40 @@ export function invalidateWalkDirectionForAnchorRevision(recordId, { direction }
 export async function unlockDirectionalAnchor(recordId, { direction }) {
   await assertReferenceAnchorUnlockable(recordId, { direction });
   const walkInvalidated = await invalidateWalkDirectionForAnchorRevision(recordId, { direction });
-  const scannerInvalidated = await invalidateTrackDirectionForAnchorRevision(SCANNER_TRACK, recordId, { direction });
+  const tracksInvalidated = await invalidateAnchorDependentTracks(recordId, direction);
   const reference = await unlockReferenceAnchor(recordId, { direction });
-  return { ...reference, walkInvalidated, scannerInvalidated };
+  return { ...reference, walkInvalidated, ...tracksInvalidated };
 }
+
+/**
+ * Drop every non-walk track's approval for one facing, because the anchor those
+ * clips were rendered from is being reopened.
+ *
+ * Iterates the registry rather than naming `scanner`: a stale approved clip whose
+ * source image no longer exists would let the atlas compile frames drawn from it,
+ * so leaving a second anchor-seeded track out of this loop is silent bad pixels
+ * in a published atlas with no error anywhere. Only anchor-seeded tracks are
+ * affected — a main-seeded one has no dependency on a directional anchor.
+ *
+ * Returns `{ tracksInvalidated: { <trackId>: bool }, scannerInvalidated }`; the
+ * scalar is kept because `ReferenceWorkflow.jsx` and the route tests read it.
+ */
+async function invalidateAnchorDependentTracks(recordId, direction) {
+  const tracksInvalidated = {};
+  for (const row of anchorSeededTracks()) {
+    // eslint-disable-next-line no-await-in-loop -- ordered: each track's selection write settles before the next
+    tracksInvalidated[row.id] = await invalidateTrackDirectionForAnchorRevision(row.id, recordId, { direction });
+  }
+  return { tracksInvalidated, scannerInvalidated: tracksInvalidated[SCANNER_TRACK] ?? false };
+}
+
+/**
+ * Every non-walk track seeded from a directional anchor — the ones a reference
+ * anchor revision invalidates. Walk is excluded because it owns its own
+ * invalidation path above.
+ */
+const anchorSeededTracks = () => Object.values(ANIMATION_TRACKS)
+  .filter((row) => row.id !== WALK_TRACK && sourceReferenceFor(row.id) === 'anchor');
 
 /**
  * Reopen the main (south) reference and invalidate only animations conditioned
@@ -1897,9 +1908,9 @@ export async function unlockMainReference(recordId) {
   await assertReferenceMainUnlockable(recordId);
   const direction = 'south';
   const walkInvalidated = await invalidateWalkDirectionForAnchorRevision(recordId, { direction });
-  const scannerInvalidated = await invalidateTrackDirectionForAnchorRevision(SCANNER_TRACK, recordId, { direction });
+  const tracksInvalidated = await invalidateAnchorDependentTracks(recordId, direction);
   const reference = await unlockReferenceMain(recordId);
-  return { ...reference, walkInvalidated, scannerInvalidated };
+  return { ...reference, walkInvalidated, ...tracksInvalidated };
 }
 
 /**
@@ -1913,9 +1924,21 @@ export async function unlockMainReference(recordId) {
 export async function unlockTurnaroundReference(recordId) {
   await assertReferenceTurnaroundUnlockable(recordId);
   const walkInvalidatedDirections = await invalidateWalkForTurnaroundRevision(recordId);
-  const scannerInvalidatedDirections = await invalidateTrackForTurnaroundRevision(SCANNER_TRACK, recordId);
+  // Same registry sweep as the per-anchor path, across every facing: a
+  // regenerated turnaround resets the whole identity chain, so no anchor-seeded
+  // track may keep an approval descended from the old sheet.
+  const tracksInvalidatedDirections = {};
+  for (const row of anchorSeededTracks()) {
+    // eslint-disable-next-line no-await-in-loop -- ordered: each track's selection write settles before the next
+    tracksInvalidatedDirections[row.id] = await invalidateTrackForTurnaroundRevision(row.id, recordId);
+  }
   const reference = await unlockReferenceTurnaround(recordId);
-  return { ...reference, walkInvalidatedDirections, scannerInvalidatedDirections };
+  return {
+    ...reference,
+    walkInvalidatedDirections,
+    tracksInvalidatedDirections,
+    scannerInvalidatedDirections: tracksInvalidatedDirections[SCANNER_TRACK] ?? [],
+  };
 }
 
 function invalidateWalkForTurnaroundRevision(recordId) {

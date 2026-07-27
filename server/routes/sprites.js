@@ -169,23 +169,22 @@ router.get('/:id', asyncHandler(async (req, res) => {
   // as `kind === 'character'` would have left the UI blank for exactly the
   // records the registry had just admitted.
   const { kind } = detail.record;
+  const kindTracks = tracksForKind(kind);
   const runsWalk = kindSupportsTrack(kind, WALK_TRACK);
   // Every non-walk track this record's kind may carry, resolved from the registry
   // (#3136) instead of one hand-written `runsScanner`/`runsAmbient` flag per
-  // track. `definition` rides along so the client renders a track's label and
-  // bounds from the row rather than mirroring them as component copy — which is
-  // what lets ONE workflow component serve a track the client has never heard of.
-  const genericTracks = tracksForKind(kind).filter((row) => row.id !== WALK_TRACK);
+  // track. Each state carries its own `definition` (the registry row), so the
+  // client renders a track's label, facing count and bounds from data rather than
+  // mirroring them as component copy — which is what lets ONE workflow component
+  // serve a track the client has never heard of.
+  const genericTracks = kindTracks.filter((row) => row.id !== WALK_TRACK);
   const [reference, walk, atlas, ...trackStates] = await Promise.all([
-    tracksForKind(kind).length ? getReferenceSet(req.params.id) : null,
+    kindTracks.length ? getReferenceSet(req.params.id) : null,
     runsWalk ? getWalkState(req.params.id) : null,
-    tracksForKind(kind).length ? getAtlasState(req.params.id) : null,
+    kindTracks.length ? getAtlasState(req.params.id) : null,
     ...genericTracks.map((row) => getTrackState(row.id, req.params.id)),
   ]);
-  const tracks = Object.fromEntries(genericTracks.map((row, index) => [
-    row.id,
-    { ...trackStates[index], definition: row },
-  ]));
+  const tracks = Object.fromEntries(genericTracks.map((row, index) => [row.id, trackStates[index]]));
   res.json({ ...detail, reference, walk, tracks, atlas });
 }));
 

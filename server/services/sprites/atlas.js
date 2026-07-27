@@ -51,7 +51,8 @@ import {
 } from './walkPostprocess.js';
 import { ATLAS_IDLE_COLUMN } from './walkBounds.js';
 import {
-  WALK_TRACK, SCANNER_TRACK, AMBIENT_TRACK, ANIMATION_TRACK_IDS, kindSupportsTrack, getAnimationTrack,
+  WALK_TRACK, SCANNER_TRACK, AMBIENT_TRACK, ANIMATION_TRACK_IDS,
+  kindSupportsTrack, getAnimationTrack, primaryTrackForKind,
 } from './animationTracks.js';
 import {
   buildAtlasGrid, resolveTrackUniformity, compiledGridUpToDate, trackDirections,
@@ -266,8 +267,12 @@ function sharedRowPasteX(anchoredX, boundsList, geometry) {
  */
 export async function validateForCompile(recordId) {
   const recordForTrack = await getRecord(recordId);
-  if (recordForTrack && kindSupportsTrack(recordForTrack.kind, AMBIENT_TRACK)
-    && !kindSupportsTrack(recordForTrack.kind, WALK_TRACK)) {
+  // Which evidence chain a record compiles through follows its PRIMARY track —
+  // the one whose finalized set it can't publish without. Asked of the registry
+  // (`primaryTrackForKind`) rather than spelled as "ambient-and-not-walk", so it
+  // is the same definition `spriteRuntimeContractSchema` requires a frame count
+  // for; the two used to agree only by coincidence.
+  if (recordForTrack && primaryTrackForKind(recordForTrack.kind)?.id === AMBIENT_TRACK) {
     return validateAmbientForCompile(recordId, recordForTrack);
   }
   // Every hashed input is read exactly once: verify the bytes in memory and

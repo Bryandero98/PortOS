@@ -22,6 +22,10 @@
  * and set-level targets that no other track has, and folding those in would make
  * this module the union of every track's features rather than their intersection.
  *
+ * Note `sourceReference` is DERIVED (`sourceReferenceFor`) rather than a row
+ * field: only one pairing with `directional` can work, so declaring it would let
+ * a row claim a combination that renders the same clip for every facing.
+ *
  * **On-disk compatibility is exact, not approximate.** Every path, `kind`
  * string, run field, error code and message this writes is byte-identical to
  * what the two clones wrote, because installs already hold approved scanner sets
@@ -45,40 +49,38 @@ import { resolveGrokDuration } from '../../lib/grokVideoClip.js';
 import { getSettings } from '../settings.js';
 import { getRecord } from './records.js';
 import { requireTrack, loadManifest } from './reference.js';
-import { SPRITE_DIRECTIONS, anchorIdForDirection } from './prompts.js';
+import { anchorIdForDirection } from './prompts.js';
 import { buildTrackVideoPrompt } from './trackPrompts.js';
-import { clampTrackFrameCount, clampTrackFps, getAnimationTrack } from './animationTracks.js';
+import { clampTrackFrameCount, clampTrackFps, getAnimationTrack, sourceReferenceFor } from './animationTracks.js';
+import { trackDirections } from './atlasGrid.js';
 import { spriteDir, resolveSpriteAssetPath, SOURCE_CLIP_NAME } from './paths.js';
 import { prepareWalkAnchorChromaInput, runWalkPostprocess } from './walkPostprocess.js';
 import { verifyPackagedFrames } from './walkFrames.js';
-import { resolveChromaKey, withAnimationWriteTail } from './animationWorkflow.js';
+import {
+  resolveChromaKey, withAnimationWriteTail, lockedAnchorFor, lockedMainFor,
+  GROK_TUI_IDLE_MS, GROK_TUI_TIMEOUT_MS, grokTuiProvider, buildGrokI2vTask,
+} from './animationWorkflow.js';
 
 const RUN_RECORD_NAME = 'animation-run.json';
-const TUI_IDLE_MS = 90_000;
-const TUI_TIMEOUT_MS = 30 * 60_000;
-
-/**
- * The single atlas row a non-directional track occupies.
- *
- * Row 0 of the grid is `SPRITE_DIRECTIONS[0]`, and `trackDirections()` already
- * slices exactly that entry for a non-directional track — so this reads the
- * facing list rather than restating `'south'`, keeping the authoring side and
- * the compile side derived from one list. The ambient clone hardcoded the
- * literal; the value is identical.
- */
-const nonDirectionalRow = () => SPRITE_DIRECTIONS[0];
 
 /**
  * The facings a track is authored across: every direction for a directional
- * track, the single row 0 for a non-directional one. This is the authoring twin
- * of `atlasGrid.trackDirections` — kept here rather than imported because
- * atlasGrid reaches the grid/compile layer, and the authoring side needs only
- * the registry's `directional` flag.
+ * track, the single row 0 for a non-directional one.
+ *
+ * `trackDirections` (atlasGrid) is the ONE definition of that slice, shared with
+ * the compiler — which matters because the count decides both when a set freezes
+ * (and what `directionOrder` it writes) and how many rows the compiler will
+ * accept. Two derivations of one registry field is exactly the drift
+ * `trackDirections`'s own header says it exists to prevent.
  */
-export function trackAuthoringDirections(trackId) {
-  const row = getAnimationTrack(trackId);
-  return row.directional ? [...SPRITE_DIRECTIONS] : [nonDirectionalRow()];
-}
+export const trackAuthoringDirections = (trackId) => trackDirections(trackId);
+
+/**
+ * The one facing a non-directional track is authored at — its own single row,
+ * read off the same slice rather than restated as `'south'`, so the authoring
+ * side and the compiled grid can never disagree about which row that is.
+ */
+const soleDirectionOf = (trackId) => trackAuthoringDirections(trackId)[0];
 
 // The on-disk layout, per track. `<track>/` subdirectory and `-<track>-` infix,
 // which is exactly what scanner.js and ambient.js each spelled for themselves.
@@ -127,52 +129,62 @@ async function trackRuns(trackId, recordId) {
 }
 
 /**
- * The track's authoring state: `{ track, bounds, selection, set, runs }`.
+ * The track's authoring state: `{ track, definition, selection, set, runs }`.
  *
- * `set` is the generic key. The route layer additionally aliases it to the
- * historical per-track key (`scannerSet` / `ambientSet`) so an existing client
- * keeps reading the field it always did — see `routes/sprites.js`.
+ * `definition` is the registry row, shipped so the client renders the track's
+ * label, facing count, and bounds from data instead of mirroring them as
+ * component copy — that is what lets one component serve a track it has never
+ * heard of. `set` is the finalized-set key for every track; the old per-track
+ * spellings (`scannerSet`/`ambientSet`) went away with the clones.
  */
 export async function getTrackState(trackId, recordId) {
   const row = getAnimationTrack(trackId);
   const [selection, set, runs] = await Promise.all([
     loadSelection(row.id, recordId), loadSet(row.id, recordId), trackRuns(row.id, recordId),
   ]);
-  return { track: row.id, bounds: row, selection, set, runs };
+  return { track: row.id, definition: row, selection, set, runs };
 }
 
 /**
- * The locked reference image this track's render is seeded from, or null.
+ * Everything about the locked reference this track's render is seeded from — both
+ * when it exists and when it doesn't.
  *
- * Two shapes behind one resolver so the caller never branches on
- * `sourceReference`: a directional track reads THIS facing's locked anchor, a
- * non-directional one reads the single locked main. `label` is what the
- * "lock it first" 409 names, so the message points at the artifact the row
- * actually asked for.
+ * ONE resolver so no caller ever branches on the source shape again. It returns
+ * the artifact's `label`, the error `code`s to use when it isn't locked or has
+ * vanished from disk, and — when it IS locked — its `path`/`sha256`/`inputName`.
+ * Returning the label and codes unconditionally is the point: the "lock it first"
+ * 409 and the "missing on disk" 500 both need to name the artifact the row asked
+ * for, and re-deriving that name at each throw site is how three of them ended up
+ * spelling the anchor's name three different ways.
+ *
+ * `locked` is the sentinel: absent means nothing is frozen yet, which is a
+ * different answer from "frozen but gone", handled by the caller's disk check.
  */
-function lockedSourceFor(row, manifest, direction) {
-  if (row.sourceReference === 'main') {
-    const main = manifest?.mainReference;
-    return main?.locked && main.path
-      ? { path: main.path, sha256: main.sha256 || null, label: 'main reference', inputName: 'input-main-chroma.png' }
-      : null;
+function trackSourceFor(row, manifest, direction) {
+  if (sourceReferenceFor(row.id) === 'main') {
+    const main = lockedMainFor(manifest);
+    return {
+      label: 'main reference',
+      notLockedCode: 'MAIN_NOT_LOCKED',
+      missingCode: 'MAIN_REFERENCE_MISSING',
+      inputName: 'input-main-chroma.png',
+      locked: main ? { path: main.path, sha256: main.sha256 || null } : null,
+    };
   }
-  const anchor = manifest?.anchors?.find((item) => item.direction === direction);
-  return anchor?.status === 'locked' && anchor.path
-    ? {
-      path: anchor.path,
-      sha256: anchor.sha256 || null,
-      label: `${anchorIdForDirection(direction)} anchor`,
-      inputName: 'input-anchor-chroma.png',
-    }
-    : null;
+  const anchor = lockedAnchorFor(manifest, direction);
+  return {
+    label: `${anchorIdForDirection(direction)} anchor`,
+    notLockedCode: 'ANCHOR_NOT_LOCKED',
+    missingCode: 'ANCHOR_MISSING',
+    inputName: 'input-anchor-chroma.png',
+    locked: anchor ? { path: anchor.path, sha256: anchor.sha256 || null } : null,
+  };
 }
 
-// The provider task wrapper — identical in both clones, verbatim.
-const trackTask = ({ prompt, inputAbs, videoAbs, duration }) => (
-  `${prompt}\n\nUse your built-in image_to_video tool to animate this exact image for ${duration} seconds:\n${inputAbs}\n\n`
-  + `Save the resulting animation as an MP4 file at exactly this path:\n${videoAbs}\n\n`
-  + 'Do not create or modify any other files, and do not run any tools beyond what is needed to render and save that MP4.'
+/** The 409 for a render/approval whose source reference isn't frozen yet. */
+const notLockedError = (source, row, verb) => new ServerError(
+  `Lock the ${source.label} before ${verb} its ${row.label.toLowerCase()}`,
+  { status: 409, code: source.notLockedCode },
 );
 
 export function startTrackGeneration(trackId, recordId, body) {
@@ -188,14 +200,9 @@ async function startTrackGenerationImpl(trackId, recordId, body) {
   // A non-directional track occupies exactly row 0, so its facing is derived
   // from the registry rather than accepted from the request — no user-supplied
   // direction can drift from what `trackDirections()` will later compile.
-  const direction = row.directional ? body.direction : nonDirectionalRow();
-  const source = lockedSourceFor(row, reference, direction);
-  if (!source) {
-    throw new ServerError(
-      `Lock the ${source?.label || (row.sourceReference === 'main' ? 'main reference' : `${anchorIdForDirection(direction)} anchor`)} before generating its ${row.label.toLowerCase()}`,
-      { status: 409, code: row.sourceReference === 'main' ? 'MAIN_NOT_LOCKED' : 'ANCHOR_NOT_LOCKED' },
-    );
-  }
+  const direction = row.directional ? body.direction : soleDirectionOf(row.id);
+  const source = trackSourceFor(row, reference, direction);
+  if (!source.locked) throw notLockedError(source, row, 'generating');
   const chromaKey = resolveChromaKey({ manifest: reference, record });
   if (!chromaKey) throw new ServerError('No frozen chroma key is available for this sprite', { status: 409, code: 'CHROMA_KEY_REQUIRED' });
   // In-flight guard, per facing for a directional track and per record for a
@@ -225,11 +232,11 @@ async function startTrackGenerationImpl(trackId, recordId, body) {
   const runRel = runRelPath(runId);
   const generatedAbs = join(spriteDir(recordId), runRel, 'generated');
   await ensureDir(generatedAbs);
-  const sourceAbs = resolveSpriteAssetPath(recordId, source.path);
+  const sourceAbs = resolveSpriteAssetPath(recordId, source.locked.path);
   if (!await pathExists(sourceAbs)) {
     throw new ServerError(
       `Locked ${source.label} file is missing on disk`,
-      { status: 500, code: row.sourceReference === 'main' ? 'MAIN_REFERENCE_MISSING' : 'ANCHOR_MISSING' },
+      { status: 500, code: source.missingCode },
     );
   }
   const inputAbs = join(generatedAbs, source.inputName);
@@ -255,8 +262,8 @@ async function startTrackGenerationImpl(trackId, recordId, body) {
     // `anchorPath`/`anchorSha256` name the SOURCE reference whatever it was —
     // the ambient clone already used these keys for the main reference, and the
     // approve gate's staleness check reads them, so the spelling stays.
-    anchorPath: source.path,
-    anchorSha256: source.sha256 || await sha256File(sourceAbs),
+    anchorPath: source.locked.path,
+    anchorSha256: source.locked.sha256 || await sha256File(sourceAbs),
     animationInputPath: `${runRel}/generated/${source.inputName}`,
     animationInputSha256: inputSha256,
     animationInputPreparation: preparation,
@@ -270,7 +277,7 @@ async function startTrackGenerationImpl(trackId, recordId, body) {
     generatedAbs,
     videoAbs,
     grokPath: settings.imageGen?.grok?.grokPath,
-    task: trackTask({
+    task: buildGrokI2vTask({
       prompt: buildTrackVideoPrompt(row.id, {
         name: record.name, kind: record.kind, direction, chromaKey, correctionPrompt,
       }),
@@ -288,11 +295,11 @@ async function startTrackGenerationImpl(trackId, recordId, body) {
 async function runTrackTuiRender(row, recordId, { runId, direction, generatedAbs, videoAbs, grokPath, task }) {
   await executeTuiRun({
     runId,
-    provider: { id: GROK_TUI_ID, type: 'tui', command: grokPath || 'grok', args: [] },
+    provider: grokTuiProvider(grokPath),
     prompt: task,
     workspacePath: generatedAbs,
-    idleMs: TUI_IDLE_MS,
-    timeout: TUI_TIMEOUT_MS,
+    idleMs: GROK_TUI_IDLE_MS,
+    timeout: GROK_TUI_TIMEOUT_MS,
     label: row.directional ? `sprite ${row.id} ${recordId}/${direction}` : `sprite ${row.id} ${recordId}`,
   }).catch((err) => console.error(`❌ sprite ${row.id} grok-tui run failed ${recordId}/${runId}: ${err?.message || err}`));
   await withAnimationWriteTail(recordId, () => attachTrackTuiResult(row.id, recordId, runId, videoAbs));
@@ -324,8 +331,8 @@ async function packageTrackRun(row, recordId, run) {
   // hence the try/catch, per the CLAUDE.md boundary exception.
   try {
     const [reference, record] = await Promise.all([loadManifest(recordId), getRecord(recordId)]);
-    const source = lockedSourceFor(row, reference, run.direction);
-    if (!source) throw new Error(`No locked ${row.sourceReference === 'main' ? 'main reference' : `${run.direction} anchor`} in the reference manifest`);
+    const source = trackSourceFor(row, reference, run.direction);
+    if (!source.locked) throw new Error(`No locked ${source.label} in the reference manifest`);
     const chromaKey = resolveChromaKey({ manifest: reference, record, run });
     if (!chromaKey) throw new Error(`No chroma key is available for the ${row.label.toLowerCase()} matte`);
     const runRel = runRelPath(run.id);
@@ -336,8 +343,8 @@ async function packageTrackRun(row, recordId, run) {
       chromaKey,
       runAbs: join(spriteDir(recordId), runRel),
       runRel,
-      anchorRel: source.path,
-      anchorAbs: resolveSpriteAssetPath(recordId, source.path),
+      anchorRel: source.locked.path,
+      anchorAbs: resolveSpriteAssetPath(recordId, source.locked.path),
       videoAbs: resolveSpriteAssetPath(recordId, run.sourceVideoPath),
       frameCount: clampTrackFrameCount(run.frameCount, row.id),
       fps: clampTrackFps(run.fps, row.id),
@@ -364,7 +371,7 @@ async function approveTrackRunImpl(trackId, recordId, { direction: requested, ru
   const row = getAnimationTrack(trackId);
   await requireTrack(recordId, row.id);
   if (await loadSet(row.id, recordId)) throw setFinalError(row);
-  const direction = row.directional ? requested : nonDirectionalRow();
+  const direction = row.directional ? requested : soleDirectionOf(row.id);
   const label = row.label.toLowerCase();
   const run = await loadRun(recordId, runId);
   if (!run || run.track !== row.id) throw new ServerError(`Unknown ${label} run: ${runId}`, { status: 404, code: 'RUN_NOT_FOUND' });
@@ -373,15 +380,11 @@ async function approveTrackRunImpl(trackId, recordId, { direction: requested, ru
   const [reference, packaged] = await Promise.all([
     loadManifest(recordId), readJSONFile(resolveSpriteAssetPath(recordId, run.postprocessManifest), null),
   ]);
-  const source = lockedSourceFor(row, reference, direction);
-  if (!source) {
-    throw new ServerError(
-      `Lock the ${row.sourceReference === 'main' ? 'main reference' : `${anchorIdForDirection(direction)} anchor`} before approving its ${label}`,
-      { status: 409, code: row.sourceReference === 'main' ? 'MAIN_NOT_LOCKED' : 'ANCHOR_NOT_LOCKED' },
-    );
-  }
+  const source = trackSourceFor(row, reference, direction);
+  if (!source.locked) throw notLockedError(source, row, 'approving');
   if (run.anchorSha256) {
-    const currentSha256 = source.sha256 || await sha256File(resolveSpriteAssetPath(recordId, source.path));
+    const currentSha256 = source.locked.sha256
+      || await sha256File(resolveSpriteAssetPath(recordId, source.locked.path));
     if (run.anchorSha256 !== currentSha256) {
       throw new ServerError(
         `This ${label} was rendered from an older ${source.label} — generate it again from the current reference`,

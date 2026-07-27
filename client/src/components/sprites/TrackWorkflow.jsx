@@ -33,11 +33,12 @@ export default function TrackWorkflow({
   const runs = state?.runs || [];
   const selection = state?.selection || null;
   const finalized = Boolean(state?.set);
+  const directional = Boolean(definition?.directional);
   // A directional track fills one card per facing; a non-directional one is the
   // single row 0. Derived from the row, not from the track's id.
   const directions = useMemo(
-    () => (definition?.directional ? SPRITE_DIRECTIONS : [SPRITE_DIRECTIONS[0]]),
-    [definition?.directional],
+    () => (directional ? SPRITE_DIRECTIONS : [SPRITE_DIRECTIONS[0]]),
+    [directional],
   );
   const latestByDirection = useMemo(() => Object.fromEntries(directions.map((direction) => [
     direction,
@@ -53,7 +54,7 @@ export default function TrackWorkflow({
 
   const [approve, approving] = useAsyncAction(async (direction, runId) => {
     await approveSpriteTrack(record.id, definition.id, { direction, runId }, { silent: true });
-    toast.success(`${definition.label} ${directions.length > 1 ? `${direction} ` : ''}approved`);
+    toast.success(`${definition.label} ${directional ? `${direction} ` : ''}approved`);
     onChanged();
   }, { errorMessage: `${definition?.label || 'Track'} approval failed` });
 
@@ -66,8 +67,7 @@ export default function TrackWorkflow({
   if (!definition || !reference?.manifest?.mainReference?.locked) return null;
   const approvedCount = Object.values(selection?.directions || {})
     .filter((entry) => entry?.status === 'approved').length;
-  // The row's own bounds, so the summary can't drift from what the server clamps.
-  const Icon = definition.directional ? Radio : Wind;
+  const Icon = directional ? Radio : Wind;
 
   return (
     <section className="bg-port-card border border-port-border rounded-lg p-4 space-y-3">
@@ -81,14 +81,17 @@ export default function TrackWorkflow({
         </h3>
         <span className="text-[11px] text-gray-500">directly requested Grok render; local deterministic packing</span>
       </div>
-      <div className={`grid gap-2 ${directions.length > 1 ? 'sm:grid-cols-2 xl:grid-cols-4' : ''}`}>
+      <div className={`grid gap-2 ${directional ? 'sm:grid-cols-2 xl:grid-cols-4' : ''}`}>
         {directions.map((direction) => {
           const run = latestByDirection[direction];
           const approved = selection?.directions?.[direction]?.status === 'approved';
           const busy = ['rendering', 'postprocessing'].includes(run?.status);
           const candidate = run?.status === 'candidate';
           const preview = run?.stripPreview;
-          const cardLabel = directions.length > 1 ? direction : `${definition.label} row 0`;
+          const cardLabel = directional ? direction : `${definition.label} row 0`;
+          // The shared page-owned corrections map's key for THIS card (#3134,
+          // generalized per track+facing in #3136).
+          const correctionKey = trackCorrectionKey(definition.id, direction);
           return (
             <article key={direction} className="rounded border border-port-border bg-port-bg p-2 space-y-2">
               <div className="flex items-center justify-between gap-2">
@@ -116,7 +119,7 @@ export default function TrackWorkflow({
                       keyed per track+facing (#3136). */}
                   {onCorrectionChange && (
                     <CorrectionNoteToggle
-                      noteKey={trackCorrectionKey(definition.id, direction)}
+                      noteKey={correctionKey}
                       label={`${cardLabel} ${definition.label.toLowerCase()}`}
                       corrections={corrections}
                       onChange={onCorrectionChange}
@@ -127,7 +130,16 @@ export default function TrackWorkflow({
                     <button
                       type="button"
                       disabled={busy}
-                      onClick={() => onGenerate(definition.id, direction)}
+                      // Both the request `direction` (only a directional track
+                      // sends one — a single-row track's facing is derived
+                      // server-side) and the note key are decided HERE, where the
+                      // definition and the facing already are, so the page's
+                      // handler needs no per-track lookup and stays stable across
+                      // the 4s poll that replaces `detail` wholesale.
+                      onClick={() => onGenerate(definition.id, {
+                        direction: directional ? direction : undefined,
+                        correctionKey,
+                      })}
                       className="flex-1 rounded border border-port-border px-2 py-1 text-xs text-gray-300 hover:border-port-accent disabled:opacity-50"
                     >
                       {busy ? <RefreshCw className="mx-auto w-3 h-3 animate-spin" /> : run?.status === 'error' ? 'Retry' : 'Generate'}

@@ -190,7 +190,7 @@ describe('PublishWorkflow runtime contract', () => {
       <MemoryRouter>
         <PublishWorkflow
           record={{ id: 'example-tree', publishBinding: { appId: 'app-1', atlasDestPath: 'assets/tree.png', codeBinding: null } }}
-          ambient={{ ambientSet: {} }}
+          ambient={{ set: {} }}
           atlas={ambientAtlas}
           onChanged={vi.fn()}
         />

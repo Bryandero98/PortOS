@@ -6,7 +6,7 @@ import { SPRITE_ID_PATTERN, SPRITE_RECORD_KINDS } from '../services/sprites/reco
 import { ANCHOR_DIRECTIONS, SPRITE_DIRECTIONS, TURNAROUND_ID } from '../services/sprites/prompts.js';
 import { CHROMA_KEY_HEXES } from '../services/sprites/chromaKey.js';
 import {
-  WALK_TRACK, ANIMATION_TRACK_IDS, getAnimationTrack, tracksForKind,
+  WALK_TRACK, ANIMATION_TRACK_IDS, getAnimationTrack,
 } from '../services/sprites/animationTracks.js';
 import { QUEUEABLE_IMAGE_MODES } from '../services/imageGen/modes.js';
 import { GROK_VIDEO_DURATIONS } from './grokVideoClip.js';
@@ -1061,23 +1061,13 @@ const spriteTrackContractFields = Object.fromEntries(
 
 // The tracks whose frame count is enough ON ITS OWN to make a contract
 // meaningful — a record can't be published without one of these authored, so a
-// contract that pins none of them describes no atlas that could ever exist.
-//
-// The discriminator is PRIMACY: a track is primary when it is the first
-// registered track for at least one record kind it supports. Walk is a
-// character's primary (`tracksForKind('character')` leads with it) and ambient is
-// a place/object's; scanner is a character's SECOND track — a short action that
-// always rides beside the walk it shares a row with, so `scannerFrameCount`
-// alone was never a publishable contract. That reproduces the historical
-// "walkFrameCount or ambientFrameCount" rule exactly while staying true for a
-// user-defined track: one that unlocks a new record kind becomes that kind's
-// primary and joins this set, and a second action on an existing kind doesn't.
-//
-// It also matches the compile side, which requires the primary track's finalized
-// set before it will emit an atlas at all (`atlas.js` — a walk set for a
-// character, an ambient set for a place).
+// contract that pins none of them describes no atlas that could ever exist. The
+// registry DECLARES this per row (`standaloneContract`), which reproduces the
+// historical "walkFrameCount or ambientFrameCount" rule and stays correct for a
+// user-defined track. It is the same field `atlas.js` dispatches its compile
+// evidence chain on, so publish validation and compile can't disagree.
 const SPRITE_STANDALONE_CONTRACT_FIELDS = ANIMATION_TRACK_IDS
-  .filter((id) => getAnimationTrack(id).kinds.some((kind) => tracksForKind(kind)[0]?.id === id))
+  .filter((id) => getAnimationTrack(id).standaloneContract)
   .map((id) => getAnimationTrack(id).contractFrameCountField);
 
 export const spriteRuntimeContractSchema = z.object({
@@ -1259,14 +1249,29 @@ export const spriteWalkGenerateSchema = z.object({
 //     through without a facing — that check reads the same registry the bounds
 //     came from, rather than being restated as a second enum.
 //   - the remaining knobs are already registry-derived.
+const buildSpriteTrackGenerateSchema = (track) => z.object({
+  direction: spriteWalkDirectionSchema.optional(),
+  duration: grokVideoDurationSchema.optional(),
+  frameCount: spriteTrackFrameCountSchema(track).optional(),
+  fps: spriteTrackFpsSchema(track).optional(),
+  correctionPrompt: z.string().max(4000).optional(),
+});
+
+// One schema per registered track, built at module load — the same
+// derive-from-the-registry idiom `spriteTrackContractFields` uses, rather than
+// re-allocating six Zod objects on every generate request.
+const SPRITE_TRACK_GENERATE_SCHEMAS = Object.fromEntries(
+  ANIMATION_TRACK_IDS.map((id) => [id, buildSpriteTrackGenerateSchema(id)]),
+);
+
+/**
+ * The generate schema for one track. Unregistered ids build on demand so the
+ * unknown-track error still comes from `getAnimationTrack` (naming the known
+ * tracks) rather than reading as "no schema" — though the route validates
+ * `trackId` against the registry first, so that path is defense in depth.
+ */
 export function spriteTrackGenerateSchema(track) {
-  return z.object({
-    direction: spriteWalkDirectionSchema.optional(),
-    duration: grokVideoDurationSchema.optional(),
-    frameCount: spriteTrackFrameCountSchema(track).optional(),
-    fps: spriteTrackFpsSchema(track).optional(),
-    correctionPrompt: z.string().max(4000).optional(),
-  });
+  return SPRITE_TRACK_GENERATE_SCHEMAS[track] || buildSpriteTrackGenerateSchema(track);
 }
 
 export const spriteTrackApproveSchema = z.object({

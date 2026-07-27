@@ -112,7 +112,7 @@ Column layout is the one thing an app genuinely has to agree with PortOS about. 
 
 Two mechanisms guard that:
 
-- **`publishBinding.runtimeContract`** (optional): `{ walkFrameCount?, scannerFrameCount?, ambientFrameCount?, cellSize?, columnCount? }` — the grid the app was built against. A contract names either `walkFrameCount` or `ambientFrameCount` (and may include the other spans); set it from the **Runtime contract** group in the publish binding form or via `PUT /api/sprites/:id/publish-binding` directly. Publishing an atlas whose compiled geometry disagrees fails with a **409** naming both the actual and expected numbers and both resolutions (change the app's constant, or reprocess the relevant set). A binding with no contract publishes unchecked, exactly as before the field existed.
+- **`publishBinding.runtimeContract`** (optional): `{ <track>FrameCount?…, cellSize?, columnCount? }` — the grid the app was built against, with one optional key per registered animation track (`walkFrameCount`, `scannerFrameCount`, `ambientFrameCount` today). A contract must name the record kind's **baseline** track — `walkFrameCount` for a character, `ambientFrameCount` for a place/object — since that is the set the compiler requires before it emits an atlas at all; other tracks' spans are optional additions. set it from the **Runtime contract** group in the publish binding form or via `PUT /api/sprites/:id/publish-binding` directly. Publishing an atlas whose compiled geometry disagrees fails with a **409** naming both the actual and expected numbers and both resolutions (change the app's constant, or reprocess the relevant set). A binding with no contract publishes unchecked, exactly as before the field existed.
 - **The sidecar**, so an app that reads it can fail loudly on its own terms instead of relying on PortOS to have been asked.
 
 `runtimeContract` follows absent-vs-null semantics: a saved binding that omits the key inherits the stored contract (saving the form with the contract group untouched omits it, so the stored contract survives an unrelated edit), while an explicit `null` — what the form's "Clear" sends — clears it. The inheritance is scoped to the same `appId` — re-pointing a character at a different app drops the old app's contract rather than holding the new one to it.
@@ -125,7 +125,7 @@ Two mechanisms guard that:
 |---|---|
 | `server/services/sprites/atlas.js` | Compiles the atlas; owns the geometry block and the pre-pixel up-to-date check |
 | `server/services/sprites/atlasGrid.js` | The grid itself: column spans and row spans per track, within-track uniformity, reading a persisted (or legacy) grid back |
-| `server/services/sprites/animationTracks.js` | One row per animation track — its bounds, defaults, directionality, which record kinds may carry it, and the workflow shape (source reference, on-disk set/selection kinds) |
+| `server/services/sprites/animationTracks.js` | One row per animation track — its bounds, defaults, directionality, which record kinds may carry it, its on-disk set/selection kinds, and whether it is the kind's publishable baseline (`standaloneContract`) |
 | `server/services/sprites/animationTrackWorkflow.js` | The ONE generate/package/review/approve implementation every non-walk track runs, parameterized by its registry row |
 | `server/services/sprites/trackPrompts.js` | Resolves a track id to its image-to-video prompt builder |
 | `server/services/sprites/reference.js` | The two animation gates: `requireCharacter` (walk workflow) and `requireAnimatable` (compile/publish) |

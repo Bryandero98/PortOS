@@ -63,7 +63,9 @@ const { lockReference } = await import('./reference.js');
 const {
   getTrackState, startTrackGeneration, approveTrackRun, trackAuthoringDirections, trackSetRelPath,
 } = await import('./animationTrackWorkflow.js');
-const { getAnimationTrack, SCANNER_TRACK, AMBIENT_TRACK } = await import('./animationTracks.js');
+const {
+  getAnimationTrack, sourceReferenceFor, SCANNER_TRACK, AMBIENT_TRACK,
+} = await import('./animationTracks.js');
 
 let sequence = 0;
 const newId = () => `track-${++sequence}`;
@@ -129,7 +131,9 @@ describe.each(TRACKS)('the generic workflow drives the $id track', (track) => {
     const initial = await getTrackState(track.id, id);
     expect(initial).toMatchObject({
       track: track.id,
-      bounds: {
+      // The row itself rides along so the client renders label/bounds/facing
+      // count from data rather than mirroring them.
+      definition: {
         minFrameCount: row().minFrameCount,
         maxFrameCount: row().maxFrameCount,
         defaultFrameCount: row().defaultFrameCount,
@@ -238,7 +242,7 @@ describe.each(TRACKS)('the generic workflow drives the $id track', (track) => {
     );
     await expect(startTrackGeneration(track.id, id, track.body)).rejects.toMatchObject({
       status: 409,
-      code: row().sourceReference === 'main' ? 'MAIN_NOT_LOCKED' : 'ANCHOR_NOT_LOCKED',
+      code: sourceReferenceFor(track.id) === 'main' ? 'MAIN_NOT_LOCKED' : 'ANCHOR_NOT_LOCKED',
     });
     expect(executeTuiRun).not.toHaveBeenCalled();
   });

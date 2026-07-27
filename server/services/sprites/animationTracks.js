@@ -43,11 +43,12 @@
  * `ambient` each shipped as a ~300-line clone of walk's state/start/package/
  * approve/invalidate stack — identical control flow differing only in which
  * reference image seeds the render, what the on-disk selection/set files are
- * called, and which prompt text goes to the provider. Those three differences
- * are now FIELDS on the row (`sourceReference`, `selectionKind`/`setKind`, and
- * the workflow's prompt builder key), and `animationTrackWorkflow.js` is the one
- * implementation both drive. A user-defined track is therefore a row plus a
- * prompt template — no new service module, no new routes.
+ * called, and which prompt text goes to the provider. Those differences are now
+ * either FIELDS on the row (`selectionKind`/`setKind`) or derived from one
+ * (`directional` decides both the facing count and which locked reference seeds
+ * the render), and `animationTrackWorkflow.js` is the one implementation both
+ * drive. A user-defined track is therefore a row plus a prompt template — no new
+ * service module, no new routes.
  */
 
 /** The default track — the only one that exists today. */
@@ -56,15 +57,6 @@ export const WALK_TRACK = 'walk';
 export const SCANNER_TRACK = 'scanner';
 /** The first non-directional environment loop (#3045). */
 export const AMBIENT_TRACK = 'ambient';
-
-/**
- * The locked reference artifacts a track's image-to-video render may be seeded
- * from (#3136). A closed set: the generic workflow dispatches on it to decide
- * which lock to require and which file to hand the provider, so an unrecognized
- * spelling is a boot failure rather than a render that 409s on an artifact
- * nothing declared.
- */
-export const SOURCE_REFERENCES = Object.freeze(['anchor', 'main']);
 
 /**
  * Every known animation track.
@@ -85,11 +77,6 @@ export const SOURCE_REFERENCES = Object.freeze(['anchor', 'main']);
  *   the app rung of the precedence chain is track-driven rather than hard-coded
  *   to `walkFrameCount`. `contractFpsField` may be `null` for a track whose
  *   speed an app has no say in.
- * - `sourceReference` (#3136) — which locked reference image the i2v render is
- *   seeded from: `'anchor'` (this facing's locked directional anchor) or
- *   `'main'` (the one locked main reference). A directional track needs a per
- *   facing anchor; a non-directional one has only the main to work from, which
- *   is why the two clones differed on this line and nowhere else structurally.
  * - `selectionKind` / `setKind` (#3136) — the `kind` discriminators the track's
  *   on-disk review selection and finalized set carry. Registry data because the
  *   atlas compiler VALIDATES them (`atlas.js`), so a track's on-disk contract
@@ -97,10 +84,20 @@ export const SOURCE_REFERENCES = Object.freeze(['anchor', 'main']);
  * - `finalErrorCode` (#3136) — the `code` on the 409 a finalized set answers
  *   generate/approve with. Named per row so an existing client that matches on
  *   `SCANNER_SET_FINAL` keeps working after the clone collapsed.
- * - `builtin` (#3136) — true for a row compiled into this module. `walk` is the
- *   mandatory character baseline and can never be removed or edited; the other
- *   rows are ordinary registry data that a later phase moves into a
- *   user-editable store (see #3136's remaining children).
+ * - `standaloneContract` (#3136) — true when this track's frame count is enough
+ *   ON ITS OWN to describe a publishable atlas, because a record can be
+ *   published with only this track authored. Walk (a character's baseline) and
+ *   ambient (a place's) qualify; a short ACTION like scanner always rides beside
+ *   the walk it shares rows with, so pinning only its span describes no atlas
+ *   that could exist. DECLARED rather than inferred from registration order: it
+ *   is a load-bearing publish-validation rule, and #3152 merges rows from a
+ *   user-ordered store where "first row for this kind" would silently change.
+ *
+ * Which locked reference an i2v render is seeded from is DERIVED, not declared:
+ * a directional track renders one clip per facing and so must seed from that
+ * facing's own anchor (`sourceReferenceFor` below), while a non-directional one
+ * has no per-facing anchor and seeds from the single locked main. Stating it as
+ * a field would let a row claim a pairing that cannot work.
  */
 export const ANIMATION_TRACKS = Object.freeze({
   [WALK_TRACK]: Object.freeze({
@@ -128,11 +125,12 @@ export const ANIMATION_TRACKS = Object.freeze({
     // (walk.js — reprocess, trims, per-direction reopen, source-frame
     // extraction, set-level targets), so these describe its on-disk contract
     // for the compiler's benefit without routing it through the generic module.
-    sourceReference: 'anchor',
     selectionKind: 'reviewed-directional-walk-selection',
     setKind: 'finalized-eight-direction-walk-set',
     finalErrorCode: 'WALK_SET_FINAL',
-    builtin: true,
+    // A character publishes off its walk — the compile path requires a finalized
+    // walk set before it emits anything at all.
+    standaloneContract: true,
   }),
   [SCANNER_TRACK]: Object.freeze({
     id: SCANNER_TRACK,
@@ -150,16 +148,16 @@ export const ANIMATION_TRACKS = Object.freeze({
     contractFrameCountField: 'scannerFrameCount',
     // The game owns action timing; PortOS carries fps as preview provenance.
     contractFpsField: null,
-    // Every facing renders from its own locked anchor, so the run is seeded per
-    // direction exactly like walk's.
-    sourceReference: 'anchor',
     // The historical on-disk spellings, kept verbatim: an already-approved
     // scanner set on any install must keep validating after the clone collapsed
     // into the generic workflow, and the compiler matches these exact strings.
     selectionKind: 'reviewed-directional-scanner-selection',
     setKind: 'finalized-eight-direction-scanner-set',
     finalErrorCode: 'SCANNER_SET_FINAL',
-    builtin: true,
+    // A scanner action rides beside the walk it shares atlas rows with — it is
+    // never the only thing a character publishes, so its span alone doesn't
+    // describe an atlas.
+    standaloneContract: false,
   }),
   [AMBIENT_TRACK]: Object.freeze({
     id: AMBIENT_TRACK,
@@ -178,14 +176,12 @@ export const ANIMATION_TRACKS = Object.freeze({
     // Ambient cadence belongs to the consuming app. PortOS keeps fps only as
     // authoring-preview provenance, like scanner.
     contractFpsField: null,
-    // A place has no facing and therefore no directional anchor — its one
-    // locked main reference is both the idle cell and the i2v source. This ONE
-    // field is the whole structural difference the ambient clone existed for.
-    sourceReference: 'main',
     selectionKind: 'reviewed-single-row-ambient-selection',
     setKind: 'finalized-single-row-ambient-set',
     finalErrorCode: 'AMBIENT_SET_FINAL',
-    builtin: true,
+    // A place publishes off its ambient loop — it has no walk, so this IS its
+    // baseline and the compile path requires its finalized set.
+    standaloneContract: true,
   }),
 });
 
@@ -232,33 +228,15 @@ export function assertAnimationTrackRows(tracks) {
     if (row.contractFpsField !== null && (typeof row.contractFpsField !== 'string' || !row.contractFpsField)) {
       throw new Error(`animationTracks: track '${id}' needs a contractFpsField (or null)`);
     }
-    // #3136 — the workflow shape. `sourceReference` is a closed set because the
-    // generic workflow dispatches on it: a third spelling would silently resolve
-    // to no reference at all and every render would 409 "not locked" naming an
-    // artifact the row never asked for.
-    if (!SOURCE_REFERENCES.includes(row.sourceReference)) {
-      throw new Error(
-        `animationTracks: track '${id}' needs a sourceReference of ${SOURCE_REFERENCES.join(' or ')}, got '${String(row.sourceReference)}'`,
-      );
-    }
-    // A directional track renders one clip per facing, so it must seed from that
-    // facing's own anchor — seeding eight directional rows from the single main
-    // reference would render the same south-facing clip eight times and pass
-    // every later check, since the packer never sees which facing it was asked
-    // for. The inverse (a non-directional track pointed at 'anchor') has no
-    // anchor to read: a place record never generates directional anchors at all.
-    const expectedSource = row.directional ? 'anchor' : 'main';
-    if (row.sourceReference !== expectedSource) {
-      throw new Error(
-        `animationTracks: ${row.directional ? 'directional' : 'non-directional'} track '${id}' must seed from the ${expectedSource} reference, not '${row.sourceReference}'`,
-      );
-    }
+    // #3136 — the workflow shape.
     for (const field of ['selectionKind', 'setKind', 'finalErrorCode']) {
       if (typeof row[field] !== 'string' || !row[field]) {
         throw new Error(`animationTracks: track '${id}' needs a non-empty '${field}'`);
       }
     }
-    if (typeof row.builtin !== 'boolean') throw new Error(`animationTracks: track '${id}' needs a boolean 'builtin'`);
+    if (typeof row.standaloneContract !== 'boolean') {
+      throw new Error(`animationTracks: track '${id}' needs a boolean 'standaloneContract'`);
+    }
     // Two tracks sharing a selection/set `kind` is the same class of bug as two
     // sharing a contract field: the compiler validates a set by its `kind`, so a
     // duplicate would let one track's finalized set satisfy the other's evidence
@@ -300,9 +278,63 @@ export function assertAnimationTrackRows(tracks) {
       claimedContractFields.set(field, { id, knob });
     }
   }
+  // Every record kind any row admits must have EXACTLY ONE standalone track —
+  // the baseline it publishes off. Zero means a record of that kind can be
+  // authored but never publish (its runtime contract could name no required
+  // field, and the compiler has no evidence chain to require); more than one
+  // means "which set must be finalized before compiling?" has two answers. This
+  // is a cross-row invariant, so it runs after the per-row loop.
+  const standaloneByKind = new Map();
+  for (const id of Object.keys(tracks)) {
+    if (!tracks[id].standaloneContract) continue;
+    for (const kind of tracks[id].kinds) {
+      standaloneByKind.set(kind, [...(standaloneByKind.get(kind) || []), id]);
+    }
+  }
+  for (const id of Object.keys(tracks)) {
+    for (const kind of tracks[id].kinds) {
+      const owners = standaloneByKind.get(kind) || [];
+      if (owners.length !== 1) {
+        throw new Error(
+          `animationTracks: record kind '${kind}' needs exactly one standaloneContract track, has ${owners.length}${owners.length ? ` (${owners.join(', ')})` : ''}`,
+        );
+      }
+    }
+  }
 }
 
 assertAnimationTrackRows(ANIMATION_TRACKS);
+
+/**
+ * The locked reference artifact a track's image-to-video render is seeded from:
+ * `'anchor'` (this facing's own locked directional anchor) or `'main'` (the one
+ * locked main reference).
+ *
+ * DERIVED from `directional` rather than declared, because only one pairing can
+ * work. A directional track renders one clip per facing, so seeding all eight
+ * rows from the single main would render the same south-facing clip eight times
+ * and pass every later check — nothing downstream re-reads which facing was
+ * asked for. The inverse has no anchor to read at all: a place record never
+ * generates directional anchors.
+ */
+export function sourceReferenceFor(id, tracks = ANIMATION_TRACKS) {
+  return getAnimationTrack(id, tracks).directional ? 'anchor' : 'main';
+}
+
+/**
+ * The one track a record of `kind` publishes off — its baseline, whose finalized
+ * set the compile path requires and whose frame count alone is a valid runtime
+ * contract. `null` for a kind no row admits.
+ *
+ * One definition, asked by the publish-contract schema (which field is required)
+ * and the compile dispatch (which evidence chain to validate). Those two used to
+ * answer it separately — one by registration order, one as
+ * `ambient-and-not-walk` — and agreed only by coincidence.
+ */
+export function primaryTrackForKind(kind, tracks = ANIMATION_TRACKS) {
+  if (typeof kind !== 'string' || !kind) return null;
+  return Object.values(tracks).find((row) => row.standaloneContract && row.kinds.includes(kind)) || null;
+}
 
 /** True when `id` names a track in `tracks` (the shipped registry by default). */
 export function isAnimationTrack(id, tracks = ANIMATION_TRACKS) {

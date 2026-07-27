@@ -107,12 +107,11 @@ export const AMBIENT_TRACK_ROW = Object.freeze({
   defaultFps: 4,
   contractFrameCountField: 'ambientFrameCount',
   contractFpsField: null,
-  // #3136 workflow shape. A non-directional row must seed from the main
-  // reference (it has no per-facing anchor to read), and its on-disk kinds must
-  // not collide with any other row this fixture is combined with.
-  sourceReference: 'main',
+  // #3136 workflow shape. Its on-disk kinds must not collide with any other row
+  // this fixture is combined with, and it is `place`/`object`'s standalone
+  // baseline — those kinds have no walk, so this is what they publish off.
   selectionKind: 'reviewed-single-row-ambient-selection',
   setKind: 'finalized-single-row-ambient-set',
   finalErrorCode: 'AMBIENT_SET_FINAL',
-  builtin: true,
+  standaloneContract: true,
 });

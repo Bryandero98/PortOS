@@ -56,6 +56,7 @@ const TRACKS = [
 
 describe.each(TRACKS)('TrackWorkflow renders the $definition.id track from its definition', (track) => {
   const { definition, facing, cardLabel } = track;
+  const { directional } = definition;
   const candidateRun = {
     id: `${definition.id}-${facing}-12345678`,
     direction: facing,
@@ -83,8 +84,13 @@ describe.each(TRACKS)('TrackWorkflow renders the $definition.id track from its d
     renderTrack(definition, {}, { onGenerate });
     fireEvent.click(screen.getAllByRole('button', { name: 'Generate' })[0]);
     // The track id rides along, which is what lets ONE page handler serve every
-    // track — including one added after this build shipped.
-    expect(onGenerate).toHaveBeenCalledWith(definition.id, 'south');
+    // track — including one added after this build shipped. So do the two things
+    // that need the definition: the request facing (omitted for a single-row
+    // track, whose row the server derives) and the correction-note key.
+    expect(onGenerate).toHaveBeenCalledWith(definition.id, {
+      direction: directional ? 'south' : undefined,
+      correctionKey: `${definition.id}:south`,
+    });
   });
 
   it('reviews a packaged candidate strip', () => {
@@ -169,7 +175,9 @@ describe('a track this client build has never heard of (#3136)', () => {
     expect(screen.getByText('Jetpack burst')).toBeInTheDocument();
     expect(screen.getByText(/0\/8 approved · 5f @ 8fps/)).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole('button', { name: 'Generate' })[0]);
-    expect(onGenerate).toHaveBeenCalledWith('jetpack', 'south');
+    expect(onGenerate).toHaveBeenCalledWith('jetpack', {
+      direction: 'south', correctionKey: 'jetpack:south',
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Approve Jetpack burst east' }));
     await waitFor(() => expect(approveSpriteTrack).toHaveBeenCalledWith(
       'example-walker', 'jetpack', { direction: 'east', runId: 'jetpack-east-12345678' }, { silent: true },

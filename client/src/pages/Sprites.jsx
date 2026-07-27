@@ -20,7 +20,7 @@ import LoopTrimmer from '../components/sprites/LoopTrimmer.jsx';
 import PublishWorkflow from '../components/sprites/PublishWorkflow.jsx';
 import AssetCollection from '../components/sprites/AssetCollection.jsx';
 import {
-  correctionPromptPayload, anchorCorrectionKey, walkCorrectionKey, trackCorrectionKey,
+  correctionPromptPayload, anchorCorrectionKey, walkCorrectionKey,
   AMBIENT_REFERENCE_CORRECTION_KEY,
 } from '../components/sprites/CorrectionNote.jsx';
 import SpriteCatalog from '../components/sprites/SpriteCatalog.jsx';
@@ -586,19 +586,23 @@ export default function Sprites() {
   // reservation (both can legitimately be authored at once), and each owns its
   // short default source clip rather than inheriting the walk duration picker.
   // The immediate refetch persists the observable TUI run for polling.
-  const generateTrack = useCallback(async (trackId, direction) => {
+  // The caller supplies both the request `direction` (present only for a
+  // directional track) and the `correctionKey` for the card that was clicked —
+  // TrackWorkflow already holds the definition and the facing, so deciding both
+  // there keeps this handler dependency-light and therefore stable across the 4s
+  // detail poll, which replaces `detail` wholesale and would otherwise churn
+  // every memoized track section.
+  const generateTrack = useCallback(async (trackId, { direction, correctionKey }) => {
     try {
       await generateSpriteTrack(id, trackId, {
-        // A non-directional track derives row 0 server-side; sending its facing
-        // anyway would be a value the server must then agree with.
-        ...(direction && detail?.tracks?.[trackId]?.definition?.directional ? { direction } : {}),
-        ...correctionPromptPayload(corrections, trackCorrectionKey(trackId, direction)),
+        ...(direction ? { direction } : {}),
+        ...correctionPromptPayload(corrections, correctionKey),
       }, { silent: true });
       onWorkflowChanged();
     } catch (err) {
       toast.error(err?.message || `Failed to queue the ${trackId} render`);
     }
-  }, [id, corrections, onWorkflowChanged, detail?.tracks]);
+  }, [id, corrections, onWorkflowChanged]);
 
   // The ambient main takes BOTH inputs: `designPrompt` replaces the design
   // outright, while the correction (#3134) keeps it and fixes one thing about

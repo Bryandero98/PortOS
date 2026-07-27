@@ -72,7 +72,12 @@ vi.mock('../services/sprites/walk.js', () => ({
 // `/:id/tracks/:trackId/*` routes drive, echoing the track it was asked for so a
 // test can assert the route resolved the right one.
 vi.mock('../services/sprites/animationTrackWorkflow.js', () => ({
-  getTrackState: vi.fn(async (track) => ({ track, runs: [], selection: null, set: null })),
+  // The service owns `definition` (the registry row it resolved), so the mock
+  // supplies a stand-in rather than the route re-attaching it — that split is
+  // what the GET assertion below is checking.
+  getTrackState: vi.fn(async (track) => ({
+    track, definition: { id: track, directional: track === 'scanner' }, runs: [], selection: null, set: null,
+  })),
   startTrackGeneration: vi.fn(async (track) => ({ runId: `${track}-east-0a1b2c3d`, direction: 'east', duration: 6 })),
   approveTrackRun: vi.fn(async (track) => ({ track, runs: [], selection: { status: 'in-progress' }, set: null })),
 }));
@@ -453,12 +458,13 @@ describe('sprites routes', () => {
     expect(r.body.walk).toEqual({ runs: [], selection: null, walkSet: null });
     expect(walk.getWalkState).toHaveBeenCalledWith('pioneer');
     // A character carries scanner but NOT ambient, so only scanner is keyed —
-    // and the payload carries the registry row so the client renders the track's
-    // label/bounds from data rather than mirroring them.
+    // and each state passes through with the `definition` (registry row) the
+    // service resolved, so the client renders the track's label/bounds from data
+    // rather than mirroring them.
     expect(Object.keys(r.body.tracks)).toEqual(['scanner']);
     expect(r.body.tracks.scanner).toMatchObject({
       track: 'scanner', runs: [], selection: null, set: null,
-      definition: { id: 'scanner', label: 'Scanner action', directional: true },
+      definition: { id: 'scanner', directional: true },
     });
     expect(trackWorkflow.getTrackState).toHaveBeenCalledWith('scanner', 'pioneer');
 
