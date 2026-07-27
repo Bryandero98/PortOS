@@ -57,6 +57,14 @@ describe('useShellSession', () => {
     expect(result.current.connected).toBe(true);
   });
 
+  it('sends Ctrl+B to the active terminal session', () => {
+    const { result } = renderHook(() => useShellSession({}), { wrapper });
+    fire('shell:sessions', []);
+    fire('shell:started', { sessionId: 'abc' });
+    act(() => result.current.sendCtrlB());
+    expect(lastEmit('shell:input')).toEqual(['shell:input', { sessionId: 'abc', data: '\x02' }]);
+  });
+
   it('ignores a shell:attached whose id does not match the pending target (strict-equality guard)', () => {
     const { result } = renderHook(() => useShellSession({}), { wrapper });
     // First load with one free survivor → auto-attach to s1 (claim:true), pending target 's1'.
