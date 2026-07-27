@@ -612,8 +612,10 @@ export const PIPELINE_BEHAVIOR_FLAGS = ['useWorktree', 'openPR', 'prCompletion',
 // Absolute cap on total agent spawns per task (across all retry types)
 export const MAX_TOTAL_SPAWNS = 5;
 
-// `cleanupMerged` / `openPr` / `resolveConflicts` / `autoMerge` are the
-// per-app action toggles for the `branch-reconcile` task type; `autoClose` is
+// `cleanupMerged` / `openPr` / `resolveConflicts` / `autoMerge` /
+// `finishAbandoned` are the per-app action toggles for the `branch-reconcile`
+// task type (`finishAbandoned` governs committing + shipping the uncommitted
+// work left in a dead agent's worktree); `autoClose` is
 // the `issue-reconcile` toggle (ON unless explicitly false — OFF forbids the
 // coordinator from closing an issue or filing a follow-up, leaving it to only
 // comment + release the claim). Each lives in the shared task-metadata
@@ -622,7 +624,7 @@ export const MAX_TOTAL_SPAWNS = 5;
 // sanitizeTaskMetadata.
 const ALLOWED_TASK_METADATA_KEYS = [
   ...PIPELINE_BEHAVIOR_FLAGS, 'readOnly',
-  'cleanupMerged', 'openPr', 'resolveConflicts', 'autoMerge', 'autoClose',
+  'cleanupMerged', 'openPr', 'resolveConflicts', 'autoMerge', 'finishAbandoned', 'autoClose',
   // Throwaway-worktree posture for programmatic-I/O reasoning tasks (layered-
   // intelligence): the worktree is discarded without a merge or PR so a reasoning
   // agent can't land code. See agentWorktreeCleanup.js.

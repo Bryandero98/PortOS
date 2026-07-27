@@ -39,6 +39,7 @@ vi.mock('../lib/fileUtils.js', () => ({
 
 import {
   classifyBranch, classifyBranches, cleanupMerged, reconcile, gatherBranchState, worktreeProtectionReason,
+  isAbandonedAgentWorktree,
   actionOn, filterActionable, desiredEndState, formatInFlightForPrompt, actionableSignature
 } from './branchReconcile.js';
 import * as git from './git.js';
@@ -77,6 +78,27 @@ describe('classifyBranch', () => {
   });
   it('local-only (no upstream), no PR → WIP', () => {
     expect(classifyBranch({ isMerged: false, openPr: null, hasUpstream: false, worktreeDirty: false })).toBe('WIP');
+  });
+
+  // The exact shape of the three branches that went unreconciled for weeks: a CoS
+  // agent exited without committing, so its branch pointer sat on an old `main`
+  // commit (reads as MERGED) while the whole deliverable stayed uncommitted in the
+  // worktree. MERGED routed it to cleanupMerged, which correctly refused to delete
+  // a dirty worktree — so it was only ever `skipped`, never in-flight, and every
+  // run logged "nothing in-flight".
+  it('classifies a dead agent\'s dirty worktree as ABANDONED_WIP even when the branch reads merged', () => {
+    expect(classifyBranch({
+      isMerged: true, worktreeDirty: true, abandonedAgentWorktree: true, hasUpstream: true, openPr: null
+    })).toBe('ABANDONED_WIP');
+  });
+
+  it('leaves a LIVE agent\'s dirty worktree alone (MERGED/WIP, never ABANDONED_WIP)', () => {
+    expect(classifyBranch({
+      isMerged: true, worktreeDirty: true, abandonedAgentWorktree: false, hasUpstream: true, openPr: null
+    })).toBe('MERGED');
+    expect(classifyBranch({
+      isMerged: false, worktreeDirty: true, abandonedAgentWorktree: false, hasUpstream: true, openPr: null
+    })).toBe('WIP');
   });
 });
 
@@ -255,6 +277,31 @@ describe('gatherBranchState', () => {
   });
 });
 
+describe('isAbandonedAgentWorktree', () => {
+  const live = new Set(['agent-aaaaaaaa']);
+
+  it('is true only for an unlocked agent worktree whose agent is not running', () => {
+    expect(isAbandonedAgentWorktree({ path: '/wt/agent-bbbbbbbb', activeAgentIds: live })).toBe(true);
+    expect(isAbandonedAgentWorktree({ path: '/wt/agent-aaaaaaaa', activeAgentIds: live })).toBe(false);
+    expect(isAbandonedAgentWorktree({ path: '/wt/agent-bbbbbbbb', locked: true, activeAgentIds: live })).toBe(false);
+  });
+
+  it('never claims a human /claim worktree, a non-agent sibling, or a missing path', () => {
+    expect(isAbandonedAgentWorktree({ path: '/wt/claim-fix-thing', activeAgentIds: live })).toBe(false);
+    expect(isAbandonedAgentWorktree({ path: '/wt/next-issue-42', activeAgentIds: live })).toBe(false);
+    expect(isAbandonedAgentWorktree({ path: '', activeAgentIds: live })).toBe(false);
+  });
+
+  // Sentinel, not a plain collection: an empty Set is an authoritative "nothing is
+  // running" (the common case), while an omitted/non-Set value means liveness is
+  // unknown and must fail safe toward protecting the worktree.
+  it('treats an empty Set as authoritative but an absent one as unknown', () => {
+    expect(isAbandonedAgentWorktree({ path: '/wt/agent-bbbbbbbb', activeAgentIds: new Set() })).toBe(true);
+    expect(isAbandonedAgentWorktree({ path: '/wt/agent-bbbbbbbb' })).toBe(false);
+    expect(isAbandonedAgentWorktree({ path: '/wt/agent-bbbbbbbb', activeAgentIds: ['agent-cccccccc'] })).toBe(false);
+  });
+});
+
 describe('reconcile', () => {
   it('cleans merged, returns in-flight + wip partitions', async () => {
     git.getBranches.mockResolvedValue([
@@ -276,6 +323,43 @@ describe('reconcile', () => {
     expect(res.inFlight.map((i) => i.branch)).toEqual(['next/issue-2199']);
     expect(res.inFlight[0].state).toBe('IN_REVIEW');
     expect(res.wip.map((i) => i.branch)).toEqual(['wip-local']);
+  });
+
+  // Regression for the "3 orphan cos branches, no active agents, reconcile says
+  // nothing in flight" report: surface the branch instead of silently skipping it,
+  // and — critically — do NOT delete the worktree holding the only copy of the work.
+  it('surfaces a dead agent\'s uncommitted work as in-flight instead of skipping it, and never deletes the worktree', async () => {
+    git.getBranches.mockResolvedValue([
+      { name: 'cos/task-x/agent-deadbeef', isDefault: false, current: false, tracking: 'origin/main', merged: true }
+    ]);
+    wt.listWorktrees.mockResolvedValue([
+      { path: '/repo/data/cos/worktrees/agent-deadbeef', branch: 'refs/heads/cos/task-x/agent-deadbeef' }
+    ]);
+    git.isBranchMergedInto.mockResolvedValue(true);
+    // Uncommitted work in the worktree.
+    execGit.mockResolvedValue({ stdout: ' M server/services/thing.js\n?? server/services/newThing.js\n', exitCode: 0 });
+
+    const res = await reconcile('/repo', { activeAgentIds: new Set() });
+    expect(res.inFlight.map((i) => i.state)).toEqual(['ABANDONED_WIP']);
+    expect(res.cleaned).toEqual([]);
+    expect(wt.forceRemoveWorktreeDir).not.toHaveBeenCalled();
+    expect(git.deleteBranch).not.toHaveBeenCalled();
+  });
+
+  it('still leaves that branch untouched while its agent is running', async () => {
+    git.getBranches.mockResolvedValue([
+      { name: 'cos/task-x/agent-deadbeef', isDefault: false, current: false, tracking: 'origin/main', merged: true }
+    ]);
+    wt.listWorktrees.mockResolvedValue([
+      { path: '/repo/data/cos/worktrees/agent-deadbeef', branch: 'refs/heads/cos/task-x/agent-deadbeef' }
+    ]);
+    git.isBranchMergedInto.mockResolvedValue(true);
+    execGit.mockResolvedValue({ stdout: ' M server/services/thing.js\n', exitCode: 0 });
+
+    const res = await reconcile('/repo', { activeAgentIds: new Set(['agent-deadbeef']) });
+    expect(res.inFlight).toEqual([]);
+    expect(res.skipped.map((s) => s.reason)).toEqual(['worktree-active-agent']);
+    expect(wt.forceRemoveWorktreeDir).not.toHaveBeenCalled();
   });
 });
 
@@ -311,12 +395,33 @@ describe('filterActionable', () => {
   it('never surfaces a non-actionable state (MERGED/WIP)', () => {
     expect(filterActionable([{ branch: 'm', state: 'MERGED' }, { branch: 'w', state: 'WIP' }], {})).toEqual([]);
   });
+
+  it('keeps ABANDONED_WIP by default and drops it only when finishAbandoned is off', () => {
+    const abandoned = [{ branch: 'z', state: 'ABANDONED_WIP' }];
+    expect(filterActionable(abandoned, {}).map((b) => b.branch)).toEqual(['z']);
+    expect(filterActionable(abandoned, { finishAbandoned: false })).toEqual([]);
+  });
 });
 
 describe('desiredEndState', () => {
   it('tells IN_REVIEW to merge only when autoMerge is on', () => {
     expect(desiredEndState('IN_REVIEW', {})).toContain('gh pr merge <num> --merge --delete-branch');
     expect(desiredEndState('IN_REVIEW', { autoMerge: false })).toContain('Do NOT merge');
+  });
+
+  it('tells ABANDONED_WIP to read the worktree first, refuse a half-finished commit, then ship', () => {
+    const instruction = desiredEndState('ABANDONED_WIP', {}, { worktreePath: '/wt/agent-deadbeef' });
+    expect(instruction).toContain('/wt/agent-deadbeef');
+    expect(instruction).toContain('UNCOMMITTED');
+    expect(instruction).toContain('do not commit it and do not delete it');
+    expect(instruction).toContain('/do:pr --no-merge');
+    expect(instruction).toContain('gh pr merge <num> --merge --delete-branch');
+  });
+
+  it('stops ABANDONED_WIP at an open PR when autoMerge is off', () => {
+    const instruction = desiredEndState('ABANDONED_WIP', { autoMerge: false }, { worktreePath: '/wt/agent-deadbeef' });
+    expect(instruction).toContain('Do NOT merge');
+    expect(instruction).not.toContain('gh pr merge');
   });
 
   it('gives NEEDS_PR a completeness gate and CONFLICTED a rebase instruction', () => {

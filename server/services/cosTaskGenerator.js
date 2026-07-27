@@ -1878,7 +1878,8 @@ async function resolveBranchReconcileBlock(app, taskType, metadata, taskSchedule
     cleanupMerged: metadata.cleanupMerged,
     openPr: metadata.openPr,
     resolveConflicts: metadata.resolveConflicts,
-    autoMerge: metadata.autoMerge
+    autoMerge: metadata.autoMerge,
+    finishAbandoned: metadata.finishAbandoned
   };
   const result = await reconcile(app.repoPath, {
     cleanup: actions.cleanupMerged !== false,
@@ -1904,7 +1905,15 @@ async function resolveBranchReconcileBlock(app, taskType, metadata, taskSchedule
     const heldSuffix = heldBack.length
       ? `, ${heldBack.length} merged branch(es) held back (${[...new Set(heldBack.map((s) => s.reason))].join(', ')})`
       : '';
-    emitLog('info', `🔀 branch-reconcile parked for ${app.name}: nothing in-flight (cleaned ${result.cleaned.length}${heldSuffix})`, { appId: app.id });
+    // In-flight branches that exist but were filtered out by a disabled action
+    // toggle are the OTHER way "nothing in-flight" can lie — say so, or the user
+    // sees a park while real branches sit there (the same invisibility that hid
+    // the abandoned-worktree case).
+    const gatedOff = result.inFlight.length;
+    const gatedSuffix = gatedOff
+      ? `, ${gatedOff} in-flight branch(es) skipped by disabled action toggles (${[...new Set(result.inFlight.map((b) => b.state))].join(', ')})`
+      : '';
+    emitLog('info', `🔀 branch-reconcile parked for ${app.name}: nothing actionable (cleaned ${result.cleaned.length}${heldSuffix}${gatedSuffix})`, { appId: app.id });
     return { skip: true };
   }
   // Convergence guard — kills the back-to-back re-dispatch loop WITHOUT stalling

@@ -56,16 +56,27 @@ const PR_LIST_LIMIT = 200;
 /**
  * Pure classifier: map one branch's git/PR facts to a reconcile state.
  * First match wins.
+ *   ABANDONED_WIP — dirty worktree of a DEAD CoS agent → agent finishes the work
  *   MERGED     — work is fully in the default branch → deterministic cleanup
  *   CONFLICTED — open PR with merge conflicts        → agent resolves
  *   IN_REVIEW  — open PR, otherwise                  → agent drives to merge
  *   NEEDS_PR   — pushed, not merged, no PR, clean     → agent verifies + opens PR
  *   WIP        — local-only or dirty worktree         → skip + report (never touch)
  *
- * @param {{ hasUpstream:boolean, isMerged:boolean, worktreeDirty:boolean, openPr:({mergeable?:string}|null) }} input
- * @returns {'MERGED'|'CONFLICTED'|'IN_REVIEW'|'NEEDS_PR'|'WIP'}
+ * @param {{ hasUpstream:boolean, isMerged:boolean, worktreeDirty:boolean, abandonedAgentWorktree?:boolean, openPr:({mergeable?:string}|null) }} input
+ * @returns {'ABANDONED_WIP'|'MERGED'|'CONFLICTED'|'IN_REVIEW'|'NEEDS_PR'|'WIP'}
  */
-export function classifyBranch({ hasUpstream, isMerged, worktreeDirty, openPr }) {
+export function classifyBranch({ hasUpstream, isMerged, worktreeDirty, abandonedAgentWorktree, openPr }) {
+  // A dead agent's worktree that still holds uncommitted work is the ONE dirty
+  // case that must be driven rather than skipped — and it must be caught BEFORE
+  // the `isMerged` test, because an agent that exited without committing leaves
+  // its branch pointer parked on an old default-branch commit, which reads as
+  // MERGED. That combination (merged pointer + dirty tree) is exactly what made
+  // these branches invisible: MERGED sent them to `cleanupMerged`, which
+  // correctly refused to delete a dirty worktree, so they were only ever
+  // reported as `skipped` and never appeared in-flight. The work sat there
+  // indefinitely while every run logged "nothing in-flight".
+  if (worktreeDirty && abandonedAgentWorktree) return 'ABANDONED_WIP';
   if (isMerged) return 'MERGED';
   // A worktree with real uncommitted changes is NEVER handed to the coordinator
   // agent — even for a branch with an open PR. The agent's per-state actions
@@ -152,6 +163,35 @@ export function worktreeProtectionReason({ path, locked, activeAgentIds, ageMs, 
 }
 
 /**
+ * Is this worktree a CoS agent workspace whose agent is no longer running?
+ *
+ * Pure. True only for a `agent-<id>` worktree (the CoS naming convention) that
+ * is unlocked and absent from the live-agent set. Paired with a dirty working
+ * tree in `classifyBranch`, that is the signature of an agent run that ended —
+ * completed, crashed, or reaped — before committing its work.
+ *
+ * Deliberately narrow: a human `claim-*` worktree, a locked worktree, and the
+ * primary checkout all return false, so this can never hand a person's live
+ * editing session to an agent that might `git reset` over it. The `agent-*`
+ * namespace is machine-owned — nothing but CoS writes there.
+ *
+ * `activeAgentIds` is a sentinel, not a plain collection: a Set (INCLUDING an
+ * empty one — "no agents running", the common case) is an authoritative liveness
+ * answer, while a missing/non-Set value means liveness is UNKNOWN and every agent
+ * worktree stays protected. Same fail-safe posture as `worktreeProtectionReason`'s
+ * unknown-age branch — never infer abandonment from an answer we didn't get.
+ *
+ * @param {{ path:string, locked?:boolean, activeAgentIds?:Set<string> }} input
+ * @returns {boolean}
+ */
+export function isAbandonedAgentWorktree({ path, locked, activeAgentIds }) {
+  if (!path || locked || !(activeAgentIds instanceof Set)) return false;
+  const basename = path.split('/').pop() || '';
+  if (!basename.startsWith('agent-') || isHumanClaimWorktree(basename)) return false;
+  return !activeAgentIds.has(basename);
+}
+
+/**
  * Is a worktree's working tree carrying real (non-lockfile) uncommitted changes?
  * @param {string} worktreePath
  * @returns {Promise<boolean>}
@@ -182,11 +222,13 @@ async function worktreeAgeMs(worktreePath) {
  * always-protected set. Effectful (git + gh).
  *
  * @param {string} repoPath
- * @param {{ defaultBranch:string }} ctx
+ * @param {{ defaultBranch:string, activeAgentIds?:Set<string> }} ctx - `activeAgentIds`
+ *   distinguishes a live agent's worktree from an abandoned one (see
+ *   `isAbandonedAgentWorktree`); omitting it leaves every agent worktree protected.
  * @returns {Promise<object[]>} one entry per candidate branch:
- *   { branch, hasUpstream, isMerged, hasWorktree, worktreePath, worktreeDirty, openPr }
+ *   { branch, hasUpstream, isMerged, hasWorktree, worktreePath, worktreeDirty, abandonedAgentWorktree, openPr }
  */
-export async function gatherBranchState(repoPath, { defaultBranch }) {
+export async function gatherBranchState(repoPath, { defaultBranch, activeAgentIds = null }) {
   const protectedSet = new Set([...PROTECTED_BRANCHES, defaultBranch]);
 
   const [branches, worktrees, prsByHead] = await Promise.all([
@@ -226,6 +268,7 @@ export async function gatherBranchState(repoPath, { defaultBranch }) {
       worktreeLocked,
       worktreeAgeMs: worktreeAge,
       worktreeDirty,
+      abandonedAgentWorktree: isAbandonedAgentWorktree({ path: worktreePath, locked: worktreeLocked, activeAgentIds }),
       openPr: prsByHead.get(b.name) || null
     });
   }
@@ -300,11 +343,11 @@ export async function cleanupMerged(repoPath, defaultBranch, merged, { activeAge
  */
 export async function reconcile(repoPath = PATHS.root, { cleanup = true, activeAgentIds = new Set() } = {}) {
   const defaultBranch = await getDefaultBranch(repoPath).catch(() => 'main') || 'main';
-  const inputs = await gatherBranchState(repoPath, { defaultBranch });
+  const inputs = await gatherBranchState(repoPath, { defaultBranch, activeAgentIds });
   const classified = classifyBranches(inputs);
 
   const merged = classified.filter((c) => c.state === 'MERGED');
-  const inFlight = classified.filter((c) => ['CONFLICTED', 'IN_REVIEW', 'NEEDS_PR'].includes(c.state));
+  const inFlight = classified.filter((c) => ['ABANDONED_WIP', 'CONFLICTED', 'IN_REVIEW', 'NEEDS_PR'].includes(c.state));
   const wip = classified.filter((c) => c.state === 'WIP');
 
   const { cleaned, skipped } = cleanup
@@ -322,7 +365,8 @@ export async function reconcile(repoPath = PATHS.root, { cleanup = true, activeA
 // here (next to the classifier that produces their input) rather than in the
 // scheduler/generator so both the perpetual-drain gate and any prompt builder
 // share one source of truth. The `actions` object mirrors the per-app task
-// metadata toggles (cleanupMerged / openPr / resolveConflicts / autoMerge).
+// metadata toggles (cleanupMerged / openPr / resolveConflicts / autoMerge /
+// finishAbandoned).
 // ============================================================
 
 /** An action is ON unless the config explicitly set it to false (opt-out). */
@@ -336,6 +380,7 @@ export const actionOn = (actions, key) => actions?.[key] !== false;
  */
 export function filterActionable(inFlight, actions) {
   return inFlight.filter((b) => {
+    if (b.state === 'ABANDONED_WIP') return actionOn(actions, 'finishAbandoned');
     if (b.state === 'NEEDS_PR') return actionOn(actions, 'openPr');
     if (b.state === 'CONFLICTED') return actionOn(actions, 'resolveConflicts');
     if (b.state === 'IN_REVIEW') return actionOn(actions, 'resolveConflicts') || actionOn(actions, 'autoMerge');
@@ -366,10 +411,28 @@ const driveToMerge = (pr) => [
  * Per-state instruction to the coordinator/sub-agent.
  * @param {string} state
  * @param {object} actions - per-app action toggles
- * @param {{ prNumber?: number }} [ctx] - the branch's open PR number, when it has one
+ * @param {{ prNumber?: number, worktreePath?: string }} [ctx] - the branch's open PR
+ *   number (when it has one) and its worktree path (ABANDONED_WIP needs it — the
+ *   uncommitted work only exists there, never in the primary checkout)
  */
-export function desiredEndState(state, actions, { prNumber } = {}) {
+export function desiredEndState(state, actions, { prNumber, worktreePath } = {}) {
   const pr = prNumber ? String(prNumber) : '<num>';
+  if (state === 'ABANDONED_WIP') {
+    // The branch has NO commits of its own — the entire deliverable is the
+    // uncommitted tree. So the first move is to READ it, and the loudest rule is
+    // "don't commit a half-finished tree": an agent that died mid-edit can leave
+    // a syntactically-broken file, and committing that is strictly worse than
+    // leaving it for a human, since it converts recoverable scratch state into
+    // branch history.
+    const where = worktreePath ? `\`${worktreePath}\`` : 'the branch\'s worktree';
+    const assess = `This branch has no commits of its own — its work is sitting UNCOMMITTED in ${where}, the worktree of a CoS agent that is no longer running (it exited, crashed, or was reaped before committing). Nothing is lost, but nothing lands either until someone finishes it. Working INSIDE that worktree, run \`git status\` and \`git diff\` (plus \`git diff\` against untracked files) and read the WHOLE change set before touching anything. Then judge whether it is coherent, finished work: the test suites for the touched workspaces pass, no stub/TODO/placeholder left mid-edit, no half-renamed symbol, and a \`.changelog/NEXT.md\` entry present.`;
+    const bail = 'If it is NOT finished, do not commit it and do not delete it — leave every file exactly as it is and report what the work appears to be, how far it got, and what is missing, so a human can decide whether to finish or discard it.';
+    const commit = 'If it IS finished, commit it on this branch (a message that states what changed and why — never a bare "wip"), then ship it with `/do:pr --no-merge` (by hand, if slash commands are unavailable: self-review the diff, `git push -u origin <branch>`, then `gh pr create` with a Summary + Test plan).';
+    if (!actionOn(actions, 'autoMerge')) {
+      return `${assess} ${bail} ${commit} Do NOT merge (auto-merge is disabled) — stop once the PR is open and report its URL.`;
+    }
+    return `${assess} ${bail} ${commit} ${driveToMerge(pr)}`;
+  }
   if (state === 'NEEDS_PR') {
     const verify = 'Verify the branch\'s work is complete and ready (tests pass, no stubs/TODO markers, changelog present). If NOT ready, report it as incomplete and leave the branch untouched — do not open a half-baked PR.';
     // `--no-merge` is passed explicitly on BOTH paths — not to disable merging,
@@ -431,8 +494,8 @@ export function formatInFlightForPrompt(inFlight, { defaultBranch, actions }) {
   for (const b of inFlight) {
     const pr = b.openPr ? ` — PR #${b.openPr.number} (${b.openPr.mergeable})${b.openPr.url ? ` ${b.openPr.url}` : ''}` : ' — no PR';
     lines.push(`### \`${b.branch}\` [${b.state}]${pr}`);
-    if (b.worktreePath) lines.push(`- Worktree: \`${b.worktreePath}\``);
-    lines.push(`- Do: ${desiredEndState(b.state, actions, { prNumber: b.openPr?.number })}`);
+    if (b.worktreePath) lines.push(`- Worktree: \`${b.worktreePath}\`${b.state === 'ABANDONED_WIP' ? ' (holds UNCOMMITTED work — read it before doing anything)' : ''}`);
+    lines.push(`- Do: ${desiredEndState(b.state, actions, { prNumber: b.openPr?.number, worktreePath: b.worktreePath })}`);
     lines.push('');
   }
   return lines.join('\n');
