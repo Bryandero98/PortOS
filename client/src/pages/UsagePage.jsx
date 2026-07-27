@@ -237,7 +237,12 @@ function ProviderCostRows({ provider }) {
         <td className="py-2 px-2 text-right">{formatNumber(provider.sessions)}</td>
         <td className="py-2 px-2 text-right">{formatNumber(provider.tokensIn)}</td>
         <td className="py-2 px-2 text-right">{formatNumber(provider.tokensOut)}</td>
-        <td className="py-2 pl-2 text-right">{formatCost(provider.estimatedCost)}</td>
+        <td
+          className="py-2 pl-2 text-right"
+          title={approxMark(provider.rateMatch) ? 'Approximate — provider or legacy usage uses fallback pricing' : undefined}
+        >
+          {approxMark(provider.rateMatch)}{formatCost(provider.estimatedCost)}
+        </td>
       </tr>
       {provider.models.map((m) => (
         <tr key={m.model} className="text-gray-400">
@@ -366,7 +371,7 @@ function InternalUsageMetrics() {
       <h2 className="text-lg font-semibold text-white">PortOS AI Usage</h2>
 
       {/* Summary Stats (all-time) */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
         <div className="bg-port-card border border-port-border rounded-xl p-3 sm:p-4 text-center">
           <div className="text-xl sm:text-2xl font-bold text-white">{formatNumber(usage.totalSessions)}</div>
           <div className="text-xs sm:text-sm text-gray-400">Sessions</div>
@@ -374,10 +379,6 @@ function InternalUsageMetrics() {
         <div className="bg-port-card border border-port-border rounded-xl p-3 sm:p-4 text-center">
           <div className="text-xl sm:text-2xl font-bold text-white">{formatNumber(usage.totalMessages)}</div>
           <div className="text-xs sm:text-sm text-gray-400">Messages</div>
-        </div>
-        <div className="bg-port-card border border-port-border rounded-xl p-3 sm:p-4 text-center">
-          <div className="text-xl sm:text-2xl font-bold text-white">{formatNumber(usage.totalToolCalls)}</div>
-          <div className="text-xs sm:text-sm text-gray-400">Tool Calls</div>
         </div>
         <div className="bg-port-card border border-port-border rounded-xl p-3 sm:p-4 text-center">
           <div className="text-xl sm:text-2xl font-bold text-white">{formatNumber((usage.totalTokens?.input ?? 0) + (usage.totalTokens?.output ?? 0))}</div>
@@ -388,15 +389,22 @@ function InternalUsageMetrics() {
       {/* Cost report — range-filtered per-provider/per-model breakdown */}
       <div className="bg-port-card border border-port-border rounded-xl p-3 sm:p-4 space-y-3">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-          <h3 className="text-sm font-medium text-gray-400">Est. API Cost Report</h3>
+          <div>
+            <h3 className="text-sm font-medium text-gray-400">Est. API Cost Report</h3>
+            {report?.breakdownSince && (
+              <p className="text-[10px] sm:text-xs text-port-warning">
+                Provider/model detail starts {report.breakdownSince}; earlier usage is grouped as legacy.
+              </p>
+            )}
+          </div>
           <span className="text-xl font-bold text-port-success">{formatCost(report?.totals?.estimatedCost)}</span>
         </div>
         <CostReportFilters period={period} from={from} to={to} isCustom={isCustom} onPeriod={setPeriod} onRange={setRange} />
         <CostReportTable report={report} />
         <p className="text-[10px] sm:text-xs text-gray-500">
           Informational estimate of what this usage would have cost under API billing (PortOS runs on subscriptions).
-          Token counts are partially estimated; rates as of {report?.pricingAsOf || 'the last update'}, excluding prompt-caching and batch discounts.
-          {report?.breakdownSince && <> Per-provider breakdown available from {report.breakdownSince}.</>}
+          Current token counts estimate each run from its initial prompt and captured output; repeated per-turn context and prompt-cache reads/writes are not counted.
+          Rates are as of {report?.pricingAsOf || 'the last update'} and exclude cache tiers, batch pricing, and long-context tiers.
           {' '}Rows marked ~ use an approximated rate.
         </p>
       </div>
