@@ -28,7 +28,7 @@
 import { homedir } from 'os';
 import { join } from 'path';
 import { readdir } from 'fs/promises';
-import { tryReadFile } from '../lib/fileUtils.js';
+import { atomicWrite, PATHS, readJSONFile, tryReadFile } from '../lib/fileUtils.js';
 import { estimateTokens, estimateTokensFromChars } from '../lib/contextBudget.js';
 import { isFreeModelId, resolveModelRates } from '../lib/modelPricing.js';
 import {
@@ -38,7 +38,7 @@ import {
   parseCodexRollout,
   totalTranscriptTokens
 } from '../lib/providerTranscriptUsage.js';
-import { recordRunUsage } from './usage.js';
+import { markUsageRunReconciled, recordRunUsage } from './usage.js';
 
 // Widen the correlation window past the recorded run bounds: the CLI writes its
 // first line slightly before PortOS stamps startTime, and flushes its last
@@ -489,6 +489,16 @@ export async function recordCompletedRunUsage(metadata, output, { home = homedir
   // persisting the record — usage accounting must not surface as a run failure.
   await reconcileRunUsage(metadata, estimate, { home })
     .then(recordRunUsage)
+    .then(async () => {
+      if (!metadata?.id) return;
+      await markUsageRunReconciled(metadata.id);
+      const metadataPath = join(PATHS.runs, metadata.id, 'metadata.json');
+      const persisted = await readJSONFile(metadataPath, null);
+      if (!persisted) return;
+      persisted.usageReconciled = true;
+      persisted.usageReconciledAt = new Date().toISOString();
+      await atomicWrite(metadataPath, persisted);
+    })
     .catch((err) => {
       console.error(`❌ Failed to record usage: ${err.message}`);
     });
