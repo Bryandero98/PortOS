@@ -500,6 +500,90 @@ describe('universe-builder routes', () => {
     expect(res.body.objects[0].name).toBe('Gold pocket watch');
   });
 
+  // ---- Art style reference deltas (#3109) ----
+
+  it('POST /:id/style-references appends one reference and can adopt guidance in the same write', async () => {
+    const app = buildApp();
+    const c = await request(app).post('/api/universe-builder').send({ name: 'Refs' });
+    const first = await request(app)
+      .post(`/api/universe-builder/${c.body.id}/style-references`)
+      .send({
+        reference: { id: 'style-ref-1', title: 'Ink wash', prompt: 'Granular ink wash', imageRefs: ['a.png'] },
+      });
+    expect(first.status).toBe(200);
+    expect(first.body.styleReferences.map((r) => r.id)).toEqual(['style-ref-1']);
+
+    const second = await request(app)
+      .post(`/api/universe-builder/${c.body.id}/style-references`)
+      .send({
+        reference: { id: 'style-ref-2', title: 'Sunlit', prompt: 'Warm sunlit haze', imageRefs: ['b.png'] },
+        adopt: { styleNotes: 'Warm and hazy', influences: { embrace: ['sunlit'], avoid: ['gloss'] } },
+      });
+    expect(second.status).toBe(200);
+    // The addition composed onto the persisted list — it did not replace it.
+    expect(second.body.styleReferences.map((r) => r.id)).toEqual(['style-ref-1', 'style-ref-2']);
+    expect(second.body.styleNotes).toBe('Warm and hazy');
+    expect(second.body.influences).toEqual({ embrace: ['sunlit'], avoid: ['gloss'] });
+  });
+
+  it('POST /:id/style-references rejects a reference missing an id or a prompt', async () => {
+    const app = buildApp();
+    const c = await request(app).post('/api/universe-builder').send({ name: 'Refs' });
+    // The delta path requires an explicit id (it's what makes a re-send
+    // idempotent), unlike the wholesale-replace field where the sanitizer mints one.
+    const noId = await request(app)
+      .post(`/api/universe-builder/${c.body.id}/style-references`)
+      .send({ reference: { title: 'No id', prompt: 'Prompt', imageRefs: ['a.png'] } });
+    expect(noId.status).toBe(400);
+    const noPrompt = await request(app)
+      .post(`/api/universe-builder/${c.body.id}/style-references`)
+      .send({ reference: { id: 'style-ref-1', title: 'No prompt', imageRefs: ['a.png'] } });
+    expect(noPrompt.status).toBe(400);
+  });
+
+  it('DELETE /:id/style-references/:referenceId removes one and no-ops on an unknown id', async () => {
+    const app = buildApp();
+    const c = await request(app).post('/api/universe-builder').send({
+      name: 'Refs',
+      styleReferences: [
+        { id: 'style-ref-a', title: 'A', prompt: 'a', imageRefs: ['a.png'] },
+        { id: 'style-ref-b', title: 'B', prompt: 'b', imageRefs: ['b.png'] },
+      ],
+    });
+    const removed = await request(app)
+      .delete(`/api/universe-builder/${c.body.id}/style-references/style-ref-a`);
+    expect(removed.status).toBe(200);
+    expect(removed.body.styleReferences.map((r) => r.id)).toEqual(['style-ref-b']);
+
+    // A duplicate delete (or one that raced the image-delete purge) is a
+    // no-op, not a 404 — the caller's intent is already satisfied.
+    const again = await request(app)
+      .delete(`/api/universe-builder/${c.body.id}/style-references/style-ref-a`);
+    expect(again.status).toBe(200);
+    expect(again.body.styleReferences.map((r) => r.id)).toEqual(['style-ref-b']);
+  });
+
+  it('DELETE /:id/style-references rejects an over-long referenceId', async () => {
+    const app = buildApp();
+    const c = await request(app).post('/api/universe-builder').send({ name: 'Refs' });
+    const res = await request(app)
+      .delete(`/api/universe-builder/${c.body.id}/style-references/${'x'.repeat(81)}`);
+    expect(res.status).toBe(400);
+  });
+
+  it('PATCH /:id still accepts a wholesale styleReferences replace (older clients + peer imports)', async () => {
+    const app = buildApp();
+    const c = await request(app).post('/api/universe-builder').send({
+      name: 'Back-compat',
+      styleReferences: [{ id: 'style-ref-a', title: 'A', prompt: 'a', imageRefs: ['a.png'] }],
+    });
+    const res = await request(app)
+      .patch(`/api/universe-builder/${c.body.id}`)
+      .send({ styleReferences: [{ id: 'style-ref-b', title: 'B', prompt: 'b', imageRefs: ['b.png'] }] });
+    expect(res.status).toBe(200);
+    expect(res.body.styleReferences.map((r) => r.id)).toEqual(['style-ref-b']);
+  });
+
   it('DELETE /:id removes the universe', async () => {
     const app = buildApp();
     const c = await request(app).post('/api/universe-builder').send({ name: 'A' });

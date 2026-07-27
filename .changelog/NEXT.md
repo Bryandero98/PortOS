@@ -32,6 +32,7 @@
 
 ## Universe art references
 
+- **[issue-3109] Adding and removing art references is now reliable no matter what else is changing them.** Each add or remove sends just that one change instead of re-sending the whole list, and the change is applied to the universe's current, saved state. So two removals in quick succession both stick, an add between them survives, and — new here — a change made by another machine you sync with, or by deleting the underlying image from your gallery, can no longer be undone by a reference edit that started before it. The 20-reference limit is now checked against what's actually saved rather than what your browser last saw.
 - **[issue-3099] Adding or removing an art reference no longer flickers back when you navigate away and return mid-save** — if you changed a universe's art references and switched to another universe and back before the change finished saving, a slower page refresh could briefly restore the pre-change list on screen, making the next add or remove operate on the wrong set. The saved change now always wins over the older refresh it raced.
 
 ## CoS quick task templates

@@ -18,9 +18,11 @@ import {
 import { store } from './storeFacade.js';
 import {
   sanitizeTemplate, sanitizeRun, sanitizeImageRefFilename, resolveInfluences,
+  sanitizeStyleReference,
   makeErr, UNIVERSE_ID_RE,
   ERR_NOT_FOUND, ERR_VALIDATION, ERR_DUPLICATE, ERR_HAS_LIVE_SERIES,
   NAME_MAX_LENGTH, CURRENT_SCHEMA_VERSION, ENTRY_REF_KIND, IMAGE_REFS_PER_ENTRY_MAX,
+  STYLE_REFERENCES_MAX, STYLE_NOTES_MAX,
 } from './sanitize.js';
 import {
   emitRecordUpdated, emitRecordDeleted,
@@ -345,7 +347,20 @@ export async function updateUniverse(id, patchOrMutator = {}, options = {}) {
   // "restore mine" path so a faithful restore of the archived snapshot drops a
   // category the live record gained since the conflict, rather than resurrecting
   // it under the normal additive-PATCH semantics (see `mergedCategories` below).
-  const { silent = false, canonProjectionGuard = null, replaceCategories = false } = options;
+  // `options.touchesCanon: false` asserts this write cannot have changed the canon
+  // arrays, so the (per-entry, serial) catalog projection and the removed-character
+  // diff below are skipped. Needed because those are gated on `isMutator` — a
+  // conservative "a mutator could have touched anything" — while projectToCatalog
+  // issues one catalog SELECT per canon entry INSIDE the queued critical section, so
+  // on a 50-character universe a scalar-only mutator would stall the record's write
+  // queue behind 50 round-trips for no reason. Only set it from a mutator whose patch
+  // provably carries no canon key (see addStyleReference / removeStyleReference); a
+  // literal-object PATCH doesn't need it, its own `'characters' in patch` checks are
+  // already precise.
+  const {
+    silent = false, canonProjectionGuard = null, replaceCategories = false,
+    touchesCanon = true,
+  } = options;
   const s = store();
   const { merged, nameChanged, skipped, removedCharacterIds, prevEphemeral, nextEphemeral } = await s.queueRecordWrite(id, async () => {
     const cur = await s.loadOne(id);
@@ -551,7 +566,7 @@ export async function updateUniverse(id, patchOrMutator = {}, options = {}) {
     // the import/call anyway — this runs inside the queued write critical
     // section and an uncaught throw here would reject the whole save. Skipped
     // when the patch can't have touched canon arrays (rename/scalar PATCH).
-    if (isMutator || 'characters' in patch || 'places' in patch || 'objects' in patch) {
+    if (touchesCanon && (isMutator || 'characters' in patch || 'places' in patch || 'objects' in patch)) {
       try {
         const { projectToCatalog } = await import('../catalogCanonProjection.js');
         await projectToCatalog(id, mergedRecord, { guardToken: canonProjectionGuard });
@@ -564,7 +579,7 @@ export async function updateUniverse(id, patchOrMutator = {}, options = {}) {
     // literal-PATCH carrying `characters`) — rename/scalar PATCHes are the
     // common case and skip the Set construction entirely.
     let removedCharacterIds = null;
-    if (isMutator || 'characters' in patch) {
+    if (touchesCanon && (isMutator || 'characters' in patch)) {
       const idsOf = (arr) => (Array.isArray(arr)
         ? arr.filter((c) => c?.id).map((c) => c.id) : []);
       const prevIds = new Set(idsOf(cur.characters));
@@ -630,6 +645,64 @@ export async function updateUniverse(id, patchOrMutator = {}, options = {}) {
     emitRecordUpdated('universe', merged.id);
   }
   return merged;
+}
+
+/**
+ * Append one analyzed art reference to a universe's `styleReferences`, and
+ * optionally adopt the style guidance the same analysis proposed — as a DELTA,
+ * inside `updateUniverse`'s queued mutator.
+ *
+ * This exists because the wholesale-replace `{ styleReferences: [...] }` PATCH
+ * forces the caller to own a base array, which means a browser doing
+ * read-modify-write races every other writer: its own second mutation, a peer
+ * sync, and `universeCanon.js`'s image-delete purge (which mutates
+ * `styleReferences` directly and is invisible to any client-side version
+ * counter). Sending just the addition moves the read half of the RMW inside the
+ * record's write queue, where the freshest persisted list is the base — so
+ * concurrent adds/removes/purges compose instead of clobbering (#3109).
+ *
+ * `adopt` writes `styleNotes` + `influences` in the SAME queued write as the
+ * reference, so the pair can't half-land. Cap enforcement lives here now
+ * (`STYLE_REFERENCES_MAX` against the persisted list), which is stricter than
+ * a client checking its own possibly-stale cache.
+ */
+export async function addStyleReference(id, reference, { adopt = null } = {}) {
+  const sanitized = sanitizeStyleReference(reference);
+  if (!sanitized) throw makeErr('Invalid style reference payload', ERR_VALIDATION);
+  return updateUniverse(id, (cur) => {
+    const current = Array.isArray(cur.styleReferences) ? cur.styleReferences : [];
+    // Idempotent on re-send (a retried request, a double-click): an id already
+    // present is a no-op rather than a duplicate or a cap-exceeded error.
+    if (current.some((ref) => ref?.id === sanitized.id)) return null;
+    if (current.length >= STYLE_REFERENCES_MAX) {
+      throw makeErr(`A universe can hold up to ${STYLE_REFERENCES_MAX} art references`, ERR_VALIDATION);
+    }
+    return {
+      styleReferences: [...current, sanitized],
+      ...(adopt ? {
+        styleNotes: trimTo(adopt.styleNotes, STYLE_NOTES_MAX),
+        influences: resolveInfluences(adopt),
+      } : {}),
+    };
+    // The patch above carries no canon key, so skip the per-entry catalog
+    // projection the mutator path would otherwise run.
+  }, { touchesCanon: false });
+}
+
+/**
+ * Remove one art reference by id — the delta counterpart to
+ * `addStyleReference`, for the same reason (see its doc comment). Resolves with
+ * the unchanged record when the id isn't present, so a duplicate delete or a
+ * removal that raced the image-delete purge is a no-op rather than an error.
+ */
+export async function removeStyleReference(id, referenceId) {
+  if (!isStr(referenceId)) throw makeErr('referenceId is required', ERR_VALIDATION);
+  return updateUniverse(id, (cur) => {
+    const current = Array.isArray(cur.styleReferences) ? cur.styleReferences : [];
+    const next = current.filter((ref) => ref?.id !== referenceId);
+    if (next.length === current.length) return null;
+    return { styleReferences: next };
+  }, { touchesCanon: false });
 }
 
 export async function deleteUniverse(id) {
