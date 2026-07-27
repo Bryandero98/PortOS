@@ -539,6 +539,42 @@ describe('usage.js — streak calculations', () => {
       ]);
     });
 
+    it('keeps flat legacy residuals in a mixed-shape monthly bucket', () => {
+      const report = buildUsageReport({}, {
+        monthlyActivity: {
+          '2025-06': {
+            sessions: 3,
+            messages: 3,
+            tokens: 300,
+            byProvider: {
+              codex: {
+                sessions: 1,
+                messages: 1,
+                tokensIn: 10,
+                tokensOut: 100,
+                byModel: {}
+              }
+            }
+          }
+        }
+      });
+
+      expect(report.providers.find((provider) => provider.id === 'codex')).toMatchObject({
+        sessions: 1,
+        tokensOut: 100
+      });
+      expect(report.providers.find((provider) => provider.id === 'legacy')).toMatchObject({
+        sessions: 2,
+        messages: 2,
+        tokensOut: 200
+      });
+      expect(report.totals).toMatchObject({
+        sessions: 3,
+        messages: 3,
+        tokensOut: 300
+      });
+    });
+
     it('allocates historical direct-token residuals without double-counting buckets', () => {
       const report = buildUsageReport({
         '2025-06-01': {

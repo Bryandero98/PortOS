@@ -416,15 +416,25 @@ export function buildUsageReport(dailyActivity, { from = null, to = null, provid
     return agg.get(pid);
   };
 
-  // Fold one bucket's per-provider/per-model splits into the running aggregate.
+  // Fold a bucket's provider/model splits and any residual flat legacy counts.
+  // Monthly rollups can contain both shapes when their source month straddled
+  // the provider-breakdown rollout.
   const foldBucket = (bucket) => {
-    for (const [pid, pDay] of Object.entries(bucket.byProvider)) {
+    let representedSessions = 0;
+    let representedMessages = 0;
+    let representedTokensIn = 0;
+    let representedTokensOut = 0;
+    for (const [pid, pDay] of Object.entries(bucket.byProvider || {})) {
       const normalized = normalizeProvider(pid, pDay.name);
       const p = ensureAggregate(normalized.id, normalized.name);
       p.sessions += pDay.sessions || 0;
       p.messages += pDay.messages || 0;
       p.tokensIn += pDay.tokensIn || 0;
       p.tokensOut += pDay.tokensOut || 0;
+      representedSessions += pDay.sessions || 0;
+      representedMessages += pDay.messages || 0;
+      representedTokensIn += pDay.tokensIn || 0;
+      representedTokensOut += pDay.tokensOut || 0;
       for (const [model, mDay] of Object.entries(pDay.byModel || {})) {
         if (!p.byModel.has(model)) {
           p.byModel.set(model, { sessions: 0, messages: 0, tokensIn: 0, tokensOut: 0 });
@@ -436,17 +446,18 @@ export function buildUsageReport(dailyActivity, { from = null, to = null, provid
         m.tokensOut += mDay.tokensOut || 0;
       }
     }
-  };
-
-  // Buckets written before per-provider capture still represent real usage.
-  // Keep them in a synthetic fallback-priced row while leaving breakdownSince
-  // to mean "the first date with actual provider/model detail".
-  const foldLegacyBucket = (bucket) => {
-    const p = ensureAggregate(LEGACY_PROVIDER_ID, LEGACY_PROVIDER_NAME);
-    p.sessions += bucket.sessions || 0;
-    p.messages += bucket.messages || 0;
-    p.tokensIn += bucket.tokensIn || 0;
-    p.tokensOut += typeof bucket.tokensOut === 'number' ? bucket.tokensOut : (bucket.tokens || 0);
+    const residualSessions = Math.max(0, (bucket.sessions || 0) - representedSessions);
+    const residualMessages = Math.max(0, (bucket.messages || 0) - representedMessages);
+    const residualTokensIn = Math.max(0, (bucket.tokensIn || 0) - representedTokensIn);
+    const bucketTokensOut = typeof bucket.tokensOut === 'number' ? bucket.tokensOut : (bucket.tokens || 0);
+    const residualTokensOut = Math.max(0, bucketTokensOut - representedTokensOut);
+    if (residualSessions || residualMessages || residualTokensIn || residualTokensOut) {
+      const legacy = ensureAggregate(LEGACY_PROVIDER_ID, LEGACY_PROVIDER_NAME);
+      legacy.sessions += residualSessions;
+      legacy.messages += residualMessages;
+      legacy.tokensIn += residualTokensIn;
+      legacy.tokensOut += residualTokensOut;
+    }
   };
 
   // Rolled-up monthly buckets first, so `breakdownSince` reflects the earliest
@@ -461,22 +472,14 @@ export function buildUsageReport(dailyActivity, { from = null, to = null, provid
     }
     if (fromMonth && month < fromMonth) continue;
     if (toMonth && month > toMonth) continue;
-    if (bucket?.byProvider) {
-      foldBucket(bucket);
-    } else if (bucket) {
-      foldLegacyBucket(bucket);
-    }
+    if (bucket) foldBucket(bucket);
   }
 
   for (const [date, day] of Object.entries(dailyActivity || {})) {
     if (day?.byProvider && (!breakdownSince || date < breakdownSince)) breakdownSince = date;
     if (from && date < from) continue;
     if (to && date > to) continue;
-    if (day?.byProvider) {
-      foldBucket(day);
-    } else if (day) {
-      foldLegacyBucket(day);
-    }
+    if (day) foldBucket(day);
   }
 
   // The legacy POST /usage/tokens path historically updated only all-time
