@@ -280,6 +280,29 @@ describe('codeReview helpers', () => {
       expect(body.messages[1].content).toContain('diff --git a b')
     })
 
+    it('widens the fence so a diff containing ``` cannot close it early', async () => {
+      // A diff touching a markdown file can legitimately contain a fenced
+      // code block of its own. A hardcoded ``` wrapper would let that content
+      // close the outer fence, turning the rest of the diff into free text
+      // the model reads as instructions rather than diff content.
+      const diff = 'diff --git a/README.md b/README.md\n+```js\n+const x = 1\n+```\n'
+      await runLocalCodeReview({ backend: 'ollama', model: 'm', diff })
+      const body = JSON.parse(global.fetch.mock.calls[0][1].body)
+      const content = body.messages[1].content
+      const fenceMatch = content.match(/^Review this PR diff:\n\n(`{3,})diff\n/)
+      expect(fenceMatch).not.toBeNull()
+      const [, fence] = fenceMatch
+      // The chosen fence must be longer than every backtick run in the diff.
+      expect(fence.length).toBeGreaterThan(3)
+      expect(content).toContain(diff)
+      // Only the trailing closing fence line may equal the chosen fence — no
+      // line WITHIN the diff itself (its own ``` fences) may match or exceed
+      // it, which is what would let the diff's content close the block early.
+      const lines = content.split('\n')
+      expect(lines.at(-1)).toBe(fence)
+      expect(lines.slice(0, -1)).not.toContain(fence)
+    })
+
     it('surfaces a non-2xx HTTP error with the status code', async () => {
       global.fetch = vi.fn().mockResolvedValue(mockTextResponse('boom', { ok: false, status: 500 }))
       const r = await runLocalCodeReview({ backend: 'lmstudio', model: 'm', diff: 'x' })

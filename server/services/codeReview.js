@@ -202,11 +202,19 @@ export async function runLocalCodeReview({ backend, model, diff, timeoutMs = 120
   }
 
   const baseUrl = BACKEND_BASE_URLS[backend]()
+  // The diff is untrusted content flowing into a fenced code block — a diff
+  // touching a file that itself contains a ``` sequence (e.g. editing this
+  // very prompt-fence, or a markdown/doc file) would close the fence early,
+  // turning the remainder of the diff into free text the model can read as
+  // instructions. A fence longer than any backtick run already in the diff
+  // can't be closed by the diff's own content (the same technique GitHub uses
+  // to nest a fenced block inside a fenced block).
+  const fence = '`'.repeat(Math.max(3, ...(trimmedDiff.match(/`+/g) || ['']).map((run) => run.length + 1)))
   const body = {
     model,
     messages: [
       { role: 'system', content: CODE_REVIEW_SYSTEM_PROMPT },
-      { role: 'user', content: `Review this PR diff:\n\n\`\`\`diff\n${trimmedDiff}\n\`\`\`` },
+      { role: 'user', content: `Review this PR diff:\n\n${fence}diff\n${trimmedDiff}\n${fence}` },
     ],
     temperature: 0.2,
     stream: false,
