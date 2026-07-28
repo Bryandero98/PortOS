@@ -863,24 +863,31 @@ export async function spawnTuiAgent({
       // forever; this timer is the honest ceiling regardless of PTY chatter.
       if (!maxRuntimeTimer) {
         maxRuntimeTimer = setTimeout(() => {
-          if (finalized) return;
-          // Salvage net: if the agent already wrote its .agent-done sentinel the
-          // run truly finished (the TUI just never idled/exited), so complete as
-          // success — mirrors the one-shot runner's response-file salvage. The
-          // 2s doneSentinelTimer normally catches this first; this covers the
-          // boundary where it lands right at the deadline.
-          if (sentinelPresent()) {
-            finish({ success: true, exitCode: 0, reason: 'max-runtime-sentinel' }).catch(err => {
-              emitLog('error', `Failed to finalize TUI agent ${agentId} at max-runtime salvage: ${err.message}`, { agentId });
-            });
-            return;
+          try {
+            if (finalized) return;
+            // Salvage net: if the agent already wrote its .agent-done sentinel the
+            // run truly finished (the TUI just never idled/exited), so complete as
+            // success — mirrors the one-shot runner's response-file salvage. The
+            // 2s doneSentinelTimer normally catches this first; this covers the
+            // boundary where it lands right at the deadline.
+            if (sentinelPresent()) {
+              finish({ success: true, exitCode: 0, reason: 'max-runtime-sentinel' }).catch(err => {
+                emitLog('error', `Failed to finalize TUI agent ${agentId} at max-runtime salvage: ${err.message}`, { agentId });
+              });
+              return;
+            }
+            // No sentinel yet — but a wall-clock deadline lands wherever it lands,
+            // including on an agent seconds from writing one (see
+            // MAX_RUNTIME_WRAP_UP_GRACE_MS for the measured 30s miss). PROD it to
+            // wrap up and keep watching for the sentinel through the grace window
+            // before reaping. Only then does this become a real failure.
+            startWrapUpGrace();
+          } catch (err) {
+            // setTimeout callback: an uncaught throw here (e.g. a PTY write racing
+            // a dead session) would crash the whole process, killing every other
+            // in-flight agent, not just this one.
+            console.error(`❌ maxRuntimeTimer callback failed: ${err.message}`);
           }
-          // No sentinel yet — but a wall-clock deadline lands wherever it lands,
-          // including on an agent seconds from writing one (see
-          // MAX_RUNTIME_WRAP_UP_GRACE_MS for the measured 30s miss). PROD it to
-          // wrap up and keep watching for the sentinel through the grace window
-          // before reaping. Only then does this become a real failure.
-          startWrapUpGrace();
         }, tuiConfig.maxRuntimeMs);
       }
     };
