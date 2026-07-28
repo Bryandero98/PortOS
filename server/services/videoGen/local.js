@@ -910,10 +910,25 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   // temp paths are tracked for the same cleanup sites.
   const icReferenceTempPaths = [];
   let resolvedIcReferencePaths = icReferencePaths;
+  // Both throw sites in this block land BEFORE the buildArgs try/catch below
+  // (whose catch is what normally unlinks resizedSrcTempPath/
+  // resizedLastTempPath/resizedKeyframeTempPaths/icReferenceTempPaths) — a
+  // throw here escapes uncaught by that cleanup, and the caller's outer catch
+  // only unlinks the route-level upload/audio temp files, not these
+  // internally-created resize/still-clip temp files. Clean them up explicitly
+  // before either throw so a missing ffmpeg or a failed still-encode doesn't
+  // leak every resized temp file for the request into os.tmpdir().
+  const cleanupResizeTempFiles = async () => {
+    if (resizedSrcTempPath) await unlink(resizedSrcTempPath).catch(() => {});
+    if (resizedLastTempPath) await unlink(resizedLastTempPath).catch(() => {});
+    for (const p of resizedKeyframeTempPaths) await unlink(p).catch(() => {});
+    for (const p of icReferenceTempPaths) await unlink(p).catch(() => {});
+  };
   if (isIcLoraMode(mode) && icLoraSpecForMode(mode)?.referenceKind === 'image'
     && Array.isArray(icReferencePaths) && icReferencePaths.length) {
     const stillFfmpeg = ffmpeg || await findFfmpeg();
     if (!stillFfmpeg) {
+      await cleanupResizeTempFiles();
       throw new ServerError(
         'ffmpeg is required to prepare still references for Ingredients mode — install it (brew install ffmpeg) and retry.',
         { status: 400, code: 'IC_LORA_STILL_NEEDS_FFMPEG' },
@@ -940,7 +955,9 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
       // Unlike the resizeImage fallback (which degrades to the original), there is
       // no usable degradation here — a still handed straight to the pipeline fails
       // deep inside the VAE reshape. Fail loudly with the ffmpeg reason.
-      for (const p of clipPaths) await unlink(p).catch(() => {});
+      // cleanupResizeTempFiles() also unlinks clipPaths (already pushed into
+      // icReferenceTempPaths above), plus any earlier resize temp files.
+      await cleanupResizeTempFiles();
       throw new ServerError(
         `Failed to prepare Ingredients reference ${basename(icReferencePaths[failedAt])}: ${encodes[failedAt].error.message}`,
         { status: 400, code: 'IC_LORA_STILL_PREP_FAILED' },

@@ -2061,6 +2061,38 @@ describe('generateVideo — IC-LoRA remix arg threading (#3100)', () => {
       execFileMock.mockImplementation((_bin, _args, _opts, cb) => cb?.(null, '', ''));
     });
 
+    it('also cleans up an earlier resized-source temp file when a still fails to encode', async () => {
+      // resizedSrcTempPath is created by an EARLIER, unrelated resize step
+      // (mirrors a caller that also passed sourceImagePath) — before the
+      // buildArgs try/catch that normally cleans it up. A still-encode
+      // failure in the Ingredients block throws before ever reaching that
+      // try/catch, so without explicit cleanup here the resized-source temp
+      // file would leak into os.tmpdir() even though the clip temp files
+      // themselves were already covered by the test above.
+      const { execFile } = await import('child_process');
+      const { unlink } = await import('fs/promises');
+      const execFileMock = vi.mocked(execFile);
+      const unlinkMock = vi.mocked(unlink);
+      execFileMock.mockClear();
+      unlinkMock.mockClear();
+
+      // The plain resize call (no `-loop`) succeeds; every still-clip call
+      // (`-loop` present) fails.
+      execFileMock.mockImplementation((_bin, args, _opts, cb) => {
+        if (args.includes('-loop')) return cb?.(new Error('ffmpeg exploded'));
+        return cb?.(null, '', '');
+      });
+
+      await expect(generateVideo({
+        ...baseIngredients, jobId: 'ing-src-leak', sourceImagePath: '/mock/images/source.png',
+      })).rejects.toThrow(/Failed to prepare Ingredients reference/);
+
+      const unlinked = unlinkMock.mock.calls.map(([p]) => String(p));
+      expect(unlinked.some((p) => p.includes('resized-src-ing-src-leak.png'))).toBe(true);
+
+      execFileMock.mockImplementation((_bin, _args, _opts, cb) => cb?.(null, '', ''));
+    });
+
     it('cleans up the temp clips after a successful render', async () => {
       const { unlink } = await import('fs/promises');
       const unlinkMock = vi.mocked(unlink);
