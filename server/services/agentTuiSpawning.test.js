@@ -1146,6 +1146,25 @@ describe('spawnTuiAgent runtime', () => {
     );
   });
 
+  it('fails immediately when Antigravity reports that account eligibility is still being verified', async () => {
+    runSpawn({ tuiConfig: agyTuiConfig });
+    await flushMicrotasks();
+
+    await capturedOnData(Buffer.from(
+      "We're finishing verifying your account eligibility. This usually takes a moment. Please try again shortly."
+    ));
+    await flushMicrotasks();
+
+    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: 'agent-1',
+        success: false,
+        completionReason: 'fallback-signal',
+        error: expect.stringContaining('account eligibility')
+      })
+    );
+  });
+
   // ── 1a-bis. Non-counter TUI provider keeps the permissive idle-complete ──────
   // The work-counter signal only exists on Claude Code / Codex. On a provider
   // that never renders it (Antigravity/Gemini), absence proves nothing — so a
