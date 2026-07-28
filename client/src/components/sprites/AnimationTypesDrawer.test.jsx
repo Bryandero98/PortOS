@@ -51,8 +51,8 @@ const CHEST = {
   promptTemplate: 'Animate the {{kind}} {{name}} opening once.',
 };
 
-const renderDrawer = () => render(
-  <MemoryRouter>
+const renderDrawer = (initialEntry = '/sprites') => render(
+  <MemoryRouter initialEntries={[initialEntry]}>
     <AnimationTypesDrawer open onClose={vi.fn()} />
   </MemoryRouter>,
 );
@@ -174,6 +174,19 @@ describe('AnimationTypesDrawer create', () => {
     expect(createSpriteAnimationTrack).not.toHaveBeenCalled();
   });
 
+  it('blocks a CLEARED bound rather than letting Number("") pass as 0', async () => {
+    // The number inputs hold `''` when emptied, and `Number('') === 0` would satisfy
+    // the ordering check — so without an explicit empty check the user gets a raw
+    // "expected number" from Zod instead of a message naming the knob.
+    renderDrawer();
+    await screen.findByText('Chest opening');
+    await fillNewType();
+    fireEvent.change(screen.getByLabelText(/^Min frames/), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: /create type/i }));
+    expect(await screen.findByText(/fill in the minimum, default and maximum/i)).toBeInTheDocument();
+    expect(createSpriteAnimationTrack).not.toHaveBeenCalled();
+  });
+
   it('blocks a duplicate id, a blank label, and a blank prompt locally', async () => {
     renderDrawer();
     await screen.findByText('Chest opening');
@@ -216,6 +229,21 @@ describe('AnimationTypesDrawer create', () => {
 });
 
 describe('AnimationTypesDrawer edit', () => {
+  it('deep-links to a type via ?editTrack and opens its form', async () => {
+    renderDrawer('/sprites?editTrack=chest-opening');
+    expect(await screen.findByDisplayValue('Chest opening')).toBeInTheDocument();
+    expect(screen.getByText(/id is fixed/i)).toBeInTheDocument();
+  });
+
+  it('says so on a STALE ?editTrack instead of silently offering the create form', async () => {
+    // A shared link to a since-deleted type must not read as "your link worked" while
+    // presenting a different action.
+    renderDrawer('/sprites?editTrack=long-gone');
+    expect(await screen.findByText(/No animation type called/)).toBeInTheDocument();
+    expect(screen.getByText('long-gone')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /create type/i })).not.toBeInTheDocument();
+  });
+
   it('loads the row, hides the id as immutable, and shows the derived fields', async () => {
     renderDrawer();
     await screen.findByText('Chest opening');

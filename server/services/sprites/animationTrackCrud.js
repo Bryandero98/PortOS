@@ -124,12 +124,12 @@ const authoredFields = (row) => ({
  * first.
  */
 function withDerivedBaselines(rows, builtins) {
+  // Seed from the BUILTINS only: their claim is compiled in and fixed, while every
+  // stored row's answer is what this function decides below (a row arrives from
+  // `composeRow` with no `standaloneContract` at all).
   const claimed = new Set();
-  for (const row of [...builtins, ...rows]) {
-    if (!row.standaloneContract) continue;
-    // A builtin's claim is fixed; a stored row's is being decided below, so only
-    // seed from rows whose answer is already settled.
-    if (row.builtin) for (const kind of row.kinds) claimed.add(kind);
+  for (const row of builtins) {
+    if (row.standaloneContract) for (const kind of row.kinds) claimed.add(kind);
   }
   return rows.map((row) => {
     const standaloneContract = row.kinds.every((kind) => !claimed.has(kind));

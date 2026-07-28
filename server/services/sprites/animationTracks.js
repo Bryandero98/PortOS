@@ -182,21 +182,6 @@ export const ANIMATION_TRACKS = Object.freeze({
 // genuinely mean the compiled rows only.
 
 /**
- * Validate a registry's rows, throwing on the first violation.
- *
- * Called at module load below (the navManifest.js / catalogTypes.js idiom): a
- * row missing a bound would otherwise boot clean and surface much later as
- * `NaN` out of a Math.min, or as `z.number().min(undefined)` throwing at the
- * first sprite render. A bad row should block boot with a message naming the
- * field, not corrupt a render hours later.
- *
- * Exported and pure — taking the table as an argument — so the guard can be
- * proven against a synthetic multi-row fixture. Asserting set-uniqueness over
- * the real (currently single-row) table would only re-derive the
- * implementation: the whole guard could be deleted and such a test would stay
- * green, which is exactly the regression it exists to prevent.
- */
-/**
  * The min/default/max triples every row must keep in order.
  *
  * Exported because three places need this exact pairing and had each spelled their
@@ -255,6 +240,21 @@ export function deriveTrackFields(id) {
   };
 }
 
+/**
+ * Validate a registry's rows, throwing on the first violation.
+ *
+ * Called at module load below (the navManifest.js / catalogTypes.js idiom): a
+ * row missing a bound would otherwise boot clean and surface much later as
+ * `NaN` out of a Math.min, or as `z.number().min(undefined)` throwing at the
+ * first sprite render. A bad row should block boot with a message naming the
+ * field, not corrupt a render hours later.
+ *
+ * Exported and pure — taking the table as an argument — so the guard can be
+ * proven against a synthetic multi-row fixture. Asserting set-uniqueness over
+ * the real (currently single-row) table would only re-derive the
+ * implementation: the whole guard could be deleted and such a test would stay
+ * green, which is exactly the regression it exists to prevent.
+ */
 export function assertAnimationTrackRows(tracks) {
   const claimedContractFields = new Map();
   const claimedOnDiskKinds = new Map();

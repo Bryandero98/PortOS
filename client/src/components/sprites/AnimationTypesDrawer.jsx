@@ -45,9 +45,10 @@ const TABS = [
 ];
 const TAB_IDS = TABS.map((t) => t.id);
 
-// `NEW_SPRITE_KINDS` is the shared "kinds a user may pick" list (already excluding
-// the legacy import-only `props`, for the same reason). A hand-edited store row may
-// still claim `props` and renders fine in the list — this only governs the FORM.
+// A new type's starting point. The kind options come from the shared
+// `NEW_SPRITE_KINDS` (which already excludes the legacy import-only `props`); a
+// hand-edited store row may still claim `props` and lists fine — that list and this
+// default only govern the FORM.
 const BLANK = {
   id: '',
   label: '',
@@ -88,14 +89,20 @@ const toForm = (row) => ({
 });
 
 /**
- * The first bounds violation, or `null`.
+ * The first bounds problem, or `null`.
  *
- * Deliberately only the ordering rule: it's the one the user hits by typing a
- * default outside the range they just narrowed, and the only one whose message is
- * more useful before the round-trip than after.
+ * Two rules, both chosen because the message is more useful before the round-trip
+ * than after: a cleared field (the number inputs hold `''`, and `Number('')` is `0`,
+ * so an emptied minimum would sail through the ordering check and come back as a raw
+ * "expected number" from Zod), and the ordering the user breaks by typing a default
+ * outside the range they just narrowed.
  */
 function boundsError(form) {
   for (const [min, def, max, label] of BOUND_TRIPLES) {
+    const values = [form[min], form[def], form[max]];
+    if (values.some((v) => v === '' || v === null || !Number.isFinite(Number(v)))) {
+      return `${label}: fill in the minimum, default and maximum.`;
+    }
     if (!(Number(form[min]) <= Number(form[def]) && Number(form[def]) <= Number(form[max]))) {
       return `${label}: minimum ≤ default ≤ maximum is required.`;
     }
@@ -485,6 +492,28 @@ export default function AnimationTypesDrawer({ open, onClose }) {
       );
     }
     if (tracks === null) return <p className="text-sm text-gray-500">Loading…</p>;
+
+    // A stale `?editTrack=` (a shared link to a type since deleted, or a typo) must
+    // say so rather than silently falling through to the blank create form, which
+    // would read as "your link worked" while offering a different action — the
+    // not-found fallback every id-addressed view here owes a stale id.
+    if (editingId && !editing) {
+      return (
+        <div className="space-y-3">
+          <Banner tone="warning" icon={AlertTriangle} size="sm">
+            No animation type called <span className="font-mono">{editingId}</span> — it may have been deleted
+            or renamed.
+          </Banner>
+          <button
+            type="button"
+            onClick={() => setEditingId(null)}
+            className="flex items-center gap-2 px-3 py-1.5 bg-port-bg border border-port-border hover:border-port-accent text-gray-300 rounded text-sm"
+          >
+            <RotateCcw className="w-4 h-4" /> Back to the list
+          </button>
+        </div>
+      );
+    }
 
     if (activeTab === 'new' || editing) {
       return (
