@@ -20,14 +20,41 @@
 export const SENTINEL_COMPLETION_MARKER = '✅ Agent signaled completion';
 
 /**
- * Matches a PortOS-authored lifecycle status line. These are all emitted via the
- * output spooler's `appendLine` with a leading emoji + space — a shape the agent's
- * own summary essentially never takes, since it writes markdown (a bullet leads
- * with `-`, a heading with `#`). Base codepoints with an optional VS16 (`️`),
- * because the emitters are inconsistent about the variation selector (`⚠️` carries
- * one, `⚡` does not) and a literal-only match would miss half of them.
+ * The PortOS-authored lifecycle status lines, matched on their actual message
+ * shapes — deliberately NOT "any line starting with an emoji."
+ *
+ * The agent's own summary is markdown, but nothing stops it from writing a
+ * checklist line like `✅ Tests passed` or `⚠️ Known limitation: …` with no
+ * leading `-`. A bare emoji-prefix test would classify those as telemetry and
+ * silently delete them from the PR description — and a summary made mostly of
+ * such lines could shrink under `extractAgentSummary`'s minimum length and fall
+ * all the way back to commit messages. Anchoring on the message text means only
+ * lines PortOS actually emits can match.
+ *
+ * Kept in sync with `appendLine` in `services/agentTuiSpawning.js`. Not listed:
+ * the generic `❌ <summary>` from `finishStartupFailure`, whose text comes from
+ * its caller and so has no fixed shape to anchor on — it only fires on a startup
+ * failure, which finalizes the agent unsuccessfully and never opens a PR.
  */
-export const RE_AGENT_LIFECYCLE_LINE = /^\s*(?:📟|💡|⚡|⏳|⚠|❌|✅|🌳)️?\s/u;
+const LIFECYCLE_LINE_PATTERNS = [
+  /^\s*📟 TUI session started: /u,
+  /^\s*📟 Prompt pasted into TUI session /u,
+  /^\s*📟 Auto-confirmed .+ folder-trust prompt for session /u,
+  /^\s*💡 Open the Shell tab /u,
+  /^\s*⚡ Provider fallback signal: /u,
+  /^\s*⏳ Max runtime reached — /u,
+  /^\s*⚠️?\s*Paste verification failed /u,
+  /^\s*❌ Paste (?:never landed|verification failed) /u,
+];
+
+/**
+ * Is this line PortOS lifecycle telemetry rather than something the agent said?
+ * @param {string} line
+ * @returns {boolean}
+ */
+export function isAgentLifecycleLine(line) {
+  return LIFECYCLE_LINE_PATTERNS.some(re => re.test(line));
+}
 
 /**
  * Drop PortOS lifecycle status lines from an array of output lines.
@@ -35,5 +62,5 @@ export const RE_AGENT_LIFECYCLE_LINE = /^\s*(?:📟|💡|⚡|⏳|⚠|❌|✅|�
  * @returns {string[]}
  */
 export function stripLifecycleLines(lines) {
-  return lines.filter(line => !RE_AGENT_LIFECYCLE_LINE.test(line));
+  return lines.filter(line => !isAgentLifecycleLine(line));
 }

@@ -165,17 +165,67 @@ describe('extractAgentSummary', () => {
     expect(summary).toContain('## Changes');
   });
 
-  it('drops mid-run lifecycle warnings that land after the completion marker', () => {
+  it('drops mid-run lifecycle warnings that precede the completion marker', () => {
     const output = [
       '📟 TUI session started: abc12345 (codex)',
       '⚠️ Paste verification failed — prompt text not found in buffer, retrying in 5000ms',
+      '⏳ Max runtime reached — asking the agent to wrap up',
       '✅ Agent signaled completion',
       'Fixed the scan-report route so deep links resolve to the SPA.',
-      '⏳ Max runtime reached — asking the agent to wrap up',
     ].join('\n');
 
     const summary = extractAgentSummary(output);
     expect(summary).toBe('Fixed the scan-report route so deep links resolve to the SPA.');
+  });
+
+  // The sentinel is appended verbatim and nothing else writes after it, so a
+  // summary is free to use emoji-led checklist lines of its own — stripping any
+  // emoji-prefixed line would delete the agent's actual words, and a summary made
+  // mostly of them could fall under the minimum length and lose the body entirely.
+  it('keeps the agent\'s own emoji checklist lines inside the sentinel summary', () => {
+    const output = [
+      '📟 TUI session started: abc12345 (codex)',
+      '💡 Open the Shell tab for live TUI output — this panel only logs lifecycle events.',
+      '✅ Agent signaled completion',
+      'Reworked the exporter so every frame lands in the atlas.',
+      '✅ Tests passed (1,204 server, 5,298 client)',
+      '⚠️ Known limitation: the legacy 8-frame atlas is not resampled.',
+    ].join('\n');
+
+    const summary = extractAgentSummary(output);
+    expect(summary).toContain('✅ Tests passed (1,204 server, 5,298 client)');
+    expect(summary).toContain('⚠️ Known limitation: the legacy 8-frame atlas is not resampled.');
+    expect(summary).not.toContain('TUI session started');
+    expect(summary).not.toContain('Open the Shell tab');
+  });
+
+  // A short summary built entirely of emoji-led lines is exactly the case a bare
+  // emoji-prefix filter would erase — it would fall under the 30-char floor and
+  // return null, sending the PR body to the commit-message fallback.
+  it('does not erase a summary composed of emoji-led lines', () => {
+    const output = [
+      '📟 TUI session started: abc12345 (codex)',
+      '✅ Agent signaled completion',
+      '✅ Fixed the crash on empty tag lists',
+      '✅ Added a regression test for it',
+    ].join('\n');
+
+    expect(extractAgentSummary(output)).toBe(
+      '✅ Fixed the crash on empty tag lists\n✅ Added a regression test for it'
+    );
+  });
+
+  it('drops telemetry when a TUI agent finished without writing a sentinel', () => {
+    const output = [
+      '📟 TUI session started: abc12345 (codex --model gpt-5.6-terra)',
+      '💡 Open the Shell tab for live TUI output — this panel only logs lifecycle events.',
+      '📟 Prompt pasted into TUI session abc12345 (ready)',
+      'Rewired the exporter so every frame lands in the atlas rather than the first eight.',
+    ].join('\n');
+
+    expect(extractAgentSummary(output)).toBe(
+      'Rewired the exporter so every frame lands in the atlas rather than the first eight.'
+    );
   });
 
   it('finds the completion marker even when the sentinel summary runs past the 4000-char tail', () => {

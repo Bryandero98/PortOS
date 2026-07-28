@@ -114,6 +114,11 @@ export function extractAgentSummary(output) {
 
   let summaryLines;
   if (markerIdx >= 0) {
+    // Everything past the marker is the sentinel, appended verbatim and
+    // contiguously by `ingestDoneSentinel` at the top of finalize — no other
+    // `appendLine` runs after it. So take it as-is: filtering here could only
+    // ever delete the agent's own words (a summary is free to contain a line
+    // like "✅ Tests passed").
     summaryLines = lines;
   } else {
     // Find the last tool-call artifact line index.
@@ -127,9 +132,11 @@ export function extractAgentSummary(output) {
       }
     }
     summaryLines = lastToolLine >= 0 ? lines.slice(lastToolLine + 1) : lines;
+    // No marker: a TUI agent that finished without writing a sentinel (idle-
+    // complete) leaves a buffer of pure telemetry, which would otherwise become
+    // the whole PR body. Drop the lines PortOS is known to emit.
+    summaryLines = stripLifecycleLines(summaryLines);
   }
-
-  summaryLines = stripLifecycleLines(summaryLines);
 
   // Trim leading/trailing blank lines
   while (summaryLines.length && !summaryLines[0].trim()) summaryLines.shift();
