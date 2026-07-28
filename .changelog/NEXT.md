@@ -3,6 +3,7 @@
 ## Added
 
 - **Malware scans now leave a durable, reviewable report trail.** Git-link scans save an owned markdown artifact, surface it from the completed agent summary and Review Hub, and mark repositories with an explicit `DANGEROUS` verdict using a skull danger treatment on the Git links card.
+- **Slashdo-free TUI agent PRs now complete their lifecycle.** Codex, Antigravity, OpenCode, and lean Claude agents hand committed work back to PortOS so it can generate a non-empty PR description, run configured reviewers, and merge after the selected gates pass instead of leaving an ownerless PR open.
 
 ## Quota burn
 

@@ -754,11 +754,10 @@ const LEAVE_PR_OPEN_STEP = (step, jiraTracked = false) => `${step}. **Leave the 
  *
  * This is the single definition of "no reviewer is configured, so CI is the
  * merge gate" — shared by every flow that reaches it: the agent's own completion
- * workflow (slashdo TUI + Claude Code CLI via `buildPostPRMergeSteps`), the
- * manual/OpenCode TUI workflow, and the merge follow-up agent PortOS spawns when
- * it opened the PR itself. They differ only in how the PR is addressed and
- * whether GitLab commands are offered, so those are parameters rather than three
- * hand-written copies that drift.
+ * workflow (slashdo TUI + Claude Code CLI via `buildPostPRMergeSteps`) and the
+ * merge follow-up agent PortOS spawns when it opened the PR itself. They differ
+ * only in how the PR is addressed and whether GitLab commands are offered, so
+ * those are parameters rather than hand-written copies that drift.
  *
  * Ends on the same merge command + MERGED verification as the review-loop
  * contract (`buildReviewLoopFollowUpSection`): a true merge commit keeps the
@@ -868,8 +867,8 @@ function buildMergeFollowUpSection({ prUrl, prBranch, prNumber = '', prOwner = '
  * @param {boolean} opts.isReadOnly
  * @param {boolean} opts.isTui
  * @param {string} opts.tuiCompletionCommand - `/do:pr` or `/do:push`
- * @param {boolean} [opts.slashdoFree] - TUI without slashdo (OpenCode): the bullet
- *   points at the manual git/gh Completion Workflow instead of a `/do:*` command.
+ * @param {boolean} [opts.slashdoFree] - TUI without slashdo: the bullet points
+ *   at the manual commit + system-handoff workflow instead of a `/do:*` command.
  * @param {Object|null} opts.worktreeInfo
  * @param {boolean} opts.willOpenPR
  * @param {'review-then-merge'|'merge-on-green'|'leave-open'} opts.prCompletion
@@ -903,7 +902,7 @@ export function buildCompletionGuidelineBullet({
     // buildTuiCompletionSection — not this bullet). It's kept provider-aware and
     // directly unit-tested so the guideline stays correct if that routing changes.
     const howTo = slashdoFree
-      ? 'the Completion Workflow above (plain `git`/`gh` commands — this provider has no slashdo commands)'
+      ? 'the Completion Workflow above (plain `git` commit + PortOS handoff — this provider has no slashdo commands)'
       : `the Completion Workflow above (\`${tuiCompletionCommand}\`)`;
     return `On successful completion, YOU run ${howTo}, then write the sentinel and stop — PortOS closes the session once it sees the sentinel; do NOT run \`/quit\`.`;
   }
@@ -1490,6 +1489,8 @@ ${discardWorktree
   ? `- **Do NOT commit, push, or open a PR.** This worktree is discarded on exit — your only output is the completion sentinel (see the Completion section above).`
   : isReviewLoopFollowUp
     ? `- **Push fixes straight to the PR branch you are on** (the follow-up section above is the procedure). Stage specific files, use a \`fix:\` prefix, no Co-Authored-By annotations. Do NOT open a new PR.`
+    : isTui && tuiSlashdoFree
+    ? `- **Commit only — do NOT push.** Stage specific files, use \`feat:\`/\`fix:\`/\`breaking:\` prefix in the commit message, no Co-Authored-By annotations, then write the completion sentinel. PortOS will handle the branch after it closes the session.`
     : isTui
     ? `- **Use \`${tuiCompletionCommand}\` to ${willOpenPR ? 'commit, push, and open the PR' : 'commit and push the branch'}** — see the Completion Workflow section above. Stage specific files (no \`git add -A\`), use \`feat:\`/\`fix:\`/\`breaking:\` prefix in the commit message, no Co-Authored-By annotations.`
     : worktreeInfo && willOpenPR
@@ -1592,7 +1593,8 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   // block where PortOS handles push+PR on exit.
   const hasSlashdo = !isTui && canTypeSlash;
   // TUI: a session that does NOT load Claude Code slash commands can't run
-  // `/do:pr` / `/do:push`, so its completion workflow uses plain git/gh instead
+  // `/do:pr` / `/do:push`, so its completion workflow uses plain git and hands
+  // the post-exit push / PR lifecycle back to PortOS
   // — an OpenCode TUI, a codex/antigravity/grok TUI, or a lean-mode Claude
   // session (`--bare` skips project command discovery, and the small local models
   // lean mode targets fumble multi-step slashdo flows anyway).
@@ -1859,40 +1861,25 @@ function buildTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.M
 /**
  * Manual (slashdo-free) TUI completion-workflow block — for an OpenCode TUI that
  * does NOT load Claude Code slash commands and so can't run `/do:pr` / `/do:push`.
- * Drives a plain `git` commit → push → (open PR/MR) → sentinel handshake, so the
- * `.agent-done` signal still fires and the task completes.
+ * Drives a plain `git` commit → sentinel handshake. PortOS owns the post-exit
+ * push / PR / review / merge lifecycle, just as it does for non-TUI providers
+ * that cannot invoke project slash commands.
  *
- * PortOS forces `openPR:false, skipMerge:true` on TUI worktree cleanup (see
- * agentTuiSpawning.js), so nothing happens after the agent exits — the agent owns
- * the push and the PR itself.
- *
- * With review-then-merge configured, it opens the PR/MR and stops:
- * this provider can't drive the reviewer CLIs (no slashdo `/do:pr` review loop)
- * and PortOS runs no post-exit review for a TUI, so merging here would ship work
- * the user asked to have reviewed. With the review loop OFF there is no reviewer
- * and no follow-up coming, so leaving it open just leaks the PR — the agent
- * merges it once CI is green, matching every other no-review-loop flow.
- *
- * Forge-aware (GitHub `gh` + GitLab `glab`) to match the slashdo path; refs are
- * shell-quoted because a git ref can legally contain shell metacharacters.
+ * Keeping PR creation system-owned also guarantees a real generated body rather
+ * than `gh pr create --fill` producing an empty description from a one-line
+ * commit, and lets the existing follow-up machinery run configured reviewers.
  */
-function buildManualTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.REVIEW_THEN_MERGE, simplifyEnabled, sentinelPath, branchName = null, baseBranch = null, leavePrOpen = false }) {
+function buildManualTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.REVIEW_THEN_MERGE, simplifyEnabled, sentinelPath, leavePrOpen = false }) {
   const policyLeavesOpen = prCompletion === PR_COMPLETIONS.LEAVE_OPEN;
   const runsReviewLoop = prCompletion === PR_COMPLETIONS.REVIEW_THEN_MERGE;
-  const branchRef = shellQuote(branchName || 'HEAD');
-  // Pin the PR base to the worktree's base branch when known, so the forge CLI
-  // doesn't guess (and a fork install targets the intended branch). `--fill`
-  // still supplies title/body from the commits.
-  const ghBaseArg = baseBranch ? ` --base ${shellQuote(baseBranch)}` : '';
-  const glabBaseArg = baseBranch ? ` --target-branch ${shellQuote(baseBranch)}` : '';
   const simplifyStep = simplifyEnabled
     ? `1. Before committing, ${SIMPLIFY_INLINE_REVIEW} and fix any findings.`
     : '1. (simplify disabled — skip)';
-  const sentinelTail = willOpenPR ? '   ## PR\n   <PR URL>' : '   ## Branch\n   <branch name>';
+  const sentinelTail = '   ## Branch\n   <branch name>';
 
   const lines = [
     '## Completion Workflow',
-    'This provider does NOT have slashdo (`/do:*`) commands, so finish the handoff with plain `git` (and your forge\'s CLI). Run these in order:',
+    'This provider does NOT have slashdo (`/do:*`) commands, so finish the handoff with plain `git`. Run these in order:',
     '',
     simplifyStep,
     '2. Stage only the files you changed (never `git add -A` / `git add .`) and commit with a conventional message (`feat:`/`fix:`/`breaking:` prefix, no Co-Authored-By annotations):',
@@ -1901,36 +1888,20 @@ function buildManualTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLET
     '   git add <file> [<file> ...]',
     '   git commit -m "feat: <description>"',
     '   ```',
-    '3. Push your branch (it is a fresh worktree branch, so set upstream on first push):',
-    '',
-    '   ```bash',
-    `   git push -u origin ${branchRef}`,
-    '   ```',
   ];
 
-  let step = 4;
+  let step = 3;
   if (willOpenPR) {
-    const openNote = policyLeavesOpen
-      ? '**Leave it open — do NOT merge it.** This task is configured to stop after opening the PR so you can inspect it.'
+    const handoff = policyLeavesOpen
+      ? 'PortOS will push the branch, create a pull request with your completion summary as its description, and leave it open for inspection.'
       : leavePrOpen
-      ? '**Leave it open — do NOT merge it.** This task is tracked in JIRA: its ticket is in review and a human lands the PR and the ticket together.'
+      ? 'PortOS will push the branch and create a pull request for the JIRA-linked human handoff.'
       : runsReviewLoop
-        ? '**Leave it open for review — do NOT merge it yourself.** This provider can\'t run the reviewer loop, and PortOS won\'t merge it for a TUI task, so a configured reviewer or a human reviews and merges it.'
-        : 'No review loop is configured for this task, so you merge it yourself in the next step — nothing else will.';
-    lines.push(
-      `${step++}. Open a pull/merge request against the base branch using the CLI for this repo's forge (check \`git remote -v\`), and capture the URL it prints. ${openNote}`,
-      '',
-      '   ```bash',
-      `   # GitHub:  gh pr create --fill${ghBaseArg}`,
-      `   # GitLab:  glab mr create --fill${glabBaseArg}`,
-      '   ```',
-    );
-    if (!runsReviewLoop && !leavePrOpen && !policyLeavesOpen) {
-      // Same CI-gate procedure the slashdo workflow and the merge follow-up use.
-      const gate = buildCiMergeGateSteps(step, { prRef: '"<PR_URL>"', forge: 'unknown' });
-      lines.push(...gate.lines);
-      step = gate.nextStep;
-    }
+        ? 'PortOS will push the branch, create a pull request with your completion summary as its description, run the configured reviewer follow-up, and merge only after review and CI pass.'
+        : 'PortOS will push the branch, create a pull request with your completion summary as its description, and merge it once CI is green.';
+    lines.push(`${step++}. Do NOT push, open, or merge a pull request yourself. ${handoff}`);
+  } else {
+    lines.push(`${step++}. Do NOT push this worktree branch yourself. PortOS will merge it back after completion.`);
   }
 
   lines.push(

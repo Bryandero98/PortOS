@@ -64,6 +64,18 @@ vi.mock('./agentFinalization.js', () => ({
   releaseAgentLane: vi.fn()
 }));
 
+vi.mock('./codeReview.js', () => ({
+  resolveReviewLoopOptions: vi.fn().mockResolvedValue({
+    reviewers: ['codex'],
+    usernames: [],
+    optionalReviewers: [],
+    reviewerMaxRounds: {},
+    reviewStopMode: 'on-clean',
+    reviewerApplies: false,
+    reviewerModels: {},
+  })
+}));
+
 vi.mock('./agentState.js', () => ({
   activeAgents: new Map(),
   userTerminatedAgents: new Set(),
@@ -509,6 +521,53 @@ describe('spawnTuiAgent runtime', () => {
 
     await capturedOnExit({ exitCode: 0, killed: false });
     await completeDone;
+  });
+
+  it('hands a slashdo-free TUI PR to PortOS for creation and review/merge follow-up', async () => {
+    const cleanupWorktreeFn = vi.fn().mockResolvedValue(undefined);
+    const spawnPromise = runSpawn({
+      provider: { id: 'codex-tui', name: 'Codex TUI', type: 'tui', command: 'codex', envVars: {} },
+      task: {
+        id: 'task-1',
+        description: 'do the thing',
+        metadata: { openPR: true, prCompletion: 'review-then-merge', reviewers: ['codex'] },
+      },
+      helpers: { cleanupWorktreeFn, isTruthyMetaFn: (value) => value === true || value === 'true' },
+    });
+    await flushMicrotasks();
+
+    await capturedOnExit({ exitCode: 0, killed: false });
+    await spawnPromise;
+
+    expect(cleanupWorktreeFn).toHaveBeenCalledWith('agent-1', true, expect.objectContaining({
+      openPR: true,
+      prCompletion: 'review-then-merge',
+      reviewers: ['codex'],
+      skipMerge: false,
+    }));
+  });
+
+  it('does not double-fire a PR owned by a slashdo-capable Claude TUI', async () => {
+    const cleanupWorktreeFn = vi.fn().mockResolvedValue(undefined);
+    const spawnPromise = runSpawn({
+      provider: { id: 'claude-code-tui', name: 'Claude TUI', type: 'tui', command: 'claude', envVars: {} },
+      task: {
+        id: 'task-1',
+        description: 'do the thing',
+        metadata: { openPR: true, prCompletion: 'review-then-merge' },
+      },
+      helpers: { cleanupWorktreeFn, isTruthyMetaFn: (value) => value === true || value === 'true' },
+    });
+    await flushMicrotasks();
+
+    await capturedOnExit({ exitCode: 0, killed: false });
+    await spawnPromise;
+
+    expect(cleanupWorktreeFn).toHaveBeenCalledWith('agent-1', true, expect.objectContaining({
+      openPR: false,
+      prCompletion: 'review-then-merge',
+      skipMerge: true,
+    }));
   });
 
   // ── 1. Successful idle-complete path ────────────────────────────────────────

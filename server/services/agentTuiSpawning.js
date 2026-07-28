@@ -19,7 +19,11 @@ import { finalizeAgent, releaseAgentLane } from './agentFinalization.js';
 import { activeAgents, userTerminatedAgents, pausedAgents, isFalsyMeta } from './agentState.js';
 import { PATHS } from '../lib/fileUtils.js';
 import { DONE_SENTINEL_NAME, parseSentinelPayload } from '../lib/agentSentinel.js';
+import { resolvePrCompletion } from '../lib/prDisposition.js';
+import { canTypeSlashCommands } from '../lib/slashdoInvocation.js';
+import { normalizeReviewers } from '../lib/validation.js';
 import * as git from './git.js';
+import { resolveReviewLoopOptions } from './codeReview.js';
 import { shellQuote } from '../lib/shellQuote.js';
 import { resolveCliModel, buildEffortArgs, resolveBedrockCliModel, prefixOpencodeModel, hasModelFlag, isOpencodeCommand, isClaudeCommand, applyLeanClaudeArgs, providerSuppliesGithubToken } from '../lib/providerModels.js';
 import { createStreamingAnsiStripper, stripAnsi } from '../lib/ansiStrip.js';
@@ -223,6 +227,7 @@ export async function spawnTuiAgent({
   laneName,
   cleanupWorktreeFn,
   isTruthyMetaFn,
+  leanMode = false,
 }) {
   const outputFile = join(agentDir, 'output.txt');
   // Raw PTY bytes spool to disk continuously rather than accumulate in-memory.
@@ -504,15 +509,29 @@ export async function spawnTuiAgent({
     } finally {
       if (workspacePath) await rm(join(workspacePath, DONE_SENTINEL_NAME)).catch(() => {});
 
-      // TUI agents run /do:pr (or /do:push) themselves before signaling via
-      // .agent-done, so the system-side cleanup must NOT also push or open a
-      // PR — that would double-fire. `skipMerge` is forced on so the
-      // post-exit auto-merge doesn't trip over a branch the agent already
-      // pushed. The worktree directory itself is still cleaned up.
+      // A slashdo-capable Claude TUI owns /do:pr itself. Slashdo-free TUIs
+      // (Codex, Antigravity, OpenCode, lean Claude) only commit and signal;
+      // PortOS must own their push + PR + reviewer/merge follow-up. Derive this
+      // from the same predicate used by the prompt builder so neither side can
+      // believe the other owns the PR.
+      const taskOpenPR = isTruthyMetaFn(task.metadata?.openPR);
+      const agentOwnsPR = taskOpenPR && canTypeSlashCommands({
+        providerId: provider?.id,
+        providerCommand: provider?.command,
+        leanMode,
+      });
+      const reviewOptions = finalSuccess && taskOpenPR && !agentOwnsPR
+        ? await resolveReviewLoopOptions(task.metadata, { normalize: normalizeReviewers, isTruthyMeta: isTruthyMetaFn })
+          .catch(err => {
+            emitLog('warn', `TUI review options unavailable for ${agentId}: ${err.message}`, { agentId });
+            return {};
+          })
+        : {};
       await cleanupWorktreeFn(agentId, finalSuccess, {
-        openPR: false,
-        requestCopilotReview: false,
-        skipMerge: true,
+        openPR: agentOwnsPR ? false : taskOpenPR,
+        prCompletion: resolvePrCompletion(task.metadata),
+        ...reviewOptions,
+        skipMerge: agentOwnsPR,
         description: task.description,
         agentOutput: getOutputBuffer(),
         originalTask: task
