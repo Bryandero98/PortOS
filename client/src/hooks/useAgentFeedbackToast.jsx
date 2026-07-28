@@ -183,6 +183,7 @@ export function useAgentFeedbackToast() {
         {
           id: toastId,
           duration: Infinity, // Component manages its own auto-dismiss
+          label: 'Agent finished — rate the result',
           style: {
             background: 'rgb(var(--port-card))',
             border: '1px solid rgb(var(--port-border))',

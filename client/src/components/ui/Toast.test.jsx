@@ -1,12 +1,14 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, screen, cleanup, act } from '@testing-library/react';
+import { useEffect } from 'react';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { render, screen, cleanup, act, fireEvent } from '@testing-library/react';
 
-import { toast, Toaster } from './Toast.jsx';
+import { toast, Toaster, COLLAPSE_AFTER_MS } from './Toast.jsx';
 
 afterEach(() => {
   act(() => toast.dismiss());
   cleanup();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe('Toast on an insecure origin', () => {
@@ -59,5 +61,101 @@ describe('Toaster accessibility', () => {
     const status = screen.getByRole('status');
     const glyph = status.querySelector('[aria-hidden="true"]');
     expect(glyph).toHaveTextContent('✓');
+  });
+});
+
+/** Why a never-dismissing toast has to fold away: see COLLAPSE_AFTER_MS. */
+describe('long-lived toasts stop blocking the page', () => {
+  const advance = (ms) => act(() => { vi.advanceTimersByTime(ms); });
+
+  // Every test here measures a timeout, so fake timers are mandatory — a test
+  // that forgot them would silently no-op every `advance()`.
+  beforeEach(() => {
+    vi.useFakeTimers();
+    render(<Toaster />);
+  });
+
+  it('collapses a persistent toast to a pill that no longer covers the page', () => {
+    act(() => { toast('Install out of sync', { duration: Infinity, icon: '⚠️' }); });
+
+    // Still a full-size toast for the first COLLAPSE_AFTER_MS.
+    expect(screen.getByRole('status')).toBeVisible();
+    expect(screen.queryByRole('button', { name: /show notification/i })).toBeNull();
+
+    advance(COLLAPSE_AFTER_MS);
+
+    // The body is hidden (out of hit-testing and out of the a11y tree) and only
+    // a corner pill remains.
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Show notification: Install out of sync' })).toBeVisible();
+  });
+
+  it('leaves transient toasts alone — they never live long enough to block anything', () => {
+    act(() => { toast('Saved'); });
+
+    // The default 4s toast is dismissed well before the collapse threshold, so
+    // it must never sprout a pill on its way out.
+    advance(COLLAPSE_AFTER_MS * 2);
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.queryByRole('button', { name: /show notification/i })).toBeNull();
+  });
+
+  it('re-expands when the pill is clicked, and re-collapses on its own', () => {
+    // Distinct text per test: identical content within DEDUP_WINDOW_MS is
+    // dropped, and the fingerprint map outlives an individual test.
+    act(() => { toast('New build available', { duration: Infinity }); });
+    advance(COLLAPSE_AFTER_MS);
+
+    fireEvent.click(screen.getByRole('button', { name: /show notification/i }));
+    expect(screen.getByRole('status')).toBeVisible();
+
+    // No pinning on expand — a tap on a touch device (no mouseleave ever
+    // arrives) must still fold the toast back away.
+    advance(COLLAPSE_AFTER_MS);
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('keeps the toast open while focus is inside it', () => {
+    act(() => {
+      toast(() => <button type="button">Reconcile</button>, { duration: Infinity, label: 'Install out of sync' });
+    });
+
+    fireEvent.focus(screen.getByRole('button', { name: 'Reconcile' }));
+    advance(COLLAPSE_AFTER_MS * 2);
+    // Collapsing here would `display: none` the focused button and dump focus
+    // on <body> mid-interaction.
+    expect(screen.getByRole('button', { name: 'Reconcile' })).toBeVisible();
+
+    fireEvent.blur(screen.getByRole('button', { name: 'Reconcile' }));
+    advance(COLLAPSE_AFTER_MS);
+    expect(screen.getByRole('button', { name: 'Show notification: Install out of sync' })).toBeVisible();
+  });
+
+  it('unfolds a collapsed toast when it is updated in place', () => {
+    act(() => { toast.loading('Restarting PortOS...', { id: 'restart', duration: Infinity }); });
+    advance(COLLAPSE_AFTER_MS);
+    expect(screen.getByRole('button', { name: /show notification/i })).toBeVisible();
+
+    // Same id, new content: the swap has something to say, so it must not land
+    // inside a pill nobody thinks to open.
+    act(() => { toast.success('PortOS restarted', { id: 'restart' }); });
+    expect(screen.getByRole('status')).toHaveTextContent('PortOS restarted');
+    expect(screen.queryByRole('button', { name: /show notification/i })).toBeNull();
+  });
+
+  it('hides rather than unmounts, so a self-dismissing toast keeps its timers', () => {
+    const unmounted = vi.fn();
+    function SelfManaging() {
+      useEffect(() => unmounted, []);
+      return <span>Agent finished</span>;
+    }
+    act(() => { toast(() => <SelfManaging />, { duration: Infinity, label: 'Agent finished' }); });
+
+    advance(COLLAPSE_AFTER_MS);
+
+    // Unmounting the body would destroy the render-prop's own auto-dismiss
+    // timer and strand the pill on screen forever.
+    expect(unmounted).not.toHaveBeenCalled();
+    expect(screen.getByText('Agent finished')).toBeInTheDocument();
   });
 });
