@@ -16,15 +16,19 @@
 
 import { homedir } from 'os'
 import { join, dirname } from 'path'
-import { readdir, stat, link } from 'fs/promises'
+import { readdir, stat, link, unlink } from 'fs/promises'
+import { createHash } from 'crypto'
 import { execFile, spawn } from 'child_process'
 import { promisify } from 'util'
 import { fetchWithTimeout } from '../lib/fetchWithTimeout.js'
 import { readResponseJson } from '../lib/readResponseJson.js'
-import { readJSONFile, sha256File, safeJSONParse, ensureDir, sleep } from '../lib/fileUtils.js'
+import { readJSONFile, sha256File, safeJSONParse, ensureDir, atomicWrite, sleep } from '../lib/fileUtils.js'
 import {
-  parseOllamaManifest, parseOllamaModelRef, ollamaManifestRelPath, digestToBlobFilename, buildModelfile
+  parseOllamaManifest, parseOllamaModelRef, ollamaManifestRelPath, digestToBlobFilename, buildModelfile,
+  manifestBlobRefs, huggingFaceRegistryBase
 } from '../lib/localLlmDisk.js'
+import { buildHfAuthHeaders } from '../lib/huggingfaceLora.js'
+import { getHfToken } from '../lib/hfToken.js'
 import { isEmbeddingModel } from '../lib/localModelHeuristics.js'
 
 const execFileAsync = promisify(execFile)
@@ -37,6 +41,21 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 10_000
 // than restarts. Total attempts (1 initial + retries) and a linear backoff base.
 const PULL_MAX_ATTEMPTS = 3
 const PULL_RETRY_BASE_DELAY_MS = 1_000
+// Hugging Face can be pathologically slow serving the tiny (≈500 byte) *config*
+// blob of a large GGUF repo — a cold CDN miss regularly takes 50-60s, well past
+// Ollama's internal per-request deadline. The weight layers all reach 100%, then
+// the pull dies with "context deadline exceeded" and no manifest is written, so
+// the model vanishes even though ~30GB of verified blobs are on disk. Ollama
+// itself doesn't resume that step, and every retry re-races the same deadline.
+// So when a pull fails that way we finish it ourselves: fetch the manifest +
+// missing blobs with a generous timeout, verify each digest, and write the
+// manifest Ollama would have written. See isPullDeadlineError().
+const HF_FINALIZE_TIMEOUT_MS = 180_000
+// Only complete blobs small enough to hold in memory and hash in one shot — the
+// config/params/template layers this recovery exists for are bytes-to-kilobytes.
+// A missing multi-GB weight layer is a real download, not a stalled hiccup, so
+// we bail and let the error surface rather than silently re-downloading it here.
+const HF_FINALIZE_MAX_BLOB_BYTES = 4 * 1024 * 1024
 // Short probe — degrade to "no Ollama" fast rather than block on a cold check.
 const AVAILABILITY_PROBE_TIMEOUT_MS = 5_000
 const START_TIMEOUT_MS = 12_000
@@ -645,11 +664,14 @@ async function unloadModel(modelName) {
 
 /**
  * Pull a model, streaming progress. Resolves once the pull finishes.
- * During a transient-error backoff the callback fires with `retrying: true`
- * (and `percent: null`) so the UI can show a "retrying" banner instead of stalling.
+ * Non-percent frames carry a reason flag so the UI can show why the banner is
+ * paused instead of stalling: `retrying: true` during a transient-error backoff,
+ * `finalizing: true` while PortOS completes an install Ollama abandoned (see
+ * finalizeHuggingFacePull). A success that went through that recovery is flagged
+ * `recovered: true`.
  * @param {string} modelId
- * @param {(p: { status: string, percent: number|null, completed?: number, total?: number, retrying?: boolean }) => void} [onProgress]
- * @returns {Promise<{ success: boolean, modelId: string, error?: string }>}
+ * @param {(p: { status: string, percent: number|null, completed?: number, total?: number, retrying?: boolean, finalizing?: boolean }) => void} [onProgress]
+ * @returns {Promise<{ success: boolean, modelId: string, error?: string, recovered?: boolean }>}
  */
 async function pullModel(modelId, onProgress) {
   if (!(await checkOllamaAvailable())) {
@@ -675,11 +697,40 @@ async function pullModel(modelId, onProgress) {
     await sleep(delayMs)
   }
 
+  // The weights may all be on disk and only Ollama's manifest write missing —
+  // retrying just re-races the same deadline, so finish the pull ourselves.
+  if (isPullDeadlineError(lastError)) {
+    if (typeof onProgress === 'function') {
+      onProgress({ status: 'finishing install from downloaded files…', percent: null, finalizing: true })
+    }
+    const recovered = await finalizeHuggingFacePull(modelId).catch((err) => ({ success: false, error: err.message }))
+    if (recovered.success) {
+      installedModels = null  // bust cache so the recovered model shows on next list
+      return { success: true, modelId, recovered: true }
+    }
+    console.warn(`⚠️ Ollama pull recovery declined for ${modelId}: ${recovered.error}`)
+  }
+
   console.error(`⚠️ Ollama pull failed for ${modelId}: ${lastError}`)
   const code = isShardedGgufError(lastError) ? 'SHARDED_GGUF'
     : isOllamaOutdatedError(lastError) ? 'OLLAMA_OUTDATED'
       : undefined
   return { success: false, error: lastError, modelId, ...(code ? { code } : {}) }
+}
+
+/**
+ * Detect the Go-runtime deadline Ollama reports when a registry request outlives
+ * its internal per-request budget: `context deadline exceeded`. Distinctive
+ * because it lands AFTER the weight layers hit 100% — the blobs are downloaded
+ * and verified, only the manifest write is missing — which is what makes the
+ * local-completion recovery in finalizeHuggingFacePull() safe to attempt.
+ *
+ * Deliberately NOT part of isTransientPullError: retrying re-races the same slow
+ * endpoint against the same deadline and fails identically every time.
+ * @param {string|null|undefined} error
+ */
+function isPullDeadlineError(error) {
+  return /context deadline exceeded/i.test(String(error ?? ''))
 }
 
 /**
@@ -866,12 +917,15 @@ function getModelsDir() {
 
 const fileExists = (p) => stat(p).then((s) => s.isFile()).catch(() => false)
 const readManifest = (p) => readJSONFile(p, null, { logError: false })
+// One expression for the canonical manifest path, so the recovery writer and
+// findManifest's reader can't drift apart.
+const manifestPathFor = (modelsDir, ref) => join(modelsDir, ...ollamaManifestRelPath(ref).split('/'))
 
 // The canonical manifest path covers registry-pulled models; fall back to a
 // shallow scan of manifests/<registry>/<namespace>/<name>/<tag> for custom
 // registries/namespaces we didn't guess.
 async function findManifest(modelsDir, ref) {
-  const direct = await readManifest(join(modelsDir, ...ollamaManifestRelPath(ref).split('/')))
+  const direct = await readManifest(manifestPathFor(modelsDir, ref))
   if (direct) return direct
   const manifestsDir = join(modelsDir, 'manifests')
   const registries = await readdir(manifestsDir).catch(() => [])
@@ -884,6 +938,86 @@ async function findManifest(modelsDir, ref) {
     }
   }
   return null
+}
+
+/**
+ * Fetch a Hugging Face registry document (manifest or blob) as a Buffer, with a
+ * timeout generous enough for HF's slow cold-CDN small-blob path (the very thing
+ * Ollama's own deadline gives up on). Carries the user's HF token when they have
+ * one, so a gated repo Ollama could pull is recoverable too.
+ * @returns {Promise<{ buffer: Buffer }|{ error: string }>}
+ */
+async function fetchHuggingFaceDocument(url, headers) {
+  return fetchWithTimeout(url, { headers }, HF_FINALIZE_TIMEOUT_MS)
+    .then(async (response) => (response.ok
+      ? { buffer: Buffer.from(await response.arrayBuffer()) }
+      : { error: `${response.status} ${response.statusText}` }))
+    .catch((err) => ({ error: describeFetchError(err) }))
+}
+
+/**
+ * Finish a Hugging Face pull that downloaded its weights but died before Ollama
+ * wrote the manifest (see HF_FINALIZE_TIMEOUT_MS). Re-fetches the manifest, then
+ * for each blob it references: keeps an on-disk blob whose size already matches,
+ * and downloads + digest-verifies any small missing one. Only when EVERY blob is
+ * present and correct does it write the manifest — a half-written manifest would
+ * leave `ollama run` failing on a missing blob, which is worse than no model.
+ *
+ * Digest verification is the whole safety story here: we are hand-placing files
+ * into Ollama's content-addressed store, so a byte we didn't verify is a corrupt
+ * model that reports as installed.
+ *
+ * Pure disk + network: the caller owns the `installedModels` cache bust, so this
+ * stays safe to call from a future "repair this install" action.
+ *
+ * @param {string} modelId e.g. `hf.co/<owner>/<repo>:Q8_0`
+ * @returns {Promise<{ success: boolean, error?: string }>}
+ */
+async function finalizeHuggingFacePull(modelId) {
+  const ref = parseOllamaModelRef(modelId)
+  const base = huggingFaceRegistryBase(ref)
+  if (!base) return { success: false, error: 'not a Hugging Face model ref' }
+
+  const modelsDir = getModelsDir()
+  const blobsDir = join(modelsDir, 'blobs')
+  const headers = buildHfAuthHeaders(await getHfToken())
+  const fetched = await fetchHuggingFaceDocument(`${base}/manifests/${ref.tag}`, headers)
+  if (fetched.error) return { success: false, error: `manifest fetch failed: ${fetched.error}` }
+
+  const manifestText = fetched.buffer.toString('utf8')
+  const refs = manifestBlobRefs(safeJSONParse(manifestText, null))
+  if (refs.length === 0) return { success: false, error: 'manifest listed no blobs' }
+
+  for (const blob of refs) {
+    const blobPath = join(blobsDir, blob.filename)
+    const existing = await stat(blobPath).then((s) => s.size, () => null)
+    // Ollama already verified anything it finished writing, so a size match is
+    // enough to accept it — re-hashing a 30GB weight layer would take minutes.
+    if (existing !== null && existing === blob.size) continue
+    if (blob.size === null || blob.size > HF_FINALIZE_MAX_BLOB_BYTES) {
+      return { success: false, error: `blob ${blob.filename} (${blob.size ?? 'unknown'} bytes) is missing and too large to recover` }
+    }
+    const got = await fetchHuggingFaceDocument(`${base}/blobs/${blob.digest}`, headers)
+    if (got.error) return { success: false, error: `blob ${blob.filename} fetch failed: ${got.error}` }
+    const hex = createHash('sha256').update(got.buffer).digest('hex')
+    if (hex !== blob.hex) return { success: false, error: `blob ${blob.filename} failed digest verification` }
+    await atomicWrite(blobPath, got.buffer)
+    console.log(`🧩 Ollama pull recovery: restored blob ${blob.filename.slice(0, 19)} (${got.buffer.length}B) for ${modelId}`)
+  }
+
+  // Ollama leaves `<blob>-partial*` scratch files behind for the download it
+  // abandoned; they'd shadow the completed blobs on a future resume attempt. One
+  // pass over the (potentially large) blobs dir clears every blob's leftovers.
+  const scratch = await readdir(blobsDir).catch(() => [])
+  await Promise.all(scratch
+    .filter((name) => refs.some((blob) => name.startsWith(`${blob.filename}-partial`)))
+    .map((name) => unlink(join(blobsDir, name)).catch(() => {})))
+
+  // Write the manifest byte-for-byte as the registry served it so the digest
+  // Ollama derives from it matches the registry's.
+  await atomicWrite(manifestPathFor(modelsDir, ref), manifestText)
+  console.log(`✅ Ollama pull recovery: wrote manifest for ${modelId} (${refs.length} blobs verified)`)
+  return { success: true }
 }
 
 /**
@@ -1007,5 +1141,7 @@ export {
   isOllamaProvider,
   getServiceStatus,
   getEmbeddings,
-  isBootstrapConflictError
+  isBootstrapConflictError,
+  isPullDeadlineError,
+  finalizeHuggingFacePull
 }

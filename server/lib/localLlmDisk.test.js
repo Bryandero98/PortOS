@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   parseOllamaManifest, digestToBlobFilename, parseOllamaModelRef, ollamaManifestRelPath,
   sanitizeOllamaName, dirIsMlx, selectPrimaryGguf, selectProjectorGguf, isShardedGguf,
-  lmStudioPublisherRepo, buildModelfile,
+  lmStudioPublisherRepo, buildModelfile, manifestBlobRefs, huggingFaceRegistryBase,
   OLLAMA_MODEL_MEDIATYPE, OLLAMA_PROJECTOR_MEDIATYPE
 } from './localLlmDisk.js';
 
@@ -108,6 +108,51 @@ describe('localLlmDisk', () => {
   describe('buildModelfile', () => {
     it('emits a FROM line for a local gguf path', () => {
       expect(buildModelfile('/abs/path/model.gguf')).toBe('FROM /abs/path/model.gguf\n');
+    });
+  });
+
+  describe('manifestBlobRefs', () => {
+    it('lists the config blob FIRST plus every layer, with sizes, filenames and bare hexes', () => {
+      const manifest = {
+        config: { digest: 'sha256:cfg', size: 481 },
+        layers: [
+          { mediaType: OLLAMA_MODEL_MEDIATYPE, digest: 'sha256:weights', size: 29787701792 },
+          { mediaType: OLLAMA_PROJECTOR_MEDIATYPE, digest: 'sha256:proj', size: 927607360 }
+        ]
+      };
+      expect(manifestBlobRefs(manifest)).toEqual([
+        { digest: 'sha256:cfg', size: 481, filename: 'sha256-cfg', hex: 'cfg' },
+        { digest: 'sha256:weights', size: 29787701792, filename: 'sha256-weights', hex: 'weights' },
+        { digest: 'sha256:proj', size: 927607360, filename: 'sha256-proj', hex: 'proj' }
+      ]);
+    });
+    it('reports a null size (not 0) when the manifest omits or mistypes it', () => {
+      // A missing size must NOT read as "0 bytes" — the caller treats null as
+      // "unknown, refuse to recover" rather than "empty file, nothing to fetch".
+      const refs = manifestBlobRefs({ config: { digest: 'sha256:cfg' }, layers: [{ digest: 'sha256:w', size: '900' }] });
+      expect(refs.map((r) => r.size)).toEqual([null, null]);
+    });
+    it('skips entries with no digest and tolerates a malformed manifest', () => {
+      expect(manifestBlobRefs({ config: { size: 5 }, layers: [{ size: 9 }] })).toEqual([]);
+      expect(manifestBlobRefs(null)).toEqual([]);
+      expect(manifestBlobRefs({})).toEqual([]);
+    });
+  });
+
+  describe('huggingFaceRegistryBase', () => {
+    it('builds the canonical huggingface.co OCI base (never the redirecting hf.co)', () => {
+      expect(huggingFaceRegistryBase(parseOllamaModelRef('hf.co/example-org/Some-Model-GGUF:Q8_0')))
+        .toBe('https://huggingface.co/v2/example-org/Some-Model-GGUF');
+      expect(huggingFaceRegistryBase(parseOllamaModelRef('huggingface.co/owner/repo:Q4_K_M')))
+        .toBe('https://huggingface.co/v2/owner/repo');
+      expect(huggingFaceRegistryBase(parseOllamaModelRef('HF.CO/owner/repo:Q4_K_M')))
+        .toBe('https://huggingface.co/v2/owner/repo');
+    });
+    it('returns null for the ollama.ai registry and other hosts (no HF OCI API to recover from)', () => {
+      expect(huggingFaceRegistryBase(parseOllamaModelRef('gpt-oss:20b'))).toBe(null);
+      expect(huggingFaceRegistryBase(parseOllamaModelRef('myorg/mymodel:v2'))).toBe(null);
+      expect(huggingFaceRegistryBase(parseOllamaModelRef('localhost:5000/team/m'))).toBe(null);
+      expect(huggingFaceRegistryBase(null)).toBe(null);
     });
   });
 });

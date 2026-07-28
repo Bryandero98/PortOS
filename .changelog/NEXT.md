@@ -4,6 +4,10 @@
 
 - **[issue-3168] Music Video projects now have a Concept and Visual style field.** Set them before clicking "AI Plan" to steer the proposed scenes toward a story or theme, and every generated frame and shot prompt now carries your chosen visual style automatically.
 
+## Local LLM installs
+
+- **A large Hugging Face model that failed with "context deadline exceeded" at 100% now finishes installing.** Ollama downloads the multi-gigabyte weights first and fetches the model's tiny metadata blob last; when Hugging Face's CDN takes a minute to serve that few-hundred-byte file, Ollama's internal request deadline expires and it abandons the install without writing the manifest — so tens of gigabytes of verified weights sit on disk and the model looks like it was never installed, and every retry loses the same race. PortOS now recognizes that specific failure and completes the install itself: it re-fetches the manifest and any missing *small* metadata blobs with a generous timeout, verifies every blob's SHA-256 against the manifest, clears leftover partial files, and only then writes the manifest. A missing multi-gigabyte layer, an unknown blob size, or a checksum mismatch is refused instead of papered over, so a genuinely incomplete download still reports as failed. The progress banner now says "finishing install from downloaded files…" instead of sitting at 100%.
+
 ## Usage cost reporting
 
 - **[issue-3156] Historical usage estimates can now be reconciled against provider transcripts.** The Usage page offers an explicit, progress-reporting repair that matches transcripts only to PortOS run windows, preserves configured provider IDs, replaces each old estimate once, and rebuilds corrected totals without inventing legacy cost.

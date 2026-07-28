@@ -1,4 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { mkdtemp, mkdir, rm, readFile, writeFile, stat } from 'fs/promises'
+import { createHash } from 'crypto'
+import { tmpdir } from 'os'
+import { join } from 'path'
 
 // startPersistentService / getServiceStatus shell out via promisify(execFile).
 // Route every exec call through a per-test impl so the homebrew service flow can
@@ -9,6 +13,11 @@ vi.mock('child_process', () => ({
   execFile: (cmd, args, opts, cb) => execMock.impl(cmd, args, opts, cb),
   spawn: vi.fn()
 }))
+
+// The HF pull recovery attaches the user's HF token (so a gated repo Ollama could
+// pull is recoverable too). Stub the resolver rather than reading real settings.
+const hfTokenMock = { token: null }
+vi.mock('../lib/hfToken.js', () => ({ getHfToken: async () => hfTokenMock.token }))
 
 // pullModel talks to Ollama over its native HTTP API via the global `fetch`
 // (through fetchWithTimeout). We stub `fetch` so each test scripts the
@@ -70,11 +79,12 @@ function stubFetch(pullResponses) {
 }
 
 // Fresh module per test → fresh availability cache so the version probe runs.
-async function loadPullModel() {
+async function loadManager() {
   vi.resetModules()
-  const mod = await import('./ollamaManager.js')
-  return mod.pullModel
+  return import('./ollamaManager.js')
 }
+
+const loadPullModel = () => loadManager().then((mod) => mod.pullModel)
 
 describe('ollamaManager.pullModel transient-error retry', () => {
   beforeEach(() => { vi.useFakeTimers() })
@@ -197,6 +207,283 @@ describe('ollamaManager.pullModel transient-error retry', () => {
   })
 })
 
+// ---- HF pull recovery ("context deadline exceeded" after 100%) --------------
+//
+// finalizeHuggingFacePull touches the real filesystem, so these tests point
+// OLLAMA_MODELS at a temp dir and pre-place the layer blobs Ollama had already
+// finished downloading — the exact on-disk state the bug leaves behind.
+
+// Serve a Buffer the way fetch does, for the HF registry stub.
+const bufferResponse = (buf) => ({ ok: true, status: 200, arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) })
+
+describe('ollamaManager HF pull recovery', () => {
+  const HF_ID = 'hf.co/example-org/Example-Model-GGUF:Q8_0'
+  const HF_BASE = 'https://huggingface.co/v2/example-org/Example-Model-GGUF'
+  let modelsDir
+  let originalModelsEnv
+
+  // Real content so digests are genuine — the recovery verifies every blob it
+  // writes, and a fake digest must be able to fail that check.
+  const configBody = Buffer.from(JSON.stringify({ model_format: 'gguf', model_family: 'qwen35' }))
+  const configDigest = `sha256:${createHash('sha256').update(configBody).digest('hex')}`
+  const weightsBody = Buffer.from('pretend 30GB of GGUF weights')
+  const weightsDigest = `sha256:${createHash('sha256').update(weightsBody).digest('hex')}`
+
+  const manifest = () => ({
+    schemaVersion: 2,
+    config: { digest: configDigest, mediaType: 'application/vnd.docker.container.image.v1+json', size: configBody.length },
+    layers: [{ digest: weightsDigest, mediaType: 'application/vnd.ollama.image.model', size: weightsBody.length }]
+  })
+
+  beforeEach(async () => {
+    originalModelsEnv = process.env.OLLAMA_MODELS
+    modelsDir = await mkdtemp(join(tmpdir(), 'portos-ollama-models-'))
+    process.env.OLLAMA_MODELS = modelsDir
+    await mkdir(join(modelsDir, 'blobs'), { recursive: true })
+  })
+
+  afterEach(async () => {
+    if (originalModelsEnv === undefined) delete process.env.OLLAMA_MODELS
+    else process.env.OLLAMA_MODELS = originalModelsEnv
+    await rm(modelsDir, { recursive: true, force: true })
+    vi.unstubAllGlobals()
+  })
+
+  const blobPath = (digest) => join(modelsDir, 'blobs', digest.replace(':', '-'))
+  const manifestPath = () => join(modelsDir, 'manifests', 'hf.co', 'example-org', 'Example-Model-GGUF', 'Q8_0')
+
+  // Pre-place the weight layer Ollama finished before it died.
+  const placeWeights = () => writeFile(blobPath(weightsDigest), weightsBody)
+
+  // Stub the HF OCI registry. `blobBody` overrides what the config blob serves
+  // (to simulate corruption); `failBlob` makes the blob request fail outright.
+  // The returned array of requested URLs also carries the per-request `init`
+  // objects on `.inits`, so header propagation is assertable.
+  function stubRegistry({ blobBody = configBody, failBlob = false, manifestDoc = manifest() } = {}) {
+    const urls = []
+    urls.inits = []
+    vi.stubGlobal('fetch', vi.fn(async (url, init) => {
+      const u = String(url)
+      urls.push(u)
+      urls.inits.push(init)
+      if (u.endsWith('/api/version')) return versionResponse()
+      if (u === `${HF_BASE}/manifests/Q8_0`) return bufferResponse(Buffer.from(JSON.stringify(manifestDoc)))
+      if (u === `${HF_BASE}/blobs/${configDigest}`) {
+        if (failBlob) return { ok: false, status: 504, statusText: 'Gateway Timeout' }
+        return bufferResponse(blobBody)
+      }
+      throw new Error(`unexpected fetch: ${u}`)
+    }))
+    return urls
+  }
+
+  const exists = (p) => stat(p).then(() => true, () => false)
+
+  describe('isPullDeadlineError', () => {
+    it('matches Ollama’s Go deadline error', async () => {
+      const { isPullDeadlineError } = await loadManager()
+      expect(isPullDeadlineError('context deadline exceeded')).toBe(true)
+      expect(isPullDeadlineError('Post "https://…": context deadline exceeded')).toBe(true)
+    })
+    it('does NOT match the transient class or unrelated errors', async () => {
+      const { isPullDeadlineError } = await loadManager()
+      // Must stay disjoint from isTransientPullError — a plain retry can't fix a
+      // deadline, and the recovery path must not swallow real network blips.
+      expect(isPullDeadlineError('EOF')).toBe(false)
+      expect(isPullDeadlineError('read ECONNRESET')).toBe(false)
+      expect(isPullDeadlineError('pull model manifest: file does not exist')).toBe(false)
+      expect(isPullDeadlineError(null)).toBe(false)
+    })
+  })
+
+  describe('finalizeHuggingFacePull', () => {
+    it('fetches the missing config blob and writes the manifest Ollama never wrote', async () => {
+      await placeWeights()
+      stubRegistry()
+      const { finalizeHuggingFacePull } = await loadManager()
+
+      expect(await finalizeHuggingFacePull(HF_ID)).toEqual({ success: true })
+      expect(await readFile(blobPath(configDigest))).toEqual(configBody)
+      // Byte-identical to what the registry served, so Ollama derives the same digest.
+      expect(await readFile(manifestPath(), 'utf8')).toBe(JSON.stringify(manifest()))
+    })
+
+    it('carries the user’s HF token so a gated repo is recoverable too', async () => {
+      hfTokenMock.token = 'hf_example_token'
+      await placeWeights()
+      const urls = stubRegistry()
+      const { finalizeHuggingFacePull } = await loadManager()
+
+      await finalizeHuggingFacePull(HF_ID)
+
+      // Both the manifest and the blob request need the bearer — a 401 on either
+      // would make the recovery decline every time for a gated model.
+      expect(urls.inits.every((init) => init?.headers?.Authorization === 'Bearer hf_example_token')).toBe(true)
+      hfTokenMock.token = null
+    })
+
+    it('keeps the already-downloaded weight layer instead of re-fetching 30GB', async () => {
+      await placeWeights()
+      const urls = stubRegistry()
+      const { finalizeHuggingFacePull } = await loadManager()
+
+      await finalizeHuggingFacePull(HF_ID)
+
+      expect(urls).not.toContain(`${HF_BASE}/blobs/${weightsDigest}`)
+      expect(await readFile(blobPath(weightsDigest))).toEqual(weightsBody) // untouched
+    })
+
+    it('clears the `-partial` scratch files Ollama abandoned for the recovered blob', async () => {
+      await placeWeights()
+      const partial = `${blobPath(configDigest)}-partial`
+      const partialPart = `${blobPath(configDigest)}-partial-0`
+      await writeFile(partial, Buffer.alloc(481))
+      await writeFile(partialPart, '{"N":0,"Offset":0,"Size":481,"Completed":0}\n')
+      stubRegistry()
+      const { finalizeHuggingFacePull } = await loadManager()
+
+      await finalizeHuggingFacePull(HF_ID)
+
+      // Left in place they'd shadow the completed blob on a later resume attempt.
+      expect(await exists(partial)).toBe(false)
+      expect(await exists(partialPart)).toBe(false)
+    })
+
+    it('refuses to write the manifest when a downloaded blob fails digest verification', async () => {
+      await placeWeights()
+      stubRegistry({ blobBody: Buffer.from('corrupted bytes from a bad CDN edge') })
+      const { finalizeHuggingFacePull } = await loadManager()
+
+      const result = await finalizeHuggingFacePull(HF_ID)
+
+      expect(result.success).toBe(false)
+      expect(result.error).toMatch(/digest verification/)
+      // No manifest AND no bogus blob — a corrupt model that reports installed is
+      // worse than a failed install.
+      expect(await exists(manifestPath())).toBe(false)
+      expect(await exists(blobPath(configDigest))).toBe(false)
+    })
+
+    it('refuses when a multi-GB weight layer is the missing blob (that is a real download)', async () => {
+      // No placeWeights(), and the layer declares its true multi-GB size — so
+      // this was never a "finished downloading, only the manifest is missing"
+      // failure and must not turn into a silent 30GB re-download here.
+      const big = manifest()
+      big.layers[0].size = 29_787_701_792
+      stubRegistry({ manifestDoc: big })
+      const { finalizeHuggingFacePull } = await loadManager()
+
+      const result = await finalizeHuggingFacePull(HF_ID)
+
+      expect(result.success).toBe(false)
+      expect(result.error).toMatch(/too large to recover/)
+      expect(await exists(manifestPath())).toBe(false)
+    })
+
+    it('refuses a blob whose manifest size is missing rather than guessing', async () => {
+      // Unknown size must not read as "0 bytes, nothing to fetch" — absent and
+      // legitimately-empty are different, and only one is safe to accept.
+      const noSize = manifest()
+      delete noSize.layers[0].size
+      stubRegistry({ manifestDoc: noSize })
+      const { finalizeHuggingFacePull } = await loadManager()
+
+      const result = await finalizeHuggingFacePull(HF_ID)
+
+      expect(result.success).toBe(false)
+      expect(result.error).toMatch(/unknown bytes/)
+      expect(await exists(manifestPath())).toBe(false)
+    })
+
+    it('treats a size-mismatched on-disk blob as missing and re-fetches it', async () => {
+      await placeWeights()
+      await writeFile(blobPath(configDigest), Buffer.from('truncated')) // wrong size
+      const urls = stubRegistry()
+      const { finalizeHuggingFacePull } = await loadManager()
+
+      expect(await finalizeHuggingFacePull(HF_ID)).toEqual({ success: true })
+      expect(urls).toContain(`${HF_BASE}/blobs/${configDigest}`)
+      expect(await readFile(blobPath(configDigest))).toEqual(configBody)
+    })
+
+    it('surfaces a failed blob fetch without writing a partial manifest', async () => {
+      await placeWeights()
+      stubRegistry({ failBlob: true })
+      const { finalizeHuggingFacePull } = await loadManager()
+
+      const result = await finalizeHuggingFacePull(HF_ID)
+
+      expect(result.success).toBe(false)
+      expect(result.error).toMatch(/504/)
+      expect(await exists(manifestPath())).toBe(false)
+    })
+
+    it('declines a non-Hugging-Face ref (no OCI registry to fetch from)', async () => {
+      const { finalizeHuggingFacePull } = await loadManager()
+      const result = await finalizeHuggingFacePull('gpt-oss:20b')
+      expect(result).toEqual({ success: false, error: 'not a Hugging Face model ref' })
+    })
+
+    it('declines a manifest that lists no blobs', async () => {
+      stubRegistry({ manifestDoc: { schemaVersion: 2 } })
+      const { finalizeHuggingFacePull } = await loadManager()
+      const result = await finalizeHuggingFacePull(HF_ID)
+      expect(result.success).toBe(false)
+      expect(result.error).toMatch(/no blobs/)
+    })
+  })
+
+  describe('pullModel deadline recovery', () => {
+    // Script /api/pull to fail with the deadline error, then let the recovery run.
+    function stubPullThenRegistry(registryOpts) {
+      const inner = stubRegistry(registryOpts)
+      const registryFetch = globalThis.fetch
+      let pulls = 0
+      vi.stubGlobal('fetch', vi.fn(async (url, ...rest) => {
+        if (String(url).endsWith('/api/pull')) {
+          pulls++
+          return makeStreamResponse([
+            { status: 'pulling manifest' },
+            { status: 'pulling', total: 100, completed: 100 },
+            { error: 'context deadline exceeded' }
+          ])
+        }
+        return registryFetch(url, ...rest)
+      }))
+      return { urls: inner, pullCount: () => pulls }
+    }
+
+    it('completes the install locally instead of failing at 100%', async () => {
+      await placeWeights()
+      const { pullCount } = stubPullThenRegistry()
+      const { pullModel } = await loadManager()
+      const onProgress = vi.fn()
+
+      const result = await pullModel(HF_ID, onProgress)
+
+      expect(result).toEqual({ success: true, modelId: HF_ID, recovered: true })
+      expect(pullCount()).toBe(1) // NOT retried — a retry re-races the same deadline
+      // The banner must move off "100%" while the recovery runs.
+      expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({ finalizing: true }))
+      expect(await exists(manifestPath())).toBe(true)
+    })
+
+    it('reports the original deadline error when recovery cannot finish the install', async () => {
+      // Multi-GB weight layer absent → recovery declines → the user sees Ollama's
+      // real error rather than a confusing recovery-internal message.
+      const big = manifest()
+      big.layers[0].size = 29_787_701_792
+      const { pullModel } = await loadManager()
+      stubPullThenRegistry({ manifestDoc: big })
+
+      const result = await pullModel(HF_ID)
+
+      expect(result.success).toBe(false)
+      expect(result.error).toBe('context deadline exceeded')
+    })
+  })
+})
+
 describe('ollamaManager.isBootstrapConflictError', () => {
   it('matches the launchctl bootstrap-5 / EIO failures brew surfaces', async () => {
     const { isBootstrapConflictError } = await import('./ollamaManager.js')
@@ -239,11 +526,6 @@ describe('ollamaManager.startPersistentService bootstrap recovery (homebrew)', (
   function stubReachable() {
     const body = { version: '0.24.0' }
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) })))
-  }
-
-  async function loadManager() {
-    vi.resetModules()
-    return import('./ollamaManager.js')
   }
 
   it('boots out a stale launchd registration and retries when start fails with bootstrap-5', async () => {
