@@ -1088,7 +1088,7 @@ export async function checkoutRemoteBranch(dir, branchName) {
 
 /**
  * Delete all merged branches (local and remote) in one operation.
- * Skips protected branches (main, master, dev, develop, release), the current branch,
+ * Skips the `PROTECTED_BRANCHES` set (see `../lib/gitArgs.js`), the current branch,
  * branches checked out in worktrees, and any explicitly excluded branches.
  * @param {string} dir - Working directory
  * @param {object} options
