@@ -25,6 +25,7 @@ import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { storedTrackRow } from './spriteTestFixtures.js';
 
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'sprite-track-prompts-test-'));
 
@@ -35,7 +36,7 @@ vi.mock('../../lib/fileUtils.js', async (importOriginal) => {
 });
 
 const {
-  buildTrackVideoPrompt, hasTrackVideoPrompt, renderPromptTemplate,
+  buildTrackVideoPrompt, tryBuildTrackVideoPrompt, renderPromptTemplate,
 } = await import('./trackPrompts.js');
 const {
   buildWalkVideoPrompt, buildScannerPrompt, buildAmbientVideoPrompt,
@@ -120,25 +121,22 @@ describe('the seeded templates reproduce the compiled builders exactly (#3152)',
 });
 
 describe('a user-defined row resolves through its own template', () => {
-  const CUSTOM = {
+  // The shared stored-row shape (spriteTestFixtures.js) with only the fields this
+  // suite cares about overridden — the template (every placeholder, both chroma
+  // forms) and `kinds: ['character']`, so walk stays `character`'s baseline and the
+  // merged table still validates.
+  const CUSTOM = storedTrackRow({
     id: 'jetpack-burst',
     label: 'Jetpack burst',
     directional: true,
     kinds: ['character'],
-    minFrameCount: 2,
-    maxFrameCount: 8,
-    defaultFrameCount: 4,
-    minFps: 2,
-    maxFps: 12,
-    defaultFps: 6,
     contractFrameCountField: 'jetpackBurstFrameCount',
-    contractFpsField: null,
     selectionKind: 'reviewed-jetpack-burst-selection',
     setKind: 'finalized-jetpack-burst-set',
     finalErrorCode: 'JETPACK_BURST_SET_FINAL',
     standaloneContract: false,
     promptTemplate: 'Animate {{name}} ({{kind}}) firing a jetpack burst while facing {{direction}}. Matte: {{chromaKeyPhrase}} / raw {{chromaKey}}.',
-  };
+  });
 
   it('interpolates every supported placeholder', () => {
     writeTracks([CUSTOM]);
@@ -163,11 +161,15 @@ describe('a user-defined row resolves through its own template', () => {
     )).toBe(true);
   });
 
-  it('reports a stored row as having a prompt, and an unknown id as not', () => {
+  it('rebuilds a known track and answers null for an unknown one (tryBuild…)', () => {
+    // The provenance-rebuild path in `assetPrompt.js`: a run may name a track a
+    // newer peer wrote, or one whose row the user has since deleted. Only that case
+    // becomes `null`; a known track still returns its real prompt.
     writeTracks([CUSTOM]);
-    expect(hasTrackVideoPrompt('jetpack-burst')).toBe(true);
-    expect(hasTrackVideoPrompt(WALK_TRACK)).toBe(true);
-    expect(hasTrackVideoPrompt('never-registered')).toBe(false);
+    const args = { name: 'Placeholder Hero', kind: 'character', direction: 'east', chromaKey: '#FF00FF' };
+    expect(tryBuildTrackVideoPrompt('jetpack-burst', args)).toContain('jetpack burst');
+    expect(tryBuildTrackVideoPrompt(WALK_TRACK, args)).toBe(buildWalkVideoPrompt(args));
+    expect(tryBuildTrackVideoPrompt('never-registered', args)).toBeNull();
   });
 
   it('throws for a track neither compiled nor stored, naming what IS known', () => {

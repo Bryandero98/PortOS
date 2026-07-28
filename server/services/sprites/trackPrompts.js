@@ -115,11 +115,19 @@ export function buildTrackVideoPrompt(trackId, args) {
   return build(args);
 }
 
-/** True when `trackId` resolves to an i2v prompt — compiled or stored. */
-export const hasTrackVideoPrompt = (trackId) => {
-  const row = getEffectiveAnimationTracks()[trackId];
-  if (!row) return false;
-  return row.builtin
-    ? Object.prototype.hasOwnProperty.call(TRACK_VIDEO_PROMPTS, trackId)
-    : true;
-};
+/**
+ * The i2v prompt for `trackId`, or `null` when this build cannot produce one.
+ *
+ * For the provenance rebuild in `assetPrompt.js`, whose question is "rebuild this
+ * run's prompt if you still can" — a run may name a track a newer peer wrote, or
+ * one whose row the user has since deleted. A separate `hasTrackVideoPrompt`
+ * predicate used to answer the first half, which meant duplicating
+ * `buildTrackVideoPrompt`'s own resolution branch and keeping the two in step; this
+ * asks the one resolver and turns its unknown-track throw into the `null` the
+ * caller wanted. It does NOT swallow anything else — a malformed template or a
+ * builtin/builder mismatch still throws.
+ */
+export function tryBuildTrackVideoPrompt(trackId, args) {
+  if (!getEffectiveAnimationTracks()[trackId]) return null;
+  return buildTrackVideoPrompt(trackId, args);
+}

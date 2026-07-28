@@ -21,7 +21,7 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import {
-  WALK_TRACK, SCANNER_TRACK, AMBIENT_TRACK, ANIMATION_TRACKS, ANIMATION_TRACK_IDS,
+  WALK_TRACK, SCANNER_TRACK, AMBIENT_TRACK, ANIMATION_TRACKS,
   isAnimationTrack, getAnimationTrack, clampTrackFrameCount, clampTrackFps,
   assertAnimationTrackRows, trackRowCount, tracksForKind, kindSupportsTrack,
   sourceReferenceFor, primaryTrackForKind,
@@ -73,7 +73,7 @@ describe('the registry rows', () => {
     // specifically — `EFFECTIVE` would pass here forever, since it contains the
     // seeded rows, so a regression that re-added `scanner` to the literal would
     // slip through a merged-table assertion.
-    expect(ANIMATION_TRACK_IDS).toEqual([WALK_TRACK]);
+    expect(Object.keys(ANIMATION_TRACKS)).toEqual([WALK_TRACK]);
     expect(ANIMATION_TRACKS[WALK_TRACK].builtin).toBe(true);
     for (const id of [SCANNER_TRACK, AMBIENT_TRACK]) {
       expect(ANIMATION_TRACKS[id], `${id} must be a stored row, not compiled in`).toBeUndefined();
@@ -223,6 +223,14 @@ describe('the module-load row guard', () => {
     ['a missing setKind', { setKind: undefined }, /needs a non-empty 'setKind'/],
     ['a missing finalErrorCode', { finalErrorCode: '' }, /needs a non-empty 'finalErrorCode'/],
     ['a non-boolean standaloneContract', { standaloneContract: 'yes' }, /boolean 'standaloneContract'/],
+    ['a non-boolean builtin', { builtin: 'yes' }, /boolean 'builtin'/],
+    // #3152 — exactly ONE prompt source per row, asserted in BOTH directions. The
+    // second case is the one a provenance-shaped guard misses: a builtin row that
+    // also carries a template has two definitions of its wording, and the stored one
+    // silently wins over the text `prompts.test.js` pins.
+    ['a stored row with no promptTemplate', { builtin: false }, /needs a non-empty 'promptTemplate'/],
+    ['a stored row with a blank promptTemplate', { builtin: false, promptTemplate: '   ' }, /needs a non-empty 'promptTemplate'/],
+    ['a builtin row carrying a promptTemplate', { promptTemplate: 'Animate it.' }, /must not carry a 'promptTemplate'/],
   ])('rejects %s', (_label, overrides, message) => {
     expect(() => assertAnimationTrackRows(twoRows(overrides))).toThrow(message);
   });

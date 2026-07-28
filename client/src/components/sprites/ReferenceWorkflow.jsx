@@ -376,7 +376,12 @@ export default function ReferenceWorkflow({ record, reference, renders, correcti
 
   const [unlockMain, mainUnlocking] = useAsyncAction(async () => {
     const result = await unlockSpriteMainReference(recordId, { silent: true });
-    toast.success(result.walkInvalidated || result.scannerInvalidated
+    // Read the per-track MAP, not the legacy `scannerInvalidated` alias (#3152):
+    // every non-walk track is user-defined now, so a user who deleted `scanner` and
+    // added their own anchor-seeded track would otherwise be told nothing was
+    // reopened while their approvals had in fact been dropped.
+    const tracksReopened = Object.values(result.tracksInvalidated || {}).some(Boolean);
+    toast.success(result.walkInvalidated || tracksReopened
       ? 'Main reference unlocked; its south animations were reopened'
       : 'Main reference unlocked; ready to regenerate from the turnaround');
     setMainUnlockConfirming(false);

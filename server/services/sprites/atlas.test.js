@@ -10,15 +10,13 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
-import { dirname, join } from 'path';
-import { fileURLToPath } from 'url';
+import { join } from 'path';
 import sharp from 'sharp';
 import { mkdir, writeFile, readFile, rm } from 'fs/promises';
 import { createHash } from 'crypto';
 import { lockAllAnchors as lockAllAnchorsFixture, placeCandidate, trackSpan as fullSpan } from './spriteTestFixtures.js';
 
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'sprite-atlas-test-'));
-const SPRITES_DIR = dirname(fileURLToPath(import.meta.url));
 
 vi.mock('../../lib/fileUtils.js', async (importOriginal) => {
   const actual = await importOriginal();
@@ -52,6 +50,7 @@ const { getAnimationTrack, SCANNER_TRACK, AMBIENT_TRACK } = await import('./anim
 // is the merge. Resolved once; the store caches its read.
 const {
   getEffectiveAnimationTracks, __resetAnimationTrackStore,
+  animationTrackStorePath, animationTrackSeedPath,
 } = await import('./animationTrackStore.js');
 const EFFECTIVE_TRACKS = getEffectiveAnimationTracks();
 
@@ -350,16 +349,19 @@ describe('compileAtlas', () => {
     // A byte copy of the shipped seed, exactly as the migration writes it — so this
     // asserts the migration's OUTPUT is sufficient, not merely that some
     // hand-written store works.
+    // Paths come from the store's own exports rather than a hand-walked `../../..`:
+    // the PATHS mock above leaves `PATHS.root` real, so `animationTrackSeedPath()`
+    // and `animationTrackStorePath()` resolve exactly where the migration reads and
+    // writes — and a future relocation of either file moves both at once.
     const installUserStore = async () => {
-      const seed = await readFile(join(SPRITES_DIR, '..', '..', '..', 'data.reference', 'sprites', 'animation-tracks.json'), 'utf-8');
       await mkdir(join(TEST_ROOT, 'sprites'), { recursive: true });
-      await writeFile(join(TEST_ROOT, 'sprites', 'animation-tracks.json'), seed);
+      await writeFile(animationTrackStorePath(), await readFile(animationTrackSeedPath(), 'utf-8'));
       __resetAnimationTrackStore();
     };
     // Restore the seed-fallback state the rest of this file compiles under, so
     // ordering between suites can't matter.
     afterEach(async () => {
-      await rm(join(TEST_ROOT, 'sprites', 'animation-tracks.json'), { force: true });
+      await rm(animationTrackStorePath(), { force: true });
       __resetAnimationTrackStore();
     });
 

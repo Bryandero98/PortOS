@@ -64,12 +64,9 @@
  */
 
 import { WALK_TRACK, getAnimationTrack, trackRowCount } from './animationTracks.js';
-// #3152 — the DEFAULT table is now the effective one (compiled `walk` + the
-// user-defined store) rather than the compiled constant, so a user's track gets a
-// span and a row count here without every caller learning to pass one. Each
+// Supplies the default `tracks` table below — see the header's #3152 note. Each
 // default is evaluated per CALL (default params are lazy), so the store's cached
-// read happens on first use rather than at this module's load. `tracks` stays an
-// explicit parameter — it is still the injection seam the multi-track tests use.
+// read happens on first use rather than at this module's load.
 import { getEffectiveAnimationTracks } from './animationTrackStore.js';
 // These two names describe columns found in imported/legacy compiled grids;
 // neither declares an animation track in the registry.

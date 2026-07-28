@@ -5,14 +5,14 @@ import { WORK_TRACKERS } from './workTracker.js';
 import { SPRITE_ID_PATTERN, SPRITE_RECORD_KINDS } from '../services/sprites/recordsLogic.js';
 import { ANCHOR_DIRECTIONS, SPRITE_DIRECTIONS, TURNAROUND_ID } from '../services/sprites/prompts.js';
 import { CHROMA_KEY_HEXES } from '../services/sprites/chromaKey.js';
-import { WALK_TRACK, getAnimationTrack } from '../services/sprites/animationTracks.js';
+import { WALK_TRACK } from '../services/sprites/animationTracks.js';
 // #3152 — the EFFECTIVE table (compiled `walk` + the user-defined store), so a
 // user's track validates against its own bounds and occupies its own contract
 // field with no schema edit. The store reads one small JSON config synchronously
 // (see its header for why sync is the right answer here), which is what lets the
 // schemas below stay module-load constants rather than becoming lazily-built.
 import {
-  getEffectiveAnimationTracks, getEffectiveAnimationTrackIds,
+  effectiveTrack, getEffectiveAnimationTracks, getEffectiveAnimationTrackIds,
 } from '../services/sprites/animationTrackStore.js';
 import { QUEUEABLE_IMAGE_MODES } from '../services/imageGen/modes.js';
 import { GROK_VIDEO_DURATIONS } from './grokVideoClip.js';
@@ -996,12 +996,12 @@ export const videoDownloadSchema = z.object({
 // carries a track id until the first second track lands, and an exported-but-
 // unwired validator is false confidence.
 export function spriteTrackFrameCountSchema(track) {
-  const row = getAnimationTrack(track, getEffectiveAnimationTracks());
+  const row = effectiveTrack(track);
   return z.number().int().min(row.minFrameCount).max(row.maxFrameCount);
 }
 
 export function spriteTrackFpsSchema(track) {
-  const row = getAnimationTrack(track, getEffectiveAnimationTracks());
+  const row = effectiveTrack(track);
   return z.number().int().min(row.minFps).max(row.maxFps);
 }
 

@@ -174,8 +174,12 @@ export const ANIMATION_TRACKS = Object.freeze({
   }),
 });
 
-/** Known track ids, in registry order. */
-export const ANIMATION_TRACK_IDS = Object.freeze(Object.keys(ANIMATION_TRACKS));
+// There is deliberately no `ANIMATION_TRACK_IDS` export (#3152 removed it). It
+// would now mean "the COMPILED ids" — `['walk']` — while reading as "every track
+// id", which is the wrong answer at every call site that wanted it: those want the
+// merged table's ids and must ask `getEffectiveAnimationTrackIds()` in
+// `animationTrackStore.js`. Iterate `Object.keys(ANIMATION_TRACKS)` inline when you
+// genuinely mean the compiled rows only.
 
 /**
  * Validate a registry's rows, throwing on the first violation.
@@ -230,17 +234,20 @@ export function assertAnimationTrackRows(tracks) {
     if (typeof row.builtin !== 'boolean') {
       throw new Error(`animationTracks: track '${id}' needs a boolean 'builtin'`);
     }
-    // A stored row has no compiled prompt builder, so a missing/blank template
-    // would surface as a throw out of `buildTrackVideoPrompt` only AFTER the user
-    // clicked generate — refuse it at load, where the message can name the row.
-    // A builtin row must NOT carry one: two prompt sources for one track is the
-    // drift this whole registry exists to prevent, and the stored value would
-    // silently win over the wording `prompts.test.js` pins.
-    if (!row.builtin && (typeof row.promptTemplate !== 'string' || !row.promptTemplate.trim())) {
-      throw new Error(`animationTracks: user-defined track '${id}' needs a non-empty 'promptTemplate'`);
-    }
-    if (row.builtin && row.promptTemplate !== undefined) {
-      throw new Error(`animationTracks: builtin track '${id}' must not carry a 'promptTemplate' — its prompt is the compiled builder`);
+    // EXACTLY ONE prompt source per row — the invariant, stated as itself rather
+    // than as two provenance checks. A row's prompt is either the compiled builder
+    // `trackPrompts.js` holds for it (`builtin`, no template) or its own
+    // `promptTemplate` (stored). Neither means a throw out of `buildTrackVideoPrompt`
+    // AFTER the user clicked generate; both means two definitions of one track's
+    // wording, where the stored value silently wins over the text
+    // `prompts.test.js` pins. Refuse either at load, where the message names the row.
+    const hasTemplate = typeof row.promptTemplate === 'string' && !!row.promptTemplate.trim();
+    if (hasTemplate === row.builtin) {
+      throw new Error(
+        row.builtin
+          ? `animationTracks: builtin track '${id}' must not carry a 'promptTemplate' — its prompt is the compiled builder`
+          : `animationTracks: user-defined track '${id}' needs a non-empty 'promptTemplate'`,
+      );
     }
     // Two tracks sharing a selection/set `kind` is the same class of bug as two
     // sharing a contract field: the compiler validates a set by its `kind`, so a

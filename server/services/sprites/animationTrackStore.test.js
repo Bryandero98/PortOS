@@ -27,6 +27,7 @@ import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { storedTrackRow } from './spriteTestFixtures.js';
 
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'sprite-track-store-test-'));
 
@@ -45,28 +46,13 @@ const { ANIMATION_TRACKS, WALK_TRACK } = await import('./animationTracks.js');
 
 const STORE_PATH = animationTrackStorePath();
 
-/** A minimal well-formed user row — every field the guard requires, nothing more. */
-const userRow = (overrides = {}) => ({
-  id: 'chest-opening',
-  label: 'Chest opening',
-  directional: false,
-  kinds: ['object'],
-  minFrameCount: 2,
-  maxFrameCount: 8,
-  defaultFrameCount: 4,
-  minFps: 2,
-  maxFps: 12,
-  defaultFps: 6,
-  contractFrameCountField: 'chestOpeningFrameCount',
-  contractFpsField: null,
-  selectionKind: 'reviewed-chest-opening-selection',
-  setKind: 'finalized-chest-opening-set',
-  finalErrorCode: 'CHEST_OPENING_SET_FINAL',
-  standaloneContract: true,
-  promptTemplate: 'Animate the {{kind}} {{name}} opening once, then hold. Matte on {{chromaKeyPhrase}}.',
-  ...overrides,
-});
+// The shared stored-row shape (spriteTestFixtures.js), so a future required row
+// field is one edit rather than one per suite.
+const userRow = storedTrackRow;
 
+// Written synchronously here (not through the shared async `writeAnimationTrackStore`)
+// because `beforeEach` must have the file in place before the first sync store read,
+// and several cases write a deliberately malformed string.
 const writeStore = (doc) => {
   mkdirSync(join(TEST_ROOT, 'sprites'), { recursive: true });
   writeFileSync(STORE_PATH, typeof doc === 'string' ? doc : JSON.stringify(doc, null, 2));

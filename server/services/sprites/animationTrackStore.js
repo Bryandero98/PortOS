@@ -67,14 +67,17 @@
  * would make the registry silently mutable mid-request — a compile could then
  * validate spans against a table the render that produced them never saw.
  * `__resetAnimationTrackStore()` exists for tests and for the CRUD UI (#3153) to
- * invalidate after a write. `null` = not loaded, `{}` = loaded and legitimately
- * empty, so a zero-row install caches instead of re-reading on every lookup.
+ * invalidate after a write. The memo holds the MERGED table (never `null` once
+ * resolved, since `walk` is always in it), so a zero-row install caches too rather
+ * than re-reading on every lookup.
  */
 
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { PATHS } from '../../lib/fileUtils.js';
-import { ANIMATION_TRACKS, WALK_TRACK, assertAnimationTrackRows } from './animationTracks.js';
+import {
+  ANIMATION_TRACKS, WALK_TRACK, assertAnimationTrackRows, getAnimationTrack,
+} from './animationTracks.js';
 
 /** The store file, relative to `data/` (and to `data.reference/` for the seed). */
 export const ANIMATION_TRACK_STORE_REL = 'sprites/animation-tracks.json';
@@ -86,19 +89,12 @@ export const animationTrackStorePath = () => join(PATHS.data, ANIMATION_TRACK_ST
 /** The shipped seed, read only when the user copy is absent (see the header). */
 export const animationTrackSeedPath = () => join(PATHS.root, 'data.reference', ANIMATION_TRACK_STORE_REL);
 
-// `null` = not read yet; `{}` = read and empty. See the header's sentinel note.
-let cachedStoredRows = null;
-// The merged table, memoized alongside the rows so `assertAnimationTrackRows`
-// runs once per process rather than on every registry lookup.
+// The merged table — `null` until first resolve. ONE cache, on the merged result
+// rather than also on the raw rows: `assertAnimationTrackRows` runs over the merge,
+// so memoizing the raw read too would only pin a row set that failed validation,
+// and a user who then fixed their JSON would keep getting the stale error.
 let cachedEffectiveTracks = null;
 
-/**
- * Read one candidate store file. Returns `null` for "not there" (try the next
- * candidate) and THROWS for "there but unreadable" — the sentinel rule: a
- * corrupt store must not silently degrade to the seed, or a user whose edits
- * broke the JSON would see their tracks quietly revert to shipped defaults with
- * no error to explain it.
- */
 /**
  * Which of the three failure kinds a read error is:
  *
@@ -117,6 +113,13 @@ export function classifyStoreReadError(err) {
   return err.code === 'ENOENT' ? 'absent' : 'io-error';
 }
 
+/**
+ * Read one candidate store file. Returns `null` for "not there" (try the next
+ * candidate) and THROWS for "there but unreadable" — the sentinel rule: a corrupt
+ * store must not silently degrade to the seed, or a user whose edits broke the JSON
+ * would see their tracks quietly revert to shipped defaults with no error to
+ * explain it.
+ */
 function readStoreDoc(path) {
   let raw;
   try {
@@ -188,7 +191,6 @@ const normalizeStoredRow = (raw) => Object.freeze({
  * exists, or when the resolved file holds no `tracks` array.
  */
 function loadStoredRows() {
-  if (cachedStoredRows) return cachedStoredRows;
   const doc = resolveStoreDoc();
   const rows = Array.isArray(doc?.tracks) ? doc.tracks : [];
   const byId = {};
@@ -207,8 +209,7 @@ function loadStoredRows() {
     if (byId[id]) throw new Error(`${ANIMATION_TRACK_STORE_REL}: track '${id}' is defined twice`);
     byId[id] = normalizeStoredRow(raw);
   }
-  cachedStoredRows = Object.freeze(byId);
-  return cachedStoredRows;
+  return Object.freeze(byId);
 }
 
 /**
@@ -237,6 +238,19 @@ export function getEffectiveAnimationTrackIds() {
 }
 
 /**
+ * One row out of the effective table — `getAnimationTrack(id, getEffectiveAnimationTracks())`,
+ * which was being spelled out at a dozen call sites.
+ *
+ * Keeps `getAnimationTrack`'s exact boundary (absent ⇒ `walk`, unrecognized ⇒
+ * throws naming the known tracks) — it IS that call, just named. Modules that must
+ * work against an injected table still call `getAnimationTrack(id, tracks)`
+ * directly; that parameter is the test seam and is deliberately untouched.
+ */
+export function effectiveTrack(id) {
+  return getAnimationTrack(id, getEffectiveAnimationTracks());
+}
+
+/**
  * Drop the cached store read.
  *
  * For tests, and for the CRUD UI (#3153) to call after it writes — a write that
@@ -244,6 +258,5 @@ export function getEffectiveAnimationTrackIds() {
  * serving the old table.
  */
 export function __resetAnimationTrackStore() {
-  cachedStoredRows = null;
   cachedEffectiveTracks = null;
 }

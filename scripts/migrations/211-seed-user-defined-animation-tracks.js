@@ -33,12 +33,17 @@
  * beats a clean reseed.
  */
 
-import { readFile, writeFile, mkdir, access } from 'fs/promises';
-import { join, dirname } from 'path';
+import { readFile } from 'fs/promises';
+import { join } from 'path';
+// `atomicWrite` (ensureDir + temp + rename) rather than mkdir+writeFile, the same
+// helper `_seedStageHelpers.js` and 30-odd sibling migrations use. Not cosmetic
+// here: a truncated store would make this migration's own existence check report
+// `already-present` forever while the store throws "not valid JSON" at module
+// load, taking down everything that imports validation.js. It passes a string
+// through unchanged, so the seed still lands byte-for-byte.
+import { atomicWrite, pathExists } from '../../server/lib/fileUtils.js';
 
 const STORE_REL = join('sprites', 'animation-tracks.json');
-
-const exists = async (path) => access(path).then(() => true, () => false);
 
 export async function up({ rootDir }) {
   const seedPath = join(rootDir, 'data.reference', STORE_REL);
@@ -47,7 +52,7 @@ export async function up({ rootDir }) {
   // Present in ANY state (valid, empty, corrupt) means the user owns this file —
   // stop. Checked by existence rather than by parsing, because a file that fails
   // to parse is exactly the case where overwriting would destroy user edits.
-  if (await exists(storePath)) {
+  if (await pathExists(storePath)) {
     console.log('🎬 animation-tracks: store already present — no-op.');
     return { ok: true, reason: 'already-present' };
   }
@@ -73,8 +78,7 @@ export async function up({ rootDir }) {
     return { ok: true, reason: 'invalid-seed' };
   }
 
-  await mkdir(dirname(storePath), { recursive: true });
-  await writeFile(storePath, seed.endsWith('\n') ? seed : `${seed}\n`);
+  await atomicWrite(storePath, seed.endsWith('\n') ? seed : `${seed}\n`);
   const count = Array.isArray(parsed?.tracks) ? parsed.tracks.length : 0;
   console.log(`🎬 animation-tracks: seeded ${count} editable animation ${count === 1 ? 'track' : 'tracks'} into data/${STORE_REL}.`);
   return { ok: true, reason: 'seeded', count };

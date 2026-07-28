@@ -599,7 +599,6 @@ async function compileTrackRow(direction, validated, geometry) {
     runId: primary.run.runId,
     runManifestPath: primary.run.manifestPath,
     walkDirectionScale: trackScales[WALK_TRACK],
-    ambientScale: trackScales[AMBIENT_TRACK],
     trackScales,
     idleScale: pyRoundTo(idleScale, 8),
     idlePolicy: sourcePolicy,
@@ -836,6 +835,14 @@ export async function compileAtlasInTail(recordId, {
 
   const manifest = {
     schemaVersion: 1,
+    // The two named `kind`s are HISTORICAL spellings, kept so a recompile of a
+    // record that was compiled before #3158 writes the same discriminator it always
+    // did. They are matched on `primaryTrackId` rather than derived from it, which
+    // means a user who deletes the seeded `ambient` row and authors their own
+    // place-baseline track (#3152) gets the generic third spelling — correct for a
+    // genuinely new track, and the same reason the two legacy names can't simply be
+    // computed from the id: nothing else on disk records which name a record's
+    // earlier atlases used.
     kind: validated.primaryTrackId === AMBIENT_TRACK
       ? 'reviewed-ambient-set-runtime-atlas'
       : validated.primaryTrackId === WALK_TRACK
