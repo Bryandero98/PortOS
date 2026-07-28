@@ -422,9 +422,15 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
             {!inactive && (
               <span className={`px-2 py-0.5 text-xs rounded animate-pulse shrink-0 ${
                 agent.metadata?.phase === 'initializing' ? 'bg-yellow-500/20 text-yellow-400' :
+                // Hit its max runtime and was asked to write its sentinel — it has
+                // minutes left before it's reaped, so say so rather than showing a
+                // reassuring "Working" right up to the kill.
+                agent.metadata?.phase === 'wrap-up' ? 'bg-orange-500/20 text-orange-400' :
                 'bg-port-accent/20 text-port-accent'
               }`}>
-                {agent.metadata?.phase === 'initializing' ? 'Initializing' : 'Working'}
+                {agent.metadata?.phase === 'initializing' ? 'Initializing'
+                  : agent.metadata?.phase === 'wrap-up' ? 'Wrapping up'
+                    : 'Working'}
               </span>
             )}
             {paused && (

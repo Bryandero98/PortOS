@@ -171,6 +171,15 @@ vi.mock('./git.js', () => ({
   generatePRDescription: vi.fn(),
   suggestPRTitle: vi.fn(),
   deleteBranch: vi.fn().mockResolvedValue(undefined),
+  // Default: the branch is 2 commits ahead of the default branch, so
+  // resolveResumeBranch reports it as resumable. Tests override per case.
+  getBranchComparison: vi.fn().mockResolvedValue({ ahead: 2, commits: [], stats: {} }),
+  // Default: no branch is claimed by a surviving worktree, so an ahead branch is
+  // attachable. The "still checked out" test overrides this.
+  getWorktreeBranches: vi.fn().mockResolvedValue(new Set()),
+  // Default: NOT already merged, so an ahead branch is resumable. The
+  // rebase/squash-merged case overrides this.
+  isBranchMergedInto: vi.fn().mockResolvedValue(false),
   requestCopilotReview: vi.fn().mockResolvedValue({ success: true }),
   resolveForgeForRepo: vi.fn().mockResolvedValue({ cli: 'gh', env: process.env, host: 'github.com', owner: null, account: null }),
   parsePullRequestUrl: vi.fn((url) => {
@@ -195,6 +204,7 @@ vi.mock('./runner.js', () => ({
 // --- Import the function under test and the mocked dependencies ---
 
 import { cleanupAgentWorktree, spawnMergeRecoveryTask, spawnReviewLoopFollowUp } from './subAgentSpawner.js';
+import { resolveResumeBranch } from './agentWorktreeCleanup.js';
 import { getAgent, addTask } from './cos.js';
 import { removeWorktree } from './worktreeManager.js';
 import * as git from './git.js';
@@ -300,7 +310,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
 
     expect(git.push).not.toHaveBeenCalled();
     expect(git.createPR).not.toHaveBeenCalled();
-    expect(removeWorktree).toHaveBeenCalledWith('agent-1', '/mock/workspace', 'cos/task-abc123', { merge: true });
+    expect(removeWorktree).toHaveBeenCalledWith('agent-1', '/mock/workspace', 'cos/task-abc123', { merge: true, preserveBranchWithCommits: false });
   });
 
   it('should use auto-merge path when openPR is not provided (defaults to false)', async () => {
@@ -308,7 +318,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
 
     expect(git.push).not.toHaveBeenCalled();
     expect(git.createPR).not.toHaveBeenCalled();
-    expect(removeWorktree).toHaveBeenCalledWith('agent-1', '/mock/workspace', 'cos/task-abc123', { merge: true });
+    expect(removeWorktree).toHaveBeenCalledWith('agent-1', '/mock/workspace', 'cos/task-abc123', { merge: true, preserveBranchWithCommits: false });
   });
 
   it('should skip PR flow when openPR is true but success is false', async () => {
@@ -316,8 +326,10 @@ describe('cleanupAgentWorktree - openPR path', () => {
 
     expect(git.push).not.toHaveBeenCalled();
     expect(git.createPR).not.toHaveBeenCalled();
-    // Falls through to auto-merge path with merge: false (failure cleanup)
-    expect(removeWorktree).toHaveBeenCalledWith('agent-1', '/mock/workspace', 'cos/task-abc123', { merge: false });
+    // Falls through to auto-merge path with merge: false (failure cleanup). A
+    // FAILED agent additionally asks removeWorktree to KEEP the branch when it
+    // holds commits, so the task's retry can resume from it (#3167).
+    expect(removeWorktree).toHaveBeenCalledWith('agent-1', '/mock/workspace', 'cos/task-abc123', { merge: false, preserveBranchWithCommits: true });
   });
 
   it('should use baseBranch as PR base (not devBranch, since worktrees are created from baseBranch)', async () => {
@@ -894,7 +906,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     await cleanupAgentWorktree('agent-1', true, { openPR: false, skipMerge: true });
 
     expect(removeWorktree).toHaveBeenCalledWith(
-      'agent-1', '/mock/workspace', 'cos/task-abc123', { merge: false }
+      'agent-1', '/mock/workspace', 'cos/task-abc123', { merge: false, preserveBranchWithCommits: false }
     );
   });
 
@@ -902,8 +914,111 @@ describe('cleanupAgentWorktree - openPR path', () => {
     await cleanupAgentWorktree('agent-1', true, { openPR: false, skipMerge: false });
 
     expect(removeWorktree).toHaveBeenCalledWith(
-      'agent-1', '/mock/workspace', 'cos/task-abc123', { merge: true }
+      'agent-1', '/mock/workspace', 'cos/task-abc123', { merge: true, preserveBranchWithCommits: false }
     );
+  });
+
+  // --- branch preservation for resume (#3167) ---
+
+  it('asks removeWorktree to preserve a FAILED agent\'s branch so its retry can resume', async () => {
+    await cleanupAgentWorktree('agent-1', false);
+
+    expect(removeWorktree).toHaveBeenCalledWith(
+      'agent-1', '/mock/workspace', 'cos/task-abc123',
+      expect.objectContaining({ preserveBranchWithCommits: true })
+    );
+  });
+
+  it('does NOT preserve the branch on success — the merge/PR path owns cleanup', async () => {
+    await cleanupAgentWorktree('agent-1', true);
+
+    expect(removeWorktree).toHaveBeenCalledWith(
+      'agent-1', '/mock/workspace', 'cos/task-abc123',
+      expect.objectContaining({ preserveBranchWithCommits: false })
+    );
+  });
+});
+
+describe('resolveResumeBranch', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    git.getDefaultBranch.mockResolvedValue('main');
+    git.getWorktreeBranches.mockResolvedValue(new Set());
+    git.isBranchMergedInto.mockResolvedValue(false);
+  });
+
+  // The incident shape: PortOS merges with `--rebase` by default, so a landed
+  // branch has NEW SHAs and still reads as "ahead" of the default branch. Pointing
+  // a retry at it would have it build on already-merged work.
+  it('returns null for a rebase/squash-merged branch even though it reads as ahead', async () => {
+    git.isBranchMergedInto.mockResolvedValue(true);
+    git.getBranchComparison.mockResolvedValue({ ahead: 6, commits: [], stats: {} });
+
+    await expect(resolveResumeBranch('/repo', 'cos/task-1/agent-x')).resolves.toBeNull();
+  });
+
+  it('fails OPEN (no resume) when the merged check errors', async () => {
+    git.isBranchMergedInto.mockRejectedValue(new Error('git exploded'));
+
+    await expect(resolveResumeBranch('/repo', 'cos/task-1/agent-x')).resolves.toBeNull();
+  });
+
+  it('returns null when the branch is still checked out in a preserved worktree', async () => {
+    // A dirty tree makes removeWorktree preserve the WORKTREE too, so the branch
+    // stays claimed. `git worktree add` would fail "already checked out", which is
+    // worse for the retry than starting clean.
+    git.getWorktreeBranches.mockResolvedValue(new Set(['cos/task-1/agent-x']));
+    git.getBranchComparison.mockResolvedValue({ ahead: 5, commits: [], stats: {} });
+
+    await expect(resolveResumeBranch('/repo', 'cos/task-1/agent-x')).resolves.toBeNull();
+  });
+
+  it('still resumes when a DIFFERENT branch is checked out elsewhere', async () => {
+    git.getWorktreeBranches.mockResolvedValue(new Set(['main', 'cos/task-9/agent-z']));
+    git.getBranchComparison.mockResolvedValue({ ahead: 2, commits: [], stats: {} });
+
+    await expect(resolveResumeBranch('/repo', 'cos/task-1/agent-x')).resolves.toBe('cos/task-1/agent-x');
+  });
+
+  it('returns the branch when it holds commits the default branch does not', async () => {
+    git.getBranchComparison.mockResolvedValue({ ahead: 3, commits: [], stats: {} });
+
+    await expect(resolveResumeBranch('/repo', 'cos/task-1/agent-x')).resolves.toBe('cos/task-1/agent-x');
+    expect(git.getBranchComparison).toHaveBeenCalledWith('/repo', 'main', 'cos/task-1/agent-x');
+  });
+
+  it('returns null when the branch holds nothing to resume', async () => {
+    git.getBranchComparison.mockResolvedValue({ ahead: 0, commits: [], stats: {} });
+
+    await expect(resolveResumeBranch('/repo', 'cos/task-1/agent-x')).resolves.toBeNull();
+  });
+
+  it('returns null for an absent branch (empty comparison), not a phantom resume', async () => {
+    // An absent branch makes the rev-range invalid, so getBranchComparison comes
+    // back with ahead: 0 rather than throwing.
+    git.getBranchComparison.mockResolvedValue({ ahead: 0, commits: [], stats: {} });
+
+    await expect(resolveResumeBranch('/repo', 'cos/gone')).resolves.toBeNull();
+  });
+
+  it('returns null when git errors — never claims a resume it cannot substantiate', async () => {
+    git.getBranchComparison.mockRejectedValue(new Error('not a git repository'));
+
+    await expect(resolveResumeBranch('/repo', 'cos/task-1/agent-x')).resolves.toBeNull();
+  });
+
+  it('returns null without touching git when the workspace or branch is missing', async () => {
+    await expect(resolveResumeBranch(null, 'cos/task-1/agent-x')).resolves.toBeNull();
+    await expect(resolveResumeBranch('/repo', null)).resolves.toBeNull();
+    expect(git.getBranchComparison).not.toHaveBeenCalled();
+  });
+
+  it('falls back to main when the default branch cannot be detected', async () => {
+    git.getDefaultBranch.mockRejectedValue(new Error('no remote'));
+    git.getBranchComparison.mockResolvedValue({ ahead: 1, commits: [], stats: {} });
+
+    await expect(resolveResumeBranch('/repo', 'cos/task-1/agent-x')).resolves.toBe('cos/task-1/agent-x');
+    expect(git.getBranchComparison).toHaveBeenCalledWith('/repo', 'main', 'cos/task-1/agent-x');
   });
 });
 

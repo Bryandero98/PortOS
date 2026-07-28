@@ -933,6 +933,70 @@ export function buildCompletionGuidelineBullet({
 const DISCARD_WORKTREE_NOTE = 'Do NOT commit, push, or open a PR — this worktree is discarded on exit. Make any scratch edits that help you reason; only the completion sentinel is kept.';
 
 /**
+ * Is this worktree attached to a branch a PR already points at — i.e. the
+ * review-loop follow-up, whose guidance is "push review fixes here, the PR
+ * points at this branch"?
+ *
+ * Identified POSITIVELY, off the follow-up's own `reviewLoopFollowUp` marker,
+ * rather than as "any `existingBranch` worktree". `existingBranch` means only
+ * "attach to this branch" and now has two producers: the follow-up, and a retry
+ * resuming a dead agent's branch (`resumedFromAgentId`), which follows the task's
+ * ordinary push/PR flow and may have no PR at all. Keying on the marker means a
+ * THIRD producer defaults to the ordinary flow instead of silently inheriting
+ * review-fix instructions for a PR that doesn't exist.
+ */
+function isPrBranchWorktree(task, worktreeInfo) {
+  return worktreeInfo?.existingBranch === true && !!task?.metadata?.reviewLoopFollowUp;
+}
+
+/**
+ * Is this worktree a RESUME of a previous failed agent's branch? Keyed on
+ * `resumedFromAgentId`, which only the resume path stamps (see
+ * agentCompletionCleanup.js).
+ */
+function isResumedWorktree(task, worktreeInfo) {
+  return worktreeInfo?.existingBranch === true && !!task?.metadata?.resumedFromAgentId;
+}
+
+/**
+ * Resume banner for a retry attached to the branch a PREVIOUS failed agent left
+ * behind (`metadata.existingBranch` + `resumedFromAgentId`, stamped by
+ * agentCompletionCleanup.js when a failed run's branch survived cleanup with
+ * commits on it).
+ *
+ * Without this the retry sees an ordinary worktree that just happens to have
+ * commits on it and redoes work that is already done — the failure mode the
+ * agent-d2ae0352 incident exposed (reaped 30s after its PR merged; the
+ * replacement agent started the shipped work over). Telling it to read the log
+ * FIRST is the whole point: the prior run may have gone as far as opening or even
+ * merging a PR, in which case there is nothing left to build.
+ *
+ * Returns '' when this isn't a resume, so callers can interpolate unconditionally.
+ */
+export function buildResumeSection(task, worktreeInfo) {
+  if (!isResumedWorktree(task, worktreeInfo)) return '';
+  const priorAgentId = task.metadata.resumedFromAgentId;
+  return `
+## Resuming Unfinished Work — Read This First
+A previous agent (\`${priorAgentId}\`) worked this same task and did NOT finish cleanly
+(it hung, timed out, or was terminated). **Its commits are already on your branch**
+\`${worktreeInfo.branchName}\` — you are continuing its run, not starting over.
+
+Before you write any code, establish what is already done:
+1. \`git log --oneline ${worktreeInfo.baseBranch || 'origin/HEAD'}..HEAD\` — the commits it already made.
+2. \`git status\` — anything it left uncommitted.
+3. Check whether it already shipped: look for an open or merged PR for this branch
+   — \`gh pr list --head ${worktreeInfo.branchName} --state all\` on GitHub,
+   \`glab mr list --source-branch ${worktreeInfo.branchName}\` on GitLab.
+
+Then do only what remains. If a PR is already **merged**, the work is done — go
+straight to your completion step and report that. If a PR is already **open**,
+finish/land that PR rather than opening a second one. Do NOT redo completed work,
+and do NOT revert its commits unless they are actually wrong.
+`;
+}
+
+/**
  * Completion block for a **programmatic-output** (throwaway-worktree) task: the
  * agent reasons in a worktree that is discarded on exit, so it must NOT commit,
  * push, merge, or open a PR. Its only channel out is the `.agent-done` sentinel,
@@ -1124,7 +1188,7 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
   // `pending` BEFORE this flag existed (persisted across an upgrade) are still
   // recognized without a metadata migration.
   const noCodeOutput = isTruthyMetaFn(task.metadata?.noCodeOutput) || !!task.metadata?.creativeDirector;
-  const isWorktreeOnExistingBranch = worktreeInfo?.existingBranch === true;
+  const isWorktreeOnExistingBranch = isPrBranchWorktree(task, worktreeInfo);
   const worktreeSection = worktreeInfo ? `
 ## Git Worktree Context
 You are working in an **isolated git worktree** to avoid conflicts with other agents working concurrently.
@@ -1139,7 +1203,7 @@ ${worktreeInfo.baseBranch ? `- **Based on**: \`${worktreeInfo.baseBranch}\` (lat
       : isWorktreeOnExistingBranch
         ? 'Commit and **push** any review-fix commits to this branch — the PR points at it, so pushed commits are how Copilot sees your fixes. Use `git pull --rebase` before pushing if needed.'
         : `Commit your changes to this branch.${willOpenPR ? ' When your task completes, the system will push this branch and open a pull request against the default branch — do NOT push or open a PR yourself.' : ' Your commits will be automatically merged back to the main development branch when your task completes.'}`} Do NOT manually switch branches or modify the worktree configuration.
-` : '';
+${buildResumeSection(task, worktreeInfo)}` : '';
 
   // Build pipeline context section if this is a pipeline stage
   const pipelineCtx = task.metadata?.pipeline;
@@ -1498,7 +1562,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   // tasks (queued before this flag existed) are recognized without a migration.
   const noCodeOutput = isTruthyMetaFn(task.metadata?.noCodeOutput) || !!task.metadata?.creativeDirector;
   const isReviewLoopFollowUp = isTruthyMetaFn(task.metadata?.reviewLoopFollowUp);
-  const isWorktreeOnExistingBranch = worktreeInfo?.existingBranch === true;
+  const isWorktreeOnExistingBranch = isPrBranchWorktree(task, worktreeInfo);
   // Ordered reviewer list + flags for the Review Loop (task metadata wins; else
   // the install's configured Code Review Defaults threaded from buildAgentPrompt;
   // else `[copilot]`). Flows as `/do:pr --review-with a,b,c [--review-stop-on-*]
@@ -1575,7 +1639,10 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
       worktreeInfo.baseBranch ? `- **Based on**: \`${worktreeInfo.baseBranch}\`` : null,
       '',
       worktreeCommitGuidance({ isTui, hasSlashdo, isWorktreeOnExistingBranch, willOpenPR, discardWorktree }),
-      'Do NOT manually switch branches or modify the worktree configuration.'
+      'Do NOT manually switch branches or modify the worktree configuration.',
+      // Resuming a previous failed agent's branch: establish what's already done
+      // before writing code (see buildResumeSection). '' when not a resume.
+      buildResumeSection(task, worktreeInfo) || null
     ].filter(Boolean).join('\n'));
   }
 

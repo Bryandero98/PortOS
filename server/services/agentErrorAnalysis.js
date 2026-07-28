@@ -603,6 +603,16 @@ export const COMPLETION_REASON_ANALYSES = {
     message: 'Agent exceeded its maximum runtime',
     suggestedFix: 'Task took longer than the configured max runtime. Break it into smaller subtasks or raise the runtime budget.'
   },
+  // Distinct from the bare ceiling above: this agent was explicitly ASKED to wrap
+  // up and write its sentinel (see MAX_RUNTIME_WRAP_UP_GRACE_MS) and never did, so
+  // "raise the runtime budget" is the wrong advice — a session that can't answer a
+  // direct prompt in five minutes is wedged, not merely slow.
+  'max-runtime-no-wrap-up': {
+    category: 'timeout',
+    actionable: false,
+    message: 'Agent did not wrap up when asked at its max runtime',
+    suggestedFix: 'The agent was asked to write its completion sentinel and did not respond within the grace window — its provider/CLI is likely wedged rather than merely slow. Check the raw transcript for a stalled request, and check for open or merged-but-uncleaned PRs it left behind.'
+  },
   'command-not-found': {
     category: 'spawn-error',
     actionable: true,

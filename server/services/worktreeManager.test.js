@@ -7,6 +7,26 @@ import { join } from 'path';
 const execGitMock = vi.fn();
 vi.mock('../lib/execGit.js', () => ({ execGit: (...args) => execGitMock(...args) }));
 
+// removeWorktree's branch-preservation path needs the fs + git boundaries stubbed:
+// it checks the worktree dir exists, reads `git status`, and (for the resume gate)
+// asks git.js for the default branch. Pure helpers don't touch these.
+vi.mock('fs', () => ({
+  existsSync: vi.fn().mockReturnValue(true),
+  realpathSync: vi.fn((p) => p),
+}));
+vi.mock('fs/promises', () => ({
+  readdir: vi.fn().mockResolvedValue([]),
+  rm: vi.fn().mockResolvedValue(undefined),
+  stat: vi.fn().mockResolvedValue({ isDirectory: () => true }),
+}));
+vi.mock('./instances.js', () => ({ ensureInstanceId: vi.fn().mockResolvedValue('instance-1') }));
+const getDefaultBranchMock = vi.fn().mockResolvedValue('main');
+const isBranchMergedIntoMock = vi.fn().mockResolvedValue(false);
+vi.mock('./git.js', () => ({
+  getDefaultBranch: (...args) => getDefaultBranchMock(...args),
+  isBranchMergedInto: (...args) => isBranchMergedIntoMock(...args),
+}));
+
 const {
   shouldRefuseDefaultBranchMerge,
   isHumanClaimWorktree,
@@ -14,6 +34,7 @@ const {
   isGitLockError,
   addWorktreeWithRetry,
   isPreexistingRefError,
+  removeWorktree,
 } = await import('./worktreeManager.js');
 
 /**
@@ -568,5 +589,79 @@ describe('isPreexistingRefError (orphan-cleanup guard, #2193)', () => {
     expect(isPreexistingRefError('fatal: invalid reference')).toBe(false);
     expect(isPreexistingRefError('')).toBe(false);
     expect(isPreexistingRefError(undefined)).toBe(false);
+  });
+});
+
+describe('removeWorktree branch preservation for resume (#3167)', () => {
+  // Routes each git invocation this path makes to a scripted answer, keyed on the
+  // subcommand, so a test only has to state what it cares about instead of
+  // ordering every call. The preserve/delete decision itself comes from the
+  // mocked `isBranchMergedInto` (see the ./git.js mock at the top of this file).
+  function scriptGit({ porcelain = '' } = {}) {
+    execGitMock.mockReset();
+    execGitMock.mockImplementation((args) => {
+      const [sub] = args;
+      if (sub === 'rev-parse' && args[1] === '--show-toplevel') {
+        // Empty stdout → `detectedToplevel` is falsy, so removeWorktree SKIPS its
+        // broken-worktree check rather than taking that early-return branch (which
+        // deletes the branch itself and would mask what these tests assert).
+        return Promise.resolve({ stdout: '', stderr: '', exitCode: 0 });
+      }
+      if (sub === 'status') return Promise.resolve({ stdout: porcelain, stderr: '', exitCode: 0 });
+      return Promise.resolve({ stdout: '', stderr: '', exitCode: 0 });
+    });
+  }
+
+  const calledWith = (subcommandArgs) =>
+    execGitMock.mock.calls.some(([args]) => JSON.stringify(args) === JSON.stringify(subcommandArgs));
+
+  beforeEach(() => {
+    getDefaultBranchMock.mockResolvedValue('main');
+    // mockReset (not just mockResolvedValue): the opt-in test asserts the merged
+    // check was NOT consulted, so recorded calls must not leak in from a prior test.
+    isBranchMergedIntoMock.mockReset();
+    isBranchMergedIntoMock.mockResolvedValue(false);
+    scriptGit();
+  });
+
+  it('KEEPS the branch when it is not yet merged into the default branch', async () => {
+    const result = await removeWorktree('agent-x', '/repo', 'cos/task-1/agent-x', {
+      merge: false, preserveBranchWithCommits: true,
+    });
+
+    expect(calledWith(['branch', '-D', 'cos/task-1/agent-x'])).toBe(false);
+    expect(result.warnings.join(' ')).toMatch(/preserved/i);
+  });
+
+  // Patch-equivalence matters here: PortOS merges with `--rebase`, so a landed
+  // branch has new SHAs. `isBranchMergedInto` is what sees through that — a bare
+  // `rev-list --count` would report it ahead and preserve a merged branch forever.
+  it('DELETES the branch once it is merged (including rebase/squash-merged)', async () => {
+    isBranchMergedIntoMock.mockResolvedValue(true);
+
+    await removeWorktree('agent-x', '/repo', 'cos/task-1/agent-x', {
+      merge: false, preserveBranchWithCommits: true,
+    });
+
+    expect(calledWith(['branch', '-D', 'cos/task-1/agent-x'])).toBe(true);
+  });
+
+  it('fails CLOSED — keeps the branch when the merged check cannot be determined', async () => {
+    isBranchMergedIntoMock.mockRejectedValue(new Error('unknown revision'));
+
+    const result = await removeWorktree('agent-x', '/repo', 'cos/task-1/agent-x', {
+      merge: false, preserveBranchWithCommits: true,
+    });
+
+    expect(calledWith(['branch', '-D', 'cos/task-1/agent-x'])).toBe(false);
+    expect(result.warnings.join(' ')).toMatch(/preserved/i);
+  });
+
+  it('is opt-in: without the flag the no-merge path still deletes an unmerged branch', async () => {
+    await removeWorktree('agent-x', '/repo', 'cos/task-1/agent-x', { merge: false });
+
+    expect(calledWith(['branch', '-D', 'cos/task-1/agent-x'])).toBe(true);
+    // The resume gate never consulted the merged check for THIS branch.
+    expect(isBranchMergedIntoMock).not.toHaveBeenCalledWith('/repo', 'cos/task-1/agent-x', 'main');
   });
 });

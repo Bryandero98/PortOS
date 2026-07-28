@@ -172,6 +172,7 @@ import * as agentErrorAnalysis from './agentErrorAnalysis.js';
 import * as cosAgents from './cosAgents.js';
 import * as gitService from './git.js';
 import { activeAgents, userTerminatedAgents } from './agentState.js';
+import { MAX_RUNTIME_WRAP_UP_GRACE_MS } from '../lib/tuiHandshake.js';
 
 describe('agent TUI spawning', () => {
   it('builds a codex TUI command without a model flag for the configured-default sentinel', () => {
@@ -867,15 +868,104 @@ describe('spawnTuiAgent runtime', () => {
     await vi.advanceTimersByTimeAsync(31000);
     await flushMicrotasks();
 
+    // The ceiling PRODS rather than reaping (#3167): it pastes a wrap-up message
+    // and opens a grace window, so the agent is NOT finalized yet.
+    expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalled();
+    expect(shellService.writeToSession).toHaveBeenCalledWith(
+      SESSION_ID, expect.stringContaining('you have hit your maximum runtime')
+    );
+
+    // No sentinel ever appears → the grace window expires → NOW it reaps.
+    await vi.advanceTimersByTimeAsync(MAX_RUNTIME_WRAP_UP_GRACE_MS + 2000);
+    await flushMicrotasks();
+
     vi.useRealTimers();
     await completeDone;
 
+    // Reaped under the DISTINCT reason: it was asked to wrap up and didn't, which
+    // means a wedged provider — not "raise the runtime budget".
     expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
       expect.objectContaining({
         agentId: 'agent-1',
         success: false,
-        completionReason: 'max-runtime-timeout',
+        completionReason: 'max-runtime-no-wrap-up',
       })
+    );
+  });
+
+  // The whole point of the grace window: an agent that was SECONDS from writing
+  // its sentinel when the ceiling landed must finalize as a SUCCESS, not be
+  // reaped. This is the agent-d2ae0352 shape (PR merged 01:32:29, killed
+  // 01:32:59) that made a fresh agent redo already-shipped work.
+  it('max-runtime: an agent that wraps up during the grace window finalizes as success', async () => {
+    let resolveComplete;
+    const completeDone = new Promise((r) => { resolveComplete = r; });
+    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
+
+    runSpawn({ tuiConfig: { ...defaultTuiConfig, idleTimeoutMs: 600000, maxRuntimeMs: 30000 } });
+    await flushMicrotasks();
+
+    await capturedOnData(Buffer.from('Codex booting...\n'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+    await capturedOnData(Buffer.from('do the thing\n'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(3600);
+    await flushMicrotasks();
+
+    // Ceiling fires → prod + grace window, no finalize.
+    await vi.advanceTimersByTimeAsync(31000);
+    await flushMicrotasks();
+    expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalled();
+
+    // The prod works: the agent writes .agent-done well inside the grace window.
+    vi.mocked(existsSync).mockReturnValue(true);
+    await vi.advanceTimersByTimeAsync(4000);
+    await flushMicrotasks();
+
+    vi.useRealTimers();
+    await completeDone;
+
+    // Finalized as a SUCCESS via the ordinary sentinel path — never reaped.
+    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: 'agent-1', success: true })
+    );
+    expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ completionReason: 'max-runtime-timeout' })
+    );
+  });
+
+  // A dead session can't be prodded, so the grace window is pointless — reap
+  // immediately rather than idling the full window for a message nobody reads.
+  it('max-runtime: reaps immediately (no grace) when the TUI session is already gone', async () => {
+    let resolveComplete;
+    const completeDone = new Promise((r) => { resolveComplete = r; });
+    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
+
+    runSpawn({ tuiConfig: { ...defaultTuiConfig, idleTimeoutMs: 600000, maxRuntimeMs: 30000 } });
+    await flushMicrotasks();
+
+    await capturedOnData(Buffer.from('Codex booting...\n'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+    await capturedOnData(Buffer.from('do the thing\n'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(3600);
+    await flushMicrotasks();
+
+    // Session died before the ceiling landed.
+    vi.mocked(shellService.getSession).mockReturnValue(null);
+    await vi.advanceTimersByTimeAsync(31000);
+    await flushMicrotasks();
+
+    vi.useRealTimers();
+    await completeDone;
+
+    // Never prodded, so this keeps the plain-ceiling reason (not no-wrap-up).
+    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ success: false, completionReason: 'max-runtime-timeout' })
     );
   });
 
