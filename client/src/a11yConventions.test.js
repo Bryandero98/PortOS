@@ -1,8 +1,8 @@
 /**
  * Repo-wide accessibility conventions.
  *
- * These encode the two regressions that keep reappearing across a11y audit
- * passes, so a new component fails the suite instead of shipping the gap:
+ * These encode the regressions that keep reappearing across a11y audit passes,
+ * so a new component fails the suite instead of shipping the gap:
  *
  *   1. A hand-rolled `fixed inset-0 … bg-black/N` overlay instead of the shared
  *      `ui/Modal`, which owns the focus trap, the Esc stack, `role="dialog"`,

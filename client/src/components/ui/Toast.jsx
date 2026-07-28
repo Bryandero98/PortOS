@@ -184,13 +184,13 @@ function ToastItem({ t, toastOptions }) {
   return (
     <>
       {isCollapsed && (
-        // Re-expanding does NOT pin the toast open: the timer restarts, so a tap
-        // on a touch device (where no mouseleave ever arrives) re-collapses on
-        // its own.
-        // No hover handlers here: the timer effect short-circuits on
-        // `collapsed` so `held` couldn't change anything, and the pill unmounts
-        // on click — browsers fire no `mouseleave` on a removed node, so a
-        // mouse click would strand `held` at true and suppress the re-collapse.
+        // The pill deliberately carries no hover handlers: the timer effect
+        // short-circuits on `collapsed` before it reads `held`, so they couldn't
+        // change anything — and the pill unmounts on click, where no
+        // `mouseleave` ever fires, which would strand `held` at true and
+        // suppress the re-collapse below. Re-expanding doesn't pin the toast
+        // open either; the timer just restarts, so a tap on a touch device
+        // folds it away again on its own.
         <button
           type="button"
           onClick={() => setCollapsed(false)}
