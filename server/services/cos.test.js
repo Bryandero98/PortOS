@@ -1264,8 +1264,16 @@ describe('cos.js source — agent:completed triggers perpetual refill', () => {
     const onIdx = COS_SRC.indexOf("cosEvents.on('agent:completed'");
     const handlerSlice = COS_SRC.slice(onIdx, onIdx + 1400);
     expect(
-      /refillPerpetualForCompletedAgent\(agent\)[\s\S]*\.then\(\s*\(\)\s*=>\s*dequeueNextTask\(\)\s*\)/.test(handlerSlice),
+      /refillPerpetualForCompletedAgent\(agent\)[\s\S]*\.then\(\s*\(\)\s*=>\s*dequeueNextTask\(/.test(handlerSlice),
       'handler must run dequeueNextTask in a .then() AFTER the refill resolves'
+    ).toBe(true);
+    // Both generators on this continuation must skip the completing task, which
+    // still reads pending/in_progress until updateTask settles it (#3179): the
+    // refill excludes it via queueEligibleImprovementTasks, and the dequeue's
+    // idle-review tier via this argument.
+    expect(
+      /dequeueNextTask\(\{\s*ignoreTaskId:\s*agent\?\.taskId\s*\}\)/.test(handlerSlice),
+      'the post-refill dequeue must pass the completing task id as ignoreTaskId'
     ).toBe(true);
     // The old standalone `setImmediate(() => dequeueNextTask())` must be gone —
     // its presence would race the refill.

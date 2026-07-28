@@ -1219,7 +1219,7 @@ export async function evaluateTasks(options) {
  * @param {Object} state - Current CoS state
  * @returns {Object|null} Generated task or null if nothing to do
  */
-export async function generateIdleReviewTask(state) {
+export async function generateIdleReviewTask(state, { ignoreTaskId = null } = {}) {
   if (!isImprovementEnabled(state)) {
     emitLog('debug', 'Improvement tasks are disabled');
     return null;
@@ -1250,7 +1250,7 @@ export async function generateIdleReviewTask(state) {
       });
 
       emitLog('info', `Generating improvement task for ${nextApp.name}`, { appId: nextApp.id });
-      const idleTask = await generateManagedAppImprovementTask(nextApp, state);
+      const idleTask = await generateManagedAppImprovementTask(nextApp, state, { ignoreTaskId });
       // Only bind the active marker once a real task exists.
       if (idleTask) {
         await bindAppReviewAgent(nextApp.id, `idle-review-${Date.now()}`);
@@ -1709,7 +1709,7 @@ export function applyAppWorktreeDefault(metadata, app) {
   }
 }
 
-async function generateManagedAppImprovementTask(app, state) {
+async function generateManagedAppImprovementTask(app, state, { ignoreTaskId = null } = {}) {
   const { getAppActivityById, updateAppActivity } = await import('./appActivity.js');
   const taskSchedule = await import('./taskSchedule.js');
 
@@ -1761,7 +1761,7 @@ async function generateManagedAppImprovementTask(app, state) {
   // with the literal {prData}/{referenceData} markers and never poll. The
   // recordExecution + activity bump above already accounted for the idle
   // spawn; the per-type generator does not record execution itself.
-  return generateManagedAppImprovementTaskForType(nextType, app, state);
+  return generateManagedAppImprovementTaskForType(nextType, app, state, { ignoreTaskId });
 }
 
 /**

@@ -886,3 +886,25 @@ describe('ignoreTaskId reaches the in-flight-counting gates (#3179)', () => {
     expect(seen[0]).toMatchObject({ taskType: 'quota-burn', ignoreTaskId: 'sys-finishing' });
   });
 });
+
+/**
+ * BOTH generators reachable from the `agent:completed` continuation must carry
+ * ignoreTaskId: the refill (queueEligibleImprovementTasks) AND the idle-review
+ * tier that `dequeueNextTask` runs on the same continuation. The idle path was
+ * missed on the first pass — it dropped the id and re-charged the completing
+ * burn, skipping a dispatch the family was entitled to (#3179).
+ */
+describe('ignoreTaskId reaches BOTH completion-continuation generators (#3179)', () => {
+  it('the idle-review chain threads ignoreTaskId end to end', () => {
+    expect(GEN_SRC).toMatch(/export async function generateIdleReviewTask\(state, \{ ignoreTaskId = null \} = \{\}\)/);
+    expect(GEN_SRC).toContain('generateManagedAppImprovementTask(nextApp, state, { ignoreTaskId })');
+    expect(GEN_SRC).toMatch(/async function generateManagedAppImprovementTask\(app, state, \{ ignoreTaskId = null \} = \{\}\)/);
+    expect(GEN_SRC).toContain('generateManagedAppImprovementTaskForType(nextType, app, state, { ignoreTaskId })');
+  });
+
+  it('cos.js passes the completing task id into the dequeue that follows the refill', () => {
+    expect(COS_SRC).toContain('dequeueNextTask({ ignoreTaskId: agent?.taskId })');
+    expect(COS_SRC).toMatch(/async function dequeueNextTask\(\{ ignoreTaskId = null \} = \{\}\)/);
+    expect(COS_SRC).toContain('generateIdleReviewTask(state, { ignoreTaskId })');
+  });
+});
