@@ -182,6 +182,65 @@ export const ANIMATION_TRACKS = Object.freeze({
 // genuinely mean the compiled rows only.
 
 /**
+ * The min/default/max triples every row must keep in order.
+ *
+ * Exported because three places need this exact pairing and had each spelled their
+ * own copy: the assert below, the request schemas in `server/lib/validation.js`
+ * (which front-run the assert so the form gets a per-field 400), and the client's
+ * pre-submit check. A fourth knob added to one copy and missed in another is the
+ * drift this prevents.
+ */
+export const TRACK_BOUND_TRIPLES = Object.freeze([
+  Object.freeze(['minFrameCount', 'defaultFrameCount', 'maxFrameCount']),
+  Object.freeze(['minFps', 'defaultFps', 'maxFps']),
+]);
+
+/**
+ * The fields of a row a USER authors, as opposed to the ones PortOS derives.
+ *
+ * The complement is deliberate and load-bearing: everything NOT listed here
+ * (`contractFrameCountField`, `contractFpsField`, `selectionKind`, `setKind`,
+ * `finalErrorCode`, `standaloneContract`, `builtin`) names a file on disk, a
+ * publish-contract key, or a cross-row invariant that `assertAnimationTrackRows`
+ * requires to be globally unique — so it is derived from the id rather than typed
+ * (see `animationTrackCrud.js`). Named here, beside the assert that validates the
+ * whole row, so the request schema and the service's whitelist build from ONE list
+ * instead of two that fail in opposite directions when they drift: a field in the
+ * schema but not the whitelist validates and is then silently dropped, and one in
+ * the whitelist but not the schema is rejected as an unrecognized key.
+ */
+export const AUTHORED_TRACK_FIELDS = Object.freeze([
+  'label', 'directional', 'kinds',
+  'minFrameCount', 'maxFrameCount', 'defaultFrameCount',
+  'minFps', 'maxFps', 'defaultFps',
+  'promptTemplate',
+]);
+
+/**
+ * The five on-disk / publish-contract discriminators a track's id determines, plus
+ * the `contractFpsField` a user-defined row always declines.
+ *
+ * Derived rather than typed because `assertAnimationTrackRows` requires each to be
+ * globally unique and they name artifacts the atlas compiler re-verifies — a typo in
+ * one would hand this track another's evidence chain. Lives here, beside that
+ * assert, so one module knows a row's whole shape.
+ *
+ * `contractFpsField` is `null` to match both seeded rows: PortOS's fps is
+ * preview-only (a distance-driven consumer owns its timing), so a new track claiming
+ * an fps contract key would offer the app a knob nothing reads.
+ */
+export function deriveTrackFields(id) {
+  const camel = id.replace(/-([a-z0-9])/g, (_m, c) => c.toUpperCase());
+  return {
+    contractFrameCountField: `${camel}FrameCount`,
+    contractFpsField: null,
+    selectionKind: `reviewed-${id}-selection`,
+    setKind: `finalized-${id}-set`,
+    finalErrorCode: `${id.replace(/-/g, '_').toUpperCase()}_SET_FINAL`,
+  };
+}
+
+/**
  * Validate a registry's rows, throwing on the first violation.
  *
  * Called at module load below (the navManifest.js / catalogTypes.js idiom): a
@@ -262,10 +321,7 @@ export function assertAnimationTrackRows(tracks) {
       }
       claimedOnDiskKinds.set(row[knob], { id, knob });
     }
-    for (const [min, def, max] of [
-      ['minFrameCount', 'defaultFrameCount', 'maxFrameCount'],
-      ['minFps', 'defaultFps', 'maxFps'],
-    ]) {
+    for (const [min, def, max] of TRACK_BOUND_TRIPLES) {
       if (!(row[min] <= row[def] && row[def] <= row[max])) {
         throw new Error(`animationTracks: track '${id}' needs ${min} <= ${def} <= ${max}`);
       }

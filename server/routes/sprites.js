@@ -25,6 +25,8 @@ import {
   spriteTrackGenerateSchema,
   spriteTrackApproveSchema,
   spriteTrackParamsSchema,
+  spriteAnimationTrackCreateSchema,
+  spriteAnimationTrackUpdateSchema,
   spriteWalkGenerateSchema,
   spriteWalkApproveSchema,
   spriteWalkReopenSchema,
@@ -66,6 +68,13 @@ import {
   unlockDirectionalAnchor, unlockMainReference, unlockTurnaroundReference,
 } from '../services/sprites/walk.js';
 import { getTrackState, startTrackGeneration, approveTrackRun } from '../services/sprites/animationTrackWorkflow.js';
+// #3153 — CRUD over the user-defined store. Separate from the read-side store
+// module so `validation.js`'s import graph stays free of the record scan the
+// in-use refusal needs (see animationTrackCrud.js's header).
+import {
+  listAnimationTracks, createAnimationTrack, updateAnimationTrack, deleteAnimationTrack,
+  animationTrackStoreOrigin,
+} from '../services/sprites/animationTrackCrud.js';
 import { saveLoopTrim } from '../services/sprites/walkTrims.js';
 import { compileAtlas, getAtlasState } from '../services/sprites/atlas.js';
 import { resolveWalkFrameCount } from '../services/sprites/atlasGrid.js';
@@ -148,6 +157,34 @@ router.get('/reference-sources', asyncHandler(async (_req, res) => {
 // not just reference-workflow characters. MUST precede `/:id`.
 router.get('/thumbnails', asyncHandler(async (_req, res) => {
   res.json(await listSpriteThumbnails());
+}));
+
+// Authoring the user-defined animation types (#3153) — a record-INDEPENDENT
+// surface, so like `/reference-sources` and `/thumbnails` it MUST precede `/:id`
+// or the literal path is captured as a record id. The DELETE likewise precedes
+// `DELETE /:id`; it can't collide (two segments vs. one) but the block stays
+// together so the ordering rule is visible in one place.
+//
+// No AI call on any of these: a track definition is data. Generating anything
+// FROM it stays behind the user-triggered `/tracks/:trackId/generate`.
+router.get('/animation-tracks', asyncHandler(async (_req, res) => {
+  res.json({ ...listAnimationTracks(), origin: await animationTrackStoreOrigin() });
+}));
+
+router.post('/animation-tracks', asyncHandler(async (req, res) => {
+  const input = validateRequest(spriteAnimationTrackCreateSchema, req.body);
+  res.status(201).json(await createAnimationTrack(input));
+}));
+
+router.put('/animation-tracks/:trackId', asyncHandler(async (req, res) => {
+  const { trackId } = validateRequest(spriteTrackParamsSchema, req.params);
+  const patch = validateRequest(spriteAnimationTrackUpdateSchema, req.body);
+  res.json(await updateAnimationTrack(trackId, patch));
+}));
+
+router.delete('/animation-tracks/:trackId', asyncHandler(async (req, res) => {
+  const { trackId } = validateRequest(spriteTrackParamsSchema, req.params);
+  res.json(await deleteAnimationTrack(trackId));
 }));
 
 // Create a character record — the entry point of the reference workflow.

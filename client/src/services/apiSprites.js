@@ -150,6 +150,30 @@ export const approveSpriteTrack = (id, trackId, body = {}, options = {}) => requ
   { method: 'POST', body: JSON.stringify(body), ...options },
 );
 
+// Animation-type definitions (#3153) — the registry the workflow surfaces render
+// from, and the CRUD over the user-defined half of it. The list returns
+// `{ tracks, storePath, origin }` (`origin: 'seed' | 'store'` — whether this
+// install has saved its own copy yet); every mutation returns the same `tracks`
+// plus `restartRequired`, because `spriteRuntimeContractSchema`'s per-track
+// publish-contract field is built once at server start. Every caller owns its own
+// error UI (the drawer shows the server's collision/in-use message inline), so
+// they all pass `{ silent: true }`.
+export const listSpriteAnimationTracks = (options = {}) => request('/sprites/animation-tracks', options);
+
+export const createSpriteAnimationTrack = (body, options = {}) => request('/sprites/animation-tracks', {
+  method: 'POST', body: JSON.stringify(body), ...options,
+});
+
+export const updateSpriteAnimationTrack = (trackId, patch, options = {}) => request(
+  `/sprites/animation-tracks/${encodeURIComponent(trackId)}`,
+  { method: 'PUT', body: JSON.stringify(patch), ...options },
+);
+
+export const deleteSpriteAnimationTrack = (trackId, options = {}) => request(
+  `/sprites/animation-tracks/${encodeURIComponent(trackId)}`,
+  { method: 'DELETE', ...options },
+);
+
 // Re-run the deterministic postprocess on a run whose video already landed.
 export const postprocessSpriteWalk = (id, body, options = {}) => request(`/sprites/${encodeURIComponent(id)}/walk/postprocess`, {
   method: 'POST', body: JSON.stringify(body), ...options,

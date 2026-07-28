@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { PersonStanding, Download, X, RefreshCw, Plus, LayoutGrid, Search, Images, Scissors } from 'lucide-react';
+import { PersonStanding, Download, X, RefreshCw, Plus, LayoutGrid, Search, Images, Scissors, Film } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import Modal from '../components/ui/Modal.jsx';
 import {
@@ -15,6 +15,7 @@ import ReferenceWorkflow from '../components/sprites/ReferenceWorkflow.jsx';
 import WalkWorkflow from '../components/sprites/WalkWorkflow.jsx';
 import TrackWorkflow from '../components/sprites/TrackWorkflow.jsx';
 import AmbientWorkflow from '../components/sprites/AmbientWorkflow.jsx';
+import AnimationTypesDrawer from '../components/sprites/AnimationTypesDrawer.jsx';
 import { GROK_VIDEO_DEFAULT_DURATION } from '../lib/grokVideoClip.js';
 import LoopTrimmer from '../components/sprites/LoopTrimmer.jsx';
 import PublishWorkflow from '../components/sprites/PublishWorkflow.jsx';
@@ -463,6 +464,18 @@ export default function Sprites() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [spriteTab, setSpriteTab] = useDrawerTab('spriteTab', 'library', ['library', 'trimmer']);
   const trimRunParam = searchParams.get('run');
+  // The animation-types drawer (#3153) is library-wide, not per-record, so its
+  // open state lives in its own search param — deep-linkable per the "URL is the
+  // source of truth for what's open" rule, and independent of `spriteTab`/`run`.
+  const animationTypesOpen = searchParams.get('animationTypes') === '1';
+  const setAnimationTypesOpen = useCallback((next) => {
+    setSearchParams((prev) => {
+      const params = new URLSearchParams(prev);
+      if (next) params.set('animationTypes', '1');
+      else params.delete('animationTypes');
+      return params;
+    });
+  }, [setSearchParams]);
   // Open the trimmer deep-linked to a run. `replace` keeps an in-trimmer source
   // switch out of history; the default push lets Back return to the Library.
   const openTrimmer = useCallback((runId, { replace = false } = {}) => {
@@ -692,6 +705,15 @@ export default function Sprites() {
           </button>
         )}
         {records?.length > 0 && <SpriteSearch records={records} onSelect={goto} />}
+        {/* Library-wide, so it sits beside create/import and is reachable from
+            the bare /sprites catalog as well as an open record. */}
+        <button
+          type="button"
+          onClick={() => setAnimationTypesOpen(true)}
+          className="flex items-center gap-2 px-3 py-1.5 bg-port-card border border-port-border hover:border-port-accent text-gray-300 rounded text-sm"
+        >
+          <Film className="w-4 h-4" /> Animation types
+        </button>
         <NewSpritePanel onCreated={(record) => { refresh(); navigate(`/sprites/${record.id}`); }} />
         {/* Re-import while a sprite is open must refresh the open detail too,
             not just the library list. */}
@@ -852,6 +874,17 @@ export default function Sprites() {
           )}
         </section>
       </div>
+      {/* Rendered last so the slide-in panel layers over the catalog/detail pane.
+          A newly-authored type only reaches an OPEN record's workflow list on the
+          next detail fetch — so refetch when the drawer reports a change, and skip
+          the (recursive-readdir) detail fetch entirely on a peek-and-close. */}
+      <AnimationTypesDrawer
+        open={animationTypesOpen}
+        onClose={(changed) => {
+          setAnimationTypesOpen(false);
+          if (changed && id) setRetryTick((t) => t + 1);
+        }}
+      />
     </div>
   );
 }
