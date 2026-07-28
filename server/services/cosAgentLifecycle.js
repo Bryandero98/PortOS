@@ -61,8 +61,19 @@ export async function updateAgent(agentId, updates) {
     }
     await saveState(state);
 
-    cosEvents.emit('agent:updated', state.agents[agentId]);
-    return state.agents[agentId];
+    // Completion writes the archive before later completion hooks enrich an
+    // agent's metadata (task summaries, scan reports, etc.). Mirror those
+    // post-completion updates into the archived metadata too, otherwise they
+    // disappear as soon as in-memory retention expires.
+    const updatedAgent = state.agents[agentId];
+    if (updatedAgent.status === 'completed' && updatedAgent.completedAt) {
+      const { output: _output, ...metadata } = updatedAgent;
+      const dateStr = updatedAgent.completedAt.slice(0, 10);
+      await atomicWrite(join(getAgentDir(agentId, dateStr), 'metadata.json'), metadata);
+    }
+
+    cosEvents.emit('agent:updated', updatedAgent);
+    return updatedAgent;
   });
 }
 

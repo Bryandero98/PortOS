@@ -22,6 +22,8 @@ import {
 } from '../lib/brainValidation.js';
 import * as githubCloner from '../services/githubCloner.js';
 import * as cos from '../services/cos.js';
+import { randomUUID } from 'crypto';
+import { prepareScanReportDirectory, reportPathForId, getScanReport } from '../services/malwareScanReports.js';
 
 const router = Router();
 
@@ -272,6 +274,9 @@ router.post('/links/:id/scan', asyncHandler(async (req, res) => {
     });
   }
 
+  const reportId = randomUUID();
+  const reportPath = reportPathForId(reportId);
+  await prepareScanReportDirectory();
   const repoLabel = link.title || link.url;
   const description = `Malware scan: ${repoLabel}`;
   // Carry the BARE command (`metadata.slashdoCommand`) rather than inlining the
@@ -282,10 +287,20 @@ router.post('/links/:id/scan', asyncHandler(async (req, res) => {
   // peer-sync payload. Matches POST /api/cos/tasks/slashdo (#3114).
   const context = `Run the scan workflow against the cloned repository at: \`${link.localPath}\`
 
-Use that path as SCAN_DIR. Adhere to every Operational Invariant in the workflow body — this is a hostile-until-proven-safe audit. The full markdown report will be written to ~/.claude/scans/. When complete, summarize the verdict (CLEAN / CAUTION / DANGEROUS) and the top findings in your final response so the report can be surfaced in the UI.`;
+Use that path as SCAN_DIR. Adhere to every Operational Invariant in the workflow body — this is a hostile-until-proven-safe audit. End the report with exactly one verdict heading: \`## Verdict: CLEAN\`, \`## Verdict: CAUTION\`, or \`## Verdict: DANGEROUS\`. When complete, summarize the verdict and top findings in your final response.`;
 
   const result = await cos.addTask(
-    { description, context, slashdoCommand: 'scan', useWorktree: false, openPR: false, simplify: false, reviewLoop: false },
+    {
+      description,
+      context,
+      slashdoCommand: 'scan',
+      slashdoArgs: `--report-path-allow-anywhere --report-path ${JSON.stringify(reportPath)}`,
+      malwareScan: { linkId: link.id, reportId },
+      useWorktree: false,
+      openPR: false,
+      simplify: false,
+      reviewLoop: false
+    },
     'user'
   );
   if (result?.duplicate) {
@@ -297,6 +312,18 @@ Use that path as SCAN_DIR. Adhere to every Operational Invariant in the workflow
 
   console.log(`🛡️ Queued malware scan: link=${link.id} path=${link.localPath} task=${result.id}`);
   res.json({ message: 'Scan queued', taskId: result.id, linkId: link.id, scanPath: link.localPath });
+}));
+
+router.get('/links/:id/scan-report', asyncHandler(async (req, res) => {
+  const link = await brainService.getLinkById(req.params.id);
+  if (!link?.malwareScan?.reportId) {
+    throw new ServerError('No malware scan report is available for this link', { status: 404, code: 'REPORT_NOT_FOUND' });
+  }
+  const report = await getScanReport(link.malwareScan.reportId);
+  if (report === null) {
+    throw new ServerError('Malware scan report file is unavailable', { status: 404, code: 'REPORT_NOT_FOUND' });
+  }
+  res.type('text/markdown').send(report);
 }));
 
 // =============================================================================

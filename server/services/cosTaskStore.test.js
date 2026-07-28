@@ -251,6 +251,15 @@ describe('cosTaskStore.addTask', () => {
     expect(tasks.find(t => t.id === created.id).metadata.slashdoCommand).toBe('plan-task');
   });
 
+  it('persists malware scan report ownership through the task markdown round-trip', async () => {
+    const malwareScan = { linkId: 'a3d2c4e8-810a-4d1a-8ab1-94d3e0a13f8d', reportId: 'b38bdf75-3fe2-498c-9c36-7d512dc078d1' };
+    const created = await addTask({ description: 'Malware scan: example/repo', malwareScan }, 'user');
+    expect(created.metadata.malwareScan).toEqual(malwareScan);
+
+    const { tasks } = await getUserTasks();
+    expect(tasks.find(t => t.id === created.id).metadata.malwareScan).toEqual(malwareScan);
+  });
+
   it('omits slashdo metadata when no workflow is pinned', async () => {
     const created = await addTask({ description: 'ordinary prose task' }, 'user');
     expect(created.metadata.slashdoCommand).toBeUndefined();

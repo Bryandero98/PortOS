@@ -17,6 +17,9 @@ vi.mock('./cosEvents.js', () => ({
 vi.mock('./memoryExtractor.js', () => ({
   extractAndStoreMemories: vi.fn().mockResolvedValue({ created: 0, pendingApproval: 0 })
 }));
+vi.mock('./malwareScanReports.js', () => ({
+  finalizeMalwareScan: vi.fn().mockResolvedValue(null)
+}));
 
 import { processAgentCompletion } from './agentCompletion.js';
 import * as appActivity from './appActivity.js';

@@ -332,6 +332,9 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     // known (see server/lib/slashdoInvocation.js).
     if (taskData.slashdoCommand) metadata.slashdoCommand = taskData.slashdoCommand;
     if (taskData.slashdoArgs) metadata.slashdoArgs = taskData.slashdoArgs;
+    if (taskData.malwareScan && typeof taskData.malwareScan === 'object' && !Array.isArray(taskData.malwareScan)) {
+      metadata.malwareScan = taskData.malwareScan;
+    }
     if (taskData.jiraTicketId) metadata.jiraTicketId = taskData.jiraTicketId;
     if (taskData.jiraTicketUrl) metadata.jiraTicketUrl = taskData.jiraTicketUrl;
     if (taskData.screenshots?.length > 0) metadata.screenshots = taskData.screenshots;
