@@ -378,8 +378,14 @@ export function parseCodexRollout(jsonlText, { from = null, to = null } = {}) {
     models: model ? [model] : [],
     // Codex reports one model per rollout (no mid-session switch in the format),
     // so the whole delta is that model's — mirrored into `byModel` for shape
-    // parity with the Claude parser so callers need no per-family branch.
-    byModel: model ? { [model]: { ...totals } } : {},
+    // parity with the Claude parser so callers need no per-family branch. A
+    // model-less rollout (no session_meta.model, no turn_context.model) still
+    // gets its own UNKNOWN_MODEL bucket rather than an empty byModel — an
+    // empty map here made readMeasuredUsage's fold() drop this rollout's
+    // tokens entirely whenever a run's window also picked up a NAMED-model
+    // rollout: reconcileRunUsage's `perModel.length > 0` branch only bills
+    // from byModel, so a model-less rollout invisible to it billed nothing.
+    byModel: { [model || UNKNOWN_MODEL]: { ...totals } },
     ...totals,
     firstTs,
     lastTs

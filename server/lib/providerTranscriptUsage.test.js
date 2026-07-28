@@ -404,6 +404,27 @@ describe('no billable tokens are dropped from byModel', () => {
     expect(sum('cacheReadTokens')).toBe(result.cacheReadTokens);
     expect(sum('messages')).toBe(result.messages);
   });
+
+  // A Codex rollout whose session_meta/turn_context never named a model used
+  // to return byModel: {} despite nonzero totals — invisible to
+  // reconcileRunUsage's per-model billing path once a NAMED-model rollout
+  // shared the same run window, silently dropping this rollout's tokens.
+  it('buckets a model-less Codex rollout under UNKNOWN_MODEL instead of an empty byModel', () => {
+    const metaNoModel = JSON.stringify({
+      timestamp: '2026-07-01T10:00:00.000Z',
+      type: 'session_meta',
+      payload: { id: 'rollout-no-model', cwd: '/work/example-repo', cli_version: '0.0.0' }
+    });
+    const text = [
+      metaNoModel,
+      codexTokenCount({ timestamp: '2026-07-01T10:00:01.000Z', input: 3000, cached: 2400, output: 250 })
+    ].join('\n');
+
+    const result = parseCodexRollout(text);
+    expect(result.model).toBeNull();
+    expect(Object.keys(result.byModel)).toEqual([UNKNOWN_MODEL]);
+    expect(result.byModel[UNKNOWN_MODEL]).toMatchObject({ tokensOut: 250, cacheReadTokens: 2400 });
+  });
 });
 
 describe('Codex message count under a window', () => {
