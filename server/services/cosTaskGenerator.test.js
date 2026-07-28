@@ -28,7 +28,7 @@ vi.mock('./codeReview.js', async (importActual) => ({
   getCodeReviewDefaults: vi.fn(async () => ({ reviewers: ['copilot'], usernames: ['alice'], optionalReviewers: [] })),
 }));
 
-import { selectDryRunAutoApproved, exceedsMaxSpawns, resolveIssueAuthorFilterBlock, resolveSwarmBlock, isCooldownExemptTask, emitOnDemandEmpty, buildJiraTicketTask, buildImprovementDedupSets } from './cosTaskGenerator.js';
+import { selectDryRunAutoApproved, exceedsMaxSpawns, resolveIssueAuthorFilterBlock, resolveSwarmBlock, isCooldownExemptTask, emitOnDemandEmpty, buildJiraTicketTask, buildImprovementDedupSets, normalizeWorkItemRef, buildTargetWorkItemBlock } from './cosTaskGenerator.js';
 import { cosEvents } from './cosEvents.js';
 import { MAX_TOTAL_SPAWNS } from '../lib/validation.js';
 
@@ -166,7 +166,28 @@ describe('{reviewers} interpolation honors Code Review Defaults', () => {
     // into buildReviewersCsv, which owns the fallback to the hardcoded copilot
     // default when the filter empties the list (unit-tested in validation.test.js).
     expect(GEN_SRC).toContain('.filter((r) => !LOCAL_LLM_REVIEWERS.includes(r))');
-    expect(GEN_SRC).toContain('buildReviewersCsv(promptReviewers, promptUsernames, promptOptionalReviewers)');
+    expect(GEN_SRC).toContain('buildReviewersCsv(promptReviewers, promptUsernames, promptOptionalReviewers, promptReviewerMaxRounds, promptReviewerModels)');
+  });
+
+  it('threads per-reviewer ~max round caps into the prompt CSV on both claim paths', () => {
+    // The `{reviewers}` token IS the flag string for the claim flows, so a
+    // configured cap only reaches slashdo if the CSV carries it. Both the
+    // scheduled path and buildClaimWorkTask resolve it with task-over-default
+    // precedence (unit-tested in validation.test.js).
+    expect(GEN_SRC).toContain('resolveReviewerMaxRounds(metadata.reviewerMaxRounds, codeReviewDefaults?.reviewerMaxRounds)');
+    expect(GEN_SRC).toContain('resolveReviewerMaxRounds(reviewerMaxRounds ?? metadata.reviewerMaxRounds, codeReviewDefaults?.reviewerMaxRounds)');
+    expect(GEN_SRC).toContain('buildReviewersCsv(reviewersList, promptUsernames, promptOptionalReviewers, promptReviewerMaxRounds, promptReviewerModels)');
+  });
+
+  it('threads per-reviewer model pins into the prompt CSV on both claim paths (#3133)', () => {
+    // Same argument as the caps above: `{reviewers}` IS the flag string for the
+    // claim flows, so a pinned model only reaches slashdo (as its `[<model>]`
+    // bracket) if the CSV carries it. Both paths resolve with task-over-default
+    // precedence off the Code Review Defaults' `<reviewer>Model` scalars.
+    expect(GEN_SRC).toContain('resolveReviewerModels(metadata.reviewerModels, reviewerModelsFromDefaults(codeReviewDefaults))');
+    expect(GEN_SRC).toContain('resolveReviewerModels(reviewerModels ?? metadata.reviewerModels, reviewerModelsFromDefaults(codeReviewDefaults))');
+    // The play-button path reads the defaults directly (no task metadata to layer).
+    expect(GEN_SRC).toContain('codeReviewDefaults?.reviewerMaxRounds, reviewerModelsFromDefaults(codeReviewDefaults)');
   });
 });
 
@@ -223,20 +244,76 @@ describe('claim-work single-source routing', () => {
   it('buildClaimWorkTask resolves issueAuthorFilter + reviewers from configured claim-work metadata (parity with scheduler)', () => {
     // The manual button must honor the app's configured Work Tracker behavior
     // (issueAuthorFilter:'any', non-Copilot reviewers), not force owner+copilot.
-    const fn = GEN_SRC.slice(GEN_SRC.indexOf('export async function buildClaimWorkTask('));
-    // Merges global schedule metadata then per-app overrides, same as the scheduler.
-    expect(fn).toMatch(/getTaskInterval\('claim-work'\)/);
-    expect(fn).toMatch(/getAppTaskTypeOverrides\(app\.id\)/);
-    expect(fn).toMatch(/stripManagedAgentOptionsFromOverride\(\s*'claim-work'/);
+    // The metadata merge itself lives in resolveClaimWorkMetadata, shared with the
+    // work-item picker route so both scan under the SAME author filter.
+    const resolver = GEN_SRC.slice(GEN_SRC.indexOf('export async function resolveClaimWorkMetadata('));
+    expect(resolver).toMatch(/getTaskInterval\('claim-work'\)/);
+    expect(resolver).toMatch(/getAppTaskTypeOverrides\(app\.id\)/);
+    expect(resolver).toMatch(/stripManagedAgentOptionsFromOverride\(\s*'claim-work'/);
     // issueAuthorFilter: explicit option > configured metadata > 'self'
     // (the slashdo /do:next --self security boundary).
-    expect(fn).toMatch(/issueAuthorFilter \?\? metadata\.issueAuthorFilter \?\? 'self'/);
+    expect(GEN_SRC).toMatch(/return explicit \?\? metadata\?\.issueAuthorFilter \?\? 'self'/);
+    const fn = GEN_SRC.slice(GEN_SRC.indexOf('export async function buildClaimWorkTask('));
+    expect(fn).toMatch(/resolveClaimWorkMetadata\(app\)/);
+    expect(fn).toMatch(/resolveClaimAuthorFilter\(issueAuthorFilter, metadata\)/);
     // reviewers fall back to Code Review Defaults via normalizeReviewers, dropping local-LLM reviewers.
     expect(fn).toMatch(/normalizeReviewers\(metadata, codeReviewDefaults\?\.reviewers\)/);
     expect(fn).toMatch(/LOCAL_LLM_REVIEWERS\.includes/);
     // A direct claim-work prompt customization overrides the tracker body, same
     // as the scheduled router's promptKeyForBody selection.
     expect(fn).toMatch(/getTaskPrompt\(interval\.prompt \? 'claim-work' : promptTaskType\)/);
+  });
+});
+
+// The "/do:next — pick a specific item" target. One normalizer + one block
+// builder serve all four claim flows (and the scheduler's reserved planId), so
+// the pin-to-one-item contract can't drift per tracker.
+describe('work-item target', () => {
+  describe('normalizeWorkItemRef', () => {
+    it('accepts issue numbers with or without the # prefix', () => {
+      expect(normalizeWorkItemRef('412')).toBe('412');
+      expect(normalizeWorkItemRef('#412')).toBe('412');
+      expect(normalizeWorkItemRef(' #412 ')).toBe('412');
+    });
+
+    it('upper-cases a JIRA key', () => {
+      expect(normalizeWorkItemRef('proj-1234')).toBe('PROJ-1234');
+    });
+
+    it('passes a PLAN.md slug through', () => {
+      expect(normalizeWorkItemRef('fix-the-thing')).toBe('fix-the-thing');
+    });
+
+    it('rejects absent, oversized, and shell-unsafe refs', () => {
+      expect(normalizeWorkItemRef(undefined)).toBeNull();
+      expect(normalizeWorkItemRef('')).toBeNull();
+      expect(normalizeWorkItemRef('a'.repeat(81))).toBeNull();
+      expect(normalizeWorkItemRef('12; rm -rf /')).toBeNull();
+      expect(normalizeWorkItemRef('$(whoami)')).toBeNull();
+    });
+  });
+
+  describe('buildTargetWorkItemBlock', () => {
+    it('is empty without a target, so the agent keeps its own Phase 1 pick', () => {
+      expect(buildTargetWorkItemBlock('claim-issue', null)).toBe('');
+      expect(buildTargetWorkItemBlock('claim-issue', '')).toBe('');
+    });
+
+    it('is empty for a flow with no constraint copy', () => {
+      expect(buildTargetWorkItemBlock('feature-ideas', '42')).toBe('');
+    });
+
+    it.each([
+      ['claim-issue', '42', '## Target Issue Constraint', 'claim/issue-42'],
+      ['claim-issue-gitlab', '42', '## Target Issue Constraint', 'claim/issue-42'],
+      ['claim-issue-jira', 'ACME-9', '## Target Ticket Constraint', 'claim/ACME-9'],
+      ['plan-task', 'do-thing', '## Item Constraint', 'NEEDS_INPUT']
+    ])('%s pins %s with the tracker\'s own vocabulary', (taskType, ref, heading, marker) => {
+      const block = buildTargetWorkItemBlock(taskType, ref);
+      expect(block).toContain(heading);
+      expect(block).toContain(ref);
+      expect(block).toContain(marker);
+    });
   });
 });
 
@@ -269,7 +346,7 @@ describe('buildJiraTicketTask', () => {
     expect(GEN_SRC).toContain('export async function buildJiraTicketTask(');
     // Routes the JIRA flow directly, not via buildClaimWorkTask.
     expect(GEN_SRC).toMatch(/buildJiraTicketTask[\s\S]*getTaskPrompt\('claim-issue-jira'\)/);
-    expect(GEN_SRC).toMatch(/buildJiraTicketTask[\s\S]*buildTargetTicketBlock\(key\)/);
+    expect(GEN_SRC).toMatch(/buildJiraTicketTask[\s\S]*appendTargetWorkItemBlock\('claim-issue-jira', key\)/);
   });
 });
 

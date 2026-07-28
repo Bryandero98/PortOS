@@ -46,7 +46,12 @@ import {
 import { enqueueJob, attachSseClient, cancelJob, listJobs } from '../services/mediaJobQueue/index.js';
 import { repoForModel, getTextEncoderRepo, isHfRepoId } from '../lib/mediaModels.js';
 import { videoLoraFamily } from '../lib/runners.js';
-import { inspectModelCache, verifyModelCache, repairModelCache, summarizeVerify } from '../lib/hfCache.js';
+import {
+  IC_LORA_MODE_VALUES, icLoraSpecForMode, icLoraRepos, listIcLoraWeights,
+  assertIcReferenceCount, describeIcReferenceRange,
+  icLoraWeightCandidates, findCachedIcLoraWeight,
+} from '../lib/icLoraWeights.js';
+import { inspectModelCache, verifyModelCache, repairModelCache, repairCachedFile, summarizeVerify } from '../lib/hfCache.js';
 import { startHfDownloadStream, openSseStream } from '../lib/sseDownload.js';
 import { createInstallLogger } from '../lib/installLogger.js';
 
@@ -72,18 +77,23 @@ export const isAudioMime = (mime, filename) => {
 };
 
 // FFLF accepts up to two image uploads (start and end frame); a2v takes
-// one audio upload (audioFile). 100MB covers audio cases too (LTX-2's a2v
+// one audio upload (audioFile); the IC-LoRA remix modes take one reference
+// video upload (icReference). 100MB covers audio cases too (LTX-2's a2v
 // expects only seconds of audio in practice). Per-fieldname mime filter
 // rejects mismatched parts up-front so a stray .mp4 drag-drop can't get
 // staged under any of these fields.
-const frameImageUpload = uploadFields(['sourceImage', 'lastImage', 'audioFile'], {
+const frameImageUpload = uploadFields(['sourceImage', 'lastImage', 'audioFile', 'icReference'], {
   limits: { fileSize: 100 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const isImageField = file.fieldname === 'sourceImage' || file.fieldname === 'lastImage';
     const isAudioField = file.fieldname === 'audioFile';
+    const isVideoField = file.fieldname === 'icReference';
     const okImage = isImageField && file.mimetype.startsWith('image/');
     const okAudio = isAudioField && isAudioMime(file.mimetype, file.originalname);
-    cb(null, okImage || okAudio);
+    // IC-LoRA references are clips — the control weight reads structure/motion
+    // out of a depth/pose/edge video, so only video/* is meaningful here.
+    const okVideo = isVideoField && file.mimetype.startsWith('video/');
+    cb(null, okImage || okAudio || okVideo);
   },
 });
 
@@ -108,6 +118,12 @@ const optionalInt = (min, max, label) => z.preprocess(
   (v) => v == null || v === '' ? undefined : Number(v),
   z.number().int().refine((n) => n >= min && n <= max, `${label} ${min}..${max}`).optional(),
 );
+// Coarse upper bound for any IC reference array, derived from the registry so a
+// weight raising its own maxReferences doesn't get rejected by a stale literal in
+// the schema before the per-mode assertion below can speak. Per-weight bounds are
+// still enforced against the mode's own spec (assertIcReferenceCount).
+const MAX_IC_REFERENCES = Math.max(...listIcLoraWeights().map((s) => s.maxReferences));
+
 const generateBodySchema = z.object({
   // Render backend: the local runtimes (default) or the Grok Build CLI's
   // image-first image_to_video flow (#2859 phase 2). Grok ignores the
@@ -143,7 +159,9 @@ const generateBodySchema = z.object({
   lastImageFile: z.string().max(512).optional(),
   // UI mode hint — backend only uses it for logging/branching; absence
   // falls back to inferring (sourceImage→i2v, no source→t2v).
-  mode: z.enum(['text', 'image', 'fflf', 'extend', 'a2v']).optional(),
+  // IC-LoRA remix modes (`ic-control`, …) come from the weight registry so the
+  // enum can never drift from what's actually installable.
+  mode: z.enum(['text', 'image', 'fflf', 'extend', 'a2v', ...IC_LORA_MODE_VALUES]).optional(),
   // Chain N renders end-to-end: each chunk's last frame becomes the next
   // chunk's start frame, then ffmpeg concats them into one clip. 1..8 to
   // keep the worst-case wall time bounded (8 × ~5min ≈ 40min on M3 Max).
@@ -153,6 +171,55 @@ const generateBodySchema = z.object({
   // the entire source video's latent rather than a single last frame).
   // The legacy chained-i2v path keeps using sourceImageFile.
   extendFromVideoId: z.string().guid().optional(),
+  // IC-LoRA remix reference clip picked from render history instead of uploaded
+  // (the `icReference` multipart upload wins when both are present, mirroring
+  // the sourceImage/sourceImageFile precedence). Control/Colorize take exactly
+  // one reference; Ingredients (a later phase) will take 2-8, hence the array.
+  icReferenceVideoIds: z.preprocess(
+    (v) => {
+      if (v == null || v === '') return undefined;
+      if (typeof v === 'string') {
+        // Multipart sends a SINGLE value as a bare string and repeated keys as
+        // an array; also accept a JSON-encoded list from a JSON client.
+        if (v.trim().startsWith('[')) { try { return JSON.parse(v); } catch { return [v]; } }
+        return [v];
+      }
+      return v;
+    },
+    z.array(z.string().guid()).min(1).max(MAX_IC_REFERENCES).optional(),
+  ),
+  // Ingredients-style IC references: 2-8 gallery STILLS, not clips. A separate
+  // field from icReference / icReferenceVideoIds on purpose — those are
+  // `video/*` and resolve against render history, and overloading them would
+  // let a video ride into an image-kind weight (or vice versa) and produce
+  // plausible-looking garbage. Gallery-only, exactly like `keyframes`: the
+  // route resolves each basename under PATHS.images. Multipart sends a single
+  // value as a bare string and repeated keys as an array; also accept a
+  // JSON-encoded list from a JSON client (mirrors icReferenceVideoIds).
+  icReferenceImageFiles: z.preprocess(
+    (v) => {
+      if (v == null || v === '') return undefined;
+      if (typeof v === 'string') {
+        if (v.trim().startsWith('[')) { try { return JSON.parse(v); } catch { return [v]; } }
+        return [v];
+      }
+      return v;
+    },
+    // Ceiling derived from the registry (the largest maxReferences any weight
+    // declares), NOT a hardcoded 8 — a second literal here would silently
+    // pre-empt the per-mode registry check with a 422 the moment a weight raised
+    // its own maximum. This is only a coarse sanity bound; the real per-weight
+    // rule is asserted below against the mode's own spec.
+    z.array(z.string().min(1).max(512)).min(1).max(MAX_IC_REFERENCES).optional(),
+  ),
+  // Reference-video conditioning strength for the IC-LoRA channel. Distinct
+  // from the IC-LoRA's own fusion strength (fixed at 1.0 server-side) and from
+  // `icAttentionStrength`, which scales the conditioning ATTENTION.
+  icStrength: optionalNum(0, 2, 'icStrength'),
+  icAttentionStrength: optionalNum(0, 1, 'icAttentionStrength'),
+  // Skip the IC pipeline's 2x upscale + refine — half-resolution output at
+  // roughly half the wall time, useful for previewing a control clip's fit.
+  icSkipStage2: z.union([z.boolean(), z.literal('true'), z.literal('false')]).optional(),
   // Multi-keyframe interpolation (ltx2 + mode='fflf'). Each entry pins one
   // gallery image at a specific pixel-frame index. Indices must be strictly
   // ascending and within [0, numFrames-1]. When set, overrides the legacy
@@ -446,6 +513,10 @@ const reposToVerify = (modelId) => {
   const repos = listVideoModels().map(repoForModel).filter(Boolean);
   const enc = getTextEncoderRepo();
   if (isHfRepoId(enc)) repos.push(enc);
+  // IC-LoRA remix weights are separate HF pulls that the render path depends
+  // on, so an unscoped integrity scan must cover them too — otherwise a
+  // corrupt IC weight only surfaces as a garbled render.
+  repos.push(...icLoraRepos());
   return [...new Set(repos)];
 };
 
@@ -453,31 +524,66 @@ const reposToVerify = (modelId) => {
 // shape contract. We also surface the active text-encoder repo so the
 // video form can warn when the Gemma encoder isn't downloaded yet (a
 // surprise multi-GB pull on top of the model itself).
+// Cache + integrity for one HF repo, in the `{ cached, sizeBytes, integrity }`
+// shape every download badge consumes. The integrity check only runs for a repo
+// that's actually downloaded — a not-yet-cached repo gets the Download badge,
+// not a Repair banner. Shared by all three lanes of /models/status below so the
+// badge semantics can't drift between models, the encoder, and IC weights.
+const repoCacheStatus = async (repo) => {
+  const { cached, sizeBytes } = await inspectModelCache(repo);
+  return { cached, sizeBytes, integrity: cached ? summarizeVerify(await verifyModelCache(repo)) : null };
+};
+
 router.get('/models/status', asyncHandler(async (_req, res) => {
   // Text encoder is shared across all video renders. A registry entry with
   // `localPath` (e.g. an LM Studio install) trumps the HF cache check, so
   // surface both the repo-cache status and the resolved local path so the UI
   // can distinguish "not downloaded" from "served from LM Studio".
   const encoderRepo = getTextEncoderRepo();
-  const [models, textEncoder] = await Promise.all([
+  const [models, textEncoder, icLoras] = await Promise.all([
     Promise.all(listVideoModels().map(async (m) => {
       const repo = repoForModel(m);
       if (!repo) return { id: m.id, repo: null, cached: null, sizeBytes: 0, integrity: null };
-      const { cached, sizeBytes } = await inspectModelCache(repo);
-      // Only run the (header-reading) integrity check for repos that are
-      // actually downloaded — a not-yet-cached model gets the Download badge,
-      // not a Repair banner.
-      const integrity = cached ? summarizeVerify(await verifyModelCache(repo)) : null;
-      return { id: m.id, repo, cached, sizeBytes, integrity };
+      return { id: m.id, repo, ...await repoCacheStatus(repo) };
     })),
     (async () => {
       if (!isHfRepoId(encoderRepo)) return { repo: encoderRepo, cached: true, sizeBytes: 0, integrity: null };
-      const enc = await inspectModelCache(encoderRepo);
-      const integrity = enc.cached ? summarizeVerify(await verifyModelCache(encoderRepo)) : null;
-      return { repo: encoderRepo, ...enc, integrity };
+      return { repo: encoderRepo, ...await repoCacheStatus(encoderRepo) };
     })(),
+    // IC-LoRA remix weights (issue #3100). Each is a separate several-hundred-MB
+    // pull the IC render path needs, so they get the same cached/size/integrity
+    // shape as the models — that's what lets the mode panel render a Download
+    // badge and a Repair banner with the existing components.
+    Promise.all(listIcLoraWeights().map(async (spec) => {
+      // A mirrored spec (Ingredients) can't use the repo-wide verdict: its
+      // official repo is gated and its mirror is a 708 GB aggregate that reports
+      // `cached` off any unrelated weight. Probe the ONE file across both
+      // candidates instead, and skip the integrity walk (which would stat/hash
+      // every sibling weight in that mirror).
+      if (spec.mirrorRepo) {
+        const found = await findCachedIcLoraWeight(spec);
+        return {
+          id: spec.mode, repo: spec.repo, label: spec.label,
+          estimatedBytes: spec.sizeBytes,
+          gated: !!spec.gated, mirrorRepo: spec.mirrorRepo,
+          cached: !!found,
+          resolvedRepo: found?.repo || null,
+          // The badge falls back to `estimatedBytes` when sizeBytes is 0, and the
+          // real number would cost a stat on a path we already proved resident —
+          // so report 0 and let the estimate speak.
+          sizeBytes: 0,
+          integrity: null,
+        };
+      }
+      return {
+        id: spec.mode, repo: spec.repo, label: spec.label,
+        estimatedBytes: spec.sizeBytes,
+        gated: !!spec.gated,
+        ...await repoCacheStatus(spec.repo),
+      };
+    })),
   ]);
-  res.json({ models, textEncoder });
+  res.json({ models, textEncoder, icLoras });
 }));
 
 // POST /models/verify — force an integrity re-scan on demand. `deep:true` adds
@@ -526,6 +632,68 @@ router.get('/models/:modelId/download', asyncHandler(async (req, res) => {
   const repo = repoForModel(model);
   if (!repo) throw new ServerError(`Model "${model.id}" has no HuggingFace repo on file.`, { status: 400, code: 'NO_REPO_FOR_MODEL' });
   await startHfDownloadStream({ req, res, repo, force: req.query.force === '1' });
+}));
+
+// IC-LoRA remix weights (issue #3100) get their own download/repair pair for
+// the same reason the text encoder does: they're required by the render path
+// but are NOT listVideoModels() entries, so the model-id-keyed routes above
+// can't reach them. Keyed by the PortOS remix mode ('ic-control', …) so the
+// client uses the same identifier it puts in the render payload.
+const icLoraSpecFromParam = (mode) => {
+  const spec = icLoraSpecForMode(mode);
+  if (!spec) {
+    throw new ServerError(
+      `Unknown IC-LoRA remix mode: ${mode} (expected one of ${IC_LORA_MODE_VALUES.join(', ')})`,
+      { status: 404, code: 'IC_LORA_UNKNOWN_MODE' },
+    );
+  }
+  return spec;
+};
+
+// Download one IC weight. A spec with a `mirrorRepo` is fetched SINGLE-FILE and
+// only ever single-file: the official Ingredients repo is gated (an anonymous
+// pull 401s) and its un-gated mirror is the ~708 GB `DeepBeepMeep/LTX-2`
+// aggregate, so a snapshot of either would either fail or fill the user's disk.
+// Candidates are tried in order (official → mirror) so a user WITH an HF token
+// gets the first-party weight and a user without one still succeeds via the
+// mirror — no token, no extra button. The exact filename is pinned so the mirror
+// can't hand back a sibling weight.
+router.get('/ic-loras/:mode/download', asyncHandler(async (req, res) => {
+  const spec = icLoraSpecFromParam(req.params.mode);
+  const force = req.query.force === '1';
+  if (!spec.mirrorRepo) {
+    await startHfDownloadStream({ req, res, repo: spec.repo, force });
+    return;
+  }
+  await startHfDownloadStream({
+    req,
+    res,
+    fallbacks: icLoraWeightCandidates(spec).map((c) => ({ repo: c.repo, only: [c.filename] })),
+    // The repo-wide `cached` verdict is meaningless for the aggregate mirror (it
+    // reports cached as soon as ANY unrelated weight is resident), so gate the
+    // already-have short-circuit on this exact weight instead.
+    cachedFile: async () => !!(await findCachedIcLoraWeight(spec)),
+    force,
+  });
+}));
+
+router.post('/ic-loras/:mode/repair', asyncHandler(async (req, res) => {
+  const spec = icLoraSpecFromParam(req.params.mode);
+  const parsed = z.object({ deep: z.boolean().optional() }).safeParse(req.body || {});
+  if (!parsed.success) failValidation(parsed);
+  const deep = parsed.data.deep || false;
+  // A mirrored spec is single-file by construction, and repairModelCache walks
+  // the WHOLE snapshot — against the 708 GB aggregate mirror that would stat (and
+  // under `deep`, hash) every unrelated LTX weight the user has. Delete just this
+  // weight and let the single-file download re-fetch it.
+  if (spec.mirrorRepo) {
+    const found = await findCachedIcLoraWeight(spec);
+    if (!found) return res.json({ deep, deleted: [], repos: [spec.repo] });
+    await repairCachedFile(found.path);
+    return res.json({ deep, deleted: [{ repo: found.repo, name: found.filename }], repos: [found.repo] });
+  }
+  const result = await repairModelCache(spec.repo, { deep });
+  res.json({ deep, deleted: result.deleted.map((name) => ({ repo: result.repoId, name })), repos: [spec.repo] });
 }));
 
 // POST /text-encoder/repair — delete the flagged (corrupt/truncated) weight
@@ -677,6 +845,105 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
       { status: 400, code: 'VIDEO_GEN_AUDIO_MODE_MISMATCH' },
     );
   }
+  // IC-LoRA remix (mode='ic-control', …). Mirrors the a2v pairing checks: the
+  // reference channel is what makes the mode meaningful, and an IC upload
+  // outside an IC mode would be silently dropped by the worker.
+  const icSpec = icLoraSpecForMode(body.mode);
+  if (icSpec) {
+    // The grok backend short-circuits below this point (it only reads
+    // prompt/dims/source-image), so an IC request routed there would enqueue a
+    // plain grok render with the reference clip silently dropped. The client's
+    // mode bar snaps grok back to text/image, but reject explicitly so a direct
+    // caller gets an error instead of a wrong-looking clip.
+    if (body.backend === 'grok') {
+      await cleanupAllStaged();
+      throw new ServerError(
+        `${icSpec.label} mode runs on the local ltx2 runtime — it isn't available on the Grok backend.`,
+        { status: 400, code: 'IC_LORA_REQUIRES_LOCAL_BACKEND' },
+      );
+    }
+    // Each weight takes exactly ONE kind of reference. An image-kind weight fed a
+    // clip (or vice versa) doesn't error inside the pipeline — it produces
+    // plausible-looking garbage — so reject the cross-kind fields explicitly
+    // rather than silently dropping them.
+    const wantsImages = icSpec.referenceKind === 'image';
+    const videoShapePresent = !!uploads.icReference || !!body.icReferenceVideoIds?.length;
+    if (wantsImages && videoShapePresent) {
+      await cleanupAllStaged();
+      throw new ServerError(
+        `${icSpec.label} mode conditions on still images — pass gallery filenames as icReferenceImageFiles, not icReference / icReferenceVideoIds.`,
+        { status: 400, code: 'IC_LORA_REFERENCE_KIND_MISMATCH' },
+      );
+    }
+    if (!wantsImages && body.icReferenceImageFiles?.length) {
+      await cleanupAllStaged();
+      throw new ServerError(
+        `${icSpec.label} mode conditions on a reference clip — pass icReference / icReferenceVideoIds, not icReferenceImageFiles.`,
+        { status: 400, code: 'IC_LORA_REFERENCE_KIND_MISMATCH' },
+      );
+    }
+    // The upload wins over gallery picks, so a request carrying both would
+    // silently drop the picks. Force one shape per request instead. Checked
+    // BEFORE the count bounds below, which would otherwise report a misleading
+    // "needs exactly 1, got 2" for what is really a mixed-shape request.
+    if (uploads.icReference && body.icReferenceVideoIds?.length) {
+      await cleanupAllStaged();
+      throw new ServerError(
+        'icReference upload cannot be combined with icReferenceVideoIds — pass one reference shape per request.',
+        { status: 400, code: 'IC_LORA_REFERENCE_CONFLICT' },
+      );
+    }
+    // Reference count is the weight's contract, asserted once here against the
+    // registry that owns the bounds. Checked before staging so a bad request only
+    // unlinks the cheap OS temp file, and resolution below can't change the
+    // count: an upload is exactly 1, every history id resolves 1:1 or throws, and
+    // every gallery filename resolves 1:1 or throws.
+    const refCount = wantsImages
+      ? (body.icReferenceImageFiles?.length || 0)
+      : (uploads.icReference ? 1 : 0) + (body.icReferenceVideoIds?.length || 0);
+    if (refCount === 0) {
+      // Special-cased ahead of the bounds assertion purely for actionability —
+      // "needs exactly 1; got 0" doesn't tell the caller HOW to supply one.
+      await cleanupAllStaged();
+      throw new ServerError(
+        wantsImages
+          ? `${icSpec.label} mode requires ${describeIcReferenceRange(icSpec)} reference images — pick them from your gallery (icReferenceImageFiles).`
+          : `${icSpec.label} mode requires a reference ${icSpec.referenceKind} — upload one (multipart field: icReference) or pick a prior render (icReferenceVideoIds).`,
+        { status: 400, code: 'IC_LORA_REFERENCE_REQUIRED' },
+      );
+    }
+    if (refCount < icSpec.minReferences || refCount > icSpec.maxReferences) {
+      await cleanupAllStaged();
+      assertIcReferenceCount(icSpec, refCount, (msg) => new ServerError(msg, {
+        status: 400, code: 'IC_LORA_REFERENCE_COUNT',
+      }));
+    }
+    // IC-LoRA remix is an LTX-2 primitive (ICLoraPipeline). Fail before enqueue
+    // so a bad modelId can't pollute the persisted queue with a doomed job.
+    if (effectiveModel && effectiveModel.runtime !== 'ltx2') {
+      await cleanupAllStaged();
+      throw new ServerError(
+        `${icSpec.label} mode requires an ltx2-runtime model. Model "${effectiveModelId}" runs on "${effectiveModel.runtime || 'mlx_video'}".`,
+        { status: 400, code: 'IC_LORA_REQUIRES_LTX2' },
+      );
+    }
+    // Chained renders re-seed each chunk from the previous chunk's last frame;
+    // an IC render is conditioned on a whole reference clip instead, so there's
+    // no defined semantic for chunk 2+ and it would silently ignore the mode.
+    if (body.chunks != null && Number(body.chunks) > 1) {
+      await cleanupAllStaged();
+      throw new ServerError(
+        `${icSpec.label} mode cannot be combined with chunks > 1 — the reference clip anchors a single render.`,
+        { status: 400, code: 'IC_LORA_CHUNKS_CONFLICT' },
+      );
+    }
+  } else if (uploads.icReference || body.icReferenceVideoIds?.length || body.icReferenceImageFiles?.length) {
+    await cleanupAllStaged();
+    throw new ServerError(
+      `IC-LoRA reference inputs are only valid with an IC remix mode (${IC_LORA_MODE_VALUES.join(', ')}); got mode='${body.mode || 'unset'}'.`,
+      { status: 400, code: 'IC_LORA_MODE_MISMATCH' },
+    );
+  }
   // a2v needs the dgrauet runtime — the legacy mlx_video pipeline has no
   // audio-conditioned mode. The worker also catches this in buildArgs (with
   // A2V_REQUIRES_LTX2), but checking here keeps the route's "fail fast
@@ -693,9 +960,10 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
   let sourceImagePath = null;
   let lastImagePath = null;
   let audioFilePath = null;
+  let icReferenceUploadPath = null;
   let uploadedTempPath = null;
   const extraUploadedTempPaths = [];
-  if (uploads.sourceImage || uploads.lastImage || uploads.audioFile) {
+  if (uploads.sourceImage || uploads.lastImage || uploads.audioFile || uploads.icReference) {
     // Ensure the durable uploads dir exists before staging. Wrapped in
     // try/catch so a permission/disk failure here still cleans up the
     // multipart temp uploads instead of leaking them in the OS temp dir.
@@ -783,6 +1051,13 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     // worker drops it on terminal events the same way it drops lastImage.
     audioFilePath = await stageUploadDurable(uploads.audioFile, 'audio');
     extraUploadedTempPaths.push(audioFilePath);
+  }
+  if (uploads.icReference) {
+    // IC-LoRA reference clip — same durable staging + cleanup tracking as the
+    // audio upload above. A history-picked reference needs neither (it already
+    // lives under data/videos/ and must survive the render).
+    icReferenceUploadPath = await stageUploadDurable(uploads.icReference, 'ic-ref');
+    extraUploadedTempPaths.push(icReferenceUploadPath);
   }
 
   // Multi-keyframe interpolation: resolve each gallery filename to an
@@ -875,34 +1150,90 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     }
   }
 
-  // Native extend (ltx2 runtime): resolve the history id to a video file
-  // path under data/videos/ and forward it as extendFromVideoPath. Reject
-  // a missing/tampered id rather than silently falling back to t2v —
-  // surfaces a clear error to the user instead of producing wrong content.
-  let extendFromVideoPath = null;
-  if (body.extendFromVideoId) {
-    const history = await loadHistory();
-    const videoEntry = history.find((h) => h.id === body.extendFromVideoId);
+  // Resolve a render-history id to its on-disk video under data/videos/.
+  // Shared by native extend and the IC-LoRA reference channel: both let the
+  // user point at a prior render, and both must reject a missing/tampered id
+  // rather than silently degrading to a text render (which would produce
+  // wrong-looking content with no error). `label` names the field in the error
+  // so the two callers stay distinguishable.
+  const resolveHistoryVideoPath = async (id, { history, label, notFoundCode, missingFileCode }) => {
+    const videoEntry = history.find((h) => h.id === id);
     if (!videoEntry) {
       // cleanupAllStaged covers durable copies that may have been written
-      // before this validation point — extend mode and image uploads are
+      // before this validation point — these modes and image uploads are
       // mutually exclusive in the UI but the route doesn't enforce that,
       // so be defensive.
       await cleanupAllStaged();
-      throw new ServerError(
-        `extendFromVideoId not found in history: ${body.extendFromVideoId}`,
-        { status: 404, code: 'EXTEND_SOURCE_NOT_FOUND' },
-      );
+      throw new ServerError(`${label} not found in history: ${id}`, { status: 404, code: notFoundCode });
     }
     const candidate = safeUnder(PATHS.videos, videoEntry.filename);
     if (!candidate || !existsSync(candidate)) {
       await cleanupAllStaged();
       throw new ServerError(
-        `extendFromVideoId resolved to a missing file: ${videoEntry.filename}`,
-        { status: 404, code: 'EXTEND_SOURCE_FILE_MISSING' },
+        `${label} resolved to a missing file: ${videoEntry.filename}`,
+        { status: 404, code: missingFileCode },
       );
     }
-    extendFromVideoPath = candidate;
+    return candidate;
+  };
+
+  // Render history is read by both the extend and IC reference paths. Load it
+  // lazily and at most once — the file grows with every render, so a request
+  // carrying both would otherwise re-read and re-parse megabytes.
+  let historyCache = null;
+  const getHistory = async () => (historyCache ??= await loadHistory());
+
+  // Native extend (ltx2 runtime): forward the resolved path as
+  // extendFromVideoPath.
+  let extendFromVideoPath = null;
+  if (body.extendFromVideoId) {
+    extendFromVideoPath = await resolveHistoryVideoPath(body.extendFromVideoId, {
+      history: await getHistory(),
+      label: 'extendFromVideoId',
+      notFoundCode: 'EXTEND_SOURCE_NOT_FOUND',
+      missingFileCode: 'EXTEND_SOURCE_FILE_MISSING',
+    });
+  }
+
+  // IC-LoRA reference channel: gallery stills for an image-kind weight, else the
+  // staged upload or the picked prior render(s). The route already rejected the
+  // cross-kind and both-present cases (and asserted the count against the weight's
+  // bounds) above, so exactly one branch contributes and each entry resolves 1:1
+  // or throws.
+  let icReferencePaths = null;
+  if (icSpec) {
+    if (icSpec.referenceKind === 'image') {
+      // Gallery-only, exactly like `keyframes` — same path-traversal guard, same
+      // "reject up-front so the queue never accepts a doomed job" contract. The
+      // service materializes each still into a VAE-compatible clip at render
+      // resolution (the IC reference channel is a video encoder end-to-end).
+      icReferencePaths = [];
+      for (let i = 0; i < body.icReferenceImageFiles.length; i++) {
+        const file = body.icReferenceImageFiles[i];
+        const path = resolveGalleryImage(file);
+        if (!path) {
+          await cleanupAllStaged();
+          throw new ServerError(
+            `icReferenceImageFiles[${i}] not found in gallery: ${file}`,
+            { status: 400, code: 'IC_LORA_REFERENCE_GALLERY_MISS' },
+          );
+        }
+        icReferencePaths.push(path);
+      }
+    } else if (icReferenceUploadPath) {
+      icReferencePaths = [icReferenceUploadPath];
+    } else {
+      const history = await getHistory();
+      icReferencePaths = [];
+      for (const id of body.icReferenceVideoIds || []) {
+        icReferencePaths.push(await resolveHistoryVideoPath(id, {
+          history,
+          label: 'icReferenceVideoIds entry',
+          notFoundCode: 'IC_LORA_REFERENCE_NOT_FOUND',
+          missingFileCode: 'IC_LORA_REFERENCE_FILE_MISSING',
+        }));
+      }
+    }
   }
 
   // Collapse the parallel loraFilenames/loraScales arrays into the internal
@@ -930,7 +1261,10 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     );
   }
 
-  const effectiveChunks = body.mode === 'a2v' ? 1 : (body.chunks ?? 1);
+  // a2v and the IC remix modes both anchor a single render (audio track /
+  // reference clip), so chaining is meaningless — pin to 1 chunk. The IC path
+  // also hard-rejects an explicit chunks>1 above; this covers the default.
+  const effectiveChunks = (body.mode === 'a2v' || icSpec) ? 1 : (body.chunks ?? 1);
 
   // Enqueue rather than spawn synchronously — the mediaJobQueue worker will
   // run this when no other render is in flight. Caller never sees BUSY.
@@ -961,6 +1295,10 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
       imageStrength: body.imageStrength,
       chunks: effectiveChunks,
       loras,
+      icReferencePaths,
+      icStrength: body.icStrength,
+      icAttentionStrength: body.icAttentionStrength,
+      icSkipStage2: body.icSkipStage2 === true || body.icSkipStage2 === 'true',
       // Director-board attach tag (#1760 Phase 1). Rides into persisted
       // job.params so the completion hook can file the clip onto the scene even
       // if the board unmounted; absent for ordinary VideoGen-page renders.
@@ -999,6 +1337,10 @@ const ACTIVE_JOB_PARAM_FIELDS = [
   // loras are { filename, scale } basenames (no server filesystem paths), so
   // they're safe to echo back for the resuming picker to repopulate.
   'loras',
+  // IC-LoRA remix dials — plain scalars, safe to echo. The reference clip
+  // itself rides a separate basename mapping below (its param is an absolute
+  // path, which the whitelist exists to keep off this surface).
+  'icStrength', 'icAttentionStrength', 'icSkipStage2',
 ];
 const pickJobParams = (params) => {
   if (!params || typeof params !== 'object') return {};
@@ -1017,6 +1359,24 @@ const pickJobParams = (params) => {
       .filter((kf) => kf && typeof kf.path === 'string' && Number.isInteger(kf.index))
       .map((kf) => ({ file: basename(kf.path), index: kf.index }));
     if (mapped.length) out.keyframes = mapped;
+  }
+  // IC-LoRA references are absolute paths for the same reason keyframes are —
+  // echo only the basename so the resuming form can show WHICH clip is in
+  // flight without leaking the staging/data layout. The client can't re-submit
+  // from a basename alone (an upload isn't re-derivable), so this is display
+  // only; the resumed render is already queued with the real path.
+  if (Array.isArray(params.icReferencePaths)) {
+    const names = params.icReferencePaths
+      .filter((p) => typeof p === 'string' && p)
+      .map((p) => basename(p));
+    if (names.length) out.icReferenceNames = names;
+    // For an IMAGE-kind weight the basename IS the gallery filename (references
+    // are gallery-only, never uploads), so unlike the clip case the resuming form
+    // CAN repopulate its picker and re-submit. Echo it under the submit field name
+    // so the client needs no per-kind translation.
+    if (names.length && icLoraSpecForMode(params.mode)?.referenceKind === 'image') {
+      out.icReferenceImageFiles = names;
+    }
   }
   return out;
 };

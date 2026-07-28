@@ -20,6 +20,23 @@ const CONFIGURED_DEFAULT_SENTINELS = new Set([
 /** True for any provider "use CLI's own default" sentinel. Mirror of server `isConfiguredDefaultModel`. */
 export const isConfiguredDefaultModel = (model) => CONFIGURED_DEFAULT_SENTINELS.has(model);
 
+/**
+ * The configured-default sentinel carried in a provider's model list, or null.
+ *
+ * `filterSelectableModels` strips sentinels from every picker, which is right
+ * for a *task's* model choice ("no override" is the empty option there). But a
+ * provider whose `defaultModel`/`lightModel`/… IS the sentinel while its
+ * `models` also holds real ids (Antigravity: `agy` has a real catalog AND its
+ * own configured default) would otherwise drive a `<select>` whose value
+ * matches no `<option>` — the field renders blank and reads as "unset" when the
+ * CLI's own default is in fact what's configured. The provider-edit form uses
+ * this to render an explicit option for it.
+ * @param {string[]|null|undefined} models
+ * @returns {string|null}
+ */
+export const configuredDefaultIn = (models) =>
+  (models || []).find(isConfiguredDefaultModel) || null;
+
 export const DEFAULT_LARGE_CONTEXT_WINDOW = 128_000;
 export const CODEX_CONTEXT_WINDOW = 1_000_000;
 export const GEMINI_CONTEXT_WINDOW = 1_048_576;
@@ -81,6 +98,22 @@ export const isKimiProvider = (provider) => {
   return id === 'kimi-cli' || id === 'kimi-tui' || commandBasename(provider?.command) === 'kimi';
 };
 
+/**
+ * True when a provider is Antigravity-flavored — the shipped
+ * `antigravity-cli`/`antigravity-tui` ids or any provider whose launch command
+ * basename is `agy`/`antigravity` (path/exe tolerant). MIRROR of
+ * `isAntigravityProvider` in server/lib/providerModels.js — keep in lockstep.
+ * @param {{id?:string, command?:string}|null|undefined} provider
+ * @returns {boolean}
+ */
+export const isAntigravityProvider = (provider) => {
+  if (!provider) return false;
+  const id = String(provider.id || '').toLowerCase();
+  if (id === 'antigravity-cli' || id === 'antigravity-tui') return true;
+  const base = commandBasename(provider.command);
+  return base === 'agy' || base === 'antigravity';
+};
+
 export const knownProviderContextWindow = (provider) => {
   if (!isProcessProvider(provider)) return null;
   const id = String(provider?.id || '').toLowerCase();
@@ -117,28 +150,62 @@ export const filterSelectableModels = (models) =>
 
 /**
  * Reasoning-effort levels per effort-capable CLI — MIRROR of
- * `CLAUDE_EFFORT_LEVELS` / `CODEX_EFFORT_LEVELS` / `effortLevelsForProvider` in
- * server/lib/providerModels.js; keep in lockstep. Claude Code takes
- * `--effort <level>`, Codex takes `-c model_reasoning_effort=<level>`.
+ * `CLAUDE_EFFORT_LEVELS` / `CODEX_EFFORT_LEVELS` / `ANTIGRAVITY_EFFORT_LEVELS` /
+ * `effortLevelsForProvider` in server/lib/providerModels.js; keep in lockstep.
+ * Claude Code and agy take `--effort <level>`, Codex takes
+ * `-c model_reasoning_effort=<level>`.
  */
 export const CLAUDE_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
 export const CODEX_EFFORT_LEVELS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+export const ANTIGRAVITY_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high']);
 
 /**
  * The effort levels a provider's CLI accepts, or null when the provider has no
- * effort control (antigravity, opencode, grok, HTTP API providers). Keyed on
- * the launch command basename plus the shipped provider ids, so path-configured
- * or renamed claude/codex providers still qualify. Drives the "Effort
- * (optional)" select in task/schedule forms.
+ * effort control (opencode, grok, kimi, HTTP API providers). Keyed on the launch
+ * command basename plus the shipped provider ids, so path-configured or renamed
+ * claude/codex/agy providers still qualify. Drives the "Effort (optional)"
+ * select in task/schedule forms.
  * @param {{id?:string, command?:string}|null|undefined} provider
  * @returns {readonly string[]|null}
  */
 export const effortLevelsForProvider = (provider) => {
   if (!provider) return null;
   if (isCodexProvider(provider)) return CODEX_EFFORT_LEVELS;
+  if (isAntigravityProvider(provider)) return ANTIGRAVITY_EFFORT_LEVELS;
   const id = String(provider.id || '').toLowerCase();
   if (id.startsWith('claude-code') || commandBasename(provider.command) === 'claude') return CLAUDE_EFFORT_LEVELS;
   return null;
+};
+
+// Every effort value any CLI accepts, weakest→strongest. MIRROR of EFFORT_RANK
+// in server/lib/providerModels.js — keep in lockstep.
+const EFFORT_RANK = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+
+/**
+ * The level a stored effort will ACTUALLY run at on this provider, or null when
+ * no flag is emitted. MIRROR of `resolveCliEffort` in
+ * server/lib/providerModels.js — keep in lockstep.
+ *
+ * The UI needs this because the server clamps an out-of-ladder effort rather
+ * than dropping it: a stage pinned to claude `max` and switched to Antigravity
+ * (whose ladder stops at `high`) still runs, at `high`. Without this the select
+ * holds a value matching no option, renders blank — reading as "Default effort"
+ * — while the run silently uses the clamped level.
+ * @param {string|null|undefined} effort
+ * @param {{id?:string, command?:string}|null|undefined} provider
+ * @returns {string|null}
+ */
+export const resolveCliEffort = (effort, provider) => {
+  if (!effort) return null;
+  const levels = effortLevelsForProvider(provider);
+  if (!levels) return null;
+  if (levels.includes(effort)) return effort;
+  const requested = EFFORT_RANK.indexOf(effort);
+  if (requested === -1) return null;
+  const supported = levels.map(l => EFFORT_RANK.indexOf(l)).filter(i => i !== -1).sort((a, b) => a - b);
+  if (supported.length === 0) return null;
+  const below = supported.filter(i => i < requested);
+  return EFFORT_RANK[below.length ? below[below.length - 1] : supported[0]];
 };
 
 /**

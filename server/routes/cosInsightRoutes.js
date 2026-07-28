@@ -69,8 +69,9 @@ router.get('/actionable-insights', asyncHandler(async (req, res) => {
       icon: 'AlertCircle',
       title: `${pendingApprovals.length} task${pendingApprovals.length > 1 ? 's' : ''} awaiting approval`,
       description: ((d) => d ? d.substring(0, 80) + (d.length > 80 ? '...' : '') : '')(pendingApprovals[0]?.description ?? ''),
-      action: { label: 'Review', route: '/cos/tasks' },
-      count: pendingApprovals.length
+      action: { label: 'Approve' },
+      count: pendingApprovals.length,
+      tasks: pendingApprovals.map(({ id, description }) => ({ id, description }))
     });
   }
 

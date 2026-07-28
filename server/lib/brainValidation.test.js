@@ -36,7 +36,10 @@ import {
   bucketReorderSchema,
   brainSyncQuerySchema,
   brainSyncPushSchema,
-  memoryInputSchema
+  memoryInputSchema,
+  songInputSchema,
+  songInstrumentEnum,
+  songContentFormatEnum
 } from './brainValidation.js';
 
 describe('brainValidation.js', () => {
@@ -772,6 +775,66 @@ describe('brainValidation.js', () => {
     it('rejects a non-ISO source timestamp', () => {
       const result = memoryInputSchema.safeParse({ title: 'x', sourceCreatedAt: 'last week' });
       expect(result.success).toBe(false);
+    });
+  });
+
+  describe('songbook enums', () => {
+    // The client mirrors both lists in client/src/components/songbook/constants.js
+    // (INSTRUMENTS / SONG_FORMATS) — keep them in lockstep.
+    it('accepts every shipped instrument, including drums (#3115)', () => {
+      for (const instrument of ['guitar', 'piano', 'ukulele', 'bass', 'voice', 'drums', 'other']) {
+        expect(songInstrumentEnum.safeParse(instrument).success, instrument).toBe(true);
+      }
+      expect(songInstrumentEnum.safeParse('hurdy-gurdy').success).toBe(false);
+    });
+
+    it('accepts every shipped content format, including drum (#3115)', () => {
+      for (const format of ['chordpro', 'tab', 'plain', 'drum']) {
+        expect(songContentFormatEnum.safeParse(format).success, format).toBe(true);
+      }
+      expect(songContentFormatEnum.safeParse('futureformat').success).toBe(false);
+    });
+
+    it('round-trips a drum song through songInputSchema', () => {
+      const result = songInputSchema.safeParse({
+        title: 'Example Rock Beat',
+        artist: 'The Placeholders',
+        instrument: 'drums',
+        content: { format: 'drum', text: 'HH: xxxx\nK: o---' },
+      });
+      expect(result.success).toBe(true);
+      expect(result.data.instrument).toBe('drums');
+      expect(result.data.content.format).toBe('drum');
+    });
+
+    it('still defaults to guitar/tab when neither is supplied', () => {
+      const result = songInputSchema.safeParse({ title: 'Untitled' });
+      expect(result.success).toBe(true);
+      expect(result.data.instrument).toBe('guitar');
+      expect(result.data.content).toEqual({ format: 'tab', text: '' });
+    });
+
+    // Brain songs sync raw between installs on independent upgrade schedules
+    // (LWW, no Zod on receive), so a newer peer's instrument/format can already be
+    // sitting in a local record. A write that rejected it would make that song
+    // permanently uneditable — every save 400ing on a field the user never
+    // touched — so the WRITE boundary is deliberately wider than the enum.
+    it('accepts (round-trips) an unknown instrument/format from a newer peer', () => {
+      const result = songInputSchema.safeParse({
+        title: 'Synced Song',
+        instrument: 'hurdy-gurdy',
+        content: { format: 'futureformat', text: 'x' },
+      });
+      expect(result.success).toBe(true);
+      expect(result.data.instrument).toBe('hurdy-gurdy');
+      expect(result.data.content.format).toBe('futureformat');
+    });
+
+    it('keeps the forward-compat slot a SLUG, not free text', () => {
+      for (const bad of ['Has Spaces', 'UPPER', 'x'.repeat(33), '', '-leading', 'sym!bol']) {
+        const result = songInputSchema.safeParse({ title: 'T', instrument: bad });
+        expect(result.success, `instrument "${bad}"`).toBe(false);
+      }
     });
   });
 });

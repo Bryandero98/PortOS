@@ -22,7 +22,7 @@
 import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { sanitizeTaskMetadata, PIPELINE_BEHAVIOR_FLAGS, MAX_TOTAL_SPAWNS, normalizeReviewers, resolveReviewUsernames, resolveOptionalReviewers, buildReviewersCsv, LOCAL_LLM_REVIEWERS, SWARM_COUNT_MIN } from '../lib/validation.js';
+import { sanitizeTaskMetadata, PIPELINE_BEHAVIOR_FLAGS, MAX_TOTAL_SPAWNS, normalizeReviewers, resolveReviewUsernames, resolveOptionalReviewers, resolveReviewerMaxRounds, resolveReviewerModels, reviewerModelsFromDefaults, buildReviewersCsv, LOCAL_LLM_REVIEWERS, SWARM_COUNT_MIN } from '../lib/validation.js';
 import { parsePlanItems, extractAllIds, findInProgressIds, pickFirstAvailable, diagnoseUnpickablePlan } from '../lib/planIds.js';
 import { loadState, saveState, withStateLock, isImprovementEnabled, isDaemonRunning } from './cosState.js';
 import { getDomainMode } from '../lib/domainAutonomy.js';
@@ -268,6 +268,44 @@ Everything not covered above (claim mechanics, branch naming, verify/skip rules,
 }
 
 /**
+ * Resolve an app's configured `claim-work` metadata the same way the scheduled
+ * router does: global schedule metadata, then per-app overrides on top (managed
+ * agent fields stripped, both passes sanitized/value-constrained). This is what
+ * carries the user's `issueAuthorFilter`, reviewer, and swarm choices into the
+ * prompt. Shared by `buildClaimWorkTask` and the work-item picker route, so the
+ * items offered are scanned with the SAME author filter the claim agent will use.
+ *
+ * @returns {Promise<{ metadata: object, interval: object }>}
+ */
+export async function resolveClaimWorkMetadata(app) {
+  const taskSchedule = await import('./taskSchedule.js');
+  // Independent reads (schedule config + per-app overrides) — the merge below
+  // needs both, but neither depends on the other.
+  const [interval, appOverrides] = await Promise.all([
+    taskSchedule.getTaskInterval('claim-work'),
+    getAppTaskTypeOverrides(app.id)
+  ]);
+  const metadata = {};
+  const sanitizedGlobalMeta = sanitizeTaskMetadata(interval.taskMetadata);
+  if (sanitizedGlobalMeta) Object.assign(metadata, sanitizedGlobalMeta);
+  const strippedAppOverride = taskSchedule.stripManagedAgentOptionsFromOverride(
+    'claim-work', appOverrides['claim-work']?.taskMetadata
+  );
+  const sanitizedAppMeta = sanitizeTaskMetadata(strippedAppOverride);
+  if (sanitizedAppMeta) Object.assign(metadata, sanitizedAppMeta);
+  return { metadata, interval };
+}
+
+/**
+ * The author filter a claim run will actually apply: explicit option >
+ * configured `claim-work` metadata > `'self'` (the slashdo `/do:next --self`
+ * security boundary — only claim issues you filed).
+ */
+export function resolveClaimAuthorFilter(explicit, metadata) {
+  return explicit ?? metadata?.issueAuthorFilter ?? 'self';
+}
+
+/**
  * Build a one-off "claim the next work item" task for `app`, routed by the app's
  * configured workTracker — the manual (Slashdo `/do:next` button) counterpart to
  * the scheduled `claim-work` router below. Resolves the tracker, delegates to the
@@ -276,7 +314,7 @@ Everything not covered above (claim mechanics, branch naming, verify/skip rules,
  * delegated flow's worktree/PR posture (all four claim prompts self-manage their
  * own worktree + MR/PR, so the self-managed false/false posture is correct).
  *
- * `issueAuthorFilter` and `reviewers` default to the app's *configured*
+ * `issueAuthorFilter` and the reviewer options default to the app's *configured*
  * `claim-work` behavior (global schedule metadata → per-app override → Code
  * Review Defaults), exactly as the scheduled `claim-work` router resolves them —
  * so clicking the button honors `issueAuthorFilter: 'any'` and non-Copilot
@@ -285,30 +323,26 @@ Everything not covered above (claim mechanics, branch naming, verify/skip rules,
  * (matching the scheduled router's `promptKeyForBody` selection). Explicit
  * options still win when a caller passes them.
  *
- * @returns {Promise<{ tracker, source, promptTaskType, prompt, taskMetadata }>}
+ * `target` pins the run to ONE work item (the drawer's "pick a specific item"
+ * mode) by appending the tracker-appropriate constraint block, overriding the
+ * prompt's own Phase 1 pick while keeping every claim safety check.
+ *
+ * @returns {Promise<{ tracker, source, promptTaskType, prompt, taskMetadata, target }>}
  */
-export async function buildClaimWorkTask(app, { issueAuthorFilter, reviewers } = {}) {
+export async function buildClaimWorkTask(app, { issueAuthorFilter, reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels, target } = {}) {
   const { resolveAppWorkTracker, trackerToClaimTaskType } = await import('../lib/workTracker.js');
   const { getTaskPrompt } = await import('./taskPromptService.js');
   const taskSchedule = await import('./taskSchedule.js');
 
-  const wt = await resolveAppWorkTracker(app);
+  // The tracker probe (a `git` shell-out), the configured claim-work metadata,
+  // and the Code Review Defaults are mutually independent — only the prompt-body
+  // read below depends on them, so overlap the three.
+  const [wt, { metadata, interval }, codeReviewDefaults] = await Promise.all([
+    resolveAppWorkTracker(app),
+    resolveClaimWorkMetadata(app),
+    getCodeReviewDefaults().catch(() => null)
+  ]);
   const promptTaskType = trackerToClaimTaskType(wt.resolved) || 'plan-task';
-
-  // Resolve the app's configured claim-work metadata the same way the scheduled
-  // router does: global schedule metadata, then per-app overrides on top (managed
-  // agent fields stripped, both passes sanitized/value-constrained). This is what
-  // carries the user's `issueAuthorFilter` and reviewer choices into the prompt.
-  const interval = await taskSchedule.getTaskInterval('claim-work');
-  const metadata = {};
-  const sanitizedGlobalMeta = sanitizeTaskMetadata(interval.taskMetadata);
-  if (sanitizedGlobalMeta) Object.assign(metadata, sanitizedGlobalMeta);
-  const appOverrides = await getAppTaskTypeOverrides(app.id);
-  const strippedAppOverride = taskSchedule.stripManagedAgentOptionsFromOverride(
-    'claim-work', appOverrides['claim-work']?.taskMetadata
-  );
-  const sanitizedAppMeta = sanitizeTaskMetadata(strippedAppOverride);
-  if (sanitizedAppMeta) Object.assign(metadata, sanitizedAppMeta);
 
   // Honor a direct claim-work prompt customization if the user set one;
   // otherwise delegate to the resolved tracker's prompt body. Mirrors the
@@ -316,36 +350,39 @@ export async function buildClaimWorkTask(app, { issueAuthorFilter, reviewers } =
   // overrides the tracker-specific body for both paths.
   const template = await getTaskPrompt(interval.prompt ? 'claim-work' : promptTaskType);
 
-  // Explicit option > configured metadata > 'self' default (the slashdo
-  // `/do:next --self` security boundary — only claim issues you filed).
-  const resolvedAuthorFilter = issueAuthorFilter ?? metadata.issueAuthorFilter ?? 'self';
+  const resolvedAuthorFilter = resolveClaimAuthorFilter(issueAuthorFilter, metadata);
 
   // Reviewers: explicit option wins; otherwise mirror the scheduler — merge
-  // configured metadata reviewers with the user's Code Review Defaults, dropping
-  // local-LLM reviewers the claim prompts can't drive, falling back to the
-  // hardcoded default when filtering empties the list. A settings read error
-  // degrades to the default inside normalizeReviewers, so it never blocks.
-  const codeReviewDefaults = await getCodeReviewDefaults().catch(() => null);
-  let reviewersList;
-  if (reviewers !== undefined) {
-    reviewersList = (Array.isArray(reviewers) ? reviewers : [reviewers]).filter(Boolean);
-  } else {
-    reviewersList = normalizeReviewers(metadata, codeReviewDefaults?.reviewers)
-      .filter((r) => !LOCAL_LLM_REVIEWERS.includes(r));
-  }
+  // configured metadata reviewers with the user's Code Review Defaults, falling
+  // back to the hardcoded default when filtering empties the list. A settings
+  // read error degrades to the default inside normalizeReviewers, so it never
+  // blocks. Local-LLM reviewers are dropped from BOTH paths: the claim prompts
+  // drive reviewers by invoking their CLI, and lmstudio/ollama have none.
+  const reviewersList = (reviewers !== undefined
+    ? (Array.isArray(reviewers) ? reviewers : [reviewers]).filter(Boolean)
+    : normalizeReviewers(metadata, codeReviewDefaults?.reviewers)
+  ).filter((r) => !LOCAL_LLM_REVIEWERS.includes(r));
   // Arbitrary GitHub reviewer usernames appended as `@user` tokens so the
-  // claim prompt's `/do:next --review-with` gates the merge on them too. A
-  // task-level list overrides the Code Review Defaults.
-  const promptUsernames = resolveReviewUsernames(metadata.usernames, codeReviewDefaults?.usernames);
-  const promptOptionalReviewers = resolveOptionalReviewers(metadata.optionalReviewers, codeReviewDefaults?.optionalReviewers);
-  const reviewersCsv = buildReviewersCsv(reviewersList, promptUsernames, promptOptionalReviewers);
+  // claim prompt's `/do:next --review-with` gates the merge on them too. An
+  // explicit option wins, then a task-level list, then the Code Review Defaults.
+  const promptUsernames = resolveReviewUsernames(usernames ?? metadata.usernames, codeReviewDefaults?.usernames);
+  const promptOptionalReviewers = resolveOptionalReviewers(optionalReviewers ?? metadata.optionalReviewers, codeReviewDefaults?.optionalReviewers);
+  // Per-reviewer `~max=<n>` round caps ride the same explicit-option → task
+  // metadata → Code Review Defaults precedence.
+  const promptReviewerMaxRounds = resolveReviewerMaxRounds(reviewerMaxRounds ?? metadata.reviewerMaxRounds, codeReviewDefaults?.reviewerMaxRounds);
+  // Per-reviewer model pins (slashdo's `[<model>]` bracket) ride the same
+  // explicit-option → task metadata → Code Review Defaults precedence.
+  const promptReviewerModels = resolveReviewerModels(reviewerModels ?? metadata.reviewerModels, reviewerModelsFromDefaults(codeReviewDefaults));
+  const reviewersCsv = buildReviewersCsv(reviewersList, promptUsernames, promptOptionalReviewers, promptReviewerMaxRounds, promptReviewerModels);
   const issueAuthorFilterBlock = resolveIssueAuthorFilterBlock(promptTaskType, resolvedAuthorFilter);
   // Swarm mode (`/do:next --swarm`) is prepended (not an in-template
   // placeholder) so it stays an opt-in orchestration wrapper that needs no
   // prompt-default version bump; empty when swarmCount is off or the tracker
   // isn't a forge issue tracker. {reviewers} inside the block is substituted by
-  // the same replacer below.
-  const swarmBlock = resolveSwarmBlock(promptTaskType, metadata.swarmCount);
+  // the same replacer below. A pinned target claims exactly one item, so the
+  // swarm wrapper (claim N in parallel) is suppressed — the two are exclusive.
+  const targetRef = normalizeWorkItemRef(target);
+  const swarmBlock = targetRef ? '' : resolveSwarmBlock(promptTaskType, metadata.swarmCount);
 
   const prompt = `${swarmBlock}${template}`
     .replace(/\{appName\}/g, app.name)
@@ -354,7 +391,8 @@ export async function buildClaimWorkTask(app, { issueAuthorFilter, reviewers } =
     // Function-form replacers so literal `$`/`$1` in the substituted text isn't
     // interpreted as a backreference (see the scheduler's same-pattern note).
     .replace(/\{reviewers\}/g, () => reviewersCsv)
-    .replace(/\{issueAuthorFilter\}/g, () => issueAuthorFilterBlock);
+    .replace(/\{issueAuthorFilter\}/g, () => issueAuthorFilterBlock)
+    + appendTargetWorkItemBlock(promptTaskType, targetRef);
 
   // Mirror the scheduler: inherit the delegated flow's isolation posture so the
   // JIRA route runs in a CoS-managed worktree rather than the live checkout.
@@ -363,7 +401,7 @@ export async function buildClaimWorkTask(app, { issueAuthorFilter, reviewers } =
   if ('useWorktree' in delegatedMeta) taskMetadata.useWorktree = delegatedMeta.useWorktree;
   if ('openPR' in delegatedMeta) taskMetadata.openPR = delegatedMeta.openPR;
 
-  return { tracker: wt.resolved, source: wt.source, promptTaskType, prompt, taskMetadata };
+  return { tracker: wt.resolved, source: wt.source, promptTaskType, prompt, taskMetadata, target: targetRef };
 }
 
 /**
@@ -378,24 +416,71 @@ async function resolveClaimReviewersCsv() {
     .filter((r) => !LOCAL_LLM_REVIEWERS.includes(r));
   // Arbitrary GitHub reviewer usernames from the Code Review Defaults, appended
   // as `@user` tokens so the play button's claim gates the merge on them too.
-  // Optional-reviewer set rides along so a `~opt` reviewer stays non-blocking.
-  return buildReviewersCsv(list, codeReviewDefaults?.usernames, codeReviewDefaults?.optionalReviewers);
+  // Optional-reviewer set rides along so a `~opt` reviewer stays non-blocking,
+  // as do the per-reviewer `~max=<n>` round caps.
+  return buildReviewersCsv(list, codeReviewDefaults?.usernames, codeReviewDefaults?.optionalReviewers, codeReviewDefaults?.reviewerMaxRounds, reviewerModelsFromDefaults(codeReviewDefaults));
 }
 
 /**
- * Append a "claim exactly this ticket" constraint to the claim-issue-jira body
- * — the JIRA analogue of buildPlanConstraintBlock. The base prompt's Phase 1
- * tells the agent to PICK the next-ready ticket; this overrides that to pin the
- * user's selection while keeping every safety check (already-claimed, stale,
- * too-ambiguous → exit cleanly).
+ * Normalize a user-supplied work-item reference to the token its tracker uses:
+ * a bare issue number (`#42` / `42` → `42`), an upper-cased JIRA key
+ * (`proj-12` → `PROJ-12`), or a PLAN.md slug. Junk, oversized, or shell-unsafe
+ * input returns null so the caller falls back to "agent picks" rather than
+ * splicing an arbitrary string into the prompt.
  */
-function buildTargetTicketBlock(ticketKey) {
-  return `
-
-## Target Ticket Constraint
-
-The user explicitly selected JIRA ticket \`${ticketKey}\` from the board. Override Phase 1 ("Pick the target ticket"): do NOT pick a different ticket and do NOT scan for the next-ready one — claim exactly \`${ticketKey}\`. Still honor the safety checks: if \`${ticketKey}\` is already In Progress / In Review / Done / closed, is already on a \`claim/${ticketKey}\` (or \`cos/.../${ticketKey}/...\`) branch, or its requirements are too ambiguous or too large to implement in a single PR, exit cleanly (file a Review Hub todo for ambiguous requirements) rather than forcing it. Otherwise run Phases 2–7 against \`${ticketKey}\`.`;
+export function normalizeWorkItemRef(ref) {
+  const raw = String(ref ?? '').trim().replace(/^#/, '');
+  if (!raw || raw.length > 80) return null;
+  if (/^\d+$/.test(raw)) return raw;
+  if (/^[A-Za-z][A-Za-z0-9]*-\d+$/.test(raw)) return raw.toUpperCase();
+  if (/^[a-z0-9][a-z0-9-]*$/i.test(raw)) return raw;
+  return null;
 }
+
+// GitHub and GitLab share one claim flow (identical phases, branch naming, and
+// skip-list — only the forge CLI differs), so their constraint copy is one
+// factory rather than two paragraphs that must be edited in lockstep.
+const forgeIssueConstraint = (forge) => (ref) => `## Target Issue Constraint
+
+The user explicitly selected ${forge} issue #${ref}. Override Phase 1 ("Pick the target issue"): do NOT pick a different issue and do NOT scan for the next eligible one — claim exactly #${ref}, and ignore the author filter above (an explicit selection overrides it). Still honor the safety checks: if #${ref} is already closed, already assigned, already carries \`in-progress\` / \`blocked\` / \`needs-input\`, is already on a \`claim/issue-${ref}\` (or \`cos/.../issue-${ref}/...\`) branch, is a tracking epic, or is stale (Phase 3), exit cleanly rather than forcing it. Otherwise run Phases 2–7 against #${ref}.`;
+
+// Per-claim-flow copy for the "claim exactly this item" constraint. Each entry
+// renders the tracker's own vocabulary (issue / ticket / PLAN item) over one
+// shared shape, so the four flows can't drift apart.
+const TARGET_ITEM_BLOCKS = {
+  // Provenance-neutral: the same copy serves a user-picked target and a
+  // scheduler-reserved planId (see buildPlanConstraintBlock).
+  'plan-task': (ref) => `## Item Constraint
+
+PLAN.md item \`[${ref}]\` is reserved for this run. You MUST work on that exact item — do not pick a different one, do not brainstorm. If the line is missing from PLAN.md, has already been checked, or carries \`<!-- NEEDS_INPUT -->\`, exit cleanly without commits or PR.`,
+
+  'claim-issue': forgeIssueConstraint('GitHub'),
+  'claim-issue-gitlab': forgeIssueConstraint('GitLab'),
+
+  'claim-issue-jira': (ref) => `## Target Ticket Constraint
+
+The user explicitly selected JIRA ticket \`${ref}\` from the board. Override Phase 1 ("Pick the target ticket"): do NOT pick a different ticket and do NOT scan for the next-ready one — claim exactly \`${ref}\`. Still honor the safety checks: if \`${ref}\` is already In Progress / In Review / Done / closed, is already on a \`claim/${ref}\` (or \`cos/.../${ref}/...\`) branch, or its requirements are too ambiguous or too large to implement in a single PR, exit cleanly (file a Review Hub todo for ambiguous requirements) rather than forcing it. Otherwise run Phases 2–7 against \`${ref}\`.`
+};
+
+/**
+ * The "claim exactly this item" constraint for a claim prompt body — the
+ * generalized form of buildPlanConstraintBlock, covering all four claim flows.
+ * The base prompts' Phase 1 tells the agent to PICK the next-ready item; this
+ * overrides that to pin the user's selection while keeping every safety check
+ * (already-claimed, stale, too-large → exit cleanly). Returns the bare block
+ * (callers own their own separators), or '' when there is no target (the
+ * agent-picks default) or the flow has no constraint copy.
+ */
+export function buildTargetWorkItemBlock(promptTaskType, ref) {
+  const render = TARGET_ITEM_BLOCKS[promptTaskType];
+  return (!ref || !render) ? '' : render(ref);
+}
+
+/** The same block with the leading blank-line separator a prompt append needs. */
+const appendTargetWorkItemBlock = (promptTaskType, ref) => {
+  const block = buildTargetWorkItemBlock(promptTaskType, ref);
+  return block ? `\n\n${block}` : '';
+};
 
 /**
  * Build a one-off "implement THIS JIRA ticket" task for `app` — the per-card
@@ -414,7 +499,10 @@ The user explicitly selected JIRA ticket \`${ticketKey}\` from the board. Overri
  */
 export async function buildJiraTicketTask(app, ticketKey) {
   const { getTaskPrompt } = await import('./taskPromptService.js');
-  const key = String(ticketKey || '').toUpperCase();
+  // Same normalizer the `/do:next` target uses — one definition of "a valid work
+  // item ref". The route's Zod key regex has already rejected junk by here, so a
+  // null (unnormalizable) key can only come from a direct service caller.
+  const key = normalizeWorkItemRef(ticketKey);
 
   // Independent reads (prompt body + Code Review Defaults) — fetch concurrently.
   const [template, reviewersCsv] = await Promise.all([
@@ -428,7 +516,7 @@ export async function buildJiraTicketTask(app, ticketKey) {
     // Function-form replacer so a literal `$` in the reviewers CSV isn't read as
     // a backreference.
     .replace(/\{reviewers\}/g, () => reviewersCsv)
-    + buildTargetTicketBlock(key);
+    + appendTargetWorkItemBlock('claim-issue-jira', key);
 
   return { ticketKey: key, prompt, taskMetadata: { useWorktree: false, openPR: false } };
 }
@@ -486,14 +574,12 @@ async function applyPlanIdMetadata(taskType, repoPath, metadata) {
 /**
  * Build the `{planConstraint}` substitution block. Empty when no planId —
  * the prompt's existing Phase 1 fallback (brainstorm or exit-clean) takes over.
+ * Shares the pin-to-one-item copy with the user-selected `/do:next` target
+ * (`buildTargetWorkItemBlock`) so the two provenances can't drift.
  */
 function buildPlanConstraintBlock(planId) {
   if (!planId) return '';
-  return `
-## Item Constraint
-
-The scheduler has reserved PLAN.md item \`[${planId}]\` for you. You MUST work on that exact item — do not pick a different one, do not brainstorm. If the line is missing from PLAN.md, has already been checked, or carries \`<!-- NEEDS_INPUT -->\`, exit cleanly without commits or PR.
-`;
+  return `\n${buildTargetWorkItemBlock('plan-task', planId)}\n`;
 }
 
 /**
@@ -1878,7 +1964,8 @@ async function resolveBranchReconcileBlock(app, taskType, metadata, taskSchedule
     cleanupMerged: metadata.cleanupMerged,
     openPr: metadata.openPr,
     resolveConflicts: metadata.resolveConflicts,
-    autoMerge: metadata.autoMerge
+    autoMerge: metadata.autoMerge,
+    finishAbandoned: metadata.finishAbandoned
   };
   const result = await reconcile(app.repoPath, {
     cleanup: actions.cleanupMerged !== false,
@@ -1904,7 +1991,15 @@ async function resolveBranchReconcileBlock(app, taskType, metadata, taskSchedule
     const heldSuffix = heldBack.length
       ? `, ${heldBack.length} merged branch(es) held back (${[...new Set(heldBack.map((s) => s.reason))].join(', ')})`
       : '';
-    emitLog('info', `🔀 branch-reconcile parked for ${app.name}: nothing in-flight (cleaned ${result.cleaned.length}${heldSuffix})`, { appId: app.id });
+    // In-flight branches that exist but were filtered out by a disabled action
+    // toggle are the OTHER way "nothing in-flight" can lie — say so, or the user
+    // sees a park while real branches sit there (the same invisibility that hid
+    // the abandoned-worktree case).
+    const gatedOff = result.inFlight.length;
+    const gatedSuffix = gatedOff
+      ? `, ${gatedOff} in-flight branch(es) skipped by disabled action toggles (${[...new Set(result.inFlight.map((b) => b.state))].join(', ')})`
+      : '';
+    emitLog('info', `🔀 branch-reconcile parked for ${app.name}: nothing actionable (cleaned ${result.cleaned.length}${heldSuffix}${gatedSuffix})`, { appId: app.id });
     return { skip: true };
   }
   // Convergence guard — kills the back-to-back re-dispatch loop WITHOUT stalling
@@ -1983,13 +2078,23 @@ async function resolveIssueReconcileBlock(app, taskType, metadata, taskSchedule)
 
 /**
  * reference-watch: dynamically build {referenceData} — a Markdown chunk per ref
- * configured on the app + commits since lastReviewedSha. The check persists
- * status/lastError so a bad URL surfaces in the UI even when dispatch is skipped.
+ * configured on the app + commits since lastReviewedSha — AND the
+ * {trackerInstructions} block naming where the agent files its proposals. The
+ * check persists status/lastError so a bad URL surfaces in the UI even when
+ * dispatch is skipped.
+ *
  * Returns `{ skip }` when no ref produced reviewable commits, else
- * `{ skip: false, block }`. Empty block for every non-reference-watch type.
+ * `{ skip: false, block, trackerInstructions, workTracker }`. Empty
+ * block/instructions (and a null tracker) for every non-reference-watch type.
+ *
+ * The tracker resolution mirrors `triggerReferenceAnalysis` (the on-commit
+ * trigger path) rather than restating its block table: both paths run
+ * `resolveAppWorkTracker` → `formatTrackerInstructions` / `isFileTracker`, so
+ * the prompt the agent gets and the `worktreeChangesExpected` flag stamped on
+ * its task can never disagree (#3140, #3102).
  */
 async function resolveReferenceWatchBlock(app, taskType) {
-  if (taskType !== 'reference-watch') return { skip: false, block: '' };
+  if (taskType !== 'reference-watch') return { skip: false, block: '', trackerInstructions: '', workTracker: null };
   const refs = Array.isArray(app.referenceRepos) ? app.referenceRepos : [];
   if (refs.length === 0) {
     emitLog('info', `Skipping reference-watch for ${app.name}: no reference repos configured`, { appId: app.id });
@@ -2017,7 +2122,19 @@ async function resolveReferenceWatchBlock(app, taskType) {
     emitLog('info', `Skipping reference-watch for ${app.name}: no refs produced reviewable commits`, { appId: app.id });
     return { skip: true };
   }
-  return { skip: false, block: blocks.join('\n\n---\n\n') };
+  // Where THIS app records autonomous work (PLAN.md / GitHub / GitLab / JIRA).
+  // Never throws — degrades to the PLAN.md block, same as the on-commit path.
+  const { resolveAppWorkTracker, isFileTracker } = await import('../lib/workTracker.js');
+  const workTracker = await resolveAppWorkTracker(app).catch(() => ({ resolved: 'plan' }));
+  return {
+    skip: false,
+    block: blocks.join('\n\n---\n\n'),
+    trackerInstructions: referenceRepos.formatTrackerInstructions(workTracker.resolved),
+    workTracker: workTracker.resolved,
+    // Derived here (not at the call site) so the flag and the instructions come
+    // off the same resolved value in one place.
+    worktreeChangesExpected: isFileTracker(workTracker.resolved),
+  };
 }
 
 /**
@@ -2112,7 +2229,12 @@ async function buildImprovementTaskDescription({ promptTemplate, app, promptTask
   // list overrides the Code Review Defaults; forge-agnostic, so not filtered.
   const promptUsernames = resolveReviewUsernames(metadata.usernames, codeReviewDefaults?.usernames);
   const promptOptionalReviewers = resolveOptionalReviewers(metadata.optionalReviewers, codeReviewDefaults?.optionalReviewers);
-  const reviewersCsv = buildReviewersCsv(promptReviewers, promptUsernames, promptOptionalReviewers);
+  const promptReviewerMaxRounds = resolveReviewerMaxRounds(metadata.reviewerMaxRounds, codeReviewDefaults?.reviewerMaxRounds);
+  // Per-reviewer model pins ride the same precedence, emitted as slashdo's
+  // `[<model>]` bracket. Entries for the local-LLM reviewers filtered out above
+  // are inert — the emitter only brackets tokens it actually emits.
+  const promptReviewerModels = resolveReviewerModels(metadata.reviewerModels, reviewerModelsFromDefaults(codeReviewDefaults));
+  const reviewersCsv = buildReviewersCsv(promptReviewers, promptUsernames, promptOptionalReviewers, promptReviewerMaxRounds, promptReviewerModels);
   // {issueAuthorFilter} directive — the filter was already merged (global →
   // per-app override) and value-constrained by sanitizeTaskMetadata, so read it
   // from `metadata` (default 'self', the slashdo `/do:next --self` security
@@ -2125,10 +2247,19 @@ async function buildImprovementTaskDescription({ promptTemplate, app, promptTask
   const swarmBlock = resolveSwarmBlock(promptTaskType, metadata.swarmCount);
 
   return `${swarmBlock}${promptTemplate}`
+    // {trackerInstructions} FIRST — the injected block itself carries
+    // {appName}/{repoPath} placeholders that the replacers below expand. This
+    // ordering is load-bearing (mirrors triggerReferenceAnalysis).
+    .replace(/\{trackerInstructions\}/g, () => blocks.trackerInstructions)
     .replace(/\{appName\}/g, app.name)
     .replace(/\{repoPath\}/g, app.repoPath)
     .replace(/\{appId\}/g, app.id)
-    .replace(/\{reviewers\}/g, reviewersCsv)
+    // Function form — reviewersCsv can carry a user-set reviewerModels pin,
+    // and normalizeReviewerModel allows `$` in that free text (only `[`, `]`,
+    // `,`, and line breaks/tabs are forbidden), so a string replacement would
+    // read a pin containing `$&`/`$1`/`` $` `` as a backreference token. See
+    // the {referenceData}/{prData} comment below for why this form is needed.
+    .replace(/\{reviewers\}/g, () => reviewersCsv)
     .replace(/\{issueAuthorFilter\}/g, () => issueAuthorFilterBlock)
     // Use a replacer function — String.replace with a replacement STRING
     // interprets `$&`, `$1`, etc. as backreferences. Commit subjects/authors
@@ -2244,10 +2375,24 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
       : await getTaskPrompt(promptKeyForBody));
 
   // reference-watch: dynamically inject {referenceData} — a Markdown chunk
-  // describing each ref configured on the app + commits since lastReviewedSha.
+  // describing each ref configured on the app + commits since lastReviewedSha —
+  // plus the {trackerInstructions} block for the app's resolved work tracker.
   const referenceWatch = await resolveReferenceWatchBlock(app, taskType);
   if (referenceWatch.skip) return null;
   const referenceDataBlock = referenceWatch.block;
+  if (referenceWatch.workTracker) {
+    // Traceability + the TUI idle-complete gate, derived from the SAME resolved
+    // tracker that selected the {trackerInstructions} block above so the flag
+    // can't drift from the instructions the agent actually got: the PLAN.md path
+    // commits checklist items (dirty tree), while github/gitlab/jira file
+    // issues/tickets and leave the tree CLEAN. Without this a scheduled
+    // forge-tracker run is recorded as an `idle-no-changes` failure (#3102).
+    metadata.workTracker = referenceWatch.workTracker;
+    // Stamped unconditionally — a schedule/per-app `worktreeChangesExpected`
+    // override would let the flag disagree with the instructions the agent
+    // actually got, which is the exact drift this derivation exists to prevent.
+    metadata.worktreeChangesExpected = referenceWatch.worktreeChangesExpected;
+  }
 
   // pr-watcher: poll the app's GitHub repo for PRs newly opened against the
   // default branch; injects {prData}/{repoFullName}/{defaultBranch}.
@@ -2271,6 +2416,7 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
     promptTemplate, app, promptTaskType, metadata,
     blocks: {
       referenceData: referenceDataBlock,
+      trackerInstructions: referenceWatch.trackerInstructions,
       prData: prDataBlock,
       inFlightBranches: inFlightBranchesBlock,
       zombieIssues: zombieIssuesBlock,

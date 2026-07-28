@@ -122,7 +122,7 @@ const { lockReference } = await import('./reference.js');
 const {
   getWalkState, startWalkGeneration, attachTuiWalkResult, approveWalkDirection, rerunWalkPostprocess, unlockWalkSet,
   reopenWalkDirection, invalidateWalkDirectionForAnchorRevision,
-  unlockDirectionalAnchor, unlockTurnaroundReference,
+  unlockDirectionalAnchor, unlockMainReference, unlockTurnaroundReference,
   setWalkTarget, importedWalkDirections, getWalkSourceFrames,
 } = await import('./walk.js');
 const { SPRITE_DIRECTIONS, ANCHOR_DIRECTIONS } = await import('./prompts.js');
@@ -347,6 +347,34 @@ describe('startWalkGeneration', () => {
       direction: 'east', chromaKey: '#FF00FF',
     });
     expect(runs[0].animationInputPreparation).toBe('composited-over-solid-chroma-matte');
+  });
+
+  it('appends a trimmed correction note to the motion prompt and stamps it on the run (#3134)', async () => {
+    const id = await characterWithLockedAnchors(newId(), ['east']);
+    const { runId } = await startWalkGeneration(id, {
+      direction: 'east', correctionPrompt: '  the legs barely lift  ',
+    });
+    expect(executeTuiRun.mock.calls[0][0].prompt)
+      .toContain('Important correction — apply this over the attached source image: the legs barely lift');
+    // Persisted on the run so the provenance rebuild can reproduce it.
+    const { runs } = await getWalkState(id);
+    expect(runs.find((r) => r.id === runId).correctionPrompt).toBe('the legs barely lift');
+  });
+
+  it('leaves a blank correction note out of the prompt and the run record (#3134)', async () => {
+    // The TUI task is `<motion prompt>\n\n<per-run input/output paths>`, so
+    // compare the motion prompt only — the paths legitimately differ per run.
+    const motionPrompt = () => executeTuiRun.mock.calls[0][0].prompt.split('\n\n')[0];
+    const plain = await characterWithLockedAnchors(newId(), ['east']);
+    await startWalkGeneration(plain, { direction: 'east' });
+    const blindPrompt = motionPrompt();
+    executeTuiRun.mockClear();
+
+    const blank = await characterWithLockedAnchors(newId(), ['east']);
+    const { runId: blankRun } = await startWalkGeneration(blank, { direction: 'east', correctionPrompt: '   ' });
+    expect(motionPrompt()).toBe(blindPrompt);
+    const { runs } = await getWalkState(blank);
+    expect(runs.find((r) => r.id === blankRun)).not.toHaveProperty('correctionPrompt');
   });
 
   it('honors duration 10 (passed to the grok task)', async () => {
@@ -1040,6 +1068,24 @@ describe('invalidateWalkDirectionForAnchorRevision', () => {
       });
     }
     expect((await records.getRecord(id)).status).toBe('reference');
+  });
+
+  it('invalidates only south before reopening the main reference', async () => {
+    const id = await characterWithLockedAnchors(newId(), ['south', 'east']);
+    const south = await makeCandidateRun(id, 'south');
+    const east = await makeCandidateRun(id, 'east');
+    await approveWalkDirection(id, { direction: 'south', runId: south.runId });
+    await approveWalkDirection(id, { direction: 'east', runId: east.runId });
+
+    const result = await unlockMainReference(id);
+    const state = await getWalkState(id);
+    expect(result.walkInvalidated).toBe(true);
+    expect(result.manifest.turnaround.locked).toBe(true);
+    expect(result.manifest.mainReference).toMatchObject({ locked: false, path: null });
+    expect(result.manifest.anchors.find((anchor) => anchor.direction === 'south')).toMatchObject({ status: 'pending' });
+    expect(result.manifest.anchors.find((anchor) => anchor.direction === 'east')).toMatchObject({ status: 'locked' });
+    expect(state.selection.directions.south).toBeUndefined();
+    expect(state.selection.directions.east.status).toBe('approved');
   });
 });
 

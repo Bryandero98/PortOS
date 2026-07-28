@@ -25,8 +25,9 @@ vi.mock('./codeReview.js', () => ({ resolveReviewLoopOptions: vi.fn().mockResolv
 vi.mock('./agentWorktreeCleanup.js', () => ({ cleanupAgentWorktree: vi.fn().mockResolvedValue([]), spawnMergeRecoveryTask: vi.fn() }));
 vi.mock('./taskPromptService.js', () => ({ getStagePrompt: vi.fn().mockResolvedValue('do stage work in {appName}') }));
 
-import { handlePipelineProgression } from './agentCompletionCleanup.js';
+import { handlePipelineProgression, runAgentCompletionCleanup } from './agentCompletionCleanup.js';
 import { updateTask, addTask, reviveBlockedTask } from './cos.js';
+import { cleanupAgentWorktree } from './agentWorktreeCleanup.js';
 
 const runningPipeline = (overrides = {}) => ({
   id: 'p1',
@@ -123,5 +124,57 @@ describe('handlePipelineProgression', () => {
     await handlePipelineProgression(task, 'agent-1', true);
     expect(reviveBlockedTask).not.toHaveBeenCalled();
     expect(updateTask).not.toHaveBeenCalled();
+  });
+});
+
+// #3114 — `agentOwnsPR` decides whether PortOS skips its own push+PR because the
+// agent was told to run `/do:pr` itself. It MUST derive from the same
+// `canTypeSlashCommands` predicate the prompt's `hasSlashdo` gate used: when the
+// two disagree, PortOS fires `gh pr create` on a branch that already has a PR
+// ("a pull request already exists" preserves the worktree as a false-positive
+// failure), or conversely never opens the PR the agent was told not to open.
+describe('runAgentCompletionCleanup — agentOwnsPR mirrors the prompt gate', () => {
+  const prTask = { id: 't', taskType: 'user', metadata: { openPR: true } };
+
+  const cleanupCallFor = async (agent) => {
+    await runAgentCompletionCleanup({
+      agentId: 'a1', task: prTask, agent, effectiveSuccess: true, outputBuffer: '',
+    });
+    // cleanupAgentWorktree(agentId, success, options) — options is the 3rd arg.
+    return cleanupAgentWorktree.mock.calls.at(-1)[2];
+  };
+
+  it.each([
+    ['claude-code', 'claude', false],
+    ['claude-code-bedrock', 'claude', false],
+    // The case an id allowlist missed: a path-configured claude under a custom id
+    // IS told to run /do:pr, so PortOS must not open a second PR.
+    ['my-custom-agent', '/opt/homebrew/bin/claude', false],
+  ])('%s does not double-fire the PR (agent owns it)', async (providerId, providerCommand) => {
+    const opts = await cleanupCallFor({ providerId, providerCommand, leanMode: false });
+    expect(opts.openPR).toBe(false);
+    expect(opts.skipMerge).toBe(true);
+  });
+
+  it.each([
+    ['codex', 'codex'],
+    ['antigravity-cli', 'agy'],
+  ])('%s still gets PortOS post-exit push+PR (agent cannot run /do:pr)', async (providerId, providerCommand) => {
+    const opts = await cleanupCallFor({ providerId, providerCommand, leanMode: false });
+    expect(opts.openPR).toBe(true);
+    expect(opts.skipMerge).toBe(false);
+  });
+
+  it('a lean --bare claude session does NOT own its PR (it has no project commands)', async () => {
+    const opts = await cleanupCallFor({ providerId: 'claude-ollama', providerCommand: 'claude', leanMode: true });
+    expect(opts.openPR).toBe(true);
+  });
+
+  it('a pre-upgrade agent record with only providerId still resolves', async () => {
+    // Records written before providerCommand/leanMode were persisted: a blank
+    // command reads as `claude`, which is what the old id allowlist effectively
+    // assumed for the claude-code ids anyway.
+    expect((await cleanupCallFor({ providerId: 'claude-code' })).openPR).toBe(false);
+    expect((await cleanupCallFor({ providerId: 'codex-tui' })).openPR).toBe(true);
   });
 });

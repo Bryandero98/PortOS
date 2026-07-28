@@ -15,10 +15,10 @@ import { buildPrompt } from './promptService.js';
 import { getToolsSummaryForPrompt } from './tools.js';
 import { getActiveProvider } from './providers.js';
 import { runPromptThroughProvider } from '../lib/promptRunner.js';
-import { readJSONFile, loadSlashdoFile, loadSlashdoLib, PATHS, tryReadFile } from '../lib/fileUtils.js';
-import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, LOCAL_LLM_REVIEWERS, MODEL_CAPABLE_CLI_REVIEWERS, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers, resolveReviewUsernames, resolveOptionalReviewers, resolveKeyedReviewers, buildReviewWithArgs } from '../lib/validation.js';
+import { readJSONFile, loadSlashdoFile, loadSlashdoLib, writeResolvedSlashdoBody, PATHS, tryReadFile } from '../lib/fileUtils.js';
+import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, LOCAL_LLM_REVIEWERS, MODEL_CAPABLE_CLI_REVIEWERS, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds, resolveReviewUsernames, resolveOptionalReviewers, resolveReviewerMaxRounds, resolveReviewerModels, reviewerModelsFromDefaults, resolveKeyedReviewers, buildReviewWithArgs, buildReviewersCsv } from '../lib/validation.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
-import { isOpencodeCommand } from '../lib/providerModels.js';
+import { canTypeSlashCommands, resolveSlashdoInvocation, buildSlashdoSection, unreachableReviewerIncludes, SLASHDO_INLINE_BUDGET_CHARS } from '../lib/slashdoInvocation.js';
 import { shellQuote } from '../lib/shellQuote.js';
 import { detectForgeCli } from '../lib/gitForge.js';
 import { PR_COMPLETIONS, leavesPrForHuman, resolvePrCompletion } from '../lib/prDisposition.js';
@@ -296,6 +296,137 @@ export function reconcileSplitContext(task) {
 }
 
 /**
+ * Fold a slashdo-backed task's invocation + procedure into its description (#3089).
+ *
+ * A task that names a bundled workflow persists only the BARE command
+ * (`metadata.slashdoCommand`) because the form's provider select defaults to
+ * "Auto" — the concrete shape (`/do:x`, `/do-x`, or an Agent Skill selected by
+ * name) is only knowable here, once the scheduler has picked a provider.
+ *
+ * The command body travels with the prompt for every provider, not just the
+ * skill-style ones: PortOS ships slashdo as a submodule and only surfaces it as
+ * slash commands via the repo-local `.claude/commands/do/` symlinks, which don't
+ * exist in the managed-app workspaces most CoS tasks run in.
+ *
+ * **Size control (#3110).** Expanded bodies run 38KB–317KB. Two independent
+ * reductions apply, in this order:
+ *
+ * 1. **Prune unreachable reviewer variants.** `review`/`better`/`pr` each paste
+ *    all five of slashdo's reviewer loops though one run drives one of them.
+ *    Pruning to a single CLI reviewer measured -23% on `review` (258,260 →
+ *    198,997 chars), -27% on `pr`, and -28% on `depfree`. (slashdo's
+ *    orchestration wrapper is never pruned — it dispatches even a single-entry
+ *    reviewer list — which is ~37KB of the theoretical ceiling.)
+ * 2. **Point at a resolved copy on disk when still over budget** — but only for a
+ *    host with file tools (`cli`/`tui`; an HTTP `api` provider has none and
+ *    inlines with a warning). On its own this is roughly token-NEUTRAL for an
+ *    agent that reads the whole procedure; it pays off when the host can invoke
+ *    slashdo natively or needs only part of the body.
+ *
+ * Pruning is only sound if the run then uses the reviewers we pruned FOR, so the
+ * section emits an explicit `--review-with` pin alongside a pruned body —
+ * otherwise the agent could resolve a different reviewer from slashdo's own saved
+ * defaults and find that loop missing. No explicit pin ⇒ no prune.
+ *
+ * The reviewers, usernames, and optional-reviewers are resolved through the SAME
+ * three helpers as the inline `/do:pr` completion path further down
+ * (`normalizeReviewers` / `resolveReviewUsernames` / `resolveOptionalReviewers`),
+ * so what we prune for is exactly what the rest of the prompt resolves — legacy
+ * single-`reviewer` tasks and defaults-inherited `optionalReviewers` included.
+ *
+ * The one case that does NOT authorize pruning is a resolved lone `copilot` that
+ * nothing named explicitly (no task pin, no username reviewers, not marked
+ * optional): `pickCodeReviewDefaults` and `normalizeReviewers` both fall back to
+ * `['copilot']`, so that value can't be told apart from an unconfigured install —
+ * and pinning `--review-with copilot` where Copilot review isn't enabled is the
+ * #2507 stall. This mirrors `buildReviewWithArgs`'s lone-default suppression,
+ * including its exemption for an explicitly-optional copilot.
+ *
+ * Applied to the description (on a COPY — the stored task is untouched) rather
+ * than emitted as its own template slot, because the briefing template renders
+ * `{{task.description}}`: a new `{{slashdoSection}}` placeholder would be
+ * silently dropped by every install whose customized template predates it.
+ *
+ * @returns {Promise<Object>} the task, or a copy carrying the invocation
+ */
+async function applySlashdoInvocation(task, {
+  providerId = null, providerCommand = null, leanMode = false, hasFileTools = false,
+  defaultReviewers = null, codeReviewDefaults = null,
+} = {}) {
+  const command = task.metadata?.slashdoCommand;
+  const resolved = resolveSlashdoInvocation({
+    command,
+    args: task.metadata?.slashdoArgs || '',
+    providerId,
+    providerCommand,
+    leanMode,
+  });
+  if (!resolved) return task;
+
+  // Resolved through the SAME three helpers the inline `/do:pr` completion path
+  // uses below (`taskReviewers` / `taskReviewerUsernames` / `taskOptionalReviewers`),
+  // so the reviewers we prune for are exactly the ones the rest of the prompt
+  // resolves. Hand-rolling `metadata.reviewers` here instead dropped the legacy
+  // single `reviewer` string and the defaults' `optionalReviewers` — pruning for
+  // one reviewer while the run resolved another, and pinning an optional reviewer
+  // as blocking.
+  const resolvedReviewers = normalizeReviewers(task.metadata, defaultReviewers);
+  const resolvedUsernames = resolveReviewUsernames(task.metadata?.usernames, codeReviewDefaults?.usernames);
+  const resolvedOptional = resolveOptionalReviewers(task.metadata?.optionalReviewers, codeReviewDefaults?.optionalReviewers);
+  const resolvedMaxRounds = resolveReviewerMaxRounds(task.metadata?.reviewerMaxRounds, codeReviewDefaults?.reviewerMaxRounds);
+  const resolvedModels = resolveReviewerModels(task.metadata?.reviewerModels, reviewerModelsFromDefaults(codeReviewDefaults));
+
+  // A resolved lone `copilot` with no usernames is ambiguous: it's what an
+  // unconfigured install produces (`pickCodeReviewDefaults` and
+  // `normalizeReviewers` both fall back to `['copilot']`), so it can't be told
+  // apart from a real choice UNLESS something names it explicitly. Absent that,
+  // treat it as unconfigured and prune nothing — pinning `--review-with copilot`
+  // where Copilot review isn't enabled is the #2507 stall.
+  //
+  // Marking copilot OPTIONAL — or giving it a `~max=<n>` round cap — is such an
+  // explicit naming: nothing defaults to either suffix, so both are deliberate
+  // choices, and dropping one would silently turn a non-blocking review blocking
+  // or spend an unbudgeted number of rounds. `buildReviewWithArgs` makes the same
+  // exemption for its lone-default suppression — keep the two in step.
+  const taskPinnedReviewer = (Array.isArray(task.metadata?.reviewers) && task.metadata.reviewers.length > 0)
+    || (typeof task.metadata?.reviewer === 'string' && !!task.metadata.reviewer);
+  const optionalDefaultReviewer = resolvedOptional.some(t => t.toLowerCase() === DEFAULT_REVIEWER);
+  const cappedDefaultReviewer = Object.keys(resolvedMaxRounds)
+    .some(t => t.toLowerCase() === DEFAULT_REVIEWER);
+  const isBareDefault = resolvedReviewers.length === 1
+    && resolvedReviewers[0] === DEFAULT_REVIEWER
+    && !resolvedUsernames.length
+    && !taskPinnedReviewer
+    && !optionalDefaultReviewer
+    && !cappedDefaultReviewer;
+  const skipIncludes = isBareDefault
+    ? []
+    : unreachableReviewerIncludes({ reviewers: resolvedReviewers, usernames: resolvedUsernames });
+
+  const body = await loadSlashdoFile(command, { stripFrontmatter: true, skipIncludes }).catch(() => null);
+  if (!body) console.log(`⚠️ Slashdo command body unavailable, sending invocation only: ${command}`);
+  const overBudget = !!body && body.length > SLASHDO_INLINE_BUDGET_CHARS;
+  // An HTTP `api` provider can't read a file, so an over-budget body is pasted
+  // whole. Surface the cost rather than paying it silently.
+  if (overBudget && !hasFileTools) {
+    console.warn(`⚠️ Inlining ${Math.round(body.length / 1000)}KB slashdo body for API provider (no file tools): ${command}`);
+  }
+  // Only spend the write when the pointer will actually be used.
+  const bodyPath = (overBudget && hasFileTools)
+    ? await writeResolvedSlashdoBody(command, body, { skipIncludes }).catch((err) => {
+        console.warn(`⚠️ Could not stage slashdo body for ${command}, inlining instead: ${err.message}`);
+        return null;
+      })
+    : null;
+
+  const reviewWith = skipIncludes.length
+    ? buildReviewersCsv(resolvedReviewers, resolvedUsernames, resolvedOptional, resolvedMaxRounds, resolvedModels)
+    : '';
+  const section = buildSlashdoSection(resolved, body, { bodyPath, reviewWith });
+  return { ...task, description: `${task.description}\n\n${section}` };
+}
+
+/**
  * True when a follow-up task is a **merge-only** run: it has a PR to land but no
  * reviewer to run (Review Loop off, or every configured reviewer was stripped —
  * e.g. copilot on a GitLab MR). Tolerates the string `'true'` because task
@@ -361,18 +492,23 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
   const reviewers = resolveKeyedReviewers(reviewerSource, usernames.length > 0);
   // Reviewer identities marked non-blocking — emitted with slashdo's `~opt`.
   const optionalReviewers = normalizeOptionalReviewers(metadata.reviewLoopOptionalReviewers) || [];
+  // Per-reviewer `~max=<n>` iteration caps, keyed by emitted token. An absent key
+  // leaves slashdo's built-in per-loop default; `0` means "loop until clean".
+  const reviewerMaxRounds = normalizeReviewerMaxRounds(metadata.reviewLoopReviewerMaxRounds) || {};
   const stopMode = metadata.reviewLoopStopMode || DEFAULT_REVIEW_STOP_MODE;
   const reviewerApplies = metadata.reviewLoopReviewerApplies === true;
   const hasCopilot = reviewers.includes(DEFAULT_REVIEWER);
   const hasLocalLlm = reviewers.some(r => LOCAL_LLM_REVIEWERS.includes(r));
   const hasCli = reviewers.some(r => r !== DEFAULT_REVIEWER && !LOCAL_LLM_REVIEWERS.includes(r));
   const hasGithubUser = usernames.length > 0;
-  // Optional per-CLI-reviewer model tiers chosen on the Code Review Defaults panel,
-  // threaded as a reviewer-keyed map. Each configured, model-capable reviewer that
-  // is actually in this loop's list gets a `<reviewer> --model <id>` note (empty =
-  // let that CLI use its own default). For an Ollama-backed `claude` reviewer the id
-  // is the local Ollama model. Falls back to the legacy codex-scalar metadata key so
-  // a follow-up task persisted by an older install still threads its codex model.
+  // Optional per-reviewer model pins (Code Review Defaults panel, or the task's own
+  // ReviewerPicker row), threaded as a reviewer-keyed map. A model-capable CLI
+  // reviewer in this loop's list gets a `<reviewer> --model <id>` note; a local-LLM
+  // reviewer's pin goes into its `/api/code-review/local` request body instead
+  // (below). Absent = let that reviewer use its own default. For an Ollama-backed
+  // `claude` reviewer the id is the local Ollama model. Falls back to the legacy
+  // codex-scalar metadata key so a follow-up task persisted by an older install
+  // still threads its codex model.
   const reviewerModelMap = (metadata.reviewLoopReviewerModels && typeof metadata.reviewLoopReviewerModels === 'object')
     ? metadata.reviewLoopReviewerModels
     : (typeof metadata.reviewLoopCodexModel === 'string' && metadata.reviewLoopCodexModel
@@ -413,7 +549,7 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
     ...reviewers.map(r => `\`${r}\``),
     ...usernames.map(u => `\`@${u}\``),
   ].join(' → ');
-  const equivArgs = buildReviewWithArgs(reviewers, stopMode, reviewerApplies, usernames, optionalReviewers);
+  const equivArgs = buildReviewWithArgs(reviewers, stopMode, reviewerApplies, usernames, optionalReviewers, reviewerMaxRounds, reviewerModelMap);
   const equiv = equivArgs ? ` (equivalent to \`/do:pr ${equivArgs}\`)` : '';
 
   // First step: how to obtain a review. For a single copilot/CLI reviewer keep the
@@ -423,6 +559,15 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
   // `POST /api/code-review/local` which runs the configured local model against
   // the diff and returns findings text. The agent always reaches it via
   // `http://localhost:5555` (the canonical loopback API port).
+  // A pinned local-LLM model can't ride the endpoint's server-side default: that
+  // reads the GLOBAL settings scalar and has never seen this task. So when the
+  // user pinned one on the reviewer's row, name it in the request body — `model`
+  // in the POST body overrides the configured default (see routes/codeReview.js).
+  // Absent pin ⇒ omit the key entirely rather than sending `""`, which would be a
+  // model id the backend can't resolve.
+  const localLlmModelNote = LOCAL_LLM_REVIEWERS
+    .filter(r => reviewers.includes(r) && typeof reviewerModelMap[r] === 'string' && reviewerModelMap[r])
+    .map(r => `\`${r}\` → \`"model": "${reviewerModelMap[r]}"\``);
   const localLlmInvocation = `POST the diff to PortOS's local reviewer endpoint and extract its review text before evaluating it. Substitute the active reviewer name for \`<lmstudio|ollama>\`:
 \`\`\`bash
 REVIEW_RESPONSE=$(mktemp)
@@ -435,7 +580,9 @@ else
   cat "\${REVIEW_RESPONSE}.findings"
 fi
 \`\`\`
-Only a successfully extracted \`.findings\` value is the review text; treat it like any other reviewer's findings.`;
+Only a successfully extracted \`.findings\` value is the review text; treat it like any other reviewer's findings.${localLlmModelNote.length
+  ? ` This run pins a model for ${localLlmModelNote.join(', ')} — add that key to the JSON body (\`jq -Rs '{ backend: "…", model: "…", diff: . }'\`) so the review runs on the pinned model instead of the install default.`
+  : ''}`;
   // Instruct the agent to request each username reviewer as a PR reviewer and
   // gate the merge on their approval. `gh pr edit --add-reviewer` takes the bare
   // login, so strip the `@`.
@@ -489,7 +636,19 @@ Only a successfully extracted \`.findings\` value is the review text; treat it l
     '```',
     'A `409` (`CHALLENGE_EXHAUSTED` = the one challenge is spent, or `CHALLENGE_BUDGET_EXHAUSTED` = the task is out of retry budget) means you can\'t dispute — then fix the finding or, if genuinely blocked, post a PR comment and stop. After filing, RE-CHECK: re-run the disputed reviewer (or another configured reviewer) against the current diff, then resolve — overturned → `POST .../challenge/resolve` with `{"outcome":"upheld"}` and continue to merge; confirmed → fix it, or send `{"outcome":"escalated"}` to hand the dispute to the user.' + (hasLocalLlm ? ' For a local reviewer you may instead POST `{"recheck":{"backend":"<lmstudio|ollama>","diff":"<unified diff>"}}` and let the server re-run it and auto-derive the outcome.' : ''),
   ].join('\n');
-  const extraNotes = [stopModeNote, applyNote].filter(Boolean);
+  // Per-reviewer round caps. This prompt drives the loop in PROSE (it isn't
+  // slashdo parsing a `~max=<n>` suffix), so a configured cap only binds if it's
+  // spelled out here — the `equiv` flag string alone documents intent without
+  // constraining the agent. `0` is slashdo's "loop until clean", so it's rendered
+  // as such rather than as a zero-round budget.
+  const maxRoundsEntries = Object.entries(reviewerMaxRounds)
+    .filter(([token]) => reviewers.includes(token) || usernames.some(u => `@${u}`.toLowerCase() === token.toLowerCase()))
+    .map(([token, max]) => `\`${token}\` → ${max === 0 ? 'loop until clean (no cap)' : `${max} round${max === 1 ? '' : 's'}`}`);
+  const maxRoundsNote = maxRoundsEntries.length
+    ? `**Round caps (~max):** stop these reviewers after their budget even if findings remain, then advance: ${maxRoundsEntries.join(', ')}. Spending a configured budget is a SUCCESS, not a failure — do not block the merge on it. Reviewers not listed keep the default cap below.`
+    : '';
+
+  const extraNotes = [stopModeNote, applyNote, maxRoundsNote].filter(Boolean);
 
   // Inline slashdo's local-agent review loop verbatim when a spawnable CLI
   // reviewer is configured. This is the maintained, precise recipe — exact
@@ -774,6 +933,70 @@ export function buildCompletionGuidelineBullet({
 const DISCARD_WORKTREE_NOTE = 'Do NOT commit, push, or open a PR — this worktree is discarded on exit. Make any scratch edits that help you reason; only the completion sentinel is kept.';
 
 /**
+ * Is this worktree attached to a branch a PR already points at — i.e. the
+ * review-loop follow-up, whose guidance is "push review fixes here, the PR
+ * points at this branch"?
+ *
+ * Identified POSITIVELY, off the follow-up's own `reviewLoopFollowUp` marker,
+ * rather than as "any `existingBranch` worktree". `existingBranch` means only
+ * "attach to this branch" and now has two producers: the follow-up, and a retry
+ * resuming a dead agent's branch (`resumedFromAgentId`), which follows the task's
+ * ordinary push/PR flow and may have no PR at all. Keying on the marker means a
+ * THIRD producer defaults to the ordinary flow instead of silently inheriting
+ * review-fix instructions for a PR that doesn't exist.
+ */
+function isPrBranchWorktree(task, worktreeInfo) {
+  return worktreeInfo?.existingBranch === true && !!task?.metadata?.reviewLoopFollowUp;
+}
+
+/**
+ * Is this worktree a RESUME of a previous failed agent's branch? Keyed on
+ * `resumedFromAgentId`, which only the resume path stamps (see
+ * agentCompletionCleanup.js).
+ */
+function isResumedWorktree(task, worktreeInfo) {
+  return worktreeInfo?.existingBranch === true && !!task?.metadata?.resumedFromAgentId;
+}
+
+/**
+ * Resume banner for a retry attached to the branch a PREVIOUS failed agent left
+ * behind (`metadata.existingBranch` + `resumedFromAgentId`, stamped by
+ * agentCompletionCleanup.js when a failed run's branch survived cleanup with
+ * commits on it).
+ *
+ * Without this the retry sees an ordinary worktree that just happens to have
+ * commits on it and redoes work that is already done — the failure mode the
+ * agent-d2ae0352 incident exposed (reaped 30s after its PR merged; the
+ * replacement agent started the shipped work over). Telling it to read the log
+ * FIRST is the whole point: the prior run may have gone as far as opening or even
+ * merging a PR, in which case there is nothing left to build.
+ *
+ * Returns '' when this isn't a resume, so callers can interpolate unconditionally.
+ */
+export function buildResumeSection(task, worktreeInfo) {
+  if (!isResumedWorktree(task, worktreeInfo)) return '';
+  const priorAgentId = task.metadata.resumedFromAgentId;
+  return `
+## Resuming Unfinished Work — Read This First
+A previous agent (\`${priorAgentId}\`) worked this same task and did NOT finish cleanly
+(it hung, timed out, or was terminated). **Its commits are already on your branch**
+\`${worktreeInfo.branchName}\` — you are continuing its run, not starting over.
+
+Before you write any code, establish what is already done:
+1. \`git log --oneline ${worktreeInfo.baseBranch || 'origin/HEAD'}..HEAD\` — the commits it already made.
+2. \`git status\` — anything it left uncommitted.
+3. Check whether it already shipped: look for an open or merged PR for this branch
+   — \`gh pr list --head ${worktreeInfo.branchName} --state all\` on GitHub,
+   \`glab mr list --source-branch ${worktreeInfo.branchName}\` on GitLab.
+
+Then do only what remains. If a PR is already **merged**, the work is done — go
+straight to your completion step and report that. If a PR is already **open**,
+finish/land that PR rather than opening a second one. Do NOT redo completed work,
+and do NOT revert its commits unless they are actually wrong.
+`;
+}
+
+/**
  * Completion block for a **programmatic-output** (throwaway-worktree) task: the
  * agent reasons in a worktree that is discarded on exit, so it must NOT commit,
  * push, merge, or open a PR. Its only channel out is the `.agent-done` sentinel,
@@ -856,14 +1079,19 @@ export function buildActionOutputCompletionSection({ isTui = false, sentinelPath
  * @param {Function} isTruthyMetaFn - isTruthyMeta function (passed to avoid circular dep)
  * @param {Object} options
  * @param {string} [options.providerType='api'] - `'tui' | 'cli' | 'api'`
- * @param {string} [options.providerId] - Provider id (e.g. `'claude-code'`). When the
- *   CLI provider has access to the project's slashdo commands (Claude Code), the
- *   light prompt instructs the agent to run `/simplify` and `/do:pr` itself
- *   instead of relying on PortOS's post-exit push+PR. The spawner must then
- *   pass `openPR: false` to `cleanupAgentWorktree` to avoid double-firing.
- * @param {string} [options.providerCommand] - Provider launch command (e.g. `'opencode'`).
- *   Used to detect a slashdo-free TUI (OpenCode): such a TUI can't run `/do:pr` / `/do:push`,
- *   so its completion workflow falls back to plain `git`/`gh` commands.
+ * `providerId` + `providerCommand` + `leanMode` together decide whether the
+ * session can TYPE a Claude Code slash command (`canTypeSlashCommands`, #3114):
+ * a capable session is instructed to drive its own `/simplify` + `/do:pr` /
+ * `/do:push`, and everything else gets plain `git`/`gh` (TUI) or PortOS's
+ * post-exit push+PR (CLI). `agentCompletionCleanup.js` derives the same predicate
+ * from the agent record so it passes `openPR: false` and avoids double-firing.
+ *
+ * @param {string} [options.providerId] - Provider id (e.g. `'claude-code'`). Not an
+ *   allowlist: it only matters when `providerCommand` is blank, where the
+ *   spawners' `inferTuiCommand` fallback resolves the command from it.
+ * @param {string} [options.providerCommand] - Provider launch command (e.g.
+ *   `'claude'`, `'codex'`, `'opencode'`) — the primary signal, so a
+ *   path-configured or renamed binary is recognised.
  * @param {boolean} [options.leanMode] - Ollama-backed Claude session launched with
  *   `--bare` (see `applyLeanClaudeArgs`): the completion workflow drops slashdo
  *   commands (bare mode skips command discovery) in favor of plain `git`/`gh`.
@@ -883,6 +1111,7 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
   const providerId = options.providerId || null;
   const providerCommand = options.providerCommand || null;
   const isTui = providerType === PROVIDER_TYPES.TUI;
+  const leanMode = options.leanMode === true;
 
   // Install-wide default reviewer list (Code Review Defaults panel →
   // `settings.codeReview.reviewers`). Threaded as the `normalizeReviewers`
@@ -893,8 +1122,22 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
   // `['copilot']` (getCodeReviewDefaults returns the copilot fallback), so
   // behavior is unchanged when nothing is configured. A settings read error
   // degrades to the hardcoded default inside normalizeReviewers.
+  //
+  // Resolved BEFORE the slashdo section below, which prunes the reviewer
+  // variants a run can't reach out of the command body (#3110).
   const codeReviewDefaults = await getCodeReviewDefaults().catch(() => null);
   const defaultReviewers = codeReviewDefaults?.reviewers;
+
+  // Render a slashdo-backed task's invocation now that the provider is known —
+  // before the light-path branch below, so both paths carry it. `hasFileTools`
+  // is the light/`api` split itself: `cli`/`tui` hosts are agentic CLIs with
+  // native file tools (so an over-budget procedure can live on disk), while an
+  // HTTP `api` provider has none and must have it pasted (#3110).
+  task = await applySlashdoInvocation(task, {
+    providerId, providerCommand, leanMode,
+    hasFileTools: LIGHT_CONTEXT_PROVIDER_TYPES.has(providerType),
+    defaultReviewers, codeReviewDefaults,
+  });
 
   // Preload slashdo's local-agent review-loop recipe once for review-loop
   // follow-up tasks; both the light/TUI path (via lightOptions) and the full
@@ -909,7 +1152,7 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
     : null;
 
   if (LIGHT_CONTEXT_PROVIDER_TYPES.has(providerType)) {
-    const lightOptions = { isTui, providerId, providerCommand, leanMode: options.leanMode === true, defaultReviewers, codeReviewDefaults, localAgentLoopBody };
+    const lightOptions = { isTui, providerId, providerCommand, leanMode, defaultReviewers, codeReviewDefaults, localAgentLoopBody };
     return options.split === true
       ? buildLightContextPromptParts(task, workspaceDir, worktreeInfo, isTruthyMetaFn, lightOptions)
       : buildLightContextPrompt(task, workspaceDir, worktreeInfo, isTruthyMetaFn, lightOptions);
@@ -945,7 +1188,7 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
   // `pending` BEFORE this flag existed (persisted across an upgrade) are still
   // recognized without a metadata migration.
   const noCodeOutput = isTruthyMetaFn(task.metadata?.noCodeOutput) || !!task.metadata?.creativeDirector;
-  const isWorktreeOnExistingBranch = worktreeInfo?.existingBranch === true;
+  const isWorktreeOnExistingBranch = isPrBranchWorktree(task, worktreeInfo);
   const worktreeSection = worktreeInfo ? `
 ## Git Worktree Context
 You are working in an **isolated git worktree** to avoid conflicts with other agents working concurrently.
@@ -960,7 +1203,7 @@ ${worktreeInfo.baseBranch ? `- **Based on**: \`${worktreeInfo.baseBranch}\` (lat
       : isWorktreeOnExistingBranch
         ? 'Commit and **push** any review-fix commits to this branch — the PR points at it, so pushed commits are how Copilot sees your fixes. Use `git pull --rebase` before pushing if needed.'
         : `Commit your changes to this branch.${willOpenPR ? ' When your task completes, the system will push this branch and open a pull request against the default branch — do NOT push or open a PR yourself.' : ' Your commits will be automatically merged back to the main development branch when your task completes.'}`} Do NOT manually switch branches or modify the worktree configuration.
-` : '';
+${buildResumeSection(task, worktreeInfo)}` : '';
 
   // Build pipeline context section if this is a pipeline stage
   const pipelineCtx = task.metadata?.pipeline;
@@ -981,10 +1224,17 @@ Use the findings from the previous stage to inform your work. If the previous st
   // section above. TUI agents own the full simplify+push+PR sequence in the
   // Completion Workflow section below, so this section is suppressed for TUI.
   const simplifyEnabled = isTruthyMetaFn(task.metadata?.simplify);
-  // `/simplify` is a Claude Code built-in slash command — only Claude providers
-  // can run it. Everyone else (API/CLI) gets the inline equivalent describing the
-  // same reuse/quality/efficiency self-review so the pass still happens.
-  const canRunSlashCommands = providerId === 'claude-code' || providerId === 'claude-code-bedrock';
+  // `/simplify` is a Claude Code built-in slash command — only a Claude session
+  // that loaded its commands can run it. Everyone else (API/CLI) gets the inline
+  // equivalent describing the same reuse/quality/efficiency self-review so the
+  // pass still happens. Same predicate as the `/do:pr` gates (#3114) — a
+  // path-configured `claude` binary qualifies; a lean `--bare` session doesn't.
+  // `assumeClaudeWhenUnknown: false` because only HTTP-API providers reach this
+  // path (tui/cli return early above): an unidentified API provider is not a
+  // latent local `claude` the way a blank CLI/TUI provider is.
+  const canRunSlashCommands = canTypeSlashCommands({
+    providerId, providerCommand, leanMode, assumeClaudeWhenUnknown: false,
+  });
   const simplifyInstruction = canRunSlashCommands
     ? 'run `/simplify` to review the changed code for reuse, quality, and efficiency'
     : SIMPLIFY_INLINE_REVIEW;
@@ -1009,6 +1259,8 @@ After completing your work and before committing, ${simplifyInstruction}. Fix an
   const taskReviewers = normalizeReviewers(task.metadata, defaultReviewers);
   const taskReviewerUsernames = resolveReviewUsernames(task.metadata?.usernames, codeReviewDefaults?.usernames);
   const taskOptionalReviewers = resolveOptionalReviewers(task.metadata?.optionalReviewers, codeReviewDefaults?.optionalReviewers);
+  const taskReviewerMaxRounds = resolveReviewerMaxRounds(task.metadata?.reviewerMaxRounds, codeReviewDefaults?.reviewerMaxRounds);
+  const taskReviewerModels = resolveReviewerModels(task.metadata?.reviewerModels, reviewerModelsFromDefaults(codeReviewDefaults));
   const taskReviewStopMode = task.metadata?.reviewStopMode || codeReviewDefaults?.stopMode || DEFAULT_REVIEW_STOP_MODE;
   const taskReviewerApplies = task.metadata?.reviewerApplies !== undefined
     ? isTruthyMetaFn(task.metadata?.reviewerApplies)
@@ -1032,12 +1284,24 @@ After completing your work and before committing, ${simplifyInstruction}. Fix an
       ? buildActionOutputCompletionSection({ isTui, sentinelPath })
       : isTui
         ? buildTuiCompletionSection({
-            willOpenPR, prCompletion, simplifyEnabled, providerId,
+            willOpenPR, prCompletion, simplifyEnabled,
+            // Unreachable today — every `tui`/`cli` provider returns early at the
+            // LIGHT_CONTEXT gate above, so `isTui` is always false on this path
+            // (same situation as buildCompletionGuidelineBullet's `isTui` arm).
+            // Kept provider-aware anyway so it can't be the ONE call site that
+            // silently promises `/do:pr` to a host that can't type it if the
+            // routing ever changes — this arm previously passed no slashdoFree at
+            // all, which is how gates like this drift (#3114).
+            slashdoFree: !canRunSlashCommands,
+            branchName: worktreeInfo?.branchName || null,
+            baseBranch: worktreeInfo?.baseBranch || null,
             sentinelPath,
             leavePrOpen: leavesPrForHuman(task),
             reviewers: taskReviewers,
             usernames: taskReviewerUsernames,
             optionalReviewers: taskOptionalReviewers,
+            reviewerMaxRounds: taskReviewerMaxRounds,
+            reviewerModels: taskReviewerModels,
             reviewStopMode: taskReviewStopMode,
             reviewerApplies: taskReviewerApplies
           })
@@ -1210,7 +1474,7 @@ ${skillSection ? `## Task-Type Skill Guidelines\n\n${skillSection}\n` : ''}${too
 ${(() => {
   const bullet = buildCompletionGuidelineBullet({
     isReadOnly: isTruthyMetaFn(task.metadata?.readOnly),
-    isTui, tuiCompletionCommand, slashdoFree: isTui && isOpencodeCommand(providerCommand),
+    isTui, tuiCompletionCommand, slashdoFree: isTui && !canRunSlashCommands,
     worktreeInfo, willOpenPR, prCompletion, discardWorktree, noCodeOutput,
     leavePrOpen: leavesPrForHuman(task),
     isPrFollowUp: isReviewLoopFollowUp,
@@ -1298,7 +1562,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   // tasks (queued before this flag existed) are recognized without a migration.
   const noCodeOutput = isTruthyMetaFn(task.metadata?.noCodeOutput) || !!task.metadata?.creativeDirector;
   const isReviewLoopFollowUp = isTruthyMetaFn(task.metadata?.reviewLoopFollowUp);
-  const isWorktreeOnExistingBranch = worktreeInfo?.existingBranch === true;
+  const isWorktreeOnExistingBranch = isPrBranchWorktree(task, worktreeInfo);
   // Ordered reviewer list + flags for the Review Loop (task metadata wins; else
   // the install's configured Code Review Defaults threaded from buildAgentPrompt;
   // else `[copilot]`). Flows as `/do:pr --review-with a,b,c [--review-stop-on-*]
@@ -1308,23 +1572,31 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   const lightReviewers = normalizeReviewers(task.metadata, defaultReviewers);
   const lightReviewerUsernames = resolveReviewUsernames(task.metadata?.usernames, codeReviewDefaults?.usernames);
   const lightOptionalReviewers = resolveOptionalReviewers(task.metadata?.optionalReviewers, codeReviewDefaults?.optionalReviewers);
+  const lightReviewerMaxRounds = resolveReviewerMaxRounds(task.metadata?.reviewerMaxRounds, codeReviewDefaults?.reviewerMaxRounds);
+  const lightReviewerModels = resolveReviewerModels(task.metadata?.reviewerModels, reviewerModelsFromDefaults(codeReviewDefaults));
   const lightReviewStopMode = task.metadata?.reviewStopMode || codeReviewDefaults?.stopMode || DEFAULT_REVIEW_STOP_MODE;
   const lightReviewerApplies = task.metadata?.reviewerApplies !== undefined
     ? isTruthyMetaFn(task.metadata?.reviewerApplies)
     : (codeReviewDefaults?.reviewerApplies === true);
-  // Claude Code CLI providers can drive `/simplify` + `/do:pr` themselves
-  // (the slashdo submodule mounts those as project-level slash commands).
-  // Other CLI providers (codex, antigravity) can't — they get the legacy
-  // commit-only block where PortOS handles push+PR on exit.
-  const hasSlashdo = !isTui && (providerId === 'claude-code' || providerId === 'claude-code-bedrock');
-  // A TUI that does NOT load Claude Code slash commands can't run `/do:pr` /
-  // `/do:push`, so its completion workflow uses plain git/gh instead. Two ways
-  // to land here: an OpenCode TUI (keyed on the launch command, not the id, so
-  // a path-configured or renamed OpenCode provider is still recognised —
-  // mirrors the arg-builder gate), or a lean-mode Claude session (`--bare`
-  // skips project command discovery, and the small local models lean mode
-  // targets fumble multi-step slashdo flows anyway).
-  const tuiSlashdoFree = isTui && (isOpencodeCommand(providerCommand) || leanMode);
+  // Can this session TYPE a Claude Code slash command (`/do:pr`, `/do:push`,
+  // `/simplify`)? One predicate, both prompt paths (#3114): `canTypeSlashCommands`
+  // derives from `resolveSlashdoStyle` with the spawners' blank-command posture,
+  // replacing three inline provider-id allowlists that had already drifted apart
+  // (a codex TUI used to be told to run `/do:pr`, which it cannot; a
+  // path-configured `claude` binary under a custom provider id used to be denied
+  // the slashdo workflow).
+  const canTypeSlash = canTypeSlashCommands({ providerId, providerCommand, leanMode });
+  // CLI (non-TUI): a Claude Code session drives `/simplify` + `/do:pr` itself
+  // (the slashdo submodule mounts those as project-level slash commands). Other
+  // CLI providers (codex, antigravity, grok, opencode) get the legacy commit-only
+  // block where PortOS handles push+PR on exit.
+  const hasSlashdo = !isTui && canTypeSlash;
+  // TUI: a session that does NOT load Claude Code slash commands can't run
+  // `/do:pr` / `/do:push`, so its completion workflow uses plain git/gh instead
+  // — an OpenCode TUI, a codex/antigravity/grok TUI, or a lean-mode Claude
+  // session (`--bare` skips project command discovery, and the small local models
+  // lean mode targets fumble multi-step slashdo flows anyway).
+  const tuiSlashdoFree = isTui && !canTypeSlash;
 
   const taskSections = [];
   const contractSections = [];
@@ -1367,7 +1639,10 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
       worktreeInfo.baseBranch ? `- **Based on**: \`${worktreeInfo.baseBranch}\`` : null,
       '',
       worktreeCommitGuidance({ isTui, hasSlashdo, isWorktreeOnExistingBranch, willOpenPR, discardWorktree }),
-      'Do NOT manually switch branches or modify the worktree configuration.'
+      'Do NOT manually switch branches or modify the worktree configuration.',
+      // Resuming a previous failed agent's branch: establish what's already done
+      // before writing code (see buildResumeSection). '' when not a resume.
+      buildResumeSection(task, worktreeInfo) || null
     ].filter(Boolean).join('\n'));
   }
 
@@ -1415,15 +1690,15 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
     sections.push(buildReviewLoopFollowUpSection(task.metadata || {}, { verbose: false, localAgentLoopBody }));
   } else if (isTui) {
     sections.push(buildTuiCompletionSection({
-      willOpenPR, prCompletion, simplifyEnabled, providerId, slashdoFree: tuiSlashdoFree,
+      willOpenPR, prCompletion, simplifyEnabled, slashdoFree: tuiSlashdoFree,
       sentinelPath: `${worktreeInfo?.worktreePath || workspaceDir}/.agent-done`,
       branchName: worktreeInfo?.branchName || null,
       baseBranch: worktreeInfo?.baseBranch || null,
       leavePrOpen: leavesPrForHuman(task),
-      reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies
+      reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewerMaxRounds: lightReviewerMaxRounds, reviewerModels: lightReviewerModels, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies
     }));
   } else {
-    sections.push(buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion, hasSlashdo, simplifyEnabled, leavePrOpen: leavesPrForHuman(task), reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies }));
+    sections.push(buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion, hasSlashdo, simplifyEnabled, leavePrOpen: leavesPrForHuman(task), reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewerMaxRounds: lightReviewerMaxRounds, reviewerModels: lightReviewerModels, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies }));
   }
 
   return { taskSections, contractSections };
@@ -1509,11 +1784,15 @@ function buildPostPRMergeSteps(startStep, { prCompletion = PR_COMPLETIONS.REVIEW
  * TUI completion-workflow block. The TUI owns its own commit → push → PR
  * pipeline via slashdo commands and signals "done" with a sentinel file.
  *
- * When `slashdoFree` is set (an OpenCode TUI, which does not load Claude Code
- * slash commands), the agent can't run `/do:pr` / `/do:push`, so it delegates to
- * the plain-git/`gh` variant below — same sentinel handshake, no slashdo.
+ * When `slashdoFree` is set — any TUI that does NOT load Claude Code slash
+ * commands: OpenCode, codex/antigravity/grok/kimi, or a lean `--bare` Claude
+ * session — the agent can't run `/do:pr` / `/do:push`, so it delegates to the
+ * plain-git/`gh` variant below (same sentinel handshake, no slashdo). The caller
+ * resolves that flag once via `canTypeSlashCommands` (#3114); past the early
+ * return this IS a Claude session, so `/simplify` and `/do:pr` are both safe to
+ * emit without a second provider check.
  */
-function buildTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.MERGE_ON_GREEN, simplifyEnabled, sentinelPath, providerId = null, slashdoFree = false, branchName = null, baseBranch = null, leavePrOpen = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false }) {
+function buildTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.MERGE_ON_GREEN, simplifyEnabled, sentinelPath, slashdoFree = false, branchName = null, baseBranch = null, leavePrOpen = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewerModels = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false }) {
   const policyLeavesOpen = prCompletion === PR_COMPLETIONS.LEAVE_OPEN;
   const runsReviewLoop = prCompletion === PR_COMPLETIONS.REVIEW_THEN_MERGE;
   if (slashdoFree) {
@@ -1528,7 +1807,7 @@ function buildTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.M
   // when the task's Review Loop control is off so that default cannot start a
   // Copilot (or other external) review unexpectedly.
   const reviewArgs = willOpenPR
-    ? (runsReviewLoop ? buildReviewWithArgs(reviewers, reviewStopMode, reviewerApplies, reviewUsernames, optionalReviewers) : '--review-with none')
+    ? (runsReviewLoop ? buildReviewWithArgs(reviewers, reviewStopMode, reviewerApplies, reviewUsernames, optionalReviewers, reviewerMaxRounds, reviewerModels) : '--review-with none')
     : '';
   // A saved slashdo `merge: true` default would otherwise merge a PR that must
   // stay open — dropping our own merge steps isn't enough, `/do:pr` has to be
@@ -1542,13 +1821,9 @@ function buildTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.M
         ? ' — `/do:pr` runs the Copilot review loop after the PR opens.'
         : ` — \`/do:pr\` runs the review loop for ${reviewerListLabel} in order after the PR opens.`)
     : (willOpenPR ? ' — external review is disabled for this task.' : '');
-  // `/simplify` is a Claude Code TUI built-in. Non-Claude TUI providers
-  // (codex-tui, antigravity-tui) can't run it, so give them the inline equivalent.
-  // Default (no providerId) stays Claude-shaped for backward compatibility.
-  const canRunSimplifyCommand = !providerId || /claude/i.test(providerId);
-  const simplifyStep = simplifyEnabled
-    ? (canRunSimplifyCommand ? '1. `/simplify`' : `1. Before committing, ${SIMPLIFY_INLINE_REVIEW} and fix any findings.`)
-    : '1. (simplify disabled — skip)';
+  // Reached only for a Claude TUI (a non-Claude one took the slashdoFree branch
+  // above), so `/simplify` — a Claude Code built-in — is invokable here.
+  const simplifyStep = simplifyEnabled ? '1. `/simplify`' : '1. (simplify disabled — skip)';
   const sentinelTail = willOpenPR ? '   ## PR\n   <PR URL>' : '   ## Branch\n   <branch name>';
   // A PR gets merge steps — gated on the review verdict when a loop runs, on CI
   // alone when it doesn't (nothing else merges a no-review-loop PR). The one
@@ -1687,7 +1962,7 @@ function buildManualTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLET
  * CLI providers fall through to the legacy commit-only block where PortOS
  * handles push+PR on exit.
  */
-function buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion = PR_COMPLETIONS.MERGE_ON_GREEN, hasSlashdo = false, simplifyEnabled = false, leavePrOpen = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false }) {
+function buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion = PR_COMPLETIONS.MERGE_ON_GREEN, hasSlashdo = false, simplifyEnabled = false, leavePrOpen = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewerModels = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false }) {
   const policyLeavesOpen = prCompletion === PR_COMPLETIONS.LEAVE_OPEN;
   const runsReviewLoop = prCompletion === PR_COMPLETIONS.REVIEW_THEN_MERGE;
   const reviewUsernames = normalizeReviewUsernames(usernames);
@@ -1698,7 +1973,7 @@ function buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion = PR
       lines.push(`${step++}. \`/simplify\` — review the changed code for reuse, quality, and efficiency, and fix any findings.`);
     }
     const reviewArgs = runsReviewLoop
-      ? buildReviewWithArgs(reviewers, reviewStopMode, reviewerApplies, reviewUsernames, optionalReviewers)
+      ? buildReviewWithArgs(reviewers, reviewStopMode, reviewerApplies, reviewUsernames, optionalReviewers, reviewerMaxRounds, reviewerModels)
       : '--review-with none';
     // `--no-merge` overrides a saved slashdo `merge: true` default, which would
     // otherwise merge a PR this task must leave open (see lib/prDisposition.js).

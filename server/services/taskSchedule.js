@@ -212,7 +212,10 @@ export const SELF_IMPROVEMENT_TASK_TYPES = [
   // stays in app.layeredIntelligence. Has NO DEFAULT_TASK_PROMPTS entry — the
   // buildTaskInput hook renders the prompt. See taskTypeHooks.js +
   // autonomousJobs/layeredIntelligenceHooks.js.
-  'layered-intelligence'
+  'layered-intelligence',
+  // An opt-in perpetual task that runs a zero-token quota probe before it
+  // ever dispatches an agent. The hook owns its provider-specific prompt.
+  'quota-burn'
 ];
 
 // Shared config for code-reviewer-a and code-reviewer-b (two instances for independent provider/model configuration)
@@ -232,13 +235,15 @@ export const DEFAULT_TASK_INTERVALS = {
   // the generator runs the deterministic reconcile every dispatch, and dispatches
   // the coordinator agent only while actionable in-flight branches remain — then
   // PARKS on the daily recheckCron. The action toggles (cleanupMerged / openPr /
-  // resolveConflicts / autoMerge) are per-app taskMetadata booleans (each ON
-  // unless explicitly false). useWorktree/openPR are LOCKED off (MANAGED_AGENT_OPTIONS):
+  // resolveConflicts / autoMerge / finishAbandoned) are per-app taskMetadata
+  // booleans (each ON unless explicitly false); `finishAbandoned` covers the work
+  // a dead agent left UNCOMMITTED in its worktree — commit + ship it, or report it
+  // as unfinished. useWorktree/openPR are LOCKED off (MANAGED_AGENT_OPTIONS):
   // the coordinator runs in the app's live checkout so it can see + operate on the
   // sibling worktrees; a CoS-managed worktree would hide the branches and could
   // trigger cleanupAgentWorktree's auto-merge. Off by default — enabling it is the
   // user's explicit consent to let it drive PRs on a schedule.
-  'branch-reconcile':    { type: INTERVAL_TYPES.PERPETUAL, enabled: false, providerId: null, model: null, prompt: null, recheckCron: '0 3 * * *', taskMetadata: { useWorktree: false, openPR: false, cleanupMerged: true, openPr: true, resolveConflicts: true, autoMerge: true } },
+  'branch-reconcile':    { type: INTERVAL_TYPES.PERPETUAL, enabled: false, providerId: null, model: null, prompt: null, recheckCron: '0 3 * * *', taskMetadata: { useWorktree: false, openPR: false, cleanupMerged: true, openPr: true, resolveConflicts: true, autoMerge: true, finishAbandoned: true } },
   // issue-reconcile heals ZOMBIE issues: open + `in-progress` (claimed) yet with
   // their PR already MERGED and no live claim anywhere — a partial ship left the
   // claim marker on, so the queue (which skips `in-progress`) never re-picks the
@@ -345,7 +350,8 @@ export const DEFAULT_TASK_INTERVALS = {
   // agent runs in a worktree that is discarded without a commit/merge/PR
   // (discardWorktree), so it can't land code — its `.agent-done` payload is the
   // only sanctioned output (consumed by the processTaskOutput hook).
-  'layered-intelligence': { type: INTERVAL_TYPES.DAILY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: true, openPR: false, discardWorktree: true } }
+  'layered-intelligence': { type: INTERVAL_TYPES.DAILY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: true, openPR: false, discardWorktree: true } },
+  'quota-burn': { type: INTERVAL_TYPES.PERPETUAL, enabled: false, providerId: null, model: null, prompt: null, recheckCron: '0 */12 * * *', taskMetadata: { useWorktree: true, openPR: true, simplify: true, families: {} } }
 };
 
 // Agent-options that a task manages internally — UI locks the toggle, and
@@ -1865,7 +1871,8 @@ export const TASK_TYPE_DESCRIPTIONS = {
   'jira-status-report': 'Generate JIRA weekly status report',
   'reference-watch': 'Watch reference repos and append PLAN.md items for new upstream work',
   'refresh-local-llm-catalog': "Refresh PortOS's bundled suggested local-model catalog + editorial ranking (PortOS repo only)",
-  'layered-intelligence': "Read this app's goals + telemetry, ask a reasoning model for one improvement, and file one deduplicated tracker issue — no code, no agent"
+  'layered-intelligence': "Read this app's goals + telemetry, ask a reasoning model for one improvement, and file one deduplicated tracker issue — no code, no agent",
+  'quota-burn': 'When enabled, spend configured provider subscription quota only near its reset window using that provider family\'s prompt'
 };
 
 function getTaskTypeDescription(taskType) {

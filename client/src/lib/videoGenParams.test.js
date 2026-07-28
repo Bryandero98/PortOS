@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   videoModelMemoryGb, computeFflfSafeFrames, isModelAllowedForMode,
   VIDEO_EDGE_BOUNDS, FRAME_OPTIONS, FPS_OPTIONS,
+  IC_LORA_MODES, IC_LORA_MODE_VALUES, isIcLoraMode, icLoraSpecForMode,
+  icResolutionIssue,
 } from './videoGenParams.js';
 
 describe('videoModelMemoryGb', () => {
@@ -63,5 +65,68 @@ describe('constants', () => {
     expect(FRAME_OPTIONS[0]).toBe(25);
     expect(FRAME_OPTIONS.every((f) => (f - 1) % 8 === 0)).toBe(true);
     expect(FPS_OPTIONS).toEqual([16, 24, 30]);
+  });
+});
+
+describe('IC-LoRA remix modes (#3100)', () => {
+  it('mirrors the server registry shape', () => {
+    expect(IC_LORA_MODE_VALUES).toEqual(['ic-control', 'ic-colorize', 'ic-ingredients']);
+    for (const spec of IC_LORA_MODES) {
+      // The `ic-` prefix drives the download-id router in useModelDownloadStatus.
+      expect(spec.mode.startsWith('ic-')).toBe(true);
+      expect(spec.maxReferences).toBeGreaterThanOrEqual(spec.minReferences);
+      expect(spec.referenceDownscaleFactor).toBeGreaterThanOrEqual(1);
+      // The panel renders these two directly — an empty one ships blank copy.
+      expect(spec.uploadLabel).toBeTruthy();
+      expect(spec.description).toBeTruthy();
+      // Drives which input surface the panel renders (single clip vs the 2-8
+      // gallery row list), so an unrecognized value would render nothing.
+      expect(['video', 'image']).toContain(spec.referenceKind);
+    }
+  });
+
+  it('mirrors the Ingredients bounds + image kind (#3112)', () => {
+    // The 2-8 count is the weight's contract, mirrored here so the form blocks
+    // before a POST the route would reject; the parity test in
+    // server/lib/icLoraWeights.parity.test.js is what keeps the two in step.
+    const ing = icLoraSpecForMode('ic-ingredients');
+    expect(ing.minReferences).toBe(2);
+    expect(ing.maxReferences).toBe(8);
+    expect(ing.referenceKind).toBe('image');
+    // Factor 1 → no divisibility rule at all, so an odd resolution is legal.
+    expect(icResolutionIssue(ing, 705, 449)).toBeNull();
+  });
+  it('identifies IC modes', () => {
+    expect(isIcLoraMode('ic-control')).toBe(true);
+    expect(isIcLoraMode('ic-colorize')).toBe(true);
+    expect(isIcLoraMode('text')).toBe(false);
+    expect(isIcLoraMode(undefined)).toBe(false);
+  });
+  it('resolves a spec by mode, null otherwise', () => {
+    expect(icLoraSpecForMode('ic-control')?.label).toBe('Control');
+    expect(icLoraSpecForMode('ic-colorize')?.label).toBe('Colorize');
+    expect(icLoraSpecForMode('extend')).toBeNull();
+  });
+  it('requires the ltx2 runtime for IC modes', () => {
+    for (const mode of IC_LORA_MODE_VALUES) {
+      expect(isModelAllowedForMode({ runtime: 'ltx2' }, mode)).toBe(true);
+      expect(isModelAllowedForMode({ runtime: 'mlx_video' }, mode)).toBe(false);
+      expect(isModelAllowedForMode({ runtime: 'wan22' }, mode)).toBe(false);
+    }
+  });
+  it('keeps each mode on its own resolution rule (Control 2, Colorize 1)', () => {
+    // Mirrors server/lib/icLoraWeights.js, where each factor is READ from that
+    // weight's safetensors metadata — a drift here would let the form accept a
+    // resolution the server rejects with IC_LORA_RESOLUTION_NOT_DIVISIBLE, or
+    // reject one the server would happily render.
+    expect(icLoraSpecForMode('ic-control').referenceDownscaleFactor).toBe(2);
+    expect(icLoraSpecForMode('ic-colorize').referenceDownscaleFactor).toBe(1);
+  });
+  it('gives each mode a distinct upload label so the panel reads correctly', () => {
+    // The panel is fully spec-driven; a shared label would tell a Colorize user
+    // to upload a depth/pose clip.
+    const labels = IC_LORA_MODES.map((m) => m.uploadLabel);
+    expect(new Set(labels).size).toBe(labels.length);
+    expect(icLoraSpecForMode('ic-colorize').uploadLabel).toMatch(/B&W/);
   });
 });

@@ -6,14 +6,16 @@ import {
 import toast from '../ui/Toast';
 import {
   generateSpriteReference, lockSpriteReference,
-  unlockSpriteReferenceAnchor, unlockSpriteTurnaround, updateSpriteRecord,
+  unlockSpriteReferenceAnchor, unlockSpriteMainReference, unlockSpriteTurnaround, updateSpriteRecord,
 } from '../../services/apiSprites.js';
 import { useAsyncAction } from '../../hooks/useAsyncAction.js';
 import SpritePreview from './SpritePreview.jsx';
 import GalleryImagePicker from '../imageGen/GalleryImagePicker.jsx';
 import SpriteReferencePicker from './SpriteReferencePicker.jsx';
 import ForkSpriteModal from './ForkSpriteModal.jsx';
-import CorrectionNote, { correctionPromptPayload } from './CorrectionNote.jsx';
+import CorrectionNote, {
+  CorrectionNoteToggle, correctionPromptPayload, anchorCorrectionKey, MAIN_CORRECTION_KEY,
+} from './CorrectionNote.jsx';
 import FilePickerButton from '../ui/FilePickerButton';
 import { IMAGE_ACCEPT } from '../../utils/fileUpload';
 
@@ -257,9 +259,13 @@ export default function ReferenceWorkflow({ record, reference, renders, correcti
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [spritePickerOpen, setSpritePickerOpen] = useState(false);
   const [forkOpen, setForkOpen] = useState(false);
+  const [mainUnlockConfirming, setMainUnlockConfirming] = useState(false);
   const [turnaroundUnlockConfirming, setTurnaroundUnlockConfirming] = useState(false);
   const [turnaroundCorrections, setTurnaroundCorrections] = useState({});
-  useEffect(() => { setTurnaroundUnlockConfirming(false); }, [recordId]);
+  useEffect(() => {
+    setMainUnlockConfirming(false);
+    setTurnaroundUnlockConfirming(false);
+  }, [recordId]);
   useEffect(() => { setTurnaroundCorrections({}); }, [recordId]);
 
   // Revoke the previous upload's object URL whenever the source changes or the
@@ -292,14 +298,18 @@ export default function ReferenceWorkflow({ record, reference, renders, correcti
         target,
         ...(mode ? { mode } : {}),
         // The sheet owns the design inputs; the main derives from it with no
-        // inputs of its own; anchors carry only their correction note.
+        // design inputs of its own; anchors carry only their correction note.
+        // The main and every anchor DO carry a correction (#3134/#2964) — under
+        // their own key in the shared map, so a main note can't ride an anchor.
         ...(target === 'turnaround' ? {
           designPrompt,
           ...(refSource?.type === 'upload' ? { referenceImageFile: refSource.file } : {}),
           ...(refSource?.type === 'gallery' ? { initImageGalleryFile: refSource.filename } : {}),
           ...(refSource?.type === 'sprite' ? { initImageSpriteId: refSource.id } : {}),
           ...(refSource ? { initImageStrength: strength } : {}),
-        } : target === 'main' ? {} : correctionPromptPayload(corrections, target)),
+        } : target === 'main'
+          ? correctionPromptPayload(corrections, MAIN_CORRECTION_KEY)
+          : correctionPromptPayload(corrections, anchorCorrectionKey(target))),
       }, { silent: true });
       resolveSubmit(target, jobId);
       if (target === 'turnaround') clearSource();
@@ -363,6 +373,20 @@ export default function ReferenceWorkflow({ record, reference, renders, correcti
       : `${direction} anchor unlocked`);
     onChanged();
   }, { errorMessage: 'Failed to unlock anchor' });
+
+  const [unlockMain, mainUnlocking] = useAsyncAction(async () => {
+    const result = await unlockSpriteMainReference(recordId, { silent: true });
+    // Read the per-track MAP, not the legacy `scannerInvalidated` alias (#3152):
+    // every non-walk track is user-defined now, so a user who deleted `scanner` and
+    // added their own anchor-seeded track would otherwise be told nothing was
+    // reopened while their approvals had in fact been dropped.
+    const tracksReopened = Object.values(result.tracksInvalidated || {}).some(Boolean);
+    toast.success(result.walkInvalidated || tracksReopened
+      ? 'Main reference unlocked; its south animations were reopened'
+      : 'Main reference unlocked; ready to regenerate from the turnaround');
+    setMainUnlockConfirming(false);
+    onChanged();
+  }, { errorMessage: 'Failed to unlock main reference' });
 
   const [unlockTurnaround, turnaroundUnlocking] = useAsyncAction(async () => {
     const result = await unlockSpriteTurnaround(recordId, { silent: true });
@@ -711,8 +735,43 @@ export default function ReferenceWorkflow({ record, reference, renders, correcti
                   <Lock className="h-3.5 w-3.5" /> Frozen · turnaround-derived
                 </p>
                 <p className="text-[11px] leading-relaxed text-gray-500">
-                  This front-facing reference seeds thumbnails and the walk-south identity. Fork for a separate character, or reopen the turnaround to rebuild this reference chain.
+                  This front-facing reference seeds thumbnails and the walk-south identity. Reopen it to derive a better front view from this turnaround, or reopen the turnaround to rebuild the full reference chain.
                 </p>
+                {turnaroundLocked && (mainUnlockConfirming ? (
+                  <div className="rounded border border-port-warning/40 bg-port-warning/10 p-2 text-[11px]">
+                    <p className="text-port-warning">
+                      Reopen the main reference and its south walk/scanner? The turnaround and other directions stay locked; existing files remain in history.
+                    </p>
+                    <div className="mt-2 flex gap-2">
+                      <button
+                        type="button"
+                        aria-label="Confirm unlock main reference"
+                        onClick={unlockMain}
+                        disabled={mainUnlocking}
+                        className="flex-1 rounded bg-port-warning px-2 py-1.5 font-medium text-black disabled:opacity-50"
+                      >
+                        {mainUnlocking ? 'Unlocking…' : 'Unlock for regeneration'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMainUnlockConfirming(false)}
+                        disabled={mainUnlocking}
+                        className="rounded px-2 py-1.5 text-gray-400 hover:text-white disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setMainUnlockConfirming(true)}
+                    disabled={mainUnlocking}
+                    className="flex min-h-9 w-full items-center justify-center gap-1.5 rounded border border-port-border bg-port-card px-2.5 py-1.5 text-xs text-gray-300 hover:border-port-warning hover:text-port-warning disabled:opacity-50"
+                  >
+                    <Unlock className="h-3.5 w-3.5" /> Unlock main reference
+                  </button>
+                ))}
                 <button
                   type="button"
                   onClick={() => setForkOpen(true)}
@@ -739,6 +798,16 @@ export default function ReferenceWorkflow({ record, reference, renders, correcti
                   {pendingJobs.main ? 'Rendering…' : mainCandidates.length ? 'Regenerate' : 'Generate candidate'}
                 </button>
               </div>
+              {/* The main has no design input of its own (it derives from the
+                  sheet), but it CAN take a correction (#3134) — otherwise a bad
+                  front view could only be re-rolled blind. */}
+              <CorrectionNoteToggle
+                noteKey={MAIN_CORRECTION_KEY}
+                label="main reference"
+                corrections={corrections}
+                onChange={onCorrectionChange}
+                placeholder="Correction (optional), e.g. the cloak hem is cut off"
+              />
               {mainCandidates.length > 0 && (
                 <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,11rem),1fr))] gap-3">
                   {mainCandidates.map((candidate) => (

@@ -107,6 +107,74 @@ describe('SongBookImport', () => {
     await waitFor(() => expect(title.value).toBe('Paste Song'));
   });
 
+  describe('drum charts (#3115)', () => {
+    // Invented groove (privacy convention).
+    const DRUM_CHART = 'time: 4/4\ntempo: 96\nsubdivision: 2\n\nHH: x x x x x x x x\nS:  - - - - o - - -\nK:  o - - - - - o -';
+
+    it('auto-detects a pasted drum chart and previews it on the kit grid', async () => {
+      renderPage();
+      fireEvent.change(screen.getByLabelText('Pasted tab content'), { target: { value: DRUM_CHART } });
+      // isDrumNotation runs BEFORE detectFormat — a grid row would otherwise
+      // classify as plain text.
+      expect(await screen.findByText('drum')).toBeTruthy();
+      expect(screen.getByLabelText('Drum bar 1')).toBeTruthy();
+      expect(screen.getAllByText('Hi-Hat').length).toBeGreaterThan(0);
+    });
+
+    it('saves the drum format with the chart text', async () => {
+      renderPage();
+      fireEvent.change(screen.getByLabelText('Pasted tab content'), { target: { value: DRUM_CHART } });
+      fireEvent.change(screen.getByLabelText('Instrument'), { target: { value: 'drums' } });
+      fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Example Groove' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save song' }));
+      await waitFor(() => expect(api.createSong).toHaveBeenCalled());
+      const [body] = api.createSong.mock.calls[0];
+      expect(body.instrument).toBe('drums');
+      expect(body.content.format).toBe('drum');
+      expect(body.content.text).toContain('HH: x x x x x x x x');
+    });
+
+    it('choosing the Drums instrument defaults the format to drum', async () => {
+      renderPage();
+      // Content the drum sniff would NOT recognize — the instrument decides.
+      fireEvent.change(screen.getByLabelText('Pasted tab content'), { target: { value: 'K: o\nnot yet a grid' } });
+      fireEvent.change(screen.getByLabelText('Instrument'), { target: { value: 'drums' } });
+      expect(await screen.findByText('drum')).toBeTruthy();
+    });
+
+    it('a recognized grid and the Drums instrument both outrank the URL extractor\'s format', async () => {
+      // The URL extractor returns generic text with no drum awareness, so its
+      // tab/plain guess must not override an unmistakable chart — nor the user
+      // explicitly saying "this is a kit chart".
+      api.importSongFromUrl.mockResolvedValue({
+        draft: { title: 'Fetched Groove', artist: '', content: { format: 'tab', text: DRUM_CHART }, sourceUrl: 'https://example.com/g' },
+      });
+      renderPage();
+      fireEvent.click(screen.getByRole('tab', { name: 'From URL' }));
+      fireEvent.change(screen.getByLabelText('Tab / chord-sheet URL'), { target: { value: 'https://example.com/g' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Fetch' }));
+      await waitFor(() => expect(screen.getByLabelText('Drum bar 1')).toBeTruthy());
+
+      // And for content the sniff can't read, the instrument still wins.
+      api.importSongFromUrl.mockResolvedValue({
+        draft: { title: 'Ambiguous', artist: '', content: { format: 'tab', text: 'K: o\nnot yet a grid' }, sourceUrl: 'https://example.com/a' },
+      });
+      fireEvent.change(screen.getByLabelText('Tab / chord-sheet URL'), { target: { value: 'https://example.com/a' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Fetch' }));
+      await waitFor(() => expect(screen.getByText('tab')).toBeTruthy());
+      fireEvent.change(screen.getByLabelText('Instrument'), { target: { value: 'drums' } });
+      await waitFor(() => expect(screen.getByText('drum')).toBeTruthy());
+    });
+
+    it('leaves a chord sheet on its detected format with the tab preview', async () => {
+      renderPage();
+      fireEvent.change(screen.getByLabelText('Pasted tab content'), { target: { value: '[Verse]\nC  G  Am  F\nInvented lyric line' } });
+      expect(await screen.findByText('tab')).toBeTruthy();
+      expect(screen.queryByLabelText(/^Drum bar/)).toBeNull();
+      expect(screen.getByText('Verse')).toBeTruthy();
+    });
+  });
+
   it('sends an in-range pasted capo through unchanged', async () => {
     renderPage();
     fireEvent.change(screen.getByLabelText('Pasted tab content'), {

@@ -6,6 +6,7 @@ vi.mock('../../services/apiSprites.js', () => ({
   generateSpriteReference: vi.fn(() => Promise.resolve({ jobId: 'job-1' })),
   lockSpriteReference: vi.fn(() => Promise.resolve({})),
   unlockSpriteReferenceAnchor: vi.fn(() => Promise.resolve({ walkInvalidated: true })),
+  unlockSpriteMainReference: vi.fn(() => Promise.resolve({ walkInvalidated: true })),
   unlockSpriteTurnaround: vi.fn(() => Promise.resolve({
     walkInvalidatedDirections: ['south', 'east'],
   })),
@@ -28,7 +29,7 @@ vi.mock('./SpritePreview.jsx', () => ({
 import ReferenceWorkflow from './ReferenceWorkflow.jsx';
 import {
   generateSpriteReference,
-  unlockSpriteReferenceAnchor, unlockSpriteTurnaround,
+  unlockSpriteReferenceAnchor, unlockSpriteMainReference, unlockSpriteTurnaround,
 } from '../../services/apiSprites.js';
 
 const DIRECTIONS = ['south', 'south-east', 'east', 'north-east', 'north', 'north-west', 'west', 'south-west'];
@@ -146,6 +147,23 @@ describe('ReferenceWorkflow workspace', () => {
     );
   });
 
+  it('reopens the main while retaining the locked turnaround', async () => {
+    const user = userEvent.setup();
+    unlockSpriteMainReference.mockClear();
+    renderWorkflow({
+      turnaround: {
+        locked: true,
+        path: 'reference/example-pioneer-turnaround-v1.png',
+      },
+    });
+
+    const main = screen.getByRole('region', { name: 'Main reference' });
+    await user.click(within(main).getByRole('button', { name: 'Unlock main reference' }));
+    expect(within(main).getByText(/Reopen the main reference and its south walk\/scanner/)).toBeInTheDocument();
+    await user.click(within(main).getByRole('button', { name: 'Confirm unlock main reference' }));
+    expect(unlockSpriteMainReference).toHaveBeenCalledWith('example-pioneer', { silent: true });
+  });
+
   it('re-processes one turnaround attempt with its own correction note', async () => {
     const user = userEvent.setup();
     generateSpriteReference.mockClear();
@@ -160,5 +178,67 @@ describe('ReferenceWorkflow workspace', () => {
       initImageCandidate: 'reference/candidates/example-pioneer-turnaround-candidate-01.png',
       correctionPrompt: 'add the missing sleeve pocket',
     }, { silent: true });
+  });
+});
+
+// The main derives from the locked sheet with no design input of its own, so
+// before #3134 it could only be re-rolled blind. It now takes the same additive
+// correction the anchors do, under its OWN key in the shared page-owned map.
+describe('main-reference correction note (#3134)', () => {
+  const renderUnlockedMain = (props = {}) => render(
+    <ReferenceWorkflow
+      record={{ id: 'example-pioneer', name: 'Example Pioneer', chromaKey: '#FF00FF' }}
+      reference={{
+        manifest: {
+          status: 'in-progress',
+          turnaround: { locked: true, path: 'reference/example-pioneer-turnaround-v1.png' },
+          mainReference: { locked: false },
+          anchors: [],
+        },
+        candidates: [],
+      }}
+      renders={renders}
+      corrections={{}}
+      onCorrectionChange={vi.fn()}
+      backends={[{ id: 'codex', label: 'Codex' }]}
+      mode="codex"
+      onModeChange={vi.fn()}
+      onChanged={vi.fn()}
+      onForked={vi.fn()}
+      {...props}
+    />,
+  );
+
+  it('sends the main note as correctionPrompt on the main re-roll', async () => {
+    const user = userEvent.setup();
+    generateSpriteReference.mockClear();
+    renderUnlockedMain({ corrections: { main: '  the cloak hem is cut off  ' } });
+    const main = screen.getByRole('region', { name: 'Main reference' });
+    await user.click(within(main).getByRole('button', { name: 'Generate candidate' }));
+    expect(generateSpriteReference).toHaveBeenCalledWith('example-pioneer', {
+      target: 'main',
+      mode: 'codex',
+      correctionPrompt: 'the cloak hem is cut off',
+    }, { silent: true });
+  });
+
+  it('omits correctionPrompt entirely for a blank note (blind regenerate unchanged)', async () => {
+    const user = userEvent.setup();
+    generateSpriteReference.mockClear();
+    renderUnlockedMain({ corrections: { main: '   ' } });
+    const main = screen.getByRole('region', { name: 'Main reference' });
+    await user.click(within(main).getByRole('button', { name: 'Generate candidate' }));
+    expect(generateSpriteReference).toHaveBeenCalledWith(
+      'example-pioneer', { target: 'main', mode: 'codex' }, { silent: true },
+    );
+  });
+
+  it('does not let an anchor note ride the main re-roll', async () => {
+    const user = userEvent.setup();
+    generateSpriteReference.mockClear();
+    renderUnlockedMain({ corrections: { east: 'no pocket on the right sleeve' } });
+    const main = screen.getByRole('region', { name: 'Main reference' });
+    await user.click(within(main).getByRole('button', { name: 'Generate candidate' }));
+    expect(generateSpriteReference.mock.calls[0][1]).not.toHaveProperty('correctionPrompt');
   });
 });

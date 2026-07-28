@@ -53,12 +53,16 @@ import {
   resolveJiraBlockKey,
   applyJiraBlockingLabel,
   computeOutcomesReport,
+  computeDeliveryMetrics,
+  formatDeliveryThrottleGuidance,
+  renderCosMetricsSource,
   computeSelfEvalSummary,
   computeProposalExecutionAwareness,
   computeCrossReferenceAnalysis,
   computeHandoffRouting,
   computeHardExclusionGate,
   computeHardExclusionNotice,
+  computeLiExecutionHealth,
   readLiTaskMetrics,
   hasPlannedWorkListing
 } from '../layeredIntelligence.js'
@@ -360,6 +364,29 @@ export async function buildTaskInput({ app } = {}) {
     }
   }
 
+  // Delivery block (#3085): fold the approval → delivery numbers into the SAME
+  // cosMetrics document the per-task-type run rates live in, so a healthy run rate can
+  // never be read as a healthy pipeline. Done here rather than inside gatherSources
+  // because only this point has POST-reconciliation outcomes — a pre-reconcile snapshot
+  // would report a different approval count than the liOutcomes block in the same
+  // prompt. Present only when the `cosMetrics` source is enabled, so an app that turned
+  // that source off gets no block (its delivery signal rides liOutcomes / liSelfEval).
+  // `cosMetricsByType` is gatherSources' internal hand-off for exactly this re-render;
+  // drop it once consumed rather than leaving a spent key on the source map.
+  if (sources.cosMetricsByType) {
+    const rendered = renderCosMetricsSource({
+      metricsByType: sources.cosMetricsByType,
+      // Not an array = the outcomes source is off / the tracker can't report outcomes /
+      // the store was unreadable. Omit the block rather than emitting zeros that would
+      // read as "nothing has ever been approved".
+      delivery: Array.isArray(outcomes) ? computeDeliveryMetrics(outcomes) : null
+    })
+    // '' when BOTH halves are empty (no task types, no delivery data) — buildPrompt
+    // drops a blank source, so the block is omitted rather than rendering a hollow `{}`.
+    sources.cosMetrics = rendered
+    delete sources.cosMetricsByType
+  }
+
   // Self-evaluation (#2700): the loop's deterministic pre-filing check on its own
   // reasoning — no LLM call, just a read of the record it already keeps. Note
   // `existingIssues` is passed as null on a FAILED tracker read: readIssues returns
@@ -402,8 +429,15 @@ export async function buildTaskInput({ app } = {}) {
     ? outcomes
     : await listOutcomes({ appId: app.id }).catch(() => [])
   const hardExclusionNotice = computeHardExclusionNotice({ liTaskStats, outcomes: noticeOutcomes })
+  // Delivery throttle (#3160): unlike the optional selfEval report, this signal is
+  // present on every LI prompt. It reads the same direct outcome snapshot as the hard
+  // exclusion notice, so turning off the outcomes/selfEval prompt sources cannot hide
+  // a stopped delivery pipeline from the reasoner.
+  const deliveryThrottleReport = formatDeliveryThrottleGuidance(
+    computeLiExecutionHealth(liTaskStats, noticeOutcomes)
+  )
 
-  const prompt = buildPrompt({ app, config, sources, openIssues, isPortos, outcomesReport, selfEvalReport, proposalExecutionReport, crossReferenceReport, hardExclusionNotice }) + buildCompletionContract()
+  const prompt = buildPrompt({ app, config, sources, openIssues, isPortos, outcomesReport, selfEvalReport, deliveryThrottleReport, proposalExecutionReport, crossReferenceReport, hardExclusionNotice }) + buildCompletionContract()
   // Option A: surface the fully-resolved LI agent provider/model (from
   // resolveLiAgentProvider — per-app override, else the resolved schedule pin) so
   // the generator pins the AGENT to it. Resolving the pin HERE (not delegating it

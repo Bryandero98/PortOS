@@ -28,7 +28,8 @@ import { getCatalog, searchCatalog, isBackend } from '../lib/localLlmCatalog.js'
 import { isAppleSilicon } from '../lib/platform.js'
 import { searchHuggingFaceModels, enrichCatalogWithVariants } from '../services/huggingFaceCatalog.js'
 import {
-  getStatus, listModels, listVisionModels, installModel, deleteModel, switchBackend, migrateBackend, installBackend, upgradeBackend, controlOllamaServer
+  getStatus, listModels, listVisionModels, installModel, deleteModel, switchBackend, migrateBackend, installBackend, upgradeBackend, controlOllamaServer,
+  describeInstallProgress
 } from '../services/localLlm.js'
 import { runLocalLlmTest, compareLocalLlmModels } from '../services/localLlmPlayground.js'
 import { listUserModels } from '../services/audioModels.js'
@@ -174,9 +175,12 @@ router.post('/install', asyncHandler(async (req, res) => {
   // A thrown rejection (e.g. the pull stream dropping mid-download) would 500
   // via asyncHandler but never emit a terminal progress frame, leaving the
   // client's progress banner stuck on the last 'start'. Surface it as 'error'.
+  // Any statused frame renders — percent progress, a transient-error retry, or
+  // the `finalizing` pass where PortOS completes an install Ollama abandoned
+  // (without which the banner would sit at "100%" through the whole recovery).
   const result = await installModel(backend, modelId, (p) => {
-    if (p?.percent != null) emit('start', `${modelId}: ${p.status || 'downloading'} ${p.percent}%`)
-    else if (p?.retrying) emit('start', `${modelId}: ${p.status || 'retrying…'}`)
+    const label = describeInstallProgress(p)
+    if (label) emit('start', `${modelId}: ${label}`)
   }).catch((err) => {
     emit('error', `Install failed: ${err.message}`)
     throw err

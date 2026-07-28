@@ -36,19 +36,31 @@ import {
 } from './paths.js';
 import { sha256Buffer } from './walkPostprocess.js';
 import { WALK_TRACK, getAnimationTrack } from './animationTracks.js';
+import { getEffectiveAnimationTracks } from './animationTrackStore.js';
 import { trackColumnLabels } from './atlasGrid.js';
 
 const compileFrameError = (message) =>
   new ServerError(message, { status: 422, code: 'ATLAS_COMPILE_INVALID' });
 
-export async function verifyPackagedFrames(recordId, manifest, { bytes = false, track = manifest?.track || WALK_TRACK } = {}) {
+export async function verifyPackagedFrames(recordId, manifest, {
+  bytes = false,
+  track = manifest?.track || WALK_TRACK,
+  // #3152 — an omitted `tracks` defaults to the EFFECTIVE table (compiled `walk` +
+  // the user-defined store), not to `getAnimationTrack`'s compiled-only default:
+  // `track` comes off a MANIFEST on disk, so it routinely names a stored row
+  // (scanner/ambient/any user track), and letting it fall through to the compiled
+  // table would throw "unknown animation track" while verifying a set that was
+  // authored and approved perfectly well. Still an explicit parameter — callers
+  // mid-compile pass the exact table they validated against.
+  tracks = getEffectiveAnimationTracks(),
+} = {}) {
   const dir = spriteDir(recordId);
   const frames = Array.isArray(manifest?.frames) ? manifest.frames : [];
   const total = frames.length;
   // Compile checks each frame's gait-phase against the set's phase labels. The
   // set's frame count is enforced identical across directions before this runs
   // (atlas.js), so labels derived from THIS manifest's length match the set's.
-  const labels = bytes ? trackColumnLabels(getAnimationTrack(track).id, total) : null;
+  const labels = bytes ? trackColumnLabels(getAnimationTrack(track, tracks).id, total) : null;
   const frameBytes = bytes ? [] : null;
   let missing = 0;
 

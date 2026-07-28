@@ -63,7 +63,9 @@ export const importSprites = (body, options = {}) => request('/sprites/import', 
 // Queue one reference candidate render. `referenceImageFile` (main target
 // only) switches the POST to multipart so the design reference uploads with
 // the fields. `initImageCandidate` re-processes one turnaround candidate with
-// a correctionPrompt. Returns { jobId, mode, target, anchorId }.
+// a correctionPrompt; every target (turnaround, main, anchor) accepts a
+// standalone `correctionPrompt` for a corrected re-roll. Returns
+// { jobId, mode, target, anchorId }.
 export const generateSpriteReference = (id, { referenceImageFile, ...fields }, options = {}) => {
   let body;
   if (referenceImageFile) {
@@ -90,6 +92,13 @@ export const unlockSpriteReferenceAnchor = (id, body, options = {}) => request(`
   method: 'POST', body: JSON.stringify(body), ...options,
 });
 
+// Re-open the main (south) reference while preserving the locked turnaround
+// and other directional anchors. Any dependent south walk/scanner is reopened.
+export const unlockSpriteMainReference = (id, options = {}) => request(
+  `/sprites/${encodeURIComponent(id)}/reference/main/unlock`,
+  { method: 'POST', ...options },
+);
+
 // Re-open the turnaround identity root and its full dependent chain. Old
 // versioned references, walks, and atlases remain available as history.
 export const unlockSpriteTurnaround = (id, options = {}) => request(
@@ -109,15 +118,24 @@ export const forkSpriteRecord = (id, body, options = {}) => request(`/sprites/${
 // approval into the finalized walk set.
 
 // Queue one walk video render. Returns { jobId, runId, direction, duration }.
+// An optional `correctionPrompt` (#3134) is appended to the motion prompt so a
+// re-roll can be told what the previous clip got wrong; omit it (never send an
+// empty string) for a blind regenerate — `correctionPromptPayload` handles that.
 export const generateSpriteWalk = (id, body, options = {}) => request(`/sprites/${encodeURIComponent(id)}/walk/generate`, {
   method: 'POST', body: JSON.stringify(body), ...options,
 });
 
-// Queue one user-requested scanner action. Its 2–8 frame, 2–12fps contract is
-// validated by the named scanner track on the server, independently of walk.
-export const generateSpriteScanner = (id, body, options = {}) => request(`/sprites/${encodeURIComponent(id)}/scanner/generate`, {
-  method: 'POST', body: JSON.stringify(body), ...options,
-});
+// Queue one user-requested render for ANY non-walk animation track (#3136) —
+// `scanner`, `ambient`, or a user-defined one. Each track's frame/fps range,
+// facing count and prompt are resolved server-side from its registry row, so
+// this one wrapper replaces the per-track pairs (`generateSpriteScanner` /
+// `generateSpriteAmbient`) that would otherwise have grown one per type. Takes
+// the same optional `correctionPrompt` as the walk render; `direction` is
+// required for a directional track and derived server-side for a single-row one.
+export const generateSpriteTrack = (id, trackId, body = {}, options = {}) => request(
+  `/sprites/${encodeURIComponent(id)}/tracks/${encodeURIComponent(trackId)}/generate`,
+  { method: 'POST', body: JSON.stringify(body), ...options },
+);
 
 // Approve a packaged candidate run for its direction. Returns the updated
 // { runs, selection, walkSet } walk state.
@@ -125,17 +143,36 @@ export const approveSpriteWalk = (id, body, options = {}) => request(`/sprites/$
   method: 'POST', body: JSON.stringify(body), ...options,
 });
 
-export const approveSpriteScanner = (id, body, options = {}) => request(`/sprites/${encodeURIComponent(id)}/scanner/approve`, {
+// Approve one packaged candidate for a non-walk track. Returns that track's
+// updated `{ track, bounds, selection, set, runs }` state.
+export const approveSpriteTrack = (id, trackId, body = {}, options = {}) => request(
+  `/sprites/${encodeURIComponent(id)}/tracks/${encodeURIComponent(trackId)}/approve`,
+  { method: 'POST', body: JSON.stringify(body), ...options },
+);
+
+// Animation-type definitions (#3153) — the registry the workflow surfaces render
+// from, and the CRUD over the user-defined half of it. The list returns
+// `{ tracks, storePath, origin }` (`origin: 'seed' | 'store'` — whether this
+// install has saved its own copy yet); every mutation returns the same `tracks`
+// plus `restartRequired`, because `spriteRuntimeContractSchema`'s per-track
+// publish-contract field is built once at server start. Every caller owns its own
+// error UI (the drawer shows the server's collision/in-use message inline), so
+// they all pass `{ silent: true }`.
+export const listSpriteAnimationTracks = (options = {}) => request('/sprites/animation-tracks', options);
+
+export const createSpriteAnimationTrack = (body, options = {}) => request('/sprites/animation-tracks', {
   method: 'POST', body: JSON.stringify(body), ...options,
 });
 
-export const generateSpriteAmbient = (id, body = {}, options = {}) => request(`/sprites/${encodeURIComponent(id)}/ambient/generate`, {
-  method: 'POST', body: JSON.stringify(body), ...options,
-});
+export const updateSpriteAnimationTrack = (trackId, patch, options = {}) => request(
+  `/sprites/animation-tracks/${encodeURIComponent(trackId)}`,
+  { method: 'PUT', body: JSON.stringify(patch), ...options },
+);
 
-export const approveSpriteAmbient = (id, body, options = {}) => request(`/sprites/${encodeURIComponent(id)}/ambient/approve`, {
-  method: 'POST', body: JSON.stringify(body), ...options,
-});
+export const deleteSpriteAnimationTrack = (trackId, options = {}) => request(
+  `/sprites/animation-tracks/${encodeURIComponent(trackId)}`,
+  { method: 'DELETE', ...options },
+);
 
 // Re-run the deterministic postprocess on a run whose video already landed.
 export const postprocessSpriteWalk = (id, body, options = {}) => request(`/sprites/${encodeURIComponent(id)}/walk/postprocess`, {

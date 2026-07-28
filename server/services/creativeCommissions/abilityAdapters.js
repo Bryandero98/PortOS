@@ -32,6 +32,7 @@
 import { renderFeedbackDigest, composeDirectiveGoal } from './directive.js';
 import {
   ABILITY_GENERATION_SPEC, GENERATION_KEY_DEFS, CREATIVE_COMMISSION_ABILITIES,
+  COMMISSION_RENDER_BACKEND_AUTO,
 } from '../../lib/creativeCommissionValidation.js';
 
 const isStr = (v) => typeof v === 'string';
@@ -49,6 +50,10 @@ function coerceGenerationValue(key, raw) {
   const def = GENERATION_KEY_DEFS[key];
   const v = raw?.[key];
   if (def.type === 'enum') return def.values.includes(v) ? v : def.default;
+  // A model id (#3135): trim to a non-empty string, else null. A blank/absent id
+  // means "the install's default model", which is a real, meaningful value — not
+  // a validation failure — so it normalizes rather than erroring.
+  if (def.type === 'id') return isStr(v) && v.trim() ? v.trim().slice(0, def.max) : def.default;
   return Number.isInteger(v) && v >= def.min && v <= def.max ? v : def.default;
 }
 
@@ -85,16 +90,62 @@ function genValue(commission, key) {
   return coerceGenerationValue(key, commission?.generation);
 }
 
+/**
+ * Translate a commission's backend pins (#3135) into the CD project's
+ * `renderBackend` field — the durable carrier that gets the pin from the
+ * commission record to the enqueue site.
+ *
+ * Why via the project: the actual `enqueueJob` happens inside the planner's
+ * `media_enqueueImageJob`/`media_enqueueVideoJob` tool call, which only knows
+ * `ctx.projectId` — it has no reference back to the commission that minted the
+ * project. Stamping the pin on the project lets the tool's forcing step
+ * (`enforceRenderBackendPin` in creative/tools/media.js) override whatever the
+ * planner LLM authored, and gives every plan-driven CD project the same knob for
+ * free, not just commission-spawned ones.
+ *
+ * Returns `null` when nothing is pinned (every mode `auto`), which is what makes
+ * the default a no-op: no pin ⇒ `enforceRenderBackendPin` returns the enqueued
+ * params byte-identical to pre-#3135 behavior, without even reading settings. A
+ * `modelId` alone is never a pin — the mode has to name a backend for a model id
+ * to mean anything.
+ */
+export function buildRenderBackendPin(commission) {
+  const gen = commission?.generation;
+  if (!gen || typeof gen !== 'object') return null;
+  const out = {};
+  for (const [kind, modeKey, modelKey] of [
+    ['image', 'imageMode', 'imageModelId'],
+    ['video', 'videoMode', 'videoModelId'],
+  ]) {
+    const mode = gen[modeKey];
+    if (!isStr(mode) || mode === COMMISSION_RENDER_BACKEND_AUTO) continue;
+    const modelId = isStr(gen[modelKey]) && gen[modelKey].trim() ? gen[modelKey].trim() : null;
+    out[kind] = { mode, modelId };
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 // Video geometry the CD project always carries. For non-video types the planner
 // ignores it (no media_enqueueVideoJob steps), so these are harmless defaults.
 // Shared by every adapter's buildProjectParams today.
 function buildVideoGeometryParams(commission, { defaultVideoModelId } = {}) {
   const gen = commission?.generation;
+  const renderBackend = buildRenderBackendPin(commission);
   return {
     aspectRatio: gen?.aspectRatio || '16:9',
     quality: gen?.quality || 'standard',
     modelId: gen?.model || (typeof defaultVideoModelId === 'function' ? defaultVideoModelId() : undefined),
     targetDurationSeconds: gen?.targetDurationSeconds || 10,
+    // Only passed when the commission actually pinned a backend (#3135), so an
+    // unpinned commission's createProject call is byte-identical to a hand-made
+    // project's — both omit the arg and buildProjectRecord stores `null`, exactly
+    // as it stores `musicBed`/`plan`/`directive` null on a bare project. (The
+    // stored KEY is new either way; that's the standard additive-field shape for
+    // this record, which round-trips through the JSONB column verbatim. What
+    // matters for back-compat is that an unpinned commission can never produce a
+    // non-null pin, and the ENQUEUED job params stay untouched — see
+    // enforceRenderBackendPin.)
+    ...(renderBackend ? { renderBackend } : {}),
   };
 }
 

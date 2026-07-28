@@ -19,8 +19,19 @@ tryReadFile: vi.fn().mockResolvedValue(null),
   readJSONFile: vi.fn()
 }));
 
-import { readJSONFile } from '../lib/fileUtils.js';
-import { loadUsage, getUsageSummary, getUsage, recordSession, recordMessages, buildUsageReport, rollupOldDailyActivity } from './usage.js';
+import { atomicWrite, readJSONFile } from '../lib/fileUtils.js';
+import {
+  applyHistoricalUsageCorrections,
+  buildUsageReport,
+  getUsage,
+  getUsageSummary,
+  loadUsage,
+  recordMessages,
+  recordRunUsage,
+  recordSession,
+  recordTokens,
+  rollupOldDailyActivity
+} from './usage.js';
 
 // Helper: produce a date string N days ago (relative to today)
 function daysAgo(n) {
@@ -208,13 +219,62 @@ describe('usage.js — streak calculations', () => {
       expect(typeof today.label).toBe('string');
     });
 
-    it('estimatedCost keeps its all-time legacy-blended semantics ($3/$15 per 1M)', async () => {
-      readJSONFile.mockResolvedValueOnce(makeUsage({}, {
-        totalTokens: { input: 1_000_000, output: 500_000 }
+    it('estimatedCost agrees with the unbounded report total', async () => {
+      readJSONFile.mockResolvedValueOnce(makeUsage({
+        '2025-05-01': { sessions: 1, messages: 1, tokens: 500_000 },
+        '2025-06-01': {
+          sessions: 1,
+          messages: 1,
+          tokens: 1_000_000,
+          byProvider: {
+            codex: {
+              name: 'Codex',
+              sessions: 1,
+              messages: 1,
+              tokensIn: 1_000_000,
+              tokensOut: 1_000_000,
+              byModel: {}
+            }
+          }
+        }
       }));
       await loadUsage();
       const summary = getUsageSummary();
-      expect(summary.estimatedCost).toBeCloseTo(10.5); // 1M×$3 + 0.5M×$15
+      expect(summary.estimatedCost).toBe(summary.report.totals.estimatedCost);
+      expect(summary.estimatedCost).toBeCloseTo(23.25);
+    });
+
+    it('keeps estimatedCost all-time when the visible report is range-filtered', async () => {
+      readJSONFile.mockResolvedValueOnce(makeUsage({
+        '2025-05-01': { sessions: 1, messages: 1, tokens: 1_000_000 },
+        '2025-06-01': {
+          sessions: 1,
+          messages: 1,
+          tokens: 500_000,
+          byProvider: {
+            codex: {
+              name: 'Codex',
+              sessions: 1,
+              messages: 1,
+              tokensIn: 0,
+              tokensOut: 500_000,
+              byModel: {
+                'gpt-5.3-codex': {
+                  sessions: 1,
+                  messages: 1,
+                  tokensIn: 0,
+                  tokensOut: 500_000
+                }
+              }
+            }
+          }
+        }
+      }));
+      await loadUsage();
+
+      const summary = getUsageSummary({ from: '2025-06-01', to: '2025-06-01' });
+      expect(summary.report.totals.estimatedCost).toBe(7);
+      expect(summary.estimatedCost).toBe(22);
     });
   });
 
@@ -239,6 +299,98 @@ describe('usage.js — streak calculations', () => {
       expect(day.byProvider['claude-code'].byModel.opus.sessions).toBe(1);
     });
 
+    it('attributes missing provider ids to a named unknown bucket', async () => {
+      readJSONFile.mockResolvedValueOnce(makeUsage({}));
+      await loadUsage();
+      await recordSession(undefined, undefined, null);
+      await recordMessages(undefined, null, 1, 40, 10);
+
+      const usage = getUsage();
+      expect(usage.byProvider.undefined).toBeUndefined();
+      expect(usage.byProvider.unknown).toMatchObject({
+        name: 'Unknown provider',
+        sessions: 1,
+        messages: 1,
+        tokens: 40
+      });
+      const day = usage.dailyActivity[daysAgo(0)];
+      expect(day.byProvider.unknown).toMatchObject({
+        name: 'Unknown provider',
+        sessions: 1,
+        messages: 1,
+        tokensIn: 10,
+        tokensOut: 40
+      });
+    });
+
+    it('normalizes a persisted string "undefined" provider in reports', () => {
+      const report = buildUsageReport({
+        [daysAgo(0)]: {
+          sessions: 1,
+          messages: 1,
+          tokens: 20,
+          byProvider: {
+            undefined: {
+              sessions: 1,
+              messages: 1,
+              tokensIn: 10,
+              tokensOut: 20,
+              byModel: {}
+            }
+          }
+        }
+      });
+      expect(report.providers).toEqual([
+        expect.objectContaining({
+          id: 'unknown',
+          name: 'Unknown provider',
+          sessions: 1
+        })
+      ]);
+    });
+
+    it('normalizes persisted undefined provider buckets while loading', async () => {
+      readJSONFile.mockResolvedValueOnce(makeUsage({
+        [daysAgo(0)]: {
+          sessions: 1,
+          messages: 1,
+          tokens: 20,
+          byProvider: {
+            undefined: { sessions: 1, messages: 1, tokensIn: 10, tokensOut: 20, byModel: {} }
+          }
+        }
+      }, {
+        byProvider: {
+          undefined: { sessions: 1, messages: 1, tokens: 20 }
+        }
+      }));
+
+      await loadUsage();
+
+      expect(getUsage().byProvider.undefined).toBeUndefined();
+      expect(getUsage().byProvider.unknown.name).toBe('Unknown provider');
+      expect(getUsage().dailyActivity[daysAgo(0)].byProvider.undefined).toBeUndefined();
+      expect(atomicWrite).toHaveBeenCalled();
+    });
+
+    it('deep-merges model usage while normalizing undefined provider buckets', async () => {
+      readJSONFile.mockResolvedValueOnce(makeUsage({
+        [daysAgo(0)]: {
+          byProvider: {
+            unknown: { byModel: { current: { sessions: 2, tokensOut: 20 } } },
+            undefined: { byModel: { legacy: { sessions: 1, tokensOut: 10 } } }
+          }
+        }
+      }));
+
+      await loadUsage();
+
+      expect(getUsage().dailyActivity[daysAgo(0)].byProvider.unknown.byModel).toEqual({
+        current: { sessions: 2, tokensOut: 20 },
+        legacy: { sessions: 1, tokensOut: 10 }
+      });
+    });
+
     it('recordMessages attributes input and output tokens to provider, model, and day', async () => {
       readJSONFile.mockResolvedValueOnce(makeUsage({}));
       await loadUsage();
@@ -253,6 +405,22 @@ describe('usage.js — streak calculations', () => {
       expect(usage.byModel.opus).toMatchObject({ tokens: 400 });
       const modelDay = usage.dailyActivity[daysAgo(0)].byProvider['claude-code'].byModel.opus;
       expect(modelDay).toMatchObject({ messages: 1, tokensIn: 1200, tokensOut: 400 });
+    });
+
+    it('attributes directly recorded tokens to reportable unknown usage', async () => {
+      readJSONFile.mockResolvedValueOnce(makeUsage({}));
+      await loadUsage();
+      await recordTokens(1_000_000, 500_000);
+
+      const report = getUsageSummary().report;
+      expect(report.providers).toEqual([
+        expect.objectContaining({
+          id: 'unknown',
+          tokensIn: 1_000_000,
+          tokensOut: 500_000
+        })
+      ]);
+      expect(report.totals.estimatedCost).toBeGreaterThan(0);
     });
 
     it('recordMessages accumulates onto legacy all-time entries without reshaping them', async () => {
@@ -331,16 +499,115 @@ describe('usage.js — streak calculations', () => {
       expect(report.totals.estimatedCost).toBe(0);
     });
 
-    it('reports breakdownSince as the earliest day with a provider split, ignoring legacy days', () => {
+    it('includes legacy days in a fallback-priced row without changing breakdownSince', () => {
       const daily = {
-        '2025-05-01': { sessions: 3, messages: 3, tokens: 100 }, // legacy — no byProvider
+        '2025-05-01': { sessions: 3, messages: 3, tokens: 1_000_000 }, // legacy — no byProvider
         '2025-06-03': nestedDay('codex', 'Codex', 'gpt-5.3-codex', { tokensOut: 10 }),
         '2025-06-01': nestedDay('codex', 'Codex', 'gpt-5.3-codex', { tokensOut: 10 })
       };
       const report = buildUsageReport(daily, {});
       expect(report.breakdownSince).toBe('2025-06-01');
-      // legacy day contributes nothing to the breakdown
-      expect(report.totals.sessions).toBe(2);
+      expect(report.totals.sessions).toBe(5);
+      expect(report.totals.tokensOut).toBe(1_000_020);
+      expect(report.providers.find((provider) => provider.id === 'legacy')).toMatchObject({
+        name: 'Pre-breakdown (legacy)',
+        sessions: 3,
+        tokensOut: 1_000_000,
+        estimatedCost: 15,
+        rateMatch: 'fallback'
+      });
+    });
+
+    it('reports the actual breakdown start even when the visible range begins later', () => {
+      const report = buildUsageReport({
+        '2025-06-01': nestedDay('codex', 'Codex', 'gpt-5.3-codex'),
+        '2025-07-01': nestedDay('codex', 'Codex', 'gpt-5.3-codex')
+      }, {
+        from: '2025-07-01',
+        to: '2025-07-31'
+      });
+
+      expect(report.breakdownSince).toBe('2025-06-01');
+      expect(report.totals.sessions).toBe(1);
+    });
+
+    it('folds legacy monthly buckets into the requested range', () => {
+      const report = buildUsageReport({}, {
+        from: '2024-05-01',
+        to: '2024-07-31',
+        monthlyActivity: {
+          '2024-01': { sessions: 1, messages: 1, tokens: 10 },
+          '2024-06': { sessions: 2, messages: 3, tokens: 500 }
+        }
+      });
+      expect(report.providers).toEqual([
+        expect.objectContaining({
+          id: 'legacy',
+          sessions: 2,
+          messages: 3,
+          tokensOut: 500
+        })
+      ]);
+    });
+
+    it('keeps flat legacy residuals in a mixed-shape monthly bucket', () => {
+      const report = buildUsageReport({}, {
+        monthlyActivity: {
+          '2025-06': {
+            sessions: 3,
+            messages: 3,
+            tokens: 300,
+            byProvider: {
+              codex: {
+                sessions: 1,
+                messages: 1,
+                tokensIn: 10,
+                tokensOut: 100,
+                byModel: {}
+              }
+            }
+          }
+        }
+      });
+
+      expect(report.providers.find((provider) => provider.id === 'codex')).toMatchObject({
+        sessions: 1,
+        tokensOut: 100
+      });
+      expect(report.providers.find((provider) => provider.id === 'legacy')).toMatchObject({
+        sessions: 2,
+        messages: 2,
+        tokensOut: 200
+      });
+      expect(report.totals).toMatchObject({
+        sessions: 3,
+        messages: 3,
+        tokensOut: 300
+      });
+    });
+
+    it('allocates historical direct-token residuals without double-counting buckets', () => {
+      const report = buildUsageReport({
+        '2025-06-01': {
+          tokens: 500_000,
+          byProvider: {
+            codex: {
+              tokensIn: 100_000,
+              tokensOut: 500_000,
+              byModel: {}
+            }
+          }
+        }
+      }, {
+        totalTokens: { input: 1_000_000, output: 1_500_000 }
+      });
+
+      expect(report.totals.tokensIn).toBe(1_000_000);
+      expect(report.totals.tokensOut).toBe(1_500_000);
+      expect(report.providers.find((provider) => provider.id === 'legacy')).toMatchObject({
+        tokensIn: 900_000,
+        tokensOut: 1_000_000
+      });
     });
 
     it('prices provider-level tokens missing a model split at the provider default', () => {
@@ -563,5 +830,382 @@ describe('usage.js — loadUsage rollup integration', () => {
     expect(data.monthlyActivity[oldKey.slice(0, 7)].tokens).toBe(500);
     // Top-level totals are independent of bucket rollup — unchanged.
     expect(data.totalSessions).toBe(7);
+  });
+});
+
+describe('usage.js — cache tiers and measured/estimate provenance (#3124 Phase 2)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(FIXED_DATE);
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const today = '2025-06-11';
+
+  it('records cache tokens and a measured source through recordRunUsage', async () => {
+    readJSONFile.mockResolvedValueOnce(makeUsage({}));
+    await loadUsage();
+    await recordSession('claude-code', 'Claude Code', 'claude-opus-5');
+    await recordRunUsage({
+      providerId: 'claude-code',
+      model: 'claude-opus-5',
+      messages: 3,
+      tokensIn: 1500,
+      tokensOut: 800,
+      cacheReadTokens: 3_500_000,
+      cacheWriteTokens: 280_000,
+      source: 'measured'
+    });
+
+    const providerDay = getUsage().dailyActivity[today].byProvider['claude-code'];
+    expect(providerDay).toMatchObject({
+      messages: 3,
+      tokensIn: 1500,
+      tokensOut: 800,
+      cacheReadTokens: 3_500_000,
+      cacheWriteTokens: 280_000,
+      source: 'measured'
+    });
+    expect(providerDay.byModel['claude-opus-5']).toMatchObject({
+      cacheReadTokens: 3_500_000,
+      source: 'measured'
+    });
+  });
+
+  it('counts every billable input tier in the all-time input total', () => {
+    // A cache read is an input token the user was charged for — the headline
+    // "Tokens" figure must not omit it (that was the #3124 understatement).
+    expect(getUsage().totalTokens.input).toBe(1500 + 3_500_000 + 280_000);
+  });
+
+  it('defaults recordMessages to an estimate source with no cache tokens', async () => {
+    readJSONFile.mockResolvedValueOnce(makeUsage({}));
+    await loadUsage();
+    await recordMessages('codex', 'gpt-5.3-codex', 1, 400, 30);
+
+    expect(getUsage().dailyActivity[today].byProvider.codex).toMatchObject({
+      tokensIn: 30,
+      tokensOut: 400,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      source: 'estimate'
+    });
+  });
+
+  it('downgrades a bucket to mixed when measured and estimated counts land together', async () => {
+    readJSONFile.mockResolvedValueOnce(makeUsage({}));
+    await loadUsage();
+    await recordRunUsage({ providerId: 'claude-code', model: 'claude-opus-5', tokensOut: 10, source: 'measured' });
+    await recordRunUsage({ providerId: 'claude-code', model: 'claude-opus-5', tokensOut: 10, source: 'estimate' });
+
+    expect(getUsage().dailyActivity[today].byProvider['claude-code'].source).toBe('mixed');
+  });
+
+  it('accumulates cache tokens onto a legacy bucket that predates the fields', async () => {
+    readJSONFile.mockResolvedValueOnce(makeUsage({
+      [today]: {
+        sessions: 1,
+        messages: 1,
+        tokens: 100,
+        // Pre-#3124 shape: no cacheReadTokens/cacheWriteTokens/source at all.
+        byProvider: { 'claude-code': { name: 'Claude Code', sessions: 1, messages: 1, tokensIn: 20, tokensOut: 100, byModel: {} } }
+      }
+    }));
+    await loadUsage();
+    await recordRunUsage({
+      providerId: 'claude-code',
+      model: null,
+      tokensOut: 50,
+      cacheReadTokens: 900,
+      source: 'measured'
+    });
+
+    const bucket = getUsage().dailyActivity[today].byProvider['claude-code'];
+    expect(bucket.cacheReadTokens).toBe(900);
+    expect(bucket.tokensOut).toBe(150);
+    // The pre-existing 100 output tokens were estimates, so the merged bucket
+    // must not claim to be purely measured.
+    expect(bucket.source).toBe('mixed');
+  });
+});
+
+describe('buildUsageReport — cache pricing and source reporting', () => {
+  const providers = [{ id: 'claude-code', name: 'Claude Code', type: 'cli', command: 'claude' }];
+
+  it('prices cache read and write tiers into the estimated cost', () => {
+    const daily = {
+      '2026-07-01': {
+        sessions: 1,
+        messages: 1,
+        byProvider: {
+          'claude-code': {
+            name: 'Claude Code',
+            sessions: 1,
+            messages: 1,
+            tokensIn: 0,
+            tokensOut: 0,
+            cacheReadTokens: 1_000_000,
+            cacheWriteTokens: 1_000_000,
+            source: 'measured',
+            byModel: {
+              'claude-opus-5': {
+                sessions: 1, messages: 1, tokensIn: 0, tokensOut: 0,
+                cacheReadTokens: 1_000_000, cacheWriteTokens: 1_000_000, source: 'measured'
+              }
+            }
+          }
+        }
+      }
+    };
+
+    const report = buildUsageReport(daily, { providers });
+    // claude-opus-5: $5/MTok input → $0.50 cache read + $6.25 cache write.
+    expect(report.totals.estimatedCost).toBeCloseTo(6.75, 2);
+    expect(report.totals.cacheReadTokens).toBe(1_000_000);
+    expect(report.totals.cacheWriteTokens).toBe(1_000_000);
+    expect(report.totals.source).toBe('measured');
+    expect(report.providers[0].source).toBe('measured');
+    expect(report.providers[0].models[0]).toMatchObject({
+      cacheReadTokens: 1_000_000,
+      cacheWritePer1M: 6.25,
+      cacheReadPer1M: 0.5
+    });
+  });
+
+  it('reports legacy buckets with no source field as estimates', () => {
+    const daily = {
+      '2026-07-01': {
+        sessions: 1,
+        messages: 1,
+        byProvider: {
+          'claude-code': {
+            name: 'Claude Code', sessions: 1, messages: 1, tokensIn: 10, tokensOut: 100, byModel: {}
+          }
+        }
+      }
+    };
+
+    const report = buildUsageReport(daily, { providers });
+    expect(report.providers[0].source).toBe('estimate');
+    expect(report.providers[0].cacheReadTokens).toBe(0);
+    expect(report.totals.source).toBe('estimate');
+  });
+
+  it('marks a range spanning legacy and measured buckets as mixed', () => {
+    const daily = {
+      '2026-07-01': {
+        sessions: 1, messages: 1,
+        byProvider: { 'claude-code': { name: 'Claude Code', sessions: 1, messages: 1, tokensIn: 10, tokensOut: 100, byModel: {} } }
+      },
+      '2026-07-02': {
+        sessions: 1, messages: 1,
+        byProvider: { 'claude-code': { name: 'Claude Code', sessions: 1, messages: 1, tokensIn: 10, tokensOut: 100, cacheReadTokens: 500, source: 'measured', byModel: {} } }
+      }
+    };
+
+    const report = buildUsageReport(daily, { providers });
+    expect(report.providers[0].source).toBe('mixed');
+  });
+
+  it('never charges a free local provider for cache tokens', () => {
+    const daily = {
+      '2026-07-01': {
+        sessions: 1, messages: 1,
+        byProvider: { ollama: { name: 'Ollama', sessions: 1, messages: 1, tokensIn: 100, tokensOut: 100, cacheReadTokens: 5_000_000, source: 'measured', byModel: {} } }
+      }
+    };
+
+    const report = buildUsageReport(daily, { providers: [{ id: 'ollama', name: 'Ollama' }] });
+    expect(report.totals.estimatedCost).toBe(0);
+  });
+
+  it('does not re-add measured cache tokens as a legacy residual', () => {
+    // totalTokens.input includes the cache tiers, so the residual reconciliation
+    // must count them as represented or it double-bills them as legacy.
+    const daily = {
+      '2026-07-01': {
+        sessions: 1, messages: 1,
+        byProvider: {
+          'claude-code': {
+            name: 'Claude Code', sessions: 1, messages: 1,
+            tokensIn: 1000, tokensOut: 500,
+            cacheReadTokens: 2_000_000, cacheWriteTokens: 100_000,
+            source: 'measured', byModel: {}
+          }
+        }
+      }
+    };
+
+    const report = buildUsageReport(daily, {
+      providers,
+      totalTokens: { input: 1000 + 2_000_000 + 100_000, output: 500 }
+    });
+
+    expect(report.providers.find((p) => p.id === 'legacy')).toBeUndefined();
+  });
+});
+
+describe('usage.js — historical transcript corrections (#3156)', () => {
+  const dayKey = '2026-07-01';
+  const providerId = 'claude-code-tui';
+  const model = 'claude-opus-5';
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    readJSONFile.mockResolvedValueOnce(makeUsage({
+      [dayKey]: {
+        sessions: 1,
+        messages: 1,
+        tokens: 50,
+        byProvider: {
+          [providerId]: {
+            name: 'Claude Code TUI',
+            sessions: 1,
+            messages: 1,
+            tokensIn: 20,
+            tokensOut: 50,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+            source: 'estimate',
+            byModel: {
+              [model]: {
+                sessions: 1,
+                messages: 1,
+                tokensIn: 20,
+                tokensOut: 50,
+                cacheReadTokens: 0,
+                cacheWriteTokens: 0,
+                source: 'estimate'
+              }
+            }
+          }
+        }
+      }
+    }, {
+      totalSessions: 1,
+      totalMessages: 1,
+      totalTokens: { input: 20, output: 50 },
+      byProvider: { [providerId]: { name: 'Claude Code TUI', sessions: 1, messages: 1, tokens: 50 } },
+      byModel: { [model]: { sessions: 1, messages: 1, tokens: 50 } }
+    }));
+    await loadUsage();
+  });
+
+  it('replaces the configured-provider estimate, rebuilds flat totals, and is idempotent', async () => {
+    const correction = {
+      runId: 'run-example-1',
+      day: dayKey,
+      providerId,
+      model,
+      estimate: { messages: 1, tokensIn: 20, tokensOut: 50 },
+      measured: [{
+        providerId,
+        model,
+        messages: 2,
+        tokensIn: 100,
+        tokensOut: 200,
+        cacheReadTokens: 1000,
+        cacheWriteTokens: 10,
+        source: 'measured'
+      }]
+    };
+
+    expect(await applyHistoricalUsageCorrections([correction])).toMatchObject({ corrected: 1 });
+    const afterFirst = structuredClone(getUsage());
+    expect(await applyHistoricalUsageCorrections([correction])).toMatchObject({ corrected: 0 });
+    expect(getUsage()).toEqual(afterFirst);
+
+    const day = getUsage().dailyActivity[dayKey];
+    expect(day).toMatchObject({ sessions: 1, messages: 2, tokens: 200, tokensIn: 100, tokensOut: 200 });
+    expect(day.byProvider[providerId]).toMatchObject({
+      messages: 2,
+      tokensIn: 100,
+      tokensOut: 200,
+      cacheReadTokens: 1000,
+      cacheWriteTokens: 10,
+      source: 'measured'
+    });
+    expect(day.byProvider['claude-code']).toBeUndefined();
+
+    const report = buildUsageReport(getUsage().dailyActivity, {
+      providers: [{ id: providerId, name: 'Claude Code TUI' }],
+      totalTokens: getUsage().totalTokens
+    });
+    expect(report.providers.find((provider) => provider.id === providerId)?.models[0]).toMatchObject({
+      tokensIn: 100,
+      tokensOut: 200
+    });
+    expect(report.providers.some((provider) => provider.id === 'legacy')).toBe(false);
+  });
+});
+
+
+
+describe('buildUsageReport — local models under a paid provider', () => {
+  // A Claude-Code-flavored CLI can be pointed at a local Ollama backend. Its
+  // provider id stays `claude-*` (correctly PAID to isFreeProvider) while the
+  // model is `qwen3.6:35b`. Before the per-model check, that row resolved
+  // through the `claude` provider default and invented ~$131 of cost for a day
+  // of free local inference. This test bills through the REPORT, not the
+  // predicate, so it fails if the wiring is ever dropped.
+  const paidClaudeProvider = [{ id: 'claude-code-tui', name: 'Claude Code TUI', type: 'cli', command: 'claude' }];
+  const dayWith = (model) => ({
+    '2026-07-01': {
+      sessions: 1, messages: 1,
+      byProvider: {
+        'claude-code-tui': {
+          name: 'Claude Code TUI', sessions: 1, messages: 1,
+          tokensIn: 5000, tokensOut: 100_000,
+          cacheReadTokens: 370_000_000, cacheWriteTokens: 5_000_000,
+          source: 'measured',
+          byModel: {
+            [model]: {
+              sessions: 1, messages: 1, tokensIn: 5000, tokensOut: 100_000,
+              cacheReadTokens: 370_000_000, cacheWriteTokens: 5_000_000, source: 'measured'
+            }
+          }
+        }
+      }
+    }
+  });
+
+  it('prices a local model at zero even under a paid provider id', () => {
+    const report = buildUsageReport(dayWith('qwen3.6:35b'), { providers: paidClaudeProvider });
+    expect(report.totals.estimatedCost).toBe(0);
+    expect(report.providers[0].models[0].rateMatch).toBe('free');
+    // The tokens are still reported — only the cost is zero.
+    expect(report.totals.cacheReadTokens).toBe(370_000_000);
+  });
+
+  it('still bills a hosted model on the same provider', () => {
+    const report = buildUsageReport(dayWith('claude-opus-5'), { providers: paidClaudeProvider });
+    expect(report.totals.estimatedCost).toBeGreaterThan(100);
+    expect(report.providers[0].models[0].rateMatch).toBe('exact');
+  });
+
+  it('bills only the hosted half of a mixed local/hosted day', () => {
+    const daily = {
+      '2026-07-01': {
+        sessions: 2, messages: 2,
+        byProvider: {
+          'claude-code-tui': {
+            name: 'Claude Code TUI', sessions: 2, messages: 2,
+            tokensIn: 0, tokensOut: 2_000_000, cacheReadTokens: 0, cacheWriteTokens: 0,
+            source: 'measured',
+            byModel: {
+              'qwen3.6:35b': { sessions: 1, messages: 1, tokensIn: 0, tokensOut: 1_000_000, cacheReadTokens: 0, cacheWriteTokens: 0, source: 'measured' },
+              'claude-opus-5': { sessions: 1, messages: 1, tokensIn: 0, tokensOut: 1_000_000, cacheReadTokens: 0, cacheWriteTokens: 0, source: 'measured' }
+            }
+          }
+        }
+      }
+    };
+    const report = buildUsageReport(daily, { providers: paidClaudeProvider });
+    // 1M output on claude-opus-5 = $25; the local million is free.
+    expect(report.totals.estimatedCost).toBeCloseTo(25, 2);
   });
 });

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Plus, Film, Trash2, Music, Activity, ArrowUp, ArrowDown, Image as ImageIcon, Video, Wand2, Download } from 'lucide-react';
 import toast from '../components/ui/Toast';
@@ -9,6 +9,7 @@ import {
   updateMusicVideoProject,
   deleteMusicVideoProject,
   analyzeMusicVideoProject,
+  setMusicVideoManualTempo,
   planMusicVideoProject,
   addMusicVideoScene,
   updateMusicVideoScene,
@@ -22,6 +23,7 @@ import {
   cancelMusicVideoMidiTranscription,
 } from '../services/apiMusicVideo.js';
 import useMidiTranscription from '../hooks/useMidiTranscription.js';
+import useFieldDraft from '../hooks/useFieldDraft.js';
 import MidiInstallModal from '../components/install/MidiInstallModal.jsx';
 import MidiGatedModal from '../components/install/MidiGatedModal.jsx';
 import MidiVisualization from '../components/songs/MidiVisualization.jsx';
@@ -35,6 +37,12 @@ import useYoutubeTrackImport from '../hooks/useYoutubeTrackImport.js';
 import { useSseProgress, isTerminalSseFrame } from '../hooks/useSseProgress.js';
 import { formatDurationSec } from '../utils/formatters.js';
 import { MUSCRIPTOR_MODELS, DEFAULT_MUSCRIPTOR_MODEL } from '../lib/muscriptorModels.js';
+import { clampBpm } from '../lib/metronome.js';
+
+// Matches musicVideoManualAnalysisSchema's `bpm.max` on the server —
+// clampBpm's own ceiling (320, metronome-focused) is looser than what the
+// manual-tempo endpoint accepts.
+const MUSIC_VIDEO_MANUAL_BPM_MAX = 300;
 
 const MODES = ['director', 'autonomous'];
 
@@ -88,7 +96,7 @@ function YoutubeImportControls({ id, url, onUrlChange, job, onStart, compact = f
 
 export default function MusicVideo() {
   // Deep-linkable project selection: the selected project lives in the URL
-  // (/media/music-video/:projectId) rather than local state, so a project's
+  // (/music-video/:projectId) rather than local state, so a project's
   // scene board is directly shareable/bookmarkable and reachable from the
   // media job-completion hooks. selectProject() navigates; the browser URL is
   // the single source of truth for "which project is open".
@@ -145,7 +153,7 @@ export default function MusicVideo() {
       toast.error('Finish or cancel the in-progress YouTube import before switching projects');
       return;
     }
-    navigate(id ? `/media/music-video/${id}` : '/media/music-video');
+    navigate(id ? `/music-video/${id}` : '/music-video');
   };
   // Drop the binding once the import settles (or is cancelled) so the backstop
   // below stops guarding a project the user is free to leave again.
@@ -162,7 +170,7 @@ export default function MusicVideo() {
     if (!ytImportEdit.active || !ytEditProjectId) return;
     if (routeProjectId !== ytEditProjectId) {
       toast.error('Finish or cancel the in-progress YouTube import before switching projects');
-      navigate(`/media/music-video/${ytEditProjectId}`, { replace: true });
+      navigate(`/music-video/${ytEditProjectId}`, { replace: true });
     }
   }, [routeProjectId, ytImportEdit.active, ytEditProjectId, navigate]);
   // Merge ONLY a scene's referenceImageId via a functional update so a render
@@ -257,7 +265,7 @@ export default function MusicVideo() {
     deleteMusicVideoProject(id, { silent: true })
       .then(() => {
         setProjects((prev) => prev.filter((p) => p.id !== id));
-        if (selectedId === id) navigate('/media/music-video');
+        if (selectedId === id) navigate('/music-video');
       })
       .catch((err) => toast.error(err?.message || 'Failed to delete project'));
   };
@@ -298,6 +306,48 @@ export default function MusicVideo() {
       .then((proj) => { replaceProject(proj); toast.success(`Analyzed — ${proj.audioAnalysis?.bpm ? `${proj.audioAnalysis.bpm} BPM` : 'no tempo detected'}`); })
       .catch((err) => toast.error(err?.message || 'Analysis failed'))
       .finally(() => setAnalyzing(false));
+  };
+
+  // Manual-tempo fallback: shown when the auto-detector caches `bpm: null`
+  // (see server/services/musicVideo/audioAnalysis.js for why). "Tap tempo"
+  // estimates BPM from the average interval between clicks (resets if the gap
+  // since the last tap exceeds 2s, i.e. the director paused/restarted).
+  const [manualBpm, setManualBpm] = useState('');
+  const [manualOffset, setManualOffset] = useState('0');
+  const [settingManualTempo, setSettingManualTempo] = useState(false);
+  const tapTimesRef = useRef([]);
+
+  useEffect(() => {
+    setManualBpm('');
+    setManualOffset('0');
+    tapTimesRef.current = [];
+  }, [selected?.id]);
+
+  const handleTapTempo = () => {
+    const now = Date.now();
+    const taps = tapTimesRef.current;
+    if (taps.length && now - taps[taps.length - 1] > 2000) taps.length = 0;
+    taps.push(now);
+    if (taps.length > 8) taps.shift();
+    if (taps.length >= 2) {
+      const intervals = [];
+      for (let i = 1; i < taps.length; i++) intervals.push(taps[i] - taps[i - 1]);
+      const avgMs = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+      setManualBpm(String(Math.round(60000 / avgMs)));
+    }
+  };
+
+  const handleSetManualTempo = () => {
+    if (!selected) return;
+    const bpm = clampBpm(manualBpm);
+    if (bpm == null) { toast.error('Enter a BPM'); return; }
+    const boundedBpm = Math.min(bpm, MUSIC_VIDEO_MANUAL_BPM_MAX);
+    const offsetSec = Number(manualOffset) || 0;
+    setSettingManualTempo(true);
+    setMusicVideoManualTempo(selected.id, { bpm: boundedBpm, offsetSec }, { silent: true })
+      .then((proj) => { replaceProject(proj); toast.success(`Tempo set — ${proj.audioAnalysis?.bpm} BPM`); tapTimesRef.current = []; })
+      .catch((err) => toast.error(err?.message || 'Could not set tempo'))
+      .finally(() => setSettingManualTempo(false));
   };
 
   // Autonomous shot planner (#1855): propose one scene per analyzed audio
@@ -461,6 +511,29 @@ export default function MusicVideo() {
     updateMusicVideoScene(selected.id, sceneId, patch, { silent: true })
       .catch((err) => toast.error(err?.message || 'Failed to save scene'));
   };
+
+  // Project-level concept/style (issue #3168) — optimistic-local + silent-PATCH on
+  // commit, same as commitSceneTiming below. Sends only the changed sub-field;
+  // the server merges it into the existing concept (applyProjectPatch), so a
+  // stale local copy can't clobber a sibling sub-field. Consumed by
+  // buildScenePlanPrompt (AI Plan) and by buildFramePrompt/buildShotPrompt's
+  // style suffix, both already reading concept.
+  const commitConcept = (patch) => {
+    replaceProject({ ...selected, concept: { ...selected.concept, ...patch } });
+    updateMusicVideoProject(selected.id, { concept: patch }, { silent: true })
+      .catch((err) => toast.error(err?.message || 'Failed to save concept'));
+  };
+  // Buffered so a concept/style keystroke doesn't fire a round-trip per character,
+  // and a focus-without-edit blur doesn't re-PATCH an unchanged value.
+  const conceptDraft = useFieldDraft(selected?.concept?.prompt, (v) => commitConcept({ prompt: v }));
+  const styleDraft = useFieldDraft(selected?.concept?.style, (v) => commitConcept({ style: v }));
+  // The route (not a remount) drives which project is "selected" here, so a
+  // still-focused, unblurred draft survives a project switch (deep link,
+  // browser Back, future ⌘K/voice jump) with the OLD project's typed text.
+  // Without this, the next incidental blur would commit that leftover draft
+  // onto the NEW project via commitConcept's captured `selected`. Discard
+  // (never auto-commit) any pending edit the instant the selection changes.
+  useEffect(() => { conceptDraft.reset(); styleDraft.reset(); }, [selectedId]);
   // BeatTimeline drag commit — same optimistic-local + silent-PATCH pattern as
   // the other scene field editors (#1854).
   const commitSceneTiming = (sceneId, patch) => {
@@ -633,7 +706,7 @@ export default function MusicVideo() {
           {!selected && !loading && routeProjectId && (
             <p className="text-sm text-port-text-muted">
               Project not found — it may have been deleted.{' '}
-              <button onClick={() => navigate('/media/music-video')} className="text-port-accent underline">Back to projects</button>
+              <button onClick={() => navigate('/music-video')} className="text-port-accent underline">Back to projects</button>
             </p>
           )}
           {!selected && (loading || !routeProjectId) && <p className="text-sm text-port-text-muted">Select or create a project to open its scene board.</p>}
@@ -703,6 +776,36 @@ export default function MusicVideo() {
                       className="flex items-center gap-1 text-port-error border border-port-border rounded px-2 py-1.5 text-sm min-h-[40px] sm:min-h-0">
                       <Trash2 size={15} />
                     </button>
+                  </div>
+                </div>
+                {/* Concept & style — optional global direction for the whole video,
+                    set before "AI Plan" (see commitConcept above for what reads it). */}
+                <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div>
+                    <label htmlFor="mv-concept" className="block text-xs text-port-text-muted mb-1">Concept</label>
+                    <textarea
+                      id="mv-concept"
+                      value={conceptDraft.value}
+                      rows={2}
+                      maxLength={8000}
+                      onChange={conceptDraft.onChange}
+                      onBlur={conceptDraft.onBlur}
+                      placeholder="What is this video about — story, theme, or narrative thread for the AI plan to build on."
+                      className="w-full bg-port-bg border border-port-border rounded px-2 py-1.5 text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="mv-style" className="block text-xs text-port-text-muted mb-1">Visual style</label>
+                    <textarea
+                      id="mv-style"
+                      value={styleDraft.value}
+                      rows={2}
+                      maxLength={2000}
+                      onChange={styleDraft.onChange}
+                      onBlur={styleDraft.onBlur}
+                      placeholder="Art style, references, palette, mood — appended to every generated frame and shot prompt."
+                      className="w-full bg-port-bg border border-port-border rounded px-2 py-1.5 text-sm"
+                    />
                   </div>
                 </div>
                 {/* Track picker — pick an existing library track or import fresh audio
@@ -791,6 +894,31 @@ export default function MusicVideo() {
                     <span>Duration: {formatDurationSec(selected.audioAnalysis.durationSec)}</span>
                     <span>Beats: {selected.audioAnalysis.beats?.length || 0}</span>
                     <span>Sections: {selected.audioAnalysis.sections?.length || 0}</span>
+                  </div>
+                )}
+                {selected.audioAnalysis && !selected.audioAnalysis.bpm && (
+                  <div className="mt-2 flex flex-wrap items-end gap-2 text-xs bg-port-bg border border-port-border rounded-lg p-2">
+                    <span className="text-port-text-muted w-full">No tempo detected — set it by ear to unlock the beat grid:</span>
+                    <div>
+                      <label htmlFor="mv-manual-bpm" className="block text-port-text-muted mb-1">BPM</label>
+                      <input id="mv-manual-bpm" type="number" min={20} max={300} step={1} value={manualBpm}
+                        onChange={(e) => setManualBpm(e.target.value)} placeholder="120"
+                        className="w-16 bg-port-card border border-port-border rounded px-1.5 py-1" />
+                    </div>
+                    <button onClick={handleTapTempo} type="button"
+                      className="bg-port-card border border-port-border rounded px-2 py-1.5 min-h-[32px] hover:bg-port-border/40">
+                      Tap tempo
+                    </button>
+                    <div>
+                      <label htmlFor="mv-manual-offset" className="block text-port-text-muted mb-1">First downbeat (s)</label>
+                      <input id="mv-manual-offset" type="number" min={0} max={600} step={0.1} value={manualOffset}
+                        onChange={(e) => setManualOffset(e.target.value)}
+                        className="w-20 bg-port-card border border-port-border rounded px-1.5 py-1" />
+                    </div>
+                    <button onClick={handleSetManualTempo} disabled={settingManualTempo || !manualBpm}
+                      className="bg-port-accent text-white rounded px-2 py-1.5 min-h-[32px] disabled:opacity-50">
+                      {settingManualTempo ? 'Setting…' : 'Set tempo'}
+                    </button>
                   </div>
                 )}
               </div>

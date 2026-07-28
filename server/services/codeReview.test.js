@@ -58,6 +58,7 @@ describe('codeReview helpers', () => {
         reviewers: ['copilot'],
         usernames: [],
         optionalReviewers: [],
+        reviewerMaxRounds: {},
         stopMode: 'all',
         reviewerApplies: false,
         lmstudioModel: null,
@@ -69,6 +70,7 @@ describe('codeReview helpers', () => {
         reviewers: ['copilot'],
         usernames: [],
         optionalReviewers: [],
+        reviewerMaxRounds: {},
         stopMode: 'all',
         reviewerApplies: false,
         lmstudioModel: null,
@@ -117,6 +119,7 @@ describe('codeReview helpers', () => {
         codeReview: {
           reviewers: ['codex', 'lmstudio'],
           optionalReviewers: ['lmstudio', 'bogus'],
+          reviewerMaxRounds: { lmstudio: 1, codex: 0, bogus: 2, ollama: -1 },
           stopMode: 'on-clean',
           reviewerApplies: true,
           lmstudioModel: 'qwen2.5-coder:7b',
@@ -130,6 +133,9 @@ describe('codeReview helpers', () => {
         usernames: [],
         // 'bogus' is dropped (not a known reviewer); 'lmstudio' survives.
         optionalReviewers: ['lmstudio'],
+        // 'bogus' (unknown token) and ollama's negative cap are dropped; an
+        // explicit 0 survives as "loop until clean".
+        reviewerMaxRounds: { lmstudio: 1, codex: 0 },
         stopMode: 'on-clean',
         reviewerApplies: true,
         lmstudioModel: 'qwen2.5-coder:7b',
@@ -186,11 +192,50 @@ describe('codeReview helpers', () => {
       expect(out.reviewerModels).toEqual({ codex: 'gpt-5.6-sol' })
     })
 
-    it('returns an empty map when no CLI-reviewer model is configured', async () => {
+    it('returns an empty map when no reviewer has a configured model', async () => {
+      mockedSettings.current = { codeReview: { reviewers: ['copilot', 'codex'] } }
+      const out = await resolveReviewLoopOptions({}, testDeps)
+      expect(out.reviewerModels).toEqual({})
+    })
+
+    it('carries a local-LLM model pin too, so a per-task one can reach the endpoint (#3133)', async () => {
       mockedSettings.current = { codeReview: { reviewers: ['copilot', 'ollama'], ollamaModel: 'codellama' } }
       const out = await resolveReviewLoopOptions({}, testDeps)
-      // ollama's model is injected server-side by /api/code-review/local, never threaded here.
+      // /api/code-review/local's own default reads the GLOBAL settings scalar and
+      // can't see a task-level pin, so the pin has to travel in this map instead
+      // of being dropped as a CLI-only concern.
+      expect(out.reviewerModels).toEqual({ ollama: 'codellama' })
+    })
+
+    it('lets a task-level model map (including an explicitly empty one) override the defaults', async () => {
+      mockedSettings.current = { codeReview: { reviewers: ['codex'], codexModel: 'gpt-5.6-sol' } }
+      const pinned = await resolveReviewLoopOptions({ reviewerModels: { codex: 'gpt-tier-b' } }, testDeps)
+      expect(pinned.reviewerModels).toEqual({ codex: 'gpt-tier-b' })
+      // An explicit `{}` is a real "use each reviewer's own default for this task"
+      // choice, not an absent field — it must not fall back to the scalars.
+      const cleared = await resolveReviewLoopOptions({ reviewerModels: {} }, testDeps)
+      expect(cleared.reviewerModels).toEqual({})
+    })
+
+    it('drops a pin on a reviewer that takes no model', async () => {
+      mockedSettings.current = { codeReview: { reviewers: ['copilot'] } }
+      const out = await resolveReviewLoopOptions({ reviewerModels: { copilot: 'nope', '@bot': 'nope' } }, testDeps)
       expect(out.reviewerModels).toEqual({})
+    })
+
+    it('inherits the defaults\' ~max round caps when the task pinned none', async () => {
+      mockedSettings.current = { codeReview: { reviewers: ['ollama'], reviewerMaxRounds: { ollama: 1 } } }
+      const out = await resolveReviewLoopOptions({}, testDeps)
+      expect(out.reviewerMaxRounds).toEqual({ ollama: 1 })
+    })
+
+    it('lets a task-level cap map (including an explicitly empty one) override the defaults', async () => {
+      mockedSettings.current = { codeReview: { reviewers: ['ollama'], reviewerMaxRounds: { ollama: 1 } } }
+      const pinned = await resolveReviewLoopOptions({ reviewerMaxRounds: { ollama: 3 } }, testDeps)
+      expect(pinned.reviewerMaxRounds).toEqual({ ollama: 3 })
+      // An explicitly empty map is a real "no caps for this task" choice.
+      const cleared = await resolveReviewLoopOptions({ reviewerMaxRounds: {} }, testDeps)
+      expect(cleared.reviewerMaxRounds).toEqual({})
     })
   })
 
@@ -233,6 +278,29 @@ describe('codeReview helpers', () => {
       expect(body.stream).toBe(false)
       expect(body.messages[0].role).toBe('system')
       expect(body.messages[1].content).toContain('diff --git a b')
+    })
+
+    it('widens the fence so a diff containing ``` cannot close it early', async () => {
+      // A diff touching a markdown file can legitimately contain a fenced
+      // code block of its own. A hardcoded ``` wrapper would let that content
+      // close the outer fence, turning the rest of the diff into free text
+      // the model reads as instructions rather than diff content.
+      const diff = 'diff --git a/README.md b/README.md\n+```js\n+const x = 1\n+```\n'
+      await runLocalCodeReview({ backend: 'ollama', model: 'm', diff })
+      const body = JSON.parse(global.fetch.mock.calls[0][1].body)
+      const content = body.messages[1].content
+      const fenceMatch = content.match(/^Review this PR diff:\n\n(`{3,})diff\n/)
+      expect(fenceMatch).not.toBeNull()
+      const [, fence] = fenceMatch
+      // The chosen fence must be longer than every backtick run in the diff.
+      expect(fence.length).toBeGreaterThan(3)
+      expect(content).toContain(diff)
+      // Only the trailing closing fence line may equal the chosen fence — no
+      // line WITHIN the diff itself (its own ``` fences) may match or exceed
+      // it, which is what would let the diff's content close the block early.
+      const lines = content.split('\n')
+      expect(lines.at(-1)).toBe(fence)
+      expect(lines.slice(0, -1)).not.toContain(fence)
     })
 
     it('surfaces a non-2xx HTTP error with the status code', async () => {

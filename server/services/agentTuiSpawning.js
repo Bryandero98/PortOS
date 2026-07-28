@@ -16,7 +16,7 @@ import { registerSpawnedAgent, unregisterSpawnedAgent } from './agents.js';
 import { createOutputSpooler } from './agentTuiSpawning/outputSpooler.js';
 import { captureWorktreeDiff, worktreeHasChanges, resolveErrorAnalysis } from './agentTuiSpawning/finalizeHelpers.js';
 import { finalizeAgent, releaseAgentLane } from './agentFinalization.js';
-import { activeAgents, userTerminatedAgents, pausedAgents } from './agentState.js';
+import { activeAgents, userTerminatedAgents, pausedAgents, isFalsyMeta } from './agentState.js';
 import { PATHS } from '../lib/fileUtils.js';
 import { DONE_SENTINEL_NAME, parseSentinelPayload } from '../lib/agentSentinel.js';
 import * as git from './git.js';
@@ -29,6 +29,8 @@ import {
   DEFAULT_TUI_PROMPT_DELAY_MS,
   DEFAULT_TUI_IDLE_TIMEOUT_MS,
   DEFAULT_TUI_MAX_RUNTIME_MS,
+  MAX_RUNTIME_WRAP_UP_GRACE_MS,
+  buildWrapUpProdMessage,
   MERGE_QUEUE_IDLE_TIMEOUT_MS,
   REVIEW_LOOP_IDLE_TIMEOUT_MS,
   READY_POLL_INTERVAL_MS,
@@ -42,6 +44,7 @@ import {
   MCP_BOOT_PASTE_DEADLINE_MS,
   MCP_BOOT_PASTE_RETRY_DELAY_MS,
   createInputReadyTracker,
+  AGY_INPUT_READY_PATTERN,
   rendersWorkCounter,
   PASTE_TO_ENTER_MIN_DELAY_MS,
   PASTE_TO_ENTER_FALLBACK_MS,
@@ -155,7 +158,6 @@ function shellHasLiveChild(shellPid) {
 }
 
 function appendModelArgs(args, model, command, provider) {
-  if (isAntigravityCommand(command)) return args;
   const effectiveModel = resolveCliModel(model);
   if (!effectiveModel) return args;
   // OpenCode TUI launches with `opencode --model ollama/<id>` (the top-level
@@ -165,6 +167,13 @@ function appendModelArgs(args, model, command, provider) {
   if (isOpencodeCommand(command)) {
     if (hasModelFlag(args)) return args;
     return [...args, '--model', prefixOpencodeModel(provider, effectiveModel)];
+  }
+  // Antigravity (`agy --model <id>`). No Bedrock mapping: agy serves
+  // `claude-*` ids through Google's own gateway, so rewriting them to
+  // `global.anthropic.*` would hand it an id it can't resolve.
+  if (isAntigravityCommand(command)) {
+    if (hasModelFlag(args)) return args;
+    return [...args, '--model', effectiveModel];
   }
   // Bedrock box: map a bare Claude id to its region-prefixed form just-in-time
   // (no-op off Bedrock / for non-Claude ids).
@@ -303,7 +312,11 @@ export async function spawnTuiAgent({
   // Tracks claude's interactive input-readiness (footer chrome) and its first-run
   // folder-trust gate. Gates the prompt paste for the claude TUI so we never
   // paste into a startup banner, a trust menu, or a returned shell prompt.
-  const inputReady = createInputReadyTracker();
+  // agy enables bracketed paste on alt-screen entry, before its composer (and
+  // before its trust gate) exists, so it needs the extra composer-footer gate.
+  const inputReady = createInputReadyTracker(
+    isAntigravityCommand(tuiConfig.command) ? { readyTextPattern: AGY_INPUT_READY_PATTERN } : {},
+  );
   let trustAccepted = false;
   // True once shell.js actually injects the `claude` command (after its
   // round-trip readiness probe). The probe runs its OWN shell command first,
@@ -332,6 +345,10 @@ export async function spawnTuiAgent({
   // ticking), this bounds the total run so a hung provider/CLI can't run
   // unbounded. See DEFAULT_TUI_MAX_RUNTIME_MS for the incident.
   let maxRuntimeTimer = null;
+  // Deadline for the wrap-up grace window the max-runtime ceiling opens instead of
+  // reaping immediately (see MAX_RUNTIME_WRAP_UP_GRACE_MS). Cleared in finish()
+  // alongside every other timer.
+  let wrapUpTimer = null;
 
   const streamingStrip = createStreamingAnsiStripper();
 
@@ -350,9 +367,15 @@ export async function spawnTuiAgent({
   // finalize chokepoint); idempotent via `sentinelIngested` so it reads at most
   // once. Capped at 4 KB so an agent that pasted the whole diff into the
   // sentinel can't blow up the record.
+  // Has the agent written its completion sentinel? One predicate for every path
+  // that asks (the 2s watcher, the max-runtime salvage, the wrap-up grace poll,
+  // and ingestDoneSentinel) so "the run finished" can't mean subtly different
+  // things in four places.
+  const sentinelPresent = () => !!doneSentinelPath && existsSync(doneSentinelPath);
+
   const ingestDoneSentinel = async () => {
     if (sentinelIngested) return;
-    if (!doneSentinelPath || !existsSync(doneSentinelPath)) return;
+    if (!sentinelPresent()) return;
     sentinelIngested = true;
     const contents = await readFile(doneSentinelPath, 'utf8').catch(err => {
       console.error(`❌ ingestDoneSentinel readFile failed: ${err.message}`);
@@ -382,6 +405,7 @@ export async function spawnTuiAgent({
     if (pasteVerifyTimer) { clearInterval(pasteVerifyTimer); pasteVerifyTimer = null; }
     if (submitEnterTimer) { clearInterval(submitEnterTimer); submitEnterTimer = null; }
     if (maxRuntimeTimer) { clearTimeout(maxRuntimeTimer); maxRuntimeTimer = null; }
+    if (wrapUpTimer) { clearTimeout(wrapUpTimer); wrapUpTimer = null; }
     // Release the post-paste accumulator even when finalize fires mid-paste-
     // window. The pasteEnterTimer's own cleanup path nulls this too, but if
     // finalize comes from elsewhere (shell-exit, command-not-found, user
@@ -437,10 +461,11 @@ export async function spawnTuiAgent({
     // record for long runs. The append-only stream is the authoritative copy.
     //
     // For failure analysis: resolveErrorAnalysis reads only the tail of the raw
-    // PTY spool (the analyzer's window is the last ~200 lines) and falls back to
-    // the capped output buffer if the spool is missing/unreadable. Successful
-    // runs skip the read entirely. raw.txt stays in agentDir alongside
-    // output.txt as the persistent record of the agent's full PTY transcript.
+    // PTY spool (the analyzer strips ANSI and windows it to the last ~200 lines /
+    // 16K chars) and falls back to the capped output buffer if the spool is
+    // missing/unreadable. Successful runs skip the read entirely. raw.txt stays
+    // in agentDir alongside output.txt as the persistent record of the agent's
+    // full PTY transcript.
     const errorAnalysis = await resolveErrorAnalysis({
       finalSuccess,
       rawFile,
@@ -448,6 +473,10 @@ export async function spawnTuiAgent({
       task,
       model,
       immediateFallbackAnalysis,
+      // The finalize path's own verdict outranks a keyword sweep of the
+      // transcript when the analyzer recognizes it (COMPLETION_REASON_ANALYSES).
+      completionReason: reason,
+      completionError: finalError,
     });
 
     // try/finally so a throw from finalizeAgent (e.g. processAgentCompletion
@@ -698,6 +727,84 @@ export async function spawnTuiAgent({
   // codex is still booting its MCP servers).
   let firstPasteStartedAt = null;
 
+  // Reap the run as a max-runtime failure. Shared by the wrap-up grace window's
+  // expiry and its own "session already died" branch so both produce the same
+  // record: uncommitted work captured for post-mortem, then a
+  // needs-manual-finish error (same recovery guidance as the merge-queue /
+  // review-loop idle-timeout paths — a stuck orchestrator may have left
+  // PRs/worktrees behind).
+  const finishMaxRuntimeFailure = (detail, reason = 'max-runtime-timeout') => {
+    captureWorktreeDiff(cwd, agentDir).catch(() => {});
+    finish({
+      success: false,
+      exitCode: 124,
+      error: `TUI agent exceeded its max runtime of ${Math.round(tuiConfig.maxRuntimeMs / 60000)}min — ${detail} check for open or merged-but-uncleaned PRs and finish them manually.`,
+      reason,
+    }).catch(err => {
+      emitLog('error', `Failed to finalize TUI agent ${agentId} at max-runtime: ${err.message}`, { agentId });
+    });
+  };
+
+  // Max-runtime wrap-up grace: prod the agent to land its sentinel, then watch
+  // for it before reaping (see MAX_RUNTIME_WRAP_UP_GRACE_MS). The prod goes in
+  // over the same bracketed-paste + delayed-Enter channel `sendBtwToAgent` uses,
+  // so from the agent's side it is indistinguishable from the user typing it.
+  //
+  // Success here finalizes through the ordinary sentinel path — we do NOT call
+  // finish() ourselves on the happy path, because the 2s doneSentinelTimer is
+  // still running and owns that transition; racing it would just be a second
+  // caller into the same `finalized` guard. This poll exists to bound the WAIT
+  // and to reap when the prod doesn't work.
+  const startWrapUpGrace = () => {
+    if (finalized || wrapUpTimer) return;
+    // A dead session can't be prodded — nothing will ever write the sentinel, so
+    // skip the grace window entirely rather than idling out the full 5min.
+    if (!sessionId || !shellService.getSession(sessionId)) {
+      finishMaxRuntimeFailure('the TUI session was already gone, so it could not be asked to wrap up;');
+      return;
+    }
+    const graceMin = Math.round(MAX_RUNTIME_WRAP_UP_GRACE_MS / 60000);
+    appendLine(`⏳ Max runtime reached — asking the agent to wrap up and write its sentinel (${graceMin}min grace)`);
+    emitLog('warn', `TUI agent ${agentId} hit max runtime — prodding it to wrap up with ${graceMin}min of grace before reaping`, { agentId, phase: 'wrap-up' });
+    updateAgent(agentId, { metadata: { phase: 'wrap-up' } }).catch(err => {
+      emitLog('warn', `Failed to mark TUI agent ${agentId} as wrapping up: ${err.message}`, { agentId });
+    });
+
+    shellService.writeToSession(sessionId, `\x1b[200~${buildWrapUpProdMessage(MAX_RUNTIME_WRAP_UP_GRACE_MS)}\x1b[201~`);
+    // Submit with the same repeated-Enter helper the initial prompt uses — a
+    // single `\r` can be swallowed while the TUI reflows the paste, and a prod
+    // that never submits is a prod that never happened. Clear any prior
+    // submit-Enter interval first: hours after submission the prompt's own is
+    // long finished, but overwriting a live handle would leak it past finish().
+    if (submitEnterTimer) clearInterval(submitEnterTimer);
+    submitEnterTimer = scheduleSubmitEnters(
+      () => shellService.writeToSession(sessionId, '\r'),
+      () => finalized,
+    );
+
+    // A single deadline, NOT a poll: the 2s doneSentinelTimer is already watching
+    // this exact path at this exact cadence and owns the success transition (and
+    // finish() clears this handle), so polling here would just double the
+    // existsSync syscalls for 5 minutes to learn something the other timer acts on
+    // first. All this needs to do is fire once at the end of the window.
+    wrapUpTimer = setTimeout(() => {
+      try {
+        wrapUpTimer = null;
+        if (finalized) return;
+        // The sentinel landed right at the boundary — the prod worked after all.
+        // Let the sentinel path finalize it as the success it is.
+        if (sentinelPresent()) return;
+        finishMaxRuntimeFailure(
+          `it did not wrap up within ${graceMin}min of being asked, so the provider/CLI likely hung (a stalled request keeps the working counter repainting so the idle reaper never fires);`,
+          'max-runtime-no-wrap-up',
+        );
+      } catch (err) {
+        // setTimeout callback: an uncaught throw here would crash the process.
+        console.error(`❌ wrapUpTimer callback failed: ${err.message}`);
+      }
+    }, MAX_RUNTIME_WRAP_UP_GRACE_MS);
+  };
+
   const sendPrompt = async (reason) => {
     if (finalized || promptSentAt) return;
     promptSentAt = Date.now();
@@ -756,32 +863,31 @@ export async function spawnTuiAgent({
       // forever; this timer is the honest ceiling regardless of PTY chatter.
       if (!maxRuntimeTimer) {
         maxRuntimeTimer = setTimeout(() => {
-          if (finalized) return;
-          // Salvage net: if the agent already wrote its .agent-done sentinel the
-          // run truly finished (the TUI just never idled/exited), so complete as
-          // success — mirrors the one-shot runner's response-file salvage. The
-          // 2s doneSentinelTimer normally catches this first; this covers the
-          // boundary where it lands right at the deadline.
-          const salvaged = doneSentinelPath && existsSync(doneSentinelPath);
-          if (salvaged) {
-            finish({ success: true, exitCode: 0, reason: 'max-runtime-sentinel' }).catch(err => {
-              emitLog('error', `Failed to finalize TUI agent ${agentId} at max-runtime salvage: ${err.message}`, { agentId });
-            });
-            return;
+          try {
+            if (finalized) return;
+            // Salvage net: if the agent already wrote its .agent-done sentinel the
+            // run truly finished (the TUI just never idled/exited), so complete as
+            // success — mirrors the one-shot runner's response-file salvage. The
+            // 2s doneSentinelTimer normally catches this first; this covers the
+            // boundary where it lands right at the deadline.
+            if (sentinelPresent()) {
+              finish({ success: true, exitCode: 0, reason: 'max-runtime-sentinel' }).catch(err => {
+                emitLog('error', `Failed to finalize TUI agent ${agentId} at max-runtime salvage: ${err.message}`, { agentId });
+              });
+              return;
+            }
+            // No sentinel yet — but a wall-clock deadline lands wherever it lands,
+            // including on an agent seconds from writing one (see
+            // MAX_RUNTIME_WRAP_UP_GRACE_MS for the measured 30s miss). PROD it to
+            // wrap up and keep watching for the sentinel through the grace window
+            // before reaping. Only then does this become a real failure.
+            startWrapUpGrace();
+          } catch (err) {
+            // setTimeout callback: an uncaught throw here (e.g. a PTY write racing
+            // a dead session) would crash the whole process, killing every other
+            // in-flight agent, not just this one.
+            console.error(`❌ maxRuntimeTimer callback failed: ${err.message}`);
           }
-          // Capture any uncommitted work for post-mortem before cleanup, then
-          // fail with a needs-manual-finish message — a stuck orchestrator may
-          // have left PRs/worktrees behind (same recovery guidance as the
-          // merge-queue/review-loop idle-timeout paths).
-          captureWorktreeDiff(cwd, agentDir).catch(() => {});
-          finish({
-            success: false,
-            exitCode: 124,
-            error: `TUI agent exceeded its max runtime of ${Math.round(tuiConfig.maxRuntimeMs / 60000)}min — the provider/CLI likely hung (a stalled request keeps the working counter repainting so the idle reaper never fires); check for open or merged-but-uncleaned PRs and finish them manually.`,
-            reason: 'max-runtime-timeout',
-          }).catch(err => {
-            emitLog('error', `Failed to finalize TUI agent ${agentId} at max-runtime: ${err.message}`, { agentId });
-          });
         }, tuiConfig.maxRuntimeMs);
       }
     };
@@ -906,19 +1012,21 @@ export async function spawnTuiAgent({
   // trust gate, and NEVER blind-paste: if the prompt never appears we surface a
   // failure. Other TUI providers keep the original idle heuristic + deadline.
   //
-  // Antigravity (agy) gets the SAME positive gate (issue #2705). agy's TUI also
-  // enables bracketed-paste mode (`ESC[?2004h`) exactly when its input box is
-  // live — the identical signal createInputReadyTracker keys on — but the old
-  // blind-paste path fired into agy's still-initializing banner, so the prompt
-  // never landed and the agent sat idle at an empty prompt until it was reaped
-  // having done nothing. agy DOES have a first-run folder-trust gate ("Do you
-  // trust the contents of this project?") like claude's — production spawns agy
-  // with `--dangerously-skip-permissions`, which bypasses it; and if it does
-  // appear (agy launched without that flag), its "Yes, I trust this folder"
-  // option matches TUI_TRUST_PROMPT_PATTERN, so the requireInputReady auto-confirm
-  // branch below handles it exactly as it does claude's. If agy ever fails to
-  // signal ready, the requireInputReady path fails fast with a surfaced startup
-  // error instead of silently idle-reaping.
+  // Antigravity (agy) gets the SAME positive gate (issue #2705), but agy alone
+  // needs a second signal on top of paste mode: unlike claude it enables
+  // bracketed paste on ALT-SCREEN ENTRY, ~200ms after launch, while it is still
+  // signing in and before its trust gate has even painted. Gating on paste mode
+  // alone therefore raced agy's sign-in round trip — when that outran the 2.5s
+  // prompt delay the prompt was pasted into the still-pending trust gate, which
+  // swallowed it and all three retries (`paste-not-rendered`). agy's composer
+  // footer (AGY_INPUT_READY_PATTERN) renders only after the trust gate is
+  // resolved, so requiring it orders the two correctly. agy DOES have a
+  // first-run folder-trust gate ("Do you trust the contents of this project?")
+  // and `--dangerously-skip-permissions` does NOT bypass it — the auto-confirm
+  // branch below is load-bearing, matching its "Yes, I trust this folder" option
+  // via TUI_TRUST_PROMPT_PATTERN. If agy ever fails to signal ready, the
+  // requireInputReady path fails fast with a surfaced startup error instead of
+  // silently idle-reaping.
   const requireInputReady = isClaudeCommand(tuiConfig.command) || isAntigravityCommand(tuiConfig.command);
   // sendPrompt / finishStartupFailure are async and dispatched fire-and-forget
   // from the interval below. A setInterval callback can't await, and an
@@ -938,12 +1046,13 @@ export async function spawnTuiAgent({
     const elapsed = now - startedAt;
 
     if (requireInputReady) {
-      // Auto-confirm claude's first-run "trust this folder?" gate (default is
-      // "Yes, I trust") so claims can run in fresh worktrees. Send Enter once.
+      // Auto-confirm the first-run "trust this folder?" gate (claude's and agy's
+      // both default to "Yes, I trust") so claims can run in fresh worktrees.
+      // Send Enter once.
       if (inputReady.needsTrust && !trustAccepted) {
         trustAccepted = true;
         shellService.writeToSession(sessionId, '\r');
-        appendLine(`📟 Auto-confirmed claude folder-trust prompt for session ${sessionId.slice(0, 8)}`);
+        appendLine(`📟 Auto-confirmed ${tuiConfig.command} folder-trust prompt for session ${sessionId.slice(0, 8)}`);
         return;
       }
       if (inputReady.ready && elapsed >= tuiConfig.promptDelayMs) {
@@ -1077,10 +1186,21 @@ export async function spawnTuiAgent({
         // Gate idle-complete success on evidence of work in the worktree.
         // An agent that shows activity counters but makes no file changes
         // (rambled, invalid tool calls, hit an error) should fail, not succeed.
+        //
+        // ...UNLESS the task declares its work product isn't files (#3102).
+        // `worktreeChangesExpected: false` marks a task type whose deliverable
+        // lands OUTSIDE the repo — a reference-watch run against a GitHub/GitLab/
+        // JIRA work tracker files issues and, per its prompt, edits no application
+        // code, so a clean tree is the SUCCESS shape and this gate would fail a run
+        // that did its whole job. Absent/`true` keeps every code-editing task type
+        // on today's behavior; the `workActivity.active` signal above still
+        // distinguishes "prompt never submitted" → idle-no-activity either way.
+        const worktreeChangesExpected = !isFalsyMeta(task?.metadata?.worktreeChangesExpected);
         (async () => {
-          const hasChanges = await worktreeHasChanges(cwd);
+          const hasChanges = !worktreeChangesExpected || await worktreeHasChanges(cwd);
           // Capture any uncommitted changes for post-mortem analysis regardless
-          // of outcome — the diff is useful even on success for debugging.
+          // of outcome — the diff is useful even on success for debugging, and is
+          // a no-op on a clean tree.
           await captureWorktreeDiff(cwd, agentDir).catch(() => {});
           if (!hasChanges) {
             finish({

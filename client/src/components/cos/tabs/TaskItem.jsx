@@ -95,18 +95,13 @@ function getSuccessRateStyle(rate) {
   return { bg: 'bg-port-error/15', text: 'text-port-error', label: 'low' };
 }
 
-export default function TaskItem({ task, isSystem, awaitingApproval, onRefresh, providers, durations, dragHandleProps, apps, onEditingChange }) {
-  // System and approval-gated tasks are persisted in COS-TASKS.md. Every task
+export default function TaskItem({ task, isSystem, onRefresh, providers, durations, dragHandleProps, apps, onEditingChange }) {
+  // System tasks are persisted in COS-TASKS.md. Every task
   // mutation must name that source; otherwise the API's user-queue default
   // searches TASKS.md and reports the system task as missing.
-  const taskSource = isSystem || awaitingApproval ? 'internal' : 'user';
-  // DOM-id scope. An approval-gated pending task renders TWICE — TasksTab's
-  // `pendingSystemTasks` filters only on `status === 'pending'`, and the
-  // "Awaiting Approval" section renders the `approvalRequired && pending`
-  // subset again — so a bare `task-desc-${task.id}` would be duplicated across
-  // the two cards. `aria-controls` resolves by first match, which would point
-  // the approval card's toggle at the pending card's paragraph.
-  const idScope = awaitingApproval ? 'approval' : isSystem ? 'sys' : 'user';
+  const taskSource = isSystem ? 'internal' : 'user';
+  const idScope = isSystem ? 'sys' : 'user';
+  const requiresApproval = isSystem && task.approvalRequired;
   const [editing, setEditingInternal] = useState(false);
   const setEditing = useCallback((val) => {
     setEditingInternal(val);
@@ -215,6 +210,7 @@ export default function TaskItem({ task, isSystem, awaitingApproval, onRefresh, 
   // for arbitration (→ blocked + an approval-required task). Gated while a resolve
   // is in flight so a double-click can't fire two verdicts.
   const [resolvingChallenge, setResolvingChallenge] = useState(false);
+  const [approving, setApproving] = useState(false);
   const handleResolveChallenge = async (outcome) => {
     setResolvingChallenge(true);
     const result = await api.resolveCosTaskChallenge(task.id, { outcome, resolvedBy: 'user' }, { silent: true })
@@ -226,10 +222,12 @@ export default function TaskItem({ task, isSystem, awaitingApproval, onRefresh, 
   };
 
   const handleApprove = async () => {
+    setApproving(true);
     const result = await api.approveCosTask(task.id, { silent: true }).catch(err => {
       toast.error(err.message);
       return null;
     });
+    setApproving(false);
     if (!result) return;
     toast.success('Task approved');
     onRefresh();
@@ -237,11 +235,11 @@ export default function TaskItem({ task, isSystem, awaitingApproval, onRefresh, 
 
   return (
     <div className={`bg-port-card border rounded-lg p-4 ${
-      awaitingApproval ? 'border-yellow-500/50' : 'border-port-border'
+      requiresApproval ? 'border-yellow-500/50' : 'border-port-border'
     }`}>
       <div className="flex items-start gap-3">
-        {/* Drag handle - only show for user tasks (not system or awaiting approval) */}
-        {dragHandleProps && !isSystem && !awaitingApproval && (
+        {/* Drag handle - only show for user tasks. */}
+        {dragHandleProps && !isSystem && (
           <button
             {...dragHandleProps}
             className="mt-0.5 cursor-grab active:cursor-grabbing text-gray-500 hover:text-gray-300 transition-colors touch-none"
@@ -303,12 +301,14 @@ export default function TaskItem({ task, isSystem, awaitingApproval, onRefresh, 
             {isSystem && task.autoApproved && (
               <span className="px-2 py-0.5 rounded text-xs bg-port-success/20 text-port-success">AUTO</span>
             )}
-            {awaitingApproval && (
+            {requiresApproval && (
               <button
                 onClick={handleApprove}
-                className="px-2 py-0.5 rounded text-xs bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 transition-colors"
+                disabled={approving}
+                className="px-2 py-0.5 rounded text-xs bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 transition-colors disabled:opacity-50"
+                aria-label={`Approve task ${task.id}`}
               >
-                APPROVE
+                {approving ? 'APPROVING…' : 'APPROVE'}
               </button>
             )}
           </div>

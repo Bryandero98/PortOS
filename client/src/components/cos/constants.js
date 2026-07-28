@@ -191,6 +191,35 @@ export const REVIEWER_OPTIONS = [
 ];
 export const LOCAL_LLM_REVIEWERS = ['lmstudio', 'ollama'];
 
+// CLI reviewers whose binary takes a `--model <id>` tier. Client mirror of
+// MODEL_CAPABLE_CLI_REVIEWERS in server/lib/cosValidation.js.
+export const MODEL_CAPABLE_CLI_REVIEWERS = ['codex', 'claude'];
+
+// Every reviewer whose model the user can pick per row in ReviewerPicker — the
+// model-capable CLIs plus the local-LLM backends. Client mirror of
+// MODEL_SELECTABLE_REVIEWERS in server/lib/cosValidation.js; keep in sync so the
+// picker only offers a Model cell where the server would keep the pin.
+// `copilot` and `@username` reviewers take no model.
+export const MODEL_SELECTABLE_REVIEWERS = [...MODEL_CAPABLE_CLI_REVIEWERS, ...LOCAL_LLM_REVIEWERS];
+
+// Upper bound on a pinned reviewer model id. Client mirror of
+// MAX_REVIEWER_MODEL_LENGTH in server/lib/cosValidation.js — a longer id is
+// dropped server-side, so the input must not accept one.
+export const MAX_REVIEWER_MODEL_LENGTH = 200;
+
+// Characters that are STRUCTURAL in slashdo's emitted `--review-with` token and
+// have no escape inside the `[<model>]` selector, so the server drops an id
+// containing one (mirror of REVIEWER_MODEL_FORBIDDEN_RE in
+// server/lib/cosValidation.js). Stripped as the user types rather than silently
+// accepted, so the field can't display a pin the server would refuse to store.
+// A space is deliberately legal — `agy[Gemini 3.5 Flash (High)]` is a valid entry.
+const REVIEWER_MODEL_FORBIDDEN_RE = /[[\],\r\n\t]/g;
+
+// Strip the structural characters from a typed model id. Trimming is left to the
+// caller: an id being typed may legitimately have a trailing space mid-entry.
+export const sanitizeReviewerModelInput = (raw) =>
+  typeof raw === 'string' ? raw.replace(REVIEWER_MODEL_FORBIDDEN_RE, '') : '';
+
 // pr-watcher author gate (taskMetadata.prAuthorFilter). Mirrors
 // PR_AUTHOR_FILTERS in server/lib/validation.js. 'self' = PRs opened by the
 // gh-authenticated operator (or their automation); 'others' = external
@@ -269,6 +298,13 @@ export function normalizeReviewUsernames(list) {
   }
   return out;
 }
+
+// Upper bound on a per-reviewer `~max=<n>` round cap. Client mirror of
+// MAX_REVIEWER_MAX_ROUNDS in `server/lib/cosValidation.js` — a value above it is
+// dropped server-side, so the input must not offer one. `0` is valid and means
+// "loop until clean" (slashdo's unlimited mode, bounded by its own guardrail);
+// blank/absent means "no cap requested" and keeps slashdo's built-in default.
+export const MAX_REVIEWER_MAX_ROUNDS = 10;
 
 // Stop-mode for the multi-reviewer loop (slashdo `--review-stop-on-*`).
 // Keep in sync with REVIEW_STOP_MODES in `server/lib/validation.js`.

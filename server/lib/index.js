@@ -96,6 +96,7 @@ export * from './hfToken.js';
 export * from './hfErrors.js';
 export * from './hfCache.js';
 export * from './hfDownload.js';
+export * from './icLoraWeights.js';
 export * from './sseDownload.js';
 export * from './sseHeaders.js';
 export * from './installLogger.js';
@@ -105,6 +106,8 @@ export * from './promptPartials.js';
 export * from './promptRunner.js';
 export * from './promptTemplate.js';
 export * from './providerModels.js';
+export * from './providerTranscriptUsage.js';
+export * from './quotaReset.js';
 export * from './opencodeConfig.js';
 // `runners.js` re-defines `isFlux2`/`isZImage`/`isErnie` that also live in
 // mediaModels.js — namespace it so the barrel surface is unambiguous.
@@ -257,6 +260,8 @@ export * from './openapiSpec.js';
 export * from './prDisposition.js';
 export * from './shellQuote.js';
 export * from './sidecarProcess.js';
+export * from './slashdoCatalog.js';
+export * from './slashdoInvocation.js';
 export * from './singleFlight.js';
 export * from './staticImportGraph.js';
 export * from './streamBackpressure.js';

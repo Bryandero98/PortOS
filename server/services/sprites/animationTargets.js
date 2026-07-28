@@ -29,9 +29,11 @@
  * by walk's floor of 6.
  */
 
-import {
-  WALK_TRACK, getAnimationTrack,
-} from './animationTracks.js';
+import { WALK_TRACK } from './animationTracks.js';
+// #3152 — resolve against the EFFECTIVE table (compiled `walk` + the user-defined
+// store) so a user's track resolves its own bounds and contract field rather than
+// throwing as unknown. Still sharp-free: the store reaches only fs/path/crypto.
+import { effectiveTrack } from './animationTrackStore.js';
 
 // Re-exported so existing importers (walk.js) keep reaching the walk track id
 // here; the registry owns the value now, so the two can never disagree.
@@ -85,7 +87,7 @@ export function resolveAnimationTarget({
   packagedCycles = [],
 } = {}) {
   // Absent → the default track; unrecognized → throws (see getAnimationTrack).
-  const row = getAnimationTrack(track);
+  const row = effectiveTrack(track);
 
   // The bound app's declared expectation for its own atlas (#2982) — a stronger
   // authority than any per-render pick. Read defensively: that field lands
@@ -137,7 +139,7 @@ function firstDefined(list, read) {
  * unrecognized write target throws while sibling keys are untouched either way.
  */
 export function withTrackTarget(animationTargets, track, { frameCount, fps, source }) {
-  const row = getAnimationTrack(track);
+  const row = effectiveTrack(track);
   const existing = (animationTargets && typeof animationTargets === 'object' && !Array.isArray(animationTargets))
     ? animationTargets
     : {};
@@ -155,7 +157,7 @@ export function withTrackTarget(animationTargets, track, { frameCount, fps, sour
  * to the default track when the caller passed a bare `{ frameCount, fps }`.
  */
 export function targetDrift(target, packagedCycles = []) {
-  const row = getAnimationTrack(target?.track);
+  const row = effectiveTrack(target?.track);
   return (packagedCycles || []).flatMap((cycle) => {
     const frameCount = readFrameCount(row, cycle?.frameCount);
     const fps = readFps(row, cycle?.fps);

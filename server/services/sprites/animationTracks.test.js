@@ -6,6 +6,14 @@
  * The walk row is pinned to its historical values on purpose: #3015 is a
  * refactor, and a registry that quietly moved walk's floor would change every
  * render's geometry while looking like plumbing.
+ *
+ * **Compiled vs. effective, since #3152.** `ANIMATION_TRACKS` now holds only
+ * `walk`; `scanner` and `ambient` are seeded rows in the user-defined store. So a
+ * test about the SHIPPED SET of tracks resolves `EFFECTIVE` (the merge) while a
+ * test about the compiled table asserts `walk` alone — and the difference is
+ * itself asserted, because "walk is the only built-in" is the property #3152
+ * exists to establish. The store's own behavior (merge, seed fallback, bad-row
+ * rejection) lives in `animationTrackStore.test.js`.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -13,10 +21,12 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import {
-  WALK_TRACK, SCANNER_TRACK, AMBIENT_TRACK, ANIMATION_TRACKS, ANIMATION_TRACK_IDS,
+  WALK_TRACK, SCANNER_TRACK, AMBIENT_TRACK, ANIMATION_TRACKS,
   isAnimationTrack, getAnimationTrack, clampTrackFrameCount, clampTrackFps,
   assertAnimationTrackRows, trackRowCount, tracksForKind, kindSupportsTrack,
+  sourceReferenceFor, primaryTrackForKind,
 } from './animationTracks.js';
+import { getEffectiveAnimationTracks, getEffectiveAnimationTrackIds } from './animationTrackStore.js';
 import { SPRITE_RECORD_KINDS } from './recordsLogic.js';
 import { AMBIENT_TRACK_ROW } from './spriteTestFixtures.js';
 import {
@@ -31,6 +41,12 @@ import {
 
 const SPRITES_DIR = dirname(fileURLToPath(import.meta.url));
 const SERVER_DIR = dirname(dirname(SPRITES_DIR));
+
+// The merged table this install actually serves — compiled `walk` plus the seeded
+// store rows. Resolved once: the store caches its read, so every call in this file
+// sees one consistent table.
+const EFFECTIVE = getEffectiveAnimationTracks();
+const effectiveTrack = (id) => getAnimationTrack(id, EFFECTIVE);
 
 describe('the registry rows', () => {
   it('reproduces the walk track\'s historical bounds and defaults exactly', () => {
@@ -52,8 +68,24 @@ describe('the registry rows', () => {
     });
   });
 
+  it('compiles in walk and ONLY walk (#3152)', () => {
+    // The property #3152 establishes. Asserted against the compiled constant
+    // specifically — `EFFECTIVE` would pass here forever, since it contains the
+    // seeded rows, so a regression that re-added `scanner` to the literal would
+    // slip through a merged-table assertion.
+    expect(Object.keys(ANIMATION_TRACKS)).toEqual([WALK_TRACK]);
+    expect(ANIMATION_TRACKS[WALK_TRACK].builtin).toBe(true);
+    for (const id of [SCANNER_TRACK, AMBIENT_TRACK]) {
+      expect(ANIMATION_TRACKS[id], `${id} must be a stored row, not compiled in`).toBeUndefined();
+      // …and still reachable through the merge, carrying the marker that says
+      // where it came from. Both halves matter: "not compiled" without "still
+      // served" would be satisfied by simply deleting the track.
+      expect(effectiveTrack(id).builtin, `${id} must be marked user-defined`).toBe(false);
+    }
+  });
+
   it('registers the short scanner action independently of walk', () => {
-    expect(getAnimationTrack(SCANNER_TRACK)).toMatchObject({
+    expect(effectiveTrack(SCANNER_TRACK)).toMatchObject({
       id: SCANNER_TRACK,
       directional: true,
       kinds: ['character'],
@@ -69,7 +101,7 @@ describe('the registry rows', () => {
   });
 
   it('registers the single-row ambient loop for places and objects', () => {
-    expect(getAnimationTrack(AMBIENT_TRACK)).toMatchObject({
+    expect(effectiveTrack(AMBIENT_TRACK)).toMatchObject({
       id: AMBIENT_TRACK,
       label: 'Ambient loop',
       directional: false,
@@ -89,8 +121,11 @@ describe('the registry rows', () => {
     // Mirrors the module-load guard in animationTracks.js (which is what
     // actually blocks boot on a bad row) so a shape violation reads as a named
     // assertion here rather than only as an import-time throw somewhere else.
-    for (const id of ANIMATION_TRACK_IDS) {
-      const row = ANIMATION_TRACKS[id];
+    // Walks the EFFECTIVE table so a malformed SEEDED row is caught here too —
+    // scoping this to the compiled table would have narrowed it to one row the
+    // moment #3152 landed.
+    for (const id of getEffectiveAnimationTrackIds()) {
+      const row = EFFECTIVE[id];
       expect(row.id, `${id}.id must match its registry key`).toBe(id);
       expect(typeof row.label).toBe('string');
       expect(typeof row.directional).toBe('boolean');
@@ -130,6 +165,15 @@ describe('the module-load row guard', () => {
   const second = {
     ...walk, id: 'scanner', label: 'Scanner', minFrameCount: 3, defaultFrameCount: 4, maxFrameCount: 8,
     contractFrameCountField: 'scannerFrameCount', contractFpsField: 'scannerFps',
+    // #3136: the on-disk `kind` discriminators are per-row unique for the same
+    // reason the contract fields are, so a row copy-pasted from walk's must
+    // rename them too or the guard (correctly) refuses it.
+    selectionKind: 'reviewed-directional-scanner-selection',
+    setKind: 'finalized-eight-direction-scanner-set',
+    finalErrorCode: 'SCANNER_SET_FINAL',
+    // Walk is `character`'s standalone baseline, so a SECOND character track must
+    // not also claim it — exactly one per record kind (asserted below).
+    standaloneContract: false,
   };
   const twoRows = (overrides = {}) => ({ walk, scanner: { ...second, ...overrides } });
 
@@ -174,8 +218,78 @@ describe('the module-load row guard', () => {
     ['a default fps outside its range', { defaultFps: 99 }, /minFps <= defaultFps <= maxFps/],
     ['an empty contract frame-count field', { contractFrameCountField: '' }, /needs a contractFrameCountField/],
     ['an undefined contract fps field', { contractFpsField: undefined }, /contractFpsField \(or null\)/],
+    // #3136 — the workflow shape the generic track service dispatches on.
+    ['a missing selectionKind', { selectionKind: '' }, /needs a non-empty 'selectionKind'/],
+    ['a missing setKind', { setKind: undefined }, /needs a non-empty 'setKind'/],
+    ['a missing finalErrorCode', { finalErrorCode: '' }, /needs a non-empty 'finalErrorCode'/],
+    ['a non-boolean standaloneContract', { standaloneContract: 'yes' }, /boolean 'standaloneContract'/],
+    ['a non-boolean builtin', { builtin: 'yes' }, /boolean 'builtin'/],
+    // #3152 — exactly ONE prompt source per row, asserted in BOTH directions. The
+    // second case is the one a provenance-shaped guard misses: a builtin row that
+    // also carries a template has two definitions of its wording, and the stored one
+    // silently wins over the text `prompts.test.js` pins.
+    ['a stored row with no promptTemplate', { builtin: false }, /needs a non-empty 'promptTemplate'/],
+    ['a stored row with a blank promptTemplate', { builtin: false, promptTemplate: '   ' }, /needs a non-empty 'promptTemplate'/],
+    ['a builtin row carrying a promptTemplate', { promptTemplate: 'Animate it.' }, /must not carry a 'promptTemplate'/],
   ])('rejects %s', (_label, overrides, message) => {
     expect(() => assertAnimationTrackRows(twoRows(overrides))).toThrow(message);
+  });
+
+  it('requires exactly one standaloneContract track per record kind (#3136)', () => {
+    // Zero means a record of that kind can be authored but never published: the
+    // publish contract would require no field and the compiler would have no
+    // evidence chain to demand. Two means "which set must be finalized before
+    // compiling?" has two answers — and the publish schema would accept either
+    // track's frame count alone as describing the atlas.
+    expect(() => assertAnimationTrackRows(twoRows({ standaloneContract: true })))
+      .toThrow(/record kind 'character' needs exactly one standaloneContract track, has 2 \(walk, scanner\)/);
+    expect(() => assertAnimationTrackRows({
+      walk: { ...walk, standaloneContract: false }, scanner: second,
+    })).toThrow(/record kind 'character' needs exactly one standaloneContract track, has 0/);
+  });
+
+  it('rejects a second row that copy-pastes walk\'s on-disk set kind (#3136)', () => {
+    // The mirror of the contract-field collision, one layer down: the atlas
+    // compiler validates a finalized set by its `kind`, so two tracks sharing
+    // one would let this track's set satisfy the OTHER's evidence check and
+    // compile the wrong frames into its span.
+    expect(() => assertAnimationTrackRows(twoRows({ setKind: 'finalized-eight-direction-walk-set' })))
+      .toThrow(/claimed by both 'walk\.setKind' and 'scanner\.setKind'/);
+    expect(() => assertAnimationTrackRows(twoRows({ selectionKind: 'reviewed-directional-walk-selection' })))
+      .toThrow(/claimed by both 'walk\.selectionKind' and 'scanner\.selectionKind'/);
+  });
+
+});
+
+describe('registry-derived source reference and primacy (#3136)', () => {
+  it('derives the seeding reference from directionality, never declaring it', () => {
+    // Only one pairing can work, which is why this is derived rather than a row
+    // field: a directional track seeded from the single `main` would render the
+    // SAME south-facing clip for all eight facings and pass every later check
+    // (nothing downstream re-reads which facing was asked for), and a
+    // non-directional one has no anchor to read at all — a place record never
+    // generates directional anchors.
+    expect(sourceReferenceFor(WALK_TRACK)).toBe('anchor');
+    expect(sourceReferenceFor(SCANNER_TRACK, EFFECTIVE)).toBe('anchor');
+    expect(sourceReferenceFor(AMBIENT_TRACK, EFFECTIVE)).toBe('main');
+    // Reads the row it's HANDED, not the shipped table.
+    expect(sourceReferenceFor('ambient', { ambient: AMBIENT_TRACK_ROW })).toBe('main');
+    expect(() => sourceReferenceFor('unknown')).toThrow(/Unknown animation track/);
+  });
+
+  it('answers which track a record kind publishes off', () => {
+    // ONE definition, shared by the publish-contract schema (which field is
+    // required) and the compile dispatch (which evidence chain to validate).
+    expect(primaryTrackForKind('character', EFFECTIVE)?.id).toBe(WALK_TRACK);
+    expect(primaryTrackForKind('place', EFFECTIVE)?.id).toBe(AMBIENT_TRACK);
+    expect(primaryTrackForKind('object', EFFECTIVE)?.id).toBe(AMBIENT_TRACK);
+    expect(primaryTrackForKind('props', EFFECTIVE)?.id).toBe(AMBIENT_TRACK);
+    // A short action a record can't publish off alone is never the primary.
+    expect(primaryTrackForKind('character', EFFECTIVE)?.id).not.toBe(SCANNER_TRACK);
+    // Absent/unknown answers null rather than defaulting to a kind.
+    expect(primaryTrackForKind('nope', EFFECTIVE)).toBeNull();
+    expect(primaryTrackForKind('', EFFECTIVE)).toBeNull();
+    expect(primaryTrackForKind(undefined, EFFECTIVE)).toBeNull();
   });
 });
 
@@ -190,7 +304,7 @@ describe('getAnimationTrack — absent vs unrecognized', () => {
     // The sentinel rule: "not set" resolves to the default; "set to something
     // this build does not know" is an error. Silently handing back walk's 6–16
     // would reject a legitimate 4-frame action for reasons nothing explains.
-    expect(getAnimationTrack(SCANNER_TRACK).id).toBe(SCANNER_TRACK);
+    expect(effectiveTrack(SCANNER_TRACK).id).toBe(SCANNER_TRACK);
     expect(() => getAnimationTrack('unknown')).toThrow(/Unknown animation track 'unknown'/);
   });
 
@@ -255,9 +369,9 @@ describe('directionality and record-kind support (#3017)', () => {
   });
 
   it('admits ambient loops for non-character sprite kinds', () => {
-    expect(tracksForKind('character').map((r) => r.id)).toEqual([WALK_TRACK, SCANNER_TRACK]);
+    expect(tracksForKind('character', EFFECTIVE).map((r) => r.id)).toEqual([WALK_TRACK, SCANNER_TRACK]);
     for (const kind of ['place', 'object', 'props']) {
-      expect(tracksForKind(kind).map((r) => r.id), `${kind} carries the ambient loop`).toEqual([AMBIENT_TRACK]);
+      expect(tracksForKind(kind, EFFECTIVE).map((r) => r.id), `${kind} carries the ambient loop`).toEqual([AMBIENT_TRACK]);
     }
   });
 
@@ -269,8 +383,8 @@ describe('directionality and record-kind support (#3017)', () => {
     // as the baffling "No animation track applies to character records".
     // Cross-checked here, where reaching another module is fine — the same
     // place the client-mirror parity check lives.
-    for (const id of ANIMATION_TRACK_IDS) {
-      for (const kind of ANIMATION_TRACKS[id].kinds) {
+    for (const id of getEffectiveAnimationTrackIds()) {
+      for (const kind of EFFECTIVE[id].kinds) {
         expect(SPRITE_RECORD_KINDS, `${id}.kinds names an unknown record kind '${kind}'`).toContain(kind);
       }
     }
@@ -297,17 +411,17 @@ describe('per-track clamps', () => {
   });
 
   it('clamps scanner values against scanner bounds', () => {
-    expect(clampTrackFrameCount(99, SCANNER_TRACK)).toBe(8);
-    expect(clampTrackFrameCount(-1, SCANNER_TRACK)).toBe(2);
-    expect(clampTrackFps(99, SCANNER_TRACK)).toBe(12);
-    expect(clampTrackFps(-1, SCANNER_TRACK)).toBe(2);
+    expect(clampTrackFrameCount(99, SCANNER_TRACK, EFFECTIVE)).toBe(8);
+    expect(clampTrackFrameCount(-1, SCANNER_TRACK, EFFECTIVE)).toBe(2);
+    expect(clampTrackFps(99, SCANNER_TRACK, EFFECTIVE)).toBe(12);
+    expect(clampTrackFps(-1, SCANNER_TRACK, EFFECTIVE)).toBe(2);
   });
 
   it('clamps ambient values against the ambient range', () => {
-    expect(clampTrackFrameCount(99, AMBIENT_TRACK)).toBe(6);
-    expect(clampTrackFrameCount(-1, AMBIENT_TRACK)).toBe(2);
-    expect(clampTrackFps(99, AMBIENT_TRACK)).toBe(12);
-    expect(clampTrackFps(-1, AMBIENT_TRACK)).toBe(2);
+    expect(clampTrackFrameCount(99, AMBIENT_TRACK, EFFECTIVE)).toBe(6);
+    expect(clampTrackFrameCount(-1, AMBIENT_TRACK, EFFECTIVE)).toBe(2);
+    expect(clampTrackFps(99, AMBIENT_TRACK, EFFECTIVE)).toBe(12);
+    expect(clampTrackFps(-1, AMBIENT_TRACK, EFFECTIVE)).toBe(2);
   });
 });
 
@@ -354,6 +468,11 @@ describe('sharp-free leaf property', () => {
   it.each([
     ['the request-validation graph', join(SERVER_DIR, 'lib', 'validation.js')],
     ['animationTracks.js', join(SPRITES_DIR, 'animationTracks.js')],
+    // #3152: the store sits BETWEEN the leaf registry and validation.js — every
+    // sprite Zod range now resolves through it — so if it ever reached sharp, the
+    // whole split collapses at its narrowest point. It does file I/O (which the
+    // leaf below may not), but native image deps are still forbidden.
+    ['animationTrackStore.js', join(SPRITES_DIR, 'animationTrackStore.js')],
     ['walkBounds.js', join(SPRITES_DIR, 'walkBounds.js')],
     ['animationTargets.js', join(SPRITES_DIR, 'animationTargets.js')],
     // #3016: the atlas grid is the ONE definition of a column span, shared by
@@ -370,6 +489,19 @@ describe('sharp-free leaf property', () => {
 
   it('keeps animationTracks.js a true leaf — it imports nothing at all', () => {
     expect(staticImportSpecifiers(join(SPRITES_DIR, 'animationTracks.js'))).toEqual([]);
+  });
+
+  it('runs the store→leaf dependency ONE way (#3152)', () => {
+    // The store does file I/O; the leaf may not. So the store imports the leaf and
+    // never the reverse — the assertion above already forbids ANY import from the
+    // leaf, but state the direction explicitly, because "move the merge into
+    // animationTracks.js" is the natural-looking refactor that would drag fs into
+    // the request-validation graph and break the split this whole describe exists
+    // to protect.
+    expect(staticImportSpecifiers(join(SPRITES_DIR, 'animationTrackStore.js')))
+      .toContain('./animationTracks.js');
+    const leafClosure = staticImportClosure(join(SPRITES_DIR, 'animationTracks.js'));
+    expect([...leafClosure.files]).not.toContain(join(SPRITES_DIR, 'animationTrackStore.js'));
   });
 
   it('actually walks the graph (positive control — the guard is not vacuous)', () => {
@@ -428,14 +560,16 @@ describe('client mirror parity', () => {
     expect(walk.maxFps - Math.max(...options)).toBeLessThan(2);
   });
 
-  it('keeps the publish form\'s hard-coded frame-count bounds in step', () => {
+  it('keeps the publish form registry-driven instead of mirroring walk bounds', () => {
     // PublishWorkflow.jsx is a React component (not importable under the server
-    // runner), so its two mirrored literals are asserted as source text.
+    // runner), so assert the source consumes each served definition's bounds
+    // and cannot drift through reintroduced walk-specific constants.
     const src = readFileSync(
       join(SERVER_DIR, '..', 'client', 'src', 'components', 'sprites', 'PublishWorkflow.jsx'),
       'utf-8',
     );
-    expect(src).toContain(`const WALK_MIN_FRAME_COUNT = ${walk.minFrameCount};`);
-    expect(src).toContain(`const WALK_MAX_FRAME_COUNT = ${walk.maxFrameCount};`);
+    expect(src).toContain('min={definition.minFrameCount}');
+    expect(src).toContain('max={definition.maxFrameCount}');
+    expect(src).not.toMatch(/WALK_(?:MIN|MAX)_FRAME_COUNT/);
   });
 });

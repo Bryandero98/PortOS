@@ -41,6 +41,7 @@ export default function Shell() {
     isLiveRun,
     emitShellInput,
     sendCommand,
+    sendCtrlB,
     sendCtrlC,
     sendNavKey,
     restartSession,
@@ -183,6 +184,7 @@ export default function Shell() {
       {!isFullscreen && connected && (
         <div className="flex items-center gap-2 mb-3 flex-wrap">
           <TerminalHotKeys
+            sendCtrlB={sendCtrlB}
             sendCtrlC={sendCtrlC}
             handlePaste={handlePaste}
             sendNavKey={sendNavKey}
@@ -261,6 +263,7 @@ export default function Shell() {
           <div className="w-px h-6 bg-port-border shrink-0" />
           {connected && (
             <TerminalHotKeys
+              sendCtrlB={sendCtrlB}
               sendCtrlC={sendCtrlC}
               handlePaste={handlePaste}
               sendNavKey={sendNavKey}

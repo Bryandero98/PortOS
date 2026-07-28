@@ -184,23 +184,32 @@ export async function forceRemoveWorktreeDir(repo, worktreePath, { label, log = 
  * lockfile churn. Pure (testable) — callers decide what to do with the result.
  *
  * @param {string} porcelain - raw `git status --porcelain` stdout
- * @returns {{ clean: boolean, lockfileOnly: boolean, lockfilePaths: string[], hasRealChanges: boolean }}
+ * @returns {{ clean: boolean, lockfileOnly: boolean, lockfilePaths: string[], realChangePaths: string[], hasRealChanges: boolean }}
  *   - clean: no changes at all
  *   - lockfileOnly: every change is an auto-generated lockfile (safe to discard)
  *   - lockfilePaths: paths of those lockfiles (strip the porcelain `XY ` status prefix)
+ *   - realChangePaths: paths of the NON-lockfile changes, same prefix stripping.
+ *     Branch reconciliation intersects these with what the default branch has
+ *     touched since the branch diverged, to spot work that may have been
+ *     superseded while it sat uncommitted.
  *   - hasRealChanges: at least one non-lockfile change (worktree must be preserved)
  */
 export function classifyWorktreeDirt(porcelain) {
   const lines = (porcelain || '').split('\n').map(l => l.trim()).filter(Boolean);
   if (lines.length === 0) {
-    return { clean: true, lockfileOnly: false, lockfilePaths: [], hasRealChanges: false };
+    return { clean: true, lockfileOnly: false, lockfilePaths: [], realChangePaths: [], hasRealChanges: false };
   }
-  const lockfileLines = lines.filter(line => AUTO_GENERATED_LOCKFILES.some(f => line.endsWith(f)));
+  const isLockfile = (line) => AUTO_GENERATED_LOCKFILES.some(f => line.endsWith(f));
+  // `R old -> new` (rename) names two paths; the post-rename path is the one
+  // that exists on disk and the one a diff against the default branch reports.
+  const toPath = (line) => line.replace(/^\s*\S+\s+/, '').split(' -> ').pop();
+  const lockfileLines = lines.filter(isLockfile);
   const lockfileOnly = lockfileLines.length === lines.length;
   return {
     clean: false,
     lockfileOnly,
-    lockfilePaths: lockfileLines.map(line => line.replace(/^\s*\S+\s+/, '')),
+    lockfilePaths: lockfileLines.map(toPath),
+    realChangePaths: lines.filter((line) => !isLockfile(line)).map(toPath),
     hasRealChanges: !lockfileOnly
   };
 }
@@ -382,7 +391,12 @@ async function createWorktreeUnlocked(agentId, sourceWorkspace, taskId, options 
  * @param {string} agentId - The agent identifier
  * @param {string} sourceWorkspace - The original git repository path
  * @param {string} branchName - The worktree branch to clean up
- * @param {object} options - { merge: boolean } whether to attempt merge back
+ * @param {object} options
+ * @param {boolean} [options.merge] - attempt to merge the branch back first
+ * @param {boolean} [options.preserveBranchWithCommits] - keep the branch (rather
+ *   than deleting it) whenever it still holds commits the default branch doesn't,
+ *   so a retry can resume the work instead of restarting. Used by the FAILED-agent
+ *   cleanup path; the PR path leaves it off so its local branch is still tidied up.
  */
 export async function removeWorktree(agentId, sourceWorkspace, branchName, options = {}) {
   const worktreePath = join(WORKTREES_DIR, agentId);
@@ -482,9 +496,37 @@ export async function removeWorktree(agentId, sourceWorkspace, branchName, optio
   // Preserve branch when (a) merge was attempted, failed, and has unmerged commits,
   // OR (b) merge was refused because HEAD is on a non-default branch — the commits
   // are still there and the user / a follow-up task may want to integrate manually.
-  const hasUnmergedCommits = options.merge && !merged && (commitsAhead > 0 || mergeRefused);
+  let hasUnmergedCommits = options.merge && !merged && (commitsAhead > 0 || mergeRefused);
+  // ...OR (c) the caller asked us to keep any branch that still holds commits
+  // (`preserveBranchWithCommits`). The no-merge path — which is what a FAILED
+  // agent's cleanup takes — otherwise deletes the branch unconditionally, taking
+  // the agent's committed work with it. That is what forces a retry to restart
+  // from scratch instead of resuming: measured on agent-d2ae0352 (2026-07-27),
+  // reaped 30s after its PR merged, whose branch was deleted and whose task was
+  // re-dispatched to a fresh agent. Opt-in rather than automatic so the PR flow
+  // (which deletes the LOCAL branch after pushing — the remote branch is what the
+  // PR points at) keeps cleaning up after itself.
+  if (!hasUnmergedCommits && options.preserveBranchWithCommits && !merged) {
+    const { getDefaultBranch, isBranchMergedInto } = await import('./git.js');
+    const target = await getDefaultBranch(sourceWorkspace).catch(() => null) || 'main';
+    // `isBranchMergedInto` — NOT a bare `rev-list --count target..branch`. A branch
+    // whose PR was REBASE- or SQUASH-merged has new SHAs, so rev-list still reports
+    // it ahead and we would preserve an already-landed branch and point a retry at
+    // it. PortOS merges with `--rebase` by default, so that is the COMMON shape of
+    // the very incident this preservation exists for ("PR merged, then reaped").
+    // isBranchMergedInto covers patch-equivalence (`git cherry`) and fails closed,
+    // which is the polarity we want here too: unknown ⇒ keep the work.
+    const alreadyMerged = await isBranchMergedInto(sourceWorkspace, branchName, target).catch(() => false);
+    if (!alreadyMerged) {
+      hasUnmergedCommits = true;
+      console.log(`🌳 Preserving branch ${branchName} — not yet merged into ${target}, kept so a retry can resume from it`);
+      warnings.push(`Branch ${branchName} preserved — it holds unmerged commits a retry can resume from`);
+    } else {
+      console.log(`🌳 Branch ${branchName} is already merged into ${target} — safe to delete`);
+    }
+  }
   if (hasUnmergedCommits) {
-    console.log(`⚠️ Preserving branch ${branchName} — merge failed, commits need manual recovery`);
+    console.log(`⚠️ Preserving worktree branch ${branchName} for manual/automated recovery`);
   } else {
     await execGit(['branch', '-D', branchName], sourceWorkspace)
       .catch(err => {

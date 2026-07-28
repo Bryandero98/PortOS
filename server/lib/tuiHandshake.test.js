@@ -46,6 +46,8 @@ import {
   verifyPasteRendered,
   isPasteConfirmed,
   isCollapsedPasteChip,
+  createInputReadyTracker,
+  AGY_INPUT_READY_PATTERN,
 } from './tuiHandshake.js';
 import { CODEX_CONFIGURED_DEFAULT } from './providerModels.js';
 
@@ -456,6 +458,14 @@ describe('tuiHandshake.inferTuiCommand', () => {
     ['anthropic-claude-code', 'claude'],
     ['kimi-tui', 'kimi'],
     ['moonshot-kimi-2', 'kimi'],
+    // grok / opencode were missing, so a blank-command provider under either id
+    // silently resolved to `claude` — which also told it (via
+    // resolveSlashdoStyle's spawner posture) to type `/do:pr` commands its real
+    // binary doesn't have.
+    ['grok-tui', 'grok'],
+    ['xai-grok-2', 'grok'],
+    ['opencode-tui', 'opencode'],
+    ['opencode-ollama-tui', 'opencode'],
   ])('inferTuiCommand(%p) → %p', (id, expected) => {
     expect(inferTuiCommand(id)).toBe(expected);
   });
@@ -509,8 +519,16 @@ describe('tuiHandshake.applyCommandDefaults', () => {
   });
 
   it('adds Antigravity permission bypass and strips legacy Gemini flags', () => {
-    expect(applyCommandDefaults('agy', ['--yolo', '--model', 'gemini-2.5-pro'])).toEqual([
+    expect(applyCommandDefaults('agy', ['--yolo', '-m', 'gemini-2.5-pro'])).toEqual([
       '--dangerously-skip-permissions',
+    ]);
+  });
+
+  // agy accepts the long `--model` now, so a baked pin survives (and suppresses
+  // the per-run model injection in buildTuiInvocation).
+  it('preserves a long-form --model pin for Antigravity', () => {
+    expect(applyCommandDefaults('agy', ['--model', 'gemini-3.1-pro-high'])).toEqual([
+      '--model', 'gemini-3.1-pro-high', '--dangerously-skip-permissions',
     ]);
   });
 
@@ -656,10 +674,30 @@ describe('tuiHandshake.buildTuiInvocation', () => {
     expect(out.args).toEqual(['--model', 'opus-x']);
   });
 
-  it('does not append --model for Antigravity TUI', () => {
+  it('does not append --model for the Antigravity configured-default sentinel', () => {
     const out = buildTuiInvocation({ id: 'antigravity-tui', command: 'agy', args: [] }, 'antigravity-configured-default');
     expect(out.command).toBe('agy');
     expect(out.args).toEqual(['--dangerously-skip-permissions']);
+  });
+
+  it('appends --model for Antigravity TUI when a real model is selected', () => {
+    const out = buildTuiInvocation({ id: 'antigravity-tui', command: 'agy', args: [] }, 'gemini-3.1-pro-high');
+    expect(out.command).toBe('agy');
+    expect(out.args).toEqual(['--dangerously-skip-permissions', '--model', 'gemini-3.1-pro-high']);
+  });
+
+  // agy serves its `claude-*` ids through Google's own gateway, so a Bedrock box
+  // must NOT rewrite them to `global.anthropic.*` (agy can't resolve that).
+  it('does not Bedrock-map an Antigravity claude-* model id', () => {
+    const prev = process.env.CLAUDE_CODE_USE_BEDROCK;
+    process.env.CLAUDE_CODE_USE_BEDROCK = '1';
+    try {
+      const out = buildTuiInvocation({ id: 'antigravity-tui', command: 'agy', args: [] }, 'claude-sonnet-4-6');
+      expect(out.args).toEqual(['--dangerously-skip-permissions', '--model', 'claude-sonnet-4-6']);
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_CODE_USE_BEDROCK;
+      else process.env.CLAUDE_CODE_USE_BEDROCK = prev;
+    }
   });
 
   it('handles a missing provider with no id (falls back to claude)', () => {
@@ -789,6 +827,61 @@ describe('tuiHandshake.extractVerifiablePromptPrefix', () => {
     // Should skip the first few characters to avoid matching common prefixes
     expect(prefix.startsWith('You are')).toBe(false);
     expect(prompt.replace(/\s+/g, ' ').includes(prefix)).toBe(true);
+  });
+});
+
+describe('createInputReadyTracker', () => {
+  const PASTE_OFF = '\x1b[?2004l';
+  const PASTE_ON = '\x1b[?2004h';
+
+  it('is ready once paste mode is re-enabled after the launch command ran', () => {
+    const tracker = createInputReadyTracker();
+    tracker.observe(PASTE_ON, ''); // the launch shell's own paste mode — not ready
+    expect(tracker.ready).toBe(false);
+    tracker.observe(PASTE_OFF, ''); // shell turned it off to run the command
+    expect(tracker.ready).toBe(false);
+    tracker.observe(PASTE_ON, '');
+    expect(tracker.ready).toBe(true);
+  });
+
+  it('latches needsTrust on either trust-gate wording', () => {
+    const claude = createInputReadyTracker();
+    claude.observe('', 'Is this a project you trust?');
+    expect(claude.needsTrust).toBe(true);
+
+    const agy = createInputReadyTracker();
+    agy.observe('', 'Do you trust the contents of this project?\n> Yes, I trust this folder\n');
+    expect(agy.needsTrust).toBe(true);
+  });
+
+  it('matches a marker split across two PTY chunks (rolling tail)', () => {
+    const tracker = createInputReadyTracker();
+    tracker.observe('', '> Yes, I trust th');
+    expect(tracker.needsTrust).toBe(false);
+    tracker.observe('', 'is folder');
+    expect(tracker.needsTrust).toBe(true);
+  });
+
+  // agy enables bracketed paste on ALT-SCREEN ENTRY — before its composer, and
+  // before its folder-trust gate paints — so paste mode alone raced the trust
+  // menu and the prompt was pasted into it (`paste-not-rendered`).
+  it('readyTextPattern: paste mode alone is not ready until the composer marker is seen', () => {
+    const tracker = createInputReadyTracker({ readyTextPattern: AGY_INPUT_READY_PATTERN });
+    tracker.observe(`${PASTE_OFF}${PASTE_ON}`, 'Welcome to the Antigravity CLI.\n Signing in...\n');
+    expect(tracker.ready).toBe(false);
+
+    tracker.observe('', 'Do you trust the contents of this project?\n> Yes, I trust this folder\n');
+    expect(tracker.needsTrust).toBe(true);
+    expect(tracker.ready).toBe(false); // still not ready while the trust menu is up
+
+    tracker.observe('', '>\n? for shortcutsGemini 3.6 Flash · medium');
+    expect(tracker.ready).toBe(true);
+  });
+
+  it('readyTextPattern: the composer marker alone is not ready without paste mode', () => {
+    const tracker = createInputReadyTracker({ readyTextPattern: AGY_INPUT_READY_PATTERN });
+    tracker.observe('', '? for shortcuts');
+    expect(tracker.ready).toBe(false);
   });
 });
 

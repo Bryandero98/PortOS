@@ -3,7 +3,7 @@ import { request, API_BASE, maybeRedirectToLogin } from './apiCore.js';
 // Image gen — local backend extras (gallery, models, LoRAs, cancel, delete).
 // generateImage / getImageGenStatus / generateAvatar live in apiSystem.js for
 // backward compatibility with existing call sites.
-export const listImageModels = () => request('/image-gen/models');
+export const listImageModels = (options) => request('/image-gen/models', options);
 // Per-model download status: `[{ id, repo, cached, sizeBytes }]`. Drives the
 // inline Available/Download badge on the image gen form.
 export const getImageModelStatuses = () => request('/image-gen/models/status', { silent: true });
@@ -172,6 +172,14 @@ export const repairVideoModel = (modelId, { deep = false } = {}) => request(`/vi
 // /text-encoder/download SSE re-fetches clean copies. The encoder isn't a model
 // id, so it needs this scalar endpoint rather than repairVideoModel.
 export const repairTextEncoder = ({ deep = false } = {}) => request('/video-gen/text-encoder/repair', {
+  method: 'POST',
+  body: JSON.stringify({ deep }),
+  silent: true,
+});
+// Repair an IC-LoRA remix weight (issue #3100). Keyed by the remix mode
+// ('ic-control', …) rather than a model id — the weights aren't registry models,
+// same reason the text encoder has its own scalar endpoint above.
+export const repairIcLora = (mode, { deep = false } = {}) => request(`/video-gen/ic-loras/${encodeURIComponent(mode)}/repair`, {
   method: 'POST',
   body: JSON.stringify({ deep }),
   silent: true,

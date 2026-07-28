@@ -27,8 +27,9 @@ import * as jiraService from './jira.js';
 import * as git from './git.js';
 import { isTruthyMeta } from './agentState.js';
 import { resolveReviewLoopOptions } from './codeReview.js';
-import { cleanupAgentWorktree, spawnMergeRecoveryTask } from './agentWorktreeCleanup.js';
+import { cleanupAgentWorktree, spawnMergeRecoveryTask, resolveResumeBranch } from './agentWorktreeCleanup.js';
 import { resolvePrCompletion } from '../lib/prDisposition.js';
+import { canTypeSlashCommands } from '../lib/slashdoInvocation.js';
 
 const ROOT_DIR = PATHS.root;
 
@@ -307,7 +308,21 @@ export async function runAgentCompletionCleanup({ agentId, task, agent, effectiv
     // branch and open the PR on their own. Mirror the TUI cleanup contract
     // so PortOS doesn't double-fire `gh pr create` ("a pull request already
     // exists" would preserve the worktree as a false-positive failure).
-    const agentOwnsPR = taskOpenPR && (agent.providerId === 'claude-code' || agent.providerId === 'claude-code-bedrock');
+    //
+    // Derived from the SAME `canTypeSlashCommands` predicate the prompt's
+    // `hasSlashdo` gate uses (#3114) — these two must agree or the double-fire
+    // this comment describes is exactly what happens. An id allowlist here would
+    // miss a path-configured `claude` under a custom provider id (told to run
+    // `/do:pr`, then PortOS opens a second PR) and would wrongly claim a lean
+    // `--bare` session owns a PR it was never told to open. `providerCommand` /
+    // `leanMode` are persisted on the agent record for this; a pre-upgrade record
+    // carries neither, and a blank command reads as `claude` — which is what the
+    // old id allowlist effectively assumed for the claude-code ids anyway.
+    const agentOwnsPR = taskOpenPR && canTypeSlashCommands({
+      providerId: agent.providerId,
+      providerCommand: agent.providerCommand,
+      leanMode: agent.leanMode === true,
+    });
     // Merge per-task reviewer metadata with the user's Code Review Defaults
     // (AI Providers → Code Review Defaults panel). Settings I/O is cached
     // inside the resolver, so this is effectively free even when invoked
@@ -322,6 +337,51 @@ export async function runAgentCompletionCleanup({ agentId, task, agent, effectiv
       agentOutput: outputBuffer,
       originalTask: task
     });
+
+    // A failed agent whose branch survived cleanup with commits on it (see
+    // `preserveBranchWithCommits` in agentWorktreeCleanup.js) leaves real work
+    // behind. Record that branch on the TASK so its retry attaches a worktree to
+    // it and RESUMES rather than restarting from scratch — the behavior the
+    // agent-d2ae0352 incident exposed, where a run reaped 30s after its PR merged
+    // was re-dispatched to a fresh agent that began the shipped work over.
+    //
+    // Written here (not in cleanupAgentWorktree) because this is where the task
+    // record is in hand, and AFTER cleanup so it reflects the branch that actually
+    // survived. `resolveResumeBranch` returns null when there's nothing to resume,
+    // in which case we leave the metadata untouched and the retry starts clean.
+    // Only for a task that is actually going to RETRY. `finalizeAgent` has already
+    // written the failure verdict by now, so the persisted status distinguishes a
+    // `pending` retry (wants the pointer) from a `blocked` task that exhausted its
+    // budget and is waiting on a human (a pointer there would be dead metadata
+    // that `updateTask` has to strip again on the next terminal write).
+    if (!effectiveSuccess && task?.id) {
+      const { getTaskById } = await import('./cos.js');
+      const persisted = await getTaskById(task.id).catch(() => null);
+      const willRetry = (persisted?.status ?? 'pending') === 'pending';
+      // Reuse the `agentState` fetched at the top of this function rather than
+      // re-reading the record: `getAgent` on a now-completed agent re-reads and
+      // splits the whole output.txt transcript (hundreds of KB for a TUI run),
+      // and both fields here are stamped once at registerAgent and never mutated.
+      const { sourceWorkspace, worktreeBranch } = (willRetry && agentState?.metadata) || {};
+      const resumeBranch = await resolveResumeBranch(sourceWorkspace, worktreeBranch).catch(err => {
+        emitLog('warn', `Failed to resolve resume branch for ${agentId}: ${err.message}`, { agentId });
+        return null;
+      });
+      if (resumeBranch) {
+        // `existingBranch` is the flag agentWorkspacePrep already honors to attach
+        // a worktree to a pre-existing branch (the review-loop follow-up path uses
+        // it), so a retry needs no new plumbing to resume. `resumedFromAgentId`
+        // records which run's work is being continued, for the prompt + postmortems.
+        await updateTask(task.id, {
+          metadata: { existingBranch: resumeBranch, resumedFromAgentId: agentId }
+        }, task.taskType || 'user').catch(err => {
+          emitLog('warn', `Failed to record resume branch for task ${task.id}: ${err.message}`, { taskId: task.id, agentId });
+        });
+        emitLog('info', `🔁 Task ${task.id} will resume from ${resumeBranch} (work left by ${agentId}) instead of restarting`, {
+          taskId: task.id, agentId, branchName: resumeBranch
+        });
+      }
+    }
 
     if (cleanupWarnings?.length > 0) {
       const { getAgent: getAgentForResult } = await import('./cos.js');

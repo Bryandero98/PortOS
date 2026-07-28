@@ -425,6 +425,13 @@ async function runAgentSpawn(task) {
       taskType: task.taskType,
       priority: task.priority,
       providerId: provider.id,
+      // Persisted alongside the id because the cleanup path's `agentOwnsPR` gate
+      // must derive from the SAME `canTypeSlashCommands` predicate the prompt used
+      // to decide whether the agent opens its own PR (#3114). An id alone can't
+      // answer that — a path-configured `claude` under a custom id is slashdo-
+      // capable, and a lean `--bare` session is not.
+      providerCommand: provider.command || null,
+      leanMode,
       model: selectedModel,
       modelTier: modelSelection.tier,
       modelReason: modelSelection.reason,

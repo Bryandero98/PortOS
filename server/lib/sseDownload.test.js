@@ -181,3 +181,182 @@ describe('startHfDownloadStream server-side logging', () => {
     expect(logged(errorSpy).some((l) => l.includes('download failed'))).toBe(false);
   });
 });
+
+// ── Single-file + first-success-wins fallbacks (#3112) ──────────────────────
+// `fallbacks` exists because the Ingredients IC weight lives in TWO repos with
+// different access: a gated first-party repo and the un-gated ~708 GB
+// `DeepBeepMeep/LTX-2` aggregate mirror. That makes two behaviors mandatory —
+// single-file pulls (a snapshot of the mirror would fill the user's disk) and
+// advancing to the next source on failure (so a user with no HF token succeeds).
+describe('startHfDownloadStream single-file + fallbacks (#3112)', () => {
+  const CANDIDATES = [
+    { repo: 'org/official', only: ['weight.safetensors'] },
+    { repo: 'org/mirror-708gb', only: ['weight.safetensors'] },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    inspectModelCache.mockResolvedValue({ cached: false, sizeBytes: 0, snapshotPath: null });
+    downloadHfRepo.mockImplementation(() => ({
+      promise: Promise.resolve({ ok: true, sizeBytes: 1000 }),
+      kill: vi.fn(),
+    }));
+  });
+
+  it('forwards `only` so the helper never enumerates the repo', async () => {
+    const { req, res } = makeReqRes();
+    await startHfDownloadStream({ req, res, fallbacks: [CANDIDATES[0]], cachedFile: async () => false });
+    expect(downloadHfRepo).toHaveBeenCalledWith(expect.objectContaining({
+      repo: 'org/official',
+      only: ['weight.safetensors'],
+    }));
+  });
+
+  it('stops at the first success without touching the mirror', async () => {
+    const { req, res, frames } = makeReqRes();
+    await startHfDownloadStream({ req, res, fallbacks: CANDIDATES, cachedFile: async () => false });
+    expect(downloadHfRepo).toHaveBeenCalledTimes(1);
+    expect(downloadHfRepo.mock.calls[0][0].repo).toBe('org/official');
+    expect(parseFrames(frames).at(-1)).toMatchObject({ type: 'complete', repos: ['org/official'] });
+  });
+
+  it('advances to the mirror when the gated repo fails', async () => {
+    downloadHfRepo.mockImplementation(({ repo }) => ({
+      promise: Promise.resolve(repo === 'org/official'
+        ? { ok: false, errorKind: 'gated_repo', errorMessage: 'gated' }
+        : { ok: true, sizeBytes: 1000 }),
+      kill: vi.fn(),
+    }));
+
+    const { req, res, frames } = makeReqRes();
+    await startHfDownloadStream({ req, res, fallbacks: CANDIDATES, cachedFile: async () => false });
+    expect(downloadHfRepo.mock.calls.map((c) => c[0].repo)).toEqual(['org/official', 'org/mirror-708gb']);
+    const events = parseFrames(frames);
+    // The retried failure must NOT reach the client as an error — otherwise the UI
+    // flashes a red "gated repo" banner for something the mirror then delivers.
+    expect(events.some((e) => e.type === 'error')).toBe(false);
+    expect(events.at(-1)).toMatchObject({ type: 'complete', repos: ['org/mirror-708gb'] });
+  });
+
+  it('reports every attempt when all sources fail', async () => {
+    downloadHfRepo.mockImplementation(({ repo }) => ({
+      promise: Promise.resolve({ ok: false, errorKind: 'x', errorMessage: `${repo} broke` }),
+      kill: vi.fn(),
+    }));
+
+    const { req, res, frames } = makeReqRes();
+    await startHfDownloadStream({ req, res, fallbacks: CANDIDATES, cachedFile: async () => false });
+    const last = parseFrames(frames).at(-1);
+    expect(last).toMatchObject({ type: 'error', kind: 'all_sources_failed' });
+    expect(last.message).toContain('org/official broke');
+    expect(last.message).toContain('org/mirror-708gb broke');
+  });
+
+  it('does not roll onto the next source after a user cancel', async () => {
+    downloadHfRepo.mockImplementation(() => ({
+      promise: Promise.resolve({ ok: false, errorKind: 'cancelled', errorMessage: 'Cancelled' }),
+      kill: vi.fn(),
+    }));
+
+    const { req, res } = makeReqRes();
+    await startHfDownloadStream({ req, res, fallbacks: CANDIDATES, cachedFile: async () => false });
+    // Cancel means "stop", not "try somewhere else".
+    expect(downloadHfRepo).toHaveBeenCalledTimes(1);
+  });
+
+  it('defers the already-cached verdict to cachedFile, not the repo-wide flag', async () => {
+    // The aggregate mirror reports `cached: true` off ANY resident weight. Without
+    // the per-file predicate the driver would skip a weight the user doesn't have.
+    inspectModelCache.mockResolvedValue({ cached: true, sizeBytes: 700e9, snapshotPath: '/snap' });
+
+    const { req, res } = makeReqRes();
+    await startHfDownloadStream({ req, res, fallbacks: [CANDIDATES[1]], cachedFile: async () => false });
+    expect(downloadHfRepo).toHaveBeenCalledTimes(1);
+  });
+
+  it('short-circuits when cachedFile says the weight is already resident', async () => {
+    inspectModelCache.mockResolvedValue({ cached: false, sizeBytes: 0, snapshotPath: null });
+
+    const { req, res, frames } = makeReqRes();
+    await startHfDownloadStream({ req, res, fallbacks: CANDIDATES, cachedFile: async () => true });
+    expect(downloadHfRepo).not.toHaveBeenCalled();
+    const last = parseFrames(frames).at(-1);
+    expect(last).toMatchObject({ type: 'complete' });
+    // Present already ⇒ don't fall through to the mirror for something we have.
+    expect(last.repos).toEqual(['org/official']);
+  });
+
+  it('never reports the aggregate repo size for a single-file cache hit', async () => {
+    // 700 GB of unrelated weights is not this weight's footprint; reporting it
+    // would put a wildly wrong number on the download badge.
+    inspectModelCache.mockResolvedValue({ cached: true, sizeBytes: 700e9, snapshotPath: '/snap' });
+
+    const { req, res, frames } = makeReqRes();
+    await startHfDownloadStream({ req, res, fallbacks: [CANDIDATES[1]], cachedFile: async () => true });
+    expect(parseFrames(frames).at(-1).sizeBytes).toBe(0);
+  });
+
+  it('never inspects the whole repo for a single-file pull (#3112)', async () => {
+    // inspectModelCache recursively stats EVERY weight in the snapshot. Against a
+    // populated 708 GB mirror that's the expensive walk the single-file path
+    // exists to avoid — and its verdict would be wrong anyway (cached off any
+    // unrelated resident file). It must not be called at all.
+    const { req, res } = makeReqRes();
+    await startHfDownloadStream({ req, res, fallbacks: CANDIDATES, cachedFile: async () => false });
+    expect(inspectModelCache).not.toHaveBeenCalled();
+  });
+
+  it('does NOT treat a single-file pull as cached when no predicate is supplied', async () => {
+    // Fail-safe direction: a caller that forgot `cachedFile` must re-fetch (cheap,
+    // etag no-op) rather than inherit the repo-wide `cached: true` and skip a
+    // weight the user doesn't have.
+    inspectModelCache.mockResolvedValue({ cached: true, sizeBytes: 700e9, snapshotPath: '/snap' });
+    const { req, res } = makeReqRes();
+    await startHfDownloadStream({ req, res, fallbacks: [CANDIDATES[0]] });
+    expect(downloadHfRepo).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an empty fallbacks list rather than silently completing', async () => {
+    const { req, res, frames } = makeReqRes();
+    await startHfDownloadStream({ req, res, fallbacks: [] });
+    expect(downloadHfRepo).not.toHaveBeenCalled();
+    expect(parseFrames(frames)).toEqual([{ type: 'error', message: 'No repo specified for download.' }]);
+  });
+});
+
+// ── Multi-repo `repos:` — ALL must succeed, unlike `fallbacks` above ────────
+describe('startHfDownloadStream repos (ALL must succeed)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    inspectModelCache.mockResolvedValue({ cached: false, sizeBytes: 0, snapshotPath: null });
+  });
+
+  it('reports an error and stops when one of several required repos fails, instead of completing', async () => {
+    downloadHfRepo
+      .mockReturnValueOnce({ promise: Promise.resolve({ ok: true, sizeBytes: 100 }), kill: vi.fn() })
+      .mockReturnValueOnce({
+        promise: Promise.resolve({ ok: false, errorKind: 'download_failed', errorMessage: 'network reset' }),
+        kill: vi.fn(),
+      });
+
+    const { req, res, frames } = makeReqRes();
+    await startHfDownloadStream({ req, res, repos: ['org/repo-a', 'org/repo-b'] });
+
+    const parsed = parseFrames(frames);
+    expect(parsed.some((f) => f.type === 'complete')).toBe(false);
+    expect(parsed.at(-1)).toMatchObject({ type: 'error', repo: 'org/repo-b' });
+    // A required repo failing must stop the chain rather than rolling on.
+    expect(downloadHfRepo).toHaveBeenCalledTimes(2);
+  });
+
+  it('completes once every required repo succeeds', async () => {
+    // Explicit mockReturnValue (not -Once) so this test's total doesn't depend
+    // on how many queued mockReturnValueOnce entries earlier tests left behind.
+    downloadHfRepo.mockReturnValue({ promise: Promise.resolve({ ok: true, sizeBytes: 100 }), kill: vi.fn() });
+    const { req, res, frames } = makeReqRes();
+    await startHfDownloadStream({ req, res, repos: ['org/repo-a', 'org/repo-b'] });
+
+    const parsed = parseFrames(frames);
+    expect(parsed.at(-1)).toMatchObject({ type: 'complete', repos: ['org/repo-a', 'org/repo-b'], sizeBytes: 200 });
+  });
+});

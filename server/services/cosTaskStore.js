@@ -16,7 +16,7 @@ import { readFile, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { parseTasksMarkdown, groupTasksByStatus, getAutoApprovedTasks, getAwaitingApprovalTasks, generateTasksMarkdown, hasKnownPrefix } from '../lib/taskParser.js';
-import { REVIEW_STOP_MODES, normalizeReviewers, normalizeReviewUsernames } from '../lib/validation.js';
+import { REVIEW_STOP_MODES, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds, normalizeReviewerModels } from '../lib/validation.js';
 import { PR_COMPLETIONS, PR_COMPLETION_VALUES } from '../lib/prDisposition.js';
 import { loadState, withStateLock, ROOT_DIR } from './cosState.js';
 import { cosEvents } from './cosEvents.js';
@@ -301,9 +301,37 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     if (Array.isArray(taskData.usernames)) {
       metadata.usernames = normalizeReviewUsernames(taskData.usernames);
     }
+    // Non-blocking (`~opt`) reviewer set. Same explicit-empty semantics as
+    // `usernames`: an empty array is a real "none optional for this task" choice
+    // that must override the Code Review Defaults. Previously validated by
+    // createCosTaskSchema but never persisted here, so the task form's `~opt`
+    // badges silently fell back to the defaults on every task.
+    if (Array.isArray(taskData.optionalReviewers)) {
+      metadata.optionalReviewers = normalizeOptionalReviewers(taskData.optionalReviewers) || [];
+    }
+    // Per-reviewer `~max=<n>` iteration caps, keyed by emitted `--review-with`
+    // token. An explicitly empty MAP overrides the Code Review Defaults' caps;
+    // an entry with no usable cap is dropped rather than coerced to `0`, which
+    // slashdo reads as "loop until clean" (absent ≠ 0).
+    if (taskData.reviewerMaxRounds && typeof taskData.reviewerMaxRounds === 'object' && !Array.isArray(taskData.reviewerMaxRounds)) {
+      metadata.reviewerMaxRounds = normalizeReviewerMaxRounds(taskData.reviewerMaxRounds) || {};
+    }
+    // Per-reviewer model pins, keyed by the same emitted token. Same
+    // explicit-empty semantics as the caps above: an empty MAP is a real "use each
+    // reviewer's own default for this task" choice that overrides the Code Review
+    // Defaults' pins. An entry naming a reviewer that takes no model, or a blank
+    // id, is dropped by the normalizer.
+    if (taskData.reviewerModels && typeof taskData.reviewerModels === 'object' && !Array.isArray(taskData.reviewerModels)) {
+      metadata.reviewerModels = normalizeReviewerModels(taskData.reviewerModels) || {};
+    }
     if (REVIEW_STOP_MODES.includes(taskData.reviewStopMode)) metadata.reviewStopMode = taskData.reviewStopMode;
     if (taskData.reviewerApplies === true) metadata.reviewerApplies = true;
     else if (taskData.reviewerApplies === false) metadata.reviewerApplies = false;
+    // Bundled slashdo workflow this task runs (#3089), as the BARE command name
+    // — the prompt builder renders the invocation shape once the provider is
+    // known (see server/lib/slashdoInvocation.js).
+    if (taskData.slashdoCommand) metadata.slashdoCommand = taskData.slashdoCommand;
+    if (taskData.slashdoArgs) metadata.slashdoArgs = taskData.slashdoArgs;
     if (taskData.jiraTicketId) metadata.jiraTicketId = taskData.jiraTicketId;
     if (taskData.jiraTicketUrl) metadata.jiraTicketUrl = taskData.jiraTicketUrl;
     if (taskData.screenshots?.length > 0) metadata.screenshots = taskData.screenshots;
@@ -413,6 +441,19 @@ export async function updateTask(taskId, updates, taskType = 'user', { now = Dat
     for (const key of ['blocker', 'blockedReason', 'blockedCategory', 'blockedAt', 'failureCount', 'lastErrorCategory', 'lastFailureAt']) {
       delete updatedMetadata[key];
     }
+  }
+
+  // Drop the resume pointer once the task reaches a terminal state. `existingBranch`
+  // + `resumedFromAgentId` are stamped by agentCompletionCleanup.js so a FAILED
+  // task's retry attaches to the branch its dead agent left behind and resumes
+  // instead of restarting. Once the task is done (or blocked for a human), that
+  // pointer is spent: a PERPETUAL task type re-queues the same task id for
+  // unrelated future work, and a stale `existingBranch` would silently attach
+  // that fresh run to a long-merged branch. Only cleared on terminal statuses —
+  // a `pending` retry is exactly who needs the pointer intact.
+  if (isTerminalTaskStatus(updates.status)) {
+    delete updatedMetadata.existingBranch;
+    delete updatedMetadata.resumedFromAgentId;
   }
 
   // Release the federation claim/lease when a task leaves `in_progress` (issue

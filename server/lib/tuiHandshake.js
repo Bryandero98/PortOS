@@ -274,19 +274,51 @@ export const BRACKETED_PASTE_MODE_PATTERN = /\x1b\[\?2004([hl])/g;
 export const TUI_TRUST_PROMPT_PATTERN =
   /trustthisfolder|isthisaprojectyou(?:created|trust)/i;
 
-export function createInputReadyTracker() {
+// Antigravity (agy) needs a SECOND, positive readiness signal on top of paste
+// mode. agy enables bracketed paste the moment it enters the alt screen — while
+// it is still "Signing in…", before its folder-trust gate has painted and long
+// before its composer exists. So `sawCommandRun && pasteModeOn` goes true within
+// ~200ms of launch and the paste fires into whatever screen happens to be up.
+// When agy's sign-in round trip outran the 2.5s prompt delay, that screen was
+// the trust gate — it swallowed the prompt and all three paste retries, and the
+// agent died `paste-not-rendered` without the trust auto-confirm ever running
+// (`needsTrust` was still false when the paste went out). agy renders
+// `? for shortcuts` under its composer, and ONLY once the composer is live —
+// i.e. strictly after the trust gate is resolved — so gating on it orders the
+// two signals correctly and removes the race.
+//
+// (`--dangerously-skip-permissions` does NOT bypass agy's trust gate, despite
+// what the flag name suggests — real transcripts show the gate appearing under
+// it, same as claude's.)
+export const AGY_INPUT_READY_PATTERN = /\?forshortcuts/i;
+
+// Handshake markers are matched against a rolling window of whitespace-stripped
+// output rather than a single chunk, so a marker split across two PTY reads
+// (`? for short` | `cuts`) still matches. Sized to a few screens of chrome.
+const OBSERVE_TAIL_MAX_LEN = 4000;
+
+// readyTextPattern: optional extra positive gate, tested against the stripped
+// rolling tail. When supplied, `ready` also requires that marker to have been
+// seen (see AGY_INPUT_READY_PATTERN).
+export function createInputReadyTracker({ readyTextPattern = null } = {}) {
   let pasteModeOn = false;   // LIVE bracketed-paste mode state from the stream
   let sawCommandRun = false; // shell turned paste mode OFF to run the command
   let needsTrust = false;
+  let sawReadyText = false;
+  let tail = '';
   return {
-    // Ready once claude has RE-ENABLED bracketed-paste mode after the launch
-    // shell turned it off to run the command — its input box is live and a
-    // paste will be read as a paste. (The launch shell's own initial ON does
-    // not count: sawCommandRun gates on the intervening OFF.)
-    get ready() { return sawCommandRun && pasteModeOn; },
+    // Ready once the TUI has RE-ENABLED bracketed-paste mode after the launch
+    // shell turned it off to run the command — for claude that means its input
+    // box is live and a paste will be read as a paste. (The launch shell's own
+    // initial ON does not count: sawCommandRun gates on the intervening OFF.)
+    // Providers that enable paste mode before their composer exists supply a
+    // readyTextPattern to close the gap.
+    get ready() {
+      return sawCommandRun && pasteModeOn && (!readyTextPattern || sawReadyText);
+    },
     get needsTrust() { return needsTrust; },
     // rawText: un-stripped chunk (paste-mode toggles live here);
-    // strippedText: ANSI-stripped chunk (the trust-gate text).
+    // strippedText: ANSI-stripped chunk (the trust-gate / composer text).
     observe(rawText, strippedText) {
       if (rawText) {
         for (const m of rawText.matchAll(BRACKETED_PASTE_MODE_PATTERN)) {
@@ -294,8 +326,10 @@ export function createInputReadyTracker() {
           else pasteModeOn = true;
         }
       }
-      if (strippedText && !needsTrust && TUI_TRUST_PROMPT_PATTERN.test(strippedText.replace(/\s+/g, ''))) {
-        needsTrust = true;
+      if (strippedText) {
+        tail = (tail + strippedText.replace(/\s+/g, '')).slice(-OBSERVE_TAIL_MAX_LEN);
+        if (!needsTrust && TUI_TRUST_PROMPT_PATTERN.test(tail)) needsTrust = true;
+        if (readyTextPattern && !sawReadyText && readyTextPattern.test(tail)) sawReadyText = true;
       }
     },
   };
@@ -477,6 +511,50 @@ export const DEFAULT_TUI_IDLE_TIMEOUT_MS = 180000;
 // / review-loop idle windows are 15min each) while bounding a genuinely-stuck
 // agent. Provider-configurable via `tuiMaxRuntimeMs`.
 export const DEFAULT_TUI_MAX_RUNTIME_MS = 3 * 60 * 60 * 1000;
+
+// Grace window opened when the max-runtime ceiling fires, BEFORE the agent is
+// reaped. The ceiling above is a wall-clock deadline, so it lands wherever it
+// lands — including on an agent that is seconds from writing `.agent-done`.
+// Measured (2026-07-27, agent-d2ae0352): its PR merged at 01:32:29 and the
+// max-runtime timer killed it at 01:32:59 — 30 SECONDS later. The run was
+// complete; it just hadn't written the sentinel yet. The kill deleted the
+// worktree, and CoS re-dispatched the task to a fresh agent that started the
+// (already-shipped) work over from scratch.
+//
+// So instead of reaping on the deadline, we PROD the agent — paste a "wrap up
+// and write your sentinel now" message into its live TUI (the same
+// bracketed-paste channel `sendBtwToAgent` uses) — and keep polling for the
+// sentinel for this long before failing. An agent that was genuinely finishing
+// gets to land its summary and finalize as a SUCCESS; a truly hung one is
+// unaffected and still reaped, just this much later. 5 minutes covers a
+// Claude Code turn that has to finish a tool call, run its completion workflow,
+// and write the file, without meaningfully loosening the ceiling.
+export const MAX_RUNTIME_WRAP_UP_GRACE_MS = 5 * 60 * 1000;
+
+/**
+ * The wrap-up prod pasted into a TUI agent's session when its max-runtime
+ * ceiling fires. Deliberately imperative and short: the agent is mid-turn on a
+ * provider that may itself be slow, so the message has to be actionable in one
+ * read. It names the sentinel path convention rather than an absolute path —
+ * the agent already knows its own workspace from its system prompt.
+ *
+ * `graceMs` is interpolated so the deadline the agent is told matches the one
+ * actually enforced (a drift here would tell the agent it has more time than it
+ * has, and it would be reaped mid-wrap-up).
+ */
+export function buildWrapUpProdMessage(graceMs = MAX_RUNTIME_WRAP_UP_GRACE_MS) {
+  const minutes = Math.max(1, Math.round(graceMs / 60000));
+  return [
+    `STOP — you have hit your maximum runtime and will be terminated in ${minutes} minute(s).`,
+    '',
+    'If your work is already shipped (PR opened/merged, or changes committed and pushed),',
+    'write your `.agent-done` sentinel in your workspace root RIGHT NOW with a short summary',
+    'so this run is recorded as a success. Do not start anything new.',
+    '',
+    'If the work is NOT shipped, commit whatever is worth keeping to your branch, push it,',
+    'and then write `.agent-done` describing exactly what is done and what is left.',
+  ].join('\n');
+}
 
 // Extended idle threshold applied ONLY while a `/do:next --swarm` orchestrator
 // is in its Phase C serialized merge queue (issue #2074). Merging PRs one at a
@@ -761,12 +839,27 @@ export const RAW_SPOOL_MAX_BYTES = 256 * 1024 * 1024;
 
 // ─── Command + args helpers ───────────────────────────────────────────────
 
+/**
+ * The launch command a TUI provider gets when it names none — the spawners'
+ * blank-`provider.command` fallback (`buildTuiSpawnConfig`, and mirrored by
+ * `buildCliSpawnConfig`'s default branch). An unrecognized id resolves to
+ * `claude`, matching `isClaudeCommand`'s blank-is-Claude policy.
+ *
+ * Also read by `resolveSlashdoStyle`'s `assumeClaudeWhenUnknown` posture, which
+ * asks "which command will actually be spawned?" before deciding whether the
+ * session can type `/do:pr` — so a missing signature here means a provider is
+ * told to run slash commands its real binary doesn't have.
+ * @param {string|null|undefined} id - provider id
+ * @returns {string}
+ */
 export function inferTuiCommand(id) {
   if (!id) return 'claude';
   if (id.includes('codex')) return 'codex';
   if (id.includes('antigravity')) return 'agy';
   if (id.includes('gemini')) return 'gemini';
   if (id.includes('kimi')) return 'kimi';
+  if (id.includes('grok')) return 'grok';
+  if (id.includes('opencode')) return 'opencode';
   return 'claude';
 }
 
@@ -857,8 +950,10 @@ export function buildTuiInvocation(provider, model) {
   const command = provider?.command || inferTuiCommand(provider?.id);
   const baseArgs = applyCommandDefaults(command, [...(provider?.args || [])]);
   const effectiveModel = resolveCliModel(model);
-  const shouldInject = !isAntigravityCommand(command) && effectiveModel && !hasModelFlag(baseArgs);
+  const shouldInject = !!effectiveModel && !hasModelFlag(baseArgs);
   // OpenCode TUI: namespace the bare Ollama id (`opencode --model ollama/<id>`).
+  // Antigravity takes the id verbatim — its `claude-*` ids are served by Google's
+  // own gateway, so a Bedrock rewrite would produce an id agy can't resolve.
   // Otherwise map a bare Claude id to its Bedrock form when the box is in Bedrock
   // mode (no-op otherwise / for non-Claude ids) — mirrors buildCliArgs for the
   // claude-code-tui runner.
@@ -866,10 +961,12 @@ export function buildTuiInvocation(provider, model) {
     ? effectiveModel
     : isOpencodeCommand(command)
       ? prefixOpencodeModel(provider, effectiveModel)
-      : resolveBedrockCliModel(effectiveModel, {
-        env: { ...process.env, ...provider?.envVars },
-        providerId: provider?.id,
-      });
+      : isAntigravityCommand(command)
+        ? effectiveModel
+        : resolveBedrockCliModel(effectiveModel, {
+          env: { ...process.env, ...provider?.envVars },
+          providerId: provider?.id,
+        });
   const args = shouldInject ? [...baseArgs, '--model', injectedModel] : baseArgs;
   return { command, args };
 }

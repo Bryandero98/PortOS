@@ -1,11 +1,11 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { PersonStanding, Download, X, RefreshCw, Plus, LayoutGrid, Search, Images, Scissors } from 'lucide-react';
+import { PersonStanding, Download, X, RefreshCw, Plus, LayoutGrid, Search, Images, Scissors, Film } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import Modal from '../components/ui/Modal.jsx';
 import {
   listSpriteRecords, getSpriteRecord, importSprites, createSpriteRecord,
-  generateSpriteWalk, generateSpriteScanner, generateSpriteAmbient, generateSpriteReference, listSpriteThumbnails,
+  generateSpriteWalk, generateSpriteTrack, generateSpriteReference, listSpriteThumbnails,
 } from '../services/apiSprites.js';
 import { getApps } from '../services/apiApps.js';
 import { getSettings } from '../services/apiSystem.js';
@@ -13,13 +13,17 @@ import { deriveAvailableBackends } from '../lib/imageGenBackends.js';
 import AppContextPicker from '../components/AppContextPicker.jsx';
 import ReferenceWorkflow from '../components/sprites/ReferenceWorkflow.jsx';
 import WalkWorkflow from '../components/sprites/WalkWorkflow.jsx';
-import ScannerWorkflow from '../components/sprites/ScannerWorkflow.jsx';
+import TrackWorkflow from '../components/sprites/TrackWorkflow.jsx';
 import AmbientWorkflow from '../components/sprites/AmbientWorkflow.jsx';
+import AnimationTypesDrawer from '../components/sprites/AnimationTypesDrawer.jsx';
 import { GROK_VIDEO_DEFAULT_DURATION } from '../lib/grokVideoClip.js';
 import LoopTrimmer from '../components/sprites/LoopTrimmer.jsx';
 import PublishWorkflow from '../components/sprites/PublishWorkflow.jsx';
 import AssetCollection from '../components/sprites/AssetCollection.jsx';
-import { correctionPromptPayload } from '../components/sprites/CorrectionNote.jsx';
+import {
+  correctionPromptPayload, anchorCorrectionKey, walkCorrectionKey,
+  AMBIENT_REFERENCE_CORRECTION_KEY,
+} from '../components/sprites/CorrectionNote.jsx';
 import SpriteCatalog from '../components/sprites/SpriteCatalog.jsx';
 import SpriteDetailHeader from '../components/sprites/SpriteDetailHeader.jsx';
 import TabPills from '../components/ui/TabPills.jsx';
@@ -438,13 +442,17 @@ export default function Sprites() {
     onChanged: onWorkflowChanged,
   });
 
-  // Per-direction anchor correction guidance is page-owned (#2964) so the
-  // ReferenceWorkflow anchor grid and the asset-collection Regenerate button
+  // Correction guidance for EVERY regeneration surface is page-owned (#2964,
+  // extended to the main reference / walk / scanner / ambient surfaces by
+  // #3134) so a workflow panel and the asset-collection Regenerate button
   // read/write ONE source: a correction typed on either surface applies to the
   // other AND rides along as `correctionPrompt` on whichever re-roll fires.
-  // Keyed by direction — the 8 anchor keys are identical across characters, so
-  // reset on record switch to keep a leftover note from bleeding into the next
-  // sprite (the reset ReferenceWorkflow used to own before the state was lifted).
+  // Keys are namespaced PER SURFACE by `lib/spriteCorrections.js` — anchors keep
+  // the bare direction, everything else prefixes — so an anchor's still-image
+  // note can't leak into that direction's walk video. Every key is identical
+  // across characters, so reset on record switch to keep a leftover note from
+  // bleeding into the next sprite (the reset ReferenceWorkflow used to own
+  // before the state was lifted).
   const [corrections, setCorrections] = useState({});
   useEffect(() => { setCorrections({}); }, [id]);
 
@@ -456,6 +464,18 @@ export default function Sprites() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [spriteTab, setSpriteTab] = useDrawerTab('spriteTab', 'library', ['library', 'trimmer']);
   const trimRunParam = searchParams.get('run');
+  // The animation-types drawer (#3153) is library-wide, not per-record, so its
+  // open state lives in its own search param — deep-linkable per the "URL is the
+  // source of truth for what's open" rule, and independent of `spriteTab`/`run`.
+  const animationTypesOpen = searchParams.get('animationTypes') === '1';
+  const setAnimationTypesOpen = useCallback((next) => {
+    setSearchParams((prev) => {
+      const params = new URLSearchParams(prev);
+      if (next) params.set('animationTypes', '1');
+      else params.delete('animationTypes');
+      return params;
+    });
+  }, [setSearchParams]);
   // Open the trimmer deep-linked to a run. `replace` keeps an in-trimmer source
   // switch out of history; the default push lets Back return to the Library.
   const openTrimmer = useCallback((runId, { replace = false } = {}) => {
@@ -511,8 +531,12 @@ export default function Sprites() {
     };
     collect(detail?.walk?.selection?.directions);
     collect(detail?.walk?.walkSet?.directions);
-    collect(detail?.scanner?.selection?.directions);
-    collect(detail?.scanner?.scannerSet?.directions);
+    // Every non-walk track's approvals, keyed by track id (#3136) — so a
+    // user-defined track's approved runs badge correctly with nothing added here.
+    for (const state of Object.values(detail?.tracks || {})) {
+      collect(state?.selection?.directions);
+      collect(state?.set?.directions);
+    }
     return set;
   }, [detail]);
 
@@ -546,50 +570,86 @@ export default function Sprites() {
     }
   }, []);
 
+  // The direction's walk-scoped correction (#3134) rides along, read from the
+  // SAME page-owned map both WalkWorkflow's card and the asset-collection walk
+  // card write — so a note typed on either surface applies to whichever
+  // Generate the user clicks. The key is walk-namespaced, so an anchor
+  // (still-image) note can never leak into the video prompt.
   const generateWalk = useCallback((direction) => submitRender(
     walkBegin, walkResolve, walkCancel, direction,
-    () => generateSpriteWalk(id, { direction, duration }, { silent: true }),
+    () => generateSpriteWalk(id, {
+      direction,
+      duration,
+      ...correctionPromptPayload(corrections, walkCorrectionKey(direction)),
+    }, { silent: true }),
     `Failed to queue ${direction} walk`,
     // Refetch immediately so the server's 'rendering' run lands before the
     // media-job poll evicts the optimistic key (~4s) — otherwise the Generate
     // button briefly re-enables and a second click would 409 the in-flight
     // render. The server guard is the real backstop; this closes the UI gap.
     onWorkflowChanged,
-  ), [id, duration, walkBegin, walkResolve, walkCancel, submitRender, onWorkflowChanged]);
+  ), [id, duration, corrections, walkBegin, walkResolve, walkCancel, submitRender, onWorkflowChanged]);
 
-  // Scanner has its own server-side in-flight guard and independent named set;
-  // keeping its submit path separate means a scanner render never occupies the
-  // walk direction's optimistic reservation (both can legitimately be authored
-  // at once). It also owns its short default source clip instead of inheriting
-  // the walk duration picker. The immediate refetch persists the observable
-  // TUI run for polling.
-  const generateScanner = useCallback(async (direction) => {
+  // ONE submit path for every non-walk track (#3136) — the track id is a
+  // parameter, so a user-defined track needs no new handler here.
+  //
+  // Kept separate from `generateWalk` for the same reason the scanner clone was:
+  // each track has its own server-side in-flight guard and its own finalized set,
+  // so a track render must not occupy the walk direction's optimistic
+  // reservation (both can legitimately be authored at once), and each owns its
+  // short default source clip rather than inheriting the walk duration picker.
+  // The immediate refetch persists the observable TUI run for polling.
+  // The caller supplies both the request `direction` (present only for a
+  // directional track) and the `correctionKey` for the card that was clicked —
+  // TrackWorkflow already holds the definition and the facing, so deciding both
+  // there keeps this handler dependency-light and therefore stable across the 4s
+  // detail poll, which replaces `detail` wholesale and would otherwise churn
+  // every memoized track section.
+  const generateTrack = useCallback(async (trackId, { direction, correctionKey }) => {
     try {
-      await generateSpriteScanner(id, { direction }, { silent: true });
+      await generateSpriteTrack(id, trackId, {
+        ...(direction ? { direction } : {}),
+        ...correctionPromptPayload(corrections, correctionKey),
+      }, { silent: true });
       onWorkflowChanged();
     } catch (err) {
-      toast.error(err?.message || `Failed to queue ${direction} scanner action`);
+      toast.error(err?.message || `Failed to queue the ${trackId} render`);
     }
-  }, [id, onWorkflowChanged]);
+  }, [id, corrections, onWorkflowChanged]);
 
+  // The ambient main takes BOTH inputs: `designPrompt` replaces the design
+  // outright, while the correction (#3134) keeps it and fixes one thing about
+  // the last render.
   const generateAmbientReference = useCallback((designPrompt) => submitRender(
     refBegin, refResolve, refCancel, 'main',
     () => generateSpriteReference(id, {
       target: 'main', designPrompt,
       ...(imageMode ? { mode: imageMode } : {}),
+      ...correctionPromptPayload(corrections, AMBIENT_REFERENCE_CORRECTION_KEY),
     }, { silent: true }),
     'Failed to queue ambient reference',
     onWorkflowChanged,
-  ), [id, imageMode, refBegin, refResolve, refCancel, submitRender, onWorkflowChanged]);
+  ), [id, imageMode, corrections, refBegin, refResolve, refCancel, submitRender, onWorkflowChanged]);
 
-  const generateAmbient = useCallback(async () => {
-    try {
-      await generateSpriteAmbient(id, {}, { silent: true });
-      onWorkflowChanged();
-    } catch (err) {
-      toast.error(err?.message || 'Failed to queue ambient loop');
-    }
-  }, [id, onWorkflowChanged]);
+  // One section per non-walk track this record's kind carries (#3136), rendered
+  // in registry order from the server's keyed `tracks` payload. The list is DATA,
+  // so a user-defined track appears here without a page edit — which is the
+  // client-side half of "an animation type is a row, not a code path". Keyed by
+  // track id so switching records can't carry one track's card state into
+  // another's.
+  const trackSections = useMemo(() => Object.entries(detail?.tracks || {}).map(([trackId, state]) => (
+    <TrackWorkflow
+      key={trackId}
+      record={detail.record}
+      reference={detail.reference}
+      state={state}
+      onGenerate={generateTrack}
+      onChanged={onWorkflowChanged}
+      corrections={corrections}
+      onCorrectionChange={setCorrections}
+    />
+  )), [detail?.tracks, detail?.record, detail?.reference, generateTrack, onWorkflowChanged, corrections]);
+
 
   // `mode` is the workflow-selected backend, threaded from the asset card via
   // buildCollectionActions (#2938) so a re-roll uses the same backend the
@@ -603,7 +663,7 @@ export default function Sprites() {
     () => generateSpriteReference(id, {
       target: direction,
       ...((mode || imageMode) ? { mode: mode || imageMode } : {}),
-      ...correctionPromptPayload(corrections, direction),
+      ...correctionPromptPayload(corrections, anchorCorrectionKey(direction)),
     }, { silent: true }),
     `Failed to queue ${direction} render`,
   ), [id, imageMode, corrections, refBegin, refResolve, refCancel, submitRender]);
@@ -645,6 +705,15 @@ export default function Sprites() {
           </button>
         )}
         {records?.length > 0 && <SpriteSearch records={records} onSelect={goto} />}
+        {/* Library-wide, so it sits beside create/import and is reachable from
+            the bare /sprites catalog as well as an open record. */}
+        <button
+          type="button"
+          onClick={() => setAnimationTypesOpen(true)}
+          className="flex items-center gap-2 px-3 py-1.5 bg-port-card border border-port-border hover:border-port-accent text-gray-300 rounded text-sm"
+        >
+          <Film className="w-4 h-4" /> Animation types
+        </button>
         <NewSpritePanel onCreated={(record) => { refresh(); navigate(`/sprites/${record.id}`); }} />
         {/* Re-import while a sprite is open must refresh the open detail too,
             not just the library list. */}
@@ -744,43 +813,43 @@ export default function Sprites() {
                         onGenerate={generateWalk}
                         onOpenTrimmer={openTrimmer}
                         onChanged={onWorkflowChanged}
+                        corrections={corrections}
+                        onCorrectionChange={setCorrections}
                       />
-                      <ScannerWorkflow
-                        record={detail.record}
-                        reference={detail.reference}
-                        scanner={detail.scanner}
-                        onGenerate={generateScanner}
-                        onChanged={onWorkflowChanged}
-                      />
+                      {trackSections}
                       {/* Keyed by record so form state and an armed publish/overwrite
                           confirmation never survive switching characters. */}
                       <PublishWorkflow
                         key={detail.record.id}
                         record={detail.record}
                         walk={detail.walk}
+                        tracks={detail.tracks}
+                        trackDefinitions={detail.trackDefinitions}
                         atlas={detail.atlas}
                         onChanged={onWorkflowChanged}
                       />
                     </>
                   )}
-                  {detail.record.kind !== 'character' && detail.ambient && (
+                  {detail.record.kind !== 'character' && (
                     <>
                       <AmbientWorkflow
                         record={detail.record}
                         reference={detail.reference}
-                        ambient={detail.ambient}
                         renders={referenceRenders}
                         hasBackend={hasImageBackend}
                         mode={imageMode}
                         onGenerateReference={generateAmbientReference}
-                        onGenerateAmbient={generateAmbient}
                         onChanged={onWorkflowChanged}
+                        corrections={corrections}
+                        onCorrectionChange={setCorrections}
                       />
+                      {trackSections}
                       <PublishWorkflow
                         key={detail.record.id}
                         record={detail.record}
                         walk={detail.walk}
-                        ambient={detail.ambient}
+                        tracks={detail.tracks}
+                        trackDefinitions={detail.trackDefinitions}
                         atlas={detail.atlas}
                         onChanged={onWorkflowChanged}
                       />
@@ -805,6 +874,17 @@ export default function Sprites() {
           )}
         </section>
       </div>
+      {/* Rendered last so the slide-in panel layers over the catalog/detail pane.
+          A newly-authored type only reaches an OPEN record's workflow list on the
+          next detail fetch — so refetch when the drawer reports a change, and skip
+          the (recursive-readdir) detail fetch entirely on a peek-and-close. */}
+      <AnimationTypesDrawer
+        open={animationTypesOpen}
+        onClose={(changed) => {
+          setAnimationTypesOpen(false);
+          if (changed && id) setRetryTick((t) => t + 1);
+        }}
+      />
     </div>
   );
 }

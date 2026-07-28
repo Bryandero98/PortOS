@@ -16,9 +16,10 @@
  *
  * Evidence contract: a locked artifact is never overwritten. A
  * turnaround-derived directional anchor may be deliberately reopened on its
- * own; the turnaround may also be deliberately reopened together with every
- * artifact that descends from it. In either revision flow the old versioned
- * PNG stays on disk and the replacement lands at the next `-vN` filename.
+ * own; the main may be deliberately reopened while retaining its turnaround;
+ * the turnaround may also be deliberately reopened together with every
+ * artifact that descends from it. In every revision flow the old versioned PNG
+ * stays on disk and the replacement lands at the next `-vN` filename.
  */
 
 import { join } from 'path';
@@ -40,12 +41,19 @@ import { getRecord, updateRecord, listRecords, createCharacter } from './records
 import { spriteDir, resolveSpriteAssetPath, listSpriteAssets } from './paths.js';
 import {
   SPRITE_DIRECTIONS, ANCHOR_DIRECTIONS, anchorIdForDirection, TURNAROUND_VIEWS, TURNAROUND_ID,
+  SPRITE_REFERENCE_CANVAS_SIZE,
   buildMainReferencePrompt, buildAmbientReferencePrompt, buildAnchorPrompt, buildTurnaroundPrompt,
 } from './prompts.js';
 import { pickChromaKey, keyProximityWarning, CHROMA_KEY_HEXES, DEFAULT_CHROMA_KEY } from './chromaKey.js';
 import {
-  WALK_TRACK, ANIMATION_TRACK_IDS, kindSupportsTrack, tracksForKind,
+  WALK_TRACK, kindSupportsTrack, tracksForKind,
 } from './animationTracks.js';
+// #3152 — the gates below ask the EFFECTIVE table (compiled `walk` + the
+// user-defined store) so a record kind a user's own track admits gets the same
+// animation path a seeded one does.
+import {
+  getEffectiveAnimationTracks, getEffectiveAnimationTrackIds,
+} from './animationTrackStore.js';
 import {
   analyzeForeground, paletteFromAnalysis, normalizeFromAnalysis, recompositeOnKey,
 } from './normalize.js';
@@ -187,9 +195,10 @@ function seedManifest(recordId, { directional = true } = {}) {
 export async function requireTrack(recordId, trackId = null) {
   const record = await getRecord(recordId);
   if (!record) throw new ServerError('Sprite record not found', { status: 404, code: 'NOT_FOUND' });
+  const effectiveTracks = getEffectiveAnimationTracks();
   const supported = trackId
-    ? kindSupportsTrack(record.kind, trackId)
-    : tracksForKind(record.kind).length > 0;
+    ? kindSupportsTrack(record.kind, trackId, effectiveTracks)
+    : tracksForKind(record.kind, effectiveTracks).length > 0;
   if (!supported) {
     // The walk gate keeps its historical message and code — callers (and
     // reference.test.js) match on NOT_A_CHARACTER, and walk is character-only,
@@ -198,7 +207,7 @@ export async function requireTrack(recordId, trackId = null) {
       throw new ServerError('Reference workflow applies to character records only', { status: 400, code: 'NOT_A_CHARACTER' });
     }
     throw new ServerError(
-      `No animation track applies to ${record.kind} records — the registered tracks are: ${ANIMATION_TRACK_IDS.join(', ')}`,
+      `No animation track applies to ${record.kind} records — the registered tracks are: ${getEffectiveAnimationTrackIds().join(', ')}`,
       { status: 400, code: 'NOT_ANIMATABLE' },
     );
   }
@@ -364,7 +373,7 @@ export function startReferenceGeneration(recordId, body, upload = null) {
 
 async function startReferenceGenerationImpl(recordId, body, upload = null) {
   const record = await requireTrack(recordId);
-  const directional = kindSupportsTrack(record.kind, WALK_TRACK);
+  const directional = kindSupportsTrack(record.kind, WALK_TRACK, getEffectiveAnimationTracks());
   const manifest = (await loadManifest(recordId)) || seedManifest(recordId, { directional });
   const target = body.target;
   if (!directional && target !== 'main') {
@@ -444,7 +453,13 @@ async function startReferenceGenerationImpl(recordId, body, upload = null) {
       }
       anchorId = 'main';
       direction = 'south';
-      prompt = buildAmbientReferencePrompt({ name: record.name, kind: record.kind, designPrompt, chromaKey: genKey });
+      // A place/object main takes BOTH inputs (#3134): `designPrompt` replaces
+      // the design outright, `correctionPrompt` keeps it and fixes one thing
+      // about the last render. They compose — the user can do either or both.
+      correctionPrompt = typeof body.correctionPrompt === 'string' ? body.correctionPrompt.trim() : '';
+      prompt = buildAmbientReferencePrompt({
+        name: record.name, kind: record.kind, designPrompt, chromaKey: genKey, correctionPrompt,
+      });
       ({ initImagePath, designReferencePath } = await resolveSeedSource(recordId, body, upload));
       if (initImagePath) initImageStrength ??= UPLOAD_DEFAULT_STRENGTH;
       if (designPrompt) manifest.designPrompt = designPrompt;
@@ -459,10 +474,15 @@ async function startReferenceGenerationImpl(recordId, body, upload = null) {
       }
       anchorId = anchorIdForDirection('south');
       direction = 'south';
+      // Same optional re-roll note the anchors take (#3134) — the main derives
+      // from the sheet, so a bad front view can be described instead of only
+      // re-rolled blind.
+      correctionPrompt = typeof body.correctionPrompt === 'string' ? body.correctionPrompt.trim() : '';
       prompt = buildMainReferencePrompt({
         name: record.name,
         designPrompt: designPrompt || manifest.designPrompt,
         chromaKey: genKey,
+        correctionPrompt,
         fromTurnaround: true,
       });
       // The sheet IS the seed here, so a caller-supplied one has nowhere to go.
@@ -523,6 +543,10 @@ async function startReferenceGenerationImpl(recordId, body, upload = null) {
       : null;
   const baseParams = {
     prompt,
+    // Codex ImageGen otherwise selects an arbitrary native aspect ratio. The
+    // review candidates must already match the square frame locked anchors use.
+    width: SPRITE_REFERENCE_CANVAS_SIZE,
+    height: SPRITE_REFERENCE_CANVAS_SIZE,
     ...(initImagePath ? { initImagePath, initImageStrength } : {}),
     cleanC2PA,
     denoise,
@@ -646,7 +670,7 @@ export async function listReferenceSources() {
     // Same question requireCharacter asks — a reference set exists only for a
     // kind that carries the walk track — so a row admitting another kind is
     // picked up here too instead of this list silently staying character-only.
-    if (r.deleted || !kindSupportsTrack(r.kind, WALK_TRACK)) continue;
+    if (r.deleted || !kindSupportsTrack(r.kind, WALK_TRACK, getEffectiveAnimationTracks())) continue;
     const manifest = await loadManifest(r.id);
     // Same picker resolveSourceReference uses, so the advertised image is
     // exactly the one a seed will attach.
@@ -683,7 +707,7 @@ export async function listSpriteThumbnails() {
     // Registry-driven for the same reason as listReferenceSources: a locked
     // main reference is a property of carrying the walk track, not of the
     // literal kind name.
-    if (tracksForKind(r.kind).length) {
+    if (tracksForKind(r.kind, getEffectiveAnimationTracks()).length) {
       const manifest = await loadManifest(r.id);
       const main = manifest?.mainReference;
       if (main?.locked && main.path) return { id: r.id, path: main.path };
@@ -791,6 +815,15 @@ export function unlockReferenceAnchor(recordId, args) {
 }
 
 /**
+ * Re-open the main (south) reference while retaining the locked turnaround
+ * and the independent directional anchors derived from it. The walk service
+ * coordinates invalidating the south animations before this manifest reset.
+ */
+export function unlockReferenceMain(recordId) {
+  return manifestWriteTail(recordId, () => unlockReferenceMainImpl(recordId));
+}
+
+/**
  * Re-open the turnaround identity root and every reference artifact derived
  * from it. The walk service coordinates dependent animation invalidation before
  * calling this write; this layer owns only the reference manifest reset.
@@ -824,6 +857,24 @@ async function loadUnlockableReferenceAnchor(recordId, direction) {
 // reopened; unlockReferenceAnchor repeats the check inside its write tail.
 export async function assertReferenceAnchorUnlockable(recordId, { direction }) {
   await loadUnlockableReferenceAnchor(recordId, direction);
+}
+
+async function loadUnlockableReferenceMain(recordId) {
+  await requireCharacter(recordId);
+  const manifest = await loadManifest(recordId);
+  if (!manifest?.turnaround?.locked) {
+    throw new ServerError('Lock the turnaround sheet before revising the main reference', { status: 409, code: 'TURNAROUND_NOT_LOCKED' });
+  }
+  if (!manifest.mainReference?.locked) {
+    throw new ServerError('Main reference is not locked', { status: 409, code: 'MAIN_NOT_LOCKED' });
+  }
+  return { manifest };
+}
+
+// Read-only preflight for the cross-service revision coordinator. A south walk
+// approval must not be invalidated unless the main pointer can be reopened.
+export async function assertReferenceMainUnlockable(recordId) {
+  await loadUnlockableReferenceMain(recordId);
 }
 
 async function loadUnlockableReferenceTurnaround(recordId) {
@@ -860,6 +911,34 @@ async function unlockReferenceAnchorImpl(recordId, { direction }) {
   await updateRecord(recordId, { status: 'reference' });
   await saveManifest(recordId, manifest);
   console.log(`🔓 sprite reference anchor ${recordId}/${direction} unlocked`);
+  return getReferenceSet(recordId);
+}
+
+async function unlockReferenceMainImpl(recordId) {
+  const { manifest } = await loadUnlockableReferenceMain(recordId);
+  manifest.mainReference = {
+    path: null,
+    role: 'immutable-root',
+    background: 'chroma-key',
+    locked: false,
+  };
+  const south = findAnchor(manifest, anchorIdForDirection('south'));
+  if (south) Object.assign(south, {
+    status: 'pending',
+    source: 'main-reference',
+  });
+  if (south) {
+    delete south.path;
+    delete south.lockedFrom;
+    delete south.lockedAt;
+    delete south.sha256;
+    delete south.clipWarning;
+  }
+  manifest.status = 'needs-main-reference';
+
+  await updateRecord(recordId, { status: 'reference' });
+  await saveManifest(recordId, manifest);
+  console.log(`🔓 sprite main reference ${recordId} unlocked with south anchor reset`);
   return getReferenceSet(recordId);
 }
 
@@ -908,7 +987,7 @@ async function unlockReferenceTurnaroundImpl(recordId) {
 
 async function lockReferenceImpl(recordId, { target, candidate, acceptClipRisk = false }) {
   const record = await requireTrack(recordId);
-  const directional = kindSupportsTrack(record.kind, WALK_TRACK);
+  const directional = kindSupportsTrack(record.kind, WALK_TRACK, getEffectiveAnimationTracks());
   // Seed on demand — a candidate may predate the manifest (e.g. files placed
   // by an import or a crash-recovered tree); the lock is what makes it real.
   const manifest = (await loadManifest(recordId)) || seedManifest(recordId, { directional });

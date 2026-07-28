@@ -49,6 +49,11 @@ import {
   computeExecutionByDomain,
   computePostApprovalCompletion,
   computeProposalOutcomeMetrics,
+  computeDeliveryMetrics,
+  computeDeliveryThrottle,
+  formatDeliveryThrottleGuidance,
+  renderCosMetricsSource,
+  COS_METRICS_MAX_CHARS,
   computeProposalExecutionAwareness,
   computeCrossReferenceAnalysis,
   computeHandoffRouting,
@@ -689,6 +694,130 @@ describe('computeProposalOutcomeMetrics (#3014)', () => {
   });
 });
 
+describe('computeDeliveryMetrics (#3085)', () => {
+  const RECORDS = [
+    { scope: 'app-improvement', outcome: 'merged', executionOutcome: 'success', filedAt: '2026-07-01T00:00:00.000Z', executionAt: '2026-07-01T01:00:00.000Z' },
+    { scope: 'app-improvement', outcome: 'merged', executionOutcome: 'failure', filedAt: '2026-07-01T00:00:00.000Z', executionAt: '2026-07-01T02:00:00.000Z' },
+    { scope: 'app-data-gap', outcome: 'merged', executionOutcome: null, filedAt: '2026-07-01T00:00:00.000Z' },
+    // Rejected-only scope: it has a filing record but nothing was ever approved there.
+    { scope: 'loop-meta', outcome: 'rejected', filedAt: '2026-07-01T00:00:00.000Z' }
+  ];
+
+  it('projects the approval → delivery totals and rate', () => {
+    const { delivery } = computeDeliveryMetrics(RECORDS);
+    // 3 approved, 1 delivered → 33%. The run-success rates sitting beside this in the
+    // same document say nothing about that gap, which is the whole point of the block.
+    expect(delivery).toEqual({ totalApproved: 3, totalDelivered: 1, currentDeliveryRate: 33 });
+  });
+
+  it('breaks delivery down per scope, omitting scopes with no approvals', () => {
+    const { deliveryByScope } = computeDeliveryMetrics(RECORDS);
+    expect(deliveryByScope).toEqual({
+      'app-improvement': { approved: 2, delivered: 1 },
+      'app-data-gap': { approved: 1, delivered: 0 }
+    });
+    // A scope whose every proposal was rejected carries no delivery signal — its
+    // 0-of-0 row would only restate the merge-rate block.
+    expect(deliveryByScope['loop-meta']).toBeUndefined();
+  });
+
+  it('reports a NULL rate (never 0%) when nothing has been approved yet', () => {
+    // The sentinel rule: "no approvals to deliver on" is not "every approval was lost".
+    // This rate arms the hard exclusion gate, so a 0 here would lock out a cold loop.
+    for (const input of [[], null, [{ scope: 'loop-meta', outcome: 'rejected' }]]) {
+      const { delivery, deliveryByScope } = computeDeliveryMetrics(input);
+      expect(delivery).toEqual({ totalApproved: 0, totalDelivered: 0, currentDeliveryRate: null });
+      expect(Object.keys(deliveryByScope)).toEqual([]);
+    }
+  });
+
+  it('agrees with the roll-up it projects', () => {
+    // `scope` is LLM-authored, so the two must never disagree about which scope a
+    // record belongs to — the prompt and the exclusion gate both trace back here.
+    const rolled = computeProposalOutcomeMetrics(RECORDS);
+    const { delivery, deliveryByScope } = computeDeliveryMetrics(RECORDS);
+    expect(delivery.totalApproved).toBe(rolled.totalApproved);
+    expect(delivery.totalDelivered).toBe(rolled.totalCompleted);
+    expect(deliveryByScope['app-improvement'].delivered).toBe(rolled.byScope['app-improvement'].completed);
+  });
+
+  it('buckets a "__proto__" scope as data rather than rewriting the prototype', () => {
+    const { deliveryByScope } = computeDeliveryMetrics([
+      { scope: '__proto__', outcome: 'merged', executionOutcome: 'success', filedAt: '2026-07-01T00:00:00.000Z', executionAt: '2026-07-01T01:00:00.000Z' }
+    ]);
+    // On a plain object `bucket['__proto__'] = …` swaps the prototype instead of adding
+    // a key, so the bucket would vanish from Object.keys. The null prototype is what
+    // makes it data — assert the prototype directly, since a passing Object.keys check
+    // on Object.prototype pollution would be silent.
+    expect(Object.getPrototypeOf(deliveryByScope)).toBeNull();
+    expect(Object.keys(deliveryByScope)).toContain('__proto__');
+  });
+});
+
+describe('renderCosMetricsSource (#3085)', () => {
+  const BY_TYPE = { 'user-task': { lifetimeSuccessRate: 92, lifetimeCompleted: 25 } };
+
+  it('leaves the per-task-type document unchanged when no delivery data was gathered', () => {
+    // Outcomes source off / tracker can't report outcomes / store unreadable: OMIT the
+    // block rather than emit zeros, which would read as "nothing has ever been approved".
+    const parsed = JSON.parse(renderCosMetricsSource({ metricsByType: BY_TYPE }));
+    expect(parsed).toEqual(BY_TYPE);
+    expect(parsed.delivery).toBeUndefined();
+  });
+
+  it('renders delivery alone when the install has no CoS run history yet', () => {
+    // The two halves are independently optional: an install with no learning.json can
+    // still have approved-but-undelivered proposals, and that is exactly the signal
+    // that arms the exclusion gate — it must not be withheld for lack of run stats.
+    const parsed = JSON.parse(renderCosMetricsSource({
+      metricsByType: {},
+      delivery: computeDeliveryMetrics([{ scope: 'loop-meta', outcome: 'merged', executionOutcome: null, filedAt: '2026-07-01T00:00:00.000Z' }])
+    }));
+    expect(parsed.delivery).toEqual({ totalApproved: 1, totalDelivered: 0, currentDeliveryRate: 0 });
+  });
+
+  it('returns an empty string when both halves are empty so the source is omitted', () => {
+    // A hollow `{}` block would tell the reasoner nothing while costing prompt budget.
+    expect(renderCosMetricsSource()).toBe('');
+    expect(renderCosMetricsSource({ metricsByType: {}, delivery: null })).toBe('');
+  });
+
+  it('folds delivery into the same document as the run rates', () => {
+    const delivery = computeDeliveryMetrics([
+      { scope: 'app-improvement', outcome: 'merged', executionOutcome: 'success', filedAt: '2026-07-01T00:00:00.000Z', executionAt: '2026-07-01T01:00:00.000Z' }
+    ]);
+    const parsed = JSON.parse(renderCosMetricsSource({ metricsByType: BY_TYPE, delivery }));
+    expect(parsed['user-task'].lifetimeSuccessRate).toBe(92);
+    expect(parsed.delivery).toEqual({ totalApproved: 1, totalDelivered: 1, currentDeliveryRate: 100 });
+    expect(parsed.deliveryByScope).toEqual({ 'app-improvement': { approved: 1, delivered: 1 } });
+  });
+
+  it('keeps the delivery block ahead of the per-type map so the cap cannot cut it', () => {
+    // An install with dozens of task types can fill COS_METRICS_MAX_CHARS on its own.
+    // The per-type tail has an interpreted sibling in the prompt (liScopeAwareness,
+    // derived from the untruncated map); the delivery block has none, so it must survive.
+    const metricsByType = {};
+    for (let i = 0; i < 200; i++) {
+      metricsByType[`self-improve:scope-${i}`] = { lifetimeSuccessRate: 50, lifetimeCompleted: 10, recentSuccessRate: null, recentCompleted: 0, avgDurationMs: 1000 };
+    }
+    const rendered = renderCosMetricsSource({
+      metricsByType,
+      delivery: computeDeliveryMetrics([{ scope: 'loop-meta', outcome: 'merged', executionOutcome: null, filedAt: '2026-07-01T00:00:00.000Z' }])
+    });
+    expect(rendered.length).toBe(COS_METRICS_MAX_CHARS); // genuinely truncated
+    expect(rendered).toContain('"currentDeliveryRate":0');
+    expect(rendered.indexOf('"delivery"')).toBeLessThan(rendered.indexOf('self-improve:scope-0'));
+  });
+
+  it('does not let a task type named "delivery" shadow the delivery block', () => {
+    const parsed = JSON.parse(renderCosMetricsSource({
+      metricsByType: { delivery: { lifetimeSuccessRate: 10 } },
+      delivery: computeDeliveryMetrics([{ scope: 'loop-meta', outcome: 'merged', executionOutcome: 'success', filedAt: '2026-07-01T00:00:00.000Z', executionAt: '2026-07-01T01:00:00.000Z' }])
+    }));
+    expect(parsed.delivery).toEqual({ totalApproved: 1, totalDelivered: 1, currentDeliveryRate: 100 });
+  });
+});
+
 describe('computeProposalExecutionAwareness (#2765)', () => {
   const execRecords = (scope, successes, failures) => [
     ...Array.from({ length: successes }, () => ({ scope, executionOutcome: 'success' })),
@@ -866,6 +995,48 @@ describe('computeHandoffRouting (#2764 §4)', () => {
     expect(routing.reason).toContain('app-improvement');
     expect(routing.reason).not.toContain('failing mostly on');
     expect(routing.reason).not.toContain('(');
+  });
+});
+
+describe('computeDeliveryThrottle (#3160)', () => {
+  const health = (deliveryRate, deliverySample) => ({ deliveryRate, deliverySample });
+
+  it('returns null when delivery data is unavailable', () => {
+    expect(computeDeliveryThrottle(null)).toBeNull();
+    expect(computeDeliveryThrottle(health(null, 0))).toBeNull();
+    expect(computeDeliveryThrottle(health(Number.NaN, 5))).toBeNull();
+  });
+
+  it('stops below the evidence floor regardless of the observed rate', () => {
+    expect(computeDeliveryThrottle(health(100, LI_DELIVERY_MIN_SAMPLE - 1))).toBe(0);
+    expect(computeDeliveryThrottle(health(0, 1))).toBe(0);
+  });
+
+  it('stops a sufficiently-sampled delivery rate below 20%', () => {
+    expect(computeDeliveryThrottle(health(0, LI_DELIVERY_MIN_SAMPLE))).toBe(0);
+    expect(computeDeliveryThrottle(health(19.99, LI_DELIVERY_MIN_SAMPLE))).toBe(0);
+  });
+
+  it('scales proportionally from 0% to full throttle at 75%', () => {
+    expect(computeDeliveryThrottle(health(20, LI_DELIVERY_MIN_SAMPLE))).toBeCloseTo(20 / 75);
+    expect(computeDeliveryThrottle(health(50, 12))).toBeCloseTo(2 / 3);
+    expect(computeDeliveryThrottle(health(75, 12))).toBe(1);
+    expect(computeDeliveryThrottle(health(100, 12))).toBe(1);
+  });
+
+  it('formats full, degraded, stopped, cold-start, and unavailable prompt guidance', () => {
+    expect(formatDeliveryThrottleGuidance(health(75, 12)))
+      .toContain('LI proposal throttle: full — based on 75% delivery rate from 12 approved proposals');
+    expect(formatDeliveryThrottleGuidance(health(50, 12)))
+      .toContain('LI proposal throttle: 67% — based on 50% delivery rate from 12 approved proposals');
+    expect(formatDeliveryThrottleGuidance(health(0, 12)))
+      .toContain('LI proposal throttle: stopped — based on 0% delivery rate from 12 approved proposals');
+    expect(formatDeliveryThrottleGuidance(health(0, 12))).toContain('return proposal: null');
+    expect(formatDeliveryThrottleGuidance(health(19.99, 12))).toContain('return proposal: null');
+    expect(formatDeliveryThrottleGuidance(health(100, LI_DELIVERY_MIN_SAMPLE - 1)))
+      .toContain(`at least ${LI_DELIVERY_MIN_SAMPLE} approvals are required before filing resumes`);
+    expect(formatDeliveryThrottleGuidance(health(null, 0)))
+      .toContain('LI proposal throttle: unavailable');
   });
 });
 
@@ -1220,6 +1391,17 @@ describe('computeScopeAwareness (#2760)', () => {
 describe('buildPrompt', () => {
   const app = { name: 'TestApp' };
 
+  it('drops a blank cosMetrics document instead of rendering an empty block (#3085)', () => {
+    // renderCosMetricsSource returns '' when it has neither task types nor delivery
+    // data, and the hook assigns that straight onto sources — so the omission this
+    // relies on happens HERE. A rendered `### cosMetrics` with nothing under it would
+    // cost prompt budget and tell the reasoner nothing.
+    const base = { app, config: { allowedScopes: ['app-improvement'], rules: '' } };
+    expect(buildPrompt({ ...base, sources: { cosMetrics: '' } })).not.toContain('### cosMetrics');
+    expect(buildPrompt({ ...base, sources: { cosMetrics: '{"delivery":{"totalApproved":3}}' } }))
+      .toContain('### cosMetrics');
+  });
+
   it('injects the scope-awareness block only when present, under its own heading (#2760)', () => {
     const base = { app, isPortos: true, config: { allowedScopes: ['loop-meta'], rules: '' } };
     const without = buildPrompt(base);
@@ -1333,6 +1515,18 @@ describe('buildPrompt', () => {
     expect(withReport).toContain('### liSelfEval');
     expect(withReport).toContain('Reasoning confidence: low');
     expect(withReport).toContain('Filing nothing (proposal: null) is a legitimate');
+  });
+
+  it('injects delivery-throttle guidance under its own prompt heading (#3160)', () => {
+    const base = { app, isPortos: false, config: { allowedScopes: ['app-improvement'], rules: '' } };
+    expect(buildPrompt(base)).not.toContain('### liDeliveryThrottle');
+    const withThrottle = buildPrompt({
+      ...base,
+      deliveryThrottleReport: 'LI proposal throttle: stopped — based on 0% delivery rate from 12 approved proposals. Return proposal: null.'
+    });
+    expect(withThrottle).toContain('### liDeliveryThrottle');
+    expect(withThrottle).toContain('LI proposal throttle: stopped');
+    expect(withThrottle).toContain('Return proposal: null');
   });
 
   it('renders selfEval and outcomes as independent blocks (either can stand alone)', () => {
@@ -1839,6 +2033,55 @@ describe('computeSelfEvalSummary (#2700)', () => {
     });
     expect(report).toContain('too small a sample to judge');
     expect(report).not.toContain('DEGRADED');
+  });
+
+  const DAY_AGO_MS = 24 * 60 * 60 * 1000;
+
+  it('folds the approval funnel into the block on every run (#3120)', () => {
+    const now = Date.parse('2026-07-20T12:00:00.000Z');
+    const ago = (ms) => new Date(now - ms).toISOString();
+    const report = computeSelfEvalSummary({
+      liTaskStats: liMetrics(),
+      existingIssues: [],
+      outcomes: [
+        { slug: 'approved-one', outcome: 'merged', filedAt: ago(5 * DAY_AGO_MS), outcomeAt: ago(3 * DAY_AGO_MS) },
+        { slug: 'rejected-one', outcome: 'rejected', filedAt: ago(6 * DAY_AGO_MS), outcomeAt: ago(2 * DAY_AGO_MS) },
+        { slug: 'stalled-one', outcome: null, filedAt: ago(9 * DAY_AGO_MS), outcomeAt: null }
+      ],
+      now
+    });
+    expect(report).toContain('LI approval rate (last 14d): 50%');
+    expect(report).toContain('LI time-to-decision: median');
+    expect(report).toContain('PENDING HUMAN REVIEW: 1 filed proposal(s)');
+    expect(report).toContain('LI proposal-phase throughput');
+  });
+
+  it('omits the pending-review indicator when the count is zero (#3120)', () => {
+    const report = computeSelfEvalSummary({
+      liTaskStats: liMetrics(),
+      outcomes: [{ slug: 'done', outcome: 'merged', filedAt: '2026-07-18T00:00:00.000Z', outcomeAt: '2026-07-19T00:00:00.000Z' }],
+      now: Date.parse('2026-07-20T12:00:00.000Z')
+    });
+    expect(report).not.toContain('PENDING HUMAN REVIEW');
+  });
+
+  it('reports the funnel as UNAVAILABLE when outcomes were not gathered (#3120)', () => {
+    const report = computeSelfEvalSummary({ outcomes: null, liTaskStats: liMetrics() });
+    expect(report).toContain('LI approval funnel: UNAVAILABLE');
+    expect(report).not.toContain('PENDING HUMAN REVIEW');
+  });
+
+  it('does not let the approval funnel inflate the confidence count (#3120)', () => {
+    // The funnel measures the APPROVER's throughput, not LI's self-knowledge — a rich
+    // funnel must not make a signal-less loop look well-informed.
+    const now = Date.parse('2026-07-20T12:00:00.000Z');
+    const report = computeSelfEvalSummary({
+      outcomes: [
+        { slug: 'a', outcome: 'merged', filedAt: new Date(now - 4 * DAY_AGO_MS).toISOString(), outcomeAt: new Date(now - 2 * DAY_AGO_MS).toISOString() }
+      ],
+      now
+    });
+    expect(report).toContain('Reasoning confidence: low');
   });
 
   it('rates confidence high with all three signals, and drops guidance', () => {
@@ -2870,6 +3113,29 @@ describe('gatherSources cosMetrics windowed rate (issue #2460)', () => {
     const listedTypes = (out.scopeGuidance.match(/self-improve:fail-scope-\d+/g) || []).length;
     expect(listedTypes).toBe(SCOPE_AWARENESS_MAX_PER_LIST);
     expect(out.scopeGuidance).toContain(`and ${overflow} more`);
+  });
+
+  it('hands the raw per-type map back for the delivery re-render, with no delivery block yet (#3085)', async () => {
+    // gatherSources runs BEFORE outcomes are reconciled against this run's tracker read,
+    // so it cannot know the approval count yet — emitting one here would let the
+    // cosMetrics and liOutcomes blocks in the SAME prompt disagree. The hook re-renders
+    // with `cosMetricsByType` once it has post-reconciliation records.
+    await writeLearning({
+      byTaskType: { 'user-task': { completed: 10, succeeded: 9, failed: 1, successRate: 90, recentOutcomes: [] } }
+    });
+    const out = await gatherSources({ repoPath: dir }, { sources: { cosMetrics: true } }, { cosPath: dir });
+    expect(out.cosMetricsByType['user-task'].lifetimeSuccessRate).toBe(90);
+    expect(JSON.parse(out.cosMetrics).delivery).toBeUndefined();
+  });
+
+  it('still hands off an empty per-type map when learning.json is missing, so delivery can render (#3085)', async () => {
+    // No learning.json at all: the source used to be skipped outright, which would have
+    // withheld the delivery half too — and that half comes from the outcome records, not
+    // from here. Hand back an empty map so the hook can still render delivery; the
+    // rendered document stays omitted while BOTH halves are empty.
+    const out = await gatherSources({ repoPath: dir }, { sources: { cosMetrics: true } }, { cosPath: dir });
+    expect(out.cosMetricsByType).toEqual({});
+    expect(out.cosMetrics).toBeUndefined();
   });
 
   it('does not emit scopeGuidance when cosMetrics is off (#2760)', async () => {

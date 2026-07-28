@@ -58,7 +58,7 @@ toasts on throw). **Custom catch ⇒ `silent: true`** — otherwise toasts fire 
 | `apiRuns.js` | Agent run history. |
 | `apiScaffold.js` | App scaffolding templates. |
 | `apiSchedules.js` | Automation schedules. |
-| `apiSystem.js` | System info (CPU/memory/ports/alerts) + D&D-style character sheet getter. |
+| `apiSystem.js` | System info (CPU/memory/ports/alerts) + D&D-style character sheet getter, plus the usage cost report and explicit historical reconciliation (`getUsage`/`getUsageRaw`/`resetUsage`, `getProviderUsage`, `getUsageBackfillStatus`/`startUsageBackfill`). |
 | `apiAuth.js` | Optional login password — status, login/logout, set/clear password. |
 | `apiLoops.js` | Scheduled loops. |
 
@@ -96,9 +96,9 @@ toasts on throw). **Custom catch ⇒ `silent: true`** — otherwise toasts fire 
 | `apiCreativeDirector.js` | Creative Director (video production). |
 | `apiCreativeCommission.js` | Creative Commissions (Autonomous Creation Engine — standing recurring briefs). |
 | `apiMusicVideo.js` | Music Video projects + scene board + audio analysis. |
-| `apiSprites.js` | Sprite Manager records, asset library, production-set import (#2895), reference workflow: create/generate/lock (#2896), directional walk and scanner-track generation/approval, trim/postprocess, and per-run source-frame listing for the Loop Trimmer's re-derive (#2980). |
+| `apiSprites.js` | Sprite Manager records, asset library, production-set import (#2895), reference workflow: create/generate/lock (#2896), directional walk and per-track generation/approval, animation-type definition CRUD (#3153), trim/postprocess, and per-run source-frame listing for the Loop Trimmer's re-derive (#2980). |
 | `apiThreejsModels.js` | Procedural Three.js model workspaces: gallery-image generation, refinement, source export, and deletion. |
-| `apiImageTo3d.js` | Image-to-3D (`/media/3d`): selectable targets (TRELLIS.2) with host availability/install status, and per-image model records — create/list/get/generate/delete + GLB asset URL. |
+| `apiImageTo3d.js` | Image-to-3D (`/3d`): selectable targets (TRELLIS.2) with host availability/install status, and per-image model records — create/list/get/generate/delete + GLB asset URL. |
 | `apiPipeline.js` | Pipeline (issues + stages + canon). |
 | `apiUniverseBuilder.js` | Universe Builder (generate + edit + commit). |
 | `apiAuthors.js` | Author personas (name, writing style, bio, headshot description/style). |

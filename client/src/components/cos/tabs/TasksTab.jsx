@@ -52,7 +52,6 @@ export default function TasksTab({ tasks, onRefresh, providers, apps }) {
   // Memoize task arrays to prevent unnecessary re-renders
   const userTasks = useMemo(() => tasks.user?.tasks || [], [tasks.user?.tasks]);
   const cosTasks = useMemo(() => tasks.cos?.tasks || [], [tasks.cos?.tasks]);
-  const awaitingApproval = useMemo(() => tasks.cos?.awaitingApproval || [], [tasks.cos?.awaitingApproval]);
 
   // Split tasks by status for system tasks
   const pendingSystemTasks = useMemo(() =>
@@ -351,17 +350,6 @@ export default function TasksTab({ tasks, onRefresh, providers, apps }) {
         )}
       </div>
 
-      {/* Awaiting Approval */}
-      {awaitingApproval.length > 0 && (
-        <div>
-          <h3 className="text-lg font-semibold text-yellow-500 mb-3">Awaiting Approval</h3>
-          <div className="space-y-2">
-            {awaitingApproval.map(task => (
-              <TaskItem key={task.id} task={task} awaitingApproval onRefresh={onRefresh} providers={providers} durations={durations} apps={apps} />
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

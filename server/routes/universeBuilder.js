@@ -10,8 +10,12 @@
  *   POST   /api/universe-builder/describe-from-images   → { description, llm }
  *   POST   /api/universe-builder/analyze-style-reference → { reference, proposed, diff, rationale, llm }
  *   POST   /api/universe-builder/:id/characters/:entryId/expand-from-images → { fields, updatedFields, llm }
+ *   POST   /api/universe-builder/:id/canon/:kind/:entryId/correct-from-image → { descField, currentDescription, proposedDescription, llm } | { locked, entryName }
+ *   POST   /api/universe-builder/:id/canon/:kind/:entryId/apply-image-correction → { universe, entry }
  *   POST   /api/universe-builder/:id/render             → { runId, collectionId, jobIds, promptCount }
  *   GET    /api/universe-builder/:id/runs               → Run[]
+ *   POST   /api/universe-builder/:id/style-references                 → Universe
+ *   DELETE /api/universe-builder/:id/style-references/:referenceId    → Universe
  */
 
 import { Router } from 'express';
@@ -29,7 +33,7 @@ import {
 import { BIBLE_KINDS, BIBLE_LIMITS, pruneStaleReferenceSheets } from '../lib/storyBible.js';
 import { getUniverseCanonUsage, listLinkedSeriesNames } from '../services/canonUsage.js';
 import { expandWorldTemplate, generateCategoryVariations } from '../services/universeBuilderExpand.js';
-import { describeEntityFromImages, VISION_KINDS, VISION_MAX_IMAGES } from '../services/universeVisionDescribe.js';
+import { describeEntityFromImages, correctEntityFromImage, VISION_KINDS, VISION_MAX_IMAGES } from '../services/universeVisionDescribe.js';
 import { expandEntityFromImages, VISION_EXPAND_MAX_IMAGES } from '../services/universeVisionExpand.js';
 import { analyzeUniverseStyleReference } from '../services/universeStyleReference.js';
 import { sanitizeFilename, PATHS, resolveGalleryImage } from '../lib/fileUtils.js';
@@ -460,6 +464,29 @@ function resolveImageSources(images) {
   });
 }
 
+// Resolve a SINGLE gallery filename to an absolute path, rejecting a
+// traversal attempt or an unknown file up front. Shared by the two
+// single-gallery-image vision routes (`analyze-style-reference`,
+// `correct-from-image`) that resolve one reference image rather than the
+// mixed upload/gallery list `resolveImageSources` handles.
+function resolveGalleryImageOrThrow(filename) {
+  const imageFilename = sanitizeFilename(filename);
+  if (imageFilename !== filename) {
+    throw new ServerError(`Invalid gallery image filename: ${filename}`, {
+      status: 400,
+      code: 'VALIDATION_ERROR',
+    });
+  }
+  const imagePath = resolveGalleryImage(imageFilename);
+  if (!imagePath) {
+    throw new ServerError(`Gallery image not found: ${imageFilename} — upload it again and retry.`, {
+      status: 400,
+      code: 'GALLERY_IMAGE_NOT_FOUND',
+    });
+  }
+  return { imageFilename, imagePath };
+}
+
 // Vision-to-prose: turn one or more reference images of a character/place/
 // object into an image-gen-ready prose description (multiple images → the
 // shared/common description). Stateless — the client decides which entry
@@ -497,20 +524,7 @@ const analyzeStyleReferenceSchema = z.object({
 // reference-and-adopt in the client.
 router.post('/analyze-style-reference', asyncHandler(async (req, res) => {
   const body = validateRequest(analyzeStyleReferenceSchema, req.body ?? {});
-  const imageFilename = sanitizeFilename(body.image);
-  if (imageFilename !== body.image) {
-    throw new ServerError(`Invalid gallery image filename: ${body.image}`, {
-      status: 400,
-      code: 'VALIDATION_ERROR',
-    });
-  }
-  const imagePath = resolveGalleryImage(imageFilename);
-  if (!imagePath) {
-    throw new ServerError(`Gallery image not found: ${imageFilename} — upload it again and retry.`, {
-      status: 400,
-      code: 'GALLERY_IMAGE_NOT_FOUND',
-    });
-  }
+  const { imageFilename, imagePath } = resolveGalleryImageOrThrow(body.image);
   res.json(await analyzeUniverseStyleReference({
     ...body,
     imagePath,
@@ -763,6 +777,57 @@ router.post('/:id/characters/:entryId/expand-from-images', asyncHandler(async (r
   res.json(result);
 }));
 
+// Corrective vision analysis for ONE canon entry (character/place/object):
+// given the entry's CURRENT descriptor text as context, a vision model
+// proposes a CORRECTED replacement — unlike expand-from-images (fills only
+// still-blank fields) or describe-from-images (describes blind), this
+// overwrites existing text where the image contradicts it. Review-only:
+// returns the proposed text for the client to show alongside the current
+// value; `apply-image-correction` (below) persists it.
+const correctFromImageSchema = z.object({
+  image: z.string().trim().min(1).max(300),
+  name: z.string().trim().max(BIBLE_LIMITS.NAME_MAX).optional(),
+  context: z.string().trim().max(2000).optional(),
+  providerId: z.string().trim().max(80).optional(),
+  model: z.string().trim().max(200).optional(),
+});
+router.post('/:id/canon/:kind/:entryId/correct-from-image', asyncHandler(async (req, res) => {
+  const { kind } = validateRequest(lockParamsSchema, req.params);
+  const body = validateRequest(correctFromImageSchema, req.body ?? {});
+  const { imageFilename, imagePath } = resolveGalleryImageOrThrow(body.image);
+  const result = await correctEntityFromImage({
+    universeId: req.params.id,
+    entryId: req.params.entryId,
+    kind,
+    name: body.name,
+    context: body.context,
+    screenshot: imagePath,
+    providerId: body.providerId,
+    model: body.model,
+  }).catch((err) => { throw mapServiceError(err); });
+  res.json({ ...result, imageFilename });
+}));
+
+// Persist a reviewed corrective-image analysis: overwrites the entry's
+// descriptor field with the reviewed text AND pins the analyzed image as the
+// entry's `primaryImageRef` — assigning it as that noun's style/reference
+// image so subsequent renders (client-side i2i seeding) use it.
+// Cap at the largest per-kind descriptor limit (canonSvc.DESC_LIMIT) rather
+// than the unrelated NOTES_MAX — applyCanonImageCorrection silently trims to
+// the per-kind limit before persisting, so a looser schema cap here would let
+// a request pass validation only to have its tail silently dropped on write.
+const applyImageCorrectionSchema = z.object({
+  description: z.string().trim().min(1).max(Math.max(...Object.values(canonSvc.DESC_LIMIT))),
+  imageFilename: z.string().trim().min(1).max(300),
+});
+router.post('/:id/canon/:kind/:entryId/apply-image-correction', asyncHandler(async (req, res) => {
+  const { kind } = validateRequest(lockParamsSchema, req.params);
+  const body = validateRequest(applyImageCorrectionSchema, req.body ?? {});
+  const result = await canonSvc.applyCanonImageCorrection(req.params.id, kind, req.params.entryId, body)
+    .catch((err) => { throw mapServiceError(err); });
+  res.json(result);
+}));
+
 // Generate one of the character reference-sheet variants from a structured
 // TEXT prompt — no init image required, so it works across codex / local
 // backends. The `variant` field selects which prompt-builder + storage slot
@@ -824,6 +889,49 @@ router.get('/:id/series-names', asyncHandler(async (req, res) => {
   const result = await listLinkedSeriesNames(req.params.id)
     .catch((err) => { throw mapServiceError(err); });
   res.json(result);
+}));
+
+// ---- Art style references (delta endpoints, #3109) ----
+//
+// Add/remove one reference at a time instead of PATCHing the whole array; see
+// `addStyleReference` in services/universeBuilder/crud.js for the rationale.
+// The wholesale-replace `{ styleReferences: [...] }` field on PATCH /:id stays
+// accepted (older clients, peer imports, the sharing importer).
+const addStyleReferenceSchema = z.object({
+  // `id` is required here (unlike the wholesale-replace field, where the
+  // sanitizer mints one): the id is what makes a re-sent add idempotent
+  // server-side, and /analyze-style-reference always returns one. `required`
+  // only drops the `.optional()` — the trim/length rules stay defined once, on
+  // the shared `entryIdField`.
+  reference: styleReferenceSchema.required({ id: true }),
+  // Present when the user chose "Adopt style + add" — written in the SAME
+  // queued write as the reference so the pair can't half-land. Both fields
+  // default, so `adopt: {}` reads as "adopt an empty guide" (an explicit clear)
+  // instead of reaching the service as `undefined` and clearing influences by
+  // accident — matching analyzeStyleReferenceSchema's choice for the same pair.
+  adopt: z.object({
+    styleNotes: z.string().trim().max(svc.STYLE_NOTES_MAX).optional().default(''),
+    influences: influencesSchema.optional().default({ embrace: [], avoid: [] }),
+  }).optional(),
+});
+router.post('/:id/style-references', asyncHandler(async (req, res) => {
+  const body = validateRequest(addStyleReferenceSchema, req.body ?? {});
+  const w = await svc.addStyleReference(req.params.id, body.reference, { adopt: body.adopt })
+    .catch((err) => { throw mapServiceError(err); });
+  res.json(w);
+}));
+
+// The id is only ever compared against stored reference ids (never used as a
+// path/SQL operand), but validate it anyway so an absurdly long param is a 400
+// here rather than a silent no-op deeper in.
+const removeStyleReferenceParamsSchema = z.object({
+  referenceId: entryIdField.unwrap(),
+});
+router.delete('/:id/style-references/:referenceId', asyncHandler(async (req, res) => {
+  const { referenceId } = validateRequest(removeStyleReferenceParamsSchema, req.params);
+  const w = await svc.removeStyleReference(req.params.id, referenceId)
+    .catch((err) => { throw mapServiceError(err); });
+  res.json(w);
 }));
 
 // Lock toggle for canon entries. Locked entries are protected from AI rewrite

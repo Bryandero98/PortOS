@@ -12,6 +12,7 @@ import {
   ANTIGRAVITY_TUI_ID,
   ensureAntigravityPrintArgs,
   ensureAntigravityTuiArgs,
+  isAntigravityCommand,
   LEGACY_GEMINI_CLI_ID,
   LEGACY_GEMINI_TUI_ID,
 } from './internal/antigravity.js';
@@ -160,6 +161,30 @@ const CODEX_MODEL_DEFAULTS = {
   heavyModel: 'gpt-5.6-sol',
 };
 const ANTIGRAVITY_MODEL_KEYS = ['defaultModel', 'lightModel', 'mediumModel', 'heavyModel'];
+// agy exposes a per-session `--model` flag and lists its catalog via
+// `agy models`. This is the shipped fallback list (agy 2026-07) used to seed a
+// fresh install and when the live `agy models` probe can't run; the AI Providers
+// "Refresh models" button replaces it with whatever the installed binary
+// reports, which is the authoritative list for that user's plan.
+const ANTIGRAVITY_MODELS = [
+  'gemini-3.6-flash-high',
+  'gemini-3.6-flash-medium',
+  'gemini-3.6-flash-low',
+  'gemini-3.5-flash-high',
+  'gemini-3.5-flash-medium',
+  'gemini-3.5-flash-low',
+  'gemini-3.1-pro-high',
+  'gemini-3.1-pro-low',
+  'claude-sonnet-4-6',
+  'claude-opus-4-6-thinking',
+  'gpt-oss-120b-medium',
+];
+// The sentinel stays FIRST in the list and remains the value of every
+// `*Model` key: an install that never picks a model keeps agy's own configured
+// default (no `--model` flag), exactly as before. The real ids ride alongside so
+// the task/schedule model pickers (which filter the sentinel out) can offer a
+// per-run override.
+const ANTIGRAVITY_MODEL_CATALOG = [ANTIGRAVITY_CONFIGURED_DEFAULT, ...ANTIGRAVITY_MODELS];
 const CODEX_CONTEXT_WINDOW = 1_000_000;
 const GEMINI_CONTEXT_WINDOW = 1_048_576;
 const STALE_GENERIC_CONTEXT_WINDOW = 128_000;
@@ -201,6 +226,24 @@ function migrateCodexProvider(data) {
   return changed;
 }
 
+// Remove a `--model <id>` / `--model=<id>` pin (both spellings) from a legacy
+// Gemini-CLI argv being converted to agy. Only the legacy migration wants this —
+// on the spawn paths a long-form `--model` is a legitimate agy pin and is kept.
+function stripLegacyModelPin(args) {
+  const out = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--model') {
+      const next = args[i + 1];
+      if (typeof next === 'string' && !next.startsWith('-')) i += 1; // skip its value
+      continue;
+    }
+    if (typeof arg === 'string' && arg.startsWith('--model=')) continue;
+    out.push(arg);
+  }
+  return out;
+}
+
 function migrateAntigravityProviders(data) {
   if (!data?.providers) return false;
   let changed = false;
@@ -216,6 +259,14 @@ function migrateAntigravityProviders(data) {
     if (!data.providers[mapping.targetId]) {
       const envVars = { ...(legacy.envVars || {}) };
       delete envVars.GEMINI_SANDBOX;
+      // Drop any `--model` the legacy argv pinned BEFORE normalizing. The arg
+      // builders deliberately preserve a long-form `--model` (agy accepts it,
+      // so a pin is a real user selection) — but this argv came from the
+      // *Gemini* CLI, so its pin is a Gemini id (`gemini-2.5-pro`) that agy
+      // cannot resolve. Carrying it over would both break every run AND make
+      // `hasModelFlag` permanently suppress PortOS's own injection, leaving the
+      // user no way to fix it short of hand-editing the provider args.
+      const legacyArgs = stripLegacyModelPin(legacy.args || []);
       const migrated = {
         ...legacy,
         id: mapping.targetId,
@@ -223,9 +274,9 @@ function migrateAntigravityProviders(data) {
         type: mapping.type,
         command: 'agy',
         args: mapping.type === 'cli'
-          ? ensureAntigravityPrintArgs(legacy.args || [])
-          : ensureAntigravityTuiArgs(legacy.args || []),
-        models: [ANTIGRAVITY_CONFIGURED_DEFAULT],
+          ? ensureAntigravityPrintArgs(legacyArgs)
+          : ensureAntigravityTuiArgs(legacyArgs),
+        models: [...ANTIGRAVITY_MODEL_CATALOG],
         timeout: legacy.timeout || mapping.timeout,
         envVars,
       };
@@ -252,6 +303,31 @@ function migrateAntigravityProviders(data) {
     changed = true;
   }
 
+  return changed;
+}
+
+// Installs that already migrated to `agy` carry the sentinel-only model list
+// from before agy grew a `--model` flag. Widen it to the shipped catalog so the
+// task/schedule pickers have something to offer. Guarded on "sentinel-only" so a
+// user's own list (or one already refreshed from `agy models`) is never
+// overwritten, and the `*Model` keys are left alone so run behavior is unchanged
+// until the user actually picks a model.
+function migrateAntigravityModelCatalog(data) {
+  if (!data?.providers) return false;
+  let changed = false;
+  for (const provider of Object.values(data.providers)) {
+    const isAntigravityProcessProvider = (provider?.id === ANTIGRAVITY_CLI_ID || provider?.id === ANTIGRAVITY_TUI_ID)
+      && (provider?.type === 'cli' || provider?.type === 'tui');
+    if (!isAntigravityProcessProvider) continue;
+
+    const isSentinelOnly = Array.isArray(provider.models)
+      && provider.models.length === 1
+      && provider.models[0] === ANTIGRAVITY_CONFIGURED_DEFAULT;
+    if (!isSentinelOnly) continue;
+
+    provider.models = [...ANTIGRAVITY_MODEL_CATALOG];
+    changed = true;
+  }
   return changed;
 }
 
@@ -367,11 +443,13 @@ export function createProviderService(config = {}) {
 
     const migratedCodex = migrateCodexProvider(data);
     const migratedAntigravity = migrateAntigravityProviders(data);
+    const migratedAntigravityModels = migrateAntigravityModelCatalog(data);
     const migratedContextWindows = migrateProviderContextWindows(data);
-    if (migratedCodex || migratedAntigravity || migratedContextWindows) {
+    if (migratedCodex || migratedAntigravity || migratedAntigravityModels || migratedContextWindows) {
       await atomicWrite(PROVIDERS_PATH, data);
       if (migratedCodex) console.log('🔧 Migrated Codex providers to the selectable GPT-5.6 model tiers');
       if (migratedAntigravity) console.log('🔧 Migrated Gemini provider config to Antigravity CLI (agy)');
+      if (migratedAntigravityModels) console.log('🔧 Migrated Antigravity providers to the selectable agy model catalog');
       if (migratedContextWindows) console.log('🔧 Migrated provider context windows to current canonical values');
     }
 
@@ -678,6 +756,10 @@ export function createProviderService(config = {}) {
           // CLI/config), but the Claude-Ollama TUI variant still needs its
           // tool-use-capable Ollama model list pulled live, same as the CLI one.
           models = await this._fetchOllamaToolCapableModels(provider);
+        } else if (provider.type === 'tui' && (provider.id === ANTIGRAVITY_TUI_ID || isAntigravityCommand(provider.command))) {
+          // Same exception for the Antigravity TUI: `agy --model` applies to the
+          // interactive session too, so its catalog must refresh like the CLI's.
+          models = await this._fetchAntigravityModels(provider);
         }
       } catch (error) {
         console.error(`Failed to refresh models for ${provider.name}:`, error.message);
@@ -759,8 +841,13 @@ export function createProviderService(config = {}) {
         return await this._fetchAnthropicModels(provider);
       }
 
-      if (providerName.includes('antigravity') || provider.command === 'agy') {
-        return [ANTIGRAVITY_CONFIGURED_DEFAULT];
+      // Path/exe-tolerant (`isAntigravityCommand`, not `command === 'agy'`) so a
+      // provider configured with the absolute binary path still refreshes —
+      // otherwise the client's `isAntigravityProvider` gate offers the Refresh
+      // button and every click falls through to the throw below. Matches the
+      // TUI branch in refreshProviderModels.
+      if (providerName.includes('antigravity') || isAntigravityCommand(provider.command)) {
+        return await this._fetchAntigravityModels(provider);
       }
 
       if (providerName.includes('gemini') || provider.command === 'gemini') {
@@ -768,6 +855,56 @@ export function createProviderService(config = {}) {
       }
 
       throw new Error('Model refresh not supported for this CLI provider');
+    },
+
+    /**
+     * agy ships an `agy models` subcommand that prints one model id per line —
+     * the authoritative catalog for this user's plan and binary version, which
+     * a hardcoded list can only go stale against.
+     *
+     * THROWS rather than falling back to `ANTIGRAVITY_MODEL_CATALOG` when the
+     * probe can't run (agy not installed, the service PATH can't resolve it, a
+     * timeout, a non-zero exit) or comes back with nothing parseable. The
+     * shipped catalog is for *seeding and migration* — surfacing it from a
+     * refresh would make a failed probe indistinguishable from a real fetch:
+     * `refreshProviderModels` would persist it and the UI would toast "Models
+     * refreshed", so a user whose PATH can't see agy would pick a model their
+     * plan doesn't have and only find out when the run dies. Throwing makes
+     * `refreshProviderModels` return null → an explicit error toast, and leaves
+     * the existing list untouched (nothing is persisted). Same posture as
+     * `_fetchOllamaToolCapableModels`, and the root CLAUDE.md rule that a
+     * reachable-but-list-failed backend must surface an explicit error rather
+     * than a plausible-looking empty/default result.
+     *
+     * The sentinel is always re-prepended: it is what keeps "use agy's own
+     * configured default" selectable after a refresh.
+     */
+    async _fetchAntigravityModels(provider) {
+      const bin = provider?.command || 'agy';
+      const { command, args } = prepareWindowsSafeSpawn(bin, ['models']);
+      const pending = execFileAsync(command, args, {
+        timeout: 15000,
+        env: { ...process.env, ...provider?.envVars },
+      });
+      // Close the child's stdin immediately. `agy models` blocks on an open
+      // stdin and prints NOTHING until it closes — with execFile's default pipe
+      // that's a full 15s hang ending in SIGTERM and an empty catalog. (execFile
+      // ignores an `stdio` option, so ending the stream is the way to do it.)
+      pending.child?.stdin?.end();
+      const { stdout } = await pending.catch((err) => {
+        throw new Error(`'${bin} models' failed: ${err?.message || 'could not run the binary'}`);
+      });
+
+      const listed = (stdout || '')
+        .split(/\r?\n/)
+        .map(line => line.trim())
+        // Drop blanks, banner/status lines, and anything that isn't a bare id.
+        .filter(line => /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(line) && line !== ANTIGRAVITY_CONFIGURED_DEFAULT);
+
+      if (listed.length === 0) {
+        throw new Error(`'${bin} models' returned no model ids`);
+      }
+      return [ANTIGRAVITY_CONFIGURED_DEFAULT, ...new Set(listed)];
     },
 
     async _fetchOllamaToolCapableModels(provider) {

@@ -46,6 +46,21 @@ export const deleteUniverse = (id, options = {}) => request(`/universe-builder/$
   ...options,
 });
 
+// Add / remove ONE art style reference — deltas, not a wholesale array replace
+// (see `addStyleReference` in server/services/universeBuilder/crud.js for why).
+// Both resolve with the full updated universe. `adopt` is
+// `{ styleNotes, influences }` when the user chose "Adopt style + add"; the
+// server writes it in the same queued write as the reference.
+export const addUniverseStyleReference = (id, { reference, adopt } = {}, options = {}) => request(
+  `/universe-builder/${encodeURIComponent(id)}/style-references`,
+  { method: 'POST', body: JSON.stringify({ reference, ...(adopt ? { adopt } : {}) }), ...options },
+);
+
+export const removeUniverseStyleReference = (id, referenceId, options = {}) => request(
+  `/universe-builder/${encodeURIComponent(id)}/style-references/${encodeURIComponent(referenceId)}`,
+  { method: 'DELETE', ...options },
+);
+
 export const expandUniverse = ({
   starterPrompt, influences,
   preservedVariations, preservedCompositeSheets,
@@ -103,6 +118,37 @@ export const expandEntityFromImages = (universeId, entryId, {
   {
     method: 'POST',
     body: JSON.stringify({ name, context, images, providerId, model }),
+    ...options,
+  },
+);
+
+// Corrective vision analysis for ONE canon entry: given the entry's current
+// descriptor text as context, a vision model proposes a CORRECTED
+// replacement (unlike expandEntityFromImages, which only fills still-blank
+// fields). Review-only — resolves to `{ descField, currentDescription,
+// proposedDescription, llm, imageFilename }` (or `{ locked: true, entryName }`);
+// `applyCanonImageCorrection` persists the reviewed text and pins the image.
+export const correctEntityFromImage = (universeId, kind, entryId, {
+  image, name, context, providerId, model,
+} = {}, options = {}) => request(
+  `/universe-builder/${encodeURIComponent(universeId)}/canon/${encodeURIComponent(kind)}/${encodeURIComponent(entryId)}/correct-from-image`,
+  {
+    method: 'POST',
+    body: JSON.stringify({ image, name, context, providerId, model }),
+    ...options,
+  },
+);
+
+// Persist a reviewed corrective-image analysis: overwrites the entry's
+// descriptor field with `description` AND pins `imageFilename` as the
+// entry's `primaryImageRef` in one atomic write.
+export const applyCanonImageCorrection = (universeId, kind, entryId, {
+  description, imageFilename,
+} = {}, options = {}) => request(
+  `/universe-builder/${encodeURIComponent(universeId)}/canon/${encodeURIComponent(kind)}/${encodeURIComponent(entryId)}/apply-image-correction`,
+  {
+    method: 'POST',
+    body: JSON.stringify({ description, imageFilename }),
     ...options,
   },
 );

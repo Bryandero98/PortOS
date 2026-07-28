@@ -34,13 +34,116 @@ import {
   isOllamaBackedProvider,
   isGrokBuildCli,
   isKimiProvider,
+  isAntigravityProvider,
+  effortLevelsForProvider,
+  resolveCliEffort,
+  CLAUDE_EFFORT_LEVELS,
+  CODEX_EFFORT_LEVELS,
+  ANTIGRAVITY_EFFORT_LEVELS,
   isConfiguredDefaultModel,
+  configuredDefaultIn,
   isLocalEndpoint,
   enabledApiProviderFilter,
   providerTypeClass,
   getProviderTimeout,
 } from './providers.js';
 import { PROVIDER_TYPES as SERVER_PROVIDER_TYPES } from '../../../server/lib/aiToolkit/constants.js';
+import {
+  effortLevelsForProvider as serverEffortLevelsForProvider,
+  isAntigravityProvider as serverIsAntigravityProvider,
+  resolveCliEffort as serverResolveCliEffort,
+} from '../../../server/lib/providerModels.js';
+
+// The client copy drives what EffortSelect DISPLAYS; the server copy decides
+// what the CLI actually receives. Any drift means the UI names a level the run
+// won't use, so every case is asserted against both implementations.
+describe('resolveCliEffort (server mirror)', () => {
+  const AGY = { id: 'antigravity-cli', command: 'agy' };
+  const CLAUDE = { id: 'claude-code', command: 'claude' };
+  const CODEX = { id: 'codex', command: 'codex' };
+  const GROK = { id: 'grok-cli', command: 'grok' };
+
+  it.each([
+    ['supported value passes through', 'medium', AGY, 'medium'],
+    ['above agy ladder clamps down', 'xhigh', AGY, 'high'],
+    ['max clamps to agy high', 'max', AGY, 'high'],
+    ['ultra clamps to agy high', 'ultra', AGY, 'high'],
+    ['below agy ladder takes the weakest', 'minimal', AGY, 'low'],
+    ['codex-only ultra clamps on claude', 'ultra', CLAUDE, 'max'],
+    ['codex-only minimal clamps on claude', 'minimal', CLAUDE, 'low'],
+    ['codex accepts its whole ladder', 'ultra', CODEX, 'ultra'],
+    ['unknown value yields no flag', 'bogus', AGY, null],
+    ['effort-less provider yields no flag', 'high', GROK, null],
+    ['unset yields no flag', '', AGY, null],
+    ['null yields no flag', null, CLAUDE, null],
+  ])('%s', (_label, effort, provider, expected) => {
+    expect(resolveCliEffort(effort, provider)).toBe(expected);
+    expect(serverResolveCliEffort(effort, provider)).toBe(expected);
+  });
+});
+
+// These drive the Effort/model pickers in the CoS task + schedule forms. The
+// client copy is a hand-mirror of server/lib/providerModels.js (the client can't
+// import server modules at runtime), so pin both sides together here.
+describe('effortLevelsForProvider (server mirror)', () => {
+  const CASES = [
+    ['antigravity CLI', { id: 'antigravity-cli', command: 'agy' }, ANTIGRAVITY_EFFORT_LEVELS],
+    ['antigravity TUI', { id: 'antigravity-tui' }, ANTIGRAVITY_EFFORT_LEVELS],
+    ['path-configured agy', { id: 'custom', command: '/Users/x/.local/bin/agy' }, ANTIGRAVITY_EFFORT_LEVELS],
+    ['claude code', { id: 'claude-code', command: 'claude' }, CLAUDE_EFFORT_LEVELS],
+    ['codex', { id: 'codex', command: 'codex' }, CODEX_EFFORT_LEVELS],
+    ['grok (no effort control)', { id: 'grok-cli', command: 'grok' }, null],
+    ['blank command is not claude', { id: 'ollama' }, null],
+  ];
+
+  it.each(CASES)('%s', (_label, provider, expected) => {
+    expect(effortLevelsForProvider(provider)).toEqual(expected);
+    expect(serverEffortLevelsForProvider(provider)).toEqual(expected);
+  });
+});
+
+// Regression guard for the provider-edit form: an Antigravity provider publishes
+// a real `agy models` catalog while its defaultModel/tiers stay on the sentinel.
+// filterGenerationModels strips the sentinel, so the edit form needs this to
+// render an explicit option for it — otherwise those four selects hold a value
+// matching no option and render blank, reading as "no model configured".
+describe('configuredDefaultIn', () => {
+  it('finds the sentinel in a mixed catalog', () => {
+    expect(configuredDefaultIn([ANTIGRAVITY_CONFIGURED_DEFAULT, 'gemini-3.1-pro-high']))
+      .toBe(ANTIGRAVITY_CONFIGURED_DEFAULT);
+    expect(configuredDefaultIn(['gpt-5.6-terra', CODEX_CONFIGURED_DEFAULT]))
+      .toBe(CODEX_CONFIGURED_DEFAULT);
+  });
+
+  it('returns null when the list carries no sentinel', () => {
+    expect(configuredDefaultIn(['gpt-5.6-terra', 'gpt-5.6-sol'])).toBeNull();
+    expect(configuredDefaultIn([])).toBeNull();
+    expect(configuredDefaultIn(null)).toBeNull();
+    expect(configuredDefaultIn(undefined)).toBeNull();
+  });
+
+  // The sentinel it finds must be exactly what filterGenerationModels removed,
+  // or the option's value still won't match the select's value.
+  it('finds precisely the value the generation filter drops', () => {
+    const models = [ANTIGRAVITY_CONFIGURED_DEFAULT, 'gemini-3.1-pro-high', 'claude-sonnet-4-6'];
+    const sentinel = configuredDefaultIn(models);
+    expect(filterGenerationModels(models)).not.toContain(sentinel);
+    expect([...filterGenerationModels(models), sentinel].sort()).toEqual([...models].sort());
+  });
+});
+
+describe('isAntigravityProvider (server mirror)', () => {
+  it.each([
+    [{ id: 'antigravity-cli' }, true],
+    [{ id: 'antigravity-tui' }, true],
+    [{ id: 'custom', command: 'agy.exe' }, true],
+    [{ id: 'claude-code', command: 'claude' }, false],
+    [null, false],
+  ])('%o → %s', (provider, expected) => {
+    expect(isAntigravityProvider(provider)).toBe(expected);
+    expect(serverIsAntigravityProvider(provider)).toBe(expected);
+  });
+});
 
 describe('PROVIDER_TYPES', () => {
   it('exposes the three provider-type values', () => {

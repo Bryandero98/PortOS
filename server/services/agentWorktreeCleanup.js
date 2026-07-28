@@ -24,7 +24,7 @@ import { PATHS } from '../lib/fileUtils.js';
 import { RECOVERY_TASK_PREFIX } from './recoveryTasks.js';
 import { detectForgeCli } from '../lib/gitForge.js';
 import { PR_COMPLETIONS, PR_COMPLETION_VALUES, leavesPrForHuman } from '../lib/prDisposition.js';
-import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, MODEL_CAPABLE_CLI_REVIEWERS, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers } from '../lib/validation.js';
+import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, MODEL_SELECTABLE_REVIEWERS, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds } from '../lib/validation.js';
 
 /**
  * Clean up a worktree for a completed agent.
@@ -43,7 +43,7 @@ import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, MODEL_CA
  * the worktree branch into the source workspace because `gh pr merge` already handled it.
  * Otherwise, merges the worktree branch back to the source branch on success.
  */
-export async function cleanupAgentWorktree(agentId, success, { openPR = false, prCompletion = null, requestCopilotReview: legacyRequestCopilotReview = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, reviewerModels = null, skipMerge = false, description = null, agentOutput = null, originalTask = null } = {}) {
+export async function cleanupAgentWorktree(agentId, success, { openPR = false, prCompletion = null, requestCopilotReview: legacyRequestCopilotReview = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, reviewerModels = null, skipMerge = false, description = null, agentOutput = null, originalTask = null } = {}) {
   const { getAgent: getAgentState } = await import('./cos.js');
   const agentState = await getAgentState(agentId).catch(() => null);
   if (!agentState?.metadata?.isWorktree) return [];
@@ -230,6 +230,7 @@ export async function cleanupAgentWorktree(agentId, success, { openPR = false, p
             reviewers: runsReviewLoop ? reviewerList : [],
             usernames: runsReviewLoop ? usernames : [],
             optionalReviewers: runsReviewLoop ? optionalReviewers : [],
+            reviewerMaxRounds: runsReviewLoop ? reviewerMaxRounds : {},
             reviewStopMode,
             reviewerApplies,
             reviewerModels,
@@ -264,12 +265,64 @@ export async function cleanupAgentWorktree(agentId, success, { openPR = false, p
     agentId, branchName: worktreeBranch, merge: shouldMerge
   });
 
-  const result = await removeWorktree(agentId, sourceWorkspace, worktreeBranch, { merge: shouldMerge }).catch(err => {
+  const result = await removeWorktree(agentId, sourceWorkspace, worktreeBranch, {
+    merge: shouldMerge,
+    // A FAILED agent's branch is the only record of what it got done. Keep it when
+    // it holds commits so the task's retry can attach to it and resume rather than
+    // redo the work (see resolveResumeBranch below + removeWorktree's flag docs).
+    preserveBranchWithCommits: !success,
+  }).catch(err => {
     emitLog('warn', `🌳 Worktree cleanup failed for ${agentId}: ${err.message}`, { agentId });
     return { warnings: [`Worktree cleanup failed: ${err.message}`] };
   });
   warnings.push(...(result?.warnings || []));
   return warnings;
+}
+
+/**
+ * Does a failed agent's branch still exist with commits a retry should resume
+ * from? Called at completion time (after cleanup has decided whether to preserve
+ * the branch) so the answer reflects what's actually on disk, not what we hoped.
+ *
+ * Returns the branch name to resume, or null when there is nothing to resume —
+ * no branch, a branch that holds nothing the default branch doesn't already
+ * have, or one still checked out in a preserved worktree (unattachable). A null
+ * answer means the retry should start clean, which is the correct behavior for an
+ * agent that failed before committing anything.
+ *
+ * Deliberately checks the LOCAL branch: `removeWorktree` preserves it in place,
+ * and `createWorktree`'s `existingBranch` path prefers a local copy before
+ * falling back to `origin/<branch>`, so a local-only branch resumes fine.
+ */
+export async function resolveResumeBranch(sourceWorkspace, branchName) {
+  if (!sourceWorkspace || !branchName) return null;
+  // Git allows a branch to be checked out in only ONE worktree, so if the dead
+  // agent's worktree is STILL on this branch, `git worktree add <path> <branch>`
+  // fails with "already checked out" and the retry can't spawn at all — worse
+  // than restarting clean. That combination is exactly what this change makes
+  // more likely: removeWorktree preserves the worktree (not just the branch)
+  // whenever the tree was dirty, so the branch stays claimed. Don't point a retry
+  // at a branch it cannot attach to.
+  const claimed = await git.getWorktreeBranches(sourceWorkspace).catch(() => null);
+  if (claimed?.has(branchName)) {
+    emitLog('info', `🌳 Branch ${branchName} is still checked out in a preserved worktree — a retry can't attach to it, so it will start clean`, { branchName });
+    return null;
+  }
+  const target = await git.getDefaultBranch(sourceWorkspace).catch(() => null) || 'main';
+  // Same predicate `removeWorktree` used to decide whether to KEEP this branch, so
+  // the two can't disagree and orphan it. `isBranchMergedInto` (not a rev-list
+  // count) because a rebase/squash-merged branch has new SHAs and would otherwise
+  // read as resumable — pointing a retry at already-landed work. Note the polarity
+  // flips here: preservation fails closed (keep), but resuming fails OPEN (start
+  // clean), because a wrong resume makes an agent build on a merged branch while a
+  // wrong clean start merely repeats work the branch still holds for a human.
+  const merged = await git.isBranchMergedInto(sourceWorkspace, branchName, target).catch(() => true);
+  if (merged) return null;
+  // Confirm the branch actually exists and holds commits — `isBranchMergedInto`
+  // reports an ABSENT branch as unmerged, which would hand back a branch name no
+  // worktree can attach to.
+  const comparison = await git.getBranchComparison(sourceWorkspace, target, branchName).catch(() => null);
+  return comparison?.ahead > 0 ? branchName : null;
 }
 
 /**
@@ -295,7 +348,7 @@ export async function cleanupAgentWorktree(agentId, success, { openPR = false, p
  * branch (via createWorktree's `existingBranch` option) so it can fix-and-push
  * without trampling concurrent agents.
  */
-export async function spawnReviewLoopFollowUp({ originalAgentId, originalTask, prUrl, prBranch, sourceWorkspace, prCompletion = PR_COMPLETIONS.REVIEW_THEN_MERGE, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, reviewerModels = null, leaveOpen = false }) {
+export async function spawnReviewLoopFollowUp({ originalAgentId, originalTask, prUrl, prBranch, sourceWorkspace, prCompletion = PR_COMPLETIONS.REVIEW_THEN_MERGE, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, reviewerModels = null, leaveOpen = false }) {
   if (!prUrl || !prBranch) return null;
   if (prCompletion === PR_COMPLETIONS.LEAVE_OPEN) return null;
 
@@ -318,6 +371,11 @@ export async function spawnReviewLoopFollowUp({ originalAgentId, originalTask, p
   // Non-blocking (`~opt`) marker set — forge-agnostic, threaded verbatim so the
   // follow-up's `--review-with` marks the same reviewers optional.
   const effectiveOptionalReviewers = normalizeOptionalReviewers(optionalReviewers) || [];
+  // Per-reviewer iteration caps (`~max=<n>`) — forge-agnostic, threaded verbatim
+  // so the follow-up's `--review-with` carries the same budgets. Entries for
+  // reviewers that were stripped are inert (the emitter only marks tokens it
+  // actually emits), so no narrowing is needed here.
+  const effectiveReviewerMaxRounds = normalizeReviewerMaxRounds(reviewerMaxRounds) || {};
   // Merge-on-green deliberately skips every reviewer. A legacy review loop
   // whose GitHub-only reviewer vanishes on another forge retains its prior
   // merge-only fallback instead of leaving an orphaned PR.
@@ -329,13 +387,15 @@ export async function spawnReviewLoopFollowUp({ originalAgentId, originalTask, p
   // normally catches this; the guard keeps the invariant local to this function.
   if (mergeOnly && leaveOpen) return null;
 
-  // Reviewer-keyed CLI model map, narrowed to the model-capable reviewers actually
-  // in this loop's list (e.g. `{ codex: 'gpt-5.6-sol', claude: 'qwen2.5:7b' }`); the
-  // prompt threads each as `<reviewer> --model <id>`. `reviewerModels` is already
-  // coerced to string values upstream (resolveReviewLoopOptions).
+  // Reviewer-keyed model map, narrowed to the model-selectable reviewers actually
+  // in this loop's list (e.g. `{ codex: 'gpt-5.6-sol', ollama: 'qwen2.5:7b' }`).
+  // The prompt threads a CLI reviewer's model as `<reviewer> --model <id>` and a
+  // local-LLM reviewer's as the `model` field of its `/api/code-review/local` body.
+  // `reviewerModels` is already coerced to string values upstream
+  // (resolveReviewLoopOptions).
   const narrowedReviewerModels = {};
   for (const r of effectiveReviewers) {
-    if (MODEL_CAPABLE_CLI_REVIEWERS.includes(r) && reviewerModels?.[r]) narrowedReviewerModels[r] = reviewerModels[r];
+    if (MODEL_SELECTABLE_REVIEWERS.includes(r) && reviewerModels?.[r]) narrowedReviewerModels[r] = reviewerModels[r];
   }
 
   // One place that names the mode, so the title, the log line, and the warning
@@ -405,6 +465,10 @@ export async function spawnReviewLoopFollowUp({ originalAgentId, originalTask, p
       // and gates the merge on (appended to `--review-with` as `@user`).
       reviewLoopReviewerUsernames: effectiveUsernames,
       reviewLoopOptionalReviewers: effectiveOptionalReviewers,
+      // Per-reviewer `~max=<n>` caps, keyed by emitted token. Empty object = no
+      // caps (leaves slashdo's per-loop built-in default in place); an absent key
+      // is NOT `0`, which slashdo reads as "loop until clean".
+      reviewLoopReviewerMaxRounds: effectiveReviewerMaxRounds,
       reviewLoopStopMode: reviewStopMode,
       reviewLoopReviewerApplies: reviewerApplies,
       // Empty → null so the prompt builder's "no models configured" path is unambiguous.

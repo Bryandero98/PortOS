@@ -11,6 +11,7 @@
 import { z } from 'zod';
 import { emptyToUndefined, emptyToNull } from './zodCompat.js';
 import { EFFORT_LEVELS } from './providerModels.js';
+import { isValidSlashdoCommand } from './slashdoInvocation.js';
 import { PR_COMPLETION_VALUES } from './prDisposition.js';
 
 // =============================================================================
@@ -42,6 +43,13 @@ export const LOCAL_LLM_REVIEWERS = ['lmstudio', 'ollama'];
 // server-side by `POST /api/code-review/local`. Add a reviewer here (and a
 // matching `<reviewer>Model` schema field) when its CLI gains model selection.
 export const MODEL_CAPABLE_CLI_REVIEWERS = ['codex', 'claude'];
+// Every reviewer whose model the user can PICK in the UI: the model-capable CLIs
+// above (threaded into the follow-up prompt as `<reviewer> --model <id>`) plus the
+// local-LLM backends (whose id is injected server-side by
+// `POST /api/code-review/local`, or emitted as slashdo's `[<model>]` bracket for a
+// claim flow). `copilot` and `@username` reviewers are excluded — neither is a
+// model-taking backend, matching slashdo rejecting `copilot[…]`/`@login[…]`.
+export const MODEL_SELECTABLE_REVIEWERS = [...MODEL_CAPABLE_CLI_REVIEWERS, ...LOCAL_LLM_REVIEWERS];
 // Stop-mode for the multi-reviewer loop (slashdo `--review-stop-on-*`).
 export const REVIEW_STOP_MODES = ['all', 'on-findings', 'on-clean'];
 export const DEFAULT_REVIEW_STOP_MODE = 'all';
@@ -98,6 +106,26 @@ export function resolveReviewUsernames(metadataUsernames, defaultUsernames) {
 }
 
 /**
+ * Normalize ONE raw reviewer identity to the exact token `--review-with` emits:
+ * a keyed slug from `REVIEWER_VALUES` (aliasing `gemini` → `antigravity`) or an
+ * `@<username>`. Returns null for anything else. Single definition of the token
+ * identity shared by `normalizeOptionalReviewers` and
+ * `normalizeReviewerMaxRounds`, so the `~opt` set and the `~max=<n>` map can't
+ * disagree about what a reviewer is called.
+ */
+function normalizeReviewerToken(raw) {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith('@')) {
+    const [user] = normalizeReviewUsernames([trimmed]);
+    return user ? `@${user}` : null;
+  }
+  const slug = REVIEWER_ALIASES[trimmed] ?? trimmed;
+  return REVIEWER_VALUES.includes(slug) ? slug : null;
+}
+
+/**
  * Reviewer identities the user marked OPTIONAL (non-blocking). slashdo's `~opt`
  * suffix is appended to each matching `--review-with` token, so an *inconclusive*
  * verdict from that reviewer (timeout / no-verdict / partial) no longer gates the
@@ -118,19 +146,8 @@ export function normalizeOptionalReviewers(list) {
   const seen = new Set();
   const out = [];
   for (const raw of list) {
-    if (typeof raw !== 'string') continue;
-    const trimmed = raw.trim();
-    if (!trimmed) continue;
-    let token;
-    if (trimmed.startsWith('@')) {
-      const [user] = normalizeReviewUsernames([trimmed]);
-      if (!user) continue;
-      token = `@${user}`;
-    } else {
-      const slug = REVIEWER_ALIASES[trimmed] ?? trimmed;
-      if (!REVIEWER_VALUES.includes(slug)) continue;
-      token = slug;
-    }
+    const token = normalizeReviewerToken(raw);
+    if (!token) continue;
     const key = token.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
@@ -151,6 +168,183 @@ export function resolveOptionalReviewers(metadataOptional, defaultOptional) {
     : (normalizeOptionalReviewers(defaultOptional) || []);
 }
 
+// Ceiling on a per-reviewer `~max=<n>` cap. slashdo's inner loops carry their own
+// 10-iteration safety guardrail, so a budget above it can never be spent —
+// accepting one would just be a lie in the flag string.
+export const MAX_REVIEWER_MAX_ROUNDS = 10;
+
+/**
+ * Per-reviewer iteration caps — slashdo's `~max=<n>` suffix (v3.25.0). Caps how
+ * many review → fix → re-review cycles ONE reviewer runs before it stops, so a
+ * slow local model can be included in a chain without paying for its otherwise
+ * hardcoded 3 rounds (`--review-with claude~max=2,ollama~max=1,codex~max=3`).
+ * Stored as a token-keyed map (`{ ollama: 1, '@flaky-bot': 0 }`) rather than a
+ * list because the cap carries a value; the key is the same *emitted*
+ * `--review-with` token `normalizeOptionalReviewers` uses.
+ *
+ * **Absent ≠ 0.** slashdo reads `~max=0` as "loop until this reviewer is clean"
+ * (bounded by its own 10-round guardrail), which is the OPPOSITE of "no cap
+ * requested" (that keeps slashdo's built-in default of 3 for CLI/Ollama
+ * reviewers). So a missing key and an explicit `0` must never collapse: an entry
+ * whose value isn't a usable cap is DROPPED rather than coerced to `0`.
+ * Drops unknown tokens, non-integers, negatives, and anything above
+ * MAX_REVIEWER_MAX_ROUNDS so a hand-edited settings.json can't smuggle in an
+ * unbounded budget. Non-object input → undefined (an omitted field isn't
+ * persisted as an empty override).
+ */
+export function normalizeReviewerMaxRounds(map) {
+  if (!map || typeof map !== 'object' || Array.isArray(map)) return undefined;
+  const out = Object.create(null);
+  for (const [rawKey, rawValue] of Object.entries(map)) {
+    const token = normalizeReviewerToken(rawKey);
+    if (!token) continue;
+    // Only a genuine non-negative integer is a cap. A string "2", null, NaN, or
+    // 1.5 is not — and must NOT fall through to 0, which slashdo reads as
+    // "unlimited".
+    if (!Number.isInteger(rawValue) || rawValue < 0 || rawValue > MAX_REVIEWER_MAX_ROUNDS) continue;
+    // First occurrence wins for two spellings of the same reviewer (`gemini` /
+    // `antigravity`, `@Bot` / `@bot`) — mirrors normalizeOptionalReviewers' dedupe.
+    if (Object.prototype.hasOwnProperty.call(out, token)) continue;
+    out[token] = rawValue;
+  }
+  return { ...out };
+}
+
+/**
+ * Resolve per-reviewer iteration caps with task-over-default precedence: a
+ * task-level map (even explicitly empty) overrides the Code Review Defaults;
+ * only fall back to the defaults when the task didn't pin its own. Mirrors
+ * `resolveOptionalReviewers`.
+ */
+export function resolveReviewerMaxRounds(metadataMap, defaultMap) {
+  const isMap = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+  return isMap(metadataMap)
+    ? (normalizeReviewerMaxRounds(metadataMap) || {})
+    : (normalizeReviewerMaxRounds(defaultMap) || {});
+}
+
+// Upper bound on a pinned reviewer model id. Generous (Bedrock/Ollama ids get
+// long) but present so a hand-edited settings.json can't smuggle in a blob that
+// then round-trips the TASKS.md store.
+export const MAX_REVIEWER_MODEL_LENGTH = 200;
+
+// Characters a model id may not contain, because they are STRUCTURAL in the
+// emitted `--review-with` token and there is no escape for them:
+//  - `]` would close the `[<model>]` selector early (`foo]~opt` → a corrupt entry
+//    whose remainder slashdo then parses as suffixes),
+//  - `[` would open a nested one,
+//  - `,` would split the entry list, turning one reviewer into two bogus ones,
+//  - whitespace that breaks lines would split the single-line flag string.
+// Everything else stays legal on purpose: the value is free-form in slashdo's
+// grammar (`agy[Gemini 3.5 Flash (High)]` is valid), and the field has to accept
+// whatever id the user's environment actually needs. A space is fine; a newline is
+// not.
+const REVIEWER_MODEL_FORBIDDEN_RE = /[[\],\r\n\t]/;
+
+/**
+ * Validate ONE reviewer model id — the single definition shared by the
+ * token-keyed map normalizer, the `<reviewer>Model` settings scalars, and the
+ * defaults→map adapter, so a pin can't be accepted by one path and dropped by
+ * another (which would show the user a stored pin that never reaches a reviewer).
+ *
+ * Returns the trimmed id, or `undefined` when it isn't usable: a non-string, a
+ * blank/whitespace-only value (absent ≠ `''` — a `--model ` with no id would break
+ * the invocation), an over-long one, one carrying a structural delimiter, or one
+ * naming a reviewer that takes no model. Pass `reviewer` to apply that last check.
+ */
+function normalizeReviewerModel(raw, reviewer = null) {
+  if (reviewer !== null && !MODEL_SELECTABLE_REVIEWERS.includes(reviewer)) return undefined;
+  if (typeof raw !== 'string') return undefined;
+  const model = raw.trim();
+  if (!model || model.length > MAX_REVIEWER_MODEL_LENGTH) return undefined;
+  if (REVIEWER_MODEL_FORBIDDEN_RE.test(model)) return undefined;
+  return model;
+}
+
+// Reviewers whose slashdo `--review-with` entry accepts a `[<model>]` bracket
+// (`lib/multi-reviewer-loop.md`: codex/claude/agy/grok/ollama). PortOS's
+// `lmstudio` reviewer has NO slashdo counterpart — it's served by
+// `POST /api/code-review/local`, which takes the model in its request body — so a
+// pinned lmstudio model never becomes a bracket, and `copilot`/`@login` entries
+// reject one outright.
+export const BRACKET_MODEL_REVIEWERS = MODEL_SELECTABLE_REVIEWERS.filter(r => r !== 'lmstudio');
+
+/**
+ * Per-reviewer model pins — the model id ONE reviewer runs with, keyed by the
+ * same emitted `--review-with` token as `normalizeOptionalReviewers` /
+ * `normalizeReviewerMaxRounds` (e.g. `{ codex: 'gpt-5.6-sol', ollama: 'qwen2.5:7b' }`).
+ *
+ * The value is free-text on purpose: a reviewer CLI is spawned by the *agent*,
+ * not by PortOS's argv builder, so the id the user needs is environment-specific
+ * (a Bedrock-form Claude id on a Bedrock box, an installed Ollama model for an
+ * Ollama-backed `claude`). We validate the shape, not the catalog.
+ *
+ * Only MODEL_SELECTABLE_REVIEWERS can carry a pin — `copilot` has no CLI and a
+ * `@username` reviewer is a human/bot, mirroring slashdo rejecting `copilot[…]`
+ * and `@login[…]`. An absent key means "let that reviewer pick its own default",
+ * which is NOT the same as an empty string, so a blank/whitespace value is
+ * DROPPED rather than persisted as `''` (a `--model ` with no id would break the
+ * reviewer invocation). Non-object input → undefined, so an omitted field isn't
+ * persisted as an empty override.
+ *
+ * An id carrying a character that is structural in the emitted token
+ * (REVIEWER_MODEL_FORBIDDEN_RE — `[`, `]`, `,`, line breaks) is dropped rather
+ * than emitted: there's no escape for them inside `[<model>]`, so `foo]~opt` would
+ * close the selector early and leave slashdo parsing the remainder as a suffix.
+ * Dropping is the safe failure — the reviewer falls back to its own default model
+ * instead of running against a corrupt reviewer list.
+ */
+export function normalizeReviewerModels(map) {
+  if (!map || typeof map !== 'object' || Array.isArray(map)) return undefined;
+  const out = Object.create(null);
+  for (const [rawKey, rawValue] of Object.entries(map)) {
+    const token = normalizeReviewerToken(rawKey);
+    if (!token) continue;
+    const model = normalizeReviewerModel(rawValue, token);
+    if (!model) continue;
+    // First occurrence wins for two spellings of one reviewer — mirrors the
+    // sibling normalizers' dedupe.
+    if (Object.prototype.hasOwnProperty.call(out, token)) continue;
+    out[token] = model;
+  }
+  return { ...out };
+}
+
+/**
+ * Resolve per-reviewer model pins with task-over-default precedence: a
+ * task-level map (even explicitly empty) overrides the Code Review Defaults;
+ * only fall back to the defaults when the task didn't pin its own. Mirrors
+ * `resolveReviewerMaxRounds`.
+ */
+export function resolveReviewerModels(metadataMap, defaultMap) {
+  const isMap = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+  return isMap(metadataMap)
+    ? (normalizeReviewerModels(metadataMap) || {})
+    : (normalizeReviewerModels(defaultMap) || {});
+}
+
+/**
+ * Fold the Code Review Defaults' per-reviewer model SCALARS
+ * (`codexModel` / `claudeModel` / `lmstudioModel` / `ollamaModel`) into the
+ * token-keyed map shape the resolvers and the picker UI both speak.
+ *
+ * The scalars are the persisted settings encoding and stay that way — they cross
+ * installs, and rewriting them to a map would need a migration for zero gain.
+ * This is the one adapter between the two shapes; everything downstream works in
+ * map form.
+ */
+export function reviewerModelsFromDefaults(defaults) {
+  const out = {};
+  for (const r of MODEL_SELECTABLE_REVIEWERS) {
+    // Re-checked here, not trusted: settings.json is hand-editable, and a value
+    // stored before the scalars were validated must not surface as a pin the token
+    // builders would then drop.
+    const model = normalizeReviewerModel(defaults?.[`${r}Model`], r);
+    if (model) out[r] = model;
+  }
+  return out;
+}
+
 /**
  * Build the set of lowercased optional-reviewer tokens for a fast membership
  * test in the builders. Tolerates the raw (unnormalized) list.
@@ -159,9 +353,48 @@ function optionalReviewerSet(optionalReviewers) {
   return new Set((normalizeOptionalReviewers(optionalReviewers) || []).map(t => t.toLowerCase()));
 }
 
-/** Append slashdo's `~opt` marker to `token` when it's in the optional set. */
-function markOptional(token, optSet) {
-  return optSet.has(token.toLowerCase()) ? `${token}~opt` : token;
+/**
+ * Build a lowercased-token → cap lookup for the builders. Tolerates the raw
+ * (unnormalized) map. A `Map` (not a plain object) so a reviewer token can never
+ * collide with `Object.prototype` keys, and so `.get()` distinguishes an absent
+ * cap (`undefined`) from an explicit `0`.
+ */
+function reviewerMaxRoundsLookup(reviewerMaxRounds) {
+  const normalized = normalizeReviewerMaxRounds(reviewerMaxRounds) || {};
+  return new Map(Object.entries(normalized).map(([token, max]) => [token.toLowerCase(), max]));
+}
+
+/**
+ * Build a lowercased-token → model-id lookup for the builders. Tolerates the raw
+ * (unnormalized) map. A `Map` for the same reasons as the cap lookup.
+ */
+function reviewerModelLookup(reviewerModels) {
+  const normalized = normalizeReviewerModels(reviewerModels) || {};
+  return new Map(Object.entries(normalized).map(([token, model]) => [token.toLowerCase(), model]));
+}
+
+/**
+ * Render one emitted `--review-with` entry: the reviewer token, its optional
+ * `[<model>]` selector, then slashdo's per-entry suffixes in canonical storage
+ * order — `~opt`, then `~max=<n>`.
+ *
+ * Order matters. slashdo's grammar is
+ * `entry := ( <agent> [ "[" <model> "]" ] | "@" <login> ) ( "~opt" | "~max=" <n> )*`
+ * and its parser strips the `~` suffixes from the RIGHT before reading the
+ * bracket — so the bracket has to sit between the slug and the suffixes.
+ *
+ * A reviewer with no pinned model emits no bracket, which is what leaves that
+ * reviewer's own default in place; likewise a reviewer with no cap emits no
+ * `~max` at all (`~max=0` is a real, distinct value meaning "loop until clean").
+ * Only BRACKET_MODEL_REVIEWERS get a bracket — `copilot`/`@login` reject one, and
+ * PortOS's `lmstudio` reviewer has no slashdo slug at all (its model rides in the
+ * `POST /api/code-review/local` body instead).
+ */
+function markSuffixes(token, optSet, maxLookup, modelLookup) {
+  const key = token.toLowerCase();
+  const max = maxLookup?.get(key);
+  const model = BRACKET_MODEL_REVIEWERS.includes(key) ? modelLookup?.get(key) : undefined;
+  return `${token}${model ? `[${model}]` : ''}${optSet.has(key) ? '~opt' : ''}${max === undefined ? '' : `~max=${max}`}`;
 }
 
 /**
@@ -214,15 +447,20 @@ export function resolveKeyedReviewers(reviewers, hasUsernames) {
  * Build the comma-separated reviewer token list used to fill the `{reviewers}`
  * placeholder in claim/plan prompts: keyed reviewers (falling back to the
  * default when empty) followed by `@user` tokens for the reviewer usernames.
- * Reviewers in `optionalReviewers` get slashdo's `~opt` non-blocking suffix.
+ * Reviewers in `optionalReviewers` get slashdo's `~opt` non-blocking suffix, and
+ * reviewers carrying a `reviewerMaxRounds` cap get `~max=<n>` after it. A
+ * reviewer with a `reviewerModels` pin gets slashdo's `[<model>]` selector
+ * between the slug and those suffixes.
  * The flag-string variant is `buildReviewWithArgs`.
  */
-export function buildReviewersCsv(reviewers, usernames = [], optionalReviewers = []) {
+export function buildReviewersCsv(reviewers, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewerModels = {}) {
   const keyed = Array.isArray(reviewers) && reviewers.length ? reviewers : [...DEFAULT_REVIEWERS];
   const users = normalizeReviewUsernames(usernames);
   const optSet = optionalReviewerSet(optionalReviewers);
+  const maxLookup = reviewerMaxRoundsLookup(reviewerMaxRounds);
+  const modelLookup = reviewerModelLookup(reviewerModels);
   const combined = [...keyed, ...users.map(u => `@${u}`)];
-  return combined.map(t => markOptional(t, optSet)).join(',');
+  return combined.map(t => markSuffixes(t, optSet, maxLookup, modelLookup)).join(',');
 }
 
 /**
@@ -237,20 +475,29 @@ export function buildReviewersCsv(reviewers, usernames = [], optionalReviewers =
  *   username reviewer is an external PR reviewer, not a CLI that applies fixes).
  * - Reviewers in `optionalReviewers` get slashdo's `~opt` non-blocking suffix on
  *   their emitted token, so an inconclusive verdict from them doesn't gate the
- *   merge. A lone default `copilot` that is marked optional DOES force the flag
- *   on (otherwise the `~opt` — the whole point — would be dropped with the flag).
+ *   merge. Reviewers with a `reviewerMaxRounds` cap get `~max=<n>` after it, and
+ *   a reviewer with a `reviewerModels` pin gets a `[<model>]` selector before both.
+ *   A lone default `copilot` that is marked optional OR carries a cap DOES force
+ *   the flag on (otherwise the suffix — the whole point — would be dropped with
+ *   the flag). A model pin can't trigger that exemption because `copilot[…]` isn't
+ *   a legal slashdo entry (see BRACKET_MODEL_REVIEWERS) — so a lone copilot with a
+ *   stray pin emits nothing extra, exactly as before.
  */
-export function buildReviewWithArgs(reviewers, stopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, usernames = [], optionalReviewers = []) {
+export function buildReviewWithArgs(reviewers, stopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewerModels = {}) {
   const users = normalizeReviewUsernames(usernames);
   const keyed = resolveKeyedReviewers(reviewers, users.length > 0);
   const combined = [...keyed, ...users.map(u => `@${u}`)];
   const optSet = optionalReviewerSet(optionalReviewers);
-  // The lone-default-copilot suppression only applies when copilot is NOT marked
-  // optional — a `copilot~opt`-only list must still emit the flag to carry `~opt`.
-  const isDefaultOnly = combined.length === 1 && combined[0] === DEFAULT_REVIEWER && !optSet.has(DEFAULT_REVIEWER);
+  const maxLookup = reviewerMaxRoundsLookup(reviewerMaxRounds);
+  const modelLookup = reviewerModelLookup(reviewerModels);
+  // The lone-default-copilot suppression only applies when copilot carries NO
+  // per-entry suffix — a `copilot~opt` / `copilot~max=2`-only list must still
+  // emit the flag to carry that suffix.
+  const isDefaultOnly = combined.length === 1 && combined[0] === DEFAULT_REVIEWER
+    && !optSet.has(DEFAULT_REVIEWER) && maxLookup.get(DEFAULT_REVIEWER) === undefined;
   const hasNonCopilot = keyed.some(r => r !== DEFAULT_REVIEWER);
   const parts = [];
-  if (!isDefaultOnly) parts.push(`--review-with ${combined.map(t => markOptional(t, optSet)).join(',')}`);
+  if (!isDefaultOnly) parts.push(`--review-with ${combined.map(t => markSuffixes(t, optSet, maxLookup, modelLookup)).join(',')}`);
   if (combined.length >= 2) {
     if (stopMode === 'on-findings') parts.push('--review-stop-on-findings');
     else if (stopMode === 'on-clean') parts.push('--review-stop-on-clean');
@@ -293,6 +540,13 @@ const cosTaskDiagnosticsSchema = z.object({
 // permanent through the API.
 const effortInputSchema = z.preprocess(emptyToUndefined, z.enum(EFFORT_LEVELS).optional());
 const effortUpdateSchema = z.preprocess(emptyToNull, z.enum(EFFORT_LEVELS).nullable().optional());
+
+// A bare slashdo command name (`plan-task`, `pr-better`). Shared by the task
+// schema and the quick-template schemas. `isValidSlashdoCommand` is the single
+// definition of the shape — it also gates `loadSlashdoFile`'s path join.
+const slashdoCommandSchema = z.string().refine(isValidSlashdoCommand, {
+  message: 'must be a bare slashdo command name (lowercase, digits, hyphens)',
+});
 
 export const createCosTaskSchema = z.object({
   description: z.string().min(1),
@@ -359,6 +613,30 @@ export const createCosTaskSchema = z.object({
     v => Array.isArray(v) ? normalizeOptionalReviewers(v) : undefined,
     z.array(z.string()).optional()
   ),
+  // Per-reviewer iteration caps (slashdo `~max=<n>`), keyed by the emitted
+  // `--review-with` token. Normalized so a hand-crafted request can't smuggle in
+  // an unbounded or non-integer budget. Absent → undefined (not `{}`); an entry
+  // with no usable cap is dropped rather than coerced to `0` (which slashdo reads
+  // as "loop until clean").
+  reviewerMaxRounds: z.preprocess(
+    v => normalizeReviewerMaxRounds(v),
+    z.record(z.number().int().min(0).max(MAX_REVIEWER_MAX_ROUNDS)).optional()
+  ),
+  // Per-reviewer model pins, keyed by the emitted `--review-with` token — the
+  // model id ONE reviewer runs with (emitted as slashdo's `[<model>]`, or threaded
+  // into the follow-up prompt as `<reviewer> --model <id>`). Normalized so a
+  // hand-crafted request can't pin a model on a reviewer that takes none, or
+  // persist a blank id. Absent → undefined (not `{}`).
+  reviewerModels: z.preprocess(
+    v => normalizeReviewerModels(v),
+    z.record(z.string().min(1).max(MAX_REVIEWER_MODEL_LENGTH)).optional()
+  ),
+  // Bundled slashdo workflow this task runs (#3089) — the BARE command name,
+  // never a rendered `/do:x` string (see slashdoInvocation.js).
+  slashdoCommand: z.preprocess(emptyToUndefined, slashdoCommandSchema.optional()),
+  // Explicit arguments for the workflow. Absent → the prompt builder falls back
+  // to the task description, which is what the task form sends.
+  slashdoArgs: z.preprocess(emptyToUndefined, z.string().max(4000).optional()),
 });
 
 export const updateCosTaskSchema = z.object({
@@ -473,6 +751,10 @@ export const createCosJobSchema = z.object({
     openPR: z.boolean().optional(),
     prCompletion: z.enum(PR_COMPLETION_VALUES).optional(),
     simplify: z.boolean().optional(),
+    // Absent = true (a clean worktree at idle-out is a failure). `false` opts the
+    // job out of the TUI idle-complete worktree-changes gate — see
+    // ALLOWED_TASK_METADATA_KEYS below and agentTuiSpawning.js (#3102).
+    worktreeChangesExpected: z.boolean().optional(),
   }).optional(),
 });
 
@@ -502,6 +784,51 @@ export const restoreRecommendationSchema = z.object({
 
 export const generateWeeklyDigestSchema = z.object({
   weekId: z.string().optional(),
+});
+
+// =============================================================================
+// QUICK TASK TEMPLATE SCHEMAS (#3089)
+// =============================================================================
+
+// Run-shape defaults a template implies. Every key is optional and each one is
+// a tri-state: ABSENT means "leave the form's current toggle alone", `false`
+// means "turn it off". Collapsing absent to false would make every template
+// silently clear toggles it never intended to touch.
+export const taskTemplateSettingsSchema = z.object({
+  useWorktree: z.boolean().optional(),
+  openPR: z.boolean().optional(),
+  simplify: z.boolean().optional(),
+}).strict();
+
+export const createTaskTemplateSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  description: z.string().min(1).max(4000),
+  icon: z.string().max(16).optional(),
+  context: z.string().max(4000).optional(),
+  category: z.string().max(60).optional(),
+  provider: z.string().max(120).optional(),
+  model: z.string().max(200).optional(),
+  effort: z.preprocess(emptyToUndefined, z.enum(EFFORT_LEVELS).optional()),
+  app: z.string().max(200).optional(),
+  slashdoCommand: z.preprocess(emptyToUndefined, slashdoCommandSchema.optional()),
+  settings: taskTemplateSettingsSchema.optional(),
+}).strict();
+
+// PUT accepts any subset — the route only forwards the keys actually present.
+export const updateTaskTemplateSchema = createTaskTemplateSchema.partial();
+
+// POST /templates/from-task snapshots a live task into a user template. Only the
+// fields createTemplateFromTask actually reads are accepted.
+export const taskTemplateFromTaskSchema = z.object({
+  task: z.object({
+    description: z.string().min(1).max(4000),
+    context: z.string().max(4000).optional(),
+    provider: z.string().max(120).optional(),
+    model: z.string().max(200).optional(),
+    effort: z.preprocess(emptyToUndefined, z.enum(EFFORT_LEVELS).optional()),
+    app: z.string().max(200).optional(),
+  }),
+  templateName: z.string().trim().min(1).max(120).optional(),
 });
 
 // Global Code Review Loop defaults (settings.codeReview). Surfaced on the AI
@@ -535,12 +862,24 @@ export const codeReviewSettingsSchema = z.object({
     v => Array.isArray(v) ? normalizeOptionalReviewers(v) : undefined,
     z.array(z.string()).optional()
   ),
+  // Per-reviewer iteration caps (slashdo `~max=<n>`) keyed by emitted token —
+  // e.g. `{ ollama: 1 }` buys one review-and-fix pass from a slow local model.
+  // Absent → undefined; an unusable entry is dropped, never coerced to `0`.
+  reviewerMaxRounds: z.preprocess(
+    v => normalizeReviewerMaxRounds(v),
+    z.record(z.number().int().min(0).max(MAX_REVIEWER_MAX_ROUNDS)).optional()
+  ),
   stopMode: z.enum(REVIEW_STOP_MODES).optional(),
   reviewerApplies: z.boolean().optional(),
-  lmstudioModel: z.preprocess(emptyToUndefined, z.string().optional()),
-  ollamaModel: z.preprocess(emptyToUndefined, z.string().optional()),
-  codexModel: z.preprocess(emptyToUndefined, z.string().optional()),
-  claudeModel: z.preprocess(emptyToUndefined, z.string().optional()),
+  // Each scalar runs through the same shape check as a task-level pin
+  // (`normalizeReviewerModel`), so a stored default can't carry an id the token
+  // builders would silently drop — the picker would otherwise DISPLAY a pin that
+  // never reaches a reviewer. An unusable value clears the field (undefined)
+  // rather than persisting: same "absent = that reviewer's own default" contract.
+  lmstudioModel: z.preprocess(v => normalizeReviewerModel(v, 'lmstudio'), z.string().optional()),
+  ollamaModel: z.preprocess(v => normalizeReviewerModel(v, 'ollama'), z.string().optional()),
+  codexModel: z.preprocess(v => normalizeReviewerModel(v, 'codex'), z.string().optional()),
+  claudeModel: z.preprocess(v => normalizeReviewerModel(v, 'claude'), z.string().optional()),
 }).strict();
 
 // =============================================================================
@@ -553,8 +892,10 @@ export const PIPELINE_BEHAVIOR_FLAGS = ['useWorktree', 'openPR', 'prCompletion',
 // Absolute cap on total agent spawns per task (across all retry types)
 export const MAX_TOTAL_SPAWNS = 5;
 
-// `cleanupMerged` / `openPr` / `resolveConflicts` / `autoMerge` are the
-// per-app action toggles for the `branch-reconcile` task type; `autoClose` is
+// `cleanupMerged` / `openPr` / `resolveConflicts` / `autoMerge` /
+// `finishAbandoned` are the per-app action toggles for the `branch-reconcile`
+// task type (`finishAbandoned` governs committing + shipping the uncommitted
+// work left in a dead agent's worktree); `autoClose` is
 // the `issue-reconcile` toggle (ON unless explicitly false — OFF forbids the
 // coordinator from closing an issue or filing a follow-up, leaving it to only
 // comment + release the claim). Each lives in the shared task-metadata
@@ -563,11 +904,18 @@ export const MAX_TOTAL_SPAWNS = 5;
 // sanitizeTaskMetadata.
 const ALLOWED_TASK_METADATA_KEYS = [
   ...PIPELINE_BEHAVIOR_FLAGS, 'readOnly',
-  'cleanupMerged', 'openPr', 'resolveConflicts', 'autoMerge', 'autoClose',
+  'cleanupMerged', 'openPr', 'resolveConflicts', 'autoMerge', 'finishAbandoned', 'autoClose',
   // Throwaway-worktree posture for programmatic-I/O reasoning tasks (layered-
   // intelligence): the worktree is discarded without a merge or PR so a reasoning
   // agent can't land code. See agentWorktreeCleanup.js.
-  'discardWorktree'
+  'discardWorktree',
+  // Whether a successful run is EXPECTED to leave file changes in the worktree
+  // (#3102). Default (absent) = true: the TUI idle-complete gate fails a run that
+  // idled out on a clean tree. `false` opts a task type out of that gate — e.g. a
+  // reference-watch run against a GitHub/GitLab/JIRA work tracker files its
+  // proposals as issues and, per the prompt, edits no application code, so a
+  // clean worktree is the SUCCESS shape. See agentTuiSpawning.js.
+  'worktreeChangesExpected'
 ];
 
 // pr-watcher author-gate values. 'self' = PRs opened by the gh-authenticated
@@ -595,6 +943,52 @@ export const ISSUE_AUTHOR_FILTERS = ['self', 'owner', 'any'];
 export const SWARM_COUNT_MIN = 2;
 export const SWARM_COUNT_MAX = 6;
 
+const QUOTA_BURN_FAMILIES = new Set(['claude', 'codex', 'agy', 'grok']);
+
+function sanitizeQuotaBurnFamilies(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const clean = Object.create(null);
+  for (const [id, value] of Object.entries(raw)) {
+    if (!QUOTA_BURN_FAMILIES.has(id) || !value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const enabled = value.enabled === true;
+    const prompt = typeof value.prompt === 'string' ? value.prompt.slice(0, 8000) : '';
+    const resetWithinHours = Number(value.resetWithinHours ?? 24);
+    const reservePercent = Number(value.reservePercent ?? 0);
+    const maxDispatchesPerWindow = Number(value.maxDispatchesPerWindow ?? 5);
+    const priority = Number(value.priority ?? 0);
+    if (!Number.isFinite(resetWithinHours) || resetWithinHours < 0 || resetWithinHours > 168
+      || !Number.isFinite(reservePercent) || reservePercent < 0 || reservePercent > 100
+      || !Number.isInteger(maxDispatchesPerWindow) || maxDispatchesPerWindow < 1 || maxDispatchesPerWindow > 50
+      || !Number.isInteger(priority) || priority < 0 || priority > 100
+      || (value.providerId != null && typeof value.providerId !== 'string')
+      || (value.model != null && typeof value.model !== 'string')) return null;
+    clean[id] = { enabled, prompt, providerId: value.providerId || null, model: value.model || null,
+      scope: typeof value.scope === 'string' ? value.scope : null, resetWithinHours, reservePercent, maxDispatchesPerWindow, priority };
+  }
+  return clean;
+}
+
+// POST /api/cos/tasks/slashdo — a `/do:*` button click from an app's Agent
+// Operations panel. The run-settings fields are PICKED from createCosTaskSchema
+// rather than restated, so the drawer's provider/model/effort/simplify/reviewer
+// knobs stay in lockstep with the Add Task form's (one vocabulary, one set of
+// preprocessors). `command` is only shape-checked here — the route owns the
+// allowed-command map and its 400 message. The remaining fields are `/do:next`
+// specific: `target` pins the run to ONE work item (empty ⇒ the agent picks),
+// and `issueAuthorFilter` overrides the app's configured claim-work gate.
+export const slashdoTaskSchema = createCosTaskSchema
+  .pick({
+    model: true, provider: true, effort: true, simplify: true,
+    reviewers: true, usernames: true, optionalReviewers: true, reviewerMaxRounds: true,
+    reviewerModels: true
+  })
+  .extend({
+    command: z.string().min(1),
+    app: z.string().min(1),
+    target: z.preprocess(emptyToUndefined, z.string().trim().max(80).optional()),
+    issueAuthorFilter: z.enum(ISSUE_AUTHOR_FILTERS).optional(),
+  });
+
 /**
  * Sanitize taskMetadata to an allow-list of agent-option keys. Boolean flags
  * (`useWorktree`/`openPR`/`simplify`/`reviewLoop`/`readOnly`/`reviewerApplies`)
@@ -612,6 +1006,12 @@ export function sanitizeTaskMetadata(raw) {
       clean[key] = raw[key];
       hasKeys = true;
     }
+  }
+  if (Object.prototype.hasOwnProperty.call(raw, 'families')) {
+    const families = sanitizeQuotaBurnFamilies(raw.families);
+    if (!families) return null;
+    clean.families = families;
+    hasKeys = true;
   }
   if (Object.prototype.hasOwnProperty.call(raw, 'prCompletion') && PR_COMPLETION_VALUES.includes(raw.prCompletion)) {
     clean.prCompletion = raw.prCompletion;
@@ -648,6 +1048,24 @@ export function sanitizeTaskMetadata(raw) {
   // the Code Review Defaults' optional set back to "none optional."
   if (Array.isArray(raw.optionalReviewers)) {
     clean.optionalReviewers = normalizeOptionalReviewers(raw.optionalReviewers) || [];
+    hasKeys = true;
+  }
+  // `reviewerMaxRounds` caps each reviewer's review→fix→re-review cycles (slashdo
+  // `~max=<n>`). Like `optionalReviewers`, an explicitly empty MAP is KEPT so a
+  // task/type can override the Code Review Defaults' caps back to "no caps."
+  // Individual entries with no usable cap are dropped by the normalizer rather
+  // than becoming `0`, which slashdo reads as "loop until clean."
+  if (raw.reviewerMaxRounds && typeof raw.reviewerMaxRounds === 'object' && !Array.isArray(raw.reviewerMaxRounds)) {
+    clean.reviewerMaxRounds = normalizeReviewerMaxRounds(raw.reviewerMaxRounds) || {};
+    hasKeys = true;
+  }
+  // `reviewerModels` pins the model each reviewer runs with (slashdo's
+  // `[<model>]` / the follow-up prompt's `--model <id>`). Like `reviewerMaxRounds`,
+  // an explicitly empty MAP is KEPT so a task/type can override the Code Review
+  // Defaults' pins back to "each reviewer's own default"; an entry naming a
+  // reviewer that takes no model, or a blank id, is dropped by the normalizer.
+  if (raw.reviewerModels && typeof raw.reviewerModels === 'object' && !Array.isArray(raw.reviewerModels)) {
+    clean.reviewerModels = normalizeReviewerModels(raw.reviewerModels) || {};
     hasKeys = true;
   }
   if (Object.prototype.hasOwnProperty.call(raw, 'reviewStopMode') && REVIEW_STOP_MODES.includes(raw.reviewStopMode)) {

@@ -148,6 +148,24 @@ describe('localLlm', () => {
     });
   });
 
+  describe('describeInstallProgress', () => {
+    it('labels percent frames and every statused non-percent frame', () => {
+      expect(svc.describeInstallProgress({ status: 'downloading', percent: 42 })).toBe('downloading 42%');
+      expect(svc.describeInstallProgress({ percent: 0 })).toBe('downloading 0%');
+      // Retry + finalize frames carry no percent — they must still render, or the
+      // banner freezes at the last percentage for the whole pause.
+      expect(svc.describeInstallProgress({ status: 'retrying after network error', percent: null }))
+        .toBe('retrying after network error');
+      expect(svc.describeInstallProgress({ status: 'finishing install from downloaded files…', percent: null, finalizing: true }))
+        .toBe('finishing install from downloaded files…');
+    });
+    it('returns null for a frame with nothing to say', () => {
+      expect(svc.describeInstallProgress({ percent: null })).toBe(null);
+      expect(svc.describeInstallProgress({})).toBe(null);
+      expect(svc.describeInstallProgress(null)).toBe(null);
+    });
+  });
+
   describe('switchBackend', () => {
     it('writes the marker and enables the paired (disabled) provider', async () => {
       const r = await svc.switchBackend('lmstudio');

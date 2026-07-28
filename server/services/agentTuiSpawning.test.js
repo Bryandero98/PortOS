@@ -67,7 +67,10 @@ vi.mock('./agentFinalization.js', () => ({
 vi.mock('./agentState.js', () => ({
   activeAgents: new Map(),
   userTerminatedAgents: new Set(),
-  pausedAgents: new Map()
+  pausedAgents: new Map(),
+  // Mirrors the real predicate (covers the TASKS.md string round-trip) — the
+  // worktreeChangesExpected opt-out reads through it.
+  isFalsyMeta: (value) => value === false || value === 'false',
 }));
 
 vi.mock('./git.js', () => ({
@@ -169,6 +172,7 @@ import * as agentErrorAnalysis from './agentErrorAnalysis.js';
 import * as cosAgents from './cosAgents.js';
 import * as gitService from './git.js';
 import { activeAgents, userTerminatedAgents } from './agentState.js';
+import { MAX_RUNTIME_WRAP_UP_GRACE_MS } from '../lib/tuiHandshake.js';
 
 describe('agent TUI spawning', () => {
   it('builds a codex TUI command without a model flag for the configured-default sentinel', () => {
@@ -295,8 +299,25 @@ describe('agent TUI spawning', () => {
     const noEffort = buildTuiSpawnConfig({ id: 'claude-code-tui', command: 'claude', type: 'tui', args: [] }, null);
     expect(noEffort.args).not.toContain('--effort');
 
+    const grok = buildTuiSpawnConfig({ id: 'grok-tui', command: 'grok', type: 'tui', args: [] }, null, { effort: 'high' });
+    expect(grok.args.join(' ')).not.toContain('effort');
+  });
+
+  it('passes --effort through to the Antigravity TUI, clamped to its low|medium|high ladder', () => {
     const agy = buildTuiSpawnConfig({ id: 'antigravity-tui', command: 'agy', type: 'tui', args: [] }, null, { effort: 'high' });
-    expect(agy.args.join(' ')).not.toContain('effort');
+    expect(agy.args).toEqual(['--dangerously-skip-permissions', '--effort', 'high']);
+
+    const clamped = buildTuiSpawnConfig({ id: 'antigravity-tui', command: 'agy', type: 'tui', args: [] }, null, { effort: 'max' });
+    expect(clamped.args).toEqual(['--dangerously-skip-permissions', '--effort', 'high']);
+  });
+
+  it('passes the per-task model through to the Antigravity TUI', () => {
+    const agy = buildTuiSpawnConfig(
+      { id: 'antigravity-tui', command: 'agy', type: 'tui', args: [] },
+      'gemini-3.1-pro-high',
+      { effort: 'low' },
+    );
+    expect(agy.args).toEqual(['--dangerously-skip-permissions', '--model', 'gemini-3.1-pro-high', '--effort', 'low']);
   });
 
   it('adds lean-mode flags and the system-prompt file for an Ollama-backed claude TUI', () => {
@@ -695,6 +716,122 @@ describe('spawnTuiAgent runtime', () => {
     );
   });
 
+  // ── 1a-quater. worktreeChangesExpected:false skips the clean-tree gate (#3102) ─
+  // Issue #3102: the #2191 gate above assumes every agent's work product is a
+  // file change. A `reference-watch` run against a GitHub/GitLab/JIRA work
+  // tracker files ISSUES and — per its own prompt — edits no application code,
+  // so a run that did its whole job leaves a CLEAN worktree and was recorded as
+  // `idle-no-changes` failure. `worktreeChangesExpected: false` opts such a task
+  // out of the worktree gate, leaving `workActivity.active` as the sole signal.
+  //
+  // Drives the same PTY sequence as the idle-no-changes test: prompt echo →
+  // submit → an ADVANCING work counter → idle out, with a clean worktree.
+  async function driveIdleWithWorkOnCleanTree(overrides) {
+    vi.mocked(gitService.getStatus).mockResolvedValue({ clean: true, files: [] });
+    vi.mocked(gitService.getDiff).mockResolvedValue('');
+
+    let resolveComplete;
+    const completeDone = new Promise((r) => { resolveComplete = r; });
+    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
+
+    runSpawn(overrides);
+    await flushMicrotasks();
+
+    await capturedOnData(Buffer.from('Codex booting...\n'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+
+    // Prompt echo so paste verification passes and the submit-Enter fires.
+    await capturedOnData(Buffer.from('do the thing\n'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(3600);
+    await flushMicrotasks();
+
+    // An ADVANCING work counter → workActivity.active becomes true.
+    await capturedOnData(Buffer.from('(1s · thinking with high effort)\n'));
+    await vi.advanceTimersByTimeAsync(800);
+    await capturedOnData(Buffer.from('(2s · thinking with high effort)\n'));
+
+    await vi.advanceTimersByTimeAsync(21000);
+    vi.useRealTimers();
+    await completeDone;
+  }
+
+  it('idle-complete: worktreeChangesExpected:false succeeds on a clean worktree (non-file work tracker)', async () => {
+    await driveIdleWithWorkOnCleanTree({
+      task: { id: 'task-1', description: 'do the thing', metadata: { worktreeChangesExpected: false } },
+    });
+
+    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: 'agent-1',
+        success: true,
+        completionReason: 'idle-complete',
+      })
+    );
+    // The gate is skipped, so git status is never consulted — but the diff
+    // capture still runs unconditionally (a no-op on a clean tree, and useful
+    // for post-mortems either way).
+    expect(gitService.getStatus).not.toHaveBeenCalled();
+    expect(gitService.getDiff).toHaveBeenCalledWith('/tmp/ws', true);
+    expect(gitService.getDiff).toHaveBeenCalledWith('/tmp/ws', false);
+  });
+
+  it("idle-no-changes: the TASKS.md string round-trip 'false' also opts out of the gate", async () => {
+    // Task metadata survives a markdown round-trip as strings, so the opt-out
+    // must read through isFalsyMeta rather than a bare `=== false`.
+    await driveIdleWithWorkOnCleanTree({
+      task: { id: 'task-1', description: 'do the thing', metadata: { worktreeChangesExpected: 'false' } },
+    });
+
+    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ success: true, completionReason: 'idle-complete' })
+    );
+  });
+
+  it('idle-no-changes: worktreeChangesExpected:true still fails on a clean worktree (no behavior change)', async () => {
+    await driveIdleWithWorkOnCleanTree({
+      task: { id: 'task-1', description: 'do the thing', metadata: { worktreeChangesExpected: true } },
+    });
+
+    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ success: false, completionReason: 'idle-no-changes' })
+    );
+  });
+
+  it('idle-no-activity: worktreeChangesExpected:false does NOT rescue a run with zero work-counter activity', async () => {
+    // The flag only relaxes the worktree-evidence gate. A prompt that never
+    // submitted (no working indicator ever appeared) must still fail — otherwise
+    // opting out of the file gate would silently launder a total no-op run.
+    vi.mocked(gitService.getStatus).mockResolvedValue({ clean: true, files: [] });
+    vi.mocked(gitService.getDiff).mockResolvedValue('');
+
+    let resolveComplete;
+    const completeDone = new Promise((r) => { resolveComplete = r; });
+    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
+
+    runSpawn({ task: { id: 'task-1', description: 'do the thing', metadata: { worktreeChangesExpected: false } } });
+    await flushMicrotasks();
+
+    await capturedOnData(Buffer.from('Codex booting...\n'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+
+    // Chrome-only repaints — the working counter never advances.
+    await capturedOnData(Buffer.from('⏵⏵ bypass permissions on (shift+tab to cycle)\n'));
+    await capturedOnData(Buffer.from('● high · /effort\n'));
+
+    await vi.advanceTimersByTimeAsync(21000);
+    vi.useRealTimers();
+    await completeDone;
+
+    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ success: false, completionReason: 'idle-no-activity' })
+    );
+  });
+
   // ── 1c. Absolute wall-clock backstop reaps a busy-but-stuck agent ───────────
   // The idle reaper resets on every PTY chunk, so an agent whose working counter
   // keeps repainting through a stalled provider retry never idles out and would
@@ -731,15 +868,104 @@ describe('spawnTuiAgent runtime', () => {
     await vi.advanceTimersByTimeAsync(31000);
     await flushMicrotasks();
 
+    // The ceiling PRODS rather than reaping (#3167): it pastes a wrap-up message
+    // and opens a grace window, so the agent is NOT finalized yet.
+    expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalled();
+    expect(shellService.writeToSession).toHaveBeenCalledWith(
+      SESSION_ID, expect.stringContaining('you have hit your maximum runtime')
+    );
+
+    // No sentinel ever appears → the grace window expires → NOW it reaps.
+    await vi.advanceTimersByTimeAsync(MAX_RUNTIME_WRAP_UP_GRACE_MS + 2000);
+    await flushMicrotasks();
+
     vi.useRealTimers();
     await completeDone;
 
+    // Reaped under the DISTINCT reason: it was asked to wrap up and didn't, which
+    // means a wedged provider — not "raise the runtime budget".
     expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
       expect.objectContaining({
         agentId: 'agent-1',
         success: false,
-        completionReason: 'max-runtime-timeout',
+        completionReason: 'max-runtime-no-wrap-up',
       })
+    );
+  });
+
+  // The whole point of the grace window: an agent that was SECONDS from writing
+  // its sentinel when the ceiling landed must finalize as a SUCCESS, not be
+  // reaped. This is the agent-d2ae0352 shape (PR merged 01:32:29, killed
+  // 01:32:59) that made a fresh agent redo already-shipped work.
+  it('max-runtime: an agent that wraps up during the grace window finalizes as success', async () => {
+    let resolveComplete;
+    const completeDone = new Promise((r) => { resolveComplete = r; });
+    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
+
+    runSpawn({ tuiConfig: { ...defaultTuiConfig, idleTimeoutMs: 600000, maxRuntimeMs: 30000 } });
+    await flushMicrotasks();
+
+    await capturedOnData(Buffer.from('Codex booting...\n'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+    await capturedOnData(Buffer.from('do the thing\n'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(3600);
+    await flushMicrotasks();
+
+    // Ceiling fires → prod + grace window, no finalize.
+    await vi.advanceTimersByTimeAsync(31000);
+    await flushMicrotasks();
+    expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalled();
+
+    // The prod works: the agent writes .agent-done well inside the grace window.
+    vi.mocked(existsSync).mockReturnValue(true);
+    await vi.advanceTimersByTimeAsync(4000);
+    await flushMicrotasks();
+
+    vi.useRealTimers();
+    await completeDone;
+
+    // Finalized as a SUCCESS via the ordinary sentinel path — never reaped.
+    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: 'agent-1', success: true })
+    );
+    expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ completionReason: 'max-runtime-timeout' })
+    );
+  });
+
+  // A dead session can't be prodded, so the grace window is pointless — reap
+  // immediately rather than idling the full window for a message nobody reads.
+  it('max-runtime: reaps immediately (no grace) when the TUI session is already gone', async () => {
+    let resolveComplete;
+    const completeDone = new Promise((r) => { resolveComplete = r; });
+    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
+
+    runSpawn({ tuiConfig: { ...defaultTuiConfig, idleTimeoutMs: 600000, maxRuntimeMs: 30000 } });
+    await flushMicrotasks();
+
+    await capturedOnData(Buffer.from('Codex booting...\n'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+    await capturedOnData(Buffer.from('do the thing\n'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(3600);
+    await flushMicrotasks();
+
+    // Session died before the ceiling landed.
+    vi.mocked(shellService.getSession).mockReturnValue(null);
+    await vi.advanceTimersByTimeAsync(31000);
+    await flushMicrotasks();
+
+    vi.useRealTimers();
+    await completeDone;
+
+    // Never prodded, so this keeps the plain-ceiling reason (not no-wrap-up).
+    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ success: false, completionReason: 'max-runtime-timeout' })
     );
   });
 
@@ -921,7 +1147,13 @@ describe('spawnTuiAgent runtime', () => {
   // agent sitting at an empty prompt until it was reaped). Without the fix agy
   // took the idle-heuristic path and WOULD have pasted after ~2s of banner idle;
   // asserting pasteCount()===0 there is what discriminates the fix.
-  it('agy input-ready: does NOT paste on the startup banner, only once paste mode is re-enabled', async () => {
+  //
+  // agy needs a SECOND gate on top of paste mode, because — unlike claude — it
+  // enables bracketed paste on alt-screen entry, before its composer exists. Its
+  // composer footer is the marker that says the input box is actually live.
+  const AGY_COMPOSER_FOOTER = '? for shortcuts';
+
+  it('agy input-ready: does NOT paste until the composer footer follows paste-mode-on', async () => {
     runSpawn({ tuiConfig: agyTuiConfig });
     await flushMicrotasks();
 
@@ -932,8 +1164,51 @@ describe('spawnTuiAgent runtime', () => {
     await flushMicrotasks();
     expect(pasteCount()).toBe(0); // banner / paste-mode-off is not "input ready"
 
-    // agy re-enables bracketed-paste mode → input box live, safe to paste.
-    await capturedOnData(Buffer.from(PASTE_ON));
+    // agy enables bracketed paste when it enters the alt screen — still signing
+    // in, no composer yet. Paste mode ALONE must not be treated as ready.
+    await capturedOnData(Buffer.from(`${PASTE_ON}Welcome to the Antigravity CLI.\n Signing in...\n`));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+    expect(pasteCount()).toBe(0);
+
+    // Composer renders → input box live, safe to paste.
+    await capturedOnData(Buffer.from(`>\n${AGY_COMPOSER_FOOTER}Gemini 3.5 Flash · medium`));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(400);
+    await flushMicrotasks();
+    expect(pasteCount()).toBe(1);
+  });
+
+  // Regression: the real `paste-not-rendered` failure. agy turned bracketed paste
+  // ON at alt-screen entry (~200ms in) and then spent longer than promptDelayMs
+  // signing in, so the old paste-mode-only gate fired while the folder-trust menu
+  // was still pending — `needsTrust` was still false, the trust auto-confirm never
+  // ran, and the menu swallowed the prompt plus all three paste retries.
+  it('agy trust gate: paste mode turns on BEFORE the trust menu — waits for trust confirm, then the composer', async () => {
+    runSpawn({ tuiConfig: agyTuiConfig });
+    await flushMicrotasks();
+
+    // Alt-screen entry enables paste mode while agy is still signing in.
+    await capturedOnData(Buffer.from(`${PASTE_OFF}${PASTE_ON}Welcome to the Antigravity CLI. You are currently not signed in.\n Signing in...\n`));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+    expect(pasteCount()).toBe(0); // would have pasted into the void before the fix
+
+    // Trust gate finally paints (after the sign-in round trip).
+    await capturedOnData(Buffer.from('Do you trust the contents of this project?\nAntigravity CLI requires permission to read, edit, and execute files here.\n> Yes, I trust this folder\n  No, exit\n'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(700);
+    await flushMicrotasks();
+
+    // Auto-confirmed with a bare Enter, and still no paste.
+    expect(vi.mocked(shellService.writeToSession).mock.calls.filter(([, d]) => d === '\r').length)
+      .toBeGreaterThanOrEqual(1);
+    expect(pasteCount()).toBe(0);
+
+    // Composer comes up only after trust is accepted → now the paste lands.
+    await capturedOnData(Buffer.from(`>\n${AGY_COMPOSER_FOOTER}Gemini 3.5 Flash · medium`));
     await flushMicrotasks();
     await vi.advanceTimersByTimeAsync(400);
     await flushMicrotasks();
@@ -958,6 +1233,25 @@ describe('spawnTuiAgent runtime', () => {
     expect(pasteCount()).toBe(0);
     expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
       expect.objectContaining({ agentId: 'agent-1', success: false, completionReason: 'tui-not-ready' })
+    );
+  });
+
+  it('fails immediately when Antigravity reports that account eligibility is still being verified', async () => {
+    runSpawn({ tuiConfig: agyTuiConfig });
+    await flushMicrotasks();
+
+    await capturedOnData(Buffer.from(
+      "We're finishing verifying your account eligibility. This usually takes a moment. Please try again shortly."
+    ));
+    await flushMicrotasks();
+
+    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: 'agent-1',
+        success: false,
+        completionReason: 'fallback-signal',
+        error: expect.stringContaining('account eligibility')
+      })
     );
   });
 

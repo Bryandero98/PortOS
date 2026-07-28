@@ -15,6 +15,13 @@ import {
   resolveReviewUsernames,
   normalizeOptionalReviewers,
   resolveOptionalReviewers,
+  normalizeReviewerMaxRounds,
+  resolveReviewerMaxRounds,
+  MAX_REVIEWER_MAX_ROUNDS,
+  normalizeReviewerModels,
+  resolveReviewerModels,
+  reviewerModelsFromDefaults,
+  MAX_REVIEWER_MODEL_LENGTH,
   resolveKeyedReviewers,
   buildReviewersCsv,
   buildReviewWithArgs,
@@ -42,9 +49,18 @@ import {
   spriteTrackFpsSchema,
   spriteRuntimeContractSchema,
   spriteWalkGenerateSchema,
-  spriteScannerGenerateSchema,
-  spriteAmbientGenerateSchema,
+  spriteTrackGenerateSchema,
 } from './validation.js';
+import {
+  WALK_TRACK, getAnimationTrack, tracksForKind,
+} from '../services/sprites/animationTracks.js';
+// #3152 — the contract schema is built from the EFFECTIVE table (compiled `walk` +
+// the user-defined store), so these assertions must enumerate the same set the
+// schema did; walking the compiled ids would narrow them to `walk` alone and stop
+// covering the seeded `scanner`/`ambient` fields entirely.
+import {
+  getEffectiveAnimationTracks, getEffectiveAnimationTrackIds,
+} from '../services/sprites/animationTrackStore.js';
 import {
   telegramForwardTypesSchema,
 } from './telegramValidation.js';
@@ -180,6 +196,54 @@ describe('validation.js', () => {
       const r = codeReviewSettingsSchema.safeParse({ reviewers: ['copilot'] })
       expect(r.success).toBe(true)
       expect(r.data.usernames).toBeUndefined()
+    })
+
+    it('normalizes reviewerMaxRounds (drops unknown tokens / bad values, keeps an explicit 0)', () => {
+      const r = codeReviewSettingsSchema.safeParse({
+        reviewerMaxRounds: { ollama: 1, copilot: 0, nope: 2, codex: -1 },
+      })
+      expect(r.success).toBe(true)
+      expect(r.data.reviewerMaxRounds).toEqual({ ollama: 1, copilot: 0 })
+    })
+
+    it('leaves reviewerMaxRounds undefined when absent', () => {
+      const r = codeReviewSettingsSchema.safeParse({ reviewers: ['copilot'] })
+      expect(r.success).toBe(true)
+      expect(r.data.reviewerMaxRounds).toBeUndefined()
+    })
+
+    it('keeps the per-reviewer model SCALARS as the persisted encoding (#3133)', () => {
+      // The picker speaks a token-keyed map, but settings.codeReview stays on the
+      // `<reviewer>Model` scalars — the encoding crosses installs, and the client
+      // adapts via reviewerModelsFromDefaults/ToDefaults. An empty string clears.
+      const r = codeReviewSettingsSchema.safeParse({
+        codexModel: 'gpt-tier-a', claudeModel: 'qwen2.5:7b', ollamaModel: '',
+      })
+      expect(r.success).toBe(true)
+      expect(r.data.codexModel).toBe('gpt-tier-a')
+      expect(r.data.claudeModel).toBe('qwen2.5:7b')
+      expect(r.data.ollamaModel).toBeUndefined()
+      // A token-keyed map is NOT part of this slice — the scalars are.
+      expect(codeReviewSettingsSchema.safeParse({ reviewerModels: { codex: 'a' } }).success).toBe(false)
+    })
+
+    it('clears a scalar carrying a character the emitted token cannot escape', () => {
+      // Otherwise the picker would DISPLAY a stored pin that the token builders
+      // silently drop — the user sets a model and no reviewer ever gets it.
+      const r = codeReviewSettingsSchema.safeParse({ codexModel: 'foo]~opt', claudeModel: 'a,b' })
+      expect(r.success).toBe(true)
+      expect(r.data.codexModel).toBeUndefined()
+      expect(r.data.claudeModel).toBeUndefined()
+    })
+
+    it('trims a scalar and clears an over-long one', () => {
+      const r = codeReviewSettingsSchema.safeParse({
+        codexModel: '  gpt-tier-a  ',
+        claudeModel: 'm'.repeat(MAX_REVIEWER_MODEL_LENGTH + 1),
+      })
+      expect(r.success).toBe(true)
+      expect(r.data.codexModel).toBe('gpt-tier-a')
+      expect(r.data.claudeModel).toBeUndefined()
     })
   })
 
@@ -710,6 +774,18 @@ describe('validation.js', () => {
         .toEqual({ useWorktree: true, openPR: true, simplify: true, reviewLoop: false });
     });
 
+    it('should accept worktreeChangesExpected as an allowed boolean key (#3102)', () => {
+      // `false` is the load-bearing value: it opts a task out of the TUI
+      // idle-complete clean-worktree gate. If the sanitizer dropped it, a
+      // reference-watch run against a forge tracker would keep failing.
+      expect(sanitizeTaskMetadata({ worktreeChangesExpected: false }))
+        .toEqual({ worktreeChangesExpected: false });
+      expect(sanitizeTaskMetadata({ worktreeChangesExpected: true }))
+        .toEqual({ worktreeChangesExpected: true });
+      // Non-boolean can't smuggle a truthy string past the gate.
+      expect(sanitizeTaskMetadata({ worktreeChangesExpected: 'false' })).toBeNull();
+    });
+
     it('should accept only known PR completion metadata', () => {
       expect(sanitizeTaskMetadata({ prCompletion: 'review-then-merge' }))
         .toEqual({ prCompletion: 'review-then-merge' });
@@ -746,6 +822,43 @@ describe('validation.js', () => {
       expect(sanitizeTaskMetadata({ reviewer: 42 })).toBeNull();
       expect(sanitizeTaskMetadata({ useWorktree: true, reviewer: 'bogus' }))
         .toEqual({ useWorktree: true });
+    });
+
+    it('should keep a reviewerMaxRounds map (including an explicitly empty one) and drop bad entries', () => {
+      expect(sanitizeTaskMetadata({ reviewerMaxRounds: { ollama: 1 } }))
+        .toEqual({ reviewerMaxRounds: { ollama: 1 } });
+      // An explicitly empty map is a real "no caps for this task/type" override
+      // of the Code Review Defaults — the same contract optionalReviewers has.
+      expect(sanitizeTaskMetadata({ reviewerMaxRounds: {} }))
+        .toEqual({ reviewerMaxRounds: {} });
+      // 0 is a REAL value (slashdo: loop until clean) and must survive; unknown
+      // tokens and non-integers are dropped without collapsing to 0.
+      expect(sanitizeTaskMetadata({ reviewerMaxRounds: { copilot: 0, nope: 2, codex: '3' } }))
+        .toEqual({ reviewerMaxRounds: { copilot: 0 } });
+      // A non-object never becomes an empty override.
+      expect(sanitizeTaskMetadata({ reviewerMaxRounds: [1, 2] })).toBeNull();
+      expect(sanitizeTaskMetadata({ reviewerMaxRounds: 'ollama=1' })).toBeNull();
+    });
+
+    it('should keep a reviewerModels map (including an explicitly empty one) and drop bad entries', () => {
+      expect(sanitizeTaskMetadata({ reviewerModels: { codex: 'gpt-tier-a' } }))
+        .toEqual({ reviewerModels: { codex: 'gpt-tier-a' } });
+      // An explicit `{}` is a real "use each reviewer's own default" override of
+      // the Code Review Defaults' pins, not an absent field.
+      expect(sanitizeTaskMetadata({ reviewerModels: {} }))
+        .toEqual({ reviewerModels: {} });
+      // copilot takes no model; a blank id would emit `--model ` with no id.
+      expect(sanitizeTaskMetadata({ reviewerModels: { copilot: 'x', ollama: '  ', codex: 'ok' } }))
+        .toEqual({ reviewerModels: { codex: 'ok' } });
+      expect(sanitizeTaskMetadata({ reviewerModels: ['codex'] })).toBeNull();
+      expect(sanitizeTaskMetadata({ reviewerModels: 'codex=a' })).toBeNull();
+    });
+
+    it('should keep an optionalReviewers list (including an explicitly empty one)', () => {
+      expect(sanitizeTaskMetadata({ optionalReviewers: ['ollama', 'nope'] }))
+        .toEqual({ optionalReviewers: ['ollama'] });
+      expect(sanitizeTaskMetadata({ optionalReviewers: [] }))
+        .toEqual({ optionalReviewers: [] });
     });
 
     it('should accept a valid issueAuthorFilter and drop invalid ones', () => {
@@ -1012,6 +1125,255 @@ describe('validation.js', () => {
       expect(buildReviewersCsv(['claude', 'ollama'], ['@Bot'], ['ollama', '@Bot']))
         .toBe('claude,ollama~opt,@Bot~opt');
     });
+
+    it('appends ~max=<n> after ~opt, in slashdo\'s canonical order', () => {
+      // The CSV fills the `{reviewers}` prompt placeholder, so it must carry the
+      // same suffixes buildReviewWithArgs emits or the two paths disagree.
+      expect(buildReviewersCsv(['claude', 'ollama'], ['@Bot'], ['ollama'], { ollama: 1, '@Bot': 2, claude: 0 }))
+        .toBe('claude~max=0,ollama~opt~max=1,@Bot~max=2');
+    });
+
+    it('emits no ~max for a reviewer with no cap (absent ≠ 0)', () => {
+      expect(buildReviewersCsv(['claude', 'ollama'], [], [], { ollama: 1 }))
+        .toBe('claude,ollama~max=1');
+    });
+  });
+
+  describe('normalizeReviewerMaxRounds', () => {
+    it('keeps non-negative integer caps for known tokens, aliasing gemini→antigravity', () => {
+      expect(normalizeReviewerMaxRounds({ ollama: 1, '@Bot': 3, gemini: 2 }))
+        .toEqual({ ollama: 1, '@Bot': 3, antigravity: 2 });
+    });
+
+    it('keeps an explicit 0 (slashdo: loop until clean) — never collapsed with absent', () => {
+      const out = normalizeReviewerMaxRounds({ ollama: 0 });
+      expect(out).toEqual({ ollama: 0 });
+      expect(Object.prototype.hasOwnProperty.call(out, 'codex')).toBe(false);
+    });
+
+    it('drops unknown tokens, non-integers, negatives, and over-cap values', () => {
+      expect(normalizeReviewerMaxRounds({
+        ollama: 1,
+        nope: 2,
+        '@bad token': 1,
+        codex: 1.5,
+        claude: -1,
+        copilot: '2',
+        grok: MAX_REVIEWER_MAX_ROUNDS + 1,
+        lmstudio: null,
+      })).toEqual({ ollama: 1 });
+    });
+
+    it('accepts a cap exactly at the ceiling', () => {
+      expect(normalizeReviewerMaxRounds({ ollama: MAX_REVIEWER_MAX_ROUNDS }))
+        .toEqual({ ollama: MAX_REVIEWER_MAX_ROUNDS });
+    });
+
+    it('returns undefined for non-object input (an omitted field is not an empty override)', () => {
+      expect(normalizeReviewerMaxRounds(undefined)).toBeUndefined();
+      expect(normalizeReviewerMaxRounds(null)).toBeUndefined();
+      expect(normalizeReviewerMaxRounds([['ollama', 1]])).toBeUndefined();
+      expect(normalizeReviewerMaxRounds('ollama=1')).toBeUndefined();
+    });
+
+    it('returns a prototype-free plain object (no prototype pollution via a __proto__ key)', () => {
+      const out = normalizeReviewerMaxRounds({ __proto__: { polluted: true }, ollama: 1 });
+      expect(out).toEqual({ ollama: 1 });
+      expect({}.polluted).toBeUndefined();
+    });
+  });
+
+  describe('resolveReviewerMaxRounds', () => {
+    it('lets a task-level map (even empty) override the defaults', () => {
+      expect(resolveReviewerMaxRounds({ ollama: 1 }, { codex: 3 })).toEqual({ ollama: 1 });
+      expect(resolveReviewerMaxRounds({}, { codex: 3 })).toEqual({});
+    });
+
+    it('falls back to the defaults when the task did not pin its own', () => {
+      expect(resolveReviewerMaxRounds(undefined, { ollama: 1, nope: 2 })).toEqual({ ollama: 1 });
+      expect(resolveReviewerMaxRounds(undefined, undefined)).toEqual({});
+    });
+  });
+
+  describe('buildReviewWithArgs — ~max round caps', () => {
+    it('emits <token>~max=<n> for exactly the tokens carrying a cap', () => {
+      expect(buildReviewWithArgs(['claude', 'ollama', 'codex'], 'all', false, [], [], { ollama: 1 }))
+        .toBe('--review-with claude,ollama~max=1,codex');
+    });
+
+    it('emits ~opt before ~max when a reviewer carries both', () => {
+      expect(buildReviewWithArgs(['claude', 'ollama'], 'all', false, [], ['ollama'], { ollama: 1 }))
+        .toBe('--review-with claude,ollama~opt~max=1');
+    });
+
+    it('round-trips ~max=0 and distinguishes it from no cap', () => {
+      expect(buildReviewWithArgs(['claude', 'ollama'], 'all', false, [], [], { ollama: 0 }))
+        .toBe('--review-with claude,ollama~max=0');
+      expect(buildReviewWithArgs(['claude', 'ollama'], 'all', false, [], [], {}))
+        .toBe('--review-with claude,ollama');
+    });
+
+    it('caps a @username reviewer by its @-form token', () => {
+      expect(buildReviewWithArgs(['codex'], 'all', false, ['Bot'], [], { '@Bot': 2 }))
+        .toBe('--review-with codex,@Bot~max=2');
+    });
+
+    it('forces the flag on for a lone default copilot carrying a cap (so ~max is not lost)', () => {
+      // Without the suffix this is the suppressed lone-default case ('').
+      expect(buildReviewWithArgs(['copilot'], 'all', false, [], [], { copilot: 2 }))
+        .toBe('--review-with copilot~max=2');
+      expect(buildReviewWithArgs(['copilot'], 'all', false, [], [], {})).toBe('');
+    });
+
+    it('ignores caps for tokens not present in the emitted list, and invalid entries', () => {
+      expect(buildReviewWithArgs(['codex', 'copilot'], 'all', false, [], [], { ollama: 1, nope: 2, codex: -1 }))
+        .toBe('--review-with codex,copilot');
+    });
+  });
+
+  describe('normalizeReviewerModels', () => {
+    it('keeps a trimmed model id for each model-taking reviewer', () => {
+      expect(normalizeReviewerModels({ codex: 'gpt-tier-a', ollama: '  qwen2.5:7b  ' }))
+        .toEqual({ codex: 'gpt-tier-a', ollama: 'qwen2.5:7b' });
+    });
+
+    it('drops a pin on a reviewer that takes no model', () => {
+      // copilot has no CLI; a @login reviewer is a human/bot. slashdo rejects
+      // `copilot[…]` / `@login[…]` for the same reason.
+      expect(normalizeReviewerModels({ copilot: 'x', '@bot': 'y', codex: 'ok' }))
+        .toEqual({ codex: 'ok' });
+    });
+
+    it('drops a blank id rather than persisting it (absent ≠ empty string)', () => {
+      // `''` would emit a `--model ` with no id, breaking the invocation.
+      expect(normalizeReviewerModels({ codex: '', claude: '   ', ollama: 'ok' }))
+        .toEqual({ ollama: 'ok' });
+    });
+
+    it('drops non-strings, unknown tokens, and an over-long id', () => {
+      expect(normalizeReviewerModels({
+        codex: 'ok',
+        claude: 42,
+        ollama: null,
+        nope: 'x',
+        lmstudio: 'm'.repeat(MAX_REVIEWER_MODEL_LENGTH + 1),
+      })).toEqual({ codex: 'ok' });
+    });
+
+    it('accepts an id exactly at the length ceiling', () => {
+      const id = 'm'.repeat(MAX_REVIEWER_MODEL_LENGTH);
+      expect(normalizeReviewerModels({ codex: id })).toEqual({ codex: id });
+    });
+
+    it('drops an id carrying a character that is structural in the emitted token', () => {
+      // `]` would close the `[<model>]` selector early and leave slashdo parsing
+      // the remainder as a suffix; `,` would split one entry into two. There is no
+      // escape for either inside the selector, so the pin is dropped (the reviewer
+      // falls back to its own default) rather than emitted corrupt.
+      expect(normalizeReviewerModels({ codex: 'foo]~opt' })).toEqual({});
+      expect(normalizeReviewerModels({ codex: 'a[b' })).toEqual({});
+      expect(normalizeReviewerModels({ codex: 'a,b' })).toEqual({});
+      expect(normalizeReviewerModels({ codex: 'a\nb' })).toEqual({});
+    });
+
+    it('still accepts a space — slashdo model selectors are free-form', () => {
+      // e.g. `agy[Gemini 3.5 Flash (High)]` is a valid slashdo entry.
+      expect(normalizeReviewerModels({ claude: 'Some Model (High)' }))
+        .toEqual({ claude: 'Some Model (High)' });
+    });
+
+    it('returns undefined for non-object input (an omitted field is not an empty override)', () => {
+      expect(normalizeReviewerModels(undefined)).toBeUndefined();
+      expect(normalizeReviewerModels(null)).toBeUndefined();
+      expect(normalizeReviewerModels([['codex', 'a']])).toBeUndefined();
+      expect(normalizeReviewerModels('codex=a')).toBeUndefined();
+    });
+
+    it('returns a prototype-free plain object (no prototype pollution via a __proto__ key)', () => {
+      const out = normalizeReviewerModels({ __proto__: { polluted: true }, codex: 'ok' });
+      expect(out).toEqual({ codex: 'ok' });
+      expect({}.polluted).toBeUndefined();
+    });
+  });
+
+  describe('resolveReviewerModels', () => {
+    it('lets a task-level map (even empty) override the defaults', () => {
+      expect(resolveReviewerModels({ codex: 'a' }, { codex: 'b' })).toEqual({ codex: 'a' });
+      expect(resolveReviewerModels({}, { codex: 'b' })).toEqual({});
+    });
+
+    it('falls back to the defaults when the task did not pin its own', () => {
+      expect(resolveReviewerModels(undefined, { codex: 'b', nope: 'x' })).toEqual({ codex: 'b' });
+      expect(resolveReviewerModels(undefined, undefined)).toEqual({});
+    });
+  });
+
+  describe('reviewerModelsFromDefaults', () => {
+    it('folds the per-reviewer settings scalars into the token-keyed map', () => {
+      expect(reviewerModelsFromDefaults({
+        codexModel: 'gpt-tier-a',
+        claudeModel: ' qwen2.5:7b ',
+        ollamaModel: null,
+        lmstudioModel: '',
+        stopMode: 'all',
+      })).toEqual({ codex: 'gpt-tier-a', claude: 'qwen2.5:7b' });
+    });
+
+    it('tolerates absent defaults', () => {
+      expect(reviewerModelsFromDefaults(null)).toEqual({});
+    });
+
+    it('re-checks the stored scalars rather than trusting them', () => {
+      // settings.json is hand-editable, and a value stored before the schema
+      // validated these scalars must not surface as a pin the builders then drop.
+      expect(reviewerModelsFromDefaults({
+        codexModel: 'foo]~opt',
+        claudeModel: 'm'.repeat(MAX_REVIEWER_MODEL_LENGTH + 1),
+        ollamaModel: 'ok',
+      })).toEqual({ ollama: 'ok' });
+    });
+  });
+
+  describe('buildReviewWithArgs — per-reviewer [model] selector', () => {
+    it('emits <token>[<model>] for exactly the tokens carrying a pin', () => {
+      expect(buildReviewWithArgs(['claude', 'ollama', 'codex'], 'all', false, [], [], {}, { ollama: 'qwen2.5:7b' }))
+        .toBe('--review-with claude,ollama[qwen2.5:7b],codex');
+    });
+
+    it('places the bracket between the slug and the ~ suffixes (slashdo strips suffixes first)', () => {
+      expect(buildReviewWithArgs(['ollama'], 'all', false, [], ['ollama'], { ollama: 1 }, { ollama: 'qwen2.5:7b' }))
+        .toBe('--review-with ollama[qwen2.5:7b]~opt~max=1');
+    });
+
+    it('never brackets copilot, a @username, or lmstudio (no slashdo slug takes one)', () => {
+      // lmstudio's model rides in the /api/code-review/local request body instead.
+      expect(buildReviewWithArgs(['copilot', 'lmstudio'], 'all', false, ['Bot'], [], {}, {
+        copilot: 'x', lmstudio: 'local-a', '@Bot': 'y',
+      })).toBe('--review-with copilot,lmstudio,@Bot');
+    });
+
+    it('does not let a stray copilot pin force the suppressed lone-default flag on', () => {
+      // Unlike ~opt / ~max, a model pin is not an explicit naming of copilot —
+      // `copilot[…]` isn't even legal slashdo, so nothing would be emitted.
+      expect(buildReviewWithArgs(['copilot'], 'all', false, [], [], {}, { copilot: 'x' })).toBe('');
+    });
+
+    it('ignores pins for tokens not in the emitted list, and invalid entries', () => {
+      expect(buildReviewWithArgs(['codex'], 'all', false, [], [], {}, { ollama: 'a', nope: 'b', codex: '  ' }))
+        .toBe('--review-with codex');
+    });
+  });
+
+  describe('buildReviewersCsv — per-reviewer [model] selector', () => {
+    it('carries the bracket into the claim prompts\' {reviewers} token', () => {
+      expect(buildReviewersCsv(['codex', 'claude'], [], [], {}, { claude: 'qwen2.5:7b' }))
+        .toBe('codex,claude[qwen2.5:7b]');
+    });
+
+    it('combines the bracket with both ~ suffixes in slashdo\'s canonical order', () => {
+      expect(buildReviewersCsv(['ollama'], [], ['ollama'], { ollama: 0 }, { ollama: 'codellama' }))
+        .toBe('ollama[codellama]~opt~max=0');
+    });
   });
 
   describe('createCosTaskSchema reviewers fields', () => {
@@ -1049,6 +1411,42 @@ describe('validation.js', () => {
       const withoutUsers = createCosTaskSchema.safeParse({ description: 'x' });
       expect(withoutUsers.success).toBe(true);
       expect(withoutUsers.data.usernames).toBeUndefined();
+    });
+
+    it('normalizes reviewerMaxRounds and leaves the field undefined when absent', () => {
+      const withCaps = createCosTaskSchema.safeParse({
+        description: 'x',
+        reviewerMaxRounds: { ollama: 1, copilot: 0, nope: 2, codex: 1.5 },
+      });
+      expect(withCaps.success).toBe(true);
+      // Unknown token + non-integer dropped; the explicit 0 survives.
+      expect(withCaps.data.reviewerMaxRounds).toEqual({ ollama: 1, copilot: 0 });
+      // Absent → undefined (not coerced to {}), so it isn't persisted as an override.
+      const withoutCaps = createCosTaskSchema.safeParse({ description: 'x' });
+      expect(withoutCaps.success).toBe(true);
+      expect(withoutCaps.data.reviewerMaxRounds).toBeUndefined();
+      // An explicitly empty map IS kept — a real "no caps for this task" override.
+      const cleared = createCosTaskSchema.safeParse({ description: 'x', reviewerMaxRounds: {} });
+      expect(cleared.success).toBe(true);
+      expect(cleared.data.reviewerMaxRounds).toEqual({});
+    });
+
+    it('normalizes reviewerModels and leaves the field undefined when absent', () => {
+      const withModels = createCosTaskSchema.safeParse({
+        description: 'x',
+        reviewerModels: { codex: 'gpt-tier-a', copilot: 'x', ollama: '  ' },
+      });
+      expect(withModels.success).toBe(true);
+      // copilot takes no model; a blank id is dropped, not persisted as ''.
+      expect(withModels.data.reviewerModels).toEqual({ codex: 'gpt-tier-a' });
+      // Absent → undefined (not coerced to {}), so it isn't persisted as an override.
+      const withoutModels = createCosTaskSchema.safeParse({ description: 'x' });
+      expect(withoutModels.success).toBe(true);
+      expect(withoutModels.data.reviewerModels).toBeUndefined();
+      // An explicitly empty map IS kept — a real "each reviewer's own default" override.
+      const cleared = createCosTaskSchema.safeParse({ description: 'x', reviewerModels: {} });
+      expect(cleared.success).toBe(true);
+      expect(cleared.data.reviewerModels).toEqual({});
     });
 
     it('accepts multiple image screenshots and attachment objects', () => {
@@ -1514,10 +1912,53 @@ describe('ad-hoc route schemas (#2521)', () => {
       expect(spriteWalkGenerateSchema.safeParse({
         direction: 'south', frameCount: 3,
       }).success).toBe(false);
-      expect(spriteScannerGenerateSchema.safeParse({ direction: 'south', frameCount: 4, fps: 6 }).success).toBe(true);
-      expect(spriteScannerGenerateSchema.safeParse({ direction: 'south', frameCount: 9 }).success).toBe(false);
-      expect(spriteAmbientGenerateSchema.safeParse({ frameCount: 3, fps: 4 }).success).toBe(true);
-      expect(spriteAmbientGenerateSchema.safeParse({ frameCount: 7 }).success).toBe(false);
+      // One generate shape, built per track from its own row (#3136) — so the
+      // scanner's 2–8 and the ambient's 2–6 are enforced by the same factory
+      // that a user-defined track's schema will come from.
+      expect(spriteTrackGenerateSchema('scanner').safeParse({ direction: 'south', frameCount: 4, fps: 6 }).success).toBe(true);
+      expect(spriteTrackGenerateSchema('scanner').safeParse({ direction: 'south', frameCount: 9 }).success).toBe(false);
+      expect(spriteTrackGenerateSchema('ambient').safeParse({ frameCount: 3, fps: 4 }).success).toBe(true);
+      expect(spriteTrackGenerateSchema('ambient').safeParse({ frameCount: 7 }).success).toBe(false);
+    });
+
+    it('builds every registered track\'s contract field into the runtime contract (#3136)', () => {
+      // The regression this replaces: each track's `contractFrameCountField` was
+      // a hand-written literal in the schema, so a new row's field was silently
+      // STRIPPED by Zod and the app rung of the target-precedence chain went
+      // dead for it with no error anywhere. Derived from the registry, every
+      // registered row's field is accepted at its own bounds by construction.
+      for (const id of getEffectiveAnimationTrackIds()) {
+        const row = getAnimationTrack(id, getEffectiveAnimationTracks());
+        // Pair a non-primary track's field with walk's so the contract is
+        // publishable — this asserts the FIELD is known, not the primacy rule
+        // (covered below).
+        const base = { walkFrameCount: 12 };
+        expect(spriteRuntimeContractSchema.safeParse({
+          ...base, [row.contractFrameCountField]: row.defaultFrameCount,
+        }).success, `${id}.${row.contractFrameCountField} at its default`).toBe(true);
+        expect(spriteRuntimeContractSchema.safeParse({
+          ...base, [row.contractFrameCountField]: row.maxFrameCount + 1,
+        }).success, `${id}.${row.contractFrameCountField} above its max`).toBe(false);
+      }
+    });
+
+    it('requires a PRIMARY track\'s frame count, not just any track\'s (#3136)', () => {
+      // A primary track is the first registered one for some record kind — walk
+      // for a character, ambient for a place. A contract naming only a SECOND
+      // track on an existing kind (scanner) describes no publishable atlas,
+      // because the compiler requires the primary's finalized set before it
+      // emits anything at all.
+      const effective = getEffectiveAnimationTracks();
+      const primaries = getEffectiveAnimationTrackIds().filter(
+        (id) => effective[id].kinds.some((kind) => tracksForKind(kind, effective)[0]?.id === id),
+      );
+      expect(primaries).toEqual([WALK_TRACK, 'ambient']);
+      for (const id of primaries) {
+        expect(spriteRuntimeContractSchema.safeParse({
+          [effective[id].contractFrameCountField]: effective[id].defaultFrameCount,
+        }).success, `${id} alone is a publishable contract`).toBe(true);
+      }
+      expect(spriteRuntimeContractSchema.safeParse({ scannerFrameCount: 4 }).success).toBe(false);
     });
   });
 

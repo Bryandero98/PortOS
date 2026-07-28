@@ -114,6 +114,9 @@ export const getUsage = (params = {}) => {
 };
 export const getUsageRaw = () => request('/usage/raw');
 export const resetUsage = () => request('/usage', { method: 'DELETE' });
+export const getUsageBackfillStatus = (options = {}) => request('/usage/backfill', options);
+export const startUsageBackfill = (options = {}) => request('/usage/backfill', { method: 'POST', ...options });
+
 
 // Subscription-quota status for every enabled provider family (claude, codex,
 // agy, grok). Callers own their inline error UI — silent by default.

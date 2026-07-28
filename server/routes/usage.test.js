@@ -26,9 +26,15 @@ vi.mock('../services/claudeCodeUsage.js', () => ({
   getClaudeCodeUsage: vi.fn()
 }));
 
+vi.mock('../services/usageBackfill.js', () => ({
+  getHistoricalUsageBackfillStatus: vi.fn(),
+  startHistoricalUsageBackfill: vi.fn()
+}));
+
 import * as usage from '../services/usage.js';
 import { getAllProviders } from '../services/providers.js';
 import { getProviderQuotas } from '../services/providerUsage.js';
+import { getHistoricalUsageBackfillStatus, startHistoricalUsageBackfill } from '../services/usageBackfill.js';
 import usageRoutes from './usage.js';
 
 const buildApp = () => {
@@ -120,6 +126,20 @@ describe('usage routes', () => {
     const res = await request(buildApp()).get('/api/usage/raw');
     expect(res.status).toBe(200);
     expect(res.body.sessions[0].providerId).toBe('p1');
+  });
+
+  it('starts historical reconciliation only from the explicit POST and reports progress', async () => {
+    getHistoricalUsageBackfillStatus.mockReturnValue({ status: 'running', processed: 2, total: 5 });
+    startHistoricalUsageBackfill.mockReturnValue({ status: 'running', processed: 0, total: 0 });
+
+    const status = await request(buildApp()).get('/api/usage/backfill');
+    expect(status.status).toBe(200);
+    expect(status.body).toMatchObject({ status: 'running', processed: 2, total: 5 });
+    expect(startHistoricalUsageBackfill).not.toHaveBeenCalled();
+
+    const started = await request(buildApp()).post('/api/usage/backfill');
+    expect(started.status).toBe(202);
+    expect(startHistoricalUsageBackfill).toHaveBeenCalledTimes(1);
   });
 
   it('POST /api/usage/session records a session and returns its number', async () => {

@@ -22,8 +22,17 @@ vi.mock('../lib/execGit.js', () => ({
 vi.mock('./worktreeManager.js', () => ({
   listWorktrees: vi.fn(async () => []),
   forceRemoveWorktreeDir: vi.fn(async () => {}),
-  // Real pure classifier semantics: empty porcelain = clean.
-  classifyWorktreeDirt: vi.fn((p) => ({ hasRealChanges: Boolean((p || '').trim()) })),
+  // Real pure classifier semantics: empty porcelain = clean, and every non-empty
+  // line is a real change path (the suite never feeds it lockfile churn). The
+  // paths matter — gatherDivergence intersects them with the default branch's
+  // changes to find work that may have been superseded.
+  classifyWorktreeDirt: vi.fn((p) => {
+    const lines = (p || '').split('\n').map((l) => l.trim()).filter(Boolean);
+    return {
+      hasRealChanges: lines.length > 0,
+      realChangePaths: lines.map((l) => l.replace(/^\s*\S+\s+/, ''))
+    };
+  }),
   isHumanClaimWorktree: vi.fn((id) => typeof id === 'string' && id.startsWith('claim-'))
 }));
 vi.mock('./github.js', () => ({ execGh: vi.fn(async () => '[]') }));
@@ -39,6 +48,7 @@ vi.mock('../lib/fileUtils.js', () => ({
 
 import {
   classifyBranch, classifyBranches, cleanupMerged, reconcile, gatherBranchState, worktreeProtectionReason,
+  isAbandonedAgentWorktree, gatherDivergence,
   actionOn, filterActionable, desiredEndState, formatInFlightForPrompt, actionableSignature
 } from './branchReconcile.js';
 import * as git from './git.js';
@@ -77,6 +87,27 @@ describe('classifyBranch', () => {
   });
   it('local-only (no upstream), no PR → WIP', () => {
     expect(classifyBranch({ isMerged: false, openPr: null, hasUpstream: false, worktreeDirty: false })).toBe('WIP');
+  });
+
+  // The exact shape of the three branches that went unreconciled for weeks: a CoS
+  // agent exited without committing, so its branch pointer sat on an old `main`
+  // commit (reads as MERGED) while the whole deliverable stayed uncommitted in the
+  // worktree. MERGED routed it to cleanupMerged, which correctly refused to delete
+  // a dirty worktree — so it was only ever `skipped`, never in-flight, and every
+  // run logged "nothing in-flight".
+  it('classifies a dead agent\'s dirty worktree as ABANDONED_WIP even when the branch reads merged', () => {
+    expect(classifyBranch({
+      isMerged: true, worktreeDirty: true, abandonedAgentWorktree: true, hasUpstream: true, openPr: null
+    })).toBe('ABANDONED_WIP');
+  });
+
+  it('leaves a LIVE agent\'s dirty worktree alone (MERGED/WIP, never ABANDONED_WIP)', () => {
+    expect(classifyBranch({
+      isMerged: true, worktreeDirty: true, abandonedAgentWorktree: false, hasUpstream: true, openPr: null
+    })).toBe('MERGED');
+    expect(classifyBranch({
+      isMerged: false, worktreeDirty: true, abandonedAgentWorktree: false, hasUpstream: true, openPr: null
+    })).toBe('WIP');
   });
 });
 
@@ -255,6 +286,103 @@ describe('gatherBranchState', () => {
   });
 });
 
+describe('isAbandonedAgentWorktree', () => {
+  const live = new Set(['agent-aaaaaaaa']);
+
+  it('is true only for an unlocked agent worktree whose agent is not running', () => {
+    expect(isAbandonedAgentWorktree({ path: '/wt/agent-bbbbbbbb', activeAgentIds: live })).toBe(true);
+    expect(isAbandonedAgentWorktree({ path: '/wt/agent-aaaaaaaa', activeAgentIds: live })).toBe(false);
+    expect(isAbandonedAgentWorktree({ path: '/wt/agent-bbbbbbbb', locked: true, activeAgentIds: live })).toBe(false);
+  });
+
+  it('never claims a human /claim worktree, a non-agent sibling, or a missing path', () => {
+    expect(isAbandonedAgentWorktree({ path: '/wt/claim-fix-thing', activeAgentIds: live })).toBe(false);
+    expect(isAbandonedAgentWorktree({ path: '/wt/next-issue-42', activeAgentIds: live })).toBe(false);
+    expect(isAbandonedAgentWorktree({ path: '', activeAgentIds: live })).toBe(false);
+  });
+
+  // Sentinel, not a plain collection: an empty Set is an authoritative "nothing is
+  // running" (the common case), while an omitted/non-Set value means liveness is
+  // unknown and must fail safe toward protecting the worktree.
+  it('treats an empty Set as authoritative but an absent one as unknown', () => {
+    expect(isAbandonedAgentWorktree({ path: '/wt/agent-bbbbbbbb', activeAgentIds: new Set() })).toBe(true);
+    expect(isAbandonedAgentWorktree({ path: '/wt/agent-bbbbbbbb' })).toBe(false);
+    expect(isAbandonedAgentWorktree({ path: '/wt/agent-bbbbbbbb', activeAgentIds: ['agent-cccccccc'] })).toBe(false);
+  });
+});
+
+describe('gatherDivergence', () => {
+  // Drives execGit by subcommand so each probe can be answered independently.
+  const mockGit = ({ counts = '3\t2', mergeBase = 'base1', defaultChanged = '', branchChanged = '' } = {}) => {
+    execGit.mockImplementation(async (args) => {
+      if (args[0] === 'rev-list') return { stdout: counts, exitCode: 0 };
+      if (args[0] === 'merge-base') return { stdout: mergeBase, exitCode: 0 };
+      if (args[0] === 'diff' && args[args.length - 1] === 'main') return { stdout: defaultChanged, exitCode: 0 };
+      if (args[0] === 'diff') return { stdout: branchChanged, exitCode: 0 };
+      return { stdout: '', exitCode: 0 };
+    });
+  };
+
+  it('reports drift counts and the files BOTH sides changed since the merge base', async () => {
+    mockGit({
+      counts: '101\t1',
+      defaultChanged: 'server/services/agentWorktreeCleanup.js\nserver/lib/prDisposition.js\ndocs/UNRELATED.md',
+      branchChanged: 'server/services/agentWorktreeCleanup.js\nserver/services/prAutoMerge.js'
+    });
+    const d = await gatherDivergence('/repo', 'stale-branch', 'main');
+    expect(d.behind).toBe(101);
+    expect(d.ahead).toBe(1);
+    // Only the shared file — the branch's own new file and main's unrelated doc are not collisions.
+    expect(d.collisionPaths).toEqual(['server/services/agentWorktreeCleanup.js']);
+  });
+
+  // An abandoned worktree's branch has NO commits, so its change set lives
+  // entirely in the working tree. Probing only committed diffs would report a
+  // clean, collision-free branch while the real collision sits uncommitted —
+  // exactly the case this whole check exists for.
+  it('counts uncommitted paths as part of the branch\'s change set', async () => {
+    mockGit({ defaultChanged: 'server/services/agentWorktreeCleanup.js', branchChanged: '' });
+    const d = await gatherDivergence('/repo', 'abandoned', 'main', ['server/services/agentWorktreeCleanup.js', 'server/services/prAutoMerge.js']);
+    expect(d.collisionPaths).toEqual(['server/services/agentWorktreeCleanup.js']);
+  });
+
+  // Every branch touches the changelog, so alphabetical order would put it first
+  // on virtually every entry and bury the source files that actually reveal a
+  // reimplementation. It stays listed (it IS a real conflict) but ranks last.
+  it('ranks always-churning files (changelog, lockfiles, README) below source files', async () => {
+    const shared = '.changelog/NEXT.md\nserver/lib/README.md\npackage-lock.json\nserver/services/agentWorktreeCleanup.js\nclient/src/components/cos/constants.js';
+    mockGit({ defaultChanged: shared, branchChanged: shared });
+    const { collisionPaths } = await gatherDivergence('/repo', 'b', 'main');
+    expect(collisionPaths).toEqual([
+      'client/src/components/cos/constants.js',
+      'server/services/agentWorktreeCleanup.js',
+      '.changelog/NEXT.md',
+      'package-lock.json',
+      'server/lib/README.md'
+    ]);
+  });
+
+  it('reports no collisions when the default branch has not touched the same files', async () => {
+    mockGit({ defaultChanged: 'docs/OTHER.md', branchChanged: 'server/services/thing.js' });
+    expect((await gatherDivergence('/repo', 'b', 'main')).collisionPaths).toEqual([]);
+  });
+
+  // A git failure must degrade to "unknown", never to a confident "no drift" —
+  // the gate keys off these values to decide how hard to look for supersession.
+  it('degrades to null counts and no collisions when git fails', async () => {
+    execGit.mockRejectedValue(new Error('not a git repository'));
+    const d = await gatherDivergence('/repo', 'b', 'main');
+    expect(d).toEqual({ behind: null, ahead: null, collisionPaths: [] });
+  });
+
+  it('degrades when the branches share no history (no merge base)', async () => {
+    mockGit({ counts: '5\t5', mergeBase: '' });
+    const d = await gatherDivergence('/repo', 'orphan', 'main');
+    expect(d.behind).toBe(5);
+    expect(d.collisionPaths).toEqual([]);
+  });
+});
+
 describe('reconcile', () => {
   it('cleans merged, returns in-flight + wip partitions', async () => {
     git.getBranches.mockResolvedValue([
@@ -276,6 +404,43 @@ describe('reconcile', () => {
     expect(res.inFlight.map((i) => i.branch)).toEqual(['next/issue-2199']);
     expect(res.inFlight[0].state).toBe('IN_REVIEW');
     expect(res.wip.map((i) => i.branch)).toEqual(['wip-local']);
+  });
+
+  // Regression for the "3 orphan cos branches, no active agents, reconcile says
+  // nothing in flight" report: surface the branch instead of silently skipping it,
+  // and — critically — do NOT delete the worktree holding the only copy of the work.
+  it('surfaces a dead agent\'s uncommitted work as in-flight instead of skipping it, and never deletes the worktree', async () => {
+    git.getBranches.mockResolvedValue([
+      { name: 'cos/task-x/agent-deadbeef', isDefault: false, current: false, tracking: 'origin/main', merged: true }
+    ]);
+    wt.listWorktrees.mockResolvedValue([
+      { path: '/repo/data/cos/worktrees/agent-deadbeef', branch: 'refs/heads/cos/task-x/agent-deadbeef' }
+    ]);
+    git.isBranchMergedInto.mockResolvedValue(true);
+    // Uncommitted work in the worktree.
+    execGit.mockResolvedValue({ stdout: ' M server/services/thing.js\n?? server/services/newThing.js\n', exitCode: 0 });
+
+    const res = await reconcile('/repo', { activeAgentIds: new Set() });
+    expect(res.inFlight.map((i) => i.state)).toEqual(['ABANDONED_WIP']);
+    expect(res.cleaned).toEqual([]);
+    expect(wt.forceRemoveWorktreeDir).not.toHaveBeenCalled();
+    expect(git.deleteBranch).not.toHaveBeenCalled();
+  });
+
+  it('still leaves that branch untouched while its agent is running', async () => {
+    git.getBranches.mockResolvedValue([
+      { name: 'cos/task-x/agent-deadbeef', isDefault: false, current: false, tracking: 'origin/main', merged: true }
+    ]);
+    wt.listWorktrees.mockResolvedValue([
+      { path: '/repo/data/cos/worktrees/agent-deadbeef', branch: 'refs/heads/cos/task-x/agent-deadbeef' }
+    ]);
+    git.isBranchMergedInto.mockResolvedValue(true);
+    execGit.mockResolvedValue({ stdout: ' M server/services/thing.js\n', exitCode: 0 });
+
+    const res = await reconcile('/repo', { activeAgentIds: new Set(['agent-deadbeef']) });
+    expect(res.inFlight).toEqual([]);
+    expect(res.skipped.map((s) => s.reason)).toEqual(['worktree-active-agent']);
+    expect(wt.forceRemoveWorktreeDir).not.toHaveBeenCalled();
   });
 });
 
@@ -311,17 +476,151 @@ describe('filterActionable', () => {
   it('never surfaces a non-actionable state (MERGED/WIP)', () => {
     expect(filterActionable([{ branch: 'm', state: 'MERGED' }, { branch: 'w', state: 'WIP' }], {})).toEqual([]);
   });
+
+  it('keeps ABANDONED_WIP by default and drops it only when finishAbandoned is off', () => {
+    const abandoned = [{ branch: 'z', state: 'ABANDONED_WIP' }];
+    expect(filterActionable(abandoned, {}).map((b) => b.branch)).toEqual(['z']);
+    expect(filterActionable(abandoned, { finishAbandoned: false })).toEqual([]);
+  });
 });
 
 describe('desiredEndState', () => {
   it('tells IN_REVIEW to merge only when autoMerge is on', () => {
-    expect(desiredEndState('IN_REVIEW', {})).toContain('gh pr merge --merge --delete-branch');
+    expect(desiredEndState('IN_REVIEW', {})).toContain('gh pr merge <num> --merge --delete-branch');
     expect(desiredEndState('IN_REVIEW', { autoMerge: false })).toContain('Do NOT merge');
+  });
+
+  // The supersession gate is the answer to "is this work still needed?" — the one
+  // failure a completeness check cannot catch, because superseded work IS
+  // complete. It has to reach every state that can end in a merge, and it has to
+  // come FIRST: once an agent has resolved the conflicts, the regression looks
+  // like a deliberate merge.
+  it.each(['ABANDONED_WIP', 'NEEDS_PR', 'CONFLICTED'])('opens the %s instruction with the supersession gate', (state) => {
+    const instruction = desiredEndState(state, {}, {
+      behind: 101,
+      collisionPaths: ['server/services/agentWorktreeCleanup.js', 'client/src/components/cos/constants.js'],
+      worktreePath: '/wt/agent-deadbeef'
+    });
+    expect(instruction).toContain('101 commit(s) behind');
+    expect(instruction).toContain('`server/services/agentWorktreeCleanup.js`');
+    expect(instruction).toContain('SUPERSEDED');
+    expect(instruction).toContain('still needed');
+    // Ordering: the gate precedes any instruction to commit/rebase/resolve.
+    const gateAt = instruction.indexOf('still needed');
+    for (const later of ['/do:pr', 'resolve all conflicts', 'commit it on this branch']) {
+      const at = instruction.indexOf(later);
+      if (at !== -1) expect(at).toBeGreaterThan(gateAt);
+    }
+  });
+
+  it('names a resolvable conflict as NOT proof the work is wanted', () => {
+    const instruction = desiredEndState('CONFLICTED', {}, { behind: 40, collisionPaths: ['server/services/thing.js'] });
+    expect(instruction).toContain('a conflict you can resolve is exactly how a regression gets in');
+  });
+
+  it('softens the gate but keeps it when nothing collides', () => {
+    const instruction = desiredEndState('NEEDS_PR', {}, { behind: 2, collisionPaths: [] });
+    expect(instruction).toContain('supersession is unlikely');
+    expect(instruction).not.toContain('read the default branch\'s current version');
+  });
+
+  // A rebase onto a moved default branch can break code that passed on the old
+  // base, and a red PR costs a full round trip to notice.
+  it.each(['ABANDONED_WIP', 'NEEDS_PR', 'CONFLICTED'])('makes %s rebase and run the suites before pushing', (state) => {
+    const instruction = desiredEndState(state, {}, { worktreePath: '/wt/agent-deadbeef' });
+    expect(instruction).toContain('Rebase onto the default branch before opening or updating a PR');
+    expect(instruction).toContain('Never push a branch whose tests you have not seen pass');
+  });
+
+  it('tells ABANDONED_WIP to read the worktree first, refuse a half-finished commit, then ship', () => {
+    const instruction = desiredEndState('ABANDONED_WIP', {}, { worktreePath: '/wt/agent-deadbeef' });
+    expect(instruction).toContain('/wt/agent-deadbeef');
+    expect(instruction).toContain('UNCOMMITTED');
+    expect(instruction).toContain('do not commit it and do not delete it');
+    expect(instruction).toContain('/do:pr --no-merge');
+    expect(instruction).toContain('gh pr merge <num> --merge --delete-branch');
+  });
+
+  it('stops ABANDONED_WIP at an open PR when autoMerge is off', () => {
+    const instruction = desiredEndState('ABANDONED_WIP', { autoMerge: false }, { worktreePath: '/wt/agent-deadbeef' });
+    expect(instruction).toContain('Do NOT merge');
+    expect(instruction).not.toContain('gh pr merge');
   });
 
   it('gives NEEDS_PR a completeness gate and CONFLICTED a rebase instruction', () => {
     expect(desiredEndState('NEEDS_PR', {})).toContain('/do:pr');
     expect(desiredEndState('CONFLICTED', {})).toContain('Rebase');
+  });
+
+  // CONFLICTED must drive to merge exactly like the other three merge-eligible
+  // states — otherwise an agent that resolves conflicts and pushes just stops,
+  // leaving a green PR open until the next scheduled run re-classifies it as
+  // IN_REVIEW, contradicting driveToMerge's own "opening the PR is NOT the end
+  // state" principle.
+  it('tells CONFLICTED to merge only when autoMerge is on', () => {
+    expect(desiredEndState('CONFLICTED', {})).toContain('gh pr merge <num> --merge --delete-branch');
+    expect(desiredEndState('CONFLICTED', { autoMerge: false })).toContain('Do NOT merge');
+    expect(desiredEndState('CONFLICTED', { autoMerge: false })).not.toContain('gh pr merge');
+  });
+
+  // The miss this pins: a NEEDS_PR run opened a PR, reported "left open for
+  // review", and exited 51s later — while CI was still running on a branch the
+  // task was supposed to finish. "PR opened" is a step, not the end state.
+  it('drives NEEDS_PR past the PR to a merge when autoMerge is on', () => {
+    const instruction = desiredEndState('NEEDS_PR', {});
+    expect(instruction).toContain('gh pr checks <num> --required');
+    expect(instruction).toContain('gh pr merge <num> --merge --delete-branch');
+    expect(instruction).toContain('NOT the end state');
+  });
+
+  it('stops NEEDS_PR at an open PR when autoMerge is off', () => {
+    const instruction = desiredEndState('NEEDS_PR', { autoMerge: false });
+    expect(instruction).toContain('Do NOT merge');
+    expect(instruction).not.toContain('gh pr merge');
+  });
+
+  // `/do:pr --merge` hands the merge to slashdo, which tries GitHub-native
+  // auto-merge first and reports the PR as "queued" — ending the run with CI
+  // still pending, the exact unattended exit this instruction closes. So the PR
+  // is always opened with `--no-merge` and the merge gate stays in the Do: line.
+  it('always opens the PR with --no-merge so the merge gate stays in-session', () => {
+    for (const actions of [{}, { autoMerge: false }]) {
+      const instruction = desiredEndState('NEEDS_PR', actions);
+      expect(instruction).toContain('/do:pr --no-merge');
+      expect(instruction).not.toContain('/do:pr --merge');
+    }
+  });
+
+  it('makes both merge-bound states wait for CI in-session and forbid queued auto-merge', () => {
+    for (const state of ['NEEDS_PR', 'IN_REVIEW']) {
+      const instruction = desiredEndState(state, {});
+      expect(instruction).toContain('gh pr checks <num> --required');
+      expect(instruction).toContain('Never `--auto`');
+    }
+  });
+
+  // branch-reconcile runs against ANY managed app; a repo that disallows merge
+  // commits would strand the branch on a hardcoded `--merge`.
+  it('gives the merge a method fallback and keeps it out of the branch worktree', () => {
+    const instruction = desiredEndState('IN_REVIEW', {});
+    expect(instruction).toContain('`--squash`');
+    expect(instruction).toContain('`--rebase`');
+    expect(instruction).toContain('NOT from inside the branch\'s worktree');
+    // Worktree first, then the branch — the delete fails while it's checked out.
+    expect(instruction).toContain('remove the branch\'s worktree first, then delete the local branch');
+  });
+
+  it('names the real PR number when the branch already has one', () => {
+    const instruction = desiredEndState('IN_REVIEW', {}, { prNumber: 42 });
+    expect(instruction).toContain('gh pr checks 42 --required');
+    expect(instruction).toContain('gh pr merge 42 --merge --delete-branch');
+    expect(instruction).not.toContain('<num>');
+  });
+
+  // A repo without Copilot review enabled never produces one — an unbounded
+  // "await the review" would strand a green PR open forever.
+  it('time-boxes the IN_REVIEW Copilot gate', () => {
+    expect(desiredEndState('IN_REVIEW', {})).toContain('within 10 minutes');
   });
 });
 
@@ -372,5 +671,31 @@ describe('formatInFlightForPrompt', () => {
     expect(block).toContain('- Worktree: `/wt/1`');
     expect(block).toContain('### `next/issue-2` [NEEDS_PR] — no PR');
     expect(block).toContain('- Do: ');
+  });
+
+  // The collision set gets its own line, not just prose inside the Do: text, so
+  // the agent can open those files directly instead of re-deriving the set.
+  it('surfaces drift and the collision files as their own lines', () => {
+    const block = formatInFlightForPrompt([{
+      branch: 'cos/task-x/agent-deadbeef',
+      state: 'ABANDONED_WIP',
+      worktreePath: '/wt/agent-deadbeef',
+      behind: 101,
+      ahead: 0,
+      collisionPaths: ['server/services/agentWorktreeCleanup.js']
+    }], { defaultBranch: 'main', actions: {} });
+    expect(block).toContain('- Drift: 101 commit(s) behind `main`, 0 ahead');
+    expect(block).toContain('**read these first — they are where supersession shows up**');
+    expect(block).toContain('`server/services/agentWorktreeCleanup.js`');
+    expect(block).toContain('holds UNCOMMITTED work');
+  });
+
+  it('omits the drift and collision lines when there is nothing to report', () => {
+    const block = formatInFlightForPrompt(
+      [{ branch: 'fresh', state: 'NEEDS_PR', behind: 0, ahead: 3, collisionPaths: [] }],
+      { defaultBranch: 'main', actions: {} }
+    );
+    expect(block).toContain('- Drift: 0 commit(s) behind');
+    expect(block).not.toContain('supersession shows up');
   });
 });

@@ -6,10 +6,14 @@ import * as api from '../../services/api';
 import { processScreenshotUploads, processAttachmentUploads, ATTACHMENT_ACCEPT } from '../../utils/fileUpload';
 import FilePickerButton from '../ui/FilePickerButton';
 import { formatBytes } from '../../utils/formatters';
-import { filterSelectableModels, isTuiProvider, isCliProvider, isProcessProvider, isCodexProvider, effortLevelsForProvider } from '../../utils/providers';
+import { filterSelectableModels, isTuiProvider, isCliProvider, isProcessProvider, isCodexProvider } from '../../utils/providers';
 import { DEFAULT_PR_COMPLETION, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, PR_COMPLETION_OPTIONS } from './constants';
 import { clickableProps } from '../../lib/a11yKeyboard';
+import { slashdoLabel } from '../../lib/slashdoCatalog';
 import ReviewerPicker from './ReviewerPicker';
+import EffortSelect from './EffortSelect';
+import useReviewerModelOptions from '../../hooks/useReviewerModelOptions';
+import { reviewerModelsFromDefaults } from '../../lib/reviewerModels';
 
 export default function TaskAddForm({ providers, apps, onTaskAdded, compact = false, defaultExpanded = false, defaultApp = '' }) {
   const [newTask, setNewTask] = useState({ description: '', model: '', provider: '', effort: '', app: defaultApp });
@@ -23,6 +27,8 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
   const [reviewers, setReviewers] = useState(DEFAULT_REVIEWERS);
   const [reviewUsernames, setReviewUsernames] = useState([]);
   const [optionalReviewers, setOptionalReviewers] = useState([]);
+  const [reviewerMaxRounds, setReviewerMaxRounds] = useState({});
+  const [reviewerModels, setReviewerModels] = useState({});
   const [reviewStopMode, setReviewStopMode] = useState(DEFAULT_REVIEW_STOP_MODE);
   const [reviewerApplies, setReviewerApplies] = useState(false);
   const [createJiraTicket, setCreateJiraTicket] = useState(false);
@@ -37,7 +43,18 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
   const [templateNameInput, setTemplateNameInput] = useState('');
   const [showTemplateSave, setShowTemplateSave] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // Bare slashdo command a quick-template pinned (`plan-task`), never a rendered
+  // `/do:x` string — see server/lib/slashdoInvocation.js for why.
+  const [slashdoCommand, setSlashdoCommand] = useState('');
+  // Resolved model lists for the reviewer table's Model column. Owned here (not by
+  // ReviewerPicker) so the picker stays fetch-free — see its `modelOptions` prop.
+  const reviewerModelOptions = useReviewerModelOptions();
   const submittingRef = useRef(false);
+  const descriptionRef = useRef(null);
+  // Set by applyTemplate only when a template changes BOTH the app and the
+  // run-shape toggles, so the app-defaults effect skips the single run that
+  // change triggers. See that effect for why.
+  const templateAppChangeRef = useRef(false);
 
   // Fetch templates
   useEffect(() => {
@@ -58,6 +75,10 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
         if (Array.isArray(d.reviewers) && d.reviewers.length) setReviewers(d.reviewers);
         if (Array.isArray(d.usernames)) setReviewUsernames(d.usernames);
         if (Array.isArray(d.optionalReviewers)) setOptionalReviewers(d.optionalReviewers);
+        if (d.reviewerMaxRounds && typeof d.reviewerMaxRounds === 'object' && !Array.isArray(d.reviewerMaxRounds)) setReviewerMaxRounds(d.reviewerMaxRounds);
+        // The defaults persist per-reviewer models as scalars; the picker takes the
+        // token-keyed map (see client/src/lib/reviewerModels.js).
+        setReviewerModels(reviewerModelsFromDefaults(d));
         if (d.stopMode) setReviewStopMode(d.stopMode);
         if (d.reviewerApplies === true) setReviewerApplies(true);
       })
@@ -109,6 +130,15 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
     [selectedApp, newTask.app]
   );
   useEffect(() => {
+    // A template that pins BOTH an app and a `settings` block would otherwise
+    // lose: applyTemplate sets the toggles synchronously, then the app change it
+    // also made re-fires this effect and stomps them with the app's defaults.
+    // The template's explicit choice is the more specific one, so skip exactly
+    // the one run its own app change triggered.
+    if (templateAppChangeRef.current) {
+      templateAppChangeRef.current = false;
+      return;
+    }
     const defaultOpenPR = !!selectedApp?.defaultOpenPR;
     const defaultUseWorktree = !!selectedApp?.defaultUseWorktree || defaultOpenPR;
     setCreateJiraTicket(!!selectedApp?.jira?.enabled);
@@ -120,7 +150,6 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
   // Get models for selected provider
   const selectedProvider = providers?.find(p => p.id === newTask.provider);
   const availableModels = filterSelectableModels(selectedProvider?.models);
-  const effortLevels = effortLevelsForProvider(selectedProvider);
   const providerModelNote = (() => {
     if (!selectedProvider) return '';
     if (isTuiProvider(selectedProvider)) return `${selectedProvider.name} runs in an attachable terminal UI session.`;
@@ -129,18 +158,40 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
     return 'No models are configured. PortOS will use the provider default.';
   })();
 
-  // Apply template to form
+  // Apply template to form. A slashdo-backed template also pins the workflow
+  // (`slashdoCommand`) and applies its implied run-shape `settings`.
+  //
+  // `settings` keys are tri-state: a key ABSENT leaves the current toggle
+  // untouched, `false` turns it off. Collapsing absent to false would make a
+  // plain user template silently clear toggles it never meant to touch.
   const applyTemplate = useCallback(async (template) => {
-    setNewTask({
+    setNewTask(t => ({
+      ...t,
       description: template.description,
-      model: template.model || '',
-      provider: template.provider || '',
-      effort: template.effort || '',
-      app: template.app || ''
-    });
+      // A template that pins no app must not clear the one the user already
+      // chose — and the built-ins pin none. Same absent-vs-empty rule as
+      // `settings` below. Provider/model/effort move as a unit: pinning a
+      // provider without a model would otherwise strand a model from a
+      // different provider in the form.
+      ...(template.app ? { app: template.app } : {}),
+      ...(template.provider
+        ? { provider: template.provider, model: template.model || '', effort: template.effort || '' }
+        : {})
+    }));
+    setSlashdoCommand(template.slashdoCommand || '');
+    const settings = template.settings;
+    if (settings && typeof settings === 'object') {
+      // Only when the template also moves the app — otherwise the effect never
+      // fires and a stale flag would swallow the user's next app change.
+      if (template.app && template.app !== newTask.app) templateAppChangeRef.current = true;
+      if (settings.useWorktree !== undefined) setUseWorktree(settings.useWorktree);
+      if (settings.openPR !== undefined) setOpenPR(settings.openPR);
+      if (settings.simplify !== undefined) setSimplify(settings.simplify);
+    }
+    descriptionRef.current?.focus();
     await api.useCosTaskTemplate(template.id).catch(() => {});
     toast.success(`Template applied: ${template.name}`);
-  }, []);
+  }, [newTask.app]);
 
   // Save current form as template (inline input instead of window.prompt)
   const saveAsTemplate = useCallback(async () => {
@@ -257,6 +308,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
       provider: newTask.provider || undefined,
       effort: newTask.effort || undefined,
       app: newTask.app || undefined,
+      slashdoCommand: slashdoCommand || undefined,
       createJiraTicket,
       useWorktree,
       openPR: useWorktree && openPR,
@@ -265,6 +317,8 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
       reviewers: openPR && prCompletion === 'review-then-merge' ? reviewers : undefined,
       usernames: openPR && prCompletion === 'review-then-merge' ? reviewUsernames : undefined,
       optionalReviewers: openPR && prCompletion === 'review-then-merge' ? optionalReviewers : undefined,
+      reviewerMaxRounds: openPR && prCompletion === 'review-then-merge' ? reviewerMaxRounds : undefined,
+      reviewerModels: openPR && prCompletion === 'review-then-merge' ? reviewerModels : undefined,
       reviewStopMode: openPR && prCompletion === 'review-then-merge' ? reviewStopMode : undefined,
       reviewerApplies: openPR && prCompletion === 'review-then-merge' ? reviewerApplies : undefined,
       screenshots: screenshots.length > 0 ? screenshots.map(s => s.path) : undefined,
@@ -289,6 +343,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
 
     // Only clear form inputs after successful submission
     setNewTask(t => ({ ...t, description: '' }));
+    setSlashdoCommand('');
     setScreenshots([]);
     setAttachments([]);
 
@@ -376,10 +431,15 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
                   onClick={() => applyTemplate(template)}
                   {...clickableProps(() => applyTemplate(template))}
                   className="group relative flex items-center gap-1.5 px-3 py-1.5 bg-port-card border border-port-border rounded-lg text-sm text-gray-300 hover:text-white hover:border-port-accent/50 transition-colors cursor-pointer"
-                  title={template.description}
+                  title={template.slashdoCommand ? `${slashdoLabel(template.slashdoCommand)} \u2014 ${template.context || template.description}` : template.description}
                 >
                   <span>{template.icon || '\ud83d\udcdd'}</span>
                   <span className="max-w-[120px] truncate">{template.name}</span>
+                  {/* The Claude-Code form of the command, as a recognizable label.
+                      The actual invocation is resolved server-side per provider. */}
+                  {template.slashdoCommand && (
+                    <span className="hidden sm:inline text-xs text-port-accent/80 font-mono">{slashdoLabel(template.slashdoCommand)}</span>
+                  )}
                   {template.useCount > 0 && (
                     <span className="text-xs text-gray-600">({template.useCount})</span>
                   )}
@@ -404,6 +464,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
           <label htmlFor="task-description" className="sr-only">Task description (required)</label>
           <input
             id="task-description"
+            ref={descriptionRef}
             type="text"
             placeholder="Task description *"
             value={newTask.description}
@@ -510,12 +571,17 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
                 reviewers={reviewers}
                 usernames={reviewUsernames}
                 optionalReviewers={optionalReviewers}
+                reviewerMaxRounds={reviewerMaxRounds}
+                reviewerModels={reviewerModels}
+                modelOptions={reviewerModelOptions}
                 stopMode={reviewStopMode}
                 reviewerApplies={reviewerApplies}
-                onChange={({ reviewers: r, usernames: u, optionalReviewers: o, stopMode, reviewerApplies: ra }) => {
+                onChange={({ reviewers: r, usernames: u, optionalReviewers: o, reviewerMaxRounds: m, reviewerModels: rm, stopMode, reviewerApplies: ra }) => {
                   setReviewers(r);
                   setReviewUsernames(u);
                   setOptionalReviewers(o);
+                  setReviewerMaxRounds(m);
+                  setReviewerModels(rm);
                   setReviewStopMode(stopMode);
                   setReviewerApplies(ra);
                 }}
@@ -572,23 +638,12 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
               {providerModelNote}
             </div>
           ) : null}
-          {effortLevels && (
-            <div className="sm:w-40">
-              <label htmlFor="task-effort" className="sr-only">Thinking effort</label>
-              <select
-                id="task-effort"
-                value={newTask.effort}
-                onChange={e => setNewTask(t => ({ ...t, effort: e.target.value }))}
-                className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm min-h-[44px]"
-                title="Thinking effort — how hard the model reasons per turn"
-              >
-                <option value="">Default effort</option>
-                {effortLevels.map(level => (
-                  <option key={level} value={level}>{level}</option>
-                ))}
-              </select>
-            </div>
-          )}
+          <EffortSelect
+            provider={selectedProvider}
+            value={newTask.effort}
+            onChange={effort => setNewTask(t => ({ ...t, effort }))}
+            className="sm:w-40 w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm min-h-[44px]"
+          />
         </div>
         {apiOnlyProviders && (
           <div className="px-3 py-2 bg-port-warning/10 border border-port-warning/40 rounded-lg text-xs text-port-warning">

@@ -5,8 +5,9 @@
  *   PUT  /bulk-task-type/:taskType   → { success, appsUpdated }  (all active apps)
  *   GET  /:id/task-types             → { taskTypeOverrides }
  *   GET  /:id/work-tracker           → { tracker info }
+ *   GET  /:id/work-items             → { tracker, items, reason }
  *   GET  /:id/layered-intelligence           → { config, isPortos }
- *   GET  /:id/layered-intelligence/outcomes  → { stats, execution, rejections, recent }
+ *   GET  /:id/layered-intelligence/outcomes  → { stats, execution, metrics, approvalFunnel, rejections, recent }
  *   PUT  /:id/task-types/all         → { success, taskTypeOverrides }
  *   PUT  /:id/task-types/:taskType   → { success, taskTypeOverrides }
  *
@@ -17,11 +18,13 @@
 import { Router } from 'express';
 import * as appsService from '../../services/apps.js';
 import { PORTOS_APP_ID } from '../../services/apps.js';
-import { sanitizeTaskMetadata } from '../../lib/validation.js';
+import { sanitizeTaskMetadata, ISSUE_AUTHOR_FILTERS } from '../../lib/validation.js';
+import { listWorkItems } from '../../services/workItems.js';
+import { resolveClaimWorkMetadata, resolveClaimAuthorFilter } from '../../services/cosTaskGenerator.js';
 import { parseCronToNextRun } from '../../services/eventScheduler.js';
 import { asyncHandler, ServerError } from '../../lib/errorHandler.js';
 import { SELF_IMPROVEMENT_TASK_TYPES } from '../../services/taskSchedule.js';
-import { summarizeOutcomeStats, computePostApprovalCompletion, computeProposalOutcomeMetrics } from '../../services/layeredIntelligence.js';
+import { summarizeOutcomeStats, computePostApprovalCompletion, computeProposalOutcomeMetrics, computeApprovalFunnel } from '../../services/layeredIntelligence.js';
 import { listOutcomesResult } from '../../services/layeredIntelligenceOutcomes.js';
 import { summarizeRejectionReasons } from '../../services/layeredIntelligenceRejections.js';
 import { loadApp } from './shared.js';
@@ -63,6 +66,25 @@ router.get('/:id/work-tracker', loadApp, asyncHandler(async (req, res) => {
   const app = req.loadedApp;
   const info = await appsService.getAppWorkTracker(app.id);
   res.json({ appId: app.id, appName: app.name, ...info });
+}));
+
+// GET /api/apps/:id/work-items - The work items a `/do:next` run could claim for
+// this app, from whichever tracker it resolves to. Backs the "pick a specific
+// item" mode of the app-overview `/do:next` drawer; the agent-picks default needs
+// no call. Scanned with the SAME author filter the claim agent will apply
+// (`?issueAuthorFilter=` overrides it for the preview) so the list can't advertise
+// items the run would then skip. Read-only: no LLM call, no claim markers set.
+router.get('/:id/work-items', loadApp, asyncHandler(async (req, res) => {
+  const app = req.loadedApp;
+  const requested = req.query.issueAuthorFilter;
+  const explicit = ISSUE_AUTHOR_FILTERS.includes(requested) ? requested : undefined;
+  // Only read the app's claim-work config when it's actually the answer — an
+  // explicit filter (every drawer refresh after the first) already wins, and the
+  // read costs a schedule load plus a per-app override read.
+  const issueAuthorFilter = explicit
+    ?? resolveClaimAuthorFilter(undefined, (await resolveClaimWorkMetadata(app)).metadata);
+  const result = await listWorkItems(app, { issueAuthorFilter });
+  res.json({ appId: app.id, appName: app.name, issueAuthorFilter, ...result });
 }));
 
 // GET /api/apps/:id/layered-intelligence - Effective Layered Intelligence config
@@ -108,7 +130,7 @@ router.get('/:id/layered-intelligence/outcomes', loadApp, asyncHandler(async (re
   const tracked = !!config?.sources?.outcomes;
   const { read, outcomes } = await listOutcomesResult({ appId: app.id });
   if (!read) {
-    return res.json({ appId: app.id, appName: app.name, read: false, tracked, stats: null, execution: null, metrics: null, rejections: null, recent: [] });
+    return res.json({ appId: app.id, appName: app.name, read: false, tracked, stats: null, execution: null, metrics: null, approvalFunnel: null, rejections: null, recent: [] });
   }
   // Computed once and threaded into the roll-up below — `computeProposalOutcomeMetrics`
   // is built on these same two aggregators, so handing it the results keeps the whole
@@ -144,6 +166,13 @@ router.get('/:id/layered-intelligence/outcomes', loadApp, asyncHandler(async (re
     // what distinguishes "rejected" from "approved then lost". Built from the same two
     // aggregate objects returned above, so the three blocks cannot drift.
     metrics: computeProposalOutcomeMetrics(outcomes, { stats, execution }),
+    // The approval FUNNEL (#3120) — the human-review side none of the three blocks
+    // above can express: the windowed approval rate, the pending-review backlog with
+    // its 1d/3d/7d age buckets, filing-to-decision latency, and proposal-phase
+    // throughput (kept distinct from cosMetrics' agent-task lifecycle). Derived from the
+    // same records, so this endpoint is the queryable view of exactly what the
+    // reasoner's liSelfEval block reports — no second on-disk aggregate to drift.
+    approvalFunnel: computeApprovalFunnel(outcomes),
     rejections,
     recent
   });

@@ -33,9 +33,10 @@ import { getRecord } from './records.js';
 import { loadManifest } from './reference.js';
 import {
   buildMainReferencePrompt, buildAmbientReferencePrompt, buildAnchorPrompt,
-  buildWalkVideoPrompt, buildAmbientVideoPrompt, buildTurnaroundPrompt, TURNAROUND_ID,
+  buildTurnaroundPrompt, TURNAROUND_ID,
 } from './prompts.js';
-import { AMBIENT_TRACK } from './animationTracks.js';
+import { tryBuildTrackVideoPrompt } from './trackPrompts.js';
+import { WALK_TRACK } from './animationTracks.js';
 import { DEFAULT_CHROMA_KEY } from './chromaKey.js';
 
 const CANDIDATE_RE = /^reference\/candidates\/(.+)\.png$/i;
@@ -50,17 +51,21 @@ function fromCandidateSidecar(sidecar, name, fromTurnaround = false, kind = 'cha
   if (typeof sidecar.prompt === 'string' && sidecar.prompt) {
     return { prompt: sidecar.prompt, designPrompt: sidecar.designPrompt || null, source: 'candidate' };
   }
-  // Pre-capture candidate — rebuild with the builder that produced it.
-  const { designPrompt, chromaKey } = sidecar;
+  // Pre-capture candidate — rebuild with the builder that produced it. The
+  // sidecar records the re-roll correction whenever one was used (#2964/#3134),
+  // so the rebuild reproduces the corrected prompt rather than the blind one.
+  const { designPrompt, chromaKey, correctionPrompt } = sidecar;
   let prompt;
   if (sidecar.target === TURNAROUND_ID) {
-    prompt = buildTurnaroundPrompt({ name, designPrompt, chromaKey });
+    prompt = buildTurnaroundPrompt({ name, designPrompt, chromaKey, correctionPrompt });
   } else if (sidecar.target === 'main') {
     prompt = kind === 'character'
-      ? buildMainReferencePrompt({ name, designPrompt, chromaKey, fromTurnaround })
-      : buildAmbientReferencePrompt({ name, kind, designPrompt, chromaKey });
+      ? buildMainReferencePrompt({ name, designPrompt, chromaKey, correctionPrompt, fromTurnaround })
+      : buildAmbientReferencePrompt({ name, kind, designPrompt, chromaKey, correctionPrompt });
   } else {
-    prompt = buildAnchorPrompt({ name, direction: sidecar.direction || sidecar.target, chromaKey, fromTurnaround });
+    prompt = buildAnchorPrompt({
+      name, direction: sidecar.direction || sidecar.target, chromaKey, correctionPrompt, fromTurnaround,
+    });
   }
   return { prompt, designPrompt: designPrompt || null, source: 'candidate-reconstructed' };
 }
@@ -163,20 +168,31 @@ export async function resolveSpriteAssetPrompt(recordId, relPath) {
     }
   }
 
-  // 3. Walk-animation asset — rebuild the i2v motion prompt from the run record.
+  // 3. Animation asset — rebuild the i2v motion prompt from the run record.
+  // Each named track rebuilds with ITS OWN builder: reconstructing a scanner run
+  // with the walk builder would report a prompt that was never sent. The run
+  // record stamps `correctionPrompt` when the render carried one (#3134), so a
+  // corrected re-roll rebuilds with its correction clause.
   const run = RUN_DIR_MATCH.exec(relPath);
   if (run) {
     const runRecord = await readJSONFile(join(spriteDir(recordId), run[0], 'animation-run.json'), null);
     if (runRecord?.direction) {
-      return {
-        prompt: typeof runRecord.prompt === 'string' && runRecord.prompt
-          ? runRecord.prompt
-          : runRecord.track === AMBIENT_TRACK
-            ? buildAmbientVideoPrompt({ name, kind: record.kind, chromaKey: runRecord.chromaKey })
-            : buildWalkVideoPrompt({ name, direction: runRecord.direction, chromaKey: runRecord.chromaKey }),
-        designPrompt: null,
-        source: runRecord.track === AMBIENT_TRACK ? 'ambient' : 'walk',
-      };
+      const { chromaKey, correctionPrompt, track } = runRecord;
+      // One dispatch through `tryBuildTrackVideoPrompt` (#3136) rather than a
+      // per-track branch here — so a user-defined track's provenance rebuilds
+      // with its own prompt instead of silently falling through to walk's.
+      // An UNREGISTERED track (a run written by a newer peer, or one whose row
+      // the user has since deleted) can't be rebuilt at all: report the prompt
+      // the run itself stamped, and otherwise null, rather than mislabelling it
+      // as a walk. `source` is the track id, which is what it always was for
+      // the shipped rows.
+      const rebuild = () => tryBuildTrackVideoPrompt(track ?? WALK_TRACK, {
+        name, kind: record.kind, direction: runRecord.direction, chromaKey, correctionPrompt,
+      });
+      const stamped = typeof runRecord.prompt === 'string' && runRecord.prompt ? runRecord.prompt : null;
+      const prompt = stamped ?? rebuild();
+      if (!prompt) return null;
+      return { prompt, designPrompt: null, source: track ?? WALK_TRACK };
     }
   }
 

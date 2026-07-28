@@ -17,6 +17,15 @@ import {
 } from './constants.js';
 import { normalizeSlug, extractSlugFromBody, isIssueWithinDedupWindow } from './dedup.js';
 import { computePostApprovalCompletion, scopeKeyOf } from './awareness.js';
+import { formatApprovalFunnelLines } from './approvalFunnel.js';
+
+// Delivery throttle thresholds (#3160). Below 20% there is enough evidence that
+// LI should stop filing; 75% is the healthy line where its filing budget is fully
+// restored. Between those points the score remains deliveryRate / 75, preserving
+// the issue's requested proportional 0%-to-75% scale (with the explicit <20% stop
+// overriding its otherwise-small non-zero score).
+const LI_DELIVERY_THROTTLE_STOP_THRESHOLD = 20;
+const LI_DELIVERY_THROTTLE_FULL_THRESHOLD = 75;
 
 /**
  * Derive a resolved outcome for a filed proposal from its live tracker issue.
@@ -197,6 +206,108 @@ export function computeProposalOutcomeMetrics(outcomes = [], { stats = null, exe
     duration: postApproval.duration,
     byScope
   };
+}
+
+/**
+ * Project the outcome metrics down to the compact delivery block folded into the
+ * `cosMetrics` prompt source (#3085). The `cosMetrics` document reports per-task-type
+ * RUN success ("did the agent's task finish?") and nothing about DELIVERY ("did the
+ * approved work actually land?") — so a healthy 90% run rate sitting beside a pipeline
+ * that has delivered 0 of 10 approvals reads as a healthy pipeline. This is the second
+ * number, in the same document.
+ *
+ * DERIVED, not stored — for the same reason `computeProposalOutcomeMetrics` is: the
+ * per-proposal records in `data/cos/li-outcomes/` already hold both sides of the
+ * lifecycle, so an on-disk counter pair incremented at each transition would be a
+ * second aggregate free to drift from the records it summarizes (and would need a
+ * migration to seed on every existing install).
+ *
+ * PROMPT-DISPLAY ONLY. The hard exclusion gate reads its own delivery rate straight
+ * off the records via `computeLiExecutionHealth`, so nothing here is load-bearing for
+ * enforcement — which is why rounding is safe (a threshold compare must never see a
+ * rounded rate; that one does not).
+ *
+ * `currentDeliveryRate` is null — never 0 — when nothing has been approved yet: the
+ * sentinel rule. "No approvals to deliver on" and "every approval was lost" are
+ * opposite facts, and a 0% delivery figure in the prompt is a direct instruction to
+ * the reasoner to hold back on self-directed work — exactly the wrong read for a loop
+ * that simply has no track record yet.
+ *
+ * `deliveryByScope` lists only scopes with at least one APPROVAL. A scope whose every
+ * proposal was rejected has no delivery signal to report (its `approved`/`delivered`
+ * would both be 0, saying only "nothing was approved here"), and the merge-rate block
+ * already covers the filing side.
+ *
+ * @param {Array} [outcomes] - the app's li-outcomes records (from listOutcomes).
+ * @returns {{ delivery: { totalApproved: number, totalDelivered: number,
+ *   currentDeliveryRate: number|null },
+ *   deliveryByScope: Object<string, { approved: number, delivered: number }> }}
+ */
+export function computeDeliveryMetrics(outcomes = []) {
+  const rolled = computeProposalOutcomeMetrics(outcomes);
+  // Null prototype for the same reason the roll-up uses one: `scope` is an
+  // LLM-authored free string, so a literal "__proto__" key would rewrite the
+  // prototype instead of adding a bucket.
+  const deliveryByScope = Object.create(null);
+  for (const [scope, bucket] of Object.entries(rolled.byScope)) {
+    if (!bucket.approved) continue;
+    deliveryByScope[scope] = { approved: bucket.approved, delivered: bucket.completed };
+  }
+  return {
+    delivery: {
+      totalApproved: rolled.totalApproved,
+      totalDelivered: rolled.totalCompleted,
+      currentDeliveryRate: rolled.approvalToCompletionRate === null
+        ? null
+        : Math.round(rolled.approvalToCompletionRate)
+    },
+    deliveryByScope
+  };
+}
+
+/**
+ * Translate LI's approval-to-completion health into a proposal-filing throttle
+ * (#3160). Accepts `computeLiExecutionHealth` output directly.
+ *
+ * `null` preserves the unavailable-data sentinel. A real but undersized sample is
+ * deliberately different: it returns 0, so LI does not expand its proposal queue
+ * before it has enough delivery evidence. At/above the sample floor, delivery under
+ * 20% is stopped; otherwise the score scales linearly to full throttle at 75%.
+ *
+ * @param {{ deliveryRate?: number|null, deliverySample?: number }|null} deliveryHealth
+ * @returns {number|null} 0..1, or null when delivery health is unavailable.
+ */
+export function computeDeliveryThrottle(deliveryHealth) {
+  const rate = deliveryHealth?.deliveryRate;
+  const sample = deliveryHealth?.deliverySample;
+  if (!Number.isFinite(rate) || !Number.isFinite(sample) || sample < 0) return null;
+  if (sample < LI_DELIVERY_MIN_SAMPLE || rate < LI_DELIVERY_THROTTLE_STOP_THRESHOLD) return 0;
+  return Math.min(1, Math.max(0, rate / LI_DELIVERY_THROTTLE_FULL_THRESHOLD));
+}
+
+/**
+ * Render the numeric delivery throttle as direct prompt guidance. Kept beside the
+ * computation so the label and the score cannot drift apart across prompt callers.
+ */
+export function formatDeliveryThrottleGuidance(deliveryHealth) {
+  const score = computeDeliveryThrottle(deliveryHealth);
+  if (score === null) {
+    return 'LI proposal throttle: unavailable — no approval-to-completion delivery data is available this run. Do not assume the delivery pipeline is healthy.';
+  }
+
+  const rawRate = deliveryHealth.deliveryRate;
+  const rate = Math.round(rawRate);
+  const sample = deliveryHealth.deliverySample;
+  const status = score === 0 ? 'stopped' : score === 1 ? 'full' : `${Math.round(score * 100)}%`;
+  const basis = `based on ${rate}% delivery rate from ${sample} approved proposal${sample === 1 ? '' : 's'}`;
+
+  if (sample < LI_DELIVERY_MIN_SAMPLE) {
+    return `LI proposal throttle: ${status} — ${basis}; at least ${LI_DELIVERY_MIN_SAMPLE} approvals are required before filing resumes. Return proposal: null rather than adding work without a reliable delivery sample.`;
+  }
+  if (rawRate < LI_DELIVERY_THROTTLE_STOP_THRESHOLD) {
+    return `LI proposal throttle: ${status} — ${basis}. Delivery is below ${LI_DELIVERY_THROTTLE_STOP_THRESHOLD}%; return proposal: null rather than adding to the undelivered queue.`;
+  }
+  return `LI proposal throttle: ${status} — ${basis}. Use this as the filing budget for this run.`;
 }
 
 /**
@@ -396,6 +507,10 @@ export function describeSuppressedIssue(issue, reasonBySlug = null) {
  *   1. Proposal merge rate      — do the user's triage decisions validate my picks?
  *   2. Already-filed proposals  — what have I said already that I must not repeat?
  *   3. LI execution health      — are my own agent runs even succeeding?
+ * Plus the APPROVAL FUNNEL (#3120) — approval rate over a sliding window, the
+ * pending-human-review backlog and its age buckets, time-to-decision, and
+ * proposal-phase throughput. Reported alongside the three but NOT counted toward
+ * `confidence`: it measures the approver's throughput, not LI's self-knowledge.
  *
  * Unlike computeOutcomesReport this ALWAYS returns a block when called: "you are
  * reasoning with no signal about yourself, hold a higher bar" is the single most
@@ -578,6 +693,17 @@ export function computeSelfEvalSummary({
       + `${health.deliveryConfident ? '' : ' — too small a sample to judge'}.`
     );
   }
+
+  // --- Signal 4: where are my proposals stuck in HUMAN review? ----------------
+  // The approval funnel (#3120): approval rate over a sliding window, the pending-review
+  // backlog with its age buckets, time-to-decision, and proposal-phase throughput. This
+  // is the one signal above that is about the APPROVER rather than about LI — a full
+  // review queue is a reason to file less, which no merge rate or delivery rate shows.
+  // Deliberately NOT folded into the confidence count below: the funnel measures the
+  // human's throughput, and "my approver is behind" is not evidence about LI's own
+  // reasoning quality, so letting it raise `confidence` would misreport the loop's
+  // self-knowledge. It carries its own guidance inline instead.
+  lines.push(...formatApprovalFunnelLines({ outcomes, now }));
 
   // --- Confidence: how much do I actually know about myself? ------------------
   // Purely a count of PRESENT signals — it rates the evidence available to the

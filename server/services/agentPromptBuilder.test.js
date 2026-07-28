@@ -13,7 +13,7 @@
  * autonomous agent…" preamble are gone from BOTH paths.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { join } from 'path';
 import { PATHS } from '../lib/fileUtils.js';
 
@@ -50,6 +50,9 @@ vi.mock('../lib/fileUtils.js', async (importOriginal) => {
   return {
     ...actual,
     loadSlashdoFile: vi.fn().mockResolvedValue(null),
+    // #3110 — staging the resolved copy is real disk I/O; mocked so tests can
+    // assert the pointer path without writing under data/.
+    writeResolvedSlashdoBody: vi.fn().mockResolvedValue(null),
   };
 });
 vi.mock('./jira.js', () => ({
@@ -67,6 +70,8 @@ import { buildLightContextPrompt, buildAgentPrompt, buildCompletionGuidelineBull
 import { getCodeReviewDefaults } from './codeReview.js'; // mocked above — control the configured default
 import { isTruthyMeta } from './agentState.js';
 import { buildPrompt } from './promptService.js'; // mocked above — inspect call args
+import { loadSlashdoFile, writeResolvedSlashdoBody } from '../lib/fileUtils.js'; // mocked above — control the inlined body
+import { SLASHDO_INLINE_BUDGET_CHARS } from '../lib/slashdoInvocation.js';
 
 function makeTask(overrides = {}) {
   return {
@@ -541,6 +546,57 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).not.toMatch(/git push -u origin weird;rm/);
     });
 
+    // #3114 acceptance criteria — the completion gates derive from
+    // `resolveSlashdoStyle`, so the two behaviors the old inline provider-id
+    // allowlists got wrong are now asserted.
+    it('a codex TUI gets the plain git/gh completion workflow, never /do:pr', () => {
+      // codex installs slashdo as Agent Skills, not slash commands, so telling it
+      // to run `/do:pr` handed it an uninvokable line. The old `tuiSlashdoFree`
+      // gate only recognized OpenCode + lean mode, so codex fell through to the
+      // slashdo path.
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, reviewLoop: true } }),
+        '/r',
+        { branchName: 'claim/x', worktreePath: '/tmp/wt', baseBranch: 'main' },
+        isTruthyMeta,
+        { isTui: true, providerId: 'codex-tui', providerCommand: 'codex' });
+      expect(prompt).toMatch(/## Completion Workflow/);
+      expect(prompt).toMatch(/does NOT have slashdo/);
+      expect(prompt).not.toMatch(/`\/do:pr`/);
+      expect(prompt).not.toMatch(/`\/do:push`/);
+      // Plain git + forge CLI instead.
+      expect(prompt).toMatch(/git push -u origin claim\/x/);
+      expect(prompt).toMatch(/gh pr create --fill --base main/);
+      expect(prompt).toMatch(/\.agent-done/);
+    });
+
+    it('a path-configured claude binary under a custom provider id gets the slashdo workflow', () => {
+      // The old `hasSlashdo` gate was an id allowlist (`claude-code` /
+      // `claude-code-bedrock`), so a renamed or path-configured claude provider
+      // was denied `/simplify` + `/do:pr` even though it launches claude.
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, simplify: true } }),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta,
+        { isTui: false, providerId: 'my-custom-agent', providerCommand: '/opt/homebrew/bin/claude' });
+      expect(prompt).toMatch(/^## Completion$/m);
+      expect(prompt).toMatch(/`\/simplify`/);
+      expect(prompt).toMatch(/`\/do:pr/);
+      expect(prompt).not.toMatch(/PortOS will push and open the PR/);
+    });
+
+    it('an antigravity TUI also drops out of the slashdo workflow', () => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: false } }),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta,
+        { isTui: true, providerId: 'antigravity-tui', providerCommand: 'agy' });
+      expect(prompt).not.toMatch(/`\/do:push`/);
+      expect(prompt).toMatch(/git push -u origin b/);
+    });
+
     it('a non-OpenCode TUI (claude-code-tui) keeps the slashdo /do:pr workflow', () => {
       // providerCommand is the gate — a claude TUI must NOT fall into the manual path.
       const prompt = buildLightContextPrompt(
@@ -560,7 +616,7 @@ describe('buildLightContextPrompt', () => {
         '/r',
         { branchName: 'b', worktreePath: '/tmp/wt' },
         isTruthyMeta,
-        { isTui: false });
+        { isTui: false, providerId: 'codex', providerCommand: 'codex' });
       expect(prompt).toMatch(/^## Completion$/m);
       expect(prompt).not.toMatch(/`\/do:pr`/);
       expect(prompt).not.toMatch(/`\/quit`/);
@@ -576,11 +632,26 @@ describe('buildLightContextPrompt', () => {
         '/r',
         { branchName: 'b', worktreePath: '/tmp/wt' },
         isTruthyMeta,
-        { isTui: false }); // no providerId → not Claude → no slashdo
+        { isTui: false, providerId: 'antigravity-cli', providerCommand: 'agy' });
       expect(prompt).toMatch(/^## Completion$/m);
       expect(prompt).not.toMatch(/`\/simplify`/);
       expect(prompt).toMatch(/review your changed code for reuse, quality, and efficiency/i);
       expect(prompt).toMatch(/PortOS will push and open the PR/);
+    });
+
+    // #3114 — the gates now derive from `resolveSlashdoStyle` with the spawners'
+    // blank-command posture, so a CLI provider with NO id and NO command reads as
+    // Claude: `buildCliSpawnConfig`'s default branch launches `claude`, and the
+    // session that actually runs does have `/do:pr` / `/simplify`.
+    it('treats a blank CLI provider as Claude Code, matching what the spawner launches', () => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, simplify: true } }),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta,
+        { isTui: false });
+      expect(prompt).toMatch(/`\/simplify`/);
+      expect(prompt).toMatch(/`\/do:pr/);
     });
 
     it('emits a slashdo Completion block (/simplify + /do:pr) for Claude Code CLI + openPR', () => {
@@ -849,6 +920,33 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).toMatch(/--review-with codex,ollama~opt,@alice --review-stop-on-findings --reviewer-applies/);
     });
 
+    it('threads per-reviewer ~max caps from the Code Review Defaults into the inline /do:pr', () => {
+      const codeReviewDefaults = {
+        reviewers: ['codex', 'ollama'],
+        optionalReviewers: ['ollama'],
+        // `~opt` first, then `~max=<n>` — slashdo's canonical order.
+        reviewerMaxRounds: { ollama: 1, codex: 2 },
+      };
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, reviewLoop: true } }),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta,
+        { isTui: true, defaultReviewers: codeReviewDefaults.reviewers, codeReviewDefaults });
+      expect(prompt).toMatch(/--review-with codex~max=2,ollama~opt~max=1/);
+    });
+
+    it('lets a task-level ~max cap map override the defaults', () => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, reviewLoop: true, reviewers: ['ollama'], reviewerMaxRounds: { ollama: 0 } } }),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta,
+        { isTui: true, defaultReviewers: ['ollama'], codeReviewDefaults: { reviewers: ['ollama'], reviewerMaxRounds: { ollama: 3 } } });
+      // `0` = loop until clean, and it must not be mistaken for "no cap".
+      expect(prompt).toMatch(/--review-with ollama~max=0/);
+    });
+
     it('does not leak default usernames/stop-mode/reviewer-applies when no Code Review Defaults are set', () => {
       // Same task, no `codeReviewDefaults` option → the lone-copilot default,
       // which suppresses `--review-with` entirely and emits none of the flags.
@@ -920,6 +1018,49 @@ describe('buildLightContextPrompt', () => {
         isTruthyMeta);
       expect(prompt).toMatch(/codex --model gpt-5\.6-sol/);
       expect(prompt).toMatch(/claude --model qwen2\.5:7b/);
+    });
+
+    it('spells out per-reviewer ~max round caps in the follow-up loop instructions', () => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: {
+          reviewLoopFollowUp: true,
+          reviewLoopPRUrl: 'https://github.com/o/r/pull/9',
+          reviewLoopPRBranch: 'b',
+          reviewLoopPRNumber: 9,
+          reviewLoopReviewers: ['codex', 'ollama'],
+          // `bogus` isn't in the list, so it must not reach the prose.
+          reviewLoopReviewerMaxRounds: { ollama: 1, codex: 0, copilot: 3 },
+          sourceTaskId: 'task-src-max',
+        }}),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta);
+      // This prompt drives the loop in prose, so the cap has to be stated —
+      // the `equiv` flag string alone wouldn't bind the agent.
+      expect(prompt).toMatch(/Round caps \(~max\)/);
+      expect(prompt).toMatch(/`ollama` → 1 round/);
+      // 0 renders as unlimited, not as a zero-round budget.
+      expect(prompt).toMatch(/`codex` → loop until clean/);
+      expect(prompt).not.toMatch(/`copilot` →/);
+      // And the equivalent flag string carries the same suffixes.
+      expect(prompt).toMatch(/--review-with codex~max=0,ollama~max=1/);
+    });
+
+    it('omits the round-caps note when no cap is configured', () => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: {
+          reviewLoopFollowUp: true,
+          reviewLoopPRUrl: 'https://github.com/o/r/pull/9',
+          reviewLoopPRBranch: 'b',
+          reviewLoopPRNumber: 9,
+          reviewLoopReviewers: ['codex', 'ollama'],
+          sourceTaskId: 'task-src-nomax',
+        }}),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta);
+      expect(prompt).not.toMatch(/Round caps \(~max\)/);
+      expect(prompt).toMatch(/--review-with codex,ollama/);
     });
 
     it('threads a configured claude model (Ollama-backed reviewer) via the map', () => {
@@ -1085,8 +1226,12 @@ describe('buildLightContextPrompt', () => {
       // sees commits that are actually pushed. This branch is selected even
       // for a Claude Code CLI provider with `openPR: true`, because the PR
       // already exists; opening another one would be wrong.
+      // `reviewLoopFollowUp` is what identifies this case — the PR-branch guidance
+      // keys on that marker, not on bare `existingBranch`, so the OTHER producer of
+      // `existingBranch` (a resume) can't inherit review-fix instructions for a PR
+      // that may not exist.
       const prompt = buildLightContextPrompt(
-        makeTask({ metadata: { openPR: true, simplify: true } }),
+        makeTask({ metadata: { openPR: true, simplify: true, reviewLoopFollowUp: true } }),
         '/r',
         { branchName: 'feat-x', worktreePath: '/tmp/wt', existingBranch: true },
         isTruthyMeta,
@@ -1098,6 +1243,34 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).toMatch(/git pull --rebase/);
       // And it must NOT emit the slashdo-driven Completion guidance for this branch.
       expect(prompt).not.toMatch(/the \*\*Completion\*\* section below drives the push and PR/);
+    });
+
+    it('a RESUMED worktree gets the resume briefing, not the PR-branch review-fix wording', () => {
+      // A retry attached to a dead agent's branch rides the same `existingBranch`
+      // mechanism but follows the task's ordinary push/PR flow — there may be no PR
+      // at all. It must be told what is already done instead of being told to push
+      // review fixes to a PR that doesn't exist.
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, simplify: true, resumedFromAgentId: 'agent-dead' } }),
+        '/r',
+        { branchName: 'cos/task-1/agent-dead', worktreePath: '/tmp/wt', existingBranch: true },
+        isTruthyMeta,
+        { isTui: false, providerId: 'claude-code' });
+      expect(prompt).toMatch(/## Resuming Unfinished Work/);
+      expect(prompt).toMatch(/agent-dead/);
+      expect(prompt).not.toMatch(/\*\(pre-existing PR branch\)\*/);
+      expect(prompt).not.toMatch(/review-fix commits/);
+    });
+
+    it('omits the resume briefing for an ordinary fresh worktree', () => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, simplify: true } }),
+        '/r',
+        { branchName: 'cos/task-1/agent-new', worktreePath: '/tmp/wt', baseBranch: 'main' },
+        isTruthyMeta,
+        { isTui: false, providerId: 'claude-code' });
+      expect(prompt).toMatch(/## Git Worktree/);
+      expect(prompt).not.toMatch(/## Resuming Unfinished Work/);
     });
 
     it('worktreeCommitGuidance: hasSlashdo + !willOpenPR emits the push-only Completion wording', () => {
@@ -1497,5 +1670,285 @@ describe('buildReviewLoopFollowUpSection — CLI reviewer procedure inlining', (
     expect(out).not.toContain('CLI Reviewer Procedure');
     // Still emits the base invocation step so the loop is not broken.
     expect(out).toMatch(/codex/);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Slashdo-backed tasks (#3089)
+// -----------------------------------------------------------------------------
+// A quick-template task persists only the BARE command name; the invocation is
+// resolved here, where the provider is finally known. Assertions are on SHAPE
+// (invocation line present, body non-empty) — never on the vendored submodule's
+// exact text, which is upstream's to change.
+describe('buildAgentPrompt — slashdo-backed tasks', () => {
+  const slashdoTask = (metadata = {}) => makeTask({
+    description: 'Add rate limiting to the widget API',
+    metadata: { slashdoCommand: 'plan-task', ...metadata },
+  });
+
+  beforeEach(() => {
+    vi.mocked(loadSlashdoFile).mockResolvedValue(null);
+  });
+
+  it('renders the Claude Code invocation for a claude-code provider', async () => {
+    const prompt = await buildAgentPrompt(
+      slashdoTask(), {}, '/r', null, isTruthyMeta,
+      { providerType: 'cli', providerId: 'claude-code' });
+    expect(prompt).toContain('/do:plan-task');
+    expect(prompt).toContain('Add rate limiting to the widget API');
+  });
+
+  it('renders the flat invocation for OpenCode', async () => {
+    const prompt = await buildAgentPrompt(
+      slashdoTask(), {}, '/r', null, isTruthyMeta,
+      { providerType: 'tui', providerId: 'opencode-tui', providerCommand: 'opencode' });
+    expect(prompt).toContain('/do-plan-task');
+    expect(prompt).not.toContain('/do:plan-task');
+  });
+
+  it('names the skill instead of a slash command for a skill-style CLI', async () => {
+    const prompt = await buildAgentPrompt(
+      slashdoTask(), {}, '/r', null, isTruthyMeta,
+      { providerType: 'cli', providerId: 'codex' });
+    expect(prompt).toContain('do-plan-task');
+    expect(prompt).not.toContain('/do:plan-task');
+  });
+
+  // PortOS surfaces slashdo as slash commands only via the repo-local
+  // `.claude/commands/do/` symlinks, which a managed app's workspace doesn't
+  // have — so the procedure ships with the prompt for every provider, and the
+  // typed invocation is a shortcut, not the thing the prompt relies on.
+  it.each(['claude-code', 'opencode', 'codex'])('inlines the command body for %s', async (providerId) => {
+    vi.mocked(loadSlashdoFile).mockResolvedValue('# Plan Task\n\nInvestigate, then file the issue.');
+    const prompt = await buildAgentPrompt(
+      slashdoTask(), {}, '/r', null, isTruthyMeta,
+      { providerType: 'cli', providerId });
+    expect(prompt).toContain('Investigate, then file the issue.');
+    // `skipIncludes: []` — nothing pruned, since this task pins no reviewers and
+    // the mocked defaults are the unconfigured lone-copilot shape (#3110).
+    expect(vi.mocked(loadSlashdoFile)).toHaveBeenCalledWith('plan-task', { stripFrontmatter: true, skipIncludes: [] });
+  });
+
+  it('still emits the invocation when the body cannot be loaded', async () => {
+    vi.mocked(loadSlashdoFile).mockResolvedValue(null);
+    const prompt = await buildAgentPrompt(
+      slashdoTask(), {}, '/r', null, isTruthyMeta,
+      { providerType: 'cli', providerId: 'claude-code' });
+    expect(prompt).toContain('/do:plan-task');
+  });
+
+  it('uses explicit slashdoArgs when present', async () => {
+    const prompt = await buildAgentPrompt(
+      slashdoTask({ slashdoArgs: '--issues 42' }), {}, '/r', null, isTruthyMeta,
+      { providerType: 'cli', providerId: 'claude-code' });
+    expect(prompt).toContain('/do:plan-task --issues 42');
+  });
+
+  it('reaches the api-path briefing template through task.description', async () => {
+    vi.mocked(buildPrompt).mockClear();
+    await buildAgentPrompt(slashdoTask(), {}, '/r', null, isTruthyMeta, { providerType: 'api', providerId: 'claude-code' });
+    const [, context] = vi.mocked(buildPrompt).mock.calls.at(-1);
+    expect(context.task.description).toContain('/do:plan-task');
+  });
+
+  it('leaves a task with no slashdoCommand untouched', async () => {
+    const prompt = await buildAgentPrompt(
+      makeTask(), {}, '/r', null, isTruthyMeta,
+      { providerType: 'cli', providerId: 'claude-code' });
+    expect(prompt).not.toContain('Slashdo Workflow');
+  });
+
+  it('ignores an invalid command rather than joining it into a path', async () => {
+    const prompt = await buildAgentPrompt(
+      slashdoTask({ slashdoCommand: '../../etc/passwd' }), {}, '/r', null, isTruthyMeta,
+      { providerType: 'cli', providerId: 'codex' });
+    expect(prompt).not.toContain('Slashdo Workflow');
+    expect(vi.mocked(loadSlashdoFile)).not.toHaveBeenCalledWith('../../etc/passwd', expect.anything());
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Slashdo prompt-size controls (#3110)
+// -----------------------------------------------------------------------------
+// Expanded bodies run 38KB–317KB. Two reductions: prune the reviewer variants a
+// run can't reach, then hand a file-tools host a path for whatever is still over
+// budget. `api` providers have no file tools and keep inlining. Assertions are on
+// SHAPE (pointer present / body present / prune set passed), never on the
+// submodule's text.
+describe('buildAgentPrompt — slashdo prompt-size controls', () => {
+  const OVER = 'B'.repeat(SLASHDO_INLINE_BUDGET_CHARS + 500);
+  const UNDER = '# Small Procedure\n\nStep one.';
+  const slashdoTask = (metadata = {}) => makeTask({
+    description: 'Audit the widget API',
+    metadata: { slashdoCommand: 'review', ...metadata },
+  });
+
+  beforeEach(() => {
+    // mockReset (not just a new return value): several tests here assert the
+    // staging helper was NOT called, so a prior test's call must not leak in.
+    vi.mocked(writeResolvedSlashdoBody).mockReset();
+    vi.mocked(loadSlashdoFile).mockReset();
+    vi.mocked(loadSlashdoFile).mockResolvedValue(OVER);
+    vi.mocked(writeResolvedSlashdoBody).mockResolvedValue('/install/data/cos/slashdo-resolved/review.md');
+    vi.mocked(getCodeReviewDefaults).mockResolvedValue({ reviewers: ['copilot'] });
+  });
+
+  it('hands a file-tools host a pointer instead of the body when over budget', async () => {
+    const prompt = await buildAgentPrompt(
+      slashdoTask(), {}, '/r', null, isTruthyMeta,
+      { providerType: 'cli', providerId: 'codex' });
+    expect(prompt).toContain('/install/data/cos/slashdo-resolved/review.md');
+    expect(prompt).not.toContain(OVER);
+    // Still actionable — the invocation survives.
+    expect(prompt).toContain('do-review');
+  });
+
+  it('inlines the body when it is under budget, and stages no file', async () => {
+    vi.mocked(loadSlashdoFile).mockResolvedValue(UNDER);
+    const prompt = await buildAgentPrompt(
+      slashdoTask(), {}, '/r', null, isTruthyMeta,
+      { providerType: 'cli', providerId: 'codex' });
+    expect(prompt).toContain('Step one.');
+    expect(vi.mocked(writeResolvedSlashdoBody)).not.toHaveBeenCalled();
+  });
+
+  it('inlines for an api provider regardless of size — no file tools to read with', async () => {
+    vi.mocked(buildPrompt).mockClear();
+    await buildAgentPrompt(slashdoTask(), {}, '/r', null, isTruthyMeta,
+      { providerType: 'api', providerId: 'some-http-provider' });
+    const [, context] = vi.mocked(buildPrompt).mock.calls.at(-1);
+    expect(context.task.description).toContain(OVER);
+    expect(vi.mocked(writeResolvedSlashdoBody)).not.toHaveBeenCalled();
+  });
+
+  it('warns once, naming the command and size, when an api provider is handed an over-budget body', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await buildAgentPrompt(slashdoTask(), {}, '/r', null, isTruthyMeta,
+      { providerType: 'api', providerId: 'some-http-provider' });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('review');
+    expect(warn.mock.calls[0][0]).toMatch(/\d+KB/);
+    warn.mockRestore();
+  });
+
+  it('falls back to inlining when the resolved copy cannot be staged', async () => {
+    vi.mocked(writeResolvedSlashdoBody).mockRejectedValue(new Error('EACCES'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const prompt = await buildAgentPrompt(
+      slashdoTask(), {}, '/r', null, isTruthyMeta,
+      { providerType: 'cli', providerId: 'codex' });
+    // A failed write must not silently drop the procedure.
+    expect(prompt).toContain(OVER);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  describe('reviewer-variant pruning', () => {
+    const skipArg = () => vi.mocked(loadSlashdoFile).mock.calls.at(-1)[1].skipIncludes;
+
+    it('prunes unreachable reviewer loops when the task pins its reviewers', async () => {
+      await buildAgentPrompt(
+        slashdoTask({ reviewers: ['codex'] }), {}, '/r', null, isTruthyMeta,
+        { providerType: 'cli', providerId: 'codex' });
+      const skipped = skipArg();
+      expect(skipped).toContain('copilot-review-loop');
+      expect(skipped).not.toContain('local-agent-review-loop');
+    });
+
+    it('pins --review-with alongside a pruned body so the run matches what it got', async () => {
+      const prompt = await buildAgentPrompt(
+        slashdoTask({ reviewers: ['codex'] }), {}, '/r', null, isTruthyMeta,
+        { providerType: 'cli', providerId: 'codex' });
+      expect(prompt).toContain('--review-with codex');
+    });
+
+    it('prunes from the install Code Review Defaults when the task pins nothing', async () => {
+      vi.mocked(getCodeReviewDefaults).mockResolvedValue({ reviewers: ['ollama'] });
+      await buildAgentPrompt(
+        slashdoTask(), {}, '/r', null, isTruthyMeta,
+        { providerType: 'cli', providerId: 'codex' });
+      expect(skipArg()).not.toContain('ollama-review-loop');
+    });
+
+    it('prunes NOTHING on an unconfigured install (a lone copilot default is the unset shape)', async () => {
+      // pickCodeReviewDefaults collapses "nothing configured" to ['copilot'], so a
+      // lone copilot can't authorize pruning — and pinning --review-with copilot on
+      // an install without Copilot review is the #2507 stall.
+      vi.mocked(getCodeReviewDefaults).mockResolvedValue({ reviewers: ['copilot'] });
+      const prompt = await buildAgentPrompt(
+        slashdoTask(), {}, '/r', null, isTruthyMeta,
+        { providerType: 'cli', providerId: 'codex' });
+      expect(skipArg()).toEqual([]);
+      expect(prompt).not.toContain('--review-with');
+    });
+
+    // Both regressions found by the codex review pass: hand-rolling the reviewer
+    // resolution here diverged from the three helpers the rest of the prompt uses,
+    // so the body was pruned for a different reviewer than the run resolves.
+    it('honors the legacy single `reviewer` string, not just the reviewers array', async () => {
+      vi.mocked(getCodeReviewDefaults).mockResolvedValue({ reviewers: ['ollama'] });
+      const prompt = await buildAgentPrompt(
+        slashdoTask({ reviewer: 'codex' }), {}, '/r', null, isTruthyMeta,
+        { providerType: 'cli', providerId: 'codex' });
+      // Legacy `reviewer` beats the defaults, so the CLI loop is kept and the
+      // local-model loop (the default's) is what gets dropped.
+      const skipped = skipArg();
+      expect(skipped).not.toContain('local-agent-review-loop');
+      expect(skipped).toContain('ollama-review-loop');
+      expect(prompt).toContain('--review-with codex');
+    });
+
+    it('carries the ~opt marker for an optional reviewer inherited from the defaults', async () => {
+      vi.mocked(getCodeReviewDefaults).mockResolvedValue({
+        reviewers: ['codex'], optionalReviewers: ['codex'],
+      });
+      const prompt = await buildAgentPrompt(
+        slashdoTask(), {}, '/r', null, isTruthyMeta,
+        { providerType: 'cli', providerId: 'codex' });
+      // Pinning a non-blocking reviewer as blocking changes the merge gate.
+      expect(prompt).toContain('--review-with codex~opt');
+    });
+
+    it('treats an explicitly-OPTIONAL lone copilot as configured and keeps its ~opt', async () => {
+      // Nothing defaults to `~opt`, so marking copilot optional is a deliberate
+      // "review but don't gate the merge" choice. Suppressing the pin here would
+      // let the run fall back to slashdo's saved BLOCKING copilot default —
+      // silently tightening the merge gate. buildReviewWithArgs makes the same
+      // exemption to its lone-default suppression.
+      vi.mocked(getCodeReviewDefaults).mockResolvedValue({
+        reviewers: ['copilot'], optionalReviewers: ['copilot'],
+      });
+      const prompt = await buildAgentPrompt(
+        slashdoTask(), {}, '/r', null, isTruthyMeta,
+        { providerType: 'cli', providerId: 'codex' });
+      expect(prompt).toContain('--review-with copilot~opt');
+      expect(skipArg()).not.toContain('copilot-review-loop');
+    });
+
+    it('prunes NOTHING when the defaults read fails', async () => {
+      vi.mocked(getCodeReviewDefaults).mockRejectedValue(new Error('unreadable'));
+      await buildAgentPrompt(
+        slashdoTask(), {}, '/r', null, isTruthyMeta,
+        { providerType: 'cli', providerId: 'codex' });
+      expect(skipArg()).toEqual([]);
+    });
+
+    it('keeps the @login loop when a username reviewer gates the PR', async () => {
+      await buildAgentPrompt(
+        slashdoTask({ reviewers: ['codex'], usernames: ['octocat'] }), {}, '/r', null, isTruthyMeta,
+        { providerType: 'cli', providerId: 'codex' });
+      const skipped = skipArg();
+      expect(skipped).not.toContain('github-reviewer-loop');
+      // Two review sources ⇒ the multi-reviewer wrapper is reachable.
+      expect(skipped).not.toContain('multi-reviewer-loop');
+    });
+
+    it('keys the staged file on the prune set so two reviewer sets do not share a copy', async () => {
+      await buildAgentPrompt(
+        slashdoTask({ reviewers: ['codex'] }), {}, '/r', null, isTruthyMeta,
+        { providerType: 'cli', providerId: 'codex' });
+      const [, , opts] = vi.mocked(writeResolvedSlashdoBody).mock.calls.at(-1);
+      expect(opts.skipIncludes).toContain('copilot-review-loop');
+    });
   });
 });

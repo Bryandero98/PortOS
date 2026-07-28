@@ -4828,6 +4828,58 @@ Summarize:
 
 IMPORTANT: Always use \`git pull --rebase --autostash\` before pushing (dev branch gets auto-bumped by CI). Never use \`git push\` alone.`,
   ],
+  'branch-reconcile': [
+    // v1 default — superseded by v2, whose Rules make "merged" (not "PR opened")
+    // the terminal state for an auto-mergeable branch. v1's blanket "never merge
+    // unreviewed work" rule read as a veto on the per-branch merge instruction,
+    // so a NEEDS_PR branch ended with a green PR left sitting open.
+    //
+    // (v2 follows this entry; it is superseded by v3, which adds SUPERSEDED as a
+    // first-class outcome — neither v1 nor v2 gave the coordinator anywhere to
+    // put "this work already shipped a different way on the default branch", so
+    // a stale branch's only paths were merge or "blocked".)
+    `[Improvement: {appName}] Branch & PR Reconciliation
+
+You are the coordinator for finishing {appName}'s unfinished local git work. The scheduler has already run the deterministic pass (removed fully-merged, orphaned local branches + their worktrees) and handed you ONLY the branches that need judgment.
+
+Repository: {repoPath}
+
+Each branch listed below is a LOCAL branch in THIS clone of {appName}. On a machine that is a federated sync peer, branches created on OTHER machines exist here only as remote-tracking refs (\`origin/*\`) and are deliberately NOT listed — never open, rebase, or merge anything that is not in the list below.
+
+{inFlightBranches}
+
+Spawn ONE sub-agent per branch (they are independent — run them in parallel) to carry out that branch's "Do:" instruction, each working in the branch's existing worktree when it has one.
+
+## Rules
+- Work ONLY on the branches listed above. Never touch a branch that is not listed.
+- Never force-push the default branch and never merge unreviewed work.
+- If a sub-agent reports a branch is incomplete or blocked, leave it as-is and note it in your summary.
+- Summarize what each branch ended up doing (PR opened / conflicts resolved / merged / left incomplete).`,
+    // v2 default — superseded by v3, which adds the SUPERSEDED outcome (work
+    // already shipped a different way on the default branch → report, never
+    // merge) and forbids treating a resolvable conflict as proof the work is
+    // still wanted.
+    `[Improvement: {appName}] Branch & PR Reconciliation
+
+You are the coordinator for finishing {appName}'s unfinished local git work. The scheduler has already run the deterministic pass (removed fully-merged, orphaned local branches + their worktrees) and handed you ONLY the branches that need judgment.
+
+Repository: {repoPath}
+
+Each branch listed below is a LOCAL branch in THIS clone of {appName}. On a machine that is a federated sync peer, branches created on OTHER machines exist here only as remote-tracking refs (\`origin/*\`) and are deliberately NOT listed — never open, rebase, or merge anything that is not in the list below.
+
+{inFlightBranches}
+
+Spawn ONE sub-agent per branch (they are independent — run them in parallel) to carry out that branch's "Do:" instruction, each working in the branch's existing worktree when it has one.
+
+## Rules
+- Work ONLY on the branches listed above. Never touch a branch that is not listed.
+- Never force-push the default branch.
+- **A branch whose "Do:" line ends in a merge is not finished until it IS merged.** Its sub-agent stays alive through CI — waiting out the check run, fixing what goes red, then merging — and reports back only when the PR is merged or a specific check/review is blocking it. "PR opened, left open for review" is a completed STEP, not a completed branch: the PR just sits green until the next run re-drives it. Do not end your own run while a sub-agent is still waiting on CI.
+- Merging is gated by the "Do:" line itself — required CI green, MERGEABLE, and the review that branch's flow ran (\`/do:pr\`'s reviewer loop for a PR this task opens; the named review for one already in review). That gate, not a blanket ban, is what keeps unreviewed work out of the default branch. Merge only via \`gh pr merge\`, never a local \`git merge\` into the default branch.
+- If a sub-agent reports a branch is incomplete or blocked, leave it as-is and note it in your summary.
+- Summarize what each branch ended up doing (merged / PR opened but blocked on <what> / conflicts resolved / left incomplete). When a PR is left open, name the check or review that blocked it.`,
+  ],
+
   'issue-reconcile': [
     // v1 default (GitHub-only) — superseded by the forge-aware v2 body (gh/glab).
     `[Improvement: {appName}] Zombie Issue Reconciliation

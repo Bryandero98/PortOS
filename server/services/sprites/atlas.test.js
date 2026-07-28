@@ -7,12 +7,12 @@
  * with a correct hash chain.
  */
 
-import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import sharp from 'sharp';
-import { mkdir, writeFile, readFile } from 'fs/promises';
+import { mkdir, writeFile, readFile, rm } from 'fs/promises';
 import { createHash } from 'crypto';
 import { lockAllAnchors as lockAllAnchorsFixture, placeCandidate, trackSpan as fullSpan } from './spriteTestFixtures.js';
 
@@ -46,6 +46,13 @@ const { SPRITE_DIRECTIONS } = await import('./prompts.js');
 const { WALK_PHASES, walkPhaseLabels, WALK_FPS } = await import('./walkPostprocess.js');
 const { buildAtlasGrid, compiledGridUpToDate } = await import('./atlasGrid.js');
 const { getAnimationTrack, SCANNER_TRACK, AMBIENT_TRACK } = await import('./animationTracks.js');
+// #3152 — `scanner`/`ambient` are seeded STORE rows, so the compiler's real table
+// is the merge. Resolved once; the store caches its read.
+const {
+  getEffectiveAnimationTracks, __resetAnimationTrackStore,
+  animationTrackStorePath, animationTrackSeedPath,
+} = await import('./animationTrackStore.js');
+const EFFECTIVE_TRACKS = getEffectiveAnimationTracks();
 
 let seq = 0;
 const newId = () => `atlas-char-${++seq}`;
@@ -155,20 +162,26 @@ async function buildFinalizedWalkSet(recordId, {
   return { walkSet, selection };
 }
 
-async function buildFinalizedScannerSet(recordId, { frameCount = 4, fps = 6 } = {}) {
+async function buildFinalizedScannerSet(recordId, {
+  frameCount = 4,
+  fps = 6,
+  trackId = SCANNER_TRACK,
+  selectionKind = 'reviewed-directional-scanner-selection',
+  setKind = 'finalized-eight-direction-scanner-set',
+} = {}) {
   const manifest = await loadManifest(recordId);
   const dir = join(TEST_ROOT, 'sprites', recordId);
-  const labels = Array.from({ length: frameCount }, (_, i) => `${SCANNER_TRACK}-${String(i).padStart(2, '0')}`);
+  const labels = Array.from({ length: frameCount }, (_, i) => `${trackId}-${String(i).padStart(2, '0')}`);
   const selection = {
     schemaVersion: 1,
-    kind: 'reviewed-directional-scanner-selection',
-    track: SCANNER_TRACK,
+    kind: selectionKind,
+    track: trackId,
     characterId: recordId,
     status: 'complete',
     directions: {},
   };
   for (const direction of SPRITE_DIRECTIONS) {
-    const runId = `${SCANNER_TRACK}-${direction}-${(seq++).toString(16).padStart(8, '0')}`;
+    const runId = `${trackId}-${direction}-${(seq++).toString(16).padStart(8, '0')}`;
     const generatedRel = `runs/${runId}/generated`;
     const frames = [];
     for (let i = 0; i < labels.length; i++) {
@@ -178,8 +191,8 @@ async function buildFinalizedScannerSet(recordId, { frameCount = 4, fps = 6 } = 
     }
     const runManifest = {
       schemaVersion: 1,
-      kind: 'deterministically-packaged-grok-scanner-video',
-      track: SCANNER_TRACK,
+      kind: `deterministically-packaged-grok-${trackId}-video`,
+      track: trackId,
       characterId: recordId,
       direction,
       chromaKey: manifest.chromaKey,
@@ -187,7 +200,7 @@ async function buildFinalizedScannerSet(recordId, { frameCount = 4, fps = 6 } = 
       frameRate: fps,
       frames,
     };
-    const manifestRel = `${generatedRel}/${recordId}-${SCANNER_TRACK}-${direction}-manifest.json`;
+    const manifestRel = `${generatedRel}/${recordId}-${trackId}-${direction}-manifest.json`;
     const manifestBytes = JSON.stringify(runManifest);
     await writeFile(join(dir, manifestRel), manifestBytes);
     selection.directions[direction] = {
@@ -195,14 +208,14 @@ async function buildFinalizedScannerSet(recordId, { frameCount = 4, fps = 6 } = 
       runManifestSha256: sha256(Buffer.from(manifestBytes)), approvedAt: new Date().toISOString(),
     };
   }
-  await mkdir(join(dir, SCANNER_TRACK), { recursive: true });
-  const selectionRel = `${SCANNER_TRACK}/${recordId}-${SCANNER_TRACK}-selection-v1.json`;
+  await mkdir(join(dir, trackId), { recursive: true });
+  const selectionRel = `${trackId}/${recordId}-${trackId}-selection-v1.json`;
   const selectionBytes = JSON.stringify(selection);
   await writeFile(join(dir, selectionRel), selectionBytes);
-  await writeFile(join(dir, `${SCANNER_TRACK}/${recordId}-${SCANNER_TRACK}-set-v1.json`), JSON.stringify({
+  await writeFile(join(dir, `${trackId}/${recordId}-${trackId}-set-v1.json`), JSON.stringify({
     schemaVersion: 1,
-    kind: 'finalized-eight-direction-scanner-set',
-    track: SCANNER_TRACK,
+    kind: setKind,
+    track: trackId,
     characterId: recordId,
     status: 'final',
     directionOrder: SPRITE_DIRECTIONS,
@@ -323,6 +336,120 @@ describe('compileAtlas', () => {
     for (const row of manifest.directions) {
       expect(row.cells.filter((cell) => cell.column.startsWith('scanner-'))).toHaveLength(4);
     }
+  });
+
+  // #3152's stated "regression that matters": `scanner`/`ambient` stopped being
+  // compiled rows and became rows in `data/sprites/animation-tracks.json`. The two
+  // cases above prove the PRE-migration state compiles (no store file → the
+  // data.reference seed answers). These prove the POST-migration state does too,
+  // with a real user-owned store on disk — the shape every upgraded install runs,
+  // and the one where a broken store→registry hand-off surfaces as "unknown
+  // animation track 'scanner'" on a record that compiled fine yesterday.
+  describe('after migration 211 materializes the user-owned store (#3152)', () => {
+    // A byte copy of the shipped seed, exactly as the migration writes it — so this
+    // asserts the migration's OUTPUT is sufficient, not merely that some
+    // hand-written store works.
+    // Paths come from the store's own exports rather than a hand-walked `../../..`:
+    // the PATHS mock above leaves `PATHS.root` real, so `animationTrackSeedPath()`
+    // and `animationTrackStorePath()` resolve exactly where the migration reads and
+    // writes — and a future relocation of either file moves both at once.
+    const installUserStore = async () => {
+      await mkdir(join(TEST_ROOT, 'sprites'), { recursive: true });
+      await writeFile(animationTrackStorePath(), await readFile(animationTrackSeedPath(), 'utf-8'));
+      __resetAnimationTrackStore();
+    };
+    // Restore the seed-fallback state the rest of this file compiles under, so
+    // ordering between suites can't matter.
+    afterEach(async () => {
+      await rm(animationTrackStorePath(), { force: true });
+      __resetAnimationTrackStore();
+    });
+
+    it('still compiles an approved scanner set beside the walk span', async () => {
+      const id = newId();
+      await lockAllAnchors(id);
+      await buildFinalizedWalkSet(id, { frameCount: 12, fps: 10 });
+      await buildFinalizedScannerSet(id);
+      await installUserStore();
+
+      const result = await compileAtlas(id);
+      const manifest = JSON.parse(await readFile(join(TEST_ROOT, 'sprites', id, result.manifestPath), 'utf8'));
+      // Identical geometry to the compiled-row era: span order, column labels and
+      // frame count all still resolve from the (now stored) row.
+      expect(manifest.geometry.columns).toEqual([
+        'idle', ...walkPhaseLabels(12), 'scanner-00', 'scanner-01', 'scanner-02', 'scanner-03',
+      ]);
+      expect(manifest.geometry.tracks.scanner).toMatchObject({ start: 13, count: 4, rows: 8 });
+      expect(manifest.geometry.scannerFrameCount).toBe(4);
+    });
+
+    it('still compiles an approved ambient loop for a place record', async () => {
+      const id = await finalizedAmbientPlace();
+      await installUserStore();
+
+      const result = await compileAtlas(id);
+      const manifest = JSON.parse(await readFile(join(TEST_ROOT, 'sprites', id, result.manifestPath), 'utf8'));
+      // The compile dispatch runs off `primaryTrackForKind('place')`/`tracksForKind`,
+      // now answered by a STORED row — a compiled-table lookup there finds no track
+      // for `place` and refuses the compile outright on a record that has one.
+      expect(manifest.kind).toBe('reviewed-ambient-set-runtime-atlas');
+      expect(manifest.geometry).toMatchObject({
+        columns: ['idle', 'ambient-00', 'ambient-01', 'ambient-02'],
+        ambientFrameCount: 3,
+      });
+    });
+  });
+
+  it('compiles and invalidates on a synthetic third registry track without compiler changes', async () => {
+    const trackId = 'jetpack';
+    // #3152 — built off the EFFECTIVE table: `scanner` is a stored row now, so
+    // `ANIMATION_TRACKS[SCANNER_TRACK]` is undefined and spreading it would
+    // silently produce a row with no bounds at all.
+    const customTracks = {
+      ...EFFECTIVE_TRACKS,
+      [trackId]: {
+        ...EFFECTIVE_TRACKS[SCANNER_TRACK],
+        id: trackId,
+        label: 'Jetpack burst',
+        contractFrameCountField: 'jetpackFrameCount',
+        selectionKind: 'reviewed-directional-jetpack-selection',
+        setKind: 'finalized-eight-direction-jetpack-set',
+        finalErrorCode: 'JETPACK_SET_FINAL',
+      },
+    };
+    const id = newId();
+    await lockAllAnchors(id);
+    await buildFinalizedWalkSet(id, { frameCount: 8, fps: 10 });
+    await buildFinalizedScannerSet(id, {
+      trackId,
+      frameCount: 3,
+      selectionKind: customTracks[trackId].selectionKind,
+      setKind: customTracks[trackId].setKind,
+    });
+
+    const first = await compileAtlas(id, { tracks: customTracks });
+    const manifest = JSON.parse(await readFile(join(TEST_ROOT, 'sprites', id, first.manifestPath), 'utf8'));
+    expect(manifest.geometry.columns).toEqual([
+      'idle', ...WALK_PHASES, 'jetpack-00', 'jetpack-01', 'jetpack-02',
+    ]);
+    expect(manifest.geometry.tracks.jetpack).toEqual({ start: 9, count: 3, rows: 8 });
+    expect(manifest.trackSets.jetpack.setSha256).toMatch(/^[0-9a-f]{64}$/);
+    for (const row of manifest.directions) {
+      expect(row.cells.filter((cell) => cell.column.startsWith('jetpack-'))).toHaveLength(3);
+    }
+
+    const unchanged = await compileAtlas(id, { tracks: customTracks });
+    expect(unchanged.created).toBe(false);
+
+    // A finalized set is part of the evidence identity even when its frame
+    // bytes are unchanged. Any track's set change must invalidate the pointer,
+    // not just the historical walk/scanner/ambient fields.
+    const setAbs = join(TEST_ROOT, 'sprites', id, `${trackId}/${id}-${trackId}-set-v1.json`);
+    const set = JSON.parse(await readFile(setAbs, 'utf8'));
+    await writeFile(setAbs, JSON.stringify({ ...set, note: 're-finalized' }));
+    const changed = await compileAtlas(id, { tracks: customTracks });
+    expect(changed.created).toBe(true);
+    expect(changed.version).toBe(first.version + 1);
   });
 
   it('compiles the 9×8 player atlas with full provenance and a current pointer', async () => {

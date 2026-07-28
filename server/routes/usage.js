@@ -6,6 +6,10 @@ import { getAllProviders } from '../services/providers.js';
 import { asyncHandler } from '../lib/errorHandler.js';
 import { validateRequest, usageQuerySchema, usageMessagesSchema } from '../lib/validation.js';
 import { resolveUsageRange } from '../lib/usageRange.js';
+import {
+  getHistoricalUsageBackfillStatus,
+  startHistoricalUsageBackfill
+} from '../services/usageBackfill.js';
 
 const router = Router();
 
@@ -42,6 +46,16 @@ router.get('/claude-code', asyncHandler(async (req, res) => {
 router.get('/raw', asyncHandler(async (req, res) => {
   const data = usage.getUsage();
   res.json(data);
+}));
+
+// Historical transcript correction is deliberately user-triggered. Starting it
+// returns immediately; the worker-thread job reports progress through GET.
+router.get('/backfill', asyncHandler(async (req, res) => {
+  res.json(getHistoricalUsageBackfillStatus());
+}));
+
+router.post('/backfill', asyncHandler(async (req, res) => {
+  res.status(202).json(startHistoricalUsageBackfill());
 }));
 
 // POST /api/usage/session - Record a session

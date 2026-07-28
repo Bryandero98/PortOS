@@ -220,7 +220,7 @@ const navItems = [
     icon: Sparkles,
     defaultTo: '/media',
     children: [
-      { to: '/media/3d', label: '3D', icon: Boxes },
+      { to: '/3d', label: '3D', icon: Boxes },
       { to: '/authors', label: 'Authors', icon: FilePen },
       { to: '/catalog', label: 'Catalog', icon: Sparkles },
       { to: '/creative-commission', label: 'Creative Commissions', icon: CalendarClock },
@@ -230,7 +230,7 @@ const navItems = [
       { to: '/media', label: 'Media Gen', icon: Layers },
       { to: '/mood-boards', label: 'Mood Boards', icon: Palette },
       { to: '/music', label: 'Music', icon: Mic },
-      { to: '/media/music-video', label: 'Music Video', icon: Music },
+      { to: '/music-video', label: 'Music Video', icon: Music },
       { to: '/rounds', label: 'Rounds', icon: Music },
       { to: '/pipeline', label: 'Series Pipeline', icon: WorkflowIcon, dynamic: 'pipelineSeries' },
       { to: '/sharing', label: 'Sharing', icon: Share2 },
@@ -465,6 +465,7 @@ export default function Layout() {
   const [collapsed, setCollapsed] = useState(() => safeReadStorage(SIDEBAR_KEY) === 'true');
   const [mobileOpen, setMobileOpen] = useState(false);
   const [expandedSections, setExpandedSections] = useState({});
+  const [expandedSubSections, setExpandedSubSections] = useState({});
   // Collapsed-sidebar flyout: hovering or focusing a section icon opens a
   // fixed-position popover to the right listing the section's children, so the
   // user can reach siblings (e.g. Writers Room from Create) without expanding
@@ -657,6 +658,15 @@ export default function Layout() {
         if (isChildActive) {
           setExpandedSections(prev => ({ ...prev, [item.label]: true }));
         }
+        item.children.forEach(child => {
+          const grandChildren = Array.isArray(child.grandChildren) ? child.grandChildren : [];
+          if (grandChildren.some(grandChild => {
+            const prefix = grandChild.activePathPrefix || grandChild.to;
+            return location.pathname === prefix || location.pathname.startsWith(prefix + '/');
+          })) {
+            setExpandedSubSections(prev => ({ ...prev, [child.to]: true }));
+          }
+        });
       }
     });
   }, [location.pathname, resolvedNavItems]);
@@ -670,6 +680,13 @@ export default function Layout() {
     setExpandedSections(prev => ({
       ...prev,
       [label]: !prev[label]
+    }));
+  };
+
+  const toggleSubSection = (path) => {
+    setExpandedSubSections(prev => ({
+      ...prev,
+      [path]: prev[path] === false,
     }));
   };
 
@@ -687,6 +704,11 @@ export default function Layout() {
     }
     return false;
   };
+
+  // The persisted collapsed preference only applies to the desktop rail. On
+  // mobile, opening the sidebar always gives the user the expanded navigation
+  // so section children remain directly reachable.
+  const sidebarCollapsed = collapsed && !mobileOpen;
 
   const renderNavItem = (item, index) => {
     // Separator
@@ -717,17 +739,17 @@ export default function Layout() {
           target="_blank"
           rel="noopener noreferrer"
           className={`flex items-start gap-3 mx-2 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors min-w-0 ${
-            collapsed ? 'lg:justify-center lg:px-2' : 'justify-between'
+            sidebarCollapsed ? 'lg:justify-center lg:px-2' : 'justify-between'
           } text-gray-400 hover:text-white hover:bg-port-border/50`}
           title={item.label}
         >
           <div className="flex items-start gap-3 min-w-0">
             <Icon size={20} className="shrink-0" />
-            <span className={`min-w-0 break-words leading-snug ${collapsed ? 'lg:hidden' : ''}`}>
+            <span className={`min-w-0 break-words leading-snug ${sidebarCollapsed ? 'lg:hidden' : ''}`}>
               {item.label}
             </span>
           </div>
-          {!collapsed && <ExternalLink size={14} className="text-gray-500 shrink-0 mt-0.5" />}
+          {!sidebarCollapsed && <ExternalLink size={14} className="text-gray-500 shrink-0 mt-0.5" />}
         </a>
       );
     }
@@ -738,7 +760,7 @@ export default function Layout() {
         <SingleNavRow
           key={item.to}
           item={item}
-          collapsed={collapsed}
+          collapsed={sidebarCollapsed}
           active={isActive(item.to)}
           badgeCount={unreadCount}
           pinned={singlePinned}
@@ -757,7 +779,7 @@ export default function Layout() {
       if (defaultChildPath) {
         navigate(defaultChildPath);
         // Ensure the section is expanded so the user can see siblings
-        if (!expandedSections[item.label] && !collapsed) {
+        if (!expandedSections[item.label] && !sidebarCollapsed) {
           toggleSection(item.label);
         }
       } else {
@@ -772,12 +794,12 @@ export default function Layout() {
         : 'text-gray-400 hover:text-white hover:bg-port-border/50'
     }`;
 
-    const hasChildrenForFlyout = collapsed && Array.isArray(item.children) && item.children.length > 0;
+    const hasChildrenForFlyout = sidebarCollapsed && Array.isArray(item.children) && item.children.length > 0;
 
     return (
       <div key={item.label} className="mx-2 min-w-0">
         <div
-          className={`flex items-stretch min-w-0 ${collapsed ? 'lg:justify-center' : ''}`}
+          className={`flex items-stretch min-w-0 ${sidebarCollapsed ? 'lg:justify-center' : ''}`}
           onMouseEnter={hasChildrenForFlyout ? (e) => openFlyout(e, item.label) : undefined}
           onMouseLeave={hasChildrenForFlyout ? scheduleCloseFlyout : undefined}
           onFocus={hasChildrenForFlyout ? (e) => openFlyout(e, item.label) : undefined}
@@ -786,31 +808,31 @@ export default function Layout() {
           <button
             type="button"
             onClick={navigateToSection}
-            className={`flex-1 min-w-0 ${sectionRowClasses} ${collapsed ? 'lg:justify-center lg:px-2' : 'justify-between'}`}
-            title={collapsed ? item.label : undefined}
+            className={`flex-1 min-w-0 ${sectionRowClasses} ${sidebarCollapsed ? 'lg:justify-center lg:px-2' : 'justify-between'}`}
+            title={sidebarCollapsed ? item.label : undefined}
             aria-haspopup={hasChildrenForFlyout ? 'menu' : undefined}
             aria-expanded={hasChildrenForFlyout ? flyoutSection === item.label : undefined}
           >
             <div className="flex items-center gap-3 min-w-0">
               <div className="relative">
                 <Icon size={20} className="shrink-0" />
-                {item.showBadge && unreadCount > 0 && collapsed && (
+                {item.showBadge && unreadCount > 0 && sidebarCollapsed && (
                   <span className="absolute -top-1.5 -right-1.5 min-w-[14px] h-[14px] flex items-center justify-center text-[9px] font-bold rounded-full bg-port-warning text-port-on-warning px-0.5">
                     {unreadCount > 9 ? '9+' : unreadCount}
                   </span>
                 )}
               </div>
-              <span className={`min-w-0 break-words leading-snug ${collapsed ? 'lg:hidden' : ''}`}>
+              <span className={`min-w-0 break-words leading-snug ${sidebarCollapsed ? 'lg:hidden' : ''}`}>
                 {item.label}
               </span>
             </div>
-            {!collapsed && item.showBadge && unreadCount > 0 && (
+            {!sidebarCollapsed && item.showBadge && unreadCount > 0 && (
               <span className="min-w-[18px] h-[18px] flex items-center justify-center text-[10px] font-bold rounded-full bg-port-warning text-port-on-warning px-1 shrink-0">
                 {unreadCount > 9 ? '9+' : unreadCount}
               </span>
             )}
           </button>
-          {!collapsed && (
+          {!sidebarCollapsed && (
             <button
               type="button"
               aria-label={expandedSections[item.label] ? `Collapse ${item.label}` : `Expand ${item.label}`}
@@ -826,7 +848,7 @@ export default function Layout() {
         </div>
 
         {/* Children items */}
-        {expandedSections[item.label] && !collapsed && (
+        {expandedSections[item.label] && !sidebarCollapsed && (
           <div className="ml-4 mt-1 min-w-0">
             {item.children.map((child, childIndex) => {
               if (child.separator) {
@@ -858,17 +880,33 @@ export default function Layout() {
                 ? location.pathname === child.to
                 : isActive(child.to);
               const grandChildren = Array.isArray(child.grandChildren) ? child.grandChildren : [];
+              const grandChildrenExpanded = expandedSubSections[child.to] !== false;
               const childIsPinned = isPinned(child.to);
               return (
                 <div key={child.to} className="min-w-0">
-                  <WorkingSetRow
-                    entry={{ path: child.to, label: child.label, icon: ChildIcon, end: child.end }}
-                    pinned={childIsPinned}
-                    onTogglePin={() => (childIsPinned ? unpin(child.to) : pin(child.to))}
-                    onNavigate={() => setMobileOpen(false)}
-                    isActive={childActive}
-                  />
-                  {grandChildren.length > 0 && (
+                  <div className="flex items-center min-w-0">
+                    <div className="min-w-0 flex-1">
+                      <WorkingSetRow
+                        entry={{ path: child.to, label: child.label, icon: ChildIcon, end: child.end }}
+                        pinned={childIsPinned}
+                        onTogglePin={() => (childIsPinned ? unpin(child.to) : pin(child.to))}
+                        onNavigate={() => setMobileOpen(false)}
+                        isActive={childActive}
+                      />
+                    </div>
+                    {grandChildren.length > 0 && (
+                      <button
+                        type="button"
+                        aria-label={grandChildrenExpanded ? `Collapse ${child.label}` : `Expand ${child.label}`}
+                        aria-expanded={grandChildrenExpanded}
+                        onClick={() => toggleSubSection(child.to)}
+                        className="px-2 py-2 text-gray-500 hover:text-white hover:bg-port-border/50 rounded-lg"
+                      >
+                        {grandChildrenExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                      </button>
+                    )}
+                  </div>
+                  {grandChildren.length > 0 && grandChildrenExpanded && (
                     <div className="ml-6 mt-0.5 mb-1 border-l border-port-border/50 pl-2 min-w-0">
                       {grandChildren.map((gc) => {
                         // Prefer the explicit prefix (e.g. `/pipeline/issues/<id>`)

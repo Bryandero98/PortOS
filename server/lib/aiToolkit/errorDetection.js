@@ -105,6 +105,17 @@ const WAIT_TIME_PATTERNS = [
 
 const IMMEDIATE_FALLBACK_SIGNALS = [
   {
+    // Antigravity leaves its composer visible while Google verifies account
+    // eligibility, so a CoS TUI agent can appear ready, accept a paste, then
+    // do no work until the idle reaper eventually kills it. This exact two-line
+    // banner is provider chrome (not a generic auth word an agent may print),
+    // making it safe to fail immediately and let the task select a fallback.
+    pattern: /We're finishing verifying your account eligibility\.\s*This usually takes a moment\. Please try again shortly\./i,
+    category: ERROR_CATEGORIES.AUTH_ERROR,
+    message: 'Antigravity account eligibility is still being verified',
+    suggestedFix: 'Wait for the Antigravity account verification to complete, or select another provider and retry.'
+  },
+  {
     pattern: /^\s*(?:\[stderr\]\s*)?Now using extra usage\s*(?:\r?\n|$)/im,
     category: ERROR_CATEGORIES.USAGE_LIMIT,
     message: 'Provider switched to extra usage',

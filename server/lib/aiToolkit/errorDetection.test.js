@@ -130,6 +130,27 @@ describe('Error Detection', () => {
   });
 
   describe('detectImmediateFallbackSignal', () => {
+    it('detects Antigravity account-eligibility blocks before an agent idles out', () => {
+      const result = detectImmediateFallbackSignal(
+        "We're finishing verifying your account eligibility. This usually takes a moment. Please try again shortly."
+      );
+      expect(result).toMatchObject({
+        hasError: true,
+        category: ERROR_CATEGORIES.AUTH_ERROR,
+        requiresFallback: true,
+        suggestedFix: expect.stringContaining('verification')
+      });
+    });
+
+    it('buffers an Antigravity account-eligibility block across stream chunks', () => {
+      const detect = createImmediateFallbackSignalDetector();
+      expect(detect("We're finishing verifying your account eligibility. This usually ")).toBeNull();
+      expect(detect('takes a moment. Please try again shortly.')).toMatchObject({
+        category: ERROR_CATEGORIES.AUTH_ERROR,
+        requiresFallback: true
+      });
+    });
+
     it('detects the Claude extra-usage status line', () => {
       const result = detectImmediateFallbackSignal('Now using extra usage');
       expect(result).toMatchObject({

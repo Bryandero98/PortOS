@@ -4,6 +4,7 @@ import { request } from '../lib/testHelper.js';
 import { errorMiddleware } from '../lib/errorHandler.js';
 import { enqueueJob } from '../services/mediaJobQueue/index.js';
 import { mockNoPeers, mockNoPeerSync } from '../lib/mockPathsDataRoot.js';
+import * as canonSvc from '../services/universeCanon.js';
 
 const fileStore = new Map();
 
@@ -34,9 +35,24 @@ vi.mock('fs', async (importActual) => {
 // Stub the vision/refine services so the route tests exercise the image-source
 // resolution + schema glue, not a real LLM. Real constants pass through.
 const describeEntityFromImagesMock = vi.fn(async () => ({ description: 'mock prose', llm: { provider: 'mock', model: null } }));
+const correctEntityFromImageMock = vi.fn(async () => ({
+  descField: 'physicalDescription', currentDescription: 'old', proposedDescription: 'corrected', llm: { provider: 'mock', model: null },
+}));
 vi.mock('../services/universeVisionDescribe.js', async () => {
   const actual = await vi.importActual('../services/universeVisionDescribe.js');
-  return { ...actual, describeEntityFromImages: (...args) => describeEntityFromImagesMock(...args) };
+  return {
+    ...actual,
+    describeEntityFromImages: (...args) => describeEntityFromImagesMock(...args),
+    correctEntityFromImage: (...args) => correctEntityFromImageMock(...args),
+  };
+});
+const applyCanonImageCorrectionMock = vi.fn(async (_universeId, kind, entryId, body) => ({
+  universe: { id: _universeId },
+  entry: { id: entryId, [kind === 'character' ? 'physicalDescription' : 'description']: body.description, primaryImageRef: body.imageFilename },
+}));
+vi.mock('../services/universeCanon.js', async () => {
+  const actual = await vi.importActual('../services/universeCanon.js');
+  return { ...actual, applyCanonImageCorrection: (...args) => applyCanonImageCorrectionMock(...args) };
 });
 const expandEntityFromImagesMock = vi.fn(async () => ({ fields: { pronouns: 'she/her' }, updatedFields: ['pronouns'], llm: { provider: 'mock', model: null } }));
 vi.mock('../services/universeVisionExpand.js', async () => {
@@ -482,6 +498,90 @@ describe('universe-builder routes', () => {
     expect(res.body.places[0].timeOfDay).toBe('night');
     expect(res.body.objects).toHaveLength(1);
     expect(res.body.objects[0].name).toBe('Gold pocket watch');
+  });
+
+  // ---- Art style reference deltas (#3109) ----
+
+  it('POST /:id/style-references appends one reference and can adopt guidance in the same write', async () => {
+    const app = buildApp();
+    const c = await request(app).post('/api/universe-builder').send({ name: 'Refs' });
+    const first = await request(app)
+      .post(`/api/universe-builder/${c.body.id}/style-references`)
+      .send({
+        reference: { id: 'style-ref-1', title: 'Ink wash', prompt: 'Granular ink wash', imageRefs: ['a.png'] },
+      });
+    expect(first.status).toBe(200);
+    expect(first.body.styleReferences.map((r) => r.id)).toEqual(['style-ref-1']);
+
+    const second = await request(app)
+      .post(`/api/universe-builder/${c.body.id}/style-references`)
+      .send({
+        reference: { id: 'style-ref-2', title: 'Sunlit', prompt: 'Warm sunlit haze', imageRefs: ['b.png'] },
+        adopt: { styleNotes: 'Warm and hazy', influences: { embrace: ['sunlit'], avoid: ['gloss'] } },
+      });
+    expect(second.status).toBe(200);
+    // The addition composed onto the persisted list — it did not replace it.
+    expect(second.body.styleReferences.map((r) => r.id)).toEqual(['style-ref-1', 'style-ref-2']);
+    expect(second.body.styleNotes).toBe('Warm and hazy');
+    expect(second.body.influences).toEqual({ embrace: ['sunlit'], avoid: ['gloss'] });
+  });
+
+  it('POST /:id/style-references rejects a reference missing an id or a prompt', async () => {
+    const app = buildApp();
+    const c = await request(app).post('/api/universe-builder').send({ name: 'Refs' });
+    // The delta path requires an explicit id (it's what makes a re-send
+    // idempotent), unlike the wholesale-replace field where the sanitizer mints one.
+    const noId = await request(app)
+      .post(`/api/universe-builder/${c.body.id}/style-references`)
+      .send({ reference: { title: 'No id', prompt: 'Prompt', imageRefs: ['a.png'] } });
+    expect(noId.status).toBe(400);
+    const noPrompt = await request(app)
+      .post(`/api/universe-builder/${c.body.id}/style-references`)
+      .send({ reference: { id: 'style-ref-1', title: 'No prompt', imageRefs: ['a.png'] } });
+    expect(noPrompt.status).toBe(400);
+  });
+
+  it('DELETE /:id/style-references/:referenceId removes one and no-ops on an unknown id', async () => {
+    const app = buildApp();
+    const c = await request(app).post('/api/universe-builder').send({
+      name: 'Refs',
+      styleReferences: [
+        { id: 'style-ref-a', title: 'A', prompt: 'a', imageRefs: ['a.png'] },
+        { id: 'style-ref-b', title: 'B', prompt: 'b', imageRefs: ['b.png'] },
+      ],
+    });
+    const removed = await request(app)
+      .delete(`/api/universe-builder/${c.body.id}/style-references/style-ref-a`);
+    expect(removed.status).toBe(200);
+    expect(removed.body.styleReferences.map((r) => r.id)).toEqual(['style-ref-b']);
+
+    // A duplicate delete (or one that raced the image-delete purge) is a
+    // no-op, not a 404 — the caller's intent is already satisfied.
+    const again = await request(app)
+      .delete(`/api/universe-builder/${c.body.id}/style-references/style-ref-a`);
+    expect(again.status).toBe(200);
+    expect(again.body.styleReferences.map((r) => r.id)).toEqual(['style-ref-b']);
+  });
+
+  it('DELETE /:id/style-references rejects an over-long referenceId', async () => {
+    const app = buildApp();
+    const c = await request(app).post('/api/universe-builder').send({ name: 'Refs' });
+    const res = await request(app)
+      .delete(`/api/universe-builder/${c.body.id}/style-references/${'x'.repeat(81)}`);
+    expect(res.status).toBe(400);
+  });
+
+  it('PATCH /:id still accepts a wholesale styleReferences replace (older clients + peer imports)', async () => {
+    const app = buildApp();
+    const c = await request(app).post('/api/universe-builder').send({
+      name: 'Back-compat',
+      styleReferences: [{ id: 'style-ref-a', title: 'A', prompt: 'a', imageRefs: ['a.png'] }],
+    });
+    const res = await request(app)
+      .patch(`/api/universe-builder/${c.body.id}`)
+      .send({ styleReferences: [{ id: 'style-ref-b', title: 'B', prompt: 'b', imageRefs: ['b.png'] }] });
+    expect(res.status).toBe(200);
+    expect(res.body.styleReferences.map((r) => r.id)).toEqual(['style-ref-b']);
   });
 
   it('DELETE /:id removes the universe', async () => {
@@ -1224,6 +1324,77 @@ describe('universe-builder routes', () => {
         .send({ images: [{ source: 'gallery', filename: 'missing.png' }] });
       expect(res.status).toBe(400);
       expect(res.body.code).toBe('GALLERY_IMAGE_NOT_FOUND');
+    });
+  });
+
+  describe('POST /:id/canon/:kind/:entryId/correct-from-image', () => {
+    it('resolves the gallery image and forwards universeId/entryId/kind, echoing the filename', async () => {
+      const res = await request(buildApp())
+        .post('/api/universe-builder/uni-1/canon/character/chr-1/correct-from-image')
+        .send({ image: 'g.png', name: 'Vex' });
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual(expect.objectContaining({
+        proposedDescription: 'corrected', imageFilename: 'g.png',
+      }));
+      expect(correctEntityFromImageMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          universeId: 'uni-1', entryId: 'chr-1', kind: 'character', name: 'Vex', screenshot: '/mock/data/images/g.png',
+        }),
+      );
+    });
+
+    it('400 GALLERY_IMAGE_NOT_FOUND for a missing gallery image, without invoking the service', async () => {
+      correctEntityFromImageMock.mockClear();
+      const res = await request(buildApp())
+        .post('/api/universe-builder/uni-1/canon/place/plc-1/correct-from-image')
+        .send({ image: 'missing.png' });
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('GALLERY_IMAGE_NOT_FOUND');
+      expect(correctEntityFromImageMock).not.toHaveBeenCalled();
+    });
+
+    it('400s an invalid kind before invoking the service', async () => {
+      correctEntityFromImageMock.mockClear();
+      const res = await request(buildApp())
+        .post('/api/universe-builder/uni-1/canon/monster/chr-1/correct-from-image')
+        .send({ image: 'g.png' });
+      expect(res.status).toBe(400);
+      expect(correctEntityFromImageMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /:id/canon/:kind/:entryId/apply-image-correction', () => {
+    it('persists the reviewed description + image filename via canonSvc', async () => {
+      const res = await request(buildApp())
+        .post('/api/universe-builder/uni-1/canon/character/chr-1/apply-image-correction')
+        .send({ description: 'a corrected description', imageFilename: 'g.png' });
+      expect(res.status).toBe(200);
+      expect(res.body.entry).toEqual(expect.objectContaining({
+        id: 'chr-1', physicalDescription: 'a corrected description', primaryImageRef: 'g.png',
+      }));
+      expect(applyCanonImageCorrectionMock).toHaveBeenCalledWith(
+        'uni-1', 'character', 'chr-1',
+        expect.objectContaining({ description: 'a corrected description', imageFilename: 'g.png' }),
+      );
+    });
+
+    it('rejects a blank description before invoking the service', async () => {
+      applyCanonImageCorrectionMock.mockClear();
+      const res = await request(buildApp())
+        .post('/api/universe-builder/uni-1/canon/character/chr-1/apply-image-correction')
+        .send({ description: '   ', imageFilename: 'g.png' });
+      expect(res.status).toBe(400);
+      expect(applyCanonImageCorrectionMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects a description over the largest per-kind descriptor limit, so it 400s instead of silently truncating on write', async () => {
+      applyCanonImageCorrectionMock.mockClear();
+      const tooLong = 'x'.repeat(Math.max(...Object.values(canonSvc.DESC_LIMIT)) + 1);
+      const res = await request(buildApp())
+        .post('/api/universe-builder/uni-1/canon/character/chr-1/apply-image-correction')
+        .send({ description: tooLong, imageFilename: 'g.png' });
+      expect(res.status).toBe(400);
+      expect(applyCanonImageCorrectionMock).not.toHaveBeenCalled();
     });
   });
 

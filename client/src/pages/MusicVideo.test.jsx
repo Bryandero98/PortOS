@@ -89,16 +89,16 @@ const PROJECT_ANALYZED = {
 };
 
 // The page now selects the open project via the route param
-// (/media/music-video/:projectId), so tests render it inside a router that
+// (/music-video/:projectId), so tests render it inside a router that
 // serves the same component at both the index and the :projectId route —
 // clicking a project navigates to its id'd URL, and the component re-reads
 // useParams() to open its board (no remount: both routes render the same
 // component type, so React preserves the instance across the param change).
 const renderMV = () => render(
-  <MemoryRouter initialEntries={['/media/music-video']}>
+  <MemoryRouter initialEntries={['/music-video']}>
     <Routes>
-      <Route path="/media/music-video" element={<MusicVideo />} />
-      <Route path="/media/music-video/:projectId" element={<MusicVideo />} />
+      <Route path="/music-video" element={<MusicVideo />} />
+      <Route path="/music-video/:projectId" element={<MusicVideo />} />
     </Routes>
   </MemoryRouter>,
 );
@@ -127,12 +127,12 @@ function NavTo({ to }) {
   return <button onClick={() => navigate(to)}>{`go-${to}`}</button>;
 }
 const renderMVWithNav = (to) => render(
-  <MemoryRouter initialEntries={['/media/music-video']}>
+  <MemoryRouter initialEntries={['/music-video']}>
     <LocationProbe />
     <NavTo to={to} />
     <Routes>
-      <Route path="/media/music-video" element={<MusicVideo />} />
-      <Route path="/media/music-video/:projectId" element={<MusicVideo />} />
+      <Route path="/music-video" element={<MusicVideo />} />
+      <Route path="/music-video/:projectId" element={<MusicVideo />} />
     </Routes>
   </MemoryRouter>,
 );
@@ -248,6 +248,83 @@ describe('MusicVideo autonomous shot planner (#1855)', () => {
   });
 });
 
+describe('MusicVideo concept & style editor (#3168)', () => {
+  it('seeds the fields from the project and persists each on blur', async () => {
+    const withConcept = { ...PROJECT_NO_CLIP, concept: { prompt: 'A road trip through neon ruins', style: 'Cyberpunk anime' } };
+    await openProject(withConcept);
+
+    const conceptField = await screen.findByLabelText('Concept');
+    const styleField = screen.getByLabelText('Visual style');
+    expect(conceptField).toHaveValue('A road trip through neon ruins');
+    expect(styleField).toHaveValue('Cyberpunk anime');
+
+    fireEvent.change(conceptField, { target: { value: 'A heist across a dying star' } });
+    fireEvent.blur(conceptField);
+    await waitFor(() => expect(updateMusicVideoProject).toHaveBeenCalledWith(
+      'mv-2',
+      { concept: { prompt: 'A heist across a dying star' } },
+      { silent: true },
+    ));
+
+    fireEvent.change(styleField, { target: { value: 'Watercolor noir' } });
+    fireEvent.blur(styleField);
+    await waitFor(() => expect(updateMusicVideoProject).toHaveBeenCalledWith(
+      'mv-2',
+      { concept: { style: 'Watercolor noir' } },
+      { silent: true },
+    ));
+  });
+
+  it('does not re-PATCH when a field is focused and blurred without an edit', async () => {
+    const withConcept = { ...PROJECT_NO_CLIP, concept: { prompt: 'Unchanged', style: 'Unchanged' } };
+    await openProject(withConcept);
+    const conceptField = await screen.findByLabelText('Concept');
+    fireEvent.focus(conceptField);
+    fireEvent.blur(conceptField);
+    await settle();
+    expect(updateMusicVideoProject).not.toHaveBeenCalled();
+  });
+
+  it('discards an unsaved draft on project switch instead of leaking it onto the next project', async () => {
+    // The page reuses one component instance across projects (route param
+    // change, no remount) — an edit left unblurred when the selection changes
+    // (deep link, browser Back, ⌘K) must not survive to be committed against
+    // whichever project is now selected.
+    const projectB = { ...PROJECT_NO_CLIP, id: 'mv-3', name: 'Other Project', concept: { prompt: 'B original' } };
+    listMusicVideoProjects.mockResolvedValue([PROJECT_NO_CLIP, projectB]);
+    renderMV();
+    fireEvent.click(await screen.findByRole('button', { name: new RegExp(PROJECT_NO_CLIP.name) }));
+
+    const conceptField = await screen.findByLabelText('Concept');
+    fireEvent.change(conceptField, { target: { value: 'A unsaved draft' } });
+    // No blur — switch projects while the edit is still pending.
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(projectB.name) }));
+
+    await waitFor(() => expect(screen.getByLabelText('Concept')).toHaveValue('B original'));
+    fireEvent.blur(screen.getByLabelText('Concept'));
+    await settle();
+    expect(updateMusicVideoProject).not.toHaveBeenCalledWith(
+      'mv-3',
+      { concept: { prompt: 'A unsaved draft' } },
+      { silent: true },
+    );
+  });
+
+  it('starts empty and enables AI Plan to use them once set', async () => {
+    await openProject(PROJECT_ANALYZED);
+    const conceptField = await screen.findByLabelText('Concept');
+    expect(conceptField).toHaveValue('');
+
+    fireEvent.change(conceptField, { target: { value: 'Underwater festival' } });
+    fireEvent.blur(conceptField);
+    await waitFor(() => expect(updateMusicVideoProject).toHaveBeenCalledWith(
+      'mv-3',
+      { concept: { prompt: 'Underwater festival' } },
+      { silent: true },
+    ));
+  });
+});
+
 describe('MusicVideo YouTube audio import (#1945)', () => {
   it('starts an import from the detail view and attaches the finished track to the project', async () => {
     await openProject(PROJECT_NO_CLIP);
@@ -343,10 +420,10 @@ describe('MusicVideo YouTube audio import (#1945)', () => {
 
   it('bounces URL-driven navigation (deep link / Back / ⌘K) away from a project with an in-flight import back to it', async () => {
     listMusicVideoProjects.mockResolvedValue([PROJECT_NO_CLIP]); // mv-2
-    renderMVWithNav('/media/music-video/mv-3');
+    renderMVWithNav('/music-video/mv-3');
     // Open mv-2 and start its detail-view import.
     fireEvent.click(await screen.findByRole('button', { name: new RegExp(PROJECT_NO_CLIP.name) }));
-    await waitFor(() => expect(screen.getByTestId('loc').textContent).toBe('/media/music-video/mv-2'));
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).toBe('/music-video/mv-2'));
     const editInput = screen.getAllByPlaceholderText(/Import audio from a YouTube URL/i)
       .find((el) => el.id !== 'mv-yt-create');
     fireEvent.change(editInput, { target: { value: 'https://youtu.be/xyz' } });
@@ -356,9 +433,9 @@ describe('MusicVideo YouTube audio import (#1945)', () => {
     // A router-driven jump to another project (not via the list buttons, so it
     // bypasses selectProject's guard) must be bounced back to the import's
     // project with the same guard message.
-    fireEvent.click(screen.getByRole('button', { name: 'go-/media/music-video/mv-3' }));
+    fireEvent.click(screen.getByRole('button', { name: 'go-/music-video/mv-3' }));
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/before switching projects/i)));
-    await waitFor(() => expect(screen.getByTestId('loc').textContent).toBe('/media/music-video/mv-2'));
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).toBe('/music-video/mv-2'));
   });
 
   it('blocks deleting the selected project while its import is in flight', async () => {

@@ -148,19 +148,18 @@ describe('runtimeContractMismatch', () => {
     expect(runtimeContractMismatch(geometryFor(8), contract)).toBeNull();
   });
 
-  it('names both counts and both resolutions on a frame-count mismatch', () => {
+  it('names the registry track and both counts on a frame-count mismatch', () => {
     const message = runtimeContractMismatch(geometryFor(12), contract, 'Example App');
-    expect(message).toContain('Atlas has 13 columns (12 walk frames)');
-    expect(message).toContain('Example App expects 9 (8 walk frames)');
-    expect(message).toMatch(/walk-frame constant/);
-    expect(message).toMatch(/reprocess this walk set to 8 frames/);
+    expect(message).toContain('Atlas has 12 walk cycle frames');
+    expect(message).toContain('Example App expects 8');
+    expect(message).toMatch(/Approve the walk cycle set at that frame count/);
   });
 
   it('flags a column-count-only mismatch as a grid-shape change', () => {
     // A pre-#2986 atlas (still carrying the scanner column) against a contract
     // re-bound to the current 9-column grid: same walk frames, wrong shape.
     const message = runtimeContractMismatch(legacyGeometryFor(8), contract, 'Example App');
-    expect(message).toContain('Atlas has 10 columns (8 walk frames)');
+    expect(message).toContain('Atlas has 10 columns but Example App expects 9');
     expect(message).toMatch(/grid shape changed/);
   });
 
@@ -188,6 +187,50 @@ describe('runtimeContractMismatch', () => {
     expect(layout.ambientFrameCount).toBe(3);
     expect(layout.tracks.ambient).toEqual(span(1, 3, 1));
     expect(runtimeContractMismatch(geometry, { ambientFrameCount: 3 })).toBeNull();
-    expect(runtimeContractMismatch(geometry, { ambientFrameCount: 4 })).toMatch(/3 ambient frames.*expects 4/);
+    expect(runtimeContractMismatch(geometry, { ambientFrameCount: 4 })).toMatch(/3 ambient loop frames.*expects 4/);
+  });
+
+  it('validates a user-defined track contract through the same registry loop', () => {
+    const jetpack = {
+      jetpack: {
+        id: 'jetpack',
+        label: 'Jetpack burst',
+        contractFrameCountField: 'jetpackFrameCount',
+      },
+    };
+    const geometry = {
+      ...geometryFor(8),
+      tracks: { jetpack: span(9, 5, DIRECTIONS.length) },
+    };
+    expect(runtimeContractMismatch(
+      geometry,
+      { jetpackFrameCount: 5 },
+      'Example App',
+      jetpack,
+    )).toBeNull();
+    expect(runtimeContractMismatch(
+      geometry,
+      { jetpackFrameCount: 7 },
+      'Example App',
+      jetpack,
+    )).toMatch(/5 jetpack burst frames.*expects 7/);
+  });
+
+  it('checks the STORED tracks\' contract fields with no table injected (#3152)', () => {
+    // The case the injected-table test above cannot cover. `scanner`/`ambient` are
+    // no longer compiled rows, so this function's DEFAULT table has to be the
+    // effective registry (compiled + store). With the compiled-only default it
+    // returns null here — every stored track's `contractFrameCountField` is simply
+    // absent from the loop, so a scanner span that disagrees with the app's
+    // contract publishes unchecked, which is exactly the mismatch this refuses.
+    const geometry = {
+      ...geometryFor(8),
+      columns: ['idle', ...walkPhaseLabels(8), 'scanner-00', 'scanner-01', 'scanner-02', 'scanner-03'],
+      tracks: { idle: span(0, 1, 8), walk: span(1, 8, 8), scanner: span(9, 4, 8) },
+      scannerFrameCount: 4,
+    };
+    expect(runtimeContractMismatch(geometry, { walkFrameCount: 8, scannerFrameCount: 4 })).toBeNull();
+    expect(runtimeContractMismatch(geometry, { walkFrameCount: 8, scannerFrameCount: 6 }, 'Example App'))
+      .toMatch(/4 scanner action frames.*expects 6/);
   });
 });

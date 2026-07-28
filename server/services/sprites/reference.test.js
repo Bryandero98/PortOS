@@ -53,7 +53,7 @@ vi.mock('../settings.js', () => ({ getSettings: async () => settings }));
 const records = await import('./records.js');
 const {
   getReferenceSet, startReferenceGeneration, attachReferenceCandidate, lockReference, patchSpriteRecord,
-  unlockReferenceAnchor, unlockReferenceTurnaround,
+  unlockReferenceAnchor, unlockReferenceMain, unlockReferenceTurnaround,
   listReferenceSources, listSpriteThumbnails, forkSprite,
   requireCharacter, requireAnimatable,
 } = await import('./reference.js');
@@ -184,6 +184,7 @@ describe('startReferenceGeneration', () => {
     expect(call.kind).toBe('image');
     expect(call.params.mode).toBe('codex');
     expect(call.params.model).toBe('gpt-5.6-luna');
+    expect(call.params).toMatchObject({ width: 1024, height: 1024 });
     expect(call.params.prompt).toContain('named Hero');
     expect(call.params.prompt).toContain('a wiry ranger');
     expect(call.params.prompt).toContain('magenta (#FF00FF)');
@@ -249,6 +250,7 @@ describe('startReferenceGeneration', () => {
     const call = enqueueJob.mock.calls[0][0];
     expect(call.params.initImagePath).toContain(`${id}-turnaround-v1.png`);
     expect(call.params.initImageStrength).toBe(0.8);
+    expect(call.params).toMatchObject({ width: 1024, height: 1024 });
     expect(call.params.prompt).toContain('turnaround model sheet');
     expect(call.params.prompt).toContain('facing the viewer (front)');
     // The design prompt persists from the turnaround step — the main render
@@ -369,6 +371,53 @@ describe('startReferenceGeneration', () => {
     await expect(startReferenceGeneration(id, {
       target: 'turnaround', initImageCandidate: candidate,
     })).rejects.toMatchObject({ code: 'CANDIDATE_TARGET_MISMATCH', status: 400 });
+  });
+
+  it('threads a correction prompt into the main-reference derive and its tag (#3134)', async () => {
+    const id = newId();
+    await createCharacter(id);
+    await lockTurnaround(id);
+    enqueueJob.mockClear();
+    await startReferenceGeneration(id, { target: 'main', correctionPrompt: '  the cloak hem is cut off  ' });
+    const call = enqueueJob.mock.calls[0][0];
+    expect(call.params.prompt)
+      .toContain('Important correction — apply this over the attached turnaround: the cloak hem is cut off');
+    expect(call.params.spriteRef.correctionPrompt).toBe('the cloak hem is cut off');
+  });
+
+  it('leaves a blank main-reference correction byte-identical to a blind re-roll (#3134)', async () => {
+    const id = newId();
+    await createCharacter(id);
+    await lockTurnaround(id);
+    enqueueJob.mockClear();
+    await startReferenceGeneration(id, { target: 'main' });
+    const blind = enqueueJob.mock.calls[0][0].params.prompt;
+    enqueueJob.mockClear();
+    await startReferenceGeneration(id, { target: 'main', correctionPrompt: '   ' });
+    const call = enqueueJob.mock.calls[0][0];
+    expect(call.params.prompt).toBe(blind);
+    expect(call.params.spriteRef).not.toHaveProperty('correctionPrompt');
+  });
+
+  it('applies a correction alongside the ambient main\'s full-replace design prompt (#3134)', async () => {
+    const id = 'grove-correction';
+    await records.createRecord({ kind: 'place', name: 'Old Grove' }, id);
+    enqueueJob.mockClear();
+    await startReferenceGeneration(id, {
+      target: 'main', designPrompt: 'a willow by a pond', correctionPrompt: '  the trunk leans too far right  ',
+    });
+    const call = enqueueJob.mock.calls[0][0];
+    // Both inputs land: designPrompt replaces the design, the correction is additive.
+    expect(call.params.prompt).toContain('Design: a willow by a pond');
+    expect(call.params.prompt)
+      .toContain('Important correction — apply this over the attached reference: the trunk leans too far right');
+    expect(call.params.spriteRef.correctionPrompt).toBe('the trunk leans too far right');
+
+    enqueueJob.mockClear();
+    await startReferenceGeneration(id, { target: 'main', designPrompt: 'a willow by a pond', correctionPrompt: '  ' });
+    const blank = enqueueJob.mock.calls[0][0];
+    expect(blank.params.prompt).not.toContain('Important correction');
+    expect(blank.params.spriteRef).not.toHaveProperty('correctionPrompt');
   });
 
   it('omits the correction from the tag when blank', async () => {
@@ -857,6 +906,40 @@ describe('lockReference', () => {
       .rejects.toMatchObject({ status: 400, code: 'INVALID_TARGET' });
     await expect(unlockReferenceAnchor(id, { direction: 'east' }))
       .rejects.toMatchObject({ status: 409, code: 'ANCHOR_NOT_LOCKED' });
+  });
+
+  it('reopens the main and south anchor while retaining the turnaround and other anchors', async () => {
+    const id = newId();
+    await createCharacter(id);
+    const first = await lockMain(id);
+    const eastCandidate = await placeCandidate(id, 'east', 'walk-east-candidate-01.png');
+    const withEast = await lockReference(id, { target: 'east', candidate: eastCandidate });
+    const oldMainPath = first.manifest.mainReference.path;
+    const oldEastPath = withEast.manifest.anchors.find((anchor) => anchor.direction === 'east').path;
+
+    const reopened = await unlockReferenceMain(id);
+    expect(reopened.manifest).toMatchObject({
+      status: 'needs-main-reference',
+      turnaround: { locked: true },
+      mainReference: { locked: false, path: null },
+    });
+    expect(reopened.manifest.anchors.find((anchor) => anchor.direction === 'south'))
+      .toMatchObject({ status: 'pending', source: 'main-reference' });
+    expect(reopened.manifest.anchors.find((anchor) => anchor.direction === 'east'))
+      .toMatchObject({ status: 'locked', path: oldEastPath });
+    expect(await readFile(join(TEST_ROOT, 'sprites', id, oldMainPath))).toBeTruthy();
+
+    await startReferenceGeneration(id, { target: 'main' });
+    const replacement = await placeCandidate(id, 'main', 'walk-south-candidate-02.png');
+    const relocked = await lockReference(id, { target: 'main', candidate: replacement });
+    expect(relocked.manifest.mainReference.path).toBe(`reference/${id}-walk-south-v2.png`);
+  });
+
+  it('refuses to reopen a main reference without a locked turnaround', async () => {
+    const id = newId();
+    await createCharacter(id);
+    await expect(unlockReferenceMain(id))
+      .rejects.toMatchObject({ status: 409, code: 'TURNAROUND_NOT_LOCKED' });
   });
 
   it('reopens the full turnaround chain, preserves v1 evidence, and relocks the sheet as v2', async () => {
