@@ -59,12 +59,21 @@ export const QUOTA_BURN_DISPATCH_KEY_FIELD = 'quotaBurnDispatchKey';
  * real quota overspend, the exact thing the cap exists to prevent, and a worse
  * failure than the over-counting #3179 fixed.
  *
+ * `ignoreTaskId` excludes one task from the in-flight tally — the same exclusion
+ * `buildImprovementDedupSets` takes, for the same reason. `agent:completed` fires
+ * from `completeAgent`, which runs AFTER the output hook wrote this run's ledger
+ * entry but BEFORE the completion flow's `updateTask` marks the task done. So
+ * during the perpetual drain-on-completion refill the just-finished burn is
+ * counted twice — once in the ledger, once as a still-`in_progress` task — and a
+ * family with `maxDispatchesPerWindow: 2` would stop after one run and likely
+ * miss its reset window. Callers on that path pass the completing task's id.
+ *
  * An unreadable task file degrades to the ledger-only count rather than throwing:
  * COS-TASKS.md is the file the whole CoS queue reads, so if it is unavailable
  * nothing is dispatching anyway, and failing the probe closed would wedge
  * quota-burn until the next 12-hourly recheck.
  */
-export async function getEffectiveQuotaBurnDispatches() {
+export async function getEffectiveQuotaBurnDispatches({ ignoreTaskId = null } = {}) {
   const counts = { ...(await getQuotaBurnDispatches()) };
   // Lazy import: cosTaskStore pulls a heavy graph (state, code review, merge),
   // and quotaBurn.js is imported by the perpetual-work detector on a hot path.
@@ -74,6 +83,7 @@ export async function getEffectiveQuotaBurnDispatches() {
     return null;
   });
   for (const task of cosTasks?.tasks || []) {
+    if (ignoreTaskId && task?.id === ignoreTaskId) continue;
     if (task?.status !== 'pending' && task?.status !== 'in_progress') continue;
     const key = task?.metadata?.[QUOTA_BURN_DISPATCH_KEY_FIELD];
     if (typeof key !== 'string' || !key) continue;
@@ -127,7 +137,7 @@ export function selectBurnCandidates(quotas, config, { now = Date.now(), dispatc
     .sort((a, b) => a.hoursUntilReset - b.hoursUntilReset || a.family.priority - b.family.priority);
 }
 
-export async function detectQuotaBurn(app, { getQuotas = getProviderQuotas, now = Date.now(), dispatches } = {}) {
+export async function detectQuotaBurn(app, { getQuotas = getProviderQuotas, now = Date.now(), dispatches, ignoreTaskId = null } = {}) {
   const config = quotaBurnConfig(app);
   const configured = Object.entries(config.families || {})
     .filter(([, family]) => family?.enabled === true)
@@ -138,7 +148,7 @@ export async function detectQuotaBurn(app, { getQuotas = getProviderQuotas, now 
   if (configuredCards.length && configuredCards.every((card) => card?.error)) {
     return { actionable: false, count: 0, transient: true, reason: 'all-provider-quota-checks-failed' };
   }
-  const candidates = selectBurnCandidates(quotas, config, { now, dispatches: dispatches || await getEffectiveQuotaBurnDispatches() });
+  const candidates = selectBurnCandidates(quotas, config, { now, dispatches: dispatches || await getEffectiveQuotaBurnDispatches({ ignoreTaskId }) });
   return candidates.length
     ? { actionable: true, count: candidates.length, reason: `${candidates[0].family.id} resets in ${Math.ceil(candidates[0].hoursUntilReset)}h`, candidates }
     : { actionable: false, count: 0, reason: 'no-family-within-reset-window' };

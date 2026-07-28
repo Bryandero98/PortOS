@@ -1433,7 +1433,7 @@ export async function queueEligibleImprovementTasks(state, cosTaskData, { ignore
     // agents claim the same slug (2026-05-21 incident). The generator
     // returns null on plan-gate / precondition skip; we silently continue.
     // Regression-pinned in cos.test.js.
-    const task = await generateManagedAppImprovementTaskForType(nextType, app, state);
+    const task = await generateManagedAppImprovementTaskForType(nextType, app, state, { ignoreTaskId });
     if (!task) continue;
 
     // Queue-path invariants override the generator's direct-spawn defaults
@@ -1868,11 +1868,11 @@ async function buildImprovementTaskMetadata(taskType, app, interval, taskSchedul
  * `hookMetadata` is normalized to null unless the hook returned a real object,
  * so the caller's "stamp it" check can't be tripped by a stray primitive.
  */
-export async function resolveTaskInputHook(app, taskType, taskSchedule) {
+export async function resolveTaskInputHook(app, taskType, taskSchedule, { ignoreTaskId = null } = {}) {
   const { getTaskInputHook } = await import('./taskTypeHooks.js');
   const inputHook = await getTaskInputHook(taskType);
   if (!inputHook) return { skip: false, hookPrompt: null, hookOverride: {}, hookMetadata: null };
-  const input = await inputHook({ app, taskType }).catch((err) => {
+  const input = await inputHook({ app, taskType, ignoreTaskId }).catch((err) => {
     emitLog('warn', `buildTaskInput hook failed for ${taskType}/${app.name}: ${err.message}`, { appId: app.id, analysisType: taskType });
     return { skip: { reason: 'input-hook-error' } };
   });
@@ -1923,14 +1923,17 @@ async function resolveClaimWorkRouting(app, taskType, metadata, taskSchedule) {
  * The detector keys on the RESOLVED promptTaskType. Returns `{ skip }` and
  * mutates `metadata.perpetual` on the actionable path.
  */
-async function applyPerpetualWorkGate(app, taskType, promptTaskType, metadata, interval, taskSchedule) {
+async function applyPerpetualWorkGate(app, taskType, promptTaskType, metadata, interval, taskSchedule, { ignoreTaskId = null } = {}) {
   if (interval.type !== taskSchedule.INTERVAL_TYPES.PERPETUAL
       || taskType === 'branch-reconcile' || taskType === 'issue-reconcile') {
     return { skip: false };
   }
   const { detectActionableWork } = await import('./perpetualWork.js');
   const detection = await detectActionableWork(promptTaskType, app, {
-    issueAuthorFilter: metadata.issueAuthorFilter || 'self'
+    issueAuthorFilter: metadata.issueAuthorFilter || 'self',
+    // A detector that counts in-flight work must skip the task whose completion
+    // triggered this refill — it is already recorded, just not yet marked done.
+    ignoreTaskId
   });
   if (detection.actionable) {
     await taskSchedule.clearPerpetualPark(taskType, app.id);
@@ -2303,7 +2306,7 @@ function applyProviderModelPins(metadata, interval, hookOverride) {
   if (hookOverride.model) { metadata.model = hookOverride.model; }
 }
 
-export async function generateManagedAppImprovementTaskForType(taskType, app, state, { skipPreconditions = false } = {}) {
+export async function generateManagedAppImprovementTaskForType(taskType, app, state, { skipPreconditions = false, ignoreTaskId = null } = {}) {
   const { updateAppActivity } = await import('./appActivity.js');
   const taskSchedule = await import('./taskSchedule.js');
   const { getTaskPrompt, getStagePrompt } = await import('./taskPromptService.js');
@@ -2335,7 +2338,11 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
   // fully OWNS its prompt. `hookOverride` may pin the app's per-app
   // provider/model — captured here but APPLIED AFTER the global-interval
   // provider/model block below, so the per-app choice wins.
-  const inputHook = await resolveTaskInputHook(app, taskType, taskSchedule);
+  // `ignoreTaskId` reaches the hook because a drain-on-completion refill runs
+  // while the completing task is still `in_progress` on disk — a hook that
+  // counts in-flight tasks (quota-burn) must not count the run that just
+  // finished and already recorded itself (#3179).
+  const inputHook = await resolveTaskInputHook(app, taskType, taskSchedule, { ignoreTaskId });
   if (inputHook.skip) return null;
   const { hookPrompt, hookOverride, hookMetadata } = inputHook;
 
@@ -2347,7 +2354,7 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
   // Perpetual (drain-until-done) gate — probes for actionable work before
   // building the prompt or burning an agent (branch-/issue-reconcile self-gate
   // in their own blocks, so this excludes them).
-  const perpetualGate = await applyPerpetualWorkGate(app, taskType, promptTaskType, metadata, interval, taskSchedule);
+  const perpetualGate = await applyPerpetualWorkGate(app, taskType, promptTaskType, metadata, interval, taskSchedule, { ignoreTaskId });
   if (perpetualGate.skip) return null;
 
   // branch-reconcile: deterministic git/gh pre-step that carries the actionable

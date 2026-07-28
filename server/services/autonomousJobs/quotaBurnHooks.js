@@ -40,13 +40,14 @@ function renderPrompt(candidate) {
  * `hookMetadata`, which the generator stamps onto the task only once every gate
  * has passed, and `processTaskOutput` below records it post-agent.
  */
-export async function buildTaskInput({ app } = {}) {
+export async function buildTaskInput({ app, ignoreTaskId = null } = {}) {
   if (!app) return { skip: { reason: 'no-app' } };
   const config = quotaBurnConfig(app);
   // Ledger + in-flight, NOT the bare ledger: a quota-burn task already queued or
   // running holds its window slot even though its ledger write lands post-agent
-  // (#3179).
-  const dispatches = await getEffectiveQuotaBurnDispatches();
+  // (#3179). `ignoreTaskId` drops the run whose completion triggered this
+  // generation — it recorded itself moments ago but still reads `in_progress`.
+  const dispatches = await getEffectiveQuotaBurnDispatches({ ignoreTaskId });
   const quotas = await getProviderQuotas({ refresh: true });
   const candidates = selectBurnCandidates(quotas, config, { dispatches });
   const candidate = candidates[0];

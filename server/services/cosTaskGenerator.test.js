@@ -842,3 +842,47 @@ describe('resolveTaskInputHook — hookMetadata threading (#3179)', () => {
     expect(stampAt).toBeGreaterThan(lastGateAt);
   });
 });
+
+/**
+ * The drain-on-completion refill regenerates while the just-finished task is
+ * still `in_progress` on disk (agent:completed fires before updateTask). A hook
+ * or detector that counts in-flight work must exclude it, or the completing run
+ * is charged twice — see #3179 and buildImprovementDedupSets' own ignoreTaskId.
+ */
+describe('ignoreTaskId reaches the in-flight-counting gates (#3179)', () => {
+  const body = () => {
+    const start = GEN_SRC.indexOf('export async function generateManagedAppImprovementTaskForType');
+    return GEN_SRC.slice(start, GEN_SRC.indexOf('return task;', start));
+  };
+
+  it('accepts ignoreTaskId and forwards it to the input hook and the perpetual gate', () => {
+    expect(GEN_SRC).toMatch(/generateManagedAppImprovementTaskForType\(taskType, app, state, \{ skipPreconditions = false, ignoreTaskId = null \} = \{\}\)/);
+    expect(body()).toContain('resolveTaskInputHook(app, taskType, taskSchedule, { ignoreTaskId })');
+    expect(body()).toContain('applyPerpetualWorkGate(app, taskType, promptTaskType, metadata, interval, taskSchedule, { ignoreTaskId })');
+  });
+
+  it('queueEligibleImprovementTasks passes its ignoreTaskId down to the generator', () => {
+    // It already forwards the same id to addTask and buildImprovementDedupSets;
+    // the generator was the one path that dropped it.
+    expect(GEN_SRC).toContain('generateManagedAppImprovementTaskForType(nextType, app, state, { ignoreTaskId })');
+  });
+
+  it('the perpetual gate hands ignoreTaskId to the work detector', () => {
+    const start = GEN_SRC.indexOf('async function applyPerpetualWorkGate');
+    const gate = GEN_SRC.slice(start, GEN_SRC.indexOf('\n}', start));
+    expect(gate).toMatch(/detectActionableWork\(promptTaskType, app, \{[\s\S]*ignoreTaskId[\s\S]*\}\)/);
+  });
+
+  it('resolveTaskInputHook passes ignoreTaskId into the hook call', async () => {
+    const seen = [];
+    vi.doMock('./taskTypeHooks.js', () => ({
+      getTaskInputHook: async () => async (args) => { seen.push(args); return { prompt: 'X' }; }
+    }));
+    try {
+      await resolveTaskInputHook({ id: 'app-1', name: 'App One' }, 'quota-burn', { recordExecution: vi.fn() }, { ignoreTaskId: 'sys-finishing' });
+    } finally {
+      vi.doUnmock('./taskTypeHooks.js');
+    }
+    expect(seen[0]).toMatchObject({ taskType: 'quota-burn', ignoreTaskId: 'sys-finishing' });
+  });
+});

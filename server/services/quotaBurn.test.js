@@ -105,4 +105,16 @@ describe('getEffectiveQuotaBurnDispatches', () => {
     const { getEffectiveQuotaBurnDispatches } = await loadStore([], { fail: true });
     await expect(getEffectiveQuotaBurnDispatches()).resolves.toEqual({ 'grok:1': 1 });
   });
+
+  it('excludes ignoreTaskId so a completing burn is not counted twice', async () => {
+    // The drain-on-completion refill runs between the output hook's ledger write
+    // and the completion flow's updateTask, so the finished burn is BOTH in the
+    // ledger and still `in_progress`. Counting both would consume two slots for
+    // one run — a family capped at 2 would stop after one and miss its window.
+    const tasks = [{ id: 'sys-finishing', status: 'in_progress', metadata: { quotaBurnDispatchKey: 'grok:1' } }];
+    const { getEffectiveQuotaBurnDispatches } = await loadStore(tasks);
+
+    await expect(getEffectiveQuotaBurnDispatches()).resolves.toEqual({ 'grok:1': 2 });
+    await expect(getEffectiveQuotaBurnDispatches({ ignoreTaskId: 'sys-finishing' })).resolves.toEqual({ 'grok:1': 1 });
+  });
 });

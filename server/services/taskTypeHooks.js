@@ -5,9 +5,12 @@
  * sentinel`. A few need PROGRAMMATIC steps around the agent. A hook module may
  * export either or both of:
  *
- *   - `buildTaskInput({ app, taskType })` — runs BEFORE spawn, inside the task
- *     generator. Collects data beyond the base prompt (telemetry, open issues, …)
- *     and returns `{ prompt?, providerId?, model?, hookMetadata?, skip? }`:
+ *   - `buildTaskInput({ app, taskType, ignoreTaskId })` — runs BEFORE spawn, inside
+ *     the task generator. Collects data beyond the base prompt (telemetry, open
+ *     issues, …) and returns `{ prompt?, providerId?, model?, hookMetadata?, skip? }`.
+ *     `ignoreTaskId` is set on the drain-on-completion refill and names the task
+ *     that just finished but is still `in_progress` on disk — a hook that counts
+ *     in-flight work must exclude it (see quotaBurnHooks.js):
  *       • `prompt`     — a fully-rendered prompt that REPLACES the template.
  *       • `providerId` / `model` — pin the agent's provider/model (per-app choice).
  *       • `hookMetadata` — a free-form bag merged into the task's persisted

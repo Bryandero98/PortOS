@@ -86,6 +86,12 @@ describe('buildTaskInput (pre-agent)', () => {
     expect(getEffectiveQuotaBurnDispatches).toHaveBeenCalled();
     expect(selectBurnCandidates).toHaveBeenCalledWith(expect.anything(), expect.anything(), { dispatches: { [DISPATCH_KEY]: 1 } });
   });
+
+  it('forwards ignoreTaskId so the completing run is not counted against itself', async () => {
+    await buildTaskInput({ app: APP, ignoreTaskId: 'sys-finishing' });
+
+    expect(getEffectiveQuotaBurnDispatches).toHaveBeenCalledWith({ ignoreTaskId: 'sys-finishing' });
+  });
 });
 
 describe('processTaskOutput (post-agent)', () => {
