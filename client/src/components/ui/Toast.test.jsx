@@ -143,6 +143,50 @@ describe('long-lived toasts stop blocking the page', () => {
     expect(screen.queryByRole('button', { name: /show notification/i })).toBeNull();
   });
 
+  it('keeps focus held even after the pointer sweeps over the toast and leaves', () => {
+    // Hover and focus are independent holds. A single shared flag lets the
+    // pointer leaving release a hold that focus still owns, and the collapse
+    // then `display: none`s the very button the keyboard user is sitting on.
+    act(() => {
+      toast(() => <button type="button">Reconcile now</button>, {
+        duration: Infinity,
+        label: 'Install out of sync',
+      });
+    });
+
+    const button = screen.getByRole('button', { name: 'Reconcile now' });
+    const body = screen.getByRole('status');
+
+    fireEvent.focus(button);       // keyboard user tabs in
+    fireEvent.mouseEnter(body);    // pointer drifts across the toast
+    fireEvent.mouseLeave(body);    // and off again — focus is still inside
+
+    advance(COLLAPSE_AFTER_MS * 2);
+    expect(screen.getByRole('button', { name: 'Reconcile now' })).toBeVisible();
+
+    // Once focus actually leaves, nothing is holding it open any more.
+    fireEvent.blur(button);
+    advance(COLLAPSE_AFTER_MS);
+    expect(screen.getByRole('button', { name: 'Show notification: Install out of sync' })).toBeVisible();
+  });
+
+  it('keeps hover held even after focus leaves the toast', () => {
+    // The mirror image: focus departing must not release the pointer's hold.
+    act(() => { toast('Update available', { duration: Infinity }); });
+
+    const body = screen.getByRole('status');
+    fireEvent.mouseEnter(body);
+    fireEvent.focus(body);
+    fireEvent.blur(body);
+
+    advance(COLLAPSE_AFTER_MS * 2);
+    expect(screen.getByRole('status')).toBeVisible();
+
+    fireEvent.mouseLeave(body);
+    advance(COLLAPSE_AFTER_MS);
+    expect(screen.getByRole('button', { name: 'Show notification: Update available' })).toBeVisible();
+  });
+
   it('folds on the content\'s own schedule when it passes collapseAfter', () => {
     // The agent-feedback card sets duration: Infinity only because it runs a
     // 15s dismiss of its own. Folding at the 8s default would hide its rating

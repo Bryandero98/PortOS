@@ -171,7 +171,16 @@ function ToastItem({ t, toastOptions }) {
   // collapsing out from under a hover would yank the buttons the user is
   // reaching for, and collapsing while focus is inside would drop that focus
   // to <body>.
-  const [held, setHeld] = useState(false);
+  //
+  // Two flags, not one: hover and focus are independent holds, and a single
+  // shared boolean lets whichever ends last clear the other's. Tab to the
+  // toast's button, then sweep the pointer over the toast and off again, and
+  // `mouseleave` would release a hold that focus still owns — 8s later the
+  // still-focused button gets `display: none` and focus lands on <body>, the
+  // exact thing this is here to prevent.
+  const [hovered, setHovered] = useState(false);
+  const [focusWithin, setFocusWithin] = useState(false);
+  const held = hovered || focusWithin;
 
   const collapseAfter = t.collapseAfter ?? COLLAPSE_AFTER_MS;
 
@@ -223,11 +232,13 @@ function ToastItem({ t, toastOptions }) {
       <div
         style={bodyStyle}
         role={t.type === 'error' ? 'alert' : 'status'}
-        onMouseEnter={() => setHeld(true)}
-        onMouseLeave={() => setHeld(false)}
-        // onFocus/onBlur bubble in React, so these fire for the toast's buttons too.
-        onFocus={() => setHeld(true)}
-        onBlur={() => setHeld(false)}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        // onFocus/onBlur bubble in React, so these fire for the toast's buttons
+        // too. Moving between two buttons inside the toast fires blur then
+        // focus; both land in one batch, so the hold never blips false.
+        onFocus={() => setFocusWithin(true)}
+        onBlur={() => setFocusWithin(false)}
         className="pointer-events-auto flex items-start gap-2 shadow-lg text-sm max-w-[calc(100vw-2rem)] sm:max-w-[520px] bg-port-card border border-port-border">
         {iconStr && <span className={`shrink-0 ${iconClass}`} aria-hidden="true">{iconStr}</span>}
         <div className="flex-1 min-w-0">
