@@ -587,7 +587,11 @@ export function desiredEndState(state, actions, { prNumber, worktreePath, collis
     // told by GitHub that it collides with the default branch, so "resolve the
     // conflicts" without first asking whether the work is still wanted is
     // precisely how a superseded branch gets merged looking deliberate.
-    return `${stillNeeded} If it is still needed: rebase the branch onto the default branch, resolve all conflicts, run the tests, and push. ${verifyGate}`;
+    const resolve = `${stillNeeded} If it is still needed: rebase the branch onto the default branch, resolve all conflicts, run the tests, and push. ${verifyGate}`;
+    if (!actionOn(actions, 'autoMerge')) {
+      return `${resolve} Do NOT merge (auto-merge is disabled) — stop once the conflicts are resolved and pushed, and report the PR's URL.`;
+    }
+    return `${resolve} ${driveToMerge(pr)}`;
   }
   // IN_REVIEW
   const canMerge = actionOn(actions, 'autoMerge');

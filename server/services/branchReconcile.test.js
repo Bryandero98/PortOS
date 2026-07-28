@@ -552,6 +552,17 @@ describe('desiredEndState', () => {
     expect(desiredEndState('CONFLICTED', {})).toContain('Rebase');
   });
 
+  // CONFLICTED must drive to merge exactly like the other three merge-eligible
+  // states — otherwise an agent that resolves conflicts and pushes just stops,
+  // leaving a green PR open until the next scheduled run re-classifies it as
+  // IN_REVIEW, contradicting driveToMerge's own "opening the PR is NOT the end
+  // state" principle.
+  it('tells CONFLICTED to merge only when autoMerge is on', () => {
+    expect(desiredEndState('CONFLICTED', {})).toContain('gh pr merge <num> --merge --delete-branch');
+    expect(desiredEndState('CONFLICTED', { autoMerge: false })).toContain('Do NOT merge');
+    expect(desiredEndState('CONFLICTED', { autoMerge: false })).not.toContain('gh pr merge');
+  });
+
   // The miss this pins: a NEEDS_PR run opened a PR, reported "left open for
   // review", and exited 51s later — while CI was still running on a branch the
   // task was supposed to finish. "PR opened" is a step, not the end state.
