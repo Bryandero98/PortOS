@@ -2254,7 +2254,12 @@ async function buildImprovementTaskDescription({ promptTemplate, app, promptTask
     .replace(/\{appName\}/g, app.name)
     .replace(/\{repoPath\}/g, app.repoPath)
     .replace(/\{appId\}/g, app.id)
-    .replace(/\{reviewers\}/g, reviewersCsv)
+    // Function form — reviewersCsv can carry a user-set reviewerModels pin,
+    // and normalizeReviewerModel allows `$` in that free text (only `[`, `]`,
+    // `,`, and line breaks/tabs are forbidden), so a string replacement would
+    // read a pin containing `$&`/`$1`/`` $` `` as a backreference token. See
+    // the {referenceData}/{prData} comment below for why this form is needed.
+    .replace(/\{reviewers\}/g, () => reviewersCsv)
     .replace(/\{issueAuthorFilter\}/g, () => issueAuthorFilterBlock)
     // Use a replacer function — String.replace with a replacement STRING
     // interprets `$&`, `$1`, etc. as backreferences. Commit subjects/authors
