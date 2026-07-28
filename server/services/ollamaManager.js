@@ -699,7 +699,10 @@ async function pullModel(modelId, onProgress) {
 
   // The weights may all be on disk and only Ollama's manifest write missing —
   // retrying just re-races the same deadline, so finish the pull ourselves.
-  if (isPullDeadlineError(lastError)) {
+  // Gated on the ref being one we can actually finish, so a deadline against a
+  // non-HF registry doesn't flash a "finishing install…" banner for a recovery
+  // that has nowhere to fetch from.
+  if (isPullDeadlineError(lastError) && huggingFaceRegistryBase(parseOllamaModelRef(modelId))) {
     if (typeof onProgress === 'function') {
       onProgress({ status: 'finishing install from downloaded files…', percent: null, finalizing: true })
     }

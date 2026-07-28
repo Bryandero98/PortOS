@@ -481,6 +481,21 @@ describe('ollamaManager HF pull recovery', () => {
       expect(result.success).toBe(false)
       expect(result.error).toBe('context deadline exceeded')
     })
+
+    it('does not announce a recovery for a non-HF ref it could never finish', async () => {
+      // registry.ollama.ai has no OCI endpoint PortOS can complete a pull from,
+      // so a deadline there must fail plainly — no "finishing install…" banner
+      // for work that has nowhere to fetch from.
+      stubPullThenRegistry()
+      const { pullModel } = await loadManager()
+      const onProgress = vi.fn()
+
+      const result = await pullModel('gpt-oss:20b', onProgress)
+
+      expect(result.success).toBe(false)
+      expect(result.error).toBe('context deadline exceeded')
+      expect(onProgress).not.toHaveBeenCalledWith(expect.objectContaining({ finalizing: true }))
+    })
   })
 })
 
