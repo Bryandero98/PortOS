@@ -106,7 +106,11 @@ describe('long-lived toasts stop blocking the page', () => {
     act(() => { toast('New build available', { duration: Infinity }); });
     advance(COLLAPSE_AFTER_MS);
 
-    fireEvent.click(screen.getByRole('button', { name: /show notification/i }));
+    // `detail: 1` marks this a pointer/touch activation. Say it explicitly:
+    // jsdom defaults `detail` to 0, which the component reads as a KEYBOARD
+    // activation and answers by taking focus — so a bare `fireEvent.click`
+    // here would silently test the wrong gesture and fail.
+    fireEvent.click(screen.getByRole('button', { name: /show notification/i }), { detail: 1 });
     expect(screen.getByRole('status')).toBeVisible();
 
     // No pinning on expand — a tap on a touch device (no mouseleave ever
@@ -154,9 +158,11 @@ describe('long-lived toasts stop blocking the page', () => {
 
     // Activating the pill unmounts it. Without a handover focus lands on
     // <body> and the toast's own buttons leave the tab sequence entirely.
+    // `detail: 0` is what makes this a KEYBOARD activation — the browser
+    // synthesizes Enter/Space clicks with no click count.
     const pill = screen.getByRole('button', { name: /show notification/i });
     pill.focus();
-    fireEvent.click(pill);
+    fireEvent.click(pill, { detail: 0 });
 
     const body = screen.getByRole('status');
     expect(document.activeElement).toBe(body);
@@ -167,14 +173,26 @@ describe('long-lived toasts stop blocking the page', () => {
   });
 
   it('does not steal focus when the pill is expanded by pointer', () => {
-    // Nothing to rescue, and taking focus here would pin the toast open until
-    // the user clicked elsewhere — back to a parked overlay.
     act(() => { toast('Build is stale', { duration: Infinity }); });
     advance(COLLAPSE_AFTER_MS);
 
-    fireEvent.click(screen.getByRole('button', { name: /show notification/i }));
+    // Model what a real browser does, or this test proves nothing: Chrome
+    // FOCUSES a <button> on mouse-down, so `document.activeElement` is the pill
+    // for an ordinary click too — a guard written against it reads "keyboard"
+    // here and steals focus. jsdom's bare `fireEvent.click` neither focuses the
+    // button nor sets `detail`, which is how an activeElement-based guard
+    // passed this test while parking the toast open forever in Chrome (measured
+    // via CDP against the live page). So focus the pill AND send `detail: 1`.
+    const pill = screen.getByRole('button', { name: /show notification/i });
+    pill.focus();
+    fireEvent.click(pill, { detail: 1 });
 
-    expect(document.activeElement).toBe(document.body);
+    // Focus must NOT have been handed to the body: `onFocus` there takes the
+    // focus hold, and nothing would ever release it.
+    expect(document.activeElement).not.toBe(screen.getByRole('status'));
+
+    // The invariant that actually matters — no expand path may leave the toast
+    // parked. Whatever the activation, it folds itself away again.
     advance(COLLAPSE_AFTER_MS);
     expect(screen.getByRole('button', { name: 'Show notification: Build is stale' })).toBeVisible();
   });

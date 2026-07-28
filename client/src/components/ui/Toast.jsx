@@ -215,11 +215,17 @@ function ToastItem({ t, toastOptions }) {
   // drop out of the tab sequence — the next Tab restarts from the top of the
   // document, past everything. So hand focus to the body it just revealed.
   //
-  // Only when the pill actually held focus. A pointer activation in an engine
-  // that doesn't focus buttons on click has nothing to rescue, and moving focus
-  // there anyway would take the focus hold and pin the toast open until the
-  // user clicked elsewhere — turning a click of curiosity back into the
-  // parked overlay this all exists to remove.
+  // Only for a KEYBOARD activation, detected by `detail === 0` — the click a
+  // browser synthesizes from Enter/Space carries no click count, while a real
+  // pointer click carries at least 1. `document.activeElement === the pill` is
+  // NOT a usable substitute: Chrome focuses a button on mouse-down, so it reads
+  // true for an ordinary click. Measured in headless Chrome against the running
+  // page, that mis-detection moved focus into the body on a plain mouse click,
+  // `onFocus` took the focus hold, and the toast never folded again — the exact
+  // parked overlay this file exists to remove, handed back to the mouse users
+  // who reported it. jsdom hides this: `fireEvent.click` doesn't focus the
+  // button, so an activeElement-based guard passes the unit test and fails the
+  // browser. The tests below therefore pass `detail` explicitly.
   const bodyRef = useRef(null);
   const refocusOnExpand = useRef(false);
 
@@ -244,7 +250,7 @@ function ToastItem({ t, toastOptions }) {
         <button
           type="button"
           onClick={e => {
-            refocusOnExpand.current = e.currentTarget === document.activeElement;
+            refocusOnExpand.current = e.detail === 0;
             setCollapsed(false);
           }}
           aria-label={collapsedLabel(t)}
