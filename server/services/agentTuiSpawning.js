@@ -29,6 +29,8 @@ import {
   DEFAULT_TUI_PROMPT_DELAY_MS,
   DEFAULT_TUI_IDLE_TIMEOUT_MS,
   DEFAULT_TUI_MAX_RUNTIME_MS,
+  MAX_RUNTIME_WRAP_UP_GRACE_MS,
+  buildWrapUpProdMessage,
   MERGE_QUEUE_IDLE_TIMEOUT_MS,
   REVIEW_LOOP_IDLE_TIMEOUT_MS,
   READY_POLL_INTERVAL_MS,
@@ -343,6 +345,10 @@ export async function spawnTuiAgent({
   // ticking), this bounds the total run so a hung provider/CLI can't run
   // unbounded. See DEFAULT_TUI_MAX_RUNTIME_MS for the incident.
   let maxRuntimeTimer = null;
+  // Poll driving the wrap-up grace window that the max-runtime ceiling opens
+  // instead of reaping immediately (see MAX_RUNTIME_WRAP_UP_GRACE_MS). Cleared
+  // in finish() alongside every other timer.
+  let wrapUpTimer = null;
 
   const streamingStrip = createStreamingAnsiStripper();
 
@@ -361,9 +367,15 @@ export async function spawnTuiAgent({
   // finalize chokepoint); idempotent via `sentinelIngested` so it reads at most
   // once. Capped at 4 KB so an agent that pasted the whole diff into the
   // sentinel can't blow up the record.
+  // Has the agent written its completion sentinel? One predicate for every path
+  // that asks (the 2s watcher, the max-runtime salvage, the wrap-up grace poll,
+  // and ingestDoneSentinel) so "the run finished" can't mean subtly different
+  // things in four places.
+  const sentinelPresent = () => !!doneSentinelPath && existsSync(doneSentinelPath);
+
   const ingestDoneSentinel = async () => {
     if (sentinelIngested) return;
-    if (!doneSentinelPath || !existsSync(doneSentinelPath)) return;
+    if (!sentinelPresent()) return;
     sentinelIngested = true;
     const contents = await readFile(doneSentinelPath, 'utf8').catch(err => {
       console.error(`❌ ingestDoneSentinel readFile failed: ${err.message}`);
@@ -393,6 +405,7 @@ export async function spawnTuiAgent({
     if (pasteVerifyTimer) { clearInterval(pasteVerifyTimer); pasteVerifyTimer = null; }
     if (submitEnterTimer) { clearInterval(submitEnterTimer); submitEnterTimer = null; }
     if (maxRuntimeTimer) { clearTimeout(maxRuntimeTimer); maxRuntimeTimer = null; }
+    if (wrapUpTimer) { clearInterval(wrapUpTimer); wrapUpTimer = null; }
     // Release the post-paste accumulator even when finalize fires mid-paste-
     // window. The pasteEnterTimer's own cleanup path nulls this too, but if
     // finalize comes from elsewhere (shell-exit, command-not-found, user
@@ -714,6 +727,84 @@ export async function spawnTuiAgent({
   // codex is still booting its MCP servers).
   let firstPasteStartedAt = null;
 
+  // Reap the run as a max-runtime failure. Shared by the wrap-up grace window's
+  // expiry and its own "session already died" branch so both produce the same
+  // record: uncommitted work captured for post-mortem, then a
+  // needs-manual-finish error (same recovery guidance as the merge-queue /
+  // review-loop idle-timeout paths — a stuck orchestrator may have left
+  // PRs/worktrees behind).
+  const finishMaxRuntimeFailure = (detail) => {
+    captureWorktreeDiff(cwd, agentDir).catch(() => {});
+    finish({
+      success: false,
+      exitCode: 124,
+      error: `TUI agent exceeded its max runtime of ${Math.round(tuiConfig.maxRuntimeMs / 60000)}min — ${detail} check for open or merged-but-uncleaned PRs and finish them manually.`,
+      reason: 'max-runtime-timeout',
+    }).catch(err => {
+      emitLog('error', `Failed to finalize TUI agent ${agentId} at max-runtime: ${err.message}`, { agentId });
+    });
+  };
+
+  // Max-runtime wrap-up grace: prod the agent to land its sentinel, then watch
+  // for it before reaping (see MAX_RUNTIME_WRAP_UP_GRACE_MS). The prod goes in
+  // over the same bracketed-paste + delayed-Enter channel `sendBtwToAgent` uses,
+  // so from the agent's side it is indistinguishable from the user typing it.
+  //
+  // Success here finalizes through the ordinary sentinel path — we do NOT call
+  // finish() ourselves on the happy path, because the 2s doneSentinelTimer is
+  // still running and owns that transition; racing it would just be a second
+  // caller into the same `finalized` guard. This poll exists to bound the WAIT
+  // and to reap when the prod doesn't work.
+  const startWrapUpGrace = () => {
+    if (finalized || wrapUpTimer) return;
+    // A dead session can't be prodded — nothing will ever write the sentinel, so
+    // skip the grace window entirely rather than idling out the full 5min.
+    if (!sessionId || !shellService.getSession(sessionId)) {
+      finishMaxRuntimeFailure('the TUI session was already gone, so it could not be asked to wrap up;');
+      return;
+    }
+    const graceMin = Math.round(MAX_RUNTIME_WRAP_UP_GRACE_MS / 60000);
+    appendLine(`⏳ Max runtime reached — asking the agent to wrap up and write its sentinel (${graceMin}min grace)`);
+    emitLog('warn', `TUI agent ${agentId} hit max runtime — prodding it to wrap up with ${graceMin}min of grace before reaping`, { agentId, phase: 'wrap-up' });
+    updateAgent(agentId, { metadata: { phase: 'wrap-up' } }).catch(err => {
+      emitLog('warn', `Failed to mark TUI agent ${agentId} as wrapping up: ${err.message}`, { agentId });
+    });
+
+    shellService.writeToSession(sessionId, `\x1b[200~${buildWrapUpProdMessage(MAX_RUNTIME_WRAP_UP_GRACE_MS)}\x1b[201~`);
+    // Submit with the same repeated-Enter helper the initial prompt uses — a
+    // single `\r` can be swallowed while the TUI reflows the paste, and a prod
+    // that never submits is a prod that never happened. Clear any prior
+    // submit-Enter interval first: hours after submission the prompt's own is
+    // long finished, but overwriting a live handle would leak it past finish().
+    if (submitEnterTimer) clearInterval(submitEnterTimer);
+    submitEnterTimer = scheduleSubmitEnters(
+      () => shellService.writeToSession(sessionId, '\r'),
+      () => finalized,
+    );
+
+    const graceStartedAt = Date.now();
+    wrapUpTimer = setInterval(() => {
+      try {
+        if (finalized) { clearInterval(wrapUpTimer); wrapUpTimer = null; return; }
+        // The sentinel landed — the prod worked. Let the doneSentinelTimer
+        // finalize it as `agent-signaled-done`; just stop the grace clock.
+        if (sentinelPresent()) {
+          clearInterval(wrapUpTimer);
+          wrapUpTimer = null;
+          appendLine(`✅ Agent wrapped up within the max-runtime grace window`);
+          return;
+        }
+        if (Date.now() - graceStartedAt < MAX_RUNTIME_WRAP_UP_GRACE_MS) return;
+        clearInterval(wrapUpTimer);
+        wrapUpTimer = null;
+        finishMaxRuntimeFailure(`it did not wrap up within ${graceMin}min of being asked, so the provider/CLI likely hung (a stalled request keeps the working counter repainting so the idle reaper never fires);`);
+      } catch (err) {
+        // setInterval callback: an uncaught throw here would crash the process.
+        console.error(`❌ wrapUpTimer interval callback failed: ${err.message}`);
+      }
+    }, DONE_POLL_INTERVAL_MS);
+  };
+
   const sendPrompt = async (reason) => {
     if (finalized || promptSentAt) return;
     promptSentAt = Date.now();
@@ -778,26 +869,18 @@ export async function spawnTuiAgent({
           // success — mirrors the one-shot runner's response-file salvage. The
           // 2s doneSentinelTimer normally catches this first; this covers the
           // boundary where it lands right at the deadline.
-          const salvaged = doneSentinelPath && existsSync(doneSentinelPath);
-          if (salvaged) {
+          if (sentinelPresent()) {
             finish({ success: true, exitCode: 0, reason: 'max-runtime-sentinel' }).catch(err => {
               emitLog('error', `Failed to finalize TUI agent ${agentId} at max-runtime salvage: ${err.message}`, { agentId });
             });
             return;
           }
-          // Capture any uncommitted work for post-mortem before cleanup, then
-          // fail with a needs-manual-finish message — a stuck orchestrator may
-          // have left PRs/worktrees behind (same recovery guidance as the
-          // merge-queue/review-loop idle-timeout paths).
-          captureWorktreeDiff(cwd, agentDir).catch(() => {});
-          finish({
-            success: false,
-            exitCode: 124,
-            error: `TUI agent exceeded its max runtime of ${Math.round(tuiConfig.maxRuntimeMs / 60000)}min — the provider/CLI likely hung (a stalled request keeps the working counter repainting so the idle reaper never fires); check for open or merged-but-uncleaned PRs and finish them manually.`,
-            reason: 'max-runtime-timeout',
-          }).catch(err => {
-            emitLog('error', `Failed to finalize TUI agent ${agentId} at max-runtime: ${err.message}`, { agentId });
-          });
+          // No sentinel yet — but a wall-clock deadline lands wherever it lands,
+          // including on an agent seconds from writing one (see
+          // MAX_RUNTIME_WRAP_UP_GRACE_MS for the measured 30s miss). PROD it to
+          // wrap up and keep watching for the sentinel through the grace window
+          // before reaping. Only then does this become a real failure.
+          startWrapUpGrace();
         }, tuiConfig.maxRuntimeMs);
       }
     };

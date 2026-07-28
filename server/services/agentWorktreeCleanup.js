@@ -265,12 +265,44 @@ export async function cleanupAgentWorktree(agentId, success, { openPR = false, p
     agentId, branchName: worktreeBranch, merge: shouldMerge
   });
 
-  const result = await removeWorktree(agentId, sourceWorkspace, worktreeBranch, { merge: shouldMerge }).catch(err => {
+  const result = await removeWorktree(agentId, sourceWorkspace, worktreeBranch, {
+    merge: shouldMerge,
+    // A FAILED agent's branch is the only record of what it got done. Keep it when
+    // it holds commits so the task's retry can attach to it and resume rather than
+    // redo the work (see resolveResumeBranch below + removeWorktree's flag docs).
+    preserveBranchWithCommits: !success,
+  }).catch(err => {
     emitLog('warn', `🌳 Worktree cleanup failed for ${agentId}: ${err.message}`, { agentId });
     return { warnings: [`Worktree cleanup failed: ${err.message}`] };
   });
   warnings.push(...(result?.warnings || []));
   return warnings;
+}
+
+/**
+ * Does a failed agent's branch still exist with commits a retry should resume
+ * from? Called at completion time (after cleanup has decided whether to preserve
+ * the branch) so the answer reflects what's actually on disk, not what we hoped.
+ *
+ * Returns the branch name to resume, or null when there is nothing to resume —
+ * no branch, or a branch that holds nothing the default branch doesn't already
+ * have. A null answer means the retry should start clean, which is the correct
+ * behavior for an agent that failed before committing anything.
+ *
+ * Deliberately checks the LOCAL branch: `removeWorktree` preserves it in place,
+ * and `createWorktree`'s `existingBranch` path prefers a local copy before
+ * falling back to `origin/<branch>`, so a local-only branch resumes fine.
+ */
+export async function resolveResumeBranch(sourceWorkspace, branchName) {
+  if (!sourceWorkspace || !branchName) return null;
+  const target = await git.getDefaultBranch(sourceWorkspace).catch(() => null) || 'main';
+  // `getBranchComparison` answers "does it exist" and "does it hold anything" in
+  // one call: an absent branch makes the rev-range invalid, so the log comes back
+  // empty and `ahead` is 0. A git error surfaces as null — don't claim a resume we
+  // can't substantiate; the retry starting clean is the safe default, and the
+  // branch (if any) is still on disk for a human.
+  const comparison = await git.getBranchComparison(sourceWorkspace, target, branchName).catch(() => null);
+  return comparison?.ahead > 0 ? branchName : null;
 }
 
 /**

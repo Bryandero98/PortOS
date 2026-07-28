@@ -7,6 +7,25 @@ import { join } from 'path';
 const execGitMock = vi.fn();
 vi.mock('../lib/execGit.js', () => ({ execGit: (...args) => execGitMock(...args) }));
 
+// removeWorktree's branch-preservation path needs the fs + git boundaries stubbed:
+// it checks the worktree dir exists, reads `git status`, and (for the resume gate)
+// asks git.js for the default branch. Pure helpers don't touch these.
+vi.mock('fs', () => ({
+  existsSync: vi.fn().mockReturnValue(true),
+  realpathSync: vi.fn((p) => p),
+}));
+vi.mock('fs/promises', () => ({
+  readdir: vi.fn().mockResolvedValue([]),
+  rm: vi.fn().mockResolvedValue(undefined),
+  stat: vi.fn().mockResolvedValue({ isDirectory: () => true }),
+}));
+vi.mock('./instances.js', () => ({ ensureInstanceId: vi.fn().mockResolvedValue('instance-1') }));
+const getDefaultBranchMock = vi.fn().mockResolvedValue('main');
+vi.mock('./git.js', () => ({
+  getDefaultBranch: (...args) => getDefaultBranchMock(...args),
+  isBranchMergedInto: vi.fn().mockResolvedValue(false),
+}));
+
 const {
   shouldRefuseDefaultBranchMerge,
   isHumanClaimWorktree,
@@ -14,6 +33,7 @@ const {
   isGitLockError,
   addWorktreeWithRetry,
   isPreexistingRefError,
+  removeWorktree,
 } = await import('./worktreeManager.js');
 
 /**
@@ -568,5 +588,80 @@ describe('isPreexistingRefError (orphan-cleanup guard, #2193)', () => {
     expect(isPreexistingRefError('fatal: invalid reference')).toBe(false);
     expect(isPreexistingRefError('')).toBe(false);
     expect(isPreexistingRefError(undefined)).toBe(false);
+  });
+});
+
+describe('removeWorktree branch preservation for resume (#3167)', () => {
+  // Routes each git invocation this path makes to a scripted answer, keyed on the
+  // subcommand, so a test only has to state what it cares about (the rev-list
+  // count) instead of ordering every call. `revListCount` of null makes rev-list
+  // FAIL, which is the fail-closed case.
+  function scriptGit({ porcelain = '', revListCount = 0 } = {}) {
+    execGitMock.mockReset();
+    execGitMock.mockImplementation((args) => {
+      const [sub] = args;
+      if (sub === 'rev-parse' && args[1] === '--show-toplevel') {
+        // Empty stdout → `detectedToplevel` is falsy, so removeWorktree SKIPS its
+        // broken-worktree check rather than taking that early-return branch (which
+        // deletes the branch itself and would mask what these tests assert).
+        return Promise.resolve({ stdout: '', stderr: '', exitCode: 0 });
+      }
+      if (sub === 'status') return Promise.resolve({ stdout: porcelain, stderr: '', exitCode: 0 });
+      if (sub === 'rev-list') {
+        return revListCount === null
+          ? Promise.reject(new Error('unknown revision'))
+          : Promise.resolve({ stdout: String(revListCount), stderr: '', exitCode: 0 });
+      }
+      return Promise.resolve({ stdout: '', stderr: '', exitCode: 0 });
+    });
+  }
+
+  const calledWith = (subcommandArgs) =>
+    execGitMock.mock.calls.some(([args]) => JSON.stringify(args) === JSON.stringify(subcommandArgs));
+
+  beforeEach(() => {
+    getDefaultBranchMock.mockResolvedValue('main');
+  });
+
+  it('KEEPS the branch when it holds commits the default branch does not', async () => {
+    scriptGit({ revListCount: 4 });
+
+    const result = await removeWorktree('agent-x', '/repo', 'cos/task-1/agent-x', {
+      merge: false, preserveBranchWithCommits: true,
+    });
+
+    expect(calledWith(['branch', '-D', 'cos/task-1/agent-x'])).toBe(false);
+    expect(result.warnings.join(' ')).toMatch(/preserved/i);
+  });
+
+  it('DELETES the branch when it holds nothing the default branch lacks', async () => {
+    scriptGit({ revListCount: 0 });
+
+    await removeWorktree('agent-x', '/repo', 'cos/task-1/agent-x', {
+      merge: false, preserveBranchWithCommits: true,
+    });
+
+    expect(calledWith(['branch', '-D', 'cos/task-1/agent-x'])).toBe(true);
+  });
+
+  it('fails CLOSED — keeps the branch when the commit count cannot be determined', async () => {
+    scriptGit({ revListCount: null });
+
+    const result = await removeWorktree('agent-x', '/repo', 'cos/task-1/agent-x', {
+      merge: false, preserveBranchWithCommits: true,
+    });
+
+    expect(calledWith(['branch', '-D', 'cos/task-1/agent-x'])).toBe(false);
+    expect(result.warnings.join(' ')).toMatch(/preserved/i);
+  });
+
+  it('is opt-in: without the flag the no-merge path still deletes a branch with commits', async () => {
+    scriptGit({ revListCount: 7 });
+
+    await removeWorktree('agent-x', '/repo', 'cos/task-1/agent-x', { merge: false });
+
+    expect(calledWith(['branch', '-D', 'cos/task-1/agent-x'])).toBe(true);
+    // The resume gate never even ran — no rev-list against the default branch.
+    expect(calledWith(['rev-list', '--count', 'main..cos/task-1/agent-x'])).toBe(false);
   });
 });

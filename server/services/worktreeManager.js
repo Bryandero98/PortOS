@@ -391,7 +391,12 @@ async function createWorktreeUnlocked(agentId, sourceWorkspace, taskId, options 
  * @param {string} agentId - The agent identifier
  * @param {string} sourceWorkspace - The original git repository path
  * @param {string} branchName - The worktree branch to clean up
- * @param {object} options - { merge: boolean } whether to attempt merge back
+ * @param {object} options
+ * @param {boolean} [options.merge] - attempt to merge the branch back first
+ * @param {boolean} [options.preserveBranchWithCommits] - keep the branch (rather
+ *   than deleting it) whenever it still holds commits the default branch doesn't,
+ *   so a retry can resume the work instead of restarting. Used by the FAILED-agent
+ *   cleanup path; the PR path leaves it off so its local branch is still tidied up.
  */
 export async function removeWorktree(agentId, sourceWorkspace, branchName, options = {}) {
   const worktreePath = join(WORKTREES_DIR, agentId);
@@ -491,9 +496,35 @@ export async function removeWorktree(agentId, sourceWorkspace, branchName, optio
   // Preserve branch when (a) merge was attempted, failed, and has unmerged commits,
   // OR (b) merge was refused because HEAD is on a non-default branch — the commits
   // are still there and the user / a follow-up task may want to integrate manually.
-  const hasUnmergedCommits = options.merge && !merged && (commitsAhead > 0 || mergeRefused);
+  let hasUnmergedCommits = options.merge && !merged && (commitsAhead > 0 || mergeRefused);
+  // ...OR (c) the caller asked us to keep any branch that still holds commits
+  // (`preserveBranchWithCommits`). The no-merge path — which is what a FAILED
+  // agent's cleanup takes — otherwise deletes the branch unconditionally, taking
+  // the agent's committed work with it. That is what forces a retry to restart
+  // from scratch instead of resuming: measured on agent-d2ae0352 (2026-07-27),
+  // reaped 30s after its PR merged, whose branch was deleted and whose task was
+  // re-dispatched to a fresh agent. Opt-in rather than automatic so the PR flow
+  // (which deletes the LOCAL branch after pushing — the remote branch is what the
+  // PR points at) keeps cleaning up after itself.
+  if (!hasUnmergedCommits && options.preserveBranchWithCommits && !merged) {
+    const { getDefaultBranch } = await import('./git.js');
+    const target = await getDefaultBranch(sourceWorkspace).catch(() => null) || 'main';
+    // `??` on the count: a failed rev-list (unknown ref, detached target) must not
+    // read as "0 commits" and green-light the delete. Fail closed — preserve.
+    const aheadOfDefault = await execGit(['rev-list', '--count', `${target}..${branchName}`], sourceWorkspace)
+      .then(r => parseInt(r.stdout.trim(), 10))
+      .catch(() => null);
+    if (aheadOfDefault === null || aheadOfDefault > 0) {
+      hasUnmergedCommits = true;
+      const count = aheadOfDefault === null ? 'an unknown number of' : aheadOfDefault;
+      console.log(`🌳 Preserving branch ${branchName} — holds ${count} commit(s) not in ${target}, kept so a retry can resume from it`);
+      warnings.push(`Branch ${branchName} preserved — it holds unmerged commits a retry can resume from`);
+    } else {
+      console.log(`🌳 Branch ${branchName} holds nothing not already in ${target} — safe to delete`);
+    }
+  }
   if (hasUnmergedCommits) {
-    console.log(`⚠️ Preserving branch ${branchName} — merge failed, commits need manual recovery`);
+    console.log(`⚠️ Preserving worktree branch ${branchName} for manual/automated recovery`);
   } else {
     await execGit(['branch', '-D', branchName], sourceWorkspace)
       .catch(err => {

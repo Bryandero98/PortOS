@@ -512,6 +512,50 @@ export const DEFAULT_TUI_IDLE_TIMEOUT_MS = 180000;
 // agent. Provider-configurable via `tuiMaxRuntimeMs`.
 export const DEFAULT_TUI_MAX_RUNTIME_MS = 3 * 60 * 60 * 1000;
 
+// Grace window opened when the max-runtime ceiling fires, BEFORE the agent is
+// reaped. The ceiling above is a wall-clock deadline, so it lands wherever it
+// lands — including on an agent that is seconds from writing `.agent-done`.
+// Measured (2026-07-27, agent-d2ae0352): its PR merged at 01:32:29 and the
+// max-runtime timer killed it at 01:32:59 — 30 SECONDS later. The run was
+// complete; it just hadn't written the sentinel yet. The kill deleted the
+// worktree, and CoS re-dispatched the task to a fresh agent that started the
+// (already-shipped) work over from scratch.
+//
+// So instead of reaping on the deadline, we PROD the agent — paste a "wrap up
+// and write your sentinel now" message into its live TUI (the same
+// bracketed-paste channel `sendBtwToAgent` uses) — and keep polling for the
+// sentinel for this long before failing. An agent that was genuinely finishing
+// gets to land its summary and finalize as a SUCCESS; a truly hung one is
+// unaffected and still reaped, just this much later. 5 minutes covers a
+// Claude Code turn that has to finish a tool call, run its completion workflow,
+// and write the file, without meaningfully loosening the ceiling.
+export const MAX_RUNTIME_WRAP_UP_GRACE_MS = 5 * 60 * 1000;
+
+/**
+ * The wrap-up prod pasted into a TUI agent's session when its max-runtime
+ * ceiling fires. Deliberately imperative and short: the agent is mid-turn on a
+ * provider that may itself be slow, so the message has to be actionable in one
+ * read. It names the sentinel path convention rather than an absolute path —
+ * the agent already knows its own workspace from its system prompt.
+ *
+ * `graceMs` is interpolated so the deadline the agent is told matches the one
+ * actually enforced (a drift here would tell the agent it has more time than it
+ * has, and it would be reaped mid-wrap-up).
+ */
+export function buildWrapUpProdMessage(graceMs = MAX_RUNTIME_WRAP_UP_GRACE_MS) {
+  const minutes = Math.max(1, Math.round(graceMs / 60000));
+  return [
+    `STOP — you have hit your maximum runtime and will be terminated in ${minutes} minute(s).`,
+    '',
+    'If your work is already shipped (PR opened/merged, or changes committed and pushed),',
+    'write your `.agent-done` sentinel in your workspace root RIGHT NOW with a short summary',
+    'so this run is recorded as a success. Do not start anything new.',
+    '',
+    'If the work is NOT shipped, commit whatever is worth keeping to your branch, push it,',
+    'and then write `.agent-done` describing exactly what is done and what is left.',
+  ].join('\n');
+}
+
 // Extended idle threshold applied ONLY while a `/do:next --swarm` orchestrator
 // is in its Phase C serialized merge queue (issue #2074). Merging PRs one at a
 // time makes each subsequent PR rebase onto the new `main` and re-run required
