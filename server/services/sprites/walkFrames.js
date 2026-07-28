@@ -36,6 +36,7 @@ import {
 } from './paths.js';
 import { sha256Buffer } from './walkPostprocess.js';
 import { WALK_TRACK, getAnimationTrack } from './animationTracks.js';
+import { getEffectiveAnimationTracks } from './animationTrackStore.js';
 import { trackColumnLabels } from './atlasGrid.js';
 
 const compileFrameError = (message) =>
@@ -44,7 +45,14 @@ const compileFrameError = (message) =>
 export async function verifyPackagedFrames(recordId, manifest, {
   bytes = false,
   track = manifest?.track || WALK_TRACK,
-  tracks,
+  // #3152 — an omitted `tracks` defaults to the EFFECTIVE table (compiled `walk` +
+  // the user-defined store), not to `getAnimationTrack`'s compiled-only default:
+  // `track` comes off a MANIFEST on disk, so it routinely names a stored row
+  // (scanner/ambient/any user track), and letting it fall through to the compiled
+  // table would throw "unknown animation track" while verifying a set that was
+  // authored and approved perfectly well. Still an explicit parameter — callers
+  // mid-compile pass the exact table they validated against.
+  tracks = getEffectiveAnimationTracks(),
 } = {}) {
   const dir = spriteDir(recordId);
   const frames = Array.isArray(manifest?.frames) ? manifest.frames : [];

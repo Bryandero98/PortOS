@@ -59,8 +59,14 @@ import {
   GROK_TUI_IDLE_MS, GROK_TUI_TIMEOUT_MS, grokTuiProvider, buildGrokI2vTask,
 } from './animationWorkflow.js';
 import {
-  ANIMATION_TRACKS, SCANNER_TRACK, sourceReferenceFor,
+  SCANNER_TRACK, sourceReferenceFor,
 } from './animationTracks.js';
+// #3152 — the anchor-invalidation sweep below must cover a USER-DEFINED track too:
+// a stored row seeded from a directional anchor holds approvals descended from the
+// same reference, and sweeping only the compiled table would leave them standing
+// after an anchor revision (the atlas would then compile frames drawn from an
+// image that no longer exists — exactly what this sweep exists to prevent).
+import { getEffectiveAnimationTracks } from './animationTrackStore.js';
 import {
   invalidateTrackDirectionForAnchorRevision, invalidateTrackForTurnaroundRevision,
 } from './animationTrackWorkflow.js';
@@ -1897,8 +1903,11 @@ async function invalidateAnchorDependentTracks(recordId, direction) {
  * anchor revision invalidates. Walk is excluded because it owns its own
  * invalidation path above.
  */
-const anchorSeededTracks = () => Object.values(ANIMATION_TRACKS)
-  .filter((row) => row.id !== WALK_TRACK && sourceReferenceFor(row.id) === 'anchor');
+const anchorSeededTracks = () => {
+  const tracks = getEffectiveAnimationTracks();
+  return Object.values(tracks)
+    .filter((row) => row.id !== WALK_TRACK && sourceReferenceFor(row.id, tracks) === 'anchor');
+};
 
 /**
  * Reopen the main (south) reference and invalidate only animations conditioned

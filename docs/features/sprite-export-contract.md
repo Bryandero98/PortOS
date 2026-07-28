@@ -22,7 +22,12 @@ Frame-count and fps uniformity is a **within-track** rule, never a between-track
 
 ### Animation tracks are data, with `walk` the one built-in
 
-**Which tracks exist is not a fixed list.** `walk` is the mandatory baseline for a character — the one animation every character has, and the only one this document can promise a reader will be there. Everything else, including the shipped `scanner` action and `ambient` loop, is an ordinary **row** in the track registry describing its own label, facing count, frame/fps range, the locked reference its render is seeded from, and the `runtimeContract` field it occupies. A consuming app must therefore treat the track set as **discovered from `geometry.tracks`, never enumerated in code** (see "Resolve columns by name, not by constant" below) — the atlas it reads next year may carry a track nobody had named when it was written.
+**Which tracks exist is not a fixed list, and it is not fixed by PortOS either.** `walk` is the mandatory baseline for a character — the one animation every character has, the only one compiled into PortOS, and the only one this document can promise a reader will be there. Everything else, including the shipped `scanner` action and `ambient` loop, is an ordinary **row** describing its own label, facing count, frame/fps range, the locked reference its render is seeded from, the `runtimeContract` field it occupies, and its image-to-video prompt. A consuming app must therefore treat the track set as **discovered from `geometry.tracks`, never enumerated in code** (see "Resolve columns by name, not by constant" below) — the atlas it reads next year may carry a track nobody had named when it was written.
+
+**Non-walk rows are user data, stored per install.** They live in `data/sprites/animation-tracks.json` (`server/services/sprites/animationTrackStore.js` merges them with `walk` into the effective registry). `scanner` and `ambient` ship as **seed rows** in `data.reference/sprites/animation-tracks.json` — a user may retune their bounds, reword their prompts, or delete them outright, and may add their own ("a chest opening", "a flower blossoming", "a jetpack burst") without a PortOS code change. Two consequences worth stating plainly:
+
+- **Two installs can legitimately disagree about which tracks exist.** An atlas is self-describing (`geometry.tracks` + `columns`) precisely so a consumer never needs the producing install's registry.
+- **A row's `selectionKind` / `setKind` are on-disk contracts, not labels.** The compiler re-verifies an approved set by those exact strings, so renaming them on a track you have already authored orphans that set. Adding, deleting, or retuning a row takes effect on the next server start.
 
 The consequence for the app side is small but load-bearing: a track's *presence* is optional and its *name* is user-chosen, so an app keys off the track ids it actually needs and ignores the rest. Nothing about the grid, cell metrics, pivot, or row semantics changes when a track is added.
 
@@ -125,9 +130,10 @@ Two mechanisms guard that:
 |---|---|
 | `server/services/sprites/atlas.js` | Compiles the atlas; owns the geometry block and the pre-pixel up-to-date check |
 | `server/services/sprites/atlasGrid.js` | The grid itself: column spans and row spans per track, within-track uniformity, reading a persisted (or legacy) grid back |
-| `server/services/sprites/animationTracks.js` | One row per animation track — its bounds, defaults, directionality, which record kinds may carry it, its on-disk set/selection kinds, and whether it is the kind's publishable baseline (`standaloneContract`) |
+| `server/services/sprites/animationTracks.js` | The one COMPILED row (`walk`) and the row contract itself — bounds, defaults, directionality, which record kinds may carry a track, its on-disk set/selection kinds, and whether it is the kind's publishable baseline (`standaloneContract`). Imports nothing: `server/lib/validation.js` builds its sprite Zod ranges from here, so the native image graph must stay out |
+| `server/services/sprites/animationTrackStore.js` | Loads the user-defined rows from `data/sprites/animation-tracks.json` (falling back to the `data.reference/` seed) and merges them with `walk` into the effective registry every reader resolves against |
 | `server/services/sprites/animationTrackWorkflow.js` | The ONE generate/package/review/approve implementation every non-walk track runs, parameterized by its registry row |
-| `server/services/sprites/trackPrompts.js` | Resolves a track id to its image-to-video prompt builder |
+| `server/services/sprites/trackPrompts.js` | Resolves a track id to its image-to-video prompt — the compiled builder for `walk`, the row's own `promptTemplate` for a stored track |
 | `server/services/sprites/reference.js` | The two animation gates: `requireCharacter` (walk workflow) and `requireAnimatable` (compile/publish) |
 | `server/services/sprites/atlasLayout.js` | Builds the sidecar payload; compares geometry against a runtime contract |
 | `server/services/sprites/publish.js` | Binding validation, the publish-time guard, the atomic PNG + sidecar write |

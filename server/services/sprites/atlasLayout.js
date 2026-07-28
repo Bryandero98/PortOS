@@ -46,7 +46,16 @@
 
 import { basename } from 'path';
 import { deriveTracks, resolveWalkFrameCount, ATLAS_DEFAULT_ROWS } from './atlasGrid.js';
-import { ANIMATION_TRACKS, WALK_TRACK } from './animationTracks.js';
+import { WALK_TRACK } from './animationTracks.js';
+// #3152 — the default table is the EFFECTIVE registry (compiled `walk` + the
+// user-defined store), not the compiled constant. Load-bearing here: the contract
+// check below iterates the table to find each track's `contractFrameCountField`,
+// so a compiled-only default would silently SKIP `scannerFrameCount` /
+// `ambientFrameCount` (and any user track's field) — publishing an atlas whose
+// span disagrees with the app's contract would then pass unchecked, which is
+// precisely the mismatch this function exists to refuse. Still sharp-free: the
+// store reaches only fs/path/crypto.
+import { getEffectiveAnimationTracks } from './animationTrackStore.js';
 
 // Bump only on a breaking shape change. Adding a field (or a new track) is
 // additive — consumers read `tracks`/`columns` by name, not by position.
@@ -133,7 +142,7 @@ export function runtimeContractMismatch(
   geometry,
   contract,
   appLabel = 'the bound app',
-  tracks = ANIMATION_TRACKS,
+  tracks = getEffectiveAnimationTracks(),
 ) {
   if (!contract) return null;
 

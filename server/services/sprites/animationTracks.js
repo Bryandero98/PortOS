@@ -49,17 +49,46 @@
  * the render), and `animationTrackWorkflow.js` is the one implementation both
  * drive. A user-defined track is therefore a row plus a prompt template — no new
  * service module, no new routes.
+ *
+ * **`walk` is the only COMPILED-IN row (#3152).** Every other track — including
+ * `scanner` and `ambient`, which shipped as compiled rows through #3018/#3045 —
+ * now lives in the user-defined store `animationTrackStore.js` reads, seeded
+ * from `data.reference/sprites/animation-tracks.json` by migration 211. That
+ * store is what makes "a chest opening" or "a flower blossoming" a user action
+ * rather than a PortOS code change, and it is why this table shrank to one row
+ * instead of growing a fourth. The MERGE cannot live here: this module does file
+ * I/O nowhere and imports nothing (see the leaf note above), so the store
+ * imports this and never the reverse. Callers that must see user rows resolve
+ * `getEffectiveAnimationTracks()` and pass it through the `tracks` parameter
+ * every reader below already takes.
+ *
+ * A stored row carries two fields a compiled one doesn't: `promptTemplate` (the
+ * i2v wording `trackPrompts.js` falls back to, since a user row has no compiled
+ * builder) and `builtin: false`. `assertAnimationTrackRows` validates a stored
+ * row exactly as it validates this table's, so a bad row fails loudly at load
+ * rather than corrupting a render hours later.
  */
 
-/** The default track — the only one that exists today. */
+/** The default track — and the only one compiled into this build (#3152). */
 export const WALK_TRACK = 'walk';
-/** The first short, directional character action (#3018). */
+/**
+ * The seeded short directional character action (#3018) and non-directional
+ * environment loop (#3045).
+ *
+ * Still NAMED here because `atlas.js` dispatches its two bespoke evidence chains
+ * on these exact ids and existing on-disk sets carry them — but they are no
+ * longer ROWS in `ANIMATION_TRACKS`: migration 211 moved both into the
+ * user-defined store, where a user can retune or delete them like any other
+ * track. Resolve them through `getEffectiveAnimationTracks()`; a `getAnimationTrack`
+ * call against the compiled table alone will (correctly) throw for them.
+ */
 export const SCANNER_TRACK = 'scanner';
-/** The first non-directional environment loop (#3045). */
 export const AMBIENT_TRACK = 'ambient';
 
 /**
- * Every known animation track.
+ * Every animation track compiled into this build — `walk`, and only `walk`
+ * (#3152). Merge with the user-defined store via `getEffectiveAnimationTracks()`
+ * before handing this to any reader that must see a user's tracks.
  *
  * - `minFrameCount` / `maxFrameCount` — the authoring range the packer clamps
  *   into and the Zod schemas range-check against.
@@ -92,6 +121,14 @@ export const AMBIENT_TRACK = 'ambient';
  *   that could exist. DECLARED rather than inferred from registration order: it
  *   is a load-bearing publish-validation rule, and #3152 merges rows from a
  *   user-ordered store where "first row for this kind" would silently change.
+ * - `builtin` (#3152) — true for a row compiled into this build, false for one
+ *   loaded from the user-defined store. Read by the store's merge (a user row may
+ *   not shadow `walk`) and by the prompt resolver (a builtin row has a compiled
+ *   prompt builder; a stored one carries `promptTemplate` instead).
+ * - `promptTemplate` (#3152, stored rows ONLY) — the i2v instruction sent to the
+ *   provider for this track, as literal text. A builtin row omits it and resolves
+ *   through the compiled builder in `trackPrompts.js`; a stored row must carry it,
+ *   because there is no code to fall back to.
  *
  * Which locked reference an i2v render is seeded from is DERIVED, not declared:
  * a directional track renders one clip per facing and so must seed from that
@@ -131,62 +168,18 @@ export const ANIMATION_TRACKS = Object.freeze({
     // A character publishes off its walk — the compile path requires a finalized
     // walk set before it emits anything at all.
     standaloneContract: true,
-  }),
-  [SCANNER_TRACK]: Object.freeze({
-    id: SCANNER_TRACK,
-    label: 'Scanner action',
-    directional: true,
-    // A scanner pose is still one per character facing, so it reuses the
-    // locked directional anchors and fills all eight atlas rows.
-    kinds: Object.freeze(['character']),
-    minFrameCount: 2,
-    maxFrameCount: 8,
-    defaultFrameCount: 4,
-    minFps: 2,
-    maxFps: 12,
-    defaultFps: 6,
-    contractFrameCountField: 'scannerFrameCount',
-    // The game owns action timing; PortOS carries fps as preview provenance.
-    contractFpsField: null,
-    // The historical on-disk spellings, kept verbatim: an already-approved
-    // scanner set on any install must keep validating after the clone collapsed
-    // into the generic workflow, and the compiler matches these exact strings.
-    selectionKind: 'reviewed-directional-scanner-selection',
-    setKind: 'finalized-eight-direction-scanner-set',
-    finalErrorCode: 'SCANNER_SET_FINAL',
-    // A scanner action rides beside the walk it shares atlas rows with — it is
-    // never the only thing a character publishes, so its span alone doesn't
-    // describe an atlas.
-    standaloneContract: false,
-  }),
-  [AMBIENT_TRACK]: Object.freeze({
-    id: AMBIENT_TRACK,
-    label: 'Ambient loop',
-    directional: false,
-    // `props` is the legacy import-only spelling of `object`; keeping it here
-    // makes an imported prop atlas and a newly-authored object behave alike.
-    kinds: Object.freeze(['place', 'object', 'props']),
-    minFrameCount: 2,
-    maxFrameCount: 6,
-    defaultFrameCount: 3,
-    minFps: 2,
-    maxFps: 12,
-    defaultFps: 4,
-    contractFrameCountField: 'ambientFrameCount',
-    // Ambient cadence belongs to the consuming app. PortOS keeps fps only as
-    // authoring-preview provenance, like scanner.
-    contractFpsField: null,
-    selectionKind: 'reviewed-single-row-ambient-selection',
-    setKind: 'finalized-single-row-ambient-set',
-    finalErrorCode: 'AMBIENT_SET_FINAL',
-    // A place publishes off its ambient loop — it has no walk, so this IS its
-    // baseline and the compile path requires its finalized set.
-    standaloneContract: true,
+    // The one mandatory built-in. `scanner` and `ambient` were `builtin: true`
+    // rows here until #3152 moved them into the user-defined store as seed data.
+    builtin: true,
   }),
 });
 
-/** Known track ids, in registry order. */
-export const ANIMATION_TRACK_IDS = Object.freeze(Object.keys(ANIMATION_TRACKS));
+// There is deliberately no `ANIMATION_TRACK_IDS` export (#3152 removed it). It
+// would now mean "the COMPILED ids" — `['walk']` — while reading as "every track
+// id", which is the wrong answer at every call site that wanted it: those want the
+// merged table's ids and must ask `getEffectiveAnimationTrackIds()` in
+// `animationTrackStore.js`. Iterate `Object.keys(ANIMATION_TRACKS)` inline when you
+// genuinely mean the compiled rows only.
 
 /**
  * Validate a registry's rows, throwing on the first violation.
@@ -236,6 +229,25 @@ export function assertAnimationTrackRows(tracks) {
     }
     if (typeof row.standaloneContract !== 'boolean') {
       throw new Error(`animationTracks: track '${id}' needs a boolean 'standaloneContract'`);
+    }
+    // #3152 — where the row came from, and (for a stored row) its prompt.
+    if (typeof row.builtin !== 'boolean') {
+      throw new Error(`animationTracks: track '${id}' needs a boolean 'builtin'`);
+    }
+    // EXACTLY ONE prompt source per row — the invariant, stated as itself rather
+    // than as two provenance checks. A row's prompt is either the compiled builder
+    // `trackPrompts.js` holds for it (`builtin`, no template) or its own
+    // `promptTemplate` (stored). Neither means a throw out of `buildTrackVideoPrompt`
+    // AFTER the user clicked generate; both means two definitions of one track's
+    // wording, where the stored value silently wins over the text
+    // `prompts.test.js` pins. Refuse either at load, where the message names the row.
+    const hasTemplate = typeof row.promptTemplate === 'string' && !!row.promptTemplate.trim();
+    if (hasTemplate === row.builtin) {
+      throw new Error(
+        row.builtin
+          ? `animationTracks: builtin track '${id}' must not carry a 'promptTemplate' — its prompt is the compiled builder`
+          : `animationTracks: user-defined track '${id}' needs a non-empty 'promptTemplate'`,
+      );
     }
     // Two tracks sharing a selection/set `kind` is the same class of bug as two
     // sharing a contract field: the compiler validates a set by its `kind`, so a
@@ -414,14 +426,20 @@ const clampInto = (n, min, max, fallback) => {
   return Math.max(min, Math.min(max, v));
 };
 
-/** Clamp a requested frame count into `track`'s authoring range. */
-export function clampTrackFrameCount(n, track) {
-  const row = getAnimationTrack(track);
+/**
+ * Clamp a requested frame count into `track`'s authoring range.
+ *
+ * `tracks` is the same injectable table every reader above takes (#3152) —
+ * callers that must clamp a USER-DEFINED track pass the effective table, since a
+ * stored row is unknown to the compiled default and would throw.
+ */
+export function clampTrackFrameCount(n, track, tracks = ANIMATION_TRACKS) {
+  const row = getAnimationTrack(track, tracks);
   return clampInto(n, row.minFrameCount, row.maxFrameCount, row.defaultFrameCount);
 }
 
 /** Clamp a requested playback fps into `track`'s authoring range. */
-export function clampTrackFps(n, track) {
-  const row = getAnimationTrack(track);
+export function clampTrackFps(n, track, tracks = ANIMATION_TRACKS) {
+  const row = getAnimationTrack(track, tracks);
   return clampInto(n, row.minFps, row.maxFps, row.defaultFps);
 }

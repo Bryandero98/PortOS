@@ -51,9 +51,17 @@ import {
 } from './walkPostprocess.js';
 import { ATLAS_IDLE_COLUMN } from './walkBounds.js';
 import {
-  WALK_TRACK, SCANNER_TRACK, AMBIENT_TRACK, ANIMATION_TRACKS,
+  WALK_TRACK, SCANNER_TRACK, AMBIENT_TRACK,
   tracksForKind, primaryTrackForKind,
 } from './animationTracks.js';
+// #3152 — the DEFAULT registry table is the EFFECTIVE one (compiled `walk` + the
+// user-defined store), not the compiled constant. Load-bearing now that #3158 made
+// this compiler fully generic: it walks `tracksForKind` to find every track a
+// record may carry, so with a compiled-only default a `place` record would resolve
+// NO primary track (ambient is a stored row) and every ambient compile would fail
+// with "has no animation track to compile". `animationTracks` stays an explicit
+// parameter — still the injection seam the multi-track tests use.
+import { getEffectiveAnimationTracks } from './animationTrackStore.js';
 import {
   buildAtlasGrid, resolveTrackUniformity, compiledGridUpToDate, trackDirections,
 } from './atlasGrid.js';
@@ -265,7 +273,7 @@ function sharedRowPasteX(anchoredX, boundsList, geometry) {
  * selection → run manifests → packaged frame bytes, plus the locked reference
  * source. Returns everything the compiler consumes.
  */
-export async function validateForCompile(recordId, animationTracks = ANIMATION_TRACKS) {
+export async function validateForCompile(recordId, animationTracks = getEffectiveAnimationTracks()) {
   return validateForCompileWithTracks(recordId, animationTracks);
 }
 
@@ -591,7 +599,6 @@ async function compileTrackRow(direction, validated, geometry) {
     runId: primary.run.runId,
     runManifestPath: primary.run.manifestPath,
     walkDirectionScale: trackScales[WALK_TRACK],
-    ambientScale: trackScales[AMBIENT_TRACK],
     trackScales,
     idleScale: pyRoundTo(idleScale, 8),
     idlePolicy: sourcePolicy,
@@ -675,7 +682,7 @@ const trackSetsUpToDate = (persisted, validated) => {
 
 export async function compileAtlasInTail(recordId, {
   geometry: geometryOverride,
-  tracks: animationTracks = ANIMATION_TRACKS,
+  tracks: animationTracks = getEffectiveAnimationTracks(),
 } = {}) {
   // The track-presence gate (#3017), not a literal kind check: a record may
   // compile an atlas when its kind carries at least one registered animation
@@ -828,6 +835,14 @@ export async function compileAtlasInTail(recordId, {
 
   const manifest = {
     schemaVersion: 1,
+    // The two named `kind`s are HISTORICAL spellings, kept so a recompile of a
+    // record that was compiled before #3158 writes the same discriminator it always
+    // did. They are matched on `primaryTrackId` rather than derived from it, which
+    // means a user who deletes the seeded `ambient` row and authors their own
+    // place-baseline track (#3152) gets the generic third spelling — correct for a
+    // genuinely new track, and the same reason the two legacy names can't simply be
+    // computed from the id: nothing else on disk records which name a record's
+    // earlier atlases used.
     kind: validated.primaryTrackId === AMBIENT_TRACK
       ? 'reviewed-ambient-set-runtime-atlas'
       : validated.primaryTrackId === WALK_TRACK

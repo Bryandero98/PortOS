@@ -50,10 +50,16 @@ import {
 } from '../services/sprites/reference.js';
 import { resolveSpriteAssetPrompt } from '../services/sprites/assetPrompt.js';
 import {
-  WALK_TRACK, ANIMATION_TRACK_IDS,
+  WALK_TRACK,
   isAnimationTrack, kindSupportsTrack, tracksForKind,
   getAnimationTrack as getAnimationTrackRow,
 } from '../services/sprites/animationTracks.js';
+// #3152 — every registry question a request asks is answered against the
+// EFFECTIVE table (compiled `walk` + the user-defined store), so a user's own
+// track is routable, gated, and listed with no route edit.
+import {
+  getEffectiveAnimationTracks, getEffectiveAnimationTrackIds,
+} from '../services/sprites/animationTrackStore.js';
 import {
   getWalkState, startWalkGeneration, approveWalkDirection, rerunWalkPostprocess, unlockWalkSet,
   reopenWalkDirection, setWalkTarget, getWalkSourceFrames,
@@ -94,9 +100,9 @@ function resolveTrackParam(params) {
       { status: 400, code: 'WALK_NOT_GENERIC' },
     );
   }
-  if (!isAnimationTrack(trackId)) {
+  if (!isAnimationTrack(trackId, getEffectiveAnimationTracks())) {
     throw new ServerError(
-      `Unknown animation track '${trackId}' — the registered tracks are: ${ANIMATION_TRACK_IDS.join(', ')}`,
+      `Unknown animation track '${trackId}' — the registered tracks are: ${getEffectiveAnimationTrackIds().join(', ')}`,
       { status: 404, code: 'UNKNOWN_ANIMATION_TRACK' },
     );
   }
@@ -113,7 +119,7 @@ function resolveTrackParam(params) {
  * anchor", blaming the reference set for a missing request field.
  */
 function requireDirectionForTrack(trackId, body) {
-  if (!getAnimationTrackRow(trackId).directional || body.direction) return;
+  if (!getAnimationTrackRow(trackId, getEffectiveAnimationTracks()).directional || body.direction) return;
   throw new ServerError(
     `The ${trackId} track is directional — name the facing to animate`,
     { status: 400, code: 'DIRECTION_REQUIRED' },
@@ -170,8 +176,9 @@ router.get('/:id', asyncHandler(async (req, res) => {
   // as `kind === 'character'` would have left the UI blank for exactly the
   // records the registry had just admitted.
   const { kind } = detail.record;
-  const kindTracks = tracksForKind(kind);
-  const runsWalk = kindSupportsTrack(kind, WALK_TRACK);
+  const effectiveTracks = getEffectiveAnimationTracks();
+  const kindTracks = tracksForKind(kind, effectiveTracks);
+  const runsWalk = kindSupportsTrack(kind, WALK_TRACK, effectiveTracks);
   // Every non-walk track this record's kind may carry, resolved from the registry
   // (#3136) instead of one hand-written `runsScanner`/`runsAmbient` flag per
   // track. Each state carries its own `definition` (the registry row), so the

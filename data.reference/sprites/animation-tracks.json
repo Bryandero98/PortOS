@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "_comment": "User-defined sprite animation tracks (issue #3152). `walk` is the one mandatory built-in and is NOT listed here — it is compiled into server/services/sprites/animationTracks.js. Every row below is ordinary seed data you may retune, add to, or delete. `scanner` and `ambient` shipped as compiled rows through #3018/#3045 and are seeded here verbatim so an install holding an approved scanner set or ambient loop keeps compiling after the upgrade: their `selectionKind`/`setKind` strings are what the atlas compiler re-verifies on disk, so do not rename those on a record you have already authored.",
+  "tracks": [
+    {
+      "id": "scanner",
+      "label": "Scanner action",
+      "directional": true,
+      "kinds": ["character"],
+      "minFrameCount": 2,
+      "maxFrameCount": 8,
+      "defaultFrameCount": 4,
+      "minFps": 2,
+      "maxFps": 12,
+      "defaultFps": 6,
+      "contractFrameCountField": "scannerFrameCount",
+      "contractFpsField": null,
+      "selectionKind": "reviewed-directional-scanner-selection",
+      "setKind": "finalized-eight-direction-scanner-set",
+      "finalErrorCode": "SCANNER_SET_FINAL",
+      "standaloneContract": false,
+      "promptTemplate": "Create a short, seamless scanner action for {{name}}, facing {{direction}}. The character raises a handheld scanner, makes one deliberate sweep, then returns to the exact starting pose. Keep the character centered, full body visible, and animate only over a solid {{chromaKey}} background. No text, UI, scenery, camera movement, cuts, or additional characters."
+    },
+    {
+      "id": "ambient",
+      "label": "Ambient loop",
+      "directional": false,
+      "kinds": ["place", "object", "props"],
+      "minFrameCount": 2,
+      "maxFrameCount": 6,
+      "defaultFrameCount": 3,
+      "minFps": 2,
+      "maxFps": 12,
+      "defaultFps": 4,
+      "contractFrameCountField": "ambientFrameCount",
+      "contractFpsField": null,
+      "selectionKind": "reviewed-single-row-ambient-selection",
+      "setKind": "finalized-single-row-ambient-set",
+      "finalErrorCode": "AMBIENT_SET_FINAL",
+      "standaloneContract": true,
+      "promptTemplate": "The source image is the locked at-rest {{kind}} sprite {{name}}. Animate one subtle seamless ambient loop (for example wind, water, flame, or a gentle flicker appropriate to the source), then return to the exact starting pose. Preserve its identity, silhouette, palette, scale, and centered ground position. Use a locked camera and an exactly uniform non-emissive {{chromaKeyPhrase}} background only as a compositing matte: no scenery, text, labels, camera movement, cuts, added objects, or people."
+    }
+  ]
+}

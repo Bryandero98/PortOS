@@ -114,4 +114,64 @@ export const AMBIENT_TRACK_ROW = Object.freeze({
   setKind: 'finalized-single-row-ambient-set',
   finalErrorCode: 'AMBIENT_SET_FINAL',
   standaloneContract: true,
+  // #3152 — `builtin: true` because this fixture stands in for a COMPILED row in
+  // the injected-table tests: those exercise the readers' row-handling, not the
+  // store's loading, and a `builtin: false` row would additionally have to carry
+  // a `promptTemplate` (which `assertAnimationTrackRows` requires of a stored row)
+  // for reasons that have nothing to do with what they assert. The store's own
+  // user-defined-row shape is exercised in `animationTrackStore.test.js`.
+  builtin: true,
 });
+
+/**
+ * A well-formed USER-DEFINED track row for the store (#3152) — every field
+ * `assertAnimationTrackRows` requires of a stored row and nothing more, including
+ * the `promptTemplate` a stored row must carry (a compiled row must not).
+ *
+ * Distinct from `AMBIENT_TRACK_ROW` above, which stands in for a COMPILED row in
+ * the injected-table tests. This one is what a user actually authors, and it is
+ * shared because #3152 alone added two required row fields — a per-suite literal
+ * means the next such change updates one copy and leaves the other suite green on
+ * a stale shape.
+ *
+ * `overrides` is shallow-merged, so a second row in one table renames the fields
+ * that must be unique (`id`, `contractFrameCountField`, `selectionKind`, `setKind`,
+ * `finalErrorCode`) without restating the rest.
+ */
+export const storedTrackRow = (overrides = {}) => ({
+  id: 'chest-opening',
+  label: 'Chest opening',
+  directional: false,
+  kinds: ['object'],
+  minFrameCount: 2,
+  maxFrameCount: 8,
+  defaultFrameCount: 4,
+  minFps: 2,
+  maxFps: 12,
+  defaultFps: 6,
+  contractFrameCountField: 'chestOpeningFrameCount',
+  contractFpsField: null,
+  selectionKind: 'reviewed-chest-opening-selection',
+  setKind: 'finalized-chest-opening-set',
+  finalErrorCode: 'CHEST_OPENING_SET_FINAL',
+  standaloneContract: true,
+  promptTemplate: 'Animate the {{kind}} {{name}} opening once, then hold. Matte on {{chromaKeyPhrase}}.',
+  ...overrides,
+});
+
+/**
+ * Write a track store under a suite's TEST_ROOT, in the on-disk shape
+ * `animationTrackStore.js` reads.
+ *
+ * Accepts either an array of rows or a raw string (for the malformed-JSON cases),
+ * so the sentinel tests and the happy path share one writer. Callers must still
+ * call `__resetAnimationTrackStore()` — the store caches per process, and making
+ * this helper do it would hide the restart boundary the tests exist to assert.
+ */
+export async function writeAnimationTrackStore(testRoot, tracks) {
+  await mkdir(join(testRoot, 'sprites'), { recursive: true });
+  await writeFile(
+    join(testRoot, 'sprites', 'animation-tracks.json'),
+    typeof tracks === 'string' ? tracks : `${JSON.stringify({ schemaVersion: 1, tracks }, null, 2)}\n`,
+  );
+}

@@ -7,12 +7,12 @@
  * with a correct hash chain.
  */
 
-import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import sharp from 'sharp';
-import { mkdir, writeFile, readFile } from 'fs/promises';
+import { mkdir, writeFile, readFile, rm } from 'fs/promises';
 import { createHash } from 'crypto';
 import { lockAllAnchors as lockAllAnchorsFixture, placeCandidate, trackSpan as fullSpan } from './spriteTestFixtures.js';
 
@@ -45,9 +45,14 @@ const { compileAtlas, getAtlasState, ATLAS_COLUMNS, DEFAULT_ATLAS_GEOMETRY } = a
 const { SPRITE_DIRECTIONS } = await import('./prompts.js');
 const { WALK_PHASES, walkPhaseLabels, WALK_FPS } = await import('./walkPostprocess.js');
 const { buildAtlasGrid, compiledGridUpToDate } = await import('./atlasGrid.js');
+const { getAnimationTrack, SCANNER_TRACK, AMBIENT_TRACK } = await import('./animationTracks.js');
+// #3152 — `scanner`/`ambient` are seeded STORE rows, so the compiler's real table
+// is the merge. Resolved once; the store caches its read.
 const {
-  ANIMATION_TRACKS, getAnimationTrack, SCANNER_TRACK, AMBIENT_TRACK,
-} = await import('./animationTracks.js');
+  getEffectiveAnimationTracks, __resetAnimationTrackStore,
+  animationTrackStorePath, animationTrackSeedPath,
+} = await import('./animationTrackStore.js');
+const EFFECTIVE_TRACKS = getEffectiveAnimationTracks();
 
 let seq = 0;
 const newId = () => `atlas-char-${++seq}`;
@@ -333,12 +338,77 @@ describe('compileAtlas', () => {
     }
   });
 
+  // #3152's stated "regression that matters": `scanner`/`ambient` stopped being
+  // compiled rows and became rows in `data/sprites/animation-tracks.json`. The two
+  // cases above prove the PRE-migration state compiles (no store file → the
+  // data.reference seed answers). These prove the POST-migration state does too,
+  // with a real user-owned store on disk — the shape every upgraded install runs,
+  // and the one where a broken store→registry hand-off surfaces as "unknown
+  // animation track 'scanner'" on a record that compiled fine yesterday.
+  describe('after migration 211 materializes the user-owned store (#3152)', () => {
+    // A byte copy of the shipped seed, exactly as the migration writes it — so this
+    // asserts the migration's OUTPUT is sufficient, not merely that some
+    // hand-written store works.
+    // Paths come from the store's own exports rather than a hand-walked `../../..`:
+    // the PATHS mock above leaves `PATHS.root` real, so `animationTrackSeedPath()`
+    // and `animationTrackStorePath()` resolve exactly where the migration reads and
+    // writes — and a future relocation of either file moves both at once.
+    const installUserStore = async () => {
+      await mkdir(join(TEST_ROOT, 'sprites'), { recursive: true });
+      await writeFile(animationTrackStorePath(), await readFile(animationTrackSeedPath(), 'utf-8'));
+      __resetAnimationTrackStore();
+    };
+    // Restore the seed-fallback state the rest of this file compiles under, so
+    // ordering between suites can't matter.
+    afterEach(async () => {
+      await rm(animationTrackStorePath(), { force: true });
+      __resetAnimationTrackStore();
+    });
+
+    it('still compiles an approved scanner set beside the walk span', async () => {
+      const id = newId();
+      await lockAllAnchors(id);
+      await buildFinalizedWalkSet(id, { frameCount: 12, fps: 10 });
+      await buildFinalizedScannerSet(id);
+      await installUserStore();
+
+      const result = await compileAtlas(id);
+      const manifest = JSON.parse(await readFile(join(TEST_ROOT, 'sprites', id, result.manifestPath), 'utf8'));
+      // Identical geometry to the compiled-row era: span order, column labels and
+      // frame count all still resolve from the (now stored) row.
+      expect(manifest.geometry.columns).toEqual([
+        'idle', ...walkPhaseLabels(12), 'scanner-00', 'scanner-01', 'scanner-02', 'scanner-03',
+      ]);
+      expect(manifest.geometry.tracks.scanner).toMatchObject({ start: 13, count: 4, rows: 8 });
+      expect(manifest.geometry.scannerFrameCount).toBe(4);
+    });
+
+    it('still compiles an approved ambient loop for a place record', async () => {
+      const id = await finalizedAmbientPlace();
+      await installUserStore();
+
+      const result = await compileAtlas(id);
+      const manifest = JSON.parse(await readFile(join(TEST_ROOT, 'sprites', id, result.manifestPath), 'utf8'));
+      // The compile dispatch runs off `primaryTrackForKind('place')`/`tracksForKind`,
+      // now answered by a STORED row — a compiled-table lookup there finds no track
+      // for `place` and refuses the compile outright on a record that has one.
+      expect(manifest.kind).toBe('reviewed-ambient-set-runtime-atlas');
+      expect(manifest.geometry).toMatchObject({
+        columns: ['idle', 'ambient-00', 'ambient-01', 'ambient-02'],
+        ambientFrameCount: 3,
+      });
+    });
+  });
+
   it('compiles and invalidates on a synthetic third registry track without compiler changes', async () => {
     const trackId = 'jetpack';
+    // #3152 — built off the EFFECTIVE table: `scanner` is a stored row now, so
+    // `ANIMATION_TRACKS[SCANNER_TRACK]` is undefined and spreading it would
+    // silently produce a row with no bounds at all.
     const customTracks = {
-      ...ANIMATION_TRACKS,
+      ...EFFECTIVE_TRACKS,
       [trackId]: {
-        ...ANIMATION_TRACKS[SCANNER_TRACK],
+        ...EFFECTIVE_TRACKS[SCANNER_TRACK],
         id: trackId,
         label: 'Jetpack burst',
         contractFrameCountField: 'jetpackFrameCount',

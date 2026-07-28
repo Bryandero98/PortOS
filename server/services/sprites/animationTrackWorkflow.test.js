@@ -66,6 +66,13 @@ const {
 const {
   getAnimationTrack, sourceReferenceFor, SCANNER_TRACK, AMBIENT_TRACK,
 } = await import('./animationTracks.js');
+// #3152 — `scanner`/`ambient` are seeded STORE rows now, so the expectations below
+// resolve them through the merged table exactly as the module under test does.
+// This suite deliberately reads the SHIPPED seed rather than writing a synthetic
+// store: its subject is "the generic workflow reads the row it was handed", and the
+// two seeded rows are precisely the directional/non-directional pair that proves it.
+const { getEffectiveAnimationTracks } = await import('./animationTrackStore.js');
+const EFFECTIVE = getEffectiveAnimationTracks();
 
 let sequence = 0;
 const newId = () => `track-${++sequence}`;
@@ -122,7 +129,7 @@ beforeEach(() => {
 afterAll(() => rmSync(TEST_ROOT, { recursive: true, force: true }));
 
 describe.each(TRACKS)('the generic workflow drives the $id track', (track) => {
-  const row = () => getAnimationTrack(track.id);
+  const row = () => getAnimationTrack(track.id, EFFECTIVE);
 
   it('is provider-silent on reads, then starts one user-triggered render at the row\'s defaults', async () => {
     const id = await track.seed(newId());
@@ -242,7 +249,7 @@ describe.each(TRACKS)('the generic workflow drives the $id track', (track) => {
     );
     await expect(startTrackGeneration(track.id, id, track.body)).rejects.toMatchObject({
       status: 409,
-      code: sourceReferenceFor(track.id) === 'main' ? 'MAIN_NOT_LOCKED' : 'ANCHOR_NOT_LOCKED',
+      code: sourceReferenceFor(track.id, EFFECTIVE) === 'main' ? 'MAIN_NOT_LOCKED' : 'ANCHOR_NOT_LOCKED',
     });
     expect(executeTuiRun).not.toHaveBeenCalled();
   });
