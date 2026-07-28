@@ -850,9 +850,9 @@ export function LocalLlmTab() {
                   const createdMs = new Date(m.createdAt).getTime();
                   const updatedMs = new Date(m.updatedAt).getTime();
                   return (
-                  <div key={m.key || m.id} className="flex items-start gap-3 bg-port-bg border border-port-border rounded-lg p-3">
+                  <div key={m.key || m.id} className="flex flex-col sm:flex-row sm:items-start gap-2 sm:gap-3 bg-port-bg border border-port-border rounded-lg p-3">
                     <div className="flex-1 min-w-0">
-                      <div className="text-sm text-white truncate">
+                      <div className="text-sm text-white break-words">
                         {m.name} <span className="text-xs text-gray-500">· {m.params}</span>
                         {FORMAT_META[m.format] && (
                           <span
@@ -871,7 +871,7 @@ export function LocalLlmTab() {
                           </span>
                         )}
                       </div>
-                      <div className="text-xs text-gray-500 truncate">{chosenId}</div>
+                      <div className="text-xs text-gray-500 break-all">{chosenId}</div>
                       <div className="text-xs text-gray-500 mt-0.5">{m.description}</div>
                       {m.note && <div className="text-[11px] text-port-warning/90 mt-0.5">{m.note}</div>}
                       {hasVariantPicker && (
@@ -922,7 +922,10 @@ export function LocalLlmTab() {
                         <CapabilityBadges capabilities={m.capabilities} />
                       </div>
                     </div>
-                    <div className="flex flex-col items-end gap-1 shrink-0">
+                    {/* Mobile: actions sit on their own row under the details so
+                        the name/id column isn't squeezed into a narrow column.
+                        Desktop keeps them stacked at the card's right edge. */}
+                    <div className="flex flex-row sm:flex-col items-center sm:items-end gap-2 sm:gap-1 shrink-0 justify-end flex-wrap">
                       {chosenInstalled ? (
                         <span className="text-xs px-2 py-1 text-port-success">Installed</span>
                       ) : m.installable === false ? (
@@ -993,56 +996,69 @@ export function LocalLlmTab() {
           {installedModels.length === 0 ? (
             <p className="text-xs text-gray-500">No models installed yet.</p>
           ) : installedModels.map((m) => (
-            <div key={m.id} className="flex items-center gap-3 bg-port-bg border border-port-border rounded-lg p-3">
-              <label className="shrink-0 flex items-center" title={`Include ${m.name || m.id} in a comparison`}>
-                <input
-                  type="checkbox"
-                  checked={compareTargetKeys.has(localLlmTargetKey({ backend: selected, modelId: m.id }))}
-                  onChange={() => toggleCompareTarget(selected, m.id)}
-                  className="h-4 w-4 accent-port-accent"
-                  aria-label={`Select ${m.name || m.id} for comparison`}
-                />
-              </label>
-              <div className="flex-1 min-w-0">
-                <div className="text-sm text-white truncate">{m.name}</div>
-                <div className="text-xs text-gray-500 truncate">
-                  {[m.params, m.quantization, m.family, formatContextLength(m.contextLength)].filter(Boolean).join(' · ')}
-                </div>
-                {(m.capabilities || []).length > 0 && (
-                  <div className="flex items-center gap-1 flex-wrap mt-1">
-                    <CapabilityBadges capabilities={m.capabilities} />
+            // Mobile: identity stacks above the action row so the (often very
+            // long) `hf.co/…` model id gets the full row width and wraps instead
+            // of being ellipsised down to "hf.co/sja…". Desktop keeps the single
+            // line with actions trailing on the right.
+            <div key={m.id} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 bg-port-bg border border-port-border rounded-lg p-3">
+              <div className="flex items-start gap-3 min-w-0 flex-1">
+                <label className="shrink-0 flex items-center pt-0.5" title={`Include ${m.name || m.id} in a comparison`}>
+                  <input
+                    type="checkbox"
+                    checked={compareTargetKeys.has(localLlmTargetKey({ backend: selected, modelId: m.id }))}
+                    onChange={() => toggleCompareTarget(selected, m.id)}
+                    className="h-4 w-4 accent-port-accent"
+                    aria-label={`Select ${m.name || m.id} for comparison`}
+                  />
+                </label>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm text-white break-all">{m.name}</div>
+                  <div className="text-xs text-gray-500 break-words">
+                    {[
+                      m.params,
+                      m.quantization,
+                      m.family,
+                      formatContextLength(m.contextLength),
+                      m.size != null ? formatBytes(m.size) : null
+                    ].filter(Boolean).join(' · ')}
                   </div>
+                  {(m.capabilities || []).length > 0 && (
+                    <div className="flex items-center gap-1 flex-wrap mt-1">
+                      <CapabilityBadges capabilities={m.capabilities} />
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0 justify-end flex-wrap">
+                <Link
+                  to={`/local-llm/playground?backend=${encodeURIComponent(selected)}&model=${encodeURIComponent(m.id)}`}
+                  className="px-2.5 py-1 text-xs bg-port-accent-2/15 hover:bg-port-accent-2/25 text-port-accent-2 rounded flex items-center gap-1 shrink-0 no-underline"
+                  title={`Chat with ${m.name || m.id}`}
+                >
+                  <FlaskConical size={12} />
+                  Chat
+                </Link>
+                {isConfirmingDelete(m.id) ? (
+                  <ConfirmButtonPair
+                    prompt="Delete?"
+                    confirmIcon={Trash2}
+                    busy={busy}
+                    className="shrink-0"
+                    onConfirm={() => confirmDelete(() => remove(m.id))}
+                    onCancel={cancelDelete}
+                  />
+                ) : (
+                  <button
+                    onClick={() => requestDelete(m.id)}
+                    disabled={busy}
+                    className="px-2.5 py-1 text-xs bg-port-error/20 hover:bg-port-error/40 text-port-error rounded disabled:opacity-50 flex items-center gap-1 shrink-0"
+                    aria-label={`Delete ${m.name}`}
+                  >
+                    {actionInProgress === `delete-${m.id}` ? <BrailleSpinner /> : <Trash2 size={12} />}
+                    Delete
+                  </button>
                 )}
               </div>
-              {m.size != null && <span className="text-xs text-gray-400 shrink-0">{formatBytes(m.size)}</span>}
-              <Link
-                to={`/local-llm/playground?backend=${encodeURIComponent(selected)}&model=${encodeURIComponent(m.id)}`}
-                className="px-2.5 py-1 text-xs bg-port-accent-2/15 hover:bg-port-accent-2/25 text-port-accent-2 rounded flex items-center gap-1 shrink-0 no-underline"
-                title={`Chat with ${m.name || m.id}`}
-              >
-                <FlaskConical size={12} />
-                Chat
-              </Link>
-              {isConfirmingDelete(m.id) ? (
-                <ConfirmButtonPair
-                  prompt="Delete?"
-                  confirmIcon={Trash2}
-                  busy={busy}
-                  className="shrink-0"
-                  onConfirm={() => confirmDelete(() => remove(m.id))}
-                  onCancel={cancelDelete}
-                />
-              ) : (
-                <button
-                  onClick={() => requestDelete(m.id)}
-                  disabled={busy}
-                  className="px-2.5 py-1 text-xs bg-port-error/20 hover:bg-port-error/40 text-port-error rounded disabled:opacity-50 flex items-center gap-1 shrink-0"
-                  aria-label={`Delete ${m.name}`}
-                >
-                  {actionInProgress === `delete-${m.id}` ? <BrailleSpinner /> : <Trash2 size={12} />}
-                  Delete
-                </button>
-              )}
             </div>
           ))}
         </div>

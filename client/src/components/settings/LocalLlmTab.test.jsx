@@ -1,0 +1,89 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
+
+vi.mock('../../services/api', () => ({
+  getLocalLlmStatus: vi.fn(),
+  getLocalLlmCatalog: vi.fn(),
+  getLocalLlmHuggingFaceSearch: vi.fn(),
+  installLocalLlmModel: vi.fn(),
+  deleteLocalLlmModel: vi.fn(),
+  switchLocalLlmBackend: vi.fn(),
+  migrateLocalLlmBackend: vi.fn(),
+  installLocalLlmBackend: vi.fn(),
+  upgradeLocalLlmBackend: vi.fn(),
+  controlOllamaService: vi.fn(),
+  installAudioModel: vi.fn(),
+}));
+vi.mock('../../services/socket', () => ({
+  default: { on: vi.fn(), off: vi.fn() },
+}));
+// The memory panel owns its own 5s poll + voice/TTS endpoints — irrelevant here.
+vi.mock('./MemoryManagement.jsx', () => ({ default: () => <div data-testid="memory-management" /> }));
+vi.mock('../ui/Toast', () => ({
+  default: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() }),
+}));
+
+import { getLocalLlmStatus, getLocalLlmCatalog } from '../../services/api';
+import { LocalLlmTab } from './LocalLlmTab';
+
+// A realistically long HF model id — the shape that got ellipsised to
+// "hf.co/sja…" on a phone before the row was allowed to wrap.
+const LONG_ID = 'hf.co/example-org/Example-Long-Model-Name-34B-Instruct-GGUF:Q6_K';
+
+const renderTab = async () => {
+  render(
+    <MemoryRouter>
+      <LocalLlmTab />
+    </MemoryRouter>,
+  );
+  await waitFor(() => expect(screen.getByText(/Installed on Ollama/)).toBeTruthy());
+};
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  getLocalLlmStatus.mockResolvedValue({
+    backend: 'ollama',
+    ollama: {
+      installed: true,
+      available: true,
+      modelCount: 1,
+      models: [{
+        id: LONG_ID,
+        name: LONG_ID,
+        params: '34.7B',
+        quantization: 'Q6_K',
+        family: 'qwen2',
+        size: 30_500_000_000,
+        capabilities: ['tools', 'reasoning'],
+      }],
+    },
+    lmstudio: { installed: false, available: false, modelCount: 0, models: [] },
+  });
+  getLocalLlmCatalog.mockResolvedValue({ models: [] });
+});
+
+describe('LocalLlmTab installed models', () => {
+  it('lets a long model id wrap instead of truncating it', async () => {
+    await renderTab();
+    const name = screen.getByText(LONG_ID);
+    expect(name.className).toMatch(/\bbreak-all\b/);
+    expect(name.className).not.toMatch(/\btruncate\b/);
+  });
+
+  it('stacks the row on mobile and keeps it inline from sm up', async () => {
+    await renderTab();
+    // The row is the flex container holding the name; on mobile it stacks so the
+    // id gets the full width, and the action row drops beneath it.
+    const row = screen.getByText(LONG_ID).closest('.rounded-lg');
+    expect(row.className).toMatch(/\bflex-col\b/);
+    expect(row.className).toMatch(/\bsm:flex-row\b/);
+  });
+
+  it('folds the model size into the wrapping metadata line', async () => {
+    await renderTab();
+    // Size used to be its own fixed-width column competing with the name; it now
+    // rides along with params/quant/family so nothing is squeezed out.
+    expect(screen.getByText(/^34\.7B · Q6_K · qwen2 · [\d.]+ GB$/)).toBeTruthy();
+  });
+});

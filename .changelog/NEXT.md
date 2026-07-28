@@ -10,6 +10,10 @@
 
 - **[issue-3090] Provider quota can now be spent deliberately before a reset.** Configure a prompt, reserve, reset window, and dispatch cap for each CLI provider family; the opt-in scheduler checks usage without consuming tokens and only runs the selected provider when safe, known quota remains.
 
+## Local LLMs
+
+- Installed and catalog model names are now readable on a phone. Long ids like `hf.co/org/Some-Long-Model-Name-GGUF:Q6_K` used to be clipped to `hf.co/sja…` because the Chat/Delete buttons and the size column held their width; each row now stacks on narrow screens so the full name and its details wrap across the width, with the actions on their own line underneath. Desktop layout is unchanged.
+
 ## Navigation
 
 - Third-level Create navigation for Series and Universes can now be collapsed and expanded independently.
