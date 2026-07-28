@@ -10,7 +10,7 @@
  * own dismiss timer passes `collapseAfter` to fold on its schedule instead.
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { uuidv4 } from '../../lib/uuid.js';
 
 let toasts = [];
@@ -210,6 +210,27 @@ function ToastItem({ t, toastOptions }) {
   const isCollapsed = collapsed && collapsible;
   const bodyStyle = isCollapsed ? { ...style, display: 'none' } : style;
 
+  // Expanding the pill unmounts the pill. If the keyboard had focus on it,
+  // focus falls to <body> and the toast's own Reconcile/Reload/Ignore buttons
+  // drop out of the tab sequence — the next Tab restarts from the top of the
+  // document, past everything. So hand focus to the body it just revealed.
+  //
+  // Only when the pill actually held focus. A pointer activation in an engine
+  // that doesn't focus buttons on click has nothing to rescue, and moving focus
+  // there anyway would take the focus hold and pin the toast open until the
+  // user clicked elsewhere — turning a click of curiosity back into the
+  // parked overlay this all exists to remove.
+  const bodyRef = useRef(null);
+  const refocusOnExpand = useRef(false);
+
+  useEffect(() => {
+    if (isCollapsed || !refocusOnExpand.current) return;
+    refocusOnExpand.current = false;
+    // Runs after commit, so the body is no longer `display: none` and can
+    // actually take focus.
+    bodyRef.current?.focus();
+  }, [isCollapsed]);
+
   return (
     <>
       {isCollapsed && (
@@ -222,7 +243,10 @@ function ToastItem({ t, toastOptions }) {
         // folds it away again on its own.
         <button
           type="button"
-          onClick={() => setCollapsed(false)}
+          onClick={e => {
+            refocusOnExpand.current = e.currentTarget === document.activeElement;
+            setCollapsed(false);
+          }}
           aria-label={collapsedLabel(t)}
           className="pointer-events-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-port-card border border-port-border shadow-lg text-sm"
         >
@@ -230,7 +254,12 @@ function ToastItem({ t, toastOptions }) {
         </button>
       )}
       <div
+        ref={bodyRef}
         style={bodyStyle}
+        // Focusable only programmatically (see the refocus effect); -1 keeps
+        // the body itself out of the tab sequence so it never sits between the
+        // page's own controls.
+        tabIndex={-1}
         role={t.type === 'error' ? 'alert' : 'status'}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}

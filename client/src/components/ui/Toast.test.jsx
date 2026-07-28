@@ -143,6 +143,42 @@ describe('long-lived toasts stop blocking the page', () => {
     expect(screen.queryByRole('button', { name: /show notification/i })).toBeNull();
   });
 
+  it('moves focus into the toast when the pill is expanded from the keyboard', () => {
+    act(() => {
+      toast(() => <button type="button">Reconcile</button>, {
+        duration: Infinity,
+        label: 'Install out of sync',
+      });
+    });
+    advance(COLLAPSE_AFTER_MS);
+
+    // Activating the pill unmounts it. Without a handover focus lands on
+    // <body> and the toast's own buttons leave the tab sequence entirely.
+    const pill = screen.getByRole('button', { name: /show notification/i });
+    pill.focus();
+    fireEvent.click(pill);
+
+    const body = screen.getByRole('status');
+    expect(document.activeElement).toBe(body);
+    expect(document.activeElement).not.toBe(document.body);
+    // ...and the toast stays put while it holds focus.
+    advance(COLLAPSE_AFTER_MS * 2);
+    expect(screen.getByRole('button', { name: 'Reconcile' })).toBeVisible();
+  });
+
+  it('does not steal focus when the pill is expanded by pointer', () => {
+    // Nothing to rescue, and taking focus here would pin the toast open until
+    // the user clicked elsewhere — back to a parked overlay.
+    act(() => { toast('Build is stale', { duration: Infinity }); });
+    advance(COLLAPSE_AFTER_MS);
+
+    fireEvent.click(screen.getByRole('button', { name: /show notification/i }));
+
+    expect(document.activeElement).toBe(document.body);
+    advance(COLLAPSE_AFTER_MS);
+    expect(screen.getByRole('button', { name: 'Show notification: Build is stale' })).toBeVisible();
+  });
+
   it('keeps focus held even after the pointer sweeps over the toast and leaves', () => {
     // Hover and focus are independent holds. A single shared flag lets the
     // pointer leaving release a hold that focus still owns, and the collapse
