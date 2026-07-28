@@ -6,7 +6,9 @@
  * gating — so any downstream skip (perpetual-work, branch-/issue-reconcile,
  * reference-watch, PLAN.md) permanently consumed a slot of
  * `family.maxDispatchesPerWindow` for an agent that never ran. The write now
- * happens once, post-agent, in `processTaskOutput`.
+ * happens once, post-agent, in `processTaskOutput` — and because that leaves a
+ * gap where a created burn isn't in the ledger yet, candidate selection counts
+ * in-flight burns alongside it so the window cap still holds.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';

@@ -43,11 +43,12 @@ function renderPrompt(candidate) {
 export async function buildTaskInput({ app } = {}) {
   if (!app) return { skip: { reason: 'no-app' } };
   const config = quotaBurnConfig(app);
-  // Ledger + in-flight: a quota-burn task already queued or running holds its
-  // window slot even though its ledger write lands post-agent (#3179).
-  const ledger = await getEffectiveQuotaBurnDispatches();
+  // Ledger + in-flight, NOT the bare ledger: a quota-burn task already queued or
+  // running holds its window slot even though its ledger write lands post-agent
+  // (#3179).
+  const dispatches = await getEffectiveQuotaBurnDispatches();
   const quotas = await getProviderQuotas({ refresh: true });
-  const candidates = selectBurnCandidates(quotas, config, { dispatches: ledger });
+  const candidates = selectBurnCandidates(quotas, config, { dispatches });
   const candidate = candidates[0];
   if (!candidate) return { skip: { reason: 'no-burnable-provider-quota' } };
 
