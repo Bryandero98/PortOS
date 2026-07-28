@@ -37,6 +37,45 @@ export function digestToBlobFilename(digest) {
 }
 
 /**
+ * Every blob a manifest needs on disk: the tiny config blob plus each layer, as
+ * `{ digest, size, filename, hex }`. Ollama verifies ALL of them before writing
+ * the manifest, so a pull that "reached 100%" can still be missing the config.
+ * `size` is null (never 0) when the manifest doesn't declare one — absent and
+ * legitimately-empty must not collapse. `hex` is the bare digest for comparing
+ * against a locally computed hash.
+ * @param {object} manifest a parsed Ollama/OCI manifest
+ * @returns {Array<{ digest: string, size: number|null, filename: string, hex: string }>}
+ */
+export function manifestBlobRefs(manifest) {
+  return [manifest?.config, ...(Array.isArray(manifest?.layers) ? manifest.layers : [])]
+    .filter((entry) => entry?.digest)
+    .map((entry) => ({
+      digest: entry.digest,
+      size: Number.isFinite(entry.size) ? entry.size : null,
+      filename: digestToBlobFilename(entry.digest),
+      hex: String(entry.digest).split(':').pop() || ''
+    }));
+}
+
+/**
+ * The Hugging Face OCI registry base URL for a passthrough pull ref
+ * (`hf.co/<owner>/<repo>:<quant>`), or null when the ref isn't one — those are
+ * the only refs whose manifest + blobs PortOS can fetch itself to finish a pull
+ * Ollama abandoned, since HF exposes the OCI registry API at
+ * `https://huggingface.co/v2/<owner>/<repo>/…`.
+ *
+ * Always addresses the canonical `huggingface.co` host: `hf.co` only
+ * 307-redirects there, and the redirect costs a round trip on every blob.
+ * @param {{ registry?: string, namespace?: string, name?: string, tag?: string }} ref
+ * @returns {string|null}
+ */
+export function huggingFaceRegistryBase(ref) {
+  const isHf = /^(hf\.co|huggingface\.co)$/i.test(String(ref?.registry || ''))
+    && Boolean(ref?.namespace) && Boolean(ref?.name) && Boolean(ref?.tag);
+  return isHf ? `https://huggingface.co/v2/${ref.namespace}/${ref.name}` : null;
+}
+
+/**
  * Parse an Ollama model ref into registry/namespace/name/tag, mirroring how
  * Ollama lays manifests out on disk. Bare names default to the
  * `registry.ollama.ai/library/<name>:latest` form.

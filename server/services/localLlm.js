@@ -830,6 +830,19 @@ function refreshOllamaBackedProviders() {
 }
 
 /**
+ * One-line label for an install progress frame, or null for a frame with nothing
+ * to say. Shared by every consumer of `installModel`'s `onProgress` (the install
+ * route and `migrateBackend`) so a new frame kind — `retrying`, `finalizing`, or
+ * whatever comes next — reaches all of them without another per-call-site edit.
+ * @param {{ status?: string, percent?: number|null }} [p]
+ * @returns {string|null}
+ */
+export function describeInstallProgress(p) {
+  if (p?.percent != null) return `${p.status || 'downloading'} ${p.percent}%`
+  return p?.status || null
+}
+
+/**
  * Install (pull/download) a model on a backend.
  * @param {(p) => void} [onProgress] - streaming progress (Ollama only)
  */
@@ -973,7 +986,8 @@ export async function migrateBackend(to, { mode = 'link', onProgress = () => {} 
     }
     onProgress({ event: 'start', message: `Downloading ${targetId} on ${to}${exact ? '' : ' (best-effort)'}…` })
     const r = await installModel(to, targetId, (p) => {
-      if (p?.percent != null) onProgress({ event: 'start', message: `Pulling ${targetId}: ${p.percent}%` })
+      const label = describeInstallProgress(p)
+      if (label) onProgress({ event: 'start', message: `Pulling ${targetId}: ${label}` })
     })
     // `pending` (LM Studio REST fallback) means the download was queued, not
     // finished — don't report it as a completed install.
