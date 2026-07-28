@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdir, rm, writeFile } from 'fs/promises';
+import { mkdir, rm, writeFile, readFile } from 'fs/promises';
 import { join } from 'path';
 
 const mockCosState = vi.hoisted(() => ({
@@ -23,7 +23,7 @@ vi.mock('./domainUsage.js', () => ({
   recordDomainUsage: vi.fn(async () => {})
 }));
 
-import { getAgent, createAgentOutputBatcher, completeAgent } from './cosAgents.js';
+import { getAgent, createAgentOutputBatcher, completeAgent, updateAgent } from './cosAgents.js';
 import { saveState } from './cosState.js';
 import { recordDomainUsage } from './domainUsage.js';
 import { cosEvents } from './cosEvents.js';
@@ -59,6 +59,19 @@ describe('cosAgents', () => {
       { line: 'full line one', timestamp: pausedAt },
       { line: 'full line two', timestamp: pausedAt }
     ]);
+  });
+
+  it('persists post-completion metadata updates in the archived agent record', async () => {
+    const agentId = 'agent-completed';
+    const completedAt = '2026-05-25T12:00:00.000Z';
+    mockCosState.state.agents[agentId] = { id: agentId, status: 'completed', completedAt, metadata: {}, output: [] };
+    const archiveDir = join(mockCosState.agentsDir, '2026-05-25', agentId);
+    await mkdir(archiveDir, { recursive: true });
+
+    await updateAgent(agentId, { metadata: { malwareScan: { verdict: 'DANGEROUS' } } });
+
+    const persisted = JSON.parse(await readFile(join(archiveDir, 'metadata.json'), 'utf8'));
+    expect(persisted.metadata.malwareScan.verdict).toBe('DANGEROUS');
   });
 });
 

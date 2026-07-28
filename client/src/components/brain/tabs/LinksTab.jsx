@@ -16,6 +16,7 @@ import {
   FolderOpen,
   Tag,
   ShieldCheck,
+  Skull,
   Search,
   ChevronDown,
   ChevronUp,
@@ -555,7 +556,9 @@ export default function LinksTab({ onRefresh }) {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
                       {link.isGitHubRepo ? (
-                        <GitBranch size={16} className="text-purple-400 shrink-0" />
+                        link.malwareScan?.verdict === 'DANGEROUS'
+                          ? <Skull size={16} className="text-port-error shrink-0" aria-label="Dangerous repository" />
+                          : <GitBranch size={16} className="text-purple-400 shrink-0" />
                       ) : (
                         <Link2 size={16} className="text-gray-400 shrink-0" />
                       )}
@@ -674,6 +677,19 @@ export default function LinksTab({ onRefresh }) {
                       <span className="text-xs text-port-error truncate max-w-[200px]" title={link.cloneError}>
                         {link.cloneError}
                       </span>
+                    )}
+
+                    {link.malwareScan?.reportId && (
+                      <a
+                        href={`/api/brain/links/${link.id}/scan-report`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className={`flex items-center gap-1 text-xs ${link.malwareScan.verdict === 'DANGEROUS' ? 'text-port-error' : 'text-port-accent'} hover:underline`}
+                        title="Open malware scan markdown report"
+                      >
+                        {link.malwareScan.verdict === 'DANGEROUS' ? <Skull size={12} /> : <ShieldCheck size={12} />}
+                        {link.malwareScan.verdict || 'Scan report'}
+                      </a>
                     )}
 
                     {/* Local path */}

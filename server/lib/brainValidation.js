@@ -386,6 +386,13 @@ export const linkRecordSchema = z.object({
   localPath: z.string().max(500).optional(),
   cloneStatus: z.enum(['pending', 'cloning', 'cloned', 'failed', 'none']).default('none'),
   cloneError: z.string().max(500).optional(),
+  malwareScan: z.object({
+    reportId: z.string().uuid(),
+    taskId: z.string().optional(),
+    status: z.enum(['completed', 'failed']).optional(),
+    verdict: z.enum(['CLEAN', 'CAUTION', 'DANGEROUS']).nullable().optional(),
+    completedAt: z.string().datetime().optional()
+  }).optional(),
   // Bucket grouping (nullable = ungrouped)
   bucketId: z.string().guid().nullable().optional(),
   bucketOrder: z.number().int().optional(),

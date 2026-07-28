@@ -561,6 +561,7 @@ async function runAgentSpawn(task) {
         laneName,
         cleanupWorktreeFn: cleanupAgentWorktree,
         isTruthyMetaFn: isTruthyMeta,
+        leanMode,
       });
     }
     if (useRunner) {

@@ -796,13 +796,24 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
           </div>
         )}
 
-        {completed && agent.metadata?.taskSummary && (
+        {completed && (agent.metadata?.taskSummary || agent.metadata?.malwareScan?.reportUrl) && (
           <div className="mt-2 bg-port-bg/50 border border-port-border/50 rounded p-2.5">
             <div className="text-[11px] text-gray-500 mb-1 flex items-center gap-1">
               <Sparkles size={10} aria-hidden="true" className="text-emerald-400" />
               Task Summary
             </div>
-            <MarkdownOutput content={agent.metadata.taskSummary} />
+            {agent.metadata?.taskSummary && <MarkdownOutput content={agent.metadata.taskSummary} />}
+            {agent.metadata?.malwareScan?.reportUrl && (
+              <a
+                href={agent.metadata.malwareScan.reportUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={`mt-2 inline-flex items-center gap-1 text-xs hover:underline ${agent.metadata.malwareScan.verdict === 'DANGEROUS' ? 'text-port-error' : 'text-port-accent'}`}
+              >
+                {agent.metadata.malwareScan.verdict === 'DANGEROUS' ? <Skull size={13} /> : <ExternalLink size={13} />}
+                View markdown scan report{agent.metadata.malwareScan.verdict ? ` (${agent.metadata.malwareScan.verdict})` : ''}
+              </a>
+            )}
           </div>
         )}
 

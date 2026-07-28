@@ -11,12 +11,17 @@ import { startAppCooldown, markAppReviewCompleted } from './appActivity.js';
 import { emitLog } from './cosEvents.js';
 import { extractAndStoreMemories } from './memoryExtractor.js';
 import { isRecoveryTask } from './recoveryTasks.js';
+import { finalizeMalwareScan } from './malwareScanReports.js';
 
 /**
  * Process post-completion tasks: memory extraction and app cooldown.
  * Shared between handleAgentCompletion (runner mode) and spawnDirectly (direct mode).
  */
 export async function processAgentCompletion(agentId, task, success, outputBuffer) {
+  await finalizeMalwareScan({ agentId, task, success }).catch(err => {
+    emitLog('warn', `Failed to finalize malware scan for ${task.id}: ${err.message}`, { taskId: task.id, agentId });
+  });
+
   // Extract memories from successful output
   if (success && outputBuffer.length > 100) {
     const memoryResult = await extractAndStoreMemories(agentId, task.id, outputBuffer, task).catch(err => {
