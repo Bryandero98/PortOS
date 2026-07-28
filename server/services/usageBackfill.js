@@ -5,6 +5,7 @@ import {
   applyHistoricalUsageCorrections,
   getReconciledUsageRunIds
 } from './usage.js';
+import { mergeUsageClaims, snapshotUsageClaims } from './usageReconciler.js';
 
 let job = {
   status: 'idle',
@@ -59,7 +60,12 @@ export function startHistoricalUsageBackfill({
     workerData: {
       runsDir,
       home,
-      reconciledRunIds: getReconciledUsageRunIds()
+      reconciledRunIds: getReconciledUsageRunIds(),
+      // The worker gets its own empty copy of usageReconciler.js's claim
+      // ledger (a separate module instance) — seed it from this thread's
+      // ledger so a message the live completion path already billed isn't
+      // billed again by the backfill scan.
+      claimsSeed: snapshotUsageClaims()
     }
   });
 
@@ -76,6 +82,7 @@ export function startHistoricalUsageBackfill({
       }
       if (message?.type !== 'complete') return;
       const result = message.result || {};
+      if (result.claimsSnapshot) mergeUsageClaims(result.claimsSnapshot);
       const applied = await applyHistoricalUsageCorrections(result.corrections || []);
       const appliedCorrections = (result.corrections || [])
         .filter((correction) => applied.correctedRunIds.includes(correction.runId));

@@ -56,9 +56,12 @@ const WINDOW_SLACK_MS = 60_000;
 // A transcript message must be counted exactly ONCE across every run that can
 // see it: without this, two concurrent runs in the same cwd (or one run whose
 // window overlaps a neighbour's through WINDOW_SLACK_MS) each fold the same
-// tokens and the cost report doubles. Process-local by design — it guards the
-// live completion path, which is the only writer; a restart loses the ledger,
-// but a run that already completed is never reconciled again.
+// tokens and the cost report doubles. Module-instance-local by design — the
+// live completion path (this module, in the main thread) and the historical
+// backfill worker (a SEPARATE module instance in a worker thread) each get
+// their own copy of this Set, so `snapshotUsageClaims`/`mergeUsageClaims`
+// hand claims across that boundary; see `usageBackfill.js`. A restart loses
+// the ledger, but a run that already completed is never reconciled again.
 const claimedMessages = new Set();
 
 // The ABSOLUTE cumulative position of each Codex rollout that has already been
@@ -74,6 +77,37 @@ const codexHighWater = new Map();
 export function __resetUsageClaims() {
   claimedMessages.clear();
   codexHighWater.clear();
+}
+
+/**
+ * Snapshot the current ledger so it can be handed to a worker thread — which
+ * gets its own empty copy of this module's state — and merged back once the
+ * worker finishes. Without this, the historical-usage backfill worker
+ * (`usageBackfillWorker.js`) and the live completion path (this module, run
+ * in the main thread) never see each other's claims, so a transcript message
+ * whose window overlaps a live run and a backfilled historical run could be
+ * billed by both.
+ */
+export function snapshotUsageClaims() {
+  return {
+    claimedMessages: [...claimedMessages],
+    codexHighWater: [...codexHighWater.entries()]
+  };
+}
+
+/** Merge claims made elsewhere (a worker thread's ledger) into this one. */
+export function mergeUsageClaims({ claimedMessages: claimed = [], codexHighWater: highWater = [] } = {}) {
+  for (const key of claimed) claimedMessages.add(key);
+  for (const [path, value] of highWater) {
+    const existing = codexHighWater.get(path);
+    codexHighWater.set(path, existing ? {
+      messages: Math.max(existing.messages || 0, value.messages || 0),
+      tokensIn: Math.max(existing.tokensIn || 0, value.tokensIn || 0),
+      tokensOut: Math.max(existing.tokensOut || 0, value.tokensOut || 0),
+      cacheReadTokens: Math.max(existing.cacheReadTokens || 0, value.cacheReadTokens || 0),
+      cacheWriteTokens: Math.max(existing.cacheWriteTokens || 0, value.cacheWriteTokens || 0)
+    } : value);
+  }
 }
 
 // A run is attributed only to transcripts whose cwd matches. A CoS agent works

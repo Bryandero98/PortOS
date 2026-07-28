@@ -3,7 +3,7 @@ import { join } from 'path';
 import { readdir } from 'fs/promises';
 import { estimateTokens, estimateTokensFromChars } from '../lib/contextBudget.js';
 import { readJSONFile, tryReadFile } from '../lib/fileUtils.js';
-import { reconcileRunUsage, transcriptFamily } from './usageReconciler.js';
+import { mergeUsageClaims, reconcileRunUsage, snapshotUsageClaims, transcriptFamily } from './usageReconciler.js';
 
 const listRunIds = async (runsDir) => readdir(runsDir, { withFileTypes: true })
   .then((entries) => entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name))
@@ -21,8 +21,16 @@ export async function scanHistoricalUsage({
   runsDir,
   home,
   reconciledRunIds = [],
+  claimsSeed = null,
   onProgress = () => {}
 }) {
+  // This function runs inside a worker thread, which gets its own empty copy
+  // of usageReconciler.js's module-level claim ledger — seed it from the main
+  // thread's ledger so a message the live completion path already billed is
+  // not billed again here. The caller merges this scan's final ledger state
+  // back into the main thread's ledger once this resolves (see `home`'s
+  // sibling `claimsSnapshot` in the return value).
+  if (claimsSeed) mergeUsageClaims(claimsSeed);
   const reconciled = new Set(reconciledRunIds);
   const candidates = [];
 
@@ -66,7 +74,7 @@ export async function scanHistoricalUsage({
     onProgress({ processed, total: candidates.length, found: corrections.length });
   }
 
-  return { corrections, processed, total: candidates.length };
+  return { corrections, processed, total: candidates.length, claimsSnapshot: snapshotUsageClaims() };
 }
 
 if (!isMainThread) {
