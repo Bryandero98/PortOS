@@ -345,9 +345,9 @@ export async function spawnTuiAgent({
   // ticking), this bounds the total run so a hung provider/CLI can't run
   // unbounded. See DEFAULT_TUI_MAX_RUNTIME_MS for the incident.
   let maxRuntimeTimer = null;
-  // Poll driving the wrap-up grace window that the max-runtime ceiling opens
-  // instead of reaping immediately (see MAX_RUNTIME_WRAP_UP_GRACE_MS). Cleared
-  // in finish() alongside every other timer.
+  // Deadline for the wrap-up grace window the max-runtime ceiling opens instead of
+  // reaping immediately (see MAX_RUNTIME_WRAP_UP_GRACE_MS). Cleared in finish()
+  // alongside every other timer.
   let wrapUpTimer = null;
 
   const streamingStrip = createStreamingAnsiStripper();
@@ -405,7 +405,7 @@ export async function spawnTuiAgent({
     if (pasteVerifyTimer) { clearInterval(pasteVerifyTimer); pasteVerifyTimer = null; }
     if (submitEnterTimer) { clearInterval(submitEnterTimer); submitEnterTimer = null; }
     if (maxRuntimeTimer) { clearTimeout(maxRuntimeTimer); maxRuntimeTimer = null; }
-    if (wrapUpTimer) { clearInterval(wrapUpTimer); wrapUpTimer = null; }
+    if (wrapUpTimer) { clearTimeout(wrapUpTimer); wrapUpTimer = null; }
     // Release the post-paste accumulator even when finalize fires mid-paste-
     // window. The pasteEnterTimer's own cleanup path nulls this too, but if
     // finalize comes from elsewhere (shell-exit, command-not-found, user
@@ -782,30 +782,27 @@ export async function spawnTuiAgent({
       () => finalized,
     );
 
-    const graceStartedAt = Date.now();
-    wrapUpTimer = setInterval(() => {
+    // A single deadline, NOT a poll: the 2s doneSentinelTimer is already watching
+    // this exact path at this exact cadence and owns the success transition (and
+    // finish() clears this handle), so polling here would just double the
+    // existsSync syscalls for 5 minutes to learn something the other timer acts on
+    // first. All this needs to do is fire once at the end of the window.
+    wrapUpTimer = setTimeout(() => {
       try {
-        if (finalized) { clearInterval(wrapUpTimer); wrapUpTimer = null; return; }
-        // The sentinel landed — the prod worked. Let the doneSentinelTimer
-        // finalize it as `agent-signaled-done`; just stop the grace clock.
-        if (sentinelPresent()) {
-          clearInterval(wrapUpTimer);
-          wrapUpTimer = null;
-          appendLine(`✅ Agent wrapped up within the max-runtime grace window`);
-          return;
-        }
-        if (Date.now() - graceStartedAt < MAX_RUNTIME_WRAP_UP_GRACE_MS) return;
-        clearInterval(wrapUpTimer);
         wrapUpTimer = null;
+        if (finalized) return;
+        // The sentinel landed right at the boundary — the prod worked after all.
+        // Let the sentinel path finalize it as the success it is.
+        if (sentinelPresent()) return;
         finishMaxRuntimeFailure(
           `it did not wrap up within ${graceMin}min of being asked, so the provider/CLI likely hung (a stalled request keeps the working counter repainting so the idle reaper never fires);`,
           'max-runtime-no-wrap-up',
         );
       } catch (err) {
-        // setInterval callback: an uncaught throw here would crash the process.
-        console.error(`❌ wrapUpTimer interval callback failed: ${err.message}`);
+        // setTimeout callback: an uncaught throw here would crash the process.
+        console.error(`❌ wrapUpTimer callback failed: ${err.message}`);
       }
-    }, DONE_POLL_INTERVAL_MS);
+    }, MAX_RUNTIME_WRAP_UP_GRACE_MS);
   };
 
   const sendPrompt = async (reason) => {

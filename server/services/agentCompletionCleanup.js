@@ -355,11 +355,14 @@ export async function runAgentCompletionCleanup({ agentId, task, agent, effectiv
     // budget and is waiting on a human (a pointer there would be dead metadata
     // that `updateTask` has to strip again on the next terminal write).
     if (!effectiveSuccess && task?.id) {
-      const { getTaskById, getAgent: getAgentForBranch } = await import('./cos.js');
+      const { getTaskById } = await import('./cos.js');
       const persisted = await getTaskById(task.id).catch(() => null);
       const willRetry = (persisted?.status ?? 'pending') === 'pending';
-      const cleanedAgent = willRetry ? await getAgentForBranch(agentId).catch(() => null) : null;
-      const { sourceWorkspace, worktreeBranch } = cleanedAgent?.metadata || {};
+      // Reuse the `agentState` fetched at the top of this function rather than
+      // re-reading the record: `getAgent` on a now-completed agent re-reads and
+      // splits the whole output.txt transcript (hundreds of KB for a TUI run),
+      // and both fields here are stamped once at registerAgent and never mutated.
+      const { sourceWorkspace, worktreeBranch } = (willRetry && agentState?.metadata) || {};
       const resumeBranch = await resolveResumeBranch(sourceWorkspace, worktreeBranch).catch(err => {
         emitLog('warn', `Failed to resolve resume branch for ${agentId}: ${err.message}`, { agentId });
         return null;
