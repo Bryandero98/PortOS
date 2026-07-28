@@ -1,4 +1,4 @@
-import { useState, useCallback, useId } from 'react';
+import { useState, useCallback, useId, useRef } from 'react';
 import { Loader2, RefreshCw } from 'lucide-react';
 import { ISSUE_AUTHOR_FILTER_OPTIONS } from '../cos/constants';
 import { WORK_TRACKER_LABELS, workItemNoun } from './constants';
@@ -50,15 +50,21 @@ export default function WorkItemPicker({ appId, target, onChange }) {
   const [work, setWork] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  // Guards against out-of-order responses: rapidly switching the author
+  // filter (or double-clicking Refresh) can let an earlier, slower request
+  // resolve after a newer one, overwriting the picker with a stale item list.
+  const requestIdRef = useRef(0);
 
   const loadWork = useCallback(async (filter) => {
+    const requestId = ++requestIdRef.current;
     setLoading(true);
     setError('');
     const data = await api.getAppWorkItems(appId, { issueAuthorFilter: filter || undefined })
       .catch((err) => {
-        setError(err.message || 'Failed to load work items');
+        if (requestId === requestIdRef.current) setError(err.message || 'Failed to load work items');
         return null;
       });
+    if (requestId !== requestIdRef.current) return;
     setLoading(false);
     if (!data) return;
     setWork(data);
