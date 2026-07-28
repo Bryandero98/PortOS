@@ -82,6 +82,18 @@ vi.mock('../services/sprites/animationTrackWorkflow.js', () => ({
   approveTrackRun: vi.fn(async (track) => ({ track, runs: [], selection: { status: 'in-progress' }, set: null })),
 }));
 
+// Animation-type CRUD (#3153). The service owns every refusal (built-in, collision,
+// in-use) and the derivation; these tests are about the ROUTES — ordering ahead of
+// `/:id`, which schema gates which verb, and that the id/patch reach the service
+// unchanged. The refusals themselves are asserted in animationTrackCrud.test.js.
+vi.mock('../services/sprites/animationTrackCrud.js', () => ({
+  listAnimationTracks: vi.fn(() => ({ tracks: [{ id: 'walk', builtin: true }], storePath: 'sprites/animation-tracks.json' })),
+  createAnimationTrack: vi.fn(async (input) => ({ tracks: [{ id: input.id }], restartRequired: true })),
+  updateAnimationTrack: vi.fn(async () => ({ tracks: [], restartRequired: true })),
+  deleteAnimationTrack: vi.fn(async () => ({ tracks: [], restartRequired: true })),
+  animationTrackStoreOrigin: vi.fn(async () => 'seed'),
+}));
+
 vi.mock('../services/sprites/walkTrims.js', () => ({
   saveLoopTrim: vi.fn(async () => ({ strip: 'walk/trims/t-v001-strip.png', loop: 'walk/trims/t-v001.gif', manifest: 'walk/trims/t-v001.json', frameCount: 3, disabledFrameCount: 1 })),
 }));
@@ -106,6 +118,7 @@ import * as reference from '../services/sprites/reference.js';
 import * as assetPrompt from '../services/sprites/assetPrompt.js';
 import * as walk from '../services/sprites/walk.js';
 import * as trackWorkflow from '../services/sprites/animationTrackWorkflow.js';
+import * as trackCrud from '../services/sprites/animationTrackCrud.js';
 import * as walkTrims from '../services/sprites/walkTrims.js';
 import * as atlas from '../services/sprites/atlas.js';
 import * as publish from '../services/sprites/publish.js';
@@ -162,6 +175,178 @@ describe('sprites routes', () => {
     expect(reference.listReferenceSources).toHaveBeenCalled();
     // The literal path must not be swallowed by the /:id route.
     expect(records.getRecordWithAssets).not.toHaveBeenCalled();
+  });
+
+  // Animation-type CRUD (#3153) — the authoring surface for the user-defined half
+  // of the track registry.
+  describe('animation-type CRUD', () => {
+    it('GET /animation-tracks lists the registry and the store origin (before /:id)', async () => {
+      const r = await request(app).get('/api/sprites/animation-tracks');
+      expect(r.status).toBe(200);
+      expect(r.body).toEqual({
+        tracks: [{ id: 'walk', builtin: true }],
+        storePath: 'sprites/animation-tracks.json',
+        origin: 'seed',
+      });
+      // The literal path must not be captured as a record id by the /:id GET.
+      expect(records.getRecordWithAssets).not.toHaveBeenCalled();
+    });
+
+    it('POST /animation-tracks validates the authored subset and 201s', async () => {
+      const body = {
+        id: 'chest-opening',
+        label: 'Chest opening',
+        directional: false,
+        kinds: ['object'],
+        minFrameCount: 2,
+        maxFrameCount: 8,
+        defaultFrameCount: 4,
+        minFps: 2,
+        maxFps: 12,
+        defaultFps: 6,
+        promptTemplate: 'Animate the {{kind}} {{name}} opening once.',
+      };
+      const r = await request(app).post('/api/sprites/animation-tracks').send(body);
+      expect(r.status).toBe(201);
+      expect(r.body.restartRequired).toBe(true);
+      expect(trackCrud.createAnimationTrack).toHaveBeenCalledWith(body);
+      // The literal path must not be captured by POST / (create record).
+      expect(records.createCharacter).not.toHaveBeenCalled();
+    });
+
+    const validBody = {
+      id: 'chest-opening',
+      label: 'Chest opening',
+      directional: false,
+      kinds: ['object'],
+      minFrameCount: 2,
+      maxFrameCount: 8,
+      defaultFrameCount: 4,
+      minFps: 2,
+      maxFps: 12,
+      defaultFps: 6,
+      promptTemplate: 'Animate it.',
+    };
+
+    it('POST /animation-tracks rejects a DERIVED field supplied by the request', async () => {
+      // These name files on disk and the publish-contract key, and the registry
+      // requires them globally unique — accepting one from a request would let a typo
+      // hand this track another's evidence chain, so `.strict()` refuses it by name
+      // rather than silently stripping a field the user thinks they set.
+      for (const extra of [
+        { setKind: 'finalized-eight-direction-walk-set' },
+        { selectionKind: 'reviewed-directional-walk-selection' },
+        { contractFrameCountField: 'walkFrameCount' },
+        { standaloneContract: true },
+        { builtin: true },
+      ]) {
+        const bad = await request(app).post('/api/sprites/animation-tracks').send({ ...validBody, ...extra });
+        expect(bad.status).toBe(400);
+      }
+      expect(trackCrud.createAnimationTrack).not.toHaveBeenCalled();
+    });
+
+    it('POST /animation-tracks rejects a malformed id, an unknown kind, and a missing prompt', async () => {
+      const cases = [
+        { ...validBody, id: 'Not A Slug' },
+        { ...validBody, kinds: ['weapon'] },
+        { ...validBody, kinds: [] },
+        { ...validBody, promptTemplate: '' },
+        { ...validBody, label: '' },
+      ];
+      for (const body of cases) {
+        expect((await request(app).post('/api/sprites/animation-tracks').send(body)).status).toBe(400);
+      }
+      expect(trackCrud.createAnimationTrack).not.toHaveBeenCalled();
+    });
+
+    it('POST /animation-tracks rejects an out-of-order bounds triple at the schema', async () => {
+      // Front-runs the registry's own cross-field rule so the form gets a per-field
+      // 400 naming the default, instead of a whole-table 409.
+      const bad = await request(app).post('/api/sprites/animation-tracks')
+        .send({ ...validBody, minFrameCount: 6, defaultFrameCount: 4, maxFrameCount: 8 });
+      expect(bad.status).toBe(400);
+      expect(bad.body.context.details).toEqual([
+        { path: 'defaultFrameCount', message: 'minFrameCount <= defaultFrameCount <= maxFrameCount is required' },
+      ]);
+      const badFps = await request(app).post('/api/sprites/animation-tracks')
+        .send({ ...validBody, minFps: 2, defaultFps: 20, maxFps: 12 });
+      expect(badFps.status).toBe(400);
+      expect(badFps.body.context.details).toEqual([
+        { path: 'defaultFps', message: 'minFps <= defaultFps <= maxFps is required' },
+      ]);
+      expect(trackCrud.createAnimationTrack).not.toHaveBeenCalled();
+    });
+
+    it('PUT /animation-tracks/:trackId takes a partial patch and threads the id through', async () => {
+      const r = await request(app).put('/api/sprites/animation-tracks/chest-opening')
+        .send({ label: 'Chest opens', maxFrameCount: 12 });
+      expect(r.status).toBe(200);
+      expect(trackCrud.updateAnimationTrack).toHaveBeenCalledWith('chest-opening', { label: 'Chest opens', maxFrameCount: 12 });
+    });
+
+    it('PUT /animation-tracks/:trackId refuses a rename and an empty patch', async () => {
+      // Renaming would have to migrate the on-disk directories, every run record and
+      // every manifest — so it is a delete-plus-create, and `id` in the patch is a
+      // 400 naming the field rather than a silent no-op.
+      expect((await request(app).put('/api/sprites/animation-tracks/chest-opening')
+        .send({ id: 'chest-opens' })).status).toBe(400);
+      expect((await request(app).put('/api/sprites/animation-tracks/chest-opening').send({})).status).toBe(400);
+      expect(trackCrud.updateAnimationTrack).not.toHaveBeenCalled();
+    });
+
+    it('PUT /animation-tracks/:trackId rejects a malformed track id at the shape schema', async () => {
+      expect((await request(app).put('/api/sprites/animation-tracks/Bad_Id').send({ label: 'x' })).status).toBe(400);
+      expect(trackCrud.updateAnimationTrack).not.toHaveBeenCalled();
+    });
+
+    // The client's own suite mocks `apiSprites.js`, so it can never see a mismatch
+    // between the body the drawer builds and the schema that has to accept it — which
+    // is exactly how an `id` in the PUT patch (a hard 400 on every "Save changes")
+    // shipped invisibly behind two green suites. These two assert the WIRE shapes the
+    // drawer sends, against the real schemas.
+    it('accepts the exact POST body the Animation types drawer builds', async () => {
+      // Mirrors AnimationTypesDrawer's `form` — the authored subset plus `id`.
+      const r = await request(app).post('/api/sprites/animation-tracks').send({
+        id: 'jetpack-burst',
+        label: 'Jetpack burst',
+        directional: true,
+        kinds: ['character'],
+        minFrameCount: 2,
+        maxFrameCount: 8,
+        defaultFrameCount: 4,
+        minFps: 2,
+        maxFps: 12,
+        defaultFps: 6,
+        promptTemplate: 'Animate {{name}} firing a jetpack, facing {{direction}}.',
+      });
+      expect(r.status).toBe(201);
+    });
+
+    it('accepts the exact PUT body the drawer builds — the form MINUS the immutable id', async () => {
+      // The drawer strips `id` before a PUT; if it ever stops, this fails here rather
+      // than only in the browser.
+      const r = await request(app).put('/api/sprites/animation-tracks/chest-opening').send({
+        label: 'Chest opens',
+        directional: false,
+        kinds: ['object'],
+        minFrameCount: 2,
+        maxFrameCount: 12,
+        defaultFrameCount: 4,
+        minFps: 2,
+        maxFps: 12,
+        defaultFps: 6,
+        promptTemplate: 'Animate the {{kind}} {{name}} opening once.',
+      });
+      expect(r.status).toBe(200);
+    });
+
+    it('DELETE /animation-tracks/:trackId delegates (and is not captured by DELETE /:id)', async () => {
+      const r = await request(app).delete('/api/sprites/animation-tracks/chest-opening');
+      expect(r.status).toBe(200);
+      expect(trackCrud.deleteAnimationTrack).toHaveBeenCalledWith('chest-opening');
+      expect(records.deleteRecord).not.toHaveBeenCalled();
+    });
   });
 
   it('GET /:id/asset-prompt resolves an asset prompt by record-relative path', async () => {

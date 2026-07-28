@@ -5,7 +5,9 @@ import { WORK_TRACKERS } from './workTracker.js';
 import { SPRITE_ID_PATTERN, SPRITE_RECORD_KINDS } from '../services/sprites/recordsLogic.js';
 import { ANCHOR_DIRECTIONS, SPRITE_DIRECTIONS, TURNAROUND_ID } from '../services/sprites/prompts.js';
 import { CHROMA_KEY_HEXES } from '../services/sprites/chromaKey.js';
-import { WALK_TRACK } from '../services/sprites/animationTracks.js';
+import {
+  WALK_TRACK, AUTHORED_TRACK_FIELDS, TRACK_BOUND_TRIPLES,
+} from '../services/sprites/animationTracks.js';
 // #3152 — the EFFECTIVE table (compiled `walk` + the user-defined store), so a
 // user's track validates against its own bounds and occupies its own contract
 // field with no schema edit. The store reads one small JSON config synchronously
@@ -1306,6 +1308,90 @@ export const spriteTrackApproveSchema = z.object({
 export const spriteTrackParamsSchema = z.object({
   trackId: z.string().min(1).max(64).regex(/^[a-z0-9][a-z0-9-]*$/, 'invalid animation track id'),
 });
+
+// Authoring a user-defined animation type (#3153) — the user-facing subset of a
+// registry row, and NOTHING else. The five on-disk/contract discriminators
+// (`contractFrameCountField`, `selectionKind`, `setKind`, `finalErrorCode`,
+// `contractFpsField`) plus `standaloneContract` and `builtin` are DERIVED by
+// `animationTrackCrud.js` and deliberately absent here: they name files on disk and
+// publish-contract keys that `assertAnimationTrackRows` requires to be globally
+// unique, so accepting them from a request would let a typo hand one track another's
+// evidence chain. `.strict()` is what makes that a 400 the user can see rather than a
+// silently-stripped field they think they set.
+//
+// The frame/fps bounds are NOT registry-derived (unlike every other sprite schema
+// here) because this request is what DEFINES a track's bounds — there is no row to
+// read them from yet. The outer envelope is the widest the pipeline can pack; the
+// `min <= default <= max` ordering is the registry's own cross-field rule and is
+// asserted by `assertAnimationTrackRows` at save time, restated here only so the
+// form gets a per-field 400 instead of a whole-table 409.
+const spriteTrackBoundSchema = z.number().int().min(1).max(64);
+const spriteTrackFpsBoundSchema = z.number().int().min(1).max(60);
+
+// Keyed off AUTHORED_TRACK_FIELDS so this shape and the service's whitelist cannot
+// drift — a field in one and not the other fails silently in one direction (Zod
+// strips it) and as an unrecognized key in the other. The unusual `Object.fromEntries`
+// spelling is what makes that coupling mechanical: adding a key to the constant
+// without a validator here is an immediate boot failure naming the field, instead of
+// a value that reaches the store unvalidated.
+const SPRITE_ANIMATION_TRACK_FIELD_SCHEMAS = {
+  label: z.string().min(1).max(120),
+  directional: z.boolean(),
+  kinds: z.array(z.enum(SPRITE_RECORD_KINDS)).min(1),
+  minFrameCount: spriteTrackBoundSchema,
+  maxFrameCount: spriteTrackBoundSchema,
+  defaultFrameCount: spriteTrackBoundSchema,
+  minFps: spriteTrackFpsBoundSchema,
+  maxFps: spriteTrackFpsBoundSchema,
+  defaultFps: spriteTrackFpsBoundSchema,
+  // The i2v instruction. A stored row MUST carry one (a user-defined track has no
+  // compiled prompt builder to fall back to), so this is required on create and
+  // non-empty on update — an empty template would throw out of
+  // `buildTrackVideoPrompt` after the user clicked Generate.
+  promptTemplate: z.string().min(1).max(4000),
+};
+
+const spriteAnimationTrackFields = Object.fromEntries(AUTHORED_TRACK_FIELDS.map((key) => {
+  const schema = SPRITE_ANIMATION_TRACK_FIELD_SCHEMAS[key];
+  if (!schema) throw new Error(`validation: no schema for authored animation-track field '${key}'`);
+  return [key, schema];
+}));
+
+// `min <= default <= max` on both knobs (the registry's own `TRACK_BOUND_TRIPLES`,
+// so the front-run check can't disagree with the assert it front-runs), reported on
+// the offending field so the form can point at it.
+//
+// Applied to each schema rather than once to a shared base because zod 4 refuses
+// `.partial()` on an object that already carries a refinement — so the shape has to
+// be finished first, then refined. The partial (update) case is why each triple is
+// skipped unless all three values are present: a patch that supplies only `maxFps`
+// is validated against the merged row by the service, not here.
+const refineTrackBounds = (schema) => schema.superRefine((value, ctx) => {
+  for (const [min, def, max] of TRACK_BOUND_TRIPLES) {
+    if ([value[min], value[def], value[max]].some((v) => v === undefined)) continue;
+    if (value[min] <= value[def] && value[def] <= value[max]) continue;
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [def],
+      message: `${min} <= ${def} <= ${max} is required`,
+    });
+  }
+});
+
+export const spriteAnimationTrackCreateSchema = refineTrackBounds(z.object({
+  // The id names the on-disk `<trackId>/` directory and every run's `track` field,
+  // so it reuses the same slug charset the `:trackId` param enforces.
+  id: spriteTrackParamsSchema.shape.trackId,
+  ...spriteAnimationTrackFields,
+}).strict());
+
+// `id` is absent from the patch on purpose — renaming would have to migrate the
+// on-disk directories, every run record and every manifest, so it is a
+// delete-plus-create the user makes explicitly. `.strict()` turns an attempted
+// rename into a 400 naming `id` rather than a silent no-op.
+export const spriteAnimationTrackUpdateSchema = refineTrackBounds(
+  z.object(spriteAnimationTrackFields).strict().partial(),
+).refine((patch) => Object.keys(patch).length > 0, { message: 'at least one field is required' });
 
 // Pin the walk track's cycle target at the SET level (#2985). Both knobs are
 // required: the target is one atomic set-level decision, and a partial write

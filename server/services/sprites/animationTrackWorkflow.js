@@ -46,7 +46,7 @@ import { executeTuiRun } from '../../lib/tuiPromptRunner.js';
 import { GROK_TUI_ID } from '../../lib/grok.js';
 import { resolveGrokDuration } from '../../lib/grokVideoClip.js';
 import { getSettings } from '../settings.js';
-import { getRecord } from './records.js';
+import { getRecord, listRecords } from './records.js';
 import { requireTrack, loadManifest } from './reference.js';
 import { anchorIdForDirection } from './prompts.js';
 import { buildTrackVideoPrompt } from './trackPrompts.js';
@@ -139,6 +139,40 @@ export async function getTrackState(trackId, recordId) {
     loadSelection(row.id, recordId), loadSet(row.id, recordId), trackRuns(row.id, recordId),
   ]);
   return { track: row.id, definition: row, selection, set, runs };
+}
+
+/**
+ * Every record id carrying approved work for `trackId`, in library order (#3153).
+ *
+ * The evidence a delete or a directionality flip would orphan, as ONE question:
+ * either the finalized set (the frozen `setKind` artifact the atlas compiler
+ * re-verifies) or a review selection with at least one approved direction. Both
+ * are renders the user approved and both are keyed by the discriminator strings
+ * the mutation would remove from the registry — a set alone would miss a
+ * half-approved directional track, where seven approvals exist but the eighth
+ * hasn't frozen the set yet.
+ *
+ * Lives here rather than in the CRUD service because the on-disk layout
+ * (`<track>/<id>-<track>-{selection,set}-v1.json`) is this module's contract; a
+ * second reader spelling those filenames is exactly the drift the generic
+ * workflow collapsed.
+ *
+ * Deliberately tolerant of a record whose directory is unreadable: `loadSelection`
+ * and `loadSet` answer `null` for anything absent, so a record with no assets
+ * simply doesn't carry the track. It never invents a false positive that would
+ * block a legitimate delete.
+ */
+export async function recordsCarryingTrack(trackId) {
+  const records = await listRecords();
+  const carried = await Promise.all(records.map(async (record) => {
+    const [selection, set] = await Promise.all([
+      loadSelection(trackId, record.id), loadSet(trackId, record.id),
+    ]);
+    const approved = Object.values(selection?.directions || {})
+      .some((entry) => entry?.status === 'approved');
+    return set || approved ? record.id : null;
+  }));
+  return carried.filter(Boolean);
 }
 
 /**

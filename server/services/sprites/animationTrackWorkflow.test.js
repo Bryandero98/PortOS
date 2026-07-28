@@ -62,6 +62,7 @@ const records = await import('./records.js');
 const { lockReference } = await import('./reference.js');
 const {
   getTrackState, startTrackGeneration, approveTrackRun, trackAuthoringDirections, trackSetRelPath,
+  recordsCarryingTrack,
 } = await import('./animationTrackWorkflow.js');
 const {
   getAnimationTrack, sourceReferenceFor, SCANNER_TRACK, AMBIENT_TRACK,
@@ -310,5 +311,64 @@ describe('registry-derived authoring shape (#3136)', () => {
   it('throws for an unregistered track rather than defaulting to walk', async () => {
     // The sentinel rule: a mis-keyed track must not silently author walk state.
     await expect(getTrackState('jetpack', 'pioneer')).rejects.toThrow(/Unknown animation track 'jetpack'/);
+  });
+});
+
+describe('recordsCarryingTrack (#3153)', () => {
+  // The evidence scan behind the CRUD surface's in-use refusal: deleting a track (or
+  // flipping its facing mode) with approved renders on disk would orphan artifacts
+  // the atlas compiler re-verifies by their `setKind`/`selectionKind`. The refusal
+  // itself is asserted in animationTrackCrud.test.js; what only this module can get
+  // wrong is which on-disk shapes count as "carrying" the track.
+  const writeArtifact = async (recordId, relPath, doc) => {
+    const abs = join(TEST_ROOT, 'sprites', recordId, relPath);
+    await mkdir(join(abs, '..'), { recursive: true });
+    await writeFile(abs, JSON.stringify(doc));
+  };
+
+  it('is empty when no record carries the track', async () => {
+    await records.createRecord({ kind: 'character', name: 'Placeholder Hero' }, newId());
+    expect(await recordsCarryingTrack(SCANNER_TRACK)).toEqual([]);
+  });
+
+  it('counts a FINALIZED set', async () => {
+    const id = newId();
+    await records.createRecord({ kind: 'character', name: 'Placeholder Hero' }, id);
+    await writeArtifact(id, trackSetRelPath(SCANNER_TRACK, id), { kind: 'finalized-eight-direction-scanner-set' });
+    expect(await recordsCarryingTrack(SCANNER_TRACK)).toEqual([id]);
+  });
+
+  it('counts a selection with at least one APPROVED direction, before the set freezes', async () => {
+    // A directional track with seven approvals has no set yet — but those seven are
+    // renders the user approved, so a set-only check would let the delete through and
+    // orphan them.
+    const id = newId();
+    await records.createRecord({ kind: 'character', name: 'Placeholder Hero' }, id);
+    await writeArtifact(id, `${SCANNER_TRACK}/${id}-${SCANNER_TRACK}-selection-v1.json`, {
+      kind: 'reviewed-directional-scanner-selection',
+      directions: { east: { status: 'approved' }, north: { status: 'candidate' } },
+    });
+    expect(await recordsCarryingTrack(SCANNER_TRACK)).toEqual([id]);
+  });
+
+  it('does NOT count an in-progress selection with no approvals', async () => {
+    // An unapproved candidate is re-derivable work the user has not committed to, so
+    // it must not block a delete — otherwise a single abandoned render permanently
+    // pins the track.
+    const id = newId();
+    await records.createRecord({ kind: 'character', name: 'Placeholder Hero' }, id);
+    await writeArtifact(id, `${SCANNER_TRACK}/${id}-${SCANNER_TRACK}-selection-v1.json`, {
+      kind: 'reviewed-directional-scanner-selection',
+      directions: { east: { status: 'candidate' } },
+    });
+    expect(await recordsCarryingTrack(SCANNER_TRACK)).toEqual([]);
+  });
+
+  it('scopes to the asked-for track, so another track\'s work never blocks this one', async () => {
+    const id = newId();
+    await records.createRecord({ kind: 'place', name: 'Example Willow' }, id);
+    await writeArtifact(id, trackSetRelPath(AMBIENT_TRACK, id), { kind: 'finalized-single-row-ambient-set' });
+    expect(await recordsCarryingTrack(AMBIENT_TRACK)).toEqual([id]);
+    expect(await recordsCarryingTrack(SCANNER_TRACK)).toEqual([]);
   });
 });
