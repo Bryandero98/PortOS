@@ -19,6 +19,7 @@ import { finalizeAgent, releaseAgentLane } from './agentFinalization.js';
 import { activeAgents, userTerminatedAgents, pausedAgents, isFalsyMeta } from './agentState.js';
 import { PATHS } from '../lib/fileUtils.js';
 import { DONE_SENTINEL_NAME, parseSentinelPayload } from '../lib/agentSentinel.js';
+import { SENTINEL_COMPLETION_MARKER } from '../lib/agentOutputMarkers.js';
 import { resolvePrCompletion } from '../lib/prDisposition.js';
 import { canTypeSlashCommands } from '../lib/slashdoInvocation.js';
 import { normalizeReviewers } from '../lib/validation.js';
@@ -393,7 +394,10 @@ export async function spawnTuiAgent({
     // parses back as its own text, so this is a no-op change for existing types.
     const { summary } = parseSentinelPayload(contents);
     if (!summary) return;
-    appendLine(`✅ Agent signaled completion`);
+    // Shared constant, not a literal: `extractAgentSummary` anchors the PR-body
+    // extraction on this exact line to tell the agent's summary apart from the
+    // lifecycle telemetry above it. Reword it here only, and the noise returns.
+    appendLine(SENTINEL_COMPLETION_MARKER);
     const truncated = summary.length > 4096 ? `${summary.slice(0, 4096)}\n…[truncated]` : summary;
     for (const line of truncated.split('\n')) appendLine(line);
   };

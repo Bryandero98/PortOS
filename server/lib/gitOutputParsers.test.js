@@ -139,4 +139,85 @@ describe('extractAgentSummary', () => {
     const summary = extractAgentSummary(output);
     expect(summary?.split('\n')[0]).toContain('Added a Run Backup Now button');
   });
+
+  // Regression: PR #3191 shipped with "📟 TUI session started: … (codex …)" as the
+  // first three lines of its description. A TUI agent's output.txt has no tool-call
+  // artifacts at all, so the old backwards walk found no boundary and kept the whole
+  // buffer — lifecycle telemetry included.
+  it('drops TUI lifecycle telemetry and keeps only the sentinel summary', () => {
+    const output = [
+      '📟 TUI session started: 92356307 (codex --dangerously-bypass-approvals-and-sandbox --model gpt-5.6-terra)',
+      '💡 Open the Shell tab for live TUI output — this panel only logs lifecycle events.',
+      '📟 Prompt pasted into TUI session 92356307 (ready)',
+      '✅ Agent signaled completion',
+      '## Summary',
+      'Rendered malware scan reports inside PortOS.',
+      '## Changes',
+      '- Added a deep-linkable Brain scan-report page.',
+    ].join('\n');
+
+    const summary = extractAgentSummary(output);
+    expect(summary).not.toContain('TUI session started');
+    expect(summary).not.toContain('Open the Shell tab');
+    expect(summary).not.toContain('Prompt pasted');
+    expect(summary).not.toContain('Agent signaled completion');
+    expect(summary?.split('\n')[0]).toBe('Rendered malware scan reports inside PortOS.');
+    expect(summary).toContain('## Changes');
+  });
+
+  it('drops mid-run lifecycle warnings that land after the completion marker', () => {
+    const output = [
+      '📟 TUI session started: abc12345 (codex)',
+      '⚠️ Paste verification failed — prompt text not found in buffer, retrying in 5000ms',
+      '✅ Agent signaled completion',
+      'Fixed the scan-report route so deep links resolve to the SPA.',
+      '⏳ Max runtime reached — asking the agent to wrap up',
+    ].join('\n');
+
+    const summary = extractAgentSummary(output);
+    expect(summary).toBe('Fixed the scan-report route so deep links resolve to the SPA.');
+  });
+
+  it('finds the completion marker even when the sentinel summary runs past the 4000-char tail', () => {
+    const filler = 'x'.repeat(5000);
+    const output = [
+      '📟 TUI session started: abc12345 (codex)',
+      '✅ Agent signaled completion',
+      'Reworked the exporter so every frame lands in the atlas.',
+      filler,
+    ].join('\n');
+
+    const summary = extractAgentSummary(output);
+    expect(summary?.split('\n')[0]).toBe('Reworked the exporter so every frame lands in the atlas.');
+    expect(summary).not.toContain('TUI session started');
+  });
+
+  it.each([
+    ['## Branch', 'cos/task-example/agent-example'],
+    ['## PR', 'https://example.com/org/repo/pull/1'],
+  ])('drops the trailing "%s" section the sentinel template asks for', (heading, value) => {
+    const output = [
+      '✅ Agent signaled completion',
+      '## Summary',
+      'Wrapped Brain Link tags so they no longer scroll horizontally on mobile.',
+      heading,
+      value,
+    ].join('\n');
+
+    const summary = extractAgentSummary(output);
+    expect(summary).toBe('Wrapped Brain Link tags so they no longer scroll horizontally on mobile.');
+  });
+
+  it('leaves a non-TUI streamed summary on the tool-call walk', () => {
+    const output = [
+      '🔧 Using Edit tool',
+      '  → /path/to/file.js',
+      '',
+      'Reworked the retry backoff so a wedged provider is reaped instead of spun on.',
+    ].join('\n');
+
+    expect(extractAgentSummary(output)).toBe(
+      'Reworked the retry backoff so a wedged provider is reaped instead of spun on.'
+    );
+  });
 });

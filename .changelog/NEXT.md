@@ -16,6 +16,7 @@
 
 ## Fixed
 
+- **CoS agent PRs no longer open with TUI startup noise as their description.** A PR that PortOS opened for a Codex/Antigravity/OpenCode agent led with the session's own lifecycle log — `📟 TUI session started: … (codex …)`, `💡 Open the Shell tab…`, `📟 Prompt pasted…` — before getting to what the agent actually did. The PR description now starts at the agent's completion summary and drops PortOS's status lines, along with the trailing `## Branch` / `## PR` section that only repeats what the PR page already shows.
 - **Branch reconciler no longer hands long-lived shared branches to the coordinator agent.** `gh-pages` (the GitHub Pages publishing branch) is now protected alongside `main`/`master`/`dev`/`develop`/`release`, so the scheduled `branch-reconcile` task never tries to "open a PR" merging it into the default branch (which would break the published site). The reconciler now reuses the single canonical `PROTECTED_BRANCHES` set in `server/lib/gitArgs.js` instead of its own narrower list, so it also picks up `dev`/`develop` protection.
 
 ## Changed
