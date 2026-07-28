@@ -1,6 +1,7 @@
 import { getProviderQuotas } from './providerUsage.js';
 import { join } from 'path';
 import { atomicWrite, PATHS, readJSONFile } from '../lib/fileUtils.js';
+import { createFileWriteQueue } from '../lib/fileWriteQueue.js';
 import { hoursUntilReset, normalizeResetAt } from '../lib/quotaReset.js';
 
 export const QUOTA_BURN_TASK_TYPE = 'quota-burn';
@@ -27,11 +28,23 @@ export async function getQuotaBurnDispatches() {
   return loaded && typeof loaded === 'object' ? loaded : {};
 }
 
+// Single-tail queue for the dispatch ledger's read-modify-write. Two quota-burn
+// agents (one per app) can finalize concurrently, and each finalization records a
+// dispatch — unserialized, both would read the same count and write the same
+// increment, losing one burn. An undercounted ledger then lets the window
+// dispatch past `maxDispatchesPerWindow`, which is real quota overspend. This is
+// the "serialize two write paths that mutate the same record" case, not a
+// defense against competing users. It only became reachable when the write moved
+// from generation (sequential, one app at a time) to finalize (#3179).
+const ledgerWriteQueue = createFileWriteQueue();
+
 export async function recordQuotaBurnDispatch(key) {
-  const ledger = await getQuotaBurnDispatches();
-  const next = { ...ledger, [key]: Number(ledger[key] || 0) + 1 };
-  await atomicWrite(LEDGER_FILE, next);
-  return next;
+  return ledgerWriteQueue(async () => {
+    const ledger = await getQuotaBurnDispatches();
+    const next = { ...ledger, [key]: Number(ledger[key] || 0) + 1 };
+    await atomicWrite(LEDGER_FILE, next);
+    return next;
+  });
 }
 
 /**

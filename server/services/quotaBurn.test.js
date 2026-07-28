@@ -118,3 +118,37 @@ describe('getEffectiveQuotaBurnDispatches', () => {
     await expect(getEffectiveQuotaBurnDispatches({ ignoreTaskId: 'sys-finishing' })).resolves.toEqual({ 'grok:1': 1 });
   });
 });
+
+/**
+ * Two quota-burn agents (one per app) can finalize concurrently, and each
+ * finalization records a dispatch. The ledger update is a read-modify-write, so
+ * without serialization both would read the same count and write the same
+ * increment — losing a burn and letting the window overspend its cap.
+ */
+describe('recordQuotaBurnDispatch serialization', () => {
+  afterEach(() => { vi.doUnmock('../lib/fileUtils.js'); vi.resetModules(); });
+
+  it('does not lose an increment when two completions race', async () => {
+    vi.resetModules();
+    let stored = {};
+    vi.doMock('../lib/fileUtils.js', async (importActual) => ({
+      ...(await importActual()),
+      readJSONFile: async () => ({ ...stored }),
+      // The delay must sit on the WRITE: it holds each read-modify-write open
+      // long enough for the next caller's read to observe the pre-write state.
+      // (A delay on the read instead resolves in a macrotask whose continuation
+      // runs the whole RMW in microtasks, so the cycles never actually overlap
+      // and the test would pass even unserialized.)
+      atomicWrite: async (_file, data) => { await new Promise((r) => setTimeout(r, 5)); stored = { ...data }; },
+    }));
+    const { recordQuotaBurnDispatch, getQuotaBurnDispatches } = await import('./quotaBurn.js');
+
+    await Promise.all([
+      recordQuotaBurnDispatch('grok:1'),
+      recordQuotaBurnDispatch('grok:1'),
+      recordQuotaBurnDispatch('codex:2'),
+    ]);
+
+    await expect(getQuotaBurnDispatches()).resolves.toEqual({ 'grok:1': 2, 'codex:2': 1 });
+  });
+});
