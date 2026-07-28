@@ -28,7 +28,6 @@ import {
   manifestBlobRefs, huggingFaceRegistryBase
 } from '../lib/localLlmDisk.js'
 import { buildHfAuthHeaders } from '../lib/huggingfaceLora.js'
-import { getHfToken } from '../lib/hfToken.js'
 import { isEmbeddingModel } from '../lib/localModelHeuristics.js'
 
 const execFileAsync = promisify(execFile)
@@ -983,6 +982,10 @@ async function finalizeHuggingFacePull(modelId) {
 
   const modelsDir = getModelsDir()
   const blobsDir = join(modelsDir, 'blobs')
+  // Imported lazily: lib/hfToken.js reaches services/settings.js, which resolves
+  // its file path from PATHS at module load — a static import would drag that
+  // (and everything settings pulls in) into every consumer of this module.
+  const { getHfToken } = await import('../lib/hfToken.js')
   const headers = buildHfAuthHeaders(await getHfToken())
   const fetched = await fetchHuggingFaceDocument(`${base}/manifests/${ref.tag}`, headers)
   if (fetched.error) return { success: false, error: `manifest fetch failed: ${fetched.error}` }
