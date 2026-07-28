@@ -23,8 +23,9 @@
  *   text        — the raw chart source (parsed here; the parser never throws)
  *   fontSizeRem — scales the labels/legend text with the viewer's font control
  *   activeStep  — `{ bar, step }` | null — draws the playhead column
- *   onStepClick — optional `(bar, step)` for a future tap-a-cell editor (#3115
- *                 out-of-scope); when absent the grid renders as a plain image
+ *   onStepClick — optional `(barIndex, step, pieceId)` for a future tap-a-cell
+ *                 editor (#3115 out-of-scope); when absent the grid renders as
+ *                 a plain image
  */
 
 import { memo, useMemo } from 'react';
