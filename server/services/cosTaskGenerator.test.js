@@ -28,7 +28,7 @@ vi.mock('./codeReview.js', async (importActual) => ({
   getCodeReviewDefaults: vi.fn(async () => ({ reviewers: ['copilot'], usernames: ['alice'], optionalReviewers: [] })),
 }));
 
-import { selectDryRunAutoApproved, exceedsMaxSpawns, resolveIssueAuthorFilterBlock, resolveSwarmBlock, isCooldownExemptTask, emitOnDemandEmpty, buildJiraTicketTask, buildImprovementDedupSets, normalizeWorkItemRef, buildTargetWorkItemBlock } from './cosTaskGenerator.js';
+import { selectDryRunAutoApproved, exceedsMaxSpawns, resolveIssueAuthorFilterBlock, resolveSwarmBlock, isCooldownExemptTask, emitOnDemandEmpty, buildJiraTicketTask, buildImprovementDedupSets, normalizeWorkItemRef, buildTargetWorkItemBlock, resolveTaskInputHook } from './cosTaskGenerator.js';
 import { cosEvents } from './cosEvents.js';
 import { MAX_TOTAL_SPAWNS } from '../lib/validation.js';
 
@@ -750,5 +750,95 @@ describe('buildImprovementDedupSets (#2614 — failure-blocked tasks occupy thei
     // Source-pinned: the queue path must consume buildImprovementDedupSets so
     // its occupancy semantics can't silently drift from the tested helper.
     expect(GEN_SRC).toMatch(/buildImprovementDedupSets\(existingTasks/);
+  });
+});
+
+/**
+ * `hookMetadata` is the channel a buildTaskInput hook uses to defer a side
+ * effect until the task is CERTAIN to exist (#3179). quota-burn rides its
+ * resolved dispatch key across on it so the ledger is written post-agent, rather
+ * than inside the input hook where any of the gates below it could still skip
+ * task creation and burn window budget on a dispatch that never ran.
+ */
+describe('resolveTaskInputHook — hookMetadata threading (#3179)', () => {
+  const app = { id: 'app-1', name: 'App One' };
+  const taskSchedule = { recordExecution: vi.fn() };
+
+  // resolveTaskInputHook resolves the hook through a DYNAMIC import, so a
+  // per-test doMock reaches it without a file-wide module mock.
+  const withInputHook = async (buildTaskInput, fn) => {
+    vi.doMock('./taskTypeHooks.js', () => ({ getTaskInputHook: async () => buildTaskInput }));
+    try {
+      return await fn();
+    } finally {
+      vi.doUnmock('./taskTypeHooks.js');
+    }
+  };
+
+  it('threads a hook metadata bag through alongside the prompt and provider pins', async () => {
+    const resolved = await withInputHook(
+      async () => ({ prompt: 'BURN', providerId: 'grok-cli', model: 'grok-4', hookMetadata: { quotaBurnDispatchKey: 'grok:123' } }),
+      () => resolveTaskInputHook(app, 'quota-burn', taskSchedule)
+    );
+    expect(resolved).toMatchObject({
+      skip: false,
+      hookPrompt: 'BURN',
+      hookOverride: { providerId: 'grok-cli', model: 'grok-4' },
+      hookMetadata: { quotaBurnDispatchKey: 'grok:123' }
+    });
+  });
+
+  it('normalizes a missing or non-object bag to null so the caller never stamps a primitive', async () => {
+    const cases = [undefined, null, 'grok:123', 42, ['grok:123']];
+    for (const hookMetadata of cases) {
+      const resolved = await withInputHook(
+        async () => ({ prompt: 'BURN', hookMetadata }),
+        () => resolveTaskInputHook(app, 'quota-burn', taskSchedule)
+      );
+      expect(resolved.hookMetadata, `hookMetadata: ${JSON.stringify(hookMetadata)}`).toBeNull();
+    }
+  });
+
+  it('returns a null bag for a task type that registers no input hook', async () => {
+    const resolved = await withInputHook(null, () => resolveTaskInputHook(app, 'performance', taskSchedule));
+    expect(resolved).toEqual({ skip: false, hookPrompt: null, hookOverride: {}, hookMetadata: null });
+  });
+
+  it('carries no bag on a skip — the task is never created, so nothing may be stamped', async () => {
+    const resolved = await withInputHook(
+      async () => ({ skip: { reason: 'no-burnable-provider-quota' } }),
+      () => resolveTaskInputHook(app, 'quota-burn', taskSchedule)
+    );
+    expect(resolved).toEqual({ skip: true });
+    expect(taskSchedule.recordExecution).toHaveBeenCalledWith('quota-burn', 'app-1');
+  });
+
+  it('drops a bag key that would overwrite generator-owned metadata', () => {
+    // The bag is stamped LAST, so a naive Object.assign would let a hook silently
+    // win over a decision made a few lines earlier. `analysisType` is the sharp
+    // edge: resolveTaskHookType reads it to dispatch the output hook, so a
+    // collision would stop the very hook that asked for the bag from running.
+    const start = GEN_SRC.indexOf('export async function generateManagedAppImprovementTaskForType');
+    const body = GEN_SRC.slice(start, GEN_SRC.indexOf('return task;', start));
+    expect(body).toContain('for (const [key, value] of Object.entries(hookMetadata || {}))');
+    expect(body).toContain('if (key in metadata)');
+    // A plain merge would reintroduce the clobber.
+    expect(body).not.toContain('Object.assign(metadata, hookMetadata)');
+  });
+
+  it('stamps the bag onto metadata BELOW every gate that can still skip task creation', () => {
+    // The ordering IS the fix. Source-pinned because it is invisible to a unit
+    // test of the generator's happy path: moving the Object.assign above any
+    // `return null` would silently restore the #3179 bug — a hook side effect
+    // keyed on the stamped metadata would fire for a task that is never built.
+    const start = GEN_SRC.indexOf('export async function generateManagedAppImprovementTaskForType');
+    expect(start, 'generateManagedAppImprovementTaskForType must exist').toBeGreaterThan(-1);
+    const body = GEN_SRC.slice(start);
+    const stampAt = body.indexOf('Object.entries(hookMetadata || {})');
+    expect(stampAt, 'the hookMetadata stamp must exist').toBeGreaterThan(-1);
+    // Bound the scan to this function: `return task;` ends it.
+    const lastGateAt = body.slice(0, body.indexOf('return task;')).lastIndexOf('return null;');
+    expect(lastGateAt, 'the gate chain must exist').toBeGreaterThan(-1);
+    expect(stampAt).toBeGreaterThan(lastGateAt);
   });
 });

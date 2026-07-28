@@ -23,6 +23,7 @@ import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { sanitizeTaskMetadata, PIPELINE_BEHAVIOR_FLAGS, MAX_TOTAL_SPAWNS, normalizeReviewers, resolveReviewUsernames, resolveOptionalReviewers, resolveReviewerMaxRounds, resolveReviewerModels, reviewerModelsFromDefaults, buildReviewersCsv, LOCAL_LLM_REVIEWERS, SWARM_COUNT_MIN } from '../lib/validation.js';
+import { isPlainObject } from '../lib/objects.js';
 import { parsePlanItems, extractAllIds, findInProgressIds, pickFirstAvailable, diagnoseUnpickablePlan } from '../lib/planIds.js';
 import { loadState, saveState, withStateLock, isImprovementEnabled, isDaemonRunning } from './cosState.js';
 import { getDomainMode } from '../lib/domainAutonomy.js';
@@ -1860,13 +1861,17 @@ async function buildImprovementTaskMetadata(taskType, app, interval, taskSchedul
  * Run a task type's registered buildTaskInput hook (taskTypeHooks.js) for
  * deterministic pre-agent data collection. Returns `{ skip: true }` when the
  * hook opts out (execution recorded so cadence advances), otherwise
- * `{ skip: false, hookPrompt, hookOverride }` — the hook may fully own the
- * rendered prompt and/or pin the app's per-app provider/model.
+ * `{ skip: false, hookPrompt, hookOverride, hookMetadata }` — the hook may fully
+ * own the rendered prompt, pin the app's per-app provider/model, and hand back a
+ * metadata bag to stamp onto the created task.
+ *
+ * `hookMetadata` is normalized to null unless the hook returned a real object,
+ * so the caller's "stamp it" check can't be tripped by a stray primitive.
  */
-async function resolveTaskInputHook(app, taskType, taskSchedule) {
+export async function resolveTaskInputHook(app, taskType, taskSchedule) {
   const { getTaskInputHook } = await import('./taskTypeHooks.js');
   const inputHook = await getTaskInputHook(taskType);
-  if (!inputHook) return { skip: false, hookPrompt: null, hookOverride: {} };
+  if (!inputHook) return { skip: false, hookPrompt: null, hookOverride: {}, hookMetadata: null };
   const input = await inputHook({ app, taskType }).catch((err) => {
     emitLog('warn', `buildTaskInput hook failed for ${taskType}/${app.name}: ${err.message}`, { appId: app.id, analysisType: taskType });
     return { skip: { reason: 'input-hook-error' } };
@@ -1879,7 +1884,8 @@ async function resolveTaskInputHook(app, taskType, taskSchedule) {
   return {
     skip: false,
     hookPrompt: input?.prompt || null,
-    hookOverride: { providerId: input?.providerId || null, model: input?.model || null }
+    hookOverride: { providerId: input?.providerId || null, model: input?.model || null },
+    hookMetadata: isPlainObject(input?.hookMetadata) ? input.hookMetadata : null
   };
 }
 
@@ -2331,7 +2337,7 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
   // provider/model block below, so the per-app choice wins.
   const inputHook = await resolveTaskInputHook(app, taskType, taskSchedule);
   if (inputHook.skip) return null;
-  const { hookPrompt, hookOverride } = inputHook;
+  const { hookPrompt, hookOverride, hookMetadata } = inputHook;
 
   // claim-work single-source router: `taskType` stays 'claim-work' for
   // interval/cadence/recording; `promptTaskType` drives prompt selection, PLAN
@@ -2431,9 +2437,29 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
 
   const approval = await resolveConfidenceApproval(state, `app-improve:${taskType}`, `Task app-improve:${taskType} for ${app.name}`, metadata);
 
-  // All gates passed — record the rotation-pointer advance + emit the
-  // generation log. Deferred from the top of the function (see note there);
-  // every `return null` above this point intentionally leaves both untouched.
+  // All gates passed — stamp the buildTaskInput hook's metadata bag, record the
+  // rotation-pointer advance, and emit the generation log. Deferred from the top
+  // of the function (see note there); every `return null` above this point
+  // intentionally leaves all three untouched.
+  //
+  // The hook bag lands HERE, below the last gate, precisely so a hook can defer a
+  // side effect keyed on it until the task is certain to exist (rationale in
+  // autonomousJobs/quotaBurnHooks.js#buildTaskInput, #3179).
+  //
+  // Generator-computed keys always win. Stamping last would otherwise let a hook
+  // silently clobber a decision made a few lines earlier — `analysisType` is the
+  // dangerous one, since resolveTaskHookType reads it to dispatch the output hook,
+  // so a collision would stop the very hook that asked for the bag from ever
+  // running. Hooks pin provider/model and own the prompt through their own return
+  // fields; the bag is for values that must SURVIVE to processTaskOutput, not an
+  // override channel. Dropped collisions are logged rather than merged silently.
+  for (const [key, value] of Object.entries(hookMetadata || {})) {
+    if (key in metadata) {
+      emitLog('warn', `Ignoring ${taskType} hookMetadata key '${key}' for ${app.name}: it would overwrite generator-owned task metadata`, { appId: app.id, analysisType: taskType });
+      continue;
+    }
+    metadata[key] = value;
+  }
   await updateAppActivity(app.id, { lastImprovementType: taskType });
   emitLog('info', `Generating improvement task for ${app.name}: ${taskType}`, { appId: app.id, analysisType: taskType });
 

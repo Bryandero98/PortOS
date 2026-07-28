@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { detectQuotaBurn, selectBurnCandidates } from './quotaBurn.js';
 import { sanitizeTaskMetadata } from '../lib/validation.js';
 
@@ -55,5 +55,54 @@ describe('quota-burn metadata validation', () => {
       .toMatchObject({ families: { grok: { enabled: true, reservePercent: 20 } } });
     expect(sanitizeTaskMetadata({ families: { unknown: { enabled: true } } })).toBeNull();
     expect(sanitizeTaskMetadata({ families: { grok: { reservePercent: 101 } } })).toBeNull();
+  });
+});
+
+/**
+ * The window cap is only honest if a burn that has been QUEUED but whose agent
+ * has not finalized yet still holds its slot. The ledger write moved post-agent
+ * (#3179), so the raw ledger no longer covers that gap on its own.
+ */
+describe('getEffectiveQuotaBurnDispatches', () => {
+  const loadStore = async (tasks, { fail = false } = {}) => {
+    vi.resetModules();
+    vi.doMock('./cosTaskStore.js', () => ({
+      getCosTasks: fail ? async () => { throw new Error('unreadable'); } : async () => ({ tasks }),
+    }));
+    vi.doMock('../lib/fileUtils.js', async (importActual) => ({
+      ...(await importActual()),
+      readJSONFile: async () => ({ 'grok:1': 1 }),
+    }));
+    return import('./quotaBurn.js');
+  };
+
+  const burnTask = (status, key) => ({ id: `sys-${status}`, status, metadata: { quotaBurnDispatchKey: key } });
+
+  afterEach(() => { vi.doUnmock('./cosTaskStore.js'); vi.doUnmock('../lib/fileUtils.js'); vi.resetModules(); });
+
+  it('adds pending and in_progress burns on top of the persisted ledger', async () => {
+    const { getEffectiveQuotaBurnDispatches } = await loadStore([
+      burnTask('pending', 'grok:1'),
+      burnTask('in_progress', 'codex:2'),
+    ]);
+    // grok:1 = 1 persisted + 1 queued; codex:2 = 0 persisted + 1 running.
+    await expect(getEffectiveQuotaBurnDispatches()).resolves.toEqual({ 'grok:1': 2, 'codex:2': 1 });
+  });
+
+  it('ignores terminal tasks and tasks carrying no dispatch key', async () => {
+    const { getEffectiveQuotaBurnDispatches } = await loadStore([
+      burnTask('completed', 'grok:1'),
+      burnTask('blocked', 'grok:1'),
+      { id: 'sys-other', status: 'pending', metadata: { analysisType: 'performance' } },
+      { id: 'sys-empty', status: 'pending', metadata: { quotaBurnDispatchKey: '' } },
+    ]);
+    // A completed burn already wrote its ledger entry — counting it would
+    // double-charge the window; a blocked one never dispatched.
+    await expect(getEffectiveQuotaBurnDispatches()).resolves.toEqual({ 'grok:1': 1 });
+  });
+
+  it('degrades to the ledger alone when the task file cannot be read', async () => {
+    const { getEffectiveQuotaBurnDispatches } = await loadStore([], { fail: true });
+    await expect(getEffectiveQuotaBurnDispatches()).resolves.toEqual({ 'grok:1': 1 });
   });
 });
