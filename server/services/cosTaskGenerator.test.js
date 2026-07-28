@@ -28,7 +28,7 @@ vi.mock('./codeReview.js', async (importActual) => ({
   getCodeReviewDefaults: vi.fn(async () => ({ reviewers: ['copilot'], usernames: ['alice'], optionalReviewers: [] })),
 }));
 
-import { selectDryRunAutoApproved, exceedsMaxSpawns, resolveIssueAuthorFilterBlock, resolveSwarmBlock, isCooldownExemptTask, emitOnDemandEmpty, buildJiraTicketTask, buildImprovementDedupSets, normalizeWorkItemRef, buildTargetWorkItemBlock } from './cosTaskGenerator.js';
+import { selectDryRunAutoApproved, exceedsMaxSpawns, resolveIssueAuthorFilterBlock, resolveSwarmBlock, isCooldownExemptTask, emitOnDemandEmpty, buildJiraTicketTask, buildImprovementDedupSets, normalizeWorkItemRef, buildTargetWorkItemBlock, resolveTaskInputHook } from './cosTaskGenerator.js';
 import { cosEvents } from './cosEvents.js';
 import { MAX_TOTAL_SPAWNS } from '../lib/validation.js';
 
@@ -750,5 +750,161 @@ describe('buildImprovementDedupSets (#2614 — failure-blocked tasks occupy thei
     // Source-pinned: the queue path must consume buildImprovementDedupSets so
     // its occupancy semantics can't silently drift from the tested helper.
     expect(GEN_SRC).toMatch(/buildImprovementDedupSets\(existingTasks/);
+  });
+});
+
+/**
+ * `hookMetadata` is the channel a buildTaskInput hook uses to defer a side
+ * effect until the task is CERTAIN to exist (#3179). quota-burn rides its
+ * resolved dispatch key across on it so the ledger is written post-agent, rather
+ * than inside the input hook where any of the gates below it could still skip
+ * task creation and burn window budget on a dispatch that never ran.
+ */
+describe('resolveTaskInputHook — hookMetadata threading (#3179)', () => {
+  const app = { id: 'app-1', name: 'App One' };
+  const taskSchedule = { recordExecution: vi.fn() };
+
+  // resolveTaskInputHook resolves the hook through a DYNAMIC import, so a
+  // per-test doMock reaches it without a file-wide module mock.
+  const withInputHook = async (buildTaskInput, fn) => {
+    vi.doMock('./taskTypeHooks.js', () => ({ getTaskInputHook: async () => buildTaskInput }));
+    try {
+      return await fn();
+    } finally {
+      vi.doUnmock('./taskTypeHooks.js');
+    }
+  };
+
+  it('threads a hook metadata bag through alongside the prompt and provider pins', async () => {
+    const resolved = await withInputHook(
+      async () => ({ prompt: 'BURN', providerId: 'grok-cli', model: 'grok-4', hookMetadata: { quotaBurnDispatchKey: 'grok:123' } }),
+      () => resolveTaskInputHook(app, 'quota-burn', taskSchedule)
+    );
+    expect(resolved).toMatchObject({
+      skip: false,
+      hookPrompt: 'BURN',
+      hookOverride: { providerId: 'grok-cli', model: 'grok-4' },
+      hookMetadata: { quotaBurnDispatchKey: 'grok:123' }
+    });
+  });
+
+  it('normalizes a missing or non-object bag to null so the caller never stamps a primitive', async () => {
+    const cases = [undefined, null, 'grok:123', 42, ['grok:123']];
+    for (const hookMetadata of cases) {
+      const resolved = await withInputHook(
+        async () => ({ prompt: 'BURN', hookMetadata }),
+        () => resolveTaskInputHook(app, 'quota-burn', taskSchedule)
+      );
+      expect(resolved.hookMetadata, `hookMetadata: ${JSON.stringify(hookMetadata)}`).toBeNull();
+    }
+  });
+
+  it('returns a null bag for a task type that registers no input hook', async () => {
+    const resolved = await withInputHook(null, () => resolveTaskInputHook(app, 'performance', taskSchedule));
+    expect(resolved).toEqual({ skip: false, hookPrompt: null, hookOverride: {}, hookMetadata: null });
+  });
+
+  it('carries no bag on a skip — the task is never created, so nothing may be stamped', async () => {
+    const resolved = await withInputHook(
+      async () => ({ skip: { reason: 'no-burnable-provider-quota' } }),
+      () => resolveTaskInputHook(app, 'quota-burn', taskSchedule)
+    );
+    expect(resolved).toEqual({ skip: true });
+    expect(taskSchedule.recordExecution).toHaveBeenCalledWith('quota-burn', 'app-1');
+  });
+
+  it('drops a bag key that would overwrite generator-owned metadata', () => {
+    // The bag is stamped LAST, so a naive Object.assign would let a hook silently
+    // win over a decision made a few lines earlier. `analysisType` is the sharp
+    // edge: resolveTaskHookType reads it to dispatch the output hook, so a
+    // collision would stop the very hook that asked for the bag from running.
+    const start = GEN_SRC.indexOf('export async function generateManagedAppImprovementTaskForType');
+    const body = GEN_SRC.slice(start, GEN_SRC.indexOf('return task;', start));
+    expect(body).toContain('for (const [key, value] of Object.entries(hookMetadata || {}))');
+    expect(body).toContain('if (key in metadata)');
+    // A plain merge would reintroduce the clobber.
+    expect(body).not.toContain('Object.assign(metadata, hookMetadata)');
+  });
+
+  it('stamps the bag onto metadata BELOW every gate that can still skip task creation', () => {
+    // The ordering IS the fix. Source-pinned because it is invisible to a unit
+    // test of the generator's happy path: moving the Object.assign above any
+    // `return null` would silently restore the #3179 bug — a hook side effect
+    // keyed on the stamped metadata would fire for a task that is never built.
+    const start = GEN_SRC.indexOf('export async function generateManagedAppImprovementTaskForType');
+    expect(start, 'generateManagedAppImprovementTaskForType must exist').toBeGreaterThan(-1);
+    const body = GEN_SRC.slice(start);
+    const stampAt = body.indexOf('Object.entries(hookMetadata || {})');
+    expect(stampAt, 'the hookMetadata stamp must exist').toBeGreaterThan(-1);
+    // Bound the scan to this function: `return task;` ends it.
+    const lastGateAt = body.slice(0, body.indexOf('return task;')).lastIndexOf('return null;');
+    expect(lastGateAt, 'the gate chain must exist').toBeGreaterThan(-1);
+    expect(stampAt).toBeGreaterThan(lastGateAt);
+  });
+});
+
+/**
+ * The drain-on-completion refill regenerates while the just-finished task is
+ * still `in_progress` on disk (agent:completed fires before updateTask). A hook
+ * or detector that counts in-flight work must exclude it, or the completing run
+ * is charged twice — see #3179 and buildImprovementDedupSets' own ignoreTaskId.
+ */
+describe('ignoreTaskId reaches the in-flight-counting gates (#3179)', () => {
+  const body = () => {
+    const start = GEN_SRC.indexOf('export async function generateManagedAppImprovementTaskForType');
+    return GEN_SRC.slice(start, GEN_SRC.indexOf('return task;', start));
+  };
+
+  it('accepts ignoreTaskId and forwards it to the input hook and the perpetual gate', () => {
+    expect(GEN_SRC).toMatch(/generateManagedAppImprovementTaskForType\(taskType, app, state, \{ skipPreconditions = false, ignoreTaskId = null \} = \{\}\)/);
+    expect(body()).toContain('resolveTaskInputHook(app, taskType, taskSchedule, { ignoreTaskId })');
+    expect(body()).toContain('applyPerpetualWorkGate(app, taskType, promptTaskType, metadata, interval, taskSchedule, { ignoreTaskId })');
+  });
+
+  it('queueEligibleImprovementTasks passes its ignoreTaskId down to the generator', () => {
+    // It already forwards the same id to addTask and buildImprovementDedupSets;
+    // the generator was the one path that dropped it.
+    expect(GEN_SRC).toContain('generateManagedAppImprovementTaskForType(nextType, app, state, { ignoreTaskId })');
+  });
+
+  it('the perpetual gate hands ignoreTaskId to the work detector', () => {
+    const start = GEN_SRC.indexOf('async function applyPerpetualWorkGate');
+    const gate = GEN_SRC.slice(start, GEN_SRC.indexOf('\n}', start));
+    expect(gate).toMatch(/detectActionableWork\(promptTaskType, app, \{[\s\S]*ignoreTaskId[\s\S]*\}\)/);
+  });
+
+  it('resolveTaskInputHook passes ignoreTaskId into the hook call', async () => {
+    const seen = [];
+    vi.doMock('./taskTypeHooks.js', () => ({
+      getTaskInputHook: async () => async (args) => { seen.push(args); return { prompt: 'X' }; }
+    }));
+    try {
+      await resolveTaskInputHook({ id: 'app-1', name: 'App One' }, 'quota-burn', { recordExecution: vi.fn() }, { ignoreTaskId: 'sys-finishing' });
+    } finally {
+      vi.doUnmock('./taskTypeHooks.js');
+    }
+    expect(seen[0]).toMatchObject({ taskType: 'quota-burn', ignoreTaskId: 'sys-finishing' });
+  });
+});
+
+/**
+ * BOTH generators reachable from the `agent:completed` continuation must carry
+ * ignoreTaskId: the refill (queueEligibleImprovementTasks) AND the idle-review
+ * tier that `dequeueNextTask` runs on the same continuation. The idle path was
+ * missed on the first pass — it dropped the id and re-charged the completing
+ * burn, skipping a dispatch the family was entitled to (#3179).
+ */
+describe('ignoreTaskId reaches BOTH completion-continuation generators (#3179)', () => {
+  it('the idle-review chain threads ignoreTaskId end to end', () => {
+    expect(GEN_SRC).toMatch(/export async function generateIdleReviewTask\(state, \{ ignoreTaskId = null \} = \{\}\)/);
+    expect(GEN_SRC).toContain('generateManagedAppImprovementTask(nextApp, state, { ignoreTaskId })');
+    expect(GEN_SRC).toMatch(/async function generateManagedAppImprovementTask\(app, state, \{ ignoreTaskId = null \} = \{\}\)/);
+    expect(GEN_SRC).toContain('generateManagedAppImprovementTaskForType(nextType, app, state, { ignoreTaskId })');
+  });
+
+  it('cos.js passes the completing task id into the dequeue that follows the refill', () => {
+    expect(COS_SRC).toContain('dequeueNextTask({ ignoreTaskId: agent?.taskId })');
+    expect(COS_SRC).toMatch(/async function dequeueNextTask\(\{ ignoreTaskId = null \} = \{\}\)/);
+    expect(COS_SRC).toContain('generateIdleReviewTask(state, { ignoreTaskId })');
   });
 });

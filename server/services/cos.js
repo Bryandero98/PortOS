@@ -1006,7 +1006,7 @@ async function spawnDequeuePriority3Missions(ctx) {
  * tasks, idle review on, auto-run in execute).
  */
 async function spawnDequeuePriority4IdleReview(ctx) {
-  const { state, capacity } = ctx;
+  const { state, capacity, ignoreTaskId } = ctx;
 
   if (!isIdleTierEligible({
     spawned: capacity.spawned,
@@ -1018,7 +1018,7 @@ async function spawnDequeuePriority4IdleReview(ctx) {
   const freshCosTasks = await getCosTasks();
   const pendingSystemTasks = freshCosTasks.autoApproved?.length || 0;
   if (pendingSystemTasks === 0) {
-    const idleTask = await generateIdleReviewTask(state);
+    const idleTask = await generateIdleReviewTask(state, { ignoreTaskId });
     if (idleTask && capacity.canSpawn(idleTask, ctx.autonomousSpawnCeiling)) {
       cosEvents.emit('task:ready', idleTask);
       capacity.trackSpawn(idleTask);
@@ -1039,7 +1039,15 @@ async function spawnDequeuePriority4IdleReview(ctx) {
  *   4. Idle review task (if idleReviewEnabled)
  * Returns silently when idle — no log noise.
  */
-async function dequeueNextTask() {
+/**
+ * `ignoreTaskId` names a task that just completed but may still read
+ * `pending`/`in_progress` on disk — `agent:completed` fires from `completeAgent`,
+ * before the completion flow's `updateTask` settles it. Generators that count
+ * in-flight work (quota-burn's dispatch tally, #3179) must exclude it or they
+ * charge the finished run twice. Only the completion continuation passes it; every
+ * other caller runs outside that window and correctly leaves it null.
+ */
+async function dequeueNextTask({ ignoreTaskId = null } = {}) {
   if (!isDaemonRunning()) return;
 
   // A global pause stops scheduled/autonomous spawning, but NOT explicit user
@@ -1071,7 +1079,8 @@ async function dequeueNextTask() {
     hasPendingUserTasks: false,
     taskSchedule: null,
     cosAutonomyMode: null,
-    autonomousSpawnCeiling: availableSlots
+    autonomousSpawnCeiling: availableSlots,
+    ignoreTaskId
   };
 
   // Priority 0 (on-demand) runs even when paused — an explicit user "Run"
@@ -1186,7 +1195,10 @@ export async function init() {
     setImmediate(() => {
       refillPerpetualForCompletedAgent(agent)
         .catch(err => console.error(`❌ Perpetual refill after ${agent?.id} failed: ${err.message}`))
-        .then(() => dequeueNextTask())
+        // Same window as the refill above: this runs before the completing
+        // task's `updateTask` settles it, so the idle tier's generator must
+        // exclude it from any in-flight tally (#3179).
+        .then(() => dequeueNextTask({ ignoreTaskId: agent?.taskId }))
         .catch(err => console.error(`❌ Dequeue after ${agent?.id} completion failed: ${err.message}`));
     });
 

@@ -1,6 +1,7 @@
 import { getProviderQuotas } from './providerUsage.js';
 import { join } from 'path';
 import { atomicWrite, PATHS, readJSONFile } from '../lib/fileUtils.js';
+import { createFileWriteQueue } from '../lib/fileWriteQueue.js';
 import { hoursUntilReset, normalizeResetAt } from '../lib/quotaReset.js';
 
 export const QUOTA_BURN_TASK_TYPE = 'quota-burn';
@@ -27,11 +28,81 @@ export async function getQuotaBurnDispatches() {
   return loaded && typeof loaded === 'object' ? loaded : {};
 }
 
+// Single-tail queue for the dispatch ledger's read-modify-write. Two quota-burn
+// agents (one per app) can finalize concurrently, and each finalization records a
+// dispatch — unserialized, both would read the same count and write the same
+// increment, losing one burn. An undercounted ledger then lets the window
+// dispatch past `maxDispatchesPerWindow`, which is real quota overspend. This is
+// the "serialize two write paths that mutate the same record" case, not a
+// defense against competing users. It only became reachable when the write moved
+// from generation (sequential, one app at a time) to finalize (#3179).
+const ledgerWriteQueue = createFileWriteQueue();
+
 export async function recordQuotaBurnDispatch(key) {
-  const ledger = await getQuotaBurnDispatches();
-  const next = { ...ledger, [key]: Number(ledger[key] || 0) + 1 };
-  await atomicWrite(LEDGER_FILE, next);
-  return next;
+  return ledgerWriteQueue(async () => {
+    const ledger = await getQuotaBurnDispatches();
+    const next = { ...ledger, [key]: Number(ledger[key] || 0) + 1 };
+    await atomicWrite(LEDGER_FILE, next);
+    return next;
+  });
+}
+
+/**
+ * The task-metadata key a resolved `dispatchKey` rides across on, from the
+ * pre-agent `buildTaskInput` hook to the post-agent `processTaskOutput` that
+ * writes the ledger (#3179). Lives here, beside the ledger it guards, so the
+ * producer, the consumer, and the in-flight count below can't drift on spelling.
+ */
+export const QUOTA_BURN_DISPATCH_KEY_FIELD = 'quotaBurnDispatchKey';
+
+/**
+ * Dispatch counts to select the next burn candidate against: the persisted
+ * ledger PLUS every quota-burn task already queued or running that carries a
+ * dispatch key but has not reached its post-agent ledger write yet.
+ *
+ * Counting the in-flight tasks is what keeps the window cap honest now that the
+ * ledger is written post-agent (#3179). The ledger write used to happen during
+ * generation, which incidentally serialized sibling candidates — the next reader
+ * always saw it. Deferring the write opens a gap between "task created" and
+ * "dispatch recorded", and two paths generate inside that gap: the per-app
+ * improvement loop runs once per managed app while `dispatchKey` is
+ * `<family>:<resetEpoch>` (app-independent, one global ledger), and an on-demand
+ * "Run" calls the generator directly, bypassing the per-app pending-task cap
+ * entirely. Without this, either could dispatch past `maxDispatchesPerWindow` —
+ * real quota overspend, the exact thing the cap exists to prevent, and a worse
+ * failure than the over-counting #3179 fixed.
+ *
+ * `ignoreTaskId` excludes one task from the in-flight tally — the same exclusion
+ * `buildImprovementDedupSets` takes, for the same reason. `agent:completed` fires
+ * from `completeAgent`, which runs AFTER the output hook wrote this run's ledger
+ * entry but BEFORE the completion flow's `updateTask` marks the task done. So
+ * during the perpetual drain-on-completion refill the just-finished burn is
+ * counted twice — once in the ledger, once as a still-`in_progress` task — and a
+ * family with `maxDispatchesPerWindow: 2` would stop after one run and likely
+ * miss its reset window. Callers on that path pass the completing task's id.
+ *
+ * An unreadable task file degrades to the ledger-only count rather than throwing:
+ * COS-TASKS.md is the file the whole CoS queue reads, so if it is unavailable
+ * nothing is dispatching anyway, and failing the probe closed would wedge
+ * quota-burn until the next 12-hourly recheck.
+ */
+export async function getEffectiveQuotaBurnDispatches({ ignoreTaskId = null } = {}) {
+  const counts = { ...(await getQuotaBurnDispatches()) };
+  // Lazy import: cosTaskStore pulls a heavy graph (state, code review, merge),
+  // and quotaBurn.js is imported by the perpetual-work detector on a hot path.
+  const { getCosTasks } = await import('./cosTaskStore.js');
+  const cosTasks = await getCosTasks().catch((err) => {
+    console.error(`❌ Quota-burn in-flight probe failed, falling back to the ledger alone: ${err.message}`);
+    return null;
+  });
+  for (const task of cosTasks?.tasks || []) {
+    if (ignoreTaskId && task?.id === ignoreTaskId) continue;
+    if (task?.status !== 'pending' && task?.status !== 'in_progress') continue;
+    const key = task?.metadata?.[QUOTA_BURN_DISPATCH_KEY_FIELD];
+    if (typeof key !== 'string' || !key) continue;
+    counts[key] = Number(counts[key] || 0) + 1;
+  }
+  return counts;
 }
 
 function normalizedFamily(id, value) {
@@ -79,7 +150,7 @@ export function selectBurnCandidates(quotas, config, { now = Date.now(), dispatc
     .sort((a, b) => a.hoursUntilReset - b.hoursUntilReset || a.family.priority - b.family.priority);
 }
 
-export async function detectQuotaBurn(app, { getQuotas = getProviderQuotas, now = Date.now(), dispatches } = {}) {
+export async function detectQuotaBurn(app, { getQuotas = getProviderQuotas, now = Date.now(), dispatches, ignoreTaskId = null } = {}) {
   const config = quotaBurnConfig(app);
   const configured = Object.entries(config.families || {})
     .filter(([, family]) => family?.enabled === true)
@@ -90,7 +161,7 @@ export async function detectQuotaBurn(app, { getQuotas = getProviderQuotas, now 
   if (configuredCards.length && configuredCards.every((card) => card?.error)) {
     return { actionable: false, count: 0, transient: true, reason: 'all-provider-quota-checks-failed' };
   }
-  const candidates = selectBurnCandidates(quotas, config, { now, dispatches: dispatches || await getQuotaBurnDispatches() });
+  const candidates = selectBurnCandidates(quotas, config, { now, dispatches: dispatches || await getEffectiveQuotaBurnDispatches({ ignoreTaskId }) });
   return candidates.length
     ? { actionable: true, count: candidates.length, reason: `${candidates[0].family.id} resets in ${Math.ceil(candidates[0].hoursUntilReset)}h`, candidates }
     : { actionable: false, count: 0, reason: 'no-family-within-reset-window' };

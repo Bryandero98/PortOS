@@ -23,6 +23,7 @@ import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { sanitizeTaskMetadata, PIPELINE_BEHAVIOR_FLAGS, MAX_TOTAL_SPAWNS, normalizeReviewers, resolveReviewUsernames, resolveOptionalReviewers, resolveReviewerMaxRounds, resolveReviewerModels, reviewerModelsFromDefaults, buildReviewersCsv, LOCAL_LLM_REVIEWERS, SWARM_COUNT_MIN } from '../lib/validation.js';
+import { isPlainObject } from '../lib/objects.js';
 import { parsePlanItems, extractAllIds, findInProgressIds, pickFirstAvailable, diagnoseUnpickablePlan } from '../lib/planIds.js';
 import { loadState, saveState, withStateLock, isImprovementEnabled, isDaemonRunning } from './cosState.js';
 import { getDomainMode } from '../lib/domainAutonomy.js';
@@ -1218,7 +1219,7 @@ export async function evaluateTasks(options) {
  * @param {Object} state - Current CoS state
  * @returns {Object|null} Generated task or null if nothing to do
  */
-export async function generateIdleReviewTask(state) {
+export async function generateIdleReviewTask(state, { ignoreTaskId = null } = {}) {
   if (!isImprovementEnabled(state)) {
     emitLog('debug', 'Improvement tasks are disabled');
     return null;
@@ -1249,7 +1250,7 @@ export async function generateIdleReviewTask(state) {
       });
 
       emitLog('info', `Generating improvement task for ${nextApp.name}`, { appId: nextApp.id });
-      const idleTask = await generateManagedAppImprovementTask(nextApp, state);
+      const idleTask = await generateManagedAppImprovementTask(nextApp, state, { ignoreTaskId });
       // Only bind the active marker once a real task exists.
       if (idleTask) {
         await bindAppReviewAgent(nextApp.id, `idle-review-${Date.now()}`);
@@ -1432,7 +1433,7 @@ export async function queueEligibleImprovementTasks(state, cosTaskData, { ignore
     // agents claim the same slug (2026-05-21 incident). The generator
     // returns null on plan-gate / precondition skip; we silently continue.
     // Regression-pinned in cos.test.js.
-    const task = await generateManagedAppImprovementTaskForType(nextType, app, state);
+    const task = await generateManagedAppImprovementTaskForType(nextType, app, state, { ignoreTaskId });
     if (!task) continue;
 
     // Queue-path invariants override the generator's direct-spawn defaults
@@ -1708,7 +1709,7 @@ export function applyAppWorktreeDefault(metadata, app) {
   }
 }
 
-async function generateManagedAppImprovementTask(app, state) {
+async function generateManagedAppImprovementTask(app, state, { ignoreTaskId = null } = {}) {
   const { getAppActivityById, updateAppActivity } = await import('./appActivity.js');
   const taskSchedule = await import('./taskSchedule.js');
 
@@ -1760,7 +1761,7 @@ async function generateManagedAppImprovementTask(app, state) {
   // with the literal {prData}/{referenceData} markers and never poll. The
   // recordExecution + activity bump above already accounted for the idle
   // spawn; the per-type generator does not record execution itself.
-  return generateManagedAppImprovementTaskForType(nextType, app, state);
+  return generateManagedAppImprovementTaskForType(nextType, app, state, { ignoreTaskId });
 }
 
 /**
@@ -1860,14 +1861,18 @@ async function buildImprovementTaskMetadata(taskType, app, interval, taskSchedul
  * Run a task type's registered buildTaskInput hook (taskTypeHooks.js) for
  * deterministic pre-agent data collection. Returns `{ skip: true }` when the
  * hook opts out (execution recorded so cadence advances), otherwise
- * `{ skip: false, hookPrompt, hookOverride }` — the hook may fully own the
- * rendered prompt and/or pin the app's per-app provider/model.
+ * `{ skip: false, hookPrompt, hookOverride, hookMetadata }` — the hook may fully
+ * own the rendered prompt, pin the app's per-app provider/model, and hand back a
+ * metadata bag to stamp onto the created task.
+ *
+ * `hookMetadata` is normalized to null unless the hook returned a real object,
+ * so the caller's "stamp it" check can't be tripped by a stray primitive.
  */
-async function resolveTaskInputHook(app, taskType, taskSchedule) {
+export async function resolveTaskInputHook(app, taskType, taskSchedule, { ignoreTaskId = null } = {}) {
   const { getTaskInputHook } = await import('./taskTypeHooks.js');
   const inputHook = await getTaskInputHook(taskType);
-  if (!inputHook) return { skip: false, hookPrompt: null, hookOverride: {} };
-  const input = await inputHook({ app, taskType }).catch((err) => {
+  if (!inputHook) return { skip: false, hookPrompt: null, hookOverride: {}, hookMetadata: null };
+  const input = await inputHook({ app, taskType, ignoreTaskId }).catch((err) => {
     emitLog('warn', `buildTaskInput hook failed for ${taskType}/${app.name}: ${err.message}`, { appId: app.id, analysisType: taskType });
     return { skip: { reason: 'input-hook-error' } };
   });
@@ -1879,7 +1884,8 @@ async function resolveTaskInputHook(app, taskType, taskSchedule) {
   return {
     skip: false,
     hookPrompt: input?.prompt || null,
-    hookOverride: { providerId: input?.providerId || null, model: input?.model || null }
+    hookOverride: { providerId: input?.providerId || null, model: input?.model || null },
+    hookMetadata: isPlainObject(input?.hookMetadata) ? input.hookMetadata : null
   };
 }
 
@@ -1917,14 +1923,17 @@ async function resolveClaimWorkRouting(app, taskType, metadata, taskSchedule) {
  * The detector keys on the RESOLVED promptTaskType. Returns `{ skip }` and
  * mutates `metadata.perpetual` on the actionable path.
  */
-async function applyPerpetualWorkGate(app, taskType, promptTaskType, metadata, interval, taskSchedule) {
+async function applyPerpetualWorkGate(app, taskType, promptTaskType, metadata, interval, taskSchedule, { ignoreTaskId = null } = {}) {
   if (interval.type !== taskSchedule.INTERVAL_TYPES.PERPETUAL
       || taskType === 'branch-reconcile' || taskType === 'issue-reconcile') {
     return { skip: false };
   }
   const { detectActionableWork } = await import('./perpetualWork.js');
   const detection = await detectActionableWork(promptTaskType, app, {
-    issueAuthorFilter: metadata.issueAuthorFilter || 'self'
+    issueAuthorFilter: metadata.issueAuthorFilter || 'self',
+    // A detector that counts in-flight work must skip the task whose completion
+    // triggered this refill — it is already recorded, just not yet marked done.
+    ignoreTaskId
   });
   if (detection.actionable) {
     await taskSchedule.clearPerpetualPark(taskType, app.id);
@@ -2297,7 +2306,7 @@ function applyProviderModelPins(metadata, interval, hookOverride) {
   if (hookOverride.model) { metadata.model = hookOverride.model; }
 }
 
-export async function generateManagedAppImprovementTaskForType(taskType, app, state, { skipPreconditions = false } = {}) {
+export async function generateManagedAppImprovementTaskForType(taskType, app, state, { skipPreconditions = false, ignoreTaskId = null } = {}) {
   const { updateAppActivity } = await import('./appActivity.js');
   const taskSchedule = await import('./taskSchedule.js');
   const { getTaskPrompt, getStagePrompt } = await import('./taskPromptService.js');
@@ -2329,9 +2338,13 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
   // fully OWNS its prompt. `hookOverride` may pin the app's per-app
   // provider/model — captured here but APPLIED AFTER the global-interval
   // provider/model block below, so the per-app choice wins.
-  const inputHook = await resolveTaskInputHook(app, taskType, taskSchedule);
+  // `ignoreTaskId` reaches the hook because a drain-on-completion refill runs
+  // while the completing task is still `in_progress` on disk — a hook that
+  // counts in-flight tasks (quota-burn) must not count the run that just
+  // finished and already recorded itself (#3179).
+  const inputHook = await resolveTaskInputHook(app, taskType, taskSchedule, { ignoreTaskId });
   if (inputHook.skip) return null;
-  const { hookPrompt, hookOverride } = inputHook;
+  const { hookPrompt, hookOverride, hookMetadata } = inputHook;
 
   // claim-work single-source router: `taskType` stays 'claim-work' for
   // interval/cadence/recording; `promptTaskType` drives prompt selection, PLAN
@@ -2341,7 +2354,7 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
   // Perpetual (drain-until-done) gate — probes for actionable work before
   // building the prompt or burning an agent (branch-/issue-reconcile self-gate
   // in their own blocks, so this excludes them).
-  const perpetualGate = await applyPerpetualWorkGate(app, taskType, promptTaskType, metadata, interval, taskSchedule);
+  const perpetualGate = await applyPerpetualWorkGate(app, taskType, promptTaskType, metadata, interval, taskSchedule, { ignoreTaskId });
   if (perpetualGate.skip) return null;
 
   // branch-reconcile: deterministic git/gh pre-step that carries the actionable
@@ -2431,9 +2444,29 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
 
   const approval = await resolveConfidenceApproval(state, `app-improve:${taskType}`, `Task app-improve:${taskType} for ${app.name}`, metadata);
 
-  // All gates passed — record the rotation-pointer advance + emit the
-  // generation log. Deferred from the top of the function (see note there);
-  // every `return null` above this point intentionally leaves both untouched.
+  // All gates passed — stamp the buildTaskInput hook's metadata bag, record the
+  // rotation-pointer advance, and emit the generation log. Deferred from the top
+  // of the function (see note there); every `return null` above this point
+  // intentionally leaves all three untouched.
+  //
+  // The hook bag lands HERE, below the last gate, precisely so a hook can defer a
+  // side effect keyed on it until the task is certain to exist (rationale in
+  // autonomousJobs/quotaBurnHooks.js#buildTaskInput, #3179).
+  //
+  // Generator-computed keys always win. Stamping last would otherwise let a hook
+  // silently clobber a decision made a few lines earlier — `analysisType` is the
+  // dangerous one, since resolveTaskHookType reads it to dispatch the output hook,
+  // so a collision would stop the very hook that asked for the bag from ever
+  // running. Hooks pin provider/model and own the prompt through their own return
+  // fields; the bag is for values that must SURVIVE to processTaskOutput, not an
+  // override channel. Dropped collisions are logged rather than merged silently.
+  for (const [key, value] of Object.entries(hookMetadata || {})) {
+    if (key in metadata) {
+      emitLog('warn', `Ignoring ${taskType} hookMetadata key '${key}' for ${app.name}: it would overwrite generator-owned task metadata`, { appId: app.id, analysisType: taskType });
+      continue;
+    }
+    metadata[key] = value;
+  }
   await updateAppActivity(app.id, { lastImprovementType: taskType });
   emitLog('info', `Generating improvement task for ${app.name}: ${taskType}`, { appId: app.id, analysisType: taskType });
 

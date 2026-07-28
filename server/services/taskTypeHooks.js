@@ -5,11 +5,23 @@
  * sentinel`. A few need PROGRAMMATIC steps around the agent. A hook module may
  * export either or both of:
  *
- *   - `buildTaskInput({ app, taskType })` — runs BEFORE spawn, inside the task
- *     generator. Collects data beyond the base prompt (telemetry, open issues, …)
- *     and returns `{ prompt?, providerId?, model?, skip? }`:
+ *   - `buildTaskInput({ app, taskType, ignoreTaskId })` — runs BEFORE spawn, inside
+ *     the task generator. Collects data beyond the base prompt (telemetry, open
+ *     issues, …) and returns `{ prompt?, providerId?, model?, hookMetadata?, skip? }`.
+ *     `ignoreTaskId` is set on the drain-on-completion refill and names the task
+ *     that just finished but is still `in_progress` on disk — a hook that counts
+ *     in-flight work must exclude it (see quotaBurnHooks.js):
  *       • `prompt`     — a fully-rendered prompt that REPLACES the template.
  *       • `providerId` / `model` — pin the agent's provider/model (per-app choice).
+ *       • `hookMetadata` — a free-form bag merged into the task's persisted
+ *         `metadata`, so a value resolved pre-agent survives to `processTaskOutput`.
+ *         The generator applies it only AFTER every gate that can still skip task
+ *         creation has passed, so a hook can safely defer a side effect until the
+ *         task really exists (quota-burn's dispatch ledger, #3179) instead of
+ *         performing it speculatively here. Untyped by design — a passthrough, not
+ *         a schema; keep the keys namespaced to the task type. A key that collides
+ *         with generator-computed metadata is DROPPED with a warning, so the bag
+ *         can't overwrite `analysisType`, provider pins, or plan ids.
  *       • `skip: { reason }` — short-circuit: no agent is spawned.
  *
  *   - `processTaskOutput({ appId, success, payload, workspacePath, agentId, task }, deps?)`
@@ -138,7 +150,8 @@ export function isNonCommittingCoordinatorTask(task) {
 
 /**
  * Resolve the pre-agent input hook for a task type, or null if it has none.
- * `buildTaskInput({ app, taskType })` → `{ prompt?, providerId?, model?, skip? }`.
+ * `buildTaskInput({ app, taskType })` → `{ prompt?, providerId?, model?, hookMetadata?, skip? }`
+ * (see the module header for each field's contract).
  */
 export async function getTaskInputHook(taskType) {
   const mod = await loadHookModule(taskType);
