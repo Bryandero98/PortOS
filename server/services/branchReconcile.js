@@ -24,10 +24,51 @@ import { execGh } from './github.js';
 import { getOriginInfo } from '../lib/gitRemote.js';
 import { githubRepoSpec } from '../lib/workTracker.js';
 import { safeJSONParse, PATHS } from '../lib/fileUtils.js';
+import { PROTECTED_BRANCHES } from '../lib/gitArgs.js';
 
-// Never reconciled — these are long-lived shared branches, not disposable work.
-// The resolved default branch is added on top at runtime.
-export const PROTECTED_BRANCHES = ['main', 'master', 'release'];
+// Never reconciled — the canonical long-lived-branch set (`main`/`master`/`dev`/
+// `develop`/`release`/`gh-pages`) shared with the git branch-cleanup guards in
+// `../lib/gitArgs.js`, so a branch that can't be deleted also can't be handed to
+// the coordinator agent. The resolved default branch is added on top at runtime.
+// Re-exported for callers that reach for it from this module.
+export { PROTECTED_BRANCHES };
+
+// Recognized work-branch prefixes, in priority order. A branch whose name marks
+// it as tracked work — a human/scheduler claim (`claim/`), a CoS sub-agent branch
+// (`cos/`), a `/do:next` issue branch (`next/`), or a conventional feature/fix
+// branch — is reconciled AHEAD of anything unrecognized, so the coordinator agent
+// spends its bounded run on real deliverables first and only reaches ad-hoc or
+// experimental branches once those are drained. Both `/` and `-` separators match
+// (branch `feature/x` and worktree-derived `feature-x` alike).
+export const WORK_BRANCH_PREFIXES = [
+  'claim', 'cos', 'next', 'feature', 'fix', 'bugfix', 'hotfix',
+  'chore', 'refactor', 'docs', 'test', 'perf', 'build', 'ci', 'style'
+];
+
+/**
+ * Priority rank of a branch by its work-branch prefix — lower sorts first; an
+ * unrecognized branch ranks last (after every recognized prefix). Pure.
+ * @param {string} branch
+ * @returns {number}
+ */
+export function branchPriorityRank(branch) {
+  const name = branch || '';
+  const idx = WORK_BRANCH_PREFIXES.findIndex((p) => name.startsWith(`${p}/`) || name.startsWith(`${p}-`));
+  return idx === -1 ? WORK_BRANCH_PREFIXES.length : idx;
+}
+
+/**
+ * Stable priority sort of classified branches: recognized work-branch prefixes
+ * first (in WORK_BRANCH_PREFIXES order), then everything else, ties broken by
+ * branch name so the order is deterministic. Pure — does not mutate the input.
+ * @param {object[]} branches - entries carrying a `branch` field
+ * @returns {object[]}
+ */
+export function prioritizeBranches(branches) {
+  return [...branches].sort(
+    (a, b) => branchPriorityRank(a.branch) - branchPriorityRank(b.branch) || (a.branch || '').localeCompare(b.branch || '')
+  );
+}
 
 // A `claim-*` worktree is normally protected as a human `/claim` session that
 // self-cleans in the /claim Phase-7 flow. But when that flow never runs (the
@@ -431,7 +472,12 @@ export async function reconcile(repoPath = PATHS.root, { cleanup = true, activeA
   const classified = classifyBranches(inputs);
 
   const merged = classified.filter((c) => c.state === 'MERGED');
-  const inFlight = classified.filter((c) => ['ABANDONED_WIP', 'CONFLICTED', 'IN_REVIEW', 'NEEDS_PR'].includes(c.state));
+  // Priority-ordered so the coordinator agent works recognized work branches
+  // (claim/cos/next/feature/fix/…) before anything unrecognized. The order flows
+  // straight through filterActionable (a stable filter) into the prompt block.
+  const inFlight = prioritizeBranches(
+    classified.filter((c) => ['ABANDONED_WIP', 'CONFLICTED', 'IN_REVIEW', 'NEEDS_PR'].includes(c.state))
+  );
   const wip = classified.filter((c) => c.state === 'WIP');
 
   const { cleaned, skipped } = cleanup
