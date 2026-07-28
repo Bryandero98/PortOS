@@ -143,6 +143,38 @@ describe('long-lived toasts stop blocking the page', () => {
     expect(screen.queryByRole('button', { name: /show notification/i })).toBeNull();
   });
 
+  it('folds on the content\'s own schedule when it passes collapseAfter', () => {
+    // The agent-feedback card sets duration: Infinity only because it runs a
+    // 15s dismiss of its own. Folding at the 8s default would hide its rating
+    // buttons for the last 7s of a life the caller did bound.
+    const OWN_BOUND = COLLAPSE_AFTER_MS * 2;
+    act(() => {
+      toast(() => <button type="button">Rate</button>, {
+        duration: Infinity,
+        label: 'Agent finished',
+        collapseAfter: OWN_BOUND,
+      });
+    });
+
+    advance(COLLAPSE_AFTER_MS);
+    expect(screen.getByRole('button', { name: 'Rate' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: /show notification/i })).toBeNull();
+
+    // Still folds — a longer delay is not an opt-out. The card clears its own
+    // dismiss timer once expanded, and an unbounded card is the click sink.
+    advance(OWN_BOUND - COLLAPSE_AFTER_MS);
+    expect(screen.getByRole('button', { name: 'Show notification: Agent finished' })).toBeVisible();
+  });
+
+  it('ignores a collapseAfter that would switch the fold off entirely', () => {
+    // `Infinity` here would read as "never fold" and hand back the very
+    // click-eating overlay this exists to remove, so it must not be honoured.
+    act(() => { toast('Stuck forever', { duration: Infinity, collapseAfter: Infinity }); });
+
+    advance(COLLAPSE_AFTER_MS);
+    expect(screen.getByRole('button', { name: 'Show notification: Stuck forever' })).toBeVisible();
+  });
+
   it('hides rather than unmounts, so a self-dismissing toast keeps its timers', () => {
     const unmounted = vi.fn();
     function SelfManaging() {

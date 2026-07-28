@@ -6,7 +6,8 @@
  * A `duration: Infinity` toast collapses to a corner pill after
  * COLLAPSE_AFTER_MS so it stops blocking clicks on the page beneath it. Such a
  * toast with render-prop content MUST pass `label` — the pill can't name itself
- * from JSX, and `a11yConventions.test.js` enforces it.
+ * from JSX, and `a11yConventions.test.js` enforces it. Content that runs its
+ * own dismiss timer passes `collapseAfter` to fold on its schedule instead.
  */
 
 import { useState, useEffect } from 'react';
@@ -33,6 +34,16 @@ const DEDUP_WINDOW_MS = 1500;
 // already chose and it clears itself, so folding one early would hide an action
 // the caller meant to keep offering for the whole time (the manuscript
 // Undo-fix toast runs 10s and its Undo button is the only one there is).
+//
+// A toast whose bound lives INSIDE its content rather than in `duration` passes
+// `collapseAfter` to say so. `useAgentFeedbackToast` is the case: it sets
+// `duration: Infinity` only because the card runs its own 15s dismiss, so the
+// default 8s would fold the rating controls away for the last 7s of a life the
+// caller did bound. Worse, re-opening the pill does NOT restart that inner
+// timer, so a card re-expanded at 10s vanished 5s later, mid-click. Passing the
+// content's own bound lines the two up. It is a delay, never an opt-out: when
+// that card is expanded it clears its dismiss timer and becomes truly
+// unbounded — the widest click sink of the set — so it still has to fold.
 export const COLLAPSE_AFTER_MS = 8000;
 
 // Fingerprint → expiry timestamp. Same content+type within DEDUP_WINDOW_MS is
@@ -70,7 +81,14 @@ function add(content, opts = {}, type = 'default') {
 
   // `label` names the toast once it collapses to a pill — required for
   // render-prop content, whose JSX the pill can't summarise on its own.
-  const entry = { id, type, content, icon: opts.icon, duration, style: opts.style, label: opts.label };
+  // `collapseAfter` is validated, not merely read: a non-finite value (a stray
+  // `Infinity` meaning "never fold") would disable the fold entirely and hand
+  // back the click-eating overlay, so anything but a finite positive number
+  // falls back to the default rather than being honoured.
+  const collapseAfter = Number.isFinite(opts.collapseAfter) && opts.collapseAfter > 0
+    ? opts.collapseAfter
+    : COLLAPSE_AFTER_MS;
+  const entry = { id, type, content, icon: opts.icon, duration, style: opts.style, label: opts.label, collapseAfter };
 
   const idx = toasts.findIndex(t => t.id === id);
   toasts = idx !== -1
@@ -155,11 +173,13 @@ function ToastItem({ t, toastOptions }) {
   // to <body>.
   const [held, setHeld] = useState(false);
 
+  const collapseAfter = t.collapseAfter ?? COLLAPSE_AFTER_MS;
+
   useEffect(() => {
     if (!collapsible || collapsed || held) return undefined;
-    const timer = setTimeout(() => setCollapsed(true), COLLAPSE_AFTER_MS);
+    const timer = setTimeout(() => setCollapsed(true), collapseAfter);
     return () => clearTimeout(timer);
-  }, [collapsible, collapsed, held]);
+  }, [collapsible, collapsed, held, collapseAfter]);
 
   // Re-entering `add()` with the same id replaces the entry in place (a
   // loading→success swap, a coalesced AI-status error picking up another

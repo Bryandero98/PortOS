@@ -184,6 +184,12 @@ export function useAgentFeedbackToast() {
           id: toastId,
           duration: Infinity, // Component manages its own auto-dismiss
           label: 'Agent finished — rate the result',
+          // The card's bound lives in AUTO_DISMISS_MS, not in `duration`, so
+          // the toast layer has to be told about it or its shorter default
+          // folds the rating buttons away mid-life. Still folds once the card
+          // is expanded: that clears the dismiss timer above, and an unbounded
+          // 480px card in the corner is exactly what eats clicks.
+          collapseAfter: AUTO_DISMISS_MS,
           style: {
             background: 'rgb(var(--port-card))',
             border: '1px solid rgb(var(--port-border))',
