@@ -285,9 +285,10 @@ export async function cleanupAgentWorktree(agentId, success, { openPR = false, p
  * the branch) so the answer reflects what's actually on disk, not what we hoped.
  *
  * Returns the branch name to resume, or null when there is nothing to resume —
- * no branch, or a branch that holds nothing the default branch doesn't already
- * have. A null answer means the retry should start clean, which is the correct
- * behavior for an agent that failed before committing anything.
+ * no branch, a branch that holds nothing the default branch doesn't already
+ * have, or one still checked out in a preserved worktree (unattachable). A null
+ * answer means the retry should start clean, which is the correct behavior for an
+ * agent that failed before committing anything.
  *
  * Deliberately checks the LOCAL branch: `removeWorktree` preserves it in place,
  * and `createWorktree`'s `existingBranch` path prefers a local copy before
@@ -295,12 +296,31 @@ export async function cleanupAgentWorktree(agentId, success, { openPR = false, p
  */
 export async function resolveResumeBranch(sourceWorkspace, branchName) {
   if (!sourceWorkspace || !branchName) return null;
+  // Git allows a branch to be checked out in only ONE worktree, so if the dead
+  // agent's worktree is STILL on this branch, `git worktree add <path> <branch>`
+  // fails with "already checked out" and the retry can't spawn at all — worse
+  // than restarting clean. That combination is exactly what this change makes
+  // more likely: removeWorktree preserves the worktree (not just the branch)
+  // whenever the tree was dirty, so the branch stays claimed. Don't point a retry
+  // at a branch it cannot attach to.
+  const claimed = await git.getWorktreeBranches(sourceWorkspace).catch(() => null);
+  if (claimed?.has(branchName)) {
+    emitLog('info', `🌳 Branch ${branchName} is still checked out in a preserved worktree — a retry can't attach to it, so it will start clean`, { branchName });
+    return null;
+  }
   const target = await git.getDefaultBranch(sourceWorkspace).catch(() => null) || 'main';
-  // `getBranchComparison` answers "does it exist" and "does it hold anything" in
-  // one call: an absent branch makes the rev-range invalid, so the log comes back
-  // empty and `ahead` is 0. A git error surfaces as null — don't claim a resume we
-  // can't substantiate; the retry starting clean is the safe default, and the
-  // branch (if any) is still on disk for a human.
+  // Same predicate `removeWorktree` used to decide whether to KEEP this branch, so
+  // the two can't disagree and orphan it. `isBranchMergedInto` (not a rev-list
+  // count) because a rebase/squash-merged branch has new SHAs and would otherwise
+  // read as resumable — pointing a retry at already-landed work. Note the polarity
+  // flips here: preservation fails closed (keep), but resuming fails OPEN (start
+  // clean), because a wrong resume makes an agent build on a merged branch while a
+  // wrong clean start merely repeats work the branch still holds for a human.
+  const merged = await git.isBranchMergedInto(sourceWorkspace, branchName, target).catch(() => true);
+  if (merged) return null;
+  // Confirm the branch actually exists and holds commits — `isBranchMergedInto`
+  // reports an ABSENT branch as unmerged, which would hand back a branch name no
+  // worktree can attach to.
   const comparison = await git.getBranchComparison(sourceWorkspace, target, branchName).catch(() => null);
   return comparison?.ahead > 0 ? branchName : null;
 }

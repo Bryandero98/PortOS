@@ -451,7 +451,7 @@ export async function updateTask(taskId, updates, taskType = 'user', { now = Dat
   // unrelated future work, and a stale `existingBranch` would silently attach
   // that fresh run to a long-merged branch. Only cleared on terminal statuses —
   // a `pending` retry is exactly who needs the pointer intact.
-  if (updates.status === 'completed' || updates.status === 'blocked') {
+  if (isTerminalTaskStatus(updates.status)) {
     delete updatedMetadata.existingBranch;
     delete updatedMetadata.resumedFromAgentId;
   }

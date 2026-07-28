@@ -21,9 +21,10 @@ vi.mock('fs/promises', () => ({
 }));
 vi.mock('./instances.js', () => ({ ensureInstanceId: vi.fn().mockResolvedValue('instance-1') }));
 const getDefaultBranchMock = vi.fn().mockResolvedValue('main');
+const isBranchMergedIntoMock = vi.fn().mockResolvedValue(false);
 vi.mock('./git.js', () => ({
   getDefaultBranch: (...args) => getDefaultBranchMock(...args),
-  isBranchMergedInto: vi.fn().mockResolvedValue(false),
+  isBranchMergedInto: (...args) => isBranchMergedIntoMock(...args),
 }));
 
 const {
@@ -593,10 +594,10 @@ describe('isPreexistingRefError (orphan-cleanup guard, #2193)', () => {
 
 describe('removeWorktree branch preservation for resume (#3167)', () => {
   // Routes each git invocation this path makes to a scripted answer, keyed on the
-  // subcommand, so a test only has to state what it cares about (the rev-list
-  // count) instead of ordering every call. `revListCount` of null makes rev-list
-  // FAIL, which is the fail-closed case.
-  function scriptGit({ porcelain = '', revListCount = 0 } = {}) {
+  // subcommand, so a test only has to state what it cares about instead of
+  // ordering every call. The preserve/delete decision itself comes from the
+  // mocked `isBranchMergedInto` (see the ./git.js mock at the top of this file).
+  function scriptGit({ porcelain = '' } = {}) {
     execGitMock.mockReset();
     execGitMock.mockImplementation((args) => {
       const [sub] = args;
@@ -607,11 +608,6 @@ describe('removeWorktree branch preservation for resume (#3167)', () => {
         return Promise.resolve({ stdout: '', stderr: '', exitCode: 0 });
       }
       if (sub === 'status') return Promise.resolve({ stdout: porcelain, stderr: '', exitCode: 0 });
-      if (sub === 'rev-list') {
-        return revListCount === null
-          ? Promise.reject(new Error('unknown revision'))
-          : Promise.resolve({ stdout: String(revListCount), stderr: '', exitCode: 0 });
-      }
       return Promise.resolve({ stdout: '', stderr: '', exitCode: 0 });
     });
   }
@@ -621,11 +617,14 @@ describe('removeWorktree branch preservation for resume (#3167)', () => {
 
   beforeEach(() => {
     getDefaultBranchMock.mockResolvedValue('main');
+    // mockReset (not just mockResolvedValue): the opt-in test asserts the merged
+    // check was NOT consulted, so recorded calls must not leak in from a prior test.
+    isBranchMergedIntoMock.mockReset();
+    isBranchMergedIntoMock.mockResolvedValue(false);
+    scriptGit();
   });
 
-  it('KEEPS the branch when it holds commits the default branch does not', async () => {
-    scriptGit({ revListCount: 4 });
-
+  it('KEEPS the branch when it is not yet merged into the default branch', async () => {
     const result = await removeWorktree('agent-x', '/repo', 'cos/task-1/agent-x', {
       merge: false, preserveBranchWithCommits: true,
     });
@@ -634,8 +633,11 @@ describe('removeWorktree branch preservation for resume (#3167)', () => {
     expect(result.warnings.join(' ')).toMatch(/preserved/i);
   });
 
-  it('DELETES the branch when it holds nothing the default branch lacks', async () => {
-    scriptGit({ revListCount: 0 });
+  // Patch-equivalence matters here: PortOS merges with `--rebase`, so a landed
+  // branch has new SHAs. `isBranchMergedInto` is what sees through that — a bare
+  // `rev-list --count` would report it ahead and preserve a merged branch forever.
+  it('DELETES the branch once it is merged (including rebase/squash-merged)', async () => {
+    isBranchMergedIntoMock.mockResolvedValue(true);
 
     await removeWorktree('agent-x', '/repo', 'cos/task-1/agent-x', {
       merge: false, preserveBranchWithCommits: true,
@@ -644,8 +646,8 @@ describe('removeWorktree branch preservation for resume (#3167)', () => {
     expect(calledWith(['branch', '-D', 'cos/task-1/agent-x'])).toBe(true);
   });
 
-  it('fails CLOSED — keeps the branch when the commit count cannot be determined', async () => {
-    scriptGit({ revListCount: null });
+  it('fails CLOSED — keeps the branch when the merged check cannot be determined', async () => {
+    isBranchMergedIntoMock.mockRejectedValue(new Error('unknown revision'));
 
     const result = await removeWorktree('agent-x', '/repo', 'cos/task-1/agent-x', {
       merge: false, preserveBranchWithCommits: true,
@@ -655,13 +657,11 @@ describe('removeWorktree branch preservation for resume (#3167)', () => {
     expect(result.warnings.join(' ')).toMatch(/preserved/i);
   });
 
-  it('is opt-in: without the flag the no-merge path still deletes a branch with commits', async () => {
-    scriptGit({ revListCount: 7 });
-
+  it('is opt-in: without the flag the no-merge path still deletes an unmerged branch', async () => {
     await removeWorktree('agent-x', '/repo', 'cos/task-1/agent-x', { merge: false });
 
     expect(calledWith(['branch', '-D', 'cos/task-1/agent-x'])).toBe(true);
-    // The resume gate never even ran — no rev-list against the default branch.
-    expect(calledWith(['rev-list', '--count', 'main..cos/task-1/agent-x'])).toBe(false);
+    // The resume gate never consulted the merged check for THIS branch.
+    expect(isBranchMergedIntoMock).not.toHaveBeenCalledWith('/repo', 'cos/task-1/agent-x', 'main');
   });
 });

@@ -1226,8 +1226,12 @@ describe('buildLightContextPrompt', () => {
       // sees commits that are actually pushed. This branch is selected even
       // for a Claude Code CLI provider with `openPR: true`, because the PR
       // already exists; opening another one would be wrong.
+      // `reviewLoopFollowUp` is what identifies this case — the PR-branch guidance
+      // keys on that marker, not on bare `existingBranch`, so the OTHER producer of
+      // `existingBranch` (a resume) can't inherit review-fix instructions for a PR
+      // that may not exist.
       const prompt = buildLightContextPrompt(
-        makeTask({ metadata: { openPR: true, simplify: true } }),
+        makeTask({ metadata: { openPR: true, simplify: true, reviewLoopFollowUp: true } }),
         '/r',
         { branchName: 'feat-x', worktreePath: '/tmp/wt', existingBranch: true },
         isTruthyMeta,
@@ -1239,6 +1243,34 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).toMatch(/git pull --rebase/);
       // And it must NOT emit the slashdo-driven Completion guidance for this branch.
       expect(prompt).not.toMatch(/the \*\*Completion\*\* section below drives the push and PR/);
+    });
+
+    it('a RESUMED worktree gets the resume briefing, not the PR-branch review-fix wording', () => {
+      // A retry attached to a dead agent's branch rides the same `existingBranch`
+      // mechanism but follows the task's ordinary push/PR flow — there may be no PR
+      // at all. It must be told what is already done instead of being told to push
+      // review fixes to a PR that doesn't exist.
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, simplify: true, resumedFromAgentId: 'agent-dead' } }),
+        '/r',
+        { branchName: 'cos/task-1/agent-dead', worktreePath: '/tmp/wt', existingBranch: true },
+        isTruthyMeta,
+        { isTui: false, providerId: 'claude-code' });
+      expect(prompt).toMatch(/## Resuming Unfinished Work/);
+      expect(prompt).toMatch(/agent-dead/);
+      expect(prompt).not.toMatch(/\*\(pre-existing PR branch\)\*/);
+      expect(prompt).not.toMatch(/review-fix commits/);
+    });
+
+    it('omits the resume briefing for an ordinary fresh worktree', () => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, simplify: true } }),
+        '/r',
+        { branchName: 'cos/task-1/agent-new', worktreePath: '/tmp/wt', baseBranch: 'main' },
+        isTruthyMeta,
+        { isTui: false, providerId: 'claude-code' });
+      expect(prompt).toMatch(/## Git Worktree/);
+      expect(prompt).not.toMatch(/## Resuming Unfinished Work/);
     });
 
     it('worktreeCommitGuidance: hasSlashdo + !willOpenPR emits the push-only Completion wording', () => {

@@ -882,11 +882,13 @@ describe('spawnTuiAgent runtime', () => {
     vi.useRealTimers();
     await completeDone;
 
+    // Reaped under the DISTINCT reason: it was asked to wrap up and didn't, which
+    // means a wedged provider — not "raise the runtime budget".
     expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
       expect.objectContaining({
         agentId: 'agent-1',
         success: false,
-        completionReason: 'max-runtime-timeout',
+        completionReason: 'max-runtime-no-wrap-up',
       })
     );
   });
@@ -961,6 +963,7 @@ describe('spawnTuiAgent runtime', () => {
     vi.useRealTimers();
     await completeDone;
 
+    // Never prodded, so this keeps the plain-ceiling reason (not no-wrap-up).
     expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
       expect.objectContaining({ success: false, completionReason: 'max-runtime-timeout' })
     );

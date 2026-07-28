@@ -733,13 +733,13 @@ export async function spawnTuiAgent({
   // needs-manual-finish error (same recovery guidance as the merge-queue /
   // review-loop idle-timeout paths — a stuck orchestrator may have left
   // PRs/worktrees behind).
-  const finishMaxRuntimeFailure = (detail) => {
+  const finishMaxRuntimeFailure = (detail, reason = 'max-runtime-timeout') => {
     captureWorktreeDiff(cwd, agentDir).catch(() => {});
     finish({
       success: false,
       exitCode: 124,
       error: `TUI agent exceeded its max runtime of ${Math.round(tuiConfig.maxRuntimeMs / 60000)}min — ${detail} check for open or merged-but-uncleaned PRs and finish them manually.`,
-      reason: 'max-runtime-timeout',
+      reason,
     }).catch(err => {
       emitLog('error', `Failed to finalize TUI agent ${agentId} at max-runtime: ${err.message}`, { agentId });
     });
@@ -797,7 +797,10 @@ export async function spawnTuiAgent({
         if (Date.now() - graceStartedAt < MAX_RUNTIME_WRAP_UP_GRACE_MS) return;
         clearInterval(wrapUpTimer);
         wrapUpTimer = null;
-        finishMaxRuntimeFailure(`it did not wrap up within ${graceMin}min of being asked, so the provider/CLI likely hung (a stalled request keeps the working counter repainting so the idle reaper never fires);`);
+        finishMaxRuntimeFailure(
+          `it did not wrap up within ${graceMin}min of being asked, so the provider/CLI likely hung (a stalled request keeps the working counter repainting so the idle reaper never fires);`,
+          'max-runtime-no-wrap-up',
+        );
       } catch (err) {
         // setInterval callback: an uncaught throw here would crash the process.
         console.error(`❌ wrapUpTimer interval callback failed: ${err.message}`);

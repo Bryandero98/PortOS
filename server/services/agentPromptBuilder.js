@@ -933,12 +933,26 @@ export function buildCompletionGuidelineBullet({
 const DISCARD_WORKTREE_NOTE = 'Do NOT commit, push, or open a PR — this worktree is discarded on exit. Make any scratch edits that help you reason; only the completion sentinel is kept.';
 
 /**
- * Is this worktree a RESUME of a previous failed agent's branch, as opposed to
- * the review-loop follow-up's PR branch? Both arrive as `existingBranch: true`,
- * but they need opposite guidance: the follow-up must push review fixes to a
- * branch a PR already points at, while a resume follows the task's ordinary
- * push/PR flow (there may be no PR yet at all). Keyed on `resumedFromAgentId`,
- * which only the resume path stamps.
+ * Is this worktree attached to a branch a PR already points at — i.e. the
+ * review-loop follow-up, whose guidance is "push review fixes here, the PR
+ * points at this branch"?
+ *
+ * Identified POSITIVELY, off the follow-up's own `reviewLoopFollowUp` marker,
+ * rather than as "any `existingBranch` worktree". `existingBranch` means only
+ * "attach to this branch" and now has two producers: the follow-up, and a retry
+ * resuming a dead agent's branch (`resumedFromAgentId`), which follows the task's
+ * ordinary push/PR flow and may have no PR at all. Keying on the marker means a
+ * THIRD producer defaults to the ordinary flow instead of silently inheriting
+ * review-fix instructions for a PR that doesn't exist.
+ */
+function isPrBranchWorktree(task, worktreeInfo) {
+  return worktreeInfo?.existingBranch === true && !!task?.metadata?.reviewLoopFollowUp;
+}
+
+/**
+ * Is this worktree a RESUME of a previous failed agent's branch? Keyed on
+ * `resumedFromAgentId`, which only the resume path stamps (see
+ * agentCompletionCleanup.js).
  */
 function isResumedWorktree(task, worktreeInfo) {
   return worktreeInfo?.existingBranch === true && !!task?.metadata?.resumedFromAgentId;
@@ -972,7 +986,8 @@ Before you write any code, establish what is already done:
 1. \`git log --oneline ${worktreeInfo.baseBranch || 'origin/HEAD'}..HEAD\` — the commits it already made.
 2. \`git status\` — anything it left uncommitted.
 3. Check whether it already shipped: look for an open or merged PR for this branch
-   (\`gh pr list --head ${worktreeInfo.branchName} --state all\`).
+   — \`gh pr list --head ${worktreeInfo.branchName} --state all\` on GitHub,
+   \`glab mr list --source-branch ${worktreeInfo.branchName}\` on GitLab.
 
 Then do only what remains. If a PR is already **merged**, the work is done — go
 straight to your completion step and report that. If a PR is already **open**,
@@ -1173,10 +1188,7 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
   // `pending` BEFORE this flag existed (persisted across an upgrade) are still
   // recognized without a metadata migration.
   const noCodeOutput = isTruthyMetaFn(task.metadata?.noCodeOutput) || !!task.metadata?.creativeDirector;
-  // PR-branch guidance ("push review fixes, the PR points here") applies only to
-  // the review-loop follow-up — NOT to a resume, which reuses the same
-  // `existingBranch` mechanism but follows the task's ordinary push/PR flow.
-  const isWorktreeOnExistingBranch = worktreeInfo?.existingBranch === true && !isResumedWorktree(task, worktreeInfo);
+  const isWorktreeOnExistingBranch = isPrBranchWorktree(task, worktreeInfo);
   const worktreeSection = worktreeInfo ? `
 ## Git Worktree Context
 You are working in an **isolated git worktree** to avoid conflicts with other agents working concurrently.
@@ -1550,9 +1562,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   // tasks (queued before this flag existed) are recognized without a migration.
   const noCodeOutput = isTruthyMetaFn(task.metadata?.noCodeOutput) || !!task.metadata?.creativeDirector;
   const isReviewLoopFollowUp = isTruthyMetaFn(task.metadata?.reviewLoopFollowUp);
-  // See the matching derivation in the full prompt path: a RESUME reuses
-  // `existingBranch` but must not inherit the follow-up's PR-branch guidance.
-  const isWorktreeOnExistingBranch = worktreeInfo?.existingBranch === true && !isResumedWorktree(task, worktreeInfo);
+  const isWorktreeOnExistingBranch = isPrBranchWorktree(task, worktreeInfo);
   // Ordered reviewer list + flags for the Review Loop (task metadata wins; else
   // the install's configured Code Review Defaults threaded from buildAgentPrompt;
   // else `[copilot]`). Flows as `/do:pr --review-with a,b,c [--review-stop-on-*]

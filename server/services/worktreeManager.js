@@ -507,20 +507,22 @@ export async function removeWorktree(agentId, sourceWorkspace, branchName, optio
   // (which deletes the LOCAL branch after pushing — the remote branch is what the
   // PR points at) keeps cleaning up after itself.
   if (!hasUnmergedCommits && options.preserveBranchWithCommits && !merged) {
-    const { getDefaultBranch } = await import('./git.js');
+    const { getDefaultBranch, isBranchMergedInto } = await import('./git.js');
     const target = await getDefaultBranch(sourceWorkspace).catch(() => null) || 'main';
-    // `??` on the count: a failed rev-list (unknown ref, detached target) must not
-    // read as "0 commits" and green-light the delete. Fail closed — preserve.
-    const aheadOfDefault = await execGit(['rev-list', '--count', `${target}..${branchName}`], sourceWorkspace)
-      .then(r => parseInt(r.stdout.trim(), 10))
-      .catch(() => null);
-    if (aheadOfDefault === null || aheadOfDefault > 0) {
+    // `isBranchMergedInto` — NOT a bare `rev-list --count target..branch`. A branch
+    // whose PR was REBASE- or SQUASH-merged has new SHAs, so rev-list still reports
+    // it ahead and we would preserve an already-landed branch and point a retry at
+    // it. PortOS merges with `--rebase` by default, so that is the COMMON shape of
+    // the very incident this preservation exists for ("PR merged, then reaped").
+    // isBranchMergedInto covers patch-equivalence (`git cherry`) and fails closed,
+    // which is the polarity we want here too: unknown ⇒ keep the work.
+    const alreadyMerged = await isBranchMergedInto(sourceWorkspace, branchName, target).catch(() => false);
+    if (!alreadyMerged) {
       hasUnmergedCommits = true;
-      const count = aheadOfDefault === null ? 'an unknown number of' : aheadOfDefault;
-      console.log(`🌳 Preserving branch ${branchName} — holds ${count} commit(s) not in ${target}, kept so a retry can resume from it`);
+      console.log(`🌳 Preserving branch ${branchName} — not yet merged into ${target}, kept so a retry can resume from it`);
       warnings.push(`Branch ${branchName} preserved — it holds unmerged commits a retry can resume from`);
     } else {
-      console.log(`🌳 Branch ${branchName} holds nothing not already in ${target} — safe to delete`);
+      console.log(`🌳 Branch ${branchName} is already merged into ${target} — safe to delete`);
     }
   }
   if (hasUnmergedCommits) {

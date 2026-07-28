@@ -174,6 +174,12 @@ vi.mock('./git.js', () => ({
   // Default: the branch is 2 commits ahead of the default branch, so
   // resolveResumeBranch reports it as resumable. Tests override per case.
   getBranchComparison: vi.fn().mockResolvedValue({ ahead: 2, commits: [], stats: {} }),
+  // Default: no branch is claimed by a surviving worktree, so an ahead branch is
+  // attachable. The "still checked out" test overrides this.
+  getWorktreeBranches: vi.fn().mockResolvedValue(new Set()),
+  // Default: NOT already merged, so an ahead branch is resumable. The
+  // rebase/squash-merged case overrides this.
+  isBranchMergedInto: vi.fn().mockResolvedValue(false),
   requestCopilotReview: vi.fn().mockResolvedValue({ success: true }),
   resolveForgeForRepo: vi.fn().mockResolvedValue({ cli: 'gh', env: process.env, host: 'github.com', owner: null, account: null }),
   parsePullRequestUrl: vi.fn((url) => {
@@ -937,6 +943,41 @@ describe('resolveResumeBranch', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     git.getDefaultBranch.mockResolvedValue('main');
+    git.getWorktreeBranches.mockResolvedValue(new Set());
+    git.isBranchMergedInto.mockResolvedValue(false);
+  });
+
+  // The incident shape: PortOS merges with `--rebase` by default, so a landed
+  // branch has NEW SHAs and still reads as "ahead" of the default branch. Pointing
+  // a retry at it would have it build on already-merged work.
+  it('returns null for a rebase/squash-merged branch even though it reads as ahead', async () => {
+    git.isBranchMergedInto.mockResolvedValue(true);
+    git.getBranchComparison.mockResolvedValue({ ahead: 6, commits: [], stats: {} });
+
+    await expect(resolveResumeBranch('/repo', 'cos/task-1/agent-x')).resolves.toBeNull();
+  });
+
+  it('fails OPEN (no resume) when the merged check errors', async () => {
+    git.isBranchMergedInto.mockRejectedValue(new Error('git exploded'));
+
+    await expect(resolveResumeBranch('/repo', 'cos/task-1/agent-x')).resolves.toBeNull();
+  });
+
+  it('returns null when the branch is still checked out in a preserved worktree', async () => {
+    // A dirty tree makes removeWorktree preserve the WORKTREE too, so the branch
+    // stays claimed. `git worktree add` would fail "already checked out", which is
+    // worse for the retry than starting clean.
+    git.getWorktreeBranches.mockResolvedValue(new Set(['cos/task-1/agent-x']));
+    git.getBranchComparison.mockResolvedValue({ ahead: 5, commits: [], stats: {} });
+
+    await expect(resolveResumeBranch('/repo', 'cos/task-1/agent-x')).resolves.toBeNull();
+  });
+
+  it('still resumes when a DIFFERENT branch is checked out elsewhere', async () => {
+    git.getWorktreeBranches.mockResolvedValue(new Set(['main', 'cos/task-9/agent-z']));
+    git.getBranchComparison.mockResolvedValue({ ahead: 2, commits: [], stats: {} });
+
+    await expect(resolveResumeBranch('/repo', 'cos/task-1/agent-x')).resolves.toBe('cos/task-1/agent-x');
   });
 
   it('returns the branch when it holds commits the default branch does not', async () => {
