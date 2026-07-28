@@ -3,7 +3,7 @@ import { PROTECTED_BRANCHES, validateFilePaths, toLiteralPathspec } from './gitA
 
 describe('PROTECTED_BRANCHES', () => {
   it('lists the branches that must never be deleted', () => {
-    expect(PROTECTED_BRANCHES).toEqual(['main', 'master', 'dev', 'develop', 'release']);
+    expect(PROTECTED_BRANCHES).toEqual(['main', 'master', 'dev', 'develop', 'release', 'gh-pages']);
   });
 });
 
