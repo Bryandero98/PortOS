@@ -215,6 +215,16 @@ function loadStoredRows() {
 /**
  * The compiled table merged with the user-defined store: `{ walk, …stored }`.
  *
+ * **SYNCHRONOUS, and never a Promise** — this is safe to use as a default
+ * parameter (`tracks = getEffectiveAnimationTracks()`), which is how atlas.js,
+ * atlasGrid.js, atlasLayout.js and walkFrames.js consume it. The header explains
+ * why sync is required rather than merely convenient; stated again here because a
+ * reader (or a reviewer) landing on one of those default params sees only the call.
+ *
+ * **`walk` is always present**, on every path — it comes from the compiled table,
+ * not the store, so an absent/empty/deleted store yields `{ walk }` rather than
+ * `{}`. A caller resolving `WALK_TRACK` can never miss.
+ *
  * Registration order puts `walk` first, which is what keeps every derived
  * ordering (the atlas span order, the effective id list) byte-stable across
  * installs regardless of what the user has added.
@@ -241,10 +251,13 @@ export function getEffectiveAnimationTrackIds() {
  * One row out of the effective table — `getAnimationTrack(id, getEffectiveAnimationTracks())`,
  * which was being spelled out at a dozen call sites.
  *
- * Keeps `getAnimationTrack`'s exact boundary (absent ⇒ `walk`, unrecognized ⇒
- * throws naming the known tracks) — it IS that call, just named. Modules that must
- * work against an injected table still call `getAnimationTrack(id, tracks)`
- * directly; that parameter is the test seam and is deliberately untouched.
+ * Keeps `getAnimationTrack`'s exact boundary — it IS that call, just named:
+ * an absent id (`undefined`/`null`) resolves to `walk`, and an unrecognized one
+ * **THROWS** naming the known tracks. It never returns `undefined`, so callers
+ * dereference `.id`/`.label`/bounds on the result without a guard (as every call
+ * site does). Modules that must work against an injected table still call
+ * `getAnimationTrack(id, tracks)` directly; that parameter is the test seam and is
+ * deliberately untouched.
  */
 export function effectiveTrack(id) {
   return getAnimationTrack(id, getEffectiveAnimationTracks());
