@@ -177,7 +177,22 @@ export async function startHfDownloadStream({ req, res, repo, repos, fallbacks, 
       currentHandle = null;
     }
     if (!firstSuccessWins) {
+      // ALL must succeed here — unlike the fallback-chain branch below, there
+      // is no next candidate to fall through to. Silently treating a failed
+      // repo as done (the prior bug) let the loop reach `complete` even
+      // though one of the required repos never downloaded.
+      if (!result?.ok) {
+        if (result?.errorKind === 'cancelled') return safeEnd();
+        send({
+          type: 'error',
+          kind: result?.errorKind || 'download_failed',
+          message: `${r}: ${result?.errorMessage || 'unknown error'}`,
+          repo: r,
+        });
+        return safeEnd();
+      }
       downloadedAny = true;
+      totalSize += result.sizeBytes || 0;
       continue;
     }
     if (result?.ok) {

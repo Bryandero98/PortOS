@@ -323,3 +323,40 @@ describe('startHfDownloadStream single-file + fallbacks (#3112)', () => {
     expect(parseFrames(frames)).toEqual([{ type: 'error', message: 'No repo specified for download.' }]);
   });
 });
+
+// ── Multi-repo `repos:` — ALL must succeed, unlike `fallbacks` above ────────
+describe('startHfDownloadStream repos (ALL must succeed)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    inspectModelCache.mockResolvedValue({ cached: false, sizeBytes: 0, snapshotPath: null });
+  });
+
+  it('reports an error and stops when one of several required repos fails, instead of completing', async () => {
+    downloadHfRepo
+      .mockReturnValueOnce({ promise: Promise.resolve({ ok: true, sizeBytes: 100 }), kill: vi.fn() })
+      .mockReturnValueOnce({
+        promise: Promise.resolve({ ok: false, errorKind: 'download_failed', errorMessage: 'network reset' }),
+        kill: vi.fn(),
+      });
+
+    const { req, res, frames } = makeReqRes();
+    await startHfDownloadStream({ req, res, repos: ['org/repo-a', 'org/repo-b'] });
+
+    const parsed = parseFrames(frames);
+    expect(parsed.some((f) => f.type === 'complete')).toBe(false);
+    expect(parsed.at(-1)).toMatchObject({ type: 'error', repo: 'org/repo-b' });
+    // A required repo failing must stop the chain rather than rolling on.
+    expect(downloadHfRepo).toHaveBeenCalledTimes(2);
+  });
+
+  it('completes once every required repo succeeds', async () => {
+    // Explicit mockReturnValue (not -Once) so this test's total doesn't depend
+    // on how many queued mockReturnValueOnce entries earlier tests left behind.
+    downloadHfRepo.mockReturnValue({ promise: Promise.resolve({ ok: true, sizeBytes: 100 }), kill: vi.fn() });
+    const { req, res, frames } = makeReqRes();
+    await startHfDownloadStream({ req, res, repos: ['org/repo-a', 'org/repo-b'] });
+
+    const parsed = parseFrames(frames);
+    expect(parsed.at(-1)).toMatchObject({ type: 'complete', repos: ['org/repo-a', 'org/repo-b'], sizeBytes: 200 });
+  });
+});
