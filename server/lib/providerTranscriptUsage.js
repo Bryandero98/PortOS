@@ -321,11 +321,23 @@ export function parseCodexRollout(jsonlText, { from = null, to = null } = {}) {
     if (!total || typeof total !== 'object') continue;
 
     const ts = toEpoch(entry.timestamp);
-    if (from != null && ts != null && ts < from) {
+    // A token_count line with no readable timestamp can't be placed relative
+    // to the window — exclude it whenever a bound is supplied, the same way
+    // `inWindow` excludes a timestamp-less message elsewhere in this file.
+    // Falling through to `latest = total` here (this snapshot's old bug) would
+    // fold a snapshot from outside the run's window into it regardless of
+    // `from`/`to`, inflating (or double-billing, on an overlapping run) that
+    // run's cumulative-usage delta.
+    if (ts == null) {
+      if (from != null || to != null) continue;
+      latest = total;
+      continue;
+    }
+    if (from != null && ts < from) {
       baseline = total; // pre-window state — subtract it below
       continue;
     }
-    if (to != null && ts != null && ts > to) continue;
+    if (to != null && ts > to) continue;
 
     latest = total;
     if (typeof entry.timestamp === 'string' && entry.timestamp) {

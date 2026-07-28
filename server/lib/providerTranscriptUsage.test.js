@@ -330,6 +330,25 @@ describe('windowing excludes un-placeable messages', () => {
     expect(result.messages).toBe(1);
     expect(result.tokensOut).toBe(150);
   });
+
+  it('excludes a timestamp-less Codex token_count snapshot when a window is supplied', () => {
+    const text = [
+      codexMeta(),
+      // In-window snapshot this run should bill.
+      codexTokenCount({ timestamp: '2026-07-01T12:00:01.000Z', input: 1000, cached: 800, output: 100 }),
+      // A later snapshot with NO timestamp — outside this run's window in
+      // reality, but unplaceable. Falling through to `latest` (the bug) would
+      // fold its bigger cumulative total into this run instead of the run
+      // that actually produced it.
+      codexTokenCount({ timestamp: undefined, input: 9000, cached: 8000, output: 900 })
+    ].join('\n');
+
+    const result = parseCodexRollout(text, {
+      from: Date.parse('2026-07-01T11:00:00.000Z'),
+      to: Date.parse('2026-07-01T13:00:00.000Z')
+    });
+    expect(result.tokensOut).toBe(100);
+  });
 });
 
 describe('per-model token buckets', () => {
