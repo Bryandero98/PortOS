@@ -34,6 +34,7 @@
 
 ## CoS agent failure reporting
 
+- An Antigravity agent no longer waits for the idle timeout when its Google account is still being verified. That provider screen is recognized immediately, the task records an actionable provider failure, and CoS can use its configured fallback instead of presenting a session that looks stuck.
 - A reference-watch run against a GitHub/GitLab/JIRA work tracker is no longer failed for leaving a clean worktree. Those runs file issues instead of editing application code, so "no file changes" is what success looks like — a task can now declare that its work product isn't files, and only that check is relaxed (a run that never actually started still fails).
 - Failed agent runs are classified far more accurately. A terminal-UI agent's transcript is a repainted *screen*, not a log — it can run to hundreds of kilobytes while containing barely any line breaks — so the analyzer's "look at the recent output" window was quietly reading the entire session. Any keyword anywhere in it, including commands the agent itself typed, decided the verdict: one run reaped for going idle was reported as "Context length exceeded", which blocked its task and auto-filed an investigation for a problem that never happened.
 - When the system already knows why a run ended — the idle watchdog fired, the runtime budget ran out, the provider CLI wasn't installed — that is now what gets reported. Only a genuine provider or system error in the transcript can override it.
