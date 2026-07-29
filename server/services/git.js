@@ -63,11 +63,19 @@ export async function getStatus(dir) {
     clean: files.length === 0,
     files,
     staged: files.filter(f => f.staged).length,
-    unstaged: files.filter(f => !f.staged).length,
-    // Raw porcelain, so callers can hand it to `classifyWorktreeDirt`
-    // (worktreeManager.js) instead of re-deriving "is this dirt real work?".
-    porcelain: result.stdout
+    unstaged: files.filter(f => !f.staged).length
   };
+}
+
+/**
+ * Raw `git status --porcelain` output, for callers that need to feed it to
+ * `classifyWorktreeDirt` (worktreeManager.js) rather than re-deriving "is this
+ * dirt real work?" from the parsed shape. Kept separate from `getStatus` because
+ * that one is returned verbatim by `POST /api/git/status`, where a raw duplicate
+ * of `files[]` would just double the payload on every dirty tree.
+ */
+export async function getStatusPorcelain(dir) {
+  return (await execGit(['status', '--porcelain'], dir)).stdout;
 }
 
 /**

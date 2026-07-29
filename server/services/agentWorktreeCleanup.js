@@ -350,8 +350,8 @@ export async function resolveResumePointer(sourceWorkspace, branchName, worktree
     // Same dirt classifier `removeWorktree` uses, so "worth preserving" and "worth
     // resuming" can't disagree: lockfile churn an agent never meant to commit is
     // not work, and a tree holding only that should start clean.
-    const status = await git.getStatus(worktreePath).catch(() => null);
-    if (!classifyWorktreeDirt(status?.porcelain).hasRealChanges) return null;
+    const porcelain = await git.getStatusPorcelain(worktreePath).catch(() => '');
+    if (!classifyWorktreeDirt(porcelain).hasRealChanges) return null;
     emitLog('info', `🌳 Worktree ${worktreePath} survived on ${branchName} — a retry can adopt it and keep its uncommitted work`, { branchName, worktreePath });
     return { branchName, worktreePath };
   }

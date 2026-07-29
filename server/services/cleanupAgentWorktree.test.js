@@ -179,7 +179,7 @@ vi.mock('./git.js', () => ({
   getBranchComparison: vi.fn().mockResolvedValue({ ahead: 2, commits: [], stats: {} }),
   // Read off a SURVIVING worktree when deciding whether a retry can adopt it.
   getBranch: vi.fn().mockResolvedValue(''),
-  getStatus: vi.fn().mockResolvedValue({ clean: true, files: [] }),
+  getStatusPorcelain: vi.fn().mockResolvedValue(''),
   // Default: no branch is claimed by a surviving worktree, so an ahead branch is
   // attachable. The "still checked out" test overrides this.
   getWorktreeBranches: vi.fn().mockResolvedValue(new Set()),
@@ -1049,7 +1049,7 @@ describe('resolveResumePointer', () => {
     git.isBranchMergedInto.mockResolvedValue(merged);
     git.getBranchComparison.mockResolvedValue({ ahead, commits: [], stats: {} });
     git.getBranch.mockResolvedValue(branch);
-    git.getStatus.mockResolvedValue({ clean: !porcelain, files: [], porcelain });
+    git.getStatusPorcelain.mockResolvedValue(porcelain);
   }
 
   // The restart case: the run is killed mid-edit, so it has ZERO commits (the
@@ -1145,7 +1145,7 @@ describe('resolveTaskResumePointer / recordTaskResumePointer', () => {
   it('stamps the worktree path when the dead agent’s tree survived', async () => {
     existsSyncMock.mockReturnValue(true);
     git.getBranch.mockResolvedValue(DEAD_BRANCH);
-    git.getStatus.mockResolvedValue({ clean: false, files: [], porcelain: ' M a.js\n' });
+    git.getStatusPorcelain.mockResolvedValue(' M a.js\n');
     const task = { id: 'task-1', taskType: 'user', metadata: {} };
 
     await recordTaskResumePointer({ task, agentId: 'agent-x', agentMetadata });
@@ -1160,7 +1160,7 @@ describe('resolveTaskResumePointer / recordTaskResumePointer', () => {
   it('looks for the tree at the path the agent recorded', async () => {
     existsSyncMock.mockReturnValue(true);
     git.getBranch.mockResolvedValue(DEAD_BRANCH);
-    git.getStatus.mockResolvedValue({ clean: false, files: [], porcelain: ' M a.js\n' });
+    git.getStatusPorcelain.mockResolvedValue(' M a.js\n');
 
     await recordTaskResumePointer({
       task: { id: 'task-1', metadata: {} }, agentId: 'agent-x',
