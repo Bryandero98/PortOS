@@ -153,10 +153,13 @@ vi.mock('./taskConflict.js', () => ({
   detectConflicts: vi.fn(() => [])
 }));
 
-vi.mock('./worktreeManager.js', () => ({
+vi.mock('./worktreeManager.js', async (importOriginal) => ({
   createWorktree: vi.fn(),
   removeWorktree: vi.fn().mockResolvedValue(undefined),
-  cleanupOrphanedWorktrees: vi.fn()
+  cleanupOrphanedWorktrees: vi.fn(),
+  // Real: the resume path's "is this dirt real work?" answer must be the SAME
+  // classifier removeWorktree preserves a tree on, and it's a pure function.
+  classifyWorktreeDirt: (await importOriginal()).classifyWorktreeDirt
 }));
 
 vi.mock('./jira.js', () => ({
@@ -172,8 +175,11 @@ vi.mock('./git.js', () => ({
   suggestPRTitle: vi.fn(),
   deleteBranch: vi.fn().mockResolvedValue(undefined),
   // Default: the branch is 2 commits ahead of the default branch, so
-  // resolveResumeBranch reports it as resumable. Tests override per case.
+  // resolveResumePointer reports it as resumable. Tests override per case.
   getBranchComparison: vi.fn().mockResolvedValue({ ahead: 2, commits: [], stats: {} }),
+  // Read off a SURVIVING worktree when deciding whether a retry can adopt it.
+  getBranch: vi.fn().mockResolvedValue(''),
+  getStatus: vi.fn().mockResolvedValue({ clean: true, files: [] }),
   // Default: no branch is claimed by a surviving worktree, so an ahead branch is
   // attachable. The "still checked out" test overrides this.
   getWorktreeBranches: vi.fn().mockResolvedValue(new Set()),
@@ -203,10 +209,13 @@ vi.mock('./runner.js', () => ({
 
 // --- Import the function under test and the mocked dependencies ---
 
+import { join } from 'path';
+import { existsSync as existsSyncMock } from 'fs';
 import { cleanupAgentWorktree, spawnMergeRecoveryTask, spawnReviewLoopFollowUp } from './subAgentSpawner.js';
-import { resolveResumeBranch } from './agentWorktreeCleanup.js';
-import { getAgent, addTask } from './cos.js';
+import { resolveResumePointer, recordTaskResumePointer, resumePointerMetadata } from './agentWorktreeCleanup.js';
+import { getAgent, addTask, updateTask } from './cos.js';
 import { removeWorktree } from './worktreeManager.js';
+import { PATHS } from '../lib/fileUtils.js';
 import * as git from './git.js';
 
 // Helper: build a mock agent state for worktree agents
@@ -939,12 +948,16 @@ describe('cleanupAgentWorktree - openPR path', () => {
   });
 });
 
-describe('resolveResumeBranch', () => {
+const DEAD_BRANCH = 'cos/task-1/agent-x';
+const DEAD_TREE = join(PATHS.worktrees, 'agent-x');
+
+describe('resolveResumePointer', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     git.getDefaultBranch.mockResolvedValue('main');
     git.getWorktreeBranches.mockResolvedValue(new Set());
     git.isBranchMergedInto.mockResolvedValue(false);
+    existsSyncMock.mockReturnValue(false);
   });
 
   // The incident shape: PortOS merges with `--rebase` by default, so a landed
@@ -954,43 +967,47 @@ describe('resolveResumeBranch', () => {
     git.isBranchMergedInto.mockResolvedValue(true);
     git.getBranchComparison.mockResolvedValue({ ahead: 6, commits: [], stats: {} });
 
-    await expect(resolveResumeBranch('/repo', 'cos/task-1/agent-x')).resolves.toBeNull();
+    await expect(resolveResumePointer('/repo', DEAD_BRANCH)).resolves.toBeNull();
   });
 
   it('fails OPEN (no resume) when the merged check errors', async () => {
     git.isBranchMergedInto.mockRejectedValue(new Error('git exploded'));
 
-    await expect(resolveResumeBranch('/repo', 'cos/task-1/agent-x')).resolves.toBeNull();
+    await expect(resolveResumePointer('/repo', DEAD_BRANCH)).resolves.toBeNull();
   });
 
-  it('returns null when the branch is still checked out in a preserved worktree', async () => {
+  it('returns null when the branch is still checked out in a worktree that is not the dead agent’s', async () => {
     // A dirty tree makes removeWorktree preserve the WORKTREE too, so the branch
     // stays claimed. `git worktree add` would fail "already checked out", which is
     // worse for the retry than starting clean.
-    git.getWorktreeBranches.mockResolvedValue(new Set(['cos/task-1/agent-x']));
+    git.getWorktreeBranches.mockResolvedValue(new Set([DEAD_BRANCH]));
     git.getBranchComparison.mockResolvedValue({ ahead: 5, commits: [], stats: {} });
 
-    await expect(resolveResumeBranch('/repo', 'cos/task-1/agent-x')).resolves.toBeNull();
+    await expect(resolveResumePointer('/repo', DEAD_BRANCH, DEAD_TREE)).resolves.toBeNull();
   });
 
   it('still resumes when a DIFFERENT branch is checked out elsewhere', async () => {
     git.getWorktreeBranches.mockResolvedValue(new Set(['main', 'cos/task-9/agent-z']));
     git.getBranchComparison.mockResolvedValue({ ahead: 2, commits: [], stats: {} });
 
-    await expect(resolveResumeBranch('/repo', 'cos/task-1/agent-x')).resolves.toBe('cos/task-1/agent-x');
+    await expect(resolveResumePointer('/repo', DEAD_BRANCH)).resolves.toEqual({
+      branchName: DEAD_BRANCH, worktreePath: null
+    });
   });
 
   it('returns the branch when it holds commits the default branch does not', async () => {
     git.getBranchComparison.mockResolvedValue({ ahead: 3, commits: [], stats: {} });
 
-    await expect(resolveResumeBranch('/repo', 'cos/task-1/agent-x')).resolves.toBe('cos/task-1/agent-x');
-    expect(git.getBranchComparison).toHaveBeenCalledWith('/repo', 'main', 'cos/task-1/agent-x');
+    await expect(resolveResumePointer('/repo', DEAD_BRANCH)).resolves.toEqual({
+      branchName: DEAD_BRANCH, worktreePath: null
+    });
+    expect(git.getBranchComparison).toHaveBeenCalledWith('/repo', 'main', DEAD_BRANCH);
   });
 
   it('returns null when the branch holds nothing to resume', async () => {
     git.getBranchComparison.mockResolvedValue({ ahead: 0, commits: [], stats: {} });
 
-    await expect(resolveResumeBranch('/repo', 'cos/task-1/agent-x')).resolves.toBeNull();
+    await expect(resolveResumePointer('/repo', DEAD_BRANCH)).resolves.toBeNull();
   });
 
   it('returns null for an absent branch (empty comparison), not a phantom resume', async () => {
@@ -998,18 +1015,18 @@ describe('resolveResumeBranch', () => {
     // back with ahead: 0 rather than throwing.
     git.getBranchComparison.mockResolvedValue({ ahead: 0, commits: [], stats: {} });
 
-    await expect(resolveResumeBranch('/repo', 'cos/gone')).resolves.toBeNull();
+    await expect(resolveResumePointer('/repo', 'cos/gone')).resolves.toBeNull();
   });
 
   it('returns null when git errors — never claims a resume it cannot substantiate', async () => {
     git.getBranchComparison.mockRejectedValue(new Error('not a git repository'));
 
-    await expect(resolveResumeBranch('/repo', 'cos/task-1/agent-x')).resolves.toBeNull();
+    await expect(resolveResumePointer('/repo', DEAD_BRANCH)).resolves.toBeNull();
   });
 
   it('returns null without touching git when the workspace or branch is missing', async () => {
-    await expect(resolveResumeBranch(null, 'cos/task-1/agent-x')).resolves.toBeNull();
-    await expect(resolveResumeBranch('/repo', null)).resolves.toBeNull();
+    await expect(resolveResumePointer(null, DEAD_BRANCH)).resolves.toBeNull();
+    await expect(resolveResumePointer('/repo', null)).resolves.toBeNull();
     expect(git.getBranchComparison).not.toHaveBeenCalled();
   });
 
@@ -1017,8 +1034,189 @@ describe('resolveResumeBranch', () => {
     git.getDefaultBranch.mockRejectedValue(new Error('no remote'));
     git.getBranchComparison.mockResolvedValue({ ahead: 1, commits: [], stats: {} });
 
-    await expect(resolveResumeBranch('/repo', 'cos/task-1/agent-x')).resolves.toBe('cos/task-1/agent-x');
-    expect(git.getBranchComparison).toHaveBeenCalledWith('/repo', 'main', 'cos/task-1/agent-x');
+    await expect(resolveResumePointer('/repo', DEAD_BRANCH)).resolves.toEqual({
+      branchName: DEAD_BRANCH, worktreePath: null
+    });
+    expect(git.getBranchComparison).toHaveBeenCalledWith('/repo', 'main', DEAD_BRANCH);
+  });
+
+  // --- Worktree adoption (the server-restart shape) ---
+
+  // Each adoption case varies exactly one of these; the rest is the shape of "a
+  // worktree survived on this branch".
+  function scriptSurvivingTree({ merged = false, ahead = 0, branch = DEAD_BRANCH, porcelain = ' M a.js\n' } = {}) {
+    existsSyncMock.mockReturnValue(true);
+    git.isBranchMergedInto.mockResolvedValue(merged);
+    git.getBranchComparison.mockResolvedValue({ ahead, commits: [], stats: {} });
+    git.getBranch.mockResolvedValue(branch);
+    git.getStatus.mockResolvedValue({ clean: !porcelain, files: [], porcelain });
+  }
+
+  // The restart case: the run is killed mid-edit, so it has ZERO commits (the
+  // branch reads as merged) and everything it did is uncommitted. Discarding that
+  // tree is exactly the "redo the work" bug — adopt it instead.
+  it('adopts the dead agent’s surviving worktree when it holds uncommitted work, even with no commits', async () => {
+    scriptSurvivingTree({ merged: true, ahead: 0 });
+
+    await expect(resolveResumePointer('/repo', DEAD_BRANCH, DEAD_TREE)).resolves.toEqual({
+      branchName: DEAD_BRANCH, worktreePath: DEAD_TREE
+    });
+  });
+
+  it('adopts a surviving worktree whose branch holds unmerged commits even when the tree is clean', async () => {
+    scriptSurvivingTree({ merged: false, ahead: 2, porcelain: '' });
+
+    await expect(resolveResumePointer('/repo', DEAD_BRANCH, DEAD_TREE)).resolves.toEqual({
+      branchName: DEAD_BRANCH, worktreePath: DEAD_TREE
+    });
+  });
+
+  // The landed-work guard has to survive the adopt path too, or a run reaped just
+  // after its PR merged would hand its replacement the merged tree to build on.
+  it('does NOT adopt when the branch’s commits already landed', async () => {
+    scriptSurvivingTree({ merged: true, ahead: 4 });
+
+    await expect(resolveResumePointer('/repo', DEAD_BRANCH, DEAD_TREE)).resolves.toBeNull();
+  });
+
+  it('does NOT adopt a directory that has been repurposed onto another branch', async () => {
+    scriptSurvivingTree({ ahead: 3, branch: 'some/other-branch' });
+    git.getWorktreeBranches.mockResolvedValue(new Set());
+
+    // Falls through to the branch-attach shape rather than handing over the tree.
+    await expect(resolveResumePointer('/repo', DEAD_BRANCH, DEAD_TREE)).resolves.toEqual({
+      branchName: DEAD_BRANCH, worktreePath: null
+    });
+  });
+
+  it('returns null for a clean surviving worktree with nothing to contribute', async () => {
+    scriptSurvivingTree({ merged: true, ahead: 0, porcelain: '' });
+
+    await expect(resolveResumePointer('/repo', DEAD_BRANCH, DEAD_TREE)).resolves.toBeNull();
+  });
+
+  // Same classifier removeWorktree uses to decide a tree is safe to delete — the
+  // two must agree, or a tree it would have discarded reads as resumable work.
+  it('treats lockfile-only churn as nothing to resume', async () => {
+    scriptSurvivingTree({ merged: true, ahead: 0, porcelain: ' M package-lock.json\n' });
+
+    await expect(resolveResumePointer('/repo', DEAD_BRANCH, DEAD_TREE)).resolves.toBeNull();
+  });
+
+  // The ordinary shape — run finished, branch landed, tree already reaped — must
+  // not pay for the branch comparison (two git subprocesses, one a whole-branch diff).
+  it('bails before the branch comparison when nothing survived and the branch is merged', async () => {
+    git.isBranchMergedInto.mockResolvedValue(true);
+
+    await expect(resolveResumePointer('/repo', DEAD_BRANCH, DEAD_TREE)).resolves.toBeNull();
+    expect(git.getBranchComparison).not.toHaveBeenCalled();
+  });
+});
+
+describe('resolveTaskResumePointer / recordTaskResumePointer', () => {
+  const agentMetadata = {
+    isWorktree: true, sourceWorkspace: '/repo',
+    worktreeBranch: DEAD_BRANCH, workspacePath: DEAD_TREE
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    git.getDefaultBranch.mockResolvedValue('main');
+    git.getWorktreeBranches.mockResolvedValue(new Set());
+    git.isBranchMergedInto.mockResolvedValue(false);
+    git.getBranchComparison.mockResolvedValue({ ahead: 2, commits: [], stats: {} });
+    existsSyncMock.mockReturnValue(false);
+  });
+
+  it('stamps the branch, the prior agent, and a null worktree path for a branch-only resume', async () => {
+    const task = { id: 'task-1', taskType: 'user', metadata: {} };
+
+    await recordTaskResumePointer({ task, agentId: 'agent-x', agentMetadata });
+
+    expect(updateTask).toHaveBeenCalledWith('task-1', {
+      metadata: {
+        existingBranch: DEAD_BRANCH,
+        resumedFromAgentId: 'agent-x',
+        resumeWorktreePath: null
+      }
+    }, 'user');
+  });
+
+  it('stamps the worktree path when the dead agent’s tree survived', async () => {
+    existsSyncMock.mockReturnValue(true);
+    git.getBranch.mockResolvedValue(DEAD_BRANCH);
+    git.getStatus.mockResolvedValue({ clean: false, files: [], porcelain: ' M a.js\n' });
+    const task = { id: 'task-1', taskType: 'user', metadata: {} };
+
+    await recordTaskResumePointer({ task, agentId: 'agent-x', agentMetadata });
+
+    expect(updateTask).toHaveBeenCalledWith('task-1', {
+      metadata: expect.objectContaining({ resumeWorktreePath: DEAD_TREE })
+    }, 'user');
+  });
+
+  // The agent's own recorded path wins over the <worktrees>/<agentId> convention,
+  // so an app-repo agent whose tree lives elsewhere is still found.
+  it('looks for the tree at the path the agent recorded', async () => {
+    existsSyncMock.mockReturnValue(true);
+    git.getBranch.mockResolvedValue(DEAD_BRANCH);
+    git.getStatus.mockResolvedValue({ clean: false, files: [], porcelain: ' M a.js\n' });
+
+    await recordTaskResumePointer({
+      task: { id: 'task-1', metadata: {} }, agentId: 'agent-x',
+      agentMetadata: { ...agentMetadata, workspacePath: '/elsewhere/tree' }
+    });
+
+    expect(git.getBranch).toHaveBeenCalledWith('/elsewhere/tree');
+  });
+
+  it('records nothing when there is no leftover work', async () => {
+    git.getBranchComparison.mockResolvedValue({ ahead: 0, commits: [], stats: {} });
+
+    await recordTaskResumePointer({ task: { id: 'task-1', metadata: {} }, agentId: 'agent-x', agentMetadata });
+
+    expect(updateTask).not.toHaveBeenCalled();
+  });
+
+  it('skips agents that never had a worktree, and persistent feature-agent worktrees', async () => {
+    const task = { id: 'task-1', metadata: {} };
+
+    await recordTaskResumePointer({ task, agentId: 'agent-x', agentMetadata: { isWorktree: false } });
+    await recordTaskResumePointer({ task, agentId: 'agent-x', agentMetadata: { ...agentMetadata, isPersistentWorktree: true } });
+
+    expect(updateTask).not.toHaveBeenCalled();
+  });
+
+  // Reasoning agents run in a worktree whose edits are deliberately thrown away —
+  // resuming one would resurrect code the discard guarantee exists to drop.
+  it('skips throwaway (discardWorktree) tasks', async () => {
+    const task = { id: 'task-1', metadata: { discardWorktree: true } };
+
+    await recordTaskResumePointer({ task, agentId: 'agent-x', agentMetadata });
+
+    expect(updateTask).not.toHaveBeenCalled();
+  });
+});
+
+describe('resumePointerMetadata', () => {
+  it('sets the three keys a retry needs to resume', () => {
+    expect(resumePointerMetadata({ branchName: 'cos/b', worktreePath: '/t' }, 'agent-x', { metadata: {} })).toEqual({
+      existingBranch: 'cos/b', resumedFromAgentId: 'agent-x', resumeWorktreePath: '/t'
+    });
+  });
+
+  // Attempt 1 left a resumable branch; attempt 2 landed it. Leaving the stale
+  // pointer would attach attempt 3 to already-merged work.
+  it('clears a pointer this mechanism wrote once there is nothing left to resume', () => {
+    expect(resumePointerMetadata(null, 'agent-y', { metadata: { resumedFromAgentId: 'agent-x' } })).toEqual({
+      existingBranch: null, resumedFromAgentId: null, resumeWorktreePath: null
+    });
+  });
+
+  // The review-loop follow-up sets existingBranch itself and has no resumedFrom
+  // marker — clearing it would strand the follow-up off its own PR branch.
+  it('leaves a foreign existingBranch alone', () => {
+    expect(resumePointerMetadata(null, 'agent-y', { metadata: { existingBranch: 'cos/pr-branch' } })).toEqual({});
   });
 });
 

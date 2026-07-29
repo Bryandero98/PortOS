@@ -33,7 +33,7 @@ import { isTruthyMeta, isFalsyMeta } from './agentState.js';
 import { PATHS } from '../lib/fileUtils.js';
 import * as git from './git.js';
 import { detectConflicts } from './taskConflict.js';
-import { createWorktree } from './worktreeManager.js';
+import { createWorktree, adoptWorktree } from './worktreeManager.js';
 import { resolveSpawnCwd } from '../lib/spawnCwd.js';
 import { getAppWorkspace, getAppDataForTask, createJiraTicketForTask } from './agentPromptBuilder.js';
 
@@ -215,9 +215,31 @@ export async function prepareAgentWorkspace({ agentId, task }) {
         });
       }
 
-      worktreeInfo = await createWorktree(agentId, workspacePath, task.id, {
+      // Resume path: the run this task is retrying left a worktree behind (its
+      // process died mid-edit, so `removeWorktree` refused to delete the dirty
+      // tree — see recordTaskResumePointer). Adopt it, which carries the
+      // uncommitted edits and untracked files no branch pointer can, instead of
+      // building a fresh tree and redoing that work.
+      const resumeWorktreePath = existingBranch ? task.metadata?.resumeWorktreePath : null;
+      const adopted = resumeWorktreePath
+        ? await adoptWorktree(agentId, workspacePath, resumeWorktreePath, existingBranch).catch(err => {
+          emitLog('warn', `🌳 Could not adopt worktree ${resumeWorktreePath} for task ${task.id}: ${err.message}`, { taskId: task.id });
+          return null;
+        })
+        : null;
+
+      // Adoption failing while the stale tree is STILL on disk means the branch is
+      // checked out there, so attaching a second worktree to it would fail with
+      // "already checked out" and block the task outright. Fail open — start clean,
+      // the same polarity resolveResumePointer uses — rather than not spawning.
+      const branchStillClaimed = !adopted && resumeWorktreePath && existsSync(resumeWorktreePath);
+      if (branchStillClaimed) {
+        emitLog('warn', `🌳 Worktree ${resumeWorktreePath} could not be adopted and still holds ${existingBranch} — task ${task.id} starts from a clean branch`, { taskId: task.id });
+      }
+
+      worktreeInfo = adopted || await createWorktree(agentId, workspacePath, task.id, {
         baseBranch: detectedBase || undefined,
-        existingBranch: existingBranch || undefined,
+        existingBranch: branchStillClaimed ? undefined : (existingBranch || undefined),
         planId: task.metadata?.planId || undefined
       }).catch(err => {
         emitLog('warn', `🌳 Worktree creation failed, using shared workspace: ${err.message}`, { taskId: task.id });
@@ -226,7 +248,10 @@ export async function prepareAgentWorkspace({ agentId, task }) {
 
       if (worktreeInfo) {
         workspacePath = worktreeInfo.worktreePath;
-        emitLog('success', `🌳 Agent ${agentId} will work in worktree: ${worktreeInfo.branchName} (base: ${worktreeInfo.baseBranch})`, {
+        const origin = worktreeInfo.adopted
+          ? `adopted from ${task.metadata?.resumedFromAgentId || 'the interrupted run'}`
+          : `base: ${worktreeInfo.baseBranch}`;
+        emitLog('success', `🌳 Agent ${agentId} will work in worktree: ${worktreeInfo.branchName} (${origin})`, {
           agentId, worktreePath: worktreeInfo.worktreePath, branchName: worktreeInfo.branchName, baseBranch: worktreeInfo.baseBranch
         });
       } else {

@@ -18,7 +18,7 @@ import { activeAgents, runnerAgents, userTerminatedAgents, pausedAgents, useRunn
 // longer depends on the lifecycle orchestrator — which depends on THIS module
 // for handleOrphanedTask. Importing them from their own leaf modules is what
 // lets that edge be a plain static import instead of a dynamic-import dodge.
-import { cleanupAgentWorktree } from './agentWorktreeCleanup.js';
+import { cleanupAgentWorktree, resolveTaskResumePointer, resumePointerMetadata } from './agentWorktreeCleanup.js';
 import { syncRunnerAgents } from './agentRunnerSync.js';
 import { flushRunnerOutputBatcher } from './agentRunnerOutputBatchers.js';
 import { checkForTaskCommit } from './agentRunTracking.js';
@@ -612,7 +612,11 @@ export async function cleanupOrphanedAgents() {
         cleanedCount++;
 
         if (agent.taskId) {
-          orphanedTaskIds.push({ taskId: agent.taskId, agentId: agent.id });
+          // Carry the agent's metadata forward rather than re-reading the record
+          // later: `getAgent` on a completed agent re-splits its whole output.txt
+          // transcript, and the worktree fields the resume pointer needs are
+          // stamped once at registerAgent and never mutated.
+          orphanedTaskIds.push({ taskId: agent.taskId, agentId: agent.id, agentMetadata: agent.metadata });
         }
       }
     }
@@ -635,9 +639,13 @@ export async function cleanupOrphanedAgents() {
     await settleOrphanedCreativeDirectorRun(task);
   }
 
-  // Handle orphaned tasks - reset for retry or create investigation task
-  for (const { taskId, agentId } of orphanedTaskIds) {
-    await handleOrphanedTask(taskId, agentId, getTask);
+  // Handle orphaned tasks - reset for retry or create investigation task.
+  // `agentMetadata` rides along so the retry can resume what this run left behind
+  // (see handleOrphanedTask). Runs AFTER cleanupAgentWorktree above so the resume
+  // pointer reflects what actually survived — a dirty tree aborts removal, leaving
+  // the whole worktree in place.
+  for (const { taskId, agentId, agentMetadata } of orphanedTaskIds) {
+    await handleOrphanedTask(taskId, agentId, getTask, { agentMetadata });
   }
 
   // Trigger evaluation to spawn new agents for retried tasks
@@ -655,8 +663,19 @@ export async function cleanupOrphanedAgents() {
 
 /**
  * Handle an orphaned task - retry or create investigation.
+ *
+ * Every path that retires a run whose process vanished funnels through here —
+ * the boot/health-check orphan sweep, `resetOrphanedTasks`, and the post-restart
+ * completion recovery — so the retry's resume pointer is resolved HERE rather than
+ * at each call site. Callers that know which agent died pass its `agentMetadata`;
+ * without it the retry simply starts clean, which is the pre-existing behavior.
+ *
+ * @param {object} [options]
+ * @param {object} [options.agentMetadata] - the dead agent's registered metadata
+ *   (`isWorktree` / `sourceWorkspace` / `worktreeBranch` / `workspacePath`), used
+ *   to work out whether its branch or worktree is worth resuming.
  */
-export async function handleOrphanedTask(taskId, agentId, getTaskByIdFn) {
+export async function handleOrphanedTask(taskId, agentId, getTaskByIdFn, { agentMetadata = null } = {}) {
   const task = await getTaskByIdFn(taskId).catch(() => null);
   if (!task) {
     emitLog('warn', `Could not find task ${taskId} for orphaned agent ${agentId}`, { taskId, agentId });
@@ -717,13 +736,26 @@ export async function handleOrphanedTask(taskId, agentId, getTaskByIdFn) {
       maxRetries: MAX_ORPHAN_RETRIES
     });
 
+    // Point the retry at whatever the dead run left behind — its branch, or the
+    // whole worktree when the process died mid-edit and the uncommitted work is
+    // still sitting in it. Folded into THIS write rather than stamped separately
+    // beforehand: the flip to `pending` emits `tasks:changed`, which can spawn the
+    // retry immediately, so a pointer written afterwards could land too late.
+    // Fails open to "start clean": requeueing the task matters far more than
+    // resuming it, and a throw here would strand it in_progress until the next sweep.
+    const resume = await resolveTaskResumePointer({ task, agentId, agentMetadata }).catch(err => {
+      emitLog('warn', `Resume pointer for task ${taskId} could not be resolved: ${err.message}`, { taskId, agentId });
+      return null;
+    });
+
     await updateTask(taskId, {
       status: 'pending',
       metadata: {
         ...task.metadata,
         orphanRetryCount: retryCount,
         lastOrphanedAt: new Date().toISOString(),
-        lastOrphanedAgentId: agentId
+        lastOrphanedAgentId: agentId,
+        ...resumePointerMetadata(resume, agentId, task)
       }
     }, taskType);
   } else if (inCooldown && retryCount < MAX_ORPHAN_RETRIES && !totalExceeded) {

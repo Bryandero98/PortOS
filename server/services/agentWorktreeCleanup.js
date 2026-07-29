@@ -14,11 +14,12 @@
  * from there).
  */
 
+import { existsSync } from 'fs';
 import { join } from 'path';
 import { emitLog } from './cosEvents.js';
-import { addTask } from './cos.js';
+import { addTask, updateTask } from './cos.js';
 import * as git from './git.js';
-import { removeWorktree } from './worktreeManager.js';
+import { removeWorktree, classifyWorktreeDirt } from './worktreeManager.js';
 import { isTruthyMeta } from './agentState.js';
 import { PATHS } from '../lib/fileUtils.js';
 import { RECOVERY_TASK_PREFIX } from './recoveryTasks.js';
@@ -280,34 +281,39 @@ export async function cleanupAgentWorktree(agentId, success, { openPR = false, p
 }
 
 /**
- * Does a failed agent's branch still exist with commits a retry should resume
- * from? Called at completion time (after cleanup has decided whether to preserve
- * the branch) so the answer reflects what's actually on disk, not what we hoped.
+ * What, if anything, should a retry of this task pick up from the run that just
+ * died? Called after cleanup has decided what to preserve, so the answer reflects
+ * what's actually on disk rather than what we hoped.
  *
- * Returns the branch name to resume, or null when there is nothing to resume —
- * no branch, a branch that holds nothing the default branch doesn't already
- * have, or one still checked out in a preserved worktree (unattachable). A null
- * answer means the retry should start clean, which is the correct behavior for an
- * agent that failed before committing anything.
+ * Two shapes of leftover work, in priority order:
+ *
+ *   1. **Adopt the worktree** — `{ branchName, worktreePath }`. The dead agent's
+ *      own worktree survived cleanup (a dirty tree aborts removal) and is still on
+ *      its branch. This is the shape a server restart leaves behind: the run is
+ *      killed mid-edit, so its work is UNCOMMITTED and no branch pointer can carry
+ *      it. The retry moves that tree to its own directory (see `adoptWorktree`).
+ *   2. **Attach the branch** — `{ branchName, worktreePath: null }`. The worktree
+ *      is gone but the branch survived with unmerged commits, so a fresh worktree
+ *      attaches to it via `createWorktree`'s `existingBranch` path.
+ *
+ * Returns null when there is nothing to resume — no branch, no leftover work, or
+ * a branch whose commits already landed. A null answer means "start clean", the
+ * correct behavior for an agent that died before producing anything.
  *
  * Deliberately checks the LOCAL branch: `removeWorktree` preserves it in place,
  * and `createWorktree`'s `existingBranch` path prefers a local copy before
  * falling back to `origin/<branch>`, so a local-only branch resumes fine.
+ *
+ * @param {string} sourceWorkspace - the parent git repository
+ * @param {string} branchName - the dead agent's worktree branch
+ * @param {string} [worktreePath] - the dead agent's worktree directory, the
+ *   adoption candidate. Omit to consider only the branch-attach shape.
+ * @returns {Promise<{branchName: string, worktreePath: string|null}|null>}
  */
-export async function resolveResumeBranch(sourceWorkspace, branchName) {
+export async function resolveResumePointer(sourceWorkspace, branchName, worktreePath = null) {
   if (!sourceWorkspace || !branchName) return null;
-  // Git allows a branch to be checked out in only ONE worktree, so if the dead
-  // agent's worktree is STILL on this branch, `git worktree add <path> <branch>`
-  // fails with "already checked out" and the retry can't spawn at all — worse
-  // than restarting clean. That combination is exactly what this change makes
-  // more likely: removeWorktree preserves the worktree (not just the branch)
-  // whenever the tree was dirty, so the branch stays claimed. Don't point a retry
-  // at a branch it cannot attach to.
-  const claimed = await git.getWorktreeBranches(sourceWorkspace).catch(() => null);
-  if (claimed?.has(branchName)) {
-    emitLog('info', `🌳 Branch ${branchName} is still checked out in a preserved worktree — a retry can't attach to it, so it will start clean`, { branchName });
-    return null;
-  }
+
+  const survivingTree = !!(worktreePath && existsSync(worktreePath));
   const target = await git.getDefaultBranch(sourceWorkspace).catch(() => null) || 'main';
   // Same predicate `removeWorktree` used to decide whether to KEEP this branch, so
   // the two can't disagree and orphan it. `isBranchMergedInto` (not a rev-list
@@ -317,12 +323,150 @@ export async function resolveResumeBranch(sourceWorkspace, branchName) {
   // clean), because a wrong resume makes an agent build on a merged branch while a
   // wrong clean start merely repeats work the branch still holds for a human.
   const merged = await git.isBranchMergedInto(sourceWorkspace, branchName, target).catch(() => true);
+  // Nothing survived and nothing is unmerged — the common "run finished, branch
+  // landed, tree already reaped" shape. Bail before spending any more git calls.
+  if (merged && !survivingTree) return null;
+
+  // How many commits the branch holds that the default branch doesn't. Only ever
+  // consulted on one of the two mutually exclusive paths below, so it costs a
+  // single call per resolution.
+  const commitsAhead = async () =>
+    (await git.getBranchComparison(sourceWorkspace, target, branchName).catch(() => null))?.ahead || 0;
+
+  // 1. Adopt the surviving tree — but only if it is actually on the branch we're
+  //    resuming; a half-cleaned or repurposed directory must not be handed over.
+  if (survivingTree && await git.getBranch(worktreePath).catch(() => null) === branchName) {
+    if (!merged) {
+      emitLog('info', `🌳 Worktree ${worktreePath} survived on unmerged ${branchName} — a retry can adopt it`, { branchName, worktreePath });
+      return { branchName, worktreePath };
+    }
+    // A merged branch reads that way for two very different reasons. Commits that
+    // already LANDED (ahead > 0) must never be resumed onto — that's the
+    // agent-d2ae0352 incident. A branch that never committed at all (ahead === 0)
+    // has nothing to duplicate, so an uncommitted tree on top of it is safe to
+    // adopt — and that is exactly the restart case this function exists for:
+    // killed mid-edit, zero commits, hours of uncommitted work.
+    if (await commitsAhead() > 0) return null;
+    // Same dirt classifier `removeWorktree` uses, so "worth preserving" and "worth
+    // resuming" can't disagree: lockfile churn an agent never meant to commit is
+    // not work, and a tree holding only that should start clean.
+    const status = await git.getStatus(worktreePath).catch(() => null);
+    if (!classifyWorktreeDirt(status?.porcelain).hasRealChanges) return null;
+    emitLog('info', `🌳 Worktree ${worktreePath} survived on ${branchName} — a retry can adopt it and keep its uncommitted work`, { branchName, worktreePath });
+    return { branchName, worktreePath };
+  }
+
   if (merged) return null;
+
+  // 2. Attach a fresh worktree to the branch. Git allows a branch to be checked out
+  //    in only ONE worktree, so if a worktree is STILL on this branch, `git worktree
+  //    add <path> <branch>` fails with "already checked out" and the retry can't
+  //    spawn at all — worse than restarting clean. The adoption path above already
+  //    handled the dead agent's OWN worktree; anything else holding the branch is
+  //    not ours to move.
+  const claimed = await git.getWorktreeBranches(sourceWorkspace).catch(() => null);
+  if (claimed?.has(branchName)) {
+    emitLog('info', `🌳 Branch ${branchName} is still checked out in a preserved worktree — a retry can't attach to it, so it will start clean`, { branchName });
+    return null;
+  }
   // Confirm the branch actually exists and holds commits — `isBranchMergedInto`
   // reports an ABSENT branch as unmerged, which would hand back a branch name no
   // worktree can attach to.
-  const comparison = await git.getBranchComparison(sourceWorkspace, target, branchName).catch(() => null);
-  return comparison?.ahead > 0 ? branchName : null;
+  return await commitsAhead() > 0 ? { branchName, worktreePath: null } : null;
+}
+
+/**
+ * What a retry of `task` can pick up from the run that just died, or null when it
+ * should start clean. Resolves only — see `recordTaskResumePointer` to persist it
+ * and `resumePointerMetadata` for the task patch.
+ *
+ * Every path that retires a dead run funnels through here so the "can this be
+ * resumed?" question has one answer:
+ *   - `handleAgentCompletion` (agentCompletionCleanup.js) — the agent failed and
+ *     its completion hook ran normally.
+ *   - `handleOrphanedTask` (agentManagement.js) — the agent's process vanished
+ *     (server restart / crash), so no completion hook ever ran. That path is why
+ *     this is shared: a restart-killed run was requeued with no pointer at all,
+ *     and its replacement redid work that was already sitting on disk.
+ *
+ * @param {{task: object, agentId: string, agentMetadata: object}} params
+ * @returns {Promise<{branchName: string, worktreePath: string|null}|null>}
+ */
+export async function resolveTaskResumePointer({ task, agentId, agentMetadata }) {
+  if (!task?.id || !agentId) return null;
+  // Persistent feature-agent worktrees are never torn down, and throwaway
+  // reasoning worktrees are deliberately discarded — neither leaves work to resume.
+  if (!agentMetadata?.isWorktree || agentMetadata?.isPersistentWorktree) return null;
+  if (isTruthyMeta(task.metadata?.discardWorktree)) return null;
+
+  // The agent's own recorded path is authoritative; the `<worktrees>/<agentId>`
+  // convention is the fallback for a record written before it was stamped (same
+  // idiom cleanupAgentWorktree uses for the PR push).
+  const worktreePath = agentMetadata.workspacePath || join(PATHS.worktrees, agentId);
+  const pointer = await resolveResumePointer(agentMetadata.sourceWorkspace, agentMetadata.worktreeBranch, worktreePath)
+    .catch(err => {
+      emitLog('warn', `Failed to resolve resume pointer for ${agentId}: ${err.message}`, { agentId });
+      return null;
+    });
+  if (!pointer) return null;
+
+  emitLog('info', `🔁 Task ${task.id} will resume ${pointer.worktreePath ? `in the worktree ${agentId} left behind` : `from ${pointer.branchName}`} instead of restarting`, {
+    taskId: task.id, agentId, branchName: pointer.branchName, worktreePath: pointer.worktreePath
+  });
+  return pointer;
+}
+
+/**
+ * The task-metadata patch that makes a retry resume (or stop resuming).
+ *
+ * `existingBranch` is the flag agentWorkspacePrep already honors to attach a
+ * worktree to a pre-existing branch (the review-loop follow-up uses it), and
+ * `resumeWorktreePath` is honored there too, so resuming needs no new spawn
+ * plumbing. `resumedFromAgentId` records whose run is being continued — it drives
+ * the prompt's resume banner and is the marker that distinguishes a resume from
+ * the follow-up (see `isPrBranchWorktree` in agentPromptBuilder.js).
+ *
+ * With no pointer, a previously-stamped resume is CLEARED: its branch may since
+ * have been merged or deleted, and leaving the pointer would attach the next
+ * attempt to landed work. Keyed on `resumedFromAgentId` so it only ever clears a
+ * pointer this mechanism wrote — the review-loop follow-up's own `existingBranch`
+ * is its whole reason for existing and must survive being orphaned.
+ *
+ * @param {{branchName: string, worktreePath: string|null}|null} pointer
+ * @param {string} agentId - the run being resumed from
+ * @param {object} task - the task being retried (read for a prior pointer)
+ * @returns {object} metadata patch to merge into an `updateTask` call
+ */
+export function resumePointerMetadata(pointer, agentId, task) {
+  if (pointer) {
+    return {
+      existingBranch: pointer.branchName,
+      resumedFromAgentId: agentId,
+      resumeWorktreePath: pointer.worktreePath
+    };
+  }
+  if (!task?.metadata?.resumedFromAgentId) return {};
+  return { existingBranch: null, resumedFromAgentId: null, resumeWorktreePath: null };
+}
+
+/**
+ * Resolve AND persist the resume pointer. For callers that aren't already writing
+ * the task; `handleOrphanedTask` folds the patch into its own retry write instead,
+ * so the pointer can't land after the status flip that makes the task spawnable.
+ *
+ * @param {{task: object, agentId: string, agentMetadata: object}} params
+ * @returns {Promise<{branchName: string, worktreePath: string|null}|null>}
+ */
+export async function recordTaskResumePointer({ task, agentId, agentMetadata }) {
+  const pointer = await resolveTaskResumePointer({ task, agentId, agentMetadata });
+  if (!pointer) return null;
+
+  await updateTask(task.id, {
+    metadata: resumePointerMetadata(pointer, agentId, task)
+  }, task.taskType || 'user').catch(err => {
+    emitLog('warn', `Failed to record resume pointer for task ${task.id}: ${err.message}`, { taskId: task.id, agentId });
+  });
+  return pointer;
 }
 
 /**

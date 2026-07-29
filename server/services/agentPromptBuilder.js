@@ -958,32 +958,43 @@ function isResumedWorktree(task, worktreeInfo) {
 }
 
 /**
- * Resume banner for a retry attached to the branch a PREVIOUS failed agent left
+ * Resume banner for a retry picking up what a PREVIOUS unfinished agent left
  * behind (`metadata.existingBranch` + `resumedFromAgentId`, stamped by
- * agentCompletionCleanup.js when a failed run's branch survived cleanup with
- * commits on it).
+ * `recordTaskResumePointer` when a dead run's branch — or whole worktree —
+ * survived cleanup).
  *
  * Without this the retry sees an ordinary worktree that just happens to have
- * commits on it and redoes work that is already done — the failure mode the
+ * work in it and redoes what is already done — the failure mode the
  * agent-d2ae0352 incident exposed (reaped 30s after its PR merged; the
  * replacement agent started the shipped work over). Telling it to read the log
  * FIRST is the whole point: the prior run may have gone as far as opening or even
  * merging a PR, in which case there is nothing left to build.
+ *
+ * An ADOPTED worktree (`worktreeInfo.adopted` — the shape a server restart leaves,
+ * killed mid-edit before committing) additionally carries the dead run's
+ * uncommitted edits and untracked files, so the banner points at `git status`
+ * as the primary record rather than the commit log.
  *
  * Returns '' when this isn't a resume, so callers can interpolate unconditionally.
  */
 export function buildResumeSection(task, worktreeInfo) {
   if (!isResumedWorktree(task, worktreeInfo)) return '';
   const priorAgentId = task.metadata.resumedFromAgentId;
+  const carriedWork = worktreeInfo.adopted
+    ? `**You are in its actual working directory** — its commits are on your branch \`${worktreeInfo.branchName}\`
+AND any edits it had not committed yet are still in your working tree, exactly as it left them.`
+    : `**Its commits are already on your branch** \`${worktreeInfo.branchName}\` — you are
+continuing its run, not starting over.`;
   return `
 ## Resuming Unfinished Work — Read This First
 A previous agent (\`${priorAgentId}\`) worked this same task and did NOT finish cleanly
-(it hung, timed out, or was terminated). **Its commits are already on your branch**
-\`${worktreeInfo.branchName}\` — you are continuing its run, not starting over.
+(it hung, timed out, or was terminated — a server restart kills runs mid-edit).
+${carriedWork}
 
 Before you write any code, establish what is already done:
-1. \`git log --oneline ${worktreeInfo.baseBranch || 'origin/HEAD'}..HEAD\` — the commits it already made.
-2. \`git status\` — anything it left uncommitted.
+1. \`git status\` — anything it left uncommitted. Treat these as YOUR in-progress
+   changes: review them, finish them, and commit them. Do not discard them wholesale.
+2. \`git log --oneline ${worktreeInfo.baseBranch || 'origin/HEAD'}..HEAD\` — the commits it already made.
 3. Check whether it already shipped: look for an open or merged PR for this branch
    — \`gh pr list --head ${worktreeInfo.branchName} --state all\` on GitHub,
    \`glab mr list --source-branch ${worktreeInfo.branchName}\` on GitLab.

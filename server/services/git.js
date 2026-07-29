@@ -63,7 +63,10 @@ export async function getStatus(dir) {
     clean: files.length === 0,
     files,
     staged: files.filter(f => f.staged).length,
-    unstaged: files.filter(f => !f.staged).length
+    unstaged: files.filter(f => !f.staged).length,
+    // Raw porcelain, so callers can hand it to `classifyWorktreeDirt`
+    // (worktreeManager.js) instead of re-deriving "is this dirt real work?".
+    porcelain: result.stdout
   };
 }
 

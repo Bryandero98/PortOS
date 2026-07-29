@@ -272,9 +272,10 @@ describe('agentLifecycle — guard wiring', () => {
   it('the post-restart recovery completion path also stamps the LI verdict (#2779, codex P2)', () => {
     // A hand-off that finished while the server was down completes via this bypass, not
     // finalizeAgent — it must still stamp so the outcome federates to the originating peer.
-    const idx = AGENT_LIFECYCLE_SRC.indexOf('Completing untracked agent');
-    expect(idx, 'post-restart recovery branch must exist').toBeGreaterThan(-1);
-    const body = AGENT_LIFECYCLE_SRC.slice(idx, idx + 2000);
+    // End-anchored on the statement that follows the branch rather than a fixed
+    // char count: a fixed window silently shrinks its coverage every time the
+    // branch grows, and a later addition pushed the assertions below out of it.
+    const body = recoveryBranchSource();
     // Success path stamps a clean completion…
     expect(body).toMatch(/await stampLiExecutionVerdict\(\{ status: 'completed' \}, task, \{ success \}\)/);
     // …and the FAILURE path re-reads the task after orphan recovery and stamps the failure
@@ -282,7 +283,28 @@ describe('agentLifecycle — guard wiring', () => {
     expect(body).toMatch(/settled\.status === 'blocked' && settled\.metadata\?\.liProposal/);
     expect(body).toMatch(/await stampLiExecutionVerdict\(\{\}, settled, \{ success: false \}\)/);
   });
+
+  // This bypass never runs worktree cleanup, so the dead run's tree is still on
+  // disk when the task is requeued. Without the dead agent's metadata,
+  // handleOrphanedTask can't tell the retry what to resume, and it builds a fresh
+  // worktree off the default branch and redoes work sitting right there.
+  it('the post-restart recovery path hands the dead agent’s metadata to the retry handler', () => {
+    const body = recoveryBranchSource();
+    expect(body).toMatch(/handleOrphanedTask\([^)]*\{\s*agentMetadata: cosAgent\.metadata\s*\}\)/);
+  });
 });
+
+/**
+ * Source of the post-restart recovery branch in handleAgentCompletion, sliced
+ * between its opening log line and the first statement after it.
+ */
+function recoveryBranchSource() {
+  const start = AGENT_LIFECYCLE_SRC.indexOf('Completing untracked agent');
+  expect(start, 'post-restart recovery branch must exist').toBeGreaterThan(-1);
+  const end = AGENT_LIFECYCLE_SRC.indexOf('const { task, runId, model', start);
+  expect(end, 'end anchor (the statement after the branch) must exist').toBeGreaterThan(start);
+  return AGENT_LIFECYCLE_SRC.slice(start, end);
+}
 
 // ─── Non-negotiable orderings inside runAgentSpawn (no behavioral seam) ──────
 //
