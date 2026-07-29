@@ -212,7 +212,7 @@ vi.mock('./runner.js', () => ({
 import { join } from 'path';
 import { existsSync as existsSyncMock } from 'fs';
 import { cleanupAgentWorktree, spawnMergeRecoveryTask, spawnReviewLoopFollowUp } from './subAgentSpawner.js';
-import { resolveResumePointer, recordTaskResumePointer, resumePointerMetadata } from './agentWorktreeCleanup.js';
+import { resolveResumePointer, resolveTaskResumePatch, recordTaskResumePointer, resumePointerMetadata } from './agentWorktreeCleanup.js';
 import { getAgent, addTask, updateTask } from './cos.js';
 import { removeWorktree } from './worktreeManager.js';
 import { PATHS } from '../lib/fileUtils.js';
@@ -1113,7 +1113,7 @@ describe('resolveResumePointer', () => {
   });
 });
 
-describe('resolveTaskResumePointer / recordTaskResumePointer', () => {
+describe('resolveTaskResumePatch / recordTaskResumePointer', () => {
   const agentMetadata = {
     isWorktree: true, sourceWorkspace: '/repo',
     worktreeBranch: DEAD_BRANCH, workspacePath: DEAD_TREE
@@ -1174,6 +1174,30 @@ describe('resolveTaskResumePointer / recordTaskResumePointer', () => {
     git.getBranchComparison.mockResolvedValue({ ahead: 0, commits: [], stats: {} });
 
     await recordTaskResumePointer({ task: { id: 'task-1', metadata: {} }, agentId: 'agent-x', agentMetadata });
+
+    expect(updateTask).not.toHaveBeenCalled();
+  });
+
+  // Attempt 1 left a resumable branch; attempt 2 landed it and then died. Leaving
+  // the spent pointer would attach attempt 3 to the merged branch.
+  it('CLEARS a spent pointer when a resuming task has nothing left to resume', async () => {
+    git.getBranchComparison.mockResolvedValue({ ahead: 0, commits: [], stats: {} });
+    const task = { id: 'task-1', taskType: 'user', metadata: { resumedFromAgentId: 'agent-w', existingBranch: 'cos/old' } };
+
+    await recordTaskResumePointer({ task, agentId: 'agent-x', agentMetadata });
+
+    expect(updateTask).toHaveBeenCalledWith('task-1', {
+      metadata: { existingBranch: null, resumedFromAgentId: null, resumeWorktreePath: null }
+    }, 'user');
+  });
+
+  // ...but a run that was never EVALUATED must not clear it. A resuming task whose
+  // retry couldn't get a worktree (agentWorkspacePrep's degrade path) still has its
+  // predecessor's tree sitting on disk for the attempt after this one.
+  it('leaves the pointer alone when the run had no worktree to evaluate', async () => {
+    const task = { id: 'task-1', taskType: 'user', metadata: { resumedFromAgentId: 'agent-w', existingBranch: 'cos/old' } };
+
+    await recordTaskResumePointer({ task, agentId: 'agent-x', agentMetadata: { isWorktree: false } });
 
     expect(updateTask).not.toHaveBeenCalled();
   });

@@ -376,9 +376,15 @@ export async function resolveResumePointer(sourceWorkspace, branchName, worktree
 }
 
 /**
- * What a retry of `task` can pick up from the run that just died, or null when it
- * should start clean. Resolves only — see `recordTaskResumePointer` to persist it
- * and `resumePointerMetadata` for the task patch.
+ * The task-metadata patch that points a retry of `task` at what the run that just
+ * died left behind — or clears a spent pointer, or does nothing. Resolves only;
+ * `recordTaskResumePointer` persists it, `handleOrphanedTask` folds it into its own
+ * retry write. Three outcomes, and the difference between the last two matters:
+ *   - a **set** patch — there is leftover work; point the retry at it
+ *   - a **clear** patch — this task WAS resuming, we looked, and there is nothing
+ *     left (the branch merged or vanished); drop the pointer so the next attempt
+ *     doesn't attach to it
+ *   - an **empty** patch — nothing to say; leave whatever the task already carries
  *
  * Every path that retires a dead run funnels through here so the "can this be
  * resumed?" question has one answer:
@@ -390,14 +396,18 @@ export async function resolveResumePointer(sourceWorkspace, branchName, worktree
  *     and its replacement redid work that was already sitting on disk.
  *
  * @param {{task: object, agentId: string, agentMetadata: object}} params
- * @returns {Promise<{branchName: string, worktreePath: string|null}|null>}
+ * @returns {Promise<object>} metadata patch to merge into an `updateTask` call
  */
-export async function resolveTaskResumePointer({ task, agentId, agentMetadata }) {
-  if (!task?.id || !agentId) return null;
+export async function resolveTaskResumePatch({ task, agentId, agentMetadata }) {
+  if (!task?.id || !agentId) return {};
   // Persistent feature-agent worktrees are never torn down, and throwaway
   // reasoning worktrees are deliberately discarded — neither leaves work to resume.
-  if (!agentMetadata?.isWorktree || agentMetadata?.isPersistentWorktree) return null;
-  if (isTruthyMeta(task.metadata?.discardWorktree)) return null;
+  // These runs are NOT evaluated at all, which is why they return the empty patch
+  // rather than the clear: a task already resuming whose retry couldn't get a
+  // worktree (see agentWorkspacePrep's degrade path) must KEEP its pointer, since
+  // the tree it names is still sitting there for the attempt after this one.
+  if (!agentMetadata?.isWorktree || agentMetadata?.isPersistentWorktree) return {};
+  if (isTruthyMeta(task.metadata?.discardWorktree)) return {};
 
   // The agent's own recorded path is authoritative; the `<worktrees>/<agentId>`
   // convention is the fallback for a record written before it was stamped (same
@@ -408,12 +418,13 @@ export async function resolveTaskResumePointer({ task, agentId, agentMetadata })
       emitLog('warn', `Failed to resolve resume pointer for ${agentId}: ${err.message}`, { agentId });
       return null;
     });
-  if (!pointer) return null;
 
-  emitLog('info', `🔁 Task ${task.id} will resume ${pointer.worktreePath ? `in the worktree ${agentId} left behind` : `from ${pointer.branchName}`} instead of restarting`, {
-    taskId: task.id, agentId, branchName: pointer.branchName, worktreePath: pointer.worktreePath
-  });
-  return pointer;
+  if (pointer) {
+    emitLog('info', `🔁 Task ${task.id} will resume ${pointer.worktreePath ? `in the worktree ${agentId} left behind` : `from ${pointer.branchName}`} instead of restarting`, {
+      taskId: task.id, agentId, branchName: pointer.branchName, worktreePath: pointer.worktreePath
+    });
+  }
+  return resumePointerMetadata(pointer, agentId, task);
 }
 
 /**
@@ -450,23 +461,24 @@ export function resumePointerMetadata(pointer, agentId, task) {
 }
 
 /**
- * Resolve AND persist the resume pointer. For callers that aren't already writing
- * the task; `handleOrphanedTask` folds the patch into its own retry write instead,
- * so the pointer can't land after the status flip that makes the task spawnable.
+ * Resolve AND persist the resume patch. For callers that aren't already writing the
+ * task; `handleOrphanedTask` folds the patch into its own retry write instead, so
+ * the pointer can't land after the status flip that makes the task spawnable.
  *
  * @param {{task: object, agentId: string, agentMetadata: object}} params
- * @returns {Promise<{branchName: string, worktreePath: string|null}|null>}
+ * @returns {Promise<object>} the patch that was written (empty when nothing was)
  */
 export async function recordTaskResumePointer({ task, agentId, agentMetadata }) {
-  const pointer = await resolveTaskResumePointer({ task, agentId, agentMetadata });
-  if (!pointer) return null;
+  const metadata = await resolveTaskResumePatch({ task, agentId, agentMetadata });
+  if (Object.keys(metadata).length === 0) return metadata;
 
-  await updateTask(task.id, {
-    metadata: resumePointerMetadata(pointer, agentId, task)
-  }, task.taskType || 'user').catch(err => {
+  await updateTask(task.id, { metadata }, task.taskType || 'user').catch(err => {
     emitLog('warn', `Failed to record resume pointer for task ${task.id}: ${err.message}`, { taskId: task.id, agentId });
   });
-  return pointer;
+  if (!metadata.existingBranch) {
+    emitLog('info', `🧹 Cleared spent resume pointer on task ${task.id} — nothing left to resume`, { taskId: task.id, agentId });
+  }
+  return metadata;
 }
 
 /**

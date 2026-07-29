@@ -737,6 +737,34 @@ describe('adoptWorktree — resuming an interrupted run in its own worktree', ()
     expect(result).toMatchObject({ worktreePath: NEW_TREE, adopted: true });
   });
 
+  // removeWorktree discards lockfile churn rather than preserving it, and the
+  // resume prompt tells the retry that everything uncommitted is its own work to
+  // finish and commit — so an adopted tree carrying only a stale `npm install`
+  // lockfile bump would ship it in the PR.
+  it('discards lockfile-only churn in the adopted tree', async () => {
+    execGitMock.mockImplementation((args) => Promise.resolve(
+      args[0] === 'status'
+        ? { stdout: ' M package-lock.json\n', stderr: '', exitCode: 0 }
+        : { stdout: '', stderr: '', exitCode: 0 }
+    ));
+
+    await adoptWorktree('agent-new', '/repo', DEAD_TREE, 'cos/task-1/agent-dead');
+
+    expect(execGitMock).toHaveBeenCalledWith(['checkout', '--', 'package-lock.json'], NEW_TREE);
+  });
+
+  it('keeps every uncommitted change when the tree holds real work too', async () => {
+    execGitMock.mockImplementation((args) => Promise.resolve(
+      args[0] === 'status'
+        ? { stdout: ' M package-lock.json\n M server/services/thing.js\n', stderr: '', exitCode: 0 }
+        : { stdout: '', stderr: '', exitCode: 0 }
+    ));
+
+    await adoptWorktree('agent-new', '/repo', DEAD_TREE, 'cos/task-1/agent-dead');
+
+    expect(execGitMock).not.toHaveBeenCalledWith(expect.arrayContaining(['checkout']), expect.anything());
+  });
+
   it('returns null on incomplete input instead of guessing', async () => {
     await expect(adoptWorktree(null, '/repo', DEAD_TREE, 'b')).resolves.toBeNull();
     await expect(adoptWorktree('agent-new', '/repo', DEAD_TREE, null)).resolves.toBeNull();

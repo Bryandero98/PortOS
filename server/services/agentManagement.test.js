@@ -75,8 +75,7 @@ vi.mock('./toolStateMachine.js', () => ({ completeExecution: vi.fn(), errorExecu
 vi.mock('./shell.js', () => ({ writeToSession: vi.fn(), killSession: vi.fn() }));
 vi.mock('./agentWorktreeCleanup.js', () => ({
   cleanupAgentWorktree: vi.fn(),
-  resolveTaskResumePointer: vi.fn().mockResolvedValue(null),
-  resumePointerMetadata: vi.fn().mockReturnValue({})
+  resolveTaskResumePatch: vi.fn().mockResolvedValue({})
 }));
 vi.mock('./agentFinalization.js', () => ({ dispatchRecoveredTaskOutputHook: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('./agentRunnerSync.js', () => ({ syncRunnerAgents: vi.fn().mockResolvedValue(0) }));
@@ -90,7 +89,7 @@ vi.mock('./creativeDirector/planAdvance.js', () => ({ advanceAfterPlanStepSettle
 vi.mock('./creativeDirector/completionHook.js', () => ({ advanceAfterSceneSettled: vi.fn().mockResolvedValue(undefined) }));
 
 import { handleOrphanedTask, pauseAgent, settleOrphanedCreativeDirectorRun, cleanupOrphanedAgents } from './agentManagement.js';
-import { cleanupAgentWorktree, resolveTaskResumePointer, resumePointerMetadata } from './agentWorktreeCleanup.js';
+import { cleanupAgentWorktree, resolveTaskResumePatch } from './agentWorktreeCleanup.js';
 import { getAgents } from './cos.js';
 import { updateRun, getProject } from './creativeDirector/local.js';
 import { advanceAfterPlanStepSettled } from './creativeDirector/planAdvance.js';
@@ -794,8 +793,7 @@ describe('orphan retries resume what the dead run left behind', () => {
     vi.clearAllMocks();
     getAgents.mockResolvedValue([deadAgent]);
     getTaskById.mockResolvedValue({ id: 'task-1', taskType: 'user', status: 'in_progress', metadata: {} });
-    resolveTaskResumePointer.mockResolvedValue(null);
-    resumePointerMetadata.mockReturnValue({});
+    resolveTaskResumePatch.mockResolvedValue({});
     activeAgents.clear();
     runnerAgents.clear();
   });
@@ -803,7 +801,7 @@ describe('orphan retries resume what the dead run left behind', () => {
   it('hands the dead agent’s worktree metadata from the sweep to the retry handler', async () => {
     await cleanupOrphanedAgents();
 
-    expect(resolveTaskResumePointer).toHaveBeenCalledWith({
+    expect(resolveTaskResumePatch).toHaveBeenCalledWith({
       task: expect.objectContaining({ id: 'task-1' }),
       agentId: 'agent-dead',
       agentMetadata: deadMetadata
@@ -816,8 +814,10 @@ describe('orphan retries resume what the dead run left behind', () => {
   it('resolves the pointer after worktree cleanup and writes it with the requeue', async () => {
     const order = [];
     cleanupAgentWorktree.mockImplementation(() => { order.push('cleanup'); });
-    resolveTaskResumePointer.mockImplementation(() => { order.push('resolve'); return Promise.resolve(pointer); });
-    resumePointerMetadata.mockReturnValue({ existingBranch: pointer.branchName, resumedFromAgentId: 'agent-dead', resumeWorktreePath: pointer.worktreePath });
+    resolveTaskResumePatch.mockImplementation(() => {
+      order.push('resolve');
+      return Promise.resolve({ existingBranch: pointer.branchName, resumedFromAgentId: 'agent-dead', resumeWorktreePath: pointer.worktreePath });
+    });
     updateTask.mockImplementation(() => { order.push('requeue'); return Promise.resolve(true); });
 
     await cleanupOrphanedAgents();
@@ -838,7 +838,7 @@ describe('orphan retries resume what the dead run left behind', () => {
 
     await cleanupOrphanedAgents();
 
-    expect(resolveTaskResumePointer).not.toHaveBeenCalled();
+    expect(resolveTaskResumePatch).not.toHaveBeenCalled();
   });
 
   // A caller that doesn't know which agent died (resetOrphanedTasks on an archived
@@ -848,7 +848,7 @@ describe('orphan retries resume what the dead run left behind', () => {
 
     await handleOrphanedTask('task-1', 'unknown-reset', getTaskById);
 
-    expect(resolveTaskResumePointer).toHaveBeenCalledWith(expect.objectContaining({ agentMetadata: null }));
+    expect(resolveTaskResumePatch).toHaveBeenCalledWith(expect.objectContaining({ agentMetadata: null }));
     expect(updateTask).toHaveBeenCalledWith('task-1', expect.objectContaining({ status: 'pending' }), 'user');
   });
 });

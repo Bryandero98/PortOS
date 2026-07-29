@@ -447,6 +447,24 @@ async function adoptWorktreeUnlocked(agentId, sourceWorkspace, existingWorktreeP
     });
   if (!moved) return null;
 
+  // Mirror removeWorktree's treatment of auto-generated lockfile churn: it discards
+  // those changes rather than preserving them, so an adopted tree must not carry
+  // them either. The resume prompt tells the retry that everything uncommitted is
+  // its own in-progress work to finish and commit — which would ship a
+  // `package-lock.json` bump from the dead run's `npm install` that nobody
+  // intended. Only when the churn is ALL there is: a tree with real changes keeps
+  // everything, exactly as removeWorktree preserves it.
+  const porcelain = await execGit(['status', '--porcelain'], targetPath)
+    .then(r => r.stdout.trim())
+    .catch(() => '');
+  const dirt = classifyWorktreeDirt(porcelain);
+  if (dirt.lockfileOnly) {
+    console.log(`🧹 Discarding ${dirt.lockfilePaths.length} auto-generated lockfile change(s) in adopted worktree ${agentId}`);
+    await execGit(['checkout', '--', ...dirt.lockfilePaths], targetPath).catch(err => {
+      console.log(`⚠️ Lockfile discard failed in adopted worktree ${agentId}: ${err.message}`);
+    });
+  }
+
   console.log(`🌳 Adopted worktree for ${agentId} at ${targetPath} (branch: ${branchName}) — resuming interrupted work`);
   return adopted;
 }

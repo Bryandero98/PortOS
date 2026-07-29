@@ -18,7 +18,7 @@ import { activeAgents, runnerAgents, userTerminatedAgents, pausedAgents, useRunn
 // longer depends on the lifecycle orchestrator — which depends on THIS module
 // for handleOrphanedTask. Importing them from their own leaf modules is what
 // lets that edge be a plain static import instead of a dynamic-import dodge.
-import { cleanupAgentWorktree, resolveTaskResumePointer, resumePointerMetadata } from './agentWorktreeCleanup.js';
+import { cleanupAgentWorktree, resolveTaskResumePatch } from './agentWorktreeCleanup.js';
 import { syncRunnerAgents } from './agentRunnerSync.js';
 import { flushRunnerOutputBatcher } from './agentRunnerOutputBatchers.js';
 import { checkForTaskCommit } from './agentRunTracking.js';
@@ -743,9 +743,9 @@ export async function handleOrphanedTask(taskId, agentId, getTaskByIdFn, { agent
     // retry immediately, so a pointer written afterwards could land too late.
     // Fails open to "start clean": requeueing the task matters far more than
     // resuming it, and a throw here would strand it in_progress until the next sweep.
-    const resume = await resolveTaskResumePointer({ task, agentId, agentMetadata }).catch(err => {
+    const resumePatch = await resolveTaskResumePatch({ task, agentId, agentMetadata }).catch(err => {
       emitLog('warn', `Resume pointer for task ${taskId} could not be resolved: ${err.message}`, { taskId, agentId });
-      return null;
+      return {};
     });
 
     await updateTask(taskId, {
@@ -755,7 +755,7 @@ export async function handleOrphanedTask(taskId, agentId, getTaskByIdFn, { agent
         orphanRetryCount: retryCount,
         lastOrphanedAt: new Date().toISOString(),
         lastOrphanedAgentId: agentId,
-        ...resumePointerMetadata(resume, agentId, task)
+        ...resumePatch
       }
     }, taskType);
   } else if (inCooldown && retryCount < MAX_ORPHAN_RETRIES && !totalExceeded) {
