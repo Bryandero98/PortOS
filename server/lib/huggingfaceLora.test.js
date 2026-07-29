@@ -77,6 +77,16 @@ describe('pickHfLoraFile', () => {
     expect(pickHfLoraFile(m('model.safetensors', 'my_style_lora.safetensors')))
       .toBe('my_style_lora.safetensors');
   });
+  it('selects an exact versioned file when requested', () => {
+    const model = {
+      id: 'fal/audio-reactive',
+      ...m('audio_reactive.safetensors', 'audio_reactive_v2.safetensors'),
+    };
+    expect(pickHfLoraFile(model, 'audio_reactive_v2.safetensors'))
+      .toBe('audio_reactive_v2.safetensors');
+    expect(() => pickHfLoraFile(model, 'audio_reactive_v3.safetensors'))
+      .toThrow(/does not contain audio_reactive_v3/);
+  });
   it('throws when there is no .safetensors', () => {
     expect(() => pickHfLoraFile(m('config.json', 'README.md'))).toThrow(/no .safetensors/);
   });
@@ -117,6 +127,19 @@ describe('buildHfLoraSidecar', () => {
     expect(sidecar.recommendedScale).toBe(1.0);
     expect(sidecar.civitai).toBeUndefined();
     expect(sidecar.file.downloadUrl).toContain('/resolve/main/lora.safetensors');
+  });
+
+  it('labels a V2 LoRA distinctly and uses its recommended scale', () => {
+    const sidecar = buildHfLoraSidecar({
+      repo: 'fal/ltx2.3-audio-reactive-lora',
+      revision: null,
+      file: 'ltx2.3_audio_reactive_lora_v2.safetensors',
+      family: VIDEO_LORA_FAMILIES.LTX_VIDEO,
+      filename: 'lora-fal-ltx2.3-audio-reactive-lora-v2-hf.safetensors',
+      model: {},
+    });
+    expect(sidecar.name).toBe('ltx2.3-audio-reactive-lora V2');
+    expect(sidecar.recommendedScale).toBe(1.2);
   });
 });
 

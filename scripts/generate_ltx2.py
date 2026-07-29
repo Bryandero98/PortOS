@@ -64,6 +64,9 @@ import sys
 from pathlib import Path
 from typing import NoReturn
 
+DISTILLED_LORA_V11 = "ltx-2.3-22b-distilled-lora-384-1.1.safetensors"
+DISTILLED_LORA_LEGACY = "ltx-2.3-22b-distilled-lora-384.safetensors"
+
 # Must be set BEFORE any ltx_core_mlx import: ltx_core_mlx.model.transformer.model
 # reads LTX2_DIT_EVAL_EVERY at import time. Phosphene's M4 Max 64 GB I2V Balanced
 # 5s / 121 f matrix: upstream default =8 runs ~3 min/step (per-block Metal
@@ -381,8 +384,8 @@ def parse_args() -> argparse.Namespace:
                         "Default for fflf: transformer-dev.safetensors (matches dgrauet/ltx-2.3-mlx-q4 + q8 layouts).")
     p.add_argument("--distilled-lora", default=None,
                    help="Filename of the distilled LoRA inside the model repo, fused on top of the "
-                        "dev transformer for stage 2. Default for fflf: "
-                        "ltx-2.3-22b-distilled-lora-384.safetensors.")
+                        "dev transformer for stage 2. By default PortOS prefers the 1.1 adapter "
+                        "when the selected model includes it, otherwise it uses the legacy adapter.")
     p.add_argument("--lora-strength", type=float, default=1.0,
                    help="Distilled-LoRA fusion strength (default 1.0, matches dgrauet's CLI).")
     p.add_argument("--user-loras", default=None,
@@ -589,6 +592,30 @@ def _one_stage_kwargs(args: argparse.Namespace, **extra) -> dict:
     return kwargs
 
 
+def _prefer_distilled_lora(pipe, requested: str | None) -> str:
+    """Select the newest compatible distilled adapter already in model_dir.
+
+    BasePipeline resolves a HuggingFace repo ID to its cached snapshot during
+    construction, but does not load the transformer until generate_and_save().
+    That gives the bridge a safe point to prefer the 1.1 adapter without
+    making a separate Hub metadata request. Repositories that do not carry 1.1
+    keep using the legacy file; an explicit CLI value always wins.
+    """
+    selected = requested
+    if selected is None:
+        selected = next(
+            (
+                filename
+                for filename in (DISTILLED_LORA_V11, DISTILLED_LORA_LEGACY)
+                if (Path(pipe.model_dir) / filename).exists()
+            ),
+            DISTILLED_LORA_LEGACY,
+        )
+    pipe._distilled_lora = selected
+    emit_status(f"Using distilled adapter {selected}")
+    return selected
+
+
 def run_two_stage(args: argparse.Namespace, image: str | None = None) -> str:
     """T2V/I2V path that honors CFG via the dgrauet two-stage pipeline."""
     TwoStagePipeline = _resolve_pipeline("TI2VidTwoStagesPipeline", "TwoStagePipeline")
@@ -598,9 +625,10 @@ def run_two_stage(args: argparse.Namespace, image: str | None = None) -> str:
         model_dir=args.model,
         gemma_model_id=args.gemma,
         dev_transformer=args.dev_transformer or "transformer-dev.safetensors",
-        distilled_lora=args.distilled_lora or "ltx-2.3-22b-distilled-lora-384.safetensors",
+        distilled_lora=args.distilled_lora or DISTILLED_LORA_LEGACY,
         distilled_lora_strength=args.lora_strength,
     )
+    _prefer_distilled_lora(pipe, args.distilled_lora)
     _apply_user_loras(pipe, args.user_lora_specs)
     bind_output_fps(pipe, args.fps)
     emit_stage(1, 1, 1, "Loaded")
@@ -727,7 +755,7 @@ def run_fflf(args: argparse.Namespace) -> str:
     # can override via --dev-transformer / --distilled-lora when a future
     # repo renames them.
     dev_transformer = args.dev_transformer or "transformer-dev.safetensors"
-    distilled_lora = args.distilled_lora or "ltx-2.3-22b-distilled-lora-384.safetensors"
+    distilled_lora = args.distilled_lora or DISTILLED_LORA_LEGACY
     emit_status(f"Loading Keyframe pipeline ({args.model}, dev+lora)…")
     emit_stage(1, 0, 1, "Loading model")
     pipe = KeyframeInterpolationPipeline(
@@ -737,6 +765,7 @@ def run_fflf(args: argparse.Namespace) -> str:
         distilled_lora=distilled_lora,
         distilled_lora_strength=args.lora_strength,
     )
+    _prefer_distilled_lora(pipe, args.distilled_lora)
     _apply_user_loras(pipe, args.user_lora_specs)
     emit_stage(1, 1, 1, "Loaded")
     emit_status(f"Interpolating between {len(keyframe_images)} keyframes at indices {keyframe_indices}…")
@@ -829,6 +858,7 @@ def run_a2v(args: argparse.Namespace) -> str:
     emit_status(f"Loading A2V pipeline ({args.model})…")
     emit_stage(1, 0, 1, "Loading model")
     pipe = AudioToVideoPipeline(model_dir=args.model, gemma_model_id=args.gemma)
+    _prefer_distilled_lora(pipe, args.distilled_lora)
     _apply_user_loras(pipe, args.user_lora_specs)
     emit_stage(1, 1, 1, "Loaded")
     emit_status(f"Generating A2V from {Path(args.audio).name}…")

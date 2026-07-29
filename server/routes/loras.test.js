@@ -83,7 +83,10 @@ describe('POST /api/loras/install/huggingface/stream', () => {
   it('streams byte-progress frames then a complete frame carrying the sidecar', async () => {
     const res = await request(makeApp())
       .post('/api/loras/install/huggingface/stream')
-      .send({ url: 'fal/ltx2.3-audio-reactive-lora' });
+      .send({
+        url: 'fal/ltx2.3-audio-reactive-lora',
+        file: 'ltx2.3_audio_reactive_lora_v2.safetensors',
+      });
     expect(res.status).toBe(200);
     const frames = parseSseFrames(res.text);
     // The service double emitted 4/8 then 8/8 → progress 0.5 then 1.
@@ -92,7 +95,10 @@ describe('POST /api/loras/install/huggingface/stream', () => {
     expect(complete?.sidecar?.runnerFamily).toBe('ltx-video');
     // The body carries through to the service, with an AbortSignal + progress cb.
     expect(installFromHuggingface).toHaveBeenCalledWith(
-      expect.objectContaining({ url: 'fal/ltx2.3-audio-reactive-lora' }),
+      expect.objectContaining({
+        url: 'fal/ltx2.3-audio-reactive-lora',
+        file: 'ltx2.3_audio_reactive_lora_v2.safetensors',
+      }),
       expect.objectContaining({ onProgress: expect.any(Function), signal: expect.any(Object) }),
     );
   });
@@ -114,6 +120,13 @@ describe('POST /api/loras/install/huggingface/stream', () => {
     const res = await request(makeApp())
       .post('/api/loras/install/huggingface/stream')
       .send({ url: 'x/y', family: 'bogus' });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a requested file that is not safetensors before opening the stream', async () => {
+    const res = await request(makeApp())
+      .post('/api/loras/install/huggingface/stream')
+      .send({ url: 'x/y', file: 'README.md' });
     expect(res.status).toBe(400);
   });
 });

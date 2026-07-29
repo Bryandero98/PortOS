@@ -28,9 +28,10 @@ const DESCRIPTION_MAX_CHARS = 240;
 const CURATED_VIDEO_LORAS = [
   {
     repo: 'fal/ltx2.3-audio-reactive-lora',
+    file: 'ltx2.3_audio_reactive_lora_v2.safetensors',
     family: VIDEO_LORA_FAMILIES.LTX_VIDEO,
-    name: 'LTX-2.3 Audio Reactive',
-    note: 'Drives camera and scene energy from an audio track — built for LTX-2 (ltx2) video renders.',
+    name: 'LTX-2.3 Audio Reactive V2',
+    note: 'Improved beat response for LTX-2.3 audio-conditioned renders. Use music as motion guidance; PortOS keeps generated vocals disabled.',
   },
 ];
 
@@ -51,6 +52,7 @@ const buildCard = (entry, model) => {
   return {
     source: 'huggingface',
     repo: entry.repo,
+    file: entry.file || null,
     name: entry.name || (entry.repo.split('/')[1] || entry.repo),
     note: entry.note || '',
     description,

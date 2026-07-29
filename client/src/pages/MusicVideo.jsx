@@ -117,6 +117,7 @@ export default function MusicVideo() {
   const [cloning, setCloning] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [videoModels, setVideoModels] = useState([]);
+  const [videoModelsLoading, setVideoModelsLoading] = useState(true);
   const [videoLoras, setVideoLoras] = useState([]);
   const [defaultVideoModel, setDefaultVideoModel] = useState('');
   const [videoSettingsSaving, setVideoSettingsSaving] = useState(false);
@@ -237,10 +238,12 @@ export default function MusicVideo() {
         // whose runtime supports both text and image conditioning.
         setVideoModels((status?.models || []).filter((model) => model.mode !== 't2v' && !model.deprecated));
         setDefaultVideoModel(status?.defaultModel || '');
+        setVideoModelsLoading(false);
       })
       .catch(() => {
         setVideoModels([]);
         setDefaultVideoModel('');
+        setVideoModelsLoading(false);
       });
     listLorasFull({ silent: true })
       .then((loras) => setVideoLoras(Array.isArray(loras) ? loras : []))
@@ -471,6 +474,12 @@ export default function MusicVideo() {
   const renderableSceneCount = (selected?.scenes || []).filter((s) => s.videoHistoryId).length;
   const sceneCount = selected?.scenes?.length || 0;
   const referenceFrameCount = (selected?.scenes || []).filter((s) => s.referenceImageId).length;
+  const uniqueReferenceFrameCount = new Set(
+    (selected?.scenes || []).map((scene) => scene.referenceImageId).filter(Boolean),
+  ).size;
+  const uniqueVideoCount = new Set(
+    (selected?.scenes || []).map((scene) => scene.videoHistoryId).filter(Boolean),
+  ).size;
   const missingFrameCount = sceneCount - referenceFrameCount;
   const missingVideoCount = sceneCount - renderableSceneCount;
   const finalVideo = useVideoFileSrc(selected?.renderHistoryId, { enabled: !!selected?.renderHistoryId });
@@ -488,10 +497,14 @@ export default function MusicVideo() {
   const activeVideoModel = videoModels.find((model) => model.id === effectiveVideoModelId) || null;
   const audioReactiveModels = videoModels.filter((model) =>
     model.runtime === 'ltx2' && /ltx.?2\.3|ltx23/i.test(`${model.id} ${model.name || ''} ${model.repo || ''}`));
+  const audioReactiveLoras = videoLoras.filter((lora) =>
+    /audio-reactive/i.test(`${lora.filename} ${lora.name || ''}`)
+    && (lora.loraCompatKey || lora.runnerFamily) === 'ltx-video');
   const detectedAudioReactiveLora = videoLoras.find((lora) =>
     lora.filename === savedVideoSettings.audioReactiveLora)
-    || videoLoras.find((lora) => /audio-reactive/i.test(`${lora.filename} ${lora.name || ''}`)
-      && (lora.loraCompatKey || lora.runnerFamily) === 'ltx-video')
+    || audioReactiveLoras.find((lora) =>
+      /(?:^|[-_.\s])v2(?:[-_.\s]|$)/i.test(`${lora.filename} ${lora.name || ''}`))
+    || audioReactiveLoras[0]
     || null;
   const audioReactiveReady = !!(activeVideoModel?.runtime === 'ltx2'
     && /ltx.?2\.3|ltx23/i.test(`${activeVideoModel.id} ${activeVideoModel.name || ''} ${activeVideoModel.repo || ''}`)
@@ -1020,6 +1033,22 @@ export default function MusicVideo() {
                         </select>
                         {audioReactiveSelected && (
                           <>
+                            <label htmlFor="mv-audio-reactive-lora" className="sr-only">Audio reactive LoRA</label>
+                            <select
+                              id="mv-audio-reactive-lora"
+                              value={savedVideoSettings.audioReactiveLora || detectedAudioReactiveLora?.filename || ''}
+                              onChange={(e) => handleVideoSettingsChange({ audioReactiveLora: e.target.value })}
+                              disabled={videoSettingsSaving || Object.keys(genVideoScenes).length > 0 || audioReactiveLoras.length === 0}
+                              title="Saved audio-reactive LoRA version for this project"
+                              className="max-w-[220px] bg-port-bg border border-port-border rounded px-1.5 py-1.5 text-sm disabled:opacity-50"
+                            >
+                              {audioReactiveLoras.length === 0 && <option value="">No audio-reactive LoRA installed</option>}
+                              {audioReactiveLoras.map((lora) => (
+                                <option key={lora.filename} value={lora.filename}>
+                                  {lora.name || lora.filename}
+                                </option>
+                              ))}
+                            </select>
                             <label htmlFor="mv-audio-reactive-scale" className="sr-only">Audio reactive LoRA strength</label>
                             <select
                               id="mv-audio-reactive-scale"
@@ -1034,10 +1063,16 @@ export default function MusicVideo() {
                               <option value={1.5}>Reactive 1.5×</option>
                             </select>
                             <span
-                              className={`text-[10px] px-1.5 py-0.5 rounded ${audioReactiveReady ? 'bg-port-success/20 text-port-success' : 'bg-port-error/20 text-port-error'}`}
+                              className={`text-[10px] px-1.5 py-0.5 rounded ${
+                                audioReactiveReady
+                                  ? 'bg-port-success/20 text-port-success'
+                                  : (videoModelsLoading ? 'bg-port-warning/20 text-port-warning' : 'bg-port-error/20 text-port-error')
+                              }`}
                               title={detectedAudioReactiveLora?.filename || 'Audio-reactive LoRA not installed'}
                             >
-                              {audioReactiveReady ? 'song-conditioned · no vocals' : 'audio-reactive unavailable'}
+                              {audioReactiveReady
+                                ? 'song-conditioned · no vocals'
+                                : (videoModelsLoading ? 'checking local runtime…' : 'audio-reactive unavailable')}
                             </span>
                           </>
                         )}
@@ -1078,6 +1113,14 @@ export default function MusicVideo() {
                     >
                       <Video size={15} /> Videos {renderableSceneCount}/{sceneCount}
                     </button>
+                    {(uniqueReferenceFrameCount < referenceFrameCount || uniqueVideoCount < renderableSceneCount) && (
+                      <span
+                        className="text-[10px] px-2 py-1.5 rounded border border-port-warning/40 bg-port-warning/10 text-port-warning"
+                        title={`${referenceFrameCount - uniqueReferenceFrameCount} scene${referenceFrameCount - uniqueReferenceFrameCount === 1 ? '' : 's'} reuse a reference frame; ${renderableSceneCount - uniqueVideoCount} reuse a video clip`}
+                      >
+                        Repetition: {uniqueReferenceFrameCount} unique frames · {uniqueVideoCount} unique clips
+                      </span>
+                    )}
                     <button
                       onClick={handleClone}
                       disabled={cloning}

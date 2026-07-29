@@ -497,7 +497,7 @@ export const installFromHuggingface = async (input, { fetchImpl = fetch, onProgr
   // send on public ones (HF ignores a bearer it doesn't require).
   const token = (typeof input?.token === 'string' && input.token.trim()) || (await getHfToken()) || '';
   const model = await fetchHuggingfaceModel(repo, { token, revision, fetchImpl });
-  const file = pickHfLoraFile(model);
+  const file = pickHfLoraFile(model, input?.file || null);
 
   // Family: explicit override (validated) wins over autodetection so a user
   // can correct a mis-detected repo from the UI. An unrecognized repo with no
@@ -522,11 +522,19 @@ export const installFromHuggingface = async (input, { fetchImpl = fetch, onProgr
     );
   }
 
-  // Stable filename: `lora-<org>-<name>-hf.safetensors`. The org+name slug
-  // disambiguates same-named LoRAs from different authors; the `-hf` suffix
-  // keeps it distinct from a Civitai install of the same model.
+  // Stable filename: `lora-<org>-<name>[-<file-variant>]-hf.safetensors`.
+  // No explicit file preserves the original filename contract. A versioned
+  // file from the same repo (for example `_v2`) gets a distinct suffix so both
+  // artifacts can coexist and projects can pin either one.
   const slug = slugifyForFilename(repo.replace('/', '-'));
-  const filename = `lora-${slug}-hf.safetensors`;
+  const repoNameSlug = slugifyForFilename((repo.split('/')[1] || repo).replace(/_/g, '-'));
+  const fileStemSlug = slugifyForFilename(file.replace(/\.safetensors$/i, '').split('/').pop().replace(/_/g, '-'));
+  const explicitVariant = input?.file
+    ? (fileStemSlug.startsWith(`${repoNameSlug}-`)
+      ? fileStemSlug.slice(repoNameSlug.length + 1)
+      : (fileStemSlug === repoNameSlug ? '' : fileStemSlug))
+    : '';
+  const filename = `lora-${slug}${explicitVariant ? `-${explicitVariant}` : ''}-hf.safetensors`;
   const destPath = join(PATHS.loras, filename);
   if (existsSync(destPath)) {
     throw new ServerError(

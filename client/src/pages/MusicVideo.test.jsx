@@ -60,6 +60,11 @@ vi.mock('../services/apiImageVideo.js', () => ({
     name: 'Audio Reactive',
     loraCompatKey: 'ltx-video',
     recommendedScale: 1.2,
+  }, {
+    filename: 'audio-reactive-v2.safetensors',
+    name: 'Audio Reactive V2',
+    loraCompatKey: 'ltx-video',
+    recommendedScale: 1.2,
   }]),
   getVideoGenStatus: vi.fn(async () => ({
     connected: true,
@@ -244,7 +249,7 @@ describe('MusicVideo project video renderer', () => {
       {
         videoSettings: expect.objectContaining({
           generationMode: 'audioReactive',
-          audioReactiveLora: 'audio-reactive.safetensors',
+          audioReactiveLora: 'audio-reactive-v2.safetensors',
           modelId: 'ltx23_distilled_q4',
         }),
       },
@@ -259,10 +264,45 @@ describe('MusicVideo project video renderer', () => {
       sourceImageFile: 'img1',
       audioStartSec: 0,
       disableAudio: true,
-      loraFilenames: ['audio-reactive.safetensors'],
+      loraFilenames: ['audio-reactive-v2.safetensors'],
       loraScales: [1.2],
       prompt: expect.stringMatching(/No singing, lip-sync, speaking, mouth movement/i),
     })));
+  });
+
+  it('lets the project pin an exact installed audio-reactive LoRA version', async () => {
+    await openProject({
+      ...PROJECT_NO_CLIP,
+      videoSettings: {
+        backend: 'local',
+        modelId: 'ltx23_distilled_q4',
+        generationMode: 'audioReactive',
+        audioReactiveLora: 'audio-reactive-v2.safetensors',
+        audioReactiveScale: 1.2,
+      },
+    });
+
+    const lora = await screen.findByLabelText('Audio reactive LoRA');
+    expect(lora.value).toBe('audio-reactive-v2.safetensors');
+    fireEvent.change(lora, { target: { value: 'audio-reactive.safetensors' } });
+
+    await waitFor(() => expect(updateMusicVideoProject).toHaveBeenCalledWith(
+      'mv-2',
+      { videoSettings: { audioReactiveLora: 'audio-reactive.safetensors' } },
+      { silent: true },
+    ));
+  });
+
+  it('warns when ready scenes reuse the same frames and clips', async () => {
+    await openProject({
+      ...PROJECT_WITH_CLIP,
+      scenes: [
+        PROJECT_WITH_CLIP.scenes[0],
+        { ...PROJECT_WITH_CLIP.scenes[0], sceneId: 's2', order: 1 },
+      ],
+    });
+
+    expect(await screen.findByText('Repetition: 1 unique frames · 1 unique clips')).toBeTruthy();
   });
 });
 

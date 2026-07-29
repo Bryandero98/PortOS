@@ -411,9 +411,9 @@ export const installLoraFromCivitai = ({ url, silent = false } = {}) => request(
 // `family` is an optional override (e.g. 'ltx-video') when autodetection from
 // the repo id/tags can't classify it. `silent` lets the page route HF_AUTH /
 // HF_UNKNOWN_FAMILY errors into its own inline UI.
-export const installLoraFromHuggingface = ({ url, family, silent = false } = {}) => request('/loras/install/huggingface', {
+export const installLoraFromHuggingface = ({ url, family, file, silent = false } = {}) => request('/loras/install/huggingface', {
   method: 'POST',
-  body: JSON.stringify(family ? { url, family } : { url }),
+  body: JSON.stringify({ url, ...(family ? { family } : {}), ...(file ? { file } : {}) }),
   silent,
 });
 
@@ -434,11 +434,11 @@ export const installLoraFromHuggingface = ({ url, family, silent = false } = {})
 // — a 401 AUTH_REQUIRED bounces to /login via maybeRedirectToLogin exactly like
 // request(), instead of dead-ending on a generic stream error. Frames are
 // SSE-encoded (`data: {json}\n\n`).
-export async function installLoraFromHuggingfaceStream({ url, family, onProgress, signal } = {}) {
+export async function installLoraFromHuggingfaceStream({ url, family, file, onProgress, signal } = {}) {
   const response = await fetch(`${API_BASE}/loras/install/huggingface/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(family ? { url, family } : { url }),
+    body: JSON.stringify({ url, ...(family ? { family } : {}), ...(file ? { file } : {}) }),
     signal,
   });
   if (!response.ok || !response.body?.getReader) {

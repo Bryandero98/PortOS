@@ -61,6 +61,8 @@ const MEDIA_FILTERS = [
 // takes the two ids explicitly rather than a whole card.
 const suggestionKey = (modelId, versionId) => `${modelId}-${versionId}`;
 const cardKey = (card) => suggestionKey(card.modelId, card.versionId);
+const hfCardKey = (card) => `${card.repo}:${card.file || ''}`;
+const installedHfKey = (lora) => `${lora.huggingface?.repo || ''}:${lora.huggingface?.file || ''}`;
 
 // Integer download percent (0..100) from an SSE progress frame, or null when
 // the frame carries no numeric ratio (server sent no Content-Length → the UI
@@ -98,9 +100,9 @@ export default function Loras() {
   const [suggestions, setSuggestions] = useState(null);
   const [loadingSuggestions, setLoadingSuggestions] = useState(true);
   const [installingSuggestion, setInstallingSuggestion] = useState(null);
-  // Repo of the video suggestion currently installing (HF installs key off
-  // repo, not modelId/versionId like the Civitai path).
-  const [installingVideoRepo, setInstallingVideoRepo] = useState(null);
+  // Repo+file key of the video suggestion currently installing. A single HF
+  // repo can publish multiple versions that must remain independently selectable.
+  const [installingVideoKey, setInstallingVideoKey] = useState(null);
   // Image/Video media-type filter for both panels. 'all' | 'image' | 'video'.
   const [mediaFilter, setMediaFilter] = useState('all');
 
@@ -171,7 +173,7 @@ export default function Loras() {
     // Cross-guard against the curated video quick-install: both write the shared
     // hfProgress, so allowing them to overlap makes both progress readouts show
     // interleaved byte counts. Only one HF install runs at a time.
-    if (!url || hfInstalling || installingVideoRepo) return;
+    if (!url || hfInstalling || installingVideoKey) return;
     setHfInstalling(true);
     setHfProgress(null);
     await installLoraFromHuggingfaceStream({ url, family, onProgress: setHfProgress })
@@ -192,7 +194,7 @@ export default function Loras() {
         }
       })
       .finally(() => { setHfInstalling(false); setHfProgress(null); });
-  }, [hfInstalling, installingVideoRepo, refresh]);
+  }, [hfInstalling, installingVideoKey, refresh]);
 
   const handleHfInstall = useCallback((e) => {
     e?.preventDefault?.();
@@ -207,17 +209,22 @@ export default function Loras() {
   const installVideoSuggestion = useCallback(async (card) => {
     // Cross-guard against the form install (see runHfInstall) — one HF install
     // at a time so they don't clobber the shared hfProgress.
-    if (!card?.installUrl || installingVideoRepo || hfInstalling) return;
-    setInstallingVideoRepo(card.repo);
+    if (!card?.installUrl || installingVideoKey || hfInstalling) return;
+    setInstallingVideoKey(hfCardKey(card));
     setHfProgress(null);
-    await installLoraFromHuggingfaceStream({ url: card.installUrl, family: card.runnerFamily, onProgress: setHfProgress })
+    await installLoraFromHuggingfaceStream({
+      url: card.installUrl,
+      family: card.runnerFamily,
+      file: card.file,
+      onProgress: setHfProgress,
+    })
       .then((sidecar) => {
         toast.success(`Installed ${sidecar.name}`);
         refresh();
       })
       .catch((err) => toast.error(err?.message || 'HuggingFace install failed'))
-      .finally(() => { setInstallingVideoRepo(null); setHfProgress(null); });
-  }, [installingVideoRepo, hfInstalling, refresh]);
+      .finally(() => { setInstallingVideoKey(null); setHfProgress(null); });
+  }, [installingVideoKey, hfInstalling, refresh]);
 
   const handleDelete = async (filename) => {
     setDeleting(filename);
@@ -309,7 +316,7 @@ export default function Loras() {
           />
           <button
             type="submit"
-            disabled={hfInstalling || !!installingVideoRepo || !hfUrl.trim()}
+            disabled={hfInstalling || !!installingVideoKey || !hfUrl.trim()}
             className="bg-port-accent text-white px-4 py-2 rounded text-sm font-medium hover:bg-port-accent/90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
           >
             {hfInstalling ? (hfPct != null ? `Downloading ${hfPct}%` : 'Downloading…') : 'Install'}
@@ -374,9 +381,9 @@ export default function Loras() {
         loading={loadingSuggestions}
         mediaFilter={mediaFilter}
         installedFilenames={new Set(loras.map((l) => l.filename))}
-        installedHfRepos={new Set(loras.map((l) => l.huggingface?.repo).filter(Boolean))}
+        installedHfKeys={new Set(loras.filter((l) => l.huggingface?.repo).map(installedHfKey))}
         installingSuggestionKey={installingSuggestion}
-        installingVideoRepo={installingVideoRepo}
+        installingVideoKey={installingVideoKey}
         installingVideoProgress={hfProgress}
         videoInstallBusy={hfInstalling}
         onRefresh={() => refreshSuggestions({ force: true })}
@@ -476,7 +483,7 @@ function MediaFilter({ value, onChange }) {
   );
 }
 
-function SuggestionsPanel({ suggestions, loading, mediaFilter = 'all', installedFilenames, installedHfRepos, installingSuggestionKey, installingVideoRepo, installingVideoProgress, videoInstallBusy, onRefresh, onInstall, onInstallVideo }) {
+function SuggestionsPanel({ suggestions, loading, mediaFilter = 'all', installedFilenames, installedHfKeys, installingSuggestionKey, installingVideoKey, installingVideoProgress, videoInstallBusy, onRefresh, onInstall, onInstallVideo }) {
   const curated = suggestions?.curated || [];
   const runners = suggestions?.runners || {};
   const video = suggestions?.video || [];
@@ -536,8 +543,8 @@ function SuggestionsPanel({ suggestions, loading, mediaFilter = 'all', installed
       {showVideo && (
         <VideoSuggestionsSection
           cards={video}
-          installedHfRepos={installedHfRepos}
-          installingVideoRepo={installingVideoRepo}
+          installedHfKeys={installedHfKeys}
+          installingVideoKey={installingVideoKey}
           installingVideoProgress={installingVideoProgress}
           videoInstallBusy={videoInstallBusy}
           onInstall={onInstallVideo}
@@ -549,9 +556,9 @@ function SuggestionsPanel({ suggestions, loading, mediaFilter = 'all', installed
 
 // Curated HuggingFace video LoRAs (LTX-Video). No keyword search / pagination
 // like the Civitai sections — it's a small hand-picked list installed via the
-// HF path. Installed-state matches on the repo (HF installs carry no
-// modelId/versionId).
-function VideoSuggestionsSection({ cards, installedHfRepos, installingVideoRepo, installingVideoProgress, videoInstallBusy, onInstall }) {
+// HF path. Installed-state matches the exact repo+file pair because a repo may
+// publish multiple independently installable LoRA versions.
+function VideoSuggestionsSection({ cards, installedHfKeys, installingVideoKey, installingVideoProgress, videoInstallBusy, onInstall }) {
   const list = cards || [];
   return (
     <div>
@@ -567,19 +574,22 @@ function VideoSuggestionsSection({ cards, installedHfRepos, installingVideoRepo,
         <p className="text-xs text-gray-600 italic">No video LoRA suggestions yet.</p>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-          {list.map((card) => (
-            <VideoSuggestionCard
-              key={card.repo}
-              card={card}
-              installed={installedHfRepos?.has(card.repo)}
-              installing={installingVideoRepo === card.repo}
-              progress={installingVideoRepo === card.repo ? installingVideoProgress : null}
-              // Disable every quick-install button while ANY HF install is in
-              // flight (this card's, another card's, or the form's) — one at a time.
-              busy={!!installingVideoRepo || videoInstallBusy}
-              onInstall={onInstall}
-            />
-          ))}
+          {list.map((card) => {
+            const key = hfCardKey(card);
+            return (
+              <VideoSuggestionCard
+                key={key}
+                card={card}
+                installed={installedHfKeys?.has(key)}
+                installing={installingVideoKey === key}
+                progress={installingVideoKey === key ? installingVideoProgress : null}
+                // Disable every quick-install button while ANY HF install is in
+                // flight (this card's, another card's, or the form's) — one at a time.
+                busy={!!installingVideoKey || videoInstallBusy}
+                onInstall={onInstall}
+              />
+            );
+          })}
         </div>
       )}
     </div>

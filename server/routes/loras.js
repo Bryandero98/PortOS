@@ -139,6 +139,7 @@ router.post('/install', asyncHandler(async (req, res) => {
 const hfInstallSchema = z.object({
   url: z.string().min(1).max(1024),
   family: z.enum(Object.values(VIDEO_LORA_FAMILIES)).optional(),
+  file: z.string().min(1).max(512).regex(/\.safetensors$/i).optional(),
   // One-shot token override; absence falls back to the stored/env/CLI HF token.
   token: z.string().min(1).max(256).optional(),
 });
@@ -163,6 +164,7 @@ router.post('/install/huggingface', asyncHandler(async (req, res) => {
 const hfInstallStreamSchema = z.object({
   url: z.string().min(1).max(1024),
   family: z.enum(Object.values(VIDEO_LORA_FAMILIES)).optional(),
+  file: z.string().min(1).max(512).regex(/\.safetensors$/i).optional(),
 });
 router.post('/install/huggingface/stream', asyncHandler(async (req, res) => {
   const data = validateRequest(hfInstallStreamSchema, req.body);
