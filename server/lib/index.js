@@ -150,6 +150,7 @@ export * from './bashResolver.js';
 export * from './bufferedSpawn.js';
 export * from './commandSecurity.js';
 export * from './detachedSpawn.js';
+export * from './hostShutdown.js';
 export * from './execGit.js';
 export * from './ffmpeg.js';
 export * from './ffmpegRenderGuard.js';

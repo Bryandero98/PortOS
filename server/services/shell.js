@@ -205,12 +205,20 @@ export function createShellSession(socket, options = {}) {
   });
 
   // Handle pty exit
-  ptyProcess.onExit(({ exitCode }) => {
-    console.log(`🐚 Shell session ${sessionId.slice(0, 8)} exited (code: ${exitCode})`);
+  //
+  // `signal` is forwarded, not discarded: on POSIX a shell killed by a signal
+  // reports the wait-status exit code (0 for a plain SIGTERM/SIGHUP) with the
+  // signal number in the separate `signal` field. Dropping it made a
+  // pm2-treekilled agent shell indistinguishable from one that exited cleanly —
+  // which is how an agent whose PTY was torn down got recorded as a successful
+  // run (#3202). Consumers that care (the TUI spawner's onExit) MUST treat a
+  // non-null `signal` as an abnormal end regardless of `exitCode`.
+  ptyProcess.onExit(({ exitCode, signal }) => {
+    console.log(`🐚 Shell session ${sessionId.slice(0, 8)} exited (code: ${exitCode}${signal ? `, signal: ${signal}` : ''})`);
     const session = shellSessions.get(sessionId);
     shellSessions.delete(sessionId);
     session?.socket?.emit('shell:exit', { sessionId, code: exitCode });
-    if (session) runHook('onExit', session, session.onExit, { exitCode });
+    if (session) runHook('onExit', session, session.onExit, { exitCode, signal: signal ?? null });
     broadcastSessionList();
   });
 

@@ -613,6 +613,16 @@ export const COMPLETION_REASON_ANALYSES = {
     message: 'Agent did not wrap up when asked at its max runtime',
     suggestedFix: 'The agent was asked to write its completion sentinel and did not respond within the grace window — its provider/CLI is likely wedged rather than merely slow. Check the raw transcript for a stalled request, and check for open or merged-but-uncleaned PRs it left behind.'
   },
+  // The PTY was terminated by a signal rather than exiting on its own — almost
+  // always pm2's TreeKill taking portos-server's descendants down with it on a
+  // restart (#3202). Not actionable as an agent fault: the run was cut short by
+  // infrastructure, and the task is requeued to resume from what it left behind.
+  'shell-signaled': {
+    category: 'process-killed',
+    actionable: false,
+    message: 'Agent session was terminated by a signal',
+    suggestedFix: 'The TUI session was killed rather than exiting on its own — usually a PortOS restart taking its child processes down. The task resumes from the preserved worktree; no agent-side fix is needed.'
+  },
   'command-not-found': {
     category: 'spawn-error',
     actionable: true,
