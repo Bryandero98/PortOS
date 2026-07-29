@@ -54,13 +54,22 @@ const clampParallel = (n, bounds = PARALLEL_FALLBACK) =>
 // grouping works whether ImageGenTab is hosted in a plain Drawer (ImageGen /
 // VideoGen / StoryboardPanel) or elsewhere — no tabs-within-tabs. The active
 // tab deep-links via the `mediaTab` search param (useDrawerTab).
-const MEDIA_TABS = [
+// `probeMode` binds a provider tab to the backend the shared Test Connection
+// button should probe. Without it the button always probed the *saved default*
+// mode, so testing from the Grok or Agy tab reported the Codex CLI's version
+// ("codex — codex-cli 0.145.0") — the answer to a question nobody asked.
+// Tabs with no provider of their own (Backend / Tokens / Expose / Test) leave
+// it undefined and fall back to the saved default backend.
+// Exported so a test can assert every IMAGE_GEN_MODE is tagged onto some tab —
+// a new backend that forgets its `probeMode` would otherwise silently regress
+// to probing the saved default again.
+export const MEDIA_TABS = [
   { id: 'backend', label: 'Backend', icon: ImageIcon },
-  { id: 'external', label: 'External', icon: Cloud },
-  { id: 'local', label: 'Local', icon: Cpu },
-  { id: 'codex', label: 'Codex CLI', icon: Terminal },
-  { id: 'grok', label: 'Grok CLI', icon: Sparkles },
-  { id: 'agy', label: 'Agy CLI', icon: Terminal },
+  { id: 'external', label: 'External', icon: Cloud, probeMode: IMAGE_GEN_MODE.EXTERNAL },
+  { id: 'local', label: 'Local', icon: Cpu, probeMode: IMAGE_GEN_MODE.LOCAL },
+  { id: 'codex', label: 'Codex CLI', icon: Terminal, probeMode: IMAGE_GEN_MODE.CODEX },
+  { id: 'grok', label: 'Grok CLI', icon: Sparkles, probeMode: IMAGE_GEN_MODE.GROK },
+  { id: 'agy', label: 'Agy CLI', icon: Terminal, probeMode: IMAGE_GEN_MODE.AGY },
   { id: 'tokens', label: 'Tokens', icon: Key },
   { id: 'expose', label: 'Expose', icon: Globe },
   { id: 'test', label: 'Test', icon: Sparkles },
@@ -297,13 +306,20 @@ export function ImageGenTab() {
     if (mediaTab === 'agy' && agyEnabled) refreshAgyModels();
   }, [mediaTab, agyEnabled, refreshAgyModels]);
 
+  // Probe the provider whose tab is open (undefined → the saved default
+  // backend). Every result is tagged with the tab that asked for it and only
+  // rendered under that tab, so neither a tab switch nor a probe still in
+  // flight can show one provider's answer under another provider's panel.
+  const activeTab = MEDIA_TABS.find((t) => t.id === mediaTab);
+  const probeMode = activeTab?.probeMode;
+
   const checkStatus = useCallback(() => {
     setChecking(true);
-    getImageGenStatus()
-      .then(setStatus)
-      .catch(() => setStatus({ connected: false, reason: 'Check failed' }))
+    getImageGenStatus(probeMode)
+      .then((result) => setStatus({ ...result, forTab: mediaTab }))
+      .catch(() => setStatus({ connected: false, reason: 'Check failed', forTab: mediaTab }))
       .finally(() => setChecking(false));
-  }, []);
+  }, [probeMode, mediaTab]);
 
   const isDirty = mode !== saved.mode
     || normalizeUrl(sdapiUrl) !== saved.sdapiUrl
@@ -1104,9 +1120,10 @@ export function ImageGenTab() {
       </div>
 
       {/* Persistent global save + status bar — applies across every tab since
-          Save persists the whole imageGen config and Test Connection probes the
-          active backend. Kept outside the tab panel so it's reachable no matter
-          which section is open. */}
+          Save persists the whole imageGen config. Test Connection probes the
+          provider whose tab is open (falling back to the saved default backend
+          on the non-provider tabs). Kept outside the tab panel so it's
+          reachable no matter which section is open. */}
       <div className="flex items-center gap-3 pt-3 border-t border-port-border">
         <button
           type="button"
@@ -1122,12 +1139,14 @@ export function ImageGenTab() {
           onClick={checkStatus}
           disabled={checking || isDirty}
           className="flex items-center gap-2 px-4 py-2 bg-port-border hover:bg-port-border/70 text-white text-sm rounded-lg transition-colors disabled:opacity-50 min-h-[40px]"
-          title={isDirty ? 'Save settings first to test' : 'Probe the active backend'}
+          title={isDirty
+            ? 'Save settings first to test'
+            : `Probe ${probeMode ? activeTab.label : 'the active backend'}`}
         >
           {checking ? <BrailleSpinner /> : <Zap size={14} />}
           Test Connection
         </button>
-        {status && (
+        {status?.forTab === mediaTab && (
           <span className={`text-sm ${status.connected ? 'text-port-success' : 'text-port-error'}`}>
             {status.connected
               ? `${status.mode} — ${status.model || status.pythonPath}`

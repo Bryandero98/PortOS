@@ -32,10 +32,11 @@ vi.mock('../../hooks/useMediaJobSse', () => ({
 }));
 
 import {
-  getSettings, getToolsList, updateSettings, listAgyImageModels,
+  getSettings, getToolsList, updateSettings, listAgyImageModels, getImageGenStatus,
 } from '../../services/api';
 import { useHfTokenStatus } from '../../hooks/useHfTokenStatus';
-import { ImageGenTab } from './ImageGenTab';
+import { ImageGenTab, MEDIA_TABS } from './ImageGenTab';
+import { IMAGE_GEN_MODE } from '../../lib/imageGenBackends';
 
 const renderTab = async (initialEntries = ['/media/image']) => {
   render(
@@ -133,6 +134,65 @@ describe('ImageGenTab grouped tabs', () => {
     fireEvent.click(screen.getByRole('tab', { name: /Expose/i }));
     expect(screen.getByText('Expose as A1111 API on the Tailnet')).toBeTruthy();
     expect(screen.getByRole('button', { name: /^Save$/ })).toBeTruthy();
+  });
+
+  it('tags every image-gen backend onto a tab, so a new backend cannot silently probe the default instead', () => {
+    const probed = MEDIA_TABS.map((t) => t.probeMode).filter(Boolean);
+    expect([...probed].sort()).toEqual([...Object.values(IMAGE_GEN_MODE)].sort());
+  });
+
+  it('probes the provider whose tab is open, not the saved default backend', async () => {
+    getImageGenStatus.mockResolvedValue({ connected: true, mode: 'agy', model: 'agy 1.2.3' });
+    await renderTab();
+
+    // On a provider tab the probe targets THAT provider — testing from the Agy
+    // tab must not report the saved default (external/codex) backend.
+    fireEvent.click(screen.getByRole('tab', { name: /Agy CLI/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Test Connection/i }));
+    await waitFor(() => expect(getImageGenStatus).toHaveBeenCalledWith('agy'));
+
+    getImageGenStatus.mockResolvedValue({ connected: true, mode: 'grok', model: 'grok-cli 0.0.30' });
+    fireEvent.click(screen.getByRole('tab', { name: /Grok CLI/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Test Connection/i }));
+    await waitFor(() => expect(getImageGenStatus).toHaveBeenLastCalledWith('grok'));
+  });
+
+  it('falls back to the saved default backend on tabs with no provider of their own', async () => {
+    getImageGenStatus.mockResolvedValue({ connected: true, mode: 'external', model: 'flux-v1' });
+    await renderTab();
+    fireEvent.click(screen.getByRole('button', { name: /Test Connection/i }));
+    await waitFor(() => expect(screen.getByText(/external — flux-v1/)).toBeTruthy());
+    expect(getImageGenStatus).toHaveBeenCalledWith(undefined);
+  });
+
+  it('hides a probe result once the user switches to another tab', async () => {
+    getImageGenStatus.mockResolvedValue({ connected: true, mode: 'grok', model: 'grok-cli 0.0.30' });
+    await renderTab();
+    fireEvent.click(screen.getByRole('tab', { name: /Grok CLI/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Test Connection/i }));
+    await waitFor(() => expect(screen.getByText(/grok — grok-cli 0\.0\.30/)).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('tab', { name: /Agy CLI/i }));
+    expect(screen.queryByText(/grok — grok-cli 0\.0\.30/)).toBeNull();
+  });
+
+  it('never shows an in-flight probe result under the tab the user switched to', async () => {
+    // Probe started on Grok, answered only after the user moved to Agy — the
+    // late response must not surface as if it described Agy.
+    let resolveProbe;
+    getImageGenStatus.mockReturnValue(new Promise((resolve) => { resolveProbe = resolve; }));
+    await renderTab();
+    fireEvent.click(screen.getByRole('tab', { name: /Grok CLI/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Test Connection/i }));
+
+    fireEvent.click(screen.getByRole('tab', { name: /Agy CLI/i }));
+    resolveProbe({ connected: true, mode: 'grok', model: 'grok-cli 0.0.30' });
+    await waitFor(() => expect(screen.getByRole('button', { name: /Test Connection/i }).disabled).toBe(false));
+    expect(screen.queryByText(/grok — grok-cli 0\.0\.30/)).toBeNull();
+
+    // Going back to Grok shows the answer that was actually asked for there.
+    fireEvent.click(screen.getByRole('tab', { name: /Grok CLI/i }));
+    expect(screen.getByText(/grok — grok-cli 0\.0\.30/)).toBeTruthy();
   });
 
   it('preserves the save behavior — dirtying a field enables Save and PUTs the full imageGen patch', async () => {
