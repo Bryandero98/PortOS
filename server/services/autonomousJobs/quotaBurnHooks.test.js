@@ -99,10 +99,10 @@ describe('processTaskOutput (post-agent)', () => {
 
   // The quota was consumed the moment the agent ran, so a failed run counts too.
   it.each([true, false])('records the dispatch exactly once on a run with success=%s', async (success) => {
-    await processTaskOutput({ appId: 'app-1', success, payload: null, task });
+    await processTaskOutput({ appId: 'app-1', agentId: 'agent-1', success, payload: null, task });
 
     expect(recordQuotaBurnDispatch).toHaveBeenCalledTimes(1);
-    expect(recordQuotaBurnDispatch).toHaveBeenCalledWith(DISPATCH_KEY);
+    expect(recordQuotaBurnDispatch).toHaveBeenCalledWith(DISPATCH_KEY, { agentId: 'agent-1' });
   });
 
   it('swallows a ledger write failure instead of throwing', async () => {
@@ -140,8 +140,8 @@ describe('processTaskOutput (post-agent)', () => {
 
     expect(reparsed.metadata[QUOTA_BURN_DISPATCH_KEY_FIELD]).toBe(DISPATCH_KEY);
 
-    await processTaskOutput({ appId: 'app-1', success: true, task: reparsed });
-    expect(recordQuotaBurnDispatch).toHaveBeenCalledWith(DISPATCH_KEY);
+    await processTaskOutput({ appId: 'app-1', agentId: 'agent-1', success: true, task: reparsed });
+    expect(recordQuotaBurnDispatch).toHaveBeenCalledWith(DISPATCH_KEY, { agentId: 'agent-1' });
   });
 
   it('returns no structured outcome, so quota-burn stays exit-code-judged', async () => {

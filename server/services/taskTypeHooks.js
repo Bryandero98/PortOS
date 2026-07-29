@@ -48,6 +48,7 @@ const HOOK_MODULES = {
   'layered-intelligence': () => import('./autonomousJobs/layeredIntelligenceHooks.js'),
   'quota-burn': () => import('./autonomousJobs/quotaBurnHooks.js'),
 };
+const PAYLOAD_OPTIONAL_OUTPUT_HOOKS = new Set(['quota-burn']);
 
 async function loadHookModule(taskType) {
   if (!isProgrammaticIoTaskType(taskType)) return null;
@@ -68,6 +69,16 @@ async function loadHookModule(taskType) {
  */
 export function isProgrammaticIoTaskType(taskType) {
   return typeof taskType === 'string' && Object.hasOwn(HOOK_MODULES, taskType);
+}
+
+/**
+ * Whether recovery may safely run this output hook when its worktree/sentinel
+ * no longer exists. Payload-dependent hooks must wait for a real sentinel
+ * rather than treating recovery's missing output as an agent-produced empty
+ * response.
+ */
+export function canRunTaskOutputHookWithoutPayload(taskType) {
+  return PAYLOAD_OPTIONAL_OUTPUT_HOOKS.has(taskType);
 }
 
 /**

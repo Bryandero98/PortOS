@@ -22,6 +22,7 @@ import { cleanupAgentWorktree } from './agentWorktreeCleanup.js';
 import { syncRunnerAgents } from './agentRunnerSync.js';
 import { flushRunnerOutputBatcher } from './agentRunnerOutputBatchers.js';
 import { checkForTaskCommit } from './agentRunTracking.js';
+import { dispatchRecoveredTaskOutputHook } from './agentFinalization.js';
 import { PATHS } from '../lib/fileUtils.js';
 import { killProcessTree } from '../lib/bufferedSpawn.js';
 import { release } from './executionLanes.js';
@@ -596,6 +597,13 @@ export async function cleanupOrphanedAgents() {
         }
 
         console.log(`🧹 Cleaning up orphaned agent ${agent.id} (PID ${agent.pid || 'unknown'} not running)`);
+        const task = agent.taskId ? await getTask(agent.taskId).catch(() => null) : null;
+        await dispatchRecoveredTaskOutputHook({
+          agentId: agent.id,
+          task,
+          success: false,
+          workspacePath: agent.metadata?.workspacePath || null,
+        });
         await markComplete(agent.id, {
           success: false,
           error: 'Agent process terminated unexpectedly',
