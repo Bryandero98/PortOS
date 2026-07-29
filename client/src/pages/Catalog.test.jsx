@@ -481,4 +481,26 @@ describe('Catalog page', () => {
 
     expect(await screen.findByRole('menuitem', { name: 'Fresh Empty Universe' })).toBeTruthy();
   });
+
+  // These buttons hide the tail of their label on a narrow viewport, so the full
+  // wording has to live in aria-label or the accessible name silently shortens
+  // with the screen. jsdom applies no CSS, so the existing name-based queries
+  // elsewhere in this file would still pass with the aria-label deleted — only
+  // an explicit attribute assertion catches that. The paired textContent check
+  // holds the visible text to a prefix of the name (WCAG 2.5.3 label-in-name).
+  it('keeps the full accessible name on buttons whose visible label shortens on a narrow viewport', async () => {
+    renderCatalog();
+    await waitFor(() => expect(screen.getByText('Echo Saint')).toBeTruthy());
+    fireEvent.click(screen.getByLabelText('Select Echo Saint'));
+
+    for (const [visiblePrefix, fullName] of [
+      ['Sync', 'Sync from Universes'],
+      ['Remix', 'Remix into…'],
+      ['Add', 'Add to universe/series…'],
+    ]) {
+      const btn = screen.getByRole('button', { name: fullName });
+      expect(btn.getAttribute('aria-label')).toBe(fullName);
+      expect(btn.textContent.startsWith(visiblePrefix)).toBe(true);
+    }
+  });
 });

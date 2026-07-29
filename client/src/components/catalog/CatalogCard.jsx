@@ -11,6 +11,7 @@
 import { Link } from 'react-router-dom';
 import { Sparkles, Trash2 } from 'lucide-react';
 import MediaImage from '../MediaImage';
+import InlineConfirmRow from '../ui/InlineConfirmRow';
 import { payloadSnippet } from '../../lib/catalogTypes';
 
 function TypeBadge({ type, getType }) {
@@ -60,7 +61,7 @@ export default function CatalogCard({
   const snippet = payloadSnippet(it.payload, it.type, 120, getType);
   return (
     <li
-      className={`relative bg-port-card border rounded-lg transition-colors ${
+      className={`relative bg-port-card border rounded-lg overflow-hidden transition-colors ${
         selected
           ? 'border-port-accent ring-1 ring-port-accent'
           : 'border-port-border hover:border-port-accent/60'
@@ -73,12 +74,30 @@ export default function CatalogCard({
           onChange={() => onToggleSelect(it)}
           onClick={(e) => e.stopPropagation()}
           aria-label={`Select ${name}`}
-          className="w-4 h-4 m-1 accent-port-accent cursor-pointer"
+          className="w-4 h-4 m-1.5 accent-port-accent cursor-pointer"
         />
       </span>
+      {/* Armed delete: a full-width band above the card body (the house
+          inline-confirm pattern) rather than a corner overlay. A corner overlay
+          has to be paid for with reserved padding on the link, and on a
+          single-column phone card there isn't enough width to reserve without
+          crushing the name — the version that stretched the overlay instead
+          covered the name, hiding the very thing being deleted. The band names
+          it. `pl-11` clears the absolutely-positioned checkbox. */}
+      {armed && (
+        <InlineConfirmRow
+          variant="separator"
+          className="pl-11"
+          question={`Delete "${name}"?`}
+          confirmText="Yes"
+          cancelText="No"
+          onConfirm={() => onConfirmDelete(it)}
+          onCancel={onCancelArm}
+        />
+      )}
       <Link
         to={`/catalog/${encodeURIComponent(it.type)}/${encodeURIComponent(it.id)}`}
-        className={`flex gap-3 p-3 pl-10 min-h-[88px] ${armed ? 'pr-32' : 'pr-10'}`}
+        className="flex gap-3 p-3 pl-11 pr-11 min-h-[88px]"
       >
         <CardThumb mediaKey={it.thumbnailKey} alt={name} />
         <span className="flex flex-col gap-2 min-w-0 flex-1">
@@ -96,39 +115,20 @@ export default function CatalogCard({
           ) : null}
         </span>
       </Link>
-      <div className="absolute top-2 right-2">
-        {/* The delete control is a sibling of the <Link>, not a descendant, so a
-            click on these buttons never traverses the anchor. */}
-        {armed ? (
-          <span className="inline-flex items-center gap-1 text-xs bg-port-card border border-port-border rounded px-1 py-0.5 shadow-sm">
-            <span className="text-gray-400 pl-1">Delete?</span>
-            <button
-              type="button"
-              onClick={() => onConfirmDelete(it)}
-              className="px-2 py-0.5 rounded bg-port-error/20 text-port-error hover:bg-port-error/30 font-medium"
-            >
-              Yes
-            </button>
-            <button
-              type="button"
-              onClick={onCancelArm}
-              className="px-2 py-0.5 rounded text-gray-400 hover:text-white"
-            >
-              No
-            </button>
-          </span>
-        ) : (
-          <button
-            type="button"
-            onClick={() => onArm(it.id)}
-            className="p-1.5 rounded text-gray-500 hover:text-port-error bg-port-card"
-            aria-label={`Delete ${name}`}
-            title="Delete ingredient"
-          >
-            <Trash2 size={14} />
-          </button>
-        )}
-      </div>
+      {/* The arm button is a sibling of the <Link>, not a descendant, so its
+          click never traverses the anchor. It gives way to the confirm band
+          above once armed, so the card never shows two delete affordances. */}
+      {!armed && (
+        <button
+          type="button"
+          onClick={() => onArm(it.id)}
+          className="absolute top-2 right-2 p-2 rounded text-gray-500 hover:text-port-error bg-port-card"
+          aria-label={`Delete ${name}`}
+          title="Delete ingredient"
+        >
+          <Trash2 size={16} />
+        </button>
+      )}
     </li>
   );
 }

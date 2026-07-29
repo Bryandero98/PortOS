@@ -75,6 +75,7 @@ export default function CatalogAlbum({
   }, [expanded, ensureLoaded]);
 
   const toggle = () => setExpanded((e) => !e);
+  const Chevron = expanded ? ChevronDown : ChevronRight;
 
   const loadMore = async () => {
     setLoadingMore(true);
@@ -102,21 +103,26 @@ export default function CatalogAlbum({
 
   return (
     <section className="border border-port-border rounded-lg overflow-hidden bg-port-card/40">
+      {/* On a phone the subtitle drops to its own line under the title rather
+          than competing with it for a ~200px slot; the chevron and count stay
+          pinned so the row reads the same at every width. */}
       <button
         type="button"
         onClick={toggle}
         aria-expanded={expanded}
-        className="w-full flex items-center gap-2 px-4 py-3 text-left hover:bg-port-bg/40"
+        className="w-full flex items-start sm:items-center gap-2 px-3 sm:px-4 py-3 text-left hover:bg-port-bg/40"
       >
-        {expanded ? <ChevronDown size={16} className="text-gray-400" /> : <ChevronRight size={16} className="text-gray-400" />}
-        <span className="text-white font-medium">{title}</span>
-        {subtitle ? <span className="text-xs text-gray-500">{subtitle}</span> : null}
-        <span className="ml-auto text-xs text-gray-400 px-2 py-0.5 rounded-full border border-port-border">
+        <Chevron size={16} className="shrink-0 mt-0.5 sm:mt-0 text-gray-400" />
+        <span className="min-w-0 flex-1 flex flex-col sm:flex-row sm:items-center sm:gap-2">
+          <span className="text-white font-medium truncate">{title}</span>
+          {subtitle ? <span className="text-xs text-gray-500 sm:truncate">{subtitle}</span> : null}
+        </span>
+        <span className="shrink-0 text-xs text-gray-400 px-2 py-0.5 rounded-full border border-port-border">
           {count}
         </span>
       </button>
       {expanded && (
-        <div className="px-4 pb-4">
+        <div className="px-3 sm:px-4 pb-3 sm:pb-4">
           {loading ? (
             <div className="flex items-center gap-2 text-sm text-gray-500 py-3">
               <Loader2 size={14} className="animate-spin" /> Loading…
