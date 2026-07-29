@@ -6,6 +6,7 @@ import { hoursUntilReset, normalizeResetAt } from '../lib/quotaReset.js';
 
 export const QUOTA_BURN_TASK_TYPE = 'quota-burn';
 const LEDGER_FILE = join(PATHS.cos, 'quota-burn-dispatches.json');
+const AGENT_DISPATCH_LEDGER_KEY = '__agentDispatches';
 export const DEFAULT_QUOTA_BURN_FAMILY = {
   enabled: false,
   providerId: null,
@@ -23,9 +24,14 @@ export function quotaBurnConfig(app) {
   return metadata && typeof metadata === 'object' ? metadata : { families: {} };
 }
 
-export async function getQuotaBurnDispatches() {
+async function readQuotaBurnLedger() {
   const loaded = await readJSONFile(LEDGER_FILE, {});
   return loaded && typeof loaded === 'object' ? loaded : {};
+}
+
+export async function getQuotaBurnDispatches() {
+  const { [AGENT_DISPATCH_LEDGER_KEY]: _agentDispatches, ...counts } = await readQuotaBurnLedger();
+  return counts;
 }
 
 // Single-tail queue for the dispatch ledger's read-modify-write. Two quota-burn
@@ -36,12 +42,26 @@ export async function getQuotaBurnDispatches() {
 // the "serialize two write paths that mutate the same record" case, not a
 // defense against competing users. It only became reachable when the write moved
 // from generation (sequential, one app at a time) to finalize (#3179).
+//
+// `__agentDispatches` keeps the increment idempotent across a crash between the
+// hook side effect and finalizeAgent's separate agent-marker write (#3182). It
+// lives in this SAME atomic ledger write and leaves window counts as top-level
+// numbers, so an older PortOS version still reads and updates the file safely.
 const ledgerWriteQueue = createFileWriteQueue();
 
-export async function recordQuotaBurnDispatch(key) {
+export async function recordQuotaBurnDispatch(key, { agentId = null } = {}) {
   return ledgerWriteQueue(async () => {
-    const ledger = await getQuotaBurnDispatches();
-    const next = { ...ledger, [key]: Number(ledger[key] || 0) + 1 };
+    const ledger = await readQuotaBurnLedger();
+    const agentDispatches = ledger[AGENT_DISPATCH_LEDGER_KEY];
+    const seenAgents = agentDispatches && typeof agentDispatches === 'object' ? agentDispatches : {};
+    if (agentId && seenAgents[agentId]) return ledger;
+    const next = {
+      ...ledger,
+      [key]: Number(ledger[key] || 0) + 1,
+      ...(agentId ? {
+        [AGENT_DISPATCH_LEDGER_KEY]: { ...seenAgents, [agentId]: key }
+      } : {}),
+    };
     await atomicWrite(LEDGER_FILE, next);
     return next;
   });

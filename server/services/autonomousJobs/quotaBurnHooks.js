@@ -96,12 +96,12 @@ export async function buildTaskInput({ app, ignoreTaskId = null } = {}) {
  * write is environmental, not a bad run; log and move on, exactly as the
  * verdict's own docstring prescribes for a hook whose side effect couldn't land.
  */
-export async function processTaskOutput({ task } = {}) {
+export async function processTaskOutput({ agentId, task } = {}) {
   const dispatchKey = task?.metadata?.[QUOTA_BURN_DISPATCH_KEY_FIELD];
   // Absent key = this task predates the metadata thread, or generation never
   // resolved a candidate. Nothing to record; never invent a ledger entry.
   if (typeof dispatchKey !== 'string' || !dispatchKey) return;
-  await recordQuotaBurnDispatch(dispatchKey)
+  await recordQuotaBurnDispatch(dispatchKey, { agentId })
     .then(() => console.log(`🔥 Recorded quota-burn dispatch for ${dispatchKey}`))
     .catch((err) => console.error(`❌ Failed to record quota-burn dispatch for ${dispatchKey}: ${err.message}`));
 }

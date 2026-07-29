@@ -151,4 +151,25 @@ describe('recordQuotaBurnDispatch serialization', () => {
 
     await expect(getQuotaBurnDispatches()).resolves.toEqual({ 'grok:1': 2, 'codex:2': 1 });
   });
+
+  it('deduplicates an agent replay in the same atomic ledger write as the increment', async () => {
+    vi.resetModules();
+    let stored = {};
+    vi.doMock('../lib/fileUtils.js', async (importActual) => ({
+      ...(await importActual()),
+      readJSONFile: async () => ({ ...stored }),
+      atomicWrite: async (_file, data) => { stored = structuredClone(data); },
+    }));
+    const { recordQuotaBurnDispatch, getQuotaBurnDispatches } = await import('./quotaBurn.js');
+
+    await recordQuotaBurnDispatch('grok:1', { agentId: 'agent-1' });
+    await recordQuotaBurnDispatch('grok:1', { agentId: 'agent-1' });
+    await recordQuotaBurnDispatch('grok:1', { agentId: 'agent-2' });
+
+    await expect(getQuotaBurnDispatches()).resolves.toEqual({ 'grok:1': 2 });
+    expect(stored.__agentDispatches).toEqual({
+      'agent-1': 'grok:1',
+      'agent-2': 'grok:1',
+    });
+  });
 });
