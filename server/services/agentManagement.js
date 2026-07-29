@@ -602,6 +602,7 @@ export async function cleanupOrphanedAgents() {
           agentId: agent.id,
           task,
           success: false,
+          workspacePath: agent.metadata?.workspacePath || null,
         });
         await markComplete(agent.id, {
           success: false,

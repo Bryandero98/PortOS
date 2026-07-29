@@ -775,7 +775,12 @@ export async function handleAgentCompletion(agentId, exitCode, success, duration
     }
     console.log(`🔄 Completing untracked agent ${agentId} from cos state (post-restart)`);
     const task = cosAgent.taskId ? await getTaskById(cosAgent.taskId).catch(() => null) : null;
-    await dispatchRecoveredTaskOutputHook({ agentId, task, success });
+    await dispatchRecoveredTaskOutputHook({
+      agentId,
+      task,
+      success,
+      workspacePath: cosAgent.metadata?.workspacePath || null,
+    });
     await completeAgent(agentId, {
       success,
       exitCode,

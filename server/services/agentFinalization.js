@@ -27,7 +27,7 @@ import { release } from './executionLanes.js';
 import { completeExecution, errorExecution } from './toolStateMachine.js';
 import { resolveFailedTaskUpdate, resolveTypeFailureSignal } from './agentErrorAnalysis.js';
 import { completeAgentRun, checkForTaskCommit } from './agentRunTracking.js';
-import { isProgrammaticIoTaskType, resolveTaskHookType, isNonCommittingCoordinatorTask } from './taskTypeHooks.js';
+import { canRunTaskOutputHookWithoutPayload, isProgrammaticIoTaskType, resolveTaskHookType, isNonCommittingCoordinatorTask } from './taskTypeHooks.js';
 import { processAgentCompletion } from './agentCompletion.js';
 import { extractSimplifySummaries } from './agentSummaryExtraction.js';
 
@@ -230,6 +230,7 @@ export function dispatchTaskOutputHookOnce({
   success,
   workspacePath = null,
   readPayload = true,
+  recovery = false,
 }) {
   const existing = outputHookDispatches.get(agentId);
   if (existing) return existing;
@@ -241,7 +242,7 @@ export function dispatchTaskOutputHookOnce({
     }
 
     const result = await withOutputHookTimeout(
-      dispatchTaskOutputHook({ agentId, task, success, workspacePath, readPayload }),
+      dispatchTaskOutputHook({ agentId, task, success, workspacePath, readPayload, recovery }),
       { agentId }
     ).catch(err => {
       emitLog('error', `❌ processTaskOutput hook threw for ${agentId} (${task?.taskType}): ${err.message}`, { agentId, error: err.message });
@@ -274,17 +275,18 @@ export function dispatchTaskOutputHookOnce({
 }
 
 /**
- * Recovery paths have no trustworthy worktree after a restart/orphan reap, so
- * they deliberately dispatch with a null payload rather than reading a stale
- * `.agent-done` from the task's repository root.
+ * Recovery paths try the agent's persisted workspace when it still exists.
+ * When it does not, only hooks whose registry contract says they are
+ * payload-independent may run with null output.
  */
-export function dispatchRecoveredTaskOutputHook({ agentId, task, success }) {
+export function dispatchRecoveredTaskOutputHook({ agentId, task, success, workspacePath = null }) {
   return dispatchTaskOutputHookOnce({
     agentId,
     task,
     success,
-    workspacePath: null,
-    readPayload: false,
+    workspacePath,
+    readPayload: !!workspacePath,
+    recovery: true,
   });
 }
 
@@ -496,7 +498,7 @@ export async function finalizeAgent({
  * task types (no hook). The hook receives `{ appId, success, payload, ... }` and
  * loads its own app/config — finalizeAgent stays domain-agnostic.
  */
-async function dispatchTaskOutputHook({ agentId, task, success, workspacePath, readPayload = true }) {
+async function dispatchTaskOutputHook({ agentId, task, success, workspacePath, readPayload = true, recovery = false }) {
   // Shared resolver with evaluateSuccessCriteria's gate — "runs a hook" and "gets
   // the programmatic-I/O criterion" must stay the same question (#2727).
   const taskType = resolveTaskHookType(task);
@@ -524,6 +526,9 @@ async function dispatchTaskOutputHook({ agentId, task, success, workspacePath, r
         emitLog('info', `Recovered structured .agent-done payload for ${agentId} (${taskType}) via lenient JSON extraction`, { agentId });
       }
     }
+  }
+  if (recovery && payload == null && !canRunTaskOutputHookWithoutPayload(taskType)) {
+    return { ran: false, recoveryPayloadUnavailable: true };
   }
 
   const outcome = await hook({

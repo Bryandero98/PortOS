@@ -10,6 +10,7 @@ vi.mock('./cosAgents.js', () => ({
 }));
 
 vi.mock('./taskTypeHooks.js', () => ({
+  canRunTaskOutputHookWithoutPayload: vi.fn(() => true),
   getTaskOutputHook: vi.fn(),
   isNonCommittingCoordinatorTask: vi.fn(() => false),
   isProgrammaticIoTaskType: vi.fn(() => true),
@@ -17,7 +18,7 @@ vi.mock('./taskTypeHooks.js', () => ({
 }));
 
 import { getAgent, updateAgent } from './cosAgents.js';
-import { getTaskOutputHook } from './taskTypeHooks.js';
+import { canRunTaskOutputHookWithoutPayload, getTaskOutputHook } from './taskTypeHooks.js';
 import {
   dispatchRecoveredTaskOutputHook,
   dispatchTaskOutputHookOnce,
@@ -144,6 +145,18 @@ describe('recovery output-hook dispatch (#3182)', () => {
       task: TASK,
       success: false,
     })).resolves.toEqual({ ran: false });
+    expect(updateAgent).not.toHaveBeenCalled();
+  });
+
+  it('does not invoke a payload-dependent hook when recovery cannot read a sentinel', async () => {
+    canRunTaskOutputHookWithoutPayload.mockReturnValueOnce(false);
+
+    await expect(dispatchRecoveredTaskOutputHook({
+      agentId: persistedAgent.id,
+      task: TASK,
+      success: true,
+    })).resolves.toEqual({ ran: false, recoveryPayloadUnavailable: true });
+    expect(hook).not.toHaveBeenCalled();
     expect(updateAgent).not.toHaveBeenCalled();
   });
 });
