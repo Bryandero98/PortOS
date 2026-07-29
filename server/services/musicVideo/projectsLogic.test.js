@@ -22,6 +22,7 @@ describe('buildProjectRecord', () => {
     expect(p).toMatchObject({
       id: 'mv-x', name: 'Neon Nights', status: 'draft', mode: 'director',
       trackId: 'track-9', uploadedAudioFilename: null, concept: null,
+      videoSettings: { backend: 'local', modelId: null, grokDuration: 10 },
       audioAnalysis: null, midiTranscription: null, scenes: [], renderHistoryId: null,
       deleted: false, deletedAt: null,
     });
@@ -158,6 +159,23 @@ describe('applyProjectPatch', () => {
     const withConcept = { ...baseProject(), concept: { prompt: 'A road trip', style: 'Cyberpunk anime' } };
     const next = applyProjectPatch(withConcept, { concept: null });
     expect(next.concept).toBeNull();
+  });
+
+  it('persists explicit renderer settings and merges later partial changes', () => {
+    const project = buildProjectRecord({
+      name: 'A',
+      videoSettings: { backend: 'grok', grokDuration: 6 },
+    }, { id: 'mv-2', now: 'n' });
+    expect(project.videoSettings).toEqual({ backend: 'grok', modelId: null, grokDuration: 6 });
+
+    const next = applyProjectPatch(project, {
+      videoSettings: { backend: 'local', modelId: 'ltx23_distilled_q4' },
+    });
+    expect(next.videoSettings).toEqual({
+      backend: 'local',
+      modelId: 'ltx23_distilled_q4',
+      grokDuration: 6,
+    });
   });
 });
 

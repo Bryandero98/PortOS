@@ -144,9 +144,10 @@ export async function resolveSceneClips(project) {
 
 // Pure: trim each clip's out-point so its cumulative cut lands on the nearest
 // analyzed beat, when one is within `toleranceSec` and the trim keeps the clip
-// at least `minClipSec` long. Snapping only ever SHORTENS a clip (a clip can't
-// be extended past its rendered length), so a cut can move earlier onto a beat
-// but never later. Returns a NEW clips array with adjusted `outSec`/`duration`.
+// at least `minClipSec` long. This derived, non-authored snap only SHORTENS a
+// source clip. A director-authored beatAligned span is handled separately
+// below and may exceed the native clip because the ffmpeg builder loops it.
+// Returns a NEW clips array with adjusted `outSec`/`duration`.
 // With no beats (no analysis) and no persisted scene arrangement, clips are
 // returned unchanged.
 //
@@ -155,10 +156,10 @@ export async function resolveSceneClips(project) {
 // the BeatTimeline drag-snap arranger, #1854), that scene's saved duration is
 // honored EXACTLY instead of being re-derived from the live beat grid: the
 // director already snapped and saved it, so the render shouldn't silently
-// recompute a different cut from whatever the grid says today. Clamped to the
-// clip's own rendered length (a saved duration can't make a clip longer than
-// what was actually generated) and to `minClipSec`. The running cursor still
-// advances by the honored duration so any later, non-aligned clips keep
+// recompute a different cut from whatever the grid says today. The ffmpeg
+// builder loops finite source clips, so a saved music-video span may exceed a
+// clip's native duration; it is still floored to `minClipSec`. The running
+// cursor advances by the honored duration so any later, non-aligned clips keep
 // snapping against the correct cumulative position.
 export function beatSnapClips(clips, beats, { toleranceSec = 0.12, minClipSec = 0.4, scenes = null } = {}) {
   const grid = Array.isArray(beats) ? beats.filter((b) => typeof b === 'number' && b >= 0).sort((a, b) => a - b) : [];
@@ -170,9 +171,11 @@ export function beatSnapClips(clips, beats, { toleranceSec = 0.12, minClipSec = 
     if (scene?.beatAligned && typeof scene.startSec === 'number' && typeof scene.endSec === 'number' && scene.endSec > scene.startSec) {
       // inSec stays 0 here deliberately: this only ever trims how much of the
       // clip plays, never which frames — there is no in-point/out-point
-      // distinction. The BeatTimeline client intentionally exposes only a
-      // right-edge (out-point) trim handle for the same reason (#1854).
-      const outSec = Math.min(clip.duration, Math.max(minClipSec, scene.endSec - scene.startSec));
+      // distinction. A planned music-video scene commonly spans much longer
+      // than one generated 6–10s source clip; buildMusicVideoFfmpegArgs loops
+      // that input, so the authored timeline duration is allowed to exceed the
+      // source duration instead of silently truncating the final song.
+      const outSec = Math.max(minClipSec, scene.endSec - scene.startSec);
       running += outSec;
       return { ...clip, inSec: 0, outSec, duration: outSec };
     }
@@ -211,7 +214,11 @@ export function buildMusicVideoFfmpegArgs(clips, audioPath, outputPath, { audioD
   const fps = clips[0].fps || 24;
 
   const inputs = [];
-  for (const c of clips) inputs.push('-i', c.videoPath);
+  // A generated scene clip is a reusable shot source, while the director's
+  // timeline owns how long that shot appears in the music video. Loop each
+  // finite clip input so a 6–10s Grok/local result can fill a longer verse or
+  // chorus span; the per-input trim below still makes every loop finite.
+  for (const c of clips) inputs.push('-stream_loop', '-1', '-i', c.videoPath);
   const audioIdx = clips.length; // master audio is the last input
   inputs.push('-i', audioPath);
 

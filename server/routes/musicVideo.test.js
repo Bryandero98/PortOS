@@ -107,6 +107,20 @@ describe('musicVideo routes', () => {
     expect(r.body.name).toBe('Renamed');
   });
 
+  it('PATCH /:id accepts bounded project video-renderer settings', async () => {
+    const videoSettings = { backend: 'local', modelId: 'ltx23_dgrauet_q4', grokDuration: 10 };
+    const r = await request(app).patch('/api/music-video/mv-1').send({ videoSettings });
+    expect(r.status).toBe(200);
+    expect(svc.updateProject).toHaveBeenCalledWith('mv-1', { videoSettings });
+  });
+
+  it('PATCH /:id rejects invalid video-renderer settings', async () => {
+    const r = await request(app).patch('/api/music-video/mv-1')
+      .send({ videoSettings: { backend: 'cloud-surprise', grokDuration: 9 } });
+    expect(r.status).toBe(400);
+    expect(svc.updateProject).not.toHaveBeenCalled();
+  });
+
   it('DELETE /:id soft-deletes', async () => {
     const r = await request(app).delete('/api/music-video/mv-1');
     expect(r.status).toBe(200);

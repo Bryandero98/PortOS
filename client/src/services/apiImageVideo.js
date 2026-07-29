@@ -152,7 +152,7 @@ export async function createImageGenVenv() {
 }
 
 // Video gen
-export const getVideoGenStatus = () => request('/video-gen/status');
+export const getVideoGenStatus = (options = {}) => request('/video-gen/status', options);
 export const listVideoModels = (options) => request('/video-gen/models', options);
 // `{ models: [...], textEncoder: { repo, cached, sizeBytes } }`. Same shape
 // contract as the image variant + a text-encoder block since the active

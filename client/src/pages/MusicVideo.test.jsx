@@ -52,7 +52,18 @@ vi.mock('../services/apiMusicVideo.js', () => ({
   cancelMusicVideoMidiTranscription: vi.fn(async () => ({ ok: true })),
 }));
 vi.mock('../services/apiSystem.js', () => ({ generateImage: vi.fn() }));
-vi.mock('../services/apiImageVideo.js', () => ({ generateVideo: vi.fn() }));
+vi.mock('../services/apiImageVideo.js', () => ({
+  generateVideo: vi.fn(),
+  getVideoGenStatus: vi.fn(async () => ({
+    connected: true,
+    defaultModel: 'ltx23_distilled_q4',
+    models: [
+      { id: 'ltx23_distilled_q4', name: 'LTX-2.3 Distilled Q4', runtime: 'ltx2' },
+      { id: 'wan22_t2v_a14b', name: 'Wan T2V', mode: 't2v' },
+    ],
+  })),
+  listVideoHistory: vi.fn(async () => [{ id: 'rh-9', filename: 'final.mp4' }]),
+}));
 vi.mock('../services/apiTracks.js', () => ({
   listTracks: vi.fn(async () => []),
   trackAudioUrl: (filename) => `/data/music/${encodeURIComponent(filename)}`,
@@ -80,6 +91,7 @@ import {
   deleteMusicVideoProject, transcribeMusicVideoMidi,
 } from '../services/apiMusicVideo.js';
 import { importTrackFromYoutube, trackImportEventsUrl, listTracks } from '../services/apiTracks.js';
+import { generateVideo } from '../services/apiImageVideo.js';
 
 const PROJECT_ANALYZED = {
   ...PROJECT_NO_CLIP,
@@ -110,9 +122,15 @@ const settle = () => act(async () => {});
 const openProject = async (project) => {
   listMusicVideoProjects.mockResolvedValue([project]);
   renderMV();
-  // Project list button appears, then select it to open the board.
-  const btn = await screen.findByRole('button', { name: new RegExp(project.name) });
-  fireEvent.click(btn);
+  const picker = await screen.findByLabelText('Project');
+  await act(async () => {
+    fireEvent.change(picker, { target: { value: project.id } });
+  });
+  await screen.findByRole('heading', { level: 2, name: project.name });
+};
+
+const openCreateForm = async () => {
+  fireEvent.click(await screen.findByRole('button', { name: /New project/i }));
 };
 
 // Probes/harness for the URL-nav backstop test: a location readout plus a
@@ -147,7 +165,7 @@ beforeEach(() => {
 describe('MusicVideo render control (#1760)', () => {
   it('enables Render and kicks off the job when a scene has a clip', async () => {
     await openProject(PROJECT_WITH_CLIP);
-    const renderBtn = await screen.findByRole('button', { name: /^Render$/ });
+    const renderBtn = await screen.findByRole('button', { name: /^Render final$/ });
     expect(renderBtn).toHaveProperty('disabled', false);
 
     fireEvent.click(renderBtn);
@@ -156,15 +174,55 @@ describe('MusicVideo render control (#1760)', () => {
 
   it('disables Render when no scene has a generated clip', async () => {
     await openProject(PROJECT_NO_CLIP);
-    const renderBtn = await screen.findByRole('button', { name: /^Render$/ });
+    const renderBtn = await screen.findByRole('button', { name: /^Render final$/ });
     expect(renderBtn).toHaveProperty('disabled', true);
   });
 
   it('shows the rendered-video link once a project carries a renderHistoryId', async () => {
     await openProject({ ...PROJECT_WITH_CLIP, renderHistoryId: 'rh-9' });
-    const link = await screen.findByText(/View rendered music video/i);
+    await screen.findByText(/Download MP4/i);
+    const link = await screen.findByText(/Open in Media History/i);
     // Media History matches video items by their `video:<id>` key via ?preview=.
     expect(link.closest('a').getAttribute('href')).toContain('preview=video%3Arh-9');
+  });
+});
+
+describe('MusicVideo project video renderer', () => {
+  it('persists the local model and uses it for scene generation', async () => {
+    generateVideo.mockResolvedValue({ jobId: 'video-job-1' });
+    await openProject(PROJECT_NO_CLIP);
+
+    const model = await screen.findByLabelText('Local video model');
+    fireEvent.change(model, { target: { value: 'ltx23_distilled_q4' } });
+    await waitFor(() => expect(updateMusicVideoProject).toHaveBeenCalledWith(
+      'mv-2',
+      { videoSettings: { modelId: 'ltx23_distilled_q4' } },
+      { silent: true },
+    ));
+
+    fireEvent.click(screen.getByRole('button', { name: /^Generate video$/ }));
+    await waitFor(() => expect(generateVideo).toHaveBeenCalledWith(expect.objectContaining({
+      backend: 'local',
+      modelId: 'ltx23_distilled_q4',
+      mode: 'image',
+      sourceImageFile: 'img1',
+    })));
+  });
+
+  it('continues an existing scene through the local model native extend mode', async () => {
+    generateVideo.mockResolvedValue({ jobId: 'video-job-2' });
+    await openProject(PROJECT_WITH_CLIP);
+
+    fireEvent.click(await screen.findByRole('button', { name: /^Continue shot$/ }));
+
+    await waitFor(() => expect(generateVideo).toHaveBeenCalledWith(expect.objectContaining({
+      backend: 'local',
+      modelId: 'ltx23_distilled_q4',
+      disableAudio: true,
+      mode: 'extend',
+      extendFromVideoId: 'h1',
+      sourceImageFile: 'img1',
+    })));
   });
 });
 
@@ -188,7 +246,7 @@ describe('MusicVideo audio preview + download', () => {
   it('renders no audio controls when the project has no audio', async () => {
     await openProject({ ...PROJECT_WITH_CLIP, trackId: null, uploadedAudioFilename: null });
     // Board opened (Render button present) but no audio surface.
-    await screen.findByRole('button', { name: /^Render$/ });
+    await screen.findByRole('button', { name: /^Render final$/ });
     expect(screen.queryByLabelText('Preview track audio')).toBeNull();
     expect(screen.queryByRole('link', { name: /Download audio/i })).toBeNull();
   });
@@ -293,12 +351,13 @@ describe('MusicVideo concept & style editor (#3168)', () => {
     const projectB = { ...PROJECT_NO_CLIP, id: 'mv-3', name: 'Other Project', concept: { prompt: 'B original' } };
     listMusicVideoProjects.mockResolvedValue([PROJECT_NO_CLIP, projectB]);
     renderMV();
-    fireEvent.click(await screen.findByRole('button', { name: new RegExp(PROJECT_NO_CLIP.name) }));
+    const picker = await screen.findByLabelText('Project');
+    fireEvent.change(picker, { target: { value: PROJECT_NO_CLIP.id } });
 
     const conceptField = await screen.findByLabelText('Concept');
     fireEvent.change(conceptField, { target: { value: 'A unsaved draft' } });
     // No blur — switch projects while the edit is still pending.
-    fireEvent.click(screen.getByRole('button', { name: new RegExp(projectB.name) }));
+    fireEvent.change(picker, { target: { value: projectB.id } });
 
     await waitFor(() => expect(screen.getByLabelText('Concept')).toHaveValue('B original'));
     fireEvent.blur(screen.getByLabelText('Concept'));
@@ -328,11 +387,7 @@ describe('MusicVideo concept & style editor (#3168)', () => {
 describe('MusicVideo YouTube audio import (#1945)', () => {
   it('starts an import from the detail view and attaches the finished track to the project', async () => {
     await openProject(PROJECT_NO_CLIP);
-    // Two matches now (create form + detail-view row share the same
-    // placeholder/aria-label) — the create form's carries the `mv-yt-create`
-    // id, so the other one is the detail view's.
-    const urlInput = screen.getAllByPlaceholderText(/Import audio from a YouTube URL/i)
-      .find((el) => el.id !== 'mv-yt-create');
+    const urlInput = screen.getByPlaceholderText(/Import audio from a YouTube URL/i);
     fireEvent.change(urlInput, { target: { value: 'https://youtu.be/dQw4w9WgXcQ' } });
     const row = urlInput.closest('div');
     fireEvent.click(within(row).getByRole('button', { name: /Import/i }));
@@ -346,7 +401,7 @@ describe('MusicVideo YouTube audio import (#1945)', () => {
     getYtSseState(url).latest = {
       type: 'complete', trackId: 'track-yt-1', track: { id: 'track-yt-1', title: 'Imported Song' },
     };
-    fireEvent.change(screen.getByPlaceholderText('Project name'), { target: { value: 'x' } });
+    fireEvent.change(urlInput, { target: { value: 'https://youtu.be/refresh' } });
     await waitFor(() => expect(updateMusicVideoProject).toHaveBeenCalledWith('mv-2', { trackId: 'track-yt-1' }, { silent: true }));
   });
 
@@ -358,6 +413,7 @@ describe('MusicVideo YouTube audio import (#1945)', () => {
 
   it('running the create-form and detail-view imports at once does not orphan either job', async () => {
     await openProject(PROJECT_NO_CLIP);
+    await openCreateForm();
     importTrackFromYoutube
       .mockResolvedValueOnce({ jobId: 'yt-job-create' })
       .mockResolvedValueOnce({ jobId: 'yt-job-edit' });
@@ -401,8 +457,8 @@ describe('MusicVideo YouTube audio import (#1945)', () => {
     const projectB = { ...PROJECT_NO_CLIP, id: 'mv-3', name: 'Other Project' };
     listMusicVideoProjects.mockResolvedValue([PROJECT_NO_CLIP, projectB]);
     renderMV();
-    const listBtnA = await screen.findByRole('button', { name: new RegExp(PROJECT_NO_CLIP.name) });
-    fireEvent.click(listBtnA);
+    const picker = await screen.findByLabelText('Project');
+    fireEvent.change(picker, { target: { value: PROJECT_NO_CLIP.id } });
 
     const editInput = screen.getAllByPlaceholderText(/Import audio from a YouTube URL/i)
       .find((el) => el.id !== 'mv-yt-create');
@@ -413,16 +469,16 @@ describe('MusicVideo YouTube audio import (#1945)', () => {
     // Switching to the OTHER project while this one's import is in flight
     // must be blocked — it would silently orphan the in-flight job's SSE
     // subscription and misattribute its progress UI to the new selection.
-    fireEvent.click(screen.getByRole('button', { name: new RegExp(projectB.name) }));
+    fireEvent.change(picker, { target: { value: projectB.id } });
     expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/before switching projects/i));
-    expect(listBtnA).toHaveClass('border-port-accent');
+    expect(picker).toHaveValue(PROJECT_NO_CLIP.id);
   });
 
   it('bounces URL-driven navigation (deep link / Back / ⌘K) away from a project with an in-flight import back to it', async () => {
     listMusicVideoProjects.mockResolvedValue([PROJECT_NO_CLIP]); // mv-2
     renderMVWithNav('/music-video/mv-3');
     // Open mv-2 and start its detail-view import.
-    fireEvent.click(await screen.findByRole('button', { name: new RegExp(PROJECT_NO_CLIP.name) }));
+    fireEvent.change(await screen.findByLabelText('Project'), { target: { value: PROJECT_NO_CLIP.id } });
     await waitFor(() => expect(screen.getByTestId('loc').textContent).toBe('/music-video/mv-2'));
     const editInput = screen.getAllByPlaceholderText(/Import audio from a YouTube URL/i)
       .find((el) => el.id !== 'mv-yt-create');
@@ -454,6 +510,7 @@ describe('MusicVideo YouTube audio import (#1945)', () => {
   it('pressing Enter in the create-form URL input starts the import instead of submitting the form', async () => {
     listMusicVideoProjects.mockResolvedValue([]);
     renderMV();
+    await openCreateForm();
     const createInput = await screen.findByPlaceholderText(/Import audio from a YouTube URL/i);
     fireEvent.change(createInput, { target: { value: 'https://youtu.be/enterkey' } });
     fireEvent.keyDown(createInput, { key: 'Enter' });
@@ -466,6 +523,7 @@ describe('MusicVideo YouTube audio import (#1945)', () => {
     let resolveKickoff;
     importTrackFromYoutube.mockImplementation(() => new Promise((resolve) => { resolveKickoff = resolve; }));
     renderMV();
+    await openCreateForm();
     const createInput = await screen.findByPlaceholderText(/Import audio from a YouTube URL/i);
     fireEvent.change(createInput, { target: { value: 'https://youtu.be/doubleclick' } });
     const importBtn = within(createInput.closest('div')).getByRole('button', { name: /Import/i });
@@ -481,8 +539,8 @@ describe('MusicVideo YouTube audio import (#1945)', () => {
     let resolveKickoff;
     importTrackFromYoutube.mockImplementation(() => new Promise((resolve) => { resolveKickoff = resolve; }));
     renderMV();
-    const listBtnA = await screen.findByRole('button', { name: new RegExp(PROJECT_NO_CLIP.name) });
-    fireEvent.click(listBtnA);
+    const picker = await screen.findByLabelText('Project');
+    fireEvent.change(picker, { target: { value: PROJECT_NO_CLIP.id } });
 
     const editInput = screen.getAllByPlaceholderText(/Import audio from a YouTube URL/i)
       .find((el) => el.id !== 'mv-yt-create');
@@ -493,9 +551,9 @@ describe('MusicVideo YouTube audio import (#1945)', () => {
     // would attach with nobody listening once it lands.
     expect(importTrackFromYoutube).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByRole('button', { name: new RegExp(projectB.name) }));
+    fireEvent.change(picker, { target: { value: projectB.id } });
     expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/before switching projects/i));
-    expect(listBtnA).toHaveClass('border-port-accent');
+    expect(picker).toHaveValue(PROJECT_NO_CLIP.id);
 
     resolveKickoff({ jobId: 'yt-job-pending' });
     // Settle the kickoff's .then (jobId + SSE-subscription state) inside act —
@@ -506,6 +564,7 @@ describe('MusicVideo YouTube audio import (#1945)', () => {
   it('blocks creating the project while the create-form YouTube import is in flight', async () => {
     listMusicVideoProjects.mockResolvedValue([]);
     renderMV();
+    await openCreateForm();
     const nameInput = await screen.findByPlaceholderText('Project name');
     fireEvent.change(nameInput, { target: { value: 'New MV' } });
     const createInput = screen.getAllByPlaceholderText(/Import audio from a YouTube URL/i)
@@ -522,7 +581,7 @@ describe('MusicVideo YouTube audio import (#1945)', () => {
 
   it('blocks relinking the track while a render is in progress for the selected project', async () => {
     await openProject(PROJECT_WITH_CLIP);
-    fireEvent.click(await screen.findByRole('button', { name: /^Render$/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Render final$/ }));
     await waitFor(() => expect(renderMusicVideoProject).toHaveBeenCalled());
 
     const trackSelect = screen.getByLabelText('Change track');

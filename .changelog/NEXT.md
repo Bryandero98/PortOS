@@ -4,6 +4,7 @@
 
 - **Malware scans now leave a durable, reviewable report trail.** Git-link scans save an owned markdown artifact, surface it from the completed agent summary and Review Hub, and mark repositories with an explicit `DANGEROUS` verdict using a skull danger treatment on the Git links card.
 - **Slashdo-free TUI agent PRs now complete their lifecycle.** Codex, Antigravity, OpenCode, and lean Claude agents hand committed work back to PortOS so it can generate a non-empty PR description, run configured reviewers, and merge after the selected gates pass instead of leaving an ownerless PR open.
+- **Music Video projects now save their scene-video renderer and model.** Directors can choose local or Grok generation per project, pick an image-to-video-capable local model, see cut-pacing warnings, selectively continue clips on native LTX runtimes, generate all missing media from the board, and play or download the audio-backed final render in place.
 
 ## Agent workspaces
 
@@ -25,6 +26,7 @@
 
 ## Fixed
 
+- **Music Video final renders now honor the authored song timeline.** Scene clips loop when their generated source is shorter than the beat-aligned cut, so an arrangement can cover the full track instead of being silently truncated to each model's native clip length.
 - **The task form's Screenshot and Attach buttons work again — a stuck notification was eating the clicks.** A notice that never goes away (the "Install out of sync" warning, "Update available", "New build available") parks in the bottom-right corner, and on a desktop window it landed on top of the Chief of Staff task form and silently absorbed every click meant for the buttons underneath. They did nothing at all — no file picker, no error, nothing in the browser console — which is why it read as a broken button rather than something covering one, and why the same page still worked on a phone, where the layout puts those buttons elsewhere. On a 1280×720 window the notice covered a 520×86px block starting at the exact pixel the Attach button begins. Notices that never dismiss themselves now fold into a small badge in the corner after 8 seconds (1600px², clear of the page); clicking the badge brings the message back, and it stays open while you hover it or use its buttons. Toasts with a set lifetime — including the manuscript Undo prompt — are untouched.
 - **CoS agent PRs no longer open with TUI startup noise as their description.** A PR that PortOS opened for a Codex/Antigravity/OpenCode agent led with the session's own lifecycle log — `📟 TUI session started: … (codex …)`, `💡 Open the Shell tab…`, `📟 Prompt pasted…` — before getting to what the agent actually did. The PR description now starts at the agent's completion summary and drops PortOS's status lines, along with the trailing `## Branch` / `## PR` section that only repeats what the PR page already shows.
 - **Review Hub success-rate alerts now require recent runs.** Low lifetime rates for task types that have been idle no longer appear as current health anomalies; alerts are shown only after enough runs occur in the rolling 30-day performance window.

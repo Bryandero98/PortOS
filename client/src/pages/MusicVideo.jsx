@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { Plus, Film, Trash2, Music, Activity, ArrowUp, ArrowDown, Image as ImageIcon, Video, Wand2, Download } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import PageHeader from '../components/PageHeader';
+import Drawer from '../components/Drawer.jsx';
 import {
   listMusicVideoProjects,
   createMusicVideoProject,
@@ -28,15 +29,17 @@ import MidiInstallModal from '../components/install/MidiInstallModal.jsx';
 import MidiGatedModal from '../components/install/MidiGatedModal.jsx';
 import MidiVisualization from '../components/songs/MidiVisualization.jsx';
 import { generateImage } from '../services/apiSystem.js';
-import { generateVideo } from '../services/apiImageVideo.js';
+import { generateVideo, getVideoGenStatus } from '../services/apiImageVideo.js';
 import { listTracks, trackAudioUrl } from '../services/apiTracks.js';
 import BeatTimeline from '../components/musicVideo/BeatTimeline.jsx';
 import { autoArrangeScenes } from '../lib/beatGrid.js';
 import useSceneRenderLifecycle from '../hooks/useSceneRenderLifecycle.js';
+import { useVideoFileSrc } from '../hooks/useVideoFileSrc.js';
 import useYoutubeTrackImport from '../hooks/useYoutubeTrackImport.js';
 import { useSseProgress, isTerminalSseFrame } from '../hooks/useSseProgress.js';
 import { formatDurationSec } from '../utils/formatters.js';
 import { MUSCRIPTOR_MODELS, DEFAULT_MUSCRIPTOR_MODEL } from '../lib/muscriptorModels.js';
+import { GROK_VIDEO_DURATIONS } from '../lib/grokVideoClip.js';
 import { clampBpm } from '../lib/metronome.js';
 
 // Matches musicVideoManualAnalysisSchema's `bpm.max` on the server —
@@ -109,6 +112,10 @@ export default function MusicVideo() {
   const [analyzing, setAnalyzing] = useState(false);
   const [arranging, setArranging] = useState(false);
   const [planning, setPlanning] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [videoModels, setVideoModels] = useState([]);
+  const [defaultVideoModel, setDefaultVideoModel] = useState('');
+  const [videoSettingsSaving, setVideoSettingsSaving] = useState(false);
   const [form, setForm] = useState({ name: '', mode: 'director', trackId: '' });
   // The project a detail-view YouTube import is bound to (captured at kickoff).
   // The import's shared UI slot (progress button + disabled track controls)
@@ -219,6 +226,18 @@ export default function MusicVideo() {
       .then((data) => { setProjects(data || []); setLoading(false); })
       .catch((err) => { toast.error(err?.message || 'Failed to load music video projects'); setLoading(false); });
     listTracks({ silent: true }).then((t) => setTracks(t || [])).catch(() => setTracks([]));
+    getVideoGenStatus({ silent: true })
+      .then((status) => {
+        // Music-video scenes always start from a reference frame. Hide
+        // explicitly text-only models, while retaining general LTX models
+        // whose runtime supports both text and image conditioning.
+        setVideoModels((status?.models || []).filter((model) => model.mode !== 't2v' && !model.deprecated));
+        setDefaultVideoModel(status?.defaultModel || '');
+      })
+      .catch(() => {
+        setVideoModels([]);
+        setDefaultVideoModel('');
+      });
   }, []);
 
   const trackName = useCallback((id) => tracks.find((t) => t.id === id)?.title || id || '—', [tracks]);
@@ -249,6 +268,7 @@ export default function MusicVideo() {
         setProjects((prev) => [...prev, proj]);
         selectProject(proj.id);
         setForm({ name: '', mode: 'director', trackId: '' });
+        setCreateOpen(false);
         toast.success('Project created');
       })
       .catch((err) => toast.error(err?.message || 'Failed to create project'));
@@ -429,6 +449,27 @@ export default function MusicVideo() {
   const renderTargetsSelected = !!(render && selected && render.projectId === selected.id);
   // The number of scenes that already have a generated clip — the render's inputs.
   const renderableSceneCount = (selected?.scenes || []).filter((s) => s.videoHistoryId).length;
+  const sceneCount = selected?.scenes?.length || 0;
+  const referenceFrameCount = (selected?.scenes || []).filter((s) => s.referenceImageId).length;
+  const missingFrameCount = sceneCount - referenceFrameCount;
+  const missingVideoCount = sceneCount - renderableSceneCount;
+  const finalVideo = useVideoFileSrc(selected?.renderHistoryId, { enabled: !!selected?.renderHistoryId });
+  const savedVideoSettings = {
+    backend: selected?.videoSettings?.backend || 'local',
+    // Empty is an intentional "follow the local Video Gen default" choice,
+    // distinct from pinning the model that happens to be default today.
+    modelId: selected?.videoSettings?.modelId || '',
+    grokDuration: selected?.videoSettings?.grokDuration || 10,
+  };
+  const effectiveVideoModelId = savedVideoSettings.modelId || defaultVideoModel;
+  const activeVideoModel = videoModels.find((model) => model.id === effectiveVideoModelId) || null;
+  const authoredCutDurations = (selected?.scenes || [])
+    .filter((scene) => typeof scene.startSec === 'number' && typeof scene.endSec === 'number' && scene.endSec > scene.startSec)
+    .map((scene) => scene.endSec - scene.startSec);
+  const averageCutSec = authoredCutDurations.length > 0
+    ? authoredCutDurations.reduce((sum, duration) => sum + duration, 0) / authoredCutDurations.length
+    : null;
+  const longCutCount = authoredCutDurations.filter((duration) => duration > 10).length;
 
   // React to terminal SSE frames: record the render on the project, surface the
   // outcome, and clear the in-flight job. Functional update keys on the captured
@@ -510,6 +551,33 @@ export default function MusicVideo() {
   const saveScene = (sceneId, patch) => {
     updateMusicVideoScene(selected.id, sceneId, patch, { silent: true })
       .catch((err) => toast.error(err?.message || 'Failed to save scene'));
+  };
+
+  // Renderer/model is a project-level production decision, not a transient
+  // browser preference. Save each change before allowing new video jobs so the
+  // job payload and the board's displayed setting cannot disagree.
+  const handleVideoSettingsChange = (patch) => {
+    if (!selected || videoSettingsSaving) return;
+    const projectId = selected.id;
+    const previous = selected.videoSettings;
+    const next = { ...savedVideoSettings, ...patch };
+    setProjects((prev) => prev.map((project) => (project.id === projectId
+      ? { ...project, videoSettings: next }
+      : project)));
+    setVideoSettingsSaving(true);
+    updateMusicVideoProject(projectId, { videoSettings: patch }, { silent: true })
+      .then((project) => {
+        setProjects((prev) => prev.map((current) => (current.id === projectId
+          ? { ...current, videoSettings: project.videoSettings, updatedAt: project.updatedAt }
+          : current)));
+      })
+      .catch((err) => {
+        setProjects((prev) => prev.map((project) => (project.id === projectId
+          ? { ...project, videoSettings: previous }
+          : project)));
+        toast.error(err?.message || 'Failed to save video renderer');
+      })
+      .finally(() => setVideoSettingsSaving(false));
   };
 
   // Project-level concept/style (issue #3168) — optimistic-local + silent-PATCH on
@@ -624,6 +692,10 @@ export default function MusicVideo() {
     videoLane.startScene(scene.sceneId);
     generateVideo({
       prompt,
+      backend: savedVideoSettings.backend,
+      ...(savedVideoSettings.backend === 'grok'
+        ? { grokDuration: savedVideoSettings.grokDuration }
+        : { modelId: savedVideoSettings.modelId || undefined, disableAudio: true }),
       mode: 'image',
       sourceImageFile: scene.referenceImageId,
       musicVideo: JSON.stringify({ projectId: selected.id, sceneId: scene.sceneId }),
@@ -640,20 +712,80 @@ export default function MusicVideo() {
       });
   };
 
+  // Selective native continuation for ltx2 models. It replaces only this
+  // scene's attached clip when the continuation finishes, preserving the
+  // reference frame and authored timeline span. Passing sourceImageFile keeps
+  // the music-video route's fail-closed reference-frame contract intact while
+  // extendFromVideoId supplies the actual native continuation source.
+  const handleContinueVideo = (scene) => {
+    if (!scene.videoHistoryId || !scene.referenceImageId) return;
+    if (savedVideoSettings.backend !== 'local' || activeVideoModel?.runtime !== 'ltx2') {
+      toast.error('Choose an LTX local model with native continuation support');
+      return;
+    }
+    const prompt = buildShotPrompt(scene);
+    videoLane.startScene(scene.sceneId);
+    generateVideo({
+      prompt,
+      backend: 'local',
+      modelId: effectiveVideoModelId || undefined,
+      disableAudio: true,
+      mode: 'extend',
+      extendFromVideoId: scene.videoHistoryId,
+      sourceImageFile: scene.referenceImageId,
+      musicVideo: JSON.stringify({ projectId: selected.id, sceneId: scene.sceneId }),
+    })
+      .then((res) => {
+        const jobId = res?.jobId || res?.generationId;
+        if (!jobId) { videoLane.clearScene(scene.sceneId); return; }
+        videoLane.trackJob(jobId, scene.sceneId);
+      })
+      .catch((err) => {
+        toast.error(err?.message || 'Shot continuation failed');
+        videoLane.clearScene(scene.sceneId);
+      });
+  };
+
+  const handleGenerateMissingFrames = () => {
+    const scenes = (selected?.scenes || []).filter((scene) =>
+      !scene.referenceImageId && !genScenes[scene.sceneId] && buildFramePrompt(scene));
+    if (scenes.length === 0) {
+      toast.info('Every scene already has a reference frame');
+      return;
+    }
+    scenes.forEach(handleGenerateFrame);
+  };
+
+  const handleGenerateMissingVideos = () => {
+    const scenes = (selected?.scenes || []).filter((scene) =>
+      scene.referenceImageId && !scene.videoHistoryId && !genVideoScenes[scene.sceneId] && buildShotPrompt(scene));
+    if (scenes.length === 0) {
+      toast.info(referenceFrameCount < sceneCount
+        ? 'Generate every reference frame before generating the remaining videos'
+        : 'Every scene already has a video');
+      return;
+    }
+    scenes.forEach(handleGenerateVideo);
+  };
+
   return (
     <div className="space-y-4">
       <MidiInstallModal {...midiJob.installGate} />
       <MidiGatedModal {...midiJob.gatedGate} />
       <PageHeader icon={Film} title="Music Video" subtitle="Director-controlled, beat-aware music videos" />
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {/* Projects + create */}
-        <div className="space-y-3">
-          <form onSubmit={handleCreate} className="bg-port-card border border-port-border rounded-lg p-3 space-y-2">
+      <Drawer
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        title="New music video"
+        subtitle="Choose the audio now or attach it later"
+      >
+        <form onSubmit={handleCreate} className="space-y-3">
             <label htmlFor="mv-name" className="block text-sm font-medium">New project</label>
             <input
               id="mv-name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-              placeholder="Project name" className="w-full bg-port-bg border border-port-border rounded px-2 py-1.5 text-sm"
+              placeholder="Project name" autoFocus
+              className="w-full bg-port-bg border border-port-border rounded px-2 py-1.5 text-sm"
             />
             <label htmlFor="mv-mode" className="block text-xs text-port-text-muted">Mode</label>
             <select id="mv-mode" value={form.mode} onChange={(e) => setForm((f) => ({ ...f, mode: e.target.value }))}
@@ -681,35 +813,51 @@ export default function MusicVideo() {
               className="w-full flex items-center justify-center gap-1 bg-port-accent text-white rounded px-2 py-1.5 text-sm min-h-[40px] sm:min-h-0 disabled:opacity-50">
               <Plus size={16} /> Create
             </button>
-          </form>
+        </form>
+      </Drawer>
 
-          <div className="space-y-1">
-            {loading && <p className="text-sm text-port-text-muted">Loading…</p>}
-            {!loading && projects.length === 0 && <p className="text-sm text-port-text-muted">No projects yet.</p>}
-            {projects.map((p) => (
-              <button key={p.id} onClick={() => selectProject(p.id)}
-                className={`w-full text-left px-3 py-2 rounded border ${selectedId === p.id ? 'border-port-accent bg-port-accent/10' : 'border-port-border bg-port-card'}`}>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm truncate">{p.name}</span>
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded ${STATUS_COLORS[p.status] || 'bg-port-border'}`}>{p.status}</span>
-                </div>
-                <div className="text-xs text-port-text-muted flex items-center gap-1 mt-0.5">
-                  <Music size={11} /> {trackName(p.trackId)} · {p.scenes?.length || 0} scenes
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
+      <div className="bg-port-card border border-port-border rounded-lg p-3 flex flex-wrap items-center gap-2">
+        <label htmlFor="mv-project-picker" className="text-xs text-port-text-muted">Project</label>
+        <select
+          id="mv-project-picker"
+          value={selectedId || ''}
+          onChange={(e) => selectProject(e.target.value || null)}
+          disabled={loading || ytImportEdit.active}
+          className="min-w-0 flex-1 sm:max-w-md bg-port-bg border border-port-border rounded px-2 py-1.5 text-sm disabled:opacity-50"
+        >
+          <option value="">{loading ? 'Loading projects…' : 'Select a project…'}</option>
+          {projects.map((project) => (
+            <option key={project.id} value={project.id}>
+              {project.name} · {project.scenes?.length || 0} scenes · {project.status}
+            </option>
+          ))}
+        </select>
+        {selected && (
+          <span className={`text-[10px] px-1.5 py-0.5 rounded ${STATUS_COLORS[selected.status] || 'bg-port-border'}`}>
+            {selected.status}
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={() => setCreateOpen(true)}
+          className="flex items-center gap-1 bg-port-accent text-white rounded px-3 py-1.5 text-sm min-h-[40px] sm:min-h-0"
+        >
+          <Plus size={15} /> New project
+        </button>
+      </div>
 
-        {/* Detail / scene board */}
-        <div className="md:col-span-2">
+      <div>
           {!selected && !loading && routeProjectId && (
             <p className="text-sm text-port-text-muted">
               Project not found — it may have been deleted.{' '}
               <button onClick={() => navigate('/music-video')} className="text-port-accent underline">Back to projects</button>
             </p>
           )}
-          {!selected && (loading || !routeProjectId) && <p className="text-sm text-port-text-muted">Select or create a project to open its scene board.</p>}
+          {!selected && (loading || !routeProjectId) && (
+            <div className="bg-port-card border border-port-border rounded-lg p-6 text-center">
+              <p className="text-sm text-port-text-muted">Select a project above or create one to open its scene board.</p>
+            </div>
+          )}
           {selected && (
             <div className="space-y-3">
               <div className="bg-port-card border border-port-border rounded-lg p-3">
@@ -760,16 +908,89 @@ export default function MusicVideo() {
                       className="flex items-center gap-1 bg-port-bg border border-port-border rounded px-2 py-1.5 text-sm min-h-[40px] sm:min-h-0 disabled:opacity-50">
                       <Wand2 size={15} /> {arranging ? 'Arranging…' : 'Auto-arrange'}
                     </button>
+                    <label htmlFor="mv-video-backend" className="sr-only">Scene video renderer</label>
+                    <select
+                      id="mv-video-backend"
+                      value={savedVideoSettings.backend}
+                      onChange={(e) => handleVideoSettingsChange({ backend: e.target.value })}
+                      disabled={videoSettingsSaving || Object.keys(genVideoScenes).length > 0}
+                      title="Saved renderer for this project's scene videos"
+                      className="bg-port-bg border border-port-border rounded px-1.5 py-1.5 text-sm disabled:opacity-50"
+                    >
+                      <option value="local">Local video</option>
+                      <option value="grok">Grok video</option>
+                    </select>
+                    {savedVideoSettings.backend === 'local' && (
+                      <>
+                        <label htmlFor="mv-video-model" className="sr-only">Local video model</label>
+                        <select
+                          id="mv-video-model"
+                          value={savedVideoSettings.modelId}
+                          onChange={(e) => handleVideoSettingsChange({ modelId: e.target.value })}
+                          disabled={videoSettingsSaving || Object.keys(genVideoScenes).length > 0 || videoModels.length === 0}
+                          title="Saved local image-to-video model for this project"
+                          className="max-w-[240px] bg-port-bg border border-port-border rounded px-1.5 py-1.5 text-sm disabled:opacity-50"
+                        >
+                          <option value="">
+                            {defaultVideoModel
+                              ? `Local default · ${videoModels.find((model) => model.id === defaultVideoModel)?.name || defaultVideoModel}`
+                              : 'Local default model'}
+                          </option>
+                          {videoModels.map((model) => (
+                            <option key={model.id} value={model.id}>{model.name || model.id}</option>
+                          ))}
+                        </select>
+                      </>
+                    )}
+                    {savedVideoSettings.backend === 'grok' && (
+                      <>
+                        <label htmlFor="mv-grok-duration" className="sr-only">Grok scene clip duration</label>
+                        <select
+                          id="mv-grok-duration"
+                          value={savedVideoSettings.grokDuration}
+                          onChange={(e) => handleVideoSettingsChange({ grokDuration: Number(e.target.value) })}
+                          disabled={videoSettingsSaving || Object.keys(genVideoScenes).length > 0}
+                          title="Native duration for each Grok scene clip"
+                          className="bg-port-bg border border-port-border rounded px-1.5 py-1.5 text-sm disabled:opacity-50"
+                        >
+                          {GROK_VIDEO_DURATIONS.map((duration) => (
+                            <option key={duration} value={duration}>{duration}s clips</option>
+                          ))}
+                        </select>
+                      </>
+                    )}
+                    <button
+                      onClick={handleGenerateMissingFrames}
+                      disabled={sceneCount === 0 || missingFrameCount === 0 || Object.keys(genScenes).length > 0}
+                      title={missingFrameCount > 0 ? `Generate ${missingFrameCount} missing reference frame${missingFrameCount === 1 ? '' : 's'}` : 'Every scene has a reference frame'}
+                      className="flex items-center gap-1 bg-port-bg border border-port-border rounded px-2 py-1.5 text-sm min-h-[40px] sm:min-h-0 disabled:opacity-50"
+                    >
+                      <ImageIcon size={15} /> Frames {referenceFrameCount}/{sceneCount}
+                    </button>
+                    <button
+                      onClick={handleGenerateMissingVideos}
+                      disabled={videoSettingsSaving || sceneCount === 0 || missingVideoCount === 0 || referenceFrameCount !== sceneCount || Object.keys(genVideoScenes).length > 0}
+                      title={referenceFrameCount !== sceneCount
+                        ? 'Generate every reference frame first'
+                        : (missingVideoCount > 0 ? `Generate ${missingVideoCount} missing scene video${missingVideoCount === 1 ? '' : 's'}` : 'Every scene has a video')}
+                      className="flex items-center gap-1 bg-port-bg border border-port-border rounded px-2 py-1.5 text-sm min-h-[40px] sm:min-h-0 disabled:opacity-50"
+                    >
+                      <Video size={15} /> Videos {renderableSceneCount}/{sceneCount}
+                    </button>
                     {render ? (
                       <button onClick={handleCancelRender} title="Cancel render"
                         className="flex items-center gap-1 bg-port-warning/20 text-port-warning border border-port-border rounded px-2 py-1.5 text-sm min-h-[40px] sm:min-h-0">
                         <Activity size={15} className="animate-spin" /> {renderProgress}% · Cancel
                       </button>
                     ) : (
-                      <button onClick={handleRender} disabled={renderableSceneCount === 0}
-                        title={renderableSceneCount === 0 ? 'Generate at least one scene video first' : 'Render the music video over the track'}
+                      <button onClick={handleRender} disabled={sceneCount === 0 || renderableSceneCount !== sceneCount}
+                        title={sceneCount === 0
+                          ? 'Add scenes first'
+                          : renderableSceneCount !== sceneCount
+                            ? `Generate videos for all ${sceneCount} scenes first`
+                            : 'Render the complete music video over the track'}
                         className="flex items-center gap-1 bg-port-accent text-white rounded px-2 py-1.5 text-sm min-h-[40px] sm:min-h-0 disabled:opacity-50">
-                        <Film size={15} /> Render
+                        <Film size={15} /> Render final
                       </button>
                     )}
                     <button onClick={() => handleDelete(selected.id)} title="Delete project"
@@ -882,10 +1103,36 @@ export default function MusicVideo() {
                   </div>
                 )}
                 {!render && selected.renderHistoryId && (
-                  <div className="mt-2 text-xs flex items-center gap-2">
-                    <Film size={14} className="text-port-success" />
-                    <a href={`/media/history?preview=${encodeURIComponent(`video:${selected.renderHistoryId}`)}`}
-                      className="text-port-accent">View rendered music video →</a>
+                  <div className="mt-3 border border-port-success/40 bg-port-success/5 rounded-lg p-3 space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-sm font-medium flex items-center gap-1.5">
+                        <Film size={15} className="text-port-success" /> Final music video
+                      </span>
+                      <div className="flex items-center gap-2 text-xs">
+                        {finalVideo.src && (
+                          <a
+                            href={finalVideo.src}
+                            download
+                            className="flex items-center gap-1 bg-port-bg border border-port-border rounded px-2 py-1 hover:bg-port-border/40"
+                          >
+                            <Download size={13} /> Download MP4
+                          </a>
+                        )}
+                        <a href={`/media/history?preview=${encodeURIComponent(`video:${selected.renderHistoryId}`)}`}
+                          className="text-port-accent">Open in Media History →</a>
+                      </div>
+                    </div>
+                    {finalVideo.resolving && <p className="text-xs text-port-text-muted">Loading final video…</p>}
+                    {finalVideo.src && (
+                      <video
+                        src={finalVideo.src}
+                        controls
+                        playsInline
+                        preload="metadata"
+                        className="w-full max-h-[65vh] rounded bg-black border border-port-border"
+                        aria-label="Play final music video"
+                      />
+                    )}
                   </div>
                 )}
                 {selected.audioAnalysis && (
@@ -894,7 +1141,14 @@ export default function MusicVideo() {
                     <span>Duration: {formatDurationSec(selected.audioAnalysis.durationSec)}</span>
                     <span>Beats: {selected.audioAnalysis.beats?.length || 0}</span>
                     <span>Sections: {selected.audioAnalysis.sections?.length || 0}</span>
+                    {averageCutSec != null && <span>Average cut: {averageCutSec.toFixed(1)}s</span>}
                   </div>
+                )}
+                {longCutCount > 0 && (
+                  <p className="mt-2 rounded border border-port-warning/40 bg-port-warning/10 px-2 py-1.5 text-xs text-port-warning">
+                    {longCutCount} authored cut{longCutCount === 1 ? ' is' : 's are'} longer than 10s.
+                    Add more shots, then Auto-arrange: higher-energy sections receive shorter cuts and every boundary stays music-led.
+                  </p>
                 )}
                 {selected.audioAnalysis && !selected.audioAnalysis.bpm && (
                   <div className="mt-2 flex flex-wrap items-end gap-2 text-xs bg-port-bg border border-port-border rounded-lg p-2">
@@ -935,11 +1189,23 @@ export default function MusicVideo() {
               </div>
 
               {(selected.scenes || []).length === 0 && <p className="text-sm text-port-text-muted">No scenes yet — add one to start the board.</p>}
-              <div className="space-y-2">
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
                 {(selected.scenes || []).map((scene, idx) => (
                   <div key={scene.sceneId} className="bg-port-card border border-port-border rounded-lg p-3 space-y-2">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-mono text-port-text-muted">#{scene.order + 1}</span>
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium truncate">
+                          {scene.sectionLabel || scene.label || `Scene ${scene.order + 1}`}
+                        </div>
+                        <div className="text-[11px] text-port-text-muted">
+                          #{scene.order + 1}
+                          {typeof scene.startSec === 'number' && typeof scene.endSec === 'number'
+                            ? ` · ${formatDurationSec(scene.endSec - scene.startSec)} · ${formatDurationSec(scene.startSec)}–${formatDurationSec(scene.endSec)}`
+                            : ''}
+                          {scene.referenceImageId ? ' · frame ready' : ''}
+                          {scene.videoHistoryId ? ' · video ready' : ''}
+                        </div>
+                      </div>
                       <div className="flex items-center gap-1">
                         <button onClick={() => moveScene(idx, -1)} disabled={idx === 0} aria-label="Move up" className="p-1 disabled:opacity-30" title="Move up"><ArrowUp size={14} /></button>
                         <button onClick={() => moveScene(idx, 1)} disabled={idx === selected.scenes.length - 1} aria-label="Move down" className="p-1 disabled:opacity-30" title="Move down"><ArrowDown size={14} /></button>
@@ -982,13 +1248,13 @@ export default function MusicVideo() {
                       <div className="flex items-center gap-2">
                         {scene.referenceImageId && (
                           <img src={`/data/images/${scene.referenceImageId}`} alt="Reference frame"
-                            className="w-16 h-16 object-cover rounded border border-port-border" />
+                            className="w-32 aspect-video object-cover rounded border border-port-border" />
                         )}
                         <button onClick={() => handleGenerateFrame(scene)} disabled={!!genScenes[scene.sceneId]}
                           className="flex items-center gap-1 bg-port-border hover:bg-port-border/70 disabled:opacity-50 rounded px-2 py-1.5 text-xs min-h-[40px] sm:min-h-0 whitespace-nowrap"
                           title="Generate a still reference frame for this scene">
                           {genScenes[scene.sceneId] ? <Activity size={14} className="animate-spin" /> : <ImageIcon size={14} />}
-                          {genScenes[scene.sceneId] ? 'Rendering…' : (scene.referenceImageId ? 'Regenerate frame' : 'Generate frame')}
+                          {genScenes[scene.sceneId] ? 'Generating frame…' : (scene.referenceImageId ? 'Regenerate frame' : 'Generate frame')}
                         </button>
                       </div>
                     </div>
@@ -996,16 +1262,26 @@ export default function MusicVideo() {
                     <div className="flex items-center gap-2 flex-wrap">
                       {scene.videoHistoryId && (
                         <video src={`/data/videos/${scene.videoHistoryId}.mp4`}
-                          className="w-28 h-16 object-cover rounded border border-port-border bg-black"
+                          className="w-40 aspect-video object-cover rounded border border-port-border bg-black"
                           muted playsInline preload="metadata" controls />
                       )}
                       <button onClick={() => handleGenerateVideo(scene)}
-                        disabled={!scene.referenceImageId || !!genVideoScenes[scene.sceneId]}
+                        disabled={videoSettingsSaving || !scene.referenceImageId || !!genVideoScenes[scene.sceneId]}
                         className="flex items-center gap-1 bg-port-border hover:bg-port-border/70 disabled:opacity-50 rounded px-2 py-1.5 text-xs min-h-[40px] sm:min-h-0 whitespace-nowrap"
                         title={scene.referenceImageId ? "Generate this scene's video from its reference frame (i2v)" : 'Generate a reference frame first'}>
                         {genVideoScenes[scene.sceneId] ? <Activity size={14} className="animate-spin" /> : <Video size={14} />}
-                        {genVideoScenes[scene.sceneId] ? 'Rendering…' : (scene.videoHistoryId ? 'Regenerate video' : 'Generate video')}
+                        {genVideoScenes[scene.sceneId] ? 'Generating video…' : (scene.videoHistoryId ? 'Regenerate video' : 'Generate video')}
                       </button>
+                      {scene.videoHistoryId && savedVideoSettings.backend === 'local' && activeVideoModel?.runtime === 'ltx2' && (
+                        <button
+                          onClick={() => handleContinueVideo(scene)}
+                          disabled={videoSettingsSaving || !!genVideoScenes[scene.sceneId]}
+                          className="flex items-center gap-1 bg-port-bg border border-port-border hover:bg-port-border/40 disabled:opacity-50 rounded px-2 py-1.5 text-xs min-h-[40px] sm:min-h-0 whitespace-nowrap"
+                          title="Native-extend this clip from its final latent frames and attach the longer result to this scene"
+                        >
+                          <Video size={14} /> Continue shot
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -1014,6 +1290,5 @@ export default function MusicVideo() {
           )}
         </div>
       </div>
-    </div>
   );
 }

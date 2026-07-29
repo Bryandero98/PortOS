@@ -60,6 +60,7 @@ export function buildProjectRecord(input, { id, now }) {
   const {
     name, mode = 'director', trackId = null,
     uploadedAudioFilename = null, concept = null,
+    videoSettings = {},
   } = input;
   return {
     id,
@@ -71,6 +72,11 @@ export function buildProjectRecord(input, { id, now }) {
     trackId,
     uploadedAudioFilename,
     concept,
+    videoSettings: {
+      backend: videoSettings.backend ?? 'local',
+      modelId: videoSettings.modelId ?? null,
+      grokDuration: videoSettings.grokDuration ?? 10,
+    },
     audioAnalysis: null,
     midiTranscription: null,
     scenes: [],
@@ -92,9 +98,23 @@ export function applyProjectPatch(project, patch) {
   // below, so a caller sending only the sub-field it edited (e.g. { style: '…' })
   // can't clobber a sibling sub-field (e.g. prompt) set concurrently by another
   // sync peer (#3168). An explicit `concept: null` still clears it outright.
-  const mergedPatch = ('concept' in patch && patch.concept && project.concept)
+  const conceptMergedPatch = ('concept' in patch && patch.concept && project.concept)
     ? { ...patch, concept: { ...project.concept, ...patch.concept } }
     : patch;
+  // Renderer settings are edited independently in the UI. Merge a partial
+  // change so picking a model cannot discard the provider or Grok duration.
+  const mergedPatch = ('videoSettings' in conceptMergedPatch && conceptMergedPatch.videoSettings)
+    ? {
+      ...conceptMergedPatch,
+      videoSettings: {
+        backend: 'local',
+        modelId: null,
+        grokDuration: 10,
+        ...project.videoSettings,
+        ...conceptMergedPatch.videoSettings,
+      },
+    }
+    : conceptMergedPatch;
   // Changing the audio source invalidates the cached beat/tempo analysis —
   // it was computed from the OLD track. AI Plan / Auto-arrange / BeatTimeline
   // gate on `audioAnalysis` truthiness, and the render's beat-snap step reads

@@ -26,6 +26,16 @@ export const musicVideoConceptSchema = z.object({
   universeId: z.string().max(64).nullable().optional(),
 }).strict();
 
+// Renderer settings travel with the project so reopening a director board (or
+// opening it on a sync peer) cannot silently change provider/model. `modelId`
+// is optional because Grok does not consume it; the video-gen route performs
+// the authoritative installed-model validation when a local render starts.
+export const musicVideoVideoSettingsSchema = z.object({
+  backend: z.enum(['local', 'grok']).optional(),
+  modelId: z.string().max(64).nullable().optional(),
+  grokDuration: z.union([z.literal(6), z.literal(10)]).optional(),
+}).strict();
+
 export const musicVideoProjectCreateSchema = z.object({
   name: z.string().min(1).max(200),
   mode: z.enum(MUSIC_VIDEO_MODES).optional(),
@@ -35,6 +45,7 @@ export const musicVideoProjectCreateSchema = z.object({
   trackId: z.string().max(64).nullable().optional(),
   uploadedAudioFilename: z.string().max(256).nullable().optional(),
   concept: musicVideoConceptSchema.nullable().optional(),
+  videoSettings: musicVideoVideoSettingsSchema.optional(),
 }).strict();
 
 export const musicVideoProjectUpdateSchema = z.object({
@@ -44,6 +55,7 @@ export const musicVideoProjectUpdateSchema = z.object({
   trackId: z.string().max(64).nullable().optional(),
   uploadedAudioFilename: z.string().max(256).nullable().optional(),
   concept: musicVideoConceptSchema.nullable().optional(),
+  videoSettings: musicVideoVideoSettingsSchema.optional(),
   renderHistoryId: z.string().max(64).nullable().optional(),
 }).strict();
 
