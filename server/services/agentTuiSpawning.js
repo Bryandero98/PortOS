@@ -29,6 +29,7 @@ import { shellQuote } from '../lib/shellQuote.js';
 import { resolveCliModel, buildEffortArgs, resolveBedrockCliModel, prefixOpencodeModel, hasModelFlag, isOpencodeCommand, isClaudeCommand, applyLeanClaudeArgs, providerSuppliesGithubToken } from '../lib/providerModels.js';
 import { createStreamingAnsiStripper, stripAnsi } from '../lib/ansiStrip.js';
 import { createImmediateFallbackSignalDetector } from '../lib/aiToolkit/errorDetection.js';
+import { isMachineOnline } from '../lib/connectivity.js';
 import { isAntigravityCommand } from '../lib/antigravity.js';
 import {
   DEFAULT_TUI_PROMPT_DELAY_MS,
@@ -79,6 +80,22 @@ const DEFAULT_TUI_MIN_RUNTIME_MS = 15000;
 // handshake windows in tuiHandshake.js (PASTE_DEADLINE_MS=10s) without
 // meaningfully weakening the idle-reap protection once input truly stops.
 const PASTE_INPUT_GRACE_MS = 15000;
+
+// Connectivity gate for the idle reaper. When the machine loses internet, a
+// live TUI goes silent (it can't reach the model) in a way that's
+// indistinguishable from a hung or finished agent to the idle timer — so an
+// outage would reap an agent that's only blocked on the network. We keep a
+// cheap reachability reading fresh only in the LEAD window right before the
+// idle deadline and DEFER the reap while offline. `RECHECK_MS` throttles probes
+// to at most one per interval; `LEAD_MS` is how far before the (possibly
+// extended) reap deadline probing begins — so a healthy, chatty agent is never
+// probed and a drifting one has a confirmed reading in hand at its reap tick,
+// without probing for the whole window. This does NOT weaken the hung-agent
+// safety net: a stuck agent on a healthy connection still reaps on schedule,
+// and the max-runtime backstop still bounds an agent kept alive through a long
+// outage.
+const CONNECTIVITY_RECHECK_MS = 10000;
+const CONNECTIVITY_PROBE_LEAD_MS = 20000;
 
 // Output buffering/spooling (createOutputSpooler) and failure-analysis /
 // worktree-inspection helpers (readFileTail, worktreeHasChanges,
@@ -230,6 +247,7 @@ export async function spawnTuiAgent({
   cleanupWorktreeFn,
   isTruthyMetaFn,
   leanMode = false,
+  checkOnlineFn = isMachineOnline,
 }) {
   const outputFile = join(agentDir, 'output.txt');
   // Raw PTY bytes spool to disk continuously rather than accumulate in-memory.
@@ -335,6 +353,38 @@ export async function spawnTuiAgent({
   let firstOutputAt = null;
   let lastOutputAt = Date.now();
   let sessionId = null;
+
+  // Idle-reaper connectivity gate (see CONNECTIVITY_* constants). `online`
+  // starts optimistically true so the happy path reaps on schedule without
+  // waiting on a probe; it only ever flips to false once a probe confirms an
+  // outage, at which point the idle reaper defers. Probing is started by the
+  // idle timer only in the LEAD window before the reap deadline (not the whole
+  // idle window), so a confirmed reading is in hand at the reap tick and a busy
+  // agent is never probed.
+  const connectivity = { online: true, checking: false, lastCheckAt: 0, loggedOffline: false };
+  const refreshConnectivity = () => {
+    if (connectivity.checking) return;
+    if (Date.now() - connectivity.lastCheckAt < CONNECTIVITY_RECHECK_MS) return;
+    connectivity.checking = true;
+    connectivity.lastCheckAt = Date.now();
+    Promise.resolve()
+      .then(() => checkOnlineFn())
+      .then((online) => {
+        if (finalized) return;
+        // A probe that RESOLVES `false` is the only thing that flips us offline;
+        // any other resolved value maps to online. A probe that THROWS is
+        // swallowed by the `.catch` below and leaves the last reading untouched
+        // — a failed-to-run probe is never proof of an outage by itself.
+        const nowOnline = online !== false;
+        // Reconnect grace: on the offline→online transition, give the CLI a
+        // fresh idle window to notice the network is back and resume before the
+        // reaper can fire — otherwise we'd reap in the gap before it repaints.
+        if (nowOnline && connectivity.online === false) lastOutputAt = Date.now();
+        connectivity.online = nowOnline;
+      })
+      .catch(() => {})
+      .finally(() => { connectivity.checking = false; });
+  };
 
   // Bounded post-paste accumulator. Lives only while pasteEnterTimer is
   // running (a few seconds at most), so the in-memory cost is bounded by
@@ -1141,7 +1191,26 @@ export async function spawnTuiAgent({
       : reviewLoop.active
         ? Math.max(tuiConfig.idleTimeoutMs, REVIEW_LOOP_IDLE_TIMEOUT_MS)
         : tuiConfig.idleTimeoutMs;
+    // Once within the LEAD window of the (possibly extended) reap deadline, keep
+    // a reachability reading fresh (throttled, non-blocking) so the gate below
+    // can read it synchronously and won't reap an agent that's only silent
+    // because the machine lost internet. Gating on the effective deadline (not a
+    // fixed lead off the base window) keeps a long merge-queue/review-loop idle
+    // from probing for its whole 15-min window.
+    if (idle >= effectiveIdleTimeoutMs - CONNECTIVITY_PROBE_LEAD_MS) refreshConnectivity();
     if (idle >= effectiveIdleTimeoutMs) {
+      // An internet outage silences a live TUI exactly like a hung or finished
+      // agent looks to this timer. If a recent probe says we're offline, DEFER
+      // the reap — the agent is only blocked on the network and resumes when it
+      // returns. (The max-runtime backstop still bounds a very long outage.)
+      if (!connectivity.online) {
+        if (!connectivity.loggedOffline) {
+          emitLog('info', `📡 TUI agent ${agentId} idle past its window but the machine appears offline — deferring reap until connectivity returns`, { agentId });
+          connectivity.loggedOffline = true;
+        }
+        return;
+      }
+      connectivity.loggedOffline = false;
       // Reaped AFTER the extended merge-queue grace elapsed: the orchestrator
       // almost certainly died mid-merge with PRs opened/merged-but-uncleaned.
       // Surface it as a needs-manual-finish FAILURE rather than the silent
