@@ -32,7 +32,11 @@ export const DEFAULT_PROBE_HOSTS = [
 export const DEFAULT_PROBE_TIMEOUT_MS = 3000;
 
 // Resolve when a single host connects; reject when it errors or times out.
-// Always tears the socket down (listeners + fd) on every terminal path.
+// Always tears the socket down (listeners + fd) on every terminal path. The
+// `setTimeout(timeoutMs)` below guarantees one of connect/timeout/error fires
+// even when the caller abandons the promise (e.g. the agent is torn down while
+// a probe is in flight), so an in-flight probe self-cleans within `timeoutMs`
+// and never dangles — there is no cancellation path that leaks a socket/fd.
 function probeHost({ host, port }, timeoutMs) {
   return new Promise((resolve, reject) => {
     const socket = net.connect({ host, port });
