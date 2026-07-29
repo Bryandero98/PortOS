@@ -10,6 +10,13 @@
  * as an outage) and NOT an HTTP/TLS exchange (we only need "can packets leave").
  * It never rejects: callers use it as a gate, and a probe that failed to run is
  * not proof of anything, so the promise always resolves to a boolean.
+ *
+ * Assumes normal outbound egress (the single-user private-machine model PortOS
+ * targets). In a locked-down, proxy-only network where both anycast IPs are
+ * blocked, a machine with working internet would read as offline — the caller
+ * (the TUI idle reaper) treats that as "defer the reap", which its independent
+ * max-runtime backstop still bounds, so the failure mode is a delayed reap, not
+ * a wedged agent.
  */
 
 import net from 'net';

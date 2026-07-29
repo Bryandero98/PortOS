@@ -371,8 +371,10 @@ export async function spawnTuiAgent({
       .then(() => checkOnlineFn())
       .then((online) => {
         if (finalized) return;
-        // A probe that failed to RUN (threw) is not proof of an outage — only
-        // an explicit `false` result flips us offline; anything else stays online.
+        // A probe that RESOLVES `false` is the only thing that flips us offline;
+        // any other resolved value maps to online. A probe that THROWS is
+        // swallowed by the `.catch` below and leaves the last reading untouched
+        // — a failed-to-run probe is never proof of an outage by itself.
         const nowOnline = online !== false;
         // Reconnect grace: on the offline→online transition, give the CLI a
         // fresh idle window to notice the network is back and resume before the
