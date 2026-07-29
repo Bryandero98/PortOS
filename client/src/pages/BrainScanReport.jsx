@@ -12,6 +12,16 @@ const VERDICT_STYLES = {
   DANGEROUS: { Icon: Skull, className: 'bg-port-error/15 text-port-error border-port-error/30' }
 };
 
+// `/brain*` is a full-width Layout route (bare `overflow-hidden` <main>), so this
+// page must own its own vertical scroll or long reports get clipped below the fold.
+function Shell({ children }) {
+  return (
+    <div className="h-full overflow-y-auto p-4 md:p-6">
+      <div className="mx-auto max-w-4xl space-y-4">{children}</div>
+    </div>
+  );
+}
+
 export default function BrainScanReport() {
   const { id } = useParams();
   const fetchReport = useCallback(async () => {
@@ -24,15 +34,21 @@ export default function BrainScanReport() {
   const { data, loading, refetch } = useAutoRefetch(fetchReport, 30_000);
 
   if (loading) {
-    return <div className="flex justify-center py-16"><BrailleSpinner text="Loading scan report" /></div>;
+    return (
+      <Shell>
+        <div className="flex justify-center py-16"><BrailleSpinner text="Loading scan report" /></div>
+      </Shell>
+    );
   }
 
   if (!data) {
     return (
-      <div className="py-12 text-center">
-        <p className="text-sm text-gray-400">This scan report is unavailable.</p>
-        <Link to="/brain/links" className="mt-3 inline-block text-sm text-port-accent hover:underline">Back to links</Link>
-      </div>
+      <Shell>
+        <div className="py-12 text-center">
+          <p className="text-sm text-gray-400">This scan report is unavailable.</p>
+          <Link to="/brain/links" className="mt-3 inline-block text-sm text-port-accent hover:underline">Back to links</Link>
+        </div>
+      </Shell>
     );
   }
 
@@ -41,7 +57,7 @@ export default function BrainScanReport() {
   const VerdictIcon = verdictStyle?.Icon;
 
   return (
-    <div className="mx-auto max-w-4xl space-y-4">
+    <Shell>
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <Link to="/brain/links" className="mb-2 inline-flex items-center gap-1 text-xs text-gray-500 hover:text-white">
@@ -73,6 +89,6 @@ export default function BrainScanReport() {
       <article className="rounded-lg border border-port-border bg-port-card p-4 sm:p-6">
         <MarkdownOutput content={data.report} />
       </article>
-    </div>
+    </Shell>
   );
 }
