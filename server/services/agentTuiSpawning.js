@@ -442,12 +442,17 @@ export async function spawnTuiAgent({
     // from being written down as completed AND keeps its worktree (which
     // finalize's cleanup would delete) intact for the resume (#3202).
     //
-    // Two exceptions finalize normally. An agent that already wrote its
-    // `.agent-done` sentinel has given a valid completion signal. And a run the
-    // user terminated must reach finalizeAgent to be recorded `user-terminated`
-    // — abandoning it would leave the record `running` with no such mark, and
-    // boot recovery's user-terminated skip would miss it and resurrect the run.
-    if (isHostShuttingDown() && !sentinelPresent() && !userTerminatedAgents.has(agentId)) {
+    // Three exceptions keep their normal path. An agent that already wrote its
+    // `.agent-done` sentinel has given a valid completion signal. A run the user
+    // terminated must reach finalizeAgent to be recorded `user-terminated` —
+    // abandoning it would leave the record `running` with no such mark, and boot
+    // recovery's user-terminated skip would miss it and resurrect the run. And a
+    // run the user paused already has its own don't-finalize branch below, which
+    // owns the paused bookkeeping (pid unregister, activeAgents delete).
+    if (isHostShuttingDown()
+      && !sentinelPresent()
+      && !userTerminatedAgents.has(agentId)
+      && !pausedAgents.has(agentId)) {
       await abandonForHostShutdown();
       return;
     }

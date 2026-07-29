@@ -880,14 +880,16 @@ export const registerShutdownHandlers = ({ io, httpServer, localHttpServer }) =>
     // fault the agent didn't cause (#3202). Only `activeAgents` — the ones whose
     // child processes live in THIS process's tree — belong here; runner-mode
     // agents are owned by portos-cos and survive this restart untouched.
-    // Best-effort and bounded: a marker we fail to write only degrades recovery
-    // to the pre-existing orphan path.
-    // Started here (the agent snapshot must be taken before anything can await)
-    // but awaited just before exit, so a stalled filesystem spends none of the
-    // graceful budget ahead of the teardown below. writeHostShutdownMarker logs
-    // both outcomes itself and never rejects, so `finish` needs no message.
+    //
+    // Started here so the agent snapshot is taken before anything can await, but
+    // awaited just before exit so a stalled filesystem spends none of the graceful
+    // budget ahead of the teardown below. Best-effort throughout: the helper logs
+    // both outcomes and never rejects (hence `finish()` with no message), the
+    // `.catch` is the belt-and-suspenders for an out-of-lifecycle rejection, and a
+    // marker we fail to write only degrades recovery to the pre-existing orphan path.
     const markerWritten = withGrace('Host-shutdown marker', 1500, (finish) =>
-      writeHostShutdownMarker({ agentIds: [...activeAgents.keys()], signal }).then(() => finish()));
+      writeHostShutdownMarker({ agentIds: [...activeAgents.keys()], signal })
+        .then(() => finish(), (err) => finish(`⚠️ Host-shutdown marker failed: ${err.message}`, true)));
 
     // Drop existing long-lived sockets (SSE + keep-alive) up front so the closes
     // below don't wait on connections that never end on their own.
