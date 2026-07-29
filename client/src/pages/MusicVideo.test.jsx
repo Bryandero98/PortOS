@@ -36,6 +36,7 @@ const { sseState, ytSseStates, getYtSseState } = vi.hoisted(() => {
 vi.mock('../services/apiMusicVideo.js', () => ({
   listMusicVideoProjects: vi.fn(async () => []),
   createMusicVideoProject: vi.fn(),
+  cloneMusicVideoProject: vi.fn(),
   updateMusicVideoProject: vi.fn(async (id, patch) => ({ id, ...patch })),
   deleteMusicVideoProject: vi.fn(),
   analyzeMusicVideoProject: vi.fn(),
@@ -54,6 +55,12 @@ vi.mock('../services/apiMusicVideo.js', () => ({
 vi.mock('../services/apiSystem.js', () => ({ generateImage: vi.fn() }));
 vi.mock('../services/apiImageVideo.js', () => ({
   generateVideo: vi.fn(),
+  listLorasFull: vi.fn(async () => [{
+    filename: 'audio-reactive.safetensors',
+    name: 'Audio Reactive',
+    loraCompatKey: 'ltx-video',
+    recommendedScale: 1.2,
+  }]),
   getVideoGenStatus: vi.fn(async () => ({
     connected: true,
     defaultModel: 'ltx23_distilled_q4',
@@ -87,7 +94,7 @@ vi.mock('../components/PageHeader', () => ({ default: ({ title }) => <div>{title
 
 import MusicVideo from './MusicVideo.jsx';
 import {
-  listMusicVideoProjects, createMusicVideoProject, renderMusicVideoProject, planMusicVideoProject, updateMusicVideoProject,
+  listMusicVideoProjects, createMusicVideoProject, cloneMusicVideoProject, renderMusicVideoProject, planMusicVideoProject, updateMusicVideoProject,
   deleteMusicVideoProject, transcribeMusicVideoMidi,
 } from '../services/apiMusicVideo.js';
 import { importTrackFromYoutube, trackImportEventsUrl, listTracks } from '../services/apiTracks.js';
@@ -223,6 +230,59 @@ describe('MusicVideo project video renderer', () => {
       extendFromVideoId: 'h1',
       sourceImageFile: 'img1',
     })));
+  });
+
+  it('uses project audio as no-vocals conditioning at the scene song offset', async () => {
+    generateVideo.mockResolvedValue({ jobId: 'audio-reactive-job' });
+    await openProject(PROJECT_NO_CLIP);
+
+    fireEvent.change(await screen.findByLabelText('Scene generation mode'), {
+      target: { value: 'audioReactive' },
+    });
+    await waitFor(() => expect(updateMusicVideoProject).toHaveBeenCalledWith(
+      'mv-2',
+      {
+        videoSettings: expect.objectContaining({
+          generationMode: 'audioReactive',
+          audioReactiveLora: 'audio-reactive.safetensors',
+          modelId: 'ltx23_distilled_q4',
+        }),
+      },
+      { silent: true },
+    ));
+
+    fireEvent.click(screen.getByRole('button', { name: /^Generate video$/ }));
+    await waitFor(() => expect(generateVideo).toHaveBeenCalledWith(expect.objectContaining({
+      backend: 'local',
+      modelId: 'ltx23_distilled_q4',
+      mode: 'a2v',
+      sourceImageFile: 'img1',
+      audioStartSec: 0,
+      disableAudio: true,
+      loraFilenames: ['audio-reactive.safetensors'],
+      loraScales: [1.2],
+      prompt: expect.stringMatching(/No singing, lip-sync, speaking, mouth movement/i),
+    })));
+  });
+});
+
+describe('MusicVideo project versions', () => {
+  it('forks the open project and navigates to the editable next version', async () => {
+    cloneMusicVideoProject.mockResolvedValue({
+      ...PROJECT_WITH_CLIP,
+      id: 'mv-v2',
+      name: 'Neon Run v2',
+      version: 2,
+      parentProjectId: 'mv-1',
+      renderHistoryId: null,
+    });
+    await openProject(PROJECT_WITH_CLIP);
+
+    fireEvent.click(await screen.findByRole('button', { name: /^Fork v2$/ }));
+
+    await waitFor(() => expect(cloneMusicVideoProject).toHaveBeenCalledWith('mv-1', {}, { silent: true }));
+    await screen.findByRole('heading', { level: 2, name: 'Neon Run v2' });
+    expect(screen.getByText('v2')).toBeTruthy();
   });
 });
 

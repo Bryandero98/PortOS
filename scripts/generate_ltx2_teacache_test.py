@@ -142,6 +142,33 @@ class GenerateLtx2TeaCacheTest(unittest.TestCase):
         self.assertEqual(self.helper._rate_kwargs(kwargs_only, 24.0), {})
         self.assertEqual(self.helper._rate_kwargs(fps_only, 24.0), {"fps": 24.0})
 
+    def test_a2v_image_conditioning_compat_supplies_missing_frame_rate(self):
+        calls = []
+
+        def combined(images, *, frame_rate):
+            calls.append((images, frame_rate))
+            return "conditioned"
+
+        orchestration = SimpleNamespace(combined_image_conditionings=combined)
+        restore = self.helper._bind_combined_image_conditioning_rate(orchestration, 24.0)
+        self.assertEqual(orchestration.combined_image_conditionings(["frame"]), "conditioned")
+        self.assertEqual(
+            orchestration.combined_image_conditionings(["frame"], frame_rate=30.0),
+            "conditioned",
+        )
+        self.assertEqual(calls, [(["frame"], 24.0), (["frame"], 30.0)])
+        restore()
+        self.assertIs(orchestration.combined_image_conditionings, combined)
+
+    def test_a2v_image_conditioning_compat_ignores_old_helper(self):
+        def combined(images):
+            return images
+
+        orchestration = SimpleNamespace(combined_image_conditionings=combined)
+        restore = self.helper._bind_combined_image_conditioning_rate(orchestration, 24.0)
+        self.assertIs(orchestration.combined_image_conditionings, combined)
+        restore()
+
     def test_one_stage_kwargs_omits_num_steps_when_steps_unset(self):
         args = SimpleNamespace(
             prompt="p", output="o.mp4", height=480, width=704,
@@ -311,6 +338,7 @@ class GenerateLtx2TeaCacheTest(unittest.TestCase):
             model="m", gemma="g", extend_from_video="in.mp4", prompt="p",
             extend_frames=2, extend_direction="after", seed=0, steps=None,
             cfg_scale=None, no_teacache=False, teacache_thresh=None,
+            user_lora_specs=[],
         )
         try:
             self.helper._EXTEND_TC_CONFIG = None

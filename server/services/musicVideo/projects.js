@@ -69,6 +69,12 @@ export async function createProject(input) {
   return project;
 }
 
+export async function cloneProject(id, options = {}) {
+  const project = await (await selectBackend()).cloneProject(id, options);
+  announceNewProject(project.id);
+  return project;
+}
+
 export async function updateProject(id, patch) {
   const next = await (await selectBackend()).updateProject(id, patch);
   emitRecordUpdated('musicVideoProject', id);

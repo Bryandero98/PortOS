@@ -34,6 +34,9 @@ export const musicVideoVideoSettingsSchema = z.object({
   backend: z.enum(['local', 'grok']).optional(),
   modelId: z.string().max(64).nullable().optional(),
   grokDuration: z.union([z.literal(6), z.literal(10)]).optional(),
+  generationMode: z.enum(['image', 'audioReactive']).optional(),
+  audioReactiveLora: z.string().max(255).regex(/^[^/\\]+\.safetensors$/i).nullable().optional(),
+  audioReactiveScale: z.number().min(0).max(2).optional(),
 }).strict();
 
 export const musicVideoProjectCreateSchema = z.object({
@@ -57,6 +60,14 @@ export const musicVideoProjectUpdateSchema = z.object({
   concept: musicVideoConceptSchema.nullable().optional(),
   videoSettings: musicVideoVideoSettingsSchema.optional(),
   renderHistoryId: z.string().max(64).nullable().optional(),
+}).strict();
+
+// Fork a project into its next editable version. The server derives lineage and
+// version numbers from the source; callers may only override the display name
+// and choose whether generated scene media should remain attached.
+export const musicVideoProjectCloneSchema = z.object({
+  name: z.string().min(1).max(200).optional(),
+  includeGeneratedMedia: z.boolean().optional(),
 }).strict();
 
 // A scene on the director board. `startSec`/`endSec` place it on the timeline;

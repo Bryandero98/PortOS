@@ -7,6 +7,14 @@ vi.mock('../services/settings.js', () => ({
   getSettings: vi.fn(async () => ({ imageGen: { local: { pythonPath: '/usr/bin/python3' } } })),
 }));
 
+vi.mock('../services/musicVideo/projects.js', () => ({
+  getProject: vi.fn(),
+}));
+
+vi.mock('../services/tracks/index.js', () => ({
+  getTrack: vi.fn(),
+}));
+
 vi.mock('../lib/pythonSetup.js', () => ({
   checkPackages: vi.fn(async () => ({ installed: ['mflux', 'mlx'], missing: [], missingPip: [] })),
   isAllowedPython: vi.fn(() => true),
@@ -92,7 +100,14 @@ vi.mock('../lib/multipart.js', () => ({
 
 vi.mock('../lib/fileUtils.js', () => ({
 tryReadFile: vi.fn().mockResolvedValue(null),
-  PATHS: { root: '/mock', data: '/mock/data', images: '/mock/images', videos: '/mock/videos', uploads: '/mock/uploads' },
+  PATHS: {
+    root: '/mock',
+    data: '/mock/data',
+    images: '/mock/images',
+    videos: '/mock/videos',
+    uploads: '/mock/uploads',
+    music: '/mock/music',
+  },
   // Route awaits ensureDir before staging the upload; no-op for tests since
   // we mock copyFile too.
   ensureDir: vi.fn(async () => {}),
@@ -121,6 +136,8 @@ vi.mock('fs/promises', () => ({
 
 import * as videoGenService from '../services/videoGen/local.js';
 import * as mediaJobQueue from '../services/mediaJobQueue/index.js';
+import { getProject as getMusicVideoProject } from '../services/musicVideo/projects.js';
+import { getTrack } from '../services/tracks/index.js';
 import { resolveGalleryImage } from '../lib/fileUtils.js';
 import { listIcLoraWeights } from '../lib/icLoraWeights.js';
 import videoGenRoutes, { isAudioMime } from './videoGen.js';
@@ -772,6 +789,40 @@ describe('videoGen routes', () => {
           uploadedTempPaths: expect.arrayContaining([
             expect.stringMatching(/\/mock\/uploads\/video-audio-.*\.wav$/),
           ]),
+        }),
+      }));
+    });
+
+    it('stages project audio and forwards the scene song offset for music-video a2v', async () => {
+      getMusicVideoProject.mockResolvedValue({
+        id: 'mv-example',
+        trackId: 'track-example',
+        scenes: [{ sceneId: 'scene-example' }],
+      });
+      getTrack.mockResolvedValue({ id: 'track-example', audioFilename: 'example-song.wav' });
+
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'rain pulses with the percussion; no performers',
+        mode: 'a2v',
+        sourceImageFile: 'reference.png',
+        audioStartSec: 42.5,
+        disableAudio: true,
+        musicVideo: { projectId: 'mv-example', sceneId: 'scene-example' },
+      });
+
+      expect(r.status).toBe(200);
+      expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'video',
+        params: expect.objectContaining({
+          mode: 'a2v',
+          sourceImagePath: '/mock/images/reference.png',
+          audioStartSec: 42.5,
+          disableAudio: true,
+          audioFilePath: expect.stringMatching(/\/mock\/uploads\/video-audio-.*\.wav$/),
+          uploadedTempPaths: expect.arrayContaining([
+            expect.stringMatching(/\/mock\/uploads\/video-audio-.*\.wav$/),
+          ]),
+          musicVideo: { projectId: 'mv-example', sceneId: 'scene-example' },
         }),
       }));
     });

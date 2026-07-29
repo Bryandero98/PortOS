@@ -13,6 +13,7 @@ import { PATHS, readJSONFile, atomicWrite, ensureDir } from '../../lib/fileUtils
 import { ServerError } from '../../lib/errorHandler.js';
 import {
   buildProjectRecord,
+  cloneProjectRecord,
   applyProjectPatch,
   setAudioAnalysis,
   setMidiTranscription,
@@ -66,6 +67,20 @@ export async function createProject(input) {
   await saveAll(all);
   console.log(`🎞️ Created Music Video project: ${id} (${input.name})`);
   return project;
+}
+
+export async function cloneProject(id, options = {}) {
+  const all = await loadAll();
+  const source = all.find((project) => project.id === id && !project.deleted);
+  if (!source) throw new ServerError('Project not found', { status: 404, code: 'NOT_FOUND' });
+  const clone = cloneProjectRecord(source, {
+    ...options,
+    id: `mv-${randomUUID()}`,
+    now: new Date().toISOString(),
+  });
+  all.push(clone);
+  await saveAll(all);
+  return clone;
 }
 
 // Locate a live (non-tombstoned) project for a user-facing mutator, or throw 404.

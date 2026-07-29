@@ -21,6 +21,8 @@ import { safeUnder } from '../lib/ffmpeg.js';
 import { grokVideoDurationSchema } from '../lib/validation.js';
 import { IMAGE_GEN_MODE } from '../services/imageGen/modes.js';
 import { getSettings } from '../services/settings.js';
+import { getProject as getMusicVideoProject } from '../services/musicVideo/projects.js';
+import { getTrack } from '../services/tracks/index.js';
 import { checkPackages, isAllowedPython } from '../lib/pythonSetup.js';
 import { safeChildProcessEnv } from '../lib/processEnv.js';
 import { createLineReader } from '../lib/streamLines.js';
@@ -149,6 +151,7 @@ const generateBodySchema = z.object({
   guidanceScale: optionalNum(0, 30, 'guidanceScale'),
   seed: optionalNum(0, Number.MAX_SAFE_INTEGER, 'seed'),
   imageStrength: optionalNum(0, 1, 'imageStrength'),
+  audioStartSec: optionalNum(0, 36000, 'audioStartSec'),
   tiling: z.enum(['auto', 'none', 'spatial', 'temporal']).optional(),
   disableAudio: z.union([z.boolean(), z.literal('true'), z.literal('false')]).optional(),
   sourceImageFile: z.string().max(512).optional(),
@@ -817,6 +820,25 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     return durablePath;
   };
 
+  // Music-video a2v jobs reuse an existing library track rather than uploading
+  // the same song for every cut. Copy it into the queue-owned uploads area so
+  // the worker may safely delete its input on completion without ever touching
+  // the source track under data/music.
+  const stageExistingAudioDurable = async (sourcePath) => {
+    const ext = extname(sourcePath) || '.bin';
+    const durablePath = join(PATHS.uploads, `video-audio-${randomUUID()}${ext}`);
+    await copyFile(sourcePath, durablePath).catch(async (err) => {
+      await unlink(durablePath).catch(() => {});
+      await cleanupAllStaged();
+      throw new ServerError(
+        `Failed to stage project audio: ${err.message}`,
+        { status: 500, code: 'VIDEO_GEN_AUDIO_STAGE_FAILED' },
+      );
+    });
+    stagedDurablePaths.push(durablePath);
+    return durablePath;
+  };
+
   // Resolution precedence on each frame side: a fresh upload always wins over
   // a gallery filename so users can override a stale gallery pick by dropping
   // in a new file without first clearing the picker.
@@ -831,10 +853,10 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
   // unlinks the OS temp file (cheap) instead of also unlinking a freshly-
   // copied 100MB durable file under data/uploads (wasted disk I/O on every
   // bad request).
-  if (body.mode === 'a2v' && !uploads.audioFile) {
+  if (body.mode === 'a2v' && !uploads.audioFile && !body.musicVideo) {
     await cleanupAllStaged();
     throw new ServerError(
-      'a2v mode requires an audioFile upload (multipart field name: audioFile).',
+      'a2v mode requires an audioFile upload or a music-video project audio source.',
       { status: 400, code: 'VIDEO_GEN_AUDIO_REQUIRED' },
     );
   }
@@ -1050,6 +1072,22 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     // image uploads. Cleanup tracking via extraUploadedTempPaths so the
     // worker drops it on terminal events the same way it drops lastImage.
     audioFilePath = await stageUploadDurable(uploads.audioFile, 'audio');
+    extraUploadedTempPaths.push(audioFilePath);
+  } else if (body.mode === 'a2v' && body.musicVideo) {
+    const project = await getMusicVideoProject(body.musicVideo.projectId);
+    const sceneExists = project?.scenes?.some((scene) => scene.sceneId === body.musicVideo.sceneId);
+    if (!project || !sceneExists) {
+      await cleanupAllStaged();
+      throw new ServerError('Music-video project or scene not found', { status: 404, code: 'NOT_FOUND' });
+    }
+    const track = project.trackId ? await getTrack(project.trackId) : null;
+    const filename = track?.audioFilename || project.uploadedAudioFilename;
+    const sourceAudioPath = filename ? safeUnder(PATHS.music, filename) : null;
+    if (!sourceAudioPath || !existsSync(sourceAudioPath)) {
+      await cleanupAllStaged();
+      throw new ServerError('Music-video project audio is unavailable', { status: 400, code: 'VIDEO_GEN_PROJECT_AUDIO_MISSING' });
+    }
+    audioFilePath = await stageExistingAudioDurable(sourceAudioPath);
     extraUploadedTempPaths.push(audioFilePath);
   }
   if (uploads.icReference) {
@@ -1286,6 +1324,7 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
       disableAudio: body.disableAudio === true || body.disableAudio === 'true',
       sourceImagePath,
       audioFilePath,
+      audioStartSec: body.audioStartSec,
       uploadedTempPath,
       uploadedTempPaths: extraUploadedTempPaths,
       lastImagePath,
@@ -1330,6 +1369,7 @@ const ACTIVE_JOB_PARAM_FIELDS = [
   'width', 'height', 'numFrames', 'fps',
   'steps', 'guidanceScale', 'seed',
   'tiling', 'disableAudio', 'mode', 'chunks', 'imageStrength',
+  'audioStartSec',
   // Grok jobs (#2859 phase 2): the semantic t2v/i2v mode ('mode' holds the
   // 'grok' discriminator for them) and the clip duration — both plain
   // values, safe to echo for the reloading page's form restore.

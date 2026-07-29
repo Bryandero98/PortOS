@@ -178,6 +178,42 @@ def _rate_kwargs(func, fps: float) -> dict:
     return {name: fps} if name else {}
 
 
+def _bind_combined_image_conditioning_rate(module, fps: float):
+    """Supply frame_rate for the v0.14.x A2V caller that omits it.
+
+    ltx-pipelines-mlx 0.14.8 made ``combined_image_conditionings.frame_rate``
+    mandatory, but its two-stage A2V pipeline still calls that helper twice
+    without the new keyword when an input image is present. Patch the imported
+    orchestration helper for this render only. Pins whose helper predates the
+    parameter are left untouched; already-correct callers may still pass their
+    own rate and win over this default.
+    """
+    original = getattr(module, "combined_image_conditionings", None)
+    if original is None:
+        return lambda: None
+    try:
+        has_frame_rate = "frame_rate" in inspect.signature(original).parameters
+    except (TypeError, ValueError):
+        has_frame_rate = False
+    if not has_frame_rate:
+        return lambda: None
+
+    def combined_image_conditionings_with_rate(*args, **kwargs):
+        kwargs.setdefault("frame_rate", fps)
+        return original(*args, **kwargs)
+
+    module.combined_image_conditionings = combined_image_conditionings_with_rate
+    return lambda: setattr(module, "combined_image_conditionings", original)
+
+
+def _patch_a2v_image_conditioning_rate(fps: float):
+    try:
+        orchestration = importlib.import_module("ltx_pipelines_mlx.utils._orchestration")
+    except ImportError:
+        return lambda: None
+    return _bind_combined_image_conditioning_rate(orchestration, fps)
+
+
 def _import_image_conditioning_input():
     """v0.14.x ImageConditioningInput (per-image strength field), or None on old pins.
 
@@ -801,6 +837,7 @@ def run_a2v(args: argparse.Namespace) -> str:
                                       args.teacache_thresh)
     if _A2V_TC_CONFIG["enable"]:
         emit_status(f"TeaCache active on A2V Stage 1 (thresh={_teacache_thresh_label(args.teacache_thresh)})")
+    restore_image_rate = _patch_a2v_image_conditioning_rate(args.fps)
     try:
         return pipe.generate_and_save(
             prompt=args.prompt,
@@ -818,6 +855,7 @@ def run_a2v(args: argparse.Namespace) -> str:
             **_rate_kwargs(pipe.generate_and_save, args.fps),
         )
     finally:
+        restore_image_rate()
         _A2V_TC_CONFIG = None
 
 

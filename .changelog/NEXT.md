@@ -5,6 +5,7 @@
 - **Malware scans now leave a durable, reviewable report trail.** Git-link scans save an owned markdown artifact, surface it from the completed agent summary and Review Hub, and mark repositories with an explicit `DANGEROUS` verdict using a skull danger treatment on the Git links card.
 - **Slashdo-free TUI agent PRs now complete their lifecycle.** Codex, Antigravity, OpenCode, and lean Claude agents hand committed work back to PortOS so it can generate a non-empty PR description, run configured reviewers, and merge after the selected gates pass instead of leaving an ownerless PR open.
 - **Music Video projects now save their scene-video renderer and model.** Directors can choose local or Grok generation per project, pick an image-to-video-capable local model, see cut-pacing warnings, selectively continue clips on native LTX runtimes, generate all missing media from the board, and play or download the audio-backed final render in place.
+- **Music Video projects can now be forked into editable versions and rendered with local song-reactive motion.** A fork keeps the source board and scene media while clearing the final master, records its parent/root lineage, and opens immediately as the next version. Projects with the LTX-2.3 audio-reactive LoRA installed can condition each cut on its exact song segment while stripping generated clip audio and automatically directing the model away from singing, lip-sync, performers, and visible musical performance.
 
 ## Agent workspaces
 

@@ -13,6 +13,7 @@ import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import {
   validateRequest,
   musicVideoProjectCreateSchema,
+  musicVideoProjectCloneSchema,
   musicVideoProjectUpdateSchema,
   musicVideoSceneCreateSchema,
   musicVideoSceneUpdateSchema,
@@ -27,6 +28,7 @@ import {
   listProjects,
   getProject,
   createProject,
+  cloneProject,
   updateProject,
   deleteProject,
   setProjectAnalysis,
@@ -62,6 +64,11 @@ router.post('/', asyncHandler(async (req, res) => {
   const data = validateRequest(musicVideoProjectCreateSchema, req.body);
   const project = await createProject(data);
   res.status(201).json(project);
+}));
+
+router.post('/:id/clone', asyncHandler(async (req, res) => {
+  const options = validateRequest(musicVideoProjectCloneSchema, req.body || {});
+  res.status(201).json(await cloneProject(req.params.id, options));
 }));
 
 router.patch('/:id', asyncHandler(async (req, res) => {

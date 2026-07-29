@@ -9,6 +9,9 @@ export const getMusicVideoProject = (id, options = {}) => request(`/music-video/
 export const createMusicVideoProject = (data, options = {}) => request('/music-video', {
   method: 'POST', body: JSON.stringify(data), ...options,
 });
+export const cloneMusicVideoProject = (id, data = {}, options = {}) => request(`/music-video/${encodeURIComponent(id)}/clone`, {
+  method: 'POST', body: JSON.stringify(data), ...options,
+});
 export const updateMusicVideoProject = (id, patch, options = {}) => request(`/music-video/${encodeURIComponent(id)}`, {
   method: 'PATCH', body: JSON.stringify(patch), ...options,
 });
