@@ -73,18 +73,25 @@ const lineOf = (src, index) => src.slice(0, index).split('\n').length;
  * the opening paren. Skips over string and template literals so a `)` inside
  * one can't close the call early.
  */
-function balancedCallAt(src, openIndex) {
+function balancedCallAt(src, openIndex, skipStrings = true) {
   let depth = 0;
   for (let i = openIndex; i < src.length; i++) {
     const c = src[i];
-    if (c === '\'' || c === '"' || c === '`') {
+    if (skipStrings && (c === '\'' || c === '"' || c === '`')) {
       for (i++; i < src.length && src[i] !== c; i++) if (src[i] === '\\') i++;
       continue;
     }
     if (c === '(') depth++;
     else if (c === ')' && --depth === 0) return src.slice(openIndex, i + 1);
   }
-  return null;
+  // Falling off the end means a quote opened a "string" that never closed —
+  // in practice an apostrophe in JSX text, `toast(<p>You're out of sync</p>,
+  // { duration: Infinity })`. The scan swallows the closing paren, the caller
+  // skips the unparseable call, and the toast rule silently misses the one
+  // shape it exists to catch: JSX content, which is precisely what needs
+  // `label`. Retry counting parens only — a `)` inside a real string could
+  // close early, but a well-formed string already returned on the first pass.
+  return skipStrings ? balancedCallAt(src, openIndex, false) : null;
 }
 
 describe('a11y conventions', () => {
@@ -221,6 +228,20 @@ describe('a11y conventions', () => {
       }
     }
     expect(offenders, `A duration: Infinity toast with JSX/render-prop content must pass \`label\` — it collapses to a pill that has no other accessible name (see COLLAPSE_AFTER_MS in components/ui/Toast.jsx):\n${offenders.join('\n')}`).toEqual([]);
+  });
+
+  it('slices toast calls whose JSX text contains an apostrophe', () => {
+    // The rule above is only as good as the slicer. An apostrophe in JSX text
+    // opens a "string" that never closes, so the scan runs past the closing
+    // paren — and a `null` slice is skipped silently, letting the exact shape
+    // the rule targets (JSX content, no `label`) ship unflagged.
+    const jsx = `toast(<div>You're out of sync</div>, { duration: Infinity })`;
+    expect(balancedCallAt(jsx, jsx.indexOf('('))).toContain('duration: Infinity');
+
+    // Skipping strings still has to win where it matters: a `)` inside a
+    // string literal must not close the call early.
+    const str = `toast('done (mostly)', { duration: Infinity })`;
+    expect(balancedCallAt(str, str.indexOf('('))).toBe(str.slice(str.indexOf('(')));
   });
 
   it('gives every role="switch" an aria-checked state', () => {
