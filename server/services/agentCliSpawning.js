@@ -34,6 +34,7 @@ import { resolveForgeTokenEnv } from './git.js';
 import { prepareCliSpawn, killProcessTree } from '../lib/bufferedSpawn.js';
 import { buildCliChildEnv } from '../lib/cliChildEnv.js';
 import { resolvePrCompletion } from '../lib/prDisposition.js';
+import { isHostShuttingDown, HOST_SHUTDOWN_REASON } from '../lib/hostShutdown.js';
 
 const AGENTS_DIR = PATHS.cosAgents;
 
@@ -801,6 +802,30 @@ export async function spawnDirectly({
       pausedAgents.delete(agentId);
       if (agentData?.pid) unregisterSpawnedAgent(agentData.pid);
       activeAgents.delete(agentId);
+      return;
+    }
+
+    // PortOS is going down and took this child with it (pm2's TreeKill walks
+    // portos-server's descendants). Abandon rather than finalize, for the same
+    // reasons as the TUI path (#3202): finalizing would charge the task's
+    // failure budget — and possibly file an investigation task — for a fault the
+    // agent didn't have, and its cleanup hands the worktree to `cleanupWorktreeFn`,
+    // which removes a clean tree, discarding the state a resume needs. Leaving
+    // the record `running` is what lets the next boot's orphan sweep see this
+    // agent in the host-shutdown marker and requeue it as interrupted.
+    // The transcript is already flushed and output.txt written above.
+    // A user-terminated run still finalizes, so it's recorded as such rather
+    // than resurrected by the requeue.
+    if (isHostShuttingDown() && !terminatedByUser) {
+      outputBatcher.push('🛑 PortOS restarted while this agent was running — the run was interrupted, not completed. Its worktree is preserved and the task will resume.');
+      emitLog('warn', `Agent ${agentId} interrupted by a PortOS host restart — preserved for resume`, { agentId, phase: 'interrupted' });
+      await Promise.all([
+        outputBatcher.flush().catch(() => {}),
+        updateAgent(agentId, { metadata: { phase: 'interrupted', interruptedBy: HOST_SHUTDOWN_REASON } })
+          .catch(err => emitLog('warn', `Could not mark agent ${agentId} interrupted: ${err.message}`, { agentId })),
+      ]);
+      // activeAgents entry left in place — the shutdown handler reads that map
+      // to name the agents in the host-shutdown marker.
       return;
     }
 

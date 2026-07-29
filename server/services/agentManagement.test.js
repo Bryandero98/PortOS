@@ -78,7 +78,10 @@ vi.mock('./agentWorktreeCleanup.js', () => ({
   resolveTaskResumePatch: vi.fn().mockResolvedValue({})
 }));
 vi.mock('./agentFinalization.js', () => ({ dispatchRecoveredTaskOutputHook: vi.fn().mockResolvedValue(undefined) }));
-vi.mock('../lib/hostShutdown.js', () => ({
+// Only the two I/O functions are stubbed — HOST_SHUTDOWN_REASON stays real so
+// the breadcrumb value the tests assert can't drift from the one production writes.
+vi.mock('../lib/hostShutdown.js', async (importOriginal) => ({
+  ...(await importOriginal()),
   readHostShutdownMarker: vi.fn().mockResolvedValue(null),
   clearHostShutdownMarker: vi.fn().mockResolvedValue(undefined),
 }));
@@ -939,7 +942,39 @@ describe('host-restart interruptions are not charged orphan-retry budget (#3202)
     const metadata = requeuedMetadata();
     expect(metadata.orphanRetryCount).toBe(2);
     expect(metadata.lastOrphanedAt).toEqual(expect.any(String));
-    expect(metadata.interruptedByRestart).toBeUndefined();
+    expect(metadata.interruptedByRestart).toBe(false);
+  });
+
+  // The metadata spread carries every prior key forward, so a task interrupted
+  // once would otherwise read as restart-interrupted forever.
+  it('clears a stale interruptedByRestart flag when the next orphan is genuine', async () => {
+    getTaskById.mockResolvedValue({
+      id: 'task-1', taskType: 'user', status: 'in_progress',
+      metadata: { interruptedByRestart: true, lastInterruptedAt: '2026-07-29T00:00:00.000Z' },
+    });
+
+    await cleanupOrphanedAgents();
+
+    expect(requeuedMetadata().interruptedByRestart).toBe(false);
+  });
+
+  // Callers that didn't watch the agent die (resetOrphanedTasks, post-restart
+  // completion recovery) pass no verdict — the breadcrumb the abandon path
+  // stamped on the agent supplies it, so correctness no longer rests on
+  // cleanupOrphanedAgents happening to run first in cos.js's boot sequence.
+  it('derives the interruption from the agent breadcrumb when the caller passes no verdict', async () => {
+    getTaskById.mockResolvedValue({
+      id: 'task-1', taskType: 'user', status: 'in_progress',
+      metadata: { orphanRetryCount: 1 },
+    });
+
+    await handleOrphanedTask('task-1', 'agent-dead', getTaskById, {
+      agentMetadata: { ...deadMetadata, interruptedBy: 'host-shutdown' },
+    });
+
+    const metadata = requeuedMetadata();
+    expect(metadata.orphanRetryCount).toBe(1);
+    expect(metadata.interruptedByRestart).toBe(true);
   });
 
   it('flags the interruption on the agent record and consumes the marker', async () => {

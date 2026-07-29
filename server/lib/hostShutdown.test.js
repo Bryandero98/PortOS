@@ -10,19 +10,24 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, rm, readFile, writeFile, mkdir } from 'fs/promises';
-import { tmpdir } from 'os';
+import { rm, readFile, writeFile, mkdir } from 'fs/promises';
 import { join } from 'path';
 
 let tmpRoot;
 
 // PATHS.cos is where the marker lives; point it at a scratch dir so the suite
-// never touches the install's real data/.
+// never touches the install's real data/. The `dataRoot` FUNCTION form is what
+// makes this work with a per-test temp dir: the mock factory is hoisted above
+// beforeEach, so the proxy has to resolve the root lazily on each PATHS read.
 vi.mock('./fileUtils.js', async (importOriginal) => {
-  const actual = await importOriginal();
-  return { ...actual, get PATHS() { return { ...actual.PATHS, cos: globalThis.__hostShutdownTestCos }; } };
+  const { makePathsProxy } = await import('./mockPathsDataRoot.js');
+  return makePathsProxy(await importOriginal(), {
+    dataRoot: () => tmpRoot,
+    extraOverrides: (root) => ({ cos: root }),
+  });
 });
 
+const { createTempDataRoot } = await import('./mockPathsDataRoot.js');
 const {
   markHostShuttingDown,
   isHostShuttingDown,
@@ -34,15 +39,13 @@ const {
   HOST_SHUTDOWN_REASON,
 } = await import('./hostShutdown.js');
 
-beforeEach(async () => {
-  tmpRoot = await mkdtemp(join(tmpdir(), 'portos-host-shutdown-'));
-  globalThis.__hostShutdownTestCos = tmpRoot;
+beforeEach(() => {
+  tmpRoot = createTempDataRoot('portos-host-shutdown-');
   resetHostShutdownFlagForTests();
 });
 
 afterEach(async () => {
   await rm(tmpRoot, { recursive: true, force: true });
-  delete globalThis.__hostShutdownTestCos;
 });
 
 describe('in-process shutdown flag', () => {
@@ -124,13 +127,10 @@ describe('a damaged marker degrades to "nobody was interrupted"', () => {
     expect((await readHostShutdownMarker()).agentIds).toEqual([]);
   });
 
-  it('normalizes non-string at/signal to null rather than surfacing junk', async () => {
-    await writeRaw(JSON.stringify({ at: 12345, signal: { x: 1 }, agentIds: ['a1'] }));
+  it('drops non-string entries inside a valid agentIds array', async () => {
+    await writeRaw(JSON.stringify({ at: 'x', agentIds: ['a1', null, 7, '', 'a2'] }));
 
-    const marker = await readHostShutdownMarker();
-    expect(marker.at).toBeNull();
-    expect(marker.signal).toBeNull();
-    expect(marker.agentIds).toEqual(['a1']);
+    expect((await readHostShutdownMarker()).agentIds).toEqual(['a1', 'a2']);
   });
 });
 

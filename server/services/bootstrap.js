@@ -882,10 +882,12 @@ export const registerShutdownHandlers = ({ io, httpServer, localHttpServer }) =>
     // agents are owned by portos-cos and survive this restart untouched.
     // Best-effort and bounded: a marker we fail to write only degrades recovery
     // to the pre-existing orphan path.
-    await withGrace('Host-shutdown marker', 1500, (finish) =>
-      writeHostShutdownMarker({ agentIds: [...activeAgents.keys()], signal })
-        .then((wrote) => finish(wrote ? '✅ Host-shutdown marker written' : null),
-          (err) => finish(`⚠️ Host-shutdown marker failed: ${err.message}`, true)));
+    // Started here (the agent snapshot must be taken before anything can await)
+    // but awaited just before exit, so a stalled filesystem spends none of the
+    // graceful budget ahead of the teardown below. writeHostShutdownMarker logs
+    // both outcomes itself and never rejects, so `finish` needs no message.
+    const markerWritten = withGrace('Host-shutdown marker', 1500, (finish) =>
+      writeHostShutdownMarker({ agentIds: [...activeAgents.keys()], signal }).then(() => finish()));
 
     // Drop existing long-lived sockets (SSE + keep-alive) up front so the closes
     // below don't wait on connections that never end on their own.
@@ -921,6 +923,7 @@ export const registerShutdownHandlers = ({ io, httpServer, localHttpServer }) =>
       console.warn('ℹ️ DB pool close not available; skipping DB shutdown');
     }
 
+    await markerWritten;
     clearTimeout(forceExitTimer);
     process.exit(0);
   };

@@ -45,6 +45,8 @@ export const HOST_SHUTDOWN_REASON = 'host-shutdown';
  */
 export const hostShutdownMarkerPath = () => join(PATHS.cos, 'host-shutdown.json');
 
+const isNonEmptyString = (value) => typeof value === 'string' && !!value;
+
 // Process-local. Never persisted — a fresh process is by definition not the one
 // that was shutting down, so this always starts false.
 let shuttingDown = false;
@@ -79,37 +81,32 @@ export function resetHostShutdownFlagForTests() {
  * @returns {Promise<boolean>} true when the marker landed on disk
  */
 export async function writeHostShutdownMarker({ agentIds = [], signal = null } = {}) {
-  const ids = [...new Set(agentIds.filter((id) => typeof id === 'string' && id))];
+  const ids = [...new Set(agentIds.filter(isNonEmptyString))];
   // Nothing was running — don't leave a marker the next boot has to reason
   // about (and don't overwrite a prior one; a marker with no agents is noise).
   if (ids.length === 0) return false;
-  const ok = await atomicWrite(hostShutdownMarkerPath(), {
-    at: new Date().toISOString(),
-    signal,
-    agentIds: ids,
-  }).then(() => true, (err) => {
-    console.error(`❌ Failed to write host-shutdown marker: ${err.message}`);
-    return false;
-  });
-  if (ok) console.log(`🛑 Host shutdown marker written for ${ids.length} live agent(s)`);
-  return ok;
+  return atomicWrite(hostShutdownMarkerPath(), { at: new Date().toISOString(), signal, agentIds: ids })
+    .then(
+      () => { console.log(`🛑 Host shutdown marker written for ${ids.length} live agent(s)`); return true; },
+      (err) => { console.error(`❌ Failed to write host-shutdown marker: ${err.message}`); return false; },
+    );
 }
 
 /**
- * Read the marker left by the previous process.
+ * Read the marker left by the previous process. Returns null when there is
+ * none, otherwise `{ at, signal, agentIds }`.
  *
- * Returns a normalized `{ at, signal, agentIds }` — `agentIds` is ALWAYS an
- * array, so a truncated/garbled marker degrades to "no agents were interrupted"
- * instead of throwing during boot recovery. Returns null when no marker exists.
+ * `agentIds` is ALWAYS an array of non-empty strings — that's the one field
+ * with a production consumer, and boot recovery runs before everything else, so
+ * a truncated/garbled marker has to degrade to "no agents were interrupted"
+ * rather than throw. `allowArray: false` does the rest of the shape check:
+ * `readJSONFile` already rejects an unparseable file AND any root that isn't a
+ * `{…}` object, so a falsy result is the only failure left to test for.
  */
 export async function readHostShutdownMarker() {
-  const raw = await readJSONFile(hostShutdownMarkerPath(), null, { logError: false });
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  return {
-    at: typeof raw.at === 'string' ? raw.at : null,
-    signal: typeof raw.signal === 'string' ? raw.signal : null,
-    agentIds: Array.isArray(raw.agentIds) ? raw.agentIds.filter((id) => typeof id === 'string' && id) : [],
-  };
+  const raw = await readJSONFile(hostShutdownMarkerPath(), null, { logError: false, allowArray: false });
+  if (!raw) return null;
+  return { ...raw, agentIds: Array.isArray(raw.agentIds) ? raw.agentIds.filter(isNonEmptyString) : [] };
 }
 
 /**
