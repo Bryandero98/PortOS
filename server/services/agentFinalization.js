@@ -235,38 +235,61 @@ export function dispatchTaskOutputHookOnce({
   const existing = outputHookDispatches.get(agentId);
   if (existing) return existing;
 
+  const persistDispatchMarker = async (result) => {
+    if (!result.ran) return;
+    // Best-effort durability: completion must continue if the marker write
+    // fails, while the in-flight promise still protects concurrent callers
+    // this cycle.
+    await updateAgent(agentId, {
+      metadata: { outputHookDispatchedAt: new Date().toISOString() }
+    }).catch(err => {
+      emitLog('warn', `⚠️ Failed to persist output-hook dispatch marker for ${agentId}: ${err.message}`, { agentId });
+    });
+  };
+
   const dispatch = (async () => {
     const agent = await getAgent(agentId).catch(() => null);
     if (agent?.metadata?.outputHookDispatchedAt) {
       return { ran: false, alreadyDispatched: true };
     }
 
-    const result = await withOutputHookTimeout(
-      dispatchTaskOutputHook({ agentId, task, success, workspacePath, readPayload, recovery }),
-      { agentId }
-    ).catch(err => {
+    const hookDispatch = dispatchTaskOutputHook({
+      agentId,
+      task,
+      success,
+      workspacePath,
+      readPayload,
+      recovery,
+    }).catch(err => {
       emitLog('error', `❌ processTaskOutput hook threw for ${agentId} (${task?.taskType}): ${err.message}`, { agentId, error: err.message });
       return { ran: true, threw: true };
     });
+    const result = await withOutputHookTimeout(hookDispatch, { agentId });
 
-    // A missing task/type/hook is not a dispatch and must remain retryable if a
-    // later completion path has fuller context. A timeout does count: the hook
-    // keeps running after Promise.race releases the completion path.
-    if (result.ran || result.timedOut) {
-      // Best-effort durability: completion must continue if the marker write
-      // fails, while the in-flight promise still protects concurrent callers
-      // this cycle.
-      await updateAgent(agentId, {
-        metadata: { outputHookDispatchedAt: new Date().toISOString() }
-      }).catch(err => {
-        emitLog('warn', `⚠️ Failed to persist output-hook dispatch marker for ${agentId}: ${err.message}`, { agentId });
-      });
+    if (result.timedOut) {
+      // The hook is still running. Keep this dispatch in the in-process map so
+      // another completion path cannot start a duplicate, and persist the
+      // durable marker only after the original hook actually settles. If the
+      // process exits first, restart recovery remains free to retry it.
+      hookDispatch
+        .then(persistDispatchMarker)
+        .finally(() => {
+          if (outputHookDispatches.get(agentId) === dispatch) {
+            outputHookDispatches.delete(agentId);
+          }
+        });
+    } else {
+      await persistDispatchMarker(result);
     }
     return result;
   })();
 
   outputHookDispatches.set(agentId, dispatch);
-  dispatch.finally(() => {
+  dispatch.then(result => {
+    if (!result.timedOut && outputHookDispatches.get(agentId) === dispatch) {
+      outputHookDispatches.delete(agentId);
+    }
+  }).catch(() => {
     if (outputHookDispatches.get(agentId) === dispatch) {
       outputHookDispatches.delete(agentId);
     }

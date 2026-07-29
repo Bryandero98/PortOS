@@ -115,6 +115,41 @@ describe('recovery output-hook dispatch (#3182)', () => {
     expect(hook).toHaveBeenCalledOnce();
   });
 
+  it('keeps a timed-out hook recoverable until the original dispatch settles', async () => {
+    vi.useFakeTimers();
+    let finishHook;
+    hook.mockReturnValueOnce(new Promise(resolve => { finishHook = resolve; }));
+
+    const original = dispatchTaskOutputHookOnce({
+      agentId: persistedAgent.id,
+      task: TASK,
+      success: true,
+    });
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+
+    await expect(original).resolves.toEqual({ ran: false, timedOut: true });
+    expect(updateAgent).not.toHaveBeenCalled();
+    expect(dispatchRecoveredTaskOutputHook({
+      agentId: persistedAgent.id,
+      task: TASK,
+      success: false,
+    })).toBe(original);
+
+    finishHook({ recorded: true });
+    await vi.waitFor(() => expect(updateAgent).toHaveBeenCalledWith(
+      persistedAgent.id,
+      { metadata: { outputHookDispatchedAt: expect.any(String) } },
+    ));
+    vi.useRealTimers();
+
+    await expect(dispatchRecoveredTaskOutputHook({
+      agentId: persistedAgent.id,
+      task: TASK,
+      success: false,
+    })).resolves.toEqual({ ran: false, alreadyDispatched: true });
+    expect(hook).toHaveBeenCalledOnce();
+  });
+
   it('does not dispatch after finalizeAgent persisted the explicit hook marker', async () => {
     persistedAgent.metadata.outputHookDispatchedAt = new Date().toISOString();
 
