@@ -276,3 +276,20 @@ describe('extractAgentSummary', () => {
   });
 });
 
+
+// Every suite that exercises the resume path mocks `./git.js` wholesale, so a
+// helper that was renamed or never exported stays invisible there and only fails
+// at runtime (an ollama review pass flagged exactly this shape as a suspected bug).
+// This asserts the real module against the real caller — the one place a mocked
+// suite structurally cannot check.
+describe('git.js exports the helpers the agent resume path calls', () => {
+  it('exposes every function agentWorktreeCleanup.resolveResumePointer uses', async () => {
+    const git = await vi.importActual('./git.js');
+    for (const name of [
+      'getBranch', 'getStatusPorcelain', 'getBranchComparison',
+      'isBranchMergedInto', 'getWorktreeBranches', 'getDefaultBranch'
+    ]) {
+      expect(typeof git[name], `git.${name} must be exported`).toBe('function');
+    }
+  });
+});

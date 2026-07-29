@@ -483,6 +483,37 @@ describe('cosTaskStore.updateTask', () => {
     expect(reopened.metadata.blockedCategory).toBeUndefined();
   });
 
+  // The pointer is spent once a task is done or parked for a human: a PERPETUAL
+  // task id gets re-queued for unrelated work later, and a stale existingBranch
+  // would attach that fresh run to a long-merged branch.
+  it('drops the resume pointer on a terminal status', async () => {
+    await addTask({ description: 'res', id: 'task-res' }, 'user');
+    await updateTask('task-res', {
+      metadata: { existingBranch: 'cos/b', resumedFromAgentId: 'agent-x', resumeWorktreePath: '/w/agent-x' }
+    }, 'user');
+    const done = await updateTask('task-res', { status: 'completed' }, 'user');
+    expect(done.metadata.existingBranch).toBeUndefined();
+    expect(done.metadata.resumedFromAgentId).toBeUndefined();
+    expect(done.metadata.resumeWorktreePath).toBeUndefined();
+  });
+
+  // ...but an orphan-cooldown block is a TIMED PAUSE that unblockExpiredOrphanCooldowns
+  // flips back to pending on its own. Stripping the pointer there means the revived
+  // task starts clean and abandons the worktree its dead agent left behind.
+  it('keeps the resume pointer through an orphan-cooldown block', async () => {
+    await addTask({ description: 'cool', id: 'task-cool' }, 'user');
+    await updateTask('task-cool', {
+      metadata: { existingBranch: 'cos/b', resumedFromAgentId: 'agent-x', resumeWorktreePath: '/w/agent-x' }
+    }, 'user');
+    const cooled = await updateTask('task-cool', {
+      status: 'blocked',
+      metadata: { blockedCategory: 'orphan-cooldown', cooldownUntil: '2026-01-01T00:30:00.000Z' }
+    }, 'user');
+    expect(cooled.metadata.existingBranch).toBe('cos/b');
+    expect(cooled.metadata.resumedFromAgentId).toBe('agent-x');
+    expect(cooled.metadata.resumeWorktreePath).toBe('/w/agent-x');
+  });
+
   it('releases the federation claim/lease when a task leaves in_progress (#1563)', async () => {
     await addTask({ description: 'claimed', id: 'task-claimed' }, 'user');
     // Spawn-time claim: status in_progress carries the claim metadata.

@@ -525,6 +525,21 @@ async function resetOrphanedTasks() {
     .filter(a => a.status === 'running')
     .map(a => a.taskId);
 
+  // The most recent agent per task. Handing it to handleOrphanedTask lets the retry
+  // resume the worktree/branch that run left behind instead of restarting — the
+  // residue this pass catches (an agent that died partway through its own cleanup,
+  // or was archived while its task stayed in_progress) leaves exactly the same
+  // preserved worktree the boot sweep's orphans do. Absent (already archived) just
+  // means no pointer and a clean start, which is the pre-existing behavior.
+  const lastAgentByTask = new Map();
+  for (const agent of Object.values(state.agents)) {
+    if (!agent.taskId) continue;
+    const previous = lastAgentByTask.get(agent.taskId);
+    if (!previous || new Date(agent.startedAt || 0) >= new Date(previous.startedAt || 0)) {
+      lastAgentByTask.set(agent.taskId, agent);
+    }
+  }
+
   // Also track tasks with recently-completed agents to avoid race condition:
   // Between completeAgent() and updateTask(), the agent is "completed" but the
   // task is still "in_progress". Without this check, resetOrphanedTasks treats
@@ -600,7 +615,8 @@ async function resetOrphanedTasks() {
         continue;
       }
       emitLog('info', `Found orphaned in_progress task ${task.id}, routing through retry handler`, { taskId: task.id });
-      await handleOrphanedTask(task.id, 'unknown-reset', getTaskById);
+      const deadAgent = lastAgentByTask.get(task.id);
+      await handleOrphanedTask(task.id, deadAgent?.id || 'unknown-reset', getTaskById, { agentMetadata: deadAgent?.metadata });
     }
   };
 

@@ -18,6 +18,8 @@ vi.mock('fs/promises', () => ({
   readdir: vi.fn().mockResolvedValue([]),
   rm: vi.fn().mockResolvedValue(undefined),
   stat: vi.fn().mockResolvedValue({ isDirectory: () => true }),
+  // adoptWorktree ensures the worktrees root exists before moving a tree into it.
+  mkdir: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('./instances.js', () => ({ ensureInstanceId: vi.fn().mockResolvedValue('instance-1') }));
 const getDefaultBranchMock = vi.fn().mockResolvedValue('main');
@@ -35,7 +37,10 @@ const {
   addWorktreeWithRetry,
   isPreexistingRefError,
   removeWorktree,
+  adoptWorktree,
 } = await import('./worktreeManager.js');
+const { existsSync } = await import('fs');
+const { PATHS } = await import('../lib/fileUtils.js');
 
 /**
  * Tests for the worktree manager service.
@@ -663,5 +668,106 @@ describe('removeWorktree branch preservation for resume (#3167)', () => {
     expect(calledWith(['branch', '-D', 'cos/task-1/agent-x'])).toBe(true);
     // The resume gate never consulted the merged check for THIS branch.
     expect(isBranchMergedIntoMock).not.toHaveBeenCalledWith('/repo', 'cos/task-1/agent-x', 'main');
+  });
+});
+
+describe('adoptWorktree — resuming an interrupted run in its own worktree', () => {
+  const WORKTREES = PATHS.worktrees;
+  const DEAD_TREE = join(WORKTREES, 'agent-dead');
+  const NEW_TREE = join(WORKTREES, 'agent-new');
+
+  // The dead run's tree is on disk; the retry's destination is not.
+  function scriptPaths({ source = true, target = false } = {}) {
+    existsSync.mockImplementation((p) => {
+      if (p === DEAD_TREE) return source;
+      if (p === NEW_TREE) return target;
+      return true;
+    });
+  }
+
+  beforeEach(() => {
+    execGitMock.mockReset();
+    execGitMock.mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
+    scriptPaths();
+  });
+
+  afterEach(() => { existsSync.mockReturnValue(true); });
+
+  // Renaming to the retry's own id keeps `<worktrees>/<agentId>` == "the agent that
+  // owns this tree" — the invariant cleanupOrphanedWorktrees reaps on. Adopted in
+  // place, the live retry's worktree would be reaped out from under it.
+  it('moves the dead run’s tree to the retrying agent’s directory', async () => {
+    const result = await adoptWorktree('agent-new', '/repo', DEAD_TREE, 'cos/task-1/agent-dead');
+
+    expect(execGitMock).toHaveBeenCalledWith(['worktree', 'move', DEAD_TREE, NEW_TREE], '/repo');
+    expect(result).toMatchObject({
+      worktreePath: NEW_TREE, branchName: 'cos/task-1/agent-dead',
+      existingBranch: true, adopted: true
+    });
+  });
+
+  it('returns null (caller starts clean) when the leftover tree is gone', async () => {
+    scriptPaths({ source: false });
+
+    await expect(adoptWorktree('agent-new', '/repo', DEAD_TREE, 'cos/task-1/agent-dead')).resolves.toBeNull();
+    expect(execGitMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses to clobber an occupied destination', async () => {
+    scriptPaths({ target: true });
+
+    await expect(adoptWorktree('agent-new', '/repo', DEAD_TREE, 'cos/task-1/agent-dead')).resolves.toBeNull();
+    expect(execGitMock).not.toHaveBeenCalled();
+  });
+
+  // git refuses to move a locked worktree or one with initialized submodules —
+  // never throw at the spawn path, just decline so the caller builds a fresh tree.
+  it('returns null rather than throwing when git refuses the move', async () => {
+    execGitMock.mockRejectedValue(new Error('working trees containing submodules cannot be moved'));
+
+    await expect(adoptWorktree('agent-new', '/repo', DEAD_TREE, 'cos/task-1/agent-dead')).resolves.toBeNull();
+  });
+
+  it('is a no-op when the tree already sits at the destination', async () => {
+    scriptPaths({ source: true, target: true });
+
+    const result = await adoptWorktree('agent-new', '/repo', NEW_TREE, 'cos/task-1/agent-dead');
+
+    expect(execGitMock).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ worktreePath: NEW_TREE, adopted: true });
+  });
+
+  // removeWorktree discards lockfile churn rather than preserving it, and the
+  // resume prompt tells the retry that everything uncommitted is its own work to
+  // finish and commit — so an adopted tree carrying only a stale `npm install`
+  // lockfile bump would ship it in the PR.
+  it('discards lockfile-only churn in the adopted tree', async () => {
+    execGitMock.mockImplementation((args) => Promise.resolve(
+      args[0] === 'status'
+        ? { stdout: ' M package-lock.json\n', stderr: '', exitCode: 0 }
+        : { stdout: '', stderr: '', exitCode: 0 }
+    ));
+
+    await adoptWorktree('agent-new', '/repo', DEAD_TREE, 'cos/task-1/agent-dead');
+
+    expect(execGitMock).toHaveBeenCalledWith(['checkout', '--', 'package-lock.json'], NEW_TREE);
+  });
+
+  it('keeps every uncommitted change when the tree holds real work too', async () => {
+    execGitMock.mockImplementation((args) => Promise.resolve(
+      args[0] === 'status'
+        ? { stdout: ' M package-lock.json\n M server/services/thing.js\n', stderr: '', exitCode: 0 }
+        : { stdout: '', stderr: '', exitCode: 0 }
+    ));
+
+    await adoptWorktree('agent-new', '/repo', DEAD_TREE, 'cos/task-1/agent-dead');
+
+    expect(execGitMock).not.toHaveBeenCalledWith(expect.arrayContaining(['checkout']), expect.anything());
+  });
+
+  it('returns null on incomplete input instead of guessing', async () => {
+    await expect(adoptWorktree(null, '/repo', DEAD_TREE, 'b')).resolves.toBeNull();
+    await expect(adoptWorktree('agent-new', '/repo', DEAD_TREE, null)).resolves.toBeNull();
+    expect(execGitMock).not.toHaveBeenCalled();
   });
 });

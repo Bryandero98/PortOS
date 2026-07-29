@@ -45,7 +45,11 @@ vi.mock('./cos.js', () => ({
   updateTask: vi.fn().mockResolvedValue(true),
   addTask: vi.fn().mockResolvedValue({ id: 'sys-mocked' }),
   getTaskById: vi.fn(),
-  getAllTasks: vi.fn()
+  getAllTasks: vi.fn(),
+  // cleanupOrphanedAgents pulls these in via a dynamic import.
+  getAgents: vi.fn().mockResolvedValue([]),
+  completeAgent: vi.fn().mockResolvedValue(undefined),
+  evaluateTasks: vi.fn().mockResolvedValue(undefined)
 }));
 
 vi.mock('./cosEvents.js', () => ({
@@ -69,7 +73,11 @@ vi.mock('./agents.js', () => ({ unregisterSpawnedAgent: vi.fn() }));
 vi.mock('./executionLanes.js', () => ({ release: vi.fn() }));
 vi.mock('./toolStateMachine.js', () => ({ completeExecution: vi.fn(), errorExecution: vi.fn() }));
 vi.mock('./shell.js', () => ({ writeToSession: vi.fn(), killSession: vi.fn() }));
-vi.mock('./agentWorktreeCleanup.js', () => ({ cleanupAgentWorktree: vi.fn() }));
+vi.mock('./agentWorktreeCleanup.js', () => ({
+  cleanupAgentWorktree: vi.fn(),
+  resolveTaskResumePatch: vi.fn().mockResolvedValue({})
+}));
+vi.mock('./agentFinalization.js', () => ({ dispatchRecoveredTaskOutputHook: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('./agentRunnerSync.js', () => ({ syncRunnerAgents: vi.fn().mockResolvedValue(0) }));
 vi.mock('./agentRunnerOutputBatchers.js', () => ({ flushRunnerOutputBatcher: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('./worktreeManager.js', () => ({ cleanupOrphanedWorktrees: vi.fn() }));
@@ -80,7 +88,9 @@ vi.mock('./creativeDirector/local.js', () => ({
 vi.mock('./creativeDirector/planAdvance.js', () => ({ advanceAfterPlanStepSettled: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('./creativeDirector/completionHook.js', () => ({ advanceAfterSceneSettled: vi.fn().mockResolvedValue(undefined) }));
 
-import { handleOrphanedTask, pauseAgent, settleOrphanedCreativeDirectorRun } from './agentManagement.js';
+import { handleOrphanedTask, pauseAgent, settleOrphanedCreativeDirectorRun, cleanupOrphanedAgents } from './agentManagement.js';
+import { cleanupAgentWorktree, resolveTaskResumePatch } from './agentWorktreeCleanup.js';
+import { getAgents } from './cos.js';
 import { updateRun, getProject } from './creativeDirector/local.js';
 import { advanceAfterPlanStepSettled } from './creativeDirector/planAdvance.js';
 import { advanceAfterSceneSettled } from './creativeDirector/completionHook.js';
@@ -767,5 +777,78 @@ describe('terminate/kill drains batched output before completion — source cont
     const flushPos = body.indexOf('agent.flushOutput?.()');
     const completePos = body.indexOf('completeAgent(');
     expect(flushPos).toBeLessThan(completePos);
+  });
+});
+
+// A server restart kills every agent PTY without running a completion hook, so
+// the ONLY thing that retires those runs is this sweep. Before its retry carried a
+// resume pointer, every restart-killed task was re-dispatched to a fresh agent
+// with a fresh worktree, which redid work still sitting on disk.
+describe('orphan retries resume what the dead run left behind', () => {
+  const deadMetadata = { isWorktree: true, sourceWorkspace: '/repo', worktreeBranch: 'cos/task-1/agent-dead' };
+  const deadAgent = { id: 'agent-dead', status: 'running', pid: null, taskId: 'task-1', metadata: deadMetadata };
+  const pointer = { branchName: 'cos/task-1/agent-dead', worktreePath: '/w/agent-dead' };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getAgents.mockResolvedValue([deadAgent]);
+    getTaskById.mockResolvedValue({ id: 'task-1', taskType: 'user', status: 'in_progress', metadata: {} });
+    resolveTaskResumePatch.mockResolvedValue({});
+    activeAgents.clear();
+    runnerAgents.clear();
+  });
+
+  it('hands the dead agent’s worktree metadata from the sweep to the retry handler', async () => {
+    await cleanupOrphanedAgents();
+
+    expect(resolveTaskResumePatch).toHaveBeenCalledWith({
+      task: expect.objectContaining({ id: 'task-1' }),
+      agentId: 'agent-dead',
+      agentMetadata: deadMetadata
+    });
+  });
+
+  // Ordering is the whole contract: the pointer must reflect what SURVIVED
+  // cleanup, and must land in the SAME write that flips the task to pending —
+  // that flip emits tasks:changed, which can spawn the retry immediately.
+  it('resolves the pointer after worktree cleanup and writes it with the requeue', async () => {
+    const order = [];
+    cleanupAgentWorktree.mockImplementation(() => { order.push('cleanup'); });
+    resolveTaskResumePatch.mockImplementation(() => {
+      order.push('resolve');
+      return Promise.resolve({ existingBranch: pointer.branchName, resumedFromAgentId: 'agent-dead', resumeWorktreePath: pointer.worktreePath });
+    });
+    updateTask.mockImplementation(() => { order.push('requeue'); return Promise.resolve(true); });
+
+    await cleanupOrphanedAgents();
+
+    expect(order).toEqual(['cleanup', 'resolve', 'requeue']);
+    expect(updateTask).toHaveBeenCalledWith('task-1', {
+      status: 'pending',
+      metadata: expect.objectContaining({
+        existingBranch: pointer.branchName,
+        resumedFromAgentId: 'agent-dead',
+        resumeWorktreePath: pointer.worktreePath
+      })
+    }, 'user');
+  });
+
+  it('skips the resume entirely when the dead agent had no task', async () => {
+    getAgents.mockResolvedValue([{ ...deadAgent, taskId: null }]);
+
+    await cleanupOrphanedAgents();
+
+    expect(resolveTaskResumePatch).not.toHaveBeenCalled();
+  });
+
+  // A caller that doesn't know which agent died (resetOrphanedTasks on an archived
+  // agent) still requeues — it just starts clean.
+  it('requeues without a pointer when no agent metadata is available', async () => {
+    getTaskById.mockResolvedValue({ id: 'task-1', taskType: 'user', status: 'in_progress', metadata: {} });
+
+    await handleOrphanedTask('task-1', 'unknown-reset', getTaskById);
+
+    expect(resolveTaskResumePatch).toHaveBeenCalledWith(expect.objectContaining({ agentMetadata: null }));
+    expect(updateTask).toHaveBeenCalledWith('task-1', expect.objectContaining({ status: 'pending' }), 'user');
   });
 });

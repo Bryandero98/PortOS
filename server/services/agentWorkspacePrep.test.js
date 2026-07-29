@@ -27,7 +27,7 @@ vi.mock('./git.js', () => ({
   createBranch: vi.fn(),
 }));
 vi.mock('./taskConflict.js', () => ({ detectConflicts: vi.fn().mockResolvedValue({ recommendation: 'proceed' }) }));
-vi.mock('./worktreeManager.js', () => ({ createWorktree: vi.fn(), mergeBaseIntoFeatureWorktree: vi.fn() }));
+vi.mock('./worktreeManager.js', () => ({ createWorktree: vi.fn(), adoptWorktree: vi.fn(), mergeBaseIntoFeatureWorktree: vi.fn() }));
 vi.mock('./agentPromptBuilder.js', () => ({
   getAppWorkspace: vi.fn().mockResolvedValue('/repos/app-x'),
   getAppDataForTask: vi.fn().mockResolvedValue(null),
@@ -38,6 +38,7 @@ import { prepareAgentWorkspace } from './agentWorkspacePrep.js';
 import { ensureLatest } from './git.js';
 import { detectConflicts } from './taskConflict.js';
 import { getAppWorkspace } from './agentPromptBuilder.js';
+import { createWorktree, adoptWorktree } from './worktreeManager.js';
 
 beforeEach(() => { vi.clearAllMocks(); });
 
@@ -122,5 +123,132 @@ describe('prepareAgentWorkspace — workspace validation (#3180)', () => {
     const r = await prepareAgentWorkspace({ agentId: 'agent-ok', task });
     expect(r.outcome).toBe('ready');
     expect(r.workspacePath).toBe(process.cwd());
+  });
+});
+
+// A run killed by a server restart never reaches its completion hook, so its
+// worktree survives with UNCOMMITTED work in it. The retry must pick that tree
+// up instead of building a fresh one off the default branch and redoing it.
+describe('prepareAgentWorkspace — resuming an interrupted run', () => {
+  const DEAD_TREE = '/mock/worktrees/agent-dead';
+  const resumeTask = (extra = {}) => ({
+    id: 't-resume', taskType: 'user',
+    metadata: {
+      useWorktree: true,
+      existingBranch: 'cos/t-resume/agent-dead',
+      resumedFromAgentId: 'agent-dead',
+      resumeWorktreePath: DEAD_TREE,
+      ...extra
+    }
+  });
+
+  beforeEach(() => { ensureLatest.mockResolvedValue({ success: true, upToDate: true }); });
+
+  it('adopts the interrupted run’s worktree instead of creating a new one', async () => {
+    adoptWorktree.mockResolvedValue({
+      worktreePath: '/mock/worktrees/agent-new', branchName: 'cos/t-resume/agent-dead',
+      baseBranch: null, existingBranch: true, adopted: true
+    });
+
+    const r = await prepareAgentWorkspace({ agentId: 'agent-new', task: resumeTask() });
+
+    expect(adoptWorktree).toHaveBeenCalledWith('agent-new', expect.any(String), DEAD_TREE, 'cos/t-resume/agent-dead');
+    expect(createWorktree).not.toHaveBeenCalled();
+    expect(r.outcome).toBe('ready');
+    expect(r.worktreeInfo.adopted).toBe(true);
+    expect(r.workspacePath).toBe('/mock/worktrees/agent-new');
+  });
+
+  // The tree is gone (already cleaned up) but the branch survived — attach to it,
+  // which is the pre-existing resume shape.
+  it('falls back to attaching the branch when the leftover tree is gone', async () => {
+    adoptWorktree.mockResolvedValue(null);
+    createWorktree.mockResolvedValue({
+      worktreePath: '/mock/worktrees/agent-new', branchName: 'cos/t-resume/agent-dead',
+      baseBranch: null, existingBranch: true
+    });
+
+    const r = await prepareAgentWorkspace({ agentId: 'agent-new', task: resumeTask() });
+
+    expect(createWorktree).toHaveBeenCalledWith('agent-new', expect.any(String), 't-resume',
+      expect.objectContaining({ existingBranch: 'cos/t-resume/agent-dead' }));
+    expect(r.outcome).toBe('ready');
+  });
+
+  // Git allows a branch in only ONE worktree. If adoption failed while the stale
+  // tree is still on disk holding the branch, attaching a second worktree to it
+  // errors out and the task is blocked entirely — worse than starting clean.
+  it('starts clean when adoption fails and the stale tree still holds the branch', async () => {
+    // Any real directory stands in for the stale tree — the production check is a
+    // bare `existsSync`, so `cwd` is enough and leaves nothing behind to clean up.
+    const stillThere = process.cwd();
+    adoptWorktree.mockResolvedValue(null);
+    createWorktree.mockResolvedValue({
+      worktreePath: '/mock/worktrees/agent-new', branchName: 'cos/t-resume/agent-new', baseBranch: 'main'
+    });
+
+    const r = await prepareAgentWorkspace({
+      agentId: 'agent-new', task: resumeTask({ resumeWorktreePath: stillThere })
+    });
+
+    expect(createWorktree).toHaveBeenCalledWith('agent-new', expect.any(String), 't-resume',
+      expect.objectContaining({ existingBranch: undefined }));
+    expect(r.outcome).toBe('ready');
+  });
+
+  // The run that died may have been isolated by conflict AUTO-detection rather than
+  // useWorktree/openPR. Its retry must still take the worktree path — conflict
+  // detection returns `proceed` once the dead agent is gone, so the old gate sent
+  // the retry into the shared workspace and abandoned the work on disk.
+  it('takes the worktree path for a resume even when the task never asked for isolation', async () => {
+    adoptWorktree.mockResolvedValue({
+      worktreePath: '/mock/worktrees/agent-new', branchName: 'cos/t-resume/agent-dead',
+      baseBranch: null, existingBranch: true, adopted: true
+    });
+    const task = resumeTask();
+    delete task.metadata.useWorktree;
+
+    const r = await prepareAgentWorkspace({ agentId: 'agent-new', task });
+
+    expect(adoptWorktree).toHaveBeenCalled();
+    expect(detectConflicts).not.toHaveBeenCalled();
+    expect(r.workspacePath).toBe('/mock/worktrees/agent-new');
+  });
+
+  // Blocking a task that never opted into isolation would be stricter than its own
+  // contract — it ran in the shared workspace before the pointer existed.
+  it('degrades to the shared workspace when a resume-only task cannot get a worktree', async () => {
+    adoptWorktree.mockResolvedValue(null);
+    createWorktree.mockResolvedValue(null);
+    const task = resumeTask();
+    delete task.metadata.useWorktree;
+
+    const r = await prepareAgentWorkspace({ agentId: 'agent-new', task });
+
+    expect(r.outcome).toBe('ready');
+    expect(r.worktreeInfo).toBeNull();
+  });
+
+  // ...but a task that DID request isolation still fails closed.
+  it('still blocks when an explicitly-isolated resume cannot get a worktree', async () => {
+    adoptWorktree.mockResolvedValue(null);
+    createWorktree.mockResolvedValue(null);
+
+    const r = await prepareAgentWorkspace({ agentId: 'agent-new', task: resumeTask() });
+
+    expect(r.outcome).toBe('blocked');
+  });
+
+  it('ignores a stale worktree pointer with no branch to resume', async () => {
+    createWorktree.mockResolvedValue({
+      worktreePath: '/mock/worktrees/agent-new', branchName: 'cos/t-resume/agent-new', baseBranch: 'main'
+    });
+
+    await prepareAgentWorkspace({
+      agentId: 'agent-new', task: resumeTask({ existingBranch: undefined })
+    });
+
+    expect(adoptWorktree).not.toHaveBeenCalled();
+    expect(createWorktree).toHaveBeenCalled();
   });
 });

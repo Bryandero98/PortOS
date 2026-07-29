@@ -798,7 +798,12 @@ export async function handleAgentCompletion(agentId, exitCode, success, duration
           const taskUpdate = await stampLiExecutionVerdict({ status: 'completed' }, task, { success });
           await updateTask(cosAgent.taskId, taskUpdate, task.taskType || 'user');
         } else {
-          await handleOrphanedTask(cosAgent.taskId, agentId, getTaskById);
+          // Hand the dead run's metadata to the retry handler so it can resume what
+          // was left behind. This path bypasses `finalizeAgent` (and its worktree
+          // cleanup), so the worktree is still on disk, branch and all — without it
+          // the retry builds a fresh tree off the default branch and redoes work
+          // that is sitting right there.
+          await handleOrphanedTask(cosAgent.taskId, agentId, getTaskById, { agentMetadata: cosAgent.metadata });
           // If orphan recovery settled the task into a terminal `blocked` state (retry budget
           // exhausted), the local completion already recorded the proposal failure — so stamp
           // the LI failure verdict here too (#2779, codex P2) or the originating peer would

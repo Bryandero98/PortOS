@@ -66,7 +66,7 @@ export function addWorktreeWithRetry(args, repo, attempt = 1, firstError = null)
       err.firstAttemptError = originalError;
       throw err;
     }
-    console.log(`🌳 Worktree add lock contention (attempt ${attempt}/${WORKTREE_ADD_MAX_ATTEMPTS}), retrying in ${WORKTREE_ADD_RETRY_DELAY_MS}ms: ${err.message}`);
+    console.log(`🌳 Worktree ${args[1] || 'add'} lock contention (attempt ${attempt}/${WORKTREE_ADD_MAX_ATTEMPTS}), retrying in ${WORKTREE_ADD_RETRY_DELAY_MS}ms: ${err.message}`);
     return sleep(WORKTREE_ADD_RETRY_DELAY_MS)
       .then(() => addWorktreeWithRetry(args, repo, attempt + 1, originalError));
   });
@@ -380,6 +380,93 @@ async function createWorktreeUnlocked(agentId, sourceWorkspace, taskId, options 
   console.log(`🌳 Created worktree for ${agentId} at ${worktreePath} (branch: ${branchName}, base: ${baseRef})`);
 
   return { worktreePath, branchName, baseBranch, instanceId };
+}
+
+/**
+ * Adopt an INTERRUPTED agent's surviving worktree on behalf of the agent that is
+ * retrying its task, instead of building a fresh one from the default branch.
+ *
+ * When an agent dies without completing (a server restart is the common case —
+ * PM2 kills the PTY, so no completion hook ever runs), `removeWorktree` refuses to
+ * delete a dirty tree and leaves the whole worktree in place. That tree holds the
+ * dead run's uncommitted edits and untracked files, which no branch pointer can
+ * carry: without adoption the retry starts from origin/main and redoes the work.
+ *
+ * The tree is MOVED to the retry's own `<worktrees>/<agentId>` directory rather
+ * than adopted where it sits, because "directory name == the agent that owns this
+ * tree" is the invariant `cleanupOrphanedWorktrees` reaps on — left at the dead
+ * agent's path, the live retry's worktree would be reaped out from under it. The
+ * move carries tracked edits, untracked files, and git's own bookkeeping intact.
+ *
+ * Returns null (never throws) whenever adoption isn't possible — the source tree
+ * is gone, the target path is occupied, or git refuses the move (a locked worktree,
+ * or one with initialized submodules). Callers fall back to a fresh worktree, which
+ * is the pre-existing behavior.
+ *
+ * @param {string} agentId - the RETRYING agent (names the destination directory)
+ * @param {string} sourceWorkspace - the parent git repository
+ * @param {string} existingWorktreePath - absolute path of the dead agent's worktree
+ * @param {string} branchName - the branch that worktree has checked out
+ * @returns {Promise<{worktreePath: string, branchName: string, baseBranch: null, existingBranch: true, adopted: true, instanceId: string}|null>}
+ */
+export async function adoptWorktree(agentId, sourceWorkspace, existingWorktreePath, branchName) {
+  return queueWorktreeCreate(sourceWorkspace, () => adoptWorktreeUnlocked(agentId, sourceWorkspace, existingWorktreePath, branchName));
+}
+
+async function adoptWorktreeUnlocked(agentId, sourceWorkspace, existingWorktreePath, branchName) {
+  if (!agentId || !sourceWorkspace || !existingWorktreePath || !branchName) return null;
+  if (!existsSync(existingWorktreePath)) {
+    console.log(`🌳 Cannot adopt worktree for ${agentId} — ${existingWorktreePath} no longer exists`);
+    return null;
+  }
+
+  const targetPath = join(WORKTREES_DIR, agentId);
+  const instanceId = await ensureInstanceId();
+  const adopted = {
+    worktreePath: targetPath, branchName, baseBranch: null,
+    existingBranch: true, adopted: true, instanceId
+  };
+
+  // Already at the destination (a retry that re-entered prep) — nothing to move.
+  if (pathsEqual(existingWorktreePath, targetPath)) return adopted;
+
+  if (existsSync(targetPath)) {
+    console.log(`🌳 Cannot adopt worktree for ${agentId} — ${targetPath} is already occupied`);
+    return null;
+  }
+
+  await ensureDir(WORKTREES_DIR);
+
+  // Through the retry wrapper, not raw execGit: `worktree move` mutates the same
+  // `.git/worktrees` bookkeeping whose per-repo lock motivated the retry (#2193).
+  const moved = await addWorktreeWithRetry(['worktree', 'move', existingWorktreePath, targetPath], sourceWorkspace)
+    .then(() => true)
+    .catch(err => {
+      console.log(`⚠️ Worktree adopt failed for ${agentId} (${existingWorktreePath} → ${targetPath}): ${err.message}`);
+      return false;
+    });
+  if (!moved) return null;
+
+  // Mirror removeWorktree's treatment of auto-generated lockfile churn: it discards
+  // those changes rather than preserving them, so an adopted tree must not carry
+  // them either. The resume prompt tells the retry that everything uncommitted is
+  // its own in-progress work to finish and commit — which would ship a
+  // `package-lock.json` bump from the dead run's `npm install` that nobody
+  // intended. Only when the churn is ALL there is: a tree with real changes keeps
+  // everything, exactly as removeWorktree preserves it.
+  const porcelain = await execGit(['status', '--porcelain'], targetPath)
+    .then(r => r.stdout.trim())
+    .catch(() => '');
+  const dirt = classifyWorktreeDirt(porcelain);
+  if (dirt.lockfileOnly) {
+    console.log(`🧹 Discarding ${dirt.lockfilePaths.length} auto-generated lockfile change(s) in adopted worktree ${agentId}`);
+    await execGit(['checkout', '--', ...dirt.lockfilePaths], targetPath).catch(err => {
+      console.log(`⚠️ Lockfile discard failed in adopted worktree ${agentId}: ${err.message}`);
+    });
+  }
+
+  console.log(`🌳 Adopted worktree for ${agentId} at ${targetPath} (branch: ${branchName}) — resuming interrupted work`);
+  return adopted;
 }
 
 /**
