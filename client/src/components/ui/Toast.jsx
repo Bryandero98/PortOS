@@ -2,9 +2,15 @@
  * Toast notification system — replaces react-hot-toast
  * Supports: toast(), toast.success(), toast.error(), toast.loading(), toast.dismiss(), <Toaster />
  * Render-prop toasts: toast((t) => <Component t={t} />, opts) — t has { id }
+ *
+ * A `duration: Infinity` toast collapses to a corner pill after
+ * COLLAPSE_AFTER_MS so it stops blocking clicks on the page beneath it. Such a
+ * toast with render-prop content MUST pass `label` — the pill can't name itself
+ * from JSX, and `a11yConventions.test.js` enforces it. Content that runs its
+ * own dismiss timer passes `collapseAfter` to fold on its schedule instead.
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { uuidv4 } from '../../lib/uuid.js';
 
 let toasts = [];
@@ -16,6 +22,29 @@ function notify() {
 
 const DEFAULT_DURATION = 4000;
 const DEDUP_WINDOW_MS = 1500;
+
+// How long a `duration: Infinity` toast stays at full size before folding into
+// a corner pill. The stack is `fixed`, `z-[9999]` and `pointer-events-auto`, so
+// a toast that never dismisses is a permanent click sink over the page: an
+// install whose `outOfSync` notice parked in the bottom-right corner covered
+// the CoS task form's Screenshot and Attach buttons, and clicking them did
+// nothing at all — no picker, no error, nothing in the console.
+//
+// Only unbounded toasts collapse. A finite duration is a bound the caller
+// already chose and it clears itself, so folding one early would hide an action
+// the caller meant to keep offering for the whole time (the manuscript
+// Undo-fix toast runs 10s and its Undo button is the only one there is).
+//
+// A toast whose bound lives INSIDE its content rather than in `duration` passes
+// `collapseAfter` to say so. `useAgentFeedbackToast` is the case: it sets
+// `duration: Infinity` only because the card runs its own 15s dismiss, so the
+// default 8s would fold the rating controls away for the last 7s of a life the
+// caller did bound. Worse, re-opening the pill does NOT restart that inner
+// timer, so a card re-expanded at 10s vanished 5s later, mid-click. Passing the
+// content's own bound lines the two up. It is a delay, never an opt-out: when
+// that card is expanded it clears its dismiss timer and becomes truly
+// unbounded — the widest click sink of the set — so it still has to fold.
+export const COLLAPSE_AFTER_MS = 8000;
 
 // Fingerprint → expiry timestamp. Same content+type within DEDUP_WINDOW_MS is
 // silently dropped so a single user action that flows through multiple error
@@ -50,7 +79,16 @@ function add(content, opts = {}, type = 'default') {
     }
   }
 
-  const entry = { id, type, content, icon: opts.icon, duration, style: opts.style };
+  // `label` names the toast once it collapses to a pill — required for
+  // render-prop content, whose JSX the pill can't summarise on its own.
+  // `collapseAfter` is validated, not merely read: a non-finite value (a stray
+  // `Infinity` meaning "never fold") would disable the fold entirely and hand
+  // back the click-eating overlay, so anything but a finite positive number
+  // falls back to the default rather than being honoured.
+  const collapseAfter = Number.isFinite(opts.collapseAfter) && opts.collapseAfter > 0
+    ? opts.collapseAfter
+    : COLLAPSE_AFTER_MS;
+  const entry = { id, type, content, icon: opts.icon, duration, style: opts.style, label: opts.label, collapseAfter };
 
   const idx = toasts.findIndex(t => t.id === id);
   toasts = idx !== -1
@@ -114,23 +152,142 @@ export function Toaster({ position = 'bottom-right', toastOptions = {} }) {
       role="region"
       aria-label="Notifications"
     >
-      {items.map(t => {
-        const style = { padding: '12px 16px', borderRadius: '8px', ...toastOptions.style, ...t.style };
-        const iconStr = t.icon ?? (t.type !== 'default' ? TYPE_ICON[t.type] : null);
-        const iconClass = t.type !== 'default' ? TYPE_CLASS[t.type] : '';
-        return (
-          <div
-            key={t.id}
-            style={style}
-            role={t.type === 'error' ? 'alert' : 'status'}
-            className="pointer-events-auto flex items-start gap-2 shadow-lg text-sm max-w-[calc(100vw-2rem)] sm:max-w-[520px] bg-port-card border border-port-border">
-            {iconStr && <span className={`shrink-0 ${iconClass}`} aria-hidden="true">{iconStr}</span>}
-            <div className="flex-1 min-w-0">
-              {typeof t.content === 'function' ? t.content({ id: t.id }) : <span>{t.content}</span>}
-            </div>
-          </div>
-        );
-      })}
+      {items.map(t => (
+        <ToastItem key={t.id} t={t} toastOptions={toastOptions} />
+      ))}
     </div>
   );
+}
+
+function ToastItem({ t, toastOptions }) {
+  const style = { padding: '12px 16px', borderRadius: '8px', ...toastOptions.style, ...t.style };
+  const iconStr = t.icon ?? (t.type !== 'default' ? TYPE_ICON[t.type] : null);
+  const iconClass = t.type !== 'default' ? TYPE_CLASS[t.type] : '';
+  // Only a toast that never dismisses itself can outstay its welcome and start
+  // eating clicks — see COLLAPSE_AFTER_MS.
+  const collapsible = t.duration === Infinity;
+  const [collapsed, setCollapsed] = useState(false);
+  // Held open while the pointer is over the toast or focus is inside it —
+  // collapsing out from under a hover would yank the buttons the user is
+  // reaching for, and collapsing while focus is inside would drop that focus
+  // to <body>.
+  //
+  // Two flags, not one: hover and focus are independent holds, and a single
+  // shared boolean lets whichever ends last clear the other's. Tab to the
+  // toast's button, then sweep the pointer over the toast and off again, and
+  // `mouseleave` would release a hold that focus still owns — 8s later the
+  // still-focused button gets `display: none` and focus lands on <body>, the
+  // exact thing this is here to prevent.
+  const [hovered, setHovered] = useState(false);
+  const [focusWithin, setFocusWithin] = useState(false);
+  const held = hovered || focusWithin;
+
+  const collapseAfter = t.collapseAfter ?? COLLAPSE_AFTER_MS;
+
+  useEffect(() => {
+    if (!collapsible || collapsed || held) return undefined;
+    const timer = setTimeout(() => setCollapsed(true), collapseAfter);
+    return () => clearTimeout(timer);
+  }, [collapsible, collapsed, held, collapseAfter]);
+
+  // Re-entering `add()` with the same id replaces the entry in place (a
+  // loading→success swap, a coalesced AI-status error picking up another
+  // failure). That toast has something new to say, so unfold it — otherwise the
+  // update lands inside a pill nobody opens. `content`/`type` only change
+  // identity when `add()` actually ran, so this doesn't fire on re-renders.
+  useEffect(() => { setCollapsed(false); }, [t.content, t.type]);
+
+  // Collapsing HIDES the body, it does not unmount it: render-prop toasts own
+  // their lifecycle (useAgentFeedbackToast's card runs its own auto-dismiss),
+  // and unmounting would destroy those timers and strand the pill forever.
+  // `display: none` inline beats the `flex` utility class, and takes the body
+  // out of the a11y tree and out of hit-testing — which is the whole point.
+  //
+  // `collapsible` is re-read during render, not just in the effect, so a
+  // loading→success swap on the same id (Infinity → 4000) unfolds in the same
+  // commit. The reset effect below would get there a paint later, which shows
+  // as a frame of pill over the new message.
+  const isCollapsed = collapsed && collapsible;
+  const bodyStyle = isCollapsed ? { ...style, display: 'none' } : style;
+
+  // Expanding the pill unmounts the pill. If the keyboard had focus on it,
+  // focus falls to <body> and the toast's own Reconcile/Reload/Ignore buttons
+  // drop out of the tab sequence — the next Tab restarts from the top of the
+  // document, past everything. So hand focus to the body it just revealed.
+  //
+  // Only for a KEYBOARD activation, detected by `detail === 0` — the click a
+  // browser synthesizes from Enter/Space carries no click count, while a real
+  // pointer click carries at least 1. `document.activeElement === the pill` is
+  // NOT a usable substitute: Chrome focuses a button on mouse-down, so it reads
+  // true for an ordinary click. Measured in headless Chrome against the running
+  // page, that mis-detection moved focus into the body on a plain mouse click,
+  // `onFocus` took the focus hold, and the toast never folded again — the exact
+  // parked overlay this file exists to remove, handed back to the mouse users
+  // who reported it. jsdom hides this: `fireEvent.click` doesn't focus the
+  // button, so an activeElement-based guard passes the unit test and fails the
+  // browser. The tests below therefore pass `detail` explicitly.
+  const bodyRef = useRef(null);
+  const refocusOnExpand = useRef(false);
+
+  useEffect(() => {
+    if (isCollapsed || !refocusOnExpand.current) return;
+    refocusOnExpand.current = false;
+    // Runs after commit, so the body is no longer `display: none` and can
+    // actually take focus.
+    bodyRef.current?.focus();
+  }, [isCollapsed]);
+
+  return (
+    <>
+      {isCollapsed && (
+        // The pill deliberately carries no hover handlers: the timer effect
+        // short-circuits on `collapsed` before it reads `held`, so they couldn't
+        // change anything — and the pill unmounts on click, where no
+        // `mouseleave` ever fires, which would strand `held` at true and
+        // suppress the re-collapse below. Re-expanding doesn't pin the toast
+        // open either; the timer just restarts, so a tap on a touch device
+        // folds it away again on its own.
+        <button
+          type="button"
+          onClick={e => {
+            refocusOnExpand.current = e.detail === 0;
+            setCollapsed(false);
+          }}
+          aria-label={collapsedLabel(t)}
+          className="pointer-events-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-port-card border border-port-border shadow-lg text-sm"
+        >
+          <span className={iconClass} aria-hidden="true">{iconStr ?? '•'}</span>
+        </button>
+      )}
+      <div
+        ref={bodyRef}
+        style={bodyStyle}
+        // Focusable only programmatically (see the refocus effect); -1 keeps
+        // the body itself out of the tab sequence so it never sits between the
+        // page's own controls.
+        tabIndex={-1}
+        role={t.type === 'error' ? 'alert' : 'status'}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        // onFocus/onBlur bubble in React, so these fire for the toast's buttons
+        // too. Moving between two buttons inside the toast fires blur then
+        // focus; both land in one batch, so the hold never blips false.
+        onFocus={() => setFocusWithin(true)}
+        onBlur={() => setFocusWithin(false)}
+        className="pointer-events-auto flex items-start gap-2 shadow-lg text-sm max-w-[calc(100vw-2rem)] sm:max-w-[520px] bg-port-card border border-port-border">
+        {iconStr && <span className={`shrink-0 ${iconClass}`} aria-hidden="true">{iconStr}</span>}
+        <div className="flex-1 min-w-0">
+          {typeof t.content === 'function' ? t.content({ id: t.id }) : <span>{t.content}</span>}
+        </div>
+      </div>
+    </>
+  );
+}
+
+// Accessible name for the collapsed pill. String content names itself; a
+// render-prop toast has to supply `label` or it collapses to an anonymous badge.
+function collapsedLabel(t) {
+  if (t.label) return `Show notification: ${t.label}`;
+  if (typeof t.content === 'string') return `Show notification: ${t.content}`;
+  return 'Show notification';
 }

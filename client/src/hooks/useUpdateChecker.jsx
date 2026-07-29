@@ -51,7 +51,8 @@ export function useUpdateChecker() {
         {
           id: TOAST_ID,
           duration: Infinity,
-          icon: '🔄'
+          icon: '🔄',
+          label: `Update available: v${data.latestVersion}`
         }
       );
     };
@@ -85,7 +86,8 @@ export function useUpdateChecker() {
         {
           id: OUT_OF_SYNC_TOAST_ID,
           duration: Infinity,
-          icon: '⚠️'
+          icon: '⚠️',
+          label: 'Install out of sync'
         }
       );
     };
