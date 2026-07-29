@@ -109,7 +109,17 @@ const PROJECT_ANALYZED = {
   ...PROJECT_NO_CLIP,
   id: 'mv-3',
   name: 'Analyzed Track',
-  audioAnalysis: { bpm: 120, beats: [], downbeats: [], sections: [{ label: 'Intro', startSec: 0, endSec: 10, energy: 0.5 }], durationSec: 10 },
+  audioAnalysis: {
+    bpm: 120,
+    beats: [0, 0.5, 1, 1.5],
+    downbeats: [0],
+    waveform: [0.1, 0.4, 1, 0.6, 0.2],
+    sections: [{ label: 'Intro', startSec: 0, endSec: 10, energy: 0.5 }],
+    durationSec: 10,
+    tempoSource: 'windowed',
+    tempoConfidence: 0.72,
+    tempoWindow: { startSec: 40, endSec: 70 },
+  },
 };
 
 // The page now selects the open project via the route param
@@ -349,6 +359,16 @@ describe('MusicVideo audio preview + download', () => {
     await screen.findByRole('button', { name: /^Render final$/ });
     expect(screen.queryByLabelText('Preview track audio')).toBeNull();
     expect(screen.queryByRole('link', { name: /Download audio/i })).toBeNull();
+  });
+});
+
+describe('MusicVideo musical timeline', () => {
+  it('renders waveform, beat evidence, legend, and the detected rhythmic window', async () => {
+    await openProject(PROJECT_ANALYZED);
+    expect(screen.getByRole('img', { name: /audio waveform overview with 4 beats and 1 downbeats/i })).toBeTruthy();
+    expect(screen.getByText(/waveform, sections, and 4\/4 beat-grid assumption/i)).toBeTruthy();
+    expect(screen.getByText(/detected near 0:40\.00–1:10\.00/i)).toBeTruthy();
+    expect(screen.getByLabelText('Timeline legend')).toBeTruthy();
   });
 });
 

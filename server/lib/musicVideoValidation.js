@@ -153,6 +153,9 @@ export const musicVideoAudioAnalysisSchema = z.object({
   bpm: z.number().nullable(),
   beats: z.array(z.number()),
   downbeats: z.array(z.number()),
+  // Compact normalized loudness envelope for the director timeline. Optional
+  // so cached analyses from older installs remain readable.
+  waveform: z.array(z.number().min(0).max(1)).max(1024).optional(),
   sections: z.array(z.object({
     label: z.string(),
     startSec: z.number(),
@@ -162,4 +165,12 @@ export const musicVideoAudioAnalysisSchema = z.object({
     energy: z.number().min(0).optional(),
   })),
   durationSec: z.number(),
+  // Explain whether the beat grid came from the full track, consensus among
+  // later rhythmic windows, or the director's manual tap/entry fallback.
+  tempoSource: z.enum(['full', 'windowed', 'manual']).nullable().optional(),
+  tempoConfidence: z.number().min(0).max(1).nullable().optional(),
+  tempoWindow: z.object({
+    startSec: z.number().min(0),
+    endSec: z.number().min(0),
+  }).nullable().optional(),
 }).strict();

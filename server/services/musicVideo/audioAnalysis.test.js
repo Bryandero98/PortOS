@@ -40,6 +40,28 @@ function clickTrack({ bpm, durationSec, sampleRate = ANALYSIS_SAMPLE_RATE, offse
   return out;
 }
 
+// A deliberately hostile song shape for the detector: a long broadband,
+// beatless intro followed by a shorter regular pulse. This mirrors recordings
+// whose rhythm only becomes obvious after an ambient/rubato opening.
+function lateClickTrack({ bpm, introSec, rhythmicSec, sampleRate = ANALYSIS_SAMPLE_RATE }) {
+  const out = new Float32Array(Math.round((introSec + rhythmicSec) * sampleRate));
+  let seed = 7;
+  for (let i = 0; i < introSec * sampleRate; i++) {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    out[i] = ((seed / 0x7fffffff) * 2 - 1) * 0.15;
+  }
+  const burstLen = Math.round(0.025 * sampleRate);
+  for (let t = introSec; t < introSec + rhythmicSec; t += 60 / bpm) {
+    const start = Math.round(t * sampleRate);
+    for (let k = 0; k < burstLen && start + k < out.length; k++) {
+      out[start + k] += 0.8
+        * Math.exp(-k / (burstLen / 5))
+        * Math.sin((2 * Math.PI * 1200 * k) / sampleRate);
+    }
+  }
+  return out;
+}
+
 /** Minimal 16-bit PCM mono WAV encoder for the ffmpeg round-trip test. */
 function encodeWav(samples, sampleRate) {
   const numSamples = samples.length;
@@ -90,6 +112,24 @@ describe('analyzePcm', () => {
     const result = analyzePcm(samples, ANALYSIS_SAMPLE_RATE);
     expect(result.bpm).toBeGreaterThan(88);
     expect(result.bpm).toBeLessThan(92);
+  });
+
+  it('finds a stable tempo after a long beatless intro', () => {
+    const samples = lateClickTrack({ bpm: 108, introSec: 45, rhythmicSec: 30 });
+    const result = analyzePcm(samples, ANALYSIS_SAMPLE_RATE);
+    expect(result.bpm).toBeGreaterThan(105);
+    expect(result.bpm).toBeLessThan(111);
+    expect(result.beats.length).toBeGreaterThan(100);
+    expect(result.tempoSource).toMatch(/^(full|windowed)$/);
+    expect(result.tempoConfidence).toBeGreaterThanOrEqual(0.3);
+  });
+
+  it('returns a bounded compact waveform for timeline visualization', () => {
+    const result = analyzePcm(clickTrack({ bpm: 120, durationSec: 16 }), ANALYSIS_SAMPLE_RATE);
+    expect(result.waveform.length).toBeGreaterThan(100);
+    expect(result.waveform.length).toBeLessThanOrEqual(512);
+    expect(Math.max(...result.waveform)).toBe(1);
+    expect(result.waveform.every((level) => level >= 0 && level <= 1)).toBe(true);
   });
 
   // Tempo is reliable only UP TO an octave (autocorrelation peaks at every
@@ -253,13 +293,19 @@ describe('buildManualAnalysis (manual-tempo fallback)', () => {
 
 describe('buildManualAnalysisFromCached (no-decode manual-tempo fast path)', () => {
   it('builds a beat grid from a cached durationSec without touching PCM', () => {
-    const cached = { sections: [{ label: 'Section 1', startSec: 0, endSec: 16, energy: 1 }], durationSec: 16 };
+    const cached = {
+      sections: [{ label: 'Section 1', startSec: 0, endSec: 16, energy: 1 }],
+      waveform: [0.1, 0.8],
+      durationSec: 16,
+    };
     const result = buildManualAnalysisFromCached(cached, { bpm: 120, offsetSec: 0.5 });
     expect(result.bpm).toBe(120);
     expect(result.durationSec).toBe(16);
     expect(result.beats[0]).toBeCloseTo(0.5, 3);
     expect(result.beats[1] - result.beats[0]).toBeCloseTo(0.5, 3);
     expect(result.beats[result.beats.length - 1]).toBeLessThanOrEqual(16);
+    expect(result.waveform).toEqual(cached.waveform);
+    expect(result.tempoSource).toBe('manual');
   });
 
   it('passes the cached sections through unchanged (does not re-segment)', () => {
