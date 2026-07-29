@@ -91,6 +91,11 @@ export async function generateImage(params) {
   }
   // Strip the dispatcher-only `mode` field — providers don't expect it.
   delete normalized.mode;
+  // Per-render cloud-CLI model override. Dispatcher-only too: it is folded
+  // into the provider's own `model` param by resolveCloudProviderConfig below,
+  // so providers never see the raw field.
+  const cloudModel = normalized.cloudModel;
+  delete normalized.cloudModel;
   // i2i is supported by local (mflux/diffusers --image-path), codex
   // (gpt-image-2 image-edit via codex CLI's -i flag), and grok (image_edit).
   // External SD-API has no i2i wiring in this codebase, so drop the init
@@ -112,7 +117,7 @@ export async function generateImage(params) {
   // knobs (codexPath/model/effort vs grokPath/aspectRatio) come from the
   // resolver's spec, so a saved override always wins over the provider's own
   // internal defaults.
-  const cloud = resolveCloudProviderConfig(s, mode);
+  const cloud = resolveCloudProviderConfig(s, mode, { model: cloudModel });
   if (cloud) {
     if (!cloud.enabled) throw cloud.disabledError;
     if (mode === IMAGE_GEN_MODE.AGY && (normalized.initImagePath || normalized.referenceImagePaths?.length)) {

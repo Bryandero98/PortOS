@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Gamepad2, Plus } from 'lucide-react';
+import { ArrowLeft, Boxes, Gamepad2, Images, MessageSquare, Plus } from 'lucide-react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import toast from '../components/ui/Toast';
 import AppContextPicker from '../components/AppContextPicker.jsx';
 import GameBindings from '../components/games/GameBindings.jsx';
 import GameCompilePanel from '../components/games/GameCompilePanel.jsx';
 import GameFeedback from '../components/games/GameFeedback.jsx';
+import TabPills from '../components/ui/TabPills.jsx';
+import useDrawerTab from '../hooks/useDrawerTab.js';
 import {
   bindGameMusic,
   bindGameSprite,
@@ -13,24 +15,47 @@ import {
   createGame,
   getApps,
   getGame,
+  getGameIntegrity,
   listGames,
   listSpriteRecords,
   listTracks,
+  launchNativeApp,
   requestGameFeedback,
+  startApp,
   unbindGameMusic,
   unbindGameSprite,
 } from '../services/api.js';
 import { timeAgo } from '../utils/formatters.js';
 
 const silent = { silent: true };
+const DETAIL_TABS = [
+  { id: 'bundle', label: 'Bundle', icon: Boxes },
+  {
+    id: 'assets',
+    label: 'Assets',
+    icon: Images,
+    count: (game) => game.spriteBindings.length + game.musicBindings.length,
+  },
+  { id: 'feedback', label: 'Feedback', icon: MessageSquare, count: (game) => game.feedbackHistory.length },
+];
+const DETAIL_TAB_IDS = DETAIL_TABS.map((tab) => tab.id);
 
 export default function Game() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const [activeTab, setActiveTab] = useDrawerTab('gameTab', 'bundle', DETAIL_TAB_IDS);
   const [games, setGames] = useState([]);
   const [apps, setApps] = useState([]);
   const [sprites, setSprites] = useState([]);
   const [tracks, setTracks] = useState([]);
+  // Integrity is keyed by the game it describes, never stored bare. `/game/A` →
+  // `/game/B` reuses the same route, so the component does NOT remount: unkeyed
+  // state would render B's panel with A's verdict — enabling "Start game" for a
+  // game with no verified bundle — and an in-flight fetch for A that resolves
+  // after B's would overwrite B's result permanently, with nothing to clear it.
+  const [integrityFor, setIntegrityFor] = useState(null);
+  const [integrityFetching, setIntegrityFetching] = useState(false);
+  const [compileError, setCompileError] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
   const [name, setName] = useState('');
@@ -58,6 +83,33 @@ export default function Game() {
 
   useEffect(() => { load(); }, [load]);
 
+  const refreshIntegrity = useCallback(async () => {
+    if (!id) {
+      setIntegrityFor(null);
+      return;
+    }
+    setIntegrityFetching(true);
+    const data = await getGameIntegrity(id, silent).catch(() => null);
+    setIntegrityFor({ gameId: id, data });
+    setIntegrityFetching(false);
+  }, [id]);
+
+  useEffect(() => {
+    refreshIntegrity();
+  }, [refreshIntegrity]);
+
+  // Only a result carrying THIS game's id counts. Anything else — another
+  // game's verdict, or nothing fetched yet — reads as "still loading", which
+  // keeps every gate closed rather than open on a stale `canLaunch`.
+  //
+  // `integrityFor && id &&` is load-bearing, not defensive padding: on the index
+  // route `id` is undefined AND there is no result, so a bare
+  // `integrityFor?.gameId === id` compares undefined to undefined, matches, and
+  // dereferences null.
+  const matchesGame = Boolean(integrityFor && id && integrityFor.gameId === id);
+  const integrity = matchesGame ? integrityFor.data : null;
+  const integrityLoading = integrityFetching || !matchesGame;
+
   const game = useMemo(() => games.find((entry) => entry.id === id) || null, [games, id]);
   const app = apps.find((entry) => entry.id === game?.appId);
   const replaceGame = (updated) => setGames((current) =>
@@ -82,18 +134,52 @@ export default function Game() {
     setBusy('');
     if (!updated) { toast.error('Game update failed'); return false; }
     replaceGame(updated);
+    setCompileError('');
+    await refreshIntegrity();
     if (successMessage) toast.success(successMessage);
     return true;
   };
 
   const compile = async () => {
     setBusy('compile');
-    const result = await compileGameAssets(game.id, silent).catch(() => null);
+    setCompileError('');
+    let message = '';
+    const result = await compileGameAssets(game.id, silent)
+      .catch((error) => { message = error?.message || 'Bundle compilation failed'; return null; });
     const refreshed = result ? await getGame(game.id, silent).catch(() => null) : null;
+    await refreshIntegrity();
     setBusy('');
-    if (!result || !refreshed) { toast.error('Bundle compilation failed'); return; }
+    if (!result) {
+      setCompileError(message || 'Bundle compilation failed');
+      return;
+    }
+    const built = result.created
+      ? `Built and verified bundle v${result.version}`
+      : `Bundle v${result.version} is already verified`;
+    // The build landed — say so. A failed re-read is a separate, lesser problem
+    // (this view is out of date), not evidence the build failed; reporting it as
+    // "Bundle compilation failed" would contradict the Verified badge that the
+    // independent integrity refresh just set.
+    toast.success(built);
+    if (!refreshed) {
+      setCompileError('The bundle was built, but this page could not reload it. Refresh to see the new version.');
+      return;
+    }
     replaceGame(refreshed);
-    toast.success(result.created ? `Compiled bundle v${result.version}` : `Bundle v${result.version} is already current`);
+  };
+
+  const launch = async () => {
+    if (!app || !integrity?.canLaunch) return;
+    setBusy('launch');
+    const result = await (app.nativeLaunch
+      ? launchNativeApp(app.id, silent)
+      : startApp(app.id, silent)).catch(() => null);
+    setBusy('');
+    if (!result?.success) {
+      toast.error('Game launch failed');
+      return;
+    }
+    toast.success(app.nativeLaunch?.label || 'Game started');
   };
 
   const feedback = async (payload) => {
@@ -196,35 +282,77 @@ export default function Game() {
     );
   }
 
-  const bindingBusy = Boolean(busy && busy !== 'compile' && busy !== 'feedback');
+  // Binding actions are namespaced so a new non-binding action (compile,
+  // feedback, launch, …) doesn't have to be remembered in an exclusion list.
+  const bindingBusy = /^(un)?bind-/.test(busy);
   return (
     <div className="mx-auto max-w-6xl space-y-4">
-      <header>
-        <Link to="/game" className="mb-2 inline-flex min-h-[44px] items-center gap-2 text-sm text-gray-400 hover:text-white">
-          <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-          All Games
-        </Link>
-        <div className="flex items-center gap-3">
-          <Gamepad2 className="h-7 w-7 text-port-accent" aria-hidden="true" />
-          <div>
-            <h1 className="text-2xl font-bold text-white">{game.name}</h1>
-            <p className="text-sm text-gray-400">{app?.name || 'Managed app unavailable'}</p>
+      <header className="flex flex-col justify-between gap-2 sm:flex-row sm:items-end">
+        <div>
+          <Link to="/game" className="mb-2 inline-flex min-h-[44px] items-center gap-2 text-sm text-gray-400 hover:text-white">
+            <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+            All Games
+          </Link>
+          <div className="flex items-center gap-3">
+            <Gamepad2 className="h-7 w-7 text-port-accent" aria-hidden="true" />
+            <div>
+              <h1 className="text-2xl font-bold text-white">{game.name}</h1>
+              <p className="text-sm text-gray-400">{app?.name || 'Managed app unavailable'}</p>
+            </div>
           </div>
+        </div>
+        <div className="flex items-center gap-2 text-xs text-gray-400">
+          <span>{game.spriteBindings.length} sprites</span>
+          <span aria-hidden="true">·</span>
+          <span>{game.musicBindings.length} {game.musicBindings.length === 1 ? 'music track' : 'music tracks'}</span>
         </div>
       </header>
 
-      <GameBindings
-        game={game}
-        sprites={sprites}
-        tracks={tracks}
-        busy={bindingBusy}
-        onBindSprite={(spriteId) => mutate('bind-sprite', () => bindGameSprite(game.id, spriteId, silent), 'Sprite bound')}
-        onUnbindSprite={(spriteId) => mutate('unbind-sprite', () => unbindGameSprite(game.id, spriteId, silent), 'Sprite unbound')}
-        onBindMusic={(trackId) => mutate('bind-music', () => bindGameMusic(game.id, trackId, silent), 'Music bound')}
-        onUnbindMusic={(bindingId) => mutate('unbind-music', () => unbindGameMusic(game.id, bindingId, silent), 'Music unbound')}
+      <TabPills
+        tabs={DETAIL_TABS.map((tab) => ({ ...tab, count: tab.count?.(game) }))}
+        activeTab={activeTab}
+        onChange={setActiveTab}
+        ariaLabel="Game workspace sections"
+        controlsIdPrefix="game-panel"
+        mobileDropdown
+        mobileSelectId="game-section"
       />
-      <GameCompilePanel game={game} compiling={busy === 'compile'} onCompile={compile} />
-      <GameFeedback history={game.feedbackHistory} submitting={busy === 'feedback'} onSubmit={feedback} />
+
+      {activeTab === 'bundle' && (
+        <div id="game-panel-bundle" role="tabpanel" aria-labelledby="tab-bundle">
+          <GameCompilePanel
+            game={game}
+            integrity={integrity}
+            loadingIntegrity={integrityLoading}
+            compiling={busy === 'compile'}
+            launching={busy === 'launch'}
+            compileError={compileError}
+            onCompile={compile}
+            onLaunch={launch}
+            onRetryIntegrity={refreshIntegrity}
+          />
+        </div>
+      )}
+      {activeTab === 'assets' && (
+        <div id="game-panel-assets" role="tabpanel" aria-labelledby="tab-assets">
+          <GameBindings
+            game={game}
+            sprites={sprites}
+            tracks={tracks}
+            integrity={integrity}
+            busy={bindingBusy}
+            onBindSprite={(spriteId) => mutate('bind-sprite', () => bindGameSprite(game.id, spriteId, silent), 'Sprite bound')}
+            onUnbindSprite={(spriteId) => mutate('unbind-sprite', () => unbindGameSprite(game.id, spriteId, silent), 'Sprite unbound')}
+            onBindMusic={(trackId) => mutate('bind-music', () => bindGameMusic(game.id, trackId, silent), 'Music bound')}
+            onUnbindMusic={(bindingId) => mutate('unbind-music', () => unbindGameMusic(game.id, bindingId, silent), 'Music unbound')}
+          />
+        </div>
+      )}
+      {activeTab === 'feedback' && (
+        <div id="game-panel-feedback" role="tabpanel" aria-labelledby="tab-feedback">
+          <GameFeedback history={game.feedbackHistory} submitting={busy === 'feedback'} onSubmit={feedback} />
+        </div>
+      )}
     </div>
   );
 }

@@ -10,6 +10,7 @@ vi.mock('../services/games/index.js', () => ({
   createGame: vi.fn(),
   deleteGame: vi.fn(),
   getGame: vi.fn(),
+  getGameIntegrity: vi.fn(),
   listGames: vi.fn(async () => []),
   requestGameFeedback: vi.fn(),
   unbindMusic: vi.fn(),
@@ -53,6 +54,24 @@ describe('Game routes', () => {
     const response = await request(makeApp()).post('/api/games/game-1/compile');
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ version: 2, created: true });
+  });
+
+  it('returns bundle integrity preflight details', async () => {
+    games.getGameIntegrity.mockResolvedValueOnce({
+      readyToCompile: false,
+      issues: [{ code: 'SPRITE_ATLAS_REQUIRED' }],
+    });
+    const response = await request(makeApp()).get('/api/games/game-1/integrity');
+    expect(response.status).toBe(200);
+    expect(response.body.readyToCompile).toBe(false);
+    expect(games.getGameIntegrity).toHaveBeenCalledWith('game-1');
+  });
+
+  it('404s the integrity preflight for a game that does not exist', async () => {
+    games.getGameIntegrity.mockResolvedValueOnce(null);
+    const response = await request(makeApp()).get('/api/games/missing/integrity');
+    expect(response.status).toBe(404);
+    expect(response.body.code).toBe('NOT_FOUND');
   });
 
   it('passes explicit provider, model, effort, and prompt to feedback', async () => {

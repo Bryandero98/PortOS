@@ -66,6 +66,14 @@ const generateSchema = z.object({
   // `imageGen.mode` from settings.json.
   mode: z.enum(IMAGE_GEN_MODES).optional(),
   modelId: z.string().max(64).optional(),
+  // Per-render override of a cloud CLI's session model, replacing the saved
+  // `settings.imageGen.<mode>.model` for this one queue item. Deliberately NOT
+  // `modelId`: that field carries a *local* model id (`dev`, `schnell`), and a
+  // form that keeps it populated while the user flips to a cloud backend would
+  // otherwise hand the CLI an id it rejects. Ignored by providers whose spec
+  // has no model knob (grok). Same charset as the provider-side MODEL_ID_RE so
+  // a typo'd id fails validation here rather than at spawn time.
+  cloudModel: z.string().max(64).regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/, 'invalid cloud model id').optional(),
   width: imageEdgeSchema,
   height: imageEdgeSchema,
   steps: z.number().int().min(1).max(150).optional(),
@@ -396,7 +404,12 @@ router.post('/generate', imageGenUploads, asyncHandler(async (req, res) => {
   // call with no local single-flight constraint to absorb. `settings` and
   // `mode` were already resolved above (so the FLUX.2 + local-backend gate
   // could fire before staging any uploads).
-  const cloud = resolveCloudProviderConfig(settings, mode);
+  // `cloudModel` is a dispatcher-level knob, not a provider param — the
+  // resolver folds it into the provider's own `model`, so drop the raw field
+  // before it rides into the persisted job params.
+  const cloudModel = params.cloudModel;
+  delete params.cloudModel;
+  const cloud = resolveCloudProviderConfig(settings, mode, { model: cloudModel });
   if (cloud) {
     // Reject up-front rather than enqueueing a doomed job — the cloud CLIs are
     // gated behind an explicit toggle each (not every Codex account has access

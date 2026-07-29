@@ -50,11 +50,25 @@ export default function ImageGenControls({
   modelStatus = null,
   onModelDownload,
   onModelDownloadCancel,
+  // Per-render cloud-CLI model override. `cloudModels` is the live catalog —
+  // an id outside it makes the CLI exit before generating, so the select only
+  // renders once the probe has returned something AND the host wired
+  // `onCloudModelChange`. Omitting either prop hides the knob entirely rather
+  // than shipping a control whose value the host would silently drop. No mode
+  // check here: the host owns which backends it supplies a catalog for (see
+  // supportsCloudModelOverride), so a second CLI backend is a caller change,
+  // not an edit to this shared component.
+  cloudModels = [],
+  cloudModel = '',
+  onCloudModelChange,
+  cloudModelLabel = 'Model',
+  cloudModelDefaultLabel = '',
 }) {
   const isLocal = mode === IMAGE_GEN_MODE.LOCAL;
   // Cloud-CLI backends (codex, grok) pick model/steps/seed internally — only
   // resolution + style fields apply, so the local-only knobs are hidden.
   const isCloudCli = isCloudCliMode(mode);
+  const showCloudModel = !!onCloudModelChange && cloudModels.length > 0;
 
   const currentModel = models.find((m) => m.id === modelId);
   const isFlux2 = currentModel?.runner === RUNNER_FAMILIES.FLUX2;
@@ -86,6 +100,25 @@ export default function ImageGenControls({
               estimateLabel={deriveSizeEstimate(currentModel?.name)}
             />
           )}
+        </FormField>
+      )}
+
+      {/* The cloud CLI's own model, overridable per queue item. Blank = inherit
+          the Settings default, so clearing the select never pins an empty id —
+          the server treats a blank `cloudModel` as "use the saved value". */}
+      {showCloudModel && (
+        <FormField label={cloudModelLabel} labelClassName="block text-xs font-medium text-gray-400 mb-1">
+          <select
+            value={cloudModel}
+            onChange={(e) => onCloudModelChange(e.target.value)}
+            disabled={disabled}
+            className={inputCls}
+          >
+            <option value="">
+              {cloudModelDefaultLabel ? `Settings default (${cloudModelDefaultLabel})` : 'Settings default'}
+            </option>
+            {cloudModels.map((id) => <option key={id} value={id}>{id}</option>)}
+          </select>
         </FormField>
       )}
 

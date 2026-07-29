@@ -79,6 +79,53 @@ describe('resolveCloudProviderConfig', () => {
     expect(fallback.providerParams.model).toBe(ANTIGRAVITY_CONFIGURED_DEFAULT);
   });
 
+  it('lets a per-render model override win over the saved default', () => {
+    const agy = resolveCloudProviderConfig(
+      settingsWith({ agy: { enabled: true, agyPath: '/bin/agy', model: 'saved-model' } }),
+      IMAGE_GEN_MODE.AGY,
+      { model: 'gemini-3.6-flash-high' },
+    );
+    expect(agy.modelOverride).toBe('gemini-3.6-flash-high');
+    expect(agy.modelId).toBe('gemini-3.6-flash-high');
+    expect(agy.jobParams).toEqual({
+      mode: IMAGE_GEN_MODE.AGY,
+      agyPath: '/bin/agy',
+      model: 'gemini-3.6-flash-high',
+    });
+
+    const codex = resolveCloudProviderConfig(
+      settingsWith({ codex: { enabled: true, model: 'gpt-5.4' } }),
+      IMAGE_GEN_MODE.CODEX,
+      { model: 'gpt-5.6-luna' },
+    );
+    expect(codex.modelId).toBe('gpt-5.6-luna');
+    expect(codex.providerParams.model).toBe('gpt-5.6-luna');
+  });
+
+  it('treats a blank or whitespace override as "inherit the saved default"', () => {
+    for (const model of ['', '   ', undefined, null, 42]) {
+      const cloud = resolveCloudProviderConfig(
+        settingsWith({ agy: { enabled: true, model: 'saved-model' } }),
+        IMAGE_GEN_MODE.AGY,
+        { model },
+      );
+      expect(cloud.modelOverride).toBeNull();
+      expect(cloud.modelId).toBe('saved-model');
+    }
+  });
+
+  it('ignores a model override for a provider with no model knob (grok)', () => {
+    const cloud = resolveCloudProviderConfig(
+      settingsWith({ grok: { enabled: true, grokPath: '/bin/grok' } }),
+      IMAGE_GEN_MODE.GROK,
+      { model: 'not-a-thing' },
+    );
+    expect(cloud.supportsModelOverride).toBe(false);
+    expect(cloud.modelOverride).toBeNull();
+    expect(cloud.modelId).toBe('grok-imagegen');
+    expect(cloud.jobParams).not.toHaveProperty('model');
+  });
+
   it('produces a ready-to-throw ServerError + skip reason when disabled', () => {
     const cloud = resolveCloudProviderConfig(settingsWith({ grok: { enabled: false } }), IMAGE_GEN_MODE.GROK);
     expect(cloud.enabled).toBe(false);

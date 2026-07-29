@@ -81,3 +81,52 @@ describe('ImageGenControls — custom dimensions', () => {
     expect(screen.getByLabelText('Height')).toBeTruthy();
   });
 });
+
+// The per-render cloud-CLI model picker. Gated on BOTH a non-empty catalog and
+// an `onCloudModelChange` handler — rendering a select whose value the host
+// would silently drop is worse than not offering the knob at all.
+describe('ImageGenControls — per-render cloud model override', () => {
+  const agyProps = (overrides = {}) => baseProps({
+    mode: IMAGE_GEN_MODE.AGY,
+    cloudModels: ['gemini-3.6-flash-high', 'gemini-3.1-pro-high'],
+    cloudModelLabel: 'Agent model',
+    onCloudModelChange: vi.fn(),
+    ...overrides,
+  });
+
+  it('hides the picker when the probe returned no models', () => {
+    render(<ImageGenControls {...agyProps({ cloudModels: [] })} />);
+    expect(screen.queryByLabelText('Agent model')).toBeNull();
+  });
+
+  it('hides the picker when the host wired no change handler', () => {
+    render(<ImageGenControls {...agyProps({ onCloudModelChange: undefined })} />);
+    expect(screen.queryByLabelText('Agent model')).toBeNull();
+  });
+
+  it('lists every probed model plus a blank "Settings default" option', () => {
+    render(<ImageGenControls {...agyProps({ cloudModelDefaultLabel: 'gemini-3.5-flash-high' })} />);
+    const select = screen.getByLabelText('Agent model');
+    expect([...select.options].map((o) => o.value))
+      .toEqual(['', 'gemini-3.6-flash-high', 'gemini-3.1-pro-high']);
+    // Naming what blank resolves to is the point — "Settings default" alone
+    // leaves the user guessing which model a blank select actually runs.
+    expect(select.options[0].textContent).toBe('Settings default (gemini-3.5-flash-high)');
+  });
+
+  it('emits the picked id, and emits blank when cleared back to the default', () => {
+    const onCloudModelChange = vi.fn();
+    render(<ImageGenControls {...agyProps({ cloudModel: '', onCloudModelChange })} />);
+    const select = screen.getByLabelText('Agent model');
+    fireEvent.change(select, { target: { value: 'gemini-3.1-pro-high' } });
+    expect(onCloudModelChange).toHaveBeenLastCalledWith('gemini-3.1-pro-high');
+    fireEvent.change(select, { target: { value: '' } });
+    expect(onCloudModelChange).toHaveBeenLastCalledWith('');
+  });
+
+  it('hides the local-only model/steps/seed knobs on a cloud backend', () => {
+    render(<ImageGenControls {...agyProps()} />);
+    expect(screen.getByLabelText('Agent model')).toBeTruthy();
+    expect(screen.queryByLabelText('Model')).toBeNull();
+  });
+});

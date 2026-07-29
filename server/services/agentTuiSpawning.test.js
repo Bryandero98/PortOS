@@ -405,6 +405,10 @@ describe('spawnTuiAgent runtime', () => {
       cleanupWorktreeFn: vi.fn().mockResolvedValue(undefined),
       isTruthyMetaFn: (v) => !!v
     };
+    // Default the connectivity probe to "online" so the idle reaper behaves
+    // exactly as before for every existing test — no real network I/O. The
+    // outage tests below inject their own resolver.
+    const checkOnlineFn = overrides.checkOnlineFn ?? vi.fn().mockResolvedValue(true);
     return spawnTuiAgent({
       agentId,
       task,
@@ -417,6 +421,7 @@ describe('spawnTuiAgent runtime', () => {
       agentDir,
       executionId,
       laneName,
+      checkOnlineFn,
       ...helpers,
     });
   }
@@ -788,14 +793,11 @@ describe('spawnTuiAgent runtime', () => {
   //
   // Drives the same PTY sequence as the idle-no-changes test: prompt echo →
   // submit → an ADVANCING work counter → idle out, with a clean worktree.
-  async function driveIdleWithWorkOnCleanTree(overrides) {
-    vi.mocked(gitService.getStatus).mockResolvedValue({ clean: true, files: [] });
-    vi.mocked(gitService.getDiff).mockResolvedValue('');
-
-    let resolveComplete;
-    const completeDone = new Promise((r) => { resolveComplete = r; });
-    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
-
+  // Shared PTY choreography: boot banner → prompt echo (paste verify) → submit
+  // Enter → an ADVANCING work counter (sets workActivity.active and
+  // lastOutputAt > promptSentAt). Leaves fake timers running at the second
+  // counter; callers add their own tail (idle advance + git/finalize/assertions).
+  async function driveToSubmittedAndWorking(overrides = {}) {
     runSpawn(overrides);
     await flushMicrotasks();
 
@@ -814,6 +816,17 @@ describe('spawnTuiAgent runtime', () => {
     await capturedOnData(Buffer.from('(1s · thinking with high effort)\n'));
     await vi.advanceTimersByTimeAsync(800);
     await capturedOnData(Buffer.from('(2s · thinking with high effort)\n'));
+  }
+
+  async function driveIdleWithWorkOnCleanTree(overrides) {
+    vi.mocked(gitService.getStatus).mockResolvedValue({ clean: true, files: [] });
+    vi.mocked(gitService.getDiff).mockResolvedValue('');
+
+    let resolveComplete;
+    const completeDone = new Promise((r) => { resolveComplete = r; });
+    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
+
+    await driveToSubmittedAndWorking(overrides);
 
     await vi.advanceTimersByTimeAsync(21000);
     vi.useRealTimers();
@@ -891,6 +904,73 @@ describe('spawnTuiAgent runtime', () => {
 
     expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
       expect.objectContaining({ success: false, completionReason: 'idle-no-activity' })
+    );
+  });
+
+  // ── 1d. Connectivity-aware idle reaper ──────────────────────────────────────
+  // When the machine loses internet, a live TUI goes silent (it can't reach the
+  // model) exactly like a hung or finished agent looks to the idle timer — so an
+  // outage would reap an agent that's only blocked on the network. The reaper is
+  // the ONLY liveness signal for a genuinely hung TUI, so it isn't removed —
+  // it's gated on a reachability probe and DEFERS while offline.
+  const OFFLINE_TUI_CONFIG = {
+    command: 'codex',
+    args: [],
+    commandLine: 'codex',
+    promptDelayMs: 100,
+    // A larger idle window than the fast default so the lead probe
+    // (idleTimeoutMs/2, capped) resolves on an earlier 5s tick than the reap
+    // tick — mirroring how a real 3-minute window spans many probe ticks.
+    idleTimeoutMs: 15000,
+    maxRuntimeMs: 3600000,
+  };
+
+  async function driveToIdleSilence({ checkOnlineFn, silenceMs = 45000 }) {
+    await driveToSubmittedAndWorking({ tuiConfig: OFFLINE_TUI_CONFIG, checkOnlineFn });
+    // Go silent well past the 15s idle window (several 5s ticks) so the lead
+    // probe fires and resolves before the reap tick.
+    await vi.advanceTimersByTimeAsync(silenceMs);
+    await flushMicrotasks();
+  }
+
+  it('idle reaper DEFERS while the machine is offline (does not reap an agent that lost internet)', async () => {
+    const checkOnlineFn = vi.fn().mockResolvedValue(false);
+    await driveToIdleSilence({ checkOnlineFn });
+
+    expect(checkOnlineFn).toHaveBeenCalled(); // the reachability probe fired
+    expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalled(); // …and the reap was deferred
+  });
+
+  it('idle reaper still reaps on the SAME window when online (deferral is outage-specific, not a timing artifact)', async () => {
+    let resolveComplete;
+    const completeDone = new Promise((r) => { resolveComplete = r; });
+    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
+
+    // dirty tree (default git mock) → idle-complete success
+    await driveToIdleSilence({ checkOnlineFn: vi.fn().mockResolvedValue(true) });
+    vi.useRealTimers();
+    await completeDone;
+
+    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ success: true, completionReason: 'idle-complete' })
+    );
+  });
+
+  it('idle reaper resumes reaping once connectivity RETURNS (deferral is not permanent)', async () => {
+    let resolveComplete;
+    const completeDone = new Promise((r) => { resolveComplete = r; });
+    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
+
+    // Offline for the first probe, then the connection comes back. The reap is
+    // deferred through the outage, then fires after the reconnect grace window.
+    const checkOnlineFn = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+    await driveToIdleSilence({ checkOnlineFn, silenceMs: 90000 });
+    vi.useRealTimers();
+    await completeDone;
+
+    expect(checkOnlineFn.mock.calls.length).toBeGreaterThan(1); // probed again after the outage
+    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ success: true, completionReason: 'idle-complete' })
     );
   });
 

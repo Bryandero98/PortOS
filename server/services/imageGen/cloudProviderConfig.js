@@ -34,26 +34,44 @@ import {
  *                   Codex's `model` carries the effective (defaulted) id so the
  *                   queue row reports what actually renders; the provider
  *                   re-applies the same default, so rendering is unchanged.
+ *  - `supportsModelOverride` — whether a per-render `cloudModel` may replace the
+ *                   saved default for one queue item. Grok is `false`: its
+ *                   `image_gen` tool runs on a fixed xAI backend with no model
+ *                   knob at all, so accepting an override there would be a lie.
+ *
+ * `modelId`/`params` both take `(config, override)` where `override` is the
+ * per-render model id (or a falsy value when the render inherits the saved
+ * default). Precedence is override → saved default → provider default.
  */
 export const CLOUD_PROVIDER_SPECS = Object.freeze({
   [IMAGE_GEN_MODE.CODEX]: Object.freeze({
     label: 'Codex Imagegen',
     errorCode: 'CODEX_IMAGEGEN_DISABLED',
-    modelId: (c) => c.model || CODEX_IMAGEGEN_DEFAULT_MODEL,
-    params: (c) => ({ codexPath: c.codexPath, model: c.model || CODEX_IMAGEGEN_DEFAULT_MODEL, effort: c.effort }),
+    supportsModelOverride: true,
+    modelId: (c, override) => override || c.model || CODEX_IMAGEGEN_DEFAULT_MODEL,
+    params: (c, override) => ({
+      codexPath: c.codexPath,
+      model: override || c.model || CODEX_IMAGEGEN_DEFAULT_MODEL,
+      effort: c.effort,
+    }),
   }),
   [IMAGE_GEN_MODE.GROK]: Object.freeze({
     label: 'Grok Imagegen',
     errorCode: 'GROK_IMAGEGEN_DISABLED',
     // Grok's image tools run on xAI's fixed image backend — no model knob.
+    supportsModelOverride: false,
     modelId: () => 'grok-imagegen',
     params: (g) => ({ grokPath: g.grokPath, aspectRatio: g.aspectRatio }),
   }),
   [IMAGE_GEN_MODE.AGY]: Object.freeze({
     label: 'Agy Imagegen',
     errorCode: 'AGY_IMAGEGEN_DISABLED',
-    modelId: (a) => a.model || ANTIGRAVITY_CONFIGURED_DEFAULT,
-    params: (a) => ({ agyPath: a.agyPath, model: a.model || ANTIGRAVITY_CONFIGURED_DEFAULT }),
+    supportsModelOverride: true,
+    modelId: (a, override) => override || a.model || ANTIGRAVITY_CONFIGURED_DEFAULT,
+    params: (a, override) => ({
+      agyPath: a.agyPath,
+      model: override || a.model || ANTIGRAVITY_CONFIGURED_DEFAULT,
+    }),
   }),
 });
 
@@ -73,18 +91,29 @@ export const CLOUD_PROVIDER_SPECS = Object.freeze({
  *  - `disabledError`  — a ready-to-throw ServerError (null when enabled).
  *  - `disabledReason` — `'<mode>-disabled'`, for callers that skip silently.
  *  - `connectionReason` — reason string for `checkConnection` responses.
+ *
+ * `overrides.model` is the per-render model id (the request's `cloudModel`).
+ * It only applies to providers whose spec sets `supportsModelOverride` — a
+ * value passed for grok is ignored rather than silently changing nothing at
+ * spawn time. Blank/whitespace is treated as "inherit the saved default", so
+ * a cleared select in the UI round-trips to the settings value instead of
+ * pinning an empty model id.
  */
-export function resolveCloudProviderConfig(settings, mode) {
+export function resolveCloudProviderConfig(settings, mode, overrides = {}) {
   const spec = CLOUD_PROVIDER_SPECS[mode];
   if (!spec) return null;
   const config = settings?.imageGen?.[mode] || {};
   const enabled = config.enabled === true;
-  const providerParams = spec.params(config);
+  const requestedModel = typeof overrides.model === 'string' ? overrides.model.trim() : '';
+  const modelOverride = spec.supportsModelOverride && requestedModel ? requestedModel : null;
+  const providerParams = spec.params(config, modelOverride);
   return {
     mode,
     config,
     enabled,
-    modelId: spec.modelId(config),
+    supportsModelOverride: spec.supportsModelOverride === true,
+    modelOverride,
+    modelId: spec.modelId(config, modelOverride),
     providerParams,
     jobParams: { mode, ...providerParams },
     disabledError: enabled ? null : new ServerError(

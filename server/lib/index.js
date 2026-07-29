@@ -167,6 +167,7 @@ export * from './ytdlp.js';
 
 // === Networking ===
 export * from './abortTimeout.js';
+export * from './connectivity.js';
 export * from './fetchWithTimeout.js';
 export * from './requestAbort.js';
 export * from './httpClient.js';

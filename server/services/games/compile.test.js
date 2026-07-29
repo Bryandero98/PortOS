@@ -20,9 +20,17 @@ vi.mock('./store.js', () => ({
 vi.mock('../../lib/fileUtils.js', () => ({
   PATHS: { music: '/tmp/music' },
   atomicWrite: vi.fn(async () => { state.manifestExists = true; }),
-  pathExists: vi.fn(async () => state.manifestExists),
-  sha256File: vi.fn(async (path) =>
-    path.includes('/manifests/') ? state.manifestSha256 : 'audio-sha'),
+  pathExists: vi.fn(async (path) =>
+    path.includes('/manifests/') ? state.manifestExists : true),
+  readJSONFile: vi.fn(async () => null),
+  sha256Text: vi.fn((value) => `text-sha:${String(value).length}`),
+  sha256File: vi.fn(async (path) => {
+    if (path.includes('/manifests/')) return state.manifestSha256;
+    const spriteId = path.match(/\/sprites\/([^/]+)\//)?.[1];
+    if (path.endsWith('.png')) return `atlas-${spriteId}`;
+    if (path.endsWith('.json')) return `manifest-${spriteId}`;
+    return 'audio-sha';
+  }),
 }));
 
 vi.mock('../apps.js', () => ({
@@ -47,12 +55,22 @@ vi.mock('../sprites/atlas.js', () => ({
   })),
 }));
 
+vi.mock('../sprites/paths.js', () => ({
+  listRuntimeAtlasAssets: vi.fn(async () => []),
+  safeResolveSpriteAssetPath: vi.fn((id, path) => `/tmp/sprites/${id}/${path}`),
+}));
+
+vi.mock('../sprites/recordsLogic.js', () => ({
+  isValidSpriteId: vi.fn(() => true),
+}));
+
 vi.mock('../tracks/index.js', () => ({
   getTrack: vi.fn(async (id) => ({ id, title: `Track ${id}`, audioFilename: `${id}.ogg` })),
 }));
 
 vi.mock('../pipeline/musicLibrary.js', () => ({
   statMusicTrack: vi.fn(async (filename) => ({ filename, sizeBytes: 100 })),
+  isSafeMusicFilename: vi.fn((name) => /\.(?:mp3|wav|m4a|ogg|flac)$/i.test(String(name || ''))),
 }));
 
 import { atomicWrite } from '../../lib/fileUtils.js';
