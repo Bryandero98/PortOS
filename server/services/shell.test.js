@@ -164,7 +164,19 @@ describe('createShellSession', () => {
     await flushMicrotasks();
     expect(shell.getSession(id)).toBeNull();
     expect(socket.emit).toHaveBeenCalledWith('shell:exit', { sessionId: id, code: 0 });
-    expect(onExit).toHaveBeenCalledWith({ exitCode: 0 });
+    expect(onExit).toHaveBeenCalledWith({ exitCode: 0, signal: null });
+  });
+
+  // node-pty reports a signal-terminated shell as exitCode 0 with the signal in a
+  // separate field. Forwarding it is what lets the TUI spawner tell "the shell
+  // finished" from "pm2 killed the shell out from under a running agent" (#3202).
+  it('on PTY exit: forwards node-pty signal to the onExit hook', async () => {
+    const onExit = vi.fn();
+    const id = shell.createShellSession(makeSocket(), { onExit });
+    ptyInstances[0].emitExit({ exitCode: 0, signal: 15 });
+    await flushMicrotasks();
+    expect(shell.getSession(id)).toBeNull();
+    expect(onExit).toHaveBeenCalledWith({ exitCode: 0, signal: 15 });
   });
 
   it('schedules initialCommand write after delay', () => {

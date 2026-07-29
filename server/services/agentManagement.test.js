@@ -78,6 +78,10 @@ vi.mock('./agentWorktreeCleanup.js', () => ({
   resolveTaskResumePatch: vi.fn().mockResolvedValue({})
 }));
 vi.mock('./agentFinalization.js', () => ({ dispatchRecoveredTaskOutputHook: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('../lib/hostShutdown.js', () => ({
+  readHostShutdownMarker: vi.fn().mockResolvedValue(null),
+  clearHostShutdownMarker: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock('./agentRunnerSync.js', () => ({ syncRunnerAgents: vi.fn().mockResolvedValue(0) }));
 vi.mock('./agentRunnerOutputBatchers.js', () => ({ flushRunnerOutputBatcher: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('./worktreeManager.js', () => ({ cleanupOrphanedWorktrees: vi.fn() }));
@@ -98,6 +102,8 @@ import { updateTask, addTask, getTaskById } from './cos.js';
 import { updateAgent } from './cosAgents.js';
 import { pauseAgentViaRunner } from './cosRunnerClient.js';
 import * as shellService from './shell.js';
+import { readHostShutdownMarker, clearHostShutdownMarker } from '../lib/hostShutdown.js';
+import { completeAgent as markAgentComplete } from './cos.js';
 import { activeAgents, runnerAgents, pausedAgents } from './agentState.js';
 
 describe('settleOrphanedCreativeDirectorRun — reap a dead CD agent run (#2705)', () => {
@@ -850,5 +856,112 @@ describe('orphan retries resume what the dead run left behind', () => {
 
     expect(resolveTaskResumePatch).toHaveBeenCalledWith(expect.objectContaining({ agentMetadata: null }));
     expect(updateTask).toHaveBeenCalledWith('task-1', expect.objectContaining({ status: 'pending' }), 'user');
+  });
+});
+
+// A PortOS restart kills every server-owned agent. Charging those runs the same
+// retry budget as a self-inflicted crash meant three routine restarts blocked the
+// task outright — and the second restart in the reported reproduction landed it in
+// the 30-minute orphan cooldown instead of resuming it (#3202).
+describe('host-restart interruptions are not charged orphan-retry budget (#3202)', () => {
+  const deadMetadata = { isWorktree: true, sourceWorkspace: '/repo', worktreeBranch: 'cos/task-1/agent-dead' };
+  const deadAgent = { id: 'agent-dead', status: 'running', pid: null, taskId: 'task-1', metadata: deadMetadata };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getAgents.mockResolvedValue([deadAgent]);
+    resolveTaskResumePatch.mockResolvedValue({ existingBranch: 'cos/task-1/agent-dead', resumedFromAgentId: 'agent-dead' });
+    readHostShutdownMarker.mockResolvedValue(null);
+    activeAgents.clear();
+    runnerAgents.clear();
+  });
+
+  const requeuedMetadata = () => updateTask.mock.calls.at(-1)[1].metadata;
+
+  it('requeues an interrupted run without incrementing orphanRetryCount or stamping lastOrphanedAt', async () => {
+    getTaskById.mockResolvedValue({
+      id: 'task-1', taskType: 'user', status: 'in_progress',
+      metadata: { orphanRetryCount: 1, lastOrphanedAt: '2020-01-01T00:00:00.000Z' },
+    });
+    readHostShutdownMarker.mockResolvedValue({ at: '2026-07-29T00:00:00.000Z', signal: 'SIGTERM', agentIds: ['agent-dead'] });
+
+    await cleanupOrphanedAgents();
+
+    expect(updateTask).toHaveBeenCalledWith('task-1', expect.objectContaining({ status: 'pending' }), 'user');
+    const metadata = requeuedMetadata();
+    // Budget untouched: same count, and the cooldown clock is NOT re-armed —
+    // a later genuine orphan still measures its cooldown from the last genuine one.
+    expect(metadata.orphanRetryCount).toBe(1);
+    expect(metadata.lastOrphanedAt).toBe('2020-01-01T00:00:00.000Z');
+    // ...but the interruption IS recorded, and the run stays resumable.
+    expect(metadata.interruptedByRestart).toBe(true);
+    expect(metadata.lastInterruptedAgentId).toBe('agent-dead');
+    expect(metadata.existingBranch).toBe('cos/task-1/agent-dead');
+  });
+
+  it('resumes an interrupted run even at the orphan-retry ceiling', async () => {
+    getTaskById.mockResolvedValue({
+      id: 'task-1', taskType: 'user', status: 'in_progress',
+      metadata: { orphanRetryCount: 3, totalSpawnCount: 3 },
+    });
+    readHostShutdownMarker.mockResolvedValue({ at: null, signal: 'SIGINT', agentIds: ['agent-dead'] });
+
+    await cleanupOrphanedAgents();
+
+    expect(updateTask).toHaveBeenCalledWith('task-1', expect.objectContaining({ status: 'pending' }), 'user');
+    expect(addTask).not.toHaveBeenCalled();
+  });
+
+  it('bypasses the orphan cooldown for an interrupted run', async () => {
+    getTaskById.mockResolvedValue({
+      id: 'task-1', taskType: 'user', status: 'in_progress',
+      // Orphaned a minute ago — an ordinary orphan would be blocked on cooldown.
+      metadata: { orphanRetryCount: 1, lastOrphanedAt: new Date(Date.now() - 60_000).toISOString() },
+    });
+    readHostShutdownMarker.mockResolvedValue({ at: null, signal: 'SIGTERM', agentIds: ['agent-dead'] });
+
+    await cleanupOrphanedAgents();
+
+    expect(updateTask).toHaveBeenCalledWith('task-1', expect.objectContaining({ status: 'pending' }), 'user');
+    expect(requeuedMetadata().blockedCategory).toBeUndefined();
+  });
+
+  it('still charges an agent NOT named in the marker (a genuine orphan alongside an interrupted one)', async () => {
+    getTaskById.mockResolvedValue({
+      id: 'task-1', taskType: 'user', status: 'in_progress',
+      metadata: { orphanRetryCount: 1 },
+    });
+    // Marker names a DIFFERENT agent — this one really did die on its own.
+    readHostShutdownMarker.mockResolvedValue({ at: null, signal: 'SIGTERM', agentIds: ['agent-other'] });
+
+    await cleanupOrphanedAgents();
+
+    const metadata = requeuedMetadata();
+    expect(metadata.orphanRetryCount).toBe(2);
+    expect(metadata.lastOrphanedAt).toEqual(expect.any(String));
+    expect(metadata.interruptedByRestart).toBeUndefined();
+  });
+
+  it('flags the interruption on the agent record and consumes the marker', async () => {
+    getTaskById.mockResolvedValue({ id: 'task-1', taskType: 'user', status: 'in_progress', metadata: {} });
+    readHostShutdownMarker.mockResolvedValue({ at: null, signal: 'SIGTERM', agentIds: ['agent-dead'] });
+
+    await cleanupOrphanedAgents();
+
+    expect(markAgentComplete).toHaveBeenCalledWith('agent-dead', expect.objectContaining({
+      success: false,
+      interruptedByRestart: true,
+      error: expect.stringContaining('restart'),
+    }));
+    expect(clearHostShutdownMarker).toHaveBeenCalled();
+  });
+
+  it('leaves the marker alone when it names nobody (nothing to reclassify)', async () => {
+    getTaskById.mockResolvedValue({ id: 'task-1', taskType: 'user', status: 'in_progress', metadata: {} });
+
+    await cleanupOrphanedAgents();
+
+    expect(clearHostShutdownMarker).not.toHaveBeenCalled();
+    expect(markAgentComplete).toHaveBeenCalledWith('agent-dead', expect.objectContaining({ interruptedByRestart: false }));
   });
 });

@@ -24,6 +24,7 @@ import { flushRunnerOutputBatcher } from './agentRunnerOutputBatchers.js';
 import { checkForTaskCommit } from './agentRunTracking.js';
 import { dispatchRecoveredTaskOutputHook } from './agentFinalization.js';
 import { PATHS } from '../lib/fileUtils.js';
+import { readHostShutdownMarker, clearHostShutdownMarker } from '../lib/hostShutdown.js';
 import { killProcessTree } from '../lib/bufferedSpawn.js';
 import { release } from './executionLanes.js';
 import { completeExecution, errorExecution } from './toolStateMachine.js';
@@ -560,6 +561,20 @@ export async function cleanupOrphanedAgents() {
   let cleanedCount = 0;
   const orphanedTaskIds = [];
 
+  // Agents the PREVIOUS process owned when it was signalled down (#3202). Their
+  // processes died because PortOS restarted, not because they failed — so they
+  // are *interrupted*, and must not be charged orphan-retry budget or held in the
+  // 30-minute orphan cooldown. A missing/garbled marker yields an empty set,
+  // which is exactly the pre-existing behavior (everything is an ordinary orphan).
+  const shutdownMarker = await readHostShutdownMarker().catch(() => null);
+  const interruptedByRestart = new Set(shutdownMarker?.agentIds || []);
+  if (interruptedByRestart.size > 0) {
+    emitLog('info', `🛑 Host restart marker: ${interruptedByRestart.size} agent(s) were interrupted by a PortOS restart`, {
+      count: interruptedByRestart.size,
+      shutdownAt: shutdownMarker?.at || null,
+    });
+  }
+
   // Get list of agents actively running in the CoS Runner
   const runnerActiveIds = new Set();
   const runnerAgentsList = await getActiveAgentsFromRunner().catch(() => []);
@@ -596,7 +611,10 @@ export async function cleanupOrphanedAgents() {
           }
         }
 
-        console.log(`🧹 Cleaning up orphaned agent ${agent.id} (PID ${agent.pid || 'unknown'} not running)`);
+        const interrupted = interruptedByRestart.has(agent.id);
+        console.log(interrupted
+          ? `🛑 Recovering agent ${agent.id} interrupted by a PortOS restart (PID ${agent.pid || 'unknown'} not running)`
+          : `🧹 Cleaning up orphaned agent ${agent.id} (PID ${agent.pid || 'unknown'} not running)`);
         const task = agent.taskId ? await getTask(agent.taskId).catch(() => null) : null;
         await dispatchRecoveredTaskOutputHook({
           agentId: agent.id,
@@ -606,8 +624,14 @@ export async function cleanupOrphanedAgents() {
         });
         await markComplete(agent.id, {
           success: false,
-          error: 'Agent process terminated unexpectedly',
-          orphaned: true
+          error: interrupted
+            ? 'Agent was interrupted by a PortOS server restart'
+            : 'Agent process terminated unexpectedly',
+          orphaned: true,
+          // Distinguishes the two in the agent record so the UI and any
+          // post-mortem can tell an infrastructure interruption from a real
+          // agent fault — they look identical from the process's point of view.
+          interruptedByRestart: interrupted,
         });
         cleanedCount++;
 
@@ -645,8 +669,17 @@ export async function cleanupOrphanedAgents() {
   // pointer reflects what actually survived — a dirty tree aborts removal, leaving
   // the whole worktree in place.
   for (const { taskId, agentId, agentMetadata } of orphanedTaskIds) {
-    await handleOrphanedTask(taskId, agentId, getTask, { agentMetadata });
+    await handleOrphanedTask(taskId, agentId, getTask, {
+      agentMetadata,
+      interrupted: interruptedByRestart.has(agentId),
+    });
   }
+
+  // Consume the marker. Doing it AFTER the retry pass (not before) means a crash
+  // mid-sweep leaves it in place and the next boot still classifies these agents
+  // correctly; re-reading a stale marker is harmless because the sweep only ever
+  // looks at agents still marked `running`.
+  if (interruptedByRestart.size > 0) await clearHostShutdownMarker();
 
   // Trigger evaluation to spawn new agents for retried tasks
   if (cleanedCount > 0) {
@@ -674,8 +707,12 @@ export async function cleanupOrphanedAgents() {
  * @param {object} [options.agentMetadata] - the dead agent's registered metadata
  *   (`isWorktree` / `sourceWorkspace` / `worktreeBranch` / `workspacePath`), used
  *   to work out whether its branch or worktree is worth resuming.
+ * @param {boolean} [options.interrupted] - the run died because PortOS itself was
+ *   restarted (identified from the host-shutdown marker), not because the agent
+ *   failed. Such a run is requeued immediately WITHOUT charging orphan-retry
+ *   budget or arming the orphan cooldown — see the retry-budget note below (#3202).
  */
-export async function handleOrphanedTask(taskId, agentId, getTaskByIdFn, { agentMetadata = null } = {}) {
+export async function handleOrphanedTask(taskId, agentId, getTaskByIdFn, { agentMetadata = null, interrupted = false } = {}) {
   const task = await getTaskByIdFn(taskId).catch(() => null);
   if (!task) {
     emitLog('warn', `Could not find task ${taskId} for orphaned agent ${agentId}`, { taskId, agentId });
@@ -715,8 +752,19 @@ export async function handleOrphanedTask(taskId, agentId, getTaskByIdFn, { agent
     return;
   }
 
-  // Get current retry count from task metadata
-  const retryCount = (Number(task.metadata?.orphanRetryCount) || 0) + 1;
+  // Get current retry count from task metadata.
+  //
+  // Retry budget and the cooldown exist to stop a task that keeps KILLING ITS OWN
+  // agent from spawning forever. A PortOS host restart is not that: the agent was
+  // healthy and PortOS took it down (#3202). Charging it a retry — and arming the
+  // 30-minute cooldown — punishes the task for our maintenance, and three routine
+  // restarts were enough to exhaust the budget and block the task outright. So an
+  // interrupted run costs no retry and arms no cooldown; it just requeues with a
+  // resume pointer. `MAX_TOTAL_SPAWNS` still applies, so nothing can spawn
+  // unboundedly even under a restart loop.
+  const retryCount = interrupted
+    ? (Number(task.metadata?.orphanRetryCount) || 0)
+    : (Number(task.metadata?.orphanRetryCount) || 0) + 1;
   const totalSpawns = Number(task.metadata?.totalSpawnCount) || 0;
   const taskType = task.taskType || 'user';
 
@@ -726,13 +774,21 @@ export async function handleOrphanedTask(taskId, agentId, getTaskByIdFn, { agent
   // Enforce cooldown between orphan retries
   const lastOrphanedAt = task.metadata?.lastOrphanedAt ? new Date(task.metadata.lastOrphanedAt).getTime() : 0;
   const cooldownRemaining = lastOrphanedAt ? ORPHAN_RETRY_COOLDOWN_MS - (Date.now() - lastOrphanedAt) : 0;
-  const inCooldown = cooldownRemaining > 0;
+  const inCooldown = !interrupted && cooldownRemaining > 0;
 
-  if (retryCount < MAX_ORPHAN_RETRIES && !totalExceeded && !inCooldown) {
-    emitLog('info', `Resetting orphaned task ${taskId} for retry (attempt ${retryCount}/${MAX_ORPHAN_RETRIES}, total spawns ${totalSpawns}/${MAX_TOTAL_SPAWNS})`, {
+  // An interrupted run is exempt from the orphan ceiling for the same reason it
+  // is exempt from the counter: it isn't one of the failures the ceiling counts.
+  // `totalExceeded` still gates it, so a restart loop can't spawn without bound.
+  const withinOrphanBudget = interrupted || retryCount < MAX_ORPHAN_RETRIES;
+
+  if (withinOrphanBudget && !totalExceeded && !inCooldown) {
+    emitLog('info', interrupted
+      ? `Resuming task ${taskId} interrupted by a PortOS restart (no retry charged; total spawns ${totalSpawns}/${MAX_TOTAL_SPAWNS})`
+      : `Resetting orphaned task ${taskId} for retry (attempt ${retryCount}/${MAX_ORPHAN_RETRIES}, total spawns ${totalSpawns}/${MAX_TOTAL_SPAWNS})`, {
       taskId,
       retryCount,
       totalSpawns,
+      interrupted,
       maxRetries: MAX_ORPHAN_RETRIES
     });
 
@@ -748,13 +804,27 @@ export async function handleOrphanedTask(taskId, agentId, getTaskByIdFn, { agent
       return {};
     });
 
+    // An interrupted run records WHAT happened without touching the orphan
+    // bookkeeping: `lastOrphanedAt` stays as-is so a later genuine orphan's
+    // cooldown is still measured from the last genuine orphan, not from our
+    // restart.
+    const recoveryMetadata = interrupted
+      ? {
+        lastInterruptedAt: new Date().toISOString(),
+        lastInterruptedAgentId: agentId,
+        interruptedByRestart: true,
+      }
+      : {
+        orphanRetryCount: retryCount,
+        lastOrphanedAt: new Date().toISOString(),
+        lastOrphanedAgentId: agentId,
+      };
+
     await updateTask(taskId, {
       status: 'pending',
       metadata: {
         ...task.metadata,
-        orphanRetryCount: retryCount,
-        lastOrphanedAt: new Date().toISOString(),
-        lastOrphanedAgentId: agentId,
+        ...recoveryMetadata,
         ...resumePatch
       }
     }, taskType);

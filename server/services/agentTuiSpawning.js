@@ -19,6 +19,7 @@ import { finalizeAgent, releaseAgentLane } from './agentFinalization.js';
 import { activeAgents, userTerminatedAgents, pausedAgents, isFalsyMeta } from './agentState.js';
 import { PATHS } from '../lib/fileUtils.js';
 import { DONE_SENTINEL_NAME, parseSentinelPayload } from '../lib/agentSentinel.js';
+import { isHostShuttingDown, HOST_SHUTDOWN_REASON } from '../lib/hostShutdown.js';
 import { SENTINEL_COMPLETION_MARKER } from '../lib/agentOutputMarkers.js';
 import { resolvePrCompletion } from '../lib/prDisposition.js';
 import { canTypeSlashCommands } from '../lib/slashdoInvocation.js';
@@ -405,6 +406,19 @@ export async function spawnTuiAgent({
 
   const finish = async ({ success, exitCode = 0, error = null, reason = 'completed' }) => {
     if (finalized) return;
+    // PortOS is going down. Whatever path got here — the PTY exiting under
+    // TreeKill, the idle reaper, a paste that failed because the shell died —
+    // the cause is the host restart, not the agent, so there is no outcome to
+    // record. Abandoning instead of finalizing is what keeps an interrupted run
+    // from being written down as completed AND keeps its worktree (which
+    // finalize's cleanup would delete) intact for the resume (#3202).
+    //
+    // An agent that already wrote its `.agent-done` sentinel is the exception:
+    // that IS a valid completion signal, so it finalizes normally.
+    if (isHostShuttingDown() && !sentinelPresent()) {
+      await abandonForHostShutdown();
+      return;
+    }
     finalized = true;
 
     const agentData = activeAgents.get(agentId);
@@ -548,6 +562,52 @@ export async function spawnTuiAgent({
     }
   };
 
+  /**
+   * Abandon the run because PortOS itself is going down (#3202).
+   *
+   * Deliberately NOT `finish()`: finalizing here would record an outcome for a
+   * run that never reached one, and its cleanup path removes the `.agent-done`
+   * sentinel and hands the worktree to `cleanupWorktreeFn` — destroying exactly
+   * the state a resume needs. So this only stops the machinery and flushes what
+   * was captured; the agent record stays `running` and the worktree stays on
+   * disk. The next boot's orphan sweep reads the host-shutdown marker, sees this
+   * agent named in it, and requeues the task as *interrupted* — resumable, and
+   * without charging it orphan-retry budget.
+   *
+   * Sets `finalized` so every other path (idle reaper, sentinel poll, paste
+   * retry) becomes a no-op for the rest of this process's life.
+   */
+  const abandonForHostShutdown = async () => {
+    if (finalized) return;
+    finalized = true;
+
+    const agentData = activeAgents.get(agentId);
+    if (agentData?.idleTimer) clearInterval(agentData.idleTimer);
+    if (agentData?.promptTimer) clearInterval(agentData.promptTimer);
+    if (agentData?.doneSentinelTimer) clearInterval(agentData.doneSentinelTimer);
+    if (pasteEnterTimer) { clearInterval(pasteEnterTimer); pasteEnterTimer = null; }
+    if (pasteVerifyTimer) { clearInterval(pasteVerifyTimer); pasteVerifyTimer = null; }
+    if (submitEnterTimer) { clearInterval(submitEnterTimer); submitEnterTimer = null; }
+    if (maxRuntimeTimer) { clearTimeout(maxRuntimeTimer); maxRuntimeTimer = null; }
+    if (wrapUpTimer) { clearTimeout(wrapUpTimer); wrapUpTimer = null; }
+    postPasteBuffer = null;
+
+    appendLine('🛑 PortOS restarted while this agent was running — the run was interrupted, not completed. Its worktree is preserved and the task will resume.');
+    // Flush what the PTY produced before the teardown so the post-mortem
+    // transcript isn't missing its final seconds.
+    await drainLines().catch(() => {});
+    await drainRaw().catch(() => {});
+    // Best-effort UI breadcrumb. The record stays `running` on purpose — boot
+    // recovery owns the transition — so this only refines the phase label.
+    await updateAgent(agentId, { metadata: { phase: 'interrupted', interruptedBy: HOST_SHUTDOWN_REASON } })
+      .catch(err => emitLog('warn', `Could not mark TUI agent ${agentId} interrupted: ${err.message}`, { agentId }));
+    emitLog('warn', `TUI agent ${agentId} interrupted by a PortOS host restart — preserved for resume`, { agentId, phase: 'interrupted' });
+    // NOTE: the activeAgents entry is intentionally left in place. The shutdown
+    // handler reads that map to build the host-shutdown marker, and the PTY can
+    // exit before that write runs — deleting here would drop this agent from the
+    // marker and get it misclassified as an ordinary orphan on the next boot.
+  };
+
   const handleData = async (data) => {
     // EventEmitter listeners run outside the request lifecycle — a rejection
     // here on Node ≥15 will kill the process unless we catch locally. The
@@ -658,14 +718,29 @@ export async function spawnTuiAgent({
     }
   };
 
-  const handleExit = async ({ exitCode, killed }) => {
+  const handleExit = async ({ exitCode, killed, signal = null }) => {
     if (finalized) return;
+    // A host restart reaches here as a plain PTY exit (pm2's TreeKill walks
+    // portos-server's descendants), which the `success` reading below would
+    // record as a completed run. finish() intercepts that case — see its
+    // host-shutdown guard (#3202).
     const code = typeof exitCode === 'number' ? exitCode : killed ? 130 : 0;
+    // A signal-terminated shell reports the wait-status exit code — 0 for a
+    // plain SIGTERM/SIGHUP — so `code === 0` alone cannot mean "finished
+    // normally". Treat any signal as an abnormal end. This is the backstop for
+    // the case the host-shutdown guard can't cover: a SIGKILL'd or crashed
+    // portos-server never runs its shutdown handler, so the flag is never set,
+    // yet the agent's PTY still dies with us (#3202).
+    const signaled = signal !== null && signal !== undefined && signal !== 0;
     await finish({
-      success: code === 0 && !killed,
+      success: code === 0 && !killed && !signaled,
       exitCode: code,
-      error: killed ? 'TUI shell session was killed' : null,
-      reason: killed ? 'shell-killed' : 'shell-exit'
+      error: killed
+        ? 'TUI shell session was killed'
+        : signaled
+          ? `TUI shell session was terminated by signal ${signal} — the run was cut short, not completed`
+          : null,
+      reason: killed ? 'shell-killed' : signaled ? 'shell-signaled' : 'shell-exit'
     });
   };
 

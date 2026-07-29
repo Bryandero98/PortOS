@@ -185,6 +185,9 @@ import * as cosAgents from './cosAgents.js';
 import * as gitService from './git.js';
 import { activeAgents, userTerminatedAgents } from './agentState.js';
 import { MAX_RUNTIME_WRAP_UP_GRACE_MS } from '../lib/tuiHandshake.js';
+// Real module, not a mock: the flag is a plain process-local boolean, so driving
+// it directly exercises the same code path production does.
+import { markHostShuttingDown, resetHostShutdownFlagForTests } from '../lib/hostShutdown.js';
 
 describe('agent TUI spawning', () => {
   it('builds a codex TUI command without a model flag for the configured-default sentinel', () => {
@@ -1832,6 +1835,93 @@ describe('spawnTuiAgent runtime', () => {
       .join('');
     expect(outputTxtWrites).toContain('Implemented the fix.');
     expect(outputTxtWrites).toContain('https://example.com/pr/42');
+  });
+
+  // ── 11. A PortOS host restart is an interruption, never a completion ─────────
+  //
+  // Reported in #3202: `pm2 restart portos-server` TreeKills the agent's PTY.
+  // node-pty reports that as exit code 0, so `success: code === 0 && !killed`
+  // recorded a run that had produced nothing as SUCCESSFUL — and worse, finalize
+  // handed the worktree to cleanupWorktreeFn, destroying the state a resume
+  // needs. Both halves are asserted here.
+  describe('host restart (#3202)', () => {
+    afterEach(() => resetHostShutdownFlagForTests());
+
+    it('abandons instead of finalizing when the PTY dies during shutdown', async () => {
+      const cleanupWorktreeFn = vi.fn().mockResolvedValue(undefined);
+      const spawnPromise = runSpawn({ helpers: { cleanupWorktreeFn, isTruthyMetaFn: (v) => !!v } });
+      await flushMicrotasks();
+
+      markHostShuttingDown();
+      // Exactly what pm2's TreeKill looks like from node-pty: a clean exit code.
+      await capturedOnExit({ exitCode: 0, killed: false });
+      await flushMicrotasks();
+      await spawnPromise;
+
+      // No outcome recorded, and — critically — the worktree is left alone.
+      expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalled();
+      expect(cleanupWorktreeFn).not.toHaveBeenCalled();
+      // The record stays `running`; only the phase label is refined, so boot
+      // recovery still sees it as an agent to reconcile from the marker.
+      expect(vi.mocked(cosAgents.updateAgent).mock.calls.some(
+        ([, patch]) => patch?.metadata?.phase === 'interrupted' && patch?.metadata?.interruptedBy === 'host-shutdown'
+      )).toBe(true);
+    });
+
+    it('still finalizes as success when the agent had already written its sentinel', async () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFile).mockImplementation(async (p) =>
+        typeof p === 'string' && p.endsWith('.agent-done') ? '## Summary\nDone.' : ''
+      );
+
+      const spawnPromise = runSpawn({ workspacePath: '/tmp/ws' });
+      await flushMicrotasks();
+
+      markHostShuttingDown();
+      await capturedOnExit({ exitCode: 0, killed: false });
+      await flushMicrotasks();
+      await spawnPromise;
+
+      expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ agentId: 'agent-1', success: true })
+      );
+    });
+
+    // The backstop for a SIGKILL'd or crashed portos-server, which never runs its
+    // shutdown handler — so the in-process flag is never set, and the only
+    // evidence left is node-pty's `signal`.
+    it('records a signal-terminated PTY as a failure even with exit code 0', async () => {
+      const spawnPromise = runSpawn();
+      await flushMicrotasks();
+
+      await capturedOnExit({ exitCode: 0, killed: false, signal: 15 });
+      await flushMicrotasks();
+      await spawnPromise;
+
+      expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: 'agent-1',
+          success: false,
+          completionReason: 'shell-signaled',
+          error: expect.stringContaining('signal 15'),
+        })
+      );
+    });
+
+    // Guard against over-correcting: a TUI that genuinely exits 0 on its own,
+    // outside a shutdown and with no signal, keeps its prior success semantics.
+    it('leaves an ordinary clean exit alone', async () => {
+      const spawnPromise = runSpawn();
+      await flushMicrotasks();
+
+      await capturedOnExit({ exitCode: 0, killed: false, signal: null });
+      await flushMicrotasks();
+      await spawnPromise;
+
+      expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ success: true, completionReason: 'shell-exit' })
+      );
+    });
   });
 });
 
