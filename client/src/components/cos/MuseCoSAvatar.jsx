@@ -235,7 +235,11 @@ function GLBAvatar({ state, speaking }) {
 
   return (
     <group ref={ref}>
-      <primitive object={scene} />
+      {/* dispose={null}: SkeletonUtils.clone shares geometry/material refs with
+          drei's useGLTF cache (shallow clone), so letting R3F dispose them on
+          unmount corrupts the cache — the next mount then renders disposed
+          buffers as an invisible mesh, leaving only the halo ring ("SVG circle"). */}
+      <primitive object={scene} dispose={null} />
     </group>
   );
 }

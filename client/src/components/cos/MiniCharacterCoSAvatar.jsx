@@ -101,7 +101,11 @@ function MiniCharacter({ state, speaking, variant }) {
 
   return (
     <group ref={group}>
-      <primitive object={scene} />
+      {/* dispose={null}: SkeletonUtils.clone shares geometry/material refs with
+          drei's useGLTF cache (the clone is shallow for those), so letting R3F
+          dispose them on unmount corrupts the cache and the next mount renders
+          disposed buffers as an invisible mesh (see the CoS Muse avatar). */}
+      <primitive object={scene} dispose={null} />
     </group>
   );
 }
