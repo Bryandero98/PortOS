@@ -37,7 +37,7 @@ import {
   AlertTriangle, X, Film,
 } from 'lucide-react';
 import { composeStyledPrompt } from '../lib/composeStyledPrompt';
-import { isCloudCliMode, deriveAvailableBackends, IMAGE_GEN_MODE, isI2iCapableMode, pickI2iMode } from '../lib/imageGenBackends';
+import { isCloudCliMode, deriveAvailableBackends, IMAGE_GEN_MODE, isI2iCapableMode, pickI2iMode, modeLabel } from '../lib/imageGenBackends';
 import { clampImageDimensions, clampImageEdge } from '../lib/imageGenResolutions';
 import { DEFAULT_NEGATIVE_PROMPT } from '../lib/imageGenDefaults';
 import { resolveCleanersFromConfig } from '../lib/imageCleaners';
@@ -47,6 +47,7 @@ import { useImageGenProgress } from '../hooks/useImageGenProgress';
 import { useMediaJobSse } from '../hooks/useMediaJobSse';
 import { useModelDownloadStatus } from '../hooks/useModelDownloadStatus';
 import { useHfTokenStatus } from '../hooks/useHfTokenStatus';
+import { useAgyModels } from '../hooks/useAgyModels';
 import {
   getImageGenStatus, generateImage, generateImageMultipart, listImageModels, listLorasFull, listImageGallery,
   cancelImageGen, deleteImage, setImageHidden, cleanGalleryImage, getActiveImageJob, getSettings,
@@ -155,6 +156,10 @@ export default function ImageGen() {
   const [quantize, setQuantize] = useState('8');
   const [seed, setSeed] = useState('');
   const [selectedLoras, setSelectedLoras] = useState([]);
+  // Per-render override of the Agy session model. Empty = inherit the saved
+  // Settings default (which itself may be empty = agy's own configured model).
+  const [agyModel, setAgyModel] = useState('');
+  const [savedAgyModel, setSavedAgyModel] = useState('');
 
   // i2i (Flux, local mflux only). source='upload' carries `file`; source='gallery'
   // carries `name` (basename from URL param). Coupled lifetime — always replace
@@ -221,10 +226,23 @@ export default function ImageGen() {
   const effectiveMode = selectedMode || status?.mode || IMAGE_GEN_MODE.EXTERNAL;
   const isLocalMode = effectiveMode === IMAGE_GEN_MODE.LOCAL;
   const isCloudMode = isCloudCliMode(effectiveMode);
-  const cloudModeLabel = effectiveMode === IMAGE_GEN_MODE.GROK
-    ? 'Grok'
-    : effectiveMode === IMAGE_GEN_MODE.AGY ? 'Agy' : 'Codex';
+  const cloudModeLabel = modeLabel(effectiveMode);
+  const isAgyMode = effectiveMode === IMAGE_GEN_MODE.AGY;
   const isAsyncMode = isLocalMode || isCloudMode;
+  // Only probe `agy models` while Agy is the active backend — it spawns a
+  // child process server-side, so an unselected backend must not pay for it.
+  const agy = useAgyModels(isAgyMode);
+  // Only ever submit a pin the live catalog confirms. Two cases collapse to the
+  // same answer — "" (inherit the Settings default):
+  //  - the pin was rotated out of the catalog: a `<select>` whose value matches
+  //    no option renders as unselected, so submitting the raw pin would show
+  //    "Settings default" while sending a stale id agy exits non-zero on;
+  //  - the probe failed (empty list): the picker is hidden entirely, so a pin
+  //    left over from an earlier render would apply invisibly — and contradict
+  //    the "renders will use the model saved in Settings" notice below it.
+  // Derived rather than written back to state, so a pin survives a transient
+  // probe failure and reappears once the catalog lists it again.
+  const effectiveAgyModel = agy.models.includes(agyModel) ? agyModel : '';
   // Whether the active backend supports image-to-image (init image). Distinct
   // concept from isAsyncMode (queued vs sync) even though they coincide today.
   const i2iCapable = isI2iCapableMode(effectiveMode);
@@ -309,6 +327,9 @@ export default function ImageGen() {
         : backends.length ? backends[0].id
         : saved;
       setAvailableBackends(backends);
+      // Shown as the "Settings default (…)" option label on the per-render Agy
+      // model select, so the user can see what blank actually resolves to.
+      setSavedAgyModel(s?.imageGen?.agy?.model || '');
       setSavedCleanC2PAByMode(c2);
       setSavedDenoiseByMode(dn);
       setSelectedMode(next);
@@ -717,6 +738,12 @@ export default function ImageGen() {
       negativePrompt: composed.negativePrompt || undefined,
       width: w, height: h,
       mode: effectiveMode,
+      // Per-queue-item model override. The field is the *cloud CLI's* model,
+      // distinct from the local `modelId` below, so a stale local id can never
+      // reach a CLI that would reject it. Blank (or a pin the live catalog no
+      // longer lists) is omitted, which the server reads as "use the saved
+      // default".
+      ...(effectiveAgyModel ? { cloudModel: effectiveAgyModel } : {}),
       cleanC2PA, denoise,
     } : {
       prompt: composed.prompt,
@@ -1187,7 +1214,17 @@ export default function ImageGen() {
             modelStatus={isLocalMode ? modelDownload.getStatus(modelId) : null}
             onModelDownload={isLocalMode ? modelDownload.start : undefined}
             onModelDownloadCancel={modelDownload.cancel}
+            cloudModels={isAgyMode ? agy.models : []}
+            cloudModel={effectiveAgyModel}
+            onCloudModelChange={setAgyModel}
+            cloudModelLabel="Agent model"
+            cloudModelDefaultLabel={savedAgyModel || "agy's own default"}
           />
+          {isAgyMode && agy.error && (
+            <p className="text-xs text-port-warning">
+              {agy.error} — renders will use the model saved in Settings → Image Gen.
+            </p>
+          )}
 
           {isLocalMode && (
             <LoraPicker

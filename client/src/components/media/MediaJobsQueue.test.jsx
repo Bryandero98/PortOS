@@ -168,6 +168,58 @@ describe('MediaJobsQueue — Codex reasoning-effort retry control', () => {
   });
 });
 
+// An Agy job's model lives on `params.model` (the CLI's `--model` session
+// model), NOT `params.modelId` (a local image-model registry id). The retry
+// editor must follow the same field, or it edits something Agy never reads and
+// leaves the actual model unchangeable.
+describe('MediaJobsQueue — Agy retry model field', () => {
+  const failedAgyJob = {
+    id: 'agyfail000000dead',
+    kind: 'image',
+    status: 'failed',
+    error: 'boom',
+    queuedAt: '2026-06-19T10:00:00Z',
+    params: { prompt: 'a fox', mode: 'agy', model: 'gemini-3.5-flash-high' },
+  };
+
+  it('pre-fills the Agy model from params.model and retries with the edited value', async () => {
+    const user = userEvent.setup();
+    listMediaJobs.mockResolvedValue([failedAgyJob]);
+    render(<MediaJobsQueue kind="image" />);
+    await expandReel(user);
+    await user.click(await screen.findByLabelText('Edit and retry'));
+
+    const input = await screen.findByLabelText('Agy model');
+    expect(input.value).toBe('gemini-3.5-flash-high');
+    await user.clear(input);
+    await user.type(input, 'gemini-3.1-pro-high');
+    await user.click(screen.getByRole('button', { name: /Retry with changes/i }));
+
+    expect(retryMediaJob).toHaveBeenCalledWith(
+      'agyfail000000dead', { model: 'gemini-3.1-pro-high' }, { silent: true },
+    );
+  });
+
+  it('shows the configured-default sentinel as an empty field and sends no override', async () => {
+    const user = userEvent.setup();
+    listMediaJobs.mockResolvedValue([{
+      ...failedAgyJob,
+      id: 'agysentinel00dead',
+      params: { ...failedAgyJob.params, model: 'antigravity-configured-default' },
+    }]);
+    render(<MediaJobsQueue kind="image" />);
+    await expandReel(user);
+    await user.click(await screen.findByLabelText('Edit and retry'));
+
+    // The sentinel is "let agy choose", not a literal id the user should see or
+    // resubmit — an untouched field must leave the original params intact.
+    const input = await screen.findByLabelText('Agy model');
+    expect(input.value).toBe('');
+    await user.click(screen.getByRole('button', { name: /Retry with changes/i }));
+    expect(retryMediaJob).toHaveBeenCalledWith('agysentinel00dead', null, { silent: true });
+  });
+});
+
 describe('MediaJobsQueue — training rows', () => {
   it('renders a training summary + engine/character label instead of a prompt', async () => {
     listMediaJobs.mockResolvedValue([trainingJob]);
