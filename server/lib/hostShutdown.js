@@ -81,7 +81,14 @@ export function resetHostShutdownFlagForTests() {
  * @returns {Promise<boolean>} true when the marker landed on disk
  */
 export async function writeHostShutdownMarker({ agentIds = [], signal = null } = {}) {
-  const ids = [...new Set(agentIds.filter(isNonEmptyString))];
+  // UNION with any marker the previous shutdown left unconsumed, rather than
+  // replacing it. A boot that is killed before its orphan sweep runs (the sweep
+  // is a couple of seconds in) leaves the prior marker in place; a plain
+  // overwrite would drop those agents and silently demote them to ordinary
+  // orphans — the exact penalty this marker exists to prevent. Consuming the
+  // marker is the sweep's job, so anything still here has not been recovered yet.
+  const prior = await readHostShutdownMarker();
+  const ids = [...new Set([...(prior?.agentIds || []), ...agentIds.filter(isNonEmptyString)])];
   // Nothing was running — don't leave a marker the next boot has to reason
   // about (and don't overwrite a prior one; a marker with no agents is noise).
   if (ids.length === 0) return false;

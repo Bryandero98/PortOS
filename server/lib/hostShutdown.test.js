@@ -84,6 +84,31 @@ describe('marker round-trip', () => {
     expect(await readHostShutdownMarker()).toBeNull();
   });
 
+  // A boot killed before its orphan sweep runs leaves the prior marker unconsumed.
+  // Overwriting it would drop those agents and demote them to ordinary orphans —
+  // the exact penalty the marker exists to prevent.
+  it('unions with an unconsumed marker instead of replacing it', async () => {
+    await writeHostShutdownMarker({ agentIds: ['a1'], signal: 'SIGTERM' });
+    await writeHostShutdownMarker({ agentIds: ['a2'], signal: 'SIGTERM' });
+
+    expect((await readHostShutdownMarker()).agentIds).toEqual(['a1', 'a2']);
+  });
+
+  it('does not resurrect a consumed marker', async () => {
+    await writeHostShutdownMarker({ agentIds: ['a1'], signal: 'SIGTERM' });
+    await clearHostShutdownMarker();
+    await writeHostShutdownMarker({ agentIds: ['a2'], signal: 'SIGTERM' });
+
+    expect((await readHostShutdownMarker()).agentIds).toEqual(['a2']);
+  });
+
+  it('leaves an unconsumed marker intact when the next shutdown had no live agents', async () => {
+    await writeHostShutdownMarker({ agentIds: ['a1'], signal: 'SIGTERM' });
+
+    expect(await writeHostShutdownMarker({ agentIds: [], signal: 'SIGTERM' })).toBe(true);
+    expect((await readHostShutdownMarker()).agentIds).toEqual(['a1']);
+  });
+
   it('clears the marker', async () => {
     await writeHostShutdownMarker({ agentIds: ['a1'], signal: 'SIGTERM' });
     await clearHostShutdownMarker();

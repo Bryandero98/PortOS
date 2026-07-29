@@ -977,6 +977,83 @@ describe('host-restart interruptions are not charged orphan-retry budget (#3202)
     expect(metadata.interruptedByRestart).toBe(true);
   });
 
+  // The marker is best-effort — a stalled disk can blow the 1.5s shutdown grace.
+  // The sweep must therefore pass a null verdict (not a bare `false`, which would
+  // hard-override the `??` fallback) so the breadcrumb can still be honored. This
+  // is the SWEEP path, not a direct handleOrphanedTask call: without it the
+  // fallback is dead exactly where nearly all boot recovery happens.
+  it('falls back to the breadcrumb through the sweep when the marker did not survive', async () => {
+    getAgents.mockResolvedValue([
+      { ...deadAgent, metadata: { ...deadMetadata, interruptedBy: 'host-shutdown' } },
+    ]);
+    getTaskById.mockResolvedValue({
+      id: 'task-1', taskType: 'user', status: 'in_progress',
+      metadata: { orphanRetryCount: 1, totalSpawnCount: 2 },
+    });
+    readHostShutdownMarker.mockResolvedValue(null); // marker lost
+
+    await cleanupOrphanedAgents();
+
+    const metadata = requeuedMetadata();
+    expect(metadata.orphanRetryCount).toBe(1);
+    expect(metadata.interruptedByRestart).toBe(true);
+  });
+
+  // The breadcrumb is consumed on use, like the marker. Left in place, a respawn
+  // that dies before creating its own agent record would keep re-deriving
+  // "interrupted" from it — and, because an interrupted run bypasses the
+  // cooldown, respawn on every 15-minute sweep instead of once per 30 minutes.
+  it('clears the breadcrumb once it has been honored', async () => {
+    getTaskById.mockResolvedValue({ id: 'task-1', taskType: 'user', status: 'in_progress', metadata: {} });
+
+    await handleOrphanedTask('task-1', 'agent-dead', getTaskById, {
+      agentMetadata: { ...deadMetadata, interruptedBy: 'host-shutdown' },
+    });
+
+    expect(updateAgent).toHaveBeenCalledWith('agent-dead', { metadata: { interruptedBy: null } });
+  });
+
+  // totalSpawnCount is charged when the task goes in_progress, so the destroyed
+  // run already consumed a spawn. Without the refund the fix only moves the
+  // ceiling: the task still ends up blocked `max-retries` with a bogus
+  // "investigate repeated agent orphaning" task filed against a healthy agent.
+  it('refunds the spawn a restart destroyed so MAX_TOTAL_SPAWNS is not charged', async () => {
+    getTaskById.mockResolvedValue({
+      id: 'task-1', taskType: 'user', status: 'in_progress',
+      metadata: { totalSpawnCount: 3 },
+    });
+    readHostShutdownMarker.mockResolvedValue({ at: null, signal: 'SIGTERM', agentIds: ['agent-dead'] });
+
+    await cleanupOrphanedAgents();
+
+    expect(requeuedMetadata().totalSpawnCount).toBe(2);
+  });
+
+  it('does not refund a spawn for a genuine orphan', async () => {
+    getTaskById.mockResolvedValue({
+      id: 'task-1', taskType: 'user', status: 'in_progress',
+      metadata: { totalSpawnCount: 3 },
+    });
+
+    await cleanupOrphanedAgents();
+
+    // Carried through the metadata spread unchanged — a genuine failure keeps
+    // costing a spawn; only a restart is refunded.
+    expect(requeuedMetadata().totalSpawnCount).toBe(3);
+  });
+
+  // A truncated/malformed marker parses to zero ids. Gating the clear on the id
+  // count would leave that file on disk to be re-read on every boot and every
+  // 15-minute sweep, forever.
+  it('clears a marker that parsed to no agents at all', async () => {
+    getTaskById.mockResolvedValue({ id: 'task-1', taskType: 'user', status: 'in_progress', metadata: {} });
+    readHostShutdownMarker.mockResolvedValue({ at: null, signal: null, agentIds: [] });
+
+    await cleanupOrphanedAgents();
+
+    expect(clearHostShutdownMarker).toHaveBeenCalled();
+  });
+
   it('flags the interruption on the agent record and consumes the marker', async () => {
     getTaskById.mockResolvedValue({ id: 'task-1', taskType: 'user', status: 'in_progress', metadata: {} });
     readHostShutdownMarker.mockResolvedValue({ at: null, signal: 'SIGTERM', agentIds: ['agent-dead'] });
