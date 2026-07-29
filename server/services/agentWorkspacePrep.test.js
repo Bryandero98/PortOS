@@ -196,6 +196,49 @@ describe('prepareAgentWorkspace — resuming an interrupted run', () => {
     expect(r.outcome).toBe('ready');
   });
 
+  // The run that died may have been isolated by conflict AUTO-detection rather than
+  // useWorktree/openPR. Its retry must still take the worktree path — conflict
+  // detection returns `proceed` once the dead agent is gone, so the old gate sent
+  // the retry into the shared workspace and abandoned the work on disk.
+  it('takes the worktree path for a resume even when the task never asked for isolation', async () => {
+    adoptWorktree.mockResolvedValue({
+      worktreePath: '/mock/worktrees/agent-new', branchName: 'cos/t-resume/agent-dead',
+      baseBranch: null, existingBranch: true, adopted: true
+    });
+    const task = resumeTask();
+    delete task.metadata.useWorktree;
+
+    const r = await prepareAgentWorkspace({ agentId: 'agent-new', task });
+
+    expect(adoptWorktree).toHaveBeenCalled();
+    expect(detectConflicts).not.toHaveBeenCalled();
+    expect(r.workspacePath).toBe('/mock/worktrees/agent-new');
+  });
+
+  // Blocking a task that never opted into isolation would be stricter than its own
+  // contract — it ran in the shared workspace before the pointer existed.
+  it('degrades to the shared workspace when a resume-only task cannot get a worktree', async () => {
+    adoptWorktree.mockResolvedValue(null);
+    createWorktree.mockResolvedValue(null);
+    const task = resumeTask();
+    delete task.metadata.useWorktree;
+
+    const r = await prepareAgentWorkspace({ agentId: 'agent-new', task });
+
+    expect(r.outcome).toBe('ready');
+    expect(r.worktreeInfo).toBeNull();
+  });
+
+  // ...but a task that DID request isolation still fails closed.
+  it('still blocks when an explicitly-isolated resume cannot get a worktree', async () => {
+    adoptWorktree.mockResolvedValue(null);
+    createWorktree.mockResolvedValue(null);
+
+    const r = await prepareAgentWorkspace({ agentId: 'agent-new', task: resumeTask() });
+
+    expect(r.outcome).toBe('blocked');
+  });
+
   it('ignores a stale worktree pointer with no branch to resume', async () => {
     createWorktree.mockResolvedValue({
       worktreePath: '/mock/worktrees/agent-new', branchName: 'cos/t-resume/agent-new', baseBranch: 'main'

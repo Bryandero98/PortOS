@@ -86,6 +86,15 @@ export async function prepareAgentWorkspace({ agentId, task }) {
   let worktreeInfo = null;
   const explicitOpenPR = isTruthyMeta(task.metadata?.openPR);
   const explicitWorktree = isTruthyMeta(task.metadata?.useWorktree) || explicitOpenPR;
+  // A task pointed at an existing branch must run in a worktree whatever isolated
+  // the ORIGINAL run, because that is the only way to reach the work: the branch
+  // has to be checked out somewhere, and an adoptable tree has to be attached.
+  // Keyed on `existingBranch` so it covers both producers — a resume pointer and
+  // the review-loop follow-up. Without it, a run that got its worktree from
+  // conflict AUTO-detection resumes into the shared workspace on retry (conflict
+  // detection returns `proceed` once the dead agent is gone) and silently
+  // abandons the work the pointer was recorded to save.
+  const wantsWorktree = explicitWorktree || !!task.metadata?.existingBranch;
 
   if (!isReadOnly) {
     // Pull latest from git before starting work
@@ -202,7 +211,7 @@ export async function prepareAgentWorkspace({ agentId, task }) {
       }
     }
 
-    if (explicitWorktree && !jiraBranchName) {
+    if (wantsWorktree && !jiraBranchName) {
       const existingBranch = task.metadata?.existingBranch || null;
       const { baseBranch: detectedBase } = await git.getRepoBranches(workspacePath).catch(() => ({ baseBranch: null }));
       if (existingBranch) {
@@ -254,6 +263,13 @@ export async function prepareAgentWorkspace({ agentId, task }) {
         emitLog('success', `🌳 Agent ${agentId} will work in worktree: ${worktreeInfo.branchName} (${origin})`, {
           agentId, worktreePath: worktreeInfo.worktreePath, branchName: worktreeInfo.branchName, baseBranch: worktreeInfo.baseBranch
         });
+      } else if (!explicitWorktree) {
+        // Reached here only for the resume pointer, on a task that never asked for
+        // isolation. Blocking would be STRICTER than the task's own contract — it
+        // would have run in the shared workspace before the pointer existed — so
+        // degrade to that instead. The resume is lost (the leftover work stays on
+        // disk for the next attempt), but the task still runs.
+        emitLog('warn', `🌳 Worktree creation failed for task ${task.id}; resuming is not possible, continuing in the shared workspace`, { taskId: task.id });
       } else {
         // Isolation was EXPLICITLY requested (useWorktree/openPR) but the
         // worktree couldn't be created. Falling back to the shared workspace
