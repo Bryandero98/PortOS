@@ -59,7 +59,7 @@ import { resolveAgentProviderAndModel } from './agentProviderResolution.js';
 import { prepareAgentWorkspace } from './agentWorkspacePrep.js';
 import { cleanupAgentWorktree } from './agentWorktreeCleanup.js';
 import { runAgentCompletionCleanup } from './agentCompletionCleanup.js';
-import { finalizeAgent, stampLiExecutionVerdict } from './agentFinalization.js';
+import { dispatchRecoveredTaskOutputHook, finalizeAgent, stampLiExecutionVerdict } from './agentFinalization.js';
 import { extractFinalSummary } from './agentSummaryExtraction.js';
 import { handleOrphanedTask } from './agentManagement.js';
 
@@ -74,7 +74,7 @@ export { handlePipelineProgression } from './agentCompletionCleanup.js';
 // break the static import cycle with the two spawners (issue #2837). Re-exported
 // here so long-standing consumers (subAgentSpawner's barrel, agentManagement,
 // existing tests) keep resolving them from agentLifecycle.js.
-export { finalizeAgent, releaseAgentLane, evaluateSuccessCriteria, resolveProgrammaticIoVerdict, withOutputHookTimeout, persistSimplifySummaries } from './agentFinalization.js';
+export { dispatchRecoveredTaskOutputHook, dispatchTaskOutputHookOnce, finalizeAgent, releaseAgentLane, evaluateSuccessCriteria, resolveProgrammaticIoVerdict, withOutputHookTimeout, persistSimplifySummaries } from './agentFinalization.js';
 export { extractFinalSummary, extractSimplifySummaries } from './agentSummaryExtraction.js';
 export { syncRunnerAgents } from './agentRunnerSync.js';
 
@@ -774,6 +774,8 @@ export async function handleAgentCompletion(agentId, exitCode, success, duration
       return;
     }
     console.log(`🔄 Completing untracked agent ${agentId} from cos state (post-restart)`);
+    const task = cosAgent.taskId ? await getTaskById(cosAgent.taskId).catch(() => null) : null;
+    await dispatchRecoveredTaskOutputHook({ agentId, task, success });
     await completeAgent(agentId, {
       success,
       exitCode,
@@ -782,7 +784,6 @@ export async function handleAgentCompletion(agentId, exitCode, success, duration
       error: success ? undefined : 'Agent completed after server restart'
     });
     if (cosAgent.taskId) {
-      const task = await getTaskById(cosAgent.taskId).catch(() => null);
       if (task && task.status !== 'completed') {
         if (success) {
           // Stamp the LI hand-off verdict here too (#2779, codex P2) — this post-restart
