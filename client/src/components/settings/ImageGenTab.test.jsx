@@ -224,7 +224,7 @@ describe('ImageGenTab — Agy CLI section', () => {
     });
     await renderTab(['/media/image?mediaTab=agy']);
     await waitFor(() => expect(listAgyImageModels).toHaveBeenCalledWith({ silent: true }));
-    const modelInput = screen.getByLabelText('Image model');
+    const modelInput = screen.getByLabelText('Default agent model');
     expect(modelInput.value).toBe('gemini-image');
     fireEvent.change(modelInput, { target: { value: 'custom/image-v3' } });
     fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));

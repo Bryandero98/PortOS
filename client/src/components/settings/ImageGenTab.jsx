@@ -20,11 +20,12 @@ import { isLoopbackHost } from '../../lib/loopbackHost.js';
 import {
   getSettings, updateSettings, getImageGenStatus, generateImage,
   registerTool, updateTool, getToolsList,
-  saveHfToken, clearHfToken, listAgyImageModels,
+  saveHfToken, clearHfToken,
 } from '../../services/api';
 import { isCloudCliMode, IMAGE_GEN_MODE, CODEX_IMAGEGEN_DEFAULT_EFFORT, GROK_ASPECT_RATIOS } from '../../lib/imageGenBackends';
 import { resolveCleanersFromConfig } from '../../lib/imageCleaners';
 import { useMediaJobSse } from '../../hooks/useMediaJobSse';
+import { useAgyModels } from '../../hooks/useAgyModels';
 import { useHfTokenStatus } from '../../hooks/useHfTokenStatus';
 import { CODEX_EFFORT_LEVELS } from '../../utils/providers';
 
@@ -120,9 +121,6 @@ export function ImageGenTab() {
   const [agyEnabled, setAgyEnabled] = useState(false);
   const [agyPath, setAgyPath] = useState('');
   const [agyModel, setAgyModel] = useState('');
-  const [agyModels, setAgyModels] = useState([]);
-  const [agyModelsError, setAgyModelsError] = useState(null);
-  const [agyModelsLoading, setAgyModelsLoading] = useState(false);
   // Per-provider cleaner toggles. Both run after the PNG lands and before
   // the SSE complete event so subscribers see the cleaned bytes. SynthID
   // (the gpt-image / Imagen / Gemini pixel-level watermark) is unaffected
@@ -286,25 +284,14 @@ export function ImageGenTab() {
       .finally(() => setLoading(false));
   }, []);
 
-  const refreshAgyModels = useCallback(() => {
-    if (!agyEnabled) return;
-    setAgyModelsLoading(true);
-    setAgyModelsError(null);
-    listAgyImageModels({ silent: true })
-      .then((result) => {
-        setAgyModels(Array.isArray(result?.models) ? result.models : []);
-        setAgyModelsError(result?.error || null);
-      })
-      .catch((err) => {
-        setAgyModels([]);
-        setAgyModelsError(err.message || 'Failed to list Agy models');
-      })
-      .finally(() => setAgyModelsLoading(false));
-  }, [agyEnabled]);
-
-  useEffect(() => {
-    if (mediaTab === 'agy' && agyEnabled) refreshAgyModels();
-  }, [mediaTab, agyEnabled, refreshAgyModels]);
+  // Probe only while the Agy tab is actually open — the list spawns `agy models`
+  // server-side, so an unopened tab must not pay for a child process.
+  const {
+    models: agyModels,
+    error: agyModelsError,
+    loading: agyModelsLoading,
+    refresh: refreshAgyModels,
+  } = useAgyModels(mediaTab === 'agy' && agyEnabled);
 
   // Probe the provider whose tab is open (undefined → the saved default
   // backend). Every result is tagged with the tab that asked for it and only
@@ -920,7 +907,7 @@ export function ImageGenTab() {
             </div>
             <div>
               <div className="flex items-end justify-between gap-3 mb-1">
-                <label htmlFor={agyModelId} className="block text-xs font-medium text-gray-400">Image model</label>
+                <label htmlFor={agyModelId} className="block text-xs font-medium text-gray-400">Default agent model</label>
                 <button
                   type="button"
                   onClick={refreshAgyModels}
@@ -937,13 +924,26 @@ export function ImageGenTab() {
                 value={agyModel}
                 onChange={(e) => setAgyModel(e.target.value)}
                 className="w-full bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-port-accent"
-                placeholder="Select an installed model or enter a custom id"
+                placeholder="Leave blank to use Agy's own configured default"
               />
               <datalist id={agyModelsListId}>
                 {agyModels.map((modelId) => <option key={modelId} value={modelId} />)}
               </datalist>
               {agyModelsError && <p className="text-xs text-port-warning mt-1">{agyModelsError}. You can still enter a custom model id.</p>}
-              {!agyModelsError && <p className="text-xs text-gray-500 mt-1">Choose an installed Agy model or enter a custom model id.</p>}
+              {/* This is the model `agy --model` runs the SESSION on — the agent that
+                  calls the built-in generate_image tool. Agy exposes no knob for the
+                  underlying image model (generate_image takes Prompt / ImageName /
+                  AspectRatio / ImagePaths and nothing else), so there is no imagen-*
+                  option to pick here. An id outside `agy models` makes agy exit
+                  non-zero before generating, which is why the list is a live probe. */}
+              {!agyModelsError && (
+                <p className="text-xs text-gray-500 mt-1">
+                  The agent model Agy runs the session on — it drives the built-in{' '}
+                  <code className="text-gray-400">generate_image</code> tool. Agy picks the
+                  image model itself and exposes no override. Renders can pin a different
+                  agent model per queue item on the Image Gen page.
+                </p>
+              )}
             </div>
             <CleanersToggles
               cleanC2PA={cleanC2PAByMode.agy}

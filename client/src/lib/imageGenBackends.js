@@ -40,6 +40,25 @@ export const CLOUD_IMAGE_GEN_MODES = Object.freeze([
 ]);
 export const isCloudCliMode = (mode) => CLOUD_IMAGE_GEN_MODES.includes(mode);
 
+// Client mirror of the server's `supportsModelOverride` spec flag
+// (imageGen/cloudProviderConfig.js) — cloud CLIs that accept a per-render
+// `cloudModel` replacing the saved `settings.imageGen.<mode>.model` for one
+// queue item. Grok is absent because its image tools run on a fixed xAI backend
+// with no model knob, so offering the control there would be a lie.
+// Use `supportsCloudModelOverride` instead of hand-rolled
+// `mode === CODEX || mode === AGY` disjunctions — the two must stay in lock-step
+// with the server spec, and a new CLI backend should be one entry here.
+export const MODEL_OVERRIDE_CAPABLE_MODES = Object.freeze([
+  IMAGE_GEN_MODE.CODEX,
+  IMAGE_GEN_MODE.AGY,
+]);
+export const supportsCloudModelOverride = (mode) => MODEL_OVERRIDE_CAPABLE_MODES.includes(mode);
+
+// Human-facing name for a backend ('Local', 'Codex', 'Grok', 'Agy', 'External').
+// Shared so label ladders (`isCodex ? 'Codex model' : …`) don't re-type what META
+// already holds and grow a branch per backend.
+export const modeLabel = (mode) => META[mode]?.label || mode || '';
+
 // Backends that support image-to-image (init image / reference editing). The
 // external SD-API path does not. Single source of truth for i2i gating in the UI.
 export const I2I_CAPABLE_MODES = Object.freeze([IMAGE_GEN_MODE.LOCAL, IMAGE_GEN_MODE.CODEX, IMAGE_GEN_MODE.GROK]);
