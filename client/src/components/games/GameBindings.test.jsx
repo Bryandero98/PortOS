@@ -12,7 +12,12 @@ const renderBindings = () => render(
         spriteBindings: [{ spriteId: 'deleted-sprite' }],
         musicBindings: [{ id: 'binding-1', trackId: 'theme/one' }],
       }}
-      sprites={[]}
+      sprites={[{
+        id: 'deleted-sprite',
+        name: 'Stale Deleted Sprite',
+        kind: 'character',
+        status: 'ready',
+      }]}
       tracks={[{
         id: 'theme/one',
         title: 'Example Theme',
@@ -56,7 +61,7 @@ const renderBindings = () => render(
 );
 
 describe('GameBindings', () => {
-  it('explains a missing source without linking to its deleted record', () => {
+  it('explains a missing source without trusting a stale catalog entry enough to link it', () => {
     renderBindings();
 
     expect(screen.getByText(

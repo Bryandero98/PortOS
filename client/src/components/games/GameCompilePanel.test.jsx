@@ -148,7 +148,7 @@ describe('GameCompilePanel', () => {
       <GameCompilePanel
         game={game}
         sprites={[{ id: 'hero/one' }]}
-        tracks={[]}
+        tracks={[{ id: 'deleted-track' }]}
         integrity={{
           readyToCompile: false,
           canLaunch: false,

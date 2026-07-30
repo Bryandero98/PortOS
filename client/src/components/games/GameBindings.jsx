@@ -26,6 +26,7 @@ const missingHelp = {
   SPRITE_MISSING: 'This Sprite Manager record was deleted. Unbind it from this game to clear the blocker.',
   TRACK_MISSING: 'This music track was deleted. Unbind it from this game to clear the blocker.',
 };
+const sourceIsMissing = (issue) => issue?.code === 'SPRITE_MISSING' || issue?.code === 'TRACK_MISSING';
 
 function BindingRow({
   label,
@@ -206,7 +207,9 @@ export default function GameBindings({
                   detail={sprite ? `${sprite.kind} · ${sprite.status}` : 'Record unavailable'}
                   health={spriteIntegrity.get(binding.spriteId)}
                   issue={issue}
-                  manageTo={sprite ? `/sprites/${encodeURIComponent(binding.spriteId)}` : null}
+                  manageTo={sprite && !sourceIsMissing(issue)
+                    ? `/sprites/${encodeURIComponent(binding.spriteId)}`
+                    : null}
                   manageLabel="Open in Sprite Manager"
                   disabled={busy}
                   onUnbind={() => onUnbindSprite(binding.spriteId)}
@@ -246,7 +249,9 @@ export default function GameBindings({
                   detail={track?.audioFilename ? 'Audio attached' : 'No audio yet'}
                   health={musicIntegrity.get(binding.id)}
                   issue={issue}
-                  manageTo={track ? `/music/tracks/${encodeURIComponent(binding.trackId)}` : null}
+                  manageTo={track && !sourceIsMissing(issue)
+                    ? `/music/tracks/${encodeURIComponent(binding.trackId)}`
+                    : null}
                   manageLabel="Open in Music"
                   disabled={busy}
                   onUnbind={() => onUnbindMusic(binding.id)}

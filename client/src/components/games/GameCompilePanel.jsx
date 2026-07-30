@@ -45,6 +45,7 @@ const statusStyle = {
 };
 
 const manageSource = (issue, spriteIds, trackIds) => {
+  if (issue.code === 'SPRITE_MISSING' || issue.code === 'TRACK_MISSING') return null;
   if (issue.assetType === 'sprite' && spriteIds.has(issue.assetId)) {
     return {
       label: 'Open in Sprite Manager',
