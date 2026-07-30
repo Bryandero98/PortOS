@@ -245,17 +245,48 @@ describe('Game bundle integrity', () => {
       });
     });
 
-    it('blocks a track whose stored filename is not a supported music name', async () => {
+    it('distinguishes missing, malformed, and missing-file track audio', async () => {
       // `sanitizeTrack` only trims the top-level audioFilename, so a legacy or
       // peer-synced track can carry one `statMusicTrack` would THROW a 400 on.
       // It has to become one blocked row, not a failed preflight.
       state.game.spriteBindings = [];
       const { getTrack } = await import('../tracks/index.js');
-      getTrack.mockResolvedValueOnce({ id: 'theme', title: 'Legacy Theme', audioFilename: 'theme.opus' });
-      const resolved = await resolveGameAssets(state.game);
-      expect(resolved.music).toEqual([]);
-      expect(resolved.issues).toEqual([
-        expect.objectContaining({ assetId: 'theme', code: 'TRACK_AUDIO_REQUIRED' }),
+      const { statMusicTrack } = await import('../pipeline/musicLibrary.js');
+
+      getTrack.mockResolvedValueOnce({ id: 'theme', title: 'No Audio' });
+      const missingName = await resolveGameAssets(state.game);
+      expect(missingName.issues).toEqual([
+        expect.objectContaining({
+          code: 'TRACK_AUDIO_REQUIRED',
+          message: expect.stringContaining('Render or upload audio'),
+        }),
+      ]);
+
+      getTrack.mockResolvedValueOnce({
+        id: 'theme',
+        title: 'Legacy Theme',
+        audioFilename: 'theme.opus',
+      });
+      const malformedName = await resolveGameAssets(state.game);
+      expect(malformedName.issues).toEqual([
+        expect.objectContaining({
+          code: 'TRACK_AUDIO_INTEGRITY_FAILED',
+          message: 'The rendered audio path for "Legacy Theme" is invalid',
+        }),
+      ]);
+
+      getTrack.mockResolvedValueOnce({
+        id: 'theme',
+        title: 'Missing Theme',
+        audioFilename: 'missing-theme.ogg',
+      });
+      statMusicTrack.mockResolvedValueOnce(null);
+      const missingFile = await resolveGameAssets(state.game);
+      expect(missingFile.issues).toEqual([
+        expect.objectContaining({
+          code: 'TRACK_AUDIO_MISSING',
+          message: 'The rendered audio for "Missing Theme" is missing or unreadable',
+        }),
       ]);
     });
   });

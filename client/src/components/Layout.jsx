@@ -1210,6 +1210,9 @@ export default function Layout() {
             location.pathname.startsWith('/brain') ||
             location.pathname.startsWith('/digital-twin') ||
             location.pathname.startsWith('/feature-agents') ||
+            // Only Game DETAIL workspaces own an internal scroll region; the
+            // bare /game index stays on the normal padded page layout.
+            /^\/game\/[^/]+\/?$/.test(location.pathname) ||
             location.pathname.startsWith('/goals') ||
             location.pathname.startsWith('/insights') ||
             location.pathname.startsWith('/meatspace') ||

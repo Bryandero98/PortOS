@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
-import { AlertTriangle, CheckCircle2, HelpCircle, Music2, PersonStanding, Plus, Unlink } from 'lucide-react';
+import { AlertTriangle, ArrowUpRight, CheckCircle2, HelpCircle, Music2, PersonStanding, Plus, Unlink } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import Pill from '../ui/Pill.jsx';
 
 const selectClass = 'w-full min-h-[44px] rounded-lg border border-port-border bg-port-bg px-3 py-2 text-sm text-white';
@@ -21,23 +22,53 @@ const healthTone = (health) => {
   return HEALTH_TONES[health.status] || HEALTH_TONES.blocked;
 };
 
-function BindingRow({ label, detail, health, disabled, onUnbind, unbindTitle }) {
+const missingHelp = {
+  SPRITE_MISSING: 'This Sprite Manager record was deleted. Unbind it from this game to clear the blocker.',
+  TRACK_MISSING: 'This music track was deleted. Unbind it from this game to clear the blocker.',
+};
+const sourceIsMissing = (issue) => issue?.code === 'SPRITE_MISSING' || issue?.code === 'TRACK_MISSING';
+
+function BindingRow({
+  label,
+  detail,
+  health,
+  issue,
+  manageTo,
+  manageLabel,
+  disabled,
+  onUnbind,
+  unbindTitle,
+}) {
   const { Icon, className } = healthTone(health);
   const message = health?.message || detail;
+  const needsAttention = health?.status === 'blocked';
+  const explanation = missingHelp[issue?.code] || issue?.message;
   return (
-    <li className="flex min-h-[54px] items-center justify-between gap-2 rounded-lg border border-port-border bg-port-bg/50 px-3 py-1.5">
-      <div className="min-w-0">
+    <li className="flex min-h-[54px] items-start justify-between gap-2 rounded-lg border border-port-border bg-port-bg/50 px-3 py-2">
+      <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
           <Icon className={`h-3.5 w-3.5 shrink-0 ${className}`} aria-hidden="true" />
           <div className="truncate text-sm font-medium text-white">{label}</div>
         </div>
         <div className="truncate text-xs text-gray-500" title={message}>{message}</div>
+        {needsAttention && explanation ? (
+          <p className="mt-1 text-xs leading-5 text-gray-400">{explanation}</p>
+        ) : null}
+        {needsAttention && manageTo ? (
+          <Link
+            to={manageTo}
+            className="mt-1 inline-flex min-h-[32px] items-center gap-1 text-xs font-medium text-port-accent hover:underline"
+          >
+            {manageLabel}
+            <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
+          </Link>
+        ) : null}
       </div>
       <button
         type="button"
         onClick={onUnbind}
         disabled={disabled}
-        className="min-h-[44px] min-w-[44px] rounded-lg p-2 text-gray-400 hover:text-port-error disabled:opacity-50"
+        className="min-h-[44px] min-w-[44px] shrink-0 rounded-lg p-2 text-gray-400 hover:text-port-error disabled:opacity-50"
         aria-label={`Unbind ${label}`}
         title={unbindTitle}
       >
@@ -122,6 +153,16 @@ export default function GameBindings({
   const musicIntegrity = useMemo(() => new Map(
     (integrity?.assets?.music || []).map((asset) => [asset.bindingId, asset]),
   ), [integrity]);
+  const spriteIssues = useMemo(() => new Map(
+    (integrity?.issues || [])
+      .filter((issue) => issue.assetType === 'sprite')
+      .map((issue) => [issue.assetId, issue]),
+  ), [integrity]);
+  const musicIssues = useMemo(() => new Map(
+    (integrity?.issues || [])
+      .filter((issue) => issue.assetType === 'music')
+      .map((issue) => [issue.assetId, issue]),
+  ), [integrity]);
   const boundSpriteIds = new Set(game.spriteBindings.map((binding) => binding.spriteId));
   const boundTrackIds = new Set(game.musicBindings.map((binding) => binding.trackId));
   const availableSprites = sprites
@@ -158,12 +199,18 @@ export default function GameBindings({
           <ul className="grid max-h-72 gap-2 overflow-y-auto pr-1 sm:grid-cols-2">
             {game.spriteBindings.map((binding) => {
               const sprite = spriteMap.get(binding.spriteId);
+              const issue = spriteIssues.get(binding.spriteId);
               return (
                 <BindingRow
                   key={binding.spriteId}
                   label={sprite?.name || binding.spriteId}
                   detail={sprite ? `${sprite.kind} · ${sprite.status}` : 'Record unavailable'}
                   health={spriteIntegrity.get(binding.spriteId)}
+                  issue={issue}
+                  manageTo={sprite && !sourceIsMissing(issue)
+                    ? `/sprites/${encodeURIComponent(binding.spriteId)}`
+                    : null}
+                  manageLabel="Open in Sprite Manager"
                   disabled={busy}
                   onUnbind={() => onUnbindSprite(binding.spriteId)}
                   unbindTitle="Unbind sprite"
@@ -190,6 +237,7 @@ export default function GameBindings({
           <ul className="max-h-72 space-y-2 overflow-y-auto pr-1">
             {game.musicBindings.map((binding) => {
               const track = trackMap.get(binding.trackId);
+              const issue = musicIssues.get(binding.trackId);
               return (
                 <BindingRow
                   key={binding.id}
@@ -200,6 +248,11 @@ export default function GameBindings({
                   // nobody hashed. The server's own message wins when present.
                   detail={track?.audioFilename ? 'Audio attached' : 'No audio yet'}
                   health={musicIntegrity.get(binding.id)}
+                  issue={issue}
+                  manageTo={track && !sourceIsMissing(issue)
+                    ? `/music/tracks/${encodeURIComponent(binding.trackId)}`
+                    : null}
+                  manageLabel="Open in Music"
                   disabled={busy}
                   onUnbind={() => onUnbindMusic(binding.id)}
                   unbindTitle="Unbind music track"
