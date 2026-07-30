@@ -126,7 +126,12 @@ export function buildAtlasLayout({
     // key position/null compatibility untouched; seeded scanner/ambient rows
     // likewise retain their historical names and order.
     ...Object.fromEntries(Object.values(animationTracks).flatMap((definition) => {
-      const value = geometry[definition.contractFrameCountField];
+      const direct = geometry[definition.contractFrameCountField];
+      // Existing custom atlases can take the compiler's idempotent path after
+      // upgrade, leaving their immutable manifest without the new convenience
+      // field. Its persisted span is the same count and keeps the published
+      // sidecar uniform without forcing a pixel recompile.
+      const value = Number.isInteger(direct) ? direct : geometry.tracks?.[definition.id]?.count;
       return Number.isInteger(value) ? [[definition.contractFrameCountField, value]] : [];
     })),
     previewFps: Number.isFinite(geometry.walkFps) ? geometry.walkFps : null,

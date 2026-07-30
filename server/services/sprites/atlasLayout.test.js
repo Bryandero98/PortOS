@@ -145,7 +145,6 @@ describe('buildAtlasLayout', () => {
           walk: span(1, 8),
           jetpack: span(9, 3),
         },
-        jetpackFrameCount: 3,
       }),
       atlasSha256: 'abc123',
       version: 8,
