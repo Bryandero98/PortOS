@@ -8,6 +8,7 @@ import {
   MAX_BASE64_UPLOAD_BYTES,
   MAX_SCREENSHOT_BYTES,
 } from './uploadLimits.js';
+import { detectImageFormat } from './fileUtils.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const read = (p) => readFileSync(join(HERE, p), 'utf8');
@@ -108,6 +109,30 @@ describe('uploadLimits', () => {
           .not.toMatch(/=\s*\d+\s*\*\s*1024\s*\*\s*1024/);
       }
     }
+  });
+
+  it('matches the client mirror of the supported image formats', () => {
+    // The client refuses an unsupported image at pick time — a drag-drop or a
+    // clipboard paste bypasses the picker's `accept`, so without a client-side
+    // check an AVIF/SVG only fails after the user typed their message. That list
+    // mirrors `detectImageFormat` here, which the client can't import; if the
+    // server learns a new format and the mirror doesn't, the client rejects
+    // something the server would happily accept.
+    const clientSrc = read('../../client/src/utils/fileUpload.js');
+    const match = clientSrc.match(/SUPPORTED_UPLOAD_IMAGE_MIME = \[([^\]]*)\]/);
+    expect(match, 'client mirror not found — did SUPPORTED_UPLOAD_IMAGE_MIME move?').toBeTruthy();
+    const mirrored = [...match[1].matchAll(/'([^']+)'/g)].map((m) => m[1]).sort();
+
+    // Derive the server's set from detectImageFormat itself rather than restating
+    // it, so this compares behavior and not two copies of a literal.
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0, 0, 0, 0, 0]);
+    const gif = Buffer.from([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0, 0]);
+    const webp = Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('WEBP')]);
+    const supported = [png, jpeg, gif, webp].map((b) => detectImageFormat(b)?.mime);
+    expect(supported, 'a probe stopped matching detectImageFormat').not.toContain(undefined);
+
+    expect(mirrored).toEqual([...new Set(supported)].sort());
   });
 
   it('matches the client mirror of the screenshot cap', () => {

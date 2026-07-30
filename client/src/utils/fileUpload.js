@@ -82,12 +82,29 @@ export function readFileAsBase64(file) {
 }
 
 /**
- * Gate a picked file as an uploadable image: right kind, within the size cap.
+ * The image formats the upload endpoints can magic-byte verify — a mirror of
+ * `detectImageFormat` in `server/lib/fileUtils.js`, which the client can't import.
+ * Anything else is refused server-side with a 400, so the check has to exist here
+ * too: a drag-drop or a clipboard paste bypasses the picker's `accept` entirely,
+ * and without this an AVIF or SVG previews happily and only fails AFTER the user
+ * has typed their message. `uploadLimits.test.js` guards the two lists against
+ * drift.
  *
- * Every image picker in the app needs this pair of checks, and a surface that
- * PREVIEWS before uploading (the Shell photo composer) can't get it from
- * `processScreenshotUploads`, which uploads immediately. So it lives here and
- * both call it, keeping one wording for the size-limit message.
+ * Distinct from `IMAGE_ACCEPT`, which is narrower on purpose (no GIF) because its
+ * consumers feed image-gen backends rather than this upload pipeline.
+ */
+export const SUPPORTED_UPLOAD_IMAGE_MIME = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+
+const SUPPORTED_LABEL = 'PNG, JPEG, GIF, WebP';
+
+/**
+ * Gate a picked file as an uploadable image: a format the server accepts, within
+ * the size cap.
+ *
+ * Every image picker in the app needs these checks, and a surface that PREVIEWS
+ * before uploading (the Shell photo composer) can't get them from
+ * `processScreenshotUploads`, which uploads immediately. So it lives here and both
+ * call it, keeping one wording for the messages.
  *
  * @param {File} file
  * @param {number} [maxFileSize] - byte ceiling (default: the screenshot cap)
@@ -95,6 +112,9 @@ export function readFileAsBase64(file) {
  */
 export function validateImageFile(file, maxFileSize = SCREENSHOT_MAX_FILE_SIZE) {
   if (!file?.type?.startsWith('image/')) return `File "${file?.name}" is not an image`;
+  if (!SUPPORTED_UPLOAD_IMAGE_MIME.includes(file.type)) {
+    return `File "${file.name}" is a ${file.type.replace('image/', '').toUpperCase()} — supported: ${SUPPORTED_LABEL}`;
+  }
   if (file.size > maxFileSize) return `File "${file.name}" exceeds the ${formatBytes(maxFileSize)} limit`;
   return null;
 }

@@ -567,6 +567,14 @@ const PASTE_SUBMIT_DELAY_MS = 400;
  * `agentTuiSpawning.js` retries against a paste-marker probe. Don't grow this
  * function into that; reach for those.
  *
+ * The return value reports that the paste was WRITTEN, deliberately not that the
+ * TUI submitted it — the submitting Enter is fire-and-forget. Making it awaitable
+ * would delay every caller's response by `PASTE_SUBMIT_DELAY_MS` to cover only the
+ * case where the PTY dies inside that window, which the user is already watching
+ * happen in the terminal (`shell:exit` paints "[Shell exited…]"). This is the same
+ * contract `shell:input` has for ordinary keystrokes: delivery to the PTY is what
+ * is promised.
+ *
  * @param {string} sessionId
  * @param {string} text - paste payload (no trailing newline; the Enter submits it)
  * @param {object} [opts]

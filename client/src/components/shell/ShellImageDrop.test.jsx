@@ -101,6 +101,25 @@ describe('ShellImageDrop', () => {
     expect(toastMock.error).toHaveBeenCalledWith(expect.stringContaining('not an image'));
   });
 
+  // A drop or a clipboard paste bypasses the picker's `accept`, so an unsupported
+  // image has to be caught here or it only fails after the message is typed.
+  it('rejects an image format the server cannot verify, before it is previewed', () => {
+    render(<ShellImageDrop onSend={vi.fn()} />);
+    openComposer();
+    const avif = imageFile('shot.avif', { type: 'image/avif' });
+    fireEvent.drop(screen.getByLabelText('Message'), { dataTransfer: { files: [avif] } });
+    expect(toastMock.error).toHaveBeenCalledWith(expect.stringContaining('supported: PNG, JPEG, GIF, WebP'));
+    expect(screen.queryByAltText('shot.avif')).toBeNull();
+  });
+
+  it('accepts a dropped GIF (the server verifies it, even though the picker filters it out)', () => {
+    render(<ShellImageDrop onSend={vi.fn()} />);
+    openComposer();
+    const gif = imageFile('loop.gif', { type: 'image/gif' });
+    fireEvent.drop(screen.getByLabelText('Message'), { dataTransfer: { files: [gif] } });
+    expect(screen.getByAltText('loop.gif')).toBeTruthy();
+  });
+
   it('accepts a pasted image', () => {
     render(<ShellImageDrop onSend={vi.fn()} />);
     openComposer();
