@@ -381,21 +381,23 @@ describe('pasteToSession', () => {
     pty = ptyInstances[0];
   });
 
-  it('writes one bracketed paste, then submits with a delayed Enter', () => {
-    expect(shell.pasteToSession(id, 'line one\nline two')).toBe(true);
+  it('writes one bracketed paste, then submits with repeated Enters', () => {
+    const timer = shell.pasteToSession(id, 'line one\nline two');
+    expect(timer).toBeTruthy();
     // The paste is a SINGLE write — a multi-line message must not become N submits.
     expect(pty.write).toHaveBeenCalledWith('\x1b[200~line one\nline two\x1b[201~');
-    expect(pty.write).not.toHaveBeenCalledWith('\r');
-
-    vi.advanceTimersByTime(400);
     expect(pty.write).toHaveBeenCalledWith('\r');
+
+    vi.advanceTimersByTime(1400);
+    expect(pty.write.mock.calls.filter(([data]) => data === '\r')).toHaveLength(3);
   });
 
-  it('skips the delayed Enter when the session dies inside the window', () => {
+  it('cancels pending Enters when the session dies', () => {
     shell.pasteToSession(id, 'hi');
+    expect(pty.write.mock.calls.filter(([data]) => data === '\r')).toHaveLength(1);
     shell.killSession(id);
-    vi.advanceTimersByTime(400);
-    expect(pty.write).not.toHaveBeenCalledWith('\r');
+    vi.advanceTimersByTime(1400);
+    expect(pty.write.mock.calls.filter(([data]) => data === '\r')).toHaveLength(1);
   });
 
   it('returns false and writes nothing for a missing session', () => {
