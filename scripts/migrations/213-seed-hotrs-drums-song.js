@@ -1,11 +1,12 @@
 /**
- * Migration 209 — seed the SongBook drum example groove into existing installs.
+ * Migration 213 — seed the House of the Rising Sun drum part into existing installs.
  *
- * The `drums` instrument / `drum` content format (#3115) ships one invented
- * example chart ("Example Rock Beat" by The Placeholders) in
- * data.reference/brain/songs.json — it doubles as the format's worked example,
- * so a drummer opening `/songbook` on an upgraded install has something to read,
- * play along with, and copy from.
+ * "House of the Rising Sun" is the SongBook's canonical sample song: migration
+ * 190 shipped guitar/piano/ukulele arrangements of it, and #3115 added the
+ * `drums` instrument + `drum` grid format. This adds the missing fourth
+ * arrangement (`song-seed-hotrs-drums`) so a drummer has the canonical song to
+ * play against the other three seeds, rather than only the invented "Example
+ * Rock Beat" that exists to demonstrate the format (migration 209).
  *
  * Idempotency, tombstone/edit preservation, the legacy-monolith top-up, and the
  * never-write-over-unreadable-data rule all live in `makeBrainSeedMigration`
@@ -17,12 +18,12 @@
 import { makeBrainSeedMigration } from './_lib.js';
 
 const migration = makeBrainSeedMigration({
-  logTag: '🥁 drum-seed',
+  logTag: '🥁 hotrs-drums',
   entityType: 'songs',
   // Only THIS seed id — a later seed addition gets its own migration rather
   // than silently riding along on a re-run of this one.
-  seedIds: ['song-seed-example-rock-beat'],
-  seedLabel: 'the drum example groove',
+  seedIds: ['song-seed-hotrs-drums'],
+  seedLabel: 'the House of the Rising Sun drum part',
   storeLabel: 'the SongBook',
 });
 

@@ -72,6 +72,31 @@
       "updatedAt": "2026-07-15T00:00:00.000Z",
       "originInstanceId": "seed"
     },
+    "song-seed-hotrs-drums": {
+      "title": "House of the Rising Sun",
+      "artist": "Traditional",
+      "instrument": "drums",
+      "stage": "new",
+      "tags": [
+        "folk",
+        "traditional",
+        "public-domain",
+        "drums"
+      ],
+      "key": "Am",
+      "capo": 0,
+      "tuning": "",
+      "sourceUrl": "",
+      "content": {
+        "format": "drum",
+        "text": "time: 6/8\ntempo: 228\nsubdivision: 1\n\n# Intro - guitar alone; keep the 6/8 pulse with the hi-hat foot x7\nHF: x - - x - -\n\n# Pickup fill - drums enter on the last intro bar\nT1: - - - o - -\nT2: - - - - o -\nS:  - - - - - o\nK:  o - - - - -\n\n# Verse groove - hats on every eighth, kick on 1, snare on 4 x7\nHH: x x x x x x\nS:  - - - o - -\nK:  o - - - - -\n\n# Verse turnaround - an extra kick pushes into the next section\nHH: x x x x x x\nS:  - - - o - g\nK:  o - - - o -\n\n# Organ break - move to the ride, kick on both pulses x7\nRD: x x x x x x\nS:  - - - o - -\nK:  o - - o - -\n\n# Break fill - walk down the toms\nS:  o - o - - -\nT1: - - - o - -\nT2: - - - - o -\nFT: - - - - - o\nK:  o - - - - -\n\n# Last verse - crash in and accent the backbeat\nCR: X - - - - -\nRD: x x x x x x\nS:  - - - X - -\nK:  o - - o - o\n\n# ...and hold that groove x6\nRD: x x x x x x\nS:  - - - X - -\nK:  o - - o - o\n\n# Ending - flam the last backbeat and let the crash ring\nCR: X - - - - -\nS:  - - - f - -\nK:  o - - - - -"
+      },
+      "notes": "Drum part for the SongBook's canonical song, so the guitar/piano/ukulele seeds have something to play against. 6/8 throughout — one cell per eighth, counted 1-2-3 4-5-6, with the kick on 1 and the snare on 4. The written 228 is the EIGHTH note (dotted quarter ~76), so start at 50-75% with the BPM control and work up. Drums sit out the 8-bar intro (hi-hat foot keeps the pulse), enter on the pickup fill, then verse groove on hats, organ break on the ride, and a flam into the final crash. 32 bars = four times through the 8-bar Am-C-D-F-Am-C-E-E progression. Traditional song, public domain.",
+      "attachments": [],
+      "createdAt": "2026-07-29T00:00:00.000Z",
+      "updatedAt": "2026-07-29T00:00:00.000Z",
+      "originInstanceId": "seed"
+    },
     "song-seed-example-rock-beat": {
       "title": "Example Rock Beat",
       "artist": "The Placeholders",
