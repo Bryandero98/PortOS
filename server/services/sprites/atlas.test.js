@@ -433,6 +433,7 @@ describe('compileAtlas', () => {
       'idle', ...WALK_PHASES, 'jetpack-00', 'jetpack-01', 'jetpack-02',
     ]);
     expect(manifest.geometry.tracks.jetpack).toEqual({ start: 9, count: 3, rows: 8 });
+    expect(manifest.geometry.jetpackFrameCount).toBe(3);
     expect(manifest.trackSets.jetpack.setSha256).toMatch(/^[0-9a-f]{64}$/);
     for (const row of manifest.directions) {
       expect(row.cells.filter((cell) => cell.column.startsWith('jetpack-'))).toHaveLength(3);

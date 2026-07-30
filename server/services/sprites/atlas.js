@@ -893,8 +893,13 @@ export async function compileAtlasInTail(recordId, {
       // walk row at the authored speed over the right number of columns.
       walkFrameCount: validated.walkFrameCount,
       walkFps: validated.walkFps,
-      ...(validated.scannerSet ? { scannerFrameCount: validated.scannerFrameCount } : {}),
-      ...(validated.ambientSet ? { ambientFrameCount: validated.ambientFrameCount } : {}),
+      // Match every compiled track to the convenience field its registry row
+      // declares. The duplicate walk assignment preserves the existing field
+      // position, while seeded scanner/ambient rows keep their wire names.
+      ...Object.fromEntries(Object.values(animationTracks).flatMap((definition) => {
+        const frameCount = validated.tracks[definition.id]?.frameCount;
+        return Number.isInteger(frameCount) ? [[definition.contractFrameCountField, frameCount]] : [];
+      })),
     },
     directions: rows.map((row) => ({
       direction: row.direction,
