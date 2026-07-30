@@ -439,6 +439,21 @@ describe('compileAtlas', () => {
       expect(row.cells.filter((cell) => cell.column.startsWith('jetpack-'))).toHaveLength(3);
     }
 
+    // A pre-#3223 pointer has the generic span but no top-level convenience
+    // field. Recompile the immutable metadata into a new version even though
+    // its atlas pixels and finalized track sets are unchanged.
+    const pointerAbs = join(TEST_ROOT, 'sprites', id, 'runtime/current.json');
+    const legacyPointer = JSON.parse(await readFile(pointerAbs, 'utf8'));
+    delete legacyPointer.geometry.jetpackFrameCount;
+    await writeFile(pointerAbs, JSON.stringify(legacyPointer));
+    const backfilled = await compileAtlas(id, { tracks: customTracks });
+    expect(backfilled.created).toBe(true);
+    expect(backfilled.version).toBe(first.version + 1);
+    const backfilledManifest = JSON.parse(
+      await readFile(join(TEST_ROOT, 'sprites', id, backfilled.manifestPath), 'utf8'),
+    );
+    expect(backfilledManifest.geometry.jetpackFrameCount).toBe(3);
+
     const unchanged = await compileAtlas(id, { tracks: customTracks });
     expect(unchanged.created).toBe(false);
 
@@ -450,7 +465,7 @@ describe('compileAtlas', () => {
     await writeFile(setAbs, JSON.stringify({ ...set, note: 're-finalized' }));
     const changed = await compileAtlas(id, { tracks: customTracks });
     expect(changed.created).toBe(true);
-    expect(changed.version).toBe(first.version + 1);
+    expect(changed.version).toBe(backfilled.version + 1);
   });
 
   it('compiles the 9×8 player atlas with full provenance and a current pointer', async () => {
