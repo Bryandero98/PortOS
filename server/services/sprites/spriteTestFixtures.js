@@ -69,6 +69,28 @@ export async function lockAllAnchors(testRoot, recordId, { lockReference, direct
 }
 
 /**
+ * Assert that `prompt` carries the re-roll correction for `note` (#3216).
+ *
+ * The routing suites (reference / walk / animationTrackWorkflow / assetPrompt /
+ * trackPrompts) are proving that a note reached the builder — NOT what the clause
+ * says. They used to each hardcode the full sentence, so a wording change was a
+ * six-file edit and the copies drifted. `prompts.js` owns the wording and
+ * `prompts.test.js` pins it; everyone else routes through here.
+ *
+ * Both halves are checked because half a sandwich is the #3216 bug.
+ *
+ * The assertions stay medium-neutral on purpose: callers span still-image
+ * surfaces (reference) and image-to-video ones (walk / tracks), whose wording
+ * legitimately differs — a video correction must not tell the model to keep
+ * everything identical to the source still. `prompts.test.js` pins each medium.
+ */
+export function expectCarriesCorrection(expect, prompt, note) {
+  const sentence = /[.!?]$/.test(note) ? note : `${note}.`;
+  expect(prompt).toContain(`Required fix: ${sentence} Make that fix in the`);
+  expect(prompt).toContain(`instruction above): ${sentence}`);
+}
+
+/**
  * A track's column span as `buildAtlasGrid` and the layout sidecar emit it.
  * `rows` defaults to the full grid height, which is what every shipped track
  * (walk, idle) and every grid compiled before #3017 has — spelled out rather
