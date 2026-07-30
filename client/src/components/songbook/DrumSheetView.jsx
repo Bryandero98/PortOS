@@ -343,6 +343,11 @@ function DrumSheetView({
     const within = rel - (bar - 1) * span;
     // `uy < GRID_TOP` floors negative → no piece; `within >= barW` is the gap
     // between bars. Either way there's nothing under the finger.
+    // A tap's note is on screen by definition, and an arrow walk that ended on
+    // the last hit leaves its flag set (React bails out of the no-op state write,
+    // so the reveal effect never ran to clear it) — clear it here rather than let
+    // it fire a pointless layout read on the next tap.
+    revealRef.current = false;
     if (!piece || bar < 1 || bar > barCount || within < 0 || within >= barW) { setSelection(null); return; }
     const cells = cellsFor(bar, piece);
     const step = Math.floor(within / CELL);
