@@ -1278,6 +1278,14 @@ export async function importFileToUploads(tempPath, originalName) {
   return importFileToDir(tempPath, originalName, PATHS.uploads);
 }
 
+// Widest supported image signature (WebP needs 12 bytes: `RIFF….WEBP`). A payload
+// shorter than this can't hold a complete header for any format we accept.
+const MIN_IMAGE_BYTES = 12;
+
+// POSIX NAME_MAX — the per-component filename limit on ext4/APFS/HFS+. A longer
+// component makes the write fail with ENAMETOOLONG.
+const MAX_FILENAME_BYTES = 255;
+
 /**
  * Persist a base64-encoded IMAGE into `dir`, deriving the format from the bytes
  * rather than trusting the client: decode → size cap → magic-byte sniff → force
@@ -1306,15 +1314,32 @@ export async function saveImageUpload(dir, { filename, data }, { maxBytes }) {
     throw new ServerError(`File exceeds maximum size of ${maxBytes / 1024 / 1024}MB`, { status: 400, code: 'FILE_TOO_LARGE' });
   }
 
+  // Floor before the sniff, because the per-format signatures are short (a JPEG is
+  // 3 bytes, a GIF header 6) and would happily "detect" a truncated payload — which
+  // then saves as a success and hands a consumer a path to an unreadable file. 12
+  // bytes is the widest signature (WebP's RIFF….WEBP), so anything under it cannot
+  // be a complete header for ANY supported format, let alone a complete image.
+  if (buffer.length < MIN_IMAGE_BYTES) {
+    throw new ServerError('Invalid image file - only PNG, JPEG, GIF, and WebP are supported', { status: 400, code: 'INVALID_FILE_TYPE' });
+  }
+
   const detected = detectImageFormat(buffer);
   if (!detected) {
     throw new ServerError('Invalid image file - only PNG, JPEG, GIF, and WebP are supported', { status: 400, code: 'INVALID_FILE_TYPE' });
   }
 
-  // The DETECTED extension wins over whatever the client claimed, so the file on
-  // disk can't advertise a type its bytes contradict.
+  // The DETECTED extension always wins over whatever the client claimed, so the
+  // file on disk can't advertise a type its bytes contradict. Strip a matching
+  // extension off the base rather than appending a second one, then clamp the base
+  // so `base + ext` fits NAME_MAX — a caller that prefixes the name (see
+  // services/shellImageDrop.js) can otherwise push a legitimately-long client
+  // filename past the limit and turn the write into an ENAMETOOLONG 500.
   const safeName = sanitizeFilename(filename);
-  const fname = safeName.toLowerCase().endsWith(detected.ext) ? safeName : `${safeName}${detected.ext}`;
+  const base = safeName.toLowerCase().endsWith(detected.ext)
+    ? safeName.slice(0, -detected.ext.length)
+    : safeName;
+  // sanitizeFilename leaves only ASCII, so slicing chars is slicing bytes.
+  const fname = `${base.slice(0, MAX_FILENAME_BYTES - detected.ext.length)}${detected.ext}`;
   const filePath = join(dir, fname);
   if (!isPathInsideDir(dir, filePath)) {
     throw new ServerError('Invalid filename', { status: 400, code: 'INVALID_FILENAME' });
