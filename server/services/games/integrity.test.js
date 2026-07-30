@@ -63,7 +63,7 @@ vi.mock('../pipeline/musicLibrary.js', () => ({
 }));
 
 vi.mock('../../lib/fileUtils.js', () => ({
-  PATHS: { music: '/tmp/music' },
+  PATHS: { images: '/tmp/images', music: '/tmp/music' },
   readJSONFile: vi.fn(async () => state.manifest),
   // Content-exact, not length-based — a canonical-stringify change that happened
   // to preserve length must still register as a changed input.
@@ -95,6 +95,7 @@ const baseGame = () => ({
     { spriteId: 'draft-character' },
   ],
   musicBindings: [{ id: 'music-1', trackId: 'theme' }],
+  artworkBindings: [],
   compiledManifest: null,
 });
 
@@ -148,6 +149,63 @@ describe('Game bundle integrity', () => {
       expect.objectContaining({ assetId: 'props', status: 'ready', fileCount: 1 }),
       expect.objectContaining({ assetId: 'draft-character', status: 'blocked' }),
     ]));
+  });
+
+  it('hashes gallery artwork and reports whether publishing is current', async () => {
+    state.game.spriteBindings = [];
+    state.game.musicBindings = [];
+    state.game.artworkBindings = [{
+      id: 'artwork-1',
+      imageFilename: 'title.png',
+      label: 'Title Key Art',
+      role: 'title-key-art',
+      destinationPath: 'game/assets/art/title.png',
+      publication: null,
+    }];
+    state.hashes['title.png'] = 'title-sha';
+
+    const pending = await resolveGameAssets(state.game);
+    expect(pending.artwork).toEqual([
+      expect.objectContaining({
+        bindingId: 'artwork-1',
+        sourceSha256: 'title-sha',
+        destinationPath: 'game/assets/art/title.png',
+      }),
+    ]);
+    expect(pending.summaries.artwork[0]).toMatchObject({
+      status: 'ready',
+      publicationStatus: 'pending',
+      fileCount: 1,
+    });
+
+    state.game.artworkBindings[0].publication = {
+      sourceSha256: 'title-sha',
+      destinationSha256: 'title-sha',
+      destinationPath: 'game/assets/art/title.png',
+      publishedAt: '2026-01-01T00:00:00.000Z',
+    };
+    const current = await resolveGameAssets(state.game);
+    expect(current.summaries.artwork[0].publicationStatus).toBe('current');
+    expect(current.verifiedFileCount).toBe(1);
+  });
+
+  it('blocks missing gallery artwork without failing the whole preflight', async () => {
+    state.game.spriteBindings = [];
+    state.game.musicBindings = [];
+    state.game.artworkBindings = [{
+      id: 'artwork-missing',
+      imageFilename: 'missing.png',
+      label: 'Missing Art',
+      role: 'loading-screen',
+      destinationPath: 'game/assets/art/loading.png',
+      publication: null,
+    }];
+    const resolved = await resolveGameAssets(state.game);
+    expect(resolved.artwork).toEqual([]);
+    expect(resolved.issues[0]).toMatchObject({
+      assetType: 'artwork',
+      code: 'ARTWORK_MISSING',
+    });
   });
 
   it('reports a corrupt binding id as a blocked asset instead of throwing', async () => {

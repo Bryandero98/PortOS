@@ -29,7 +29,7 @@ import { getTrack } from '../tracks/index.js';
 import { getGame } from './records.js';
 import { gameRecordDir } from './store.js';
 
-export const BUNDLE_SCHEMA_VERSION = 2;
+export const BUNDLE_SCHEMA_VERSION = 3;
 
 const issue = (assetType, assetId, name, code, message) => ({
   assetType,
@@ -270,23 +270,81 @@ async function resolveMusic(binding) {
   };
 }
 
+const safeArtworkFilename = (filename) =>
+  typeof filename === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]*\.png$/i.test(filename);
+
+async function resolveArtwork(binding) {
+  const identity = {
+    assetId: binding.id,
+    bindingId: binding.id,
+    name: binding.label,
+    role: binding.role,
+  };
+  if (!safeArtworkFilename(binding.imageFilename)) {
+    return blocked(
+      'artwork',
+      identity,
+      'ARTWORK_PATH_INVALID',
+      `The gallery path for "${binding.label}" is invalid`,
+      'Gallery path invalid',
+    );
+  }
+  const sourceSha256 = await hashIfPresent(join(PATHS.images, binding.imageFilename));
+  if (!sourceSha256) {
+    return blocked(
+      'artwork',
+      identity,
+      'ARTWORK_MISSING',
+      `The gallery artwork for "${binding.label}" is missing or unreadable`,
+      'Gallery artwork missing',
+    );
+  }
+  const publicationCurrent = binding.publication?.sourceSha256 === sourceSha256
+    && binding.publication?.destinationPath === binding.destinationPath;
+  return {
+    item: {
+      bindingId: binding.id,
+      label: binding.label,
+      role: binding.role,
+      imagePath: `images/${binding.imageFilename}`,
+      sourceSha256,
+      destinationPath: binding.destinationPath,
+      publishedSha256: publicationCurrent ? sourceSha256 : null,
+    },
+    summary: {
+      ...identity,
+      imageFilename: binding.imageFilename,
+      destinationPath: binding.destinationPath,
+      status: 'ready',
+      fileCount: 1,
+      publicationStatus: publicationCurrent ? 'current' : 'pending',
+      message: publicationCurrent ? 'Gallery source verified · published' : 'Gallery source verified · publish pending',
+    },
+  };
+}
+
 export async function resolveGameAssets(game) {
-  const [spriteResults, musicResults] = await Promise.all([
+  const [spriteResults, musicResults, artworkResults] = await Promise.all([
     Promise.all([...game.spriteBindings]
       .sort((a, b) => a.spriteId.localeCompare(b.spriteId))
       .map(resolveSprite)),
     Promise.all([...game.musicBindings]
       .sort((a, b) => a.trackId.localeCompare(b.trackId) || a.id.localeCompare(b.id))
       .map(resolveMusic)),
+    Promise.all([...(game.artworkBindings || [])]
+      .sort((a, b) => a.role.localeCompare(b.role) || a.id.localeCompare(b.id))
+      .map(resolveArtwork)),
   ]);
-  const issues = [...spriteResults, ...musicResults]
+  const issues = [...spriteResults, ...musicResults, ...artworkResults]
     .map((result) => result.problem)
     .filter(Boolean);
   const sprites = spriteResults.map((result) => result.item).filter(Boolean);
   const music = musicResults.map((result) => result.item).filter(Boolean);
+  const artwork = artworkResults.map((result) => result.item).filter(Boolean);
   const summaries = {
     sprites: spriteResults.map((result) => result.summary),
     music: musicResults.map((result) => result.summary),
+    artwork: artworkResults.map((result) => result.summary),
   };
   const inputs = {
     schemaVersion: BUNDLE_SCHEMA_VERSION,
@@ -294,11 +352,13 @@ export async function resolveGameAssets(game) {
     appId: game.appId,
     sprites,
     music,
+    artwork,
   };
   return {
     schemaVersion: BUNDLE_SCHEMA_VERSION,
     sprites,
     music,
+    artwork,
     issues,
     inputSha256: sha256Text(canonicalStringify(inputs)),
     summaries,
@@ -306,7 +366,7 @@ export async function resolveGameAssets(game) {
     // resolver that hashed them. The compiled manifest pointer and the
     // preflight both read this, so a new source type can't make the two
     // numbers disagree on screen.
-    verifiedFileCount: [...summaries.sprites, ...summaries.music]
+    verifiedFileCount: [...summaries.sprites, ...summaries.music, ...summaries.artwork]
       .reduce((sum, asset) => sum + (asset.fileCount || 0), 0),
   };
 }
@@ -380,6 +440,8 @@ export async function getGameIntegrity(id) {
       spriteTotal: game.spriteBindings.length,
       musicReady: resolved.music.length,
       musicTotal: game.musicBindings.length,
+      artworkReady: resolved.artwork.length,
+      artworkTotal: (game.artworkBindings || []).length,
       verifiedFiles: resolved.verifiedFileCount,
     },
   };

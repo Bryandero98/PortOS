@@ -18,7 +18,7 @@ vi.mock('./store.js', () => ({
 }));
 
 vi.mock('../../lib/fileUtils.js', () => ({
-  PATHS: { music: '/tmp/music' },
+  PATHS: { images: '/tmp/images', music: '/tmp/music' },
   atomicWrite: vi.fn(async () => { state.manifestExists = true; }),
   pathExists: vi.fn(async (path) =>
     path.includes('/manifests/') ? state.manifestExists : true),
@@ -27,6 +27,7 @@ vi.mock('../../lib/fileUtils.js', () => ({
   sha256File: vi.fn(async (path) => {
     if (path.includes('/manifests/')) return state.manifestSha256;
     const spriteId = path.match(/\/sprites\/([^/]+)\//)?.[1];
+    if (path.endsWith('title.png')) return 'title-art-sha';
     if (path.endsWith('.png')) return `atlas-${spriteId}`;
     if (path.endsWith('.json')) return `manifest-${spriteId}`;
     return 'audio-sha';
@@ -91,6 +92,14 @@ describe('compileGameAssets', () => {
         { id: 'music-2', trackId: 'track-z' },
         { id: 'music-1', trackId: 'track-a' },
       ],
+      artworkBindings: [{
+        id: 'artwork-1',
+        imageFilename: 'title.png',
+        label: 'Title Key Art',
+        role: 'title-key-art',
+        destinationPath: 'game/assets/art/title.png',
+        publication: null,
+      }],
       compiledManifest: null,
       compileHistory: [],
       feedbackHistory: [],
@@ -109,6 +118,10 @@ describe('compileGameAssets', () => {
     state.manifestSha256 = first.manifestSha256;
     expect(manifest.sprites.map((sprite) => sprite.spriteId)).toEqual(['alpha', 'zeta']);
     expect(manifest.music.map((track) => track.trackId)).toEqual(['track-a', 'track-z']);
+    expect(manifest.artwork).toEqual([
+      expect.objectContaining({ bindingId: 'artwork-1', role: 'title-key-art' }),
+    ]);
+    expect(first.artworkCount).toBe(1);
 
     const second = await compileGameAssets('game-1');
     expect(second).toEqual({ ...state.game.compiledManifest, created: false });

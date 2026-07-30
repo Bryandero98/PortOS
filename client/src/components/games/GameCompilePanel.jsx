@@ -58,6 +58,9 @@ const manageSource = (issue, spriteIds, trackIds) => {
       to: `/music/tracks/${encodeURIComponent(issue.assetId)}`,
     };
   }
+  if (issue.assetType === 'artwork') {
+    return { label: 'Open image gallery', to: '/media/image' };
+  }
   return null;
 };
 
@@ -124,7 +127,7 @@ export default function GameCompilePanel({
         </div>
       </div>
 
-      <div className="mt-4 grid gap-3 sm:grid-cols-3">
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <div className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${bundleStatus.className}`}>
           <StatusIcon className={`h-4 w-4 shrink-0 ${loadingIntegrity ? 'animate-spin' : ''}`} aria-hidden="true" />
           <div>
@@ -136,6 +139,18 @@ export default function GameCompilePanel({
           <div className="text-xs text-gray-500">Sprite readiness</div>
           <div className="font-medium text-white">
             {integrity ? `${integrity.counts.spriteReady} / ${integrity.counts.spriteTotal}` : '—'}
+          </div>
+        </div>
+        <div className="rounded-lg border border-port-border bg-port-bg/50 px-3 py-2 text-sm">
+          <div className="text-xs text-gray-500">Music readiness</div>
+          <div className="font-medium text-white">
+            {integrity ? `${integrity.counts.musicReady ?? 0} / ${integrity.counts.musicTotal ?? 0}` : '—'}
+          </div>
+        </div>
+        <div className="rounded-lg border border-port-border bg-port-bg/50 px-3 py-2 text-sm">
+          <div className="text-xs text-gray-500">Artwork readiness</div>
+          <div className="font-medium text-white">
+            {integrity ? `${integrity.counts.artworkReady ?? 0} / ${integrity.counts.artworkTotal ?? 0}` : '—'}
           </div>
         </div>
         <div className="rounded-lg border border-port-border bg-port-bg/50 px-3 py-2 text-sm">
@@ -204,10 +219,11 @@ export default function GameCompilePanel({
       )}
 
       {current ? (
-        <dl className="mt-4 grid gap-3 rounded-lg border border-port-border bg-port-bg/50 p-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+        <dl className="mt-4 grid gap-3 rounded-lg border border-port-border bg-port-bg/50 p-3 text-sm sm:grid-cols-2 lg:grid-cols-5">
           <div><dt className="text-xs text-gray-500">Version</dt><dd className="text-white">v{current.version}</dd></div>
           <div><dt className="text-xs text-gray-500">Sprites</dt><dd className="text-white">{current.spriteCount}</dd></div>
           <div><dt className="text-xs text-gray-500">Music</dt><dd className="text-white">{current.musicCount}</dd></div>
+          <div><dt className="text-xs text-gray-500">Artwork</dt><dd className="text-white">{current.artworkCount ?? 0}</dd></div>
           <div><dt className="text-xs text-gray-500">Built</dt><dd className="text-white">{formatDateShort(current.builtAt)}</dd></div>
           <div><dt className="text-xs text-gray-500">Verified files</dt><dd className="text-white">{current.verifiedFileCount ?? '—'}</dd></div>
           <div className="min-w-0 sm:col-span-2 lg:col-span-4">

@@ -24,7 +24,7 @@ export const repairImageModel = (modelId, { deep = false } = {}) => request(`/im
   silent: true,
 });
 export const listLoras = () => request('/image-gen/loras');
-export const listImageGallery = () => request('/image-gen/gallery');
+export const listImageGallery = (options = {}) => request('/image-gen/gallery', options);
 export const getActiveImageJob = () => request('/image-gen/active');
 // cancelImageGen({ all: true }) cancels every queued/running image job.
 // cancelImageGen({ jobId }) cancels a specific job. Plain cancelImageGen()

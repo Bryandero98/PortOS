@@ -6,6 +6,9 @@ import { Router } from 'express';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import {
   gameCreateSchema,
+  gameArtworkBindingSchema,
+  gameArtworkBindingUpdateSchema,
+  gameArtworkPublishSchema,
   gameFeedbackSchema,
   gameMusicBindingSchema,
   gameSpriteBindingSchema,
@@ -14,6 +17,7 @@ import {
 } from '../lib/validation.js';
 import {
   bindMusic,
+  bindArtwork,
   bindSprite,
   compileGameAssets,
   createGame,
@@ -21,9 +25,12 @@ import {
   getGame,
   getGameIntegrity,
   listGames,
+  publishGameArtwork,
   requestGameFeedback,
   unbindMusic,
+  unbindArtwork,
   unbindSprite,
+  updateArtwork,
   updateGame,
 } from '../services/games/index.js';
 
@@ -75,6 +82,25 @@ router.post('/:id/music', asyncHandler(async (req, res) => {
 
 router.delete('/:id/music/:bindingId', asyncHandler(async (req, res) => {
   res.json(await unbindMusic(req.params.id, req.params.bindingId));
+}));
+
+router.post('/:id/artwork', asyncHandler(async (req, res) => {
+  const binding = validateRequest(gameArtworkBindingSchema, req.body);
+  res.status(201).json(await bindArtwork(req.params.id, binding));
+}));
+
+router.patch('/:id/artwork/:bindingId', asyncHandler(async (req, res) => {
+  const patch = validateRequest(gameArtworkBindingUpdateSchema, req.body);
+  res.json(await updateArtwork(req.params.id, req.params.bindingId, patch));
+}));
+
+router.delete('/:id/artwork/:bindingId', asyncHandler(async (req, res) => {
+  res.json(await unbindArtwork(req.params.id, req.params.bindingId));
+}));
+
+router.post('/:id/artwork/:bindingId/publish', asyncHandler(async (req, res) => {
+  const options = validateRequest(gameArtworkPublishSchema, req.body || {});
+  res.json(await publishGameArtwork(req.params.id, req.params.bindingId, options));
 }));
 
 router.post('/:id/compile', asyncHandler(async (req, res) => {

@@ -37,7 +37,9 @@ export async function compileGameAssets(id) {
         context: { issues: resolved.issues },
       });
     }
-    const { sprites, music, inputSha256, schemaVersion, verifiedFileCount } = resolved;
+    const {
+      sprites, music, artwork, inputSha256, schemaVersion, verifiedFileCount,
+    } = resolved;
     const current = game.compiledManifest;
     const currentPath = current?.manifestPath
       ? join(gameRecordDir(id), current.manifestPath)
@@ -62,6 +64,7 @@ export async function compileGameAssets(id) {
       builtAt,
       sprites,
       music,
+      artwork,
     };
     const serialized = `${canonicalStringify(manifest)}\n`;
     const manifestPath = manifestPathFor(version);
@@ -75,6 +78,7 @@ export async function compileGameAssets(id) {
       inputSha256,
       spriteCount: sprites.length,
       musicCount: music.length,
+      artworkCount: artwork.length,
       verifiedFileCount,
     };
     const next = sanitizeGame({

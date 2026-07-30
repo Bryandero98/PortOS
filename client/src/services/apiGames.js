@@ -42,6 +42,26 @@ export const unbindGameMusic = (id, bindingId, options = {}) => request(
   { method: 'DELETE', ...options },
 );
 
+export const bindGameArtwork = (id, binding, options = {}) => request(
+  `/games/${encodeURIComponent(id)}/artwork`,
+  { method: 'POST', body: JSON.stringify(binding), ...options },
+);
+
+export const updateGameArtwork = (id, bindingId, patch, options = {}) => request(
+  `/games/${encodeURIComponent(id)}/artwork/${encodeURIComponent(bindingId)}`,
+  { method: 'PATCH', body: JSON.stringify(patch), ...options },
+);
+
+export const unbindGameArtwork = (id, bindingId, options = {}) => request(
+  `/games/${encodeURIComponent(id)}/artwork/${encodeURIComponent(bindingId)}`,
+  { method: 'DELETE', ...options },
+);
+
+export const publishGameArtwork = (id, bindingId, body = {}, options = {}) => request(
+  `/games/${encodeURIComponent(id)}/artwork/${encodeURIComponent(bindingId)}/publish`,
+  { method: 'POST', body: JSON.stringify(body), ...options },
+);
+
 export const compileGameAssets = (id, options = {}) => request(
   `/games/${encodeURIComponent(id)}/compile`,
   { method: 'POST', ...options },

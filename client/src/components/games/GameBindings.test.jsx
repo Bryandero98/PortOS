@@ -11,6 +11,14 @@ const renderBindings = () => render(
       game={{
         spriteBindings: [{ spriteId: 'deleted-sprite' }],
         musicBindings: [{ id: 'binding-1', trackId: 'theme/one' }],
+        artworkBindings: [{
+          id: 'artwork-1',
+          imageFilename: 'title.png',
+          label: 'Title Key Art',
+          role: 'title-key-art',
+          destinationPath: 'game/assets/art/title.png',
+          publication: null,
+        }],
       }}
       sprites={[{
         id: 'deleted-sprite',
@@ -22,6 +30,11 @@ const renderBindings = () => render(
         id: 'theme/one',
         title: 'Example Theme',
         audioFilename: 'example-theme.ogg',
+      }]}
+      gallery={[{
+        filename: 'title.png',
+        path: '/data/images/title.png',
+        prompt: 'Cinematic alien valley',
       }]}
       integrity={{
         issues: [
@@ -49,6 +62,12 @@ const renderBindings = () => render(
             status: 'blocked',
             message: 'Audio path invalid',
           }],
+          artwork: [{
+            bindingId: 'artwork-1',
+            status: 'ready',
+            publicationStatus: 'pending',
+            message: 'Gallery source verified · publish pending',
+          }],
         },
       }}
       busy={false}
@@ -56,6 +75,10 @@ const renderBindings = () => render(
       onUnbindSprite={noop}
       onBindMusic={noop}
       onUnbindMusic={noop}
+      onBindArtwork={noop}
+      onUpdateArtwork={noop}
+      onPublishArtwork={noop}
+      onUnbindArtwork={noop}
     />
   </MemoryRouter>,
 );
@@ -79,5 +102,15 @@ describe('GameBindings', () => {
     )).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Open in Music' }))
       .toHaveAttribute('href', '/music/tracks/theme%2Fone');
+  });
+
+  it('previews role-specific artwork and keeps publishing behind saved details', () => {
+    renderBindings();
+    expect(screen.getByRole('heading', { name: 'World & interface artwork' })).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'Title Key Art preview' })).toHaveAttribute('src', '/data/images/title.png');
+    expect(screen.getByText('Publish pending')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Publish to game' })).toBeEnabled();
+    expect(screen.getByRole('link', { name: 'Generate for this role' }))
+      .toHaveAttribute('href', expect.stringContaining('/media/image?prompt='));
   });
 });

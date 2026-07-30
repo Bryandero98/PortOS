@@ -26,6 +26,7 @@ vi.mock('../services/api.js', () => ({
       name: 'Verified Game',
       spriteBindings: [{ spriteId: 'hero' }],
       musicBindings: [],
+      artworkBindings: [],
       feedbackHistory: [],
       compiledManifest: {
         version: 2,
@@ -43,6 +44,7 @@ vi.mock('../services/api.js', () => ({
       name: 'Unbuilt Game',
       spriteBindings: [],
       musicBindings: [],
+      artworkBindings: [],
       feedbackHistory: [],
       compiledManifest: null,
       updatedAt: '2026-07-28T12:00:00.000Z',
@@ -51,6 +53,7 @@ vi.mock('../services/api.js', () => ({
   getApps: vi.fn(async () => [{ id: 'app-1', name: 'Example App' }]),
   listSpriteRecords: vi.fn(async () => [{ id: 'hero', name: 'Hero', kind: 'character', status: 'ready' }]),
   listTracks: vi.fn(async () => []),
+  listImageGallery: vi.fn(async () => []),
   getGameIntegrity: vi.fn(async (id) => {
     api.integrityCalls.push(id);
     return api.integrityByGame[id] ?? null;
@@ -61,8 +64,12 @@ vi.mock('../services/api.js', () => ({
   requestGameFeedback: vi.fn(),
   bindGameSprite: vi.fn(),
   bindGameMusic: vi.fn(),
+  bindGameArtwork: vi.fn(),
+  updateGameArtwork: vi.fn(),
+  publishGameArtwork: vi.fn(),
   unbindGameSprite: vi.fn(),
   unbindGameMusic: vi.fn(),
+  unbindGameArtwork: vi.fn(),
   startApp: vi.fn(),
   launchNativeApp: vi.fn(),
 }));
@@ -87,16 +94,32 @@ describe('Game page', () => {
         canLaunch: true,
         bundle: { status: 'current' },
         issues: [],
-        counts: { spriteReady: 1, spriteTotal: 1, musicReady: 0, musicTotal: 0, verifiedFiles: 2 },
-        assets: { sprites: [], music: [] },
+        counts: {
+          spriteReady: 1,
+          spriteTotal: 1,
+          musicReady: 0,
+          musicTotal: 0,
+          artworkReady: 0,
+          artworkTotal: 0,
+          verifiedFiles: 2,
+        },
+        assets: { sprites: [], music: [], artwork: [] },
       },
       'unbuilt-game': {
         readyToCompile: true,
         canLaunch: false,
         bundle: { status: 'missing' },
         issues: [],
-        counts: { spriteReady: 0, spriteTotal: 0, musicReady: 0, musicTotal: 0, verifiedFiles: 0 },
-        assets: { sprites: [], music: [] },
+        counts: {
+          spriteReady: 0,
+          spriteTotal: 0,
+          musicReady: 0,
+          musicTotal: 0,
+          artworkReady: 0,
+          artworkTotal: 0,
+          verifiedFiles: 0,
+        },
+        assets: { sprites: [], music: [], artwork: [] },
       },
     };
   });

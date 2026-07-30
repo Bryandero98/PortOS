@@ -41,6 +41,13 @@ async function buildGameFeedbackPrompt(game, request) {
       title: track.title,
       hasAudio: Boolean(track.audioFilename),
     })),
+    artwork: (game.artworkBindings || []).map((binding) => ({
+      id: binding.id,
+      label: binding.label,
+      role: binding.role,
+      destinationPath: binding.destinationPath,
+      published: binding.publication?.destinationPath === binding.destinationPath,
+    })),
     compiledManifest: game.compiledManifest,
   };
   return `You are reviewing an asset bundle plan for a game project.

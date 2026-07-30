@@ -9,6 +9,7 @@ import GameFeedback from '../components/games/GameFeedback.jsx';
 import TabPills from '../components/ui/TabPills.jsx';
 import useDrawerTab from '../hooks/useDrawerTab.js';
 import {
+  bindGameArtwork,
   bindGameMusic,
   bindGameSprite,
   compileGameAssets,
@@ -17,13 +18,17 @@ import {
   getGame,
   getGameIntegrity,
   listGames,
+  listImageGallery,
   listSpriteRecords,
   listTracks,
   launchNativeApp,
+  publishGameArtwork,
   requestGameFeedback,
   startApp,
+  unbindGameArtwork,
   unbindGameMusic,
   unbindGameSprite,
+  updateGameArtwork,
 } from '../services/api.js';
 import { timeAgo } from '../utils/formatters.js';
 
@@ -34,7 +39,9 @@ const DETAIL_TABS = [
     id: 'assets',
     label: 'Assets',
     icon: Images,
-    count: (game) => game.spriteBindings.length + game.musicBindings.length,
+    count: (game) => game.spriteBindings.length
+      + game.musicBindings.length
+      + (game.artworkBindings?.length || 0),
   },
   { id: 'feedback', label: 'Feedback', icon: MessageSquare, count: (game) => game.feedbackHistory.length },
 ];
@@ -48,6 +55,7 @@ export default function Game() {
   const [apps, setApps] = useState([]);
   const [sprites, setSprites] = useState([]);
   const [tracks, setTracks] = useState([]);
+  const [gallery, setGallery] = useState([]);
   // Integrity is keyed by the game it describes, never stored bare. `/game/A` →
   // `/game/B` reuses the same route, so the component does NOT remount: unkeyed
   // state would render B's panel with A's verdict — enabling "Start game" for a
@@ -68,15 +76,17 @@ export default function Game() {
       getApps(silent),
       listSpriteRecords(silent),
       listTracks(silent),
+      listImageGallery(silent),
     ]).catch(() => null);
     if (!result) {
       toast.error('Failed to load the Game studio');
     } else {
-      const [gameRows, appRows, spriteRows, trackRows] = result;
+      const [gameRows, appRows, spriteRows, trackRows, galleryRows] = result;
       setGames(Array.isArray(gameRows) ? gameRows : []);
       setApps((Array.isArray(appRows) ? appRows : []).filter((app) => !app.archived));
       setSprites(Array.isArray(spriteRows) ? spriteRows : []);
       setTracks(Array.isArray(trackRows) ? trackRows : []);
+      setGallery((Array.isArray(galleryRows) ? galleryRows : []).filter((image) => !image.hidden));
     }
     setLoading(false);
   }, []);
@@ -192,6 +202,21 @@ export default function Game() {
     return true;
   };
 
+  const publishArtwork = async (bindingId) => {
+    setBusy(`artwork-publish-${bindingId}`);
+    const result = await publishGameArtwork(game.id, bindingId, {}, silent).catch(() => null);
+    setBusy('');
+    if (!result?.game) {
+      toast.error('Artwork publish was refused; the destination may contain unmanaged changes');
+      return false;
+    }
+    replaceGame(result.game);
+    setCompileError('');
+    await refreshIntegrity();
+    toast.success(result.publication?.wrote ? 'Artwork published to the game' : 'Artwork is already current');
+    return true;
+  };
+
   if (loading) {
     return <div className="py-12 text-center text-sm text-gray-400">Loading Game studio…</div>;
   }
@@ -266,7 +291,7 @@ export default function Game() {
                     <div className="font-semibold text-white">{entry.name}</div>
                     <div className="mt-1 text-sm text-gray-400">{linkedApp?.name || 'Managed app unavailable'}</div>
                     <div className="mt-3 text-xs text-gray-500">
-                      {entry.spriteBindings.length} sprites · {entry.musicBindings.length} tracks · updated {timeAgo(entry.updatedAt)}
+                      {entry.spriteBindings.length} sprites · {entry.musicBindings.length} tracks · {entry.artworkBindings?.length || 0} artwork · updated {timeAgo(entry.updatedAt)}
                     </div>
                   </Link>
                 </li>
@@ -284,7 +309,7 @@ export default function Game() {
 
   // Binding actions are namespaced so a new non-binding action (compile,
   // feedback, launch, …) doesn't have to be remembered in an exclusion list.
-  const bindingBusy = /^(un)?bind-/.test(busy);
+  const bindingBusy = /^(un)?bind-|^artwork-/.test(busy);
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex shrink-0 flex-col justify-between gap-2 border-b border-port-border px-4 py-3 sm:flex-row sm:items-center">
@@ -307,6 +332,8 @@ export default function Game() {
           <span>{game.spriteBindings.length} sprites</span>
           <span aria-hidden="true">·</span>
           <span>{game.musicBindings.length} {game.musicBindings.length === 1 ? 'music track' : 'music tracks'}</span>
+          <span aria-hidden="true">·</span>
+          <span>{game.artworkBindings?.length || 0} artwork</span>
         </div>
       </header>
 
@@ -346,12 +373,29 @@ export default function Game() {
                 game={game}
                 sprites={sprites}
                 tracks={tracks}
+                gallery={gallery}
                 integrity={integrity}
                 busy={bindingBusy}
                 onBindSprite={(spriteId) => mutate('bind-sprite', () => bindGameSprite(game.id, spriteId, silent), 'Sprite bound')}
                 onUnbindSprite={(spriteId) => mutate('unbind-sprite', () => unbindGameSprite(game.id, spriteId, silent), 'Sprite unbound')}
                 onBindMusic={(trackId) => mutate('bind-music', () => bindGameMusic(game.id, trackId, silent), 'Music bound')}
                 onUnbindMusic={(bindingId) => mutate('unbind-music', () => unbindGameMusic(game.id, bindingId, silent), 'Music unbound')}
+                onBindArtwork={(binding) => mutate(
+                  'bind-artwork',
+                  () => bindGameArtwork(game.id, binding, silent),
+                  'Artwork bound',
+                )}
+                onUpdateArtwork={(bindingId, patch) => mutate(
+                  `artwork-update-${bindingId}`,
+                  () => updateGameArtwork(game.id, bindingId, patch, silent),
+                  'Artwork details saved',
+                )}
+                onPublishArtwork={publishArtwork}
+                onUnbindArtwork={(bindingId) => mutate(
+                  'unbind-artwork',
+                  () => unbindGameArtwork(game.id, bindingId, silent),
+                  'Artwork unbound',
+                )}
               />
             </div>
           )}

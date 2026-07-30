@@ -1,5 +1,6 @@
 export {
   GAME_HISTORY_LIMIT,
+  bindArtwork,
   bindMusic,
   bindSprite,
   createGame,
@@ -8,10 +9,13 @@ export {
   listGames,
   mutateGame,
   sanitizeGame,
+  unbindArtwork,
   unbindMusic,
   unbindSprite,
+  updateArtwork,
   updateGame,
 } from './records.js';
+export { publishGameArtwork } from './artwork.js';
 export { compileGameAssets } from './compile.js';
 export {
   BUNDLE_SCHEMA_VERSION,

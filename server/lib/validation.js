@@ -343,6 +343,46 @@ export const gameMusicBindingSchema = z.object({
   trackId: gameAssetIdSchema,
 }).strict();
 
+export const GAME_ARTWORK_ROLES = [
+  'title-key-art',
+  'biome-luminous-wilds',
+  'biome-mineral-steppe',
+  'biome-tide-meadow',
+  'loading-screen',
+  'other',
+];
+
+const gameArtworkFilenameSchema = z.string()
+  .trim()
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*\.png$/i, 'must be a gallery PNG filename')
+  .max(255);
+const gameArtworkDestinationSchema = z.string()
+  .trim()
+  .min(1)
+  .max(500)
+  .regex(/\.png$/i, 'must end in .png')
+  .refine((value) => !value.startsWith('/') && !value.includes('\\'), 'must be a repo-relative path')
+  .refine((value) => !value.split('/').includes('..'), 'must not traverse outside the app repository');
+
+export const gameArtworkBindingSchema = z.object({
+  imageFilename: gameArtworkFilenameSchema,
+  label: z.string().trim().min(1).max(120),
+  role: z.enum(GAME_ARTWORK_ROLES),
+  destinationPath: gameArtworkDestinationSchema,
+}).strict();
+
+export const gameArtworkBindingUpdateSchema = z.object({
+  label: z.string().trim().min(1).max(120).optional(),
+  role: z.enum(GAME_ARTWORK_ROLES).optional(),
+  destinationPath: gameArtworkDestinationSchema.optional(),
+}).strict().refine((patch) => Object.keys(patch).length > 0, {
+  message: 'at least one field is required',
+});
+
+export const gameArtworkPublishSchema = z.object({
+  acknowledgeOverwrite: z.boolean().optional(),
+}).strict();
+
 export const gameFeedbackSchema = z.object({
   providerId: z.string().trim().min(1).max(128),
   model: z.string().trim().min(1).max(256).optional(),

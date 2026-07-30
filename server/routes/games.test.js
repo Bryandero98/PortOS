@@ -4,6 +4,7 @@ import { errorMiddleware } from '../lib/errorHandler.js';
 import { request } from '../lib/testHelper.js';
 
 vi.mock('../services/games/index.js', () => ({
+  bindArtwork: vi.fn(),
   bindMusic: vi.fn(),
   bindSprite: vi.fn(),
   compileGameAssets: vi.fn(),
@@ -12,9 +13,12 @@ vi.mock('../services/games/index.js', () => ({
   getGame: vi.fn(),
   getGameIntegrity: vi.fn(),
   listGames: vi.fn(async () => []),
+  publishGameArtwork: vi.fn(),
   requestGameFeedback: vi.fn(),
   unbindMusic: vi.fn(),
+  unbindArtwork: vi.fn(),
   unbindSprite: vi.fn(),
+  updateArtwork: vi.fn(),
   updateGame: vi.fn(),
 }));
 
@@ -47,6 +51,45 @@ describe('Game routes', () => {
       .send({ spriteId: '' });
     expect(response.status).toBe(400);
     expect(games.bindSprite).not.toHaveBeenCalled();
+  });
+
+  it('binds and publishes role-specific gallery artwork', async () => {
+    const updated = { id: 'game-1', artworkBindings: [{ id: 'artwork-1' }] };
+    games.bindArtwork.mockResolvedValueOnce(updated);
+    const binding = {
+      imageFilename: 'title-key-art.png',
+      label: 'Title Key Art',
+      role: 'title-key-art',
+      destinationPath: 'game/assets/art/title/title-key-art.png',
+    };
+    const bindResponse = await request(makeApp())
+      .post('/api/games/game-1/artwork')
+      .send(binding);
+    expect(bindResponse.status).toBe(201);
+    expect(games.bindArtwork).toHaveBeenCalledWith('game-1', binding);
+
+    games.publishGameArtwork.mockResolvedValueOnce({
+      game: updated,
+      publication: { bindingId: 'artwork-1', wrote: true },
+    });
+    const publishResponse = await request(makeApp())
+      .post('/api/games/game-1/artwork/artwork-1/publish')
+      .send({});
+    expect(publishResponse.status).toBe(200);
+    expect(games.publishGameArtwork).toHaveBeenCalledWith('game-1', 'artwork-1', {});
+  });
+
+  it('rejects artwork destinations that escape the managed repository', async () => {
+    const response = await request(makeApp())
+      .post('/api/games/game-1/artwork')
+      .send({
+        imageFilename: 'title.png',
+        label: 'Title',
+        role: 'title-key-art',
+        destinationPath: '../outside.png',
+      });
+    expect(response.status).toBe(400);
+    expect(games.bindArtwork).not.toHaveBeenCalled();
   });
 
   it('compiles a Game bundle', async () => {
