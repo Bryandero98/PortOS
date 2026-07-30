@@ -180,6 +180,19 @@ describe('Layout — persistent mobile touch targets', () => {
   });
 });
 
+describe('Layout — Game workspace scroll mode', () => {
+  it('makes only the Game detail route full-bleed', async () => {
+    const detail = await renderLayout('/game/example-game');
+    expect(detail.container.querySelector('#main-content')?.className).toContain('overflow-hidden');
+    detail.unmount();
+
+    const index = await renderLayout('/game');
+    const main = index.container.querySelector('#main-content');
+    expect(main?.className).toContain('overflow-auto');
+    expect(main?.className).toContain('p-4');
+  });
+});
+
 describe('Layout — dynamic third-level navigation', () => {
   it('collapses and expands the Series and Universes children', async () => {
     api.listPipelineSeries.mockResolvedValue([{ id: 'series-1', name: 'Example Series' }]);

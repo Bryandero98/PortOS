@@ -212,13 +212,33 @@ async function resolveMusic(binding) {
   // can reach here with one. Screen it first, or one bad track fails the whole
   // read-only preflight instead of naming itself (same reason the sprite path
   // guards on `isValidSpriteId`).
-  if (!isSafeMusicFilename(track.audioFilename) || !(await statMusicTrack(track.audioFilename))) {
+  if (!track.audioFilename) {
     return blocked(
       'music',
       identity,
       'TRACK_AUDIO_REQUIRED',
       `Render or upload audio for "${track.title}" before building the game bundle`,
       'Audio render required',
+    );
+  }
+
+  if (!isSafeMusicFilename(track.audioFilename)) {
+    return blocked(
+      'music',
+      identity,
+      'TRACK_AUDIO_INTEGRITY_FAILED',
+      `The rendered audio path for "${track.title}" is invalid`,
+      'Audio path invalid',
+    );
+  }
+
+  if (!(await statMusicTrack(track.audioFilename))) {
+    return blocked(
+      'music',
+      identity,
+      'TRACK_AUDIO_MISSING',
+      `The rendered audio for "${track.title}" is missing or unreadable`,
+      'Audio integrity failed',
     );
   }
 

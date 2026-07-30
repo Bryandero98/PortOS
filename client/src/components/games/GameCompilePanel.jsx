@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  ArrowUpRight,
   Boxes,
   CheckCircle2,
   CircleDashed,
@@ -8,6 +9,7 @@ import {
   RefreshCw,
   ShieldCheck,
 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import Banner from '../ui/Banner.jsx';
 import { formatDateShort } from '../../utils/formatters.js';
 
@@ -42,8 +44,26 @@ const statusStyle = {
   },
 };
 
+const manageSource = (issue, spriteIds, trackIds) => {
+  if (issue.assetType === 'sprite' && spriteIds.has(issue.assetId)) {
+    return {
+      label: 'Open in Sprite Manager',
+      to: `/sprites/${encodeURIComponent(issue.assetId)}`,
+    };
+  }
+  if (issue.assetType === 'music' && trackIds.has(issue.assetId)) {
+    return {
+      label: 'Open in Music',
+      to: `/music/tracks/${encodeURIComponent(issue.assetId)}`,
+    };
+  }
+  return null;
+};
+
 export default function GameCompilePanel({
   game,
+  sprites = [],
+  tracks = [],
   integrity,
   loadingIntegrity,
   compiling,
@@ -63,6 +83,8 @@ export default function GameCompilePanel({
   const StatusIcon = bundleStatus.icon;
   const blocked = !integrity || !integrity.readyToCompile;
   const issues = integrity?.issues || [];
+  const spriteIds = new Set(sprites.map((sprite) => sprite.id));
+  const trackIds = new Set(tracks.map((track) => track.id));
   return (
     <section className="rounded-xl border border-port-border bg-port-card p-4">
       <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
@@ -153,11 +175,25 @@ export default function GameCompilePanel({
           className="mt-4"
         >
           <ul className="mt-2 grid gap-1 sm:grid-cols-2">
-            {issues.map((item) => (
-              <li key={`${item.assetType}-${item.assetId}`} className="truncate" title={item.message}>
-                <span className="font-medium">{item.name}</span>: {item.message}
-              </li>
-            ))}
+            {issues.map((item) => {
+              const source = manageSource(item, spriteIds, trackIds);
+              return (
+                <li key={`${item.assetType}-${item.assetId}`} className="min-w-0" title={item.message}>
+                  <div className="truncate">
+                    <span className="font-medium">{item.name}</span>: {item.message}
+                  </div>
+                  {source ? (
+                    <Link
+                      to={source.to}
+                      className="mt-1 inline-flex min-h-[32px] items-center gap-1 text-xs font-medium text-port-accent hover:underline"
+                    >
+                      {source.label}
+                      <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
+                    </Link>
+                  ) : null}
+                </li>
+              );
+            })}
           </ul>
         </Banner>
       )}
