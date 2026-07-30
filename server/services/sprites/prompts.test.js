@@ -287,56 +287,66 @@ describe('fromTurnaround prompt variants (#2979)', () => {
 
 describe('correction prompts on every regeneration surface (#3134)', () => {
   // One table so a newly-added builder can't quietly ship without the
-  // correction contract: each row is a builder plus the base params it needs and
-  // the noun its clause is expected to name.
+  // correction contract: each row is a builder plus the base params it needs, the
+  // noun its clause is expected to name, and the medium it produces — the video
+  // rows exist to catch a still-image "keep everything else identical" clause
+  // being handed to an image-to-video render, which would freeze the clip.
   const SURFACES = [
     {
       label: 'turnaround sheet',
       fn: buildTurnaroundPrompt,
       build: (extra) => buildTurnaroundPrompt({ name: 'Scout', designPrompt: 'a wiry ranger', chromaKey: '#FF00FF', ...extra }),
       subject: 'turnaround',
+      output: 'image',
     },
     {
       label: 'main reference (from the sheet)',
       fn: buildMainReferencePrompt,
       build: (extra) => buildMainReferencePrompt({ name: 'Scout', designPrompt: 'a wiry ranger', chromaKey: '#FF00FF', fromTurnaround: true, ...extra }),
       subject: 'turnaround',
+      output: 'image',
     },
     {
       label: 'main reference (legacy, no sheet)',
       fn: buildMainReferencePrompt,
       build: (extra) => buildMainReferencePrompt({ name: 'Scout', designPrompt: 'a wiry ranger', chromaKey: '#FF00FF', ...extra }),
       subject: 'reference',
+      output: 'image',
     },
     {
       label: 'directional anchor',
       fn: buildAnchorPrompt,
       build: (extra) => buildAnchorPrompt({ name: 'Scout', direction: 'east', chromaKey: '#FF00FF', ...extra }),
       subject: 'reference',
+      output: 'image',
     },
     {
       label: 'ambient/place reference',
       fn: buildAmbientReferencePrompt,
       build: (extra) => buildAmbientReferencePrompt({ name: 'Old Willow', kind: 'place', designPrompt: 'a willow by a pond', chromaKey: '#FF00FF', ...extra }),
       subject: 'reference',
+      output: 'image',
     },
     {
       label: 'walk video',
       fn: buildWalkVideoPrompt,
       build: (extra) => buildWalkVideoPrompt({ name: 'Scout', direction: 'east', chromaKey: '#FF00FF', ...extra }),
       subject: 'source image',
+      output: 'animation',
     },
     {
       label: 'scanner action video',
       fn: buildScannerPrompt,
       build: (extra) => buildScannerPrompt({ name: 'Scout', direction: 'east', chromaKey: '#FF00FF', ...extra }),
       subject: 'source image',
+      output: 'animation',
     },
     {
       label: 'ambient loop video',
       fn: buildAmbientVideoPrompt,
       build: (extra) => buildAmbientVideoPrompt({ name: 'Old Willow', kind: 'place', chromaKey: '#FF00FF', ...extra }),
       subject: 'source image',
+      output: 'animation',
     },
   ];
 
@@ -353,14 +363,14 @@ describe('correction prompts on every regeneration surface (#3134)', () => {
     expect(exported.filter((name) => !covered.has(name))).toEqual([]);
   });
 
-  for (const { label, build, subject } of SURFACES) {
+  for (const { label, build, subject, output } of SURFACES) {
     describe(label, () => {
       it('wraps the body in one trimmed correction sandwich', () => {
         const p = build({ correctionPrompt: '  the strap floats off the shoulder  ' });
         // Framed up front (before any preservation clause can forbid the change)…
         expect(p.startsWith('This is a corrected re-render')).toBe(true);
         expect(p).toContain(
-          'Required fix: the strap floats off the shoulder. Make that fix in the image you produce.'
+          `Required fix: the strap floats off the shoulder. Make that fix in the ${output} you produce.`
           + ' It takes priority over any instruction below to match or preserve the attached'
           + ` ${subject}`,
         );
@@ -374,6 +384,21 @@ describe('correction prompts on every regeneration surface (#3134)', () => {
         // Exactly the two halves — the note is stated twice by design (once was
         // what got ignored), never three times.
         expect(p.match(/the strap floats off the shoulder/g)).toHaveLength(2);
+      });
+
+      // A corrected re-roll must not trade the ignored-correction bug for a
+      // frozen clip: on an i2v surface the sandwich may not carry the still's
+      // "keep everything else identical [to the attachment]" wording, and has to
+      // restate that the motion the body asks for still happens.
+      it(`keeps the correction consistent with a ${output} output`, () => {
+        const p = build({ correctionPrompt: 'the legs barely lift' });
+        if (output === 'animation') {
+          expect(p).not.toContain('keep everything else identical');
+          expect(p).toContain('the motion described above still happens in full');
+        } else {
+          expect(p).toContain('keep everything else identical');
+          expect(p).not.toContain('the motion described above');
+        }
       });
 
       // The hard acceptance criterion: a blank note must not perturb the blind
@@ -394,7 +419,7 @@ describe('applyCorrection', () => {
   // The one place the correction wording is pinned to reviewed text. Every other
   // suite asserts that its surface ROUTES through this helper, not what it says.
   it('states precedence and targets the OUTPUT, not the attachment', () => {
-    const p = applyCorrection('BODY.', '  fix the arm  ', 'turnaround');
+    const p = applyCorrection('BODY.', '  fix the arm  ', { subject: 'turnaround', output: 'image' });
     // "apply this over the attached turnaround" (the pre-#3216 wording) pointed the
     // model at a frozen, usually-correct sheet — so it concluded there was nothing
     // to do. The fix belongs in the image being produced.
@@ -412,13 +437,46 @@ describe('applyCorrection', () => {
     );
   });
 
+  // The image wording tells the model to keep everything the fix doesn't name
+  // identical to the attachment. On an image-to-video render that is an
+  // instruction to hold still — so the animation medium overrides the body's
+  // preserve-the-source clauses while explicitly re-asserting its motion.
+  it('preserves the requested motion when the output is an animation', () => {
+    const p = applyCorrection('MOVE THE LEGS.', 'the legs barely lift', { subject: 'source image', output: 'animation' });
+    expect(p).toBe(
+      'This is a corrected re-render: a previous attempt at this exact animation was rejected. '
+      + 'Required fix: the legs barely lift. Make that fix in the animation you produce. It takes '
+      + 'priority over any instruction below to match or preserve the attached source image — '
+      + 'change what the fix names, and leave the rest of the animation exactly as the instructions '
+      + 'below describe it. '
+      + 'MOVE THE LEGS.'
+      + ' Required fix (highest priority — this overrides any conflicting instruction above): the '
+      + 'legs barely lift. The previous render was rejected for exactly this, so an animation that '
+      + 'does not visibly reflect this fix is a failed render. Change only what the fix names; the '
+      + 'motion described above still happens in full, and every other detail of identity and '
+      + 'appearance stays as the attached source image shows it.',
+    );
+    expect(p).not.toContain('keep everything else identical');
+  });
+
   it('keeps a note that already ends in punctuation as written', () => {
-    expect(applyCorrection('BODY.', 'Move it up!', 'reference')).toContain('Required fix: Move it up! Make');
+    expect(applyCorrection('BODY.', 'Move it up!', { subject: 'reference', output: 'image' }))
+      .toContain('Required fix: Move it up! Make');
   });
 
   it('returns the body untouched for anything blank or non-string', () => {
     for (const v of [undefined, null, '', '   ', '\n\t ', 0, 7, [], {}, () => {}]) {
-      expect(applyCorrection('BODY.', v, 'reference'), String(v)).toBe('BODY.');
+      expect(applyCorrection('BODY.', v, { subject: 'reference', output: 'image' }), String(v)).toBe('BODY.');
+    }
+  });
+
+  // Fail loudly, and on the blind path too — a builder that names no medium (or a
+  // typo'd one) must not silently inherit still-image wording and only reveal it
+  // once a user types a note into a video re-roll.
+  it('throws on a missing or unknown output medium, even with no note', () => {
+    for (const target of [undefined, {}, { subject: 'reference' }, { subject: 'reference', output: 'video' }]) {
+      expect(() => applyCorrection('BODY.', 'fix the arm', target), String(target)).toThrow(/unknown output medium/);
+      expect(() => applyCorrection('BODY.', '', target), String(target)).toThrow(/unknown output medium/);
     }
   });
 });

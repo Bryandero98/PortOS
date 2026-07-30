@@ -106,7 +106,10 @@ export function buildTrackVideoPrompt(trackId, args) {
     return applyCorrection(
       renderPromptTemplate(row.promptTemplate, args),
       args?.correctionPrompt,
-      'source image',
+      // A user-defined row is always an i2v track, like every compiled one — so
+      // it takes the animation wording, which overrides the template's
+      // preserve-the-source clauses without also cancelling its motion.
+      { subject: 'source image', output: 'animation' },
     );
   }
   const build = TRACK_VIDEO_PROMPTS[trackId];

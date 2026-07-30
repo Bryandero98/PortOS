@@ -78,10 +78,15 @@ export async function lockAllAnchors(testRoot, recordId, { lockReference, direct
  * `prompts.test.js` pins it; everyone else routes through here.
  *
  * Both halves are checked because half a sandwich is the #3216 bug.
+ *
+ * The assertions stay medium-neutral on purpose: callers span still-image
+ * surfaces (reference) and image-to-video ones (walk / tracks), whose wording
+ * legitimately differs — a video correction must not tell the model to keep
+ * everything identical to the source still. `prompts.test.js` pins each medium.
  */
 export function expectCarriesCorrection(expect, prompt, note) {
   const sentence = /[.!?]$/.test(note) ? note : `${note}.`;
-  expect(prompt).toContain(`Required fix: ${sentence} Make that fix in the image you produce.`);
+  expect(prompt).toContain(`Required fix: ${sentence} Make that fix in the`);
   expect(prompt).toContain(`instruction above): ${sentence}`);
 }
 

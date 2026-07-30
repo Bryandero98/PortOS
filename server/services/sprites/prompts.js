@@ -172,18 +172,43 @@ export const TURNAROUND_ID = 'turnaround';
 // fix…") and the boundary between the user's words and ours disappears.
 const asSentence = (note) => (/[.!?]$/.test(note) ? note : `${note}.`);
 
-const leadInFor = (note, subject) => (
-  'This is a corrected re-render: a previous attempt at this exact image was rejected. '
-  + `Required fix: ${note} Make that fix in the image you produce. It takes priority over any `
+/**
+ * Per-medium copy for the two halves. The medium is explicit rather than shared
+ * because the sandwich has to overrule the body's pin-to-the-attachment clauses
+ * WITHOUT also overruling its motion instruction: "keep everything else
+ * identical [to the attached still]" is exactly right for an image and exactly
+ * wrong for an image-to-video render, where every frame after the first is
+ * SUPPOSED to differ from the attachment. A video surface inheriting the image
+ * wording is told to hold still — trading the ignored-correction bug for a
+ * frozen clip. `keepRest` closes the lead-in's sentence; `keepRestClosing`
+ * closes the override's.
+ */
+const CORRECTION_MEDIA = Object.freeze({
+  image: {
+    noun: 'image',
+    keepRest: 'and keep everything else identical',
+    keepRestClosing: (subject) => `everything it does not mention stays as the attached ${subject} shows it`,
+  },
+  animation: {
+    noun: 'animation',
+    keepRest: 'and leave the rest of the animation exactly as the instructions below describe it',
+    keepRestClosing: (subject) => 'the motion described above still happens in full, and every other detail of '
+      + `identity and appearance stays as the attached ${subject} shows it`,
+  },
+});
+
+const leadInFor = (note, subject, medium) => (
+  `This is a corrected re-render: a previous attempt at this exact ${medium.noun} was rejected. `
+  + `Required fix: ${note} Make that fix in the ${medium.noun} you produce. It takes priority over any `
   + `instruction below to match or preserve the attached ${subject} — change what the fix names, `
-  + 'and keep everything else identical. '
+  + `${medium.keepRest}. `
 );
 
-const overrideFor = (note, subject) => (
+const overrideFor = (note, subject, medium) => (
   ` Required fix (highest priority — this overrides any conflicting instruction above): ${note}`
-  + ' The previous render was rejected for exactly this, so an image that does not visibly'
-  + ' reflect this fix is a failed render. Change only what the fix names; everything it does'
-  + ` not mention stays as the attached ${subject} shows it.`
+  + ` The previous render was rejected for exactly this, so an ${medium.noun} that does not visibly`
+  + ' reflect this fix is a failed render. Change only what the fix names;'
+  + ` ${medium.keepRestClosing(subject)}.`
 );
 
 /**
@@ -192,15 +217,31 @@ const overrideFor = (note, subject) => (
  * one of them wired and not the other; that half-wired state is precisely what
  * reads to the user as "the model ignored my feedback".
  *
+ * `target` names both what the render DERIVES from (`subject` — "turnaround",
+ * "reference", "source image", so each surface reads naturally) and what it
+ * PRODUCES (`output` — a key of `CORRECTION_MEDIA`). Both are required and named
+ * at every call site: an optional medium defaulting to `image` is how a video
+ * builder silently ends up with wording that forbids motion.
+ *
  * An absent, blank, or non-string note returns `body` untouched. That is the hard
  * contract every surface depends on: a whitespace-only note must leave the prompt
  * byte-identical to a blind regenerate.
  */
-export function applyCorrection(body, correctionPrompt, subject) {
+export function applyCorrection(body, correctionPrompt, { subject, output } = {}) {
+  const medium = CORRECTION_MEDIA[output];
+  // Fail fast, and BEFORE the blank-note early return — a builder that names an
+  // unknown medium has to break on the blind path too, not lie dormant until a
+  // user actually types a note.
+  if (!medium) {
+    throw new TypeError(
+      `applyCorrection: unknown output medium "${output}" `
+      + `(expected ${Object.keys(CORRECTION_MEDIA).join(' | ')})`,
+    );
+  }
   const raw = typeof correctionPrompt === 'string' ? correctionPrompt.trim() : '';
   if (!raw) return body;
   const note = asSentence(raw);
-  return leadInFor(note, subject) + body + overrideFor(note, subject);
+  return leadInFor(note, subject, medium) + body + overrideFor(note, subject, medium);
 }
 
 /**
@@ -257,7 +298,7 @@ export function buildTurnaroundPrompt({ name, designPrompt, chromaKey, correctio
     + 'labels, captions, arrows, grid, shadows, scenery, wireframe, or extra characters. '
     + 'Return exactly one PNG.',
     correctionPrompt,
-    'turnaround',
+    { subject: 'turnaround', output: 'image' },
   );
 }
 
@@ -327,7 +368,7 @@ export function buildMainReferencePrompt({ name, designPrompt, chromaKey, correc
     // The main derives from the sheet when there is one, so name the sheet as
     // the attachment the untouched details come from; a legacy record has only
     // its own reference attached.
-    fromTurnaround ? 'turnaround' : 'reference',
+    { subject: fromTurnaround ? 'turnaround' : 'reference', output: 'image' },
   );
 }
 
@@ -348,7 +389,7 @@ export function buildAmbientReferencePrompt({ name, kind, designPrompt, chromaKe
     + `Use a plain exact ${keyColorPhrase(chromaKey)} background on a square 1:1 canvas. No people, scenery, text, labels, grid, `
     + 'camera angle, shadows, wireframe, or extra objects. Return exactly one PNG.',
     correctionPrompt,
-    'reference',
+    { subject: 'reference', output: 'image' },
   );
 }
 
@@ -366,7 +407,7 @@ export function buildAmbientVideoPrompt({ name, kind, chromaKey, correctionPromp
     + `uniform non-emissive ${keyColorPhrase(chromaKey)} background only as a compositing matte: no scenery, text, labels, `
     + 'camera movement, cuts, added objects, or people.',
     correctionPrompt,
-    'source image',
+    { subject: 'source image', output: 'animation' },
   );
 }
 
@@ -396,7 +437,7 @@ export function buildWalkVideoPrompt({ name, direction, chromaKey, correctionPro
     + 'pivot and ground line with loop-friendly walk-in-place motion. No scenery, no text, no '
     + 'labels, no camera motion, no extra figures.',
     correctionPrompt,
-    'source image',
+    { subject: 'source image', output: 'animation' },
   );
 }
 
@@ -416,7 +457,7 @@ export function buildScannerPrompt({ name, direction, chromaKey, correctionPromp
     + `Keep the character centered, full body visible, and animate only over a solid ${chromaKey} background. `
     + 'No text, UI, scenery, camera movement, cuts, or additional characters.',
     correctionPrompt,
-    'source image',
+    { subject: 'source image', output: 'animation' },
   );
 }
 
@@ -443,6 +484,6 @@ export function buildAnchorPrompt({ name, direction, chromaKey, correctionPrompt
     + `single centered figure on a square 1:1 canvas; plain flat ${keyColorPhrase(chromaKey)} background; no labels, no `
     + 'grid lines, no wireframe or guide colors. Return exactly one PNG.',
     correctionPrompt,
-    'reference',
+    { subject: 'reference', output: 'image' },
   );
 }

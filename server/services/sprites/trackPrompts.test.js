@@ -77,7 +77,7 @@ const ARG_CASES = [
   },
   {
     // A whitespace-only note must leave the prompt byte-identical to a blind
-    // regenerate — the hard contract `correctionClause` promises, which the
+    // regenerate — the hard contract `applyCorrection` promises, which the
     // template path has to inherit rather than re-implement.
     label: 'with a blank correction note',
     args: { name: 'Example Willow', kind: 'object', direction: 'south', chromaKey: '#00FF00', correctionPrompt: '   ' },
@@ -161,6 +161,10 @@ describe('a user-defined row resolves through its own template', () => {
     // The template body sits BETWEEN the two halves, not after them.
     expect(prompt.indexOf('jetpack burst')).toBeGreaterThan(prompt.indexOf('Required fix:'));
     expect(prompt.trimEnd().endsWith('stays as the attached source image shows it.')).toBe(true);
+    // A user-defined row is an i2v track, so it gets the animation wording — the
+    // still-image "keep everything else identical" would cancel its own motion.
+    expect(prompt).toContain('Make that fix in the animation you produce');
+    expect(prompt).not.toContain('keep everything else identical');
   });
 
   it('rebuilds a known track and answers null for an unknown one (tryBuild…)', () => {
