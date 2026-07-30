@@ -1,10 +1,9 @@
 import { Router } from 'express';
-import { writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
-import { join, resolve } from 'path';
+import { resolve } from 'path';
 import { v4 as uuidv4 } from '../lib/uuid.js';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
-import { ensureDir, PATHS, sanitizeFilename, isPathInsideDir } from '../lib/fileUtils.js';
+import { PATHS, sanitizeFilename, isPathInsideDir, saveImageUpload } from '../lib/fileUtils.js';
 import { MAX_SCREENSHOT_BYTES } from '../lib/uploadLimits.js';
 
 const SCREENSHOTS_DIR = PATHS.screenshots;
@@ -14,84 +13,31 @@ const router = Router();
 // Screenshots cap well below the wire limit on purpose — see lib/uploadLimits.js.
 const MAX_FILE_SIZE = MAX_SCREENSHOT_BYTES;
 
-/**
- * Validate image magic bytes
- * Note: This validates the file signature/magic bytes at the start of the file.
- * It does NOT validate the entire file structure - a file could have valid magic
- * bytes but malformed content. This is sufficient for basic type detection and
- * blocking non-image uploads. For high-security scenarios, consider using a
- * proper image processing library to fully validate the file structure.
- */
-function isValidImage(buffer) {
-  if (buffer.length < 12) return null; // Too small to be a valid image
-  // PNG: 89 50 4E 47
-  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) {
-    return 'png';
-  }
-  // JPEG: FF D8 FF
-  if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) {
-    return 'jpg';
-  }
-  // GIF: 47 49 46 38
-  if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x38) {
-    return 'gif';
-  }
-  // WebP: 52 49 46 46 ... 57 45 42 50
-  if (buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 &&
-      buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) {
-    return 'webp';
-  }
-  return null;
-}
-
 // POST /api/screenshots - Upload a screenshot (base64)
 router.post('/', asyncHandler(async (req, res) => {
-  const { data, filename, mimeType } = req.body;
+  const { data, filename } = req.body;
 
   if (!data) {
     throw new ServerError('data is required (base64)', { status: 400, code: 'VALIDATION_ERROR' });
   }
 
-  // Decode base64 and validate size
-  const buffer = Buffer.from(data, 'base64');
-  if (buffer.length > MAX_FILE_SIZE) {
-    throw new ServerError(`File exceeds maximum size of ${MAX_FILE_SIZE / 1024 / 1024}MB`, { status: 400, code: 'FILE_TOO_LARGE' });
-  }
-
-  // Validate actual file content (magic bytes)
-  const detectedType = isValidImage(buffer);
-  if (!detectedType) {
-    throw new ServerError('Invalid image file - only PNG, JPEG, GIF, and WebP are supported', { status: 400, code: 'INVALID_FILE_TYPE' });
-  }
-
-  // Ensure screenshots directory exists
-  if (!existsSync(SCREENSHOTS_DIR)) {
-    await ensureDir(SCREENSHOTS_DIR);
-  }
-
   const id = uuidv4();
-  const ext = detectedType; // Use detected type, not client-provided
-  // Sanitize user-provided filename or generate a safe one
-  const safeName = filename ? sanitizeFilename(filename) : `screenshot-${id}.${ext}`;
-  // Ensure extension matches detected type
-  const fname = safeName.endsWith(`.${ext}`) ? safeName : `${safeName}.${ext}`;
-  const filepath = join(SCREENSHOTS_DIR, fname);
+  // Shared pipeline: decode → size cap → magic-byte sniff → detected extension →
+  // containment guard → write. The client-supplied mimeType is deliberately
+  // ignored; the bytes decide the type.
+  const saved = await saveImageUpload(SCREENSHOTS_DIR, {
+    filename: filename || `screenshot-${id}`,
+    data,
+  }, { maxBytes: MAX_FILE_SIZE });
 
-  // Double-check path is within screenshots directory (defense in depth)
-  if (!isPathInsideDir(SCREENSHOTS_DIR, filepath)) {
-    throw new ServerError('Invalid filename', { status: 400, code: 'INVALID_FILENAME' });
-  }
-
-  await writeFile(filepath, buffer);
-
-  console.log(`📸 Screenshot saved: ${fname} (${buffer.length} bytes)`);
+  console.log(`📸 Screenshot saved: ${saved.filename} (${saved.size} bytes)`);
 
   res.json({
     id,
-    filename: fname,
+    filename: saved.filename,
     // API-relative URL only — never the absolute FS path (leaks install layout).
-    path: `/api/screenshots/${encodeURIComponent(fname)}`,
-    size: buffer.length
+    path: `/api/screenshots/${encodeURIComponent(saved.filename)}`,
+    size: saved.size
   });
 }));
 

@@ -546,6 +546,56 @@ export function writeToSession(sessionId, data) {
   return false;
 }
 
+// Gap between the bracketed paste and the Enter that submits it. Claude Code
+// commits its paste buffer asynchronously, so an Enter in the same tick arrives
+// before the buffer is committed and submits nothing.
+const PASTE_SUBMIT_DELAY_MS = 400;
+
+/**
+ * Deliver `text` to a session as a SINGLE bracketed-paste event, then submit it
+ * with a delayed Enter.
+ *
+ * This is how you hand a message to a live agent TUI rather than to a shell:
+ * Claude Code reads `ESC[200~…ESC[201~` as one paste, so a multi-line message
+ * lands as one input event instead of N submits.
+ *
+ * Scope: this is the ONE-SHOT form, for short payloads that don't need
+ * confirmation. A large paste that must be *verified* to have landed (an agent's
+ * initial prompt) goes through `lib/tuiHandshake.js` instead — its
+ * `scheduleSubmitEnters` sends repeated Enters because a single `\r` can be
+ * swallowed while the TUI is still reflowing a big paste, and `attemptPaste` in
+ * `agentTuiSpawning.js` retries against a paste-marker probe. Don't grow this
+ * function into that; reach for those.
+ *
+ * The return value reports that the paste was WRITTEN, deliberately not that the
+ * TUI submitted it — the submitting Enter is fire-and-forget. Making it awaitable
+ * would delay every caller's response by `PASTE_SUBMIT_DELAY_MS` to cover only the
+ * case where the PTY dies inside that window, which the user is already watching
+ * happen in the terminal (`shell:exit` paints "[Shell exited…]"). This is the same
+ * contract `shell:input` has for ordinary keystrokes: delivery to the PTY is what
+ * is promised.
+ *
+ * @param {string} sessionId
+ * @param {string} text - paste payload (no trailing newline; the Enter submits it)
+ * @param {object} [opts]
+ * @param {string} [opts.label='paste'] - log label for the delayed-Enter failure path
+ * @returns {boolean} false when the session is unknown (nothing was written)
+ */
+export function pasteToSession(sessionId, text, { label = 'paste' } = {}) {
+  if (!writeToSession(sessionId, `\x1b[200~${text}\x1b[201~`)) return false;
+  setTimeout(() => {
+    try {
+      // writeToSession no-ops if the PTY died inside the window. try/catch still
+      // earns its place: a write to a live-but-broken pty can throw, and this
+      // runs outside the request lifecycle where that would crash the process.
+      writeToSession(sessionId, '\r');
+    } catch (err) {
+      console.error(`🐚 ${label} delayed Enter failed for ${sessionId.slice(0, 8)}: ${err.message}`);
+    }
+  }, PASTE_SUBMIT_DELAY_MS);
+  return true;
+}
+
 /**
  * When input was last written to this session (human paste/keystrokes via
  * `shell:input`, or an internal writer like the CoS agent's auto-paste) — or

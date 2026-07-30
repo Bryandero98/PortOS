@@ -1,4 +1,5 @@
 import { OctagonX, ChevronsLeft, ClipboardPaste, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, CornerDownLeft } from 'lucide-react';
+import ShellImageDrop from './ShellImageDrop';
 
 // Hot buttons for arrow / Enter entry — handy on touch devices and for driving TUI
 // apps or scrolling shell history without a hardware keyboard. Arrow keys carry the
@@ -15,10 +16,13 @@ export const NAV_KEYS = [
 ];
 
 // Touch-friendly TUI-driving controls shared by the inline quick-commands toolbar
-// and the fullscreen control bar: Ctrl+B/C, Paste (+ fallback paste input), and the
-// arrow / Enter hot buttons. The Ctrl+B/C / Paste text labels collapse below `sm` so
-// the cluster stays narrow on a phone; the icons always show.
-export default function TerminalHotKeys({ sendCtrlB, sendCtrlC, handlePaste, sendNavKey, showPasteInput, setShowPasteInput, pasteInputRef, handlePasteInputEvent }) {
+// and the fullscreen control bar: Ctrl+B/C, Paste (+ fallback paste input), Photo,
+// and the arrow / Enter hot buttons. The Ctrl+B/C / Paste text labels collapse
+// below `sm` so the cluster stays narrow on a phone; the icons always show.
+//
+// `popoverPlacement` is which way the Photo composer opens — 'above' for the
+// fullscreen bar, which is pinned to the bottom of the viewport.
+export default function TerminalHotKeys({ sendCtrlB, sendCtrlC, handlePaste, sendNavKey, showPasteInput, setShowPasteInput, pasteInputRef, handlePasteInputEvent, sendImage, popoverPlacement = 'below' }) {
   return (
     <>
       <button
@@ -58,6 +62,7 @@ export default function TerminalHotKeys({ sendCtrlB, sendCtrlC, handlePaste, sen
           onBlur={() => setShowPasteInput(false)}
         />
       )}
+      <ShellImageDrop onSend={sendImage} placement={popoverPlacement} />
       <div className="w-px h-6 bg-port-border shrink-0" />
       {/* Arrow / Enter hot buttons — touch-friendly TUI nav + shell history */}
       {NAV_KEYS.map((key) => (

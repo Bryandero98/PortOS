@@ -372,6 +372,38 @@ describe('writeToSession / resizeSession', () => {
   });
 });
 
+describe('pasteToSession', () => {
+  let id;
+  let pty;
+  beforeEach(() => {
+    vi.useFakeTimers();
+    id = shell.createShellSession(makeSocket());
+    pty = ptyInstances[0];
+  });
+
+  it('writes one bracketed paste, then submits with a delayed Enter', () => {
+    expect(shell.pasteToSession(id, 'line one\nline two')).toBe(true);
+    // The paste is a SINGLE write — a multi-line message must not become N submits.
+    expect(pty.write).toHaveBeenCalledWith('\x1b[200~line one\nline two\x1b[201~');
+    expect(pty.write).not.toHaveBeenCalledWith('\r');
+
+    vi.advanceTimersByTime(400);
+    expect(pty.write).toHaveBeenCalledWith('\r');
+  });
+
+  it('skips the delayed Enter when the session dies inside the window', () => {
+    shell.pasteToSession(id, 'hi');
+    shell.killSession(id);
+    vi.advanceTimersByTime(400);
+    expect(pty.write).not.toHaveBeenCalledWith('\r');
+  });
+
+  it('returns false and writes nothing for a missing session', () => {
+    expect(shell.pasteToSession('missing', 'hi')).toBe(false);
+    expect(pty.write).not.toHaveBeenCalled();
+  });
+});
+
 describe('killSession', () => {
   it('kills the PTY, removes the session, fires the onExit hook, broadcasts', async () => {
     const onExit = vi.fn();

@@ -7,6 +7,9 @@ import '@xterm/xterm/css/xterm.css';
 import { useSocket } from './useSocket';
 import { useThemeContext } from '../components/ThemeContext';
 import { buildTerminalTheme, parseCssColorToHex } from '../lib/terminalTheme';
+import { readFileAsBase64 } from '../utils/fileUpload';
+import * as api from '../services/api';
+import toast from '../components/ui/Toast';
 
 // Must match MAX_TOTAL_SESSIONS in server/services/shell.js
 export const MAX_SESSIONS = 20;
@@ -151,6 +154,47 @@ export function useShellSession({ isFullscreen } = {}) {
     socket.emit('shell:input', { sessionId: sessionIdRef.current, data });
     if (focus) termInstanceRef.current?.focus();
   }, [socket]);
+
+  // Send a photo (plus an optional message) to whatever is running in the active
+  // session — the point being a live `claude`/`codex` TUI, which reads images off
+  // disk. This one goes over HTTP, not the `shell:*` socket protocol: socket.io's
+  // 1MB frame limit can't carry a photo, and it's a one-shot request that needs a
+  // result. The server saves the bytes and bracket-pastes `<message>\n<path>` into
+  // the PTY; the path never comes back, so nothing here can leak the install layout.
+  //
+  // Resolves true only on success, so the caller can keep its composer open (with
+  // the user's message intact) to retry. Errors are toasted here — the guard
+  // refusals have no other error surface, so this owns all of them and the API call
+  // is `silent`.
+  const sendImage = useCallback(async (file, message = '') => {
+    if (!sessionIdRef.current) {
+      toast.error('No active shell session');
+      return false;
+    }
+    // Same guard as emitShellInput: a mid-switch send would land in the session
+    // the user is leaving.
+    if (pendingAttachRef.current.target) {
+      toast.error('Session is still attaching — try again in a moment');
+      return false;
+    }
+    // Capture the target BEFORE the read: a big photo takes a moment to encode, and
+    // the send belongs to the session the user was looking at when they hit Send —
+    // not to whichever one happens to be active by the time the bytes are ready.
+    const sessionId = sessionIdRef.current;
+    const data = await readFileAsBase64(file).catch(() => null);
+    if (!data) {
+      toast.error(`Failed to read ${file.name}`);
+      return false;
+    }
+    const sent = await api.sendShellImage(sessionId, { data, filename: file.name, message }, { silent: true })
+      .catch((err) => {
+        toast.error(`Failed to send image: ${err.message}`);
+        return null;
+      });
+    if (!sent) return false;
+    toast.success('Image sent to session');
+    return true;
+  }, []);
 
   const sendCommand = useCallback((cmd) => emitShellInput(cmd + '\n'), [emitShellInput]);
   const sendCtrlB = useCallback(() => emitShellInput('\x02'), [emitShellInput]);
@@ -790,6 +834,7 @@ export function useShellSession({ isFullscreen } = {}) {
     liveRunCount,
     isLiveRun,
     emitShellInput,
+    sendImage,
     sendCommand,
     sendCtrlB,
     sendCtrlC,

@@ -429,17 +429,7 @@ export async function sendBtwToAgent(agentId, message) {
   // Bracketed-paste + delayed Enter, mirroring the initial prompt paste in
   // agentTuiSpawning.js: Claude Code commits the paste buffer before the
   // submit arrives, so multi-line messages land as a single paste event.
-  shellService.writeToSession(agentInfo.tuiSessionId, `\x1b[200~${message}\x1b[201~`);
-  setTimeout(() => {
-    try {
-      // Re-check session liveness: the TUI session may have died in the 400ms window.
-      if (shellService.getSession(agentInfo.tuiSessionId)) {
-        shellService.writeToSession(agentInfo.tuiSessionId, '\r');
-      }
-    } catch (err) {
-      console.error(`❌ [cosAgents] BTW delayed Enter failed for session ${agentInfo.tuiSessionId}: ${err.message}`);
-    }
-  }, 400);
+  shellService.pasteToSession(agentInfo.tuiSessionId, message, { label: '[cosAgents] BTW' });
 
   // Track in agent state (cap at 50 messages)
   const timestamp = new Date().toISOString();

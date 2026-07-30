@@ -40,6 +40,7 @@ export default function Shell() {
     liveRunCount,
     isLiveRun,
     emitShellInput,
+    sendImage,
     sendCommand,
     sendCtrlB,
     sendCtrlC,
@@ -192,6 +193,7 @@ export default function Shell() {
             setShowPasteInput={setShowPasteInput}
             pasteInputRef={pasteInputRef}
             handlePasteInputEvent={handlePasteInputEvent}
+            sendImage={sendImage}
           />
           <div className="w-px h-6 bg-port-border" />
           {QUICK_COMMANDS.map(({ label, command }) => (
@@ -271,6 +273,9 @@ export default function Shell() {
               setShowPasteInput={setShowPasteInput}
               pasteInputRef={pasteInputRef}
               handlePasteInputEvent={handlePasteInputEvent}
+              sendImage={sendImage}
+              /* Opens upward — this bar is pinned to the bottom of the viewport. */
+              popoverPlacement="above"
             />
           )}
         </div>

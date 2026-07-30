@@ -73,6 +73,7 @@ export * from './apiCreativeCommission.js';
 export * from './apiGames.js';
 export * from './apiMusicVideo.js';
 export * from './apiSprites.js';
+export * from './apiShell.js';
 export * from './apiMoodBoard.js';
 export * from './apiThreejsModels.js';
 export * from './apiImporter.js';
