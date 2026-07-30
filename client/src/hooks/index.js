@@ -11,6 +11,8 @@
 export { default as useAnchorReveal } from './useAnchorReveal.js';
 export { default as useAutoscroll } from './useAutoscroll.js';
 export { default as useCityAudio } from './useCityAudio.js';
+export { default as useClonedGltf } from './useClonedGltf.jsx';
+export * from './useClonedGltf.jsx';
 export { default as useAutoSizeTextarea } from './useAutoSizeTextarea.js';
 export { default as useChartColors } from './useChartColors.js';
 export * from './useChartColors.js';
