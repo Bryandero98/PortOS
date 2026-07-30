@@ -190,6 +190,12 @@ describe('Layout — Game workspace scroll mode', () => {
     const main = index.container.querySelector('#main-content');
     expect(main?.className).toContain('overflow-auto');
     expect(main?.className).toContain('p-4');
+    index.unmount();
+
+    const trailingSlashIndex = await renderLayout('/game/');
+    const trailingSlashMain = trailingSlashIndex.container.querySelector('#main-content');
+    expect(trailingSlashMain?.className).toContain('overflow-auto');
+    expect(trailingSlashMain?.className).toContain('p-4');
   });
 });
 
