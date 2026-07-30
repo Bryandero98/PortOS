@@ -69,7 +69,7 @@ vi.mock('./codeReview.js', () => ({
   getCodeReviewDefaults: vi.fn().mockResolvedValue({ reviewers: ['copilot'] }),
 }));
 
-import { buildLightContextPrompt, buildAgentPrompt, buildCompletionGuidelineBullet, reconcileSplitContext, buildReviewLoopFollowUpSection, getAppWorkspace } from './agentPromptBuilder.js';
+import { buildLightContextPrompt, buildAgentPrompt, buildCompletionGuidelineBullet, reconcileSplitContext, buildReviewLoopFollowUpSection, getAppWorkspace, UNATTENDED_RUN_RULE } from './agentPromptBuilder.js';
 import { getCodeReviewDefaults } from './codeReview.js'; // mocked above — control the configured default
 import { isTruthyMeta } from './agentState.js';
 import { buildPrompt } from './promptService.js'; // mocked above — inspect call args
@@ -1452,6 +1452,47 @@ describe('buildAgentPrompt — provider type routing', () => {
     // its cleanup runs with skipMerge, and a clean run makes no commit at all.
     expect(prompt).not.toMatch(/automatically merged back to the source branch/);
     expect(prompt).toMatch(/Follow the follow-up section above/);
+  });
+});
+
+// A `/do:plan-task` run parked on its skill's approval gate for its entire life
+// and was retried into the same gate three times, filing nothing — the briefing
+// never told it that nobody was there to answer. Every path that produces an
+// agent briefing must carry that rule.
+describe('unattended-run rule reaches every prompt path', () => {
+  const RULE_HEADING = /## ⚠️ Unattended Run/;
+  const wt = { branchName: 'cos/t/a', worktreePath: '/tmp/wt', baseBranch: 'main' };
+
+  it('rides in the light-context prompt', () => {
+    const prompt = buildLightContextPrompt(makeTask(), '/repo', null, isTruthyMeta);
+    expect(prompt).toMatch(RULE_HEADING);
+    expect(prompt).toMatch(/Never ask the user to choose or approve/);
+  });
+
+  it('rides in the SYSTEM half of a split prompt, not the user half', async () => {
+    const parts = await buildAgentPrompt(
+      makeTask(), {}, '/r', wt, isTruthyMeta,
+      { providerType: 'tui', providerId: 'claude-code-tui', providerCommand: 'claude', split: true });
+    expect(parts.systemPrompt).toMatch(RULE_HEADING);
+    expect(parts.userPrompt).not.toMatch(RULE_HEADING);
+  });
+
+  it('rides in the full built-in-template prompt', async () => {
+    vi.mocked(buildPrompt).mockResolvedValueOnce(null);
+    const prompt = await buildAgentPrompt(
+      makeTask(), {}, '/r', null, isTruthyMeta, { providerType: 'api' });
+    expect(prompt).toMatch(RULE_HEADING);
+  });
+
+  it('rides in a custom-template prompt', async () => {
+    vi.mocked(buildPrompt).mockResolvedValueOnce({ prompt: 'Custom rendered briefing.' });
+    const prompt = await buildAgentPrompt(
+      makeTask(), {}, '/r', null, isTruthyMeta, { providerType: 'api' });
+    expect(prompt).toMatch(RULE_HEADING);
+  });
+
+  it('names no slashdo slash-command form — skill-style CLIs cannot type one', () => {
+    expect(UNATTENDED_RUN_RULE).not.toMatch(/\/do:/);
   });
 });
 
