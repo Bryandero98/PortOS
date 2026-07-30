@@ -548,6 +548,7 @@ export default function SongBookViewer() {
                     songId={id}
                     fontSizeRem={fontSize}
                     sheetClassName="p-3"
+                    settingsMirror={drum}
                   />
                 ) : (
                   <TabSheetView

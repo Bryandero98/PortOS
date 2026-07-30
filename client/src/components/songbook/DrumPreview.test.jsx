@@ -6,6 +6,7 @@ const mockPlayer = vi.hoisted(() => ({
   toggle: vi.fn(),
   stop: vi.fn(),
   hasMusic: true,
+  chartSettingsReady: true,
   bpm: 96,
   setBpm: vi.fn(),
   setBpmPercent: vi.fn(),
@@ -27,7 +28,9 @@ const mockPlayer = vi.hoisted(() => ({
 }));
 
 const useDrumPlayer = vi.hoisted(() => vi.fn(() => mockPlayer));
+const useWakeLock = vi.hoisted(() => vi.fn());
 vi.mock('../../hooks/useDrumPlayer.js', () => ({ default: useDrumPlayer }));
+vi.mock('../../hooks/useWakeLock.js', () => ({ default: useWakeLock }));
 vi.mock('./DrumTransportBar.jsx', () => ({
   default: ({ onToggle, playing, hasMusic }) => (
     <button type="button" onClick={onToggle} disabled={!hasMusic}>
@@ -47,9 +50,11 @@ const CHART_B = 'tempo: 96\nHH: xxxx\nK: o-o-';
 describe('DrumPreview', () => {
   beforeEach(() => {
     mockPlayer.playing = false;
+    mockPlayer.chartSettingsReady = true;
     mockPlayer.toggle.mockReset();
     mockPlayer.stop.mockReset();
     useDrumPlayer.mockClear();
+    useWakeLock.mockClear();
   });
 
   it('freezes the sounding chart and sheet while live text changes', () => {
@@ -62,12 +67,25 @@ describe('DrumPreview', () => {
     expect(screen.getByText('Chart changed — press Play to reload.')).toBeTruthy();
   });
 
-  it('rebuilds from the latest snapshot before starting after a change', async () => {
+  it('keeps Stop enabled when the live draft becomes silent', () => {
     const { rerender } = render(<DrumPreview text={CHART_A} />);
+    mockPlayer.playing = true;
+    rerender(<DrumPreview text="HH: ----" />);
+
+    expect(screen.getByRole('button', { name: 'Stop preview' }).disabled).toBe(false);
+    expect(useWakeLock).toHaveBeenLastCalledWith(true);
+  });
+
+  it('waits for the latest snapshot settings before starting after a change', async () => {
+    const { rerender } = render(<DrumPreview text={CHART_A} />);
+    mockPlayer.chartSettingsReady = false;
     rerender(<DrumPreview text={CHART_B} />);
     fireEvent.click(screen.getByRole('button', { name: 'Play preview' }));
 
     await waitFor(() => expect(useDrumPlayer.mock.calls.at(-1)[0]).toBe(CHART_B));
+    expect(mockPlayer.toggle).not.toHaveBeenCalled();
+    mockPlayer.chartSettingsReady = true;
+    rerender(<DrumPreview text={CHART_B} />);
     expect(mockPlayer.toggle).toHaveBeenCalledTimes(1);
     expect(screen.queryByText('Chart changed — press Play to reload.')).toBeNull();
   });

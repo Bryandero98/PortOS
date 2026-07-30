@@ -328,6 +328,16 @@ K:  o - - - - - o -`;
       expect(screen.getByLabelText('Play along')).toBeTruthy();
     });
 
+    it('keeps edit-preview practice settings when returning to play mode', async () => {
+      api.getSong.mockResolvedValue(drumSong());
+      renderPage('/songbook/abc?mode=edit');
+      const bpm = await screen.findByLabelText('Practice tempo (BPM)');
+      fireEvent.change(bpm, { target: { value: '72' } });
+      fireEvent.click(screen.getByRole('button', { name: 'View' }));
+
+      await waitFor(() => expect(screen.getByLabelText('Practice tempo (BPM)').value).toBe('72'));
+    });
+
     it('keeps an unknown stored instrument/format selectable and preserves it on save', async () => {
       // A song synced from a NEWER peer carrying values this client doesn't list.
       api.getSong.mockResolvedValue(song({

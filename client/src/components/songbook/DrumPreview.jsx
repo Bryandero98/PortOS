@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import useDrumPlayer from '../../hooks/useDrumPlayer.js';
+import useWakeLock from '../../hooks/useWakeLock.js';
 import { chartHasMusic, parseDrumChart } from '../../lib/drumNotation.js';
 import DrumSheetView from './DrumSheetView.jsx';
 import DrumTransportBar from './DrumTransportBar.jsx';
@@ -17,12 +18,39 @@ export default function DrumPreview({
   songId,
   fontSizeRem,
   sheetClassName = '',
+  settingsMirror,
 }) {
   const [snapshot, setSnapshot] = useState(text);
   const [playAfterReload, setPlayAfterReload] = useState(false);
   const player = useDrumPlayer(snapshot, { songId });
   const chartChanged = text !== snapshot;
   const liveHasMusic = useMemo(() => chartHasMusic(parseDrumChart(text)), [text]);
+  useWakeLock(player.playing);
+
+  const setBpm = useCallback((next) => {
+    player.setBpm(next);
+    settingsMirror?.setBpm(next);
+  }, [player.setBpm, settingsMirror]);
+  const setBpmPercent = useCallback((percent) => {
+    player.setBpmPercent(percent);
+    settingsMirror?.setBpm(Math.round((player.writtenTempo * percent) / 100));
+  }, [player.setBpmPercent, player.writtenTempo, settingsMirror]);
+  const setCountInBars = useCallback((next) => {
+    player.setCountInBars(next);
+    settingsMirror?.setCountInBars(next);
+  }, [player.setCountInBars, settingsMirror]);
+  const setLoopEnabled = useCallback((enabled) => {
+    player.setLoopEnabled(enabled);
+    settingsMirror?.setLoopEnabled(enabled);
+  }, [player.setLoopEnabled, settingsMirror]);
+  const setLoopRange = useCallback((from, to) => {
+    player.setLoopRange(from, to);
+    settingsMirror?.setLoopRange(from, to);
+  }, [player.setLoopRange, settingsMirror]);
+  const setClickEnabled = useCallback((enabled) => {
+    player.setClickEnabled(enabled);
+    settingsMirror?.setClickEnabled(enabled);
+  }, [player.setClickEnabled, settingsMirror]);
 
   const toggle = useCallback(() => {
     if (player.playing) {
@@ -38,35 +66,36 @@ export default function DrumPreview({
   }, [player.playing, player.toggle, snapshot, text]);
 
   // A snapshot update rebuilds the idle player. Start only after that render so
-  // toggle() cannot accidentally launch the stale chart from the click render.
+  // toggle() cannot launch the stale chart or run before its tempo seed lands.
   useEffect(() => {
-    if (!playAfterReload || snapshot !== text) return;
+    if (!playAfterReload || snapshot !== text || !player.chartSettingsReady) return;
     setPlayAfterReload(false);
     player.toggle();
-  }, [playAfterReload, player.toggle, snapshot, text]);
+  }, [playAfterReload, player.chartSettingsReady, player.toggle, snapshot, text]);
 
   const displayedText = player.playing ? snapshot : text;
 
   return (
     <div className="min-w-0">
+      {/* A sounding snapshot must keep Stop enabled even if the live draft is silent. */}
       <DrumTransportBar
         playing={player.playing}
         onToggle={toggle}
-        hasMusic={chartChanged ? liveHasMusic : player.hasMusic}
+        hasMusic={player.playing || (chartChanged ? liveHasMusic : player.hasMusic)}
         bpm={player.bpm}
-        onBpmChange={player.setBpm}
-        onPercent={player.setBpmPercent}
+        onBpmChange={setBpm}
+        onPercent={setBpmPercent}
         writtenTempo={player.writtenTempo}
         countInBars={player.countInBars}
-        onCountInChange={player.setCountInBars}
+        onCountInChange={setCountInBars}
         loopEnabled={player.loopEnabled}
-        onLoopToggle={player.setLoopEnabled}
+        onLoopToggle={setLoopEnabled}
         loopFrom={player.loopFrom}
         loopTo={player.loopTo}
-        onLoopRangeChange={player.setLoopRange}
+        onLoopRangeChange={setLoopRange}
         barCount={player.barCount}
         clickEnabled={player.clickEnabled}
-        onClickToggle={player.setClickEnabled}
+        onClickToggle={setClickEnabled}
         beatsPerBar={player.beatsPerBar}
         pulse={player.pulse}
         currentBar={player.currentBar}
