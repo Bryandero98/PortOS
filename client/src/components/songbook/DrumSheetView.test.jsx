@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { render, cleanup, act, screen, fireEvent } from '@testing-library/react';
-import DrumSheetView from './DrumSheetView.jsx';
+import DrumSheetView, { SHEET_GEOMETRY } from './DrumSheetView.jsx';
 
 // Invented grooves only (privacy convention).
 const ROCK_BEAT = `time: 4/4
@@ -142,15 +142,13 @@ describe('DrumSheetView', () => {
 
   // --- Tap a note to learn it ------------------------------------------------
 
-  // The lane hit-tests taps arithmetically off the click coordinates, so these
-  // mirror DrumSheetView's internal geometry (CELL / PAD / GRID_TOP / ROW_H /
-  // BAR_GAP). jsdom reports a zeroed bounding box and the default font size maps
-  // to 1× scale, so a client point IS an internal SVG point here.
-  const CELL = 20;
-  const PAD = 6;
-  const GRID_TOP = 26;
-  const ROW_H = 20;
-  const BAR_GAP = 6;
+  // The lane hit-tests taps arithmetically off the click coordinates, so a test
+  // has to aim at a cell in the sheet's own internal units — taken from the
+  // component, never mirrored, or a geometry change would leave these agreeing
+  // with a stale inverse while every real tap reported the wrong note. jsdom
+  // reports a zeroed bounding box and the default font size maps to 1× scale, so
+  // a client point IS an internal SVG point here.
+  const { CELL, PAD, GRID_TOP, ROW_H, BAR_GAP } = SHEET_GEOMETRY;
   const cellPoint = (row, step, { bar = 1, stepsPerBar = 4 } = {}) => ({
     clientX: PAD + (bar - 1) * (stepsPerBar * CELL + BAR_GAP) + step * CELL + CELL / 2,
     clientY: GRID_TOP + row * ROW_H + ROW_H / 2,
@@ -247,15 +245,24 @@ describe('DrumSheetView', () => {
     expect(screen.queryByText(/Ghost note/)).toBeNull();
   });
 
-  it('leaves the tap gesture to an editing host when onStepClick is set', () => {
-    const onStepClick = vi.fn();
-    const { container } = render(<DrumSheetView text={'subdivision: 1\n\nHH: x---'} onStepClick={onStepClick} />);
+  it('drops the whole explain affordance when a host opts out', () => {
+    const { container } = render(<DrumSheetView text={'subdivision: 1\n\nHH: x---'} explain={false} />);
     expect(lane(container).getAttribute('tabindex')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Legend' })).toBeNull();
-    // The per-cell rects still route to the host, and no readout appears.
-    fireEvent.click(container.querySelectorAll('rect')[1]);
-    expect(onStepClick).toHaveBeenCalled();
+    tap(container, 0, 0);
     expect(readout()).toBeNull();
+  });
+
+  it('keeps explaining notes for an editing host that also wires onStepClick', () => {
+    // Authoring the notation is where "what does this glyph mean" matters most,
+    // so a cell-edit handler must not silently cost the host its readout.
+    const onStepClick = vi.fn();
+    const { container } = render(<DrumSheetView text={'subdivision: 1\n\nHH: x---'} onStepClick={onStepClick} />);
+    // A real tap lands on the host's cell rect and bubbles to the lane, so both
+    // gestures resolve from the one click.
+    fireEvent.click(container.querySelectorAll('rect')[1], cellPoint(0, 0));
+    expect(onStepClick).toHaveBeenCalledWith(1, 0, 'HH');
+    expect(readout()).toHaveTextContent('Hi-Hat — Normal hit');
   });
 
   // --- The playhead (rAF, DOM-only — never React state) ----------------------

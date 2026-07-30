@@ -64,3 +64,9 @@ export const inputClass = 'w-full bg-port-bg border border-port-border rounded-l
 export const labelClass = 'block text-xs text-gray-400 mb-1';
 // Secondary button (bordered, subtle hover; disabled fades).
 export const btnClass = 'flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg border border-port-border text-gray-300 hover:text-white hover:bg-port-border/50 disabled:opacity-50';
+// A sheet/transport control: 44px minimum touch target, matching the viewer's own
+// controls bar. `activeCtrlClass` is the lit state for the toggles among them
+// (play, metronome, loop, the sheet's Legend) — shared so a new control can't
+// invent a fourth "this is on" look.
+export const ctrlBtnClass = 'flex items-center justify-center min-w-[44px] min-h-[44px] rounded-lg border border-port-border text-gray-300 hover:text-white hover:bg-port-border/50';
+export const activeCtrlClass = 'text-port-accent border-port-accent/50';

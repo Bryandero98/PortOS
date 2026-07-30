@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   parseDrumChart, isDrumNotation, drumChartHasMusic, kitPiece,
-  describeDrumCell, describeKitPiece, DRUM_GLYPH_LEGEND,
+  describeDrumCell, describeDrumPosition, DRUM_GLYPH_LEGEND,
   KIT_PIECES, CELL_GLYPHS, DEFAULT_DRUM_TEMPO, SUBDIVISION_MAX,
 } from './drumNotation.js';
 
@@ -338,7 +338,7 @@ describe('describeDrumCell', () => {
   });
 });
 
-describe('DRUM_GLYPH_LEGEND / describeKitPiece', () => {
+describe('notation legend coverage', () => {
   it('covers every cell character exactly once, with text', () => {
     expect(DRUM_GLYPH_LEGEND.map((g) => g.char).sort()).toEqual(Object.keys(CELL_GLYPHS).sort());
     for (const glyph of DRUM_GLYPH_LEGEND) {
@@ -348,11 +348,26 @@ describe('DRUM_GLYPH_LEGEND / describeKitPiece', () => {
   });
 
   it('has playing instructions for every kit piece', () => {
-    for (const piece of KIT_PIECES) {
-      const described = describeKitPiece(piece.id);
-      expect(described.label).toBe(piece.label);
-      expect(described.technique.length).toBeGreaterThan(10);
-    }
-    expect(describeKitPiece('CB')).toBeNull();
+    // The sheet's legend prints `technique` for whatever pieces a chart uses, so
+    // a tenth piece added without one would render a blank row.
+    for (const piece of KIT_PIECES) expect(piece.technique.length).toBeGreaterThan(10);
+  });
+});
+
+describe('describeDrumPosition', () => {
+  it('counts subdivisions the way a drummer says them', () => {
+    expect(describeDrumPosition(6, 0, 4)).toBe('bar 6, count “1”');
+    expect(describeDrumPosition(1, 5, 4)).toBe('bar 1, count “2 e”');
+    expect(describeDrumPosition(1, 6, 4)).toBe('bar 1, count “2 &”');
+    expect(describeDrumPosition(1, 7, 4)).toBe('bar 1, count “2 a”');
+    expect(describeDrumPosition(2, 3, 2)).toBe('bar 2, count “2 &”');
+    expect(describeDrumPosition(2, 4, 3)).toBe('bar 2, count “2 trip”');
+  });
+
+  it('falls back to an exact fraction where no syllable is conventional', () => {
+    // Better an unfamiliar-but-correct "+2/5" than borrowing a syllable from a
+    // different subdivision and misnaming the position.
+    expect(describeDrumPosition(1, 2, 5)).toBe('bar 1, count “1 +2/5”');
+    expect(describeDrumPosition(1, 5, 5)).toBe('bar 1, count “2”');
   });
 });

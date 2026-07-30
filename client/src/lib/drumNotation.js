@@ -40,16 +40,21 @@
 // the General MIDI percussion note (documented reference for anyone wiring a
 // MIDI export later — the synth in drumPlayback.js reads `sound`, not `midi`).
 // `sound` picks the synth voice; `glyph` picks the notehead shape.
+// `technique` is how the piece is struck, in the words a drummer would use at
+// the kit — the sheet's tap-a-note readout and legend show it, because a
+// hand-rolled notation has no engraving convention to look up. Handedness-
+// neutral: which foot works the kick and which side the floor tom sits on depend
+// on the kit and the player, so it says what to strike and how, never which limb.
 export const KIT_PIECES = [
-  { id: 'CR', label: 'Crash', aliases: ['crash', 'cr', 'cc'], midi: 49, sound: 'crash', glyph: 'cross' },
-  { id: 'RD', label: 'Ride', aliases: ['ride', 'rd'], midi: 51, sound: 'ride', glyph: 'cross' },
-  { id: 'HH', label: 'Hi-Hat', aliases: ['hihat', 'hi-hat', 'hh', 'hat'], midi: 42, sound: 'hihat', glyph: 'cross' },
-  { id: 'T1', label: 'Tom 1', aliases: ['tom1', 'tom', 't1', 'hitom'], midi: 48, sound: 'tom1', glyph: 'head' },
-  { id: 'T2', label: 'Tom 2', aliases: ['tom2', 't2', 'midtom'], midi: 47, sound: 'tom2', glyph: 'head' },
-  { id: 'S', label: 'Snare', aliases: ['snare', 's', 'sd'], midi: 38, sound: 'snare', glyph: 'head' },
-  { id: 'FT', label: 'Floor Tom', aliases: ['floor', 'floortom', 'ft', 't3'], midi: 43, sound: 'floor', glyph: 'head' },
-  { id: 'K', label: 'Kick', aliases: ['kick', 'k', 'bd', 'bass'], midi: 36, sound: 'kick', glyph: 'head' },
-  { id: 'HF', label: 'Hi-Hat (foot)', aliases: ['hihatfoot', 'hhfoot', 'hf', 'foot'], midi: 44, sound: 'hihatFoot', glyph: 'cross' },
+  { id: 'CR', label: 'Crash', aliases: ['crash', 'cr', 'cc'], midi: 49, sound: 'crash', glyph: 'cross', technique: 'The crash cymbal — strike the edge with the shoulder of the stick and let it ring out.' },
+  { id: 'RD', label: 'Ride', aliases: ['ride', 'rd'], midi: 51, sound: 'ride', glyph: 'cross', technique: 'The ride cymbal — stick tip on the bow for a clear "ping", nearer the edge for a wash, on the bell for a clang.' },
+  { id: 'HH', label: 'Hi-Hat', aliases: ['hihat', 'hi-hat', 'hh', 'hat'], midi: 42, sound: 'hihat', glyph: 'cross', technique: 'The hi-hat pair, played with a stick — tip on the edge, cymbals held shut by the pedal unless the note is open.' },
+  { id: 'T1', label: 'Tom 1', aliases: ['tom1', 'tom', 't1', 'hitom'], midi: 48, sound: 'tom1', glyph: 'head', technique: 'The highest tom — stick tip near the middle of the head.' },
+  { id: 'T2', label: 'Tom 2', aliases: ['tom2', 't2', 'midtom'], midi: 47, sound: 'tom2', glyph: 'head', technique: 'The middle tom — stick tip near the middle of the head.' },
+  { id: 'S', label: 'Snare', aliases: ['snare', 's', 'sd'], midi: 38, sound: 'snare', glyph: 'head', technique: 'The snare drum — a full stroke in the middle of the head for the sharpest crack.' },
+  { id: 'FT', label: 'Floor Tom', aliases: ['floor', 'floortom', 'ft', 't3'], midi: 43, sound: 'floor', glyph: 'head', technique: 'The floor tom, the biggest and lowest of the toms — stick tip near the middle of the head.' },
+  { id: 'K', label: 'Kick', aliases: ['kick', 'k', 'bd', 'bass'], midi: 36, sound: 'kick', glyph: 'head', technique: 'The bass drum, played with the kick pedal rather than a stick.' },
+  { id: 'HF', label: 'Hi-Hat (foot)', aliases: ['hihatfoot', 'hhfoot', 'hf', 'foot'], midi: 44, sound: 'hihatFoot', glyph: 'cross', technique: 'The hi-hat pedal with no stick — press it to clap the cymbals shut for a short "chick".' },
 ];
 
 // Row order index for a piece id — the renderer and the `kit:` override both
@@ -71,14 +76,16 @@ export const kitPiece = (id) => KIT_PIECES.find((p) => p.id === id) || null;
 // --- Cell glyphs -----------------------------------------------------------
 // The six cell characters and what each means. `velocity` is the relative hit
 // strength drumPlayback scales its voice gain by; `open` lengthens the hi-hat
-// decay; `flam` sounds a grace note just before the beat.
+// decay; `flam` sounds a grace note just before the beat. `char` is the entry's
+// own key, carried on the value so a cell (which is a shared reference to one of
+// these) can name the character it came from without a reverse lookup.
 export const CELL_GLYPHS = {
-  '-': { id: 'rest', rest: true, velocity: 0, label: 'rest' },
-  x: { id: 'normal', rest: false, velocity: 0.8, label: 'normal' },
-  X: { id: 'accent', rest: false, velocity: 1, accent: true, label: 'accent' },
-  o: { id: 'open', rest: false, velocity: 0.85, open: true, label: 'open' },
-  g: { id: 'ghost', rest: false, velocity: 0.35, ghost: true, label: 'ghost' },
-  f: { id: 'flam', rest: false, velocity: 0.9, flam: true, label: 'flam' },
+  '-': { id: 'rest', char: '-', rest: true, velocity: 0 },
+  x: { id: 'normal', char: 'x', rest: false, velocity: 0.8 },
+  X: { id: 'accent', char: 'X', rest: false, velocity: 1, accent: true },
+  o: { id: 'open', char: 'o', rest: false, velocity: 0.85, open: true },
+  g: { id: 'ghost', char: 'g', rest: false, velocity: 0.35, ghost: true },
+  f: { id: 'flam', char: 'f', rest: false, velocity: 0.9, flam: true },
 };
 
 // A cell char → its descriptor, or null when it isn't a known glyph. `.` and
@@ -93,31 +100,14 @@ const cellFor = (ch) => {
 // --- Plain-language explanations --------------------------------------------
 // A hand-rolled grid notation has no engraving convention to look up, so the
 // sheet has to be able to answer "what IS this glyph and how do I play it?"
-// itself — that's what `<DrumSheetView>`'s tap-a-note popover and its legend
-// read. Kept here, beside the notation it describes, so the two can't drift.
-//
-// Handedness-neutral wording throughout: which foot works the kick and which
-// side the floor tom sits on depend on the kit and the player, so the text says
-// what to strike and how, never which hand or foot does it.
-
-// How each kit piece is struck.
-const PIECE_TECHNIQUE = {
-  CR: 'The crash cymbal — strike the edge with the shoulder of the stick and let it ring out.',
-  RD: 'The ride cymbal — stick tip on the bow for a clear "ping", nearer the edge for a wash, on the bell for a clang.',
-  HH: 'The hi-hat pair, played with a stick — tip on the edge, cymbals held shut by the pedal unless the note is open.',
-  T1: 'The highest tom — stick tip near the middle of the head.',
-  T2: 'The middle tom — stick tip near the middle of the head.',
-  S: 'The snare drum — a full stroke in the middle of the head for the sharpest crack.',
-  FT: 'The floor tom, the biggest and lowest of the toms — stick tip near the middle of the head.',
-  K: 'The bass drum, played with the kick pedal rather than a stick.',
-  HF: 'The hi-hat pedal with no stick — press it to clap the cymbals shut for a short "chick".',
-};
+// itself — that's what `<DrumSheetView>`'s tap-a-note readout and its legend
+// read. Kept here, beside the notation it describes (and derived from the same
+// two tables), so prose and notation can't drift apart.
 
 // What each cell character asks for, independent of which piece it lands on.
-// `openCross` / `openHead` split the one glyph whose meaning depends on the
-// piece: an `o` opens a hi-hat or lets a cymbal ring, but a drum has nothing to
-// open, so there it just sounds as a normal hit (and the renderer draws it as
-// one) — saying "open" for a kick would describe a technique that doesn't exist.
+// `openHead` is the one entry with no glyph of its own: it covers `open` landing
+// on a DRUM, which has nothing to open, so it sounds (and draws) as a normal hit
+// — calling a kick's `o` "open" would describe a technique that doesn't exist.
 const ARTICULATIONS = {
   rest: { name: 'Rest', detail: 'Nothing is played on this step — count it, don\'t fill it.' },
   normal: { name: 'Normal hit', detail: 'An unaccented stroke at your regular playing volume.' },
@@ -128,24 +118,11 @@ const ARTICULATIONS = {
   flam: { name: 'Flam', detail: 'Two strokes so close together they read as one thick hit: the small grace glyph just before the beat lands a hair early, then the main note on the beat.' },
 };
 
-// Glyph id → the character an author types for it (the CELL_GLYPHS key).
-const CHAR_BY_GLYPH_ID = new Map(Object.entries(CELL_GLYPHS).map(([ch, g]) => [g.id, ch]));
-
-// The six cell characters for a legend panel — the same articulation text the
-// per-note popover shows, minus anything piece-specific.
-export const DRUM_GLYPH_LEGEND = Object.entries(CELL_GLYPHS).map(([char, glyph]) => ({
-  char,
-  id: glyph.id,
-  ...ARTICULATIONS[glyph.id],
-}));
-
-// How to play one piece, for a legend panel. Unknown ids return null so a caller
-// can fall back to the raw id rather than printing "undefined".
-export const describeKitPiece = (id) => {
-  const piece = kitPiece(id);
-  if (!piece) return null;
-  return { id: piece.id, label: piece.label, technique: PIECE_TECHNIQUE[piece.id] || '' };
-};
+// The six cell characters for a legend panel. Each shows the articulation as
+// written for a cymbal (the `open` wording names the hi-hat pedal), which is the
+// form the glyph is defined by; `describeDrumCell` is what re-reads it per piece.
+export const DRUM_GLYPH_LEGEND = Object.values(CELL_GLYPHS)
+  .map((glyph) => ({ char: glyph.char, ...ARTICULATIONS[glyph.id] }));
 
 /**
  * Explain ONE cell of a parsed chart in plain language — what the glyph means,
@@ -153,27 +130,50 @@ export const describeKitPiece = (id) => {
  *
  * @param {string} pieceId - Canonical kit-piece id (`'CR'`, `'S'`, …).
  * @param {object} cell - A cell from `parseDrumChart` (a `CELL_GLYPHS` entry).
- * @returns {{ pieceId, pieceLabel, char, rest, articulation, detail, technique, velocityPercent }|null}
+ * @returns {{ pieceLabel, char, rest, articulation, detail, technique, velocityPercent }|null}
  *   `null` only when the piece id is unknown — an unknown/missing cell is
  *   described as a rest, matching how the parser already treats one.
  */
 export const describeDrumCell = (pieceId, cell) => {
   const piece = kitPiece(pieceId);
   if (!piece) return null;
-  const glyph = cell && CELL_GLYPHS[CHAR_BY_GLYPH_ID.get(cell.id)] ? cell : CELL_GLYPHS['-'];
+  const glyph = CELL_GLYPHS[cell?.char] || CELL_GLYPHS['-'];
   // `open` is the one piece-dependent glyph (see ARTICULATIONS).
-  const key = glyph.id === 'open' && piece.glyph !== 'cross' ? 'openHead' : glyph.id;
-  const articulation = ARTICULATIONS[key] || ARTICULATIONS.normal;
+  const articulation = ARTICULATIONS[
+    glyph.id === 'open' && piece.glyph !== 'cross' ? 'openHead' : glyph.id
+  ];
   return {
-    pieceId: piece.id,
     pieceLabel: piece.label,
-    char: CHAR_BY_GLYPH_ID.get(glyph.id) || '-',
-    rest: !!glyph.rest,
+    char: glyph.char,
+    rest: glyph.rest,
     articulation: articulation.name,
     detail: articulation.detail,
-    technique: PIECE_TECHNIQUE[piece.id] || '',
-    velocityPercent: glyph.rest ? 0 : Math.round(glyph.velocity * 100),
+    technique: piece.technique,
+    velocityPercent: Math.round(glyph.velocity * 100),
   };
+};
+
+// Count-along syllables for a step inside its beat — how a drummer says the
+// position out loud ("2 e & a"). A subdivision with no conventional syllable
+// falls back to an exact "beat +n/N" rather than borrowing the wrong one.
+const SUBDIVISION_SYLLABLES = { 2: ['', '&'], 3: ['', 'trip', 'let'], 4: ['', 'e', '&', 'a'] };
+
+/**
+ * Where a cell falls, as a drummer would say it: `bar 6, count “2 e”`.
+ *
+ * @param {number} bar - 1-based bar number (post repeat-expansion).
+ * @param {number} step - 0-based grid step within the bar.
+ * @param {number} subdivision - Grid steps per notated beat.
+ * @returns {string}
+ */
+export const describeDrumPosition = (bar, step, subdivision) => {
+  const beat = Math.floor(step / subdivision) + 1;
+  const within = step % subdivision;
+  const syllable = within ? SUBDIVISION_SYLLABLES[subdivision]?.[within] : '';
+  const count = within
+    ? `${beat} ${syllable || `+${within}/${subdivision}`}`
+    : `${beat}`;
+  return `bar ${bar}, count “${count}”`;
 };
 
 // --- Header ----------------------------------------------------------------
