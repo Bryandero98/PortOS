@@ -55,7 +55,8 @@ grep -i "what you want to do" client/src/lib/README.md
 | `pipelineImageDefaults.js` | Pipeline comic-page image-gen defaults + settings reader. |
 | `reverseOutlineGrid.js` | `buildPlotlineGrid` (reverse-outline scenes + plotlines → plotline-by-sequence grid rows/cells) + `sceneComponentCount`. Used by the Reverse Outline page. |
 | `wrImageDefaults.js` | Writers Room per-scene image-gen defaults + style discriminators. |
-| `imageGenBackends.js` | `IMAGE_GEN_MODE` enum (local / codex / external) + metadata; `deriveAvailableBackends`; `I2I_CAPABLE_MODES` / `isI2iCapableMode(mode)` / `pickI2iMode(backends)` — image-to-image capability gating + best-backend selection. |
+| `imageGenBackends.js` | Icon metadata + `deriveAvailableBackends` for the image-gen backends; re-exports everything from `imageGenModes.js` so consumers keep one import site. |
+| `imageGenModes.js` | Node-safe (dependency-free) image/video backend constants + pure helpers: `IMAGE_GEN_MODE`, render-target mirror (`RENDER_TARGET_OPTIONS`, `normalizeRenderPinValue`), `VIDEO_RENDER_MODES`, `modeLabel`, cloud/model-override/i2i capability gating. Imported by the server-side parity suite — must stay importable without client packages. |
 | `imageGenDefaults.js` | Shared `DEFAULT_NEGATIVE_PROMPT` used by the Image Gen form and quick-submit entry points. Mirrors server-side default. |
 | `imageGenResolutions.js` | Shared resolution presets for image generation. |
 | `importerDeepLink.js` | The Importer deep-link contract both ways: `buildImporterLink({ universeId, seriesId, seriesName })` builds the `/importer?…` URL a Series Pipeline page navigates to; `resolveImporterDeepLink(...)` reads those params back into the universe + series names the importer matches on. |

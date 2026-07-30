@@ -28,6 +28,9 @@ export * from './editorialRoadmap.js';
 export * from './grokVideoClip.js';
 export * from './imageCleaners.js';
 export * from './imageGenBackends.js';
+// Namespace export: imageGenBackends re-exports every imageGenModes symbol
+// flat (one import site for consumers), so a flat export here would collide.
+export * as imageGenModes from './imageGenModes.js';
 export * from './imageGenDefaults.js';
 export * from './imageGenResolutions.js';
 export * from './importerDeepLink.js';
