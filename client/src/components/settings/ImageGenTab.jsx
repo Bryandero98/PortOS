@@ -22,7 +22,7 @@ import {
   registerTool, updateTool, getToolsList,
   saveHfToken, clearHfToken,
 } from '../../services/api';
-import { isCloudCliMode, IMAGE_GEN_MODE, AGY_IMAGEGEN_DEFAULT_MODEL, AGY_IMAGEGEN_IMAGE_MODEL, CODEX_IMAGEGEN_DEFAULT_EFFORT, GROK_ASPECT_RATIOS, RENDER_TARGET_BACKEND_AUTO, RENDER_TARGET_OPTIONS, modeLabel, supportsCloudModelOverride } from '../../lib/imageGenBackends';
+import { isCloudCliMode, IMAGE_GEN_MODE, AGY_IMAGEGEN_DEFAULT_MODEL, AGY_IMAGEGEN_IMAGE_MODEL, CODEX_IMAGEGEN_DEFAULT_EFFORT, GROK_ASPECT_RATIOS, RENDER_TARGET_BACKEND_AUTO, RENDER_TARGET_OPTIONS, VIDEO_RENDER_MODES, modeLabel, supportsCloudModelOverride } from '../../lib/imageGenBackends';
 import { resolveCleanersFromConfig } from '../../lib/imageCleaners';
 import { useMediaJobSse } from '../../hooks/useMediaJobSse';
 import { useAgyModels } from '../../hooks/useAgyModels';
@@ -104,6 +104,12 @@ export function ImageGenTab() {
   // Per-surface render defaults (#3231) — `{ [target]: { imageMode, imageModel } }`.
   // Only pinned entries are kept; an absent target means "auto".
   const [renderDefaults, setRenderDefaults] = useState({});
+  // Install-wide video backend pin (`settings.videoGen.mode`, #3231 Phase 4).
+  // '' = no pin (local). The full loaded `videoGen` slice is kept so the save
+  // can round-trip sibling keys (defaultModelId) — the settings PUT replaces
+  // top-level slices wholesale.
+  const [videoGenMode, setVideoGenMode] = useState('');
+  const [videoGenSlice, setVideoGenSlice] = useState({});
   const [sdapiUrl, setSdapiUrl] = useState('');
   const [pythonPath, setPythonPath] = useState('');
   const [exposeA1111, setExposeA1111] = useState(false);
@@ -166,6 +172,7 @@ export function ImageGenTab() {
     cleanC2PAByMode: { external: true, local: true, codex: true, grok: false, agy: false },
     denoiseByMode: { external: false, local: false, codex: false, grok: false, agy: false },
     renderDefaultsJson: '{}',
+    videoGenMode: '',
   });
 
   const [status, setStatus] = useState(null);
@@ -223,11 +230,16 @@ export function ImageGenTab() {
     Promise.all([getSettings({ silent: true }), getToolsList({ silent: true })])
       .then(([s, tools]) => {
         const ig = s?.imageGen || {};
-        // Round-trip the FULL renderDefaults object (including videoMode /
-        // videoModel keys this tab doesn't edit yet) — the server replaces the
-        // top-level slice wholesale on save, so dropping unedited keys here
-        // would erase them.
+        // Round-trip the FULL renderDefaults object (including videoModel keys
+        // this tab doesn't edit) — the server replaces the top-level slice
+        // wholesale on save, so dropping unedited keys here would erase them.
         const rd = (s?.renderDefaults && typeof s.renderDefaults === 'object') ? s.renderDefaults : {};
+        // Video pin: keep the whole slice for round-trip; normalize the mode
+        // ('auto'/blank → '', i.e. no pin) for the select.
+        const vg = (s?.videoGen && typeof s.videoGen === 'object') ? s.videoGen : {};
+        const vgMode = (typeof vg.mode === 'string' && vg.mode.trim() && vg.mode !== RENDER_TARGET_BACKEND_AUTO)
+          ? vg.mode
+          : '';
         const m = ig.mode || IMAGE_GEN_MODE.EXTERNAL;
         const url = normalizeUrl(ig.external?.sdapiUrl || ig.sdapiUrl);
         const py = ig.local?.pythonPath || '';
@@ -261,6 +273,8 @@ export function ImageGenTab() {
         const dn = { codex: codexClean.denoise, grok: grokClean.denoise, agy: agyClean.denoise, local: localClean.denoise, external: externalClean.denoise };
         setMode(m);
         setRenderDefaults(rd);
+        setVideoGenMode(vgMode);
+        setVideoGenSlice(vg);
         setSdapiUrl(url);
         setPythonPath(py);
         setExposeA1111(expose);
@@ -286,6 +300,7 @@ export function ImageGenTab() {
           agyEnabled: ayEnabled, agyPath: ayPath, agyModel: ayModel,
           cleanC2PAByMode: c2, denoiseByMode: dn,
           renderDefaultsJson: JSON.stringify(rd),
+          videoGenMode: vgMode,
         });
         setToolRegistered(tools.some((t) => t.id === SDAPI_TOOL_ID));
         setCodexToolRegistered(tools.some((t) => t.id === CODEX_TOOL_ID));
@@ -345,7 +360,8 @@ export function ImageGenTab() {
     || denoiseByMode.codex !== saved.denoiseByMode.codex
     || denoiseByMode.local !== saved.denoiseByMode.local
     || denoiseByMode.external !== saved.denoiseByMode.external
-    || JSON.stringify(renderDefaults) !== saved.renderDefaultsJson;
+    || JSON.stringify(renderDefaults) !== saved.renderDefaultsJson
+    || videoGenMode !== saved.videoGenMode;
 
   const handleSave = async () => {
     setSaving(true);
@@ -388,6 +404,9 @@ export function ImageGenTab() {
           (v) => typeof v === 'string' && v.trim() && v !== RENDER_TARGET_BACKEND_AUTO,
         )),
       ),
+      // Install-wide video pin (#3231 Phase 4). Spread over the loaded slice so
+      // sibling keys (defaultModelId) survive the wholesale slice replace.
+      videoGen: { ...videoGenSlice, mode: videoGenMode || null },
     };
     try {
       await updateSettings(patch, { silent: true });
@@ -403,10 +422,12 @@ export function ImageGenTab() {
         agyEnabled, agyPath: ayPath || '', agyModel: ayModel || '',
         cleanC2PAByMode, denoiseByMode,
         renderDefaultsJson: JSON.stringify(patch.renderDefaults),
+        videoGenMode,
       });
       // Reflect the pruned no-op entries back into the editor state so the
       // dirty check compares like against like after a save.
       setRenderDefaults(patch.renderDefaults);
+      setVideoGenSlice(patch.videoGen);
       if (cxParallel !== codexParallelLimit) {
         setCodexParallelLimit(cxParallel);
         setParallelLimitDraft(String(cxParallel));
@@ -670,14 +691,38 @@ export function ImageGenTab() {
           backend that is disabled (or unconfigured) falls back to whatever that surface would
           have used anyway — enable the backend on its own tab to make a pin take effect. A
           model can be pinned for backends that accept one (Codex, Agy); Grok and Local pick
-          their models elsewhere.
+          their models elsewhere. Surfaces that also render video get a video backend pin —
+          backend only, since Grok video has no model choice and local video models are picked
+          on the surface itself.
         </p>
+        <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2 sm:items-center border border-port-border rounded-lg px-3 py-2 bg-port-bg/40">
+          <label htmlFor="video-default-mode" className="text-sm text-gray-300">
+            Default video backend
+            <span className="block text-xs text-gray-500 mt-0.5">
+              Used when a video render names no backend and its surface has no pin. Grok clips
+              render at 6s or 10s on xAI&rsquo;s fixed video backend.
+            </span>
+          </label>
+          <select
+            id="video-default-mode"
+            value={videoGenMode}
+            onChange={(e) => setVideoGenMode(e.target.value)}
+            className="bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent sm:w-44"
+          >
+            <option value="">Auto (Local)</option>
+            {VIDEO_RENDER_MODES.map((m) => (
+              <option key={m} value={m}>{modeLabel(m)}</option>
+            ))}
+          </select>
+        </div>
         <div className="space-y-3">
-          {RENDER_TARGET_OPTIONS.map(({ id, label }) => {
+          {RENDER_TARGET_OPTIONS.map(({ id, label, video }) => {
             const entry = renderDefaults[id] || {};
             const pinnedMode = entry.imageMode && entry.imageMode !== RENDER_TARGET_BACKEND_AUTO ? entry.imageMode : '';
+            const pinnedVideoMode = entry.videoMode && entry.videoMode !== RENDER_TARGET_BACKEND_AUTO ? entry.videoMode : '';
             const modeSelectId = `render-default-mode-${id}`;
             const modelInputId = `render-default-model-${id}`;
+            const videoSelectId = `render-default-video-${id}`;
             const setPin = (key, value) => setRenderDefaults((rd) => {
               const nextEntry = { ...(rd[id] || {}) };
               if (value) nextEntry[key] = value; else delete nextEntry[key];
@@ -686,7 +731,7 @@ export function ImageGenTab() {
               return next;
             });
             return (
-              <div key={id} className="grid grid-cols-1 sm:grid-cols-[1fr_auto_auto] gap-2 sm:items-center border border-port-border rounded-lg px-3 py-2">
+              <div key={id} className={`grid grid-cols-1 ${video ? 'sm:grid-cols-[1fr_auto_auto_auto]' : 'sm:grid-cols-[1fr_auto_auto]'} gap-2 sm:items-center border border-port-border rounded-lg px-3 py-2`}>
                 <label htmlFor={modeSelectId} className="text-sm text-gray-300">{label}</label>
                 <select
                   id={modeSelectId}
@@ -719,6 +764,21 @@ export function ImageGenTab() {
                     className="bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent sm:w-52"
                   />
                 ) : <span className="hidden sm:block sm:w-52" />}
+                {video && (
+                  <select
+                    id={videoSelectId}
+                    value={pinnedVideoMode}
+                    onChange={(e) => setPin('videoMode', e.target.value || null)}
+                    aria-label={`${label} video backend`}
+                    title="Video backend for this surface — no model choice (Grok video has none; local video models are picked on the surface)"
+                    className="bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent sm:w-44"
+                  >
+                    <option value="">Video: Auto</option>
+                    {VIDEO_RENDER_MODES.map((m) => (
+                      <option key={m} value={m}>Video: {modeLabel(m)}</option>
+                    ))}
+                  </select>
+                )}
               </div>
             );
           })}

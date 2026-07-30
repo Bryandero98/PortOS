@@ -15,16 +15,16 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { RENDER_TARGET, RENDER_TARGETS, RENDER_TARGET_BACKEND_AUTO } from './renderTargets.js';
+import { RENDER_TARGETS, RENDER_TARGET_BACKEND_AUTO } from './renderTargets.js';
 import {
   RENDER_TARGET_OPTIONS as CLIENT_OPTIONS,
   RENDER_TARGET_BACKEND_AUTO as CLIENT_AUTO,
 } from '../../client/src/lib/imageGenBackends.js';
 
-// Targets the Settings UI deliberately does NOT list yet — a pin nobody's
-// resolver reads would be a control that silently does nothing. Shrink this
-// as phases land (music-video ships with the Phase 4 video lane).
-const DELIBERATELY_UNLISTED = new Set([RENDER_TARGET.MUSIC_VIDEO]);
+// Targets the Settings UI deliberately does NOT list — a pin nobody's
+// resolver reads would be a control that silently does nothing. Empty since
+// the Phase 4 video lane wired music-video (the last unlisted target).
+const DELIBERATELY_UNLISTED = new Set([]);
 
 describe('render-target client mirror parity (#3231)', () => {
   it('every client option id is a real server render target', () => {

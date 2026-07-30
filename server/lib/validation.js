@@ -1017,6 +1017,21 @@ export const renderDefaultsSettingsSchema = z.object(
   Object.fromEntries(RENDER_TARGETS.map((t) => [t, renderTargetEntrySchema.optional()])),
 );
 
+// Install-wide video render pin (`settings.videoGen`, #3231 Phase 4) — the
+// third rung in resolveVideoMode's ladder (request → target pin → THIS →
+// local). `'auto'`/`''`/null all mean "no pin — local". Tolerant of unknown
+// keys for the same rollback/forward-compat reason as renderDefaults above.
+// `defaultModelId` predates this schema (pipeline storyboards/episodeVideo
+// read it as the local-model default) — typed here so a Settings save can't
+// write junk to it.
+export const videoGenSettingsSchema = z.object({
+  mode: z.enum([RENDER_TARGET_BACKEND_AUTO, ...VIDEO_GEN_MODES]).nullable().optional(),
+  defaultModelId: z.preprocess(
+    (v) => (v === '' ? null : v),
+    z.string().trim().max(64).nullable().optional(),
+  ),
+});
+
 // Per-RECORD render pin (#3231 Phase 3) — the flat `imageMode`/`imageModelId`
 // field pair persisted on universe / series / sprite records, following the
 // creative-commission shape. Spread into a record's create + patch schemas.

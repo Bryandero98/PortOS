@@ -28,6 +28,9 @@ import { ServerError } from '../../lib/errorHandler.js';
 import { PATHS, ensureDir, resolveGalleryImage } from '../../lib/fileUtils.js';
 import { getSettings } from '../settings.js';
 import { IMAGE_GEN_MODE, CLOUD_IMAGE_GEN_MODES, resolveImageCleaners } from './index.js';
+import { resolveRenderTargetConfig } from './cloudProviderConfig.js';
+import { RENDER_TARGET, recordRenderPin } from '../../lib/renderTargets.js';
+import { getProject as getMusicVideoProject } from '../musicVideo/projects.js';
 import { getImageModels, isFlux2 } from '../../lib/mediaModels.js';
 
 // Only the formats mflux can decode — mirrors the route's MIME_TO_EXT map
@@ -77,7 +80,28 @@ export async function prepareGenerateParams({ data, files, referenceImageFields 
   // while the actual generation silently ignored them. (Reading settings here
   // is cheap — it's already read again below for the per-mode dispatch.)
   const settings = await getSettings();
-  const mode = data.mode || settings.imageGen?.mode || IMAGE_GEN_MODE.EXTERNAL;
+  let mode = data.mode || settings.imageGen?.mode || IMAGE_GEN_MODE.EXTERNAL;
+  // #3231 Phase 4 — Music Video scene-frame renders resolve through the
+  // render-target ladder: per-request mode → the owning project's record pin
+  // (`imageMode`/`imageModelId`) → `renderDefaults['music-video']` → the
+  // install default above. The director board sends NO mode with its frame
+  // renders, so the record/target pins are live without any client seeding
+  // (unlike the universe batch form). The layered model is stamped onto
+  // `data.cloudModel` so the route/dispatch resolution downstream picks it up;
+  // an explicit per-request cloudModel wins untouched.
+  if (data.musicVideo?.projectId) {
+    const project = await getMusicVideoProject(data.musicVideo.projectId).catch(() => null);
+    const pin = recordRenderPin(project || {});
+    const resolved = resolveRenderTargetConfig(settings, RENDER_TARGET.MUSIC_VIDEO, {
+      mode: data.mode || null,
+      model: data.cloudModel || null,
+      recordMode: pin.mode,
+      recordModel: pin.modelId,
+      fallbackMode: settings.imageGen?.mode || IMAGE_GEN_MODE.EXTERNAL,
+    });
+    mode = resolved.mode;
+    if (!data.cloudModel && resolved.cloud?.modelId) data.cloudModel = resolved.cloud.modelId;
+  }
   if (mode === IMAGE_GEN_MODE.AGY && (initUpload || data.initImageFile)) {
     cleanupReqFilesTemp();
     throw new ServerError('Agy Imagegen supports text-to-image only', {

@@ -200,4 +200,43 @@ describe('Settings routes — renderDefaults slice (#3231)', () => {
       .send({ renderDefaults: { 'universe-bible': { imageModel: 'x; rm -rf /' } } });
     expect(shell.status).toBe(400);
   });
+
+  it('accepts a per-target video backend pin and rejects a non-video backend (#3231 Phase 4)', async () => {
+    const ok = await request(buildApp())
+      .put('/api/settings')
+      .send({ renderDefaults: { 'music-video': { videoMode: 'grok' } } });
+    expect(ok.status).toBe(200);
+    expect(ok.body.renderDefaults['music-video']).toEqual({ videoMode: 'grok' });
+    const bad = await request(buildApp())
+      .put('/api/settings')
+      .send({ renderDefaults: { 'music-video': { videoMode: 'codex' } } });
+    expect(bad.status).toBe(400);
+  });
+});
+
+describe('Settings routes — videoGen slice (#3231 Phase 4)', () => {
+  beforeEach(() => {
+    store = {};
+    vi.clearAllMocks();
+  });
+
+  it('accepts the install-wide video pin and preserves sibling keys', async () => {
+    const res = await request(buildApp())
+      .put('/api/settings')
+      .send({ videoGen: { mode: 'grok', defaultModelId: 'ltx23_distilled_q4' } });
+    expect(res.status).toBe(200);
+    expect(res.body.videoGen).toEqual({ mode: 'grok', defaultModelId: 'ltx23_distilled_q4' });
+    // Clearing via null is the intentional no-pin state.
+    const cleared = await request(buildApp())
+      .put('/api/settings')
+      .send({ videoGen: { mode: null } });
+    expect(cleared.status).toBe(200);
+  });
+
+  it('rejects a non-video backend as the install-wide video pin', async () => {
+    const res = await request(buildApp())
+      .put('/api/settings')
+      .send({ videoGen: { mode: 'codex' } });
+    expect(res.status).toBe(400);
+  });
 });

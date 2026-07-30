@@ -33,6 +33,7 @@ import { generateImage } from '../services/apiSystem.js';
 import { generateVideo, getVideoGenStatus, listLorasFull } from '../services/apiImageVideo.js';
 import { listTracks, trackAudioUrl } from '../services/apiTracks.js';
 import BeatTimeline from '../components/musicVideo/BeatTimeline.jsx';
+import RecordRenderPinRow from '../components/imageGen/RecordRenderPinRow.jsx';
 import { autoArrangeScenes } from '../lib/beatGrid.js';
 import useSceneRenderLifecycle from '../hooks/useSceneRenderLifecycle.js';
 import { useVideoFileSrc } from '../hooks/useVideoFileSrc.js';
@@ -628,6 +629,28 @@ export default function MusicVideo() {
       .finally(() => setVideoSettingsSaving(false));
   };
 
+  // #3231 Phase 4 — per-project frame-render pin (`imageMode`/`imageModelId`),
+  // the image-side sibling of the video renderer select above. Scene
+  // reference-frame renders send no explicit mode, so the server resolves this
+  // record pin directly (imageGen/prepareParams) — no client seeding needed.
+  // Optimistic-local + silent PATCH, rollback + toast on failure.
+  const handleFramePinChange = ({ imageMode, imageModelId }) => {
+    if (!selected) return;
+    const projectId = selected.id;
+    const previous = { imageMode: selected.imageMode ?? null, imageModelId: selected.imageModelId ?? null };
+    setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, imageMode, imageModelId } : p)));
+    updateMusicVideoProject(projectId, { imageMode, imageModelId }, { silent: true })
+      .then((project) => {
+        setProjects((prev) => prev.map((current) => (current.id === projectId
+          ? { ...current, imageMode: project.imageMode ?? null, imageModelId: project.imageModelId ?? null, updatedAt: project.updatedAt }
+          : current)));
+      })
+      .catch((err) => {
+        setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, ...previous } : p)));
+        toast.error(err?.message || 'Failed to save frame renderer');
+      });
+  };
+
   // Project-level concept/style (issue #3168) — optimistic-local + silent-PATCH on
   // commit, same as commitSceneTiming below. Sends only the changed sub-field;
   // the server merges it into the existing concept (applyProjectPatch), so a
@@ -974,6 +997,13 @@ export default function MusicVideo() {
                       className="flex items-center gap-1 bg-port-bg border border-port-border rounded px-2 py-1.5 text-sm min-h-[40px] sm:min-h-0 disabled:opacity-50">
                       <Wand2 size={15} /> {arranging ? 'Arranging…' : 'Auto-arrange'}
                     </button>
+                    <RecordRenderPinRow
+                      idPrefix="mv-frame-pin"
+                      label="Frames"
+                      imageMode={selected.imageMode ?? null}
+                      imageModelId={selected.imageModelId ?? null}
+                      onChange={handleFramePinChange}
+                    />
                     <label htmlFor="mv-video-backend" className="sr-only">Scene video renderer</label>
                     <select
                       id="mv-video-backend"

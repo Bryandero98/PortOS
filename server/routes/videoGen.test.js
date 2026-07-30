@@ -307,6 +307,60 @@ describe('videoGen routes', () => {
     });
   });
 
+  describe('POST / — video pin ladder (#3231 Phase 4)', () => {
+    const grokReady = { grok: { enabled: true, grokPath: '/opt/grok' } };
+
+    it('routes an unpinned-request render to grok via settings.videoGen.mode', async () => {
+      const { getSettings } = await import('../services/settings.js');
+      getSettings.mockResolvedValueOnce({ imageGen: grokReady, videoGen: { mode: 'grok' } });
+      const r = await request(app).post('/api/video-gen/').send({ prompt: 'a fox' });
+      expect(r.status).toBe(200);
+      expect(r.body.mode).toBe('grok');
+      expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'video',
+        params: expect.objectContaining({ mode: 'grok', videoMode: 'text', grokPath: '/opt/grok' }),
+      }));
+    });
+
+    it('an explicit backend outranks the install pin', async () => {
+      const { getSettings } = await import('../services/settings.js');
+      getSettings.mockResolvedValueOnce({
+        imageGen: { ...grokReady, local: { pythonPath: '/usr/bin/python3' } },
+        videoGen: { mode: 'grok' },
+      });
+      const r = await request(app).post('/api/video-gen/').send({ prompt: 'a fox', backend: 'local' });
+      expect(r.status).toBe(200);
+      const [call] = mediaJobQueue.enqueueJob.mock.calls;
+      expect(call[0].params.mode).not.toBe('grok');
+    });
+
+    it('a grok pin degrades to local when the request carries local-only machinery', async () => {
+      const { getSettings } = await import('../services/settings.js');
+      getSettings.mockResolvedValueOnce({
+        imageGen: { ...grokReady, local: { pythonPath: '/usr/bin/python3' } },
+        videoGen: { mode: 'grok' },
+      });
+      // 'fflf' is a local-runtime semantic — the pin must not hijack it to grok
+      // (which would silently drop the keyframe machinery).
+      const r = await request(app).post('/api/video-gen/').send({ prompt: 'a fox', mode: 'fflf' });
+      expect(r.status).toBe(200);
+      const [call] = mediaJobQueue.enqueueJob.mock.calls;
+      expect(call[0].params.mode).not.toBe('grok');
+    });
+
+    it('a disabled grok install pin degrades to local instead of erroring', async () => {
+      const { getSettings } = await import('../services/settings.js');
+      getSettings.mockResolvedValueOnce({
+        imageGen: { grok: { enabled: false }, local: { pythonPath: '/usr/bin/python3' } },
+        videoGen: { mode: 'grok' },
+      });
+      const r = await request(app).post('/api/video-gen/').send({ prompt: 'a fox' });
+      expect(r.status).toBe(200);
+      const [call] = mediaJobQueue.enqueueJob.mock.calls;
+      expect(call[0].params.mode).not.toBe('grok');
+    });
+  });
+
   describe('POST /', () => {
     it('rejects missing prompt', async () => {
       const r = await request(app).post('/api/video-gen/').send({ width: 512 });
