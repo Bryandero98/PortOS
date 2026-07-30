@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useState } from 'react';
 import useDrumPlayer from '../../hooks/useDrumPlayer.js';
 import useWakeLock from '../../hooks/useWakeLock.js';
 import { chartHasMusic, parseDrumChart } from '../../lib/drumNotation.js';
@@ -21,11 +21,17 @@ export default function DrumPreview({
   settingsMirror,
 }) {
   const [snapshot, setSnapshot] = useState(text);
-  const [playAfterReload, setPlayAfterReload] = useState(false);
   const player = useDrumPlayer(snapshot, { songId });
   const chartChanged = text !== snapshot;
   const liveHasMusic = useMemo(() => chartHasMusic(parseDrumChart(text)), [text]);
   useWakeLock(player.playing);
+
+  // Keep the idle player current before the browser can paint another
+  // interaction target. Play can then start directly from its trusted click
+  // (required by Safari/iOS) while edits made during playback stay frozen.
+  useLayoutEffect(() => {
+    if (!player.playing && snapshot !== text) setSnapshot(text);
+  }, [player.playing, snapshot, text]);
 
   const setBpm = useCallback((next) => {
     player.setBpm(next);
@@ -53,25 +59,8 @@ export default function DrumPreview({
   }, [player.setClickEnabled, settingsMirror]);
 
   const toggle = useCallback(() => {
-    if (player.playing) {
-      player.toggle();
-      return;
-    }
-    if (text !== snapshot) {
-      setSnapshot(text);
-      setPlayAfterReload(true);
-      return;
-    }
     player.toggle();
-  }, [player.playing, player.toggle, snapshot, text]);
-
-  // A snapshot update rebuilds the idle player. Start only after that render so
-  // toggle() cannot launch the stale chart or run before its tempo seed lands.
-  useEffect(() => {
-    if (!playAfterReload || snapshot !== text || !player.chartSettingsReady) return;
-    setPlayAfterReload(false);
-    player.toggle();
-  }, [playAfterReload, player.chartSettingsReady, player.toggle, snapshot, text]);
+  }, [player.toggle]);
 
   const displayedText = player.playing ? snapshot : text;
 

@@ -55,10 +55,6 @@ export default function useDrumPlayer(text, { songId } = {}) {
 
   const storageKey = songId ? `songbook:drumBpm:${songId}` : null;
   const [bpm, setBpmState] = useState(writtenTempo);
-  // A chart change seeds tempo in an effect. Consumers that need to start the
-  // replacement player automatically must wait for this marker, otherwise they
-  // can launch it with the previous chart's BPM before the seed render lands.
-  const [settingsChart, setSettingsChart] = useState(chart);
   const [countInBars, setCountInBarsState] = useState(1);
   const [loopEnabled, setLoopEnabledState] = useState(false);
   const [loopFrom, setLoopFromState] = useState(1);
@@ -87,8 +83,7 @@ export default function useDrumPlayer(text, { songId } = {}) {
   useEffect(() => {
     const stored = storageKey ? clampBpm(safeReadStorage(storageKey)) : null;
     setBpmState(stored ?? writtenTempo);
-    setSettingsChart(chart);
-  }, [chart, storageKey, writtenTempo]);
+  }, [storageKey, writtenTempo]);
 
   // A chart change invalidates the loop range (the bar count differs).
   useEffect(() => {
@@ -222,7 +217,6 @@ export default function useDrumPlayer(text, { songId } = {}) {
 
   return {
     chart,
-    chartSettingsReady: settingsChart === chart,
     barCount,
     hasMusic,
     writtenTempo,

@@ -1,12 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 
 const mockPlayer = vi.hoisted(() => ({
   playing: false,
   toggle: vi.fn(),
   stop: vi.fn(),
   hasMusic: true,
-  chartSettingsReady: true,
   bpm: 96,
   setBpm: vi.fn(),
   setBpmPercent: vi.fn(),
@@ -50,7 +49,6 @@ const CHART_B = 'tempo: 96\nHH: xxxx\nK: o-o-';
 describe('DrumPreview', () => {
   beforeEach(() => {
     mockPlayer.playing = false;
-    mockPlayer.chartSettingsReady = true;
     mockPlayer.toggle.mockReset();
     mockPlayer.stop.mockReset();
     useDrumPlayer.mockClear();
@@ -76,16 +74,12 @@ describe('DrumPreview', () => {
     expect(useWakeLock).toHaveBeenLastCalledWith(true);
   });
 
-  it('waits for the latest snapshot settings before starting after a change', async () => {
+  it('updates the idle snapshot before starting directly from the Play click', () => {
     const { rerender } = render(<DrumPreview text={CHART_A} />);
-    mockPlayer.chartSettingsReady = false;
     rerender(<DrumPreview text={CHART_B} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Play preview' }));
 
-    await waitFor(() => expect(useDrumPlayer.mock.calls.at(-1)[0]).toBe(CHART_B));
-    expect(mockPlayer.toggle).not.toHaveBeenCalled();
-    mockPlayer.chartSettingsReady = true;
-    rerender(<DrumPreview text={CHART_B} />);
+    expect(useDrumPlayer.mock.calls.at(-1)[0]).toBe(CHART_B);
+    fireEvent.click(screen.getByRole('button', { name: 'Play preview' }));
     expect(mockPlayer.toggle).toHaveBeenCalledTimes(1);
     expect(screen.queryByText('Chart changed — press Play to reload.')).toBeNull();
   });

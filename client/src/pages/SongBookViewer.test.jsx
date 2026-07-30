@@ -318,13 +318,13 @@ K:  o - - - - - o -`;
       expect(screen.getByLabelText('Play along')).toBeTruthy();
     });
 
-    it('keeps the edit preview on its sounding snapshot while the draft changes', async () => {
+    it('keeps the idle edit preview synchronized before Play', async () => {
       api.getSong.mockResolvedValue(drumSong());
       renderPage('/songbook/abc?mode=edit');
       const editor = await screen.findByLabelText('Content');
       fireEvent.change(editor, { target: { value: `${DRUM_CHART}\nC: x - x -` } });
 
-      expect(screen.getByText('Chart changed — press Play to reload.')).toBeTruthy();
+      expect(screen.queryByText('Chart changed — press Play to reload.')).toBeNull();
       expect(screen.getByLabelText('Play along')).toBeTruthy();
     });
 
