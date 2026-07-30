@@ -400,6 +400,17 @@ describe('pasteToSession', () => {
     expect(pty.write.mock.calls.filter(([data]) => data === '\r')).toHaveLength(1);
   });
 
+  it('cancels pending Enters when newer input arrives', () => {
+    shell.pasteToSession(id, 'hi');
+    expect(pty.write.mock.calls.filter(([data]) => data === '\r')).toHaveLength(1);
+
+    shell.writeToSession(id, 'new input');
+    vi.advanceTimersByTime(1400);
+
+    expect(pty.write.mock.calls.filter(([data]) => data === '\r')).toHaveLength(1);
+    expect(pty.write).toHaveBeenCalledWith('new input');
+  });
+
   it('returns false and writes nothing for a missing session', () => {
     expect(shell.pasteToSession('missing', 'hi')).toBe(false);
     expect(pty.write).not.toHaveBeenCalled();

@@ -541,6 +541,7 @@ export function writeToSession(sessionId, data) {
   const session = shellSessions.get(sessionId);
   if (session) {
     session.lastInputAt = Date.now();
+    session.inputRevision = (session.inputRevision || 0) + 1;
     session.pty.write(data);
     return true;
   }
@@ -555,8 +556,8 @@ export function writeToSession(sessionId, data) {
  * lands as one input event instead of N submits.
  *
  * The returned interval handle lets lifecycle-aware callers cancel pending
- * submission retries. The helper self-cancels when the session disappears or
- * after its attempt budget is spent.
+ * submission retries. The helper self-cancels when the session disappears,
+ * newer input arrives, or its attempt budget is spent.
  *
  * @param {string} sessionId
  * @param {string} text - paste payload (no trailing newline; the Enter submits it)
@@ -566,16 +567,22 @@ export function writeToSession(sessionId, data) {
  */
 export function pasteToSession(sessionId, text, { label = 'paste' } = {}) {
   if (!writeToSession(sessionId, `\x1b[200~${text}\x1b[201~`)) return false;
+  const session = shellSessions.get(sessionId);
+  let expectedInputRevision = session.inputRevision;
   const writeEnter = () => {
     try {
       writeToSession(sessionId, '\r');
+      expectedInputRevision = session.inputRevision;
     } catch (err) {
       // Timer callbacks run outside the request lifecycle, and a write to a
       // live-but-broken PTY can throw.
       console.error(`🐚 ${label} submit Enter failed for ${sessionId.slice(0, 8)}: ${err.message}`);
     }
   };
-  return scheduleSubmitEnters(writeEnter, () => !shellSessions.has(sessionId));
+  return scheduleSubmitEnters(
+    writeEnter,
+    () => !shellSessions.has(sessionId) || session.inputRevision !== expectedInputRevision,
+  );
 }
 
 /**
