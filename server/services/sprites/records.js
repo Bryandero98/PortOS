@@ -58,7 +58,7 @@ export async function createRecord(input, id) {
  * `props` families stay import-only. Only character records unlock the
  * reference → walk → publish workflows (gated client-side on kind).
  */
-export async function createCharacter({ id, name, spec = null, kind = 'character' }) {
+export async function createCharacter({ id, name, spec = null, kind = 'character', imageMode = null, imageModelId = null }) {
   const recordId = id || deriveSpriteId(name);
   if (!isValidSpriteId(recordId)) {
     throw new ServerError(`Cannot derive a valid sprite id from "${name}" — pass an explicit id`, { status: 400, code: 'INVALID_SPRITE_ID' });
@@ -73,7 +73,10 @@ export async function createCharacter({ id, name, spec = null, kind = 'character
   // buildSpriteRecord validates kind against SPRITE_RECORD_KINDS and falls
   // back to 'character' for anything unexpected — the Zod schema enum-gates it
   // before this point, so an out-of-set value can't reach here from the route.
-  return createRecord({ kind, name, spec }, recordId);
+  // The render pin (#3231 Phase 3) is seedable at create time so a fork
+  // persists its chosen backend/model in the same write that creates the
+  // record — buildSpriteRecord normalizes the pair.
+  return createRecord({ kind, name, spec, imageMode, imageModelId }, recordId);
 }
 
 export async function updateRecord(id, patch) {

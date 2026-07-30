@@ -18,7 +18,7 @@ import {
 } from '../services/sprites/animationTrackStore.js';
 import { QUEUEABLE_IMAGE_MODES } from '../services/imageGen/modes.js';
 import { VIDEO_GEN_MODES } from '../services/videoGen/modes.js';
-import { RENDER_TARGETS, RENDER_TARGET_BACKEND_AUTO } from './renderTargets.js';
+import { RENDER_TARGETS, RENDER_TARGET_BACKEND_AUTO, RECORD_RENDER_MODEL_MAX } from './renderTargets.js';
 import { GROK_VIDEO_DURATIONS } from './grokVideoClip.js';
 import { PR_COMPLETION_VALUES } from './prDisposition.js';
 import { EFFORT_LEVELS } from './providerModels.js';
@@ -979,8 +979,9 @@ export const imageGenGrokSettingsSchema = z.object({
 
 // Shared "valid model id" base — one definition of the shape a cloud-CLI
 // model id may take (bounds + charset), derived per consumer below so a
-// future tweak (e.g. allowing `@`) lands everywhere at once.
-const cloudModelIdString = (message) => z.string().trim().max(200)
+// future tweak (e.g. allowing `@`) lands everywhere at once. Exported for
+// route schemas that carry a one-off model override (universe renderSchema).
+export const cloudModelIdString = (message) => z.string().trim().max(200)
   .regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/, message);
 
 const agyImageModelSchema = z.preprocess(
@@ -1015,6 +1016,23 @@ const renderTargetEntrySchema = z.object({
 export const renderDefaultsSettingsSchema = z.object(
   Object.fromEntries(RENDER_TARGETS.map((t) => [t, renderTargetEntrySchema.optional()])),
 );
+
+// Per-RECORD render pin (#3231 Phase 3) — the flat `imageMode`/`imageModelId`
+// field pair persisted on universe / series / sprite records, following the
+// creative-commission shape. Spread into a record's create + patch schemas.
+// Absent preserves; `'auto'`/`''`/null clears (the sanitizers collapse all
+// three to "no pin"). The model id keeps the shared cloud-model charset so a
+// pinned id can safely reach a CLI argv.
+export const recordRenderPinFields = {
+  imageMode: z.preprocess(
+    (v) => (v === '' ? null : v),
+    z.enum([RENDER_TARGET_BACKEND_AUTO, ...QUEUEABLE_IMAGE_MODES]).nullable().optional(),
+  ),
+  imageModelId: z.preprocess(
+    (v) => (v === '' ? null : v),
+    cloudModelIdString('model must be a valid model id').max(RECORD_RENDER_MODEL_MAX).nullable().optional(),
+  ),
+};
 
 export const imageGenAgySettingsSchema = z.object({
   enabled: z.boolean().optional(),
@@ -1135,6 +1153,9 @@ export const spriteRecordUpdateSchema = z.object({
   // whatever hex they carried (the importer writes via upsert, not this
   // schema); null clears back to auto-select-on-lock.
   chromaKey: z.enum(CHROMA_KEY_HEXES).nullable().optional(),
+  // Per-record render pin (#3231 Phase 3) — this sprite's default image
+  // backend + cloud model for reference renders.
+  ...recordRenderPinFields,
 });
 
 // Phase 4 (issue #2898): publish binding — the shape check only; app
@@ -1251,6 +1272,8 @@ export const spriteCreateSchema = z.object({
   // in practice. Absent → the service defaults to 'character'.
   kind: z.enum(SPRITE_RECORD_KINDS).optional(),
   spec: z.record(z.string(), z.unknown()).nullable().optional(),
+  // Per-record render pin (#3231 Phase 3) — seedable at create time (fork).
+  ...recordRenderPinFields,
 });
 
 // 'turnaround' is the identity root of the turnaround-first workflow (#2979) —

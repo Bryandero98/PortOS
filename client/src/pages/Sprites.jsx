@@ -518,6 +518,19 @@ export default function Sprites() {
   }, []);
   const hasImageBackend = Array.isArray(imageBackends) && imageBackends.length > 0;
 
+  // Seed the page-owned backend picker from an opened record's persisted
+  // render pin (#3231 Phase 3) — but only when that backend is actually
+  // available, so a pinned-but-since-disabled backend degrades to the server
+  // ladder's graceful fallback instead of being sent as an explicit (and
+  // erroring) body.mode. Unpinned records keep the current page mode.
+  const detailPinMode = detail?.record?.imageMode || '';
+  const detailRecordId = detail?.record?.id || '';
+  useEffect(() => {
+    if (detailPinMode && (imageBackends || []).some((b) => b.id === detailPinMode)) {
+      setImageMode(detailPinMode);
+    }
+  }, [detailPinMode, detailRecordId, imageBackends]);
+
   // Run ids the walk selection has approved. An approved run's strip/frames
   // never move on disk (approval is recorded in the selection, not the path),
   // so the pure path classifier still reads them as `candidate` — the asset

@@ -21,6 +21,7 @@ import { sanitizeProseExportSettings } from '../../lib/proseExportSettings.js';
 import { sanitizeSeverityWeights, sanitizeBlockingSeverities } from '../../lib/editorial/severityConfig.js';
 import { sanitizeOrigin } from '../../lib/sharingOrigin.js';
 import { sanitizeSoftDeleteFields } from '../../lib/syncWire.js';
+import { persistedRenderPinFields } from '../../lib/renderTargets.js';
 import {
   maybeJournalBeforeOverwrite, setSyncBaseHash, contentHashForRecord, flushBaseHashes,
   deleteSyncBaseHash,
@@ -360,6 +361,14 @@ const sanitizeSeries = (raw) => {
       : null,
     issueCountTarget,
     llm,
+    // Per-record render pin (#3231 Phase 3) — this series' default image
+    // backend + cloud model for pipeline visual renders (storyboards, comic
+    // pages, covers). Persisted only when set so existing series keep their
+    // on-disk shape. WIRE-LOCAL (an install-capability choice — the peer may
+    // not have the pinned backend configured): sanitizeRecordForWire strips
+    // the pair and ADDITIVE_SERIES_FIELDS preserves the local values on
+    // merge — no pipelineSeries schema-version bump needed.
+    ...persistedRenderPinFields(raw),
     // Share-bucket provenance — present on imported records, absent on locally-authored ones.
     origin: sanitizeOrigin(raw.origin),
     createdAt,
@@ -437,6 +446,10 @@ export async function createSeries(input = {}) {
     targetFormat: input.targetFormat || 'comic+tv',
     issueCountTarget: input.issueCountTarget || 0,
     llm: input.llm || null,
+    // Per-record render pin (#3231 Phase 3) — sanitizeSeries persists the
+    // pair only when actually set.
+    imageMode: input.imageMode || null,
+    imageModelId: input.imageModelId || null,
     createdAt: now,
     updatedAt: now,
     ephemeral: input.ephemeral === true,
@@ -625,6 +638,10 @@ export async function updateSeries(id, patch = {}) {
       ...('authorId' in patch ? { authorId: patch.authorId } : {}),
       ...('stylePromptOverride' in patch ? { stylePromptOverride: patch.stylePromptOverride } : {}),
       ...('stylePromptOverrideMode' in patch ? { stylePromptOverrideMode: patch.stylePromptOverrideMode } : {}),
+      // Per-record render pin (#3231 Phase 3). Key-present with 'auto'/null
+      // clears (sanitizeSeries drops the field); key-absent preserves.
+      ...('imageMode' in patch ? { imageMode: patch.imageMode } : {}),
+      ...('imageModelId' in patch ? { imageModelId: patch.imageModelId } : {}),
       ...('targetFormat' in patch ? { targetFormat: patch.targetFormat } : {}),
       ...('primaryManuscriptType' in patch ? { primaryManuscriptType: patch.primaryManuscriptType } : {}),
       ...('issueCountTarget' in patch ? { issueCountTarget: patch.issueCountTarget } : {}),
@@ -856,7 +873,7 @@ async function cascadeDeleteSideEffects(id) {
 // consult the RAW remote payload to tell the two apart: key absent → preserve
 // local; key present (even null/empty) → honor the intentional clear. Mirrors
 // the `universeId` hierarchy guard. See issue #1361.
-const ADDITIVE_SERIES_FIELDS = ['arc', 'seasons', 'styleGuide', 'styleNotes', 'characterArcs', 'factReference', 'factCritical', 'editorialCheckConfig', 'severityWeights', 'blockingSeverities', 'exportSettings'];
+const ADDITIVE_SERIES_FIELDS = ['arc', 'seasons', 'styleGuide', 'styleNotes', 'characterArcs', 'factReference', 'factCritical', 'editorialCheckConfig', 'severityWeights', 'blockingSeverities', 'exportSettings', 'imageMode', 'imageModelId'];
 // Additive sub-fields nested inside `arc`. A peer that predates these (readerMap
 // shipped at schema v2, tickingClock at #1289/v3, foreshadowing at #2172/v10)
 // still sends an `arc` object — just without these keys — so the erasure for

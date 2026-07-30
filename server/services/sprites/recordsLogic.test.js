@@ -79,6 +79,25 @@ describe('applySpriteRecordPatch', () => {
     expect(applySpriteRecordPatch(base, { kind: 'place' }).kind).toBe('place');
     expect(applySpriteRecordPatch(base, { kind: 'bogus' }).kind).toBe('character');
   });
+
+  it('render pin (#3231 Phase 3): seeds at build, clears on auto/null, caps the model id', () => {
+    const pinned = buildSpriteRecord(
+      { name: 'Hero', imageMode: 'agy', imageModelId: 'gemini-3.6-flash-low' },
+      { id: 'hero', now: NOW },
+    );
+    expect(pinned.imageMode).toBe('agy');
+    expect(pinned.imageModelId).toBe('gemini-3.6-flash-low');
+    // The 'auto' UI sentinel and null both clear; key-absent preserves.
+    expect(applySpriteRecordPatch(pinned, { imageMode: 'auto' }).imageMode).toBeNull();
+    expect(applySpriteRecordPatch(pinned, { imageMode: null }).imageMode).toBeNull();
+    expect(applySpriteRecordPatch(pinned, { notes: 'x' }).imageMode).toBe('agy');
+    expect(applySpriteRecordPatch(pinned, { imageModelId: null }).imageModelId).toBeNull();
+    // The model id persists bounded (recordRenderPin's shared cap).
+    const long = applySpriteRecordPatch(pinned, { imageModelId: 'm'.repeat(200) });
+    expect(long.imageModelId).toHaveLength(64);
+    // An unpinned build stores explicit nulls (no pin).
+    expect(buildSpriteRecord({ name: 'Plain' }, { id: 'plain', now: NOW }).imageMode).toBeNull();
+  });
 });
 
 describe('mergeImportedRecord', () => {

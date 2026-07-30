@@ -18,6 +18,7 @@ import {
 } from '../../lib/storyBible.js';
 import { sanitizeOrigin } from '../../lib/sharingOrigin.js';
 import { sanitizeSoftDeleteFields } from '../../lib/syncWire.js';
+import { persistedRenderPinFields } from '../../lib/renderTargets.js';
 
 // RECORD-shape schema version, stamped INSIDE each universe record. Distinct
 // from the type-level (storage layout) schemaVersion carried by
@@ -767,6 +768,14 @@ export const sanitizeTemplate = (raw) => {
     // conflict-journal content hash (which reuses that projection). Per-peer +
     // one-click to regenerate, so no schema-version gate is needed.
     styleImageRefs: sanitizeEntryImageRefs(raw.styleImageRefs),
+    // Per-record render pin (#3231 Phase 3) — this universe's default image
+    // backend + cloud model for bible/character-sheet renders. Persisted only
+    // when set ('auto'/blank/absent collapse to absent) so every existing
+    // universe keeps its on-disk shape. WIRE-LOCAL like styleImageRefs: a
+    // pinned backend is an install-capability choice (a peer may not have
+    // codex/agy configured), so sanitizeRecordForWire strips the pair and the
+    // sync merge restores the local values — no schema-version gate needed.
+    ...persistedRenderPinFields(raw),
     locked,
     characters,
     places,

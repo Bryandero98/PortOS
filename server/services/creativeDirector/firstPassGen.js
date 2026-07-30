@@ -71,11 +71,17 @@ export function buildPortraitPrompt(ingredient) {
  * (#1867) uses the exact same queue-backed-mode gate as the portrait path
  * rather than re-deriving it.
  */
-async function resolveQueueModeParams() {
+async function resolveQueueModeParams(project = null) {
   const settings = await getSettings();
-  // Render-target ladder (#3231): the series-first-pass pin in
-  // settings.renderDefaults → the install default → external (not ready).
+  // Render-target ladder (#3231): the CD project's persisted renderBackend
+  // image pin (#3135 — the per-record override for this surface, Phase 3) →
+  // the series-first-pass pin in settings.renderDefaults → the install
+  // default → external (not ready). The record pin is usability-gated by the
+  // resolver, matching enforceRenderBackendPin's live-settings contract.
+  const projectPin = project?.renderBackend?.image || null;
   const { mode, cloud } = resolveRenderTargetConfig(settings, RENDER_TARGET.SERIES_FIRST_PASS, {
+    recordMode: projectPin?.mode || null,
+    recordModel: projectPin?.modelId || null,
     fallbackMode: IMAGE_GEN_MODE.EXTERNAL,
   });
   if (cloud) {
@@ -126,11 +132,11 @@ async function ingredientHasPortrait(ingredientId) {
  * recorded in `skipped`, never thrown — this runs as a side-effect of auto-cast,
  * so it must not fail the seeding it follows.
  */
-export async function enqueueFirstPassPortraits(members = []) {
+export async function enqueueFirstPassPortraits(members = [], project = null) {
   const list = Array.isArray(members) ? members.filter((m) => m && m.ingredientId) : [];
   if (list.length === 0) return { mode: null, enqueued: [], skipped: [] };
 
-  const resolved = await resolveQueueModeParams();
+  const resolved = await resolveQueueModeParams(project);
   if (!resolved.ready) {
     return { mode: resolved.mode, enqueued: [], skipped: [], reason: resolved.reason };
   }
@@ -217,7 +223,7 @@ export async function enqueueFirstPassSceneFrames(project) {
   const scenes = Array.isArray(project?.treatment?.scenes) ? project.treatment.scenes : [];
   if (scenes.length === 0) return { mode: null, enqueued: [], skipped: [] };
 
-  const resolved = await resolveQueueModeParams();
+  const resolved = await resolveQueueModeParams(project);
   if (!resolved.ready) {
     return { mode: resolved.mode, enqueued: [], skipped: [], reason: resolved.reason };
   }

@@ -187,6 +187,10 @@ export async function createUniverse(input = {}) {
       influences: input.influences || {},
       styleReferences: input.styleReferences || [],
       styleImageRefs: input.styleImageRefs || [],
+      // Per-record render pin (#3231 Phase 3) — sanitizeTemplate persists the
+      // pair only when actually set.
+      imageMode: input.imageMode || null,
+      imageModelId: input.imageModelId || null,
       locked: input.locked || {},
       // Canon registries — let callers seed a universe at creation time
       // (writers-room promote, share-bucket import). sanitizeTemplate runs
@@ -418,6 +422,9 @@ export async function updateUniverse(id, patchOrMutator = {}, options = {}) {
       'styleReferences',
       // Base style-probe render refs — patched wholesale (sanitizer re-caps).
       'styleImageRefs',
+      // Per-record render pin (#3231 Phase 3). Key-present with 'auto'/null
+      // clears (sanitizeTemplate drops the field); key-absent preserves.
+      'imageMode', 'imageModelId',
       // Canon entity arrays — patched wholesale (the sanitizer reruns
       // sanitizeBibleList so per-entry shape is enforced on every save).
       'characters', 'places', 'objects',

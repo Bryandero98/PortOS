@@ -17,7 +17,7 @@
  */
 
 import { ServerError } from '../../lib/errorHandler.js';
-import { RENDER_TARGET_BACKEND_AUTO } from '../../lib/renderTargets.js';
+import { normalizeRenderPinValue } from '../../lib/renderTargets.js';
 import {
   AGY_IMAGEGEN_DEFAULT_MODEL,
   CLOUD_IMAGE_GEN_MODES,
@@ -160,15 +160,11 @@ export function pickUsableMode(settings, candidates = []) {
  */
 export function renderTargetDefaults(settings, target) {
   const d = settings?.renderDefaults?.[target] || {};
-  const norm = (v) => {
-    const s = typeof v === 'string' ? v.trim() : '';
-    return s && s !== RENDER_TARGET_BACKEND_AUTO ? s : null;
-  };
   return {
-    imageMode: norm(d.imageMode),
-    imageModel: norm(d.imageModel),
-    videoMode: norm(d.videoMode),
-    videoModel: norm(d.videoModel),
+    imageMode: normalizeRenderPinValue(d.imageMode),
+    imageModel: normalizeRenderPinValue(d.imageModel),
+    videoMode: normalizeRenderPinValue(d.videoMode),
+    videoModel: normalizeRenderPinValue(d.videoModel),
   };
 }
 
@@ -184,17 +180,28 @@ export function renderTargetDefaults(settings, target) {
  * is exactly what all seven pre-#3231 call sites did.
  *
  * Options:
- *  - `mode`        — the surface's per-request/per-record mode override
- *                    (e.g. `body.mode`). Wins over the target pin.
- *  - `model`       — per-request cloud model override. Wins over the target's
- *                    `imageModel` pin.
+ *  - `mode`        — the surface's per-request mode override (e.g.
+ *                    `body.mode`). Wins over every pin.
+ *  - `model`       — per-request cloud model override. Wins over every pin.
+ *  - `recordMode`  — the owning record's persisted backend pin (#3231 Phase 3
+ *                    — universe/series/sprite `imageMode`, normalized via
+ *                    `recordRenderPin`). Sits between the per-request override
+ *                    and the target's `renderDefaults` pin, and is
+ *                    usability-gated like the target pin (a since-disabled
+ *                    backend degrades instead of bricking the record's
+ *                    renders — the enforceRenderBackendPin contract).
+ *  - `recordModel` — the owning record's persisted model pin. Rides only when
+ *                    the resolved mode is the record's pinned backend (same
+ *                    leak guard as the target's model pin).
  *  - `fallbackMode`— the surface's historical final fallback when nothing
  *                    else resolves (EXTERNAL for batch-reject surfaces, LOCAL
  *                    for local-first ones). Surfaces with their own usability
  *                    ladder (resolveQueueImageMode / pickUsableMode) resolve
- *                    mode first — seeding the ladder with
+ *                    mode first — seeding the ladder with the record pin then
  *                    `renderTargetDefaults(...).imageMode` — and pass the
- *                    result as `mode` here for model threading.
+ *                    result as `mode` here for model threading (keeping
+ *                    `recordMode`/`recordModel` so the leak guard still knows
+ *                    which backend the record pinned).
  *
  * Returns `{ mode, cloud }` — `cloud` is the resolveCloudProviderConfig
  * bundle (null for non-cloud modes), with the layered model threaded through.
@@ -202,25 +209,29 @@ export function renderTargetDefaults(settings, target) {
 export function resolveRenderTargetConfig(settings, target, {
   mode = null,
   model = null,
+  recordMode = null,
+  recordModel = null,
   fallbackMode = null,
 } = {}) {
   const defaults = renderTargetDefaults(settings, target);
-  // The target pin is usability-gated: a pinned backend whose enable toggle is
-  // off (or that isn't queueable) falls through to the next rung instead of
-  // bricking every render on this surface with a disabled-error. An explicit
+  // Pins are usability-gated: a pinned backend whose enable toggle is off (or
+  // that isn't queueable) falls through to the next rung instead of bricking
+  // every render on this surface with a disabled-error. An explicit
   // per-request `mode` deliberately is NOT gated — it keeps each surface's
   // existing explicit-request error semantics.
+  const recordPinnedMode = recordMode && isModeUsable(settings, recordMode) ? recordMode : null;
   const pinnedMode = defaults.imageMode && isModeUsable(settings, defaults.imageMode)
     ? defaults.imageMode
     : null;
-  const finalMode = mode || pinnedMode || settings?.imageGen?.mode || fallbackMode;
-  // The model pin rides WITH its backend pin: apply defaults.imageModel only
-  // when the resolved mode is still the pinned backend. When the mode fell
+  const finalMode = mode || recordPinnedMode || pinnedMode || settings?.imageGen?.mode || fallbackMode;
+  // A model pin rides WITH its backend pin: apply recordModel/defaults.imageModel
+  // only when the resolved mode is still that pin's backend. When the mode fell
   // back (pin disabled) or an explicit request chose another backend, the
   // pinned model must not leak — codex would happily accept `--model` with a
   // gemini id (supportsModelOverride gates by PROVIDER, not by id namespace).
   const requestedModel = (typeof model === 'string' && model.trim()) ? model.trim() : null;
   const finalModel = requestedModel
+    || (recordMode && finalMode === recordMode ? recordModel : null)
     || (defaults.imageMode && finalMode === defaults.imageMode ? defaults.imageModel : null);
   return {
     mode: finalMode,

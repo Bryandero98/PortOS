@@ -34,3 +34,47 @@ export const RENDER_TARGETS = Object.freeze(Object.values(RENDER_TARGET));
 // means the same thing; the explicit value exists so a UI select can round-trip
 // the choice).
 export const RENDER_TARGET_BACKEND_AUTO = 'auto';
+
+// Max length for a persisted per-record model-id pin — matches the
+// creative-commission `COMMISSION_RENDER_MODEL_MAX` convention.
+export const RECORD_RENDER_MODEL_MAX = 64;
+
+// The ONE normalization rule for render-pin values, shared by the per-record
+// pin below and the settings-registry reader (renderTargetDefaults in
+// imageGen/cloudProviderConfig.js): trim; the `'auto'` sentinel and blank
+// strings collapse to null ("no pin — fall through").
+export const normalizeRenderPinValue = (v) => {
+  const s = typeof v === 'string' ? v.trim() : '';
+  return s && s !== RENDER_TARGET_BACKEND_AUTO ? s : null;
+};
+
+/**
+ * Normalize a record's persisted render pin (#3231 Phase 3 — the flat
+ * `imageMode` / `imageModelId` field pair on universe / series / sprite
+ * records, following the creative-commission shape). The `'auto'` sentinel,
+ * blank strings, and absent fields all collapse to null ("no pin"), so
+ * callers can hand the result straight to `resolveRenderTargetConfig`'s
+ * `recordMode` / `recordModel` options without re-checking sentinels. The
+ * model id is capped here so every record kind persists the same bounded
+ * shape.
+ */
+export function recordRenderPin(record) {
+  const modelId = normalizeRenderPinValue(record?.imageModelId);
+  return {
+    mode: normalizeRenderPinValue(record?.imageMode),
+    modelId: modelId ? modelId.slice(0, RECORD_RENDER_MODEL_MAX) : null,
+  };
+}
+
+/**
+ * The persist-only-when-set spread for a record sanitizer (#3231 Phase 3) —
+ * returns `{ imageMode?, imageModelId? }` with each key present only when a
+ * real pin exists, so existing records keep their on-disk shape byte-stable.
+ */
+export function persistedRenderPinFields(raw) {
+  const pin = recordRenderPin(raw);
+  return {
+    ...(pin.mode ? { imageMode: pin.mode } : {}),
+    ...(pin.modelId ? { imageModelId: pin.modelId } : {}),
+  };
+}
