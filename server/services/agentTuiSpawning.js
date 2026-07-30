@@ -383,9 +383,12 @@ export async function spawnTuiAgent({
   // paste into a startup banner, a trust menu, or a returned shell prompt.
   // agy enables bracketed paste on alt-screen entry, before its composer (and
   // before its trust gate) exists, so it needs the extra composer-footer gate.
-  const inputReady = createInputReadyTracker(
-    isAntigravityCommand(tuiConfig.command) ? { readyTextPattern: AGY_INPUT_READY_PATTERN } : {},
-  );
+  // The durable runner pty.spawns the TUI directly (no launch shell), so the
+  // tracker must not wait for a shell paste-mode OFF that will never come.
+  const inputReady = createInputReadyTracker({
+    ...(isAntigravityCommand(tuiConfig.command) ? { readyTextPattern: AGY_INPUT_READY_PATTERN } : {}),
+    directLaunch: useDurableRunner,
+  });
   let trustAccepted = false;
   // True once shell.js actually injects the `claude` command (after its
   // round-trip readiness probe). The probe runs its OWN shell command first,
@@ -1022,7 +1025,12 @@ export async function spawnTuiAgent({
     // would dump the bracketed-paste prompt into the bare shell — the wedged
     // `^[[200~ …` session. If the shell has no live child, the command is gone:
     // fail loudly with whatever it printed instead of pasting into the shell.
-    if (!(await shellHasLiveChild(pid))) {
+    //
+    // Runner mode has no launch shell — the TUI IS the PTY process — so "does
+    // this pid have a live child?" is the wrong question (claude may have zero
+    // children at paste time) and a TUI exit kills the PTY, firing onExit. Skip
+    // the probe there.
+    if (!useDurableRunner && !(await shellHasLiveChild(pid))) {
       if (finalized) return; // a real onExit may have finalized during the probe await
       await finishStartupFailure(
         'tui-exited-early',

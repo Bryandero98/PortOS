@@ -300,9 +300,19 @@ const OBSERVE_TAIL_MAX_LEN = 4000;
 // readyTextPattern: optional extra positive gate, tested against the stripped
 // rolling tail. When supplied, `ready` also requires that marker to have been
 // seen (see AGY_INPUT_READY_PATTERN).
-export function createInputReadyTracker({ readyTextPattern = null } = {}) {
+//
+// directLaunch: the TUI was pty.spawn'd DIRECTLY — there is no launch shell on
+// the PTY, so the shell's paste-mode OFF (`ESC[?2004l`) that normally proves
+// "the command is now running" never occurs; the first `ESC[?2004h` in the
+// stream comes from the TUI itself and IS the ready signal. Without this flag a
+// direct-launch session can never become ready (the durable-runner regression:
+// every runner-tui claude agent died `tui-not-ready` at the 45s deadline while
+// its input box sat live on screen).
+export function createInputReadyTracker({ readyTextPattern = null, directLaunch = false } = {}) {
   let pasteModeOn = false;   // LIVE bracketed-paste mode state from the stream
-  let sawCommandRun = false; // shell turned paste mode OFF to run the command
+  // Shell turned paste mode OFF to run the command. Pre-latched for direct
+  // launches, where the TUI owns the PTY from byte zero and no shell OFF exists.
+  let sawCommandRun = directLaunch;
   let needsTrust = false;
   let sawReadyText = false;
   let tail = '';
