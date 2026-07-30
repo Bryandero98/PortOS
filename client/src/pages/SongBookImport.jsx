@@ -22,7 +22,7 @@ import toast from '../components/ui/Toast';
 import PageHeader from '../components/PageHeader';
 import TabPills from '../components/ui/TabPills';
 import TabSheetView from '../components/songbook/TabSheetView';
-import DrumSheetView from '../components/songbook/DrumSheetView';
+import DrumPreview from '../components/songbook/DrumPreview';
 import {
   SONG_STAGES, INSTRUMENTS, DRUM_FORMAT, DRUM_INSTRUMENT,
   inputClass, labelClass, btnClass,
@@ -279,9 +279,12 @@ export default function SongBookImport() {
       {contentText && (
         <div className="mb-4">
           <div className="text-xs text-gray-400 mb-1">Preview</div>
-          <div className="bg-port-card border border-port-border rounded-lg p-3 max-h-[50vh] overflow-y-auto overflow-x-auto">
+          <div className={`bg-port-card border border-port-border rounded-lg max-h-[50vh] overflow-y-auto overflow-x-auto ${previewIsDrum ? '' : 'p-3'}`}>
             {previewIsDrum ? (
-              <DrumSheetView text={contentText} />
+              <DrumPreview
+                text={contentText}
+                sheetClassName="p-3"
+              />
             ) : (
               <TabSheetView
                 text={contentText}

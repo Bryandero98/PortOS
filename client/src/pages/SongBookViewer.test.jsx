@@ -315,6 +315,17 @@ K:  o - - - - - o -`;
       expect(await screen.findByLabelText('Title')).toBeTruthy();
       expect(screen.getByLabelText('Format').value).toBe('drum');
       expect(screen.getByLabelText(/^Drum chart —/)).toBeTruthy();
+      expect(screen.getByLabelText('Play along')).toBeTruthy();
+    });
+
+    it('keeps the edit preview on its sounding snapshot while the draft changes', async () => {
+      api.getSong.mockResolvedValue(drumSong());
+      renderPage('/songbook/abc?mode=edit');
+      const editor = await screen.findByLabelText('Content');
+      fireEvent.change(editor, { target: { value: `${DRUM_CHART}\nC: x - x -` } });
+
+      expect(screen.getByText('Chart changed — press Play to reload.')).toBeTruthy();
+      expect(screen.getByLabelText('Play along')).toBeTruthy();
     });
 
     it('keeps an unknown stored instrument/format selectable and preserves it on save', async () => {

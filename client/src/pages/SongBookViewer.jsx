@@ -43,6 +43,7 @@ import AutoSizeTextarea from '../components/ui/AutoSizeTextarea';
 import TabPills from '../components/ui/TabPills';
 import TabSheetView from '../components/songbook/TabSheetView';
 import DrumSheetView from '../components/songbook/DrumSheetView';
+import DrumPreview from '../components/songbook/DrumPreview';
 import DrumTransportBar from '../components/songbook/DrumTransportBar';
 import {
   SONG_STAGES, SONG_STAGE_COLORS, INSTRUMENTS, SONG_FORMATS, DRUM_FORMAT,
@@ -239,7 +240,8 @@ export default function SongBookViewer() {
   // a non-drum song, so it stands up no player and touches no audio.
   const drum = useDrumPlayer(isDrum ? contentText : '', { songId: id });
 
-  // The wake lock holds while EITHER hands-free surface is running.
+  // The wake lock holds while either play-mode hands-free surface is running.
+  // Edit-preview audio owns its lifecycle inside DrumPreview.
   useWakeLock(playing || drum.playing);
 
   // Leaving play mode (Edit) or unmounting must not leave the kit sounding — the
@@ -539,9 +541,14 @@ export default function SongBookViewer() {
             </div>
             <div>
               <div className="text-xs text-gray-400 mb-1">Preview</div>
-              <div className="bg-port-card border border-port-border rounded-lg p-3 overflow-x-auto">
+              <div className={`bg-port-card border border-port-border rounded-lg overflow-hidden ${draftIsDrum ? '' : 'p-3 overflow-x-auto'}`}>
                 {draftIsDrum ? (
-                  <DrumSheetView text={draft.text} fontSizeRem={fontSize} />
+                  <DrumPreview
+                    text={draft.text}
+                    songId={id}
+                    fontSizeRem={fontSize}
+                    sheetClassName="p-3"
+                  />
                 ) : (
                   <TabSheetView
                     text={draft.text}

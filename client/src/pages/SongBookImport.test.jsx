@@ -119,6 +119,7 @@ describe('SongBookImport', () => {
       expect(await screen.findByText('drum')).toBeTruthy();
       expect(screen.getByLabelText(/^Drum chart —/)).toBeTruthy();
       expect(screen.getAllByText('Hi-Hat').length).toBeGreaterThan(0);
+      expect(screen.getByLabelText('Play along')).toBeTruthy();
     });
 
     it('saves the drum format with the chart text', async () => {
