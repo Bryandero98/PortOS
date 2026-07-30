@@ -225,6 +225,24 @@ describe('DrumSheetView', () => {
     expect(readout()).toHaveTextContent('count “1”');
   });
 
+  it('does not yank the strip back to an old selection when playback stops', () => {
+    // The reveal effect depends on `playing` (the rAF follow loop owns scrollLeft
+    // while it runs), so it re-fires when playback stops. It must no-op there: the
+    // strip belongs to wherever the playhead stopped, not to a note selected
+    // before playback started.
+    const chart = 'subdivision: 1\n\nHH: x-x-\n\nHH: x-x-\n\nHH: x-x-';
+    const { container, rerender } = render(<DrumSheetView text={chart} />);
+    fireEvent.keyDown(lane(container), { key: 'ArrowRight' });   // select bar 1's first hit
+    const scroller = container.querySelector('.overflow-x-auto');
+    rerender(<DrumSheetView text={chart} playing />);
+    scroller.scrollLeft = 400;                                    // where the playhead left it
+    // A boundary press while playing selects the same hit, so React skips the
+    // state write — the effect must not treat the later `playing` flip as new.
+    fireEvent.keyDown(lane(container), { key: 'ArrowLeft' });
+    rerender(<DrumSheetView text={chart} playing={false} />);
+    expect(scroller.scrollLeft).toBe(400);
+  });
+
   it('dismisses the readout with Escape or its close button', () => {
     const { container } = render(<DrumSheetView text={'subdivision: 1\n\nHH: x---'} />);
     tap(container, 0, 0);

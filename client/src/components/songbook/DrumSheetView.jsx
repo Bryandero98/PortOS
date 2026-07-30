@@ -275,9 +275,8 @@ function DrumSheetView({
   const laneRef = useRef(null);
   const lineRef = useRef(null);
   const columnRef = useRef(null);
-  // Set by the arrow walk so the reveal effect knows a selection came from the
-  // keyboard and may be off screen (see that effect).
-  const revealRef = useRef(false);
+  // The selection the reveal effect has already scrolled to (see that effect).
+  const revealedRef = useRef(null);
   // The note whose explanation is showing — `{ bar, step, piece }` or null.
   const [selection, setSelection] = useState(null);
   const [legendOpen, setLegendOpen] = useState(false);
@@ -343,11 +342,6 @@ function DrumSheetView({
     const within = rel - (bar - 1) * span;
     // `uy < GRID_TOP` floors negative → no piece; `within >= barW` is the gap
     // between bars. Either way there's nothing under the finger.
-    // A tap's note is on screen by definition, and an arrow walk that ended on
-    // the last hit leaves its flag set (React bails out of the no-op state write,
-    // so the reveal effect never ran to clear it) — clear it here rather than let
-    // it fire a pointless layout read on the next tap.
-    revealRef.current = false;
     if (!piece || bar < 1 || bar > barCount || within < 0 || within >= barW) { setSelection(null); return; }
     const cells = cellsFor(bar, piece);
     const step = Math.floor(within / CELL);
@@ -364,7 +358,6 @@ function DrumSheetView({
       : (e.key === 'ArrowLeft' || e.key === 'ArrowUp') ? -1 : 0;
     if (!delta || !hits.length) return;
     e.preventDefault();   // arrows would otherwise scroll the lane out from under the walk
-    revealRef.current = true;
     setSelection((prev) => {
       const i = prev
         ? hits.findIndex((h) => h.bar === prev.bar && h.step === prev.step && h.piece === prev.piece)
@@ -376,15 +369,19 @@ function DrumSheetView({
 
   useEscapeKey(!!selection, () => setSelection(null));
 
-  // Bring an arrow-walked note into view. Gated on the keyboard flag, not just on
-  // `selection`: reading `scrollLeft`/`clientWidth` right after React commits the
-  // selection box forces a synchronous layout of the whole strip, and for a TAP
-  // it can never help — the note the finger landed on is on screen by definition.
-  // Skipped while playing too, where the rAF follow loop owns `scrollLeft`.
+  // Bring a newly selected note into view — for the arrow walk, which is the only
+  // path that can select something off screen (a tap's note is under the finger,
+  // so both branches below are no-ops for it).
+  //
+  // Keyed on the SELECTION IDENTITY, not just the effect firing: `playing` is a
+  // dep (the rAF follow loop owns `scrollLeft` while it runs, so this must stand
+  // down), and without the identity check, merely STOPPING playback would re-run
+  // this and yank the strip back to a selection made long before — away from where
+  // the playhead just stopped.
   useEffect(() => {
     const el = scrollRef.current;
-    if (!revealRef.current) return;
-    revealRef.current = false;
+    if (selection === revealedRef.current) return;
+    revealedRef.current = selection;
     if (!selection || !el || playing) return;
     const left = (barX(selection.bar) + selection.step * CELL) * scale;
     const right = left + CELL * scale;

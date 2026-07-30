@@ -104,19 +104,32 @@ const cellFor = (ch) => {
 // read. Kept here, beside the notation it describes (and derived from the same
 // two tables), so prose and notation can't drift apart.
 
-// What each cell character asks for, independent of which piece it lands on.
-// `openHead` is the one entry with no glyph of its own: it covers `open` landing
-// on a DRUM, which has nothing to open, so it sounds (and draws) as a normal hit
-// — calling a kick's `o` "open" would describe a technique that doesn't exist.
+// What each cell character asks for. Every key but the three `open*` ones is a
+// cell-glyph id; `open` is piece-dependent, because "open" means a different
+// technique — or none at all — depending on what it lands on, and only the hi-hat
+// voice actually sustains it in playback (it is the only voice with an
+// `openDecay`, see drumPlayback.js). So the variants say what the player should
+// do AND, where the play-along can't reproduce it, that it sounds the same.
 const ARTICULATIONS = {
   rest: { name: 'Rest', detail: 'Nothing is played on this step — count it, don\'t fill it.' },
   normal: { name: 'Normal hit', detail: 'An unaccented stroke at your regular playing volume.' },
   accent: { name: 'Accent', detail: 'Strike noticeably harder than the notes around it. The ">" chevron drawn above the glyph is the accent mark.' },
-  open: { name: 'Open', detail: 'Let the cymbals ring instead of choking them: ease off the hi-hat pedal as you strike, and close again on the next unopened note. The circle drawn around the "×" is the open mark.' },
+  open: { name: 'Open', detail: 'Ease off the hi-hat pedal as you strike so the cymbals ring instead of clicking shut, then close again on the next unopened note. The circle drawn around the "×" is the open mark, and the play-along lets the note sustain.' },
+  openRing: { name: 'Open (let it ring)', detail: 'The circle around the "×" says let the cymbal sustain rather than choking it with your hand. A crash or ride rings freely already, so the play-along sounds this the same as a normal hit.' },
+  openFoot: { name: 'Open (foot splash)', detail: 'Let the pedal rebound as you press it so the cymbals splash open instead of clapping shut. The play-along sounds it as a normal foot "chick".' },
   openHead: { name: 'Normal hit', detail: 'The "o" open mark only changes hi-hats and cymbals — on a drum there is nothing to open, so this sounds and draws as a normal hit.' },
   ghost: { name: 'Ghost note', detail: 'A very light tap that sits under the groove rather than in it, drawn as a small hollow glyph.' },
   flam: { name: 'Flam', detail: 'Two strokes so close together they read as one thick hit: the small grace glyph just before the beat lands a hair early, then the main note on the beat.' },
 };
+
+// Which `open` entry a piece takes, keyed off the piece's SYNTH VOICE rather than
+// its glyph shape: the parser accepts `o` on any row, and `CR: o` draws the same
+// open ring a hi-hat does, but only the hi-hat voice sustains it — so keying on
+// `glyph === 'cross'` alone would tell a crash player to work the hi-hat pedal.
+const OPEN_BY_SOUND = { hihat: 'open', hihatFoot: 'openFoot' };
+const openArticulationFor = (piece) => (piece.glyph === 'cross'
+  ? (OPEN_BY_SOUND[piece.sound] || 'openRing')
+  : 'openHead');
 
 // The six cell characters for a legend panel. Each shows the articulation as
 // written for a cymbal (the `open` wording names the hi-hat pedal), which is the
@@ -138,9 +151,8 @@ export const describeDrumCell = (pieceId, cell) => {
   const piece = kitPiece(pieceId);
   if (!piece) return null;
   const glyph = CELL_GLYPHS[cell?.char] || CELL_GLYPHS['-'];
-  // `open` is the one piece-dependent glyph (see ARTICULATIONS).
   const articulation = ARTICULATIONS[
-    glyph.id === 'open' && piece.glyph !== 'cross' ? 'openHead' : glyph.id
+    glyph.id === 'open' ? openArticulationFor(piece) : glyph.id
   ];
   return {
     pieceLabel: piece.label,

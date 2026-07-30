@@ -321,6 +321,24 @@ describe('describeDrumCell', () => {
     expect(kick.char).toBe('o');
   });
 
+  it('does not send a crash or ride player to the hi-hat pedal for an "o"', () => {
+    // The parser accepts `o` on any row and the renderer rings every cross glyph,
+    // but only the hi-hat VOICE sustains it (drumPlayback's `openDecay`) — so the
+    // wording has to follow the piece, not just the glyph shape.
+    for (const id of ['CR', 'RD']) {
+      const info = describeDrumCell(id, CELL_GLYPHS.o);
+      expect(info.articulation).toBe('Open (let it ring)');
+      expect(info.detail).not.toMatch(/pedal/i);
+      expect(info.detail).toMatch(/same as a normal hit/i);
+    }
+  });
+
+  it('reads an "o" on the hi-hat FOOT row as a splash, not a stick-played open hat', () => {
+    const info = describeDrumCell('HF', CELL_GLYPHS.o);
+    expect(info.articulation).toBe('Open (foot splash)');
+    expect(info.detail).toMatch(/splash/i);
+  });
+
   it('describes ghosts, flams and rests', () => {
     expect(describeDrumCell('S', cellOf('subdivision: 1\n\nS: g---', 'S')).articulation).toBe('Ghost note');
     expect(describeDrumCell('S', cellOf('subdivision: 1\n\nS: f---', 'S')).articulation).toBe('Flam');
