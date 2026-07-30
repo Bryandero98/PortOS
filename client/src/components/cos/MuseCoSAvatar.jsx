@@ -1,8 +1,7 @@
 import { useRef, useMemo, useEffect, useState, useCallback, Suspense, Component } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { useGLTF, useAnimations, Sparkles } from '@react-three/drei';
+import { useGLTF, Sparkles } from '@react-three/drei';
 import * as THREE from 'three';
-import { SkeletonUtils } from 'three-stdlib';
 import {
   AGENT_STATES,
   MUSE_STATE_ANIMATIONS,
@@ -16,9 +15,13 @@ import CoSAvatarOrbitControls from './CoSAvatarOrbitControls';
 import CoSAvatarFrame from './CoSAvatarFrame';
 import CoSBackgroundCamera from './CoSBackgroundCamera';
 import { withInPlaceClips, inPlaceClipName } from '../../utils/animationClips';
+import useClonedGltf, { GltfPrimitive } from '../../hooks/useClonedGltf';
 
 const MODEL_URL = '/api/avatar/model.glb';
 const FADE = 0.35; // crossfade seconds between state loops
+const buildMuseAnimations = (animations) => (
+  withInPlaceClips(animations, MUSE_ROOT_MOTION_CLIPS, MUSE_IN_PLACE_SUFFIX)
+);
 
 // Loaded avatar rendered with its own textures/materials. When the GLB ships
 // animation clips (the bundled RobotExpressive default does), an AnimationMixer
@@ -27,21 +30,13 @@ const FADE = 0.35; // crossfade seconds between state loops
 // lives entirely in the surrounding lights/halo/glow/sparkles (see Scene) — the
 // model itself keeps its real colors rather than being tinted.
 function GLBAvatar({ state, speaking }) {
-  const gltf = useGLTF(MODEL_URL);
   const ref = useRef();
-
-  // SkeletonUtils.clone rebinds SkinnedMeshes to the cloned skeleton so the
-  // AnimationMixer actually deforms the visible mesh. A plain scene.clone(true)
-  // leaves the mixer driving bones the rendered mesh no longer references, so
-  // nothing would move — the reason clips were previously ignored.
-  const scene = useMemo(() => SkeletonUtils.clone(gltf.scene), [gltf.scene]);
   // Append the treadmill (in-place) variants of the root-motion clips so the
-  // coding montage can run/walk without drifting. Memoized on the source clips.
-  const animations = useMemo(
-    () => withInPlaceClips(gltf.animations, MUSE_ROOT_MOTION_CLIPS, MUSE_IN_PLACE_SUFFIX),
-    [gltf.animations]
+  // coding montage can run/walk without drifting.
+  const { scene, actions, names, mixer } = useClonedGltf(
+    MODEL_URL,
+    buildMuseAnimations,
   );
-  const { actions, names, mixer } = useAnimations(animations, scene);
   const hasClips = names.length > 0;
 
   // Fit the model to the viewport ONCE per scene (absolute `setScalar`, so it
@@ -235,11 +230,7 @@ function GLBAvatar({ state, speaking }) {
 
   return (
     <group ref={ref}>
-      {/* dispose={null}: SkeletonUtils.clone shares geometry/material refs with
-          drei's useGLTF cache (shallow clone), so letting R3F dispose them on
-          unmount corrupts the cache — the next mount then renders disposed
-          buffers as an invisible mesh, leaving only the halo ring ("SVG circle"). */}
-      <primitive object={scene} dispose={null} />
+      <GltfPrimitive object={scene} />
     </group>
   );
 }

@@ -1,5 +1,9 @@
 # Unreleased Changes
 
+## 3D avatars
+
+- **[issue-3208] Shared GLB avatars now keep their cached model resources intact by construction.** CyberCity, Chief of Staff, and generated-model views render cached or cloned scenes through one safe path, preventing future avatar additions from reintroducing blank meshes after navigation or remounts.
+
 ## Added
 
 - **Malware scans now leave a durable, reviewable report trail.** Git-link scans save an owned markdown artifact, surface it from the completed agent summary and Review Hub, and mark repositories with an explicit `DANGEROUS` verdict using a skull danger treatment on the Git links card.

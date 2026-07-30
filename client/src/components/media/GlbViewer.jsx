@@ -7,6 +7,7 @@ import {
   useGLTF,
 } from '@react-three/drei';
 import { Download, Rotate3d, SlidersHorizontal } from 'lucide-react';
+import { GltfPrimitive } from '../../hooks/useClonedGltf';
 
 const DEFAULT_BACKGROUND = '#050505';
 const ENVIRONMENT_HDRI = '/hdri/studio-small-08-1k.hdr';
@@ -71,13 +72,7 @@ function GlbModel({ src, forceOpaque }) {
       });
     };
   }, [forceOpaque, renderedScene]);
-  // dispose={null}: when !forceOpaque this primitive renders drei's cached scene
-  // directly, and even the forceOpaque clone shares geometry refs with the cache
-  // (scene.clone(true) is shallow for geometry). Letting R3F auto-dispose those
-  // GPU buffers on unmount would empty the cache the comment above deliberately
-  // keeps, so revisiting the same `src` would render a blank mesh. The cloned
-  // opaque *materials* (not shared) are still freed by the cleanup effect above.
-  return <primitive object={renderedScene} dispose={null} />;
+  return <GltfPrimitive object={renderedScene} />;
 }
 
 // Own `scene.environmentIntensity` directly rather than passing drei's

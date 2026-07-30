@@ -63,6 +63,7 @@ grep -i "what you want to do" client/src/hooks/README.md
 | `useMediaCompletionRefresh` | Refetch on image/video completion socket events. | A list view that needs to refresh when new media lands. |
 | `useOpenClawAttachments` | File attachment handling (base64, size-capped). | OpenClaw attachment UI. |
 | `useMediaPreviewActions` | Shared MediaPreview / MediaLightbox action handlers (images + videos — dispatch by `item.kind`). | New surface that exposes the same 4 preview actions. |
+| `useClonedGltf` | Clones a drei-cached GLTF scene with skeleton bindings intact and wires its animations; the colocated `GltfPrimitive` prevents R3F from disposing shared cache resources. Accepts an optional animation transform for derived clip sets. | Any skinned GLTF rendered from `useGLTF`; render its scene through `GltfPrimitive` so remounts cannot inherit disposed geometry or materials. |
 | `usePreviewRoute` | URL-driven `[preview, setPreview]` via `?preview=<filename>`. | Any page hosting `<MediaPreview>` — gives the preview a deep-link. |
 | `useImageGenQueue` | Work-scoped live queue of in-flight image renders. | Pages that show per-work image-gen queue state. |
 | `useImageRenderSettings` | Load the pipeline image-gen config once (`getSettings → readPipelineImageSettings`), failing open to `PIPELINE_IMAGE_DEFAULTS`; returns `{ imageCfg }`. | A single-image render slot that needs the render config and doesn't already load the full settings blob. |
