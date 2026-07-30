@@ -18,7 +18,7 @@ import {
 } from '../../lib/storyBible.js';
 import { sanitizeOrigin } from '../../lib/sharingOrigin.js';
 import { sanitizeSoftDeleteFields } from '../../lib/syncWire.js';
-import { recordRenderPin, RECORD_RENDER_MODEL_MAX } from '../../lib/renderTargets.js';
+import { persistedRenderPinFields } from '../../lib/renderTargets.js';
 
 // RECORD-shape schema version, stamped INSIDE each universe record. Distinct
 // from the type-level (storage layout) schemaVersion carried by
@@ -706,7 +706,6 @@ export const sanitizeTemplate = (raw) => {
   const compositeSheets = sanitizeCompositeSheets(raw.compositeSheets || []);
   const influences = resolveInfluences(raw);
   const locked = sanitizeLocked(raw.locked);
-  const renderPin = recordRenderPin(raw);
   // Canon registries. Two passes:
   //   1. foldRetiredCharactersBucket — Phase A retirement contract. ALWAYS
   //      runs (regardless of schemaVersion) so a `categories.characters`
@@ -776,8 +775,7 @@ export const sanitizeTemplate = (raw) => {
     // pinned backend is an install-capability choice (a peer may not have
     // codex/agy configured), so sanitizeRecordForWire strips the pair and the
     // sync merge restores the local values — no schema-version gate needed.
-    ...(renderPin.mode ? { imageMode: renderPin.mode } : {}),
-    ...(renderPin.modelId ? { imageModelId: renderPin.modelId.slice(0, RECORD_RENDER_MODEL_MAX) } : {}),
+    ...persistedRenderPinFields(raw),
     locked,
     characters,
     places,

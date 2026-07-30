@@ -979,8 +979,9 @@ export const imageGenGrokSettingsSchema = z.object({
 
 // Shared "valid model id" base — one definition of the shape a cloud-CLI
 // model id may take (bounds + charset), derived per consumer below so a
-// future tweak (e.g. allowing `@`) lands everywhere at once.
-const cloudModelIdString = (message) => z.string().trim().max(200)
+// future tweak (e.g. allowing `@`) lands everywhere at once. Exported for
+// route schemas that carry a one-off model override (universe renderSchema).
+export const cloudModelIdString = (message) => z.string().trim().max(200)
   .regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/, message);
 
 const agyImageModelSchema = z.preprocess(

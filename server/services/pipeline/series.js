@@ -21,7 +21,7 @@ import { sanitizeProseExportSettings } from '../../lib/proseExportSettings.js';
 import { sanitizeSeverityWeights, sanitizeBlockingSeverities } from '../../lib/editorial/severityConfig.js';
 import { sanitizeOrigin } from '../../lib/sharingOrigin.js';
 import { sanitizeSoftDeleteFields } from '../../lib/syncWire.js';
-import { recordRenderPin, RECORD_RENDER_MODEL_MAX } from '../../lib/renderTargets.js';
+import { persistedRenderPinFields } from '../../lib/renderTargets.js';
 import {
   maybeJournalBeforeOverwrite, setSyncBaseHash, contentHashForRecord, flushBaseHashes,
   deleteSyncBaseHash,
@@ -289,7 +289,6 @@ const sanitizeSeries = (raw) => {
   // behind-sender's omission is preserved (see ADDITIVE_SERIES_FIELDS).
   const severityWeights = sanitizeSeverityWeights(raw.severityWeights);
   const blockingSeverities = sanitizeBlockingSeverities(raw.blockingSeverities);
-  const renderPin = recordRenderPin(raw);
   return {
     id: raw.id,
     name,
@@ -369,8 +368,7 @@ const sanitizeSeries = (raw) => {
     // not have the pinned backend configured): sanitizeRecordForWire strips
     // the pair and ADDITIVE_SERIES_FIELDS preserves the local values on
     // merge — no pipelineSeries schema-version bump needed.
-    ...(renderPin.mode ? { imageMode: renderPin.mode } : {}),
-    ...(renderPin.modelId ? { imageModelId: renderPin.modelId.slice(0, RECORD_RENDER_MODEL_MAX) } : {}),
+    ...persistedRenderPinFields(raw),
     // Share-bucket provenance — present on imported records, absent on locally-authored ones.
     origin: sanitizeOrigin(raw.origin),
     createdAt,

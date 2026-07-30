@@ -36,7 +36,7 @@ import {
   LOCAL_IMAGEGEN_DEFAULT_MODEL,
 } from '../imageGen/modes.js';
 import { resolveImageCleaners } from '../imageGen/index.js';
-import { renderTargetDefaults, resolveRenderTargetConfig } from '../imageGen/cloudProviderConfig.js';
+import { pickUsableMode, renderTargetDefaults, resolveRenderTargetConfig } from '../imageGen/cloudProviderConfig.js';
 import { RENDER_TARGET, recordRenderPin } from '../../lib/renderTargets.js';
 import { getSettings } from '../settings.js';
 import { getRecord, updateRecord, listRecords, createCharacter } from './records.js';
@@ -389,11 +389,18 @@ async function startReferenceGenerationImpl(recordId, body, upload = null) {
   const settings = await getSettings();
   // Render-target ladder (#3231): the page's explicit body.mode wins, then
   // the sprite record's persisted pin (Phase 3), then the sprite-reference
-  // pin in settings.renderDefaults — all gated through the usability ladder
-  // (a pinned-but-disabled backend falls through).
+  // pin in settings.renderDefaults, then the install default. The pins go
+  // through pickUsableMode so each disabled rung falls to the NEXT rung
+  // (matching resolveRenderTargetConfig's per-rung gating) instead of a
+  // disabled record pin swallowing the target pin; resolveQueueImageMode
+  // keeps the historical gate for an explicit body.mode.
   const spritePin = recordRenderPin(record);
   let mode = resolveQueueImageMode(
-    body.mode || spritePin.mode || renderTargetDefaults(settings, RENDER_TARGET.SPRITE_REFERENCE).imageMode,
+    body.mode || pickUsableMode(settings, [
+      spritePin.mode,
+      renderTargetDefaults(settings, RENDER_TARGET.SPRITE_REFERENCE).imageMode,
+      settings?.imageGen?.mode,
+    ]),
     settings,
   );
 
@@ -758,15 +765,13 @@ export async function listSpriteThumbnails() {
  */
 export async function forkSprite(sourceId, body) {
   await resolveSourceReference(sourceId); // fail fast before creating a record
-  const record = await createCharacter({ name: body.name, id: body.id, kind: 'character' });
-  // Persist the fork's chosen backend/model as the NEW record's render pin
-  // (#3231 Phase 3) so re-rolls keep rendering where the fork was made.
-  if (body.mode || body.model) {
-    await updateRecord(record.id, {
-      ...(body.mode ? { imageMode: body.mode } : {}),
-      ...(body.model ? { imageModelId: body.model } : {}),
-    });
-  }
+  // The fork's chosen backend/model seeds the NEW record's render pin
+  // (#3231 Phase 3) in the create itself, so re-rolls keep rendering where
+  // the fork was made.
+  const record = await createCharacter({
+    name: body.name, id: body.id, kind: 'character',
+    imageMode: body.mode || null, imageModelId: body.model || null,
+  });
   const gen = await startReferenceGeneration(record.id, {
     target: TURNAROUND_ID,
     designPrompt: body.designPrompt,

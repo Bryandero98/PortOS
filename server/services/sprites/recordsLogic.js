@@ -18,6 +18,11 @@
 
 export const SPRITE_RECORD_KINDS = ['character', 'place', 'object', 'props'];
 
+// The one import is lib/renderTargets.js, itself a dependency-free leaf, so
+// this module stays safe to import from mocked suites (see the note on
+// SPRITE_ID_PATTERN in lib/validation.js).
+import { recordRenderPin } from '../../lib/renderTargets.js';
+
 // Record ids double as the on-disk directory name under data/sprites/ — keep
 // them strict kebab-case so a record id can never traverse the filesystem.
 export const SPRITE_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -42,13 +47,6 @@ export function mirrorTimestamp(value, fallback) {
 }
 
 const trimOrNull = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);
-
-// Per-record render-pin mode (#3231 Phase 3): the 'auto' UI sentinel means
-// "no pin" and is stored as null, matching recordRenderPin's normalization.
-const pinModeOrNull = (v) => {
-  const t = trimOrNull(v);
-  return t && t !== 'auto' ? t : null;
-};
 
 export function buildSpriteRecord(input, { id, now }) {
   const kind = SPRITE_RECORD_KINDS.includes(input.kind) ? input.kind : 'character';
@@ -75,8 +73,8 @@ export function buildSpriteRecord(input, { id, now }) {
     // Per-record render pin (#3231 Phase 3) — this sprite's default image
     // backend + cloud model for reference renders. null = no pin (fall
     // through to renderDefaults / the install default).
-    imageMode: pinModeOrNull(input.imageMode),
-    imageModelId: trimOrNull(input.imageModelId),
+    imageMode: recordRenderPin(input).mode,
+    imageModelId: recordRenderPin(input).modelId,
     createdAt: now,
     updatedAt: now,
     deleted: false,
@@ -101,8 +99,11 @@ export function applySpriteRecordPatch(record, patch) {
     else if (key === 'spec' || key === 'publishBinding') {
       next[key] = patch[key] && typeof patch[key] === 'object' ? patch[key] : null;
     // 'auto' (the UI's "no pin" sentinel) clears like null/'' — key-present
-    // always applies per the whitelist-patch convention above.
-    } else if (key === 'imageMode') next.imageMode = pinModeOrNull(patch.imageMode);
+    // always applies per the whitelist-patch convention above. recordRenderPin
+    // also caps the model id, so a PATCH persists the same bounded shape as
+    // the other pinned record kinds.
+    } else if (key === 'imageMode') next.imageMode = recordRenderPin(patch).mode;
+    else if (key === 'imageModelId') next.imageModelId = recordRenderPin(patch).modelId;
     else next[key] = trimOrNull(patch[key]);
   }
   next.updatedAt = new Date().toISOString();

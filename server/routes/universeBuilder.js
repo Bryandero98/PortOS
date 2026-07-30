@@ -21,7 +21,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler, ServerError, createServiceErrorMapper } from '../lib/errorHandler.js';
-import { validateRequest, optionalBooleanMap, llmSchema, isPaginationRequested, paginateArray, recordRenderPinFields } from '../lib/validation.js';
+import { validateRequest, optionalBooleanMap, llmSchema, isPaginationRequested, paginateArray, recordRenderPinFields, cloudModelIdString } from '../lib/validation.js';
+import { RECORD_RENDER_MODEL_MAX } from '../lib/renderTargets.js';
 import * as svc from '../services/universeBuilder.js';
 import * as canonSvc from '../services/universeCanon.js';
 import { expandUniverseCharacter } from '../services/universeCharacterExpand.js';
@@ -358,8 +359,9 @@ const renderSchema = z.object({
   mode: z.enum(IMAGE_GEN_MODES).optional(),
   modelId: z.string().trim().max(64).optional(),
   // Per-batch cloud model override (#3231 Phase 3) — wins over the universe's
-  // persisted imageModelId pin and the renderDefaults imageModel pin.
-  cloudModel: z.string().trim().max(64).optional(),
+  // persisted imageModelId pin and the renderDefaults imageModel pin. Shares
+  // the model-id charset guard so a bad id can't reach a CLI argv.
+  cloudModel: cloudModelIdString('cloudModel must be a valid model id').max(RECORD_RENDER_MODEL_MAX).optional(),
   width: z.number().int().min(64).max(2048).optional(),
   height: z.number().int().min(64).max(2048).optional(),
   steps: z.number().int().min(1).max(150).optional(),

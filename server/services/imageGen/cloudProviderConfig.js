@@ -17,7 +17,7 @@
  */
 
 import { ServerError } from '../../lib/errorHandler.js';
-import { RENDER_TARGET_BACKEND_AUTO } from '../../lib/renderTargets.js';
+import { normalizeRenderPinValue } from '../../lib/renderTargets.js';
 import {
   AGY_IMAGEGEN_DEFAULT_MODEL,
   CLOUD_IMAGE_GEN_MODES,
@@ -160,15 +160,11 @@ export function pickUsableMode(settings, candidates = []) {
  */
 export function renderTargetDefaults(settings, target) {
   const d = settings?.renderDefaults?.[target] || {};
-  const norm = (v) => {
-    const s = typeof v === 'string' ? v.trim() : '';
-    return s && s !== RENDER_TARGET_BACKEND_AUTO ? s : null;
-  };
   return {
-    imageMode: norm(d.imageMode),
-    imageModel: norm(d.imageModel),
-    videoMode: norm(d.videoMode),
-    videoModel: norm(d.videoModel),
+    imageMode: normalizeRenderPinValue(d.imageMode),
+    imageModel: normalizeRenderPinValue(d.imageModel),
+    videoMode: normalizeRenderPinValue(d.videoMode),
+    videoModel: normalizeRenderPinValue(d.videoModel),
   };
 }
 
