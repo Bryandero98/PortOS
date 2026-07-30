@@ -152,7 +152,7 @@ function TabSheetView({
     }
     return out;
   }, [lines]);
-  const hasTabstaff = format === 'tab' && lines.some((line) => line.type === 'tabstaff');
+  const hasTabstaff = lines.some((line) => line.type === 'tabstaff');
   const [legendOpen, setLegendOpen] = useState(false);
   const legendId = useId();
 

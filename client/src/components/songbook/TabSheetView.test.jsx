@@ -57,12 +57,12 @@ describe('TabSheetView', () => {
     expect(document.getElementById(panelId)).toBeNull();
   });
 
-  it('only offers the articulation legend for tab-format sheets with a tab staff', () => {
+  it('only offers the articulation legend when parsed content has a tab staff', () => {
     const { rerender } = render(<TabSheetView text={'C G\nNonsense lyric line'} format="tab" />);
     expect(screen.queryByRole('button', { name: 'Legend' })).toBeNull();
 
-    rerender(<TabSheetView text={SAMPLE} format="chordpro" />);
-    expect(screen.queryByRole('button', { name: 'Legend' })).toBeNull();
+    rerender(<TabSheetView text={`{start_of_tab}\n${SAMPLE}`} format="chordpro" />);
+    expect(screen.getByRole('button', { name: 'Legend' })).toBeTruthy();
 
     rerender(<TabSheetView text={SAMPLE} format="plain" />);
     expect(screen.queryByRole('button', { name: 'Legend' })).toBeNull();
