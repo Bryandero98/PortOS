@@ -334,6 +334,21 @@ describe('videoGen routes', () => {
       expect(call[0].params.mode).not.toBe('grok');
     });
 
+    it('a named local model anchors a no-backend request local, even under a grok pin', async () => {
+      const { getSettings } = await import('../services/settings.js');
+      getSettings.mockResolvedValueOnce({
+        imageGen: { ...grokReady, local: { pythonPath: '/usr/bin/python3' } },
+        videoGen: { mode: 'grok' },
+      });
+      // A media requeue rebuilds a local render's config (modelId, no backend)
+      // — grok has no model knob, so the pin must not discard the model.
+      const r = await request(app).post('/api/video-gen/').send({ prompt: 'a fox', modelId: 'ltx2_unified' });
+      expect(r.status).toBe(200);
+      const [call] = mediaJobQueue.enqueueJob.mock.calls;
+      expect(call[0].params.mode).not.toBe('grok');
+      expect(call[0].params.modelId).toBe('ltx2_unified');
+    });
+
     it('a grok pin degrades to local when the request carries local-only machinery', async () => {
       const { getSettings } = await import('../services/settings.js');
       getSettings.mockResolvedValueOnce({

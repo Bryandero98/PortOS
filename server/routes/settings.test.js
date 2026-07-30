@@ -220,7 +220,11 @@ describe('Settings routes — videoGen slice (#3231 Phase 4)', () => {
     vi.clearAllMocks();
   });
 
-  it('accepts the install-wide video pin and preserves sibling keys', async () => {
+  it('accepts the install-wide video pin fields and the null clear', async () => {
+    // NOTE: the settings PUT replaces top-level slices wholesale, so sibling-key
+    // preservation (defaultModelId surviving a mode-only save) is the CLIENT's
+    // job — ImageGenTab round-trips the loaded slice (videoGenSliceRef); the
+    // client suite pins that wire body. This test only pins schema acceptance.
     const res = await request(buildApp())
       .put('/api/settings')
       .send({ videoGen: { mode: 'grok', defaultModelId: 'ltx23_distilled_q4' } });

@@ -1193,6 +1193,10 @@ export default function VideoGen() {
     // along when keyframes aren't active.
     const legacyFflf = mode === 'fflf' && !keyframesActive;
     return {
+      // The page's backend toggle IS an explicit choice — send it so the
+      // server's #3231 video pin ladder can't reroute a Local render to a
+      // pinned grok backend behind the UI's back.
+      backend: 'local',
       prompt: promptOut,
       negativePrompt: composed.negativePrompt,
       modelId,

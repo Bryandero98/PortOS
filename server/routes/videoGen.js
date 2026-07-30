@@ -763,6 +763,11 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
   // silently dropping those inputs. A pin degrades; only an explicit backend
   // request errors.
   const grokDeliverable = (!body.mode || body.mode === 'text' || body.mode === 'image')
+    // A named local model is local-only machinery in the same sense as the
+    // fields below — grok has no model knob, so honoring a grok pin here
+    // would silently discard the model the caller asked for (e.g. a media
+    // requeue rebuilding a local render's config without a backend field).
+    && !body.modelId
     && !uploads.lastImage && !body.lastImageFile
     && !uploads.audioFile
     && !uploads.icReference && !body.icReferenceVideoIds?.length && !body.icReferenceImageFiles?.length
