@@ -1287,6 +1287,34 @@ describe('spawnTuiAgent runtime', () => {
     expect(pasteCount()).toBe(1);
   });
 
+  // Regression (#3202 durable runner): the runner pty.spawns claude DIRECTLY —
+  // no launch shell — so the shell's paste-mode OFF never appears in the
+  // stream. The tracker must treat claude's own first ON as ready; before the
+  // fix every runner-tui claude agent died `tui-not-ready` at the 45s deadline
+  // with a live input box on screen (agent-ade9a664 / agent-29ca86ef).
+  it('claude input-ready (runner mode): pastes on claude\'s own paste-mode ON with no shell OFF ever seen', async () => {
+    // Runner mode must also SKIP the shell-child liveness probe: the TUI is the
+    // PTY process itself (no launch shell), so a ps listing where the pid has no
+    // children does not mean the TUI exited. Make ps return no child of pid 4321
+    // to prove the probe can't veto the paste.
+    vi.mocked(execFile).mockImplementation((_file, _args, _opts, cb) => cb(null, '1\n1\n999\n'));
+    runSpawn({ tuiConfig: claudeTuiConfig, useDurableRunner: true });
+    await flushMicrotasks();
+
+    // Startup banner only — no bracketed-paste OFF precedes it in runner mode.
+    await capturedOnData(Buffer.from('Claude Code v2.1.220\nOpus 5 with high effort\n'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+    expect(pasteCount()).toBe(0); // banner alone is still not "input ready"
+
+    await capturedOnData(Buffer.from(PASTE_ON));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(400);
+    await flushMicrotasks();
+    expect(pasteCount()).toBe(1);
+  });
+
   it('claude trust gate: auto-confirms the folder-trust prompt with Enter, then pastes once ready', async () => {
     runSpawn({ tuiConfig: claudeTuiConfig });
     await flushMicrotasks();
