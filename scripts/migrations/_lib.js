@@ -559,8 +559,6 @@ async function seedReadJsonTagged(path) {
   }
 }
 
-const seedFileExists = (path) => stat(path).then(() => true, () => false);
-
 /**
  * Build a brain seed-record migration's `up()`. Returns `{ up }`.
  *
@@ -610,21 +608,23 @@ export function makeBrainSeedMigration({ logTag, entityType, seedIds, seedLabel,
     }
 
     // --- Legacy monolithic file (only when it still exists) -----------------
+    // The tagged read distinguishes all three cases in one syscall: 'missing'
+    // means the install is already split, so leave it alone (creating the file
+    // would resurrect a shape nothing reads); 'invalid' means user data a write
+    // would destroy.
     let legacyAdded = 0;
-    if (await seedFileExists(legacyPath)) {
-      const legacyRead = await seedReadJsonTagged(legacyPath);
-      if (legacyRead.state === 'invalid') {
-        console.error(`❌ ${logTag}: data/brain/${entityType}.json exists but is unreadable (${legacyRead.error}) — leaving it untouched.`);
-      } else {
-        const live = legacyRead.doc && typeof legacyRead.doc === 'object' ? legacyRead.doc : {};
-        if (!live.records || typeof live.records !== 'object') live.records = {};
-        for (const id of present) {
-          if (live.records[id] !== undefined) continue;
-          live.records[id] = seedRecords[id];
-          legacyAdded += 1;
-        }
-        if (legacyAdded > 0) await writeFile(legacyPath, JSON.stringify(live, null, 2) + '\n');
+    const legacyRead = await seedReadJsonTagged(legacyPath);
+    if (legacyRead.state === 'invalid') {
+      console.error(`❌ ${logTag}: data/brain/${entityType}.json exists but is unreadable (${legacyRead.error}) — leaving it untouched.`);
+    } else if (legacyRead.state === 'ok') {
+      const live = legacyRead.doc && typeof legacyRead.doc === 'object' ? legacyRead.doc : {};
+      if (!live.records || typeof live.records !== 'object') live.records = {};
+      for (const id of present) {
+        if (live.records[id] !== undefined) continue;
+        live.records[id] = seedRecords[id];
+        legacyAdded += 1;
       }
+      if (legacyAdded > 0) await writeFile(legacyPath, JSON.stringify(live, null, 2) + '\n');
     }
 
     if (added === 0 && legacyAdded === 0) {
