@@ -5,8 +5,8 @@
  * stepper + number input (slider on wider screens, clamped by `clampBpm`,
  * 20–320), percent-of-written quick buttons that recompute BPM from the chart's
  * `tempo:` marking, a kit picker (TR-909 / TR-808 / Acoustic), a count-in select,
- * a loop toggle with a from/to bar range, a metronome-click toggle, and a live
- * beat/bar readout. All state and audio live in the hook — this file only
+ * a loop toggle with a from/to bar range, a metronome mute + volume pair, and a
+ * live beat/bar readout. All state and audio live in the hook — this file only
  * renders and calls back.
  *
  * PHONE-FIRST LAYOUT. A phone is the primary SongBook surface, and the previous
@@ -23,9 +23,12 @@
  */
 
 import { useMemo, useState } from 'react';
-import { Play, Square, Repeat, Timer, Minus, Plus, SlidersHorizontal } from 'lucide-react';
+import {
+  Play, Square, Repeat, Minus, Plus, SlidersHorizontal, Volume2, VolumeX,
+} from 'lucide-react';
 import { METRONOME_BPM_MIN, METRONOME_BPM_MAX } from '../../lib/metronome.js';
 import { DRUM_KIT_LIST, resolveDrumKit } from '../../lib/drumKits.js';
+import { clampClickVolume, DEFAULT_CLICK_VOLUME } from '../../lib/drumPlayback.js';
 import { ctrlBtnClass, activeCtrlClass } from './constants.js';
 
 // Practice speeds as a percentage of the chart's written tempo.
@@ -68,11 +71,16 @@ export default function DrumTransportBar({
   countInBars, onCountInChange,
   loopEnabled, onLoopToggle, loopFrom, loopTo, onLoopRangeChange, barCount,
   clickEnabled, onClickToggle,
+  clickVolume = DEFAULT_CLICK_VOLUME, onClickVolumeChange,
   kitId, onKitChange,
   beatsPerBar = 4, pulse = null, currentBar = null,
 }) {
   // Setup controls: collapsed by default on a phone, always shown from `sm` up.
   const [showSetup, setShowSetup] = useState(false);
+
+  // The click level rides a 0–100 slider but is stored 0–1, so the two ends
+  // convert here rather than leaking percent into the player.
+  const clickPercent = Math.round((clampClickVolume(clickVolume) ?? DEFAULT_CLICK_VOLUME) * 100);
 
   // `pulse` turns over on every beat, so the bar-range options must not be
   // rebuilt with it — a 32-bar song is 64 <option>s per beat otherwise.
@@ -88,38 +96,62 @@ export default function DrumTransportBar({
     <div className="shrink-0 border-b border-port-border bg-port-card/60 px-3 py-2 space-y-2">
       {/* --- Primary: the controls you touch while playing -------------------- */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <div className="flex items-center gap-1.5" role="group" aria-label="Drum play-along">
-          <button
-            type="button"
-            onClick={onToggle}
-            // An all-rest chart parses into bars but has nothing to sound — a Play
-            // button that silently does nothing reads as broken.
-            disabled={!hasMusic}
-            className={`${ctrlBtnClass} disabled:opacity-40 disabled:hover:bg-transparent ${playing ? activeCtrlClass : ''}`}
-            aria-label={playing ? 'Stop play-along' : 'Play along'}
-            title={hasMusic
-              ? (playing ? 'Stop (space)' : 'Play along (space)')
-              : 'Nothing to play — this chart has no hits yet'}
-          >
-            {playing ? <Square size={16} /> : <Play size={18} />}
-          </button>
+        <button
+          type="button"
+          onClick={onToggle}
+          // An all-rest chart parses into bars but has nothing to sound — a Play
+          // button that silently does nothing reads as broken.
+          disabled={!hasMusic}
+          className={`${ctrlBtnClass} disabled:opacity-40 disabled:hover:bg-transparent ${playing ? activeCtrlClass : ''}`}
+          aria-label={playing ? 'Stop play-along' : 'Play along'}
+          title={hasMusic
+            ? (playing ? 'Stop (space)' : 'Play along (space)')
+            : 'Nothing to play — this chart has no hits yet'}
+        >
+          {playing ? <Square size={16} /> : <Play size={18} />}
+        </button>
 
-          {/* Metronome click — a primary control: it's the thing you toggle
-              between "play me the groove" and "just count me in". */}
+        {/* Metronome — a primary control: it's the thing you toggle between
+            "play me the groove" and "just count me in", and the level you
+            balance against your own playing.
+
+            It reads as a VOLUME (speaker icon + its own short slider) so the
+            tempo control beside it can't be mistaken for one — with the BPM
+            slider as the bar's only slider, that was exactly the confusion. */}
+        <div className="flex items-center gap-1" role="group" aria-label="Metronome">
           <button
             type="button"
             onClick={() => onClickToggle(!clickEnabled)}
             aria-pressed={clickEnabled}
             className={`${ctrlBtnClass} ${clickEnabled ? activeCtrlClass : ''}`}
             aria-label={clickEnabled ? 'Turn the metronome off' : 'Turn the metronome on'}
-            title="Metronome click over the kit"
+            title={clickEnabled
+              ? 'Mute the metronome click (m) — the count-in still sounds'
+              : 'Unmute the metronome click (m)'}
           >
-            <Timer size={16} />
+            {clickEnabled ? <Volume2 size={16} /> : <VolumeX size={16} />}
           </button>
+          <label htmlFor="drum-click-volume" className="sr-only">Metronome volume</label>
+          <input
+            id="drum-click-volume"
+            type="range"
+            min={0}
+            max={100}
+            step={5}
+            value={clickPercent}
+            onChange={(e) => onClickVolumeChange(Number(e.target.value) / 100)}
+            aria-valuetext={`${clickPercent}%`}
+            // Tall box, thin native track: the thumb centers in it, so a phone
+            // gets a 44px drag target without the slider looking chunky.
+            className="w-14 sm:w-20 min-h-[44px] accent-port-accent"
+            title={`Metronome volume (${clickPercent}%)`}
+          />
         </div>
 
-        {/* Practice tempo — steppers everywhere, slider only where there's room */}
-        <div className="flex items-center gap-1">
+        {/* Practice tempo — steppers everywhere, slider only where there's room.
+            The visible "BPM" carries the unit: an unlabelled number between a
+            minus and a plus, trailed by a slider, reads as a level. */}
+        <div className="flex items-center gap-1" role="group" aria-label="Practice tempo">
           <button
             type="button"
             onClick={() => onBpmChange(bpm - BPM_STEP)}
@@ -150,6 +182,7 @@ export default function DrumTransportBar({
           >
             <Plus size={16} />
           </button>
+          <span aria-hidden="true" className="text-xs text-gray-500 ml-0.5">BPM</span>
           <label htmlFor="drum-bpm-slider" className="sr-only">Practice tempo slider</label>
           <input
             id="drum-bpm-slider"

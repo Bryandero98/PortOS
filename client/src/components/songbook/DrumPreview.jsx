@@ -57,6 +57,10 @@ export default function DrumPreview({
     player.setClickEnabled(enabled);
     settingsMirror?.setClickEnabled(enabled);
   }, [player.setClickEnabled, settingsMirror]);
+  const setClickVolume = useCallback((level) => {
+    player.setClickVolume(level);
+    settingsMirror?.setClickVolume(level);
+  }, [player.setClickVolume, settingsMirror]);
   // The kit persists globally, but the viewer's transport already read it at
   // mount — mirror the change so the two don't disagree until a reload.
   const setKitId = useCallback((next) => {
@@ -91,6 +95,8 @@ export default function DrumPreview({
         barCount={player.barCount}
         clickEnabled={player.clickEnabled}
         onClickToggle={setClickEnabled}
+        clickVolume={player.clickVolume}
+        onClickVolumeChange={setClickVolume}
         kitId={player.kitId}
         onKitChange={setKitId}
         beatsPerBar={player.beatsPerBar}

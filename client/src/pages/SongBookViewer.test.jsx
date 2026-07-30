@@ -297,6 +297,51 @@ K:  o - - - - - o -`;
       expect(await screen.findByLabelText('Turn the metronome on')).toBeTruthy();
     });
 
+    it('mutes the metronome from the m shortcut as well as the button', async () => {
+      api.getSong.mockResolvedValue(drumSong());
+      renderPage();
+      await screen.findByLabelText('Turn the metronome off');
+      fireEvent.keyDown(window, { key: 'm' });
+      expect(await screen.findByLabelText('Turn the metronome on')).toBeTruthy();
+      fireEvent.keyDown(window, { key: 'm' });
+      expect(await screen.findByLabelText('Turn the metronome off')).toBeTruthy();
+    });
+
+    it('defaults the metronome to full and persists a level per machine', async () => {
+      api.getSong.mockResolvedValue(drumSong());
+      const { unmount } = renderPage();
+      const volume = await screen.findByLabelText('Metronome volume');
+      // No stored level is "never chosen" → full, NOT silent.
+      expect(volume.value).toBe('100');
+      fireEvent.change(volume, { target: { value: '30' } });
+      await waitFor(() => expect(screen.getByLabelText('Metronome volume').value).toBe('30'));
+      expect(globalThis.localStorage.getItem('songbook:drumClickVolume')).toBe('0.3');
+      // The click is a reference pulse, not song content — no record write, and
+      // the level is global rather than keyed by song.
+      expect(api.updateSong).not.toHaveBeenCalled();
+      unmount();
+
+      renderPage();
+      await waitFor(() => expect(screen.getByLabelText('Metronome volume').value).toBe('30'));
+    });
+
+    it('raising the level off silence unmutes, so the slider is never a dead control', async () => {
+      globalThis.localStorage.setItem('songbook:drumClick', '0');
+      api.getSong.mockResolvedValue(drumSong());
+      renderPage();
+      const volume = await screen.findByLabelText('Metronome volume');
+      expect(screen.getByLabelText('Turn the metronome on')).toBeTruthy(); // muted
+      fireEvent.change(volume, { target: { value: '60' } });
+      // Reaching for the level is an intent to HEAR it.
+      expect(await screen.findByLabelText('Turn the metronome off')).toBeTruthy();
+
+      // The reverse is deliberately not wired: dragging to zero leaves the
+      // toggle alone, so unmuting later can't come back silent.
+      fireEvent.change(screen.getByLabelText('Metronome volume'), { target: { value: '0' } });
+      await waitFor(() => expect(screen.getByLabelText('Metronome volume').value).toBe('0'));
+      expect(screen.getByLabelText('Turn the metronome off')).toBeTruthy();
+    });
+
     it('reveals the loop bar range only when looping is on', async () => {
       api.getSong.mockResolvedValue(drumSong());
       renderPage();

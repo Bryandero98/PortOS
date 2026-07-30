@@ -1,32 +1,38 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { parseDrumChart, chartHasMusic } from '../lib/drumNotation.js';
-import { createDrumPlayer, resolveLoopRange, resolvePlayhead } from '../lib/drumPlayback.js';
+import {
+  createDrumPlayer, resolveLoopRange, resolvePlayhead,
+  clampClickVolume, DEFAULT_CLICK_VOLUME,
+} from '../lib/drumPlayback.js';
 import { resolveDrumKit } from '../lib/drumKits.js';
 import { clampBpm } from '../lib/metronome.js';
-import { useLocalStorageBool } from './useLocalStorageBool.js';
+import { useLocalStorageBool, useLocalStoragePersisted } from './useLocalStorageBool.js';
 import { safeReadStorage, safeWriteStorage } from '../lib/safeStorage.js';
 
 // The selected kit is global to the machine (see the `kitId` state below).
 const KIT_STORAGE_KEY = 'songbook:drumKit';
+// So is the metronome level (see the header note).
+const CLICK_VOLUME_STORAGE_KEY = 'songbook:drumClickVolume';
 
 /**
  * Drum play-along transport for a SongBook `drum` chart (#3115) — React wrapper
  * over `lib/drumPlayback.js`. Owns the player lifecycle, the practice settings
- * (tempo / count-in / loop range / click) and the playback position, so
- * `SongBookViewer` only renders controls.
+ * (tempo / count-in / loop range / click on-off and level) and the playback
+ * position, so `SongBookViewer` only renders controls.
  *
  * Practice tempo is a PER-MACHINE preference, not synced content: it persists to
  * `safeStorage` under the song id (exactly like the viewer's transpose offset)
- * and is never written into the record. The metronome is the same kind of
- * preference but global to the machine, so it uses the shared
- * `useLocalStorageBool`.
+ * and is never written into the record. The metronome — both its on/off and its
+ * level — is the same kind of preference but global to the MACHINE: the click is
+ * a reference pulse you balance against your own playing, not a property of any
+ * one song.
  *
  * A timing-critical edit (tempo, count-in, loop range) while playing STOPS
  * playback rather than re-timing a running schedule — already-scheduled audio
  * can't be moved, so a live rebase would desync the position from what you hear.
- * The user presses play again at the new setting. The click toggle and the kit
- * selection are the exceptions: they only gate FUTURE scheduling, so they apply
- * live.
+ * The user presses play again at the new setting. The click toggle, the click
+ * level and the kit selection are the exceptions: they gate or scale FUTURE
+ * scheduling only, so they apply live.
  *
  * Settings live in state AND are pushed into the player by a sync effect, so the
  * order the seeding effects happen to run in can't leave the player holding a
@@ -79,6 +85,14 @@ export default function useDrumPlayer(text, { songId, initialSettings } = {}) {
   // against no pulse is the unusual case, and "never chosen" must not read as
   // "chosen off" (the hook's own default handles that distinction).
   const [clickEnabled, setClickEnabled] = useLocalStorageBool('songbook:drumClick', true);
+  // How loud that click sits over the kit. `parse` only runs on a value that was
+  // really stored, and `clampClickVolume` returns null for a garbled one — which
+  // together keep "never chosen" (→ full) distinct from a stored 0 (→ silent).
+  const [clickVolume, setClickVolumeState] = useLocalStoragePersisted(
+    CLICK_VOLUME_STORAGE_KEY,
+    DEFAULT_CLICK_VOLUME,
+    { parse: (raw) => clampClickVolume(raw) ?? DEFAULT_CLICK_VOLUME },
+  );
   // Which synth kit sounds the chart (909 / 808 / acoustic). Like the metronome
   // it's a taste setting global to the MACHINE, not per song — and it changes no
   // timing, so unlike the tempo/loop settings it applies without stopping
@@ -145,14 +159,19 @@ export default function useDrumPlayer(text, { songId, initialSettings } = {}) {
     player.setBpm(bpm);
     player.setCountIn(countInBars);
     player.setLoop(loopEnabled ? { from: loopFrom, to: loopTo } : null);
-    player.setClick(clickEnabled);
-  }, [chart, bpm, countInBars, loopEnabled, loopFrom, loopTo, clickEnabled]);
+  }, [chart, bpm, countInBars, loopEnabled, loopFrom, loopTo]);
 
-  // The kit gets its OWN effect rather than joining the one above: each timing
-  // setter there rebuilds the schedule while idle, so folding the kit in would
-  // re-flatten and re-sort every event three times over to deliver what is
-  // really a one-line assignment.
-  useEffect(() => { playerRef.current?.setKit(kitId); }, [chart, kitId]);
+  // The settings that touch no timing get their OWN effect rather than joining
+  // the one above: each timing setter there rebuilds the schedule while idle, so
+  // folding these in would re-flatten and re-sort every event three times over
+  // to deliver what are really one-line assignments.
+  useEffect(() => {
+    const player = playerRef.current;
+    if (!player) return;
+    player.setClick(clickEnabled);
+    player.setClickVolume(clickVolume);
+    player.setKit(kitId);
+  }, [chart, clickEnabled, clickVolume, kitId]);
 
   // Live playhead read — the source both consumers below share. Stable identity
   // so a caller's animation-frame loop can depend on it without restarting.
@@ -227,6 +246,22 @@ export default function useDrumPlayer(text, { songId, initialSettings } = {}) {
     safeWriteStorage(KIT_STORAGE_KEY, id);
   }, []);
 
+  // Metronome level. Like the kit it changes no timing, so playback keeps
+  // running and the live-settings effect above hands it to the sounding player.
+  //
+  // Raising it off silence UNMUTES: reaching for the level is an intent to hear
+  // the click, and a slider that moves while the mute button holds it silent is
+  // the "I adjusted it and nothing happened" bug. The reverse is deliberately
+  // NOT wired — dragging to zero leaves the toggle alone, so unmuting later
+  // can't come back silent.
+  const setClickVolume = useCallback((next) => {
+    const level = clampClickVolume(next);
+    if (level == null) return;
+    setClickVolumeState(level); // persists as a side effect
+    // Guarded so a drag doesn't re-write the toggle's storage on every frame.
+    if (level > 0 && !clickEnabled) setClickEnabled(true);
+  }, [clickEnabled, setClickEnabled]);
+
   // Percent of the chart's WRITTEN tempo (the practice-slower control).
   const setBpmPercent = useCallback((percent) => {
     setBpm(Math.round((writtenTempo * percent) / 100));
@@ -273,6 +308,8 @@ export default function useDrumPlayer(text, { songId, initialSettings } = {}) {
     setLoopRange,
     clickEnabled,
     setClickEnabled,
+    clickVolume,
+    setClickVolume,
     kitId,
     setKitId,
     playing,
