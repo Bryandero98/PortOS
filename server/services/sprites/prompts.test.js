@@ -3,8 +3,11 @@ import {
   SPRITE_DIRECTIONS, ANCHOR_DIRECTIONS, REFERENCE_FACING, anchorIdForDirection,
   keyColorPhrase, buildMainReferencePrompt, buildAnchorPrompt, buildTurnaroundPrompt,
   buildWalkVideoPrompt, buildScannerPrompt, buildAmbientReferencePrompt, buildAmbientVideoPrompt,
-  correctionClause, viewGeometryClause, TURNAROUND_VIEWS, SPRITE_REFERENCE_CANVAS_SIZE,
+  applyCorrection, viewGeometryClause, TURNAROUND_VIEWS, SPRITE_REFERENCE_CANVAS_SIZE,
 } from './prompts.js';
+// Namespace import so the SURFACES exhaustiveness guard below can enumerate every
+// exported builder rather than trusting a hand-maintained list.
+import * as allPrompts from './prompts.js';
 
 describe('sprite direction contracts', () => {
   it('uses a square canvas for reviewable reference candidates', () => {
@@ -77,21 +80,22 @@ describe('buildAnchorPrompt', () => {
     expect(p).toContain('Treat the turnaround panels as the source of truth');
   });
 
-  it('appends a trimmed correction clause when provided', () => {
+  // The bug that motivated #3216. The anchor body pins accessory placement to the
+  // attached reference in three separate sentences (and, from the sheet, tells the
+  // model to read a specific panel first), so a correction asking to MOVE an
+  // accessory contradicts the bulk of the prompt. It has to bracket those clauses
+  // — framed before them, overriding after them — not merely follow them.
+  // The sandwich's own wording is pinned once, in the `applyCorrection` suite.
+  it('brackets the pin-to-reference clauses with an accessory-moving correction', () => {
+    const NOTE = 'Hip bag should be on the other leg';
     const p = buildAnchorPrompt({
-      name: 'Scout', direction: 'north-east', chromaKey: '#FF00FF',
-      correctionPrompt: '  no pocket on the right sleeve  ',
+      name: 'Scout', direction: 'west', chromaKey: '#FF00FF', fromTurnaround: true,
+      correctionPrompt: NOTE,
     });
-    expect(p).toContain('Important correction — apply this over the attached reference: no pocket on the right sleeve');
-    // The correction rides at the end so it reads as an override, not a base clause.
-    expect(p.trimEnd().endsWith('no pocket on the right sleeve')).toBe(true);
-  });
-
-  it('omits the correction clause for blank/absent input', () => {
-    const base = buildAnchorPrompt({ name: 'Scout', direction: 'east', chromaKey: '#FF00FF' });
-    const blank = buildAnchorPrompt({ name: 'Scout', direction: 'east', chromaKey: '#FF00FF', correctionPrompt: '   ' });
-    expect(base).not.toContain('Important correction');
-    expect(blank).toBe(base);
+    for (const pinned of ['turnaround model sheet', 'same anatomical side as the attached reference']) {
+      expect(p.indexOf(NOTE), pinned).toBeLessThan(p.indexOf(pinned));
+      expect(p.lastIndexOf(NOTE), pinned).toBeGreaterThan(p.indexOf(pinned));
+    }
   });
 });
 
@@ -246,15 +250,6 @@ describe('fromTurnaround prompt variants (#2979)', () => {
     expect(p).toContain('magenta (#FF00FF) background');
   });
 
-  it('keeps the correction clause last, after the turnaround preamble', () => {
-    const p = buildAnchorPrompt({
-      name: 'Scout', direction: 'west', chromaKey: '#FF00FF', fromTurnaround: true,
-      correctionPrompt: 'satchel on the left hip',
-    });
-    expect(p.indexOf('turnaround model sheet')).toBeLessThan(p.indexOf('Important correction'));
-    expect(p.trimEnd().endsWith('satchel on the left hip')).toBe(true);
-  });
-
   it('sends a diagonal facing to the two panels it sits between (#3004)', () => {
     // The sheet only has the 4 cardinals, so naming "the panel that shows a
     // three-quarter rear view" points the model at a panel that isn't there.
@@ -297,62 +292,96 @@ describe('correction prompts on every regeneration surface (#3134)', () => {
   const SURFACES = [
     {
       label: 'turnaround sheet',
+      fn: buildTurnaroundPrompt,
       build: (extra) => buildTurnaroundPrompt({ name: 'Scout', designPrompt: 'a wiry ranger', chromaKey: '#FF00FF', ...extra }),
       subject: 'turnaround',
     },
     {
       label: 'main reference (from the sheet)',
+      fn: buildMainReferencePrompt,
       build: (extra) => buildMainReferencePrompt({ name: 'Scout', designPrompt: 'a wiry ranger', chromaKey: '#FF00FF', fromTurnaround: true, ...extra }),
       subject: 'turnaround',
     },
     {
       label: 'main reference (legacy, no sheet)',
+      fn: buildMainReferencePrompt,
       build: (extra) => buildMainReferencePrompt({ name: 'Scout', designPrompt: 'a wiry ranger', chromaKey: '#FF00FF', ...extra }),
       subject: 'reference',
     },
     {
       label: 'directional anchor',
+      fn: buildAnchorPrompt,
       build: (extra) => buildAnchorPrompt({ name: 'Scout', direction: 'east', chromaKey: '#FF00FF', ...extra }),
       subject: 'reference',
     },
     {
       label: 'ambient/place reference',
+      fn: buildAmbientReferencePrompt,
       build: (extra) => buildAmbientReferencePrompt({ name: 'Old Willow', kind: 'place', designPrompt: 'a willow by a pond', chromaKey: '#FF00FF', ...extra }),
       subject: 'reference',
     },
     {
       label: 'walk video',
+      fn: buildWalkVideoPrompt,
       build: (extra) => buildWalkVideoPrompt({ name: 'Scout', direction: 'east', chromaKey: '#FF00FF', ...extra }),
       subject: 'source image',
     },
     {
       label: 'scanner action video',
+      fn: buildScannerPrompt,
       build: (extra) => buildScannerPrompt({ name: 'Scout', direction: 'east', chromaKey: '#FF00FF', ...extra }),
       subject: 'source image',
     },
     {
       label: 'ambient loop video',
+      fn: buildAmbientVideoPrompt,
       build: (extra) => buildAmbientVideoPrompt({ name: 'Old Willow', kind: 'place', chromaKey: '#FF00FF', ...extra }),
       subject: 'source image',
     },
   ];
 
+  // The table above is only a contract if it is exhaustive. This set grew #2964 →
+  // #3134 → #3152 → #3216 by hand, and a 9th builder that accepted
+  // `correctionPrompt` without routing it through `applyCorrection` would ship
+  // green — reintroducing exactly the silently-ignored-feedback bug.
+  it('covers every prompt builder the module exports', () => {
+    const exported = Object.entries(allPrompts)
+      .filter(([name, value]) => /^build[A-Za-z]*Prompt$/.test(name) && typeof value === 'function')
+      .map(([name]) => name);
+    expect(exported.length).toBeGreaterThan(0); // not vacuous
+    const covered = new Set(SURFACES.map((s) => s.fn.name));
+    expect(exported.filter((name) => !covered.has(name))).toEqual([]);
+  });
+
   for (const { label, build, subject } of SURFACES) {
     describe(label, () => {
-      it('appends one trimmed correction clause, last', () => {
+      it('wraps the body in one trimmed correction sandwich', () => {
         const p = build({ correctionPrompt: '  the strap floats off the shoulder  ' });
-        expect(p).toContain(`Important correction — apply this over the attached ${subject}: the strap floats off the shoulder`);
-        // Last so it reads as an override of the base clauses, not one more of them.
-        expect(p.trimEnd().endsWith('the strap floats off the shoulder')).toBe(true);
-        // Exactly one clause — a second would let the surfaces disagree on emphasis.
-        expect(p.match(/Important correction/g)).toHaveLength(1);
+        // Framed up front (before any preservation clause can forbid the change)…
+        expect(p.startsWith('This is a corrected re-render')).toBe(true);
+        expect(p).toContain(
+          'Required fix: the strap floats off the shoulder. Make that fix in the image you produce.'
+          + ' It takes priority over any instruction below to match or preserve the attached'
+          + ` ${subject}`,
+        );
+        // …and again as the closing override, which names the attachment the
+        // untouched details come from.
+        expect(p.trimEnd().endsWith(`stays as the attached ${subject} shows it.`)).toBe(true);
+        expect(p).toContain(
+          'Required fix (highest priority — this overrides any conflicting instruction above):'
+          + ' the strap floats off the shoulder',
+        );
+        // Exactly the two halves — the note is stated twice by design (once was
+        // what got ignored), never three times.
+        expect(p.match(/the strap floats off the shoulder/g)).toHaveLength(2);
       });
 
       // The hard acceptance criterion: a blank note must not perturb the blind
       // regenerate by even one byte, on any surface.
       it('is byte-identical to a blind regenerate for absent/blank input', () => {
         const base = build({});
-        expect(base).not.toContain('Important correction');
+        expect(base).not.toContain('Required fix');
+        expect(base).not.toContain('corrected re-render');
         for (const blank of [undefined, null, '', '   ', '\n\t ', 42, {}]) {
           expect(build({ correctionPrompt: blank }), String(blank)).toBe(base);
         }
@@ -361,15 +390,35 @@ describe('correction prompts on every regeneration surface (#3134)', () => {
   }
 });
 
-describe('correctionClause', () => {
-  it('names the subject the correction applies over', () => {
-    expect(correctionClause('fix the arm', 'turnaround'))
-      .toBe(' Important correction — apply this over the attached turnaround: fix the arm');
+describe('applyCorrection', () => {
+  // The one place the correction wording is pinned to reviewed text. Every other
+  // suite asserts that its surface ROUTES through this helper, not what it says.
+  it('states precedence and targets the OUTPUT, not the attachment', () => {
+    const p = applyCorrection('BODY.', '  fix the arm  ', 'turnaround');
+    // "apply this over the attached turnaround" (the pre-#3216 wording) pointed the
+    // model at a frozen, usually-correct sheet — so it concluded there was nothing
+    // to do. The fix belongs in the image being produced.
+    expect(p).not.toContain('apply this over the attached');
+    expect(p).toBe(
+      'This is a corrected re-render: a previous attempt at this exact image was rejected. '
+      + 'Required fix: fix the arm. Make that fix in the image you produce. It takes priority over '
+      + 'any instruction below to match or preserve the attached turnaround — change what the fix '
+      + 'names, and keep everything else identical. '
+      + 'BODY.'
+      + ' Required fix (highest priority — this overrides any conflicting instruction above): fix '
+      + 'the arm. The previous render was rejected for exactly this, so an image that does not '
+      + 'visibly reflect this fix is a failed render. Change only what the fix names; everything it '
+      + 'does not mention stays as the attached turnaround shows it.',
+    );
   });
 
-  it('returns the empty string for anything blank or non-string', () => {
-    for (const v of [undefined, null, '', '   ', 0, 7, [], {}, () => {}]) {
-      expect(correctionClause(v, 'reference'), String(v)).toBe('');
+  it('keeps a note that already ends in punctuation as written', () => {
+    expect(applyCorrection('BODY.', 'Move it up!', 'reference')).toContain('Required fix: Move it up! Make');
+  });
+
+  it('returns the body untouched for anything blank or non-string', () => {
+    for (const v of [undefined, null, '', '   ', '\n\t ', 0, 7, [], {}, () => {}]) {
+      expect(applyCorrection('BODY.', v, 'reference'), String(v)).toBe('BODY.');
     }
   });
 });

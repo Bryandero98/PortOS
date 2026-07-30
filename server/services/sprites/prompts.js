@@ -138,22 +138,69 @@ export function viewGeometryClause(direction) {
 // target vocabulary so validation.js and the services share one spelling.
 export const TURNAROUND_ID = 'turnaround';
 
+// --- Corrections (#2964 / #3134, made to actually land by #3216) -------------
+//
+// `subject` names the ATTACHED image/clip the render derives from ("turnaround",
+// "reference", "source image") so each surface reads naturally while the
+// instruction shape stays identical everywhere.
+//
+// Why the original single trailing sentence didn't work: every body pins the
+// render to the attachment — an anchor does it in three separate sentences ("keep
+// accessories/straps on the same anatomical side as the attached reference",
+// "treat the turnaround panels as the source of truth", plus the per-facing
+// occlusion rule). A note asking to CHANGE one of those ("hip bag should be on
+// the other leg") contradicts the bulk of the prompt, and the model sided with
+// the bulk: the corrected re-roll came back identical to the candidate the user
+// had just rejected. Two things were needed, both of them:
+//
+//   1. State precedence. Position last is not authority.
+//   2. Target the OUTPUT. "Apply this over the attached reference" pointed the
+//      model at a frozen, usually-correct sheet — inviting "nothing to do". The
+//      user is describing a defect in the PREVIOUS RENDER.
+//
+// So the note is stated twice: a lead-in that frames the render before any
+// preservation rule is read, and a closing override. One mention buried in a
+// ~200-word instruction is exactly what got ignored.
+//
+// If this ever stops holding, the next step is structural, NOT a third round of
+// stronger adjectives: suppress the body clauses the note contradicts (compare
+// `refineComicPageRender` in services/pipeline/comicPages.js, which merges the
+// user's instruction into the stored prompt so no clause disagrees with it).
+
+// Users type notes as fragments, and both halves quote the note mid-paragraph, so
+// terminate it — otherwise it runs into the next sentence ("…other leg Make that
+// fix…") and the boundary between the user's words and ours disappears.
+const asSentence = (note) => (/[.!?]$/.test(note) ? note : `${note}.`);
+
+const leadInFor = (note, subject) => (
+  'This is a corrected re-render: a previous attempt at this exact image was rejected. '
+  + `Required fix: ${note} Make that fix in the image you produce. It takes priority over any `
+  + `instruction below to match or preserve the attached ${subject} — change what the fix names, `
+  + 'and keep everything else identical. '
+);
+
+const overrideFor = (note, subject) => (
+  ` Required fix (highest priority — this overrides any conflicting instruction above): ${note}`
+  + ' The previous render was rejected for exactly this, so an image that does not visibly'
+  + ' reflect this fix is a failed render. Change only what the fix names; everything it does'
+  + ` not mention stays as the attached ${subject} shows it.`
+);
+
 /**
- * The one appended clause that turns a blind re-roll into a corrected one
- * (#2964, extended to every surface by #3134). `subject` names what the model is
- * being corrected ON — the noun of whatever image/clip is attached ("turnaround",
- * "reference", "source image") — so each surface reads naturally while the
- * instruction shape stays identical everywhere.
+ * Wrap a built prompt body in the correction sandwich — the ONLY way a builder
+ * takes a correction. The two halves stay private so a surface cannot ship with
+ * one of them wired and not the other; that half-wired state is precisely what
+ * reads to the user as "the model ignored my feedback".
  *
- * Returns `''` for absent/blank input, which is the hard contract every caller
- * depends on: a whitespace-only note must leave the prompt byte-identical to
- * today's blind regenerate. Callers append the result LAST so the correction
- * reads as an override of the base clauses rather than one more of them.
+ * An absent, blank, or non-string note returns `body` untouched. That is the hard
+ * contract every surface depends on: a whitespace-only note must leave the prompt
+ * byte-identical to a blind regenerate.
  */
-export function correctionClause(correctionPrompt, subject) {
-  return (typeof correctionPrompt === 'string' && correctionPrompt.trim())
-    ? ` Important correction — apply this over the attached ${subject}: ${correctionPrompt.trim()}`
-    : '';
+export function applyCorrection(body, correctionPrompt, subject) {
+  const raw = typeof correctionPrompt === 'string' ? correctionPrompt.trim() : '';
+  if (!raw) return body;
+  const note = asSentence(raw);
+  return leadInFor(note, subject) + body + overrideFor(note, subject);
 }
 
 /**
@@ -179,8 +226,7 @@ export function buildTurnaroundPrompt({ name, designPrompt, chromaKey, correctio
   const panelRules = TURNAROUND_VIEWS
     .map((view, i) => `Panel ${i + 1} (${REFERENCE_FACING[view] || view}): ${viewGeometryClause(view)}`)
     .join(' ');
-  const correction = correctionClause(correctionPrompt, 'turnaround');
-  return (
+  return applyCorrection(
     `Create a character turnaround model sheet for a game character named ${name}. `
     + `Character design: ${description} `
     + `Draw exactly ${TURNAROUND_VIEWS.length} full-body figures of the SAME character in one `
@@ -209,8 +255,9 @@ export function buildTurnaroundPrompt({ name, designPrompt, chromaKey, correctio
     + 'Flat non-isometric pixel-art game sprite '
     + `reference on a plain exact ${keyColorPhrase(chromaKey)} background on a square 1:1 canvas. No panel borders, `
     + 'labels, captions, arrows, grid, shadows, scenery, wireframe, or extra characters. '
-    + 'Return exactly one PNG.'
-    + correction
+    + 'Return exactly one PNG.',
+    correctionPrompt,
+    'turnaround',
   );
 }
 
@@ -266,11 +313,7 @@ export function buildMainReferencePrompt({ name, designPrompt, chromaKey, correc
   const description = (typeof designPrompt === 'string' && designPrompt.trim())
     ? designPrompt.trim()
     : 'Use the attached visual reference as the character design.';
-  // The main derives from the sheet when there is one, so name the sheet as
-  // what the correction applies OVER; a legacy record has only its own
-  // reference attached.
-  const correction = correctionClause(correctionPrompt, fromTurnaround ? 'turnaround' : 'reference');
-  return (
+  return applyCorrection(
     (fromTurnaround ? fromTurnaroundClause('south') : '')
     + `Create the frozen walk-south identity reference for a game character named ${name}. `
     + `Character direction: ${description} `
@@ -279,8 +322,12 @@ export function buildMainReferencePrompt({ name, designPrompt, chromaKey, correc
     + 'attached visual reference when provided. Preserve physical-left and physical-right '
     + `accessories exactly. ${geometryRule('south')}Flat non-isometric pixel-art game sprite reference, centered on `
     + `a plain exact ${keyColorPhrase(chromaKey)} background on a square 1:1 canvas. No motion, labels, grid, shadows, scenery, `
-    + 'wireframe, or extra figures. Return exactly one PNG.'
-    + correction
+    + 'wireframe, or extra figures. Return exactly one PNG.',
+    correctionPrompt,
+    // The main derives from the sheet when there is one, so name the sheet as
+    // the attachment the untouched details come from; a legacy record has only
+    // its own reference attached.
+    fromTurnaround ? 'turnaround' : 'reference',
   );
 }
 
@@ -295,12 +342,13 @@ export function buildAmbientReferencePrompt({ name, kind, designPrompt, chromaKe
   const description = (typeof designPrompt === 'string' && designPrompt.trim())
     ? designPrompt.trim()
     : 'Use the attached visual reference as the design.';
-  return (
+  return applyCorrection(
     `Create one centered game-sprite ${kind} named ${name}. Design: ${description} `
     + 'Show its at-rest state with a clear readable silhouette. Match the attached visual reference when provided. '
     + `Use a plain exact ${keyColorPhrase(chromaKey)} background on a square 1:1 canvas. No people, scenery, text, labels, grid, `
-    + 'camera angle, shadows, wireframe, or extra objects. Return exactly one PNG.'
-    + correctionClause(correctionPrompt, 'reference')
+    + 'camera angle, shadows, wireframe, or extra objects. Return exactly one PNG.',
+    correctionPrompt,
+    'reference',
   );
 }
 
@@ -311,13 +359,14 @@ export function buildAmbientReferencePrompt({ name, kind, designPrompt, chromaKe
  * trunk") so a re-roll diverges instead of reproducing it.
  */
 export function buildAmbientVideoPrompt({ name, kind, chromaKey, correctionPrompt }) {
-  return (
+  return applyCorrection(
     `The source image is the locked at-rest ${kind} sprite ${name}. Animate one subtle seamless ambient loop `
     + '(for example wind, water, flame, or a gentle flicker appropriate to the source), then return to the exact starting pose. '
     + 'Preserve its identity, silhouette, palette, scale, and centered ground position. Use a locked camera and an exactly '
     + `uniform non-emissive ${keyColorPhrase(chromaKey)} background only as a compositing matte: no scenery, text, labels, `
-    + 'camera movement, cuts, added objects, or people.'
-    + correctionClause(correctionPrompt, 'source image')
+    + 'camera movement, cuts, added objects, or people.',
+    correctionPrompt,
+    'source image',
   );
 }
 
@@ -335,7 +384,7 @@ export function buildAmbientVideoPrompt({ name, kind, chromaKey, correctionPromp
  */
 export function buildWalkVideoPrompt({ name, direction, chromaKey, correctionPrompt }) {
   const facing = REFERENCE_FACING[direction] || direction;
-  return (
+  return applyCorrection(
     `The source image is the locked directional identity anchor for the game character ${name}, `
     + `${facing}. Animate a walk-in-place loop, walking ${direction}. `
     + 'Preserve identity, palette, proportions, facing, and physical-left and physical-right '
@@ -345,8 +394,9 @@ export function buildWalkVideoPrompt({ name, direction, chromaKey, correctionPro
     + `${keyColorPhrase(chromaKey)} background that acts only as a compositing matte: no rim light, `
     + 'bounce light, reflections, color cast, glow, or shadow on the character. Keep a stable '
     + 'pivot and ground line with loop-friendly walk-in-place motion. No scenery, no text, no '
-    + 'labels, no camera motion, no extra figures.'
-    + correctionClause(correctionPrompt, 'source image')
+    + 'labels, no camera motion, no extra figures.',
+    correctionPrompt,
+    'source image',
   );
 }
 
@@ -360,11 +410,14 @@ export function buildWalkVideoPrompt({ name, direction, chromaKey, correctionPro
  * existing scanner run's rebuilt provenance prompt still matches what was sent.
  */
 export function buildScannerPrompt({ name, direction, chromaKey, correctionPrompt }) {
-  return `Create a short, seamless scanner action for ${name}, facing ${direction}. `
+  return applyCorrection(
+    `Create a short, seamless scanner action for ${name}, facing ${direction}. `
     + 'The character raises a handheld scanner, makes one deliberate sweep, then returns to the exact starting pose. '
     + `Keep the character centered, full body visible, and animate only over a solid ${chromaKey} background. `
-    + 'No text, UI, scenery, camera movement, cuts, or additional characters.'
-    + correctionClause(correctionPrompt, 'source image');
+    + 'No text, UI, scenery, camera movement, cuts, or additional characters.',
+    correctionPrompt,
+    'source image',
+  );
 }
 
 /**
@@ -378,8 +431,7 @@ export function buildScannerPrompt({ name, direction, chromaKey, correctionPromp
  */
 export function buildAnchorPrompt({ name, direction, chromaKey, correctionPrompt, fromTurnaround = false }) {
   const facing = REFERENCE_FACING[direction] || direction;
-  const correction = correctionClause(correctionPrompt, 'reference');
-  return (
+  return applyCorrection(
     (fromTurnaround ? fromTurnaroundClause(direction) : '')
     + `Redraw the attached ${name} character as one `
     + `full-body figure in a neutral standing pose, ${facing}. Keep the exact same `
@@ -389,7 +441,8 @@ export function buildAnchorPrompt({ name, direction, chromaKey, correctionPrompt
     + 'facing can physically reveal it. This is a rotation of the character, '
     + `not a mirrored copy of the reference. ${geometryRule(direction)}Flat, non-isometric view; a `
     + `single centered figure on a square 1:1 canvas; plain flat ${keyColorPhrase(chromaKey)} background; no labels, no `
-    + 'grid lines, no wireframe or guide colors. Return exactly one PNG.'
-    + correction
+    + 'grid lines, no wireframe or guide colors. Return exactly one PNG.',
+    correctionPrompt,
+    'reference',
   );
 }

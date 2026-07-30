@@ -33,7 +33,7 @@
  * `readFileSync` of one small config — see `animationTrackStore.js`).
  */
 
-import { buildWalkVideoPrompt, correctionClause, keyColorPhrase } from './prompts.js';
+import { buildWalkVideoPrompt, applyCorrection, keyColorPhrase } from './prompts.js';
 import { WALK_TRACK } from './animationTracks.js';
 import { getEffectiveAnimationTracks } from './animationTrackStore.js';
 
@@ -58,10 +58,11 @@ const TRACK_VIDEO_PROMPTS = Object.freeze({
  * and collapsing them to one variable would change one of the two prompts on the
  * wire. A user's template picks whichever reads better in its sentence.
  *
- * `correctionPrompt` is deliberately NOT a placeholder: its clause is appended
- * last by every builder (`correctionClause`), because a correction that reads as an
- * override of the base wording is the whole contract — a template that
- * interpolated it mid-sentence would bury it.
+ * `correctionPrompt` is deliberately NOT a placeholder: every builder wraps its
+ * body with `applyCorrection`, which frames the render as a correction up front
+ * and closes with the override clause. Reading as an override of the base wording
+ * is the whole contract — a template that interpolated it mid-sentence would bury
+ * it, which is precisely the failure mode #3216 fixed.
  */
 const templateVariables = ({ name, kind, direction, chromaKey }) => ({
   name: name ?? '',
@@ -102,8 +103,11 @@ export function buildTrackVideoPrompt(trackId, args) {
     );
   }
   if (!row.builtin) {
-    return renderPromptTemplate(row.promptTemplate, args)
-      + correctionClause(args?.correctionPrompt, 'source image');
+    return applyCorrection(
+      renderPromptTemplate(row.promptTemplate, args),
+      args?.correctionPrompt,
+      'source image',
+    );
   }
   const build = TRACK_VIDEO_PROMPTS[trackId];
   // A builtin row with no compiled builder is unreachable today (`walk` is the

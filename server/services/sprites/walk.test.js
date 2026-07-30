@@ -12,7 +12,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { mkdir, writeFile, readFile, rm } from 'fs/promises';
 import { createHash } from 'crypto';
-import { lockAllAnchors } from './spriteTestFixtures.js';
+import { lockAllAnchors, expectCarriesCorrection } from './spriteTestFixtures.js';
 
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'sprite-walk-test-'));
 
@@ -354,8 +354,7 @@ describe('startWalkGeneration', () => {
     const { runId } = await startWalkGeneration(id, {
       direction: 'east', correctionPrompt: '  the legs barely lift  ',
     });
-    expect(executeTuiRun.mock.calls[0][0].prompt)
-      .toContain('Important correction — apply this over the attached source image: the legs barely lift');
+    expectCarriesCorrection(expect, executeTuiRun.mock.calls[0][0].prompt, 'the legs barely lift');
     // Persisted on the run so the provenance rebuild can reproduce it.
     const { runs } = await getWalkState(id);
     expect(runs.find((r) => r.id === runId).correctionPrompt).toBe('the legs barely lift');

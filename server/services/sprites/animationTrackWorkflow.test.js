@@ -20,7 +20,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { mkdir, writeFile } from 'fs/promises';
 import { createHash } from 'crypto';
-import { lockAllAnchors, placeCandidate } from './spriteTestFixtures.js';
+import { lockAllAnchors, placeCandidate, expectCarriesCorrection } from './spriteTestFixtures.js';
 
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'sprite-track-workflow-test-'));
 
@@ -212,8 +212,7 @@ describe.each(TRACKS)('the generic workflow drives the $id track', (track) => {
     const { runId } = await startTrackGeneration(track.id, id, {
       ...track.body, correctionPrompt: `  ${track.correction}  `,
     });
-    expect(executeTuiRun.mock.calls[0][0].prompt)
-      .toContain(`Important correction — apply this over the attached source image: ${track.correction}`);
+    expectCarriesCorrection(expect, executeTuiRun.mock.calls[0][0].prompt, track.correction);
     const { runs } = await getTrackState(track.id, id);
     expect(runs.find((r) => r.id === runId).correctionPrompt).toBe(track.correction);
   });

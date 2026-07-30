@@ -54,6 +54,9 @@ function fromCandidateSidecar(sidecar, name, fromTurnaround = false, kind = 'cha
   // Pre-capture candidate — rebuild with the builder that produced it. The
   // sidecar records the re-roll correction whenever one was used (#2964/#3134),
   // so the rebuild reproduces the corrected prompt rather than the blind one.
+  // Accepted: a pre-capture candidate that carried a correction rebuilds with
+  // #3216's stronger wording, not the weaker sentence sent. Versioning the clause
+  // would freeze wording we just had to change.
   const { designPrompt, chromaKey, correctionPrompt } = sidecar;
   let prompt;
   if (sidecar.target === TURNAROUND_ID) {

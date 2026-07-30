@@ -11,7 +11,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { mkdir, writeFile, rm } from 'fs/promises';
-import { writeCandidatePng, placeCandidate as placeCandidateFixture } from './spriteTestFixtures.js';
+import { writeCandidatePng, placeCandidate as placeCandidateFixture, expectCarriesCorrection } from './spriteTestFixtures.js';
 
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'sprite-assetprompt-test-'));
 
@@ -293,8 +293,7 @@ describe('resolveSpriteAssetPrompt', () => {
 
     const res = await resolveSpriteAssetPrompt(id, 'runs/walk-east-abc12345/generated/source-video.mp4');
     expect(res.source).toBe('walk');
-    expect(res.prompt)
-      .toContain('Important correction — apply this over the attached source image: the legs barely lift');
+    expectCarriesCorrection(expect, res.prompt, 'the legs barely lift');
   });
 
   it('rebuilds a corrected reference candidate with its correction clause (#3134)', async () => {
@@ -311,8 +310,7 @@ describe('resolveSpriteAssetPrompt', () => {
 
     const res = await resolveSpriteAssetPrompt(id, 'reference/candidates/walk-east-candidate-03.png');
     expect(res.source).toBe('candidate-reconstructed');
-    expect(res.prompt)
-      .toContain('Important correction — apply this over the attached reference: no pocket on the right sleeve');
+    expectCarriesCorrection(expect, res.prompt, 'no pocket on the right sleeve');
   });
 
   it('returns null for an asset with no prompt provenance', async () => {
