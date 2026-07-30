@@ -21,7 +21,7 @@ export default function DrumPreview({
   settingsMirror,
 }) {
   const [snapshot, setSnapshot] = useState(text);
-  const player = useDrumPlayer(snapshot, { songId });
+  const player = useDrumPlayer(snapshot, { songId, initialSettings: settingsMirror });
   const chartChanged = text !== snapshot;
   const liveHasMusic = useMemo(() => chartHasMusic(parseDrumChart(text)), [text]);
   useWakeLock(player.playing);

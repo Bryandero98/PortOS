@@ -338,6 +338,20 @@ K:  o - - - - - o -`;
       await waitFor(() => expect(screen.getByLabelText('Practice tempo (BPM)').value).toBe('72'));
     });
 
+    it('inherits play-mode count-in and loop settings when entering edit mode', async () => {
+      api.getSong.mockResolvedValue(drumSong());
+      renderPage();
+      await screen.findByLabelText('Count-in');
+      fireEvent.change(screen.getByLabelText('Count-in'), { target: { value: '2' } });
+      fireEvent.click(screen.getByLabelText('Enable loop'));
+      fireEvent.change(screen.getByLabelText('Loop from bar'), { target: { value: '2' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+
+      await waitFor(() => expect(screen.getByLabelText('Count-in').value).toBe('2'));
+      expect(screen.getByLabelText('Disable loop')).toBeTruthy();
+      expect(screen.getByLabelText('Loop from bar').value).toBe('2');
+    });
+
     it('keeps an unknown stored instrument/format selectable and preserves it on save', async () => {
       // A song synced from a NEWER peer carrying values this client doesn't list.
       api.getSong.mockResolvedValue(song({

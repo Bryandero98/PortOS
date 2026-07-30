@@ -40,9 +40,11 @@ import { safeReadStorage, safeWriteStorage } from '../lib/safeStorage.js';
  * chart/song change, and on unmount — nothing survives the view.
  *
  * @param {string} text — the raw drum-chart source.
- * @param {{ songId?: string }} [options] — `songId` keys the persisted tempo.
+ * @param {{ songId?: string, initialSettings?: object }} [options] — `songId`
+ *   keys the persisted tempo; `initialSettings` seeds a second transport that
+ *   should inherit the first transport's count-in and loop configuration.
  */
-export default function useDrumPlayer(text, { songId } = {}) {
+export default function useDrumPlayer(text, { songId, initialSettings } = {}) {
   const chart = useMemo(() => parseDrumChart(text), [text]);
   const barCount = chart.bars.length;
   // Bars can parse while every cell is a rest — there'd be nothing to hear, so
@@ -55,10 +57,19 @@ export default function useDrumPlayer(text, { songId } = {}) {
 
   const storageKey = songId ? `songbook:drumBpm:${songId}` : null;
   const [bpm, setBpmState] = useState(writtenTempo);
-  const [countInBars, setCountInBarsState] = useState(1);
-  const [loopEnabled, setLoopEnabledState] = useState(false);
-  const [loopFrom, setLoopFromState] = useState(1);
-  const [loopTo, setLoopToState] = useState(1);
+  const initialLoop = resolveLoopRange(
+    barCount,
+    initialSettings?.loopEnabled
+      ? { from: initialSettings.loopFrom, to: initialSettings.loopTo }
+      : null,
+  );
+  const initialCountIn = initialSettings?.countInBars == null
+    ? 1
+    : Math.max(0, Math.min(4, Math.trunc(Number(initialSettings.countInBars)) || 0));
+  const [countInBars, setCountInBarsState] = useState(initialCountIn);
+  const [loopEnabled, setLoopEnabledState] = useState(!!initialSettings?.loopEnabled);
+  const [loopFrom, setLoopFromState] = useState(initialLoop?.from ?? 1);
+  const [loopTo, setLoopToState] = useState(initialLoop?.to ?? Math.max(1, barCount));
   // The click is a play-along METRONOME, so it defaults on — practising a groove
   // against no pulse is the unusual case, and "never chosen" must not read as
   // "chosen off" (the hook's own default handles that distinction).
@@ -85,8 +96,13 @@ export default function useDrumPlayer(text, { songId } = {}) {
     setBpmState(stored ?? writtenTempo);
   }, [storageKey, writtenTempo]);
 
-  // A chart change invalidates the loop range (the bar count differs).
+  // A later chart change invalidates the loop range. The initial bar count is
+  // already represented by the state initializers above, including any range
+  // inherited by an edit preview.
+  const previousBarCountRef = useRef(barCount);
   useEffect(() => {
+    if (previousBarCountRef.current === barCount) return;
+    previousBarCountRef.current = barCount;
     setLoopFromState(1);
     setLoopToState(Math.max(1, barCount));
   }, [barCount]);
