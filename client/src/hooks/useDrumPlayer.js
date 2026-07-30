@@ -1,28 +1,40 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { parseDrumChart, drumChartHasMusic } from '../lib/drumNotation.js';
-import { createDrumPlayer, resolveLoopRange } from '../lib/drumPlayback.js';
+import { parseDrumChart, chartHasMusic } from '../lib/drumNotation.js';
+import { createDrumPlayer, resolveLoopRange, resolvePlayhead } from '../lib/drumPlayback.js';
 import { clampBpm } from '../lib/metronome.js';
+import { useLocalStorageBool } from './useLocalStorageBool.js';
 import { safeReadStorage, safeWriteStorage } from '../lib/safeStorage.js';
 
 /**
  * Drum play-along transport for a SongBook `drum` chart (#3115) — React wrapper
  * over `lib/drumPlayback.js`. Owns the player lifecycle, the practice settings
- * (tempo / count-in / loop range / click) and the sheet playhead, so
+ * (tempo / count-in / loop range / click) and the playback position, so
  * `SongBookViewer` only renders controls.
  *
  * Practice tempo is a PER-MACHINE preference, not synced content: it persists to
  * `safeStorage` under the song id (exactly like the viewer's transpose offset)
- * and is never written into the record.
+ * and is never written into the record. The metronome is the same kind of
+ * preference but global to the machine, so it uses the shared
+ * `useLocalStorageBool`.
  *
  * A timing-critical edit (tempo, count-in, loop range) while playing STOPS
  * playback rather than re-timing a running schedule — already-scheduled audio
- * can't be moved, so a live rebase would desync the playhead from what you hear.
+ * can't be moved, so a live rebase would desync the position from what you hear.
  * The user presses play again at the new setting. The click toggle is the
  * exception: it only gates FUTURE scheduling, so it applies live.
  *
  * Settings live in state AND are pushed into the player by a sync effect, so the
  * order the seeding effects happen to run in can't leave the player holding a
  * stale tempo (the per-song stored tempo lands after the player is created).
+ *
+ * POSITION COMES FROM THE AUDIO CLOCK, never from the player's `onStep` event
+ * callback — see `resolvePlayhead`. Two consumers, two rates:
+ * - `getPlayhead()` is a stable on-demand read for the sheet's own animation
+ *   frame loop (a continuous line can't go through React state 8×/second);
+ * - `pulse` is the same position quantized to `{ bar, beat, countingIn }` for
+ *   the transport's readout, polled per frame but only ever committed to state
+ *   when the beat actually turns over — so the whole page re-renders on beats,
+ *   not on steps.
  *
  * The player, its interval and its scheduled audio are torn down on stop, on a
  * chart/song change, and on unmount — nothing survives the view.
@@ -35,9 +47,11 @@ export default function useDrumPlayer(text, { songId } = {}) {
   const barCount = chart.bars.length;
   // Bars can parse while every cell is a rest — there'd be nothing to hear, so
   // the transport gates Play on real hits rather than on the bar count.
-  const hasMusic = useMemo(() => drumChartHasMusic(text), [text]);
+  const hasMusic = useMemo(() => chartHasMusic(chart), [chart]);
   // The chart's own `tempo:` marking — the 100% reference for the percent buttons.
   const writtenTempo = clampBpm(chart.tempo) ?? 90;
+  const beatsPerBar = chart.time?.beats || 4;
+  const subdivision = chart.subdivision || 1;
 
   const storageKey = songId ? `songbook:drumBpm:${songId}` : null;
   const [bpm, setBpmState] = useState(writtenTempo);
@@ -45,9 +59,12 @@ export default function useDrumPlayer(text, { songId } = {}) {
   const [loopEnabled, setLoopEnabledState] = useState(false);
   const [loopFrom, setLoopFromState] = useState(1);
   const [loopTo, setLoopToState] = useState(1);
-  const [clickEnabled, setClickEnabledState] = useState(false);
+  // The click is a play-along METRONOME, so it defaults on — practising a groove
+  // against no pulse is the unusual case, and "never chosen" must not read as
+  // "chosen off" (the hook's own default handles that distinction).
+  const [clickEnabled, setClickEnabled] = useLocalStorageBool('songbook:drumClick', true);
   const [playing, setPlaying] = useState(false);
-  const [activeStep, setActiveStep] = useState(null);
+  const [pulse, setPulse] = useState(null);
 
   const playerRef = useRef(null);
   // Intent mirror of `playing`: during a first play the player's own flag only
@@ -83,15 +100,13 @@ export default function useDrumPlayer(text, { songId } = {}) {
       return undefined;
     }
     const player = createDrumPlayer(chart, {
-      onStep: (info) => setActiveStep(info),
-      onEnded: () => { setPlayingBoth(false); setActiveStep(null); },
+      onEnded: () => setPlayingBoth(false),
     });
     playerRef.current = player;
     return () => {
       player.stop();
       playerRef.current = null;
       setPlayingBoth(false);
-      setActiveStep(null);
     };
   }, [chart, setPlayingBoth]);
 
@@ -107,10 +122,39 @@ export default function useDrumPlayer(text, { songId } = {}) {
     player.setClick(clickEnabled);
   }, [chart, bpm, countInBars, loopEnabled, loopFrom, loopTo, clickEnabled]);
 
+  // Live playhead read — the source both consumers below share. Stable identity
+  // so a caller's animation-frame loop can depend on it without restarting.
+  const getPlayhead = useCallback(() => {
+    const player = playerRef.current;
+    if (!player || !playingRef.current) return null;
+    return resolvePlayhead(player.schedule(), player.position());
+  }, []);
+
+  // The transport's beat/bar readout, polled off the same clock and committed
+  // only when it changes (see the header note).
+  useEffect(() => {
+    if (!playing || typeof requestAnimationFrame !== 'function') {
+      setPulse(null);
+      return undefined;
+    }
+    let raf = requestAnimationFrame(function tick() {
+      raf = requestAnimationFrame(tick);
+      const head = getPlayhead();
+      const next = head && (head.countIn
+        ? { bar: null, beat: head.beat, countingIn: true }
+        : { bar: head.bar, beat: Math.floor(head.stepFloat / subdivision) + 1, countingIn: false });
+      setPulse((prev) => (
+        prev?.bar === next?.bar && prev?.beat === next?.beat && prev?.countingIn === next?.countingIn
+          ? prev
+          : next
+      ));
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [playing, getPlayhead, subdivision]);
+
   const stop = useCallback(() => {
     playerRef.current?.stop();
     setPlayingBoth(false);
-    setActiveStep(null);
   }, [setPlayingBoth]);
 
   const toggle = useCallback(() => {
@@ -126,7 +170,6 @@ export default function useDrumPlayer(text, { songId } = {}) {
     Promise.resolve(player.play()).catch((err) => {
       console.error(`🥁 Drum play-along failed to start: ${err.message}`);
       setPlayingBoth(false);
-      setActiveStep(null);
     });
   }, [setPlayingBoth, stop, hasMusic]);
 
@@ -168,18 +211,16 @@ export default function useDrumPlayer(text, { songId } = {}) {
     setLoopToState(range.to);
   }, [barCount, stopIfPlaying]);
 
-  // Click only gates FUTURE scheduling — safe to flip mid-groove.
-  const setClickEnabled = useCallback((enabled) => setClickEnabledState(!!enabled), []);
-
   // The bar the `[` / `]` loop-endpoint shortcuts act on: the playhead's bar
   // while playing, else the current loop start.
-  const currentBar = activeStep?.bar || loopFrom;
+  const currentBar = pulse?.bar || loopFrom;
 
   return {
     chart,
     barCount,
     hasMusic,
     writtenTempo,
+    beatsPerBar,
     bpm,
     setBpm,
     setBpmPercent,
@@ -193,8 +234,9 @@ export default function useDrumPlayer(text, { songId } = {}) {
     clickEnabled,
     setClickEnabled,
     playing,
-    activeStep,
+    pulse,
     currentBar,
+    getPlayhead,
     toggle,
     stop,
   };
