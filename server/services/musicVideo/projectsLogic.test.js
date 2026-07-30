@@ -36,6 +36,35 @@ describe('buildProjectRecord', () => {
     expect(p.mode).toBe('autonomous');
     expect(p.concept).toEqual({ prompt: 'noir' });
   });
+
+  it('persists the image render pin only when set (#3231 Phase 4)', () => {
+    const pinned = buildProjectRecord(
+      { name: 'A', imageMode: 'codex', imageModelId: 'example-model' },
+      { id: 'mv-3', now: 'n' },
+    );
+    expect(pinned.imageMode).toBe('codex');
+    expect(pinned.imageModelId).toBe('example-model');
+    // No pin → the keys are absent entirely, keeping the on-disk shape
+    // byte-stable for existing records.
+    const unpinned = buildProjectRecord({ name: 'B' }, { id: 'mv-4', now: 'n' });
+    expect('imageMode' in unpinned).toBe(false);
+    expect('imageModelId' in unpinned).toBe(false);
+    // The 'auto' sentinel and blanks collapse to no pin.
+    const auto = buildProjectRecord({ name: 'C', imageMode: 'auto', imageModelId: '' }, { id: 'mv-5', now: 'n' });
+    expect('imageMode' in auto).toBe(false);
+    expect('imageModelId' in auto).toBe(false);
+  });
+
+  it('a patch sets and clears the image render pin (#3231 Phase 4)', () => {
+    const p = baseProject();
+    const pinned = applyProjectPatch(p, { imageMode: 'agy', imageModelId: 'example-model' });
+    expect(pinned.imageMode).toBe('agy');
+    expect(pinned.imageModelId).toBe('example-model');
+    // Key-present-with-null is the intentional clear (absent-vs-empty rule).
+    const cleared = applyProjectPatch(pinned, { imageMode: null, imageModelId: null });
+    expect(cleared.imageMode).toBeNull();
+    expect(cleared.imageModelId).toBeNull();
+  });
 });
 
 describe('cloneProjectRecord', () => {

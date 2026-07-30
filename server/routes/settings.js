@@ -10,7 +10,7 @@ import {
 } from '../services/mediaJobQueue/index.js';
 import { asyncHandler } from '../lib/errorHandler.js';
 import { isPlainObject } from '../lib/objects.js';
-import { backupConfigSchema, sharingSettingsPatchSchema, featureProviderConfigSchema, autofixerSettingsSchema, codeReviewSettingsSchema, locationSettingsSchema, settingsEmbeddingsSchema, citySnapshotConfigSchema, imessageConfigSchema, signalConfigSchema, spotifyConfigSchema, youtubeConfigSchema, apiAccessSettingsSchema, loraTrainingConfigSchema, pipelineEditorialChecksSettingsSchema, creativeDirectorSettingsSchema, musicSettingsSchema, privacySettingsSchema, seriesAutopilotSettingsSchema, layeredIntelligenceSettingsSchema, imageGenGrokSettingsSchema, imageGenAgySettingsSchema, renderDefaultsSettingsSchema, validateRequest } from '../lib/validation.js';
+import { backupConfigSchema, sharingSettingsPatchSchema, featureProviderConfigSchema, autofixerSettingsSchema, codeReviewSettingsSchema, locationSettingsSchema, settingsEmbeddingsSchema, citySnapshotConfigSchema, imessageConfigSchema, signalConfigSchema, spotifyConfigSchema, youtubeConfigSchema, apiAccessSettingsSchema, loraTrainingConfigSchema, pipelineEditorialChecksSettingsSchema, creativeDirectorSettingsSchema, musicSettingsSchema, privacySettingsSchema, seriesAutopilotSettingsSchema, layeredIntelligenceSettingsSchema, imageGenGrokSettingsSchema, imageGenAgySettingsSchema, renderDefaultsSettingsSchema, videoGenSettingsSchema, validateRequest } from '../lib/validation.js';
 
 const router = Router();
 
@@ -225,6 +225,11 @@ router.put('/', asyncHandler(async (req, res) => {
   // to a cloud CLI's argv).
   if (req.body?.renderDefaults !== undefined) {
     validateRequest(renderDefaultsSettingsSchema, req.body.renderDefaults);
+  }
+  // Install-wide video render pin (#3231 Phase 4) — validate when present so a
+  // non-enum backend can't persist a mode resolveVideoMode would choke on.
+  if (req.body?.videoGen !== undefined) {
+    validateRequest(videoGenSettingsSchema, req.body.videoGen);
   }
   // Install-level Layered Intelligence settings (#2515) — validate the slice when
   // present so a malformed `trustShellSources` can't persist and silently unlock

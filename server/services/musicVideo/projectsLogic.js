@@ -25,6 +25,7 @@ import {
 } from '../../lib/validation.js';
 import { compareNewerWins } from '../../lib/lwwTimestamp.js';
 import { sanitizeSoftDeleteFields } from '../../lib/syncWire.js';
+import { persistedRenderPinFields } from '../../lib/renderTargets.js';
 
 // Re-exported for the PG backend's typed mirror columns (mirrors the CD store).
 export { mirrorTimestamp } from '../../lib/pgTimestamp.js';
@@ -83,6 +84,10 @@ export function buildProjectRecord(input, { id, now }) {
       audioReactiveLora: videoSettings.audioReactiveLora ?? null,
       audioReactiveScale: videoSettings.audioReactiveScale ?? 1.2,
     },
+    // #3231 Phase 4 — per-record image render pin for scene reference-frame
+    // renders (the shared universe/series/sprite field pair). Present only
+    // when set, so existing records keep their on-disk shape byte-stable.
+    ...persistedRenderPinFields(input),
     audioAnalysis: null,
     midiTranscription: null,
     scenes: [],

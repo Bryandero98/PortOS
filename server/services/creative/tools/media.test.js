@@ -68,6 +68,50 @@ describe('render-backend pin — the auto/unpinned path is a strict no-op (#3135
     expect(enqueued().params).toEqual({ prompt: 'p', mode: 'image' });
   });
 
+  it('applies the creative-agent renderDefaults VIDEO pin when the project has none (#3231 Phase 4)', async () => {
+    getSettings.mockResolvedValue({
+      imageGen: { grok: { enabled: true, grokPath: '/bin/grok' } },
+      renderDefaults: { 'creative-agent': { videoMode: 'grok' } },
+    });
+    await run('media_enqueueVideoJob', { prompt: 'p' });
+    expect(enqueued().params).toEqual(expect.objectContaining({ mode: 'grok', videoMode: 'text', grokPath: '/bin/grok' }));
+  });
+
+  it('applies the install-wide settings.videoGen.mode pin when nothing else pins (#3231 Phase 4)', async () => {
+    getSettings.mockResolvedValue({
+      imageGen: { grok: { enabled: true, grokPath: '/bin/grok' } },
+      videoGen: { mode: 'grok' },
+    });
+    await run('media_enqueueVideoJob', { prompt: 'p' });
+    expect(enqueued().params).toEqual(expect.objectContaining({ mode: 'grok' }));
+  });
+
+  it('the project video pin outranks the target video pin', async () => {
+    getSettings.mockResolvedValue({
+      imageGen: { grok: { enabled: true, grokPath: '/bin/grok' } },
+      renderDefaults: { 'creative-agent': { videoMode: 'grok' } },
+    });
+    getProject.mockResolvedValue(projectWithPin({ video: { mode: 'local' } }));
+    await run('media_enqueueVideoJob', { prompt: 'p', mode: 'image' }, { projectId: 'cd-1' });
+    expect(enqueued().params.mode).toBe('image'); // local pin → semantic survives, no grok discriminator
+  });
+
+  it('a disabled grok video pin degrades to local (never fails the commission)', async () => {
+    getSettings.mockResolvedValue({
+      renderDefaults: { 'creative-agent': { videoMode: 'grok' } },
+    });
+    await run('media_enqueueVideoJob', { prompt: 'p', mode: 'image' });
+    expect(enqueued().params).toEqual(expect.objectContaining({ mode: 'image', prompt: 'p' }));
+  });
+
+  it('the target videoModel rides a local resolution when the project pins no model', async () => {
+    getSettings.mockResolvedValue({
+      renderDefaults: { 'creative-agent': { videoMode: 'local', videoModel: 'target-video-model' } },
+    });
+    await run('media_enqueueVideoJob', { prompt: 'p', mode: 'image' });
+    expect(enqueued().params.modelId).toBe('target-video-model');
+  });
+
   it('reads the owning project exactly once per enqueue', async () => {
     getProject.mockResolvedValue(projectWithPin({ image: { mode: 'local' } }));
     await run('media_enqueueVideoJob', { prompt: 'p' }, { projectId: 'cd-1' });

@@ -20,6 +20,8 @@ import { PATHS, ensureDir, resolveGalleryImage } from '../lib/fileUtils.js';
 import { safeUnder } from '../lib/ffmpeg.js';
 import { grokVideoDurationSchema } from '../lib/validation.js';
 import { IMAGE_GEN_MODE } from '../services/imageGen/modes.js';
+import { VIDEO_GEN_MODE, resolveVideoMode } from '../services/videoGen/modes.js';
+import { RENDER_TARGET } from '../lib/renderTargets.js';
 import { getSettings } from '../services/settings.js';
 import { getProject as getMusicVideoProject } from '../services/musicVideo/projects.js';
 import { getTrack } from '../services/tracks/index.js';
@@ -750,6 +752,33 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
   }
   const body = parsed.data;
   const s = await getSettings();
+  // #3231 Phase 4 — the video pin ladder. An explicit `body.backend` always
+  // wins (the VideoGen page and the MV director board both send one); when
+  // absent, consult the music-video target pin (for director-board renders)
+  // and the install-wide `settings.videoGen.mode` via resolveVideoMode. A pin
+  // is honored only for a grok-DELIVERABLE request shape — the grok lane reads
+  // only prompt/dims/source-image/duration, so a request carrying local-only
+  // machinery (a semantic mode beyond text/image, keyframes, audio, IC refs,
+  // extend, LoRAs, a last frame, chunked renders) stays local rather than
+  // silently dropping those inputs. A pin degrades; only an explicit backend
+  // request errors.
+  const grokDeliverable = (!body.mode || body.mode === 'text' || body.mode === 'image')
+    // A named local model is local-only machinery in the same sense as the
+    // fields below — grok has no model knob, so honoring a grok pin here
+    // would silently discard the model the caller asked for (e.g. a media
+    // requeue rebuilding a local render's config without a backend field).
+    && !body.modelId
+    && !uploads.lastImage && !body.lastImageFile
+    && !uploads.audioFile
+    && !uploads.icReference && !body.icReferenceVideoIds?.length && !body.icReferenceImageFiles?.length
+    && !body.extendFromVideoId
+    && !body.keyframes?.length
+    && !body.loraFilenames?.length
+    && !(body.chunks != null && Number(body.chunks) > 1);
+  const backend = body.backend
+    || (grokDeliverable
+      ? resolveVideoMode(null, s, { target: body.musicVideo ? RENDER_TARGET.MUSIC_VIDEO : null })
+      : VIDEO_GEN_MODE.LOCAL);
   const pythonPath = s.imageGen?.local?.pythonPath || null;
   // Resolve the effective model up front — both the modelId-exists check
   // below AND the a2v runtime guard further down need the model entry,
@@ -777,7 +806,7 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
   // shared with services/videoGen/local.js so the route and worker stay
   // in sync.
   const runtimeBringsOwnVenv = effectiveModel && BYOV_VIDEO_RUNTIMES.has(effectiveModel.runtime);
-  if (!pythonPath && !runtimeBringsOwnVenv && body.backend !== 'grok') {
+  if (!pythonPath && !runtimeBringsOwnVenv && backend !== 'grok') {
     await cleanupTempUploads();
     throw new ServerError(
       'Local video generation is not configured (settings.imageGen.local.pythonPath is missing).',
@@ -1023,8 +1052,9 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
   // local-runtime machinery grok doesn't use. sourceImagePath (upload or
   // gallery pick) is already resolved above, so an i2v render animates that
   // frame and a plain prompt runs the image-first image_gen → image_to_video
-  // flow inside the provider.
-  if (body.backend === 'grok') {
+  // flow inside the provider. `backend` (not `body.backend`) so the #3231
+  // pin ladder routes an unpinned-request grok default through here too.
+  if (backend === 'grok') {
     const g = s.imageGen?.grok || {};
     if (!g.enabled) {
       await cleanupAllStaged();

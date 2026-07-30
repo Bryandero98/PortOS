@@ -56,3 +56,54 @@ describe('resolveVideoMode', () => {
     expect(resolveVideoMode(undefined, grokOn)).toBe('local');
   });
 });
+
+describe('resolveVideoMode — pin ladder (#3231 Phase 4)', () => {
+  const grokOn = { imageGen: { grok: { enabled: true } } };
+  const withPins = (extra) => ({ ...grokOn, ...extra });
+
+  it('consults renderDefaults[target].videoMode when no request names a backend', () => {
+    const settings = withPins({ renderDefaults: { 'music-video': { videoMode: 'grok' } } });
+    expect(resolveVideoMode(null, settings, { target: 'music-video' })).toBe('grok');
+    // A different target's pin does not leak.
+    expect(resolveVideoMode(null, settings, { target: 'creative-agent' })).toBe('local');
+    // No target → the target rung is skipped entirely.
+    expect(resolveVideoMode(null, settings)).toBe('local');
+  });
+
+  it('consults settings.videoGen.mode after the target pin', () => {
+    const settings = withPins({ videoGen: { mode: 'grok' } });
+    expect(resolveVideoMode(null, settings)).toBe('grok');
+    expect(resolveVideoMode(null, settings, { target: 'music-video' })).toBe('grok');
+    // The target pin outranks the install pin.
+    const both = withPins({
+      renderDefaults: { 'music-video': { videoMode: 'local' } },
+      videoGen: { mode: 'grok' },
+    });
+    expect(resolveVideoMode(null, both, { target: 'music-video' })).toBe('local');
+  });
+
+  it('an explicit request outranks every pin', () => {
+    const settings = withPins({
+      renderDefaults: { 'music-video': { videoMode: 'grok' } },
+      videoGen: { mode: 'grok' },
+    });
+    expect(resolveVideoMode('local', settings, { target: 'music-video' })).toBe('local');
+  });
+
+  it("normalizes the 'auto' sentinel and blanks to no-pin on every rung", () => {
+    expect(resolveVideoMode(null, withPins({ videoGen: { mode: 'auto' } }))).toBe('local');
+    expect(resolveVideoMode(null, withPins({ videoGen: { mode: '  ' } }))).toBe('local');
+    expect(resolveVideoMode(null, withPins({
+      renderDefaults: { 'music-video': { videoMode: 'auto' } },
+    }), { target: 'music-video' })).toBe('local');
+  });
+
+  it('usability-gates each pin rung — a disabled grok pin degrades to local', () => {
+    const grokOff = { imageGen: { grok: { enabled: false } } };
+    expect(resolveVideoMode(null, {
+      ...grokOff,
+      renderDefaults: { 'music-video': { videoMode: 'grok' } },
+    }, { target: 'music-video' })).toBe('local');
+    expect(resolveVideoMode(null, { ...grokOff, videoGen: { mode: 'grok' } })).toBe('local');
+  });
+});

@@ -212,6 +212,26 @@ describe('ImageGenTab grouped tabs', () => {
     expect(patch.imageGen).toHaveProperty('agy');
     expect(patch.imageGen).toHaveProperty('expose');
   });
+
+  it('the videoGen save body round-trips sibling keys the tab does not edit (#3231 Phase 4)', async () => {
+    // The settings PUT replaces top-level slices wholesale, so if this wire
+    // body ever drops the loaded slice's sibling keys, a Defaults-tab save
+    // erases videoGen.defaultModelId (read by pipeline video stages). The
+    // server suite can't see this — it validates whatever body arrives — so
+    // the exact wire body is pinned HERE.
+    getSettings.mockResolvedValue({
+      imageGen: { mode: 'external', external: { sdapiUrl: 'http://localhost:7860' } },
+      videoGen: { mode: 'grok', defaultModelId: 'ltx23_distilled_q4' },
+    });
+    await renderTab(['/media/image?mediaTab=defaults']);
+    const videoSelect = screen.getByLabelText(/Default video backend/i);
+    expect(videoSelect.value).toBe('grok');
+    fireEvent.change(videoSelect, { target: { value: 'local' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
+    await waitFor(() => expect(updateSettings).toHaveBeenCalled());
+    const patch = updateSettings.mock.calls[0][0];
+    expect(patch.videoGen).toEqual({ mode: 'local', defaultModelId: 'ltx23_distilled_q4' });
+  });
 });
 
 describe('ImageGenTab — Agy CLI section', () => {
