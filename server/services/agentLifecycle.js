@@ -401,7 +401,7 @@ async function runAgentSpawn(task) {
       workspacePath,
       appName: resolvedAppName
     });
-    const executionMode = isTui ? 'tui' : useRunner ? 'runner' : 'direct';
+    const executionMode = isTui ? (useRunner ? 'runner-tui' : 'tui') : useRunner ? 'runner' : 'direct';
 
     // Register the agent with model info.
     //
@@ -437,7 +437,7 @@ async function runAgentSpawn(task) {
       modelReason: modelSelection.reason,
       runId,
       phase: 'initializing',
-      useRunner: isTui ? false : useRunner,
+      useRunner,
       executionMode,
       taskAnalysisType: task.metadata?.analysisType || null,
       taskReviewType: task.metadata?.reviewType || null,
@@ -562,6 +562,7 @@ async function runAgentSpawn(task) {
         cleanupWorktreeFn: cleanupAgentWorktree,
         isTruthyMetaFn: isTruthyMeta,
         leanMode,
+        useDurableRunner: useRunner,
       });
     }
     if (useRunner) {

@@ -11,9 +11,10 @@
  * or `agentManagement.js` (enforced by `agentImportCycles.test.js`).
  */
 
-import { getActiveAgentsFromRunner } from './cosRunnerClient.js';
+import { connectTuiSessionViaRunner, getActiveAgentsFromRunner } from './cosRunnerClient.js';
 import { isInternalTaskId } from '../lib/taskParser.js';
 import { runnerAgents } from './agentState.js';
+import * as shellService from './shell.js';
 
 /**
  * Sync running agents from the runner (recovery after server restart).
@@ -63,6 +64,19 @@ export async function syncRunnerAgents() {
         hasStartedWorking: true,
         startedAt: agent.startedAt
       });
+      if (agent.kind === 'tui' && agent.sessionId && !shellService.getSession(agent.sessionId)) {
+        const session = connectTuiSessionViaRunner(agent);
+        shellService.registerExternalSession(agent.sessionId, session.ptyProcess, {
+          cwd: agent.workspacePath,
+          kind: 'agent-tui',
+          agentId: agent.id,
+          label: `Recovered TUI ${agent.id}`,
+          command: agent.command,
+        });
+        session.ptyProcess.onExit(({ exitCode }) => {
+          shellService.unregisterExternalSession(agent.sessionId, { exitCode });
+        });
+      }
       console.log(`🔄 Recovered agent ${agent.id} (task: ${agent.taskId})`);
       syncedCount++;
     }

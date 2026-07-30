@@ -346,7 +346,7 @@ function releaseExternalViews(socket, exceptId = null) {
  * @param {string} sessionId — typically the runId, so the Shell view correlates
  *   with the /runs record.
  * @param {object} ptyProcess — the live node-pty IPty.
- * @param {object} [options] — { label, command, cwd, kind }.
+ * @param {object} [options] — { label, command, cwd, kind, agentId }.
  * @returns {string} sessionId (idempotent — returns the id if already registered).
  */
 export function registerExternalSession(sessionId, ptyProcess, options = {}) {
@@ -367,7 +367,7 @@ export function registerExternalSession(sessionId, ptyProcess, options = {}) {
     createdAt: Date.now(),
     label: options.label || null,
     kind: options.kind || 'tui-run',
-    agentId: null,
+    agentId: options.agentId || null,
     command: options.command || null,
     onData: null,
     onExit: null,

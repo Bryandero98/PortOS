@@ -9,7 +9,12 @@ vi.mock('./shell.js', () => ({
   killSession: vi.fn(),
   getSession: vi.fn(),
   getSessionProcess: vi.fn(),
-  getLastInputAt: vi.fn().mockReturnValue(null)
+  getLastInputAt: vi.fn().mockReturnValue(null),
+  registerExternalSession: vi.fn(),
+}));
+
+vi.mock('./cosRunnerClient.js', () => ({
+  spawnTuiSessionViaRunner: vi.fn(),
 }));
 
 vi.mock('./cosEvents.js', () => ({
@@ -178,6 +183,7 @@ import { existsSync } from 'fs';
 import { readFile } from 'fs/promises';
 import { execFile } from 'child_process';
 import { buildTuiSpawnConfig, spawnTuiAgent } from './agentTuiSpawning.js';
+import { spawnTuiSessionViaRunner } from './cosRunnerClient.js';
 import * as shellService from './shell.js';
 import * as agentLifecycle from './agentFinalization.js';
 import * as agentErrorAnalysis from './agentErrorAnalysis.js';
@@ -422,6 +428,7 @@ describe('spawnTuiAgent runtime', () => {
       executionId,
       laneName,
       checkOnlineFn,
+      useDurableRunner: overrides.useDurableRunner ?? false,
       ...helpers,
     });
   }
@@ -460,6 +467,22 @@ describe('spawnTuiAgent runtime', () => {
 
     vi.mocked(shellService.getSessionProcess).mockReturnValue(null);
     vi.mocked(shellService.getSession).mockReturnValue({ id: SESSION_ID });
+    vi.mocked(spawnTuiSessionViaRunner).mockImplementation(async (options) => {
+      capturedOnData = options.onData;
+      capturedOnExit = options.onExit;
+      return {
+        sessionId: SESSION_ID,
+        pid: 4321,
+        ptyProcess: {
+          pid: 4321,
+          onData: vi.fn(),
+          onExit: vi.fn(),
+          write: vi.fn(),
+          resize: vi.fn(),
+          kill: vi.fn(),
+        },
+      };
+    });
 
     // Reset sentinel state: no .agent-done on disk, empty read. The
     // completion-sentinel test overrides both. clearAllMocks keeps the factory
@@ -491,6 +514,27 @@ describe('spawnTuiAgent runtime', () => {
   // calls — those are covered by agentLifecycle.test.js.
 
   // ── GH_TOKEN pinning: the agent's own `gh pr create` must auth as the repo owner ─
+  it('uses a runner-owned PTY and registers it as an attachable shell session', async () => {
+    runSpawn({ useDurableRunner: true });
+    await flushMicrotasks();
+
+    expect(spawnTuiSessionViaRunner).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: 'agent-1',
+      taskId: 'task-1',
+      command: 'codex',
+      workspacePath: '/tmp/ws',
+      doneSentinelPath: '/tmp/ws/.agent-done',
+    }));
+    expect(shellService.createShellSession).not.toHaveBeenCalled();
+    expect(shellService.registerExternalSession).toHaveBeenCalledWith(
+      SESSION_ID,
+      expect.objectContaining({ pid: 4321 }),
+      expect.objectContaining({ agentId: 'agent-1', kind: 'agent-tui' }),
+    );
+
+    await capturedOnExit({ exitCode: 1, signal: 15 });
+  });
+
   it('passes the repo-owner-pinned GH_TOKEN into the TUI session env (buildSafeEnv would otherwise strip it)', async () => {
     let resolveComplete;
     const completeDone = new Promise((r) => { resolveComplete = r; });

@@ -78,14 +78,25 @@ describe('cos-runner termination — Windows tree-kill for cmd.exe-wrapped shims
     );
   });
 
-  it('terminates agent processes via killProcessTree, not a bare .kill(), so the wrapped child is not orphaned', () => {
+  it('tree-kills wrapped CLI agents while using node-pty kill for TUI handles', () => {
     // Once an agent is spawned as `cmd.exe /c opencode.cmd …` on Windows, a
     // plain agent.process.kill() signals only cmd.exe and orphans the real CLI.
-    // Every agent-process termination must route through killProcessTree.
-    expect(RUNNER_SRC).toMatch(/killProcessTree\(agent\.process,\s*'SIGTERM'\)/);
-    expect(RUNNER_SRC).toMatch(/killProcessTree\(agent\.process,\s*'SIGKILL'\)/);
-    // Guard against a regression that reverts an agent-process kill to bare .kill().
-    expect(RUNNER_SRC).not.toMatch(/agent\.process\.kill\(/);
-    expect(RUNNER_SRC).not.toMatch(/current\.process\.kill\(/);
+    // node-pty handles are the exception: their own kill API releases the
+    // native PTY resources correctly.
+    expect(RUNNER_SRC).toMatch(
+      /if\s*\(\s*agent\.kind\s*===\s*'tui'\s*\)\s*\{[\s\S]{0,100}?agent\.process\.kill\(signal\)[\s\S]{0,100}?return;/
+    );
+    expect(RUNNER_SRC).toMatch(/killProcessTree\(agent\.process,\s*signal\)/);
+  });
+});
+
+describe('cos-runner durable TUI ownership (#3202)', () => {
+  it('spawns the PTY in the runner and keeps Windows npm shims behind cmd.exe', () => {
+    expect(RUNNER_SRC).toMatch(/app\.post\('\/spawn-tui'/);
+    expect(RUNNER_SRC).toMatch(/const ptyCommand = process\.platform === 'win32'/);
+    expect(RUNNER_SRC).toMatch(/pty\.spawn\(ptyCommand,\s*ptyArgs/);
+    expect(RUNNER_SRC).toMatch(/io\.emit\('tui:output'/);
+    expect(RUNNER_SRC).toMatch(/parseSentinelPayload\(contents\)/);
+    expect(RUNNER_SRC).toMatch(/emitToServer\('agent:completed'/);
   });
 });
