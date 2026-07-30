@@ -15,6 +15,20 @@ export const IMAGE_GEN_MODE = Object.freeze({
 // this default rather than showing a blank.
 export const CODEX_IMAGEGEN_DEFAULT_EFFORT = 'low';
 
+// Client mirror of the server's AGY_IMAGEGEN_DEFAULT_MODEL
+// (server/services/imageGen/modes.js, #3231) — the cheap-tier agent/session
+// model an unpinned agy render runs on. Any UI naming "the model an agy job
+// used" must resolve an absent value to this, not to "agy's own default"
+// (which stopped being true when the pin shipped).
+export const AGY_IMAGEGEN_DEFAULT_MODEL = 'gemini-3.5-flash-low';
+
+// Client mirror of AGY_IMAGEGEN_IMAGE_MODEL — the image model behind agy's
+// generate_image tool, fixed server-side by Antigravity and NOT selectable by
+// PortOS (all three channels probed and closed — see the server constant's
+// comment). Surfaced read-only in Settings so the agent-model field can't be
+// mistaken for an image-model picker.
+export const AGY_IMAGEGEN_IMAGE_MODEL = 'imagen-3.0-generate-002';
+
 // Client mirror of the server's GROK_ASPECT_RATIOS (imageGen/grok.js) — the
 // aspect ratios grok's image_gen/image_edit tools accept, offered as the
 // default-ratio picker in Settings → Image Gen → Grok.

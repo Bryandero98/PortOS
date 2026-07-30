@@ -22,7 +22,7 @@ import {
   registerTool, updateTool, getToolsList,
   saveHfToken, clearHfToken,
 } from '../../services/api';
-import { isCloudCliMode, IMAGE_GEN_MODE, CODEX_IMAGEGEN_DEFAULT_EFFORT, GROK_ASPECT_RATIOS } from '../../lib/imageGenBackends';
+import { isCloudCliMode, IMAGE_GEN_MODE, AGY_IMAGEGEN_DEFAULT_MODEL, AGY_IMAGEGEN_IMAGE_MODEL, CODEX_IMAGEGEN_DEFAULT_EFFORT, GROK_ASPECT_RATIOS } from '../../lib/imageGenBackends';
 import { resolveCleanersFromConfig } from '../../lib/imageCleaners';
 import { useMediaJobSse } from '../../hooks/useMediaJobSse';
 import { useAgyModels } from '../../hooks/useAgyModels';
@@ -907,7 +907,7 @@ export function ImageGenTab() {
             </div>
             <div>
               <div className="flex items-end justify-between gap-3 mb-1">
-                <label htmlFor={agyModelId} className="block text-xs font-medium text-gray-400">Default agent model</label>
+                <label htmlFor={agyModelId} className="block text-xs font-medium text-gray-400">Agent model (drives the session — not the image model)</label>
                 <button
                   type="button"
                   onClick={refreshAgyModels}
@@ -924,7 +924,7 @@ export function ImageGenTab() {
                 value={agyModel}
                 onChange={(e) => setAgyModel(e.target.value)}
                 className="w-full bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-port-accent"
-                placeholder="Leave blank to use Agy's own configured default"
+                placeholder={`${AGY_IMAGEGEN_DEFAULT_MODEL} (default)`}
               />
               <datalist id={agyModelsListId}>
                 {agyModels.map((modelId) => <option key={modelId} value={modelId} />)}
@@ -934,16 +934,28 @@ export function ImageGenTab() {
                   calls the built-in generate_image tool. Agy exposes no knob for the
                   underlying image model (generate_image takes Prompt / ImageName /
                   AspectRatio / ImagePaths and nothing else), so there is no imagen-*
-                  option to pick here. An id outside `agy models` makes agy exit
-                  non-zero before generating, which is why the list is a live probe. */}
+                  option to pick here — the image model is fixed server-side (see the
+                  read-only row below and AGY_IMAGEGEN_IMAGE_MODEL). An id outside
+                  `agy models` makes agy exit non-zero before generating, which is why
+                  the list is a live probe. */}
               {!agyModelsError && (
                 <p className="text-xs text-gray-500 mt-1">
                   The agent model Agy runs the session on — it drives the built-in{' '}
-                  <code className="text-gray-400">generate_image</code> tool. Agy picks the
-                  image model itself and exposes no override. Renders can pin a different
-                  agent model per queue item on the Image Gen page.
+                  <code className="text-gray-400">generate_image</code> tool. Leave empty to
+                  use the cheap default (<code className="text-gray-400">{AGY_IMAGEGEN_DEFAULT_MODEL}</code>).
+                  Renders can pin a different agent model per queue item on the Image Gen page.
                 </p>
               )}
+            </div>
+            <div>
+              <span className="block text-xs font-medium text-gray-400 mb-1">Image model</span>
+              <p className="text-sm text-gray-300">
+                <code className="text-gray-300">{AGY_IMAGEGEN_IMAGE_MODEL}</code>{' '}
+                <span className="text-xs text-gray-500">
+                  — chosen by Antigravity server-side; not selectable through the CLI
+                  (no tool parameter, no <code>--model</code> id, prompt requests are ignored).
+                </span>
+              </p>
             </div>
             <CleanersToggles
               cleanC2PA={cleanC2PAByMode.agy}

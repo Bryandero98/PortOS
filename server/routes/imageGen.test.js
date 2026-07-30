@@ -630,9 +630,9 @@ describe('Image Gen Routes', () => {
       expect(enqueued.params).not.toHaveProperty('cloudModel');
     });
 
-    // Agy is the backend the override was actually built for, and its default
-    // is a sentinel (ANTIGRAVITY_CONFIGURED_DEFAULT) rather than a real id —
-    // so exercise it directly instead of inferring from the codex case.
+    // Agy is the backend the override was actually built for — exercise it
+    // directly instead of inferring from the codex case. (Its unpinned default
+    // is now the concrete AGY_IMAGEGEN_DEFAULT_MODEL cheap-tier pin, #3231.)
     it('agy: cloudModel replaces the configured-default sentinel for one queue item', async () => {
       getSettings.mockResolvedValueOnce({
         imageGen: { mode: 'agy', agy: { enabled: true, agyPath: '/opt/agy' } },
@@ -665,6 +665,26 @@ describe('Image Gen Routes', () => {
       expect(response.status).toBe(200);
       expect(response.body.model).toBe('gemini-3.5-flash-high');
       expect(mediaJobQueue.enqueueJob.mock.calls.at(-1)[0].params.model).toBe('gemini-3.5-flash-high');
+    });
+
+    // Defense-in-depth for the cheap-tier pin (#3231): a fully-unpinned agy
+    // enqueue (no saved model, no cloudModel) must persist the concrete
+    // default into the queue job — a refactor that stops spreading
+    // cloud.jobParams into the enqueue would otherwise only fail at the
+    // resolver-level test.
+    it('agy: a fully-unpinned render enqueues the cheap-tier default model', async () => {
+      getSettings.mockResolvedValueOnce({
+        imageGen: { mode: 'agy', agy: { enabled: true } },
+      });
+      mediaJobQueue.enqueueJob.mockReturnValueOnce({ jobId: 'queued-agy-003', position: 1, status: 'queued' });
+
+      const response = await request(app)
+        .post('/api/image-gen/generate')
+        .send({ prompt: 'a lighthouse' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.model).toBe('gemini-3.5-flash-low');
+      expect(mediaJobQueue.enqueueJob.mock.calls.at(-1)[0].params.model).toBe('gemini-3.5-flash-low');
     });
 
     // No getSettings mock here on purpose: Zod rejects before the route ever

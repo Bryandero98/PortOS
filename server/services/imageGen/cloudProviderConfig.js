@@ -17,8 +17,8 @@
  */
 
 import { ServerError } from '../../lib/errorHandler.js';
-import { ANTIGRAVITY_CONFIGURED_DEFAULT } from '../../lib/antigravity.js';
 import {
+  AGY_IMAGEGEN_DEFAULT_MODEL,
   CLOUD_IMAGE_GEN_MODES,
   CODEX_IMAGEGEN_DEFAULT_MODEL,
   IMAGE_GEN_MODE,
@@ -28,8 +28,8 @@ import {
 /**
  * Per-provider knowledge, keyed by mode:
  *  - `label`      — user-facing provider name used in every disabled message.
- *  - `modelId`    — the *effective* model id for display/metadata (codex
- *                   defaults to the cheap tier; grok's backend is fixed).
+ *  - `modelId`    — the *effective* model id for display/metadata (codex and
+ *                   agy default to their cheap tiers; grok's backend is fixed).
  *  - `params`     — the provider's knob bundle for a queue job / direct call.
  *                   Codex's `model` carries the effective (defaulted) id so the
  *                   queue row reports what actually renders; the provider
@@ -67,10 +67,13 @@ export const CLOUD_PROVIDER_SPECS = Object.freeze({
     label: 'Agy Imagegen',
     errorCode: 'AGY_IMAGEGEN_DISABLED',
     supportsModelOverride: true,
-    modelId: (a, override) => override || a.model || ANTIGRAVITY_CONFIGURED_DEFAULT,
+    // The concrete cheap-tier pin (not the ANTIGRAVITY_CONFIGURED_DEFAULT
+    // sentinel, which resolves to "no --model" and lets agy pick a possibly
+    // reasoning-heavy session default) — see AGY_IMAGEGEN_DEFAULT_MODEL.
+    modelId: (a, override) => override || a.model || AGY_IMAGEGEN_DEFAULT_MODEL,
     params: (a, override) => ({
       agyPath: a.agyPath,
-      model: override || a.model || ANTIGRAVITY_CONFIGURED_DEFAULT,
+      model: override || a.model || AGY_IMAGEGEN_DEFAULT_MODEL,
     }),
   }),
 });

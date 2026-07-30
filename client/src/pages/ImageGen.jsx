@@ -37,7 +37,7 @@ import {
   AlertTriangle, X, Film,
 } from 'lucide-react';
 import { composeStyledPrompt } from '../lib/composeStyledPrompt';
-import { isCloudCliMode, deriveAvailableBackends, IMAGE_GEN_MODE, isI2iCapableMode, pickI2iMode, modeLabel } from '../lib/imageGenBackends';
+import { isCloudCliMode, deriveAvailableBackends, AGY_IMAGEGEN_DEFAULT_MODEL, IMAGE_GEN_MODE, isI2iCapableMode, pickI2iMode, modeLabel } from '../lib/imageGenBackends';
 import { clampImageDimensions, clampImageEdge } from '../lib/imageGenResolutions';
 import { DEFAULT_NEGATIVE_PROMPT } from '../lib/imageGenDefaults';
 import { resolveCleanersFromConfig } from '../lib/imageCleaners';
@@ -157,7 +157,8 @@ export default function ImageGen() {
   const [seed, setSeed] = useState('');
   const [selectedLoras, setSelectedLoras] = useState([]);
   // Per-render override of the Agy session model. Empty = inherit the saved
-  // Settings default (which itself may be empty = agy's own configured model).
+  // Settings default (which itself may be empty = the shipped cheap-tier pin,
+  // AGY_IMAGEGEN_DEFAULT_MODEL — #3231).
   const [agyModel, setAgyModel] = useState('');
   const [savedAgyModel, setSavedAgyModel] = useState('');
 
@@ -1218,7 +1219,7 @@ export default function ImageGen() {
             cloudModel={effectiveAgyModel}
             onCloudModelChange={setAgyModel}
             cloudModelLabel="Agent model"
-            cloudModelDefaultLabel={savedAgyModel || "agy's own default"}
+            cloudModelDefaultLabel={savedAgyModel || AGY_IMAGEGEN_DEFAULT_MODEL}
           />
           {isAgyMode && agy.error && (
             <p className="text-xs text-port-warning">

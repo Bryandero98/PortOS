@@ -1,5 +1,9 @@
 # Unreleased Changes
 
+## Image generation
+
+- **[issue-3231] Agy image renders now default to a cheap, fast agent model.** An Agy render with no model chosen used to run on whatever Antigravity's own configuration selected — potentially its slowest, most expensive reasoning tier — just to relay a single image request. Renders now default to the cheapest flash tier (matching how Codex renders already pin their light model), and a model you set in Settings or per render still wins. Settings → Image Gen → Agy CLI also now makes clear which model the field controls: the *agent* driving the session, not the image model — the image itself always renders on Antigravity's fixed server-side Imagen 3 backend, which is now named on the page and recorded with each generated image.
+
 ## 3D avatars
 
 - **[issue-3208] Shared GLB avatars now keep their cached model resources intact by construction.** CyberCity, Chief of Staff, and generated-model views render cached or cloned scenes through one safe path, preventing future avatar additions from reintroducing blank meshes after navigation or remounts.

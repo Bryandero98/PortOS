@@ -5,12 +5,12 @@ import {
   resolveCloudProviderConfig,
 } from './cloudProviderConfig.js';
 import {
+  AGY_IMAGEGEN_DEFAULT_MODEL,
   CODEX_IMAGEGEN_DEFAULT_MODEL,
   IMAGE_GEN_MODE,
   resolveQueueImageEditMode,
   resolveQueueImageMode,
 } from './modes.js';
-import { ANTIGRAVITY_CONFIGURED_DEFAULT } from '../../lib/antigravity.js';
 
 const settingsWith = (imageGen) => ({ imageGen });
 
@@ -59,7 +59,7 @@ describe('resolveCloudProviderConfig', () => {
     });
   });
 
-  it('bundles Agy path and selected model, defaulting to its configured model sentinel', () => {
+  it('bundles Agy path and selected model, defaulting to the cheap-tier pin', () => {
     const selected = resolveCloudProviderConfig(
       settingsWith({ agy: { enabled: true, agyPath: '/bin/agy', model: 'gemini-image' } }),
       IMAGE_GEN_MODE.AGY,
@@ -75,8 +75,11 @@ describe('resolveCloudProviderConfig', () => {
       settingsWith({ agy: { enabled: true } }),
       IMAGE_GEN_MODE.AGY,
     );
-    expect(fallback.modelId).toBe(ANTIGRAVITY_CONFIGURED_DEFAULT);
-    expect(fallback.providerParams.model).toBe(ANTIGRAVITY_CONFIGURED_DEFAULT);
+    // NOT the ANTIGRAVITY_CONFIGURED_DEFAULT sentinel — that resolved to "no
+    // --model", letting agy run a possibly reasoning-heavy session default for
+    // a single generate_image relay (#3231).
+    expect(fallback.modelId).toBe(AGY_IMAGEGEN_DEFAULT_MODEL);
+    expect(fallback.providerParams.model).toBe(AGY_IMAGEGEN_DEFAULT_MODEL);
   });
 
   it('lets a per-render model override win over the saved default', () => {
