@@ -519,7 +519,16 @@ function BibleSidebar({ series, universes, patchSeries, onSeriesUpdate, onFlushP
           label="Backend"
           imageMode={series.imageMode || null}
           imageModelId={series.imageModelId || null}
-          onChange={({ imageMode, imageModelId }) => patchSeries({ imageMode, imageModelId })}
+          onChange={async ({ imageMode, imageModelId }) => {
+            // Persist immediately (the primaryManuscriptType pattern) — a
+            // pipeline render from another page must see the pin without
+            // requiring a Save on this one; the other two hosts of this row
+            // (universe, sprite) also persist on change.
+            patchSeries({ imageMode, imageModelId });
+            const updated = await updatePipelineSeries(series.id, { imageMode, imageModelId }, { silent: true })
+              .catch((err) => { toast.error(err.message || 'Failed to save render pin'); return null; });
+            if (updated) onSeriesUpdate?.(updated);
+          }}
           autoLabel="Auto (install / surface default)"
         />
         <p className="text-[11px] text-gray-500 mt-1">

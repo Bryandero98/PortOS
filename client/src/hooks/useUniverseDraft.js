@@ -253,6 +253,11 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
       influences: ensureInfluences(draft.influences),
       locked: draft.locked || {},
       llm: draft.llm || {},
+      // Per-record render pin (#3231 Phase 3) — included only when set so a
+      // pin chosen on a not-yet-saved universe survives the create (the
+      // update path is a no-op re-send; setRenderPin already PATCHed it).
+      ...(draft.imageMode ? { imageMode: draft.imageMode } : {}),
+      ...(draft.imageModelId ? { imageModelId: draft.imageModelId } : {}),
     };
     const needsCanonInPayload = !selectedId || canonDirty;
     let payload = basePayload;
