@@ -5,6 +5,7 @@
  * and orphaned task retry logic.
  */
 
+import { join } from 'path';
 import { ServerError } from '../lib/errorHandler.js';
 import { emitLog } from './cosEvents.js';
 import { completeAgent, updateAgent } from './cosAgents.js';
@@ -21,9 +22,9 @@ import { activeAgents, runnerAgents, userTerminatedAgents, pausedAgents, useRunn
 import { cleanupAgentWorktree, resolveTaskResumePatch } from './agentWorktreeCleanup.js';
 import { syncRunnerAgents } from './agentRunnerSync.js';
 import { flushRunnerOutputBatcher } from './agentRunnerOutputBatchers.js';
-import { checkForTaskCommit } from './agentRunTracking.js';
+import { checkForTaskCommit, completeAgentRun } from './agentRunTracking.js';
 import { dispatchRecoveredTaskOutputHook } from './agentFinalization.js';
-import { PATHS } from '../lib/fileUtils.js';
+import { PATHS, tryReadFile } from '../lib/fileUtils.js';
 import { readHostShutdownMarker, clearHostShutdownMarker, HOST_SHUTDOWN_REASON } from '../lib/hostShutdown.js';
 import { killProcessTree } from '../lib/bufferedSpawn.js';
 import { release } from './executionLanes.js';
@@ -612,6 +613,9 @@ export async function cleanupOrphanedAgents() {
         }
 
         const interrupted = interruptedByRestart.has(agent.id);
+        const errorMessage = interrupted
+          ? 'Agent was interrupted by a PortOS server restart'
+          : 'Agent process terminated unexpectedly';
         console.log(interrupted
           ? `🛑 Recovering agent ${agent.id} interrupted by a PortOS restart (PID ${agent.pid || 'unknown'} not running)`
           : `🧹 Cleaning up orphaned agent ${agent.id} (PID ${agent.pid || 'unknown'} not running)`);
@@ -622,11 +626,24 @@ export async function cleanupOrphanedAgents() {
           success: false,
           workspacePath: agent.metadata?.workspacePath || null,
         });
+        if (agent.metadata?.runId) {
+          const bufferedOutput = Array.isArray(agent.output)
+            ? agent.output.map((entry) => typeof entry === 'string' ? entry : entry?.line).filter(Boolean).join('\n')
+            : '';
+          const output = await tryReadFile(join(PATHS.cosAgents, agent.id, 'output.txt')) ?? bufferedOutput;
+          const startedAt = Date.parse(agent.startedAt);
+          const duration = Number.isFinite(startedAt) ? Math.max(0, Date.now() - startedAt) : 0;
+          // Close the run BEFORE the agent record. If the run write fails, the
+          // agent remains eligible for the next sweep; if the later agent write
+          // fails, completeAgentRun's endTime guard makes this retry harmless.
+          await completeAgentRun(agent.metadata.runId, output, interrupted ? 143 : 1, duration, {
+            message: errorMessage,
+            category: interrupted ? 'interrupted' : 'orphaned',
+          });
+        }
         await markComplete(agent.id, {
           success: false,
-          error: interrupted
-            ? 'Agent was interrupted by a PortOS server restart'
-            : 'Agent process terminated unexpectedly',
+          error: errorMessage,
           orphaned: true,
           // Post-mortem telemetry on the agent record (nothing reads it yet —
           // the human-visible distinction is the `error` string above). Worth
@@ -779,7 +796,7 @@ export async function handleOrphanedTask(taskId, agentId, getTaskByIdFn, { agent
   }
 
   // Check if the agent actually committed work before treating as orphaned
-  const commitFound = await checkForTaskCommit(taskId, ROOT_DIR);
+  const commitFound = await checkForTaskCommit(taskId, agentMetadata?.workspacePath || ROOT_DIR);
   if (commitFound) {
     emitLog('info', `✅ Orphaned agent ${agentId} actually completed work - commit found for task ${taskId}`, { taskId, agentId });
     await updateTask(taskId, { status: 'completed' }, task.taskType || 'user');

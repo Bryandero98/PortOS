@@ -109,6 +109,7 @@ export async function completeAgentRun(runId, output, exitCode, duration, errorA
 
   const metadata = await readJSONFile(metaPath, null);
   if (!metadata) return;
+  if (metadata.endTime) return;
 
   metadata.endTime = new Date().toISOString();
   metadata.duration = duration;
@@ -139,15 +140,19 @@ export async function completeAgentRun(runId, output, exitCode, duration, errorA
     }
   }
 
-  await atomicWrite(metaPath, metadata);
+  // Persist output first so endTime remains the durable completion marker. If
+  // this write fails, the still-open metadata lets recovery retry the whole
+  // operation; once metadata lands, every run artifact is already complete.
   await writeFile(join(runDir, 'output.txt'), output || '');
+  await atomicWrite(metaPath, metadata);
 
-  // Record usage for successful CoS agent runs. Prefers the provider CLI's own
+  // Record usage for every completed CoS agent run: failed and interrupted
+  // providers still consumed tokens. Prefers the provider CLI's own
   // per-message token counts (read from its on-disk transcript, including the
   // prompt-cache tiers) and falls back to the prompt-length/stdout estimate.
   // `metadata` already carries the endTime stamped above, which bounds the
   // transcript window. Owns its own error handling.
-  if (exitCode === 0 && metadata.providerId && metadata.model) {
+  if (metadata.providerId && metadata.model) {
     recordCompletedRunUsage(metadata, output);
   }
 }
