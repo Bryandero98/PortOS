@@ -137,6 +137,55 @@ export const buildDrumSchedule = (chart, options = {}) => {
   };
 };
 
+/**
+ * A built schedule + a live clock position → where the playhead sits, as a
+ * CONTINUOUS grid coordinate (pure; no Web Audio).
+ *
+ * THIS is the playhead the UI reads. The `onStep` callback reports the last
+ * event that SOUNDED, which is enough to light a column but not to place a
+ * position: it stalls across rests and never moves at all through a bar with no
+ * hits. Anything that has to keep moving with the music — the sheet's line, the
+ * transport's pulse — converts the audio clock here instead.
+ *
+ * Returns `null` when there's nothing to place. Otherwise:
+ * - during the count-in (and the negative pre-roll lead) —
+ *   `{ countIn: true, beat }`, the 1-based beat WITHIN the count-in bar;
+ * - during the music — `{ countIn: false, bar, stepFloat }`, where `bar` is the
+ *   chart's own 1-based bar number (so a loop range still points at the right
+ *   bar of the full sheet) and `stepFloat` is a fractional grid step into it.
+ *
+ * @param {object} schedule — `buildDrumSchedule` output.
+ * @param {number} posSec — transport position in piece-seconds (may be negative).
+ */
+export const resolvePlayhead = (schedule, posSec) => {
+  const bars = Array.isArray(schedule?.bars) ? schedule.bars : [];
+  const { barSec, stepSec, beatSec, countInSec = 0 } = schedule || {};
+  if (!bars.length || !(barSec > 0) || !(stepSec > 0)) return null;
+  const pos = Number.isFinite(posSec) ? posSec : 0;
+
+  if (pos < countInSec) {
+    const beatsPerBar = beatSec > 0 ? Math.max(1, Math.round(barSec / beatSec)) : 1;
+    // The lead-in before t=0 is negative — clamp it to the first beat rather
+    // than counting backwards past the start of the count-in.
+    const elapsedBeats = Math.floor(Math.max(0, pos) / (beatSec || barSec));
+    return { countIn: true, beat: (elapsedBeats % beatsPerBar) + 1 };
+  }
+
+  const musicSec = bars.length * barSec;
+  let elapsed = pos - countInSec;
+  // A looping player runs past the end of its schedule forever, replaying the
+  // selected range — fold the position back onto one pass.
+  if (schedule.loop && musicSec > 0) elapsed = ((elapsed % musicSec) + musicSec) % musicSec;
+  elapsed = Math.min(Math.max(0, elapsed), Math.max(0, musicSec - 1e-6));
+
+  const barIdx = Math.min(bars.length - 1, Math.floor(elapsed / barSec));
+  return {
+    countIn: false,
+    bar: bars[barIdx].index,
+    stepFloat: (elapsed - barIdx * barSec) / stepSec,
+  };
+};
+
 // --- Kit voices -------------------------------------------------------------
 
 const VOICE_PEAK = 0.5; // per-hit gain ceiling before the per-cell velocity scale
@@ -368,6 +417,12 @@ export const createDrumPlayer = (chart, options = {}) => {
     // Playhead: report the LATEST position whose onset has already passed. Keyed
     // by bar+step so a bar's simultaneous hits fire one callback, not one per
     // piece — and the key includes the pass, so a looped single bar re-lights.
+    //
+    // Event-driven, so it stands still through a rest — a caller that needs a
+    // position rather than "the last thing that sounded" reads the clock via
+    // `position()` + `resolvePlayhead` and passes no `onStep` at all, which
+    // skips this walk entirely.
+    if (!onStep) return;
     let latest = null;
     for (;;) {
       if (headCursor.idx >= schedule.events.length) {
@@ -447,6 +502,11 @@ export const createDrumPlayer = (chart, options = {}) => {
     pause: transport.pause,
     stop: transport.stop,
     isPlaying: transport.isPlaying,
+    // Live audio-clock position in piece-seconds. The `onStep` callback only
+    // fires on EVENTS (so it stalls across a rest and skips a silent bar
+    // entirely) — a continuously-scrolling sheet needs the clock itself, read
+    // per animation frame rather than pushed through React state.
+    position: transport.position,
     setBpm: (next) => {
       bpm = Number.isFinite(next) && next > 0 ? next : null;
       rebuildIfIdle();

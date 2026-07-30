@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { render, cleanup, act } from '@testing-library/react';
 import DrumSheetView from './DrumSheetView.jsx';
 
 // Invented grooves only (privacy convention).
@@ -14,11 +15,13 @@ K:  o - - - - - o -`;
 
 const count = (html, tag) => (html.match(new RegExp(`<${tag}[ />]`, 'g')) || []).length;
 
+afterEach(cleanup);
+
 describe('DrumSheetView', () => {
   it('renders a bar-gridded kit sheet with no NaN geometry', () => {
     const html = renderToStaticMarkup(<DrumSheetView text={ROCK_BEAT} />);
     expect(html).not.toMatch(/NaN/);
-    expect(html).toContain('aria-label="Drum bar 1: Bar 1 — basic rock beat"');
+    expect(html).toContain('Bar 1 — basic rock beat');
     expect(html).toContain('Hi-Hat');
     expect(html).toContain('Snare');
     expect(html).toContain('Kick');
@@ -76,36 +79,42 @@ describe('DrumSheetView', () => {
     expect(count(flam, 'circle')).toBe(count(plain, 'circle') + 1);
   });
 
-  it('renders one bar block per bar, including repeat expansions', () => {
+  // --- Continuous lane -------------------------------------------------------
+
+  it('lays the whole song out in ONE horizontal lane, not a grid per bar', () => {
     const html = renderToStaticMarkup(<DrumSheetView text={'# A x3\nHH: xxxx'} />);
-    expect(count(html, 'svg')).toBe(3);
-    expect(html).toContain('(1/3)');
-    expect(html).toContain('(3/3)');
+    // Two svgs total regardless of bar count: the frozen label column + the lane.
+    expect(count(html, 'svg')).toBe(2);
+    // And exactly one scroller for the song.
+    expect((html.match(/overflow-x-auto/g) || []).length).toBe(1);
   });
 
-  it('gives every bar its own scroll container so wide bars scroll as a unit', () => {
-    const html = renderToStaticMarkup(<DrumSheetView text={'# A\nHH: xxxxxxxxxxxxxxxx\n\n# B\nHH: xxxx'} />);
-    expect((html.match(/overflow-x-auto/g) || []).length).toBe(2);
+  it('numbers every bar but only repeats a section label where it changes', () => {
+    const html = renderToStaticMarkup(<DrumSheetView text={'# Verse x3\nHH: xxxx\n\n# Chorus\nS: xxxx'} />);
+    expect((html.match(/Verse/g) || []).length).toBe(1);   // 3 bars, 1 label
+    expect((html.match(/Chorus/g) || []).length).toBe(1);
+    expect(html).toContain('>4<');                          // bar 4 still numbered
   });
 
-  it('highlights the active step column in the active bar only', () => {
-    const chart = '# A\nHH: xxxx\n\n# B\nHH: xxxx';
-    const none = renderToStaticMarkup(<DrumSheetView text={chart} />);
-    const lit = renderToStaticMarkup(<DrumSheetView text={chart} activeStep={{ bar: 2, step: 1 }} />);
-    expect(count(none, 'rect')).toBe(0);
-    expect(count(lit, 'rect')).toBe(1);           // exactly one playhead column
-    expect(lit).toContain('--port-accent');
+  it('keeps the kit labels in their own column so they survive scrolling', () => {
+    const html = renderToStaticMarkup(<DrumSheetView text={ROCK_BEAT} />);
+    const labelSvg = html.slice(html.indexOf('<svg'), html.indexOf('overflow-x-auto'));
+    expect(labelSvg).toContain('Hi-Hat');
+    expect(labelSvg).toContain('aria-hidden="true"');
+    // …and names them on the lane instead, since the column is aria-hidden.
+    expect(html).toMatch(/aria-label="Drum chart[^"]*Hi-Hat/);
   });
 
-  it('ignores an out-of-range activeStep instead of drawing off-grid', () => {
-    const html = renderToStaticMarkup(<DrumSheetView text={'subdivision: 1\n\nHH: xxxx'} activeStep={{ bar: 1, step: 99 }} />);
-    expect(count(html, 'rect')).toBe(0);
-    expect(html).not.toMatch(/NaN/);
+  it('scales the whole lane off the viewer font control', () => {
+    const small = renderToStaticMarkup(<DrumSheetView text={ROCK_BEAT} fontSizeRem={0.875} />);
+    const large = renderToStaticMarkup(<DrumSheetView text={ROCK_BEAT} fontSizeRem={1.75} />);
+    const laneWidth = (html) => Number(/<svg[^>]*viewBox="0 0 (\d+(?:\.\d+)?)[^"]*"[^>]*width="(\d+(?:\.\d+)?)"/.exec(html.slice(html.indexOf('overflow-x-auto')))?.[2]);
+    expect(laneWidth(large)).toBeCloseTo(laneWidth(small) * 2, 1);
   });
 
   it('renders the sheet AND an errors summary for a partly-bad chart', () => {
     const html = renderToStaticMarkup(<DrumSheetView text={'CB: xxxx\nHH: xxxx'} />);
-    expect(html).toContain('aria-label="Drum bar 1"');   // the good row still drew
+    expect(html).toContain('aria-label="Drum chart');   // the good row still drew
     expect(html).toContain('unknown kit piece');
     expect(html).toContain('1 chart note');
   });
@@ -125,8 +134,66 @@ describe('DrumSheetView', () => {
 
   it('adds tap targets only when onStepClick is provided', () => {
     const chart = 'subdivision: 1\n\nHH: xxxx';
-    expect(count(renderToStaticMarkup(<DrumSheetView text={chart} />), 'rect')).toBe(0);
+    // The playhead column is the one rect a static sheet carries.
+    expect(count(renderToStaticMarkup(<DrumSheetView text={chart} />), 'rect')).toBe(1);
     const interactive = renderToStaticMarkup(<DrumSheetView text={chart} onStepClick={() => {}} />);
-    expect(count(interactive, 'rect')).toBe(4);   // one per cell of the single row
+    expect(count(interactive, 'rect')).toBe(5);   // + one per cell of the single row
+  });
+
+  // --- The playhead (rAF, DOM-only — never React state) ----------------------
+
+  const playhead = (container) => ({
+    line: container.querySelector('[data-playhead="line"]'),
+    column: container.querySelector('[data-playhead="column"]'),
+  });
+
+  // One animation frame, driven by hand so the assertions don't race the clock.
+  const oneFrame = (fn) => {
+    const frames = [];
+    vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb) => {
+      frames.push(cb);
+      return frames.length;
+    });
+    vi.spyOn(globalThis, 'cancelAnimationFrame').mockImplementation(() => {});
+    const out = fn();
+    act(() => { frames.shift()?.(0); });
+    vi.restoreAllMocks();
+    return out;
+  };
+
+  it('places both playhead marks off the audio clock without re-rendering the lane', () => {
+    const chart = 'subdivision: 1\n\nHH: xxxx\n\nHH: xxxx';
+    const getPlayhead = vi.fn(() => ({ countIn: false, bar: 2, stepFloat: 1.5 }));
+    let container;
+    oneFrame(() => {
+      ({ container } = render(<DrumSheetView text={chart} playing getPlayhead={getPlayhead} />));
+    });
+    const { line, column } = playhead(container);
+    expect(getPlayhead).toHaveBeenCalled();
+    expect(line.style.display).not.toBe('none');
+    // Bar 2 starts one 4-step bar (plus the inter-bar gap) into the lane, so the
+    // marks sit right of bar 1 rather than at the origin…
+    const x = Number(/translate\(([\d.]+)/.exec(line.getAttribute('transform'))[1]);
+    expect(x).toBeGreaterThan(4 * 20);
+    // …and the column quantizes to the step the line is partway through.
+    expect(Number(column.getAttribute('x'))).toBe(x - 0.5 * 20);
+  });
+
+  it('parks the playhead during the count-in instead of sliding through bar 1', () => {
+    let container;
+    oneFrame(() => {
+      ({ container } = render(
+        <DrumSheetView text={'subdivision: 1\n\nHH: xxxx'} playing getPlayhead={() => ({ countIn: true, beat: 2 })} />,
+      ));
+    });
+    const { line, column } = playhead(container);
+    expect(line.style.display).toBe('none');
+    expect(column.style.display).toBe('none');
+  });
+
+  it('does not run a frame loop while stopped', () => {
+    const getPlayhead = vi.fn(() => ({ countIn: false, bar: 1, stepFloat: 0 }));
+    render(<DrumSheetView text={'subdivision: 1\n\nHH: xxxx'} getPlayhead={getPlayhead} />);
+    expect(getPlayhead).not.toHaveBeenCalled();
   });
 });

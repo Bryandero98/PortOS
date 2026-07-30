@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseDrumChart, CELL_GLYPHS } from './drumNotation.js';
-import { buildDrumSchedule, resolveLoopRange } from './drumPlayback.js';
+import { buildDrumSchedule, resolveLoopRange, resolvePlayhead } from './drumPlayback.js';
 
 // Invented grooves only (privacy convention). Every assertion here is pure math
 // over the parsed chart — no AudioContext is created anywhere in this suite.
@@ -204,5 +204,56 @@ describe('resolveLoopRange', () => {
   it('defaults a missing endpoint to the full span', () => {
     expect(resolveLoopRange(5, {})).toEqual({ from: 1, to: 5 });
     expect(resolveLoopRange(5, { from: 3 })).toEqual({ from: 3, to: 5 });
+  });
+});
+
+describe('resolvePlayhead', () => {
+  // 2 bars at subdivision 1, 120 bpm → 0.5s/beat, 2s/bar, 4s total.
+  const chart = parseDrumChart(TWO_BARS);
+  const schedule = buildDrumSchedule(chart, { bpm: 120 });
+
+  it('places a mid-bar position as a FRACTIONAL step, not a quantized one', () => {
+    // 2.75s in = bar 2 (starts at 2s), 0.75s into it = 1.5 steps.
+    const head = resolvePlayhead(schedule, 2.75);
+    expect(head).toMatchObject({ countIn: false, bar: 2 });
+    near(head.stepFloat, 1.5);
+  });
+
+  it('keeps moving through a bar with no hits at all', () => {
+    // The onStep callback would stall here (no events to report); the clock
+    // does not. A rest-only bar 2 still resolves to a position inside bar 2.
+    const silent = buildDrumSchedule(parseDrumChart('time: 4/4\ntempo: 120\nsubdivision: 1\n\n# A\nK: o---\n\n# B\nK: ----'), { bpm: 120 });
+    expect(resolvePlayhead(silent, 3).bar).toBe(2);
+  });
+
+  it('reports the count-in as a beat within its bar', () => {
+    const withCount = buildDrumSchedule(chart, { bpm: 120, countInBars: 1 });
+    expect(resolvePlayhead(withCount, 0)).toMatchObject({ countIn: true, beat: 1 });
+    expect(resolvePlayhead(withCount, 1.2)).toMatchObject({ countIn: true, beat: 3 });
+    // The transport's pre-roll lead runs NEGATIVE before t=0 — that's still the
+    // first beat of the count-in, never a beat counted backwards.
+    expect(resolvePlayhead(withCount, -0.1)).toMatchObject({ countIn: true, beat: 1 });
+    // …and the music starts at the end of the count-in, rebased to bar 1.
+    expect(resolvePlayhead(withCount, 2)).toMatchObject({ countIn: false, bar: 1, stepFloat: 0 });
+  });
+
+  it('reports the CHART bar number for a looped range, not the slice index', () => {
+    // Loop bars 2–2: the schedule holds one bar, but the sheet must light bar 2.
+    const looped = buildDrumSchedule(chart, { bpm: 120, loop: { from: 2, to: 2 } });
+    expect(resolvePlayhead(looped, 0.5)).toMatchObject({ bar: 2 });
+    // A looping player runs past its own length forever — pass 3 folds back on.
+    expect(resolvePlayhead(looped, 6.5)).toMatchObject({ bar: 2 });
+    near(resolvePlayhead(looped, 6.5).stepFloat, 1);
+  });
+
+  it('clamps a one-shot position at the final step instead of running off the end', () => {
+    const head = resolvePlayhead(schedule, 99);
+    expect(head.bar).toBe(2);
+    expect(head.stepFloat).toBeLessThanOrEqual(4);
+  });
+
+  it('returns null when there is nothing to place', () => {
+    expect(resolvePlayhead(null, 1)).toBeNull();
+    expect(resolvePlayhead(buildDrumSchedule(parseDrumChart(''), {}), 1)).toBeNull();
   });
 });

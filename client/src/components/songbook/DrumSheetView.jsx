@@ -1,57 +1,85 @@
 /**
- * DrumSheetView — renders PortOS drum-kit notation (drumNotation.js) as a
- * labelled, bar-gridded kit sheet in hand-rolled SVG, with no engraving library
+ * DrumSheetView — renders PortOS drum-kit notation (drumNotation.js) as ONE
+ * continuous horizontal kit strip in hand-rolled SVG, with no engraving library
  * (the same explicit choice `ScoreSheet.jsx` makes: no VexFlow / abcjs / OSMD).
  *
- * Geometry is driven off ONE constant — the grid cell size. Every row is a kit
- * piece, every column a grid step, so positioning a hit is a single multiply.
- * Beat boundaries get a heavier grid line so a 16th-note row still reads in
- * fours, and each hit's glyph follows its cell: a cross for cymbals/hats, a
- * filled notehead for drums, a ring for an open hi-hat, a small hollow head for
- * a ghost, a doubled head for a flam, all with the accent's own chevron.
+ * A phone is the primary SongBook surface, and a drummer reads a groove the way
+ * it is played: left to right, without end. So the whole song is a single lane
+ * that scrolls horizontally under a playhead, rather than a stack of per-bar
+ * grids that push the kit off the bottom of a phone screen (the pre-#3115
+ * layout put ~1.5 bars above the fold on a 390px viewport). The kit labels live
+ * in their own frozen column beside the scroller so "which row is the snare"
+ * survives scrolling to bar 30.
+ *
+ * Geometry is driven off ONE constant — the grid cell size — in fixed internal
+ * SVG units; the viewer's A−/A+ control scales the whole strip through the
+ * `fontSizeRem` prop instead of recomputing any of it.
+ *
+ * THE PLAYHEAD NEVER GOES THROUGH REACT. `getPlayhead()` (useDrumPlayer) reads
+ * the audio clock, and one animation-frame loop writes the results straight to
+ * the DOM: a column rect on the current step, a line at the exact sub-step
+ * position, and the scroller's `scrollLeft`. So a 16th-note groove repaints two
+ * attributes per frame instead of re-rendering a ~2000-element SVG 8×/second.
+ * The clock is also the only source that keeps moving through a rest — the
+ * player's `onStep` events stall there (see `resolvePlayhead`).
  *
  * Ink comes from the PortOS theme CSS variables (`--port-text` / `--port-accent`
  * / `--port-text-muted`) applied through the `style` prop — SVG presentation
  * *attributes* don't evaluate `var()`, so `fill="var(--x)"` would silently paint
  * nothing. Same rule as ScoreSheet.
  *
- * Each bar is its own SVG so bars wrap responsively and a wide bar scrolls as a
- * UNIT on a narrow screen (mobile-responsive is non-negotiable) instead of
- * squeezing its columns into illegibility.
- *
  * Props:
  *   text        — the raw chart source (parsed here; the parser never throws)
- *   fontSizeRem — scales the labels/legend text with the viewer's font control
- *   activeStep  — `{ bar, step }` | null — draws the playhead column
+ *   fontSizeRem — scales the whole strip with the viewer's A−/A+ control
+ *   getPlayhead — `() => { countIn, bar, stepFloat } | null`; absent → a static
+ *                 sheet with no playhead and no auto-follow
+ *   playing     — gates the animation frame loop
  *   onStepClick — optional `(barIndex, step, pieceId)` for a future tap-a-cell
  *                 editor (#3115 out-of-scope); when absent the grid renders as
  *                 a plain image
  */
 
-import { memo, useMemo } from 'react';
+import { memo, useEffect, useMemo, useRef } from 'react';
 import { parseDrumChart, kitPiece } from '../../lib/drumNotation.js';
 
-// --- Geometry (internal SVG units; each bar's <svg> scales via viewBox) ------
-const CELL = 22;              // one grid step — every other measure derives from this
+// --- Geometry (internal SVG units; the strip scales via width/height + viewBox)
+const CELL = 20;              // one grid step — every other measure derives from this
 const ROW_H = CELL;           // one kit-piece row
-const LABEL_W = 74;           // room for the row labels ("Hi-Hat", "Floor Tom")
-const PAD = 6;                // padding inside a bar's svg
+const LABEL_W = 56;           // the frozen label column ("Hi-Hat", "Floor Tom")
+const PAD = 6;                // padding inside the svgs
 const HEAD_R = CELL * 0.3;    // notehead radius
 const GHOST_R = CELL * 0.2;
 const CROSS_R = CELL * 0.26;
-const HEADER_H = 18;          // bar-number / label strip above the grid
+const HEADER_H = 20;          // bar-number / section-label strip above the grid
+const BAR_GAP = 6;            // breathing room between bars, inside the lane
 
-// Ink — theme CSS vars, applied via `style` (see the header note).
-const INK = 'rgb(var(--port-text))';
-const GRID = 'rgb(var(--port-text-muted) / 0.35)';
-const GRID_BEAT = 'rgb(var(--port-text-muted) / 0.7)';
-const LABEL = 'rgb(var(--port-text-muted))';
-const ACTIVE = 'rgb(var(--port-accent))';
-const ACTIVE_FILL = 'rgb(var(--port-accent) / 0.18)';
+const GRID_TOP = PAD + HEADER_H;
+// Vertical centre of kit row `ri` — shared by the lane and the frozen label
+// column, which have to stay in lockstep or the labels drift off their rows.
+const rowCenterY = (ri) => GRID_TOP + ri * ROW_H + ROW_H / 2;
+
+// Zoom: the A−/A+ font control drives the whole strip. 0.875rem is the viewer's
+// default, so that maps to 1×.
+const BASE_FONT_REM = 0.875;
+const SCALE_MIN = 0.7;
+const SCALE_MAX = 2.4;
+
+// Where the playhead sits in the viewport while the sheet scrolls under it —
+// far enough left that the bar you're about to play is the one you can read.
+const FOLLOW_FRACTION = 0.35;
+
+// Ink — theme CSS vars, applied via `style` (see the header note). Hoisted as
+// shared objects, not built per element: the lane is ~2000 nodes on a long
+// chart, and a fresh `{ fill }` literal each also defeats React's diff.
+const INK = { fill: 'rgb(var(--port-text))' };
+const INK_STROKE = { stroke: 'rgb(var(--port-text))' };
+const INK_HOLLOW = { fill: 'none', stroke: 'rgb(var(--port-text))' };
+const GRID = { stroke: 'rgb(var(--port-text-muted) / 0.35)' };
+const GRID_BEAT = { stroke: 'rgb(var(--port-text-muted) / 0.7)' };
+const LABEL = { fill: 'rgb(var(--port-text-muted))' };
+const ACTIVE_STROKE = { stroke: 'rgb(var(--port-accent))' };
+const ACTIVE_FILL = { fill: 'rgb(var(--port-accent) / 0.18)' };
 const UI_FONT = 'ui-sans-serif, system-ui, sans-serif';
-
-const strokeStyle = (color) => ({ stroke: color });
-const fillStyle = (color) => ({ fill: color });
 
 // Time-signature denominator → the note glyph for one BEAT at that value, for the
 // tempo marking. The tempo counts notated beats, so 6/8 must read "♪ = 96", not
@@ -59,22 +87,21 @@ const fillStyle = (color) => ({ fill: color });
 // than a wrong glyph.
 const BEAT_GLYPH = { 1: '𝅝', 2: '𝅗𝅥', 4: '♩', 8: '♪', 16: '𝅘𝅥𝅯' };
 
-// One hit's glyph. `cross` pieces (cymbals, hats) draw an ×; `head` pieces
-// (drums) draw a notehead. The cell's own flags then modify it: a ring for an
-// open hi-hat, a small hollow head for a ghost, a leading grace head for a flam,
-// and a chevron above an accent.
-const renderHit = (cell, piece, cx, cy, ink, key) => {
-  const out = [];
+// One hit's glyph, pushed into the caller's element array. `cross` pieces
+// (cymbals, hats) draw an ×; `head` pieces (drums) draw a notehead. The cell's
+// own flags then modify it: a ring for an open hi-hat, a small hollow head for a
+// ghost, a leading grace head for a flam, and a chevron above an accent.
+const pushHit = (out, cell, piece, cx, cy, key) => {
   const cross = kitPiece(piece)?.glyph === 'cross';
 
   if (cell.flam) {
     // Grace note just ahead of the beat — small and offset left.
     const gx = cx - CELL * 0.3;
     out.push(cross
-      ? <line key={`${key}-fl1`} x1={gx - GHOST_R} y1={cy - GHOST_R} x2={gx + GHOST_R} y2={cy + GHOST_R} style={strokeStyle(ink)} strokeWidth={1.1} />
-      : <circle key={`${key}-fl1`} cx={gx} cy={cy} r={GHOST_R} style={{ fill: 'none', stroke: ink }} strokeWidth={1.1} />);
+      ? <line key={`${key}-fl1`} x1={gx - GHOST_R} y1={cy - GHOST_R} x2={gx + GHOST_R} y2={cy + GHOST_R} style={INK_STROKE} strokeWidth={1.1} />
+      : <circle key={`${key}-fl1`} cx={gx} cy={cy} r={GHOST_R} style={INK_HOLLOW} strokeWidth={1.1} />);
     if (cross) {
-      out.push(<line key={`${key}-fl2`} x1={gx - GHOST_R} y1={cy + GHOST_R} x2={gx + GHOST_R} y2={cy - GHOST_R} style={strokeStyle(ink)} strokeWidth={1.1} />);
+      out.push(<line key={`${key}-fl2`} x1={gx - GHOST_R} y1={cy + GHOST_R} x2={gx + GHOST_R} y2={cy - GHOST_R} style={INK_STROKE} strokeWidth={1.1} />);
     }
   }
 
@@ -82,150 +109,51 @@ const renderHit = (cell, piece, cx, cy, ink, key) => {
     const r = cell.ghost ? GHOST_R : CROSS_R;
     const w = cell.accent ? 2.2 : 1.6;
     out.push(
-      <line key={`${key}-a`} x1={cx - r} y1={cy - r} x2={cx + r} y2={cy + r} style={strokeStyle(ink)} strokeWidth={w} strokeLinecap="round" />,
-      <line key={`${key}-b`} x1={cx - r} y1={cy + r} x2={cx + r} y2={cy - r} style={strokeStyle(ink)} strokeWidth={w} strokeLinecap="round" />,
+      <line key={`${key}-a`} x1={cx - r} y1={cy - r} x2={cx + r} y2={cy + r} style={INK_STROKE} strokeWidth={w} strokeLinecap="round" />,
+      <line key={`${key}-b`} x1={cx - r} y1={cy + r} x2={cx + r} y2={cy - r} style={INK_STROKE} strokeWidth={w} strokeLinecap="round" />,
     );
     // Open hi-hat: the conventional circle around the ×.
     if (cell.open) {
-      out.push(<circle key={`${key}-o`} cx={cx} cy={cy} r={r + 2.6} style={{ fill: 'none', stroke: ink }} strokeWidth={1.2} />);
+      out.push(<circle key={`${key}-o`} cx={cx} cy={cy} r={r + 2.6} style={INK_HOLLOW} strokeWidth={1.2} />);
     }
   } else if (cell.ghost) {
     // Ghost note — the parenthesized/hollow head convention.
-    out.push(<circle key={`${key}-h`} cx={cx} cy={cy} r={GHOST_R} style={{ fill: 'none', stroke: ink }} strokeWidth={1.2} />);
+    out.push(<circle key={`${key}-h`} cx={cx} cy={cy} r={GHOST_R} style={INK_HOLLOW} strokeWidth={1.2} />);
   } else {
-    out.push(<circle key={`${key}-h`} cx={cx} cy={cy} r={HEAD_R} style={fillStyle(ink)} />);
+    out.push(<circle key={`${key}-h`} cx={cx} cy={cy} r={HEAD_R} style={INK} />);
   }
 
   if (cell.accent) {
     // Accent chevron above the head (the > articulation mark, rotated to sit
-    // horizontally over the note).
-    const y = cy - CELL * 0.42;
+    // horizontally over the note). Kept inside the row: at much more than 0.36
+    // of a cell up, the chevron crosses the lane line into the row above.
+    const y = cy - CELL * 0.36;
     out.push(
       <path key={`${key}-ac`}
         d={`M ${cx - HEAD_R - 1} ${y - 2.4} L ${cx + HEAD_R + 1} ${y} L ${cx - HEAD_R - 1} ${y + 2.4}`}
-        style={{ fill: 'none', stroke: ink }} strokeWidth={1.3} strokeLinecap="round" strokeLinejoin="round" />,
+        style={INK_HOLLOW} strokeWidth={1.3} strokeLinecap="round" strokeLinejoin="round" />,
     );
   }
-  return out;
 };
 
-// One bar → its own <svg>. Kept a component (not a helper returning elements) so
-// React can key/diff bars independently as the playhead moves.
-const Bar = ({ bar, pieces, subdivision, activeStep, onStepClick }) => {
-  const steps = bar.rows[0]?.cells.length || 0;
-  const gridW = steps * CELL;
-  const width = LABEL_W + gridW + PAD * 2;
-  const height = HEADER_H + pieces.length * ROW_H + PAD * 2;
-  const gridLeft = PAD + LABEL_W;
-  const gridTop = PAD + HEADER_H;
-  const gridBottom = gridTop + pieces.length * ROW_H;
-  // Only the bar the playhead is IN highlights a column.
-  const active = activeStep && activeStep.bar === bar.index ? activeStep.step : null;
-
-  const els = [];
-
-  // Bar number + label strip.
-  els.push(
-    <text key="num" x={PAD} y={PAD + 12} fontSize={11} fontWeight="600" style={fillStyle(LABEL)} fontFamily={UI_FONT}>
-      {bar.index}
-    </text>,
-  );
-  if (bar.label) {
-    els.push(
-      <text key="label" x={gridLeft} y={PAD + 12} fontSize={11} style={fillStyle(LABEL)} fontFamily={UI_FONT}>
-        {bar.label}
-        {bar.repeat > 1 ? ` (${bar.repeatPass}/${bar.repeat})` : ''}
-      </text>,
-    );
-  }
-
-  // Playhead column — drawn first so glyphs and grid lines sit on top of it.
-  if (active != null && active >= 0 && active < steps) {
-    els.push(
-      <rect key="ph" x={gridLeft + active * CELL} y={gridTop} width={CELL} height={gridBottom - gridTop}
-        style={fillStyle(ACTIVE_FILL)} />,
-    );
-  }
-
-  // Row labels + horizontal lane lines.
-  pieces.forEach((id, ri) => {
-    const y = gridTop + ri * ROW_H;
-    els.push(
-      <text key={`rl${id}`} x={PAD} y={y + ROW_H / 2 + 3.5} fontSize={10} style={fillStyle(LABEL)} fontFamily={UI_FONT}>
+// The frozen kit-piece labels beside the scroller. Its own <svg> so it can't
+// scroll away, sharing the lane's row geometry exactly.
+const LabelColumn = ({ pieces, height, scale }) => (
+  <svg
+    viewBox={`0 0 ${LABEL_W} ${height}`}
+    width={LABEL_W * scale}
+    height={height * scale}
+    aria-hidden="true"
+    className="shrink-0"
+    style={{ display: 'block' }}
+  >
+    {pieces.map((id, ri) => (
+      <text key={id} x={LABEL_W - 5} y={rowCenterY(ri) + 3.5} fontSize={9.5} textAnchor="end" style={LABEL} fontFamily={UI_FONT}>
         {kitPiece(id)?.label || id}
-      </text>,
-      <line key={`rh${id}`} x1={gridLeft} y1={y} x2={gridLeft + gridW} y2={y} style={strokeStyle(GRID)} strokeWidth={1} />,
-    );
-  });
-  els.push(
-    <line key="rh-last" x1={gridLeft} y1={gridBottom} x2={gridLeft + gridW} y2={gridBottom} style={strokeStyle(GRID)} strokeWidth={1} />,
-  );
-
-  // Vertical step lines — every `subdivision`-th is a beat boundary (heavier),
-  // and the bar's own edges are heavier still.
-  for (let s = 0; s <= steps; s += 1) {
-    const x = gridLeft + s * CELL;
-    const isEdge = s === 0 || s === steps;
-    const isBeat = s % subdivision === 0;
-    els.push(
-      <line key={`v${s}`} x1={x} y1={gridTop} x2={x} y2={gridBottom}
-        style={strokeStyle(isBeat ? GRID_BEAT : GRID)} strokeWidth={isEdge ? 1.8 : (isBeat ? 1.2 : 0.6)} />,
-    );
-  }
-
-  // Beat numbers under the grid.
-  for (let s = 0; s < steps; s += subdivision) {
-    els.push(
-      <text key={`bn${s}`} x={gridLeft + s * CELL + CELL / 2} y={gridTop - 3} fontSize={9}
-        style={fillStyle(LABEL)} fontFamily={UI_FONT} textAnchor="middle">
-        {s / subdivision + 1}
-      </text>,
-    );
-  }
-
-  // Hits.
-  const rowByPiece = new Map(bar.rows.map((r) => [r.piece, r]));
-  pieces.forEach((id, ri) => {
-    const row = rowByPiece.get(id);
-    if (!row) return;
-    const cy = gridTop + ri * ROW_H + ROW_H / 2;
-    row.cells.forEach((cell, s) => {
-      if (cell.rest) return;
-      const cx = gridLeft + s * CELL + CELL / 2;
-      els.push(...renderHit(cell, id, cx, cy, s === active ? ACTIVE : INK, `h${id}-${s}`));
-    });
-  });
-
-  // Optional tap targets (a future click-to-toggle editor); absent by default so
-  // the sheet is a plain image with no stray interactive nodes.
-  if (onStepClick) {
-    pieces.forEach((id, ri) => {
-      for (let s = 0; s < steps; s += 1) {
-        els.push(
-          <rect key={`t${id}-${s}`} x={gridLeft + s * CELL} y={gridTop + ri * ROW_H} width={CELL} height={ROW_H}
-            fill="transparent" style={{ cursor: 'pointer' }} onClick={() => onStepClick(bar.index, s, id)} />,
-        );
-      }
-    });
-  }
-
-  return (
-    // The bar scrolls as a unit on a narrow viewport: the svg keeps its intrinsic
-    // width and the wrapper scrolls, rather than the viewBox squeezing columns.
-    <div className="overflow-x-auto max-w-full">
-      <svg
-        viewBox={`0 0 ${width} ${height}`}
-        width={width}
-        height={height}
-        role="img"
-        aria-label={`Drum bar ${bar.index}${bar.label ? `: ${bar.label}` : ''}`}
-        style={{ display: 'block', maxWidth: '100%', height: 'auto' }}
-      >
-        {els}
-      </svg>
-    </div>
-  );
-};
+      </text>
+    ))}
+  </svg>
+);
 
 // Chart problems (unknown pieces, over-long rows, bad headers). Rendered
 // ALONGSIDE the sheet, never instead of it — a chart with one bad row must still
@@ -241,8 +169,81 @@ const ErrorSummary = ({ errors }) => (
   </div>
 );
 
-function DrumSheetView({ text, fontSizeRem = 0.875, activeStep = null, onStepClick, className = '' }) {
+function DrumSheetView({
+  text,
+  fontSizeRem = 0.875,
+  getPlayhead,
+  playing = false,
+  onStepClick,
+  className = '',
+}) {
   const chart = useMemo(() => parseDrumChart(text), [text]);
+  const scrollRef = useRef(null);
+  const lineRef = useRef(null);
+  const columnRef = useRef(null);
+
+  const scale = Math.min(SCALE_MAX, Math.max(SCALE_MIN, (fontSizeRem || BASE_FONT_REM) / BASE_FONT_REM));
+  const { pieces, subdivision, stepsPerBar } = chart;
+  const gridBottom = GRID_TOP + pieces.length * ROW_H;
+  const height = gridBottom + PAD;
+
+  // Every bar is exactly `stepsPerBar` wide (the parser pads every row to that
+  // length), so a bar's lane position is arithmetic — no per-bar measuring.
+  // Memoized as one object so the rAF loop can depend on the whole geometry.
+  const { barCount, barW, barX, laneW } = useMemo(() => {
+    const w = chart.stepsPerBar * CELL;
+    const x = (barIndex) => PAD + (barIndex - 1) * (w + BAR_GAP);
+    return {
+      barCount: chart.bars.length,
+      barW: w,
+      barX: x,
+      laneW: Math.max(PAD * 2, x(chart.bars.length + 1) - BAR_GAP + PAD),
+    };
+  }, [chart]);
+
+  // One rAF loop for both playhead marks and the auto-follow scroll. All DOM
+  // READS happen before any write — reading scrollLeft/clientWidth after
+  // dirtying the tree in the same frame forces a synchronous layout.
+  useEffect(() => {
+    const line = lineRef.current;
+    const column = columnRef.current;
+    if (!line || !column) return undefined;
+    const hide = () => {
+      line.style.display = 'none';
+      column.style.display = 'none';
+    };
+    if (!playing || !getPlayhead || typeof requestAnimationFrame !== 'function') {
+      hide();
+      return undefined;
+    }
+    let raf = requestAnimationFrame(function tick() {
+      raf = requestAnimationFrame(tick);
+      const pos = getPlayhead();
+      // The count-in has no position on the sheet — park the marks rather than
+      // sliding them through bar 1 before bar 1 is playing.
+      if (!pos || pos.countIn || pos.bar > barCount) { hide(); return; }
+
+      const el = scrollRef.current;
+      const viewportW = el?.clientWidth ?? 0;
+      const x = barX(pos.bar) + pos.stepFloat * CELL;
+
+      line.style.display = '';
+      column.style.display = '';
+      line.setAttribute('transform', `translate(${x} 0)`);
+      column.setAttribute('x', barX(pos.bar) + Math.floor(pos.stepFloat) * CELL);
+
+      if (!el) return;
+      const max = laneW * scale - viewportW;
+      if (max <= 0) return;
+      el.scrollLeft = Math.min(max, Math.max(0, x * scale - viewportW * FOLLOW_FRACTION));
+    });
+    return () => { cancelAnimationFrame(raf); hide(); };
+  }, [playing, getPlayhead, barCount, barX, laneW, scale]);
+
+  // A new chart is a new song — start reading it from the top.
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollLeft = 0;
+  }, [chart]);
 
   if (!chart.bars.length) {
     return (
@@ -255,32 +256,124 @@ function DrumSheetView({ text, fontSizeRem = 0.875, activeStep = null, onStepCli
     );
   }
 
+  const els = [];
+  let lastLabel = null;
+
+  chart.bars.forEach((bar) => {
+    const x = barX(bar.index);
+
+    // Bar number, always; the section label only where it CHANGES. A four-bar
+    // block repeating its own name over every bar is noise on a phone.
+    els.push(
+      <text key={`n${bar.index}`} x={x + 1} y={GRID_TOP - 8} fontSize={9} fontWeight="600" style={LABEL} fontFamily={UI_FONT}>
+        {bar.index}
+      </text>,
+    );
+    if (bar.label && bar.label !== lastLabel) {
+      els.push(
+        <text key={`l${bar.index}`} x={x + 14} y={GRID_TOP - 8} fontSize={9.5} style={LABEL} fontFamily={UI_FONT}>
+          {bar.label}{bar.repeat > 1 ? ` ×${bar.repeat}` : ''}
+        </text>,
+      );
+    }
+    lastLabel = bar.label;
+
+    // Lane lines for this bar's span (one per kit row, plus the bottom edge).
+    for (let ri = 0; ri <= pieces.length; ri += 1) {
+      const y = GRID_TOP + ri * ROW_H;
+      els.push(<line key={`h${bar.index}-${ri}`} x1={x} y1={y} x2={x + barW} y2={y} style={GRID} strokeWidth={1} />);
+    }
+
+    // Vertical step lines — every `subdivision`-th is a beat boundary (heavier),
+    // and the bar's own edges are heavier still.
+    for (let s = 0; s <= stepsPerBar; s += 1) {
+      const isEdge = s === 0 || s === stepsPerBar;
+      const isBeat = s % subdivision === 0;
+      els.push(
+        <line key={`v${bar.index}-${s}`} x1={x + s * CELL} y1={GRID_TOP} x2={x + s * CELL} y2={gridBottom}
+          style={isBeat ? GRID_BEAT : GRID} strokeWidth={isEdge ? 1.8 : (isBeat ? 1.2 : 0.6)} />,
+      );
+    }
+
+    // Beat numbers under the bar-number strip. Beat 1 is skipped: the bar number
+    // already sits in that corner, and "1₁" at every bar line is noise.
+    for (let s = subdivision; s < stepsPerBar; s += subdivision) {
+      els.push(
+        <text key={`b${bar.index}-${s}`} x={x + s * CELL + CELL / 2} y={GRID_TOP - 1.5} fontSize={8}
+          style={LABEL} fontFamily={UI_FONT} textAnchor="middle">
+          {s / subdivision + 1}
+        </text>,
+      );
+    }
+
+    // Hits.
+    const rowByPiece = new Map(bar.rows.map((r) => [r.piece, r]));
+    pieces.forEach((id, ri) => {
+      const row = rowByPiece.get(id);
+      if (!row) return;
+      const cy = rowCenterY(ri);
+      row.cells.forEach((cell, s) => {
+        if (cell.rest) return;
+        pushHit(els, cell, id, x + s * CELL + CELL / 2, cy, `h${bar.index}-${id}-${s}`);
+      });
+    });
+
+    // Optional tap targets (a future click-to-toggle editor); absent by default
+    // so the sheet is a plain image with no stray interactive nodes.
+    if (onStepClick) {
+      pieces.forEach((id, ri) => {
+        for (let s = 0; s < stepsPerBar; s += 1) {
+          els.push(
+            <rect key={`t${bar.index}-${id}-${s}`} x={x + s * CELL} y={GRID_TOP + ri * ROW_H} width={CELL} height={ROW_H}
+              fill="transparent" style={{ cursor: 'pointer' }} onClick={() => onStepClick(bar.index, s, id)} />,
+          );
+        }
+      });
+    }
+  });
+
   return (
     <div className={className} style={{ fontSize: `${fontSizeRem}rem` }}>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mb-2 text-xs text-gray-500">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mb-1.5 text-xs text-gray-500">
         <span>{chart.time.beats}/{chart.time.beatValue}</span>
         {/* The tempo counts NOTATED beats — the time-signature denominator — so
             6/8 is eighth = bpm, not quarter = bpm. Label the actual beat unit
             rather than always printing ♩, which would misstate the tempo the
             playback schedule uses (drumPlayback.buildDrumSchedule). */}
         <span>{BEAT_GLYPH[chart.time.beatValue] || `1/${chart.time.beatValue}`} = {chart.tempo}</span>
-        <span>
-          {chart.subdivision} per beat
-        </span>
+        <span>{chart.subdivision} per beat</span>
         <span>{chart.bars.length} bar{chart.bars.length === 1 ? '' : 's'}</span>
       </div>
 
-      <div className="flex flex-col gap-3">
-        {chart.bars.map((bar) => (
-          <Bar
-            key={`${bar.index}`}
-            bar={bar}
-            pieces={chart.pieces}
-            subdivision={chart.subdivision}
-            activeStep={activeStep}
-            onStepClick={onStepClick}
-          />
-        ))}
+      <div className="flex items-start">
+        <LabelColumn pieces={pieces} height={height} scale={scale} />
+        {/* One scroller for the whole song. `overscroll-contain` keeps a swipe
+            that runs off the end of the strip from turning into a page/back
+            gesture on a phone. */}
+        <div ref={scrollRef} className="flex-1 min-w-0 overflow-x-auto overscroll-x-contain">
+          {/* The label column is aria-hidden (a visual freeze of these same row
+              names), so the kit rows are named in the strip's own label. */}
+          <svg
+            viewBox={`0 0 ${laneW} ${height}`}
+            width={laneW * scale}
+            height={height * scale}
+            role="img"
+            aria-label={`Drum chart — ${chart.bars.length} bar${chart.bars.length === 1 ? '' : 's'}, ${chart.time.beats}/${chart.time.beatValue} at ${chart.tempo} BPM. Kit rows: ${pieces.map((id) => kitPiece(id)?.label || id).join(', ')}`}
+            style={{ display: 'block' }}
+          >
+            {/* Playhead column — first in the tree so the grid and glyphs paint
+                over it; the line is last so it paints over them. Both are
+                positioned by the rAF loop and hidden until it runs. A full-height
+                line rather than a line-plus-marker: the header strip is already
+                two rows of small text deep, and any glyph big enough to read
+                would sit on top of the beat numbers. */}
+            <rect data-playhead="column" ref={columnRef} x={0} y={GRID_TOP} width={CELL} height={gridBottom - GRID_TOP}
+              style={{ ...ACTIVE_FILL, display: 'none' }} />
+            {els}
+            <line data-playhead="line" ref={lineRef} x1={0} y1={PAD} x2={0} y2={gridBottom}
+              style={{ ...ACTIVE_STROKE, display: 'none' }} strokeWidth={1.6} />
+          </svg>
+        </div>
       </div>
 
       {chart.errors.length > 0 && <ErrorSummary errors={chart.errors} />}
@@ -288,6 +381,7 @@ function DrumSheetView({ text, fontSizeRem = 0.875, activeStep = null, onStepCli
   );
 }
 
-// Props are primitives plus a shallow `activeStep` object, so memo keeps a host
-// page's unrelated re-renders (stage flips, BPM edits) from redrawing the sheet.
+// Every prop is a primitive or the stable `getPlayhead` callback, and the
+// playhead itself never arrives as a prop — so during playback memo bails out
+// and the lane is never rebuilt.
 export default memo(DrumSheetView);

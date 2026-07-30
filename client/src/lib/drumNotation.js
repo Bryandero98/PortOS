@@ -323,7 +323,12 @@ export const isDrumNotation = (text) => {
   return pieceRows >= 1 && /^\s*subdivision\s*:/im.test(String(text || ''));
 };
 
-// True when the chart contains at least one struck cell — lets the UI show an
-// empty-state hint instead of an all-rest grid.
-export const drumChartHasMusic = (text) => parseDrumChart(text).bars
+// True when an ALREADY-PARSED chart contains at least one struck cell — lets the
+// UI show an empty-state hint instead of an all-rest grid. Split from the
+// text-taking form below so a caller that already holds a parsed chart doesn't
+// pay for a second full parse of the same source.
+export const chartHasMusic = (chart) => (chart?.bars || [])
   .some((bar) => bar.rows.some((row) => row.cells.some((cell) => !cell.rest)));
+
+// Same question, from raw source.
+export const drumChartHasMusic = (text) => chartHasMusic(parseDrumChart(text));
