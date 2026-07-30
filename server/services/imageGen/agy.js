@@ -25,7 +25,7 @@ import { killWithEscalation } from '../../lib/killWithEscalation.js';
 import { broadcastSse, attachSseClient as attachSse, closeJobAfterDelay } from '../../lib/sseUtils.js';
 import { imageGenEvents } from '../imageGenEvents.js';
 import { buildNoImageReason } from './noImageReason.js';
-import { IMAGE_GEN_MODE } from './modes.js';
+import { AGY_IMAGEGEN_IMAGE_MODEL, IMAGE_GEN_MODE } from './modes.js';
 import { withSpawnCwdEnv } from '../../lib/spawnCwd.js';
 
 const AGY_TIMEOUT_MS = (() => {
@@ -196,6 +196,10 @@ export async function generateImage({
     filename,
     mode: IMAGE_GEN_MODE.AGY,
     model: model || null,
+    // The agent/session model above drives the CLI; the image itself always
+    // renders on Antigravity's fixed server-side backend — record it so
+    // provenance names the model that actually produced the pixels (#3231).
+    imageModel: AGY_IMAGEGEN_IMAGE_MODEL,
     createdAt: new Date().toISOString(),
   };
   const job = { ...meta, clients: [], status: 'running' };

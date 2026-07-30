@@ -62,6 +62,34 @@ export const describeFidelity = (strength) => {
 export const CODEX_IMAGEGEN_DEFAULT_MODEL = 'gpt-5.6-luna';
 export const CODEX_IMAGEGEN_DEFAULT_EFFORT = 'low';
 
+// The Agy mirror of the Codex pin above (#3231). An unpinned agy render used to
+// resolve to the ANTIGRAVITY_CONFIGURED_DEFAULT sentinel, which resolveCliModel
+// maps to null — no `--model` flag at all — so agy ran the session on whatever
+// its own config selected, potentially a reasoning-heavy tier
+// (claude-opus-4-6-thinking) just to relay one generate_image tool call. The
+// driving agent does no creative work on the image, so the cheapest flash tier
+// that reliably issues the tool call is the correct shipped default
+// (empirically verified to complete a render). Agy bakes the effort ladder into
+// the model id (-low/-medium/-high), so there is no separate effort pin. Same
+// code-level-default rationale as Codex: reaches every install and peer with no
+// migration; an explicit `imageGen.agy.model` in Settings still wins. If this
+// tier ever proves flaky at issuing generate_image, escalate exactly one rung
+// (gemini-3.5-flash-medium) and record why here.
+export const AGY_IMAGEGEN_DEFAULT_MODEL = 'gemini-3.5-flash-low';
+
+// The image model behind agy's generate_image tool — fixed server-side by
+// Antigravity and NOT selectable by PortOS. All three channels were probed and
+// closed (2026-07-29, #3231): the tool schema has no model parameter
+// (Prompt/ImageName/toolSummary/toolAction/AspectRatio/ImagePaths only);
+// `agy --model imagen-3-fast` errors pre-generation ("invalid model
+// selection"); and a prompt directive naming imagen-3-fast rendered anyway on
+// the default backend, with agy reporting it was "not able to honor" the
+// request. Beware: agy itself CLAIMS the --model and prompt-directive routes
+// work — it is wrong about both, so do not re-probe on its word. Exported so
+// sidecars can record the image model that actually rendered (distinct from
+// the agent/session model above) without hardcoding a second copy.
+export const AGY_IMAGEGEN_IMAGE_MODEL = 'imagen-3.0-generate-002';
+
 // The local runner's fallback model id when neither the request nor
 // settings.imageGen.local.modelId names one (local.js's parameter default).
 // Exported so provenance writers (sprite candidate sidecars, #2896) can

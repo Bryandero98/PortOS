@@ -137,7 +137,10 @@ describe('agy image provider', () => {
     expect(completed).toHaveBeenCalledTimes(1);
     expect(existsSync(join(FAKE_IMAGES_DIR, job.filename))).toBe(true);
     expect(await readFile(join(FAKE_IMAGES_DIR, job.filename))).toEqual(png);
-    expect(existsSync(join(FAKE_IMAGES_DIR, `${job.jobId}.metadata.json`))).toBe(true);
+    const sidecar = JSON.parse(await readFile(join(FAKE_IMAGES_DIR, `${job.jobId}.metadata.json`), 'utf8'));
+    // Provenance records the FIXED server-side image model, distinct from the
+    // agent/session model that drove the CLI (#3231).
+    expect(sidecar.imageModel).toBe('imagen-3.0-generate-002');
   });
 
   it('fails closed when the directed output is not an image', async () => {

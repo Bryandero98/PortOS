@@ -37,7 +37,7 @@ import {
   AlertTriangle, X, Film,
 } from 'lucide-react';
 import { composeStyledPrompt } from '../lib/composeStyledPrompt';
-import { isCloudCliMode, deriveAvailableBackends, IMAGE_GEN_MODE, isI2iCapableMode, pickI2iMode, modeLabel } from '../lib/imageGenBackends';
+import { isCloudCliMode, deriveAvailableBackends, AGY_IMAGEGEN_DEFAULT_MODEL, IMAGE_GEN_MODE, isI2iCapableMode, pickI2iMode, modeLabel } from '../lib/imageGenBackends';
 import { clampImageDimensions, clampImageEdge } from '../lib/imageGenResolutions';
 import { DEFAULT_NEGATIVE_PROMPT } from '../lib/imageGenDefaults';
 import { resolveCleanersFromConfig } from '../lib/imageCleaners';
@@ -1218,7 +1218,7 @@ export default function ImageGen() {
             cloudModel={effectiveAgyModel}
             onCloudModelChange={setAgyModel}
             cloudModelLabel="Agent model"
-            cloudModelDefaultLabel={savedAgyModel || "agy's own default"}
+            cloudModelDefaultLabel={savedAgyModel || AGY_IMAGEGEN_DEFAULT_MODEL}
           />
           {isAgyMode && agy.error && (
             <p className="text-xs text-port-warning">

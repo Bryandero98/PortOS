@@ -224,7 +224,7 @@ describe('ImageGenTab — Agy CLI section', () => {
     });
     await renderTab(['/media/image?mediaTab=agy']);
     await waitFor(() => expect(listAgyImageModels).toHaveBeenCalledWith({ silent: true }));
-    const modelInput = screen.getByLabelText('Default agent model');
+    const modelInput = screen.getByLabelText(/^Agent model/);
     expect(modelInput.value).toBe('gemini-image');
     fireEvent.change(modelInput, { target: { value: 'custom/image-v3' } });
     fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
@@ -234,6 +234,18 @@ describe('ImageGenTab — Agy CLI section', () => {
       agyPath: '/opt/agy',
       model: 'custom/image-v3',
     }));
+  });
+
+  it('names the fixed server-side image model as a read-only fact (#3231)', async () => {
+    getSettings.mockResolvedValue({
+      imageGen: { mode: 'agy', agy: { enabled: true } },
+    });
+    await renderTab(['/media/image?mediaTab=agy']);
+    await waitFor(() => expect(listAgyImageModels).toHaveBeenCalled());
+    // The image model is fixed by Antigravity — the section must state the
+    // concrete id rather than implying an imagen-* picker exists.
+    expect(screen.getByText('imagen-3.0-generate-002')).toBeTruthy();
+    expect(screen.getByText(/not selectable through the CLI/i)).toBeTruthy();
   });
 
   it('states that Agy is text-to-image only', async () => {

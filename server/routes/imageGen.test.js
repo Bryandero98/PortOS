@@ -630,9 +630,9 @@ describe('Image Gen Routes', () => {
       expect(enqueued.params).not.toHaveProperty('cloudModel');
     });
 
-    // Agy is the backend the override was actually built for, and its default
-    // is a sentinel (ANTIGRAVITY_CONFIGURED_DEFAULT) rather than a real id —
-    // so exercise it directly instead of inferring from the codex case.
+    // Agy is the backend the override was actually built for — exercise it
+    // directly instead of inferring from the codex case. (Its unpinned default
+    // is now the concrete AGY_IMAGEGEN_DEFAULT_MODEL cheap-tier pin, #3231.)
     it('agy: cloudModel replaces the configured-default sentinel for one queue item', async () => {
       getSettings.mockResolvedValueOnce({
         imageGen: { mode: 'agy', agy: { enabled: true, agyPath: '/opt/agy' } },
