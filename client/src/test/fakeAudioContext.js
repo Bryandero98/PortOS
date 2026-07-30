@@ -55,6 +55,9 @@ export const createFakeAudio = ({ suspended = false } = {}) => {
       values,
       setValueAtTime: (v) => values.push(v),
       exponentialRampToValueAtTime: (v) => values.push(v),
+      // Glide to a target (drumPlayback's click-volume bus) — recorded like any
+      // other scheduled value so a test reads the level off `values`.
+      setTargetAtTime: (v) => values.push(v),
     };
   };
   function FakeAudioContext() {
