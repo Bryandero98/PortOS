@@ -24,6 +24,8 @@ const props = (extra = {}) => ({
   barCount: 4,
   clickEnabled: true,
   onClickToggle: vi.fn(),
+  clickVolume: 1,
+  onClickVolumeChange: vi.fn(),
   kitId: '909',
   onKitChange: vi.fn(),
   beatsPerBar: 4,
@@ -41,6 +43,34 @@ describe('DrumTransportBar', () => {
     expect(screen.getByLabelText('Play along')).toBeTruthy();
     expect(screen.getByLabelText('Practice tempo (BPM)').value).toBe('96');
     expect(screen.getByLabelText('Turn the metronome off')).toBeTruthy();
+  });
+
+  it('keeps the metronome volume beside its mute, in the primary row', () => {
+    // The confusion this fixes: with the BPM slider as the bar's only slider,
+    // the tempo control read as a volume. So the metronome carries its OWN
+    // slider next to a speaker button, and the tempo is labelled in BPM.
+    const p = props();
+    render(<DrumTransportBar {...p} />);
+    const volume = screen.getByLabelText('Metronome volume');
+    expect(volume.type).toBe('range');
+    expect(volume.value).toBe('100');
+    fireEvent.change(volume, { target: { value: '40' } });
+    // The slider is 0–100; the player's level is 0–1.
+    expect(p.onClickVolumeChange).toHaveBeenCalledWith(0.4);
+    expect(screen.getByText('BPM')).toBeTruthy();
+  });
+
+  it('shows the stored level and flips the icon-button between mute and unmute', () => {
+    const p = props({ clickVolume: 0.35 });
+    const { rerender } = render(<DrumTransportBar {...p} />);
+    expect(screen.getByLabelText('Metronome volume').value).toBe('35');
+    fireEvent.click(screen.getByLabelText('Turn the metronome off'));
+    expect(p.onClickToggle).toHaveBeenCalledWith(false);
+
+    rerender(<DrumTransportBar {...props({ clickEnabled: false, clickVolume: 0.35 })} />);
+    // Muted still shows the level — it's what you get back when you unmute.
+    expect(screen.getByLabelText('Turn the metronome on')).toBeTruthy();
+    expect(screen.getByLabelText('Metronome volume').value).toBe('35');
   });
 
   it('collapses the setup controls under sm and expands them on the disclosure', () => {

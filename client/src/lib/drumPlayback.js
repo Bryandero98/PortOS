@@ -23,6 +23,30 @@ import { CLICK_VOICE, kitVoiceLayers, resolveDrumKit } from './drumKits.js';
 const { SCHEDULE_AHEAD } = SYNTH_TIMING;
 const safeCall = makeSafeCall('drum playback');
 
+// The `sound` name a count-in event carries. It is NOT a kit piece — it sounds
+// through `CLICK_VOICE` on the click bus, so a count-in is the same blip as the
+// through-music click and follows the same volume. ONE predicate decides both
+// the voice and the bus: two (say, `sound` for the voice and `countIn` for the
+// bus) would let a future click event get the right blip on the wrong bus, and
+// silently stop following the volume control.
+const CLICK_SOUND = 'click';
+const isClickEvent = (ev) => ev.sound === CLICK_SOUND;
+
+// Metronome-click level, 0 (silent) – 1 (full). Full is the historical level, so
+// an install that never touches the new control hears exactly what it did.
+export const DEFAULT_CLICK_VOLUME = 1;
+
+// Clamp a click level into 0–1. Returns null for a missing/unparseable value so
+// a caller can tell "never set" from a legitimately-clamped 0 (the same
+// sentinel contract as `clampBpm`) — `Number('')` is 0, i.e. silence, and must
+// not be able to masquerade as a chosen level.
+export const clampClickVolume = (value) => {
+  if (value == null || value === '') return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.min(1, Math.max(0, n));
+};
+
 // --- Schedule building (pure) ----------------------------------------------
 
 // Clamp a loop range against the chart's real bar count. Returns null when the
@@ -89,7 +113,7 @@ export const buildDrumSchedule = (chart, options = {}) => {
         step: null,
         beat: beat + 1,
         piece: null,
-        sound: 'click',
+        sound: CLICK_SOUND,
         velocity: beat === 0 ? 1 : 0.6,
         countIn: true,
         startSec: (bar * beats + beat) * beatSec,
@@ -333,8 +357,13 @@ const soundLayers = (c, layers, at, destination, track, { velocity, open }) => {
 // Sound one chart event — the hit, plus a flam grace note when the glyph calls
 // for one. Every created node pair goes through `track` so the transport tears
 // all of them down on stop.
+//
+// A count-in event is the metronome, not a kit piece: it sounds through
+// `CLICK_VOICE`. Left to `kitVoiceLayers` it would fall through to the kit's
+// SNARE (the "unmapped piece stays audible" fallback), which is why a count-in
+// used to be four snare hits instead of four clicks.
 const soundEvent = (c, kit, ev, at, destination, track) => {
-  const layers = kitVoiceLayers(kit, ev.sound);
+  const layers = isClickEvent(ev) ? CLICK_VOICE : kitVoiceLayers(kit, ev.sound);
   if (ev.flam) {
     soundLayers(c, layers, Math.max(at - FLAM_LEAD_SEC, 0), destination, track, {
       velocity: ev.velocity * 0.45, open: ev.open,
@@ -356,19 +385,21 @@ const soundEvent = (c, kit, ev, at, destination, track) => {
  *   bar range; when set, playback repeats that range until stopped.
  * @param {boolean} [options.clickEnabled] — layer a metronome click on every
  *   notated beat, on the same clock as the kit.
+ * @param {number} [options.clickVolume] — click/count-in level, 0–1 (default 1).
  * @param {string} [options.kit] — kit id from `drumKits.js` (`909` / `808` /
  *   `acoustic`); an unknown id falls back to the default rather than to silence.
  * @param {({bar:number|null, step:number|null, countIn:boolean})=>void} [options.onStep]
  *   — the now-sounding grid position (null when playback ends/stops), for the
  *   sheet playhead.
  * @param {()=>void} [options.onEnded] — fired once when a non-looping chart ends.
- * @returns {{ play, pause, stop, isPlaying, setBpm, setLoop, setClick, setKit, schedule }}
+ * @returns {{ play, pause, stop, isPlaying, setBpm, setLoop, setClick, setClickVolume, setKit, schedule }}
  */
 export const createDrumPlayer = (chart, options = {}) => {
   const { onStep, onEnded } = options;
   let bpm = Number.isFinite(options.bpm) && options.bpm > 0 ? options.bpm : null;
   let loopBars = options.loopBars || null;
   let clickEnabled = !!options.clickEnabled;
+  let clickVolume = clampClickVolume(options.clickVolume) ?? DEFAULT_CLICK_VOLUME;
   let countInBars = options.countInBars || 0;
   // The kit only affects which voices SOUND, never the schedule — so unlike the
   // timing settings it can change mid-play (the next scheduled hit picks it up).
@@ -378,6 +409,11 @@ export const createDrumPlayer = (chart, options = {}) => {
   let schedule = build();
   let master = null;
   let masterOut = null;
+  // The metronome gets its OWN sub-bus into the drum master. A per-hit velocity
+  // scale would only reach clicks scheduled AFTER the change, so a slider drag
+  // wouldn't be heard until the lookahead window had drained; a bus moves
+  // everything already queued too, which is what makes the control feel live.
+  let clickBus = null;
 
   // Click track for the CURRENT schedule: one marker per notated beat of the
   // music (the count-in carries its own clicks as real events). Derived rather
@@ -465,7 +501,10 @@ export const createDrumPlayer = (chart, options = {}) => {
       if (at >= horizon) break;
       hitCursor.idx += 1;
       if (at < now - 0.05) continue; // already past (first tick after a stall)
-      soundEvent(c, kit, ev, Math.max(at, now), master, track);
+      // Count-in beats are metronome, not kit — they ride the click bus so the
+      // volume control governs them too. They are deliberately NOT gated on
+      // `clickEnabled`: "click off, count-in on" is the "just count me in" mode.
+      soundEvent(c, kit, ev, Math.max(at, now), isClickEvent(ev) ? clickBus : master, track);
     }
 
     // The click layer walks its own list on the same pass geometry. Its pass ≥ 1
@@ -482,7 +521,15 @@ export const createDrumPlayer = (chart, options = {}) => {
         if (at >= horizon) break;
         clickCursor.idx += 1;
         if (at < now - 0.05) continue;
-        soundLayers(c, CLICK_VOICE, Math.max(at, now), master, track, {
+        // A level of 0 is silence, and it PERSISTS — dragging the slider down is
+        // the obvious way to shut the click up, so without this a practice loop
+        // would build a voice per beat forever to sound nothing. The gate sits
+        // after the cursor advance (skipping the loop wholesale would leave the
+        // cursor behind and dump a backlog on the tick after you turn it back
+        // up); the cost is that raising the level mid-window loses at most one
+        // lookahead of clicks.
+        if (clickVolume <= 0) continue;
+        soundLayers(c, CLICK_VOICE, Math.max(at, now), clickBus, track, {
           velocity: click.accent ? 1 : 0.55, open: false,
         });
       }
@@ -540,6 +587,9 @@ export const createDrumPlayer = (chart, options = {}) => {
       masterOut.oversample = '2x';
       master.connect(masterOut);
       masterOut.connect(c.destination);
+      clickBus = c.createGain();
+      clickBus.gain.value = clickVolume;
+      clickBus.connect(master);
       return true;
     },
     seekCursors: (offsetSec) => {
@@ -560,10 +610,11 @@ export const createDrumPlayer = (chart, options = {}) => {
     onTeardown: () => {
       // Outside the request lifecycle — a disconnect on an already-torn-down
       // node must not throw into the transport's teardown path.
-      for (const node of [master, masterOut]) {
+      for (const node of [clickBus, master, masterOut]) {
         if (!node) continue;
         try { node.disconnect(); } catch { /* already gone */ }
       }
+      clickBus = null;
       master = null;
       masterOut = null;
     },
@@ -599,6 +650,15 @@ export const createDrumPlayer = (chart, options = {}) => {
       rebuildIfIdle();
     },
     setClick: (enabled) => { clickEnabled = !!enabled; },
+    // Level of the click layer AND the count-in, live (see the `clickBus`
+    // declaration for why it's a bus). `setTargetAtTime` rather than a step
+    // assignment so a drag across a ringing blip doesn't pop.
+    setClickVolume: (level) => {
+      const next = clampClickVolume(level);
+      if (next == null) return;
+      clickVolume = next;
+      if (clickBus) clickBus.gain.setTargetAtTime(next, ctx().currentTime, 0.01);
+    },
     // Kit changes touch no timing, so — like the click toggle — they apply live:
     // whatever is already in the lookahead window finishes on the old kit and
     // everything scheduled after this lands on the new one.

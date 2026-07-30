@@ -254,9 +254,11 @@ export default function SongBookViewer() {
   }, [stop]);
 
   // Play-mode shortcuts. A drum chart rebinds them onto the kit transport (space
-  // play/stop, +/- BPM, [ ] loop ends) since transpose/scroll-speed don't apply.
+  // play/stop, +/- BPM, [ ] loop ends, m mutes the click) since transpose/
+  // scroll-speed don't apply.
   const drumShortcuts = {
     ' ': drum.toggle,
+    m: () => drum.setClickEnabled(!drum.clickEnabled),
     '+': () => drum.setBpm(drum.bpm + 1),
     '=': () => drum.setBpm(drum.bpm + 1),
     '-': () => drum.setBpm(drum.bpm - 1),
@@ -587,6 +589,8 @@ export default function SongBookViewer() {
               barCount={drum.barCount}
               clickEnabled={drum.clickEnabled}
               onClickToggle={drum.setClickEnabled}
+              clickVolume={drum.clickVolume}
+              onClickVolumeChange={drum.setClickVolume}
               kitId={drum.kitId}
               onKitChange={drum.setKitId}
               beatsPerBar={drum.beatsPerBar}

@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { parseDrumChart, CELL_GLYPHS } from './drumNotation.js';
-import { buildDrumSchedule, resolveLoopRange, resolvePlayhead } from './drumPlayback.js';
+import {
+  buildDrumSchedule, resolveLoopRange, resolvePlayhead,
+  clampClickVolume, DEFAULT_CLICK_VOLUME,
+} from './drumPlayback.js';
 
 // Invented grooves only (privacy convention). Every assertion here is pure math
 // over the parsed chart — no AudioContext is created anywhere in this suite.
@@ -255,5 +258,26 @@ describe('resolvePlayhead', () => {
   it('returns null when there is nothing to place', () => {
     expect(resolvePlayhead(null, 1)).toBeNull();
     expect(resolvePlayhead(buildDrumSchedule(parseDrumChart(''), {}), 1)).toBeNull();
+  });
+});
+
+describe('clampClickVolume', () => {
+  it('clamps a level into 0–1', () => {
+    expect(clampClickVolume(0.4)).toBe(0.4);
+    expect(clampClickVolume(0)).toBe(0);
+    expect(clampClickVolume(1)).toBe(1);
+    expect(clampClickVolume(2.5)).toBe(1);
+    expect(clampClickVolume(-3)).toBe(0);
+    expect(clampClickVolume('0.75')).toBe(0.75);
+  });
+
+  it('returns null — not silence — for a value that was never set', () => {
+    // The sentinel contract: a caller falls back to DEFAULT_CLICK_VOLUME on null.
+    // `Number('')` and `Number(null)` are both 0, so collapsing them into the
+    // band would turn "no stored preference" into a muted metronome.
+    for (const absent of [null, undefined, '', 'loud', NaN, {}]) {
+      expect(clampClickVolume(absent)).toBeNull();
+    }
+    expect(DEFAULT_CLICK_VOLUME).toBe(1); // the fallback is FULL, never silence
   });
 });
