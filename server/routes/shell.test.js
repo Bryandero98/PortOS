@@ -93,6 +93,16 @@ describe('POST /api/shell/sessions/:sessionId/image', () => {
     expect(pasteToSession).not.toHaveBeenCalled();
   });
 
+  // Nothing will ever read the file, and this bucket is shared with screenshot
+  // uploads — an orphan here is indistinguishable from a real one.
+  it('404s and removes the written file when the session dies mid-write', async () => {
+    vi.mocked(pasteToSession).mockReturnValue(false);
+    const before = readdirSync(PATHS.screenshots).length;
+    const res = await post({ data: pngBase64, filename: 'photo.png' });
+    expect(res.status).toBe(404);
+    expect(readdirSync(PATHS.screenshots).length - before).toBe(0);
+  });
+
   it('rejects bytes that are not a supported image', async () => {
     const res = await post({ data: Buffer.from('not an image at all').toString('base64'), filename: 'photo.png' });
     expect(res.status).toBe(400);

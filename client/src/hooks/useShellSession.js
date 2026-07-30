@@ -177,6 +177,9 @@ export function useShellSession({ isFullscreen } = {}) {
       toast.error('Session is still attaching — try again in a moment');
       return false;
     }
+    // Capture the target BEFORE the read: a big photo takes a moment to encode, and
+    // the send belongs to the session the user was looking at when they hit Send —
+    // not to whichever one happens to be active by the time the bytes are ready.
     const sessionId = sessionIdRef.current;
     const data = await readFileAsBase64(file).catch(() => null);
     if (!data) {
