@@ -455,6 +455,7 @@ describe('registerExternalSession / unregisterExternalSession', () => {
     const pty = makeFakePty();
     const id = shell.registerExternalSession('run-123', pty, {
       label: 'pipeline-manuscript-completeness',
+      agentId: 'agent-123',
       command: 'claude --model x',
       cwd: '/work',
     });
@@ -463,6 +464,7 @@ describe('registerExternalSession / unregisterExternalSession', () => {
     expect(info).toMatchObject({
       sessionId: 'run-123',
       label: 'pipeline-manuscript-completeness',
+      agentId: 'agent-123',
       kind: 'tui-run',
       command: 'claude --model x',
       external: true,

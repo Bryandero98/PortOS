@@ -11,6 +11,7 @@ vi.mock('socket.io-client', () => ({
     capturedSocket = {
       on: vi.fn(socketOn),
       emit: vi.fn(),
+      connected: true,
       disconnect: vi.fn()
     };
     return capturedSocket;
@@ -34,7 +35,9 @@ import {
   killAgentViaRunner,
   getAgentStatsFromRunner,
   terminateAllAgentsViaRunner,
-  getAgentOutputFromRunner
+  getAgentOutputFromRunner,
+  spawnTuiSessionViaRunner,
+  connectTuiSessionViaRunner,
 } from './cosRunnerClient.js';
 
 // The client reads the body via text() and tolerantly JSON.parses it, so a
@@ -242,6 +245,58 @@ describe('cosRunnerClient', () => {
       fetchWithTimeout.mockResolvedValue(mockResponse(true, 'not json'));
       const result = await spawnAgentViaRunner({ agentId: 'a1' });
       expect(result).toEqual({ error: 'not json' });
+    });
+  });
+
+  describe('runner-owned TUI relay', () => {
+    it('spawns a durable PTY and relays output, input, resize, and exit', async () => {
+      fetchWithTimeout.mockResolvedValue(mockResponse(true, {
+        sessionId: 'agent-tui-1',
+        pid: 4321,
+      }));
+      const session = await spawnTuiSessionViaRunner({
+        agentId: 'agent-tui-1',
+        taskId: 'task-1',
+        command: 'codex',
+        args: [],
+        workspacePath: '/tmp/example-workspace',
+      });
+      const onData = vi.fn();
+      const onExit = vi.fn();
+      session.ptyProcess.onData(onData);
+      session.ptyProcess.onExit(onExit);
+
+      capturedSocketListeners['tui:output']({ sessionId: session.sessionId, data: 'working' });
+      session.ptyProcess.write('hello');
+      session.ptyProcess.resize(120, 40);
+      capturedSocketListeners['tui:exit']({ sessionId: session.sessionId, exitCode: 0, signal: 0 });
+
+      expect(onData).toHaveBeenCalledWith('working');
+      expect(onExit).toHaveBeenCalledWith({ exitCode: 0, signal: 0 });
+      expect(capturedSocket.emit).toHaveBeenCalledWith('tui:input', {
+        sessionId: 'agent-tui-1',
+        data: 'hello',
+      });
+      expect(capturedSocket.emit).toHaveBeenCalledWith('tui:resize', {
+        sessionId: 'agent-tui-1',
+        cols: 120,
+        rows: 40,
+      });
+      expect(JSON.parse(fetchWithTimeout.mock.calls[0][1].body)).toMatchObject({
+        agentId: 'agent-tui-1',
+        sessionId: 'agent-tui-1',
+      });
+    });
+
+    it('rebuilds a relay for a TUI discovered after server restart', () => {
+      const session = connectTuiSessionViaRunner({ sessionId: 'recovered-tui', pid: 9876 });
+      const onData = vi.fn();
+      session.ptyProcess.onData(onData);
+
+      capturedSocketListeners['tui:output']({ sessionId: 'recovered-tui', data: 'still alive' });
+
+      expect(session.pid).toBe(9876);
+      expect(onData).toHaveBeenCalledWith('still alive');
     });
   });
 

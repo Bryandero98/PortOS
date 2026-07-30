@@ -26,6 +26,7 @@ import { canTypeSlashCommands } from '../lib/slashdoInvocation.js';
 import { normalizeReviewers } from '../lib/validation.js';
 import * as git from './git.js';
 import { resolveReviewLoopOptions } from './codeReview.js';
+import { spawnTuiSessionViaRunner } from './cosRunnerClient.js';
 import { shellQuote } from '../lib/shellQuote.js';
 import { resolveCliModel, buildEffortArgs, resolveBedrockCliModel, prefixOpencodeModel, hasModelFlag, isOpencodeCommand, isClaudeCommand, applyLeanClaudeArgs, providerSuppliesGithubToken } from '../lib/providerModels.js';
 import { createStreamingAnsiStripper, stripAnsi } from '../lib/ansiStrip.js';
@@ -120,7 +121,48 @@ const DONE_POLL_INTERVAL_MS = 2000;
  * to create the session, `sessionId` is null and the caller is expected
  * to bail out via its `finish` path.
  */
-export function createAgentTuiSession({ agentId, provider, model, tuiConfig, cwd, forgeTokenEnv = {}, onData, onExit, onInitialCommandSent }) {
+export async function createAgentTuiSession({
+  agentId,
+  taskId,
+  provider,
+  model,
+  tuiConfig,
+  cwd,
+  forgeTokenEnv = {},
+  doneSentinelPath = null,
+  useDurableRunner = false,
+  onData,
+  onExit,
+  onInitialCommandSent,
+}) {
+  const env = { ...composeProviderEnv({ before: forgeTokenEnv, provider, model }), ...agentGuardEnv() };
+  if (useDurableRunner) {
+    // The runner launches the TUI command directly (there is no intermediate
+    // login-shell readiness probe), so output can arrive before the spawn HTTP
+    // response. Open the readiness gate before handing off to avoid discarding
+    // the TUI's first bracketed-paste/input-ready signals.
+    onInitialCommandSent?.();
+    const session = await spawnTuiSessionViaRunner({
+      agentId,
+      taskId,
+      command: tuiConfig.command,
+      args: tuiConfig.args,
+      workspacePath: cwd,
+      envVars: env,
+      doneSentinelPath,
+      onData,
+      onExit,
+    });
+    shellService.registerExternalSession(session.sessionId, session.ptyProcess, {
+      cwd,
+      kind: 'agent-tui',
+      agentId,
+      label: `${provider.name} ${agentId}`,
+      command: tuiConfig.commandLine,
+    });
+    return session;
+  }
+
   const sessionId = shellService.createShellSession(null, {
     cwd,
     kind: 'agent-tui',
@@ -149,7 +191,7 @@ export function createAgentTuiSession({ agentId, provider, model, tuiConfig, cwd
     // and NOT what buildCliChildEnv's `guard` does, because this is an overlay
     // whose real base env is assembled downstream. Only AI agent sessions get
     // the shim; the user's own Shell page does not.
-    env: { ...composeProviderEnv({ before: forgeTokenEnv, provider, model }), ...agentGuardEnv() },
+    env,
     onData,
     onExit,
   });
@@ -248,6 +290,7 @@ export async function spawnTuiAgent({
   cleanupWorktreeFn,
   isTruthyMetaFn,
   leanMode = false,
+  useDurableRunner = false,
   checkOnlineFn = isMachineOnline,
 }) {
   const outputFile = join(agentDir, 'output.txt');
@@ -817,13 +860,16 @@ export async function spawnTuiAgent({
     ? {}
     : await git.resolveForgeTokenEnv(cwd);
 
-  const session = createAgentTuiSession({
+  const session = await createAgentTuiSession({
     agentId,
+    taskId: task.id,
     provider,
     model,
     tuiConfig,
     cwd,
     forgeTokenEnv,
+    doneSentinelPath,
+    useDurableRunner,
     onData: handleData,
     onExit: handleExit,
     onInitialCommandSent: () => { commandInjected = true; },
@@ -1454,7 +1500,7 @@ export async function spawnTuiAgent({
     pid,
     metadata: {
       phase: 'working',
-      executionMode: 'tui',
+      executionMode: useDurableRunner ? 'runner-tui' : 'tui',
       tuiSessionId: sessionId,
       tuiCommand: tuiConfig.commandLine,
       tuiKind,

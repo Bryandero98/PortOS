@@ -342,6 +342,16 @@ describe('runAgentSpawn source — handedOff pre-spawn vs post-handoff split', (
   });
 });
 
+describe('runAgentSpawn source — durable TUI ownership (#3202)', () => {
+  it('routes TUI providers through the runner when it is available', () => {
+    expect(RUN_SPAWN_BODY).toMatch(
+      /const executionMode = isTui \? \(useRunner \? 'runner-tui' : 'tui'\)/
+    );
+    expect(RUN_SPAWN_BODY).toMatch(/spawnTuiAgent\(\{[\s\S]{0,1000}?useDurableRunner:\s*useRunner/);
+    expect(RUN_SPAWN_BODY).not.toMatch(/useRunner:\s*isTui\s*\?\s*false\s*:\s*useRunner/);
+  });
+});
+
 // Source-level assertion (issue #989): the synthetic app-review marker bound by
 // `bindAppReviewAgent` before this spawn MUST be released on every
 // pre-completion `return null` path, or the app reads "in review" until the next
