@@ -61,28 +61,52 @@ describe('uploadLimits', () => {
     // attachments.js drifted to unreachable 100MB/50MB claims. Discover the
     // routes rather than listing them, so a NEW upload route added later is
     // covered too — a hardcoded list would leave it unguarded.
-    // Detect the base64-in-JSON transport specifically — decoding a base64 body
-    // or handing one to saveBase64Upload. Routes that take RAW bytes via
+    // Detect the base64-in-JSON transport specifically — decoding a base64 body,
+    // or handing one to a shared saver. Routes that take RAW bytes via
     // express.raw() (imageClean.js) carry their own limit and are correctly out
     // of scope: no ×4/3 inflation applies to them.
+    //
+    // A route may also DELEGATE: `routes/shell.js` validates the body and hands it
+    // to `services/shellImageDrop.js`, which calls the saver and owns the cap. So
+    // each route is checked together with the services it imports — otherwise
+    // moving the decode one file down silently exits this guard. Only the shared
+    // savers count as a delegation signal, not a bare base64 decode: plenty of
+    // services (mbox import, message sync) decode base64 that never came from a
+    // client upload and have no business carrying an upload cap.
     const routesDir = join(HERE, '../routes');
-    const uploadRoutes = readdirSync(routesDir)
-      .filter((f) => f.endsWith('.js') && !f.endsWith('.test.js'))
-      .filter((f) => /Buffer\.from\([^)]*'base64'\)|saveBase64Upload/
-        .test(readFileSync(join(routesDir, f), 'utf8')));
+    const SAVERS = /saveBase64Upload|saveImageUpload/;
+    const INLINE_DECODE = /Buffer\.from\([^)]*'base64'\)/;
+    const readSafe = (p) => { try { return readFileSync(p, 'utf8'); } catch { return ''; } };
+
+    const routeFiles = readdirSync(routesDir)
+      .filter((f) => f.endsWith('.js') && !f.endsWith('.test.js'));
+
+    const uploadRoutes = routeFiles.map((f) => {
+      const src = readFileSync(join(routesDir, f), 'utf8');
+      // The route's own service imports, read so a delegated saver is visible.
+      const delegates = [...src.matchAll(/from '\.\.\/services\/([\w/.-]+\.js)'/g)]
+        .map((m) => ({ name: `services/${m[1]}`, src: readSafe(join(HERE, '../services', m[1])) }))
+        .filter((s) => SAVERS.test(s.src));
+      return { name: f, src, delegates };
+    }).filter((r) => INLINE_DECODE.test(r.src) || SAVERS.test(r.src) || r.delegates.length > 0);
+
     expect(uploadRoutes.length, 'no upload routes discovered — did the detection heuristic break?')
-      .toBeGreaterThanOrEqual(4);
+      .toBeGreaterThanOrEqual(5);
 
     for (const route of uploadRoutes) {
-      const src = readFileSync(join(routesDir, route), 'utf8');
-      // Assert the route USES a shared constant (positive), rather than
+      // The cap may live in the route or in the service it delegates to; assert
+      // one of them USES a shared constant (positive), rather than
       // pattern-matching for the absence of one literal spelling — a route
       // could hardcode `= 52428800` under any name and slip past that.
-      expect(src, `${route} must take its cap from lib/uploadLimits.js`)
-        .toMatch(/MAX_BASE64_UPLOAD_BYTES|MAX_SCREENSHOT_BYTES/);
-      // Belt-and-braces: no raw MB-shaped byte literal left in an upload route.
-      expect(src, `${route} still hardcodes a raw byte cap`)
-        .not.toMatch(/=\s*\d+\s*\*\s*1024\s*\*\s*1024/);
+      const chain = [{ name: route.name, src: route.src }, ...route.delegates];
+      const where = chain.map((f) => f.name).join(' / ');
+      expect(chain.some((f) => /MAX_BASE64_UPLOAD_BYTES|MAX_SCREENSHOT_BYTES/.test(f.src)),
+        `${where} must take its cap from lib/uploadLimits.js`).toBe(true);
+      // Belt-and-braces: no raw MB-shaped byte literal left anywhere on the path.
+      for (const file of chain) {
+        expect(file.src, `${file.name} still hardcodes a raw byte cap`)
+          .not.toMatch(/=\s*\d+\s*\*\s*1024\s*\*\s*1024/);
+      }
     }
   });
 

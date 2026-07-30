@@ -1279,6 +1279,54 @@ export async function importFileToUploads(tempPath, originalName) {
 }
 
 /**
+ * Persist a base64-encoded IMAGE into `dir`, deriving the format from the bytes
+ * rather than trusting the client: decode → size cap → magic-byte sniff → force
+ * the extension to the detected format → sanitize + containment guard → write.
+ *
+ * This is the sibling of `saveBase64Upload` for the paths that must be certain
+ * they wrote an image (they hand the file to an image-gen backend or to an agent
+ * that will read it), so an extension allowlist isn't enough. Naming is the
+ * CALLER's call — pass a name that is already unique if later uploads must not
+ * overwrite this one, since `dir` is a shared bucket.
+ *
+ * Throws ServerError with the status/code/message contract `routes/screenshots.js`
+ * established (`FILE_TOO_LARGE`, `INVALID_FILE_TYPE`, `INVALID_FILENAME` — all
+ * 400) so callers keep their pinned responses.
+ *
+ * @param {string} dir - Destination directory (created if missing).
+ * @param {{ filename: string, data: string }} upload - Desired base name (the
+ *   extension is replaced with the detected one) + base64 payload.
+ * @param {{ maxBytes: number }} opts
+ * @returns {Promise<{ filename: string, filePath: string, size: number,
+ *   format: string, mime: string }>}
+ */
+export async function saveImageUpload(dir, { filename, data }, { maxBytes }) {
+  const buffer = Buffer.from(data, 'base64');
+  if (buffer.length > maxBytes) {
+    throw new ServerError(`File exceeds maximum size of ${maxBytes / 1024 / 1024}MB`, { status: 400, code: 'FILE_TOO_LARGE' });
+  }
+
+  const detected = detectImageFormat(buffer);
+  if (!detected) {
+    throw new ServerError('Invalid image file - only PNG, JPEG, GIF, and WebP are supported', { status: 400, code: 'INVALID_FILE_TYPE' });
+  }
+
+  // The DETECTED extension wins over whatever the client claimed, so the file on
+  // disk can't advertise a type its bytes contradict.
+  const safeName = sanitizeFilename(filename);
+  const fname = safeName.toLowerCase().endsWith(detected.ext) ? safeName : `${safeName}${detected.ext}`;
+  const filePath = join(dir, fname);
+  if (!isPathInsideDir(dir, filePath)) {
+    throw new ServerError('Invalid filename', { status: 400, code: 'INVALID_FILENAME' });
+  }
+
+  await ensureDir(dir);
+  await writeFile(filePath, buffer);
+
+  return { filename: fname, filePath, size: buffer.length, format: detected.format, mime: detected.mime };
+}
+
+/**
  * Persist a base64-encoded upload into `dir` with the shared attachment
  * pipeline: extension allowlist → base64 decode → size cap → ensureDir →
  * `<uuid8>-<sanitized-name>` naming → containment guard → write.

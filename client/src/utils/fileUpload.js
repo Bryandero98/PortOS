@@ -82,6 +82,24 @@ export function readFileAsBase64(file) {
 }
 
 /**
+ * Gate a picked file as an uploadable image: right kind, within the size cap.
+ *
+ * Every image picker in the app needs this pair of checks, and a surface that
+ * PREVIEWS before uploading (the Shell photo composer) can't get it from
+ * `processScreenshotUploads`, which uploads immediately. So it lives here and
+ * both call it, keeping one wording for the size-limit message.
+ *
+ * @param {File} file
+ * @param {number} [maxFileSize] - byte ceiling (default: the screenshot cap)
+ * @returns {string|null} an error message, or null when the file is acceptable
+ */
+export function validateImageFile(file, maxFileSize = SCREENSHOT_MAX_FILE_SIZE) {
+  if (!file?.type?.startsWith('image/')) return `File "${file?.name}" is not an image`;
+  if (file.size > maxFileSize) return `File "${file.name}" exceeds the ${formatBytes(maxFileSize)} limit`;
+  return null;
+}
+
+/**
  * Process and upload image files as screenshots
  *
  * @param {FileList|File[]} files - Files to process
@@ -101,12 +119,14 @@ export async function processScreenshotUploads(files, options = {}) {
   const fileArray = Array.from(files);
 
   for (const file of fileArray) {
-    // Skip non-image files silently
+    // Non-image files are skipped SILENTLY here (this runs over a multi-select /
+    // drop of mixed content, where naming each non-image is noise) — but an
+    // oversized image is reported, since the user clearly meant to upload it.
     if (!file.type.startsWith('image/')) continue;
 
-    // Check file size
-    if (file.size > maxFileSize) {
-      onError?.(`File "${file.name}" exceeds the ${formatBytes(maxFileSize)} limit`);
+    const problem = validateImageFile(file, maxFileSize);
+    if (problem) {
+      onError?.(problem);
       continue;
     }
 
