@@ -105,4 +105,59 @@ describe('completeAgentRun idempotency', () => {
     expect(atomicWrite).not.toHaveBeenCalled();
     expect(writeFile).not.toHaveBeenCalled();
   });
+
+  it('writes the transcript before stamping the terminal metadata', async () => {
+    vi.resetModules();
+    const order = [];
+    const atomicWrite = vi.fn().mockImplementation(() => { order.push('metadata'); });
+    const writeFile = vi.fn().mockImplementation(() => { order.push('output'); });
+    vi.doMock('../lib/fileUtils.js', async (importOriginal) => ({
+      ...(await importOriginal()),
+      readJSONFile: vi.fn().mockResolvedValue({
+        id: 'run-open',
+        endTime: null,
+        taskId: null,
+        providerId: null,
+      }),
+      atomicWrite,
+    }));
+    vi.doMock('fs/promises', async (importOriginal) => ({
+      ...(await importOriginal()),
+      writeFile,
+    }));
+    const { completeAgentRun } = await import('./agentRunTracking.js');
+
+    await completeAgentRun('run-open', 'output', 1, 100, { message: 'failed' });
+
+    expect(order).toEqual(['output', 'metadata']);
+  });
+
+  it('reconciles usage for failed runs as well as successful ones', async () => {
+    vi.resetModules();
+    const recordCompletedRunUsage = vi.fn();
+    vi.doMock('../lib/fileUtils.js', async (importOriginal) => ({
+      ...(await importOriginal()),
+      readJSONFile: vi.fn().mockResolvedValue({
+        id: 'run-failed',
+        endTime: null,
+        taskId: null,
+        providerId: 'codex',
+        model: 'example-model',
+      }),
+      atomicWrite: vi.fn(),
+    }));
+    vi.doMock('fs/promises', async (importOriginal) => ({
+      ...(await importOriginal()),
+      writeFile: vi.fn(),
+    }));
+    vi.doMock('./usageReconciler.js', () => ({ recordCompletedRunUsage }));
+    const { completeAgentRun } = await import('./agentRunTracking.js');
+
+    await completeAgentRun('run-failed', 'partial output', 1, 100, { message: 'failed' });
+
+    expect(recordCompletedRunUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'run-failed', success: false }),
+      'partial output',
+    );
+  });
 });

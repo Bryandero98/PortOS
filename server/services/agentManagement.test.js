@@ -108,7 +108,7 @@ import { pauseAgentViaRunner } from './cosRunnerClient.js';
 import * as shellService from './shell.js';
 import { readHostShutdownMarker, clearHostShutdownMarker } from '../lib/hostShutdown.js';
 import { completeAgent as markAgentComplete } from './cos.js';
-import { completeAgentRun } from './agentRunTracking.js';
+import { checkForTaskCommit, completeAgentRun } from './agentRunTracking.js';
 import { activeAgents, runnerAgents, pausedAgents } from './agentState.js';
 
 describe('settleOrphanedCreativeDirectorRun — reap a dead CD agent run (#2705)', () => {
@@ -890,6 +890,18 @@ describe('orphan retries resume what the dead run left behind', () => {
 
     expect(resolveTaskResumePatch).toHaveBeenCalledWith(expect.objectContaining({ agentMetadata: null }));
     expect(updateTask).toHaveBeenCalledWith('task-1', expect.objectContaining({ status: 'pending' }), 'user');
+  });
+
+  it('checks for completed work in the orphaned agent’s actual workspace', async () => {
+    checkForTaskCommit.mockResolvedValueOnce(true);
+    getTaskById.mockResolvedValue({ id: 'task-1', taskType: 'user', status: 'in_progress', metadata: {} });
+
+    await handleOrphanedTask('task-1', 'agent-dead', getTaskById, {
+      agentMetadata: { workspacePath: '/example-app' },
+    });
+
+    expect(checkForTaskCommit).toHaveBeenCalledWith('task-1', '/example-app');
+    expect(updateTask).toHaveBeenCalledWith('task-1', { status: 'completed' }, 'user');
   });
 });
 
