@@ -1,14 +1,20 @@
 import { fireEvent, render, screen } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import GameCompilePanel from './GameCompilePanel.jsx';
 
 const game = {
   compiledManifest: null,
 };
+const renderPanel = (panel) => render(
+  <MemoryRouter>
+    {panel}
+  </MemoryRouter>,
+);
 
 describe('GameCompilePanel', () => {
   it('surfaces integrity blockers and gates build and launch', () => {
-    render(
+    renderPanel(
       <GameCompilePanel
         game={game}
         integrity={{
@@ -41,7 +47,7 @@ describe('GameCompilePanel', () => {
   it('surfaces a compile failure as an alert', () => {
     // The inline alert is the only surface for a failed compile — the page
     // deliberately does not also toast it.
-    render(
+    renderPanel(
       <GameCompilePanel
         game={game}
         integrity={{
@@ -65,7 +71,7 @@ describe('GameCompilePanel', () => {
     // that would leave Build enabled on an unverified tree and label an existing
     // bundle "Not built" right above the block describing it.
     const onRetryIntegrity = vi.fn();
-    render(
+    renderPanel(
       <GameCompilePanel
         game={{ compiledManifest: { version: 2, spriteCount: 1, musicCount: 0, builtAt: '2026-07-28T12:00:00.000Z', manifestPath: 'manifests/game-assets-v2.json' } }}
         integrity={null}
@@ -86,7 +92,7 @@ describe('GameCompilePanel', () => {
   });
 
   it('does not offer to build while the preflight is still loading', () => {
-    render(
+    renderPanel(
       <GameCompilePanel
         game={game}
         integrity={null}
@@ -104,7 +110,7 @@ describe('GameCompilePanel', () => {
 
   it('allows a verified bundle to launch', () => {
     const onLaunch = vi.fn();
-    render(
+    renderPanel(
       <GameCompilePanel
         game={{
           compiledManifest: {
@@ -135,5 +141,43 @@ describe('GameCompilePanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Start game' }));
     expect(onLaunch).toHaveBeenCalledOnce();
     expect(screen.getByText('Verified')).toBeInTheDocument();
+  });
+
+  it('links resolved blockers to their source records but not deleted records', () => {
+    renderPanel(
+      <GameCompilePanel
+        game={game}
+        sprites={[{ id: 'hero/one' }]}
+        tracks={[{ id: 'deleted-track' }]}
+        integrity={{
+          readyToCompile: false,
+          canLaunch: false,
+          bundle: { status: 'missing' },
+          issues: [
+            {
+              assetType: 'sprite',
+              assetId: 'hero/one',
+              name: 'Hero',
+              code: 'SPRITE_ATLAS_REQUIRED',
+              message: 'Runtime atlas required',
+            },
+            {
+              assetType: 'music',
+              assetId: 'deleted-track',
+              name: 'Deleted Track',
+              code: 'TRACK_MISSING',
+              message: 'Bound music track no longer exists',
+            },
+          ],
+          counts: { spriteReady: 0, spriteTotal: 1, verifiedFiles: 0 },
+        }}
+        onCompile={() => {}}
+        onLaunch={() => {}}
+      />,
+    );
+
+    expect(screen.getByRole('link', { name: 'Open in Sprite Manager' }))
+      .toHaveAttribute('href', '/sprites/hero%2Fone');
+    expect(screen.queryByRole('link', { name: 'Open in Music' })).not.toBeInTheDocument();
   });
 });

@@ -115,6 +115,13 @@ describe('Game page', () => {
     renderAt('/game/verified-game');
     expect(await screen.findByText('Verified')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Start game' })).toBeEnabled();
+    const back = screen.getByRole('link', { name: 'All Games' });
+    expect(back.className).toContain('h-11');
+    expect(back.className).toContain('w-11');
+    expect(back).toHaveAttribute('title', 'All Games');
+    expect(back.closest('header')?.className).toContain('shrink-0');
+    expect(screen.getByRole('tabpanel').parentElement?.parentElement?.className)
+      .toContain('overflow-y-auto');
   });
 
   it('never offers to launch a game whose bundle was never built', async () => {
