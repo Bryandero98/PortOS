@@ -444,8 +444,15 @@ describe('compileAtlas', () => {
     // its atlas pixels and finalized track sets are unchanged.
     const pointerAbs = join(TEST_ROOT, 'sprites', id, 'runtime/current.json');
     const legacyPointer = JSON.parse(await readFile(pointerAbs, 'utf8'));
+    const legacyManifestAbs = join(TEST_ROOT, 'sprites', id, first.manifestPath);
+    const legacyManifest = JSON.parse(await readFile(legacyManifestAbs, 'utf8'));
+    delete legacyManifest.geometry.jetpackFrameCount;
+    const legacyManifestBytes = Buffer.from(`${JSON.stringify(legacyManifest, null, 2)}\n`);
+    await writeFile(legacyManifestAbs, legacyManifestBytes);
     delete legacyPointer.geometry.jetpackFrameCount;
+    legacyPointer.manifestSha256 = sha256(legacyManifestBytes);
     await writeFile(pointerAbs, JSON.stringify(legacyPointer));
+    await rm(join(TEST_ROOT, 'sprites', id, first.atlasPath));
     const backfilled = await compileAtlas(id, { tracks: customTracks });
     expect(backfilled.created).toBe(true);
     expect(backfilled.version).toBe(first.version + 1);

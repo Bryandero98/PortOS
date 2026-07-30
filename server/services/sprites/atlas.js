@@ -808,7 +808,10 @@ export async function compileAtlasInTail(recordId, {
   // (the re-materialize case).
   for (;;) {
     const survivor = await readJSONFile(join(runtimeAbs, `v${version}`, `${stem}-v${version}-manifest.json`), null);
-    if (!survivor || survivor.atlasSha256 === atlasSha256) break;
+    if (!survivor || (
+      survivor.atlasSha256 === atlasSha256
+      && trackFrameCountsUpToDate(survivor.geometry, frameCountFields)
+    )) break;
     version += 1;
   }
   const versionRel = `${RUNTIME_DIR}/v${version}`;
@@ -823,7 +826,10 @@ export async function compileAtlasInTail(recordId, {
   // createdAt and trip the immutable-write refusal.
   const manifestAbs = join(dir, manifestRel);
   const survivingManifest = await readJSONFile(manifestAbs, null);
-  if (survivingManifest?.atlasSha256 === atlasSha256) {
+  if (
+    survivingManifest?.atlasSha256 === atlasSha256
+    && trackFrameCountsUpToDate(survivingManifest.geometry, frameCountFields)
+  ) {
     const survivingBuffer = await readFile(manifestAbs);
     const pointer = {
       schemaVersion: 1,
