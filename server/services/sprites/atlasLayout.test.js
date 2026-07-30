@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  buildAtlasLayout, layoutSidecarPath, runtimeContractMismatch, ATLAS_LAYOUT_SCHEMA_VERSION,
+  buildAtlasLayout, layoutSidecarPath, runtimeContractMismatch, ATLAS_LAYOUT_SCHEMA_VERSION, PREVIEW_FPS_NOTE,
 } from './atlasLayout.js';
 import { walkPhaseLabels } from './walkBounds.js';
 // The span math moved to atlasGrid.js (#3016) and is unit-tested there. This
@@ -120,6 +120,77 @@ describe('buildAtlasLayout', () => {
     // The walk span is still recoverable by name for a consumer that only knows
     // about walk — a second track is additive, not a re-read.
     expect(layout.walkFrameCount).toBe(12);
+  });
+
+  it('publishes every registry track frame count through its declared contract field', () => {
+    const animationTracks = {
+      walk: ANIMATION_TRACKS.walk,
+      jetpack: {
+        id: 'jetpack',
+        label: 'Jetpack burst',
+        contractFrameCountField: 'jetpackFrameCount',
+      },
+      unknown: {
+        id: 'unknown',
+        label: 'Unknown action',
+        contractFrameCountField: 'unknownFrameCount',
+      },
+    };
+    const layout = buildAtlasLayout({
+      characterId: 'example-character',
+      geometry: geometryFor(8, {
+        columns: ['idle', ...walkPhaseLabels(8), 'jetpack-00', 'jetpack-01', 'jetpack-02'],
+        tracks: {
+          idle: span(0, 1),
+          walk: span(1, 8),
+          jetpack: span(9, 3),
+        },
+      }),
+      atlasSha256: 'abc123',
+      version: 8,
+      atlasDestPath: 'assets/sprites/hero/hero-atlas.png',
+    }, animationTracks);
+
+    expect(layout.jetpackFrameCount).toBe(3);
+    expect(layout).not.toHaveProperty('unknownFrameCount');
+  });
+
+  it('keeps seeded scanner and ambient sidecars byte-identical', () => {
+    const geometry = geometryFor(8, {
+      scannerFrameCount: 4,
+      ambientFrameCount: 3,
+    });
+    const input = {
+      characterId: 'example-character',
+      geometry,
+      atlasSha256: 'abc123',
+      version: 4,
+      atlasDestPath: 'assets/sprites/hero/hero-atlas.png',
+    };
+    const legacy = {
+      schemaVersion: ATLAS_LAYOUT_SCHEMA_VERSION,
+      kind: 'portos-sprite-atlas-layout',
+      characterId: input.characterId,
+      atlasFile: 'hero-atlas.png',
+      atlasVersion: input.version,
+      sourceAtlasSha256: input.atlasSha256,
+      cellSize: geometry.cellSize,
+      rows: geometry.rows,
+      rowOrder: [...geometry.directionOrder],
+      columns: [...geometry.columns],
+      columnCount: geometry.columns.length,
+      tracks: {
+        idle: span(0, 1),
+        walk: span(1, 8),
+      },
+      walkFrameCount: geometry.walkFrameCount,
+      scannerFrameCount: geometry.scannerFrameCount,
+      ambientFrameCount: geometry.ambientFrameCount,
+      previewFps: geometry.walkFps,
+      previewFpsNote: PREVIEW_FPS_NOTE,
+    };
+
+    expect(JSON.stringify(buildAtlasLayout(input))).toBe(JSON.stringify(legacy));
   });
 
   it('refuses a persisted descriptor that contradicts its own column list', () => {

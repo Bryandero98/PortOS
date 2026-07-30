@@ -680,6 +680,16 @@ const trackSetsUpToDate = (persisted, validated) => {
   return [...ids].every((id) => current[id] === expected[id]);
 };
 
+const trackFrameCountFields = (validated, animationTracks) => Object.fromEntries(
+  Object.values(animationTracks).flatMap((definition) => {
+    const frameCount = validated.tracks[definition.id]?.frameCount;
+    return Number.isInteger(frameCount) ? [[definition.contractFrameCountField, frameCount]] : [];
+  }),
+);
+
+const trackFrameCountsUpToDate = (geometry, fields) => Object.entries(fields)
+  .every(([field, frameCount]) => geometry?.[field] === frameCount);
+
 export async function compileAtlasInTail(recordId, {
   geometry: geometryOverride,
   tracks: animationTracks = getEffectiveAnimationTracks(),
@@ -692,6 +702,7 @@ export async function compileAtlasInTail(recordId, {
   await requireAnimatable(recordId);
   const geometry = mergeGeometry(geometryOverride);
   const validated = await validateForCompile(recordId, animationTracks);
+  const frameCountFields = trackFrameCountFields(validated, animationTracks);
   const dir = spriteDir(recordId);
 
   // Columns/width follow the set's actual per-track frame counts, not the
@@ -727,6 +738,7 @@ export async function compileAtlasInTail(recordId, {
     && currentAtlasOnDisk
     && trackSetsUpToDate(current, validated)
     && compiledGridUpToDate(current.geometry, { ...geometry, columns, tracks })
+    && trackFrameCountsUpToDate(current.geometry, frameCountFields)
   ) {
     return { ...current, created: false };
   }
@@ -781,7 +793,8 @@ export async function compileAtlasInTail(recordId, {
   const atlasSha256 = sha256Buffer(atlasBuffer);
 
   if (current && currentAtlasOnDisk && trackSetsUpToDate(current, validated)
-    && current.atlasSha256 === atlasSha256) {
+    && current.atlasSha256 === atlasSha256
+    && trackFrameCountsUpToDate(current.geometry, frameCountFields)) {
     return { ...current, created: false };
   }
 
@@ -795,7 +808,10 @@ export async function compileAtlasInTail(recordId, {
   // (the re-materialize case).
   for (;;) {
     const survivor = await readJSONFile(join(runtimeAbs, `v${version}`, `${stem}-v${version}-manifest.json`), null);
-    if (!survivor || survivor.atlasSha256 === atlasSha256) break;
+    if (!survivor || (
+      survivor.atlasSha256 === atlasSha256
+      && trackFrameCountsUpToDate(survivor.geometry, frameCountFields)
+    )) break;
     version += 1;
   }
   const versionRel = `${RUNTIME_DIR}/v${version}`;
@@ -810,7 +826,10 @@ export async function compileAtlasInTail(recordId, {
   // createdAt and trip the immutable-write refusal.
   const manifestAbs = join(dir, manifestRel);
   const survivingManifest = await readJSONFile(manifestAbs, null);
-  if (survivingManifest?.atlasSha256 === atlasSha256) {
+  if (
+    survivingManifest?.atlasSha256 === atlasSha256
+    && trackFrameCountsUpToDate(survivingManifest.geometry, frameCountFields)
+  ) {
     const survivingBuffer = await readFile(manifestAbs);
     const pointer = {
       schemaVersion: 1,
@@ -893,8 +912,10 @@ export async function compileAtlasInTail(recordId, {
       // walk row at the authored speed over the right number of columns.
       walkFrameCount: validated.walkFrameCount,
       walkFps: validated.walkFps,
-      ...(validated.scannerSet ? { scannerFrameCount: validated.scannerFrameCount } : {}),
-      ...(validated.ambientSet ? { ambientFrameCount: validated.ambientFrameCount } : {}),
+      // Match every compiled track to the convenience field its registry row
+      // declares. The duplicate walk assignment preserves the existing field
+      // position, while seeded scanner/ambient rows keep their wire names.
+      ...frameCountFields,
     },
     directions: rows.map((row) => ({
       direction: row.direction,
