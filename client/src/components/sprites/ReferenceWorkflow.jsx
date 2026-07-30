@@ -18,6 +18,7 @@ import CorrectionNote, {
 } from './CorrectionNote.jsx';
 import FilePickerButton from '../ui/FilePickerButton';
 import { IMAGE_ACCEPT } from '../../utils/fileUpload';
+import { supportsCloudModelOverride } from '../../lib/imageGenBackends';
 
 // Reference workflow (issues #2896, #2979): three ordered steps — generate a
 // turnaround sheet from text + an optional design image and freeze it, derive
@@ -440,16 +441,48 @@ export default function ReferenceWorkflow({ record, reference, renders, correcti
 
   const noBackend = Array.isArray(backends) && backends.length === 0;
   const modePicker = Array.isArray(backends) && backends.length > 0 && (
-    <label className="flex items-center gap-2 text-xs text-gray-400">
-      Backend
-      <select
-        value={mode}
-        onChange={(e) => onModeChange(e.target.value)}
-        className="bg-port-bg border border-port-border rounded px-2 py-1 text-sm text-white"
-      >
-        {backends.map((b) => <option key={b.id} value={b.id}>{b.label || b.id}</option>)}
-      </select>
-    </label>
+    <span className="flex items-center gap-2 flex-wrap">
+      <label className="flex items-center gap-2 text-xs text-gray-400">
+        Backend
+        <select
+          value={mode}
+          onChange={(e) => {
+            const v = e.target.value;
+            onModeChange(v);
+            // Persist the choice as THIS record's render pin (#3231 Phase 3)
+            // so re-rolls and future sessions render on the same backend. A
+            // backend change clears the pinned model — ids are namespaced per
+            // provider (the ImageGenTab render-defaults precedent).
+            updateSpriteRecord(recordId, { imageMode: v || null, imageModelId: null }, { silent: true })
+              .then(() => onChanged())
+              .catch((err) => toast.error(`Backend pin save failed: ${err.message}`));
+          }}
+          className="bg-port-bg border border-port-border rounded px-2 py-1 text-sm text-white"
+        >
+          {backends.map((b) => <option key={b.id} value={b.id}>{b.label || b.id}</option>)}
+        </select>
+      </label>
+      {supportsCloudModelOverride(mode) && (
+        <label className="flex items-center gap-2 text-xs text-gray-400">
+          Model
+          <input
+            type="text"
+            key={`${recordId}:${mode}:${record.imageModelId || ''}`}
+            defaultValue={record.imageModelId || ''}
+            onBlur={(e) => {
+              const v = e.target.value.trim() || null;
+              if (v === (record.imageModelId || null)) return;
+              updateSpriteRecord(recordId, { imageModelId: v }, { silent: true })
+                .then(() => onChanged())
+                .catch((err) => toast.error(`Model pin save failed: ${err.message}`));
+            }}
+            placeholder="Provider default"
+            aria-label="Pinned cloud model for this sprite"
+            className="bg-port-bg border border-port-border rounded px-2 py-1 text-sm text-white w-44"
+          />
+        </label>
+      )}
+    </span>
   );
   const turnaroundCandidates = candidatesByTarget.turnaround || [];
   const mainCandidates = candidatesByTarget.main || [];

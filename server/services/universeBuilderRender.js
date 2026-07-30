@@ -20,7 +20,7 @@ import { getImageModels, isFlux2 } from '../lib/mediaModels.js';
 import { usesDiffusersRunner } from '../lib/runners.js';
 import { IMAGE_GEN_MODE, QUEUEABLE_IMAGE_MODES } from './imageGen/modes.js';
 import { resolveRenderTargetConfig } from './imageGen/cloudProviderConfig.js';
-import { RENDER_TARGET } from '../lib/renderTargets.js';
+import { RENDER_TARGET, recordRenderPin } from '../lib/renderTargets.js';
 import { resolveImageCleaners } from './imageGen/index.js';
 import { getStylePresetById } from '../lib/writersRoomStylePresets.js';
 import { ServerError } from '../lib/errorHandler.js';
@@ -60,10 +60,16 @@ export async function renderUniverseJobs(universeId, body, mapServiceError) {
   }
 
   const settings = await getSettings();
-  // Render-target ladder (#3231): body.mode → the universe-bible pin in
-  // settings.renderDefaults → the install default → external (rejected below).
+  // Render-target ladder (#3231): body.mode → the universe's persisted pin
+  // (Phase 3) → the universe-bible pin in settings.renderDefaults → the
+  // install default → external (rejected below). body.cloudModel wins over
+  // the record's imageModelId pin the same way.
+  const renderPin = recordRenderPin(universe);
   const { mode, cloud } = resolveRenderTargetConfig(settings, RENDER_TARGET.UNIVERSE_BIBLE, {
     mode: body.mode,
+    model: body.cloudModel,
+    recordMode: renderPin.mode,
+    recordModel: renderPin.modelId,
     fallbackMode: IMAGE_GEN_MODE.EXTERNAL,
   });
 

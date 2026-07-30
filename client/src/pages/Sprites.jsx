@@ -413,7 +413,15 @@ export default function Sprites() {
     setDetail((prev) => (prev?.record?.id === id ? prev : null));
     setDetailState('loading');
     getSpriteRecord(id, { silent: true })
-      .then((d) => { if (!stale) { setDetail(d); setDetailState('loaded'); } })
+      .then((d) => {
+        if (stale) return;
+        setDetail(d);
+        setDetailState('loaded');
+        // Seed the page-owned backend picker from the record's persisted
+        // render pin (#3231 Phase 3) so an opened sprite renders where it was
+        // pinned; unpinned records keep the current page mode.
+        if (d?.record?.imageMode) setImageMode(d.record.imageMode);
+      })
       .catch((err) => { if (!stale) setDetailState(err?.status === 404 || err?.status === 400 ? 'missing' : 'error'); });
     return () => { stale = true; };
   }, [id, retryTick]);

@@ -21,7 +21,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler, ServerError, createServiceErrorMapper } from '../lib/errorHandler.js';
-import { validateRequest, optionalBooleanMap, llmSchema, isPaginationRequested, paginateArray } from '../lib/validation.js';
+import { validateRequest, optionalBooleanMap, llmSchema, isPaginationRequested, paginateArray, recordRenderPinFields } from '../lib/validation.js';
 import * as svc from '../services/universeBuilder.js';
 import * as canonSvc from '../services/universeCanon.js';
 import { expandUniverseCharacter } from '../services/universeCharacterExpand.js';
@@ -183,6 +183,9 @@ const createSchema = z.object({
   characters: canonArrayField,
   places: canonArrayField,
   objects: canonArrayField,
+  // Per-record render pin (#3231 Phase 3) — this universe's default image
+  // backend + cloud model.
+  ...recordRenderPinFields,
   // Local-only "don't sync to peers" marker — see sanitizeRecordForWire.
   ephemeral: z.boolean().optional(),
 });
@@ -220,6 +223,9 @@ const patchSchema = z.object({
   places: canonArrayField,
   objects: canonArrayField,
   origin: originField,
+  // Per-record render pin (#3231 Phase 3). Key-present with 'auto'/''/null
+  // clears; key-absent preserves.
+  ...recordRenderPinFields,
   ephemeral: z.boolean().optional(),
 }).refine((p) => Object.keys(p).length > 0, { message: 'patch must include at least one field' });
 
@@ -351,6 +357,9 @@ const renderSchema = z.object({
   // pick mode/size/steps without bouncing to the Image page first.
   mode: z.enum(IMAGE_GEN_MODES).optional(),
   modelId: z.string().trim().max(64).optional(),
+  // Per-batch cloud model override (#3231 Phase 3) — wins over the universe's
+  // persisted imageModelId pin and the renderDefaults imageModel pin.
+  cloudModel: z.string().trim().max(64).optional(),
   width: z.number().int().min(64).max(2048).optional(),
   height: z.number().int().min(64).max(2048).optional(),
   steps: z.number().int().min(1).max(150).optional(),

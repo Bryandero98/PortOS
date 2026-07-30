@@ -23,7 +23,7 @@ import { resolveCharacterLoras } from '../characterLoraResolver.js';
 import { pickCanon } from './seriesCanon.js';
 import { IMAGE_GEN_MODE } from '../imageGen/modes.js';
 import { pickUsableMode, renderTargetDefaults, resolveRenderTargetConfig } from '../imageGen/cloudProviderConfig.js';
-import { RENDER_TARGET } from '../../lib/renderTargets.js';
+import { RENDER_TARGET, recordRenderPin } from '../../lib/renderTargets.js';
 import { resolveImageCleaners } from '../imageGen/index.js';
 
 const joinStyleParts = (...parts) =>
@@ -73,8 +73,12 @@ const applyWorldStyle = (prompt, world, series = null) => {
 // one first; this is the wider param-assembly consolidation from #2881.)
 // The pipeline-visual renderDefaults pin (#3231) slots between the explicit
 // per-request override and the install default — usability-gated like both.
-const resolveMode = (options, settings) => pickUsableMode(settings, [
+// The series' persisted per-record pin (#3231 Phase 3) sits between the
+// per-request override and the install-wide target pin: "this series renders
+// on codex" beats the surface default, loses to an explicit UI selection.
+const resolveMode = (options, settings, series = null) => pickUsableMode(settings, [
   options.mode,
+  recordRenderPin(series).mode,
   renderTargetDefaults(settings, RENDER_TARGET.PIPELINE_VISUAL).imageMode,
   settings?.imageGen?.mode,
 ]);
@@ -218,7 +222,7 @@ const loadBibleContext = async (issueId) => {
   return { ...chain, settings };
 };
 
-const enqueueImageJob = ({ prompt, world, settings, options, mode, owner, logLine }) => {
+const enqueueImageJob = ({ prompt, world, settings, options, mode, owner, logLine, series = null }) => {
   // Merge user + world negatives — mirrors composeStyledPrompt's preset
   // negative handling so the world's global negative-prompt terms stay in
   // effect even when the caller supplies their own additions. Deduplicated
@@ -259,8 +263,15 @@ const enqueueImageJob = ({ prompt, world, settings, options, mode, owner, logLin
   // effect on storyboard, comic-panel, or cover renders.
   const { cleanC2PA, denoise } = resolveImageCleaners(undefined, settings, mode);
   // Mode is already resolved through the ladder above; this call threads the
-  // pipeline-visual renderDefaults imageModel into the cloud job params.
-  const { cloud } = resolveRenderTargetConfig(settings, RENDER_TARGET.PIPELINE_VISUAL, { mode });
+  // series' persisted imageModelId pin (#3231 Phase 3), then the
+  // pipeline-visual renderDefaults imageModel, into the cloud job params —
+  // each riding only when the resolved mode is still its pinned backend.
+  const seriesPin = recordRenderPin(series);
+  const { cloud } = resolveRenderTargetConfig(settings, RENDER_TARGET.PIPELINE_VISUAL, {
+    mode,
+    recordMode: seriesPin.mode,
+    recordModel: seriesPin.modelId,
+  });
   const params = cloud
     ? { ...cloud.jobParams, cleanC2PA, denoise, ...baseParams }
     : { pythonPath: settings.imageGen?.local?.pythonPath || null, modelId: options.modelId, cleanC2PA, denoise, ...baseParams };

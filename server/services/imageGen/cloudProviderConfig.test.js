@@ -13,6 +13,7 @@ import {
   resolveQueueImageEditMode,
   resolveQueueImageMode,
 } from './modes.js';
+import { recordRenderPin } from '../../lib/renderTargets.js';
 
 const settingsWith = (imageGen) => ({ imageGen });
 
@@ -286,6 +287,60 @@ describe('resolveRenderTargetConfig (#3231)', () => {
     );
     const { cloud } = resolveRenderTargetConfig(settings, 'sprite-reference', { mode: IMAGE_GEN_MODE.CODEX });
     expect(cloud.modelId).toBe(CODEX_IMAGEGEN_DEFAULT_MODEL);
+  });
+
+  it('a record pin beats the target pin and loses to a per-request mode (#3231 Phase 3)', () => {
+    const settings = withDefaults(
+      { mode: IMAGE_GEN_MODE.LOCAL, codex: { enabled: true }, agy: { enabled: true }, grok: { enabled: true } },
+      { 'universe-bible': { imageMode: IMAGE_GEN_MODE.AGY } },
+    );
+    expect(resolveRenderTargetConfig(settings, 'universe-bible', { recordMode: IMAGE_GEN_MODE.CODEX }).mode)
+      .toBe(IMAGE_GEN_MODE.CODEX);
+    expect(resolveRenderTargetConfig(settings, 'universe-bible', {
+      mode: IMAGE_GEN_MODE.GROK, recordMode: IMAGE_GEN_MODE.CODEX,
+    }).mode).toBe(IMAGE_GEN_MODE.GROK);
+  });
+
+  it('a record model pin rides its backend and wins over the target model pin', () => {
+    const settings = withDefaults(
+      { agy: { enabled: true } },
+      { 'universe-bible': { imageMode: IMAGE_GEN_MODE.AGY, imageModel: 'target-model' } },
+    );
+    const { cloud } = resolveRenderTargetConfig(settings, 'universe-bible', {
+      recordMode: IMAGE_GEN_MODE.AGY, recordModel: 'record-model',
+    });
+    expect(cloud.modelId).toBe('record-model');
+    expect(cloud.jobParams.model).toBe('record-model');
+  });
+
+  it('a disabled record pin falls through and takes its model with it', () => {
+    const settings = withDefaults(
+      { mode: IMAGE_GEN_MODE.CODEX, codex: { enabled: true }, agy: { enabled: false } },
+      {},
+    );
+    const { mode, cloud } = resolveRenderTargetConfig(settings, 'universe-bible', {
+      recordMode: IMAGE_GEN_MODE.AGY, recordModel: 'gemini-3.6-flash-low',
+    });
+    expect(mode).toBe(IMAGE_GEN_MODE.CODEX);
+    expect(cloud.modelId).toBe(CODEX_IMAGEGEN_DEFAULT_MODEL);
+  });
+
+  it('a pre-resolved mode matching the record pin still applies the record model', () => {
+    // Surfaces with their own usability ladder (sprites, pipeline) resolve
+    // mode first and pass it as `mode` — the record model must still ride
+    // when that mode IS the record's pinned backend.
+    const settings = withDefaults({ codex: { enabled: true } }, {});
+    const { cloud } = resolveRenderTargetConfig(settings, 'sprite-reference', {
+      mode: IMAGE_GEN_MODE.CODEX, recordMode: IMAGE_GEN_MODE.CODEX, recordModel: 'record-model',
+    });
+    expect(cloud.modelId).toBe('record-model');
+  });
+
+  it('recordRenderPin normalizes auto/blank/missing to null', () => {
+    expect(recordRenderPin(null)).toEqual({ mode: null, modelId: null });
+    expect(recordRenderPin({ imageMode: 'auto', imageModelId: '  ' })).toEqual({ mode: null, modelId: null });
+    expect(recordRenderPin({ imageMode: ` ${IMAGE_GEN_MODE.AGY} `, imageModelId: 'gemini-3.6-flash-low' }))
+      .toEqual({ mode: IMAGE_GEN_MODE.AGY, modelId: 'gemini-3.6-flash-low' });
   });
 
   it('renderTargetDefaults normalizes auto/blank/missing to null', () => {

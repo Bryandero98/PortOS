@@ -158,7 +158,7 @@ export async function enqueueStoryboardShotStartFrame(issueId, sceneIndex, shotI
     });
   }
 
-  const mode = resolveMode(options, settings);
+  const mode = resolveMode(options, settings, series);
   const matchedCharacters = matchCharactersInText(
     `${description} ${scene.slugline || ''}`,
     canon.characters,
@@ -176,7 +176,7 @@ export async function enqueueStoryboardShotStartFrame(issueId, sceneIndex, shotI
   });
 
   const jobId = enqueueImageJob({
-    prompt, world, settings, options, mode,
+    prompt, world, settings, options, mode, series,
     owner: buildStoryboardsShotOwner({ issueId, sceneIndex: sIdx, shotIndex: tIdx }),
     logLine: `🎞️ Pipeline shot start-frame — issue=${issueId.slice(0, 8)} scene=${sIdx + 1} shot=${tIdx + 1}`,
   });

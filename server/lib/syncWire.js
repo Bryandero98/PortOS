@@ -144,8 +144,27 @@ export function sanitizeRecordForWire(kind, record) {
       // field. The strip is byte-stable against pre-field peers — they never sent
       // it, so the wire/hash form is unchanged for them.
       if (kind === 'universe') {
-        const { styleImageRefs: _styleImageRefs, ...universeRest } = rest;
+        // `imageMode`/`imageModelId` (#3231 Phase 3 per-record render pin) are
+        // WIRE-LOCAL for the same reasons as styleImageRefs: a pinned backend
+        // is an install-capability choice (the peer may not have codex/agy
+        // configured), the pair is one click to re-set, and stripping keeps
+        // universe sync flowing to pre-field peers without a whole-category
+        // schema gate. The sync merge restores the local values (see
+        // universeBuilder/sync.js).
+        const {
+          styleImageRefs: _styleImageRefs,
+          imageMode: _imageMode,
+          imageModelId: _imageModelId,
+          ...universeRest
+        } = rest;
         return { ...universeRest, ...sanitizeSoftDeleteFields(record) };
+      }
+      if (kind === 'series') {
+        // Series carry the same wire-local per-record render pin (#3231
+        // Phase 3) — strip it for the same reasons as the universe pair
+        // above. ADDITIVE_SERIES_FIELDS preserves the local values on merge.
+        const { imageMode: _imageMode, imageModelId: _imageModelId, ...seriesRest } = rest;
+        return { ...seriesRest, ...sanitizeSoftDeleteFields(record) };
       }
       return { ...rest, ...sanitizeSoftDeleteFields(record) };
     }

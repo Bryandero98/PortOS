@@ -37,7 +37,7 @@ import {
 } from '../imageGen/modes.js';
 import { resolveImageCleaners } from '../imageGen/index.js';
 import { renderTargetDefaults, resolveRenderTargetConfig } from '../imageGen/cloudProviderConfig.js';
-import { RENDER_TARGET } from '../../lib/renderTargets.js';
+import { RENDER_TARGET, recordRenderPin } from '../../lib/renderTargets.js';
 import { getSettings } from '../settings.js';
 import { getRecord, updateRecord, listRecords, createCharacter } from './records.js';
 import { spriteDir, resolveSpriteAssetPath, listSpriteAssets } from './paths.js';
@@ -387,11 +387,13 @@ async function startReferenceGenerationImpl(recordId, body, upload = null) {
   // fork subsequent renders onto a different background than the frozen set.
   const genKey = manifest.chromaKey || record.chromaKey || DEFAULT_CHROMA_KEY;
   const settings = await getSettings();
-  // Render-target ladder (#3231): the page's explicit body.mode wins, then the
-  // sprite-reference pin in settings.renderDefaults, both gated through the
-  // usability ladder (a pinned-but-disabled backend falls through).
+  // Render-target ladder (#3231): the page's explicit body.mode wins, then
+  // the sprite record's persisted pin (Phase 3), then the sprite-reference
+  // pin in settings.renderDefaults — all gated through the usability ladder
+  // (a pinned-but-disabled backend falls through).
+  const spritePin = recordRenderPin(record);
   let mode = resolveQueueImageMode(
-    body.mode || renderTargetDefaults(settings, RENDER_TARGET.SPRITE_REFERENCE).imageMode,
+    body.mode || spritePin.mode || renderTargetDefaults(settings, RENDER_TARGET.SPRITE_REFERENCE).imageMode,
     settings,
   );
 
@@ -546,19 +548,29 @@ async function startReferenceGenerationImpl(recordId, body, upload = null) {
   const { cleanC2PA, denoise } = resolveImageCleaners(undefined, settings, mode);
   // The model the provider will ACTUALLY run, for candidate provenance —
   // grok picks its model internally, so its sidecars record null. body.model
-  // (a per-render override) wins over the sprite-reference renderDefaults pin,
-  // which wins over the provider's saved default (#3231).
+  // (a per-render override) wins over the record's imageModelId pin (Phase 3),
+  // which wins over the sprite-reference renderDefaults pin, which wins over
+  // the provider's saved default (#3231). Each pin rides only while the
+  // resolved mode is still its pinned backend (the resolver's leak guard).
   const { cloud } = resolveRenderTargetConfig(settings, RENDER_TARGET.SPRITE_REFERENCE, {
     mode,
     model: body.model,
+    recordMode: spritePin.mode,
+    recordModel: spritePin.modelId,
   });
   const cloudJobParams = mode === IMAGE_GEN_MODE.CODEX
     ? { ...cloud?.jobParams, effort: body.effort || settings.imageGen?.codex?.effort }
     : cloud?.jobParams;
+  // Local mode mirrors the cloud leak guard by hand: the record's model pin
+  // applies only when the record pinned local (or nothing) — a gemini id
+  // pinned for a cloud backend must not become an mflux modelId.
+  const localPinModel = (!spritePin.mode || spritePin.mode === IMAGE_GEN_MODE.LOCAL)
+    ? spritePin.modelId
+    : null;
   const effectiveModel = mode === IMAGE_GEN_MODE.CODEX || mode === IMAGE_GEN_MODE.AGY
     ? cloud.modelId
     : mode === IMAGE_GEN_MODE.LOCAL
-      ? (body.model || settings.imageGen?.local?.modelId || LOCAL_IMAGEGEN_DEFAULT_MODEL)
+      ? (body.model || localPinModel || settings.imageGen?.local?.modelId || LOCAL_IMAGEGEN_DEFAULT_MODEL)
       : null;
   const baseParams = {
     prompt,
@@ -747,6 +759,14 @@ export async function listSpriteThumbnails() {
 export async function forkSprite(sourceId, body) {
   await resolveSourceReference(sourceId); // fail fast before creating a record
   const record = await createCharacter({ name: body.name, id: body.id, kind: 'character' });
+  // Persist the fork's chosen backend/model as the NEW record's render pin
+  // (#3231 Phase 3) so re-rolls keep rendering where the fork was made.
+  if (body.mode || body.model) {
+    await updateRecord(record.id, {
+      ...(body.mode ? { imageMode: body.mode } : {}),
+      ...(body.model ? { imageModelId: body.model } : {}),
+    });
+  }
   const gen = await startReferenceGeneration(record.id, {
     target: TURNAROUND_ID,
     designPrompt: body.designPrompt,

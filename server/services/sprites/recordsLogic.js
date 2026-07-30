@@ -43,6 +43,13 @@ export function mirrorTimestamp(value, fallback) {
 
 const trimOrNull = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);
 
+// Per-record render-pin mode (#3231 Phase 3): the 'auto' UI sentinel means
+// "no pin" and is stored as null, matching recordRenderPin's normalization.
+const pinModeOrNull = (v) => {
+  const t = trimOrNull(v);
+  return t && t !== 'auto' ? t : null;
+};
+
 export function buildSpriteRecord(input, { id, now }) {
   const kind = SPRITE_RECORD_KINDS.includes(input.kind) ? input.kind : 'character';
   return {
@@ -65,6 +72,11 @@ export function buildSpriteRecord(input, { id, now }) {
       ? input.importedFrom
       : null,
     notes: trimOrNull(input.notes),
+    // Per-record render pin (#3231 Phase 3) — this sprite's default image
+    // backend + cloud model for reference renders. null = no pin (fall
+    // through to renderDefaults / the install default).
+    imageMode: pinModeOrNull(input.imageMode),
+    imageModelId: trimOrNull(input.imageModelId),
     createdAt: now,
     updatedAt: now,
     deleted: false,
@@ -74,7 +86,7 @@ export function buildSpriteRecord(input, { id, now }) {
 
 // Whitelist patch — key-absent preserves, key-present applies (including an
 // intentional clear via null/''), per the LLM/merge convention in CLAUDE.md.
-const PATCHABLE = ['name', 'status', 'kind', 'spec', 'chromaKey', 'publishBinding', 'notes'];
+const PATCHABLE = ['name', 'status', 'kind', 'spec', 'chromaKey', 'publishBinding', 'notes', 'imageMode', 'imageModelId'];
 
 export function applySpriteRecordPatch(record, patch) {
   const next = { ...record };
@@ -88,7 +100,10 @@ export function applySpriteRecordPatch(record, patch) {
     else if (key === 'kind') next.kind = SPRITE_RECORD_KINDS.includes(patch.kind) ? patch.kind : record.kind;
     else if (key === 'spec' || key === 'publishBinding') {
       next[key] = patch[key] && typeof patch[key] === 'object' ? patch[key] : null;
-    } else next[key] = trimOrNull(patch[key]);
+    // 'auto' (the UI's "no pin" sentinel) clears like null/'' — key-present
+    // always applies per the whitelist-patch convention above.
+    } else if (key === 'imageMode') next.imageMode = pinModeOrNull(patch.imageMode);
+    else next[key] = trimOrNull(patch[key]);
   }
   next.updatedAt = new Date().toISOString();
   return next;

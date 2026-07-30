@@ -147,7 +147,7 @@ async function enqueueComicCoverLike(issueId, target, options = {}) {
   const script = typeof options[scriptOptionKey] === 'string'
     ? options[scriptOptionKey]
     : (record?.script || '');
-  const mode = resolveMode(options, settings);
+  const mode = resolveMode(options, settings, series);
   const variant = resolveVariant(options.target);
   const fromProof = variant === 'final' && options.useProofAsBase === true;
   const initImagePath = fromProof
@@ -162,7 +162,7 @@ async function enqueueComicCoverLike(issueId, target, options = {}) {
     : composeComicBackCoverPrompt({ series, world, issue, backCoverScript: script, extraStyle });
   const logTarget = target === 'cover' ? 'cover' : 'back cover';
   const jobId = enqueueImageJob({
-    prompt, world, settings, mode,
+    prompt, world, settings, mode, series,
     options: { ...options, initImagePath, initImageStrength },
     owner: buildComicPagesOwner({ issueId, target, variant }),
     logLine: `🎨 Pipeline comic ${logTarget} — issue=${issueId.slice(0, 8)} number=${issue.number || 1} variant=${variant}${fromProof ? ' (from proof)' : ''}`,
@@ -337,7 +337,7 @@ async function enqueueVolumeCoverLike(seriesId, seasonId, target, options = {}) 
   const script = typeof options[scriptOptionKey] === 'string'
     ? options[scriptOptionKey]
     : (record?.script || '');
-  const mode = resolveMode(options, settings);
+  const mode = resolveMode(options, settings, series);
   const variant = resolveVariant(options.target);
   const fromProof = variant === 'final' && options.useProofAsBase === true;
   const initImagePath = fromProof
@@ -352,7 +352,7 @@ async function enqueueVolumeCoverLike(seriesId, seasonId, target, options = {}) 
     : composeVolumeBackCoverPrompt({ series, world, season, backCoverScript: script, extraStyle });
   const logTarget = target === 'cover' ? 'cover' : 'back cover';
   const jobId = enqueueImageJob({
-    prompt, world, settings, mode,
+    prompt, world, settings, mode, series,
     options: { ...options, initImagePath, initImageStrength },
     owner: buildSeasonCoverOwner({ seriesId, seasonId, target, variant }),
     logLine: `🎨 Pipeline volume ${logTarget} — series=${seriesId.slice(0, 8)} season=${seasonId.slice(0, 8)} vol=${season.number || 1} variant=${variant}${fromProof ? ' (from proof)' : ''}`,

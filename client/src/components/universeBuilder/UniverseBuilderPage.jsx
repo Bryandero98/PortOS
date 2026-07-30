@@ -144,6 +144,7 @@ export default function UniverseBuilder() {
     removeStyleReference,
     runs,
     saving,
+    setRenderPin,
     setCanonDirty,
     setDraft,
     setNewCategoryName,
@@ -716,6 +717,7 @@ export default function UniverseBuilder() {
         {activeTab === TAB_RENDER && (
           <RenderTab
             draft={draft}
+            setRenderPin={setRenderPin}
             selectedId={selectedId}
             bucketsByKind={bucketsByKind}
             renderOpts={renderOpts}

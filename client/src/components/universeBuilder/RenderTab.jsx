@@ -5,6 +5,7 @@ import { formatDateTime } from '../../utils/formatters';
 import { RUNNER_FAMILIES, loraCompatKey } from '../../lib/runnerFamilies';
 import { IMAGE_GEN_MODE } from '../../lib/imageGenBackends';
 import ImageGenSettingsForm from '../imageGen/ImageGenSettingsForm';
+import RecordRenderPinRow from '../imageGen/RecordRenderPinRow';
 import { TRUNK_TABS, humanizeCategory } from '../../lib/universeBuilderShared';
 import { totalVariationCount, countCanonWithContent } from '../../lib/universeBuilderCounts';
 
@@ -13,7 +14,7 @@ import { totalVariationCount, countCanonWithContent } from '../../lib/universeBu
 // recent-runs list. Extracted from UniverseBuilder.jsx (#2374). handleRender
 // (owned by the page) queues the actual render jobs.
 export default function RenderTab({
-  draft, selectedId, bucketsByKind, renderOpts, setRenderOpts,
+  draft, setRenderPin, selectedId, bucketsByKind, renderOpts, setRenderOpts,
   availableBackends, defaultMode, imageModels, availableLoras = [],
   handleRender, rendering, runs,
 }) {
@@ -64,6 +65,17 @@ export default function RenderTab({
             to enable batch render.
           </p>
         )}
+        {/* Per-universe render pin (#3231 Phase 3) — the persisted default for
+            THIS universe's bible + character-sheet renders. The batch form
+            below still overrides for one batch (transient renderOpts). */}
+        <RecordRenderPinRow
+          idPrefix={`universe-render-pin-${selectedId || 'new'}`}
+          label="This universe's default"
+          imageMode={draft.imageMode || null}
+          imageModelId={draft.imageModelId || null}
+          onChange={setRenderPin}
+          autoLabel="Auto (install / surface default)"
+        />
         <ImageGenSettingsForm
           value={{ ...renderOpts, mode: renderOpts.mode || defaultMode || IMAGE_GEN_MODE.LOCAL }}
           onChange={(next) => setRenderOpts(next)}

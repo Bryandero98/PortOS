@@ -34,3 +34,26 @@ export const RENDER_TARGETS = Object.freeze(Object.values(RENDER_TARGET));
 // means the same thing; the explicit value exists so a UI select can round-trip
 // the choice).
 export const RENDER_TARGET_BACKEND_AUTO = 'auto';
+
+// Max length for a persisted per-record model-id pin — matches the
+// creative-commission `COMMISSION_RENDER_MODEL_MAX` convention.
+export const RECORD_RENDER_MODEL_MAX = 64;
+
+/**
+ * Normalize a record's persisted render pin (#3231 Phase 3 — the flat
+ * `imageMode` / `imageModelId` field pair on universe / series / sprite
+ * records, following the creative-commission shape). The `'auto'` sentinel,
+ * blank strings, and absent fields all collapse to null ("no pin"), so
+ * callers can hand the result straight to `resolveRenderTargetConfig`'s
+ * `recordMode` / `recordModel` options without re-checking sentinels.
+ */
+export function recordRenderPin(record) {
+  const norm = (v) => {
+    const s = typeof v === 'string' ? v.trim() : '';
+    return s && s !== RENDER_TARGET_BACKEND_AUTO ? s : null;
+  };
+  return {
+    mode: norm(record?.imageMode),
+    modelId: norm(record?.imageModelId),
+  };
+}

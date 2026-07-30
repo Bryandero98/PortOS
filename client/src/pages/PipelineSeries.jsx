@@ -37,6 +37,7 @@ import { buildImporterLink } from '../lib/importerDeepLink';
 import { recommendStructure, describeStructure } from '../lib/seasonStructure';
 import { useLocalStorageBool } from '../hooks/useLocalStorageBool';
 import { useArcCanvasSync } from '../hooks/useArcCanvasSync';
+import RecordRenderPinRow from '../components/imageGen/RecordRenderPinRow';
 
 const PIPELINE_SIDEBAR_KEY = 'portos-pipeline-series-sidebar-collapsed';
 
@@ -56,6 +57,7 @@ const ARC_FLUSH_FIELDS = [
   'name', 'logline', 'premise', 'styleNotes', 'factCritical', 'factReference', 'styleGuide',
   'titleLogo', 'author', 'authorId',
   'stylePromptOverride', 'stylePromptOverrideMode', 'issueCountTarget', 'universeId', 'characterArcs',
+  'imageMode', 'imageModelId',
 ];
 const ARC_PAYLOAD_DEFAULTS = {
   titleLogo: '',
@@ -73,6 +75,10 @@ const ARC_PAYLOAD_DEFAULTS = {
   // Per-character story arcs (#1293) — [] means "no authored arcs"; the server
   // sanitizer drops empty arcs/beats and dedupes by character identity.
   characterArcs: [],
+  // Per-record render pin (#3231 Phase 3) — null means "no pin", which the
+  // server sanitizer also produces from an absent field.
+  imageMode: null,
+  imageModelId: null,
 };
 
 // Style-guide option lists — mirror the enums in server/lib/styleGuide.js. Each
@@ -502,6 +508,23 @@ function BibleSidebar({ series, universes, patchSeries, onSeriesUpdate, onFlushP
         />
         <p className="text-[11px] text-gray-500 mt-1">
           <strong>Prepend</strong> (default) puts the override ahead of the universe's <em>stylePrompt</em>; <strong>Append</strong> trails it; <strong>Replace</strong> drops the universe style entirely. Leave the box blank to use the universe style verbatim.
+        </p>
+      </Field>
+
+      <Field label="Render backend (this series only)">
+        {/* Per-record render pin (#3231 Phase 3) — this series' default image
+            backend + model for storyboards, comic pages, and covers. */}
+        <RecordRenderPinRow
+          idPrefix={`series-render-pin-${series.id}`}
+          label="Backend"
+          imageMode={series.imageMode || null}
+          imageModelId={series.imageModelId || null}
+          onChange={({ imageMode, imageModelId }) => patchSeries({ imageMode, imageModelId })}
+          autoLabel="Auto (install / surface default)"
+        />
+        <p className="text-[11px] text-gray-500 mt-1">
+          Pins this series' visual renders to one backend (and, for Codex/Agy, a model).
+          Leave on Auto to follow Settings → Image Gen.
         </p>
       </Field>
 

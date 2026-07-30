@@ -25,7 +25,7 @@ import { enqueueJob, mediaJobEvents } from './mediaJobQueue/index.js';
 import { buildUniverseRunTag } from './universeRunTag.js';
 import { IMAGE_GEN_MODE } from './imageGen/modes.js';
 import { resolveRenderTargetConfig } from './imageGen/cloudProviderConfig.js';
-import { RENDER_TARGET } from '../lib/renderTargets.js';
+import { RENDER_TARGET, recordRenderPin } from '../lib/renderTargets.js';
 import {
   flattenStats, flattenPalette, flattenWardrobes, flattenProps, flattenNamedList,
 } from '../lib/canonPrompt.js';
@@ -418,9 +418,13 @@ export async function renderCharacterReferenceSheet(universeId, entryId, options
   // the media-job queue with the active mode set; codex and local are both
   // first-class. External SD-API has no multi-zone layout support, so it
   // gets a clear remediation rather than a silently-degraded render.
-  // Render-target ladder (#3231): the universe-character-sheet pin in
-  // settings.renderDefaults → the install default → local.
+  // Render-target ladder (#3231): the universe's persisted pin (Phase 3) →
+  // the universe-character-sheet pin in settings.renderDefaults → the install
+  // default → local.
+  const renderPin = recordRenderPin(universe);
   const sheetTarget = resolveRenderTargetConfig(settings, RENDER_TARGET.UNIVERSE_CHARACTER_SHEET, {
+    recordMode: renderPin.mode,
+    recordModel: renderPin.modelId,
     fallbackMode: IMAGE_GEN_MODE.LOCAL,
   });
   const activeMode = sheetTarget.mode;

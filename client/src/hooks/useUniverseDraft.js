@@ -462,6 +462,18 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
     });
   }, [selectedId]);
 
+  // Per-record render pin (#3231 Phase 3) — this universe's default image
+  // backend + cloud model. Mirrors toggleLock: reactive local update plus an
+  // immediate targeted PATCH (the pin is not part of the autosaved draft
+  // payload, so a stale draft flush can't resurrect a cleared pin).
+  const setRenderPin = useCallback(({ imageMode, imageModelId }) => {
+    setDraft((current) => ({ ...current, imageMode, imageModelId }));
+    if (selectedId) {
+      updateUniverse(selectedId, { imageMode, imageModelId }, { silent: true })
+        .catch((error) => toast.error(`Render pin save failed: ${error.message}`));
+    }
+  }, [selectedId]);
+
   const updateCategory = useCallback((category, variations) => setDraft((current) => ({
     ...current,
     categories: {
@@ -573,6 +585,7 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
     removeStyleReference,
     runs,
     saving,
+    setRenderPin,
     setCanonDirty,
     setDraft,
     setNewCategoryName,

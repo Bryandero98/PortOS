@@ -442,7 +442,12 @@ describe('creativeDirector routes', () => {
       });
       const r = await request(app).post('/api/creative-director/cd-1/auto-cast').send({ generateFirstPass: true });
       expect(r.status).toBe(200);
-      expect(firstPass.enqueueFirstPassPortraits).toHaveBeenCalledWith([{ ingredientId: 'p1' }]);
+      // The project rides along so the CD renderBackend pin (#3231 Phase 3)
+      // reaches the first-pass mode resolver.
+      expect(firstPass.enqueueFirstPassPortraits).toHaveBeenCalledWith(
+        [{ ingredientId: 'p1' }],
+        expect.objectContaining({ id: 'cd-1' }),
+      );
       expect(r.body.firstPass).toEqual({ mode: 'local', enqueued: [{ ingredientId: 'p1', jobId: 'job-1' }], skipped: [] });
     });
 
@@ -473,7 +478,10 @@ describe('creativeDirector routes', () => {
       expect(r.status).toBe(200);
       expect(r.body.composing).toBe(true);
       expect(hook.startCreativeDirectorProject).toHaveBeenCalledWith('cd-1');
-      expect(firstPass.enqueueFirstPassPortraits).toHaveBeenCalledWith([{ ingredientId: 'p1' }]);
+      expect(firstPass.enqueueFirstPassPortraits).toHaveBeenCalledWith(
+        [{ ingredientId: 'p1' }],
+        expect.objectContaining({ id: 'cd-1' }),
+      );
     });
 
     it('400s on a non-boolean generateFirstPass', async () => {
