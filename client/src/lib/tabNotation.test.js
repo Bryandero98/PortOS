@@ -17,6 +17,7 @@ describe('TAB_ARTICULATIONS', () => {
     const chars = TAB_ARTICULATIONS.map(({ char }) => char);
     expect(chars).toEqual(expect.arrayContaining([
       'h', 'p', '/', '\\', 's', 'b', '^', 'r', '~', 'v', 'x', 'X', 't',
+      '<n>', '*', '(n)', '>', '=', '.',
     ]));
     expect(new Set(chars).size).toBe(chars.length);
     for (const articulation of TAB_ARTICULATIONS) {

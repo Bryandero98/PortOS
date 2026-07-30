@@ -103,6 +103,36 @@ export const TAB_ARTICULATIONS = [
     name: 'Tapped note',
     detail: 'Sound the fret by tapping it with a picking-hand finger.',
   },
+  {
+    char: '<n>',
+    name: 'Natural harmonic',
+    detail: 'Lightly touch the string above fret n, pick it, then lift the touching finger.',
+  },
+  {
+    char: '*',
+    name: 'Natural harmonic',
+    detail: 'Play the marked note as a natural harmonic.',
+  },
+  {
+    char: '(n)',
+    name: 'Ghost or optional note',
+    detail: 'Play fret n quietly, or treat it as an optional passing note.',
+  },
+  {
+    char: '>',
+    name: 'Accent',
+    detail: 'Play the following note more strongly than the surrounding notes.',
+  },
+  {
+    char: '=',
+    name: 'Tie or sustain',
+    detail: 'Let the note continue sounding into the next written note or beat.',
+  },
+  {
+    char: '.',
+    name: 'Staccato',
+    detail: 'Cut the note short instead of letting it ring.',
+  },
 ];
 
 // Anchored matcher for ONE chord symbol (test whitespace-split tokens against
