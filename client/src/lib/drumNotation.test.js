@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   parseDrumChart, isDrumNotation, drumChartHasMusic, kitPiece,
+  describeDrumCell, describeDrumPosition, drumGlyphLegend,
   KIT_PIECES, CELL_GLYPHS, DEFAULT_DRUM_TEMPO, SUBDIVISION_MAX,
 } from './drumNotation.js';
 
@@ -277,5 +278,142 @@ describe('drumChartHasMusic', () => {
     expect(drumChartHasMusic('HH: ----\nK: ----')).toBe(false);
     expect(drumChartHasMusic('time: 4/4')).toBe(false);
     expect(drumChartHasMusic('')).toBe(false);
+  });
+});
+
+describe('describeDrumCell', () => {
+  const cellOf = (text, piece, step = 0) => {
+    const chart = parseDrumChart(text);
+    return chart.bars[0].rows.find((r) => r.piece === piece).cells[step];
+  };
+
+  it('names the piece, the articulation, and how to strike it', () => {
+    const info = describeDrumCell('CR', cellOf('subdivision: 1\n\nCR: X---', 'CR'));
+    expect(info.pieceLabel).toBe('Crash');
+    expect(info.char).toBe('X');
+    expect(info.articulation).toBe('Accent');
+    expect(info.detail).toMatch(/harder/i);
+    expect(info.technique).toMatch(/crash cymbal/i);
+    expect(info.rest).toBe(false);
+    // The accent's own mark is explained — the whole point of tapping an X with
+    // a chevron over it.
+    expect(info.detail).toContain('>');
+  });
+
+  it('reports the hit strength playback actually uses', () => {
+    expect(describeDrumCell('S', cellOf('subdivision: 1\n\nS: x---', 'S')).velocityPercent)
+      .toBe(Math.round(CELL_GLYPHS.x.velocity * 100));
+    expect(describeDrumCell('S', cellOf('subdivision: 1\n\nS: g---', 'S')).velocityPercent)
+      .toBe(Math.round(CELL_GLYPHS.g.velocity * 100));
+    expect(describeDrumCell('S', CELL_GLYPHS['-']).velocityPercent).toBe(0);
+  });
+
+  it('explains `o` as OPEN on a cymbal and as a normal hit on a drum', () => {
+    // The renderer only rings the × on cross-glyph pieces, so calling a kick's
+    // `o` "open" would describe a technique the sheet never drew.
+    const hat = describeDrumCell('HH', cellOf('subdivision: 1\n\nHH: o---', 'HH'));
+    expect(hat.articulation).toBe('Open');
+    expect(hat.detail).toMatch(/ring/i);
+
+    const kick = describeDrumCell('K', cellOf('subdivision: 1\n\nK: o---', 'K'));
+    expect(kick.articulation).toBe('Normal hit');
+    expect(kick.detail).toMatch(/only changes hi-hats and cymbals/i);
+    expect(kick.char).toBe('o');
+  });
+
+  it('does not send a crash or ride player to the hi-hat pedal for an "o"', () => {
+    // The parser accepts `o` on any row and the renderer rings every cross glyph,
+    // but only the hi-hat VOICE sustains it (drumPlayback's `openDecay`) — so the
+    // wording has to follow the piece, not just the glyph shape.
+    for (const id of ['CR', 'RD']) {
+      const info = describeDrumCell(id, CELL_GLYPHS.o);
+      expect(info.articulation).toBe('Open (let it ring)');
+      expect(info.detail).not.toMatch(/pedal/i);
+      expect(info.detail).toMatch(/same as a normal hit/i);
+    }
+  });
+
+  it('reads an "o" on the hi-hat FOOT row as a splash, not a stick-played open hat', () => {
+    const info = describeDrumCell('HF', CELL_GLYPHS.o);
+    expect(info.articulation).toBe('Open (foot splash)');
+    expect(info.detail).toMatch(/splash/i);
+  });
+
+  it('describes ghosts, flams and rests', () => {
+    expect(describeDrumCell('S', cellOf('subdivision: 1\n\nS: g---', 'S')).articulation).toBe('Ghost note');
+    expect(describeDrumCell('S', cellOf('subdivision: 1\n\nS: f---', 'S')).articulation).toBe('Flam');
+    const rest = describeDrumCell('S', cellOf('subdivision: 1\n\nS: -x--', 'S'));
+    expect(rest.articulation).toBe('Rest');
+    expect(rest.rest).toBe(true);
+  });
+
+  it('falls back to a rest for a missing cell, and null for an unknown piece', () => {
+    // A stale selection into an edited chart hands us a null cell — describe it
+    // as a rest (what the parser would have made of it) rather than throwing.
+    expect(describeDrumCell('S', null).articulation).toBe('Rest');
+    expect(describeDrumCell('S', { id: 'not-a-glyph' }).articulation).toBe('Rest');
+    expect(describeDrumCell('CB', CELL_GLYPHS.x)).toBeNull();
+  });
+});
+
+describe('notation legend coverage', () => {
+  it('covers every cell character exactly once, with text', () => {
+    for (const pieces of [[], ['HH'], ['CR', 'S', 'K', 'HF']]) {
+      const legend = drumGlyphLegend(pieces);
+      expect(legend.map((g) => g.char).sort()).toEqual(Object.keys(CELL_GLYPHS).sort());
+      for (const glyph of legend) {
+        expect(glyph.name).toBeTruthy();
+        expect(glyph.detail).toBeTruthy();
+      }
+    }
+  });
+
+  it('resolves the legend\'s "o" row for the pieces the chart actually uses', () => {
+    // A fixed row would tell someone reading a crash-only chart to work the
+    // hi-hat pedal — contradicting what tapping that same note says.
+    const openRow = (pieces) => drumGlyphLegend(pieces).find((g) => g.char === 'o');
+    expect(openRow(['HH']).name).toBe('Open');
+    expect(openRow(['HH']).detail).toMatch(/pedal/i);
+    expect(openRow(['CR', 'RD']).name).toBe('Open (let it ring)');
+    expect(openRow(['CR', 'RD']).detail).not.toMatch(/pedal/i);
+    expect(openRow(['S', 'K']).name).toBe('Normal hit');
+    expect(openRow(['HF']).name).toBe('Open (foot splash)');
+  });
+
+  it('gives a mixed kit every applicable reading of "o", in kit order', () => {
+    // One sentence can't cover a hi-hat and a crash at once, so the row carries
+    // both rather than silently picking one.
+    const mixed = drumGlyphLegend(['CR', 'HH', 'K']).find((g) => g.char === 'o');
+    expect(mixed.name).toBe('Open');
+    expect(mixed.detail).toMatch(/pedal/i);                    // the hi-hat reading
+    expect(mixed.detail).toMatch(/let the cymbal sustain/i);   // the crash/ride reading
+    expect(mixed.detail).toMatch(/nothing to open/i);          // the kick reading
+    expect(mixed.detail.indexOf('pedal')).toBeLessThan(mixed.detail.indexOf('let the cymbal sustain'));
+    // An unknown piece id can't invent a reading.
+    expect(drumGlyphLegend(['CB']).find((g) => g.char === 'o').name).toBe('Open');
+  });
+
+  it('has playing instructions for every kit piece', () => {
+    // The sheet's legend prints `technique` for whatever pieces a chart uses, so
+    // a tenth piece added without one would render a blank row.
+    for (const piece of KIT_PIECES) expect(piece.technique.length).toBeGreaterThan(10);
+  });
+});
+
+describe('describeDrumPosition', () => {
+  it('counts subdivisions the way a drummer says them', () => {
+    expect(describeDrumPosition(6, 0, 4)).toBe('bar 6, count “1”');
+    expect(describeDrumPosition(1, 5, 4)).toBe('bar 1, count “2 e”');
+    expect(describeDrumPosition(1, 6, 4)).toBe('bar 1, count “2 &”');
+    expect(describeDrumPosition(1, 7, 4)).toBe('bar 1, count “2 a”');
+    expect(describeDrumPosition(2, 3, 2)).toBe('bar 2, count “2 &”');
+    expect(describeDrumPosition(2, 4, 3)).toBe('bar 2, count “2 trip”');
+  });
+
+  it('falls back to an exact fraction where no syllable is conventional', () => {
+    // Better an unfamiliar-but-correct "+2/5" than borrowing a syllable from a
+    // different subdivision and misnaming the position.
+    expect(describeDrumPosition(1, 2, 5)).toBe('bar 1, count “1 +2/5”');
+    expect(describeDrumPosition(1, 5, 5)).toBe('bar 1, count “2”');
   });
 });

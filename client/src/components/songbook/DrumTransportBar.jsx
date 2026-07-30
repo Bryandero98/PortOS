@@ -24,6 +24,7 @@
 import { useMemo, useState } from 'react';
 import { Play, Square, Repeat, Timer, Minus, Plus, SlidersHorizontal } from 'lucide-react';
 import { METRONOME_BPM_MIN, METRONOME_BPM_MAX } from '../../lib/metronome.js';
+import { ctrlBtnClass, activeCtrlClass } from './constants.js';
 
 // Practice speeds as a percentage of the chart's written tempo.
 const PERCENTS = [50, 75, 90, 100, 110];
@@ -32,10 +33,7 @@ const COUNT_IN_OPTIONS = [0, 1, 2];
 // twenty taps, and the ±1 fine trim is on the keyboard (+/-) and the input.
 const BPM_STEP = 5;
 
-// 44px minimum touch targets, matching the viewer's own controls bar.
-const ctrlBtnClass = 'flex items-center justify-center min-w-[44px] min-h-[44px] rounded-lg border border-port-border text-gray-300 hover:text-white hover:bg-port-border/50';
 const smallSelectClass = 'bg-port-bg border border-port-border rounded px-2 py-2 min-h-[44px] text-xs text-white focus:border-port-accent focus:outline-none';
-const activeClass = 'text-port-accent border-port-accent/50';
 
 // The pulse row: one dot per notated beat of the bar, the current one lit. This
 // is the metronome you can SEE — the audible click is easy to lose under a kit,
@@ -94,7 +92,7 @@ export default function DrumTransportBar({
             // An all-rest chart parses into bars but has nothing to sound — a Play
             // button that silently does nothing reads as broken.
             disabled={!hasMusic}
-            className={`${ctrlBtnClass} disabled:opacity-40 disabled:hover:bg-transparent ${playing ? activeClass : ''}`}
+            className={`${ctrlBtnClass} disabled:opacity-40 disabled:hover:bg-transparent ${playing ? activeCtrlClass : ''}`}
             aria-label={playing ? 'Stop play-along' : 'Play along'}
             title={hasMusic
               ? (playing ? 'Stop (space)' : 'Play along (space)')
@@ -109,7 +107,7 @@ export default function DrumTransportBar({
             type="button"
             onClick={() => onClickToggle(!clickEnabled)}
             aria-pressed={clickEnabled}
-            className={`${ctrlBtnClass} ${clickEnabled ? activeClass : ''}`}
+            className={`${ctrlBtnClass} ${clickEnabled ? activeCtrlClass : ''}`}
             aria-label={clickEnabled ? 'Turn the metronome off' : 'Turn the metronome on'}
             title="Metronome click over the kit"
           >
@@ -177,7 +175,7 @@ export default function DrumTransportBar({
           onClick={() => setShowSetup((v) => !v)}
           aria-expanded={showSetup}
           aria-controls="drum-setup-controls"
-          className={`${ctrlBtnClass} sm:hidden ml-auto ${showSetup ? activeClass : ''}`}
+          className={`${ctrlBtnClass} sm:hidden ml-auto ${showSetup ? activeCtrlClass : ''}`}
           aria-label={showSetup ? 'Hide practice settings' : 'Show practice settings'}
           title="Practice speed, count-in, loop"
         >
@@ -199,7 +197,7 @@ export default function DrumTransportBar({
               aria-pressed={activePercent === p}
               className={`px-2 min-h-[44px] rounded-lg border text-xs ${
                 activePercent === p
-                  ? activeClass
+                  ? activeCtrlClass
                   : 'border-port-border text-gray-400 hover:text-white hover:bg-port-border/50'
               }`}
               title={`${p}% of the written ${writtenTempo} BPM`}
@@ -228,7 +226,7 @@ export default function DrumTransportBar({
             type="button"
             onClick={() => onLoopToggle(!loopEnabled)}
             aria-pressed={loopEnabled}
-            className={`${ctrlBtnClass} ${loopEnabled ? activeClass : ''}`}
+            className={`${ctrlBtnClass} ${loopEnabled ? activeCtrlClass : ''}`}
             aria-label={loopEnabled ? 'Disable loop' : 'Enable loop'}
             title="Loop a bar range ([ and ] set the ends)"
           >
