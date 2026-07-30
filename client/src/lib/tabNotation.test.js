@@ -14,9 +14,11 @@ import {
 
 describe('TAB_ARTICULATIONS', () => {
   it('documents every supported tab-staff articulation character', () => {
-    expect(TAB_ARTICULATIONS.map(({ char }) => char)).toEqual([
-      'h', 'p', '/', '\\', 'b', 'r', '~', 'x',
-    ]);
+    const chars = TAB_ARTICULATIONS.map(({ char }) => char);
+    expect(chars).toEqual(expect.arrayContaining([
+      'h', 'p', '/', '\\', 's', 'b', '^', 'r', '~', 'v', 'x', 'X', 't',
+    ]));
+    expect(new Set(chars).size).toBe(chars.length);
     for (const articulation of TAB_ARTICULATIONS) {
       expect(articulation.name.trim()).not.toBe('');
       expect(articulation.detail.trim()).not.toBe('');

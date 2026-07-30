@@ -59,9 +59,19 @@ export const TAB_ARTICULATIONS = [
     detail: 'Keep the string sounding while sliding to a lower fret.',
   },
   {
+    char: 's',
+    name: 'Slide',
+    detail: 'Keep the string sounding while sliding between the written frets.',
+  },
+  {
     char: 'b',
     name: 'Bend',
     detail: 'Push or pull the string sideways to raise the pitch.',
+  },
+  {
+    char: '^',
+    name: 'Bend',
+    detail: 'Raise the pitch by pushing or pulling the fretted string sideways.',
   },
   {
     char: 'r',
@@ -74,9 +84,24 @@ export const TAB_ARTICULATIONS = [
     detail: 'Gently vary the pitch while the note sustains.',
   },
   {
+    char: 'v',
+    name: 'Vibrato',
+    detail: 'Gently vary the pitch while the note sustains.',
+  },
+  {
     char: 'x',
     name: 'Muted note',
     detail: 'Touch the string lightly and pick a short, unpitched sound.',
+  },
+  {
+    char: 'X',
+    name: 'Muted note',
+    detail: 'Touch the string lightly and pick a short, unpitched sound.',
+  },
+  {
+    char: 't',
+    name: 'Tapped note',
+    detail: 'Sound the fret by tapping it with a picking-hand finger.',
   },
 ];
 
