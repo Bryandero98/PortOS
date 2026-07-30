@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { render, cleanup, act } from '@testing-library/react';
+import { render, cleanup, act, screen, fireEvent } from '@testing-library/react';
 import DrumSheetView from './DrumSheetView.jsx';
 
 // Invented grooves only (privacy convention).
@@ -138,6 +138,124 @@ describe('DrumSheetView', () => {
     expect(count(renderToStaticMarkup(<DrumSheetView text={chart} />), 'rect')).toBe(1);
     const interactive = renderToStaticMarkup(<DrumSheetView text={chart} onStepClick={() => {}} />);
     expect(count(interactive, 'rect')).toBe(5);   // + one per cell of the single row
+  });
+
+  // --- Tap a note to learn it ------------------------------------------------
+
+  // The lane hit-tests taps arithmetically off the click coordinates, so these
+  // mirror DrumSheetView's internal geometry (CELL / PAD / GRID_TOP / ROW_H /
+  // BAR_GAP). jsdom reports a zeroed bounding box and the default font size maps
+  // to 1× scale, so a client point IS an internal SVG point here.
+  const CELL = 20;
+  const PAD = 6;
+  const GRID_TOP = 26;
+  const ROW_H = 20;
+  const BAR_GAP = 6;
+  const cellPoint = (row, step, { bar = 1, stepsPerBar = 4 } = {}) => ({
+    clientX: PAD + (bar - 1) * (stepsPerBar * CELL + BAR_GAP) + step * CELL + CELL / 2,
+    clientY: GRID_TOP + row * ROW_H + ROW_H / 2,
+  });
+  const lane = (container) => container.querySelector('[role="img"]');
+  const tap = (container, ...args) => fireEvent.click(lane(container), cellPoint(...args));
+  const readout = () => screen.queryByRole('status');
+
+  it('explains the tapped note — piece, articulation, technique and position', () => {
+    // The motivating question: what IS an X with a chevron over it on the crash?
+    const { container } = render(<DrumSheetView text={'subdivision: 1\n\nCR: -X--'} />);
+    expect(readout()).toBeNull();
+    tap(container, 0, 1);
+    expect(readout()).toHaveTextContent('Crash — Accent');
+    expect(readout()).toHaveTextContent(/harder/i);
+    expect(readout()).toHaveTextContent(/shoulder of the stick/i);
+    expect(readout()).toHaveTextContent('bar 1, count “2”');
+    expect(readout()).toHaveTextContent('100% volume');
+  });
+
+  it('reads the same `o` as OPEN on the hi-hat row and a normal hit on the kick row', () => {
+    const { container } = render(<DrumSheetView text={'subdivision: 1\n\nHH: o---\nK: o---'} />);
+    tap(container, 0, 0);
+    expect(readout()).toHaveTextContent('Hi-Hat — Open');
+    tap(container, 1, 0);
+    expect(readout()).toHaveTextContent('Kick — Normal hit');
+  });
+
+  it('names the position the way a drummer counts it', () => {
+    const { container } = render(<DrumSheetView text={'subdivision: 4\n\nS: ---x'} />);
+    tap(container, 0, 3, { stepsPerBar: 16 });
+    expect(readout()).toHaveTextContent('count “1 a”');
+  });
+
+  it('forgives a near-miss on a groove but dismisses a tap on empty grid', () => {
+    const { container } = render(<DrumSheetView text={'subdivision: 1\n\nS: -x--'} />);
+    // A cell is 20px wide — narrower than a fingertip — so the step either side
+    // of the hit still answers.
+    tap(container, 0, 0);
+    expect(readout()).toHaveTextContent('Snare — Normal hit');
+    // Two steps away there is nothing to explain, and tapping the background is
+    // how you dismiss.
+    tap(container, 0, 3);
+    expect(readout()).toBeNull();
+  });
+
+  it('ignores a tap in the gap between bars or above the first kit row', () => {
+    const { container } = render(<DrumSheetView text={'subdivision: 1\n\nS: xxxx\n\nS: xxxx'} />);
+    fireEvent.click(lane(container), { clientX: PAD + 4 * CELL + BAR_GAP / 2, clientY: GRID_TOP + ROW_H / 2 });
+    expect(readout()).toBeNull();
+    fireEvent.click(lane(container), { clientX: PAD + CELL / 2, clientY: GRID_TOP - 5 });
+    expect(readout()).toBeNull();
+  });
+
+  it('marks WHICH note the readout is describing, inside the lane', () => {
+    const { container } = render(<DrumSheetView text={'subdivision: 1\n\nHH: x-x-'} />);
+    expect(container.querySelector('[data-selected-cell]')).toBeNull();
+    tap(container, 0, 2);
+    const box = container.querySelector('[data-selected-cell]');
+    expect(Number(box.getAttribute('x'))).toBe(PAD + 2 * CELL);
+    expect(Number(box.getAttribute('y'))).toBe(GRID_TOP);
+  });
+
+  it('walks the hits with the arrow keys, skipping the rests between them', () => {
+    const { container } = render(<DrumSheetView text={'subdivision: 1\n\nHH: x-x-'} />);
+    fireEvent.keyDown(lane(container), { key: 'ArrowRight' });
+    expect(readout()).toHaveTextContent('count “1”');
+    fireEvent.keyDown(lane(container), { key: 'ArrowRight' });
+    expect(readout()).toHaveTextContent('count “3”');
+    // Already on the last hit — stays put rather than wrapping past the end.
+    fireEvent.keyDown(lane(container), { key: 'ArrowRight' });
+    expect(readout()).toHaveTextContent('count “3”');
+    fireEvent.keyDown(lane(container), { key: 'ArrowLeft' });
+    expect(readout()).toHaveTextContent('count “1”');
+  });
+
+  it('dismisses the readout with Escape or its close button', () => {
+    const { container } = render(<DrumSheetView text={'subdivision: 1\n\nHH: x---'} />);
+    tap(container, 0, 0);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(readout()).toBeNull();
+    tap(container, 0, 0);
+    fireEvent.click(screen.getByLabelText('Close note explanation'));
+    expect(readout()).toBeNull();
+  });
+
+  it('shows the whole vocabulary in a legend, kit pieces included', () => {
+    render(<DrumSheetView text={'subdivision: 1\n\nHH: x---\nK: o---'} />);
+    expect(screen.queryByText(/Ghost note/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Legend' }));
+    expect(screen.getByText(/Ghost note/)).toBeInTheDocument();
+    expect(screen.getByText(/bass drum/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Legend' }));
+    expect(screen.queryByText(/Ghost note/)).toBeNull();
+  });
+
+  it('leaves the tap gesture to an editing host when onStepClick is set', () => {
+    const onStepClick = vi.fn();
+    const { container } = render(<DrumSheetView text={'subdivision: 1\n\nHH: x---'} onStepClick={onStepClick} />);
+    expect(lane(container).getAttribute('tabindex')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Legend' })).toBeNull();
+    // The per-cell rects still route to the host, and no readout appears.
+    fireEvent.click(container.querySelectorAll('rect')[1]);
+    expect(onStepClick).toHaveBeenCalled();
+    expect(readout()).toBeNull();
   });
 
   // --- The playhead (rAF, DOM-only — never React state) ----------------------

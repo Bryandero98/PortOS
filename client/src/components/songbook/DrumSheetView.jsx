@@ -28,6 +28,15 @@
  * *attributes* don't evaluate `var()`, so `fill="var(--x)"` would silently paint
  * nothing. Same rule as ScoreSheet.
  *
+ * TAP A NOTE TO LEARN IT. This notation is hand-rolled, so nothing outside this
+ * repo explains what an × with a chevron over it is asking for. Tapping a glyph
+ * opens a readout (`describeDrumCell` in drumNotation.js) naming the piece, the
+ * articulation, and how to strike it; the Legend button is the same content
+ * for the whole kit, and the lane is focusable so ←/→ walk the hits without a
+ * pointer. Hit-testing is arithmetic on the click coordinates rather than a
+ * per-cell <rect>, because a 32-bar chart would otherwise carry ~2500 invisible
+ * tap targets purely so a tap could report where it landed.
+ *
  * Props:
  *   text        — the raw chart source (parsed here; the parser never throws)
  *   fontSizeRem — scales the whole strip with the viewer's A−/A+ control
@@ -35,12 +44,12 @@
  *                 sheet with no playhead and no auto-follow
  *   playing     — gates the animation frame loop
  *   onStepClick — optional `(barIndex, step, pieceId)` for a future tap-a-cell
- *                 editor (#3115 out-of-scope); when absent the grid renders as
- *                 a plain image
+ *                 editor (#3115 out-of-scope). It takes over the tap gesture, so
+ *                 an editing host gets cell rects instead of the explain readout
  */
 
-import { memo, useEffect, useMemo, useRef } from 'react';
-import { parseDrumChart, kitPiece } from '../../lib/drumNotation.js';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { parseDrumChart, kitPiece, describeDrumCell, describeKitPiece, DRUM_GLYPH_LEGEND } from '../../lib/drumNotation.js';
 
 // --- Geometry (internal SVG units; the strip scales via width/height + viewBox)
 const CELL = 20;              // one grid step — every other measure derives from this
@@ -79,7 +88,20 @@ const GRID_BEAT = { stroke: 'rgb(var(--port-text-muted) / 0.7)' };
 const LABEL = { fill: 'rgb(var(--port-text-muted))' };
 const ACTIVE_STROKE = { stroke: 'rgb(var(--port-accent))' };
 const ACTIVE_FILL = { fill: 'rgb(var(--port-accent) / 0.18)' };
+const SELECT_BOX = { stroke: 'rgb(var(--port-accent))', fill: 'rgb(var(--port-accent) / 0.14)' };
 const UI_FONT = 'ui-sans-serif, system-ui, sans-serif';
+
+// Count-along syllables for a step inside its beat — how a drummer says the
+// position out loud ("2 e & a"). A subdivision with no conventional syllable
+// falls back to an exact "beat +n/N" rather than borrowing the wrong one.
+const SUBDIVISION_SYLLABLES = { 2: ['', '&'], 3: ['', 'trip', 'let'], 4: ['', 'e', '&', 'a'] };
+const countLabel = (step, subdivision) => {
+  const beat = Math.floor(step / subdivision) + 1;
+  const within = step % subdivision;
+  if (!within) return `${beat}`;
+  const syllable = SUBDIVISION_SYLLABLES[subdivision]?.[within];
+  return syllable ? `${beat} ${syllable}` : `${beat} +${within}/${subdivision}`;
+};
 
 // Time-signature denominator → the note glyph for one BEAT at that value, for the
 // tempo marking. The tempo counts notated beats, so 6/8 must read "♪ = 96", not
@@ -155,6 +177,77 @@ const LabelColumn = ({ pieces, height, scale }) => (
   </svg>
 );
 
+// What the tapped glyph means. Sits UNDER the strip rather than floating beside
+// the note: the lane is a horizontal scroller that auto-follows the playhead, so
+// an anchored bubble would slide off its own note mid-groove — the in-lane
+// highlight box says WHICH note, and this card says what it is. `aria-live` so a
+// keyboard walk through the hits is announced as the selection moves.
+const HitReadout = ({ info, bar, count, onClose }) => (
+  <div
+    role="status"
+    aria-live="polite"
+    className="mt-2 rounded-lg border border-port-accent/40 bg-port-accent/5 px-3 py-2 text-xs"
+  >
+    <div className="flex items-start gap-2">
+      <span
+        aria-hidden="true"
+        className="shrink-0 rounded border border-port-border bg-port-bg px-1.5 py-0.5 font-mono text-sm text-port-accent"
+      >
+        {info.char}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+          <span className="font-semibold text-white">{info.pieceLabel} — {info.articulation}</span>
+          <span className="text-gray-500">bar {bar}, count &ldquo;{count}&rdquo;</span>
+          {!info.rest && <span className="text-gray-500">≈{info.velocityPercent}% volume</span>}
+        </div>
+        <p className="mt-1 text-gray-300">{info.detail}</p>
+        {info.technique && <p className="mt-0.5 text-gray-400">{info.technique}</p>}
+      </div>
+      {/* A text × rather than a lucide icon: an `<svg>` anywhere in this
+          component inflates the glyph counts that assert what the NOTATION drew
+          (see DrumSheetView.test.jsx `count(html, 'circle')`). */}
+      <button
+        type="button"
+        onClick={onClose}
+        aria-label="Close note explanation"
+        className="shrink-0 rounded px-1.5 leading-none text-base text-gray-500 hover:text-gray-200 focus:outline-none focus-visible:ring-1 focus-visible:ring-port-accent"
+      >
+        <span aria-hidden="true">×</span>
+      </button>
+    </div>
+  </div>
+);
+
+// The whole vocabulary at once — every cell character, plus how to strike each
+// piece THIS chart uses. The keyboard/screen-reader route to the same content
+// the tap readout gives, and the answer to "what are my options" when writing a
+// chart in Edit mode.
+const KitLegend = ({ pieces }) => (
+  <div className="mt-2 rounded-lg border border-port-border bg-port-bg/60 px-3 py-2 text-xs">
+    <dl className="grid gap-x-4 gap-y-1 sm:grid-cols-2">
+      {DRUM_GLYPH_LEGEND.map((glyph) => (
+        <div key={glyph.char} className="flex items-start gap-2">
+          <dt className="shrink-0 rounded border border-port-border bg-port-card px-1.5 font-mono text-sm text-port-accent">
+            {glyph.char}
+          </dt>
+          <dd className="min-w-0 text-gray-300">
+            <span className="font-semibold text-white">{glyph.name}</span> — {glyph.detail}
+          </dd>
+        </div>
+      ))}
+    </dl>
+    <dl className="mt-2 space-y-1 border-t border-port-border pt-2">
+      {pieces.map((id) => describeKitPiece(id)).filter(Boolean).map((piece) => (
+        <div key={piece.id} className="flex items-start gap-2">
+          <dt className="w-20 shrink-0 font-semibold text-white">{piece.label}</dt>
+          <dd className="min-w-0 text-gray-400">{piece.technique}</dd>
+        </div>
+      ))}
+    </dl>
+  </div>
+);
+
 // Chart problems (unknown pieces, over-long rows, bad headers). Rendered
 // ALONGSIDE the sheet, never instead of it — a chart with one bad row must still
 // draw the bars that parsed.
@@ -179,8 +272,12 @@ function DrumSheetView({
 }) {
   const chart = useMemo(() => parseDrumChart(text), [text]);
   const scrollRef = useRef(null);
+  const laneRef = useRef(null);
   const lineRef = useRef(null);
   const columnRef = useRef(null);
+  // The note whose explanation is showing — `{ bar, step, piece }` or null.
+  const [selection, setSelection] = useState(null);
+  const [legendOpen, setLegendOpen] = useState(false);
 
   const scale = Math.min(SCALE_MAX, Math.max(SCALE_MIN, (fontSizeRem || BASE_FONT_REM) / BASE_FONT_REM));
   const { pieces, subdivision, stepsPerBar } = chart;
@@ -200,6 +297,103 @@ function DrumSheetView({
       laneW: Math.max(PAD * 2, x(chart.bars.length + 1) - BAR_GAP + PAD),
     };
   }, [chart]);
+
+  // --- Tap / arrow-key note explanation --------------------------------------
+  // An editing host owns the tap gesture (see the prop doc), so the explain
+  // readout and `onStepClick` are mutually exclusive.
+  const explain = !onStepClick;
+
+  const cellAt = useCallback(
+    (bar, piece, step) => chart.bars[bar - 1]?.rows.find((r) => r.piece === piece)?.cells[step] || null,
+    [chart],
+  );
+
+  // Every struck cell in reading order (time, then top of the kit down) — the
+  // ←/→ walk steps through this, so the keyboard path reaches exactly the notes
+  // a tap can.
+  const hits = useMemo(() => {
+    const out = [];
+    for (const bar of chart.bars) {
+      for (let step = 0; step < chart.stepsPerBar; step += 1) {
+        for (const piece of chart.pieces) {
+          const cell = bar.rows.find((r) => r.piece === piece)?.cells[step];
+          if (cell && !cell.rest) out.push({ bar: bar.index, step, piece });
+        }
+      }
+    }
+    return out;
+  }, [chart]);
+
+  // Click coordinates → the note the finger meant. The tapped cell first, then
+  // one step either side in the SAME row: a cell is 20px wide at 1× zoom, well
+  // under a fingertip, so a near-miss on a groove should still answer rather
+  // than dismiss. A tap that lands on no hit at all closes the readout, which is
+  // the natural "tap the background to dismiss" gesture.
+  const selectFromPoint = useCallback((clientX, clientY) => {
+    const svg = laneRef.current;
+    if (!svg) return;
+    const box = svg.getBoundingClientRect();
+    // Into internal SVG units: the lane is drawn `laneW × height` and displayed
+    // at `scale` times that, with no other transform in between.
+    const ux = (clientX - box.left) / scale;
+    const uy = (clientY - box.top) / scale;
+    const piece = chart.pieces[Math.floor((uy - GRID_TOP) / ROW_H)];
+    const span = barW + BAR_GAP;
+    const rel = ux - PAD;
+    const bar = Math.floor(rel / span) + 1;
+    const within = rel - (bar - 1) * span;
+    // `uy < GRID_TOP` floors negative → no piece; `within >= barW` is the gap
+    // between bars. Either way there's nothing under the finger.
+    if (!piece || bar < 1 || bar > barCount || within < 0 || within >= barW) { setSelection(null); return; }
+    const step = Math.floor(within / CELL);
+    const found = [step, step - 1, step + 1].find((s) => {
+      const cell = s >= 0 && s < stepsPerBar ? cellAt(bar, piece, s) : null;
+      return cell && !cell.rest;
+    });
+    // `found` can legitimately be step 0, so test for the miss explicitly.
+    setSelection(found === undefined ? null : { bar, step: found, piece });
+  }, [barCount, barW, cellAt, chart, scale, stepsPerBar]);
+
+  // ←/→ (and ↑/↓, since reading order usually means the next row down) walk the
+  // hits. From no selection, → starts at the first note and ← at the last.
+  const moveSelection = useCallback((delta) => {
+    if (!hits.length) return;
+    setSelection((prev) => {
+      const i = prev
+        ? hits.findIndex((h) => h.bar === prev.bar && h.step === prev.step && h.piece === prev.piece)
+        : -1;
+      if (i < 0) return hits[delta > 0 ? 0 : hits.length - 1];
+      return hits[Math.min(hits.length - 1, Math.max(0, i + delta))];
+    });
+  }, [hits]);
+
+  const onLaneKeyDown = (e) => {
+    if (!explain) return;
+    const delta = (e.key === 'ArrowRight' || e.key === 'ArrowDown') ? 1
+      : (e.key === 'ArrowLeft' || e.key === 'ArrowUp') ? -1 : 0;
+    if (!delta) return;
+    e.preventDefault();   // arrows would otherwise scroll the lane out from under the walk
+    moveSelection(delta);
+  };
+
+  useEffect(() => {
+    if (!selection) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') setSelection(null); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [selection]);
+
+  // Bring an arrow-walked note into view — skipped while playing, where the rAF
+  // follow loop owns `scrollLeft` and would fight this write every frame.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!selection || !el || playing) return;
+    const left = (barX(selection.bar) + selection.step * CELL) * scale;
+    const right = left + CELL * scale;
+    // Land one cell inside the edge so the next note along is visible too.
+    if (left < el.scrollLeft) el.scrollLeft = Math.max(0, left - CELL * scale);
+    else if (right > el.scrollLeft + el.clientWidth) el.scrollLeft = right - el.clientWidth + CELL * scale;
+  }, [selection, playing, barX, scale]);
 
   // One rAF loop for both playhead marks and the auto-follow scroll. All DOM
   // READS happen before any write — reading scrollLeft/clientWidth after
@@ -240,12 +434,99 @@ function DrumSheetView({
     return () => { cancelAnimationFrame(raf); hide(); };
   }, [playing, getPlayhead, barCount, barX, laneW, scale]);
 
-  // A new chart starts from the top. Content-keyed, so a host that can show two
-  // DIFFERENT records with identical charts in one mounted sheet should key this
-  // component by record id (SongBookViewer does).
+  // A new chart starts from the top, with no note selected — the old selection
+  // pointed at a bar/step that may not exist any more (live editing). Content-
+  // keyed, so a host that can show two DIFFERENT records with identical charts
+  // in one mounted sheet should key this component by record id
+  // (SongBookViewer does).
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollLeft = 0;
+    setSelection(null);
   }, [chart]);
+
+  // The lane's grid + glyphs — ~2000 elements on a long chart, so memoized on
+  // the chart and its geometry ALONE. Selecting a note re-renders this component
+  // (the readout below is React state), and with a stable array React skips
+  // diffing the whole strip; the selection box is drawn outside it.
+  const els = useMemo(() => {
+    const out = [];
+    let lastLabel = null;
+
+    chart.bars.forEach((bar) => {
+      const x = barX(bar.index);
+
+      // Bar number, always; the section label only where it CHANGES. A four-bar
+      // block repeating its own name over every bar is noise on a phone.
+      out.push(
+        <text key={`n${bar.index}`} x={x + 1} y={GRID_TOP - 8} fontSize={9} fontWeight="600" style={LABEL} fontFamily={UI_FONT}>
+          {bar.index}
+        </text>,
+      );
+      if (bar.label && bar.label !== lastLabel) {
+        out.push(
+          <text key={`l${bar.index}`} x={x + 14} y={GRID_TOP - 8} fontSize={9.5} style={LABEL} fontFamily={UI_FONT}>
+            {bar.label}{bar.repeat > 1 ? ` ×${bar.repeat}` : ''}
+          </text>,
+        );
+      }
+      lastLabel = bar.label;
+
+      // Lane lines for this bar's span (one per kit row, plus the bottom edge).
+      for (let ri = 0; ri <= pieces.length; ri += 1) {
+        const y = GRID_TOP + ri * ROW_H;
+        out.push(<line key={`h${bar.index}-${ri}`} x1={x} y1={y} x2={x + barW} y2={y} style={GRID} strokeWidth={1} />);
+      }
+
+      // Vertical step lines — every `subdivision`-th is a beat boundary (heavier),
+      // and the bar's own edges are heavier still.
+      for (let s = 0; s <= stepsPerBar; s += 1) {
+        const isEdge = s === 0 || s === stepsPerBar;
+        const isBeat = s % subdivision === 0;
+        out.push(
+          <line key={`v${bar.index}-${s}`} x1={x + s * CELL} y1={GRID_TOP} x2={x + s * CELL} y2={gridBottom}
+            style={isBeat ? GRID_BEAT : GRID} strokeWidth={isEdge ? 1.8 : (isBeat ? 1.2 : 0.6)} />,
+        );
+      }
+
+      // Beat numbers under the bar-number strip. Beat 1 is skipped: the bar number
+      // already sits in that corner, and "1₁" at every bar line is noise.
+      for (let s = subdivision; s < stepsPerBar; s += subdivision) {
+        out.push(
+          <text key={`b${bar.index}-${s}`} x={x + s * CELL + CELL / 2} y={GRID_TOP - 1.5} fontSize={8}
+            style={LABEL} fontFamily={UI_FONT} textAnchor="middle">
+            {s / subdivision + 1}
+          </text>,
+        );
+      }
+
+      // Hits.
+      const rowByPiece = new Map(bar.rows.map((r) => [r.piece, r]));
+      pieces.forEach((id, ri) => {
+        const row = rowByPiece.get(id);
+        if (!row) return;
+        const cy = rowCenterY(ri);
+        row.cells.forEach((cell, s) => {
+          if (cell.rest) return;
+          pushHit(out, cell, id, x + s * CELL + CELL / 2, cy, `h${bar.index}-${id}-${s}`);
+        });
+      });
+
+      // Optional tap targets (a future click-to-toggle editor); absent by default
+      // so the sheet is a plain image with no stray interactive nodes. When they
+      // ARE present the editing host owns the tap, and the explain readout is off.
+      if (onStepClick) {
+        pieces.forEach((id, ri) => {
+          for (let s = 0; s < stepsPerBar; s += 1) {
+            out.push(
+              <rect key={`t${bar.index}-${id}-${s}`} x={x + s * CELL} y={GRID_TOP + ri * ROW_H} width={CELL} height={ROW_H}
+                fill="transparent" style={{ cursor: 'pointer' }} onClick={() => onStepClick(bar.index, s, id)} />,
+            );
+          }
+        });
+      }
+    });
+    return out;
+  }, [chart, pieces, subdivision, stepsPerBar, gridBottom, barX, barW, onStepClick]);
 
   if (!chart.bars.length) {
     return (
@@ -258,81 +539,8 @@ function DrumSheetView({
     );
   }
 
-  const els = [];
-  let lastLabel = null;
-
-  chart.bars.forEach((bar) => {
-    const x = barX(bar.index);
-
-    // Bar number, always; the section label only where it CHANGES. A four-bar
-    // block repeating its own name over every bar is noise on a phone.
-    els.push(
-      <text key={`n${bar.index}`} x={x + 1} y={GRID_TOP - 8} fontSize={9} fontWeight="600" style={LABEL} fontFamily={UI_FONT}>
-        {bar.index}
-      </text>,
-    );
-    if (bar.label && bar.label !== lastLabel) {
-      els.push(
-        <text key={`l${bar.index}`} x={x + 14} y={GRID_TOP - 8} fontSize={9.5} style={LABEL} fontFamily={UI_FONT}>
-          {bar.label}{bar.repeat > 1 ? ` ×${bar.repeat}` : ''}
-        </text>,
-      );
-    }
-    lastLabel = bar.label;
-
-    // Lane lines for this bar's span (one per kit row, plus the bottom edge).
-    for (let ri = 0; ri <= pieces.length; ri += 1) {
-      const y = GRID_TOP + ri * ROW_H;
-      els.push(<line key={`h${bar.index}-${ri}`} x1={x} y1={y} x2={x + barW} y2={y} style={GRID} strokeWidth={1} />);
-    }
-
-    // Vertical step lines — every `subdivision`-th is a beat boundary (heavier),
-    // and the bar's own edges are heavier still.
-    for (let s = 0; s <= stepsPerBar; s += 1) {
-      const isEdge = s === 0 || s === stepsPerBar;
-      const isBeat = s % subdivision === 0;
-      els.push(
-        <line key={`v${bar.index}-${s}`} x1={x + s * CELL} y1={GRID_TOP} x2={x + s * CELL} y2={gridBottom}
-          style={isBeat ? GRID_BEAT : GRID} strokeWidth={isEdge ? 1.8 : (isBeat ? 1.2 : 0.6)} />,
-      );
-    }
-
-    // Beat numbers under the bar-number strip. Beat 1 is skipped: the bar number
-    // already sits in that corner, and "1₁" at every bar line is noise.
-    for (let s = subdivision; s < stepsPerBar; s += subdivision) {
-      els.push(
-        <text key={`b${bar.index}-${s}`} x={x + s * CELL + CELL / 2} y={GRID_TOP - 1.5} fontSize={8}
-          style={LABEL} fontFamily={UI_FONT} textAnchor="middle">
-          {s / subdivision + 1}
-        </text>,
-      );
-    }
-
-    // Hits.
-    const rowByPiece = new Map(bar.rows.map((r) => [r.piece, r]));
-    pieces.forEach((id, ri) => {
-      const row = rowByPiece.get(id);
-      if (!row) return;
-      const cy = rowCenterY(ri);
-      row.cells.forEach((cell, s) => {
-        if (cell.rest) return;
-        pushHit(els, cell, id, x + s * CELL + CELL / 2, cy, `h${bar.index}-${id}-${s}`);
-      });
-    });
-
-    // Optional tap targets (a future click-to-toggle editor); absent by default
-    // so the sheet is a plain image with no stray interactive nodes.
-    if (onStepClick) {
-      pieces.forEach((id, ri) => {
-        for (let s = 0; s < stepsPerBar; s += 1) {
-          els.push(
-            <rect key={`t${bar.index}-${id}-${s}`} x={x + s * CELL} y={GRID_TOP + ri * ROW_H} width={CELL} height={ROW_H}
-              fill="transparent" style={{ cursor: 'pointer' }} onClick={() => onStepClick(bar.index, s, id)} />,
-          );
-        }
-      });
-    }
-  });
+  const info = selection && describeDrumCell(selection.piece, cellAt(selection.bar, selection.piece, selection.step));
+  const selectedRow = selection ? pieces.indexOf(selection.piece) : -1;
 
   return (
     <div className={className} style={{ fontSize: `${fontSizeRem}rem` }}>
@@ -345,7 +553,23 @@ function DrumSheetView({
         <span>{BEAT_GLYPH[chart.time.beatValue] || `1/${chart.time.beatValue}`} = {chart.tempo}</span>
         <span>{chart.subdivision} per beat</span>
         <span>{chart.bars.length} bar{chart.bars.length === 1 ? '' : 's'}</span>
+        {explain && (
+          <button
+            type="button"
+            onClick={() => setLegendOpen((open) => !open)}
+            aria-expanded={legendOpen}
+            className={`ml-auto flex min-h-[32px] items-center gap-1 rounded-full border px-2 py-1 focus:outline-none focus-visible:ring-1 focus-visible:ring-port-accent ${legendOpen ? 'border-port-accent/60 text-port-accent' : 'border-port-border hover:text-gray-300'}`}
+          >
+            Legend
+          </button>
+        )}
       </div>
+
+      {/* The hint sits ABOVE the strip: on a phone the readout appears below the
+          lane, and a hint underneath it would be the last thing found. */}
+      {explain && !info && (
+        <p className="mb-1.5 text-xs text-gray-600">Tap any note to learn what it means.</p>
+      )}
 
       <div className="flex items-start">
         <LabelColumn pieces={pieces} height={height} scale={scale} />
@@ -356,12 +580,20 @@ function DrumSheetView({
           {/* The label column is aria-hidden (a visual freeze of these same row
               names), so the kit rows are named in the strip's own label. */}
           <svg
+            ref={laneRef}
             viewBox={`0 0 ${laneW} ${height}`}
             width={laneW * scale}
             height={height * scale}
             role="img"
-            aria-label={`Drum chart — ${chart.bars.length} bar${chart.bars.length === 1 ? '' : 's'}, ${chart.time.beats}/${chart.time.beatValue} at ${chart.tempo} BPM. Kit rows: ${pieces.map((id) => kitPiece(id)?.label || id).join(', ')}`}
-            style={{ display: 'block' }}
+            aria-label={`Drum chart — ${chart.bars.length} bar${chart.bars.length === 1 ? '' : 's'}, ${chart.time.beats}/${chart.time.beatValue} at ${chart.tempo} BPM. Kit rows: ${pieces.map((id) => kitPiece(id)?.label || id).join(', ')}${explain ? '. Tap a note, or use the arrow keys, for an explanation of it' : ''}`}
+            // Explain mode hit-tests taps arithmetically (see selectFromPoint),
+            // so the whole lane is one listener instead of a rect per cell. The
+            // lane also takes focus so ←/→ can walk the hits — the tap gesture's
+            // keyboard equivalent, alongside the Legend button.
+            onClick={explain ? (e) => selectFromPoint(e.clientX, e.clientY) : undefined}
+            onKeyDown={explain ? onLaneKeyDown : undefined}
+            tabIndex={explain ? 0 : undefined}
+            style={{ display: 'block', cursor: explain ? 'pointer' : undefined }}
           >
             {/* Playhead column — first in the tree so the grid and glyphs paint
                 over it; the line is last so it paints over them. Both are
@@ -371,12 +603,28 @@ function DrumSheetView({
                 would sit on top of the beat numbers. */}
             <rect data-playhead="column" ref={columnRef} x={0} y={GRID_TOP} width={CELL} height={gridBottom - GRID_TOP}
               style={{ ...ACTIVE_FILL, display: 'none' }} />
+            {/* Which note the readout is describing. Under the glyphs so the box
+                frames the note rather than washing over it. */}
+            {selectedRow >= 0 && (
+              <rect data-selected-cell="" x={barX(selection.bar) + selection.step * CELL} y={GRID_TOP + selectedRow * ROW_H}
+                width={CELL} height={ROW_H} rx={3} style={SELECT_BOX} strokeWidth={1.4} />
+            )}
             {els}
             <line data-playhead="line" ref={lineRef} x1={0} y1={PAD} x2={0} y2={gridBottom}
               style={{ ...ACTIVE_STROKE, display: 'none' }} strokeWidth={1.6} />
           </svg>
         </div>
       </div>
+
+      {info && (
+        <HitReadout
+          info={info}
+          bar={selection.bar}
+          count={countLabel(selection.step, subdivision)}
+          onClose={() => setSelection(null)}
+        />
+      )}
+      {legendOpen && <KitLegend pieces={pieces} />}
 
       {chart.errors.length > 0 && <ErrorSummary errors={chart.errors} />}
     </div>
@@ -385,5 +633,6 @@ function DrumSheetView({
 
 // Every prop is a primitive or the stable `getPlayhead` callback, and the
 // playhead itself never arrives as a prop — so during playback memo bails out
-// and the lane is never rebuilt.
+// and the lane is never rebuilt. Selecting a note DOES re-render (it's local
+// state), which is why the lane's element array is itself memoized.
 export default memo(DrumSheetView);

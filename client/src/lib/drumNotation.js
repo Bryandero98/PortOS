@@ -90,6 +90,92 @@ const cellFor = (ch) => {
   return CELL_GLYPHS[ch] || null;
 };
 
+// --- Plain-language explanations --------------------------------------------
+// A hand-rolled grid notation has no engraving convention to look up, so the
+// sheet has to be able to answer "what IS this glyph and how do I play it?"
+// itself — that's what `<DrumSheetView>`'s tap-a-note popover and its legend
+// read. Kept here, beside the notation it describes, so the two can't drift.
+//
+// Handedness-neutral wording throughout: which foot works the kick and which
+// side the floor tom sits on depend on the kit and the player, so the text says
+// what to strike and how, never which hand or foot does it.
+
+// How each kit piece is struck.
+const PIECE_TECHNIQUE = {
+  CR: 'The crash cymbal — strike the edge with the shoulder of the stick and let it ring out.',
+  RD: 'The ride cymbal — stick tip on the bow for a clear "ping", nearer the edge for a wash, on the bell for a clang.',
+  HH: 'The hi-hat pair, played with a stick — tip on the edge, cymbals held shut by the pedal unless the note is open.',
+  T1: 'The highest tom — stick tip near the middle of the head.',
+  T2: 'The middle tom — stick tip near the middle of the head.',
+  S: 'The snare drum — a full stroke in the middle of the head for the sharpest crack.',
+  FT: 'The floor tom, the biggest and lowest of the toms — stick tip near the middle of the head.',
+  K: 'The bass drum, played with the kick pedal rather than a stick.',
+  HF: 'The hi-hat pedal with no stick — press it to clap the cymbals shut for a short "chick".',
+};
+
+// What each cell character asks for, independent of which piece it lands on.
+// `openCross` / `openHead` split the one glyph whose meaning depends on the
+// piece: an `o` opens a hi-hat or lets a cymbal ring, but a drum has nothing to
+// open, so there it just sounds as a normal hit (and the renderer draws it as
+// one) — saying "open" for a kick would describe a technique that doesn't exist.
+const ARTICULATIONS = {
+  rest: { name: 'Rest', detail: 'Nothing is played on this step — count it, don\'t fill it.' },
+  normal: { name: 'Normal hit', detail: 'An unaccented stroke at your regular playing volume.' },
+  accent: { name: 'Accent', detail: 'Strike noticeably harder than the notes around it. The ">" chevron drawn above the glyph is the accent mark.' },
+  open: { name: 'Open', detail: 'Let the cymbals ring instead of choking them: ease off the hi-hat pedal as you strike, and close again on the next unopened note. The circle drawn around the "×" is the open mark.' },
+  openHead: { name: 'Normal hit', detail: 'The "o" open mark only changes hi-hats and cymbals — on a drum there is nothing to open, so this sounds and draws as a normal hit.' },
+  ghost: { name: 'Ghost note', detail: 'A very light tap that sits under the groove rather than in it, drawn as a small hollow glyph.' },
+  flam: { name: 'Flam', detail: 'Two strokes so close together they read as one thick hit: the small grace glyph just before the beat lands a hair early, then the main note on the beat.' },
+};
+
+// Glyph id → the character an author types for it (the CELL_GLYPHS key).
+const CHAR_BY_GLYPH_ID = new Map(Object.entries(CELL_GLYPHS).map(([ch, g]) => [g.id, ch]));
+
+// The six cell characters for a legend panel — the same articulation text the
+// per-note popover shows, minus anything piece-specific.
+export const DRUM_GLYPH_LEGEND = Object.entries(CELL_GLYPHS).map(([char, glyph]) => ({
+  char,
+  id: glyph.id,
+  ...ARTICULATIONS[glyph.id],
+}));
+
+// How to play one piece, for a legend panel. Unknown ids return null so a caller
+// can fall back to the raw id rather than printing "undefined".
+export const describeKitPiece = (id) => {
+  const piece = kitPiece(id);
+  if (!piece) return null;
+  return { id: piece.id, label: piece.label, technique: PIECE_TECHNIQUE[piece.id] || '' };
+};
+
+/**
+ * Explain ONE cell of a parsed chart in plain language — what the glyph means,
+ * how the piece is struck, and how loud the hit is relative to a full stroke.
+ *
+ * @param {string} pieceId - Canonical kit-piece id (`'CR'`, `'S'`, …).
+ * @param {object} cell - A cell from `parseDrumChart` (a `CELL_GLYPHS` entry).
+ * @returns {{ pieceId, pieceLabel, char, rest, articulation, detail, technique, velocityPercent }|null}
+ *   `null` only when the piece id is unknown — an unknown/missing cell is
+ *   described as a rest, matching how the parser already treats one.
+ */
+export const describeDrumCell = (pieceId, cell) => {
+  const piece = kitPiece(pieceId);
+  if (!piece) return null;
+  const glyph = cell && CELL_GLYPHS[CHAR_BY_GLYPH_ID.get(cell.id)] ? cell : CELL_GLYPHS['-'];
+  // `open` is the one piece-dependent glyph (see ARTICULATIONS).
+  const key = glyph.id === 'open' && piece.glyph !== 'cross' ? 'openHead' : glyph.id;
+  const articulation = ARTICULATIONS[key] || ARTICULATIONS.normal;
+  return {
+    pieceId: piece.id,
+    pieceLabel: piece.label,
+    char: CHAR_BY_GLYPH_ID.get(glyph.id) || '-',
+    rest: !!glyph.rest,
+    articulation: articulation.name,
+    detail: articulation.detail,
+    technique: PIECE_TECHNIQUE[piece.id] || '',
+    velocityPercent: glyph.rest ? 0 : Math.round(glyph.velocity * 100),
+  };
+};
+
 // --- Header ----------------------------------------------------------------
 const DEFAULT_HEADER = { beats: 4, beatValue: 4, tempo: 90, subdivision: 4, kit: null };
 
