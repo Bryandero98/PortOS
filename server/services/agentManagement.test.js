@@ -57,7 +57,8 @@ vi.mock('./cosEvents.js', () => ({
 }));
 
 vi.mock('./agentRunTracking.js', () => ({
-  checkForTaskCommit: vi.fn().mockResolvedValue(false)
+  checkForTaskCommit: vi.fn().mockResolvedValue(false),
+  completeAgentRun: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Stub other transitive imports we don't exercise in handleOrphanedTask.
@@ -107,6 +108,7 @@ import { pauseAgentViaRunner } from './cosRunnerClient.js';
 import * as shellService from './shell.js';
 import { readHostShutdownMarker, clearHostShutdownMarker } from '../lib/hostShutdown.js';
 import { completeAgent as markAgentComplete } from './cos.js';
+import { completeAgentRun } from './agentRunTracking.js';
 import { activeAgents, runnerAgents, pausedAgents } from './agentState.js';
 
 describe('settleOrphanedCreativeDirectorRun — reap a dead CD agent run (#2705)', () => {
@@ -850,6 +852,35 @@ describe('orphan retries resume what the dead run left behind', () => {
     expect(resolveTaskResumePatch).not.toHaveBeenCalled();
   });
 
+  it('closes the orphaned run before completing the agent record', async () => {
+    getAgents.mockResolvedValue([{
+      ...deadAgent,
+      startedAt: new Date(Date.now() - 1000).toISOString(),
+      metadata: { ...deadMetadata, runId: 'run-orphan' },
+      output: [{ line: 'last buffered line' }],
+    }]);
+    const order = [];
+    completeAgentRun.mockImplementation(() => { order.push('run'); });
+    markAgentComplete.mockImplementation(() => { order.push('agent'); });
+
+    await cleanupOrphanedAgents();
+
+    expect(completeAgentRun).toHaveBeenCalledWith(
+      'run-orphan',
+      'last buffered line',
+      1,
+      expect.any(Number),
+      { message: 'Agent process terminated unexpectedly', category: 'orphaned' },
+    );
+    expect(order.slice(0, 2)).toEqual(['run', 'agent']);
+  });
+
+  it('skips run completion for legacy agents without a runId', async () => {
+    await cleanupOrphanedAgents();
+
+    expect(completeAgentRun).not.toHaveBeenCalled();
+  });
+
   // A caller that doesn't know which agent died (resetOrphanedTasks on an archived
   // agent) still requeues — it just starts clean.
   it('requeues without a pointer when no agent metadata is available', async () => {
@@ -1056,6 +1087,10 @@ describe('host-restart interruptions are not charged orphan-retry budget (#3202)
 
   it('flags the interruption on the agent record and consumes the marker', async () => {
     getTaskById.mockResolvedValue({ id: 'task-1', taskType: 'user', status: 'in_progress', metadata: {} });
+    getAgents.mockResolvedValue([{
+      ...deadAgent,
+      metadata: { ...deadMetadata, runId: 'run-interrupted' },
+    }]);
     readHostShutdownMarker.mockResolvedValue({ at: null, signal: 'SIGTERM', agentIds: ['agent-dead'] });
 
     await cleanupOrphanedAgents();
@@ -1065,6 +1100,13 @@ describe('host-restart interruptions are not charged orphan-retry budget (#3202)
       interruptedByRestart: true,
       error: expect.stringContaining('restart'),
     }));
+    expect(completeAgentRun).toHaveBeenCalledWith(
+      'run-interrupted',
+      '',
+      143,
+      0,
+      { message: expect.stringContaining('restart'), category: 'interrupted' },
+    );
     expect(clearHostShutdownMarker).toHaveBeenCalled();
   });
 

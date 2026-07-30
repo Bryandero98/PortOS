@@ -109,6 +109,7 @@ export async function completeAgentRun(runId, output, exitCode, duration, errorA
 
   const metadata = await readJSONFile(metaPath, null);
   if (!metadata) return;
+  if (metadata.endTime) return;
 
   metadata.endTime = new Date().toISOString();
   metadata.duration = duration;
