@@ -43,6 +43,12 @@ export default function ShellImageDrop({ onSend, placement = 'below' }) {
   const [message, setMessage] = useState('');
   const [sending, setSending] = useState(false);
   const containerRef = useRef(null);
+  // Bumped by every edit to the draft (pick, remove, message, close). A send
+  // captures it and only tears the composer down if it still matches — otherwise a
+  // slow send the user cancelled and re-drafted mid-flight would, on success, wipe
+  // the photo and message they had just started.
+  const draftGenRef = useRef(0);
+  const bumpDraft = () => { draftGenRef.current += 1; };
   const { triggerRef, popoverRef, style } = usePopoverPosition({
     open,
     width: PANEL_WIDTH,
@@ -66,10 +72,22 @@ export default function ShellImageDrop({ onSend, placement = 'below' }) {
       toast.error(problem);
       return;
     }
+    bumpDraft();
     setPicked({ file, url: URL.createObjectURL(file) });
   }, []);
 
+  const clearFile = useCallback(() => {
+    bumpDraft();
+    setPicked(null);
+  }, []);
+
+  const editMessage = useCallback((next) => {
+    bumpDraft();
+    setMessage(next);
+  }, []);
+
   const close = useCallback(() => {
+    bumpDraft();
     setOpen(false);
     setPicked(null);
     setMessage('');
@@ -91,12 +109,16 @@ export default function ShellImageDrop({ onSend, placement = 'below' }) {
 
   const send = useCallback(async () => {
     if (!picked || sending) return;
+    const gen = draftGenRef.current;
     setSending(true);
     const ok = await onSend(picked.file, message.trim());
+    // Always clear `sending` — only one send is ever in flight (the guard above),
+    // so the flag belongs to this one regardless of what the draft did meanwhile.
     setSending(false);
-    // Only tear the composer down on success — on failure the user keeps their
-    // message and picked file and can retry.
-    if (ok) close();
+    // Tear the composer down only on success AND only while it still holds the
+    // draft we sent: on failure the user keeps their message and file to retry, and
+    // a completion the user has since re-drafted past must not wipe the new draft.
+    if (ok && draftGenRef.current === gen) close();
   }, [picked, message, onSend, sending, close]);
 
   useEscapeKey(open, close);
@@ -163,7 +185,7 @@ export default function ShellImageDrop({ onSend, placement = 'below' }) {
                 <div className="text-xs text-gray-500 font-mono">{formatBytes(picked.file.size)}</div>
               </div>
               <button
-                onClick={() => setPicked(null)}
+                onClick={clearFile}
                 className="p-1 text-gray-400 hover:text-white transition-colors"
                 title="Remove image"
                 aria-label="Remove image"
@@ -186,7 +208,7 @@ export default function ShellImageDrop({ onSend, placement = 'below' }) {
           <FormField label="Message" labelClassName="block text-xs text-gray-400 mb-1">
             <textarea
               value={message}
-              onChange={(e) => setMessage(e.target.value)}
+              onChange={(e) => editMessage(e.target.value)}
               onKeyDown={(e) => {
                 // Enter sends, Shift+Enter adds a newline — the same contract as
                 // every other agent prompt box in PortOS.

@@ -142,6 +142,30 @@ describe('ShellImageDrop', () => {
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
   });
 
+  // A slow send the user cancelled and re-drafted past must not, on success, wipe
+  // the photo and message they had just started.
+  it('does not wipe a newer draft when an older send finally succeeds', async () => {
+    let settle;
+    const onSend = vi.fn(() => new Promise((resolve) => { settle = resolve; }));
+    render(<ShellImageDrop onSend={onSend} />);
+    openComposer();
+    pickFile(imageFile('first.jpg'));
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'first ask' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(onSend).toHaveBeenCalled());
+
+    // Bail out mid-flight and start over.
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    openComposer();
+    pickFile(imageFile('second.jpg'));
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'second ask' } });
+
+    settle(true);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled());
+    expect(screen.getByLabelText('Message').value).toBe('second ask');
+    expect(screen.getByAltText('second.jpg')).toBeTruthy();
+  });
+
   it('removes a picked image without closing the composer', () => {
     render(<ShellImageDrop onSend={vi.fn()} />);
     openComposer();
