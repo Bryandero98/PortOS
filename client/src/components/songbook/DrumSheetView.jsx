@@ -240,7 +240,9 @@ function DrumSheetView({
     return () => { cancelAnimationFrame(raf); hide(); };
   }, [playing, getPlayhead, barCount, barX, laneW, scale]);
 
-  // A new chart is a new song — start reading it from the top.
+  // A new chart starts from the top. Content-keyed, so a host that can show two
+  // DIFFERENT records with identical charts in one mounted sheet should key this
+  // component by record id (SongBookViewer does).
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollLeft = 0;
   }, [chart]);

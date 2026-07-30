@@ -694,6 +694,12 @@ export default function SongBookViewer() {
               // scroller, so capping it just shortens the window you read
               // through on a wide screen.
               <DrumSheetView
+                // Keyed on the song, not just its text: the sheet resets its
+                // horizontal scroll when the CHART changes, and two songs can
+                // hold identical charts. Today the load's `setSong(null)`
+                // unmounts the sheet between songs anyway, but that's an
+                // incidental guarantee — the key makes it the sheet's own.
+                key={id}
                 text={contentText}
                 fontSizeRem={fontSize}
                 getPlayhead={drum.getPlayhead}
