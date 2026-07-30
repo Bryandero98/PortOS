@@ -82,22 +82,23 @@ export async function prepareGenerateParams({ data, files, referenceImageFields 
   const settings = await getSettings();
   let mode = data.mode || settings.imageGen?.mode || IMAGE_GEN_MODE.EXTERNAL;
   // #3231 Phase 4 — Music Video scene-frame renders resolve through the
-  // render-target ladder: per-request mode → the owning project's record pin
+  // render-target ladder: the owning project's record pin
   // (`imageMode`/`imageModelId`) → `renderDefaults['music-video']` → the
   // install default above. The director board sends NO mode with its frame
   // renders, so the record/target pins are live without any client seeding
-  // (unlike the universe batch form). The layered model is stamped onto
+  // (unlike the universe batch form). An explicit per-request mode wins
+  // outright (and blocks the pinned model from leaking), so the project fetch
+  // is skipped entirely in that case. The layered model is stamped onto
   // `data.cloudModel` so the route/dispatch resolution downstream picks it up;
   // an explicit per-request cloudModel wins untouched.
-  if (data.musicVideo?.projectId) {
+  if (!data.mode && data.musicVideo?.projectId) {
     const project = await getMusicVideoProject(data.musicVideo.projectId).catch(() => null);
     const pin = recordRenderPin(project || {});
     const resolved = resolveRenderTargetConfig(settings, RENDER_TARGET.MUSIC_VIDEO, {
-      mode: data.mode || null,
       model: data.cloudModel || null,
       recordMode: pin.mode,
       recordModel: pin.modelId,
-      fallbackMode: settings.imageGen?.mode || IMAGE_GEN_MODE.EXTERNAL,
+      fallbackMode: IMAGE_GEN_MODE.EXTERNAL,
     });
     mode = resolved.mode;
     if (!data.cloudModel && resolved.cloud?.modelId) data.cloudModel = resolved.cloud.modelId;

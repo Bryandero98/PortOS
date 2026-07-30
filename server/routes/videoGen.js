@@ -759,15 +759,17 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
   // is honored only for a grok-DELIVERABLE request shape — the grok lane reads
   // only prompt/dims/source-image/duration, so a request carrying local-only
   // machinery (a semantic mode beyond text/image, keyframes, audio, IC refs,
-  // extend, LoRAs, a last frame) stays local rather than silently dropping
-  // those inputs. A pin degrades; only an explicit backend request errors.
+  // extend, LoRAs, a last frame, chunked renders) stays local rather than
+  // silently dropping those inputs. A pin degrades; only an explicit backend
+  // request errors.
   const grokDeliverable = (!body.mode || body.mode === 'text' || body.mode === 'image')
     && !uploads.lastImage && !body.lastImageFile
     && !uploads.audioFile
     && !uploads.icReference && !body.icReferenceVideoIds?.length && !body.icReferenceImageFiles?.length
     && !body.extendFromVideoId
     && !body.keyframes?.length
-    && !body.loraFilenames?.length;
+    && !body.loraFilenames?.length
+    && !(body.chunks != null && Number(body.chunks) > 1);
   const backend = body.backend
     || (grokDeliverable
       ? resolveVideoMode(null, s, { target: body.musicVideo ? RENDER_TARGET.MUSIC_VIDEO : null })

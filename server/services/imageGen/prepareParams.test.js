@@ -54,6 +54,8 @@ describe('music-video render-target resolution (#3231 Phase 4)', () => {
     const { data, mode } = await run({ prompt: 'p', mode: 'local', musicVideo: { projectId: 'mv-1', sceneId: 's1' } });
     expect(mode).toBe('local');
     expect(data.cloudModel).toBeUndefined();
+    // Explicit mode wins outright, so the project store isn't even consulted.
+    expect(getProject).not.toHaveBeenCalled();
   });
 
   it('falls through to the install default with no pins, and a missing project is harmless', async () => {

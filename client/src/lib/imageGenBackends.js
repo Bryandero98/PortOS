@@ -57,6 +57,14 @@ export const RENDER_TARGET_OPTIONS = Object.freeze([
 // `settings.videoGen.mode` pin.
 export const VIDEO_RENDER_MODES = Object.freeze(['local', 'grok']);
 
+// Client mirror of the server's normalizeRenderPinValue
+// (server/lib/renderTargets.js) — THE one render-pin normalization rule: trim;
+// the 'auto' sentinel and blank strings collapse to null ("no pin").
+export const normalizeRenderPinValue = (v) => {
+  const s = typeof v === 'string' ? v.trim() : '';
+  return s && s !== RENDER_TARGET_BACKEND_AUTO ? s : null;
+};
+
 // Client mirror of the server's GROK_ASPECT_RATIOS (imageGen/grok.js) — the
 // aspect ratios grok's image_gen/image_edit tools accept, offered as the
 // default-ratio picker in Settings → Image Gen → Grok.

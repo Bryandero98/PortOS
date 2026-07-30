@@ -10,8 +10,8 @@ import { ASPECT_PRESETS, QUALITY_PRESETS, presetToRenderParams } from '../../../
 import { getSettings } from '../../settings.js';
 import { IMAGE_GEN_MODE, resolveQueueImageMode, resolveQueueImageEditMode } from '../../imageGen/modes.js';
 import { renderTargetDefaults, resolveRenderTargetConfig } from '../../imageGen/cloudProviderConfig.js';
-import { RENDER_TARGET, normalizeRenderPinValue } from '../../../lib/renderTargets.js';
-import { VIDEO_GEN_MODE, VIDEO_GEN_MODES, resolveVideoMode } from '../../videoGen/modes.js';
+import { RENDER_TARGET } from '../../../lib/renderTargets.js';
+import { VIDEO_GEN_MODE, VIDEO_GEN_MODES, resolveVideoMode, hasVideoPin } from '../../videoGen/modes.js';
 import { nearestGrokDuration } from '../../../lib/grokVideoClip.js';
 import { COST_RENDER, resolveOwner } from './shared.js';
 
@@ -131,8 +131,7 @@ async function enforceRenderBackendPin(kind, params, project) {
   // is byte-identical" contract above.
   if (kind === 'image') {
     if (!pin?.mode && !targetDefaults.imageMode) return params;
-  } else if (!pin?.mode && !targetDefaults.videoMode
-      && !normalizeRenderPinValue(settings.videoGen?.mode)) {
+  } else if (!pin?.mode && !hasVideoPin(settings, { target: RENDER_TARGET.CREATIVE_AGENT })) {
     return params;
   }
 

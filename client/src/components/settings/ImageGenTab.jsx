@@ -6,7 +6,7 @@
  * lives in the always-visible Codex CLI Imagegen section.
  */
 
-import { useState, useEffect, useCallback, useId } from 'react';
+import { useState, useEffect, useCallback, useId, useRef } from 'react';
 import {
   Save, Image as ImageIcon, Zap, Wrench, Cloud, Cpu, Globe, AlertTriangle,
   Sparkles, Terminal, Key, Check, Trash2, SlidersHorizontal
@@ -22,7 +22,7 @@ import {
   registerTool, updateTool, getToolsList,
   saveHfToken, clearHfToken,
 } from '../../services/api';
-import { isCloudCliMode, IMAGE_GEN_MODE, AGY_IMAGEGEN_DEFAULT_MODEL, AGY_IMAGEGEN_IMAGE_MODEL, CODEX_IMAGEGEN_DEFAULT_EFFORT, GROK_ASPECT_RATIOS, RENDER_TARGET_BACKEND_AUTO, RENDER_TARGET_OPTIONS, VIDEO_RENDER_MODES, modeLabel, supportsCloudModelOverride } from '../../lib/imageGenBackends';
+import { isCloudCliMode, IMAGE_GEN_MODE, AGY_IMAGEGEN_DEFAULT_MODEL, AGY_IMAGEGEN_IMAGE_MODEL, CODEX_IMAGEGEN_DEFAULT_EFFORT, GROK_ASPECT_RATIOS, RENDER_TARGET_BACKEND_AUTO, RENDER_TARGET_OPTIONS, VIDEO_RENDER_MODES, modeLabel, normalizeRenderPinValue, supportsCloudModelOverride } from '../../lib/imageGenBackends';
 import { resolveCleanersFromConfig } from '../../lib/imageCleaners';
 import { useMediaJobSse } from '../../hooks/useMediaJobSse';
 import { useAgyModels } from '../../hooks/useAgyModels';
@@ -105,11 +105,11 @@ export function ImageGenTab() {
   // Only pinned entries are kept; an absent target means "auto".
   const [renderDefaults, setRenderDefaults] = useState({});
   // Install-wide video backend pin (`settings.videoGen.mode`, #3231 Phase 4).
-  // '' = no pin (local). The full loaded `videoGen` slice is kept so the save
-  // can round-trip sibling keys (defaultModelId) — the settings PUT replaces
-  // top-level slices wholesale.
+  // '' = no pin (local). The full loaded `videoGen` slice is kept in a ref —
+  // never rendered, only round-tripped at save time so sibling keys
+  // (defaultModelId) survive the settings PUT's wholesale slice replace.
   const [videoGenMode, setVideoGenMode] = useState('');
-  const [videoGenSlice, setVideoGenSlice] = useState({});
+  const videoGenSliceRef = useRef({});
   const [sdapiUrl, setSdapiUrl] = useState('');
   const [pythonPath, setPythonPath] = useState('');
   const [exposeA1111, setExposeA1111] = useState(false);
@@ -237,9 +237,7 @@ export function ImageGenTab() {
         // Video pin: keep the whole slice for round-trip; normalize the mode
         // ('auto'/blank → '', i.e. no pin) for the select.
         const vg = (s?.videoGen && typeof s.videoGen === 'object') ? s.videoGen : {};
-        const vgMode = (typeof vg.mode === 'string' && vg.mode.trim() && vg.mode !== RENDER_TARGET_BACKEND_AUTO)
-          ? vg.mode
-          : '';
+        const vgMode = normalizeRenderPinValue(vg.mode) || '';
         const m = ig.mode || IMAGE_GEN_MODE.EXTERNAL;
         const url = normalizeUrl(ig.external?.sdapiUrl || ig.sdapiUrl);
         const py = ig.local?.pythonPath || '';
@@ -274,7 +272,7 @@ export function ImageGenTab() {
         setMode(m);
         setRenderDefaults(rd);
         setVideoGenMode(vgMode);
-        setVideoGenSlice(vg);
+        videoGenSliceRef.current = vg;
         setSdapiUrl(url);
         setPythonPath(py);
         setExposeA1111(expose);
@@ -406,7 +404,7 @@ export function ImageGenTab() {
       ),
       // Install-wide video pin (#3231 Phase 4). Spread over the loaded slice so
       // sibling keys (defaultModelId) survive the wholesale slice replace.
-      videoGen: { ...videoGenSlice, mode: videoGenMode || null },
+      videoGen: { ...videoGenSliceRef.current, mode: videoGenMode || null },
     };
     try {
       await updateSettings(patch, { silent: true });
@@ -427,7 +425,7 @@ export function ImageGenTab() {
       // Reflect the pruned no-op entries back into the editor state so the
       // dirty check compares like against like after a save.
       setRenderDefaults(patch.renderDefaults);
-      setVideoGenSlice(patch.videoGen);
+      videoGenSliceRef.current = patch.videoGen;
       if (cxParallel !== codexParallelLimit) {
         setCodexParallelLimit(cxParallel);
         setParallelLimitDraft(String(cxParallel));
@@ -719,7 +717,7 @@ export function ImageGenTab() {
           {RENDER_TARGET_OPTIONS.map(({ id, label, video }) => {
             const entry = renderDefaults[id] || {};
             const pinnedMode = entry.imageMode && entry.imageMode !== RENDER_TARGET_BACKEND_AUTO ? entry.imageMode : '';
-            const pinnedVideoMode = entry.videoMode && entry.videoMode !== RENDER_TARGET_BACKEND_AUTO ? entry.videoMode : '';
+            const pinnedVideoMode = normalizeRenderPinValue(entry.videoMode) || '';
             const modeSelectId = `render-default-mode-${id}`;
             const modelInputId = `render-default-model-${id}`;
             const videoSelectId = `render-default-video-${id}`;

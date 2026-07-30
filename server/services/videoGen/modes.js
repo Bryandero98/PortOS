@@ -71,13 +71,26 @@ export function isVideoModeUsable(settings, mode) {
  * enabled grok for IMAGES would be a surprise spend — grok video renders only
  * when a request, record, or explicit user pin names it.
  */
+// The ONE enumeration of the video pin rungs (target pin, then install pin) —
+// both the resolver below and hasVideoPin walk this list, so adding a rung is
+// one edit and the "is anything pinned?" question can't drift from the ladder.
+const videoPinRungs = (settings, target) => [
+  target ? normalizeRenderPinValue(settings?.renderDefaults?.[target]?.videoMode) : null,
+  normalizeRenderPinValue(settings?.videoGen?.mode),
+];
+
+/**
+ * Does ANY video pin rung name a backend for this surface? Presence only — no
+ * usability gating — so callers with a byte-identical-when-auto contract (the
+ * creative agent's enforceRenderBackendPin) can gate on the same rung list the
+ * resolver walks instead of re-enumerating it.
+ */
+export function hasVideoPin(settings, { target = null } = {}) {
+  return videoPinRungs(settings, target).some(Boolean);
+}
+
 export function resolveVideoMode(requested, settings, { target = null } = {}) {
-  const candidates = [
-    requested,
-    target ? normalizeRenderPinValue(settings?.renderDefaults?.[target]?.videoMode) : null,
-    normalizeRenderPinValue(settings?.videoGen?.mode),
-  ];
-  for (const mode of candidates) {
+  for (const mode of [requested, ...videoPinRungs(settings, target)]) {
     if (mode && isVideoModeUsable(settings, mode)) return mode;
   }
   return VIDEO_GEN_MODE.LOCAL;
