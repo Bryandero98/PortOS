@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 vi.mock('./shell.js', () => ({
   createShellSession: vi.fn(),
   writeToSession: vi.fn(),
+  pasteToSession: vi.fn(),
   killSession: vi.fn(),
   getSession: vi.fn(),
   getSessionProcess: vi.fn(),
@@ -1057,8 +1058,10 @@ describe('spawnTuiAgent runtime', () => {
     // The ceiling PRODS rather than reaping (#3167): it pastes a wrap-up message
     // and opens a grace window, so the agent is NOT finalized yet.
     expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalled();
-    expect(shellService.writeToSession).toHaveBeenCalledWith(
-      SESSION_ID, expect.stringContaining('you have hit your maximum runtime')
+    expect(shellService.pasteToSession).toHaveBeenCalledWith(
+      SESSION_ID,
+      expect.stringContaining('you have hit your maximum runtime'),
+      { label: '[cosAgents] max-runtime wrap-up' },
     );
 
     // No sentinel ever appears → the grace window expires → NOW it reaps.

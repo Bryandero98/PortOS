@@ -980,16 +980,14 @@ export async function spawnTuiAgent({
       emitLog('warn', `Failed to mark TUI agent ${agentId} as wrapping up: ${err.message}`, { agentId });
     });
 
-    shellService.writeToSession(sessionId, `\x1b[200~${buildWrapUpProdMessage(MAX_RUNTIME_WRAP_UP_GRACE_MS)}\x1b[201~`);
-    // Submit with the same repeated-Enter helper the initial prompt uses — a
-    // single `\r` can be swallowed while the TUI reflows the paste, and a prod
-    // that never submits is a prod that never happened. Clear any prior
-    // submit-Enter interval first: hours after submission the prompt's own is
-    // long finished, but overwriting a live handle would leak it past finish().
+    // Clear any prior submit-Enter interval first: hours after submission the
+    // prompt's own is long finished, but overwriting a live handle would leak
+    // it past finish().
     if (submitEnterTimer) clearInterval(submitEnterTimer);
-    submitEnterTimer = scheduleSubmitEnters(
-      () => shellService.writeToSession(sessionId, '\r'),
-      () => finalized,
+    submitEnterTimer = shellService.pasteToSession(
+      sessionId,
+      buildWrapUpProdMessage(MAX_RUNTIME_WRAP_UP_GRACE_MS),
+      { label: '[cosAgents] max-runtime wrap-up' },
     );
 
     // A single deadline, NOT a poll: the 2s doneSentinelTimer is already watching
