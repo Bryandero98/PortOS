@@ -157,7 +157,8 @@ export default function ImageGen() {
   const [seed, setSeed] = useState('');
   const [selectedLoras, setSelectedLoras] = useState([]);
   // Per-render override of the Agy session model. Empty = inherit the saved
-  // Settings default (which itself may be empty = agy's own configured model).
+  // Settings default (which itself may be empty = the shipped cheap-tier pin,
+  // AGY_IMAGEGEN_DEFAULT_MODEL — #3231).
   const [agyModel, setAgyModel] = useState('');
   const [savedAgyModel, setSavedAgyModel] = useState('');
 
