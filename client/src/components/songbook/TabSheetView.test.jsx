@@ -38,6 +38,36 @@ describe('TabSheetView', () => {
     expect(staffBlocks[0].textContent).toContain('B|--0-----|');
   });
 
+  it('toggles the tab articulation legend when a tab staff is present', () => {
+    render(<TabSheetView text={SAMPLE} format="tab" />);
+    const toggle = screen.getByRole('button', { name: 'Legend' });
+    const panelId = toggle.getAttribute('aria-controls');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(document.getElementById(panelId)).toBeNull();
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    const panel = document.getElementById(panelId);
+    expect(panel).toBeTruthy();
+    expect(panel.textContent).toContain('Hammer-on');
+    expect(panel.textContent).toContain('Muted note');
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(document.getElementById(panelId)).toBeNull();
+  });
+
+  it('only offers the articulation legend for tab-format sheets with a tab staff', () => {
+    const { rerender } = render(<TabSheetView text={'C G\nNonsense lyric line'} format="tab" />);
+    expect(screen.queryByRole('button', { name: 'Legend' })).toBeNull();
+
+    rerender(<TabSheetView text={SAMPLE} format="chordpro" />);
+    expect(screen.queryByRole('button', { name: 'Legend' })).toBeNull();
+
+    rerender(<TabSheetView text={SAMPLE} format="plain" />);
+    expect(screen.queryByRole('button', { name: 'Legend' })).toBeNull();
+  });
+
   it('renders chordlyric lines as a chord row above the bare lyric', () => {
     const { container } = render(<TabSheetView text={SAMPLE} />);
     // Bare lyric (brackets stripped)

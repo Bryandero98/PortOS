@@ -16,6 +16,7 @@
 //   transposeChordName(name, n) → transposed chord symbol
 //   transposeText(text, n)      → text with chord lines transposed in place
 //   CHORD_TOKEN_RE              → anchored single-token chord matcher
+//   TAB_ARTICULATIONS            → tab-staff character legend
 //
 // Line = { type, text, chords?, label? } where type is one of:
 //   'section'    — [Verse 1], {start_of_chorus}/{soc}, or a bare "Chorus:" line
@@ -32,6 +33,52 @@
 // ---------------------------------------------------------------------------
 // Chord tokens
 // ---------------------------------------------------------------------------
+
+// Standard articulation characters accepted inside tab-staff lines. Kept
+// beside the parser so the renderer's legend and the notation contract cannot
+// drift into separate vocabularies.
+export const TAB_ARTICULATIONS = [
+  {
+    char: 'h',
+    name: 'Hammer-on',
+    detail: 'Pick the first note, then press a higher fret without picking again.',
+  },
+  {
+    char: 'p',
+    name: 'Pull-off',
+    detail: 'Sound a lower fretted note by pulling the higher fretting finger away.',
+  },
+  {
+    char: '/',
+    name: 'Slide up',
+    detail: 'Keep the string sounding while sliding to a higher fret.',
+  },
+  {
+    char: '\\',
+    name: 'Slide down',
+    detail: 'Keep the string sounding while sliding to a lower fret.',
+  },
+  {
+    char: 'b',
+    name: 'Bend',
+    detail: 'Push or pull the string sideways to raise the pitch.',
+  },
+  {
+    char: 'r',
+    name: 'Release',
+    detail: 'Let a bent string return to the written fret and pitch.',
+  },
+  {
+    char: '~',
+    name: 'Vibrato',
+    detail: 'Gently vary the pitch while the note sustains.',
+  },
+  {
+    char: 'x',
+    name: 'Muted note',
+    detail: 'Touch the string lightly and pick a short, unpitched sound.',
+  },
+];
 
 // Anchored matcher for ONE chord symbol (test whitespace-split tokens against
 // it). Root A–G + optional #/b, then any run of quality/extension parts, then

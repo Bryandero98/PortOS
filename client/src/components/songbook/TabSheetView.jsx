@@ -1,9 +1,10 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
-import { parseTabSheet } from '../../lib/tabNotation.js';
+import { parseTabSheet, TAB_ARTICULATIONS } from '../../lib/tabNotation.js';
 import { splitJoinedChords } from '../../lib/chordShapes.js';
 import usePopoverPosition from '../../hooks/usePopoverPosition.js';
 import ChordDiagram from './ChordDiagram.jsx';
+import { activeCtrlClass, ctrlBtnClass } from './constants.js';
 
 /**
  * Rendered tab/chord sheet — the shared display surface for the SongBook
@@ -105,6 +106,23 @@ const ChordSegments = ({ segments, blockKey, activeKey, onTap }) =>
     );
   });
 
+const TabLegend = ({ id }) => (
+  <div id={id} className="mb-3 rounded-lg border border-port-border bg-port-bg/60 px-3 py-2 text-xs font-sans">
+    <dl className="grid gap-x-4 gap-y-1 sm:grid-cols-2">
+      {TAB_ARTICULATIONS.map((articulation) => (
+        <div key={articulation.char} className="flex items-start gap-2">
+          <dt className="shrink-0 rounded border border-port-border bg-port-card px-1.5 font-mono text-sm text-port-accent">
+            {articulation.char}
+          </dt>
+          <dd className="min-w-0 text-gray-300">
+            <span className="font-semibold text-white">{articulation.name}</span> — {articulation.detail}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  </div>
+);
+
 function TabSheetView({
   text,
   format = 'tab',
@@ -134,6 +152,9 @@ function TabSheetView({
     }
     return out;
   }, [lines]);
+  const hasTabstaff = format === 'tab' && lines.some((line) => line.type === 'tabstaff');
+  const [legendOpen, setLegendOpen] = useState(false);
+  const legendId = useId();
 
   // Unique chord names in order of first appearance (chords-used strip).
   // Dash-joined quick changes split into their segments FIRST, so "Am-Am7"
@@ -250,6 +271,21 @@ function TabSheetView({
           )}
         </div>
       )}
+
+      {hasTabstaff && (
+        <div className="mb-1.5 flex justify-end font-sans">
+          <button
+            type="button"
+            onClick={() => setLegendOpen((open) => !open)}
+            aria-expanded={legendOpen}
+            aria-controls={legendId}
+            className={`px-3 ${ctrlBtnClass} ${legendOpen ? activeCtrlClass : ''}`}
+          >
+            Legend
+          </button>
+        </div>
+      )}
+      {hasTabstaff && legendOpen && <TabLegend id={legendId} />}
 
       {blocks.map((block, bi) => {
         if (block.type === 'tabstaff') {

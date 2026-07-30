@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   CHORD_TOKEN_RE,
+  TAB_ARTICULATIONS,
   detectFormat,
   parseTabSheet,
   normalizePastedTab,
@@ -10,6 +11,18 @@ import {
 
 // All fixture content is invented ("Example Song" by "The Placeholders") —
 // never real lyrics or real records.
+
+describe('TAB_ARTICULATIONS', () => {
+  it('documents every supported tab-staff articulation character', () => {
+    expect(TAB_ARTICULATIONS.map(({ char }) => char)).toEqual([
+      'h', 'p', '/', '\\', 'b', 'r', '~', 'x',
+    ]);
+    for (const articulation of TAB_ARTICULATIONS) {
+      expect(articulation.name.trim()).not.toBe('');
+      expect(articulation.detail.trim()).not.toBe('');
+    }
+  });
+});
 
 describe('CHORD_TOKEN_RE', () => {
   const CHORDS = [
