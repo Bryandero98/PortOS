@@ -39,6 +39,21 @@ const SKILLS_DIR = join(ROOT_DIR, 'data/prompts/skills');
 export const PM2_SAFETY_RULE = `## ⚠️ PM2 Safety (shared server)
 PortOS runs MANY apps under one shared pm2 daemon. To restart an app, use a SCOPED command — \`pm2 restart <that-app's-process-name>\`. NEVER run \`pm2 kill\`, \`pm2 stop\`, \`pm2 delete\`, \`pm2 startup\`/\`unstartup\`, or any \`pm2 <verb> all\` form: they take down EVERY app on this machine, including PortOS itself, and are blocked (they will fail).`;
 
+// Also appended to every agent briefing. A CoS agent runs headless: the TUI has
+// no human attached, so an interactive selector or approval gate is a dead end —
+// the session repaints it until the idle reaper kills the run and the work is
+// discarded. Nothing in the briefing used to SAY that, so a `/do:plan-task` run
+// (whose skill shows its drafted issue for approval before filing) parked on a
+// scope question for its whole life and was retried into the same gate three
+// times, filing nothing. The rule names the escape hatch too: slash commands
+// that gate on approval take a flag to skip it.
+export const UNATTENDED_RUN_RULE = `## ⚠️ Unattended Run (no human is present)
+PortOS launched you autonomously. Nobody is watching this session and nothing can answer you — if you present an interactive choice (a multiple-choice question, an approval gate, a "which option?" selector, a confirmation), the session sits there until the idle reaper kills it and **your work is thrown away**.
+- **Never ask the user to choose or approve.** Make the call yourself, state the assumption in your summary, and proceed.
+- **Invoke commands and skills in their non-interactive form.** If one drafts something and gates on approval before acting, pass the flag that skips that gate (\`--yes\` for the slashdo commands that have one).
+- **Ambiguous task?** Pick the most reasonable reading, do the work, and note the alternatives you rejected in your completion summary.
+- **Genuinely blocked** (missing credential, contradictory requirements)? Write why to the completion sentinel and stop. Do NOT wait for a reply.`;
+
 /**
  * Skill template keyword matchers.
  * Each entry maps a skill template filename to its trigger keywords.
@@ -1435,7 +1450,7 @@ ${task.metadata.jiraBranch ? 'Commit your changes to this branch. Do NOT switch 
   }).catch(() => null);
 
   if (promptData?.prompt) {
-    return `${promptData.prompt}\n\n${PM2_SAFETY_RULE}`;
+    return `${promptData.prompt}\n\n${UNATTENDED_RUN_RULE}\n\n${PM2_SAFETY_RULE}`;
   }
 
   const taskBlock = buildTaskBlock(task, { screenshotsAsList: false });
@@ -1511,6 +1526,8 @@ ${discardWorktree ? '' : worktreeInfo ? `- **Your PR should contain only your ta
 
 ## Working Directory
 ${task.metadata?.app ? `You are working in the target app directory: \`${workspaceDir}\`. All code changes, research, plans, and docs for this task belong in this directory — NOT in the PortOS repo.` : 'You are working in the project directory.'} Use the available tools to explore, modify, and test code.
+
+${UNATTENDED_RUN_RULE}
 
 ${PM2_SAFETY_RULE}
 
@@ -1642,6 +1659,12 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   // route it to `contractSections` so the split path can lift it into the
   // system prompt.
   sections = contractSections;
+
+  // --- Unattended run ----------------------------------------------------
+  // First contract section, and unconditional: the light path is the one that
+  // actually stalled on an approval gate, and "no human will answer you" is not
+  // something the agent can infer from CLAUDE.md or its cwd.
+  sections.push(UNATTENDED_RUN_RULE);
 
   // --- Worktree ----------------------------------------------------------
   if (worktreeInfo) {

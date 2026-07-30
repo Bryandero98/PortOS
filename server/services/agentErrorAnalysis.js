@@ -640,6 +640,63 @@ export const COMPLETION_REASON_ANALYSES = {
 };
 
 /**
+ * Screen signatures of a TUI parked on an interactive prompt — a multiple-choice
+ * selector, an approval gate, a confirmation. A CoS agent is unattended, so
+ * nothing ever answers: the session repaints the prompt until the idle reaper
+ * kills it, and the run lands as a plain idle-out. That verdict is true but
+ * diagnostically useless — it sends the reader hunting for a stalled provider
+ * request, and a retry re-runs the same command straight into the same gate.
+ * (Observed cost: three identical `/do:plan-task` attempts, each parked on a
+ * scope question, filing nothing. Prevention is `UNATTENDED_RUN_RULE` in
+ * `agentPromptBuilder.js`; this is the diagnosis when one slips through.)
+ */
+// Each marker must be chrome no narrative prose would produce — a bare
+// `to navigate` matches an agent describing a button it just added, so the
+// navigate hint keeps its arrow glyphs.
+export const AWAITING_INPUT_MARKERS = [
+  /Enter to select/i,
+  /↑\/↓ to navigate/,
+  /❯\s*1\./,
+  /Do you want to proceed\?/i,
+  /Press Enter to continue/i
+];
+
+/**
+ * Only the TAIL of the failure window is searched: the claim is "still sitting
+ * here when the reaper fired", not "asked something at some point". A TUI
+ * transcript is repaint-mangled and nearly newline-free (see
+ * getFailureAnalysisWindow), so a character tail is the only reliable "end of
+ * the session" boundary available.
+ */
+export const AWAITING_INPUT_TAIL_CHARS = 2500;
+
+/** True when the end of the transcript looks like an unanswered prompt. Pure. */
+export function endsAwaitingUserInput(analysisOutput) {
+  const tail = (analysisOutput || '').slice(-AWAITING_INPUT_TAIL_CHARS);
+  return AWAITING_INPUT_MARKERS.some(marker => marker.test(tail));
+}
+
+/** Idle-out reasons worth re-explaining as an unanswered prompt. */
+const AWAITING_INPUT_REFINABLE_REASONS = new Set(['idle-no-changes', 'idle-no-activity']);
+
+/**
+ * Re-word an idle-out whose transcript ends on an unanswered prompt. The
+ * original `category` is preserved — downstream taxonomies (auto-fix tiers,
+ * layered-intelligence failure buckets) keep classifying it exactly as they did,
+ * and both idle reasons already escalate rather than blind-retry. Only the prose
+ * a human reads changes. Pure.
+ */
+function refineIdleReasonAnalysis(def, completionReason, analysisOutput) {
+  if (!def || !AWAITING_INPUT_REFINABLE_REASONS.has(completionReason)) return def;
+  if (!endsAwaitingUserInput(analysisOutput)) return def;
+  return {
+    ...def,
+    message: 'Agent stalled on an interactive prompt with nobody to answer it',
+    suggestedFix: 'The transcript ends on an unanswered prompt (a choice selector or approval gate), so the agent never got past it and the idle reaper killed the run. Agents run unattended — re-running as-is will stall the same way. Invoke the command in its non-interactive form (e.g. `/do:plan-task --yes`) or reword the task so no approval is needed.'
+  };
+}
+
+/**
  * Build the analysis object for a runner-resolved completion reason. The
  * snippet comes from the runner's own error prose — clean, already-scoped text —
  * never from the escape-laden transcript.
@@ -673,8 +730,14 @@ function structuralReasonAnalysis(def, completionReason, completionError) {
  */
 export function analyzeAgentFailure(output, task, model, options = {}) {
   const completionReason = options?.completionReason || null;
-  const structuralDef = completionReason ? COMPLETION_REASON_ANALYSES[completionReason] : null;
   const analysisOutput = getFailureAnalysisWindow(output || '');
+  // An idle-out whose transcript ends on an unanswered prompt gets that named as
+  // the cause; every other reason passes through untouched.
+  const structuralDef = refineIdleReasonAnalysis(
+    completionReason ? COMPLETION_REASON_ANALYSES[completionReason] : null,
+    completionReason,
+    analysisOutput
+  );
 
   // Agent produced no meaningful output — likely failed to start. Measured on
   // the CLEANED window: a transcript that is nothing but cursor repaints carries
