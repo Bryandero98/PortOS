@@ -52,7 +52,7 @@
  */
 
 import { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { parseDrumChart, kitPiece, describeDrumCell, describeDrumPosition, DRUM_GLYPH_LEGEND } from '../../lib/drumNotation.js';
+import { parseDrumChart, kitPiece, describeDrumCell, describeDrumPosition, drumGlyphLegend } from '../../lib/drumNotation.js';
 import useEscapeKey from '../../hooks/useEscapeKey.js';
 import { ctrlBtnClass, activeCtrlClass } from './constants.js';
 
@@ -225,7 +225,7 @@ const HitReadout = ({ info, position, onClose }) => (
 const KitLegend = ({ id, pieces }) => (
   <div id={id} className="mt-2 rounded-lg border border-port-border bg-port-bg/60 px-3 py-2 text-xs">
     <dl className="grid gap-x-4 gap-y-1 sm:grid-cols-2">
-      {DRUM_GLYPH_LEGEND.map((glyph) => (
+      {drumGlyphLegend(pieces).map((glyph) => (
         <div key={glyph.char} className="flex items-start gap-2">
           <dt className="shrink-0 rounded border border-port-border bg-port-card px-1.5 font-mono text-sm text-port-accent">
             {glyph.char}

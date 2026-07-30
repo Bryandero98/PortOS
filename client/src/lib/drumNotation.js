@@ -131,11 +131,38 @@ const openArticulationFor = (piece) => (piece.glyph === 'cross'
   ? (OPEN_BY_SOUND[piece.sound] || 'openRing')
   : 'openHead');
 
-// The six cell characters for a legend panel. Each shows the articulation as
-// written for a cymbal (the `open` wording names the hi-hat pedal), which is the
-// form the glyph is defined by; `describeDrumCell` is what re-reads it per piece.
-export const DRUM_GLYPH_LEGEND = Object.values(CELL_GLYPHS)
-  .map((glyph) => ({ char: glyph.char, ...ARTICULATIONS[glyph.id] }));
+// Deterministic order for the `open` variants when a legend has to describe more
+// than one of them (see below) — kit order, cymbals first.
+const OPEN_KEYS = ['open', 'openRing', 'openFoot', 'openHead'];
+
+/**
+ * The six cell characters for a legend panel, resolved FOR THE PIECES A CHART
+ * ACTUALLY USES.
+ *
+ * `o` is the reason this takes an argument rather than being a constant: its
+ * meaning is per-piece (see `openArticulationFor`), so a fixed legend row would
+ * tell someone reading a crash-only chart to work the hi-hat pedal — contradicting
+ * what tapping that same note says. A chart whose pieces all resolve to one
+ * variant gets exactly that variant; a mixed kit gets each applicable reading, in
+ * kit order, so the row is right no matter which row of the chart you're looking at.
+ *
+ * @param {string[]} [pieceIds] - The chart's piece ids (`chart.pieces`).
+ * @returns {{ char: string, name: string, detail: string }[]}
+ */
+export const drumGlyphLegend = (pieceIds = []) => {
+  const present = pieceIds.map(kitPiece).filter(Boolean).map(openArticulationFor);
+  const keys = OPEN_KEYS.filter((key) => present.includes(key));
+  const open = keys.length === 1
+    ? ARTICULATIONS[keys[0]]
+    : {
+      name: 'Open',
+      // Mixed kit (or no pieces at all): every applicable reading, since one
+      // sentence can't cover a hi-hat and a crash at once.
+      detail: (keys.length ? keys : OPEN_KEYS).map((key) => ARTICULATIONS[key].detail).join(' '),
+    };
+  return Object.values(CELL_GLYPHS)
+    .map((glyph) => ({ char: glyph.char, ...(glyph.id === 'open' ? open : ARTICULATIONS[glyph.id]) }));
+};
 
 /**
  * Explain ONE cell of a parsed chart in plain language — what the glyph means,

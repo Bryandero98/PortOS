@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   parseDrumChart, isDrumNotation, drumChartHasMusic, kitPiece,
-  describeDrumCell, describeDrumPosition, DRUM_GLYPH_LEGEND,
+  describeDrumCell, describeDrumPosition, drumGlyphLegend,
   KIT_PIECES, CELL_GLYPHS, DEFAULT_DRUM_TEMPO, SUBDIVISION_MAX,
 } from './drumNotation.js';
 
@@ -358,11 +358,39 @@ describe('describeDrumCell', () => {
 
 describe('notation legend coverage', () => {
   it('covers every cell character exactly once, with text', () => {
-    expect(DRUM_GLYPH_LEGEND.map((g) => g.char).sort()).toEqual(Object.keys(CELL_GLYPHS).sort());
-    for (const glyph of DRUM_GLYPH_LEGEND) {
-      expect(glyph.name).toBeTruthy();
-      expect(glyph.detail).toBeTruthy();
+    for (const pieces of [[], ['HH'], ['CR', 'S', 'K', 'HF']]) {
+      const legend = drumGlyphLegend(pieces);
+      expect(legend.map((g) => g.char).sort()).toEqual(Object.keys(CELL_GLYPHS).sort());
+      for (const glyph of legend) {
+        expect(glyph.name).toBeTruthy();
+        expect(glyph.detail).toBeTruthy();
+      }
     }
+  });
+
+  it('resolves the legend\'s "o" row for the pieces the chart actually uses', () => {
+    // A fixed row would tell someone reading a crash-only chart to work the
+    // hi-hat pedal — contradicting what tapping that same note says.
+    const openRow = (pieces) => drumGlyphLegend(pieces).find((g) => g.char === 'o');
+    expect(openRow(['HH']).name).toBe('Open');
+    expect(openRow(['HH']).detail).toMatch(/pedal/i);
+    expect(openRow(['CR', 'RD']).name).toBe('Open (let it ring)');
+    expect(openRow(['CR', 'RD']).detail).not.toMatch(/pedal/i);
+    expect(openRow(['S', 'K']).name).toBe('Normal hit');
+    expect(openRow(['HF']).name).toBe('Open (foot splash)');
+  });
+
+  it('gives a mixed kit every applicable reading of "o", in kit order', () => {
+    // One sentence can't cover a hi-hat and a crash at once, so the row carries
+    // both rather than silently picking one.
+    const mixed = drumGlyphLegend(['CR', 'HH', 'K']).find((g) => g.char === 'o');
+    expect(mixed.name).toBe('Open');
+    expect(mixed.detail).toMatch(/pedal/i);                    // the hi-hat reading
+    expect(mixed.detail).toMatch(/let the cymbal sustain/i);   // the crash/ride reading
+    expect(mixed.detail).toMatch(/nothing to open/i);          // the kick reading
+    expect(mixed.detail.indexOf('pedal')).toBeLessThan(mixed.detail.indexOf('let the cymbal sustain'));
+    // An unknown piece id can't invent a reading.
+    expect(drumGlyphLegend(['CB']).find((g) => g.char === 'o').name).toBe('Open');
   });
 
   it('has playing instructions for every kit piece', () => {
