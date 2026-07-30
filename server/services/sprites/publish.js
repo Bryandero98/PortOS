@@ -3,7 +3,8 @@
  * (issue #2898, phase 4).
  *
  * The game consumes sprites from its own tree; PortOS owns provenance. A
- * per-record `publishBinding` ({ appId, atlasDestPath, codeBinding? }) names
+ * per-record `publishBinding` ({ appId, atlasDestPath, portraitDestPath?,
+ * presentationIdleDestPath?, codeBinding? }) names
  * the managed app and the repo-relative destination. Publishing compiles the
  * atlas (idempotently), path-anchors the destination under the app's
  * repoPath, and atomically replaces the file — refusing when the destination
@@ -49,6 +50,13 @@ import { spriteRuntimeContractSchema } from '../../lib/validation.js';
 import {
   ATLAS_LAYOUT_KIND, buildAtlasLayout, layoutSidecarPath, runtimeContractMismatch,
 } from './atlasLayout.js';
+import { buildPresentationPortrait } from './presentationPortrait.js';
+import {
+  buildPresentationIdle,
+  buildPresentationIdleLayout,
+  PRESENTATION_IDLE_LAYOUT_KIND,
+  presentationIdleSidecarPath,
+} from './presentationIdle.js';
 
 // Per-repo serialization: keyed by the resolved repoPath (matching
 // appDeployer's `deployingApps` key), so two app records pointing at the
@@ -123,12 +131,21 @@ function validateRuntimeContract(runtimeContract) {
 /** Validate a publishBinding shape (null clears it). */
 export async function validatePublishBinding(binding) {
   if (binding === null) return null;
-  const { appId, atlasDestPath, codeBinding, runtimeContract } = binding;
+  const {
+    appId, atlasDestPath, portraitDestPath, presentationIdleDestPath,
+    codeBinding, runtimeContract,
+  } = binding;
   const { app } = await requireAppRepo(appId, 400);
   anchorRepoPath(app.repoPath, atlasDestPath, 'atlasDestPath');
   // The sidecar lands beside the atlas, so its path must anchor too — catch a
   // destination whose sidecar would escape the repo at SAVE time, not mid-publish.
   anchorRepoPath(app.repoPath, layoutSidecarPath(atlasDestPath), 'atlas layout sidecar');
+  if (portraitDestPath) {
+    anchorRepoPath(app.repoPath, portraitDestPath, 'portraitDestPath');
+  }
+  if (presentationIdleDestPath) {
+    anchorRepoPath(app.repoPath, presentationIdleDestPath, 'presentationIdleDestPath');
+  }
   if (codeBinding) {
     anchorRepoPath(app.repoPath, codeBinding.path, 'codeBinding.path');
     if (typeof codeBinding.resourcePath !== 'string' || !codeBinding.resourcePath.trim()) {
@@ -138,6 +155,8 @@ export async function validatePublishBinding(binding) {
   return {
     appId,
     atlasDestPath,
+    ...(portraitDestPath === undefined ? {} : { portraitDestPath }),
+    ...(presentationIdleDestPath === undefined ? {} : { presentationIdleDestPath }),
     codeBinding: codeBinding
       ? {
         path: codeBinding.path,
@@ -177,6 +196,12 @@ export async function setPublishBinding(recordId, binding) {
   if (validated && binding.runtimeContract === undefined && validated.appId === stored?.appId) {
     validated.runtimeContract = stored.runtimeContract ?? null;
   }
+  if (validated && binding.portraitDestPath === undefined && validated.appId === stored?.appId) {
+    validated.portraitDestPath = stored.portraitDestPath ?? null;
+  }
+  if (validated && binding.presentationIdleDestPath === undefined && validated.appId === stored?.appId) {
+    validated.presentationIdleDestPath = stored.presentationIdleDestPath ?? null;
+  }
   return updateRecord(recordId, { publishBinding: validated });
 }
 
@@ -199,6 +224,8 @@ export async function listPublishBindingsForApp(appId) {
       name: r.name || r.id,
       kind: r.kind || null,
       atlasDestPath: r.publishBinding.atlasDestPath || null,
+      portraitDestPath: r.publishBinding.portraitDestPath || null,
+      presentationIdleDestPath: r.publishBinding.presentationIdleDestPath || null,
       codeBindingPath: r.publishBinding.codeBinding?.path || null,
     }));
 }
@@ -298,6 +325,24 @@ async function publishAtlasImpl(recordId, { acknowledgeOverwrite = false } = {})
   const layoutBuffer = Buffer.from(`${JSON.stringify(layout, null, 2)}\n`);
   const layoutSha256 = sha256Buffer(layoutBuffer);
   const layoutDestPath = layoutSidecarPath(binding.atlasDestPath);
+  const portrait = binding.portraitDestPath
+    ? await buildPresentationPortrait(recordId, record)
+    : null;
+  const presentationIdle = binding.presentationIdleDestPath
+    ? await buildPresentationIdle(recordId)
+    : null;
+  const presentationIdleLayout = presentationIdle
+    ? buildPresentationIdleLayout(presentationIdle, binding.presentationIdleDestPath)
+    : null;
+  const presentationIdleLayoutBuffer = presentationIdleLayout
+    ? Buffer.from(`${JSON.stringify(presentationIdleLayout, null, 2)}\n`)
+    : null;
+  const presentationIdleLayoutSha256 = presentationIdleLayoutBuffer
+    ? sha256Buffer(presentationIdleLayoutBuffer)
+    : null;
+  const presentationIdleLayoutDestPath = presentationIdle
+    ? presentationIdleSidecarPath(binding.presentationIdleDestPath)
+    : null;
 
   return repoPublishTail(resolve(repoRoot), async () => {
     // Don't mutate a tree a deploy is currently building from — appDeployer
@@ -311,6 +356,15 @@ async function publishAtlasImpl(recordId, { acknowledgeOverwrite = false } = {})
     // as the PNG, so the pair is never interleaved with another publish into
     // the same checkout.
     const layoutAbs = anchorRepoPath(repoRoot, layoutDestPath, 'atlas layout sidecar');
+    const portraitAbs = portrait
+      ? anchorRepoPath(repoRoot, binding.portraitDestPath, 'portraitDestPath')
+      : null;
+    const presentationIdleAbs = presentationIdle
+      ? anchorRepoPath(repoRoot, binding.presentationIdleDestPath, 'presentationIdleDestPath')
+      : null;
+    const presentationIdleLayoutAbs = presentationIdle
+      ? anchorRepoPath(repoRoot, presentationIdleLayoutDestPath, 'picker animation sidecar')
+      : null;
     const existingLayout = await readFile(layoutAbs).catch(() => null);
     const layoutUpToDate = Boolean(existingLayout?.equals(layoutBuffer));
     // Occupied-destination guard, mirroring the atlas's: PortOS owns files it
@@ -364,6 +418,17 @@ async function publishAtlasImpl(recordId, { acknowledgeOverwrite = false } = {})
         (p) => p.appId === binding.appId && p.codeBinding?.path === binding.codeBinding.path,
       )
       : null;
+    const previousPortrait = portrait
+      ? [...publications].reverse().find(
+        (p) => p.appId === binding.appId && p.portraitDestPath === binding.portraitDestPath,
+      )
+      : null;
+    const previousPresentationIdle = presentationIdle
+      ? [...publications].reverse().find(
+        (p) => p.appId === binding.appId
+          && p.presentationIdleDestPath === binding.presentationIdleDestPath,
+      )
+      : null;
 
     const recordPublication = async (extra) => {
       const publication = {
@@ -375,6 +440,21 @@ async function publishAtlasImpl(recordId, { acknowledgeOverwrite = false } = {})
         appId: binding.appId,
         appName: app.name || null,
         atlasDestPath: binding.atlasDestPath,
+        portraitDestPath: binding.portraitDestPath || null,
+        portraitSha256: portrait?.sha256 || null,
+        portraitSourcePath: portrait?.sourcePath || null,
+        portraitSourceSha256: portrait?.sourceSha256 || null,
+        portraitSize: portrait?.size || null,
+        presentationIdleDestPath: binding.presentationIdleDestPath || null,
+        presentationIdleSha256: presentationIdle?.sha256 || null,
+        presentationIdleSourceManifestPath: presentationIdle?.sourceManifestPath || null,
+        presentationIdleSourceManifestSha256: presentationIdle?.sourceManifestSha256 || null,
+        presentationIdleSourceFrameSha256s: presentationIdle?.sourceFrameSha256s || null,
+        presentationIdleFrameCount: presentationIdle?.frameCount || null,
+        presentationIdleFrameRate: presentationIdle?.frameRate || null,
+        presentationIdleCellSize: presentationIdle?.cellSize || null,
+        presentationIdleLayoutDestPath,
+        presentationIdleLayoutSha256,
         ...extra,
       };
       publications.push(publication);
@@ -382,9 +462,91 @@ async function publishAtlasImpl(recordId, { acknowledgeOverwrite = false } = {})
       return publication;
     };
 
+    const portraitDestSha256 = portrait && await pathExists(portraitAbs)
+      ? await sha256File(portraitAbs)
+      : null;
+    const portraitUpToDate = Boolean(portrait && portraitDestSha256 === portrait.sha256);
+    const assertPortraitDestWritable = () => {
+      if (!portrait || portraitUpToDate || acknowledgeOverwrite || portraitDestSha256 === null) return;
+      if (previousPortrait && portraitDestSha256 !== previousPortrait.portraitSha256) {
+        throw new ServerError(
+          'Destination portrait no longer matches the previous publish — it was changed outside PortOS. Resolve it in the game repo, then re-publish.',
+          { status: 409, code: 'PUBLISH_PORTRAIT_DIVERGED' },
+        );
+      }
+      if (!previousPortrait) {
+        throw new ServerError(
+          'Destination already contains a portrait PortOS did not publish — confirm the overwrite to replace it.',
+          { status: 409, code: 'PUBLISH_PORTRAIT_OCCUPIED' },
+        );
+      }
+    };
+    const writePortrait = async () => {
+      if (!portrait || portraitUpToDate) return false;
+      await atomicWrite(portraitAbs, portrait.buffer);
+      return true;
+    };
+    const presentationIdleDestSha256 = presentationIdle && await pathExists(presentationIdleAbs)
+      ? await sha256File(presentationIdleAbs)
+      : null;
+    const presentationIdleUpToDate = Boolean(
+      presentationIdle && presentationIdleDestSha256 === presentationIdle.sha256,
+    );
+    const assertPresentationIdleDestWritable = () => {
+      if (!presentationIdle
+        || presentationIdleUpToDate
+        || acknowledgeOverwrite
+        || presentationIdleDestSha256 === null) return;
+      if (previousPresentationIdle
+        && presentationIdleDestSha256 !== previousPresentationIdle.presentationIdleSha256) {
+        throw new ServerError(
+          'Destination picker animation no longer matches the previous publish — it was changed outside PortOS. Resolve it in the game repo, then re-publish.',
+          { status: 409, code: 'PUBLISH_PRESENTATION_IDLE_DIVERGED' },
+        );
+      }
+      if (!previousPresentationIdle) {
+        throw new ServerError(
+          'Destination already contains a picker animation PortOS did not publish — confirm the overwrite to replace it.',
+          { status: 409, code: 'PUBLISH_PRESENTATION_IDLE_OCCUPIED' },
+        );
+      }
+    };
+    const writePresentationIdle = async () => {
+      if (!presentationIdle || presentationIdleUpToDate) return false;
+      await atomicWrite(presentationIdleAbs, presentationIdle.buffer);
+      return true;
+    };
+    const existingPresentationIdleLayout = presentationIdle
+      ? await readFile(presentationIdleLayoutAbs).catch(() => null)
+      : null;
+    const presentationIdleLayoutUpToDate = Boolean(
+      existingPresentationIdleLayout?.equals(presentationIdleLayoutBuffer),
+    );
+    const assertPresentationIdleLayoutWritable = () => {
+      if (!presentationIdle
+        || presentationIdleLayoutUpToDate
+        || acknowledgeOverwrite
+        || !existingPresentationIdleLayout) return;
+      if (safeJSONParse(existingPresentationIdleLayout.toString('utf8'))?.kind
+        !== PRESENTATION_IDLE_LAYOUT_KIND) {
+        throw new ServerError(
+          `${presentationIdleLayoutDestPath} already exists and was not written by PortOS — confirm the overwrite to replace it.`,
+          { status: 409, code: 'PUBLISH_PRESENTATION_IDLE_LAYOUT_OCCUPIED' },
+        );
+      }
+    };
+    const writePresentationIdleLayout = async () => {
+      if (!presentationIdle || presentationIdleLayoutUpToDate) return false;
+      await atomicWrite(presentationIdleLayoutAbs, presentationIdleLayoutBuffer);
+      return true;
+    };
+
     const destSha256 = (await pathExists(destAbs)) ? await sha256File(destAbs) : null;
     if (destSha256 === compiled.atlasSha256) {
       assertLayoutDestWritable();
+      assertPortraitDestWritable();
+      assertPresentationIdleDestWritable();
+      assertPresentationIdleLayoutWritable();
       // Verify the code binding even on a no-op so drift never hides.
       const codeBinding = binding.codeBinding
         ? await applyCodeBinding(repoRoot, binding.codeBinding, previousForCode?.codeBinding?.resourcePath)
@@ -393,6 +555,9 @@ async function publishAtlasImpl(recordId, { acknowledgeOverwrite = false } = {})
       // sidecar — from a publish that predates it, or a hand-deleted file.
       // Reconcile it here so the pair converges on the next publish.
       const layoutWritten = await writeLayoutSidecar();
+      const portraitWritten = await writePortrait();
+      const presentationIdleLayoutWritten = await writePresentationIdleLayout();
+      const presentationIdleWritten = await writePresentationIdle();
       // The destination already holds the current bytes, but three sub-cases
       // still mutate durable state and must be recorded: a code-binding
       // rewrite just changed the game's source, the sidecar was just written,
@@ -400,13 +565,29 @@ async function publishAtlasImpl(recordId, { acknowledgeOverwrite = false } = {})
       // baseline (otherwise the next changed-atlas publish reads the dest as
       // foreign and 409s OCCUPIED).
       let publication = null;
-      if ((codeBinding?.rewritten || layoutWritten || !previous)) {
+      if ((codeBinding?.rewritten
+        || layoutWritten
+        || portraitWritten
+        || presentationIdleLayoutWritten
+        || presentationIdleWritten
+        || !previous
+        || (portrait && !previousPortrait)
+        || (presentationIdle && !previousPresentationIdle))) {
         publication = await recordPublication({
           destPreviousSha256: destSha256, codeBinding, layoutDestPath, layoutSha256, upToDateBaseline: true,
         });
       }
       return {
-        published: false, upToDate: true, compiled, codeBinding, publication, layoutWritten, layoutDestPath,
+        published: false,
+        upToDate: true,
+        compiled,
+        codeBinding,
+        publication,
+        layoutWritten,
+        layoutDestPath,
+        portraitWritten,
+        presentationIdleWritten,
+        presentationIdleLayoutWritten,
       };
     }
     if (previous && destSha256 !== null && destSha256 !== previous.atlasSha256) {
@@ -429,6 +610,9 @@ async function publishAtlasImpl(recordId, { acknowledgeOverwrite = false } = {})
     // binding aborts the publish with the game repo untouched — and assert the
     // sidecar destination first, since that rewrite is itself a mutation.
     assertLayoutDestWritable();
+    assertPortraitDestWritable();
+    assertPresentationIdleDestWritable();
+    assertPresentationIdleLayoutWritable();
     const codeBinding = binding.codeBinding
       ? await applyCodeBinding(repoRoot, binding.codeBinding, previousForCode?.codeBinding?.resourcePath)
       : null;
@@ -439,12 +623,24 @@ async function publishAtlasImpl(recordId, { acknowledgeOverwrite = false } = {})
     // new atlas under a stale/absent layout is exactly the silent column shift
     // this whole contract exists to prevent.
     const layoutWritten = await writeLayoutSidecar();
+    const portraitWritten = await writePortrait();
+    const presentationIdleLayoutWritten = await writePresentationIdleLayout();
+    const presentationIdleWritten = await writePresentationIdle();
     await atomicWrite(destAbs, atlasBuffer);
 
     const publication = await recordPublication({
       destPreviousSha256: destSha256, codeBinding, layoutDestPath, layoutSha256,
     });
     console.log(`🚚 sprite atlas v${compiled.version} published for ${recordId} → ${appLabel}:${binding.atlasDestPath}`);
-    return { published: true, publication, compiled, layoutWritten, layoutDestPath };
+    return {
+      published: true,
+      publication,
+      compiled,
+      layoutWritten,
+      layoutDestPath,
+      portraitWritten,
+      presentationIdleWritten,
+      presentationIdleLayoutWritten,
+    };
   });
 }

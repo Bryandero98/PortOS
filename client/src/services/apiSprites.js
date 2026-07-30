@@ -150,6 +150,11 @@ export const approveSpriteTrack = (id, trackId, body = {}, options = {}) => requ
   { method: 'POST', body: JSON.stringify(body), ...options },
 );
 
+export const reopenSpriteTrack = (id, trackId, body = {}, options = {}) => request(
+  `/sprites/${encodeURIComponent(id)}/tracks/${encodeURIComponent(trackId)}/reopen`,
+  { method: 'POST', body: JSON.stringify(body), ...options },
+);
+
 // Animation-type definitions (#3153) — the registry the workflow surfaces render
 // from, and the CRUD over the user-defined half of it. The list returns
 // `{ tracks, storePath, origin }` (`origin: 'seed' | 'store'` — whether this

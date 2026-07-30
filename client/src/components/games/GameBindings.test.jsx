@@ -112,5 +112,6 @@ describe('GameBindings', () => {
     expect(screen.getByRole('button', { name: 'Publish to game' })).toBeEnabled();
     expect(screen.getByRole('link', { name: 'Generate for this role' }))
       .toHaveAttribute('href', expect.stringContaining('/media/image?prompt='));
+    expect(screen.getAllByRole('option', { name: 'Game logo' })).toHaveLength(2);
   });
 });

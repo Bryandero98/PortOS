@@ -345,6 +345,7 @@ export const gameMusicBindingSchema = z.object({
 
 export const GAME_ARTWORK_ROLES = [
   'title-key-art',
+  'game-logo',
   'biome-luminous-wilds',
   'biome-mineral-steppe',
   'biome-tide-meadow',
@@ -1287,6 +1288,12 @@ export const spritePublishBindingSchema = z.object({
   atlasDestPath: spriteRepoRelativePath.refine((p) => p.toLowerCase().endsWith('.png'), {
     message: 'atlasDestPath must point at a .png atlas file',
   }),
+  portraitDestPath: spriteRepoRelativePath.refine((p) => p.toLowerCase().endsWith('.png'), {
+    message: 'portraitDestPath must point at a .png image file',
+  }).nullable().optional(),
+  presentationIdleDestPath: spriteRepoRelativePath.refine((p) => p.toLowerCase().endsWith('.png'), {
+    message: 'presentationIdleDestPath must point at a .png sprite strip',
+  }).nullable().optional(),
   codeBinding: z.object({
     path: spriteRepoRelativePath,
     resourcePath: z.string().min(1).max(1024),
@@ -1474,6 +1481,10 @@ export function spriteTrackGenerateSchema(track) {
 export const spriteTrackApproveSchema = z.object({
   direction: spriteWalkDirectionSchema.optional(),
   runId: spriteResolvableRunIdSchema,
+});
+
+export const spriteTrackReopenSchema = z.object({
+  direction: spriteWalkDirectionSchema.optional(),
 });
 
 // The `:trackId` path param. Shape gate only — whether the id names a REGISTERED

@@ -62,6 +62,8 @@ export default function PublishWorkflow({
   const apps = useSidebarApps();
   const [appId, setAppId] = useState(saved?.appId || '');
   const [destPath, setDestPath] = useState(saved?.atlasDestPath || '');
+  const [portraitPath, setPortraitPath] = useState(saved?.portraitDestPath || '');
+  const [presentationIdlePath, setPresentationIdlePath] = useState(saved?.presentationIdleDestPath || '');
   const [codePath, setCodePath] = useState(saved?.codeBinding?.path || '');
   const [resourcePath, setResourcePath] = useState(saved?.codeBinding?.resourcePath || '');
   const [contractTrackCounts, setContractTrackCounts] = useState(seedTrackCounts);
@@ -80,13 +82,16 @@ export default function PublishWorkflow({
   useEffect(() => {
     setAppId(saved?.appId || '');
     setDestPath(saved?.atlasDestPath || '');
+    setPortraitPath(saved?.portraitDestPath || '');
+    setPresentationIdlePath(saved?.presentationIdleDestPath || '');
     setCodePath(saved?.codeBinding?.path || '');
     setResourcePath(saved?.codeBinding?.resourcePath || '');
     setContractTrackCounts(seedTrackCounts);
     setContractCell(seedCell);
     setContractCols(seedCols);
     setConfirmStage(null);
-  }, [saved?.appId, saved?.atlasDestPath, saved?.codeBinding?.path, saved?.codeBinding?.resourcePath,
+  }, [saved?.appId, saved?.atlasDestPath, saved?.portraitDestPath, saved?.presentationIdleDestPath,
+    saved?.codeBinding?.path, saved?.codeBinding?.resourcePath,
     seedTrackCounts, seedCell, seedCols]);
 
   const trackInputs = trackDefinitions.map((definition) => {
@@ -170,6 +175,8 @@ export default function PublishWorkflow({
       ? {
         appId,
         atlasDestPath: destPath.trim(),
+        portraitDestPath: portraitPath.trim() || null,
+        presentationIdleDestPath: presentationIdlePath.trim() || null,
         codeBinding: codePath.trim() && resourcePath.trim()
           ? { path: codePath.trim(), resourcePath: resourcePath.trim() }
           : null,
@@ -203,8 +210,22 @@ export default function PublishWorkflow({
       // The destination holds an atlas — or a layout sidecar — PortOS never
       // published. Escalate to an explicit overwrite consent instead of
       // toasting a dead end the UI offers no way to act on.
-      if (err?.code === 'PUBLISH_DEST_OCCUPIED' || err?.code === 'PUBLISH_LAYOUT_OCCUPIED') {
-        setOccupiedFile(err.code === 'PUBLISH_LAYOUT_OCCUPIED' ? 'layout' : 'atlas');
+      if ([
+        'PUBLISH_DEST_OCCUPIED',
+        'PUBLISH_LAYOUT_OCCUPIED',
+        'PUBLISH_PORTRAIT_OCCUPIED',
+        'PUBLISH_PRESENTATION_IDLE_OCCUPIED',
+        'PUBLISH_PRESENTATION_IDLE_LAYOUT_OCCUPIED',
+      ].includes(err?.code)) {
+        setOccupiedFile(err.code === 'PUBLISH_LAYOUT_OCCUPIED'
+          ? 'layout'
+          : err.code === 'PUBLISH_PORTRAIT_OCCUPIED'
+            ? 'portrait'
+            : err.code === 'PUBLISH_PRESENTATION_IDLE_OCCUPIED'
+              ? 'picker animation'
+              : err.code === 'PUBLISH_PRESENTATION_IDLE_LAYOUT_OCCUPIED'
+                ? 'picker animation layout'
+                : 'atlas');
         setConfirmStage('overwrite');
         return null;
       }
@@ -217,8 +238,8 @@ export default function PublishWorkflow({
         ? ' — code binding rewritten to the new resource path'
         : '';
       toast.success(result.published
-        ? `Atlas v${result.publication.version} published${rewriteNote}`
-        : `Destination already up to date${rewriteNote}`);
+        ? `Atlas v${result.publication.version}${result.portraitWritten ? ', portrait' : ''}${result.presentationIdleWritten ? ', and picker animation' : ''} published${rewriteNote}`
+        : `Destination${result.portraitWritten || result.presentationIdleWritten ? ' atlas already current; presentation art published' : ' already up to date'}${rewriteNote}`);
       onChanged?.();
     }
     return result;
@@ -252,6 +273,8 @@ export default function PublishWorkflow({
 
   const bindingDirty = (saved?.appId || '') !== appId
     || (saved?.atlasDestPath || '') !== destPath.trim()
+    || (saved?.portraitDestPath || '') !== portraitPath.trim()
+    || (saved?.presentationIdleDestPath || '') !== presentationIdlePath.trim()
     || (saved?.codeBinding?.path || '') !== codePath.trim()
     || (saved?.codeBinding?.resourcePath || '') !== resourcePath.trim()
     || contractDirty;
@@ -348,6 +371,12 @@ export default function PublishWorkflow({
             />
             <FormField label="Atlas destination (repo-relative .png)" labelClassName={fieldLabelClass}>
               <input value={destPath} onChange={(e) => setDestPath(e.target.value)} placeholder="assets/sprites/hero/hero-atlas.png" className={inputClass} />
+            </FormField>
+            <FormField label="Selector portrait (optional .png)" labelClassName={fieldLabelClass}>
+              <input value={portraitPath} onChange={(e) => setPortraitPath(e.target.value)} placeholder="assets/portraits/hero.png" className={inputClass} />
+            </FormField>
+            <FormField label="Picker idle strip (optional .png)" labelClassName={fieldLabelClass}>
+              <input value={presentationIdlePath} onChange={(e) => setPresentationIdlePath(e.target.value)} placeholder="assets/presentation/hero-idle.png" className={inputClass} />
             </FormField>
             <FormField label="Code binding file (optional)" labelClassName={fieldLabelClass}>
               <input value={codePath} onChange={(e) => setCodePath(e.target.value)} placeholder="src/Hero.cs" className={inputClass} />
@@ -472,6 +501,12 @@ export default function PublishWorkflow({
             <InlineConfirmRow
               question={occupiedFile === 'layout'
                 ? `${destLabel} already has a layout sidecar PortOS did not write. Overwrite it?`
+                : occupiedFile === 'portrait'
+                  ? `The selector portrait destination already contains an image PortOS did not publish. Overwrite it?`
+                  : occupiedFile === 'picker animation'
+                    ? `The picker animation destination already contains an image PortOS did not publish. Overwrite it?`
+                    : occupiedFile === 'picker animation layout'
+                      ? `The picker animation layout destination already contains metadata PortOS did not publish. Overwrite it?`
                 : `${destLabel} already contains an atlas PortOS did not publish. Overwrite it?`}
               confirmText={publishing ? 'Publishing…' : 'Overwrite'}
               tone="error"
@@ -490,6 +525,8 @@ export default function PublishWorkflow({
               <li key={p.publishedAt} className="text-[11px] text-gray-500 flex items-center gap-2 flex-wrap">
                 <span className="text-gray-300">v{p.version}</span>
                 <span>→ {p.appName || p.appId}:{p.atlasDestPath}</span>
+                {p.portraitDestPath && <span>portrait: {p.portraitDestPath}</span>}
+                {p.presentationIdleDestPath && <span>picker idle: {p.presentationIdleDestPath}</span>}
                 {p.codeBinding?.rewritten && <span className="text-port-warning">code binding rewritten</span>}
                 <span>{timeAgo(p.publishedAt)}</span>
               </li>

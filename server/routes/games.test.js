@@ -79,6 +79,23 @@ describe('Game routes', () => {
     expect(games.publishGameArtwork).toHaveBeenCalledWith('game-1', 'artwork-1', {});
   });
 
+  it('accepts a game logo as managed interface artwork', async () => {
+    const binding = {
+      imageFilename: 'example-game-logo.png',
+      label: 'Example Game Logo',
+      role: 'game-logo',
+      destinationPath: 'game/assets/art/ui/branding/example-game-logo.png',
+    };
+    games.bindArtwork.mockResolvedValueOnce({ id: 'game-1', artworkBindings: [binding] });
+
+    const response = await request(makeApp())
+      .post('/api/games/game-1/artwork')
+      .send(binding);
+
+    expect(response.status).toBe(201);
+    expect(games.bindArtwork).toHaveBeenCalledWith('game-1', binding);
+  });
+
   it('rejects artwork destinations that escape the managed repository', async () => {
     const response = await request(makeApp())
       .post('/api/games/game-1/artwork')

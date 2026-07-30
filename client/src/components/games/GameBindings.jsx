@@ -28,6 +28,12 @@ const ARTWORK_ROLES = [
     prompt: 'Premium cinematic 16:9 title-screen key art for a cozy science-fiction homesteading game, painterly stylized realism, rich alien world, sophisticated AAA composition, dark calm negative space for a menu, no text, no logo, no UI.',
   },
   {
+    id: 'game-logo',
+    label: 'Game logo',
+    destinationPath: 'game/assets/art/ui/branding/game-logo.png',
+    prompt: 'Premium illustrated game-title wordmark for a cozy science-fiction frontier game, handcrafted expedition-map lettering, subtle botanical and astronomical motifs, strong silhouette, transparent-ready flat chroma background, exact title text only, no mockup, no extra words.',
+  },
+  {
     id: 'biome-luminous-wilds',
     label: 'Luminous Wilds',
     destinationPath: 'game/assets/art/biomes/luminous-wilds.png',

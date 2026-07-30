@@ -102,6 +102,18 @@ const lastBindingArg = () => setSpritePublishBinding.mock.calls.at(-1)[1];
 describe('PublishWorkflow runtime contract', () => {
   beforeEach(() => setSpritePublishBinding.mockClear());
 
+  it('saves the player-facing picker animation destination', async () => {
+    renderWorkflow({ appId: 'app-1', atlasDestPath: 'assets/hero.png', codeBinding: null });
+
+    fireEvent.change(screen.getByLabelText(/Picker idle strip/), {
+      target: { value: 'assets/presentation/hero-idle.png' },
+    });
+    await act(async () => { fireEvent.click(screen.getByText('Save binding')); });
+
+    expect(lastBindingArg().presentationIdleDestPath)
+      .toBe('assets/presentation/hero-idle.png');
+  });
+
   it('SETS the contract from a populated field group', async () => {
     renderWorkflow({ appId: 'app-1', atlasDestPath: 'assets/hero.png', codeBinding: null });
 

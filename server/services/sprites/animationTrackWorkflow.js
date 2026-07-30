@@ -515,7 +515,38 @@ export function invalidateTrackForTurnaroundRevision(trackId, recordId) {
   });
 }
 
-async function invalidateTrackDirectionImpl(trackId, recordId, direction) {
+/**
+ * Deliberately reopen one approved facing (or the sole row of a non-directional
+ * track) so a user can replace a finalized motion without revising its identity
+ * source. Approved files remain on disk as superseded provenance.
+ */
+export function reopenTrackDirection(trackId, recordId, { direction: requested } = {}) {
+  return withAnimationWriteTail(recordId, async () => {
+    const row = effectiveTrack(trackId);
+    await requireTrack(recordId, row.id);
+    const direction = resolveTrackDirection(row, requested);
+    const reopened = await invalidateTrackDirectionImpl(
+      row.id,
+      recordId,
+      direction,
+      'manual-track-revision',
+    );
+    if (!reopened) {
+      throw new ServerError(
+        `${row.label} ${row.directional ? `${direction} ` : ''}has no approved render to reopen`,
+        { status: 409, code: 'TRACK_NOT_APPROVED' },
+      );
+    }
+    return getTrackState(row.id, recordId);
+  });
+}
+
+async function invalidateTrackDirectionImpl(
+  trackId,
+  recordId,
+  direction,
+  supersededReason = 'directional-anchor-revised',
+) {
   const row = effectiveTrack(trackId);
   const [finalizedSet, loaded] = await Promise.all([loadSet(row.id, recordId), loadSelection(row.id, recordId)]);
   const approved = loaded?.directions?.[direction] || finalizedSet?.directions?.[direction];
@@ -530,11 +561,12 @@ async function invalidateTrackDirectionImpl(trackId, recordId, direction) {
   if (run?.track === row.id) {
     await saveRun(recordId, {
       ...run,
-      status: 'superseded-anchor',
+      status: supersededReason === 'manual-track-revision' ? 'superseded' : 'superseded-anchor',
       supersededAt: new Date().toISOString(),
-      supersededReason: 'directional-anchor-revised',
+      supersededReason,
     });
   }
-  console.log(`♻️ sprite ${row.id} direction ${recordId}/${direction} invalidated after anchor revision`);
+  const reasonLabel = supersededReason === 'manual-track-revision' ? 'manual revision' : 'anchor revision';
+  console.log(`♻️ sprite ${row.id} direction ${recordId}/${direction} reopened after ${reasonLabel}`);
   return true;
 }
