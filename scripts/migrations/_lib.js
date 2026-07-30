@@ -513,6 +513,132 @@ export async function writeLayoutsDoc(path, doc) {
   await writeFile(path, JSON.stringify(doc, null, 2));
 }
 
+// ---- brain seed-record migration family ----
+//
+// `scripts/setup-data.js` copies `data.reference/` wholesale, so a FRESH install
+// picks up every seed record in `data.reference/brain/<type>.json` for free. But
+// setup-data only copies MISSING files — an install whose `data/brain/<type>.json`
+// already exists (even empty, from the feature's first boot) never receives a
+// seed added later. Each such addition therefore ships a migration that merges
+// its own ids in; 209 (the drum-format worked example) and 213 (the House of the
+// Rising Sun drum arrangement) are the current members.
+//
+// They all want the same skeleton, so it lives here once:
+//   - Since migration 200, brain stores live per-record at
+//     `data/brain/<type>/<id>/index.json` (collectionStore layout) — that's the
+//     primary write target.
+//   - The legacy monolithic `data/brain/<type>.json` is ALSO topped up when it's
+//     still present, so an install whose 200 split hasn't run yet still picks the
+//     seed up when it finally does. It is never CREATED — doing so on a split
+//     install would resurrect a shape nothing reads.
+//   - An id already present — a user-edited copy, a peer-synced copy, or a
+//     tombstone from a deliberate delete — is NEVER overwritten, so a deleted
+//     seed stays deleted, and a second run is a no-op.
+//   - Nothing is written when the existing record (or the legacy file) is
+//     unreadable: possibly-recoverable user data beats a cosmetic starter record.
+//
+// Each migration owns an explicit `seedIds` list rather than "everything in the
+// reference file", so a later seed addition gets its own migration instead of
+// silently riding along on a re-run of an older one.
+
+// Tagged read: 'missing' (ENOENT — nothing there, safe to create) is NOT the
+// same as 'invalid' (exists but won't parse — user data a write would destroy).
+// The migration runner executes before the service layer is wired, so this can't
+// reach for server/lib helpers.
+async function seedReadJsonTagged(path) {
+  let raw;
+  try {
+    raw = await readFile(path, 'utf-8');
+  } catch (err) {
+    return err?.code === 'ENOENT' ? { state: 'missing' } : { state: 'invalid', error: err?.message };
+  }
+  try {
+    return { state: 'ok', doc: JSON.parse(raw) };
+  } catch (err) {
+    return { state: 'invalid', error: err?.message };
+  }
+}
+
+const seedFileExists = (path) => stat(path).then(() => true, () => false);
+
+/**
+ * Build a brain seed-record migration's `up()`. Returns `{ up }`.
+ *
+ *   - `logTag`     — emoji-prefixed log tag, e.g. `'🥁 drum-seed'`
+ *   - `entityType` — brain entity type, e.g. `'songs'` (names all three paths)
+ *   - `seedIds`    — the record ids THIS migration owns
+ *   - `seedLabel`  — human phrase for the log lines ("the drum example groove")
+ *   - `storeLabel` — where it lands, for the success line ("the SongBook")
+ *
+ * Resolves to `{ ok: true, reason: 'no-seeds' | 'already-present' | 'seeded',
+ * added, legacyAdded, skipped }`.
+ */
+export function makeBrainSeedMigration({ logTag, entityType, seedIds, seedLabel, storeLabel }) {
+  async function up({ rootDir }) {
+    const seedPath = join(rootDir, 'data.reference', 'brain', `${entityType}.json`);
+    const perRecordDir = join(rootDir, 'data', 'brain', entityType);
+    const legacyPath = join(rootDir, 'data', 'brain', `${entityType}.json`);
+
+    const seedRead = await seedReadJsonTagged(seedPath);
+    const seedRecords = seedRead.state === 'ok' && seedRead.doc?.records && typeof seedRead.doc.records === 'object'
+      ? seedRead.doc.records
+      : {};
+    const present = seedIds.filter((id) => seedRecords[id] !== undefined);
+    if (present.length === 0) {
+      console.log(`${logTag}: no ${seedLabel} in data.reference — no-op.`);
+      return { ok: true, reason: 'no-seeds' };
+    }
+
+    // --- Per-record store (the post-migration-200 layout) -------------------
+    let added = 0;
+    let skipped = 0;
+    for (const id of present) {
+      const recordPath = join(perRecordDir, id, 'index.json');
+      const read = await seedReadJsonTagged(recordPath);
+      if (read.state !== 'missing') {
+        // Present (a user-edited copy / peer copy / tombstone) or unreadable —
+        // either way, leave it alone.
+        if (read.state === 'invalid') {
+          console.error(`❌ ${logTag}: ${id}/index.json is unreadable (${read.error}) — leaving it untouched.`);
+        }
+        skipped += 1;
+        continue;
+      }
+      await mkdir(join(perRecordDir, id), { recursive: true });
+      await writeFile(recordPath, JSON.stringify(seedRecords[id], null, 2) + '\n');
+      added += 1;
+    }
+
+    // --- Legacy monolithic file (only when it still exists) -----------------
+    let legacyAdded = 0;
+    if (await seedFileExists(legacyPath)) {
+      const legacyRead = await seedReadJsonTagged(legacyPath);
+      if (legacyRead.state === 'invalid') {
+        console.error(`❌ ${logTag}: data/brain/${entityType}.json exists but is unreadable (${legacyRead.error}) — leaving it untouched.`);
+      } else {
+        const live = legacyRead.doc && typeof legacyRead.doc === 'object' ? legacyRead.doc : {};
+        if (!live.records || typeof live.records !== 'object') live.records = {};
+        for (const id of present) {
+          if (live.records[id] !== undefined) continue;
+          live.records[id] = seedRecords[id];
+          legacyAdded += 1;
+        }
+        if (legacyAdded > 0) await writeFile(legacyPath, JSON.stringify(live, null, 2) + '\n');
+      }
+    }
+
+    if (added === 0 && legacyAdded === 0) {
+      console.log(`${logTag}: ${seedLabel} already present — no-op.`);
+      return { ok: true, reason: 'already-present', added: 0, legacyAdded: 0, skipped };
+    }
+
+    console.log(`${logTag}: added ${seedLabel} (${added} per-record, ${legacyAdded} legacy) to ${storeLabel}.`);
+    return { ok: true, reason: 'seeded', added, legacyAdded, skipped };
+  }
+
+  return { up };
+}
+
 /**
  * Build the per-subdir prompt-drift tables that `scripts/setup-data.js` uses
  * for its "pending migration" warning by sweeping every numbered migration's
