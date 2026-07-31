@@ -4,6 +4,7 @@ import { parseScore } from '../../lib/scoreNotation.js';
 
 const start = vi.fn();
 const stop = vi.fn();
+const cancel = vi.fn();
 const reset = vi.fn();
 const toggleAccept = vi.fn();
 const acceptAll = vi.fn();
@@ -11,7 +12,7 @@ let hookState = { phase: 'idle', beat: null, rows: [], error: null };
 
 vi.mock('../../hooks/useSingToVerify.js', () => ({
   __esModule: true,
-  default: () => ({ ...hookState, start, stop, reset, toggleAccept, acceptAll }),
+  default: () => ({ ...hookState, start, stop, cancel, reset, toggleAccept, acceptAll }),
   VERIFY_IDLE: 'idle',
   VERIFY_COUNT_IN: 'countIn',
   VERIFY_RECORDING: 'recording',
@@ -101,5 +102,15 @@ describe('SingToVerify', () => {
     expect(onChange).toHaveBeenCalledWith('key: C\ntime: 4/4\n| F#4q D4q |');
     expect(reset).toHaveBeenCalled();
   });
-});
 
+  it('cancels an active capture when the score text changes', () => {
+    const { rerender } = render(<SingToVerify value={value} tempo={120} />);
+    vi.clearAllMocks();
+    hookState = { ...hookState, phase: 'recording' };
+
+    rerender(<SingToVerify value={`${value}\n| E4q |`} tempo={120} />);
+
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(reset).toHaveBeenCalledOnce();
+  });
+});

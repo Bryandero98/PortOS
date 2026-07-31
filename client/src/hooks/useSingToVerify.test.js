@@ -95,5 +95,67 @@ describe('useSingToVerify', () => {
     expect(analyserClose).toHaveBeenCalled();
     expect(trackStop).toHaveBeenCalled();
   });
-});
 
+  it('allows only one microphone request while permission is pending', async () => {
+    let resolveStream;
+    navigator.mediaDevices.getUserMedia = vi.fn(() => new Promise((resolve) => {
+      resolveStream = resolve;
+    }));
+    const { result } = renderHook(() => useSingToVerify({
+      tempo: 120,
+      score: 'time: 4/4\n| C4q |',
+    }));
+
+    let firstStart;
+    act(() => {
+      firstStart = result.current.start(1);
+      result.current.start(1);
+    });
+    expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveStream(fakeStream());
+      await firstStart;
+    });
+    expect(result.current.phase).toBe(VERIFY_COUNT_IN);
+  });
+
+  it('cancels an active capture without aligning stale rows', async () => {
+    const { result } = renderHook(() => useSingToVerify({
+      tempo: 120,
+      score: 'time: 4/4\n| C4q |',
+    }));
+    await act(async () => { await result.current.start(1); });
+
+    act(() => result.current.cancel());
+
+    expect(result.current.phase).toBe(VERIFY_IDLE);
+    expect(alignMock).not.toHaveBeenCalled();
+    expect(metronomeStop).toHaveBeenCalled();
+    expect(trackerStop).toHaveBeenCalled();
+    expect(analyserClose).toHaveBeenCalled();
+    expect(trackStop).toHaveBeenCalled();
+  });
+
+  it('stops a permission-pending stream when capture is cancelled', async () => {
+    let resolveStream;
+    navigator.mediaDevices.getUserMedia = vi.fn(() => new Promise((resolve) => {
+      resolveStream = resolve;
+    }));
+    const { result } = renderHook(() => useSingToVerify({
+      tempo: 120,
+      score: 'time: 4/4\n| C4q |',
+    }));
+
+    let startPromise;
+    act(() => { startPromise = result.current.start(1); });
+    act(() => result.current.cancel());
+    await act(async () => {
+      resolveStream(fakeStream());
+      await startPromise;
+    });
+
+    expect(trackStop).toHaveBeenCalledOnce();
+    expect(result.current.phase).toBe(VERIFY_IDLE);
+  });
+});

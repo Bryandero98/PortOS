@@ -23,6 +23,7 @@ export default function SingToVerify({ value = '', tempo = null, onChange }) {
     error,
     start,
     stop,
+    cancel,
     reset,
     toggleAccept,
     acceptAll,
@@ -42,9 +43,10 @@ export default function SingToVerify({ value = '', tempo = null, onChange }) {
   // edits the textarea before committing, discard the stale comparison instead
   // of letting it target a different token.
   useEffect(() => {
+    cancel();
     reset();
     setActiveIndex(null);
-  }, [value, reset]);
+  }, [value, cancel, reset]);
 
   const commit = () => {
     const accepted = rows

@@ -32,6 +32,8 @@ export default function useSingToVerify({ score: scoreText = '', tempo } = {}) {
   const captureStartRef = useRef(0);
   const startBarRef = useRef(1);
   const capturingRef = useRef(false);
+  const startPendingRef = useRef(false);
+  const requestGenerationRef = useRef(0);
 
   const bpm = clampBpm(tempo ?? score.tempo) ?? DEFAULT_BPM;
 
@@ -45,6 +47,16 @@ export default function useSingToVerify({ score: scoreText = '', tempo } = {}) {
     }
     capturingRef.current = false;
   }, []);
+
+  const cancel = useCallback(() => {
+    requestGenerationRef.current += 1;
+    startPendingRef.current = false;
+    teardown();
+    trackRef.current = [];
+    if (!mountedRef.current) return;
+    setPhase(VERIFY_IDLE);
+    setBeat(null);
+  }, [teardown, mountedRef]);
 
   const stop = useCallback(() => {
     if (phase === VERIFY_IDLE) return;
@@ -64,21 +76,27 @@ export default function useSingToVerify({ score: scoreText = '', tempo } = {}) {
   }, [phase, score, bpm, teardown, mountedRef]);
 
   const start = useCallback(async (startBar = 1) => {
-    if (phase !== VERIFY_IDLE) return;
+    if (phase !== VERIFY_IDLE || startPendingRef.current) return;
+    startPendingRef.current = true;
+    const requestGeneration = ++requestGenerationRef.current;
     setError(null);
     setRows([]);
     trackRef.current = [];
     startBarRef.current = startBar;
 
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true }).catch((err) => {
-      if (mountedRef.current) setError(err?.message || 'Microphone access denied');
+      if (requestGeneration === requestGenerationRef.current) {
+        startPendingRef.current = false;
+        if (mountedRef.current) setError(err?.message || 'Microphone access denied');
+      }
       return null;
     });
     if (!stream) return;
-    if (!mountedRef.current) {
+    if (!mountedRef.current || requestGeneration !== requestGenerationRef.current) {
       stream.getTracks().forEach((track) => track.stop());
       return;
     }
+    startPendingRef.current = false;
     streamRef.current = stream;
 
     const graph = createStreamAnalyser(stream);
@@ -135,10 +153,9 @@ export default function useSingToVerify({ score: scoreText = '', tempo } = {}) {
     setRows((current) => current.map((row) => row.sung ? { ...row, accepted: true } : row));
   }, []);
 
-  const teardownRef = useRef(teardown);
-  teardownRef.current = teardown;
-  useEffect(() => () => teardownRef.current(), []);
+  const cancelRef = useRef(cancel);
+  cancelRef.current = cancel;
+  useEffect(() => () => cancelRef.current(), []);
 
-  return { phase, beat, rows, error, start, stop, reset, toggleAccept, acceptAll };
+  return { phase, beat, rows, error, start, stop, cancel, reset, toggleAccept, acceptAll };
 }
-
