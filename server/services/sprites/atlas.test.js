@@ -825,6 +825,21 @@ describe('compileAtlas', () => {
     expect(meta.height).toBe(64 * 8);
   });
 
+  it('scales the visual tolerance with a 2x source-density compile', async () => {
+    const id = await finalizedCharacter();
+    const result = await compileAtlas(id, {
+      geometry: {
+        cellSize: 192,
+        pivot: [96, 176],
+        targetMaxHeight: 148,
+        targetMaxWidth: 172,
+      },
+    });
+    const meta = await sharp(join(TEST_ROOT, 'sprites', id, result.atlasPath)).metadata();
+    expect(meta.width).toBe(192 * 9);
+    expect(meta.height).toBe(192 * 8);
+  });
+
   it('refuses an imported legacy walk set with an explicit code (not a tamper error)', async () => {
     const id = await finalizedCharacter();
     const setAbs = join(TEST_ROOT, 'sprites', id, `walk/${id}-walk-set-v1.json`);

@@ -20,7 +20,7 @@ vi.mock('../../hooks/useSidebarApps.js', () => ({
 }));
 
 import PublishWorkflow from './PublishWorkflow';
-import { setSpritePublishBinding } from '../../services/apiSprites.js';
+import { compileSpriteAtlas, setSpritePublishBinding } from '../../services/apiSprites.js';
 
 const GEOMETRY = {
   columns: ['idle', 'frame-00', 'frame-01', 'frame-02', 'frame-03', 'frame-04',
@@ -100,7 +100,30 @@ const savedContractBinding = {
 const lastBindingArg = () => setSpritePublishBinding.mock.calls.at(-1)[1];
 
 describe('PublishWorkflow runtime contract', () => {
-  beforeEach(() => setSpritePublishBinding.mockClear());
+  beforeEach(() => {
+    compileSpriteAtlas.mockClear();
+    setSpritePublishBinding.mockClear();
+  });
+
+  it('compiles a 2x atlas from the runtime cell size without changing sprite proportions', async () => {
+    renderWorkflow(savedContractBinding);
+
+    fireEvent.change(screen.getByLabelText(/Cell size/), { target: { value: '192' } });
+    await act(async () => { fireEvent.click(screen.getByText('Recompile atlas')); });
+
+    expect(compileSpriteAtlas).toHaveBeenCalledWith(
+      'example-walker',
+      {
+        geometry: {
+          cellSize: 192,
+          pivot: [96, 176],
+          targetMaxHeight: 148,
+          targetMaxWidth: 172,
+        },
+      },
+      { silent: true },
+    );
+  });
 
   it('saves the player-facing picker animation destination', async () => {
     renderWorkflow({ appId: 'app-1', atlasDestPath: 'assets/hero.png', codeBinding: null });

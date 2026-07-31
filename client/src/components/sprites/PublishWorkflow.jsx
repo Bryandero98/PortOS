@@ -21,6 +21,33 @@ import { timeAgo } from '../../utils/formatters.js';
 const inputClass = 'w-full px-2 py-1 text-xs bg-port-bg border border-port-border rounded text-gray-200 focus:border-port-accent focus:outline-none';
 const fieldLabelClass = 'block text-xs text-gray-400 mb-1';
 const EMPTY_TRACK_DEFINITIONS = Object.freeze([]);
+const DEFAULT_COMPILE_GEOMETRY = Object.freeze({
+  cellSize: 96,
+  pivot: [48, 88],
+  targetMaxHeight: 74,
+  targetMaxWidth: 86,
+});
+
+export function geometryForCellSize(currentGeometry, requestedCellSize) {
+  if (!Number.isInteger(requestedCellSize)) return {};
+  const base = Number.isInteger(currentGeometry?.cellSize)
+    ? currentGeometry
+    : DEFAULT_COMPILE_GEOMETRY;
+  const scale = requestedCellSize / base.cellSize;
+  const pivot = Array.isArray(base.pivot) && base.pivot.length === 2
+    ? base.pivot
+    : DEFAULT_COMPILE_GEOMETRY.pivot;
+  return {
+    cellSize: requestedCellSize,
+    pivot: pivot.map((value) => Math.round(value * scale)),
+    targetMaxHeight: Math.round(
+      (base.targetMaxHeight ?? DEFAULT_COMPILE_GEOMETRY.targetMaxHeight) * scale,
+    ),
+    targetMaxWidth: Math.round(
+      (base.targetMaxWidth ?? DEFAULT_COMPILE_GEOMETRY.targetMaxWidth) * scale,
+    ),
+  };
+}
 
 function contractSeedOf(definitions, contract) {
   return Object.fromEntries(definitions.map((definition) => {
@@ -165,7 +192,8 @@ export default function PublishWorkflow({
   };
 
   const [compile, compiling] = useAsyncAction(async () => {
-    const result = await compileSpriteAtlas(record.id, {}, { silent: true });
+    const geometry = geometryForCellSize(current?.geometry, cellNum);
+    const result = await compileSpriteAtlas(record.id, { geometry }, { silent: true });
     onChanged?.();
     return result;
   }, { errorMessage: 'Atlas compile failed' });
@@ -350,7 +378,10 @@ export default function PublishWorkflow({
           )}
           <button
             onClick={compile}
-            disabled={compiling}
+            disabled={compiling || Boolean(contractError)}
+            title={contractError || (cellNum
+              ? `Compile source art at ${cellNum}px per cell`
+              : 'Compile with the standard source density')}
             className="flex items-center gap-1 px-2 py-1 text-xs bg-port-bg border border-port-border rounded text-gray-300 hover:border-port-accent disabled:opacity-50"
           >
             <RefreshCw size={12} className={compiling ? 'animate-spin' : ''} />
@@ -411,7 +442,9 @@ export default function PublishWorkflow({
             </div>
             <p className="text-[11px] text-gray-500">
               The grid a consuming app was built against. A publish whose compiled atlas disagrees is
-              refused. Leave blank to publish unchecked; clearing removes a stored contract.
+              refused. Cell size also controls compile density: use 192px for a 2× source that the
+              game draws into a 96px footprint. Leave blank to use standard density; clearing removes
+              a stored contract.
             </p>
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-2">
               {trackInputs.map(({ definition, raw }) => (

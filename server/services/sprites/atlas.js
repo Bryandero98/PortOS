@@ -116,7 +116,9 @@ const ALPHA_THRESHOLD = 8;
 const SILHOUETTE_ALPHA_THRESHOLD = 64;
 // Post-resize alpha snap (Python premultiplied_resize's ALPHA_NOISE_FLOOR).
 const ALPHA_NOISE_FLOOR = 2;
-// Compiled idle height must match the walk row's median height within 2px.
+// Compiled idle height must match the walk row's median height within two
+// logical (96px-contract) pixels. Scale the rounding tolerance with source
+// density so a 2×/3× compile applies the same visual standard.
 const IDLE_HEIGHT_TOLERANCE = 2;
 
 const RUNTIME_DIR = 'runtime';
@@ -553,8 +555,12 @@ async function compileTrackRow(direction, validated, geometry) {
     geometry,
     idleScale,
   );
+  const idleHeightTolerance = Math.max(
+    IDLE_HEIGHT_TOLERANCE,
+    IDLE_HEIGHT_TOLERANCE * (geometry.cellSize / DEFAULT_ATLAS_GEOMETRY.cellSize),
+  );
   if (validated.anchors[direction]
-    && Math.abs(idle.meta.occupiedBounds.height - desiredIdleHeight) > IDLE_HEIGHT_TOLERANCE) {
+    && Math.abs(idle.meta.occupiedBounds.height - desiredIdleHeight) > idleHeightTolerance) {
     throw compileError(
       `${direction} idle height ${idle.meta.occupiedBounds.height} misses the animation median ${pyRoundTo(desiredIdleHeight, 2)}`,
     );
