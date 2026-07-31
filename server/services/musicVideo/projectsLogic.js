@@ -24,7 +24,7 @@ import {
   musicVideoSceneUpdateSchema,
 } from '../../lib/validation.js';
 import { compareNewerWins } from '../../lib/lwwTimestamp.js';
-import { sanitizeSoftDeleteFields } from '../../lib/syncWire.js';
+import { sanitizeRecordForWire, sanitizeSoftDeleteFields } from '../../lib/syncWire.js';
 import { persistedRenderPinFields } from '../../lib/renderTargets.js';
 
 // Re-exported for the PG backend's typed mirror columns (mirrors the CD store).
@@ -353,6 +353,10 @@ export function sanitizeProjectForSync(raw) {
 export function mergeProjectRecord(local, remoteRaw) {
   let remote = sanitizeProjectForSync(remoteRaw);
   if (!remote) return { next: null, inserted: false, remoteWins: false, changed: false };
+  // An older peer can still send the fields that newer peers strip. Project
+  // sync remains schema-v1 compatible, so apply the same projection inbound
+  // before either inserting or restoring this machine's local choices.
+  remote = sanitizeRecordForWire('musicVideoProject', remote);
   if (!local) return { next: remote, inserted: true, remoteWins: true, changed: true };
   // Render pins are install-capability choices and therefore wire-local
   // (#3245). sanitizeRecordForWire omits them from peer payloads; restore this

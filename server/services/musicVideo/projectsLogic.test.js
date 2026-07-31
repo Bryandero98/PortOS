@@ -469,6 +469,20 @@ describe('mergeProjectRecord (#1770 LWW)', () => {
     expect(r.next.name).toBe('X');
   });
 
+  it('strips render pins sent by a legacy peer before inserting (#3245)', () => {
+    const { next } = mergeProjectRecord(null, {
+      id: 'mv-1',
+      updatedAt: '2026-01-02T00:00:00Z',
+      imageMode: 'grok',
+      imageModelId: 'foreign-image-model',
+      videoSettings: { backend: 'grok', modelId: 'shared-video-model' },
+    });
+
+    expect(next).not.toHaveProperty('imageMode');
+    expect(next).not.toHaveProperty('imageModelId');
+    expect(next.videoSettings).toEqual({ modelId: 'shared-video-model' });
+  });
+
   it('remote with a newer updatedAt wins', () => {
     const local = { id: 'mv-1', updatedAt: '2026-01-01T00:00:00Z', name: 'old' };
     const remote = { id: 'mv-1', updatedAt: '2026-01-05T00:00:00Z', name: 'new' };
@@ -516,7 +530,9 @@ describe('mergeProjectRecord (#1770 LWW)', () => {
     const remote = {
       id: 'mv-1',
       updatedAt: '2026-01-05T00:00:00Z',
-      videoSettings: { modelId: 'shared-model' },
+      imageMode: 'grok',
+      imageModelId: 'foreign-image-model',
+      videoSettings: { backend: 'grok', modelId: 'shared-model' },
     };
 
     const { next } = mergeProjectRecord(local, remote);
