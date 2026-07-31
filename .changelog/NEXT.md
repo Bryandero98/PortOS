@@ -66,6 +66,8 @@
 
 ## Rounds
 
+- **[issue-3239] Sing your own version of any round into its existing sheet music.** Choose a starting bar, get a one-bar count-in, then compare the written and sung pitches note by note on the staff. Nothing changes automatically: accept only the sung notes you want, and PortOS preserves every duration, chord, lyric, line break, and space around those pitch corrections when you commit them.
+
 - **[issue-3238] "Hey Ho Nobody Home" now has all four of its lines — and the right words for the last one.** The built-in round printed four lines of lyrics but only ever notated three: the closing line had no notes to sing it on, so the words and the sheet music disagreed. That line was wrong too, repeating the opening ("Hey, ho, nobody home.") instead of the way it is actually sung — **"Hey, hey, ho."** It now has its own two bars, cadencing down onto the note the round is centred on, plus the fourth entering voice the round always described but could not support. That also puts it back in step with Ah Poor Bird and Rose Rose Rose Red: at three phrases it was a quarter shorter than both, so the three-round quodlibet drifted out of alignment every few times round. If you have edited your copy of the round, your version is left exactly as you wrote it.
 
 ## Quota burn

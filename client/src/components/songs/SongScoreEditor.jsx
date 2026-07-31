@@ -16,6 +16,7 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { Music, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react';
 import ScoreSheet from './ScoreSheet.jsx';
 import SingToScore from './SingToScore.jsx';
+import SingToVerify from './SingToVerify.jsx';
 import { parseScore } from '../../lib/scoreNotation.js';
 
 const PLACEHOLDER = `clef: treble
@@ -117,13 +118,18 @@ export default function SongScoreEditor({ value, onChange }) {
       />
 
       {/* Sing a melody → transcribe it into the notation above. */}
-      <div className="mt-3">
+      <div className="mt-3 grid gap-3 xl:grid-cols-2">
         <SingToScore
           value={value || ''}
           tempo={score.tempo}
           musicKey={score.key}
           hasSelection={hasSelection}
           onInsert={insertNotation}
+        />
+        <SingToVerify
+          value={value || ''}
+          tempo={score.tempo}
+          onChange={onChange}
         />
       </div>
 

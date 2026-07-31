@@ -205,7 +205,7 @@ const FLAT_SPELLING = {
 // We adjust the octave for the flat respelling so the *pitch* is unchanged
 // (e.g. C#5 → Db5 stays the same sounding note; only the name changes — same
 // octave because Db and C# share octave boundaries above C).
-const spellNote = (note, keySig) => {
+export const spellNote = (note, keySig) => {
   if (!note) return null;
   if (keySig?.type !== 'flat' || !note.accidental) return note;
   // Recover the pitch class from the detector's sharp spelling.

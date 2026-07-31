@@ -31,6 +31,8 @@ export { default as useSlotInFlight } from './useSlotInFlight.js';
 export { default as useSseJobSlot } from './useSseJobSlot.js';
 export { default as useSingToScore } from './useSingToScore.js';
 export * from './useSingToScore.js';
+export { default as useSingToVerify } from './useSingToVerify.js';
+export * from './useSingToVerify.js';
 export { default as useSongTraining } from './useSongTraining.js';
 export { default as useMediaPreviewActions } from './useMediaPreviewActions.js';
 export { default as useKeyboardControls } from './useKeyboardControls.js';
