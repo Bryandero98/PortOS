@@ -1,5 +1,9 @@
 # Unreleased Changes
 
+## Internal
+
+- **[issue-3250] Stabilize Music Video project-selection tests under CI load.** Project-selection coverage now waits for the requested project to be available before opening its board, preventing intermittent false failures.
+
 ## Music Video
 
 - **[issue-3245] Synced Music Video projects now use each machine's own render backends.** Image and video backend pins no longer overwrite a peer's locally usable choices, while shared model and pacing settings continue to sync.

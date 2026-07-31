@@ -146,13 +146,28 @@ const renderMV = () => render(
 // callbacks can't land outside it after the test body.
 const settle = () => act(async () => {});
 
+// The picker renders disabled before the project-list promise settles. Waiting
+// only for the select itself races that loading state under CI contention: a
+// change fired against the disabled picker can be ignored, leaving the board
+// unopened. Wait for both the enabled state and the requested option before
+// navigating, then confirm the route-driven selection landed.
+const selectProject = async (projectId) => {
+  const picker = await screen.findByLabelText('Project');
+  await waitFor(() => {
+    expect(picker).toHaveProperty('disabled', false);
+    expect(Array.from(picker.options, (option) => option.value)).toContain(projectId);
+  });
+  await act(async () => {
+    fireEvent.change(picker, { target: { value: projectId } });
+  });
+  await waitFor(() => expect(picker).toHaveValue(projectId));
+  return picker;
+};
+
 const openProject = async (project) => {
   listMusicVideoProjects.mockResolvedValue([project]);
   renderMV();
-  const picker = await screen.findByLabelText('Project');
-  await act(async () => {
-    fireEvent.change(picker, { target: { value: project.id } });
-  });
+  await selectProject(project.id);
   await screen.findByRole('heading', { level: 2, name: project.name });
 };
 
@@ -504,13 +519,12 @@ describe('MusicVideo concept & style editor (#3168)', () => {
     const projectB = { ...PROJECT_NO_CLIP, id: 'mv-3', name: 'Other Project', concept: { prompt: 'B original' } };
     listMusicVideoProjects.mockResolvedValue([PROJECT_NO_CLIP, projectB]);
     renderMV();
-    const picker = await screen.findByLabelText('Project');
-    fireEvent.change(picker, { target: { value: PROJECT_NO_CLIP.id } });
+    await selectProject(PROJECT_NO_CLIP.id);
 
     const conceptField = await screen.findByLabelText('Concept');
     fireEvent.change(conceptField, { target: { value: 'A unsaved draft' } });
     // No blur — switch projects while the edit is still pending.
-    fireEvent.change(picker, { target: { value: projectB.id } });
+    await selectProject(projectB.id);
 
     await waitFor(() => expect(screen.getByLabelText('Concept')).toHaveValue('B original'));
     fireEvent.blur(screen.getByLabelText('Concept'));
@@ -610,8 +624,7 @@ describe('MusicVideo YouTube audio import (#1945)', () => {
     const projectB = { ...PROJECT_NO_CLIP, id: 'mv-3', name: 'Other Project' };
     listMusicVideoProjects.mockResolvedValue([PROJECT_NO_CLIP, projectB]);
     renderMV();
-    const picker = await screen.findByLabelText('Project');
-    fireEvent.change(picker, { target: { value: PROJECT_NO_CLIP.id } });
+    const picker = await selectProject(PROJECT_NO_CLIP.id);
 
     const editInput = screen.getAllByPlaceholderText(/Import audio from a YouTube URL/i)
       .find((el) => el.id !== 'mv-yt-create');
@@ -631,7 +644,7 @@ describe('MusicVideo YouTube audio import (#1945)', () => {
     listMusicVideoProjects.mockResolvedValue([PROJECT_NO_CLIP]); // mv-2
     renderMVWithNav('/music-video/mv-3');
     // Open mv-2 and start its detail-view import.
-    fireEvent.change(await screen.findByLabelText('Project'), { target: { value: PROJECT_NO_CLIP.id } });
+    await selectProject(PROJECT_NO_CLIP.id);
     await waitFor(() => expect(screen.getByTestId('loc').textContent).toBe('/music-video/mv-2'));
     const editInput = screen.getAllByPlaceholderText(/Import audio from a YouTube URL/i)
       .find((el) => el.id !== 'mv-yt-create');
@@ -692,8 +705,7 @@ describe('MusicVideo YouTube audio import (#1945)', () => {
     let resolveKickoff;
     importTrackFromYoutube.mockImplementation(() => new Promise((resolve) => { resolveKickoff = resolve; }));
     renderMV();
-    const picker = await screen.findByLabelText('Project');
-    fireEvent.change(picker, { target: { value: PROJECT_NO_CLIP.id } });
+    const picker = await selectProject(PROJECT_NO_CLIP.id);
 
     const editInput = screen.getAllByPlaceholderText(/Import audio from a YouTube URL/i)
       .find((el) => el.id !== 'mv-yt-create');
