@@ -10,6 +10,7 @@ import toast from '../components/ui/Toast';
 const PROJECT_WITH_CLIP = {
   id: 'mv-1', name: 'Neon Run', mode: 'director', status: 'ready',
   trackId: 't1', uploadedAudioFilename: null, audioAnalysis: null, renderHistoryId: null,
+  videoSettings: { backend: 'local' },
   scenes: [{ sceneId: 's1', order: 0, prompt: 'a', referenceImageId: 'img1', videoHistoryId: 'h1' }],
 };
 const PROJECT_NO_CLIP = {
@@ -37,7 +38,11 @@ vi.mock('../services/apiMusicVideo.js', () => ({
   listMusicVideoProjects: vi.fn(async () => []),
   createMusicVideoProject: vi.fn(),
   cloneMusicVideoProject: vi.fn(),
-  updateMusicVideoProject: vi.fn(async (id, patch) => ({ id, ...patch })),
+  updateMusicVideoProject: vi.fn(async (id, patch) => ({
+    id,
+    ...patch,
+    ...(patch.videoSettings ? { videoSettings: { backend: 'local', ...patch.videoSettings } } : {}),
+  })),
   deleteMusicVideoProject: vi.fn(),
   analyzeMusicVideoProject: vi.fn(),
   planMusicVideoProject: vi.fn(),
@@ -210,6 +215,34 @@ describe('MusicVideo render control (#1760)', () => {
 });
 
 describe('MusicVideo project video renderer', () => {
+  it('lets the server resolve this install default when a synced project has no backend pin', async () => {
+    generateVideo.mockResolvedValue({ jobId: 'video-job-default' });
+    await openProject({
+      ...PROJECT_NO_CLIP,
+      videoSettings: { modelId: 'ltx23_distilled_q4' },
+    });
+
+    expect(await screen.findByLabelText('Scene video renderer')).toHaveProperty('value', '');
+    fireEvent.click(screen.getByRole('button', { name: /^Generate video$/ }));
+    await waitFor(() => expect(generateVideo).toHaveBeenCalled());
+    expect(generateVideo.mock.calls.at(-1)[0]).not.toHaveProperty('backend');
+    expect(generateVideo.mock.calls.at(-1)[0]).not.toHaveProperty('modelId');
+  });
+
+  it('clears an existing backend pin with the Install default option', async () => {
+    await openProject(PROJECT_NO_CLIP);
+
+    fireEvent.change(await screen.findByLabelText('Scene video renderer'), {
+      target: { value: '' },
+    });
+
+    await waitFor(() => expect(updateMusicVideoProject).toHaveBeenCalledWith(
+      'mv-2',
+      { videoSettings: { backend: null } },
+      { silent: true },
+    ));
+  });
+
   it('persists the local model and uses it for scene generation', async () => {
     generateVideo.mockResolvedValue({ jobId: 'video-job-1' });
     await openProject(PROJECT_NO_CLIP);

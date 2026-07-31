@@ -18,6 +18,23 @@ export function sanitizeSoftDeleteFields(raw) {
   return { deleted, deletedAt };
 }
 
+/**
+ * Remove Music Video render choices that belong to the receiving install.
+ * Transport keeps the legacy `videoSettings.backend` by default so an older
+ * receiver is not regressed; upgraded receivers and content hashing opt into
+ * stripping it as well.
+ */
+export function stripMusicVideoLocalRenderPins(record, { stripVideoBackend = true } = {}) {
+  if (!record || typeof record !== 'object' || Array.isArray(record)) return record;
+  const { imageMode: _imageMode, imageModelId: _imageModelId, ...shared } = record;
+  if (stripVideoBackend && shared.videoSettings
+    && typeof shared.videoSettings === 'object' && !Array.isArray(shared.videoSettings)) {
+    const { backend: _backend, ...sharedVideoSettings } = shared.videoSettings;
+    shared.videoSettings = sharedVideoSettings;
+  }
+  return shared;
+}
+
 // Single source of truth for what fields cross the federated-peer wire.
 //
 // Two transports carry universe / series / issue records between peers:
@@ -178,7 +195,6 @@ export function sanitizeRecordForWire(kind, record) {
     case 'moodBoard':
     case 'writersRoomFolder':
     case 'writersRoomExercise':
-    case 'musicVideoProject':
     case 'commissionFeedback': {
       // Persona/music/creative-director/mood-board records: like mediaCollection,
       // no `ephemeral` flag — always wire-syncable when present. Strip-then-tail-
@@ -190,12 +206,25 @@ export function sanitizeRecordForWire(kind, record) {
       // record LWW contract; a moodBoard (name/description/items) is the same.
       // Writers Room folders + exercises (#1645) are also body-less whole-record
       // LWW kinds with no ephemeral counters — they wire identically (no liveMode
-      // strip like writersRoomWork below). A musicVideoProject (#1770:
-      // metadata + beat-aligned scenes[]) is the same whole-record LWW contract.
       // A commissionFeedback (#2686: one reaction — commissionId/runId/rating/
       // note/tags/at) is a body-less whole-record LWW record with no local-only
       // fields to strip, so it rides this same group.
       const { deleted: _d, deletedAt: _da, ...rest } = record;
+      return { ...rest, ...sanitizeSoftDeleteFields(record) };
+    }
+    case 'musicVideoProject': {
+      // Music Video projects are whole-record LWW, but their image render pin
+      // and video backend are install-capability choices: a peer may not have
+      // the selected provider configured. Keep those fields wire-local while
+      // preserving the rest of videoSettings (model, pacing, generation mode).
+      // Stripping also keeps the wire/hash form byte-stable with peers from
+      // before these fields shipped, so no schema-version gate is required.
+      // `videoSettings.backend` predates the local-pin contract. Keep it on
+      // transport for older receivers whose LWW merge still expects it;
+      // upgraded receivers strip it before persistence, and content hashing
+      // excludes it so local choices never create phantom divergence.
+      const projected = stripMusicVideoLocalRenderPins(record, { stripVideoBackend: false });
+      const { deleted: _d, deletedAt: _da, ...rest } = projected;
       return { ...rest, ...sanitizeSoftDeleteFields(record) };
     }
     case 'writersRoomWork': {

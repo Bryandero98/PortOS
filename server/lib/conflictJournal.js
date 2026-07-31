@@ -35,7 +35,7 @@ import { randomUUID, createHash } from 'crypto';
 import { PATHS, atomicWrite, readJSONFile, ensureDir } from './fileUtils.js';
 import { createCollectionStore } from './collectionStore.js';
 import { canonicalStringify, isPlainObject } from './objects.js';
-import { sanitizeRecordForWire } from './syncWire.js';
+import { sanitizeRecordForWire, stripMusicVideoLocalRenderPins } from './syncWire.js';
 
 const JOURNAL_TYPE_SCHEMA_VERSION = 1;
 const BASE_HASH_FILE = () => join(PATHS.data, 'sharing', 'sync_base_hashes.json');
@@ -169,6 +169,8 @@ export function contentHashForRecord(kind, record, { maxVersion } = {}) {
   let hashInput = wire;
   if (kind === 'mediaCollection') {
     hashInput = projectCollectionScalars(wire);
+  } else if (kind === 'musicVideoProject') {
+    hashInput = stripMusicVideoLocalRenderPins(wire);
   } else if (HASH_EXCLUDED_FIELDS[kind] || HASH_FIELD_VERSION_BY_KIND[kind]) {
     const excluded = HASH_EXCLUDED_FIELDS[kind] || [];
     const introducedAt = HASH_FIELD_VERSION_BY_KIND[kind];

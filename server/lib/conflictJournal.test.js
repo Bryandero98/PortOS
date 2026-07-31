@@ -233,6 +233,23 @@ describe('conflictJournal', () => {
       .not.toBe(cj.contentHashForRecord('issue', iss({ title: 'B' })));
   });
 
+  it('Music Video content hash ignores each install render pins (#3245)', () => {
+    const base = {
+      id: 'mv-1',
+      name: 'Example Video',
+      videoSettings: { modelId: 'shared-model', backend: 'local' },
+    };
+    const otherPins = {
+      ...base,
+      imageMode: 'grok',
+      imageModelId: 'example-image-model',
+      videoSettings: { ...base.videoSettings, backend: 'grok' },
+    };
+
+    expect(cj.contentHashForRecord('musicVideoProject', base))
+      .toBe(cj.contentHashForRecord('musicVideoProject', otherPins));
+  });
+
   it('a pure-renumber local drift does NOT journal a conflict when a real remote edit arrives', async () => {
     const base = iss({ number: 1 });
     await cj.setSyncBaseHash('issue', 'iss-1', cj.contentHashForRecord('issue', base));

@@ -31,7 +31,8 @@ export const musicVideoConceptSchema = z.object({
 // is optional because Grok does not consume it; the video-gen route performs
 // the authoritative installed-model validation when a local render starts.
 export const musicVideoVideoSettingsSchema = z.object({
-  backend: z.enum(['local', 'grok']).optional(),
+  // null clears the per-project pin so this install's configured default wins.
+  backend: z.enum(['local', 'grok']).nullable().optional(),
   modelId: z.string().max(64).nullable().optional(),
   grokDuration: z.union([z.literal(6), z.literal(10)]).optional(),
   generationMode: z.enum(['image', 'audioReactive']).optional(),
