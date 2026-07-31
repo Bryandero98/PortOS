@@ -9,6 +9,8 @@ import { basename } from 'path';
 import sharp from 'sharp';
 import { ServerError } from '../../lib/errorHandler.js';
 import { keyChannelSplit } from './chromaKey.js';
+import { isAnimationTrack } from './animationTracks.js';
+import { getEffectiveAnimationTracks } from './animationTrackStore.js';
 import { getTrackState } from './animationTrackWorkflow.js';
 import { resolveSpriteAssetPath } from './paths.js';
 import { loadManifest } from './reference.js';
@@ -81,6 +83,18 @@ export async function composePresentationIdleStrip(frameBytes, chromaKey) {
 }
 
 export async function buildPresentationIdle(recordId) {
+  // `idle-loop` is a user-authored track, not a shipped one (#3152 moved every
+  // non-walk row into the editable registry). On an install that never created
+  // it, `getTrackState` resolves the id through the registry, which THROWS a
+  // bare "Unknown animation track" Error — a 500 naming internals, on the same
+  // publish the UI offers unconditionally. Answer it as the missing prerequisite
+  // it is, alongside the not-yet-approved case below.
+  if (!isAnimationTrack(PRESENTATION_IDLE_TRACK_ID, getEffectiveAnimationTracks())) {
+    throw idleError(
+      `Create an animation track named '${PRESENTATION_IDLE_TRACK_ID}' and approve it before publishing a picker animation`,
+      'PRESENTATION_IDLE_TRACK_REQUIRED',
+    );
+  }
   const [record, referenceManifest, state] = await Promise.all([
     getRecord(recordId),
     loadManifest(recordId),

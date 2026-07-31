@@ -1,6 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import sharp from 'sharp';
+
+// The registry table this module consults, pinned to a install that never
+// authored an `idle-loop` track — the default state of every install, since
+// #3152 made every non-walk track user-defined. Reading the real table would
+// make the assertion below depend on whichever tracks THIS machine happens to
+// have authored.
+vi.mock('./animationTrackStore.js', async (importOriginal) => ({
+  ...(await importOriginal()),
+  getEffectiveAnimationTracks: () => ({ walk: { id: 'walk' } }),
+}));
+
 import {
+  buildPresentationIdle,
   buildPresentationIdleLayout,
   composePresentationIdleStrip,
   PRESENTATION_IDLE_CELL_SIZE,
@@ -59,6 +71,18 @@ describe('presentation idle strip', () => {
       frameCount: 6,
       frameRate: 6,
       cellSize: 512,
+    });
+  });
+
+  it('answers a missing idle-loop track as a prerequisite, not an internal registry error', async () => {
+    // The publish form offers the picker-idle path unconditionally, so an
+    // install that never created the track reaches here. Resolving the id
+    // through the registry throws a bare Error naming the known tracks — a 500
+    // about internals. It must arrive as the same 422 the not-yet-approved case
+    // gets, so the UI can tell the user what to create.
+    await expect(buildPresentationIdle('rec-1')).rejects.toMatchObject({
+      status: 422,
+      code: 'PRESENTATION_IDLE_TRACK_REQUIRED',
     });
   });
 });
