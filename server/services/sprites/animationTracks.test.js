@@ -288,8 +288,12 @@ describe('registry-derived source reference and primacy (#3136)', () => {
     // non-directional one has no anchor to read at all — a place record never
     // generates directional anchors.
     expect(sourceReferenceFor(WALK_TRACK)).toBe('anchor');
-    expect(sourceReferenceFor(SCANNER_TRACK, EFFECTIVE)).toBe('anchor');
-    expect(sourceReferenceFor(AMBIENT_TRACK, EFFECTIVE)).toBe('main');
+    // SHIPPED, not EFFECTIVE — these name the seed's own flags, and the seed's
+    // `_comment` says every row in it may be retuned or deleted. Read from the
+    // live table, an operator deleting `scanner` (a supported edit) reds a test
+    // about the shipped contract that they never touched.
+    expect(sourceReferenceFor(SCANNER_TRACK, SHIPPED)).toBe('anchor');
+    expect(sourceReferenceFor(AMBIENT_TRACK, SHIPPED)).toBe('main');
     // Reads the row it's HANDED, not the shipped table.
     expect(sourceReferenceFor('ambient', { ambient: AMBIENT_TRACK_ROW })).toBe('main');
     expect(() => sourceReferenceFor('unknown')).toThrow(/Unknown animation track/);
@@ -298,16 +302,16 @@ describe('registry-derived source reference and primacy (#3136)', () => {
   it('answers which track a record kind publishes off', () => {
     // ONE definition, shared by the publish-contract schema (which field is
     // required) and the compile dispatch (which evidence chain to validate).
-    expect(primaryTrackForKind('character', EFFECTIVE)?.id).toBe(WALK_TRACK);
-    expect(primaryTrackForKind('place', EFFECTIVE)?.id).toBe(AMBIENT_TRACK);
-    expect(primaryTrackForKind('object', EFFECTIVE)?.id).toBe(AMBIENT_TRACK);
-    expect(primaryTrackForKind('props', EFFECTIVE)?.id).toBe(AMBIENT_TRACK);
+    expect(primaryTrackForKind('character', SHIPPED)?.id).toBe(WALK_TRACK);
+    expect(primaryTrackForKind('place', SHIPPED)?.id).toBe(AMBIENT_TRACK);
+    expect(primaryTrackForKind('object', SHIPPED)?.id).toBe(AMBIENT_TRACK);
+    expect(primaryTrackForKind('props', SHIPPED)?.id).toBe(AMBIENT_TRACK);
     // A short action a record can't publish off alone is never the primary.
-    expect(primaryTrackForKind('character', EFFECTIVE)?.id).not.toBe(SCANNER_TRACK);
+    expect(primaryTrackForKind('character', SHIPPED)?.id).not.toBe(SCANNER_TRACK);
     // Absent/unknown answers null rather than defaulting to a kind.
-    expect(primaryTrackForKind('nope', EFFECTIVE)).toBeNull();
-    expect(primaryTrackForKind('', EFFECTIVE)).toBeNull();
-    expect(primaryTrackForKind(undefined, EFFECTIVE)).toBeNull();
+    expect(primaryTrackForKind('nope', SHIPPED)).toBeNull();
+    expect(primaryTrackForKind('', SHIPPED)).toBeNull();
+    expect(primaryTrackForKind(undefined, SHIPPED)).toBeNull();
   });
 });
 
@@ -430,18 +434,21 @@ describe('per-track clamps', () => {
     expect(clampTrackFps(99)).toBe(24);
   });
 
+  // Both clamp tests read SHIPPED: they assert the seed's own numeric bounds, so
+  // against the live table an operator who retunes `scanner.maxFrameCount` — the
+  // seed invites exactly that — would red a test about the shipped defaults.
   it('clamps scanner values against scanner bounds', () => {
-    expect(clampTrackFrameCount(99, SCANNER_TRACK, EFFECTIVE)).toBe(8);
-    expect(clampTrackFrameCount(-1, SCANNER_TRACK, EFFECTIVE)).toBe(2);
-    expect(clampTrackFps(99, SCANNER_TRACK, EFFECTIVE)).toBe(12);
-    expect(clampTrackFps(-1, SCANNER_TRACK, EFFECTIVE)).toBe(2);
+    expect(clampTrackFrameCount(99, SCANNER_TRACK, SHIPPED)).toBe(8);
+    expect(clampTrackFrameCount(-1, SCANNER_TRACK, SHIPPED)).toBe(2);
+    expect(clampTrackFps(99, SCANNER_TRACK, SHIPPED)).toBe(12);
+    expect(clampTrackFps(-1, SCANNER_TRACK, SHIPPED)).toBe(2);
   });
 
   it('clamps ambient values against the ambient range', () => {
-    expect(clampTrackFrameCount(99, AMBIENT_TRACK, EFFECTIVE)).toBe(6);
-    expect(clampTrackFrameCount(-1, AMBIENT_TRACK, EFFECTIVE)).toBe(2);
-    expect(clampTrackFps(99, AMBIENT_TRACK, EFFECTIVE)).toBe(12);
-    expect(clampTrackFps(-1, AMBIENT_TRACK, EFFECTIVE)).toBe(2);
+    expect(clampTrackFrameCount(99, AMBIENT_TRACK, SHIPPED)).toBe(6);
+    expect(clampTrackFrameCount(-1, AMBIENT_TRACK, SHIPPED)).toBe(2);
+    expect(clampTrackFps(99, AMBIENT_TRACK, SHIPPED)).toBe(12);
+    expect(clampTrackFps(-1, AMBIENT_TRACK, SHIPPED)).toBe(2);
   });
 });
 
