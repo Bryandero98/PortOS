@@ -153,7 +153,23 @@ export function mockTextResponse(body = '', { ok = true, status = 200 } = {}) {
  * @returns {string[]} paths relative to `server/`, e.g. `services/runner.js`
  */
 export function collectServerSources(dir = SERVER_DIR) {
-  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+  // A directory can vanish BETWEEN the readdir that named it and the recursion
+  // into it: vitest runs suites concurrently in one process, and sibling suites
+  // create-and-remove scratch directories under `server/` (aiToolkit's
+  // `providers.test.js` cycles `server/test-data/` in beforeEach/afterEach). The
+  // walk hitting that window threw ENOENT and failed whichever guard suite was
+  // mid-scan — a flake that reproduces roughly one run in three and depends on
+  // shard ordering, so it lands in CI and not locally. A directory that is gone
+  // holds no sources to check, so skipping it is the honest answer, not a
+  // papered-over error.
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch (err) {
+    if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') return [];
+    throw err;
+  }
+  return entries.flatMap((entry) => {
     if (entry.name === 'node_modules' || entry.name.startsWith('.')) return [];
     const abs = join(dir, entry.name);
     if (entry.isDirectory()) return collectServerSources(abs);
