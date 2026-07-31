@@ -124,6 +124,7 @@ import * as atlas from '../services/sprites/atlas.js';
 import * as publish from '../services/sprites/publish.js';
 import * as assets from '../services/sprites/assets.js';
 import { errorMiddleware } from '../lib/errorHandler.js';
+import { cloudModelIdString } from '../lib/validation.js';
 import spriteRoutes from './sprites.js';
 
 function makeApp() {
@@ -376,6 +377,39 @@ describe('sprites routes', () => {
     const bad = await request(app).post('/api/sprites/pioneer/fork').send({ name: 'Pioneer Fork' });
     expect(bad.status).toBe(400);
     expect(reference.forkSprite).not.toHaveBeenCalled();
+  });
+
+  it('fork, create, and update share the durable model-id validator', async () => {
+    const invalidModelId = 'gpt image 1; rm';
+    const validation = cloudModelIdString('model must be a valid model id').safeParse(invalidModelId);
+    expect(validation.success).toBe(false);
+    const expectedMessage = validation.error.issues[0].message;
+
+    const attempts = [
+      {
+        response: await request(app).post('/api/sprites/pioneer/fork')
+          .send({ name: 'Pioneer Fork', designPrompt: 'wearing a red coat', model: invalidModelId }),
+        path: 'model',
+      },
+      {
+        response: await request(app).post('/api/sprites')
+          .send({ name: 'Pioneer Fork', imageModelId: invalidModelId }),
+        path: 'imageModelId',
+      },
+      {
+        response: await request(app).patch('/api/sprites/pioneer')
+          .send({ imageModelId: invalidModelId }),
+        path: 'imageModelId',
+      },
+    ];
+
+    for (const { response, path } of attempts) {
+      expect(response.status, path).toBe(400);
+      expect(response.body.context.details).toContainEqual({ path, message: expectedMessage });
+    }
+    expect(reference.forkSprite).not.toHaveBeenCalled();
+    expect(records.createCharacter).not.toHaveBeenCalled();
+    expect(reference.patchSpriteRecord).not.toHaveBeenCalled();
   });
 
   it('POST /:id/reference/generate accepts a gallery/sprite seed source in JSON', async () => {

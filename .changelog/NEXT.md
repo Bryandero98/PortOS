@@ -4,6 +4,10 @@
 
 - **[issue-3245] Synced Music Video projects now use each machine's own render backends.** Image and video backend pins no longer overwrite a peer's locally usable choices, while shared model and pacing settings continue to sync.
 
+## Sprite Manager
+
+- **[issue-3247] Forked sprites now validate their pinned render model before saving.** Invalid model IDs are rejected immediately instead of leaving a sprite pinned to a model that later renders cannot use or replace.
+
 ## POST
 
 - **[issue-3252] A new Practice Plan page decides what you're actually studying.** POST had grown to roughly thirty drill types across six subjects plus three standalone study surfaces, with no single place to say which of them you want. Practice Plan (`/post/plan`, also reachable from ⌘K and by voice) lists every topic with a switch, expandable to its individual drills, and shows a live "your daily POST will include…" summary that updates as you flip switches — so you can see what tomorrow's session becomes before you run it. Drill Config still owns how hard each drill is; Practice Plan owns what's in the rotation.

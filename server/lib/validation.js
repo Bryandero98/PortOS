@@ -1382,7 +1382,7 @@ export const spriteForkSchema = z.object({
   id: z.string().trim().max(200).optional(),
   designPrompt: z.string().trim().min(1).max(4000),
   mode: z.enum(QUEUEABLE_IMAGE_MODES).optional(),
-  model: z.string().trim().max(64).optional(),
+  model: cloudModelIdString('model must be a valid model id').max(RECORD_RENDER_MODEL_MAX).optional(),
   effort: z.string().trim().max(32).optional(),
   initImageStrength: optionalUnitNumber,
 });

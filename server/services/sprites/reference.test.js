@@ -1132,12 +1132,17 @@ describe('forkSprite', () => {
     await createCharacter(source, { name: 'Origin' });
     await lockMain(source);
     enqueueJob.mockClear();
-    const { record, jobId, target } = await forkSprite(source, { name: 'Origin Fork', designPrompt: 'wearing a red coat' });
+    const { record, jobId, target } = await forkSprite(source, {
+      name: 'Origin Fork',
+      designPrompt: 'wearing a red coat',
+      model: 'openai/gpt-image-1',
+    });
     // A fork enters the same turnaround-first workflow every new character does.
     expect(target).toBe('turnaround');
     expect(jobId).toBe('job-1234567890');
     expect(record.kind).toBe('character');
     expect(record.name).toBe('Origin Fork');
+    expect(record.imageModelId).toBe('openai/gpt-image-1');
     // The new record exists and the render was seeded from the source's ref.
     expect(await records.getRecord(record.id)).toBeTruthy();
     const call = enqueueJob.mock.calls[0][0];
