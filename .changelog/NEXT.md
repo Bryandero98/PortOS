@@ -4,6 +4,10 @@
 
 - **[issue-3245] Synced Music Video projects now use each machine's own render backends.** Image and video backend pins no longer overwrite a peer's locally usable choices, while shared model and pacing settings continue to sync.
 
+## Video Generation
+
+- **[issue-3248] Requeued local videos now keep their original render controls when Grok is the default.** Frame count, frame rate, steps, guidance, seed, image strength, and tiling settings keep the render on the local backend instead of being silently discarded.
+
 ## Sprite Manager
 
 - **[issue-3247] Forked sprites now validate their pinned render model before saving.** Invalid model IDs are rejected immediately instead of leaving a sprite pinned to a model that later renders cannot use or replace.

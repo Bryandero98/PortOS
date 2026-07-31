@@ -140,7 +140,7 @@ import { getProject as getMusicVideoProject } from '../services/musicVideo/proje
 import { getTrack } from '../services/tracks/index.js';
 import { resolveGalleryImage } from '../lib/fileUtils.js';
 import { listIcLoraWeights } from '../lib/icLoraWeights.js';
-import videoGenRoutes, { isAudioMime } from './videoGen.js';
+import videoGenRoutes, { isAudioMime, LOCAL_ONLY_VIDEO_PARAMS } from './videoGen.js';
 
 // isAudioMime is the gating function inside the fileFilter callback. The
 // multipart mock in these route tests bypasses fileFilter entirely, so we
@@ -347,6 +347,33 @@ describe('videoGen routes', () => {
       const [call] = mediaJobQueue.enqueueJob.mock.calls;
       expect(call[0].params.mode).not.toBe('grok');
       expect(call[0].params.modelId).toBe('ltx2_unified');
+    });
+
+    it.each(Object.entries({
+      numFrames: 49,
+      fps: 24,
+      steps: 25,
+      guidanceScale: 3,
+      seed: 0,
+      imageStrength: 0.5,
+      tiling: 'auto',
+    }))('keeps %s on the local path under a grok pin', async (param, value) => {
+      expect(Object.keys(LOCAL_ONLY_VIDEO_PARAMS)).toEqual([
+        'numFrames',
+        'fps',
+        'steps',
+        'guidanceScale',
+        'seed',
+        'imageStrength',
+        'tiling',
+      ]);
+      const { getSettings } = await import('../services/settings.js');
+      getSettings.mockResolvedValueOnce({ imageGen: grokReady, videoGen: { mode: 'grok' } });
+      const r = await request(app).post('/api/video-gen/').send({ prompt: 'a fox', [param]: value });
+      expect(r.status).toBe(200);
+      const [call] = mediaJobQueue.enqueueJob.mock.calls;
+      expect(call[0].params.mode).not.toBe('grok');
+      expect(call[0].params[param]).toBe(value);
     });
 
     it('a grok pin degrades to local when the request carries local-only machinery', async () => {

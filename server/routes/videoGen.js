@@ -128,6 +128,19 @@ const optionalInt = (min, max, label) => z.preprocess(
 // still enforced against the mode's own spec (assertIcReferenceCount).
 const MAX_IC_REFERENCES = Math.max(...listIcLoraWeights().map((s) => s.maxReferences));
 
+// Render controls that only the local runtimes understand. Keep their schemas
+// together so Grok eligibility and request validation cannot drift when a new
+// local-only knob is added.
+export const LOCAL_ONLY_VIDEO_PARAMS = Object.freeze({
+  numFrames: optionalInt(1, 1024, 'numFrames'),
+  fps: optionalNum(1, 60, 'fps'),
+  steps: optionalNum(1, 200, 'steps'),
+  guidanceScale: optionalNum(0, 30, 'guidanceScale'),
+  seed: optionalNum(0, Number.MAX_SAFE_INTEGER, 'seed'),
+  imageStrength: optionalNum(0, 1, 'imageStrength'),
+  tiling: z.enum(['auto', 'none', 'spatial', 'temporal']).optional(),
+});
+
 const generateBodySchema = z.object({
   // Render backend: the local runtimes (default) or the Grok Build CLI's
   // image-first image_to_video flow (#2859 phase 2). Grok ignores the
@@ -147,14 +160,8 @@ const generateBodySchema = z.object({
   modelId: z.string().max(64).optional(),
   width: optionalNum(64, 2048, 'width'),
   height: optionalNum(64, 2048, 'height'),
-  numFrames: optionalInt(1, 1024, 'numFrames'),
-  fps: optionalNum(1, 60, 'fps'),
-  steps: optionalNum(1, 200, 'steps'),
-  guidanceScale: optionalNum(0, 30, 'guidanceScale'),
-  seed: optionalNum(0, Number.MAX_SAFE_INTEGER, 'seed'),
-  imageStrength: optionalNum(0, 1, 'imageStrength'),
+  ...LOCAL_ONLY_VIDEO_PARAMS,
   audioStartSec: optionalNum(0, 36000, 'audioStartSec'),
-  tiling: z.enum(['auto', 'none', 'spatial', 'temporal']).optional(),
   disableAudio: z.union([z.boolean(), z.literal('true'), z.literal('false')]).optional(),
   sourceImageFile: z.string().max(512).optional(),
   // Gallery-pick filename for the FFLF end-frame. The end-frame can also
@@ -768,6 +775,7 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     // would silently discard the model the caller asked for (e.g. a media
     // requeue rebuilding a local render's config without a backend field).
     && !body.modelId
+    && !Object.keys(LOCAL_ONLY_VIDEO_PARAMS).some((param) => body[param] !== undefined)
     && !uploads.lastImage && !body.lastImageFile
     && !uploads.audioFile
     && !uploads.icReference && !body.icReferenceVideoIds?.length && !body.icReferenceImageFiles?.length
