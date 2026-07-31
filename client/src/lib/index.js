@@ -111,6 +111,7 @@ export * from './referenceAnalysis.js';
 export * from './scoreNotation.js';
 export * from './scorePlayback.js';
 export * from './singToScore.js';
+export * from './singToVerify.js';
 export * from './songCraft.js';
 export * from './songPlayback.js';
 export * from './songProgress.js';
