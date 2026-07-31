@@ -92,7 +92,7 @@ export default function ImageGenSettingsForm({
         <p className="text-[10px] text-gray-500 mt-1">
           Agy's <code className="text-gray-400">generate_image</code> picks the image model internally
           and supports text-to-image only. The model in Settings is the <em>agent</em> that drives the
-          tool. Resolution and style fields apply.
+          tool. Style fields apply; resolution maps to the nearest supported aspect ratio.
         </p>
       ) : null}
     </div>

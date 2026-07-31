@@ -143,6 +143,46 @@ describe('agy image provider', () => {
     expect(sidecar.imageModel).toBe('imagen-3.0-generate-002');
   });
 
+  // The tool's AspectRatio parameter defaults to '1:1', so a render that names
+  // only pixel dimensions comes back square no matter what was asked for —
+  // measured against agy 1.1.8 (1024×1024 with no ratio, 1376×768 with 16:9).
+  // These lock the directive in place; without it, wide comic pages silently
+  // render square.
+  describe('buildAgyPrompt aspect ratio', () => {
+    const build = (width, height) => agy._internals.buildAgyPrompt({
+      prompt: 'a fox', stagingPath: '/tmp/out.png', width, height,
+    });
+
+    it.each([
+      [1024, 1024, '1:1'],
+      [1920, 1080, '16:9'],
+      [1080, 1920, '9:16'],
+      [1024, 768, '4:3'],
+      [768, 1024, '3:4'],
+      [1500, 1000, '3:2'],
+      [1000, 1500, '2:3'],
+    ])('directs the nearest supported ratio for %ix%i', (width, height, ratio) => {
+      expect(build(width, height)).toContain(`Pass AspectRatio "${ratio}" to the tool.`);
+    });
+
+    it('snaps an unsupported ratio to the closest supported one', () => {
+      // 21:9 ultrawide has no exact match — 16:9 is nearest.
+      expect(build(2560, 1080)).toContain('Pass AspectRatio "16:9" to the tool.');
+    });
+
+    it('omits the directive entirely when dimensions are absent', () => {
+      const prompt = agy._internals.buildAgyPrompt({ prompt: 'a fox', stagingPath: '/tmp/out.png' });
+      expect(prompt).not.toContain('AspectRatio');
+    });
+
+    it('keeps the ratio directive out of the image prompt line', () => {
+      // Anything on the "Image prompt:" line becomes part of what gets drawn —
+      // a directive that leaks in there is rendered as content.
+      const promptLine = build(1920, 1080).split('\n').find((l) => l.startsWith('Image prompt:'));
+      expect(promptLine).toBe('Image prompt: a fox');
+    });
+  });
+
   it('fails closed when the directed output is not an image', async () => {
     const failed = vi.fn();
     imageGenEvents.on('failed', failed);

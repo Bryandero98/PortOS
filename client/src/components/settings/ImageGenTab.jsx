@@ -1086,11 +1086,12 @@ export function ImageGenTab() {
               {/* This is the model `agy --model` runs the SESSION on — the agent that
                   calls the built-in generate_image tool. Agy exposes no knob for the
                   underlying image model (generate_image takes Prompt / ImageName /
-                  AspectRatio / ImagePaths and nothing else), so there is no imagen-*
-                  option to pick here — the image model is fixed server-side (see the
-                  read-only row below and AGY_IMAGEGEN_IMAGE_MODEL). An id outside
-                  `agy models` makes agy exit non-zero before generating, which is why
-                  the list is a live probe. */}
+                  AspectRatio / ImagePaths and nothing else — schema re-dumped from a
+                  live session 2026-07-30, agy 1.1.8), so there is no imagen-* option to
+                  pick here — the image model is fixed server-side (see the read-only
+                  row below and AGY_IMAGEGEN_IMAGE_MODEL). An id outside `agy models`
+                  makes agy exit non-zero before generating, which is why the list is a
+                  live probe. */}
               {!agyModelsError && (
                 <p className="text-xs text-gray-500 mt-1">
                   The agent model Agy runs the session on — it drives the built-in{' '}
@@ -1106,7 +1107,8 @@ export function ImageGenTab() {
                 <code className="text-gray-300">{AGY_IMAGEGEN_IMAGE_MODEL}</code>{' '}
                 <span className="text-xs text-gray-500">
                   — chosen by Antigravity server-side; not selectable through the CLI
-                  (no tool parameter, no <code>--model</code> id, prompt requests are ignored).
+                  (no tool parameter, no <code>--model</code> id, prompt requests are ignored —
+                  agy will claim it honored one, but the pixels come out identical).
                 </span>
               </p>
             </div>

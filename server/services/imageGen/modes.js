@@ -78,17 +78,66 @@ export const CODEX_IMAGEGEN_DEFAULT_EFFORT = 'low';
 export const AGY_IMAGEGEN_DEFAULT_MODEL = 'gemini-3.5-flash-low';
 
 // The image model behind agy's generate_image tool — fixed server-side by
-// Antigravity and NOT selectable by PortOS. All three channels were probed and
-// closed (2026-07-29, #3231): the tool schema has no model parameter
-// (Prompt/ImageName/toolSummary/toolAction/AspectRatio/ImagePaths only);
-// `agy --model imagen-3-fast` errors pre-generation ("invalid model
-// selection"); and a prompt directive naming imagen-3-fast rendered anyway on
-// the default backend, with agy reporting it was "not able to honor" the
-// request. Beware: agy itself CLAIMS the --model and prompt-directive routes
-// work — it is wrong about both, so do not re-probe on its word. Exported so
-// sidecars can record the image model that actually rendered (distinct from
-// the agent/session model above) without hardcoding a second copy.
+// Antigravity and NOT selectable by PortOS. Re-probed 2026-07-30 against agy
+// 1.1.8 and still closed; the decisive evidence is now the tool's own schema,
+// dumped from a live session:
+//
+//   { Prompt, ImageName, AspectRatio, ImagePaths, toolAction, toolSummary }
+//
+// There is no model parameter, so the driving agent has nothing to route a
+// model choice through. `agy --model imagen-3-fast` selects the AGENT/session
+// model and rejects image-model ids ("invalid model selection"). A prompt
+// directive naming a model is worse than a no-op: three runs directing
+// imagen-3-fast / gemini-3.5-flash / gemini-2.0-flash all produced identical
+// 1376×768 output from the same backend, and the directive text got
+// concatenated into the tool's `Prompt` ("…spider web (macro lens) using the
+// imagen-3-fast model"), polluting the image prompt itself.
+//
+// Beware: agy CONFIDENTLY names whichever model you asked for when questioned
+// afterward — it reported "gemini-2.0-flash" for a render that came out at
+// Imagen's 16:9 geometry. Do not re-probe on its word; probe the pixels.
+// Exported so sidecars can record the image model that actually rendered
+// (distinct from the agent/session model above) without a second copy.
 export const AGY_IMAGEGEN_IMAGE_MODEL = 'imagen-3.0-generate-002';
+
+// Aspect ratios agy's generate_image tool accepts via its `AspectRatio`
+// parameter — verbatim from the tool schema above. This IS a real knob: a run
+// that names no ratio renders at the tool's documented '1:1' default (measured
+// 1024×1024) no matter what pixel dimensions the prompt asks for, so a PortOS
+// render requesting a wide comic page silently came back square before the
+// directive below started naming a ratio.
+export const AGY_ASPECT_RATIOS = Object.freeze(['1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9']);
+
+/**
+ * Map a pixel width/height onto the closest ratio in `ratios` ('W:H' strings).
+ * Returns null when either dimension is missing or non-positive, so the caller
+ * omits its ratio directive entirely rather than asserting one the user never
+ * chose (each tool then applies its own documented default).
+ *
+ * Lives here rather than in a provider module because every cloud CLI needs the
+ * same mapping against its own alphabet — grok's `deriveAspectRatio` delegates
+ * to it, and agy's prompt builder calls it with AGY_ASPECT_RATIOS.
+ */
+export function nearestAspectRatio(width, height, ratios) {
+  const w = Number(width);
+  const h = Number(height);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
+  const target = w / h;
+  let best = null;
+  let bestDelta = Infinity;
+  for (const ratio of ratios) {
+    const [rw, rh] = ratio.split(':').map(Number);
+    const delta = Math.abs((rw / rh) - target);
+    if (delta < bestDelta) {
+      bestDelta = delta;
+      best = ratio;
+    }
+  }
+  return best;
+}
+
+/** `nearestAspectRatio` bound to agy's alphabet. */
+export const nearestAgyAspectRatio = (width, height) => nearestAspectRatio(width, height, AGY_ASPECT_RATIOS);
 
 // The local runner's fallback model id when neither the request nor
 // settings.imageGen.local.modelId names one (local.js's parameter default).

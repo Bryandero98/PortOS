@@ -25,7 +25,7 @@ import { killWithEscalation } from '../../lib/killWithEscalation.js';
 import { broadcastSse, attachSseClient as attachSse, closeJobAfterDelay } from '../../lib/sseUtils.js';
 import { imageGenEvents } from '../imageGenEvents.js';
 import { buildNoImageReason } from './noImageReason.js';
-import { AGY_IMAGEGEN_IMAGE_MODEL, IMAGE_GEN_MODE } from './modes.js';
+import { AGY_IMAGEGEN_IMAGE_MODEL, IMAGE_GEN_MODE, nearestAgyAspectRatio } from './modes.js';
 import { withSpawnCwdEnv } from '../../lib/spawnCwd.js';
 
 const AGY_TIMEOUT_MS = (() => {
@@ -140,11 +140,19 @@ export const noImageReason = (stdoutTail = '') => buildNoImageReason(stdoutTail,
 
 export function buildAgyPrompt({ prompt, negativePrompt, width, height, stagingPath }) {
   const avoid = negativePrompt?.trim() ? `\nAvoid: ${negativePrompt.trim()}` : '';
+  // `AspectRatio` is a real generate_image parameter and it defaults to '1:1'.
+  // Naming the pixel dimensions alone is not enough — the agent has to be told
+  // which ratio to pass, or every render comes back square regardless of the
+  // requested size. Directed on its own line so it reads as an instruction to
+  // the agent rather than as image content: anything that lands inside the
+  // tool's `Prompt` becomes part of what gets drawn.
+  const ratio = nearestAgyAspectRatio(width, height);
   const dimensions = Number(width) > 0 && Number(height) > 0
-    ? `\nTarget dimensions/aspect: ${Number(width)}×${Number(height)} pixels.`
+    ? `\nTarget dimensions: ${Number(width)}×${Number(height)} pixels.`
     : '';
+  const aspect = ratio ? `\nPass AspectRatio "${ratio}" to the tool.` : '';
   return `Use your built-in generate_image tool to generate exactly one image.
-Image prompt: ${prompt.trim()}${avoid}${dimensions}
+Image prompt: ${prompt.trim()}${avoid}${dimensions}${aspect}
 Save the generated image as a PNG file at exactly this path: ${stagingPath}
 Do not create any other files, do not modify any code or workspace content, and do not run unrelated tools. When the file is written, you are done.`;
 }
