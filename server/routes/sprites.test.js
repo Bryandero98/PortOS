@@ -650,18 +650,28 @@ describe('sprites routes', () => {
     const r = await request(app).get('/api/sprites/pioneer');
     expect(r.body.walk).toEqual({ runs: [], selection: null, walkSet: null });
     expect(walk.getWalkState).toHaveBeenCalledWith('pioneer');
-    expect(r.body.trackDefinitions.map(({ id }) => id)).toEqual(['walk', 'scanner']);
+    // This route resolves the LIVE registry, which since #3152 also holds
+    // whatever tracks the operator authored — so assert the kind gate and the
+    // keyed-by-id contract, not a snapshot of one install's track list. (Pinning
+    // the exact array asserted that the developer running the suite had authored
+    // no character tracks, and went red the day one did.)
+    const characterTracks = r.body.trackDefinitions.map(({ id }) => id);
+    expect(characterTracks).toEqual(expect.arrayContaining(['walk', 'scanner']));
+    expect(characterTracks).not.toContain('ambient');
+    expect(characterTracks[0]).toBe('walk');
     expect(r.body.trackDefinitions[0]).toMatchObject({
       id: 'walk',
       contractFrameCountField: 'walkFrameCount',
       standaloneContract: true,
     });
     expect(r.body.atlas.current.geometry.walkFrameCount).toBe(3);
-    // A character carries scanner but NOT ambient, so only scanner is keyed —
-    // and each state passes through with the `definition` (registry row) the
-    // service resolved, so the client renders the track's label/bounds from data
-    // rather than mirroring them.
-    expect(Object.keys(r.body.tracks)).toEqual(['scanner']);
+    // A character carries scanner but NOT ambient, and `tracks` keys EVERY
+    // non-walk track the kind carries by id — that equality is the contract, and
+    // it holds whatever the registry contains. Each state passes through with the
+    // `definition` (registry row) the service resolved, so the client renders the
+    // track's label/bounds from data rather than mirroring them.
+    expect(Object.keys(r.body.tracks)).toEqual(characterTracks.filter((id) => id !== 'walk'));
+    expect(Object.keys(r.body.tracks)).toContain('scanner');
     expect(r.body.tracks.scanner).toMatchObject({
       track: 'scanner', runs: [], selection: null, set: null,
       definition: { id: 'scanner', directional: true },
@@ -675,8 +685,11 @@ describe('sprites routes', () => {
     // A props family has no gait, so no walk — and ambient, not scanner. The
     // whole point of keying by id: neither kind needs a route-level branch.
     expect(props.body.walk).toBeNull();
-    expect(props.body.trackDefinitions.map(({ id }) => id)).toEqual(['ambient']);
-    expect(Object.keys(props.body.tracks)).toEqual(['ambient']);
+    const propsTracks = props.body.trackDefinitions.map(({ id }) => id);
+    expect(propsTracks).toContain('ambient');
+    expect(propsTracks).not.toContain('walk');
+    expect(propsTracks).not.toContain('scanner');
+    expect(Object.keys(props.body.tracks)).toEqual(propsTracks);
     expect(props.body.tracks.ambient).toMatchObject({
       track: 'ambient', definition: { id: 'ambient', directional: false },
     });
