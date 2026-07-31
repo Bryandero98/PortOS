@@ -37,6 +37,21 @@ export const CLOUD_IMAGE_GEN_MODES = Object.freeze([
 // future backend is one edit here instead of a sweep of enum literals.
 export const QUEUEABLE_IMAGE_MODES = Object.freeze([IMAGE_GEN_MODE.LOCAL, ...CLOUD_IMAGE_GEN_MODES]);
 
+// Backends that cannot take an input image at all (#3243). Agy's `generate_image`
+// tool accepts prompt / image name / aspect ratio / reference paths and exposes
+// no edit mode, so `agy.js` throws AGY_IMAGE_EDIT_UNSUPPORTED the moment an
+// initImagePath or referenceImagePaths arrives.
+//
+// This is the SINGLE source for that fact. It was previously encoded implicitly,
+// by `resolveQueueImageEditMode` simply never listing AGY — which is invisible to
+// any other ladder, and is why the pipeline's `pickUsableMode` ladder could route
+// an i2i redraw to Agy and fail asynchronously in the queue. A future
+// edit-incapable backend belongs here and nowhere else.
+export const EDIT_INCAPABLE_IMAGE_MODES = Object.freeze([IMAGE_GEN_MODE.AGY]);
+
+/** Can `mode` accept an input image (i2i / edit)? */
+export const isEditCapableMode = (mode) => !EDIT_INCAPABLE_IMAGE_MODES.includes(mode);
+
 // Cloud-CLI providers expose no numeric i2i denoise knob, so map the
 // local-runner-style strength (0..1, lower = more faithful to the source)
 // onto a phrase the model reliably honors. Mirrors

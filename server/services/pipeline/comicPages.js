@@ -230,7 +230,6 @@ export async function enqueueVisualComicPage(issueId, options = {}) {
     });
   }
 
-  const mode = resolveMode(options, settings, series);
   const variant = resolveVariant(options.target);
 
   // Consistency reference: pass an already-rendered page as the init image so a
@@ -253,6 +252,10 @@ export async function enqueueVisualComicPage(issueId, options = {}) {
     : fromProof
       ? (Number.isFinite(options.initImageStrength) ? options.initImageStrength : PROOF_AS_BASE_DEFAULT_STRENGTH)
       : undefined;
+  // Resolved AFTER the init image, so an i2i render skips edit-incapable
+  // backends rather than resolving to one that rejects the job in the queue
+  // (#3243).
+  const mode = resolveMode(options, settings, series, { edit: Boolean(initImagePath) });
 
   // Build a free-text haystack from every panel's prose (description +
   // caption + sfx). Dialogue lines feed character matching via CAPS names
@@ -469,7 +472,9 @@ export async function refineComicPageRender(issueId, options = {}) {
     logTag: `Pipeline comic page refine — issue=${issueId.slice(0, 8)} page=${pageIndex + 1} variant=${variant}`,
   });
 
-  const mode = resolveMode(options, settings, series);
+  // A refine render always redraws from `initImagePath`, so it is unconditionally
+  // an edit — edit-incapable backends are skipped (#3243).
+  const mode = resolveMode(options, settings, series, { edit: true });
   const initImageStrength = Number.isFinite(options.initImageStrength)
     ? Math.min(Math.max(options.initImageStrength, 0), 1)
     : REFINE_RENDER_DEFAULT_STRENGTH;

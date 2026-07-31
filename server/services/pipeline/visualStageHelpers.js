@@ -76,12 +76,19 @@ const applyWorldStyle = (prompt, world, series = null) => {
 // The series' persisted per-record pin (#3231 Phase 3) sits between the
 // per-request override and the install-wide target pin: "this series renders
 // on codex" beats the surface default, loses to an explicit UI selection.
-const resolveMode = (options, settings, series = null) => pickUsableMode(settings, [
+// `edit` marks a render that carries an input image (i2i: "use proof as base",
+// a reference page, or a refine pass). Edit-incapable backends are skipped at
+// every rung so the ladder falls through instead of resolving to one that will
+// reject the job asynchronously (#3243). It DEFAULTS from `options.initImagePath`
+// so a call site that already carries the image on `options` — enqueueVisualImage,
+// the storyboard shot path — is covered without opting in; the sites that derive
+// the init image AFTER resolving the mode pass `{ edit: true }` explicitly.
+const resolveMode = (options, settings, series = null, { edit } = {}) => pickUsableMode(settings, [
   options.mode,
   recordRenderPin(series).mode,
   renderTargetDefaults(settings, RENDER_TARGET.PIPELINE_VISUAL).imageMode,
   settings?.imageGen?.mode,
-]);
+], { edit: edit ?? Boolean(options.initImagePath) });
 
 /**
  * Resolve trained character LoRAs for a pipeline render. Local mode only —

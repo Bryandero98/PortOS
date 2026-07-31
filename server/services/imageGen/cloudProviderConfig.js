@@ -24,6 +24,7 @@ import {
   CODEX_IMAGEGEN_DEFAULT_MODEL,
   IMAGE_GEN_MODE,
   QUEUEABLE_IMAGE_MODES,
+  isEditCapableMode,
 } from './modes.js';
 
 /**
@@ -138,8 +139,13 @@ export function resolveCloudProviderConfig(settings, mode, overrides = {}) {
  * (pipeline/visualStageHelpers.js), so the mode ladder no longer grows a
  * pairwise `if` per backend.
  */
-export function isModeUsable(settings, mode) {
+export function isModeUsable(settings, mode, { edit = false } = {}) {
   if (!QUEUEABLE_IMAGE_MODES.includes(mode)) return false;
+  // An edit render (i2i / "use proof as base" / refine) can only go to a backend
+  // that accepts an input image at all — #3243. Without this the ladder happily
+  // returned Agy for a redraw, and the failure surfaced asynchronously in the
+  // queue as AGY_IMAGE_EDIT_UNSUPPORTED, long after the request 200'd.
+  if (edit && !isEditCapableMode(mode)) return false;
   const cloud = resolveCloudProviderConfig(settings, mode);
   return cloud ? cloud.enabled : true;
 }
@@ -147,10 +153,17 @@ export function isModeUsable(settings, mode) {
 /**
  * First usable mode from an ordered candidate list, falling back to the
  * cloud providers (in `CLOUD_IMAGE_GEN_MODES` order) and finally local.
+ *
+ * Pass `{ edit: true }` when the render carries an input image: edit-incapable
+ * backends are then skipped at every rung, so a record pinned to such a backend
+ * FALLS THROUGH to the next usable one rather than failing. Falling through is
+ * deliberate — a pin is a preference, and the surrounding pins already degrade
+ * this way when a pinned backend is disabled (the enforceRenderBackendPin
+ * contract). LOCAL is edit-capable, so the tail always resolves.
  */
-export function pickUsableMode(settings, candidates = []) {
+export function pickUsableMode(settings, candidates = [], { edit = false } = {}) {
   const ordered = [...candidates, ...CLOUD_IMAGE_GEN_MODES, IMAGE_GEN_MODE.LOCAL];
-  return ordered.find((m) => m && isModeUsable(settings, m)) || IMAGE_GEN_MODE.LOCAL;
+  return ordered.find((m) => m && isModeUsable(settings, m, { edit })) || IMAGE_GEN_MODE.LOCAL;
 }
 
 /**

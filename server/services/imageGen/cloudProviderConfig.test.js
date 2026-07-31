@@ -168,6 +168,19 @@ describe('isModeUsable', () => {
     expect(isModeUsable(settingsWith({}), IMAGE_GEN_MODE.EXTERNAL)).toBe(false);
     expect(isModeUsable(settingsWith({}), 'nonsense')).toBe(false);
   });
+
+  it('refuses an edit-incapable backend for an edit render, enabled or not (#3243)', () => {
+    // Agy's generate_image takes no input image, so an i2i render routed there
+    // throws AGY_IMAGE_EDIT_UNSUPPORTED — asynchronously, inside the queue, long
+    // after the request 200'd. Enabled-ness is irrelevant: it is a capability,
+    // not a toggle.
+    const s = settingsWith({ agy: { enabled: true }, codex: { enabled: true } });
+    expect(isModeUsable(s, IMAGE_GEN_MODE.AGY)).toBe(true);
+    expect(isModeUsable(s, IMAGE_GEN_MODE.AGY, { edit: true })).toBe(false);
+    // Edit-capable backends are unaffected by the flag.
+    expect(isModeUsable(s, IMAGE_GEN_MODE.CODEX, { edit: true })).toBe(true);
+    expect(isModeUsable(s, IMAGE_GEN_MODE.LOCAL, { edit: true })).toBe(true);
+  });
 });
 
 describe('pickUsableMode', () => {
@@ -194,6 +207,24 @@ describe('pickUsableMode', () => {
       settingsWith({ codex: { enabled: true }, grok: { enabled: true } }),
       [],
     )).toBe(IMAGE_GEN_MODE.CODEX);
+  });
+
+  it('falls a record pinned to an edit-incapable backend through to the next usable one (#3243)', () => {
+    // The bug: a series pinned to Agy rendered plain text-to-image fine, but
+    // every redraw ("use proof as base", a reference page, a refine pass)
+    // enqueued and then failed async. Falling through is the right answer, not
+    // an error — a pin is a preference, and the surrounding pins already degrade
+    // this way when a pinned backend is disabled.
+    const s = settingsWith({ agy: { enabled: true }, codex: { enabled: true } });
+    expect(pickUsableMode(s, [IMAGE_GEN_MODE.AGY])).toBe(IMAGE_GEN_MODE.AGY);
+    expect(pickUsableMode(s, [IMAGE_GEN_MODE.AGY], { edit: true })).toBe(IMAGE_GEN_MODE.CODEX);
+  });
+
+  it('lands on local for an edit render when every cloud backend is edit-incapable or off (#3243)', () => {
+    // LOCAL is edit-capable, so the auto tail always resolves — an edit render
+    // can never fall off the end of the ladder.
+    const agyOnly = settingsWith({ codex: { enabled: false }, grok: { enabled: false }, agy: { enabled: true } });
+    expect(pickUsableMode(agyOnly, [IMAGE_GEN_MODE.AGY], { edit: true })).toBe(IMAGE_GEN_MODE.LOCAL);
   });
 
   it('falls back to local when nothing else is usable', () => {
