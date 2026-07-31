@@ -84,7 +84,13 @@ export default function useSingToVerify({ score: scoreText = '', tempo } = {}) {
     trackRef.current = [];
     startBarRef.current = startBar;
 
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true }).catch((err) => {
+    const getUserMedia = navigator.mediaDevices?.getUserMedia?.bind(navigator.mediaDevices);
+    if (!getUserMedia) {
+      startPendingRef.current = false;
+      if (mountedRef.current) setError('Microphone access requires a secure browser connection');
+      return;
+    }
+    const stream = await getUserMedia({ audio: true }).catch((err) => {
       if (requestGeneration === requestGenerationRef.current) {
         startPendingRef.current = false;
         if (mountedRef.current) setError(err?.message || 'Microphone access denied');

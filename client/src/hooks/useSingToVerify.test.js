@@ -120,6 +120,19 @@ describe('useSingToVerify', () => {
     expect(result.current.phase).toBe(VERIFY_COUNT_IN);
   });
 
+  it('reports unavailable microphone APIs without getting stuck', async () => {
+    global.navigator.mediaDevices = undefined;
+    const { result } = renderHook(() => useSingToVerify({
+      tempo: 120,
+      score: 'time: 4/4\n| C4q |',
+    }));
+
+    await act(async () => { await result.current.start(1); });
+    expect(result.current.error).toMatch(/secure browser connection/i);
+    await act(async () => { await result.current.start(1); });
+    expect(result.current.error).toMatch(/secure browser connection/i);
+  });
+
   it('cancels an active capture without aligning stale rows', async () => {
     const { result } = renderHook(() => useSingToVerify({
       tempo: 120,
