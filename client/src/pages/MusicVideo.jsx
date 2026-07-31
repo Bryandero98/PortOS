@@ -485,7 +485,10 @@ export default function MusicVideo() {
   const missingVideoCount = sceneCount - renderableSceneCount;
   const finalVideo = useVideoFileSrc(selected?.renderHistoryId, { enabled: !!selected?.renderHistoryId });
   const savedVideoSettings = {
-    backend: selected?.videoSettings?.backend || 'local',
+    // Empty means this peer resolves its own configured Video Gen default.
+    // Synced projects intentionally arrive without another install's backend
+    // pin, so do not turn that absence into an explicit local override.
+    backend: selected?.videoSettings?.backend || '',
     // Empty is an intentional "follow the local Video Gen default" choice,
     // distinct from pinning the model that happens to be default today.
     modelId: selected?.videoSettings?.modelId || '',
@@ -771,10 +774,15 @@ export default function MusicVideo() {
     videoLane.startScene(scene.sceneId);
     generateVideo({
       prompt,
-      backend: savedVideoSettings.backend,
+      ...(savedVideoSettings.backend ? { backend: savedVideoSettings.backend } : {}),
       ...(savedVideoSettings.backend === 'grok'
         ? { grokDuration: savedVideoSettings.grokDuration }
-        : { modelId: savedVideoSettings.modelId || undefined, disableAudio: true }),
+        : savedVideoSettings.backend === 'local'
+          ? { modelId: savedVideoSettings.modelId || undefined, disableAudio: true }
+          // A named model is local-only machinery at the server boundary and
+          // would force the resolver off a Grok install default. Keep the
+          // shared pin saved, but omit it until this peer chooses Local.
+          : { grokDuration: savedVideoSettings.grokDuration, disableAudio: true }),
       mode: audioReactive ? 'a2v' : 'image',
       sourceImageFile: scene.referenceImageId,
       ...(audioReactive ? {
@@ -1013,6 +1021,7 @@ export default function MusicVideo() {
                       title="Saved renderer for this project's scene videos"
                       className="bg-port-bg border border-port-border rounded px-1.5 py-1.5 text-sm disabled:opacity-50"
                     >
+                      <option value="">Install default</option>
                       <option value="local">Local video</option>
                       <option value="grok">Grok video</option>
                     </select>
