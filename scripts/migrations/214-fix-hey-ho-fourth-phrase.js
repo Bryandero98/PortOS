@@ -131,12 +131,20 @@ export default {
     // the exact 6-bar shipped string. Deep-clone the parts so the persisted record
     // can't share array/object identity with the in-memory seed.
     //
-    // Parts the user added themselves are preserved. `scoreParts` is independently
+    // Parts the user ADDED themselves are preserved. `scoreParts` is independently
     // editable (SongScoreParts' "Add part" and the AI-derive path both append a
     // part with a generated id), so a stock melody can still carry a hand-written
     // bass line. Rewriting the whole array — as a naive replace would — would
     // delete that work with no backup, which is exactly the clobbering this
     // migration's per-field gating exists to prevent.
+    //
+    // An EDIT to a shipped voice (`part-heyho-v2`/`v3`) is deliberately NOT
+    // preserved, and this is the one place the per-field gating is knowingly
+    // traded away: the lead grows from 6 bars to 8 here, so a voice still written
+    // against the 6-bar lead enters on the wrong beat and the round no longer
+    // lines up. A silently out-of-phase voice is worse than a reset one. Anyone
+    // who retuned a shipped voice re-applies it against the 8-bar lead; the gate
+    // above means this only ever runs on a stock, untouched score.
     if (round.score === OLD_HEY_HO_SCORE_6BAR) {
       round.score = NEW_HEY_HO_SCORE;
       const shippedIds = new Set(NEW_HEY_HO_SCORE_PARTS.map((p) => p.id));
