@@ -878,8 +878,14 @@ export const registerShutdownHandlers = ({ io, httpServer, localHttpServer }) =>
     // tell "PortOS was restarted out from under a healthy agent" apart from "the
     // agent's own process died" and skip the retry-budget/cooldown penalty for a
     // fault the agent didn't cause (#3202). Only `activeAgents` — the ones whose
-    // child processes live in THIS process's tree — belong here; runner-mode
-    // agents are owned by portos-cos and survive this restart untouched.
+    // child processes live in THIS process's tree — belong here; agents the CoS
+    // runner owns survive this restart untouched and are re-adopted by
+    // `syncRunnerAgents` on the next boot.
+    //
+    // Note `activeAgents` is NOT "direct-spawn only": runner-launched TUI agents
+    // register there too (`agentTuiSpawning.js`, both launch modes). The
+    // distinction that matters here is process ownership, not spawn mode — do
+    // not re-derive the snapshot from "was this spawned via the runner".
     //
     // Started here so the agent snapshot is taken before anything can await, but
     // awaited just before exit so a stalled filesystem spends none of the graceful
