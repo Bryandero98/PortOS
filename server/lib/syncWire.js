@@ -178,7 +178,6 @@ export function sanitizeRecordForWire(kind, record) {
     case 'moodBoard':
     case 'writersRoomFolder':
     case 'writersRoomExercise':
-    case 'musicVideoProject':
     case 'commissionFeedback': {
       // Persona/music/creative-director/mood-board records: like mediaCollection,
       // no `ephemeral` flag — always wire-syncable when present. Strip-then-tail-
@@ -190,12 +189,30 @@ export function sanitizeRecordForWire(kind, record) {
       // record LWW contract; a moodBoard (name/description/items) is the same.
       // Writers Room folders + exercises (#1645) are also body-less whole-record
       // LWW kinds with no ephemeral counters — they wire identically (no liveMode
-      // strip like writersRoomWork below). A musicVideoProject (#1770:
-      // metadata + beat-aligned scenes[]) is the same whole-record LWW contract.
       // A commissionFeedback (#2686: one reaction — commissionId/runId/rating/
       // note/tags/at) is a body-less whole-record LWW record with no local-only
       // fields to strip, so it rides this same group.
       const { deleted: _d, deletedAt: _da, ...rest } = record;
+      return { ...rest, ...sanitizeSoftDeleteFields(record) };
+    }
+    case 'musicVideoProject': {
+      // Music Video projects are whole-record LWW, but their image render pin
+      // and video backend are install-capability choices: a peer may not have
+      // the selected provider configured. Keep those fields wire-local while
+      // preserving the rest of videoSettings (model, pacing, generation mode).
+      // Stripping also keeps the wire/hash form byte-stable with peers from
+      // before these fields shipped, so no schema-version gate is required.
+      const {
+        deleted: _d,
+        deletedAt: _da,
+        imageMode: _imageMode,
+        imageModelId: _imageModelId,
+        ...rest
+      } = record;
+      if (rest.videoSettings && typeof rest.videoSettings === 'object' && !Array.isArray(rest.videoSettings)) {
+        const { backend: _backend, ...sharedVideoSettings } = rest.videoSettings;
+        rest.videoSettings = sharedVideoSettings;
+      }
       return { ...rest, ...sanitizeSoftDeleteFields(record) };
     }
     case 'writersRoomWork': {

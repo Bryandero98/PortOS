@@ -478,6 +478,54 @@ describe('mergeProjectRecord (#1770 LWW)', () => {
     expect(r.next.name).toBe('new');
   });
 
+  it('preserves local render pins when a newer remote edit wins (#3245)', () => {
+    const local = {
+      id: 'mv-1',
+      updatedAt: '2026-01-01T00:00:00Z',
+      name: 'local',
+      imageMode: 'codex',
+      imageModelId: 'example-image-model',
+      videoSettings: { backend: 'local', modelId: 'local-model', grokDuration: 5 },
+    };
+    const remote = {
+      id: 'mv-1',
+      updatedAt: '2026-01-05T00:00:00Z',
+      name: 'remote edit',
+      videoSettings: { modelId: 'shared-model', grokDuration: 10 },
+    };
+
+    const r = mergeProjectRecord(local, remote);
+
+    expect(r.remoteWins).toBe(true);
+    expect(r.next.name).toBe('remote edit');
+    expect(r.next.imageMode).toBe('codex');
+    expect(r.next.imageModelId).toBe('example-image-model');
+    expect(r.next.videoSettings).toEqual({
+      modelId: 'shared-model',
+      grokDuration: 10,
+      backend: 'local',
+    });
+  });
+
+  it('keeps absent local image pins absent while preserving a local video backend', () => {
+    const local = {
+      id: 'mv-1',
+      updatedAt: '2026-01-01T00:00:00Z',
+      videoSettings: { backend: 'local' },
+    };
+    const remote = {
+      id: 'mv-1',
+      updatedAt: '2026-01-05T00:00:00Z',
+      videoSettings: { modelId: 'shared-model' },
+    };
+
+    const { next } = mergeProjectRecord(local, remote);
+
+    expect(next).not.toHaveProperty('imageMode');
+    expect(next).not.toHaveProperty('imageModelId');
+    expect(next.videoSettings).toEqual({ modelId: 'shared-model', backend: 'local' });
+  });
+
   it('local with a newer updatedAt wins (no change applied)', () => {
     const local = { id: 'mv-1', updatedAt: '2026-01-05T00:00:00Z', name: 'local' };
     const remote = { id: 'mv-1', updatedAt: '2026-01-01T00:00:00Z', name: 'remote' };

@@ -201,6 +201,35 @@ describe('syncWire', () => {
       expect(series.styleImageRefs).toEqual(['x.png']);
     });
 
+    it('strips Music Video render pins byte-for-byte against a pre-field peer (#3245)', () => {
+      const withPins = sanitizeRecordForWire('musicVideoProject', {
+        id: 'mv-1',
+        name: 'Example Video',
+        imageMode: 'grok',
+        imageModelId: 'example-image-model',
+        videoSettings: {
+          backend: 'grok',
+          modelId: 'example-video-model',
+          grokDuration: 10,
+          generationMode: 'image',
+        },
+      });
+      const preField = sanitizeRecordForWire('musicVideoProject', {
+        id: 'mv-1',
+        name: 'Example Video',
+        videoSettings: {
+          modelId: 'example-video-model',
+          grokDuration: 10,
+          generationMode: 'image',
+        },
+      });
+
+      expect(withPins.imageMode).toBeUndefined();
+      expect(withPins.imageModelId).toBeUndefined();
+      expect(withPins.videoSettings.backend).toBeUndefined();
+      expect(JSON.stringify(withPins)).toBe(JSON.stringify(preField));
+    });
+
     describe('author kind', () => {
       it('passes through an author with canonical tail soft-delete fields', () => {
         const a = { id: 'auth-1', name: 'Ada', bio: 'b' };

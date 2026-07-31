@@ -351,9 +351,23 @@ export function sanitizeProjectForSync(raw) {
  * `updatedAt`, so a tombstone beats an older live copy and can't be resurrected.
  */
 export function mergeProjectRecord(local, remoteRaw) {
-  const remote = sanitizeProjectForSync(remoteRaw);
+  let remote = sanitizeProjectForSync(remoteRaw);
   if (!remote) return { next: null, inserted: false, remoteWins: false, changed: false };
   if (!local) return { next: remote, inserted: true, remoteWins: true, changed: true };
+  // Render pins are install-capability choices and therefore wire-local
+  // (#3245). sanitizeRecordForWire omits them from peer payloads; restore this
+  // machine's values before a newer remote record wholesale-replaces local.
+  // Key-presence checks preserve an intentional local empty/null value instead
+  // of confusing it with a missing field.
+  remote = { ...remote };
+  if (Object.hasOwn(local, 'imageMode')) remote.imageMode = local.imageMode;
+  if (Object.hasOwn(local, 'imageModelId')) remote.imageModelId = local.imageModelId;
+  if (local.videoSettings && typeof local.videoSettings === 'object'
+    && !Array.isArray(local.videoSettings) && Object.hasOwn(local.videoSettings, 'backend')) {
+    const remoteVideoSettings = remote.videoSettings && typeof remote.videoSettings === 'object'
+      && !Array.isArray(remote.videoSettings) ? remote.videoSettings : {};
+    remote.videoSettings = { ...remoteVideoSettings, backend: local.videoSettings.backend };
+  }
   const remoteWins = compareNewerWins(remote.updatedAt, local.updatedAt);
   const next = remoteWins ? remote : local;
   const changed = JSON.stringify(next) !== JSON.stringify(local);
