@@ -1016,7 +1016,7 @@ export default function MusicVideo() {
                     <select
                       id="mv-video-backend"
                       value={savedVideoSettings.backend}
-                      onChange={(e) => handleVideoSettingsChange({ backend: e.target.value })}
+                      onChange={(e) => handleVideoSettingsChange({ backend: e.target.value || null })}
                       disabled={videoSettingsSaving || Object.keys(genVideoScenes).length > 0}
                       title="Saved renderer for this project's scene videos"
                       className="bg-port-bg border border-port-border rounded px-1.5 py-1.5 text-sm disabled:opacity-50"

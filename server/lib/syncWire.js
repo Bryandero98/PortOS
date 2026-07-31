@@ -18,6 +18,23 @@ export function sanitizeSoftDeleteFields(raw) {
   return { deleted, deletedAt };
 }
 
+/**
+ * Remove Music Video render choices that belong to the receiving install.
+ * Transport keeps the legacy `videoSettings.backend` by default so an older
+ * receiver is not regressed; upgraded receivers and content hashing opt into
+ * stripping it as well.
+ */
+export function stripMusicVideoLocalRenderPins(record, { stripVideoBackend = true } = {}) {
+  if (!record || typeof record !== 'object' || Array.isArray(record)) return record;
+  const { imageMode: _imageMode, imageModelId: _imageModelId, ...shared } = record;
+  if (stripVideoBackend && shared.videoSettings
+    && typeof shared.videoSettings === 'object' && !Array.isArray(shared.videoSettings)) {
+    const { backend: _backend, ...sharedVideoSettings } = shared.videoSettings;
+    shared.videoSettings = sharedVideoSettings;
+  }
+  return shared;
+}
+
 // Single source of truth for what fields cross the federated-peer wire.
 //
 // Two transports carry universe / series / issue records between peers:
@@ -202,17 +219,12 @@ export function sanitizeRecordForWire(kind, record) {
       // preserving the rest of videoSettings (model, pacing, generation mode).
       // Stripping also keeps the wire/hash form byte-stable with peers from
       // before these fields shipped, so no schema-version gate is required.
-      const {
-        deleted: _d,
-        deletedAt: _da,
-        imageMode: _imageMode,
-        imageModelId: _imageModelId,
-        ...rest
-      } = record;
-      if (rest.videoSettings && typeof rest.videoSettings === 'object' && !Array.isArray(rest.videoSettings)) {
-        const { backend: _backend, ...sharedVideoSettings } = rest.videoSettings;
-        rest.videoSettings = sharedVideoSettings;
-      }
+      // `videoSettings.backend` predates the local-pin contract. Keep it on
+      // transport for older receivers whose LWW merge still expects it;
+      // upgraded receivers strip it before persistence, and content hashing
+      // excludes it so local choices never create phantom divergence.
+      const projected = stripMusicVideoLocalRenderPins(record, { stripVideoBackend: false });
+      const { deleted: _d, deletedAt: _da, ...rest } = projected;
       return { ...rest, ...sanitizeSoftDeleteFields(record) };
     }
     case 'writersRoomWork': {

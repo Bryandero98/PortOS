@@ -2,7 +2,7 @@
 
 ## Music Video
 
-- **[issue-3245] Synced Music Video projects now use each machine's own render backends.** Image and video backend pins no longer cross federation boundaries or overwrite a peer's locally usable choices, while shared model and pacing settings continue to sync.
+- **[issue-3245] Synced Music Video projects now use each machine's own render backends.** Image and video backend pins no longer overwrite a peer's locally usable choices, while shared model and pacing settings continue to sync.
 
 ## POST
 

@@ -141,6 +141,13 @@ describe('musicVideo routes', () => {
     expect(svc.updateProject).toHaveBeenCalledWith('mv-1', { videoSettings });
   });
 
+  it('PATCH /:id accepts null to clear the project video-backend pin', async () => {
+    const videoSettings = { backend: null };
+    const r = await request(app).patch('/api/music-video/mv-1').send({ videoSettings });
+    expect(r.status).toBe(200);
+    expect(svc.updateProject).toHaveBeenCalledWith('mv-1', { videoSettings });
+  });
+
   it('PATCH /:id rejects invalid video-renderer settings', async () => {
     const r = await request(app).patch('/api/music-video/mv-1')
       .send({ videoSettings: { backend: 'cloud-surprise', grokDuration: 9 } });

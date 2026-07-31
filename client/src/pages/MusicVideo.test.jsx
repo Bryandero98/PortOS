@@ -229,6 +229,20 @@ describe('MusicVideo project video renderer', () => {
     expect(generateVideo.mock.calls.at(-1)[0]).not.toHaveProperty('modelId');
   });
 
+  it('clears an existing backend pin with the Install default option', async () => {
+    await openProject(PROJECT_NO_CLIP);
+
+    fireEvent.change(await screen.findByLabelText('Scene video renderer'), {
+      target: { value: '' },
+    });
+
+    await waitFor(() => expect(updateMusicVideoProject).toHaveBeenCalledWith(
+      'mv-2',
+      { videoSettings: { backend: null } },
+      { silent: true },
+    ));
+  });
+
   it('persists the local model and uses it for scene generation', async () => {
     generateVideo.mockResolvedValue({ jobId: 'video-job-1' });
     await openProject(PROJECT_NO_CLIP);

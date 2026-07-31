@@ -201,7 +201,7 @@ describe('syncWire', () => {
       expect(series.styleImageRefs).toEqual(['x.png']);
     });
 
-    it('strips Music Video render pins byte-for-byte against a pre-field peer (#3245)', () => {
+    it('strips Music Video image pins while retaining the legacy backend wire shape (#3245)', () => {
       const withPins = sanitizeRecordForWire('musicVideoProject', {
         id: 'mv-1',
         name: 'Example Video',
@@ -218,6 +218,7 @@ describe('syncWire', () => {
         id: 'mv-1',
         name: 'Example Video',
         videoSettings: {
+          backend: 'grok',
           modelId: 'example-video-model',
           grokDuration: 10,
           generationMode: 'image',
@@ -226,7 +227,7 @@ describe('syncWire', () => {
 
       expect(withPins.imageMode).toBeUndefined();
       expect(withPins.imageModelId).toBeUndefined();
-      expect(withPins.videoSettings.backend).toBeUndefined();
+      expect(withPins.videoSettings.backend).toBe('grok');
       expect(JSON.stringify(withPins)).toBe(JSON.stringify(preField));
     });
 
