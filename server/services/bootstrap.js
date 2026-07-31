@@ -28,6 +28,7 @@ import { ERROR_CATEGORIES } from '../lib/aiToolkit/errorDetection.js';
 import { createAIToolkit } from '../lib/aiToolkit/index.js';
 import { verifyCollectionVersions } from '../lib/collectionStore.js';
 import { conflictJournalStore } from '../lib/conflictJournal.js';
+import { markHostShuttingDown, writeHostShutdownMarker } from '../lib/hostShutdown.js';
 import { setUserCatalogTypes } from '../lib/catalogTypes.js';
 import { runMigrations } from '../../scripts/run-migrations.js';
 
@@ -45,6 +46,10 @@ import { initSpawner } from './subAgentSpawner.js';
 import { initCertRenewer } from './certRenewer.js';
 
 import * as cos from './cos.js';
+// Side-effect-free shared state module — importing it here does NOT pull in the
+// agent-lifecycle orchestrator graph (that's why activeAgents lives in its own
+// leaf module), so the shutdown handler can read the live agent set cheaply.
+import { activeAgents } from './agentState.js';
 import * as automationScheduler from './automationScheduler.js';
 import * as agentActionExecutor from './agentActionExecutor.js';
 import * as telegram from './telegram.js';
@@ -110,6 +115,7 @@ import { mediaCollectionStore } from './mediaCollections.js';
 import { loraDatasetStore } from './loraDatasets.js';
 import { commissionStore, backfillAllCommissionFeedback } from './creativeCommissions/store.js';
 import { outcomesStore as liOutcomesStore } from './layeredIntelligenceOutcomes.js';
+import * as gameStore from './games/store.js';
 
 /**
  * Pre-route boot. Everything a route handler may depend on being ready the
@@ -144,7 +150,7 @@ export const bootstrapServices = async ({ io, dataDir, dataReferenceDir, serverD
   // but DO NOT crash the server. PortOS is single-user (CLAUDE.md "Security
   // Model"); a hard exit on startup is worse than a noisy log the user can act
   // on. Returns per-store statuses for downstream telemetry; we discard them.
-  await verifyCollectionVersions([universeStore(), seriesStore(), issueStore(), conflictJournalStore(), storyBuilderStore(), mediaCollectionStore(), loraDatasetStore, liOutcomesStore(), commissionStore(), ...brainCollectionStores()]).catch(err => {
+  await verifyCollectionVersions([universeStore(), seriesStore(), issueStore(), conflictJournalStore(), storyBuilderStore(), mediaCollectionStore(), loraDatasetStore, liOutcomesStore(), commissionStore(), gameStore, ...brainCollectionStores()]).catch(err => {
     console.error(`❌ Collection version check failed at startup: ${err?.stack ?? err}`);
   });
 
@@ -843,6 +849,11 @@ export const registerShutdownHandlers = ({ io, httpServer, localHttpServer }) =>
   const shutdown = async (signal) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    // Latch the host-shutdown flag BEFORE anything can await. pm2's TreeKill
+    // signals the whole descendant tree, so a server-owned agent PTY can exit
+    // microseconds from now — and its exit handler must already know the PTY
+    // died because PortOS is going down, not because the agent finished (#3202).
+    markHostShuttingDown();
     // Diagnostic context for the shutdown trigger. ppid tells us whether the
     // signal came from PM2 (parent is the PM2 god process), a TTY (parent is
     // the user's shell), or some external orchestrator. pm_* env vars are set
@@ -862,6 +873,29 @@ export const registerShutdownHandlers = ({ io, httpServer, localHttpServer }) =>
     // Don't let the safety timer itself keep the event loop alive — if every
     // other handle has closed we should exit immediately, not wait out the timer.
     forceExitTimer.unref?.();
+
+    // Record which agents this process owned, so the NEXT boot's orphan sweep can
+    // tell "PortOS was restarted out from under a healthy agent" apart from "the
+    // agent's own process died" and skip the retry-budget/cooldown penalty for a
+    // fault the agent didn't cause (#3202). Only `activeAgents` — the ones whose
+    // child processes live in THIS process's tree — belong here; agents the CoS
+    // runner owns survive this restart untouched and are re-adopted by
+    // `syncRunnerAgents` on the next boot.
+    //
+    // Note `activeAgents` is NOT "direct-spawn only": runner-launched TUI agents
+    // register there too (`agentTuiSpawning.js`, both launch modes). The
+    // distinction that matters here is process ownership, not spawn mode — do
+    // not re-derive the snapshot from "was this spawned via the runner".
+    //
+    // Started here so the agent snapshot is taken before anything can await, but
+    // awaited just before exit so a stalled filesystem spends none of the graceful
+    // budget ahead of the teardown below. Best-effort throughout: the helper logs
+    // both outcomes and never rejects (hence `finish()` with no message), the
+    // `.catch` is the belt-and-suspenders for an out-of-lifecycle rejection, and a
+    // marker we fail to write only degrades recovery to the pre-existing orphan path.
+    const markerWritten = withGrace('Host-shutdown marker', 1500, (finish) =>
+      writeHostShutdownMarker({ agentIds: [...activeAgents.keys()], signal })
+        .then(() => finish(), (err) => finish(`⚠️ Host-shutdown marker failed: ${err.message}`, true)));
 
     // Drop existing long-lived sockets (SSE + keep-alive) up front so the closes
     // below don't wait on connections that never end on their own.
@@ -897,6 +931,7 @@ export const registerShutdownHandlers = ({ io, httpServer, localHttpServer }) =>
       console.warn('ℹ️ DB pool close not available; skipping DB shutdown');
     }
 
+    await markerWritten;
     clearTimeout(forceExitTimer);
     process.exit(0);
   };

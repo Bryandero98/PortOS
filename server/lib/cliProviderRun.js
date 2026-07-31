@@ -18,8 +18,8 @@
 
 import { spawn } from 'child_process';
 import { buildCliArgs, prepareCliPrompt } from './cliProviderArgs.js';
-import { buildOpencodeEnvVars } from './opencodeConfig.js';
 import { killProcessTree, resolveWindowsExecutable, prepareWindowsSafeSpawn } from './bufferedSpawn.js';
+import { buildCliChildEnv } from './cliChildEnv.js';
 
 /**
  * Resolve which CLI provider + model a feature should use from the providers
@@ -101,14 +101,18 @@ export function runCliProviderPrompt(args = {}) {
     let stderr = '';
     let settled = false;
 
-    // CLAUDECODE is deleted from the child env so a nested invocation doesn't
-    // think it's running inside the parent Claude Code session.
-    // buildOpencodeEnvVars rebuilds OPENCODE_CONFIG_CONTENT with a declared
-    // models map for OpenCode Ollama providers (empty/no-op otherwise) so the
-    // injected `--model ollama/<id>` isn't rejected as "not valid" — see
-    // issue-2190. effectiveProvider carries the per-call model as defaultModel.
-    const childEnv = { ...baseEnv, ...provider.envVars, ...buildOpencodeEnvVars(effectiveProvider, effectiveProvider.defaultModel) };
-    delete childEnv.CLAUDECODE;
+    // Shared composition (provider.envVars + OpenCode models map + PWD pin +
+    // CLAUDECODE strip) — see buildCliChildEnv. No `guard`: this is the
+    // fire-and-collect path, not an autonomous agent, so it keeps the unguarded
+    // PATH it has always had. effectiveProvider carries the per-call model as
+    // defaultModel, which is what the OpenCode declared-models map is built from
+    // (its envVars are provider's, unchanged).
+    const effectiveCwd = cwd || process.cwd();
+    const childEnv = buildCliChildEnv({
+      baseEnv,
+      provider: effectiveProvider,
+      cwd: effectiveCwd,
+    });
 
     // npm-installed CLI providers are .cmd/.bat shims on Windows; resolve+wrap
     // (cmd.exe /c) instead of enabling a shell — shell:true + an args array
@@ -120,7 +124,7 @@ export function runCliProviderPrompt(args = {}) {
     const resolvedCommand = resolveWindowsExecutable(provider.command, undefined, childEnv) || provider.command;
     const { command: spawnCommand, args: wrappedArgs } = prepareWindowsSafeSpawn(resolvedCommand, spawnArgs);
     const child = spawn(spawnCommand, wrappedArgs, {
-      cwd: cwd || process.cwd(),
+      cwd: effectiveCwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: childEnv,
       windowsHide: true,

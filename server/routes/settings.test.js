@@ -125,3 +125,122 @@ describe('Settings routes — imageGen.grok slice (#2859)', () => {
     expect(res.status).toBe(200);
   });
 });
+
+describe('Settings routes — imageGen.agy slice', () => {
+  beforeEach(() => {
+    store = {};
+    vi.clearAllMocks();
+  });
+
+  it('accepts a valid Agy slice and persists the selected model', async () => {
+    const res = await request(buildApp())
+      .put('/api/settings')
+      .send({ imageGen: { agy: { enabled: true, agyPath: '/usr/local/bin/agy', model: 'gemini/image-v2' } } });
+    expect(res.status).toBe(200);
+    expect(res.body.imageGen.agy).toEqual(expect.objectContaining({
+      enabled: true,
+      model: 'gemini/image-v2',
+    }));
+  });
+
+  it('accepts empty-string UI sentinels for path and model', async () => {
+    const res = await request(buildApp())
+      .put('/api/settings')
+      .send({ imageGen: { agy: { enabled: false, agyPath: '', model: '' } } });
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects a model id containing shell syntax', async () => {
+    const res = await request(buildApp())
+      .put('/api/settings')
+      .send({ imageGen: { agy: { model: 'gemini; rm -rf /' } } });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('Settings routes — renderDefaults slice (#3231)', () => {
+  beforeEach(() => {
+    store = {};
+    vi.clearAllMocks();
+  });
+
+  it('accepts per-target backend + model pins and persists them', async () => {
+    const res = await request(buildApp())
+      .put('/api/settings')
+      .send({ renderDefaults: {
+        'universe-bible': { imageMode: 'codex' },
+        'sprite-reference': { imageMode: 'agy', imageModel: 'gemini-3.6-flash-low' },
+      } });
+    expect(res.status).toBe(200);
+    expect(res.body.renderDefaults).toEqual({
+      'universe-bible': { imageMode: 'codex' },
+      'sprite-reference': { imageMode: 'agy', imageModel: 'gemini-3.6-flash-low' },
+    });
+  });
+
+  it('tolerates and preserves unknown target keys (forward compat after rollback)', async () => {
+    // A newer build's target (or field) must not 400 every Image Gen save on
+    // an older build — the UI round-trips the whole stored object. Unknown
+    // keys pass validation and persist raw, so the newer pins survive.
+    const res = await request(buildApp())
+      .put('/api/settings')
+      .send({ renderDefaults: { 'future-target': { imageMode: 'codex' }, 'universe-bible': { imageMode: 'codex', futureField: 'x' } } });
+    expect(res.status).toBe(200);
+    expect(res.body.renderDefaults['future-target']).toEqual({ imageMode: 'codex' });
+    expect(res.body.renderDefaults['universe-bible'].futureField).toBe('x');
+  });
+
+  it('rejects a non-queueable backend and a shell-syntax model id', async () => {
+    const external = await request(buildApp())
+      .put('/api/settings')
+      .send({ renderDefaults: { 'universe-bible': { imageMode: 'external' } } });
+    expect(external.status).toBe(400);
+    const shell = await request(buildApp())
+      .put('/api/settings')
+      .send({ renderDefaults: { 'universe-bible': { imageModel: 'x; rm -rf /' } } });
+    expect(shell.status).toBe(400);
+  });
+
+  it('accepts a per-target video backend pin and rejects a non-video backend (#3231 Phase 4)', async () => {
+    const ok = await request(buildApp())
+      .put('/api/settings')
+      .send({ renderDefaults: { 'music-video': { videoMode: 'grok' } } });
+    expect(ok.status).toBe(200);
+    expect(ok.body.renderDefaults['music-video']).toEqual({ videoMode: 'grok' });
+    const bad = await request(buildApp())
+      .put('/api/settings')
+      .send({ renderDefaults: { 'music-video': { videoMode: 'codex' } } });
+    expect(bad.status).toBe(400);
+  });
+});
+
+describe('Settings routes — videoGen slice (#3231 Phase 4)', () => {
+  beforeEach(() => {
+    store = {};
+    vi.clearAllMocks();
+  });
+
+  it('accepts the install-wide video pin fields and the null clear', async () => {
+    // NOTE: the settings PUT replaces top-level slices wholesale, so sibling-key
+    // preservation (defaultModelId surviving a mode-only save) is the CLIENT's
+    // job — ImageGenTab round-trips the loaded slice (videoGenSliceRef); the
+    // client suite pins that wire body. This test only pins schema acceptance.
+    const res = await request(buildApp())
+      .put('/api/settings')
+      .send({ videoGen: { mode: 'grok', defaultModelId: 'ltx23_distilled_q4' } });
+    expect(res.status).toBe(200);
+    expect(res.body.videoGen).toEqual({ mode: 'grok', defaultModelId: 'ltx23_distilled_q4' });
+    // Clearing via null is the intentional no-pin state.
+    const cleared = await request(buildApp())
+      .put('/api/settings')
+      .send({ videoGen: { mode: null } });
+    expect(cleared.status).toBe(200);
+  });
+
+  it('rejects a non-video backend as the install-wide video pin', async () => {
+    const res = await request(buildApp())
+      .put('/api/settings')
+      .send({ videoGen: { mode: 'codex' } });
+    expect(res.status).toBe(400);
+  });
+});

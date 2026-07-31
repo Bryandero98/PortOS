@@ -10,6 +10,7 @@
 
 import express from 'express';
 import { spawn } from 'child_process';
+import * as pty from 'node-pty';
 import { join, basename } from 'path';
 import { writeFile, readFile } from 'fs/promises';
 import { existsSync } from 'fs';
@@ -17,6 +18,7 @@ import http from 'http';
 import { Server as SocketServer } from 'socket.io';
 import { ensureDir, PATHS, sleep } from '../lib/fileUtils.js';
 import { prepareCliSpawn, killProcessTree } from '../lib/bufferedSpawn.js';
+import { buildCliChildEnv } from '../lib/cliChildEnv.js';
 import { prepareCliPrompt } from '../lib/cliProviderArgs.js';
 import { createCodexStderrFormatter } from '../lib/codexCliOutput.js';
 import { createStreamJsonParser } from './streamJsonParser.js';
@@ -25,6 +27,8 @@ import { getProcessStats, checkProcessRunning } from './processStats.js';
 import { ALLOWED_COMMANDS, isAllowedCommand } from './allowedCommands.js';
 import { PORTS } from '../lib/ports.js';
 import { setupProcessErrorHandlers } from '../lib/errorHandler.js';
+import { parseSentinelPayload } from '../lib/agentSentinel.js';
+import { SENTINEL_COMPLETION_MARKER } from '../lib/agentOutputMarkers.js';
 
 // Process-level safety net (defense-in-depth, see issue #1878). The main server
 // (server/index.js) already wires this same shared helper via
@@ -44,6 +48,7 @@ setupProcessErrorHandlers();
 const SIGKILL_GRACE_MS = 5000;       // wait after SIGTERM before forcing SIGKILL
 const ORPHAN_CLEANUP_DELAY_MS = 3000; // delay on boot before reaping orphaned agents
 const SHUTDOWN_DRAIN_MS = 5000;       // SIGTERM drain window before closing the server
+const TUI_DONE_POLL_MS = 2000;
 
 // Path + listen constants. These lived adjacent to the command allowlist before
 // it was extracted to ./allowedCommands.js; they must stay here — they're
@@ -57,6 +62,15 @@ const HOST = process.env.HOST || '127.0.0.1';
 
 // Active agent processes (in memory)
 const activeAgents = new Map();
+const TUI_SIGNALS = new Set(['SIGTERM', 'SIGKILL', 'SIGINT']);
+
+const terminateRunnerProcess = (agent, signal = 'SIGTERM') => {
+  if (agent.kind === 'tui') {
+    agent.process.kill(signal);
+    return;
+  }
+  killProcessTree(agent.process, signal);
+};
 
 // Express app setup
 const app = express();
@@ -102,10 +116,159 @@ app.get('/agents', async (req, res) => {
       processActive: stats.active,
       cpu: stats.cpu,
       memoryMb: stats.memoryMb,
-      state: stats.state
+      state: stats.state,
+      kind: agent.kind || 'cli',
+      sessionId: agent.sessionId || null,
+      command: agent.command || null,
+      workspacePath: agent.workspacePath || null,
     });
   }
   res.json(agents);
+});
+
+/**
+ * Spawn an interactive TUI in a runner-owned PTY. PortOS remains responsible
+ * for prompt timing and rich completion analysis while it is connected; the
+ * runner owns process survival and emits normal agent completion if the server
+ * restarts before the TUI exits.
+ */
+app.post('/spawn-tui', async (req, res) => {
+  const {
+    agentId,
+    taskId,
+    sessionId = agentId,
+    command,
+    args = [],
+    workspacePath,
+    envVars = {},
+    cols = 80,
+    rows = 24,
+    doneSentinelPath = null,
+  } = req.body;
+
+  if (!agentId || !taskId || !sessionId || !isAllowedCommand(command)) {
+    return res.status(400).json({ error: 'Missing or invalid TUI spawn fields' });
+  }
+  if (!Array.isArray(args)) {
+    return res.status(400).json({ error: 'Invalid args: expected an array' });
+  }
+  if (activeAgents.has(agentId)) {
+    return res.status(409).json({ error: `Agent ${agentId} is already running` });
+  }
+
+  const cwd = workspacePath && typeof workspacePath === 'string' ? workspacePath : ROOT_DIR;
+  const childEnv = buildCliChildEnv({ before: envVars, cwd });
+  // Windows coding CLIs are commonly npm .cmd shims. ConPTY cannot execute a
+  // batch shim directly, so keep it behind cmd.exe; POSIX can own the CLI
+  // process directly.
+  const ptyCommand = process.platform === 'win32' ? (process.env.COMSPEC || 'cmd.exe') : command;
+  const ptyArgs = process.platform === 'win32' ? ['/d', '/s', '/c', command, ...args] : args;
+  const tuiProcess = pty.spawn(ptyCommand, ptyArgs, {
+    name: 'xterm-256color',
+    cols,
+    rows,
+    cwd,
+    env: childEnv,
+  });
+  const startedAt = Date.now();
+  const agent = {
+    kind: 'tui',
+    process: tuiProcess,
+    taskId,
+    pid: tuiProcess.pid,
+    startedAt,
+    outputBuffer: '',
+    workspacePath: cwd,
+    sessionId,
+    command,
+    doneSentinelPath,
+    completedBySentinel: false,
+    doneTimer: null,
+  };
+  activeAgents.set(agentId, agent);
+
+  tuiProcess.onData((data) => {
+    const current = activeAgents.get(agentId);
+    if (!current) return;
+    current.outputBuffer += data;
+    if (current.outputBuffer.length > 512 * 1024) {
+      current.outputBuffer = current.outputBuffer.slice(-512 * 1024);
+    }
+    io.emit('tui:output', { sessionId, agentId, data });
+  });
+
+  tuiProcess.onExit(async ({ exitCode, signal }) => {
+    try {
+      const current = activeAgents.get(agentId);
+      if (!current) return;
+      if (current.doneTimer) clearInterval(current.doneTimer);
+      const duration = Date.now() - current.startedAt;
+      const success = current.completedBySentinel;
+      const effectiveExitCode = success ? 0 : exitCode;
+      const effectiveSignal = success ? 0 : signal;
+      io.emit('tui:exit', { sessionId, agentId, exitCode: effectiveExitCode, signal: effectiveSignal });
+      emitToServer('agent:completed', {
+        agentId,
+        taskId,
+        exitCode: effectiveExitCode,
+        success,
+        duration,
+        outputLength: current.outputBuffer.length,
+        completionReason: current.completedBySentinel ? 'agent-signaled-done' : 'tui-exit',
+      });
+      await withState((state) => {
+        state.stats.completed++;
+        if (!success) state.stats.failed++;
+        delete state.agents[agentId];
+      });
+      activeAgents.delete(agentId);
+    } catch (err) {
+      console.error(`❌ TUI agent ${agentId} exit handler error: ${err.message}`);
+      activeAgents.delete(agentId);
+    }
+  });
+
+  if (doneSentinelPath) {
+    agent.doneTimer = setInterval(async () => {
+      try {
+        const current = activeAgents.get(agentId);
+        if (!current || !existsSync(doneSentinelPath)) return;
+        current.completedBySentinel = true;
+        clearInterval(current.doneTimer);
+        current.doneTimer = null;
+        const contents = await readFile(doneSentinelPath, 'utf8').catch(err => {
+          console.error(`❌ TUI agent ${agentId} sentinel read failed: ${err.message}`);
+          return '';
+        });
+        const { summary } = parseSentinelPayload(contents);
+        if (summary) {
+          emitToServer('agent:output', {
+            agentId,
+            text: `${SENTINEL_COMPLETION_MARKER}\n${summary.slice(0, 4096)}\n`,
+          });
+        }
+        current.process.kill();
+      } catch (err) {
+        console.error(`❌ TUI agent ${agentId} sentinel poll failed: ${err.message}`);
+      }
+    }, TUI_DONE_POLL_MS);
+  }
+
+  await withState((state) => {
+    state.agents[agentId] = {
+      pid: tuiProcess.pid,
+      taskId,
+      startedAt,
+      kind: 'tui',
+      sessionId,
+      workspacePath: cwd,
+      doneSentinelPath,
+    };
+    state.stats.spawned++;
+  });
+
+  console.log(`📟 Runner-owned TUI ${agentId} started (PID: ${tuiProcess.pid})`);
+  res.json({ success: true, agentId, sessionId, pid: tuiProcess.pid });
 });
 
 /**
@@ -187,7 +350,13 @@ app.post('/spawn', async (req, res) => {
   // Ensure workspacePath is valid
   const cwd = workspacePath && typeof workspacePath === 'string' ? workspacePath : ROOT_DIR;
 
-  const childEnv = (() => { const e = { ...process.env, ...envVars }; delete e.CLAUDECODE; return e; })();
+  // The env arrives already composed — agentLifecycle built it with
+  // composeProviderEnv (provider.envVars + the OpenCode models map) and POSTed it
+  // — so this side only needs the base, the PWD pin, and the CLAUDECODE strip.
+  // The pin is the path #3193 was reported through: the log line above named the
+  // app's workspace correctly while every OpenCode agent still ran in the PortOS
+  // folder. No `guard` — this separate process has never carried the pm2 shim.
+  const childEnv = buildCliChildEnv({ before: envVars, cwd });
 
   // Resolve a bare npm-installed CLI (opencode/codex/claude/… — a .cmd/.bat
   // shim on Windows) to its real path and wrap a shim as `cmd.exe /c <path>` so
@@ -416,13 +585,13 @@ app.post('/terminate/:agentId', (req, res) => {
 
   // killProcessTree (not .kill) so a Windows cmd.exe-wrapped CLI shim's real
   // child is taken down too, not orphaned (#2243). No-op difference on POSIX.
-  killProcessTree(agent.process, 'SIGTERM');
+  terminateRunnerProcess(agent, 'SIGTERM');
 
   // Force kill after timeout; store handle so it can be cancelled if the
   // process exits cleanly before the grace window expires.
   agent.killTimer = setTimeout(() => {
     if (activeAgents.has(agentId)) {
-      killProcessTree(agent.process, 'SIGKILL');
+      terminateRunnerProcess(agent, 'SIGKILL');
       activeAgents.delete(agentId);
     }
   }, SIGKILL_GRACE_MS);
@@ -445,7 +614,7 @@ app.post('/kill/:agentId', async (req, res) => {
 
   // Use SIGKILL for immediate termination — killProcessTree so a Windows
   // cmd.exe-wrapped shim's real child isn't orphaned (#2243). POSIX unchanged.
-  killProcessTree(agent.process, 'SIGKILL');
+  terminateRunnerProcess(agent, 'SIGKILL');
 
   // Clean up immediately
   activeAgents.delete(agentId);
@@ -480,11 +649,11 @@ app.post('/pause/:agentId', async (req, res) => {
   agent.pauseReason = reason;
 
   // killProcessTree so a Windows cmd.exe-wrapped shim's child isn't orphaned (#2243).
-  killProcessTree(agent.process, 'SIGTERM');
+  terminateRunnerProcess(agent, 'SIGTERM');
   // Store handle so the close handler can clear it when the process exits first.
   agent.killTimer = setTimeout(() => {
     const current = activeAgents.get(agentId);
-    if (current?.paused) killProcessTree(current.process, 'SIGKILL');
+    if (current?.paused) terminateRunnerProcess(current, 'SIGKILL');
   }, SIGKILL_GRACE_MS);
 
   res.json({ success: true, agentId, pid: agent.pid, pausedAt });
@@ -504,10 +673,10 @@ app.post('/terminate-all', async (req, res) => {
     const agent = activeAgents.get(agentId);
     if (agent) {
       // killProcessTree so a Windows cmd.exe-wrapped shim's child isn't orphaned (#2243).
-      killProcessTree(agent.process, 'SIGTERM');
+      terminateRunnerProcess(agent, 'SIGTERM');
       agent.killTimer = setTimeout(() => {
         if (activeAgents.has(agentId)) {
-          killProcessTree(agent.process, 'SIGKILL');
+          terminateRunnerProcess(agent, 'SIGKILL');
           activeAgents.delete(agentId);
         }
       }, SIGKILL_GRACE_MS);
@@ -577,6 +746,36 @@ app.get('/agents/:agentId/output', (req, res) => {
  */
 io.on('connection', (socket) => {
   console.log(`🔌 Client connected: ${socket.id}`);
+
+  socket.on('tui:input', ({ sessionId, data }) => {
+    try {
+      const agent = [...activeAgents.values()].find(candidate => candidate.sessionId === sessionId);
+      if (agent?.kind === 'tui' && typeof data === 'string') agent.process.write(data);
+    } catch (err) {
+      console.error(`❌ TUI input relay failed: ${err.message}`);
+    }
+  });
+
+  socket.on('tui:resize', ({ sessionId, cols, rows }) => {
+    try {
+      const agent = [...activeAgents.values()].find(candidate => candidate.sessionId === sessionId);
+      if (agent?.kind !== 'tui') return;
+      if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 1 || rows < 1) return;
+      agent.process.resize(cols, rows);
+    } catch (err) {
+      console.error(`❌ TUI resize relay failed: ${err.message}`);
+    }
+  });
+
+  socket.on('tui:kill', ({ sessionId, signal = 'SIGTERM' }) => {
+    try {
+      if (!TUI_SIGNALS.has(signal)) return;
+      const agent = [...activeAgents.values()].find(candidate => candidate.sessionId === sessionId);
+      if (agent?.kind === 'tui') terminateRunnerProcess(agent, signal);
+    } catch (err) {
+      console.error(`❌ TUI termination relay failed: ${err.message}`);
+    }
+  });
 
   socket.on('disconnect', () => {
     console.log(`🔌 Client disconnected: ${socket.id}`);
@@ -652,7 +851,7 @@ process.on('SIGTERM', async () => {
   // Terminate all agents
   for (const [agentId, agent] of activeAgents) {
     console.log(`🔪 Terminating agent ${agentId}`);
-    killProcessTree(agent.process, 'SIGTERM'); // tree-kill so Windows cmd.exe shims aren't orphaned (#2243)
+    terminateRunnerProcess(agent, 'SIGTERM');
   }
 
   // Wait for agents to terminate

@@ -883,6 +883,25 @@ describe('createInputReadyTracker', () => {
     tracker.observe('', '? for shortcuts');
     expect(tracker.ready).toBe(false);
   });
+
+  // The durable runner pty.spawns the TUI directly — no launch shell, so the
+  // shell's paste-mode OFF never appears in the stream. The TUI's own first ON
+  // is the ready signal (regression: every runner-tui claude agent died
+  // `tui-not-ready` at the deadline with a live input box on screen).
+  it('directLaunch: ready on the TUI\'s own first paste-mode ON, with no shell OFF ever seen', () => {
+    const tracker = createInputReadyTracker({ directLaunch: true });
+    expect(tracker.ready).toBe(false); // banner painting, paste mode not yet on
+    tracker.observe(PASTE_ON, '');
+    expect(tracker.ready).toBe(true);
+  });
+
+  it('directLaunch + readyTextPattern: still waits for the composer marker', () => {
+    const tracker = createInputReadyTracker({ readyTextPattern: AGY_INPUT_READY_PATTERN, directLaunch: true });
+    tracker.observe(PASTE_ON, 'Signing in...');
+    expect(tracker.ready).toBe(false);
+    tracker.observe('', '? for shortcuts');
+    expect(tracker.ready).toBe(true);
+  });
 });
 
 describe('tuiHandshake.verifyPasteRendered', () => {

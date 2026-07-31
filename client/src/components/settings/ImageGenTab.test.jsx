@@ -12,6 +12,7 @@ vi.mock('../../services/api', () => ({
   getToolsList: vi.fn(),
   saveHfToken: vi.fn(),
   clearHfToken: vi.fn(),
+  listAgyImageModels: vi.fn(),
 }));
 vi.mock('../../hooks/useHfTokenStatus', () => ({
   useHfTokenStatus: vi.fn(),
@@ -31,10 +32,11 @@ vi.mock('../../hooks/useMediaJobSse', () => ({
 }));
 
 import {
-  getSettings, getToolsList, updateSettings,
+  getSettings, getToolsList, updateSettings, listAgyImageModels, getImageGenStatus,
 } from '../../services/api';
 import { useHfTokenStatus } from '../../hooks/useHfTokenStatus';
-import { ImageGenTab } from './ImageGenTab';
+import { ImageGenTab, MEDIA_TABS } from './ImageGenTab';
+import { IMAGE_GEN_MODE } from '../../lib/imageGenBackends';
 
 const renderTab = async (initialEntries = ['/media/image']) => {
   render(
@@ -60,13 +62,14 @@ beforeEach(() => {
   getToolsList.mockResolvedValue([]);
   useHfTokenStatus.mockReturnValue({ present: false, source: 'none', refresh: vi.fn() });
   updateSettings.mockResolvedValue({});
+  listAgyImageModels.mockResolvedValue({ models: ['gemini-image', 'custom/image-v2'], error: null });
 });
 
 describe('ImageGenTab grouped tabs', () => {
-  it('renders a pills sub-nav with all eight media-settings groups', async () => {
+  it('renders a pills sub-nav with all media-settings groups', async () => {
     await renderTab();
     const tabs = screen.getAllByRole('tab').map((t) => t.textContent);
-    for (const label of ['Backend', 'External', 'Local', 'Codex CLI', 'Grok CLI', 'Tokens', 'Expose', 'Test']) {
+    for (const label of ['Backend', 'External', 'Local', 'Codex CLI', 'Grok CLI', 'Agy CLI', 'Tokens', 'Expose', 'Test']) {
       expect(tabs.some((t) => t.includes(label))).toBe(true);
     }
   });
@@ -133,6 +136,65 @@ describe('ImageGenTab grouped tabs', () => {
     expect(screen.getByRole('button', { name: /^Save$/ })).toBeTruthy();
   });
 
+  it('tags every image-gen backend onto a tab, so a new backend cannot silently probe the default instead', () => {
+    const probed = MEDIA_TABS.map((t) => t.probeMode).filter(Boolean);
+    expect([...probed].sort()).toEqual([...Object.values(IMAGE_GEN_MODE)].sort());
+  });
+
+  it('probes the provider whose tab is open, not the saved default backend', async () => {
+    getImageGenStatus.mockResolvedValue({ connected: true, mode: 'agy', model: 'agy 1.2.3' });
+    await renderTab();
+
+    // On a provider tab the probe targets THAT provider — testing from the Agy
+    // tab must not report the saved default (external/codex) backend.
+    fireEvent.click(screen.getByRole('tab', { name: /Agy CLI/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Test Connection/i }));
+    await waitFor(() => expect(getImageGenStatus).toHaveBeenCalledWith('agy'));
+
+    getImageGenStatus.mockResolvedValue({ connected: true, mode: 'grok', model: 'grok-cli 0.0.30' });
+    fireEvent.click(screen.getByRole('tab', { name: /Grok CLI/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Test Connection/i }));
+    await waitFor(() => expect(getImageGenStatus).toHaveBeenLastCalledWith('grok'));
+  });
+
+  it('falls back to the saved default backend on tabs with no provider of their own', async () => {
+    getImageGenStatus.mockResolvedValue({ connected: true, mode: 'external', model: 'flux-v1' });
+    await renderTab();
+    fireEvent.click(screen.getByRole('button', { name: /Test Connection/i }));
+    await waitFor(() => expect(screen.getByText(/external — flux-v1/)).toBeTruthy());
+    expect(getImageGenStatus).toHaveBeenCalledWith(undefined);
+  });
+
+  it('hides a probe result once the user switches to another tab', async () => {
+    getImageGenStatus.mockResolvedValue({ connected: true, mode: 'grok', model: 'grok-cli 0.0.30' });
+    await renderTab();
+    fireEvent.click(screen.getByRole('tab', { name: /Grok CLI/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Test Connection/i }));
+    await waitFor(() => expect(screen.getByText(/grok — grok-cli 0\.0\.30/)).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('tab', { name: /Agy CLI/i }));
+    expect(screen.queryByText(/grok — grok-cli 0\.0\.30/)).toBeNull();
+  });
+
+  it('never shows an in-flight probe result under the tab the user switched to', async () => {
+    // Probe started on Grok, answered only after the user moved to Agy — the
+    // late response must not surface as if it described Agy.
+    let resolveProbe;
+    getImageGenStatus.mockReturnValue(new Promise((resolve) => { resolveProbe = resolve; }));
+    await renderTab();
+    fireEvent.click(screen.getByRole('tab', { name: /Grok CLI/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Test Connection/i }));
+
+    fireEvent.click(screen.getByRole('tab', { name: /Agy CLI/i }));
+    resolveProbe({ connected: true, mode: 'grok', model: 'grok-cli 0.0.30' });
+    await waitFor(() => expect(screen.getByRole('button', { name: /Test Connection/i }).disabled).toBe(false));
+    expect(screen.queryByText(/grok — grok-cli 0\.0\.30/)).toBeNull();
+
+    // Going back to Grok shows the answer that was actually asked for there.
+    fireEvent.click(screen.getByRole('tab', { name: /Grok CLI/i }));
+    expect(screen.getByText(/grok — grok-cli 0\.0\.30/)).toBeTruthy();
+  });
+
   it('preserves the save behavior — dirtying a field enables Save and PUTs the full imageGen patch', async () => {
     await renderTab();
     fireEvent.click(screen.getByRole('tab', { name: /External/i }));
@@ -147,7 +209,99 @@ describe('ImageGenTab grouped tabs', () => {
     expect(patch.imageGen.mode).toBe('external');
     expect(patch.imageGen).toHaveProperty('codex');
     expect(patch.imageGen).toHaveProperty('grok');
+    expect(patch.imageGen).toHaveProperty('agy');
     expect(patch.imageGen).toHaveProperty('expose');
+  });
+
+  it('the videoGen save body round-trips sibling keys the tab does not edit (#3231 Phase 4)', async () => {
+    // The settings PUT replaces top-level slices wholesale, so if this wire
+    // body ever drops the loaded slice's sibling keys, a Defaults-tab save
+    // erases videoGen.defaultModelId (read by pipeline video stages). The
+    // server suite can't see this — it validates whatever body arrives — so
+    // the exact wire body is pinned HERE.
+    getSettings.mockResolvedValue({
+      imageGen: { mode: 'external', external: { sdapiUrl: 'http://localhost:7860' } },
+      videoGen: { mode: 'grok', defaultModelId: 'ltx23_distilled_q4' },
+    });
+    await renderTab(['/media/image?mediaTab=defaults']);
+    const videoSelect = screen.getByLabelText(/Default video backend/i);
+    expect(videoSelect.value).toBe('grok');
+    fireEvent.change(videoSelect, { target: { value: 'local' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
+    await waitFor(() => expect(updateSettings).toHaveBeenCalled());
+    const patch = updateSettings.mock.calls[0][0];
+    expect(patch.videoGen).toEqual({ mode: 'local', defaultModelId: 'ltx23_distilled_q4' });
+  });
+});
+
+describe('ImageGenTab — Agy CLI section', () => {
+  it('loads installed models, allows a custom model id, and saves the Agy slice', async () => {
+    getSettings.mockResolvedValue({
+      imageGen: {
+        mode: 'agy',
+        agy: { enabled: true, agyPath: '/opt/agy', model: 'gemini-image' },
+      },
+    });
+    await renderTab(['/media/image?mediaTab=agy']);
+    await waitFor(() => expect(listAgyImageModels).toHaveBeenCalledWith({ silent: true }));
+    const modelInput = screen.getByLabelText(/^Agent model/);
+    expect(modelInput.value).toBe('gemini-image');
+    fireEvent.change(modelInput, { target: { value: 'custom/image-v3' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
+    await waitFor(() => expect(updateSettings).toHaveBeenCalled());
+    expect(updateSettings.mock.calls[0][0].imageGen.agy).toEqual(expect.objectContaining({
+      enabled: true,
+      agyPath: '/opt/agy',
+      model: 'custom/image-v3',
+    }));
+  });
+
+  it('render-defaults tab pins a backend + model per surface and saves the slice (#3231)', async () => {
+    getSettings.mockResolvedValue({
+      imageGen: { mode: 'local', agy: { enabled: true } },
+      renderDefaults: { 'universe-bible': { imageMode: 'codex' } },
+    });
+    await renderTab(['/media/image?mediaTab=defaults']);
+    // Existing pin loads into its select.
+    const bibleSelect = await screen.findByLabelText('Universe Bible batch renders');
+    expect(bibleSelect.value).toBe('codex');
+    // Pin a model-capable backend on another surface → model input appears.
+    const spriteSelect = screen.getByLabelText('Sprite references & anchors');
+    fireEvent.change(spriteSelect, { target: { value: 'agy' } });
+    const modelInput = screen.getByLabelText('Sprite references & anchors model');
+    fireEvent.change(modelInput, { target: { value: 'gemini-3.6-flash-low' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
+    await waitFor(() => expect(updateSettings).toHaveBeenCalled());
+    // The saved wire body carries exactly the pinned entries — no 'auto' no-ops.
+    expect(updateSettings.mock.calls[0][0].renderDefaults).toEqual({
+      'universe-bible': { imageMode: 'codex' },
+      'sprite-reference': { imageMode: 'agy', imageModel: 'gemini-3.6-flash-low' },
+    });
+  });
+
+  it('grok pins never show a model input — its backend has no model knob (#3231)', async () => {
+    getSettings.mockResolvedValue({ imageGen: { mode: 'local' } });
+    await renderTab(['/media/image?mediaTab=defaults']);
+    const select = await screen.findByLabelText('LoRA training datasets');
+    fireEvent.change(select, { target: { value: 'grok' } });
+    expect(screen.queryByLabelText('LoRA training datasets model')).toBeNull();
+  });
+
+  it('names the fixed server-side image model as a read-only fact (#3231)', async () => {
+    getSettings.mockResolvedValue({
+      imageGen: { mode: 'agy', agy: { enabled: true } },
+    });
+    await renderTab(['/media/image?mediaTab=agy']);
+    await waitFor(() => expect(listAgyImageModels).toHaveBeenCalled());
+    // The image model is fixed by Antigravity — the section must state the
+    // concrete id rather than implying an imagen-* picker exists.
+    expect(screen.getByText('imagen-3.0-generate-002')).toBeTruthy();
+    expect(screen.getByText(/not selectable through the CLI/i)).toBeTruthy();
+  });
+
+  it('states that Agy is text-to-image only', async () => {
+    await renderTab(['/media/image?mediaTab=agy']);
+    expect(screen.getByText(/Image editing is not supported/i)).toBeTruthy();
   });
 });
 

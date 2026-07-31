@@ -28,6 +28,9 @@ export * from './editorialRoadmap.js';
 export * from './grokVideoClip.js';
 export * from './imageCleaners.js';
 export * from './imageGenBackends.js';
+// Namespace export: imageGenBackends re-exports every imageGenModes symbol
+// flat (one import site for consumers), so a flat export here would collide.
+export * as imageGenModes from './imageGenModes.js';
 export * from './imageGenDefaults.js';
 export * from './imageGenResolutions.js';
 export * from './importerDeepLink.js';
@@ -91,6 +94,7 @@ export * from './canvasRoll.js';
 export * from './chiptunePlayback.js';
 export * from './chordShapes.js';
 export * from './colorMatch.js';
+export * from './drumKits.js';
 export * from './drumNotation.js';
 export * from './drumPlayback.js';
 export * from './editorialChecks.js';
@@ -107,6 +111,7 @@ export * from './referenceAnalysis.js';
 export * from './scoreNotation.js';
 export * from './scorePlayback.js';
 export * from './singToScore.js';
+export * from './singToVerify.js';
 export * from './songCraft.js';
 export * from './songPlayback.js';
 export * from './songProgress.js';

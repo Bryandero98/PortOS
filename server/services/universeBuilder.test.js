@@ -1209,6 +1209,24 @@ describe("universeBuilder service", () => {
         // …but local probe renders survived.
         expect(after.styleImageRefs).toEqual(["probe-1.png", "probe-2.png"]);
       });
+
+      it("preserves the local render pin across a remote-wins LWW edit (#3231 Phase 3)", async () => {
+        // imageMode/imageModelId are wire-local like styleImageRefs — a peer's
+        // edit to other fields must not clear this machine's pinned backend.
+        const w = await seedWorld();
+        await svc.updateUniverse(w.id, { imageMode: "agy", imageModelId: "gemini-3.6-flash-low" });
+        const editTs = new Date(Date.now() + 60_000).toISOString();
+        const r = await svc.mergeUniversesFromSync([{
+          ...w,
+          name: "Remote Edited Name",
+          updatedAt: editTs,
+        }]);
+        expect(r.applied).toBe(true);
+        const after = await svc.getUniverse(w.id);
+        expect(after.name).toBe("Remote Edited Name");
+        expect(after.imageMode).toBe("agy");
+        expect(after.imageModelId).toBe("gemini-3.6-flash-low");
+      });
     });
 
     describe("pruneTombstonedUniverses", () => {

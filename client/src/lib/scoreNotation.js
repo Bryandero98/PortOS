@@ -147,10 +147,19 @@ const parseTimeSignature = (raw) => {
 //   [chord]? (r | PITCH) DURATION dots? (lyric)?
 const TOKEN_RE = /^(?:\[([^\]]*)\])?(r|[A-Ga-g](?:#{1,2}|b{1,2}|n)?-?\d)([whqest])(\.*)(?:\((.*)\))?$/;
 
-const parseToken = (token) => {
+const parseToken = (token, start = null) => {
   const m = TOKEN_RE.exec(token);
   if (!m) return { error: `unrecognized token "${token}"` };
   const [, chord, core, durCode, dotStr, lyric] = m;
+  const tokenSource = Number.isInteger(start)
+    ? {
+        raw: token,
+        start,
+        end: start + token.length,
+        pitchStart: start + (chord == null ? 0 : token.indexOf(']') + 1),
+        pitchEnd: start + (chord == null ? 0 : token.indexOf(']') + 1) + core.length,
+      }
+    : { raw: token };
   const dots = dotStr ? dotStr.length : 0;
   // Carry the static duration properties (filled / stem / flags) the renderer
   // needs alongside the per-token dots/beats, so a duration object is fully
@@ -158,7 +167,7 @@ const parseToken = (token) => {
   const base = DURATIONS[durCode];
   const duration = { code: durCode, dots, beats: durationBeats(durCode, dots), filled: base.filled, stem: base.stem, flags: base.flags };
   if (core === 'r') {
-    return { rest: true, duration, chord: chord || '' };
+    return { rest: true, duration, chord: chord || '', ...tokenSource };
   }
   const pitch = parsePitch(core);
   if (!pitch) return { error: `bad pitch in "${token}"` };
@@ -169,6 +178,7 @@ const parseToken = (token) => {
     duration,
     chord: chord || '',
     lyric: lyric || '',
+    ...tokenSource,
   };
 };
 
@@ -177,14 +187,21 @@ const parseToken = (token) => {
 // summed duration (handy for the renderer to flag incomplete bars, and for
 // tests). Always returns a usable object — never throws.
 export const parseScore = (text) => {
+  const source = String(text || '');
   const header = { ...DEFAULT_HEADER };
   const errors = [];
   const bodyLines = [];
 
-  const lines = String(text || '').split(/\r?\n/);
-  for (const rawLine of lines) {
+  let lineStart = 0;
+  for (const rawLine of source.split(/\r?\n/)) {
+    const rawEnd = lineStart + rawLine.length;
+    const newlineLength = source.startsWith('\r\n', rawEnd) ? 2 : (source[rawEnd] === '\n' ? 1 : 0);
+    const nextLineStart = rawEnd + newlineLength;
     const line = rawLine.trim();
-    if (!line) continue;
+    if (!line) {
+      lineStart = nextLineStart;
+      continue;
+    }
     // A header line is `key: value` and contains no `|` (music) and no note
     // tokens. We detect it by the leading `word:` shape before any `|`.
     const headerMatch = /^([A-Za-z]+)\s*:\s*(.+)$/.exec(line);
@@ -199,33 +216,53 @@ export const parseScore = (text) => {
         if (ts) { header.beats = ts.beats; header.beatValue = ts.beatValue; }
         else errors.push(`bad time signature "${value}"`);
       }
+      lineStart = nextLineStart;
       continue;
     }
-    bodyLines.push(line);
+    bodyLines.push({ rawLine, start: lineStart });
+    lineStart = nextLineStart;
   }
 
-  // Join the music body and split into measures on `|`. Empty segments (from a
-  // leading/trailing/double `|`) are dropped.
-  const body = bodyLines.join(' ');
-  const segments = body.split('|').map((s) => s.trim()).filter(Boolean);
-  const measures = segments.map((segment, mi) => {
-    const notes = [];
-    // A standalone `[chord]` token attaches to the NEXT note (the readable form
-    // `[C] E4q`); the attached form `[C]E4q` also works. `pendingChord` carries a
-    // bare bracket forward until a note consumes it.
-    let pendingChord = '';
-    for (const token of segment.split(/\s+/).filter(Boolean)) {
+  // Scan the original source instead of joining/reflowing the body. Each parsed
+  // note carries offsets back into `source`, so a caller can surgically replace
+  // its pitch while preserving every other byte (including line breaks).
+  const measures = [];
+  let notes = [];
+  let pendingChord = '';
+  let segmentHasToken = false;
+  const finishMeasure = () => {
+    if (!segmentHasToken) return;
+    const beats = notes.reduce((sum, n) => sum + (n.duration?.beats || 0), 0);
+    measures.push({ notes, beats });
+    notes = [];
+    pendingChord = '';
+    segmentHasToken = false;
+  };
+
+  for (const { rawLine, start } of bodyLines) {
+    for (const match of rawLine.matchAll(/\||[^\s|]+/g)) {
+      const token = match[0];
+      if (token === '|') {
+        finishMeasure();
+        continue;
+      }
+      segmentHasToken = true;
       const bare = /^\[([^\]]*)\]$/.exec(token);
-      if (bare) { pendingChord = bare[1]; continue; }
-      const parsed = parseToken(token);
-      if (parsed.error) { errors.push(`measure ${mi + 1}: ${parsed.error}`); continue; }
+      if (bare) {
+        pendingChord = bare[1];
+        continue;
+      }
+      const parsed = parseToken(token, start + match.index);
+      if (parsed.error) {
+        errors.push(`measure ${measures.length + 1}: ${parsed.error}`);
+        continue;
+      }
       if (pendingChord && !parsed.chord) parsed.chord = pendingChord;
       pendingChord = '';
       notes.push(parsed);
     }
-    const beats = notes.reduce((sum, n) => sum + (n.duration?.beats || 0), 0);
-    return { notes, beats };
-  });
+  }
+  finishMeasure();
 
   return {
     clef: header.clef,
@@ -236,6 +273,22 @@ export const parseScore = (text) => {
     measures,
     errors,
   };
+};
+
+// Replace only the pitch characters inside one parsed note token. Source spans
+// are validated against the current text so a stale note object cannot rewrite
+// a different score after the editor changes.
+export const replaceNotePitch = (text, note, newPitch) => {
+  const source = String(text || '');
+  const replacement = parsePitch(newPitch);
+  if (!note || note.rest || !replacement) throw new Error('A pitched note and valid replacement pitch are required');
+  if (!Number.isInteger(note.start) || !Number.isInteger(note.end)
+    || !Number.isInteger(note.pitchStart) || !Number.isInteger(note.pitchEnd)
+    || source.slice(note.start, note.end) !== note.raw) {
+    throw new Error('The note source span is stale or invalid');
+  }
+  const pitchText = `${replacement.letter}${replacement.accidental}${replacement.octave}`;
+  return source.slice(0, note.pitchStart) + pitchText + source.slice(note.pitchEnd);
 };
 
 // True when the text contains at least one parseable note — lets the UI decide

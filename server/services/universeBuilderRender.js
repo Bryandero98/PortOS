@@ -19,7 +19,8 @@ import { registerUniverseBuilderRun } from './universeBuilderCollectionHook.js';
 import { getImageModels, isFlux2 } from '../lib/mediaModels.js';
 import { usesDiffusersRunner } from '../lib/runners.js';
 import { IMAGE_GEN_MODE, QUEUEABLE_IMAGE_MODES } from './imageGen/modes.js';
-import { resolveCloudProviderConfig } from './imageGen/cloudProviderConfig.js';
+import { resolveRenderTargetConfig } from './imageGen/cloudProviderConfig.js';
+import { RENDER_TARGET, recordRenderPin } from '../lib/renderTargets.js';
 import { resolveImageCleaners } from './imageGen/index.js';
 import { getStylePresetById } from '../lib/writersRoomStylePresets.js';
 import { ServerError } from '../lib/errorHandler.js';
@@ -59,7 +60,18 @@ export async function renderUniverseJobs(universeId, body, mapServiceError) {
   }
 
   const settings = await getSettings();
-  const mode = body.mode || settings.imageGen?.mode || IMAGE_GEN_MODE.EXTERNAL;
+  // Render-target ladder (#3231): body.mode → the universe's persisted pin
+  // (Phase 3) → the universe-bible pin in settings.renderDefaults → the
+  // install default → external (rejected below). body.cloudModel wins over
+  // the record's imageModelId pin the same way.
+  const renderPin = recordRenderPin(universe);
+  const { mode, cloud } = resolveRenderTargetConfig(settings, RENDER_TARGET.UNIVERSE_BIBLE, {
+    mode: body.mode,
+    model: body.cloudModel,
+    recordMode: renderPin.mode,
+    recordModel: renderPin.modelId,
+    fallbackMode: IMAGE_GEN_MODE.EXTERNAL,
+  });
 
   // Reject `external` mode upfront — batch rendering against a remote SD-API
   // would block this request for the entire batch, and we don't want to leave
@@ -73,7 +85,6 @@ export async function renderUniverseJobs(universeId, body, mapServiceError) {
 
   // Mirror the upfront validation /api/image-gen/generate does so a doomed
   // batch fails before any jobs land in the queue.
-  const cloud = resolveCloudProviderConfig(settings, mode);
   if (cloud && !cloud.enabled) throw cloud.disabledError;
   if (mode === IMAGE_GEN_MODE.LOCAL) {
     const py = settings.imageGen?.local?.pythonPath || null;

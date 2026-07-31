@@ -11,9 +11,11 @@
  * or `agentManagement.js` (enforced by `agentImportCycles.test.js`).
  */
 
-import { getActiveAgentsFromRunner } from './cosRunnerClient.js';
+import { connectTuiSessionViaRunner, getActiveAgentsFromRunner } from './cosRunnerClient.js';
 import { isInternalTaskId } from '../lib/taskParser.js';
 import { runnerAgents } from './agentState.js';
+import { getAgent } from './cosAgents.js';
+import * as shellService from './shell.js';
 
 /**
  * Sync running agents from the runner (recovery after server restart).
@@ -55,14 +57,42 @@ export async function syncRunnerAgents() {
       const task = taskMap.get(agent.taskId);
 
       const inferredType = isInternalTaskId(agent.taskId) ? 'internal' : 'user';
+      // Recover the run id from the PERSISTED agent record (#3244). The runner's
+      // /agents response describes the live process and carries no `metadata`,
+      // but `spawnViaRunner` wrote `runId` into the agent record before handing
+      // off, so it is still on disk — `agentManagement.js` reads it the same way
+      // on its orphan path. Dropping it here left the survivor's run permanently
+      // open (`completeAgentRun` returns early on a null id), so the Runs list
+      // showed it running forever and `recordCompletedRunUsage` never fired —
+      // silently exempting the longest-lived runs in the system from all cost
+      // accounting. Survivors are the normal case since #3202 made TUI agents
+      // durable, so this cannot stay a best-effort null.
+      const persisted = await getAgent(agent.id).catch(() => null);
+      const recoveredRunId = persisted?.metadata?.runId || null;
       runnerAgents.set(agent.id, {
         taskId: agent.taskId,
         task: task || { id: agent.taskId, taskType: inferredType, description: 'Recovered from runner' },
-        runId: null, // Run tracking may be lost on restart
-        model: null,
+        runId: recoveredRunId,
+        model: persisted?.metadata?.model || null,
         hasStartedWorking: true,
         startedAt: agent.startedAt
       });
+      if (!recoveredRunId) {
+        console.warn(`⚠️ Recovered agent ${agent.id} has no run id on record — its run stays open and unbilled`);
+      }
+      if (agent.kind === 'tui' && agent.sessionId && !shellService.getSession(agent.sessionId)) {
+        const session = connectTuiSessionViaRunner(agent);
+        shellService.registerExternalSession(agent.sessionId, session.ptyProcess, {
+          cwd: agent.workspacePath,
+          kind: 'agent-tui',
+          agentId: agent.id,
+          label: `Recovered TUI ${agent.id}`,
+          command: agent.command,
+        });
+        session.ptyProcess.onExit(({ exitCode }) => {
+          shellService.unregisterExternalSession(agent.sessionId, { exitCode });
+        });
+      }
       console.log(`🔄 Recovered agent ${agent.id} (task: ${agent.taskId})`);
       syncedCount++;
     }

@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import EventEmitter from 'events';
 
+// executeCliRun validates that a requested workspace actually exists before
+// spawning (#3180 — a bad repoPath used to silently run in the PortOS root), so
+// these tests need a real directory rather than a synthetic '/workspace' path.
+const TEST_WORKSPACE = process.cwd();
+
 vi.mock('child_process', async (importOriginal) => {
   const actual = await importOriginal();
   return { ...actual, spawn: vi.fn() };
@@ -21,17 +26,25 @@ vi.mock('../lib/bufferedSpawn.js', async (importOriginal) => {
   };
 });
 
-vi.mock('../lib/fileUtils.js', () => ({
-tryReadFile: vi.fn().mockResolvedValue(null),
-  ensureDir: vi.fn().mockResolvedValue(undefined),
-  // atomicWrite replaced the raw writeFile(JSON.stringify) metadata sites (#1837);
-  // route it through the mocked fs/promises.writeFile so it resolves cleanly.
-  atomicWrite: vi.fn(async (filePath, data) => {
-    const payload = (typeof data === 'string' || Buffer.isBuffer(data)) ? data : JSON.stringify(data, null, 2);
-    const { writeFile } = await import('fs/promises');
-    return writeFile(filePath, payload);
-  }),
-}));
+// Spread the real module and override only the three I/O entry points. A
+// hand-listed mock silently drops everything else — the cwd resolution reaches
+// for PATHS and expandHome, and an absent expandHome failed every run rather
+// than only the bad-workspace one (#3180).
+vi.mock('../lib/fileUtils.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    tryReadFile: vi.fn().mockResolvedValue(null),
+    ensureDir: vi.fn().mockResolvedValue(undefined),
+    // atomicWrite replaced the raw writeFile(JSON.stringify) metadata sites (#1837);
+    // route it through the mocked fs/promises.writeFile so it resolves cleanly.
+    atomicWrite: vi.fn(async (filePath, data) => {
+      const payload = (typeof data === 'string' || Buffer.isBuffer(data)) ? data : JSON.stringify(data, null, 2);
+      const { writeFile } = await import('fs/promises');
+      return writeFile(filePath, payload);
+    }),
+  };
+});
 
 vi.mock('fs/promises', () => ({
   writeFile: vi.fn().mockResolvedValue(undefined),
@@ -63,6 +76,10 @@ function fakeToolkit(errorDetection = null) {
     },
   };
 }
+
+// Let executeCliRun run to its spawn(): it awaits ensureDir and the cwd
+// resolution first, so a single microtask tick is not enough.
+const flushMicrotasks = () => new Promise((resolve) => setImmediate(resolve));
 
 function makeChild() {
   const child = new EventEmitter();
@@ -97,7 +114,7 @@ describe('executeCliRun — Codex sentinel suppression', () => {
       child.emit('close', 0);
     });
 
-    await executeCliRun({ runId: 'run-1', provider, prompt: 'test prompt', workspacePath: '/workspace' });
+    await executeCliRun({ runId: 'run-1', provider, prompt: 'test prompt', workspacePath: TEST_WORKSPACE });
 
     const [, capturedArgs] = spawn.mock.calls.at(-1);
     expect(capturedArgs).not.toContain('--model');
@@ -124,7 +141,7 @@ describe('executeCliRun — Codex sentinel suppression', () => {
       child.emit('close', 0);
     });
 
-    await executeCliRun({ runId: 'run-2', provider, prompt: 'test prompt', workspacePath: '/workspace' });
+    await executeCliRun({ runId: 'run-2', provider, prompt: 'test prompt', workspacePath: TEST_WORKSPACE });
 
     const [, capturedArgs] = spawn.mock.calls.at(-1);
     const modelIdx = capturedArgs.indexOf('--model');
@@ -147,10 +164,10 @@ describe('executeCliRun — Codex sentinel suppression', () => {
     };
 
     const completed = new Promise((resolve) => {
-      executeCliRun({ runId: 'run-extra-usage', provider, prompt: 'test prompt', workspacePath: '/workspace', onData: undefined, onComplete: resolve, timeout: 60000 });
+      executeCliRun({ runId: 'run-extra-usage', provider, prompt: 'test prompt', workspacePath: TEST_WORKSPACE, onData: undefined, onComplete: resolve, timeout: 60000 });
     });
 
-    await Promise.resolve();
+    await flushMicrotasks();
     child.stderr.emit('data', Buffer.from('Now using extra '));
     expect(child.kill).not.toHaveBeenCalled();
     child.stderr.emit('data', Buffer.from('usage\n'));
@@ -179,10 +196,10 @@ describe('executeCliRun — Codex sentinel suppression', () => {
     };
 
     const completed = new Promise((resolve) => {
-      executeCliRun({ runId: 'run-fallback-exit0', provider, prompt: 'test prompt', workspacePath: '/workspace', onData: undefined, onComplete: resolve, timeout: 60000 });
+      executeCliRun({ runId: 'run-fallback-exit0', provider, prompt: 'test prompt', workspacePath: TEST_WORKSPACE, onData: undefined, onComplete: resolve, timeout: 60000 });
     });
 
-    await Promise.resolve();
+    await flushMicrotasks();
     child.stderr.emit('data', Buffer.from('Now using extra usage\n'));
     expect(child.kill).toHaveBeenCalledWith('SIGTERM');
 
@@ -216,7 +233,7 @@ describe('executeCliRun — Windows .cmd/.bat shim spawning (#1865)', () => {
       child.emit('close', 0);
     });
 
-    await executeCliRun({ runId: 'run-resolved', provider, prompt: 'test prompt', workspacePath: '/workspace' });
+    await executeCliRun({ runId: 'run-resolved', provider, prompt: 'test prompt', workspacePath: TEST_WORKSPACE });
 
     const [command, args, options] = spawn.mock.calls.at(-1);
     expect(command).toBe('cmd.exe');
@@ -244,7 +261,7 @@ describe('executeCliRun — Windows .cmd/.bat shim spawning (#1865)', () => {
       child.emit('close', 0);
     });
 
-    await executeCliRun({ runId: 'run-unresolved', provider, prompt: 'test prompt', workspacePath: '/workspace' });
+    await executeCliRun({ runId: 'run-unresolved', provider, prompt: 'test prompt', workspacePath: TEST_WORKSPACE });
 
     const [command, , options] = spawn.mock.calls.at(-1);
     expect(command).toBe('codex');
@@ -270,7 +287,7 @@ describe('executeCliRun — close handler crash guard', () => {
       defaultModel: 'codex-configured-default', timeout: 5000,
     };
     const onComplete = vi.fn();
-    await executeCliRun({ runId, provider, prompt: 'test prompt', workspacePath: '/workspace', onComplete });
+    await executeCliRun({ runId, provider, prompt: 'test prompt', workspacePath: TEST_WORKSPACE, onComplete });
 
     child.stdout.emit('data', Buffer.from('output'));
     child.emit('close', 0);
@@ -317,7 +334,7 @@ describe('executeCliRun — close handler crash guard', () => {
       defaultModel: 'codex-configured-default', timeout: 5000,
     };
     const onComplete = vi.fn();
-    await executeCliRun({ runId: 'run-success-hook-throws', provider, prompt: 'test prompt', workspacePath: '/workspace', onComplete });
+    await executeCliRun({ runId: 'run-success-hook-throws', provider, prompt: 'test prompt', workspacePath: TEST_WORKSPACE, onComplete });
 
     child.stdout.emit('data', Buffer.from('output'));
     child.emit('close', 0);
@@ -345,7 +362,7 @@ describe('executeCliRun — close handler crash guard', () => {
       defaultModel: 'codex-configured-default', timeout: 5000,
     };
     const onComplete = vi.fn();
-    await executeCliRun({ runId: 'run-async-hook-rejects', provider, prompt: 'test prompt', workspacePath: '/workspace', onComplete });
+    await executeCliRun({ runId: 'run-async-hook-rejects', provider, prompt: 'test prompt', workspacePath: TEST_WORKSPACE, onComplete });
 
     child.stdout.emit('data', Buffer.from('output'));
     child.emit('close', 0);
@@ -386,7 +403,7 @@ describe('executeCliRun — close handler crash guard', () => {
       runId: 'run-spawn-error',
       provider,
       prompt: 'test prompt',
-      workspacePath: '/workspace',
+      workspacePath: TEST_WORKSPACE,
       onComplete,
     });
 
@@ -717,5 +734,88 @@ describe('emitRunStarted — payload-flattening contract', () => {
       provider: { name: 'codex', defaultModel: 'o4-mini' },
       model: 'gpt-4',
     })).not.toThrow();
+  });
+});
+
+describe('executeCliRun — workspace validation (#3180)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setAIToolkit(fakeToolkit(), { dataDir: '/tmp/test-runner' });
+  });
+
+  const provider = { id: 'codex', name: 'Codex', command: 'codex', args: [], timeout: 5000 };
+
+  // The bug: a workspace that doesn't exist used to fall through to spawn(),
+  // which quietly ran the agent in the PortOS checkout. A prompt naming a
+  // relative file then wrote into the wrong repo with no error anywhere.
+  // Also asserts the call RESOLVES rather than rejecting: the /runs route
+  // invokes executeCliRun without awaiting it, so a bare throw would surface
+  // only as an unhandled rejection and leave the run looking stuck.
+  it('fails the run instead of spawning when the workspace does not exist', async () => {
+    const onComplete = vi.fn();
+    const onData = vi.fn();
+
+    await expect(executeCliRun({
+      runId: 'run-bad-workspace',
+      provider,
+      prompt: 'test prompt',
+      workspacePath: '/definitely/not/a/real/repo/path',
+      onData,
+      onComplete,
+    })).resolves.toBeUndefined();
+
+    expect(spawn).not.toHaveBeenCalled();
+    expect(onData).toHaveBeenCalledWith(expect.stringContaining('Workspace path does not exist'));
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    expect(onComplete.mock.calls[0][0]).toMatchObject({ success: false });
+  });
+});
+
+describe('resolveRunCwd — callback containment (#3180)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setAIToolkit(fakeToolkit(), { dataDir: '/tmp/test-runner' });
+  });
+
+  // /runs never awaits its executor, so a throwing onComplete here would reject
+  // resolveRunCwd AFTER the failed run was persisted — landing as the unhandled
+  // rejection and hung-looking run this helper exists to prevent.
+  it('does not reject when the caller onComplete throws on the failure path', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const onComplete = vi.fn(() => { throw new Error('caller exploded'); });
+
+    await expect(runner.resolveRunCwd({
+      runId: 'run-cb-throws',
+      workspacePath: '/definitely/not/a/real/repo/path',
+      label: 'Run cb',
+      onComplete,
+    })).resolves.toMatchObject({ failure: expect.objectContaining({ success: false }) });
+
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    errSpy.mockRestore();
+  });
+
+  it('does not reject when the caller onComplete rejects asynchronously', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const onComplete = vi.fn(async () => { throw new Error('async caller exploded'); });
+
+    await expect(runner.resolveRunCwd({
+      runId: 'run-cb-rejects',
+      workspacePath: '/definitely/not/a/real/repo/path',
+      label: 'Run cb2',
+      onComplete,
+    })).resolves.toBeTruthy();
+    errSpy.mockRestore();
+  });
+
+  // The whitespace-only repoPath z.string().min(1) still lets through.
+  it('fails the run for a whitespace-only workspace rather than using the root', async () => {
+    const onComplete = vi.fn();
+    const { failure, cwd } = await runner.resolveRunCwd({
+      runId: 'run-blank-ws', workspacePath: '   ', label: 'Run blank', onComplete,
+    });
+    expect(cwd).toBeUndefined();
+    expect(failure).toMatchObject({ success: false });
+    expect(failure.error).toMatch(/blank/);
   });
 });

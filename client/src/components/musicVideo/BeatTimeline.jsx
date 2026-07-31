@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { buildBeatGridPoints, computeDragSpan, computeSceneSpans, shouldMarkBeatAligned } from '../../lib/beatGrid.js';
+import { formatTimecode } from '../../utils/formatters.js';
 
 // Beat-quantized timeline arranger for a music-video project's scene board
 // (#1854). Renders a beat-grid overlay (section bands, beat/downbeat ticks)
@@ -29,6 +30,7 @@ export default function BeatTimeline({ audioAnalysis, scenes, onCommit }) {
   // tripping through the parent's `scenes` prop on every pixel of movement.
   const [liveSpan, setLiveSpan] = useState(null);
   const dragRef = useRef(null);
+  const scrollRef = useRef(null);
 
   const spans = baseSpans.map((span) => (
     liveSpan && liveSpan.sceneId === span.sceneId ? { ...span, ...liveSpan } : span
@@ -36,6 +38,11 @@ export default function BeatTimeline({ audioAnalysis, scenes, onCommit }) {
 
   const totalDurationSec = Math.max(audioAnalysis?.durationSec || 0, ...spans.map((s) => s.endSec), 1);
   const widthPx = Math.ceil(totalDurationSec * PX_PER_SEC) + 40;
+  const waveform = Array.isArray(audioAnalysis?.waveform) ? audioAnalysis.waveform : [];
+  const timeMarks = useMemo(() => {
+    const interval = totalDurationSec > 180 ? 30 : totalDurationSec > 60 ? 15 : 5;
+    return Array.from({ length: Math.floor(totalDurationSec / interval) + 1 }, (_, i) => i * interval);
+  }, [totalDurationSec]);
 
   const onPointerMove = useCallback((e) => {
     const drag = dragRef.current;
@@ -78,16 +85,104 @@ export default function BeatTimeline({ audioAnalysis, scenes, onCommit }) {
     window.addEventListener('pointerup', onPointerUp);
   };
 
+  const jumpToOverviewTime = (e) => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const timeSec = Math.max(0, Math.min(totalDurationSec, ((e.clientX - rect.left) / rect.width) * totalDurationSec));
+    scroller.scrollTo({ left: Math.max(0, timeSec * PX_PER_SEC - scroller.clientWidth / 2), behavior: 'smooth' });
+  };
+
   if (!audioAnalysis || !scenes || scenes.length === 0) return null;
 
   return (
-    <div className="space-y-1">
-      <div className="flex items-center justify-between text-xs text-port-text-muted">
-        <span>Beat-quantized timeline — drag a scene's right edge to trim its length, or its body to reposition</span>
-        {audioAnalysis.bpm && <span>{audioAnalysis.bpm} BPM</span>}
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-start justify-between gap-1 text-xs text-port-text-muted">
+        <span>
+          Music timeline — waveform, sections, and 4/4 beat-grid assumption.
+          Drag a scene&apos;s right edge to trim, or its body to reposition.
+        </span>
+        <span className="whitespace-nowrap">
+          {audioAnalysis.bpm ? `${audioAnalysis.bpm} BPM` : 'Waveform only · no beat grid'}
+          {audioAnalysis.tempoSource === 'windowed' && audioAnalysis.tempoWindow && (
+            <> · detected near {formatTimecode(audioAnalysis.tempoWindow.startSec)}–{formatTimecode(audioAnalysis.tempoWindow.endSec)}</>
+          )}
+          {audioAnalysis.tempoSource === 'manual' && <> · director-set</>}
+        </span>
       </div>
-      <div className="overflow-x-auto border border-port-border rounded-lg bg-port-bg">
-        <div className="relative h-28" style={{ width: `${widthPx}px`, touchAction: 'none' }}>
+
+      <button
+        type="button"
+        className="relative block h-16 w-full overflow-hidden rounded-lg border border-port-border bg-port-bg text-left"
+        onClick={jumpToOverviewTime}
+        title="Song overview — click to center the detailed timeline"
+      >
+        <svg
+          viewBox="0 0 1000 64"
+          preserveAspectRatio="none"
+          className="absolute inset-0 h-full w-full"
+          role="img"
+          aria-label={`Audio waveform overview with ${(audioAnalysis.beats || []).length} beats and ${(audioAnalysis.downbeats || []).length} downbeats`}
+        >
+          {(audioAnalysis.sections || []).map((section, i) => (
+            <rect
+              key={`overview-sec-${i}`}
+              x={(section.startSec / totalDurationSec) * 1000}
+              y="0"
+              width={Math.max(1, ((section.endSec - section.startSec) / totalDurationSec) * 1000)}
+              height="64"
+              className="fill-port-accent/10"
+              opacity={0.25 + 0.45 * (section.energy ?? 0.5)}
+            />
+          ))}
+          {waveform.map((level, i) => {
+            const x = waveform.length === 1 ? 0 : (i / (waveform.length - 1)) * 1000;
+            const halfHeight = 2 + level * 23;
+            return (
+              <line
+                key={`overview-wave-${i}`}
+                x1={x}
+                x2={x}
+                y1={32 - halfHeight}
+                y2={32 + halfHeight}
+                className="stroke-port-text-muted/70"
+                strokeWidth={Math.max(1, 1000 / Math.max(waveform.length, 1))}
+              />
+            );
+          })}
+          {(audioAnalysis.beats || []).map((t, i) => (
+            <line key={`overview-beat-${i}`} x1={(t / totalDurationSec) * 1000} x2={(t / totalDurationSec) * 1000}
+              y1="42" y2="64" className="stroke-port-border" strokeWidth="1" />
+          ))}
+          {(audioAnalysis.downbeats || []).map((t, i) => (
+            <line key={`overview-downbeat-${i}`} x1={(t / totalDurationSec) * 1000} x2={(t / totalDurationSec) * 1000}
+              y1="34" y2="64" className="stroke-port-accent" strokeWidth="2" />
+          ))}
+          {spans.map((span) => (
+            <line key={`overview-scene-${span.sceneId}`} x1={(span.startSec / totalDurationSec) * 1000}
+              x2={(span.startSec / totalDurationSec) * 1000} y1="0" y2="12"
+              className="stroke-port-success/80" strokeWidth="1.5" />
+          ))}
+        </svg>
+        {waveform.length === 0 && (
+          <span className="absolute inset-0 flex items-center justify-center text-xs text-port-text-muted">
+            Re-run Analyze to add the waveform to this cached project
+          </span>
+        )}
+        <span className="absolute bottom-0.5 left-1 text-[10px] text-port-text-muted">0:00</span>
+        <span className="absolute bottom-0.5 right-1 text-[10px] text-port-text-muted">{formatTimecode(totalDurationSec)}</span>
+      </button>
+
+      <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-port-text-muted" aria-label="Timeline legend">
+        <span><i className="mr-1 inline-block h-2 w-3 bg-port-text-muted/60" />waveform energy</span>
+        <span><i className="mr-1 inline-block h-3 w-px bg-port-border" />beat</span>
+        <span><i className="mr-1 inline-block h-3 w-0.5 bg-port-accent" />downbeat</span>
+        <span><i className="mr-1 inline-block h-2 w-3 bg-port-success/40" />scene start</span>
+      </div>
+
+      <div ref={scrollRef} className="overflow-x-auto border border-port-border rounded-lg bg-port-bg">
+        <div className="relative h-36" style={{ width: `${widthPx}px`, touchAction: 'none' }}>
           {(audioAnalysis.sections || []).map((section, i) => (
             <div key={`sec-${i}`}
               className="absolute top-0 h-6 border-r border-port-border/60 overflow-hidden"
@@ -96,11 +191,33 @@ export default function BeatTimeline({ audioAnalysis, scenes, onCommit }) {
               <span className="absolute top-0.5 left-1 text-[10px] text-port-text-muted truncate max-w-full">{section.label}</span>
             </div>
           ))}
+          {waveform.map((level, i) => {
+            const x = waveform.length === 1 ? 0 : (i / (waveform.length - 1)) * totalDurationSec * PX_PER_SEC;
+            const height = Math.max(1, level * 42);
+            return (
+              <div
+                key={`wave-${i}`}
+                className="pointer-events-none absolute bg-port-text-muted/45"
+                style={{
+                  left: x,
+                  top: 50 - height / 2,
+                  width: Math.max(1, (totalDurationSec * PX_PER_SEC) / Math.max(waveform.length, 1)),
+                  height,
+                }}
+              />
+            );
+          })}
           {(audioAnalysis.beats || []).map((t, i) => (
             <div key={`b-${i}`} className="absolute top-7 bottom-0 w-px bg-port-border" style={{ left: t * PX_PER_SEC }} />
           ))}
           {(audioAnalysis.downbeats || []).map((t, i) => (
             <div key={`db-${i}`} className="absolute top-6 bottom-0 w-px bg-port-accent/60" style={{ left: t * PX_PER_SEC }} />
+          ))}
+          {timeMarks.map((t) => (
+            <div key={`time-${t}`} className="pointer-events-none absolute top-[74px] text-[9px] text-port-text-muted"
+              style={{ left: t * PX_PER_SEC }}>
+              <span className="-translate-x-1/2 inline-block">{formatTimecode(t)}</span>
+            </div>
           ))}
           {spans.map((span, i) => {
             const scene = scenes.find((s) => s.sceneId === span.sceneId);
@@ -108,7 +225,7 @@ export default function BeatTimeline({ audioAnalysis, scenes, onCommit }) {
             const snappedNow = dragging && liveSpan.snapped;
             return (
               <div key={span.sceneId}
-                className={`absolute top-14 h-12 rounded border bg-port-card/90 select-none ${snappedNow ? 'border-port-success' : 'border-port-accent'}`}
+                className={`absolute top-[92px] h-11 rounded border bg-port-card/90 select-none ${snappedNow ? 'border-port-success' : 'border-port-accent'}`}
                 style={{ left: span.startSec * PX_PER_SEC, width: Math.max(6, (span.endSec - span.startSec) * PX_PER_SEC) }}>
                 <div role="presentation"
                   className="absolute inset-0 flex items-center justify-center text-[10px] px-2 cursor-grab truncate"

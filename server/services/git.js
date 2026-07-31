@@ -68,6 +68,17 @@ export async function getStatus(dir) {
 }
 
 /**
+ * Raw `git status --porcelain` output, for callers that need to feed it to
+ * `classifyWorktreeDirt` (worktreeManager.js) rather than re-deriving "is this
+ * dirt real work?" from the parsed shape. Kept separate from `getStatus` because
+ * that one is returned verbatim by `POST /api/git/status`, where a raw duplicate
+ * of `files[]` would just double the payload on every dirty tree.
+ */
+export async function getStatusPorcelain(dir) {
+  return (await execGit(['status', '--porcelain'], dir)).stdout;
+}
+
+/**
  * Get current branch name
  */
 export async function getBranch(dir) {
@@ -1088,7 +1099,7 @@ export async function checkoutRemoteBranch(dir, branchName) {
 
 /**
  * Delete all merged branches (local and remote) in one operation.
- * Skips protected branches (main, master, dev, develop, release), the current branch,
+ * Skips the `PROTECTED_BRANCHES` set (see `../lib/gitArgs.js`), the current branch,
  * branches checked out in worktrees, and any explicitly excluded branches.
  * @param {string} dir - Working directory
  * @param {object} options

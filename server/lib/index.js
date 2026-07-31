@@ -85,6 +85,7 @@ export * from './ansiStrip.js';
 // ANTIGRAVITY_CONFIGURED_DEFAULT, so a flat `export *` would trip the
 // barrel's duplicate-identifier collision check.
 export * as antigravity from './antigravity.js';
+export * from './cliChildEnv.js';
 export * from './cliProviderArgs.js';
 export * from './cliProviderRun.js';
 export * from './codexAssistantExtract.js';
@@ -127,6 +128,7 @@ export * from './createNewestWinsGuard.js';
 export * from './dataRoot.js';
 export * from './fileUtils.js';
 export * from './fileWriteQueue.js';
+export * from './spawnCwd.js';
 export * from './schemaVersions.js';
 export * from './imageClean.js';
 export * from './imageWatermark.js';
@@ -141,12 +143,14 @@ export * from './zipWriter.js';
 
 // === Process execution ===
 export * from './agentGuard/index.js';
+export * from './agentOutputMarkers.js';
 export * from './agentSentinel.js';
 export * from './bareUrl.js';
 export * from './bashResolver.js';
 export * from './bufferedSpawn.js';
 export * from './commandSecurity.js';
 export * from './detachedSpawn.js';
+export * from './hostShutdown.js';
 export * from './execGit.js';
 export * from './ffmpeg.js';
 export * from './ffmpegRenderGuard.js';
@@ -163,6 +167,7 @@ export * from './ytdlp.js';
 
 // === Networking ===
 export * from './abortTimeout.js';
+export * from './connectivity.js';
 export * from './fetchWithTimeout.js';
 export * from './requestAbort.js';
 export * from './httpClient.js';
@@ -224,6 +229,7 @@ export * from './postProgression.js';
 export * from './postStreak.js';
 export * from './planIds.js';
 export * from './renderSlot.js';
+export * from './renderTargets.js';
 export * from './telegramClient.js';
 export * from './textUtils.js';
 export * from './vaultCrypto.js';

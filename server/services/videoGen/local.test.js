@@ -428,6 +428,43 @@ describe('generateVideo — ltx2 FFLF image resizing', () => {
   });
 });
 
+describe('generateVideo — LTX audio-reactive conditioning', () => {
+  it('threads the song offset while disabling generated clip audio', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+
+    await generateVideo({
+      jobId: 'audio-reactive-offset-test',
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx2_unified',
+      prompt: 'streetlights pulse with the music; no performers',
+      width: 512,
+      height: 512,
+      numFrames: 25,
+      fps: 24,
+      mode: 'a2v',
+      sourceImagePath: '/mock/source.png',
+      audioFilePath: '/mock/song.wav',
+      audioStartSec: 42.5,
+      disableAudio: true,
+    });
+
+    const renderCall = spawnMock.mock.calls.find(
+      ([bin, args]) => String(bin).includes('.portos/ltx-2-mlx/.venv/bin/python3')
+        && Array.isArray(args)
+        && args.includes('--mode')
+        && args.includes('a2v'),
+    );
+    expect(renderCall).toBeTruthy();
+    expect(renderCall[1]).toEqual(expect.arrayContaining([
+      '--audio', '/mock/song.wav',
+      '--audio-start', '42.5',
+      '--no-audio',
+    ]));
+  });
+});
+
 describe('generateVideo — PORTOS_T2V_TWO_STAGE arg threading', () => {
   afterEach(() => { delete process.env.PORTOS_T2V_TWO_STAGE; });
 

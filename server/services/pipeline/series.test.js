@@ -257,6 +257,27 @@ describe('pipeline series service', () => {
     expect(after.universeId).toBe('uni-A');         // …but the link was preserved
   });
 
+  it('round-trips the per-record render pin and preserves it across a wire-stripped merge (#3231 Phase 3)', async () => {
+    const s = await svc.createSeries({ name: 'Pinned', imageMode: 'agy', imageModelId: 'gemini-3.6-flash-low' });
+    expect(s.imageMode).toBe('agy');
+    expect(s.imageModelId).toBe('gemini-3.6-flash-low');
+    // 'auto' clears the mode pin; absent preserves the model pin.
+    const cleared = await svc.updateSeries(s.id, { imageMode: 'auto' });
+    expect(cleared.imageMode).toBeUndefined();
+    expect(cleared.imageModelId).toBe('gemini-3.6-flash-low');
+    await svc.updateSeries(s.id, { imageMode: 'codex' });
+    // Inbound remote edit (wire-stripped — no pin fields) must not erase the
+    // local pin (ADDITIVE_SERIES_FIELDS).
+    const local = await svc.getSeries(s.id);
+    const { imageMode: _im, imageModelId: _imid, ...wireForm } = local;
+    const res = await svc.mergeSeriesFromSync([{ ...wireForm, name: 'Pinned (peer edit)', updatedAt: '2999-01-01T00:00:00.000Z' }]);
+    expect(res.applied).toBe(true);
+    const after = await svc.getSeries(s.id);
+    expect(after.name).toBe('Pinned (peer edit)');
+    expect(after.imageMode).toBe('codex');
+    expect(after.imageModelId).toBe('gemini-3.6-flash-low');
+  });
+
   it('mergeSeriesFromSync still applies a MOVE to a different non-empty universe', async () => {
     const s = await svc.createSeries({ name: 'Mover', universeId: 'uni-A' });
     const movePayload = { ...s, universeId: 'uni-B', updatedAt: '2999-01-01T00:00:00.000Z' };

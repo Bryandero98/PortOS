@@ -121,6 +121,29 @@ export async function decodeRgbaFrame(src) {
   return { data, width: info.width, height: info.height };
 }
 
+/**
+ * Decode a validated sprite source into a straight-alpha transparent frame.
+ * Already-transparent sources receive the same despill safety pass as packaged
+ * animation frames. Opaque chroma-key sources first recover alpha from their
+ * measured border key, preserving the deterministic evidence path used by both
+ * runtime-atlas compilation and presentation-portrait publishing.
+ */
+export async function decodeTransparentSpriteSource(src, split, keyHex) {
+  const frame = await decodeRgbaFrame(src);
+  const { data } = frame;
+  let alphaMin = 255;
+  let alphaMax = 0;
+  for (let i = 3; i < data.length; i += 4) {
+    const alpha = data[i];
+    if (alpha < alphaMin) alphaMin = alpha;
+    if (alpha > alphaMax) alphaMax = alpha;
+  }
+  if (alphaMin < alphaMax) return despillKeyFrame(frame, split);
+  const measured = sampleBorderKey(frame);
+  validateMeasuredKey(measured, split, keyHex);
+  return despillKeyFrame(recoverAlphaFrame(frame, measured, split), split);
+}
+
 // Encode + write + hash in one pass — hashing the in-memory PNG buffer saves
 // reading every just-written artifact back off disk purely to checksum it.
 async function encodePngWithHash(frame, dest, channels = 4) {

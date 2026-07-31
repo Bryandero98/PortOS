@@ -25,7 +25,7 @@ import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { storedTrackRow } from './spriteTestFixtures.js';
+import { storedTrackRow, expectCarriesCorrection } from './spriteTestFixtures.js';
 
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'sprite-track-prompts-test-'));
 
@@ -77,7 +77,7 @@ const ARG_CASES = [
   },
   {
     // A whitespace-only note must leave the prompt byte-identical to a blind
-    // regenerate — the hard contract `correctionClause` promises, which the
+    // regenerate — the hard contract `applyCorrection` promises, which the
     // template path has to inherit rather than re-implement.
     label: 'with a blank correction note',
     args: { name: 'Example Willow', kind: 'object', direction: 'south', chromaKey: '#00FF00', correctionPrompt: '   ' },
@@ -148,17 +148,23 @@ describe('a user-defined row resolves through its own template', () => {
     );
   });
 
-  it('appends the correction clause LAST, like every compiled builder', () => {
-    // Not a placeholder on purpose: a correction reads as an override of the base
-    // wording, so a template that interpolated it mid-sentence would bury it.
+  it('wraps a user template in the same correction sandwich as every compiled builder', () => {
+    // Not a placeholder on purpose: a correction has to frame the render up front
+    // and override it at the end, so a template that interpolated it mid-sentence
+    // would bury it — the failure #3216 fixed.
     writeTracks([CUSTOM]);
     const prompt = buildTrackVideoPrompt('jetpack-burst', {
       name: 'Placeholder Hero', kind: 'character', direction: 'east', chromaKey: '#FF00FF',
       correctionPrompt: 'more flame, less smoke',
     });
-    expect(prompt.endsWith(
-      ' Important correction — apply this over the attached source image: more flame, less smoke',
-    )).toBe(true);
+    expectCarriesCorrection(expect, prompt, 'more flame, less smoke');
+    // The template body sits BETWEEN the two halves, not after them.
+    expect(prompt.indexOf('jetpack burst')).toBeGreaterThan(prompt.indexOf('Required fix:'));
+    expect(prompt.trimEnd().endsWith('stays as the attached source image shows it.')).toBe(true);
+    // A user-defined row is an i2v track, so it gets the animation wording — the
+    // still-image "keep everything else identical" would cancel its own motion.
+    expect(prompt).toContain('Make that fix in the animation you produce');
+    expect(prompt).not.toContain('keep everything else identical');
   });
 
   it('rebuilds a known track and answers null for an unknown one (tryBuild…)', () => {

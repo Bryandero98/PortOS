@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import * as api from '../../../services/api';
 import {
   Link2,
@@ -16,11 +17,13 @@ import {
   FolderOpen,
   Tag,
   ShieldCheck,
+  Skull,
   Search,
   ChevronDown,
   ChevronUp,
   FolderClosed,
-  GripVertical
+  GripVertical,
+  FileText
 } from 'lucide-react';
 import BrailleSpinner from '../../BrailleSpinner';
 import toast from '../../ui/Toast';
@@ -63,7 +66,7 @@ export default function LinksTab({ onRefresh }) {
   const [links, setLinks] = useState([]);
   const [buckets, setBuckets] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState('all'); // all, github, other, ungrouped
+  const [filter, setFilter] = useState('all'); // all, github, scanned, other, ungrouped
   const [search, setSearch] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({});
@@ -96,6 +99,7 @@ export default function LinksTab({ onRefresh }) {
   // Client-side filter (type / bucket membership) then keyword search.
   const matchesFilter = (link) => {
     if (filter === 'github') return link.isGitHubRepo;
+    if (filter === 'scanned') return Boolean(link.malwareScan?.reportId);
     if (filter === 'other') return !link.isGitHubRepo;
     if (filter === 'ungrouped') return !link.bucketId;
     return true;
@@ -415,6 +419,7 @@ export default function LinksTab({ onRefresh }) {
         {[
           { id: 'all', label: 'All', count: links.length },
           { id: 'github', label: 'GitHub Repos', icon: GitBranch, count: links.filter(l => l.isGitHubRepo).length },
+          { id: 'scanned', label: 'Scan Reports', icon: FileText, count: links.filter(l => l.malwareScan?.reportId).length },
           { id: 'other', label: 'Other Links', icon: Link2, count: links.filter(l => !l.isGitHubRepo).length },
           { id: 'ungrouped', label: 'Ungrouped', icon: FolderClosed, count: links.filter(l => !l.bucketId).length }
         ].map(tab => {
@@ -555,7 +560,9 @@ export default function LinksTab({ onRefresh }) {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
                       {link.isGitHubRepo ? (
-                        <GitBranch size={16} className="text-purple-400 shrink-0" />
+                        link.malwareScan?.verdict === 'DANGEROUS'
+                          ? <Skull size={16} className="text-port-error shrink-0" aria-label="Dangerous repository" />
+                          : <GitBranch size={16} className="text-purple-400 shrink-0" />
                       ) : (
                         <Link2 size={16} className="text-gray-400 shrink-0" />
                       )}
@@ -644,10 +651,10 @@ export default function LinksTab({ onRefresh }) {
 
                 {/* Tags */}
                 {link.tags?.length > 0 && (
-                  <div className="flex items-center gap-1">
+                  <div className="flex min-w-0 flex-wrap items-center gap-1">
                     <Tag size={12} className="text-gray-500" />
                     {link.tags.map((tag, i) => (
-                      <span key={i} className="px-1.5 py-0.5 text-xs bg-port-border/50 text-gray-400 rounded">
+                      <span key={i} className="max-w-full break-all px-1.5 py-0.5 text-xs bg-port-border/50 text-gray-400 rounded">
                         {tag}
                       </span>
                     ))}
@@ -674,6 +681,17 @@ export default function LinksTab({ onRefresh }) {
                       <span className="text-xs text-port-error truncate max-w-[200px]" title={link.cloneError}>
                         {link.cloneError}
                       </span>
+                    )}
+
+                    {link.malwareScan?.reportId && (
+                      <Link
+                        to={api.brainScanReportPath(link.id)}
+                        className={`flex items-center gap-1 text-xs ${link.malwareScan.verdict === 'DANGEROUS' ? 'text-port-error' : 'text-port-accent'} hover:underline`}
+                        title="View malware scan report"
+                      >
+                        {link.malwareScan.verdict === 'DANGEROUS' ? <Skull size={12} /> : <ShieldCheck size={12} />}
+                        {link.malwareScan.verdict || 'Scan report'}
+                      </Link>
                     )}
 
                     {/* Local path */}

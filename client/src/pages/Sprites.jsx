@@ -443,7 +443,7 @@ export default function Sprites() {
   });
 
   // Correction guidance for EVERY regeneration surface is page-owned (#2964,
-  // extended to the main reference / walk / scanner / ambient surfaces by
+  // extended to the main reference and every animation track's surfaces by
   // #3134) so a workflow panel and the asset-collection Regenerate button
   // read/write ONE source: a correction typed on either surface applies to the
   // other AND rides along as `correctionPrompt` on whichever re-roll fires.
@@ -517,6 +517,19 @@ export default function Sprites() {
       .catch(() => setImageBackends([]));
   }, []);
   const hasImageBackend = Array.isArray(imageBackends) && imageBackends.length > 0;
+
+  // Seed the page-owned backend picker from an opened record's persisted
+  // render pin (#3231 Phase 3) — but only when that backend is actually
+  // available, so a pinned-but-since-disabled backend degrades to the server
+  // ladder's graceful fallback instead of being sent as an explicit (and
+  // erroring) body.mode. Unpinned records keep the current page mode.
+  const detailPinMode = detail?.record?.imageMode || '';
+  const detailRecordId = detail?.record?.id || '';
+  useEffect(() => {
+    if (detailPinMode && (imageBackends || []).some((b) => b.id === detailPinMode)) {
+      setImageMode(detailPinMode);
+    }
+  }, [detailPinMode, detailRecordId, imageBackends]);
 
   // Run ids the walk selection has approved. An approved run's strip/frames
   // never move on disk (approval is recorded in the selection, not the path),
@@ -798,6 +811,7 @@ export default function Sprites() {
                         corrections={corrections}
                         onCorrectionChange={setCorrections}
                         backends={imageBackends}
+                        trackDefinitions={detail.trackDefinitions}
                         mode={imageMode}
                         onModeChange={setImageMode}
                         onChanged={onWorkflowChanged}

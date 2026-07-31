@@ -5,6 +5,12 @@
  */
 
 import { createServer } from 'http';
+import { readdirSync, readFileSync } from 'fs';
+import { join, relative } from 'path';
+import { fileURLToPath } from 'url';
+
+/** The `server/` root — the scan root for the source-guard helpers below. */
+export const SERVER_DIR = fileURLToPath(new URL('..', import.meta.url));
 
 function startServer(app) {
   return new Promise((resolve, reject) => {
@@ -131,4 +137,48 @@ export function mockJsonResponse(body, { ok = true, status = 200 } = {}) {
  */
 export function mockTextResponse(body = '', { ok = true, status = 200 } = {}) {
   return { ok, status, text: async () => body };
+}
+
+/**
+ * Every non-test `.js` file under `server/`, as server-relative paths.
+ *
+ * Shared by the source-scanning guard suites — `spawnCwd.test.js` (every
+ * cwd-passing spawn pins PWD, #3193) and `cliChildEnv.test.js` (every AI-CLI
+ * spawn composes its env through the shared builder, #3194). Those two guards
+ * deliberately overlap, so they must agree on what "a source file" is: a change
+ * to the ignore rules here (a new extension, a skipped directory) has to apply
+ * to both, or one guard silently stops covering files the other still checks.
+ *
+ * @param {string} [dir] - directory to walk (defaults to the `server/` root)
+ * @returns {string[]} paths relative to `server/`, e.g. `services/runner.js`
+ */
+export function collectServerSources(dir = SERVER_DIR) {
+  // A directory can vanish BETWEEN the readdir that named it and the recursion
+  // into it: vitest runs suites concurrently in one process, and sibling suites
+  // create-and-remove scratch directories under `server/` (aiToolkit's
+  // `providers.test.js` cycles `server/test-data/` in beforeEach/afterEach). The
+  // walk hitting that window threw ENOENT and failed whichever guard suite was
+  // mid-scan — a flake that reproduces roughly one run in three and depends on
+  // shard ordering, so it lands in CI and not locally. A directory that is gone
+  // holds no sources to check, so skipping it is the honest answer, not a
+  // papered-over error.
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch (err) {
+    if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') return [];
+    throw err;
+  }
+  return entries.flatMap((entry) => {
+    if (entry.name === 'node_modules' || entry.name.startsWith('.')) return [];
+    const abs = join(dir, entry.name);
+    if (entry.isDirectory()) return collectServerSources(abs);
+    if (!entry.name.endsWith('.js') || entry.name.endsWith('.test.js')) return [];
+    return [relative(SERVER_DIR, abs)];
+  });
+}
+
+/** Read a source file named by a `collectServerSources()` path. */
+export function readServerSource(rel) {
+  return readFileSync(join(SERVER_DIR, rel), 'utf8');
 }

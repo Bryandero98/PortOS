@@ -2,8 +2,12 @@
 // child-process access — these sanitize/shape the inputs that
 // server/services/git.js passes to execGit.
 
-// Branches that must never be deleted by the branch-cleanup paths.
-export const PROTECTED_BRANCHES = ['main', 'master', 'dev', 'develop', 'release'];
+// Long-lived shared branches that must never be deleted by the branch-cleanup
+// paths, nor handed to the branch-reconcile coordinator agent — they are not
+// disposable work. `gh-pages` is the GitHub Pages publishing branch: deleting it
+// (or letting reconcile try to "open a PR" merging it into the default branch)
+// would break the published site, so it is protected everywhere the others are.
+export const PROTECTED_BRANCHES = ['main', 'master', 'dev', 'develop', 'release', 'gh-pages'];
 
 /**
  * Validate file paths to prevent command injection and path traversal.

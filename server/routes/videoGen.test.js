@@ -7,6 +7,14 @@ vi.mock('../services/settings.js', () => ({
   getSettings: vi.fn(async () => ({ imageGen: { local: { pythonPath: '/usr/bin/python3' } } })),
 }));
 
+vi.mock('../services/musicVideo/projects.js', () => ({
+  getProject: vi.fn(),
+}));
+
+vi.mock('../services/tracks/index.js', () => ({
+  getTrack: vi.fn(),
+}));
+
 vi.mock('../lib/pythonSetup.js', () => ({
   checkPackages: vi.fn(async () => ({ installed: ['mflux', 'mlx'], missing: [], missingPip: [] })),
   isAllowedPython: vi.fn(() => true),
@@ -92,7 +100,14 @@ vi.mock('../lib/multipart.js', () => ({
 
 vi.mock('../lib/fileUtils.js', () => ({
 tryReadFile: vi.fn().mockResolvedValue(null),
-  PATHS: { root: '/mock', data: '/mock/data', images: '/mock/images', videos: '/mock/videos', uploads: '/mock/uploads' },
+  PATHS: {
+    root: '/mock',
+    data: '/mock/data',
+    images: '/mock/images',
+    videos: '/mock/videos',
+    uploads: '/mock/uploads',
+    music: '/mock/music',
+  },
   // Route awaits ensureDir before staging the upload; no-op for tests since
   // we mock copyFile too.
   ensureDir: vi.fn(async () => {}),
@@ -121,6 +136,8 @@ vi.mock('fs/promises', () => ({
 
 import * as videoGenService from '../services/videoGen/local.js';
 import * as mediaJobQueue from '../services/mediaJobQueue/index.js';
+import { getProject as getMusicVideoProject } from '../services/musicVideo/projects.js';
+import { getTrack } from '../services/tracks/index.js';
 import { resolveGalleryImage } from '../lib/fileUtils.js';
 import { listIcLoraWeights } from '../lib/icLoraWeights.js';
 import videoGenRoutes, { isAudioMime } from './videoGen.js';
@@ -284,6 +301,75 @@ describe('videoGen routes', () => {
 
     it('does not touch the grok path for default local renders', async () => {
       const r = await request(app).post('/api/video-gen/').send({ prompt: 'a cat' });
+      expect(r.status).toBe(200);
+      const [call] = mediaJobQueue.enqueueJob.mock.calls;
+      expect(call[0].params.mode).not.toBe('grok');
+    });
+  });
+
+  describe('POST / — video pin ladder (#3231 Phase 4)', () => {
+    const grokReady = { grok: { enabled: true, grokPath: '/opt/grok' } };
+
+    it('routes an unpinned-request render to grok via settings.videoGen.mode', async () => {
+      const { getSettings } = await import('../services/settings.js');
+      getSettings.mockResolvedValueOnce({ imageGen: grokReady, videoGen: { mode: 'grok' } });
+      const r = await request(app).post('/api/video-gen/').send({ prompt: 'a fox' });
+      expect(r.status).toBe(200);
+      expect(r.body.mode).toBe('grok');
+      expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'video',
+        params: expect.objectContaining({ mode: 'grok', videoMode: 'text', grokPath: '/opt/grok' }),
+      }));
+    });
+
+    it('an explicit backend outranks the install pin', async () => {
+      const { getSettings } = await import('../services/settings.js');
+      getSettings.mockResolvedValueOnce({
+        imageGen: { ...grokReady, local: { pythonPath: '/usr/bin/python3' } },
+        videoGen: { mode: 'grok' },
+      });
+      const r = await request(app).post('/api/video-gen/').send({ prompt: 'a fox', backend: 'local' });
+      expect(r.status).toBe(200);
+      const [call] = mediaJobQueue.enqueueJob.mock.calls;
+      expect(call[0].params.mode).not.toBe('grok');
+    });
+
+    it('a named local model anchors a no-backend request local, even under a grok pin', async () => {
+      const { getSettings } = await import('../services/settings.js');
+      getSettings.mockResolvedValueOnce({
+        imageGen: { ...grokReady, local: { pythonPath: '/usr/bin/python3' } },
+        videoGen: { mode: 'grok' },
+      });
+      // A media requeue rebuilds a local render's config (modelId, no backend)
+      // — grok has no model knob, so the pin must not discard the model.
+      const r = await request(app).post('/api/video-gen/').send({ prompt: 'a fox', modelId: 'ltx2_unified' });
+      expect(r.status).toBe(200);
+      const [call] = mediaJobQueue.enqueueJob.mock.calls;
+      expect(call[0].params.mode).not.toBe('grok');
+      expect(call[0].params.modelId).toBe('ltx2_unified');
+    });
+
+    it('a grok pin degrades to local when the request carries local-only machinery', async () => {
+      const { getSettings } = await import('../services/settings.js');
+      getSettings.mockResolvedValueOnce({
+        imageGen: { ...grokReady, local: { pythonPath: '/usr/bin/python3' } },
+        videoGen: { mode: 'grok' },
+      });
+      // 'fflf' is a local-runtime semantic — the pin must not hijack it to grok
+      // (which would silently drop the keyframe machinery).
+      const r = await request(app).post('/api/video-gen/').send({ prompt: 'a fox', mode: 'fflf' });
+      expect(r.status).toBe(200);
+      const [call] = mediaJobQueue.enqueueJob.mock.calls;
+      expect(call[0].params.mode).not.toBe('grok');
+    });
+
+    it('a disabled grok install pin degrades to local instead of erroring', async () => {
+      const { getSettings } = await import('../services/settings.js');
+      getSettings.mockResolvedValueOnce({
+        imageGen: { grok: { enabled: false }, local: { pythonPath: '/usr/bin/python3' } },
+        videoGen: { mode: 'grok' },
+      });
+      const r = await request(app).post('/api/video-gen/').send({ prompt: 'a fox' });
       expect(r.status).toBe(200);
       const [call] = mediaJobQueue.enqueueJob.mock.calls;
       expect(call[0].params.mode).not.toBe('grok');
@@ -772,6 +858,40 @@ describe('videoGen routes', () => {
           uploadedTempPaths: expect.arrayContaining([
             expect.stringMatching(/\/mock\/uploads\/video-audio-.*\.wav$/),
           ]),
+        }),
+      }));
+    });
+
+    it('stages project audio and forwards the scene song offset for music-video a2v', async () => {
+      getMusicVideoProject.mockResolvedValue({
+        id: 'mv-example',
+        trackId: 'track-example',
+        scenes: [{ sceneId: 'scene-example' }],
+      });
+      getTrack.mockResolvedValue({ id: 'track-example', audioFilename: 'example-song.wav' });
+
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'rain pulses with the percussion; no performers',
+        mode: 'a2v',
+        sourceImageFile: 'reference.png',
+        audioStartSec: 42.5,
+        disableAudio: true,
+        musicVideo: { projectId: 'mv-example', sceneId: 'scene-example' },
+      });
+
+      expect(r.status).toBe(200);
+      expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'video',
+        params: expect.objectContaining({
+          mode: 'a2v',
+          sourceImagePath: '/mock/images/reference.png',
+          audioStartSec: 42.5,
+          disableAudio: true,
+          audioFilePath: expect.stringMatching(/\/mock\/uploads\/video-audio-.*\.wav$/),
+          uploadedTempPaths: expect.arrayContaining([
+            expect.stringMatching(/\/mock\/uploads\/video-audio-.*\.wav$/),
+          ]),
+          musicVideo: { projectId: 'mv-example', sceneId: 'scene-example' },
         }),
       }));
     });

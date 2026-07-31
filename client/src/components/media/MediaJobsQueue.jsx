@@ -5,8 +5,8 @@ import ConfirmButtonPair from '../ui/ConfirmButtonPair';
 import { FormField } from '../ui/FormField';
 import { listMediaJobs, cancelMediaJob, cancelQueuedMediaJobs, deleteMediaJob, retryMediaJob, runMediaJobNow } from '../../services/apiMediaJobs.js';
 import { listLoraTrainingCheckpoints } from '../../services/apiLoraTraining.js';
-import { isCloudCliMode, IMAGE_GEN_MODE, CODEX_IMAGEGEN_DEFAULT_EFFORT } from '../../lib/imageGenBackends';
-import { CODEX_EFFORT_LEVELS } from '../../utils/providers';
+import { isCloudCliMode, IMAGE_GEN_MODE, CODEX_IMAGEGEN_DEFAULT_EFFORT, supportsCloudModelOverride, modeLabel } from '../../lib/imageGenBackends';
+import { ANTIGRAVITY_CONFIGURED_DEFAULT, CODEX_EFFORT_LEVELS, isConfiguredDefaultModel } from '../../utils/providers';
 import { lossSparklineGeometry } from '../../lib/lossSparkline';
 import { useAutoRefetch } from '../../hooks/useAutoRefetch';
 import { useConfirmDelete } from '../../hooks/useConfirmDelete';
@@ -54,6 +54,12 @@ function modelLabel(params) {
     // the aspect ratio is the only distinguishing render param.
     const ratio = (typeof params.aspectRatio === 'string' ? params.aspectRatio.trim() : '');
     return ratio ? `grok · ${ratio}` : 'grok';
+  }
+  if (params.mode === IMAGE_GEN_MODE.AGY) {
+    const model = (typeof params.model === 'string' ? params.model.trim() : '');
+    return model && model !== ANTIGRAVITY_CONFIGURED_DEFAULT
+      ? `agy / ${model}`
+      : 'agy / configured default';
   }
   const id = (params.modelId || '').trim();
   if (!id) return 'local';
@@ -474,9 +480,22 @@ const EFFORT_DEFAULT_OPTION = 'default';
 function EditRetryForm({ job, onSubmit, onCancel }) {
   const p = job.params || {};
   const isCodex = p.mode === IMAGE_GEN_MODE.CODEX;
+  // Codex and Agy both run under a CLI model id carried on `params.model`;
+  // local jobs use `params.modelId` (a PortOS image-model registry id). Binding
+  // an Agy retry to `modelId` would edit a field its provider never reads AND
+  // leave the actual model unchangeable, so the field follows `params.model`
+  // for every backend that takes a CLI model — the same capability list the
+  // gen form's override picker is gated on.
+  const usesCliModel = supportsCloudModelOverride(p.mode);
   const [prompt, setPrompt] = useState(p.prompt || '');
   const [negativePrompt, setNegativePrompt] = useState(p.negativePrompt || '');
-  const [model, setModel] = useState(p.model || '');
+  // A configured-default sentinel means "let the CLI's own config pick" — display
+  // it as an empty field so the "leave empty for default" placeholder is honest.
+  // The submit comparison below uses this same blanked value, not the raw
+  // `p.model`: otherwise an untouched sentinel field reads as an edit and
+  // submits `model: ''` on every retry.
+  const originalModel = isConfiguredDefaultModel(p.model) ? '' : (p.model || '');
+  const [model, setModel] = useState(originalModel);
   const [modelId, setModelId] = useState(p.modelId || '');
   const [width, setWidth] = useState(p.width ?? '');
   const [height, setHeight] = useState(p.height ?? '');
@@ -494,8 +513,8 @@ function EditRetryForm({ job, onSubmit, onCancel }) {
     const numEq = (a, b) => (a === '' ? null : Number(a)) === (b ?? null);
     if (!trimEq(prompt, p.prompt) && prompt.trim()) overrides.prompt = prompt.trim();
     if (!trimEq(negativePrompt, p.negativePrompt)) overrides.negativePrompt = negativePrompt.trim();
-    if (isCodex && !trimEq(model, p.model)) overrides.model = model.trim();
-    if (!isCodex && !trimEq(modelId, p.modelId)) overrides.modelId = modelId.trim();
+    if (usesCliModel && !trimEq(model, originalModel)) overrides.model = model.trim();
+    if (!usesCliModel && !trimEq(modelId, p.modelId)) overrides.modelId = modelId.trim();
     if (!numEq(width, p.width) && width !== '') overrides.width = Number(width);
     if (!numEq(height, p.height) && height !== '') overrides.height = Number(height);
     if (!numEq(steps, p.steps) && steps !== '') overrides.steps = Number(steps);
@@ -526,12 +545,15 @@ function EditRetryForm({ job, onSubmit, onCancel }) {
         />
       </FormField>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-        <FormField className="col-span-2" label={isCodex ? 'Codex model' : 'Model id'} labelClassName="block text-[10px] uppercase tracking-wide text-port-text-muted">
+        {/* 'Codex model' / 'Agy model' come from the shared backend META rather
+            than a per-backend ternary ladder — a new CLI backend gets the right
+            label from its registry entry alone. */}
+        <FormField className="col-span-2" label={usesCliModel ? `${modeLabel(p.mode)} model` : 'Model id'} labelClassName="block text-[10px] uppercase tracking-wide text-port-text-muted">
           <input
             type="text"
-            value={isCodex ? model : modelId}
-            onChange={(e) => (isCodex ? setModel(e.target.value) : setModelId(e.target.value))}
-            placeholder={isCodex ? 'leave empty for default' : 'e.g. z-image-turbo-bf16'}
+            value={usesCliModel ? model : modelId}
+            onChange={(e) => (usesCliModel ? setModel(e.target.value) : setModelId(e.target.value))}
+            placeholder={usesCliModel ? 'leave empty for default' : 'e.g. z-image-turbo-bf16'}
             className="w-full px-2 py-1 bg-port-bg border border-port-border rounded text-white text-xs"
             maxLength={200}
           />

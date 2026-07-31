@@ -7,6 +7,9 @@ vi.mock('../services/musicVideo/projects.js', () => ({
   listProjects: vi.fn(async () => [{ id: 'mv-1', name: 'A' }]),
   getProject: vi.fn(),
   createProject: vi.fn(async (d) => ({ id: 'mv-new', ...d })),
+  cloneProject: vi.fn(async (id, options) => ({
+    id: 'mv-clone', name: options.name || 'A v2', version: 2, parentProjectId: id,
+  })),
   updateProject: vi.fn(async (id, p) => ({ id, ...p })),
   deleteProject: vi.fn(async () => ({ ok: true })),
   setProjectAnalysis: vi.fn(async (id, analysis) => ({ id, audioAnalysis: analysis, status: 'analyzed' })),
@@ -101,10 +104,48 @@ describe('musicVideo routes', () => {
     expect(r.status).toBe(400);
   });
 
+  it('POST /:id/clone creates the next version and accepts an optional name', async () => {
+    const r = await request(app).post('/api/music-video/mv-1/clone')
+      .send({ name: 'Director Cut', includeGeneratedMedia: true });
+    expect(r.status).toBe(201);
+    expect(r.body).toMatchObject({ id: 'mv-clone', name: 'Director Cut', version: 2, parentProjectId: 'mv-1' });
+    expect(svc.cloneProject).toHaveBeenCalledWith('mv-1', {
+      name: 'Director Cut',
+      includeGeneratedMedia: true,
+    });
+  });
+
+  it('POST /:id/clone rejects unsupported options', async () => {
+    const r = await request(app).post('/api/music-video/mv-1/clone').send({ copyFinalRender: true });
+    expect(r.status).toBe(400);
+    expect(svc.cloneProject).not.toHaveBeenCalled();
+  });
+
   it('PATCH /:id updates', async () => {
     const r = await request(app).patch('/api/music-video/mv-1').send({ name: 'Renamed' });
     expect(r.status).toBe(200);
     expect(r.body.name).toBe('Renamed');
+  });
+
+  it('PATCH /:id accepts bounded project video-renderer settings', async () => {
+    const videoSettings = {
+      backend: 'local',
+      modelId: 'ltx23_dgrauet_q4',
+      grokDuration: 10,
+      generationMode: 'audioReactive',
+      audioReactiveLora: 'audio-reactive.safetensors',
+      audioReactiveScale: 1.2,
+    };
+    const r = await request(app).patch('/api/music-video/mv-1').send({ videoSettings });
+    expect(r.status).toBe(200);
+    expect(svc.updateProject).toHaveBeenCalledWith('mv-1', { videoSettings });
+  });
+
+  it('PATCH /:id rejects invalid video-renderer settings', async () => {
+    const r = await request(app).patch('/api/music-video/mv-1')
+      .send({ videoSettings: { backend: 'cloud-surprise', grokDuration: 9 } });
+    expect(r.status).toBe(400);
+    expect(svc.updateProject).not.toHaveBeenCalled();
   });
 
   it('DELETE /:id soft-deletes', async () => {

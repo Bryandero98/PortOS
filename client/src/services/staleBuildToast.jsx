@@ -17,6 +17,6 @@ export function showStaleBuildToast() {
         Reload
       </button>
     </div>,
-    { id: 'portos-stale-build', duration: Infinity },
+    { id: 'portos-stale-build', duration: Infinity, label: 'New build available' },
   );
 }

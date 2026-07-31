@@ -25,6 +25,7 @@ import {
 } from '../../lib/validation.js';
 import { compareNewerWins } from '../../lib/lwwTimestamp.js';
 import { sanitizeSoftDeleteFields } from '../../lib/syncWire.js';
+import { persistedRenderPinFields } from '../../lib/renderTargets.js';
 
 // Re-exported for the PG backend's typed mirror columns (mirrors the CD store).
 export { mirrorTimestamp } from '../../lib/pgTimestamp.js';
@@ -60,10 +61,14 @@ export function buildProjectRecord(input, { id, now }) {
   const {
     name, mode = 'director', trackId = null,
     uploadedAudioFilename = null, concept = null,
+    videoSettings = {},
   } = input;
   return {
     id,
     name,
+    version: 1,
+    parentProjectId: null,
+    rootProjectId: null,
     status: 'draft',
     mode,
     createdAt: now,
@@ -71,12 +76,66 @@ export function buildProjectRecord(input, { id, now }) {
     trackId,
     uploadedAudioFilename,
     concept,
+    videoSettings: {
+      backend: videoSettings.backend ?? 'local',
+      modelId: videoSettings.modelId ?? null,
+      grokDuration: videoSettings.grokDuration ?? 10,
+      generationMode: videoSettings.generationMode ?? 'image',
+      audioReactiveLora: videoSettings.audioReactiveLora ?? null,
+      audioReactiveScale: videoSettings.audioReactiveScale ?? 1.2,
+    },
+    // #3231 Phase 4 — per-record image render pin for scene reference-frame
+    // renders (the shared universe/series/sprite field pair). Present only
+    // when set, so existing records keep their on-disk shape byte-stable.
+    ...persistedRenderPinFields(input),
     audioAnalysis: null,
     midiTranscription: null,
     scenes: [],
     renderHistoryId: null,
     // Soft-delete tombstone trio — kept so peer-sync federation (a follow-up)
     // is additive rather than a record-shape migration.
+    deleted: false,
+    deletedAt: null,
+  };
+}
+
+/** Build an independently editable next version while reusing immutable media assets. */
+export function cloneProjectRecord(source, {
+  id,
+  now,
+  name,
+  includeGeneratedMedia = true,
+}) {
+  const nameMatch = typeof source.name === 'string' ? source.name.match(/^(.*?)(?:\s+v(\d+))?$/i) : null;
+  const inferredVersion = Number(nameMatch?.[2]) || 1;
+  const sourceVersion = Number.isInteger(source.version) && source.version > 0
+    ? source.version
+    : inferredVersion;
+  const version = sourceVersion + 1;
+  const baseName = nameMatch?.[1]?.trim() || source.name || 'Music Video';
+  const scenes = (source.scenes || []).map((scene, order) => ({
+    ...scene,
+    sceneId: `mvs-${randomUUID()}`,
+    order,
+    referenceImageId: includeGeneratedMedia ? (scene.referenceImageId ?? null) : null,
+    videoHistoryId: includeGeneratedMedia ? (scene.videoHistoryId ?? null) : null,
+  }));
+  const mediaReady = includeGeneratedMedia
+    && scenes.length > 0
+    && scenes.every((scene) => scene.referenceImageId && scene.videoHistoryId);
+
+  return {
+    ...source,
+    id,
+    name: name?.trim() || `${baseName} v${version}`,
+    version,
+    parentProjectId: source.id,
+    rootProjectId: source.rootProjectId || source.id,
+    status: source.audioAnalysis ? (mediaReady ? 'ready' : 'analyzed') : 'draft',
+    createdAt: now,
+    updatedAt: now,
+    scenes,
+    renderHistoryId: null,
     deleted: false,
     deletedAt: null,
   };
@@ -92,9 +151,26 @@ export function applyProjectPatch(project, patch) {
   // below, so a caller sending only the sub-field it edited (e.g. { style: '…' })
   // can't clobber a sibling sub-field (e.g. prompt) set concurrently by another
   // sync peer (#3168). An explicit `concept: null` still clears it outright.
-  const mergedPatch = ('concept' in patch && patch.concept && project.concept)
+  const conceptMergedPatch = ('concept' in patch && patch.concept && project.concept)
     ? { ...patch, concept: { ...project.concept, ...patch.concept } }
     : patch;
+  // Renderer settings are edited independently in the UI. Merge a partial
+  // change so picking a model cannot discard the provider or Grok duration.
+  const mergedPatch = ('videoSettings' in conceptMergedPatch && conceptMergedPatch.videoSettings)
+    ? {
+      ...conceptMergedPatch,
+      videoSettings: {
+        backend: 'local',
+        modelId: null,
+        grokDuration: 10,
+        generationMode: 'image',
+        audioReactiveLora: null,
+        audioReactiveScale: 1.2,
+        ...project.videoSettings,
+        ...conceptMergedPatch.videoSettings,
+      },
+    }
+    : conceptMergedPatch;
   // Changing the audio source invalidates the cached beat/tempo analysis —
   // it was computed from the OLD track. AI Plan / Auto-arrange / BeatTimeline
   // gate on `audioAnalysis` truthiness, and the render's beat-snap step reads

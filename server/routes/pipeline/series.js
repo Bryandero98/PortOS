@@ -7,7 +7,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler, ServerError } from '../../lib/errorHandler.js';
-import { validateRequest, optionalBooleanMap, llmSchema } from '../../lib/validation.js';
+import { validateRequest, optionalBooleanMap, llmSchema, recordRenderPinFields } from '../../lib/validation.js';
 import * as seriesSvc from '../../services/pipeline/series.js';
 import { TRIM_SIZES, INTERIOR_FONTS } from '../../lib/proseExportSettings.js';
 import * as issuesSvc from '../../services/pipeline/issues.js';
@@ -260,6 +260,9 @@ const seriesCreateSchema = z.object({
   primaryManuscriptType: z.enum(seriesSvc.MANUSCRIPT_TYPES).nullable().optional(),
   issueCountTarget: z.number().int().min(0).max(seriesSvc.ISSUE_COUNT_TARGET_MAX).optional(),
   llm: llmSchema,
+  // Per-record render pin (#3231 Phase 3) — this series' default image
+  // backend + cloud model for pipeline visual renders.
+  ...recordRenderPinFields,
   // Local-only "don't sync to peers" marker.
   ephemeral: z.boolean().optional(),
 });
@@ -302,6 +305,9 @@ const seriesPatchSchema = z.object({
   // explicit empty array on a gate = "nothing blocks this gate".
   severityWeights: severityWeightsSchema.nullable().optional(),
   blockingSeverities: blockingSeveritiesSchema.nullable().optional(),
+  // Per-record render pin (#3231 Phase 3). Key-present with 'auto'/''/null
+  // clears; key-absent preserves.
+  ...recordRenderPinFields,
 }).refine((p) => Object.keys(p).length > 0, { message: 'patch must include at least one field' });
 const arcFieldLockSchema = z.object({ locked: z.boolean() });
 

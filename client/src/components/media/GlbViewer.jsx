@@ -7,6 +7,7 @@ import {
   useGLTF,
 } from '@react-three/drei';
 import { Download, Rotate3d, SlidersHorizontal } from 'lucide-react';
+import { GltfPrimitive } from '../../hooks/useClonedGltf';
 
 const DEFAULT_BACKGROUND = '#050505';
 const ENVIRONMENT_HDRI = '/hdri/studio-small-08-1k.hdr';
@@ -71,7 +72,7 @@ function GlbModel({ src, forceOpaque }) {
       });
     };
   }, [forceOpaque, renderedScene]);
-  return <primitive object={renderedScene} />;
+  return <GltfPrimitive object={renderedScene} />;
 }
 
 // Own `scene.environmentIntensity` directly rather than passing drei's

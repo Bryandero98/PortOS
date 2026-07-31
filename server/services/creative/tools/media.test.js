@@ -27,18 +27,38 @@ beforeEach(() => {
 });
 
 describe('render-backend pin — the auto/unpinned path is a strict no-op (#3135)', () => {
-  it('leaves image params untouched with no owning project', async () => {
+  // Note (#3231): the image lane now reads settings even without a project pin
+  // — the install-wide creative-agent renderDefaults pin is a second pin
+  // source — so the old "no settings read at all" assertion is gone. The
+  // load-bearing contract is unchanged: with NO pin from either source, the
+  // enqueued params are byte-identical to the caller's.
+  it('leaves image params untouched with no owning project and no renderDefaults pin', async () => {
     await run('media_enqueueImageJob', { prompt: 'a lighthouse' });
     expect(enqueued().params).toEqual({ prompt: 'a lighthouse' });
-    // No project ⇒ no settings read at all.
-    expect(getSettings).not.toHaveBeenCalled();
   });
 
   it('leaves image params untouched when the project has no pin', async () => {
     getProject.mockResolvedValue(projectWithPin(null));
     await run('media_enqueueImageJob', { prompt: 'p' }, { projectId: 'cd-1' });
     expect(enqueued().params).toEqual({ prompt: 'p' });
-    expect(getSettings).not.toHaveBeenCalled();
+  });
+
+  it('applies the creative-agent renderDefaults pin when the project has none (#3231)', async () => {
+    getSettings.mockResolvedValue({
+      imageGen: { codex: { enabled: true, codexPath: '/bin/codex', model: 'example-model', effort: 'low' } },
+      renderDefaults: { 'creative-agent': { imageMode: 'codex' } },
+    });
+    await run('media_enqueueImageJob', { prompt: 'p' });
+    expect(enqueued().params).toEqual(expect.objectContaining({ mode: 'codex', model: 'example-model' }));
+  });
+
+  it('a disabled creative-agent renderDefaults pin still leaves params flowing (degrades, never fails)', async () => {
+    getSettings.mockResolvedValue({
+      renderDefaults: { 'creative-agent': { imageMode: 'codex' } },
+    });
+    await run('media_enqueueImageJob', { prompt: 'p' });
+    // Codex pin present but disabled → the usability ladder degrades to local.
+    expect(enqueued().params).toEqual(expect.objectContaining({ mode: 'local', prompt: 'p' }));
   });
 
   it('leaves video params untouched when the project has no pin', async () => {
@@ -46,6 +66,50 @@ describe('render-backend pin — the auto/unpinned path is a strict no-op (#3135
     await run('media_enqueueVideoJob', { prompt: 'p', mode: 'image' }, { projectId: 'cd-1' });
     // The local lane's `mode` is the t2v/i2v SEMANTIC — it must survive untouched.
     expect(enqueued().params).toEqual({ prompt: 'p', mode: 'image' });
+  });
+
+  it('applies the creative-agent renderDefaults VIDEO pin when the project has none (#3231 Phase 4)', async () => {
+    getSettings.mockResolvedValue({
+      imageGen: { grok: { enabled: true, grokPath: '/bin/grok' } },
+      renderDefaults: { 'creative-agent': { videoMode: 'grok' } },
+    });
+    await run('media_enqueueVideoJob', { prompt: 'p' });
+    expect(enqueued().params).toEqual(expect.objectContaining({ mode: 'grok', videoMode: 'text', grokPath: '/bin/grok' }));
+  });
+
+  it('applies the install-wide settings.videoGen.mode pin when nothing else pins (#3231 Phase 4)', async () => {
+    getSettings.mockResolvedValue({
+      imageGen: { grok: { enabled: true, grokPath: '/bin/grok' } },
+      videoGen: { mode: 'grok' },
+    });
+    await run('media_enqueueVideoJob', { prompt: 'p' });
+    expect(enqueued().params).toEqual(expect.objectContaining({ mode: 'grok' }));
+  });
+
+  it('the project video pin outranks the target video pin', async () => {
+    getSettings.mockResolvedValue({
+      imageGen: { grok: { enabled: true, grokPath: '/bin/grok' } },
+      renderDefaults: { 'creative-agent': { videoMode: 'grok' } },
+    });
+    getProject.mockResolvedValue(projectWithPin({ video: { mode: 'local' } }));
+    await run('media_enqueueVideoJob', { prompt: 'p', mode: 'image' }, { projectId: 'cd-1' });
+    expect(enqueued().params.mode).toBe('image'); // local pin → semantic survives, no grok discriminator
+  });
+
+  it('a disabled grok video pin degrades to local (never fails the commission)', async () => {
+    getSettings.mockResolvedValue({
+      renderDefaults: { 'creative-agent': { videoMode: 'grok' } },
+    });
+    await run('media_enqueueVideoJob', { prompt: 'p', mode: 'image' });
+    expect(enqueued().params).toEqual(expect.objectContaining({ mode: 'image', prompt: 'p' }));
+  });
+
+  it('the target videoModel rides a local resolution when the project pins no model', async () => {
+    getSettings.mockResolvedValue({
+      renderDefaults: { 'creative-agent': { videoMode: 'local', videoModel: 'target-video-model' } },
+    });
+    await run('media_enqueueVideoJob', { prompt: 'p', mode: 'image' });
+    expect(enqueued().params.modelId).toBe('target-video-model');
   });
 
   it('reads the owning project exactly once per enqueue', async () => {

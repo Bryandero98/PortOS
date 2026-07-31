@@ -183,7 +183,7 @@ router.post('/:id/auto-cast', asyncHandler(async (req, res) => {
   // report how many were queued; the renders themselves run in the background.
   let firstPass = null;
   if (generateFirstPass && Array.isArray(result.added) && result.added.length > 0) {
-    firstPass = await enqueueFirstPassPortraits(result.added)
+    firstPass = await enqueueFirstPassPortraits(result.added, project)
       .catch((e) => {
         console.log(`⚠️ CD first-pass portraits failed: ${e.message}`);
         return null;

@@ -26,6 +26,19 @@ export const musicVideoConceptSchema = z.object({
   universeId: z.string().max(64).nullable().optional(),
 }).strict();
 
+// Renderer settings travel with the project so reopening a director board (or
+// opening it on a sync peer) cannot silently change provider/model. `modelId`
+// is optional because Grok does not consume it; the video-gen route performs
+// the authoritative installed-model validation when a local render starts.
+export const musicVideoVideoSettingsSchema = z.object({
+  backend: z.enum(['local', 'grok']).optional(),
+  modelId: z.string().max(64).nullable().optional(),
+  grokDuration: z.union([z.literal(6), z.literal(10)]).optional(),
+  generationMode: z.enum(['image', 'audioReactive']).optional(),
+  audioReactiveLora: z.string().max(255).regex(/^[^/\\]+\.safetensors$/i).nullable().optional(),
+  audioReactiveScale: z.number().min(0).max(2).optional(),
+}).strict();
+
 export const musicVideoProjectCreateSchema = z.object({
   name: z.string().min(1).max(200),
   mode: z.enum(MUSIC_VIDEO_MODES).optional(),
@@ -35,6 +48,7 @@ export const musicVideoProjectCreateSchema = z.object({
   trackId: z.string().max(64).nullable().optional(),
   uploadedAudioFilename: z.string().max(256).nullable().optional(),
   concept: musicVideoConceptSchema.nullable().optional(),
+  videoSettings: musicVideoVideoSettingsSchema.optional(),
 }).strict();
 
 export const musicVideoProjectUpdateSchema = z.object({
@@ -44,7 +58,16 @@ export const musicVideoProjectUpdateSchema = z.object({
   trackId: z.string().max(64).nullable().optional(),
   uploadedAudioFilename: z.string().max(256).nullable().optional(),
   concept: musicVideoConceptSchema.nullable().optional(),
+  videoSettings: musicVideoVideoSettingsSchema.optional(),
   renderHistoryId: z.string().max(64).nullable().optional(),
+}).strict();
+
+// Fork a project into its next editable version. The server derives lineage and
+// version numbers from the source; callers may only override the display name
+// and choose whether generated scene media should remain attached.
+export const musicVideoProjectCloneSchema = z.object({
+  name: z.string().min(1).max(200).optional(),
+  includeGeneratedMedia: z.boolean().optional(),
 }).strict();
 
 // A scene on the director board. `startSec`/`endSec` place it on the timeline;
@@ -130,6 +153,9 @@ export const musicVideoAudioAnalysisSchema = z.object({
   bpm: z.number().nullable(),
   beats: z.array(z.number()),
   downbeats: z.array(z.number()),
+  // Compact normalized loudness envelope for the director timeline. Optional
+  // so cached analyses from older installs remain readable.
+  waveform: z.array(z.number().min(0).max(1)).max(1024).optional(),
   sections: z.array(z.object({
     label: z.string(),
     startSec: z.number(),
@@ -139,4 +165,12 @@ export const musicVideoAudioAnalysisSchema = z.object({
     energy: z.number().min(0).optional(),
   })),
   durationSec: z.number(),
+  // Explain whether the beat grid came from the full track, consensus among
+  // later rhythmic windows, or the director's manual tap/entry fallback.
+  tempoSource: z.enum(['full', 'windowed', 'manual']).nullable().optional(),
+  tempoConfidence: z.number().min(0).max(1).nullable().optional(),
+  tempoWindow: z.object({
+    startSec: z.number().min(0),
+    endSec: z.number().min(0),
+  }).nullable().optional(),
 }).strict();

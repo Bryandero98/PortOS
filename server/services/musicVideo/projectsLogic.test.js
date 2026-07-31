@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildProjectRecord,
+  cloneProjectRecord,
   applyProjectPatch,
   setAudioAnalysis,
   setMidiTranscription,
@@ -21,7 +22,9 @@ describe('buildProjectRecord', () => {
     const p = buildProjectRecord({ name: 'Neon Nights', trackId: 'track-9' }, { id: 'mv-x', now: '2026-01-01T00:00:00.000Z' });
     expect(p).toMatchObject({
       id: 'mv-x', name: 'Neon Nights', status: 'draft', mode: 'director',
+      version: 1, parentProjectId: null, rootProjectId: null,
       trackId: 'track-9', uploadedAudioFilename: null, concept: null,
+      videoSettings: { backend: 'local', modelId: null, grokDuration: 10 },
       audioAnalysis: null, midiTranscription: null, scenes: [], renderHistoryId: null,
       deleted: false, deletedAt: null,
     });
@@ -32,6 +35,103 @@ describe('buildProjectRecord', () => {
     const p = buildProjectRecord({ name: 'A', mode: 'autonomous', concept: { prompt: 'noir' } }, { id: 'mv-2', now: 'n' });
     expect(p.mode).toBe('autonomous');
     expect(p.concept).toEqual({ prompt: 'noir' });
+  });
+
+  it('persists the image render pin only when set (#3231 Phase 4)', () => {
+    const pinned = buildProjectRecord(
+      { name: 'A', imageMode: 'codex', imageModelId: 'example-model' },
+      { id: 'mv-3', now: 'n' },
+    );
+    expect(pinned.imageMode).toBe('codex');
+    expect(pinned.imageModelId).toBe('example-model');
+    // No pin → the keys are absent entirely, keeping the on-disk shape
+    // byte-stable for existing records.
+    const unpinned = buildProjectRecord({ name: 'B' }, { id: 'mv-4', now: 'n' });
+    expect('imageMode' in unpinned).toBe(false);
+    expect('imageModelId' in unpinned).toBe(false);
+    // The 'auto' sentinel and blanks collapse to no pin.
+    const auto = buildProjectRecord({ name: 'C', imageMode: 'auto', imageModelId: '' }, { id: 'mv-5', now: 'n' });
+    expect('imageMode' in auto).toBe(false);
+    expect('imageModelId' in auto).toBe(false);
+  });
+
+  it('a patch sets and clears the image render pin (#3231 Phase 4)', () => {
+    const p = baseProject();
+    const pinned = applyProjectPatch(p, { imageMode: 'agy', imageModelId: 'example-model' });
+    expect(pinned.imageMode).toBe('agy');
+    expect(pinned.imageModelId).toBe('example-model');
+    // Key-present-with-null is the intentional clear (absent-vs-empty rule).
+    const cleared = applyProjectPatch(pinned, { imageMode: null, imageModelId: null });
+    expect(cleared.imageMode).toBeNull();
+    expect(cleared.imageModelId).toBeNull();
+  });
+});
+
+describe('cloneProjectRecord', () => {
+  it('creates an editable next version with fresh scene ids and reusable media', () => {
+    const source = {
+      ...baseProject(),
+      status: 'complete',
+      renderHistoryId: 'final-1',
+      audioAnalysis: {
+        bpm: 120, beats: [0], downbeats: [0],
+        sections: [{ label: 'S', startSec: 0, endSec: 5 }],
+        durationSec: 5,
+      },
+      scenes: [{
+        sceneId: 'scene-old',
+        order: 0,
+        prompt: 'Tracking shot',
+        referenceImageId: 'frame.png',
+        videoHistoryId: 'clip-1',
+      }],
+    };
+
+    const clone = cloneProjectRecord(source, {
+      id: 'mv-2',
+      now: '2026-01-02T00:00:00.000Z',
+    });
+
+    expect(clone).toMatchObject({
+      id: 'mv-2',
+      name: 'Test MV v2',
+      version: 2,
+      parentProjectId: 'mv-1',
+      rootProjectId: 'mv-1',
+      status: 'ready',
+      renderHistoryId: null,
+      createdAt: '2026-01-02T00:00:00.000Z',
+      updatedAt: '2026-01-02T00:00:00.000Z',
+    });
+    expect(clone.scenes[0]).toMatchObject({
+      order: 0,
+      referenceImageId: 'frame.png',
+      videoHistoryId: 'clip-1',
+    });
+    expect(clone.scenes[0].sceneId).not.toBe('scene-old');
+    expect(source.scenes[0].sceneId).toBe('scene-old');
+  });
+
+  it('can fork the board without carrying generated media', () => {
+    const source = {
+      ...baseProject(),
+      version: 2,
+      rootProjectId: 'mv-root',
+      scenes: [{ sceneId: 'old', order: 0, referenceImageId: 'frame.png', videoHistoryId: 'clip-1' }],
+    };
+    const clone = cloneProjectRecord(source, {
+      id: 'mv-3',
+      now: '2026-01-03T00:00:00.000Z',
+      includeGeneratedMedia: false,
+    });
+
+    expect(clone).toMatchObject({
+      version: 3,
+      parentProjectId: 'mv-1',
+      rootProjectId: 'mv-root',
+      name: 'Test MV v3',
+    });
+    expect(clone.scenes[0]).toMatchObject({ referenceImageId: null, videoHistoryId: null });
   });
 });
 
@@ -158,6 +258,33 @@ describe('applyProjectPatch', () => {
     const withConcept = { ...baseProject(), concept: { prompt: 'A road trip', style: 'Cyberpunk anime' } };
     const next = applyProjectPatch(withConcept, { concept: null });
     expect(next.concept).toBeNull();
+  });
+
+  it('persists explicit renderer settings and merges later partial changes', () => {
+    const project = buildProjectRecord({
+      name: 'A',
+      videoSettings: { backend: 'grok', grokDuration: 6 },
+    }, { id: 'mv-2', now: 'n' });
+    expect(project.videoSettings).toEqual({
+      backend: 'grok',
+      modelId: null,
+      grokDuration: 6,
+      generationMode: 'image',
+      audioReactiveLora: null,
+      audioReactiveScale: 1.2,
+    });
+
+    const next = applyProjectPatch(project, {
+      videoSettings: { backend: 'local', modelId: 'ltx23_distilled_q4' },
+    });
+    expect(next.videoSettings).toEqual({
+      backend: 'local',
+      modelId: 'ltx23_distilled_q4',
+      grokDuration: 6,
+      generationMode: 'image',
+      audioReactiveLora: null,
+      audioReactiveScale: 1.2,
+    });
   });
 });
 

@@ -746,6 +746,15 @@ function ReviewItem({ item, config, isEditing, onComplete, onDismiss, onDelete, 
                     <MarkdownOutput content={item.description} />
                   </div>
                 )}
+                {item.metadata?.reportUrl && (
+                  <a
+                    href={api.normalizeBrainScanReportPath(item.metadata.reportUrl)}
+                    className={`mt-2 inline-flex items-center gap-1 text-xs hover:underline ${item.metadata.verdict === 'DANGEROUS' ? 'text-port-error' : 'text-port-accent'}`}
+                  >
+                    <FileText size={13} />
+                    View scan report{item.metadata.verdict ? ` (${item.metadata.verdict})` : ''}
+                  </a>
+                )}
               </div>
               {isPending && (
                 <span className={`text-[10px] uppercase tracking-wide px-2 py-1 rounded-full border border-current/20 ${config.color}`}>

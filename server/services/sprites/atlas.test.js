@@ -433,10 +433,33 @@ describe('compileAtlas', () => {
       'idle', ...WALK_PHASES, 'jetpack-00', 'jetpack-01', 'jetpack-02',
     ]);
     expect(manifest.geometry.tracks.jetpack).toEqual({ start: 9, count: 3, rows: 8 });
+    expect(manifest.geometry.jetpackFrameCount).toBe(3);
     expect(manifest.trackSets.jetpack.setSha256).toMatch(/^[0-9a-f]{64}$/);
     for (const row of manifest.directions) {
       expect(row.cells.filter((cell) => cell.column.startsWith('jetpack-'))).toHaveLength(3);
     }
+
+    // A pre-#3223 pointer has the generic span but no top-level convenience
+    // field. Recompile the immutable metadata into a new version even though
+    // its atlas pixels and finalized track sets are unchanged.
+    const pointerAbs = join(TEST_ROOT, 'sprites', id, 'runtime/current.json');
+    const legacyPointer = JSON.parse(await readFile(pointerAbs, 'utf8'));
+    const legacyManifestAbs = join(TEST_ROOT, 'sprites', id, first.manifestPath);
+    const legacyManifest = JSON.parse(await readFile(legacyManifestAbs, 'utf8'));
+    delete legacyManifest.geometry.jetpackFrameCount;
+    const legacyManifestBytes = Buffer.from(`${JSON.stringify(legacyManifest, null, 2)}\n`);
+    await writeFile(legacyManifestAbs, legacyManifestBytes);
+    delete legacyPointer.geometry.jetpackFrameCount;
+    legacyPointer.manifestSha256 = sha256(legacyManifestBytes);
+    await writeFile(pointerAbs, JSON.stringify(legacyPointer));
+    await rm(join(TEST_ROOT, 'sprites', id, first.atlasPath));
+    const backfilled = await compileAtlas(id, { tracks: customTracks });
+    expect(backfilled.created).toBe(true);
+    expect(backfilled.version).toBe(first.version + 1);
+    const backfilledManifest = JSON.parse(
+      await readFile(join(TEST_ROOT, 'sprites', id, backfilled.manifestPath), 'utf8'),
+    );
+    expect(backfilledManifest.geometry.jetpackFrameCount).toBe(3);
 
     const unchanged = await compileAtlas(id, { tracks: customTracks });
     expect(unchanged.created).toBe(false);
@@ -449,7 +472,7 @@ describe('compileAtlas', () => {
     await writeFile(setAbs, JSON.stringify({ ...set, note: 're-finalized' }));
     const changed = await compileAtlas(id, { tracks: customTracks });
     expect(changed.created).toBe(true);
-    expect(changed.version).toBe(first.version + 1);
+    expect(changed.version).toBe(backfilled.version + 1);
   });
 
   it('compiles the 9×8 player atlas with full provenance and a current pointer', async () => {
@@ -800,6 +823,21 @@ describe('compileAtlas', () => {
     const meta = await sharp(join(TEST_ROOT, 'sprites', id, result.atlasPath)).metadata();
     expect(meta.width).toBe(64 * 9);
     expect(meta.height).toBe(64 * 8);
+  });
+
+  it('scales the visual tolerance with a 2x source-density compile', async () => {
+    const id = await finalizedCharacter();
+    const result = await compileAtlas(id, {
+      geometry: {
+        cellSize: 192,
+        pivot: [96, 176],
+        targetMaxHeight: 148,
+        targetMaxWidth: 172,
+      },
+    });
+    const meta = await sharp(join(TEST_ROOT, 'sprites', id, result.atlasPath)).metadata();
+    expect(meta.width).toBe(192 * 9);
+    expect(meta.height).toBe(192 * 8);
   });
 
   it('refuses an imported legacy walk set with an explicit code (not a tamper error)', async () => {

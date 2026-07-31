@@ -38,7 +38,7 @@ import { join, resolve } from 'path';
 import { ensureDir, PATHS, tryReadFile } from './fileUtils.js';
 import { createStreamingAnsiStripper, stripAnsi } from './ansiStrip.js';
 import { createImmediateFallbackSignalDetector, createTerminalModelErrorDetector } from './aiToolkit/errorDetection.js';
-import { getRunsPath, finalizeRunRecord, emitRunStarted, registerActiveRun, unregisterActiveRun } from '../services/runner.js';
+import { getRunsPath, finalizeRunRecord, emitRunStarted, registerActiveRun, unregisterActiveRun, resolveRunCwd } from '../services/runner.js';
 import { registerExternalSession, unregisterExternalSession, isExternalSessionAttached } from '../services/shell.js';
 import {
   DEFAULT_TUI_PROMPT_DELAY_MS,
@@ -57,7 +57,7 @@ import {
   buildTuiInvocation,
   detectMissingTuiBinary,
 } from './tuiHandshake.js';
-import { buildOpencodeEnvVars } from './opencodeConfig.js';
+import { buildCliChildEnv } from './cliChildEnv.js';
 
 // One-shot defaults that don't apply to the long-running agent path:
 //   - hard run cap (5 min vs unbounded for agents)
@@ -122,13 +122,19 @@ export async function executeTuiRun({ runId, provider, prompt, workspacePath, on
   const promptDelayMs = provider.tuiPromptDelayMs ?? DEFAULT_TUI_PROMPT_DELAY_MS;
   const idleThresholdMs = idleMs ?? provider.tuiOneShotIdleMs ?? DEFAULT_ONE_SHOT_IDLE_MS;
   const totalTimeoutMs = timeout ?? provider.timeout ?? DEFAULT_TIMEOUT_MS;
-  const workingDir = (typeof workspacePath === 'string' && workspacePath) ? workspacePath : PATHS.root;
-
   // Mirror runner.js#executeCliRun's runs-path resolution so TUI runs land
   // under the runner-config dataDir (not always PATHS.runs) — otherwise a
   // non-default dataDir would split metadata + output across two trees.
   const runDir = join(getRunsPath(), runId);
   await ensureDir(runDir);
+
+  // Logs the effective cwd, and rejects a workspace that was requested but is
+  // missing on disk instead of silently spawning in the PortOS root (#3180).
+  // Sequenced after ensureDir so finalizeRunRecord has a run dir to write into.
+  const { cwd: workingDir, failure } = await resolveRunCwd({
+    runId, workspacePath, label: `TUI run ${runId}`, onData, onComplete,
+  });
+  if (failure) return failure;
 
   // TUI screens redraw their banner, input chrome, and status bar on every
   // keystroke — scraping the PTY stream for the model's reply is
@@ -164,15 +170,17 @@ ${prompt}`;
   // unstripped) is counted the same way the stripped post-paste buffer is.
   const promptMarkerCount = countPasteMarkers(stripAnsi(wrappedPrompt));
 
-  // CLAUDECODE is set when PortOS itself runs inside Claude Code; passing it
-  // through to a spawned Claude Code TUI would make the child think it's
-  // nested. Other AI spawn paths (runner.js, agentCliSpawning.js) strip it
-  // for the same reason.
-  // For OpenCode Ollama providers, build dynamic OPENCODE_CONFIG_CONTENT with
-  // the models map so --model is accepted (the static env var lacked this).
-  const opencodeEnv = buildOpencodeEnvVars(provider, provider.defaultModel);
-  const childEnv = { ...process.env, ...(provider.envVars || {}), ...opencodeEnv, TERM: 'xterm-256color', COLORTERM: 'truecolor' };
-  delete childEnv.CLAUDECODE;
+  // Shared composition (provider.envVars + OpenCode models map + PWD pin +
+  // CLAUDECODE strip) — see buildCliChildEnv. The PWD pin matters here because
+  // this PTY runs the CLI directly, so there is no login shell to rewrite PWD
+  // for us. TERM/COLORTERM go in `extra` so they override any provider setting —
+  // the PTY is always a truecolor xterm regardless of provider config. No
+  // `guard`: this is a Run Prompt TUI, not an autonomous agent.
+  const childEnv = buildCliChildEnv({
+    provider,
+    cwd: workingDir,
+    extra: { TERM: 'xterm-256color', COLORTERM: 'truecolor' },
+  });
 
   let ptyProcess;
   try {

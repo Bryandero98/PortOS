@@ -130,6 +130,12 @@ export async function mergeUniversesFromSync(remoteUniverses, { source = { via: 
         // shift the journal's divergence verdict). Mirror of the ephemeral
         // local-only contract above.
         sanitized.styleImageRefs = local.styleImageRefs ?? [];
+        // The per-record render pin (#3231 Phase 3) is wire-local too —
+        // restore the local pair so a remote-wins LWW write can't clear this
+        // machine's pinned backend/model (the fields are persisted only when
+        // set, so absent-locally stays absent).
+        if (local.imageMode) sanitized.imageMode = local.imageMode;
+        if (local.imageModelId) sanitized.imageModelId = local.imageModelId;
         // Non-blocking conflict journal: archive the about-to-be-lost local
         // version when BOTH sides diverged from the last synced base. Always
         // advances the base hash (clean or conflict) so the next snapshot

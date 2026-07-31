@@ -1,12 +1,11 @@
 import { useRef, useMemo, useEffect, useState, Suspense, Component } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { useGLTF, useAnimations } from '@react-three/drei';
 import * as THREE from 'three';
-import { SkeletonUtils } from 'three-stdlib';
 import { AGENT_STATES } from './constants';
 import CoSAvatarOrbitControls from './CoSAvatarOrbitControls';
 import CoSAvatarFrame from './CoSAvatarFrame';
 import CoSBackgroundCamera from './CoSBackgroundCamera';
+import useClonedGltf, { GltfPrimitive } from '../../hooks/useClonedGltf';
 
 // Kenney Mini Characters (CC0) ship 32 named clips. We map the CoS agent
 // states onto the most evocative ones. Each entry has a clip name plus a
@@ -38,15 +37,8 @@ function buildModelUrl(variant) {
 
 function MiniCharacter({ state, speaking, variant }) {
   const url = useMemo(() => buildModelUrl(variant), [variant]);
-  const gltf = useGLTF(url);
   const group = useRef();
-
-  // Clone via SkeletonUtils — a plain Object3D.clone() does NOT rebind the
-  // SkinnedMesh to the cloned skeleton, so AnimationMixer would drive bones
-  // the visible mesh no longer references and nothing moves. SkeletonUtils
-  // rebuilds the bone bindings on the clone so animations actually deform it.
-  const scene = useMemo(() => SkeletonUtils.clone(gltf.scene), [gltf.scene]);
-  const { actions, names } = useAnimations(gltf.animations, scene);
+  const { scene, actions, names } = useClonedGltf(url);
 
   // Fit the character into a consistent height regardless of source scale.
   // Kenney mini-characters are authored ~1.7 units tall already, but we
@@ -101,7 +93,7 @@ function MiniCharacter({ state, speaking, variant }) {
 
   return (
     <group ref={group}>
-      <primitive object={scene} />
+      <GltfPrimitive object={scene} />
     </group>
   );
 }

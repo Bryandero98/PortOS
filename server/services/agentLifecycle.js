@@ -38,7 +38,7 @@ import { analyzeAgentFailure } from './agentErrorAnalysis.js';
 import { createAgentRun, checkForTaskCommit } from './agentRunTracking.js';
 import { buildAgentPrompt, getAppWorkspace } from './agentPromptBuilder.js';
 import { isOllamaClaudeProvider, isClaudeCommand, providerSuppliesGithubToken } from '../lib/providerModels.js';
-import { buildOpencodeEnvVars } from '../lib/opencodeConfig.js';
+import { composeProviderEnv } from '../lib/cliChildEnv.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { buildCliSpawnConfig, isClaudeCliProvider, isTuiProvider, getClaudeSettingsEnv, spawnDirectly } from './agentCliSpawning.js';
 import { buildTuiSpawnConfig, spawnTuiAgent } from './agentTuiSpawning.js';
@@ -59,7 +59,7 @@ import { resolveAgentProviderAndModel } from './agentProviderResolution.js';
 import { prepareAgentWorkspace } from './agentWorkspacePrep.js';
 import { cleanupAgentWorktree } from './agentWorktreeCleanup.js';
 import { runAgentCompletionCleanup } from './agentCompletionCleanup.js';
-import { finalizeAgent, stampLiExecutionVerdict } from './agentFinalization.js';
+import { dispatchRecoveredTaskOutputHook, finalizeAgent, stampLiExecutionVerdict } from './agentFinalization.js';
 import { extractFinalSummary } from './agentSummaryExtraction.js';
 import { handleOrphanedTask } from './agentManagement.js';
 
@@ -74,7 +74,7 @@ export { handlePipelineProgression } from './agentCompletionCleanup.js';
 // break the static import cycle with the two spawners (issue #2837). Re-exported
 // here so long-standing consumers (subAgentSpawner's barrel, agentManagement,
 // existing tests) keep resolving them from agentLifecycle.js.
-export { finalizeAgent, releaseAgentLane, evaluateSuccessCriteria, resolveProgrammaticIoVerdict, withOutputHookTimeout, persistSimplifySummaries } from './agentFinalization.js';
+export { dispatchRecoveredTaskOutputHook, dispatchTaskOutputHookOnce, finalizeAgent, releaseAgentLane, evaluateSuccessCriteria, resolveProgrammaticIoVerdict, withOutputHookTimeout, persistSimplifySummaries } from './agentFinalization.js';
 export { extractFinalSummary, extractSimplifySummaries } from './agentSummaryExtraction.js';
 export { syncRunnerAgents } from './agentRunnerSync.js';
 
@@ -401,7 +401,7 @@ async function runAgentSpawn(task) {
       workspacePath,
       appName: resolvedAppName
     });
-    const executionMode = isTui ? 'tui' : useRunner ? 'runner' : 'direct';
+    const executionMode = isTui ? (useRunner ? 'runner-tui' : 'tui') : useRunner ? 'runner' : 'direct';
 
     // Register the agent with model info.
     //
@@ -437,7 +437,7 @@ async function runAgentSpawn(task) {
       modelReason: modelSelection.reason,
       runId,
       phase: 'initializing',
-      useRunner: isTui ? false : useRunner,
+      useRunner,
       executionMode,
       taskAnalysisType: task.metadata?.analysisType || null,
       taskReviewType: task.metadata?.reviewType || null,
@@ -561,6 +561,8 @@ async function runAgentSpawn(task) {
         laneName,
         cleanupWorktreeFn: cleanupAgentWorktree,
         isTruthyMetaFn: isTruthyMeta,
+        leanMode,
+        useDurableRunner: useRunner,
       });
     }
     if (useRunner) {
@@ -686,22 +688,23 @@ export async function spawnViaRunner(agentId, task, opts) {
     providerSuppliesGithubToken(provider) ? Promise.resolve({}) : resolveForgeTokenEnv(workspacePath),
   ]);
 
-  // For OpenCode Ollama providers, build dynamic OPENCODE_CONFIG_CONTENT with the
-  // models map so the injected `--model ollama/<id>` is accepted (empty/no-op
-  // otherwise). The direct-spawn path (agentCliSpawning.spawnDirectly) and the
-  // "Run Prompt" path (server/services/runner.js) already do this; the runner
-  // path omitted it, so an OpenCode Ollama CoS task on the runner would reject
-  // the model even after the spawn itself succeeds. See issue #2243 / #2190.
-  const opencodeEnv = buildOpencodeEnvVars(provider, model);
-
   const result = await spawnAgentViaRunner({
     agentId,
     taskId: task.id,
     prompt,
     workspacePath,
     model,
-    // forgeTokenEnv before provider.envVars so an explicit provider override wins.
-    envVars: { ...forgeTokenEnv, ...claudeSettingsEnv, ...provider.envVars, ...opencodeEnv },
+    // A DELTA, not a full env — the cos-runner bases it on its own process.env
+    // and does the PWD pin / CLAUDECODE strip. composeProviderEnv owns the layer
+    // order: forgeTokenEnv before provider.envVars so an explicit provider
+    // override wins, and the OpenCode declared-models map after it so the
+    // injected `--model ollama/<id>` is accepted (#2243/#2190 — this path was
+    // the site that sweep originally missed).
+    envVars: composeProviderEnv({
+      before: { ...forgeTokenEnv, ...claudeSettingsEnv },
+      provider,
+      model,
+    }),
     cliCommand: cliConfig.command,
     cliArgs: cliConfig.args
   });
@@ -772,6 +775,13 @@ export async function handleAgentCompletion(agentId, exitCode, success, duration
       return;
     }
     console.log(`🔄 Completing untracked agent ${agentId} from cos state (post-restart)`);
+    const task = cosAgent.taskId ? await getTaskById(cosAgent.taskId).catch(() => null) : null;
+    await dispatchRecoveredTaskOutputHook({
+      agentId,
+      task,
+      success,
+      workspacePath: cosAgent.metadata?.workspacePath || null,
+    });
     await completeAgent(agentId, {
       success,
       exitCode,
@@ -780,7 +790,6 @@ export async function handleAgentCompletion(agentId, exitCode, success, duration
       error: success ? undefined : 'Agent completed after server restart'
     });
     if (cosAgent.taskId) {
-      const task = await getTaskById(cosAgent.taskId).catch(() => null);
       if (task && task.status !== 'completed') {
         if (success) {
           // Stamp the LI hand-off verdict here too (#2779, codex P2) — this post-restart
@@ -790,7 +799,12 @@ export async function handleAgentCompletion(agentId, exitCode, success, duration
           const taskUpdate = await stampLiExecutionVerdict({ status: 'completed' }, task, { success });
           await updateTask(cosAgent.taskId, taskUpdate, task.taskType || 'user');
         } else {
-          await handleOrphanedTask(cosAgent.taskId, agentId, getTaskById);
+          // Hand the dead run's metadata to the retry handler so it can resume what
+          // was left behind. This path bypasses `finalizeAgent` (and its worktree
+          // cleanup), so the worktree is still on disk, branch and all — without it
+          // the retry builds a fresh tree off the default branch and redoes work
+          // that is sitting right there.
+          await handleOrphanedTask(cosAgent.taskId, agentId, getTaskById, { agentMetadata: cosAgent.metadata });
           // If orphan recovery settled the task into a terminal `blocked` state (retry budget
           // exhausted), the local completion already recorded the proposal failure — so stamp
           // the LI failure verdict here too (#2779, codex P2) or the originating peer would

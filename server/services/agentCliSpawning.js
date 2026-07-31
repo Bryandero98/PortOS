@@ -30,11 +30,11 @@ import { prepareCliPrompt } from '../lib/cliProviderArgs.js';
 import { isGrokCommand, ensureGrokHeadlessArgs } from '../lib/grok.js';
 import { isKimiCommand, ensureKimiHeadlessArgs } from '../lib/kimi.js';
 import { resolveCliModel, buildEffortArgs, buildCodexStartupArgs, resolveBedrockCliModel, prefixOpencodeModel, hasModelFlag, isOpencodeCommand, applyLeanClaudeArgs, providerSuppliesGithubToken } from '../lib/providerModels.js';
-import { agentGuardEnv } from '../lib/agentGuard/index.js';
 import { resolveForgeTokenEnv } from './git.js';
-import { buildOpencodeEnvVars } from '../lib/opencodeConfig.js';
 import { prepareCliSpawn, killProcessTree } from '../lib/bufferedSpawn.js';
+import { buildCliChildEnv } from '../lib/cliChildEnv.js';
 import { resolvePrCompletion } from '../lib/prDisposition.js';
+import { isHostShuttingDown, HOST_SHUTDOWN_REASON } from '../lib/hostShutdown.js';
 
 const AGENTS_DIR = PATHS.cosAgents;
 
@@ -482,16 +482,19 @@ export async function spawnDirectly({
     providerSuppliesGithubToken(provider) ? Promise.resolve({}) : resolveForgeTokenEnv(cwd),
   ]);
 
-  // For OpenCode Ollama providers, build dynamic OPENCODE_CONFIG_CONTENT with
-  // the models map so --model is accepted (the static env var lacked this).
-  const opencodeEnv = buildOpencodeEnvVars(provider, model);
-
-  // The pm2 shim must be prepended onto the FINAL PATH (after any
-  // provider.envVars override) so a `--dangerously-skip-permissions` agent
-  // can't `pm2 kill` the shared daemon. opencodeEnv comes LAST to override
-  // the static OPENCODE_CONFIG_CONTENT in provider.envVars; forgeTokenEnv sits
-  // before provider.envVars so an explicit provider GH_TOKEN override still wins.
-  const childEnv = (() => { const e = { ...process.env, ...forgeTokenEnv, ...claudeSettingsEnv, ...provider.envVars, ...opencodeEnv }; delete e.CLAUDECODE; Object.assign(e, agentGuardEnv(e)); return e; })();
+  // Shared composition (provider.envVars + OpenCode models map + PWD pin +
+  // CLAUDECODE strip) — see buildCliChildEnv. forgeTokenEnv/claudeSettingsEnv go
+  // in `before` so they sit UNDER provider.envVars and an explicit provider
+  // GH_TOKEN override still wins. `guard: true` prepends the pm2 shim onto the
+  // final PATH so a `--dangerously-skip-permissions` agent can't `pm2 kill` the
+  // shared daemon.
+  const childEnv = buildCliChildEnv({
+    before: { ...forgeTokenEnv, ...claudeSettingsEnv },
+    provider,
+    model,
+    cwd,
+    guard: true,
+  });
 
   // Resolve a bare npm-installed CLI (a .cmd/.bat shim on Windows) to its real
   // path and wrap a shim as `cmd.exe /c <path>` so spawn() under shell:false
@@ -799,6 +802,30 @@ export async function spawnDirectly({
       pausedAgents.delete(agentId);
       if (agentData?.pid) unregisterSpawnedAgent(agentData.pid);
       activeAgents.delete(agentId);
+      return;
+    }
+
+    // PortOS is going down and took this child with it (pm2's TreeKill walks
+    // portos-server's descendants). Abandon rather than finalize, for the same
+    // reasons as the TUI path (#3202): finalizing would charge the task's
+    // failure budget — and possibly file an investigation task — for a fault the
+    // agent didn't have, and its cleanup hands the worktree to `cleanupWorktreeFn`,
+    // which removes a clean tree, discarding the state a resume needs. Leaving
+    // the record `running` is what lets the next boot's orphan sweep see this
+    // agent in the host-shutdown marker and requeue it as interrupted.
+    // The transcript is already flushed and output.txt written above.
+    // A user-terminated run still finalizes, so it's recorded as such rather
+    // than resurrected by the requeue.
+    if (isHostShuttingDown() && !terminatedByUser) {
+      outputBatcher.push('🛑 PortOS restarted while this agent was running — the run was interrupted, not completed. Its worktree is preserved and the task will resume.');
+      emitLog('warn', `Agent ${agentId} interrupted by a PortOS host restart — preserved for resume`, { agentId, phase: 'interrupted' });
+      await Promise.all([
+        outputBatcher.flush().catch(() => {}),
+        updateAgent(agentId, { metadata: { phase: 'interrupted', interruptedBy: HOST_SHUTDOWN_REASON } })
+          .catch(err => emitLog('warn', `Could not mark agent ${agentId} interrupted: ${err.message}`, { agentId })),
+      ]);
+      // activeAgents entry left in place — the shutdown handler reads that map
+      // to name the agents in the host-shutdown marker.
       return;
     }
 

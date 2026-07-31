@@ -13,7 +13,7 @@
  *
  * Pipeline:
  *   1. ffmpeg decodes the track to mono f32 PCM at a fixed analysis rate.
- *   2. An onset-strength envelope (half-wave-rectified energy flux) is framed.
+ *   2. A spectral-flux onset envelope captures percussion and harmonic attacks.
  *   3. Tempo is estimated by tempo-weighted autocorrelation of the envelope.
  *   4. The beat phase is fit by sliding a pulse train against the envelope.
  *   5. Downbeats are picked as the strongest of the four 4/4 beat phases.
@@ -29,9 +29,9 @@ import { spawn } from 'child_process';
 import { findFfmpeg } from '../../lib/ffmpeg.js';
 import { safeChildProcessEnv } from '../../lib/processEnv.js';
 
-// Fixed analysis sample rate. 22.05kHz is plenty for tempo/onset work (we care
-// about energy flux, not high-frequency fidelity) and halves the sample count
-// vs 44.1kHz. Mono — beat structure is shared across channels.
+// Fixed analysis sample rate. 22.05kHz retains the 40Hz–8kHz spectral bands
+// used for onset work and halves the sample count vs 44.1kHz. Mono — beat
+// structure is shared across channels.
 export const ANALYSIS_SAMPLE_RATE = 22050;
 
 // Frame hop for the onset envelope. 512 samples @ 22.05kHz → ~43 frames/sec,
@@ -63,6 +63,15 @@ const MAX_SECTIONS = 8;
 // there is worse than reporting none. Clean periodic input sits well above it
 // (click tracks measure 0.4–0.9); white noise measures ~0.23.
 const TEMPO_PEAK_MIN = 0.3;
+// A song-wide autocorrelation can be diluted by a long rubato/ambient intro
+// even when the body of the song has a stable pulse. Scan overlapping musical
+// windows as a fallback and require two agreeing windows before accepting their
+// tempo, so one coincidental noise peak cannot invent a beat grid.
+const TEMPO_WINDOW_SEC = 30;
+const TEMPO_WINDOW_STEP_SEC = 15;
+const TEMPO_WINDOW_AGREEMENT = 0.04;
+const WAVEFORM_POINTS = 512;
+const FFT_SIZE = 1024;
 
 // Hann window cached per length. Windowing each analysis frame before measuring
 // energy suppresses the spectral-leakage ripple a steady tone otherwise beats
@@ -78,6 +87,57 @@ const hannWindow = (len) => {
   hannCache.set(len, w);
   return w;
 };
+
+const fftPlanCache = new Map();
+const fftPlan = (size) => {
+  let plan = fftPlanCache.get(size);
+  if (plan) return plan;
+  const reverse = new Uint32Array(size);
+  const bits = Math.log2(size);
+  for (let i = 0; i < size; i++) {
+    let x = i;
+    let r = 0;
+    for (let bit = 0; bit < bits; bit++) { r = (r << 1) | (x & 1); x >>= 1; }
+    reverse[i] = r;
+  }
+  const cos = new Float64Array(size / 2);
+  const sin = new Float64Array(size / 2);
+  for (let i = 0; i < size / 2; i++) {
+    const angle = (-2 * Math.PI * i) / size;
+    cos[i] = Math.cos(angle);
+    sin[i] = Math.sin(angle);
+  }
+  plan = { reverse, cos, sin };
+  fftPlanCache.set(size, plan);
+  return plan;
+};
+
+function fftInPlace(real, imaginary, plan) {
+  const n = real.length;
+  for (let i = 0; i < n; i++) {
+    const j = plan.reverse[i];
+    if (j <= i) continue;
+    [real[i], real[j]] = [real[j], real[i]];
+    [imaginary[i], imaginary[j]] = [imaginary[j], imaginary[i]];
+  }
+  for (let size = 2; size <= n; size *= 2) {
+    const half = size / 2;
+    const twiddleStep = n / size;
+    for (let start = 0; start < n; start += size) {
+      for (let offset = 0; offset < half; offset++) {
+        const twiddle = offset * twiddleStep;
+        const even = start + offset;
+        const odd = even + half;
+        const oddReal = real[odd] * plan.cos[twiddle] - imaginary[odd] * plan.sin[twiddle];
+        const oddImaginary = real[odd] * plan.sin[twiddle] + imaginary[odd] * plan.cos[twiddle];
+        real[odd] = real[even] - oddReal;
+        imaginary[odd] = imaginary[even] - oddImaginary;
+        real[even] += oddReal;
+        imaginary[even] += oddImaginary;
+      }
+    }
+  }
+}
 
 /**
  * Decode an audio file to a mono Float32Array at ANALYSIS_SAMPLE_RATE via
@@ -145,26 +205,57 @@ export async function decodeAudioToPcm(audioPath, { signal } = {}) {
 }
 
 /**
- * Compute a per-frame onset-strength envelope: half-wave-rectified positive
- * change in short-time energy. Energy rises sharply at note/percussion onsets,
- * so its rectified first difference peaks on the beat. Returns the envelope
- * plus the raw per-frame energy (reused for section segmentation) and the
- * frame rate.
+ * Compute a per-frame onset-strength envelope from spectral flux. Unlike a
+ * single loudness difference, positive changes across FFT bands capture guitar
+ * strums and harmonic attacks even when the song's overall volume is steady.
+ * A local adaptive floor suppresses broadband noise and room tone. Raw RMS
+ * energy is returned alongside it for section segmentation and the waveform.
  */
 function onsetEnvelope(samples, sampleRate, hop = ONSET_HOP) {
-  const frameCount = Math.floor(samples.length / hop);
+  const fftSize = FFT_SIZE;
+  const frameCount = Math.max(0, Math.floor((samples.length - fftSize) / hop) + 1);
   const energy = new Float32Array(frameCount);
-  const win = hannWindow(hop);
+  const rawFlux = new Float32Array(frameCount);
+  const win = hannWindow(fftSize);
+  const plan = fftPlan(fftSize);
+  const real = new Float64Array(fftSize);
+  const imaginary = new Float64Array(fftSize);
+  const previous = new Float64Array(fftSize / 2);
+  const minBin = Math.max(1, Math.floor((40 * fftSize) / sampleRate));
+  const maxBin = Math.min(fftSize / 2 - 1, Math.ceil((8000 * fftSize) / sampleRate));
   for (let f = 0; f < frameCount; f++) {
     let sum = 0;
     const base = f * hop;
-    for (let i = 0; i < hop; i++) { const s = samples[base + i] * win[i]; sum += s * s; }
-    energy[f] = Math.sqrt(sum / hop);
+    for (let i = 0; i < fftSize; i++) {
+      const sample = samples[base + i];
+      sum += sample * sample;
+      real[i] = sample * win[i];
+      imaginary[i] = 0;
+    }
+    energy[f] = Math.sqrt(sum / fftSize);
+    fftInPlace(real, imaginary, plan);
+    let flux = 0;
+    for (let bin = minBin; bin <= maxBin; bin++) {
+      const magnitude = Math.log1p(Math.sqrt(real[bin] * real[bin] + imaginary[bin] * imaginary[bin]));
+      const rise = magnitude - previous[bin];
+      if (rise > 0) flux += rise;
+      previous[bin] = magnitude;
+    }
+    rawFlux[f] = flux / (maxBin - minBin + 1);
   }
+
+  // Subtract a rolling ~0.75s local mean. A real note/percussion attack rises
+  // above its neighborhood; stationary noise fluctuates around the floor.
   const onset = new Float32Array(frameCount);
-  for (let f = 1; f < frameCount; f++) {
-    const d = energy[f] - energy[f - 1];
-    onset[f] = d > 0 ? d : 0;
+  const radius = Math.max(1, Math.round((0.75 * sampleRate) / hop / 2));
+  let rolling = 0;
+  let left = 0;
+  let right = 0;
+  for (let f = 0; f < frameCount; f++) {
+    while (right < frameCount && right <= f + radius) { rolling += rawFlux[right]; right += 1; }
+    while (left < f - radius) { rolling -= rawFlux[left]; left += 1; }
+    const localMean = rolling / Math.max(1, right - left);
+    onset[f] = Math.max(0, rawFlux[f] - localMean);
   }
   return { onset, energy, fps: sampleRate / hop, frameCount };
 }
@@ -187,16 +278,16 @@ const TEMPO_LAG_STEP = 0.25;
  * envelope carries no usable periodicity (silence, or structureless input whose
  * strongest peak is below the significance floor).
  */
-function estimateTempo(onset, fps) {
+function estimateTempoCandidate(onset, fps) {
   const n = onset.length;
-  if (n < 4) return { bpm: null, lag: null };
+  if (n < 4) return null;
   let mean = 0;
   for (let i = 0; i < n; i++) mean += onset[i];
   mean /= n;
   const o = new Float32Array(n);
   let variance = 0;
   for (let i = 0; i < n; i++) { o[i] = onset[i] - mean; variance += o[i] * o[i]; }
-  if (variance <= 1e-9) return { bpm: null, lag: null };
+  if (variance <= 1e-9) return null;
 
   // Autocorrelation at a fractional lag via linear interpolation of the shifted
   // envelope. `variance` is the zero-lag value (ac(0) = sum of squares).
@@ -223,12 +314,7 @@ function estimateTempo(onset, fps) {
     const score = ac * weight;
     if (score > bestScore) { bestScore = score; bestLag = lag; bestAc = ac; }
   }
-  if (bestLag < 0 || bestScore <= 0) return { bpm: null, lag: null };
-
-  // Significance gate. Structureless input (white noise) still has a strongest
-  // lag, but it sits far below a real periodicity — emit `null` rather than a
-  // confident bogus tempo + beat grid.
-  if (bestAc / variance < TEMPO_PEAK_MIN) return { bpm: null, lag: null };
+  if (bestLag < 0 || bestScore <= 0) return null;
 
   // NOTE — octave (half/double-tempo) ambiguity is intentionally NOT resolved
   // here. Autocorrelation peaks at every multiple of the true period, so the
@@ -241,7 +327,69 @@ function estimateTempo(onset, fps) {
   // possibly-doubled/halved density. The detected period is the
   // highest-weighted autocorrelation peak in [MIN_BPM, MAX_BPM].
   const bpm = (60 * fps) / bestLag;
-  return { bpm, lag: bestLag };
+  return { bpm, lag: bestLag, confidence: bestAc / variance };
+}
+
+const temposAgree = (a, b) => {
+  const octaveDistance = Math.abs(Math.log2(a / b));
+  return Math.abs(octaveDistance - Math.round(octaveDistance)) <= Math.log2(1 + TEMPO_WINDOW_AGREEMENT);
+};
+
+const foldTempoNear = (bpm, anchor) => {
+  let folded = bpm;
+  while (folded * 2 <= MAX_BPM && Math.abs(Math.log2((folded * 2) / anchor)) < Math.abs(Math.log2(folded / anchor))) folded *= 2;
+  while (folded / 2 >= MIN_BPM && Math.abs(Math.log2((folded / 2) / anchor)) < Math.abs(Math.log2(folded / anchor))) folded /= 2;
+  return folded;
+};
+
+function estimateTempo(onset, fps) {
+  const full = estimateTempoCandidate(onset, fps);
+  if (full && full.confidence >= TEMPO_PEAK_MIN) {
+    return {
+      ...full,
+      source: 'full',
+      window: { startSec: 0, endSec: onset.length / fps },
+    };
+  }
+
+  const windowFrames = Math.round(TEMPO_WINDOW_SEC * fps);
+  const stepFrames = Math.round(TEMPO_WINDOW_STEP_SEC * fps);
+  if (onset.length < windowFrames) return { bpm: null, lag: null, confidence: full?.confidence ?? null, source: null, window: null };
+
+  const candidates = [];
+  for (let start = 0; start + windowFrames <= onset.length; start += stepFrames) {
+    const candidate = estimateTempoCandidate(onset.slice(start, start + windowFrames), fps);
+    if (candidate?.confidence >= TEMPO_PEAK_MIN) {
+      candidates.push({
+        ...candidate,
+        startSec: start / fps,
+        endSec: (start + windowFrames) / fps,
+      });
+    }
+  }
+
+  const clusters = candidates.map((anchor) => candidates.filter((candidate) => temposAgree(anchor.bpm, candidate.bpm)));
+  const cluster = clusters
+    .filter((group) => group.length >= 2)
+    .sort((a, b) => (
+      b.reduce((sum, candidate) => sum + candidate.confidence, 0)
+      - a.reduce((sum, candidate) => sum + candidate.confidence, 0)
+    ))[0];
+  if (!cluster) return { bpm: null, lag: null, confidence: full?.confidence ?? null, source: null, window: null };
+
+  const strongest = cluster.slice().sort((a, b) => b.confidence - a.confidence)[0];
+  const weight = cluster.reduce((sum, candidate) => sum + candidate.confidence, 0);
+  const bpm = cluster.reduce(
+    (sum, candidate) => sum + foldTempoNear(candidate.bpm, strongest.bpm) * candidate.confidence,
+    0,
+  ) / weight;
+  return {
+    bpm,
+    lag: (60 * fps) / bpm,
+    confidence: strongest.confidence,
+    source: 'windowed',
+    window: { startSec: strongest.startSec, endSec: strongest.endSec },
+  };
 }
 
 /**
@@ -375,6 +523,27 @@ function segmentSections(energy, fps, durationSec) {
   return sections;
 }
 
+// Persist a small normalized loudness envelope so the timeline can show the
+// musical evidence behind its sections and beats without shipping raw PCM.
+// Mean RMS energy per bin keeps song-shape dynamics visible; normalization to
+// the 95th percentile prevents one transient from flattening the whole display.
+function summarizeWaveform(energy, targetPoints = WAVEFORM_POINTS) {
+  if (!energy?.length) return [];
+  const count = Math.min(targetPoints, energy.length);
+  const bins = new Array(count);
+  for (let bin = 0; bin < count; bin++) {
+    const start = Math.floor((bin * energy.length) / count);
+    const end = Math.max(start + 1, Math.floor(((bin + 1) * energy.length) / count));
+    let sum = 0;
+    for (let i = start; i < end; i++) sum += energy[i] || 0;
+    bins[bin] = sum / (end - start);
+  }
+  const ranked = bins.slice().sort((a, b) => a - b);
+  const reference = ranked[Math.min(ranked.length - 1, Math.floor(ranked.length * 0.95))] || 0;
+  if (reference <= 1e-9) return bins.map(() => 0);
+  return bins.map((value) => Number(Math.min(1, value / reference).toFixed(3)));
+}
+
 // The too-short guard + onset-envelope + section-segmentation pass is shared
 // by the auto-detector (analyzePcm) and the manual-tempo builder below — both
 // need the same section map, differing only in how bpm/beats are derived from
@@ -383,11 +552,16 @@ function segmentSections(energy, fps, durationSec) {
 function deriveSections(samples, sampleRate, hop) {
   const durationSec = samples?.length ? samples.length / sampleRate : 0;
   if (!samples || samples.length < hop * 4) {
-    return { sections: segmentSections(new Float32Array(0), 1, durationSec), onset: null, fps: null };
+    return {
+      sections: segmentSections(new Float32Array(0), 1, durationSec),
+      waveform: [],
+      onset: null,
+      fps: null,
+    };
   }
   const { onset, energy, fps } = onsetEnvelope(samples, sampleRate, hop);
   const sections = segmentSections(energy, fps, durationSec);
-  return { sections, onset, fps };
+  return { sections, waveform: summarizeWaveform(energy), onset, fps };
 }
 
 /**
@@ -397,23 +571,45 @@ function deriveSections(samples, sampleRate, hop) {
  * @param {Float32Array} samples mono PCM
  * @param {number} sampleRate
  * @param {{ hop?: number }} [opts]
- * @returns {{ bpm: number|null, beats: number[], downbeats: number[],
+ * @returns {{ bpm: number|null, beats: number[], downbeats: number[], waveform: number[],
  *   sections: Array<{label:string,startSec:number,endSec:number,energy:number}>,
  *   durationSec: number }}
  */
 export function analyzePcm(samples, sampleRate, { hop = ONSET_HOP } = {}) {
   const durationSec = samples?.length ? samples.length / sampleRate : 0;
   const roundedDuration = Number(durationSec.toFixed(3));
-  const { sections, onset, fps } = deriveSections(samples, sampleRate, hop);
+  const { sections, waveform, onset, fps } = deriveSections(samples, sampleRate, hop);
   if (!onset) {
-    return { bpm: null, beats: [], downbeats: [], sections, durationSec: roundedDuration };
+    return {
+      bpm: null,
+      beats: [],
+      downbeats: [],
+      waveform,
+      sections,
+      durationSec: roundedDuration,
+      tempoSource: null,
+      tempoConfidence: null,
+      tempoWindow: null,
+    };
   }
 
-  const { bpm } = estimateTempo(onset, fps);
+  const { bpm, source, confidence, window } = estimateTempo(onset, fps);
   const roundedBpm = bpm == null ? null : Number(bpm.toFixed(2));
   const beats = roundedBpm == null ? [] : fitBeats(onset, fps, bpm, durationSec);
   const downbeats = roundedBpm == null ? [] : pickDownbeats(beats, onset, fps);
-  return { bpm: roundedBpm, beats, downbeats, sections, durationSec: roundedDuration };
+  return {
+    bpm: roundedBpm,
+    beats,
+    downbeats,
+    waveform,
+    sections,
+    durationSec: roundedDuration,
+    tempoSource: source,
+    tempoConfidence: confidence == null ? null : Number(Math.max(0, Math.min(1, confidence)).toFixed(3)),
+    tempoWindow: window
+      ? { startSec: Number(window.startSec.toFixed(3)), endSec: Number(Math.min(durationSec, window.endSec).toFixed(3)) }
+      : null,
+  };
 }
 
 /**
@@ -455,9 +651,19 @@ const manualDownbeats = (beats) => beats.filter((_, i) => i % 4 === 0);
  * @param {{ sections: Array, durationSec: number }} cached prior audioAnalysis
  * @param {{ bpm: number, offsetSec?: number }} tempo
  */
-export function buildManualAnalysisFromCached({ sections, durationSec }, { bpm, offsetSec = 0 }) {
+export function buildManualAnalysisFromCached({ sections, durationSec, waveform = [] }, { bpm, offsetSec = 0 }) {
   const beats = manualBeatTimes(bpm, offsetSec, durationSec);
-  return { bpm: Number(bpm.toFixed(2)), beats, downbeats: manualDownbeats(beats), sections, durationSec };
+  return {
+    bpm: Number(bpm.toFixed(2)),
+    beats,
+    downbeats: manualDownbeats(beats),
+    waveform,
+    sections,
+    durationSec,
+    tempoSource: 'manual',
+    tempoConfidence: null,
+    tempoWindow: null,
+  };
 }
 
 /**
@@ -474,8 +680,18 @@ export function buildManualAnalysis(samples, sampleRate, { bpm, offsetSec = 0, h
   const durationSec = samples?.length ? samples.length / sampleRate : 0;
   const roundedDuration = Number(durationSec.toFixed(3));
   const beats = manualBeatTimes(bpm, offsetSec, durationSec);
-  const { sections } = deriveSections(samples, sampleRate, hop);
-  return { bpm: Number(bpm.toFixed(2)), beats, downbeats: manualDownbeats(beats), sections, durationSec: roundedDuration };
+  const { sections, waveform } = deriveSections(samples, sampleRate, hop);
+  return {
+    bpm: Number(bpm.toFixed(2)),
+    beats,
+    downbeats: manualDownbeats(beats),
+    waveform,
+    sections,
+    durationSec: roundedDuration,
+    tempoSource: 'manual',
+    tempoConfidence: null,
+    tempoWindow: null,
+  };
 }
 
 /**

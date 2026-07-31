@@ -18,6 +18,7 @@ import CorrectionNote, {
 } from './CorrectionNote.jsx';
 import FilePickerButton from '../ui/FilePickerButton';
 import { IMAGE_ACCEPT } from '../../utils/fileUpload';
+import RecordRenderPinRow from '../imageGen/RecordRenderPinRow.jsx';
 
 // Reference workflow (issues #2896, #2979): three ordered steps — generate a
 // turnaround sheet from text + an optional design image and freeze it, derive
@@ -197,8 +198,13 @@ function StageHeading({ id, number, title, status, statusTone = 'text-gray-500' 
   );
 }
 
-export default function ReferenceWorkflow({ record, reference, renders, corrections, onCorrectionChange, backends, mode, onModeChange, onChanged, onForked }) {
+export default function ReferenceWorkflow({ record, reference, renders, corrections, onCorrectionChange, backends, trackDefinitions, mode, onModeChange, onChanged, onForked }) {
   const recordId = record.id;
+  // Local shadow of record.imageModelId (#3231 Phase 3) — pin PATCHes update
+  // this directly instead of refetching the whole detail payload; re-seeded
+  // when the user switches records.
+  const [modelPin, setModelPin] = useState(record.imageModelId || null);
+  useEffect(() => { setModelPin(record.imageModelId || null); }, [recordId, record.imageModelId]);
   const manifest = reference?.manifest || null;
   const candidates = reference?.candidates || [];
   const mainLocked = manifest?.mainReference?.locked === true;
@@ -210,6 +216,25 @@ export default function ReferenceWorkflow({ record, reference, renders, correcti
   const backfilling = mainLocked && !turnaroundLocked;
   // Whichever lock froze the canonical key closes the pin control.
   const keyFrozen = mainLocked || turnaroundLocked;
+  // What a reference reopen actually drops, named from THIS record's registry
+  // slice rather than as literal copy. The old wording said "walk/scanner",
+  // which was already wrong twice over since #3152 made every non-walk track
+  // user-defined: an install whose user deleted the seeded `scanner` row was
+  // warned about an animation it does not have, and one who authored a track of
+  // their own was not warned about the approvals they were about to lose.
+  //
+  // Directional is the client-side spelling of the server's `sourceReferenceFor`
+  // === 'anchor' (a per-facing track must seed from that facing's own anchor) —
+  // which is exactly the set `invalidateAnchorDependentTracks` sweeps, so this
+  // sentence and the invalidation it describes cannot drift.
+  const anchorSeededLabels = useMemo(() => (trackDefinitions || [])
+    .filter((row) => row.directional)
+    .map((row) => row.label.toLowerCase()), [trackDefinitions]);
+  // Falls back to the generic noun when the record carries no directional track
+  // (or the caller passed no definitions) rather than rendering an empty list.
+  const anchorSeededPhrase = anchorSeededLabels.length
+    ? anchorSeededLabels.join(' / ')
+    : 'animations';
   // Once every anchor is locked this grid is just static previews of files the
   // "Reference set" file browser below already lists (and makes inspectable /
   // downloadable), so it reads as duplicate content. Collapse it by default
@@ -368,8 +393,12 @@ export default function ReferenceWorkflow({ record, reference, renders, correcti
       { direction },
       { silent: true },
     );
-    toast.success(result.walkInvalidated
-      ? `${direction} anchor unlocked; its walk was reopened`
+    // Same per-track map the main unlock reads below — `unlockDirectionalAnchor`
+    // sweeps every anchor-seeded track for this facing, not just walk, so a toast
+    // that reads only `walkInvalidated` under-reports what it just dropped.
+    const tracksReopened = Object.values(result.tracksInvalidated || {}).some(Boolean);
+    toast.success(result.walkInvalidated || tracksReopened
+      ? `${direction} anchor unlocked; its animations were reopened`
       : `${direction} anchor unlocked`);
     onChanged();
   }, { errorMessage: 'Failed to unlock anchor' });
@@ -390,9 +419,17 @@ export default function ReferenceWorkflow({ record, reference, renders, correcti
 
   const [unlockTurnaround, turnaroundUnlocking] = useAsyncAction(async () => {
     const result = await unlockSpriteTurnaround(recordId, { silent: true });
-    const invalidated = result.walkInvalidatedDirections?.length || 0;
+    // A turnaround reopen resets the whole identity chain, so the server sweeps
+    // EVERY anchor-seeded track across every facing (`tracksInvalidatedDirections`)
+    // alongside walk. Count the reopened facings across all of them rather than
+    // reporting walk's alone — a record whose user deleted `walk`'s seeded
+    // companions, or added their own, otherwise sees a number that doesn't match
+    // the cards that just went back to draft.
+    const trackDirections = Object.values(result.tracksInvalidatedDirections || {})
+      .reduce((total, directions) => total + (directions?.length || 0), 0);
+    const invalidated = (result.walkInvalidatedDirections?.length || 0) + trackDirections;
     toast.success(invalidated
-      ? `Turnaround unlocked; ${invalidated} dependent walks were reopened`
+      ? `Turnaround unlocked; ${invalidated} dependent ${invalidated === 1 ? 'animation was' : 'animations were'} reopened`
       : 'Turnaround unlocked; dependent references were reopened');
     setTurnaroundUnlockConfirming(false);
     onChanged();
@@ -408,17 +445,26 @@ export default function ReferenceWorkflow({ record, reference, renders, correcti
   }, { errorMessage: 'Failed to set chroma key' });
 
   const noBackend = Array.isArray(backends) && backends.length === 0;
+  // Backend + model picker, persisted onto THIS record as its render pin
+  // (#3231 Phase 3) so re-rolls and future sessions render where the user
+  // chose. `modelPin` shadows record.imageModelId locally — the PATCH already
+  // holds the new value, so no detail refetch is needed (the useUniverseDraft
+  // setRenderPin pattern).
   const modePicker = Array.isArray(backends) && backends.length > 0 && (
-    <label className="flex items-center gap-2 text-xs text-gray-400">
-      Backend
-      <select
-        value={mode}
-        onChange={(e) => onModeChange(e.target.value)}
-        className="bg-port-bg border border-port-border rounded px-2 py-1 text-sm text-white"
-      >
-        {backends.map((b) => <option key={b.id} value={b.id}>{b.label || b.id}</option>)}
-      </select>
-    </label>
+    <RecordRenderPinRow
+      idPrefix={`sprite-render-pin-${recordId}`}
+      label="Backend"
+      imageMode={mode}
+      imageModelId={modelPin}
+      options={backends}
+      showAuto={false}
+      onChange={({ imageMode, imageModelId }) => {
+        if (imageMode && imageMode !== mode) onModeChange(imageMode);
+        setModelPin(imageModelId);
+        updateSpriteRecord(recordId, { imageMode, imageModelId }, { silent: true })
+          .catch((err) => toast.error(`Render pin save failed: ${err.message}`));
+      }}
+    />
   );
   const turnaroundCandidates = candidatesByTarget.turnaround || [];
   const mainCandidates = candidatesByTarget.main || [];
@@ -531,7 +577,7 @@ export default function ReferenceWorkflow({ record, reference, renders, correcti
                 {turnaroundUnlockConfirming ? (
                   <div className="mt-3 rounded border border-port-warning/40 bg-port-warning/10 p-2 text-[11px]">
                     <p className="text-port-warning">
-                      Reopen the turnaround, main, all 8 anchors, and any approved walks? Existing versioned files stay in history.
+                      Reopen the turnaround, main, all 8 anchors, and every approved {anchorSeededPhrase}? Existing versioned files stay in history.
                     </p>
                     <div className="mt-2 flex gap-2">
                       <button
@@ -740,7 +786,7 @@ export default function ReferenceWorkflow({ record, reference, renders, correcti
                 {turnaroundLocked && (mainUnlockConfirming ? (
                   <div className="rounded border border-port-warning/40 bg-port-warning/10 p-2 text-[11px]">
                     <p className="text-port-warning">
-                      Reopen the main reference and its south walk/scanner? The turnaround and other directions stay locked; existing files remain in history.
+                      Reopen the main reference and its south {anchorSeededPhrase}? The turnaround and other directions stay locked; existing files remain in history.
                     </p>
                     <div className="mt-2 flex gap-2">
                       <button

@@ -16,6 +16,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { mkdir, writeFile, readFile } from 'fs/promises';
 import { createHash } from 'crypto';
+import sharp from 'sharp';
 import { trackSpan as fullSpan } from './spriteTestFixtures.js';
 
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'sprite-publish-test-'));
@@ -44,6 +45,20 @@ vi.mock('../appDeployer.js', () => ({ isDeploying: (...args) => isDeploying(...a
 const compileAtlasInTail = vi.fn();
 vi.mock('./atlas.js', () => ({
   compileAtlasInTail: (...args) => compileAtlasInTail(...args),
+}));
+const presentationIdleMocks = vi.hoisted(() => ({ buildPresentationIdle: vi.fn() }));
+vi.mock('./presentationIdle.js', () => ({
+  ...presentationIdleMocks,
+  PRESENTATION_IDLE_LAYOUT_KIND: 'portos-presentation-animation-layout',
+  presentationIdleSidecarPath: (path) => path.replace(/\.png$/, '.presentation.json'),
+  buildPresentationIdleLayout: (idle, path) => ({
+    kind: 'portos-presentation-animation-layout',
+    imageFile: path.split('/').at(-1),
+    imageSha256: idle.sha256,
+    frameCount: idle.frameCount,
+    frameRate: idle.frameRate,
+    cellSize: idle.cellSize,
+  }),
 }));
 
 const records = await import('./records.js');
@@ -98,11 +113,42 @@ async function characterWithAtlas(atlasBytes = 'atlas-png-bytes-v1', geometry = 
 
 const BINDING = { appId: 'game-app', atlasDestPath: 'assets/sprites/hero/hero-atlas.png' };
 
+async function addLockedMainReference(id) {
+  const referenceDir = join(TEST_ROOT, 'sprites', id, 'reference');
+  await mkdir(referenceDir, { recursive: true });
+  const width = 32;
+  const height = 32;
+  const pixels = Buffer.alloc(width * height * 3);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const index = (y * width + x) * 3;
+      const subject = x >= 10 && x < 22 && y >= 6 && y < 28;
+      pixels[index] = subject ? 18 : 255;
+      pixels[index + 1] = subject ? 84 : 0;
+      pixels[index + 2] = subject ? 102 : 255;
+    }
+  }
+  const sourcePath = `reference/${id}-walk-south-v1.png`;
+  await sharp(pixels, { raw: { width, height, channels: 3 } })
+    .png()
+    .toFile(join(TEST_ROOT, 'sprites', id, sourcePath));
+  await writeFile(
+    join(referenceDir, `${id}-reference-set-v1.json`),
+    JSON.stringify({
+      schemaVersion: 2,
+      chromaKey: '#FF00FF',
+      mainReference: { path: sourcePath, locked: true },
+      anchors: [],
+    }),
+  );
+}
+
 beforeEach(async () => {
   getAppById.mockClear();
   isDeploying.mockReset();
   isDeploying.mockReturnValue(false);
   compileAtlasInTail.mockReset();
+  presentationIdleMocks.buildPresentationIdle.mockReset();
   rmSync(join(TEST_ROOT, 'sprite-records.json'), { force: true });
   rmSync(APP_REPO, { recursive: true, force: true });
   rmSync(OTHER_APP_REPO, { recursive: true, force: true });
@@ -263,6 +309,73 @@ describe('publishAtlas', () => {
       await readFile(join(TEST_ROOT, 'sprites', id, 'runtime/publications.json'), 'utf8'),
     );
     expect(history).toHaveLength(1);
+  });
+
+  it('publishes a transparent 512px presentation portrait from the locked identity master', async () => {
+    const { id } = await characterWithAtlas();
+    await addLockedMainReference(id);
+    const portraitDestPath = 'assets/portraits/hero.png';
+    await setPublishBinding(id, { ...BINDING, portraitDestPath });
+
+    const result = await publishAtlas(id);
+    expect(result.portraitWritten).toBe(true);
+    expect(result.publication).toMatchObject({
+      portraitDestPath,
+      portraitSize: 512,
+      portraitSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      portraitSourcePath: `reference/${id}-walk-south-v1.png`,
+    });
+    const portraitAbs = join(APP_REPO, portraitDestPath);
+    const metadata = await sharp(portraitAbs).metadata();
+    expect(metadata).toMatchObject({ width: 512, height: 512, channels: 4 });
+    const raw = await sharp(portraitAbs).ensureAlpha().raw().toBuffer();
+    expect(raw[3]).toBe(0);
+    const centerAlpha = raw[((256 * 512 + 256) * 4) + 3];
+    expect(centerAlpha).toBe(255);
+  });
+
+  it('publishes a presentation-resolution picker idle strip with source provenance', async () => {
+    const { id } = await characterWithAtlas();
+    const presentationIdleDestPath = 'assets/presentation/hero-idle.png';
+    const strip = await sharp({
+      create: {
+        width: 512 * 3,
+        height: 512,
+        channels: 4,
+        background: { r: 20, g: 90, b: 110, alpha: 1 },
+      },
+    }).png().toBuffer();
+    presentationIdleMocks.buildPresentationIdle.mockResolvedValue({
+      buffer: strip,
+      sha256: sha256(strip),
+      sourceManifestPath: 'idle-loop/approved-run.json',
+      sourceManifestSha256: 'a'.repeat(64),
+      sourceFrameSha256s: ['b'.repeat(64), 'c'.repeat(64), 'd'.repeat(64)],
+      frameCount: 3,
+      frameRate: 6,
+      cellSize: 512,
+    });
+    await setPublishBinding(id, { ...BINDING, presentationIdleDestPath });
+
+    const result = await publishAtlas(id);
+    expect(result.presentationIdleWritten).toBe(true);
+    expect(result.publication).toMatchObject({
+      presentationIdleDestPath,
+      presentationIdleFrameCount: 3,
+      presentationIdleFrameRate: 6,
+      presentationIdleCellSize: 512,
+      presentationIdleSourceManifestPath: 'idle-loop/approved-run.json',
+      presentationIdleLayoutDestPath: 'assets/presentation/hero-idle.presentation.json',
+    });
+    expect(await readFile(join(APP_REPO, presentationIdleDestPath))).toEqual(strip);
+    expect(JSON.parse(await readFile(
+      join(APP_REPO, 'assets/presentation/hero-idle.presentation.json'),
+      'utf8',
+    ))).toMatchObject({
+      kind: 'portos-presentation-animation-layout',
+      frameCount: 3,
+      cellSize: 512,
+    });
   });
 
   it('resolves purely from repoPath — no dependency on registered processes/ports (#2991)', async () => {

@@ -27,6 +27,11 @@ vi.mock('../sharing/recordEvents.js', () => ({
   autoSubscribeRecordToAllPeers: (...a) => autoSubscribeRecordToAllPeers(...a),
 }));
 
+// Settings feed the create-time video-backend seed (#3231 Phase 4) — mocked so
+// each test controls the pin ladder deterministically.
+const getSettings = vi.fn(async () => ({}));
+vi.mock('../settings.js', () => ({ getSettings: (...a) => getSettings(...a) }));
+
 const projects = await import('./projects.js');
 
 function reset() {
@@ -34,6 +39,8 @@ function reset() {
   emitRecordUpdated.mockClear();
   emitRecordDeleted.mockClear();
   autoSubscribeRecordToAllPeers.mockClear();
+  getSettings.mockClear();
+  getSettings.mockResolvedValue({});
 }
 beforeEach(reset);
 afterAll(() => rmSync(TEST_DATA_ROOT, { recursive: true, force: true }));
@@ -90,5 +97,45 @@ describe('musicVideo dispatcher — record-event emit (#1770)', () => {
     expect(typeof projects.mergeProjectsFromSync).toBe('function');
     expect(typeof projects.pruneTombstonedProjects).toBe('function');
     expect(typeof projects.listProjectIds).toBe('function');
+  });
+});
+
+describe('create-time video-backend seeding (#3231 Phase 4)', () => {
+  const grokPinned = (pins) => ({
+    imageGen: { grok: { enabled: true } },
+    ...pins,
+  });
+
+  it('seeds videoSettings.backend from renderDefaults[music-video].videoMode', async () => {
+    getSettings.mockResolvedValue(grokPinned({ renderDefaults: { 'music-video': { videoMode: 'grok' } } }));
+    const p = await projects.createProject({ name: 'A' });
+    expect(p.videoSettings.backend).toBe('grok');
+  });
+
+  it('seeds from settings.videoGen.mode when no target pin exists', async () => {
+    getSettings.mockResolvedValue(grokPinned({ videoGen: { mode: 'grok' } }));
+    const p = await projects.createProject({ name: 'A' });
+    expect(p.videoSettings.backend).toBe('grok');
+  });
+
+  it('an explicit input backend wins over every pin', async () => {
+    getSettings.mockResolvedValue(grokPinned({ videoGen: { mode: 'grok' } }));
+    const p = await projects.createProject({ name: 'A', videoSettings: { backend: 'local' } });
+    expect(p.videoSettings.backend).toBe('local');
+  });
+
+  it('defaults to local with no pin anywhere — and a disabled grok pin degrades', async () => {
+    const p1 = await projects.createProject({ name: 'A' });
+    expect(p1.videoSettings.backend).toBe('local');
+    // Pin present but the grok toggle is off → usability gate degrades to local.
+    getSettings.mockResolvedValue({ renderDefaults: { 'music-video': { videoMode: 'grok' } } });
+    const p2 = await projects.createProject({ name: 'B' });
+    expect(p2.videoSettings.backend).toBe('local');
+  });
+
+  it('a settings read failure leaves creation working (seed is best-effort)', async () => {
+    getSettings.mockRejectedValue(new Error('boom'));
+    const p = await projects.createProject({ name: 'A' });
+    expect(p.videoSettings.backend).toBe('local');
   });
 });

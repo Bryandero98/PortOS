@@ -230,7 +230,6 @@ export async function enqueueVisualComicPage(issueId, options = {}) {
     });
   }
 
-  const mode = resolveMode(options, settings);
   const variant = resolveVariant(options.target);
 
   // Consistency reference: pass an already-rendered page as the init image so a
@@ -253,6 +252,10 @@ export async function enqueueVisualComicPage(issueId, options = {}) {
     : fromProof
       ? (Number.isFinite(options.initImageStrength) ? options.initImageStrength : PROOF_AS_BASE_DEFAULT_STRENGTH)
       : undefined;
+  // Resolved AFTER the init image, so an i2i render skips edit-incapable
+  // backends rather than resolving to one that rejects the job in the queue
+  // (#3243).
+  const mode = resolveMode(options, settings, series, { edit: Boolean(initImagePath) });
 
   // Build a free-text haystack from every panel's prose (description +
   // caption + sfx). Dialogue lines feed character matching via CAPS names
@@ -301,7 +304,7 @@ export async function enqueueVisualComicPage(issueId, options = {}) {
   });
 
   const jobId = enqueueImageJob({
-    prompt, world, settings, mode,
+    prompt, world, settings, mode, series,
     options: { ...options, initImagePath, initImageStrength, ...loraRenderOptions(characterLoras) },
     owner: buildComicPagesOwner({ issueId, target: 'page', pageIndex, variant }),
     logLine: `📄 Pipeline comic page — issue=${issueId.slice(0, 8)} page=${pageIndex + 1} panels=${page.panels.length} variant=${variant}${fromProof ? ' (from proof)' : ''}${fromReference ? ` (${autoReference ? 'auto-ref' : 'ref'} page ${referencePageIndex + 1})` : ''}`,
@@ -469,13 +472,15 @@ export async function refineComicPageRender(issueId, options = {}) {
     logTag: `Pipeline comic page refine — issue=${issueId.slice(0, 8)} page=${pageIndex + 1} variant=${variant}`,
   });
 
-  const mode = resolveMode(options, settings);
+  // A refine render always redraws from `initImagePath`, so it is unconditionally
+  // an edit — edit-incapable backends are skipped (#3243).
+  const mode = resolveMode(options, settings, series, { edit: true });
   const initImageStrength = Number.isFinite(options.initImageStrength)
     ? Math.min(Math.max(options.initImageStrength, 0), 1)
     : REFINE_RENDER_DEFAULT_STRENGTH;
 
   const jobId = enqueueImageJob({
-    prompt: refined, world, settings, mode,
+    prompt: refined, world, settings, mode, series,
     options: { ...options, initImagePath, initImageStrength },
     owner: buildComicPagesOwner({ issueId, target: 'page', pageIndex, variant }),
     logLine: `🪄 Pipeline comic page refine — issue=${issueId.slice(0, 8)} page=${pageIndex + 1} variant=${variant} strength=${initImageStrength}`,
@@ -505,7 +510,7 @@ export async function enqueueVisualImage(issueId, stageId, options = {}) {
   // characterId/wardrobeId is a client/state bug worth a 400, not the silent
   // drop buildScenePrompt would otherwise apply.
   assertCharacterAppearancesResolve(options.characterAppearances, canon.characters);
-  const mode = resolveMode(options, settings);
+  const mode = resolveMode(options, settings, series);
   // Match on description + slugline so the featured-character set (and thus
   // which wardrobe picks apply) stays consistent with the scene-video / shot
   // paths and the storyboards picker UI — all of which match both fields.
@@ -543,7 +548,7 @@ export async function enqueueVisualImage(issueId, stageId, options = {}) {
   const prompt = triggerClause ? `${composedPrompt}\n\nFeaturing ${triggerClause}.` : composedPrompt;
 
   const jobId = enqueueImageJob({
-    prompt, world, settings, mode,
+    prompt, world, settings, mode, series,
     options: { ...options, ...loraRenderOptions(characterLoras) },
     owner: `pipeline:${issueId}:${stageId}`,
     logLine: `🎬 Pipeline visual — issue=${issueId.slice(0, 8)} stage=${stageId}`,

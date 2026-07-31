@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 import { readFile, writeFile, rm, mkdir } from 'fs/promises';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { tmpdir, homedir } from 'os';
 import { createHash } from 'crypto';
@@ -21,6 +21,7 @@ vi.mock('fs/promises', async (importOriginal) => {
 });
 import {
   assertSafeFilename,
+  isSafeFilename,
   atomicWrite,
   ensureDir,
   pathExists,
@@ -50,6 +51,7 @@ import {
   ATTACHMENT_ALLOWED_EXTENSIONS,
   SONGBOOK_ATTACHMENT_EXTENSIONS,
   saveBase64Upload,
+  saveImageUpload,
   serveLocalFile,
   loadSlashdoLib,
   loadSlashdoFile,
@@ -819,6 +821,32 @@ describe('fileUtils', () => {
         .toThrow(/each extension must be a non-empty string starting with/);
     });
 
+    // `isSafeFilename` is the same rule as a predicate, for read-only callers
+    // that must report a bad name as data. The two share one implementation, so
+    // the contract worth pinning is that they never disagree — a future edit to
+    // either must keep the gate and the reported verdict in lockstep.
+    it('agrees with isSafeFilename on every input class', () => {
+      const extensions = ['.png', '.mp3'];
+      const cases = [
+        'foo.png', 'FOO.PNG', 'x.mp3', 'my..render.png', // accepted
+        'foo.jpg', 'png', 'foo.png.txt', // bad extension
+        'sub/foo.png', 'sub\\foo.png', '/foo.png', '../foo.png', '..\\foo.png', // separators
+        '.', '..', // exact traversal
+        'foo\0.png', '\0', // null bytes
+        '', null, undefined, 0, false, [], {}, // missing / non-string
+      ];
+      for (const name of cases) {
+        let threw = false;
+        try {
+          assertSafeFilename(name, { extensions });
+        } catch {
+          threw = true;
+        }
+        expect(isSafeFilename(name, extensions), `disagreed on ${JSON.stringify(name)}`)
+          .toBe(!threw);
+      }
+    });
+
     it('honors requiredMessage override for the missing-input case only', () => {
       // Backward-compat path: wrappers that used to throw a fixed phrase
       // (e.g. "Filename required" / "Invalid filename") can preserve that
@@ -1462,6 +1490,80 @@ describe('detectImageFormat', () => {
   it('returns null for a non-Buffer input', () => {
     expect(detectImageFormat('AAAA')).toBeNull();
     expect(detectImageFormat(null)).toBeNull();
+  });
+});
+
+describe('saveImageUpload (shared image upload pipeline)', () => {
+  let dir;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'save-image-test-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Exactly MIN_IMAGE_BYTES (12) — the shortest payload the floor accepts.
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]);
+  const b64 = (buf) => buf.toString('base64');
+  const opts = { maxBytes: 1024 };
+
+  it('persists the bytes verbatim and reports the detected format', async () => {
+    const saved = await saveImageUpload(dir, { filename: 'photo.png', data: b64(PNG) }, opts);
+    expect(saved.filename).toBe('photo.png');
+    expect(saved.size).toBe(12);
+    expect(saved.format).toBe('png');
+    expect(saved.mime).toBe('image/png');
+    expect(readFileSync(saved.filePath)).toEqual(PNG);
+  });
+
+  it('rejects a payload over maxBytes with a 400 FILE_TOO_LARGE', async () => {
+    await expect(saveImageUpload(dir, { filename: 'photo.png', data: b64(Buffer.alloc(2048)) }, opts))
+      .rejects.toMatchObject({ status: 400, code: 'FILE_TOO_LARGE' });
+  });
+
+  it('rejects bytes with no recognized image signature', async () => {
+    await expect(saveImageUpload(dir, { filename: 'photo.png', data: b64(Buffer.from('not an image!!')) }, opts))
+      .rejects.toMatchObject({ status: 400, code: 'INVALID_FILE_TYPE' });
+  });
+
+  // The per-format signatures are short (JPEG is 3 bytes, GIF 6) — without an
+  // explicit floor a truncated payload "detects" fine and saves as a success,
+  // handing the consumer a path to an unreadable file.
+  it('rejects a truncated payload whose signature alone would match', async () => {
+    for (const truncated of [
+      Buffer.from([0xff, 0xd8, 0xff]),                                     // 3-byte JPEG
+      Buffer.from([0x47, 0x49, 0x46, 0x38, 0x39, 0x61]),                   // 6-byte GIF
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),       // 8-byte PNG
+    ]) {
+      await expect(saveImageUpload(dir, { filename: 'photo.png', data: b64(truncated) }, opts))
+        .rejects.toMatchObject({ status: 400, code: 'INVALID_FILE_TYPE' });
+    }
+    expect(readdirSync(dir)).toHaveLength(0);
+  });
+
+  it('forces the extension to the detected format, not the claimed one', async () => {
+    const saved = await saveImageUpload(dir, { filename: 'photo.jpg', data: b64(PNG) }, opts);
+    expect(saved.filename).toBe('photo.jpg.png');
+  });
+
+  it('replaces a matching extension case-insensitively instead of doubling it', async () => {
+    const saved = await saveImageUpload(dir, { filename: 'PHOTO.PNG', data: b64(PNG) }, opts);
+    expect(saved.filename).toBe('PHOTO.png');
+  });
+
+  // A caller that prefixes the name can otherwise push a legitimately-long client
+  // filename past NAME_MAX and turn the write into an ENAMETOOLONG 500.
+  it('clamps the stored name to NAME_MAX, keeping the extension', async () => {
+    const saved = await saveImageUpload(dir, { filename: `${'a'.repeat(300)}.png`, data: b64(PNG) }, opts);
+    expect(saved.filename.length).toBe(255);
+    expect(saved.filename.endsWith('.png')).toBe(true);
+    expect(existsSync(saved.filePath)).toBe(true);
+  });
+
+  it('strips directory components from a traversal-shaped filename', async () => {
+    const saved = await saveImageUpload(dir, { filename: '../../evil.png', data: b64(PNG) }, opts);
+    expect(saved.filename).toBe('evil.png');
+    expect(saved.filePath.startsWith(dir)).toBe(true);
   });
 });
 

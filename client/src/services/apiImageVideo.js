@@ -4,6 +4,7 @@ import { request, API_BASE, maybeRedirectToLogin } from './apiCore.js';
 // generateImage / getImageGenStatus / generateAvatar live in apiSystem.js for
 // backward compatibility with existing call sites.
 export const listImageModels = (options) => request('/image-gen/models', options);
+export const listAgyImageModels = (options) => request('/image-gen/agy/models', options);
 // Per-model download status: `[{ id, repo, cached, sizeBytes }]`. Drives the
 // inline Available/Download badge on the image gen form.
 export const getImageModelStatuses = () => request('/image-gen/models/status', { silent: true });
@@ -23,7 +24,7 @@ export const repairImageModel = (modelId, { deep = false } = {}) => request(`/im
   silent: true,
 });
 export const listLoras = () => request('/image-gen/loras');
-export const listImageGallery = () => request('/image-gen/gallery');
+export const listImageGallery = (options = {}) => request('/image-gen/gallery', options);
 export const getActiveImageJob = () => request('/image-gen/active');
 // cancelImageGen({ all: true }) cancels every queued/running image job.
 // cancelImageGen({ jobId }) cancels a specific job. Plain cancelImageGen()
@@ -151,7 +152,7 @@ export async function createImageGenVenv() {
 }
 
 // Video gen
-export const getVideoGenStatus = () => request('/video-gen/status');
+export const getVideoGenStatus = (options = {}) => request('/video-gen/status', options);
 export const listVideoModels = (options) => request('/video-gen/models', options);
 // `{ models: [...], textEncoder: { repo, cached, sizeBytes } }`. Same shape
 // contract as the image variant + a text-encoder block since the active
@@ -410,9 +411,9 @@ export const installLoraFromCivitai = ({ url, silent = false } = {}) => request(
 // `family` is an optional override (e.g. 'ltx-video') when autodetection from
 // the repo id/tags can't classify it. `silent` lets the page route HF_AUTH /
 // HF_UNKNOWN_FAMILY errors into its own inline UI.
-export const installLoraFromHuggingface = ({ url, family, silent = false } = {}) => request('/loras/install/huggingface', {
+export const installLoraFromHuggingface = ({ url, family, file, silent = false } = {}) => request('/loras/install/huggingface', {
   method: 'POST',
-  body: JSON.stringify(family ? { url, family } : { url }),
+  body: JSON.stringify({ url, ...(family ? { family } : {}), ...(file ? { file } : {}) }),
   silent,
 });
 
@@ -433,11 +434,11 @@ export const installLoraFromHuggingface = ({ url, family, silent = false } = {})
 // — a 401 AUTH_REQUIRED bounces to /login via maybeRedirectToLogin exactly like
 // request(), instead of dead-ending on a generic stream error. Frames are
 // SSE-encoded (`data: {json}\n\n`).
-export async function installLoraFromHuggingfaceStream({ url, family, onProgress, signal } = {}) {
+export async function installLoraFromHuggingfaceStream({ url, family, file, onProgress, signal } = {}) {
   const response = await fetch(`${API_BASE}/loras/install/huggingface/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(family ? { url, family } : { url }),
+    body: JSON.stringify({ url, ...(family ? { family } : {}), ...(file ? { file } : {}) }),
     signal,
   });
   if (!response.ok || !response.body?.getReader) {

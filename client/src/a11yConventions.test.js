@@ -1,8 +1,8 @@
 /**
  * Repo-wide accessibility conventions.
  *
- * These encode the two regressions that keep reappearing across a11y audit
- * passes, so a new component fails the suite instead of shipping the gap:
+ * These encode the regressions that keep reappearing across a11y audit passes,
+ * so a new component fails the suite instead of shipping the gap:
  *
  *   1. A hand-rolled `fixed inset-0 … bg-black/N` overlay instead of the shared
  *      `ui/Modal`, which owns the focus trap, the Esc stack, `role="dialog"`,
@@ -20,6 +20,10 @@
  *      picker at all in WebKit-as-installed-PWA — the shape PortOS is opened in
  *      from a second machine over the tailnet. `components/ui/FilePickerButton.jsx`
  *      is the shared widget (sr-only input + native `<label for>` activation).
+ *   4. A `duration: Infinity` toast whose content is JSX or a render prop but
+ *      which passes no `label`. Such a toast collapses to a pill after
+ *      COLLAPSE_AFTER_MS (so it stops covering the page), and the pill has no
+ *      text of its own to name itself with.
  *
  * Scoped to git-tracked `.jsx` under `client/src` so an untracked scratch file
  * can't fail the suite.
@@ -63,6 +67,32 @@ function openingTagAt(src, index, nameLength) {
 }
 
 const lineOf = (src, index) => src.slice(0, index).split('\n').length;
+
+/**
+ * Slice a call's full argument list, `(` through its matching `)`, starting at
+ * the opening paren. Skips over string and template literals so a `)` inside
+ * one can't close the call early.
+ */
+function balancedCallAt(src, openIndex, skipStrings = true) {
+  let depth = 0;
+  for (let i = openIndex; i < src.length; i++) {
+    const c = src[i];
+    if (skipStrings && (c === '\'' || c === '"' || c === '`')) {
+      for (i++; i < src.length && src[i] !== c; i++) if (src[i] === '\\') i++;
+      continue;
+    }
+    if (c === '(') depth++;
+    else if (c === ')' && --depth === 0) return src.slice(openIndex, i + 1);
+  }
+  // Falling off the end means a quote opened a "string" that never closed —
+  // in practice an apostrophe in JSX text, `toast(<p>You're out of sync</p>,
+  // { duration: Infinity })`. The scan swallows the closing paren, the caller
+  // skips the unparseable call, and the toast rule silently misses the one
+  // shape it exists to catch: JSX content, which is precisely what needs
+  // `label`. Retry counting parens only — a `)` inside a real string could
+  // close early, but a well-formed string already returned on the first pass.
+  return skipStrings ? balancedCallAt(src, openIndex, false) : null;
+}
 
 describe('a11y conventions', () => {
   // Modal.jsx IS the shared implementation; Drawer and Layout use the same
@@ -168,6 +198,50 @@ describe('a11y conventions', () => {
       }
     }
     expect(offenders, `Programmatic .click() on a ref — if it targets a file input the picker never opens in WebKit/PWA; use components/ui/FilePickerButton.jsx. If the ref is genuinely NOT a file input (e.g. a synthesized <a download>), add the file to REF_CLICK_ALLOWLIST above with a comment:\n${offenders.join('\n')}`).toEqual([]);
+  });
+
+  it('names every never-dismissing toast that cannot name itself', () => {
+    // A `duration: Infinity` toast folds into an icon-only pill after
+    // COLLAPSE_AFTER_MS so it stops covering the page (components/ui/Toast.jsx).
+    // The pill takes its accessible name from string content — but JSX and
+    // render-prop content have no text to take, so without `label` the whole
+    // name is "Show notification" and the notice becomes unidentifiable to a
+    // screen reader for the rest of its (unbounded) life. Nothing at runtime
+    // complains, so this is the only thing that catches it.
+    const offenders = [];
+    for (const file of trackedSourceFiles()) {
+      const src = readFileSync(join(CLIENT_ROOT, file), 'utf8');
+      const re = /\btoast(?:\.\w+)?\s*\(/g;
+      let m;
+      while ((m = re.exec(src))) {
+        const call = balancedCallAt(src, re.lastIndex - 1);
+        if (!call || !/\bduration:\s*Infinity\b/.test(call)) continue;
+        // Only content that demonstrably isn't a string needs `label`: inline
+        // JSX and render props. A literal or a variable is left alone — the
+        // pill reads a string straight off `t.content`.
+        const firstArg = call.slice(1).trimStart();
+        const isJsx = firstArg.startsWith('<');
+        const isRenderProp = /^(\([^)]*\)|\w+)\s*=>/.test(firstArg);
+        if (!isJsx && !isRenderProp) continue;
+        if (/\blabel:/.test(call)) continue;
+        offenders.push(`${file}:${lineOf(src, m.index)}`);
+      }
+    }
+    expect(offenders, `A duration: Infinity toast with JSX/render-prop content must pass \`label\` — it collapses to a pill that has no other accessible name (see COLLAPSE_AFTER_MS in components/ui/Toast.jsx):\n${offenders.join('\n')}`).toEqual([]);
+  });
+
+  it('slices toast calls whose JSX text contains an apostrophe', () => {
+    // The rule above is only as good as the slicer. An apostrophe in JSX text
+    // opens a "string" that never closes, so the scan runs past the closing
+    // paren — and a `null` slice is skipped silently, letting the exact shape
+    // the rule targets (JSX content, no `label`) ship unflagged.
+    const jsx = `toast(<div>You're out of sync</div>, { duration: Infinity })`;
+    expect(balancedCallAt(jsx, jsx.indexOf('('))).toContain('duration: Infinity');
+
+    // Skipping strings still has to win where it matters: a `)` inside a
+    // string literal must not close the call early.
+    const str = `toast('done (mostly)', { duration: Infinity })`;
+    expect(balancedCallAt(str, str.indexOf('('))).toBe(str.slice(str.indexOf('(')));
   });
 
   it('gives every role="switch" an aria-checked state', () => {

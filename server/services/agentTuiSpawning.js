@@ -19,11 +19,19 @@ import { finalizeAgent, releaseAgentLane } from './agentFinalization.js';
 import { activeAgents, userTerminatedAgents, pausedAgents, isFalsyMeta } from './agentState.js';
 import { PATHS } from '../lib/fileUtils.js';
 import { DONE_SENTINEL_NAME, parseSentinelPayload } from '../lib/agentSentinel.js';
+import { isHostShuttingDown, HOST_SHUTDOWN_REASON } from '../lib/hostShutdown.js';
+import { SENTINEL_COMPLETION_MARKER } from '../lib/agentOutputMarkers.js';
+import { resolvePrCompletion } from '../lib/prDisposition.js';
+import { canTypeSlashCommands } from '../lib/slashdoInvocation.js';
+import { normalizeReviewers } from '../lib/validation.js';
 import * as git from './git.js';
+import { resolveReviewLoopOptions } from './codeReview.js';
+import { spawnTuiSessionViaRunner } from './cosRunnerClient.js';
 import { shellQuote } from '../lib/shellQuote.js';
 import { resolveCliModel, buildEffortArgs, resolveBedrockCliModel, prefixOpencodeModel, hasModelFlag, isOpencodeCommand, isClaudeCommand, applyLeanClaudeArgs, providerSuppliesGithubToken } from '../lib/providerModels.js';
 import { createStreamingAnsiStripper, stripAnsi } from '../lib/ansiStrip.js';
 import { createImmediateFallbackSignalDetector } from '../lib/aiToolkit/errorDetection.js';
+import { isMachineOnline } from '../lib/connectivity.js';
 import { isAntigravityCommand } from '../lib/antigravity.js';
 import {
   DEFAULT_TUI_PROMPT_DELAY_MS,
@@ -61,7 +69,7 @@ import {
   isPasteConfirmed,
 } from '../lib/tuiHandshake.js';
 import { agentGuardEnv } from '../lib/agentGuard/index.js';
-import { buildOpencodeEnvVars } from '../lib/opencodeConfig.js';
+import { composeProviderEnv } from '../lib/cliChildEnv.js';
 import { execFile } from 'child_process';
 
 // Agent-specific timing/lifecycle constants (not shared with the one-shot
@@ -74,6 +82,22 @@ const DEFAULT_TUI_MIN_RUNTIME_MS = 15000;
 // handshake windows in tuiHandshake.js (PASTE_DEADLINE_MS=10s) without
 // meaningfully weakening the idle-reap protection once input truly stops.
 const PASTE_INPUT_GRACE_MS = 15000;
+
+// Connectivity gate for the idle reaper. When the machine loses internet, a
+// live TUI goes silent (it can't reach the model) in a way that's
+// indistinguishable from a hung or finished agent to the idle timer — so an
+// outage would reap an agent that's only blocked on the network. We keep a
+// cheap reachability reading fresh only in the LEAD window right before the
+// idle deadline and DEFER the reap while offline. `RECHECK_MS` throttles probes
+// to at most one per interval; `LEAD_MS` is how far before the (possibly
+// extended) reap deadline probing begins — so a healthy, chatty agent is never
+// probed and a drifting one has a confirmed reading in hand at its reap tick,
+// without probing for the whole window. This does NOT weaken the hung-agent
+// safety net: a stuck agent on a healthy connection still reaps on schedule,
+// and the max-runtime backstop still bounds an agent kept alive through a long
+// outage.
+const CONNECTIVITY_RECHECK_MS = 10000;
+const CONNECTIVITY_PROBE_LEAD_MS = 20000;
 
 // Output buffering/spooling (createOutputSpooler) and failure-analysis /
 // worktree-inspection helpers (readFileTail, worktreeHasChanges,
@@ -97,10 +121,48 @@ const DONE_POLL_INTERVAL_MS = 2000;
  * to create the session, `sessionId` is null and the caller is expected
  * to bail out via its `finish` path.
  */
-export function createAgentTuiSession({ agentId, provider, model, tuiConfig, cwd, forgeTokenEnv = {}, onData, onExit, onInitialCommandSent }) {
-  // For OpenCode Ollama providers, build dynamic OPENCODE_CONFIG_CONTENT with
-  // the models map so --model is accepted (the static env var lacked this).
-  const opencodeEnv = buildOpencodeEnvVars(provider, model);
+export async function createAgentTuiSession({
+  agentId,
+  taskId,
+  provider,
+  model,
+  tuiConfig,
+  cwd,
+  forgeTokenEnv = {},
+  doneSentinelPath = null,
+  useDurableRunner = false,
+  onData,
+  onExit,
+  onInitialCommandSent,
+}) {
+  const env = { ...composeProviderEnv({ before: forgeTokenEnv, provider, model }), ...agentGuardEnv() };
+  if (useDurableRunner) {
+    // The runner launches the TUI command directly (there is no intermediate
+    // login-shell readiness probe), so output can arrive before the spawn HTTP
+    // response. Open the readiness gate before handing off to avoid discarding
+    // the TUI's first bracketed-paste/input-ready signals.
+    onInitialCommandSent?.();
+    const session = await spawnTuiSessionViaRunner({
+      agentId,
+      taskId,
+      command: tuiConfig.command,
+      args: tuiConfig.args,
+      workspacePath: cwd,
+      envVars: env,
+      doneSentinelPath,
+      onData,
+      onExit,
+    });
+    shellService.registerExternalSession(session.sessionId, session.ptyProcess, {
+      cwd,
+      kind: 'agent-tui',
+      agentId,
+      label: `${provider.name} ${agentId}`,
+      command: tuiConfig.commandLine,
+    });
+    return session;
+  }
+
   const sessionId = shellService.createShellSession(null, {
     cwd,
     kind: 'agent-tui',
@@ -117,15 +179,19 @@ export function createAgentTuiSession({ agentId, provider, model, tuiConfig, cwd
     // claude's input-readiness only after this so the readiness probe's own
     // shell activity can't prematurely open the paste gate.
     onInitialCommandSent,
-    // agentGuardEnv() prepends the pm2 shim to the agent session's PATH (and
-    // points it at the real pm2). Spread LAST so it wins over any provider PATH.
-    // Only AI agent sessions get this — the user's own Shell page does not.
-    // opencodeEnv comes after provider.envVars to override the static config.
-    // forgeTokenEnv is threaded in explicitly because buildSafeEnv strips
-    // GH_TOKEN from the inherited env (see resolveForgeTokenEnv); it goes before
-    // provider.envVars so an explicit provider GH_TOKEN override still wins,
-    // matching the direct-CLI and runner spawn paths.
-    env: { ...forgeTokenEnv, ...(provider.envVars || {}), ...opencodeEnv, ...agentGuardEnv() },
+    // A DELTA, not a full env — buildSafeEnv inside createShellSession supplies
+    // the base and shell.js does the PWD pin. composeProviderEnv owns the layer
+    // order (forgeTokenEnv before provider.envVars so an explicit provider
+    // GH_TOKEN still wins; the OpenCode declared-models map after it, overriding
+    // the static config). forgeTokenEnv has to be threaded in explicitly because
+    // buildSafeEnv strips GH_TOKEN from the inherited env (resolveForgeTokenEnv).
+    //
+    // agentGuardEnv() is spread last so the pm2 shim wins over any provider PATH.
+    // It reads PATH from process.env rather than the composed env — correct here
+    // and NOT what buildCliChildEnv's `guard` does, because this is an overlay
+    // whose real base env is assembled downstream. Only AI agent sessions get
+    // the shim; the user's own Shell page does not.
+    env,
     onData,
     onExit,
   });
@@ -223,6 +289,9 @@ export async function spawnTuiAgent({
   laneName,
   cleanupWorktreeFn,
   isTruthyMetaFn,
+  leanMode = false,
+  useDurableRunner = false,
+  checkOnlineFn = isMachineOnline,
 }) {
   const outputFile = join(agentDir, 'output.txt');
   // Raw PTY bytes spool to disk continuously rather than accumulate in-memory.
@@ -314,9 +383,12 @@ export async function spawnTuiAgent({
   // paste into a startup banner, a trust menu, or a returned shell prompt.
   // agy enables bracketed paste on alt-screen entry, before its composer (and
   // before its trust gate) exists, so it needs the extra composer-footer gate.
-  const inputReady = createInputReadyTracker(
-    isAntigravityCommand(tuiConfig.command) ? { readyTextPattern: AGY_INPUT_READY_PATTERN } : {},
-  );
+  // The durable runner pty.spawns the TUI directly (no launch shell), so the
+  // tracker must not wait for a shell paste-mode OFF that will never come.
+  const inputReady = createInputReadyTracker({
+    ...(isAntigravityCommand(tuiConfig.command) ? { readyTextPattern: AGY_INPUT_READY_PATTERN } : {}),
+    directLaunch: useDurableRunner,
+  });
   let trustAccepted = false;
   // True once shell.js actually injects the `claude` command (after its
   // round-trip readiness probe). The probe runs its OWN shell command first,
@@ -328,6 +400,38 @@ export async function spawnTuiAgent({
   let firstOutputAt = null;
   let lastOutputAt = Date.now();
   let sessionId = null;
+
+  // Idle-reaper connectivity gate (see CONNECTIVITY_* constants). `online`
+  // starts optimistically true so the happy path reaps on schedule without
+  // waiting on a probe; it only ever flips to false once a probe confirms an
+  // outage, at which point the idle reaper defers. Probing is started by the
+  // idle timer only in the LEAD window before the reap deadline (not the whole
+  // idle window), so a confirmed reading is in hand at the reap tick and a busy
+  // agent is never probed.
+  const connectivity = { online: true, checking: false, lastCheckAt: 0, loggedOffline: false };
+  const refreshConnectivity = () => {
+    if (connectivity.checking) return;
+    if (Date.now() - connectivity.lastCheckAt < CONNECTIVITY_RECHECK_MS) return;
+    connectivity.checking = true;
+    connectivity.lastCheckAt = Date.now();
+    Promise.resolve()
+      .then(() => checkOnlineFn())
+      .then((online) => {
+        if (finalized) return;
+        // A probe that RESOLVES `false` is the only thing that flips us offline;
+        // any other resolved value maps to online. A probe that THROWS is
+        // swallowed by the `.catch` below and leaves the last reading untouched
+        // — a failed-to-run probe is never proof of an outage by itself.
+        const nowOnline = online !== false;
+        // Reconnect grace: on the offline→online transition, give the CLI a
+        // fresh idle window to notice the network is back and resume before the
+        // reaper can fire — otherwise we'd reap in the gap before it repaints.
+        if (nowOnline && connectivity.online === false) lastOutputAt = Date.now();
+        connectivity.online = nowOnline;
+      })
+      .catch(() => {})
+      .finally(() => { connectivity.checking = false; });
+  };
 
   // Bounded post-paste accumulator. Lives only while pasteEnterTimer is
   // running (a few seconds at most), so the in-memory cost is bounded by
@@ -388,15 +492,26 @@ export async function spawnTuiAgent({
     // parses back as its own text, so this is a no-op change for existing types.
     const { summary } = parseSentinelPayload(contents);
     if (!summary) return;
-    appendLine(`✅ Agent signaled completion`);
+    // Shared constant, not a literal: `extractAgentSummary` anchors the PR-body
+    // extraction on this exact line to tell the agent's summary apart from the
+    // lifecycle telemetry above it. Reword it here only, and the noise returns.
+    appendLine(SENTINEL_COMPLETION_MARKER);
     const truncated = summary.length > 4096 ? `${summary.slice(0, 4096)}\n…[truncated]` : summary;
     for (const line of truncated.split('\n')) appendLine(line);
   };
 
-  const finish = async ({ success, exitCode = 0, error = null, reason = 'completed' }) => {
-    if (finalized) return;
-    finalized = true;
-
+  /**
+   * Stop everything this run armed, and hand back the agent record so the
+   * caller doesn't need a second map lookup.
+   *
+   * Shared by the two paths that end a run — `finish()` (records an outcome) and
+   * `abandonForHostShutdown()` (records none). Every timer here is created inside
+   * this closure, so a teardown site that falls behind leaks an interval holding
+   * the closure and the PTY handle alive; this file has already grown two new
+   * timers since it was written (maxRuntime + wrapUp), which is exactly the drift
+   * a single teardown prevents.
+   */
+  const stopRunMachinery = () => {
     const agentData = activeAgents.get(agentId);
     if (agentData?.idleTimer) clearInterval(agentData.idleTimer);
     if (agentData?.promptTimer) clearInterval(agentData.promptTimer);
@@ -406,11 +521,40 @@ export async function spawnTuiAgent({
     if (submitEnterTimer) { clearInterval(submitEnterTimer); submitEnterTimer = null; }
     if (maxRuntimeTimer) { clearTimeout(maxRuntimeTimer); maxRuntimeTimer = null; }
     if (wrapUpTimer) { clearTimeout(wrapUpTimer); wrapUpTimer = null; }
-    // Release the post-paste accumulator even when finalize fires mid-paste-
-    // window. The pasteEnterTimer's own cleanup path nulls this too, but if
-    // finalize comes from elsewhere (shell-exit, command-not-found, user
-    // termination) the timer never gets a chance to run.
+    // Release the post-paste accumulator even when the run ends mid-paste-window.
+    // The pasteEnterTimer's own cleanup path nulls this too, but if the run ends
+    // from elsewhere (shell-exit, command-not-found, user termination, a host
+    // restart) that timer never gets a chance to run.
     postPasteBuffer = null;
+    return agentData;
+  };
+
+  const finish = async ({ success, exitCode = 0, error = null, reason = 'completed' }) => {
+    if (finalized) return;
+    // PortOS is going down. Whatever path got here — the PTY exiting under
+    // TreeKill, the idle reaper, a paste that failed because the shell died —
+    // the cause is the host restart, not the agent, so there is no outcome to
+    // record. Abandoning instead of finalizing is what keeps an interrupted run
+    // from being written down as completed AND keeps its worktree (which
+    // finalize's cleanup would delete) intact for the resume (#3202).
+    //
+    // Three exceptions keep their normal path. An agent that already wrote its
+    // `.agent-done` sentinel has given a valid completion signal. A run the user
+    // terminated must reach finalizeAgent to be recorded `user-terminated` —
+    // abandoning it would leave the record `running` with no such mark, and boot
+    // recovery's user-terminated skip would miss it and resurrect the run. And a
+    // run the user paused already has its own don't-finalize branch below, which
+    // owns the paused bookkeeping (pid unregister, activeAgents delete).
+    if (isHostShuttingDown()
+      && !sentinelPresent()
+      && !userTerminatedAgents.has(agentId)
+      && !pausedAgents.has(agentId)) {
+      await abandonForHostShutdown();
+      return;
+    }
+    finalized = true;
+
+    const agentData = stopRunMachinery();
 
     // Ingest the .agent-done sentinel BEFORE draining, so its markdown summary
     // lands in outputBuffer/output.txt regardless of WHICH path finalized the
@@ -504,15 +648,29 @@ export async function spawnTuiAgent({
     } finally {
       if (workspacePath) await rm(join(workspacePath, DONE_SENTINEL_NAME)).catch(() => {});
 
-      // TUI agents run /do:pr (or /do:push) themselves before signaling via
-      // .agent-done, so the system-side cleanup must NOT also push or open a
-      // PR — that would double-fire. `skipMerge` is forced on so the
-      // post-exit auto-merge doesn't trip over a branch the agent already
-      // pushed. The worktree directory itself is still cleaned up.
+      // A slashdo-capable Claude TUI owns /do:pr itself. Slashdo-free TUIs
+      // (Codex, Antigravity, OpenCode, lean Claude) only commit and signal;
+      // PortOS must own their push + PR + reviewer/merge follow-up. Derive this
+      // from the same predicate used by the prompt builder so neither side can
+      // believe the other owns the PR.
+      const taskOpenPR = isTruthyMetaFn(task.metadata?.openPR);
+      const agentOwnsPR = taskOpenPR && canTypeSlashCommands({
+        providerId: provider?.id,
+        providerCommand: provider?.command,
+        leanMode,
+      });
+      const reviewOptions = finalSuccess && taskOpenPR && !agentOwnsPR
+        ? await resolveReviewLoopOptions(task.metadata, { normalize: normalizeReviewers, isTruthyMeta: isTruthyMetaFn })
+          .catch(err => {
+            emitLog('warn', `TUI review options unavailable for ${agentId}: ${err.message}`, { agentId });
+            return {};
+          })
+        : {};
       await cleanupWorktreeFn(agentId, finalSuccess, {
-        openPR: false,
-        requestCopilotReview: false,
-        skipMerge: true,
+        openPR: agentOwnsPR ? false : taskOpenPR,
+        prCompletion: resolvePrCompletion(task.metadata),
+        ...reviewOptions,
+        skipMerge: agentOwnsPR,
         description: task.description,
         agentOutput: getOutputBuffer(),
         originalTask: task
@@ -522,6 +680,47 @@ export async function spawnTuiAgent({
       activeAgents.delete(agentId);
       if (sessionId && shellService.getSession(sessionId)) shellService.killSession(sessionId);
     }
+  };
+
+  /**
+   * Abandon the run because PortOS itself is going down (#3202).
+   *
+   * Deliberately NOT `finish()`: finalizing here would record an outcome for a
+   * run that never reached one, and its cleanup path removes the `.agent-done`
+   * sentinel and hands the worktree to `cleanupWorktreeFn` — destroying exactly
+   * the state a resume needs. So this only stops the machinery and flushes what
+   * was captured; the agent record stays `running` and the worktree stays on
+   * disk. The next boot's orphan sweep reads the host-shutdown marker, sees this
+   * agent named in it, and requeues the task as *interrupted* — resumable, and
+   * without charging it orphan-retry budget.
+   *
+   * Sets `finalized` so every other path (idle reaper, sentinel poll, paste
+   * retry) becomes a no-op for the rest of this process's life.
+   */
+  const abandonForHostShutdown = async () => {
+    // No `finalized` guard: finish() — the only caller — already returned if it
+    // was set, and this sets it below.
+    finalized = true;
+    stopRunMachinery();
+
+    appendLine('🛑 PortOS restarted while this agent was running — the run was interrupted, not completed. Its worktree is preserved and the task will resume.');
+    emitLog('warn', `TUI agent ${agentId} interrupted by a PortOS host restart — preserved for resume`, { agentId, phase: 'interrupted' });
+    // Concurrent, not sequential: nothing awaits this function (it runs off the
+    // PTY-exit handler, racing the shutdown handler's own process.exit), so the
+    // shorter the critical path the more of the transcript actually lands. The
+    // three targets are independent — output.txt + the state record, raw.txt, and
+    // the metadata patch — and the two that share the state lock still serialize
+    // on it. `phase` is a breadcrumb only: the record stays `running` on purpose,
+    // because boot recovery owns the transition.
+    await Promise.all([
+      drainLines().catch(() => {}),
+      drainRaw().catch(() => {}),
+      updateAgent(agentId, { metadata: { phase: 'interrupted', interruptedBy: HOST_SHUTDOWN_REASON } })
+        .catch(err => emitLog('warn', `Could not mark TUI agent ${agentId} interrupted: ${err.message}`, { agentId })),
+    ]);
+    // NOTE: the activeAgents entry is intentionally left in place — the shutdown
+    // handler reads that map to name the agents in the host-shutdown marker, and
+    // there is no reason to shrink it on the way out.
   };
 
   const handleData = async (data) => {
@@ -634,15 +833,26 @@ export async function spawnTuiAgent({
     }
   };
 
-  const handleExit = async ({ exitCode, killed }) => {
+  const handleExit = async ({ exitCode, killed, signal = null }) => {
     if (finalized) return;
+    // A host restart reaches here as a plain PTY exit (pm2's TreeKill walks
+    // portos-server's descendants), which the `success` reading below would
+    // record as a completed run. finish() intercepts that case — see its
+    // host-shutdown guard (#3202).
     const code = typeof exitCode === 'number' ? exitCode : killed ? 130 : 0;
-    await finish({
-      success: code === 0 && !killed,
-      exitCode: code,
-      error: killed ? 'TUI shell session was killed' : null,
-      reason: killed ? 'shell-killed' : 'shell-exit'
-    });
+    // A signal-terminated shell reports the wait-status exit code — 0 for a
+    // plain SIGTERM/SIGHUP — so `code === 0` alone cannot mean "finished
+    // normally". Treat any signal as an abnormal end. This is the backstop for
+    // the case the host-shutdown guard can't cover: a SIGKILL'd or crashed
+    // portos-server never runs its shutdown handler, so the flag is never set,
+    // yet the agent's PTY still dies with us (#3202).
+    const signaled = !!signal;
+    const outcome = killed
+      ? { error: 'TUI shell session was killed', reason: 'shell-killed' }
+      : signaled
+        ? { error: `TUI shell session was terminated by signal ${signal} — the run was cut short, not completed`, reason: 'shell-signaled' }
+        : { error: null, reason: 'shell-exit' };
+    await finish({ success: code === 0 && !killed && !signaled, exitCode: code, ...outcome });
   };
 
   // Repo-owner-pinned GH_TOKEN for the agent's own `gh pr create` (see
@@ -653,13 +863,16 @@ export async function spawnTuiAgent({
     ? {}
     : await git.resolveForgeTokenEnv(cwd);
 
-  const session = createAgentTuiSession({
+  const session = await createAgentTuiSession({
     agentId,
+    taskId: task.id,
     provider,
     model,
     tuiConfig,
     cwd,
     forgeTokenEnv,
+    doneSentinelPath,
+    useDurableRunner,
     onData: handleData,
     onExit: handleExit,
     onInitialCommandSent: () => { commandInjected = true; },
@@ -770,16 +983,14 @@ export async function spawnTuiAgent({
       emitLog('warn', `Failed to mark TUI agent ${agentId} as wrapping up: ${err.message}`, { agentId });
     });
 
-    shellService.writeToSession(sessionId, `\x1b[200~${buildWrapUpProdMessage(MAX_RUNTIME_WRAP_UP_GRACE_MS)}\x1b[201~`);
-    // Submit with the same repeated-Enter helper the initial prompt uses — a
-    // single `\r` can be swallowed while the TUI reflows the paste, and a prod
-    // that never submits is a prod that never happened. Clear any prior
-    // submit-Enter interval first: hours after submission the prompt's own is
-    // long finished, but overwriting a live handle would leak it past finish().
+    // Clear any prior submit-Enter interval first: hours after submission the
+    // prompt's own is long finished, but overwriting a live handle would leak
+    // it past finish().
     if (submitEnterTimer) clearInterval(submitEnterTimer);
-    submitEnterTimer = scheduleSubmitEnters(
-      () => shellService.writeToSession(sessionId, '\r'),
-      () => finalized,
+    submitEnterTimer = shellService.pasteToSession(
+      sessionId,
+      buildWrapUpProdMessage(MAX_RUNTIME_WRAP_UP_GRACE_MS),
+      { label: '[cosAgents] max-runtime wrap-up' },
     );
 
     // A single deadline, NOT a poll: the 2s doneSentinelTimer is already watching
@@ -814,7 +1025,12 @@ export async function spawnTuiAgent({
     // would dump the bracketed-paste prompt into the bare shell — the wedged
     // `^[[200~ …` session. If the shell has no live child, the command is gone:
     // fail loudly with whatever it printed instead of pasting into the shell.
-    if (!(await shellHasLiveChild(pid))) {
+    //
+    // Runner mode has no launch shell — the TUI IS the PTY process — so "does
+    // this pid have a live child?" is the wrong question (claude may have zero
+    // children at paste time) and a TUI exit kills the PTY, firing onExit. Skip
+    // the probe there.
+    if (!useDurableRunner && !(await shellHasLiveChild(pid))) {
       if (finalized) return; // a real onExit may have finalized during the probe await
       await finishStartupFailure(
         'tui-exited-early',
@@ -1117,7 +1333,26 @@ export async function spawnTuiAgent({
       : reviewLoop.active
         ? Math.max(tuiConfig.idleTimeoutMs, REVIEW_LOOP_IDLE_TIMEOUT_MS)
         : tuiConfig.idleTimeoutMs;
+    // Once within the LEAD window of the (possibly extended) reap deadline, keep
+    // a reachability reading fresh (throttled, non-blocking) so the gate below
+    // can read it synchronously and won't reap an agent that's only silent
+    // because the machine lost internet. Gating on the effective deadline (not a
+    // fixed lead off the base window) keeps a long merge-queue/review-loop idle
+    // from probing for its whole 15-min window.
+    if (idle >= effectiveIdleTimeoutMs - CONNECTIVITY_PROBE_LEAD_MS) refreshConnectivity();
     if (idle >= effectiveIdleTimeoutMs) {
+      // An internet outage silences a live TUI exactly like a hung or finished
+      // agent looks to this timer. If a recent probe says we're offline, DEFER
+      // the reap — the agent is only blocked on the network and resumes when it
+      // returns. (The max-runtime backstop still bounds a very long outage.)
+      if (!connectivity.online) {
+        if (!connectivity.loggedOffline) {
+          emitLog('info', `📡 TUI agent ${agentId} idle past its window but the machine appears offline — deferring reap until connectivity returns`, { agentId });
+          connectivity.loggedOffline = true;
+        }
+        return;
+      }
+      connectivity.loggedOffline = false;
       // Reaped AFTER the extended merge-queue grace elapsed: the orchestrator
       // almost certainly died mid-merge with PRs opened/merged-but-uncleaned.
       // Surface it as a needs-manual-finish FAILURE rather than the silent
@@ -1271,7 +1506,7 @@ export async function spawnTuiAgent({
     pid,
     metadata: {
       phase: 'working',
-      executionMode: 'tui',
+      executionMode: useDurableRunner ? 'runner-tui' : 'tui',
       tuiSessionId: sessionId,
       tuiCommand: tuiConfig.commandLine,
       tuiKind,

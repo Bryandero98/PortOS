@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { stripAnsi } from './ansiStrip.js';
 import { sleep } from './fileUtils.js';
+import { buildCliChildEnv } from './cliChildEnv.js';
 
 /**
  * Drive an interactive coding-agent TUI (Antigravity `agy`, Grok Build `grok`)
@@ -95,11 +96,16 @@ export async function scrapeTuiUsage({
 
   mkdirSync(sandboxDir, { recursive: true });
 
-  // Provider envVars (auth/config) merged over process.env, then the PTY hints.
-  // CLAUDECODE leaks when PortOS itself runs under Claude Code; strip it so a
-  // spawned TUI doesn't think it's nested (mirrors tuiPromptRunner.js).
-  const env = { ...process.env, ...extraEnv, TERM: 'xterm-256color', COLORTERM: 'truecolor' };
-  delete env.CLAUDECODE;
+  // TERM/COLORTERM go in `extra` so the PTY is always a truecolor xterm
+  // regardless of the provider's own env (mirrors tuiPromptRunner.js). The PWD
+  // pin keeps the scrape in the throwaway sandbox instead of opening the PortOS
+  // checkout as a project. No provider record here — this drives a slash command,
+  // not a model, so there is nothing for the OpenCode layer to declare.
+  const env = buildCliChildEnv({
+    before: extraEnv,
+    cwd: sandboxDir,
+    extra: { TERM: 'xterm-256color', COLORTERM: 'truecolor' },
+  });
 
   let pty;
   try {

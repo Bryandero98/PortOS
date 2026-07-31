@@ -5,11 +5,11 @@
 import { spawn } from 'child_process';
 import { writeFile, readFile } from 'fs/promises';
 import { join } from 'path';
-import { atomicWrite, ensureDir, tryReadFile } from '../lib/fileUtils.js';
+import { atomicWrite, ensureDir, tryReadFile, PATHS } from '../lib/fileUtils.js';
+import { resolveSpawnCwd } from '../lib/spawnCwd.js';
 import { hasModelFlag, extractBakedModel } from '../lib/providerModels.js';
-import { buildOpencodeEnvVars } from '../lib/opencodeConfig.js';
 import { buildCliArgs, prepareCliPrompt } from '../lib/cliProviderArgs.js';
-import { agentGuardEnv } from '../lib/agentGuard/index.js';
+import { buildCliChildEnv } from '../lib/cliChildEnv.js';
 import { createImmediateFallbackSignalDetector } from '../lib/aiToolkit/errorDetection.js';
 import { killProcessTree, resolveWindowsExecutable, prepareWindowsSafeSpawn } from '../lib/bufferedSpawn.js';
 import {
@@ -117,13 +117,52 @@ export async function finalizeRunRecord({ runId, output, exitCode, success, erro
 
   await atomicWrite(metadataPath, metadata).catch(() => {});
 
+  // Guarded: these hooks are host-supplied, and every caller of this function
+  // runs outside the request lifecycle — the /runs route never awaits its
+  // executor. An unguarded throw (or rejected promise) from a hook propagates
+  // out of finalizeRunRecord, past the caller's own settlement, and lands as an
+  // unhandled rejection with the run stuck looking in-flight. The metadata is
+  // already persisted by this point, so a failing hook must not un-finalize it.
   if (success) {
-    runnerConfig.hooks?.onRunCompleted?.(metadata, output);
+    safeSettle(() => runnerConfig.hooks?.onRunCompleted?.(metadata, output), 'onRunCompleted');
   } else {
-    runnerConfig.hooks?.onRunFailed?.(metadata, metadata.error, output);
+    safeSettle(() => runnerConfig.hooks?.onRunFailed?.(metadata, metadata.error, output), 'onRunFailed');
   }
 
   return metadata;
+}
+
+/**
+ * Resolve a run's spawn cwd, turning an unusable workspace into a normal failed
+ * run rather than a throw.
+ *
+ * Shared by both spawning runners (`executeCliRun` here, `executeTuiRun` in
+ * `lib/tuiPromptRunner.js`) because the /runs route invokes them WITHOUT
+ * awaiting: a bare throw would surface only as an unhandled rejection and the
+ * UI would show the run hanging forever. Returning the failure instead keeps
+ * the "report it through the run record" contract in one place, so a third
+ * runner can't reintroduce the hang by forgetting the try/catch.
+ *
+ * @returns {Promise<{cwd: string, failure?: undefined} | {cwd?: undefined, failure: object}>}
+ *   `cwd` on success; `failure` (the finalized metadata) when the workspace is unusable.
+ */
+export async function resolveRunCwd({ runId, workspacePath, label, startTime = Date.now(), onData, onComplete }) {
+  try {
+    return { cwd: resolveSpawnCwd(workspacePath, PATHS.root, label) };
+  } catch (err) {
+    const message = `❌ ${err.message}`;
+    // Settle the caller's callbacks through the same guard the close handler
+    // uses. A throwing (or rejecting) onComplete here would reject
+    // resolveRunCwd itself AFTER the failed run was already persisted — and
+    // since /runs never awaits its executor, that lands as the unhandled
+    // rejection + hung-looking run this helper exists to prevent.
+    safeSettle(() => onData?.(message), 'onData');
+    const failure = await finalizeRunRecord({
+      runId, output: message, exitCode: null, success: false, error: err.message, startTime,
+    });
+    safeSettle(() => onComplete?.(failure), 'onComplete');
+    return { failure };
+  }
 }
 
 /**
@@ -199,6 +238,16 @@ export async function executeCliRun({ runId, provider, prompt, workspacePath, on
     killProcessTree(childProcess);
   };
 
+  // Resolve (and log) the working directory before spawning, so a supplied-but-
+  // missing workspace fails the run with an actionable message instead of
+  // silently spawning in the PortOS checkout, where relative file writes from
+  // the prompt would land in the wrong repo (#3180). Placed ahead of
+  // prepareCliPrompt so a bad workspace short-circuits before any temp-file I/O.
+  const { cwd: effectiveCwd, failure } = await resolveRunCwd({
+    runId, workspacePath, label: `Run ${runId}`, startTime, onData, onComplete,
+  });
+  if (failure) return;
+
   // Build provider-specific args for prompt delivery
   const builtArgs = buildCliArgs(provider);
   // Rewrite the argv for prompt delivery and learn whether to still write stdin:
@@ -211,14 +260,15 @@ export async function executeCliRun({ runId, provider, prompt, workspacePath, on
   const { args, useStdin, cleanup: cleanupPromptFile } = prepareCliPrompt(provider.command, builtArgs, prompt);
   console.log(`🚀 Executing CLI: ${provider.command} (${prompt.length} chars via ${useStdin ? 'stdin' : 'argv'})`);
 
-  // Prepend the pm2 shim (agentGuardEnv) onto the final PATH so an unrestricted
-  // agent can't `pm2 kill` the shared daemon. See server/lib/agentGuard.
-  // buildOpencodeEnvVars rebuilds OPENCODE_CONFIG_CONTENT with a declared models
-  // map for OpenCode Ollama providers (empty/no-op otherwise) so the injected
-  // `--model ollama/<id>` isn't rejected as "not valid" — see issue-2190.
-  const childEnv = { ...process.env, ...provider.envVars, ...buildOpencodeEnvVars(provider, provider.defaultModel) };
-  delete childEnv.CLAUDECODE;
-  Object.assign(childEnv, agentGuardEnv(childEnv));
+  // Shared composition (provider.envVars + OpenCode models map + PWD pin +
+  // CLAUDECODE strip) — see buildCliChildEnv. `guard: true` prepends the pm2
+  // shim onto the final PATH so an unrestricted agent can't `pm2 kill` the
+  // shared daemon.
+  const childEnv = buildCliChildEnv({
+    provider,
+    cwd: effectiveCwd,
+    guard: true,
+  });
 
   // See the executeCliRun docblock above for why this is a resolve+wrap, not
   // a shell:true. Resolved against `childEnv` (not bare process.env) so a
@@ -227,7 +277,7 @@ export async function executeCliRun({ runId, provider, prompt, workspacePath, on
   const { command: spawnCommand, args: spawnArgs } = prepareWindowsSafeSpawn(resolvedCommand, args);
 
   childProcess = spawn(spawnCommand, spawnArgs, {
-    cwd: workspacePath,
+    cwd: effectiveCwd,
     env: childEnv,
     windowsHide: true
   });
@@ -289,7 +339,10 @@ export async function executeCliRun({ runId, provider, prompt, workspacePath, on
     if (metadata.providerId == null && provider.id) metadata.providerId = provider.id;
     if (metadata.providerName == null && (provider.name || provider.id)) metadata.providerName = provider.name || provider.id;
     if (metadata.model == null && provider.defaultModel) metadata.model = provider.defaultModel;
-    if (metadata.workspacePath == null && workspacePath) metadata.workspacePath = workspacePath;
+    // Record the cwd the child ACTUALLY ran in, not the requested one — when no
+    // workspace was selected these differ, and the /runs replay claiming a
+    // workspace the run never used is the confusion this fixes (#3180).
+    metadata.workspacePath ??= effectiveCwd;
 
     try {
       if (timeoutHandle) clearTimeout(timeoutHandle);

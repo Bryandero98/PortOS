@@ -49,7 +49,8 @@ vi.mock('../lib/fileUtils.js', () => ({
 import {
   classifyBranch, classifyBranches, cleanupMerged, reconcile, gatherBranchState, worktreeProtectionReason,
   isAbandonedAgentWorktree, gatherDivergence,
-  actionOn, filterActionable, desiredEndState, formatInFlightForPrompt, actionableSignature
+  actionOn, filterActionable, desiredEndState, formatInFlightForPrompt, actionableSignature,
+  branchPriorityRank, prioritizeBranches
 } from './branchReconcile.js';
 import * as git from './git.js';
 import * as wt from './worktreeManager.js';
@@ -225,6 +226,9 @@ describe('gatherBranchState', () => {
     git.getBranches.mockResolvedValue([
       { name: 'main', isDefault: true, current: true, tracking: 'origin/main', merged: false },
       { name: 'release', isDefault: false, current: false, tracking: 'origin/release', merged: false },
+      // Long-lived shared branches that must never be reconciled or handed to the agent.
+      { name: 'develop', isDefault: false, current: false, tracking: 'origin/develop', merged: false },
+      { name: 'gh-pages', isDefault: false, current: false, tracking: 'origin/gh-pages', merged: false },
       { name: 'next/issue-2199', isDefault: false, current: false, tracking: 'origin/next/issue-2199', merged: false },
       { name: 'next/issue-2190', isDefault: false, current: false, tracking: 'origin/next/issue-2190', merged: true }
     ]);
@@ -238,7 +242,7 @@ describe('gatherBranchState', () => {
 
     const inputs = await gatherBranchState('/repo', { defaultBranch: 'main' });
     const names = inputs.map((i) => i.branch);
-    expect(names).toEqual(['next/issue-2199', 'next/issue-2190']); // main + release excluded
+    expect(names).toEqual(['next/issue-2199', 'next/issue-2190']); // main/release/develop/gh-pages excluded
 
     const i2199 = inputs.find((i) => i.branch === 'next/issue-2199');
     expect(i2199.hasWorktree).toBe(true);
@@ -383,7 +387,52 @@ describe('gatherDivergence', () => {
   });
 });
 
+describe('branchPriorityRank / prioritizeBranches', () => {
+  it('ranks recognized work-branch prefixes ahead of unrecognized ones, in list order', () => {
+    expect(branchPriorityRank('claim/issue-1')).toBeLessThan(branchPriorityRank('cos/task/agent'));
+    expect(branchPriorityRank('cos/task/agent')).toBeLessThan(branchPriorityRank('feature/x'));
+    expect(branchPriorityRank('feature/x')).toBeLessThan(branchPriorityRank('random-scratch'));
+    // Hyphen and slash separators both match; a bare keyword substring does not.
+    expect(branchPriorityRank('feature-x')).toBe(branchPriorityRank('feature/x'));
+    expect(branchPriorityRank('featureful')).toBe(branchPriorityRank('random-scratch'));
+  });
+
+  it('sorts by priority, ties broken by name, without mutating the input', () => {
+    const input = [
+      { branch: 'zzz-scratch' },
+      { branch: 'feature/b' },
+      { branch: 'claim/issue-9' },
+      { branch: 'feature/a' },
+      { branch: 'cos/task/agent-1' }
+    ];
+    const out = prioritizeBranches(input);
+    expect(out.map((b) => b.branch)).toEqual([
+      'claim/issue-9', 'cos/task/agent-1', 'feature/a', 'feature/b', 'zzz-scratch'
+    ]);
+    // Pure: original order untouched.
+    expect(input[0].branch).toBe('zzz-scratch');
+  });
+});
+
 describe('reconcile', () => {
+  it('orders in-flight branches by work-branch priority', async () => {
+    // A plain unrecognized branch, a feature branch, and a claim branch — all
+    // NEEDS_PR (pushed, not merged, no PR, clean). The claim/feature branches must
+    // lead the unrecognized one regardless of gather order.
+    git.getBranches.mockResolvedValue([
+      { name: 'scratch-thing', isDefault: false, current: false, tracking: 'origin/scratch-thing', merged: false },
+      { name: 'feature/new-thing', isDefault: false, current: false, tracking: 'origin/feature/new-thing', merged: false },
+      { name: 'claim/issue-42', isDefault: false, current: false, tracking: 'origin/claim/issue-42', merged: false }
+    ]);
+    wt.listWorktrees.mockResolvedValue([]);
+    execGh.mockResolvedValue('[]');
+    git.isBranchMergedInto.mockResolvedValue(false);
+
+    const res = await reconcile('/repo');
+    expect(res.inFlight.map((i) => i.branch)).toEqual(['claim/issue-42', 'feature/new-thing', 'scratch-thing']);
+    expect(res.inFlight.every((i) => i.state === 'NEEDS_PR')).toBe(true);
+  });
+
   it('cleans merged, returns in-flight + wip partitions', async () => {
     git.getBranches.mockResolvedValue([
       { name: 'next/issue-2190', isDefault: false, current: false, tracking: 'origin/x', merged: true },

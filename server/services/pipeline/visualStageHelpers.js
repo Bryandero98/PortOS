@@ -22,7 +22,8 @@ import { loraCompatKey } from '../../lib/runners.js';
 import { resolveCharacterLoras } from '../characterLoraResolver.js';
 import { pickCanon } from './seriesCanon.js';
 import { IMAGE_GEN_MODE } from '../imageGen/modes.js';
-import { pickUsableMode, resolveCloudProviderConfig } from '../imageGen/cloudProviderConfig.js';
+import { pickUsableMode, renderTargetDefaults, resolveRenderTargetConfig } from '../imageGen/cloudProviderConfig.js';
+import { RENDER_TARGET, recordRenderPin } from '../../lib/renderTargets.js';
 import { resolveImageCleaners } from '../imageGen/index.js';
 
 const joinStyleParts = (...parts) =>
@@ -70,7 +71,24 @@ const applyWorldStyle = (prompt, world, series = null) => {
 // two explicit candidates. (Sprite renders use the equivalent
 // `resolveQueueImageMode` ladder in imageGen/modes.js — #2896 hoisted that
 // one first; this is the wider param-assembly consolidation from #2881.)
-const resolveMode = (options, settings) => pickUsableMode(settings, [options.mode, settings?.imageGen?.mode]);
+// The pipeline-visual renderDefaults pin (#3231) slots between the explicit
+// per-request override and the install default — usability-gated like both.
+// The series' persisted per-record pin (#3231 Phase 3) sits between the
+// per-request override and the install-wide target pin: "this series renders
+// on codex" beats the surface default, loses to an explicit UI selection.
+// `edit` marks a render that carries an input image (i2i: "use proof as base",
+// a reference page, or a refine pass). Edit-incapable backends are skipped at
+// every rung so the ladder falls through instead of resolving to one that will
+// reject the job asynchronously (#3243). It DEFAULTS from `options.initImagePath`
+// so a call site that already carries the image on `options` — enqueueVisualImage,
+// the storyboard shot path — is covered without opting in; the sites that derive
+// the init image AFTER resolving the mode pass `{ edit: true }` explicitly.
+const resolveMode = (options, settings, series = null, { edit } = {}) => pickUsableMode(settings, [
+  options.mode,
+  recordRenderPin(series).mode,
+  renderTargetDefaults(settings, RENDER_TARGET.PIPELINE_VISUAL).imageMode,
+  settings?.imageGen?.mode,
+], { edit: edit ?? Boolean(options.initImagePath) });
 
 /**
  * Resolve trained character LoRAs for a pipeline render. Local mode only —
@@ -211,7 +229,7 @@ const loadBibleContext = async (issueId) => {
   return { ...chain, settings };
 };
 
-const enqueueImageJob = ({ prompt, world, settings, options, mode, owner, logLine }) => {
+const enqueueImageJob = ({ prompt, world, settings, options, mode, owner, logLine, series = null }) => {
   // Merge user + world negatives — mirrors composeStyledPrompt's preset
   // negative handling so the world's global negative-prompt terms stay in
   // effect even when the caller supplies their own additions. Deduplicated
@@ -251,7 +269,16 @@ const enqueueImageJob = ({ prompt, world, settings, options, mode, owner, logLin
   // the saved settings.imageGen[mode].{cleanC2PA,denoise} would have no
   // effect on storyboard, comic-panel, or cover renders.
   const { cleanC2PA, denoise } = resolveImageCleaners(undefined, settings, mode);
-  const cloud = resolveCloudProviderConfig(settings, mode);
+  // Mode is already resolved through the ladder above; this call threads the
+  // series' persisted imageModelId pin (#3231 Phase 3), then the
+  // pipeline-visual renderDefaults imageModel, into the cloud job params —
+  // each riding only when the resolved mode is still its pinned backend.
+  const seriesPin = recordRenderPin(series);
+  const { cloud } = resolveRenderTargetConfig(settings, RENDER_TARGET.PIPELINE_VISUAL, {
+    mode,
+    recordMode: seriesPin.mode,
+    recordModel: seriesPin.modelId,
+  });
   const params = cloud
     ? { ...cloud.jobParams, cleanC2PA, denoise, ...baseParams }
     : { pythonPath: settings.imageGen?.local?.pythonPath || null, modelId: options.modelId, cleanC2PA, denoise, ...baseParams };

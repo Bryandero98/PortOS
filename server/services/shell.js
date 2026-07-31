@@ -1,6 +1,8 @@
 import * as pty from 'node-pty';
 import os from 'os';
 import { v4 as uuidv4 } from '../lib/uuid.js';
+import { withSpawnCwdEnv } from '../lib/spawnCwd.js';
+import { scheduleSubmitEnters } from '../lib/tuiHandshake.js';
 
 // Store active shell sessions (persist across socket reconnects)
 const shellSessions = new Map();
@@ -38,12 +40,73 @@ const SAFE_ENV_PREFIXES = [
   'KUBECONFIG', 'LESS', 'PAGER', 'MANPATH', 'INFOPATH', 'ZDOTDIR', 'STARSHIP_'
 ];
 
-function buildSafeEnv() {
+// Windows-only additions, matched as EXACT names rather than prefixes. The list
+// above is POSIX-shaped: on Windows it drops variables the OS itself needs to
+// create a working process, so a PTY session started from it launches into a
+// crippled shell (no DLL search root, no temp dir, no per-user app data — which
+// is where `claude`/`codex` keep their credentials and config).
+//
+// Exact-match is load-bearing, not a style choice: these are individual OS
+// variables, not grouped families like `NPM_`/`XDG_`, so prefix-matching them
+// would admit anything merely STARTING with one — `APPDATA_TOKEN`,
+// `TEMP_SECRET`, and (worst, since it is two characters) `OS_API_KEY` would all
+// be handed to an attachable agent shell by a filter whose entire job is
+// withholding credentials.
+//
+// PATHEXT / USERPROFILE / HOMEDRIVE / HOMEPATH are deliberately absent: the
+// POSIX PATH / USER / HOME prefixes already cover them.
+const SAFE_ENV_NAMES_WIN32 = new Set([
+  'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', 'COMSPEC',
+  'APPDATA', 'LOCALAPPDATA',
+  'PROGRAMFILES', 'PROGRAMFILES(X86)', 'PROGRAMW6432',
+  'PROGRAMDATA', 'COMMONPROGRAMFILES', 'COMMONPROGRAMFILES(X86)', 'COMMONPROGRAMW6432',
+  'TEMP', 'TMP',
+  'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE', 'OS', 'PSMODULEPATH',
+  // Windows spellings of variables the POSIX prefixes above cover only on
+  // POSIX. They are listed here — rather than case-folding the POSIX prefix
+  // list on Windows — because folding a PREFIX list widens it: `NPM_` would
+  // then match npm's lower-case `npm_config__authToken` (a registry credential)
+  // and hand it to an attachable agent shell. An exact-name Set can be matched
+  // case-insensitively with no such reach.
+  'PATH', 'PATHEXT',
+  'USERPROFILE', 'USERNAME', 'USERDOMAIN', 'USERDOMAIN_ROAMINGPROFILE',
+  'HOMEDRIVE', 'HOMEPATH'
+]);
+
+/**
+ * Filter `process.env` down to the allowlist above.
+ *
+ * Two matching rules, deliberately different:
+ *
+ *   - `SAFE_ENV_PREFIXES` is matched **case-sensitively on both platforms**.
+ *     These are grouped families, and folding case widens a prefix rather than
+ *     preserving it: upper-casing keys would push npm's lower-case
+ *     `npm_config_*` / `npm_package_*` vars — `npm_config__authToken` among
+ *     them — through the `NPM_` prefix into an attachable shell. PortOS starts
+ *     under `npm run`, so those variables are always present.
+ *   - `SAFE_ENV_NAMES_WIN32` is matched **case-insensitively, on Windows only,
+ *     as exact names**. Windows env names are case-insensitive and arrive in
+ *     mixed case (the real variable is `Path`, not `PATH`), and an exact-name
+ *     Set can be folded safely because it has no prefix reach.
+ *
+ * Before this split, `Path` was dropped entirely on Windows by the
+ * case-sensitive `startsWith('PATH')` — the agent shell then couldn't resolve
+ * any CLI provider — while the coincidentally-upper-case `PATHEXT` survived.
+ *
+ * Exported for tests; `platform` is injectable so the Windows branch is
+ * testable from any host.
+ *
+ * @param {NodeJS.ProcessEnv} [env] - source environment; defaults to `process.env`
+ * @param {string} [platform] - `process.platform` value; defaults to the real one
+ * @returns {Record<string, string>} filtered environment
+ */
+export function buildSafeEnv(env = process.env, platform = process.platform) {
+  const isWin32 = platform === 'win32';
   const safeEnv = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (SAFE_ENV_PREFIXES.some(prefix => key === prefix || key.startsWith(prefix))) {
-      safeEnv[key] = value;
-    }
+  for (const [key, value] of Object.entries(env)) {
+    const allowed = SAFE_ENV_PREFIXES.some(prefix => key.startsWith(prefix))
+      || (isWin32 && SAFE_ENV_NAMES_WIN32.has(key.toUpperCase()));
+    if (allowed) safeEnv[key] = value;
   }
   return safeEnv;
 }
@@ -87,7 +150,10 @@ export function createShellSession(socket, options = {}) {
       cols,
       rows,
       cwd,
-      env: {
+      // Pin PWD to the spawn cwd — see withSpawnCwdEnv (#3193). An interactive
+      // login shell rewrites PWD itself at startup, but a non-login shell may
+      // not, and an agent-TUI session injects its CLI command into this shell.
+      env: withSpawnCwdEnv({
         ...buildSafeEnv(), // filters process.env to prevent leaking inherited secrets (e.g. shell-inherited API keys)
         // options.env is the caller's explicit opt-in env (e.g. TUI provider API keys for codex/claude).
         // Callers are responsible for not passing vars they don't want visible inside attachable shells.
@@ -95,7 +161,7 @@ export function createShellSession(socket, options = {}) {
         ...(options.env || {}),
         TERM: 'xterm-256color',
         COLORTERM: 'truecolor'
-      }
+      }, cwd)
     });
   } catch (err) {
     console.error(`❌ Failed to spawn PTY: ${err.message}`);
@@ -140,12 +206,20 @@ export function createShellSession(socket, options = {}) {
   });
 
   // Handle pty exit
-  ptyProcess.onExit(({ exitCode }) => {
-    console.log(`🐚 Shell session ${sessionId.slice(0, 8)} exited (code: ${exitCode})`);
+  //
+  // `signal` is forwarded, not discarded: on POSIX a shell killed by a signal
+  // reports the wait-status exit code (0 for a plain SIGTERM/SIGHUP) with the
+  // signal number in the separate `signal` field. Dropping it made a
+  // pm2-treekilled agent shell indistinguishable from one that exited cleanly —
+  // which is how an agent whose PTY was torn down got recorded as a successful
+  // run (#3202). Consumers that care (the TUI spawner's onExit) MUST treat a
+  // non-null `signal` as an abnormal end regardless of `exitCode`.
+  ptyProcess.onExit(({ exitCode, signal }) => {
+    console.log(`🐚 Shell session ${sessionId.slice(0, 8)} exited (code: ${exitCode}${signal ? `, signal: ${signal}` : ''})`);
     const session = shellSessions.get(sessionId);
     shellSessions.delete(sessionId);
     session?.socket?.emit('shell:exit', { sessionId, code: exitCode });
-    if (session) runHook('onExit', session, session.onExit, { exitCode });
+    if (session) runHook('onExit', session, session.onExit, { exitCode, signal: signal ?? null });
     broadcastSessionList();
   });
 
@@ -273,7 +347,7 @@ function releaseExternalViews(socket, exceptId = null) {
  * @param {string} sessionId — typically the runId, so the Shell view correlates
  *   with the /runs record.
  * @param {object} ptyProcess — the live node-pty IPty.
- * @param {object} [options] — { label, command, cwd, kind }.
+ * @param {object} [options] — { label, command, cwd, kind, agentId }.
  * @returns {string} sessionId (idempotent — returns the id if already registered).
  */
 export function registerExternalSession(sessionId, ptyProcess, options = {}) {
@@ -294,7 +368,7 @@ export function registerExternalSession(sessionId, ptyProcess, options = {}) {
     createdAt: Date.now(),
     label: options.label || null,
     kind: options.kind || 'tui-run',
-    agentId: null,
+    agentId: options.agentId || null,
     command: options.command || null,
     onData: null,
     onExit: null,
@@ -467,10 +541,48 @@ export function writeToSession(sessionId, data) {
   const session = shellSessions.get(sessionId);
   if (session) {
     session.lastInputAt = Date.now();
+    session.inputRevision = (session.inputRevision || 0) + 1;
     session.pty.write(data);
     return true;
   }
   return false;
+}
+
+/**
+ * Deliver `text` to a session as a SINGLE bracketed-paste event, then submit it.
+ *
+ * This is how you hand a message to a live agent TUI rather than to a shell:
+ * Claude Code reads `ESC[200~…ESC[201~` as one paste, so a multi-line message
+ * lands as one input event instead of N submits.
+ *
+ * The returned interval handle lets lifecycle-aware callers cancel pending
+ * submission retries. The helper self-cancels when the session disappears,
+ * newer input arrives, or its attempt budget is spent.
+ *
+ * @param {string} sessionId
+ * @param {string} text - paste payload (no trailing newline; the Enter submits it)
+ * @param {object} [opts]
+ * @param {string} [opts.label='paste'] - log label for the submit-Enter failure path
+ * @returns {ReturnType<typeof setInterval>|false} false when the session is unknown
+ */
+export function pasteToSession(sessionId, text, { label = 'paste' } = {}) {
+  if (!writeToSession(sessionId, `\x1b[200~${text}\x1b[201~`)) return false;
+  const session = shellSessions.get(sessionId);
+  let expectedInputRevision = session.inputRevision;
+  const writeEnter = () => {
+    try {
+      writeToSession(sessionId, '\r');
+      expectedInputRevision = session.inputRevision;
+    } catch (err) {
+      // Timer callbacks run outside the request lifecycle, and a write to a
+      // live-but-broken PTY can throw.
+      console.error(`🐚 ${label} submit Enter failed for ${sessionId.slice(0, 8)}: ${err.message}`);
+    }
+  };
+  return scheduleSubmitEnters(
+    writeEnter,
+    () => !shellSessions.has(sessionId) || session.inputRevision !== expectedInputRevision,
+  );
 }
 
 /**

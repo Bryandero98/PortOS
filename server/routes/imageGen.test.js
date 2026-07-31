@@ -16,9 +16,9 @@ vi.mock('../services/imageGen/index.js', () => ({
   generateAvatar: vi.fn(),
   attachSseClient: vi.fn(() => false),
   cancel: vi.fn(() => false),
-  IMAGE_GEN_MODE: { EXTERNAL: 'external', LOCAL: 'local', CODEX: 'codex', GROK: 'grok' },
-  IMAGE_GEN_MODES: ['external', 'local', 'codex', 'grok'],
-  CLOUD_IMAGE_GEN_MODES: ['codex', 'grok'],
+  IMAGE_GEN_MODE: { EXTERNAL: 'external', LOCAL: 'local', CODEX: 'codex', GROK: 'grok', AGY: 'agy' },
+  IMAGE_GEN_MODES: ['external', 'local', 'codex', 'grok', 'agy'],
+  CLOUD_IMAGE_GEN_MODES: ['codex', 'grok', 'agy'],
   // Mirror the real precedence by delegating to the same helper the prod
   // resolver uses — keeps test mock and prod in lock-step automatically.
   // Legacy `autoClean: true` no longer carries into denoise (lossy, opt-in only).
@@ -608,6 +608,95 @@ describe('Image Gen Routes', () => {
         params: expect.objectContaining({ mode: 'codex' }),
       }));
       expect(imageGen.generateImage).not.toHaveBeenCalled();
+    });
+
+    // Per-queue-item model override. `cloudModel` is dispatcher-level: it
+    // replaces the provider's `model` and must NOT survive into the persisted
+    // job params (the queue runner would hand the provider an unknown field).
+    it('cloudModel overrides the saved cloud model for one queue item without leaking the raw field', async () => {
+      getSettings.mockResolvedValueOnce({
+        imageGen: { mode: 'codex', codex: { enabled: true, model: 'gpt-5.4' } },
+      });
+      mediaJobQueue.enqueueJob.mockReturnValueOnce({ jobId: 'queued-codex-003', position: 1, status: 'queued' });
+
+      const response = await request(app)
+        .post('/api/image-gen/generate')
+        .send({ prompt: 'a lighthouse', cloudModel: 'gpt-5.6-luna' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.model).toBe('gpt-5.6-luna');
+      const enqueued = mediaJobQueue.enqueueJob.mock.calls.at(-1)[0];
+      expect(enqueued.params.model).toBe('gpt-5.6-luna');
+      expect(enqueued.params).not.toHaveProperty('cloudModel');
+    });
+
+    // Agy is the backend the override was actually built for — exercise it
+    // directly instead of inferring from the codex case. (Its unpinned default
+    // is now the concrete AGY_IMAGEGEN_DEFAULT_MODEL cheap-tier pin, #3231.)
+    it('agy: cloudModel replaces the configured-default sentinel for one queue item', async () => {
+      getSettings.mockResolvedValueOnce({
+        imageGen: { mode: 'agy', agy: { enabled: true, agyPath: '/opt/agy' } },
+      });
+      mediaJobQueue.enqueueJob.mockReturnValueOnce({ jobId: 'queued-agy-001', position: 1, status: 'queued' });
+
+      const response = await request(app)
+        .post('/api/image-gen/generate')
+        .send({ prompt: 'a lighthouse', cloudModel: 'gemini-3.1-pro-high' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.mode).toBe('agy');
+      expect(response.body.model).toBe('gemini-3.1-pro-high');
+      const enqueued = mediaJobQueue.enqueueJob.mock.calls.at(-1)[0];
+      expect(enqueued.params.model).toBe('gemini-3.1-pro-high');
+      expect(enqueued.params.agyPath).toBe('/opt/agy');
+      expect(enqueued.params).not.toHaveProperty('cloudModel');
+    });
+
+    it('agy: an omitted cloudModel leaves the saved default in place', async () => {
+      getSettings.mockResolvedValueOnce({
+        imageGen: { mode: 'agy', agy: { enabled: true, model: 'gemini-3.5-flash-high' } },
+      });
+      mediaJobQueue.enqueueJob.mockReturnValueOnce({ jobId: 'queued-agy-002', position: 1, status: 'queued' });
+
+      const response = await request(app)
+        .post('/api/image-gen/generate')
+        .send({ prompt: 'a lighthouse' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.model).toBe('gemini-3.5-flash-high');
+      expect(mediaJobQueue.enqueueJob.mock.calls.at(-1)[0].params.model).toBe('gemini-3.5-flash-high');
+    });
+
+    // Defense-in-depth for the cheap-tier pin (#3231): a fully-unpinned agy
+    // enqueue (no saved model, no cloudModel) must persist the concrete
+    // default into the queue job — a refactor that stops spreading
+    // cloud.jobParams into the enqueue would otherwise only fail at the
+    // resolver-level test.
+    it('agy: a fully-unpinned render enqueues the cheap-tier default model', async () => {
+      getSettings.mockResolvedValueOnce({
+        imageGen: { mode: 'agy', agy: { enabled: true } },
+      });
+      mediaJobQueue.enqueueJob.mockReturnValueOnce({ jobId: 'queued-agy-003', position: 1, status: 'queued' });
+
+      const response = await request(app)
+        .post('/api/image-gen/generate')
+        .send({ prompt: 'a lighthouse' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.model).toBe('gemini-3.5-flash-low');
+      expect(mediaJobQueue.enqueueJob.mock.calls.at(-1)[0].params.model).toBe('gemini-3.5-flash-low');
+    });
+
+    // No getSettings mock here on purpose: Zod rejects before the route ever
+    // reads settings, and a queued mockResolvedValueOnce would leak into the
+    // next test.
+    it('rejects a cloudModel with shell-unsafe characters', async () => {
+      const response = await request(app)
+        .post('/api/image-gen/generate')
+        .send({ prompt: 'a lighthouse', cloudModel: '--dangerously-skip-permissions' });
+
+      expect(response.status).toBe(400);
+      expect(mediaJobQueue.enqueueJob).not.toHaveBeenCalled();
     });
 
     describe('cleaner resolution (body wins over saved setting)', () => {

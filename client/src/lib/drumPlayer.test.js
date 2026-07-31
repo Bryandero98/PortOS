@@ -11,6 +11,19 @@ import { createFakeAudio } from '../test/fakeAudioContext.js';
 // One fake pair for the whole file — lib/audioContext.js caches the context.
 const { FakeAudioContext, audio } = createFakeAudio();
 
+// GainNodes the player builds before any voice: the drum master and the
+// metronome's own click bus. Every later gain in `audio.gains` is a voice
+// envelope, so tests that reason about voices skip these two.
+const BUS_GAINS = 2;
+
+// Metronome blips that actually sounded: CLICK_VOICE is a lone square starting
+// at 1600 Hz, a frequency no kit voice uses (noise sources carry no `frequency`).
+const clickBlips = () => audio.oscillators.filter((o) => o.frequency?.values[0] === 1600);
+
+// A bus's current level: set outright when the bus is built, then glided with
+// setTargetAtTime on a live change (which the fake records into `values`).
+const busLevel = (bus) => (bus.gain.values.length ? bus.gain.values.at(-1) : bus.gain.value);
+
 // Advance the audio clock relatively, ticking the lookahead interval alongside.
 const drive = (deltaSec) => {
   const target = audio.now + deltaSec;
@@ -53,25 +66,117 @@ describe('createDrumPlayer', () => {
     expect(player.isPlaying()).toBe(false);
   });
 
-  it('uses bandpassed noise for cymbals/snare and a pitched sweep for the kick', async () => {
+  it('uses filtered noise for the hat and a pitched sweep for the kick', async () => {
     const player = createDrumPlayer(parseDrumChart('tempo: 240\nsubdivision: 1\n\nHH: x---\nK: -o--'), {});
     await player.play();
     drive(2);
-    // The hat is a filtered noise burst; the kick is a sine sweep (no filter).
-    expect(audio.filters.length).toBe(1);
-    expect(audio.filters[0].type).toBe('bandpass');
+    // The hat is a filtered noise burst; the kick's body is a pitched oscillator.
     expect(audio.oscillators.some((o) => o.noise)).toBe(true);
-    expect(audio.oscillators.some((o) => !o.noise)).toBe(true);
+    expect(audio.filters.length).toBeGreaterThan(0);
+    const swept = audio.oscillators.filter((o) => !o.noise && o.frequency.values.length > 1);
+    expect(swept.length).toBeGreaterThan(0);
+    // Every sweep DROPS in pitch — a membrane falling to its fundamental.
+    expect(swept.every((o) => o.frequency.values[1] < o.frequency.values[0])).toBe(true);
+  });
+
+  it('drops the kick pitch far faster than its amplitude decays', async () => {
+    // The punch fix: the pitch envelope and the amplitude envelope are separate.
+    // A kick whose sweep runs the full length of its tail is the weak-sounding
+    // recipe this replaced, so the two are pinned apart here rather than left to
+    // whichever numbers a kit happens to carry.
+    const player = createDrumPlayer(parseDrumChart('tempo: 240\nsubdivision: 1\n\nK: o---'), {});
+    await player.play();
+    drive(0.2);
+    const body = audio.oscillators.find((o) => !o.noise && o.frequency.values.length > 1);
+    expect(body).toBeDefined();
+    // stop() is scheduled at attack + decay + 0.02 — a proxy for the amp tail.
+    const ampTail = body.stopped - body.started;
+    expect(ampTail).toBeGreaterThan(0.3);
+    // …and the sweep lands in the first tenth of it (~30–60ms in every kit).
+    expect(body.frequency.values[1]).toBeLessThan(body.frequency.values[0] / 2);
+    player.stop();
+  });
+
+  it('routes the kick body through a drive shaper, and the bus through a clipper', async () => {
+    // A sub-50Hz sine is inaudible on a phone speaker; the drive shaper supplies
+    // the harmonics that make it read. Both shapers are load-bearing for the
+    // "the kick sounds weak" fix, so both are pinned — structurally, off the
+    // fake's recorded connections rather than off node creation order.
+    const player = createDrumPlayer(parseDrumChart('tempo: 240\nsubdivision: 1\n\nK: o---'), {});
+    await player.play();
+    drive(0.2);
+    const body = audio.oscillators.find((o) => !o.noise && o.frequency.values.length > 1);
+    expect(audio.shapers).toContain(body.connections[0]);
+    // The master gain feeds a shaper, which feeds the destination.
+    const busShaper = audio.shapers.find((s) => s.connections.some((t) => t?.id === 'destination'));
+    expect(busShaper).toBeDefined();
+    expect(audio.gains.some((g) => g.connections.includes(busShaper))).toBe(true);
+    // Every curve is a real saturation curve: bounded to ±1 and monotonic.
+    for (const shaper of audio.shapers) {
+      expect(shaper.curve.length).toBeGreaterThan(0);
+      expect(Math.max(...shaper.curve)).toBeLessThanOrEqual(1);
+      expect(Math.min(...shaper.curve)).toBeGreaterThanOrEqual(-1);
+      expect(shaper.curve.every((v, i, a) => i === 0 || v >= a[i - 1])).toBe(true);
+    }
+    player.stop();
   });
 
   it('scales voice gain by the glyph velocity (accent louder than ghost)', async () => {
     const player = createDrumPlayer(parseDrumChart('tempo: 240\nsubdivision: 1\n\nHH: X-g-'), {});
     await player.play();
     drive(2);
-    const peaks = audio.gains.map((g) => Math.max(...g.gain.values, 0));
-    // [master, accent, ghost] in creation order — the accent must be louder.
-    expect(peaks[1]).toBeGreaterThan(peaks[2]);
+    // Creation order is [master, click bus, ...accent layers, ...ghost layers] —
+    // the two buses are built up front in prepare(), and a voice can be several
+    // layers (the 808 hat is a six-oscillator cluster), so compare the two halves
+    // rather than two fixed indices.
+    const peaks = audio.gains.slice(BUS_GAINS).map((g) => Math.max(...g.gain.values, 0));
+    const half = peaks.length / 2;
+    expect(Number.isInteger(half)).toBe(true);
+    expect(Math.max(...peaks.slice(0, half))).toBeGreaterThan(Math.max(...peaks.slice(half)));
     player.stop();
+  });
+
+  it('setKit swaps the voices live, without stopping playback', async () => {
+    const player = createDrumPlayer(parseDrumChart('tempo: 120\nsubdivision: 1\n\nHH: xxxx'), {});
+    await player.play();
+    drive(0.5);
+    // The default 909 hat is one noise burst.
+    expect(audio.oscillators.every((o) => o.noise)).toBe(true);
+    player.setKit('808');
+    drive(1);
+    // The 808's is a square cluster — so the swap shows up as pitched sources
+    // appearing mid-run, and playback never stopped to do it.
+    expect(audio.oscillators.some((o) => !o.noise)).toBe(true);
+    expect(player.isPlaying()).toBe(true);
+    player.stop();
+  });
+
+  it('shares one filter and envelope across a square cluster', async () => {
+    // The 808 hat is six oscillators; they must sum into ONE filter + gain (a
+    // biquad is linear, so per-partial filters would be six times the nodes for
+    // an identical signal) while each partial stays individually stoppable.
+    const player = createDrumPlayer(parseDrumChart('tempo: 240\nsubdivision: 1\n\nHH: x---'), {
+      kit: '808',
+    });
+    await player.play();
+    drive(0.2);
+    expect(audio.oscillators.length).toBeGreaterThan(1);
+    expect(audio.filters).toHaveLength(1);
+    expect(audio.gains).toHaveLength(BUS_GAINS + 1); // the buses + one voice envelope
+    for (const osc of audio.oscillators) expect(osc.connections).toEqual([audio.filters[0]]);
+    player.stop();
+    // Every partial was stopped — one tracked entry per oscillator, so an open
+    // hat or a 1.2s crash can't ring on after Stop.
+    expect(audio.oscillators.every((o) => o.stopped !== null)).toBe(true);
+  });
+
+  it('falls back to the default kit for an unknown id rather than going silent', async () => {
+    const player = createDrumPlayer(parseDrumChart('tempo: 240\nsubdivision: 1\n\nK: o---'), {
+      kit: 'roland-tr-nope',
+    });
+    await player.play();
+    drive(2);
+    expect(audio.oscillators.length).toBeGreaterThan(0);
   });
 
   it('reports the playhead per grid position, once per bar+step', async () => {
@@ -130,6 +235,93 @@ describe('createDrumPlayer', () => {
     // 8 beats of click over the two bars.
     expect(audio.oscillators.length).toBeGreaterThan(withoutClick);
     clicked.stop();
+  });
+
+  it('sounds the click on its own bus, at the level it was built with', async () => {
+    const player = createDrumPlayer(CHART, { clickEnabled: true, clickVolume: 0.4 });
+    await player.play();
+    drive(1);
+    const [master, clickBus] = audio.gains;
+    // The bus hangs off the drum master (so it still goes through the master
+    // soft-clipper) and carries the level.
+    expect(clickBus.connections).toEqual([master]);
+    expect(busLevel(clickBus)).toBe(0.4);
+    // Every click envelope feeds the bus, and no KIT voice does.
+    const clickVoices = audio.gains.filter((g) => g.connections.includes(clickBus));
+    expect(clickVoices.length).toBeGreaterThan(0);
+    // Nothing on the master is also on the click bus — a kit voice riding the
+    // click bus would duck with the metronome slider.
+    const masterVoices = audio.gains.filter((g) => g.connections.includes(master));
+    expect(masterVoices.some((g) => clickVoices.includes(g))).toBe(false);
+    player.stop();
+  });
+
+  it('setClickVolume moves the bus live, without stopping playback', async () => {
+    const player = createDrumPlayer(CHART, { clickEnabled: true });
+    await player.play();
+    drive(0.5);
+    const clickBus = audio.gains[1];
+    expect(busLevel(clickBus)).toBe(1); // default: unchanged from before
+    // A bus move reaches clicks ALREADY scheduled in the lookahead window — that
+    // is the whole reason the level isn't folded into each click's velocity.
+    player.setClickVolume(0.25);
+    expect(busLevel(clickBus)).toBe(0.25);
+    expect(player.isPlaying()).toBe(true);
+    // A garbled level is ignored rather than silencing the click.
+    player.setClickVolume('nope');
+    expect(busLevel(clickBus)).toBe(0.25);
+    player.stop();
+  });
+
+  it('schedules no click voice at all once the level is zero', async () => {
+    // Dragging the slider to 0 deliberately does NOT flip the mute toggle, and
+    // the level persists — so a silent click that still built a voice per beat
+    // would do that forever, on every chart, for nothing.
+    const muted = createDrumPlayer(CHART, { clickEnabled: false });
+    await muted.play();
+    drive(2.5);
+    const kitOnly = audio.oscillators.length;
+    muted.stop();
+
+    audio.reset();
+    const zeroed = createDrumPlayer(CHART, { clickEnabled: true, clickVolume: 0 });
+    await zeroed.play();
+    drive(2.5);
+    // Level 0 costs exactly what muting costs: not one extra node, and not one
+    // click blip.
+    expect(audio.oscillators).toHaveLength(kitOnly);
+    expect(clickBlips()).toHaveLength(0);
+    zeroed.stop();
+
+    // Turning it back up mid-run resumes the click without a restart.
+    audio.reset();
+    const raised = createDrumPlayer(CHART, { clickEnabled: true, clickVolume: 0 });
+    await raised.play();
+    drive(0.5);
+    expect(clickBlips()).toHaveLength(0);
+    raised.setClickVolume(1);
+    drive(1);
+    expect(clickBlips().length).toBeGreaterThan(0);
+    raised.stop();
+  });
+
+  it('counts in with the metronome click, not with the kit snare', async () => {
+    // `sound: 'click'` is not a kit piece — left to kitVoiceLayers it falls
+    // through to the SNARE, which made a count-in four snare hits.
+    const player = createDrumPlayer(parseDrumChart('tempo: 240\nsubdivision: 1\n\nK: o---'), {
+      countInBars: 1, clickEnabled: false, clickVolume: 0.5,
+    });
+    await player.play();
+    drive(1.2); // the 1s count-in bar, then the kick on bar 1
+    const clickBus = audio.gains[1];
+    // Four click blips, one per count-in beat, each routed through the bus.
+    const blips = clickBlips();
+    expect(blips).toHaveLength(4);
+    expect(audio.gains.filter((g) => g.connections.includes(clickBus))).toHaveLength(4);
+    // The count-in sounds even with the through-music click muted ("just count
+    // me in"), and the kick still lands on the kit master.
+    expect(audio.oscillators.length).toBeGreaterThan(blips.length);
+    player.stop();
   });
 
   it('stop() clears the interval, silences live voices and clears the playhead', async () => {

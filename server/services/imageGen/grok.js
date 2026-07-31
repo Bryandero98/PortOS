@@ -45,7 +45,8 @@ import { buildNoImageReason } from './noImageReason.js';
 import sharp from 'sharp';
 import { bufferedSpawn, killProcessTree, prepareCliSpawn } from '../../lib/bufferedSpawn.js';
 import { ensureGrokHeadlessArgs, prepareGrokPromptFile } from '../../lib/grok.js';
-import { IMAGE_GEN_MODE, describeFidelity } from './modes.js';
+import { IMAGE_GEN_MODE, describeFidelity, nearestAspectRatio } from './modes.js';
+import { withSpawnCwdEnv } from '../../lib/spawnCwd.js';
 
 // 20 minutes — grok's image_gen typically returns in well under a minute, but
 // the agent turn wrapping it (skill load, tool call, file write) has no
@@ -67,29 +68,11 @@ let harvestTimeoutMs = DEFAULT_HARVEST_TIMEOUT_MS;
 // PortOS callers are mapped to the closest of these; a configured default
 // (`imageGen.grok.aspectRatio`) applies when the caller sent no dimensions.
 export const GROK_ASPECT_RATIOS = Object.freeze(['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3']);
-const RATIO_VALUES = GROK_ASPECT_RATIOS.map((ratio) => {
-  const [rw, rh] = ratio.split(':').map(Number);
-  return { ratio, value: rw / rh };
-});
 
 // Map a width/height pair to the closest supported grok aspect ratio, or null
 // when dimensions are absent/invalid (the tool then uses its own default).
-export function deriveAspectRatio(width, height) {
-  const w = Number(width);
-  const h = Number(height);
-  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
-  const target = w / h;
-  let best = null;
-  let bestDelta = Infinity;
-  for (const { ratio, value } of RATIO_VALUES) {
-    const delta = Math.abs(value - target);
-    if (delta < bestDelta) {
-      best = ratio;
-      bestDelta = delta;
-    }
-  }
-  return best;
-}
+// The mapping itself is shared with agy — see nearestAspectRatio in modes.js.
+export const deriveAspectRatio = (width, height) => nearestAspectRatio(width, height, GROK_ASPECT_RATIOS);
 
 // Per-job state — keyed by jobId so multiple grok renders can run in parallel
 // under the mediaJobQueue's cloud lane. Same client shape as imageGen/codex.js
@@ -283,7 +266,10 @@ async function runGrok(job, jobId, bin, args, {
   // shell:false spawn — a no-op on POSIX.
   const resolvedBin = (!isAbsolute(bin) && (bin.includes('/') || bin.includes(sep))) ? pathResolve(bin) : bin;
   const { command: spawnBin, args: spawnArgs } = prepareCliSpawn(resolvedBin, args);
-  const proc = spawn(spawnBin, spawnArgs, { cwd: scratchDir, shell: false, stdio: [useStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
+  // Pin PWD to the spawn cwd — see withSpawnCwdEnv (#3193). grok reads
+  // process.cwd(), so this is defensive rather than a live fix; it keeps every
+  // scratch-dir spawn telling the child one consistent story about where it is.
+  const proc = spawn(spawnBin, spawnArgs, { cwd: scratchDir, env: withSpawnCwdEnv(process.env, scratchDir), shell: false, stdio: [useStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
   activeProcs.set(jobId, proc);
   const removeScratch = () => rm(scratchDir, { recursive: true, force: true }).catch(() => {});
 

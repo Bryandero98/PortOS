@@ -20,7 +20,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { mkdir, writeFile } from 'fs/promises';
 import { createHash } from 'crypto';
-import { lockAllAnchors, placeCandidate } from './spriteTestFixtures.js';
+import { lockAllAnchors, placeCandidate, expectCarriesCorrection } from './spriteTestFixtures.js';
 
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'sprite-track-workflow-test-'));
 
@@ -62,7 +62,7 @@ const records = await import('./records.js');
 const { lockReference } = await import('./reference.js');
 const {
   getTrackState, startTrackGeneration, approveTrackRun, trackAuthoringDirections, trackSetRelPath,
-  recordsCarryingTrack,
+  recordsCarryingTrack, reopenTrackDirection,
 } = await import('./animationTrackWorkflow.js');
 const {
   getAnimationTrack, sourceReferenceFor, SCANNER_TRACK, AMBIENT_TRACK,
@@ -212,8 +212,7 @@ describe.each(TRACKS)('the generic workflow drives the $id track', (track) => {
     const { runId } = await startTrackGeneration(track.id, id, {
       ...track.body, correctionPrompt: `  ${track.correction}  `,
     });
-    expect(executeTuiRun.mock.calls[0][0].prompt)
-      .toContain(`Important correction — apply this over the attached source image: ${track.correction}`);
+    expectCarriesCorrection(expect, executeTuiRun.mock.calls[0][0].prompt, track.correction);
     const { runs } = await getTrackState(track.id, id);
     expect(runs.find((r) => r.id === runId).correctionPrompt).toBe(track.correction);
   });
@@ -311,6 +310,38 @@ describe('registry-derived authoring shape (#3136)', () => {
   it('throws for an unregistered track rather than defaulting to walk', async () => {
     // The sentinel rule: a mis-keyed track must not silently author walk state.
     await expect(getTrackState('jetpack', 'pioneer')).rejects.toThrow(/Unknown animation track 'jetpack'/);
+  });
+
+  it('reopens a finalized non-directional row while retaining its evidence', async () => {
+    const id = newId();
+    await records.createRecord({ kind: 'place', name: 'Example Willow' }, id);
+    const runId = 'ambient-approved-run';
+    const recordDir = join(TEST_ROOT, 'sprites', id);
+    await mkdir(join(recordDir, 'ambient'), { recursive: true });
+    await mkdir(join(recordDir, 'runs', runId), { recursive: true });
+    await writeFile(join(recordDir, 'runs', runId, 'animation-run.json'), JSON.stringify({
+      track: AMBIENT_TRACK,
+      id: runId,
+      status: 'candidate',
+    }));
+    await writeFile(join(recordDir, `ambient/${id}-ambient-selection-v1.json`), JSON.stringify({
+      kind: 'reviewed-single-row-ambient-selection',
+      status: 'complete',
+      directions: { south: { status: 'approved', runId } },
+    }));
+    await writeFile(join(recordDir, trackSetRelPath(AMBIENT_TRACK, id)), JSON.stringify({
+      kind: 'finalized-single-row-ambient-set',
+      directions: { south: { status: 'approved', runId } },
+    }));
+
+    const reopened = await reopenTrackDirection(AMBIENT_TRACK, id);
+    expect(reopened.set).toBeNull();
+    expect(reopened.selection.status).toBe('in-progress');
+    expect(reopened.selection.directions).toEqual({});
+    expect(reopened.runs.find((run) => run.id === runId)).toMatchObject({
+      status: 'superseded',
+      supersededReason: 'manual-track-revision',
+    });
   });
 });
 

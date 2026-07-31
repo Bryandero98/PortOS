@@ -272,9 +272,10 @@ describe('agentLifecycle — guard wiring', () => {
   it('the post-restart recovery completion path also stamps the LI verdict (#2779, codex P2)', () => {
     // A hand-off that finished while the server was down completes via this bypass, not
     // finalizeAgent — it must still stamp so the outcome federates to the originating peer.
-    const idx = AGENT_LIFECYCLE_SRC.indexOf('Completing untracked agent');
-    expect(idx, 'post-restart recovery branch must exist').toBeGreaterThan(-1);
-    const body = AGENT_LIFECYCLE_SRC.slice(idx, idx + 2000);
+    // End-anchored on the statement that follows the branch rather than a fixed
+    // char count: a fixed window silently shrinks its coverage every time the
+    // branch grows, and a later addition pushed the assertions below out of it.
+    const body = recoveryBranchSource();
     // Success path stamps a clean completion…
     expect(body).toMatch(/await stampLiExecutionVerdict\(\{ status: 'completed' \}, task, \{ success \}\)/);
     // …and the FAILURE path re-reads the task after orphan recovery and stamps the failure
@@ -282,7 +283,28 @@ describe('agentLifecycle — guard wiring', () => {
     expect(body).toMatch(/settled\.status === 'blocked' && settled\.metadata\?\.liProposal/);
     expect(body).toMatch(/await stampLiExecutionVerdict\(\{\}, settled, \{ success: false \}\)/);
   });
+
+  // This bypass never runs worktree cleanup, so the dead run's tree is still on
+  // disk when the task is requeued. Without the dead agent's metadata,
+  // handleOrphanedTask can't tell the retry what to resume, and it builds a fresh
+  // worktree off the default branch and redoes work sitting right there.
+  it('the post-restart recovery path hands the dead agent’s metadata to the retry handler', () => {
+    const body = recoveryBranchSource();
+    expect(body).toMatch(/handleOrphanedTask\([^)]*\{\s*agentMetadata: cosAgent\.metadata\s*\}\)/);
+  });
 });
+
+/**
+ * Source of the post-restart recovery branch in handleAgentCompletion, sliced
+ * between its opening log line and the first statement after it.
+ */
+function recoveryBranchSource() {
+  const start = AGENT_LIFECYCLE_SRC.indexOf('Completing untracked agent');
+  expect(start, 'post-restart recovery branch must exist').toBeGreaterThan(-1);
+  const end = AGENT_LIFECYCLE_SRC.indexOf('const { task, runId, model', start);
+  expect(end, 'end anchor (the statement after the branch) must exist').toBeGreaterThan(start);
+  return AGENT_LIFECYCLE_SRC.slice(start, end);
+}
 
 // ─── Non-negotiable orderings inside runAgentSpawn (no behavioral seam) ──────
 //
@@ -317,6 +339,16 @@ describe('runAgentSpawn source — handedOff pre-spawn vs post-handoff split', (
       const idx = RUN_SPAWN_BODY.indexOf(helper);
       expect(idx, `${helper} must appear AFTER \`handedOff = true\``).toBeGreaterThan(flipIdx);
     }
+  });
+});
+
+describe('runAgentSpawn source — durable TUI ownership (#3202)', () => {
+  it('routes TUI providers through the runner when it is available', () => {
+    expect(RUN_SPAWN_BODY).toMatch(
+      /const executionMode = isTui \? \(useRunner \? 'runner-tui' : 'tui'\)/
+    );
+    expect(RUN_SPAWN_BODY).toMatch(/spawnTuiAgent\(\{[\s\S]{0,1000}?useDurableRunner:\s*useRunner/);
+    expect(RUN_SPAWN_BODY).not.toMatch(/useRunner:\s*isTui\s*\?\s*false\s*:\s*useRunner/);
   });
 });
 
@@ -441,31 +473,44 @@ describe('runAgentSpawn source — instance provenance + claim ordering (#1563)'
   });
 });
 
+// These used to be three source-regex assertions pinning a hand-spread env
+// literal (`...forgeTokenEnv, ...provider.envVars, ...opencodeEnv`) inside
+// spawnViaRunner. The layering now lives in `lib/cliChildEnv.js#composeProviderEnv`,
+// where `cliChildEnv.test.js` asserts the ORDER against the real function instead
+// of against source text — which is the point of #3194: a grep-shaped guard was
+// what let this exact site miss the #2243/#2190 sweep in the first place.
+//
+// What is still worth pinning HERE is the wiring: that spawnViaRunner routes
+// through the shared composer and feeds it the right inputs.
 describe('agentLifecycle — runner OpenCode Ollama env (#2243 / #2190)', () => {
-  it('source: imports buildOpencodeEnvVars from opencodeConfig', () => {
-    expect(AGENT_LIFECYCLE_SRC).toMatch(
-      /import\s*\{\s*buildOpencodeEnvVars\s*\}\s*from\s*'\.\.\/lib\/opencodeConfig\.js';/
-    );
-  });
-
-  it('source: spawnViaRunner merges buildOpencodeEnvVars into the runner envVars so --model ollama/<id> is accepted', () => {
+  const runnerBody = () => {
     const fnStart = AGENT_LIFECYCLE_SRC.indexOf('export async function spawnViaRunner');
     expect(fnStart, 'spawnViaRunner must exist').toBeGreaterThan(-1);
-    const fnBody = AGENT_LIFECYCLE_SRC.slice(fnStart, fnStart + 4000);
-    const buildIdx = fnBody.indexOf('buildOpencodeEnvVars(provider, model)');
-    expect(buildIdx, 'must build the opencode env from provider+model').toBeGreaterThan(-1);
-    expect(fnBody).toMatch(/envVars:\s*\{[^}]*\.\.\.opencodeEnv[^}]*\}/);
-    expect(fnBody.indexOf('...opencodeEnv'), 'opencodeEnv must be spread AFTER provider.envVars so it overrides the static config')
-      .toBeGreaterThan(fnBody.indexOf('...provider.envVars'));
+    return AGENT_LIFECYCLE_SRC.slice(fnStart, fnStart + 4000);
+  };
+
+  it('source: composes the runner envVars through the shared composeProviderEnv', () => {
+    expect(AGENT_LIFECYCLE_SRC).toMatch(
+      /import\s*\{\s*composeProviderEnv\s*\}\s*from\s*'\.\.\/lib\/cliChildEnv\.js';/
+    );
+    // The payload must BE the composed env — not a literal that re-spreads it,
+    // which is how the layer order drifted from the other spawn sites before.
+    expect(runnerBody()).toMatch(/envVars:\s*composeProviderEnv\(\{/);
   });
 
-  it("source: spawnViaRunner pins GH_TOKEN via resolveForgeTokenEnv so the runner-spawned agent's `gh` uses the repo-owner account", () => {
-    const fnStart = AGENT_LIFECYCLE_SRC.indexOf('export async function spawnViaRunner');
-    const fnBody = AGENT_LIFECYCLE_SRC.slice(fnStart, fnStart + 4000);
+  it('source: feeds the composer the provider + per-call model so --model ollama/<id> is accepted', () => {
+    const fnBody = runnerBody();
+    const call = fnBody.slice(fnBody.indexOf('composeProviderEnv({'), fnBody.indexOf('composeProviderEnv({') + 300);
+    expect(call, 'the OpenCode declared-models map is built from provider+model').toContain('provider,');
+    expect(call).toContain('model,');
+  });
+
+  it("source: pins GH_TOKEN via resolveForgeTokenEnv so the runner-spawned agent's `gh` uses the repo-owner account", () => {
+    const fnBody = runnerBody();
     expect(fnBody).toContain('resolveForgeTokenEnv(workspacePath)');
-    expect(fnBody).toMatch(/envVars:\s*\{[^}]*\.\.\.forgeTokenEnv[^}]*\}/);
-    expect(fnBody.indexOf('...forgeTokenEnv'), 'forgeTokenEnv must be spread BEFORE provider.envVars')
-      .toBeLessThan(fnBody.indexOf('...provider.envVars'));
+    // `before` is the slot that sits UNDER provider.envVars, so an explicit
+    // provider GH_TOKEN still wins — passing it as `extra` would invert that.
+    expect(fnBody).toMatch(/before:\s*\{[^}]*\.\.\.forgeTokenEnv[^}]*\}/);
   });
 });
 

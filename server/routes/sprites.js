@@ -24,6 +24,7 @@ import {
   spriteForkSchema,
   spriteTrackGenerateSchema,
   spriteTrackApproveSchema,
+  spriteTrackReopenSchema,
   spriteTrackParamsSchema,
   spriteAnimationTrackCreateSchema,
   spriteAnimationTrackUpdateSchema,
@@ -67,7 +68,9 @@ import {
   reopenWalkDirection, setWalkTarget, getWalkSourceFrames,
   unlockDirectionalAnchor, unlockMainReference, unlockTurnaroundReference,
 } from '../services/sprites/walk.js';
-import { getTrackState, startTrackGeneration, approveTrackRun } from '../services/sprites/animationTrackWorkflow.js';
+import {
+  getTrackState, startTrackGeneration, approveTrackRun, reopenTrackDirection,
+} from '../services/sprites/animationTrackWorkflow.js';
 // #3153 — CRUD over the user-defined store. Separate from the read-side store
 // module so `validation.js`'s import graph stays free of the record scan the
 // in-use refusal needs (see animationTrackCrud.js's header).
@@ -341,6 +344,13 @@ router.post('/:id/tracks/:trackId/approve', asyncHandler(async (req, res) => {
   const body = validateRequest(spriteTrackApproveSchema, req.body);
   requireDirectionForTrack(trackId, body);
   res.json(await approveTrackRun(trackId, req.params.id, body));
+}));
+
+router.post('/:id/tracks/:trackId/reopen', asyncHandler(async (req, res) => {
+  const trackId = resolveTrackParam(req.params);
+  const body = validateRequest(spriteTrackReopenSchema, req.body ?? {});
+  requireDirectionForTrack(trackId, body);
+  res.json(await reopenTrackDirection(trackId, req.params.id, body));
 }));
 
 // Approve one direction's packaged candidate; the 8th approval freezes the

@@ -8,7 +8,9 @@
  * Two URL-param-driven modes (linkable-routes convention):
  * - PLAY (default): the rendered sheet (TabSheetView — or DrumSheetView plus a
  *   drum transport bar when the content format is `drum`, #3115) with an
- *   Ultimate-Guitar-style controls bar — autoscroll play/pause + speed,
+ *   Ultimate-Guitar-style controls bar — autoscroll play/pause + speed
+ *   (suppressed for a drum chart, which scrolls itself horizontally under its
+ *   own playhead and would otherwise carry two rival "play" buttons),
  *   transpose ± (render-time transposeText, never mutates stored text; offset
  *   persisted per song via safeStorage), font size ±, an instrument-view
  *   toggle (?view=guitar|ukulele|piano — chord diagrams only, render-only,
@@ -41,6 +43,7 @@ import AutoSizeTextarea from '../components/ui/AutoSizeTextarea';
 import TabPills from '../components/ui/TabPills';
 import TabSheetView from '../components/songbook/TabSheetView';
 import DrumSheetView from '../components/songbook/DrumSheetView';
+import DrumPreview from '../components/songbook/DrumPreview';
 import DrumTransportBar from '../components/songbook/DrumTransportBar';
 import {
   SONG_STAGES, SONG_STAGE_COLORS, INSTRUMENTS, SONG_FORMATS, DRUM_FORMAT,
@@ -237,7 +240,8 @@ export default function SongBookViewer() {
   // a non-drum song, so it stands up no player and touches no audio.
   const drum = useDrumPlayer(isDrum ? contentText : '', { songId: id });
 
-  // The wake lock holds while EITHER hands-free surface is running.
+  // The wake lock holds while either play-mode hands-free surface is running.
+  // Edit-preview audio owns its lifecycle inside DrumPreview.
   useWakeLock(playing || drum.playing);
 
   // Leaving play mode (Edit) or unmounting must not leave the kit sounding — the
@@ -250,9 +254,11 @@ export default function SongBookViewer() {
   }, [stop]);
 
   // Play-mode shortcuts. A drum chart rebinds them onto the kit transport (space
-  // play/stop, +/- BPM, [ ] loop ends) since transpose/scroll-speed don't apply.
+  // play/stop, +/- BPM, [ ] loop ends, m mutes the click) since transpose/
+  // scroll-speed don't apply.
   const drumShortcuts = {
     ' ': drum.toggle,
+    m: () => drum.setClickEnabled(!drum.clickEnabled),
     '+': () => drum.setBpm(drum.bpm + 1),
     '=': () => drum.setBpm(drum.bpm + 1),
     '-': () => drum.setBpm(drum.bpm - 1),
@@ -537,9 +543,15 @@ export default function SongBookViewer() {
             </div>
             <div>
               <div className="text-xs text-gray-400 mb-1">Preview</div>
-              <div className="bg-port-card border border-port-border rounded-lg p-3 overflow-x-auto">
+              <div className={`bg-port-card border border-port-border rounded-lg overflow-hidden ${draftIsDrum ? '' : 'p-3 overflow-x-auto'}`}>
                 {draftIsDrum ? (
-                  <DrumSheetView text={draft.text} fontSizeRem={fontSize} />
+                  <DrumPreview
+                    text={draft.text}
+                    songId={id}
+                    fontSizeRem={fontSize}
+                    sheetClassName="p-3"
+                    settingsMirror={drum}
+                  />
                 ) : (
                   <TabSheetView
                     text={draft.text}
@@ -577,33 +589,44 @@ export default function SongBookViewer() {
               barCount={drum.barCount}
               clickEnabled={drum.clickEnabled}
               onClickToggle={drum.setClickEnabled}
+              clickVolume={drum.clickVolume}
+              onClickVolumeChange={drum.setClickVolume}
+              kitId={drum.kitId}
+              onKitChange={drum.setKitId}
+              beatsPerBar={drum.beatsPerBar}
+              pulse={drum.pulse}
+              currentBar={drum.currentBar}
             />
           )}
 
           <div className="shrink-0 border-b border-port-border bg-port-card/60 px-3 py-2 flex flex-wrap items-center gap-x-4 gap-y-2">
-            {/* Autoscroll */}
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={toggle}
-                className={`${ctrlBtnClass} ${playing ? 'text-port-accent border-port-accent/50' : ''}`}
-                aria-label={playing ? 'Pause autoscroll' : 'Play autoscroll'}
-                title={playing ? 'Pause autoscroll (space)' : 'Play autoscroll (space)'}
-              >
-                {playing ? <Pause size={18} /> : <Play size={18} />}
-              </button>
-              <label htmlFor="song-speed" className="sr-only">Autoscroll speed</label>
-              <input
-                id="song-speed"
-                type="range"
-                min={SPEED_MIN}
-                max={SPEED_MAX}
-                value={pxPerSec}
-                onChange={(e) => setPxPerSec(Number(e.target.value))}
-                className="w-24 sm:w-32 accent-port-accent"
-                title="Autoscroll speed (+/-)"
-              />
-            </div>
+            {/* Autoscroll — a drum chart scrolls HORIZONTALLY under its own
+                playhead (DrumSheetView), so a second vertical-scroll play button
+                would be a rival transport with a rival meaning of "play". */}
+            {!isDrum && (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={toggle}
+                  className={`${ctrlBtnClass} ${playing ? 'text-port-accent border-port-accent/50' : ''}`}
+                  aria-label={playing ? 'Pause autoscroll' : 'Play autoscroll'}
+                  title={playing ? 'Pause autoscroll (space)' : 'Play autoscroll (space)'}
+                >
+                  {playing ? <Pause size={18} /> : <Play size={18} />}
+                </button>
+                <label htmlFor="song-speed" className="sr-only">Autoscroll speed</label>
+                <input
+                  id="song-speed"
+                  type="range"
+                  min={SPEED_MIN}
+                  max={SPEED_MAX}
+                  value={pxPerSec}
+                  onChange={(e) => setPxPerSec(Number(e.target.value))}
+                  className="w-24 sm:w-32 accent-port-accent"
+                  title="Autoscroll speed (+/-)"
+                />
+              </div>
+            )}
 
             {/* Transpose — meaningless on a kit grid, so hidden for drum charts */}
             {!isDrum && (
@@ -620,12 +643,14 @@ export default function SongBookViewer() {
               </div>
             )}
 
-            {/* Font size */}
-            <div className="flex items-center gap-1" role="group" aria-label="Font size">
-              <button type="button" onClick={() => setFontSize(fontSize - FONT_STEP)} className={`${ctrlBtnClass} text-xs font-bold`} aria-label="Smaller text">
+            {/* Font size — on a drum chart the same control zooms the kit grid
+                (DrumSheetView scales the whole strip off fontSizeRem), so it's
+                labelled for what it actually does there. */}
+            <div className="flex items-center gap-1" role="group" aria-label={isDrum ? 'Grid size' : 'Font size'}>
+              <button type="button" onClick={() => setFontSize(fontSize - FONT_STEP)} className={`${ctrlBtnClass} text-xs font-bold`} aria-label={isDrum ? 'Zoom out' : 'Smaller text'}>
                 A−
               </button>
-              <button type="button" onClick={() => setFontSize(fontSize + FONT_STEP)} className={`${ctrlBtnClass} text-sm font-bold`} aria-label="Larger text">
+              <button type="button" onClick={() => setFontSize(fontSize + FONT_STEP)} className={`${ctrlBtnClass} text-sm font-bold`} aria-label={isDrum ? 'Zoom in' : 'Larger text'}>
                 A+
               </button>
             </div>
@@ -677,13 +702,22 @@ export default function SongBookViewer() {
             </div>
           </div>
 
-          <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4">
+          <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-3 sm:px-4 sm:py-4">
             {song.content?.text && isDrum ? (
+              // Full width, not max-w-4xl: the kit strip IS the horizontal
+              // scroller, so capping it just shortens the window you read
+              // through on a wide screen.
               <DrumSheetView
+                // Keyed on the song, not just its text: the sheet resets its
+                // horizontal scroll when the CHART changes, and two songs can
+                // hold identical charts. Today the load's `setSong(null)`
+                // unmounts the sheet between songs anyway, but that's an
+                // incidental guarantee — the key makes it the sheet's own.
+                key={id}
                 text={contentText}
                 fontSizeRem={fontSize}
-                activeStep={drum.activeStep}
-                className="max-w-4xl"
+                getPlayhead={drum.getPlayhead}
+                playing={drum.playing}
               />
             ) : song.content?.text ? (
               <TabSheetView

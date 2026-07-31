@@ -17,36 +17,66 @@
  */
 
 import { ServerError } from '../../lib/errorHandler.js';
+import { normalizeRenderPinValue } from '../../lib/renderTargets.js';
 import {
+  AGY_IMAGEGEN_DEFAULT_MODEL,
   CLOUD_IMAGE_GEN_MODES,
   CODEX_IMAGEGEN_DEFAULT_MODEL,
   IMAGE_GEN_MODE,
   QUEUEABLE_IMAGE_MODES,
+  isEditCapableMode,
 } from './modes.js';
 
 /**
  * Per-provider knowledge, keyed by mode:
  *  - `label`      — user-facing provider name used in every disabled message.
- *  - `modelId`    — the *effective* model id for display/metadata (codex
- *                   defaults to the cheap tier; grok's backend is fixed).
+ *  - `modelId`    — the *effective* model id for display/metadata (codex and
+ *                   agy default to their cheap tiers; grok's backend is fixed).
  *  - `params`     — the provider's knob bundle for a queue job / direct call.
  *                   Codex's `model` carries the effective (defaulted) id so the
  *                   queue row reports what actually renders; the provider
  *                   re-applies the same default, so rendering is unchanged.
+ *  - `supportsModelOverride` — whether a per-render `cloudModel` may replace the
+ *                   saved default for one queue item. Grok is `false`: its
+ *                   `image_gen` tool runs on a fixed xAI backend with no model
+ *                   knob at all, so accepting an override there would be a lie.
+ *
+ * `modelId`/`params` both take `(config, override)` where `override` is the
+ * per-render model id (or a falsy value when the render inherits the saved
+ * default). Precedence is override → saved default → provider default.
  */
 export const CLOUD_PROVIDER_SPECS = Object.freeze({
   [IMAGE_GEN_MODE.CODEX]: Object.freeze({
     label: 'Codex Imagegen',
     errorCode: 'CODEX_IMAGEGEN_DISABLED',
-    modelId: (c) => c.model || CODEX_IMAGEGEN_DEFAULT_MODEL,
-    params: (c) => ({ codexPath: c.codexPath, model: c.model || CODEX_IMAGEGEN_DEFAULT_MODEL, effort: c.effort }),
+    supportsModelOverride: true,
+    modelId: (c, override) => override || c.model || CODEX_IMAGEGEN_DEFAULT_MODEL,
+    params: (c, override) => ({
+      codexPath: c.codexPath,
+      model: override || c.model || CODEX_IMAGEGEN_DEFAULT_MODEL,
+      effort: c.effort,
+    }),
   }),
   [IMAGE_GEN_MODE.GROK]: Object.freeze({
     label: 'Grok Imagegen',
     errorCode: 'GROK_IMAGEGEN_DISABLED',
     // Grok's image tools run on xAI's fixed image backend — no model knob.
+    supportsModelOverride: false,
     modelId: () => 'grok-imagegen',
     params: (g) => ({ grokPath: g.grokPath, aspectRatio: g.aspectRatio }),
+  }),
+  [IMAGE_GEN_MODE.AGY]: Object.freeze({
+    label: 'Agy Imagegen',
+    errorCode: 'AGY_IMAGEGEN_DISABLED',
+    supportsModelOverride: true,
+    // The concrete cheap-tier pin (not the ANTIGRAVITY_CONFIGURED_DEFAULT
+    // sentinel, which resolves to "no --model" and lets agy pick a possibly
+    // reasoning-heavy session default) — see AGY_IMAGEGEN_DEFAULT_MODEL.
+    modelId: (a, override) => override || a.model || AGY_IMAGEGEN_DEFAULT_MODEL,
+    params: (a, override) => ({
+      agyPath: a.agyPath,
+      model: override || a.model || AGY_IMAGEGEN_DEFAULT_MODEL,
+    }),
   }),
 });
 
@@ -66,18 +96,29 @@ export const CLOUD_PROVIDER_SPECS = Object.freeze({
  *  - `disabledError`  — a ready-to-throw ServerError (null when enabled).
  *  - `disabledReason` — `'<mode>-disabled'`, for callers that skip silently.
  *  - `connectionReason` — reason string for `checkConnection` responses.
+ *
+ * `overrides.model` is the per-render model id (the request's `cloudModel`).
+ * It only applies to providers whose spec sets `supportsModelOverride` — a
+ * value passed for grok is ignored rather than silently changing nothing at
+ * spawn time. Blank/whitespace is treated as "inherit the saved default", so
+ * a cleared select in the UI round-trips to the settings value instead of
+ * pinning an empty model id.
  */
-export function resolveCloudProviderConfig(settings, mode) {
+export function resolveCloudProviderConfig(settings, mode, overrides = {}) {
   const spec = CLOUD_PROVIDER_SPECS[mode];
   if (!spec) return null;
   const config = settings?.imageGen?.[mode] || {};
   const enabled = config.enabled === true;
-  const providerParams = spec.params(config);
+  const requestedModel = typeof overrides.model === 'string' ? overrides.model.trim() : '';
+  const modelOverride = spec.supportsModelOverride && requestedModel ? requestedModel : null;
+  const providerParams = spec.params(config, modelOverride);
   return {
     mode,
     config,
     enabled,
-    modelId: spec.modelId(config),
+    supportsModelOverride: spec.supportsModelOverride === true,
+    modelOverride,
+    modelId: spec.modelId(config, modelOverride),
     providerParams,
     jobParams: { mode, ...providerParams },
     disabledError: enabled ? null : new ServerError(
@@ -98,8 +139,13 @@ export function resolveCloudProviderConfig(settings, mode) {
  * (pipeline/visualStageHelpers.js), so the mode ladder no longer grows a
  * pairwise `if` per backend.
  */
-export function isModeUsable(settings, mode) {
+export function isModeUsable(settings, mode, { edit = false } = {}) {
   if (!QUEUEABLE_IMAGE_MODES.includes(mode)) return false;
+  // An edit render (i2i / "use proof as base" / refine) can only go to a backend
+  // that accepts an input image at all — #3243. Without this the ladder happily
+  // returned Agy for a redraw, and the failure surfaced asynchronously in the
+  // queue as AGY_IMAGE_EDIT_UNSUPPORTED, long after the request 200'd.
+  if (edit && !isEditCapableMode(mode)) return false;
   const cloud = resolveCloudProviderConfig(settings, mode);
   return cloud ? cloud.enabled : true;
 }
@@ -107,8 +153,101 @@ export function isModeUsable(settings, mode) {
 /**
  * First usable mode from an ordered candidate list, falling back to the
  * cloud providers (in `CLOUD_IMAGE_GEN_MODES` order) and finally local.
+ *
+ * Pass `{ edit: true }` when the render carries an input image: edit-incapable
+ * backends are then skipped at every rung, so a record pinned to such a backend
+ * FALLS THROUGH to the next usable one rather than failing. Falling through is
+ * deliberate — a pin is a preference, and the surrounding pins already degrade
+ * this way when a pinned backend is disabled (the enforceRenderBackendPin
+ * contract). LOCAL is edit-capable, so the tail always resolves.
  */
-export function pickUsableMode(settings, candidates = []) {
+export function pickUsableMode(settings, candidates = [], { edit = false } = {}) {
   const ordered = [...candidates, ...CLOUD_IMAGE_GEN_MODES, IMAGE_GEN_MODE.LOCAL];
-  return ordered.find((m) => m && isModeUsable(settings, m)) || IMAGE_GEN_MODE.LOCAL;
+  return ordered.find((m) => m && isModeUsable(settings, m, { edit })) || IMAGE_GEN_MODE.LOCAL;
+}
+
+/**
+ * The user's saved per-surface pins for one render target (#3231 Phase 2) —
+ * `settings.renderDefaults[target]`, normalized: the `'auto'` sentinel and
+ * blank strings collapse to null ("no pin — fall through").
+ */
+export function renderTargetDefaults(settings, target) {
+  const d = settings?.renderDefaults?.[target] || {};
+  return {
+    imageMode: normalizeRenderPinValue(d.imageMode),
+    imageModel: normalizeRenderPinValue(d.imageModel),
+    videoMode: normalizeRenderPinValue(d.videoMode),
+    videoModel: normalizeRenderPinValue(d.videoModel),
+  };
+}
+
+/**
+ * Resolve one surface's image render config through the render-target ladder
+ * (#3231 Phase 2): per-request/per-record override → the target's saved
+ * `renderDefaults` pin → the install-wide `settings.imageGen.mode` → the
+ * caller's own fallback. Every creative surface resolves through THIS (the
+ * guard test in renderTargets.guard.test.js fails a direct
+ * `resolveCloudProviderConfig` call outside the dispatcher) so a new surface
+ * is one `RENDER_TARGET` entry + one call here — and so the target's saved
+ * `imageModel` actually reaches the provider instead of being dropped, which
+ * is exactly what all seven pre-#3231 call sites did.
+ *
+ * Options:
+ *  - `mode`        — the surface's per-request mode override (e.g.
+ *                    `body.mode`). Wins over every pin.
+ *  - `model`       — per-request cloud model override. Wins over every pin.
+ *  - `recordMode`  — the owning record's persisted backend pin (#3231 Phase 3
+ *                    — universe/series/sprite `imageMode`, normalized via
+ *                    `recordRenderPin`). Sits between the per-request override
+ *                    and the target's `renderDefaults` pin, and is
+ *                    usability-gated like the target pin (a since-disabled
+ *                    backend degrades instead of bricking the record's
+ *                    renders — the enforceRenderBackendPin contract).
+ *  - `recordModel` — the owning record's persisted model pin. Rides only when
+ *                    the resolved mode is the record's pinned backend (same
+ *                    leak guard as the target's model pin).
+ *  - `fallbackMode`— the surface's historical final fallback when nothing
+ *                    else resolves (EXTERNAL for batch-reject surfaces, LOCAL
+ *                    for local-first ones). Surfaces with their own usability
+ *                    ladder (resolveQueueImageMode / pickUsableMode) resolve
+ *                    mode first — seeding the ladder with the record pin then
+ *                    `renderTargetDefaults(...).imageMode` — and pass the
+ *                    result as `mode` here for model threading (keeping
+ *                    `recordMode`/`recordModel` so the leak guard still knows
+ *                    which backend the record pinned).
+ *
+ * Returns `{ mode, cloud }` — `cloud` is the resolveCloudProviderConfig
+ * bundle (null for non-cloud modes), with the layered model threaded through.
+ */
+export function resolveRenderTargetConfig(settings, target, {
+  mode = null,
+  model = null,
+  recordMode = null,
+  recordModel = null,
+  fallbackMode = null,
+} = {}) {
+  const defaults = renderTargetDefaults(settings, target);
+  // Pins are usability-gated: a pinned backend whose enable toggle is off (or
+  // that isn't queueable) falls through to the next rung instead of bricking
+  // every render on this surface with a disabled-error. An explicit
+  // per-request `mode` deliberately is NOT gated — it keeps each surface's
+  // existing explicit-request error semantics.
+  const recordPinnedMode = recordMode && isModeUsable(settings, recordMode) ? recordMode : null;
+  const pinnedMode = defaults.imageMode && isModeUsable(settings, defaults.imageMode)
+    ? defaults.imageMode
+    : null;
+  const finalMode = mode || recordPinnedMode || pinnedMode || settings?.imageGen?.mode || fallbackMode;
+  // A model pin rides WITH its backend pin: apply recordModel/defaults.imageModel
+  // only when the resolved mode is still that pin's backend. When the mode fell
+  // back (pin disabled) or an explicit request chose another backend, the
+  // pinned model must not leak — codex would happily accept `--model` with a
+  // gemini id (supportsModelOverride gates by PROVIDER, not by id namespace).
+  const requestedModel = (typeof model === 'string' && model.trim()) ? model.trim() : null;
+  const finalModel = requestedModel
+    || (recordMode && finalMode === recordMode ? recordModel : null)
+    || (defaults.imageMode && finalMode === defaults.imageMode ? defaults.imageModel : null);
+  return {
+    mode: finalMode,
+    cloud: resolveCloudProviderConfig(settings, finalMode, { model: finalModel }),
+  };
 }

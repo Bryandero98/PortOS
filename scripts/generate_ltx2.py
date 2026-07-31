@@ -64,6 +64,9 @@ import sys
 from pathlib import Path
 from typing import NoReturn
 
+DISTILLED_LORA_V11 = "ltx-2.3-22b-distilled-lora-384-1.1.safetensors"
+DISTILLED_LORA_LEGACY = "ltx-2.3-22b-distilled-lora-384.safetensors"
+
 # Must be set BEFORE any ltx_core_mlx import: ltx_core_mlx.model.transformer.model
 # reads LTX2_DIT_EVAL_EVERY at import time. Phosphene's M4 Max 64 GB I2V Balanced
 # 5s / 121 f matrix: upstream default =8 runs ~3 min/step (per-block Metal
@@ -176,6 +179,42 @@ def _rate_kwargs(func, fps: float) -> dict:
     """
     name = _rate_kwarg_name(func)
     return {name: fps} if name else {}
+
+
+def _bind_combined_image_conditioning_rate(module, fps: float):
+    """Supply frame_rate for the v0.14.x A2V caller that omits it.
+
+    ltx-pipelines-mlx 0.14.8 made ``combined_image_conditionings.frame_rate``
+    mandatory, but its two-stage A2V pipeline still calls that helper twice
+    without the new keyword when an input image is present. Patch the imported
+    orchestration helper for this render only. Pins whose helper predates the
+    parameter are left untouched; already-correct callers may still pass their
+    own rate and win over this default.
+    """
+    original = getattr(module, "combined_image_conditionings", None)
+    if original is None:
+        return lambda: None
+    try:
+        has_frame_rate = "frame_rate" in inspect.signature(original).parameters
+    except (TypeError, ValueError):
+        has_frame_rate = False
+    if not has_frame_rate:
+        return lambda: None
+
+    def combined_image_conditionings_with_rate(*args, **kwargs):
+        kwargs.setdefault("frame_rate", fps)
+        return original(*args, **kwargs)
+
+    module.combined_image_conditionings = combined_image_conditionings_with_rate
+    return lambda: setattr(module, "combined_image_conditionings", original)
+
+
+def _patch_a2v_image_conditioning_rate(fps: float):
+    try:
+        orchestration = importlib.import_module("ltx_pipelines_mlx.utils._orchestration")
+    except ImportError:
+        return lambda: None
+    return _bind_combined_image_conditioning_rate(orchestration, fps)
 
 
 def _import_image_conditioning_input():
@@ -345,8 +384,8 @@ def parse_args() -> argparse.Namespace:
                         "Default for fflf: transformer-dev.safetensors (matches dgrauet/ltx-2.3-mlx-q4 + q8 layouts).")
     p.add_argument("--distilled-lora", default=None,
                    help="Filename of the distilled LoRA inside the model repo, fused on top of the "
-                        "dev transformer for stage 2. Default for fflf: "
-                        "ltx-2.3-22b-distilled-lora-384.safetensors.")
+                        "dev transformer for stage 2. By default PortOS prefers the 1.1 adapter "
+                        "when the selected model includes it, otherwise it uses the legacy adapter.")
     p.add_argument("--lora-strength", type=float, default=1.0,
                    help="Distilled-LoRA fusion strength (default 1.0, matches dgrauet's CLI).")
     p.add_argument("--user-loras", default=None,
@@ -553,6 +592,30 @@ def _one_stage_kwargs(args: argparse.Namespace, **extra) -> dict:
     return kwargs
 
 
+def _prefer_distilled_lora(pipe, requested: str | None) -> str:
+    """Select the newest compatible distilled adapter already in model_dir.
+
+    BasePipeline resolves a HuggingFace repo ID to its cached snapshot during
+    construction, but does not load the transformer until generate_and_save().
+    That gives the bridge a safe point to prefer the 1.1 adapter without
+    making a separate Hub metadata request. Repositories that do not carry 1.1
+    keep using the legacy file; an explicit CLI value always wins.
+    """
+    selected = requested
+    if selected is None:
+        selected = next(
+            (
+                filename
+                for filename in (DISTILLED_LORA_V11, DISTILLED_LORA_LEGACY)
+                if (Path(pipe.model_dir) / filename).exists()
+            ),
+            DISTILLED_LORA_LEGACY,
+        )
+    pipe._distilled_lora = selected
+    emit_status(f"Using distilled adapter {selected}")
+    return selected
+
+
 def run_two_stage(args: argparse.Namespace, image: str | None = None) -> str:
     """T2V/I2V path that honors CFG via the dgrauet two-stage pipeline."""
     TwoStagePipeline = _resolve_pipeline("TI2VidTwoStagesPipeline", "TwoStagePipeline")
@@ -562,9 +625,10 @@ def run_two_stage(args: argparse.Namespace, image: str | None = None) -> str:
         model_dir=args.model,
         gemma_model_id=args.gemma,
         dev_transformer=args.dev_transformer or "transformer-dev.safetensors",
-        distilled_lora=args.distilled_lora or "ltx-2.3-22b-distilled-lora-384.safetensors",
+        distilled_lora=args.distilled_lora or DISTILLED_LORA_LEGACY,
         distilled_lora_strength=args.lora_strength,
     )
+    _prefer_distilled_lora(pipe, args.distilled_lora)
     _apply_user_loras(pipe, args.user_lora_specs)
     bind_output_fps(pipe, args.fps)
     emit_stage(1, 1, 1, "Loaded")
@@ -691,7 +755,7 @@ def run_fflf(args: argparse.Namespace) -> str:
     # can override via --dev-transformer / --distilled-lora when a future
     # repo renames them.
     dev_transformer = args.dev_transformer or "transformer-dev.safetensors"
-    distilled_lora = args.distilled_lora or "ltx-2.3-22b-distilled-lora-384.safetensors"
+    distilled_lora = args.distilled_lora or DISTILLED_LORA_LEGACY
     emit_status(f"Loading Keyframe pipeline ({args.model}, dev+lora)…")
     emit_stage(1, 0, 1, "Loading model")
     pipe = KeyframeInterpolationPipeline(
@@ -701,6 +765,7 @@ def run_fflf(args: argparse.Namespace) -> str:
         distilled_lora=distilled_lora,
         distilled_lora_strength=args.lora_strength,
     )
+    _prefer_distilled_lora(pipe, args.distilled_lora)
     _apply_user_loras(pipe, args.user_lora_specs)
     emit_stage(1, 1, 1, "Loaded")
     emit_status(f"Interpolating between {len(keyframe_images)} keyframes at indices {keyframe_indices}…")
@@ -793,6 +858,7 @@ def run_a2v(args: argparse.Namespace) -> str:
     emit_status(f"Loading A2V pipeline ({args.model})…")
     emit_stage(1, 0, 1, "Loading model")
     pipe = AudioToVideoPipeline(model_dir=args.model, gemma_model_id=args.gemma)
+    _prefer_distilled_lora(pipe, args.distilled_lora)
     _apply_user_loras(pipe, args.user_lora_specs)
     emit_stage(1, 1, 1, "Loaded")
     emit_status(f"Generating A2V from {Path(args.audio).name}…")
@@ -801,6 +867,7 @@ def run_a2v(args: argparse.Namespace) -> str:
                                       args.teacache_thresh)
     if _A2V_TC_CONFIG["enable"]:
         emit_status(f"TeaCache active on A2V Stage 1 (thresh={_teacache_thresh_label(args.teacache_thresh)})")
+    restore_image_rate = _patch_a2v_image_conditioning_rate(args.fps)
     try:
         return pipe.generate_and_save(
             prompt=args.prompt,
@@ -818,6 +885,7 @@ def run_a2v(args: argparse.Namespace) -> str:
             **_rate_kwargs(pipe.generate_and_save, args.fps),
         )
     finally:
+        restore_image_rate()
         _A2V_TC_CONFIG = None
 
 

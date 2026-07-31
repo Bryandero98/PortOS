@@ -134,18 +134,27 @@ export const modelSiblingFilenames = (model) => {
 const safetensorsSiblings = (model) =>
   modelSiblingFilenames(model).filter((f) => /\.safetensors$/i.test(f));
 
-// Pick the LoRA weights file to download. Most LoRA repos ship a single
-// .safetensors; when several are present we prefer the canonical diffusers
-// filename, then anything with "lora" in the name, then the first. Throws when
-// the repo has none (it's not a LoRA weights repo, or weights are split into a
-// subdir we don't recognize).
-export const pickHfLoraFile = (model) => {
+// Pick the LoRA weights file to download. An explicit file must exactly match a
+// .safetensors sibling — this lets curated cards select a versioned artifact
+// from repos that publish several LoRAs without accepting an arbitrary path.
+// Without an explicit file, preserve the legacy canonical-name preference.
+export const pickHfLoraFile = (model, preferredFile = null) => {
   const files = safetensorsSiblings(model);
   if (!files.length) {
     throw new ServerError(
       `HuggingFace repo ${model?.id || model?.modelId || ''} has no .safetensors file`,
       { status: 422, code: 'HF_NO_SAFETENSORS' },
     );
+  }
+  if (preferredFile) {
+    const exact = files.find((file) => file === preferredFile);
+    if (!exact) {
+      throw new ServerError(
+        `HuggingFace repo ${model?.id || model?.modelId || ''} does not contain ${preferredFile}`,
+        { status: 422, code: 'HF_FILE_NOT_FOUND' },
+      );
+    }
+    return exact;
   }
   if (files.length === 1) return files[0];
   const canonical = files.find((f) => /(^|\/)pytorch_lora_weights\.safetensors$/i.test(f))
@@ -214,9 +223,10 @@ export const buildHfLoraSidecar = ({ repo, revision, file, model, family, filena
     ? model.cardData.instance_prompt.trim()
     : '';
   const description = extractHfCardDescription(model, DESCRIPTION_MAX_CHARS);
+  const isV2 = /(?:^|[-_.])v2(?:[-_.]|$)/i.test(file);
   return {
     filename,
-    name: repo.split('/')[1] || repo,
+    name: `${repo.split('/')[1] || repo}${isV2 ? ' V2' : ''}`,
     description,
     huggingface: {
       repo,
@@ -229,7 +239,7 @@ export const buildHfLoraSidecar = ({ repo, revision, file, model, family, filena
     runnerFamily: family,
     fluxVariant: null,
     triggerWords: instancePrompt ? [instancePrompt] : [],
-    recommendedScale: 1.0,
+    recommendedScale: isV2 ? 1.2 : 1.0,
     file: {
       sizeKB: null,
       hashes: {},

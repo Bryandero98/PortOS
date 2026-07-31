@@ -13,6 +13,7 @@ import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import {
   validateRequest,
   musicVideoProjectCreateSchema,
+  musicVideoProjectCloneSchema,
   musicVideoProjectUpdateSchema,
   musicVideoSceneCreateSchema,
   musicVideoSceneUpdateSchema,
@@ -20,6 +21,7 @@ import {
   musicVideoPlanRequestSchema,
   musicVideoManualAnalysisSchema,
   musicVideoTranscribeMidiRequestSchema,
+  recordRenderPinFields,
 } from '../lib/validation.js';
 import { PATHS } from '../lib/fileUtils.js';
 import { safeUnder } from '../lib/ffmpeg.js';
@@ -27,6 +29,7 @@ import {
   listProjects,
   getProject,
   createProject,
+  cloneProject,
   updateProject,
   deleteProject,
   setProjectAnalysis,
@@ -48,6 +51,15 @@ import { getTrack } from '../services/tracks/index.js';
 
 const router = Router();
 
+// #3231 Phase 4 — the per-record image render pin (`imageMode`/`imageModelId`,
+// the shared universe/series/sprite field pair) on Music Video projects: scene
+// reference-frame renders resolve through it (imageGen/prepareParams.js).
+// Extended at the route layer — the same pattern as routes/universeBuilder.js —
+// because musicVideoValidation.js can't import recordRenderPinFields from
+// validation.js without a circular import (validation.js re-exports it).
+const projectCreateSchema = musicVideoProjectCreateSchema.extend(recordRenderPinFields);
+const projectUpdateSchema = musicVideoProjectUpdateSchema.extend(recordRenderPinFields);
+
 router.get('/', asyncHandler(async (_req, res) => {
   res.json(await listProjects());
 }));
@@ -59,13 +71,18 @@ router.get('/:id', asyncHandler(async (req, res) => {
 }));
 
 router.post('/', asyncHandler(async (req, res) => {
-  const data = validateRequest(musicVideoProjectCreateSchema, req.body);
+  const data = validateRequest(projectCreateSchema, req.body);
   const project = await createProject(data);
   res.status(201).json(project);
 }));
 
+router.post('/:id/clone', asyncHandler(async (req, res) => {
+  const options = validateRequest(musicVideoProjectCloneSchema, req.body || {});
+  res.status(201).json(await cloneProject(req.params.id, options));
+}));
+
 router.patch('/:id', asyncHandler(async (req, res) => {
-  const data = validateRequest(musicVideoProjectUpdateSchema, req.body);
+  const data = validateRequest(projectUpdateSchema, req.body);
   const updated = await updateProject(req.params.id, data);
   res.json(updated);
 }));

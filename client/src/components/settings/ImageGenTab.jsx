@@ -6,10 +6,10 @@
  * lives in the always-visible Codex CLI Imagegen section.
  */
 
-import { useState, useEffect, useCallback, useId } from 'react';
+import { useState, useEffect, useCallback, useId, useRef } from 'react';
 import {
   Save, Image as ImageIcon, Zap, Wrench, Cloud, Cpu, Globe, AlertTriangle,
-  Sparkles, Terminal, Key, Check, Trash2
+  Sparkles, Terminal, Key, Check, Trash2, SlidersHorizontal
 } from 'lucide-react';
 import toast from '../ui/Toast';
 import TabPills from '../ui/TabPills';
@@ -22,15 +22,17 @@ import {
   registerTool, updateTool, getToolsList,
   saveHfToken, clearHfToken,
 } from '../../services/api';
-import { isCloudCliMode, IMAGE_GEN_MODE, CODEX_IMAGEGEN_DEFAULT_EFFORT, GROK_ASPECT_RATIOS } from '../../lib/imageGenBackends';
+import { isCloudCliMode, IMAGE_GEN_MODE, AGY_IMAGEGEN_DEFAULT_MODEL, AGY_IMAGEGEN_IMAGE_MODEL, CODEX_IMAGEGEN_DEFAULT_EFFORT, GROK_ASPECT_RATIOS, RENDER_TARGET_BACKEND_AUTO, RENDER_TARGET_OPTIONS, VIDEO_RENDER_MODES, modeLabel, normalizeRenderPinValue, supportsCloudModelOverride } from '../../lib/imageGenBackends';
 import { resolveCleanersFromConfig } from '../../lib/imageCleaners';
 import { useMediaJobSse } from '../../hooks/useMediaJobSse';
+import { useAgyModels } from '../../hooks/useAgyModels';
 import { useHfTokenStatus } from '../../hooks/useHfTokenStatus';
 import { CODEX_EFFORT_LEVELS } from '../../utils/providers';
 
 const SDAPI_TOOL_ID = 'sdapi';
 const CODEX_TOOL_ID = 'codex-imagegen';
 const GROK_TOOL_ID = 'grok-imagegen';
+const AGY_TOOL_ID = 'agy-imagegen';
 // Mirror of server/services/imageGen/modes.js — shown as placeholder/default
 // hints so the user sees what a blank Model / Effort field will actually use.
 // The server owns the real default; these are display-only. The effort default
@@ -53,12 +55,23 @@ const clampParallel = (n, bounds = PARALLEL_FALLBACK) =>
 // grouping works whether ImageGenTab is hosted in a plain Drawer (ImageGen /
 // VideoGen / StoryboardPanel) or elsewhere — no tabs-within-tabs. The active
 // tab deep-links via the `mediaTab` search param (useDrawerTab).
-const MEDIA_TABS = [
+// `probeMode` binds a provider tab to the backend the shared Test Connection
+// button should probe. Without it the button always probed the *saved default*
+// mode, so testing from the Grok or Agy tab reported the Codex CLI's version
+// ("codex — codex-cli 0.145.0") — the answer to a question nobody asked.
+// Tabs with no provider of their own (Backend / Tokens / Expose / Test) leave
+// it undefined and fall back to the saved default backend.
+// Exported so a test can assert every IMAGE_GEN_MODE is tagged onto some tab —
+// a new backend that forgets its `probeMode` would otherwise silently regress
+// to probing the saved default again.
+export const MEDIA_TABS = [
   { id: 'backend', label: 'Backend', icon: ImageIcon },
-  { id: 'external', label: 'External', icon: Cloud },
-  { id: 'local', label: 'Local', icon: Cpu },
-  { id: 'codex', label: 'Codex CLI', icon: Terminal },
-  { id: 'grok', label: 'Grok CLI', icon: Sparkles },
+  { id: 'defaults', label: 'Defaults', icon: SlidersHorizontal },
+  { id: 'external', label: 'External', icon: Cloud, probeMode: IMAGE_GEN_MODE.EXTERNAL },
+  { id: 'local', label: 'Local', icon: Cpu, probeMode: IMAGE_GEN_MODE.LOCAL },
+  { id: 'codex', label: 'Codex CLI', icon: Terminal, probeMode: IMAGE_GEN_MODE.CODEX },
+  { id: 'grok', label: 'Grok CLI', icon: Sparkles, probeMode: IMAGE_GEN_MODE.GROK },
+  { id: 'agy', label: 'Agy CLI', icon: Terminal, probeMode: IMAGE_GEN_MODE.AGY },
   { id: 'tokens', label: 'Tokens', icon: Key },
   { id: 'expose', label: 'Expose', icon: Globe },
   { id: 'test', label: 'Test', icon: Sparkles },
@@ -88,6 +101,15 @@ export function ImageGenTab() {
 
   // Mode + per-mode config
   const [mode, setMode] = useState(IMAGE_GEN_MODE.EXTERNAL);
+  // Per-surface render defaults (#3231) — `{ [target]: { imageMode, imageModel } }`.
+  // Only pinned entries are kept; an absent target means "auto".
+  const [renderDefaults, setRenderDefaults] = useState({});
+  // Install-wide video backend pin (`settings.videoGen.mode`, #3231 Phase 4).
+  // '' = no pin (local). The full loaded `videoGen` slice is kept in a ref —
+  // never rendered, only round-tripped at save time so sibling keys
+  // (defaultModelId) survive the settings PUT's wholesale slice replace.
+  const [videoGenMode, setVideoGenMode] = useState('');
+  const videoGenSliceRef = useRef({});
   const [sdapiUrl, setSdapiUrl] = useState('');
   const [pythonPath, setPythonPath] = useState('');
   const [exposeA1111, setExposeA1111] = useState(false);
@@ -106,6 +128,9 @@ export function ImageGenTab() {
   const [grokPath, setGrokPath] = useState('');
   // Empty = let the caller's width/height (or the tool default) decide.
   const [grokAspectRatio, setGrokAspectRatio] = useState('');
+  const [agyEnabled, setAgyEnabled] = useState(false);
+  const [agyPath, setAgyPath] = useState('');
+  const [agyModel, setAgyModel] = useState('');
   // Per-provider cleaner toggles. Both run after the PNG lands and before
   // the SSE complete event so subscribers see the cleaned bytes. SynthID
   // (the gpt-image / Imagen / Gemini pixel-level watermark) is unaffected
@@ -115,8 +140,8 @@ export function ImageGenTab() {
   //     provenance chunk. Lossless — pixels untouched.
   //   - denoise   (default OFF): median(3) + sharpen pass for AI-artifact
   //     reduction. LOSSY: blurs annotation text and small details.
-  const [cleanC2PAByMode, setCleanC2PAByMode] = useState({ external: true, local: true, codex: true, grok: false });
-  const [denoiseByMode, setDenoiseByMode] = useState({ external: false, local: false, codex: false, grok: false });
+  const [cleanC2PAByMode, setCleanC2PAByMode] = useState({ external: true, local: true, codex: true, grok: false, agy: false });
+  const [denoiseByMode, setDenoiseByMode] = useState({ external: false, local: false, codex: false, grok: false, agy: false });
   const setCleanC2PAFor = (m) => (v) => setCleanC2PAByMode((p) => ({ ...p, [m]: v }));
   const setDenoiseFor = (m) => (v) => setDenoiseByMode((p) => ({ ...p, [m]: v }));
   // Raw string held while the user is typing in the parallel-limit input.
@@ -134,14 +159,20 @@ export function ImageGenTab() {
   const codexParallelId = useId();
   const grokPathId = useId();
   const grokRatioId = useId();
+  const agyPathId = useId();
+  const agyModelId = useId();
+  const agyModelsListId = useId();
 
   // Snapshot of saved values so we can show the "dirty" state
   const [saved, setSaved] = useState({
     mode: IMAGE_GEN_MODE.EXTERNAL, sdapiUrl: '', pythonPath: '', exposeA1111: false,
     codexEnabled: false, codexPath: '', codexModel: '', codexEffort: '', codexParallelLimit: 1,
     grokEnabled: false, grokPath: '', grokAspectRatio: '',
-    cleanC2PAByMode: { external: true, local: true, codex: true, grok: false },
-    denoiseByMode: { external: false, local: false, codex: false, grok: false },
+    agyEnabled: false, agyPath: '', agyModel: '',
+    cleanC2PAByMode: { external: true, local: true, codex: true, grok: false, agy: false },
+    denoiseByMode: { external: false, local: false, codex: false, grok: false, agy: false },
+    renderDefaultsJson: '{}',
+    videoGenMode: '',
   });
 
   const [status, setStatus] = useState(null);
@@ -149,6 +180,7 @@ export function ImageGenTab() {
   const [toolRegistered, setToolRegistered] = useState(false);
   const [codexToolRegistered, setCodexToolRegistered] = useState(false);
   const [grokToolRegistered, setGrokToolRegistered] = useState(false);
+  const [agyToolRegistered, setAgyToolRegistered] = useState(false);
 
   const [testPrompt, setTestPrompt] = useState(DEFAULT_TEST_PROMPT);
   const [rendering, setRendering] = useState(false);
@@ -198,6 +230,14 @@ export function ImageGenTab() {
     Promise.all([getSettings({ silent: true }), getToolsList({ silent: true })])
       .then(([s, tools]) => {
         const ig = s?.imageGen || {};
+        // Round-trip the FULL renderDefaults object (including videoModel keys
+        // this tab doesn't edit) — the server replaces the top-level slice
+        // wholesale on save, so dropping unedited keys here would erase them.
+        const rd = (s?.renderDefaults && typeof s.renderDefaults === 'object') ? s.renderDefaults : {};
+        // Video pin: keep the whole slice for round-trip; normalize the mode
+        // ('auto'/blank → '', i.e. no pin) for the select.
+        const vg = (s?.videoGen && typeof s.videoGen === 'object') ? s.videoGen : {};
+        const vgMode = normalizeRenderPinValue(vg.mode) || '';
         const m = ig.mode || IMAGE_GEN_MODE.EXTERNAL;
         const url = normalizeUrl(ig.external?.sdapiUrl || ig.sdapiUrl);
         const py = ig.local?.pythonPath || '';
@@ -216,15 +256,23 @@ export function ImageGenTab() {
         const gkEnabled = gk.enabled === true;
         const gkPath = gk.grokPath || '';
         const gkRatio = gk.aspectRatio || '';
+        const ay = ig.agy || {};
+        const ayEnabled = ay.enabled === true;
+        const ayPath = ay.agyPath || '';
+        const ayModel = ay.model || '';
         // Per-mode cleaner reads via the shared helper (mirrored from
         // server/lib/imageClean.js).
         const codexClean = resolveCleanersFromConfig(cx, IMAGE_GEN_MODE.CODEX);
         const grokClean = resolveCleanersFromConfig(gk, IMAGE_GEN_MODE.GROK);
+        const agyClean = resolveCleanersFromConfig(ay, IMAGE_GEN_MODE.AGY);
         const localClean = resolveCleanersFromConfig(ig.local, IMAGE_GEN_MODE.LOCAL);
         const externalClean = resolveCleanersFromConfig(ig.external, IMAGE_GEN_MODE.EXTERNAL);
-        const c2 = { codex: codexClean.cleanC2PA, grok: grokClean.cleanC2PA, local: localClean.cleanC2PA, external: externalClean.cleanC2PA };
-        const dn = { codex: codexClean.denoise, grok: grokClean.denoise, local: localClean.denoise, external: externalClean.denoise };
+        const c2 = { codex: codexClean.cleanC2PA, grok: grokClean.cleanC2PA, agy: agyClean.cleanC2PA, local: localClean.cleanC2PA, external: externalClean.cleanC2PA };
+        const dn = { codex: codexClean.denoise, grok: grokClean.denoise, agy: agyClean.denoise, local: localClean.denoise, external: externalClean.denoise };
         setMode(m);
+        setRenderDefaults(rd);
+        setVideoGenMode(vgMode);
+        videoGenSliceRef.current = vg;
         setSdapiUrl(url);
         setPythonPath(py);
         setExposeA1111(expose);
@@ -237,6 +285,9 @@ export function ImageGenTab() {
         setGrokEnabled(gkEnabled);
         setGrokPath(gkPath);
         setGrokAspectRatio(gkRatio);
+        setAgyEnabled(ayEnabled);
+        setAgyPath(ayPath);
+        setAgyModel(ayModel);
         setCleanC2PAByMode(c2);
         setDenoiseByMode(dn);
         setSaved({
@@ -244,23 +295,43 @@ export function ImageGenTab() {
           codexEnabled: cxEnabled, codexPath: cxPath, codexModel: cxModel, codexEffort: cxEffort,
           codexParallelLimit: cxParallel,
           grokEnabled: gkEnabled, grokPath: gkPath, grokAspectRatio: gkRatio,
+          agyEnabled: ayEnabled, agyPath: ayPath, agyModel: ayModel,
           cleanC2PAByMode: c2, denoiseByMode: dn,
+          renderDefaultsJson: JSON.stringify(rd),
+          videoGenMode: vgMode,
         });
         setToolRegistered(tools.some((t) => t.id === SDAPI_TOOL_ID));
         setCodexToolRegistered(tools.some((t) => t.id === CODEX_TOOL_ID));
         setGrokToolRegistered(tools.some((t) => t.id === GROK_TOOL_ID));
+        setAgyToolRegistered(tools.some((t) => t.id === AGY_TOOL_ID));
       })
       .catch(() => toast.error('Failed to load image gen settings'))
       .finally(() => setLoading(false));
   }, []);
 
+  // Probe only while the Agy tab is actually open — the list spawns `agy models`
+  // server-side, so an unopened tab must not pay for a child process.
+  const {
+    models: agyModels,
+    error: agyModelsError,
+    loading: agyModelsLoading,
+    refresh: refreshAgyModels,
+  } = useAgyModels(mediaTab === 'agy' && agyEnabled);
+
+  // Probe the provider whose tab is open (undefined → the saved default
+  // backend). Every result is tagged with the tab that asked for it and only
+  // rendered under that tab, so neither a tab switch nor a probe still in
+  // flight can show one provider's answer under another provider's panel.
+  const activeTab = MEDIA_TABS.find((t) => t.id === mediaTab);
+  const probeMode = activeTab?.probeMode;
+
   const checkStatus = useCallback(() => {
     setChecking(true);
-    getImageGenStatus()
-      .then(setStatus)
-      .catch(() => setStatus({ connected: false, reason: 'Check failed' }))
+    getImageGenStatus(probeMode)
+      .then((result) => setStatus({ ...result, forTab: mediaTab }))
+      .catch(() => setStatus({ connected: false, reason: 'Check failed', forTab: mediaTab }))
       .finally(() => setChecking(false));
-  }, []);
+  }, [probeMode, mediaTab]);
 
   const isDirty = mode !== saved.mode
     || normalizeUrl(sdapiUrl) !== saved.sdapiUrl
@@ -274,6 +345,11 @@ export function ImageGenTab() {
     || grokEnabled !== saved.grokEnabled
     || grokPath !== saved.grokPath
     || grokAspectRatio !== saved.grokAspectRatio
+    || agyEnabled !== saved.agyEnabled
+    || agyPath !== saved.agyPath
+    || agyModel !== saved.agyModel
+    || cleanC2PAByMode.agy !== saved.cleanC2PAByMode.agy
+    || denoiseByMode.agy !== saved.denoiseByMode.agy
     || cleanC2PAByMode.grok !== saved.cleanC2PAByMode.grok
     || denoiseByMode.grok !== saved.denoiseByMode.grok
     || cleanC2PAByMode.codex !== saved.cleanC2PAByMode.codex
@@ -281,7 +357,9 @@ export function ImageGenTab() {
     || cleanC2PAByMode.external !== saved.cleanC2PAByMode.external
     || denoiseByMode.codex !== saved.denoiseByMode.codex
     || denoiseByMode.local !== saved.denoiseByMode.local
-    || denoiseByMode.external !== saved.denoiseByMode.external;
+    || denoiseByMode.external !== saved.denoiseByMode.external
+    || JSON.stringify(renderDefaults) !== saved.renderDefaultsJson
+    || videoGenMode !== saved.videoGenMode;
 
   const handleSave = async () => {
     setSaving(true);
@@ -292,6 +370,8 @@ export function ImageGenTab() {
     const cxParallel = clampParallel(codexParallelLimit, parallelBounds);
     const gkPath = grokPath?.trim() || undefined;
     const gkRatio = grokAspectRatio?.trim() || undefined;
+    const ayPath = agyPath?.trim() || undefined;
+    const ayModel = agyModel?.trim() || undefined;
     const patch = {
       imageGen: {
         mode,
@@ -305,11 +385,26 @@ export function ImageGenTab() {
           enabled: grokEnabled, grokPath: gkPath, aspectRatio: gkRatio,
           cleanC2PA: cleanC2PAByMode.grok, denoise: denoiseByMode.grok,
         },
+        agy: {
+          enabled: agyEnabled, agyPath: ayPath, model: ayModel,
+          cleanC2PA: cleanC2PAByMode.agy, denoise: denoiseByMode.agy,
+        },
         expose: { a1111: exposeA1111 },
         // Keep the legacy field populated so anything still reading
         // `imageGen.sdapiUrl` directly stays working.
         sdapiUrl: url,
       },
+      // Per-surface render defaults (#3231). Entries with no effective pin are
+      // dropped so settings.json doesn't accumulate `{ imageMode: 'auto' }`
+      // no-ops for every surface the user merely glanced at.
+      renderDefaults: Object.fromEntries(
+        Object.entries(renderDefaults).filter(([, entry]) => entry && Object.values(entry).some(
+          (v) => typeof v === 'string' && v.trim() && v !== RENDER_TARGET_BACKEND_AUTO,
+        )),
+      ),
+      // Install-wide video pin (#3231 Phase 4). Spread over the loaded slice so
+      // sibling keys (defaultModelId) survive the wholesale slice replace.
+      videoGen: { ...videoGenSliceRef.current, mode: videoGenMode || null },
     };
     try {
       await updateSettings(patch, { silent: true });
@@ -322,8 +417,15 @@ export function ImageGenTab() {
         codexEnabled, codexPath: cxPath || '', codexModel: cxModel || '', codexEffort: cxEffort || '',
         codexParallelLimit: cxParallel,
         grokEnabled, grokPath: gkPath || '', grokAspectRatio: gkRatio || '',
+        agyEnabled, agyPath: ayPath || '', agyModel: ayModel || '',
         cleanC2PAByMode, denoiseByMode,
+        renderDefaultsJson: JSON.stringify(patch.renderDefaults),
+        videoGenMode,
       });
+      // Reflect the pruned no-op entries back into the editor state so the
+      // dirty check compares like against like after a save.
+      setRenderDefaults(patch.renderDefaults);
+      videoGenSliceRef.current = patch.videoGen;
       if (cxParallel !== codexParallelLimit) {
         setCodexParallelLimit(cxParallel);
         setParallelLimitDraft(String(cxParallel));
@@ -335,6 +437,8 @@ export function ImageGenTab() {
       if (cxEffort !== codexEffort) setCodexEffort(cxEffort || '');
       if (gkPath !== grokPath) setGrokPath(gkPath || '');
       if (gkRatio !== grokAspectRatio) setGrokAspectRatio(gkRatio || '');
+      if (ayPath !== agyPath) setAgyPath(ayPath || '');
+      if (ayModel !== agyModel) setAgyModel(ayModel || '');
       toast.success('Image gen settings saved');
     } catch (err) {
       toast.error(err.message || 'Failed to save settings');
@@ -369,6 +473,14 @@ export function ImageGenTab() {
       config: { codexPath: cxPath, model: cxModel, effort: cxEffort },
       promptHints: 'Use POST /api/image-gen/generate with { prompt, mode: "codex" } — or call the image_generate voice tool with provider: "codex".',
     };
+    const agyToolData = {
+      name: 'Agy Imagegen',
+      category: 'image-generation',
+      description: 'Generate text-to-image renders through the Antigravity CLI generate_image tool.',
+      enabled: agyEnabled,
+      config: { agyPath: ayPath, model: ayModel },
+      promptHints: 'Use POST /api/image-gen/generate with { prompt, mode: "agy" } — or call image_generate with provider: "agy". Image editing is not supported.',
+    };
 
     const syncTool = async ({ id, registered, data, shouldCreate, onCreated, errLabel }) => {
       if (registered) {
@@ -399,6 +511,11 @@ export function ImageGenTab() {
         id: GROK_TOOL_ID, registered: grokToolRegistered, data: grokToolData,
         shouldCreate: grokEnabled, onCreated: () => setGrokToolRegistered(true),
         errLabel: 'Grok Imagegen tool',
+      }),
+      syncTool({
+        id: AGY_TOOL_ID, registered: agyToolRegistered, data: agyToolData,
+        shouldCreate: agyEnabled, onCreated: () => setAgyToolRegistered(true),
+        errLabel: 'Agy Imagegen tool',
       }),
     ]);
 
@@ -492,7 +609,7 @@ export function ImageGenTab() {
           generation locally with mflux on this Mac. Pick whichever fits — you can also
           expose this PortOS as an A1111-compatible endpoint for other tailnet boxes.
         </p>
-        <div className={`grid grid-cols-1 sm:grid-cols-2 ${(codexEnabled || grokEnabled) ? 'lg:grid-cols-3' : ''} gap-3`}>
+        <div className={`grid grid-cols-1 sm:grid-cols-2 ${(codexEnabled || grokEnabled || agyEnabled) ? 'lg:grid-cols-3' : ''} gap-3`}>
           <button
             type="button"
             onClick={() => setMode(IMAGE_GEN_MODE.EXTERNAL)}
@@ -541,6 +658,128 @@ export function ImageGenTab() {
               <p className="text-xs text-gray-500 mt-1">Route through the Grok Build CLI built-in image_gen tool. Counts against your Grok plan.</p>
             </button>
           )}
+          {agyEnabled && (
+            <button
+              type="button"
+              onClick={() => setMode(IMAGE_GEN_MODE.AGY)}
+              className={`text-left p-4 rounded-lg border transition-colors ${mode === IMAGE_GEN_MODE.AGY ? 'border-port-accent bg-port-accent/10 text-white' : 'border-port-border text-gray-400 hover:bg-port-border/30 hover:text-white'}`}
+            >
+              <div className="flex items-center gap-2">
+                <Terminal className="w-4 h-4" />
+                <span className="font-medium text-sm">Agy CLI</span>
+              </div>
+              <p className="text-xs text-gray-500 mt-1">Text-to-image through Antigravity's generate_image tool and your selected model.</p>
+            </button>
+          )}
+        </div>
+      </div>
+      )}
+
+      {/* Per-surface render defaults (#3231) — pin a backend (and, for the
+          model-override-capable cloud CLIs, a model) per creative surface,
+          without touching the install-wide default above. */}
+      {mediaTab === 'defaults' && (
+      <div className="bg-port-card border border-port-border rounded-xl p-6 space-y-4">
+        <div className="flex items-center gap-2 text-white">
+          <SlidersHorizontal size={18} />
+          <h2 className="text-lg font-semibold">Render defaults</h2>
+        </div>
+        <p className="text-xs text-gray-500">
+          Each surface below follows the install default backend unless pinned here. A pinned
+          backend that is disabled (or unconfigured) falls back to whatever that surface would
+          have used anyway — enable the backend on its own tab to make a pin take effect. A
+          model can be pinned for backends that accept one (Codex, Agy); Grok and Local pick
+          their models elsewhere. Surfaces that also render video get a video backend pin —
+          backend only, since Grok video has no model choice and local video models are picked
+          on the surface itself.
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2 sm:items-center border border-port-border rounded-lg px-3 py-2 bg-port-bg/40">
+          <label htmlFor="video-default-mode" className="text-sm text-gray-300">
+            Default video backend
+            <span className="block text-xs text-gray-500 mt-0.5">
+              Used when a video render names no backend and its surface has no pin. Grok clips
+              render at 6s or 10s on xAI&rsquo;s fixed video backend.
+            </span>
+          </label>
+          <select
+            id="video-default-mode"
+            value={videoGenMode}
+            onChange={(e) => setVideoGenMode(e.target.value)}
+            className="bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent sm:w-44"
+          >
+            <option value="">Auto (Local)</option>
+            {VIDEO_RENDER_MODES.map((m) => (
+              <option key={m} value={m}>{modeLabel(m)}</option>
+            ))}
+          </select>
+        </div>
+        <div className="space-y-3">
+          {RENDER_TARGET_OPTIONS.map(({ id, label, video }) => {
+            const entry = renderDefaults[id] || {};
+            const pinnedMode = entry.imageMode && entry.imageMode !== RENDER_TARGET_BACKEND_AUTO ? entry.imageMode : '';
+            const pinnedVideoMode = normalizeRenderPinValue(entry.videoMode) || '';
+            const modeSelectId = `render-default-mode-${id}`;
+            const modelInputId = `render-default-model-${id}`;
+            const videoSelectId = `render-default-video-${id}`;
+            const setPin = (key, value) => setRenderDefaults((rd) => {
+              const nextEntry = { ...(rd[id] || {}) };
+              if (value) nextEntry[key] = value; else delete nextEntry[key];
+              const next = { ...rd };
+              if (Object.keys(nextEntry).length) next[id] = nextEntry; else delete next[id];
+              return next;
+            });
+            return (
+              <div key={id} className={`grid grid-cols-1 ${video ? 'sm:grid-cols-[1fr_auto_auto_auto]' : 'sm:grid-cols-[1fr_auto_auto]'} gap-2 sm:items-center border border-port-border rounded-lg px-3 py-2`}>
+                <label htmlFor={modeSelectId} className="text-sm text-gray-300">{label}</label>
+                <select
+                  id={modeSelectId}
+                  value={pinnedMode}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setPin('imageMode', v || null);
+                    // ANY backend change invalidates the pinned model — model ids
+                    // are namespaced per provider, and a codex→agy switch that
+                    // kept the gpt-* id would save a pin agy errors on. The
+                    // server's leak guard can't catch this case (mode and model
+                    // are pinned together), so the clear must happen here.
+                    setPin('imageModel', null);
+                  }}
+                  className="bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent sm:w-44"
+                >
+                  <option value="">Auto (install default)</option>
+                  {[IMAGE_GEN_MODE.LOCAL, IMAGE_GEN_MODE.CODEX, IMAGE_GEN_MODE.GROK, IMAGE_GEN_MODE.AGY].map((m) => (
+                    <option key={m} value={m}>{modeLabel(m)}</option>
+                  ))}
+                </select>
+                {supportsCloudModelOverride(pinnedMode) ? (
+                  <input
+                    id={modelInputId}
+                    type="text"
+                    value={entry.imageModel || ''}
+                    onChange={(e) => setPin('imageModel', e.target.value.trim() || null)}
+                    placeholder="Model (optional)"
+                    aria-label={`${label} model`}
+                    className="bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent sm:w-52"
+                  />
+                ) : <span className="hidden sm:block sm:w-52" />}
+                {video && (
+                  <select
+                    id={videoSelectId}
+                    value={pinnedVideoMode}
+                    onChange={(e) => setPin('videoMode', e.target.value || null)}
+                    aria-label={`${label} video backend`}
+                    title="Video backend for this surface — no model choice (Grok video has none; local video models are picked on the surface)"
+                    className="bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent sm:w-44"
+                  >
+                    <option value="">Video: Auto</option>
+                    {VIDEO_RENDER_MODES.map((m) => (
+                      <option key={m} value={m}>Video: {modeLabel(m)}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
       )}
@@ -780,6 +1019,110 @@ export function ImageGenTab() {
       </div>
       )}
 
+      {mediaTab === 'agy' && (
+      <div className="bg-port-card border border-port-border rounded-xl p-6 space-y-4">
+        <div className="flex items-center gap-2 text-white">
+          <Terminal size={18} />
+          <h2 className="text-lg font-semibold">Agy CLI Imagegen</h2>
+        </div>
+        <p className="text-xs text-gray-500">
+          Route text-to-image generation through Antigravity's built-in
+          <code className="text-gray-400"> generate_image </code> tool. Agy runs in an isolated scratch
+          directory and PortOS imports only the directed image output. Image editing is not supported.
+        </p>
+        <label className="flex items-center gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={agyEnabled}
+            onChange={(e) => {
+              const enabled = e.target.checked;
+              setAgyEnabled(enabled);
+              if (!enabled && mode === IMAGE_GEN_MODE.AGY) {
+                setMode(pythonPath?.trim() ? IMAGE_GEN_MODE.LOCAL : IMAGE_GEN_MODE.EXTERNAL);
+              }
+            }}
+            className="rounded"
+          />
+          <span className="text-sm text-gray-300">Enable Agy Imagegen</span>
+        </label>
+        {agyEnabled && (
+          <div className="space-y-3 pl-6 border-l-2 border-port-border">
+            <div>
+              <label htmlFor={agyPathId} className="block text-xs font-medium text-gray-400 mb-1">Agy binary path (optional)</label>
+              <input
+                id={agyPathId}
+                type="text"
+                value={agyPath}
+                onChange={(e) => setAgyPath(e.target.value)}
+                className="w-full bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-port-accent"
+                placeholder="agy (uses $PATH)"
+              />
+            </div>
+            <div>
+              <div className="flex items-end justify-between gap-3 mb-1">
+                <label htmlFor={agyModelId} className="block text-xs font-medium text-gray-400">Agent model (drives the session — not the image model)</label>
+                <button
+                  type="button"
+                  onClick={refreshAgyModels}
+                  disabled={agyModelsLoading}
+                  className="text-xs text-port-accent hover:underline disabled:opacity-50"
+                >
+                  {agyModelsLoading ? 'Loading…' : 'Refresh models'}
+                </button>
+              </div>
+              <input
+                id={agyModelId}
+                list={agyModelsListId}
+                type="text"
+                value={agyModel}
+                onChange={(e) => setAgyModel(e.target.value)}
+                className="w-full bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-port-accent"
+                placeholder={`${AGY_IMAGEGEN_DEFAULT_MODEL} (default)`}
+              />
+              <datalist id={agyModelsListId}>
+                {agyModels.map((modelId) => <option key={modelId} value={modelId} />)}
+              </datalist>
+              {agyModelsError && <p className="text-xs text-port-warning mt-1">{agyModelsError}. You can still enter a custom model id.</p>}
+              {/* This is the model `agy --model` runs the SESSION on — the agent that
+                  calls the built-in generate_image tool. Agy exposes no knob for the
+                  underlying image model (generate_image takes Prompt / ImageName /
+                  AspectRatio / ImagePaths and nothing else — schema re-dumped from a
+                  live session 2026-07-30, agy 1.1.8), so there is no imagen-* option to
+                  pick here — the image model is fixed server-side (see the read-only
+                  row below and AGY_IMAGEGEN_IMAGE_MODEL). An id outside `agy models`
+                  makes agy exit non-zero before generating, which is why the list is a
+                  live probe. */}
+              {!agyModelsError && (
+                <p className="text-xs text-gray-500 mt-1">
+                  The agent model Agy runs the session on — it drives the built-in{' '}
+                  <code className="text-gray-400">generate_image</code> tool. Leave empty to
+                  use the cheap default (<code className="text-gray-400">{AGY_IMAGEGEN_DEFAULT_MODEL}</code>).
+                  Renders can pin a different agent model per queue item on the Image Gen page.
+                </p>
+              )}
+            </div>
+            <div>
+              <span className="block text-xs font-medium text-gray-400 mb-1">Image model</span>
+              <p className="text-sm text-gray-300">
+                <code className="text-gray-300">{AGY_IMAGEGEN_IMAGE_MODEL}</code>{' '}
+                <span className="text-xs text-gray-500">
+                  — chosen by Antigravity server-side; not selectable through the CLI
+                  (no tool parameter, no <code>--model</code> id, prompt requests are ignored —
+                  agy will claim it honored one, but the pixels come out identical).
+                </span>
+              </p>
+            </div>
+            <CleanersToggles
+              cleanC2PA={cleanC2PAByMode.agy}
+              denoise={denoiseByMode.agy}
+              onCleanC2PAChange={setCleanC2PAFor(IMAGE_GEN_MODE.AGY)}
+              onDenoiseChange={setDenoiseFor(IMAGE_GEN_MODE.AGY)}
+            />
+          </div>
+        )}
+      </div>
+      )}
+
       {/* HuggingFace token — used by local Flux models (FLUX.1-dev, FLUX.2-klein).
           Independent of the mode picker because the token persists in settings
           and applies whenever local image gen runs. */}
@@ -944,9 +1287,10 @@ export function ImageGenTab() {
       </div>
 
       {/* Persistent global save + status bar — applies across every tab since
-          Save persists the whole imageGen config and Test Connection probes the
-          active backend. Kept outside the tab panel so it's reachable no matter
-          which section is open. */}
+          Save persists the whole imageGen config. Test Connection probes the
+          provider whose tab is open (falling back to the saved default backend
+          on the non-provider tabs). Kept outside the tab panel so it's
+          reachable no matter which section is open. */}
       <div className="flex items-center gap-3 pt-3 border-t border-port-border">
         <button
           type="button"
@@ -962,12 +1306,14 @@ export function ImageGenTab() {
           onClick={checkStatus}
           disabled={checking || isDirty}
           className="flex items-center gap-2 px-4 py-2 bg-port-border hover:bg-port-border/70 text-white text-sm rounded-lg transition-colors disabled:opacity-50 min-h-[40px]"
-          title={isDirty ? 'Save settings first to test' : 'Probe the active backend'}
+          title={isDirty
+            ? 'Save settings first to test'
+            : `Probe ${probeMode ? activeTab.label : 'the active backend'}`}
         >
           {checking ? <BrailleSpinner /> : <Zap size={14} />}
           Test Connection
         </button>
-        {status && (
+        {status?.forTab === mediaTab && (
           <span className={`text-sm ${status.connected ? 'text-port-success' : 'text-port-error'}`}>
             {status.connected
               ? `${status.mode} — ${status.model || status.pythonPath}`

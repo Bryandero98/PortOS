@@ -28,6 +28,9 @@ import { ServerError } from '../../lib/errorHandler.js';
 import { PATHS, ensureDir, resolveGalleryImage } from '../../lib/fileUtils.js';
 import { getSettings } from '../settings.js';
 import { IMAGE_GEN_MODE, CLOUD_IMAGE_GEN_MODES, resolveImageCleaners } from './index.js';
+import { resolveRenderTargetConfig } from './cloudProviderConfig.js';
+import { RENDER_TARGET, recordRenderPin } from '../../lib/renderTargets.js';
+import { getProject as getMusicVideoProject } from '../musicVideo/projects.js';
 import { getImageModels, isFlux2 } from '../../lib/mediaModels.js';
 
 // Only the formats mflux can decode — mirrors the route's MIME_TO_EXT map
@@ -77,7 +80,36 @@ export async function prepareGenerateParams({ data, files, referenceImageFields 
   // while the actual generation silently ignored them. (Reading settings here
   // is cheap — it's already read again below for the per-mode dispatch.)
   const settings = await getSettings();
-  const mode = data.mode || settings.imageGen?.mode || IMAGE_GEN_MODE.EXTERNAL;
+  let mode = data.mode || settings.imageGen?.mode || IMAGE_GEN_MODE.EXTERNAL;
+  // #3231 Phase 4 — Music Video scene-frame renders resolve through the
+  // render-target ladder: the owning project's record pin
+  // (`imageMode`/`imageModelId`) → `renderDefaults['music-video']` → the
+  // install default above. The director board sends NO mode with its frame
+  // renders, so the record/target pins are live without any client seeding
+  // (unlike the universe batch form). An explicit per-request mode wins
+  // outright (and blocks the pinned model from leaking), so the project fetch
+  // is skipped entirely in that case. The layered model is stamped onto
+  // `data.cloudModel` so the route/dispatch resolution downstream picks it up;
+  // an explicit per-request cloudModel wins untouched.
+  if (!data.mode && data.musicVideo?.projectId) {
+    const project = await getMusicVideoProject(data.musicVideo.projectId).catch(() => null);
+    const pin = recordRenderPin(project || {});
+    const resolved = resolveRenderTargetConfig(settings, RENDER_TARGET.MUSIC_VIDEO, {
+      model: data.cloudModel || null,
+      recordMode: pin.mode,
+      recordModel: pin.modelId,
+      fallbackMode: IMAGE_GEN_MODE.EXTERNAL,
+    });
+    mode = resolved.mode;
+    if (!data.cloudModel && resolved.cloud?.modelId) data.cloudModel = resolved.cloud.modelId;
+  }
+  if (mode === IMAGE_GEN_MODE.AGY && (initUpload || data.initImageFile)) {
+    cleanupReqFilesTemp();
+    throw new ServerError('Agy Imagegen supports text-to-image only', {
+      status: 400,
+      code: 'AGY_IMAGE_EDIT_UNSUPPORTED',
+    });
+  }
 
   // Resolve cleaners ONCE at the route layer so all three dispatch paths
   // (synchronous external, codex queue, local queue) see the same values.
@@ -163,12 +195,13 @@ export async function prepareGenerateParams({ data, files, referenceImageFields 
   }
 
   // Empty prompt is allowed for i2i / local / external, but cloud-CLI
-  // text-to-image (codex/grok, no init image) still needs one — reject
+  // text-to-image (no init image) still needs one — reject
   // synchronously here so direct API callers get a 400 instead of a
   // 200-then-async-job-failure. Mirrors the guards in codex.js/grok.js and
   // the client's needs-prompt gate.
   if (CLOUD_IMAGE_GEN_MODES.includes(mode) && !initImagePath && !data.prompt?.trim()) {
-    throw new ServerError(`Prompt is required for ${mode === IMAGE_GEN_MODE.CODEX ? 'Codex' : 'Grok'} text-to-image`, { status: 400, code: 'VALIDATION_ERROR' });
+    const label = mode === IMAGE_GEN_MODE.CODEX ? 'Codex' : mode === IMAGE_GEN_MODE.GROK ? 'Grok' : 'Agy';
+    throw new ServerError(`Prompt is required for ${label} text-to-image`, { status: 400, code: 'VALIDATION_ERROR' });
   }
 
   if (data.guidance == null && data.cfgScale != null) {

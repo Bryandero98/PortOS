@@ -2,6 +2,8 @@
 // access — these turn the text git prints into structured data. The
 // orchestration that actually runs git lives in server/services/git.js.
 
+import { SENTINEL_COMPLETION_MARKER, stripLifecycleLines } from './agentOutputMarkers.js';
+
 /**
  * Map a 2-char porcelain status code to a human-readable label.
  * Falls back to the trimmed code for unmapped combinations.
@@ -80,34 +82,61 @@ export function parseSubmoduleStatusLine(line) {
 
 /**
  * Extract a meaningful implementation summary from raw agent output.
- * Agents typically end their output with a summary of what was implemented.
- * This function finds the last tool-call artifact in the tail of the output
- * and returns everything after it, cleaned up.
+ *
+ * Two shapes reach this:
+ *   - A TUI agent's `output.txt`, which is lifecycle telemetry plus the
+ *     `.agent-done` sentinel summary ingested behind
+ *     `SENTINEL_COMPLETION_MARKER`. When that marker is present, everything
+ *     after it IS the agent's summary — nothing before it was ever the agent
+ *     talking, so the tool-line walk must not be allowed to reach back into it.
+ *   - A CLI agent's streamed output, which ends with a summary after the last
+ *     tool-call artifact. That's the fallback walk.
+ *
+ * Either way, PortOS-authored lifecycle status lines are dropped: they are
+ * telemetry for the agent card, and a PR body that opens with
+ * "📟 TUI session started: …" is noise the reviewer has to scroll past.
+ *
  * @param {string} output - Raw agent output
  * @returns {string|null} Cleaned summary text, or null if nothing usable
  */
 export function extractAgentSummary(output) {
   if (!output || output.length < 50) return null;
 
-  // Take the last ~4000 chars where the summary typically lives
-  const tail = output.slice(-4000);
-  const lines = tail.split('\n');
+  // Anchor on the completion marker when the agent wrote a sentinel; otherwise
+  // fall back to the last ~4000 chars, where a streamed summary typically lives.
+  // The marker is searched in the FULL output, not the tail — a long sentinel
+  // summary can itself run past 4000 chars and push the marker out of the window.
+  const markerIdx = output.lastIndexOf(SENTINEL_COMPLETION_MARKER);
+  const region = markerIdx >= 0
+    ? output.slice(markerIdx + SENTINEL_COMPLETION_MARKER.length)
+    : output.slice(-4000);
+  const lines = region.split('\n');
 
-  // Find the last tool-call artifact line index.
-  // Everything after it is the agent's final summary.
-  let lastToolLine = -1;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const trimmed = lines[i].trimStart();
-    if (trimmed.startsWith('→') || trimmed.startsWith('🔧') || /^\s*\$ /.test(lines[i])) {
-      lastToolLine = i;
-      break;
+  let summaryLines;
+  if (markerIdx >= 0) {
+    // Everything past the marker is the sentinel, appended verbatim and
+    // contiguously by `ingestDoneSentinel` at the top of finalize — no other
+    // `appendLine` runs after it. So take it as-is: filtering here could only
+    // ever delete the agent's own words (a summary is free to contain a line
+    // like "✅ Tests passed").
+    summaryLines = lines;
+  } else {
+    // Find the last tool-call artifact line index.
+    // Everything after it is the agent's final summary.
+    let lastToolLine = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const trimmed = lines[i].trimStart();
+      if (trimmed.startsWith('→') || trimmed.startsWith('🔧') || /^\s*\$ /.test(lines[i])) {
+        lastToolLine = i;
+        break;
+      }
     }
+    summaryLines = lastToolLine >= 0 ? lines.slice(lastToolLine + 1) : lines;
+    // No marker: a TUI agent that finished without writing a sentinel (idle-
+    // complete) leaves a buffer of pure telemetry, which would otherwise become
+    // the whole PR body. Drop the lines PortOS is known to emit.
+    summaryLines = stripLifecycleLines(summaryLines);
   }
-
-  // Extract everything after the last tool line
-  const summaryLines = lastToolLine >= 0
-    ? lines.slice(lastToolLine + 1)
-    : lines;
 
   // Trim leading/trailing blank lines
   while (summaryLines.length && !summaryLines[0].trim()) summaryLines.shift();
@@ -120,6 +149,16 @@ export function extractAgentSummary(output) {
   while (summaryLines.length && /^\s*(#{1,6}\s*)?summary\s*:?\s*$/i.test(summaryLines[0])) {
     summaryLines.shift();
     while (summaryLines.length && !summaryLines[0].trim()) summaryLines.shift();
+  }
+
+  // Drop a trailing "## Branch" / "## PR" section. The sentinel template asks for
+  // one so a human reading the agent card knows where the work landed — but in a
+  // PR description the forge already shows the head branch, and a "## PR" section
+  // is a link to the very page you're reading.
+  const tailIdx = summaryLines.findIndex(l => /^\s*(#{1,6}\s*)?(branch|pr)\s*:?\s*$/i.test(l));
+  if (tailIdx >= 0) {
+    summaryLines = summaryLines.slice(0, tailIdx);
+    while (summaryLines.length && !summaryLines[summaryLines.length - 1].trim()) summaryLines.pop();
   }
 
   const summary = summaryLines.join('\n').trim();

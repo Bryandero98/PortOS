@@ -95,7 +95,8 @@ import {
   Clapperboard,
   PersonStanding,
   Box,
-  Boxes
+  Boxes,
+  Gamepad2
 } from 'lucide-react';
 /* global __APP_VERSION__ */
 import { safeReadStorage, safeWriteStorage } from '../lib/safeStorage';
@@ -226,6 +227,7 @@ const navItems = [
       { to: '/creative-commission', label: 'Creative Commissions', icon: CalendarClock },
       { to: '/creative-director', label: 'Creative Director', icon: Clapperboard },
       { to: '/pipeline/editorial-checks', label: 'Editorial Checks', icon: ListChecks },
+      { to: '/game', label: 'Game', icon: Gamepad2 },
       { to: '/importer', label: 'Importer', icon: FileInput },
       { to: '/media', label: 'Media Gen', icon: Layers },
       { to: '/mood-boards', label: 'Mood Boards', icon: Palette },
@@ -1208,6 +1210,9 @@ export default function Layout() {
             location.pathname.startsWith('/brain') ||
             location.pathname.startsWith('/digital-twin') ||
             location.pathname.startsWith('/feature-agents') ||
+            // Only Game DETAIL workspaces own an internal scroll region; the
+            // bare /game index stays on the normal padded page layout.
+            /^\/game\/[^/]+\/?$/.test(location.pathname) ||
             location.pathname.startsWith('/goals') ||
             location.pathname.startsWith('/insights') ||
             location.pathname.startsWith('/meatspace') ||

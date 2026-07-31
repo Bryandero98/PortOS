@@ -12,7 +12,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import sharp from 'sharp';
 import { mkdir, writeFile, readFile } from 'fs/promises';
-import { writeCandidatePng, placeCandidate as placeCandidateFixture } from './spriteTestFixtures.js';
+import { writeCandidatePng, placeCandidate as placeCandidateFixture, expectCarriesCorrection } from './spriteTestFixtures.js';
 
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'sprite-reference-test-'));
 
@@ -340,7 +340,7 @@ describe('startReferenceGeneration', () => {
     await lockMain(id);
     await startReferenceGeneration(id, { target: 'north-east', correctionPrompt: '  no pocket on the right sleeve  ' });
     const call = enqueueJob.mock.calls[0][0];
-    expect(call.params.prompt).toContain('Important correction — apply this over the attached reference: no pocket on the right sleeve');
+    expectCarriesCorrection(expect, call.params.prompt, 'no pocket on the right sleeve');
     // Trimmed and carried on the tag so the completion hook's sidecar records it.
     expect(call.params.spriteRef.correctionPrompt).toBe('no pocket on the right sleeve');
   });
@@ -357,7 +357,7 @@ describe('startReferenceGeneration', () => {
     const call = enqueueJob.mock.calls[0][0];
     expect(call.params.initImagePath).toBe(join(TEST_ROOT, 'sprites', id, candidate));
     expect(call.params.initImageStrength).toBe(0.65);
-    expect(call.params.prompt).toContain('Important correction — apply this over the attached turnaround: add the missing pocket to the right sleeve');
+    expectCarriesCorrection(expect, call.params.prompt, 'add the missing pocket to the right sleeve');
     expect(call.params.spriteRef).toMatchObject({
       designReferencePath: candidate,
       correctionPrompt: 'add the missing pocket to the right sleeve',
@@ -380,8 +380,7 @@ describe('startReferenceGeneration', () => {
     enqueueJob.mockClear();
     await startReferenceGeneration(id, { target: 'main', correctionPrompt: '  the cloak hem is cut off  ' });
     const call = enqueueJob.mock.calls[0][0];
-    expect(call.params.prompt)
-      .toContain('Important correction — apply this over the attached turnaround: the cloak hem is cut off');
+    expectCarriesCorrection(expect, call.params.prompt, 'the cloak hem is cut off');
     expect(call.params.spriteRef.correctionPrompt).toBe('the cloak hem is cut off');
   });
 
@@ -409,14 +408,13 @@ describe('startReferenceGeneration', () => {
     const call = enqueueJob.mock.calls[0][0];
     // Both inputs land: designPrompt replaces the design, the correction is additive.
     expect(call.params.prompt).toContain('Design: a willow by a pond');
-    expect(call.params.prompt)
-      .toContain('Important correction — apply this over the attached reference: the trunk leans too far right');
+    expectCarriesCorrection(expect, call.params.prompt, 'the trunk leans too far right');
     expect(call.params.spriteRef.correctionPrompt).toBe('the trunk leans too far right');
 
     enqueueJob.mockClear();
     await startReferenceGeneration(id, { target: 'main', designPrompt: 'a willow by a pond', correctionPrompt: '  ' });
     const blank = enqueueJob.mock.calls[0][0];
-    expect(blank.params.prompt).not.toContain('Important correction');
+    expect(blank.params.prompt).not.toContain('Required fix');
     expect(blank.params.spriteRef).not.toHaveProperty('correctionPrompt');
   });
 
@@ -426,7 +424,7 @@ describe('startReferenceGeneration', () => {
     await lockMain(id);
     await startReferenceGeneration(id, { target: 'east', correctionPrompt: '   ' });
     const call = enqueueJob.mock.calls[0][0];
-    expect(call.params.prompt).not.toContain('Important correction');
+    expect(call.params.prompt).not.toContain('Required fix');
     expect(call.params.spriteRef).not.toHaveProperty('correctionPrompt');
   });
 

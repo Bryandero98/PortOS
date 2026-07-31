@@ -17,8 +17,11 @@ import {
   effectiveTrack, getEffectiveAnimationTracks, getEffectiveAnimationTrackIds,
 } from '../services/sprites/animationTrackStore.js';
 import { QUEUEABLE_IMAGE_MODES } from '../services/imageGen/modes.js';
+import { VIDEO_GEN_MODES } from '../services/videoGen/modes.js';
+import { RENDER_TARGETS, RENDER_TARGET_BACKEND_AUTO, RECORD_RENDER_MODEL_MAX } from './renderTargets.js';
 import { GROK_VIDEO_DURATIONS } from './grokVideoClip.js';
 import { PR_COMPLETION_VALUES } from './prDisposition.js';
+import { EFFORT_LEVELS } from './providerModels.js';
 
 // Clip lengths grok's image_to_video delivers, as a Zod union built from the
 // single shared list (see grokVideoClip.js). `z.literal` per value rather than
@@ -313,6 +316,80 @@ export const referenceRepoUpdateSchema = z.object({
 // from appSchema (see comment there) so it can't sneak in via PUT
 // either — all ref CRUD goes through /api/apps/:appId/reference-repos.
 export const appUpdateSchema = partialWithoutDefaults(appSchema);
+
+// Game studio (#3177): managed-app binding, reusable asset bindings, bundle
+// compile, and user-triggered AI feedback.
+const gameNameSchema = z.string().trim().min(1).max(120);
+const gameAppIdSchema = z.string().trim().min(1).max(128);
+const gameAssetIdSchema = z.string().trim().min(1).max(128);
+
+export const gameCreateSchema = z.object({
+  appId: gameAppIdSchema,
+  name: gameNameSchema,
+}).strict();
+
+export const gameUpdateSchema = z.object({
+  appId: gameAppIdSchema.optional(),
+  name: gameNameSchema.optional(),
+}).strict().refine((patch) => Object.keys(patch).length > 0, {
+  message: 'at least one field is required',
+});
+
+export const gameSpriteBindingSchema = z.object({
+  spriteId: gameAssetIdSchema,
+}).strict();
+
+export const gameMusicBindingSchema = z.object({
+  trackId: gameAssetIdSchema,
+}).strict();
+
+export const GAME_ARTWORK_ROLES = [
+  'title-key-art',
+  'game-logo',
+  'biome-luminous-wilds',
+  'biome-mineral-steppe',
+  'biome-tide-meadow',
+  'loading-screen',
+  'other',
+];
+
+const gameArtworkFilenameSchema = z.string()
+  .trim()
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*\.png$/i, 'must be a gallery PNG filename')
+  .max(255);
+const gameArtworkDestinationSchema = z.string()
+  .trim()
+  .min(1)
+  .max(500)
+  .regex(/\.png$/i, 'must end in .png')
+  .refine((value) => !value.startsWith('/') && !value.includes('\\'), 'must be a repo-relative path')
+  .refine((value) => !value.split('/').includes('..'), 'must not traverse outside the app repository');
+
+export const gameArtworkBindingSchema = z.object({
+  imageFilename: gameArtworkFilenameSchema,
+  label: z.string().trim().min(1).max(120),
+  role: z.enum(GAME_ARTWORK_ROLES),
+  destinationPath: gameArtworkDestinationSchema,
+}).strict();
+
+export const gameArtworkBindingUpdateSchema = z.object({
+  label: z.string().trim().min(1).max(120).optional(),
+  role: z.enum(GAME_ARTWORK_ROLES).optional(),
+  destinationPath: gameArtworkDestinationSchema.optional(),
+}).strict().refine((patch) => Object.keys(patch).length > 0, {
+  message: 'at least one field is required',
+});
+
+export const gameArtworkPublishSchema = z.object({
+  acknowledgeOverwrite: z.boolean().optional(),
+}).strict();
+
+export const gameFeedbackSchema = z.object({
+  providerId: z.string().trim().min(1).max(128),
+  model: z.string().trim().min(1).max(256).optional(),
+  effort: z.enum(EFFORT_LEVELS).nullable().optional(),
+  prompt: z.string().trim().min(1).max(4_000),
+}).strict();
 
 // Provider schema
 export const providerSchema = z.object({
@@ -785,6 +862,21 @@ export function validateRequest(schema, data) {
 }
 
 // =============================================================================
+// SHELL
+// =============================================================================
+
+// POST /api/shell/sessions/:sessionId/image — hand a photo to whatever is running
+// in a shell session. `data` is base64 image bytes; the real ceiling is enforced
+// by `saveImageUpload` (MAX_SCREENSHOT_BYTES) against the DECODED buffer, so the
+// cap here only refuses a payload too large to be worth decoding. The message cap
+// matches the BTW route's — both end up bracket-pasted into the same TUI prompt.
+export const shellImageDropSchema = z.object({
+  data: z.string().min(1, 'data is required (base64)').max(64 * 1024 * 1024),
+  filename: z.string().min(1, 'filename is required').max(255),
+  message: z.string().max(5000).optional()
+});
+
+// =============================================================================
 // CLIENT ERROR REPORT
 // =============================================================================
 
@@ -926,6 +1018,86 @@ export const imageGenGrokSettingsSchema = z.object({
   denoise: z.boolean().optional(),
 });
 
+// Shared "valid model id" base — one definition of the shape a cloud-CLI
+// model id may take (bounds + charset), derived per consumer below so a
+// future tweak (e.g. allowing `@`) lands everywhere at once. Exported for
+// route schemas that carry a one-off model override (universe renderSchema).
+export const cloudModelIdString = (message) => z.string().trim().max(200)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/, message);
+
+const agyImageModelSchema = z.preprocess(
+  (v) => (v === '' ? undefined : v),
+  cloudModelIdString('model must be a valid Agy model id').optional(),
+);
+
+// Per-surface render defaults (`settings.renderDefaults`, #3231 Phase 2) —
+// one optional entry per render target, each pinning a backend and/or a cloud
+// model for that surface. `'auto'`, `''`, and null all mean "no pin — fall
+// through to the install default" (renderTargetDefaults normalizes them).
+// Deliberately TOLERANT of unknown keys at both levels (no `.strict()`): the
+// Settings UI round-trips the WHOLE stored object on every save, so after a
+// version rollback (or a newer client against an older server) a target/field
+// this build doesn't know would otherwise 400 every Image Gen save until the
+// user hand-edits settings.json — the same forward-compat call the settings
+// route makes for catalogUserTypes. The route persists the raw body, so a
+// newer build's pins survive the round-trip intact rather than being dropped.
+// Known fields keep full enum/charset enforcement (that's what stops a bad
+// model id reaching a CLI argv); the client mirror's parity test guards the
+// known-key alphabet.
+const renderTargetModelSchema = z.preprocess(
+  (v) => (v === '' ? null : v),
+  cloudModelIdString('model must be a valid model id').nullable().optional(),
+);
+// Shared by the per-target entries and `videoGenSettingsSchema.mode` below —
+// one copy of the video-backend pin alphabet.
+const videoModePinSchema = z.enum([RENDER_TARGET_BACKEND_AUTO, ...VIDEO_GEN_MODES]).nullable().optional();
+const renderTargetEntrySchema = z.object({
+  imageMode: z.enum([RENDER_TARGET_BACKEND_AUTO, ...QUEUEABLE_IMAGE_MODES]).nullable().optional(),
+  imageModel: renderTargetModelSchema,
+  videoMode: videoModePinSchema,
+  videoModel: renderTargetModelSchema,
+});
+export const renderDefaultsSettingsSchema = z.object(
+  Object.fromEntries(RENDER_TARGETS.map((t) => [t, renderTargetEntrySchema.optional()])),
+);
+
+// Install-wide video render pin (`settings.videoGen`, #3231 Phase 4) — the
+// third rung in resolveVideoMode's ladder (request → target pin → THIS →
+// local). `'auto'`/`''`/null all mean "no pin — local". Tolerant of unknown
+// keys for the same rollback/forward-compat reason as renderDefaults above.
+// `defaultModelId` predates this schema (pipeline storyboards/episodeVideo
+// read it as the local-model default) — typed here so a Settings save can't
+// write junk to it.
+export const videoGenSettingsSchema = z.object({
+  mode: videoModePinSchema,
+  defaultModelId: z.preprocess(emptyToNull, z.string().trim().max(64).nullable().optional()),
+});
+
+// Per-RECORD render pin (#3231 Phase 3) — the flat `imageMode`/`imageModelId`
+// field pair persisted on universe / series / sprite records, following the
+// creative-commission shape. Spread into a record's create + patch schemas.
+// Absent preserves; `'auto'`/`''`/null clears (the sanitizers collapse all
+// three to "no pin"). The model id keeps the shared cloud-model charset so a
+// pinned id can safely reach a CLI argv.
+export const recordRenderPinFields = {
+  imageMode: z.preprocess(
+    (v) => (v === '' ? null : v),
+    z.enum([RENDER_TARGET_BACKEND_AUTO, ...QUEUEABLE_IMAGE_MODES]).nullable().optional(),
+  ),
+  imageModelId: z.preprocess(
+    (v) => (v === '' ? null : v),
+    cloudModelIdString('model must be a valid model id').max(RECORD_RENDER_MODEL_MAX).nullable().optional(),
+  ),
+};
+
+export const imageGenAgySettingsSchema = z.object({
+  enabled: z.boolean().optional(),
+  agyPath: z.preprocess((v) => (v === '' ? undefined : v), z.string().trim().max(500).optional()),
+  model: agyImageModelSchema,
+  cleanC2PA: z.boolean().optional(),
+  denoise: z.boolean().optional(),
+});
+
 // Provider-agnostic embeddings settings. `provider: 'none'` is the default and
 // makes embedText() a no-op — rows persist without an embedding and a future
 // admin "Re-embed missing" action backfills. Model is optional so the user can
@@ -1037,6 +1209,9 @@ export const spriteRecordUpdateSchema = z.object({
   // whatever hex they carried (the importer writes via upsert, not this
   // schema); null clears back to auto-select-on-lock.
   chromaKey: z.enum(CHROMA_KEY_HEXES).nullable().optional(),
+  // Per-record render pin (#3231 Phase 3) — this sprite's default image
+  // backend + cloud model for reference renders.
+  ...recordRenderPinFields,
 });
 
 // Phase 4 (issue #2898): publish binding — the shape check only; app
@@ -1113,6 +1288,12 @@ export const spritePublishBindingSchema = z.object({
   atlasDestPath: spriteRepoRelativePath.refine((p) => p.toLowerCase().endsWith('.png'), {
     message: 'atlasDestPath must point at a .png atlas file',
   }),
+  portraitDestPath: spriteRepoRelativePath.refine((p) => p.toLowerCase().endsWith('.png'), {
+    message: 'portraitDestPath must point at a .png image file',
+  }).nullable().optional(),
+  presentationIdleDestPath: spriteRepoRelativePath.refine((p) => p.toLowerCase().endsWith('.png'), {
+    message: 'presentationIdleDestPath must point at a .png sprite strip',
+  }).nullable().optional(),
   codeBinding: z.object({
     path: spriteRepoRelativePath,
     resourcePath: z.string().min(1).max(1024),
@@ -1153,6 +1334,8 @@ export const spriteCreateSchema = z.object({
   // in practice. Absent → the service defaults to 'character'.
   kind: z.enum(SPRITE_RECORD_KINDS).optional(),
   spec: z.record(z.string(), z.unknown()).nullable().optional(),
+  // Per-record render pin (#3231 Phase 3) — seedable at create time (fork).
+  ...recordRenderPinFields,
 });
 
 // 'turnaround' is the identity root of the turnaround-first workflow (#2979) —
@@ -1298,6 +1481,10 @@ export function spriteTrackGenerateSchema(track) {
 export const spriteTrackApproveSchema = z.object({
   direction: spriteWalkDirectionSchema.optional(),
   runId: spriteResolvableRunIdSchema,
+});
+
+export const spriteTrackReopenSchema = z.object({
+  direction: spriteWalkDirectionSchema.optional(),
 });
 
 // The `:trackId` path param. Shape gate only — whether the id names a REGISTERED

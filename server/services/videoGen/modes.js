@@ -20,11 +20,13 @@
  * literal 'grok', which is exactly why the cloud discriminator can share the
  * key; a grok job carries the semantic separately as `videoMode`.
  *
- * Dependency-free apart from the image enum (which is itself a leaf), so
- * `lib/validation.js` and the commission validation leaf can both import it.
+ * Dependency-free apart from the image enum and the render-target leaf (both
+ * leaves themselves), so `lib/validation.js` and the commission validation
+ * leaf can both import it.
  */
 
 import { IMAGE_GEN_MODE } from '../imageGen/modes.js';
+import { normalizeRenderPinValue } from '../../lib/renderTargets.js';
 
 export const VIDEO_GEN_MODE = Object.freeze({
   LOCAL: IMAGE_GEN_MODE.LOCAL,
@@ -52,20 +54,44 @@ export function isVideoModeUsable(settings, mode) {
 }
 
 /**
- * Resolve the video backend for a render: the per-request/per-record override
- * when that backend is usable, else the install-wide default.
+ * Resolve the video backend for a render through the video pin ladder (#3231
+ * Phase 4): per-request/per-record override → the surface's saved
+ * `renderDefaults[target].videoMode` pin → the install-wide
+ * `settings.videoGen.mode` pin → LOCAL. Every rung is usability-gated (a
+ * pinned grok whose `imageGen.grok.enabled` toggle is off degrades instead of
+ * bricking the render — same contract as the image side's
+ * resolveRenderTargetConfig).
  *
  * Mirrors `pickUsableMode` (imageGen/cloudProviderConfig.js) in shape and
- * intent, but the DEFAULT differs deliberately: image gen prefers an enabled
- * cloud backend, while video defaults to LOCAL. A local video render is free and
- * fully controllable (model/frames/fps/LoRAs); grok video spends remote quota
- * and only delivers 6s or 10s clips (see lib/grokVideoClip.js). Silently
+ * intent, but the FALLBACK differs deliberately: image gen prefers an enabled
+ * cloud backend, while video falls back to LOCAL. A local video render is free
+ * and fully controllable (model/frames/fps/LoRAs); grok video spends remote
+ * quota and only delivers 6s or 10s clips (see lib/grokVideoClip.js). Silently
  * upgrading every unpinned video render to a paid backend because the user
- * enabled grok for IMAGES would be a surprise spend, so grok video stays opt-in
- * per record. There is no `settings.videoGen.mode` install-wide pin today; when
- * one lands it belongs as the second candidate here.
+ * enabled grok for IMAGES would be a surprise spend — grok video renders only
+ * when a request, record, or explicit user pin names it.
  */
-export function resolveVideoMode(requested, settings) {
-  if (requested && isVideoModeUsable(settings, requested)) return requested;
+// The ONE enumeration of the video pin rungs (target pin, then install pin) —
+// both the resolver below and hasVideoPin walk this list, so adding a rung is
+// one edit and the "is anything pinned?" question can't drift from the ladder.
+const videoPinRungs = (settings, target) => [
+  target ? normalizeRenderPinValue(settings?.renderDefaults?.[target]?.videoMode) : null,
+  normalizeRenderPinValue(settings?.videoGen?.mode),
+];
+
+/**
+ * Does ANY video pin rung name a backend for this surface? Presence only — no
+ * usability gating — so callers with a byte-identical-when-auto contract (the
+ * creative agent's enforceRenderBackendPin) can gate on the same rung list the
+ * resolver walks instead of re-enumerating it.
+ */
+export function hasVideoPin(settings, { target = null } = {}) {
+  return videoPinRungs(settings, target).some(Boolean);
+}
+
+export function resolveVideoMode(requested, settings, { target = null } = {}) {
+  for (const mode of [requested, ...videoPinRungs(settings, target)]) {
+    if (mode && isVideoModeUsable(settings, mode)) return mode;
+  }
   return VIDEO_GEN_MODE.LOCAL;
 }

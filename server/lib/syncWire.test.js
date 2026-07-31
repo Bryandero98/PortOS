@@ -179,6 +179,19 @@ describe('syncWire', () => {
       expect(JSON.stringify(withRefs)).toBe(JSON.stringify(without));
     });
 
+    it('strips the per-record render pin from universe wire form (#3231 Phase 3)', () => {
+      // imageMode/imageModelId are install-capability choices (the peer may
+      // not have the pinned backend configured) — wire-local like
+      // styleImageRefs, and byte-stable against a record without the pair.
+      const withPin = sanitizeRecordForWire('universe', {
+        id: 'u1', name: 'U', imageMode: 'agy', imageModelId: 'gemini-3.6-flash-low',
+      });
+      expect(withPin.imageMode).toBeUndefined();
+      expect(withPin.imageModelId).toBeUndefined();
+      const without = sanitizeRecordForWire('universe', { id: 'u1', name: 'U' });
+      expect(JSON.stringify(withPin)).toBe(JSON.stringify(without));
+    });
+
     it('does NOT strip styleImageRefs from series/issue wire form (universe-only field)', () => {
       // The strip is scoped to `kind === 'universe'` — series/issue records
       // never carry styleImageRefs, but a stray value (hand-edit, corrupted

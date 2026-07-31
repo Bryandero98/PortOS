@@ -16,6 +16,8 @@ import {
   createInvestigationTask,
   buildInvestigationFingerprint,
   redactFailureSnippet,
+  endsAwaitingUserInput,
+  AWAITING_INPUT_TAIL_CHARS,
   MAX_TASK_RETRIES,
   INVESTIGATION_CIRCUIT_WINDOW_MS,
   INVESTIGATION_CIRCUIT_MAX_CREATIONS,
@@ -737,6 +739,64 @@ describe('analyzeAgentFailure — runner completion reason (COMPLETION_REASON_AN
       completionReason: 'agent-signaled-done',
     });
     expect(analysis.category).toBe('rate-limit');
+  });
+
+  // Verbatim-shaped tail of the real incident: a `/do:plan-task` run parked on the
+  // skill's scope question until the idle reaper killed it. The transcript is
+  // repaint-mangled (the TUI spools a SCREEN, not a log), which is why the marker
+  // set only leans on fragments that survive a repaint.
+  const parkedOnSelector = [
+    'Initializing agent session and preparing the working directory.',
+    'Found the real gap. Let me confirm the reuse surface.',
+    '☐ Scope The drum-kit Web Audio play-along already exists in play mode. Which gap should I file?',
+    '❯1.Audible preview in edit + import (Recommended)  2. Edit-mode preview only',
+    'Enter to select · ↑/↓ to navigate · Esc to ancel',
+  ].join('\n');
+
+  it('names the unanswered prompt as the cause of an idle-no-changes run', () => {
+    const analysis = analyzeAgentFailure(parkedOnSelector, { id: 't' }, 'x', {
+      completionReason: 'idle-no-changes',
+      completionError: 'TUI agent idled out with zero uncommitted file changes',
+    });
+    expect(analysis.message).toMatch(/interactive prompt/i);
+    expect(analysis.suggestedFix).toMatch(/non-interactive/i);
+    // Category is deliberately unchanged so the auto-fix tier and the
+    // layered-intelligence failure bucket keep classifying it identically.
+    expect(analysis.category).toBe(COMPLETION_REASON_ANALYSES['idle-no-changes'].category);
+    expect(analysis.completionReason).toBe('idle-no-changes');
+    expect(analysis.origin).toBe('runner');
+  });
+
+  it('preserves the original category when refining an idle-no-activity stall', () => {
+    const analysis = analyzeAgentFailure(parkedOnSelector, { id: 't' }, 'x', {
+      completionReason: 'idle-no-activity',
+    });
+    expect(analysis.category).toBe('startup-failure');
+    expect(analysis.message).toMatch(/interactive prompt/i);
+  });
+
+  it('leaves a plain idle-out alone when no prompt is on screen', () => {
+    const analysis = analyzeAgentFailure(withLead('Ran 4 shell commands and read 2 files.'), { id: 't' }, 'x', {
+      completionReason: 'idle-no-changes',
+    });
+    expect(analysis.message).toBe(COMPLETION_REASON_ANALYSES['idle-no-changes'].message);
+  });
+
+  it('does not re-word a non-idle reason that happens to show a prompt', () => {
+    const analysis = analyzeAgentFailure(parkedOnSelector, { id: 't' }, 'x', {
+      completionReason: 'max-runtime-timeout',
+    });
+    expect(analysis.message).toBe(COMPLETION_REASON_ANALYSES['max-runtime-timeout'].message);
+  });
+
+  it('ignores a prompt the agent got PAST — only the tail counts as parked', () => {
+    const answeredEarly = [
+      'Enter to select · ↑/↓ to navigate',
+      // Enough subsequent work to push the selector out of the tail window.
+      ...Array.from({ length: 60 }, (_, i) => `Edited server/services/file${i}.js and ran the suite.`),
+    ].join('\n');
+    expect(answeredEarly.length).toBeGreaterThan(AWAITING_INPUT_TAIL_CHARS);
+    expect(endsAwaitingUserInput(answeredEarly)).toBe(false);
   });
 
   it('maps every reason to a category ERROR_PATTERNS already produces (no orphan taxonomy tokens)', () => {

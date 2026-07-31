@@ -251,6 +251,15 @@ describe('cosTaskStore.addTask', () => {
     expect(tasks.find(t => t.id === created.id).metadata.slashdoCommand).toBe('plan-task');
   });
 
+  it('persists malware scan report ownership through the task markdown round-trip', async () => {
+    const malwareScan = { linkId: 'a3d2c4e8-810a-4d1a-8ab1-94d3e0a13f8d', reportId: 'b38bdf75-3fe2-498c-9c36-7d512dc078d1' };
+    const created = await addTask({ description: 'Malware scan: example/repo', malwareScan }, 'user');
+    expect(created.metadata.malwareScan).toEqual(malwareScan);
+
+    const { tasks } = await getUserTasks();
+    expect(tasks.find(t => t.id === created.id).metadata.malwareScan).toEqual(malwareScan);
+  });
+
   it('omits slashdo metadata when no workflow is pinned', async () => {
     const created = await addTask({ description: 'ordinary prose task' }, 'user');
     expect(created.metadata.slashdoCommand).toBeUndefined();
@@ -472,6 +481,37 @@ describe('cosTaskStore.updateTask', () => {
     const reopened = await updateTask('task-blk', { status: 'pending' }, 'user');
     expect(reopened.metadata.blockedReason).toBeUndefined();
     expect(reopened.metadata.blockedCategory).toBeUndefined();
+  });
+
+  // The pointer is spent once a task is done or parked for a human: a PERPETUAL
+  // task id gets re-queued for unrelated work later, and a stale existingBranch
+  // would attach that fresh run to a long-merged branch.
+  it('drops the resume pointer on a terminal status', async () => {
+    await addTask({ description: 'res', id: 'task-res' }, 'user');
+    await updateTask('task-res', {
+      metadata: { existingBranch: 'cos/b', resumedFromAgentId: 'agent-x', resumeWorktreePath: '/w/agent-x' }
+    }, 'user');
+    const done = await updateTask('task-res', { status: 'completed' }, 'user');
+    expect(done.metadata.existingBranch).toBeUndefined();
+    expect(done.metadata.resumedFromAgentId).toBeUndefined();
+    expect(done.metadata.resumeWorktreePath).toBeUndefined();
+  });
+
+  // ...but an orphan-cooldown block is a TIMED PAUSE that unblockExpiredOrphanCooldowns
+  // flips back to pending on its own. Stripping the pointer there means the revived
+  // task starts clean and abandons the worktree its dead agent left behind.
+  it('keeps the resume pointer through an orphan-cooldown block', async () => {
+    await addTask({ description: 'cool', id: 'task-cool' }, 'user');
+    await updateTask('task-cool', {
+      metadata: { existingBranch: 'cos/b', resumedFromAgentId: 'agent-x', resumeWorktreePath: '/w/agent-x' }
+    }, 'user');
+    const cooled = await updateTask('task-cool', {
+      status: 'blocked',
+      metadata: { blockedCategory: 'orphan-cooldown', cooldownUntil: '2026-01-01T00:30:00.000Z' }
+    }, 'user');
+    expect(cooled.metadata.existingBranch).toBe('cos/b');
+    expect(cooled.metadata.resumedFromAgentId).toBe('agent-x');
+    expect(cooled.metadata.resumeWorktreePath).toBe('/w/agent-x');
   });
 
   it('releases the federation claim/lease when a task leaves in_progress (#1563)', async () => {

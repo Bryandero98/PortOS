@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getTaskInputHook, getTaskOutputHook, isProgrammaticIoTaskType } from './taskTypeHooks.js';
+import { canRunTaskOutputHookWithoutPayload, getTaskInputHook, getTaskOutputHook, isProgrammaticIoTaskType } from './taskTypeHooks.js';
 
 describe('taskTypeHooks registry', () => {
   it('resolves both hooks for layered-intelligence to callables', async () => {
@@ -14,6 +14,12 @@ describe('taskTypeHooks registry', () => {
     expect(await getTaskOutputHook('security')).toBeNull();
     expect(await getTaskInputHook('does-not-exist')).toBeNull();
     expect(await getTaskOutputHook('does-not-exist')).toBeNull();
+  });
+
+  it('declares only payload-independent hooks safe for sentinel-less recovery', () => {
+    expect(canRunTaskOutputHookWithoutPayload('quota-burn')).toBe(true);
+    expect(canRunTaskOutputHookWithoutPayload('layered-intelligence')).toBe(false);
+    expect(canRunTaskOutputHookWithoutPayload('does-not-exist')).toBe(false);
   });
 });
 

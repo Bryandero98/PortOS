@@ -22,6 +22,8 @@ describe('getVideoSuggestions', () => {
     expect(card.source).toBe('huggingface');
     expect(card.runnerFamily).toBe('ltx-video');
     expect(card.repo).toBe('fal/ltx2.3-audio-reactive-lora');
+    expect(card.file).toBe('ltx2.3_audio_reactive_lora_v2.safetensors');
+    expect(card.name).toBe('LTX-2.3 Audio Reactive V2');
     expect(card.description).toBe('Audio-reactive LTX LoRA.');
     expect(card.previewImageUrl).toBe('https://hf/preview.png');
     expect(card.installUrl).toBe('https://huggingface.co/fal/ltx2.3-audio-reactive-lora');
@@ -32,6 +34,7 @@ describe('getVideoSuggestions', () => {
     const cards = await svc.getVideoSuggestions({ fetchImpl });
     expect(cards.length).toBeGreaterThan(0);
     expect(cards[0].repo).toBe('fal/ltx2.3-audio-reactive-lora');
+    expect(cards[0].file).toBe('ltx2.3_audio_reactive_lora_v2.safetensors');
     expect(cards[0].runnerFamily).toBe('ltx-video');
     // No metadata → no description / preview, but the card is still usable.
     expect(cards[0].description).toBe('');

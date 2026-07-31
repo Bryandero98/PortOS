@@ -19,7 +19,7 @@
 
 import { join } from 'path';
 import { emitLog } from './cosEvents.js';
-import { updateAgent, completeAgent } from './cosAgents.js';
+import { getAgent, updateAgent, completeAgent } from './cosAgents.js';
 import { updateTask } from './cos.js';
 import { getActiveProvider } from './providers.js';
 import { markProviderUsageLimit, markProviderRateLimited } from './providerStatus.js';
@@ -27,7 +27,7 @@ import { release } from './executionLanes.js';
 import { completeExecution, errorExecution } from './toolStateMachine.js';
 import { resolveFailedTaskUpdate, resolveTypeFailureSignal } from './agentErrorAnalysis.js';
 import { completeAgentRun, checkForTaskCommit } from './agentRunTracking.js';
-import { isProgrammaticIoTaskType, resolveTaskHookType, isNonCommittingCoordinatorTask } from './taskTypeHooks.js';
+import { canRunTaskOutputHookWithoutPayload, isProgrammaticIoTaskType, resolveTaskHookType, isNonCommittingCoordinatorTask } from './taskTypeHooks.js';
 import { processAgentCompletion } from './agentCompletion.js';
 import { extractSimplifySummaries } from './agentSummaryExtraction.js';
 
@@ -192,6 +192,7 @@ const HOOK_ABORTED_BEFORE_EVALUATION = new Set(['no-app', 'app-not-found']);
  * subscribes to both), so it can't surface as an unhandled rejection.
  */
 const OUTPUT_HOOK_TIMEOUT_MS = 5 * 60_000;
+const outputHookDispatches = new Map();
 
 export function withOutputHookTimeout(promise, { agentId, timeoutMs = OUTPUT_HOOK_TIMEOUT_MS }) {
   let timer;
@@ -213,6 +214,103 @@ export function withOutputHookTimeout(promise, { agentId, timeoutMs = OUTPUT_HOO
     timer.unref?.();
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Run an agent's task-type output hook at most once, including completion paths
+ * that bypass finalizeAgent after a restart or orphan reap.
+ *
+ * The persisted marker closes the sequential normal/recovery gap; the per-agent
+ * promise closes the smaller same-process race where two completion paths both
+ * observe a running, unmarked agent before either hook finishes.
+ */
+export function dispatchTaskOutputHookOnce({
+  agentId,
+  task,
+  success,
+  workspacePath = null,
+  readPayload = true,
+  recovery = false,
+}) {
+  const existing = outputHookDispatches.get(agentId);
+  if (existing) return existing;
+
+  const persistDispatchMarker = async (result) => {
+    if (!result.ran) return;
+    // Best-effort durability: completion must continue if the marker write
+    // fails, while the in-flight promise still protects concurrent callers
+    // this cycle.
+    await updateAgent(agentId, {
+      metadata: { outputHookDispatchedAt: new Date().toISOString() }
+    }).catch(err => {
+      emitLog('warn', `⚠️ Failed to persist output-hook dispatch marker for ${agentId}: ${err.message}`, { agentId });
+    });
+  };
+
+  const dispatch = (async () => {
+    const agent = await getAgent(agentId).catch(() => null);
+    if (agent?.metadata?.outputHookDispatchedAt) {
+      return { ran: false, alreadyDispatched: true };
+    }
+
+    const hookDispatch = dispatchTaskOutputHook({
+      agentId,
+      task,
+      success,
+      workspacePath,
+      readPayload,
+      recovery,
+    }).catch(err => {
+      emitLog('error', `❌ processTaskOutput hook threw for ${agentId} (${task?.taskType}): ${err.message}`, { agentId, error: err.message });
+      return { ran: true, threw: true };
+    });
+    const result = await withOutputHookTimeout(hookDispatch, { agentId });
+
+    if (result.timedOut) {
+      // The hook is still running. Keep this dispatch in the in-process map so
+      // another completion path cannot start a duplicate, and persist the
+      // durable marker only after the original hook actually settles. If the
+      // process exits first, restart recovery remains free to retry it.
+      hookDispatch
+        .then(persistDispatchMarker)
+        .finally(() => {
+          if (outputHookDispatches.get(agentId) === dispatch) {
+            outputHookDispatches.delete(agentId);
+          }
+        });
+    } else {
+      await persistDispatchMarker(result);
+    }
+    return result;
+  })();
+
+  outputHookDispatches.set(agentId, dispatch);
+  dispatch.then(result => {
+    if (!result.timedOut && outputHookDispatches.get(agentId) === dispatch) {
+      outputHookDispatches.delete(agentId);
+    }
+  }).catch(() => {
+    if (outputHookDispatches.get(agentId) === dispatch) {
+      outputHookDispatches.delete(agentId);
+    }
+  });
+  return dispatch;
+}
+
+/**
+ * Recovery paths try the agent's persisted workspace when it still exists.
+ * When it does not, only hooks whose registry contract says they are
+ * payload-independent may run with null output.
+ */
+export function dispatchRecoveredTaskOutputHook({ agentId, task, success, workspacePath = null }) {
+  return dispatchTaskOutputHookOnce({
+    agentId,
+    task,
+    success,
+    workspacePath,
+    readPayload: !!workspacePath,
+    recovery: true,
+  });
 }
 
 /**
@@ -318,15 +416,7 @@ export async function finalizeAgent({
   // of awaiting here is that the agent still counts against the CoS concurrency
   // gate for the hook's duration, so the dispatch is hard-bounded — see
   // withOutputHookTimeout.
-  const hookResult = await withOutputHookTimeout(
-    dispatchTaskOutputHook({ agentId, task, success, workspacePath }),
-    { agentId }
-  ).catch(err => {
-    emitLog('error', `❌ processTaskOutput hook threw for ${agentId} (${task?.taskType}): ${err.message}`, { agentId, error: err.message });
-    // A thrown hook is a non-success signal for the type ledger (#2616) and a
-    // rejected success criterion for task-learning (#2727).
-    return { ran: true, threw: true };
-  });
+  const hookResult = await dispatchTaskOutputHookOnce({ agentId, task, success, workspacePath });
 
   // Success-criteria validation (issue #2344): stamp an explicit pass/fail (or
   // null-when-undeclared) verdict onto the completion result, distinct from the
@@ -431,7 +521,7 @@ export async function finalizeAgent({
  * task types (no hook). The hook receives `{ appId, success, payload, ... }` and
  * loads its own app/config — finalizeAgent stays domain-agnostic.
  */
-async function dispatchTaskOutputHook({ agentId, task, success, workspacePath }) {
+async function dispatchTaskOutputHook({ agentId, task, success, workspacePath, readPayload = true, recovery = false }) {
   // Shared resolver with evaluateSuccessCriteria's gate — "runs a hook" and "gets
   // the programmatic-I/O criterion" must stay the same question (#2727).
   const taskType = resolveTaskHookType(task);
@@ -440,7 +530,7 @@ async function dispatchTaskOutputHook({ agentId, task, success, workspacePath })
   const hook = await getTaskOutputHook(taskType);
   if (!hook) return { ran: false };
 
-  const cwd = workspacePath || task?.metadata?.repoPath || null;
+  const cwd = readPayload ? (workspacePath || task?.metadata?.repoPath || null) : null;
   let payload = null;
   if (cwd) {
     const { DONE_SENTINEL_NAME, parseSentinelPayload, salvageSentinelPayload } = await import('../lib/agentSentinel.js');
@@ -459,6 +549,9 @@ async function dispatchTaskOutputHook({ agentId, task, success, workspacePath })
         emitLog('info', `Recovered structured .agent-done payload for ${agentId} (${taskType}) via lenient JSON extraction`, { agentId });
       }
     }
+  }
+  if (recovery && payload == null && !canRunTaskOutputHookWithoutPayload(taskType)) {
+    return { ran: false, recoveryPayloadUnavailable: true };
   }
 
   const outcome = await hook({

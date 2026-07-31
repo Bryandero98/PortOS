@@ -45,8 +45,8 @@ import { SPRITE_DIRECTIONS } from './prompts.js';
 import { keyChannelSplit } from './chromaKey.js';
 import {
   WALK_PHASES, WALK_FPS,
-  pyRound, pyRoundTo, median, decodeRgbaFrame, premultipliedResize,
-  sampleBorderKey, validateMeasuredKey, recoverAlphaFrame, despillKeyFrame,
+  pyRound, pyRoundTo, median, premultipliedResize, decodeTransparentSpriteSource,
+  despillKeyFrame,
   alphaBbox, robustBottomRow, rootX, rootBandForManifest, ROBUST_BASELINE_MIN_PIXELS, compositeOnto, sha256Buffer,
 } from './walkPostprocess.js';
 import { ATLAS_IDLE_COLUMN } from './walkBounds.js';
@@ -116,7 +116,9 @@ const ALPHA_THRESHOLD = 8;
 const SILHOUETTE_ALPHA_THRESHOLD = 64;
 // Post-resize alpha snap (Python premultiplied_resize's ALPHA_NOISE_FLOOR).
 const ALPHA_NOISE_FLOOR = 2;
-// Compiled idle height must match the walk row's median height within 2px.
+// Compiled idle height must match the walk row's median height within two
+// logical (96px-contract) pixels. Scale the rounding tolerance with source
+// density so a 2×/3× compile applies the same visual standard.
 const IDLE_HEIGHT_TOLERANCE = 2;
 
 const RUNTIME_DIR = 'runtime';
@@ -146,29 +148,6 @@ function occupiedDimensions(frame, threshold, label, robust = false) {
   if (!bounds) throw compileError(`${label} has no visible pixels`);
   const bottom = robust ? robustBottomRow(frame, threshold) : bounds.bottom;
   return { width: bounds.right - bounds.left, height: bottom - bounds.top };
-}
-
-/**
- * Decode a validated source buffer as a straight-alpha transparent frame.
- * Already-keyed sources (packaged walk frames) get a despill safety pass;
- * opaque key-matte sources (locked anchors) go through measured-key alpha
- * recovery first — the same treatment the walk postprocess gives its raw
- * frames. Takes the in-memory bytes validateForCompile already hashed, so
- * the pixels compiled are provably the pixels verified.
- */
-async function transparentSource(bytes, split, keyHex) {
-  const frame = await decodeRgbaFrame(bytes);
-  const { data } = frame;
-  let alphaMin = 255; let alphaMax = 0;
-  for (let i = 3; i < data.length; i += 4) {
-    const a = data[i];
-    if (a < alphaMin) alphaMin = a;
-    if (a > alphaMax) alphaMax = a;
-  }
-  if (alphaMin < alphaMax) return despillKeyFrame(frame, split);
-  const measured = sampleBorderKey(frame);
-  validateMeasuredKey(measured, split, keyHex);
-  return despillKeyFrame(recoverAlphaFrame(frame, measured, split), split);
 }
 
 /**
@@ -483,7 +462,7 @@ async function prepareTrackCells(track, direction, validated, geometry, split) {
   const sources = [];
   for (const bytes of run.frameBytes) {
     // eslint-disable-next-line no-await-in-loop -- sharp transforms preserve frame order
-    sources.push(await transparentSource(bytes, split, validated.chromaKey));
+    sources.push(await decodeTransparentSpriteSource(bytes, split, validated.chromaKey));
   }
   const dims = sources.map((source, index) => occupiedDimensions(
     source,
@@ -552,7 +531,7 @@ async function compileTrackRow(direction, validated, geometry) {
     ? 'locked-directional-reference-anchor'
     : 'locked-main-reference';
   const idleLabel = `${direction}-idle`;
-  const idleSource = await transparentSource(source.bytes, split, validated.chromaKey);
+  const idleSource = await decodeTransparentSpriteSource(source.bytes, split, validated.chromaKey);
   const idleDims = occupiedDimensions(idleSource, SILHOUETTE_ALPHA_THRESHOLD, idleLabel);
   const desiredIdleHeight = median(primary.dims.map((dim) => dim.height)) * primary.scale;
   const idleScale = Math.min(desiredIdleHeight / idleDims.height, geometry.targetMaxWidth / idleDims.width);
@@ -576,8 +555,12 @@ async function compileTrackRow(direction, validated, geometry) {
     geometry,
     idleScale,
   );
+  const idleHeightTolerance = Math.max(
+    IDLE_HEIGHT_TOLERANCE,
+    IDLE_HEIGHT_TOLERANCE * (geometry.cellSize / DEFAULT_ATLAS_GEOMETRY.cellSize),
+  );
   if (validated.anchors[direction]
-    && Math.abs(idle.meta.occupiedBounds.height - desiredIdleHeight) > IDLE_HEIGHT_TOLERANCE) {
+    && Math.abs(idle.meta.occupiedBounds.height - desiredIdleHeight) > idleHeightTolerance) {
     throw compileError(
       `${direction} idle height ${idle.meta.occupiedBounds.height} misses the animation median ${pyRoundTo(desiredIdleHeight, 2)}`,
     );
@@ -680,6 +663,16 @@ const trackSetsUpToDate = (persisted, validated) => {
   return [...ids].every((id) => current[id] === expected[id]);
 };
 
+const trackFrameCountFields = (validated, animationTracks) => Object.fromEntries(
+  Object.values(animationTracks).flatMap((definition) => {
+    const frameCount = validated.tracks[definition.id]?.frameCount;
+    return Number.isInteger(frameCount) ? [[definition.contractFrameCountField, frameCount]] : [];
+  }),
+);
+
+const trackFrameCountsUpToDate = (geometry, fields) => Object.entries(fields)
+  .every(([field, frameCount]) => geometry?.[field] === frameCount);
+
 export async function compileAtlasInTail(recordId, {
   geometry: geometryOverride,
   tracks: animationTracks = getEffectiveAnimationTracks(),
@@ -692,6 +685,7 @@ export async function compileAtlasInTail(recordId, {
   await requireAnimatable(recordId);
   const geometry = mergeGeometry(geometryOverride);
   const validated = await validateForCompile(recordId, animationTracks);
+  const frameCountFields = trackFrameCountFields(validated, animationTracks);
   const dir = spriteDir(recordId);
 
   // Columns/width follow the set's actual per-track frame counts, not the
@@ -727,6 +721,7 @@ export async function compileAtlasInTail(recordId, {
     && currentAtlasOnDisk
     && trackSetsUpToDate(current, validated)
     && compiledGridUpToDate(current.geometry, { ...geometry, columns, tracks })
+    && trackFrameCountsUpToDate(current.geometry, frameCountFields)
   ) {
     return { ...current, created: false };
   }
@@ -781,7 +776,8 @@ export async function compileAtlasInTail(recordId, {
   const atlasSha256 = sha256Buffer(atlasBuffer);
 
   if (current && currentAtlasOnDisk && trackSetsUpToDate(current, validated)
-    && current.atlasSha256 === atlasSha256) {
+    && current.atlasSha256 === atlasSha256
+    && trackFrameCountsUpToDate(current.geometry, frameCountFields)) {
     return { ...current, created: false };
   }
 
@@ -795,7 +791,10 @@ export async function compileAtlasInTail(recordId, {
   // (the re-materialize case).
   for (;;) {
     const survivor = await readJSONFile(join(runtimeAbs, `v${version}`, `${stem}-v${version}-manifest.json`), null);
-    if (!survivor || survivor.atlasSha256 === atlasSha256) break;
+    if (!survivor || (
+      survivor.atlasSha256 === atlasSha256
+      && trackFrameCountsUpToDate(survivor.geometry, frameCountFields)
+    )) break;
     version += 1;
   }
   const versionRel = `${RUNTIME_DIR}/v${version}`;
@@ -810,7 +809,10 @@ export async function compileAtlasInTail(recordId, {
   // createdAt and trip the immutable-write refusal.
   const manifestAbs = join(dir, manifestRel);
   const survivingManifest = await readJSONFile(manifestAbs, null);
-  if (survivingManifest?.atlasSha256 === atlasSha256) {
+  if (
+    survivingManifest?.atlasSha256 === atlasSha256
+    && trackFrameCountsUpToDate(survivingManifest.geometry, frameCountFields)
+  ) {
     const survivingBuffer = await readFile(manifestAbs);
     const pointer = {
       schemaVersion: 1,
@@ -893,8 +895,10 @@ export async function compileAtlasInTail(recordId, {
       // walk row at the authored speed over the right number of columns.
       walkFrameCount: validated.walkFrameCount,
       walkFps: validated.walkFps,
-      ...(validated.scannerSet ? { scannerFrameCount: validated.scannerFrameCount } : {}),
-      ...(validated.ambientSet ? { ambientFrameCount: validated.ambientFrameCount } : {}),
+      // Match every compiled track to the convenience field its registry row
+      // declares. The duplicate walk assignment preserves the existing field
+      // position, while seeded scanner/ambient rows keep their wire names.
+      ...frameCountFields,
     },
     directions: rows.map((row) => ({
       direction: row.direction,

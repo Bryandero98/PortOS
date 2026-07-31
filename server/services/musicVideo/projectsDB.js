@@ -16,6 +16,7 @@ import {
   mirrorStatus,
   mirrorTimestamp,
   buildProjectRecord,
+  cloneProjectRecord,
   applyProjectPatch,
   setAudioAnalysis,
   setMidiTranscription,
@@ -91,6 +92,23 @@ export async function createProject(input) {
   await persist(query, project);
   console.log(`🎞️ Created Music Video project: ${id} (${input.name})`);
   return project;
+}
+
+export async function cloneProject(id, options = {}) {
+  return withTransaction(async (client) => {
+    const sel = await client.query(`SELECT data FROM music_video_projects WHERE id = $1 FOR SHARE`, [id]);
+    const source = rowToProject(sel.rows[0]);
+    if (!source || source.deleted) {
+      throw new ServerError('Project not found', { status: 404, code: 'NOT_FOUND' });
+    }
+    const clone = cloneProjectRecord(source, {
+      ...options,
+      id: `mv-${randomUUID()}`,
+      now: new Date().toISOString(),
+    });
+    await persist(client.query.bind(client), clone);
+    return clone;
+  });
 }
 
 // Lock the row, apply `mutate(project)`, persist, return the mutator's result.

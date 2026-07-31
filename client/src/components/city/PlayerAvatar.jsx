@@ -1,11 +1,11 @@
 import { useRef, useMemo, useEffect, useCallback } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { useGLTF, useAnimations } from '@react-three/drei';
+import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
-import { SkeletonUtils } from 'three-stdlib';
 import { useCityPalette } from './CityPaletteContext';
 import { dampFactor, EYE_HEIGHT } from '../../utils/cityPlayerRig';
 import { withInPlaceClips, inPlaceClipName } from '../../utils/animationClips';
+import useClonedGltf, { GltfPrimitive } from '../../hooks/useClonedGltf';
 // The root-motion clip set + treadmill suffix are model-level facts about the bundled
 // RobotExpressive GLB, so import the single source of truth rather than redeclaring it —
 // a divergent copy would silently break in-place routing in one avatar and not the other.
@@ -34,6 +34,9 @@ const FADE = 0.25;         // crossfade seconds between state clips
 // If a user swaps in a GLB with a different forward axis, the runner would face the wrong
 // way — this offset is the one model-orientation assumption, called out so it's greppable.
 const MODEL_FACING_OFFSET = Math.PI;
+const buildPlayerAnimations = (animations) => (
+  withInPlaceClips(animations, ROOT_MOTION_CLIPS, IN_PLACE_SUFFIX)
+);
 
 // rig.state → { desired GLB clip, playback rate }. The clip is auto-routed to its
 // in-place variant when it's a root-motion clip. Rates lean a touch fast so the gait
@@ -47,20 +50,9 @@ const STATE_CLIP = {
 
 export default function PlayerAvatar({ rigRef }) {
   const { accent } = useCityPalette();
-  const gltf = useGLTF(MODEL_URL);
-
-  // SkeletonUtils.clone rebinds SkinnedMeshes to the cloned skeleton so the mixer
-  // actually deforms the visible mesh (a plain scene.clone would animate bones the
-  // rendered mesh no longer references). Memoized on the source scene.
-  const scene = useMemo(() => SkeletonUtils.clone(gltf.scene), [gltf.scene]);
-
-  // Append neutralized in-place variants of the root-motion clips so walk/run cycle
-  // the legs without translating the model off the rig-driven position.
-  const animations = useMemo(
-    () => withInPlaceClips(gltf.animations, ROOT_MOTION_CLIPS, IN_PLACE_SUFFIX),
-    [gltf.animations]
-  );
-  const { actions, names } = useAnimations(animations, scene);
+  // Append neutralized in-place variants of the root-motion clips so walk/run
+  // cycles the legs without translating the model off the rig-driven position.
+  const { scene, actions, names } = useClonedGltf(MODEL_URL, buildPlayerAnimations);
   const hasClips = names.length > 0;
 
   const rootRef = useRef();
@@ -162,11 +154,8 @@ export default function PlayerAvatar({ rigRef }) {
 
   return (
     <group ref={rootRef}>
-      {/* scene carries its own fit scale/position (applied in the effect above).
-          dispose={null}: the clone shares geometry/material refs with the useGLTF cache
-          (SkeletonUtils.clone is shallow for those), so letting r3f dispose them on unmount
-          would corrupt the cache for the next mount / the CoS Muse avatar. */}
-      <primitive object={scene} dispose={null} />
+      {/* scene carries its own fit scale/position (applied in the effect above). */}
+      <GltfPrimitive object={scene} />
       {/* Accent-tinted ground glow — the runner's neon footprint. Declared as JSX so R3F
           owns the geometry/material lifecycle; `color` tracks the theme reactively and the
           per-frame opacity write goes through discMatRef. */}

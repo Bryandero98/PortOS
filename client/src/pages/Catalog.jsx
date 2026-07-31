@@ -517,69 +517,98 @@ export default function Catalog() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
-        <div className="flex items-center gap-3">
-          <Sparkles className="w-6 h-6 text-port-accent" aria-hidden="true" />
-          <h1 className="text-2xl font-bold text-white">Catalog</h1>
-          <span className="text-sm text-gray-500">
+      {/* Header. The toolbar wraps to its own rows on a phone because the four
+          controls together need ~350px and a 320px viewport gives 288px.
+          A label too long to survive that (Sync's, at `lg`; the action bar's, at
+          `sm`) hides its tail and keeps the full wording in aria-label, so the
+          accessible name never depends on viewport width — the visible text is
+          always a prefix of it, per WCAG 2.5.3 label-in-name. The reveal
+          breakpoint differs per button; only the prefix relationship is
+          invariant (asserted in Catalog.test.jsx). */}
+      <div className="flex items-center justify-between mb-4 sm:mb-6 flex-wrap gap-3">
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+          <Sparkles className="w-6 h-6 shrink-0 text-port-accent" aria-hidden="true" />
+          <h1 className="text-xl sm:text-2xl font-bold text-white">Catalog</h1>
+          <span className="text-sm text-gray-500 whitespace-nowrap">
             {totalCount} ingredient{totalCount === 1 ? '' : 's'}
           </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
           {/* View toggle (Grid ↔ Albums), persisted in the URL. */}
-          <div className="inline-flex rounded-lg border border-port-border overflow-hidden" role="group" aria-label="Catalog view">
+          <div className="inline-flex w-full sm:w-auto rounded-lg border border-port-border overflow-hidden" role="group" aria-label="Catalog view">
             <button
               type="button"
               onClick={() => updateParams({ view: '' })}
               aria-pressed={view === 'grid'}
-              className={`inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium ${view === 'grid' ? 'bg-port-accent text-white' : 'bg-port-card text-gray-300 hover:text-white'}`}
+              className={`inline-flex flex-1 sm:flex-none items-center justify-center gap-1.5 px-3 py-2 min-h-[40px] text-sm font-medium ${view === 'grid' ? 'bg-port-accent text-white' : 'bg-port-card text-gray-300 hover:text-white'}`}
             >
-              <LayoutGrid size={16} aria-hidden="true" /> Grid
+              <LayoutGrid size={16} className="shrink-0" aria-hidden="true" /> Grid
             </button>
             <button
               type="button"
               onClick={() => updateParams({ view: 'albums' })}
               aria-pressed={view === 'albums'}
-              className={`inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium ${view === 'albums' ? 'bg-port-accent text-white' : 'bg-port-card text-gray-300 hover:text-white'}`}
+              className={`inline-flex flex-1 sm:flex-none items-center justify-center gap-1.5 px-3 py-2 min-h-[40px] text-sm font-medium ${view === 'albums' ? 'bg-port-accent text-white' : 'bg-port-card text-gray-300 hover:text-white'}`}
             >
-              <Library size={16} aria-hidden="true" /> Albums
+              <Library size={16} className="shrink-0" aria-hidden="true" /> Albums
             </button>
           </div>
           <button
             type="button"
             onClick={handleSync}
             disabled={syncing}
+            aria-label="Sync from Universes"
             title="Pull canon characters, places, and objects from your universes into the catalog"
-            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-port-border bg-port-card hover:bg-port-bg text-white text-sm font-medium disabled:opacity-50"
+            className="inline-flex flex-1 sm:flex-none items-center justify-center gap-2 px-3 py-2 min-h-[40px] rounded-lg border border-port-border bg-port-card hover:bg-port-bg text-white text-sm font-medium disabled:opacity-50"
           >
             {syncing
-              ? <Loader2 size={16} className="animate-spin" aria-hidden="true" />
-              : <RefreshCw size={16} aria-hidden="true" />}
-            {syncing ? 'Syncing…' : 'Sync from Universes'}
+              ? <Loader2 size={16} className="animate-spin shrink-0" aria-hidden="true" />
+              : <RefreshCw size={16} className="shrink-0" aria-hidden="true" />}
+            <span className="truncate">
+              {syncing ? 'Syncing…' : <>Sync<span className="hidden lg:inline"> from Universes</span></>}
+            </span>
           </button>
           <Link
             to="/catalog/ingest"
-            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-port-border bg-port-card hover:bg-port-bg text-white text-sm font-medium"
+            className="inline-flex flex-1 sm:flex-none items-center justify-center gap-2 px-3 py-2 min-h-[40px] rounded-lg border border-port-border bg-port-card hover:bg-port-bg text-white text-sm font-medium"
           >
-            <FileInput size={16} aria-hidden="true" />
+            <FileInput size={16} className="shrink-0" aria-hidden="true" />
             Ingest
           </Link>
           <button
             type="button"
             onClick={() => (showForm ? closeForm() : setShowForm(true))}
-            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-port-accent hover:bg-port-accent/90 text-white text-sm font-medium"
+            className="inline-flex flex-1 sm:flex-none items-center justify-center gap-2 px-3 py-2 min-h-[40px] rounded-lg bg-port-accent hover:bg-port-accent/90 text-white text-sm font-medium"
           >
-            <Plus size={16} aria-hidden="true" />
+            <Plus size={16} className="shrink-0" aria-hidden="true" />
             New
           </button>
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 mb-4">
+      {/* Search sits directly under the header so the primary way to find an
+          ingredient stays above the fold on a phone, ahead of the filters. */}
+      <div className="relative mb-4">
+        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" aria-hidden="true" />
+        <label htmlFor="catalog-search" className="sr-only">Search catalog</label>
+        <input
+          id="catalog-search"
+          type="search"
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          placeholder="Search by name, tag, or text…"
+          className="w-full pl-9 pr-3 py-2 bg-port-card border border-port-border rounded-lg text-white text-sm focus:outline-none focus:border-port-accent"
+        />
+      </div>
+
+      {/* Type chips. Under `sm` they stay on one swipeable row (bleeding to the
+          screen edge) instead of wrapping into 3-4 stacked rows that push the
+          cards below the fold; from `sm` up they wrap as before. */}
+      <div className="flex items-center gap-2 mb-4 -mx-4 px-4 overflow-x-auto scrollbar-hide touch-pan-x sm:mx-0 sm:px-0 sm:flex-wrap">
         <button
           type="button"
           onClick={() => updateParams({ type: '' })}
-          className={`text-xs px-3 py-1.5 rounded-full border ${
+          className={`shrink-0 whitespace-nowrap text-xs px-3 py-2 sm:py-1.5 rounded-full border ${
             selectedType === ''
               ? 'bg-port-accent border-port-accent text-white'
               : 'border-port-border text-gray-300 hover:text-white'
@@ -592,7 +621,7 @@ export default function Catalog() {
             key={t.id}
             type="button"
             onClick={() => updateParams({ type: selectedType === t.id ? '' : t.id })}
-            className={`text-xs px-3 py-1.5 rounded-full border ${
+            className={`shrink-0 whitespace-nowrap text-xs px-3 py-2 sm:py-1.5 rounded-full border ${
               selectedType === t.id
                 ? 'bg-port-accent border-port-accent text-white'
                 : 'border-port-border text-gray-300 hover:text-white'
@@ -603,16 +632,18 @@ export default function Catalog() {
         ))}
       </div>
 
-      {/* Universe / Series / Tag dropdowns + Clear filters. */}
-      <div className="flex flex-wrap items-end gap-3 mb-4">
-        <div>
+      {/* Universe / Series / Tag dropdowns + Clear filters. Two columns on a
+          phone (a fixed min-width would overflow a 320px viewport), free-flowing
+          from `sm` up. */}
+      <div className="grid grid-cols-2 gap-3 mb-6 sm:flex sm:flex-wrap sm:items-end">
+        <div className="min-w-0">
           <label htmlFor="catalog-filter-universe" className="block text-[10px] uppercase tracking-wider text-gray-500 mb-1">Universe</label>
           <select
             id="catalog-filter-universe"
             value={selectedUniverse}
             // Changing universe clears a now-out-of-scope series selection.
             onChange={(e) => updateParams({ universe: e.target.value, series: '' })}
-            className="px-3 py-2 bg-port-card border border-port-border rounded text-white text-sm min-w-[160px]"
+            className="w-full sm:w-auto px-3 py-2 bg-port-card border border-port-border rounded text-white text-sm sm:min-w-[160px]"
           >
             <option value="">All universes</option>
             {(facets?.universes || []).map((u) => (
@@ -620,13 +651,13 @@ export default function Catalog() {
             ))}
           </select>
         </div>
-        <div>
+        <div className="min-w-0">
           <label htmlFor="catalog-filter-series" className="block text-[10px] uppercase tracking-wider text-gray-500 mb-1">Series</label>
           <select
             id="catalog-filter-series"
             value={selectedSeries}
             onChange={(e) => updateParams({ series: e.target.value })}
-            className="px-3 py-2 bg-port-card border border-port-border rounded text-white text-sm min-w-[160px]"
+            className="w-full sm:w-auto px-3 py-2 bg-port-card border border-port-border rounded text-white text-sm sm:min-w-[160px]"
           >
             <option value="">All series</option>
             {seriesOptions.map((s) => (
@@ -634,13 +665,13 @@ export default function Catalog() {
             ))}
           </select>
         </div>
-        <div>
+        <div className="min-w-0">
           <label htmlFor="catalog-filter-tag" className="block text-[10px] uppercase tracking-wider text-gray-500 mb-1">Tag</label>
           <select
             id="catalog-filter-tag"
             value={selectedTag}
             onChange={(e) => updateParams({ tag: e.target.value })}
-            className="px-3 py-2 bg-port-card border border-port-border rounded text-white text-sm min-w-[140px]"
+            className="w-full sm:w-auto px-3 py-2 bg-port-card border border-port-border rounded text-white text-sm sm:min-w-[140px]"
           >
             <option value="">All tags</option>
             {(facets?.tags || []).map((t) => (
@@ -652,24 +683,11 @@ export default function Catalog() {
           <button
             type="button"
             onClick={clearFilters}
-            className="inline-flex items-center gap-1 px-3 py-2 rounded-lg border border-port-border text-gray-300 hover:text-white text-sm"
+            className="inline-flex items-center justify-center self-end gap-1 px-3 py-2 min-h-[40px] rounded-lg border border-port-border text-gray-300 hover:text-white text-sm"
           >
-            <X size={14} aria-hidden="true" /> Clear filters
+            <X size={14} className="shrink-0" aria-hidden="true" /> Clear filters
           </button>
         )}
-      </div>
-
-      <div className="relative mb-6">
-        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" aria-hidden="true" />
-        <label htmlFor="catalog-search" className="sr-only">Search catalog</label>
-        <input
-          id="catalog-search"
-          type="search"
-          value={searchInput}
-          onChange={(e) => setSearchInput(e.target.value)}
-          placeholder="Search by name, tag, or text…"
-          className="w-full pl-9 pr-3 py-2 bg-port-card border border-port-border rounded-lg text-white text-sm focus:outline-none focus:border-port-accent"
-        />
       </div>
 
       {showForm && (
@@ -724,14 +742,14 @@ export default function Catalog() {
             <button
               type="button"
               onClick={closeForm}
-              className="px-3 py-2 rounded-lg text-gray-400 hover:text-white text-sm"
+              className="px-3 py-2 min-h-[40px] rounded-lg text-gray-400 hover:text-white text-sm"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={creating || !form.name.trim()}
-              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-port-accent text-white text-sm font-medium disabled:opacity-50"
+              className="inline-flex items-center justify-center gap-2 px-4 py-2 min-h-[40px] rounded-lg bg-port-accent text-white text-sm font-medium disabled:opacity-50"
             >
               {creating ? <Loader2 size={14} className="animate-spin" /> : null}
               Create
@@ -799,27 +817,40 @@ export default function Catalog() {
         </>
       )}
 
+      {/* Selection action bar. Stacks on a phone: count line, then three
+          equal-width actions whose labels shorten under `sm` (see the header
+          comment for the aria-label contract). `sm:backdrop-blur` — the fill is
+          already 95% opaque, so on a phone the blur buys nothing visible while
+          making the compositor re-sample the area behind the bar on every scroll
+          frame over a 60-card grid. */}
       {selectedIds.size > 0 && (
-        <div className="sticky bottom-0 left-0 right-0 mt-4 -mx-4 md:-mx-6 px-4 md:px-6 py-3 bg-port-card/95 backdrop-blur border-t border-port-border flex items-center justify-between gap-3 flex-wrap z-20">
+        <div className="sticky bottom-0 left-0 right-0 mt-4 -mx-4 md:-mx-6 px-4 md:px-6 py-3 bg-port-card/95 sm:backdrop-blur border-t border-port-border flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-3 z-20">
           <span className="text-sm text-white font-medium">
             {selectedIds.size} selected
           </span>
-          <div className="flex items-center gap-2">
-            <div className="relative">
+          {/* The row is the positioning context under `sm` (the per-button
+              wrappers only become `relative` at `sm`), so a menu spans the whole
+              bar on a phone instead of hanging off a ~90px button and running
+              past the viewport edge. Anything that gives an element between the
+              menu and this row a containing block — `relative`, `transform`,
+              `filter`, `contain` — silently re-anchors both menus. */}
+          <div className="relative flex flex-wrap items-center gap-2">
+            <div className="flex-1 sm:relative sm:flex-none">
               <button
                 type="button"
                 onClick={() => { setRemixMenuOpen((o) => !o); setAddMenuOpen(false); }}
                 aria-haspopup="menu"
                 aria-expanded={remixMenuOpen}
-                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-port-accent hover:bg-port-accent/90 text-white text-sm font-medium"
+                aria-label="Remix into…"
+                className="inline-flex w-full sm:w-auto items-center justify-center gap-2 px-3 py-2 min-h-[40px] rounded-lg bg-port-accent hover:bg-port-accent/90 text-white text-sm font-medium"
               >
-                <Wand2 size={16} aria-hidden="true" />
-                Remix into…
+                <Wand2 size={16} className="shrink-0" aria-hidden="true" />
+                <span className="truncate">Remix<span className="hidden sm:inline"> into…</span></span>
               </button>
               {remixMenuOpen && (
                 <ul
                   role="menu"
-                  className="absolute right-0 bottom-full mb-2 min-w-[180px] bg-port-card border border-port-border rounded-lg shadow-lg overflow-hidden"
+                  className="absolute bottom-full mb-2 left-0 right-0 sm:left-auto sm:min-w-[180px] bg-port-card border border-port-border rounded-lg shadow-lg overflow-hidden"
                 >
                   {REMIX_TARGETS.map((t) => (
                     <li key={t.id} role="none">
@@ -836,22 +867,26 @@ export default function Catalog() {
                 </ul>
               )}
             </div>
-            <div className="relative">
+            <div className="flex-1 sm:relative sm:flex-none">
               <button
                 type="button"
                 onClick={openAddMenu}
                 aria-haspopup="menu"
                 aria-expanded={addMenuOpen}
+                aria-label="Add to universe/series…"
                 title="Place the selected ingredients into a universe or series"
-                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-port-border bg-port-card hover:bg-port-bg text-white text-sm font-medium disabled:opacity-50"
+                className="inline-flex w-full sm:w-auto items-center justify-center gap-2 px-3 py-2 min-h-[40px] rounded-lg border border-port-border bg-port-card hover:bg-port-bg text-white text-sm font-medium disabled:opacity-50"
               >
-                <FolderPlus size={16} aria-hidden="true" />
-                Add to universe/series…
+                <FolderPlus size={16} className="shrink-0" aria-hidden="true" />
+                <span className="truncate">Add<span className="hidden sm:inline"> to universe/series…</span></span>
               </button>
               {addMenuOpen && (
+                // The bar is pinned to the bottom of the viewport and the menu
+                // opens upward, so cap it against the viewport rather than a
+                // fixed 18rem — in landscape that would run off the top.
                 <div
                   role="menu"
-                  className="absolute right-0 bottom-full mb-2 min-w-[220px] max-h-72 overflow-y-auto bg-port-card border border-port-border rounded-lg shadow-lg"
+                  className="absolute bottom-full mb-2 left-0 right-0 sm:left-auto sm:min-w-[220px] max-h-[60vh] sm:max-h-72 overflow-y-auto bg-port-card border border-port-border rounded-lg shadow-lg"
                 >
                   {placeTargetsLoading || placeTargets === null ? (
                     <p className="px-3 py-2 text-sm text-gray-500">Loading…</p>
@@ -899,9 +934,9 @@ export default function Catalog() {
             <button
               type="button"
               onClick={clearSelection}
-              className="inline-flex items-center gap-1 px-3 py-2 rounded-lg border border-port-border text-gray-300 hover:text-white text-sm"
+              className="inline-flex flex-1 sm:flex-none items-center justify-center gap-1 px-3 py-2 min-h-[40px] rounded-lg border border-port-border text-gray-300 hover:text-white text-sm"
             >
-              <X size={16} aria-hidden="true" />
+              <X size={16} className="shrink-0" aria-hidden="true" />
               Clear
             </button>
           </div>

@@ -23,6 +23,9 @@
 
 import { createRecordStoreBackendSelector } from '../../lib/pgFileFacade.js';
 import { emitRecordUpdated, emitRecordDeleted, autoSubscribeRecordToAllPeers } from '../sharing/recordEvents.js';
+import { RENDER_TARGET } from '../../lib/renderTargets.js';
+import { VIDEO_GEN_MODE, resolveVideoMode } from '../videoGen/modes.js';
+import { getSettings } from '../settings.js';
 
 // Shared dispatcher (#2899). ensureSchema() runs inside the selector (mirroring
 // memoryBackend.js) so the backend is self-sufficient regardless of boot ordering.
@@ -63,8 +66,32 @@ export async function listProjectIds(options = {}) {
   return (await selectBackend()).listProjectIds(options);
 }
 
+// #3231 Phase 4 — seed a new project's video backend from the video pin ladder
+// (`renderDefaults['music-video'].videoMode` → `settings.videoGen.mode`). The
+// director board always sends the record's `videoSettings.backend` with each
+// clip render (an explicit `body.backend`), so a target/install video pin can
+// only take effect HERE, at record creation — the same explicit-body seeding
+// trap the universe batch form and sprites page picker hit on the image side.
+// resolveVideoMode usability-gates the pin (a disabled grok pin seeds local);
+// an input that names a backend explicitly wins untouched.
+async function seedVideoBackendDefault(input) {
+  if (input?.videoSettings?.backend) return input;
+  const settings = await getSettings().catch(() => null);
+  if (!settings) return input;
+  const backend = resolveVideoMode(null, settings, { target: RENDER_TARGET.MUSIC_VIDEO });
+  // Local is buildProjectRecord's own default — leave the input byte-identical.
+  if (backend === VIDEO_GEN_MODE.LOCAL) return input;
+  return { ...input, videoSettings: { ...(input?.videoSettings || {}), backend } };
+}
+
 export async function createProject(input) {
-  const project = await (await selectBackend()).createProject(input);
+  const project = await (await selectBackend()).createProject(await seedVideoBackendDefault(input));
+  announceNewProject(project.id);
+  return project;
+}
+
+export async function cloneProject(id, options = {}) {
+  const project = await (await selectBackend()).cloneProject(id, options);
   announceNewProject(project.id);
   return project;
 }

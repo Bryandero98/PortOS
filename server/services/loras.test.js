@@ -501,6 +501,40 @@ describe('installFromHuggingface', () => {
     expect(calls.some((u) => u.includes('/resolve/main/pytorch_lora_weights.safetensors'))).toBe(true);
   });
 
+  it('installs an exact versioned file beside the repo default', async () => {
+    const versionedModel = {
+      ...HF_MODEL,
+      siblings: [
+        ...HF_MODEL.siblings,
+        { rfilename: 'ltx2.3_audio_reactive_lora_v2.safetensors' },
+      ],
+    };
+    const fetchImpl = async (url) => {
+      if (url.startsWith('https://huggingface.co/api/models/')) {
+        return mockJsonResponse(versionedModel);
+      }
+      if (url.includes('/resolve/main/ltx2.3_audio_reactive_lora_v2.safetensors')) {
+        const stream = new ReadableStream({
+          start(c) { c.enqueue(new Uint8Array(validSafetensors())); c.close(); },
+        });
+        return { ok: true, status: 200, body: stream };
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    };
+    const sidecar = await lorasService.installFromHuggingface(
+      {
+        url: 'https://huggingface.co/fal/ltx2.3-audio-reactive-lora',
+        file: 'ltx2.3_audio_reactive_lora_v2.safetensors',
+        token: 'hf_test',
+      },
+      { fetchImpl },
+    );
+    expect(sidecar.filename).toBe('lora-fal-ltx2.3-audio-reactive-lora-v2-hf.safetensors');
+    expect(sidecar.huggingface.file).toBe('ltx2.3_audio_reactive_lora_v2.safetensors');
+    expect(sidecar.name).toMatch(/V2$/);
+    expect(sidecar.recommendedScale).toBe(1.2);
+  });
+
   it('refuses a repo it cannot classify as a supported video family', async () => {
     const fetchImpl = async (url) => {
       if (url.startsWith('https://huggingface.co/api/models/')) {

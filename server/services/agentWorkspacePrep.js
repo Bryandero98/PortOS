@@ -33,7 +33,8 @@ import { isTruthyMeta, isFalsyMeta } from './agentState.js';
 import { PATHS } from '../lib/fileUtils.js';
 import * as git from './git.js';
 import { detectConflicts } from './taskConflict.js';
-import { createWorktree } from './worktreeManager.js';
+import { createWorktree, adoptWorktree } from './worktreeManager.js';
+import { resolveSpawnCwd } from '../lib/spawnCwd.js';
 import { getAppWorkspace, getAppDataForTask, createJiraTicketForTask } from './agentPromptBuilder.js';
 
 const ROOT_DIR = PATHS.root;
@@ -54,11 +55,46 @@ export async function prepareAgentWorkspace({ agentId, task }) {
     ? (await getAppById(task.metadata.app).catch(() => null))?.name || null
     : null;
 
+  // Refuse to run an agent whose app didn't resolve to a usable directory.
+  // Previously both failures fell through to the PortOS root and the agent
+  // silently did its work in the PortOS checkout instead of the user's app
+  // (issue #3180) — a wrong-repo commit is far worse than a blocked task, and
+  // the block carries the exact thing to fix. Validated ONCE here rather than in
+  // each of the three spawn helpers (TUI / runner / direct), which all take
+  // their cwd from this function.
+  if (task.metadata?.app && !workspacePath) {
+    const reason = `App '${task.metadata.app}' has no usable Repository Path — set it in Apps, then re-run this task. `
+      + `(The agent was not started, so it could not write into the PortOS directory by mistake.)`;
+    emitLog('error', `❌ ${reason}`, { taskId: task.id });
+    return { outcome: 'blocked', reason };
+  }
+  // Same resolver the /runs spawn paths use, so a `~/Projects/App` repoPath
+  // expands here too and a repoPath pointing at a FILE is rejected up front
+  // rather than flowing into the git operations below with a non-directory cwd.
+  // Reusing it is what keeps the two validation sites from drifting — an
+  // inline existsSync here did both of those wrong.
+  try {
+    workspacePath = resolveSpawnCwd(workspacePath, ROOT_DIR, `Task ${task.id}`);
+  } catch (err) {
+    const reason = `${err.message} (Task blocked before the agent started, so it could not write into the PortOS directory by mistake.)`;
+    emitLog('error', `❌ ${reason}`, { taskId: task.id, workspace: workspacePath });
+    return { outcome: 'blocked', reason };
+  }
+
   let jiraTicket = null;
   let jiraBranchName = null;
   let worktreeInfo = null;
   const explicitOpenPR = isTruthyMeta(task.metadata?.openPR);
   const explicitWorktree = isTruthyMeta(task.metadata?.useWorktree) || explicitOpenPR;
+  // A task pointed at an existing branch must run in a worktree whatever isolated
+  // the ORIGINAL run, because that is the only way to reach the work: the branch
+  // has to be checked out somewhere, and an adoptable tree has to be attached.
+  // Keyed on `existingBranch` so it covers both producers — a resume pointer and
+  // the review-loop follow-up. Without it, a run that got its worktree from
+  // conflict AUTO-detection resumes into the shared workspace on retry (conflict
+  // detection returns `proceed` once the dead agent is gone) and silently
+  // abandons the work the pointer was recorded to save.
+  const wantsWorktree = explicitWorktree || !!task.metadata?.existingBranch;
 
   if (!isReadOnly) {
     // Pull latest from git before starting work
@@ -175,7 +211,7 @@ export async function prepareAgentWorkspace({ agentId, task }) {
       }
     }
 
-    if (explicitWorktree && !jiraBranchName) {
+    if (wantsWorktree && !jiraBranchName) {
       const existingBranch = task.metadata?.existingBranch || null;
       const { baseBranch: detectedBase } = await git.getRepoBranches(workspacePath).catch(() => ({ baseBranch: null }));
       if (existingBranch) {
@@ -188,9 +224,31 @@ export async function prepareAgentWorkspace({ agentId, task }) {
         });
       }
 
-      worktreeInfo = await createWorktree(agentId, workspacePath, task.id, {
+      // Resume path: the run this task is retrying left a worktree behind (its
+      // process died mid-edit, so `removeWorktree` refused to delete the dirty
+      // tree — see recordTaskResumePointer). Adopt it, which carries the
+      // uncommitted edits and untracked files no branch pointer can, instead of
+      // building a fresh tree and redoing that work.
+      const resumeWorktreePath = existingBranch ? task.metadata?.resumeWorktreePath : null;
+      const adopted = resumeWorktreePath
+        ? await adoptWorktree(agentId, workspacePath, resumeWorktreePath, existingBranch).catch(err => {
+          emitLog('warn', `🌳 Could not adopt worktree ${resumeWorktreePath} for task ${task.id}: ${err.message}`, { taskId: task.id });
+          return null;
+        })
+        : null;
+
+      // Adoption failing while the stale tree is STILL on disk means the branch is
+      // checked out there, so attaching a second worktree to it would fail with
+      // "already checked out" and block the task outright. Fail open — start clean,
+      // the same polarity resolveResumePointer uses — rather than not spawning.
+      const branchStillClaimed = !adopted && resumeWorktreePath && existsSync(resumeWorktreePath);
+      if (branchStillClaimed) {
+        emitLog('warn', `🌳 Worktree ${resumeWorktreePath} could not be adopted and still holds ${existingBranch} — task ${task.id} starts from a clean branch`, { taskId: task.id });
+      }
+
+      worktreeInfo = adopted || await createWorktree(agentId, workspacePath, task.id, {
         baseBranch: detectedBase || undefined,
-        existingBranch: existingBranch || undefined,
+        existingBranch: branchStillClaimed ? undefined : (existingBranch || undefined),
         planId: task.metadata?.planId || undefined
       }).catch(err => {
         emitLog('warn', `🌳 Worktree creation failed, using shared workspace: ${err.message}`, { taskId: task.id });
@@ -199,9 +257,19 @@ export async function prepareAgentWorkspace({ agentId, task }) {
 
       if (worktreeInfo) {
         workspacePath = worktreeInfo.worktreePath;
-        emitLog('success', `🌳 Agent ${agentId} will work in worktree: ${worktreeInfo.branchName} (base: ${worktreeInfo.baseBranch})`, {
+        const origin = worktreeInfo.adopted
+          ? `adopted from ${task.metadata?.resumedFromAgentId || 'the interrupted run'}`
+          : `base: ${worktreeInfo.baseBranch}`;
+        emitLog('success', `🌳 Agent ${agentId} will work in worktree: ${worktreeInfo.branchName} (${origin})`, {
           agentId, worktreePath: worktreeInfo.worktreePath, branchName: worktreeInfo.branchName, baseBranch: worktreeInfo.baseBranch
         });
+      } else if (!explicitWorktree) {
+        // Reached here only for the resume pointer, on a task that never asked for
+        // isolation. Blocking would be STRICTER than the task's own contract — it
+        // would have run in the shared workspace before the pointer existed — so
+        // degrade to that instead. The resume is lost (the leftover work stays on
+        // disk for the next attempt), but the task still runs.
+        emitLog('warn', `🌳 Worktree creation failed for task ${task.id}; resuming is not possible, continuing in the shared workspace`, { taskId: task.id });
       } else {
         // Isolation was EXPLICITLY requested (useWorktree/openPR) but the
         // worktree couldn't be created. Falling back to the shared workspace
@@ -259,6 +327,11 @@ export async function prepareAgentWorkspace({ agentId, task }) {
       }
     }
   } // end !isReadOnly
+
+  // Announce the FINAL cwd — emitted here, after any worktree reassignment
+  // above, so the task log names the directory the agent actually runs in
+  // rather than the repo it was cut from (#3180).
+  emitLog('info', `📂 Agent workspace: ${workspacePath}`, { taskId: task.id, workspace: workspacePath });
 
   return {
     outcome: 'ready',

@@ -332,6 +332,9 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     // known (see server/lib/slashdoInvocation.js).
     if (taskData.slashdoCommand) metadata.slashdoCommand = taskData.slashdoCommand;
     if (taskData.slashdoArgs) metadata.slashdoArgs = taskData.slashdoArgs;
+    if (taskData.malwareScan && typeof taskData.malwareScan === 'object' && !Array.isArray(taskData.malwareScan)) {
+      metadata.malwareScan = taskData.malwareScan;
+    }
     if (taskData.jiraTicketId) metadata.jiraTicketId = taskData.jiraTicketId;
     if (taskData.jiraTicketUrl) metadata.jiraTicketUrl = taskData.jiraTicketUrl;
     if (taskData.screenshots?.length > 0) metadata.screenshots = taskData.screenshots;
@@ -444,16 +447,24 @@ export async function updateTask(taskId, updates, taskType = 'user', { now = Dat
   }
 
   // Drop the resume pointer once the task reaches a terminal state. `existingBranch`
-  // + `resumedFromAgentId` are stamped by agentCompletionCleanup.js so a FAILED
-  // task's retry attaches to the branch its dead agent left behind and resumes
-  // instead of restarting. Once the task is done (or blocked for a human), that
-  // pointer is spent: a PERPETUAL task type re-queues the same task id for
-  // unrelated future work, and a stale `existingBranch` would silently attach
-  // that fresh run to a long-merged branch. Only cleared on terminal statuses —
-  // a `pending` retry is exactly who needs the pointer intact.
-  if (isTerminalTaskStatus(updates.status)) {
+  // + `resumeWorktreePath` + `resumedFromAgentId` are stamped by
+  // `resolveTaskResumePatch` so a FAILED or ORPHANED task's retry picks up the
+  // branch (and worktree) its dead agent left behind and resumes instead of
+  // restarting. Once the task is done (or blocked for a human), that pointer is
+  // spent: a PERPETUAL task type re-queues the same task id for unrelated future
+  // work, and a stale `existingBranch` would silently attach that fresh run to a
+  // long-merged branch. Only cleared on terminal statuses — a `pending` retry is
+  // exactly who needs the pointer intact.
+  //
+  // An `orphan-cooldown` block is the exception: it is a TIMED PAUSE, not a
+  // terminal state — `unblockExpiredOrphanCooldowns` (cosTaskGenerator.js) flips it
+  // back to `pending` on its own once `cooldownUntil` passes. Stripping the pointer
+  // there means the revived task starts clean and abandons the worktree its dead
+  // agent left behind, which is exactly the recovery this mechanism exists for.
+  if (isTerminalTaskStatus(updates.status) && updatedMetadata.blockedCategory !== 'orphan-cooldown') {
     delete updatedMetadata.existingBranch;
     delete updatedMetadata.resumedFromAgentId;
+    delete updatedMetadata.resumeWorktreePath;
   }
 
   // Release the federation claim/lease when a task leaves `in_progress` (issue

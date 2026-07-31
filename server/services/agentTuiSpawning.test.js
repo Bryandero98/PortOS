@@ -6,10 +6,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 vi.mock('./shell.js', () => ({
   createShellSession: vi.fn(),
   writeToSession: vi.fn(),
+  pasteToSession: vi.fn(),
   killSession: vi.fn(),
   getSession: vi.fn(),
   getSessionProcess: vi.fn(),
-  getLastInputAt: vi.fn().mockReturnValue(null)
+  getLastInputAt: vi.fn().mockReturnValue(null),
+  registerExternalSession: vi.fn(),
+}));
+
+vi.mock('./cosRunnerClient.js', () => ({
+  spawnTuiSessionViaRunner: vi.fn(),
 }));
 
 vi.mock('./cosEvents.js', () => ({
@@ -62,6 +68,18 @@ vi.mock('./agentFinalization.js', () => ({
   persistSimplifySummaries: vi.fn().mockResolvedValue(undefined),
   finalizeAgent: vi.fn().mockResolvedValue(undefined),
   releaseAgentLane: vi.fn()
+}));
+
+vi.mock('./codeReview.js', () => ({
+  resolveReviewLoopOptions: vi.fn().mockResolvedValue({
+    reviewers: ['codex'],
+    usernames: [],
+    optionalReviewers: [],
+    reviewerMaxRounds: {},
+    reviewStopMode: 'on-clean',
+    reviewerApplies: false,
+    reviewerModels: {},
+  })
 }));
 
 vi.mock('./agentState.js', () => ({
@@ -166,6 +184,7 @@ import { existsSync } from 'fs';
 import { readFile } from 'fs/promises';
 import { execFile } from 'child_process';
 import { buildTuiSpawnConfig, spawnTuiAgent } from './agentTuiSpawning.js';
+import { spawnTuiSessionViaRunner } from './cosRunnerClient.js';
 import * as shellService from './shell.js';
 import * as agentLifecycle from './agentFinalization.js';
 import * as agentErrorAnalysis from './agentErrorAnalysis.js';
@@ -173,6 +192,9 @@ import * as cosAgents from './cosAgents.js';
 import * as gitService from './git.js';
 import { activeAgents, userTerminatedAgents } from './agentState.js';
 import { MAX_RUNTIME_WRAP_UP_GRACE_MS } from '../lib/tuiHandshake.js';
+// Real module, not a mock: the flag is a plain process-local boolean, so driving
+// it directly exercises the same code path production does.
+import { markHostShuttingDown, resetHostShutdownFlagForTests } from '../lib/hostShutdown.js';
 
 describe('agent TUI spawning', () => {
   it('builds a codex TUI command without a model flag for the configured-default sentinel', () => {
@@ -390,6 +412,10 @@ describe('spawnTuiAgent runtime', () => {
       cleanupWorktreeFn: vi.fn().mockResolvedValue(undefined),
       isTruthyMetaFn: (v) => !!v
     };
+    // Default the connectivity probe to "online" so the idle reaper behaves
+    // exactly as before for every existing test — no real network I/O. The
+    // outage tests below inject their own resolver.
+    const checkOnlineFn = overrides.checkOnlineFn ?? vi.fn().mockResolvedValue(true);
     return spawnTuiAgent({
       agentId,
       task,
@@ -402,6 +428,8 @@ describe('spawnTuiAgent runtime', () => {
       agentDir,
       executionId,
       laneName,
+      checkOnlineFn,
+      useDurableRunner: overrides.useDurableRunner ?? false,
       ...helpers,
     });
   }
@@ -440,6 +468,22 @@ describe('spawnTuiAgent runtime', () => {
 
     vi.mocked(shellService.getSessionProcess).mockReturnValue(null);
     vi.mocked(shellService.getSession).mockReturnValue({ id: SESSION_ID });
+    vi.mocked(spawnTuiSessionViaRunner).mockImplementation(async (options) => {
+      capturedOnData = options.onData;
+      capturedOnExit = options.onExit;
+      return {
+        sessionId: SESSION_ID,
+        pid: 4321,
+        ptyProcess: {
+          pid: 4321,
+          onData: vi.fn(),
+          onExit: vi.fn(),
+          write: vi.fn(),
+          resize: vi.fn(),
+          kill: vi.fn(),
+        },
+      };
+    });
 
     // Reset sentinel state: no .agent-done on disk, empty read. The
     // completion-sentinel test overrides both. clearAllMocks keeps the factory
@@ -471,6 +515,27 @@ describe('spawnTuiAgent runtime', () => {
   // calls — those are covered by agentLifecycle.test.js.
 
   // ── GH_TOKEN pinning: the agent's own `gh pr create` must auth as the repo owner ─
+  it('uses a runner-owned PTY and registers it as an attachable shell session', async () => {
+    runSpawn({ useDurableRunner: true });
+    await flushMicrotasks();
+
+    expect(spawnTuiSessionViaRunner).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: 'agent-1',
+      taskId: 'task-1',
+      command: 'codex',
+      workspacePath: '/tmp/ws',
+      doneSentinelPath: '/tmp/ws/.agent-done',
+    }));
+    expect(shellService.createShellSession).not.toHaveBeenCalled();
+    expect(shellService.registerExternalSession).toHaveBeenCalledWith(
+      SESSION_ID,
+      expect.objectContaining({ pid: 4321 }),
+      expect.objectContaining({ agentId: 'agent-1', kind: 'agent-tui' }),
+    );
+
+    await capturedOnExit({ exitCode: 1, signal: 15 });
+  });
+
   it('passes the repo-owner-pinned GH_TOKEN into the TUI session env (buildSafeEnv would otherwise strip it)', async () => {
     let resolveComplete;
     const completeDone = new Promise((r) => { resolveComplete = r; });
@@ -509,6 +574,53 @@ describe('spawnTuiAgent runtime', () => {
 
     await capturedOnExit({ exitCode: 0, killed: false });
     await completeDone;
+  });
+
+  it('hands a slashdo-free TUI PR to PortOS for creation and review/merge follow-up', async () => {
+    const cleanupWorktreeFn = vi.fn().mockResolvedValue(undefined);
+    const spawnPromise = runSpawn({
+      provider: { id: 'codex-tui', name: 'Codex TUI', type: 'tui', command: 'codex', envVars: {} },
+      task: {
+        id: 'task-1',
+        description: 'do the thing',
+        metadata: { openPR: true, prCompletion: 'review-then-merge', reviewers: ['codex'] },
+      },
+      helpers: { cleanupWorktreeFn, isTruthyMetaFn: (value) => value === true || value === 'true' },
+    });
+    await flushMicrotasks();
+
+    await capturedOnExit({ exitCode: 0, killed: false });
+    await spawnPromise;
+
+    expect(cleanupWorktreeFn).toHaveBeenCalledWith('agent-1', true, expect.objectContaining({
+      openPR: true,
+      prCompletion: 'review-then-merge',
+      reviewers: ['codex'],
+      skipMerge: false,
+    }));
+  });
+
+  it('does not double-fire a PR owned by a slashdo-capable Claude TUI', async () => {
+    const cleanupWorktreeFn = vi.fn().mockResolvedValue(undefined);
+    const spawnPromise = runSpawn({
+      provider: { id: 'claude-code-tui', name: 'Claude TUI', type: 'tui', command: 'claude', envVars: {} },
+      task: {
+        id: 'task-1',
+        description: 'do the thing',
+        metadata: { openPR: true, prCompletion: 'review-then-merge' },
+      },
+      helpers: { cleanupWorktreeFn, isTruthyMetaFn: (value) => value === true || value === 'true' },
+    });
+    await flushMicrotasks();
+
+    await capturedOnExit({ exitCode: 0, killed: false });
+    await spawnPromise;
+
+    expect(cleanupWorktreeFn).toHaveBeenCalledWith('agent-1', true, expect.objectContaining({
+      openPR: false,
+      prCompletion: 'review-then-merge',
+      skipMerge: true,
+    }));
   });
 
   // ── 1. Successful idle-complete path ────────────────────────────────────────
@@ -726,14 +838,11 @@ describe('spawnTuiAgent runtime', () => {
   //
   // Drives the same PTY sequence as the idle-no-changes test: prompt echo →
   // submit → an ADVANCING work counter → idle out, with a clean worktree.
-  async function driveIdleWithWorkOnCleanTree(overrides) {
-    vi.mocked(gitService.getStatus).mockResolvedValue({ clean: true, files: [] });
-    vi.mocked(gitService.getDiff).mockResolvedValue('');
-
-    let resolveComplete;
-    const completeDone = new Promise((r) => { resolveComplete = r; });
-    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
-
+  // Shared PTY choreography: boot banner → prompt echo (paste verify) → submit
+  // Enter → an ADVANCING work counter (sets workActivity.active and
+  // lastOutputAt > promptSentAt). Leaves fake timers running at the second
+  // counter; callers add their own tail (idle advance + git/finalize/assertions).
+  async function driveToSubmittedAndWorking(overrides = {}) {
     runSpawn(overrides);
     await flushMicrotasks();
 
@@ -752,6 +861,17 @@ describe('spawnTuiAgent runtime', () => {
     await capturedOnData(Buffer.from('(1s · thinking with high effort)\n'));
     await vi.advanceTimersByTimeAsync(800);
     await capturedOnData(Buffer.from('(2s · thinking with high effort)\n'));
+  }
+
+  async function driveIdleWithWorkOnCleanTree(overrides) {
+    vi.mocked(gitService.getStatus).mockResolvedValue({ clean: true, files: [] });
+    vi.mocked(gitService.getDiff).mockResolvedValue('');
+
+    let resolveComplete;
+    const completeDone = new Promise((r) => { resolveComplete = r; });
+    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
+
+    await driveToSubmittedAndWorking(overrides);
 
     await vi.advanceTimersByTimeAsync(21000);
     vi.useRealTimers();
@@ -832,6 +952,73 @@ describe('spawnTuiAgent runtime', () => {
     );
   });
 
+  // ── 1d. Connectivity-aware idle reaper ──────────────────────────────────────
+  // When the machine loses internet, a live TUI goes silent (it can't reach the
+  // model) exactly like a hung or finished agent looks to the idle timer — so an
+  // outage would reap an agent that's only blocked on the network. The reaper is
+  // the ONLY liveness signal for a genuinely hung TUI, so it isn't removed —
+  // it's gated on a reachability probe and DEFERS while offline.
+  const OFFLINE_TUI_CONFIG = {
+    command: 'codex',
+    args: [],
+    commandLine: 'codex',
+    promptDelayMs: 100,
+    // A larger idle window than the fast default so the lead probe
+    // (idleTimeoutMs/2, capped) resolves on an earlier 5s tick than the reap
+    // tick — mirroring how a real 3-minute window spans many probe ticks.
+    idleTimeoutMs: 15000,
+    maxRuntimeMs: 3600000,
+  };
+
+  async function driveToIdleSilence({ checkOnlineFn, silenceMs = 45000 }) {
+    await driveToSubmittedAndWorking({ tuiConfig: OFFLINE_TUI_CONFIG, checkOnlineFn });
+    // Go silent well past the 15s idle window (several 5s ticks) so the lead
+    // probe fires and resolves before the reap tick.
+    await vi.advanceTimersByTimeAsync(silenceMs);
+    await flushMicrotasks();
+  }
+
+  it('idle reaper DEFERS while the machine is offline (does not reap an agent that lost internet)', async () => {
+    const checkOnlineFn = vi.fn().mockResolvedValue(false);
+    await driveToIdleSilence({ checkOnlineFn });
+
+    expect(checkOnlineFn).toHaveBeenCalled(); // the reachability probe fired
+    expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalled(); // …and the reap was deferred
+  });
+
+  it('idle reaper still reaps on the SAME window when online (deferral is outage-specific, not a timing artifact)', async () => {
+    let resolveComplete;
+    const completeDone = new Promise((r) => { resolveComplete = r; });
+    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
+
+    // dirty tree (default git mock) → idle-complete success
+    await driveToIdleSilence({ checkOnlineFn: vi.fn().mockResolvedValue(true) });
+    vi.useRealTimers();
+    await completeDone;
+
+    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ success: true, completionReason: 'idle-complete' })
+    );
+  });
+
+  it('idle reaper resumes reaping once connectivity RETURNS (deferral is not permanent)', async () => {
+    let resolveComplete;
+    const completeDone = new Promise((r) => { resolveComplete = r; });
+    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
+
+    // Offline for the first probe, then the connection comes back. The reap is
+    // deferred through the outage, then fires after the reconnect grace window.
+    const checkOnlineFn = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+    await driveToIdleSilence({ checkOnlineFn, silenceMs: 90000 });
+    vi.useRealTimers();
+    await completeDone;
+
+    expect(checkOnlineFn.mock.calls.length).toBeGreaterThan(1); // probed again after the outage
+    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ success: true, completionReason: 'idle-complete' })
+    );
+  });
+
   // ── 1c. Absolute wall-clock backstop reaps a busy-but-stuck agent ───────────
   // The idle reaper resets on every PTY chunk, so an agent whose working counter
   // keeps repainting through a stalled provider retry never idles out and would
@@ -871,8 +1058,10 @@ describe('spawnTuiAgent runtime', () => {
     // The ceiling PRODS rather than reaping (#3167): it pastes a wrap-up message
     // and opens a grace window, so the agent is NOT finalized yet.
     expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalled();
-    expect(shellService.writeToSession).toHaveBeenCalledWith(
-      SESSION_ID, expect.stringContaining('you have hit your maximum runtime')
+    expect(shellService.pasteToSession).toHaveBeenCalledWith(
+      SESSION_ID,
+      expect.stringContaining('you have hit your maximum runtime'),
+      { label: '[cosAgents] max-runtime wrap-up' },
     );
 
     // No sentinel ever appears → the grace window expires → NOW it reaps.
@@ -1090,6 +1279,34 @@ describe('spawnTuiAgent runtime', () => {
     await vi.advanceTimersByTimeAsync(2000);
     await flushMicrotasks();
     expect(pasteCount()).toBe(0);
+
+    await capturedOnData(Buffer.from(PASTE_ON));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(400);
+    await flushMicrotasks();
+    expect(pasteCount()).toBe(1);
+  });
+
+  // Regression (#3202 durable runner): the runner pty.spawns claude DIRECTLY —
+  // no launch shell — so the shell's paste-mode OFF never appears in the
+  // stream. The tracker must treat claude's own first ON as ready; before the
+  // fix every runner-tui claude agent died `tui-not-ready` at the 45s deadline
+  // with a live input box on screen (agent-ade9a664 / agent-29ca86ef).
+  it('claude input-ready (runner mode): pastes on claude\'s own paste-mode ON with no shell OFF ever seen', async () => {
+    // Runner mode must also SKIP the shell-child liveness probe: the TUI is the
+    // PTY process itself (no launch shell), so a ps listing where the pid has no
+    // children does not mean the TUI exited. Make ps return no child of pid 4321
+    // to prove the probe can't veto the paste.
+    vi.mocked(execFile).mockImplementation((_file, _args, _opts, cb) => cb(null, '1\n1\n999\n'));
+    runSpawn({ tuiConfig: claudeTuiConfig, useDurableRunner: true });
+    await flushMicrotasks();
+
+    // Startup banner only — no bracketed-paste OFF precedes it in runner mode.
+    await capturedOnData(Buffer.from('Claude Code v2.1.220\nOpus 5 with high effort\n'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+    expect(pasteCount()).toBe(0); // banner alone is still not "input ready"
 
     await capturedOnData(Buffer.from(PASTE_ON));
     await flushMicrotasks();
@@ -1773,6 +1990,93 @@ describe('spawnTuiAgent runtime', () => {
       .join('');
     expect(outputTxtWrites).toContain('Implemented the fix.');
     expect(outputTxtWrites).toContain('https://example.com/pr/42');
+  });
+
+  // ── 11. A PortOS host restart is an interruption, never a completion ─────────
+  //
+  // Reported in #3202: `pm2 restart portos-server` TreeKills the agent's PTY.
+  // node-pty reports that as exit code 0, so `success: code === 0 && !killed`
+  // recorded a run that had produced nothing as SUCCESSFUL — and worse, finalize
+  // handed the worktree to cleanupWorktreeFn, destroying the state a resume
+  // needs. Both halves are asserted here.
+  describe('host restart (#3202)', () => {
+    afterEach(() => resetHostShutdownFlagForTests());
+
+    it('abandons instead of finalizing when the PTY dies during shutdown', async () => {
+      const cleanupWorktreeFn = vi.fn().mockResolvedValue(undefined);
+      const spawnPromise = runSpawn({ helpers: { cleanupWorktreeFn, isTruthyMetaFn: (v) => !!v } });
+      await flushMicrotasks();
+
+      markHostShuttingDown();
+      // Exactly what pm2's TreeKill looks like from node-pty: a clean exit code.
+      await capturedOnExit({ exitCode: 0, killed: false });
+      await flushMicrotasks();
+      await spawnPromise;
+
+      // No outcome recorded, and — critically — the worktree is left alone.
+      expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalled();
+      expect(cleanupWorktreeFn).not.toHaveBeenCalled();
+      // The record stays `running`; only the phase label is refined, so boot
+      // recovery still sees it as an agent to reconcile from the marker.
+      expect(vi.mocked(cosAgents.updateAgent).mock.calls.some(
+        ([, patch]) => patch?.metadata?.phase === 'interrupted' && patch?.metadata?.interruptedBy === 'host-shutdown'
+      )).toBe(true);
+    });
+
+    it('still finalizes as success when the agent had already written its sentinel', async () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFile).mockImplementation(async (p) =>
+        typeof p === 'string' && p.endsWith('.agent-done') ? '## Summary\nDone.' : ''
+      );
+
+      const spawnPromise = runSpawn({ workspacePath: '/tmp/ws' });
+      await flushMicrotasks();
+
+      markHostShuttingDown();
+      await capturedOnExit({ exitCode: 0, killed: false });
+      await flushMicrotasks();
+      await spawnPromise;
+
+      expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ agentId: 'agent-1', success: true })
+      );
+    });
+
+    // The backstop for a SIGKILL'd or crashed portos-server, which never runs its
+    // shutdown handler — so the in-process flag is never set, and the only
+    // evidence left is node-pty's `signal`.
+    it('records a signal-terminated PTY as a failure even with exit code 0', async () => {
+      const spawnPromise = runSpawn();
+      await flushMicrotasks();
+
+      await capturedOnExit({ exitCode: 0, killed: false, signal: 15 });
+      await flushMicrotasks();
+      await spawnPromise;
+
+      expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: 'agent-1',
+          success: false,
+          completionReason: 'shell-signaled',
+          error: expect.stringContaining('signal 15'),
+        })
+      );
+    });
+
+    // Guard against over-correcting: a TUI that genuinely exits 0 on its own,
+    // outside a shutdown and with no signal, keeps its prior success semantics.
+    it('leaves an ordinary clean exit alone', async () => {
+      const spawnPromise = runSpawn();
+      await flushMicrotasks();
+
+      await capturedOnExit({ exitCode: 0, killed: false, signal: null });
+      await flushMicrotasks();
+      await spawnPromise;
+
+      expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ success: true, completionReason: 'shell-exit' })
+      );
+    });
   });
 });
 

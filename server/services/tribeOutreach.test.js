@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import { groupUnansweredThreads, generateOutreachDraft, findUnansweredTribeThreads, buildTwoWayGate, outreachTemplateForSource } from './tribeOutreach.js';
 
@@ -276,9 +276,20 @@ describe('findUnansweredTribeThreads — per-account email querying (#2820)', ()
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // findUnansweredTribeThreads() reads Date.now() directly (no injectable
+    // `now`), so pin the clock to NOW — otherwise the fixtures' ages drift with
+    // wall-clock time and the daysAgo(3) inbound falls outside the 14-day window
+    // once real time passes NOW+14d (this test began failing at 2026-07-29T12:00Z).
+    // Only Date is faked; the code under test uses no real timers.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
     // One tribe person, resolved from the inbound's handle.
     loadResolverContext.mockResolvedValue({ people: [{ id: 'p1', ring: 'tribe', name: 'Alex' }] });
     enrichActivityEvent.mockReturnValue({ personId: 'p1', displayName: 'Alex' });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('queries each two-way Gmail account under its OWN cap so a noisy account cannot suppress an opted-in one', async () => {

@@ -5,6 +5,7 @@ import {
   diatonicStep,
   durationBeats,
   keySignature,
+  replaceNotePitch,
   scoreHasMusic,
   DURATIONS,
 } from './scoreNotation.js';
@@ -186,6 +187,47 @@ describe('parseScore', () => {
     expect(s.errors).toEqual([]);
     expect(s.measures).toHaveLength(8);
     for (const m of s.measures) expect(m.beats).toBeCloseTo(4, 5);
+  });
+
+  it('keeps source spans across formatted multi-line bodies', () => {
+    const text = [
+      'key: Bb',
+      '',
+      '| [Bb] Bb3q.(Sing)   C4e(now) |',
+      '  | [F7]D4h(through) rq |',
+    ].join('\r\n');
+    const notes = parseScore(text).measures.flatMap((measure) => measure.notes);
+    expect(notes.map((note) => text.slice(note.start, note.end))).toEqual([
+      'Bb3q.(Sing)',
+      'C4e(now)',
+      '[F7]D4h(through)',
+      'rq',
+    ]);
+    expect(notes.map((note) => note.raw)).toEqual([
+      'Bb3q.(Sing)',
+      'C4e(now)',
+      '[F7]D4h(through)',
+      'rq',
+    ]);
+  });
+});
+
+describe('replaceNotePitch', () => {
+  it('rewrites only the pitch and preserves formatting, chord, duration, dots, and lyric', () => {
+    const text = 'key: C\n\n| [C]  C4q. (bad-gap)  [G7]F#4h.(held) |';
+    const note = parseScore(text).measures[0].notes[1];
+    const next = replaceNotePitch(text, note, 'Bb3');
+    expect(next).toBe('key: C\n\n| [C]  C4q. (bad-gap)  [G7]Bb3h.(held) |');
+    expect(next.slice(0, note.start)).toBe(text.slice(0, note.start));
+    expect(next.slice(note.pitchStart + 'Bb3'.length)).toBe(text.slice(note.pitchEnd));
+  });
+
+  it('rejects rests, invalid pitches, and stale spans', () => {
+    const text = '| C4q rq |';
+    const [note, rest] = parseScore(text).measures[0].notes;
+    expect(() => replaceNotePitch(text, rest, 'D4')).toThrow(/pitched note/i);
+    expect(() => replaceNotePitch(text, note, 'nope')).toThrow(/valid replacement/i);
+    expect(() => replaceNotePitch(`${text} `, { ...note, raw: 'D4q' }, 'D4')).toThrow(/stale/i);
   });
 });
 

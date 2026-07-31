@@ -1278,6 +1278,79 @@ export async function importFileToUploads(tempPath, originalName) {
   return importFileToDir(tempPath, originalName, PATHS.uploads);
 }
 
+// Widest supported image signature (WebP needs 12 bytes: `RIFF….WEBP`). A payload
+// shorter than this can't hold a complete header for any format we accept.
+const MIN_IMAGE_BYTES = 12;
+
+// POSIX NAME_MAX — the per-component filename limit on ext4/APFS/HFS+. A longer
+// component makes the write fail with ENAMETOOLONG.
+const MAX_FILENAME_BYTES = 255;
+
+/**
+ * Persist a base64-encoded IMAGE into `dir`, deriving the format from the bytes
+ * rather than trusting the client: decode → size cap → magic-byte sniff → force
+ * the extension to the detected format → sanitize + containment guard → write.
+ *
+ * This is the sibling of `saveBase64Upload` for the paths that must be certain
+ * they wrote an image (they hand the file to an image-gen backend or to an agent
+ * that will read it), so an extension allowlist isn't enough. Naming is the
+ * CALLER's call — pass a name that is already unique if later uploads must not
+ * overwrite this one, since `dir` is a shared bucket.
+ *
+ * Throws ServerError with the status/code/message contract `routes/screenshots.js`
+ * established (`FILE_TOO_LARGE`, `INVALID_FILE_TYPE`, `INVALID_FILENAME` — all
+ * 400) so callers keep their pinned responses.
+ *
+ * @param {string} dir - Destination directory (created if missing).
+ * @param {{ filename: string, data: string }} upload - Desired base name (the
+ *   extension is replaced with the detected one) + base64 payload.
+ * @param {{ maxBytes: number }} opts
+ * @returns {Promise<{ filename: string, filePath: string, size: number,
+ *   format: string, mime: string }>}
+ */
+export async function saveImageUpload(dir, { filename, data }, { maxBytes }) {
+  const buffer = Buffer.from(data, 'base64');
+  if (buffer.length > maxBytes) {
+    throw new ServerError(`File exceeds maximum size of ${maxBytes / 1024 / 1024}MB`, { status: 400, code: 'FILE_TOO_LARGE' });
+  }
+
+  // Floor before the sniff, because the per-format signatures are short (a JPEG is
+  // 3 bytes, a GIF header 6) and would happily "detect" a truncated payload — which
+  // then saves as a success and hands a consumer a path to an unreadable file. 12
+  // bytes is the widest signature (WebP's RIFF….WEBP), so anything under it cannot
+  // be a complete header for ANY supported format, let alone a complete image.
+  if (buffer.length < MIN_IMAGE_BYTES) {
+    throw new ServerError('Invalid image file - only PNG, JPEG, GIF, and WebP are supported', { status: 400, code: 'INVALID_FILE_TYPE' });
+  }
+
+  const detected = detectImageFormat(buffer);
+  if (!detected) {
+    throw new ServerError('Invalid image file - only PNG, JPEG, GIF, and WebP are supported', { status: 400, code: 'INVALID_FILE_TYPE' });
+  }
+
+  // The DETECTED extension always wins over whatever the client claimed, so the
+  // file on disk can't advertise a type its bytes contradict. Strip a matching
+  // extension off the base rather than appending a second one, then clamp the base
+  // so `base + ext` fits NAME_MAX — a caller that prefixes the name (see
+  // services/shellImageDrop.js) can otherwise push a legitimately-long client
+  // filename past the limit and turn the write into an ENAMETOOLONG 500.
+  const safeName = sanitizeFilename(filename);
+  const base = safeName.toLowerCase().endsWith(detected.ext)
+    ? safeName.slice(0, -detected.ext.length)
+    : safeName;
+  // sanitizeFilename leaves only ASCII, so slicing chars is slicing bytes.
+  const fname = `${base.slice(0, MAX_FILENAME_BYTES - detected.ext.length)}${detected.ext}`;
+  const filePath = join(dir, fname);
+  if (!isPathInsideDir(dir, filePath)) {
+    throw new ServerError('Invalid filename', { status: 400, code: 'INVALID_FILENAME' });
+  }
+
+  await ensureDir(dir);
+  await writeFile(filePath, buffer);
+
+  return { filename: fname, filePath, size: buffer.length, format: detected.format, mime: detected.mime };
+}
+
 /**
  * Persist a base64-encoded upload into `dir` with the shared attachment
  * pipeline: extension allowlist → base64 decode → size cap → ensureDir →
@@ -1414,18 +1487,36 @@ export function assertSafeFilename(filename, { extensions, subject = 'filename',
   if (filename.includes('\0')) {
     throw new ServerError(`Invalid ${subjectText}`, { status: 400, code: 'VALIDATION_ERROR' });
   }
-  const isExactTraversal = filename === '.' || filename === '..';
-  const hasSeparator = filename.includes('/') || filename.includes('\\');
-  const isPureBasename = basename(filename) === filename;
-  // Leading dot is fine for normal hidden files, but combined with the no-
-  // separator rule it's already covered above for `.`/`..`. We keep the
-  // basename equality check so e.g. `subdir\foo.png` (which has a `\` and
-  // also has basename `foo.png`) is still rejected by hasSeparator.
-  const lower = filename.toLowerCase();
-  const extOk = extensions.some((ext) => lower.endsWith(String(ext).toLowerCase()));
-  if (!extOk || hasSeparator || isExactTraversal || !isPureBasename) {
+  if (!isSafeFilename(filename, extensions)) {
     throw new ServerError(`Invalid ${subjectText}`, { status: 400, code: 'VALIDATION_ERROR' });
   }
+}
+
+/**
+ * `assertSafeFilename`'s non-throwing twin: the same rule as a predicate, for
+ * callers that must report a bad name as *data* rather than fail the request —
+ * e.g. a read-only preflight that names one corrupt record as a blocked row
+ * instead of 400-ing the whole sweep. Both share this implementation so the
+ * thrown gate and the reported verdict can never disagree.
+ *
+ * Rejects: empty/non-string, null bytes (they terminate C strings, so some
+ * POSIX syscalls treat the prefix as a separate path), `.`/`..`, any path
+ * separator, anything that isn't already a pure basename, and any extension
+ * outside `extensions`. The basename equality check is kept alongside the
+ * separator check so e.g. `subdir\foo.png` is rejected on both counts.
+ *
+ * `extensions` must be dot-prefixed, and unlike `assertSafeFilename` this does
+ * not police that for you — a bare suffix like `png` would also match
+ * `not-an-imagepng`. Pass a module constant, never a caller-supplied list.
+ */
+export function isSafeFilename(filename, extensions) {
+  if (!filename || typeof filename !== 'string') return false;
+  if (filename.includes('\0')) return false;
+  if (filename === '.' || filename === '..') return false;
+  if (filename.includes('/') || filename.includes('\\')) return false;
+  if (basename(filename) !== filename) return false;
+  const lower = filename.toLowerCase();
+  return extensions.some((ext) => lower.endsWith(String(ext).toLowerCase()));
 }
 
 /**
@@ -1745,6 +1836,9 @@ export async function dirSize(path) {
   const kb = parseInt(result.stdout.split('\t')[0], 10) || 0;
   return kb * 1024;
 }
+
+/** SHA-256 a string or Buffer as hex — `sha256File`'s in-memory twin. */
+export const sha256Text = (value) => createHash('sha256').update(value).digest('hex');
 
 /**
  * SHA-256 a file as hex. One-shot read under 512 KB; streams above so multi-GB

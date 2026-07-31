@@ -15,12 +15,24 @@ import {
 } from './layeredIntelligenceOutcomes.js';
 import { computeExecutionByDomain } from './layeredIntelligence.js';
 
+// The suite's frozen "today". The reconcile fixtures below close their issues on
+// absolute dates (`closedAt: '2026-07-01T00:00:00Z'` and friends), while the
+// assertions read them back through `listOutcomes()` with no explicit `now` — so
+// the GC measures those fixtures against the real wall clock. That is a time
+// bomb: OUTCOME_RETENTION_MS is 30 days, so on 2026-07-31 every fixture closed on
+// 2026-07-01 aged out mid-suite and 20 tests began failing on a tree nobody had
+// touched. Freezing Date pins the fixtures inside the retention window forever.
+// Only Date is faked — the store's write queue runs on real timers.
+const SUITE_NOW = '2026-07-20T00:00:00Z';
+
 // Build an isolated store over a temp dir so the suite never touches the real
 // data/cos/li-outcomes collection. The store functions all take an injectable
 // `store` param exactly so tests can drive them without PATHS.cos.
 let dir;
 let store;
 beforeEach(async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(SUITE_NOW));
   dir = await mkdtemp(join(tmpdir(), 'li-outcomes-'));
   store = createCollectionStore({
     dir,
@@ -30,6 +42,7 @@ beforeEach(async () => {
   });
 });
 afterEach(async () => {
+  vi.useRealTimers();
   await rm(dir, { recursive: true, force: true });
 });
 

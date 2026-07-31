@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import tempfile
 import types
 import unittest
 from types import SimpleNamespace
@@ -125,6 +126,31 @@ class GenerateLtx2TeaCacheTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.helper._resolve_pipeline("Nope1", "Nope2")
 
+    def test_prefers_v11_distilled_lora_when_model_contains_it(self):
+        with tempfile.TemporaryDirectory() as model_dir:
+            Path(model_dir, self.helper.DISTILLED_LORA_V11).touch()
+            Path(model_dir, self.helper.DISTILLED_LORA_LEGACY).touch()
+            pipe = SimpleNamespace(
+                model_dir=Path(model_dir),
+                _distilled_lora=self.helper.DISTILLED_LORA_LEGACY,
+            )
+            selected = self.helper._prefer_distilled_lora(pipe, None)
+            self.assertEqual(selected, self.helper.DISTILLED_LORA_V11)
+            self.assertEqual(pipe._distilled_lora, self.helper.DISTILLED_LORA_V11)
+
+    def test_distilled_lora_falls_back_and_honors_explicit_override(self):
+        with tempfile.TemporaryDirectory() as model_dir:
+            Path(model_dir, self.helper.DISTILLED_LORA_LEGACY).touch()
+            pipe = SimpleNamespace(model_dir=Path(model_dir), _distilled_lora=None)
+            self.assertEqual(
+                self.helper._prefer_distilled_lora(pipe, None),
+                self.helper.DISTILLED_LORA_LEGACY,
+            )
+            self.assertEqual(
+                self.helper._prefer_distilled_lora(pipe, "custom.safetensors"),
+                "custom.safetensors",
+            )
+
     def test_rate_kwarg_name_prefers_frame_rate_over_fps(self):
         def both(a, frame_rate=1, fps=2):
             pass
@@ -141,6 +167,33 @@ class GenerateLtx2TeaCacheTest(unittest.TestCase):
         self.assertIsNone(self.helper._rate_kwarg_name(kwargs_only))
         self.assertEqual(self.helper._rate_kwargs(kwargs_only, 24.0), {})
         self.assertEqual(self.helper._rate_kwargs(fps_only, 24.0), {"fps": 24.0})
+
+    def test_a2v_image_conditioning_compat_supplies_missing_frame_rate(self):
+        calls = []
+
+        def combined(images, *, frame_rate):
+            calls.append((images, frame_rate))
+            return "conditioned"
+
+        orchestration = SimpleNamespace(combined_image_conditionings=combined)
+        restore = self.helper._bind_combined_image_conditioning_rate(orchestration, 24.0)
+        self.assertEqual(orchestration.combined_image_conditionings(["frame"]), "conditioned")
+        self.assertEqual(
+            orchestration.combined_image_conditionings(["frame"], frame_rate=30.0),
+            "conditioned",
+        )
+        self.assertEqual(calls, [(["frame"], 24.0), (["frame"], 30.0)])
+        restore()
+        self.assertIs(orchestration.combined_image_conditionings, combined)
+
+    def test_a2v_image_conditioning_compat_ignores_old_helper(self):
+        def combined(images):
+            return images
+
+        orchestration = SimpleNamespace(combined_image_conditionings=combined)
+        restore = self.helper._bind_combined_image_conditioning_rate(orchestration, 24.0)
+        self.assertIs(orchestration.combined_image_conditionings, combined)
+        restore()
 
     def test_one_stage_kwargs_omits_num_steps_when_steps_unset(self):
         args = SimpleNamespace(
@@ -311,6 +364,7 @@ class GenerateLtx2TeaCacheTest(unittest.TestCase):
             model="m", gemma="g", extend_from_video="in.mp4", prompt="p",
             extend_frames=2, extend_direction="after", seed=0, steps=None,
             cfg_scale=None, no_teacache=False, teacache_thresh=None,
+            user_lora_specs=[],
         )
         try:
             self.helper._EXTEND_TC_CONFIG = None

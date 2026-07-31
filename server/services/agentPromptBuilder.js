@@ -15,7 +15,7 @@ import { buildPrompt } from './promptService.js';
 import { getToolsSummaryForPrompt } from './tools.js';
 import { getActiveProvider } from './providers.js';
 import { runPromptThroughProvider } from '../lib/promptRunner.js';
-import { readJSONFile, loadSlashdoFile, loadSlashdoLib, writeResolvedSlashdoBody, PATHS, tryReadFile } from '../lib/fileUtils.js';
+import { readJSONFile, loadSlashdoFile, loadSlashdoLib, writeResolvedSlashdoBody, PATHS, tryReadFile, expandHome } from '../lib/fileUtils.js';
 import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, LOCAL_LLM_REVIEWERS, MODEL_CAPABLE_CLI_REVIEWERS, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds, resolveReviewUsernames, resolveOptionalReviewers, resolveReviewerMaxRounds, resolveReviewerModels, reviewerModelsFromDefaults, resolveKeyedReviewers, buildReviewWithArgs, buildReviewersCsv } from '../lib/validation.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { canTypeSlashCommands, resolveSlashdoInvocation, buildSlashdoSection, unreachableReviewerIncludes, SLASHDO_INLINE_BUDGET_CHARS } from '../lib/slashdoInvocation.js';
@@ -38,6 +38,21 @@ const SKILLS_DIR = join(ROOT_DIR, 'data/prompts/skills');
 // from even attempting them.
 export const PM2_SAFETY_RULE = `## ⚠️ PM2 Safety (shared server)
 PortOS runs MANY apps under one shared pm2 daemon. To restart an app, use a SCOPED command — \`pm2 restart <that-app's-process-name>\`. NEVER run \`pm2 kill\`, \`pm2 stop\`, \`pm2 delete\`, \`pm2 startup\`/\`unstartup\`, or any \`pm2 <verb> all\` form: they take down EVERY app on this machine, including PortOS itself, and are blocked (they will fail).`;
+
+// Also appended to every agent briefing. A CoS agent runs headless: the TUI has
+// no human attached, so an interactive selector or approval gate is a dead end —
+// the session repaints it until the idle reaper kills the run and the work is
+// discarded. Nothing in the briefing used to SAY that, so a `/do:plan-task` run
+// (whose skill shows its drafted issue for approval before filing) parked on a
+// scope question for its whole life and was retried into the same gate three
+// times, filing nothing. The rule names the escape hatch too: slash commands
+// that gate on approval take a flag to skip it.
+export const UNATTENDED_RUN_RULE = `## ⚠️ Unattended Run (no human is present)
+PortOS launched you autonomously. Nobody is watching this session and nothing can answer you — if you present an interactive choice (a multiple-choice question, an approval gate, a "which option?" selector, a confirmation), the session sits there until the idle reaper kills it and **your work is thrown away**.
+- **Never ask the user to choose or approve.** Make the call yourself, state the assumption in your summary, and proceed.
+- **Invoke commands and skills in their non-interactive form.** If one drafts something and gates on approval before acting, pass the flag that skips that gate (\`--yes\` for the slashdo commands that have one).
+- **Ambiguous task?** Pick the most reasonable reading, do the work, and note the alternatives you rejected in your completion summary.
+- **Genuinely blocked** (missing credential, contradictory requirements)? Write why to the completion sentinel and stop. Do NOT wait for a reply.`;
 
 /**
  * Skill template keyword matchers.
@@ -754,11 +769,10 @@ const LEAVE_PR_OPEN_STEP = (step, jiraTracked = false) => `${step}. **Leave the 
  *
  * This is the single definition of "no reviewer is configured, so CI is the
  * merge gate" — shared by every flow that reaches it: the agent's own completion
- * workflow (slashdo TUI + Claude Code CLI via `buildPostPRMergeSteps`), the
- * manual/OpenCode TUI workflow, and the merge follow-up agent PortOS spawns when
- * it opened the PR itself. They differ only in how the PR is addressed and
- * whether GitLab commands are offered, so those are parameters rather than three
- * hand-written copies that drift.
+ * workflow (slashdo TUI + Claude Code CLI via `buildPostPRMergeSteps`) and the
+ * merge follow-up agent PortOS spawns when it opened the PR itself. They differ
+ * only in how the PR is addressed and whether GitLab commands are offered, so
+ * those are parameters rather than hand-written copies that drift.
  *
  * Ends on the same merge command + MERGED verification as the review-loop
  * contract (`buildReviewLoopFollowUpSection`): a true merge commit keeps the
@@ -868,8 +882,8 @@ function buildMergeFollowUpSection({ prUrl, prBranch, prNumber = '', prOwner = '
  * @param {boolean} opts.isReadOnly
  * @param {boolean} opts.isTui
  * @param {string} opts.tuiCompletionCommand - `/do:pr` or `/do:push`
- * @param {boolean} [opts.slashdoFree] - TUI without slashdo (OpenCode): the bullet
- *   points at the manual git/gh Completion Workflow instead of a `/do:*` command.
+ * @param {boolean} [opts.slashdoFree] - TUI without slashdo: the bullet points
+ *   at the manual commit + system-handoff workflow instead of a `/do:*` command.
  * @param {Object|null} opts.worktreeInfo
  * @param {boolean} opts.willOpenPR
  * @param {'review-then-merge'|'merge-on-green'|'leave-open'} opts.prCompletion
@@ -903,7 +917,7 @@ export function buildCompletionGuidelineBullet({
     // buildTuiCompletionSection — not this bullet). It's kept provider-aware and
     // directly unit-tested so the guideline stays correct if that routing changes.
     const howTo = slashdoFree
-      ? 'the Completion Workflow above (plain `git`/`gh` commands — this provider has no slashdo commands)'
+      ? 'the Completion Workflow above (plain `git` commit + PortOS handoff — this provider has no slashdo commands)'
       : `the Completion Workflow above (\`${tuiCompletionCommand}\`)`;
     return `On successful completion, YOU run ${howTo}, then write the sentinel and stop — PortOS closes the session once it sees the sentinel; do NOT run \`/quit\`.`;
   }
@@ -959,32 +973,43 @@ function isResumedWorktree(task, worktreeInfo) {
 }
 
 /**
- * Resume banner for a retry attached to the branch a PREVIOUS failed agent left
+ * Resume banner for a retry picking up what a PREVIOUS unfinished agent left
  * behind (`metadata.existingBranch` + `resumedFromAgentId`, stamped by
- * agentCompletionCleanup.js when a failed run's branch survived cleanup with
- * commits on it).
+ * `recordTaskResumePointer` when a dead run's branch — or whole worktree —
+ * survived cleanup).
  *
  * Without this the retry sees an ordinary worktree that just happens to have
- * commits on it and redoes work that is already done — the failure mode the
+ * work in it and redoes what is already done — the failure mode the
  * agent-d2ae0352 incident exposed (reaped 30s after its PR merged; the
  * replacement agent started the shipped work over). Telling it to read the log
  * FIRST is the whole point: the prior run may have gone as far as opening or even
  * merging a PR, in which case there is nothing left to build.
+ *
+ * An ADOPTED worktree (`worktreeInfo.adopted` — the shape a server restart leaves,
+ * killed mid-edit before committing) additionally carries the dead run's
+ * uncommitted edits and untracked files, so the banner points at `git status`
+ * as the primary record rather than the commit log.
  *
  * Returns '' when this isn't a resume, so callers can interpolate unconditionally.
  */
 export function buildResumeSection(task, worktreeInfo) {
   if (!isResumedWorktree(task, worktreeInfo)) return '';
   const priorAgentId = task.metadata.resumedFromAgentId;
+  const carriedWork = worktreeInfo.adopted
+    ? `**You are in its actual working directory** — its commits are on your branch \`${worktreeInfo.branchName}\`
+AND any edits it had not committed yet are still in your working tree, exactly as it left them.`
+    : `**Its commits are already on your branch** \`${worktreeInfo.branchName}\` — you are
+continuing its run, not starting over.`;
   return `
 ## Resuming Unfinished Work — Read This First
 A previous agent (\`${priorAgentId}\`) worked this same task and did NOT finish cleanly
-(it hung, timed out, or was terminated). **Its commits are already on your branch**
-\`${worktreeInfo.branchName}\` — you are continuing its run, not starting over.
+(it hung, timed out, or was terminated — a server restart kills runs mid-edit).
+${carriedWork}
 
 Before you write any code, establish what is already done:
-1. \`git log --oneline ${worktreeInfo.baseBranch || 'origin/HEAD'}..HEAD\` — the commits it already made.
-2. \`git status\` — anything it left uncommitted.
+1. \`git status\` — anything it left uncommitted. Treat these as YOUR in-progress
+   changes: review them, finish them, and commit them. Do not discard them wholesale.
+2. \`git log --oneline ${worktreeInfo.baseBranch || 'origin/HEAD'}..HEAD\` — the commits it already made.
 3. Check whether it already shipped: look for an open or merged PR for this branch
    — \`gh pr list --head ${worktreeInfo.branchName} --state all\` on GitHub,
    \`glab mr list --source-branch ${worktreeInfo.branchName}\` on GitLab.
@@ -1425,7 +1450,7 @@ ${task.metadata.jiraBranch ? 'Commit your changes to this branch. Do NOT switch 
   }).catch(() => null);
 
   if (promptData?.prompt) {
-    return `${promptData.prompt}\n\n${PM2_SAFETY_RULE}`;
+    return `${promptData.prompt}\n\n${UNATTENDED_RUN_RULE}\n\n${PM2_SAFETY_RULE}`;
   }
 
   const taskBlock = buildTaskBlock(task, { screenshotsAsList: false });
@@ -1490,6 +1515,8 @@ ${discardWorktree
   ? `- **Do NOT commit, push, or open a PR.** This worktree is discarded on exit — your only output is the completion sentinel (see the Completion section above).`
   : isReviewLoopFollowUp
     ? `- **Push fixes straight to the PR branch you are on** (the follow-up section above is the procedure). Stage specific files, use a \`fix:\` prefix, no Co-Authored-By annotations. Do NOT open a new PR.`
+    : isTui && tuiSlashdoFree
+    ? `- **Commit only — do NOT push.** Stage specific files, use \`feat:\`/\`fix:\`/\`breaking:\` prefix in the commit message, no Co-Authored-By annotations, then write the completion sentinel. PortOS will handle the branch after it closes the session.`
     : isTui
     ? `- **Use \`${tuiCompletionCommand}\` to ${willOpenPR ? 'commit, push, and open the PR' : 'commit and push the branch'}** — see the Completion Workflow section above. Stage specific files (no \`git add -A\`), use \`feat:\`/\`fix:\`/\`breaking:\` prefix in the commit message, no Co-Authored-By annotations.`
     : worktreeInfo && willOpenPR
@@ -1499,6 +1526,8 @@ ${discardWorktree ? '' : worktreeInfo ? `- **Your PR should contain only your ta
 
 ## Working Directory
 ${task.metadata?.app ? `You are working in the target app directory: \`${workspaceDir}\`. All code changes, research, plans, and docs for this task belong in this directory — NOT in the PortOS repo.` : 'You are working in the project directory.'} Use the available tools to explore, modify, and test code.
+
+${UNATTENDED_RUN_RULE}
 
 ${PM2_SAFETY_RULE}
 
@@ -1592,7 +1621,8 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   // block where PortOS handles push+PR on exit.
   const hasSlashdo = !isTui && canTypeSlash;
   // TUI: a session that does NOT load Claude Code slash commands can't run
-  // `/do:pr` / `/do:push`, so its completion workflow uses plain git/gh instead
+  // `/do:pr` / `/do:push`, so its completion workflow uses plain git and hands
+  // the post-exit push / PR lifecycle back to PortOS
   // — an OpenCode TUI, a codex/antigravity/grok TUI, or a lean-mode Claude
   // session (`--bare` skips project command discovery, and the small local models
   // lean mode targets fumble multi-step slashdo flows anyway).
@@ -1629,6 +1659,12 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   // route it to `contractSections` so the split path can lift it into the
   // system prompt.
   sections = contractSections;
+
+  // --- Unattended run ----------------------------------------------------
+  // First contract section, and unconditional: the light path is the one that
+  // actually stalled on an approval gate, and "no human will answer you" is not
+  // something the agent can infer from CLAUDE.md or its cwd.
+  sections.push(UNATTENDED_RUN_RULE);
 
   // --- Worktree ----------------------------------------------------------
   if (worktreeInfo) {
@@ -1859,40 +1895,25 @@ function buildTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.M
 /**
  * Manual (slashdo-free) TUI completion-workflow block — for an OpenCode TUI that
  * does NOT load Claude Code slash commands and so can't run `/do:pr` / `/do:push`.
- * Drives a plain `git` commit → push → (open PR/MR) → sentinel handshake, so the
- * `.agent-done` signal still fires and the task completes.
+ * Drives a plain `git` commit → sentinel handshake. PortOS owns the post-exit
+ * push / PR / review / merge lifecycle, just as it does for non-TUI providers
+ * that cannot invoke project slash commands.
  *
- * PortOS forces `openPR:false, skipMerge:true` on TUI worktree cleanup (see
- * agentTuiSpawning.js), so nothing happens after the agent exits — the agent owns
- * the push and the PR itself.
- *
- * With review-then-merge configured, it opens the PR/MR and stops:
- * this provider can't drive the reviewer CLIs (no slashdo `/do:pr` review loop)
- * and PortOS runs no post-exit review for a TUI, so merging here would ship work
- * the user asked to have reviewed. With the review loop OFF there is no reviewer
- * and no follow-up coming, so leaving it open just leaks the PR — the agent
- * merges it once CI is green, matching every other no-review-loop flow.
- *
- * Forge-aware (GitHub `gh` + GitLab `glab`) to match the slashdo path; refs are
- * shell-quoted because a git ref can legally contain shell metacharacters.
+ * Keeping PR creation system-owned also guarantees a real generated body rather
+ * than `gh pr create --fill` producing an empty description from a one-line
+ * commit, and lets the existing follow-up machinery run configured reviewers.
  */
-function buildManualTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.REVIEW_THEN_MERGE, simplifyEnabled, sentinelPath, branchName = null, baseBranch = null, leavePrOpen = false }) {
+function buildManualTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.REVIEW_THEN_MERGE, simplifyEnabled, sentinelPath, leavePrOpen = false }) {
   const policyLeavesOpen = prCompletion === PR_COMPLETIONS.LEAVE_OPEN;
   const runsReviewLoop = prCompletion === PR_COMPLETIONS.REVIEW_THEN_MERGE;
-  const branchRef = shellQuote(branchName || 'HEAD');
-  // Pin the PR base to the worktree's base branch when known, so the forge CLI
-  // doesn't guess (and a fork install targets the intended branch). `--fill`
-  // still supplies title/body from the commits.
-  const ghBaseArg = baseBranch ? ` --base ${shellQuote(baseBranch)}` : '';
-  const glabBaseArg = baseBranch ? ` --target-branch ${shellQuote(baseBranch)}` : '';
   const simplifyStep = simplifyEnabled
     ? `1. Before committing, ${SIMPLIFY_INLINE_REVIEW} and fix any findings.`
     : '1. (simplify disabled — skip)';
-  const sentinelTail = willOpenPR ? '   ## PR\n   <PR URL>' : '   ## Branch\n   <branch name>';
+  const sentinelTail = '   ## Branch\n   <branch name>';
 
   const lines = [
     '## Completion Workflow',
-    'This provider does NOT have slashdo (`/do:*`) commands, so finish the handoff with plain `git` (and your forge\'s CLI). Run these in order:',
+    'This provider does NOT have slashdo (`/do:*`) commands, so finish the handoff with plain `git`. Run these in order:',
     '',
     simplifyStep,
     '2. Stage only the files you changed (never `git add -A` / `git add .`) and commit with a conventional message (`feat:`/`fix:`/`breaking:` prefix, no Co-Authored-By annotations):',
@@ -1901,36 +1922,20 @@ function buildManualTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLET
     '   git add <file> [<file> ...]',
     '   git commit -m "feat: <description>"',
     '   ```',
-    '3. Push your branch (it is a fresh worktree branch, so set upstream on first push):',
-    '',
-    '   ```bash',
-    `   git push -u origin ${branchRef}`,
-    '   ```',
   ];
 
-  let step = 4;
+  let step = 3;
   if (willOpenPR) {
-    const openNote = policyLeavesOpen
-      ? '**Leave it open — do NOT merge it.** This task is configured to stop after opening the PR so you can inspect it.'
+    const handoff = policyLeavesOpen
+      ? 'PortOS will push the branch, create a pull request with your completion summary as its description, and leave it open for inspection.'
       : leavePrOpen
-      ? '**Leave it open — do NOT merge it.** This task is tracked in JIRA: its ticket is in review and a human lands the PR and the ticket together.'
+      ? 'PortOS will push the branch and create a pull request for the JIRA-linked human handoff.'
       : runsReviewLoop
-        ? '**Leave it open for review — do NOT merge it yourself.** This provider can\'t run the reviewer loop, and PortOS won\'t merge it for a TUI task, so a configured reviewer or a human reviews and merges it.'
-        : 'No review loop is configured for this task, so you merge it yourself in the next step — nothing else will.';
-    lines.push(
-      `${step++}. Open a pull/merge request against the base branch using the CLI for this repo's forge (check \`git remote -v\`), and capture the URL it prints. ${openNote}`,
-      '',
-      '   ```bash',
-      `   # GitHub:  gh pr create --fill${ghBaseArg}`,
-      `   # GitLab:  glab mr create --fill${glabBaseArg}`,
-      '   ```',
-    );
-    if (!runsReviewLoop && !leavePrOpen && !policyLeavesOpen) {
-      // Same CI-gate procedure the slashdo workflow and the merge follow-up use.
-      const gate = buildCiMergeGateSteps(step, { prRef: '"<PR_URL>"', forge: 'unknown' });
-      lines.push(...gate.lines);
-      step = gate.nextStep;
-    }
+        ? 'PortOS will push the branch, create a pull request with your completion summary as its description, run the configured reviewer follow-up, and merge only after review and CI pass.'
+        : 'PortOS will push the branch, create a pull request with your completion summary as its description, and merge it once CI is green.';
+    lines.push(`${step++}. Do NOT push, open, or merge a pull request yourself. ${handoff}`);
+  } else {
+    lines.push(`${step++}. Do NOT push this worktree branch yourself. PortOS will merge it back after completion.`);
   }
 
   lines.push(
@@ -2021,27 +2026,46 @@ function buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion = PR
 }
 
 /**
- * Get workspace path for an app.
+ * Get the workspace path for an app, or `null` when it can't be resolved.
+ *
+ * This used to substitute the PortOS repo root for every failure — registry
+ * missing, app not found, app carrying no `repoPath` — which made an
+ * unresolvable app indistinguishable from a working one: the agent quietly
+ * wrote its files into the PortOS checkout and nothing said otherwise
+ * (issue #3180). A downstream existence check can't recover that case either,
+ * because the substituted root is a real directory.
+ *
+ * So this returns an explicit `null` sentinel and lets each caller decide
+ * whether "no workspace" is legal for it (per the sentinel-and-validate rule in
+ * CLAUDE.md — absent must not collapse into a valid-looking value). The reason
+ * is logged here, where it's known.
+ *
+ * @returns {Promise<string|null>} the app's repoPath, or null if unresolvable
  */
 export async function getAppWorkspace(appName) {
   const appsFile = join(ROOT_DIR, 'data/apps.json');
+  const unresolved = (why) => { console.warn(`⚠️ ${why} — no agent workspace resolved`); return null; };
 
   const data = await readJSONFile(appsFile, null);
-  if (!data) {
-    return ROOT_DIR;
-  }
+  if (!data) return unresolved(`No apps registry at ${appsFile}`);
 
   // Handle both object format { apps: { id: {...} } } and array format [...]
   const apps = data.apps || data;
 
-  if (Array.isArray(apps)) {
-    const app = apps.find(a => a.name === appName || a.id === appName);
-    return app?.repoPath || ROOT_DIR;
-  }
+  const app = Array.isArray(apps)
+    ? apps.find(a => a.name === appName || a.id === appName)
+    // Object format - keys are app IDs
+    : (apps[appName] || Object.values(apps).find(a => a.name === appName));
 
-  // Object format - keys are app IDs
-  const app = apps[appName] || Object.values(apps).find(a => a.name === appName);
-  return app?.repoPath || ROOT_DIR;
+  if (!app) return unresolved(`App '${appName}' not found in apps registry`);
+  if (!app.repoPath) return unresolved(`App '${appName}' has no repoPath`);
+  // Expand here, not just at the spawn boundary. Callers do more with this than
+  // spawn into it: agentLifecycle persists it as an agent's `sourceWorkspace`,
+  // and the worktree cleanup/merge paths later hand that value to a child
+  // process as its cwd. Node never shell-expands `~`, so returning the raw
+  // tilde form would let a task start (the spawn path expands) and then strand
+  // its worktree and branch when cleanup runs against a path that doesn't exist.
+  return expandHome(app.repoPath);
 }
 
 /**

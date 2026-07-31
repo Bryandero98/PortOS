@@ -117,8 +117,9 @@ describe('SongBookImport', () => {
       // isDrumNotation runs BEFORE detectFormat — a grid row would otherwise
       // classify as plain text.
       expect(await screen.findByText('drum')).toBeTruthy();
-      expect(screen.getByLabelText('Drum bar 1')).toBeTruthy();
+      expect(screen.getByLabelText(/^Drum chart —/)).toBeTruthy();
       expect(screen.getAllByText('Hi-Hat').length).toBeGreaterThan(0);
+      expect(screen.getByLabelText('Play along')).toBeTruthy();
     });
 
     it('saves the drum format with the chart text', async () => {
@@ -153,7 +154,7 @@ describe('SongBookImport', () => {
       fireEvent.click(screen.getByRole('tab', { name: 'From URL' }));
       fireEvent.change(screen.getByLabelText('Tab / chord-sheet URL'), { target: { value: 'https://example.com/g' } });
       fireEvent.click(screen.getByRole('button', { name: 'Fetch' }));
-      await waitFor(() => expect(screen.getByLabelText('Drum bar 1')).toBeTruthy());
+      await waitFor(() => expect(screen.getByLabelText(/^Drum chart —/)).toBeTruthy());
 
       // And for content the sniff can't read, the instrument still wins.
       api.importSongFromUrl.mockResolvedValue({

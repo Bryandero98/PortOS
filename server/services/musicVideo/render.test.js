@@ -48,6 +48,7 @@ describe('buildMusicVideoFfmpegArgs', () => {
     const maps = args.reduce((acc, a, i) => (a === '-map' ? [...acc, args[i + 1]] : acc), []);
     expect(maps).toEqual(['[outv]', '2:a']);
     expect(args).toContain('-shortest');
+    expect(args.filter((arg) => arg === '-stream_loop')).toHaveLength(2);
   });
 
   it('totalDuration is the min of video and audio length', () => {
@@ -113,10 +114,11 @@ describe('beatSnapClips', () => {
       expect(out[0].duration).toBeCloseTo(1.2, 5);
     });
 
-    it('clamps a persisted duration to the clip\'s own rendered length', () => {
+    it('allows a persisted duration to exceed the source clip so ffmpeg can loop it', () => {
       const scenes = [{ sceneId: 's1', startSec: 0, endSec: 100, beatAligned: true }];
       const out = beatSnapClips([clip({ sceneId: 's1', duration: 2, outSec: 2 })], null, { scenes });
-      expect(out[0].outSec).toBe(2);
+      expect(out[0].outSec).toBe(100);
+      expect(out[0].duration).toBe(100);
     });
 
     it('clamps a persisted duration to minClipSec', () => {

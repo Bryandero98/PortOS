@@ -26,7 +26,9 @@ import {
   assertAnimationTrackRows, trackRowCount, tracksForKind, kindSupportsTrack,
   sourceReferenceFor, primaryTrackForKind,
 } from './animationTracks.js';
-import { getEffectiveAnimationTracks, getEffectiveAnimationTrackIds } from './animationTrackStore.js';
+import {
+  getEffectiveAnimationTracks, getEffectiveAnimationTrackIds, animationTrackSeedPath,
+} from './animationTrackStore.js';
 import { SPRITE_RECORD_KINDS } from './recordsLogic.js';
 import { AMBIENT_TRACK_ROW } from './spriteTestFixtures.js';
 import {
@@ -42,11 +44,27 @@ import {
 const SPRITES_DIR = dirname(fileURLToPath(import.meta.url));
 const SERVER_DIR = dirname(dirname(SPRITES_DIR));
 
-// The merged table this install actually serves — compiled `walk` plus the seeded
-// store rows. Resolved once: the store caches its read, so every call in this file
-// sees one consistent table.
+// The merged table this install actually serves — compiled `walk` plus the store
+// rows, which on a machine that has authored its own tracks includes those too.
+// Resolved once: the store caches its read, so every call in this file sees one
+// consistent table. Use this for assertions about the SHAPE of whatever rows
+// exist (a hand-authored row must satisfy the same guards a seeded one does).
 const EFFECTIVE = getEffectiveAnimationTracks();
 const effectiveTrack = (id) => getAnimationTrack(id, EFFECTIVE);
+
+// The table a FRESH install serves — compiled `walk` plus `data.reference`'s seed,
+// with no user-authored rows. Use this for assertions that enumerate the exact
+// shipped set: against EFFECTIVE they assert that the developer running the suite
+// has authored no tracks of their own, which is not a property of this repo (#3152
+// exists to let them). One such assertion did read EFFECTIVE and turned red the
+// day a character track was added on the machine running it.
+const SHIPPED = Object.freeze({
+  ...ANIMATION_TRACKS,
+  ...Object.fromEntries(
+    (JSON.parse(readFileSync(animationTrackSeedPath(), 'utf-8')).tracks || [])
+      .map((row) => [row.id, Object.freeze({ ...row, builtin: false })]),
+  ),
+});
 
 describe('the registry rows', () => {
   it('reproduces the walk track\'s historical bounds and defaults exactly', () => {
@@ -270,8 +288,12 @@ describe('registry-derived source reference and primacy (#3136)', () => {
     // non-directional one has no anchor to read at all — a place record never
     // generates directional anchors.
     expect(sourceReferenceFor(WALK_TRACK)).toBe('anchor');
-    expect(sourceReferenceFor(SCANNER_TRACK, EFFECTIVE)).toBe('anchor');
-    expect(sourceReferenceFor(AMBIENT_TRACK, EFFECTIVE)).toBe('main');
+    // SHIPPED, not EFFECTIVE — these name the seed's own flags, and the seed's
+    // `_comment` says every row in it may be retuned or deleted. Read from the
+    // live table, an operator deleting `scanner` (a supported edit) reds a test
+    // about the shipped contract that they never touched.
+    expect(sourceReferenceFor(SCANNER_TRACK, SHIPPED)).toBe('anchor');
+    expect(sourceReferenceFor(AMBIENT_TRACK, SHIPPED)).toBe('main');
     // Reads the row it's HANDED, not the shipped table.
     expect(sourceReferenceFor('ambient', { ambient: AMBIENT_TRACK_ROW })).toBe('main');
     expect(() => sourceReferenceFor('unknown')).toThrow(/Unknown animation track/);
@@ -280,16 +302,16 @@ describe('registry-derived source reference and primacy (#3136)', () => {
   it('answers which track a record kind publishes off', () => {
     // ONE definition, shared by the publish-contract schema (which field is
     // required) and the compile dispatch (which evidence chain to validate).
-    expect(primaryTrackForKind('character', EFFECTIVE)?.id).toBe(WALK_TRACK);
-    expect(primaryTrackForKind('place', EFFECTIVE)?.id).toBe(AMBIENT_TRACK);
-    expect(primaryTrackForKind('object', EFFECTIVE)?.id).toBe(AMBIENT_TRACK);
-    expect(primaryTrackForKind('props', EFFECTIVE)?.id).toBe(AMBIENT_TRACK);
+    expect(primaryTrackForKind('character', SHIPPED)?.id).toBe(WALK_TRACK);
+    expect(primaryTrackForKind('place', SHIPPED)?.id).toBe(AMBIENT_TRACK);
+    expect(primaryTrackForKind('object', SHIPPED)?.id).toBe(AMBIENT_TRACK);
+    expect(primaryTrackForKind('props', SHIPPED)?.id).toBe(AMBIENT_TRACK);
     // A short action a record can't publish off alone is never the primary.
-    expect(primaryTrackForKind('character', EFFECTIVE)?.id).not.toBe(SCANNER_TRACK);
+    expect(primaryTrackForKind('character', SHIPPED)?.id).not.toBe(SCANNER_TRACK);
     // Absent/unknown answers null rather than defaulting to a kind.
-    expect(primaryTrackForKind('nope', EFFECTIVE)).toBeNull();
-    expect(primaryTrackForKind('', EFFECTIVE)).toBeNull();
-    expect(primaryTrackForKind(undefined, EFFECTIVE)).toBeNull();
+    expect(primaryTrackForKind('nope', SHIPPED)).toBeNull();
+    expect(primaryTrackForKind('', SHIPPED)).toBeNull();
+    expect(primaryTrackForKind(undefined, SHIPPED)).toBeNull();
   });
 });
 
@@ -369,9 +391,11 @@ describe('directionality and record-kind support (#3017)', () => {
   });
 
   it('admits ambient loops for non-character sprite kinds', () => {
-    expect(tracksForKind('character', EFFECTIVE).map((r) => r.id)).toEqual([WALK_TRACK, SCANNER_TRACK]);
+    // SHIPPED, not EFFECTIVE: this names the exact set a fresh install carries,
+    // so a track the developer authored locally must not appear in it.
+    expect(tracksForKind('character', SHIPPED).map((r) => r.id)).toEqual([WALK_TRACK, SCANNER_TRACK]);
     for (const kind of ['place', 'object', 'props']) {
-      expect(tracksForKind(kind, EFFECTIVE).map((r) => r.id), `${kind} carries the ambient loop`).toEqual([AMBIENT_TRACK]);
+      expect(tracksForKind(kind, SHIPPED).map((r) => r.id), `${kind} carries the ambient loop`).toEqual([AMBIENT_TRACK]);
     }
   });
 
@@ -410,18 +434,21 @@ describe('per-track clamps', () => {
     expect(clampTrackFps(99)).toBe(24);
   });
 
+  // Both clamp tests read SHIPPED: they assert the seed's own numeric bounds, so
+  // against the live table an operator who retunes `scanner.maxFrameCount` — the
+  // seed invites exactly that — would red a test about the shipped defaults.
   it('clamps scanner values against scanner bounds', () => {
-    expect(clampTrackFrameCount(99, SCANNER_TRACK, EFFECTIVE)).toBe(8);
-    expect(clampTrackFrameCount(-1, SCANNER_TRACK, EFFECTIVE)).toBe(2);
-    expect(clampTrackFps(99, SCANNER_TRACK, EFFECTIVE)).toBe(12);
-    expect(clampTrackFps(-1, SCANNER_TRACK, EFFECTIVE)).toBe(2);
+    expect(clampTrackFrameCount(99, SCANNER_TRACK, SHIPPED)).toBe(8);
+    expect(clampTrackFrameCount(-1, SCANNER_TRACK, SHIPPED)).toBe(2);
+    expect(clampTrackFps(99, SCANNER_TRACK, SHIPPED)).toBe(12);
+    expect(clampTrackFps(-1, SCANNER_TRACK, SHIPPED)).toBe(2);
   });
 
   it('clamps ambient values against the ambient range', () => {
-    expect(clampTrackFrameCount(99, AMBIENT_TRACK, EFFECTIVE)).toBe(6);
-    expect(clampTrackFrameCount(-1, AMBIENT_TRACK, EFFECTIVE)).toBe(2);
-    expect(clampTrackFps(99, AMBIENT_TRACK, EFFECTIVE)).toBe(12);
-    expect(clampTrackFps(-1, AMBIENT_TRACK, EFFECTIVE)).toBe(2);
+    expect(clampTrackFrameCount(99, AMBIENT_TRACK, SHIPPED)).toBe(6);
+    expect(clampTrackFrameCount(-1, AMBIENT_TRACK, SHIPPED)).toBe(2);
+    expect(clampTrackFps(99, AMBIENT_TRACK, SHIPPED)).toBe(12);
+    expect(clampTrackFps(-1, AMBIENT_TRACK, SHIPPED)).toBe(2);
   });
 });
 

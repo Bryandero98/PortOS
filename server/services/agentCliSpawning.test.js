@@ -90,6 +90,9 @@ vi.mock('child_process', () => ({
 }));
 
 import { buildCliSpawnConfig, createStreamJsonParser, spawnDirectly } from './agentCliSpawning.js';
+// Real module — the flag is a plain process-local boolean, so driving it
+// directly exercises the same code path production does.
+import { markHostShuttingDown, resetHostShutdownFlagForTests } from '../lib/hostShutdown.js';
 import { spawn } from 'child_process';
 import { prepareCliSpawn, killProcessTree } from '../lib/bufferedSpawn.js';
 
@@ -797,5 +800,59 @@ describe('stream error containment', () => {
     expect(opts.reviewerApplies).toBe(true);
     // The removed singular key must NOT be passed.
     expect(opts.reviewer).toBeUndefined();
+  });
+
+  // pm2's TreeKill takes direct-CLI children down with portos-server exactly as
+  // it does TUI PTYs (#3202). Finalizing here would charge the task's failure
+  // budget — and possibly file an investigation task — for a fault the agent
+  // didn't have, and hand its worktree to cleanup, discarding the state a resume
+  // needs. The run is abandoned instead, leaving the record `running` for the
+  // next boot's orphan sweep to reconcile from the host-shutdown marker.
+  describe('host restart (#3202)', () => {
+    // The outer beforeEach re-sets implementations but not call history, and the
+    // mocks are module-scoped — clear so "was it called" reads only this test.
+    beforeEach(async () => {
+      const { finalizeAgent } = await import('./agentFinalization.js');
+      finalizeAgent.mockClear();
+      cosAgentsMocks.updateAgent.mockClear();
+    });
+
+    afterEach(() => resetHostShutdownFlagForTests());
+
+    const runToClose = async (args) => {
+      spawnDirectly(args);
+      await new Promise((r) => setTimeout(r, 10));
+      markHostShuttingDown();
+      fakeProcess.emit('close', 0);
+      await new Promise((r) => setTimeout(r, 80));
+    };
+
+    it('abandons without finalizing or cleaning up the worktree', async () => {
+      const cleanupWorktreeFn = vi.fn().mockResolvedValue(undefined);
+      const { finalizeAgent } = await import('./agentFinalization.js');
+
+      await runToClose({ ...minimalArgs, cleanupWorktreeFn });
+
+      expect(finalizeAgent).not.toHaveBeenCalled();
+      expect(cleanupWorktreeFn).not.toHaveBeenCalled();
+      // The breadcrumb the orphan sweep falls back on when no marker names the agent.
+      expect(cosAgentsMocks.updateAgent).toHaveBeenCalledWith(
+        minimalArgs.agentId,
+        { metadata: { phase: 'interrupted', interruptedBy: 'host-shutdown' } },
+      );
+    });
+
+    it('still finalizes a user-terminated run so it is recorded as terminated, not resurrected', async () => {
+      const { userTerminatedAgents } = await import('./agentState.js');
+      const { finalizeAgent } = await import('./agentFinalization.js');
+      userTerminatedAgents.add(minimalArgs.agentId);
+
+      await runToClose({ ...minimalArgs });
+
+      expect(finalizeAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ terminatedByUser: true, success: false }),
+      );
+      userTerminatedAgents.delete(minimalArgs.agentId);
+    });
   });
 });

@@ -207,35 +207,39 @@ K:  o - - - - - o -`;
       api.getSong.mockResolvedValue(drumSong());
       renderPage();
       expect(await screen.findByText('Example Song')).toBeTruthy();
-      // The kit sheet drew (labelled rows, per-bar svg).
-      expect(screen.getByLabelText('Drum bar 1: Groove')).toBeTruthy();
-      // One row label per bar that uses the piece (the block repeats x2).
+      // The kit sheet drew — one continuous lane for the whole song.
+      expect(screen.getByLabelText(/^Drum chart —/)).toBeTruthy();
+      // The frozen label column names every kit row the chart uses.
       expect(screen.getAllByText('Hi-Hat').length).toBeGreaterThan(0);
       // Transport controls are present.
       expect(screen.getByLabelText('Play along')).toBeTruthy();
-      expect(screen.getByLabelText('Practice tempo')).toBeTruthy();
+      expect(screen.getByLabelText('Practice tempo (BPM)')).toBeTruthy();
       expect(screen.getByLabelText('Enable loop')).toBeTruthy();
-      expect(screen.getByLabelText('Turn the click on')).toBeTruthy();
+      // The metronome defaults ON for a play-along, so the button offers to
+      // turn it off.
+      expect(screen.getByLabelText('Turn the metronome off')).toBeTruthy();
     });
 
-    it('hides transpose and the chord instrument-view picker for a drum chart', async () => {
+    it('hides transpose, chord voicings AND the rival autoscroll transport for a drum chart', async () => {
       api.getSong.mockResolvedValue(drumSong());
       renderPage();
       expect(await screen.findByLabelText('Play along')).toBeTruthy();
       expect(screen.queryByLabelText('Transpose up')).toBeNull();
       expect(screen.queryByLabelText('Transpose down')).toBeNull();
       expect(screen.queryByRole('combobox', { name: 'Instrument view' })).toBeNull();
-      // Autoscroll stays available.
-      expect(screen.getByLabelText('Autoscroll speed')).toBeTruthy();
+      // The kit strip scrolls horizontally under its own playhead — a vertical
+      // autoscroll play button beside it would be a second, conflicting "play".
+      expect(screen.queryByLabelText('Autoscroll speed')).toBeNull();
+      expect(screen.queryByLabelText('Play autoscroll')).toBeNull();
     });
 
     it('seeds BPM from the chart tempo and persists an edit per song (never the record)', async () => {
       api.getSong.mockResolvedValue(drumSong());
       renderPage();
-      await screen.findByLabelText('BPM');
-      await waitFor(() => expect(screen.getByLabelText('BPM').value).toBe('96'));
-      fireEvent.change(screen.getByLabelText('BPM'), { target: { value: '72' } });
-      await waitFor(() => expect(screen.getByLabelText('BPM').value).toBe('72'));
+      await screen.findByLabelText('Practice tempo (BPM)');
+      await waitFor(() => expect(screen.getByLabelText('Practice tempo (BPM)').value).toBe('96'));
+      fireEvent.change(screen.getByLabelText('Practice tempo (BPM)'), { target: { value: '72' } });
+      await waitFor(() => expect(screen.getByLabelText('Practice tempo (BPM)').value).toBe('72'));
       expect(globalThis.localStorage.getItem('songbook:drumBpm:abc')).toBe('72');
       // A practice tempo is a per-machine preference — never a record write.
       expect(api.updateSong).not.toHaveBeenCalled();
@@ -245,28 +249,28 @@ K:  o - - - - - o -`;
       globalThis.localStorage.setItem('songbook:drumBpm:abc', '60');
       api.getSong.mockResolvedValue(drumSong());
       renderPage();
-      await screen.findByLabelText('BPM');
-      await waitFor(() => expect(screen.getByLabelText('BPM').value).toBe('60'));
+      await screen.findByLabelText('Practice tempo (BPM)');
+      await waitFor(() => expect(screen.getByLabelText('Practice tempo (BPM)').value).toBe('60'));
     });
 
     it('recomputes BPM from a percent-of-written button', async () => {
       api.getSong.mockResolvedValue(drumSong());
       renderPage();
-      expect(await screen.findByLabelText('BPM')).toBeTruthy();
+      expect(await screen.findByLabelText('Practice tempo (BPM)')).toBeTruthy();
       fireEvent.click(screen.getByRole('button', { name: '50%' }));
-      await waitFor(() => expect(screen.getByLabelText('BPM').value).toBe('48'));
+      await waitFor(() => expect(screen.getByLabelText('Practice tempo (BPM)').value).toBe('48'));
       fireEvent.click(screen.getByRole('button', { name: '100%' }));
-      await waitFor(() => expect(screen.getByLabelText('BPM').value).toBe('96'));
+      await waitFor(() => expect(screen.getByLabelText('Practice tempo (BPM)').value).toBe('96'));
     });
 
     it('clamps a BPM outside the metronome band', async () => {
       api.getSong.mockResolvedValue(drumSong());
       renderPage();
-      const bpm = await screen.findByLabelText('BPM');
+      const bpm = await screen.findByLabelText('Practice tempo (BPM)');
       fireEvent.change(bpm, { target: { value: '9999' } });
-      await waitFor(() => expect(screen.getByLabelText('BPM').value).toBe('320'));
-      fireEvent.change(screen.getByLabelText('BPM'), { target: { value: '1' } });
-      await waitFor(() => expect(screen.getByLabelText('BPM').value).toBe('20'));
+      await waitFor(() => expect(screen.getByLabelText('Practice tempo (BPM)').value).toBe('320'));
+      fireEvent.change(screen.getByLabelText('Practice tempo (BPM)'), { target: { value: '1' } });
+      await waitFor(() => expect(screen.getByLabelText('Practice tempo (BPM)').value).toBe('20'));
     });
 
     it('disables Play for an all-rest chart, and space cannot route around it', async () => {
@@ -278,6 +282,64 @@ K:  o - - - - - o -`;
       // touched (jsdom has none, so a start attempt would throw).
       fireEvent.keyDown(window, { key: ' ' });
       expect(screen.getByLabelText('Play along').disabled).toBe(true);
+    });
+
+    it('defaults the metronome ON and remembers it being turned off', async () => {
+      api.getSong.mockResolvedValue(drumSong());
+      const { unmount } = renderPage();
+      // A play-along without a pulse is the unusual case, so the click starts on
+      // — and "never chosen" (no stored value) must not read as "chosen off".
+      fireEvent.click(await screen.findByLabelText('Turn the metronome off'));
+      expect(globalThis.localStorage.getItem('songbook:drumClick')).toBe('0');
+      unmount();
+
+      renderPage();
+      expect(await screen.findByLabelText('Turn the metronome on')).toBeTruthy();
+    });
+
+    it('mutes the metronome from the m shortcut as well as the button', async () => {
+      api.getSong.mockResolvedValue(drumSong());
+      renderPage();
+      await screen.findByLabelText('Turn the metronome off');
+      fireEvent.keyDown(window, { key: 'm' });
+      expect(await screen.findByLabelText('Turn the metronome on')).toBeTruthy();
+      fireEvent.keyDown(window, { key: 'm' });
+      expect(await screen.findByLabelText('Turn the metronome off')).toBeTruthy();
+    });
+
+    it('defaults the metronome to full and persists a level per machine', async () => {
+      api.getSong.mockResolvedValue(drumSong());
+      const { unmount } = renderPage();
+      const volume = await screen.findByLabelText('Metronome volume');
+      // No stored level is "never chosen" → full, NOT silent.
+      expect(volume.value).toBe('100');
+      fireEvent.change(volume, { target: { value: '30' } });
+      await waitFor(() => expect(screen.getByLabelText('Metronome volume').value).toBe('30'));
+      expect(globalThis.localStorage.getItem('songbook:drumClickVolume')).toBe('0.3');
+      // The click is a reference pulse, not song content — no record write, and
+      // the level is global rather than keyed by song.
+      expect(api.updateSong).not.toHaveBeenCalled();
+      unmount();
+
+      renderPage();
+      await waitFor(() => expect(screen.getByLabelText('Metronome volume').value).toBe('30'));
+    });
+
+    it('raising the level off silence unmutes, so the slider is never a dead control', async () => {
+      globalThis.localStorage.setItem('songbook:drumClick', '0');
+      api.getSong.mockResolvedValue(drumSong());
+      renderPage();
+      const volume = await screen.findByLabelText('Metronome volume');
+      expect(screen.getByLabelText('Turn the metronome on')).toBeTruthy(); // muted
+      fireEvent.change(volume, { target: { value: '60' } });
+      // Reaching for the level is an intent to HEAR it.
+      expect(await screen.findByLabelText('Turn the metronome off')).toBeTruthy();
+
+      // The reverse is deliberately not wired: dragging to zero leaves the
+      // toggle alone, so unmuting later can't come back silent.
+      fireEvent.change(screen.getByLabelText('Metronome volume'), { target: { value: '0' } });
+      await waitFor(() => expect(screen.getByLabelText('Metronome volume').value).toBe('0'));
+      expect(screen.getByLabelText('Turn the metronome off')).toBeTruthy();
     });
 
     it('reveals the loop bar range only when looping is on', async () => {
@@ -297,7 +359,42 @@ K:  o - - - - - o -`;
       renderPage('/songbook/abc?mode=edit');
       expect(await screen.findByLabelText('Title')).toBeTruthy();
       expect(screen.getByLabelText('Format').value).toBe('drum');
-      expect(screen.getByLabelText('Drum bar 1: Groove')).toBeTruthy();
+      expect(screen.getByLabelText(/^Drum chart —/)).toBeTruthy();
+      expect(screen.getByLabelText('Play along')).toBeTruthy();
+    });
+
+    it('keeps the idle edit preview synchronized before Play', async () => {
+      api.getSong.mockResolvedValue(drumSong());
+      renderPage('/songbook/abc?mode=edit');
+      const editor = await screen.findByLabelText('Content');
+      fireEvent.change(editor, { target: { value: `${DRUM_CHART}\nC: x - x -` } });
+
+      expect(screen.queryByText('Chart changed — press Play to reload.')).toBeNull();
+      expect(screen.getByLabelText('Play along')).toBeTruthy();
+    });
+
+    it('keeps edit-preview practice settings when returning to play mode', async () => {
+      api.getSong.mockResolvedValue(drumSong());
+      renderPage('/songbook/abc?mode=edit');
+      const bpm = await screen.findByLabelText('Practice tempo (BPM)');
+      fireEvent.change(bpm, { target: { value: '72' } });
+      fireEvent.click(screen.getByRole('button', { name: 'View' }));
+
+      await waitFor(() => expect(screen.getByLabelText('Practice tempo (BPM)').value).toBe('72'));
+    });
+
+    it('inherits play-mode count-in and loop settings when entering edit mode', async () => {
+      api.getSong.mockResolvedValue(drumSong());
+      renderPage();
+      await screen.findByLabelText('Count-in');
+      fireEvent.change(screen.getByLabelText('Count-in'), { target: { value: '2' } });
+      fireEvent.click(screen.getByLabelText('Enable loop'));
+      fireEvent.change(screen.getByLabelText('Loop from bar'), { target: { value: '2' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+
+      await waitFor(() => expect(screen.getByLabelText('Count-in').value).toBe('2'));
+      expect(screen.getByLabelText('Disable loop')).toBeTruthy();
+      expect(screen.getByLabelText('Loop from bar').value).toBe('2');
     });
 
     it('keeps an unknown stored instrument/format selectable and preserves it on save', async () => {

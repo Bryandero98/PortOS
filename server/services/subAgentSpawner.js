@@ -145,9 +145,11 @@ async function runInitSpawner() {
     onCosRunnerEvent('agent:completed', async (data) => {
       const { agentId, exitCode, success, duration } = data;
       const agent = runnerAgents.get(agentId);
-      if (agent) {
-        clearTimeout(agent.initializationTimeout);
-      }
+      // A runner-owned TUI is finalized by spawnTuiAgent while this server
+      // remains connected. Only a TUI recovered into runnerAgents after a
+      // server restart should use the generic runner completion path.
+      if (!agent) return;
+      clearTimeout(agent.initializationTimeout);
       // Drain pending output before completion so the final lines land in
       // state before handleAgentCompletion writes the terminal record.
       await flushRunnerOutputBatcher(agentId);

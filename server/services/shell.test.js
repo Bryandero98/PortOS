@@ -164,7 +164,19 @@ describe('createShellSession', () => {
     await flushMicrotasks();
     expect(shell.getSession(id)).toBeNull();
     expect(socket.emit).toHaveBeenCalledWith('shell:exit', { sessionId: id, code: 0 });
-    expect(onExit).toHaveBeenCalledWith({ exitCode: 0 });
+    expect(onExit).toHaveBeenCalledWith({ exitCode: 0, signal: null });
+  });
+
+  // node-pty reports a signal-terminated shell as exitCode 0 with the signal in a
+  // separate field. Forwarding it is what lets the TUI spawner tell "the shell
+  // finished" from "pm2 killed the shell out from under a running agent" (#3202).
+  it('on PTY exit: forwards node-pty signal to the onExit hook', async () => {
+    const onExit = vi.fn();
+    const id = shell.createShellSession(makeSocket(), { onExit });
+    ptyInstances[0].emitExit({ exitCode: 0, signal: 15 });
+    await flushMicrotasks();
+    expect(shell.getSession(id)).toBeNull();
+    expect(onExit).toHaveBeenCalledWith({ exitCode: 0, signal: 15 });
   });
 
   it('schedules initialCommand write after delay', () => {
@@ -360,6 +372,51 @@ describe('writeToSession / resizeSession', () => {
   });
 });
 
+describe('pasteToSession', () => {
+  let id;
+  let pty;
+  beforeEach(() => {
+    vi.useFakeTimers();
+    id = shell.createShellSession(makeSocket());
+    pty = ptyInstances[0];
+  });
+
+  it('writes one bracketed paste, then submits with repeated Enters', () => {
+    const timer = shell.pasteToSession(id, 'line one\nline two');
+    expect(timer).toBeTruthy();
+    // The paste is a SINGLE write — a multi-line message must not become N submits.
+    expect(pty.write).toHaveBeenCalledWith('\x1b[200~line one\nline two\x1b[201~');
+    expect(pty.write).toHaveBeenCalledWith('\r');
+
+    vi.advanceTimersByTime(1400);
+    expect(pty.write.mock.calls.filter(([data]) => data === '\r')).toHaveLength(3);
+  });
+
+  it('cancels pending Enters when the session dies', () => {
+    shell.pasteToSession(id, 'hi');
+    expect(pty.write.mock.calls.filter(([data]) => data === '\r')).toHaveLength(1);
+    shell.killSession(id);
+    vi.advanceTimersByTime(1400);
+    expect(pty.write.mock.calls.filter(([data]) => data === '\r')).toHaveLength(1);
+  });
+
+  it('cancels pending Enters when newer input arrives', () => {
+    shell.pasteToSession(id, 'hi');
+    expect(pty.write.mock.calls.filter(([data]) => data === '\r')).toHaveLength(1);
+
+    shell.writeToSession(id, 'new input');
+    vi.advanceTimersByTime(1400);
+
+    expect(pty.write.mock.calls.filter(([data]) => data === '\r')).toHaveLength(1);
+    expect(pty.write).toHaveBeenCalledWith('new input');
+  });
+
+  it('returns false and writes nothing for a missing session', () => {
+    expect(shell.pasteToSession('missing', 'hi')).toBe(false);
+    expect(pty.write).not.toHaveBeenCalled();
+  });
+});
+
 describe('killSession', () => {
   it('kills the PTY, removes the session, fires the onExit hook, broadcasts', async () => {
     const onExit = vi.fn();
@@ -411,6 +468,7 @@ describe('registerExternalSession / unregisterExternalSession', () => {
     const pty = makeFakePty();
     const id = shell.registerExternalSession('run-123', pty, {
       label: 'pipeline-manuscript-completeness',
+      agentId: 'agent-123',
       command: 'claude --model x',
       cwd: '/work',
     });
@@ -419,6 +477,7 @@ describe('registerExternalSession / unregisterExternalSession', () => {
     expect(info).toMatchObject({
       sessionId: 'run-123',
       label: 'pipeline-manuscript-completeness',
+      agentId: 'agent-123',
       kind: 'tui-run',
       command: 'claude --model x',
       external: true,
@@ -581,5 +640,137 @@ describe('getSession / getSessionProcess / getSessionCount', () => {
     shell.createShellSession(makeSocket());
     shell.createShellSession(makeSocket());
     expect(shell.getSessionCount()).toBe(2);
+  });
+});
+
+describe('buildSafeEnv', () => {
+  // Windows environment variable names are case-insensitive and arrive in mixed
+  // case: the real variable is `Path`, not `PATH`. A case-SENSITIVE prefix match
+  // dropped it (while keeping the coincidentally-upper-case `PATHEXT`), leaving
+  // the agent shell unable to resolve any CLI provider (#3180).
+  it('keeps mixed-case Windows variables that a case-sensitive match dropped', () => {
+    const env = {
+      Path: 'C:\\Windows\\system32',
+      PATHEXT: '.COM;.EXE;.BAT;.CMD',
+      SystemRoot: 'C:\\Windows',
+      windir: 'C:\\Windows',
+      ComSpec: 'C:\\Windows\\system32\\cmd.exe',
+      TEMP: 'C:\\Users\\Example\\AppData\\Local\\Temp',
+      APPDATA: 'C:\\Users\\Example\\AppData\\Roaming',
+      LOCALAPPDATA: 'C:\\Users\\Example\\AppData\\Local',
+      ProgramFiles: 'C:\\Program Files',
+      USERPROFILE: 'C:\\Users\\Example',
+    };
+    const safe = shell.buildSafeEnv(env, 'win32');
+    for (const key of Object.keys(env)) {
+      expect(safe, `expected ${key} to survive the allowlist`).toHaveProperty(key);
+    }
+  });
+
+  it('still strips secrets on Windows', () => {
+    const safe = shell.buildSafeEnv(
+      { Path: 'C:\\Windows', ANTHROPIC_API_KEY: 'sk-secret', GITHUB_TOKEN: 'ghp_secret' },
+      'win32'
+    );
+    expect(safe).toHaveProperty('Path');
+    expect(safe).not.toHaveProperty('ANTHROPIC_API_KEY');
+    expect(safe).not.toHaveProperty('GITHUB_TOKEN');
+  });
+
+  // The Windows names must not widen the POSIX allowlist — a Linux/macOS box
+  // with an `OS` or `TEMP` var set should filter exactly as it did before.
+  it('does not apply the Windows additions on POSIX', () => {
+    const safe = shell.buildSafeEnv(
+      { PATH: '/usr/bin', HOME: '/home/example', APPDATA: 'x', SystemRoot: 'y', ANTHROPIC_API_KEY: 'sk-secret' },
+      'linux'
+    );
+    expect(safe).toHaveProperty('PATH');
+    expect(safe).toHaveProperty('HOME');
+    expect(safe).not.toHaveProperty('APPDATA');
+    expect(safe).not.toHaveProperty('SystemRoot');
+    expect(safe).not.toHaveProperty('ANTHROPIC_API_KEY');
+  });
+});
+
+describe('buildSafeEnv — POSIX case sensitivity', () => {
+  // Folding case on POSIX would WIDEN the allowlist, not preserve it: PortOS
+  // starts under `npm run`, which exports dozens of lower-case npm_config_*
+  // vars (including values read from the user's .npmrc). Upper-casing keys
+  // would push every one of them through the 'NPM_' prefix into an attachable
+  // shell, so POSIX matching stays case-sensitive.
+  it('does not admit lower-case npm_config_* through the NPM_ prefix', () => {
+    const safe = shell.buildSafeEnv(
+      { PATH: '/usr/bin', npm_config_registry: 'https://example.com', npm_config_mysecret: 'hunter2' },
+      'linux'
+    );
+    expect(safe).toHaveProperty('PATH');
+    expect(safe).not.toHaveProperty('npm_config_registry');
+    expect(safe).not.toHaveProperty('npm_config_mysecret');
+  });
+});
+
+describe('buildSafeEnv — Windows names are exact, not prefixes', () => {
+  // The Windows additions are individual OS variables, not grouped families
+  // like NPM_/XDG_. Prefix-matching them would hand anything merely STARTING
+  // with one to an attachable agent shell — and `OS` is two characters, so it
+  // would admit OS_API_KEY from a filter whose whole job is withholding
+  // credentials.
+  it('does not admit token-like lookalikes of the Windows names', () => {
+    const safe = shell.buildSafeEnv({
+      Path: 'C:\\Windows',
+      APPDATA: 'C:\\Users\\Example\\AppData\\Roaming',
+      APPDATA_TOKEN: 'leak-me',
+      TEMP: 'C:\\Temp',
+      TEMP_SECRET: 'leak-me',
+      OS: 'Windows_NT',
+      OS_API_KEY: 'leak-me',
+    }, 'win32');
+    expect(safe).toHaveProperty('Path');
+    expect(safe).toHaveProperty('APPDATA');
+    expect(safe).toHaveProperty('TEMP');
+    expect(safe).toHaveProperty('OS');
+    expect(safe).not.toHaveProperty('APPDATA_TOKEN');
+    expect(safe).not.toHaveProperty('TEMP_SECRET');
+    expect(safe).not.toHaveProperty('OS_API_KEY');
+  });
+
+  it('keeps the parenthesized ProgramFiles variants that exact-matching could drop', () => {
+    const safe = shell.buildSafeEnv({
+      'ProgramFiles(x86)': 'C:\\Program Files (x86)',
+      ProgramW6432: 'C:\\Program Files',
+    }, 'win32');
+    expect(safe).toHaveProperty('ProgramFiles(x86)');
+    expect(safe).toHaveProperty('ProgramW6432');
+  });
+});
+
+describe('buildSafeEnv — Windows folding must not widen the POSIX prefixes', () => {
+  // Folding case for the PREFIX list (rather than only for the exact-name
+  // Windows Set) reaches much further than intended: PortOS starts under
+  // `npm run`, so npm's lower-case config vars are always present, and
+  // npm_config__authToken is a registry credential.
+  it('does not admit lower-case npm_config_* on Windows via the NPM_ prefix', () => {
+    const safe = shell.buildSafeEnv({
+      Path: 'C:\\Windows',
+      npm_config__authToken: 'npm-registry-credential',
+      npm_config_registry: 'https://example.com',
+      npm_package_name: 'portos',
+    }, 'win32');
+    expect(safe).toHaveProperty('Path');
+    expect(safe).not.toHaveProperty('npm_config__authToken');
+    expect(safe).not.toHaveProperty('npm_config_registry');
+    expect(safe).not.toHaveProperty('npm_package_name');
+  });
+
+  // The Windows names still need case-insensitive matching — that is the whole
+  // point of the exact-name Set, and `Path` is why the fix exists.
+  it('still matches the Windows names case-insensitively', () => {
+    const safe = shell.buildSafeEnv(
+      { Path: 'C:\\Windows', SystemRoot: 'C:\\Windows', windir: 'C:\\Windows', ComSpec: 'C:\\cmd.exe', ProgramData: 'C:\\PD' },
+      'win32'
+    );
+    for (const key of ['Path', 'SystemRoot', 'windir', 'ComSpec', 'ProgramData']) {
+      expect(safe, `expected ${key} to survive`).toHaveProperty(key);
+    }
   });
 });

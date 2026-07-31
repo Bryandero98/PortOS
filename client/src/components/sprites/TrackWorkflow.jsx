@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from 'react';
 import { Check, Film, Radio, RefreshCw, Wind } from 'lucide-react';
 import toast from '../ui/Toast';
-import { approveSpriteTrack } from '../../services/apiSprites.js';
+import { approveSpriteTrack, reopenSpriteTrack } from '../../services/apiSprites.js';
 import { useAsyncAction } from '../../hooks/useAsyncAction.js';
 import { SPRITE_DIRECTIONS } from '../../lib/spriteFacets.js';
 import { CorrectionNoteToggle, trackCorrectionKey } from './CorrectionNote.jsx';
@@ -57,6 +57,16 @@ export default function TrackWorkflow({
     toast.success(`${definition.label} ${directional ? `${direction} ` : ''}approved`);
     onChanged();
   }, { errorMessage: `${definition?.label || 'Track'} approval failed` });
+  const [reopen, reopening] = useAsyncAction(async (direction) => {
+    await reopenSpriteTrack(
+      record.id,
+      definition.id,
+      directional ? { direction } : {},
+      { silent: true },
+    );
+    toast.success(`${definition.label} reopened for a replacement render`);
+    onChanged();
+  }, { errorMessage: `${definition?.label || 'Track'} reopen failed` });
 
   // A track can only render from a locked reference, so the surface stays hidden
   // until one exists — otherwise it offers a Generate that always 409s. The main
@@ -157,6 +167,16 @@ export default function TrackWorkflow({
                     )}
                   </div>
                 </div>
+              )}
+              {finalized && approved && (
+                <button
+                  type="button"
+                  disabled={reopening}
+                  onClick={() => reopen(direction)}
+                  className="w-full rounded border border-port-warning/50 px-2 py-1 text-xs text-port-warning hover:border-port-warning disabled:opacity-50"
+                >
+                  {reopening ? 'Reopening…' : 'Reopen for replacement'}
+                </button>
               )}
               {run?.postprocessError && <p className="text-[10px] text-red-300">{run.postprocessError}</p>}
             </article>

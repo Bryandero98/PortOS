@@ -147,12 +147,14 @@ async function enqueueComicCoverLike(issueId, target, options = {}) {
   const script = typeof options[scriptOptionKey] === 'string'
     ? options[scriptOptionKey]
     : (record?.script || '');
-  const mode = resolveMode(options, settings);
   const variant = resolveVariant(options.target);
   const fromProof = variant === 'final' && options.useProofAsBase === true;
   const initImagePath = fromProof
     ? resolveProofInitImage(record?.proofImage, target)
     : null;
+  // Resolved AFTER the init image so a proof-as-base render skips edit-incapable
+  // backends instead of failing asynchronously in the queue (#3243).
+  const mode = resolveMode(options, settings, series, { edit: Boolean(initImagePath) });
   const initImageStrength = fromProof
     ? (Number.isFinite(options.initImageStrength) ? options.initImageStrength : PROOF_AS_BASE_DEFAULT_STRENGTH)
     : undefined;
@@ -162,7 +164,7 @@ async function enqueueComicCoverLike(issueId, target, options = {}) {
     : composeComicBackCoverPrompt({ series, world, issue, backCoverScript: script, extraStyle });
   const logTarget = target === 'cover' ? 'cover' : 'back cover';
   const jobId = enqueueImageJob({
-    prompt, world, settings, mode,
+    prompt, world, settings, mode, series,
     options: { ...options, initImagePath, initImageStrength },
     owner: buildComicPagesOwner({ issueId, target, variant }),
     logLine: `🎨 Pipeline comic ${logTarget} — issue=${issueId.slice(0, 8)} number=${issue.number || 1} variant=${variant}${fromProof ? ' (from proof)' : ''}`,
@@ -337,12 +339,13 @@ async function enqueueVolumeCoverLike(seriesId, seasonId, target, options = {}) 
   const script = typeof options[scriptOptionKey] === 'string'
     ? options[scriptOptionKey]
     : (record?.script || '');
-  const mode = resolveMode(options, settings);
   const variant = resolveVariant(options.target);
   const fromProof = variant === 'final' && options.useProofAsBase === true;
   const initImagePath = fromProof
     ? resolveProofInitImage(record?.proofImage, `volume ${target}`)
     : null;
+  // Resolved AFTER the init image — see the issue-cover path above (#3243).
+  const mode = resolveMode(options, settings, series, { edit: Boolean(initImagePath) });
   const initImageStrength = fromProof
     ? (Number.isFinite(options.initImageStrength) ? options.initImageStrength : PROOF_AS_BASE_DEFAULT_STRENGTH)
     : undefined;
@@ -352,7 +355,7 @@ async function enqueueVolumeCoverLike(seriesId, seasonId, target, options = {}) 
     : composeVolumeBackCoverPrompt({ series, world, season, backCoverScript: script, extraStyle });
   const logTarget = target === 'cover' ? 'cover' : 'back cover';
   const jobId = enqueueImageJob({
-    prompt, world, settings, mode,
+    prompt, world, settings, mode, series,
     options: { ...options, initImagePath, initImageStrength },
     owner: buildSeasonCoverOwner({ seriesId, seasonId, target, variant }),
     logLine: `🎨 Pipeline volume ${logTarget} — series=${seriesId.slice(0, 8)} season=${seasonId.slice(0, 8)} vol=${season.number || 1} variant=${variant}${fromProof ? ' (from proof)' : ''}`,

@@ -10,7 +10,7 @@ import {
 } from '../services/mediaJobQueue/index.js';
 import { asyncHandler } from '../lib/errorHandler.js';
 import { isPlainObject } from '../lib/objects.js';
-import { backupConfigSchema, sharingSettingsPatchSchema, featureProviderConfigSchema, autofixerSettingsSchema, codeReviewSettingsSchema, locationSettingsSchema, settingsEmbeddingsSchema, citySnapshotConfigSchema, imessageConfigSchema, signalConfigSchema, spotifyConfigSchema, youtubeConfigSchema, apiAccessSettingsSchema, loraTrainingConfigSchema, pipelineEditorialChecksSettingsSchema, creativeDirectorSettingsSchema, musicSettingsSchema, privacySettingsSchema, seriesAutopilotSettingsSchema, layeredIntelligenceSettingsSchema, imageGenGrokSettingsSchema, validateRequest } from '../lib/validation.js';
+import { backupConfigSchema, sharingSettingsPatchSchema, featureProviderConfigSchema, autofixerSettingsSchema, codeReviewSettingsSchema, locationSettingsSchema, settingsEmbeddingsSchema, citySnapshotConfigSchema, imessageConfigSchema, signalConfigSchema, spotifyConfigSchema, youtubeConfigSchema, apiAccessSettingsSchema, loraTrainingConfigSchema, pipelineEditorialChecksSettingsSchema, creativeDirectorSettingsSchema, musicSettingsSchema, privacySettingsSchema, seriesAutopilotSettingsSchema, layeredIntelligenceSettingsSchema, imageGenGrokSettingsSchema, imageGenAgySettingsSchema, renderDefaultsSettingsSchema, videoGenSettingsSchema, validateRequest } from '../lib/validation.js';
 
 const router = Router();
 
@@ -215,6 +215,21 @@ router.put('/', asyncHandler(async (req, res) => {
   // polymorphic; only the grok sub-slice has a schema here.
   if (req.body?.imageGen?.grok !== undefined) {
     validateRequest(imageGenGrokSettingsSchema.partial(), req.body.imageGen.grok);
+  }
+  if (req.body?.imageGen?.agy !== undefined) {
+    validateRequest(imageGenAgySettingsSchema.partial(), req.body.imageGen.agy);
+  }
+  // Per-surface render defaults (#3231) — validate when present so a typo'd
+  // target key or a non-enum backend can't persist a slice the render-target
+  // resolver would then silently ignore (or worse, hand an invalid model id
+  // to a cloud CLI's argv).
+  if (req.body?.renderDefaults !== undefined) {
+    validateRequest(renderDefaultsSettingsSchema, req.body.renderDefaults);
+  }
+  // Install-wide video render pin (#3231 Phase 4) — validate when present so a
+  // non-enum backend can't persist a mode resolveVideoMode would choke on.
+  if (req.body?.videoGen !== undefined) {
+    validateRequest(videoGenSettingsSchema, req.body.videoGen);
   }
   // Install-level Layered Intelligence settings (#2515) — validate the slice when
   // present so a malformed `trustShellSources` can't persist and silently unlock

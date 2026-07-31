@@ -88,7 +88,7 @@ export function layoutSidecarPath(atlasDestPath) {
  */
 export function buildAtlasLayout({
   characterId, geometry, atlasSha256, version, atlasDestPath,
-}) {
+}, animationTracks = getEffectiveAnimationTracks()) {
   const columns = geometry?.columns;
   if (!Array.isArray(columns) || !columns.length) {
     throw new Error('Compiled atlas geometry has no column list');
@@ -121,8 +121,19 @@ export function buildAtlasLayout({
     // through `undefined` to re-trigger a default.
     tracks: deriveTracks(columns, walkFrameCount, geometry.tracks ?? null, rows ?? ATLAS_DEFAULT_ROWS),
     walkFrameCount,
-    ...(Number.isInteger(geometry.scannerFrameCount) ? { scannerFrameCount: geometry.scannerFrameCount } : {}),
-    ...(Number.isInteger(geometry.ambientFrameCount) ? { ambientFrameCount: geometry.ambientFrameCount } : {}),
+    // Every track publishes the same top-level convenience field its runtime
+    // contract declares. Re-emitting walkFrameCount here leaves its existing
+    // key position/null compatibility untouched; seeded scanner/ambient rows
+    // likewise retain their historical names and order.
+    ...Object.fromEntries(Object.values(animationTracks).flatMap((definition) => {
+      const direct = geometry[definition.contractFrameCountField];
+      // Existing custom atlases can take the compiler's idempotent path after
+      // upgrade, leaving their immutable manifest without the new convenience
+      // field. Its persisted span is the same count and keeps the published
+      // sidecar uniform without forcing a pixel recompile.
+      const value = Number.isInteger(direct) ? direct : geometry.tracks?.[definition.id]?.count;
+      return Number.isInteger(value) ? [[definition.contractFrameCountField, value]] : [];
+    })),
     previewFps: Number.isFinite(geometry.walkFps) ? geometry.walkFps : null,
     previewFpsNote: PREVIEW_FPS_NOTE,
   };
