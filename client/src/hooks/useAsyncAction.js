@@ -1,5 +1,6 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState } from 'react';
 import toast from '../components/ui/Toast';
+import useMounted from './useMounted.js';
 
 /**
  * Wraps an async action with `running` state and toast-on-error.
@@ -19,14 +20,15 @@ import toast from '../components/ui/Toast';
  * The trailing `setRunning(false)` is gated on a `mountedRef` so an action
  * that resolves after the component unmounts (navigate-away mid-request)
  * doesn't call `setState` on an unmounted component — React warns about
- * that and it's a latent memory-leak signal.
+ * that and it's a latent memory-leak signal. The guard MUST come from
+ * `useMounted`, which re-arms the ref on every effect setup: StrictMode runs
+ * mount→cleanup→mount on the same instance (refs survive), so a cleanup-only
+ * ref stays false forever and every button in the app would stay stuck in its
+ * disabled/spinner state after one click.
  */
 export function useAsyncAction(fn, { errorMessage } = {}) {
   const [running, setRunning] = useState(false);
-  const mountedRef = useRef(true);
-  // Never reset to `true` on re-mount — this handles dev-mode double-mount
-  // cleanly (the cleanup runs once, the flag stays false for the dead tree).
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  const mountedRef = useMounted();
   const run = async (...args) => {
     setRunning(true);
     const result = await fn(...args).catch((err) => {

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import useMounted from './useMounted';
 import toast from '../components/ui/Toast';
 import {
   addUniverseStyleReference,
@@ -86,7 +87,7 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
   const [newCategoryName, setNewCategoryName] = useState('');
   const [canonDirty, setCanonDirty] = useState(false);
 
-  const mountedRef = useRef(true);
+  const mountedRef = useMounted();
   const draftRef = useRef(null);
   const savedDraftSnapshotRef = useRef(universeDraftSnapshot(createEmptyUniverseDraft()));
   const savedStyleSnapshotRef = useRef(ensureInfluences(createEmptyUniverseDraft().influences));
@@ -134,7 +135,6 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
     lastSeenUpdatedAtRef.current.set(id, updatedAt);
   }, []);
 
-  useEffect(() => () => { mountedRef.current = false; }, []);
   useEffect(() => { draftRef.current = draft; }, [draft]);
 
   const clearPendingCanonAdditions = useCallback(() => {

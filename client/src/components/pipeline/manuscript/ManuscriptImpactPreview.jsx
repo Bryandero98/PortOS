@@ -16,7 +16,8 @@
  * red/green. Diffs per changed section, never one giant concatenation.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
+import useMounted from '../../../hooks/useMounted';
 import { Check, Loader2, X } from 'lucide-react';
 import Modal from '../../ui/Modal';
 import HunkDiff from '../../ui/HunkDiff';
@@ -50,8 +51,7 @@ export default function ManuscriptImpactPreview({ open, onClose, seriesId, secti
   // The accept-all pass awaits one network round-trip per note; if the user
   // closes the preview mid-batch, late callbacks must not fire into a torn-down
   // parent. Never reset to true (handles dev-mode double-mount cleanly).
-  const mountedRef = useRef(true);
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  const mountedRef = useMounted();
 
   const changed = useMemo(() => {
     if (!open) return [];

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { StrictMode } from 'react';
 import { renderHook, act } from '@testing-library/react';
 import { useAsyncAction } from './useAsyncAction';
 
@@ -76,5 +77,25 @@ describe('useAsyncAction', () => {
     );
     expect(sawUnmountWarning).toBe(false);
     setStateSpy.mockRestore();
+  });
+
+  // The unmount guard above must not cost us the ordinary case. The app runs
+  // under <React.StrictMode>, whose dev double-mount reuses the hook's refs — a
+  // cleanup-only guard is left false by the simulated unmount, so `setRunning
+  // (false)` never fires and EVERY button backed by this hook stays disabled
+  // after one click (#3264). `useMounted` re-arms on setup; this pins it.
+  it('clears running under StrictMode so the action can be run again', async () => {
+    const { result } = renderHook(() => useAsyncAction(async (x) => x * 2), {
+      wrapper: StrictMode,
+    });
+
+    await act(async () => { await result.current[0](1); });
+    expect(result.current[1]).toBe(false);
+
+    // The second click is the one that broke: the button was still disabled.
+    let second;
+    await act(async () => { second = await result.current[0](21); });
+    expect(second).toBe(42);
+    expect(result.current[1]).toBe(false);
   });
 });

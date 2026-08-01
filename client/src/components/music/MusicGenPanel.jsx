@@ -12,7 +12,8 @@
  * inline (streamed download), then selected immediately.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import useMounted from '../../hooks/useMounted';
 import { Loader2, Wand2, Download, X } from 'lucide-react';
 import toast from '../ui/Toast';
 import {
@@ -33,8 +34,7 @@ export default function MusicGenPanel({ track, prompt, lyrics, onGenerated, remi
   const [installProgress, setInstallProgress] = useState(null);
   const [runtimeInstallEngine, setRuntimeInstallEngine] = useState(null);
   const [userSelectedEngine, setUserSelectedEngine] = useState(false);
-  const mountedRef = useRef(true);
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  const mountedRef = useMounted();
 
   const loadEngines = async () => {
     const data = await listMusicEngines({ silent: true }).catch(() => null);

@@ -10,7 +10,8 @@
  * overwrites the deployed LoRA in place.
  */
 
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback } from 'react';
+import useMounted from '../../hooks/useMounted';
 import { Layers, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react';
 import toast from '../ui/Toast';
 import {
@@ -26,8 +27,7 @@ export default function CheckpointPicker({ run, onPromoted }) {
   // Guards the background preview-poll setTimeout chain from firing after the
   // component unmounts (deferred-work-respects-unmount rule). Not reset to true
   // so dev-mode double-mount can't re-arm a stale chain.
-  const mountedRef = useRef(true);
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  const mountedRef = useMounted();
 
   const load = useCallback(() => {
     setLoading(true);

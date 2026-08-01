@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import useMounted from '../../hooks/useMounted';
 import {
   ArrowUpCircle, Edit3, FolderTree, Loader2, Lock, Play, Plus,
   Sparkles, Trash2, Unlock, X,
@@ -77,8 +78,7 @@ export function CategoryEditor({
     return () => document.removeEventListener('keydown', onKey);
   }, [assignOpen]);
 
-  const editorMountedRef = useRef(true);
-  useEffect(() => () => { editorMountedRef.current = false; }, []);
+  const editorMountedRef = useMounted();
   const runPromote = async (idx, variation, opts) => {
     if (!onPromote) return;
     setPickerIdx(null);

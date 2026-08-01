@@ -1,4 +1,5 @@
-import { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
+import useMounted from './useMounted';
 import { listCatalogTypes } from '../services/apiCatalogTypes';
 import { CATALOG_TYPES, mergeCatalogTypes } from '../lib/catalogTypes';
 
@@ -34,8 +35,7 @@ const buildRegistry = (userTypesRaw) => mergeCatalogTypes(CATALOG_TYPES, userTyp
 function useRegistryFetcher(enabled = true) {
   const [registry, setRegistry] = useState(() => buildRegistry([]));
   const [loading, setLoading] = useState(true);
-  const mountedRef = useRef(true);
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  const mountedRef = useMounted();
 
   const refresh = useCallback(() => listCatalogTypes({ silent: true })
     .then((data) => {

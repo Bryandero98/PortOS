@@ -1,4 +1,5 @@
-import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
+import useMounted from './useMounted';
 import { getCitySnapshots } from '../services/apiCity.js';
 import { isPlayableFrame, buildPlaybackStats } from '../lib/cityPlaybackFrame.js';
 
@@ -24,8 +25,7 @@ export function useCityPlayback() {
 
   // Guards a deferred/interval callback against firing after unmount (CLAUDE.md
   // deferred-work rule). Never reset to true — handles dev double-mount cleanly.
-  const mountedRef = useRef(true);
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  const mountedRef = useMounted();
 
   const enter = useCallback(async () => {
     setActive(true);
