@@ -79,6 +79,11 @@ async function renderMorse(props = {}, { route = '/post/morse' } = {}) {
   return result;
 }
 
+beforeEach(() => {
+  submitTrainingEntry.mockResolvedValue({});
+  submitMorseRound.mockResolvedValue({});
+});
+
 describe('MorseTrainer deep-linking', () => {
   beforeEach(() => {
     submitTrainingEntry.mockClear();
@@ -165,6 +170,10 @@ describe('MorseTrainer training log integration', () => {
   });
 
   it('waits for a Send result to save before continuing the daily routine', async () => {
+    let resolveTraining;
+    let resolveRound;
+    submitTrainingEntry.mockImplementationOnce(() => new Promise(resolve => { resolveTraining = resolve; }));
+    submitMorseRound.mockImplementationOnce(() => new Promise(resolve => { resolveRound = resolve; }));
     const onContinue = vi.fn();
     await renderMorse({ mode: 'send', onContinue, onExitMode: vi.fn(), onBack: vi.fn() });
 
@@ -173,7 +182,28 @@ describe('MorseTrainer training log integration', () => {
 
     await waitFor(() => expect(submitTrainingEntry).toHaveBeenCalled());
     await waitFor(() => expect(submitMorseRound).toHaveBeenCalled());
+    expect(onContinue).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveTraining({});
+      resolveRound({});
+    });
     await waitFor(() => expect(onContinue).toHaveBeenCalledTimes(1));
+  });
+
+  it('stays on the Send result when a retry still cannot save', async () => {
+    submitTrainingEntry.mockRejectedValue(new Error('offline'));
+    submitMorseRound.mockResolvedValue({});
+    const onContinue = vi.fn();
+    await renderMorse({ mode: 'send', onContinue, onExitMode: vi.fn(), onBack: vi.fn() });
+
+    fireEvent.click(screen.getByText('Check'));
+    await waitFor(() => expect(submitTrainingEntry).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByText("Continue Today's Routine"));
+
+    await waitFor(() => expect(submitTrainingEntry).toHaveBeenCalledTimes(2));
+    expect(onContinue).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByText("Continue Today's Routine")).toBeEnabled());
   });
 
   describe('round completion', () => {
@@ -236,7 +266,6 @@ describe('MorseTrainer training log integration', () => {
               expect.objectContaining({ sent: expect.any(String), guessed: expect.any(String), correct: expect.any(Boolean) }),
             ]),
           }),
-          expect.objectContaining({ silent: true }),
         );
       });
       // Every item carries the sent/guessed/correct shape the confusion matrix needs.

@@ -6,6 +6,7 @@ import MorseProgressPanel from './MorseProgressPanel';
 import { streakGlyph } from '../../../lib/streakGlyph.js';
 import { safeReadJsonStorage, safeWriteStorage } from '../../../lib/safeStorage';
 import PostCompletionActions from './PostCompletionActions';
+import { startRetryableSaves } from './completionSave';
 
 export const MORSE_TABLE = {
   A: '.-',     B: '-...',   C: '-.-.',   D: '-..',    E: '.',      F: '..-.',
@@ -476,12 +477,11 @@ export default function MorseTrainer({ mode = null, onSelectMode, onExitMode, on
     updatePrefs({ kochLevel: DEFAULT_KOCH_LEVEL, bestAccuracy: 0 });
   }
 
-  // Fire-and-forget per-round submit (server persists per-item sent→guessed
-  // results for the trends + confusion matrix). Refreshes the panel on success.
+  // Persist per-item sent→guessed results for trends + confusion analysis.
+  // Completion actions await this promise and retry it if the first write fails.
   const submitRound = useCallback((round) => {
-    return submitMorseRound(round, { silent: true })
-      .then(() => setProgressRefresh((n) => n + 1))
-      .catch(() => {});
+    return submitMorseRound(round)
+      .then(() => setProgressRefresh((n) => n + 1));
   }, []);
 
   // Fetches the training log's 30-day view and reduces it to what this trainer
@@ -504,13 +504,10 @@ export default function MorseTrainer({ mode = null, onSelectMode, onExitMode, on
 
   useEffect(() => { refreshTrainingStats(); }, [refreshTrainingStats]);
 
-  // Fire-and-forget training-log write, mirroring the existing
-  // usePostSession.js training-mode pattern (silent — a failed background log
-  // shouldn't interrupt practice). Refreshes the displayed stats on success.
+  // Completion actions await the training-log write and retry it if needed.
   const logTraining = useCallback((patch) => {
     return submitTrainingEntry({ module: TRAINING_MODULE, ...patch })
-      .then(() => refreshTrainingStats())
-      .catch(() => {});
+      .then(() => refreshTrainingStats());
   }, [refreshTrainingStats]);
 
   return (
@@ -888,7 +885,7 @@ function CopyDrill({ prefs, updatePrefs, ensureCtx, onExit, onContinue, onSessio
   // Set when a prompt finishes playing; drives per-question responseMs (time from
   // "audio done" to the user's submit) recorded per character in the round.
   const questionStartRef = useRef(0);
-  const saveRef = useRef(Promise.resolve());
+  const saveRef = useRef(() => Promise.resolve());
   // Re-entrancy guard. On the first play of a session `ensureCtx()` awaits the
   // iOS audio-unlock, and `prompt`/`playing` aren't set until after it — so the
   // Start Round / New Round button stays live during that window. A second tap
@@ -953,24 +950,27 @@ function CopyDrill({ prefs, updatePrefs, ensureCtx, onExit, onContinue, onSessio
     updatePrefs(patch);
     setDone(true);
     const durationMs = roundStartRef.current ? Date.now() - roundStartRef.current : 0;
-    const trainingSave = onSessionComplete?.({
+    const trainingPayload = {
       drillType: headCopy ? 'morse-head-copy' : 'morse-copy',
       questionCount: rs.length,
       correctCount,
       totalMs: durationMs,
-    });
+    };
     // Persist the round server-side with per-character sent→guessed pairs (each
     // prompt/guess is aligned positionally so a 5-char group yields 5 items) —
     // the raw material for the confusion matrix and per-character mastery.
-    const roundSave = onRoundSubmit?.({
+    const roundPayload = {
       mode: headCopy ? 'head-copy' : 'copy',
       kochLevel: prefs.kochLevel,
       wpm: prefs.wpm,
       farnsworthWpm: prefs.effectiveWpm,
       durationMs,
       items: resultsToItems(rs),
-    });
-    saveRef.current = Promise.all([trainingSave, roundSave]);
+    };
+    saveRef.current = startRetryableSaves([
+      onSessionComplete && (() => onSessionComplete(trainingPayload)),
+      onRoundSubmit && (() => onRoundSubmit(roundPayload)),
+    ]);
   }
 
   function onKey(e) {
@@ -1008,8 +1008,8 @@ function CopyDrill({ prefs, updatePrefs, ensureCtx, onExit, onContinue, onSessio
         </div>
         <PostCompletionActions
           saveLabel="Finish for Now"
-          onSave={() => saveRef.current.then(onExit)}
-          onContinue={() => saveRef.current.then(onContinue)}
+          onSave={() => saveRef.current().then(onExit)}
+          onContinue={() => saveRef.current().then(onContinue)}
         />
         <div className="flex justify-center">
           <button onClick={startRound} className="px-4 py-2 text-sm text-gray-400 hover:text-white transition-colors">
@@ -1111,7 +1111,7 @@ function SendDrill({ keying, onExit, onContinue, onSessionComplete, onRoundSubmi
   const [prompt, setPrompt] = useState(() => pickSendPrompt());
   const [feedback, setFeedback] = useState(null);
   const promptStartRef = useRef(Date.now());
-  const saveRef = useRef(Promise.resolve());
+  const saveRef = useRef(() => Promise.resolve());
 
   // Drop any stale keying state from a prior session so "Your sending" starts empty.
   const { clear: clearKeying } = keying;
@@ -1125,12 +1125,12 @@ function SendDrill({ keying, onExit, onContinue, onSessionComplete, onRoundSubmi
     const correct = got === target;
     setFeedback({ correct, decoded: got, target });
     const durationMs = Date.now() - promptStartRef.current;
-    const trainingSave = onSessionComplete?.({
+    const trainingPayload = {
       drillType: 'morse-send',
       questionCount: 1,
       correctCount: correct ? 1 : 0,
       totalMs: durationMs,
-    });
+    };
     // Record per-character keying accuracy + timing. sent = target char, guessed =
     // what the decoder resolved at that position. responseMs is the inter-letter
     // keying interval (letterLog is on the same performance.now() clock, so only
@@ -1161,10 +1161,15 @@ function SendDrill({ keying, onExit, onContinue, onSessionComplete, onRoundSubmi
       items.push({ sent: '', guessed: ' ', correct: false, responseMs: 0 });
     }
     if (items.length > 0) {
-      const roundSave = onRoundSubmit?.({ mode: 'send', durationMs, items });
-      saveRef.current = Promise.all([trainingSave, roundSave]);
+      const roundPayload = { mode: 'send', durationMs, items };
+      saveRef.current = startRetryableSaves([
+        onSessionComplete && (() => onSessionComplete(trainingPayload)),
+        onRoundSubmit && (() => onRoundSubmit(roundPayload)),
+      ]);
     } else {
-      saveRef.current = Promise.resolve(trainingSave);
+      saveRef.current = startRetryableSaves([
+        onSessionComplete && (() => onSessionComplete(trainingPayload)),
+      ]);
     }
   }
 
@@ -1210,8 +1215,8 @@ function SendDrill({ keying, onExit, onContinue, onSessionComplete, onRoundSubmi
           </div>
           <PostCompletionActions
             saveLabel="Finish for Now"
-            onSave={() => saveRef.current.then(onExit)}
-            onContinue={() => saveRef.current.then(onContinue)}
+            onSave={() => saveRef.current().then(onExit)}
+            onContinue={() => saveRef.current().then(onContinue)}
           />
           <button onClick={nextPrompt} className="w-full px-4 py-2 text-sm text-gray-400 hover:text-white transition-colors">
             Practice Another Prompt

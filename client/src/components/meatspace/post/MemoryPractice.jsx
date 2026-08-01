@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import { ChevronLeft, Check, X, SkipForward, RotateCcw, Target, ChevronDown, Loader } from 'lucide-react';
 import { submitMemoryPractice, getChunkMastery, getMemoryItem } from '../../../services/api';
 import PostCompletionActions from './PostCompletionActions';
+import { startRetryableSave } from './completionSave';
 
 const MODES = [
   { id: 'learn', label: 'Learn', desc: 'Progressive reveal — read and absorb line by line' },
@@ -96,6 +97,7 @@ function MemoryPracticeRunner({ item, mode, onSelectMode, onExitMode, onBack, on
   const [done, setDone] = useState(false);
   const [startTime] = useState(Date.now());
   const inputRef = useRef(null);
+  const spacedSavesRef = useRef([]);
 
   // Spaced repetition state
   const [chunkMastery, setChunkMastery] = useState(null);
@@ -705,7 +707,7 @@ function MemoryPracticeRunner({ item, mode, onSelectMode, onExitMode, onBack, on
       // Save practice for this chunk, move to next
       const chunkResults = results.filter(r => r.chunkId === currentChunk.id);
       if (chunkResults.length > 0) {
-        submitMemoryPractice(item.id, {
+        const payload = {
           mode: 'sequence',
           chunkId: currentChunk.id,
           results: chunkResults.map(r => ({
@@ -714,7 +716,8 @@ function MemoryPracticeRunner({ item, mode, onSelectMode, onExitMode, onBack, on
             answered: r.answered,
           })),
           totalMs: Date.now() - startTime,
-        }).catch(err => console.warn(`⚠️ Failed to save sequence practice: ${err.message}`));
+        };
+        spacedSavesRef.current.push(startRetryableSave(() => submitMemoryPractice(item.id, payload)));
       }
 
       if (spacedChunkIdx + 1 < chunkMastery.length) {
@@ -741,13 +744,14 @@ function MemoryPracticeRunner({ item, mode, onSelectMode, onExitMode, onBack, on
         answered: r.answered,
       })),
       totalMs: Date.now() - startTime,
-    }).catch(err => console.warn(`⚠️ Failed to save practice results: ${err.message}`));
+    });
   }
 
   async function saveAndExit(continueDaily) {
     // Spaced repetition persists each completed chunk as the user advances;
-    // every other mode waits for this explicit completion choice.
-    if (mode !== 'spaced') await savePractice(mode, results);
+    // the completion action waits for those writes and retries failures.
+    if (mode === 'spaced') await Promise.all(spacedSavesRef.current.map(save => save()));
+    else await savePractice(mode, results);
     if (continueDaily) onContinue();
     else onBack();
   }

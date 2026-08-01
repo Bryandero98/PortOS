@@ -16,7 +16,8 @@ export default function PostCompletionActions({
   function run(kind, action) {
     if (pending || !action) return;
     setPending(kind);
-    Promise.resolve(action())
+    Promise.resolve()
+      .then(action)
       .catch(() => {})
       .finally(() => setPending(null));
   }

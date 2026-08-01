@@ -11,6 +11,7 @@ import toast from '../../ui/Toast';
 import { AILoadingIndicator, MissedExamplesDisplay, CompoundChainUI, BridgeWordUI, DoubleMeaningUI, IdiomTwistUI, ProgressBar, scoreWordplayResponse } from './WordplayDrillUI';
 import { countLlmCorrect, LLM_TRAINING_CORRECT_THRESHOLD } from './constants';
 import PostCompletionActions from './PostCompletionActions';
+import { startRetryableSave } from './completionSave';
 
 // Coarse module bucket for training-log entries — matches the module
 // PostLlmDrillRunner's in-session runner logs LLM/wordplay drills under
@@ -88,7 +89,7 @@ export default function WordplayTrainer({ onBack, onContinue, config, onConfigUp
   // log one training-log entry with the whole round's elapsed time (matches
   // MorseTrainer's roundStartRef → totalMs contract).
   const roundStartRef = useRef(Date.now());
-  const roundSaveRef = useRef(Promise.resolve());
+  const roundSaveRef = useRef(() => Promise.resolve());
 
   // Cache-fill consent: PortOS never issues background LLM calls a user
   // hasn't asked for. A mode whose drill cache is cold (0 cached) prompts
@@ -362,14 +363,14 @@ export default function WordplayTrainer({ onBack, onContinue, config, onConfigUp
       setFeedback({ complete: true });
       // Persist the completed round to the training log — the standalone
       // Wordplay tab previously scored every response but never recorded
-      // that practice happened anywhere (issue #2097). Fire-and-forget, same
-      // pattern as MorseTrainer's logTraining: a failed background write
-      // shouldn't interrupt the results screen the user is already seeing.
+      // that practice happened anywhere (issue #2097). Start it immediately,
+      // then make the completion actions wait for it and retry a failure before
+      // leaving the results screen.
       // `questions` carries the per-question breakdown already computed in
       // `results` (issue #2114) — the drill cache means these prompts are
       // reusable, so a future progress dashboard can trend which individual
       // wordplay prompts get missed rather than only the round aggregate.
-      roundSaveRef.current = submitTrainingEntry({
+      const trainingEntry = {
         module: TRAINING_MODULE,
         drillType: selectedMode,
         questionCount: results.length,
@@ -384,7 +385,8 @@ export default function WordplayTrainer({ onBack, onContinue, config, onConfigUp
           feedback: r.feedback,
           correct: (r.score ?? 0) >= LLM_TRAINING_CORRECT_THRESHOLD,
         })),
-      }).catch(() => {});
+      };
+      roundSaveRef.current = startRetryableSave(() => submitTrainingEntry(trainingEntry));
     } else {
       setQuestionIndex(questionIndex + 1);
       questionStartRef.current = Date.now();
@@ -501,8 +503,8 @@ export default function WordplayTrainer({ onBack, onContinue, config, onConfigUp
         </div>
         <PostCompletionActions
           saveLabel="Finish for Now"
-          onSave={() => roundSaveRef.current.then(onBack)}
-          onContinue={() => roundSaveRef.current.then(onContinue)}
+          onSave={() => roundSaveRef.current().then(onBack)}
+          onContinue={() => roundSaveRef.current().then(onContinue)}
         />
         <div className="flex justify-center">
           <button

@@ -614,7 +614,7 @@ export default function PostSessionLauncher({
   // A default/full recommendation may include memory drills, so wait until the
   // item pool is known before deciding whether its session is runnable.
   if (autoStartRecommendationId && recommendationsLoaded && memoryItemsState.status !== 'loading') {
-    const recommendation = recommendations.find(rec => rec.id === autoStartRecommendationId) || topRec;
+    const recommendation = recommendations.find(rec => rec.id === autoStartRecommendationId);
     return (
       <AutoStartRecommendation
         action={recAction(recommendation)}

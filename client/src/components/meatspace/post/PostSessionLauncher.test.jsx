@@ -222,6 +222,24 @@ describe('PostSessionLauncher render (issue #2100)', () => {
     expect(onAutoStartConsumed).toHaveBeenCalledTimes(1);
   });
 
+  it('does not auto-start a different lesson when the requested recommendation is stale', async () => {
+    const onStart = vi.fn();
+    const onAutoStartConsumed = vi.fn();
+    getPostRecommendations.mockResolvedValue({ recommendations: [
+      { id: 'weak-skill:mm', kind: 'weak-skill', title: 'Shore up Multiplication', detail: 'x', deepLink: '/post/launcher', drillType: 'multiplication', priority: 0 },
+    ] });
+
+    renderLauncher({
+      onStart,
+      autoStartRecommendationId: 'stale:missing',
+      onAutoStartConsumed,
+      onNavigate: vi.fn(),
+    });
+
+    await waitFor(() => expect(onAutoStartConsumed).toHaveBeenCalledTimes(1));
+    expect(onStart).not.toHaveBeenCalled();
+  });
+
   it('launches a review rep (with markers) for a skill-review recommendation', async () => {
     const onStart = vi.fn();
     getPostReviewReps.mockResolvedValue({ reps: [
