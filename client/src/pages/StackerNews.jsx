@@ -64,6 +64,7 @@ export default function StackerNews() {
   const [territories, setTerritories] = useState([]);
   const [items, setItems] = useState([]);
   const [actions, setActions] = useState([]);
+  const [resourcesAccountId, setResourcesAccountId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
@@ -90,6 +91,9 @@ export default function StackerNews() {
   const models = useMemo(() => [...new Set(localModels.ollama)], [localModels.ollama]);
   const accountFormDirty = selected ? !sameAccountForm(editAccount, savedAccount) : false;
   const accountActionsDisabled = accountFormDirty || Boolean(busy);
+  const visibleTerritories = resourcesAccountId === accountId ? territories : [];
+  const visibleItems = resourcesAccountId === accountId ? items : [];
+  const visibleActions = resourcesAccountId === accountId ? actions : [];
 
   const loadAccounts = useCallback(async () => {
     const result = await api.getStackerNewsAccounts({ silent: true }).catch((err) => ({ error: err.message }));
@@ -101,8 +105,9 @@ export default function StackerNews() {
   const loadSelected = useCallback(async () => {
     const requestId = ++selectedLoadRef.current;
     const requestedAccountId = accountId;
+    setResourcesAccountId(null);
+    setTerritories([]); setItems([]); setActions([]);
     if (!accountId) {
-      setTerritories([]); setItems([]); setActions([]);
       return;
     }
     const [territoryResult, itemResult, actionResult] = await Promise.all([
@@ -116,6 +121,7 @@ export default function StackerNews() {
     setTerritories(territoryResult.territories || []);
     setItems(itemResult.items || []);
     setActions(actionResult.actions || []);
+    setResourcesAccountId(requestedAccountId);
   }, [accountId]);
 
   useEffect(() => { loadAccounts(); }, [loadAccounts]);
@@ -158,18 +164,20 @@ export default function StackerNews() {
   const saveAccount = (event) => {
     event.preventDefault();
     if (!selected) return;
-    finish('save-account', api.updateStackerNewsAccount(selected.id, {
+    const savedAccountId = selected.id;
+    finish('save-account', api.updateStackerNewsAccount(savedAccountId, {
       label: editAccount.label, username: editAccount.username, enabled: editAccount.enabled,
       ...(editAccount.clearApiKey ? { apiKey: '' } : editAccount.apiKey ? { apiKey: editAccount.apiKey } : {}),
       monitoringEnabled: editAccount.monitoringEnabled, monitoringIntervalMinutes: Number(editAccount.monitoringIntervalMinutes),
       analysisEnabled: editAccount.analysisEnabled, textModel: editAccount.textModel, visionModel: editAccount.visionModel,
       rules: accountRules(editAccount),
     }, { silent: true }), (result) => {
+      setAccounts((previous) => previous.map((candidate) => candidate.id === result.id ? result : candidate));
+      if (currentAccountIdRef.current !== savedAccountId) return;
       const nextSaved = accountToForm(result);
       savedAccountRef.current = nextSaved;
       setSavedAccount(nextSaved);
       setEditAccount(nextSaved);
-      setAccounts((previous) => previous.map((candidate) => candidate.id === result.id ? result : candidate));
       setNotice('Account rules and schedule saved.');
     });
   };
@@ -255,7 +263,7 @@ export default function StackerNews() {
         <h2 className="font-semibold text-white">Approval queue</h2>
         <p className="mt-1 text-sm text-gray-400">Approval and execution are separate. Identity, content freshness, rules, budgets, and idempotency are rechecked at execution.</p>
         <div className="mt-3 space-y-2">
-          {actions.filter((action) => ['pending_review', 'approved'].includes(action.state)).map((action) => (
+          {visibleActions.filter((action) => ['pending_review', 'approved'].includes(action.state)).map((action) => (
             <div key={action.id} className="rounded border border-port-border p-3 text-sm">
               <div className="flex items-center justify-between gap-2"><span className="font-medium text-white">{action.kind.replaceAll('_', ' ')}</span><span className="text-xs text-gray-400">{action.state.replaceAll('_', ' ')}</span></div>
               <div className="mt-1 whitespace-pre-wrap text-gray-400">{action.payload?.title || action.payload?.body || `Fixed ${action.destination || 'local'} action`}</div>
@@ -265,12 +273,12 @@ export default function StackerNews() {
               {action.state === 'approved' && <button className={`${buttonClass} mt-2`} disabled={busy === `execute-${action.id}`} onClick={() => executeAction(action)}>Execute reviewed action</button>}
             </div>
           ))}
-          {!actions.some((action) => ['pending_review', 'approved'].includes(action.state)) && <p className="text-sm text-gray-500">No actions are waiting.</p>}
+          {!visibleActions.some((action) => ['pending_review', 'approved'].includes(action.state)) && <p className="text-sm text-gray-500">No actions are waiting.</p>}
         </div>
       </section>
       <section className="rounded border border-port-border bg-port-card p-4">
         <div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="font-semibold text-white">Monitored content</h2><p className="text-sm text-gray-400">Remote text and images remain untrusted data.</p></div><button className={secondaryButton} disabled={accountActionsDisabled} onClick={syncNow}>Sync now</button></div>
-        <div className="mt-3 space-y-2">{items.map((item) => <div key={item.id} className="rounded border border-port-border p-3"><div className="text-sm font-medium text-white">{item.title || `${item.kind} by @${item.authorName}`}</div><div className="mt-1 line-clamp-3 text-sm text-gray-400">{item.body}</div>{analysisResults[item.id] && <div className="mt-2 rounded bg-port-bg p-2 text-xs text-gray-300">Policy: {analysisResults[item.id].stale ? 'stale' : analysisResults[item.id].policy?.decision || 'review'}{analysisResults[item.id].policy?.reasons?.length ? ` · ${analysisResults[item.id].policy.reasons.join(', ')}` : ''}<div className="mt-2 flex gap-2"><input aria-label={`Feedback for ${item.title || item.id}`} className={fieldClass} placeholder="Moderator feedback" value={feedbackDrafts[item.id] || ''} onChange={(event) => setFeedbackDrafts((previous) => ({ ...previous, [item.id]: event.target.value }))} /><button className={secondaryButton} disabled={!analysisResults[item.id].analysisId || busy === `feedback-${item.id}`} onClick={() => saveFeedback(item)}>Save feedback</button></div></div>}<button className={`${secondaryButton} mt-2`} disabled={busy === `analyze-${item.id}`} onClick={() => analyze(item)}>Run local analysis</button></div>)}{!items.length && <p className="text-sm text-gray-500">No stored content. Add a territory, then sync explicitly or enable a schedule.</p>}</div>
+        <div className="mt-3 space-y-2">{visibleItems.map((item) => <div key={item.id} className="rounded border border-port-border p-3"><div className="text-sm font-medium text-white">{item.title || `${item.kind} by @${item.authorName}`}</div><div className="mt-1 line-clamp-3 text-sm text-gray-400">{item.body}</div>{analysisResults[item.id] && <div className="mt-2 rounded bg-port-bg p-2 text-xs text-gray-300">Policy: {analysisResults[item.id].stale ? 'stale' : analysisResults[item.id].policy?.decision || 'review'}{analysisResults[item.id].policy?.reasons?.length ? ` · ${analysisResults[item.id].policy.reasons.join(', ')}` : ''}<div className="mt-2 flex gap-2"><input aria-label={`Feedback for ${item.title || item.id}`} className={fieldClass} placeholder="Moderator feedback" value={feedbackDrafts[item.id] || ''} onChange={(event) => setFeedbackDrafts((previous) => ({ ...previous, [item.id]: event.target.value }))} /><button className={secondaryButton} disabled={!analysisResults[item.id].analysisId || busy === `feedback-${item.id}`} onClick={() => saveFeedback(item)}>Save feedback</button></div></div>}<button className={`${secondaryButton} mt-2`} disabled={busy === `analyze-${item.id}`} onClick={() => analyze(item)}>Run local analysis</button></div>)}{!visibleItems.length && <p className="text-sm text-gray-500">No stored content. Add a territory, then sync explicitly or enable a schedule.</p>}</div>
       </section>
     </div>
   );
@@ -280,7 +288,7 @@ export default function StackerNews() {
       <section className="rounded border border-port-border bg-port-card p-4">
         <h2 className="font-semibold text-white">Configured communities</h2>
         <div className="mt-3 space-y-2">
-          {territories.map((territory) => editingTerritoryId === territory.id ? (
+          {visibleTerritories.map((territory) => editingTerritoryId === territory.id ? (
             <TerritoryForm key={territory.id} prefix={`edit-territory-${territory.id}`} title={`Edit ${territory.label || territory.slug}`} form={editTerritory} setForm={setEditTerritory} onSubmit={saveTerritory} busy={busy === `save-territory-${territory.id}`} onCancel={() => { setEditingTerritoryId(null); setEditTerritory(emptyTerritory); }} submitLabel="Save community" />
           ) : (
             <div key={territory.id} className="rounded border border-port-border p-3">
@@ -293,7 +301,7 @@ export default function StackerNews() {
               </div>
             </div>
           ))}
-          {!territories.length && <p className="text-sm text-gray-500">Add communities this account monitors or owns.</p>}
+          {!visibleTerritories.length && <p className="text-sm text-gray-500">Add communities this account monitors or owns.</p>}
         </div>
       </section>
       <TerritoryForm prefix="new-territory" title="Add community" form={newTerritory} setForm={setNewTerritory} onSubmit={createTerritory} busy={busy === 'create-territory'} submitLabel="Add community" />
@@ -303,7 +311,7 @@ export default function StackerNews() {
   const renderDrafts = () => {
     const post = draft.kind.endsWith('_post');
     const comment = draft.kind.endsWith('_comment');
-    return <form className="mx-auto max-w-2xl rounded border border-port-border bg-port-card p-4" onSubmit={createAction}><h2 className="font-semibold text-white">Prepare a review-gated action</h2><p className="mt-1 text-sm text-gray-400">Wallet actions are browser handoffs only. Publishing uses the constrained API after separate approval.</p><div className="mt-3 space-y-3"><Field id="action-kind" label="Action"><select id="action-kind" className={fieldClass} value={draft.kind} onChange={(event) => setDraft({ ...draft, kind: event.target.value })}><option value="draft_comment">Local comment draft</option><option value="publish_comment">Publish comment after review</option><option value="draft_post">Local post draft</option><option value="publish_post">Publish post after review</option><option value="open_browser">Open fixed browser handoff</option></select></Field>{draft.kind === 'open_browser' && <Field id="action-destination" label="Handoff"><select id="action-destination" className={fieldClass} value={draft.destination} onChange={(event) => setDraft({ ...draft, destination: event.target.value })}><option value="item">Item (zap, downzap, boost, or manual interaction)</option><option value="territory_settings">Territory settings</option></select></Field>}{(comment || (draft.kind === 'open_browser' && draft.destination === 'item')) && <Field id="action-item" label="Source item"><select id="action-item" required className={fieldClass} value={draft.itemId} onChange={(event) => setDraft({ ...draft, itemId: event.target.value })}><option value="">Choose item</option>{items.map((item) => <option key={item.id} value={item.id}>{item.title || `${item.kind} by ${item.authorName}`}</option>)}</select></Field>}{(post || (draft.kind === 'open_browser' && draft.destination === 'territory_settings')) && <Field id="action-territory" label="Territory"><select id="action-territory" required className={fieldClass} value={draft.territoryId} onChange={(event) => setDraft({ ...draft, territoryId: event.target.value })}><option value="">Choose territory</option>{territories.map((territory) => <option key={territory.id} value={territory.id}>{territory.label || territory.slug}</option>)}</select></Field>}{post && <Field id="action-title" label="Title"><input id="action-title" required className={fieldClass} value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} /></Field>}{(post || comment) && <Field id="action-body" label="Draft text"><textarea id="action-body" required className={fieldClass} rows="6" value={draft.body} onChange={(event) => setDraft({ ...draft, body: event.target.value })} /></Field>}<button className={buttonClass} disabled={busy === 'create-action'}>Send to approval queue</button></div></form>;
+    return <form className="mx-auto max-w-2xl rounded border border-port-border bg-port-card p-4" onSubmit={createAction}><h2 className="font-semibold text-white">Prepare a review-gated action</h2><p className="mt-1 text-sm text-gray-400">Wallet actions are browser handoffs only. Publishing uses the constrained API after separate approval.</p><div className="mt-3 space-y-3"><Field id="action-kind" label="Action"><select id="action-kind" className={fieldClass} value={draft.kind} onChange={(event) => setDraft({ ...draft, kind: event.target.value })}><option value="draft_comment">Local comment draft</option><option value="publish_comment">Publish comment after review</option><option value="draft_post">Local post draft</option><option value="publish_post">Publish post after review</option><option value="open_browser">Open fixed browser handoff</option></select></Field>{draft.kind === 'open_browser' && <Field id="action-destination" label="Handoff"><select id="action-destination" className={fieldClass} value={draft.destination} onChange={(event) => setDraft({ ...draft, destination: event.target.value })}><option value="item">Item (zap, downzap, boost, or manual interaction)</option><option value="territory_settings">Territory settings</option></select></Field>}{(comment || (draft.kind === 'open_browser' && draft.destination === 'item')) && <Field id="action-item" label="Source item"><select id="action-item" required className={fieldClass} value={draft.itemId} onChange={(event) => setDraft({ ...draft, itemId: event.target.value })}><option value="">Choose item</option>{visibleItems.map((item) => <option key={item.id} value={item.id}>{item.title || `${item.kind} by ${item.authorName}`}</option>)}</select></Field>}{(post || (draft.kind === 'open_browser' && draft.destination === 'territory_settings')) && <Field id="action-territory" label="Territory"><select id="action-territory" required className={fieldClass} value={draft.territoryId} onChange={(event) => setDraft({ ...draft, territoryId: event.target.value })}><option value="">Choose territory</option>{visibleTerritories.map((territory) => <option key={territory.id} value={territory.id}>{territory.label || territory.slug}</option>)}</select></Field>}{post && <Field id="action-title" label="Title"><input id="action-title" required className={fieldClass} value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} /></Field>}{(post || comment) && <Field id="action-body" label="Draft text"><textarea id="action-body" required className={fieldClass} rows="6" value={draft.body} onChange={(event) => setDraft({ ...draft, body: event.target.value })} /></Field>}<button className={buttonClass} disabled={busy === 'create-action'}>Send to approval queue</button></div></form>;
   };
 
   const renderAccounts = () => (
@@ -316,7 +324,7 @@ export default function StackerNews() {
 
   if (loading) return <PageSkeleton header="bar" label="Loading Stacker News" tabs={TABS.length} cards={3} />;
   const notFound = accountId && !selected;
-  return <div className="flex h-full min-h-0 flex-col"><PageHeader icon={Newspaper} title="Stacker News" subtitle="Review-gated multi-account community stewardship" actions={selected && <span className="text-sm text-gray-400">@{selected.username}</span>} /><TabPills tabs={TABS} activeTab={activeTab} onChange={(nextTab) => selected ? navigate(accountPath(selected.id, nextTab)) : navigate('/stacker-news')} ariaLabel="Stacker News sections" /><main className="flex-1 overflow-auto p-4">{error && <div className="mb-3 rounded border border-port-error p-3 text-sm text-port-error">{error}</div>}{notice && <div className="mb-3 rounded border border-port-border p-3 text-sm text-gray-200">{notice}</div>}{notFound && <div className="mb-3 rounded border border-port-error p-4 text-sm text-port-error">This Stacker News account was not found. <button className="underline" onClick={() => navigate('/stacker-news')}>Return to accounts.</button></div>}{activeTab === 'review' && selected && renderReview()}{activeTab === 'territory' && selected && renderTerritory()}{activeTab === 'drafts' && selected && renderDrafts()}{activeTab === 'activity' && selected && <section className="rounded border border-port-border bg-port-card p-4"><h2 className="font-semibold text-white">Action ledger</h2><div className="mt-3 space-y-2">{actions.map((action) => <div key={action.id} className="rounded border border-port-border p-3 text-sm text-gray-300"><div>{action.kind.replaceAll('_', ' ')} · {action.state}</div>{action.error && <div className="mt-1 text-port-error">{action.error}</div>}{action.result?.handoffOpened && <div className="mt-1 text-gray-400">Fixed browser handoff opened.</div>}</div>)}{!actions.length && <p className="text-sm text-gray-500">No actions recorded.</p>}</div></section>}{activeTab === 'accounts' && renderAccounts()}</main></div>;
+  return <div className="flex h-full min-h-0 flex-col"><PageHeader icon={Newspaper} title="Stacker News" subtitle="Review-gated multi-account community stewardship" actions={selected && <span className="text-sm text-gray-400">@{selected.username}</span>} /><TabPills tabs={TABS} activeTab={activeTab} onChange={(nextTab) => selected ? navigate(accountPath(selected.id, nextTab)) : navigate('/stacker-news')} ariaLabel="Stacker News sections" /><main className="flex-1 overflow-auto p-4">{error && <div className="mb-3 rounded border border-port-error p-3 text-sm text-port-error">{error}</div>}{notice && <div className="mb-3 rounded border border-port-border p-3 text-sm text-gray-200">{notice}</div>}{notFound && <div className="mb-3 rounded border border-port-error p-4 text-sm text-port-error">This Stacker News account was not found. <button className="underline" onClick={() => navigate('/stacker-news')}>Return to accounts.</button></div>}{activeTab === 'review' && selected && renderReview()}{activeTab === 'territory' && selected && renderTerritory()}{activeTab === 'drafts' && selected && renderDrafts()}{activeTab === 'activity' && selected && <section className="rounded border border-port-border bg-port-card p-4"><h2 className="font-semibold text-white">Action ledger</h2><div className="mt-3 space-y-2">{visibleActions.map((action) => <div key={action.id} className="rounded border border-port-border p-3 text-sm text-gray-300"><div>{action.kind.replaceAll('_', ' ')} · {action.state}</div>{action.error && <div className="mt-1 text-port-error">{action.error}</div>}{action.result?.handoffOpened && <div className="mt-1 text-gray-400">Fixed browser handoff opened.</div>}</div>)}{!visibleActions.length && <p className="text-sm text-gray-500">No actions recorded.</p>}</div></section>}{activeTab === 'accounts' && renderAccounts()}</main></div>;
 }
 
 function Field({ id, label, children }) {

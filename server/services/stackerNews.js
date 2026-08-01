@@ -10,6 +10,7 @@ import {
   combineStackerNewsModelResults,
   evaluateStackerNewsPolicy,
   hashStackerNewsRules,
+  normalizeStackerNewsRuleOverrides,
   normalizeStackerNewsRules,
   parseStackerNewsModelResult,
   resolveStackerNewsRules,
@@ -202,7 +203,7 @@ export async function createTerritory({ accountId, slug, label = '', isOwned = f
   const result = await query(
     `INSERT INTO stacker_news_territories (id,account_id,slug,label,is_owned,monitoring_enabled,inherit_account_rules,rules)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-    [randomUUID(), accountId, slug, label, isOwned, monitoringEnabled, inheritAccountRules, normalizeStackerNewsRules(rules)],
+    [randomUUID(), accountId, slug, label, isOwned, monitoringEnabled, inheritAccountRules, normalizeStackerNewsRuleOverrides(rules)],
   );
   return territoryView(result.rows[0]);
 }
@@ -211,13 +212,17 @@ export async function updateTerritory(id, updates) {
   const previous = await query('SELECT * FROM stacker_news_territories WHERE id=$1', [id]);
   const existing = previous.rows[0];
   if (!existing) return null;
+  const nextSlug = updates.slug ?? existing.slug;
+  const slugChanged = nextSlug !== existing.slug;
   const result = await query(
     `UPDATE stacker_news_territories SET slug=$2,label=$3,is_owned=$4,monitoring_enabled=$5,
-     inherit_account_rules=$6,rules=$7,updated_at=NOW() WHERE id=$1 RETURNING *`,
-    [id, updates.slug ?? existing.slug, updates.label ?? existing.label, updates.isOwned ?? existing.is_owned,
+     inherit_account_rules=$6,rules=$7,remote_settings=$8,remote_refreshed_at=$9,updated_at=NOW() WHERE id=$1 RETURNING *`,
+    [id, nextSlug, updates.label ?? existing.label, updates.isOwned ?? existing.is_owned,
       updates.monitoringEnabled === undefined ? existing.monitoring_enabled : updates.monitoringEnabled,
       updates.inheritAccountRules ?? existing.inherit_account_rules,
-      updates.rules === undefined ? existing.rules : normalizeStackerNewsRules(updates.rules)],
+      updates.rules === undefined ? existing.rules : normalizeStackerNewsRuleOverrides(updates.rules),
+      slugChanged ? {} : existing.remote_settings,
+      slugChanged ? null : existing.remote_refreshed_at],
   );
   return territoryView(result.rows[0]);
 }
@@ -452,20 +457,25 @@ const eventInsert = (client, actionId, fromState, toState, note = '', metadata =
 );
 
 async function actionContext({ accountId, itemId, territoryId }) {
-  const [account, itemResult, territoryResult] = await Promise.all([
+  const [account, itemResult] = await Promise.all([
     getAccountRow(accountId),
     itemId ? query('SELECT * FROM stacker_news_items WHERE id=$1 AND account_id=$2', [itemId, accountId]) : Promise.resolve({ rows: [] }),
-    territoryId ? query('SELECT * FROM stacker_news_territories WHERE id=$1 AND account_id=$2', [territoryId, accountId]) : Promise.resolve({ rows: [] }),
   ]);
-  return { account, item: itemResult.rows[0] || null, territory: territoryResult.rows[0] || null };
+  const item = itemResult.rows[0] || null;
+  if (item && territoryId && territoryId !== item.territory_id) throw new Error('Stacker News territory does not match the selected item');
+  const resolvedTerritoryId = territoryId || item?.territory_id || null;
+  const territoryResult = resolvedTerritoryId
+    ? await query('SELECT * FROM stacker_news_territories WHERE id=$1 AND account_id=$2', [resolvedTerritoryId, accountId])
+    : { rows: [] };
+  return { account, item, territory: territoryResult.rows[0] || null, resolvedTerritoryId };
 }
 
 export async function createAction({ accountId, itemId = null, territoryId = null, kind, destination = '', payload = {} }) {
   if (!ACTION_KINDS.has(kind)) throw new Error('Unsupported Stacker News action kind');
-  const { account, item, territory } = await actionContext({ accountId, itemId, territoryId });
+  const { account, item, territory, resolvedTerritoryId } = await actionContext({ accountId, itemId, territoryId });
   if (!account) throw new Error('Stacker News account not found');
   if (itemId && !item) throw new Error('Stacker News item not found for account');
-  if (territoryId && !territory) throw new Error('Stacker News territory not found for account');
+  if (resolvedTerritoryId && !territory) throw new Error('Stacker News territory not found for account');
   const rules = resolveStackerNewsRules(account.rules, territory?.rules, territory?.inherit_account_rules ?? true);
   const rulesHash = hashStackerNewsRules(rules);
   const sourceContentHash = item?.content_hash || '';
@@ -474,7 +484,7 @@ export async function createAction({ accountId, itemId = null, territoryId = nul
     territorySlug: territory?.slug || '',
     remoteItemId: item?.remote_id || '',
   };
-  const idempotencyKey = stableHash({ accountId, itemId, territoryId, kind, destination, payload, sourceContentHash, rulesHash, reviewedTarget });
+  const idempotencyKey = stableHash({ accountId, itemId, territoryId: resolvedTerritoryId, kind, destination, payload, sourceContentHash, rulesHash, reviewedTarget });
   const id = randomUUID();
   const row = await withTransaction(async (client) => {
     const active = await client.query(
@@ -499,7 +509,7 @@ export async function createAction({ accountId, itemId = null, territoryId = nul
        (id,account_id,item_id,territory_id,kind,state,destination,payload,source_content_hash,rules_hash,policy_version,idempotency_key,reviewed_target)
        VALUES ($1,$2,$3,$4,$5,'pending_review',$6,$7,$8,$9,$10,$11,$12)
        ON CONFLICT (idempotency_key) WHERE state IN ('pending_review','approved','executing') DO NOTHING RETURNING *`,
-      [id, accountId, itemId, territoryId, kind, destination, payload, sourceContentHash, rulesHash, POLICY_VERSION, idempotencyKey, reviewedTarget],
+      [id, accountId, itemId, resolvedTerritoryId, kind, destination, payload, sourceContentHash, rulesHash, POLICY_VERSION, idempotencyKey, reviewedTarget],
     );
     if (result.rows[0]) {
       await eventInsert(client, id, null, 'pending_review', 'Created for human review');

@@ -95,6 +95,20 @@ describe('StackerNews', () => {
     expect(screen.getByText('Current community')).toBeInTheDocument();
   });
 
+  it('hides executable actions immediately when account selection changes', async () => {
+    const user = userEvent.setup();
+    const nextActions = deferred();
+    api.getStackerNewsActions.mockImplementation((id) => id === 'a1'
+      ? Promise.resolve({ actions: [{ id: 'old-action', kind: 'publish_comment', state: 'approved', payload: { body: 'Old account action' }, reviewedTarget: { username: 'art_steward' }, policyVersion: 'v1' }] })
+      : nextActions.promise);
+    renderPage('/stacker-news/a1/review');
+    expect(await screen.findByRole('button', { name: 'Execute reviewed action' })).toBeInTheDocument();
+    await user.click(screen.getByRole('tab', { name: 'Accounts & Safety' }));
+    await user.click(await screen.findByRole('button', { name: /Personal/ }));
+    expect(screen.queryByRole('button', { name: 'Execute reviewed action' })).not.toBeInTheDocument();
+    await act(async () => nextActions.resolve({ actions: [] }));
+  });
+
   it('gates server-side account actions on saved settings and the in-flight save', async () => {
     const user = userEvent.setup();
     const save = deferred();
@@ -119,6 +133,22 @@ describe('StackerNews', () => {
     await user.click(await screen.findByRole('checkbox', { name: 'Remove stored API key when saving' }));
     await user.click(screen.getByRole('button', { name: 'Save account' }));
     await waitFor(() => expect(api.updateStackerNewsAccount).toHaveBeenCalledWith('a1', expect.objectContaining({ apiKey: '' }), { silent: true }));
+  });
+
+  it('ignores an old account save completion after navigation', async () => {
+    const user = userEvent.setup();
+    const save = deferred();
+    api.updateStackerNewsAccount.mockReturnValue(save.promise);
+    renderPage('/stacker-news/a1/accounts');
+    const interval = await screen.findByLabelText('Monitoring interval (minutes)', { selector: '#edit-account-interval' });
+    await user.clear(interval);
+    await user.type(interval, '20');
+    await user.click(screen.getByRole('button', { name: 'Save account' }));
+    await user.click(screen.getByRole('button', { name: /Personal/ }));
+    expect(await screen.findByDisplayValue('personal_stacker')).toBeInTheDocument();
+    await act(async () => save.resolve({ ...accounts[0], monitoringIntervalMinutes: 20 }));
+    expect(screen.getByDisplayValue('personal_stacker')).toBeInTheDocument();
+    expect(screen.getByLabelText('Monitoring interval (minutes)', { selector: '#edit-account-interval' })).toHaveValue(60);
   });
 
   it('edits and deletes configured communities through inline controls', async () => {

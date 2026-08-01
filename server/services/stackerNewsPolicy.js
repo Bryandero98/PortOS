@@ -34,6 +34,20 @@ export function normalizeStackerNewsRules(value = {}) {
   };
 }
 
+export function normalizeStackerNewsRuleOverrides(value = {}) {
+  const rules = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const normalized = normalizeStackerNewsRules(rules);
+  const rawBudget = rules.actionBudget && typeof rules.actionBudget === 'object' && !Array.isArray(rules.actionBudget)
+    ? rules.actionBudget
+    : {};
+  return {
+    ...normalized,
+    actionBudget: Object.fromEntries(Object.keys(normalized.actionBudget)
+      .filter((key) => Number.isInteger(rawBudget[key]))
+      .map((key) => [key, normalized.actionBudget[key]])),
+  };
+}
+
 export function resolveStackerNewsRules(accountRules, territoryRules, inheritAccountRules = true) {
   const account = normalizeStackerNewsRules(accountRules);
   const territory = normalizeStackerNewsRules(territoryRules);

@@ -13,6 +13,15 @@ describe('Stacker News policy', () => {
     expect(rules.actionBudget.maxPerDay).toBe(2);
   });
 
+  it('preserves account budgets when a territory omitted budget overrides', () => {
+    const rules = resolveStackerNewsRules(
+      { actionBudget: { maxPerHour: 1, maxPerDay: 1, minMinutesBetween: 60 } },
+      { guidance: 'Community-specific guidance', actionBudget: {} },
+      true,
+    );
+    expect(rules.actionBudget).toEqual({ maxPerHour: 1, maxPerDay: 1, minMinutesBetween: 60 });
+  });
+
   it('rejects unknown model fields and model-proposed action names', () => {
     expect(() => parseStackerNewsModelResult({ classification: 'allowed', risk: 'low', summary: '', findings: [], suggestedAction: 'zap', tool: 'shell' })).toThrow();
   });

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 const account = { id: 'account', username: 'example_user', enabled: true, rules: {}, policy_version: 'v1' };
 const territory = { id: 'territory', account_id: 'account', slug: 'art', rules: {}, inherit_account_rules: true, is_owned: false, remote_settings: {} };
-const item = { id: 'item', account_id: 'account', remote_id: '42', content_hash: 'content-hash' };
+const item = { id: 'item', account_id: 'account', territory_id: 'territory', remote_id: '42', content_hash: 'content-hash' };
 let actionForExecution = null;
 
 const query = vi.fn(async (sql) => {
@@ -45,6 +45,24 @@ describe('Stacker News reviewed actions', () => {
     });
     expect(action.reviewedTarget).toEqual({ username: 'example_user', territorySlug: 'art', remoteItemId: '42' });
     expect(transactionQuery.mock.calls.find(([sql]) => sql.includes('INSERT INTO stacker_news_actions'))[0]).toContain('reviewed_target');
+  });
+
+  it('derives an item action territory and rejects an explicit mismatch', async () => {
+    const action = await createAction({
+      accountId: account.id,
+      itemId: item.id,
+      kind: 'publish_comment',
+      payload: { body: 'Thanks for sharing.' },
+    });
+    expect(action.territoryId).toBe(territory.id);
+    expect(action.reviewedTarget.territorySlug).toBe('art');
+    await expect(createAction({
+      accountId: account.id,
+      itemId: item.id,
+      territoryId: 'different-territory',
+      kind: 'publish_comment',
+      payload: { body: 'Thanks for sharing.' },
+    })).rejects.toThrow('territory does not match');
   });
 
   it('refuses execution when the reviewed identity no longer matches', async () => {
