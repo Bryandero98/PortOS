@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
-import {
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import MemoryPractice, {
   fuzzyMatch,
   generateHint,
   findChunkForLine,
@@ -7,6 +8,20 @@ import {
   checkSequenceAnswer,
   checkSpacedAnswer,
 } from './MemoryPractice';
+
+const { submitMemoryPractice } = vi.hoisted(() => ({
+  submitMemoryPractice: vi.fn(),
+}));
+
+vi.mock('../../../services/api', () => ({
+  submitMemoryPractice,
+  getChunkMastery: vi.fn(),
+  getMemoryItem: vi.fn(),
+}));
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 // Pure-function tests for MemoryPractice's correctness scorers (issue #2102
 // gap #2). These decide whether a memorization drill answer counts as
@@ -173,5 +188,42 @@ describe('findChunkForLine', () => {
 
   it('returns null when there are no chunks', () => {
     expect(findChunkForLine({ content: {} }, 0)).toBeNull();
+  });
+});
+
+describe('MemoryPractice daily routine actions', () => {
+  it('waits for progress to save before continuing from a completed lesson', async () => {
+    let resolveSave;
+    submitMemoryPractice.mockImplementation(() => new Promise(resolve => { resolveSave = resolve; }));
+    const onContinue = vi.fn();
+    const item = {
+      id: 'example-memory',
+      title: 'Example Memory',
+      content: {
+        lines: [{ text: 'An example line.' }],
+        chunks: [{ id: 'example-chunk', label: 'Example Chunk', lineRange: [0, 0] }],
+      },
+    };
+
+    render(
+      <MemoryPractice
+        itemId={item.id}
+        item={item}
+        mode="learn"
+        onSelectMode={() => {}}
+        onExitMode={() => {}}
+        onBack={() => {}}
+        onContinue={onContinue}
+      />
+    );
+
+    fireEvent.click(screen.getByText('Complete'));
+    fireEvent.click(screen.getByText("Continue Today's Routine"));
+
+    expect(submitMemoryPractice).toHaveBeenCalledTimes(1);
+    expect(onContinue).not.toHaveBeenCalled();
+
+    await act(async () => resolveSave({ mastery: {} }));
+    await waitFor(() => expect(onContinue).toHaveBeenCalledTimes(1));
   });
 });

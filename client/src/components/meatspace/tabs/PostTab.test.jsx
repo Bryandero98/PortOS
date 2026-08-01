@@ -13,6 +13,7 @@ const settle = () => act(async () => {});
 // any of this data — it's the pure routing surface under test here.
 vi.mock('../../../services/api', () => ({
   getPostConfig: () => Promise.resolve(null),
+  getPostRecommendations,
   getPostSessions: () => Promise.resolve([]),
   getPostStats: () => Promise.resolve(null),
   // MorseTrainer (rendered by the 'morse' tab) fetches/logs training stats on
@@ -43,7 +44,7 @@ vi.mock('../../RapidReader', () => ({ RapidReaderModal: () => null }));
 
 // Hoisted so the api mock factory (which vitest lifts above imports) can close
 // over it — a plain `const` declared below would be in the TDZ at mock time.
-const { MEMORY_ITEM, ELEMENTS_ITEM } = vi.hoisted(() => ({
+const { MEMORY_ITEM, ELEMENTS_ITEM, getPostRecommendations } = vi.hoisted(() => ({
   MEMORY_ITEM: {
     id: 'raven',
     title: 'The Raven',
@@ -64,6 +65,7 @@ const { MEMORY_ITEM, ELEMENTS_ITEM } = vi.hoisted(() => ({
     content: { lines: [], chunks: [], elementMap: { H: { name: 'Hydrogen', atomicNumber: 1 } } },
     mastery: { overallPct: 0, chunks: {}, elements: {} },
   },
+  getPostRecommendations: vi.fn().mockResolvedValue({ recommendations: [] }),
 }));
 
 vi.mock('../../../hooks/usePostSession', () => ({
@@ -112,13 +114,13 @@ describe('PostTab morse deep-linking', () => {
       </MemoryRouter>,
     );
     await settle();
-    // Check surfaces the send-drill feedback, whose "Pick Mode" button exits the
-    // mode back to the grid; ?ref=length must not reset to tree on the way out.
+    // Check surfaces the send-drill feedback, whose "Finish for Now" action exits
+    // the mode back to the grid; ?ref=length must not reset to tree on the way out.
     fireEvent.click(screen.getByText('Check'));
     // Check submits the round + training entry — settle those writes before
     // navigating away so their state updates stay act-wrapped.
     await settle();
-    fireEvent.click(screen.getByText('Pick Mode'));
+    fireEvent.click(screen.getByText('Finish for Now'));
     await settle();
     expect(screen.getByTestId('loc').textContent).toBe('/post/morse?ref=length');
   });
@@ -143,6 +145,16 @@ describe('PostTab memory deep-linking (issue #3249)', () => {
     renderMemory('/post/memory');
     await settle();
     expect(screen.getByText('Memory Builder')).toBeInTheDocument();
+  });
+
+  it('starts Review Next inside the due practice mode instead of reopening the item menu', async () => {
+    renderMemory('/post/memory');
+    await settle();
+
+    fireEvent.click(screen.getByText('Review Next'));
+    await settle();
+
+    expect(screen.getByTestId('loc').textContent).toBe('/post/memory/raven/spaced');
   });
 
   it('loads an item practice mode straight from the URL on a cold load', async () => {
@@ -194,5 +206,27 @@ describe('PostTab memory deep-linking (issue #3249)', () => {
     renderMemory('/post/memory/elements/bogus-mode', { subtab: 'elements', mode: 'bogus-mode' });
     await settle();
     expect(screen.getByText('Periodic Table')).toBeInTheDocument();
+  });
+
+  it('continues from a saved Elements lesson to the next cross-domain recommendation', async () => {
+    getPostRecommendations.mockResolvedValueOnce({ recommendations: [{
+      id: 'stalled:morse-copy',
+      kind: 'stalled-progression',
+      title: 'Morse: keep climbing',
+      deepLink: '/post/morse/copy',
+      drillType: 'morse-copy',
+      priority: 0,
+    }] });
+    renderMemory('/post/memory/elements/element-study', { subtab: 'elements', mode: 'element-study' });
+    await settle();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reveal' }));
+    fireEvent.click(screen.getByText('Got It'));
+    await settle();
+    fireEvent.click(screen.getByText("Continue Today's Routine"));
+    await settle();
+
+    expect(getPostRecommendations).toHaveBeenCalledWith(1);
+    expect(screen.getByTestId('loc').textContent).toBe('/post/morse/copy');
   });
 });

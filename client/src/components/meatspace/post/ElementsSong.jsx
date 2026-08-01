@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight, BookOpen, Zap, Target, Check, X, SkipForward
 import { submitMemoryPractice, getMemoryMastery, getMemoryItem } from '../../../services/api';
 import { RapidReaderModal } from '../../RapidReader';
 import { clickableProps } from '../../../lib/a11yKeyboard';
+import PostCompletionActions from './PostCompletionActions';
 
 // Standard periodic table layout: [row][col] = symbol or null
 const PERIODIC_TABLE = [
@@ -58,7 +59,7 @@ export const PRACTICE_MODES = [
 // picker, mirroring MorseTrainer's MORSE_MODE_IDS (issue #3249).
 export const ELEMENTS_MODE_IDS = PRACTICE_MODES.map(m => m.id);
 
-export default function ElementsSong({ item: itemProp, onBack, loadItemOnMount, mode, onSelectMode, onExitMode }) {
+export default function ElementsSong({ item: itemProp, onBack, loadItemOnMount, mode, onSelectMode, onExitMode, onContinue }) {
   const [loadedItem, setLoadedItem] = useState(null);
   const item = itemProp || loadedItem;
   const [mastery, setMastery] = useState(item?.mastery || { overallPct: 0, chunks: {}, elements: {} });
@@ -76,9 +77,10 @@ export default function ElementsSong({ item: itemProp, onBack, loadItemOnMount, 
     getMemoryMastery(item.id).then(m => { if (m) setMastery(m); }).catch(err => console.warn('⚠️ Failed to load mastery: ' + err.message));
   }, [item?.id]);
 
-  function handlePracticeComplete(newMastery) {
+  function handlePracticeComplete(newMastery, continueDaily = false) {
     if (newMastery) setMastery(newMastery);
-    onExitMode();
+    if (continueDaily) onContinue();
+    else onExitMode();
   }
 
   if (!item) {
@@ -511,9 +513,30 @@ function SelectedElementDetail({ sym, elementMap, mastery, inSong, category, ver
 function LearnMode({ item, onBack, onComplete }) {
   const [currentChunk, setCurrentChunk] = useState(0);
   const [revealedLines, setRevealedLines] = useState(1);
+  const [complete, setComplete] = useState(false);
   const chunks = item.content?.chunks || [];
   const chunk = chunks[currentChunk];
   const lines = chunk ? item.content.lines.slice(chunk.lineRange[0], chunk.lineRange[1] + 1) : [];
+
+  function save(continueDaily) {
+    return submitMemoryPractice(item.id, {
+      mode: 'learn', chunkId: null,
+      results: [{ correct: true }],
+      totalMs: 0,
+    }).then(r => onComplete(r?.mastery, continueDaily));
+  }
+
+  if (complete) {
+    return (
+      <div className="space-y-6 max-w-2xl">
+        <h2 className="text-xl font-bold text-white">Lesson Complete</h2>
+        <div className="bg-port-card border border-port-border rounded-lg p-6 text-center text-gray-300">
+          You finished every verse in The Elements Song.
+        </div>
+        <PostCompletionActions onSave={() => save(false)} onContinue={() => save(true)} />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 max-w-2xl">
@@ -566,13 +589,7 @@ function LearnMode({ item, onBack, onComplete }) {
           </button>
         ) : (
           <button
-            onClick={() => {
-              submitMemoryPractice(item.id, {
-                mode: 'learn', chunkId: null,
-                results: [{ correct: true }],
-                totalMs: 0,
-              }).then(r => onComplete(r?.mastery)).catch(err => { console.warn('⚠️ Failed to record practice: ' + err.message); onComplete(null); });
-            }}
+            onClick={() => setComplete(true)}
             className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-port-success hover:bg-port-success/80 text-white rounded-lg transition-colors"
           >
             <Check size={16} /> Complete
@@ -618,6 +635,14 @@ function ElementStudyMode({ item, mastery, onBack, onComplete }) {
   const [flipped, setFlipped] = useState(false);
   const [results, setResults] = useState([]);
   const [startTime] = useState(Date.now());
+
+  function save(continueDaily) {
+    return submitMemoryPractice(item.id, {
+      mode: 'element-study', chunkId: null,
+      results: results.map(r => ({ correct: r.correct, element: r.element })),
+      totalMs: Date.now() - startTime,
+    }).then(r => onComplete(r?.mastery, continueDaily));
+  }
 
   if (!cards.length) {
     return (
@@ -666,18 +691,7 @@ function ElementStudyMode({ item, mastery, onBack, onComplete }) {
             </div>
           </div>
         )}
-        <button
-          onClick={() => {
-            submitMemoryPractice(item.id, {
-              mode: 'element-study', chunkId: null,
-              results: results.map(r => ({ correct: r.correct, element: r.element })),
-              totalMs: Date.now() - startTime,
-            }).then(r => onComplete(r?.mastery)).catch(err => { console.warn('⚠️ Failed to record practice: ' + err.message); onComplete(null); });
-          }}
-          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-port-accent hover:bg-port-accent/80 text-white rounded-lg transition-colors"
-        >
-          Save & Return
-        </button>
+        <PostCompletionActions onSave={() => save(false)} onContinue={() => save(true)} />
       </div>
     );
   }
@@ -787,6 +801,14 @@ function ElementFlashMode({ item, mastery, onBack, onComplete }) {
   const [startTime] = useState(Date.now());
   const inputRef = useRef(null);
 
+  function save(continueDaily) {
+    return submitMemoryPractice(item.id, {
+      mode: 'element-flash', chunkId: null,
+      results: results.map(r => ({ correct: r.correct, element: r.element, expected: r.expected, answered: r.answered })),
+      totalMs: Date.now() - startTime,
+    }).then(r => onComplete(r?.mastery, continueDaily));
+  }
+
   useEffect(() => { inputRef.current?.focus(); }, [idx]);
 
   const next = useCallback(() => {
@@ -846,18 +868,7 @@ function ElementFlashMode({ item, mastery, onBack, onComplete }) {
             </div>
           </div>
         )}
-        <button
-          onClick={() => {
-            submitMemoryPractice(item.id, {
-              mode: 'element-flash', chunkId: null,
-              results: results.map(r => ({ correct: r.correct, element: r.element, expected: r.expected, answered: r.answered })),
-              totalMs: Date.now() - startTime,
-            }).then(r => onComplete(r?.mastery)).catch(err => { console.warn('⚠️ Failed to record practice: ' + err.message); onComplete(null); });
-          }}
-          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-port-accent hover:bg-port-accent/80 text-white rounded-lg transition-colors"
-        >
-          Save & Return
-        </button>
+        <PostCompletionActions onSave={() => save(false)} onContinue={() => save(true)} />
       </div>
     );
   }
@@ -947,6 +958,14 @@ function FillBlankMode({ item, onBack, onComplete }) {
   const [startTime] = useState(Date.now());
   const inputRef = useRef(null);
 
+  function save(continueDaily) {
+    return submitMemoryPractice(item.id, {
+      mode: 'fill-blank', chunkId: null,
+      results: results.map(r => ({ correct: r.correct, expected: r.expected, answered: r.answered })),
+      totalMs: Date.now() - startTime,
+    }).then(r => onComplete(r?.mastery, continueDaily));
+  }
+
   useEffect(() => { inputRef.current?.focus(); }, [idx]);
 
   if (idx >= lines.length) {
@@ -966,18 +985,7 @@ function FillBlankMode({ item, onBack, onComplete }) {
           <div className={`text-5xl font-bold font-mono ${scoreColor} mb-2`}>{pct}%</div>
           <div className="text-gray-400 text-sm">{correct} of {results.length} lines correct</div>
         </div>
-        <button
-          onClick={() => {
-            submitMemoryPractice(item.id, {
-              mode: 'fill-blank', chunkId: null,
-              results: results.map(r => ({ correct: r.correct, expected: r.expected, answered: r.answered })),
-              totalMs: Date.now() - startTime,
-            }).then(r => onComplete(r?.mastery)).catch(err => { console.warn('⚠️ Failed to record practice: ' + err.message); onComplete(null); });
-          }}
-          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-port-accent hover:bg-port-accent/80 text-white rounded-lg transition-colors"
-        >
-          Save & Return
-        </button>
+        <PostCompletionActions onSave={() => save(false)} onContinue={() => save(true)} />
       </div>
     );
   }

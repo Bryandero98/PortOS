@@ -10,6 +10,7 @@ import Modal from '../../ui/Modal';
 import toast from '../../ui/Toast';
 import { AILoadingIndicator, MissedExamplesDisplay, CompoundChainUI, BridgeWordUI, DoubleMeaningUI, IdiomTwistUI, ProgressBar, scoreWordplayResponse } from './WordplayDrillUI';
 import { countLlmCorrect, LLM_TRAINING_CORRECT_THRESHOLD } from './constants';
+import PostCompletionActions from './PostCompletionActions';
 
 // Coarse module bucket for training-log entries — matches the module
 // PostLlmDrillRunner's in-session runner logs LLM/wordplay drills under
@@ -60,7 +61,7 @@ const GAME_MODES = [
   },
 ];
 
-export default function WordplayTrainer({ onBack, config, onConfigUpdate, mode = null, onSelectMode, onExitMode }) {
+export default function WordplayTrainer({ onBack, onContinue, config, onConfigUpdate, mode = null, onSelectMode, onExitMode }) {
   // Selected mode is driven by the `/post/wordplay/:mode` URL param (source of
   // truth), not local state — deep-linkable and refresh-safe like MorseTrainer.
   // An unknown segment degrades to the mode grid instead of a blank screen.
@@ -87,6 +88,7 @@ export default function WordplayTrainer({ onBack, config, onConfigUpdate, mode =
   // log one training-log entry with the whole round's elapsed time (matches
   // MorseTrainer's roundStartRef → totalMs contract).
   const roundStartRef = useRef(Date.now());
+  const roundSaveRef = useRef(Promise.resolve());
 
   // Cache-fill consent: PortOS never issues background LLM calls a user
   // hasn't asked for. A mode whose drill cache is cold (0 cached) prompts
@@ -367,7 +369,7 @@ export default function WordplayTrainer({ onBack, config, onConfigUpdate, mode =
       // `results` (issue #2114) — the drill cache means these prompts are
       // reusable, so a future progress dashboard can trend which individual
       // wordplay prompts get missed rather than only the round aggregate.
-      submitTrainingEntry({
+      roundSaveRef.current = submitTrainingEntry({
         module: TRAINING_MODULE,
         drillType: selectedMode,
         questionCount: results.length,
@@ -497,18 +499,17 @@ export default function WordplayTrainer({ onBack, config, onConfigUpdate, mode =
             </div>
           ))}
         </div>
-        <div className="flex gap-3">
+        <PostCompletionActions
+          saveLabel="Finish for Now"
+          onSave={() => roundSaveRef.current.then(onBack)}
+          onContinue={() => roundSaveRef.current.then(onContinue)}
+        />
+        <div className="flex justify-center">
           <button
             onClick={() => startMode(selectedMode)}
-            className="flex-1 px-4 py-2.5 bg-port-accent hover:bg-port-accent/80 text-white font-medium rounded-lg transition-colors"
+            className="px-4 py-2 text-sm text-gray-400 hover:text-white transition-colors"
           >
-            Play Again
-          </button>
-          <button
-            onClick={handleBackToModes}
-            className="flex-1 px-4 py-2.5 bg-port-card border border-port-border hover:border-port-accent text-white font-medium rounded-lg transition-colors"
-          >
-            Pick Mode
+            Practice Again
           </button>
         </div>
       </div>
@@ -709,4 +710,3 @@ function CacheFillConsentModal({
     </Modal>
   );
 }
-

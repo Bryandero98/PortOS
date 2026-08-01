@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { render, screen, fireEvent, within, act } from '@testing-library/react';
 import PostSessionResults from './PostSessionResults';
 
 // Issue #2093 — the drill-breakdown expansion previously only ever showed
@@ -88,5 +88,28 @@ describe('PostSessionResults drill breakdown', () => {
     expect(within(container.querySelector('table')).getByText('6 x 7')).toBeInTheDocument();
     fireEvent.click(row);
     expect(container.querySelector('table')).not.toBeInTheDocument();
+  });
+});
+
+describe('PostSessionResults daily routine actions', () => {
+  it('saves before requesting the next scheduled lesson', async () => {
+    const saved = { id: 'session-example' };
+    const saveSession = vi.fn().mockResolvedValue(saved);
+    const onSaved = vi.fn();
+    render(
+      <PostSessionResults
+        session={makeSession({ saveSession })}
+        tags={{}}
+        onSaved={onSaved}
+        onBack={() => {}}
+      />
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("Continue Today's Routine"));
+    });
+
+    expect(saveSession).toHaveBeenCalledWith({});
+    expect(onSaved).toHaveBeenCalledWith(saved, { continueDaily: true });
   });
 });

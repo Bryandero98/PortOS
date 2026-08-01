@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { ChevronLeft, Check, X, SkipForward, RotateCcw, Target, ChevronDown, Loader } from 'lucide-react';
 import { submitMemoryPractice, getChunkMastery, getMemoryItem } from '../../../services/api';
+import PostCompletionActions from './PostCompletionActions';
 
 const MODES = [
   { id: 'learn', label: 'Learn', desc: 'Progressive reveal — read and absorb line by line' },
@@ -22,7 +23,7 @@ export const MEMORY_PRACTICE_MODE_IDS = MODES.map(m => m.id);
  * fetched. An id that doesn't resolve renders a not-found fallback rather than a
  * blank panel, per the deep-link contract in CLAUDE.md.
  */
-export default function MemoryPractice({ itemId, item: seedItem, mode, onSelectMode, onExitMode, onBack }) {
+export default function MemoryPractice({ itemId, item: seedItem, mode, onSelectMode, onExitMode, onBack, onContinue }) {
   const [loadedItem, setLoadedItem] = useState(null);
   const [notFound, setNotFound] = useState(false);
   const item = seedItem || loadedItem;
@@ -79,6 +80,7 @@ export default function MemoryPractice({ itemId, item: seedItem, mode, onSelectM
       onSelectMode={onSelectMode}
       onExitMode={onExitMode}
       onBack={onBack}
+      onContinue={onContinue}
     />
   );
 }
@@ -86,7 +88,7 @@ export default function MemoryPractice({ itemId, item: seedItem, mode, onSelectM
 // The practice runner itself. `mode` is URL-driven; PostTab keys this component
 // on it, so every mode entry (and every return to the picker) mounts fresh —
 // no manual per-run state reset is needed.
-function MemoryPracticeRunner({ item, mode, onSelectMode, onExitMode, onBack }) {
+function MemoryPracticeRunner({ item, mode, onSelectMode, onExitMode, onBack, onContinue }) {
   const [results, setResults] = useState([]);
   const [currentIdx, setCurrentIdx] = useState(0);
   const [answer, setAnswer] = useState('');
@@ -132,17 +134,14 @@ function MemoryPracticeRunner({ item, mode, onSelectMode, onExitMode, onBack }) 
 
   // Drive terminal transitions from an effect, never during render. The render
   // fallbacks below (chunk exhausted, line exhausted, sequence exhausted) return null
-  // for a frame while this effect saves results, advances the chunk, or marks the
-  // session done — firing setState + an async submitMemoryPractice() POST inside the
-  // render body is fragile under StrictMode/concurrent rendering. Normal per-answer
-  // flow still runs through advanceSpaced / nextSequenceQuestion.
+  // for a frame while this effect advances or marks the session done. Spaced
+  // chunks persist as they advance; other modes wait for the completion choice.
   useEffect(() => {
     if (done) return;
     if (mode === 'spaced') {
       if (!chunkMastery || chunkMastery.length === 0) return;
       const currentChunk = chunkMastery[spacedChunkIdx];
       if (!currentChunk) {
-        savePractice('spaced', results);
         setDone(true);
         return;
       }
@@ -236,19 +235,17 @@ function MemoryPracticeRunner({ item, mode, onSelectMode, onExitMode, onBack }) 
           </div>
         )}
 
-        <div className="flex gap-3">
+        <div className="space-y-3">
+          <PostCompletionActions
+            onSave={() => saveAndExit(false)}
+            onContinue={() => saveAndExit(true)}
+          />
           <button
             onClick={onExitMode}
-            className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-port-card border border-port-border rounded-lg text-gray-300 hover:text-white transition-colors"
+            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-gray-400 hover:text-white transition-colors"
           >
             <RotateCcw size={16} />
-            Try Again
-          </button>
-          <button
-            onClick={onBack}
-            className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-port-accent hover:bg-port-accent/80 text-white rounded-lg transition-colors"
-          >
-            Done
+            Practice Again
           </button>
         </div>
       </div>
@@ -442,7 +439,7 @@ function MemoryPracticeRunner({ item, mode, onSelectMode, onExitMode, onBack }) 
             </button>
           ) : (
             <button
-              onClick={() => { setDone(true); setResults([{ correct: true, expected: 'learn mode', answered: 'learn mode' }]); savePractice('learn', [{ correct: true }]); }}
+              onClick={() => { setDone(true); setResults([{ correct: true, expected: 'learn mode', answered: 'learn mode' }]); }}
               className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-port-success hover:bg-port-success/80 text-white rounded-lg transition-colors"
             >
               <Check size={16} />
@@ -640,7 +637,7 @@ function MemoryPracticeRunner({ item, mode, onSelectMode, onExitMode, onBack }) 
 
         {results.length === lines.length && (
           <button
-            onClick={() => { savePractice('speed-run', results); setDone(true); }}
+            onClick={() => setDone(true)}
             className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-port-success hover:bg-port-success/80 text-white rounded-lg transition-colors"
           >
             <Check size={16} />
@@ -672,7 +669,6 @@ function MemoryPracticeRunner({ item, mode, onSelectMode, onExitMode, onBack }) 
   }
 
   function finishSequence() {
-    savePractice('sequence', results);
     setDone(true);
   }
 
@@ -684,7 +680,6 @@ function MemoryPracticeRunner({ item, mode, onSelectMode, onExitMode, onBack }) 
 
   function nextFillBlank() {
     if (currentIdx + 1 >= lines.length) {
-      savePractice('fill-blank', results);
       setDone(true);
     } else {
       setCurrentIdx(prev => prev + 1);
@@ -747,6 +742,14 @@ function MemoryPracticeRunner({ item, mode, onSelectMode, onExitMode, onBack }) 
       })),
       totalMs: Date.now() - startTime,
     }).catch(err => console.warn(`⚠️ Failed to save practice results: ${err.message}`));
+  }
+
+  async function saveAndExit(continueDaily) {
+    // Spaced repetition persists each completed chunk as the user advances;
+    // every other mode waits for this explicit completion choice.
+    if (mode !== 'spaced') await savePractice(mode, results);
+    if (continueDaily) onContinue();
+    else onBack();
   }
 }
 

@@ -164,6 +164,18 @@ describe('MorseTrainer training log integration', () => {
     expect(container.textContent).toContain('80% avg');
   });
 
+  it('waits for a Send result to save before continuing the daily routine', async () => {
+    const onContinue = vi.fn();
+    await renderMorse({ mode: 'send', onContinue, onExitMode: vi.fn(), onBack: vi.fn() });
+
+    fireEvent.click(screen.getByText('Check'));
+    fireEvent.click(screen.getByText("Continue Today's Routine"));
+
+    await waitFor(() => expect(submitTrainingEntry).toHaveBeenCalled());
+    await waitFor(() => expect(submitMorseRound).toHaveBeenCalled());
+    await waitFor(() => expect(onContinue).toHaveBeenCalledTimes(1));
+  });
+
   describe('round completion', () => {
     // Scoped to just this test — install/teardown live in beforeEach/afterEach
     // (not inline in the test body) so a failed assertion above the cleanup

@@ -55,6 +55,7 @@ beforeEach(() => {
 
 describe('WordplayTrainer — training-log persistence (issue #2097)', () => {
   it('submits a training entry on round completion, with correctCount derived from the scored responses', async () => {
+    const onContinue = vi.fn();
     generatePostDrill.mockResolvedValue({
       type: 'compound-chain',
       challenges: [{ rootWord: 'fire', position: 'prefix', minExpected: 1 }],
@@ -63,7 +64,7 @@ describe('WordplayTrainer — training-log persistence (issue #2097)', () => {
       evaluation: { scores: [{ score: 85, feedback: 'Nice compounds!' }] },
     });
 
-    render(<TrainerHarness onBack={() => {}} config={{}} onConfigUpdate={() => {}} />);
+    render(<TrainerHarness onBack={() => {}} onContinue={onContinue} config={{}} onConfigUpdate={() => {}} />);
 
     fireEvent.click(await screen.findByText('Compound Chain'));
 
@@ -101,6 +102,9 @@ describe('WordplayTrainer — training-log persistence (issue #2097)', () => {
       feedback: 'Nice compounds!',
       correct: true,
     });
+
+    fireEvent.click(screen.getByText("Continue Today's Routine"));
+    await waitFor(() => expect(onContinue).toHaveBeenCalledTimes(1));
   });
 
   it('does not wedge on a permanent spinner after leaving a mode mid-generation then picking another (issue #2098)', async () => {

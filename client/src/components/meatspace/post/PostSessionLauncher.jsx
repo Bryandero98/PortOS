@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { Zap, History, Settings, Play, Brain, BookOpen, Dumbbell, Timer, Radio, Target, TrendingUp, TrendingDown, Minus, Compass, ArrowRight, ChevronRight, Layers } from 'lucide-react';
 import { getPostReviewReps, getPostRecommendations, getMorseProgress, getPostProgress, getMemoryItems } from '../../../services/api';
@@ -69,7 +69,34 @@ export function buildCleanTags(tags) {
   return cleanTags;
 }
 
-export default function PostSessionLauncher({ config, recentSessions, stats, statsWeek, onStart, onViewHistory, onViewConfig, onViewMemory, onViewMorse }) {
+function AutoStartRecommendation({ action, onConsumed, onNavigate }) {
+  const startedRef = useRef(false);
+
+  useEffect(() => {
+    if (startedRef.current) return;
+    startedRef.current = true;
+    onConsumed();
+    if (action?.to) onNavigate(action.to);
+    else action?.onClick?.();
+  }, [action, onConsumed, onNavigate]);
+
+  return <div className="text-center text-gray-400 py-12">Starting your next lesson...</div>;
+}
+
+export default function PostSessionLauncher({
+  config,
+  recentSessions,
+  stats,
+  statsWeek,
+  onStart,
+  onViewHistory,
+  onViewConfig,
+  onViewMemory,
+  onViewMorse,
+  autoStartRecommendationId,
+  onAutoStartConsumed,
+  onNavigate,
+}) {
   // Resolve "today" in the user's CONFIGURED timezone so client-side day matching
   // (completed-today, today's minutes) agrees with the server, which stamps and
   // windows POST records on the configured local day (issue #2681). Deriving it
@@ -101,6 +128,7 @@ export default function PostSessionLauncher({ config, recentSessions, stats, sta
   // failure silently degrades to an empty list (the panel hides). The top
   // recommendation also biases the Quick session's drill picks.
   const [recommendations, setRecommendations] = useState([]);
+  const [recommendationsLoaded, setRecommendationsLoaded] = useState(false);
   // Current effective Morse WPM — fetched only when a Morse WPM goal is set, so
   // that goal can render progress (issue #2100). null when unset/unavailable.
   const [morseWpm, setMorseWpm] = useState(null);
@@ -115,7 +143,10 @@ export default function PostSessionLauncher({ config, recentSessions, stats, sta
 
   useEffect(() => {
     getPostReviewReps(5).then(r => setReviewReps(r?.reps || [])).catch(() => setReviewReps([]));
-    getPostRecommendations().then(r => setRecommendations(r?.recommendations || [])).catch(() => setRecommendations([]));
+    getPostRecommendations()
+      .then(r => setRecommendations(r?.recommendations || []))
+      .catch(() => setRecommendations([]))
+      .finally(() => setRecommendationsLoaded(true));
     getMemoryItems({ silent: true })
       .then(items => setMemoryItemsState({ status: 'ready', items: Array.isArray(items) ? items : [] }))
       .catch(() => setMemoryItemsState({ status: 'error', items: [] }));
@@ -579,6 +610,19 @@ export default function PostSessionLauncher({ config, recentSessions, stats, sta
     : Math.round(todaysSessions.reduce((sum, s) => sum + (s.durationMs || 0), 0) / 60000);
   const weekSessions = statsWeek?.sessionCount ?? 0;
   const goalRows = computeGoalProgress(config.goals, { todayMinutes, weekSessions, currentStreak, morseWpm });
+
+  // A default/full recommendation may include memory drills, so wait until the
+  // item pool is known before deciding whether its session is runnable.
+  if (autoStartRecommendationId && recommendationsLoaded && memoryItemsState.status !== 'loading') {
+    const recommendation = recommendations.find(rec => rec.id === autoStartRecommendationId) || topRec;
+    return (
+      <AutoStartRecommendation
+        action={recAction(recommendation)}
+        onConsumed={onAutoStartConsumed}
+        onNavigate={onNavigate}
+      />
+    );
+  }
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto">

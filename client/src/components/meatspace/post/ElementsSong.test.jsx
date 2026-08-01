@@ -83,7 +83,7 @@ describe('ElementsSong — Flash Cards study mode', () => {
     }
 
     // Completion screen → persist the study reps.
-    fireEvent.click(screen.getByText('Save & Return'));
+    fireEvent.click(screen.getByText('Save Progress'));
     await settle();
 
     expect(submitMemoryPractice).toHaveBeenCalledTimes(1);
@@ -95,6 +95,24 @@ describe('ElementsSong — Flash Cards study mode', () => {
     // exactly one was marked known.
     expect(payload.results.every((r) => r.element === 'H' || r.element === 'He')).toBe(true);
     expect(payload.results.filter((r) => r.correct)).toHaveLength(1);
+  });
+
+  it('saves the deck before continuing the daily routine', async () => {
+    const onContinue = vi.fn();
+    render(<RoutedElementsSong item={item} onBack={() => {}} onContinue={onContinue} />);
+    await settle();
+
+    fireEvent.click(screen.getByText('Flash Cards'));
+    for (let i = 0; i < 2; i++) {
+      fireEvent.click(screen.getByRole('button', { name: 'Reveal' }));
+      fireEvent.click(screen.getByText('Got It'));
+    }
+
+    fireEvent.click(screen.getByText("Continue Today's Routine"));
+    await settle();
+
+    expect(submitMemoryPractice).toHaveBeenCalledTimes(1);
+    expect(onContinue).toHaveBeenCalledTimes(1);
   });
 });
 
