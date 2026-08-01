@@ -105,11 +105,38 @@ export default function ElementsSong({ item: itemProp, onBack, loadItemOnMount, 
 // distinguishable from "practiced and scored zero" (the sentinel rule in
 // CLAUDE.md) — the caller routes those two to different modes.
 function bucketAccuracy(buckets) {
-  const attempted = Object.values(buckets || {}).filter(m => (m?.attempts || 0) > 0);
+  const attempted = Object.values(buckets || {})
+    .map(elementMasteryProgress)
+    .filter(progress => progress.attempts > 0);
   if (attempted.length === 0) return null;
-  const attempts = attempted.reduce((sum, m) => sum + m.attempts, 0);
-  const correct = attempted.reduce((sum, m) => sum + (m.correct || 0), 0);
+  const attempts = attempted.reduce((sum, progress) => sum + progress.attempts, 0);
+  const correct = attempted.reduce((sum, progress) => sum + progress.correct, 0);
   return attempts > 0 ? correct / attempts : null;
+}
+
+const ELEMENT_MASTERY_MIN_ATTEMPTS = 3;
+const ELEMENT_MASTERY_TARGET_ACCURACY = 0.8;
+
+// Mirror the server's decay-aware mastery gate for every Elements UI surface.
+// Recent answers take precedence; cumulative counts remain the legacy fallback.
+export function elementMasteryProgress(stat) {
+  const hasRecent = Array.isArray(stat?.recent) && stat.recent.length > 0;
+  const attempts = hasRecent
+    ? stat.recent.length
+    : (Number.isFinite(stat?.attempts) ? stat.attempts : 0);
+  const correct = hasRecent
+    ? stat.recent.reduce((sum, result) => sum + (result ? 1 : 0), 0)
+    : (Number.isFinite(stat?.correct) ? stat.correct : 0);
+  const accuracy = attempts > 0 ? correct / attempts : 0;
+
+  return {
+    accuracy,
+    attempts,
+    correct,
+    hasRecent,
+    mastered: attempts >= ELEMENT_MASTERY_MIN_ATTEMPTS
+      && accuracy >= ELEMENT_MASTERY_TARGET_ACCURACY,
+  };
 }
 
 /**
@@ -133,6 +160,8 @@ export function recommendedElementsMode(mastery) {
 function ElementsSongMain({ item, mastery, onSelectMode, onBack }) {
   const recommendedMode = recommendedElementsMode(mastery);
   const elementMap = useMemo(() => item.content?.elementMap ?? {}, [item]);
+  const masteredElementCount = Object.keys(elementMap)
+    .filter(symbol => elementMasteryProgress(mastery.elements?.[symbol]).mastered).length;
   const songElements = useMemo(() => {
     const s = new Set();
     for (const line of item.content?.lines || []) {
@@ -200,8 +229,9 @@ function ElementsSongMain({ item, mastery, onSelectMode, onBack }) {
           </div>
         </div>
         <div className="text-left sm:text-right text-sm text-gray-500">
-          <div>{Object.keys(mastery.elements || {}).filter(s => { const m = mastery.elements[s]; return m?.attempts >= 3 && m.correct / m.attempts >= 0.8; }).length} / {Object.keys(elementMap).length} elements mastered</div>
+          <div>{masteredElementCount} / {Object.keys(elementMap).length} elements mastered</div>
           <div>{Object.keys(elementMap).length} elements in song</div>
+          <div className="text-xs text-gray-600">Mastery requires 3 recent checks at 80%+ accuracy</div>
         </div>
       </div>
 
@@ -277,7 +307,7 @@ function ElementsSongMain({ item, mastery, onSelectMode, onBack }) {
                 if (!sym) return <div key={`${ri}-${ci}`} className="w-[30px] sm:w-[36px] h-[30px] sm:h-[36px]" />;
                 const inSong = songElements.has(sym);
                 const m = mastery.elements?.[sym];
-                const masteryPct = m?.attempts > 0 ? m.correct / m.attempts : 0;
+                const progress = elementMasteryProgress(m);
                 const cat = getCategory(sym);
                 const isHovered = hoveredElement === sym;
                 const isSelected = selectedElement === sym;
@@ -285,7 +315,7 @@ function ElementsSongMain({ item, mastery, onSelectMode, onBack }) {
 
                 let bg, borderColor, catBorderStyle;
                 if (tableView === 'mastery') {
-                  bg = !inSong ? 'bg-gray-800/30' : masteryPct >= 0.8 && m?.attempts >= 3 ? 'bg-emerald-600/60' : masteryPct >= 0.5 ? 'bg-amber-600/50' : m?.attempts > 0 ? 'bg-red-600/40' : 'bg-port-border';
+                  bg = !inSong ? 'bg-gray-800/30' : progress.mastered ? 'bg-emerald-600/60' : progress.accuracy >= 0.5 ? 'bg-amber-600/50' : progress.attempts > 0 ? 'bg-red-600/40' : 'bg-port-border';
                   borderColor = isSelected ? 'border-port-accent' : cat ? cat.border : 'border-transparent';
                   catBorderStyle = cat ? 'border-l-2' : '';
                 } else {
@@ -423,8 +453,8 @@ function ElementsSongMain({ item, mastery, onSelectMode, onBack }) {
 
 function ElementTooltip({ sym, elementMap, mastery, inSong, category, verses, chunks, pos }) {
   const info = elementMap[sym];
-  const m = mastery.elements?.[sym];
-  const pct = m?.attempts > 0 ? Math.round((m.correct / m.attempts) * 100) : null;
+  const progress = elementMasteryProgress(mastery.elements?.[sym]);
+  const pct = progress.attempts > 0 ? Math.round(progress.accuracy * 100) : null;
   const verseLabels = verses.map(v => chunks.find(c => c.id === v)?.label).filter(Boolean);
 
   return (
@@ -441,10 +471,13 @@ function ElementTooltip({ sym, elementMap, mastery, inSong, category, verses, ch
           {inSong ? (
             <>
               <div className="text-gray-500">
-                Mastery: <span className={`font-mono ${pct != null && pct >= 80 ? 'text-port-success' : pct != null && pct >= 50 ? 'text-port-warning' : pct != null ? 'text-port-error' : 'text-gray-600'}`}>
-                  {pct != null ? `${pct}%` : '—'}
+                Status: <span className={`font-medium ${progress.mastered ? 'text-port-success' : progress.attempts > 0 ? 'text-port-warning' : 'text-gray-600'}`}>
+                  {progress.mastered ? 'Mastered' : progress.attempts > 0 ? 'Learning' : 'Not practiced'}
                 </span>
-                {m?.attempts > 0 && <span className="text-gray-600 ml-1">({m.correct}/{m.attempts})</span>}
+              </div>
+              <div className="text-gray-500">
+                Accuracy: <span className="font-mono text-gray-300">{pct != null ? `${pct}%` : '—'}</span>
+                {progress.attempts > 0 && <span className="text-gray-600 ml-1">({progress.correct}/{progress.attempts}{progress.hasRecent ? ' recent' : ''})</span>}
               </div>
               {verseLabels.length > 0 && <div className="text-gray-500">In: {verseLabels.join(', ')}</div>}
             </>
@@ -459,8 +492,8 @@ function ElementTooltip({ sym, elementMap, mastery, inSong, category, verses, ch
 
 function SelectedElementDetail({ sym, elementMap, mastery, inSong, category, verses, chunks, lines, onClear }) {
   const info = elementMap[sym];
-  const m = mastery.elements?.[sym];
-  const pct = m?.attempts > 0 ? Math.round((m.correct / m.attempts) * 100) : null;
+  const progress = elementMasteryProgress(mastery.elements?.[sym]);
+  const pct = progress.attempts > 0 ? Math.round(progress.accuracy * 100) : null;
   const verseLabels = verses.map(v => chunks.find(c => c.id === v)?.label).filter(Boolean);
   const containingLines = lines.filter(l => l.elements?.includes(sym));
 
@@ -481,14 +514,17 @@ function SelectedElementDetail({ sym, elementMap, mastery, inSong, category, ver
       </div>
       {inSong ? (
         <>
-          <div className="flex items-center gap-4 text-sm">
+          <div className="flex flex-wrap items-center gap-4 text-sm">
             <div>
-              <span className="text-gray-500">Mastery: </span>
-              <span className={`font-mono font-medium ${pct != null && pct >= 80 ? 'text-port-success' : pct != null && pct >= 50 ? 'text-port-warning' : pct != null ? 'text-port-error' : 'text-gray-600'}`}>
-                {pct != null ? `${pct}%` : 'Not practiced'}
+              <span className="text-gray-500">Status: </span>
+              <span className={`font-medium ${progress.mastered ? 'text-port-success' : progress.attempts > 0 ? 'text-port-warning' : 'text-gray-600'}`}>
+                {progress.mastered ? 'Mastered' : progress.attempts > 0 ? 'Learning' : 'Not practiced'}
               </span>
             </div>
-            {m?.attempts > 0 && <div className="text-gray-500 text-xs">{m.correct} correct / {m.attempts} attempts</div>}
+            <div className="text-gray-500">
+              Accuracy: <span className="font-mono text-gray-300">{pct != null ? `${pct}%` : '—'}</span>
+              {progress.attempts > 0 && <span className="text-xs ml-1">({progress.correct}/{progress.attempts}{progress.hasRecent ? ' recent' : ''})</span>}
+            </div>
           </div>
           {containingLines.length > 0 && (
             <div className="space-y-1">
@@ -604,11 +640,9 @@ function LearnMode({ item, onBack, onComplete }) {
 // study deck and the flash quiz surface the least-known elements first.
 function weakestFirstElements(elementMap, mastery) {
   return Object.entries(elementMap).sort((a, b) => {
-    const mA = mastery.elements?.[a[0]];
-    const mB = mastery.elements?.[b[0]];
-    const pctA = mA?.attempts > 0 ? mA.correct / mA.attempts : 0;
-    const pctB = mB?.attempts > 0 ? mB.correct / mB.attempts : 0;
-    return pctA - pctB;
+    const progressA = elementMasteryProgress(mastery.elements?.[a[0]]);
+    const progressB = elementMasteryProgress(mastery.elements?.[b[0]]);
+    return progressA.accuracy - progressB.accuracy;
   });
 }
 
