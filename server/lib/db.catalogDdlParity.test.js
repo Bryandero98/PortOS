@@ -49,10 +49,13 @@ const CATALOG_TABLES = [
 
 const STACKER_NEWS_TABLES = [
   'stacker_news_accounts',
+  'stacker_news_credentials',
   'stacker_news_territories',
   'stacker_news_items',
+  'stacker_news_media',
   'stacker_news_analyses',
   'stacker_news_actions',
+  'stacker_news_action_events',
 ];
 
 // Strip line comments + collapse whitespace so column lists compare cleanly.

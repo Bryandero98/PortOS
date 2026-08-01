@@ -11,7 +11,9 @@ vi.mock('../services/stackerNews.js', () => ({
     apiKeyConfigured: true,
   })),
   createAction: vi.fn(),
+  executeApprovedAction: vi.fn(),
   listAccounts: vi.fn(async () => []),
+  stackerNewsCapabilities: { api: { reads: ['me'] } },
 }));
 
 import * as stackerNews from '../services/stackerNews.js';
@@ -54,5 +56,16 @@ describe('Stacker News routes', () => {
 
     expect(response.status).toBe(400);
     expect(stackerNews.createAction).not.toHaveBeenCalled();
+  });
+
+  it('executes only through the dedicated approved-action primitive', async () => {
+    stackerNews.executeApprovedAction.mockResolvedValue({
+      id: '00000000-0000-4000-8000-000000000010',
+      accountId: '00000000-0000-4000-8000-000000000001',
+      state: 'completed',
+    });
+    const response = await request(app).post('/api/stacker-news/actions/00000000-0000-4000-8000-000000000010/execute').send({});
+    expect(response.status).toBe(200);
+    expect(stackerNews.executeApprovedAction).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000010');
   });
 });

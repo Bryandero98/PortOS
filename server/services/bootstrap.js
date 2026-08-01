@@ -68,6 +68,7 @@ import { startImessageScheduler } from './imessageScheduler.js';
 import { startSignalScheduler } from './signalScheduler.js';
 import { startSpotifyScheduler } from './spotifyScheduler.js';
 import { startYoutubeScheduler } from './youtubeScheduler.js';
+import { reconcileStackerNewsSchedulers } from './stackerNewsScheduler.js';
 import { startBrainScheduler } from './brainScheduler.js';
 import { startActivityDigestScheduler } from './activityDigestScheduler.js';
 import { startTwinEnrichmentScheduler } from './twinEnrichmentScheduler.js';
@@ -761,7 +762,13 @@ export const runBootSequence = ({ io, httpServer, localHttpServer, httpsEnabled,
       const { dbReady, ensureSchema } = await gateOnDatabase();
       await runDbAndCatalogMigrations(dbReady, ensureSchema);
       // Skipped when not dbReady (escape hatch), matching the migrations above.
-      if (dbReady) await warmMandatoryStores();
+      if (dbReady) {
+        await warmMandatoryStores();
+        // OFF by default. This only arms timers for explicitly opted-in
+        // accounts after their tables exist; it does not perform an initial
+        // sync or local-LLM call.
+        await reconcileStackerNewsSchedulers();
+      }
     })
     .then(async () => {
       // One-time series cover-thumbnail backfill: derive `series.coverImage` (the

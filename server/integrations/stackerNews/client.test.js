@@ -14,6 +14,23 @@ describe('Stacker News GraphQL adapter', () => {
     await expect(executeStackerNewsOperation('me', {}, 'secret')).resolves.toEqual({ me: { name: 'example' } });
     expect(fetch.mock.calls[0][0]).toBe('https://stacker.news/api/graphql');
     expect(fetch.mock.calls[0][1].headers['x-api-key']).toBe('secret');
-    expect(stackerNewsOperations).toEqual(['me', 'territory']);
+    expect(stackerNewsOperations).toEqual(['me', 'sub', 'items', 'createDiscussion', 'createComment']);
+  });
+
+  it('sanitizes operation variables and never accepts a caller query or endpoint', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: { sub: { name: 'art' } } }), { status: 200 }));
+    vi.stubGlobal('fetch', fetch);
+    await executeStackerNewsOperation('sub', { name: 'art', query: 'mutation Evil', endpoint: 'https://example.com' }, 'secret');
+    const [url, options] = fetch.mock.calls[0];
+    expect(url).toBe('https://stacker.news/api/graphql');
+    expect(JSON.parse(options.body).variables).toEqual({ name: 'art' });
+    expect(options.body).not.toContain('mutation Evil');
+  });
+
+  it('does not retry writes that could duplicate a post', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ errors: [{ message: 'busy' }] }), { status: 503 }));
+    vi.stubGlobal('fetch', fetch);
+    await expect(executeStackerNewsOperation('createComment', { parentId: '42', body: 'hello' }, 'secret')).rejects.toThrow('busy');
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 });

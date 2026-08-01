@@ -91,4 +91,4 @@
 
 ## Stacker News stewardship
 
-- **[issue-3302] Safe Stacker News account foundations** — Add protected multi-account and territory setup, untrusted-content screening, constrained API connection checks, and a review-gated action ledger in Comms.
+- **[issue-3302] Safe Stacker News community stewardship** — Add independent account rules and schedules, ownership-aware territory monitoring, constrained GraphQL reads and reviewed publishing, local text/vision analysis with safe image normalization, fixed-origin identity-verified browser handoffs, Review Hub approvals, and an auditable action ledger in Comms.

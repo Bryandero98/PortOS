@@ -15,6 +15,7 @@ const askPromote = { promoteLatestAssistantTurn: vi.fn() };
 // getGoals feeds the Ask row's inline goal picker (goalOptions); default to no
 // active goals so existing cases see the brain/task-only target list.
 const identity = { getGoals: vi.fn() };
+const stackerNews = { listPendingReviewActions: vi.fn() };
 
 vi.mock('./brain.js', () => brain);
 vi.mock('./askConversations.js', () => askConversations);
@@ -24,6 +25,7 @@ vi.mock('./proactiveAlerts.js', () => proactiveAlerts);
 vi.mock('./backup.js', () => backup);
 vi.mock('./identity.js', () => identity);
 vi.mock('./askPromote.js', () => askPromote);
+vi.mock('./stackerNews.js', () => stackerNews);
 
 const { buildQueue, resolveQueueItem, promoteAskQueueItem, __resetAlertsCache } = await import('./reviewQueue.js');
 
@@ -36,6 +38,7 @@ function resetEmpty() {
   proactiveAlerts.generateAlerts.mockResolvedValue({ alerts: [] });
   backup.getState.mockResolvedValue({ status: 'ok', error: null });
   identity.getGoals.mockResolvedValue({ goals: [] });
+  stackerNews.listPendingReviewActions.mockResolvedValue([]);
 }
 
 describe('reviewQueue.buildQueue', () => {
@@ -65,6 +68,16 @@ describe('reviewQueue.buildQueue', () => {
       title: 'Inbox item needs classification',
       summary: 'classify me',
       drillTo: '/brain/inbox'
+    });
+  });
+
+  it('surfaces pending Stacker News approvals with an account-specific drill-down', async () => {
+    stackerNews.listPendingReviewActions.mockResolvedValue([{ id: 's1', accountId: 'a1', accountLabel: 'Example account', kind: 'publish_comment', payload: { body: 'Thoughtful reply' }, createdAt: '2026-06-03T10:00:00.000Z' }]);
+    const queue = await buildQueue();
+    expect(queue.items.find((item) => item.source === 'stacker')).toMatchObject({
+      id: 'stacker:s1',
+      drillTo: '/stacker-news/a1/review',
+      sourceLabel: 'Stacker News approvals',
     });
   });
 

@@ -31,6 +31,7 @@ import * as messageDrafts from './messageDrafts.js';
 import * as proactiveAlerts from './proactiveAlerts.js';
 import * as backup from './backup.js';
 import * as identity from './identity.js';
+import * as stackerNews from './stackerNews.js';
 import { promoteLatestAssistantTurn } from './askPromote.js';
 import { ServerError } from '../lib/errorHandler.js';
 
@@ -236,6 +237,25 @@ const PRODUCERS = [
         ...(Object.keys(meta).length ? { meta } : {})
       };
     }
+  },
+  {
+    source: 'stacker',
+    label: 'Stacker News approvals',
+    drillTo: '/stacker-news',
+    async gather() {
+      return stackerNews.listPendingReviewActions({ limit: PER_SOURCE_LIMIT * 2 });
+    },
+    map(action) {
+      return {
+        id: `stacker:${action.id}`,
+        title: `${action.kind.replaceAll('_', ' ')} awaiting review`,
+        summary: action.itemTitle || action.payload?.title || action.payload?.body?.slice(0, 200) || `Account: ${action.accountLabel}`,
+        timestamp: action.createdAt || null,
+        severity: 'normal',
+        drillTo: `/stacker-news/${action.accountId}/review`,
+        meta: { account: action.accountLabel },
+      };
+    },
   },
   {
     source: 'health',
