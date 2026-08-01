@@ -13,6 +13,7 @@ const TRACKED = [
   'server/services/sprites/atlasGrid.test.js',
   'server/services/sprites/atlasLayout.test.js',
   'client/src/a11yConventions.test.js',
+  'client/src/hooks/mountedRefConventions.test.js',
   'client/src/components/catalog/CatalogCard.jsx',
   'client/src/components/catalog/CatalogCard.test.jsx',
   'client/src/components/sprites/WalkWorkflow.test.jsx',
@@ -117,6 +118,7 @@ describe('CI test impact planner', () => {
     expect(plan.client.mode).toBe('related');
     expect(plan.client.files).toContain('client/src/lib/index.test.js');
     expect(plan.client.files).toContain('client/src/a11yConventions.test.js');
+    expect(plan.client.files).toContain('client/src/hooks/mountedRefConventions.test.js');
     expect(plan.lint).toEqual({
       mode: 'files',
       files: [
@@ -125,6 +127,16 @@ describe('CI test impact planner', () => {
       ],
     });
     expect(plan.build).toBe(true);
+  });
+
+  it('selects the mounted-ref guard for a plain-.js client change', () => {
+    // The a11y guard only triggers on `.jsx`, but the StrictMode mounted-ref bug
+    // reached 94 call sites through a `.js` hook — so this guard must be selected
+    // by a change that touches no `.jsx` at all.
+    const plan = buildCiTestPlan(['client/src/hooks/useAsyncAction.js'], { trackedFiles: TRACKED });
+
+    expect(plan.client.files).toContain('client/src/hooks/mountedRefConventions.test.js');
+    expect(plan.client.files).not.toContain('client/src/a11yConventions.test.js');
   });
 
   it('runs the DB suite when a database-backed adapter changes', () => {

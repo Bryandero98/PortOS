@@ -137,6 +137,14 @@ const structuralTestsFor = (changedFiles, trackedSet) => {
   if (changedFiles.some((path) => /^client\/src\/.*\.jsx$/.test(path))) {
     add('client/src/a11yConventions.test.js');
   }
+  // Both `.js` and `.jsx`: the StrictMode mounted-ref bug this guards against
+  // reached its widest blast radius through a plain-`.js` hook (`useAsyncAction`),
+  // so a `.jsx`-only trigger would miss the case that matters most. Nothing else
+  // selects this file — it has no source sibling and imports no app module, so
+  // without this entry it only ever runs on a full suite.
+  if (changedFiles.some((path) => /^client\/src\/.*\.jsx?$/.test(path))) {
+    add('client/src/hooks/mountedRefConventions.test.js');
+  }
 
   return selected;
 };

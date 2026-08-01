@@ -16,35 +16,53 @@
  * stuck on "Loading generators…" forever, and every `useAsyncAction` button stuck
  * in its disabled/spinner state after one click (#3264).
  *
- * `hooks/useMounted.js` is the fix and the only sanctioned form: it assigns `true`
- * in the effect setup body, so the StrictMode remount re-arms the guard.
+ * `hooks/useMounted.js` is the fix, and the sanctioned form for new code. (A dozen
+ * older sites still inline the same body correctly — they DO set `true` on setup,
+ * so they are safe and this guard passes them; converting them is follow-up
+ * cleanup, not a correctness fix.)
  *
- * The rule below is deliberately shape-based rather than name-based — a ref called
- * `editorMountedRef` (or anything else) carries the identical bug, and one of the
- * sites this guard was written for was named exactly that. Scoped to git-tracked
- * sources under `client/src` per the repo-hygiene convention in
- * `client/src/a11yConventions.test.js`, so an untracked scratch file can't fail it.
+ * The rule is deliberately shape-based rather than name-based — a ref called
+ * `editorMountedRef` carries the identical bug, and one of the sites this guard
+ * was written for was named exactly that.
+ *
+ * ## What this guard CANNOT see
+ *
+ * It is a source grep, not a scope-aware AST pass, so these semantically identical
+ * shapes slip through. They are listed so the next person extending it knows where
+ * the floor is rather than trusting a green run too far:
+ *
+ *   - `let`/`var` declarations (the pattern hardcodes `const`).
+ *   - A non-literal seed: `const INIT = true; const r = useRef(INIT)`.
+ *   - Two components in ONE file where A is correct and B is broken — the scan is
+ *     file-scoped, so A's `= true` satisfies B. Live risk: three separate
+ *     `mountedRef`s coexist in `components/meatspace/post/PostCognitiveDrillRunner.jsx`.
+ *   - A ref created in one file and lowered in another (a hook returning its ref to
+ *     a caller that writes `ref.current = false`).
+ *   - Aliasing (`const g = mountedRef; g.current = false`), computed access
+ *     (`ref['current']`), or assignment funneled through a setter function.
+ *   - An assignment that only appears inside a comment (no comment stripping).
+ *
+ * Tightening any of these means moving to an AST pass; the shapes above are all
+ * unusual enough in this codebase that the grep earns its keep as-is.
  */
 
 import { describe, it, expect } from 'vitest';
-import { execSync } from 'child_process';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { trackedSourceFiles } from '../test/trackedFiles.js';
 
 const CLIENT_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-
-function trackedSourceFiles() {
-  const out = execSync('git ls-files src', { cwd: CLIENT_ROOT, encoding: 'utf8' });
-  return out.trim().split('\n').filter((f) => /\.jsx?$/.test(f) && !f.includes('.test.'));
-}
 
 // `const <name> = useRef(true)` — the seed value that marks a mounted-style guard.
 // A ref seeded `useRef(false)` and raised to `true` on mount is a different (and
 // correct) pattern, so it is intentionally out of scope.
 const TRUE_SEEDED_REF = /const\s+([A-Za-z_$][\w$]*)\s*=\s*useRef\(\s*true\s*\)/g;
 
-const assignsRe = (name, value) => new RegExp(`\\b${name}\\.current\\s*=\\s*${value}\\b`);
+// `=` and `||=` both count as re-arming. Matching only `=` would report a ref
+// re-armed with `ref.current ||= true` as broken — a false positive that would
+// push someone to "fix" already-correct code.
+const assignsRe = (name, value) => new RegExp(`\\b${name}\\.current\\s*(?:\\|\\|)?=\\s*${value}\\b`);
 
 /** Refs in `src` that are lowered to false but never re-raised to true. */
 function findOneWayRefs(src) {
@@ -60,8 +78,13 @@ function findOneWayRefs(src) {
 
 describe('mounted-guard refs re-arm on mount (StrictMode)', () => {
   it('has no ref that is only ever set to false', () => {
+    const files = trackedSourceFiles(CLIENT_ROOT);
+    // A broken `git ls-files` (wrong cwd, detached checkout) would otherwise make
+    // this guard pass by scanning nothing at all.
+    expect(files.length).toBeGreaterThan(100);
+
     const violations = [];
-    for (const file of trackedSourceFiles()) {
+    for (const file of files) {
       const src = readFileSync(join(CLIENT_ROOT, file), 'utf8');
       for (const name of findOneWayRefs(src)) violations.push(`${file}: ${name}`);
     }
@@ -80,7 +103,7 @@ describe('mounted-guard refs re-arm on mount (StrictMode)', () => {
 
   // Guards the guard: if the detector stops recognizing the broken shape, the test
   // above goes vacuously green and the bug class walks straight back in.
-  it('detects the broken shape and accepts the useMounted shape', () => {
+  it('detects the broken shape and accepts every correct re-arm', () => {
     const broken = `
       const mountedRef = useRef(true);
       useEffect(() => () => { mountedRef.current = false; }, []);
@@ -96,14 +119,21 @@ describe('mounted-guard refs re-arm on mount (StrictMode)', () => {
         return () => { mountedRef.current = false; };
       }, []);
     `;
+    // `||=` re-arms just as well as `=`; flagging it would be a false positive.
+    const fixedLogicalAssign = `
+      const mountedRef = useRef(true);
+      useEffect(() => {
+        mountedRef.current ||= true;
+        return () => { mountedRef.current = false; };
+      }, []);
+    `;
+    // A ref that is never lowered has nothing to re-arm.
+    const neverLowered = 'const readyRef = useRef(true);';
+
     expect(findOneWayRefs(broken)).toEqual(['mountedRef']);
     expect(findOneWayRefs(brokenRenamed)).toEqual(['editorMountedRef']);
     expect(findOneWayRefs(fixed)).toEqual([]);
-  });
-
-  it('scans a non-empty set of tracked sources', () => {
-    // A broken `git ls-files` (wrong cwd, detached checkout) would otherwise make
-    // the whole guard pass by scanning nothing.
-    expect(trackedSourceFiles().length).toBeGreaterThan(100);
+    expect(findOneWayRefs(fixedLogicalAssign)).toEqual([]);
+    expect(findOneWayRefs(neverLowered)).toEqual([]);
   });
 });

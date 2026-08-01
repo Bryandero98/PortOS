@@ -261,7 +261,7 @@ export default function SyncDetailDrawer({ kind, recordId, onClose }) {
 
   // Drop async results that resolve after the drawer unmounts (fast route
   // change / close while a fetch is in flight) to avoid setState-on-unmounted
-  // warnings. Never reset to true — handles dev-mode double-mount cleanly.
+  // warnings.
   const mountedRef = useMounted();
   // Generation counter so only the LATEST in-flight fetch commits state — a
   // rapid recordId change (or switch to empty) bumps this, and an older fetch

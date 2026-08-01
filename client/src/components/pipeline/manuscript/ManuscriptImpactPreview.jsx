@@ -50,7 +50,7 @@ export default function ManuscriptImpactPreview({ open, onClose, seriesId, secti
 
   // The accept-all pass awaits one network round-trip per note; if the user
   // closes the preview mid-batch, late callbacks must not fire into a torn-down
-  // parent. Never reset to true (handles dev-mode double-mount cleanly).
+  // parent.
   const mountedRef = useMounted();
 
   const changed = useMemo(() => {

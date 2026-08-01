@@ -471,9 +471,7 @@ export default function TracksManager() {
                 </div>
                 {!persisted ? (
                   <p className="text-xs text-gray-500">
-                    {genMode === 'chiptune'
-                      ? 'Save the track first, then generate a chiptune score.'
-                      : 'Save the track first, then generate with an audio model.'}
+                    Save the track first, then generate {genMode === 'chiptune' ? 'a chiptune score' : 'with an audio model'}.
                   </p>
                 ) : genMode === 'chiptune' ? (
                   <ChiptunePanel
@@ -581,7 +579,9 @@ export default function TracksManager() {
                   ) : null}
                 </div>
               ) : (
-                <p className="text-xs text-gray-500">Save the track first to generate, upload, or attach audio.</p>
+                /* Generation has its own hint under the mode toggle above
+                   (#3264), so this covers only what the renders block offers. */
+                <p className="text-xs text-gray-500">Save the track first to upload or attach audio.</p>
               )}
 
               {/* MIDI piano-roll (#2477) — read through from the linked Music

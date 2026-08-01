@@ -24,7 +24,7 @@ export function useCityPlayback() {
   const [error, setError] = useState(false);
 
   // Guards a deferred/interval callback against firing after unmount (CLAUDE.md
-  // deferred-work rule). Never reset to true — handles dev double-mount cleanly.
+  // deferred-work rule).
   const mountedRef = useMounted();
 
   const enter = useCallback(async () => {

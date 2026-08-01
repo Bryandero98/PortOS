@@ -107,6 +107,10 @@ describe('<TracksManager> generator mode toggle', () => {
     expect(screen.getByText(/Save the track first, then generate with an audio model/i)).toBeInTheDocument();
     expect(screen.queryByTestId('gen-panel')).toBeNull();
     expect(screen.queryByTestId('chiptune-panel')).toBeNull();
+    // The renders block's own hint no longer claims to cover generation, so an
+    // unsaved track doesn't show two near-identical "save first" sentences.
+    expect(screen.getByText(/Save the track first to upload or attach audio/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Save the track first to generate, upload/i)).toBeNull();
   });
 
   it('switches mode before save and names the selected mode in the hint', async () => {
@@ -125,13 +129,7 @@ describe('<TracksManager> generator mode toggle', () => {
     const created = { id: 'track-new', title: 'Fresh Cut', renders: [] };
     createTrack.mockResolvedValue(created);
 
-    render(
-      <MemoryRouter initialEntries={['/music/tracks/new']}>
-        <Routes>
-          <Route path="/music/tracks/:id" element={<TracksManager />} />
-        </Routes>
-      </MemoryRouter>,
-    );
+    renderAt('new');
     await screen.findByRole('group', { name: /generation mode/i });
 
     fireEvent.click(modeButton('Chiptune score'));

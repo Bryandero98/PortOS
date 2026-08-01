@@ -25,8 +25,7 @@ export default function CheckpointPicker({ run, onPromoted }) {
   const [loading, setLoading] = useState(false);
   const [promotingStep, setPromotingStep] = useState(null);
   // Guards the background preview-poll setTimeout chain from firing after the
-  // component unmounts (deferred-work-respects-unmount rule). Not reset to true
-  // so dev-mode double-mount can't re-arm a stale chain.
+  // component unmounts (deferred-work-respects-unmount rule).
   const mountedRef = useMounted();
 
   const load = useCallback(() => {
