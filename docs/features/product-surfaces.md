@@ -36,7 +36,7 @@ PortOS is a local-first operating system for a developer's machines, work, and p
 
 ## Connect and operate PortOS
 
-- **Comms, OpenClaw, iMessage, Telegram, and social agents** — Receive, prepare, route, and supervise conversations with people and external agents. See [OpenClaw Operator Chat](./openclaw-operator-chat.md).
+- **Comms, OpenClaw, iMessage, Stacker News, Telegram, and social agents** — Receive, prepare, route, and supervise conversations with people and external agents. Stacker News keeps account credentials encrypted, treats community input as untrusted, and requires review before external actions. See [Stacker News stewardship](./stacker-news.md) and [OpenClaw Operator Chat](./openclaw-operator-chat.md).
 - **Voice Mode** — Use local speech-to-text, text-to-speech, and model-backed navigation or assistance. See [Voice Mode](./voice.md).
 - **Instances, sharing, backups, and security** — Coordinate peer installations, synchronize selected records, protect data, and run on a private network. See [Backup & Restore](../BACKUP.md), [Storage](../STORAGE.md), [Ports](../PORTS.md), and the [security audit](../SECURITY_AUDIT.md).
 

@@ -79,6 +79,7 @@ toasts on throw). **Custom catch ⇒ `silent: true`** — otherwise toasts fire 
 | `apiTribe.js` | Tribe people (relationship rings + contacts). |
 | `apiCalendar.js` | Calendar events. |
 | `apiMessages.js` | Messages / notifications + iMessage manager (#2413). |
+| `apiStackerNews.js` | Stacker News account, territory, review-action, and safe analysis APIs. |
 | `apiContacts.js` | macOS Contacts sync + identity resolve + Tribe enrich (#2415). |
 | `apiSignal.js` | Signal Desktop ingestion status / setup-check / sync. |
 | `apiSpotify.js` | Spotify OAuth + listening-history sync. |

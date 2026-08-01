@@ -88,3 +88,7 @@
 ## Music
 
 - **[issue-3264] The track generator picker is now visible before you save a new track.** Clicking New Track showed nothing at all where the generators belong, so there was no way to tell the Audio model and Chiptune score generators existed until after the first save. The picker now appears right away with a note that saving is required to generate, and a mode chosen before saving stays selected once the track is created.
+
+## Stacker News stewardship
+
+- **[issue-3302] Safe Stacker News account foundations** — Add protected multi-account and territory setup, untrusted-content screening, constrained API connection checks, and a review-gated action ledger in Comms.

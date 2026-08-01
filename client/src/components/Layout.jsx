@@ -213,6 +213,7 @@ const navItems = [
       { to: '/messages/drafts', label: 'Drafts', icon: FilePen },
       { to: '/messages/imessage', label: 'iMessage', icon: MessageSquare },
       { to: '/messages/inbox', label: 'Inbox', icon: Inbox },
+      { to: '/stacker-news', label: 'Stacker News', icon: Newspaper },
       { to: '/messages/sync', label: 'Sync', icon: RefreshCw },
     ],
   },
