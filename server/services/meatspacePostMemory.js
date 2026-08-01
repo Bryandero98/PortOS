@@ -45,6 +45,8 @@ export const MASTERY_WINDOW = 10;
 // Mastery gate: at least this many attempts (in the window) at ≥ this accuracy.
 export const MASTERY_MIN_ATTEMPTS = 3;
 export const MASTERY_TARGET_ACCURACY = 0.8;
+export const SPOT_CHECK_MIN_DAYS = 30;
+export const SPOT_CHECK_MAX_DAYS = 90;
 
 /** Push a per-attempt correctness flag onto a mastery stat's rolling window. */
 function pushRecent(stat, correct) {
@@ -75,8 +77,27 @@ export function windowedAccuracy(stat) {
 
 /** True when a mastery stat clears the windowed gate (≥3 recent attempts, ≥0.8). */
 export function isStatMastered(stat) {
+  if (typeof stat?.masteredAt === 'string') return true;
   const { attempts, accuracy } = windowedAccuracy(stat);
   return attempts >= MASTERY_MIN_ATTEMPTS && accuracy >= MASTERY_TARGET_ACCURACY;
+}
+
+/** Freeze a fact once it has cleared the mastery gate. */
+function preserveStatMastery(stat, nowIso, source = 'verified') {
+  if (!stat.masteredAt && isStatMastered(stat)) {
+    stat.masteredAt = nowIso;
+    stat.masterySource = source;
+  }
+  return stat;
+}
+
+/** Randomized one-time retention audit, 30–90 days after mastery. */
+export function scheduleSpotCheckAt(now = new Date(), random = Math.random) {
+  const sample = random();
+  const clamped = Math.max(0, Math.min(0.999999, Number.isFinite(sample) ? sample : 0));
+  const days = SPOT_CHECK_MIN_DAYS
+    + Math.floor(clamped * (SPOT_CHECK_MAX_DAYS - SPOT_CHECK_MIN_DAYS + 1));
+  return new Date(now.getTime() + days * DAY_MS).toISOString();
 }
 
 const MIN_EASE = 1.3;
@@ -169,8 +190,105 @@ export function mergeScheduleAdvance(prev, advanced, now = new Date()) {
   return advanced;
 }
 
-/** True when an item is due for review (no schedule / invalid date = due). */
+function ensureMastery(item) {
+  if (!item.mastery || typeof item.mastery !== 'object') {
+    item.mastery = { overallPct: 0, chunks: {}, elements: {}, retention: { status: 'learning' } };
+  }
+  if (!item.mastery.chunks || typeof item.mastery.chunks !== 'object') item.mastery.chunks = {};
+  if (!item.mastery.elements || typeof item.mastery.elements !== 'object') item.mastery.elements = {};
+  if (!item.mastery.retention || typeof item.mastery.retention !== 'object') {
+    item.mastery.retention = { status: 'learning' };
+  }
+  return item.mastery;
+}
+
+function targetMasteryEntries(item) {
+  ensureMastery(item);
+  if (item.id === 'elements-song' && item.content?.elementMap) {
+    return Object.keys(item.content.elementMap).map(key => [key, item.mastery.elements, item.mastery.elements[key]]);
+  }
+  return (item.content?.chunks || []).map(chunk => [chunk.id, item.mastery.chunks, item.mastery.chunks[chunk.id]]);
+}
+
+function isItemFullyMastered(item) {
+  const targets = targetMasteryEntries(item);
+  return targets.length > 0 && targets.every(([, , stat]) => isStatMastered(stat));
+}
+
+function setAuditSchedule(item, spotCheckAt, now = new Date()) {
+  ensureSchedule(item);
+  item.schedule = {
+    ...item.schedule,
+    intervalDays: Math.max(0, Math.round((Date.parse(spotCheckAt) - now.getTime()) / DAY_MS)),
+    nextReview: spotCheckAt,
+  };
+}
+
+function promoteCompletedMastery(item, now, random = Math.random) {
+  const mastery = ensureMastery(item);
+  const retention = mastery.retention;
+  if (!isItemFullyMastered(item) || ['attested', 'mastered'].includes(retention.status)) return false;
+  const nowIso = now.toISOString();
+  const spotCheckAt = scheduleSpotCheckAt(now, random);
+  mastery.retention = {
+    status: 'mastered',
+    masteredAt: nowIso,
+    spotCheckAt,
+    spotCheckCompletedAt: null,
+    lapsedAt: null,
+  };
+  setAuditSchedule(item, spotCheckAt, now);
+  return true;
+}
+
+export function isMemorySpotCheckDue(item, now = new Date()) {
+  const retention = item?.mastery?.retention;
+  if (!['attested', 'mastered'].includes(retention?.status) || retention.spotCheckCompletedAt) return false;
+  const dueAt = Date.parse(retention.spotCheckAt ?? '');
+  return Number.isFinite(dueAt) && dueAt <= now.getTime();
+}
+
+function completeSpotCheck(item, now) {
+  const retention = ensureMastery(item).retention;
+  const nowIso = now.toISOString();
+  item.mastery.retention = {
+    ...retention,
+    status: 'mastered',
+    masteredAt: retention.masteredAt || nowIso,
+    spotCheckCompletedAt: nowIso,
+    lapsedAt: null,
+  };
+  for (const [, , stat] of targetMasteryEntries(item)) {
+    if (!stat) continue;
+    stat.masteredAt ||= nowIso;
+    stat.masterySource = 'verified';
+  }
+}
+
+function resumeTrainingAfterFailedSpotCheck(item, now) {
+  const nowIso = now.toISOString();
+  for (const [, , stat] of targetMasteryEntries(item)) {
+    if (!stat) continue;
+    delete stat.masteredAt;
+    delete stat.masterySource;
+    stat.recent = [];
+  }
+  item.mastery.retention = {
+    status: 'lapsed',
+    masteredAt: null,
+    spotCheckAt: null,
+    spotCheckCompletedAt: null,
+    lapsedAt: nowIso,
+  };
+  item.schedule = defaultSchedule(nowIso);
+}
+
+/** True when an item is due for routine learning or its one-time spot check. */
 export function isMemoryItemDue(item, now = new Date()) {
+  const retention = item?.mastery?.retention;
+  if (['attested', 'mastered'].includes(retention?.status)) {
+    return isMemorySpotCheckDue(item, now);
+  }
   const nr = item?.schedule?.nextReview;
   if (typeof nr !== 'string') return true;
   const t = Date.parse(nr);
@@ -294,7 +412,7 @@ const ELEMENTS_SONG = {
       Og: { name: "Oganesson", atomicNumber: 118 },
     }
   },
-  mastery: { overallPct: 0, chunks: {}, elements: {} },
+  mastery: { overallPct: 0, chunks: {}, elements: {}, retention: { status: 'learning' } },
   createdAt: '2026-03-08T00:00:00.000Z',
   updatedAt: '2026-03-08T00:00:00.000Z',
 };
@@ -323,7 +441,10 @@ async function loadMemoryItems() {
 
   // Backfill a schedule on any item that predates spaced-repetition (built-in
   // or legacy custom items) so every item is schedulable + surfaces as due.
-  for (const item of items) ensureSchedule(item);
+  for (const item of items) {
+    ensureSchedule(item);
+    ensureMastery(item);
+  }
 
   return items;
 }
@@ -382,7 +503,7 @@ export async function createMemoryItem(data) {
       lines: contentLines,
       chunks: remappedChunks,
     },
-    mastery: { overallPct: 0, chunks: {}, elements: {} },
+    mastery: { overallPct: 0, chunks: {}, elements: {}, retention: { status: 'learning' } },
     // Honor a client-provided schedule (e.g. importing an item with progress),
     // else stamp a fresh "due now" default.
     schedule: data.schedule || defaultSchedule(now),
@@ -416,6 +537,7 @@ export async function updateMemoryItem(id, updates) {
   if (updates.title) item.title = updates.title;
   if (updates.type) item.type = updates.type;
   if (updates.schedule) item.schedule = updates.schedule;
+  if (updates.mastery) item.mastery = updates.mastery;
   if (updates.lines) {
     item.content.lines = updates.lines.map(l => ({
       text: l.text || l,
@@ -429,6 +551,43 @@ export async function updateMemoryItem(id, updates) {
   await saveMemoryItems(items);
   console.log(`🧠 Memory item updated: "${item.title}"`);
   return item;
+}
+
+/**
+ * User attestation is trusted provisionally: remove the item from routine
+ * training now, then schedule one randomized future audit. Passing that audit
+ * makes the attestation verified; failing it resumes ordinary learning.
+ */
+export async function attestMemoryItemMastery(id, now = new Date(), random = Math.random) {
+  const items = await loadMemoryItems();
+  const item = items.find(i => i.id === id);
+  if (!item) return null;
+
+  const targets = targetMasteryEntries(item);
+  if (!targets.length) return null;
+  const nowIso = now.toISOString();
+  for (const [key, bucket, existing] of targets) {
+    const stat = existing || { correct: 0, attempts: 0 };
+    stat.masteredAt = nowIso;
+    stat.masterySource = 'attested';
+    bucket[key] = stat;
+  }
+
+  const spotCheckAt = scheduleSpotCheckAt(now, random);
+  item.mastery.retention = {
+    status: 'attested',
+    attestedAt: nowIso,
+    masteredAt: null,
+    spotCheckAt,
+    spotCheckCompletedAt: null,
+    lapsedAt: null,
+  };
+  item.mastery.overallPct = computeOverallMastery(item);
+  setAuditSchedule(item, spotCheckAt, now);
+  item.updatedAt = nowIso;
+  await saveMemoryItems(items);
+  console.log(`🧠 Memory mastery attested: "${item.title}" → one future spot check scheduled`);
+  return { mastery: item.mastery, schedule: item.schedule };
 }
 
 export async function deleteMemoryItem(id) {
@@ -446,6 +605,18 @@ export async function deleteMemoryItem(id) {
 // PRACTICE & MASTERY
 // =============================================================================
 
+function recordChunkResults(item, chunkId, results, nowIso) {
+  if (!item.mastery.chunks[chunkId]) {
+    item.mastery.chunks[chunkId] = { correct: 0, attempts: 0, lastPracticed: null };
+  }
+  const chunk = item.mastery.chunks[chunkId];
+  chunk.attempts += results.length;
+  chunk.correct += results.filter(r => r.correct).length;
+  chunk.lastPracticed = nowIso;
+  for (const result of results) pushRecent(chunk, result.correct);
+  preserveStatMastery(chunk, nowIso);
+}
+
 export async function submitPractice(id, practiceData) {
   const items = await loadMemoryItems();
   const item = items.find(i => i.id === id);
@@ -462,18 +633,27 @@ export async function submitPractice(id, practiceData) {
   // keeps the exact instant, matching submitTrainingEntry's shape. Derive the day
   // from the SAME `nowDate` so a midnight boundary can't split date and timestamp.
   const todayLocal = await userLocalToday(nowDate);
+  const correctCount = results.filter(r => r.correct).length;
+  const ratio = results.length ? correctCount / results.length : 0;
+  const spotCheckDue = isMemorySpotCheckDue(item, nowDate);
+  if (spotCheckDue && ratio < MASTERY_TARGET_ACCURACY) {
+    resumeTrainingAfterFailedSpotCheck(item, nowDate);
+  }
 
   // Update chunk mastery
   if (chunkId) {
-    if (!item.mastery.chunks[chunkId]) {
-      item.mastery.chunks[chunkId] = { correct: 0, attempts: 0, lastPracticed: null };
+    recordChunkResults(item, chunkId, results, now);
+  } else {
+    const resultsByChunk = new Map();
+    for (const result of results) {
+      if (!result.chunkId) continue;
+      const bucket = resultsByChunk.get(result.chunkId) || [];
+      bucket.push(result);
+      resultsByChunk.set(result.chunkId, bucket);
     }
-    const chunk = item.mastery.chunks[chunkId];
-    chunk.attempts += results.length;
-    chunk.correct += results.filter(r => r.correct).length;
-    chunk.lastPracticed = now;
-    // Rolling window for decay-aware mastery (issue #2096) — one flag per result.
-    for (const r of results) pushRecent(chunk, r.correct);
+    for (const [resultChunkId, chunkResults] of resultsByChunk) {
+      recordChunkResults(item, resultChunkId, chunkResults, now);
+    }
   }
 
   // Update element-level mastery (for elements song)
@@ -487,6 +667,7 @@ export async function submitPractice(id, practiceData) {
         el.attempts++;
         if (r.correct) el.correct++;
         pushRecent(el, r.correct);
+        preserveStatMastery(el, now);
       }
     }
   }
@@ -500,10 +681,14 @@ export async function submitPractice(id, practiceData) {
   // staying due today. `mergeScheduleAdvance` gates interval growth to once per
   // day so the per-chunk submits of a spaced session don't compound the interval,
   // while a miss anywhere still resets the item to due-now.
-  const correctCount = results.filter(r => r.correct).length;
-  const ratio = results.length ? correctCount / results.length : 0;
-  const advanced = advanceSchedule(item.schedule, ratio, new Date(now));
-  item.schedule = mergeScheduleAdvance(item.schedule, advanced, new Date(now));
+  if (spotCheckDue && ratio >= MASTERY_TARGET_ACCURACY) {
+    completeSpotCheck(item, nowDate);
+  } else if (!spotCheckDue && promoteCompletedMastery(item, nowDate)) {
+    item.mastery.overallPct = computeOverallMastery(item);
+  } else if (!['attested', 'mastered'].includes(item.mastery.retention?.status)) {
+    const advanced = advanceSchedule(item.schedule, ratio, nowDate);
+    item.schedule = mergeScheduleAdvance(item.schedule, advanced, nowDate);
+  }
 
   item.updatedAt = now;
   await saveMemoryItems(items);
@@ -558,6 +743,16 @@ export async function advanceScheduleFromSession(memoryItemId, ratio, now = new 
 // single core guarantees the consolidated one-pass path produces byte-identical
 // schedule results to the legacy per-task path.
 function applyScheduleAdvanceToItem(item, ratio, now) {
+  if (isMemorySpotCheckDue(item, now)) {
+    if (ratio >= MASTERY_TARGET_ACCURACY) completeSpotCheck(item, now);
+    else resumeTrainingAfterFailedSpotCheck(item, now);
+    item.updatedAt = now.toISOString();
+    return item.schedule;
+  }
+  if (['attested', 'mastered'].includes(item.mastery?.retention?.status)) {
+    item.updatedAt = now.toISOString();
+    return item.schedule;
+  }
   const advanced = advanceSchedule(item.schedule, ratio, now);
   item.schedule = mergeScheduleAdvance(item.schedule, advanced, now);
   item.updatedAt = now.toISOString();
@@ -569,6 +764,12 @@ function applyScheduleAdvanceToItem(item, ratio, now) {
 // applyScheduleAdvanceToItem above.
 function applyMasteryMergeToItem(item, questions, now) {
   const nowIso = now.toISOString();
+  const correct = questions.filter(q => q.correct).length;
+  const ratio = questions.length ? correct / questions.length : 0;
+  const spotCheckDue = isMemorySpotCheckDue(item, now);
+  if (spotCheckDue && ratio < MASTERY_TARGET_ACCURACY) {
+    resumeTrainingAfterFailedSpotCheck(item, now);
+  }
   for (const q of questions) {
     if (q.chunkId) {
       if (!item.mastery.chunks[q.chunkId]) {
@@ -579,6 +780,7 @@ function applyMasteryMergeToItem(item, questions, now) {
       if (q.correct) chunk.correct += 1;
       chunk.lastPracticed = nowIso;
       pushRecent(chunk, q.correct);
+      preserveStatMastery(chunk, nowIso);
     }
     if (q.element) {
       if (!item.mastery.elements[q.element]) {
@@ -588,10 +790,16 @@ function applyMasteryMergeToItem(item, questions, now) {
       el.attempts += 1;
       if (q.correct) el.correct += 1;
       pushRecent(el, q.correct);
+      preserveStatMastery(el, nowIso);
     }
   }
 
   item.mastery.overallPct = computeOverallMastery(item);
+  if (spotCheckDue && ratio >= MASTERY_TARGET_ACCURACY) {
+    completeSpotCheck(item, now);
+  } else if (!spotCheckDue && promoteCompletedMastery(item, now)) {
+    item.mastery.overallPct = computeOverallMastery(item);
+  }
   item.updatedAt = nowIso;
   return item.mastery;
 }
@@ -888,10 +1096,14 @@ export function computeOverallMastery(item) {
     return Math.round((masteredCount / totalElements) * 100);
   }
 
-  // For generic items: mastery is based on windowed chunk accuracy.
+  // For generic items: durable chunks remain at 100%; learning chunks continue
+  // to show their rolling-window accuracy.
   const chunks = Object.values(item.mastery.chunks);
   if (!chunks.length) return 0;
-  const avgAccuracy = chunks.reduce((sum, c) => sum + windowedAccuracy(c).accuracy, 0) / chunks.length;
+  const avgAccuracy = chunks.reduce(
+    (sum, c) => sum + (typeof c?.masteredAt === 'string' ? 1 : windowedAccuracy(c).accuracy),
+    0,
+  ) / chunks.length;
   return Math.round(avgAccuracy * 100);
 }
 

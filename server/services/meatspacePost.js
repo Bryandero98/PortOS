@@ -28,7 +28,7 @@ import {
   COGNITIVE_MASTERY_DEFAULTS,
 } from '../lib/postProgression.js';
 import { COGNITIVE_DRILL_TYPES, generateCognitiveDrill, scoreCognitiveDrill } from './meatspacePostCognitive.js';
-import { applySessionToMemoryItems, getMemoryItems, getDueMemoryItems, isStatMastered, MASTERY_TARGET_ACCURACY } from './meatspacePostMemory.js';
+import { applySessionToMemoryItems, getMemoryItems, getDueMemoryItems, MASTERY_TARGET_ACCURACY } from './meatspacePostMemory.js';
 import { applySessionToReviewSchedule, getDueReviews, getRetentionReport } from './meatspacePostReview.js';
 import { getAllTrainingEntries } from './meatspacePostTraining.js';
 import { getMorseProgress, MAX_KOCH_LEVEL } from './meatspacePostMorse.js';
@@ -399,8 +399,9 @@ const MIN_REVIEW_COMPLETION = 0.75;
  * Current mastered-but-inactive skills eligible for re-verification tracking:
  *   - multiplication / Powers rungs strictly BELOW the resolved current level
  *     (you've moved past them, so they're no longer actively drilled),
- *   - cognitive rungs strictly below the current level, per laddered type,
- *   - memory chunks whose windowed mastery clears the gate.
+ *   - cognitive rungs strictly below the current level, per laddered type.
+ * Memory items own their durable-mastery + one-time spot-check lifecycle in
+ * meatspacePostMemory.js, so they are intentionally not duplicated here.
  * Returns opaque skill descriptors the review scheduler upserts + schedules.
  */
 export async function getMasteredSkills() {
@@ -449,25 +450,6 @@ export async function getMasteredSkills() {
           module: 'cognitive',
           level: rung.level,
           config: cognitiveLevelConfig(type, rung.level),
-        });
-      }
-    }
-  }
-
-  const memoryItems = await getMemoryItems();
-  for (const item of memoryItems) {
-    const chunkStats = item.mastery?.chunks || {};
-    for (const chunk of item.content?.chunks || []) {
-      const stat = chunkStats[chunk.id];
-      if (stat && isStatMastered(stat)) {
-        skills.push({
-          skillId: `memory:${item.id}:${chunk.id}`,
-          kind: 'memory',
-          label: `${item.title} — ${chunk.label || chunk.id}`,
-          drillType: 'memory-sequence',
-          module: 'memory',
-          memoryItemId: item.id,
-          chunkId: chunk.id,
         });
       }
     }

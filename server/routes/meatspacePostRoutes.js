@@ -17,6 +17,7 @@ import {
   memoryItemCreateSchema,
   memoryItemUpdateSchema,
   memoryPracticeSchema,
+  memoryMasteryAttestationSchema,
   memoryDrillRequestSchema,
   morseRoundSchema,
   morseLevelUpdateSchema,
@@ -431,6 +432,17 @@ router.post('/post/memory-items/:id/practice', asyncHandler(async (req, res) => 
   const data = validateRequest(memoryPracticeSchema, req.body);
   const result = await memoryService.submitPractice(req.params.id, data);
   if (!result) throw new ServerError('Memory item not found', { status: 404, code: 'NOT_FOUND' });
+  res.json(result);
+}));
+
+/**
+ * POST /api/meatspace/post/memory-items/:id/attest-mastery
+ * Provisionally accept user-attested mastery and schedule one future audit.
+ */
+router.post('/post/memory-items/:id/attest-mastery', asyncHandler(async (req, res) => {
+  validateRequest(memoryMasteryAttestationSchema, req.body);
+  const result = await memoryService.attestMemoryItemMastery(req.params.id);
+  if (!result) throw new ServerError('Memory item not found or has no practice targets', { status: 404, code: 'NOT_FOUND' });
   res.json(result);
 }));
 

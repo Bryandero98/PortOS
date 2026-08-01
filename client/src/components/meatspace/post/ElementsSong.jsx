@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { ChevronLeft, ChevronRight, BookOpen, Zap, Target, Check, X, SkipForward, Loader, Search, Eye, BarChart3, Gauge, Layers, RotateCw } from 'lucide-react';
-import { submitMemoryPractice, getMemoryMastery, getMemoryItem } from '../../../services/api';
+import { ChevronLeft, ChevronRight, BookOpen, Zap, Target, Check, X, SkipForward, Loader, Search, Eye, BarChart3, Gauge, Layers, RotateCw, ShieldCheck } from 'lucide-react';
+import { submitMemoryPractice, getMemoryMastery, getMemoryItem, attestMemoryMastery } from '../../../services/api';
 import { RapidReaderModal } from '../../RapidReader';
 import { clickableProps } from '../../../lib/a11yKeyboard';
 import PostCompletionActions from './PostCompletionActions';
@@ -83,6 +83,12 @@ export default function ElementsSong({ item: itemProp, onBack, loadItemOnMount, 
     else onExitMode();
   }
 
+  async function handleAttestMastery() {
+    const result = await attestMemoryMastery(item.id, { silent: true });
+    if (result?.mastery) setMastery(result.mastery);
+    return result;
+  }
+
   if (!item) {
     return (
       <div className="flex flex-col items-center justify-center h-64 gap-3">
@@ -97,7 +103,7 @@ export default function ElementsSong({ item: itemProp, onBack, loadItemOnMount, 
   if (mode === 'element-flash') return <ElementFlashMode item={item} mastery={mastery} onBack={onExitMode} onComplete={handlePracticeComplete} />;
   if (mode === 'fill-blank') return <FillBlankMode item={item} onBack={onExitMode} onComplete={handlePracticeComplete} />;
 
-  return <ElementsSongMain item={item} mastery={mastery} onSelectMode={onSelectMode} onBack={onBack} />;
+  return <ElementsSongMain item={item} mastery={mastery} onSelectMode={onSelectMode} onBack={onBack} onAttestMastery={handleAttestMastery} />;
 }
 
 // Sum `{ attempts, correct }` mastery buckets into a single accuracy in [0,1].
@@ -106,7 +112,12 @@ export default function ElementsSong({ item: itemProp, onBack, loadItemOnMount, 
 // CLAUDE.md) — the caller routes those two to different modes.
 function bucketAccuracy(buckets) {
   const attempted = Object.values(buckets || {})
-    .map(elementMasteryProgress)
+    .map(stat => {
+      const progress = elementMasteryProgress(stat);
+      return progress.mastered && progress.attempts === 0
+        ? { ...progress, attempts: 1, correct: 1, accuracy: 1 }
+        : progress;
+    })
     .filter(progress => progress.attempts > 0);
   if (attempted.length === 0) return null;
   const attempts = attempted.reduce((sum, progress) => sum + progress.attempts, 0);
@@ -134,8 +145,8 @@ export function elementMasteryProgress(stat) {
     attempts,
     correct,
     hasRecent,
-    mastered: attempts >= ELEMENT_MASTERY_MIN_ATTEMPTS
-      && accuracy >= ELEMENT_MASTERY_TARGET_ACCURACY,
+    mastered: typeof stat?.masteredAt === 'string' || (attempts >= ELEMENT_MASTERY_MIN_ATTEMPTS
+      && accuracy >= ELEMENT_MASTERY_TARGET_ACCURACY),
   };
 }
 
@@ -149,6 +160,7 @@ export function elementMasteryProgress(stat) {
  *   - everything solid          → Element Flash as maintenance
  */
 export function recommendedElementsMode(mastery) {
+  if (mastery?.retention?.status === 'attested' || mastery?.retention?.status === 'mastered') return null;
   const elementAccuracy = bucketAccuracy(mastery?.elements);
   if (elementAccuracy === null) return 'element-study';
   if (elementAccuracy < 0.8) return 'element-flash';
@@ -157,7 +169,7 @@ export function recommendedElementsMode(mastery) {
   return 'element-flash';
 }
 
-function ElementsSongMain({ item, mastery, onSelectMode, onBack }) {
+function ElementsSongMain({ item, mastery, onSelectMode, onBack, onAttestMastery }) {
   const recommendedMode = recommendedElementsMode(mastery);
   const elementMap = useMemo(() => item.content?.elementMap ?? {}, [item]);
   const masteredElementCount = Object.keys(elementMap)
@@ -180,6 +192,19 @@ function ElementsSongMain({ item, mastery, onSelectMode, onBack }) {
   // Per-verse expand overrides ({ [chunkId]: bool }). Absent → falls back to
   // isHighlighted so selecting an element still auto-opens its verses.
   const [openVerses, setOpenVerses] = useState({});
+  const [attestConfirming, setAttestConfirming] = useState(false);
+  const [attesting, setAttesting] = useState(false);
+  const [attestError, setAttestError] = useState('');
+  const retention = mastery.retention || { status: 'learning' };
+
+  async function confirmAttestation() {
+    setAttesting(true);
+    setAttestError('');
+    const result = await onAttestMastery().catch(() => null);
+    setAttesting(false);
+    if (result) setAttestConfirming(false);
+    else setAttestError('Could not save mastery. Please try again.');
+  }
 
   const songText = useMemo(
     () => (item.content?.lines || []).map(l => l.text).join(' '),
@@ -231,8 +256,43 @@ function ElementsSongMain({ item, mastery, onSelectMode, onBack }) {
         <div className="text-left sm:text-right text-sm text-gray-500">
           <div>{masteredElementCount} / {Object.keys(elementMap).length} elements mastered</div>
           <div>{Object.keys(elementMap).length} elements in song</div>
-          <div className="text-xs text-gray-600">Mastery requires 3 recent checks at 80%+ accuracy</div>
+          <div className="text-xs text-gray-600">Mastery becomes durable after 3 checks at 80%+ accuracy</div>
         </div>
+      </div>
+
+      <div className="bg-port-card border border-port-border rounded-lg p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div className="flex items-start gap-3">
+          <ShieldCheck size={20} className={retention.status === 'lapsed' ? 'text-amber-400' : 'text-emerald-400'} />
+          <div>
+            <div className="text-white text-sm font-medium">
+              {retention.status === 'attested' && 'Mastery attested'}
+              {retention.status === 'mastered' && (retention.spotCheckCompletedAt ? 'Mastery verified permanently' : 'Mastery verified')}
+              {retention.status === 'lapsed' && 'Review resumed'}
+              {retention.status === 'learning' && 'Still learning'}
+            </div>
+            <div className="text-xs text-gray-500 mt-0.5">
+              {retention.status === 'attested' && 'Removed from routine practice; one surprise spot check will verify it.'}
+              {retention.status === 'mastered' && (retention.spotCheckCompletedAt ? 'No more time decay or scheduled reviews.' : 'One future spot check remains; ordinary misses will not erase mastery.')}
+              {retention.status === 'lapsed' && 'A spot check showed a weak area, so this item is back in the routine.'}
+              {retention.status === 'learning' && 'Already know every element? You can attest now and verify it once later.'}
+            </div>
+          </div>
+        </div>
+        {retention.status === 'learning' && (
+          attestConfirming ? (
+            <div className="flex items-center gap-2">
+              <button onClick={() => setAttestConfirming(false)} disabled={attesting} className="min-h-11 px-3 text-sm text-gray-400 hover:text-white">Cancel</button>
+              <button onClick={confirmAttestation} disabled={attesting} className="min-h-11 px-3 text-sm bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-lg">
+                {attesting ? 'Saving...' : 'Yes, I know these'}
+              </button>
+            </div>
+          ) : (
+            <button onClick={() => setAttestConfirming(true)} className="shrink-0 min-h-11 px-3 text-sm border border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10 rounded-lg">
+              I already know this
+            </button>
+          )
+        )}
+        {attestError && <div role="alert" className="text-xs text-port-error">{attestError}</div>}
       </div>
 
       {/* Practice Modes — above the periodic table so the page leads with what

@@ -10,11 +10,15 @@ import ElementsSong, { elementMasteryProgress, recommendedElementsMode } from '.
 // deck submits `mode: 'element-study'` with element-tagged results.
 
 const submitMemoryPractice = vi.fn(() => Promise.resolve({ mastery: { overallPct: 10, chunks: {}, elements: {} } }));
+const attestMemoryMastery = vi.fn(() => Promise.resolve({
+  mastery: { overallPct: 100, chunks: {}, elements: {}, retention: { status: 'attested', spotCheckAt: '2026-09-01T00:00:00.000Z' } },
+}));
 
 vi.mock('../../../services/api', () => ({
   submitMemoryPractice: (...args) => submitMemoryPractice(...args),
   getMemoryMastery: () => Promise.resolve(null),
   getMemoryItem: () => Promise.resolve(null),
+  attestMemoryMastery: (...args) => attestMemoryMastery(...args),
 }));
 
 // The RapidReader modal pulls in browser-only APIs; the study flow never opens
@@ -52,7 +56,10 @@ function RoutedElementsSong(props) {
   );
 }
 
-beforeEach(() => submitMemoryPractice.mockClear());
+beforeEach(() => {
+  submitMemoryPractice.mockClear();
+  attestMemoryMastery.mockClear();
+});
 
 describe('ElementsSong — Flash Cards study mode', () => {
   it('offers a Flash Cards study mode alongside the recall test', async () => {
@@ -168,12 +175,24 @@ describe('ElementsSong mastery display', () => {
     await settle();
 
     expect(screen.getByText('0 / 2 elements mastered')).toBeInTheDocument();
-    expect(screen.getByText('Mastery requires 3 recent checks at 80%+ accuracy')).toBeInTheDocument();
+    expect(screen.getByText('Mastery becomes durable after 3 checks at 80%+ accuracy')).toBeInTheDocument();
 
     fireEvent.mouseEnter(screen.getByText('H'));
     expect(screen.getAllByText('Learning')).toHaveLength(2); // legend + tooltip status
     expect(screen.getByText('100%')).toBeInTheDocument();
     expect(screen.getByText('(1/1 recent)')).toBeInTheDocument();
+  });
+
+  it('offers an explicit attestation and explains its one future spot check', async () => {
+    render(<ElementsSong item={item} mode={null} onSelectMode={() => {}} onExitMode={() => {}} onBack={() => {}} />);
+    await settle();
+    fireEvent.click(screen.getByRole('button', { name: 'I already know this' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, I know these' }));
+    await settle();
+    expect(attestMemoryMastery).toHaveBeenCalledWith('elements-song', { silent: true });
+    expect(screen.getByText('Mastery attested')).toBeInTheDocument();
+    expect(screen.getByText('Removed from routine practice; one surprise spot check will verify it.')).toBeInTheDocument();
+    expect(screen.queryByText('Start here')).not.toBeInTheDocument();
   });
 
   it('uses recent answers for the same decay-aware mastery gate as the server', () => {
@@ -222,6 +241,11 @@ describe('recommendedElementsMode', () => {
       elements: { H: { attempts: 10, correct: 9 } },
       chunks: { v1: { attempts: 10, correct: 9 } },
     })).toBe('element-flash');
+  });
+
+  it('does not recommend routine practice while mastery awaits or has passed its spot check', () => {
+    expect(recommendedElementsMode({ retention: { status: 'attested' }, elements: {}, chunks: {} })).toBeNull();
+    expect(recommendedElementsMode({ retention: { status: 'mastered' }, elements: {}, chunks: {} })).toBeNull();
   });
 });
 
