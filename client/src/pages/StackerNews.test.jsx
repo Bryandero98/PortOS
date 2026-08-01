@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 
@@ -30,6 +30,12 @@ const accounts = [
 
 function renderPage(path) {
   return render(<MemoryRouter initialEntries={[path]}><Routes><Route path="/stacker-news" element={<StackerNews />} /><Route path="/stacker-news/:accountId/:tab" element={<StackerNews />} /></Routes></MemoryRouter>);
+}
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
 }
 
 describe('StackerNews', () => {
@@ -69,5 +75,38 @@ describe('StackerNews', () => {
   it('renders a recovery path for a stale account URL', async () => {
     renderPage('/stacker-news/missing/review');
     expect(await screen.findByText(/account was not found/i)).toBeInTheDocument();
+  });
+
+  it('discards resource responses for an account that is no longer selected', async () => {
+    const user = userEvent.setup();
+    const oldTerritories = deferred();
+    api.getStackerNewsTerritories.mockImplementation((id) => id === 'a1'
+      ? oldTerritories.promise
+      : Promise.resolve({ territories: [{ id: 't2', accountId: 'a2', slug: 'current-community', label: 'Current community', rules: {} }] }));
+    renderPage('/stacker-news/a1/accounts');
+    await screen.findByRole('button', { name: /Personal/ });
+    await user.click(screen.getByRole('button', { name: /Personal/ }));
+    await user.click(screen.getByRole('tab', { name: 'Territory' }));
+    expect(await screen.findByText('Current community')).toBeInTheDocument();
+    await act(async () => oldTerritories.resolve({ territories: [{ id: 't1', accountId: 'a1', slug: 'old-community', label: 'Old community', rules: {} }] }));
+    expect(screen.queryByText('Old community')).not.toBeInTheDocument();
+    expect(screen.getByText('Current community')).toBeInTheDocument();
+  });
+
+  it('gates server-side account actions on saved settings and the in-flight save', async () => {
+    const user = userEvent.setup();
+    const save = deferred();
+    api.updateStackerNewsAccount.mockReturnValue(save.promise);
+    renderPage('/stacker-news/a1/accounts');
+    const interval = await screen.findByLabelText('Monitoring interval (minutes)', { selector: '#edit-account-interval' });
+    await user.clear(interval);
+    await user.type(interval, '20');
+    expect(screen.getByRole('button', { name: 'Check API identity' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Check browser identity' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Sync now' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Save account' }));
+    expect(screen.getByRole('button', { name: 'Sync now' })).toBeDisabled();
+    await act(async () => save.resolve({ ...accounts[0], monitoringIntervalMinutes: 20 }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Sync now' })).toBeEnabled());
   });
 });

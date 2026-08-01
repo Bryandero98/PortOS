@@ -7,6 +7,7 @@ import { fetchAndNormalizeStackerNewsImage, hashRemoteMediaUrl } from './stacker
 import { getStackerNewsBrowserIdentity, openStackerNewsHandoff } from './stackerNewsBrowser.js';
 import {
   POLICY_VERSION,
+  combineStackerNewsModelResults,
   evaluateStackerNewsPolicy,
   hashStackerNewsRules,
   normalizeStackerNewsRules,
@@ -29,7 +30,15 @@ const ACTION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const syncLocks = new Map();
 
 const stableHash = (value) => createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
-const normalizedText = ({ title = '', body = '' }) => `${title}\n${body}`.replace(/\0/g, '').slice(0, MAX_ANALYSIS_CHARS);
+const boundedContent = ({ title = '', body = '' }) => ({
+  title: String(title).replace(/\0/g, '').slice(0, 2_000),
+  body: String(body).replace(/\0/g, '').slice(0, 40_000),
+});
+const normalizedText = (value) => {
+  const { title, body } = boundedContent(value);
+  return `${title}\n${body}`;
+};
+const analysisText = (value) => normalizedText(value).slice(0, MAX_ANALYSIS_CHARS);
 const markdownImages = (body = '') => [...body.matchAll(/!\[[^\]]*\]\((https?:\/\/[^\s)]+)(?:\s+"[^"]*")?\)/gi)].map((match) => match[1]).slice(0, 12);
 
 const accountView = (row) => ({
@@ -96,6 +105,7 @@ const actionView = (row) => ({
   sourceContentHash: row.source_content_hash,
   rulesHash: row.rules_hash,
   policyVersion: row.policy_version,
+  reviewedTarget: row.reviewed_target || {},
   reviewNote: row.review_note,
   result: row.result || {},
   error: row.error || '',
@@ -245,7 +255,8 @@ export async function ingestItem({
   accountId, territoryId = null, remoteId, kind, authorName = '', title = '', body = '', sourceUrl = '', imageUrls = [],
   remoteCreatedAt = null, remoteUpdatedAt = null,
 }) {
-  const contentHash = stableHash(normalizedText({ title, body }));
+  const content = boundedContent({ title, body });
+  const contentHash = stableHash(normalizedText(content));
   const result = await query(
     `INSERT INTO stacker_news_items
      (id,account_id,territory_id,remote_id,kind,author_name,title,body,source_url,image_urls,content_hash,remote_created_at,remote_updated_at)
@@ -254,7 +265,7 @@ export async function ingestItem({
        author_name=EXCLUDED.author_name,title=EXCLUDED.title,body=EXCLUDED.body,source_url=EXCLUDED.source_url,
        image_urls=EXCLUDED.image_urls,content_hash=EXCLUDED.content_hash,remote_created_at=EXCLUDED.remote_created_at,
        remote_updated_at=EXCLUDED.remote_updated_at,received_at=NOW(),updated_at=NOW() RETURNING *`,
-    [randomUUID(), accountId, territoryId, String(remoteId), kind, authorName, title, body, sourceUrl, imageUrls, contentHash, remoteCreatedAt, remoteUpdatedAt],
+    [randomUUID(), accountId, territoryId, String(remoteId), kind, authorName, content.title, content.body, sourceUrl, imageUrls, contentHash, remoteCreatedAt, remoteUpdatedAt],
   );
   return itemView(result.rows[0]);
 }
@@ -304,7 +315,7 @@ export async function analyzeItem(itemId) {
   const territory = territoryResult.rows[0];
   const rules = resolveStackerNewsRules(account.rules, territory?.rules, territory?.inherit_account_rules ?? true);
   const rulesHash = hashStackerNewsRules(rules);
-  const { normalized: content, injectionMatches } = inspectUntrustedContent(normalizedText(item));
+  const { normalized: content, injectionMatches } = inspectUntrustedContent(analysisText(item));
   const deterministic = { injectionRisk: injectionMatches.length ? 'high' : 'low', injectionMatches, sourceTrusted: false, contentLength: content.length };
   await persistAnalysis({ item, stage: 'ingress', provider: 'deterministic', rulesHash, result: deterministic });
 
@@ -343,9 +354,10 @@ export async function analyzeItem(itemId) {
 
   const fresh = await query('SELECT content_hash FROM stacker_news_items WHERE id=$1', [item.id]);
   if (fresh.rows[0]?.content_hash !== item.content_hash) return { item: itemView(item), stale: true, deterministic, errors };
-  const policy = evaluateStackerNewsPolicy({ deterministic, model: visionResult || textResult, rules });
+  const combinedModel = combineStackerNewsModelResults(textResult, visionResult);
+  const policy = evaluateStackerNewsPolicy({ deterministic, model: combinedModel, rules });
   const analysisId = await persistAnalysis({ item, stage: 'policy', provider: 'deterministic', rulesHash, result: policy });
-  return { item: itemView(item), analysisId, stale: false, deterministic, text: textResult, vision: visionResult, policy, errors };
+  return { item: itemView(item), analysisId, stale: false, deterministic, text: textResult, vision: visionResult, combinedModel, policy, errors };
 }
 
 export async function listAnalyses(itemId) {
@@ -455,18 +467,49 @@ export async function createAction({ accountId, itemId = null, territoryId = nul
   const rules = resolveStackerNewsRules(account.rules, territory?.rules, territory?.inherit_account_rules ?? true);
   const rulesHash = hashStackerNewsRules(rules);
   const sourceContentHash = item?.content_hash || '';
-  const idempotencyKey = stableHash({ accountId, itemId, territoryId, kind, destination, payload, sourceContentHash, rulesHash });
+  const reviewedTarget = {
+    username: account.username,
+    territorySlug: territory?.slug || '',
+    remoteItemId: item?.remote_id || '',
+  };
+  const idempotencyKey = stableHash({ accountId, itemId, territoryId, kind, destination, payload, sourceContentHash, rulesHash, reviewedTarget });
   const id = randomUUID();
   const row = await withTransaction(async (client) => {
+    const active = await client.query(
+      `SELECT * FROM stacker_news_actions
+       WHERE idempotency_key=$1 AND state IN ('pending_review','approved','executing')
+       ORDER BY created_at DESC LIMIT 1`,
+      [idempotencyKey],
+    );
+    const existing = active.rows[0];
+    const approvalExpired = existing?.state === 'approved'
+      && (!existing.approved_at || Date.now() - new Date(existing.approved_at).getTime() > ACTION_MAX_AGE_MS);
+    if (existing && !approvalExpired) return existing;
+    if (approvalExpired) {
+      await client.query(
+        "UPDATE stacker_news_actions SET state='rejected',error='Approval expired before execution',updated_at=NOW() WHERE id=$1 AND state='approved'",
+        [existing.id],
+      );
+      await eventInsert(client, existing.id, 'approved', 'rejected', 'Approval expired; a fresh review was requested');
+    }
     const result = await client.query(
       `INSERT INTO stacker_news_actions
-       (id,account_id,item_id,territory_id,kind,state,destination,payload,source_content_hash,rules_hash,policy_version,idempotency_key)
-       VALUES ($1,$2,$3,$4,$5,'pending_review',$6,$7,$8,$9,$10,$11)
-       ON CONFLICT (idempotency_key) DO UPDATE SET updated_at=stacker_news_actions.updated_at RETURNING *`,
-      [id, accountId, itemId, territoryId, kind, destination, payload, sourceContentHash, rulesHash, POLICY_VERSION, idempotencyKey],
+       (id,account_id,item_id,territory_id,kind,state,destination,payload,source_content_hash,rules_hash,policy_version,idempotency_key,reviewed_target)
+       VALUES ($1,$2,$3,$4,$5,'pending_review',$6,$7,$8,$9,$10,$11,$12)
+       ON CONFLICT (idempotency_key) WHERE state IN ('pending_review','approved','executing') DO NOTHING RETURNING *`,
+      [id, accountId, itemId, territoryId, kind, destination, payload, sourceContentHash, rulesHash, POLICY_VERSION, idempotencyKey, reviewedTarget],
     );
-    if (result.rows[0].id === id) await eventInsert(client, id, null, 'pending_review', 'Created for human review');
-    return result.rows[0];
+    if (result.rows[0]) {
+      await eventInsert(client, id, null, 'pending_review', 'Created for human review');
+      return result.rows[0];
+    }
+    const conflicted = await client.query(
+      `SELECT * FROM stacker_news_actions
+       WHERE idempotency_key=$1 AND state IN ('pending_review','approved','executing')
+       ORDER BY created_at DESC LIMIT 1`,
+      [idempotencyKey],
+    );
+    return conflicted.rows[0];
   });
   return actionView(row);
 }
@@ -556,7 +599,14 @@ export async function executeApprovedAction(id) {
     territoryId: action.territory_id,
   });
   if (!account?.enabled) throw new Error('Selected Stacker News account is disabled');
+  const currentTarget = {
+    username: account.username,
+    territorySlug: territory?.slug || '',
+    remoteItemId: item?.remote_id || '',
+  };
+  if (stableHash(currentTarget) !== stableHash(action.reviewed_target || {})) throw new Error('External account or destination changed after review');
   if (item && item.content_hash !== action.source_content_hash) throw new Error('Source content changed after review');
+  if (action.policy_version !== POLICY_VERSION) throw new Error('Policy version changed after review');
   const rules = resolveStackerNewsRules(account.rules, territory?.rules, territory?.inherit_account_rules ?? true);
   if (hashStackerNewsRules(rules) !== action.rules_hash) throw new Error('Community rules changed after review');
   if (!['draft_post', 'draft_comment'].includes(action.kind)) await assertActionBudget(account.id, rules.actionBudget);

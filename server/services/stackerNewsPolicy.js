@@ -67,6 +67,28 @@ export function parseStackerNewsModelResult(raw) {
   return modelAnalysisSchema.parse(parsed);
 }
 
+export function combineStackerNewsModelResults(...results) {
+  const available = results.flat().filter(Boolean).map((result) => modelAnalysisSchema.parse(result));
+  if (!available.length) return null;
+  if (available.length === 1) return available[0];
+  const classificationRank = { allowed: 0, review: 1, escalate: 2 };
+  const riskRank = { low: 0, medium: 1, high: 2 };
+  const classification = available.reduce((worst, result) => (
+    classificationRank[result.classification] > classificationRank[worst] ? result.classification : worst
+  ), 'allowed');
+  const risk = available.reduce((worst, result) => (
+    riskRank[result.risk] > riskRank[worst] ? result.risk : worst
+  ), 'low');
+  const suggestedActions = new Set(available.map((result) => result.suggestedAction));
+  return {
+    classification,
+    risk,
+    summary: available.map((result) => result.summary).filter(Boolean).join(' | ').slice(0, 1_200),
+    findings: [...new Set(available.flatMap((result) => result.findings))].slice(0, 12),
+    suggestedAction: suggestedActions.size === 1 ? available[0].suggestedAction : 'none',
+  };
+}
+
 export function evaluateStackerNewsPolicy({ deterministic, model, rules }) {
   if (deterministic.injectionMatches?.length) return { decision: 'escalate', reasons: ['prompt_injection_pattern'], allowedAction: 'none' };
   if (model?.classification === 'escalate' || model?.risk === 'high') return { decision: 'escalate', reasons: ['model_high_risk'], allowedAction: 'none' };

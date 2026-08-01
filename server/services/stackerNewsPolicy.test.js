@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { evaluateStackerNewsPolicy, parseStackerNewsModelResult, resolveStackerNewsRules } from './stackerNewsPolicy.js';
+import { combineStackerNewsModelResults, evaluateStackerNewsPolicy, parseStackerNewsModelResult, resolveStackerNewsRules } from './stackerNewsPolicy.js';
 
 describe('Stacker News policy', () => {
   it('inherits account rules while allowing explicit territory scalar and budget overrides', () => {
@@ -19,5 +19,14 @@ describe('Stacker News policy', () => {
 
   it('keeps prompt-injection decisions deterministic', () => {
     expect(evaluateStackerNewsPolicy({ deterministic: { injectionMatches: ['ignore'] }, model: null, rules: {} })).toMatchObject({ decision: 'escalate', allowedAction: 'none' });
+  });
+
+  it('combines text and vision results conservatively', () => {
+    const combined = combineStackerNewsModelResults(
+      { classification: 'escalate', risk: 'high', summary: 'Text concern', findings: ['credential request'], suggestedAction: 'none' },
+      { classification: 'allowed', risk: 'low', summary: 'Image is ordinary', findings: [], suggestedAction: 'draft_comment' },
+    );
+    expect(combined).toMatchObject({ classification: 'escalate', risk: 'high', suggestedAction: 'none' });
+    expect(evaluateStackerNewsPolicy({ deterministic: { injectionMatches: [] }, model: combined, rules: {} })).toMatchObject({ decision: 'escalate' });
   });
 });

@@ -1377,6 +1377,7 @@ CREATE TABLE IF NOT EXISTS stacker_news_actions (
   rules_hash TEXT NOT NULL DEFAULT '',
   policy_version TEXT NOT NULL DEFAULT 'v1',
   idempotency_key TEXT NOT NULL,
+  reviewed_target JSONB NOT NULL DEFAULT '{}'::jsonb,
   review_note TEXT NOT NULL DEFAULT '',
   result JSONB NOT NULL DEFAULT '{}'::jsonb,
   error TEXT NOT NULL DEFAULT '',
@@ -1385,7 +1386,8 @@ CREATE TABLE IF NOT EXISTS stacker_news_actions (
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_stacker_news_actions_idempotency_key ON stacker_news_actions (idempotency_key);
+DROP INDEX IF EXISTS idx_stacker_news_actions_idempotency_key;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_stacker_news_actions_active_idempotency_key ON stacker_news_actions (idempotency_key) WHERE state IN ('pending_review','approved','executing');
 CREATE INDEX IF NOT EXISTS idx_stacker_news_actions_account_state ON stacker_news_actions (account_id, state, created_at DESC);
 CREATE TABLE IF NOT EXISTS stacker_news_action_events (
   id UUID PRIMARY KEY,

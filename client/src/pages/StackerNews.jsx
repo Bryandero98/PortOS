@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Newspaper, Plus, RefreshCw, ShieldCheck, ShieldAlert } from 'lucide-react';
 import * as api from '../services/api';
@@ -23,6 +23,16 @@ const buttonClass = 'rounded bg-port-accent px-3 py-2 text-sm font-medium text-w
 const secondaryButton = 'rounded border border-port-border px-3 py-2 text-sm text-gray-200 disabled:opacity-50';
 const splitList = (value) => value.split(',').map((entry) => entry.trim()).filter(Boolean);
 const accountRules = (form) => ({ guidance: form.guidance, tone: form.tone, allowedThemes: splitList(form.allowedThemes), disallowedThemes: splitList(form.disallowedThemes), escalationCues: splitList(form.escalationCues), desiredEngagement: splitList(form.desiredEngagement), actionBudget: { maxPerHour: Number(form.maxPerHour), maxPerDay: Number(form.maxPerDay), minMinutesBetween: Number(form.minMinutesBetween) } });
+const accountToForm = (account) => ({
+  label: account.label, username: account.username, apiKey: '', enabled: account.enabled,
+  monitoringEnabled: account.monitoringEnabled, monitoringIntervalMinutes: account.monitoringIntervalMinutes,
+  analysisEnabled: account.analysisEnabled, textModel: account.textModel, visionModel: account.visionModel,
+  guidance: account.rules?.guidance || '', tone: account.rules?.tone || '', allowedThemes: (account.rules?.allowedThemes || []).join(', '),
+  disallowedThemes: (account.rules?.disallowedThemes || []).join(', '), escalationCues: (account.rules?.escalationCues || []).join(', '),
+  desiredEngagement: (account.rules?.desiredEngagement || []).join(', '), maxPerHour: account.rules?.actionBudget?.maxPerHour ?? 3,
+  maxPerDay: account.rules?.actionBudget?.maxPerDay ?? 12, minMinutesBetween: account.rules?.actionBudget?.minMinutesBetween ?? 5,
+});
+const sameAccountForm = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 
 export default function StackerNews() {
   const navigate = useNavigate();
@@ -39,15 +49,23 @@ export default function StackerNews() {
   const [notice, setNotice] = useState('');
   const [newAccount, setNewAccount] = useState(emptyAccount);
   const [editAccount, setEditAccount] = useState(emptyAccount);
+  const [savedAccount, setSavedAccount] = useState(emptyAccount);
   const [newTerritory, setNewTerritory] = useState(emptyTerritory);
   const [draft, setDraft] = useState(emptyDraft);
   const [analysisResults, setAnalysisResults] = useState({});
   const [feedbackDrafts, setFeedbackDrafts] = useState({});
+  const selectedLoadRef = useRef(0);
+  const currentAccountIdRef = useRef(accountId);
+  const selectedAccountIdRef = useRef(null);
+  const savedAccountRef = useRef(emptyAccount);
+  currentAccountIdRef.current = accountId;
 
   const selected = accounts.find((account) => account.id === accountId) || null;
   const activeTab = selected ? tab : 'accounts';
   const accountPath = (id, nextTab = tab) => `/stacker-news/${id}/${nextTab}`;
   const models = useMemo(() => [...new Set(localModels.ollama)], [localModels.ollama]);
+  const accountFormDirty = selected ? !sameAccountForm(editAccount, savedAccount) : false;
+  const accountActionsDisabled = accountFormDirty || Boolean(busy);
 
   const loadAccounts = useCallback(async () => {
     const result = await api.getStackerNewsAccounts({ silent: true }).catch((err) => ({ error: err.message }));
@@ -57,6 +75,8 @@ export default function StackerNews() {
   }, []);
 
   const loadSelected = useCallback(async () => {
+    const requestId = ++selectedLoadRef.current;
+    const requestedAccountId = accountId;
     if (!accountId) {
       setTerritories([]); setItems([]); setActions([]);
       return;
@@ -66,6 +86,7 @@ export default function StackerNews() {
       api.getStackerNewsItems(accountId, { silent: true }).catch((err) => ({ error: err.message, items: [] })),
       api.getStackerNewsActions(accountId, { silent: true }).catch((err) => ({ error: err.message, actions: [] })),
     ]);
+    if (selectedLoadRef.current !== requestId || currentAccountIdRef.current !== requestedAccountId) return;
     const failed = [territoryResult, itemResult, actionResult].find((result) => result.error);
     if (failed) setError(failed.error);
     setTerritories(territoryResult.territories || []);
@@ -76,16 +97,16 @@ export default function StackerNews() {
   useEffect(() => { loadAccounts(); }, [loadAccounts]);
   useEffect(() => { loadSelected(); }, [loadSelected]);
   useEffect(() => {
-    if (!selected) return;
-    setEditAccount({
-      label: selected.label, username: selected.username, apiKey: '', enabled: selected.enabled,
-      monitoringEnabled: selected.monitoringEnabled, monitoringIntervalMinutes: selected.monitoringIntervalMinutes,
-      analysisEnabled: selected.analysisEnabled, textModel: selected.textModel, visionModel: selected.visionModel,
-      guidance: selected.rules?.guidance || '', tone: selected.rules?.tone || '', allowedThemes: (selected.rules?.allowedThemes || []).join(', '),
-      disallowedThemes: (selected.rules?.disallowedThemes || []).join(', '), escalationCues: (selected.rules?.escalationCues || []).join(', '),
-      desiredEngagement: (selected.rules?.desiredEngagement || []).join(', '), maxPerHour: selected.rules?.actionBudget?.maxPerHour ?? 3,
-      maxPerDay: selected.rules?.actionBudget?.maxPerDay ?? 12, minMinutesBetween: selected.rules?.actionBudget?.minMinutesBetween ?? 5,
-    });
+    if (!selected) {
+      selectedAccountIdRef.current = null;
+      return;
+    }
+    const nextSaved = accountToForm(selected);
+    const switchedAccounts = selectedAccountIdRef.current !== selected.id;
+    setEditAccount((current) => switchedAccounts || sameAccountForm(current, savedAccountRef.current) ? nextSaved : current);
+    selectedAccountIdRef.current = selected.id;
+    savedAccountRef.current = nextSaved;
+    setSavedAccount(nextSaved);
   }, [selected]);
 
   const finish = (key, promise, onSuccess) => {
@@ -115,6 +136,10 @@ export default function StackerNews() {
       analysisEnabled: editAccount.analysisEnabled, textModel: editAccount.textModel, visionModel: editAccount.visionModel,
       rules: accountRules(editAccount),
     }, { silent: true }), (result) => {
+      const nextSaved = accountToForm(result);
+      savedAccountRef.current = nextSaved;
+      setSavedAccount(nextSaved);
+      setEditAccount(nextSaved);
       setAccounts((previous) => previous.map((candidate) => candidate.id === result.id ? result : candidate));
       setNotice('Account rules and schedule saved.');
     });
@@ -194,6 +219,7 @@ export default function StackerNews() {
             <div key={action.id} className="rounded border border-port-border p-3 text-sm">
               <div className="flex items-center justify-between gap-2"><span className="font-medium text-white">{action.kind.replaceAll('_', ' ')}</span><span className="text-xs text-gray-400">{action.state.replaceAll('_', ' ')}</span></div>
               <div className="mt-1 whitespace-pre-wrap text-gray-400">{action.payload?.title || action.payload?.body || `Fixed ${action.destination || 'local'} action`}</div>
+              <div className="mt-1 text-xs text-gray-400">Reviewed target: @{action.reviewedTarget?.username || selected.username}{action.reviewedTarget?.territorySlug ? ` · ${action.reviewedTarget.territorySlug}` : ''}{action.reviewedTarget?.remoteItemId ? ` · item ${action.reviewedTarget.remoteItemId}` : ''}</div>
               <div className="mt-1 font-mono text-[11px] text-gray-500">content {action.sourceContentHash?.slice(0, 10) || 'n/a'} · rules {action.rulesHash?.slice(0, 10) || 'n/a'} · {action.policyVersion}</div>
               {action.state === 'pending_review' && <div className="mt-2 flex gap-2"><button className={buttonClass} disabled={busy === `review-${action.id}`} onClick={() => reviewAction(action, 'approved')}>Approve</button><button className={secondaryButton} onClick={() => reviewAction(action, 'rejected')}>Reject</button></div>}
               {action.state === 'approved' && <button className={`${buttonClass} mt-2`} disabled={busy === `execute-${action.id}`} onClick={() => executeAction(action)}>Execute reviewed action</button>}
@@ -203,7 +229,7 @@ export default function StackerNews() {
         </div>
       </section>
       <section className="rounded border border-port-border bg-port-card p-4">
-        <div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="font-semibold text-white">Monitored content</h2><p className="text-sm text-gray-400">Remote text and images remain untrusted data.</p></div><button className={secondaryButton} disabled={busy === 'sync'} onClick={syncNow}>Sync now</button></div>
+        <div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="font-semibold text-white">Monitored content</h2><p className="text-sm text-gray-400">Remote text and images remain untrusted data.</p></div><button className={secondaryButton} disabled={accountActionsDisabled} onClick={syncNow}>Sync now</button></div>
         <div className="mt-3 space-y-2">{items.map((item) => <div key={item.id} className="rounded border border-port-border p-3"><div className="text-sm font-medium text-white">{item.title || `${item.kind} by @${item.authorName}`}</div><div className="mt-1 line-clamp-3 text-sm text-gray-400">{item.body}</div>{analysisResults[item.id] && <div className="mt-2 rounded bg-port-bg p-2 text-xs text-gray-300">Policy: {analysisResults[item.id].stale ? 'stale' : analysisResults[item.id].policy?.decision || 'review'}{analysisResults[item.id].policy?.reasons?.length ? ` · ${analysisResults[item.id].policy.reasons.join(', ')}` : ''}<div className="mt-2 flex gap-2"><input aria-label={`Feedback for ${item.title || item.id}`} className={fieldClass} placeholder="Moderator feedback" value={feedbackDrafts[item.id] || ''} onChange={(event) => setFeedbackDrafts((previous) => ({ ...previous, [item.id]: event.target.value }))} /><button className={secondaryButton} disabled={!analysisResults[item.id].analysisId || busy === `feedback-${item.id}`} onClick={() => saveFeedback(item)}>Save feedback</button></div></div>}<button className={`${secondaryButton} mt-2`} disabled={busy === `analyze-${item.id}`} onClick={() => analyze(item)}>Run local analysis</button></div>)}{!items.length && <p className="text-sm text-gray-500">No stored content. Add a territory, then sync explicitly or enable a schedule.</p>}</div>
       </section>
     </div>
@@ -225,7 +251,7 @@ export default function StackerNews() {
   const renderAccounts = () => (
     <div className="grid gap-3 xl:grid-cols-3">
       <section className="rounded border border-port-border bg-port-card p-4"><h2 className="font-semibold text-white">Accounts</h2><div className="mt-3 space-y-2">{accounts.map((account) => <button key={account.id} className={`block w-full rounded border p-3 text-left ${account.id === selected?.id ? 'border-port-accent' : 'border-port-border'}`} onClick={() => navigate(accountPath(account.id, 'accounts'))}><div className="flex justify-between gap-2"><span className="font-medium text-white">{account.label}</span><span className="text-xs text-gray-400">{account.apiKeyConfigured ? 'Key protected' : 'No key'}</span></div><div className="mt-1 text-sm text-gray-400">@{account.username} · {account.monitoringEnabled ? `every ${account.monitoringIntervalMinutes}m` : 'monitoring off'}</div></button>)}{!accounts.length && <p className="text-sm text-gray-500">No accounts configured.</p>}</div></section>
-      {selected ? <AccountForm title="Selected account" submitLabel="Save account" form={editAccount} setForm={setEditAccount} models={models} onSubmit={saveAccount} busy={busy === 'save-account'} extra={<div className="flex flex-wrap gap-2"><button type="button" className={secondaryButton} disabled={busy === 'verify'} onClick={checkConnection}>Check API identity</button><button type="button" className={secondaryButton} disabled={busy === 'browser'} onClick={checkBrowser}>Check browser identity</button><button type="button" className={secondaryButton} disabled={busy === 'sync'} onClick={syncNow}>Sync now</button></div>} /> : <div className="rounded border border-port-border bg-port-card p-4 text-sm text-gray-400">Choose an account to edit its independent rules, models, and monitoring schedule.</div>}
+      {selected ? <AccountForm title="Selected account" submitLabel="Save account" form={editAccount} setForm={setEditAccount} models={models} onSubmit={saveAccount} busy={busy === 'save-account'} extra={<div className="flex flex-wrap gap-2"><button type="button" className={secondaryButton} disabled={accountActionsDisabled} onClick={checkConnection}>Check API identity</button><button type="button" className={secondaryButton} disabled={accountActionsDisabled} onClick={checkBrowser}>Check browser identity</button><button type="button" className={secondaryButton} disabled={accountActionsDisabled} onClick={syncNow}>Sync now</button></div>} /> : <div className="rounded border border-port-border bg-port-card p-4 text-sm text-gray-400">Choose an account to edit its independent rules, models, and monitoring schedule.</div>}
       <AccountForm title="Add account" submitLabel="Add protected account" form={newAccount} setForm={setNewAccount} models={models} onSubmit={createAccount} busy={busy === 'create-account'} showCredential />
     </div>
   );

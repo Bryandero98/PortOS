@@ -17,12 +17,15 @@ accounts its user explicitly adds.
 - Posts, comments, URLs, images, and browser content are untrusted. Text is
   bounded and screened for instruction-shaped content before optional local
   analysis. A prompt-injection match prevents text and images from reaching an
-  Ollama model.
+  Ollama model. The complete bounded title and body are hashed even though the
+  model copy is shorter, so edits outside the model window still invalidate an
+  analysis or approval.
 - Remote images use the strict public-network fetch posture, a five-megabyte
   download cap, MIME and pixel limits, and a single-frame Sharp decode. SVG and
   other active formats are rejected. Ollama receives only an in-memory,
   re-encoded PNG; raw remote bytes are never persisted.
-- Ollama text and vision results must match a strict JSON schema. Results record
+- Ollama text and vision results must match a strict JSON schema and are merged
+  conservatively, preserving the highest risk from either stage. Results record
   their source-content hash, effective-rules hash, model, stage, provider, and
   policy version. If content changes during analysis, the result is stale and
   cannot drive an action.
@@ -35,6 +38,9 @@ Every proposed action enters `pending_review`. Approval and execution are
 separate user actions. Immediately before execution PortOS rechecks the selected
 account identity, source-content hash, effective rule hash, action age, action
 budgets, territory ownership evidence, state transition, and idempotency key.
+The reviewed username, territory slug, and remote item ID are snapshotted and
+must still match, so editing account or territory configuration cannot redirect
+an already-approved action. Terminal actions may be submitted as a fresh review.
 Every transition is appended to the action ledger. Pending actions also appear
 in Review Hub and drill back to the correct account.
 
