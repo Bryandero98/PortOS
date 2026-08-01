@@ -63,7 +63,7 @@ function createOAuth2Client(credentials) {
   );
 }
 
-export async function getAuthUrl() {
+export async function getAuthUrl(returnTo = 'calendar') {
   const credentials = await getCredentials();
   if (!credentials) throw new ServerError('No Google OAuth credentials configured', { status: 400 });
 
@@ -71,7 +71,11 @@ export async function getAuthUrl() {
   const url = client.generateAuthUrl({
     access_type: 'offline',
     prompt: 'consent',
-    scope: SCOPES
+    scope: SCOPES,
+    // The callback is shared by Calendar and Messages. Keep the return target
+    // in Google's round trip so authorization started in Messages lands back
+    // on the Messages config tab.
+    state: returnTo === 'messages' ? 'messages' : 'calendar'
   });
   return { url };
 }

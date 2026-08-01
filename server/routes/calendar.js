@@ -234,7 +234,11 @@ router.post('/google/auth/credentials', asyncHandler(async (req, res) => {
 }));
 
 router.get('/google/auth/url', asyncHandler(async (req, res) => {
-  const result = await googleAuth.getAuthUrl();
+  const { returnTo } = validateRequest(
+    z.object({ returnTo: z.enum(['calendar', 'messages']).optional().default('calendar') }),
+    req.query
+  );
+  const result = await googleAuth.getAuthUrl(returnTo);
   res.json(result);
 }));
 
@@ -242,9 +246,10 @@ router.get('/google/oauth/callback', asyncHandler(async (req, res) => {
   // This endpoint is hit by a BROWSER redirect from Google, not by the SPA —
   // render every outcome as a redirect to the config page (which toasts the
   // oauthError param) instead of the JSON envelope the middleware would send.
+  const configPath = req.query.state === 'messages' ? '/messages/config' : '/calendar/config';
   const configUrl = (error) => error
-    ? `/calendar/config?oauthError=${encodeURIComponent(error)}`
-    : '/calendar/config';
+    ? `${configPath}?oauthError=${encodeURIComponent(error)}`
+    : configPath;
   const code = req.query.code;
   if (!code) return res.redirect(configUrl('Missing authorization code'));
   const error = await googleAuth.handleCallback(code).then(() => null)

@@ -77,6 +77,7 @@ describe('Calendar Routes — normalized error handling', () => {
     // The OAuth callback redirects the BROWSER here — echo the query so tests
     // can assert what landed (fetch follows redirects by default).
     app.get('/calendar/config', (req, res) => res.json({ landed: true, oauthError: req.query.oauthError ?? null }));
+    app.get('/messages/config', (req, res) => res.json({ landed: true, destination: 'messages', oauthError: req.query.oauthError ?? null }));
     vi.clearAllMocks();
   });
 
@@ -154,6 +155,16 @@ describe('Calendar Routes — normalized error handling', () => {
 
       expect(response.status).toBe(200);
       expect(response.body.url).toMatch(/^https:\/\/accounts\.google\.com/);
+      expect(googleAuth.getAuthUrl).toHaveBeenCalledWith('calendar');
+    });
+
+    it('GET /google/auth/url preserves a Messages return target', async () => {
+      googleAuth.getAuthUrl.mockResolvedValue({ url: 'https://accounts.google.com/o/oauth2/auth?state=messages' });
+
+      const response = await request(app).get('/api/calendar/google/auth/url?returnTo=messages');
+
+      expect(response.status).toBe(200);
+      expect(googleAuth.getAuthUrl).toHaveBeenCalledWith('messages');
     });
   });
 
@@ -164,6 +175,15 @@ describe('Calendar Routes — normalized error handling', () => {
       const response = await request(app).get('/api/calendar/google/oauth/callback?code=ok');
 
       expect(response.body).toEqual({ landed: true, oauthError: null });
+      expect(googleAuth.handleCallback).toHaveBeenCalledWith('ok');
+    });
+
+    it('returns to Messages when authorization started there', async () => {
+      googleAuth.handleCallback.mockResolvedValue({ success: true });
+
+      const response = await request(app).get('/api/calendar/google/oauth/callback?code=ok&state=messages');
+
+      expect(response.body).toEqual({ landed: true, destination: 'messages', oauthError: null });
       expect(googleAuth.handleCallback).toHaveBeenCalledWith('ok');
     });
 
