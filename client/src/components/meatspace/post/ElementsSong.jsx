@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight, BookOpen, Zap, Target, Check, X, SkipForward
 import { submitMemoryPractice, getMemoryMastery, getMemoryItem } from '../../../services/api';
 import { RapidReaderModal } from '../../RapidReader';
 import { clickableProps } from '../../../lib/a11yKeyboard';
+import PostCompletionActions from './PostCompletionActions';
 
 // Standard periodic table layout: [row][col] = symbol or null
 const PERIODIC_TABLE = [
@@ -58,7 +59,7 @@ export const PRACTICE_MODES = [
 // picker, mirroring MorseTrainer's MORSE_MODE_IDS (issue #3249).
 export const ELEMENTS_MODE_IDS = PRACTICE_MODES.map(m => m.id);
 
-export default function ElementsSong({ item: itemProp, onBack, loadItemOnMount, mode, onSelectMode, onExitMode }) {
+export default function ElementsSong({ item: itemProp, onBack, loadItemOnMount, mode, onSelectMode, onExitMode, onContinue }) {
   const [loadedItem, setLoadedItem] = useState(null);
   const item = itemProp || loadedItem;
   const [mastery, setMastery] = useState(item?.mastery || { overallPct: 0, chunks: {}, elements: {} });
@@ -76,9 +77,10 @@ export default function ElementsSong({ item: itemProp, onBack, loadItemOnMount, 
     getMemoryMastery(item.id).then(m => { if (m) setMastery(m); }).catch(err => console.warn('⚠️ Failed to load mastery: ' + err.message));
   }, [item?.id]);
 
-  function handlePracticeComplete(newMastery) {
+  function handlePracticeComplete(newMastery, continueDaily = false) {
     if (newMastery) setMastery(newMastery);
-    onExitMode();
+    if (continueDaily) onContinue();
+    else onExitMode();
   }
 
   if (!item) {
@@ -103,11 +105,38 @@ export default function ElementsSong({ item: itemProp, onBack, loadItemOnMount, 
 // distinguishable from "practiced and scored zero" (the sentinel rule in
 // CLAUDE.md) — the caller routes those two to different modes.
 function bucketAccuracy(buckets) {
-  const attempted = Object.values(buckets || {}).filter(m => (m?.attempts || 0) > 0);
+  const attempted = Object.values(buckets || {})
+    .map(elementMasteryProgress)
+    .filter(progress => progress.attempts > 0);
   if (attempted.length === 0) return null;
-  const attempts = attempted.reduce((sum, m) => sum + m.attempts, 0);
-  const correct = attempted.reduce((sum, m) => sum + (m.correct || 0), 0);
+  const attempts = attempted.reduce((sum, progress) => sum + progress.attempts, 0);
+  const correct = attempted.reduce((sum, progress) => sum + progress.correct, 0);
   return attempts > 0 ? correct / attempts : null;
+}
+
+const ELEMENT_MASTERY_MIN_ATTEMPTS = 3;
+const ELEMENT_MASTERY_TARGET_ACCURACY = 0.8;
+
+// Mirror the server's decay-aware mastery gate for every Elements UI surface.
+// Recent answers take precedence; cumulative counts remain the legacy fallback.
+export function elementMasteryProgress(stat) {
+  const hasRecent = Array.isArray(stat?.recent) && stat.recent.length > 0;
+  const attempts = hasRecent
+    ? stat.recent.length
+    : (Number.isFinite(stat?.attempts) ? stat.attempts : 0);
+  const correct = hasRecent
+    ? stat.recent.reduce((sum, result) => sum + (result ? 1 : 0), 0)
+    : (Number.isFinite(stat?.correct) ? stat.correct : 0);
+  const accuracy = attempts > 0 ? correct / attempts : 0;
+
+  return {
+    accuracy,
+    attempts,
+    correct,
+    hasRecent,
+    mastered: attempts >= ELEMENT_MASTERY_MIN_ATTEMPTS
+      && accuracy >= ELEMENT_MASTERY_TARGET_ACCURACY,
+  };
 }
 
 /**
@@ -131,6 +160,8 @@ export function recommendedElementsMode(mastery) {
 function ElementsSongMain({ item, mastery, onSelectMode, onBack }) {
   const recommendedMode = recommendedElementsMode(mastery);
   const elementMap = useMemo(() => item.content?.elementMap ?? {}, [item]);
+  const masteredElementCount = Object.keys(elementMap)
+    .filter(symbol => elementMasteryProgress(mastery.elements?.[symbol]).mastered).length;
   const songElements = useMemo(() => {
     const s = new Set();
     for (const line of item.content?.lines || []) {
@@ -198,8 +229,9 @@ function ElementsSongMain({ item, mastery, onSelectMode, onBack }) {
           </div>
         </div>
         <div className="text-left sm:text-right text-sm text-gray-500">
-          <div>{Object.keys(mastery.elements || {}).filter(s => { const m = mastery.elements[s]; return m?.attempts >= 3 && m.correct / m.attempts >= 0.8; }).length} / {Object.keys(elementMap).length} elements mastered</div>
+          <div>{masteredElementCount} / {Object.keys(elementMap).length} elements mastered</div>
           <div>{Object.keys(elementMap).length} elements in song</div>
+          <div className="text-xs text-gray-600">Mastery requires 3 recent checks at 80%+ accuracy</div>
         </div>
       </div>
 
@@ -275,7 +307,7 @@ function ElementsSongMain({ item, mastery, onSelectMode, onBack }) {
                 if (!sym) return <div key={`${ri}-${ci}`} className="w-[30px] sm:w-[36px] h-[30px] sm:h-[36px]" />;
                 const inSong = songElements.has(sym);
                 const m = mastery.elements?.[sym];
-                const masteryPct = m?.attempts > 0 ? m.correct / m.attempts : 0;
+                const progress = elementMasteryProgress(m);
                 const cat = getCategory(sym);
                 const isHovered = hoveredElement === sym;
                 const isSelected = selectedElement === sym;
@@ -283,7 +315,7 @@ function ElementsSongMain({ item, mastery, onSelectMode, onBack }) {
 
                 let bg, borderColor, catBorderStyle;
                 if (tableView === 'mastery') {
-                  bg = !inSong ? 'bg-gray-800/30' : masteryPct >= 0.8 && m?.attempts >= 3 ? 'bg-emerald-600/60' : masteryPct >= 0.5 ? 'bg-amber-600/50' : m?.attempts > 0 ? 'bg-red-600/40' : 'bg-port-border';
+                  bg = !inSong ? 'bg-gray-800/30' : progress.mastered ? 'bg-emerald-600/60' : progress.accuracy >= 0.5 ? 'bg-amber-600/50' : progress.attempts > 0 ? 'bg-red-600/40' : 'bg-port-border';
                   borderColor = isSelected ? 'border-port-accent' : cat ? cat.border : 'border-transparent';
                   catBorderStyle = cat ? 'border-l-2' : '';
                 } else {
@@ -421,8 +453,8 @@ function ElementsSongMain({ item, mastery, onSelectMode, onBack }) {
 
 function ElementTooltip({ sym, elementMap, mastery, inSong, category, verses, chunks, pos }) {
   const info = elementMap[sym];
-  const m = mastery.elements?.[sym];
-  const pct = m?.attempts > 0 ? Math.round((m.correct / m.attempts) * 100) : null;
+  const progress = elementMasteryProgress(mastery.elements?.[sym]);
+  const pct = progress.attempts > 0 ? Math.round(progress.accuracy * 100) : null;
   const verseLabels = verses.map(v => chunks.find(c => c.id === v)?.label).filter(Boolean);
 
   return (
@@ -439,10 +471,13 @@ function ElementTooltip({ sym, elementMap, mastery, inSong, category, verses, ch
           {inSong ? (
             <>
               <div className="text-gray-500">
-                Mastery: <span className={`font-mono ${pct != null && pct >= 80 ? 'text-port-success' : pct != null && pct >= 50 ? 'text-port-warning' : pct != null ? 'text-port-error' : 'text-gray-600'}`}>
-                  {pct != null ? `${pct}%` : '—'}
+                Status: <span className={`font-medium ${progress.mastered ? 'text-port-success' : progress.attempts > 0 ? 'text-port-warning' : 'text-gray-600'}`}>
+                  {progress.mastered ? 'Mastered' : progress.attempts > 0 ? 'Learning' : 'Not practiced'}
                 </span>
-                {m?.attempts > 0 && <span className="text-gray-600 ml-1">({m.correct}/{m.attempts})</span>}
+              </div>
+              <div className="text-gray-500">
+                Accuracy: <span className="font-mono text-gray-300">{pct != null ? `${pct}%` : '—'}</span>
+                {progress.attempts > 0 && <span className="text-gray-600 ml-1">({progress.correct}/{progress.attempts}{progress.hasRecent ? ' recent' : ''})</span>}
               </div>
               {verseLabels.length > 0 && <div className="text-gray-500">In: {verseLabels.join(', ')}</div>}
             </>
@@ -457,8 +492,8 @@ function ElementTooltip({ sym, elementMap, mastery, inSong, category, verses, ch
 
 function SelectedElementDetail({ sym, elementMap, mastery, inSong, category, verses, chunks, lines, onClear }) {
   const info = elementMap[sym];
-  const m = mastery.elements?.[sym];
-  const pct = m?.attempts > 0 ? Math.round((m.correct / m.attempts) * 100) : null;
+  const progress = elementMasteryProgress(mastery.elements?.[sym]);
+  const pct = progress.attempts > 0 ? Math.round(progress.accuracy * 100) : null;
   const verseLabels = verses.map(v => chunks.find(c => c.id === v)?.label).filter(Boolean);
   const containingLines = lines.filter(l => l.elements?.includes(sym));
 
@@ -479,14 +514,17 @@ function SelectedElementDetail({ sym, elementMap, mastery, inSong, category, ver
       </div>
       {inSong ? (
         <>
-          <div className="flex items-center gap-4 text-sm">
+          <div className="flex flex-wrap items-center gap-4 text-sm">
             <div>
-              <span className="text-gray-500">Mastery: </span>
-              <span className={`font-mono font-medium ${pct != null && pct >= 80 ? 'text-port-success' : pct != null && pct >= 50 ? 'text-port-warning' : pct != null ? 'text-port-error' : 'text-gray-600'}`}>
-                {pct != null ? `${pct}%` : 'Not practiced'}
+              <span className="text-gray-500">Status: </span>
+              <span className={`font-medium ${progress.mastered ? 'text-port-success' : progress.attempts > 0 ? 'text-port-warning' : 'text-gray-600'}`}>
+                {progress.mastered ? 'Mastered' : progress.attempts > 0 ? 'Learning' : 'Not practiced'}
               </span>
             </div>
-            {m?.attempts > 0 && <div className="text-gray-500 text-xs">{m.correct} correct / {m.attempts} attempts</div>}
+            <div className="text-gray-500">
+              Accuracy: <span className="font-mono text-gray-300">{pct != null ? `${pct}%` : '—'}</span>
+              {progress.attempts > 0 && <span className="text-xs ml-1">({progress.correct}/{progress.attempts}{progress.hasRecent ? ' recent' : ''})</span>}
+            </div>
           </div>
           {containingLines.length > 0 && (
             <div className="space-y-1">
@@ -511,9 +549,30 @@ function SelectedElementDetail({ sym, elementMap, mastery, inSong, category, ver
 function LearnMode({ item, onBack, onComplete }) {
   const [currentChunk, setCurrentChunk] = useState(0);
   const [revealedLines, setRevealedLines] = useState(1);
+  const [complete, setComplete] = useState(false);
   const chunks = item.content?.chunks || [];
   const chunk = chunks[currentChunk];
   const lines = chunk ? item.content.lines.slice(chunk.lineRange[0], chunk.lineRange[1] + 1) : [];
+
+  function save(continueDaily) {
+    return submitMemoryPractice(item.id, {
+      mode: 'learn', chunkId: null,
+      results: [{ correct: true }],
+      totalMs: 0,
+    }).then(r => onComplete(r?.mastery, continueDaily));
+  }
+
+  if (complete) {
+    return (
+      <div className="space-y-6 max-w-2xl">
+        <h2 className="text-xl font-bold text-white">Lesson Complete</h2>
+        <div className="bg-port-card border border-port-border rounded-lg p-6 text-center text-gray-300">
+          You finished every verse in The Elements Song.
+        </div>
+        <PostCompletionActions onSave={() => save(false)} onContinue={() => save(true)} />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 max-w-2xl">
@@ -566,13 +625,7 @@ function LearnMode({ item, onBack, onComplete }) {
           </button>
         ) : (
           <button
-            onClick={() => {
-              submitMemoryPractice(item.id, {
-                mode: 'learn', chunkId: null,
-                results: [{ correct: true }],
-                totalMs: 0,
-              }).then(r => onComplete(r?.mastery)).catch(err => { console.warn('⚠️ Failed to record practice: ' + err.message); onComplete(null); });
-            }}
+            onClick={() => setComplete(true)}
             className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-port-success hover:bg-port-success/80 text-white rounded-lg transition-colors"
           >
             <Check size={16} /> Complete
@@ -587,11 +640,9 @@ function LearnMode({ item, onBack, onComplete }) {
 // study deck and the flash quiz surface the least-known elements first.
 function weakestFirstElements(elementMap, mastery) {
   return Object.entries(elementMap).sort((a, b) => {
-    const mA = mastery.elements?.[a[0]];
-    const mB = mastery.elements?.[b[0]];
-    const pctA = mA?.attempts > 0 ? mA.correct / mA.attempts : 0;
-    const pctB = mB?.attempts > 0 ? mB.correct / mB.attempts : 0;
-    return pctA - pctB;
+    const progressA = elementMasteryProgress(mastery.elements?.[a[0]]);
+    const progressB = elementMasteryProgress(mastery.elements?.[b[0]]);
+    return progressA.accuracy - progressB.accuracy;
   });
 }
 
@@ -618,6 +669,14 @@ function ElementStudyMode({ item, mastery, onBack, onComplete }) {
   const [flipped, setFlipped] = useState(false);
   const [results, setResults] = useState([]);
   const [startTime] = useState(Date.now());
+
+  function save(continueDaily) {
+    return submitMemoryPractice(item.id, {
+      mode: 'element-study', chunkId: null,
+      results: results.map(r => ({ correct: r.correct, element: r.element })),
+      totalMs: Date.now() - startTime,
+    }).then(r => onComplete(r?.mastery, continueDaily));
+  }
 
   if (!cards.length) {
     return (
@@ -666,18 +725,7 @@ function ElementStudyMode({ item, mastery, onBack, onComplete }) {
             </div>
           </div>
         )}
-        <button
-          onClick={() => {
-            submitMemoryPractice(item.id, {
-              mode: 'element-study', chunkId: null,
-              results: results.map(r => ({ correct: r.correct, element: r.element })),
-              totalMs: Date.now() - startTime,
-            }).then(r => onComplete(r?.mastery)).catch(err => { console.warn('⚠️ Failed to record practice: ' + err.message); onComplete(null); });
-          }}
-          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-port-accent hover:bg-port-accent/80 text-white rounded-lg transition-colors"
-        >
-          Save & Return
-        </button>
+        <PostCompletionActions onSave={() => save(false)} onContinue={() => save(true)} />
       </div>
     );
   }
@@ -787,6 +835,14 @@ function ElementFlashMode({ item, mastery, onBack, onComplete }) {
   const [startTime] = useState(Date.now());
   const inputRef = useRef(null);
 
+  function save(continueDaily) {
+    return submitMemoryPractice(item.id, {
+      mode: 'element-flash', chunkId: null,
+      results: results.map(r => ({ correct: r.correct, element: r.element, expected: r.expected, answered: r.answered })),
+      totalMs: Date.now() - startTime,
+    }).then(r => onComplete(r?.mastery, continueDaily));
+  }
+
   useEffect(() => { inputRef.current?.focus(); }, [idx]);
 
   const next = useCallback(() => {
@@ -846,18 +902,7 @@ function ElementFlashMode({ item, mastery, onBack, onComplete }) {
             </div>
           </div>
         )}
-        <button
-          onClick={() => {
-            submitMemoryPractice(item.id, {
-              mode: 'element-flash', chunkId: null,
-              results: results.map(r => ({ correct: r.correct, element: r.element, expected: r.expected, answered: r.answered })),
-              totalMs: Date.now() - startTime,
-            }).then(r => onComplete(r?.mastery)).catch(err => { console.warn('⚠️ Failed to record practice: ' + err.message); onComplete(null); });
-          }}
-          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-port-accent hover:bg-port-accent/80 text-white rounded-lg transition-colors"
-        >
-          Save & Return
-        </button>
+        <PostCompletionActions onSave={() => save(false)} onContinue={() => save(true)} />
       </div>
     );
   }
@@ -947,6 +992,14 @@ function FillBlankMode({ item, onBack, onComplete }) {
   const [startTime] = useState(Date.now());
   const inputRef = useRef(null);
 
+  function save(continueDaily) {
+    return submitMemoryPractice(item.id, {
+      mode: 'fill-blank', chunkId: null,
+      results: results.map(r => ({ correct: r.correct, expected: r.expected, answered: r.answered })),
+      totalMs: Date.now() - startTime,
+    }).then(r => onComplete(r?.mastery, continueDaily));
+  }
+
   useEffect(() => { inputRef.current?.focus(); }, [idx]);
 
   if (idx >= lines.length) {
@@ -966,18 +1019,7 @@ function FillBlankMode({ item, onBack, onComplete }) {
           <div className={`text-5xl font-bold font-mono ${scoreColor} mb-2`}>{pct}%</div>
           <div className="text-gray-400 text-sm">{correct} of {results.length} lines correct</div>
         </div>
-        <button
-          onClick={() => {
-            submitMemoryPractice(item.id, {
-              mode: 'fill-blank', chunkId: null,
-              results: results.map(r => ({ correct: r.correct, expected: r.expected, answered: r.answered })),
-              totalMs: Date.now() - startTime,
-            }).then(r => onComplete(r?.mastery)).catch(err => { console.warn('⚠️ Failed to record practice: ' + err.message); onComplete(null); });
-          }}
-          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-port-accent hover:bg-port-accent/80 text-white rounded-lg transition-colors"
-        >
-          Save & Return
-        </button>
+        <PostCompletionActions onSave={() => save(false)} onContinue={() => save(true)} />
       </div>
     );
   }

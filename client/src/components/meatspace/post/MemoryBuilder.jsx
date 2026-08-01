@@ -36,7 +36,7 @@ function mostOverdueFirst(a, b) {
 
 // Practice selection is URL-driven (`/post/memory/:itemId`), so this component
 // only ever renders the list — `onSelectItem` navigates (issue #3249).
-export default function MemoryBuilder({ onBack, onSelectItem }) {
+export default function MemoryBuilder({ onBack, onSelectItem, onReviewItem = onSelectItem }) {
   const [items, setItems] = useState([]);
   const [creating, setCreating] = useState(false);
 
@@ -150,7 +150,7 @@ export default function MemoryBuilder({ onBack, onSelectItem }) {
               </div>
             </div>
             <button
-              onClick={() => onSelectItem(dueItems[0])}
+              onClick={() => onReviewItem(dueItems[0])}
               className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-sm bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition-colors"
             >
               <BookOpen size={14} />

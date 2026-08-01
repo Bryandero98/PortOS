@@ -44,6 +44,7 @@ function TrainerHarness(props) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  submitTrainingEntry.mockResolvedValue({});
   // Cache reported warm for every mode so startMode skips the cache-fill
   // consent modal and goes straight to runMode — the modal flow is covered
   // separately and isn't the concern of these tests.
@@ -55,6 +56,9 @@ beforeEach(() => {
 
 describe('WordplayTrainer — training-log persistence (issue #2097)', () => {
   it('submits a training entry on round completion, with correctCount derived from the scored responses', async () => {
+    let resolveSave;
+    submitTrainingEntry.mockImplementation(() => new Promise(resolve => { resolveSave = resolve; }));
+    const onContinue = vi.fn();
     generatePostDrill.mockResolvedValue({
       type: 'compound-chain',
       challenges: [{ rootWord: 'fire', position: 'prefix', minExpected: 1 }],
@@ -63,7 +67,7 @@ describe('WordplayTrainer — training-log persistence (issue #2097)', () => {
       evaluation: { scores: [{ score: 85, feedback: 'Nice compounds!' }] },
     });
 
-    render(<TrainerHarness onBack={() => {}} config={{}} onConfigUpdate={() => {}} />);
+    render(<TrainerHarness onBack={() => {}} onContinue={onContinue} config={{}} onConfigUpdate={() => {}} />);
 
     fireEvent.click(await screen.findByText('Compound Chain'));
 
@@ -101,6 +105,37 @@ describe('WordplayTrainer — training-log persistence (issue #2097)', () => {
       feedback: 'Nice compounds!',
       correct: true,
     });
+
+    fireEvent.click(screen.getByText("Continue Today's Routine"));
+    expect(onContinue).not.toHaveBeenCalled();
+    await act(async () => resolveSave({}));
+    await waitFor(() => expect(onContinue).toHaveBeenCalledTimes(1));
+  });
+
+  it('stays on the results screen when a retry still cannot save', async () => {
+    const onContinue = vi.fn();
+    submitTrainingEntry.mockRejectedValue(new Error('offline'));
+    generatePostDrill.mockResolvedValue({
+      type: 'compound-chain',
+      challenges: [{ rootWord: 'fire', position: 'prefix', minExpected: 1 }],
+    });
+    scorePostLlmDrill.mockResolvedValue({
+      evaluation: { scores: [{ score: 85, feedback: 'Nice compounds!' }] },
+    });
+
+    render(<TrainerHarness onBack={() => {}} onContinue={onContinue} config={{}} onConfigUpdate={() => {}} />);
+    fireEvent.click(await screen.findByText('Compound Chain'));
+    await waitFor(() => expect(screen.getByText('fire')).toBeInTheDocument(), { timeout: GENERATED_DRILL_TIMEOUT });
+    fireEvent.change(screen.getByPlaceholderText(/other half/i), { target: { value: 'firehouse' } });
+    fireEvent.click(screen.getByText('Add'));
+    fireEvent.click(screen.getByText(/Done — Submit 1 compounds/));
+    fireEvent.click(await screen.findByText('See Results'));
+
+    await waitFor(() => expect(submitTrainingEntry).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByText("Continue Today's Routine"));
+    await waitFor(() => expect(submitTrainingEntry).toHaveBeenCalledTimes(2));
+    expect(onContinue).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByText("Continue Today's Routine")).toBeEnabled());
   });
 
   it('does not wedge on a permanent spinner after leaving a mode mid-generation then picking another (issue #2098)', async () => {

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Loader } from 'lucide-react';
-import { getPostConfig, getPostSessions, getPostStats } from '../../../services/api';
+import { getPostConfig, getPostRecommendations, getPostSessions, getPostStats } from '../../../services/api';
 import { usePostSession } from '../../../hooks/usePostSession';
 import PostSessionLauncher from '../post/PostSessionLauncher';
 import PostDrillRunner from '../post/PostDrillRunner';
@@ -83,12 +83,27 @@ export default function PostTab({ tab = 'launcher', subtab, mode }) {
     if (started) navigate('/post/session/run');
   }
 
-  // Save success → jump to the deep-linkable results URL for this session, so it
-  // is shareable/bookmarkable/reachable from History. The run id === session id.
-  async function handleSaved(savedSession) {
+  // Save success either continues the daily recommendation chain or opens the
+  // deep-linkable saved result. The run id === session id.
+  async function continueDailyRoutine() {
+    const result = await getPostRecommendations(1).catch(() => null);
+    const recommendation = result?.recommendations?.[0];
+    if (!recommendation) {
+      navigate('/post/launcher');
+      return;
+    }
+    if (recommendation.deepLink && recommendation.deepLink !== '/post/launcher') {
+      navigate(recommendation.deepLink);
+      return;
+    }
+    navigate(`/post/launcher?continue=${encodeURIComponent(recommendation.id)}`);
+  }
+
+  async function handleSaved(savedSession, { continueDaily = false } = {}) {
     await loadData();
     session.reset();
-    if (savedSession?.id) navigate(`/post/session/${savedSession.id}`);
+    if (continueDaily) await continueDailyRoutine();
+    else if (savedSession?.id) navigate(`/post/session/${savedSession.id}`);
     else navigate('/post/launcher');
   }
 
@@ -233,6 +248,7 @@ export default function PostTab({ tab = 'launcher', subtab, mode }) {
           onSelectMode={(id) => navigate(`/post/wordplay/${id}`)}
           onExitMode={() => navigate('/post/wordplay')}
           onBack={() => navigate('/post/launcher')}
+          onContinue={continueDailyRoutine}
         />
       );
     case 'morse': {
@@ -249,6 +265,7 @@ export default function PostTab({ tab = 'launcher', subtab, mode }) {
           onSelectMode={(id) => navigate(`/post/morse/${id}${location.search}`)}
           onExitMode={() => navigate(`/post/morse${location.search}`)}
           onBack={() => navigate('/post/launcher')}
+          onContinue={continueDailyRoutine}
         />
       );
     }
@@ -266,6 +283,10 @@ export default function PostTab({ tab = 'launcher', subtab, mode }) {
               if (item.id === 'elements-song') { setElementsItem(item); navigate('/post/memory/elements'); }
               else { setMemoryItem(item); navigate(`/post/memory/${item.id}`); }
             }}
+            onReviewItem={(item) => {
+              if (item.id === 'elements-song') navigate('/post/memory/elements/element-flash');
+              else navigate(`/post/memory/${item.id}/spaced`);
+            }}
           />
         );
       }
@@ -278,6 +299,7 @@ export default function PostTab({ tab = 'launcher', subtab, mode }) {
             onSelectMode={(id) => navigate(`/post/memory/elements/${id}`)}
             onExitMode={() => navigate('/post/memory/elements')}
             onBack={() => { setElementsItem(null); navigate('/post/memory'); }}
+            onContinue={continueDailyRoutine}
             loadItemOnMount={!elementsItem}
           />
         );
@@ -296,6 +318,7 @@ export default function PostTab({ tab = 'launcher', subtab, mode }) {
           onSelectMode={(id) => navigate(`/post/memory/${subtab}/${id}`)}
           onExitMode={() => navigate(`/post/memory/${subtab}`)}
           onBack={() => { setMemoryItem(null); navigate('/post/memory'); }}
+          onContinue={continueDailyRoutine}
         />
       );
     }
@@ -311,6 +334,9 @@ export default function PostTab({ tab = 'launcher', subtab, mode }) {
           onViewConfig={() => navigate('/post/config')}
           onViewMemory={() => navigate('/post/memory')}
           onViewMorse={() => navigate('/post/morse')}
+          autoStartRecommendationId={new URLSearchParams(location.search).get('continue')}
+          onAutoStartConsumed={() => navigate('/post/launcher', { replace: true })}
+          onNavigate={navigate}
         />
       );
   }

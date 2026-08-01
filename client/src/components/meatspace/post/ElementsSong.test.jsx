@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, act } from '@testing-library/react';
-import ElementsSong, { recommendedElementsMode } from './ElementsSong';
+import ElementsSong, { elementMasteryProgress, recommendedElementsMode } from './ElementsSong';
 
 // The Flash Cards study mode (issue #2480) is a flip-to-reveal study surface —
 // distinct from the Element Flash recall test — that must still advance element
@@ -83,7 +83,7 @@ describe('ElementsSong — Flash Cards study mode', () => {
     }
 
     // Completion screen → persist the study reps.
-    fireEvent.click(screen.getByText('Save & Return'));
+    fireEvent.click(screen.getByText('Save Progress'));
     await settle();
 
     expect(submitMemoryPractice).toHaveBeenCalledTimes(1);
@@ -95,6 +95,24 @@ describe('ElementsSong — Flash Cards study mode', () => {
     // exactly one was marked known.
     expect(payload.results.every((r) => r.element === 'H' || r.element === 'He')).toBe(true);
     expect(payload.results.filter((r) => r.correct)).toHaveLength(1);
+  });
+
+  it('saves the deck before continuing the daily routine', async () => {
+    const onContinue = vi.fn();
+    render(<RoutedElementsSong item={item} onBack={() => {}} onContinue={onContinue} />);
+    await settle();
+
+    fireEvent.click(screen.getByText('Flash Cards'));
+    for (let i = 0; i < 2; i++) {
+      fireEvent.click(screen.getByRole('button', { name: 'Reveal' }));
+      fireEvent.click(screen.getByText('Got It'));
+    }
+
+    fireEvent.click(screen.getByText("Continue Today's Routine"));
+    await settle();
+
+    expect(submitMemoryPractice).toHaveBeenCalledTimes(1);
+    expect(onContinue).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -130,6 +148,50 @@ describe('ElementsSong — routed practice modes (issue #3249)', () => {
   });
 });
 
+describe('ElementsSong mastery display', () => {
+  it('distinguishes one-answer accuracy from confirmed mastery', async () => {
+    const learningItem = {
+      ...item,
+      content: {
+        ...item.content,
+        lines: [{ text: 'Hydrogen and helium', elements: ['H', 'He'] }],
+        chunks: [{ id: 'verse-1', label: 'Verse 1', lineRange: [0, 0] }],
+      },
+      mastery: {
+        overallPct: 0,
+        chunks: {},
+        elements: { H: { attempts: 1, correct: 1, recent: [1] } },
+      },
+    };
+
+    render(<ElementsSong item={learningItem} mode={null} onSelectMode={() => {}} onExitMode={() => {}} onBack={() => {}} />);
+    await settle();
+
+    expect(screen.getByText('0 / 2 elements mastered')).toBeInTheDocument();
+    expect(screen.getByText('Mastery requires 3 recent checks at 80%+ accuracy')).toBeInTheDocument();
+
+    fireEvent.mouseEnter(screen.getByText('H'));
+    expect(screen.getAllByText('Learning')).toHaveLength(2); // legend + tooltip status
+    expect(screen.getByText('100%')).toBeInTheDocument();
+    expect(screen.getByText('(1/1 recent)')).toBeInTheDocument();
+  });
+
+  it('uses recent answers for the same decay-aware mastery gate as the server', () => {
+    expect(elementMasteryProgress({ attempts: 10, correct: 10, recent: [0, 0, 0] })).toEqual({
+      accuracy: 0,
+      attempts: 3,
+      correct: 0,
+      hasRecent: true,
+      mastered: false,
+    });
+    expect(elementMasteryProgress({ attempts: 3, correct: 3 })).toMatchObject({
+      accuracy: 1,
+      attempts: 3,
+      mastered: true,
+    });
+  });
+});
+
 describe('recommendedElementsMode', () => {
   it('sends a never-practiced user to the study deck first', () => {
     expect(recommendedElementsMode({ elements: {}, chunks: {} })).toBe('element-study');
@@ -140,6 +202,9 @@ describe('recommendedElementsMode', () => {
 
   it('sends weak element recall to the recall test', () => {
     expect(recommendedElementsMode({ elements: { H: { attempts: 10, correct: 3 } } })).toBe('element-flash');
+    expect(recommendedElementsMode({
+      elements: { H: { attempts: 10, correct: 10, recent: [0, 0, 0] } },
+    })).toBe('element-flash');
   });
 
   it('sends solid elements but weak verses to the lyrics drill', () => {
