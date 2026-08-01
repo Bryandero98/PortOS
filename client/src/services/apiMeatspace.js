@@ -250,6 +250,11 @@ export const submitMemoryPractice = (id, data) => request(`/meatspace/post/memor
   method: 'POST',
   body: JSON.stringify(data)
 });
+export const attestMemoryMastery = (id, options = {}) => request(`/meatspace/post/memory-items/${id}/attest-mastery`, {
+  method: 'POST',
+  body: JSON.stringify({ acknowledged: true }),
+  ...options
+});
 export const getMemoryMastery = (id) => request(`/meatspace/post/memory-items/${id}/mastery`);
 export const getChunkMastery = (id) => request(`/meatspace/post/memory-items/${id}/chunk-mastery`);
 export const generateMemoryDrill = (data) => request('/meatspace/post/memory-drill', {

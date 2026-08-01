@@ -17,6 +17,12 @@ const ITEM_TYPES = [
 // schedule = due (matches the server's `isMemoryItemDue`), so legacy items and
 // anything the migration hasn't stamped still surface for review.
 function isItemDue(item) {
+  const retention = item?.mastery?.retention;
+  if (retention?.status === 'attested' || retention?.status === 'mastered') {
+    if (retention.spotCheckCompletedAt) return false;
+    const spotCheckAt = Date.parse(retention.spotCheckAt ?? '');
+    return Number.isFinite(spotCheckAt) && spotCheckAt <= Date.now();
+  }
   const nr = item?.schedule?.nextReview;
   if (typeof nr !== 'string') return true;
   const t = Date.parse(nr);
@@ -256,7 +262,7 @@ export default function MemoryBuilder({ onBack, onSelectItem, onReviewItem = onS
                 </div>
               </div>
               <div className="flex flex-col items-end gap-1 shrink-0">
-                <MasteryBadge pct={item.mastery?.overallPct || 0} />
+                <MasteryBadge pct={item.mastery?.overallPct || 0} retention={item.mastery?.retention} />
                 {isItemDue(item) && (
                   <span className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-emerald-400">
                     <CalendarClock size={10} />
@@ -342,7 +348,16 @@ function ItemIcon({ type, builtin }) {
   }
 }
 
-function MasteryBadge({ pct }) {
+function MasteryBadge({ pct, retention }) {
+  if (retention?.status === 'attested') {
+    return <div className="text-xs font-medium text-emerald-400">Attested</div>;
+  }
+  if (retention?.status === 'mastered') {
+    return <div className="text-xs font-medium text-port-success">Mastered</div>;
+  }
+  if (retention?.status === 'lapsed') {
+    return <div className="text-xs font-medium text-amber-400">Review resumed</div>;
+  }
   const color = pct >= 80 ? 'text-port-success' : pct >= 40 ? 'text-port-warning' : 'text-gray-500';
   return (
     <div className={`text-sm font-mono font-medium ${color}`}>

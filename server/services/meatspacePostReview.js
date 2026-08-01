@@ -9,10 +9,10 @@
  *   - When a skill first becomes mastered it's tracked with `masteredAt` and a
  *     first review due 7 days out.
  *   - Left un-practiced, it goes "due for review" on an expanding interval
- *     (7 → 30 → 90 days). Passing a maintenance review pushes the next review
- *     further out; failing one flips it to "needs refresh" and schedules a
- *     sooner re-review — but NEVER demotes the underlying `floorLevel` (the
- *     anti-frustration guard lives in the progression ladder, untouched here).
+ *     (7 → 30 → 90 days). Three consecutive passes make mastery permanent and
+ *     end the schedule. A failure resets that verification count, flips to
+ *     "needs refresh", and schedules a sooner re-review — but NEVER demotes the
+ *     underlying `floorLevel` (the anti-frustration guard lives elsewhere).
  *   - Actively practicing a mastered skill (any non-review session at it) resets
  *     its staleness clock, so only genuinely inactive skills ever surface.
  *
@@ -36,6 +36,7 @@ const REVIEW_SCHEDULE_FILE = join(MEATSPACE_DIR, 'post-review-schedule.json');
 
 // Expanding review intervals (days) after mastery — SM-2-flavored per skill.
 export const REVIEW_INTERVALS_DAYS = [7, 30, 90];
+export const PERMANENT_MASTERY_PASSES = 3;
 // A failed review schedules a much sooner re-review (and flips to needs-refresh).
 export const REFRESH_INTERVAL_DAYS = 3;
 // Retention % window (reviews passed / taken) reported in the progress dashboard.
@@ -91,15 +92,17 @@ export function defaultReviewEntry(skill, now = new Date()) {
     lastReviewedAt: null,
     reviewStage: 0,
     nextReviewAt: addDays(nowMs, REVIEW_INTERVALS_DAYS[0]),
-    status: 'fresh',                // 'fresh' | 'needs-refresh'
+    status: 'fresh',                // 'fresh' | 'needs-refresh' | 'permanent'
     reviewsPassed: 0,
     reviewsTaken: 0,
+    verificationPasses: 0,
     reviewHistory: [],              // [{ date, passed }]
   };
 }
 
 /** True when a tracked skill's review is due (`nextReviewAt <= now`). */
 export function isReviewDue(entry, now = new Date()) {
+  if (entry?.status === 'permanent') return false;
   const t = Date.parse(entry?.nextReviewAt ?? '');
   if (Number.isNaN(t)) return true;
   return t <= now.getTime();
@@ -107,9 +110,10 @@ export function isReviewDue(entry, now = new Date()) {
 
 /**
  * Retention state for reporting: `fresh` (mastered, not yet due), `due` (review
- * overdue), or `needs-refresh` (last review failed, awaiting a sooner re-review).
+ * overdue), `needs-refresh` (last review failed), or `permanent` (three passes).
  */
 export function reviewState(entry, now = new Date()) {
+  if (entry?.status === 'permanent') return 'permanent';
   if (entry?.status === 'needs-refresh') return 'needs-refresh';
   return isReviewDue(entry, now) ? 'due' : 'fresh';
 }
@@ -134,6 +138,7 @@ export function retentionForEntry(entry, now = new Date(), windowDays = RETENTIO
 
 /** Apply a passed/failed review to an entry (pure — returns a new entry). */
 export function applyReviewResult(entry, passed, now = new Date()) {
+  if (entry?.status === 'permanent') return entry;
   const nowMs = now.getTime();
   const nowIso = now.toISOString();
   const history = [...(Array.isArray(entry.reviewHistory) ? entry.reviewHistory : []), { date: nowIso, passed: !!passed }]
@@ -144,11 +149,20 @@ export function applyReviewResult(entry, passed, now = new Date()) {
     lastPracticedAt: nowIso,
     reviewsTaken: (entry.reviewsTaken || 0) + 1,
     reviewsPassed: (entry.reviewsPassed || 0) + (passed ? 1 : 0),
+    verificationPasses: passed ? (entry.verificationPasses || 0) + 1 : 0,
     reviewHistory: history,
   };
   if (passed) {
-    // Passed a maintenance rep — push the next review further out (expanding
-    // interval) and clear any needs-refresh flag.
+    // Three passed maintenance reps are enough evidence: mastery becomes
+    // permanent and the skill leaves the review queue entirely.
+    if (next.verificationPasses >= PERMANENT_MASTERY_PASSES) {
+      next.reviewStage = REVIEW_INTERVALS_DAYS.length - 1;
+      next.status = 'permanent';
+      next.nextReviewAt = null;
+      next.permanentAt = nowIso;
+      return next;
+    }
+    // Until then, push the next verification further out.
     next.reviewStage = Math.min(REVIEW_INTERVALS_DAYS.length - 1, (entry.reviewStage || 0) + 1);
     next.status = 'fresh';
     next.nextReviewAt = addDays(nowMs, intervalForStage(next.reviewStage));
@@ -169,6 +183,7 @@ export function applyReviewResult(entry, passed, now = new Date()) {
  * the current stage's interval; does not count as a formal review.
  */
 export function applyPractice(entry, now = new Date()) {
+  if (entry?.status === 'permanent') return entry;
   const nowMs = now.getTime();
   return {
     ...entry,
@@ -279,7 +294,7 @@ export async function getDueReviews(now = new Date(), limit = 2) {
   // isReviewDue covers both a fresh skill past its interval and a needs-refresh
   // skill past its (shorter) refresh interval.
   return entries
-    .filter(e => isReviewDue(e, now))
+    .filter(e => e.kind !== 'memory' && isReviewDue(e, now))
     .sort((a, b) => Date.parse(a.nextReviewAt || 0) - Date.parse(b.nextReviewAt || 0))
     .slice(0, Math.max(0, limit));
 }
@@ -289,7 +304,9 @@ export async function getDueReviews(now = new Date(), limit = 2) {
  * dashboard mastery block (issue #2091 + #2096).
  */
 export async function getRetentionReport(now = new Date()) {
-  const entries = await getReviewSchedule();
+  // Memory retention moved to each memory item's mastery record; ignore legacy
+  // per-chunk entries so one fact never receives two competing schedules.
+  const entries = (await getReviewSchedule()).filter(e => e.kind !== 'memory');
   let totalTaken = 0;
   let totalPassed = 0;
   const skills = entries.map(e => {

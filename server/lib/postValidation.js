@@ -369,11 +369,25 @@ export const memoryItemUpdateSchema = z.object({
       correct: z.number().int().min(0),
       attempts: z.number().int().min(0),
       lastPracticed: z.string().nullable().optional(),
+      recent: z.array(z.union([z.literal(0), z.literal(1)])).max(10).optional(),
+      masteredAt: z.string().optional(),
+      masterySource: z.enum(['verified', 'attested']).optional(),
     })).optional(),
     elements: z.record(z.object({
       correct: z.number().int().min(0),
       attempts: z.number().int().min(0),
+      recent: z.array(z.union([z.literal(0), z.literal(1)])).max(10).optional(),
+      masteredAt: z.string().optional(),
+      masterySource: z.enum(['verified', 'attested']).optional(),
     })).optional(),
+    retention: z.object({
+      status: z.enum(['learning', 'attested', 'mastered', 'lapsed']),
+      attestedAt: z.string().nullable().optional(),
+      masteredAt: z.string().nullable().optional(),
+      spotCheckAt: z.string().nullable().optional(),
+      spotCheckCompletedAt: z.string().nullable().optional(),
+      lapsedAt: z.string().nullable().optional(),
+    }).optional(),
   }).optional(),
 });
 
@@ -383,6 +397,7 @@ const practiceResultSchema = z.object({
   element: z.string().nullable().optional(),
   expected: z.string().optional(),
   answered: z.string().optional(),
+  chunkId: z.string().optional(),
 });
 
 export const memoryPracticeSchema = z.object({
@@ -393,6 +408,10 @@ export const memoryPracticeSchema = z.object({
   chunkId: z.string().nullable().optional(),
   results: z.array(practiceResultSchema).min(1),
   totalMs: z.number().min(0).optional(),
+});
+
+export const memoryMasteryAttestationSchema = z.object({
+  acknowledged: z.literal(true),
 });
 
 export const memoryDrillRequestSchema = z.object({

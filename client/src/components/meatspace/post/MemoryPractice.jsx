@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { ChevronLeft, Check, X, SkipForward, RotateCcw, Target, ChevronDown, Loader } from 'lucide-react';
-import { submitMemoryPractice, getChunkMastery, getMemoryItem } from '../../../services/api';
+import { ChevronLeft, Check, X, SkipForward, RotateCcw, Target, ChevronDown, Loader, ShieldCheck } from 'lucide-react';
+import { submitMemoryPractice, getChunkMastery, getMemoryItem, attestMemoryMastery } from '../../../services/api';
 import PostCompletionActions from './PostCompletionActions';
 import { startRetryableSave } from './completionSave';
 
@@ -27,21 +27,29 @@ export const MEMORY_PRACTICE_MODE_IDS = MODES.map(m => m.id);
 export default function MemoryPractice({ itemId, item: seedItem, mode, onSelectMode, onExitMode, onBack, onContinue }) {
   const [loadedItem, setLoadedItem] = useState(null);
   const [notFound, setNotFound] = useState(false);
-  const item = seedItem || loadedItem;
+  const item = loadedItem || seedItem;
 
   useEffect(() => {
-    if (seedItem || !itemId) return;
+    if (!itemId) return;
     let cancelled = false;
     setLoadedItem(null);
     setNotFound(false);
     getMemoryItem(itemId)
-      .then(data => { if (!cancelled) { if (data) setLoadedItem(data); else setNotFound(true); } })
+      .then(data => { if (!cancelled) { if (data) setLoadedItem(data); else if (!seedItem) setNotFound(true); } })
       .catch(err => {
         console.warn(`⚠️ Failed to load memory item ${itemId}: ${err.message}`);
-        if (!cancelled) setNotFound(true);
+        if (!cancelled && !seedItem) setNotFound(true);
       });
     return () => { cancelled = true; };
   }, [itemId, seedItem]);
+
+  function handleMasteryChange(nextMastery, nextSchedule) {
+    setLoadedItem(current => ({
+      ...(current || seedItem),
+      mastery: nextMastery,
+      ...(nextSchedule ? { schedule: nextSchedule } : {}),
+    }));
+  }
 
   if (notFound) {
     return (
@@ -82,6 +90,7 @@ export default function MemoryPractice({ itemId, item: seedItem, mode, onSelectM
       onExitMode={onExitMode}
       onBack={onBack}
       onContinue={onContinue}
+      onMasteryChange={handleMasteryChange}
     />
   );
 }
@@ -89,7 +98,7 @@ export default function MemoryPractice({ itemId, item: seedItem, mode, onSelectM
 // The practice runner itself. `mode` is URL-driven; PostTab keys this component
 // on it, so every mode entry (and every return to the picker) mounts fresh —
 // no manual per-run state reset is needed.
-function MemoryPracticeRunner({ item, mode, onSelectMode, onExitMode, onBack, onContinue }) {
+function MemoryPracticeRunner({ item, mode, onSelectMode, onExitMode, onBack, onContinue, onMasteryChange }) {
   const [results, setResults] = useState([]);
   const [currentIdx, setCurrentIdx] = useState(0);
   const [answer, setAnswer] = useState('');
@@ -98,6 +107,18 @@ function MemoryPracticeRunner({ item, mode, onSelectMode, onExitMode, onBack, on
   const [startTime] = useState(Date.now());
   const inputRef = useRef(null);
   const spacedSavesRef = useRef([]);
+  const [mastery, setMastery] = useState(item.mastery || { overallPct: 0, chunks: {}, elements: {}, retention: { status: 'learning' } });
+  const [attestConfirming, setAttestConfirming] = useState(false);
+  const [attesting, setAttesting] = useState(false);
+  const [attestError, setAttestError] = useState('');
+
+  // The route renders its seed immediately, then replaces it with the
+  // authoritative item from the server. Keep the runner's local display in
+  // step so a stale navigation seed cannot resurrect an attestation or other
+  // mastery change that was already persisted.
+  useEffect(() => {
+    setMastery(item.mastery || { overallPct: 0, chunks: {}, elements: {}, retention: { status: 'learning' } });
+  }, [item.id, item.mastery]);
 
   // Spaced repetition state
   const [chunkMastery, setChunkMastery] = useState(null);
@@ -106,6 +127,24 @@ function MemoryPracticeRunner({ item, mode, onSelectMode, onExitMode, onBack, on
 
   const lines = item.content?.lines || [];
   const chunks = item.content?.chunks || [];
+  const retention = mastery.retention || { status: 'learning' };
+  const spotCheckTime = Date.parse(retention.spotCheckAt ?? '');
+  const spotCheckDue = (retention.status === 'attested' || retention.status === 'mastered')
+    && !retention.spotCheckCompletedAt
+    && Number.isFinite(spotCheckTime)
+    && spotCheckTime <= Date.now();
+
+  async function confirmAttestation() {
+    setAttesting(true);
+    setAttestError('');
+    const result = await attestMemoryMastery(item.id, { silent: true }).catch(() => null);
+    setAttesting(false);
+    if (result?.mastery) {
+      setMastery(result.mastery);
+      onMasteryChange(result.mastery, result.schedule);
+      setAttestConfirming(false);
+    } else setAttestError('Could not save mastery. Please try again.');
+  }
   const fillBlankLine = lines[currentIdx] || null;
   const fillBlankText = fillBlankLine?.text || '';
   const fillBlankWords = fillBlankText.split(/\s+/).filter(Boolean);
@@ -176,6 +215,41 @@ function MemoryPracticeRunner({ item, mode, onSelectMode, onExitMode, onBack, on
 
         <p className="text-gray-400 text-sm">Choose a practice mode:</p>
 
+        <div className="bg-port-card border border-port-border rounded-lg p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <ShieldCheck size={20} className={retention.status === 'lapsed' ? 'text-amber-400' : 'text-emerald-400'} />
+            <div>
+              <div className="text-sm font-medium text-white">
+                {retention.status === 'attested' && 'Mastery attested'}
+                {retention.status === 'mastered' && (retention.spotCheckCompletedAt ? 'Mastery verified permanently' : 'Mastery verified')}
+                {retention.status === 'lapsed' && 'Review resumed'}
+                {retention.status === 'learning' && 'Still learning'}
+              </div>
+              <div className="text-xs text-gray-500 mt-0.5">
+                {retention.status === 'attested' && 'One future spot check will verify this permanently.'}
+                {retention.status === 'mastered' && (retention.spotCheckCompletedAt ? 'No more time decay or scheduled reviews.' : 'One future spot check remains.')}
+                {retention.status === 'lapsed' && 'A missed spot check returned this item to the routine.'}
+                {retention.status === 'learning' && 'Already know it? Attest now and verify it once later.'}
+              </div>
+            </div>
+          </div>
+          {retention.status === 'learning' && (
+            attestConfirming ? (
+              <div className="flex items-center gap-2">
+                <button onClick={() => setAttestConfirming(false)} disabled={attesting} className="min-h-11 px-3 text-sm text-gray-400 hover:text-white">Cancel</button>
+                <button onClick={confirmAttestation} disabled={attesting} className="min-h-11 px-3 text-sm bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-lg">
+                  {attesting ? 'Saving...' : 'Yes, I know this'}
+                </button>
+              </div>
+            ) : (
+              <button onClick={() => setAttestConfirming(true)} className="shrink-0 min-h-11 px-3 text-sm border border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10 rounded-lg">
+                I already know this
+              </button>
+            )
+          )}
+          {attestError && <div role="alert" className="text-xs text-port-error">{attestError}</div>}
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {MODES.map(m => (
             <button
@@ -194,7 +268,7 @@ function MemoryPracticeRunner({ item, mode, onSelectMode, onExitMode, onBack, on
 
         {/* Chunk mastery overview */}
         {chunks.length > 0 && (
-          <ChunkMasteryOverview item={item} />
+          <ChunkMasteryOverview item={{ ...item, mastery }} />
         )}
       </div>
     );
@@ -706,7 +780,9 @@ function MemoryPracticeRunner({ item, mode, onSelectMode, onExitMode, onBack, on
     } else {
       // Save practice for this chunk, move to next
       const chunkResults = results.filter(r => r.chunkId === currentChunk.id);
-      if (chunkResults.length > 0) {
+      // A due retention audit is scored over the WHOLE spaced run. Saving each
+      // chunk here would let the first chunk permanently pass/fail the item.
+      if (!spotCheckDue && chunkResults.length > 0) {
         const payload = {
           mode: 'sequence',
           chunkId: currentChunk.id,
@@ -749,8 +825,22 @@ function MemoryPracticeRunner({ item, mode, onSelectMode, onExitMode, onBack, on
 
   async function saveAndExit(continueDaily) {
     // Spaced repetition persists each completed chunk as the user advances;
-    // the completion action waits for those writes and retries failures.
-    if (mode === 'spaced') await Promise.all(spacedSavesRef.current.map(save => save()));
+    // the completion action waits for those writes and retries failures. A due
+    // spot check instead submits one aggregate result at this explicit finish
+    // boundary so no individual chunk can decide the whole audit.
+    if (mode === 'spaced' && spotCheckDue) {
+      await submitMemoryPractice(item.id, {
+        mode: 'sequence',
+        chunkId: null,
+        results: results.map(result => ({
+          correct: result.correct,
+          expected: result.expected,
+          answered: result.answered,
+          chunkId: result.chunkId,
+        })),
+        totalMs: Date.now() - startTime,
+      });
+    } else if (mode === 'spaced') await Promise.all(spacedSavesRef.current.map(save => save()));
     else await savePractice(mode, results);
     if (continueDaily) onContinue();
     else onBack();
@@ -811,7 +901,9 @@ function ChunkMasteryOverview({ item }) {
         <div className="px-3 pb-3 space-y-1.5">
           {chunks.map(chunk => {
             const stats = item.mastery?.chunks?.[chunk.id];
-            const accuracy = stats?.attempts > 0 ? Math.round((stats.correct / stats.attempts) * 100) : 0;
+            const accuracy = typeof stats?.masteredAt === 'string'
+              ? 100
+              : stats?.attempts > 0 ? Math.round((stats.correct / stats.attempts) * 100) : 0;
             const barColor = accuracy >= 80 ? 'bg-port-success' : accuracy >= 40 ? 'bg-port-warning' : 'bg-gray-600';
 
             return (
