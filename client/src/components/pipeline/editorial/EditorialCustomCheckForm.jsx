@@ -12,6 +12,7 @@
  * committing the check to the catalog.
  */
 import { useEffect, useRef, useState } from 'react';
+import useMounted from '../../../hooks/useMounted';
 import { FlaskConical, Loader2, Save, X } from 'lucide-react';
 import { CHECK_SCOPE_ORDER, scopeLabel, SEVERITY_BADGE_CLASSES } from '../../../lib/editorialChecks';
 
@@ -53,8 +54,7 @@ export default function EditorialCustomCheckForm({ check = null, saving = false,
   const [previewing, setPreviewing] = useState(false);
   const [previewError, setPreviewError] = useState('');
   const previewReqRef = useRef(0);
-  const mountedRef = useRef(true);
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  const mountedRef = useMounted();
 
   // Invalidate + clear any preview when the draft or the target series changes.
   const invalidatePreview = () => {

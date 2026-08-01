@@ -140,6 +140,13 @@ export default function TracksManager() {
   // for every selection change (incl. idle / not-found) so a modal/remix left
   // open can't drive the previous track (see Authors.jsx for the base pattern).
   const hydratedRef = useRef(null);
+  // Set by `handleSave` to the id it just created. The create flow navigates
+  // /music/tracks/new → /music/tracks/<id>, which re-runs this effect; without
+  // the marker the derivation below would snap a "Chiptune score" chosen BEFORE
+  // saving back to "Audio model" the moment the track came into existence
+  // (#3264). Consumed once — a later re-selection of the same track hydrates
+  // from `chiptuneScore` normally.
+  const justCreatedIdRef = useRef(null);
   const selectionKey = id ?? null;
   useEffect(() => {
     if (loading) return;
@@ -147,9 +154,19 @@ export default function TracksManager() {
     hydratedRef.current = selectionKey;
     selectedIdRef.current = selectionKey;
     resetTrackViewState();
-    if (isCreate) setForm(emptyForm());
-    else if (selected) setForm(formFromTrack(selected));
-    setGenMode(selected?.chiptuneScore ? 'chiptune' : 'audio');
+    if (isCreate) {
+      setForm(emptyForm());
+      // Deliberately no `setGenMode` here. A new track has no score to derive
+      // from, so the derivation could only ever force 'audio' — and the create
+      // editor renders while `listTracks` is still in flight, so it would also
+      // clobber a mode the user picked during that window.
+    } else if (selected) {
+      setForm(formFromTrack(selected));
+      // Skip the derivation exactly once for the track `handleSave` just made,
+      // so the pre-save choice survives the create → navigate hydration.
+      if (justCreatedIdRef.current === selectionKey) justCreatedIdRef.current = null;
+      else setGenMode(selected.chiptuneScore ? 'chiptune' : 'audio');
+    }
   }, [selectionKey, isCreate, selected, loading]);
 
   const upsertLocal = (track) => {
@@ -171,6 +188,9 @@ export default function TracksManager() {
       // Point the async-handler ref at the new id immediately (the hydration
       // effect also sets it, but not until after navigation re-renders).
       selectedIdRef.current = created.id;
+      // Carry the pre-save generator choice through the create → navigate
+      // hydration instead of re-deriving it from the (score-less) new track.
+      justCreatedIdRef.current = created.id;
       navigate(`/music/tracks/${encodeURIComponent(created.id)}`);
       toast.success(`Created "${created.title}"`);
     } else {
@@ -425,55 +445,64 @@ export default function TracksManager() {
                 />
               </Field>
 
-              {/* Generation — available once the track is saved (the server
-                  attaches the audio + metadata to the persisted track). Two
-                  modes: the on-device audio models (MusicGen/AudioLDM2/ACE-Step)
-                  and the LLM-composed looping chiptune score (#2911). */}
-              {persisted ? (
-                <div className="space-y-2">
-                  <div className="inline-flex rounded-lg border border-port-border overflow-hidden text-sm" role="group" aria-label="Generation mode">
-                    {[['audio', 'Audio model'], ['chiptune', 'Chiptune score']].map(([mode, label]) => (
-                      <button
-                        key={mode}
-                        type="button"
-                        onClick={() => setGenMode(mode)}
-                        className={`px-3 py-1.5 ${genMode === mode ? 'bg-port-accent/20 text-white' : 'bg-port-bg text-gray-400 hover:text-white'}`}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                  {genMode === 'chiptune' ? (
-                    <ChiptunePanel
-                      track={persisted}
-                      remix={chiptuneRemix}
-                      onTrackUpdate={(updated) => {
-                        upsertLocal(updated); // list update is id-keyed → always safe
-                        if (selectedIdRef.current === updated.id) {
-                          setForm((f) => ({ ...f, audioFilename: updated.audioFilename || f.audioFilename }));
-                        }
-                      }}
-                    />
-                  ) : (
-                    <MusicGenPanel
-                      track={persisted}
-                      prompt={form.prompt}
-                      lyrics={form.lyrics}
-                      remix={remix}
-                      onGenerated={(updated) => {
-                        upsertLocal(updated); // list update is id-keyed → always safe
-                        // Merge ONLY the server-set generation fields into the open
-                        // form (the active audio pointer mirrors onto the form) so any
-                        // UNSAVED edits the user made to title/artist/album/prompt/
-                        // lyrics before clicking Generate survive.
-                        if (selectedIdRef.current === updated.id) {
-                          setForm((f) => ({ ...f, audioFilename: updated.audioFilename || '' }));
-                        }
-                      }}
-                    />
-                  )}
+              {/* Generation — two modes: the on-device audio models
+                  (MusicGen/AudioLDM2/ACE-Step) and the LLM-composed looping
+                  chiptune score (#2911).
+
+                  The mode TOGGLE renders even before the track is saved: mode
+                  is pure local state and needs no track id, and hiding it left
+                  a brand-new track showing no sign either generator existed
+                  (#3264). The PANELS stay gated on `persisted` — the server
+                  attaches audio + gen metadata to a saved id — but the gate now
+                  explains itself instead of rendering an empty region. */}
+              <div className="space-y-2">
+                <div className="inline-flex rounded-lg border border-port-border overflow-hidden text-sm" role="group" aria-label="Generation mode">
+                  {[['audio', 'Audio model'], ['chiptune', 'Chiptune score']].map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setGenMode(mode)}
+                      aria-pressed={genMode === mode}
+                      className={`px-3 py-1.5 ${genMode === mode ? 'bg-port-accent/20 text-white' : 'bg-port-bg text-gray-400 hover:text-white'}`}
+                    >
+                      {label}
+                    </button>
+                  ))}
                 </div>
-              ) : null}
+                {!persisted ? (
+                  <p className="text-xs text-gray-500">
+                    Save the track first, then generate {genMode === 'chiptune' ? 'a chiptune score' : 'with an audio model'}.
+                  </p>
+                ) : genMode === 'chiptune' ? (
+                  <ChiptunePanel
+                    track={persisted}
+                    remix={chiptuneRemix}
+                    onTrackUpdate={(updated) => {
+                      upsertLocal(updated); // list update is id-keyed → always safe
+                      if (selectedIdRef.current === updated.id) {
+                        setForm((f) => ({ ...f, audioFilename: updated.audioFilename || f.audioFilename }));
+                      }
+                    }}
+                  />
+                ) : (
+                  <MusicGenPanel
+                    track={persisted}
+                    prompt={form.prompt}
+                    lyrics={form.lyrics}
+                    remix={remix}
+                    onGenerated={(updated) => {
+                      upsertLocal(updated); // list update is id-keyed → always safe
+                      // Merge ONLY the server-set generation fields into the open
+                      // form (the active audio pointer mirrors onto the form) so any
+                      // UNSAVED edits the user made to title/artist/album/prompt/
+                      // lyrics before clicking Generate survive.
+                      if (selectedIdRef.current === updated.id) {
+                        setForm((f) => ({ ...f, audioFilename: updated.audioFilename || '' }));
+                      }
+                    }}
+                  />
+                )}
+              </div>
 
               {/* Render history — every generated/uploaded take as a card. The
                   active take is highlighted; each card opens a detail/remix modal,
@@ -550,7 +579,9 @@ export default function TracksManager() {
                   ) : null}
                 </div>
               ) : (
-                <p className="text-xs text-gray-500">Save the track first to generate, upload, or attach audio.</p>
+                /* Generation has its own hint under the mode toggle above
+                   (#3264), so this covers only what the renders block offers. */
+                <p className="text-xs text-gray-500">Save the track first to upload or attach audio.</p>
               )}
 
               {/* MIDI piano-roll (#2477) — read through from the linked Music
