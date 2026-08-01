@@ -1291,6 +1291,7 @@ CREATE TABLE IF NOT EXISTS stacker_news_accounts (
   updated_at TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE (username)
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_stacker_news_accounts_username_ci ON stacker_news_accounts (LOWER(username));
 CREATE TABLE IF NOT EXISTS stacker_news_credentials (
   account_id UUID PRIMARY KEY REFERENCES stacker_news_accounts (id) ON DELETE CASCADE,
   api_key_enc TEXT NOT NULL,

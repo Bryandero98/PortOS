@@ -1,14 +1,19 @@
 import { cancel, schedule } from './eventScheduler.js';
-import { getAccount, listAccounts, syncAccount } from './stackerNews.js';
+import { getAccount, listAccounts, listTerritories, syncAccount } from './stackerNews.js';
 
 const PREFIX = 'stacker-news-sync:';
 const registered = new Set();
+
+const hasEffectiveMonitoring = (account, territories) => account.enabled
+  && territories.some((territory) => territory.monitoringEnabled ?? account.monitoringEnabled);
 
 export async function reconcileStackerNewsSchedulers() {
   for (const id of registered) cancel(id);
   registered.clear();
   const accounts = await listAccounts();
-  for (const account of accounts.filter((candidate) => candidate.enabled && candidate.monitoringEnabled)) {
+  for (const account of accounts) {
+    const territories = await listTerritories(account.id);
+    if (!hasEffectiveMonitoring(account, territories)) continue;
     const id = `${PREFIX}${account.id}`;
     schedule({
       id,
@@ -16,7 +21,7 @@ export async function reconcileStackerNewsSchedulers() {
       intervalMs: account.monitoringIntervalMinutes * 60_000,
       handler: async () => {
         const current = await getAccount(account.id);
-        if (!current?.enabled || !current.monitoringEnabled) return;
+        if (!current || !hasEffectiveMonitoring(current, await listTerritories(account.id))) return;
         await syncAccount(account.id);
       },
       metadata: { source: 'stackerNewsScheduler', accountId: account.id },

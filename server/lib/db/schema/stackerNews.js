@@ -20,6 +20,7 @@ export const stackerNewsDdl = [
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (username)
   )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_stacker_news_accounts_username_ci ON stacker_news_accounts (LOWER(username))`,
   `ALTER TABLE stacker_news_accounts ADD COLUMN IF NOT EXISTS monitoring_interval_minutes INTEGER NOT NULL DEFAULT 30 CHECK (monitoring_interval_minutes BETWEEN 5 AND 1440)`,
   `ALTER TABLE stacker_news_accounts ADD COLUMN IF NOT EXISTS analysis_enabled BOOLEAN NOT NULL DEFAULT FALSE`,
   `ALTER TABLE stacker_news_accounts ADD COLUMN IF NOT EXISTS policy_version TEXT NOT NULL DEFAULT 'v1'`,

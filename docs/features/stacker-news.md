@@ -67,7 +67,7 @@ handoff for the user to complete.
 | --- | --- | --- |
 | Verify account identity | Named GraphQL `me` | Read only |
 | Refresh territory settings/ownership | Named GraphQL `sub` | Read only |
-| Monitor recent posts and comments | Named GraphQL `items` | Explicit sync or opted-in per-account schedule |
+| Monitor recent posts and comments | Named GraphQL `items` | Explicit sync or an effective account/territory opt-in |
 | Analyze text/images | Local Ollama | Strict schema; no tools, credentials, or write access |
 | Publish a discussion/comment | Named GraphQL mutations | Separate human approval and execution; no write retry |
 | Open an item or territory settings | Fixed-origin CDP handoff | Identity match required; no clicks or DOM supplied by callers |
@@ -81,7 +81,8 @@ handoff for the user to complete.
 2. Add an API key if API reads or reviewed publishing are needed, then verify
    that the returned identity matches the configured username.
 3. Add each territory, mark whether the account owns it, and choose whether it
-   inherits account rules and monitoring.
+   inherits account rules and monitoring. Communities can be edited or removed
+   later as ownership and stewardship responsibilities change.
 4. Configure account and territory guidance, themes, escalation cues, and action
    budgets. Each account keeps its own effective rules.
 5. Optionally choose installed Ollama text and vision models. Analysis remains
@@ -92,4 +93,6 @@ handoff for the user to complete.
    account and run **Check browser identity**.
 
 Monitoring is off by default. Boot may arm a schedule the user already enabled,
-but it never performs an immediate sync or cold-start model call.
+including a territory override on an otherwise quiet account, but it never
+performs an immediate sync or cold-start model call. The account form can also
+explicitly remove a stored API key without exposing its value.

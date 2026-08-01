@@ -142,6 +142,7 @@ router.get('/accounts/:id/territories', asyncHandler(async (req, res) => {
 
 router.post('/territories', asyncHandler(async (req, res) => {
   const territory = await stackerNews.createTerritory(validateRequest(territorySchema, req.body));
+  await reconcileStackerNewsSchedulers();
   emitChanged(req, territory.accountId);
   res.status(201).json(territory);
 }));
@@ -151,13 +152,17 @@ router.patch('/territories/:id', asyncHandler(async (req, res) => {
   const data = validateRequest(territorySchema.omit({ accountId: true }).partial().strict(), req.body);
   const territory = await stackerNews.updateTerritory(req.params.id, data);
   if (!territory) throw new ServerError('Stacker News territory not found', { status: 404 });
+  await reconcileStackerNewsSchedulers();
   emitChanged(req, territory.accountId);
   res.json(territory);
 }));
 
 router.delete('/territories/:id', asyncHandler(async (req, res) => {
   requireId(req.params.id, 'territory ID');
-  if (!await stackerNews.deleteTerritory(req.params.id)) throw new ServerError('Stacker News territory not found', { status: 404 });
+  const accountId = await stackerNews.deleteTerritory(req.params.id);
+  if (!accountId) throw new ServerError('Stacker News territory not found', { status: 404 });
+  await reconcileStackerNewsSchedulers();
+  emitChanged(req, accountId);
   res.status(204).send();
 }));
 

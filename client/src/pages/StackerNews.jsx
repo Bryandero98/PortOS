@@ -15,7 +15,7 @@ const TABS = [
   { id: 'activity', label: 'Activity', icon: RefreshCw },
   { id: 'accounts', label: 'Accounts & Safety', icon: ShieldAlert },
 ];
-const emptyAccount = { label: '', username: '', apiKey: '', enabled: true, monitoringEnabled: false, monitoringIntervalMinutes: 30, analysisEnabled: false, textModel: '', visionModel: '', guidance: '', tone: '', allowedThemes: '', disallowedThemes: '', escalationCues: '', desiredEngagement: '', maxPerHour: 3, maxPerDay: 12, minMinutesBetween: 5 };
+const emptyAccount = { label: '', username: '', apiKey: '', clearApiKey: false, enabled: true, monitoringEnabled: false, monitoringIntervalMinutes: 30, analysisEnabled: false, textModel: '', visionModel: '', guidance: '', tone: '', allowedThemes: '', disallowedThemes: '', escalationCues: '', desiredEngagement: '', maxPerHour: 3, maxPerDay: 12, minMinutesBetween: 5 };
 const emptyTerritory = { slug: '', label: '', isOwned: false, monitoringEnabled: '', inheritAccountRules: true, guidance: '', tone: '', allowedThemes: '', disallowedThemes: '', escalationCues: '' };
 const emptyDraft = { kind: 'publish_comment', itemId: '', territoryId: '', title: '', body: '', destination: 'item' };
 const fieldClass = 'w-full rounded border border-port-border bg-port-bg px-3 py-2 text-sm text-white';
@@ -23,14 +23,35 @@ const buttonClass = 'rounded bg-port-accent px-3 py-2 text-sm font-medium text-w
 const secondaryButton = 'rounded border border-port-border px-3 py-2 text-sm text-gray-200 disabled:opacity-50';
 const splitList = (value) => value.split(',').map((entry) => entry.trim()).filter(Boolean);
 const accountRules = (form) => ({ guidance: form.guidance, tone: form.tone, allowedThemes: splitList(form.allowedThemes), disallowedThemes: splitList(form.disallowedThemes), escalationCues: splitList(form.escalationCues), desiredEngagement: splitList(form.desiredEngagement), actionBudget: { maxPerHour: Number(form.maxPerHour), maxPerDay: Number(form.maxPerDay), minMinutesBetween: Number(form.minMinutesBetween) } });
+const territoryRules = (form) => ({ guidance: form.guidance, tone: form.tone, allowedThemes: splitList(form.allowedThemes), disallowedThemes: splitList(form.disallowedThemes), escalationCues: splitList(form.escalationCues) });
+const territoryPayload = (form) => ({
+  slug: form.slug,
+  label: form.label,
+  isOwned: form.isOwned,
+  monitoringEnabled: form.monitoringEnabled === '' ? null : form.monitoringEnabled === 'true',
+  inheritAccountRules: form.inheritAccountRules,
+  rules: territoryRules(form),
+});
 const accountToForm = (account) => ({
-  label: account.label, username: account.username, apiKey: '', enabled: account.enabled,
+  label: account.label, username: account.username, apiKey: '', clearApiKey: false, enabled: account.enabled,
   monitoringEnabled: account.monitoringEnabled, monitoringIntervalMinutes: account.monitoringIntervalMinutes,
   analysisEnabled: account.analysisEnabled, textModel: account.textModel, visionModel: account.visionModel,
   guidance: account.rules?.guidance || '', tone: account.rules?.tone || '', allowedThemes: (account.rules?.allowedThemes || []).join(', '),
   disallowedThemes: (account.rules?.disallowedThemes || []).join(', '), escalationCues: (account.rules?.escalationCues || []).join(', '),
   desiredEngagement: (account.rules?.desiredEngagement || []).join(', '), maxPerHour: account.rules?.actionBudget?.maxPerHour ?? 3,
   maxPerDay: account.rules?.actionBudget?.maxPerDay ?? 12, minMinutesBetween: account.rules?.actionBudget?.minMinutesBetween ?? 5,
+});
+const territoryToForm = (territory) => ({
+  slug: territory.slug,
+  label: territory.label,
+  isOwned: territory.isOwned,
+  monitoringEnabled: territory.monitoringEnabled == null ? '' : String(territory.monitoringEnabled),
+  inheritAccountRules: territory.inheritAccountRules,
+  guidance: territory.rules?.guidance || '',
+  tone: territory.rules?.tone || '',
+  allowedThemes: (territory.rules?.allowedThemes || []).join(', '),
+  disallowedThemes: (territory.rules?.disallowedThemes || []).join(', '),
+  escalationCues: (territory.rules?.escalationCues || []).join(', '),
 });
 const sameAccountForm = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 
@@ -51,6 +72,9 @@ export default function StackerNews() {
   const [editAccount, setEditAccount] = useState(emptyAccount);
   const [savedAccount, setSavedAccount] = useState(emptyAccount);
   const [newTerritory, setNewTerritory] = useState(emptyTerritory);
+  const [editingTerritoryId, setEditingTerritoryId] = useState(null);
+  const [editTerritory, setEditTerritory] = useState(emptyTerritory);
+  const [deleteTerritoryId, setDeleteTerritoryId] = useState(null);
   const [draft, setDraft] = useState(emptyDraft);
   const [analysisResults, setAnalysisResults] = useState({});
   const [feedbackDrafts, setFeedbackDrafts] = useState({});
@@ -97,6 +121,11 @@ export default function StackerNews() {
   useEffect(() => { loadAccounts(); }, [loadAccounts]);
   useEffect(() => { loadSelected(); }, [loadSelected]);
   useEffect(() => {
+    setEditingTerritoryId(null);
+    setEditTerritory(emptyTerritory);
+    setDeleteTerritoryId(null);
+  }, [accountId]);
+  useEffect(() => {
     if (!selected) {
       selectedAccountIdRef.current = null;
       return;
@@ -131,7 +160,7 @@ export default function StackerNews() {
     if (!selected) return;
     finish('save-account', api.updateStackerNewsAccount(selected.id, {
       label: editAccount.label, username: editAccount.username, enabled: editAccount.enabled,
-      ...(editAccount.apiKey ? { apiKey: editAccount.apiKey } : {}),
+      ...(editAccount.clearApiKey ? { apiKey: '' } : editAccount.apiKey ? { apiKey: editAccount.apiKey } : {}),
       monitoringEnabled: editAccount.monitoringEnabled, monitoringIntervalMinutes: Number(editAccount.monitoringIntervalMinutes),
       analysisEnabled: editAccount.analysisEnabled, textModel: editAccount.textModel, visionModel: editAccount.visionModel,
       rules: accountRules(editAccount),
@@ -149,16 +178,27 @@ export default function StackerNews() {
     event.preventDefault();
     if (!selected) return;
     finish('create-territory', api.createStackerNewsTerritory({
-      accountId: selected.id, slug: newTerritory.slug, label: newTerritory.label, isOwned: newTerritory.isOwned,
-      monitoringEnabled: newTerritory.monitoringEnabled === '' ? null : newTerritory.monitoringEnabled === 'true',
-      inheritAccountRules: newTerritory.inheritAccountRules, rules: {
-        guidance: newTerritory.guidance, tone: newTerritory.tone, allowedThemes: splitList(newTerritory.allowedThemes),
-        disallowedThemes: splitList(newTerritory.disallowedThemes), escalationCues: splitList(newTerritory.escalationCues),
-      },
+      accountId: selected.id, ...territoryPayload(newTerritory),
     }, { silent: true }), (result) => {
       setTerritories((previous) => [...previous, result]); setNewTerritory(emptyTerritory);
     });
   };
+
+  const saveTerritory = (event) => {
+    event.preventDefault();
+    if (!editingTerritoryId) return;
+    finish(`save-territory-${editingTerritoryId}`, api.updateStackerNewsTerritory(editingTerritoryId, territoryPayload(editTerritory), { silent: true }), (result) => {
+      setTerritories((previous) => previous.map((territory) => territory.id === result.id ? result : territory));
+      setEditingTerritoryId(null); setEditTerritory(emptyTerritory); setNotice('Community settings saved.');
+    });
+  };
+
+  const removeTerritory = (territory) => finish(`delete-territory-${territory.id}`, api.deleteStackerNewsTerritory(territory.id, { silent: true }), () => {
+    setTerritories((previous) => previous.filter((candidate) => candidate.id !== territory.id));
+    setDeleteTerritoryId(null);
+    if (editingTerritoryId === territory.id) { setEditingTerritoryId(null); setEditTerritory(emptyTerritory); }
+    setNotice('Community removed.');
+  });
 
   const checkConnection = () => selected && finish('verify', api.verifyStackerNewsAccount(selected.id, { silent: true }), (result) => {
     setNotice(!result.connected ? 'Add an API key before testing.' : `API identity: @${result.username}. ${result.matchesConfigured ? 'Matches this account.' : 'Mismatch: writes are blocked.'}`);
@@ -237,8 +277,26 @@ export default function StackerNews() {
 
   const renderTerritory = () => (
     <div className="grid gap-3 lg:grid-cols-2">
-      <section className="rounded border border-port-border bg-port-card p-4"><h2 className="font-semibold text-white">Configured communities</h2><div className="mt-3 space-y-2">{territories.map((territory) => <div key={territory.id} className="rounded border border-port-border p-3"><div className="flex justify-between gap-2"><span className="font-medium text-white">{territory.label || territory.slug}</span><span className="text-xs text-gray-400">{territory.isOwned ? (territory.remoteSettings?.ownershipVerified ? 'Ownership verified' : 'Owned · not verified') : 'Monitored'}</span></div><p className="mt-1 text-sm text-gray-400">{territory.rules?.guidance || (territory.inheritAccountRules ? 'Inherits account rules.' : 'No custom guidance.')}</p><div className="mt-1 text-xs text-gray-500">Monitoring: {territory.monitoringEnabled == null ? 'inherit account' : territory.monitoringEnabled ? 'on' : 'off'}</div></div>)}{!territories.length && <p className="text-sm text-gray-500">Add communities this account monitors or owns.</p>}</div></section>
-      <form className="rounded border border-port-border bg-port-card p-4" onSubmit={createTerritory}><h2 className="font-semibold text-white">Add community</h2><div className="mt-3 space-y-3"><Field id="territory-slug" label="Territory slug"><input id="territory-slug" required className={fieldClass} value={newTerritory.slug} onChange={(event) => setNewTerritory({ ...newTerritory, slug: event.target.value })} /></Field><Field id="territory-label" label="Local label"><input id="territory-label" className={fieldClass} value={newTerritory.label} onChange={(event) => setNewTerritory({ ...newTerritory, label: event.target.value })} /></Field><label className="flex gap-2 text-sm text-gray-300"><input type="checkbox" checked={newTerritory.isOwned} onChange={(event) => setNewTerritory({ ...newTerritory, isOwned: event.target.checked })} /> This account owns this community</label><label className="flex gap-2 text-sm text-gray-300"><input type="checkbox" checked={newTerritory.inheritAccountRules} onChange={(event) => setNewTerritory({ ...newTerritory, inheritAccountRules: event.target.checked })} /> Inherit account rules</label><Field id="territory-monitoring" label="Monitoring override"><select id="territory-monitoring" className={fieldClass} value={newTerritory.monitoringEnabled} onChange={(event) => setNewTerritory({ ...newTerritory, monitoringEnabled: event.target.value })}><option value="">Inherit account</option><option value="true">Enabled</option><option value="false">Disabled</option></select></Field><Field id="territory-rules" label="Territory guidance"><textarea id="territory-rules" className={fieldClass} rows="3" value={newTerritory.guidance} onChange={(event) => setNewTerritory({ ...newTerritory, guidance: event.target.value })} /></Field><Field id="territory-tone" label="Tone override"><input id="territory-tone" className={fieldClass} value={newTerritory.tone} onChange={(event) => setNewTerritory({ ...newTerritory, tone: event.target.value })} /></Field><Field id="territory-allowed" label="Allowed themes"><input id="territory-allowed" className={fieldClass} value={newTerritory.allowedThemes} onChange={(event) => setNewTerritory({ ...newTerritory, allowedThemes: event.target.value })} /></Field><Field id="territory-disallowed" label="Disallowed themes"><input id="territory-disallowed" className={fieldClass} value={newTerritory.disallowedThemes} onChange={(event) => setNewTerritory({ ...newTerritory, disallowedThemes: event.target.value })} /></Field><Field id="territory-escalation" label="Escalation cues"><input id="territory-escalation" className={fieldClass} value={newTerritory.escalationCues} onChange={(event) => setNewTerritory({ ...newTerritory, escalationCues: event.target.value })} /></Field><button className={buttonClass} disabled={busy === 'create-territory'}>Add community</button></div></form>
+      <section className="rounded border border-port-border bg-port-card p-4">
+        <h2 className="font-semibold text-white">Configured communities</h2>
+        <div className="mt-3 space-y-2">
+          {territories.map((territory) => editingTerritoryId === territory.id ? (
+            <TerritoryForm key={territory.id} prefix={`edit-territory-${territory.id}`} title={`Edit ${territory.label || territory.slug}`} form={editTerritory} setForm={setEditTerritory} onSubmit={saveTerritory} busy={busy === `save-territory-${territory.id}`} onCancel={() => { setEditingTerritoryId(null); setEditTerritory(emptyTerritory); }} submitLabel="Save community" />
+          ) : (
+            <div key={territory.id} className="rounded border border-port-border p-3">
+              <div className="flex justify-between gap-2"><span className="font-medium text-white">{territory.label || territory.slug}</span><span className="text-xs text-gray-400">{territory.isOwned ? (territory.remoteSettings?.ownershipVerified ? 'Ownership verified' : 'Owned · not verified') : 'Monitored'}</span></div>
+              <p className="mt-1 text-sm text-gray-400">{territory.rules?.guidance || (territory.inheritAccountRules ? 'Inherits account rules.' : 'No custom guidance.')}</p>
+              <div className="mt-1 text-xs text-gray-500">Monitoring: {territory.monitoringEnabled == null ? 'inherit account' : territory.monitoringEnabled ? 'on' : 'off'}</div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button type="button" className={secondaryButton} onClick={() => { setEditingTerritoryId(territory.id); setEditTerritory(territoryToForm(territory)); setDeleteTerritoryId(null); }}>Edit</button>
+                {deleteTerritoryId === territory.id ? <><button type="button" className={secondaryButton} onClick={() => setDeleteTerritoryId(null)}>Cancel</button><button type="button" className="rounded bg-port-error px-3 py-2 text-sm font-medium text-white disabled:opacity-50" disabled={busy === `delete-territory-${territory.id}`} onClick={() => removeTerritory(territory)}>Confirm delete</button></> : <button type="button" className={secondaryButton} onClick={() => setDeleteTerritoryId(territory.id)}>Delete</button>}
+              </div>
+            </div>
+          ))}
+          {!territories.length && <p className="text-sm text-gray-500">Add communities this account monitors or owns.</p>}
+        </div>
+      </section>
+      <TerritoryForm prefix="new-territory" title="Add community" form={newTerritory} setForm={setNewTerritory} onSubmit={createTerritory} busy={busy === 'create-territory'} submitLabel="Add community" />
     </div>
   );
 
@@ -251,7 +309,7 @@ export default function StackerNews() {
   const renderAccounts = () => (
     <div className="grid gap-3 xl:grid-cols-3">
       <section className="rounded border border-port-border bg-port-card p-4"><h2 className="font-semibold text-white">Accounts</h2><div className="mt-3 space-y-2">{accounts.map((account) => <button key={account.id} className={`block w-full rounded border p-3 text-left ${account.id === selected?.id ? 'border-port-accent' : 'border-port-border'}`} onClick={() => navigate(accountPath(account.id, 'accounts'))}><div className="flex justify-between gap-2"><span className="font-medium text-white">{account.label}</span><span className="text-xs text-gray-400">{account.apiKeyConfigured ? 'Key protected' : 'No key'}</span></div><div className="mt-1 text-sm text-gray-400">@{account.username} · {account.monitoringEnabled ? `every ${account.monitoringIntervalMinutes}m` : 'monitoring off'}</div></button>)}{!accounts.length && <p className="text-sm text-gray-500">No accounts configured.</p>}</div></section>
-      {selected ? <AccountForm title="Selected account" submitLabel="Save account" form={editAccount} setForm={setEditAccount} models={models} onSubmit={saveAccount} busy={busy === 'save-account'} extra={<div className="flex flex-wrap gap-2"><button type="button" className={secondaryButton} disabled={accountActionsDisabled} onClick={checkConnection}>Check API identity</button><button type="button" className={secondaryButton} disabled={accountActionsDisabled} onClick={checkBrowser}>Check browser identity</button><button type="button" className={secondaryButton} disabled={accountActionsDisabled} onClick={syncNow}>Sync now</button></div>} /> : <div className="rounded border border-port-border bg-port-card p-4 text-sm text-gray-400">Choose an account to edit its independent rules, models, and monitoring schedule.</div>}
+      {selected ? <AccountForm title="Selected account" submitLabel="Save account" form={editAccount} setForm={setEditAccount} models={models} onSubmit={saveAccount} busy={busy === 'save-account'} canClearCredential={selected.apiKeyConfigured} extra={<div className="flex flex-wrap gap-2"><button type="button" className={secondaryButton} disabled={accountActionsDisabled} onClick={checkConnection}>Check API identity</button><button type="button" className={secondaryButton} disabled={accountActionsDisabled} onClick={checkBrowser}>Check browser identity</button><button type="button" className={secondaryButton} disabled={accountActionsDisabled} onClick={syncNow}>Sync now</button></div>} /> : <div className="rounded border border-port-border bg-port-card p-4 text-sm text-gray-400">Choose an account to edit its independent rules, models, and monitoring schedule.</div>}
       <AccountForm title="Add account" submitLabel="Add protected account" form={newAccount} setForm={setNewAccount} models={models} onSubmit={createAccount} busy={busy === 'create-account'} showCredential />
     </div>
   );
@@ -265,10 +323,20 @@ function Field({ id, label, children }) {
   return <div><label htmlFor={id} className="mb-1 block text-sm text-gray-300">{label}</label>{children}</div>;
 }
 
-function AccountForm({ title, submitLabel, form, setForm, models, onSubmit, busy, showCredential = false, extra = null }) {
-  const update = (key, value) => setForm((previous) => ({ ...previous, [key]: value }));
+function AccountForm({ title, submitLabel, form, setForm, models, onSubmit, busy, showCredential = false, canClearCredential = false, extra = null }) {
+  const update = (key, value) => setForm((previous) => ({
+    ...previous,
+    [key]: value,
+    ...(key === 'apiKey' && value ? { clearApiKey: false } : {}),
+    ...(key === 'clearApiKey' && value ? { apiKey: '' } : {}),
+  }));
   const prefix = showCredential ? 'new-account' : 'edit-account';
-  return <form className="rounded border border-port-border bg-port-card p-4" onSubmit={onSubmit}><h2 className="font-semibold text-white">{title}</h2><p className="mt-1 text-sm text-gray-400">Credentials are encrypted separately and never sent to a model.</p><div className="mt-3 space-y-3"><Field id={`${prefix}-label`} label="Local label"><input id={`${prefix}-label`} required className={fieldClass} value={form.label} onChange={(event) => update('label', event.target.value)} /></Field><Field id={`${prefix}-username`} label="Stacker News username"><input id={`${prefix}-username`} required className={fieldClass} value={form.username} onChange={(event) => update('username', event.target.value)} /></Field><Field id={`${prefix}-api-key`} label={showCredential ? 'API key (optional)' : 'Replace API key (leave blank to keep)'}><input id={`${prefix}-api-key`} type="password" className={fieldClass} value={form.apiKey} onChange={(event) => update('apiKey', event.target.value)} /></Field><div className="grid grid-cols-2 gap-2"><Field id={`${prefix}-text-model`} label="Ollama text model"><ModelSelect id={`${prefix}-text-model`} value={form.textModel} models={models} onChange={(value) => update('textModel', value)} /></Field><Field id={`${prefix}-vision-model`} label="Ollama vision model"><ModelSelect id={`${prefix}-vision-model`} value={form.visionModel} models={models} onChange={(value) => update('visionModel', value)} /></Field></div><label className="flex gap-2 text-sm text-gray-300"><input type="checkbox" checked={form.enabled} onChange={(event) => update('enabled', event.target.checked)} /> Account enabled</label><label className="flex gap-2 text-sm text-gray-300"><input type="checkbox" checked={form.monitoringEnabled} onChange={(event) => update('monitoringEnabled', event.target.checked)} /> Enable scheduled monitoring</label><label className="flex gap-2 text-sm text-gray-300"><input type="checkbox" checked={form.analysisEnabled} onChange={(event) => update('analysisEnabled', event.target.checked)} /> Run configured local analysis during monitoring</label><Field id={`${prefix}-interval`} label="Monitoring interval (minutes)"><input id={`${prefix}-interval`} type="number" min="5" max="1440" className={fieldClass} value={form.monitoringIntervalMinutes} onChange={(event) => update('monitoringIntervalMinutes', event.target.value)} /></Field><Field id={`${prefix}-guidance`} label="Stewardship guidance"><textarea id={`${prefix}-guidance`} className={fieldClass} rows="3" value={form.guidance} onChange={(event) => update('guidance', event.target.value)} /></Field><Field id={`${prefix}-tone`} label="Tone"><input id={`${prefix}-tone`} className={fieldClass} value={form.tone} onChange={(event) => update('tone', event.target.value)} /></Field><Field id={`${prefix}-allowed`} label="Allowed themes"><input id={`${prefix}-allowed`} className={fieldClass} value={form.allowedThemes} onChange={(event) => update('allowedThemes', event.target.value)} /></Field><Field id={`${prefix}-disallowed`} label="Disallowed themes"><input id={`${prefix}-disallowed`} className={fieldClass} value={form.disallowedThemes} onChange={(event) => update('disallowedThemes', event.target.value)} /></Field><Field id={`${prefix}-escalation`} label="Escalation cues"><input id={`${prefix}-escalation`} className={fieldClass} value={form.escalationCues} onChange={(event) => update('escalationCues', event.target.value)} /></Field><Field id={`${prefix}-engagement`} label="Desired engagement"><input id={`${prefix}-engagement`} className={fieldClass} value={form.desiredEngagement} onChange={(event) => update('desiredEngagement', event.target.value)} /></Field><div className="grid grid-cols-3 gap-2"><Field id={`${prefix}-hour-budget`} label="Max/hour"><input id={`${prefix}-hour-budget`} type="number" min="1" max="50" className={fieldClass} value={form.maxPerHour} onChange={(event) => update('maxPerHour', event.target.value)} /></Field><Field id={`${prefix}-day-budget`} label="Max/day"><input id={`${prefix}-day-budget`} type="number" min="1" max="200" className={fieldClass} value={form.maxPerDay} onChange={(event) => update('maxPerDay', event.target.value)} /></Field><Field id={`${prefix}-spacing`} label="Spacing min"><input id={`${prefix}-spacing`} type="number" min="0" max="1440" className={fieldClass} value={form.minMinutesBetween} onChange={(event) => update('minMinutesBetween', event.target.value)} /></Field></div>{extra}<button className={buttonClass} disabled={busy}>{submitLabel}</button></div></form>;
+  return <form className="rounded border border-port-border bg-port-card p-4" onSubmit={onSubmit}><h2 className="font-semibold text-white">{title}</h2><p className="mt-1 text-sm text-gray-400">Credentials are encrypted separately and never sent to a model.</p><div className="mt-3 space-y-3"><Field id={`${prefix}-label`} label="Local label"><input id={`${prefix}-label`} required className={fieldClass} value={form.label} onChange={(event) => update('label', event.target.value)} /></Field><Field id={`${prefix}-username`} label="Stacker News username"><input id={`${prefix}-username`} required className={fieldClass} value={form.username} onChange={(event) => update('username', event.target.value)} /></Field><Field id={`${prefix}-api-key`} label={showCredential ? 'API key (optional)' : 'Replace API key (leave blank to keep)'}><input id={`${prefix}-api-key`} type="password" className={fieldClass} disabled={form.clearApiKey} value={form.apiKey} onChange={(event) => update('apiKey', event.target.value)} /></Field>{canClearCredential && <label className="flex gap-2 text-sm text-gray-300"><input type="checkbox" checked={form.clearApiKey} onChange={(event) => update('clearApiKey', event.target.checked)} /> Remove stored API key when saving</label>}<div className="grid grid-cols-2 gap-2"><Field id={`${prefix}-text-model`} label="Ollama text model"><ModelSelect id={`${prefix}-text-model`} value={form.textModel} models={models} onChange={(value) => update('textModel', value)} /></Field><Field id={`${prefix}-vision-model`} label="Ollama vision model"><ModelSelect id={`${prefix}-vision-model`} value={form.visionModel} models={models} onChange={(value) => update('visionModel', value)} /></Field></div><label className="flex gap-2 text-sm text-gray-300"><input type="checkbox" checked={form.enabled} onChange={(event) => update('enabled', event.target.checked)} /> Account enabled</label><label className="flex gap-2 text-sm text-gray-300"><input type="checkbox" checked={form.monitoringEnabled} onChange={(event) => update('monitoringEnabled', event.target.checked)} /> Enable scheduled monitoring</label><label className="flex gap-2 text-sm text-gray-300"><input type="checkbox" checked={form.analysisEnabled} onChange={(event) => update('analysisEnabled', event.target.checked)} /> Run configured local analysis during monitoring</label><Field id={`${prefix}-interval`} label="Monitoring interval (minutes)"><input id={`${prefix}-interval`} type="number" min="5" max="1440" className={fieldClass} value={form.monitoringIntervalMinutes} onChange={(event) => update('monitoringIntervalMinutes', event.target.value)} /></Field><Field id={`${prefix}-guidance`} label="Stewardship guidance"><textarea id={`${prefix}-guidance`} className={fieldClass} rows="3" value={form.guidance} onChange={(event) => update('guidance', event.target.value)} /></Field><Field id={`${prefix}-tone`} label="Tone"><input id={`${prefix}-tone`} className={fieldClass} value={form.tone} onChange={(event) => update('tone', event.target.value)} /></Field><Field id={`${prefix}-allowed`} label="Allowed themes"><input id={`${prefix}-allowed`} className={fieldClass} value={form.allowedThemes} onChange={(event) => update('allowedThemes', event.target.value)} /></Field><Field id={`${prefix}-disallowed`} label="Disallowed themes"><input id={`${prefix}-disallowed`} className={fieldClass} value={form.disallowedThemes} onChange={(event) => update('disallowedThemes', event.target.value)} /></Field><Field id={`${prefix}-escalation`} label="Escalation cues"><input id={`${prefix}-escalation`} className={fieldClass} value={form.escalationCues} onChange={(event) => update('escalationCues', event.target.value)} /></Field><Field id={`${prefix}-engagement`} label="Desired engagement"><input id={`${prefix}-engagement`} className={fieldClass} value={form.desiredEngagement} onChange={(event) => update('desiredEngagement', event.target.value)} /></Field><div className="grid grid-cols-3 gap-2"><Field id={`${prefix}-hour-budget`} label="Max/hour"><input id={`${prefix}-hour-budget`} type="number" min="1" max="50" className={fieldClass} value={form.maxPerHour} onChange={(event) => update('maxPerHour', event.target.value)} /></Field><Field id={`${prefix}-day-budget`} label="Max/day"><input id={`${prefix}-day-budget`} type="number" min="1" max="200" className={fieldClass} value={form.maxPerDay} onChange={(event) => update('maxPerDay', event.target.value)} /></Field><Field id={`${prefix}-spacing`} label="Spacing min"><input id={`${prefix}-spacing`} type="number" min="0" max="1440" className={fieldClass} value={form.minMinutesBetween} onChange={(event) => update('minMinutesBetween', event.target.value)} /></Field></div>{extra}<button className={buttonClass} disabled={busy}>{submitLabel}</button></div></form>;
+}
+
+function TerritoryForm({ prefix, title, form, setForm, onSubmit, busy, submitLabel, onCancel = null }) {
+  const update = (key, value) => setForm((previous) => ({ ...previous, [key]: value }));
+  return <form className="rounded border border-port-border bg-port-card p-4" onSubmit={onSubmit}><h2 className="font-semibold text-white">{title}</h2><div className="mt-3 space-y-3"><Field id={`${prefix}-slug`} label="Territory slug"><input id={`${prefix}-slug`} required className={fieldClass} value={form.slug} onChange={(event) => update('slug', event.target.value)} /></Field><Field id={`${prefix}-label`} label="Local label"><input id={`${prefix}-label`} className={fieldClass} value={form.label} onChange={(event) => update('label', event.target.value)} /></Field><label className="flex gap-2 text-sm text-gray-300"><input type="checkbox" checked={form.isOwned} onChange={(event) => update('isOwned', event.target.checked)} /> This account owns this community</label><label className="flex gap-2 text-sm text-gray-300"><input type="checkbox" checked={form.inheritAccountRules} onChange={(event) => update('inheritAccountRules', event.target.checked)} /> Inherit account rules</label><Field id={`${prefix}-monitoring`} label="Monitoring override"><select id={`${prefix}-monitoring`} className={fieldClass} value={form.monitoringEnabled} onChange={(event) => update('monitoringEnabled', event.target.value)}><option value="">Inherit account</option><option value="true">Enabled</option><option value="false">Disabled</option></select></Field><Field id={`${prefix}-rules`} label="Territory guidance"><textarea id={`${prefix}-rules`} className={fieldClass} rows="3" value={form.guidance} onChange={(event) => update('guidance', event.target.value)} /></Field><Field id={`${prefix}-tone`} label="Tone override"><input id={`${prefix}-tone`} className={fieldClass} value={form.tone} onChange={(event) => update('tone', event.target.value)} /></Field><Field id={`${prefix}-allowed`} label="Allowed themes"><input id={`${prefix}-allowed`} className={fieldClass} value={form.allowedThemes} onChange={(event) => update('allowedThemes', event.target.value)} /></Field><Field id={`${prefix}-disallowed`} label="Disallowed themes"><input id={`${prefix}-disallowed`} className={fieldClass} value={form.disallowedThemes} onChange={(event) => update('disallowedThemes', event.target.value)} /></Field><Field id={`${prefix}-escalation`} label="Escalation cues"><input id={`${prefix}-escalation`} className={fieldClass} value={form.escalationCues} onChange={(event) => update('escalationCues', event.target.value)} /></Field><div className="flex gap-2">{onCancel && <button type="button" className={secondaryButton} onClick={onCancel}>Cancel</button>}<button className={buttonClass} disabled={busy}>{submitLabel}</button></div></div></form>;
 }
 
 function ModelSelect({ id, value, models, onChange }) {

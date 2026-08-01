@@ -162,7 +162,7 @@ export async function createAccount({
       `INSERT INTO stacker_news_accounts
        (id,label,username,enabled,monitoring_enabled,monitoring_interval_minutes,analysis_enabled,text_model,vision_model,rules,policy_version)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-      [id, label, username, enabled, monitoringEnabled, monitoringIntervalMinutes, analysisEnabled, textModel, visionModel, normalizeStackerNewsRules(rules), POLICY_VERSION],
+      [id, label, username.toLowerCase(), enabled, monitoringEnabled, monitoringIntervalMinutes, analysisEnabled, textModel, visionModel, normalizeStackerNewsRules(rules), POLICY_VERSION],
     );
     if (apiKey) await saveCredential(client, id, apiKey);
   });
@@ -178,7 +178,7 @@ export async function updateAccount(id, updates) {
       `UPDATE stacker_news_accounts SET label=$2,username=$3,enabled=$4,monitoring_enabled=$5,
        monitoring_interval_minutes=$6,analysis_enabled=$7,text_model=$8,vision_model=$9,rules=$10,policy_version=$11,updated_at=NOW()
        WHERE id=$1`,
-      [id, updates.label ?? existing.label, updates.username ?? existing.username, updates.enabled ?? existing.enabled,
+      [id, updates.label ?? existing.label, (updates.username ?? existing.username).toLowerCase(), updates.enabled ?? existing.enabled,
         updates.monitoringEnabled ?? existing.monitoring_enabled, updates.monitoringIntervalMinutes ?? existing.monitoring_interval_minutes,
         updates.analysisEnabled ?? existing.analysis_enabled, updates.textModel ?? existing.text_model, updates.visionModel ?? existing.vision_model,
         updates.rules === undefined ? existing.rules : normalizeStackerNewsRules(updates.rules), POLICY_VERSION],
@@ -223,8 +223,8 @@ export async function updateTerritory(id, updates) {
 }
 
 export async function deleteTerritory(id) {
-  const result = await query('DELETE FROM stacker_news_territories WHERE id=$1', [id]);
-  return result.rowCount > 0;
+  const result = await query('DELETE FROM stacker_news_territories WHERE id=$1 RETURNING account_id', [id]);
+  return result.rows[0]?.account_id || null;
 }
 
 export async function verifyConnection(accountId) {
@@ -378,17 +378,19 @@ export async function setAnalysisFeedback(analysisId, feedback) {
 async function syncAccountUnlocked(accountId, { force = false } = {}) {
   const account = await getAccountRow(accountId);
   if (!account) return null;
-  if (!force && (!account.enabled || !account.monitoring_enabled)) return { skipped: true, reason: 'monitoring_disabled', account: accountView({ ...account, api_key_configured: false }) };
+  if (!force && !account.enabled) return { skipped: true, reason: 'monitoring_disabled', account: accountView({ ...account, api_key_configured: false }) };
+  const territories = await listTerritories(accountId);
+  const hasEffectiveMonitoring = territories.some((territory) => territory.monitoringEnabled ?? account.monitoring_enabled);
+  if (!force && !hasEffectiveMonitoring) return { skipped: true, reason: 'monitoring_disabled', account: accountView({ ...account, api_key_configured: false }) };
   const apiKey = await getCredential(accountId);
   if (!apiKey) throw new Error('Stacker News API key is not configured');
   const me = (await executeStackerNewsOperation('me', {}, apiKey))?.me;
   if (!me?.name || me.name.toLowerCase() !== account.username.toLowerCase()) throw new Error(`API key identity @${me?.name || 'unknown'} does not match configured account`);
-  const territories = await listTerritories(accountId);
   let ingested = 0;
   let analyzed = 0;
   for (const territory of territories) {
     const monitored = territory.monitoringEnabled ?? account.monitoring_enabled;
-    if (!monitored) continue;
+    if (!force && !monitored) continue;
     const remote = (await executeStackerNewsOperation('sub', { name: territory.slug }, apiKey))?.sub;
     const ownershipVerified = Boolean(remote && String(remote.userId) === String(me.id));
     await query(
