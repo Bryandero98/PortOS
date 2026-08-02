@@ -57,6 +57,7 @@
 
 - **Clicking the "Image Strength" label now focuses its slider.** The label was never associated with its input, so unlike every other field on the form clicking it did nothing, and a screen reader announced the slider with no name.
 - **[issue-3248] Requeued local videos now keep their original render controls when Grok is the default.** Frame count, frame rate, steps, guidance, seed, image strength, and tiling settings keep the render on the local backend instead of being silently discarded.
+- **[issue-3279] Generate is back above the fold on the Video tab.** Frames, chunks, frame rate, seed, steps, CFG scale, image strength, tiling and the audio flags now sit behind a closed-by-default "Advanced" disclosure, leaving Model and Resolution inline exactly like the sibling Image tab — so the button that starts the render is on screen when you finish typing the prompt instead of roughly 600px below it. The collapsed header still shows the frame count, frame rate and seed a remix carried in, and every value survives collapsing.
 
 ## Sprite Manager
 

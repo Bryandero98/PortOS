@@ -41,6 +41,7 @@ import KeyframePanel from '../components/videoGen/KeyframePanel';
 import AudioPanel from '../components/videoGen/AudioPanel';
 import ExtendPanel from '../components/videoGen/ExtendPanel';
 import IcLoraPanel from '../components/videoGen/IcLoraPanel';
+import AdvancedParamsPanel from '../components/videoGen/AdvancedParamsPanel';
 import RuntimeFingerprint from '../components/videoGen/RuntimeFingerprint';
 import ModelRepairBanner from '../components/videoGen/ModelRepairBanner';
 import VideoPreviewPanel from '../components/videoGen/VideoPreviewPanel';
@@ -51,7 +52,7 @@ import { normalizeVideo } from '../components/media/normalize';
 import { composeStyledPrompt } from '../lib/composeStyledPrompt';
 import {
   Film, Sparkles, Settings as SettingsIcon, RefreshCw, AlertTriangle,
-  Dice5, X, Type, Image as ImageIcon, GitBranch, ListPlus, Music, SlidersHorizontal,
+  X, Type, Image as ImageIcon, GitBranch, ListPlus, Music, SlidersHorizontal,
 } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import BatchQueuePanel from '../components/media/BatchQueuePanel';
@@ -83,9 +84,9 @@ import { VIDEO_RESOLUTIONS, snapAspectToImage } from '../lib/videoGenResolutions
 import { clampImageEdge } from '../lib/imageGenResolutions';
 import { GROK_VIDEO_DURATIONS, GROK_VIDEO_DEFAULT_DURATION } from '../lib/grokVideoClip.js';
 import ResolutionField from '../components/media/ResolutionField';
-import { VIDEO_TILING_OPTIONS, VIDEO_TILING_ENUM_SET } from '../lib/videoTilingOptions';
+import { VIDEO_TILING_ENUM_SET } from '../lib/videoTilingOptions';
 import {
-  FRAME_OPTIONS, FPS_OPTIONS, VIDEO_EDGE_BOUNDS,
+  VIDEO_EDGE_BOUNDS,
   videoModelMemoryGb, computeFflfSafeFrames, isModelAllowedForMode,
   IC_LORA_MODES, icLoraSpecForMode, icResolutionIssue,
 } from '../lib/videoGenParams.js';
@@ -1845,155 +1846,27 @@ export default function VideoGen() {
               note="Each edge 64–2048px; the server rounds each down to the nearest multiple of 64."
             />
 
-            <FormField label="Frames" labelClassName="block text-xs font-medium text-gray-400 mb-1">
-              <select
-                value={numFrames}
-                onChange={(e) => setNumFrames(Number(e.target.value))}
-                className="w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50"
-              >
-                {FRAME_OPTIONS.map((f) => <option key={f} value={f}>{f} ({(f / fps).toFixed(1)}s @ {fps}fps)</option>)}
-              </select>
-              {numFrames > 241 && (
-                <p className="text-[10px] text-gray-500 leading-snug mt-1">
-                  Past 241 frames a single-pass render may swap or OOM at 48 GB. For reliable longer clips, render up to ~10s and then use <strong>Extend</strong> on the result — it conditions on the source's full latent rather than a single last frame.
-                </p>
-              )}
-            </FormField>
-
-            {mode !== 'a2v' && (
-              <div>
-                <label htmlFor="chunks-select" className="block text-xs font-medium text-gray-400 mb-1" title="Chain N renders end-to-end. Each chunk's last frame seeds the next, then they're stitched into one clip. Wall time scales linearly with chunks.">
-                  Chunks
-                </label>
-                <select
-                  id="chunks-select"
-                  value={keyframesActive ? 1 : chunks}
-                  onChange={(e) => setChunks(Number(e.target.value))}
-                  disabled={keyframesActive}
-                  title={keyframesActive ? 'Multi-keyframe renders anchor a single clip — chunking is unavailable.' : undefined}
-                  className="w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
-                    <option key={n} value={n}>
-                      {n === 1 ? '1 (single)' : `${n} (~${((n * numFrames) / fps).toFixed(0)}s total)`}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-
-            <FormField label="FPS" labelClassName="block text-xs font-medium text-gray-400 mb-1">
-              <select
-                value={fps}
-                onChange={(e) => setFps(Number(e.target.value))}
-                className="w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50"
-              >
-                {FPS_OPTIONS.map((f) => <option key={f} value={f}>{f}</option>)}
-              </select>
-            </FormField>
-
-            <div>
-              <label htmlFor="video-seed" className="block text-xs font-medium text-gray-400 mb-1">Seed</label>
-              <div className="flex items-center gap-1">
-                <input
-                  id="video-seed"
-                  type="number"
-                  value={seed}
-                  onChange={(e) => setSeed(e.target.value)}
-                  placeholder="Random"
-                  className="flex-1 bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50"
-                />
-                <button
-                  type="button"
-                  onClick={handleRandomSeed}
-                  className="p-2 text-gray-400 hover:text-white border border-port-border rounded-lg hover:bg-port-border/50 disabled:opacity-50 min-h-[40px] min-w-[40px] flex items-center justify-center"
-                  title="Randomize seed"
-                >
-                  <Dice5 className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-
-            <FormField
-              label={<>Steps {currentModel?.steps && `(default: ${currentModel.steps})`}</>}
-              labelClassName="block text-xs font-medium text-gray-400 mb-1"
-            >
-              <input
-                type="number" min={1} max={150}
-                value={steps}
-                onChange={(e) => setSteps(e.target.value)}
-                placeholder={String(currentModel?.steps || 25)}
-                className="w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50"
-              />
-            </FormField>
-
-            <FormField
-              label={<>CFG Scale {currentModel?.guidance != null && `(default: ${currentModel.guidance})`}</>}
-              labelClassName="block text-xs font-medium text-gray-400 mb-1"
-            >
-              <input
-                type="number" min={0} max={20} step={0.5}
-                value={guidanceScale}
-                onChange={(e) => setGuidanceScale(e.target.value)}
-                placeholder={String(currentModel?.guidance ?? 3.0)}
-                className="w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50"
-              />
-            </FormField>
-
-            {(mode === 'image' || (mode === 'extend' && currentModel?.runtime !== 'ltx2')) && (
-              <div className="col-span-2 sm:col-span-3">
-                <div className="flex items-center justify-between gap-3 mb-1">
-                  <label htmlFor="video-image-strength" className="block text-xs font-medium text-gray-400">Image Strength</label>
-                  <span className="text-[11px] text-gray-500">{imageStrength || '1.0'}</span>
-                </div>
-                <input
-                  id="video-image-strength"
-                  type="range" min={0} max={1} step={0.05}
-                  value={imageStrength || 1}
-                  onChange={(e) => setImageStrength(e.target.value)}
-                  className="w-full accent-port-accent"
-                  title="Higher values preserve the source frame more strongly"
-                />
-              </div>
-            )}
-
-            <FormField className="col-span-2 sm:col-span-3" label="Tiling" labelClassName="block text-xs font-medium text-gray-400 mb-1">
-              <select
-                value={tiling}
-                onChange={(e) => setTiling(e.target.value)}
-                className="w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50"
-              >
-                {VIDEO_TILING_OPTIONS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
-              </select>
-            </FormField>
-
-            {mode !== 'a2v' && (
-              <label className="col-span-2 sm:col-span-3 flex items-center gap-2 text-xs text-gray-400 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={disableAudio}
-                  onChange={(e) => setDisableAudio(e.target.checked)}
-                  className="rounded"
-                />
-                Disable audio (LTX-2 only — speeds up generation)
-              </label>
-            )}
-            {mode !== 'a2v' && (
-              <label
-                className={`col-span-2 sm:col-span-3 flex items-center gap-2 text-xs cursor-pointer ${disableAudio ? 'text-gray-600 cursor-not-allowed' : 'text-gray-400'}`}
-                title="LTX-2 conditions audio on the prompt — appending 'no music, no soundtrack' at submit time pushes the model toward ambient/diegetic sound only"
-              >
-                <input
-                  type="checkbox"
-                  checked={noMusic}
-                  disabled={disableAudio}
-                  onChange={(e) => setNoMusic(e.target.checked)}
-                  className="rounded"
-                />
-                No music — keep ambient/diegetic sound only (LTX-2)
-              </label>
-            )}
           </div>
+          )}
+
+          {/* Sampler/output knobs live behind a closed-by-default disclosure so
+              Generate stays above the fold — the sibling /media/image tab keeps
+              only Model + Resolution inline for the same reason (issue #3279). */}
+          {!isGrok && (
+            <AdvancedParamsPanel
+              mode={mode}
+              currentModel={currentModel}
+              numFrames={numFrames} onNumFramesChange={setNumFrames}
+              chunks={chunks} onChunksChange={setChunks} keyframesActive={keyframesActive}
+              fps={fps} onFpsChange={setFps}
+              seed={seed} onSeedChange={setSeed} onRandomSeed={handleRandomSeed}
+              steps={steps} onStepsChange={setSteps}
+              guidanceScale={guidanceScale} onGuidanceScaleChange={setGuidanceScale}
+              imageStrength={imageStrength} onImageStrengthChange={setImageStrength}
+              tiling={tiling} onTilingChange={setTiling}
+              disableAudio={disableAudio} onDisableAudioChange={setDisableAudio}
+              noMusic={noMusic} onNoMusicChange={setNoMusic}
+            />
           )}
 
           <div className="flex flex-wrap items-center gap-2 pt-1">
