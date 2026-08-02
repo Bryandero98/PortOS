@@ -151,8 +151,64 @@ Check {appName} dependencies for updates and security vulnerabilities:
 
 Repository: {repoPath}
 
+Open automated dependency PRs come FIRST. A Dependabot/Renovate PR is a bump already
+proposed and already isolated to one package — redoing it yourself conflicts with the bot
+branch and leaves a stale PR behind. Finish Phase 1 before you touch a manifest.
+
+## Phase 1 — Land or resolve open automated dependency PRs
+
+1. List the open PRs. If the repo has no GitHub/GitLab remote, or \`gh\`/\`glab\` is
+   unavailable or unauthenticated, say so and skip straight to Phase 2:
+   \`gh pr list --state open --limit 50 --json number,title,headRefName,author,mergeable,mergeStateStatus\`
+   (GitLab: \`glab mr list --state opened\`.)
+   An automated dependency PR is one authored by \`dependabot[bot]\`, \`app/dependabot\`,
+   \`renovate[bot]\`, or whose head branch starts with \`dependabot/\` or \`renovate/\`.
+
+2. For EACH one, gather evidence before deciding:
+   - The version jump: patch, minor, or major (\`gh pr view <n>\`)
+   - For a major (or a minor from a package that breaks on minors): read the release
+     notes in the PR body, then grep this codebase for the APIs that changed. A breaking
+     change the repo never calls is not a blocker.
+   - CI status: \`gh pr checks <n>\`. For a failure, read the actual log
+     (\`gh run view <run-id> --log-failed\`) and identify the root cause — a real
+     incompatibility, a flaky test, or an unrelated pre-existing failure on the
+     default branch (check that before blaming the bump).
+   - Mergeability: \`CONFLICTING\` almost always means lockfile/manifest drift from
+     another dependency PR that already merged.
+   - Diff sanity: the diff should be manifest + lockfile only. Source-file edits, a new
+     postinstall/prepare script, or a changed registry URL in a bot PR is a red flag —
+     do not merge it; comment what you found and leave it open.
+
+3. Then take exactly ONE verdict per PR:
+   - MERGE — patch/minor, CI green, not conflicting, diff is clean, nothing in the
+     release notes affects how this repo uses the package. Merge it, matching the repo's
+     documented merge method (\`gh pr merge <n> --merge\` unless the repo says otherwise).
+   - FIX-THEN-MERGE — the bump is wanted but the PR is stuck. Fix it:
+     * Conflicts only: ask the bot to redo it first — comment \`@dependabot rebase\`
+       (Renovate: tick the PR's rebase checkbox), move on, and re-check at the end of
+       the phase. If the bot doesn't respond, resolve it yourself: \`gh pr checkout <n>\`,
+       rebase onto the default branch, regenerate the lockfile with the package manager
+       (\`npm install\` — never hand-edit a lockfile), run the tests, push.
+     * Build/test failure caused by the new version (renamed export, changed default,
+       dropped Node/engine support): make the SMALLEST adapting code change on the PR
+       branch, run the tests, push. Keep it scoped to the breakage — never bundle
+       unrelated work onto a bot branch, and never force-push over the bot's history.
+     * Merge once it is green.
+   - CLOSE — the PR is superseded (a newer bot PR bumps the same package further) or
+     targets a dependency this repo no longer uses. Close it with a comment saying why.
+   - LEAVE — a major upgrade that needs a real migration, or a bump to something
+     security- or billing-critical that warrants a human call. Comment on the PR with
+     what you found and what the migration would take, and record it in the repo's work
+     tracker (a PLAN.md item or an issue, whichever the repo uses). Do not merge it.
+
+4. Re-check anything you asked the bot to rebase, then merge or leave it accordingly.
+   Summarize each PR and its verdict at the end of the phase.
+
+## Phase 2 — Everything the bots did not cover
+
 1. Run npm audit (or equivalent package manager)
-2. Check for outdated packages
+2. Check for outdated packages — skip any package that still has an open bot PR from
+   Phase 1; that PR owns the bump.
 3. Review CRITICAL and HIGH severity vulnerabilities
 4. For each vulnerability:
    - Assess actual risk

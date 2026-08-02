@@ -4197,6 +4197,34 @@ Check PortOS dependencies for updates and security vulnerabilities:
    - Verify the app starts correctly
 
 7. Commit with clear changelog of what was updated and why`,
+    // v2 default — genericized {appName}/{repoPath} body, but no awareness of open
+    // Dependabot/Renovate PRs (v3 triages those first).
+    `[Improvement: {appName}] Dependency Updates
+
+Check {appName} dependencies for updates and security vulnerabilities:
+
+Repository: {repoPath}
+
+1. Run npm audit (or equivalent package manager)
+2. Check for outdated packages
+3. Review CRITICAL and HIGH severity vulnerabilities
+4. For each vulnerability:
+   - Assess actual risk
+   - Check if update available
+   - Test updates don't break functionality
+
+5. Update dependencies carefully:
+   - Patch versions first (safest)
+   - Then minor versions
+   - Major versions need careful review
+
+6. After updating:
+   - Run tests
+   - Verify the app starts correctly
+
+7. Commit with clear changelog
+
+IMPORTANT: Only update one major version bump at a time.`,
   ],
   'documentation': [
     // prior default (pre-genericization / intermediate)

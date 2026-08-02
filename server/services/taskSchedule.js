@@ -1880,7 +1880,7 @@ export const TASK_TYPE_DESCRIPTIONS = {
   'branch-cleanup': 'Clean up merged branches',
   'branch-reconcile': "Finish this machine's in-flight local branches: clean up merged ones, open PRs, resolve conflicts, drive review, auto-merge when green",
   'issue-reconcile': "Heal zombie issues: open + in-progress but their PR already merged with no live claim — close + file a scoped follow-up when work remains, or release the claim so the queue re-picks it",
-  'dependency-updates': 'Update dependencies',
+  'dependency-updates': 'Land or resolve open Dependabot/Renovate PRs, then update the dependencies they missed',
   'release-check': 'Check for release readiness',
   'error-handling': 'Improve error handling',
   'typing': 'Improve TypeScript types',
