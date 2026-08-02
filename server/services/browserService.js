@@ -349,7 +349,9 @@ const describeHopDelivery = (hop) => `no remoteIPAddress; fromServiceWorker=${ho
  * browser. Returns `{ hops: [{ requestId, url, remoteIPAddress, status,
  * fromServiceWorker, fromDiskCache, fromPrefetchCache,
  * serviceWorkerResponseSource }], finalUrl, mainRequestIds: string[],
- * pendingMainRequestIds: string[] }`. The delivery flags ride along so the gate
+ * pendingMainRequestIds: string[], pendingMainRequestUrls: string[] }` (the
+ * URLs are positional to the pending ids, so a refusal can name the destination
+ * without re-parsing the stream). The delivery flags ride along so the gate
  * can tell "Chrome dialed somewhere we can't see" apart from "Chrome made no
  * connection at all" (see `hopMadeNoConnection`), and `requestId` keeps the hops
  * of ONE top-level navigation distinguishable from another's.
@@ -357,7 +359,11 @@ const describeHopDelivery = (hop) => `no remoteIPAddress; fromServiceWorker=${ho
  * `responseReceived` in the captured window — i.e. a navigation still in flight
  * whose final connection IP was never observed. The caller must fail closed on a
  * non-empty pending set: Chrome could complete that navigation (to a private /
- * metadata target) right after we stop capturing, leaving it unpinned.
+ * metadata target) right after we stop capturing, leaving it unpinned. A
+ * navigation Chrome reported as FAILED (`Network.loadingFailed` — most often
+ * `net::ERR_ABORTED` when a client-side route change supersedes an in-flight
+ * one) is NOT pending: it is dead, it can never commit a document, and there is
+ * no connection left to complete after we stop capturing.
  */
 export function pickMainFrameHops(messages, topFrameId = null) {
   // CDP sets `requestId === loaderId` on the main resource of EVERY frame — the
@@ -376,6 +382,10 @@ export function pickMainFrameHops(messages, topFrameId = null) {
     && (useFrameId ? p.frameId === topFrameId : p.requestId === p.loaderId);
   const mainRequestIds = new Set();
   const respondedIds = new Set();
+  const failedIds = new Set();
+  // Latest requested URL per main-frame navigation (a redirect overwrites it),
+  // so a pending navigation can be NAMED in the refusal without a second parse.
+  const mainRequestUrls = new Map();
   const hops = [];
   let finalUrl = null;
   for (const msg of messages) {
@@ -385,8 +395,9 @@ export function pickMainFrameHops(messages, topFrameId = null) {
       if (isMainDocRequest(p)) {
         mainRequestIds.add(p.requestId);
       }
-      if (mainRequestIds.has(p.requestId) && p.redirectResponse) {
-        hops.push(toHop(p.redirectResponse, p.requestId));
+      if (mainRequestIds.has(p.requestId)) {
+        if (p.request?.url) mainRequestUrls.set(p.requestId, p.request.url);
+        if (p.redirectResponse) hops.push(toHop(p.redirectResponse, p.requestId));
       }
     } else if (msg.method === 'Network.responseReceived') {
       if (mainRequestIds.has(p.requestId) && p.response) {
@@ -394,10 +405,22 @@ export function pickMainFrameHops(messages, topFrameId = null) {
         hops.push(toHop(p.response, p.requestId));
         finalUrl = p.response.url || finalUrl;
       }
+    } else if (msg.method === 'Network.loadingFailed' && mainRequestIds.has(p.requestId)) {
+      // Chrome gave up on this load — no document will ever commit from it. A
+      // failure that arrives AFTER the response is only the body being cut
+      // short, and that hop is already pinned, so `respondedIds` still wins.
+      failedIds.add(p.requestId);
     }
   }
-  const pendingMainRequestIds = [...mainRequestIds].filter((id) => !respondedIds.has(id));
-  return { hops, finalUrl, mainRequestIds: [...mainRequestIds], pendingMainRequestIds };
+  const pendingMainRequestIds = [...mainRequestIds]
+    .filter((id) => !respondedIds.has(id) && !failedIds.has(id));
+  return {
+    hops,
+    finalUrl,
+    mainRequestIds: [...mainRequestIds],
+    pendingMainRequestIds,
+    pendingMainRequestUrls: pendingMainRequestIds.map((id) => mainRequestUrls.get(id) || '(url unknown)'),
+  };
 }
 
 // Session-scoped CDP commands the pinned tab issues after `Network.enable` and
@@ -468,7 +491,7 @@ export function collectWebSocketHosts(messages) {
 // Pure gate over a captured CDP message stream: returns a refusal reason string,
 // or null when the navigation is safe to read. Exported for unit testing.
 export function ssrfPinRefusalReason(messages, verifyRemoteIp, url, topFrameId = null) {
-  const { hops, pendingMainRequestIds } = pickMainFrameHops(messages, topFrameId);
+  const { hops, pendingMainRequestUrls } = pickMainFrameHops(messages, topFrameId);
   if (!hops.length) return 'no main-frame document response was observed';
   // The main document must have a verifiable (present) connection IP — an empty
   // one can't be checked, so fail closed. The ONE exception is a hop Chrome
@@ -496,9 +519,13 @@ export function ssrfPinRefusalReason(messages, verifyRemoteIp, url, topFrameId =
       : describeHopDelivery(hop);
     return `Chrome connected to an unverifiable address for ${hop.url || url} (${detail})`;
   }
-  // A top-level navigation that STARTED but produced no response was never
-  // pinned — Chrome could be mid-connect to a private/metadata target.
-  if (pendingMainRequestIds.length) return 'a top-level navigation was still in flight (unpinned)';
+  // A top-level navigation that STARTED, produced no response, and was not
+  // reported as failed was never pinned — Chrome could be mid-connect to a
+  // private/metadata target. Name the URL(s): the bare message is undiagnosable
+  // once the capture window is gone.
+  if (pendingMainRequestUrls.length) {
+    return `a top-level navigation was still in flight (unpinned): ${pendingMainRequestUrls.join(', ')}`;
+  }
   // EVERY connection Chrome made must dial an allowed address — not just the
   // main document. A rebinding page can load public, then `fetch()` its
   // now-private-resolving hostname; the browser treats it as same-origin, JS

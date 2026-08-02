@@ -1,5 +1,5 @@
 import { isPrivateAddress } from '../lib/safeUrlFetch.js';
-import { navigateToUrlPinned } from './browserService.js';
+import { closeCdpPage, navigateToUrlPinned } from './browserService.js';
 
 const ORIGIN = 'https://stacker.news';
 // The ONE signed-in-identity extractor. Both the handoff identity check and the
@@ -41,8 +41,13 @@ export async function getStackerNewsBrowserIdentity() {
     settleMs: 1_000,
     evaluateExpression: STACKER_NEWS_IDENTITY_EXPRESSION,
   });
+  // The identity tab is scratch, like the read transport's (browserReader.js):
+  // it is read and torn down. Only a handoff leaves a tab for the user, so
+  // without this every "Check browser identity" click — and every handoff, which
+  // checks identity first — piled another stacker.news tab into their browser.
+  await closeCdpPage(page.id);
   verifyFinalOrigin(page.url);
-  return { username: page.evalResult?.username || null, pageId: page.id, url: page.url };
+  return { username: page.evalResult?.username || null, url: page.url };
 }
 
 export async function openStackerNewsHandoff({ kind, value, expectedUsername }) {

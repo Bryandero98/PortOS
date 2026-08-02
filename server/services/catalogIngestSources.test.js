@@ -33,6 +33,7 @@ vi.mock('./voice/stt.js', () => ({
 }));
 vi.mock('./browserService.js', () => ({
   navigateToUrlPinned: vi.fn(),
+  closeCdpPage: vi.fn(),
 }));
 vi.mock('fs/promises', () => ({
   writeFile: vi.fn(),
@@ -117,6 +118,9 @@ describe('fetchUrlMainText', () => {
       'https://ex.com/a',
       expect.objectContaining({ verifyRemoteIp: expect.any(Function), evaluateExpression: expect.any(String) }),
     );
+    // The read ran on that session, so the tab is scratch — every ingested URL
+    // would otherwise leave one open in the user's browser.
+    expect(browserService.closeCdpPage).toHaveBeenCalledWith('p1');
   });
 
   it('throws when the page extracts no readable text', async () => {
