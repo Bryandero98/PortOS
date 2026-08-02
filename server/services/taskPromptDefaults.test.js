@@ -130,7 +130,8 @@ describe('taskPromptDefaults integrity snapshot', () => {
     // The task runs in the app's LIVE checkout (no useWorktree default), so repairing a
     // bot branch has to happen in a throwaway worktree — a bare `gh pr checkout` there
     // hijacks whatever branch the user is on.
-    expect(current).toContain('{worktreesRoot}/dep-pr-<n>');
+    // …namespaced per app, since {worktreesRoot} is shared across every managed app.
+    expect(current).toContain('{worktreesRoot}/dep-{appName}-pr-<n>');
     expect(current).toContain('THROWAWAY WORKTREE');
     // Rebasing the bot branch rewrites its commits, so the push needs a lease, not a ban.
     expect(current).toContain('--force-with-lease');

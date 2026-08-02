@@ -205,16 +205,19 @@ repo (a globally-configured \`gh\` will silently target an unrelated GitHub repo
        it out in {repoPath} — this task usually runs in the app's live checkout, so a
        \`gh pr checkout\` there hijacks whatever branch the user is on and fails outright
        on their uncommitted work. The bot branch normally exists only on the remote, so
-       name the remote ref explicitly and let \`-b\` create the local branch:
+       name the remote ref explicitly and let \`-b\` create the local branch. Call the
+       worktree \`dep-{appName}-pr-<n>\` (lowercase the app name and collapse anything
+       non-alphanumeric to \`-\`) — {worktreesRoot} is shared by every app this install
+       manages, so a bare \`dep-pr-<n>\` collides with another app's PR of the same number:
          \`git -C {repoPath} fetch origin <headRefName>\`
-         \`git -C {repoPath} worktree add -b dep-pr-<n> {worktreesRoot}/dep-pr-<n> origin/<headRefName>\`
-       Do the work in \`{worktreesRoot}/dep-pr-<n>\`: rebase onto the default branch if
-       it was conflicting, regenerate the lockfile with the package manager
-       (\`npm install\` — never hand-edit a lockfile), run the tests, then push back to
-       the PR's own branch: \`git push origin HEAD:<headRefName>\`. Remove the worktree
-       and its local branch when you're done with that PR
-       (\`git -C {repoPath} worktree remove {worktreesRoot}/dep-pr-<n>\` then
-       \`git -C {repoPath} branch -D dep-pr-<n>\`).
+         \`git -C {repoPath} worktree add -b dep-{appName}-pr-<n> {worktreesRoot}/dep-{appName}-pr-<n> origin/<headRefName>\`
+       Do the work in that worktree: rebase onto the default branch if it was conflicting,
+       regenerate the lockfile with the package manager (\`npm install\` — never hand-edit
+       a lockfile), run the tests, then push back to the PR's own branch:
+       \`git push origin HEAD:<headRefName>\`. Remove the worktree and its local branch
+       when you're done with that PR
+       (\`git -C {repoPath} worktree remove {worktreesRoot}/dep-{appName}-pr-<n>\` then
+       \`git -C {repoPath} branch -D dep-{appName}-pr-<n>\`).
      * Pushing a rebase rewrites the bot's commits, so a plain push is rejected — add
        \`--force-with-lease=<headRefName>:origin/<headRefName>\`, which refuses if the bot
        pushed again while you worked, so you never clobber a newer version of its branch.
@@ -234,10 +237,13 @@ repo (a globally-configured \`gh\` will silently target an unrelated GitHub repo
 
 1. Run npm audit (or equivalent package manager)
 2. Check for outdated packages — skip any package that still has an open bot PR; that PR
-   owns the bump. Phase 1's list is the first filter, but confirm per package before you
-   bump one it didn't mention (\`gh pr list --state open --search "<package> in:title"\` /
+   owns the bump. Phase 1's list is the first filter, and when Phase 1 had forge access,
+   confirm per package before you bump one it didn't mention
+   (\`gh pr list --state open --search "<package> in:title"\` /
    \`glab mr list --state opened --search "<package>"\`), so a PR that fell outside the
-   listing can't still get double-bumped here.
+   listing can't still get double-bumped here. If Phase 1 was skipped for lack of a
+   working \`gh\`/\`glab\`, skip this confirmation too — there is nothing to query — and
+   say in your summary that bot-PR overlap could not be checked.
 3. Review CRITICAL and HIGH severity vulnerabilities
 4. For each vulnerability:
    - Assess actual risk
