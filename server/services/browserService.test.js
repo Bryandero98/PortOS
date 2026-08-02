@@ -273,6 +273,27 @@ describe('hopMadeNoConnection (no-network delivery classifier)', () => {
   });
 });
 
+describe('navigationWasCanceled (abandoned vs failed-against-a-peer)', () => {
+  let navigationWasCanceled;
+  beforeEach(async () => {
+    vi.resetModules();
+    ({ navigationWasCanceled } = await import('./browserService.js'));
+  });
+
+  it('accepts either cancel signal alone, and nothing else', () => {
+    // Chrome 150 sends both on a superseded navigation, but taking either alone
+    // keeps the classification working if a build reports only one.
+    expect(navigationWasCanceled({ canceled: true, errorText: 'net::ERR_ABORTED' })).toBe(true);
+    expect(navigationWasCanceled({ canceled: true, errorText: 'net::ERR_FAILED' })).toBe(true);
+    expect(navigationWasCanceled({ canceled: false, errorText: 'net::ERR_ABORTED' })).toBe(true);
+    // A real connection outcome we could not pin — never treated as abandoned.
+    expect(navigationWasCanceled({ canceled: false, errorText: 'net::ERR_CONNECTION_RESET' })).toBe(false);
+    expect(navigationWasCanceled({ errorText: 'net::ERR_CONNECTION_REFUSED' })).toBe(false);
+    expect(navigationWasCanceled({})).toBe(false);
+    expect(navigationWasCanceled(null)).toBe(false);
+  });
+});
+
 describe('ssrfPinRefusalReason (SSRF pin gate)', () => {
   let ssrfPinRefusalReason;
   beforeEach(async () => {
@@ -345,6 +366,21 @@ describe('ssrfPinRefusalReason (SSRF pin gate)', () => {
       loadingFailed('R1', 'net::ERR_CONNECTION_RESET'),
     ], allow, 'http://127.0.0.1/x');
     expect(reason).toMatch(/disallowed address 127\.0\.0\.1/);
+  });
+
+  // The relaxation is scoped to CANCELED loads. A connection-level failure means
+  // Chrome DID reach a peer and got an answer back, and loadingFailed carries no
+  // remoteIPAddress — so a private endpoint that accepts and resets must not be
+  // able to retire itself from the gate by failing.
+  it('still refuses a navigation that failed against a peer rather than being canceled', () => {
+    const reason = ssrfPinRefusalReason([
+      docRequest('R1', 'https://ex.com/a'),
+      docResponse('R1', 'https://ex.com/a', '93.184.216.34'),
+      docRequest('R2', 'https://rebind.example/x'),
+      loadingFailed('R2', 'net::ERR_CONNECTION_RESET'),
+    ], allow, 'https://ex.com/a');
+    expect(reason).toMatch(/still in flight/);
+    expect(reason).toContain('https://rebind.example/x');
   });
 
   it('refuses when no main-frame document response was observed', () => {

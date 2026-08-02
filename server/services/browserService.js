@@ -321,6 +321,16 @@ export function hopMadeNoConnection(hop) {
     || NO_NETWORK_SW_SOURCES.has(hop.serviceWorkerResponseSource);
 }
 
+// True when a `Network.loadingFailed` describes a load Chrome ABANDONED rather
+// than one that failed against a peer. Chrome 150 flags a superseded top-level
+// navigation with `canceled: true` and `net::ERR_ABORTED`; either signal alone
+// is accepted so a Chrome that reports only one of them still classifies. Every
+// other error kind is a real connection outcome we could not pin. Exported for
+// testing.
+export function navigationWasCanceled(params) {
+  return params?.canceled === true || params?.errorText === 'net::ERR_ABORTED';
+}
+
 // Human-readable cause for an empty-IP refusal, so the next occurrence is
 // diagnosable from the thrown message without a manual CDP replay.
 const describeHopDelivery = (hop) => `no remoteIPAddress; fromServiceWorker=${hop.fromServiceWorker === true}`
@@ -360,10 +370,12 @@ const describeHopDelivery = (hop) => `no remoteIPAddress; fromServiceWorker=${ho
  * whose final connection IP was never observed. The caller must fail closed on a
  * non-empty pending set: Chrome could complete that navigation (to a private /
  * metadata target) right after we stop capturing, leaving it unpinned. A
- * navigation Chrome reported as FAILED (`Network.loadingFailed` — most often
- * `net::ERR_ABORTED` when a client-side route change supersedes an in-flight
- * one) is NOT pending: it is dead, it can never commit a document, and there is
- * no connection left to complete after we stop capturing.
+ * navigation Chrome reported as CANCELED (`Network.loadingFailed` with
+ * `canceled`/`net::ERR_ABORTED` — what a client-side route change that
+ * supersedes an in-flight one produces) is NOT pending: it was abandoned before
+ * any answer, so nothing commits and no connection outcome is hidden. Any other
+ * failure kind stays pending and keeps failing closed — see
+ * `navigationWasCanceled`.
  */
 export function pickMainFrameHops(messages, topFrameId = null) {
   // CDP sets `requestId === loaderId` on the main resource of EVERY frame — the
@@ -406,10 +418,17 @@ export function pickMainFrameHops(messages, topFrameId = null) {
         finalUrl = p.response.url || finalUrl;
       }
     } else if (msg.method === 'Network.loadingFailed' && mainRequestIds.has(p.requestId)) {
-      // Chrome gave up on this load — no document will ever commit from it. A
-      // failure that arrives AFTER the response is only the body being cut
-      // short, and that hop is already pinned, so `respondedIds` still wins.
-      failedIds.add(p.requestId);
+      // ONLY a navigation Chrome CANCELED clears the pending gate. A cancel is
+      // "this load was abandoned before any answer" — nothing committed and no
+      // connection outcome is being hidden. Every OTHER failure kind
+      // (ERR_CONNECTION_RESET, ERR_CONNECTION_REFUSED, …) means Chrome did
+      // reach out and got something back, and `loadingFailed` carries no
+      // `remoteIPAddress`, so we cannot verify WHERE — a private endpoint that
+      // accepts and resets would otherwise pass unpinned. Those stay pending
+      // and the gate keeps failing closed on them.
+      // A failure arriving AFTER the response is only a truncated body, and
+      // that hop is already pinned, so `respondedIds` still wins either way.
+      if (navigationWasCanceled(p)) failedIds.add(p.requestId);
     }
   }
   const pendingMainRequestIds = [...mainRequestIds]
