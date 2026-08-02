@@ -30,13 +30,27 @@ export default function Messages() {
   const { chatKey } = useParams();
   const activeTab = useValidTab(TABS, 'inbox');
   const fullBleed = FULL_BLEED_TAB_IDS.has(activeTab);
-  const [accounts, setAccounts] = useState([]);
+  // `null` = the account list never loaded (request failed) — deliberately distinct
+  // from `[]`, which means "loaded, and there genuinely are no accounts". The inbox
+  // empty state branches on that difference to avoid telling a user to add an
+  // account they already have (#3281).
+  const [accounts, setAccounts] = useState(null);
   const [loading, setLoading] = useState(true);
 
   const fetchAccounts = useCallback(async () => {
-    const data = await api.getMessageAccounts().catch(() => []);
-    setAccounts(data || []);
+    const data = await api.getMessageAccounts().catch(() => null);
+    setAccounts(Array.isArray(data) ? data : null);
     setLoading(false);
+  }, []);
+
+  // Tabs that only iterate accounts want a plain array; the load-failed sentinel
+  // is forwarded to the inbox alone, which is the one surface that acts on it.
+  const accountList = accounts || [];
+
+  // ConfigTab mutates the list with functional updaters — normalize the sentinel
+  // so `prev` is always an array there.
+  const updateAccounts = useCallback((updater) => {
+    setAccounts(prev => (typeof updater === 'function' ? updater(prev || []) : updater));
   }, []);
 
   useEffect(() => {
@@ -60,11 +74,11 @@ export default function Messages() {
       case 'inbox':
         return <InboxTab accounts={accounts} />;
       case 'config':
-        return <ConfigTab accounts={accounts} setAccounts={setAccounts} />;
+        return <ConfigTab accounts={accountList} setAccounts={updateAccounts} />;
       case 'drafts':
-        return <DraftsTab accounts={accounts} />;
+        return <DraftsTab accounts={accountList} />;
       case 'sync':
-        return <SyncTab accounts={accounts} onRefresh={fetchAccounts} />;
+        return <SyncTab accounts={accountList} onRefresh={fetchAccounts} />;
       case 'imessage':
         return <IMessageTab />;
       default:
@@ -96,7 +110,11 @@ export default function Messages() {
         icon={Mail}
         title="Messages"
         subtitle="Unified email and messaging management"
-        actions={<span className="text-sm text-gray-500">{accounts.length} accounts</span>}
+        actions={(
+          <span className="text-sm text-gray-500">
+            {accounts === null ? 'Accounts unavailable' : `${accounts.length} accounts`}
+          </span>
+        )}
       />
 
       <TabPills tabs={TABS} activeTab={activeTab} onChange={handleTabChange} ariaLabel="Messages sections" />

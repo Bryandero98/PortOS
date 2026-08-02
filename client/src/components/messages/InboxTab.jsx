@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Mail, Search, RefreshCw, ChevronRight, Sparkles, Archive, Trash2, Reply, Eye, Flag, Pin, Loader2 } from 'lucide-react';
+import { Mail, Search, RefreshCw, ChevronRight, Sparkles, Archive, Trash2, Reply, Eye, Flag, Pin, Loader2, Settings, FilterX, AlertTriangle } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import toast from '../ui/Toast';
 import * as api from '../../services/api';
 import socket from '../../services/socket';
+import { timeAgo } from '../../utils/formatters';
 import MessageDetail from './MessageDetail';
 
 const ACTION_CONFIG = {
@@ -33,7 +34,129 @@ const TRIAGE_TABS = [
   { key: 'untriaged', label: 'Untriaged', icon: Mail,    filter: m => !m.evaluation },
 ];
 
+const EMPTY_ACTION_CLASS = 'inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm transition-colors disabled:opacity-50';
+
+/**
+ * Newest `lastSyncAt` across the given accounts, or `null` when none has ever
+ * synced. `null` here means "never synced" — never "synced and found nothing".
+ * @param {Array<{lastSyncAt?: string|null}>} accounts
+ * @returns {string|null} ISO timestamp or null
+ */
+export function latestSyncAt(accounts) {
+  return (accounts || []).reduce((newest, a) => {
+    const stamp = a?.lastSyncAt;
+    if (!stamp) return newest;
+    return !newest || stamp > newest ? stamp : newest;
+  }, null);
+}
+
+/**
+ * Empty state for the inbox list. The action the user still has to take depends
+ * on where they actually are, so this branches instead of always telling them to
+ * "add an account and sync" — advice that was wrong for every user who already
+ * had an account configured (#3281).
+ *
+ * `accounts === null` is the load-failed / not-loaded sentinel and is distinct
+ * from `[]` ("loaded, and there are genuinely no accounts"); likewise a null
+ * `lastSyncAt` means "never synced", not "synced and found nothing".
+ */
+export function InboxEmptyState({ accounts, lastSyncAt, hasFilters, syncing, onSync, onClearFilters }) {
+  const navigate = useNavigate();
+
+  const body = (() => {
+    if (accounts === null) return {
+      Icon: AlertTriangle,
+      title: 'Could not load your mail accounts',
+      hint: 'The inbox cannot tell what is configured until that request succeeds.',
+      action: (
+        <button
+          onClick={() => navigate('/messages/config')}
+          className={`${EMPTY_ACTION_CLASS} bg-port-accent/10 text-port-accent hover:bg-port-accent/20`}
+        >
+          <Settings size={14} />
+          Open Config
+        </button>
+      )
+    };
+
+    if (accounts.length === 0) return {
+      Icon: Mail,
+      title: 'No messages yet',
+      hint: 'Add an account and sync to get started',
+      action: (
+        <button
+          onClick={() => navigate('/messages/config')}
+          className={`${EMPTY_ACTION_CLASS} bg-port-accent/10 text-port-accent hover:bg-port-accent/20`}
+        >
+          <Settings size={14} />
+          Add an account
+        </button>
+      )
+    };
+
+    if (!lastSyncAt) return {
+      Icon: RefreshCw,
+      title: 'Nothing synced yet',
+      hint: 'Pull your latest mail to fill the inbox',
+      action: (
+        <button
+          onClick={onSync}
+          disabled={syncing}
+          className={`${EMPTY_ACTION_CLASS} bg-port-accent/10 text-port-accent hover:bg-port-accent/20`}
+        >
+          <RefreshCw size={14} className={syncing ? 'animate-spin' : ''} />
+          {syncing ? 'Syncing...' : 'Sync Unread'}
+        </button>
+      )
+    };
+
+    if (hasFilters) return {
+      Icon: Mail,
+      title: 'No messages match this view',
+      hint: `Last synced ${timeAgo(lastSyncAt)}`,
+      action: (
+        <button
+          onClick={onClearFilters}
+          className={`${EMPTY_ACTION_CLASS} bg-port-border text-gray-300 hover:bg-port-border/80`}
+        >
+          <FilterX size={14} />
+          Clear filters
+        </button>
+      )
+    };
+
+    return {
+      Icon: Mail,
+      title: 'Your inbox is empty',
+      hint: `The last sync brought back nothing new — last synced ${timeAgo(lastSyncAt)}`,
+      action: (
+        <button
+          onClick={onSync}
+          disabled={syncing}
+          className={`${EMPTY_ACTION_CLASS} bg-port-accent/10 text-port-accent hover:bg-port-accent/20`}
+        >
+          <RefreshCw size={14} className={syncing ? 'animate-spin' : ''} />
+          {syncing ? 'Syncing...' : 'Sync Unread'}
+        </button>
+      )
+    };
+  })();
+
+  const { Icon, title, hint, action } = body;
+  return (
+    <div className="text-center py-12 px-4 text-gray-500">
+      <Icon size={48} className="mx-auto mb-4 opacity-50" />
+      <p className="text-gray-300">{title}</p>
+      <p className="text-sm mt-1">{hint}</p>
+      <div className="mt-4 flex justify-center">{action}</div>
+    </div>
+  );
+}
+
 export default function InboxTab({ accounts }) {
+  // Everything below iterates the list; the `null` load-failed sentinel is only
+  // meaningful to the empty state, which reads `accounts` directly.
+  const accountList = useMemo(() => accounts || [], [accounts]);
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -42,6 +165,9 @@ export default function InboxTab({ accounts }) {
   const [selectedMessage, setSelectedMessage] = useState(null);
   const [evaluating, setEvaluating] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  // Set once a sync in this session actually succeeded, so the empty state stops
+  // saying "never synced" without waiting for the parent to refetch accounts.
+  const [syncedAt, setSyncedAt] = useState(null);
   const [fetchingFull, setFetchingFull] = useState(false);
   const [actionInProgress, setActionInProgress] = useState(null);
   const debounceRef = useRef(null);
@@ -106,22 +232,29 @@ export default function InboxTab({ accounts }) {
 
   const handleSync = async (mode) => {
     const targets = selectedAccount
-      ? accounts.filter(a => a.id === selectedAccount && a.enabled)
-      : accounts.filter(a => a.enabled);
+      ? accountList.filter(a => a.id === selectedAccount && a.enabled)
+      : accountList.filter(a => a.enabled);
     if (targets.length === 0) return toast.error('No enabled accounts to sync');
     setSyncing(true);
     let totalNew = 0;
     let totalPruned = 0;
+    let succeeded = 0;
     for (const acct of targets) {
       toast(`Syncing ${acct.name} (${mode})...`, { icon: '📧' });
       const result = await api.syncMessageAccount(acct.id, mode, { silent: true }).catch(err => {
         toast.error(`${acct.name}: ${err?.message || 'Sync failed'}`);
         return null;
       });
-      if (result?.newMessages) totalNew += result.newMessages;
-      if (result?.pruned) totalPruned += result.pruned;
+      if (!result) continue;
+      succeeded += 1;
+      if (result.newMessages) totalNew += result.newMessages;
+      if (result.pruned) totalPruned += result.pruned;
     }
     setSyncing(false);
+    // Every account failing is not a completed sync — say so, and leave the
+    // "never synced" state intact so the empty state keeps offering the retry.
+    if (succeeded === 0) return;
+    setSyncedAt(new Date().toISOString());
     const parts = [`${totalNew} new`];
     if (totalPruned > 0) parts.push(`${totalPruned} removed`);
     toast.success(`Sync complete — ${parts.join(', ')}`);
@@ -148,7 +281,7 @@ export default function InboxTab({ accounts }) {
 
   const handleQuickReply = async (msg, e) => {
     e.stopPropagation();
-    const account = accounts.find(a => a.id === msg.accountId) || accounts[0];
+    const account = accountList.find(a => a.id === msg.accountId) || accountList[0];
     if (!account) return toast.error('No account available');
     toast('Generating AI reply...', { icon: '✨' });
     const draft = await api.generateMessageDraft({
@@ -167,7 +300,7 @@ export default function InboxTab({ accounts }) {
   const handleAction = async (msg, action, e) => {
     e.stopPropagation();
     if (actionInProgress) return;
-    const account = accounts.find(a => a.id === msg.accountId);
+    const account = accountList.find(a => a.id === msg.accountId);
     if (!account) return toast.error('No account found for this message');
     if (!ACTIONABLE_SOURCES.includes(msg.source || account.type)) {
       return toast.error(`${action} not supported for ${msg.source || account.type}`);
@@ -197,11 +330,24 @@ export default function InboxTab({ accounts }) {
     [messages, currentTab]
   );
 
+  // A sync that landed in this session wins over the (not-yet-refetched) account
+  // timestamps; absent both, the user has genuinely never synced.
+  const lastSyncAt = syncedAt || latestSyncAt(accountList);
+  // Search and account are applied server-side in fetchMessages, the triage tab
+  // client-side — all three narrow what the list can show, so all three make
+  // "nothing here" a filtering result rather than an empty mailbox.
+  const hasFilters = Boolean(debouncedSearch || selectedAccount || activeTab !== 'all');
+  const clearFilters = () => {
+    setSearch('');
+    setSelectedAccount('');
+    setActiveTab('all');
+  };
+
   if (selectedMessage) {
     return (
       <MessageDetail
         message={selectedMessage}
-        accounts={accounts}
+        accounts={accountList}
         onBack={() => { setSelectedMessage(null); fetchMessages(); }}
       />
     );
@@ -226,7 +372,7 @@ export default function InboxTab({ accounts }) {
           className="px-3 py-2 bg-port-bg border border-port-border rounded-lg text-sm text-white focus:outline-none focus:border-port-accent"
         >
           <option value="">All accounts</option>
-          {accounts.map(a => (
+          {accountList.map(a => (
             <option key={a.id} value={a.id}>{a.name}</option>
           ))}
         </select>
@@ -318,22 +464,16 @@ export default function InboxTab({ accounts }) {
         })}
       </div>
 
-      {(() => {
-        if (visibleMessages.length === 0 && !loading) return (
-          <div className="text-center py-12 text-gray-500">
-            <Mail size={48} className="mx-auto mb-4 opacity-50" />
-            {messages.length === 0 ? (
-              <>
-                <p>No messages yet</p>
-                <p className="text-sm mt-1">Add an account and sync to get started</p>
-              </>
-            ) : (
-              <p>No {currentTab.label.toLowerCase()} messages</p>
-            )}
-          </div>
-        );
-        return null;
-      })()}
+      {visibleMessages.length === 0 && !loading && (
+        <InboxEmptyState
+          accounts={accounts}
+          lastSyncAt={lastSyncAt}
+          hasFilters={hasFilters}
+          syncing={syncing}
+          onSync={() => handleSync('unread')}
+          onClearFilters={clearFilters}
+        />
+      )}
 
       <div className="space-y-1">
         {visibleMessages.map((msg) => {
@@ -379,7 +519,7 @@ export default function InboxTab({ accounts }) {
                   const cfg = ACTION_CONFIG[actionKey];
                   const Icon = cfg.icon;
                   const isRecommended = ev?.action === actionKey;
-                  const msgSource = msg.source || accounts.find(a => a.id === msg.accountId)?.type;
+                  const msgSource = msg.source || accountList.find(a => a.id === msg.accountId)?.type;
                   const isActionable = ['archive', 'delete'].includes(actionKey) && ACTIONABLE_SOURCES.includes(msgSource);
 
                   const onClick = actionKey === 'reply'
