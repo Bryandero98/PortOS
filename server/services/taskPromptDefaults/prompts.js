@@ -164,8 +164,11 @@ repo (a globally-configured \`gh\` will silently target an unrelated GitHub repo
 
 1. List the open PRs. If the repo has no GitHub/GitLab remote, or the matching CLI is
    unavailable or unauthenticated, say so and skip straight to Phase 2:
-   \`gh pr list --state open --limit 50 --json number,title,headRefName,author,mergeable,mergeStateStatus\`
-   (GitLab: \`glab mr list --state opened\`.)
+   \`gh pr list --state open --limit 500 --json number,title,headRefName,author,mergeable,mergeStateStatus\`
+   (GitLab: \`glab mr list --state opened --per-page 100 --page <n>\`, paging until a page
+   comes back short.) The limit has to cover EVERY open PR, not just a first page — a bot
+   PR you never listed looks bot-uncovered to Phase 2, which then files the duplicate bump
+   this phase exists to prevent. If the result is exactly at your limit, raise it and re-run.
    An automated dependency PR is one authored by \`dependabot[bot]\`, \`app/dependabot\`,
    \`renovate[bot]\`, or whose head branch starts with \`dependabot/\` or \`renovate/\`.
 
@@ -201,18 +204,21 @@ repo (a globally-configured \`gh\` will silently target an unrelated GitHub repo
      * Either way, work on the bot branch in a THROWAWAY WORKTREE, never by checking
        it out in {repoPath} — this task usually runs in the app's live checkout, so a
        \`gh pr checkout\` there hijacks whatever branch the user is on and fails outright
-       on their uncommitted work:
+       on their uncommitted work. The bot branch normally exists only on the remote, so
+       name the remote ref explicitly and let \`-b\` create the local branch:
          \`git -C {repoPath} fetch origin <headRefName>\`
-         \`git -C {repoPath} worktree add {worktreesRoot}/dep-pr-<n> <headRefName>\`
+         \`git -C {repoPath} worktree add -b dep-pr-<n> {worktreesRoot}/dep-pr-<n> origin/<headRefName>\`
        Do the work in \`{worktreesRoot}/dep-pr-<n>\`: rebase onto the default branch if
        it was conflicting, regenerate the lockfile with the package manager
-       (\`npm install\` — never hand-edit a lockfile), run the tests, push. Remove the
-       worktree when you're done with that PR
-       (\`git -C {repoPath} worktree remove {worktreesRoot}/dep-pr-<n>\`).
-     * Pushing a rebase rewrites the bot's commits, so a plain push is rejected — use
-       \`git push --force-with-lease\` (which refuses if the bot pushed again while you
-       worked, so you never clobber a newer version of its branch). Never a bare
-       \`--force\`. A push you did NOT rebase needs no force at all.
+       (\`npm install\` — never hand-edit a lockfile), run the tests, then push back to
+       the PR's own branch: \`git push origin HEAD:<headRefName>\`. Remove the worktree
+       and its local branch when you're done with that PR
+       (\`git -C {repoPath} worktree remove {worktreesRoot}/dep-pr-<n>\` then
+       \`git -C {repoPath} branch -D dep-pr-<n>\`).
+     * Pushing a rebase rewrites the bot's commits, so a plain push is rejected — add
+       \`--force-with-lease=<headRefName>:origin/<headRefName>\`, which refuses if the bot
+       pushed again while you worked, so you never clobber a newer version of its branch.
+       Never a bare \`--force\`. A push you did NOT rebase needs no force at all.
      * Merge once it is green.
    - CLOSE — the PR is superseded (a newer bot PR bumps the same package further) or
      targets a dependency this repo no longer uses. Close it with a comment saying why.
@@ -227,8 +233,11 @@ repo (a globally-configured \`gh\` will silently target an unrelated GitHub repo
 ## Phase 2 — Everything the bots did not cover
 
 1. Run npm audit (or equivalent package manager)
-2. Check for outdated packages — skip any package that still has an open bot PR from
-   Phase 1; that PR owns the bump.
+2. Check for outdated packages — skip any package that still has an open bot PR; that PR
+   owns the bump. Phase 1's list is the first filter, but confirm per package before you
+   bump one it didn't mention (\`gh pr list --state open --search "<package> in:title"\` /
+   \`glab mr list --state opened --search "<package>"\`), so a PR that fell outside the
+   listing can't still get double-bumped here.
 3. Review CRITICAL and HIGH severity vulnerabilities
 4. For each vulnerability:
    - Assess actual risk

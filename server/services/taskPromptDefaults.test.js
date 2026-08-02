@@ -123,8 +123,10 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(current).toContain('dependabot[bot]');
     expect(current).toContain('renovate[bot]');
     expect(current).toContain('FIX-THEN-MERGE');
-    // Phase 2 must not re-bump a package a bot PR already owns.
-    expect(current).toContain('that PR owns the bump');
+    // Phase 2 must not re-bump a package a bot PR already owns — and must confirm that
+    // per package rather than trusting Phase 1's listing to have been complete.
+    expect(current).toContain('owns the bump');
+    expect(current).toContain('confirm per package');
     // The task runs in the app's LIVE checkout (no useWorktree default), so repairing a
     // bot branch has to happen in a throwaway worktree — a bare `gh pr checkout` there
     // hijacks whatever branch the user is on.
