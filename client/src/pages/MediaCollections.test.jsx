@@ -103,6 +103,14 @@ describe('MediaCollections', () => {
     expect(await screen.findByText('Beta')).toBeInTheDocument();
   });
 
+  it('toggles empty collections back in from the Hide empty checkbox', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await waitFor(() => screen.getByText('Alpha'));
+    await user.click(screen.getByLabelText('Hide empty'));
+    expect(await screen.findByText('Beta')).toBeInTheDocument();
+  });
+
   it('honours ?empty=1 so a shared filtered URL restores the view', async () => {
     renderPage('/media/collections?empty=1');
     expect(await screen.findByText('Beta')).toBeInTheDocument();

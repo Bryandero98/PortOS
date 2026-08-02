@@ -248,8 +248,9 @@ export default function MediaCollections() {
             <option key={s.id} value={s.id}>{s.label}</option>
           ))}
         </select>
-        <label className="flex items-center gap-2 text-sm text-gray-400 px-1 py-2 cursor-pointer whitespace-nowrap">
+        <label htmlFor="collection-hide-empty" className="flex items-center gap-2 text-sm text-gray-400 px-1 py-2 cursor-pointer whitespace-nowrap">
           <input
+            id="collection-hide-empty"
             type="checkbox"
             checked={hideEmpty}
             onChange={(e) => updateParams({ empty: e.target.checked ? '' : '1' })}
@@ -282,64 +283,64 @@ export default function MediaCollections() {
               {query ? 'No collections match that search.' : 'No collections with items yet.'}
             </div>
           ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-            {visible.map((c) => (
-              <div
-                key={c.id}
-              className={`bg-port-card border rounded-xl overflow-hidden flex flex-col ${c.synthetic ? 'border-port-accent/40' : 'border-port-border'}`}
-            >
-              <Link
-                to={`/media/collections/${encodeURIComponent(c.id)}`}
-                className="block aspect-square bg-port-bg relative"
-              >
-                {c.cover ? (
-                  // A cover can point at a pruned video thumbnail or an unpulled
-                  // peer asset; MediaImage degrades to the syncing tile instead
-                  // of the browser's broken-image icon.
-                  <MediaImage src={c.cover} alt={c.name} className="w-full h-full object-cover" loading="lazy" />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center text-gray-600">
-                    {c.synthetic ? <Inbox className="w-12 h-12" /> : <FolderOpen className="w-12 h-12" />}
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+              {visible.map((c) => (
+                <div
+                  key={c.id}
+                  className={`bg-port-card border rounded-xl overflow-hidden flex flex-col ${c.synthetic ? 'border-port-accent/40' : 'border-port-border'}`}
+                >
+                  <Link
+                    to={`/media/collections/${encodeURIComponent(c.id)}`}
+                    className="block aspect-square bg-port-bg relative"
+                  >
+                    {c.cover ? (
+                      // A cover can point at a pruned video thumbnail or an unpulled
+                      // peer asset; MediaImage degrades to the syncing tile instead
+                      // of the browser's broken-image icon.
+                      <MediaImage src={c.cover} alt={c.name} className="w-full h-full object-cover" loading="lazy" />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-gray-600">
+                        {c.synthetic ? <Inbox className="w-12 h-12" /> : <FolderOpen className="w-12 h-12" />}
+                      </div>
+                    )}
+                  </Link>
+                  <div className="p-2 space-y-1.5 flex-1 flex flex-col">
+                    {c.badge && (
+                      <span className="inline-block self-start text-[9px] uppercase tracking-wide text-gray-400 bg-port-bg border border-port-border rounded px-1.5 py-0.5">
+                        {c.badge}
+                      </span>
+                    )}
+                    <Link to={`/media/collections/${encodeURIComponent(c.id)}`} className="text-sm text-white hover:text-port-accent break-words" title={c.name}>
+                      {c.displayTitle}
+                    </Link>
+                    <div className="flex items-center gap-2 text-[10px] text-gray-500">
+                      {c.counts.image > 0 && <span className="flex items-center gap-1"><ImageIcon className="w-3 h-3" />{c.counts.image}</span>}
+                      {c.counts.video > 0 && <span className="flex items-center gap-1"><Film className="w-3 h-3" />{c.counts.video}</span>}
+                      {c.counts.image === 0 && c.counts.video === 0 && <span>Empty</span>}
+                    </div>
+                    <div className="flex-1" />
+                    <div className="flex items-center justify-between gap-1">
+                      {!c.synthetic && (
+                        <SyncBadge
+                          status={syncBadgeStatus(sync, c.id)}
+                          onClick={() => navigate(`/media/collections/${encodeURIComponent(c.id)}/sync`)}
+                        />
+                      )}
+                      {!c.synthetic && (
+                        <button
+                          type="button"
+                          onClick={() => handleDelete(c)}
+                          className="px-1.5 py-1 bg-port-error/20 hover:bg-port-error/40 text-port-error text-[10px] rounded flex items-center gap-1"
+                          title="Delete collection"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
                   </div>
-                )}
-              </Link>
-              <div className="p-2 space-y-1.5 flex-1 flex flex-col">
-                {c.badge && (
-                  <span className="inline-block self-start text-[9px] uppercase tracking-wide text-gray-400 bg-port-bg border border-port-border rounded px-1.5 py-0.5">
-                    {c.badge}
-                  </span>
-                )}
-                <Link to={`/media/collections/${encodeURIComponent(c.id)}`} className="text-sm text-white hover:text-port-accent break-words" title={c.name}>
-                  {c.displayTitle}
-                </Link>
-                <div className="flex items-center gap-2 text-[10px] text-gray-500">
-                  {c.counts.image > 0 && <span className="flex items-center gap-1"><ImageIcon className="w-3 h-3" />{c.counts.image}</span>}
-                  {c.counts.video > 0 && <span className="flex items-center gap-1"><Film className="w-3 h-3" />{c.counts.video}</span>}
-                  {c.counts.image === 0 && c.counts.video === 0 && <span>Empty</span>}
                 </div>
-                <div className="flex-1" />
-                <div className="flex items-center justify-between gap-1">
-                  {!c.synthetic && (
-                    <SyncBadge
-                      status={syncBadgeStatus(sync, c.id)}
-                      onClick={() => navigate(`/media/collections/${encodeURIComponent(c.id)}/sync`)}
-                    />
-                  )}
-                  {!c.synthetic && (
-                    <button
-                      type="button"
-                      onClick={() => handleDelete(c)}
-                      className="px-1.5 py-1 bg-port-error/20 hover:bg-port-error/40 text-port-error text-[10px] rounded flex items-center gap-1"
-                      title="Delete collection"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
-                  )}
-                </div>
-              </div>
+              ))}
             </div>
-          ))}
-        </div>
           )}
         </div>
       )}
