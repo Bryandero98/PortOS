@@ -1,11 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const navigateToUrlPinned = vi.fn();
-vi.mock('./browserService.js', () => ({ navigateToUrlPinned }));
-const { openStackerNewsHandoff } = await import('./stackerNewsBrowser.js');
+const closeCdpPage = vi.fn();
+vi.mock('./browserService.js', () => ({ navigateToUrlPinned, closeCdpPage }));
+const { getStackerNewsBrowserIdentity, openStackerNewsHandoff } = await import('./stackerNewsBrowser.js');
 
 describe('Stacker News CDP handoff', () => {
-  beforeEach(() => navigateToUrlPinned.mockReset());
+  beforeEach(() => { navigateToUrlPinned.mockReset(); closeCdpPage.mockReset(); });
 
   it('uses fixed Stacker News URLs and blocks an identity mismatch before opening a destination', async () => {
     navigateToUrlPinned.mockResolvedValue({ id: 'page-1', url: 'https://stacker.news', evalResult: { username: 'wrong_user' } });
@@ -22,5 +23,21 @@ describe('Stacker News CDP handoff', () => {
     await expect(openStackerNewsHandoff({ kind: 'item', value: '42', expectedUsername: 'example_user' })).resolves.toMatchObject({ pageId: 'item' });
     expect(navigateToUrlPinned.mock.calls[1][0]).toBe('https://stacker.news/items/42');
     expect(navigateToUrlPinned.mock.calls[1][1]).not.toHaveProperty('evaluateExpression');
+  });
+
+  // The identity read is scratch: without teardown every check (and every
+  // handoff, which checks first) leaves another stacker.news tab behind.
+  it('tears the identity tab down and leaves ONLY the handoff tab open', async () => {
+    navigateToUrlPinned
+      .mockResolvedValueOnce({ id: 'identity', url: 'https://stacker.news', evalResult: { username: 'example_user' } })
+      .mockResolvedValueOnce({ id: 'item', url: 'https://stacker.news/items/42' });
+    await openStackerNewsHandoff({ kind: 'item', value: '42', expectedUsername: 'example_user' });
+    expect(closeCdpPage.mock.calls).toEqual([['identity']]);
+  });
+
+  it('closes the identity tab on a standalone identity check', async () => {
+    navigateToUrlPinned.mockResolvedValue({ id: 'identity', url: 'https://stacker.news', evalResult: { username: 'example_user' } });
+    await expect(getStackerNewsBrowserIdentity()).resolves.toEqual({ username: 'example_user', url: 'https://stacker.news' });
+    expect(closeCdpPage).toHaveBeenCalledWith('identity');
   });
 });

@@ -31,6 +31,7 @@ import * as brainStorage from './brainStorage.js';
 import { extractIngredientsForScrap } from './catalogExtraction.js';
 import { transcribe } from './voice/stt.js';
 import {
+  closeCdpPage,
   navigateToUrlPinned,
 } from './browserService.js';
 import { lookup } from 'dns/promises';
@@ -137,6 +138,10 @@ export async function fetchUrlMainText(url, { settleMs = PAGE_SETTLE_MS } = {}) 
     settleMs,
     evaluateExpression: expression,
   });
+
+  // The read already happened on that CDP session, so this tab is scratch —
+  // every ingested URL would otherwise leave one open in the user's browser.
+  await closeCdpPage(page.id);
 
   const parsed = page.evalResult ? safeJSONParse(page.evalResult, null) : null;
   const text = clampText(parsed?.text || '');

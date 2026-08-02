@@ -3,6 +3,14 @@ import { mkdir, readFile, rm, utimes, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { createTempDataRoot, makePathsProxy } from '../lib/mockPathsDataRoot.js';
 
+// Shape captured from Chrome 150 when a second top-level navigation supersedes
+// an in-flight one: no `responseReceived` ever arrives for the canceled id.
+// Shared by both SSRF-pin suites below so the CDP shape is written once.
+const loadingFailed = (requestId, errorText) => ({
+  method: 'Network.loadingFailed',
+  params: { requestId, type: 'Document', errorText, canceled: errorText === 'net::ERR_ABORTED' },
+});
+
 describe('browserService config persistence', () => {
   let tempRoot;
 
@@ -173,6 +181,35 @@ describe('pickMainFrameHops (SSRF pin — main-frame connection IPs)', () => {
     expect(hops.map((h) => h.remoteIPAddress)).toEqual(['93.184.216.34']);
   });
 
+  it('drops a canceled top-level navigation from pending (loadingFailed, no response)', () => {
+    const { mainRequestIds, pendingMainRequestIds } = pickMainFrameHops([
+      docRequest('R1', 'https://ex.com/a', ''),
+      docResponse('R1', 'https://ex.com/a', '93.184.216.34'),
+      docRequest('R2', 'https://ex.com/b', ''),
+      loadingFailed('R2', 'net::ERR_ABORTED'),
+    ]);
+    expect(mainRequestIds).toEqual(['R1', 'R2']);
+    expect(pendingMainRequestIds).toEqual([]);
+  });
+
+  it('names each pending navigation by its latest requested URL (redirects included)', () => {
+    const { pendingMainRequestIds, pendingMainRequestUrls } = pickMainFrameHops([
+      docRequest('R1', 'https://ex.com/a', ''),
+      docResponse('R1', 'https://ex.com/a', '93.184.216.34'),
+      docRequest('R2', 'https://ex.com/b', ''),
+      // R2 redirected before stalling: the refusal must name where it ended up.
+      {
+        method: 'Network.requestWillBeSent',
+        params: {
+          requestId: 'R2', loaderId: 'R2', type: 'Document', request: { url: 'https://ex.com/c' },
+          redirectResponse: { url: 'https://ex.com/b', remoteIPAddress: '93.184.216.34', status: 302 },
+        },
+      },
+    ]);
+    expect(pendingMainRequestIds).toEqual(['R2']);
+    expect(pendingMainRequestUrls).toEqual(['https://ex.com/c']);
+  });
+
   it('returns no hops when no main-frame document load is present', () => {
     const { hops, mainRequestIds, finalUrl } = pickMainFrameHops([
       { method: 'Network.requestWillBeSent', params: { requestId: 'R2', loaderId: 'R1', type: 'Image', request: { url: 'https://cdn/x.png' } } },
@@ -236,6 +273,27 @@ describe('hopMadeNoConnection (no-network delivery classifier)', () => {
   });
 });
 
+describe('navigationWasCanceled (abandoned vs failed-against-a-peer)', () => {
+  let navigationWasCanceled;
+  beforeEach(async () => {
+    vi.resetModules();
+    ({ navigationWasCanceled } = await import('./browserService.js'));
+  });
+
+  it('accepts either cancel signal alone, and nothing else', () => {
+    // Chrome 150 sends both on a superseded navigation, but taking either alone
+    // keeps the classification working if a build reports only one.
+    expect(navigationWasCanceled({ canceled: true, errorText: 'net::ERR_ABORTED' })).toBe(true);
+    expect(navigationWasCanceled({ canceled: true, errorText: 'net::ERR_FAILED' })).toBe(true);
+    expect(navigationWasCanceled({ canceled: false, errorText: 'net::ERR_ABORTED' })).toBe(true);
+    // A real connection outcome we could not pin — never treated as abandoned.
+    expect(navigationWasCanceled({ canceled: false, errorText: 'net::ERR_CONNECTION_RESET' })).toBe(false);
+    expect(navigationWasCanceled({ errorText: 'net::ERR_CONNECTION_REFUSED' })).toBe(false);
+    expect(navigationWasCanceled({})).toBe(false);
+    expect(navigationWasCanceled(null)).toBe(false);
+  });
+});
+
 describe('ssrfPinRefusalReason (SSRF pin gate)', () => {
   let ssrfPinRefusalReason;
   beforeEach(async () => {
@@ -269,13 +327,60 @@ describe('ssrfPinRefusalReason (SSRF pin gate)', () => {
     expect(reason).toMatch(/disallowed address 127\.0\.0\.1/);
   });
 
-  it('refuses an in-flight top-level navigation (started, no response)', () => {
+  it('refuses an in-flight top-level navigation (started, no response), naming its URL', () => {
     const reason = ssrfPinRefusalReason([
       docRequest('R1', 'https://ex.com/a'),
       docResponse('R1', 'https://ex.com/a', '93.184.216.34'),
       docRequest('R2', 'https://evil.example/x'),
     ], allow, 'https://ex.com/a');
     expect(reason).toMatch(/still in flight/);
+    // Which navigation was unpinned is the whole diagnostic value — the capture
+    // window is gone by the time anyone reads the error.
+    expect(reason).toContain('https://evil.example/x');
+  });
+
+  // The Stacker News regression: a single-page app supersedes its own in-flight
+  // navigation routinely, and the gate counted that dead load as "still in
+  // flight" forever, refusing a perfectly clean read at random.
+  it('does NOT refuse a top-level navigation Chrome canceled, but DOES refuse one still open', () => {
+    const canceled = [
+      docRequest('R1', 'https://ex.com/a'),
+      docResponse('R1', 'https://ex.com/a', '93.184.216.34'),
+      docRequest('R2', 'https://ex.com/b'),
+      loadingFailed('R2', 'net::ERR_ABORTED'),
+    ];
+    expect(ssrfPinRefusalReason(canceled, allow, 'https://ex.com/a')).toBeNull();
+
+    const reason = ssrfPinRefusalReason([...canceled, docRequest('R3', 'https://ex.com/c')], allow, 'https://ex.com/a');
+    expect(reason).toMatch(/still in flight/);
+    expect(reason).toContain('https://ex.com/c');
+    expect(reason).not.toContain('https://ex.com/b');
+  });
+
+  // A failure that lands AFTER the response (a truncated body) must not undo the
+  // pin: that hop was already verified and its IP still has to pass.
+  it('keeps verifying a hop whose body failed after the response was received', () => {
+    const reason = ssrfPinRefusalReason([
+      docRequest('R1', 'http://127.0.0.1/x'),
+      docResponse('R1', 'http://127.0.0.1/x', '127.0.0.1'),
+      loadingFailed('R1', 'net::ERR_CONNECTION_RESET'),
+    ], allow, 'http://127.0.0.1/x');
+    expect(reason).toMatch(/disallowed address 127\.0\.0\.1/);
+  });
+
+  // The relaxation is scoped to CANCELED loads. A connection-level failure means
+  // Chrome DID reach a peer and got an answer back, and loadingFailed carries no
+  // remoteIPAddress — so a private endpoint that accepts and resets must not be
+  // able to retire itself from the gate by failing.
+  it('still refuses a navigation that failed against a peer rather than being canceled', () => {
+    const reason = ssrfPinRefusalReason([
+      docRequest('R1', 'https://ex.com/a'),
+      docResponse('R1', 'https://ex.com/a', '93.184.216.34'),
+      docRequest('R2', 'https://rebind.example/x'),
+      loadingFailed('R2', 'net::ERR_CONNECTION_RESET'),
+    ], allow, 'https://ex.com/a');
+    expect(reason).toMatch(/still in flight/);
+    expect(reason).toContain('https://rebind.example/x');
   });
 
   it('refuses when no main-frame document response was observed', () => {
