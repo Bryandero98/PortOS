@@ -37,11 +37,17 @@ export function useOnDemandTaskToast() {
       const scope = data?.appName ? ` for ${data.appName}` : '';
 
       // A perpetual task that did NOT park ⇒ the detector couldn't complete (a
-      // transient gh/glab probe failure). Never claim "nothing to do" — the
-      // check didn't finish.
+      // gh/glab probe failure). Never claim "nothing to do" — the check didn't
+      // finish. When the server classified the forge CLI as broken in a way that
+      // will NOT clear on its own (not installed / not authenticated / blocked
+      // outbound), say THAT and give the remedy — "try again shortly" is a dead
+      // end when every future tick fails identically.
       if (data?.outcome === 'transient') {
-        toast(`${task}${scope}: couldn't complete the check just now (a transient forge/network issue) — try again shortly.`, {
-          duration: 7000,
+        const forge = data?.forge;
+        toast(forge?.remedy
+          ? `${task}${scope}: the ${forge.cli} check couldn't run — ${forge.remedy}`
+          : `${task}${scope}: couldn't complete the check just now (a transient forge/network issue) — try again shortly.`, {
+          duration: forge?.remedy ? 12000 : 7000,
           icon: '⚠️'
         });
         return;

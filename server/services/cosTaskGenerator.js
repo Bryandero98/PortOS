@@ -1782,14 +1782,53 @@ async function generateManagedAppImprovementTask(app, state, { ignoreTaskId = nu
  * @param {Object} state - Current CoS state
  * @returns {Object} Generated task
  */
+// Last transient (non-parking) detector verdict, keyed the same way a park is
+// (`taskType` + appId), so emitOnDemandEmpty can read it right beside
+// getPerpetualParkInfo. A transient skip deliberately does NOT park — there is no
+// park record to hang the reason on — so this is that path's reason channel.
+//
+// Deliberately in-memory and short-lived: the only consumer is the emit that
+// follows the gate a few frames later in the SAME drain, so a persisted schedule
+// field would have nothing left to read it after a restart. The TTL keeps a
+// verdict from a *previous* drain out of an unrelated later toast, and the read
+// consumes it so it can never be reported twice.
+const TRANSIENT_VERDICT_TTL_MS = 60_000;
+const transientVerdicts = new Map();
+const transientVerdictKey = (taskType, appId) => `${taskType}:${appId || 'global'}`;
+
+/**
+ * Record why a perpetual work gate skipped WITHOUT parking. `cli` is the forge
+ * CLI whose probe failed (`gh` / `glab`), or null when no forge was involved.
+ * Passing a null verdict clears any stale entry (the actionable / park paths).
+ */
+export function recordPerpetualTransient(taskType, appId, verdict) {
+  const key = transientVerdictKey(taskType, appId);
+  if (!verdict) {
+    transientVerdicts.delete(key);
+    return;
+  }
+  transientVerdicts.set(key, { ...verdict, at: Date.now() });
+}
+
+/** Read-and-consume the recorded verdict; null when absent or past its TTL. */
+function takePerpetualTransient(taskType, appId) {
+  const key = transientVerdictKey(taskType, appId);
+  const verdict = transientVerdicts.get(key);
+  transientVerdicts.delete(key);
+  if (!verdict || (Date.now() - verdict.at) > TRANSIENT_VERDICT_TTL_MS) return null;
+  return verdict;
+}
+
 /**
  * Surface WHY a user-initiated on-demand "Run" produced no task, so the trigger
  * isn't a silent no-op the user only discovers in the pm2 logs. Emits
  * `schedule:on-demand-empty` (which the client toasts) with an `outcome`:
  *   - 'parked'    → a perpetual detector re-checked and found no actionable work;
  *                   carries the reason + open/in-flight/filtered breakdown.
- *   - 'transient' → a perpetual task that did NOT park — a transient gh/glab
- *                   probe failure — so the check didn't actually complete.
+ *   - 'transient' → a perpetual task that did NOT park — a gh/glab probe
+ *                   failure — so the check didn't actually complete. Carries a
+ *                   `forge` block naming the real fault when the CLI is broken
+ *                   in a way that will NOT clear on its own.
  *   - 'idle'      → a non-perpetual task produced no task: a genuine "nothing to
  *                   do", NOT a failure (e.g. pr-watcher with no new PRs).
  *
@@ -1818,6 +1857,24 @@ export async function emitOnDemandEmpty({ taskScheduleMod, request, targetApp, t
     reason = app?.layeredIntelligence?.lastRunReason || null;
   }
 
+  // 'transient' says "the forge probe failed, try again shortly" — only true when
+  // the forge is momentarily flaky. A gh that is missing, unauthenticated, or
+  // blocked by an outbound firewall fails EVERY tick forever, so that advice sends
+  // the user in circles. Ask the CLI the detector actually ran (recorded by the
+  // work gate moments ago — the task-type NAME can't answer this: `claim-work`
+  // resolves its forge internally, and branch-reconcile/quota-burn go transient
+  // over git/provider faults with no forge involved) whether it is broken in a
+  // way that won't self-clear, and pass the remedy through. No verdict, an
+  // unprobeable CLI, or a healthy one all leave `forge` null and keep the
+  // generic copy — the failure really was a blip, or at least not one we can name.
+  let forge = null;
+  const verdict = outcome === 'transient' ? takePerpetualTransient(request.taskType, appId) : null;
+  if (verdict?.cli === 'gh') {
+    const { checkGhHealth } = await import('./github.js');
+    const health = await checkGhHealth().catch(() => null);
+    if (health && !health.ok && health.remedy) forge = { cli: 'gh', remedy: health.remedy };
+  }
+
   cosEvents.emit('schedule:on-demand-empty', {
     requestId: request.id,
     taskType: request.taskType,
@@ -1825,6 +1882,7 @@ export async function emitOnDemandEmpty({ taskScheduleMod, request, targetApp, t
     appName: targetApp?.name || null,
     outcome,
     reason,
+    forge,
     parkReason: parkInfo?.parkReason || null,
     parkedUntil: parkInfo?.parkedUntil || null,
     actionableCount: parkInfo?.parkActionableCount ?? null,
@@ -1946,13 +2004,19 @@ async function applyPerpetualWorkGate(app, taskType, promptTaskType, metadata, i
   });
   if (detection.actionable) {
     await taskSchedule.clearPerpetualPark(taskType, app.id);
+    recordPerpetualTransient(taskType, app.id, null);
     metadata.perpetual = true;
     return { skip: false };
   }
   if (detection.transient) {
     emitLog('debug', `Perpetual ${taskType} skip for ${app.name} (transient: ${detection.reason})`, { appId: app.id });
+    // The skip is silent by design (the next tick retries), but an explicit user
+    // "Run" ends here too — record which CLI failed so emitOnDemandEmpty can tell
+    // the difference between a blip and a forge that is broken for good.
+    recordPerpetualTransient(taskType, app.id, { cli: detection.cli || null, reason: detection.reason });
     return { skip: true };
   }
+  recordPerpetualTransient(taskType, app.id, null);
   // Carry the detector's open/in-flight/filtered breakdown into the park so an
   // explicit "Run" can explain WHY a non-empty queue yielded no work.
   const counts = detection.total != null
