@@ -25,6 +25,7 @@ export * from './apiPersonalities.js';
 export * from './apiAccounts.js';
 export * from './apiSchedules.js';
 export * from './apiMessages.js';
+export * from './apiStackerNews.js';
 export * from './apiContacts.js';
 export * from './apiSignal.js';
 export * from './apiSpotify.js';

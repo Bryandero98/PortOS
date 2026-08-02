@@ -27,7 +27,7 @@ import {
 const DOMAIN_ARRAYS = [
   'coreDdl', 'tribeDdl', 'humanActivityDdl', 'commissionsDdl',
   'catalogDdl', 'catalogUserTypesDdl', 'mediaDdl', 'universesDdl',
-  'libraryDdl', 'pipelineDdl', 'writersRoomDdl', 'loraDdl', 'privacyDdl',
+  'libraryDdl', 'pipelineDdl', 'writersRoomDdl', 'loraDdl', 'privacyDdl', 'stackerNewsDdl',
   'auditDdl',
 ];
 
@@ -60,6 +60,7 @@ describe('db/schema barrel + composer (#2832)', () => {
       ...schema.writersRoomDdl,
       ...schema.loraDdl,
       ...schema.privacyDdl,
+      ...schema.stackerNewsDdl,
       ...schema.auditDdl,
       ...buildAuditTriggers(),
     ];

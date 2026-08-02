@@ -30,6 +30,7 @@ const FeatureAgents = lazyWithReload(() => import('./pages/FeatureAgents'));
 const FeatureAgentDetail = lazyWithReload(() => import('./pages/FeatureAgentDetail'));
 const CalendarPage = lazyWithReload(() => import('./pages/Calendar'));
 const Messages = lazyWithReload(() => import('./pages/Messages'));
+const StackerNews = lazyWithReload(() => import('./pages/StackerNews'));
 const IMessage = lazyWithReload(() => import('./pages/IMessage'));
 const Tribe = lazyWithReload(() => import('./pages/Tribe'));
 const Timeline = lazyWithReload(() => import('./pages/Timeline'));
@@ -311,6 +312,8 @@ export default function App() {
           {/* :chatKey is only used by the imessage tab; other tabs strip a stray second segment. */}
           <Route path="messages/:tab/:chatKey" element={<Messages />} />
           <Route path="messages/:tab" element={<Messages />} />
+          <Route path="stacker-news" element={<StackerNews />} />
+          <Route path="stacker-news/:accountId/:tab" element={<StackerNews />} />
           {/* Legacy /imessage → Comms Messages → iMessage tab */}
           <Route path="imessage" element={<Navigate to="/messages/imessage" replace />} />
           <Route path="imessage/:chatKey" element={<IMessage />} />
