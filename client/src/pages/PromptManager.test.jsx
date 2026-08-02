@@ -97,14 +97,14 @@ describe('PromptManager stage list', () => {
     expect(screen.getByText('1 of 4')).toBeTruthy();
   });
 
-  it('drops the group toggle while filtering rather than leaving a dead control', async () => {
+  it('disables the group toggle while filtering rather than leaving a dead control', async () => {
     renderPage();
     await screen.findByText('Prompt Stages');
-    expect(groupHeader('Pipeline')).toBeTruthy();
+    expect(groupHeader('Pipeline').disabled).toBe(false);
 
     fireEvent.change(searchBox(), { target: { value: 'comic' } });
-    expect(screen.queryByRole('button', { name: /^Pipeline, \d+ stages$/i })).toBeNull();
-    expect(screen.getByText('Pipeline')).toBeTruthy();
+    expect(groupHeader('Pipeline').disabled).toBe(true);
+    expect(groupHeader('Pipeline').getAttribute('aria-expanded')).toBe('true');
   });
 
   it('filters on the description too', async () => {

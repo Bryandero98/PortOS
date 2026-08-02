@@ -52,6 +52,9 @@ export const STAGE_WORD_PREFIXES = [
   'Twin',
 ];
 
+// Lowercased once at module load — the match below runs per stage per keystroke.
+const LOWERED_WORD_PREFIXES = STAGE_WORD_PREFIXES.map((prefix) => [prefix, prefix.toLowerCase()]);
+
 /**
  * The group a stage belongs to, derived from its display name (falling back to
  * its key when a stage has no name). Hyphens normalize to spaces first so a
@@ -68,11 +71,20 @@ export function stageGroupLabel(displayName) {
   }
 
   const normalized = name.replace(/-/g, ' ').toLowerCase();
-  for (const prefix of STAGE_WORD_PREFIXES) {
-    const needle = prefix.toLowerCase();
+  for (const [prefix, needle] of LOWERED_WORD_PREFIXES) {
     if (normalized === needle || normalized.startsWith(`${needle} `)) return prefix;
   }
   return OTHER_GROUP_LABEL;
+}
+
+/**
+ * The group for a `[key, config]` pair — the display name when it has one,
+ * else the key. The single definition of that fallback: the page's
+ * auto-expand and this module's bucketing must agree on the label, or a
+ * deep-linked stage opens the wrong group.
+ */
+export function stageGroupLabelFor(key, config) {
+  return stageGroupLabel(config?.name || key);
 }
 
 /**
@@ -107,22 +119,21 @@ export function buildStageGroups(stages, { query = '', systemOnly = false } = {}
 
   const byLabel = new Map();
   for (const entry of matched) {
-    const label = stageGroupLabel(entry[1]?.name || entry[0]);
+    const label = stageGroupLabelFor(entry[0], entry[1]);
     const list = byLabel.get(label);
     if (list) list.push(entry); else byLabel.set(label, [entry]);
   }
 
+  // `Other` sorts last; everything else alphabetically. Ranking rather than
+  // branching so a second pinned bucket is one table entry, not a rewrite.
+  const rank = (label) => (label === OTHER_GROUP_LABEL ? 1 : 0);
   const groups = [...byLabel.entries()]
     .map(([label, list]) => ({
       label,
       stages: list.sort(([aKey, a], [bKey, b]) =>
         String(a?.name || aKey).localeCompare(String(b?.name || bKey))),
     }))
-    .sort((a, b) => {
-      if (a.label === OTHER_GROUP_LABEL) return b.label === OTHER_GROUP_LABEL ? 0 : 1;
-      if (b.label === OTHER_GROUP_LABEL) return -1;
-      return a.label.localeCompare(b.label);
-    });
+    .sort((a, b) => rank(a.label) - rank(b.label) || a.label.localeCompare(b.label));
 
   return { groups, matchCount: matched.length, totalCount: entries.length };
 }

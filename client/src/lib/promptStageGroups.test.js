@@ -1,7 +1,11 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   buildStageGroups,
   stageGroupLabel,
+  stageGroupLabelFor,
   stageHaystack,
   isSystemStage,
   SYSTEM_STAGE_KEYS,
@@ -166,5 +170,49 @@ describe('buildStageGroups', () => {
   it('groups a name-less stage by its key', () => {
     const { groups } = buildStageGroups({ 'cos-report-summary': {} });
     expect(groups[0].label).toBe('CoS');
+  });
+});
+
+describe('stageGroupLabelFor', () => {
+  it('prefers the display name and falls back to the key', () => {
+    expect(stageGroupLabelFor('x', stage('Importer — Analyze'))).toBe('Importer');
+    expect(stageGroupLabelFor('brain-classifier', {})).toBe('Brain');
+    expect(stageGroupLabelFor('brain-classifier', undefined)).toBe('Brain');
+  });
+
+  it('agrees with the label buildStageGroups buckets under', () => {
+    const stages = { 'brain-classifier': {}, 'creative-director-treatment': stage('Creative Director — Treatment') };
+    const { groups } = buildStageGroups(stages);
+    for (const { label, stages: rows } of groups) {
+      for (const [key, config] of rows) expect(stageGroupLabelFor(key, config)).toBe(label);
+    }
+  });
+});
+
+// Drift guard: the word-prefix fallback is a curated list, so a NEW stage family
+// that skips the `Family — Specific` convention would silently land in `Other`
+// with nothing to notice it. Pin the shipped catalog's Other bucket so adding
+// such a stage fails here instead of quietly becoming unfiled in the UI.
+describe('shipped stage catalog', () => {
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const seeded = JSON.parse(
+    readFileSync(resolve(repoRoot, 'data.reference', 'prompts', 'stage-config.json'), 'utf8'),
+  ).stages;
+
+  it('files every shipped stage except the three known un-prefixed scorers', () => {
+    const { groups, totalCount } = buildStageGroups(seeded);
+    expect(totalCount).toBeGreaterThan(100);
+    const other = groups.find(g => g.label === OTHER_GROUP_LABEL);
+    expect(other?.stages.map(([key]) => key) ?? []).toEqual([
+      'adversarial-boundary-scorer',
+      'multi-turn-consistency-scorer',
+      'values-alignment-scorer',
+    ]);
+  });
+
+  it('keeps every shipped group non-empty and Other last', () => {
+    const { groups } = buildStageGroups(seeded);
+    expect(groups.every(g => g.stages.length > 0)).toBe(true);
+    expect(groups[groups.length - 1].label).toBe(OTHER_GROUP_LABEL);
   });
 });

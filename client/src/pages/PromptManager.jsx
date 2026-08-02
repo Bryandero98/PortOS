@@ -22,7 +22,10 @@ import {
   getJobSkills, getJobSkill, saveJobSkill as apiSaveJobSkill, previewJobSkill as apiPreviewJobSkill,
 } from '../services/apiPrompts';
 import { getProviders } from '../services/apiProviders';
-import { buildStageGroups, stageGroupLabel, isSystemStage } from '../lib/promptStageGroups';
+import Pill from '../components/ui/Pill';
+// Aliased: `confirmDeleteStage` destructures an `isSystemStage` field off the
+// pending-delete record, which would otherwise shadow this import.
+import { buildStageGroups, stageGroupLabelFor, isSystemStage as isSystemStageKey } from '../lib/promptStageGroups';
 
 const VALID_PROMPT_TABS = ['stages', 'variables', 'job-skills'];
 
@@ -294,16 +297,13 @@ export default function PromptManager() {
   // lands with its row visible. Seeding STATE (rather than forcing it open at
   // render time) keeps the user free to collapse it again afterwards.
   const selectedGroupLabel = selectedStage && stages[selectedStage]
-    ? stageGroupLabel(stages[selectedStage].name || selectedStage)
+    ? stageGroupLabelFor(selectedStage, stages[selectedStage])
     : null;
   useEffect(() => {
     if (!selectedGroupLabel) return;
-    setExpandedGroups((prev) => (prev.has(selectedGroupLabel) ? prev : new Set(prev).add(selectedGroupLabel)));
+    setExpandedGroups((prev) => new Set(prev).add(selectedGroupLabel));
   }, [selectedGroupLabel]);
 
-  // While a filter is on, every surviving group shows its matches — a search
-  // that returns hits behind collapsed headers reads as "no results".
-  const groupIsOpen = (label) => stageFilterActive || expandedGroups.has(label);
   const toggleGroup = (label) => setExpandedGroups((prev) => {
     const next = new Set(prev);
     if (next.has(label)) next.delete(label); else next.add(label);
@@ -398,7 +398,6 @@ export default function PromptManager() {
                 <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
                 <input
                   type="search"
-                  id="stage-search"
                   aria-label="Search prompt stages"
                   value={stageQuery}
                   onChange={(e) => setStageQuery(e.target.value)}
@@ -434,39 +433,26 @@ export default function PromptManager() {
             </div>
             <div className="space-y-1">
               {stageGroups.map(({ label, stages: groupStages }) => {
-                const open = groupIsOpen(label);
-                const headerBody = (
-                  <>
-                    {stageFilterActive
-                      ? null
-                      : open
-                        ? <ChevronDown size={12} className="shrink-0" />
-                        : <ChevronRight size={12} className="shrink-0" />}
-                    <span className="min-w-0 truncate">{label}</span>
-                    <span className="ml-auto shrink-0 text-gray-500 normal-case">{groupStages.length}</span>
-                  </>
-                );
+                // A filter forces every surviving group open — hits hidden
+                // behind collapsed headers read as "no results" — which also
+                // makes the toggle inert, so it disables rather than lying.
+                const open = stageFilterActive || expandedGroups.has(label);
+                const Chevron = open ? ChevronDown : ChevronRight;
                 return (
                   <div key={label}>
-                    {/* While a filter is on every group is forced open, so the
-                        toggle would be a dead control — render a plain heading
-                        instead of a button that does nothing. */}
-                    {stageFilterActive ? (
-                      <div className="flex items-center gap-1 px-2 py-1.5 text-xs font-semibold uppercase tracking-wide text-gray-400">
-                        {headerBody}
-                      </div>
-                    ) : (
-                      <button
-                        onClick={() => toggleGroup(label)}
-                        aria-expanded={open}
-                        // Without this the name computes to "Pipeline78" — the
-                        // count span abuts the label with no separator.
-                        aria-label={`${label}, ${groupStages.length} stages`}
-                        className="w-full flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-semibold uppercase tracking-wide text-gray-400 hover:bg-port-border hover:text-white"
-                      >
-                        {headerBody}
-                      </button>
-                    )}
+                    <button
+                      onClick={() => toggleGroup(label)}
+                      disabled={stageFilterActive}
+                      aria-expanded={open}
+                      // Without this the name computes to "Pipeline78" — the
+                      // count span abuts the label with no separator.
+                      aria-label={`${label}, ${groupStages.length} stages`}
+                      className="w-full flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-semibold uppercase tracking-wide text-gray-400 enabled:hover:bg-port-border enabled:hover:text-white"
+                    >
+                      <Chevron size={12} className={`shrink-0 ${stageFilterActive ? 'invisible' : ''}`} />
+                      <span className="min-w-0 truncate">{label}</span>
+                      <span className="ml-auto shrink-0 text-gray-500 normal-case">{groupStages.length}</span>
+                    </button>
                     {open && (
                       <div className="space-y-1 pl-2">
                         {groupStages.map(([name, config]) => (
@@ -481,10 +467,10 @@ export default function PromptManager() {
                           >
                             <div className="flex items-center gap-1">
                               <span className="font-medium truncate">{config.name || name}</span>
-                              {isSystemStage(name) && (
-                                <span className="shrink-0 text-[10px] px-1.5 py-0.5 bg-port-accent/20 text-port-accent rounded uppercase font-semibold">
+                              {isSystemStageKey(name) && (
+                                <Pill tone="bare" size="xs" bordered={false} className="shrink-0 bg-port-accent/20 text-port-accent uppercase font-semibold">
                                   System
-                                </span>
+                                </Pill>
                               )}
                             </div>
                             <div className="text-xs text-gray-500 truncate">{config.description}</div>
