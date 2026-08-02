@@ -42,11 +42,14 @@ vi.mock('../hooks/useSyncIntegrity', () => ({
 }));
 
 // ── Mock buildUnsortedCollection ─────────────────────────────────────────────
+// Read at call time (inside the factory's returned function), so a test can
+// empty it to simulate a fresh install with no media at all.
+let mockUnsortedItems = [{ kind: 'image', ref: 'loose.png', addedAt: '2024-01-02' }];
 vi.mock('../lib/unsorted', () => ({
   buildUnsortedCollection: () => ({
     id: '__unsorted__',
     name: 'Unsorted',
-    items: [{ kind: 'image', ref: 'loose.png', addedAt: '2024-01-02' }],
+    items: mockUnsortedItems,
     synthetic: true,
   }),
 }));
@@ -62,6 +65,7 @@ function RouteProbe() {
   return (
     <>
       <div data-testid="search-string">{location.search}</div>
+      <div data-testid="pathname">{location.pathname}</div>
       <button type="button" onClick={() => navigate('/media/collections?q=alpha')}>external nav</button>
     </>
   );
@@ -77,7 +81,12 @@ function renderPage(entry = '/media/collections') {
 }
 
 describe('MediaCollections', () => {
-  beforeEach(() => { vi.clearAllMocks(); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // clearAllMocks resets calls, not implementations — restore the shared
+    // fixture so a test that emptied it can't leak into the next one.
+    mockUnsortedItems = [{ kind: 'image', ref: 'loose.png', addedAt: '2024-01-02' }];
+  });
 
   it('renders non-empty collection names after loading', async () => {
     renderPage();
@@ -199,17 +208,43 @@ describe('MediaCollections', () => {
     expect(screen.queryByText(/No collections match that search/)).not.toBeInTheDocument();
   });
 
-  it('reveals the empties after creating a collection so the new one is visible', async () => {
+  it('opens the new collection after creating it, even under an active search', async () => {
     const { createMediaCollection } = await import('../services/api');
-    createMediaCollection.mockResolvedValue({ id: 'col-4', name: 'Fresh Bucket', items: [] });
+    createMediaCollection.mockResolvedValueOnce({ id: 'col-4', name: 'Fresh Bucket', items: [] });
     const user = userEvent.setup();
-    renderPage();
+    // `?q=alpha` is the hostile case: a brand-new collection is always empty
+    // AND doesn't match the search, so any grid-local feedback would be
+    // swallowed and the create would look like it failed.
+    renderPage('/media/collections?q=alpha');
     await waitFor(() => screen.getByText('Alpha'));
     await user.type(screen.getByLabelText('New collection name'), 'Fresh Bucket');
     await user.click(screen.getByRole('button', { name: /create/i }));
-    // A brand-new collection is always empty; without the reveal it would be
-    // filtered straight back out and the create would look like it failed.
-    expect(await screen.findByText('Fresh Bucket')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('pathname')).toHaveTextContent('/media/collections/col-4'));
+  });
+
+  it('preserves sibling URL params when one filter changes', async () => {
+    const user = userEvent.setup();
+    renderPage('/media/collections?q=beta&sort=name&empty=1');
+    await waitFor(() => screen.getByText('Beta'));
+    await user.selectOptions(screen.getByLabelText('Sort collections'), 'count');
+    await waitFor(() => expect(screen.getByTestId('search-string')).toHaveTextContent('sort=count'));
+    // A params merge built from a stale/blank snapshot would silently drop the
+    // search and the empty toggle the user set moments earlier.
+    expect(screen.getByTestId('search-string')).toHaveTextContent('q=beta');
+    expect(screen.getByTestId('search-string')).toHaveTextContent('empty=1');
+  });
+
+  it('shows the onboarding copy on a fresh install, not a hidden-empties notice', async () => {
+    const { listMediaCollections } = await import('../services/api');
+    listMediaCollections.mockResolvedValueOnce([]);
+    mockUnsortedItems = [];
+    renderPage();
+    expect(await screen.findByText(/No collections yet/)).toBeInTheDocument();
+    // The synthetic "Unsorted" entry is always prepended, so a gate on the
+    // enriched list would never fire this copy — and would instead tell a new
+    // user that 1 empty collection they never made is hidden.
+    expect(screen.queryByText(/empty collection/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Every collection here is empty/)).not.toBeInTheDocument();
   });
 
   it('offers the three sort options', async () => {

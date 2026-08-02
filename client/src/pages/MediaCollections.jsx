@@ -102,12 +102,13 @@ export default function MediaCollections() {
       setCollections((prev) => [...prev, created]);
       setName('');
       toast.success(`Created "${created.name}"`);
-      // A new collection is always empty, so with "Hide empty" on (the default)
-      // it would be filtered straight back out and the create would read as
-      // broken. Reveal the empties so the thing the user just made is visible.
-      // (Referenced before its `const` in source order, but only ever called
-      // from an event handler — well after the component body has run.)
-      if (hideEmpty) updateParams({ empty: '1' });
+      // Open the new collection instead of dropping the user back on the grid.
+      // A new collection is always empty, so any filter state that hides
+      // empties — or an active search it doesn't match — would swallow it and
+      // make the create read as broken. Navigating is the one feedback that
+      // holds regardless of the filter row, and an empty bucket exists to be
+      // filled anyway.
+      navigate(`/media/collections/${encodeURIComponent(created.id)}`);
     }
   };
 
@@ -273,15 +274,22 @@ export default function MediaCollections() {
 
       {loading ? (
         <div className="text-gray-500 text-sm">Loading…</div>
-      ) : enriched.length === 0 ? (
-        <div className="text-gray-500 text-sm bg-port-card border border-port-border rounded-lg p-6 text-center">
-          No collections yet. Create one above, or use the folder icon on any image/video card to start a new collection.
-        </div>
       ) : (
         <div className="space-y-2">
+          {/* First run. Gated on the REAL collections, not `enriched` — the
+              synthetic "Unsorted" entry is always prepended, so `enriched` is
+              never empty and an `enriched.length === 0` gate would leave a
+              fresh install staring at "1 empty collection hidden" with no copy
+              telling it where collections come from. The grid below still
+              renders alongside this when Unsorted has media in it. */}
+          {collections.length === 0 && (
+            <div className="text-gray-500 text-sm bg-port-card border border-port-border rounded-lg p-6 text-center">
+              No collections yet. Create one above, or use the folder icon on any image/video card to start a new collection.
+            </div>
+          )}
           {/* One notice for both the populated and the emptied-out grid, so the
               "Show" escape hatch has a single implementation. */}
-          {hiddenEmptyCount > 0 && (
+          {collections.length > 0 && hiddenEmptyCount > 0 && (
             <div className="text-xs text-gray-500">
               {hiddenEmptyCount} empty {hiddenEmptyCount === 1 ? 'collection' : 'collections'} hidden.{' '}
               <button type="button" onClick={() => updateParams({ empty: '1' })} className="text-port-accent hover:underline">
@@ -289,7 +297,7 @@ export default function MediaCollections() {
               </button>
             </div>
           )}
-          {visible.length === 0 ? (
+          {collections.length > 0 && visible.length === 0 ? (
             <div className="text-gray-500 text-sm bg-port-card border border-port-border rounded-lg p-6 text-center">
               {/* "No match" is only true when the search itself came up empty.
                   When it matched rows that "Hide empty" then removed, saying
@@ -299,7 +307,7 @@ export default function MediaCollections() {
                 ? 'No collections match that search.'
                 : 'Every collection here is empty — use Show above to see them.'}
             </div>
-          ) : (
+          ) : visible.length === 0 ? null : (
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
               {visible.map((c) => (
                 <div
