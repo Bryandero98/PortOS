@@ -48,6 +48,7 @@
 
 - **A message thread no longer renders under the wrong message.** Selecting one message and then quickly selecting another could let the first thread's response arrive last and render beneath the second message's header. The same stale-response fix was applied to the Feature Agents Output and Runs tabs, where switching agents mid-request could show one agent's output — and its recorded agent id — under another agent's tab.
 - **Gmail can now be fully connected from Messages Config.** The page can create or accept Google OAuth credentials, returns to Messages after authorization, and labels an enabled Gmail account as pending until its Gmail permission is actually ready.
+- **[issue-3281] An empty inbox now names the step that would actually fill it.** "No messages yet — add an account and sync to get started" was shown to everyone, including users whose account was already configured and whose Sync buttons were sitting directly above the message. The empty state now says what is left to do and carries the button for it: add an account when none is configured, Sync Unread when nothing has ever synced, and — once a sync has run — how long ago it was, with a Clear filters button when a search or triage tab is what is hiding the mail. A sync where every account errors no longer reports success or claims the inbox has been synced.
 
 ## Music Video
 
