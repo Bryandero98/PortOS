@@ -16,15 +16,25 @@ export function getLaunchUrls(app) {
   // Non-TLS launch URLs always use http:// regardless of how PortOS itself is served —
   // inheriting window.location.protocol produced https:// links to plain-HTTP app ports
   // (e.g., uiPort, devUiPort) whenever PortOS was served over HTTPS, which doesn't work.
-  const dev = app.devUiPort ? `http://${hostname}:${app.devUiPort}` : null;
+  //
+  // A port serves ONE scheme. When an app terminates TLS on the same port it lists as
+  // its uiPort/devUiPort (the common shape for a single-listener dev server that reads
+  // the shared Tailscale cert), the plain-HTTP variant is that same TLS-only listener
+  // and can never answer http://. Suppress those so we don't render a launch button
+  // that is guaranteed to fail — the https one already covers that port.
+  const tlsPort = app.tlsPort || null;
+  const httpPort = (port) => (port && port !== tlsPort ? port : null);
+  const devPort = httpPort(app.devUiPort);
+  const dev = devPort ? `http://${hostname}:${devPort}` : null;
   // Self-app: primary URL is the active origin (right scheme + port); dev still
   // reflects the Vite dev server on a separate port.
   if (app.id === PORTOS_APP_ID) {
     return { https: null, http: window.location.origin, dev };
   }
+  const uiPort = httpPort(app.uiPort);
   return {
-    https: app.tlsPort ? `https://${hostname}:${app.tlsPort}` : null,
-    http: app.uiPort ? `http://${hostname}:${app.uiPort}` : null,
+    https: tlsPort ? `https://${hostname}:${tlsPort}` : null,
+    http: uiPort ? `http://${hostname}:${uiPort}` : null,
     dev
   };
 }
