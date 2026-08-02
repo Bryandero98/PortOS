@@ -398,18 +398,28 @@ export function nameFromImageFilename(filename, fallback = 'Untitled 3D model') 
  * prefix (auto-generated names, dated run labels, deep paths), where clipping
  * the end collapses every row to the same visible text.
  * @param {string} value - Source string (non-strings coerce; nullish → '')
- * @param {number} [max=48] - Maximum length of the RESULT, ellipsis included
+ * @param {number} [max=48] - Maximum length of the RESULT in CODE POINTS, ellipsis included.
+ *   A non-finite cap returns the string whole rather than discarding it.
  * @returns {string} `value` when it already fits, else `head…tail`
  */
 export function middleTruncate(value, max = 48) {
   const str = value == null ? '' : String(value);
-  // A max that can't fit the ellipsis plus one char on each side has no
+  // A cap that isn't a real number can't middle-truncate anything — return the
+  // string untouched. (`Math.max(0, NaN)` is NaN, so a naive slice would
+  // silently return '' and swallow the value.)
+  if (!Number.isFinite(max)) return str;
+  const cap = Math.floor(max);
+  // Slice on CODE POINTS, not UTF-16 code units: cutting through a surrogate
+  // pair (any emoji / astral character) emits a lone surrogate that renders as
+  // the replacement glyph.
+  const chars = Array.from(str);
+  // A cap that can't fit the ellipsis plus one char on each side has no
   // meaningful middle-truncation; fall back to a plain head slice.
-  if (!Number.isFinite(max) || max < 3) return str.slice(0, Math.max(0, max));
-  if (str.length <= max) return str;
-  const head = Math.ceil((max - 1) / 2);
-  const tail = max - 1 - head;
-  return `${str.slice(0, head)}…${str.slice(str.length - tail)}`;
+  if (cap < 3) return chars.slice(0, Math.max(0, cap)).join('');
+  if (chars.length <= cap) return str;
+  const head = Math.ceil((cap - 1) / 2);
+  const tail = cap - 1 - head;
+  return `${chars.slice(0, head).join('')}…${chars.slice(chars.length - tail).join('')}`;
 }
 
 /**

@@ -276,4 +276,29 @@ describe('middleTruncate', () => {
     expect(middleTruncate('abcdef', 2)).toBe('ab');
     expect(middleTruncate('abcdef', 0)).toBe('');
   });
+
+  it('never splits a surrogate pair', () => {
+    // Both cut points land inside an astral character; slicing by UTF-16 code
+    // unit would emit a lone surrogate that renders as the replacement glyph.
+    const out = middleTruncate('AAAAAAAAAAAAAAAA🎬BBBBBBBBBBBB🎬CCCC', 20);
+    // Array.from groups a valid pair into one char above 0xFFFF; a LONE
+    // surrogate survives as a single char inside the surrogate range.
+    const lone = Array.from(out).filter((ch) => {
+      const cp = ch.codePointAt(0);
+      return cp >= 0xD800 && cp <= 0xDFFF;
+    });
+    expect(lone).toEqual([]);
+    expect(Array.from(out)).toHaveLength(20);
+  });
+
+  it('counts the cap in code points, not UTF-16 units', () => {
+    // 10 emoji = 20 code units but only 10 code points, so a cap of 10 fits.
+    expect(middleTruncate('🎬'.repeat(10), 10)).toBe('🎬'.repeat(10));
+  });
+
+  it('returns the string whole for a non-finite cap instead of discarding it', () => {
+    expect(middleTruncate('keep me', NaN)).toBe('keep me');
+    expect(middleTruncate('keep me', Infinity)).toBe('keep me');
+    expect(middleTruncate('keep me', undefined)).toBe('keep me');
+  });
 });

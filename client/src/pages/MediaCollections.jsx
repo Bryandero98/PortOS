@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Plus, FolderOpen, Inbox, Trash2, Image as ImageIcon, Film, Search } from 'lucide-react';
 import toast from '../components/ui/Toast';
@@ -102,6 +102,12 @@ export default function MediaCollections() {
       setCollections((prev) => [...prev, created]);
       setName('');
       toast.success(`Created "${created.name}"`);
+      // A new collection is always empty, so with "Hide empty" on (the default)
+      // it would be filtered straight back out and the create would read as
+      // broken. Reveal the empties so the thing the user just made is visible.
+      // (Referenced before its `const` in source order, but only ever called
+      // from an event handler — well after the component body has run.)
+      if (hideEmpty) updateParams({ empty: '1' });
     }
   };
 
@@ -150,15 +156,20 @@ export default function MediaCollections() {
   const sort = normalizeCollectionSort(searchParams.get('sort'));
   const hideEmpty = searchParams.get('empty') !== '1';
 
+  // react-router's functional `setSearchParams` updater is NOT latest-state: it
+  // hands back the params captured in the closure at render time. A debounced
+  // write armed before a sort/toggle change would therefore navigate with the
+  // pre-change snapshot and silently drop the param the user just set. Read the
+  // live params off a ref instead.
+  const paramsRef = useRef(searchParams);
+  paramsRef.current = searchParams;
   const updateParams = useCallback((patch, { replace = false } = {}) => {
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      for (const [k, v] of Object.entries(patch)) {
-        if (v == null || v === '') next.delete(k);
-        else next.set(k, v);
-      }
-      return next;
-    }, { replace });
+    const next = new URLSearchParams(paramsRef.current);
+    for (const [k, v] of Object.entries(patch)) {
+      if (v == null || v === '') next.delete(k);
+      else next.set(k, v);
+    }
+    setSearchParams(next, { replace });
   }, [setSearchParams]);
 
   // Two-stage search (same shape as Catalog): `query` is what the user is
@@ -280,7 +291,13 @@ export default function MediaCollections() {
           )}
           {visible.length === 0 ? (
             <div className="text-gray-500 text-sm bg-port-card border border-port-border rounded-lg p-6 text-center">
-              {query ? 'No collections match that search.' : 'No collections with items yet.'}
+              {/* "No match" is only true when the search itself came up empty.
+                  When it matched rows that "Hide empty" then removed, saying
+                  that would contradict the "N empty hidden — Show" line above
+                  and send the user hunting for a collection that does exist. */}
+              {matching.length === 0
+                ? 'No collections match that search.'
+                : 'Every collection here is empty — use Show above to see them.'}
             </div>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
