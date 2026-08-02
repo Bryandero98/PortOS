@@ -27,6 +27,23 @@ import { detectForgeCli } from '../lib/gitForge.js';
 import { PR_COMPLETIONS, PR_COMPLETION_VALUES, leavesPrForHuman } from '../lib/prDisposition.js';
 import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, MODEL_SELECTABLE_REVIEWERS, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds } from '../lib/validation.js';
 
+// In-flight cleanup per agentId, so two completion paths racing to clean the
+// SAME agent coalesce onto one run instead of tripping over each other.
+//
+// A completing agent reaches cleanup twice by design: the runner path
+// (`handleAgentCompletion` → `runAgentCompletionCleanup`) AND the spawner's
+// `finally` safety net (agentTuiSpawning.js / agentCliSpawning.js), which fires
+// unconditionally so a throw from `finalizeAgent` can never strand a worktree.
+// Neither knows about the other, and they are driven by independent events, so
+// they overlap. The loser then ran `git status --porcelain` while the winner was
+// mid-`git worktree remove --force`, saw the in-progress deletions as ` D <path>`
+// dirt, and reported "Worktree preserved — uncommitted changes detected" for a
+// worktree that removed cleanly milliseconds later — a false warning AND a false
+// user notification on a successful run (observed on agent-ce67bb09, whose PR had
+// already merged). Sanctioned by the Security Model's re-entrancy-guard carve-out:
+// this is one actor's duplicate in-flight operation, not two competing humans.
+const inFlightCleanups = new Map();
+
 /**
  * Clean up a worktree for a completed agent.
  * Reads worktree metadata from the agent's registered state and removes the worktree.
@@ -43,8 +60,25 @@ import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, MODEL_SE
  * When skipMerge is true (review-loop follow-up agents), the cleanup never auto-merges
  * the worktree branch into the source workspace because `gh pr merge` already handled it.
  * Otherwise, merges the worktree branch back to the source branch on success.
+ *
+ * Re-entrant per `agentId`: a second call that arrives while the first is still
+ * running joins it and resolves with the SAME warnings rather than starting a
+ * competing pass (see `inFlightCleanups`). The joiner's `options` are therefore
+ * ignored — one completing agent gets one cleanup, and the two duplicate callers
+ * this guards against derive their options from the same task metadata anyway.
  */
-export async function cleanupAgentWorktree(agentId, success, { openPR = false, prCompletion = null, requestCopilotReview: legacyRequestCopilotReview = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, reviewerModels = null, skipMerge = false, description = null, agentOutput = null, originalTask = null } = {}) {
+export async function cleanupAgentWorktree(agentId, success, options = {}) {
+  const existing = inFlightCleanups.get(agentId);
+  // Join the pass already underway. Its warnings are the run's warnings — the
+  // duplicate caller must not re-derive them from a half-removed worktree.
+  if (existing) return existing;
+  const run = runCleanupAgentWorktree(agentId, success, options)
+    .finally(() => { inFlightCleanups.delete(agentId); });
+  inFlightCleanups.set(agentId, run);
+  return run;
+}
+
+async function runCleanupAgentWorktree(agentId, success, { openPR = false, prCompletion = null, requestCopilotReview: legacyRequestCopilotReview = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, reviewerModels = null, skipMerge = false, description = null, agentOutput = null, originalTask = null } = {}) {
   const { getAgent: getAgentState } = await import('./cos.js');
   const agentState = await getAgentState(agentId).catch(() => null);
   if (!agentState?.metadata?.isWorktree) return [];

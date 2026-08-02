@@ -20,6 +20,10 @@ import { ensureInstanceId } from './instances.js';
 const WORKTREES_DIR = PATHS.worktrees;
 // Lockfiles that npm/yarn/pnpm modify as a side-effect — safe to discard during worktree cleanup
 const AUTO_GENERATED_LOCKFILES = ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml'];
+// Cap the dirty paths named in a "worktree preserved" warning — the message ends
+// up in a notification and on the agent card, and a broad sweep can dirty
+// hundreds of files. Enough to identify the work, short enough to read.
+const DIRT_PATHS_IN_WARNING = 5;
 
 // `git worktree add` lock-contention retry (#2193). Git guards a repo's
 // worktree bookkeeping (`.git/worktrees`, `.git/index.lock`) with a per-repo
@@ -532,8 +536,16 @@ export async function removeWorktree(agentId, sourceWorkspace, branchName, optio
       console.log(`🧹 Discarding ${dirt.lockfilePaths.length} auto-generated lockfile change(s) in worktree ${agentId}`);
       await execGit(['checkout', '--', ...dirt.lockfilePaths], worktreePath);
     } else {
-      console.log(`⚠️ Preserving worktree for ${agentId} — uncommitted changes detected, aborting cleanup to avoid data loss`);
-      warnings.push(`Worktree preserved — uncommitted changes detected in ${worktreePath}`);
+      // NAME the dirty paths. The bare message reads as "your work was left
+      // behind" with no way to tell real uncommitted work from a transient
+      // observation, and the worktree is usually gone by the time anyone looks —
+      // which is exactly what made the duplicate-cleanup race in
+      // `agentWorktreeCleanup.js` undiagnosable from the card alone.
+      const shown = dirt.realChangePaths.slice(0, DIRT_PATHS_IN_WARNING);
+      const more = dirt.realChangePaths.length - shown.length;
+      const detail = `${shown.join(', ')}${more > 0 ? ` (+${more} more)` : ''}`;
+      console.log(`⚠️ Preserving worktree for ${agentId} — uncommitted changes detected (${detail}), aborting cleanup to avoid data loss`);
+      warnings.push(`Worktree preserved — uncommitted changes detected in ${worktreePath}: ${detail}`);
       return { merged: false, removed: false, uncommittedSaved: false, warnings };
     }
   }

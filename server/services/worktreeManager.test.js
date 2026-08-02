@@ -669,6 +669,30 @@ describe('removeWorktree branch preservation for resume (#3167)', () => {
     // The resume gate never consulted the merged check for THIS branch.
     expect(isBranchMergedIntoMock).not.toHaveBeenCalledWith('/repo', 'cos/task-1/agent-x', 'main');
   });
+
+  // The bare "uncommitted changes detected" message left the user unable to tell
+  // real abandoned work from a transient read of a worktree already being removed
+  // — and the worktree is gone by the time anyone looks. Name the paths.
+  it('NAMES the dirty paths in the preserved-worktree warning', async () => {
+    scriptGit({ porcelain: ' M server/services/foo.js\n?? notes.md' });
+
+    const result = await removeWorktree('agent-x', '/repo', 'cos/task-1/agent-x', { merge: false });
+
+    expect(result.removed).toBe(false);
+    expect(result.warnings.join(' ')).toContain('server/services/foo.js');
+    expect(result.warnings.join(' ')).toContain('notes.md');
+  });
+
+  it('caps the named paths so a broad sweep cannot flood the notification', async () => {
+    scriptGit({ porcelain: Array.from({ length: 9 }, (_, i) => ` M src/f${i}.js`).join('\n') });
+
+    const result = await removeWorktree('agent-x', '/repo', 'cos/task-1/agent-x', { merge: false });
+
+    const warning = result.warnings.join(' ');
+    expect(warning).toContain('src/f0.js');
+    expect(warning).toContain('(+4 more)');
+    expect(warning).not.toContain('src/f8.js');
+  });
 });
 
 describe('adoptWorktree — resuming an interrupted run in its own worktree', () => {

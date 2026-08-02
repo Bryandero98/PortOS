@@ -1484,3 +1484,116 @@ describe('cleanupAgentWorktree - discardWorktree (throwaway reasoning worktree)'
     expect(git.createPR).toHaveBeenCalled();
   });
 });
+
+// A completing agent reaches cleanup TWICE by design — the runner path
+// (`handleAgentCompletion` → `runAgentCompletionCleanup`) and the spawner's
+// unconditional `finally` safety net. Driven by independent events, the two
+// overlapped: the loser read `git status --porcelain` while the winner was
+// mid-`git worktree remove --force`, saw the in-progress deletions as dirt, and
+// reported "Worktree preserved — uncommitted changes detected" for a worktree
+// that removed cleanly (observed on agent-ce67bb09, whose PR had already merged).
+describe('cleanupAgentWorktree — re-entrancy (duplicate completion paths)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    queuePendingMergeMock.mockResolvedValue(false);
+    getAgent.mockResolvedValue(mockWorktreeAgent());
+    git.getRepoBranches.mockResolvedValue({ baseBranch: 'main', devBranch: null });
+    git.push.mockResolvedValue(undefined);
+    git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/1' });
+    git.generatePRDescription.mockResolvedValue('body');
+    git.suggestPRTitle.mockResolvedValue('title');
+  });
+
+  it('coalesces two overlapping cleanups of the SAME agent into one pass', async () => {
+    // Park the first pass INSIDE removeWorktree so the second call provably
+    // lands mid-flight — the exact interleaving that produced the false warning.
+    // `removeCalled` is what makes it provable: releasing on a bare microtask
+    // tick would fire before the pass had even reached removeWorktree.
+    let releaseRemove;
+    const removeCalled = new Promise((signalCalled) => {
+      removeWorktree.mockImplementation(() => new Promise((res) => {
+        releaseRemove = () => res({ merged: false, removed: true, warnings: [] });
+        signalCalled();
+      }));
+    });
+
+    const first = cleanupAgentWorktree('agent-1', true, { openPR: true });
+    await removeCalled;
+    const second = cleanupAgentWorktree('agent-1', true, { openPR: true });
+
+    releaseRemove();
+    const [firstWarnings, secondWarnings] = await Promise.all([first, second]);
+
+    // ONE removal, ONE push, ONE PR — the duplicate caller joined the pass.
+    expect(removeWorktree).toHaveBeenCalledTimes(1);
+    expect(git.push).toHaveBeenCalledTimes(1);
+    expect(git.createPR).toHaveBeenCalledTimes(1);
+    // ...and both callers observe the same verdict, so neither can report a
+    // "preserved" warning the other's run never produced.
+    expect(secondWarnings).toEqual(firstWarnings);
+  });
+
+  // The guard is keyed per agent — two agents finishing together must NOT be
+  // collapsed into one cleanup. `openPR: false` keeps this on the plain merge
+  // path so it asserts the keying and nothing else.
+  it('does NOT coalesce across different agents', async () => {
+    // Park each pass inside removeWorktree so both are in flight at once, and
+    // parking keeps the post-removal follow-up machinery out of the test.
+    const reached = [];
+    const arrivals = [];
+    removeWorktree.mockImplementation((agentId) => new Promise(() => {
+      reached.push(agentId);
+      arrivals.shift()?.();
+    }));
+    const nextArrival = () => new Promise((res) => { arrivals.push(res); });
+
+    // B starts only once A is parked. A is still in flight, so this is the
+    // overlap the guard has to distinguish — started sequentially so the two
+    // passes don't race the lazy module graph and make the test flaky.
+    const aParked = nextArrival();
+    cleanupAgentWorktree('agent-A', true, { openPR: false });
+    await aParked;
+    const bParked = nextArrival();
+    cleanupAgentWorktree('agent-B', true, { openPR: false });
+    await bParked;
+
+    expect(reached).toEqual(['agent-A', 'agent-B']);
+  });
+
+  it('releases the guard so a LATER cleanup of the same agent still runs', async () => {
+    removeWorktree.mockResolvedValue({ merged: false, removed: true, warnings: [] });
+
+    await cleanupAgentWorktree('agent-1', true, { openPR: true });
+    await cleanupAgentWorktree('agent-1', true, { openPR: true });
+
+    expect(removeWorktree).toHaveBeenCalledTimes(2);
+  });
+
+  // A failing removal is reported as a warning, not a throw — so the joiner must
+  // receive that SAME warning rather than re-deriving its own verdict from a
+  // worktree the failed pass may have left half-removed.
+  it('gives the joiner the same warnings when the pass FAILS, and still releases the guard', async () => {
+    let releaseRemove;
+    const removeCalled = new Promise((signalCalled) => {
+      removeWorktree.mockImplementation(() => new Promise((_res, rej) => {
+        releaseRemove = () => rej(new Error('git exploded'));
+        signalCalled();
+      }));
+    });
+
+    const first = cleanupAgentWorktree('agent-1', true, { openPR: false });
+    await removeCalled;
+    const second = cleanupAgentWorktree('agent-1', true, { openPR: false });
+    releaseRemove();
+
+    const [firstWarnings, secondWarnings] = await Promise.all([first, second]);
+    expect(firstWarnings.join(' ')).toContain('git exploded');
+    expect(secondWarnings).toEqual(firstWarnings);
+    expect(removeWorktree).toHaveBeenCalledTimes(1);
+
+    // Guard cleared → a later cleanup is not wedged on the failed pass.
+    removeWorktree.mockResolvedValue({ merged: false, removed: true, warnings: [] });
+    await cleanupAgentWorktree('agent-1', true, { openPR: false });
+    expect(removeWorktree).toHaveBeenCalledTimes(2);
+  });
+});
