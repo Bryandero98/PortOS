@@ -1,11 +1,25 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { Canvas } from '@react-three/fiber';
-import { OrbitControls } from '@react-three/drei';
+import { Suspense, useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { Billboard, OrbitControls, Text } from '@react-three/drei';
 import * as THREE from 'three';
-import { Search, Plus, Wand2, X, Check, Star, Crown } from 'lucide-react';
+import { Search, Plus, Wand2, X, Check, Star, Crown, Type } from 'lucide-react';
 import toast from '../ui/Toast';
 import * as api from '../../services/api';
 import { layoutGoalNodes } from './goalTreeLayout';
+import {
+  DIMMED_LABEL_OPACITY,
+  GOAL_LABEL_FONT_URL,
+  computeGraphBounds,
+  fitCameraToBounds,
+  goalLabelColor,
+  goalLabelFontSize,
+  goalLabelOffsetY,
+  goalLabelText,
+  goalNodeRadius,
+  labelFadeRange,
+  labelOpacityForDistance,
+  orbitDistanceLimits
+} from './goalTreeScene';
 import GoalDetailPanel, { CATEGORY_CONFIG, HORIZON_OPTIONS, GOAL_TYPE_CONFIG, DEFAULT_NEW_GOAL } from './GoalDetailPanel';
 import { applyOrganizationSuggestion } from './applyOrganization';
 import useProviderModels from '../../hooks/useProviderModels';
@@ -79,12 +93,102 @@ function GoalEdges({ edges, selectedId }) {
   );
 }
 
-function GoalScene({ graph, selectedId, adjacentIds, onSelect, onHover }) {
+// Labels are decoration over the nodes — they must never eat a click meant for
+// the sphere underneath (or, once faded to invisible, swallow one from nothing).
+const noRaycast = () => null;
+const labelWorldPos = new THREE.Vector3();
+
+// A persistent, camera-facing goal title. Opacity is driven imperatively from the
+// frame loop: a per-frame setState would re-render the whole scene 60x a second,
+// and troika reads `fillOpacity` off the instance at draw time, so mutating it
+// needs no sync() and no React round-trip.
+function GoalLabel({ node, dimmed, fadeRange }) {
+  const groupRef = useRef();
+  const textRef = useRef();
+  const stateRef = useRef({ dimmed, fadeRange });
+  stateRef.current = { dimmed, fadeRange };
+
+  useFrame(({ camera }) => {
+    const group = groupRef.current;
+    const text = textRef.current;
+    if (!group || !text) return;
+    const { dimmed: isDimmed, fadeRange: range } = stateRef.current;
+    const distance = camera.position.distanceTo(group.getWorldPosition(labelWorldPos));
+    const opacity = labelOpacityForDistance(distance, range) * (isDimmed ? DIMMED_LABEL_OPACITY : 1);
+    group.visible = opacity > 0.02;
+    text.fillOpacity = opacity;
+    text.outlineOpacity = opacity;
+  });
+
+  const label = goalLabelText(node.title);
+  if (!label) return null;
+  const fontSize = goalLabelFontSize(node);
+
+  return (
+    <Billboard ref={groupRef} position={[node.x, node.y + goalLabelOffsetY(node), node.z]}>
+      <Text
+        ref={textRef}
+        font={GOAL_LABEL_FONT_URL}
+        fontSize={fontSize}
+        color={goalLabelColor(node)}
+        anchorX="center"
+        anchorY="bottom"
+        textAlign="center"
+        maxWidth={fontSize * 12}
+        outlineWidth={fontSize * 0.1}
+        outlineColor="#000000"
+        raycast={noRaycast}
+      >
+        {label}
+      </Text>
+    </Billboard>
+  );
+}
+
+// Frames the whole graph on mount and whenever the node set changes (a filter or
+// search rebuilds the layout), so no goal starts outside the viewport.
+function GoalCameraRig({ bounds, fitKey, onFit }) {
+  const camera = useThree(state => state.camera);
+  const controls = useThree(state => state.controls);
+  // Read through a ref: re-running the fit on every `bounds` identity change would
+  // yank the camera back after an unrelated refetch. `fitKey` is the real trigger.
+  const boundsRef = useRef(bounds);
+  boundsRef.current = bounds;
+
+  useEffect(() => {
+    if (!camera) return;
+    const fit = fitCameraToBounds(boundsRef.current, { fov: camera.fov, aspect: camera.aspect });
+    if (!fit) return;
+    camera.position.set(...fit.position);
+    camera.updateProjectionMatrix();
+    if (controls?.target) {
+      controls.target.set(...fit.target);
+      controls.update();
+    } else {
+      // OrbitControls registers itself as the default controls a tick after mount;
+      // until then, aim the camera directly so the first frame is already framed.
+      camera.lookAt(...fit.target);
+    }
+    onFit(fit.distance);
+  }, [camera, controls, fitKey, onFit]);
+
+  return null;
+}
+
+function GoalScene({ graph, selectedId, adjacentIds, onSelect, onHover, showLabels }) {
   const sphereGeo = useMemo(() => new THREE.SphereGeometry(1, 16, 12), []);
   const octaGeo = useMemo(() => new THREE.OctahedronGeometry(1, 0), []);
 
   const selNode = selectedId ? graph.idMap.get(selectedId) : null;
-  const selRadius = selNode ? (selNode.goalType === 'apex' ? 1.6 : selNode.goalType === 'sub-apex' ? 1.1 : 0.5 + (selNode.urgency ?? 0.3) * 0.6) : 0;
+  const selRadius = selNode ? goalNodeRadius(selNode) : 0;
+
+  const bounds = useMemo(() => computeGraphBounds(graph.nodes), [graph.nodes]);
+  const fitKey = useMemo(() => graph.nodes.map(n => n.id).join('|'), [graph.nodes]);
+  const orbitLimits = useMemo(() => orbitDistanceLimits(bounds), [bounds]);
+
+  const [fitDistance, setFitDistance] = useState(null);
+  const handleFit = useCallback((distance) => setFitDistance(distance), []);
+  const fadeRange = useMemo(() => labelFadeRange(fitDistance), [fitDistance]);
 
   return (
     <>
@@ -92,12 +196,14 @@ function GoalScene({ graph, selectedId, adjacentIds, onSelect, onHover }) {
       <pointLight position={[50, 50, 50]} intensity={0.8} />
       <pointLight position={[-30, -30, -30]} intensity={0.3} />
 
+      <GoalCameraRig bounds={bounds} fitKey={fitKey} onFit={handleFit} />
+
       <GoalEdges edges={graph.edges} selectedId={selectedId} />
 
       {graph.nodes.map(node => {
         const isApex = node.goalType === 'apex';
         const isSubApex = node.goalType === 'sub-apex';
-        const radius = isApex ? 1.6 : isSubApex ? 1.1 : 0.5 + (node.urgency ?? 0.3) * 0.6;
+        const radius = goalNodeRadius(node);
         const cat = CATEGORY_CONFIG[node.category] || CATEGORY_CONFIG.mastery;
         const color = isApex ? '#fbbf24' : isSubApex ? '#c084fc' : cat.hex;
         const isSelected = node.id === selectedId;
@@ -124,13 +230,34 @@ function GoalScene({ graph, selectedId, adjacentIds, onSelect, onHover }) {
         );
       })}
 
+      {/* Own Suspense boundary: drei's <Text> suspends until the font loads, and
+          the Canvas-level boundary would blank the WHOLE scene while it does. */}
+      {showLabels && (
+        <Suspense fallback={null}>
+          {graph.nodes.map(node => (
+            <GoalLabel
+              key={`label-${node.id}`}
+              node={node}
+              dimmed={Boolean(selectedId && node.id !== selectedId && !adjacentIds?.has(node.id))}
+              fadeRange={fadeRange}
+            />
+          ))}
+        </Suspense>
+      )}
+
       {selNode && (
         <mesh geometry={sphereGeo} position={[selNode.x, selNode.y, selNode.z]} scale={selRadius + 0.2}>
           <meshBasicMaterial color="#ffffff" transparent opacity={0.15} wireframe />
         </mesh>
       )}
 
-      <OrbitControls enableDamping dampingFactor={0.05} minDistance={5} maxDistance={150} />
+      <OrbitControls
+        makeDefault
+        enableDamping
+        dampingFactor={0.05}
+        minDistance={orbitLimits.min}
+        maxDistance={orbitLimits.max}
+      />
     </>
   );
 }
@@ -248,6 +375,9 @@ export default function GoalsTreeView({ data, onRefresh }) {
   const [categoryFilters, setCategoryFilters] = useState(() =>
     Object.fromEntries(Object.keys(CATEGORY_CONFIG).map(k => [k, true]))
   );
+  // Names on by default: without them the tree is a field of unlabelled dots and
+  // reads as strictly less than the list view next to it (#3280).
+  const [showLabels, setShowLabels] = useState(true);
   const [showNewGoal, setShowNewGoal] = useState(false);
   const [newGoal, setNewGoal] = useState({ ...DEFAULT_NEW_GOAL });
   const [organizing, setOrganizing] = useState(false);
@@ -372,6 +502,20 @@ export default function GoalsTreeView({ data, onRefresh }) {
               </button>
             );
           })}
+          <button
+            onClick={() => setShowLabels(v => !v)}
+            aria-pressed={showLabels}
+            aria-label="Labels"
+            title={showLabels ? 'Hide goal names' : 'Show goal names'}
+            className={`flex items-center gap-1 px-1.5 sm:px-2 py-1 rounded-lg text-xs font-medium border transition-colors ${
+              showLabels
+                ? 'bg-port-accent/20 text-port-accent border-transparent'
+                : 'bg-port-card/60 text-gray-600 border-port-border'
+            }`}
+          >
+            <Type className="w-3 h-3" />
+            <span className="hidden sm:inline">Labels</span>
+          </button>
           <button
             onClick={() => setShowNewGoal(!showNewGoal)}
             className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium bg-port-accent text-white"
@@ -523,6 +667,7 @@ export default function GoalsTreeView({ data, onRefresh }) {
               adjacentIds={adjacentIds}
               onSelect={handleSelect}
               onHover={handleHover}
+              showLabels={showLabels}
             />
           </Canvas>
         ) : (

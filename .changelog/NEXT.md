@@ -95,3 +95,7 @@
 ## Stacker News stewardship
 
 - **[issue-3302] Safe Stacker News community stewardship** — Add independent account rules and effective account/territory schedules, editable ownership-aware communities, removable encrypted credentials, constrained GraphQL reads and reviewed publishing, conservative local text/vision analysis with safe image normalization, fixed-origin identity-verified browser handoffs, target-bound Review Hub approvals, and an auditable action ledger in Comms.
+
+## Goals
+
+- **[issue-3280] The goal tree now names every goal instead of showing bare dots.** The Tree view rendered a dozen unlabelled coloured spheres whose identity was only revealed on hover — which doesn't exist on a touch device — so it conveyed strictly less than the list view beside it. Each node now carries its title on a camera-facing label sized by goal type, fading out as you pull back so a zoomed-out graph doesn't turn into a wall of words, with a Labels toggle (on by default) to quiet a dense tree. The camera also frames itself to the whole graph on open and whenever a filter or search reshapes it, so no goal starts off-screen with its edges running into empty space.
