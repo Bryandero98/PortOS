@@ -26,6 +26,12 @@ describe('splitCollectionName', () => {
       .toEqual({ badge: 'Creative Director', title: 'Nightly Surreal — 2026-08-01' });
   });
 
+  it('covers every server-side auto-creator prefix', () => {
+    expect(splitCollectionName('Writers Room: The Deep').badge).toBe('Writers Room');
+    expect(splitCollectionName('Universe: Example Universe').badge).toBe('Universe');
+    expect(splitCollectionName('Series: Example Series').badge).toBe('Series');
+  });
+
   it('leaves a user-named collection alone', () => {
     expect(splitCollectionName('Concept Art')).toEqual({ badge: null, title: 'Concept Art' });
   });
@@ -43,6 +49,10 @@ describe('isAutoCollection', () => {
   it('recognizes each marker independently', () => {
     expect(isAutoCollection({ id: 'x', name: 'Creative Director: Foo' })).toBe(true);
     expect(isAutoCollection({ id: 'x', name: 'Foo', description: 'Auto-created for project x' })).toBe(true);
+    // Writers Room buckets carry a random uuid and no universe/series link, so
+    // the name + description markers are the only ones that can fire.
+    expect(isAutoCollection({ id: 'x', name: 'Writers Room: The Deep' })).toBe(true);
+    expect(isAutoCollection({ id: 'x', name: 'Foo', description: 'Auto-generated images for "The Deep"' })).toBe(true);
     expect(isAutoCollection({ id: 'uc-universe-1', name: 'Foo' })).toBe(true);
     expect(isAutoCollection({ id: 'sc-series-1', name: 'Foo' })).toBe(true);
     expect(isAutoCollection({ id: 'x', name: 'Foo', universeId: 'u1' })).toBe(true);
@@ -79,16 +89,12 @@ describe('applyCollectionView', () => {
   const all = [unsorted, userFull, userEmpty, autoFull, autoEmpty];
 
   it('pins Unsorted first, then non-empty/user-created, then auto-generated empties', () => {
-    const out = applyCollectionView(all, { hideEmpty: false });
+    const out = applyCollectionView(all);
     expect(out[0].id).toBe('unsorted');
     // autoEmpty is the newest by updatedAt but still sorts last — its bucket wins.
     expect(out[out.length - 1].id).toBe('p2');
     // A user's own empty collection is NOT demoted with the auto empties.
     expect(out.indexOf(userEmpty)).toBeLessThan(out.length - 1);
-  });
-
-  it('drops every empty collection when hideEmpty is set', () => {
-    expect(ids(applyCollectionView(all, { hideEmpty: true }))).toEqual(['unsorted', 'p1', 'u1']);
   });
 
   it('does not mutate the input array', () => {
@@ -98,13 +104,13 @@ describe('applyCollectionView', () => {
   });
 
   it('searches name and description with AND-token semantics', () => {
-    expect(ids(applyCollectionView(all, { query: 'nightly 08-01', hideEmpty: false }))).toEqual(['p2']);
-    expect(ids(applyCollectionView(all, { query: 'project p1', hideEmpty: false }))).toEqual(['p1']);
+    expect(ids(applyCollectionView(all, { query: 'nightly 08-01' }))).toEqual(['p2']);
+    expect(ids(applyCollectionView(all, { query: 'project p1' }))).toEqual(['p1']);
     expect(applyCollectionView(all, { query: 'nothing matches this' })).toEqual([]);
   });
 
   it('ignores case and surrounding whitespace in the query', () => {
-    expect(ids(applyCollectionView(all, { query: '  CONCEPT  ', hideEmpty: false }))).toEqual(['u1']);
+    expect(ids(applyCollectionView(all, { query: '  CONCEPT  ' }))).toEqual(['u1']);
   });
 
   it('sorts by name using the prefix-stripped title so auto entries interleave', () => {
@@ -125,8 +131,8 @@ describe('applyCollectionView', () => {
   });
 
   it('falls back to the default sort for an unknown sort id', () => {
-    expect(ids(applyCollectionView(all, { sort: 'bogus', hideEmpty: true })))
-      .toEqual(ids(applyCollectionView(all, { sort: DEFAULT_COLLECTION_SORT, hideEmpty: true })));
+    expect(ids(applyCollectionView(all, { sort: 'bogus' })))
+      .toEqual(ids(applyCollectionView(all, { sort: DEFAULT_COLLECTION_SORT })));
   });
 
   it('handles an absent list', () => {

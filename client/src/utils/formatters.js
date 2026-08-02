@@ -399,19 +399,17 @@ export function nameFromImageFilename(filename, fallback = 'Untitled 3D model') 
  * the end collapses every row to the same visible text.
  * @param {string} value - Source string (non-strings coerce; nullish → '')
  * @param {number} [max=48] - Maximum length of the RESULT, ellipsis included
- * @param {string} [ellipsis='…'] - Joiner placed between head and tail
  * @returns {string} `value` when it already fits, else `head…tail`
  */
-export function middleTruncate(value, max = 48, ellipsis = '…') {
+export function middleTruncate(value, max = 48) {
   const str = value == null ? '' : String(value);
   // A max that can't fit the ellipsis plus one char on each side has no
   // meaningful middle-truncation; fall back to a plain head slice.
-  if (!Number.isFinite(max) || max < ellipsis.length + 2) return str.slice(0, Math.max(0, max));
+  if (!Number.isFinite(max) || max < 3) return str.slice(0, Math.max(0, max));
   if (str.length <= max) return str;
-  const keep = max - ellipsis.length;
-  const head = Math.ceil(keep / 2);
-  const tail = keep - head;
-  return `${str.slice(0, head)}${ellipsis}${tail > 0 ? str.slice(str.length - tail) : ''}`;
+  const head = Math.ceil((max - 1) / 2);
+  const tail = max - 1 - head;
+  return `${str.slice(0, head)}…${str.slice(str.length - tail)}`;
 }
 
 /**
