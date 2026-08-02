@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import TabPills from '../ui/TabPills';
 
 // Shared sub-nav for every page that lives under the sidebar's "Settings"

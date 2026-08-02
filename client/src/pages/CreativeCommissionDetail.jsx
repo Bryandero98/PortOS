@@ -13,7 +13,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import { useNavigate, useParams, useLocation, useSearchParams, Link } from 'react-router-dom';
+import { useNavigate, useParams, useLocation, useSearchParams, Link } from 'react-router';
 import { ArrowLeft, Sparkles, Clock, Cpu, Zap, Pause, Play, Trash2 } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import ConfirmButtonPair from '../components/ui/ConfirmButtonPair';

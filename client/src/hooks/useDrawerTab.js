@@ -1,5 +1,5 @@
 import { useCallback } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 
 // Deep-linkable active-tab state for a tabbed <Drawer>, backed by a URL search
 // param so the open section is shareable, bookmarkable, and reload-safe — the

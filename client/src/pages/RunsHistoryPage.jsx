@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { Trash2, RotateCcw, MessageSquarePlus, ScrollText } from 'lucide-react';
 import * as api from '../services/api';
 import { formatTime, formatRuntime, formatBytes, formatDateTime } from '../utils/formatters';

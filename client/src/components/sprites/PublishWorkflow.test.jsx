@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   render, screen, act, fireEvent,
 } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter } from 'react-router';
 
 // Coverage for the runtime-contract field group (#2992). The load-bearing
 // behavior is the absent-vs-null merge: a populated contract SETS it, the

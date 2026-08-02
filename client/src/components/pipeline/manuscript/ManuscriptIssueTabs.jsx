@@ -6,7 +6,7 @@
  * format, so where the feedback lives is visible at a glance.
  */
 
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 
 export default function ManuscriptIssueTabs({ seriesId, sections, activeNumber, openCountByNumber }) {
   if (sections.length === 0) return null;

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, act } from '@testing-library/react';
 import { StrictMode } from 'react';
-import { MemoryRouter, Routes, Route, useNavigate } from 'react-router-dom';
+import { MemoryRouter, Routes, Route, useNavigate } from 'react-router';
 
 // Deferred-promise registry so a test can resolve A's load *after* navigating
 // to B, reproducing the stale-result race the guard is meant to defeat.

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router';
 import {Target, TreePine, List} from 'lucide-react';
 import * as api from '../services/api';
 import GoalsListView from '../components/goals/GoalsListView';

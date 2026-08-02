@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import * as api from '../../../services/api';
 import { FolderOpen, RefreshCw, AlertTriangle } from 'lucide-react';
 import { timeAgo } from '../../../utils/formatters';

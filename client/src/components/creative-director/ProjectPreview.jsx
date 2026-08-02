@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { Play, Film, Music } from 'lucide-react';
 import MediaImage from '../MediaImage.jsx';
 import ScenePreview from './ScenePreview.jsx';

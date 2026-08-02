@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { Rss, ArrowRight } from 'lucide-react';
 
 // Glanceable RSS/Atom unread digest. Reads the shared `feeds` slice of

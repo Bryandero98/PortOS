@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router';
 import {
   CalendarClock, ChevronLeft, ChevronRight, Mail, MailOpen, Send,
   CalendarDays, Music, Play, MessageSquare, Activity, MapPin, Globe,

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter } from 'react-router';
 
 // Stub the three config sections + the identity header so the test pins the
 // tabbed *layout* TaskConfigDrawer owns (which section shows on which tab, tab

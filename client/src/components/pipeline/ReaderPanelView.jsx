@@ -8,7 +8,7 @@
  * the explicit button here (AI-provider policy).
  */
 
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { Loader2, Sparkles, Users, AlertTriangle, Scale, Split, ArrowRight } from 'lucide-react';
 import { useReaderPanel } from '../../hooks/useReaderPanel';
 

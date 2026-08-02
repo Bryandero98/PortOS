@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { Cpu, Zap, MessageSquare, Eye } from 'lucide-react';
 import toast from '../../ui/Toast';
 import * as api from '../../../services/api';

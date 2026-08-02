@@ -15,7 +15,7 @@
  * triage page, which already carries the `findings` keyword.
  */
 import { useEffect, useState } from 'react';
-import { Link, Navigate, useParams } from 'react-router-dom';
+import { Link, Navigate, useParams } from 'react-router';
 import { AlertTriangle } from 'lucide-react';
 import BrailleSpinner from '../components/BrailleSpinner';
 import { locatePipelineFinding } from '../services/api';

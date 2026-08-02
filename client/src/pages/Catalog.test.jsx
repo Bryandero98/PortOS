@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter } from 'react-router';
 
 // Spy on navigation so the "Remix into…" handoff can assert the target route +
 // the generic `remix.ingredientIds` state payload. MemoryRouter still supplies
 // the real Link/router context.
 const navigateMock = vi.hoisted(() => vi.fn());
-vi.mock('react-router-dom', async (importOriginal) => {
+vi.mock('react-router', async (importOriginal) => {
   const actual = await importOriginal();
   return { ...actual, useNavigate: () => navigateMock };
 });

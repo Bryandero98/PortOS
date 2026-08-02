@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
-import { MemoryRouter, useLocation } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router';
 import { useUniverseNav, universesBasePath } from './useUniverseNav';
 
 // Pair the hook with `useLocation` so each test can read back the URL the

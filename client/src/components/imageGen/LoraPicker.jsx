@@ -11,7 +11,7 @@
 // the caller's prompt. Omit it (or pass `null`) where there's no prompt to
 // append into (batch render with per-variation prompts).
 
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 
 // Matches /api/image-gen/generate and /api/universe-builder/:id/render's
 // .max(8) on the LoRA list. Hard cap stops the user from queuing a render

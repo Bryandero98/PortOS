@@ -1,5 +1,5 @@
 import { useState, memo } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import StatusBadge from './StatusBadge';
 import AppIcon from './AppIcon';
 import * as api from '../services/api';

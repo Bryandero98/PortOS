@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { formatDateTime } from '../../utils/formatters';
 
 const STATUS_BADGE = {

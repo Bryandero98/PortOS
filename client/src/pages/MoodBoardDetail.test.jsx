@@ -1,7 +1,7 @@
 import { StrictMode } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter } from 'react-router';
 
 // ── Mocks must be declared before any imports that use them ──────────────────
 
@@ -30,7 +30,7 @@ vi.mock('../components/ui/Toast', () => ({
 // Control the board id `useParams` returns so we can simulate the user
 // navigating from one board to another mid-fetch.
 let currentId = 'a';
-vi.mock('react-router-dom', async (importOriginal) => {
+vi.mock('react-router', async (importOriginal) => {
   const actual = await importOriginal();
   return {
     ...actual,

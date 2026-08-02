@@ -1,5 +1,5 @@
 import { Suspense, useEffect } from 'react';
-import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation } from 'react-router';
 import Layout from './components/Layout';
 import { getSettings, updateSettings, getSelfInstance } from './services/api';
 import BrailleSpinner from './components/BrailleSpinner';

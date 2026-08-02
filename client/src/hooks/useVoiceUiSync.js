@@ -24,7 +24,7 @@
 // without requiring every ui_* handler to thread through React context.
 
 import { useEffect, useRef } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation } from 'react-router';
 import socket from '../services/socket.js';
 import { buildIndex, clearRefs, extractVisibleText } from '../services/domIndex.js';
 

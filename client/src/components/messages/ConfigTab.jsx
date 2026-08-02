@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 import { Plus, Trash2, RefreshCw, Mail, Globe, MessageSquare, Save, ExternalLink, User, Key, Monitor, Wand2 } from 'lucide-react';
 import toast from '../ui/Toast';
 import { formatDateTime } from '../../utils/formatters';

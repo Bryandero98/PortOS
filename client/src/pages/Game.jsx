@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, Boxes, Gamepad2, Images, MessageSquare, Plus } from 'lucide-react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router';
 import toast from '../components/ui/Toast';
 import AppContextPicker from '../components/AppContextPicker.jsx';
 import GameBindings from '../components/games/GameBindings.jsx';

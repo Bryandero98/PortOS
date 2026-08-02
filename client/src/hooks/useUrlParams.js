@@ -1,5 +1,5 @@
 import { useCallback, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 
 // URL-synced filter/selection state: `[searchParams, updateParams]`, where
 // `updateParams(patch, { replace })` merges a patch into the current query

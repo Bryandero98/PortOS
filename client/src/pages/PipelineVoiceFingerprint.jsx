@@ -17,7 +17,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { Link, useParams, useNavigate } from 'react-router-dom';
+import { Link, useParams, useNavigate } from 'react-router';
 import { Loader2, ArrowLeft, Fingerprint, BookOpen, Info } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import { getPipelineSeries, getVoiceFingerprint } from '../services/api';

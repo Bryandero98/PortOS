@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import toast from '../ui/Toast';
 import { RefreshCw, Terminal, Play, Settings } from 'lucide-react';
 import * as api from '../../services/api';

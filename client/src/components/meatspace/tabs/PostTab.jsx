@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router';
 import { Loader } from 'lucide-react';
 import { getPostConfig, getPostRecommendations, getPostSessions, getPostStats } from '../../../services/api';
 import { usePostSession } from '../../../hooks/usePostSession';

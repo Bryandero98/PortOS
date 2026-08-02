@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Link, useParams, useNavigate } from 'react-router-dom';
+import { Link, useParams, useNavigate } from 'react-router';
 import { ArrowLeft } from 'lucide-react';
 import BrailleSpinner from '../BrailleSpinner';
 import * as api from '../../services/api';

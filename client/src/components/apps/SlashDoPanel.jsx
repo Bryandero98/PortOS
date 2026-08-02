@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { Terminal, Loader2 } from 'lucide-react';
 import toast from '../ui/Toast';
 import { NON_PM2_TYPES } from './constants';

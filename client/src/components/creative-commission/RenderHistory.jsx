@@ -16,7 +16,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { ExternalLink, Film, ThumbsUp, ThumbsDown } from 'lucide-react';
 import ProjectPreview from '../creative-director/ProjectPreview.jsx';
 import { previewAspectClass } from '../../lib/creativeDirectorPreview.js';

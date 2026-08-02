@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 import {
   Search, ShieldOff, RefreshCw, CalendarClock, AlertTriangle,
   CheckCircle2, XCircle, ExternalLink, Loader2, Database, ChevronDown, ChevronRight,

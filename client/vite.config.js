@@ -86,7 +86,7 @@ export default defineConfig(({ mode }) => {
           codeSplitting: {
             groups: [
               // Core React dependencies
-              { name: 'vendor-react', test: /[\\/]node_modules[\\/](react|react-dom|react-router|react-router-dom)[\\/]/ },
+              { name: 'vendor-react', test: /[\\/]node_modules[\\/](react|react-dom|react-router)[\\/]/ },
               // Socket dependencies
               { name: 'vendor-realtime', test: /[\\/]node_modules[\\/]socket\.io-client[\\/]/ },
               // Drag and drop library (only used in CoS)

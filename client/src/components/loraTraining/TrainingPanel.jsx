@@ -8,7 +8,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { Dumbbell, Loader2, Square, CheckCircle2, XCircle, Sparkles, RotateCcw, Moon, AlertTriangle, Eraser } from 'lucide-react';
 import toast from '../ui/Toast';
 import { useSseProgress } from '../../hooks/useSseProgress';

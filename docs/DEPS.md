@@ -51,7 +51,7 @@ Before removing a Tier 3 candidate, run a transitive-dep check (`npm ls <pkg>`).
 | `lucide-react` | 1 | KEEP | icons | Widely-used |
 | `react` | 1 | KEEP | UI | |
 | `react-dom` | 1 | KEEP | UI | |
-| `react-router-dom` | 1 | KEEP | routing | |
+| `react-router` | 1 | KEEP | routing | v8 dropped the `react-router-dom` alias package |
 | `recharts` | 1 | KEEP | charts | |
 | `socket.io-client` | 1 | KEEP | realtime client | |
 | `three` | 1 | KEEP | 3D | |

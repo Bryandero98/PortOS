@@ -16,7 +16,7 @@
 
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { toVoicingInstrument } from '../lib/chordShapes.js';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router';
 import { ListMusic, ArrowLeft, ClipboardPaste, Eraser, Wand2, Globe, FileText, Save } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import PageHeader from '../components/PageHeader';

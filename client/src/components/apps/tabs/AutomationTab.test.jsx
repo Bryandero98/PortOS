@@ -3,7 +3,7 @@ import { render, screen, fireEvent, waitFor, within, act } from '@testing-librar
 
 // ── Mock router — capture navigate calls, no real Router needed ────────────────
 const mockNavigate = vi.hoisted(() => vi.fn());
-vi.mock('react-router-dom', () => ({
+vi.mock('react-router', () => ({
   useNavigate: () => mockNavigate,
 }));
 

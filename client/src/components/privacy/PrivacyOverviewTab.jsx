@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { ShieldCheck, ShieldAlert, KeyRound, Building2, ArrowRight, ShieldOff } from 'lucide-react';
 import { getPrivacyStatus, getPrivacyOrgs, getPrivacyScanStatus } from '../../services/api';
 import {

@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useParams, useNavigate } from 'react-router-dom';
+import { Link, useParams, useNavigate } from 'react-router';
 import { Loader2, ArrowLeft, Download, Save, BookText, FileText, FileType } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import {

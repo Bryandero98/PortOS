@@ -6,7 +6,7 @@
  * user lands on /media/collections after dismissing the drawer.
  */
 
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router';
 import SyncDetailDrawer from '../components/sync/SyncDetailDrawer';
 
 export default function MediaCollectionSyncView() {

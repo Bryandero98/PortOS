@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import {
   CheckCircle, AlertTriangle, XCircle, Circle, ChevronRight, LayoutGrid,
 } from 'lucide-react';

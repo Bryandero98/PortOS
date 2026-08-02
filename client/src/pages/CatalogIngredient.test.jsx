@@ -8,13 +8,13 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter } from 'react-router';
 
 // Stable navigate mock — returning a fresh vi.fn() per call would change the
 // load effect's dependency identity every render and re-fire the fetch, which
 // races the second test in this file into a stuck "loading" state.
 const { navigateMock } = vi.hoisted(() => ({ navigateMock: () => {} }));
-vi.mock('react-router-dom', async (io) => {
+vi.mock('react-router', async (io) => {
   const actual = await io();
   return { ...actual, useParams: () => ({ id: 'cat-chr-1', type: 'character' }), useNavigate: () => navigateMock };
 });

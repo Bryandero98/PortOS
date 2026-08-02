@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 import * as api from '../../../services/api';
 import { METRIC_CATEGORIES } from '../healthMetrics';
 import HealthCategorySection from '../HealthCategorySection';

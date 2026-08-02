@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 import {
   Clapperboard, Loader2, Users, MapPin as MapPinIcon,
   ListTree, SlidersHorizontal, Package,

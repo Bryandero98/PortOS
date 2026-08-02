@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router';
 import { Gauge, Bell, Clock, Activity, Map as MapIcon, Filter, Palette, Compass, Camera, History, Settings, X } from 'lucide-react';
 import useDrawerTab from '../../hooks/useDrawerTab';
 import { buildAttentionItems, CityIntelContent } from './CityIntelPane';

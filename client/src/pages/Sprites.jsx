@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router';
 import { PersonStanding, Download, X, RefreshCw, Plus, LayoutGrid, Search, Images, Scissors, Film } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import Modal from '../components/ui/Modal.jsx';

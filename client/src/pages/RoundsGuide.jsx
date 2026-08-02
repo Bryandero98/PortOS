@@ -9,7 +9,7 @@
  * its own vertical scroll — mirrors WritersRoomGuide.
  */
 
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { Music, ArrowLeft, Drum, Layers, GraduationCap, FileMusic } from 'lucide-react';
 import Pill from '../components/ui/Pill';
 import {

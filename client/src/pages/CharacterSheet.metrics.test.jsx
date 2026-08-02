@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter } from 'react-router';
 
 // Coverage for the Character sheet's metrics grid (#2676). The load-bearing behavior is the
 // THREE-state rendering: the server distinguishes a real value (0 included) from a stat it

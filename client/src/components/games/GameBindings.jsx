@@ -13,7 +13,7 @@ import {
   Sparkles,
   Unlink,
 } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import Pill from '../ui/Pill.jsx';
 
 const selectClass = 'w-full min-h-[44px] rounded-lg border border-port-border bg-port-bg px-3 py-2 text-sm text-white';
