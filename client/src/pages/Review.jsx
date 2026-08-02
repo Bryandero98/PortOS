@@ -26,8 +26,10 @@ import {
   DatabaseBackup
 } from 'lucide-react';
 import PageSkeleton from '../components/ui/PageSkeleton';
+import CollapsibleText from '../components/ui/CollapsibleText';
 import MarkdownOutput from '../components/cos/MarkdownOutput';
 import { timeAgo, formatDateTime } from '../utils/formatters';
+import { markdownToPlainText, dropsMarkupWhenFlattened } from '../utils/markdownText';
 import { coalesce } from '../utils/coalesce';
 import * as api from '../services/api';
 import socket from '../services/socket';
@@ -413,6 +415,7 @@ export default function Review() {
                   key={item.id}
                   item={item}
                   config={TYPE_CONFIG[item.type]}
+                  idScope="action-queue"
                   isEditing={editingId === item.id}
                   onComplete={handleComplete}
                   onDismiss={handleDismiss}
@@ -481,6 +484,7 @@ export default function Review() {
                     key={item.id}
                     item={item}
                     config={config}
+                    idScope={`section-${type}`}
                     isEditing={editingId === item.id}
                     onComplete={handleComplete}
                     onDismiss={handleDismiss}
@@ -680,10 +684,21 @@ function SummaryPill({ icon: Icon, label, value, tone = 'text-white', urgent = f
   );
 }
 
-function ReviewItem({ item, config, isEditing, onComplete, onDismiss, onDelete, onStartEdit, onSaveEdit, onCancelEdit, compact = false }) {
+// `idScope` namespaces the body's DOM id. An actionable item renders twice —
+// once in the Action Queue and again (dimmed) in its per-type section — so
+// without a scope both copies would share one id and the disclosure's
+// aria-controls would be ambiguous.
+function ReviewItem({ item, config, idScope, isEditing, onComplete, onDismiss, onDelete, onStartEdit, onSaveEdit, onCancelEdit, compact = false }) {
   const [editTitle, setEditTitle] = useState(item.title);
   const [editDescription, setEditDescription] = useState(item.description || '');
   const isPending = item.status === 'pending';
+  // The page re-renders on every socket event and on every keystroke in the
+  // quick-add input, and a body can be a multi-thousand-word agent prompt —
+  // flatten once per description rather than once per render, per card.
+  const body = useMemo(() => ({
+    preview: markdownToPlainText(item.description),
+    lossy: dropsMarkupWhenFlattened(item.description)
+  }), [item.description]);
 
   useEffect(() => {
     if (isEditing) {
@@ -738,13 +753,38 @@ function ReviewItem({ item, config, isEditing, onComplete, onDismiss, onDelete, 
           <>
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <p className={`text-sm font-medium ${isPending ? 'text-white' : 'text-gray-400 line-through'}`}>
-                  {item.title}
-                </p>
+                {/* Titles clamp to two lines so cards scan as a uniform list.
+                    They get a real disclosure rather than a `title` tooltip:
+                    an alert title runs to 120 characters and overflows two
+                    lines on a phone, where a hover tooltip never fires. */}
+                <CollapsibleText
+                  id={`review-item-title-${idScope}-${item.id}`}
+                  lines={2}
+                  text={item.title}
+                  className={`text-sm font-medium ${isPending ? 'text-white' : 'text-gray-400 line-through'}`}
+                />
+                {/* Triage is a scanning task, so the body is a fixed 3-line
+                    plain-text preview: the raw markdown for a CoS task prompt
+                    or a stack trace runs thousands of words, and rendering it
+                    through MarkdownOutput both defeated the clamp (line-clamp
+                    doesn't apply across block children) and injected the
+                    prompt's own headings into this page's outline. The real
+                    markdown renders — height-capped — behind Show more. */}
                 {item.description && (
-                  <div className="text-xs text-gray-500 mt-0.5 line-clamp-3">
-                    <MarkdownOutput content={item.description} />
-                  </div>
+                  <CollapsibleText
+                    id={`review-item-body-${idScope}-${item.id}`}
+                    lines={3}
+                    text={body.preview}
+                    className="text-xs text-gray-500 mt-0.5"
+                    expandedContent={<MarkdownOutput content={item.description} />}
+                    expandedClassName="max-h-80 overflow-y-auto pr-1"
+                    // Flattening drops links, images and tables, so a body that
+                    // fits in three lines still needs a route to its rendered
+                    // form — otherwise a short description holding a scan-report
+                    // link becomes permanently inert text. Markup loss only:
+                    // a body that merely lost a trailing newline gets no toggle.
+                    forceToggle={body.lossy}
+                  />
                 )}
                 {item.metadata?.reportUrl && (
                   <a
