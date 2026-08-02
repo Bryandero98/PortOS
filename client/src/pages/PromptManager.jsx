@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { FileText, Variable, RefreshCw, Save, Plus, Trash2, Eye, Briefcase } from 'lucide-react';
+import { FileText, Variable, RefreshCw, Save, Plus, Trash2, Eye, Briefcase, Search, X, ChevronRight, ChevronDown } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import BrailleSpinner from '../components/BrailleSpinner';
 import ProviderModelSelector from '../components/ProviderModelSelector';
@@ -22,6 +22,10 @@ import {
   getJobSkills, getJobSkill, saveJobSkill as apiSaveJobSkill, previewJobSkill as apiPreviewJobSkill,
 } from '../services/apiPrompts';
 import { getProviders } from '../services/apiProviders';
+import Pill from '../components/ui/Pill';
+// Aliased: `confirmDeleteStage` destructures an `isSystemStage` field off the
+// pending-delete record, which would otherwise shadow this import.
+import { buildStageGroups, stageGroupKeyFor, isSystemStage as isSystemStageKey } from '../lib/promptStageGroups';
 
 const VALID_PROMPT_TABS = ['stages', 'variables', 'job-skills'];
 
@@ -53,12 +57,18 @@ export default function PromptManager() {
   const [variables, setVariables] = useState({});
   const [loading, setLoading] = useState(true);
 
-  // System stages that are protected
-  const systemStages = [
-    'cos-agent-briefing', 'cos-evaluate', 'cos-report-summary', 'cos-self-improvement',
-    'cos-task-enhance', 'brain-classifier', 'brain-daily-digest', 'brain-weekly-review',
-    'memory-evaluate', 'app-detection'
-  ];
+  // Stage list search / grouping. The query is deliberately LOCAL, not a URL
+  // param: it's a transient way to reach a stage, and the thing worth
+  // deep-linking (`?stage=`) is already in the URL.
+  const [stageQuery, setStageQuery] = useState('');
+  const [systemOnly, setSystemOnly] = useState(false);
+  // Two disclosure sets, because the default flips with the filter: unfiltered,
+  // groups start CLOSED and this tracks the ones opened; filtered, they start
+  // OPEN (hiding a match reads as "no results") and `collapsedWhileFiltering`
+  // tracks the ones folded away — a broad query like "e" matches every stage,
+  // so the user still needs to be able to fold Pipeline's 78 rows out of view.
+  const [expandedGroups, setExpandedGroups] = useState(() => new Set());
+  const [collapsedWhileFiltering, setCollapsedWhileFiltering] = useState(() => new Set());
 
   // Stage editing (selection is URL-driven — see selectedStage above)
   const [stageTemplate, setStageTemplate] = useState('');
@@ -283,6 +293,41 @@ export default function PromptManager() {
     return p ? filterSelectableModels(p.models || [p.defaultModel]) : [];
   };
 
+  const stageFilterActive = stageQuery.trim() !== '' || systemOnly;
+  const { groups: stageGroups, matchCount: stageMatchCount, totalCount: stageTotalCount } = useMemo(
+    () => buildStageGroups(stages, { query: stageQuery, systemOnly }),
+    [stages, stageQuery, systemOnly],
+  );
+
+  // The group holding the open stage expands itself so a deep link / reload
+  // lands with its row visible. Seeding STATE (rather than forcing it open at
+  // render time) keeps the user free to collapse it again afterwards.
+  const selectedGroupKey = selectedStage && stages[selectedStage]
+    ? stageGroupKeyFor(selectedStage, stages[selectedStage])
+    : null;
+  useEffect(() => {
+    if (!selectedGroupKey) return;
+    setExpandedGroups((prev) => new Set(prev).add(selectedGroupKey));
+  }, [selectedGroupKey]);
+
+  // A fold is scoped to the EXACT filter that motivated it, not merely to
+  // "some filter is on". Carrying it across a refinement is how the refined
+  // query's only hit ends up behind a collapsed header — the "reads as no
+  // results" failure this whole disclosure default exists to avoid.
+  const stageQueryKey = stageQuery.trim();
+  useEffect(() => {
+    setCollapsedWhileFiltering((prev) => (prev.size === 0 ? prev : new Set()));
+  }, [stageQueryKey, systemOnly]);
+
+  const toggleInSet = (set, key) => {
+    const next = new Set(set);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  };
+  const toggleGroup = (key) => (stageFilterActive
+    ? setCollapsedWhileFiltering((prev) => toggleInSet(prev, key))
+    : setExpandedGroups((prev) => toggleInSet(prev, key)));
+
   if (loading) {
     return (
       <div className="flex flex-col h-full">
@@ -364,39 +409,106 @@ export default function PromptManager() {
                 <Plus size={16} />
               </button>
             </div>
-            <div className="space-y-1">
-              {Object.entries(stages).sort(([a], [b]) => a.localeCompare(b)).map(([name, config]) => (
-                <div
-                  key={name}
-                  className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm ${
-                    selectedStage === name
-                      ? 'bg-port-accent/20 text-port-accent'
-                      : 'text-gray-300 hover:bg-port-border'
+            {/* Search + SYSTEM filter, pinned above the list so it stays
+                reachable while the grouped rows scroll. */}
+            <div className="sticky top-0 z-10 -mx-4 px-4 pb-3 bg-port-card">
+              <div className="relative">
+                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+                <input
+                  type="search"
+                  aria-label="Search prompt stages"
+                  value={stageQuery}
+                  onChange={(e) => setStageQuery(e.target.value)}
+                  placeholder="Search stages…"
+                  // WebKit paints its own cancel glyph on a non-empty
+                  // type=search, which would sit on top of the labelled clear
+                  // button below; Tailwind's preflight resets only
+                  // ::-webkit-search-decoration, so suppress it here.
+                  className="w-full pl-8 pr-9 py-2.5 bg-port-bg border border-port-border rounded-lg text-sm text-white placeholder:text-gray-500 focus:border-port-accent focus:outline-hidden [&::-webkit-search-cancel-button]:appearance-none"
+                />
+                {stageQuery && (
+                  <button
+                    onClick={() => setStageQuery('')}
+                    aria-label="Clear stage search"
+                    className="absolute right-1 top-1/2 -translate-y-1/2 p-2 text-gray-500 hover:text-white"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+              <div className="flex items-center justify-between gap-2 mt-2">
+                <button
+                  onClick={() => setSystemOnly(v => !v)}
+                  aria-pressed={systemOnly}
+                  className={`text-[10px] px-2.5 py-1.5 rounded uppercase font-semibold transition-colors ${
+                    systemOnly
+                      ? 'bg-port-accent text-white'
+                      : 'bg-port-border text-gray-400 hover:text-white'
                   }`}
                 >
-                  <button
-                    onClick={() => setSelectedStage(name)}
-                    className="flex-1 min-w-0 text-left"
-                  >
-                    <div className="flex items-center gap-1">
-                      <span className="font-medium truncate">{config.name || name}</span>
-                      {systemStages.includes(name) && (
-                        <span className="shrink-0 text-[10px] px-1.5 py-0.5 bg-port-accent/20 text-port-accent rounded uppercase font-semibold">
-                          System
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-xs text-gray-500 truncate">{config.description}</div>
-                  </button>
-                  <button
-                    onClick={() => requestDeleteStage(name)}
-                    className="shrink-0 p-1 text-gray-500 hover:text-port-error"
-                    title="Delete stage"
-                  >
-                    <Trash2 size={14} />
-                  </button>
+                  System only
+                </button>
+                <span className="text-xs text-gray-500">
+                  {stageFilterActive ? `${stageMatchCount} of ${stageTotalCount}` : `${stageTotalCount} stages`}
+                </span>
+              </div>
+            </div>
+            <div className="space-y-1">
+              {stageGroups.map(({ key: groupKey, label, stages: groupStages }) => {
+                // A filter flips the default open — hits hidden behind collapsed
+                // headers read as "no results" — but the toggle stays live so a
+                // broad query's biggest group can still be folded away.
+                const open = stageFilterActive
+                  ? !collapsedWhileFiltering.has(groupKey)
+                  : expandedGroups.has(groupKey);
+                const Chevron = open ? ChevronDown : ChevronRight;
+                return (
+                  <div key={groupKey}>
+                    <button
+                      onClick={() => toggleGroup(groupKey)}
+                      aria-expanded={open}
+                      // Without this the name computes to "Pipeline78" — the
+                      // count span abuts the label with no separator.
+                      aria-label={`${label}, ${groupStages.length} stage${groupStages.length === 1 ? '' : 's'}`}
+                      className="w-full flex items-center gap-1 px-2 py-2 rounded-lg text-xs font-semibold uppercase tracking-wide text-gray-400 hover:bg-port-border hover:text-white"
+                    >
+                      <Chevron size={12} className="shrink-0" />
+                      <span className="min-w-0 truncate">{label}</span>
+                      <span className="ml-auto shrink-0 text-gray-500 normal-case">{groupStages.length}</span>
+                    </button>
+                    {open && (
+                      <div className="space-y-1 pl-2">
+                        {groupStages.map(([name, config]) => (
+                          <button
+                            key={name}
+                            onClick={() => setSelectedStage(name)}
+                            className={`w-full text-left px-3 py-2 rounded-lg text-sm ${
+                              selectedStage === name
+                                ? 'bg-port-accent/20 text-port-accent'
+                                : 'text-gray-300 hover:bg-port-border'
+                            }`}
+                          >
+                            <div className="flex items-center gap-1">
+                              <span className="font-medium truncate">{config.name || name}</span>
+                              {isSystemStageKey(name) && (
+                                <Pill tone="bare" size="xs" bordered={false} className="shrink-0 bg-port-accent/20 text-port-accent uppercase font-semibold">
+                                  System
+                                </Pill>
+                              )}
+                            </div>
+                            <div className="text-xs text-gray-500 truncate">{config.description}</div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              {stageGroups.length === 0 && (
+                <div className="text-sm text-gray-500 px-3 py-2">
+                  {stageFilterActive ? 'No stages match that search' : 'No prompt stages found'}
                 </div>
-              ))}
+              )}
             </div>
           </div>
 
@@ -427,6 +539,16 @@ export default function PromptManager() {
                         className="flex items-center gap-1 px-3 py-1 text-sm bg-port-accent hover:bg-port-accent/80 text-white rounded disabled:opacity-50"
                       >
                         <Save size={14} /> Save
+                      </button>
+                      {/* Delete lives here, not on the list row: a destructive
+                          control sitting beside 120+ select targets is a
+                          mis-tap waiting to happen (#3284). */}
+                      <button
+                        onClick={() => requestDeleteStage(selectedStage)}
+                        title="Delete stage"
+                        className="flex items-center gap-1 px-3 py-1 text-sm bg-port-border hover:bg-port-error text-gray-300 hover:text-white rounded"
+                      >
+                        <Trash2 size={14} /> Delete
                       </button>
                     </div>
                   </div>
@@ -784,9 +906,12 @@ export default function PromptManager() {
                     type="text"
                     value={newStageForm.name}
                     onChange={(e) => setNewStageForm({ ...newStageForm, name: e.target.value })}
-                    placeholder="My Stage"
+                    placeholder="Pipeline — My Stage"
                     className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
                   />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Name it <span className="text-gray-400">Family — Specific</span> to file it under an existing group
+                  </p>
                 </FormField>
               </div>
 
