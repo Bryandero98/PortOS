@@ -276,38 +276,43 @@ export default function MediaCollections() {
         <div className="text-gray-500 text-sm">Loading…</div>
       ) : (
         <div className="space-y-2">
-          {/* First run. Gated on the REAL collections, not `enriched` — the
-              synthetic "Unsorted" entry is always prepended, so `enriched` is
-              never empty and an `enriched.length === 0` gate would leave a
-              fresh install staring at "1 empty collection hidden" with no copy
-              telling it where collections come from. The grid below still
-              renders alongside this when Unsorted has media in it. */}
-          {collections.length === 0 && (
+          {/* Precedence chain, not independent gates. First run wins only when
+              no search is active — gated on the REAL collections, since the
+              synthetic "Unsorted" entry is always prepended and an
+              `enriched.length === 0` test would never fire. Otherwise the
+              hidden-empties notice and the empty-result panel render TOGETHER,
+              so the panel's "use Show above" can never point at a link that
+              isn't on screen. The grid is independent of both — a fresh install
+              with loose media shows the onboarding copy AND its Unsorted card. */}
+          {collections.length === 0 && !query ? (
             <div className="text-gray-500 text-sm bg-port-card border border-port-border rounded-lg p-6 text-center">
               No collections yet. Create one above, or use the folder icon on any image/video card to start a new collection.
             </div>
+          ) : (
+            <>
+              {hiddenEmptyCount > 0 && (
+                <div className="text-xs text-gray-500">
+                  {hiddenEmptyCount} empty {hiddenEmptyCount === 1 ? 'collection' : 'collections'} hidden.{' '}
+                  <button type="button" onClick={() => updateParams({ empty: '1' })} className="text-port-accent hover:underline">
+                    Show
+                  </button>
+                </div>
+              )}
+              {visible.length === 0 && (
+                <div className="text-gray-500 text-sm bg-port-card border border-port-border rounded-lg p-6 text-center">
+                  {/* "No match" is only true when the search itself came up
+                      empty. When it matched rows that "Hide empty" then
+                      removed, saying that would contradict the "N empty hidden
+                      — Show" line above and send the user hunting for a
+                      collection that does exist. */}
+                  {matching.length === 0
+                    ? 'No collections match that search.'
+                    : 'Every collection here is empty — use Show above to see them.'}
+                </div>
+              )}
+            </>
           )}
-          {/* One notice for both the populated and the emptied-out grid, so the
-              "Show" escape hatch has a single implementation. */}
-          {collections.length > 0 && hiddenEmptyCount > 0 && (
-            <div className="text-xs text-gray-500">
-              {hiddenEmptyCount} empty {hiddenEmptyCount === 1 ? 'collection' : 'collections'} hidden.{' '}
-              <button type="button" onClick={() => updateParams({ empty: '1' })} className="text-port-accent hover:underline">
-                Show
-              </button>
-            </div>
-          )}
-          {collections.length > 0 && visible.length === 0 ? (
-            <div className="text-gray-500 text-sm bg-port-card border border-port-border rounded-lg p-6 text-center">
-              {/* "No match" is only true when the search itself came up empty.
-                  When it matched rows that "Hide empty" then removed, saying
-                  that would contradict the "N empty hidden — Show" line above
-                  and send the user hunting for a collection that does exist. */}
-              {matching.length === 0
-                ? 'No collections match that search.'
-                : 'Every collection here is empty — use Show above to see them.'}
-            </div>
-          ) : visible.length === 0 ? null : (
+          {visible.length > 0 && (
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
               {visible.map((c) => (
                 <div

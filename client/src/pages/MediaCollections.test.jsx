@@ -247,6 +247,17 @@ describe('MediaCollections', () => {
     expect(screen.queryByText(/Every collection here is empty/)).not.toBeInTheDocument();
   });
 
+  it('reports a failed search as a failed search, not as a fresh install', async () => {
+    const { listMediaCollections } = await import('../services/api');
+    listMediaCollections.mockResolvedValueOnce([]);
+    // Loose media but no collections yet — the exact population the onboarding
+    // copy is for. With a query active, that copy would answer the search with
+    // "No collections yet" and give no sign a filter was even applied.
+    renderPage('/media/collections?q=zzzz');
+    expect(await screen.findByText(/No collections match that search/)).toBeInTheDocument();
+    expect(screen.queryByText(/No collections yet/)).not.toBeInTheDocument();
+  });
+
   it('offers the three sort options', async () => {
     renderPage();
     await waitFor(() => screen.getByText('Alpha'));
