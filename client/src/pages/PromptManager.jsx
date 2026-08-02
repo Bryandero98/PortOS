@@ -310,12 +310,14 @@ export default function PromptManager() {
     setExpandedGroups((prev) => new Set(prev).add(selectedGroupKey));
   }, [selectedGroupKey]);
 
-  // Folding a group away is scoped to the filter that motivated it — clearing
-  // the search must not leave groups collapsed-by-exception in a view whose
-  // default is already collapsed.
+  // A fold is scoped to the EXACT filter that motivated it, not merely to
+  // "some filter is on". Carrying it across a refinement is how the refined
+  // query's only hit ends up behind a collapsed header — the "reads as no
+  // results" failure this whole disclosure default exists to avoid.
+  const stageQueryKey = stageQuery.trim();
   useEffect(() => {
     setCollapsedWhileFiltering((prev) => (prev.size === 0 ? prev : new Set()));
-  }, [stageFilterActive]);
+  }, [stageQueryKey, systemOnly]);
 
   const toggleInSet = (set, key) => {
     const next = new Set(set);

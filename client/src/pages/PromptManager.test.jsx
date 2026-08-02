@@ -126,9 +126,37 @@ describe('PromptManager stage list', () => {
     // Clearing returns to the collapsed-by-default view...
     fireEvent.change(searchBox(), { target: { value: '' } });
     expect(groupHeader('Pipeline').getAttribute('aria-expanded')).toBe('false');
-    // ...and expanding still works (the collapse exception did not persist).
+    // ...and the stale fold does not carry into the NEXT filter session. This
+    // is the assertion that actually observes the set — while no filter is on,
+    // `collapsedWhileFiltering` is never read, so clearing it is invisible.
+    fireEvent.change(searchBox(), { target: { value: 'e' } });
+    expect(groupHeader('Pipeline').getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('drops a fold when the query is refined, so the new match cannot hide behind it', async () => {
+    renderPage();
+    await screen.findByText('Prompt Stages');
+
+    fireEvent.change(searchBox(), { target: { value: 'e' } });
     fireEvent.click(groupHeader('Pipeline'));
-    expect(screen.getByText('Pipeline — Prose Draft')).toBeTruthy();
+    expect(screen.queryByText('Pipeline — Comic Book Script')).toBeNull();
+
+    // Refining to a query whose ONLY hit lives in the folded group must show it.
+    fireEvent.change(searchBox(), { target: { value: 'comic' } });
+    expect(screen.getByText('1 of 4')).toBeTruthy();
+    expect(screen.getByText('Pipeline — Comic Book Script')).toBeTruthy();
+  });
+
+  it('drops a fold when the SYSTEM toggle changes the filter', async () => {
+    renderPage();
+    await screen.findByText('Prompt Stages');
+
+    fireEvent.change(searchBox(), { target: { value: 'e' } });
+    fireEvent.click(groupHeader('Brain'));
+    expect(screen.queryByText('Brain Classifier')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /system only/i }));
+    expect(screen.getByText('Brain Classifier')).toBeTruthy();
   });
 
   it('folds two spellings of the same family into one group', async () => {
