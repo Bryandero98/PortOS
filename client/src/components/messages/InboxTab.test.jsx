@@ -61,6 +61,19 @@ describe('latestSyncAt', () => {
     expect(latestSyncAt(null)).toBeNull();
   });
 
+  it('skips an unparseable timestamp instead of reporting it as the newest sync', () => {
+    expect(latestSyncAt([{ id: 'a', lastSyncAt: 'not-a-date' }])).toBeNull();
+  });
+
+  it('compares parsed dates, not raw strings, so an offset stamp sorts correctly', () => {
+    // 2026-01-31T20:00-05:00 is 2026-02-01T01:00Z — later than the Z stamp, even
+    // though it sorts earlier lexicographically.
+    const zStamp = '2026-02-01T00:00:00.000Z';
+    const offsetStamp = '2026-01-31T20:00:00.000-05:00';
+    expect(latestSyncAt([{ id: 'a', lastSyncAt: zStamp }, { id: 'b', lastSyncAt: offsetStamp }]))
+      .toBe(offsetStamp);
+  });
+
   it('picks the newest timestamp and ignores accounts that never synced', () => {
     const older = '2026-01-01T00:00:00.000Z';
     const newer = '2026-02-01T00:00:00.000Z';
@@ -127,6 +140,20 @@ describe('InboxTab empty state', () => {
     fireEvent.click(screen.getByRole('button', { name: /clear filters/i }));
 
     expect(await screen.findByText('Your inbox is empty')).toBeInTheDocument();
+  });
+
+  it('scopes the sync question to the filtered account, not the whole list', async () => {
+    const otherNeverSynced = { ...neverSyncedAccount, id: '22222222-2222-2222-2222-222222222222', name: 'Work' };
+    renderInbox([syncedAccount, otherNeverSynced]);
+
+    // Unfiltered, one account has synced — so the list is genuinely empty.
+    expect(await screen.findByText('Your inbox is empty')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: otherNeverSynced.id } });
+
+    // Filtered to the account that has never synced, the other account's
+    // timestamp says nothing useful — offer the sync instead.
+    expect(await screen.findByText('Nothing synced yet')).toBeInTheDocument();
   });
 
   it('does not claim there are no accounts when the account list failed to load', async () => {

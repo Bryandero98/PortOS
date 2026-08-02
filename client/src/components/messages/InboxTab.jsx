@@ -39,15 +39,26 @@ const EMPTY_ACTION_CLASS = 'inline-flex items-center gap-1.5 px-3 py-2 rounded-l
 /**
  * Newest `lastSyncAt` across the given accounts, or `null` when none has ever
  * synced. `null` here means "never synced" — never "synced and found nothing".
+ * Timestamps are compared as parsed dates rather than lexicographically, so a
+ * stamp written with a UTC offset can't sort ahead of a newer `Z` one; an
+ * unparseable stamp is skipped (worst case the caller offers a sync that isn't
+ * strictly needed, rather than rendering "last synced never").
  * @param {Array<{lastSyncAt?: string|null}>} accounts
  * @returns {string|null} ISO timestamp or null
  */
 export function latestSyncAt(accounts) {
-  return (accounts || []).reduce((newest, a) => {
-    const stamp = a?.lastSyncAt;
-    if (!stamp) return newest;
-    return !newest || stamp > newest ? stamp : newest;
-  }, null);
+  if (!Array.isArray(accounts)) return null;
+  let newest = null;
+  let newestMs = -Infinity;
+  for (const account of accounts) {
+    const stamp = account?.lastSyncAt;
+    if (!stamp) continue;
+    const ms = new Date(stamp).getTime();
+    if (!Number.isFinite(ms) || ms <= newestMs) continue;
+    newest = stamp;
+    newestMs = ms;
+  }
+  return newest;
 }
 
 /**
@@ -64,7 +75,7 @@ export function InboxEmptyState({ accounts, lastSyncAt, hasFilters, syncing, onS
   const navigate = useNavigate();
 
   const body = (() => {
-    if (accounts === null) return {
+    if (!Array.isArray(accounts)) return {
       Icon: AlertTriangle,
       title: 'Could not load your mail accounts',
       hint: 'The inbox cannot tell what is configured until that request succeeds.',
@@ -165,9 +176,11 @@ export default function InboxTab({ accounts }) {
   const [selectedMessage, setSelectedMessage] = useState(null);
   const [evaluating, setEvaluating] = useState(false);
   const [syncing, setSyncing] = useState(false);
-  // Set once a sync in this session actually succeeded, so the empty state stops
-  // saying "never synced" without waiting for the parent to refetch accounts.
-  const [syncedAt, setSyncedAt] = useState(null);
+  // accountId -> ISO timestamp for syncs that succeeded in this session, so the
+  // empty state stops saying "never synced" without waiting for the parent to
+  // refetch accounts. Keyed by account because the account filter narrows which
+  // accounts the empty state is speaking about.
+  const [syncedAtById, setSyncedAtById] = useState({});
   const [fetchingFull, setFetchingFull] = useState(false);
   const [actionInProgress, setActionInProgress] = useState(null);
   const debounceRef = useRef(null);
@@ -238,7 +251,7 @@ export default function InboxTab({ accounts }) {
     setSyncing(true);
     let totalNew = 0;
     let totalPruned = 0;
-    let succeeded = 0;
+    const syncedNow = {};
     for (const acct of targets) {
       toast(`Syncing ${acct.name} (${mode})...`, { icon: '📧' });
       const result = await api.syncMessageAccount(acct.id, mode, { silent: true }).catch(err => {
@@ -246,15 +259,15 @@ export default function InboxTab({ accounts }) {
         return null;
       });
       if (!result) continue;
-      succeeded += 1;
+      syncedNow[acct.id] = new Date().toISOString();
       if (result.newMessages) totalNew += result.newMessages;
       if (result.pruned) totalPruned += result.pruned;
     }
     setSyncing(false);
-    // Every account failing is not a completed sync — say so, and leave the
+    // Every account failing is not a completed sync — stay quiet, and leave the
     // "never synced" state intact so the empty state keeps offering the retry.
-    if (succeeded === 0) return;
-    setSyncedAt(new Date().toISOString());
+    if (Object.keys(syncedNow).length === 0) return;
+    setSyncedAtById(prev => ({ ...prev, ...syncedNow }));
     const parts = [`${totalNew} new`];
     if (totalPruned > 0) parts.push(`${totalPruned} removed`);
     toast.success(`Sync complete — ${parts.join(', ')}`);
@@ -330,9 +343,16 @@ export default function InboxTab({ accounts }) {
     [messages, currentTab]
   );
 
-  // A sync that landed in this session wins over the (not-yet-refetched) account
-  // timestamps; absent both, the user has genuinely never synced.
-  const lastSyncAt = syncedAt || latestSyncAt(accountList);
+  // Scope the "have we ever synced?" answer to the accounts the current view can
+  // show — with an account filter on, another account's sync says nothing about
+  // this one. A sync that landed in this session wins over the (not-yet-refetched)
+  // account timestamps; absent both, these accounts have genuinely never synced.
+  const lastSyncAt = useMemo(() => {
+    const scoped = selectedAccount
+      ? accountList.filter(a => a.id === selectedAccount)
+      : accountList;
+    return latestSyncAt(scoped.map(a => ({ lastSyncAt: syncedAtById[a.id] || a.lastSyncAt })));
+  }, [accountList, selectedAccount, syncedAtById]);
   // Search and account are applied server-side in fetchMessages, the triage tab
   // client-side — all three narrow what the list can show, so all three make
   // "nothing here" a filtering result rather than an empty mailbox.
