@@ -25,7 +25,7 @@ import { getProviders } from '../services/apiProviders';
 import Pill from '../components/ui/Pill';
 // Aliased: `confirmDeleteStage` destructures an `isSystemStage` field off the
 // pending-delete record, which would otherwise shadow this import.
-import { buildStageGroups, stageGroupLabelFor, isSystemStage as isSystemStageKey } from '../lib/promptStageGroups';
+import { buildStageGroups, stageGroupKeyFor, isSystemStage as isSystemStageKey } from '../lib/promptStageGroups';
 
 const VALID_PROMPT_TABS = ['stages', 'variables', 'job-skills'];
 
@@ -62,7 +62,13 @@ export default function PromptManager() {
   // deep-linking (`?stage=`) is already in the URL.
   const [stageQuery, setStageQuery] = useState('');
   const [systemOnly, setSystemOnly] = useState(false);
+  // Two disclosure sets, because the default flips with the filter: unfiltered,
+  // groups start CLOSED and this tracks the ones opened; filtered, they start
+  // OPEN (hiding a match reads as "no results") and `collapsedWhileFiltering`
+  // tracks the ones folded away — a broad query like "e" matches every stage,
+  // so the user still needs to be able to fold Pipeline's 78 rows out of view.
   const [expandedGroups, setExpandedGroups] = useState(() => new Set());
+  const [collapsedWhileFiltering, setCollapsedWhileFiltering] = useState(() => new Set());
 
   // Stage editing (selection is URL-driven — see selectedStage above)
   const [stageTemplate, setStageTemplate] = useState('');
@@ -296,19 +302,29 @@ export default function PromptManager() {
   // The group holding the open stage expands itself so a deep link / reload
   // lands with its row visible. Seeding STATE (rather than forcing it open at
   // render time) keeps the user free to collapse it again afterwards.
-  const selectedGroupLabel = selectedStage && stages[selectedStage]
-    ? stageGroupLabelFor(selectedStage, stages[selectedStage])
+  const selectedGroupKey = selectedStage && stages[selectedStage]
+    ? stageGroupKeyFor(selectedStage, stages[selectedStage])
     : null;
   useEffect(() => {
-    if (!selectedGroupLabel) return;
-    setExpandedGroups((prev) => new Set(prev).add(selectedGroupLabel));
-  }, [selectedGroupLabel]);
+    if (!selectedGroupKey) return;
+    setExpandedGroups((prev) => new Set(prev).add(selectedGroupKey));
+  }, [selectedGroupKey]);
 
-  const toggleGroup = (label) => setExpandedGroups((prev) => {
-    const next = new Set(prev);
-    if (next.has(label)) next.delete(label); else next.add(label);
+  // Folding a group away is scoped to the filter that motivated it — clearing
+  // the search must not leave groups collapsed-by-exception in a view whose
+  // default is already collapsed.
+  useEffect(() => {
+    setCollapsedWhileFiltering((prev) => (prev.size === 0 ? prev : new Set()));
+  }, [stageFilterActive]);
+
+  const toggleInSet = (set, key) => {
+    const next = new Set(set);
+    if (next.has(key)) next.delete(key); else next.add(key);
     return next;
-  });
+  };
+  const toggleGroup = (key) => (stageFilterActive
+    ? setCollapsedWhileFiltering((prev) => toggleInSet(prev, key))
+    : setExpandedGroups((prev) => toggleInSet(prev, key)));
 
   if (loading) {
     return (
@@ -402,7 +418,11 @@ export default function PromptManager() {
                   value={stageQuery}
                   onChange={(e) => setStageQuery(e.target.value)}
                   placeholder="Search stages…"
-                  className="w-full pl-8 pr-9 py-2.5 bg-port-bg border border-port-border rounded-lg text-sm text-white placeholder:text-gray-500 focus:border-port-accent focus:outline-hidden"
+                  // WebKit paints its own cancel glyph on a non-empty
+                  // type=search, which would sit on top of the labelled clear
+                  // button below; Tailwind's preflight resets only
+                  // ::-webkit-search-decoration, so suppress it here.
+                  className="w-full pl-8 pr-9 py-2.5 bg-port-bg border border-port-border rounded-lg text-sm text-white placeholder:text-gray-500 focus:border-port-accent focus:outline-hidden [&::-webkit-search-cancel-button]:appearance-none"
                 />
                 {stageQuery && (
                   <button
@@ -432,24 +452,25 @@ export default function PromptManager() {
               </div>
             </div>
             <div className="space-y-1">
-              {stageGroups.map(({ label, stages: groupStages }) => {
-                // A filter forces every surviving group open — hits hidden
-                // behind collapsed headers read as "no results" — which also
-                // makes the toggle inert, so it disables rather than lying.
-                const open = stageFilterActive || expandedGroups.has(label);
+              {stageGroups.map(({ key: groupKey, label, stages: groupStages }) => {
+                // A filter flips the default open — hits hidden behind collapsed
+                // headers read as "no results" — but the toggle stays live so a
+                // broad query's biggest group can still be folded away.
+                const open = stageFilterActive
+                  ? !collapsedWhileFiltering.has(groupKey)
+                  : expandedGroups.has(groupKey);
                 const Chevron = open ? ChevronDown : ChevronRight;
                 return (
-                  <div key={label}>
+                  <div key={groupKey}>
                     <button
-                      onClick={() => toggleGroup(label)}
-                      disabled={stageFilterActive}
+                      onClick={() => toggleGroup(groupKey)}
                       aria-expanded={open}
                       // Without this the name computes to "Pipeline78" — the
                       // count span abuts the label with no separator.
-                      aria-label={`${label}, ${groupStages.length} stages`}
-                      className="w-full flex items-center gap-1 px-2 py-2 rounded-lg text-xs font-semibold uppercase tracking-wide text-gray-400 enabled:hover:bg-port-border enabled:hover:text-white"
+                      aria-label={`${label}, ${groupStages.length} stage${groupStages.length === 1 ? '' : 's'}`}
+                      className="w-full flex items-center gap-1 px-2 py-2 rounded-lg text-xs font-semibold uppercase tracking-wide text-gray-400 hover:bg-port-border hover:text-white"
                     >
-                      <Chevron size={12} className={`shrink-0 ${stageFilterActive ? 'invisible' : ''}`} />
+                      <Chevron size={12} className="shrink-0" />
                       <span className="min-w-0 truncate">{label}</span>
                       <span className="ml-auto shrink-0 text-gray-500 normal-case">{groupStages.length}</span>
                     </button>
@@ -883,9 +904,12 @@ export default function PromptManager() {
                     type="text"
                     value={newStageForm.name}
                     onChange={(e) => setNewStageForm({ ...newStageForm, name: e.target.value })}
-                    placeholder="My Stage"
+                    placeholder="Pipeline — My Stage"
                     className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
                   />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Name it <span className="text-gray-400">Family — Specific</span> to file it under an existing group
+                  </p>
                 </FormField>
               </div>
 

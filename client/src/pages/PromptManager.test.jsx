@@ -50,7 +50,7 @@ const renderPage = (entry = '/prompts') => render(
 );
 
 const searchBox = () => screen.getByLabelText('Search prompt stages');
-const groupHeader = (label) => screen.getByRole('button', { name: new RegExp(`^${label}, \\d+ stages$`, 'i') });
+const groupHeader = (label) => screen.getByRole('button', { name: new RegExp(`^${label}, \\d+ stages?$`, 'i') });
 
 describe('PromptManager stage list', () => {
   beforeEach(() => {
@@ -65,7 +65,8 @@ describe('PromptManager stage list', () => {
 
     // Group headers, not rows.
     expect(groupHeader('Pipeline')).toBeTruthy();
-    expect(groupHeader('Brain')).toBeTruthy();
+    expect(groupHeader('Brain').getAttribute('aria-label')).toBe('Brain, 1 stage');
+    expect(groupHeader('Pipeline').getAttribute('aria-label')).toBe('Pipeline, 2 stages');
     expect(screen.getByText('4 stages')).toBeTruthy();
     expect(screen.queryByText('Pipeline — Prose Draft')).toBeNull();
   });
@@ -97,14 +98,54 @@ describe('PromptManager stage list', () => {
     expect(screen.getByText('1 of 4')).toBeTruthy();
   });
 
-  it('disables the group toggle while filtering rather than leaving a dead control', async () => {
+  it('keeps the group toggle live while filtering so a broad query can be folded', async () => {
     renderPage();
     await screen.findByText('Prompt Stages');
-    expect(groupHeader('Pipeline').disabled).toBe(false);
 
-    fireEvent.change(searchBox(), { target: { value: 'comic' } });
-    expect(groupHeader('Pipeline').disabled).toBe(true);
+    // A query matching everything must not become an uncollapsible wall.
+    fireEvent.change(searchBox(), { target: { value: 'e' } });
+    expect(screen.getByText('4 of 4')).toBeTruthy();
     expect(groupHeader('Pipeline').getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByText('Pipeline — Prose Draft')).toBeTruthy();
+
+    fireEvent.click(groupHeader('Pipeline'));
+    expect(groupHeader('Pipeline').getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByText('Pipeline — Prose Draft')).toBeNull();
+    // Folding one group leaves the others open.
+    expect(screen.getByText('Brain Classifier')).toBeTruthy();
+  });
+
+  it('forgets a filter-scoped collapse once the filter clears', async () => {
+    renderPage();
+    await screen.findByText('Prompt Stages');
+
+    fireEvent.change(searchBox(), { target: { value: 'e' } });
+    fireEvent.click(groupHeader('Pipeline'));
+    expect(groupHeader('Pipeline').getAttribute('aria-expanded')).toBe('false');
+
+    // Clearing returns to the collapsed-by-default view...
+    fireEvent.change(searchBox(), { target: { value: '' } });
+    expect(groupHeader('Pipeline').getAttribute('aria-expanded')).toBe('false');
+    // ...and expanding still works (the collapse exception did not persist).
+    fireEvent.click(groupHeader('Pipeline'));
+    expect(screen.getByText('Pipeline — Prose Draft')).toBeTruthy();
+  });
+
+  it('folds two spellings of the same family into one group', async () => {
+    getPrompts.mockResolvedValue({
+      stages: {
+        ...STAGES,
+        'pipeline-lowercase': { name: 'pipeline — hand typed', description: 'user made' },
+      },
+    });
+    renderPage();
+    await screen.findByText('Prompt Stages');
+
+    // One PIPELINE header, holding all three — not two headers that render alike.
+    expect(screen.getAllByRole('button', { name: /^Pipeline, \d+ stages?$/i })).toHaveLength(1);
+    fireEvent.click(groupHeader('Pipeline'));
+    expect(screen.getByText('pipeline — hand typed')).toBeTruthy();
+    expect(screen.getByText('Pipeline — Prose Draft')).toBeTruthy();
   });
 
   it('filters on the description too', async () => {
@@ -133,6 +174,8 @@ describe('PromptManager stage list', () => {
 
     expect(searchBox().value).toBe('');
     expect(screen.getByText('4 stages')).toBeTruthy();
+    // Rows the filter revealed go back into their collapsed groups.
+    expect(screen.queryByText('Pipeline — Comic Book Script')).toBeNull();
   });
 
   it('narrows to system stages with the SYSTEM-only toggle', async () => {
@@ -177,13 +220,16 @@ describe('PromptManager delete demotion', () => {
     getPromptUsage.mockReset().mockResolvedValue({ isSystemStage: true, usedBy: ['Brain thought classification'] });
   });
 
-  it('keeps delete out of the list rows entirely', async () => {
+  it('keeps delete — or any other control — out of the list rows entirely', async () => {
     renderPage();
     await screen.findByText('Prompt Stages');
     fireEvent.click(groupHeader('Pipeline'));
 
-    const list = screen.getByText('Pipeline — Prose Draft').closest('div[class*="space-y-1"]');
-    expect(within(list).queryByTitle('Delete stage')).toBeNull();
+    // Count buttons rather than probe for a label: a re-added row control
+    // fails this however it happens to be named.
+    const rows = screen.getByText('Pipeline — Prose Draft').closest('div[class*="space-y-1"]');
+    expect(within(rows).getAllByRole('button')).toHaveLength(2);
+    expect(within(rows).getByText('Pipeline — Comic Book Script')).toBeTruthy();
   });
 
   it('offers delete from the selected stage detail pane', async () => {

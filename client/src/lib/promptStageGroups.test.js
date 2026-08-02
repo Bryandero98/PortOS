@@ -6,6 +6,7 @@ import {
   buildStageGroups,
   stageGroupLabel,
   stageGroupLabelFor,
+  stageGroupKeyFor,
   stageHaystack,
   isSystemStage,
   SYSTEM_STAGE_KEYS,
@@ -24,12 +25,15 @@ describe('stageGroupLabel', () => {
     expect(stageGroupLabel('Pipeline — Reverse Outline — v2')).toBe('Pipeline');
   });
 
-  it('accepts an en-dash separator too', () => {
+  it('accepts an en-dash or a plain hyphen separator too', () => {
     expect(stageGroupLabel('Importer – Analyze')).toBe('Importer');
+    // What a user actually types in the Create Stage modal.
+    expect(stageGroupLabel('Writers Room - My Pass')).toBe('Writers Room');
   });
 
-  it('ignores hyphens that are not the separator', () => {
+  it('requires the separator to be spaced, so in-word hyphens do not split', () => {
     expect(stageGroupLabel('Twin Spoken-vs-Written Comparison')).toBe('Twin');
+    expect(stageGroupLabel('Multi-Turn Consistency Scorer')).toBe(OTHER_GROUP_LABEL);
   });
 
   it('falls back to a known leading word for pre-dash names', () => {
@@ -171,21 +175,37 @@ describe('buildStageGroups', () => {
     const { groups } = buildStageGroups({ 'cos-report-summary': {} });
     expect(groups[0].label).toBe('CoS');
   });
+
+  it('merges case-variant family names into one group, keeping the first spelling', () => {
+    const { groups } = buildStageGroups({
+      'a': stage('Pipeline — Alpha'),
+      'b': stage('pipeline — beta'),
+      'c': stage('PIPELINE — gamma'),
+    });
+    expect(groups).toHaveLength(1);
+    expect(groups[0].key).toBe('pipeline');
+    expect(groups[0].label).toBe('Pipeline');
+    expect(groups[0].stages).toHaveLength(3);
+  });
 });
 
-describe('stageGroupLabelFor', () => {
+describe('stageGroupLabelFor / stageGroupKeyFor', () => {
   it('prefers the display name and falls back to the key', () => {
     expect(stageGroupLabelFor('x', stage('Importer — Analyze'))).toBe('Importer');
     expect(stageGroupLabelFor('brain-classifier', {})).toBe('Brain');
     expect(stageGroupLabelFor('brain-classifier', undefined)).toBe('Brain');
   });
 
-  it('agrees with the label buildStageGroups buckets under', () => {
+  it('agrees with the key buildStageGroups buckets under', () => {
     const stages = { 'brain-classifier': {}, 'creative-director-treatment': stage('Creative Director — Treatment') };
     const { groups } = buildStageGroups(stages);
-    for (const { label, stages: rows } of groups) {
-      for (const [key, config] of rows) expect(stageGroupLabelFor(key, config)).toBe(label);
+    for (const { key: groupKey, stages: rows } of groups) {
+      for (const [key, config] of rows) expect(stageGroupKeyFor(key, config)).toBe(groupKey);
     }
+  });
+
+  it('case-folds the key so differently-spelled families share one group', () => {
+    expect(stageGroupKeyFor('a', stage('Pipeline — X'))).toBe(stageGroupKeyFor('b', stage('pipeline — y')));
   });
 });
 

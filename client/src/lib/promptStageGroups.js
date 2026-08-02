@@ -35,8 +35,11 @@ export function isSystemStage(key) {
 // Bucket for names that carry neither a dash prefix nor a known leading word.
 export const OTHER_GROUP_LABEL = 'Other';
 
-// Most names encode their family as `<Family> — <specific>` (em or en dash).
-const DASH_PREFIX_RE = /^(.+?)\s[—–]\s/;
+// Most names encode their family as `<Family> — <specific>`. The shipped catalog
+// uses an em dash, but a user naming their own stage in the Create Stage modal
+// will reach for a plain hyphen, so accept all three. A spaced separator is
+// required — `Twin Spoken-vs-Written Comparison` must not split.
+const DASH_PREFIX_RE = /^(.+?)\s[—–-]\s/;
 
 // Families whose names predate the dash convention (`CoS Agent Briefing`,
 // `Brain Classifier`). Matched as a leading WORD run so `Model Personality`
@@ -80,11 +83,26 @@ export function stageGroupLabel(displayName) {
 /**
  * The group for a `[key, config]` pair — the display name when it has one,
  * else the key. The single definition of that fallback: the page's
- * auto-expand and this module's bucketing must agree on the label, or a
- * deep-linked stage opens the wrong group.
+ * auto-expand and this module's bucketing must agree, or a deep-linked stage
+ * opens the wrong group.
  */
 export function stageGroupLabelFor(key, config) {
   return stageGroupLabel(config?.name || key);
+}
+
+/**
+ * The identity a group is bucketed and remembered under. Case-folded because
+ * headers render uppercase: `Pipeline — X` and `pipeline — y` are one group to
+ * the eye, and letting them be two produces twin `PIPELINE` headers with the
+ * user's stage in whichever one they didn't open. The first spelling seen wins
+ * as the *display* label; this key is what open/closed state is stored under.
+ */
+export function stageGroupKey(label) {
+  return String(label || '').toLowerCase();
+}
+
+export function stageGroupKeyFor(key, config) {
+  return stageGroupKey(stageGroupLabelFor(key, config));
 }
 
 /**
@@ -101,8 +119,9 @@ export function stageHaystack(key, config) {
  *
  * `stages` is the `{ key: config }` map the prompts API returns. Returns
  * `{ groups, matchCount, totalCount }` where each group is
- * `{ label, stages: [[key, config], …] }` — groups sorted alphabetically with
- * `Other` pinned last, stages sorted by display name within a group.
+ * `{ key, label, stages: [[key, config], …] }` — `key` is the case-folded
+ * identity to store open/closed state under, `label` the first spelling seen.
+ * Groups sort alphabetically with `Other` pinned last, stages by display name.
  *
  * An empty query and `systemOnly: false` return everything, so the same call
  * drives both the unfiltered and the filtered render.
@@ -117,23 +136,26 @@ export function buildStageGroups(stages, { query = '', systemOnly = false } = {}
     return matchHaystack(stageHaystack(key, config), tokens);
   });
 
-  const byLabel = new Map();
+  const byKey = new Map();
   for (const entry of matched) {
     const label = stageGroupLabelFor(entry[0], entry[1]);
-    const list = byLabel.get(label);
-    if (list) list.push(entry); else byLabel.set(label, [entry]);
+    const key = stageGroupKey(label);
+    const group = byKey.get(key);
+    if (group) group.stages.push(entry);
+    else byKey.set(key, { key, label, stages: [entry] });
   }
 
   // `Other` sorts last; everything else alphabetically. Ranking rather than
   // branching so a second pinned bucket is one table entry, not a rewrite.
-  const rank = (label) => (label === OTHER_GROUP_LABEL ? 1 : 0);
-  const groups = [...byLabel.entries()]
-    .map(([label, list]) => ({
-      label,
-      stages: list.sort(([aKey, a], [bKey, b]) =>
+  const otherKey = stageGroupKey(OTHER_GROUP_LABEL);
+  const rank = (group) => (group.key === otherKey ? 1 : 0);
+  const groups = [...byKey.values()]
+    .map((group) => ({
+      ...group,
+      stages: group.stages.sort(([aKey, a], [bKey, b]) =>
         String(a?.name || aKey).localeCompare(String(b?.name || bKey))),
     }))
-    .sort((a, b) => rank(a.label) - rank(b.label) || a.label.localeCompare(b.label));
+    .sort((a, b) => rank(a) - rank(b) || a.label.localeCompare(b.label));
 
   return { groups, matchCount: matched.length, totalCount: entries.length };
 }
