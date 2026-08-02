@@ -125,6 +125,13 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(current).toContain('FIX-THEN-MERGE');
     // Phase 2 must not re-bump a package a bot PR already owns.
     expect(current).toContain('that PR owns the bump');
+    // The task runs in the app's LIVE checkout (no useWorktree default), so repairing a
+    // bot branch has to happen in a throwaway worktree — a bare `gh pr checkout` there
+    // hijacks whatever branch the user is on.
+    expect(current).toContain('{worktreesRoot}/dep-pr-<n>');
+    expect(current).toContain('THROWAWAY WORKTREE');
+    // Rebasing the bot branch rewrites its commits, so the push needs a lease, not a ban.
+    expect(current).toContain('--force-with-lease');
     expect(PROMPT_VERSIONS['dependency-updates']).toBe(3);
 
     const previous = PREVIOUS_DEFAULT_PROMPTS['dependency-updates'];

@@ -157,7 +157,12 @@ branch and leaves a stale PR behind. Finish Phase 1 before you touch a manifest.
 
 ## Phase 1 — Land or resolve open automated dependency PRs
 
-1. List the open PRs. If the repo has no GitHub/GitLab remote, or \`gh\`/\`glab\` is
+This phase talks to the repo's forge. Use \`gh\` on GitHub and \`glab\` on GitLab —
+the command pairs are given below, and every \`gh pr <verb> <n>\` has a \`glab mr <verb> <n>\`
+equivalent. Run the right one for this repo's origin; never run \`gh\` against a GitLab
+repo (a globally-configured \`gh\` will silently target an unrelated GitHub repository).
+
+1. List the open PRs. If the repo has no GitHub/GitLab remote, or the matching CLI is
    unavailable or unauthenticated, say so and skip straight to Phase 2:
    \`gh pr list --state open --limit 50 --json number,title,headRefName,author,mergeable,mergeStateStatus\`
    (GitLab: \`glab mr list --state opened\`.)
@@ -165,16 +170,17 @@ branch and leaves a stale PR behind. Finish Phase 1 before you touch a manifest.
    \`renovate[bot]\`, or whose head branch starts with \`dependabot/\` or \`renovate/\`.
 
 2. For EACH one, gather evidence before deciding:
-   - The version jump: patch, minor, or major (\`gh pr view <n>\`)
+   - The version jump: patch, minor, or major (\`gh pr view <n>\` / \`glab mr view <n>\`)
    - For a major (or a minor from a package that breaks on minors): read the release
      notes in the PR body, then grep this codebase for the APIs that changed. A breaking
      change the repo never calls is not a blocker.
-   - CI status: \`gh pr checks <n>\`. For a failure, read the actual log
-     (\`gh run view <run-id> --log-failed\`) and identify the root cause — a real
-     incompatibility, a flaky test, or an unrelated pre-existing failure on the
-     default branch (check that before blaming the bump).
-   - Mergeability: \`CONFLICTING\` almost always means lockfile/manifest drift from
-     another dependency PR that already merged.
+   - CI status: \`gh pr checks <n>\` (GitLab: \`glab ci status --branch <headRefName>\`).
+     For a failure, read the actual log (\`gh run view <run-id> --log-failed\` /
+     \`glab ci trace <job-id>\`) and identify the root cause — a real incompatibility, a
+     flaky test, or an unrelated pre-existing failure on the default branch (check that
+     before blaming the bump).
+   - Mergeability: \`CONFLICTING\` (GitLab: \`cannot_be_merged\`) almost always means
+     lockfile/manifest drift from another dependency PR that already merged.
    - Diff sanity: the diff should be manifest + lockfile only. Source-file edits, a new
      postinstall/prepare script, or a changed registry URL in a bot PR is a red flag —
      do not merge it; comment what you found and leave it open.
@@ -182,17 +188,31 @@ branch and leaves a stale PR behind. Finish Phase 1 before you touch a manifest.
 3. Then take exactly ONE verdict per PR:
    - MERGE — patch/minor, CI green, not conflicting, diff is clean, nothing in the
      release notes affects how this repo uses the package. Merge it, matching the repo's
-     documented merge method (\`gh pr merge <n> --merge\` unless the repo says otherwise).
+     documented merge method (\`gh pr merge <n> --merge\` / \`glab mr merge <n> --yes\`
+     unless the repo says otherwise).
    - FIX-THEN-MERGE — the bump is wanted but the PR is stuck. Fix it:
      * Conflicts only: ask the bot to redo it first — comment \`@dependabot rebase\`
        (Renovate: tick the PR's rebase checkbox), move on, and re-check at the end of
-       the phase. If the bot doesn't respond, resolve it yourself: \`gh pr checkout <n>\`,
-       rebase onto the default branch, regenerate the lockfile with the package manager
-       (\`npm install\` — never hand-edit a lockfile), run the tests, push.
+       the phase. If the bot doesn't respond, resolve it yourself.
      * Build/test failure caused by the new version (renamed export, changed default,
        dropped Node/engine support): make the SMALLEST adapting code change on the PR
-       branch, run the tests, push. Keep it scoped to the breakage — never bundle
-       unrelated work onto a bot branch, and never force-push over the bot's history.
+       branch. Keep it scoped to the breakage — never bundle unrelated work onto a
+       bot branch.
+     * Either way, work on the bot branch in a THROWAWAY WORKTREE, never by checking
+       it out in {repoPath} — this task usually runs in the app's live checkout, so a
+       \`gh pr checkout\` there hijacks whatever branch the user is on and fails outright
+       on their uncommitted work:
+         \`git -C {repoPath} fetch origin <headRefName>\`
+         \`git -C {repoPath} worktree add {worktreesRoot}/dep-pr-<n> <headRefName>\`
+       Do the work in \`{worktreesRoot}/dep-pr-<n>\`: rebase onto the default branch if
+       it was conflicting, regenerate the lockfile with the package manager
+       (\`npm install\` — never hand-edit a lockfile), run the tests, push. Remove the
+       worktree when you're done with that PR
+       (\`git -C {repoPath} worktree remove {worktreesRoot}/dep-pr-<n>\`).
+     * Pushing a rebase rewrites the bot's commits, so a plain push is rejected — use
+       \`git push --force-with-lease\` (which refuses if the bot pushed again while you
+       worked, so you never clobber a newer version of its branch). Never a bare
+       \`--force\`. A push you did NOT rebase needs no force at all.
      * Merge once it is green.
    - CLOSE — the PR is superseded (a newer bot PR bumps the same package further) or
      targets a dependency this repo no longer uses. Close it with a comment saying why.
