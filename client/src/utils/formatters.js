@@ -392,6 +392,29 @@ export function nameFromImageFilename(filename, fallback = 'Untitled 3D model') 
 }
 
 /**
+ * Truncate from the MIDDLE so the distinguishing tail of a long string stays
+ * readable — the failure mode of CSS `line-clamp`/`text-overflow`, which always
+ * eats the end. Use it wherever a list renders many strings that share a long
+ * prefix (auto-generated names, dated run labels, deep paths), where clipping
+ * the end collapses every row to the same visible text.
+ * @param {string} value - Source string (non-strings coerce; nullish → '')
+ * @param {number} [max=48] - Maximum length of the RESULT, ellipsis included
+ * @param {string} [ellipsis='…'] - Joiner placed between head and tail
+ * @returns {string} `value` when it already fits, else `head…tail`
+ */
+export function middleTruncate(value, max = 48, ellipsis = '…') {
+  const str = value == null ? '' : String(value);
+  // A max that can't fit the ellipsis plus one char on each side has no
+  // meaningful middle-truncation; fall back to a plain head slice.
+  if (!Number.isFinite(max) || max < ellipsis.length + 2) return str.slice(0, Math.max(0, max));
+  if (str.length <= max) return str;
+  const keep = max - ellipsis.length;
+  const head = Math.ceil(keep / 2);
+  const tail = keep - head;
+  return `${str.slice(0, head)}${ellipsis}${tail > 0 ? str.slice(str.length - tail) : ''}`;
+}
+
+/**
  * Format a cooldown countdown in milliseconds as "M:SS" (e.g., "1:05", "0:09").
  * @param {number} ms - Remaining milliseconds (negative values clamp to 0:00)
  * @returns {string} Minutes:seconds countdown string

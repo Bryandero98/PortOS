@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   formatContextLength, formatDurationMin, formatDurationMs, formatEventDateTime, timeAgo,
-  formatCooldown, parseSizeGb, recommendedRamGb, parseTimeoutMs, formatDurationSec,
+  formatCooldown, parseSizeGb, recommendedRamGb, parseTimeoutMs, formatDurationSec, middleTruncate,
 } from './formatters.js';
 
 describe('formatDurationSec', () => {
@@ -250,5 +250,30 @@ describe('parseTimeoutMs', () => {
 
   it('accepts a mid-range valid value', () => {
     expect(parseTimeoutMs('30000')).toBe(30000);
+  });
+});
+
+describe('middleTruncate', () => {
+  it('returns the string untouched when it already fits', () => {
+    expect(middleTruncate('short name', 20)).toBe('short name');
+    expect(middleTruncate('exactly-ten', 11)).toBe('exactly-ten');
+  });
+
+  it('keeps the distinguishing tail that an end-clip would eat', () => {
+    const a = middleTruncate('Nightly Surreal Landscapes — 2026-08-01', 24);
+    const b = middleTruncate('Nightly Surreal Landscapes — 2026-08-02', 24);
+    expect(a).not.toBe(b);
+    expect(a.endsWith('2026-08-01')).toBe(true);
+    expect(a.length).toBe(24);
+  });
+
+  it('coerces nullish input to an empty string', () => {
+    expect(middleTruncate(null, 10)).toBe('');
+    expect(middleTruncate(undefined, 10)).toBe('');
+  });
+
+  it('falls back to a head slice when max cannot fit a middle', () => {
+    expect(middleTruncate('abcdef', 2)).toBe('ab');
+    expect(middleTruncate('abcdef', 0)).toBe('');
   });
 });
