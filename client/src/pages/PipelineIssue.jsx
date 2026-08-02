@@ -7,7 +7,7 @@
  */
 
 import { useEffect, useState, useMemo } from 'react';
-import { Link, useParams, useNavigate } from 'react-router-dom';
+import { Link, useParams, useNavigate } from 'react-router';
 import {
   ArrowLeft, Sparkles, Loader2, X, Lightbulb, BookOpen, FileText, Film as FilmIcon,
   LayoutGrid, Image as ImageIcon, Clapperboard, Users, Settings, Mic, Lock, Unlock,

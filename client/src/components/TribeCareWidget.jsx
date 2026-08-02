@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { Users, ArrowRight } from 'lucide-react';
 
 // Surfaces who in the Tribe is overdue for contact on the dashboard. Reads the

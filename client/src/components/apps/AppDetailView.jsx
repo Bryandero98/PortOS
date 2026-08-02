@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Link, useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useParams, useNavigate, useSearchParams } from 'react-router';
 import { ArrowLeft, Play, Square, RotateCcw, ExternalLink, Gamepad2, Hammer, RefreshCw, Pencil, AlertTriangle, Sparkles } from 'lucide-react';
 import DeployPanel from './DeployPanel';
 import EditAppDrawer from './EditAppDrawer';

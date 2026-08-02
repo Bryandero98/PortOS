@@ -1,5 +1,5 @@
 import { useCallback, useState, useEffect, useMemo, useRef } from 'react';
-import { useNavigate, useLocation, useParams } from 'react-router-dom';
+import { useNavigate, useLocation, useParams } from 'react-router';
 import { useCityData } from '../hooks/useCityData';
 import { useCityPlayback } from '../hooks/useCityPlayback';
 import useCityAudio from '../hooks/useCityAudio';

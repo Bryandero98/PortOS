@@ -3,7 +3,7 @@ import { ArrowLeft, Flame, Trophy, Clock, Gauge } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
 } from 'recharts';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { getPostProgress } from '../../../services/api';
 import useChartColors from '../../../hooks/useChartColors.js';
 import { formatDurationMin } from '../../../utils/formatters';

@@ -1,5 +1,5 @@
 import { useCallback } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router';
 
 // Strips any trailing `/:universeId` (or deeper path) so the result is always
 // the "/universes" root. The editor mounts at `/universes/:universeId` (and the

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router';
 import { SkipForward, RotateCw, CheckCircle2, RefreshCw, AlertTriangle, Sparkles, ExternalLink } from 'lucide-react';
 import toast from '../ui/Toast';
 import Drawer from '../Drawer';

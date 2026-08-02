@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { Play, Pause, Square, Zap, Trash2 } from 'lucide-react';
 import { STATUS_COLORS, STATUS_BG, PRIORITY_COLORS, SCHEDULE_LABELS, timeAgo } from './constants';
 import ConfirmButtonPair from '../ui/ConfirmButtonPair';

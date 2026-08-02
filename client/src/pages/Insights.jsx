@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { useValidTab } from '../hooks/useValidTab';
 import { Dna, Palette, Link2, Lightbulb, ArrowRight, Target } from 'lucide-react';
 import {

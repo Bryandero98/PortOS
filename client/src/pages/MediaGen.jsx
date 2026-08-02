@@ -1,4 +1,4 @@
-import { useNavigate, useLocation, Outlet } from 'react-router-dom';
+import { useNavigate, useLocation, Outlet } from 'react-router';
 import { Layers, Image as ImageIcon, Film, History, HardDrive, Scissors, FolderOpen, Sparkles, GraduationCap, Box } from 'lucide-react';
 import TabPills from '../components/ui/TabPills';
 

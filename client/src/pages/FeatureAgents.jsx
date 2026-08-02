@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { Wand2, Plus, RefreshCw } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import * as api from '../services/api';

@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter } from 'react-router';
 
 // The audio branch never touches these, but the module imports them — stub so
 // the test stays a unit of ProjectPreview's own branch selection.

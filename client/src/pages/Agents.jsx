@@ -1,4 +1,4 @@
-import { useParams, Navigate } from 'react-router-dom';
+import { useParams, Navigate } from 'react-router';
 import AgentList from '../components/agents/AgentList';
 import AgentDetail from '../components/agents/AgentDetail';
 

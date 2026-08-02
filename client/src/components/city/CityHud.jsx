@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router';
 import CityIntelPane from './CityIntelPane';
 import CityFocusPanel from './CityFocusPanel';
 import CityAgentBar from './CityAgentBar';

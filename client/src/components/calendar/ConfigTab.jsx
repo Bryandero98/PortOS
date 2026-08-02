@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 import { Plus, Trash2, RefreshCw, Globe, Calendar, Eye, EyeOff, ChevronDown, ChevronRight, Search, Key, ExternalLink, Wand2, Monitor } from 'lucide-react';
 import toast from '../ui/Toast';
 import * as api from '../../services/api';

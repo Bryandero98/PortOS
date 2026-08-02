@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import MediaCard from '../media/MediaCard';
 import FavoritesFilterChip from '../media/FavoritesFilterChip';
 import { normalizeVideo } from '../media/normalize';

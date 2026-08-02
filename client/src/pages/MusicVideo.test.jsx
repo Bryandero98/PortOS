@@ -4,7 +4,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, within, act } from '@testing-library/react';
-import { MemoryRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom';
+import { MemoryRouter, Routes, Route, useNavigate, useLocation } from 'react-router';
 import toast from '../components/ui/Toast';
 
 const PROJECT_WITH_CLIP = {

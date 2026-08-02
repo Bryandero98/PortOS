@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useId, Children, cloneElement, isValidElement } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { Save, Mic, Play, Zap, RefreshCw, Globe } from 'lucide-react';
 import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';

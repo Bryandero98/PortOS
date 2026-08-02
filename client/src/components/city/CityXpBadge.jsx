@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { computeAgeView, diffXp, birthDateCta } from '../../utils/characterXp';
 
 // CyberCity character HUD badge (roadmap 2.11; reframed in #2673). A compact floating panel

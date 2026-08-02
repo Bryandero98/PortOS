@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { Lightbulb, ChevronRight, MessageCircle, ArrowRight } from 'lucide-react';
 
 const CATEGORY_LABELS = {

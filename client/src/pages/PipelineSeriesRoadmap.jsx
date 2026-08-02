@@ -12,7 +12,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { Link, useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useParams, useNavigate, useSearchParams } from 'react-router';
 import {
   ArrowLeft, Loader2, Sparkles, ChevronRight, ChevronDown, AlertTriangle, Crown, ChartSpline, Users, Swords,
 } from 'lucide-react';

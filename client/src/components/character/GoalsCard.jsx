@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { Target, ArrowRight } from 'lucide-react';
 import { getGoalsTree } from '../../services/api';
 import BrailleSpinner from '../BrailleSpinner';

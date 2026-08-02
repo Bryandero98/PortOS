@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import {
   Compass, ArrowRight, X, CheckCircle2, Target, Sparkles,
   Brain, HeartPulse, PenLine, Globe, Clapperboard, Users,

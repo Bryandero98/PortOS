@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 
 // URL-driven MediaPreview state. Returns `[preview, setPreview]` with the same
 // shape every MediaPreview host already expects, but the source of truth is a

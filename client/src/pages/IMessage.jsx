@@ -1,4 +1,4 @@
-import { Navigate, useParams } from 'react-router-dom';
+import { Navigate, useParams } from 'react-router';
 
 // Legacy /imessage and /imessage/:chatKey → Comms Messages sub-nav tab.
 export default function IMessageRedirect() {

@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router';
 import { Plus, Loader2, Trash2, Save, Upload, ImageIcon, Sparkles, X } from 'lucide-react';
 import toast from '../ui/Toast';
 import FilePickerButton from '../ui/FilePickerButton';

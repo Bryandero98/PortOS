@@ -13,7 +13,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 import {
   Library, Loader2, Users, MapPin, Package,
   Settings as SettingsIcon, ChevronDown, ChevronRight, AlertTriangle, FileSearch,

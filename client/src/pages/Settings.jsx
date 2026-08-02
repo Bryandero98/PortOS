@@ -1,4 +1,4 @@
-import { useParams, Navigate } from 'react-router-dom';
+import { useParams, Navigate } from 'react-router';
 import { Settings as SettingsIcon } from 'lucide-react';
 import PageHeader from '../components/PageHeader';
 import { ApiAccessTab } from '../components/settings/ApiAccessTab';

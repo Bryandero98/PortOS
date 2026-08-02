@@ -12,7 +12,7 @@
  */
 
 import { useState, useRef, useMemo } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { Send } from 'lucide-react';
 import toast from './ui/Toast';
 import TagPicker from './TagPicker';

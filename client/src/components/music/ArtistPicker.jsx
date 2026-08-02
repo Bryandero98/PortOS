@@ -9,7 +9,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { listArtists } from '../../services/api';
 
 export default function ArtistPicker({ id = 'music-artist', value, name, onChange, disabled = false }) {

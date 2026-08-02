@@ -17,14 +17,14 @@
     "@dnd-kit/core": "6.3.1",
     "@dnd-kit/sortable": "10.0.0",
     "@react-three/drei": "10.7.7",
-    "@react-three/fiber": "9.6.1",
+    "@react-three/fiber": "9.7.0",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/addon-web-links": "0.12.0",
     "@xterm/xterm": "6.0.0",
     "lucide-react": "1.28.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "react-router-dom": "7.18.2",
+    "react-router": "8.3.0",
     "recharts": "3.10.1",
     "socket.io-client": "4.8.3",
     "three": "0.185.1"
@@ -47,12 +47,12 @@
     "vitest": "4.1.10"
   },
   "overrides": {
-    "brace-expansion": "5.0.8",
+    "brace-expansion": "5.0.9",
     "js-yaml": "4.3.0",
-    "socket.io-parser": "4.2.6",
-    "ws": "8.21.0",
+    "socket.io-parser": "4.2.7",
+    "ws": "8.21.1",
     "minimatch@3": {
-      "brace-expansion": "1.1.16"
+      "brace-expansion": "1.1.18"
     },
     "three": "0.185.1"
   }

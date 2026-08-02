@@ -13,7 +13,7 @@
  */
 
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { Play, Square, Music, Layers } from 'lucide-react';
 import toast from '../ui/Toast';
 import ScoreSheet from './ScoreSheet';

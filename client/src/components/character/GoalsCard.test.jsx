@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter } from 'react-router';
 
 // Coverage for the Character sheet's life-goals card (#2675). The load-bearing behavior:
 // the card mirrors the goals service read-only, ranks by urgency without inventing a rank

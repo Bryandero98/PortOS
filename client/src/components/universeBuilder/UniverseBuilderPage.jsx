@@ -6,7 +6,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useParams, useSearchParams } from 'react-router';
 import {
   ArrowLeft, BookOpen, FolderTree, ImagePlus, Layers, Loader2,
   MapPin, Package, Plus, Save, Trash2, Users,

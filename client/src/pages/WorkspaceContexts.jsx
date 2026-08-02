@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router';
 import {
   Layers, GitBranch, SquareTerminal, ListChecks, Save, RotateCcw,
   Trash2, RefreshCw, FolderGit2, AlertCircle, CheckCircle2, ArrowRight

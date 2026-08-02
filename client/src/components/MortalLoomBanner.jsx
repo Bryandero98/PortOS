@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { X, ExternalLink, Smartphone } from 'lucide-react';
 import { safeReadStorage, safeWriteStorage } from '../lib/safeStorage';
 

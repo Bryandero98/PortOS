@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { ChevronDown, ChevronUp, ExternalLink } from 'lucide-react';
 import toast from '../../ui/Toast';
 import * as api from '../../../services/api';

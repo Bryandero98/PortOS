@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Box, ImagePlus, LoaderCircle, Sparkles } from 'lucide-react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router';
 import GalleryImagePicker from '../components/imageGen/GalleryImagePicker';
 import MediaImage from '../components/MediaImage';
 import ProviderModelSelector from '../components/ProviderModelSelector';

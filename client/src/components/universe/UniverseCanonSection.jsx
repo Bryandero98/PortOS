@@ -12,7 +12,7 @@
  * universe's canon.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 import {
   Library, Loader2, Users, MapPin, Package, Wand2, Filter, Lock, Unlock, ImagePlus, Sparkles, Plus,
 } from 'lucide-react';

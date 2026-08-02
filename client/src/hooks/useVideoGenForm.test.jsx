@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter } from 'react-router';
 
 const extractLastFrame = vi.fn();
 vi.mock('../services/api', () => ({ extractLastFrame: (...a) => extractLastFrame(...a) }));

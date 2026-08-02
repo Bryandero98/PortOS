@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
-import { MemoryRouter, useNavigate } from 'react-router-dom';
+import { MemoryRouter, useNavigate } from 'react-router';
 import { useNavWorkingSet } from './useNavWorkingSet.js';
 import { RECENT_KEY, PINNED_KEY } from '../utils/navWorkingSet.js';
 

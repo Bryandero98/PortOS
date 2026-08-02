@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 import { AlertTriangle, Info, Lock, Pencil, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import Drawer from '../Drawer';
 import Banner from '../ui/Banner';

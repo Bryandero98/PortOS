@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { Bot } from 'lucide-react';
 import { extractKind } from './ActiveAgentsBanner.jsx';
 import ScenePreview from './ScenePreview.jsx';

@@ -12,7 +12,7 @@
  */
 
 import { useEffect, useMemo, useState, useCallback } from 'react';
-import { useNavigate, useSearchParams, Link } from 'react-router-dom';
+import { useNavigate, useSearchParams, Link } from 'react-router';
 import { ListMusic, Plus, Trash2, Download, Search, X } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import PageHeader from '../components/PageHeader';

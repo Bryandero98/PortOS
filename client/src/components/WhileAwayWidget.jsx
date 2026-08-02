@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import useMounted from '../hooks/useMounted';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import {
   Moon,
   CheckCircle,

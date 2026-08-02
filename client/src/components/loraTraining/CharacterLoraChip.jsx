@@ -6,7 +6,7 @@
  */
 
 import { useState, useEffect } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router';
 import { Sparkles, GraduationCap, Loader2 } from 'lucide-react';
 import { getCharacterLoras, createLoraDataset, listLoraDatasets } from '../../services/api';
 

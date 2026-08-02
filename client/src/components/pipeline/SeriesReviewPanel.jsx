@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import {
   ClipboardCheck, Loader2, CheckCircle2, AlertCircle, AlertTriangle, Wrench,
   ThumbsUp, X, MessageSquarePlus, ChevronRight,

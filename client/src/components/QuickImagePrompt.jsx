@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router';
 import { Sparkles, Pencil, ChevronDown, ChevronRight } from 'lucide-react';
 import { generateImage, listUniverseStyles } from '../services/api';
 import { DEFAULT_NEGATIVE_PROMPT } from '../lib/imageGenDefaults';

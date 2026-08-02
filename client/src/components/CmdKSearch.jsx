@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router';
 import { Brain, Cpu, Package, History, HeartPulse, Search, Loader2, Navigation, Play, LayoutGrid, BookMarked } from 'lucide-react';
 import { useCmdKSearch } from '../hooks/useCmdKSearch';
 import { useScrollLock } from '../hooks/useScrollLock';

@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { useState, useEffect, useRef } from 'react';
 import { Sparkles, Loader2 } from 'lucide-react';
 import { updateCreativeDirectorProject, applyCreativeDirectorAutoCast } from '../../services/apiCreativeDirector.js';

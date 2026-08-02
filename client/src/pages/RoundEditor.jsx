@@ -23,7 +23,7 @@
  */
 
 import { useState, useEffect, useCallback, useMemo, useRef, useId } from 'react';
-import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams, Link } from 'react-router';
 import {
   Music, ArrowLeft, Plus, Trash2, Save, BookOpen, CheckCircle2, Circle, Layers, Eye, Pencil,
   Sparkles, RefreshCw, Video, ExternalLink, AudioLines,

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
-import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router';
 import useUrlParams from './useUrlParams';
 
 // MemoryRouter so `useSearchParams` resolves; `useLocation` lets the assertions
