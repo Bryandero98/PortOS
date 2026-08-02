@@ -402,13 +402,13 @@ export default function PromptManager() {
                   value={stageQuery}
                   onChange={(e) => setStageQuery(e.target.value)}
                   placeholder="Search stages…"
-                  className="w-full pl-8 pr-8 py-2 bg-port-bg border border-port-border rounded-lg text-sm text-white placeholder-gray-500 focus:border-port-accent focus:outline-hidden"
+                  className="w-full pl-8 pr-9 py-2.5 bg-port-bg border border-port-border rounded-lg text-sm text-white placeholder:text-gray-500 focus:border-port-accent focus:outline-hidden"
                 />
                 {stageQuery && (
                   <button
                     onClick={() => setStageQuery('')}
                     aria-label="Clear stage search"
-                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-white"
+                    className="absolute right-1 top-1/2 -translate-y-1/2 p-2 text-gray-500 hover:text-white"
                   >
                     <X size={14} />
                   </button>
@@ -418,7 +418,7 @@ export default function PromptManager() {
                 <button
                   onClick={() => setSystemOnly(v => !v)}
                   aria-pressed={systemOnly}
-                  className={`text-[10px] px-2 py-1 rounded uppercase font-semibold transition-colors ${
+                  className={`text-[10px] px-2.5 py-1.5 rounded uppercase font-semibold transition-colors ${
                     systemOnly
                       ? 'bg-port-accent text-white'
                       : 'bg-port-border text-gray-400 hover:text-white'
@@ -447,7 +447,7 @@ export default function PromptManager() {
                       // Without this the name computes to "Pipeline78" — the
                       // count span abuts the label with no separator.
                       aria-label={`${label}, ${groupStages.length} stages`}
-                      className="w-full flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-semibold uppercase tracking-wide text-gray-400 enabled:hover:bg-port-border enabled:hover:text-white"
+                      className="w-full flex items-center gap-1 px-2 py-2 rounded-lg text-xs font-semibold uppercase tracking-wide text-gray-400 enabled:hover:bg-port-border enabled:hover:text-white"
                     >
                       <Chevron size={12} className={`shrink-0 ${stageFilterActive ? 'invisible' : ''}`} />
                       <span className="min-w-0 truncate">{label}</span>
