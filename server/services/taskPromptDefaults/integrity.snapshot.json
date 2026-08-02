@@ -6,7 +6,7 @@
     "performance": "672bd3958b12afb0f382bcebb6dc3b33",
     "accessibility": "372916803f32b82da38a5b2130a54baf",
     "console-errors": "2b6ed595287f0742bed9ecba6788afe6",
-    "dependency-updates": "3f461b1c111ba45b7fa5016883cfa54d",
+    "dependency-updates": "7ed05444e2602f4895bdd1e5e0edcaa8",
     "documentation": "74aa8433896647e7815f9d6d9e4a56c8",
     "ui-bugs": "def9ad96bd74ab397233f234d79a1974",
     "mobile-responsive": "16d8e7f63a673a2de48994c0ac08ef3d",
@@ -53,7 +53,7 @@
     "test-coverage": 2,
     "performance": 2,
     "accessibility": 2,
-    "dependency-updates": 2,
+    "dependency-updates": 3,
     "documentation": 4,
     "ui-bugs": 2,
     "mobile-responsive": 2,
@@ -130,7 +130,8 @@
       "b07cfe1e367411036ef1d4cc4b6e9d2e"
     ],
     "dependency-updates": [
-      "640a7c4214e6bdba2bbd5b9061d9d425"
+      "640a7c4214e6bdba2bbd5b9061d9d425",
+      "3f461b1c111ba45b7fa5016883cfa54d"
     ],
     "documentation": [
       "074ea22140f8f6a02c7e40a6bc7b0614",

@@ -114,6 +114,38 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(preDecide).not.toBe(current);
   });
 
+  // dependency-updates v3: open Dependabot/Renovate PRs are triaged BEFORE the agent
+  // bumps anything itself. v2 went straight to `npm outdated`, so a run against a repo
+  // with open bot PRs re-did their work by hand — duplicate bumps, lockfile conflicts
+  // against the bot branches, and a pile of stale bot PRs nobody closed.
+  it('dependency-updates v3 triages bot PRs before updating, preserving the v2 default', () => {
+    const current = DEFAULT_TASK_PROMPTS['dependency-updates'];
+    expect(current).toContain('dependabot[bot]');
+    expect(current).toContain('renovate[bot]');
+    expect(current).toContain('FIX-THEN-MERGE');
+    // Phase 2 must not re-bump a package a bot PR already owns — and must confirm that
+    // per package rather than trusting Phase 1's listing to have been complete.
+    expect(current).toContain('owns the bump');
+    expect(current).toContain('confirm per package');
+    // The task runs in the app's LIVE checkout (no useWorktree default), so repairing a
+    // bot branch has to happen in a throwaway worktree — a bare `gh pr checkout` there
+    // hijacks whatever branch the user is on.
+    // …namespaced per app, since {worktreesRoot} is shared across every managed app.
+    expect(current).toContain('{worktreesRoot}/dep-{appName}-pr-<n>');
+    expect(current).toContain('THROWAWAY WORKTREE');
+    // Rebasing the bot branch rewrites its commits, so the push needs a lease, not a ban.
+    expect(current).toContain('--force-with-lease');
+    expect(PROMPT_VERSIONS['dependency-updates']).toBe(3);
+
+    const previous = PREVIOUS_DEFAULT_PROMPTS['dependency-updates'];
+    const v2 = previous[previous.length - 1];
+    // The outgoing v2 default knew nothing about bot PRs and is preserved verbatim so
+    // installs holding it are recognized and upgraded.
+    expect(v2).not.toContain('dependabot');
+    expect(v2).toContain('Only update one major version bump at a time');
+    expect(v2).not.toBe(current);
+  });
+
   // NOTE: PROMPT_VERSIONS keys are SCHEDULE keys, not always prompt keys —
   // code-reviewer-a/b version a pipeline whose stages use the
   // code-reviewer-review / code-reviewer-implement prompt bodies — so there is

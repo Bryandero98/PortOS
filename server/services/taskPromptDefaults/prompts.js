@@ -151,8 +151,99 @@ Check {appName} dependencies for updates and security vulnerabilities:
 
 Repository: {repoPath}
 
+Open automated dependency PRs come FIRST. A Dependabot/Renovate PR is a bump already
+proposed and already isolated to one package — redoing it yourself conflicts with the bot
+branch and leaves a stale PR behind. Finish Phase 1 before you touch a manifest.
+
+## Phase 1 — Land or resolve open automated dependency PRs
+
+This phase talks to the repo's forge. Use \`gh\` on GitHub and \`glab\` on GitLab —
+the command pairs are given below, and every \`gh pr <verb> <n>\` has a \`glab mr <verb> <n>\`
+equivalent. Run the right one for this repo's origin; never run \`gh\` against a GitLab
+repo (a globally-configured \`gh\` will silently target an unrelated GitHub repository).
+
+1. List the open PRs. If the repo has no GitHub/GitLab remote, or the matching CLI is
+   unavailable or unauthenticated, say so and skip straight to Phase 2:
+   \`gh pr list --state open --limit 500 --json number,title,headRefName,author,mergeable,mergeStateStatus\`
+   (GitLab: \`glab mr list --state opened --per-page 100 --page <n>\`, paging until a page
+   comes back short.) The limit has to cover EVERY open PR, not just a first page — a bot
+   PR you never listed looks bot-uncovered to Phase 2, which then files the duplicate bump
+   this phase exists to prevent. If the result is exactly at your limit, raise it and re-run.
+   An automated dependency PR is one authored by \`dependabot[bot]\`, \`app/dependabot\`,
+   \`renovate[bot]\`, or whose head branch starts with \`dependabot/\` or \`renovate/\`.
+
+2. For EACH one, gather evidence before deciding:
+   - The version jump: patch, minor, or major (\`gh pr view <n>\` / \`glab mr view <n>\`)
+   - For a major (or a minor from a package that breaks on minors): read the release
+     notes in the PR body, then grep this codebase for the APIs that changed. A breaking
+     change the repo never calls is not a blocker.
+   - CI status: \`gh pr checks <n>\` (GitLab: \`glab ci status --branch <headRefName>\`).
+     For a failure, read the actual log (\`gh run view <run-id> --log-failed\` /
+     \`glab ci trace <job-id>\`) and identify the root cause — a real incompatibility, a
+     flaky test, or an unrelated pre-existing failure on the default branch (check that
+     before blaming the bump).
+   - Mergeability: \`CONFLICTING\` (GitLab: \`cannot_be_merged\`) almost always means
+     lockfile/manifest drift from another dependency PR that already merged.
+   - Diff sanity: the diff should be manifest + lockfile only. Source-file edits, a new
+     postinstall/prepare script, or a changed registry URL in a bot PR is a red flag —
+     do not merge it; comment what you found and leave it open.
+
+3. Then take exactly ONE verdict per PR:
+   - MERGE — patch/minor, CI green, not conflicting, diff is clean, nothing in the
+     release notes affects how this repo uses the package. Merge it, matching the repo's
+     documented merge method (\`gh pr merge <n> --merge\` / \`glab mr merge <n> --yes\`
+     unless the repo says otherwise).
+   - FIX-THEN-MERGE — the bump is wanted but the PR is stuck. Fix it:
+     * Conflicts only: ask the bot to redo it first — comment \`@dependabot rebase\`
+       (Renovate: tick the PR's rebase checkbox), move on, and re-check at the end of
+       the phase. If the bot doesn't respond, resolve it yourself.
+     * Build/test failure caused by the new version (renamed export, changed default,
+       dropped Node/engine support): make the SMALLEST adapting code change on the PR
+       branch. Keep it scoped to the breakage — never bundle unrelated work onto a
+       bot branch.
+     * Either way, work on the bot branch in a THROWAWAY WORKTREE, never by checking
+       it out in {repoPath} — this task usually runs in the app's live checkout, so a
+       \`gh pr checkout\` there hijacks whatever branch the user is on and fails outright
+       on their uncommitted work. The bot branch normally exists only on the remote, so
+       name the remote ref explicitly and let \`-b\` create the local branch. Call the
+       worktree \`dep-{appName}-pr-<n>\` (lowercase the app name and collapse anything
+       non-alphanumeric to \`-\`) — {worktreesRoot} is shared by every app this install
+       manages, so a bare \`dep-pr-<n>\` collides with another app's PR of the same number:
+         \`git -C {repoPath} fetch origin <headRefName>\`
+         \`git -C {repoPath} worktree add -b dep-{appName}-pr-<n> {worktreesRoot}/dep-{appName}-pr-<n> origin/<headRefName>\`
+       Do the work in that worktree: rebase onto the default branch if it was conflicting,
+       regenerate the lockfile with the package manager (\`npm install\` — never hand-edit
+       a lockfile), run the tests, then push back to the PR's own branch:
+       \`git push origin HEAD:<headRefName>\`. Remove the worktree and its local branch
+       when you're done with that PR
+       (\`git -C {repoPath} worktree remove {worktreesRoot}/dep-{appName}-pr-<n>\` then
+       \`git -C {repoPath} branch -D dep-{appName}-pr-<n>\`).
+     * Pushing a rebase rewrites the bot's commits, so a plain push is rejected — add
+       \`--force-with-lease=<headRefName>:origin/<headRefName>\`, which refuses if the bot
+       pushed again while you worked, so you never clobber a newer version of its branch.
+       Never a bare \`--force\`. A push you did NOT rebase needs no force at all.
+     * Merge once it is green.
+   - CLOSE — the PR is superseded (a newer bot PR bumps the same package further) or
+     targets a dependency this repo no longer uses. Close it with a comment saying why.
+   - LEAVE — a major upgrade that needs a real migration, or a bump to something
+     security- or billing-critical that warrants a human call. Comment on the PR with
+     what you found and what the migration would take, and record it in the repo's work
+     tracker (a PLAN.md item or an issue, whichever the repo uses). Do not merge it.
+
+4. Re-check anything you asked the bot to rebase, then merge or leave it accordingly.
+   Summarize each PR and its verdict at the end of the phase.
+
+## Phase 2 — Everything the bots did not cover
+
 1. Run npm audit (or equivalent package manager)
-2. Check for outdated packages
+2. Check for outdated packages — skip any package that still has an open bot PR; that PR
+   owns the bump. Phase 1's list is the first filter, and when Phase 1 had forge access,
+   confirm per package before you bump one it didn't mention
+   (\`gh pr list --state open --search "<package> in:title"\` /
+   \`glab mr list --state opened --search "<package>"\`), so a PR that fell outside the
+   listing can't still get double-bumped here. If Phase 1 was skipped for lack of a
+   working \`gh\`/\`glab\`, skip this confirmation too — there is nothing to query — and
+   say in your summary that bot-PR overlap could not be checked.
 3. Review CRITICAL and HIGH severity vulnerabilities
 4. For each vulnerability:
    - Assess actual risk
