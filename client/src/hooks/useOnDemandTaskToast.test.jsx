@@ -47,6 +47,37 @@ describe('useOnDemandTaskToast — idle outcome', () => {
   });
 });
 
+describe('useOnDemandTaskToast — transient outcome', () => {
+  beforeEach(() => { handlers.clear(); toastSpy.mockClear(); });
+  afterEach(cleanup);
+
+  it('keeps the generic "try again shortly" copy when the forge health is unknown', () => {
+    renderHook(() => useOnDemandTaskToast());
+    fire({ taskType: 'claim-issue', appName: 'App One', outcome: 'transient' });
+    const [msg, opts] = toastSpy.mock.calls[0];
+    expect(msg).toMatch(/transient forge\/network issue/);
+    expect(opts.icon).toBe('⚠️');
+  });
+
+  it('names the real fault + remedy when the forge CLI is broken in a way that will not self-clear', () => {
+    renderHook(() => useOnDemandTaskToast());
+    fire({
+      taskType: 'claim-issue', appName: 'App One', outcome: 'transient',
+      forge: {
+        cli: 'gh',
+        remedy: 'gh cannot open an outbound connection. If an outbound firewall (e.g. Little Snitch) is installed, allow the gh binary to reach api.github.com — a denied connect surfaces as "bad file descriptor".'
+      }
+    });
+    const [msg, opts] = toastSpy.mock.calls[0];
+    // Names the CLI that actually failed, so a glab fault never reads as a gh one.
+    expect(msg).toMatch(/the gh check couldn't run/);
+    expect(msg).toMatch(/allow the gh binary to reach api\.github\.com/);
+    // "try again shortly" is a dead end for a permanent fault — it must be gone.
+    expect(msg).not.toMatch(/try again shortly/);
+    expect(opts.duration).toBeGreaterThan(7000);
+  });
+});
+
 describe('useOnDemandTaskToast — parked outcome', () => {
   beforeEach(() => { handlers.clear(); toastSpy.mockClear(); });
   afterEach(cleanup);
