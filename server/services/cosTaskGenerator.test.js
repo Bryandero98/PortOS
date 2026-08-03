@@ -87,6 +87,32 @@ describe('dry-run hook wiring matches each engine execute path', () => {
   });
 });
 
+// Both on-demand spawn engines must stamp `metadata.onDemand` on the generated
+// task, or a MANUAL "Run Now" perpetual drain processed by whichever engine
+// forgot would refill through the auto-run-gated queue lane and stall after one
+// item (see perpetualRefillPlan in cos.js). The cos.js engine's stamp +
+// ignoreTaskId forwarding is pinned in cos.test.js; this pins the sibling
+// evaluateTasks engine here so the two-engine mirror can't drift by a comment.
+describe('both on-demand engines stamp metadata.onDemand', () => {
+  const onDemandStamp = (src, engineFn) => {
+    const start = src.indexOf(engineFn);
+    expect(start, `${engineFn} must exist`).toBeGreaterThan(-1);
+    // Scan to the next top-level function so the assertion is scoped to this engine.
+    const next = src.indexOf('\nasync function ', start + 1);
+    return src.slice(start, next === -1 ? src.length : next);
+  };
+
+  it('evaluateTasks engine (spawnPriority0OnDemand) stamps onDemand before addTask', () => {
+    const engine = onDemandStamp(GEN_SRC, 'async function spawnPriority0OnDemand');
+    expect(/task\.metadata = \{ \.\.\.\(task\.metadata \|\| \{\}\), onDemand: true \}/.test(engine)).toBe(true);
+  });
+
+  it('dequeueNextTask engine (spawnDequeuePriority0OnDemand) stamps onDemand before addTask', () => {
+    const engine = onDemandStamp(COS_SRC, 'async function spawnDequeuePriority0OnDemand');
+    expect(/task\.metadata = \{ \.\.\.\(task\.metadata \|\| \{\}\), onDemand: true \}/.test(engine)).toBe(true);
+  });
+});
+
 // #1650: once a peer's claim/lease is visible via task-record federation, a
 // task whose live lease belongs to ANOTHER instance must be skipped during
 // candidate selection — BEFORE the engine emits `task:ready` + trackSpawn.

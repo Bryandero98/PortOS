@@ -758,7 +758,7 @@ async function tryImmediateSpawn(task) {
  * the on-demand request queue, generating + persisting a task per request.
  */
 async function spawnDequeuePriority0OnDemand(ctx) {
-  const { state, capacity } = ctx;
+  const { state, capacity, ignoreTaskId } = ctx;
 
   const taskScheduleMod = await import('./taskSchedule.js');
   const taskSchedule = await taskScheduleMod.loadSchedule();
@@ -842,7 +842,17 @@ async function spawnDequeuePriority0OnDemand(ctx) {
     }
 
     if (task && capacity.canSpawn(task)) {
-      const persisted = await addTask(task, 'internal', { raw: true });
+      // Mark this as a MANUAL (on-demand) run so a completed perpetual drain
+      // continues in the same user-initiated lane instead of the auto-run-gated
+      // queue path (see perpetualRefillPlan). Stamped before addTask so the
+      // blocked-revive branch below inherits it via `task.metadata` too.
+      task.metadata = { ...(task.metadata || {}), onDemand: true };
+      // Forward `ignoreTaskId` so a completion-triggered re-issue is dedup-safe:
+      // the perpetual drain regenerates an identical first-line for the same app,
+      // and `agent:completed` fires before the completing task's updateTask
+      // settles it to `completed` — so without excluding it the re-issued claim is
+      // rejected as a duplicate of the run that just finished and the drain stalls.
+      const persisted = await addTask(task, 'internal', { raw: true, ignoreTaskId });
       if (!persisted?.duplicate) {
         cosEvents.emit('task:ready', task);
         capacity.trackSpawn(task);
@@ -1158,25 +1168,68 @@ async function dequeueNextTask({ ignoreTaskId = null } = {}) {
  * the analysis type the same way `queueEligibleImprovementTasks` /
  * `isDisabledAnalysisType` do, and never throws on partial inputs.
  */
-export function isPerpetualRefillCandidate(agent, schedule) {
-  const analysisType = agent?.metadata?.taskAnalysisType
+/**
+ * The scheduled task type a completed agent belongs to, if any — the key
+ * `schedule.tasks` and the perpetual-refill gates look up. Reads the same three
+ * projections agentLifecycle stamps onto the agent, newest-name first.
+ */
+function agentScheduledType(agent) {
+  return agent?.metadata?.taskAnalysisType
     || agent?.metadata?.analysisType
-    || agent?.metadata?.selfImprovementType;
+    || agent?.metadata?.selfImprovementType
+    || null;
+}
+
+export function isPerpetualRefillCandidate(agent, schedule) {
+  const analysisType = agentScheduledType(agent);
   if (!analysisType) return false;
   const taskDef = schedule?.tasks?.[analysisType];
   return Boolean(taskDef?.enabled) && taskDef.type === 'perpetual';
 }
 
 /**
- * When a perpetual-schedule agent finishes, re-queue the next eligible
- * improvement task right away so the backlog drains back-to-back rather than
- * stalling until the next improvement-check tick. Mirrors the gates the
- * improvement-check timer applies (daemon running, not paused, idle-review on,
- * CoS auto-run = execute) and reuses the same `queueEligibleImprovementTasks`
- * path — which already enforces per-app cooldown, the one-pending-per-app cap,
- * and the perpetual work-detector park, so this converges (when no actionable
- * work remains the task parks and nothing is re-queued) and can't fan out past
- * the concurrency limits in `dequeueNextTask`.
+ * Decide which "lane" a completed perpetual run's drain must continue in. Pure,
+ * so the branch is unit-testable without a live daemon.
+ *
+ *   - `'skip'`     — not a perpetual refill candidate (disabled/non-perpetual/no
+ *                    analysis type); nothing to refill.
+ *   - `'onDemand'` — the completed run was a MANUAL "Run Now" drain, marked by
+ *                    the on-demand spawn engines (`metadata.onDemand`, projected
+ *                    onto the agent as `taskOnDemand`). It continues in the SAME
+ *                    user-initiated lane it started in: re-issue an on-demand
+ *                    request for the exact `taskType` + `appId`, gated only on the
+ *                    master Improve flag — what `RunTaskButton` itself gates on —
+ *                    NOT on `canQueueImprovementTasks`. This is the fix for a
+ *                    manual drain stalling after ONE item whenever CoS auto-run is
+ *                    off/dry-run or idle-review is off: those are exactly the
+ *                    postures in which a user reaches for "Run Now". The manual
+ *                    run is allowed to START (Priority-0 on-demand only checks
+ *                    `isImprovementEnabled`), but the autonomous refill's
+ *                    `canQueueImprovementTasks` gate then refuses to continue it.
+ *                    Re-issuing an on-demand request is scoped to just that
+ *                    type+app, so it can't leak unrelated rotation/idle autonomous
+ *                    work past the auto-run kill switch, and the on-demand path
+ *                    re-runs the work-detector and PARKS when the drain is done —
+ *                    so it converges exactly like the scheduled drain.
+ *   - `'queue'`    — a SCHEDULED perpetual run: the autonomous queue path, gated
+ *                    on `canQueueImprovementTasks` (auto-run = execute).
+ */
+export function perpetualRefillPlan(agent, schedule) {
+  if (!isPerpetualRefillCandidate(agent, schedule)) return { lane: 'skip' };
+  if (agent?.metadata?.taskOnDemand) {
+    return { lane: 'onDemand', taskType: agentScheduledType(agent), appId: agent?.metadata?.taskApp || null };
+  }
+  return { lane: 'queue' };
+}
+
+/**
+ * When a perpetual-schedule agent finishes, re-queue the next eligible task
+ * right away so the backlog drains back-to-back rather than stalling until the
+ * next improvement-check tick. `perpetualRefillPlan` picks the lane (see there):
+ * a MANUAL drain re-issues an on-demand request; a SCHEDULED drain uses the
+ * auto-run-gated `queueEligibleImprovementTasks` (which already enforces per-app
+ * cooldown, the one-pending-per-app cap, and the work-detector park, so it
+ * converges and can't fan out past the `dequeueNextTask` concurrency limits).
  */
 async function refillPerpetualForCompletedAgent(agent) {
   if (!isDaemonRunning()) return;
@@ -1192,9 +1245,24 @@ async function refillPerpetualForCompletedAgent(agent) {
 
   const taskScheduleMod = await import('./taskSchedule.js');
   const schedule = await taskScheduleMod.loadSchedule();
-  if (!isPerpetualRefillCandidate(agent, schedule)) return;
+  const plan = perpetualRefillPlan(agent, schedule);
+  if (plan.lane === 'skip') return;
 
   const state = await loadState();
+
+  if (plan.lane === 'onDemand') {
+    // Manual drain: gate on the master Improve flag (what the manual trigger
+    // itself uses), NOT canQueueImprovementTasks, and re-issue an on-demand
+    // request. `emit: false` — the completion handler's subsequent
+    // dequeueNextTask({ ignoreTaskId }) drains the re-issue dedup-safely against
+    // the still-`in_progress` completing task; letting triggerOnDemandTask emit
+    // its event would fire a redundant SECOND dequeue of the same request.
+    if (!isImprovementEnabled(state)) return;
+    await taskScheduleMod.triggerOnDemandTask(plan.taskType, plan.appId, { emit: false });
+    return;
+  }
+
+  // Scheduled drain — autonomous queue path, gated on CoS auto-run.
   if (!canQueueImprovementTasks(state)) return;
 
   // `agent:completed` fires from `completeAgent` BEFORE the completion flow's

@@ -463,6 +463,12 @@ async function runAgentSpawn(task) {
       taskAnalysisType: task.metadata?.analysisType || null,
       taskReviewType: task.metadata?.reviewType || null,
       taskApp: task.metadata?.app || null,
+      // Marks a run dispatched by an explicit "Run Now" (on-demand) trigger, so
+      // the perpetual drain-on-completion refill (perpetualRefillPlan in cos.js)
+      // continues a MANUAL drain in the user-initiated on-demand lane rather than
+      // the auto-run-gated queue lane. `isTruthyMeta` accepts the boolean set at
+      // spawn AND the string `"true"` a COS-TASKS.md round-trip yields.
+      taskOnDemand: isTruthyMeta(task.metadata?.onDemand),
       // LI hand-off provenance (#2765): projected onto the agent so the completion
       // hook (recordTaskCompletion) can attribute the run's success/failure back to
       // the proposal's domain. agent.metadata is a hand-picked projection of
