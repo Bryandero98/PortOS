@@ -339,9 +339,34 @@ export const gameSpriteBindingSchema = z.object({
   spriteId: gameAssetIdSchema,
 }).strict();
 
+// Repo-relative publish destination inside the managed app repository. The
+// extension gate is per-lane (PNG artwork vs library audio); the traversal
+// refinements are shared so the two lanes can't drift.
+const gameDestinationSchema = (extensionPattern, extensionMessage) => z.string()
+  .trim()
+  .min(1)
+  .max(500)
+  .regex(extensionPattern, extensionMessage)
+  .refine((value) => !value.startsWith('/') && !value.includes('\\'), 'must be a repo-relative path')
+  .refine((value) => !value.split('/').includes('..'), 'must not traverse outside the app repository');
+const gameMusicDestinationSchema = gameDestinationSchema(
+  /\.(?:mp3|wav|m4a|ogg|flac)$/i,
+  'must end in a supported audio extension',
+);
+const gamePublishOptionsSchema = z.object({
+  acknowledgeOverwrite: z.boolean().optional(),
+}).strict();
+
 export const gameMusicBindingSchema = z.object({
   trackId: gameAssetIdSchema,
+  destinationPath: gameMusicDestinationSchema.optional(),
 }).strict();
+
+export const gameMusicBindingUpdateSchema = z.object({
+  destinationPath: gameMusicDestinationSchema,
+}).strict();
+
+export const gameMusicPublishSchema = gamePublishOptionsSchema;
 
 export const GAME_ARTWORK_ROLES = [
   'title-key-art',
@@ -357,13 +382,7 @@ const gameArtworkFilenameSchema = z.string()
   .trim()
   .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*\.png$/i, 'must be a gallery PNG filename')
   .max(255);
-const gameArtworkDestinationSchema = z.string()
-  .trim()
-  .min(1)
-  .max(500)
-  .regex(/\.png$/i, 'must end in .png')
-  .refine((value) => !value.startsWith('/') && !value.includes('\\'), 'must be a repo-relative path')
-  .refine((value) => !value.split('/').includes('..'), 'must not traverse outside the app repository');
+const gameArtworkDestinationSchema = gameDestinationSchema(/\.png$/i, 'must end in .png');
 
 export const gameArtworkBindingSchema = z.object({
   imageFilename: gameArtworkFilenameSchema,
@@ -380,9 +399,7 @@ export const gameArtworkBindingUpdateSchema = z.object({
   message: 'at least one field is required',
 });
 
-export const gameArtworkPublishSchema = z.object({
-  acknowledgeOverwrite: z.boolean().optional(),
-}).strict();
+export const gameArtworkPublishSchema = gamePublishOptionsSchema;
 
 export const gameFeedbackSchema = z.object({
   providerId: z.string().trim().min(1).max(128),

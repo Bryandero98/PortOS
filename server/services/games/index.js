@@ -14,8 +14,10 @@ export {
   unbindSprite,
   updateArtwork,
   updateGame,
+  updateMusic,
 } from './records.js';
 export { publishGameArtwork } from './artwork.js';
+export { publishGameMusic } from './musicPublish.js';
 export { compileGameAssets } from './compile.js';
 export {
   BUNDLE_SCHEMA_VERSION,

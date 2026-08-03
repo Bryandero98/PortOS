@@ -23,12 +23,14 @@ import {
   listTracks,
   launchNativeApp,
   publishGameArtwork,
+  publishGameMusic,
   requestGameFeedback,
   startApp,
   unbindGameArtwork,
   unbindGameMusic,
   unbindGameSprite,
   updateGameArtwork,
+  updateGameMusic,
 } from '../services/api.js';
 import { timeAgo } from '../utils/formatters.js';
 
@@ -68,6 +70,9 @@ export default function Game() {
   const [busy, setBusy] = useState('');
   const [name, setName] = useState('');
   const [appId, setAppId] = useState('');
+  // Music binding id whose publish hit a 409 PUBLISH_DEST_OCCUPIED — the row
+  // shows an inline overwrite consent instead of a dead-end error toast.
+  const [musicOverwrite, setMusicOverwrite] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -217,6 +222,35 @@ export default function Game() {
     return true;
   };
 
+  const publishMusic = async (bindingId, acknowledgeOverwrite = false) => {
+    setBusy(`music-publish-${bindingId}`);
+    let occupied = false;
+    const result = await publishGameMusic(
+      game.id,
+      bindingId,
+      acknowledgeOverwrite ? { acknowledgeOverwrite: true } : {},
+      silent,
+    ).catch((error) => {
+      occupied = error?.code === 'PUBLISH_DEST_OCCUPIED';
+      return null;
+    });
+    setBusy('');
+    if (!result?.game) {
+      if (occupied) {
+        setMusicOverwrite(bindingId);
+        return false;
+      }
+      toast.error('Music publish failed');
+      return false;
+    }
+    setMusicOverwrite(null);
+    replaceGame(result.game);
+    setCompileError('');
+    await refreshIntegrity();
+    toast.success(result.publication?.wrote ? 'Music published to the game' : 'Music is already current');
+    return true;
+  };
+
   if (loading) {
     return <div className="py-12 text-center text-sm text-gray-400">Loading Game studio…</div>;
   }
@@ -309,7 +343,7 @@ export default function Game() {
 
   // Binding actions are namespaced so a new non-binding action (compile,
   // feedback, launch, …) doesn't have to be remembered in an exclusion list.
-  const bindingBusy = /^(un)?bind-|^artwork-/.test(busy);
+  const bindingBusy = /^(un)?bind-|^artwork-|^music-/.test(busy);
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex shrink-0 flex-col justify-between gap-2 border-b border-port-border px-4 py-3 sm:flex-row sm:items-center">
@@ -379,6 +413,14 @@ export default function Game() {
                 onBindSprite={(spriteId) => mutate('bind-sprite', () => bindGameSprite(game.id, spriteId, silent), 'Sprite bound')}
                 onUnbindSprite={(spriteId) => mutate('unbind-sprite', () => unbindGameSprite(game.id, spriteId, silent), 'Sprite unbound')}
                 onBindMusic={(trackId) => mutate('bind-music', () => bindGameMusic(game.id, trackId, silent), 'Music bound')}
+                onUpdateMusic={(bindingId, patch) => mutate(
+                  `music-update-${bindingId}`,
+                  () => updateGameMusic(game.id, bindingId, patch, silent),
+                  'Music destination saved',
+                )}
+                onPublishMusic={publishMusic}
+                musicOverwriteFor={musicOverwrite}
+                onDismissMusicOverwrite={() => setMusicOverwrite(null)}
                 onUnbindMusic={(bindingId) => mutate('unbind-music', () => unbindGameMusic(game.id, bindingId, silent), 'Music unbound')}
                 onBindArtwork={(binding) => mutate(
                   'bind-artwork',

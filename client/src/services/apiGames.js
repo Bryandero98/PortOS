@@ -37,9 +37,21 @@ export const bindGameMusic = (id, trackId, options = {}) => request(
   { method: 'POST', body: JSON.stringify({ trackId }), ...options },
 );
 
+export const updateGameMusic = (id, bindingId, patch, options = {}) => request(
+  `/games/${encodeURIComponent(id)}/music/${encodeURIComponent(bindingId)}`,
+  { method: 'PATCH', body: JSON.stringify(patch), ...options },
+);
+
 export const unbindGameMusic = (id, bindingId, options = {}) => request(
   `/games/${encodeURIComponent(id)}/music/${encodeURIComponent(bindingId)}`,
   { method: 'DELETE', ...options },
+);
+
+// Pass { acknowledgeOverwrite: true } after a 409 PUBLISH_DEST_OCCUPIED to
+// consent to replacing destination bytes PortOS never published.
+export const publishGameMusic = (id, bindingId, body = {}, options = {}) => request(
+  `/games/${encodeURIComponent(id)}/music/${encodeURIComponent(bindingId)}/publish`,
+  { method: 'POST', body: JSON.stringify(body), ...options },
 );
 
 export const bindGameArtwork = (id, binding, options = {}) => request(

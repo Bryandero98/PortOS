@@ -11,6 +11,8 @@ import {
   gameArtworkPublishSchema,
   gameFeedbackSchema,
   gameMusicBindingSchema,
+  gameMusicBindingUpdateSchema,
+  gameMusicPublishSchema,
   gameSpriteBindingSchema,
   gameUpdateSchema,
   isPaginationRequested,
@@ -28,12 +30,14 @@ import {
   getGameIntegrity,
   listGames,
   publishGameArtwork,
+  publishGameMusic,
   requestGameFeedback,
   unbindMusic,
   unbindArtwork,
   unbindSprite,
   updateArtwork,
   updateGame,
+  updateMusic,
 } from '../services/games/index.js';
 
 const router = Router();
@@ -89,8 +93,18 @@ router.post('/:id/music', asyncHandler(async (req, res) => {
   res.status(201).json(await bindMusic(req.params.id, binding));
 }));
 
+router.patch('/:id/music/:bindingId', asyncHandler(async (req, res) => {
+  const patch = validateRequest(gameMusicBindingUpdateSchema, req.body);
+  res.json(await updateMusic(req.params.id, req.params.bindingId, patch));
+}));
+
 router.delete('/:id/music/:bindingId', asyncHandler(async (req, res) => {
   res.json(await unbindMusic(req.params.id, req.params.bindingId));
+}));
+
+router.post('/:id/music/:bindingId/publish', asyncHandler(async (req, res) => {
+  const options = validateRequest(gameMusicPublishSchema, req.body || {});
+  res.json(await publishGameMusic(req.params.id, req.params.bindingId, options));
 }));
 
 router.post('/:id/artwork', asyncHandler(async (req, res) => {

@@ -14,12 +14,14 @@ vi.mock('../services/games/index.js', () => ({
   getGameIntegrity: vi.fn(),
   listGames: vi.fn(async () => []),
   publishGameArtwork: vi.fn(),
+  publishGameMusic: vi.fn(),
   requestGameFeedback: vi.fn(),
   unbindMusic: vi.fn(),
   unbindArtwork: vi.fn(),
   unbindSprite: vi.fn(),
   updateArtwork: vi.fn(),
   updateGame: vi.fn(),
+  updateMusic: vi.fn(),
 }));
 
 import * as games from '../services/games/index.js';
@@ -152,6 +154,43 @@ describe('Game routes', () => {
       .send({});
     expect(publishResponse.status).toBe(200);
     expect(games.publishGameArtwork).toHaveBeenCalledWith('game-1', 'artwork-1', {});
+  });
+
+  it('retargets and publishes a bound music track', async () => {
+    const updated = { id: 'game-1', musicBindings: [{ id: 'music-1' }] };
+    games.updateMusic.mockResolvedValueOnce(updated);
+    const patchResponse = await request(makeApp())
+      .patch('/api/games/game-1/music/music-1')
+      .send({ destinationPath: 'game/assets/music/example-theme.ogg' });
+    expect(patchResponse.status).toBe(200);
+    expect(games.updateMusic).toHaveBeenCalledWith('game-1', 'music-1', {
+      destinationPath: 'game/assets/music/example-theme.ogg',
+    });
+
+    games.publishGameMusic.mockResolvedValueOnce({
+      game: updated,
+      publication: { bindingId: 'music-1', wrote: true },
+    });
+    const publishResponse = await request(makeApp())
+      .post('/api/games/game-1/music/music-1/publish')
+      .send({ acknowledgeOverwrite: true });
+    expect(publishResponse.status).toBe(200);
+    expect(games.publishGameMusic).toHaveBeenCalledWith('game-1', 'music-1', {
+      acknowledgeOverwrite: true,
+    });
+  });
+
+  it('rejects music destinations that escape the repository or are not audio', async () => {
+    const escape = await request(makeApp())
+      .patch('/api/games/game-1/music/music-1')
+      .send({ destinationPath: '../outside.mp3' });
+    expect(escape.status).toBe(400);
+
+    const wrongExtension = await request(makeApp())
+      .patch('/api/games/game-1/music/music-1')
+      .send({ destinationPath: 'game/assets/music/theme.png' });
+    expect(wrongExtension.status).toBe(400);
+    expect(games.updateMusic).not.toHaveBeenCalled();
   });
 
   it('accepts a game logo as managed interface artwork', async () => {
