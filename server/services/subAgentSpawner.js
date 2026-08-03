@@ -149,6 +149,10 @@ async function runInitSpawner() {
       // A runner-owned TUI is finalized by spawnTuiAgent while this server
       // remains connected. Only a TUI recovered into runnerAgents after a
       // server restart should use the generic runner completion path.
+      // That invariant is upheld elsewhere — `syncRunnerAgents` must not adopt an
+      // agent this process already owns (see `isAgentOwnedLocally`). When it did,
+      // this guard passed for a live TUI and double-finalized it; the sibling
+      // `agent:output` and `agent:error` handlers key off the same membership.
       if (!agent) return;
       clearTimeout(agent.initializationTimeout);
       // Drain pending output before completion so the final lines land in

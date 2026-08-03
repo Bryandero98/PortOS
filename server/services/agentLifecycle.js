@@ -27,7 +27,13 @@ import { readFile, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { cosEvents, emitLog } from './cosEvents.js';
 import { registerAgent, updateAgent, completeAgent } from './cosAgents.js';
-import { getConfig, updateTask, getTaskById, getAgent as getAgentRecord } from './cos.js';
+// `getAgentRecord`, NOT `getAgent`: the record without its transcript. Both
+// consumers below want only `.status` / `.metadata`, and `getAgent` hydrates a
+// completed or paused record by reading the whole output.txt, line-splitting it
+// into per-line objects, and running `repairCodexTaskSummary` (which can write
+// metadata.json back). That is megabytes and a disk write on a long TUI run —
+// paid to read one string. Same trap documented at agentWorktreeCleanup.js:562.
+import { getConfig, updateTask, getTaskById, getAgentRecord } from './cos.js';
 import { spawnAgentViaRunner, getRunnerHealth } from './cosRunnerClient.js';
 import { MAX_TOTAL_SPAWNS, normalizeReviewers } from '../lib/validation.js';
 import { isInternalTaskId } from '../lib/taskParser.js';
@@ -853,8 +859,35 @@ export async function handleAgentCompletion(agentId, exitCode, success, duration
   // withMapEntryCleanup drops the runnerAgents entry in a finally even if any
   // inner completion step throws — otherwise a memory-extraction crash etc.
   // would strand it forever and no future spawn could reclaim the slot. The
-  // error still propagates to the caller (agentGuards.js, issue #2548).
+  // error still propagates to the caller (agentGuards.js, issue #2548). The
+  // already-finalized guard below sits INSIDE it so its early return drops the
+  // entry too, rather than hand-rolling a second delete.
   return withMapEntryCleanup(runnerAgents, agentId, async () => {
+    // The persisted record, read once and shared with the PR-ownership check
+    // further down. Read off the PERSISTED record, not the in-memory
+    // `runnerAgents` entry: the entry carries only `providerId` (and a
+    // post-restart survivor recovered by syncRunnerAgents carries even less), so
+    // a lean `--bare` runner agent would read as slashdo-capable — and be
+    // downgraded for not opening a PR PortOS was about to open for it.
+    // `registerAgent` writes those fields into metadata precisely so this
+    // question survives a restart, and nothing mutates them mid-run.
+    const persistedAgent = await getAgentRecord(agentId).catch(() => null);
+
+    // Already-finalized backstop, mirroring the untracked branch above. Another
+    // owner may have written the terminal record before this event arrived —
+    // most often the TUI spawner's `finish()`, which finalizes on its own
+    // sentinel and THEN kills the session, so the runner reports that kill as a
+    // late exit-143 completion. Finalizing again would overwrite the recorded
+    // success with this event's exit code and an `analyzeAgentFailure` verdict
+    // read from an output buffer this path cannot see (a TUI writes output.txt
+    // under the dated run dir, not AGENTS_DIR/<id>) — i.e. an empty buffer
+    // classified `startup-failure`. See syncRunnerAgents for how a live TUI came
+    // to be in `runnerAgents` at all.
+    if (persistedAgent && persistedAgent.status !== 'running') {
+      console.log(`✅ Agent ${agentId} already ${persistedAgent.status} — ignoring duplicate completion (exit ${exitCode})`);
+      return;
+    }
+
     // Normalize the agent's task shape — recovered agents (post-restart,
     // via syncRunnerAgents) may lack taskType AND metadata, both of which
     // downstream paths spread / read without a guard.
@@ -913,13 +946,9 @@ export async function handleAgentCompletion(agentId, exitCode, success, duration
     // one. When PortOS owns it the PR is created by that cleanup, i.e. AFTER
     // finalize, so verifying here would fail every correct run.
     //
-    // Read off the PERSISTED record, not the in-memory `runnerAgents` entry: the
-    // entry carries only `providerId` (and a post-restart survivor recovered by
-    // syncRunnerAgents carries even less), so a lean `--bare` runner agent would
-    // read as slashdo-capable — and be downgraded for not opening a PR PortOS
-    // was about to open for it. registerAgent writes both fields into metadata
-    // precisely so this question survives a restart.
-    const persistedAgent = await getAgentRecord(agentId).catch(() => null);
+    // `persistedAgent` is the record read once at the top of this callback — see
+    // the note there for why the metadata must come off disk rather than the
+    // in-memory entry.
     const runnerAgentOwnsPR = isTruthyMeta(task?.metadata?.openPR) && canTypeSlashCommands({
       providerId: persistedAgent?.metadata?.providerId ?? agent.providerId,
       providerCommand: persistedAgent?.metadata?.providerCommand ?? null,

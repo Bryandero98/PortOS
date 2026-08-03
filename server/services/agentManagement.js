@@ -14,7 +14,7 @@ import { terminateAgentViaRunner, killAgentViaRunner, pauseAgentViaRunner, getAg
 import { unregisterSpawnedAgent } from './agents.js';
 import { MAX_TOTAL_SPAWNS } from '../lib/validation.js';
 import { isInternalTaskId } from '../lib/taskParser.js';
-import { activeAgents, runnerAgents, userTerminatedAgents, pausedAgents, useRunner } from './agentState.js';
+import { activeAgents, runnerAgents, userTerminatedAgents, pausedAgents, useRunner, isAgentOwnedLocally } from './agentState.js';
 // Both were extracted out of agentLifecycle.js (issue #2837) so this module no
 // longer depends on the lifecycle orchestrator — which depends on THIS module
 // for handleOrphanedTask. Importing them from their own leaf modules is what
@@ -594,11 +594,9 @@ export async function cleanupOrphanedAgents() {
 
   for (const agent of agents) {
     if (agent.status === 'running') {
-      const inLocalDirect = activeAgents.has(agent.id);
-      const inLocalRunner = runnerAgents.has(agent.id);
       const inRemoteRunner = runnerActiveIds.has(agent.id);
 
-      if (!inLocalDirect && !inLocalRunner && !inRemoteRunner) {
+      if (!isAgentOwnedLocally(agent.id) && !inRemoteRunner) {
         // Before marking as orphaned, check if the process is actually still running
         if (agent.pid) {
           const stillAlive = await isPidAlive(agent.pid);

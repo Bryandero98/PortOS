@@ -30,6 +30,19 @@ export const setUseRunner = (val) => { useRunner = val; };
 // `subAgentSpawner` re-exports it for backward compatibility.
 export const getActiveAgentIds = () => [...activeAgents.keys(), ...runnerAgents.keys()];
 
+// Does THIS process already own the agent's lifecycle?
+//
+// Ownership is split across the two maps by spawn mode, and which map an agent
+// lands in is not guessable from its `executionMode`: a runner-backed TUI
+// (`runner-tui`) is driven by the live `spawnTuiAgent` closure, so it registers
+// in `activeAgents` — NEVER in `runnerAgents`, even though the runner owns its
+// process and lists it in `/agents`. Only `spawnViaRunner` populates
+// `runnerAgents`. Consult this rather than either map alone: checking
+// `runnerAgents` by itself reads a live TUI as an unowned restart survivor,
+// which is exactly how `syncRunnerAgents` came to hoist running TUI agents and
+// let a stray runner `agent:completed` event double-finalize them.
+export const isAgentOwnedLocally = (agentId) => activeAgents.has(agentId) || runnerAgents.has(agentId);
+
 // Metadata booleans may arrive as true/'true' or false/'false' (JSON vs TASKS.md string round-trip)
 export const isTruthyMeta = (value) => value === true || value === 'true';
 export const isFalsyMeta = (value) => value === false || value === 'false';

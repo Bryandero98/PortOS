@@ -37,13 +37,14 @@ vi.mock('./cosAgents.js', () => ({
 import { connectTuiSessionViaRunner, getActiveAgentsFromRunner } from './cosRunnerClient.js';
 import * as shellService from './shell.js';
 import { getAgent } from './cosAgents.js';
-import { runnerAgents } from './agentState.js';
+import { activeAgents, runnerAgents } from './agentState.js';
 import { syncRunnerAgents } from './agentRunnerSync.js';
 
 describe('syncRunnerAgents runner-owned TUI recovery', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     runnerAgents.clear();
+    activeAgents.clear();
     vi.mocked(shellService.getSession).mockReturnValue(null);
     vi.mocked(getAgent).mockResolvedValue(null);
   });
@@ -112,5 +113,38 @@ describe('syncRunnerAgents runner-owned TUI recovery', () => {
 
     await expect(syncRunnerAgents()).resolves.toBe(1);
     expect(runnerAgents.get('agent-2')).toMatchObject({ runId: null });
+  });
+
+  // A live runner-TUI is owned by this process's spawnTuiAgent closure, which
+  // registers in `activeAgents` — never in `runnerAgents`. Hoisting it here made
+  // subAgentSpawner's `agent:completed` handler run a second finalizeAgent over
+  // the TUI's own sentinel-signalled success, flipping the agent card to failed.
+  // `cleanupOrphanedAgents` calls this every 15 minutes, so every TUI run longer
+  // than one tick was exposed. The unowned agent in the same sweep pins that this
+  // skips one entry rather than abandoning the loop.
+  it('skips a TUI this process already owns while still adopting real survivors', async () => {
+    activeAgents.set('agent-live', { task: { id: 'task-1' }, startedAt: Date.now() });
+    vi.mocked(getActiveAgentsFromRunner).mockResolvedValue([
+      {
+        id: 'agent-live',
+        taskId: 'task-1',
+        pid: 4321,
+        startedAt: Date.now(),
+        kind: 'tui',
+        sessionId: 'tui-session-live',
+        command: 'claude',
+        workspacePath: '/tmp/example-workspace',
+      },
+      { id: 'agent-orphan', taskId: 'task-1', pid: 8765, startedAt: Date.now(), kind: 'cli' },
+    ]);
+
+    await expect(syncRunnerAgents()).resolves.toBe(1);
+
+    expect(runnerAgents.has('agent-live')).toBe(false);
+    expect(runnerAgents.has('agent-orphan')).toBe(true);
+    // The owned TUI's shell relay is already registered by its spawner;
+    // re-attaching would hand the same PTY two readers.
+    expect(connectTuiSessionViaRunner).not.toHaveBeenCalled();
+    expect(shellService.registerExternalSession).not.toHaveBeenCalled();
   });
 });

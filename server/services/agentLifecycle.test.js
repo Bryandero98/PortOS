@@ -247,6 +247,34 @@ describe('agentLifecycle — guard wiring', () => {
     expect(body).toMatch(/withMapEntryCleanup\(\s*runnerAgents\s*,\s*agentId\s*,/);
   });
 
+  // A tracked agent can already be terminal by the time its completion event
+  // lands: a runner-backed TUI is finalized by spawnTuiAgent's `finish()`, which
+  // then kills the session — and the runner reports THAT as an exit-143
+  // completion. Without this guard the event ran a second finalizeAgent that
+  // overwrote a sentinel-signalled success with a `startup-failure` verdict.
+  it('handleAgentCompletion bails on a duplicate completion for an already-terminal record', () => {
+    const body = trackedCompletionPreamble();
+    // Reads the PERSISTED record — the in-memory maps say nothing about whether
+    // another owner already wrote the terminal record.
+    expect(body).toMatch(/await getAgentRecord\(agentId\)/);
+    expect(body).toMatch(/persistedAgent && persistedAgent\.status !== 'running'/);
+  });
+
+  // The record backs BOTH the terminal-status guard and the PR-ownership check,
+  // and `getAgent` (the transcript-hydrating reader) would line-split a completed
+  // run's whole output.txt — megabytes on the very path the guard exists to catch,
+  // plus a possible metadata.json rewrite via repairCodexTaskSummary.
+  it('handleAgentCompletion reads the record once, via the transcript-free reader', () => {
+    const body = trackedCompletionPreamble();
+    expect(body).toMatch(/const persistedAgent = await getAgentRecord\(agentId\)/);
+    // Imported unaliased, so `getAgent` can't be smuggled back in under this name.
+    expect(AGENT_LIFECYCLE_SRC).toMatch(/import \{[^}]*\bgetAgentRecord\b[^}]*\} from '\.\/cos\.js'/);
+    expect(AGENT_LIFECYCLE_SRC).not.toMatch(/getAgent as getAgentRecord/);
+    // Exactly one read for the whole tracked path.
+    const reads = AGENT_LIFECYCLE_SRC.match(/await getAgentRecord\(agentId\)/g) || [];
+    expect(reads).toHaveLength(1);
+  });
+
   it('finalizeAgent stamps the LI execution verdict into the completion task write (#2779)', () => {
     const idx = AGENT_FINALIZATION_SRC.indexOf('export async function finalizeAgent');
     expect(idx, 'finalizeAgent must exist').toBeGreaterThan(-1);
@@ -303,6 +331,20 @@ function recoveryBranchSource() {
   expect(start, 'post-restart recovery branch must exist').toBeGreaterThan(-1);
   const end = AGENT_LIFECYCLE_SRC.indexOf('const { task, runId, model', start);
   expect(end, 'end anchor (the statement after the branch) must exist').toBeGreaterThan(start);
+  return AGENT_LIFECYCLE_SRC.slice(start, end);
+}
+
+/**
+ * Source of the TRACKED completion preamble in handleAgentCompletion — from
+ * entering the withMapEntryCleanup body to the first real work it does. Both
+ * anchors are real statements, so the window can't silently widen to swallow the
+ * rest of the completion body as the function grows.
+ */
+function trackedCompletionPreamble() {
+  const start = AGENT_LIFECYCLE_SRC.indexOf('withMapEntryCleanup(runnerAgents, agentId,');
+  expect(start, 'withMapEntryCleanup wrapper must exist').toBeGreaterThan(-1);
+  const end = AGENT_LIFECYCLE_SRC.indexOf("Normalize the agent's task shape", start);
+  expect(end, 'end anchor (task-shape normalization) must exist').toBeGreaterThan(start);
   return AGENT_LIFECYCLE_SRC.slice(start, end);
 }
 
