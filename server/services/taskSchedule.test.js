@@ -134,6 +134,7 @@ import {
   PROMPT_VERSIONS,
   DEFAULT_TASK_INTERVALS,
   MANAGED_AGENT_OPTIONS,
+  stripManagedAgentOptionsFromOverride,
   TASK_TYPE_DESCRIPTIONS,
   REFERENCE_WATCH_AUDITED_VERSION
 } from './taskSchedule.js'
@@ -146,6 +147,10 @@ import {
 } from './taskPromptService.js'
 
 import { DEFAULT_TASK_PROMPTS, PREVIOUS_DEFAULT_PROMPTS } from './taskPromptDefaults.js'
+
+// The source of truth for "this type's deliverable is a side effect, not a commit"
+// — the posture guard below iterates it so the two can't drift apart.
+import { NON_COMMITTING_COORDINATOR_TASK_TYPES } from './taskTypeHooks.js'
 
 import { loadState } from './cosState.js'
 
@@ -1089,6 +1094,61 @@ describe('taskSchedule', () => {
       expect(prompt).toContain('{issueAuthorFilter}')
       // Issues mode ships GitHub issues only — it explicitly does not touch PLAN.md.
       expect(prompt).toContain('does NOT touch PLAN.md')
+    })
+  })
+
+  // The gh/git coordinator types deliver their work as a SIDE EFFECT (a deleted
+  // branch, a merged PR, a relabeled issue, a posted report) in the app's live
+  // checkout — never as a commit in a CoS-managed worktree. Two code-shipping
+  // criteria have to be switched off for them or every successful run is recorded
+  // as a failure: `openPR` (→ `pr-missing` at finalization, since there is no code
+  // to open a PR for) and `worktreeChangesExpected` (→ `idle-no-changes` at the TUI
+  // idle-complete gate, since a clean tree IS the success shape).
+  describe('non-committing coordinator posture', () => {
+    // Driven off NON_COMMITTING_COORDINATOR_TASK_TYPES — the same set that grants
+    // these types their commit-criterion exemption — rather than a hand-typed list,
+    // so a FUTURE coordinator type added there can't silently ship without the
+    // posture. That drift is exactly how `branch-cleanup` shipped with no
+    // taskMetadata at all, letting an app-level `defaultOpenPR: true` attach a
+    // worktree + PR expectation to a task that only runs `git branch -d`.
+    it.each([...NON_COMMITTING_COORDINATOR_TASK_TYPES])(
+      '%s declares no worktree/PR, expects a clean tree, and locks both flags',
+      (taskType) => {
+        const meta = DEFAULT_TASK_INTERVALS[taskType].taskMetadata
+        // Explicitly false, NOT merely absent — applyAppWorktreeDefault fills these
+        // from the app's defaults on an `=== undefined` check, so an absent key is
+        // the bug, not a pass.
+        expect(meta.openPR).toBe(false)
+        expect(meta.useWorktree).toBe(false)
+        expect(meta.worktreeChangesExpected).toBe(false)
+        // Locked, so a per-app override can't re-attach what the defaults cleared.
+        expect(MANAGED_AGENT_OPTIONS[taskType]).toEqual(['useWorktree', 'openPR'])
+      }
+    )
+
+    it('forces branch-cleanup useWorktree/openPR back off when stored true (loadSchedule)', async () => {
+      mockSchedule({
+        tasks: {
+          'branch-cleanup': {
+            type: 'cron',
+            enabled: true,
+            providerId: null,
+            model: null,
+            prompt: null,
+            taskMetadata: { useWorktree: true, openPR: true }
+          }
+        }
+      })
+
+      const schedule = await loadSchedule()
+      expect(schedule.tasks['branch-cleanup'].taskMetadata.useWorktree).toBe(false)
+      expect(schedule.tasks['branch-cleanup'].taskMetadata.openPR).toBe(false)
+      // Backfilled from the defaults for installs whose stored config predates it.
+      expect(schedule.tasks['branch-cleanup'].taskMetadata.worktreeChangesExpected).toBe(false)
+    })
+
+    it('strips a per-app branch-cleanup worktree/PR override', () => {
+      expect(stripManagedAgentOptionsFromOverride('branch-cleanup', { useWorktree: true, openPR: true })).toBeNull()
     })
   })
 
