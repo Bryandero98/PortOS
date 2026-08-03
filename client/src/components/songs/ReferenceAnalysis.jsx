@@ -381,7 +381,7 @@ function Waveform({ samples, durationMs, segments, playheadMs, onSeek }) {
     if (!interactive) return;
     const cur = Math.min(durationMs, Math.max(0, playheadMs ?? 0));
     const bigStep = e.shiftKey;
-    let next = null;
+    let next;
     switch (e.key) {
       case 'ArrowLeft':
       case 'ArrowDown':

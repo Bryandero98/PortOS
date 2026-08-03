@@ -79,8 +79,7 @@ const parseTrackEvents = (view, start, end) => {
       } else if (metaType === 0x03 && len.value > 0) {
         events.push({ tick, type: 'name', name: decodeText(view, dataPos, len.value) });
       } else if (metaType === 0x2f) {
-        pos = dataPos + len.value;
-        break; // End of Track
+        break; // End of Track — `pos` is not read after the loop, so don't bother advancing it
       }
       pos = dataPos + len.value;
       runningStatus = 0; // meta/sysex cancel running status

@@ -131,17 +131,15 @@ export function computeMemoryDistrict(graph, opts = {}) {
   // Fold the long tail of small categories into one "+N more" overflow cluster so the district
   // stays readable; its mass is the sum of what it absorbs.
   let clustersData = grouped;
-  let overflow = null;
   if (grouped.length > maxClusters) {
-    clustersData = grouped.slice(0, maxClusters - 1);
     const rest = grouped.slice(maxClusters - 1);
-    overflow = {
+    const overflow = {
       category: 'other',
       count: rest.reduce((s, c) => s + c.count, 0),
       importance: rest.reduce((s, c) => s + c.importance, 0),
       overflowOf: rest.length,
     };
-    clustersData = [...clustersData, overflow];
+    clustersData = [...grouped.slice(0, maxClusters - 1), overflow];
   }
 
   const total = clustersData.length;
