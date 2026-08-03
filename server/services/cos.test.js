@@ -34,7 +34,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { firstLine, isPerpetualRefillCandidate } from './cos.js';
+import { firstLine, isPerpetualRefillCandidate, perpetualRefillPlan } from './cos.js';
 import { canQueueImprovementTasks } from './cosState.js';
 import { createDequeueCapacity, isMissionTierEligible, isIdleTierEligible } from './cosDequeue.js';
 
@@ -1260,6 +1260,66 @@ describe('isPerpetualRefillCandidate — perpetual drain on completion', () => {
   });
 });
 
+// `perpetualRefillPlan` chooses which lane a completed perpetual run continues
+// in. The load-bearing case: a MANUAL "Run Now" drain (metadata.taskOnDemand)
+// must continue in the user-initiated on-demand lane — gated on the master
+// Improve flag, NOT canQueueImprovementTasks — so it keeps draining even when
+// CoS auto-run is off/dry-run or idle-review is off (the postures in which the
+// user reaches for "Run Now" and the manual run is allowed to START but the
+// auto-run-gated queue lane would otherwise stall the drain after one item).
+describe('perpetualRefillPlan — manual vs scheduled drain lane', () => {
+  const schedule = {
+    tasks: {
+      'claim-issue': { type: 'perpetual', enabled: true },
+      'claim-issue-disabled': { type: 'perpetual', enabled: false },
+      'plan-task': { type: 'daily', enabled: true },
+    },
+  };
+  const agent = (metadata) => ({ metadata });
+
+  it('routes a scheduled perpetual run to the auto-run-gated queue lane', () => {
+    expect(perpetualRefillPlan(agent({ taskAnalysisType: 'claim-issue' }), schedule))
+      .toEqual({ lane: 'queue' });
+  });
+
+  it('routes a MANUAL (on-demand) perpetual run to the on-demand lane, carrying type + app', () => {
+    expect(perpetualRefillPlan(
+      agent({ taskAnalysisType: 'claim-issue', taskOnDemand: true, taskApp: 'app-42' }),
+      schedule,
+    )).toEqual({ lane: 'onDemand', taskType: 'claim-issue', appId: 'app-42' });
+  });
+
+  it('a manual run with no app resolves appId to null (global on-demand re-issue)', () => {
+    expect(perpetualRefillPlan(
+      agent({ taskAnalysisType: 'claim-issue', taskOnDemand: true }),
+      schedule,
+    )).toEqual({ lane: 'onDemand', taskType: 'claim-issue', appId: null });
+  });
+
+  it('skips a non-candidate even when it is marked on-demand (disabled / non-perpetual / unknown)', () => {
+    expect(perpetualRefillPlan(agent({ taskAnalysisType: 'claim-issue-disabled', taskOnDemand: true }), schedule))
+      .toEqual({ lane: 'skip' });
+    expect(perpetualRefillPlan(agent({ taskAnalysisType: 'plan-task', taskOnDemand: true }), schedule))
+      .toEqual({ lane: 'skip' });
+    expect(perpetualRefillPlan(agent({ taskAnalysisType: 'ghost', taskOnDemand: true }), schedule))
+      .toEqual({ lane: 'skip' });
+  });
+
+  it('resolves the on-demand type from the analysisType / selfImprovementType fallbacks', () => {
+    expect(perpetualRefillPlan(agent({ analysisType: 'claim-issue', taskOnDemand: true }), schedule).lane)
+      .toBe('onDemand');
+    expect(perpetualRefillPlan(agent({ selfImprovementType: 'claim-issue', taskOnDemand: true }), schedule).lane)
+      .toBe('onDemand');
+  });
+
+  it('never throws on missing agent / metadata / schedule', () => {
+    expect(perpetualRefillPlan(null, schedule)).toEqual({ lane: 'skip' });
+    expect(perpetualRefillPlan(agent({}), schedule)).toEqual({ lane: 'skip' });
+    expect(perpetualRefillPlan(agent({ taskAnalysisType: 'claim-issue', taskOnDemand: true }), null))
+      .toEqual({ lane: 'skip' });
+  });
+});
+
 // Source-level guard: the agent:completed handler must wire the perpetual
 // refill so completion drains back-to-back instead of waiting for the hourly
 // improvement-check timer.
@@ -1283,10 +1343,60 @@ describe('cos.js source — agent:completed triggers perpetual refill', () => {
     // drain stalls. Pin the ignoreTaskId thread so a refactor can't reintroduce it.
     const fnIdx = COS_SRC.indexOf('async function refillPerpetualForCompletedAgent');
     expect(fnIdx, 'refillPerpetualForCompletedAgent must exist').toBeGreaterThan(-1);
-    const fnSlice = COS_SRC.slice(fnIdx, fnIdx + 2500);
+    const fnSlice = COS_SRC.slice(fnIdx, fnIdx + 3600);
     expect(
       /queueEligibleImprovementTasks\(\s*state\s*,\s*cosTaskData\s*,\s*\{\s*ignoreTaskId:\s*agent\?\.taskId\s*\}\s*\)/.test(fnSlice),
       'refill must forward { ignoreTaskId: agent?.taskId } to queueEligibleImprovementTasks'
+    ).toBe(true);
+  });
+
+  it('a MANUAL (on-demand) drain continues via triggerOnDemandTask under isImprovementEnabled, returning before the auto-run queue lane', () => {
+    // The bug fixed here: a "Run Now" perpetual drain is allowed to START in a
+    // posture where canQueueImprovementTasks is false (auto-run off/dry-run or
+    // idle-review off), but the scheduled queue lane refuses to continue it —
+    // stalling the drain after one item. The manual lane must instead re-issue an
+    // on-demand request (scoped to the same type+app) under the same
+    // isImprovementEnabled gate the manual trigger used, and RETURN before the
+    // queueEligibleImprovementTasks path. Assert the ordering rather than the
+    // absence of a keyword in a comment (fragile): Improve gate → re-issue →
+    // return → (only then) the queue lane.
+    const fnIdx = COS_SRC.indexOf('async function refillPerpetualForCompletedAgent');
+    const fnSlice = COS_SRC.slice(fnIdx, fnIdx + 3600);
+    expect(
+      fnSlice.includes('const plan = perpetualRefillPlan(agent, schedule)'),
+      'refill must resolve the lane via perpetualRefillPlan'
+    ).toBe(true);
+    expect(/plan\.lane === 'onDemand'/.test(fnSlice), 'refill must branch on the on-demand lane').toBe(true);
+
+    const improveGateIdx = fnSlice.indexOf('if (!isImprovementEnabled(state)) return;');
+    const triggerIdx = fnSlice.indexOf('triggerOnDemandTask(plan.taskType, plan.appId)');
+    const queueIdx = fnSlice.indexOf('queueEligibleImprovementTasks(state, cosTaskData');
+    expect(improveGateIdx, 'manual lane must gate on isImprovementEnabled').toBeGreaterThan(-1);
+    expect(triggerIdx, 'manual lane must re-issue via triggerOnDemandTask(plan.taskType, plan.appId)').toBeGreaterThan(-1);
+    expect(queueIdx, 'scheduled queue lane must still exist').toBeGreaterThan(-1);
+    // Improve gate precedes the re-issue; the manual lane returns before the queue lane.
+    expect(improveGateIdx).toBeLessThan(triggerIdx);
+    expect(triggerIdx).toBeLessThan(queueIdx);
+    const returnAfterTrigger = fnSlice.indexOf('return;', triggerIdx);
+    expect(returnAfterTrigger, 'manual lane must return before falling through to the queue lane').toBeGreaterThan(-1);
+    expect(returnAfterTrigger).toBeLessThan(queueIdx);
+  });
+
+  it('the on-demand spawn engine marks generated tasks on-demand and forwards ignoreTaskId to addTask', () => {
+    // For the manual continuation to be recognized on completion, the on-demand
+    // engine must stamp metadata.onDemand; and the completion-triggered re-issue
+    // must be dedup-safe against the still-in_progress completing task, so the
+    // engine's addTask must forward the dequeue's ignoreTaskId.
+    const engIdx = COS_SRC.indexOf('async function spawnDequeuePriority0OnDemand');
+    expect(engIdx, 'spawnDequeuePriority0OnDemand must exist').toBeGreaterThan(-1);
+    const engSlice = COS_SRC.slice(engIdx, engIdx + 5600);
+    expect(
+      /onDemand:\s*true/.test(engSlice),
+      'on-demand engine must stamp metadata.onDemand: true before addTask'
+    ).toBe(true);
+    expect(
+      /addTask\(\s*task\s*,\s*'internal'\s*,\s*\{\s*raw:\s*true\s*,\s*ignoreTaskId\s*\}\s*\)/.test(engSlice),
+      'on-demand engine must forward ignoreTaskId to addTask'
     ).toBe(true);
   });
 
@@ -1296,7 +1406,7 @@ describe('cos.js source — agent:completed triggers perpetual refill', () => {
     // sees the same issue as actionable). The refill must bail on a non-success
     // result and let task-retry/backoff + the recheck cadence handle failures.
     const fnIdx = COS_SRC.indexOf('async function refillPerpetualForCompletedAgent');
-    const fnSlice = COS_SRC.slice(fnIdx, fnIdx + 2500);
+    const fnSlice = COS_SRC.slice(fnIdx, fnIdx + 3600);
     expect(
       /if\s*\(\s*!agent\?\.result\?\.success\s*\)\s*return/.test(fnSlice),
       'refill must early-return when the completed agent did not succeed'

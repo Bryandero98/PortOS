@@ -780,6 +780,11 @@ async function spawnPriority0OnDemand(ctx) {
       }
 
       if (task && canSpawnTask(task)) {
+        // Mark this a MANUAL (on-demand) run so its perpetual drain continues in
+        // the on-demand lane (see perpetualRefillPlan in cos.js). BOTH on-demand
+        // engines must stamp it — either may drain a given request. Stamped before
+        // addTask so the blocked-revive branch inherits it via `task.metadata`.
+        task.metadata = { ...(task.metadata || {}), onDemand: true };
         const persisted = await addTask(task, 'internal', { raw: true });
         if (!persisted?.duplicate) {
           tasksToSpawn.push(task);
