@@ -1122,7 +1122,29 @@ describe('taskSchedule', () => {
         expect(meta.useWorktree).toBe(false)
         expect(meta.worktreeChangesExpected).toBe(false)
         // Locked, so a per-app override can't re-attach what the defaults cleared.
-        expect(MANAGED_AGENT_OPTIONS[taskType]).toEqual(['useWorktree', 'openPR'])
+        // worktreeChangesExpected is managed too — see MANAGED_AGENT_OPTIONS.
+        expect(MANAGED_AGENT_OPTIONS[taskType]).toEqual(['useWorktree', 'openPR', 'worktreeChangesExpected'])
+      }
+    )
+
+    // An explicit `taskMetadata: null` (accepted by PUT /api/cos/schedule as "clear
+    // it") makes loadSchedule SKIP the defaults deep-merge, so enforceManagedAgentOptions
+    // is the only thing that rebuilds the bag — and it rebuilds MANAGED fields only.
+    // Before worktreeChangesExpected was managed, it went absent here and a successful
+    // clean-tree run was scored `idle-no-changes` all over again.
+    it.each([...NON_COMMITTING_COORDINATOR_TASK_TYPES])(
+      '%s keeps the full posture when stored taskMetadata was cleared to null',
+      async (taskType) => {
+        mockSchedule({
+          tasks: {
+            [taskType]: { type: 'cron', enabled: true, providerId: null, model: null, prompt: null, taskMetadata: null }
+          }
+        })
+
+        const meta = (await loadSchedule()).tasks[taskType].taskMetadata
+        expect(meta.useWorktree).toBe(false)
+        expect(meta.openPR).toBe(false)
+        expect(meta.worktreeChangesExpected).toBe(false)
       }
     )
 

@@ -422,10 +422,20 @@ export const MANAGED_AGENT_OPTIONS = {
   // AND could trip cleanupAgentWorktree's auto-merge), and branch-cleanup's worktree
   // would hold refs it is trying to delete. Locking both off also keeps the
   // finalize-time PR-claim check from scoring a completed run `pr-missing`.
-  'branch-reconcile': ['useWorktree', 'openPR'],
-  'branch-cleanup': ['useWorktree', 'openPR'],
-  'issue-reconcile': ['useWorktree', 'openPR'],
-  'jira-status-report': ['useWorktree', 'openPR'],
+  //
+  // `worktreeChangesExpected` is managed for these four as well — the one type-keyed
+  // exception to it being a free per-app override. A clean tree is definitionally the
+  // success shape for a branch deletion or a posted report, so setting it back to
+  // `true` can only make successful runs fail; it is exactly as non-negotiable here as
+  // the other two. Managing it is also what carries it through an explicit
+  // `taskMetadata: null` clear — loadSchedule preserves that null (skipping the
+  // defaults deep-merge), and enforceManagedAgentOptions rebuilds only the MANAGED
+  // fields, so an unmanaged `worktreeChangesExpected` would silently go absent and the
+  // TUI idle-complete gate would fail the run as `idle-no-changes`.
+  ...Object.fromEntries(
+    ['branch-reconcile', 'branch-cleanup', 'issue-reconcile', 'jira-status-report']
+      .map((t) => [t, ['useWorktree', 'openPR', 'worktreeChangesExpected']])
+  ),
   // claim-issue's prompt creates its own claim/issue-<num> worktree (same
   // rationale as plan-task), so CoS must not pre-create one or open the PR.
   'claim-issue': ['useWorktree', 'openPR'],
