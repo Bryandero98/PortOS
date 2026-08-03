@@ -1253,10 +1253,12 @@ async function refillPerpetualForCompletedAgent(agent) {
   if (plan.lane === 'onDemand') {
     // Manual drain: gate on the master Improve flag (what the manual trigger
     // itself uses), NOT canQueueImprovementTasks, and re-issue an on-demand
-    // request. The completion handler's subsequent dequeueNextTask({ ignoreTaskId })
-    // processes it dedup-safely against the still-`in_progress` completing task.
+    // request. `emit: false` — the completion handler's subsequent
+    // dequeueNextTask({ ignoreTaskId }) drains the re-issue dedup-safely against
+    // the still-`in_progress` completing task; letting triggerOnDemandTask emit
+    // its event would fire a redundant SECOND dequeue of the same request.
     if (!isImprovementEnabled(state)) return;
-    await taskScheduleMod.triggerOnDemandTask(plan.taskType, plan.appId);
+    await taskScheduleMod.triggerOnDemandTask(plan.taskType, plan.appId, { emit: false });
     return;
   }
 

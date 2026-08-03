@@ -1369,10 +1369,10 @@ describe('cos.js source — agent:completed triggers perpetual refill', () => {
     expect(/plan\.lane === 'onDemand'/.test(fnSlice), 'refill must branch on the on-demand lane').toBe(true);
 
     const improveGateIdx = fnSlice.indexOf('if (!isImprovementEnabled(state)) return;');
-    const triggerIdx = fnSlice.indexOf('triggerOnDemandTask(plan.taskType, plan.appId)');
+    const triggerIdx = fnSlice.indexOf('triggerOnDemandTask(plan.taskType, plan.appId, { emit: false })');
     const queueIdx = fnSlice.indexOf('queueEligibleImprovementTasks(state, cosTaskData');
     expect(improveGateIdx, 'manual lane must gate on isImprovementEnabled').toBeGreaterThan(-1);
-    expect(triggerIdx, 'manual lane must re-issue via triggerOnDemandTask(plan.taskType, plan.appId)').toBeGreaterThan(-1);
+    expect(triggerIdx, 'manual lane must re-issue via triggerOnDemandTask(plan.taskType, plan.appId, { emit: false }) — emit:false avoids a redundant second dequeue').toBeGreaterThan(-1);
     expect(queueIdx, 'scheduled queue lane must still exist').toBeGreaterThan(-1);
     // Improve gate precedes the re-issue; the manual lane returns before the queue lane.
     expect(improveGateIdx).toBeLessThan(triggerIdx);

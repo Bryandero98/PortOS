@@ -1582,7 +1582,7 @@ export async function deleteTemplateTask(templateId) {
 // On-Demand Requests
 // ============================================================
 
-export async function triggerOnDemandTask(taskType, appId = null) {
+export async function triggerOnDemandTask(taskType, appId = null, { emit = true } = {}) {
   const schedule = await loadSchedule();
 
   // Cheap per-task-type check first; the master-flag check pays a state.json read.
@@ -1615,7 +1615,14 @@ export async function triggerOnDemandTask(taskType, appId = null) {
   await saveSchedule(schedule);
 
   emitLog('info', `On-demand task requested: ${taskType}`, { appId }, '📅 TaskSchedule');
-  cosEvents.emit('task:on-demand-requested', request);
+  // The event's only consumer is a `dequeueNextTask()` trigger (cos.js). Callers
+  // that already own their own dequeue (the perpetual drain-on-completion refill,
+  // which enqueues a re-issue and then drains it via its OWN
+  // dequeueNextTask({ ignoreTaskId })) pass `emit: false` to avoid a redundant
+  // SECOND dequeue of the same request — which would re-run recordExecution + the
+  // work-detector probe. The manual "Run Now" route keeps the default so its
+  // request is picked up promptly.
+  if (emit) cosEvents.emit('task:on-demand-requested', request);
 
   return request;
 }
