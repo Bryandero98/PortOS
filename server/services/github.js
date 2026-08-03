@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import { join } from 'path';
-import { atomicWrite, readJSONFile, PATHS, ensureDir } from '../lib/fileUtils.js';
+import { atomicWrite, readJSONFile, PATHS, ensureDir, safeJSONParse } from '../lib/fileUtils.js';
+import { withSpawnCwdEnv } from '../lib/spawnCwd.js';
 import { ServerError } from '../lib/errorHandler.js';
 import { getSettings, updateSettings } from './settings.js';
 
@@ -45,9 +46,14 @@ const DEFAULT_EXEC_GH_TIMEOUT_MS = 60000;
  * process. `timeoutMs` kills the child and rejects with a clear error; it's
  * cleared on normal exit so it never fires for a completed run.
  */
-export function execGh(args, timeoutMs = DEFAULT_EXEC_GH_TIMEOUT_MS) {
+export function execGh(args, timeoutMs = DEFAULT_EXEC_GH_TIMEOUT_MS, { cwd = null, env = null } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn('gh', args, { shell: false, windowsHide: true });
+    const baseEnv = env || process.env;
+    const child = spawn('gh', args, {
+      shell: false,
+      windowsHide: true,
+      ...(cwd ? { cwd, env: withSpawnCwdEnv(baseEnv, cwd) } : (env ? { env } : {}))
+    });
     let stdout = '';
     let stderr = '';
     let timedOut = false;
@@ -314,4 +320,223 @@ export async function getStatus() {
     reposWithSecrets: repos.filter(r => r.managedSecrets?.length > 0).length,
     secretCount: Object.keys(data.secrets).length
   };
+}
+
+// --- Forge (gh CLI) reachability -------------------------------------------
+//
+// Roughly thirty call sites across PortOS run `gh` and swallow the failure into
+// an empty result (`.catch(() => [])`). That collapses "the forge said there is
+// nothing" into "we could not ask the forge" — the exact conflation the root
+// CLAUDE.md's sentinel-and-validate rule exists to prevent. In practice it means
+// a `gh` that cannot reach api.github.com is indistinguishable from a quiet
+// repo: prWatcher sees no PRs, branchReconcile sees no branches, and an agent
+// told to open a PR reports success having opened nothing.
+//
+// This probe answers the question those call sites cannot: is `gh` actually
+// usable right now, and if not, which of the three failure modes is it? Callers
+// stay unchanged — the value is that the state is *reportable* (see the `forge`
+// block on GET /api/system/health/details) instead of silently absent.
+
+const GH_PROBE_TIMEOUT_MS = 10000;
+const GH_HEALTH_TTL_MS = 60000;
+
+// Matched against `gh`'s stderr. Auth is checked first: an unauthenticated `gh`
+// can still reach the network, and its message is the more actionable one.
+const GH_AUTH_MARKERS = [
+  'not logged in',
+  'authentication required',
+  'requires authentication',
+  'bad credentials',
+  'gh auth login',
+  'no such host: authentication'
+];
+
+// A blocked or broken transport. `bad file descriptor` belongs here because an
+// outbound-filtering firewall (Little Snitch and friends) denies the connect()
+// rather than refusing it, and Go surfaces that as EBADF — which reads like a
+// local bug unless it is named as a network failure.
+const GH_NETWORK_MARKERS = [
+  'dial tcp',
+  'bad file descriptor',
+  'no such host',
+  'connection refused',
+  'connection reset',
+  'network is unreachable',
+  'i/o timeout',
+  'timed out',
+  'tls handshake',
+  'certificate'
+];
+
+const includesAny = (haystack, needles) => needles.some(n => haystack.includes(n));
+
+/**
+ * Classify a `gh` probe result. Split out from the spawn so the mapping from
+ * failure text to status is testable without a network or a `gh` binary.
+ *
+ * @param {{ code?: number|null, stderr?: string, spawnError?: Error|null }} probe
+ * @returns {{ status: 'ok'|'not-installed'|'not-authenticated'|'unreachable'|'error', detail: string|null }}
+ */
+export function classifyGhProbe({ code = null, stderr = '', spawnError = null } = {}) {
+  if (spawnError) {
+    // ENOENT is the only spawn error that reliably means "no binary on PATH";
+    // anything else (EACCES, EPERM) is a real local fault worth reporting as-is.
+    const status = spawnError.code === 'ENOENT' ? 'not-installed' : 'error';
+    return { status, detail: spawnError.message || String(spawnError) };
+  }
+  if (code === 0) return { status: 'ok', detail: null };
+
+  const text = String(stderr || '').trim();
+  const lower = text.toLowerCase();
+  if (includesAny(lower, GH_AUTH_MARKERS)) return { status: 'not-authenticated', detail: text || null };
+  if (includesAny(lower, GH_NETWORK_MARKERS)) return { status: 'unreachable', detail: text || null };
+  return { status: 'error', detail: text || `gh exited with code ${code}` };
+}
+
+/**
+ * Human-readable remedy for a given probe status. Kept beside the classifier so
+ * the message and the state it describes cannot drift apart.
+ */
+export function ghRemedy(status) {
+  switch (status) {
+    case 'not-installed':
+      return 'Install the GitHub CLI (brew install gh) to let PortOS read pull requests and issues.';
+    case 'not-authenticated':
+      return 'Run `gh auth login` — PortOS can reach GitHub but has no usable credential.';
+    case 'unreachable':
+      return 'gh cannot open an outbound connection. If an outbound firewall (e.g. Little Snitch) is installed, allow the gh binary to reach api.github.com — a denied connect surfaces as "bad file descriptor".';
+    case 'error':
+      return 'gh failed for an unrecognised reason — run `gh api rate_limit` in a terminal to see the full output.';
+    default:
+      return null;
+  }
+}
+
+// Keyed by hostname (`''` = gh's default host). An operator commonly has a
+// working github.com credential and a broken enterprise one (or the reverse), so
+// one process-wide verdict would report the wrong forge's health — the same
+// host-keying prWatcher's self-login cache already needs.
+const ghHealthCache = new Map();
+
+function probeGh(timeoutMs, hostname) {
+  return new Promise((resolve) => {
+    // `rate_limit` is authenticated, cheap, and — unlike every other endpoint —
+    // does not itself consume quota, so polling this probe is free.
+    // `--hostname` is required for an enterprise host: without it `gh api`
+    // targets github.com regardless of cwd, so an enterprise repo would be
+    // gated on a host it never talks to.
+    const args = hostname ? ['api', 'rate_limit', '--hostname', hostname] : ['api', 'rate_limit'];
+    const child = spawn('gh', args, { shell: false, windowsHide: true });
+    let stderr = '';
+    let settled = false;
+    const done = (result) => { if (!settled) { settled = true; clearTimeout(timer); resolve(result); } };
+    const timer = setTimeout(() => {
+      // setTimeout callback boundary — a kill() throw here would be uncaught.
+      try { child.kill('SIGKILL'); } catch (err) { console.error(`❌ gh health probe: failed to kill child: ${err.message}`); }
+      done({ code: null, stderr: `gh api rate_limit timed out after ${timeoutMs}ms`, spawnError: null });
+    }, timeoutMs);
+    child.stderr.on('data', (d) => { stderr += d.toString(); });
+    child.on('error', (err) => done({ code: null, stderr, spawnError: err }));
+    child.on('close', (code) => done({ code, stderr, spawnError: null }));
+  });
+}
+
+/**
+ * Probe whether `gh` can actually talk to the forge right now.
+ *
+ * Result is cached per host for a minute — /api/system/health/details is polled,
+ * and the probe spawns a process. Pass `{ force: true }` to bypass the cache.
+ *
+ * @param {{ force?: boolean, timeoutMs?: number, hostname?: string|null }} [opts]
+ *   `hostname` targets a specific forge host (a GitHub Enterprise install);
+ *   omitted means gh's default host.
+ * @returns {Promise<{ status: string, ok: boolean, detail: string|null, remedy: string|null, checkedAt: string }>}
+ */
+export async function checkGhHealth({ force = false, timeoutMs = GH_PROBE_TIMEOUT_MS, hostname = null } = {}) {
+  const now = Date.now();
+  const key = hostname || '';
+  const cached = ghHealthCache.get(key);
+  if (!force && cached && (now - cached.at) < GH_HEALTH_TTL_MS) return cached.health;
+
+  const { status, detail } = classifyGhProbe(await probeGh(timeoutMs, hostname));
+  const health = {
+    status,
+    ok: status === 'ok',
+    detail,
+    remedy: ghRemedy(status),
+    checkedAt: new Date(now).toISOString()
+  };
+  ghHealthCache.set(key, { health, at: now });
+  return health;
+}
+
+/** Test seam — drops the memoized probe results. */
+export function __resetGhHealthCache() {
+  ghHealthCache.clear();
+}
+
+/**
+ * Gate for a forge-dependent scheduled job (#3358). Runs the probe and, when the
+ * forge is NOT usable, emits ONE single-line error naming the job and the probe
+ * status — then the caller skips the cycle instead of executing against a forge
+ * it cannot read and concluding "everything is quiet".
+ *
+ * A probe that itself blows up is reported as `error` rather than silently
+ * passing: "we could not even ask whether we can ask" is still not `ok`.
+ *
+ * @param {string} label - job name for the log line (e.g. 'pr-watcher')
+ * @param {{ hostname?: string|null }} [opts] - the forge host this job actually
+ *   talks to. Pass it whenever the caller knows the repo's host: a bare probe
+ *   hits github.com, so an enterprise job would otherwise be gated on the health
+ *   of a host it never contacts (and vice versa).
+ * @returns {Promise<{ ok: boolean, status: string, detail: string|null, remedy: string|null }>}
+ */
+export async function ensureForgeReachable(label, { hostname = null } = {}) {
+  const health = await checkGhHealth({ hostname }).catch(err => ({
+    status: 'error', ok: false, detail: err.message, remedy: ghRemedy('error')
+  }));
+  if (health.ok) return health;
+  const detail = health.detail ? ` — ${String(health.detail).split('\n')[0].slice(0, 160)}` : '';
+  const where = hostname ? ` on ${hostname}` : '';
+  console.error(`❌ ${label}: skipping this cycle, gh is ${health.status}${where}${detail}`);
+  return health;
+}
+
+/**
+ * Does a pull request exist for `branch`? Three answers, never collapsed to two
+ * (#3358): `found` (the forge has one), `none` (the forge answered and has
+ * none), `unavailable` (we could not ask). A caller must never read
+ * `unavailable` as `none` — that is how a run that opened no PR gets recorded as
+ * a success while `gh` is firewalled.
+ *
+ * `--state all` deliberately: a PR that was opened and then closed still proves
+ * the agent DID reach the forge, which is the question being asked.
+ *
+ * @param {string} branch - head branch name
+ * @param {{ cwd?: string, env?: object|null }} [opts] - repo dir gh resolves the
+ *   remote from, and the env overlay to run under. Pass the `env` from
+ *   `resolveForgeForRepo` so the lookup authenticates as the SAME repo-owner-
+ *   pinned account that opened the PR — on a multi-login host the ambient
+ *   account may not even see it, which would read as "no PR".
+ * @returns {Promise<{ status: 'found'|'none'|'unavailable', number: number|null, url: string|null, detail: string|null }>}
+ */
+export async function findPullRequestForBranch(branch, { cwd = null, env = null } = {}) {
+  if (!branch) return { status: 'unavailable', number: null, url: null, detail: 'no branch name' };
+  const raw = await execGh(
+    ['pr', 'list', '--head', branch, '--state', 'all', '--limit', '1', '--json', 'number,url,state'],
+    DEFAULT_EXEC_GH_TIMEOUT_MS,
+    { cwd, env }
+  ).catch(err => err);
+  if (raw instanceof Error) {
+    return { status: 'unavailable', number: null, url: null, detail: raw.message };
+  }
+  const parsed = safeJSONParse(raw, null);
+  // A zero-exit gh that emitted nothing parseable told us nothing — that is
+  // "could not ask", not "no PR".
+  if (!Array.isArray(parsed)) {
+    return { status: 'unavailable', number: null, url: null, detail: 'gh returned unparseable output' };
+  }
+  const pr = parsed[0];
+  if (!pr) return { status: 'none', number: null, url: null, detail: null };
+  return { status: 'found', number: pr.number ?? null, url: pr.url || null, detail: pr.state || null };
 }

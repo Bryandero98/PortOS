@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import useMounted from './useMounted';
 import toast from '../components/ui/Toast';
 import {
   addUniverseStyleReference,
@@ -27,6 +28,11 @@ import {
   humanizeCategory,
   normalizeCategoryKey,
 } from '../lib/universeBuilderShared';
+
+// Distinguishes "this request failed" from "this request returned nothing". A unique
+// object is used rather than null/undefined so it can never collide with a legitimate
+// empty payload from any of the endpoints refresh() fans out to.
+const FETCH_FAILED = Symbol('fetch-failed');
 
 export const createEmptyUniverseDraft = () => ({
   name: '',
@@ -86,7 +92,7 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
   const [newCategoryName, setNewCategoryName] = useState('');
   const [canonDirty, setCanonDirty] = useState(false);
 
-  const mountedRef = useRef(true);
+  const mountedRef = useMounted();
   const draftRef = useRef(null);
   const savedDraftSnapshotRef = useRef(universeDraftSnapshot(createEmptyUniverseDraft()));
   const savedStyleSnapshotRef = useRef(ensureInfluences(createEmptyUniverseDraft().influences));
@@ -134,7 +140,6 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
     lastSeenUpdatedAtRef.current.set(id, updatedAt);
   }, []);
 
-  useEffect(() => () => { mountedRef.current = false; }, []);
   useEffect(() => { draftRef.current = draft; }, [draft]);
 
   const clearPendingCanonAdditions = useCallback(() => {
@@ -164,23 +169,35 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
 
   const refresh = async () => {
     setLoading(true);
+    // FETCH_FAILED is a sentinel, not a value: it keeps "the request failed" distinct
+    // from "the request succeeded and the answer is empty". Collapsing both to `[]`/`{}`
+    // is what made a transient blip look identical to an unconfigured install — and, for
+    // settings, silently rewrote the user's saved image-gen mode (see below).
     const [list, providerData, models, loras, settings] = await Promise.all([
-      listUniverses().catch(() => []),
-      getProviders().catch(() => ({ providers: [] })),
-      listImageModels().catch(() => []),
-      listLorasFull().catch(() => []),
-      getSettings().catch(() => ({})),
+      listUniverses().catch(() => FETCH_FAILED),
+      getProviders().catch(() => FETCH_FAILED),
+      listImageModels().catch(() => FETCH_FAILED),
+      listLorasFull().catch(() => FETCH_FAILED),
+      getSettings().catch(() => FETCH_FAILED),
     ]);
-    setWorlds(list);
-    setProviders(providerData.providers || []);
-    setActiveProviderId(providerData.activeProvider || null);
-    setImageModels(models || []);
-    setAvailableLoras(Array.isArray(loras) ? loras : []);
-    const backends = deriveAvailableBackends(settings, { excludeExternal: true });
-    setAvailableBackends(backends);
-    const saved = settings?.imageGen?.mode;
-    setDefaultMode(backends.find((backend) => backend.id === saved)?.id || backends[0]?.id || IMAGE_GEN_MODE.LOCAL);
-    setImageCfg(readPipelineImageSettings(settings));
+    if (list !== FETCH_FAILED) setWorlds(list);
+    if (providerData !== FETCH_FAILED) {
+      setProviders(providerData.providers || []);
+      setActiveProviderId(providerData.activeProvider || null);
+    }
+    if (models !== FETCH_FAILED) setImageModels(models || []);
+    if (loras !== FETCH_FAILED) setAvailableLoras(Array.isArray(loras) ? loras : []);
+    // Deriving the backend list / default mode / image config from a `{}` stand-in on a
+    // failed settings read reset the picker to IMAGE_GEN_MODE.LOCAL and the pipeline
+    // image config to defaults — overwriting the user's real configuration because a
+    // request happened to fail. Leave all three at their last-known-good values instead.
+    if (settings !== FETCH_FAILED) {
+      const backends = deriveAvailableBackends(settings, { excludeExternal: true });
+      setAvailableBackends(backends);
+      const saved = settings?.imageGen?.mode;
+      setDefaultMode(backends.find((backend) => backend.id === saved)?.id || backends[0]?.id || IMAGE_GEN_MODE.LOCAL);
+      setImageCfg(readPipelineImageSettings(settings));
+    }
     setLoading(false);
   };
 
@@ -452,20 +469,48 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
     });
   }, [canonDirty]);
 
+  // Serializes lock PATCHes, PER UNIVERSE. The server replaces the stored
+  // `locked` map wholesale on every arrival, so ORDER is load-bearing: two
+  // toggles fired back-to-back that land reversed persist the older map,
+  // leaving a field locked on disk while the UI shows it unlocked. Chaining
+  // them means the second is not even sent until the first settles. The
+  // style-reference mutators need no such tail — they send deltas the server
+  // applies in any order (#3109) — which is exactly the difference that makes
+  // one necessary here.
+  //
+  // Keyed by id rather than held as one tail for the hook, because a request
+  // has no timeout: a stalled write for the universe the user just left would
+  // otherwise block every lock on the one they navigated to, indefinitely and
+  // silently (the draft still updates optimistically, so nothing surfaces it).
+  const lockWriteTailsRef = useRef(new Map());
+
   const toggleLock = useCallback((field) => {
     if (!WORLD_LOCKABLE_FIELDS.includes(field)) return;
-    setDraft((current) => {
-      const nextLocked = { ...(current.locked || {}) };
-      if (nextLocked[field]) delete nextLocked[field];
-      else nextLocked[field] = true;
-      const next = { ...current, locked: nextLocked };
-      if (selectedId && next.name?.trim()) {
-        updateUniverse(selectedId, { locked: nextLocked }, { silent: true })
-          .catch((error) => toast.error(`Lock save failed: ${error.message}`));
-      }
-      return next;
-    });
-  }, [selectedId]);
+    // The next lock map is derived from the freshest draft OUTSIDE the state
+    // updater, and the PATCH fires from here rather than from inside it. A
+    // state updater must be pure: React is free to invoke it more than once
+    // for a single setState (StrictMode double-invocation, an interrupted
+    // concurrent render), and a request issued from within one is sent once
+    // per invocation — one lock click produced two identical PATCHes. Mirrors
+    // setRenderPin / assignBucketKind, which already patch outside the updater.
+    const current = draftRef.current || draft;
+    const nextLocked = { ...(current.locked || {}) };
+    if (nextLocked[field]) delete nextLocked[field];
+    else nextLocked[field] = true;
+    // Advance the mirror synchronously. The effect that syncs `draftRef` runs a
+    // commit later, so two toggles inside one tick would otherwise both read the
+    // pre-toggle map — the second re-sending the first's write instead of
+    // composing on top of it. The functional updater still owns the draft
+    // itself, so a concurrent edit to another field is not clobbered.
+    draftRef.current = { ...current, locked: nextLocked };
+    setDraft((value) => ({ ...value, locked: nextLocked }));
+    if (selectedId && current.name?.trim()) {
+      const tail = lockWriteTailsRef.current.get(selectedId) || Promise.resolve();
+      lockWriteTailsRef.current.set(selectedId, tail
+        .then(() => updateUniverse(selectedId, { locked: nextLocked }, { silent: true }))
+        .catch((error) => toast.error(`Lock save failed: ${error.message}`)));
+    }
+  }, [draft, selectedId]);
 
   // Per-record render pin (#3231 Phase 3) — this universe's default image
   // backend + cloud model. Mirrors toggleLock: reactive local update plus an
@@ -585,6 +630,9 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
     providerLabel,
     providerModels,
     providers,
+    // Exposed so a consumer can retry the catalog/settings load after a failed
+    // refresh instead of forcing a full page reload.
+    refresh,
     persistStyleReference,
     removeCategory,
     removeStyleReference,

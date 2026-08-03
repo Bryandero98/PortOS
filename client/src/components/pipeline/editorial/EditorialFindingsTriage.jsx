@@ -14,7 +14,7 @@
  * bar bulk-accepts the selected findings that have an applicable fix and/or
  * bulk-dismisses the selection — each result reactively updates local state.
  */
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router';
 import { ChevronDown, ChevronRight, ExternalLink, History, Check, X, Loader2, GitCompareArrows, Search, Ban, Undo2, Info, Play, ArrowRight, CheckCircle2, RefreshCw, Users, MapPin, Package } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import CheckKindBadge from './CheckKindBadge';

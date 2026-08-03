@@ -1,11 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter } from 'react-router';
 
 import { CategoryEditor, TrunkView, OtherTab, UniverseSelector } from './UniverseBuilder';
 
-// MemoryRouter wrapper — UniverseBuilder.jsx imports react-router-dom hooks at
+// MemoryRouter wrapper — UniverseBuilder.jsx imports react-router hooks at
 // module scope, so the test harness needs a router context even when the
 // extracted component doesn't read URL state itself.
 const renderWithRouter = (ui) => render(<MemoryRouter>{ui}</MemoryRouter>);

@@ -1,21 +1,31 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter } from 'react-router';
 
 // Mock the API surface the launcher touches on mount (providers + review reps +
 // recommendations) so the render tests are deterministic and offline.
+//
+// getProviders MUST resolve the real wire shape — `{ activeProvider, providers }`,
+// not a bare array. This mock used to return `[]`, which made the suite pass
+// whether or not the component unwrapped the response, so it stayed green while
+// the launcher threw on every mount in the real app. Mirror the server contract
+// here or this file proves nothing about provider handling.
 vi.mock('../../../services/api', () => ({
-  getProviders: vi.fn().mockResolvedValue([]),
+  getProviders: vi.fn().mockResolvedValue({
+    activeProvider: 'openai',
+    providers: [{ id: 'openai', name: 'OpenAI', type: 'api', enabled: true, defaultModel: 'gpt-4' }],
+  }),
   getPostReviewReps: vi.fn().mockResolvedValue({ reps: [] }),
   getPostRecommendations: vi.fn().mockResolvedValue({ recommendations: [] }),
   getMorseProgress: vi.fn().mockResolvedValue({ settings: { wpm: 18, farnsworthWpm: 12 } }),
   getPostProgress: vi.fn().mockResolvedValue({ series: { byDay: [] } }),
+  getMemoryItems: vi.fn().mockResolvedValue([{ id: 'example-memory' }]),
   // useUserTimezone (via the today day key) reads getSettings; pin to UTC.
   getSettings: vi.fn().mockResolvedValue({ timezone: 'UTC' }),
 }));
 
 import PostSessionLauncher, { buildCleanTags, cognitiveSummary, interleaveByDomain } from './PostSessionLauncher';
-import { getPostRecommendations, getMorseProgress, getPostProgress, getPostReviewReps } from '../../../services/api';
+import { getPostRecommendations, getMorseProgress, getPostProgress, getPostReviewReps, getMemoryItems } from '../../../services/api';
 
 // Pure-function tests for PostSessionLauncher's pre-submit helpers (issue
 // #2102 gap #10). Both were lifted from component-body closures to module
@@ -193,6 +203,43 @@ describe('PostSessionLauncher render (issue #2100)', () => {
     expect(drills.map(d => d.type)).toEqual(['multiplication']);
   });
 
+  it('auto-starts the requested recommendation when continuing a daily routine', async () => {
+    const onStart = vi.fn();
+    const onAutoStartConsumed = vi.fn();
+    getPostRecommendations.mockResolvedValue({ recommendations: [
+      { id: 'weak-skill:mm', kind: 'weak-skill', title: 'Shore up Multiplication', detail: 'x', deepLink: '/post/launcher', drillType: 'multiplication', priority: 0 },
+    ] });
+
+    renderLauncher({
+      onStart,
+      autoStartRecommendationId: 'weak-skill:mm',
+      onAutoStartConsumed,
+      onNavigate: vi.fn(),
+    });
+
+    await waitFor(() => expect(onStart).toHaveBeenCalledTimes(1));
+    expect(onStart.mock.calls[0][0].map(d => d.type)).toEqual(['multiplication']);
+    expect(onAutoStartConsumed).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not auto-start a different lesson when the requested recommendation is stale', async () => {
+    const onStart = vi.fn();
+    const onAutoStartConsumed = vi.fn();
+    getPostRecommendations.mockResolvedValue({ recommendations: [
+      { id: 'weak-skill:mm', kind: 'weak-skill', title: 'Shore up Multiplication', detail: 'x', deepLink: '/post/launcher', drillType: 'multiplication', priority: 0 },
+    ] });
+
+    renderLauncher({
+      onStart,
+      autoStartRecommendationId: 'stale:missing',
+      onAutoStartConsumed,
+      onNavigate: vi.fn(),
+    });
+
+    await waitFor(() => expect(onAutoStartConsumed).toHaveBeenCalledTimes(1));
+    expect(onStart).not.toHaveBeenCalled();
+  });
+
   it('launches a review rep (with markers) for a skill-review recommendation', async () => {
     const onStart = vi.fn();
     getPostReviewReps.mockResolvedValue({ reps: [
@@ -288,5 +335,497 @@ describe('PostSessionLauncher render (issue #2100)', () => {
     const drills = onStart.mock.calls[0][0];
     expect(drills.some(d => d.type === 'wit-comeback')).toBe(false);
     expect(drills.some(d => d.type === 'multiplication')).toBe(true);
+  });
+
+  // Regression: the launcher read getProviders()'s `{ activeProvider, providers }`
+  // response as if it were a bare array, so the filter threw on mount, the list
+  // stayed empty, and the Wit & Memory panel never rendered its provider hint.
+  // Assert the hint appears purely from a loaded provider list (no pinned
+  // llmProviderId) — that only happens when the response is unwrapped.
+  it('shows the Wit & Memory provider hint once the provider list loads', async () => {
+    renderLauncher({
+      config: {
+        ...baseConfig,
+        sessionModules: ['mental-math', 'llm-drills'],
+        llmDrills: { enabled: true, drillTypes: { 'wit-comeback': { enabled: true, count: 3 } } },
+      },
+    });
+    expect(await screen.findByText('system default')).toBeInTheDocument();
+  });
+});
+
+// The launcher is the entry point to a DAILY habit, so the actions that start a
+// session must be the first thing on the page — they used to sit under Today's
+// Status, Goals, Up next, the analytics block, the mode toggle and the
+// Conditions form, i.e. below the fold on a laptop (issue #3249).
+describe('PostSessionLauncher — Start card (issue #3249)', () => {
+  const baseConfig = {
+    mentalMath: { enabled: true, drillTypes: {
+      multiplication: { enabled: true, count: 10, timeLimitSec: 120 },
+      powers: { enabled: true, count: 10, timeLimitSec: 120 },
+    } },
+    llmDrills: { enabled: false, drillTypes: {} },
+    cognitive: { enabled: true, drillTypes: { 'n-back': { enabled: true, n: 2 } } },
+    goals: { streakTarget: 10 },
+  };
+  const stats = { sessionCount: 3, overall: 70, currentStreak: 4, longestStreak: 8, byDrill: { 'mental-math:multiplication': 70 } };
+
+  const renderLauncher = (props = {}) => render(
+    <MemoryRouter>
+      <PostSessionLauncher
+        config={baseConfig}
+        recentSessions={[]}
+        stats={stats}
+        statsWeek={{ sessionCount: 2 }}
+        onStart={vi.fn()}
+        onViewHistory={vi.fn()}
+        onViewConfig={vi.fn()}
+        onViewMemory={vi.fn()}
+        onViewMorse={vi.fn()}
+        {...props}
+      />
+    </MemoryRouter>,
+  );
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getPostRecommendations.mockResolvedValue({ recommendations: [] });
+    getPostReviewReps.mockResolvedValue({ reps: [] });
+    getMorseProgress.mockResolvedValue({ settings: { wpm: 18, farnsworthWpm: 12 } });
+    getPostProgress.mockResolvedValue({ series: { byDay: [] } });
+  });
+
+  it('puts the session starts ahead of status, goals, Up next and the analytics block', async () => {
+    getPostRecommendations.mockResolvedValue({ recommendations: [
+      { id: 'default:full-post', kind: 'default', title: 'Keep your streak going', detail: 'No gaps', deepLink: '/post/launcher', priority: 0 },
+    ] });
+    const { container } = renderLauncher();
+    await waitFor(() => expect(screen.getByText('Up next')).toBeTruthy());
+
+    // Compare document order: the Full POST button must precede every panel it
+    // used to sit below. Node.compareDocumentPosition returns FOLLOWING (4) when
+    // the argument comes after the reference node.
+    const start = screen.getByText('Full POST');
+    for (const label of ["Today's Status", 'Goals', 'Up next', 'Session Mode'].filter(Boolean)) {
+      const el = screen.queryByText(label);
+      if (!el) continue;
+      expect(start.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    expect(container).toBeTruthy();
+  });
+
+  it('leads with a CTA that dispatches the top recommendation', async () => {
+    const onStart = vi.fn();
+    getPostRecommendations.mockResolvedValue({ recommendations: [
+      { id: 'weak-skill:mental-math:powers', kind: 'weak-skill', title: 'Shore up Powers', detail: '40% accuracy', deepLink: '/post/launcher', drillType: 'powers', priority: 0 },
+    ] });
+    renderLauncher({ onStart });
+    await waitFor(() => expect(screen.getByText('Start: Shore up Powers')).toBeTruthy());
+
+    fireEvent.click(screen.getByText('Start: Shore up Powers'));
+    expect(onStart).toHaveBeenCalledTimes(1);
+    // The EXACT recommended drill, not its whole domain.
+    const drills = onStart.mock.calls[0][0];
+    expect(drills).toHaveLength(1);
+    expect(drills[0].type).toBe('powers');
+  });
+
+  it('renders the CTA as a link for a routed recommendation', async () => {
+    getPostRecommendations.mockResolvedValue({ recommendations: [
+      { id: 'memory-due:raven', kind: 'memory-due', title: 'Review "The Raven"', detail: 'Due', deepLink: '/post/memory/raven/spaced', priority: 0 },
+    ] });
+    const { container } = renderLauncher();
+    await waitFor(() => expect(screen.getByText('Start: Review "The Raven"')).toBeTruthy());
+    // One click from the launcher into the drill itself — not the item list.
+    expect(container.querySelectorAll('a[href="/post/memory/raven/spaced"]')).toHaveLength(2);
+  });
+
+  it('falls back to a Full POST CTA when no recommendation loaded', async () => {
+    const onStart = vi.fn();
+    getPostRecommendations.mockResolvedValue({ recommendations: [] });
+    renderLauncher({ onStart });
+    await waitFor(() => expect(screen.getByText('Start: Full POST')).toBeTruthy());
+    fireEvent.click(screen.getByText('Start: Full POST'));
+    expect(onStart).toHaveBeenCalledTimes(1);
+    expect(onStart.mock.calls[0][0].length).toBeGreaterThan(1);
+  });
+
+  it('collapses Conditions by default and keeps typed values when re-collapsed', async () => {
+    renderLauncher();
+    await waitFor(() => expect(screen.getByText(/Conditions \(optional\)/)).toBeTruthy());
+    // Collapsed: no inputs rendered.
+    expect(screen.queryByPlaceholderText('good/poor')).toBeNull();
+
+    const toggle = screen.getByText(/Conditions \(optional\)/).closest('button');
+    fireEvent.click(toggle);
+    const sleep = screen.getByPlaceholderText('good/poor');
+    fireEvent.change(sleep, { target: { value: 'poor' } });
+
+    // Re-collapse, then re-expand — the value survives (state lives above it).
+    fireEvent.click(toggle);
+    expect(screen.queryByPlaceholderText('good/poor')).toBeNull();
+    expect(screen.getByText('· 1 set')).toBeTruthy();
+    fireEvent.click(toggle);
+    expect(screen.getByPlaceholderText('good/poor').value).toBe('poor');
+  });
+});
+
+// Practice-topic gating (issue #3252). The four fine-grained domains that
+// collapse into the single `llm-drills` module could not be separated by the
+// coarse sessionModules filter — "Wordplay only" meant unchecking eight drill
+// types by hand. A topic toggle now does it in one move.
+describe('PostSessionLauncher topic gating (issue #3252)', () => {
+  const llmConfig = (topics) => ({
+    mentalMath: { enabled: true, drillTypes: {} },
+    llmDrills: {
+      enabled: true,
+      drillTypes: {
+        'pun-wordplay': { enabled: true, count: 5 },
+        'bridge-word': { enabled: true, count: 5 },
+        'wit-comeback': { enabled: true, count: 5 },
+        'what-if': { enabled: true, count: 5 },
+      },
+    },
+    cognitive: { enabled: false, drillTypes: {} },
+    sessionModules: ['llm-drills'],
+    ...(topics ? { topics } : {}),
+  });
+
+  const renderWith = (config, onStart) => render(
+    <MemoryRouter>
+      <PostSessionLauncher
+        config={config}
+        recentSessions={[]}
+        stats={{ sessionCount: 1, overall: 70, currentStreak: 1, longestStreak: 1, byDrill: {} }}
+        statsWeek={{ sessionCount: 1 }}
+        onStart={onStart}
+        onViewHistory={vi.fn()}
+        onViewConfig={vi.fn()}
+        onViewMemory={vi.fn()}
+        onViewMorse={vi.fn()}
+      />
+    </MemoryRouter>,
+  );
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getPostRecommendations.mockResolvedValue({ recommendations: [] });
+    getPostReviewReps.mockResolvedValue({ reps: [] });
+    getMorseProgress.mockResolvedValue({ settings: { wpm: 18, farnsworthWpm: 12 } });
+    getPostProgress.mockResolvedValue({ series: { byDay: [] } });
+  });
+
+  it('composes every llm-drills topic when no topics key is set (legacy config)', async () => {
+    const onStart = vi.fn();
+    renderWith(llmConfig(null), onStart);
+    await waitFor(() => expect(screen.getByText('Full POST')).toBeTruthy());
+    fireEvent.click(screen.getByText('Full POST'));
+
+    const types = onStart.mock.calls[0][0].map(d => d.type).sort();
+    expect(types).toEqual(['bridge-word', 'pun-wordplay', 'what-if', 'wit-comeback']);
+  });
+
+  it('composes ONLY wordplay drills when the sibling llm topics are switched off', async () => {
+    const onStart = vi.fn();
+    renderWith(llmConfig({ verbal: { enabled: false }, imagination: { enabled: false } }), onStart);
+    await waitFor(() => expect(screen.getByText('Full POST')).toBeTruthy());
+    fireEvent.click(screen.getByText('Full POST'));
+
+    const types = onStart.mock.calls[0][0].map(d => d.type).sort();
+    expect(types).toEqual(['bridge-word', 'pun-wordplay']);
+  });
+
+  it('a disabled topic is excluded from Quick sessions too, not just Full POST', async () => {
+    const onStart = vi.fn();
+    // The Quick button only renders with ≥2 composable domains, so keep math in
+    // alongside wordplay while verbal/imagination are switched off.
+    renderWith({
+      ...llmConfig({ verbal: { enabled: false }, imagination: { enabled: false } }),
+      mentalMath: { enabled: true, drillTypes: { multiplication: { enabled: true, count: 10 } } },
+      sessionModules: ['mental-math', 'llm-drills'],
+    }, onStart);
+    // The label interpolates the domain count, so it spans multiple text nodes
+    // — query the button by accessible name, not by a text node.
+    const quick = await screen.findByRole('button', { name: /Quick 5 Min/ });
+    fireEvent.click(quick);
+
+    for (const drill of onStart.mock.calls[0][0]) {
+      expect(['pun-wordplay', 'bridge-word', 'multiplication']).toContain(drill.type);
+    }
+    // Quick picks one drill per domain — math and wordplay only, never the two
+    // switched-off llm topics.
+    expect(onStart.mock.calls[0][0].map(d => d.domain).sort()).toEqual(['math', 'wordplay']);
+  });
+});
+
+// Maintenance review reps are drills too. The topic gate has to reach them, or
+// switching Cognitive off still mixed an n-back rep into a Quick session (and
+// the launcher still advertised it) — contradicting the gate's own promise.
+describe('PostSessionLauncher review-rep topic gating (issue #3252)', () => {
+  const twoDomainConfig = (topics) => ({
+    mentalMath: { enabled: true, drillTypes: { multiplication: { enabled: true, count: 10 } } },
+    llmDrills: { enabled: true, drillTypes: { 'pun-wordplay': { enabled: true, count: 5 } } },
+    cognitive: { enabled: true, drillTypes: { 'n-back': { enabled: true } } },
+    sessionModules: ['mental-math', 'llm-drills', 'cognitive'],
+    ...(topics ? { topics } : {}),
+  });
+
+  const renderWith = (config, onStart) => render(
+    <MemoryRouter>
+      <PostSessionLauncher
+        config={config}
+        recentSessions={[]}
+        stats={{ sessionCount: 1, overall: 70, currentStreak: 1, longestStreak: 1, byDrill: {} }}
+        statsWeek={{ sessionCount: 1 }}
+        onStart={onStart}
+        onViewHistory={vi.fn()}
+        onViewConfig={vi.fn()}
+        onViewMemory={vi.fn()}
+        onViewMorse={vi.fn()}
+      />
+    </MemoryRouter>,
+  );
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getPostRecommendations.mockResolvedValue({ recommendations: [] });
+    getPostReviewReps.mockResolvedValue({ reps: [
+      { skillId: 'n-back:L2', type: 'n-back', label: 'N-Back level 2', config: { n: 2 } },
+    ] });
+    getMorseProgress.mockResolvedValue({ settings: { wpm: 18, farnsworthWpm: 12 } });
+    getPostProgress.mockResolvedValue({ series: { byDay: [] } });
+  });
+
+  it('mixes a review rep into a Quick session while its topic is on', async () => {
+    const onStart = vi.fn();
+    renderWith(twoDomainConfig(null), onStart);
+    await waitFor(() => expect(screen.getByText(/due for a maintenance rep/)).toBeTruthy());
+    fireEvent.click(await screen.findByRole('button', { name: /Quick 5 Min/ }));
+
+    expect(onStart.mock.calls[0][0].some(d => d.isReview && d.type === 'n-back')).toBe(true);
+  });
+
+  it('drops the review rep — and its launcher nudge — when its topic is switched off', async () => {
+    const onStart = vi.fn();
+    renderWith(twoDomainConfig({ cognitive: { enabled: false } }), onStart);
+    await waitFor(() => expect(screen.getByText('Full POST')).toBeTruthy());
+    expect(screen.queryByText(/due for a maintenance rep/)).toBeNull();
+
+    fireEvent.click(await screen.findByRole('button', { name: /Quick 5 Min/ }));
+    expect(onStart.mock.calls[0][0].some(d => d.isReview)).toBe(false);
+    expect(onStart.mock.calls[0][0].some(d => d.type === 'n-back')).toBe(false);
+  });
+});
+
+// The mirror the Practice Plan preview uses (composedSessionDrillTypes) gates on
+// the module-level `enabled` flag; the launcher used to ignore it for math only,
+// so a `mentalMath.enabled: false` config previewed as "no Mental Math" while a
+// Full POST still ran all five math drills.
+describe('PostSessionLauncher honors the mentalMath module flag (issue #3252)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getPostRecommendations.mockResolvedValue({ recommendations: [] });
+    getPostReviewReps.mockResolvedValue({ reps: [] });
+    getMorseProgress.mockResolvedValue({ settings: { wpm: 18, farnsworthWpm: 12 } });
+    getPostProgress.mockResolvedValue({ series: { byDay: [] } });
+  });
+
+  it('composes no math drills when mentalMath.enabled is false', async () => {
+    const onStart = vi.fn();
+    render(
+      <MemoryRouter>
+        <PostSessionLauncher
+          config={{
+            mentalMath: { enabled: false, drillTypes: { multiplication: { enabled: true, count: 10 } } },
+            cognitive: { enabled: true, drillTypes: { 'n-back': { enabled: true } } },
+            llmDrills: { enabled: false, drillTypes: {} },
+          }}
+          recentSessions={[]}
+          stats={{ sessionCount: 1, overall: 70, currentStreak: 1, longestStreak: 1, byDrill: {} }}
+          statsWeek={{ sessionCount: 1 }}
+          onStart={onStart}
+          onViewHistory={vi.fn()}
+          onViewConfig={vi.fn()}
+          onViewMemory={vi.fn()}
+          onViewMorse={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByText('Full POST')).toBeTruthy());
+    fireEvent.click(screen.getByText('Full POST'));
+
+    expect(onStart.mock.calls[0][0].map(d => d.type)).toEqual(['n-back']);
+  });
+});
+
+describe('PostSessionLauncher composed memory drills (issue #3254)', () => {
+  const memoryConfig = (overrides = {}) => ({
+    mentalMath: { enabled: true, drillTypes: { multiplication: { enabled: true, count: 10 } } },
+    llmDrills: { enabled: false, drillTypes: {} },
+    cognitive: { enabled: false, drillTypes: {} },
+    memory: {
+      enabled: true,
+      drillTypes: {
+        'memory-sequence': { enabled: true, count: 4 },
+        'memory-element-flash': { enabled: false, count: 6 },
+      },
+      items: {},
+    },
+    sessionModules: ['mental-math', 'memory'],
+    ...overrides,
+  });
+
+  const renderWith = (config, onStart) => render(
+    <MemoryRouter>
+      <PostSessionLauncher
+        config={config}
+        recentSessions={[]}
+        stats={{ sessionCount: 1, overall: 70, currentStreak: 1, longestStreak: 1, byDrill: {} }}
+        statsWeek={{ sessionCount: 1 }}
+        onStart={onStart}
+        onViewHistory={vi.fn()}
+        onViewConfig={vi.fn()}
+        onViewMemory={vi.fn()}
+        onViewMorse={vi.fn()}
+      />
+    </MemoryRouter>,
+  );
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getPostRecommendations.mockResolvedValue({ recommendations: [] });
+    getPostReviewReps.mockResolvedValue({ reps: [] });
+    getMemoryItems.mockResolvedValue([{
+      id: 'example-memory',
+      content: { lines: [{ text: 'First line' }, { text: 'Second line' }] },
+      mastery: { overallPct: 20 },
+    }]);
+  });
+
+  it('adds enabled memory drill types to Full and Quick sessions', async () => {
+    const onStart = vi.fn();
+    renderWith(memoryConfig(), onStart);
+    await waitFor(() => expect(getMemoryItems).toHaveBeenCalledWith({ silent: true }));
+
+    fireEvent.click(screen.getByText('Full POST'));
+    expect(onStart.mock.calls[0][0]).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'memory-sequence',
+        domain: 'memory',
+        config: { count: 4, memoryItemId: 'example-memory' },
+        timeLimitSec: 90,
+      }),
+    ]));
+    expect(onStart.mock.calls[0][0].some(d => d.type === 'memory-element-flash')).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: /Quick 5 Min/ }));
+    expect(onStart.mock.calls[1][0]).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'memory-sequence',
+        domain: 'memory',
+        config: { count: 3, memoryItemId: 'example-memory' },
+      }),
+    ]));
+  });
+
+  it('does not compose memory when no items exist', async () => {
+    const onStart = vi.fn();
+    getMemoryItems.mockResolvedValue([]);
+    renderWith(memoryConfig(), onStart);
+    await waitFor(() => expect(getMemoryItems).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByText('Full POST'));
+    expect(onStart.mock.calls[0][0].map(d => d.type)).toEqual(['multiplication']);
+  });
+
+  it('does not compose memory when every item is disabled in the Practice Plan', async () => {
+    const onStart = vi.fn();
+    renderWith(memoryConfig({
+      memory: {
+        enabled: true,
+        drillTypes: { 'memory-sequence': { enabled: true, count: 4 } },
+        items: { 'example-memory': { enabled: false } },
+      },
+    }), onStart);
+    await waitFor(() => expect(getMemoryItems).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByText('Full POST'));
+    expect(onStart.mock.calls[0][0].some(d => d.domain === 'memory')).toBe(false);
+  });
+
+  it('omits Element Flash when the built-in elements item is unavailable', async () => {
+    const onStart = vi.fn();
+    getMemoryItems.mockResolvedValue([{
+      id: 'example-memory',
+      content: { lines: [{ text: 'First line' }, { text: 'Second line' }] },
+      mastery: { overallPct: 0 },
+    }]);
+    renderWith(memoryConfig({
+      memory: {
+        enabled: true,
+        drillTypes: { 'memory-element-flash': { enabled: true, count: 6 } },
+        items: {},
+      },
+    }), onStart);
+    await waitFor(() => expect(getMemoryItems).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByText('Full POST'));
+    expect(onStart.mock.calls[0][0].some(d => d.type === 'memory-element-flash')).toBe(false);
+  });
+
+  it('pins Element Flash to the compatible elements item', async () => {
+    const onStart = vi.fn();
+    getMemoryItems.mockResolvedValue([
+      { id: 'example-memory', content: { lines: [{ text: 'First' }, { text: 'Second' }] }, mastery: { overallPct: 0 } },
+      { id: 'elements-song', content: { lines: [{ text: 'Hydrogen' }, { text: 'Helium' }] }, mastery: { overallPct: 90 } },
+    ]);
+    renderWith(memoryConfig({
+      memory: {
+        enabled: true,
+        drillTypes: { 'memory-element-flash': { enabled: true, count: 6 } },
+        items: {},
+      },
+    }), onStart);
+    await waitFor(() => expect(getMemoryItems).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByText('Full POST'));
+    expect(onStart.mock.calls[0][0]).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'memory-element-flash',
+        config: { count: 6, memoryItemId: 'elements-song' },
+      }),
+    ]));
+  });
+
+  it('omits Sequence Recall when no enabled item has two usable lines', async () => {
+    const onStart = vi.fn();
+    getMemoryItems.mockResolvedValue([{
+      id: 'one-line',
+      content: { lines: [{ text: 'Only line' }] },
+      mastery: { overallPct: 0 },
+    }]);
+    renderWith(memoryConfig(), onStart);
+    await waitFor(() => expect(getMemoryItems).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByText('Full POST'));
+    expect(onStart.mock.calls[0][0].some(d => d.type === 'memory-sequence')).toBe(false);
+  });
+
+  it('pins Sequence Recall to a compatible item instead of a lower-mastery one-line item', async () => {
+    const onStart = vi.fn();
+    getMemoryItems.mockResolvedValue([
+      { id: 'one-line', content: { lines: [{ text: 'Only line' }] }, mastery: { overallPct: 0 } },
+      { id: 'runnable', content: { lines: [{ text: 'First' }, { text: 'Second' }] }, mastery: { overallPct: 80 } },
+    ]);
+    renderWith(memoryConfig(), onStart);
+    await waitFor(() => expect(getMemoryItems).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByText('Full POST'));
+    expect(onStart.mock.calls[0][0]).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'memory-sequence',
+        config: { count: 4, memoryItemId: 'runnable' },
+      }),
+    ]));
   });
 });

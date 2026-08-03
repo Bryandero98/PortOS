@@ -9,7 +9,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { Link, useParams, useNavigate } from 'react-router-dom';
+import { Link, useParams, useNavigate } from 'react-router';
 import { Loader2, RefreshCw, X, ArrowLeft, BookOpen, AlertTriangle, Compass } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import {

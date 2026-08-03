@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { Plus, Film, Trash2, Clock } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import * as api from '../services/api';

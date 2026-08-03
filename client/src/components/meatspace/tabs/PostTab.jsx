@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router';
 import { Loader } from 'lucide-react';
-import { getPostConfig, getPostSessions, getPostStats } from '../../../services/api';
+import { getPostConfig, getPostRecommendations, getPostSessions, getPostStats } from '../../../services/api';
 import { usePostSession } from '../../../hooks/usePostSession';
 import PostSessionLauncher from '../post/PostSessionLauncher';
 import PostDrillRunner from '../post/PostDrillRunner';
@@ -12,8 +12,10 @@ import PostSessionDetail from '../post/PostSessionDetail';
 import PostHistory from '../post/PostHistory';
 import PostProgress from '../post/PostProgress';
 import PostDrillConfig from '../post/PostDrillConfig';
+import PracticePlan from '../post/PracticePlan';
 import MemoryBuilder from '../post/MemoryBuilder';
-import ElementsSong from '../post/ElementsSong';
+import MemoryPractice, { MEMORY_PRACTICE_MODE_IDS } from '../post/MemoryPractice';
+import ElementsSong, { ELEMENTS_MODE_IDS } from '../post/ElementsSong';
 import DrillTransition from '../post/DrillTransition';
 import WordplayTrainer from '../post/WordplayTrainer';
 import MorseTrainer, { MORSE_MODE_IDS } from '../post/MorseTrainer';
@@ -28,16 +30,18 @@ import { LLM_DRILL_TYPES, COGNITIVE_DRILL_TYPES } from '../post/constants';
 const RUN_SUBROUTE = 'run';
 const isRunSubroute = (subtab) => subtab === RUN_SUBROUTE;
 
-// Routed memory sub-pages (`/post/memory/:subtab`). The Elements Song study
-// surface is the only one today; kept as a const so the guard below and the
-// nav-manifest contract test (server/lib/navManifest.test.js) share one source
-// of truth for which `/post/memory/*` deep links resolve to a real page.
+// RESERVED memory sub-routes (`/post/memory/:subtab`) — segments that name a
+// dedicated study surface rather than a memory item id. `elements` is the only
+// one today; kept as a const so the guard below and the nav-manifest contract
+// test (server/lib/navManifest.test.js) share one source of truth. Any OTHER
+// `:subtab` is a memory ITEM id, mirroring how the session tab reserves `run`
+// and treats every other subtab as a saved session id (issue #3249).
 export const MEMORY_SUBROUTES = [
   { id: 'elements', label: 'Elements' },
 ];
 const MEMORY_SUBROUTE_IDS = MEMORY_SUBROUTES.map((s) => s.id);
 
-export default function PostTab({ tab = 'launcher', subtab }) {
+export default function PostTab({ tab = 'launcher', subtab, mode }) {
   const navigate = useNavigate();
   const location = useLocation();
   const [config, setConfig] = useState(null);
@@ -45,7 +49,11 @@ export default function PostTab({ tab = 'launcher', subtab }) {
   const [stats, setStats] = useState(null);
   const [statsWeek, setStatsWeek] = useState(null);
   const session = usePostSession();
+  // Seed items handed to the routed practice surfaces so a click from the list
+  // skips the refetch. The URL is still the source of truth — a seed is only
+  // used when its id matches the route, and a cold deep link has none.
   const [elementsItem, setElementsItem] = useState(null);
+  const [memoryItem, setMemoryItem] = useState(null);
 
   useEffect(() => { loadData(); }, []);
 
@@ -75,12 +83,27 @@ export default function PostTab({ tab = 'launcher', subtab }) {
     if (started) navigate('/post/session/run');
   }
 
-  // Save success → jump to the deep-linkable results URL for this session, so it
-  // is shareable/bookmarkable/reachable from History. The run id === session id.
-  async function handleSaved(savedSession) {
+  // Save success either continues the daily recommendation chain or opens the
+  // deep-linkable saved result. The run id === session id.
+  async function continueDailyRoutine() {
+    const result = await getPostRecommendations(1).catch(() => null);
+    const recommendation = result?.recommendations?.[0];
+    if (!recommendation) {
+      navigate('/post/launcher');
+      return;
+    }
+    if (recommendation.deepLink && recommendation.deepLink !== '/post/launcher') {
+      navigate(recommendation.deepLink);
+      return;
+    }
+    navigate(`/post/launcher?continue=${encodeURIComponent(recommendation.id)}`);
+  }
+
+  async function handleSaved(savedSession, { continueDaily = false } = {}) {
     await loadData();
     session.reset();
-    if (savedSession?.id) navigate(`/post/session/${savedSession.id}`);
+    if (continueDaily) await continueDailyRoutine();
+    else if (savedSession?.id) navigate(`/post/session/${savedSession.id}`);
     else navigate('/post/launcher');
   }
 
@@ -200,6 +223,20 @@ export default function PostTab({ tab = 'launcher', subtab }) {
       ) : (
         <div className="text-gray-500">Loading configuration...</div>
       );
+    case 'plan':
+      // Practice Plan owns "what am I studying" (issue #3252). Same null guard
+      // as `config`: the editor seeds its draft state once from the loaded
+      // config, so mounting before it resolves would save defaults over the
+      // user's settings.
+      return config ? (
+        <PracticePlan
+          config={config}
+          onSaved={handleConfigSaved}
+          onBack={() => navigate('/post/launcher')}
+        />
+      ) : (
+        <div className="text-gray-500">Loading practice plan...</div>
+      );
     case 'wordplay':
       // Selected game mode is the `:mode` sub-route (URL is source of truth),
       // mirroring the Morse trainer's `:mode` routing.
@@ -211,6 +248,7 @@ export default function PostTab({ tab = 'launcher', subtab }) {
           onSelectMode={(id) => navigate(`/post/wordplay/${id}`)}
           onExitMode={() => navigate('/post/wordplay')}
           onBack={() => navigate('/post/launcher')}
+          onContinue={continueDailyRoutine}
         />
       );
     case 'morse': {
@@ -227,25 +265,63 @@ export default function PostTab({ tab = 'launcher', subtab }) {
           onSelectMode={(id) => navigate(`/post/morse/${id}${location.search}`)}
           onExitMode={() => navigate(`/post/morse${location.search}`)}
           onBack={() => navigate('/post/launcher')}
+          onContinue={continueDailyRoutine}
         />
       );
     }
-    case 'memory':
+    case 'memory': {
+      // `/post/memory` → the item list. Any other `:subtab` selects an item:
+      // `elements` is the reserved Elements Song surface, everything else is a
+      // memory item id. The optional third segment is the practice mode, so a
+      // drill is directly linkable (issue #3249). An unrecognized mode degrades
+      // to the mode picker, mirroring MorseTrainer's MORSE_MODE_IDS guard.
+      if (!subtab) {
+        return (
+          <MemoryBuilder
+            onBack={() => navigate('/post/launcher')}
+            onSelectItem={(item) => {
+              if (item.id === 'elements-song') { setElementsItem(item); navigate('/post/memory/elements'); }
+              else { setMemoryItem(item); navigate(`/post/memory/${item.id}`); }
+            }}
+            onReviewItem={(item) => {
+              if (item.id === 'elements-song') navigate('/post/memory/elements/element-flash');
+              else navigate(`/post/memory/${item.id}/spaced`);
+            }}
+          />
+        );
+      }
       if (MEMORY_SUBROUTE_IDS.includes(subtab)) {
+        const elementsMode = ELEMENTS_MODE_IDS.includes(mode) ? mode : null;
         return (
           <ElementsSong
             item={elementsItem}
+            mode={elementsMode}
+            onSelectMode={(id) => navigate(`/post/memory/elements/${id}`)}
+            onExitMode={() => navigate('/post/memory/elements')}
             onBack={() => { setElementsItem(null); navigate('/post/memory'); }}
+            onContinue={continueDailyRoutine}
             loadItemOnMount={!elementsItem}
           />
         );
       }
+      const practiceMode = MEMORY_PRACTICE_MODE_IDS.includes(mode) ? mode : null;
+      // Only pass the cached item when it actually matches the URL — a stale
+      // one from a previous selection would render the wrong item's practice.
+      // Keying on the mode remounts the runner per entry, so each run starts
+      // from clean state without a manual reset.
       return (
-        <MemoryBuilder
-          onBack={() => navigate('/post/launcher')}
-          onNavigateElements={(item) => { setElementsItem(item); navigate('/post/memory/elements'); }}
+        <MemoryPractice
+          key={`${subtab}:${practiceMode || 'picker'}`}
+          itemId={subtab}
+          item={memoryItem?.id === subtab ? memoryItem : null}
+          mode={practiceMode}
+          onSelectMode={(id) => navigate(`/post/memory/${subtab}/${id}`)}
+          onExitMode={() => navigate(`/post/memory/${subtab}`)}
+          onBack={() => { setMemoryItem(null); navigate('/post/memory'); }}
+          onContinue={continueDailyRoutine}
         />
       );
+    }
     default:
       return (
         <PostSessionLauncher
@@ -258,6 +334,9 @@ export default function PostTab({ tab = 'launcher', subtab }) {
           onViewConfig={() => navigate('/post/config')}
           onViewMemory={() => navigate('/post/memory')}
           onViewMorse={() => navigate('/post/morse')}
+          autoStartRecommendationId={new URLSearchParams(location.search).get('continue')}
+          onAutoStartConsumed={() => navigate('/post/launcher', { replace: true })}
+          onNavigate={navigate}
         />
       );
   }

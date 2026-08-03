@@ -337,12 +337,18 @@ async function detectForgeIssues(forgeKey, app, { issueAuthorFilter = 'self' } =
   // default plus any out-of-vocab value) = the @me security boundary. Transient
   // resolver failures skip this dispatch and retry next tick rather than parking
   // a full cadence.
+  // Shared shape for a transient (non-parking) probe failure. Carries the CLI
+  // that failed so the caller can attribute the fault to `gh` vs `glab` instead
+  // of guessing from the task-type name — a `claim-work` request only resolves to
+  // its forge-specific type internally, so the name is not a reliable signal.
+  const transient = (reason) => ({ actionable: false, count: 0, cli: cfg.cli, reason, transient: true });
+
   let authorApplied = false;
   if (issueAuthorFilter === 'any') {
     // no --author filter
   } else if (issueAuthorFilter === 'owner') {
     const { owner, isOrg, error } = await cfg.resolveOwner(repoPath);
-    if (error) return { actionable: false, count: 0, reason: error, transient: true };
+    if (error) return transient(error);
     if (isOrg) {
       // The owner filter resolved to a non-authoring owner (a GitHub ORG or a
       // GitLab GROUP), which can never be an issue author — `--author <owner>` is
@@ -357,20 +363,20 @@ async function detectForgeIssues(forgeKey, app, { issueAuthorFilter = 'self' } =
     authorApplied = true;
   } else {
     const { author, error } = await cfg.resolveSelf(repoPath);
-    if (error) return { actionable: false, count: 0, reason: error, transient: true };
+    if (error) return transient(error);
     args.push('--author', author);
     authorApplied = true;
   }
 
   const res = await runCli(cfg.cli, args, repoPath);
-  if (res.code !== 0) return { actionable: false, count: 0, reason: cfg.listFail, transient: true };
+  if (res.code !== 0) return transient(cfg.listFail);
   let raw;
   try {
     raw = JSON.parse(res.stdout || '[]');
   } catch {
-    return { actionable: false, count: 0, reason: cfg.parseFail, transient: true };
+    return transient(cfg.parseFail);
   }
-  if (!Array.isArray(raw)) return { actionable: false, count: 0, reason: cfg.parseFail, transient: true };
+  if (!Array.isArray(raw)) return transient(cfg.parseFail);
   if (raw.length === 0) {
     // An empty *filtered* list is ambiguous: the repo may truly have no open
     // issues, OR it has open issues that just don't match the author filter —

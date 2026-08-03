@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, act } from '@testing-library/react';
-import { createMemoryRouter, RouterProvider } from 'react-router-dom';
+import { createMemoryRouter } from 'react-router';
+import { RouterProvider } from 'react-router/dom';
 
 // Sharing.jsx pulls in socket.io-client at module scope (auto-connects).
 // Stub it so the test runner doesn't try to open a network socket.

@@ -29,12 +29,14 @@ import { ensureAntigravityPrintArgs, isAntigravityCliProvider } from '../lib/ant
 import { prepareCliPrompt } from '../lib/cliProviderArgs.js';
 import { isGrokCommand, ensureGrokHeadlessArgs } from '../lib/grok.js';
 import { isKimiCommand, ensureKimiHeadlessArgs } from '../lib/kimi.js';
-import { resolveCliModel, buildEffortArgs, buildCodexStartupArgs, resolveBedrockCliModel, prefixOpencodeModel, hasModelFlag, isOpencodeCommand, applyLeanClaudeArgs, providerSuppliesGithubToken } from '../lib/providerModels.js';
+import { resolveCliModel, buildEffortArgs, buildCodexStartupArgs, resolveBedrockCliModel, prefixOpencodeModel, hasModelFlag, isOpencodeCommand, applyLeanClaudeArgs, providerSuppliesGithubToken, isOllamaClaudeProvider } from '../lib/providerModels.js';
 import { resolveForgeTokenEnv } from './git.js';
 import { prepareCliSpawn, killProcessTree } from '../lib/bufferedSpawn.js';
 import { buildCliChildEnv } from '../lib/cliChildEnv.js';
 import { resolvePrCompletion } from '../lib/prDisposition.js';
-import { isHostShuttingDown, HOST_SHUTDOWN_REASON } from '../lib/hostShutdown.js';
+import { canTypeSlashCommands } from '../lib/slashdoInvocation.js';
+import { DONE_SENTINEL_NAME } from '../lib/agentSentinel.js';
+import { isHostShuttingDown, shouldAbandonForHostShutdown, HOST_SHUTDOWN_REASON } from '../lib/hostShutdown.js';
 
 const AGENTS_DIR = PATHS.cosAgents;
 
@@ -748,6 +750,8 @@ export async function spawnDirectly({
 
     const terminatedByUser = userTerminatedAgents.has(agentId);
     if (terminatedByUser) userTerminatedAgents.delete(agentId);
+    const completionSentinelPresent = !!workspacePath && existsSync(join(workspacePath, DONE_SENTINEL_NAME));
+    const completedBeforeHostShutdown = isHostShuttingDown() && completionSentinelPresent;
 
     // If the user terminated the agent, force success=false even if the
     // process happened to exit 0 in the race window — otherwise the run is
@@ -755,8 +759,12 @@ export async function spawnDirectly({
     // `finish` path's `finalSuccess = terminatedByUser ? false : success`.
     // A mid-stream fallback signal (e.g. usage-limit hit) kills the CLI; if it
     // races to exit 0, don't record success or the fallback/retry never fires.
+    // A completion sentinel written before host shutdown is also authoritative:
+    // TreeKill may surface its otherwise-completed child with a null exit code.
     // Mirrors the runner path (`runner.js`) and the TUI finish() handling.
-    const finalSuccess = terminatedByUser ? false : (success && !immediateFallbackAnalysis);
+    const finalSuccess = terminatedByUser
+      ? false
+      : ((success || completedBeforeHostShutdown) && !immediateFallbackAnalysis);
     const finalError = terminatedByUser ? 'Agent terminated by user' : null;
 
     // Drain any queued transcript writes before reading/appending outputBuffer
@@ -816,7 +824,11 @@ export async function spawnDirectly({
     // The transcript is already flushed and output.txt written above.
     // A user-terminated run still finalizes, so it's recorded as such rather
     // than resurrected by the requeue.
-    if (isHostShuttingDown() && !terminatedByUser) {
+    if (shouldAbandonForHostShutdown({
+      sentinelPresent: completionSentinelPresent,
+      terminatedByUser,
+      paused: pausedAgents.has(agentId),
+    })) {
       outputBatcher.push('🛑 PortOS restarted while this agent was running — the run was interrupted, not completed. Its worktree is preserved and the task will resume.');
       emitLog('warn', `Agent ${agentId} interrupted by a PortOS host restart — preserved for resume`, { agentId, phase: 'interrupted' });
       await Promise.all([
@@ -848,11 +860,34 @@ export async function spawnDirectly({
     const analysisBuffer = rawStreamBuffer || outputBuffer;
     const errorAnalysis = finalSuccess ? null : (immediateFallbackAnalysis || analyzeAgentFailure(analysisBuffer, task, model));
 
+    // Slashdo-capable CLI agents run `/simplify` + `/do:pr` themselves (see
+    // buildCliCompletionSection in agentPromptBuilder.js) — mirror the TUI
+    // cleanup contract so PortOS doesn't double-fire push+PR creation. Resolved
+    // BEFORE finalizeAgent because it also gates the PR-claim verification
+    // (#3358): a PortOS-owned PR is created by the cleanup below, i.e. AFTER
+    // finalize, so only an agent-owned PR can be verified there.
+    //
+    // Uses the SAME `canTypeSlashCommands` predicate the prompt builder and the
+    // runner-mode cleanup already use, not a provider-id allowlist: an allowlist
+    // misses a path-configured `claude` under a custom provider id (told to run
+    // `/do:pr`, then PortOS opens a second PR) and wrongly claims a lean `--bare`
+    // session owns a PR it was never told to open. Whoever the prompt told to
+    // open the PR must be who cleanup and verification believe opened it.
+    const directOpenPR = isTruthyMetaFn(task.metadata?.openPR);
+    const directAgentOwnsPR = directOpenPR && canTypeSlashCommands({
+      providerId: provider?.id,
+      providerCommand: provider?.command,
+      leanMode: isOllamaClaudeProvider(provider),
+    });
+
     // try/finally so a throw from finalizeAgent still runs the local
     // cleanup (worktree, pid unregister, activeAgents delete). Mirrors the
     // TUI path's pattern.
+    // See the TUI path: a PR-claim downgrade must reach cleanup, or a run that
+    // opened no PR is cleaned up as a success and loses its retry state (#3358).
+    let cleanupSuccess = finalSuccess;
     try {
-      await finalizeAgent({
+      const finalized = await finalizeAgent({
         agentId,
         task,
         runId: agentData?.runId || runId,
@@ -867,18 +902,14 @@ export async function spawnDirectly({
         error: finalError || undefined,
         completionReason: terminatedByUser ? 'user-terminated' : undefined,
         workspacePath,
+        prExpected: directAgentOwnsPR,
       });
+      if (finalized && typeof finalized.success === 'boolean') cleanupSuccess = finalized.success;
     } finally {
-      // Clean up worktree if agent was using one. Claude Code CLI agents run
-      // `/simplify` + `/do:pr` themselves (see buildCliCompletionSection in
-      // agentPromptBuilder.js) — mirror the TUI cleanup contract so PortOS
-      // doesn't double-fire push+PR creation.
-      const directOpenPR = isTruthyMetaFn(task.metadata?.openPR);
       const directPrCompletion = resolvePrCompletion(task.metadata);
       const directReviewLoopFollowUp = isTruthyMetaFn(task.metadata?.reviewLoopFollowUp);
-      const directAgentOwnsPR = directOpenPR && (provider?.id === 'claude-code' || provider?.id === 'claude-code-bedrock');
       const reviewOptions = await resolveReviewLoopOptions(task.metadata, { normalize: normalizeReviewers, isTruthyMeta: isTruthyMetaFn });
-      await cleanupWorktreeFn(agentId, finalSuccess, {
+      await cleanupWorktreeFn(agentId, cleanupSuccess, {
         openPR: directAgentOwnsPR ? false : directOpenPR,
         prCompletion: directPrCompletion,
         ...reviewOptions,
@@ -887,6 +918,18 @@ export async function spawnDirectly({
         agentOutput: outputBuffer,
         originalTask: task
       }).catch(err => console.error(`❌ CLI worktree cleanup failed for ${agentId}: ${err.message}`));
+
+      // Release the retry hold: flip the failed task back to `pending` carrying a
+      // pointer at whatever the run left behind — the branch (or whole worktree)
+      // `cleanupWorktreeFn` just preserved because the run failed with commits on
+      // it. Without the pointer the retry starts clean and redoes work already
+      // sitting on disk (#3368); without the hold that release replaces, the retry
+      // could be dequeued before the pointer landed (#3373). Imported lazily for the
+      // same reason `cleanupWorktreeFn` is injected: pulling the cleanup graph in at
+      // module top level races this file's own init in the agentLifecycle cycle.
+      await import('./agentWorktreeCleanup.js')
+        .then(({ releaseRetryHold }) => releaseRetryHold({ agentId, task, success: cleanupSuccess }))
+        .catch(err => console.error(`❌ CLI retry-hold release failed for ${agentId}: ${err.message}`));
 
       unregisterSpawnedAgent(agentData?.pid || claudeProcess.pid);
       activeAgents.delete(agentId);

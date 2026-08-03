@@ -26,4 +26,35 @@ describe('getLaunchUrls — portless vs port-bearing (#2991)', () => {
     expect(getPrimaryLaunchUrl({ id: 'web-app', type: 'express', uiPort: 3000, tlsPort: 8443 }))
       .toBe(`https://${window.location.hostname}:8443`);
   });
+
+  it('keeps the http launch URL when uiPort is a distinct plain-HTTP listener', () => {
+    const urls = getLaunchUrls({ id: 'web-app', type: 'express', uiPort: 3000, tlsPort: 8443 });
+    expect(urls.http).toBe(`http://${window.location.hostname}:3000`);
+  });
+});
+
+// A single-listener dev server that terminates TLS itself (a Vite app reading the
+// shared Tailscale cert) reports the SAME port as uiPort/devUiPort and tlsPort.
+// That port speaks TLS only, so emitting an http:// URL for it renders a launch
+// button that can never connect.
+describe('getLaunchUrls — TLS and plain-HTTP on the same port', () => {
+  it('suppresses the http URL when uiPort is the TLS port', () => {
+    const urls = getLaunchUrls({ id: 'vite-app', type: 'vite', uiPort: 3117, tlsPort: 3117 });
+    expect(urls.https).toBe(`https://${window.location.hostname}:3117`);
+    expect(urls.http).toBeNull();
+  });
+
+  it('suppresses the dev URL when devUiPort is the TLS port', () => {
+    const urls = getLaunchUrls({ id: 'vite-app', type: 'vite', uiPort: 3117, devUiPort: 3117, tlsPort: 3117 });
+    expect(urls.dev).toBeNull();
+    // The one surviving URL is the working one, so the single-click launcher still opens it.
+    expect(getPrimaryLaunchUrl({ id: 'vite-app', type: 'vite', uiPort: 3117, devUiPort: 3117, tlsPort: 3117 }))
+      .toBe(`https://${window.location.hostname}:3117`);
+  });
+
+  it('keeps a dev URL that runs on its own plain-HTTP port', () => {
+    const urls = getLaunchUrls({ id: 'vite-app', type: 'vite', uiPort: 5173, devUiPort: 5174, tlsPort: 5173 });
+    expect(urls.dev).toBe(`http://${window.location.hostname}:5174`);
+    expect(urls.http).toBeNull();
+  });
 });

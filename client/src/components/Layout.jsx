@@ -1,5 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
-import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom';
+import { Outlet, NavLink, useLocation, useNavigate } from 'react-router';
 import {
   Home,
   Package,
@@ -213,6 +213,7 @@ const navItems = [
       { to: '/messages/drafts', label: 'Drafts', icon: FilePen },
       { to: '/messages/imessage', label: 'iMessage', icon: MessageSquare },
       { to: '/messages/inbox', label: 'Inbox', icon: Inbox },
+      { to: '/stacker-news', label: 'Stacker News', icon: Newspaper },
       { to: '/messages/sync', label: 'Sync', icon: RefreshCw },
     ],
   },
@@ -350,6 +351,7 @@ const navItems = [
       { to: '/post/launcher', label: 'Launcher', icon: Play },
       { to: '/post/memory', label: 'Memory', icon: Brain },
       { to: '/post/morse', label: 'Morse', icon: Radio },
+      { to: '/post/plan', label: 'Practice Plan', icon: ListChecks },
       { to: '/post/progress', label: 'Progress', icon: TrendingUp },
       { to: '/post/wordplay', label: 'Wordplay', icon: MessageCircle },
     ],

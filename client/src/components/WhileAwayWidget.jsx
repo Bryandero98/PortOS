@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Link } from 'react-router-dom';
+import useMounted from '../hooks/useMounted';
+import { Link } from 'react-router';
 import {
   Moon,
   CheckCircle,
@@ -68,7 +69,7 @@ export default function WhileAwayWidget() {
   const sinceRef = useRef(null);
   // A socket-driven refresh can land after the widget unmounts — guard the
   // async setState so it doesn't fire into the void (CLAUDE.md unmount rule).
-  const mountedRef = useRef(true);
+  const mountedRef = useMounted();
 
   const load = useCallback(() => {
     const since = readLastSeen();
@@ -86,7 +87,6 @@ export default function WhileAwayWidget() {
     const refresh = () => load();
     socket.on('cos:agent:completed', refresh);
     return () => {
-      mountedRef.current = false;
       socket.off('cos:agent:completed', refresh);
     };
   }, [load]);

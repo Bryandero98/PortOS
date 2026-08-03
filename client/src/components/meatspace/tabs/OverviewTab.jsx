@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { Beer, Scale, HeartPulse, Dna, Eye, Dumbbell, Database, Rocket, Calendar } from 'lucide-react';
 import * as api from '../../../services/api';
 import BrailleSpinner from '../../BrailleSpinner';

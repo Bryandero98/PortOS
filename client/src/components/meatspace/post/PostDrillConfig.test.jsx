@@ -6,12 +6,14 @@ vi.mock('../../../services/api', () => ({
   getProviders: vi.fn(),
   getPostAdaptivePreview: vi.fn(),
   getPostMultiplicationProgress: vi.fn(),
+  getPostPowersProgress: vi.fn(),
   getPostCognitiveProgress: vi.fn(),
+  getMemoryItems: vi.fn(),
 }));
 vi.mock('../../ui/Toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
 
 import PostDrillConfig from './PostDrillConfig';
-import { updatePostConfig, getProviders, getPostAdaptivePreview, getPostMultiplicationProgress, getPostCognitiveProgress } from '../../../services/api';
+import { updatePostConfig, getProviders, getPostAdaptivePreview, getPostMultiplicationProgress, getPostPowersProgress, getPostCognitiveProgress, getMemoryItems } from '../../../services/api';
 import { LLM_DRILL_TYPES, DRILL_LABELS } from './constants';
 
 // The generatable LLM drill types + labels, imported from the canonical
@@ -27,6 +29,11 @@ const NEWLY_EXPOSED_TYPES = ALL_LLM_TYPES.filter(t => !LEGACY_ENABLED_TYPES.incl
 // Mirrors the server DEFAULT_CONFIG: only the 5 legacy LLM drills ship enabled.
 const config = {
   mentalMath: { drillTypes: { 'multiplication': { enabled: true, count: 10 } } },
+  memory: {
+    enabled: true,
+    drillTypes: { 'memory-sequence': { enabled: true, count: 4 } },
+    items: {},
+  },
   llmDrills: {
     enabled: true,
     providerId: null,
@@ -58,6 +65,18 @@ beforeEach(() => {
     thresholds: { minSamples: 12, targetAccuracy: 0.9 },
     windowDays: 30,
   });
+  getPostPowersProgress.mockResolvedValue({
+    level: 0,
+    label: 'Powers of 2 — recall table',
+    atHardest: false,
+    currentMastered: false,
+    levels: [
+      { level: 0, label: 'Powers of 2 — recall table', mastered: false },
+      { level: 1, label: 'Small squares & cubes', mastered: false },
+    ],
+    thresholds: { minSamples: 12, targetAccuracy: 0.9 },
+    windowDays: 30,
+  });
   getPostCognitiveProgress.mockResolvedValue({
     'n-back': {
       type: 'n-back', level: 1, label: '2-back @ 2500ms', atHardest: false, currentMastered: false,
@@ -69,6 +88,10 @@ beforeEach(() => {
       thresholds: { minSamples: 3, targetAccuracy: 0.85 }, windowDays: 30,
     },
   });
+  getMemoryItems.mockResolvedValue([{
+    id: 'example-memory',
+    content: { lines: [{ text: 'First' }, { text: 'Second' }] },
+  }]);
 });
 
 // Render + settle the mount-effect fetches (providers, adaptive preview,
@@ -126,6 +149,43 @@ describe('PostDrillConfig', () => {
     expect(payload.goals).toEqual({ streakTarget: 10 });
     expect(payload.sessionModules).toContain('llm-drills');
     expect(payload.sessionModules).toContain('mental-math');
+  });
+
+  it('offers Memory for composed sessions when an enabled item exists', async () => {
+    await renderConfig(<PostDrillConfig config={config} onSaved={vi.fn()} onBack={vi.fn()} />);
+    const memory = await screen.findByRole('checkbox', { name: 'Memory' });
+    expect(memory.disabled).toBe(false);
+    fireEvent.click(memory);
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() => expect(updatePostConfig).toHaveBeenCalled());
+    expect(updatePostConfig.mock.calls[0][0].sessionModules).toContain('memory');
+  });
+
+  it('disables Memory composition and explains why when no enabled item exists', async () => {
+    getMemoryItems.mockResolvedValue([]);
+    await renderConfig(<PostDrillConfig config={config} onSaved={vi.fn()} onBack={vi.fn()} />);
+    const memory = await screen.findByRole('checkbox', { name: 'Memory' });
+    expect(memory.disabled).toBe(true);
+    expect(screen.getByText('Enable Memory, a runnable drill, and an item in Practice Plan first.')).toBeTruthy();
+  });
+
+  it('disables Memory composition when its topic or every runnable drill is off', async () => {
+    const topicOff = {
+      ...config,
+      topics: { memory: { enabled: false } },
+    };
+    const { unmount } = await renderConfig(
+      <PostDrillConfig config={topicOff} onSaved={vi.fn()} onBack={vi.fn()} />,
+    );
+    expect((await screen.findByRole('checkbox', { name: 'Memory' })).disabled).toBe(true);
+    unmount();
+
+    const drillsOff = {
+      ...config,
+      memory: { ...config.memory, drillTypes: { 'memory-sequence': { enabled: false } } },
+    };
+    await renderConfig(<PostDrillConfig config={drillsOff} onSaved={vi.fn()} onBack={vi.fn()} />);
+    expect((await screen.findByRole('checkbox', { name: 'Memory' })).disabled).toBe(true);
   });
 
   it('clears a previously-set goal to an empty goals patch on save', async () => {
@@ -243,6 +303,21 @@ describe('PostDrillConfig', () => {
     fireEvent.click(screen.getByText('Save'));
     await waitFor(() => expect(updatePostConfig).toHaveBeenCalled());
     expect(updatePostConfig.mock.calls[0][0].mentalMath.drillTypes.multiplication.progressive).toBe(false);
+  });
+
+  it('powers defaults to its technique ladder and can switch back to manual max exponent', async () => {
+    await renderConfig(<PostDrillConfig config={config} onSaved={vi.fn()} onBack={vi.fn()} />);
+    const toggle = screen.getByRole('switch', { name: 'Progressive difficulty — Powers' });
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+    expect(screen.queryByText('Max Exponent')).toBeNull();
+    await waitFor(() => expect(getPostPowersProgress).toHaveBeenCalled());
+    expect(screen.getByText(/Powers of 2 — recall table/)).toBeTruthy();
+
+    fireEvent.click(toggle);
+    expect(screen.getByText('Max Exponent')).toBeTruthy();
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() => expect(updatePostConfig).toHaveBeenCalled());
+    expect(updatePostConfig.mock.calls[0][0].mentalMath.drillTypes.powers.progressive).toBe(false);
   });
 
   it('cognitive drills default to Progressive on — n-back hides its knobs and shows its rung', async () => {

@@ -4,8 +4,6 @@ import { getMemoryItems, createMemoryItem, deleteMemoryItem } from '../../../ser
 import ConfirmButtonPair from '../../ui/ConfirmButtonPair';
 import { FormField } from '../../ui/FormField';
 import { useConfirmDelete } from '../../../hooks/useConfirmDelete';
-import MemoryPractice from './MemoryPractice';
-import ElementsSong from './ElementsSong';
 
 const ITEM_TYPES = [
   { id: 'song', label: 'Song' },
@@ -19,6 +17,12 @@ const ITEM_TYPES = [
 // schedule = due (matches the server's `isMemoryItemDue`), so legacy items and
 // anything the migration hasn't stamped still surface for review.
 function isItemDue(item) {
+  const retention = item?.mastery?.retention;
+  if (retention?.status === 'attested' || retention?.status === 'mastered') {
+    if (retention.spotCheckCompletedAt) return false;
+    const spotCheckAt = Date.parse(retention.spotCheckAt ?? '');
+    return Number.isFinite(spotCheckAt) && spotCheckAt <= Date.now();
+  }
   const nr = item?.schedule?.nextReview;
   if (typeof nr !== 'string') return true;
   const t = Date.parse(nr);
@@ -36,10 +40,10 @@ function mostOverdueFirst(a, b) {
   return va === vb ? 0 : va < vb ? -1 : 1;
 }
 
-export default function MemoryBuilder({ onBack, onNavigateElements }) {
+// Practice selection is URL-driven (`/post/memory/:itemId`), so this component
+// only ever renders the list — `onSelectItem` navigates (issue #3249).
+export default function MemoryBuilder({ onBack, onSelectItem, onReviewItem = onSelectItem }) {
   const [items, setItems] = useState([]);
-  const [selectedItem, setSelectedItem] = useState(null);
-  const [view, setView] = useState('list'); // list, practice, elements, create
   const [creating, setCreating] = useState(false);
 
   // Create form state
@@ -63,19 +67,6 @@ export default function MemoryBuilder({ onBack, onNavigateElements }) {
     if (!Array.isArray(data)) return false;
     setItems(data);
     return true;
-  }
-
-  function handleSelect(item) {
-    if (item.id === 'elements-song' && onNavigateElements) {
-      onNavigateElements(item);
-      return;
-    }
-    setSelectedItem(item);
-    if (item.id === 'elements-song') {
-      setView('elements');
-    } else {
-      setView('practice');
-    }
   }
 
   async function handleDelete(id) {
@@ -115,24 +106,6 @@ export default function MemoryBuilder({ onBack, onNavigateElements }) {
       setItems(prev => [...prev, item]);
       resetCreateForm();
     }
-  }
-
-  if (view === 'elements' && selectedItem) {
-    return (
-      <ElementsSong
-        item={selectedItem}
-        onBack={() => { setView('list'); setSelectedItem(null); loadItems(); }}
-      />
-    );
-  }
-
-  if (view === 'practice' && selectedItem) {
-    return (
-      <MemoryPractice
-        item={selectedItem}
-        onBack={() => { loadItems(); setView('list'); setSelectedItem(null); }}
-      />
-    );
   }
 
   return (
@@ -183,7 +156,7 @@ export default function MemoryBuilder({ onBack, onNavigateElements }) {
               </div>
             </div>
             <button
-              onClick={() => handleSelect(dueItems[0])}
+              onClick={() => onReviewItem(dueItems[0])}
               className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-sm bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition-colors"
             >
               <BookOpen size={14} />
@@ -289,7 +262,7 @@ export default function MemoryBuilder({ onBack, onNavigateElements }) {
                 </div>
               </div>
               <div className="flex flex-col items-end gap-1 shrink-0">
-                <MasteryBadge pct={item.mastery?.overallPct || 0} />
+                <MasteryBadge pct={item.mastery?.overallPct || 0} retention={item.mastery?.retention} />
                 {isItemDue(item) && (
                   <span className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-emerald-400">
                     <CalendarClock size={10} />
@@ -301,7 +274,7 @@ export default function MemoryBuilder({ onBack, onNavigateElements }) {
 
             <div className="flex items-center gap-2 mt-4">
               <button
-                onClick={() => handleSelect(item)}
+                onClick={() => onSelectItem(item)}
                 className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-sm bg-port-accent hover:bg-port-accent/80 text-white rounded-lg transition-colors"
               >
                 <BookOpen size={14} />
@@ -375,7 +348,16 @@ function ItemIcon({ type, builtin }) {
   }
 }
 
-function MasteryBadge({ pct }) {
+function MasteryBadge({ pct, retention }) {
+  if (retention?.status === 'attested') {
+    return <div className="text-xs font-medium text-emerald-400">Attested</div>;
+  }
+  if (retention?.status === 'mastered') {
+    return <div className="text-xs font-medium text-port-success">Mastered</div>;
+  }
+  if (retention?.status === 'lapsed') {
+    return <div className="text-xs font-medium text-amber-400">Review resumed</div>;
+  }
   const color = pct >= 80 ? 'text-port-success' : pct >= 40 ? 'text-port-warning' : 'text-gray-500';
   return (
     <div className={`text-sm font-mono font-medium ${color}`}>

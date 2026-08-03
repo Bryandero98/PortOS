@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router';
 import { Plus, Film, Trash2, Music, Activity, ArrowUp, ArrowDown, Image as ImageIcon, Video, Wand2, Download, Copy } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import PageHeader from '../components/PageHeader';
@@ -485,7 +485,10 @@ export default function MusicVideo() {
   const missingVideoCount = sceneCount - renderableSceneCount;
   const finalVideo = useVideoFileSrc(selected?.renderHistoryId, { enabled: !!selected?.renderHistoryId });
   const savedVideoSettings = {
-    backend: selected?.videoSettings?.backend || 'local',
+    // Empty means this peer resolves its own configured Video Gen default.
+    // Synced projects intentionally arrive without another install's backend
+    // pin, so do not turn that absence into an explicit local override.
+    backend: selected?.videoSettings?.backend || '',
     // Empty is an intentional "follow the local Video Gen default" choice,
     // distinct from pinning the model that happens to be default today.
     modelId: selected?.videoSettings?.modelId || '',
@@ -771,10 +774,15 @@ export default function MusicVideo() {
     videoLane.startScene(scene.sceneId);
     generateVideo({
       prompt,
-      backend: savedVideoSettings.backend,
+      ...(savedVideoSettings.backend ? { backend: savedVideoSettings.backend } : {}),
       ...(savedVideoSettings.backend === 'grok'
         ? { grokDuration: savedVideoSettings.grokDuration }
-        : { modelId: savedVideoSettings.modelId || undefined, disableAudio: true }),
+        : savedVideoSettings.backend === 'local'
+          ? { modelId: savedVideoSettings.modelId || undefined, disableAudio: true }
+          // A named model is local-only machinery at the server boundary and
+          // would force the resolver off a Grok install default. Keep the
+          // shared pin saved, but omit it until this peer chooses Local.
+          : { grokDuration: savedVideoSettings.grokDuration, disableAudio: true }),
       mode: audioReactive ? 'a2v' : 'image',
       sourceImageFile: scene.referenceImageId,
       ...(audioReactive ? {
@@ -1008,11 +1016,12 @@ export default function MusicVideo() {
                     <select
                       id="mv-video-backend"
                       value={savedVideoSettings.backend}
-                      onChange={(e) => handleVideoSettingsChange({ backend: e.target.value })}
+                      onChange={(e) => handleVideoSettingsChange({ backend: e.target.value || null })}
                       disabled={videoSettingsSaving || Object.keys(genVideoScenes).length > 0}
                       title="Saved renderer for this project's scene videos"
                       className="bg-port-bg border border-port-border rounded px-1.5 py-1.5 text-sm disabled:opacity-50"
                     >
+                      <option value="">Install default</option>
                       <option value="local">Local video</option>
                       <option value="grok">Grok video</option>
                     </select>
@@ -1306,12 +1315,19 @@ export default function MusicVideo() {
                     </div>
                     {finalVideo.resolving && <p className="text-xs text-port-text-muted">Loading final video…</p>}
                     {finalVideo.src && (
+                      // aspect-video reserves the box before the video's
+                      // intrinsic dimensions resolve, so the actions above it
+                      // don't jump — same as the scene thumbnails below. The
+                      // render inherits its first scene clip's dimensions, which
+                      // are not always 16:9, so object-contain is explicit: a
+                      // 3:2 cut letterboxes inside the reserved box (against the
+                      // player's own black) instead of being stretched to fill it.
                       <video
                         src={finalVideo.src}
                         controls
                         playsInline
                         preload="metadata"
-                        className="w-full max-h-[65vh] rounded bg-black border border-port-border"
+                        className="w-full aspect-video max-h-[65vh] object-contain rounded bg-black border border-port-border"
                         aria-label="Play final music video"
                       />
                     )}

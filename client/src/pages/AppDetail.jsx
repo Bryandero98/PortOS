@@ -1,4 +1,4 @@
-import { useParams, Navigate } from 'react-router-dom';
+import { useParams, Navigate } from 'react-router';
 import AppDetailView from '../components/apps/AppDetailView';
 
 export default function AppDetail() {

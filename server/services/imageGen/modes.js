@@ -8,7 +8,13 @@
  * `IMAGE_GEN_MODE.X` is the preferred form at branching/tagging sites.
  * `IMAGE_GEN_MODES` is the alphabet for Zod / OpenAI tool-spec enums.
  * Single source of truth: derive the array from `Object.values(...)`.
+ *
+ * The lone import is the error type — `errorHandler.js` pulls in nothing but
+ * node's `events`, so it cannot reintroduce the provider cycle this module was
+ * split out to avoid.
  */
+
+import { ServerError } from '../../lib/errorHandler.js';
 
 export const IMAGE_GEN_MODE = Object.freeze({
   EXTERNAL: 'external',
@@ -31,6 +37,29 @@ export const CLOUD_IMAGE_GEN_MODES = Object.freeze([
   IMAGE_GEN_MODE.AGY,
 ]);
 
+// The provider-side image tool each cloud CLI is directed to call. Single
+// source: the prompt builders name it, the fabrication guard names it when it
+// rejects a code-drawn stand-in, and the usage card labels its quota row with
+// it — six string literals before this existed. Grok is the one backend with
+// two, picked by whether the render has a source image.
+export const IMAGE_TOOL_NAMES = Object.freeze({
+  [IMAGE_GEN_MODE.AGY]: 'generate_image',
+  [IMAGE_GEN_MODE.GROK]: 'image_gen',
+  [IMAGE_GEN_MODE.CODEX]: 'image_gen',
+});
+
+/** Grok's tool depends on the direction: i2i edits go to `image_edit`. */
+export const grokImageTool = (initImagePath) => (initImagePath ? 'image_edit' : IMAGE_TOOL_NAMES[IMAGE_GEN_MODE.GROK]);
+
+/**
+ * Cloud image backends the user has enabled in Settings → Image Gen. Hoisted
+ * here so callers outside the dispatcher (the usage card) don't re-encode how
+ * a backend is enabled — `settings.imageGen[mode].enabled` was already spelled
+ * out at a dozen sites and drifts the moment enablement grows a nuance.
+ */
+export const enabledCloudImageModes = (settings) =>
+  CLOUD_IMAGE_GEN_MODES.filter((mode) => settings?.imageGen?.[mode]?.enabled === true);
+
 // Modes the mediaJobQueue can run (external SD-API stays synchronous — a
 // remote HTTP call with no local single-flight constraint to absorb). Single
 // source for the pipeline routes' Zod enums and batch-render guards, so a
@@ -51,6 +80,24 @@ export const EDIT_INCAPABLE_IMAGE_MODES = Object.freeze([IMAGE_GEN_MODE.AGY]);
 
 /** Can `mode` accept an input image (i2i / edit)? */
 export const isEditCapableMode = (mode) => !EDIT_INCAPABLE_IMAGE_MODES.includes(mode);
+
+/**
+ * The one 400 for "this backend was handed an input image and cannot take one".
+ *
+ * Four verbatim copies of this throw existed — `agy.js`, the dispatcher,
+ * `prepareParams.js` and the imageGen route — before the sprite reference paths
+ * needed a fifth (#3331), so it now lives beside the predicate that decides it.
+ * Every caller gates on `isEditCapableMode`, so adding a backend to
+ * EDIT_INCAPABLE_IMAGE_MODES still stays a one-line change.
+ *
+ * The `AGY_IMAGE_EDIT_UNSUPPORTED` code keeps the name it shipped under (it is
+ * the only edit-incapable backend today) so existing clients and docs still
+ * match; the message names whichever backend was actually asked for.
+ */
+export const editIncapableModeError = (mode) => new ServerError(
+  `${mode ? mode[0].toUpperCase() + mode.slice(1) : 'This'} Imagegen supports text-to-image only`,
+  { status: 400, code: 'AGY_IMAGE_EDIT_UNSUPPORTED' },
+);
 
 // Cloud-CLI providers expose no numeric i2i denoise knob, so map the
 // local-runner-style strength (0..1, lower = more faithful to the source)

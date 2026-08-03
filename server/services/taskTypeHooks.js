@@ -42,6 +42,9 @@
  * importing anything, so a normal task type pays ~zero cost.
  */
 
+import { isFalsyMeta } from './agentState.js';
+import { TRACKER_FILING_TASK_TYPES } from '../lib/workTracker.js';
+
 // taskType → () => import('./path/to/hookModule.js'). A module may export either
 // or both hooks; a missing export means "no hook of that kind for this type".
 const HOOK_MODULES = {
@@ -157,6 +160,45 @@ export function isNonCommittingCoordinatorTask(task) {
   if (task?.metadata?.reviewLoopFollowUp === true || task?.metadata?.reviewLoopFollowUp === 'true') return true;
   const type = task?.metadata?.analysisType || task?.metadata?.taskAnalysisType || task?.taskType || null;
   return NON_COMMITTING_COORDINATOR_TASK_TYPES.has(type);
+}
+
+/**
+ * Whether a task declares NO `[task-<id>]` commit criterion: the static
+ * coordinator set above, OR a TRACKER-FILING task whose dispatch derived
+ * `worktreeChangesExpected: false` (cosTaskGenerator.js#resolveTrackerFilingBlock,
+ * referenceRepos.js#triggerReferenceAnalysis).
+ *
+ * A type-keyed set alone cannot express the tracker-filing shape: the SAME task
+ * type legitimately commits on a `plan`-tracker app (it appends + commits
+ * PLAN.md checklist items) and legitimately commits NOTHING on a
+ * github/gitlab/jira app (it files issues/tickets out of band). Reading the
+ * already-derived per-task flag gets both right, and retro-fixes the same latent
+ * #2696-class artifact `reference-watch` has on non-`plan` trackers today —
+ * every successful run scoring as a failure and pinning the type's learning
+ * bucket at ~0% (#3273).
+ *
+ * The flag alone is NOT sufficient, hence the type gate in front of it:
+ * `worktreeChangesExpected` is a user-settable per-app taskMetadata override
+ * accepted for EVERY task type (`cosValidation.js` ALLOWED keys → `POST
+ * /api/apps/:id/task-types` → merged into `metadata` in
+ * cosTaskGenerator.js#generateManagedAppImprovementTaskForType). It exists to
+ * opt a run out of the TUI idle-complete clean-tree gate; someone setting it
+ * there is not asking to disable success validation. Ungated, a `security` task
+ * carrying it would exit 0 having committed nothing and be recorded as a pass
+ * instead of the honest miss it is.
+ *
+ * Accepts the `'false'` string form for parity with the spawn-side gate
+ * (agentTuiSpawning.js's `isFalsyMeta`), since task metadata round-trips through
+ * TASKS.md as text. `true`/absent falls through to the commit check unchanged.
+ */
+export function declaresNoCommitCriterion(task) {
+  if (isNonCommittingCoordinatorTask(task)) return true;
+  // Resolved the same way isNonCommittingCoordinatorTask (and the learning
+  // bucket) resolves it, so a LIVE queue task (`analysisType`) and the archived
+  // agent projection (`taskAnalysisType`) agree.
+  const type = task?.metadata?.analysisType || task?.metadata?.taskAnalysisType || task?.taskType || null;
+  if (!TRACKER_FILING_TASK_TYPES.has(type)) return false;
+  return isFalsyMeta(task?.metadata?.worktreeChangesExpected);
 }
 
 /**

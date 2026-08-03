@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import {Fingerprint, Dna, Clock, Activity, Palette, Target,
   ChevronRight, Sun, Moon, Coffee, Zap,
   Heart, DollarSign, Lightbulb, Users, Flame, Link2,

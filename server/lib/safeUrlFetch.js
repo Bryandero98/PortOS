@@ -39,7 +39,7 @@ const DEFAULT_MAX_BYTES = 12 * 1024 * 1024; // 12 MB — generous for a single i
  * net to the full RFC1918 / CGNAT-adjacent / IPv6-ULA ranges so a feed URL can't
  * reach the home network. An unparseable / empty value fails closed (private).
  */
-function isPrivateAddress(ip) {
+export function isPrivateAddress(ip) {
   if (!ip) return true;
   const lower = ip.toLowerCase();
   if (lower.includes(':')) {

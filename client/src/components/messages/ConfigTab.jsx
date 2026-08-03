@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Plus, Trash2, RefreshCw, Mail, Globe, MessageSquare, Save, ExternalLink, User } from 'lucide-react';
+import { useSearchParams } from 'react-router';
+import { Plus, Trash2, RefreshCw, Mail, Globe, MessageSquare, Save, ExternalLink, User, Key, Monitor, Wand2 } from 'lucide-react';
 import toast from '../ui/Toast';
 import { formatDateTime } from '../../utils/formatters';
 import * as api from '../../services/api';
@@ -49,7 +50,10 @@ export default function ConfigTab({ accounts, setAccounts }) {
 
   // Google OAuth status for Gmail accounts
   const [googleAuth, setGoogleAuth] = useState(null);
+  const [oauthForm, setOauthForm] = useState({ clientId: '', clientSecret: '' });
+  const [savingOAuth, setSavingOAuth] = useState(false);
   const [reauthorizing, setReauthorizing] = useState(false);
+  const [autoConfigStep, setAutoConfigStep] = useState(null);
 
   // AI config
   const [config, setConfig] = useState(null);
@@ -98,18 +102,74 @@ export default function ConfigTab({ accounts, setAccounts }) {
 
   // Check Google OAuth status when Gmail accounts exist
   const hasGmailAccount = accounts.some(a => a.type === 'gmail');
+  const gmailAuthorized = Boolean(googleAuth?.hasTokens && !googleAuth?.needsScopeUpgrade);
+  const fetchGoogleAuth = useCallback(() => {
+    api.getGoogleAuthStatus()
+      .then(setGoogleAuth)
+      .catch(err => console.warn(`⚠️ Failed to load Google auth status: ${err.message}`));
+  }, []);
+
   useEffect(() => {
-    if (hasGmailAccount) {
-      api.getGoogleAuthStatus().then(setGoogleAuth).catch(err => console.warn(`⚠️ Failed to load Google auth status: ${err.message}`));
-    }
-  }, [hasGmailAccount]);
+    if (hasGmailAccount) fetchGoogleAuth();
+  }, [fetchGoogleAuth, hasGmailAccount]);
+
+  // Google redirects back to the surface that started authorization. Surface a
+  // callback failure once, then remove it so reloads do not repeat the toast.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const oauthError = searchParams.get('oauthError');
+  useEffect(() => {
+    if (!oauthError) return;
+    toast.error(`Google OAuth failed: ${oauthError}`);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete('oauthError');
+      return next;
+    }, { replace: true });
+  }, [oauthError, setSearchParams]);
 
   const handleReauthorize = () => {
     setReauthorizing(true);
-    api.getGoogleAuthUrl({ silent: true })
-      .then(({ url }) => { window.open(url, '_blank'); })
+    api.getGoogleAuthUrl({ returnTo: 'messages', silent: true })
+      .then(({ url }) => {
+        window.open(url, '_blank');
+        toast.success('Complete authorization in the opened browser tab');
+      })
       .catch(() => toast.error('Failed to get auth URL'))
       .finally(() => setReauthorizing(false));
+  };
+
+  const handleSaveOAuthCredentials = async () => {
+    if (!oauthForm.clientId || !oauthForm.clientSecret) {
+      return toast.error('Both Client ID and Client Secret are required');
+    }
+    setSavingOAuth(true);
+    const saved = await api.saveGoogleAuthCredentials(oauthForm, { silent: true }).catch(() => null);
+    setSavingOAuth(false);
+    if (!saved) return toast.error('Failed to save credentials');
+    toast.success('OAuth credentials saved');
+    fetchGoogleAuth();
+    handleReauthorize();
+  };
+
+  const handleAutoConfigStart = async () => {
+    const result = await api.startGoogleAutoConfig({ silent: true }).catch(() => null);
+    if (!result || result.error) return toast.error(result?.error || 'Failed to open browser');
+    setAutoConfigStep('login');
+    toast.success('Google Cloud Console opened in PortOS browser');
+  };
+
+  const handleAutoConfigContinue = async () => {
+    setAutoConfigStep('running');
+    const email = accounts.find(a => a.type === 'gmail')?.email || '';
+    const result = await api.runGoogleAutoConfig(email, { silent: true }).catch(() => null);
+    if (!result || result.error) {
+      setAutoConfigStep('login');
+      return toast.error(result?.error || 'Automated setup failed. Try manual setup instead.');
+    }
+    setAutoConfigStep('done');
+    fetchGoogleAuth();
+    toast.success('Google OAuth setup complete');
+    handleReauthorize();
   };
 
   const handleEnableGmailApi = () => {
@@ -243,35 +303,129 @@ export default function ConfigTab({ accounts, setAccounts }) {
           <div className="p-4 mb-4 bg-port-card border border-port-border rounded-lg space-y-3">
             <h3 className="text-sm font-medium text-white">Gmail Setup</h3>
             <div className="space-y-2">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-center gap-2 text-sm">
-                  <span className={`w-2 h-2 rounded-full ${googleAuth?.hasTokens ? 'bg-port-success' : 'bg-port-error'}`} />
-                  <span className="text-gray-300">Google OAuth</span>
+                  <span className={`w-2 h-2 rounded-full ${gmailAuthorized ? 'bg-port-success' : 'bg-port-warning'}`} />
+                  <span className="text-gray-300">
+                    {gmailAuthorized
+                      ? 'Google OAuth authorized'
+                      : googleAuth?.hasTokens
+                        ? 'Google OAuth needs Gmail permission'
+                        : googleAuth?.hasCredentials
+                          ? 'Google OAuth authorization pending'
+                          : 'Google OAuth setup required'}
+                  </span>
                 </div>
-                {googleAuth?.hasTokens ? (
-                  <button
-                    onClick={handleReauthorize}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-gray-400 hover:text-white transition-colors"
-                    title="Re-authorize to update permissions"
-                  >
-                    <RefreshCw size={12} />
-                    Re-authorize
-                  </button>
-                ) : (
+                {googleAuth?.hasCredentials && (
                   <button
                     onClick={handleReauthorize}
                     disabled={reauthorizing}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-port-warning/20 text-port-warning text-xs rounded-lg hover:bg-port-warning/30 transition-colors disabled:opacity-50"
+                    className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg transition-colors disabled:opacity-50 ${
+                      gmailAuthorized
+                        ? 'text-gray-400 hover:text-white'
+                        : 'bg-port-warning/20 text-port-warning hover:bg-port-warning/30'
+                    }`}
+                    title={gmailAuthorized ? 'Re-authorize to update permissions' : 'Authorize Gmail with Google'}
                   >
-                    <ExternalLink size={14} />
-                    Authorize
+                    {gmailAuthorized ? <RefreshCw size={12} /> : <ExternalLink size={14} />}
+                    {gmailAuthorized ? 'Re-authorize' : 'Authorize'}
                   </button>
                 )}
               </div>
+
+              {!googleAuth?.hasCredentials && (
+                <div className="space-y-3 rounded-lg border border-port-border bg-port-bg/50 p-3">
+                  <p className="text-xs text-gray-500">
+                    PortOS needs a Google Cloud OAuth client before it can ask for access to Gmail.
+                  </p>
+
+                  {!autoConfigStep ? (
+                    <button
+                      onClick={handleAutoConfigStart}
+                      className="flex w-full items-center justify-center gap-1.5 rounded border border-port-accent/20 bg-port-accent/10 px-3 py-2 text-xs text-port-accent hover:bg-port-accent/20"
+                    >
+                      <Monitor size={14} />
+                      Set up with PortOS Browser
+                    </button>
+                  ) : autoConfigStep === 'running' ? (
+                    <div className="flex items-center gap-2 rounded border border-port-border bg-port-bg/80 p-3">
+                      <RefreshCw size={14} className="shrink-0 animate-spin text-port-accent" />
+                      <p className="text-xs text-gray-400">
+                        Enabling Google APIs, configuring OAuth consent, and creating credentials. This may take up to a minute.
+                      </p>
+                    </div>
+                  ) : autoConfigStep === 'login' ? (
+                    <div className="space-y-2 rounded border border-port-border bg-port-bg/80 p-3">
+                      <div className="flex items-center gap-1.5 text-xs font-medium text-port-accent">
+                        <Monitor size={12} />
+                        Google Cloud Console is open in the PortOS browser
+                      </div>
+                      <div className="space-y-1 text-xs text-gray-400">
+                        <p>1. Log in to your Google account if needed.</p>
+                        <p>2. Select or create a Google Cloud project.</p>
+                        <p>3. Click Continue and PortOS will finish the setup.</p>
+                      </div>
+                      <div className="flex gap-2 pt-1">
+                        <button
+                          onClick={handleAutoConfigContinue}
+                          className="flex items-center gap-1 rounded bg-port-accent px-3 py-1.5 text-xs text-white hover:bg-port-accent/80"
+                        >
+                          <Wand2 size={12} /> Continue
+                        </button>
+                        <button
+                          onClick={() => setAutoConfigStep(null)}
+                          className="rounded bg-port-border px-3 py-1.5 text-xs text-gray-400 hover:text-white"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5 p-2 text-xs text-port-success">
+                      <Key size={12} />
+                      Setup complete. Finish authorization in the opened tab.
+                    </div>
+                  )}
+
+                  <details className="text-xs text-gray-600">
+                    <summary className="cursor-pointer font-medium text-gray-400 hover:text-white">
+                      Manual setup (paste credentials)
+                    </summary>
+                    <div className="mt-2 space-y-2">
+                      <FormField label="Google OAuth Client ID" labelClassName="block text-xs text-gray-400 mb-1">
+                        <input
+                          type="text"
+                          value={oauthForm.clientId}
+                          onChange={e => setOauthForm(f => ({ ...f, clientId: e.target.value }))}
+                          placeholder="123456789-abc.apps.googleusercontent.com"
+                          className="w-full rounded border border-port-border bg-port-bg px-2 py-1.5 text-xs text-white placeholder-gray-600"
+                        />
+                      </FormField>
+                      <FormField label="Google OAuth Client Secret" labelClassName="block text-xs text-gray-400 mb-1">
+                        <input
+                          type="password"
+                          value={oauthForm.clientSecret}
+                          onChange={e => setOauthForm(f => ({ ...f, clientSecret: e.target.value }))}
+                          placeholder="GOCSPX-..."
+                          className="w-full rounded border border-port-border bg-port-bg px-2 py-1.5 text-xs text-white placeholder-gray-600"
+                        />
+                      </FormField>
+                      <button
+                        onClick={handleSaveOAuthCredentials}
+                        disabled={savingOAuth || !oauthForm.clientId || !oauthForm.clientSecret}
+                        className="flex items-center gap-1 rounded bg-port-accent px-2.5 py-1.5 text-xs text-white hover:bg-port-accent/80 disabled:opacity-50"
+                      >
+                        {savingOAuth ? 'Saving...' : 'Save & Authorize'}
+                      </button>
+                    </div>
+                  </details>
+                </div>
+              )}
+
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2 text-sm">
                   <span className="w-2 h-2 rounded-full bg-gray-500" />
-                  <span className="text-gray-300">Gmail API enabled</span>
+                  <span className="text-gray-300">Gmail API</span>
                 </div>
                 <button
                   onClick={handleEnableGmailApi}
@@ -284,8 +438,8 @@ export default function ConfigTab({ accounts, setAccounts }) {
               </div>
             </div>
             <p className="text-xs text-gray-500">
-              Gmail requires: 1) Gmail API enabled in Google Cloud Console, 2) Google OAuth authorized with Gmail scopes.
-              If sync fails with "API not enabled", click "Enable in Console" above.
+              Gmail requires the Gmail API in Google Cloud and Google OAuth permission. Guided setup handles both;
+              manual setup can use "Enable in Console" to verify the API.
             </p>
           </div>
         )}
@@ -350,6 +504,7 @@ export default function ConfigTab({ accounts, setAccounts }) {
         <div className="space-y-2">
           {accounts.map((account) => {
             const Icon = TYPE_ICONS[account.type] || Mail;
+            const isPendingAuthorization = account.type === 'gmail' && account.enabled && !gmailAuthorized;
             return (
               <div
                 key={account.id}
@@ -387,12 +542,15 @@ export default function ConfigTab({ accounts, setAccounts }) {
                   <button
                     onClick={() => handleToggle(account)}
                     className={`px-2 py-1 rounded text-xs transition-colors ${
-                      account.enabled
+                      isPendingAuthorization
+                        ? 'bg-port-warning/20 text-port-warning'
+                        : account.enabled
                         ? 'bg-port-success/20 text-port-success'
                         : 'bg-gray-700 text-gray-400'
                     }`}
+                    title={isPendingAuthorization ? 'Account is enabled but waiting for Google authorization' : undefined}
                   >
-                    {account.enabled ? 'Enabled' : 'Disabled'}
+                    {isPendingAuthorization ? 'Pending authorization' : account.enabled ? 'Enabled' : 'Disabled'}
                   </button>
                   <button
                     onClick={() => handleClearCache(account.id)}

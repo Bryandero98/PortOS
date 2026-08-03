@@ -7,7 +7,7 @@
 
 import { Router } from 'express';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
-import { validateRequest } from '../lib/validation.js';
+import { validateRequest, parsePagination } from '../lib/validation.js';
 import {
   postSessionSubmitSchema,
   postConfigUpdateSchema,
@@ -17,6 +17,7 @@ import {
   memoryItemCreateSchema,
   memoryItemUpdateSchema,
   memoryPracticeSchema,
+  memoryMasteryAttestationSchema,
   memoryDrillRequestSchema,
   morseRoundSchema,
   morseLevelUpdateSchema,
@@ -166,7 +167,13 @@ router.post('/post/drill', asyncHandler(async (req, res) => {
 
   if (MEMORY_DRILL_TYPES.includes(data.type)) {
     const mode = data.type.replace('memory-', '');
-    const drill = await memoryService.generateMemoryDrill({ mode, count: data.config?.count, memoryItemId: data.config?.memoryItemId });
+    // The saved config scopes the auto-picked (lowest-mastery) item to the ones
+    // still enabled in the user's Practice Plan (issue #3252); an explicit
+    // memoryItemId bypasses it.
+    const drill = await memoryService.generateMemoryDrill(
+      { mode, count: data.config?.count, memoryItemId: data.config?.memoryItemId },
+      await postService.getPostConfig(),
+    );
     if (!drill) {
       throw new ServerError('Failed to generate memory drill', { status: 500, code: 'MEMORY_DRILL_FAILED' });
     }
@@ -203,6 +210,12 @@ router.post('/post/drill', asyncHandler(async (req, res) => {
  */
 router.get('/post/multiplication-progress', asyncHandler(async (req, res) => {
   const progress = await postService.getMultiplicationProgress();
+  res.json(progress);
+}));
+
+/** Current technique-anchored Powers ladder level and mastery status. */
+router.get('/post/powers-progress', asyncHandler(async (req, res) => {
+  const progress = await postService.getPowersProgress();
   res.json(progress);
 }));
 
@@ -306,7 +319,7 @@ router.get('/post/training/stats', asyncHandler(async (req, res) => {
  * Recent training entries
  */
 router.get('/post/training/entries', asyncHandler(async (req, res) => {
-  const limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
+  const { limit } = parsePagination(req.query, { defaultLimit: 20, maxLimit: 100 });
   const entries = await trainingService.getTrainingEntries(limit);
   res.json(entries);
 }));
@@ -423,6 +436,17 @@ router.post('/post/memory-items/:id/practice', asyncHandler(async (req, res) => 
 }));
 
 /**
+ * POST /api/meatspace/post/memory-items/:id/attest-mastery
+ * Provisionally accept user-attested mastery and schedule one future audit.
+ */
+router.post('/post/memory-items/:id/attest-mastery', asyncHandler(async (req, res) => {
+  validateRequest(memoryMasteryAttestationSchema, req.body);
+  const result = await memoryService.attestMemoryItemMastery(req.params.id);
+  if (!result) throw new ServerError('Memory item not found or has no practice targets', { status: 404, code: 'NOT_FOUND' });
+  res.json(result);
+}));
+
+/**
  * GET /api/meatspace/post/memory-items/:id/mastery
  * Get mastery breakdown for a memory item
  */
@@ -448,7 +472,7 @@ router.get('/post/memory-items/:id/chunk-mastery', asyncHandler(async (req, res)
  */
 router.post('/post/memory-drill', asyncHandler(async (req, res) => {
   const data = validateRequest(memoryDrillRequestSchema, req.body);
-  const drill = await memoryService.generateMemoryDrill(data);
+  const drill = await memoryService.generateMemoryDrill(data, await postService.getPostConfig());
   if (!drill) throw new ServerError('No memory items available', { status: 400, code: 'NO_MEMORY_ITEMS' });
   res.json(drill);
 }));

@@ -821,6 +821,28 @@ export const portsAllocateSchema = z.object({
 });
 
 // =============================================================================
+// DATA MANAGER
+// =============================================================================
+
+// DELETE /api/data/:category — purge a category, or one entry inside it.
+// `subPath` names a single top-level entry of the category directory; omitting
+// it asks for the whole-directory wipe, which `purgeCategory` only honors for
+// `purgeScope: 'category'` entries (#3327). `isTopLevelEntryName` in
+// `fileUtils.js` is the authoritative gate — it runs in `purgeCategory`, which
+// is the boundary a non-HTTP caller crosses too. The separator check is spelled
+// out here rather than imported so this module keeps its narrow import surface
+// (a partial mock of fileUtils in an unrelated suite would break schema
+// construction at module load).
+export const dataPurgeSchema = z.object({
+  subPath: z.string().min(1).max(255)
+    .refine(
+      (v) => !v.includes('/') && !v.includes('\\') && v !== '.' && v !== '..',
+      'subPath must name a single entry in the category'
+    )
+    .optional()
+});
+
+// =============================================================================
 // DATABASE
 // =============================================================================
 
@@ -1382,7 +1404,7 @@ export const spriteForkSchema = z.object({
   id: z.string().trim().max(200).optional(),
   designPrompt: z.string().trim().min(1).max(4000),
   mode: z.enum(QUEUEABLE_IMAGE_MODES).optional(),
-  model: z.string().trim().max(64).optional(),
+  model: cloudModelIdString('model must be a valid model id').max(RECORD_RENDER_MODEL_MAX).optional(),
   effort: z.string().trim().max(32).optional(),
   initImageStrength: optionalUnitNumber,
 });

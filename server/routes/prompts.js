@@ -2,6 +2,13 @@ import { Router } from 'express';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import { stageConfigUpdateSchema, validateRequest } from '../lib/validation.js';
 import {
+  SYSTEM_STAGE_KEYS,
+  isProtectedStage,
+  isSystemStage,
+  stageReferencedBy,
+  systemStageUsedBy
+} from '../lib/promptSystemStages.js';
+import {
   listJobSkillTemplates,
   loadJobSkillTemplate,
   saveJobSkillTemplate,
@@ -18,10 +25,12 @@ export function createPortOSPromptsRoutes(aiToolkit) {
   const router = Router();
   const promptsService = aiToolkit.services.prompts;
 
-  // GET /api/prompts - List all stages (wrapped in {stages: ...})
+  // GET /api/prompts - List all stages (wrapped in {stages: ...}) plus the
+  // system-stage key list, so the Prompt Manager badges/filters them off the
+  // server's own table instead of a client-side mirror that can drift (#3314).
   router.get('/', asyncHandler(async (req, res) => {
     const stages = promptsService.getStages();
-    res.json({ stages });
+    res.json({ stages, systemStages: SYSTEM_STAGE_KEYS });
   }));
 
   // GET /api/prompts/variables - List all variables (wrapped in {variables: ...})
@@ -159,32 +168,28 @@ export function createPortOSPromptsRoutes(aiToolkit) {
     res.json({ success: true });
   }));
 
-  // GET /api/prompts/:stage/usage - Check if stage is in use
+  // GET /api/prompts/:stage/usage - Check if stage is in use.
+  //
+  // `isSystemStage` stays the CURATED answer so the UI's SYSTEM copy/badge
+  // stays accurate, while `canDelete` reflects the WIDER protected set — a
+  // pipeline stage nothing badges is still undeletable because source names it
+  // (#3335). `referencedBy` is what the delete-confirm dialog lists.
   router.get('/:stage/usage', asyncHandler(async (req, res) => {
     const stageName = req.params.stage;
-
-    // Known system stages that are referenced in code
-    const systemStages = {
-      'cos-agent-briefing': ['CoS sub-agent task briefing'],
-      'cos-evaluate': ['CoS task evaluation'],
-      'cos-report-summary': ['CoS daily reports'],
-      'cos-self-improvement': ['CoS self-improvement tasks'],
-      'cos-task-enhance': ['CoS task prompt enhancement'],
-      'brain-classifier': ['Brain thought classification'],
-      'brain-daily-digest': ['Brain daily digest generation'],
-      'brain-weekly-review': ['Brain weekly review generation'],
-      'memory-evaluate': ['Memory extraction from agent output'],
-      'app-detection': ['Project directory analysis']
-    };
-
-    const isSystemStage = stageName in systemStages;
-    const usedBy = systemStages[stageName] || [];
+    const isSystem = isSystemStage(stageName);
+    const referencedBy = stageReferencedBy(stageName);
+    const isProtected = isProtectedStage(stageName);
 
     res.json({
-      isSystemStage,
-      usedBy,
-      canDelete: !isSystemStage,
-      warning: isSystemStage ? 'This is a system stage used by PortOS features. Deleting it may break functionality.' : null
+      isSystemStage: isSystem,
+      usedBy: systemStageUsedBy(stageName),
+      referencedBy,
+      canDelete: !isProtected,
+      warning: isProtected
+        ? (isSystem
+          ? 'This is a system stage used by PortOS features. Deleting it may break functionality.'
+          : `PortOS resolves this stage by name in ${referencedBy.length} source file${referencedBy.length === 1 ? '' : 's'}. Deleting it will break the feature that calls it.`)
+        : null
     });
   }));
 
@@ -192,16 +197,9 @@ export function createPortOSPromptsRoutes(aiToolkit) {
   router.delete('/:stage', asyncHandler(async (req, res) => {
     const stageName = req.params.stage;
 
-    // Check if it's a system stage
-    const systemStages = [
-      'cos-agent-briefing', 'cos-evaluate', 'cos-report-summary', 'cos-self-improvement',
-      'cos-task-enhance', 'brain-classifier', 'brain-daily-digest', 'brain-weekly-review',
-      'memory-evaluate', 'app-detection'
-    ];
-
-    if (systemStages.includes(stageName) && req.query.force !== 'true') {
+    if (isProtectedStage(stageName) && req.query.force !== 'true') {
       throw new ServerError(
-        'Cannot delete system stage. This stage is used by PortOS features. Add ?force=true to delete anyway.',
+        'Cannot delete protected stage. PortOS resolves this stage by name. Add ?force=true to delete anyway.',
         { status: 400, code: 'SYSTEM_STAGE_PROTECTED' }
       );
     }

@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router';
 import { FileInput, Loader2, ArrowLeft, CheckCircle2, AlertTriangle, ChevronDown, ChevronRight, Wand2, Sparkles } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import { useAsyncAction } from '../hooks/useAsyncAction';

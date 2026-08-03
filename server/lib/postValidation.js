@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { CACHEABLE_TYPES } from '../services/meatspacePostDrillCache.js';
 import { COGNITIVE_DRILL_TYPES } from '../services/meatspacePostCognitive.js';
+import { TOPIC_IDS } from './postTopics.js';
 import { HHMM_STRICT_RE } from './timezone.js';
 
 // =============================================================================
@@ -106,6 +107,7 @@ const drillTypeConfigSchema = z.object({
   // session submit), so they must survive validation on the round-trip.
   progressive: z.boolean().optional(),
   level: z.number().int().min(0).max(50).optional(),
+  technique: z.string().max(100).optional(),
   factors: z.array(z.number().int().min(1).max(4)).min(2).max(6).optional(),
   // Maintenance-review rep (issue #2096): `review` bypasses the progression
   // override so a specific mastered-but-inactive rung is re-verified at its own
@@ -240,6 +242,36 @@ export const postConfigUpdateSchema = z.object({
     enabled: z.boolean().optional(),
     drillTypes: z.record(z.enum(COGNITIVE_DRILL_TYPES), drillTypeConfigSchema).optional()
   }).optional(),
+  // Memory practice (issue #3252). Mirrors the other module blocks, plus an
+  // `items` map so an INDIVIDUAL memorized text — e.g. the seeded Elements Song
+  // — can be dropped from the daily rotation without deleting it (which would
+  // throw away its mastery/schedule history). Keys are memory item ids, so this
+  // is an open `z.string()` record rather than an enum.
+  // `partialRecord`, not `record`: an enum-keyed `z.record` is EXHAUSTIVE in
+  // zod 4 (every enum member required), which is why the sibling module blocks
+  // above force their UI to write a complete drillTypes map. These blocks are
+  // new, so they take the more forgiving contract — a patch may carry just the
+  // one flag it is changing.
+  memory: z.object({
+    enabled: z.boolean().optional(),
+    drillTypes: z.partialRecord(z.enum(MEMORY_DRILL_TYPES), drillTypeConfigSchema).optional(),
+    // Keys are memory item ids — an open record, capped at the same 200 chars
+    // every other id field here uses so a hand-edited config can't grow unbounded.
+    items: z.record(z.string().max(200), z.object({ enabled: z.boolean().optional() })).optional()
+  }).optional(),
+  // Morse (issue #3252). Morse has no drill-type knobs here — its trainer owns
+  // its own Koch settings — so the block is just the participation toggle that
+  // suppresses the `morse-copy` stalled-progression recommendation.
+  morse: z.object({
+    enabled: z.boolean().optional()
+  }).optional(),
+  // Practice-topic participation (issue #3252) — the fine-grained "what am I
+  // studying?" layer that sits ON TOP of the coarse `sessionModules` filter.
+  // Absent entry = enabled (see server/lib/postTopics.js), so a config that
+  // predates this key behaves exactly as before — additive, no migration.
+  topics: z.partialRecord(z.enum(TOPIC_IDS), z.object({
+    enabled: z.boolean().optional()
+  })).optional(),
   sessionModules: z.array(z.enum(POST_MODULES)).optional(),
   // Optional practice goals (issue #2100) — see postGoalsSchema above.
   goals: postGoalsSchema.optional(),
@@ -337,11 +369,25 @@ export const memoryItemUpdateSchema = z.object({
       correct: z.number().int().min(0),
       attempts: z.number().int().min(0),
       lastPracticed: z.string().nullable().optional(),
+      recent: z.array(z.union([z.literal(0), z.literal(1)])).max(10).optional(),
+      masteredAt: z.string().optional(),
+      masterySource: z.enum(['verified', 'attested']).optional(),
     })).optional(),
     elements: z.record(z.object({
       correct: z.number().int().min(0),
       attempts: z.number().int().min(0),
+      recent: z.array(z.union([z.literal(0), z.literal(1)])).max(10).optional(),
+      masteredAt: z.string().optional(),
+      masterySource: z.enum(['verified', 'attested']).optional(),
     })).optional(),
+    retention: z.object({
+      status: z.enum(['learning', 'attested', 'mastered', 'lapsed']),
+      attestedAt: z.string().nullable().optional(),
+      masteredAt: z.string().nullable().optional(),
+      spotCheckAt: z.string().nullable().optional(),
+      spotCheckCompletedAt: z.string().nullable().optional(),
+      lapsedAt: z.string().nullable().optional(),
+    }).optional(),
   }).optional(),
 });
 
@@ -351,6 +397,7 @@ const practiceResultSchema = z.object({
   element: z.string().nullable().optional(),
   expected: z.string().optional(),
   answered: z.string().optional(),
+  chunkId: z.string().optional(),
 });
 
 export const memoryPracticeSchema = z.object({
@@ -361,6 +408,10 @@ export const memoryPracticeSchema = z.object({
   chunkId: z.string().nullable().optional(),
   results: z.array(practiceResultSchema).min(1),
   totalMs: z.number().min(0).optional(),
+});
+
+export const memoryMasteryAttestationSchema = z.object({
+  acknowledged: z.literal(true),
 });
 
 export const memoryDrillRequestSchema = z.object({

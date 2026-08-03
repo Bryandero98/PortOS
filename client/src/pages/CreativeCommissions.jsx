@@ -15,7 +15,7 @@
  */
 
 import { useEffect, useMemo, useState, useCallback } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router';
 import { Plus, Sparkles, Trash2, Clock, Cpu, Pause, Play, Zap } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import Drawer from '../components/Drawer';

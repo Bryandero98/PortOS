@@ -29,7 +29,11 @@
  *     higher-ranked status is the newer truth and wins. This makes completion
  *     converge: once either peer marks a task done, the other adopts it instead
  *     of holding it `in_progress` forever (a live claim alone can't carry that
- *     signal — the owner strips the claim when it completes).
+ *     signal — the owner strips the claim when it completes). Two pairings are
+ *     exempt because their transitions run BACKWARD in rank and would otherwise
+ *     never converge: anything-vs-`challenged` (#2441) is decided by newest
+ *     `updatedAt`, and `in_progress`-vs-`pending` (#3376) by whether the pending
+ *     side's requeue postdates the other side's spawn. See pickContentBase.
  *
  *  3. Resolve the CLAIM metadata independently of content via the live lease:
  *     a side holding an unexpired lease is authoritative (the other peer must
@@ -73,6 +77,7 @@ import { isLeaseLive, getClaimOwner, CLAIM_METADATA_KEYS, parseTimestampMs } fro
 // store imports THIS module for mergeTaskLists, so pulling its PRIORITY_VALUES
 // here would form a circular import. taskParser has no cos-module deps.
 import { PRIORITY_VALUES } from '../lib/taskParser.js';
+import { isPostSpawnRequeue } from '../lib/taskRequeue.js';
 
 // Lifecycle rank — higher wins the content tiebreak (rule 2). Each status has a
 // distinct rank so two DIFFERENT statuses never tie (full convergence); the only
@@ -87,6 +92,12 @@ import { PRIORITY_VALUES } from '../lib/taskParser.js';
 // that never actually arise (both-challenged goes to the same-status path). It is
 // NOT terminal (the dispute resolves back to pending or forward to blocked), so it
 // keeps a live claim the same way in_progress does.
+//
+// The `in_progress`/`pending` pair carries a narrower version of the same caveat
+// (#3376): a requeue moves a task backward, so `pickContentBase` lets a `pending`
+// side win that pair when its requeue stamp postdates the other side's spawn —
+// falling back to this rank in every other case, including an ordinary edit on a
+// stale `pending` copy, which must NOT revert a running task.
 const STATUS_RANK = Object.freeze({ completed: 5, blocked: 4, challenged: 3, in_progress: 2, pending: 1 });
 const statusRank = (status) => STATUS_RANK[status] || 0;
 const isTerminalStatus = (status) => status === 'completed' || status === 'blocked';
@@ -126,7 +137,18 @@ function resolveClaim(local, remote, now) {
     if (lExp !== rExp) return claimTriple(lExp > rExp ? local : remote);
     const lOwner = getClaimOwner(local.metadata) || '';
     const rOwner = getClaimOwner(remote.metadata) || '';
-    return claimTriple(lOwner <= rOwner ? local : remote);
+    if (lOwner !== rOwner) return claimTriple(lOwner < rOwner ? local : remote);
+    // Same owner AND same expiry — the two sides are the same claim, but their
+    // `claimedAt` can still differ (a re-claim of a task this instance already
+    // held). Returning "whichever is local" would leave each peer with a
+    // different triple forever, so break on the remaining field too: earliest
+    // `claimedAt` wins, which is the claim that actually started this run.
+    const lAt = parseTimestampMs(local.metadata?.claimedAt);
+    const rAt = parseTimestampMs(remote.metadata?.claimedAt);
+    if (lAt === rAt) return claimTriple(local);
+    if (lAt === null) return claimTriple(remote);
+    if (rAt === null) return claimTriple(local);
+    return claimTriple(lAt < rAt ? local : remote);
   }
   if (localLive) return claimTriple(local);
   if (remoteLive) return claimTriple(remote);
@@ -186,6 +208,26 @@ function pickContentBase(local, remote) {
     // (non-challenged) side so an overturn still converges deterministically.
     return lChallenged ? remote : local;
   }
+  // `in_progress` → `pending` is the OTHER non-monotonic transition (#3376): a
+  // requeue moves a task BACKWARD in rank, so a pure rank comparison lets a peer's
+  // stale pre-requeue `in_progress` snapshot revert it — discarding the resume
+  // pointer (`existingBranch` / `resumeWorktreePath`) that write just resolved, so
+  // the eventual retry restarts from scratch. Two live paths requeue this way:
+  // the orphan sweep (`handleOrphanedTask`, agentManagement.js) and the retry-hold
+  // release (`releaseRetryHold`, agentWorktreeCleanup.js, #3373).
+  //
+  // The exemption is CAUSAL, not merely recent. Deciding this pair by `updatedAt`
+  // alone would also hand the win to an ordinary content edit that happens to land
+  // on a peer's stale `pending` copy — reverting a genuinely running task to
+  // `pending` and inviting a second agent onto it, which is worse than the delayed
+  // retry this fixes. So the `pending` side wins only when its requeue stamp is
+  // strictly NEWER than the spawn the `in_progress` side is reporting
+  // (`isPostSpawnRequeue`); anything else falls through to the rank below, which
+  // is exactly today's behavior — including for a peer too old to stamp.
+  // Symmetric (depends only on the pair), so both peers converge. `completed`
+  // (rule 2) is never involved: the test requires this exact status pair.
+  if (isPostSpawnRequeue(local, remote)) return local;
+  if (isPostSpawnRequeue(remote, local)) return remote;
   const lr = statusRank(local.status);
   const rr = statusRank(remote.status);
   if (rr !== lr) return rr > lr ? remote : local;
@@ -242,8 +284,22 @@ function mergeOne(local, remote, now) {
   const base = pickContentBase(local, remote);
 
   // (rule 3) claim metadata resolved separately so a live claim propagates even
-  // when content came from the other side.
-  const claim = resolveClaim(local, remote, now);
+  // when content came from the other side — EXCEPT when the winner is a requeue
+  // (#3376). `cosTaskStore.updateTask` releases the claim in the very write that
+  // moves a task out of `in_progress` (#1563), precisely so a stale lease can't
+  // block the retry for a full lease window. So when a requeue beats the
+  // counterpart's pre-requeue `in_progress` snapshot, that snapshot's lease
+  // belongs to the run the requeue just retired: re-applying it would re-impose
+  // the lease the requeue dropped and undo half of what adopting it bought us.
+  // Only the counterpart's claim is excluded — a claim held by the WINNING
+  // `pending` side is still honored, because dispatch takes the lease BEFORE
+  // flipping the status to `in_progress` (agentLifecycle.js), so `pending` + live
+  // claim is a legitimate in-flight shape a peer must keep seeing. Both peers
+  // reach the same `base` and counterpart, so this stays symmetric.
+  const counterpart = base === local ? remote : local;
+  const claim = isPostSpawnRequeue(base, counterpart)
+    ? (isLeaseLive(base.metadata, now) ? claimTriple(base) : null)
+    : resolveClaim(local, remote, now);
 
   // Strip any claim keys from the base's metadata, then re-apply the resolved
   // live claim — unless the merged status is terminal, where a claim must never

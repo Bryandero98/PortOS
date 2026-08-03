@@ -47,6 +47,7 @@ import {
   getCognitiveProgress,
   generateDrill,
   getSessionSkillContext,
+  getPostReviewReps,
 } from './meatspacePost.js';
 
 // =============================================================================
@@ -201,6 +202,18 @@ describe('generateMultiplication — progressive factors', () => {
 // =============================================================================
 
 describe('generatePowers', () => {
+  it('uses only technique-covered pairs and orders progressive questions easiest first', () => {
+    const result = generatePowers([99], 20, 30, 4);
+    expect(result.config).toMatchObject({ level: 4, technique: 'split-exponent' });
+    expect(result.questions.map(question => question.techniqueLevel)).toEqual(
+      [...result.questions.map(question => question.techniqueLevel)].sort((a, b) => a - b)
+    );
+    for (const question of result.questions) {
+      expect(question.technique).toBeTruthy();
+      expect(question.prompt).not.toMatch(/^99\^/);
+    }
+  });
+
   it('generates requested number of questions', () => {
     const result = generatePowers([2, 3], 8, 6);
     expect(result.questions).toHaveLength(6);
@@ -996,6 +1009,47 @@ describe('resolveDrillConfig — progressive multiplication', () => {
   });
 });
 
+describe('resolveDrillConfig — progressive Powers mastery attribution', () => {
+  const today = new Date().toISOString().split('T')[0];
+
+  function mockPowersQuestions(prompt) {
+    readJSONFile.mockImplementation((path, defaultValue) => {
+      const p = String(path);
+      if (p.includes('post-sessions')) return Promise.resolve({
+        sessions: [{
+          date: today,
+          tasks: [{
+            module: 'mental-math',
+            type: 'powers',
+            config: { level: 1 },
+            questions: Array.from({ length: 14 }, () => ({
+              prompt, answered: 1, correct: true, responseMs: 1000,
+            })),
+          }],
+        }],
+      });
+      return Promise.resolve(defaultValue);
+    });
+  }
+
+  beforeEach(() => vi.clearAllMocks());
+
+  it('does not let lower-rung review questions master the current technique', async () => {
+    mockPowersQuestions('2^8');
+    const { progression } = await resolveDrillConfig('powers', { count: 8 });
+    expect(progression.level).toBe(1);
+    expect(progression.levels[0].samples).toBe(14);
+    expect(progression.levels[1].samples).toBe(0);
+  });
+
+  it('advances when questions covered by the current technique clear mastery', async () => {
+    mockPowersQuestions('3^4');
+    const { progression } = await resolveDrillConfig('powers', { count: 8 });
+    expect(progression.level).toBe(2);
+    expect(progression.levels[1].samples).toBe(14);
+  });
+});
+
 // =============================================================================
 // ADAPTIVE PREVIEW / resolveDrillConfig PARITY — multiplication (issue #2099, fix #2)
 //
@@ -1171,7 +1225,10 @@ describe('adaptive signal is accuracy-driven — fast-sloppy vs slow-accurate di
     readJSONFile.mockImplementation((path, defaultValue) => {
       const p = String(path);
       if (p.includes('post-sessions')) return Promise.resolve({ sessions });
-      if (p.includes('post-config')) return Promise.resolve({ adaptive: { enabled: true } });
+      if (p.includes('post-config')) return Promise.resolve({
+        adaptive: { enabled: true },
+        mentalMath: { drillTypes: { powers: { progressive: false } } },
+      });
       return Promise.resolve(defaultValue);
     });
   }
@@ -1408,7 +1465,10 @@ describe('resolveDrillConfig — adaptive integration for serial-subtraction/pow
           }],
         });
       }
-      if (p.includes('post-config')) return Promise.resolve({ adaptive: { enabled: true } });
+      if (p.includes('post-config')) return Promise.resolve({
+        adaptive: { enabled: true },
+        mentalMath: { drillTypes: { powers: { progressive: false } } },
+      });
       return Promise.resolve(defaultValue);
     });
   }
@@ -1923,17 +1983,68 @@ describe('getSessionSkillContext', () => {
     expect(getSessionSkillContext(session).reviewResults).toEqual([{ skillId: 'multiplication:L1', passed: false }]);
   });
 
-  it('collects practiced skill ids from normal (non-review) multiplication / cognitive / memory tasks', () => {
+  it('collects practiced skill ids from normal (non-review) progressive and memory tasks', () => {
     const session = { tasks: [
       { type: 'multiplication', config: { level: 2 }, questions: [{ answered: 1, correct: true }] },
+      { type: 'powers', config: { level: 1 }, questions: [{ answered: 81, correct: true }] },
       { type: 'n-back', config: { level: 1 }, accuracy: 0.9, questions: [] },
       { type: 'memory-sequence', memoryItemId: 'song-1', questions: [{ chunkId: 'verse-1', correct: true }, { chunkId: 'verse-2', correct: true }] },
     ] };
     const { practicedSkillIds, reviewResults } = getSessionSkillContext(session);
     expect(reviewResults).toEqual([]);
     expect(practicedSkillIds.sort()).toEqual([
-      'cognitive:n-back:L1', 'memory:song-1:verse-1', 'memory:song-1:verse-2', 'multiplication:L2',
+      'cognitive:n-back:L1', 'memory:song-1:verse-1', 'memory:song-1:verse-2', 'multiplication:L2', 'powers:L1',
     ]);
+  });
+
+  it('regenerates a due Powers review from only its mastered technique rung', async () => {
+    readJSONFile.mockImplementation((path, defaultValue) => {
+      if (String(path).includes('post-review-schedule')) return Promise.resolve({
+        skills: {
+          'powers:L1': {
+            skillId: 'powers:L1',
+            kind: 'powers',
+            label: 'Powers Small squares & cubes',
+            drillType: 'powers',
+            level: 1,
+            config: { technique: 'recall-small' },
+            nextReviewAt: '2020-01-01T00:00:00.000Z',
+            status: 'fresh',
+          },
+        },
+      });
+      return Promise.resolve(defaultValue);
+    });
+
+    const [rep] = await getPostReviewReps(new Date('2026-07-31T00:00:00.000Z'));
+    expect(rep).toMatchObject({
+      type: 'powers',
+      config: { level: 1, technique: 'recall-small', review: true, reviewSkillId: 'powers:L1' },
+    });
+    const drill = generateDrill(rep.type, rep.config);
+    expect(drill.questions).toHaveLength(5);
+    expect(drill.questions.every(question => question.techniqueLevel === 1)).toBe(true);
+  });
+
+  it('does not return a due Powers review after Powers is disabled', async () => {
+    readJSONFile.mockImplementation((path, defaultValue) => {
+      const p = String(path);
+      if (p.includes('post-review-schedule')) return Promise.resolve({
+        skills: {
+          'powers:L1': {
+            skillId: 'powers:L1', kind: 'powers', label: 'Powers review',
+            drillType: 'powers', level: 1,
+            nextReviewAt: '2020-01-01T00:00:00.000Z', status: 'fresh',
+          },
+        },
+      });
+      if (p.includes('post-config')) return Promise.resolve({
+        mentalMath: { drillTypes: { powers: { enabled: false } } },
+      });
+      return Promise.resolve(defaultValue);
+    });
+
+    expect(await getPostReviewReps(new Date('2026-07-31T00:00:00.000Z'))).toEqual([]);
   });
 });
 

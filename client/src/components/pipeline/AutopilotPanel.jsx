@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import {
   Rocket, Loader2, X, Sliders, ShieldCheck, AlertCircle, CheckCircle2,
   PauseCircle, Play, ScanSearch, ChevronRight,

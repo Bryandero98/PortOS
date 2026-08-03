@@ -1271,6 +1271,137 @@ CREATE TABLE IF NOT EXISTS privacy_change_events (
 -- "Changes touching this record" — the inventory view groups by the old record.
 CREATE INDEX IF NOT EXISTS idx_privacy_change_events_vault_record ON privacy_change_events (vault_record_id);
 
+-- Stacker News community stewardship. Credentials are isolated from account
+-- configuration; untrusted snapshots and all review transitions are auditable.
+CREATE TABLE IF NOT EXISTS stacker_news_accounts (
+  id UUID PRIMARY KEY,
+  label TEXT NOT NULL,
+  username TEXT NOT NULL,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  monitoring_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  monitoring_interval_minutes INTEGER NOT NULL DEFAULT 30 CHECK (monitoring_interval_minutes BETWEEN 5 AND 1440),
+  analysis_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  text_model TEXT NOT NULL DEFAULT '',
+  vision_model TEXT NOT NULL DEFAULT '',
+  rules JSONB NOT NULL DEFAULT '{}'::jsonb,
+  policy_version TEXT NOT NULL DEFAULT 'v1',
+  read_transport TEXT NOT NULL DEFAULT 'browser' CHECK (read_transport IN ('browser','api')),
+  last_sync_at TIMESTAMPTZ,
+  last_error TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (username)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_stacker_news_accounts_username_ci ON stacker_news_accounts (LOWER(username));
+CREATE TABLE IF NOT EXISTS stacker_news_credentials (
+  account_id UUID PRIMARY KEY REFERENCES stacker_news_accounts (id) ON DELETE CASCADE,
+  api_key_enc TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS stacker_news_territories (
+  id UUID PRIMARY KEY,
+  account_id UUID NOT NULL REFERENCES stacker_news_accounts (id) ON DELETE CASCADE,
+  slug TEXT NOT NULL,
+  label TEXT NOT NULL DEFAULT '',
+  is_owned BOOLEAN NOT NULL DEFAULT FALSE,
+  monitoring_enabled BOOLEAN,
+  inherit_account_rules BOOLEAN NOT NULL DEFAULT TRUE,
+  rules JSONB NOT NULL DEFAULT '{}'::jsonb,
+  remote_settings JSONB NOT NULL DEFAULT '{}'::jsonb,
+  remote_refreshed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (account_id, slug)
+);
+CREATE INDEX IF NOT EXISTS idx_stacker_news_territories_account ON stacker_news_territories (account_id);
+CREATE TABLE IF NOT EXISTS stacker_news_items (
+  id UUID PRIMARY KEY,
+  account_id UUID NOT NULL REFERENCES stacker_news_accounts (id) ON DELETE CASCADE,
+  territory_id UUID REFERENCES stacker_news_territories (id) ON DELETE SET NULL,
+  remote_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  author_name TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  body TEXT NOT NULL DEFAULT '',
+  source_url TEXT NOT NULL DEFAULT '',
+  image_urls JSONB NOT NULL DEFAULT '[]'::jsonb,
+  content_hash TEXT NOT NULL,
+  remote_created_at TIMESTAMPTZ,
+  remote_updated_at TIMESTAMPTZ,
+  received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (account_id, remote_id)
+);
+CREATE INDEX IF NOT EXISTS idx_stacker_news_items_account_received ON stacker_news_items (account_id, received_at DESC);
+CREATE TABLE IF NOT EXISTS stacker_news_media (
+  id UUID PRIMARY KEY,
+  item_id UUID NOT NULL REFERENCES stacker_news_items (id) ON DELETE CASCADE,
+  source_url_hash TEXT NOT NULL,
+  content_hash TEXT NOT NULL DEFAULT '',
+  mime_type TEXT NOT NULL DEFAULT '',
+  width INTEGER,
+  height INTEGER,
+  byte_length INTEGER,
+  status TEXT NOT NULL DEFAULT 'pending',
+  error TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (item_id, source_url_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_stacker_news_media_item ON stacker_news_media (item_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS stacker_news_analyses (
+  id UUID PRIMARY KEY,
+  item_id UUID NOT NULL REFERENCES stacker_news_items (id) ON DELETE CASCADE,
+  stage TEXT NOT NULL,
+  provider TEXT NOT NULL DEFAULT 'deterministic',
+  model TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'completed',
+  source_content_hash TEXT NOT NULL,
+  rules_hash TEXT NOT NULL DEFAULT '',
+  policy_version TEXT NOT NULL DEFAULT 'v1',
+  result JSONB NOT NULL DEFAULT '{}'::jsonb,
+  moderator_feedback TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_stacker_news_analyses_item ON stacker_news_analyses (item_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS stacker_news_actions (
+  id UUID PRIMARY KEY,
+  account_id UUID NOT NULL REFERENCES stacker_news_accounts (id) ON DELETE CASCADE,
+  item_id UUID REFERENCES stacker_news_items (id) ON DELETE SET NULL,
+  territory_id UUID REFERENCES stacker_news_territories (id) ON DELETE SET NULL,
+  kind TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'draft',
+  destination TEXT NOT NULL DEFAULT '',
+  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  source_content_hash TEXT NOT NULL DEFAULT '',
+  rules_hash TEXT NOT NULL DEFAULT '',
+  policy_version TEXT NOT NULL DEFAULT 'v1',
+  idempotency_key TEXT NOT NULL,
+  reviewed_target JSONB NOT NULL DEFAULT '{}'::jsonb,
+  review_note TEXT NOT NULL DEFAULT '',
+  result JSONB NOT NULL DEFAULT '{}'::jsonb,
+  error TEXT NOT NULL DEFAULT '',
+  approved_at TIMESTAMPTZ,
+  executed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+DROP INDEX IF EXISTS idx_stacker_news_actions_idempotency_key;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_stacker_news_actions_active_idempotency_key ON stacker_news_actions (idempotency_key) WHERE state IN ('pending_review','approved','executing');
+CREATE INDEX IF NOT EXISTS idx_stacker_news_actions_account_state ON stacker_news_actions (account_id, state, created_at DESC);
+CREATE TABLE IF NOT EXISTS stacker_news_action_events (
+  id UUID PRIMARY KEY,
+  action_id UUID NOT NULL REFERENCES stacker_news_actions (id) ON DELETE CASCADE,
+  from_state TEXT,
+  to_state TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_stacker_news_action_events_action ON stacker_news_action_events (action_id, created_at ASC);
+
 -- Deletion audit log (incident #1248-follow-up). Append-only forensic trail of
 -- every tombstone / un-tombstone / hard-delete of user-authored records, written
 -- by a DB trigger so it captures deletions from ANY source (app, a test suite's

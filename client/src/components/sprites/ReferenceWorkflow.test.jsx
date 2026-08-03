@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { typeSettled } from '../../test/settledInput';
 
 vi.mock('../../services/apiSprites.js', () => ({
   generateSpriteReference: vi.fn(() => Promise.resolve({ jobId: 'job-1' })),
@@ -118,7 +119,8 @@ describe('ReferenceWorkflow workspace', () => {
 
     await user.click(within(anchors).getByRole('button', { name: 'Unlock north anchor' }));
     expect(within(anchors).getByText('Regenerate north from turnaround?')).toBeInTheDocument();
-    await user.click(within(anchors).getByRole('button', { name: 'Confirm unlock north anchor' }));
+    const anchorConfirm = within(anchors).getByRole('group', { name: 'Confirm unlock north anchor' });
+    await user.click(within(anchorConfirm).getByRole('button', { name: 'Unlock' }));
 
     expect(unlockSpriteReferenceAnchor).toHaveBeenCalledWith(
       'example-pioneer',
@@ -141,7 +143,8 @@ describe('ReferenceWorkflow workspace', () => {
     await user.click(within(turnaround).getByRole('button', { name: 'Unlock turnaround' }));
     expect(within(turnaround).getByText(/Reopen the turnaround, main, all 8 anchors/)).toBeInTheDocument();
 
-    await user.click(within(turnaround).getByRole('button', { name: 'Confirm unlock turnaround' }));
+    const turnaroundConfirm = within(turnaround).getByRole('group', { name: 'Confirm unlock turnaround' });
+    await user.click(within(turnaroundConfirm).getByRole('button', { name: 'Unlock for regeneration' }));
     expect(unlockSpriteTurnaround).toHaveBeenCalledWith(
       'example-pioneer',
       { silent: true },
@@ -163,7 +166,8 @@ describe('ReferenceWorkflow workspace', () => {
     // No definitions supplied → the generic noun, never a track name this record
     // may not carry.
     expect(within(main).getByText(/Reopen the main reference and its south animations\?/)).toBeInTheDocument();
-    await user.click(within(main).getByRole('button', { name: 'Confirm unlock main reference' }));
+    const mainConfirm = within(main).getByRole('group', { name: 'Confirm unlock main reference' });
+    await user.click(within(mainConfirm).getByRole('button', { name: 'Unlock for regeneration' }));
     expect(unlockSpriteMainReference).toHaveBeenCalledWith('example-pioneer', { silent: true });
   });
 
@@ -198,7 +202,7 @@ describe('ReferenceWorkflow workspace', () => {
     renderWorkflow();
     const turnaround = screen.getByRole('region', { name: 'Turnaround sheet' });
     const note = within(turnaround).getByPlaceholderText(/Correction for this attempt/);
-    await user.type(note, 'add the missing sleeve pocket');
+    await typeSettled(user, note, 'add the missing sleeve pocket');
     await user.click(within(turnaround).getByRole('button', { name: 'Re-process with note' }));
     expect(generateSpriteReference).toHaveBeenCalledWith('example-pioneer', {
       target: 'turnaround',

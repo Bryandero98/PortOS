@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { StrictMode } from 'react';
 import { renderHook, act } from '@testing-library/react';
 import { useAsyncAction } from './useAsyncAction';
 
@@ -51,8 +52,12 @@ describe('useAsyncAction', () => {
     expect(errorSpy).toHaveBeenCalledWith('Action failed');
   });
 
-  it('does not call setRunning after the component unmounts mid-request', async () => {
-    const setStateSpy = vi.spyOn(console, 'error');
+  // There is no mounted guard on the trailing `setRunning(false)` (#3267): on
+  // React 19 that setState is a silent no-op after unmount. Assert the
+  // observable — resolving late must not throw and must still hand the caller
+  // the fn's value — rather than the absence of a console warning React no
+  // longer emits (an assertion that passed with the guard deleted).
+  it('resolves to the fn value when the component unmounts mid-request', async () => {
     let release;
     const pending = new Promise((resolve) => { release = resolve; });
     const { result, unmount } = renderHook(() => useAsyncAction(async () => { await pending; return 'late'; }));
@@ -64,17 +69,33 @@ describe('useAsyncAction', () => {
 
     // Unmount while the action is still pending, then let it resolve.
     unmount();
+    let resolved;
     await act(async () => {
       release();
-      await runPromise;
+      resolved = await runPromise;
     });
 
-    // React logs an "update on an unmounted component" error if the guard is
-    // missing — the guard keeps that console.error from ever firing.
-    const sawUnmountWarning = setStateSpy.mock.calls.some((call) =>
-      String(call[0]).includes('unmounted')
-    );
-    expect(sawUnmountWarning).toBe(false);
-    setStateSpy.mockRestore();
+    expect(resolved).toBe('late');
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  // The app runs under <React.StrictMode>, whose dev double-mount reuses the
+  // hook's refs — a cleanup-only mounted guard is left false by the simulated
+  // unmount, so `setRunning(false)` never fires and EVERY button backed by this
+  // hook stays disabled after one click (#3264). The hook carries no guard at
+  // all now (#3267); this fails the moment a broken one is re-added.
+  it('clears running under StrictMode so the action can be run again', async () => {
+    const { result } = renderHook(() => useAsyncAction(async (x) => x * 2), {
+      wrapper: StrictMode,
+    });
+
+    await act(async () => { await result.current[0](1); });
+    expect(result.current[1]).toBe(false);
+
+    // The second click is the one that broke: the button was still disabled.
+    let second;
+    await act(async () => { second = await result.current[0](21); });
+    expect(second).toBe(42);
+    expect(result.current[1]).toBe(false);
   });
 });

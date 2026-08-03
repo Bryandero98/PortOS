@@ -39,7 +39,8 @@ vi.mock('./cos.js', () => ({
   addTask: vi.fn().mockResolvedValue(undefined),
   emitLog: vi.fn(),
   getTaskById: vi.fn().mockResolvedValue(null),
-  getAgent: vi.fn().mockResolvedValue(null)
+  getAgent: vi.fn().mockResolvedValue(null),
+  getAgentRecord: vi.fn().mockResolvedValue(null)
 }));
 
 vi.mock('./appActivity.js', () => ({
@@ -212,8 +213,8 @@ vi.mock('./runner.js', () => ({
 import { join } from 'path';
 import { existsSync as existsSyncMock } from 'fs';
 import { cleanupAgentWorktree, spawnMergeRecoveryTask, spawnReviewLoopFollowUp } from './subAgentSpawner.js';
-import { resolveResumePointer, resolveTaskResumePatch, recordTaskResumePointer, resumePointerMetadata } from './agentWorktreeCleanup.js';
-import { getAgent, addTask, updateTask } from './cos.js';
+import { resolveResumePointer, resolveTaskResumePatch, recordTaskResumePointer, releaseRetryHold, resumePointerMetadata } from './agentWorktreeCleanup.js';
+import { getAgent, getAgentRecord, getTaskById, addTask, updateTask } from './cos.js';
 import { removeWorktree } from './worktreeManager.js';
 import { PATHS } from '../lib/fileUtils.js';
 import * as git from './git.js';
@@ -1187,7 +1188,7 @@ describe('resolveTaskResumePatch / recordTaskResumePointer', () => {
     await recordTaskResumePointer({ task, agentId: 'agent-x', agentMetadata });
 
     expect(updateTask).toHaveBeenCalledWith('task-1', {
-      metadata: { existingBranch: null, resumedFromAgentId: null, resumeWorktreePath: null }
+      metadata: { existingBranch: undefined, resumedFromAgentId: undefined, resumeWorktreePath: undefined }
     }, 'user');
   });
 
@@ -1222,6 +1223,195 @@ describe('resolveTaskResumePatch / recordTaskResumePointer', () => {
   });
 });
 
+// The shared post-cleanup gate every spawn mode calls (#3368, #3373). Direct-CLI
+// and TUI runs used to skip this entirely, so a failed run's preserved branch was
+// never pointed at and its retry redid the work from scratch. It now also RELEASES
+// the retry hold the failure verdict armed, so the task becomes spawnable and
+// pointed in one write.
+describe('releaseRetryHold', () => {
+  const agentMetadata = {
+    isWorktree: true, sourceWorkspace: '/repo',
+    worktreeBranch: DEAD_BRANCH, workspacePath: DEAD_TREE
+  };
+  const task = () => ({ id: 'task-1', taskType: 'user', metadata: {} });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    git.getDefaultBranch.mockResolvedValue('main');
+    git.getWorktreeBranches.mockResolvedValue(new Set());
+    git.isBranchMergedInto.mockResolvedValue(false);
+    git.getBranchComparison.mockResolvedValue({ ahead: 2, commits: [], stats: {} });
+    existsSyncMock.mockReturnValue(false);
+    getTaskById.mockResolvedValue({ id: 'task-1', status: 'pending' });
+    getAgentRecord.mockResolvedValue({ metadata: agentMetadata });
+  });
+
+  // The direct-CLI / TUI shape: neither spawn path holds the agent record, so the
+  // helper has to read it for the worktree fields — via the transcript-free
+  // `getAgentRecord`, since a long TUI run's output.txt is megabytes.
+  it('records the pointer for a failed run whose task is still pending', async () => {
+    await releaseRetryHold({ agentId: 'agent-x', task: task(), success: false });
+
+    expect(getAgentRecord).toHaveBeenCalledWith('agent-x');
+    expect(getAgent).not.toHaveBeenCalled();
+    expect(updateTask).toHaveBeenCalledWith('task-1', {
+      metadata: { existingBranch: DEAD_BRANCH, resumedFromAgentId: 'agent-x', resumeWorktreePath: null }
+    }, 'user');
+  });
+
+  // A task that exhausted its retry budget is waiting on a human — a pointer there
+  // is dead metadata `updateTask` has to strip again on the next terminal write.
+  it('records nothing when the task is already blocked', async () => {
+    getTaskById.mockResolvedValue({ id: 'task-1', status: 'blocked' });
+
+    await releaseRetryHold({ agentId: 'agent-x', task: task(), success: false });
+
+    expect(updateTask).not.toHaveBeenCalled();
+  });
+
+  it('records nothing on a successful run', async () => {
+    await releaseRetryHold({ agentId: 'agent-x', task: task(), success: true });
+
+    expect(getTaskById).not.toHaveBeenCalled();
+    expect(updateTask).not.toHaveBeenCalled();
+  });
+
+  // "I couldn't read the status" is not "the status is pending" — guessing would
+  // stamp a pointer on a blocked task, which a later reviveBlockedTask would then
+  // resurrect as a live pointer to a branch nobody vetted.
+  it('records nothing when the task status is unreadable', async () => {
+    getTaskById.mockRejectedValue(new Error('read failed'));
+
+    await releaseRetryHold({ agentId: 'agent-x', task: task(), success: false });
+
+    expect(updateTask).not.toHaveBeenCalled();
+  });
+
+  it('records nothing when the task was deleted mid-run', async () => {
+    getTaskById.mockResolvedValue(null);
+
+    await releaseRetryHold({ agentId: 'agent-x', task: task(), success: false });
+
+    expect(updateTask).not.toHaveBeenCalled();
+  });
+
+  // Records written before the status field existed read as pending.
+  it('treats a status-less legacy task record as pending', async () => {
+    getTaskById.mockResolvedValue({ id: 'task-1' });
+
+    await releaseRetryHold({ agentId: 'agent-x', task: task(), success: false });
+
+    expect(updateTask).toHaveBeenCalled();
+  });
+
+  // The runner path already holds the agent record; passing it spares a re-read.
+  it('uses caller-supplied agent metadata instead of re-reading the record', async () => {
+    await releaseRetryHold({ agentId: 'agent-x', task: task(), success: false, agentMetadata });
+
+    expect(getAgentRecord).not.toHaveBeenCalled();
+    expect(updateTask).toHaveBeenCalled();
+  });
+
+  it('is a no-op without an agent id or a task id', async () => {
+    await releaseRetryHold({ agentId: '', task: task(), success: false });
+    await releaseRetryHold({ agentId: 'agent-x', task: { metadata: {} }, success: false });
+
+    expect(getTaskById).not.toHaveBeenCalled();
+    expect(updateTask).not.toHaveBeenCalled();
+  });
+
+  // The #3373 shape. The failure verdict left the task `in_progress` + held; the
+  // flip to `pending` and the pointer MUST be the same write, or a dequeue between
+  // them claims the retry with no pointer and restarts from scratch.
+  describe('a held task (#3373)', () => {
+    const heldTask = { id: 'task-1', status: 'in_progress', metadata: { retryPendingCleanup: 'agent-x', retryPendingSince: new Date().toISOString() } };
+
+    it('flips to pending WITH the pointer and the cleared marker in one updateTask', async () => {
+      getTaskById.mockResolvedValue(heldTask);
+
+      await releaseRetryHold({ agentId: 'agent-x', task: task(), success: false, agentMetadata });
+
+      expect(updateTask).toHaveBeenCalledTimes(1);
+      expect(updateTask).toHaveBeenCalledWith('task-1', {
+        status: 'pending',
+        metadata: {
+          existingBranch: DEAD_BRANCH,
+          resumedFromAgentId: 'agent-x',
+          resumeWorktreePath: null,
+          retryPendingCleanup: undefined,
+          retryPendingSince: undefined,
+        }
+      }, 'user');
+    });
+
+    // Nothing survived cleanup — the task still has to become spawnable, it just
+    // starts clean. Releasing the hold is NOT conditional on having a pointer.
+    it('still releases the hold when there is nothing left to resume', async () => {
+      getTaskById.mockResolvedValue(heldTask);
+      git.getBranchComparison.mockResolvedValue({ ahead: 0, commits: [], stats: {} });
+
+      await releaseRetryHold({ agentId: 'agent-x', task: task(), success: false, agentMetadata });
+
+      expect(updateTask).toHaveBeenCalledWith('task-1', {
+        status: 'pending',
+        metadata: { retryPendingCleanup: undefined, retryPendingSince: undefined }
+      }, 'user');
+    });
+
+    // A hold armed before the marker carried an id (legacy shape) is releasable by
+    // whoever finds it, and the markdown round-trip stores booleans as strings.
+    it('recognizes an unattributed hold after a markdown round-trip', async () => {
+      getTaskById.mockResolvedValue({ ...heldTask, metadata: { retryPendingCleanup: 'true' } });
+
+      await releaseRetryHold({ agentId: 'agent-x', task: task(), success: false, agentMetadata });
+
+      expect(updateTask).toHaveBeenCalledWith('task-1', expect.objectContaining({ status: 'pending' }), 'user');
+    });
+
+    // The whole point of stamping the owner: attempt A's slow cleanup lands after
+    // attempt B failed and armed ITS hold. Releasing here would make the task
+    // spawnable while B's cleanup is still resolving B's pointer.
+    it('does not release a hold armed by a later attempt', async () => {
+      getTaskById.mockResolvedValue({ ...heldTask, metadata: { retryPendingCleanup: 'agent-later' } });
+
+      await releaseRetryHold({ agentId: 'agent-x', task: task(), success: false, agentMetadata });
+
+      expect(updateTask).not.toHaveBeenCalled();
+    });
+
+    // The orphan sweep got there first and already requeued + cleared the hold, or
+    // the retry has since spawned. Either way this run no longer owns the task.
+    it('writes nothing when the hold is gone and the task is in_progress again', async () => {
+      getTaskById.mockResolvedValue({ id: 'task-1', status: 'in_progress', metadata: {} });
+
+      await releaseRetryHold({ agentId: 'agent-x', task: task(), success: false, agentMetadata });
+
+      expect(updateTask).not.toHaveBeenCalled();
+    });
+
+    // A late release must never REOPEN a task that has since gone terminal —
+    // user-terminated, budget-exhausted, or completed by a recovery path.
+    it('never flips a blocked or completed task, even one carrying a stale marker', async () => {
+      getTaskById.mockResolvedValue({ id: 'task-1', status: 'blocked', metadata: { retryPendingCleanup: 'agent-x' } });
+      await releaseRetryHold({ agentId: 'agent-x', task: task(), success: false, agentMetadata });
+
+      getTaskById.mockResolvedValue({ id: 'task-1', status: 'completed', metadata: { retryPendingCleanup: 'agent-x' } });
+      await releaseRetryHold({ agentId: 'agent-x', task: task(), success: false, agentMetadata });
+
+      expect(updateTask).not.toHaveBeenCalled();
+    });
+
+    // The hold stays on disk, so the orphan sweep can finish the transition.
+    it('leaves the task held when the release write fails', async () => {
+      getTaskById.mockResolvedValue(heldTask);
+      updateTask.mockResolvedValueOnce({ error: 'Task file not found' });
+
+      await expect(releaseRetryHold({ agentId: 'agent-x', task: task(), success: false, agentMetadata }))
+        .resolves.toEqual({});
+    });
+  });
+});
+
 describe('resumePointerMetadata', () => {
   it('sets the three keys a retry needs to resume', () => {
     expect(resumePointerMetadata({ branchName: 'cos/b', worktreePath: '/t' }, 'agent-x', { metadata: {} })).toEqual({
@@ -1233,7 +1423,7 @@ describe('resumePointerMetadata', () => {
   // pointer would attach attempt 3 to already-merged work.
   it('clears a pointer this mechanism wrote once there is nothing left to resume', () => {
     expect(resumePointerMetadata(null, 'agent-y', { metadata: { resumedFromAgentId: 'agent-x' } })).toEqual({
-      existingBranch: null, resumedFromAgentId: null, resumeWorktreePath: null
+      existingBranch: undefined, resumedFromAgentId: undefined, resumeWorktreePath: undefined
     });
   });
 
@@ -1482,5 +1672,118 @@ describe('cleanupAgentWorktree - discardWorktree (throwaway reasoning worktree)'
     // No discard → the standard openPR flow pushes + creates a PR.
     expect(git.push).toHaveBeenCalled();
     expect(git.createPR).toHaveBeenCalled();
+  });
+});
+
+// A completing agent reaches cleanup TWICE by design — the runner path
+// (`handleAgentCompletion` → `runAgentCompletionCleanup`) and the spawner's
+// unconditional `finally` safety net. Driven by independent events, the two
+// overlapped: the loser read `git status --porcelain` while the winner was
+// mid-`git worktree remove --force`, saw the in-progress deletions as dirt, and
+// reported "Worktree preserved — uncommitted changes detected" for a worktree
+// that removed cleanly (observed on agent-ce67bb09, whose PR had already merged).
+describe('cleanupAgentWorktree — re-entrancy (duplicate completion paths)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    queuePendingMergeMock.mockResolvedValue(false);
+    getAgent.mockResolvedValue(mockWorktreeAgent());
+    git.getRepoBranches.mockResolvedValue({ baseBranch: 'main', devBranch: null });
+    git.push.mockResolvedValue(undefined);
+    git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/1' });
+    git.generatePRDescription.mockResolvedValue('body');
+    git.suggestPRTitle.mockResolvedValue('title');
+  });
+
+  it('coalesces two overlapping cleanups of the SAME agent into one pass', async () => {
+    // Park the first pass INSIDE removeWorktree so the second call provably
+    // lands mid-flight — the exact interleaving that produced the false warning.
+    // `removeCalled` is what makes it provable: releasing on a bare microtask
+    // tick would fire before the pass had even reached removeWorktree.
+    let releaseRemove;
+    const removeCalled = new Promise((signalCalled) => {
+      removeWorktree.mockImplementation(() => new Promise((res) => {
+        releaseRemove = () => res({ merged: false, removed: true, warnings: [] });
+        signalCalled();
+      }));
+    });
+
+    const first = cleanupAgentWorktree('agent-1', true, { openPR: true });
+    await removeCalled;
+    const second = cleanupAgentWorktree('agent-1', true, { openPR: true });
+
+    releaseRemove();
+    const [firstWarnings, secondWarnings] = await Promise.all([first, second]);
+
+    // ONE removal, ONE push, ONE PR — the duplicate caller joined the pass.
+    expect(removeWorktree).toHaveBeenCalledTimes(1);
+    expect(git.push).toHaveBeenCalledTimes(1);
+    expect(git.createPR).toHaveBeenCalledTimes(1);
+    // ...and both callers observe the same verdict, so neither can report a
+    // "preserved" warning the other's run never produced.
+    expect(secondWarnings).toEqual(firstWarnings);
+  });
+
+  // The guard is keyed per agent — two agents finishing together must NOT be
+  // collapsed into one cleanup. `openPR: false` keeps this on the plain merge
+  // path so it asserts the keying and nothing else.
+  it('does NOT coalesce across different agents', async () => {
+    // Park each pass inside removeWorktree so both are in flight at once, and
+    // parking keeps the post-removal follow-up machinery out of the test.
+    const reached = [];
+    const arrivals = [];
+    removeWorktree.mockImplementation((agentId) => new Promise(() => {
+      reached.push(agentId);
+      arrivals.shift()?.();
+    }));
+    const nextArrival = () => new Promise((res) => { arrivals.push(res); });
+
+    // B starts only once A is parked. A is still in flight, so this is the
+    // overlap the guard has to distinguish — started sequentially so the two
+    // passes don't race the lazy module graph and make the test flaky.
+    const aParked = nextArrival();
+    cleanupAgentWorktree('agent-A', true, { openPR: false });
+    await aParked;
+    const bParked = nextArrival();
+    cleanupAgentWorktree('agent-B', true, { openPR: false });
+    await bParked;
+
+    expect(reached).toEqual(['agent-A', 'agent-B']);
+  });
+
+  it('releases the guard so a LATER cleanup of the same agent still runs', async () => {
+    removeWorktree.mockResolvedValue({ merged: false, removed: true, warnings: [] });
+
+    await cleanupAgentWorktree('agent-1', true, { openPR: true });
+    await cleanupAgentWorktree('agent-1', true, { openPR: true });
+
+    expect(removeWorktree).toHaveBeenCalledTimes(2);
+  });
+
+  // A failing removal is reported as a warning, not a throw — so the joiner must
+  // receive that SAME warning rather than re-deriving its own verdict from a
+  // worktree the failed pass may have left half-removed.
+  it('gives the joiner the same warnings when the pass FAILS, and still releases the guard', async () => {
+    let releaseRemove;
+    const removeCalled = new Promise((signalCalled) => {
+      removeWorktree.mockImplementation(() => new Promise((_res, rej) => {
+        releaseRemove = () => rej(new Error('git exploded'));
+        signalCalled();
+      }));
+    });
+
+    const first = cleanupAgentWorktree('agent-1', true, { openPR: false });
+    await removeCalled;
+    const second = cleanupAgentWorktree('agent-1', true, { openPR: false });
+    releaseRemove();
+
+    const [firstWarnings, secondWarnings] = await Promise.all([first, second]);
+    expect(firstWarnings.join(' ')).toContain('git exploded');
+    expect(secondWarnings).toEqual(firstWarnings);
+    expect(removeWorktree).toHaveBeenCalledTimes(1);
+
+    // Guard cleared → a later cleanup is not wedged on the failed pass.
+    removeWorktree.mockResolvedValue({ merged: false, removed: true, warnings: [] });
+    await cleanupAgentWorktree('agent-1', true, { openPR: false });
+    expect(removeWorktree).toHaveBeenCalledTimes(2);
   });
 });

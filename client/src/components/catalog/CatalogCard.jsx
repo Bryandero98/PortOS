@@ -8,7 +8,7 @@
  * bubble to the anchor.
  */
 
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { Sparkles, Trash2 } from 'lucide-react';
 import MediaImage from '../MediaImage';
 import InlineConfirmRow from '../ui/InlineConfirmRow';

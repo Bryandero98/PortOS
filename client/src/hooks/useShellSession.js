@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { useSearchParams, useParams, useNavigate } from 'react-router-dom';
+import useMounted from './useMounted';
+import { useSearchParams, useParams, useNavigate } from 'react-router';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -105,8 +106,7 @@ export function useShellSession({ isFullscreen } = {}) {
   // Flipped on unmount so deferred work (setTimeout-scheduled recovery attaches)
   // can short-circuit instead of firing shell:attach from a teardown component —
   // which would claim a session with no listener left to render it.
-  const mountedRef = useRef(true);
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  const mountedRef = useMounted();
   // useCallback for stable identity so consumers can list these in dep arrays without
   // causing useEffect re-binds on every render. They only touch a ref, so empty deps is correct.
   const setPendingAttach = useCallback((target) => {

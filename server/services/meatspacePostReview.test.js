@@ -12,6 +12,7 @@ vi.mock('../lib/fileUtils.js', () => ({
 
 import {
   REVIEW_INTERVALS_DAYS,
+  PERMANENT_MASTERY_PASSES,
   REFRESH_INTERVAL_DAYS,
   defaultReviewEntry,
   isReviewDue,
@@ -41,6 +42,7 @@ describe('defaultReviewEntry', () => {
     expect(entry.masteredAt).toBe(now.toISOString());
     expect(Date.parse(entry.nextReviewAt) - now.getTime()).toBe(REVIEW_INTERVALS_DAYS[0] * DAY);
     expect(entry.reviewsTaken).toBe(0);
+    expect(entry.verificationPasses).toBe(0);
   });
 });
 
@@ -61,6 +63,11 @@ describe('isReviewDue / reviewState', () => {
   it('treats a missing/invalid nextReviewAt as due', () => {
     expect(isReviewDue({}, now)).toBe(true);
   });
+  it('never resurfaces permanent mastery', () => {
+    const entry = { nextReviewAt: null, status: 'permanent' };
+    expect(isReviewDue(entry, now)).toBe(false);
+    expect(reviewState(entry, now)).toBe('permanent');
+  });
 });
 
 describe('applyReviewResult — expanding intervals', () => {
@@ -74,13 +81,17 @@ describe('applyReviewResult — expanding intervals', () => {
     expect(after.reviewsPassed).toBe(1);
     expect(after.reviewsTaken).toBe(1);
   });
-  it('successive passes keep expanding, then cap at the last interval', () => {
+  it('three successful reviews make mastery permanent', () => {
     let entry = defaultReviewEntry(skill(), now);
     entry = applyReviewResult(entry, true, now); // stage 1
-    entry = applyReviewResult(entry, true, now); // stage 2 (last)
-    entry = applyReviewResult(entry, true, now); // stays stage 2
+    entry = applyReviewResult(entry, true, now); // stage 2
+    entry = applyReviewResult(entry, true, now); // permanent
+    expect(entry.reviewsPassed).toBe(PERMANENT_MASTERY_PASSES);
+    expect(entry.verificationPasses).toBe(PERMANENT_MASTERY_PASSES);
     expect(entry.reviewStage).toBe(REVIEW_INTERVALS_DAYS.length - 1);
-    expect(Date.parse(entry.nextReviewAt) - now.getTime()).toBe(REVIEW_INTERVALS_DAYS[REVIEW_INTERVALS_DAYS.length - 1] * DAY);
+    expect(entry.status).toBe('permanent');
+    expect(entry.nextReviewAt).toBeNull();
+    expect(entry.permanentAt).toBe(now.toISOString());
   });
   it('a failed review flips to needs-refresh and schedules a SOONER re-review, resetting the stage', () => {
     let entry = defaultReviewEntry(skill(), now);
@@ -92,11 +103,17 @@ describe('applyReviewResult — expanding intervals', () => {
     expect(REFRESH_INTERVAL_DAYS).toBeLessThan(REVIEW_INTERVALS_DAYS[0]);
     expect(failed.reviewsPassed).toBe(1); // the earlier pass still counted
     expect(failed.reviewsTaken).toBe(2);
+    expect(failed.verificationPasses).toBe(0);
   });
   it('never carries a floorLevel field — demotion is out of scope for the scheduler', () => {
     const entry = defaultReviewEntry(skill(), now);
     const failed = applyReviewResult(entry, false, now);
     expect(failed).not.toHaveProperty('floorLevel');
+  });
+  it('treats permanent mastery as terminal even when a stale review result arrives', () => {
+    const permanent = { ...defaultReviewEntry(skill(), now), status: 'permanent', nextReviewAt: null };
+    expect(applyReviewResult(permanent, true, now)).toBe(permanent);
+    expect(applyReviewResult(permanent, false, now)).toBe(permanent);
   });
 });
 
@@ -114,6 +131,10 @@ describe('applyPractice — active use resets staleness', () => {
     const future = { ...defaultReviewEntry(skill(), now), reviewStage: 2, nextReviewAt: new Date(now.getTime() + 90 * DAY).toISOString() };
     const after = applyPractice(future, now);
     expect(after.nextReviewAt).toBe(future.nextReviewAt);
+  });
+  it('does not restart the clock for permanent mastery', () => {
+    const permanent = { ...defaultReviewEntry(skill()), status: 'permanent', nextReviewAt: null };
+    expect(applyPractice(permanent, new Date('2026-08-01T00:00:00.000Z'))).toBe(permanent);
   });
 });
 
@@ -189,6 +210,14 @@ describe('getDueReviews — caps + ordering', () => {
     store.skills.c.nextReviewAt = '2026-04-01T00:00:00.000Z';
     const due = await getDueReviews(new Date('2026-07-01T00:00:00.000Z'), 2);
     expect(due.map(d => d.skillId)).toEqual(['b', 'a']); // oldest-due first, capped at 2
+  });
+
+  it('ignores legacy memory-chunk schedules now owned by the memory item', async () => {
+    await applySessionToReviewSchedule({
+      masteredSkills: [skill({ skillId: 'memory:item:chunk', kind: 'memory' })],
+      now: new Date('2026-01-01T00:00:00.000Z'),
+    });
+    expect(await getDueReviews(new Date('2026-07-01T00:00:00.000Z'))).toEqual([]);
   });
 });
 

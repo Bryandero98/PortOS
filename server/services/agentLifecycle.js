@@ -27,10 +27,11 @@ import { readFile, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { cosEvents, emitLog } from './cosEvents.js';
 import { registerAgent, updateAgent, completeAgent } from './cosAgents.js';
-import { getConfig, updateTask, getTaskById } from './cos.js';
+import { getConfig, updateTask, getTaskById, getAgent as getAgentRecord } from './cos.js';
 import { spawnAgentViaRunner, getRunnerHealth } from './cosRunnerClient.js';
 import { MAX_TOTAL_SPAWNS, normalizeReviewers } from '../lib/validation.js';
 import { isInternalTaskId } from '../lib/taskParser.js';
+import { isRetryHeld } from '../lib/taskRetryHold.js';
 import { ensureDir, PATHS, sleep, tryReadFile } from '../lib/fileUtils.js';
 import { createToolExecution, startExecution, completeExecution, errorExecution } from './toolStateMachine.js';
 import { determineLane, acquire, release } from './executionLanes.js';
@@ -38,6 +39,7 @@ import { analyzeAgentFailure } from './agentErrorAnalysis.js';
 import { createAgentRun, checkForTaskCommit } from './agentRunTracking.js';
 import { buildAgentPrompt, getAppWorkspace } from './agentPromptBuilder.js';
 import { isOllamaClaudeProvider, isClaudeCommand, providerSuppliesGithubToken } from '../lib/providerModels.js';
+import { canTypeSlashCommands } from '../lib/slashdoInvocation.js';
 import { composeProviderEnv } from '../lib/cliChildEnv.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { buildCliSpawnConfig, isClaudeCliProvider, isTuiProvider, getClaudeSettingsEnv, spawnDirectly } from './agentCliSpawning.js';
@@ -228,6 +230,19 @@ async function runAgentSpawn(task) {
   // within one install the `spawningTasks` guard already prevents duplicates.)
   const freshTask = await getTaskById(task.id).catch(() => null);
   if (freshTask) {
+    // A retry held for its resume pointer (#3373) is not spawnable, however this
+    // dispatch reached us. The dequeue tiers can't see it (they select `pending`),
+    // but a `task:ready` emitted before the hold was armed — or a stale generator
+    // snapshot — arrives with a task object from before the failure, and the claim
+    // check below passes because the hold keeps OUR OWN lease. Spawning here is
+    // exactly the race the hold exists to close: the retry would start clean while
+    // the pointer naming its predecessor's branch is still being resolved. The
+    // release re-emits `tasks:changed`, which re-runs the dequeue.
+    if (isRetryHeld(freshTask.metadata)) {
+      console.log(`⏳ Task ${task.id} is held for its retry pointer — not spawning until cleanup releases it`);
+      await cleanupOnError('retry held pending cleanup');
+      return null;
+    }
     // The task is persisted — honor a peer's claim that synced in since dispatch,
     // then take the lease up front.
     if (!isClaimableBy(freshTask.metadata, instanceId)) {
@@ -447,6 +462,16 @@ async function runAgentSpawn(task) {
       // the proposal's domain. agent.metadata is a hand-picked projection of
       // task.metadata (not a full spread), so this must be listed explicitly.
       taskLiProposal: task.metadata?.liProposal || null,
+      // Same reason as taskLiProposal — a hand-picked projection, so this must be
+      // listed explicitly. `declaresNoCommitCriterion` (taskTypeHooks.js) reads it
+      // to decide whether a run declared a `[task-<id>]` commit criterion at all,
+      // and taskLearning's history backfill re-processes the ARCHIVED agent shape
+      // through that same predicate. Without the projection an archived
+      // tracker-filing run (reference-watch/ux on a github/gitlab/jira app) looks
+      // like a committing task during backfill, so its stale `validationPassed:
+      // false` fossil survives the sanitizer (#3273). `?? null` — not `|| null` —
+      // because `false` is the load-bearing value here.
+      worktreeChangesExpected: task.metadata?.worktreeChangesExpected ?? null,
       taskAppName: resolvedAppName,
       selfImprovementType: task.metadata?.selfImprovementType || null,
       jobId: task.metadata?.jobId || null,
@@ -881,6 +906,26 @@ export async function handleAgentCompletion(agentId, exitCode, success, duration
     // Analyze failure if applicable
     const errorAnalysis = effectiveSuccess ? null : analyzeAgentFailure(outputBuffer, task, model);
 
+    // Whether the AGENT (not PortOS) owned PR creation — the gate for
+    // finalizeAgent's PR-claim verification (#3358). Derived from the same
+    // `canTypeSlashCommands` predicate `runAgentCompletionCleanup` uses below, so
+    // the run that was told to open its own PR is exactly the run we check for
+    // one. When PortOS owns it the PR is created by that cleanup, i.e. AFTER
+    // finalize, so verifying here would fail every correct run.
+    //
+    // Read off the PERSISTED record, not the in-memory `runnerAgents` entry: the
+    // entry carries only `providerId` (and a post-restart survivor recovered by
+    // syncRunnerAgents carries even less), so a lean `--bare` runner agent would
+    // read as slashdo-capable — and be downgraded for not opening a PR PortOS
+    // was about to open for it. registerAgent writes both fields into metadata
+    // precisely so this question survives a restart.
+    const persistedAgent = await getAgentRecord(agentId).catch(() => null);
+    const runnerAgentOwnsPR = isTruthyMeta(task?.metadata?.openPR) && canTypeSlashCommands({
+      providerId: persistedAgent?.metadata?.providerId ?? agent.providerId,
+      providerCommand: persistedAgent?.metadata?.providerCommand ?? null,
+      leanMode: persistedAgent?.metadata?.leanMode === true,
+    });
+
     // Extract pipeline output summary before completion writes metadata to disk
     if (task?.metadata?.pipeline && effectiveSuccess) {
       const workspacePath = agent.workspacePath || ROOT_DIR;
@@ -907,8 +952,12 @@ export async function handleAgentCompletion(agentId, exitCode, success, duration
     // it (#2727) but both carry their own .catch, so neither throws out —
     // the partial-state cases are best-effort by design).
     let finalizeError = null;
+    // The verdict finalizeAgent persisted — a PR-claim downgrade (#3358) has to
+    // reach the cleanup below, which otherwise removes the worktree, deletes the
+    // local branch, and skips the resume pointer for a run it believes succeeded.
+    let cleanupSuccess = effectiveSuccess;
     try {
-      await finalizeAgent({
+      const finalized = await finalizeAgent({
         agentId,
         task,
         runId,
@@ -920,7 +969,9 @@ export async function handleAgentCompletion(agentId, exitCode, success, duration
         errorAnalysis,
         isTruthyMetaFn: isTruthyMeta,
         workspacePath: agent.workspacePath || null,
+        prExpected: runnerAgentOwnsPR,
       });
+      if (finalized && typeof finalized.success === 'boolean') cleanupSuccess = finalized.success;
     } catch (err) {
       finalizeError = err;
       emitLog('error', `finalizeAgent threw for ${agentId} (continuing cleanup): ${err.message}`, { agentId, error: err.message });
@@ -930,7 +981,7 @@ export async function handleAgentCompletion(agentId, exitCode, success, duration
     // pipeline progression, the Creative Director chain hook, and worktree
     // cleanup (+ cleanup-warning notification and merge-recovery task). Runs
     // inside this try so a throw still hits the finally below.
-    await runAgentCompletionCleanup({ agentId, task, agent, effectiveSuccess, outputBuffer });
+    await runAgentCompletionCleanup({ agentId, task, agent, effectiveSuccess: cleanupSuccess, outputBuffer });
 
     // Surface a finalizeAgent throw to the caller after best-effort
     // cleanup completed — without this the runner harness would never see

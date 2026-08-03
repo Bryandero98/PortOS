@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router';
 import { ArrowLeft, CheckSquare, Copy, DatabaseZap, FolderInput, Inbox, Lock, Pencil, Star, StarOff, Trash2, X } from 'lucide-react';
 import ShareToButton from '../components/sharing/ShareToButton';
 import toast from '../components/ui/Toast';

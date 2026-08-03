@@ -31,10 +31,11 @@ export const PROMPT_VERSIONS = {
   'test-coverage': 2, // v2: generic {appName} body (older default hardcoded "PortOS")
   'performance': 2, // v2: generic {appName} body (older default hardcoded "PortOS")
   'accessibility': 2, // v2: generic {appName} + the app UI (older default hardcoded "PortOS" + http://localhost:5555)
-  'dependency-updates': 2, // v2: generic {appName} body (older default hardcoded "PortOS")
+  'dependency-updates': 3, // v3: Phase 1 triages open Dependabot/Renovate PRs first (evidence → MERGE / FIX-THEN-MERGE / CLOSE / LEAVE, including conflict + CI-failure repair on the bot branch) before Phase 2 updates anything the bots didn't cover — an agent that bumped packages itself was duplicating and conflicting with open bot PRs. v2: generic {appName} body (older default hardcoded "PortOS")
   'documentation': 4, // v4: generic {appName} body (v1 hardcoded "PortOS"; v2/v3 retired DONE.md wording)
   'ui-bugs': 2, // v2: generic {appName} + the app UI (older default hardcoded "PortOS" + http://localhost:5555)
   'mobile-responsive': 2, // v2: generic {appName} app-UI body (older default hardcoded "PortOS" + http://localhost:5555)
+  'ux': 1, // v1: walk the running UI with Playwright MCP against a 7-item named UX checklist and file ONE tracker item per finding via {trackerInstructions} — read-only on source, no branches/PRs. Net-new type (no PREVIOUS_DEFAULT_PROMPTS entry needed).
   'release-check': 6, // v6: generic {appName} body (older defaults hardcoded "PortOS")
 };
 

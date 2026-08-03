@@ -22,10 +22,28 @@ import * as git from './git.js';
 import { removeWorktree, classifyWorktreeDirt } from './worktreeManager.js';
 import { isTruthyMeta } from './agentState.js';
 import { PATHS } from '../lib/fileUtils.js';
+import { isRetryHoldOwner, clearedRetryHoldMetadata } from '../lib/taskRetryHold.js';
 import { RECOVERY_TASK_PREFIX } from './recoveryTasks.js';
 import { detectForgeCli } from '../lib/gitForge.js';
 import { PR_COMPLETIONS, PR_COMPLETION_VALUES, leavesPrForHuman } from '../lib/prDisposition.js';
 import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, MODEL_SELECTABLE_REVIEWERS, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds } from '../lib/validation.js';
+
+// In-flight cleanup per agentId, so two completion paths racing to clean the
+// SAME agent coalesce onto one run instead of tripping over each other.
+//
+// A completing agent reaches cleanup twice by design: the runner path
+// (`handleAgentCompletion` → `runAgentCompletionCleanup`) AND the spawner's
+// `finally` safety net (agentTuiSpawning.js / agentCliSpawning.js), which fires
+// unconditionally so a throw from `finalizeAgent` can never strand a worktree.
+// Neither knows about the other, and they are driven by independent events, so
+// they overlap. The loser then ran `git status --porcelain` while the winner was
+// mid-`git worktree remove --force`, saw the in-progress deletions as ` D <path>`
+// dirt, and reported "Worktree preserved — uncommitted changes detected" for a
+// worktree that removed cleanly milliseconds later — a false warning AND a false
+// user notification on a successful run (observed on agent-ce67bb09, whose PR had
+// already merged). Sanctioned by the Security Model's re-entrancy-guard carve-out:
+// this is one actor's duplicate in-flight operation, not two competing humans.
+const inFlightCleanups = new Map();
 
 /**
  * Clean up a worktree for a completed agent.
@@ -43,8 +61,25 @@ import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, MODEL_SE
  * When skipMerge is true (review-loop follow-up agents), the cleanup never auto-merges
  * the worktree branch into the source workspace because `gh pr merge` already handled it.
  * Otherwise, merges the worktree branch back to the source branch on success.
+ *
+ * Re-entrant per `agentId`: a second call that arrives while the first is still
+ * running joins it and resolves with the SAME warnings rather than starting a
+ * competing pass (see `inFlightCleanups`). The joiner's `options` are therefore
+ * ignored — one completing agent gets one cleanup, and the two duplicate callers
+ * this guards against derive their options from the same task metadata anyway.
  */
-export async function cleanupAgentWorktree(agentId, success, { openPR = false, prCompletion = null, requestCopilotReview: legacyRequestCopilotReview = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, reviewerModels = null, skipMerge = false, description = null, agentOutput = null, originalTask = null } = {}) {
+export async function cleanupAgentWorktree(agentId, success, options = {}) {
+  const existing = inFlightCleanups.get(agentId);
+  // Join the pass already underway. Its warnings are the run's warnings — the
+  // duplicate caller must not re-derive them from a half-removed worktree.
+  if (existing) return existing;
+  const run = runCleanupAgentWorktree(agentId, success, options)
+    .finally(() => { inFlightCleanups.delete(agentId); });
+  inFlightCleanups.set(agentId, run);
+  return run;
+}
+
+async function runCleanupAgentWorktree(agentId, success, { openPR = false, prCompletion = null, requestCopilotReview: legacyRequestCopilotReview = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, reviewerModels = null, skipMerge = false, description = null, agentOutput = null, originalTask = null } = {}) {
   const { getAgent: getAgentState } = await import('./cos.js');
   const agentState = await getAgentState(agentId).catch(() => null);
   if (!agentState?.metadata?.isWorktree) return [];
@@ -457,7 +492,12 @@ export function resumePointerMetadata(pointer, agentId, task) {
     };
   }
   if (!task?.metadata?.resumedFromAgentId) return {};
-  return { existingBranch: null, resumedFromAgentId: null, resumeWorktreePath: null };
+  // `undefined`, not `null`: `updateTask` DELETES undefined keys from the merged
+  // metadata, while a null survives the merge and TASKS.md serializes it as the
+  // literal string `"null"` — which reads back as a truthy `existingBranch` and
+  // sends the next attempt looking for a branch named "null". The keys are still
+  // present on the returned patch, so callers can tell a clear from a no-op.
+  return { existingBranch: undefined, resumedFromAgentId: undefined, resumeWorktreePath: undefined };
 }
 
 /**
@@ -479,6 +519,106 @@ export async function recordTaskResumePointer({ task, agentId, agentMetadata }) 
     emitLog('info', `🧹 Cleared spent resume pointer on task ${task.id} — nothing left to resume`, { taskId: task.id, agentId });
   }
   return metadata;
+}
+
+/**
+ * The post-cleanup write that RELEASES a failed task's retry hold, shared by every
+ * spawn mode (#3368, #3373).
+ *
+ * A failed agent whose branch — or whole worktree — survived cleanup leaves real
+ * work behind (see `preserveBranchWithCommits` above; a dirty tree aborts removal
+ * outright). Recording where it lives on the TASK is what makes its retry RESUME
+ * rather than restart from scratch — the behavior the agent-d2ae0352 incident
+ * exposed, where a run reaped 30s after its PR merged was re-dispatched to a fresh
+ * agent that began the shipped work over.
+ *
+ * Call this AFTER `cleanupAgentWorktree` so it reflects what actually survived, and
+ * from all three spawn sites — `spawnDirectly` (agentCliSpawning.js), the TUI
+ * `finish()` (agentTuiSpawning.js), and `handleAgentCompletion`
+ * (agentCompletionCleanup.js, runner mode). Only the runner path used to do it, so a
+ * failed direct-CLI/TUI run left a branch full of commits nothing would ever point a
+ * retry at.
+ *
+ * Only for a task that is actually going to RETRY. The failure verdict has already
+ * been persisted by `finalizeAgent` at this point, and a retryable failure leaves
+ * the task HELD — `in_progress` plus the retry-hold marker (#3373,
+ * lib/taskRetryHold.js) — precisely so nothing can dequeue it during the cleanup
+ * this call follows. Releasing the hold and writing the pointer is therefore ONE
+ * `updateTask`: the task becomes spawnable and pointed in the same write, never
+ * spawnable-then-pointed. A `blocked` task that exhausted its budget carries no
+ * hold and gets no pointer — dead metadata `updateTask` would strip again on the
+ * next terminal write, and that a later `reviveBlockedTask` would resurrect as a
+ * live pointer to a branch nobody vetted.
+ *
+ * The no-hold fallback (a task we read as plain `pending`) still writes the pointer
+ * alone: that is the pre-#3373 shape, and it is also what a task the orphan sweep
+ * already recovered mid-cleanup looks like. Anything else we read — `blocked`,
+ * `in_progress` under someone else's hold or none at all (the retry already
+ * spawned), a failed read, a task deleted mid-run — is not evidence of a retry we
+ * own, so we write nothing.
+ *
+ * `agentMetadata` is optional: pass it when the caller already holds the agent
+ * record (the runner path does), omit it and this reads the record itself —
+ * `getAgentRecord`, not `getAgent`, so it doesn't read and line-split the run's
+ * whole output.txt for three metadata fields. `undefined` means "not supplied" —
+ * a caller that genuinely has no metadata still gets the no-op it deserves, since
+ * `resolveTaskResumePatch` bails on a non-worktree run.
+ *
+ * @param {{agentId: string, task: object, success: boolean, agentMetadata?: object}} params
+ * @returns {Promise<object>} the metadata patch that was written (empty when nothing was)
+ */
+export async function releaseRetryHold({ agentId, task, success, agentMetadata }) {
+  if (success || !agentId || !task?.id) return {};
+
+  const { getTaskById, getAgentRecord } = await import('./cos.js');
+  const persisted = await getTaskById(task.id).catch(err => {
+    emitLog('warn', `Skipping resume pointer for task ${task.id} — status unreadable: ${err.message}`, { taskId: task.id, agentId });
+    return null;
+  });
+  if (!persisted) return {};
+
+  // Release only OUR hold, and only while the task is still held `in_progress`.
+  // Both halves matter: a slow cleanup from a previous attempt must not clear the
+  // hold the CURRENT attempt just armed (it would make the task spawnable while
+  // that attempt's cleanup is still running — the very race this exists to close),
+  // and a task that reached `blocked`/`completed` carrying a stale marker must
+  // never be flipped back to `pending` by a late cleanup.
+  const held = isRetryHoldOwner(persisted.metadata, agentId) && persisted.status === 'in_progress';
+  // A record with no `status` at all is a legacy shape that predates the field;
+  // those are pending.
+  if (!held && (persisted.status ?? 'pending') !== 'pending') return {};
+
+  const metadata = agentMetadata === undefined
+    ? (await getAgentRecord(agentId).catch(() => null))?.metadata
+    : agentMetadata;
+
+  if (!held) return await recordTaskResumePointer({ task, agentId, agentMetadata: metadata });
+
+  // Fails open to "start clean" for the same reason `handleOrphanedTask` does:
+  // requeueing the task matters far more than resuming it, and a throw here would
+  // leave it held until the orphan sweep.
+  const patch = await resolveTaskResumePatch({ task, agentId, agentMetadata: metadata }).catch(err => {
+    emitLog('warn', `Resume pointer for task ${task.id} could not be resolved: ${err.message}`, { taskId: task.id, agentId });
+    return {};
+  });
+  const taskType = task.taskType || persisted.taskType || 'user';
+  const result = await updateTask(task.id, {
+    status: 'pending',
+    metadata: { ...patch, ...clearedRetryHoldMetadata() }
+  }, taskType).catch(err => {
+    emitLog('warn', `Failed to release retry hold on task ${task.id}: ${err.message}`, { taskId: task.id, agentId });
+    return { error: err.message };
+  });
+  if (result?.error) {
+    // The hold is still on disk, so the orphan sweep finishes the transition —
+    // the task is delayed, never stranded.
+    emitLog('warn', `⏳ Task ${task.id} still held after a failed release — the orphan sweep will requeue it`, { taskId: task.id, agentId });
+    return {};
+  }
+  emitLog('info', patch.existingBranch
+    ? `🔁 Task ${task.id} requeued pointing at ${patch.existingBranch}`
+    : `🔓 Task ${task.id} requeued for retry`, { taskId: task.id, agentId, branchName: patch.existingBranch || null });
+  return patch;
 }
 
 /**

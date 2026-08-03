@@ -1,5 +1,5 @@
 import { Suspense, useEffect } from 'react';
-import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation } from 'react-router';
 import Layout from './components/Layout';
 import { getSettings, updateSettings, getSelfInstance } from './services/api';
 import BrailleSpinner from './components/BrailleSpinner';
@@ -30,6 +30,7 @@ const FeatureAgents = lazyWithReload(() => import('./pages/FeatureAgents'));
 const FeatureAgentDetail = lazyWithReload(() => import('./pages/FeatureAgentDetail'));
 const CalendarPage = lazyWithReload(() => import('./pages/Calendar'));
 const Messages = lazyWithReload(() => import('./pages/Messages'));
+const StackerNews = lazyWithReload(() => import('./pages/StackerNews'));
 const IMessage = lazyWithReload(() => import('./pages/IMessage'));
 const Tribe = lazyWithReload(() => import('./pages/Tribe'));
 const Timeline = lazyWithReload(() => import('./pages/Timeline'));
@@ -301,11 +302,18 @@ export default function App() {
           <Route path="post" element={<Navigate to="/post/launcher" replace />} />
           <Route path="post/:tab" element={<Post />} />
           <Route path="post/:tab/:subtab" element={<Post />} />
+          {/* Third segment carries the practice mode for the memory tab
+              (/post/memory/:itemId/:mode) so a drill is directly linkable — the
+              same "selection lives in the URL" contract Morse/Wordplay already
+              satisfy with their :mode subtab (issue #3249). */}
+          <Route path="post/:tab/:subtab/:mode" element={<Post />} />
           <Route path="review" element={<Review />} />
           <Route path="messages" element={<Navigate to="/messages/inbox" replace />} />
           {/* :chatKey is only used by the imessage tab; other tabs strip a stray second segment. */}
           <Route path="messages/:tab/:chatKey" element={<Messages />} />
           <Route path="messages/:tab" element={<Messages />} />
+          <Route path="stacker-news" element={<StackerNews />} />
+          <Route path="stacker-news/:accountId/:tab" element={<StackerNews />} />
           {/* Legacy /imessage → Comms Messages → iMessage tab */}
           <Route path="imessage" element={<Navigate to="/messages/imessage" replace />} />
           <Route path="imessage/:chatKey" element={<IMessage />} />

@@ -19,7 +19,7 @@ import { finalizeAgent, releaseAgentLane } from './agentFinalization.js';
 import { activeAgents, userTerminatedAgents, pausedAgents, isFalsyMeta } from './agentState.js';
 import { PATHS } from '../lib/fileUtils.js';
 import { DONE_SENTINEL_NAME, parseSentinelPayload } from '../lib/agentSentinel.js';
-import { isHostShuttingDown, HOST_SHUTDOWN_REASON } from '../lib/hostShutdown.js';
+import { shouldAbandonForHostShutdown, HOST_SHUTDOWN_REASON } from '../lib/hostShutdown.js';
 import { SENTINEL_COMPLETION_MARKER } from '../lib/agentOutputMarkers.js';
 import { resolvePrCompletion } from '../lib/prDisposition.js';
 import { canTypeSlashCommands } from '../lib/slashdoInvocation.js';
@@ -545,10 +545,11 @@ export async function spawnTuiAgent({
     // recovery's user-terminated skip would miss it and resurrect the run. And a
     // run the user paused already has its own don't-finalize branch below, which
     // owns the paused bookkeeping (pid unregister, activeAgents delete).
-    if (isHostShuttingDown()
-      && !sentinelPresent()
-      && !userTerminatedAgents.has(agentId)
-      && !pausedAgents.has(agentId)) {
+    if (shouldAbandonForHostShutdown({
+      sentinelPresent: sentinelPresent(),
+      terminatedByUser: userTerminatedAgents.has(agentId),
+      paused: pausedAgents.has(agentId),
+    })) {
       await abandonForHostShutdown();
       return;
     }
@@ -623,13 +624,35 @@ export async function spawnTuiAgent({
       completionError: finalError,
     });
 
+    // A slashdo-capable Claude TUI owns /do:pr itself. Slashdo-free TUIs
+    // (Codex, Antigravity, OpenCode, lean Claude) only commit and signal;
+    // PortOS must own their push + PR + reviewer/merge follow-up. Derive this
+    // from the same predicate used by the prompt builder so neither side can
+    // believe the other owns the PR.
+    //
+    // Resolved BEFORE finalizeAgent (not just in the cleanup below) because it is
+    // also the gate for the PR-claim verification (#3358): only a run that owned
+    // its own PR creation can be expected to have produced one by finalize time.
+    const taskOpenPR = isTruthyMetaFn(task.metadata?.openPR);
+    const agentOwnsPR = taskOpenPR && canTypeSlashCommands({
+      providerId: provider?.id,
+      providerCommand: provider?.command,
+      leanMode,
+    });
+
     // try/finally so a throw from finalizeAgent (e.g. processAgentCompletion
     // hook crash) still runs the local cleanup — sentinel removal, worktree
     // cleanup, pid unregister, activeAgents delete, session kill. Without
     // this, a memory-extraction crash would strand the worktree and the
     // shell session on disk.
+    // The verdict finalizeAgent actually persisted. A PR-claim downgrade (#3358)
+    // must reach cleanup too — cleaning up as a success removes the worktree and
+    // deletes the local branch, destroying the state the retry needs. Left at
+    // `finalSuccess` if finalize threw before returning (the pre-existing
+    // best-effort posture).
+    let cleanupSuccess = finalSuccess;
     try {
-      await finalizeAgent({
+      const finalized = await finalizeAgent({
         agentId,
         task,
         runId,
@@ -644,29 +667,20 @@ export async function spawnTuiAgent({
         error: finalError || undefined,
         completionReason: reason,
         workspacePath,
+        prExpected: agentOwnsPR,
       });
+      if (finalized && typeof finalized.success === 'boolean') cleanupSuccess = finalized.success;
     } finally {
       if (workspacePath) await rm(join(workspacePath, DONE_SENTINEL_NAME)).catch(() => {});
 
-      // A slashdo-capable Claude TUI owns /do:pr itself. Slashdo-free TUIs
-      // (Codex, Antigravity, OpenCode, lean Claude) only commit and signal;
-      // PortOS must own their push + PR + reviewer/merge follow-up. Derive this
-      // from the same predicate used by the prompt builder so neither side can
-      // believe the other owns the PR.
-      const taskOpenPR = isTruthyMetaFn(task.metadata?.openPR);
-      const agentOwnsPR = taskOpenPR && canTypeSlashCommands({
-        providerId: provider?.id,
-        providerCommand: provider?.command,
-        leanMode,
-      });
-      const reviewOptions = finalSuccess && taskOpenPR && !agentOwnsPR
+      const reviewOptions = cleanupSuccess && taskOpenPR && !agentOwnsPR
         ? await resolveReviewLoopOptions(task.metadata, { normalize: normalizeReviewers, isTruthyMeta: isTruthyMetaFn })
           .catch(err => {
             emitLog('warn', `TUI review options unavailable for ${agentId}: ${err.message}`, { agentId });
             return {};
           })
         : {};
-      await cleanupWorktreeFn(agentId, finalSuccess, {
+      await cleanupWorktreeFn(agentId, cleanupSuccess, {
         openPR: agentOwnsPR ? false : taskOpenPR,
         prCompletion: resolvePrCompletion(task.metadata),
         ...reviewOptions,
@@ -675,6 +689,18 @@ export async function spawnTuiAgent({
         agentOutput: getOutputBuffer(),
         originalTask: task
       }).catch(err => emitLog('warn', `TUI worktree cleanup failed for ${agentId}: ${err.message}`, { agentId }));
+
+      // Release the retry hold: flip the failed task back to `pending` carrying a
+      // pointer at whatever the run left behind — the branch (or whole worktree)
+      // `cleanupWorktreeFn` just preserved because the run failed with commits on
+      // it. Without the pointer the retry starts clean and redoes work already
+      // sitting on disk (#3368); without the hold that release replaces, the retry
+      // could be dequeued before the pointer landed (#3373). Imported lazily for the
+      // same reason `cleanupWorktreeFn` is injected: pulling the cleanup graph in at
+      // module top level races this file's own init in the agentLifecycle cycle.
+      await import('./agentWorktreeCleanup.js')
+        .then(({ releaseRetryHold }) => releaseRetryHold({ agentId, task, success: cleanupSuccess }))
+        .catch(err => emitLog('warn', `TUI retry-hold release failed for ${agentId}: ${err.message}`, { agentId }));
 
       if (agentData?.pid) unregisterSpawnedAgent(agentData.pid);
       activeAgents.delete(agentId);

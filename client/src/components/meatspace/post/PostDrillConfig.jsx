@@ -1,19 +1,22 @@
 import { useState, useEffect } from 'react';
 import { ArrowLeft, Save, Brain, Bell, Target, Layers, TrendingUp, TrendingDown, Minus } from 'lucide-react';
-import { updatePostConfig, getProviders, getPostAdaptivePreview, getPostMultiplicationProgress, getPostCognitiveProgress } from '../../../services/api';
+import { updatePostConfig, getProviders, getPostAdaptivePreview, getPostMultiplicationProgress, getPostPowersProgress, getPostCognitiveProgress, getMemoryItems } from '../../../services/api';
 import toast from '../../ui/Toast';
 import { FormField } from '../../ui/FormField';
 import { filterSelectableModels, enabledApiProviderFilter } from '../../../utils/providers';
-import { GOAL_DEFS } from './constants';
+import { GOAL_DEFS, POST_TOPICS, MODULE_LABELS, composedSessionDrillTypes } from './constants';
 
-// Modules a Full/Quick composed session can draw from (issue #2100). Memory is
-// deliberately absent — it has no launcher-composed drill yet (practice lives in
-// the Memory tab), so offering it here would let a user build an empty session.
-const SESSION_MODULE_OPTIONS = [
-  { id: 'mental-math', label: 'Mental Math' },
-  { id: 'cognitive', label: 'Cognitive' },
-  { id: 'llm-drills', label: 'Wit & Memory (AI)' },
-];
+// Modules a Full/Quick composed session can draw from (issue #2100), DERIVED
+// from the shared topic registry so the list has one owner (issue #3252): a
+// module is offered exactly when some topic composes into a session
+// (`surface: 'session'`). Memory joins this list now that the launcher has a
+// real composed-drill source (issue #3254); Morse remains standalone.
+//
+// One row per MODULE, not per topic — wordplay / verbal / imagination all share
+// `llm-drills`, so the dedupe below keeps a single row named by MODULE_LABELS.
+const SESSION_MODULE_OPTIONS = [...new Set(
+  POST_TOPICS.filter(t => t.surface === 'session' && t.module).map(t => t.module)
+)].map(module => ({ id: module, label: MODULE_LABELS[module] }));
 
 // Human labels for the adaptive difficulty knob each math drill tunes.
 const ADAPTIVE_FIELD_LABELS = {
@@ -524,6 +527,7 @@ export default function PostDrillConfig({ config, onSaved, onBack }) {
   );
   const [adaptivePreview, setAdaptivePreview] = useState(null);
   const [multiplicationProgress, setMultiplicationProgress] = useState(null);
+  const [powersProgress, setPowersProgress] = useState(null);
   const [cognitiveProgress, setCognitiveProgress] = useState(null);
   // Opt-in daily reminder — off by default; see server/services/meatspacePostReminder.js.
   const [reminderEnabled, setReminderEnabled] = useState(
@@ -536,13 +540,14 @@ export default function PostDrillConfig({ config, onSaved, onBack }) {
   // goal. Seeded from saved config; the launcher/widget render progress vs these.
   const [goals, setGoals] = useState(() => ({ ...(config?.goals || {}) }));
   // Which modules a Full/Quick COMPOSED session draws from (issue #2100). The
-  // default (mental-math + cognitive + memory) excludes LLM drills so they're
-  // never auto-run without provider-cost consent — check "Wit & Memory" to opt
-  // them into composed sessions.
+  // default (mental-math + cognitive) excludes Memory and LLM drills. Memory is
+  // a deliberate composition opt-in; AI drills are never auto-run without
+  // provider-cost consent — check "Wit & Memory" to opt them in.
   const [sessionModules, setSessionModules] = useState(
     () => Array.isArray(config?.sessionModules) ? config.sessionModules : ['mental-math', 'cognitive']
   );
   const [providers, setProviders] = useState([]);
+  const [memoryItemsState, setMemoryItemsState] = useState({ status: 'loading', items: [] });
   const [saving, setSaving] = useState(false);
 
   const setGoalField = (key, raw) => setGoals(prev => {
@@ -561,7 +566,19 @@ export default function PostDrillConfig({ config, onSaved, onBack }) {
 
   useEffect(() => {
     getProviders().then(p => setProviders((p?.providers || []).filter(enabledApiProviderFilter))).catch(err => console.warn('⚠️ Failed to load providers: ' + err.message));
+    getMemoryItems({ silent: true })
+      .then(items => setMemoryItemsState({ status: 'ready', items: Array.isArray(items) ? items : [] }))
+      .catch(() => setMemoryItemsState({ status: 'error', items: [] }));
   }, []);
+
+  // Force Memory through the same topic/module/drill/item compatibility chain
+  // as the launcher while ignoring its current Session Composition membership:
+  // this predicate decides whether that membership may be added in the first place.
+  const hasRunnableMemoryDrill = memoryItemsState.status === 'ready'
+    && !!composedSessionDrillTypes(
+      { ...config, sessionModules: ['memory'] },
+      memoryItemsState.items,
+    ).memory?.length;
 
   // Load the effective-difficulty preview when Adaptive is on, so each math card
   // can show what a session would actually use. Reflects saved config + recent
@@ -580,6 +597,7 @@ export default function PostDrillConfig({ config, onSaved, onBack }) {
   // so the config page shows the current rung + mastery before a session.
   // Progressive defaults ON (undefined → true), matching the server default.
   const multiplicationProgressive = drillTypes.multiplication?.progressive !== false;
+  const powersProgressive = drillTypes.powers?.progressive !== false;
   useEffect(() => {
     if (!multiplicationProgressive) { setMultiplicationProgress(null); return; }
     let cancelled = false;
@@ -588,6 +606,15 @@ export default function PostDrillConfig({ config, onSaved, onBack }) {
       .catch(err => console.warn('⚠️ Failed to load multiplication progress: ' + err.message));
     return () => { cancelled = true; };
   }, [multiplicationProgressive]);
+
+  useEffect(() => {
+    if (!powersProgressive) { setPowersProgress(null); return; }
+    let cancelled = false;
+    getPostPowersProgress()
+      .then(p => { if (!cancelled) setPowersProgress(p); })
+      .catch(err => console.warn('⚠️ Failed to load powers progress: ' + err.message));
+    return () => { cancelled = true; };
+  }, [powersProgressive]);
 
   // Progressive cognitive-ladder status (per drill type), same pattern as the
   // multiplication badge. Fetched whenever the cognitive section is on and any
@@ -612,10 +639,10 @@ export default function PostDrillConfig({ config, onSaved, onBack }) {
     }));
   }
 
-  function toggleProgressive() {
+  function toggleProgressive(type) {
     setDrillTypes(prev => ({
       ...prev,
-      multiplication: { ...prev.multiplication, progressive: !(prev.multiplication?.progressive !== false) }
+      [type]: { ...prev[type], progressive: !(prev[type]?.progressive !== false) }
     }));
   }
 
@@ -871,21 +898,30 @@ export default function PostDrillConfig({ config, onSaved, onBack }) {
         <div className="flex flex-wrap gap-2">
           {SESSION_MODULE_OPTIONS.map(opt => {
             const on = sessionModules.includes(opt.id);
+            const memoryUnavailable = opt.id === 'memory' && !hasRunnableMemoryDrill;
+            const unavailableReason = memoryItemsState.status === 'loading'
+              ? 'Checking memory items…'
+              : memoryItemsState.status === 'error'
+                ? 'Memory items could not be loaded.'
+                : 'Enable Memory, a runnable drill, and an item in Practice Plan first.';
             return (
-              <button
-                key={opt.id}
-                type="button"
-                role="checkbox"
-                aria-checked={on}
-                onClick={() => toggleModule(opt.id)}
-                className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
-                  on
-                    ? 'bg-port-accent/20 text-port-accent border-port-accent/50'
-                    : 'bg-port-bg text-gray-400 border-port-border hover:text-white'
-                }`}
-              >
-                {opt.label}
-              </button>
+              <div key={opt.id} className="flex flex-col gap-1">
+                <button
+                  type="button"
+                  role="checkbox"
+                  aria-checked={on}
+                  disabled={memoryUnavailable && !on}
+                  onClick={() => toggleModule(opt.id)}
+                  className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
+                    on
+                      ? 'bg-port-accent/20 text-port-accent border-port-accent/50'
+                      : 'bg-port-bg text-gray-400 border-port-border hover:text-white'
+                  } disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-gray-400`}
+                >
+                  {opt.label}
+                </button>
+                {memoryUnavailable && <span className="max-w-48 text-xs text-gray-500">{unavailableReason}</span>}
+              </div>
             );
           })}
         </div>
@@ -929,6 +965,8 @@ export default function PostDrillConfig({ config, onSaved, onBack }) {
           {Object.entries(DRILL_META).map(([type, meta]) => {
             const drillConfig = drillTypes[type] || {};
             const isMultiplication = type === 'multiplication';
+            const isPowers = type === 'powers';
+            const isProgressive = isMultiplication || isPowers;
             return (
               <DrillCard
                 key={type}
@@ -939,12 +977,12 @@ export default function PostDrillConfig({ config, onSaved, onBack }) {
                 onToggle={() => toggleDrill(type)}
                 onUpdateField={(key, value) => updateField(type, key, value)}
                 adaptiveInfo={adaptiveEnabled ? adaptivePreview?.[type] : null}
-                progressive={isMultiplication ? multiplicationProgressive : undefined}
-                onToggleProgressive={isMultiplication ? toggleProgressive : undefined}
-                progressInfo={isMultiplication ? multiplicationProgress : null}
-                managedFieldKeys={isMultiplication ? ['maxDigits'] : []}
-                speedGated={isMultiplication}
-                managedLabel="Max Digits"
+                progressive={isProgressive ? (isMultiplication ? multiplicationProgressive : powersProgressive) : undefined}
+                onToggleProgressive={isProgressive ? () => toggleProgressive(type) : undefined}
+                progressInfo={isMultiplication ? multiplicationProgress : (isPowers ? powersProgress : null)}
+                managedFieldKeys={isMultiplication ? ['maxDigits'] : (isPowers ? ['maxExponent'] : [])}
+                speedGated={isProgressive}
+                managedLabel={isMultiplication ? 'Max Digits' : 'Max Exponent'}
               />
             );
           })}

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   formatContextLength, formatDurationMin, formatDurationMs, formatEventDateTime, timeAgo,
-  formatCooldown, parseSizeGb, recommendedRamGb, parseTimeoutMs, formatDurationSec,
+  formatCooldown, parseSizeGb, recommendedRamGb, parseTimeoutMs, formatDurationSec, middleTruncate,
 } from './formatters.js';
 
 describe('formatDurationSec', () => {
@@ -250,5 +250,55 @@ describe('parseTimeoutMs', () => {
 
   it('accepts a mid-range valid value', () => {
     expect(parseTimeoutMs('30000')).toBe(30000);
+  });
+});
+
+describe('middleTruncate', () => {
+  it('returns the string untouched when it already fits', () => {
+    expect(middleTruncate('short name', 20)).toBe('short name');
+    expect(middleTruncate('exactly-ten', 11)).toBe('exactly-ten');
+  });
+
+  it('keeps the distinguishing tail that an end-clip would eat', () => {
+    const a = middleTruncate('Nightly Surreal Landscapes — 2026-08-01', 24);
+    const b = middleTruncate('Nightly Surreal Landscapes — 2026-08-02', 24);
+    expect(a).not.toBe(b);
+    expect(a.endsWith('2026-08-01')).toBe(true);
+    expect(a.length).toBe(24);
+  });
+
+  it('coerces nullish input to an empty string', () => {
+    expect(middleTruncate(null, 10)).toBe('');
+    expect(middleTruncate(undefined, 10)).toBe('');
+  });
+
+  it('falls back to a head slice when max cannot fit a middle', () => {
+    expect(middleTruncate('abcdef', 2)).toBe('ab');
+    expect(middleTruncate('abcdef', 0)).toBe('');
+  });
+
+  it('never splits a surrogate pair', () => {
+    // Both cut points land inside an astral character; slicing by UTF-16 code
+    // unit would emit a lone surrogate that renders as the replacement glyph.
+    const out = middleTruncate('AAAAAAAAAAAAAAAA🎬BBBBBBBBBBBB🎬CCCC', 20);
+    // Array.from groups a valid pair into one char above 0xFFFF; a LONE
+    // surrogate survives as a single char inside the surrogate range.
+    const lone = Array.from(out).filter((ch) => {
+      const cp = ch.codePointAt(0);
+      return cp >= 0xD800 && cp <= 0xDFFF;
+    });
+    expect(lone).toEqual([]);
+    expect(Array.from(out)).toHaveLength(20);
+  });
+
+  it('counts the cap in code points, not UTF-16 units', () => {
+    // 10 emoji = 20 code units but only 10 code points, so a cap of 10 fits.
+    expect(middleTruncate('🎬'.repeat(10), 10)).toBe('🎬'.repeat(10));
+  });
+
+  it('returns the string whole for a non-finite cap instead of discarding it', () => {
+    expect(middleTruncate('keep me', NaN)).toBe('keep me');
+    expect(middleTruncate('keep me', Infinity)).toBe('keep me');
+    expect(middleTruncate('keep me', undefined)).toBe('keep me');
   });
 });

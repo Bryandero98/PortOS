@@ -51,11 +51,11 @@
  */
 
 import { execGit } from '../lib/execGit.js';
-import { execGh } from './github.js';
+import { execGh, ensureForgeReachable } from './github.js';
 import { execGlab } from './gitlab.js';
 import { fetchMyCurrentSprintTickets } from './jira.js';
 import { getOriginInfo, readOriginRemoteUrl } from '../lib/gitRemote.js';
-import { hostToWorkTracker, hostFromOriginUrl, githubRepoSpec } from '../lib/workTracker.js';
+import { hostToWorkTracker, hostFromOriginUrl, githubRepoSpec, githubApiHost } from '../lib/workTracker.js';
 import { safeJSONParse, PATHS } from '../lib/fileUtils.js';
 
 // Bound the forge queries (single-user repos never realistically truncate at 200).
@@ -266,17 +266,27 @@ function normalizeGithubIssue(issue) {
  * @param {string} fullName - plain `OWNER/REPO`, returned for display/logging
  * @returns {Promise<{forge:'github', fullName:string, inProgress:object[], mergedPrs:object[], openPrs:object[]}|null>}
  */
-async function getGithubState(repoSpec, fullName) {
+async function getGithubState(repoSpec, fullName, apiHost = null) {
+  // Probe before the three list calls (#3358): without it an unreachable gh
+  // returns three empty pages that read as "nothing to reconcile" forever.
+  const forge = await ensureForgeReachable('issue-reconcile', { hostname: apiHost });
+  if (!forge.ok) return null;
+
+  const ghList = (args, what) => execGh(args).catch((err) => {
+    console.error(`❌ issue-reconcile: ${what} failed for ${fullName}: ${err.message}`);
+    return null;
+  });
+
   const [issuesRaw, mergedRaw, openRaw] = await Promise.all([
-    execGh(['issue', 'list', '--repo', repoSpec, '--state', 'open',
+    ghList(['issue', 'list', '--repo', repoSpec, '--state', 'open',
       '--label', IN_PROGRESS_LABEL, '--limit', String(GH_LIST_LIMIT),
-      '--json', 'number,title,labels,assignees,url']).catch(() => null),
-    execGh(['pr', 'list', '--repo', repoSpec, '--state', 'merged',
+      '--json', 'number,title,labels,assignees,url'], 'gh issue list'),
+    ghList(['pr', 'list', '--repo', repoSpec, '--state', 'merged',
       '--limit', String(GH_LIST_LIMIT),
-      '--json', 'number,headRefName,body,url,mergedAt']).catch(() => null),
-    execGh(['pr', 'list', '--repo', repoSpec, '--state', 'open',
+      '--json', 'number,headRefName,body,url,mergedAt'], 'gh pr list --state merged'),
+    ghList(['pr', 'list', '--repo', repoSpec, '--state', 'open',
       '--limit', String(GH_LIST_LIMIT),
-      '--json', 'number,headRefName,body']).catch(() => null),
+      '--json', 'number,headRefName,body'], 'gh pr list --state open'),
   ]);
 
   const inProgressRaw = safeJSONParse(issuesRaw, null);
@@ -284,12 +294,20 @@ async function getGithubState(repoSpec, fullName) {
   // transient blip (return null → skip without parking). Empty is a valid,
   // different answer (no in-progress issues) and returns [].
   if (!Array.isArray(inProgressRaw)) return null;
+  // The PR lists are load-bearing too (#3358): `mergedPrs` is what proves an
+  // issue shipped and `openPrs` is what proves a claim is still live on a peer.
+  // Degrading either to [] would classify a live claim as a zombie and unlabel a
+  // PR that is open right now — so a failure here fails the whole scan, and only
+  // an ANSWERED-but-empty list falls through as [].
+  const mergedPrs = safeJSONParse(mergedRaw, null);
+  const openPrs = safeJSONParse(openRaw, null);
+  if (!Array.isArray(mergedPrs) || !Array.isArray(openPrs)) return null;
   return {
     forge: 'github',
     fullName,
     inProgress: inProgressRaw.map(normalizeGithubIssue),
-    mergedPrs: safeJSONParse(mergedRaw, []) || [],
-    openPrs: safeJSONParse(openRaw, []) || [],
+    mergedPrs,
+    openPrs,
   };
 }
 
@@ -349,12 +367,20 @@ async function getGitlabState(repoPath, fullName) {
 
   const inProgressRaw = safeJSONParse(issuesRaw, null);
   if (!Array.isArray(inProgressRaw)) return null;
+  // Same load-bearing treatment as the GitHub path (#3358): a `glab` blip on the
+  // MR lists must fail the scan, not degrade to "no MRs exist".
+  const mergedRows = safeJSONParse(mergedRaw, null);
+  const openRows = safeJSONParse(openRaw, null);
+  if (!Array.isArray(mergedRows) || !Array.isArray(openRows)) {
+    console.error(`❌ issue-reconcile: glab mr list unavailable for ${fullName} — skipping this cycle`);
+    return null;
+  }
   return {
     forge: 'gitlab',
     fullName,
     inProgress: inProgressRaw.map(normalizeGitlabIssue),
-    mergedPrs: (safeJSONParse(mergedRaw, []) || []).map(normalizeGitlabMr),
-    openPrs: (safeJSONParse(openRaw, []) || []).map(normalizeGitlabMr),
+    mergedPrs: mergedRows.map(normalizeGitlabMr),
+    openPrs: openRows.map(normalizeGitlabMr),
   };
 }
 
@@ -396,7 +422,7 @@ async function getForgeState(repoPath) {
   // `HOST/OWNER/REPO` --repo selector (deterministic on fork+upstream checkouts),
   // or null when the origin isn't a resolvable GitHub repo.
   const githubSpec = githubRepoSpec(origin);
-  if (githubSpec) return getGithubState(githubSpec, origin.fullName);
+  if (githubSpec) return getGithubState(githubSpec, origin.fullName, githubApiHost(origin.host));
 
   // GitLab: classify off the host (subgroup-safe). `glab` is cwd-based, so a
   // display path is best-effort — prefer getOriginInfo's fullName, else derive the

@@ -1,5 +1,5 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useEffect, useState, useCallback } from 'react';
+import { useParams, useNavigate, Link } from 'react-router';
 import { NotebookPen, PanelLeftOpen, BookOpen } from 'lucide-react';
 import LibraryPane from '../components/writers-room/LibraryPane';
 import WorkEditor from '../components/writers-room/WorkEditor';
@@ -11,6 +11,7 @@ import {
   getWritersRoomWork,
 } from '../services/apiWritersRoom';
 import { useLocalStorageBool } from '../hooks/useLocalStorageBool';
+import useMounted from '../hooks/useMounted';
 
 const LIBRARY_COLLAPSED_KEY = 'wr.libraryCollapsed';
 
@@ -33,13 +34,8 @@ export default function WritersRoom() {
   }, [setLibraryCollapsed]);
 
   // Skip setState when an in-flight library or work fetch resolves after the
-  // page unmounts (rapid nav across pages). Reset on mount so React 18
-  // StrictMode's mount→cleanup→remount cycle doesn't leave the ref stuck false.
-  const mountedRef = useRef(true);
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => { mountedRef.current = false; };
-  }, []);
+  // page unmounts (rapid nav across pages).
+  const mountedRef = useMounted();
 
   const refreshLibrary = useCallback(async () => {
     const [foldersList, worksList] = await Promise.all([

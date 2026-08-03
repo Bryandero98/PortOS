@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import useMounted from '../hooks/useMounted';
+import { Link, useSearchParams } from 'react-router';
 import { ArrowLeft, ArrowRightLeft, Brain, Check, ChevronDown, Clock, Copy, Cpu, Gauge, MessageSquare, Play, RefreshCw, Send, TriangleAlert, X } from 'lucide-react';
 import BrailleSpinner from '../components/BrailleSpinner';
 import PlaygroundOutput from '../components/localLlm/PlaygroundOutput';
@@ -242,7 +243,7 @@ export default function LocalLlmPlayground() {
   // the prompt/controls stay above the fold. Open by default on first load.
   const [modelsOpen, setModelsOpen] = useState(true);
 
-  const mountedRef = useRef(true);
+  const mountedRef = useMounted();
   // Holds the AbortController for the in-flight run so the Cancel button can
   // abort the client fetch (which closes the server-side stream early). Cleared
   // in each run's .finally(). Abort the live request on unmount too.
@@ -257,7 +258,6 @@ export default function LocalLlmPlayground() {
   const reasoningBufRef = useRef('');
   const flushTimerRef = useRef(null);
   useEffect(() => () => {
-    mountedRef.current = false;
     runControllerRef.current?.abort();
     if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
   }, []);

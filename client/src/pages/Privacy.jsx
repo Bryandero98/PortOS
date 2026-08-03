@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { Shield, LayoutDashboard, KeyRound, Building2, Repeat, ShieldOff } from 'lucide-react';
 import { useValidTab } from '../hooks/useValidTab';
 import PageHeader from '../components/PageHeader';

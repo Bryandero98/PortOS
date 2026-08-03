@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import {
   Clock,
   ChevronRight,
@@ -49,6 +49,7 @@ const UpcomingTasksWidget = memo(function UpcomingTasksWidget() {
       'security': '🔒',
       'ui-bugs': '🐛',
       'mobile-responsive': '📱',
+      'ux': '🎨',
       'code-quality': '✨',
       'console-errors': '🔧',
       'performance': '⚡',

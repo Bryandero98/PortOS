@@ -9,7 +9,7 @@ import {
   RefreshCw,
   ShieldCheck,
 } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import Banner from '../ui/Banner.jsx';
 import { formatDateShort } from '../../utils/formatters.js';
 

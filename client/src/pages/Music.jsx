@@ -10,7 +10,7 @@
  * tab is deep-linkable and survives reload. `tab` defaults to `artists`.
  */
 
-import { useParams, Navigate, Link } from 'react-router-dom';
+import { useParams, Navigate, Link } from 'react-router';
 import { Music as MusicIcon, Mic, Disc3, AudioLines } from 'lucide-react';
 import ArtistsManager from '../components/music/ArtistsManager';
 import AlbumsManager from '../components/music/AlbumsManager';

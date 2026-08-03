@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { Send, Sparkles } from 'lucide-react';
 import toast from './ui/Toast';
 import * as api from '../services/api';

@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ReviewerPicker from './ReviewerPicker';
+import { typeSettled } from '../../test/settledInput';
 
 describe('ReviewerPicker', () => {
   it('renders the selected reviewers in order with numbered badges', () => {
@@ -81,7 +82,7 @@ describe('ReviewerPicker', () => {
     const onChange = vi.fn();
     const user = userEvent.setup();
     render(<ReviewerPicker reviewers={['copilot']} onChange={onChange} />);
-    await user.type(screen.getByLabelText('Add a GitHub reviewer username'), '@CodeReviewbot');
+    await typeSettled(user, screen.getByLabelText('Add a GitHub reviewer username'), '@CodeReviewbot');
     await user.click(screen.getByRole('button', { name: /^Add$/ }));
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ usernames: ['CodeReviewbot'] }));
   });
@@ -90,7 +91,10 @@ describe('ReviewerPicker', () => {
     const onChange = vi.fn();
     const user = userEvent.setup();
     render(<ReviewerPicker reviewers={['copilot']} onChange={onChange} />);
-    await user.type(screen.getByLabelText('Add a GitHub reviewer username'), 'reviewer-bot{Enter}');
+    // Enter is pressed separately so the draft can be pinned first: the keydown
+    // handler adds whatever `usernameInput` state holds at that moment.
+    await typeSettled(user, screen.getByLabelText('Add a GitHub reviewer username'), 'reviewer-bot');
+    await user.keyboard('{Enter}');
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ usernames: ['reviewer-bot'] }));
   });
 
@@ -98,7 +102,10 @@ describe('ReviewerPicker', () => {
     const onChange = vi.fn();
     const user = userEvent.setup();
     render(<ReviewerPicker reviewers={['copilot']} onChange={onChange} />);
-    await user.type(screen.getByLabelText('Add a GitHub reviewer username'), 'bad token!{Enter}');
+    // Same pin: a partially-typed `bad` is a *valid* username, so an Enter that
+    // beat the last keystrokes would emit and make this assertion lie.
+    await typeSettled(user, screen.getByLabelText('Add a GitHub reviewer username'), 'bad token!');
+    await user.keyboard('{Enter}');
     expect(onChange).not.toHaveBeenCalled();
     expect(screen.getByText(/valid GitHub username/)).toBeInTheDocument();
   });

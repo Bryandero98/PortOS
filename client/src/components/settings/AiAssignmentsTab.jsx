@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { ArrowRight, Bot, RefreshCw, Save, Search } from 'lucide-react';
 import toast from '../ui/Toast';
 import { getAiAssignments, updateAiAssignment } from '../../services/api';

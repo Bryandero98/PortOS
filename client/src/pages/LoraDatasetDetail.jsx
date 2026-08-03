@@ -8,7 +8,7 @@
  */
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link } from 'react-router';
 import {
   ArrowLeft, Loader2, Upload, Wand2, Scissors, Tags, RefreshCw, AlertTriangle, Images, Replace, Lightbulb, Eraser,
 } from 'lucide-react';

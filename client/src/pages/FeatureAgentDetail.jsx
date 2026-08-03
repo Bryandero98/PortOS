@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import useMounted from '../hooks/useMounted';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router';
 import { Wand2, ArrowLeft } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import * as api from '../services/api';

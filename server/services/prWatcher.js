@@ -24,7 +24,7 @@
  * failure on one app.
  */
 
-import { execGh } from './github.js';
+import { execGh, ensureForgeReachable } from './github.js';
 import { getAppById, updateApp } from './apps.js';
 import * as git from './git.js';
 import { addNotification, NOTIFICATION_TYPES, PRIORITY_LEVELS } from './notifications.js';
@@ -77,7 +77,13 @@ export async function getSelfLogin(host) {
   if (_selfLoginCache.has(host)) return _selfLoginCache.get(host);
   // `--hostname` is required: without it `gh api` targets github.com regardless
   // of cwd, resolving the wrong identity for an enterprise repo.
-  const login = await execGh(['api', 'user', '--hostname', host, '--jq', '.login']).catch(() => null);
+  const login = await execGh(['api', 'user', '--hostname', host, '--jq', '.login']).catch((err) => {
+    // Log rather than swallow (#3358): without this a firewalled/unauthenticated
+    // gh is indistinguishable from "this host has no login", and every self/others
+    // gate silently stops firing with nothing in the log to explain it.
+    console.error(`❌ pr-watcher: could not resolve the gh login on ${host}: ${err.message}`);
+    return null;
+  });
   // Only memoize a SUCCESSFUL lookup. Caching a null from a transient gh/auth
   // failure (keychain locked mid-tick, gh re-auth in progress) would wedge every
   // later self/others gate on this host into 'self-login-unavailable' until
@@ -101,7 +107,10 @@ export function __resetSelfLoginCache() {
  */
 async function getDefaultBranch(repoSpec) {
   const name = await execGh(['repo', 'view', repoSpec, '--json', 'defaultBranchRef', '-q', '.defaultBranchRef.name'])
-    .catch(() => null);
+    .catch((err) => {
+      console.error(`❌ pr-watcher: could not resolve the default branch for ${repoSpec}: ${err.message}`);
+      return null;
+    });
   return name ? name.trim() : null;
 }
 
@@ -117,15 +126,23 @@ async function listOpenPullRequests(repoSpec, baseBranch) {
     '--base', baseBranch, '--state', 'open',
     '--limit', String(PR_LIST_LIMIT),
     '--json', 'number,title,author,url,createdAt,isDraft,headRefName'
-  ]).catch(() => null);
+  ]).catch((err) => {
+    console.error(`❌ pr-watcher: gh pr list failed for ${repoSpec}: ${err.message}`);
+    return null;
+  });
   if (raw === null) return null;
   // Guard the parse: a success-exit gh that emits empty/malformed stdout would
   // otherwise throw a SyntaxError, breaking this module's "never throws"
   // contract and aborting the scheduler tick (the generator calls
   // checkPullRequests with no try/catch). Degrade to the pr-list-failed path.
+  // Anything that isn't an array is output we could not READ, not an empty
+  // repo — degrading it to [] would clear the watcher's lastError and record a
+  // quiet poll for a page we never parsed (#3358).
   const parsed = safeJSONParse(raw, null);
-  if (parsed === null) return null;
-  if (!Array.isArray(parsed)) return [];
+  if (!Array.isArray(parsed)) {
+    console.error(`❌ pr-watcher: gh pr list returned unreadable output for ${repoSpec} — deferring this cycle`);
+    return null;
+  }
   return parsed.map((pr) => ({
     number: pr.number,
     title: pr.title || '',
@@ -298,6 +315,10 @@ export async function processPendingMergePrs(app) {
   const repoSpec = githubRepoSpec(origin);
   if (!repoSpec) return { ok: false, reason: 'not-a-github-repo' };
 
+  // Skip rather than poll every pending PR into an `errors` count we can't act on.
+  const forge = await ensureForgeReachable('pr-watcher pending-merge', { hostname: githubApiHost(origin.host) });
+  if (!forge.ok) return { ok: false, reason: 'forge-unreachable', forgeStatus: forge.status };
+
   const outcomes = new Map();
   const result = { ok: true, checked: 0, merged: 0, escalated: 0, timedOut: 0, errors: 0 };
 
@@ -406,6 +427,14 @@ export async function checkPullRequests(app, { authorFilter = 'any' } = {}) {
     return { ok: false, reason: 'not-a-github-repo' };
   }
   const repoFullName = origin.fullName;
+
+  // Probe before any gh read (#3358). Without this an unreachable gh returns an
+  // empty PR page, the high-water mark stays put, and the watcher reports a
+  // quiet repo forever with nothing in the log naming the real cause. Probed
+  // against THIS repo's API host, not gh's default — an enterprise app must not
+  // be gated on github.com's health (and vice versa).
+  const forge = await ensureForgeReachable('pr-watcher', { hostname: githubApiHost(origin.host) });
+  if (!forge.ok) return { ok: false, reason: 'forge-unreachable', forgeStatus: forge.status, repoFullName };
 
   const defaultBranch = await getDefaultBranch(repoSpec);
   if (!defaultBranch) {

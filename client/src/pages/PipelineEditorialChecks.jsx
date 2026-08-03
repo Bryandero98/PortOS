@@ -12,7 +12,7 @@
  * preselect a series, e.g. from a series page).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router';
 import { ArrowLeft, ListChecks, Loader2, Play, Plus, Square, Undo2 } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import EditorialCheckCard from '../components/pipeline/editorial/EditorialCheckCard';

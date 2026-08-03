@@ -30,26 +30,19 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { execSync } from 'child_process';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { trackedJsxFiles as trackedJsx, trackedSourceFiles as trackedSources } from './test/trackedFiles.js';
 
 const CLIENT_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-function trackedJsxFiles() {
-  const out = execSync('git ls-files src', { cwd: CLIENT_ROOT, encoding: 'utf8' });
-  return out.trim().split('\n').filter(f => f.endsWith('.jsx') && !f.includes('.test.'));
-}
-
-// Same, but including plain `.js` — hooks and services hold JSX and refs too
-// (the OpenClaw composer's file-input ref lived in `hooks/useOpenClawAttachments.js`),
-// so a rule that only scans `.jsx` has a hole exactly where a shared helper
-// would reintroduce the pattern for many call sites at once.
-function trackedSourceFiles() {
-  const out = execSync('git ls-files src', { cwd: CLIENT_ROOT, encoding: 'utf8' });
-  return out.trim().split('\n').filter(f => /\.jsx?$/.test(f) && !f.includes('.test.'));
-}
+// Shared with the other repo-hygiene guards (see `src/test/trackedFiles.js` for
+// why `.js` is included alongside `.jsx`: the OpenClaw composer's file-input ref
+// lived in `hooks/useOpenClawAttachments.js`, exactly the hole a `.jsx`-only
+// scan leaves open).
+const trackedJsxFiles = () => trackedJsx(CLIENT_ROOT);
+const trackedSourceFiles = () => trackedSources(CLIENT_ROOT);
 
 /**
  * Slice out the full opening tag starting at `index`, tolerating `>` inside

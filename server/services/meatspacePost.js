@@ -11,8 +11,15 @@ import { EventEmitter } from 'events';
 import { atomicWrite, PATHS, ensureDir, readJSONFile } from '../lib/fileUtils.js';
 import { deepMerge, isPlainObject } from '../lib/objects.js';
 import { LLM_DRILL_TYPES, MEMORY_DRILL_TYPES, POST_SUPPORTED_MEMORY_TYPES } from '../lib/postValidation.js';
+import { resolveTopicForDrillType, isTopicEnabled, isMemoryItemEnabled } from '../lib/postTopics.js';
 import { adaptDrillConfig, ADAPTIVE_SPECS, ADAPTIVE_DEFAULTS } from '../lib/postAdaptive.js';
 import { resolveMultiplicationLevel, MASTERY_DEFAULTS } from '../lib/postMultiplicationLadder.js';
+import {
+  POWERS_MASTERY_DEFAULTS,
+  powersPoolForLevel,
+  powersTechniqueForPair,
+  resolvePowersLevel,
+} from '../lib/postPowersLadder.js';
 import {
   cognitiveLadder,
   cognitiveLevelConfig,
@@ -21,7 +28,7 @@ import {
   COGNITIVE_MASTERY_DEFAULTS,
 } from '../lib/postProgression.js';
 import { COGNITIVE_DRILL_TYPES, generateCognitiveDrill, scoreCognitiveDrill } from './meatspacePostCognitive.js';
-import { applySessionToMemoryItems, getMemoryItems, getDueMemoryItems, isStatMastered, MASTERY_TARGET_ACCURACY } from './meatspacePostMemory.js';
+import { applySessionToMemoryItems, getMemoryItems, getDueMemoryItems, MASTERY_TARGET_ACCURACY } from './meatspacePostMemory.js';
 import { applySessionToReviewSchedule, getDueReviews, getRetentionReport } from './meatspacePostReview.js';
 import { getAllTrainingEntries } from './meatspacePostTraining.js';
 import { getMorseProgress, MAX_KOCH_LEVEL } from './meatspacePostMorse.js';
@@ -68,7 +75,7 @@ const DEFAULT_CONFIG = {
       // `maxDigits` difficulty. `maxDigits` is retained as the fallback for when
       // a user turns the progressive ladder off.
       'multiplication': { enabled: true, count: 10, maxDigits: 2, progressive: true, timeLimitSec: 120 },
-      'powers': { enabled: true, bases: [2, 3, 5], maxExponent: 10, count: 8, timeLimitSec: 90 },
+      'powers': { enabled: true, bases: [2, 3, 5], maxExponent: 10, count: 8, progressive: true, timeLimitSec: 90 },
       'estimation': { enabled: true, count: 5, tolerancePct: 10, timeLimitSec: 120 }
     }
   },
@@ -103,15 +110,31 @@ const DEFAULT_CONFIG = {
       'reaction-time': { enabled: true, mode: 'simple', count: 15, minDelayMs: 1000, maxDelayMs: 3000, choices: 3 }
     }
   },
+  // Memory practice (issue #3252). Present so the block's shape is discoverable
+  // in the saved config; `items` is deliberately ABSENT — a per-item entry is
+  // only written when the user actually switches an item off, and absent =
+  // enabled, so a fresh or legacy install rotates every memory item as before.
+  memory: {
+    enabled: true,
+    drillTypes: {
+      'memory-fill-blank': { enabled: true },
+      'memory-sequence': { enabled: true },
+      'memory-element-flash': { enabled: true }
+    }
+  },
+  // Morse participation (issue #3252) — on by default so existing installs keep
+  // seeing Koch-progression recommendations; a user not learning CW turns it off
+  // from the Practice Plan.
+  morse: { enabled: true },
   // Default session composition is a balanced, interleaved mix of the free
   // (no-provider) modules the launcher can actually compose — mental math and
   // deterministic cognitive drills (issue #2100). LLM drills are deliberately
   // excluded: auto-enabling them would queue provider calls the user hasn't
   // consented to (see CLAUDE.md's AI Provider Usage Policy) — a user who wants
   // wit/verbal drills in every session adds `llm-drills` here explicitly.
-  // `memory` is intentionally NOT a default: memory practice lives in its own
-  // tab and has no launcher-composed drill yet, so including it would only risk
-  // an empty composed session. Legacy installs that persisted the old
+  // `memory` is intentionally NOT a default: composed memory practice is opt-in,
+  // so existing installs keep exactly their prior daily session mix. Legacy
+  // installs that persisted the old
   // `['mental-math']` default are upgraded to this by migration 159.
   sessionModules: ['mental-math', 'cognitive'],
   // Optional practice goals (issue #2100). All fields absent by default so a
@@ -374,10 +397,11 @@ const MIN_REVIEW_COMPLETION = 0.75;
 
 /**
  * Current mastered-but-inactive skills eligible for re-verification tracking:
- *   - multiplication rungs strictly BELOW the resolved current level (you've
- *     moved past them, so they're no longer actively drilled),
- *   - cognitive rungs strictly below the current level, per laddered type,
- *   - memory chunks whose windowed mastery clears the gate.
+ *   - multiplication / Powers rungs strictly BELOW the resolved current level
+ *     (you've moved past them, so they're no longer actively drilled),
+ *   - cognitive rungs strictly below the current level, per laddered type.
+ * Memory items own their durable-mastery + one-time spot-check lifecycle in
+ * meatspacePostMemory.js, so they are intentionally not duplicated here.
  * Returns opaque skill descriptors the review scheduler upserts + schedules.
  */
 export async function getMasteredSkills() {
@@ -398,6 +422,21 @@ export async function getMasteredSkills() {
     }
   }
 
+  const powers = await getPowersProgress();
+  for (const rung of powers.levels || []) {
+    if (rung.mastered && rung.level < powers.level) {
+      skills.push({
+        skillId: `powers:L${rung.level}`,
+        kind: 'powers',
+        label: `Powers ${rung.label}`,
+        drillType: 'powers',
+        module: 'mental-math',
+        level: rung.level,
+        config: { technique: rung.technique },
+      });
+    }
+  }
+
   const cog = await getCognitiveProgress();
   for (const [type, prog] of Object.entries(cog)) {
     if (!prog) continue;
@@ -411,25 +450,6 @@ export async function getMasteredSkills() {
           module: 'cognitive',
           level: rung.level,
           config: cognitiveLevelConfig(type, rung.level),
-        });
-      }
-    }
-  }
-
-  const memoryItems = await getMemoryItems();
-  for (const item of memoryItems) {
-    const chunkStats = item.mastery?.chunks || {};
-    for (const chunk of item.content?.chunks || []) {
-      const stat = chunkStats[chunk.id];
-      if (stat && isStatMastered(stat)) {
-        skills.push({
-          skillId: `memory:${item.id}:${chunk.id}`,
-          kind: 'memory',
-          label: `${item.title} — ${chunk.label || chunk.id}`,
-          drillType: 'memory-sequence',
-          module: 'memory',
-          memoryItemId: item.id,
-          chunkId: chunk.id,
         });
       }
     }
@@ -466,6 +486,8 @@ export function getSessionSkillContext(session) {
     }
     if (task.type === 'multiplication' && Number.isInteger(cfg.level)) {
       practicedSkillIds.add(`multiplication:L${cfg.level}`);
+    } else if (task.type === 'powers' && Number.isInteger(cfg.level)) {
+      practicedSkillIds.add(`powers:L${cfg.level}`);
     } else if (cognitiveLadder(task.type) && Number.isInteger(cfg.level)) {
       practicedSkillIds.add(`cognitive:${task.type}:L${cfg.level}`);
     } else if (task.memoryItemId) {
@@ -487,8 +509,8 @@ export async function syncReviewScheduleForSession(session, now = new Date()) {
 /**
  * Ready-to-run "maintenance rep" drill specs for the mastered skills currently
  * due for review — the labeled review items the launcher mixes into a Quick
- * session (issue #2096). Only multiplication + cognitive reps are generated (both
- * run through the standard /post/drill path); memory-chunk retention is served by
+ * session (issue #2096). Multiplication, Powers, and cognitive reps are generated
+ * through the standard /post/drill path; memory-chunk retention is served by
  * the existing spaced-repetition due-items flow. Each carries `review: true` +
  * `reviewSkillId` so the session-submit path records the pass/fail.
  */
@@ -497,10 +519,17 @@ export async function getPostReviewReps(now = new Date(), limit = 2) {
   // capping first would let older due memory-chunk entries (which have no
   // runnable rep) consume the limit slots and starve runnable multiplication/
   // cognitive reps that are due later in the schedule.
-  const due = await getDueReviews(now, Infinity);
+  const [due, config] = await Promise.all([
+    getDueReviews(now, Infinity),
+    getPostConfig(),
+  ]);
   const reps = [];
   for (const entry of due) {
     if (reps.length >= limit) break;
+    // Review reps are mixed directly into Quick sessions, so enforce the same
+    // topic, module-composition, module, and per-drill gates as recommendations.
+    // A skill may have become due after the user switched that practice off.
+    if (!isRecDrillRunnable(config, recModuleForDrillType(entry.drillType, 'cognitive'), entry.drillType)) continue;
     if (entry.kind === 'multiplication') {
       reps.push({
         skillId: entry.skillId,
@@ -509,6 +538,15 @@ export async function getPostReviewReps(now = new Date(), limit = 2) {
         module: 'mental-math',
         type: 'multiplication',
         config: { count: 5, level: entry.level, factors: entry.factors, review: true, reviewSkillId: entry.skillId },
+      });
+    } else if (entry.kind === 'powers') {
+      reps.push({
+        skillId: entry.skillId,
+        label: entry.label,
+        state: entry.status === 'needs-refresh' ? 'needs-refresh' : 'due',
+        module: 'mental-math',
+        type: 'powers',
+        config: { ...(entry.config || {}), count: 5, level: entry.level, review: true, reviewSkillId: entry.skillId },
       });
     } else if (entry.kind === 'cognitive') {
       reps.push({
@@ -909,17 +947,18 @@ export function weakestSkillFromStats(stats) {
 }
 
 /**
- * Stalled-progression descriptors from the resolved multiplication + cognitive
+ * Stalled-progression descriptors from the resolved multiplication, Powers, and cognitive
  * ladders: a laddered drill the user is partway up but not yet advancing, with
  * how many more clean/fast reps remain to reach the next rung. Pure — takes the
  * already-resolved progress objects. A ladder that's mastered-and-advancing or
  * at its hardest rung contributes nothing.
  *
  * @param {object} mulProgress - getMultiplicationProgress() result
+ * @param {object} powersProgress - getPowersProgress() result
  * @param {Record<string,object>} cogProgress - getCognitiveProgress() result
  * @param {{kochLevel:number, kochLevelSet:boolean, maxKochLevel:number}} morse
  */
-export function stalledProgressions(mulProgress, cogProgress, morse) {
+export function stalledProgressions(mulProgress, powersProgress, cogProgress, morse) {
   const out = [];
 
   const ladderStall = (prog, drillType, label, deepLink) => {
@@ -946,6 +985,9 @@ export function stalledProgressions(mulProgress, cogProgress, morse) {
 
   const mul = ladderStall(mulProgress, 'multiplication', 'Multiplication', '/post/launcher');
   if (mul) out.push(mul);
+
+  const powers = ladderStall(powersProgress, 'powers', 'Powers', '/post/launcher');
+  if (powers) out.push(powers);
 
   for (const [type, prog] of Object.entries(cogProgress || {})) {
     const stall = ladderStall(prog, type, DRILL_LABEL(type), '/post/launcher');
@@ -979,6 +1021,42 @@ export function stalledProgressions(mulProgress, cogProgress, morse) {
  * When nothing is actionable (e.g. a fresh install with no history), a single
  * sensible default ("run a full POST") is returned so the panel is never empty.
  */
+// The built-in Elements Song has its own study surface (`/post/memory/elements`)
+// rather than the generic per-item practice route.
+const ELEMENTS_SONG_ID = 'elements-song';
+
+/**
+ * Deep link that lands a due memory item INSIDE a practice mode rather than on
+ * the item list (issue #3249) — an "Up next" rec should start the drill, not
+ * open a page the user still has to navigate. Mode choice per surface:
+ *   - Elements Song → `element-flash` (recall test; its study deck is one click
+ *     away on that surface)
+ *   - any other item → `spaced`, which targets the weakest chunks — exactly what
+ *     an item that has come due needs.
+ * Pure — exported for unit tests.
+ */
+export function memoryPracticeDeepLink(itemId) {
+  if (!itemId) return '/post/memory';
+  if (itemId === ELEMENTS_SONG_ID) return '/post/memory/elements/element-flash';
+  return `/post/memory/${itemId}/spaced`;
+}
+
+/**
+ * The memory item a `kind: 'memory'` review entry belongs to. Prefers the
+ * explicit `memoryItemId` field; falls back to parsing the `memory:<itemId>:<chunkId>`
+ * skillId, splitting on the LAST colon so an item id containing one still
+ * resolves. Returns null for a non-memory or unparseable entry. Pure.
+ */
+export function memoryItemIdFromReview(review) {
+  if (review?.memoryItemId) return review.memoryItemId;
+  const skillId = review?.skillId;
+  if (typeof skillId !== 'string' || !skillId.startsWith('memory:')) return null;
+  const rest = skillId.slice('memory:'.length);
+  const lastColon = rest.lastIndexOf(':');
+  const itemId = lastColon > 0 ? rest.slice(0, lastColon) : rest;
+  return itemId || null;
+}
+
 export function composePostRecommendations({
   dueMemoryItems = [],
   dueReviews = [],
@@ -995,7 +1073,7 @@ export function composePostRecommendations({
       kind: 'memory-due',
       title: `Review "${item.title}"`,
       detail: 'Due for spaced-repetition practice',
-      deepLink: '/post/memory',
+      deepLink: memoryPracticeDeepLink(item.id),
       drillType: 'memory-sequence',
     });
   }
@@ -1004,7 +1082,8 @@ export function composePostRecommendations({
     // A memory-chunk re-verification can't run through the launcher's review-rep
     // path (getPostReviewReps only regenerates multiplication/cognitive reps —
     // memory retention lives under /post/memory), so route it there instead of a
-    // dead /post/launcher link (issue #2100 review).
+    // dead /post/launcher link (issue #2100 review). It routes all the way INTO a
+    // practice mode rather than the item list (issue #3249).
     recs.push({
       id: `skill-review:${review.skillId}`,
       kind: 'skill-review',
@@ -1012,7 +1091,9 @@ export function composePostRecommendations({
       detail: review.status === 'needs-refresh'
         ? 'Needs a refresh — last review slipped'
         : 'Maintenance rep due',
-      deepLink: review.kind === 'memory' ? '/post/memory' : '/post/launcher',
+      deepLink: review.kind === 'memory'
+        ? memoryPracticeDeepLink(memoryItemIdFromReview(review))
+        : '/post/launcher',
       drillType: review.drillType || null,
     });
   }
@@ -1062,15 +1143,52 @@ export function composePostRecommendations({
 const MODULE_CONFIG_KEY = { 'mental-math': 'mentalMath', 'llm-drills': 'llmDrills', cognitive: 'cognitive' };
 
 /**
+ * The module string `isRecDrillRunnable` should be called with for a given drill
+ * type, derived from the topic registry rather than hardcoded per call site.
+ *
+ * Morse carries a null registry module (it never posts a scored POST task) but is
+ * gated by its own config block, so it maps to the `morse` pseudo-module the gate
+ * understands. `fallback` covers a drill type with no registry entry.
+ */
+function recModuleForDrillType(type, fallback) {
+  const topic = resolveTopicForDrillType(type);
+  return topic ? (topic.module || topic.id) : fallback;
+}
+
+/**
  * Whether a recommended drill can actually be run under the current config
  * (issue #2100 review): a weak-skill / stalled rec deep-links into a session,
  * so recommending a drill the user has since disabled — or a module they've
- * removed from Session Composition — would be a dead end. Memory practice runs
- * from its own tab, so it's always runnable regardless of session composition.
+ * removed from Session Composition — would be a dead end.
+ *
+ * Three gates, checked in order (issue #3252):
+ *   1. The drill's practice TOPIC — off means off everywhere, including the
+ *      dedicated Memory and Morse practice routes.
+ *   2. Recommendation-specific participation — memory due-item recommendations
+ *      deep-link to dedicated practice, so `sessionModules` doesn't apply;
+ *      memory still honors the per-ITEM toggle when the caller knows the item.
+ *   3. Session composition + the per-module/per-drill `enabled` flags.
+ *
+ * `memoryItemId` is only meaningful for `module === 'memory'`; absent means
+ * "no specific item", which is never filtered.
  * Pure — exported for unit tests.
  */
-export function isRecDrillRunnable(config, module, type) {
-  if (module === 'memory') return true;
+export function isRecDrillRunnable(config, module, type, memoryItemId = null) {
+  // An unmapped drill type has no topic — treat it as not topic-gated rather
+  // than disabled, so a type added ahead of its registry entry still surfaces.
+  const topic = resolveTopicForDrillType(type);
+  if (topic && !isTopicEnabled(config, topic.id)) return false;
+
+  if (module === 'memory') {
+    if (config?.memory?.enabled === false) return false;
+    const dt = config?.memory?.drillTypes?.[type];
+    if (dt && dt.enabled === false) return false;
+    return isMemoryItemEnabled(config, memoryItemId);
+  }
+  // Morse isn't a POST module (it never posts a scored task), so it is gated by
+  // its own block alone — never by sessionModules, which can't contain it.
+  if (module === 'morse') return config?.morse?.enabled !== false;
+
   const sm = Array.isArray(config?.sessionModules) ? config.sessionModules : null;
   // null = legacy/absent → all modules allowed; an explicit array must include it.
   if (sm !== null && !sm.includes(module)) return false;
@@ -1093,11 +1211,12 @@ export function isRecDrillRunnable(config, module, type) {
  * config can actually run.
  */
 export async function getPostRecommendations({ limit = RECOMMENDATION_LIMIT } = {}) {
-  const [dueMemoryItems, dueReviews, stats, mulProgress, cogProgress, morse, sessions, config] = await Promise.all([
+  const [dueMemoryItems, dueReviews, stats, mulProgress, powersProgress, cogProgress, morse, sessions, config] = await Promise.all([
     getDueMemoryItems(),
     getDueReviews(new Date(), Infinity),
     getPostStats(MASTERY_DEFAULTS.windowDays),
     getMultiplicationProgress(),
+    getPowersProgress(),
     getCognitiveProgress(),
     getMorseProgress(MASTERY_DEFAULTS.windowDays),
     getPostSessions(),
@@ -1113,19 +1232,42 @@ export async function getPostRecommendations({ limit = RECOMMENDATION_LIMIT } = 
       : null;
   }
 
-  // Stalled progressions — keep Morse (runs from its own tab) and any ladder
-  // whose drill is still runnable under the current config.
-  const stalled = stalledProgressions(mulProgress, cogProgress, {
+  // Due memory items — drop the ones the user has switched off for the daily
+  // rotation (issue #3252). The item keeps its mastery/schedule history and is
+  // still practiceable on demand from its own page; it just stops being
+  // recommended. getDueMemoryItems() itself stays unfiltered — it also backs the
+  // Memory tab's own list.
+  //
+  // Gated on the topic + module + per-ITEM flags only, never on a drill type:
+  // these recs deep-link into a practice MODE (`spaced` / `element-flash`), so
+  // probing them with one arbitrary drill type would let switching off a single
+  // mode blank the entire spaced-repetition feed.
+  const enabledDueMemoryItems = dueMemoryItems
+    .filter(item => isMemoryItemEnabled(config, item.id));
+
+  // Due re-verifications are config-dependent recommendations like weakest-skill
+  // and stalled-progression, so they get the same gate. A memory chunk
+  // re-verification points at a specific item (same mode-not-drill-type reasoning
+  // as above); a ladder re-verification names its drill, so it routes through
+  // isRecDrillRunnable exactly as the stalled rec for that same ladder does.
+  const enabledDueReviews = dueReviews.filter((review) => {
+    if (review.kind === 'memory') return isMemoryItemEnabled(config, memoryItemIdFromReview(review));
+    return isRecDrillRunnable(config, recModuleForDrillType(review.drillType, 'cognitive'), review.drillType);
+  });
+
+  // Stalled progressions — Morse runs from its own tab (so it's gated by its own
+  // topic/config block rather than session composition), and any ladder whose
+  // drill is still runnable under the current config.
+  const stalled = stalledProgressions(mulProgress, powersProgress, cogProgress, {
     kochLevel: morse?.kochLevel,
     kochLevelSet: morse?.kochLevelSet,
     maxKochLevel: MAX_KOCH_LEVEL,
-  }).filter(s => s.drillType === 'morse-copy'
-    || isRecDrillRunnable(config, s.drillType === 'multiplication' ? 'mental-math' : 'cognitive', s.drillType));
+  }).filter(s => isRecDrillRunnable(config, recModuleForDrillType(s.drillType, 'cognitive'), s.drillType));
 
   return {
     recommendations: composePostRecommendations({
-      dueMemoryItems,
-      dueReviews,
+      dueMemoryItems: enabledDueMemoryItems,
+      dueReviews: enabledDueReviews,
       weakestSkill,
       stalled,
       hasHistory: sessions.length > 0,
@@ -1205,7 +1347,31 @@ export function generateMultiplication(count = 10, maxDigits = 2, factors = null
   return { type: 'multiplication', config, questions };
 }
 
-export function generatePowers(bases, maxExponent = 10, count = 8) {
+export function generatePowers(bases, maxExponent = 10, count = 8, level = null, review = false) {
+  if (Number.isInteger(level)) {
+    const cumulativePool = powersPoolForLevel(level);
+    const pool = review
+      ? cumulativePool.filter(pair => pair.level === level)
+      : cumulativePool;
+    const questions = Array.from({ length: count }, () => {
+      const pair = pool[Math.floor(Math.random() * pool.length)];
+      return {
+        prompt: `${pair.base}^${pair.exponent}`,
+        expected: Math.pow(pair.base, pair.exponent),
+        technique: pair.technique,
+        techniqueLevel: pair.level,
+      };
+    }).sort((a, b) => a.techniqueLevel - b.techniqueLevel);
+    return {
+      type: 'powers',
+      config: {
+        count,
+        level,
+        technique: pool.at(-1).technique,
+      },
+      questions,
+    };
+  }
   bases = Array.isArray(bases) && bases.length > 0 ? bases : [2, 3, 5];
   const questions = [];
   for (let i = 0; i < count; i++) {
@@ -1251,7 +1417,7 @@ export function generateDrill(type, config = {}) {
     case 'multiplication':
       return generateMultiplication(config.count, config.maxDigits, config.factors, config.level);
     case 'powers':
-      return generatePowers(config.bases, config.maxExponent, config.count);
+      return generatePowers(config.bases, config.maxExponent, config.count, config.level, config.review);
     case 'estimation':
       return generateEstimation(config.count, config.tolerancePct);
     case 'n-back':
@@ -1349,6 +1515,48 @@ async function getMultiplicationLevelStats(windowDays = MASTERY_DEFAULTS.windowD
   return { stats, floorLevel };
 }
 
+async function getPowersLevelStats(windowDays = POWERS_MASTERY_DEFAULTS.windowDays) {
+  const sessions = await getPostSessions();
+  const cutoffStr = windowDays > 0 ? ymdShift(await localToday(), -windowDays) : null;
+  const byLevel = {};
+  let floorLevel = 0;
+  for (const session of sessions) {
+    for (const task of session.tasks || []) {
+      if (task.type !== 'powers') continue;
+      const level = Number.isInteger(task.config?.level) ? task.config.level : null;
+      if (level == null) continue;
+      const anyAnswered = (task.questions || []).some(question => question?.answered != null);
+      if (anyAnswered && level > floorLevel) floorLevel = level;
+      if (cutoffStr && session.date < cutoffStr) continue;
+      for (const question of task.questions || []) {
+        if (question?.answered == null) continue;
+        const match = typeof question.prompt === 'string' ? question.prompt.match(/^(\d+)\^(\d+)$/) : null;
+        const pair = match ? powersTechniqueForPair(Number(match[1]), Number(match[2])) : null;
+        // Progressive pools are cumulative for review, but mastery belongs to
+        // the technique that actually covered this question. Otherwise quick
+        // recall reps in a later-rung session could unlock that rung without
+        // the user ever answering one of its new pairs.
+        const sampleLevel = pair?.level ?? level;
+        const bucket = byLevel[sampleLevel] || (byLevel[sampleLevel] = { samples: 0, correct: 0, totalResponseMs: 0 });
+        bucket.samples += 1;
+        if (question.correct) bucket.correct += 1;
+        bucket.totalResponseMs += Math.min(
+          Math.max(0, question.responseMs || 0),
+          POWERS_MASTERY_DEFAULTS.responseMsCap
+        );
+      }
+    }
+  }
+  return {
+    stats: Object.fromEntries(Object.entries(byLevel).map(([level, bucket]) => [level, {
+      samples: bucket.samples,
+      accuracy: bucket.samples ? bucket.correct / bucket.samples : 0,
+      avgResponseMs: bucket.samples ? bucket.totalResponseMs / bucket.samples : 0,
+    }])),
+    floorLevel,
+  };
+}
+
 /**
  * Resolve the current progressive-multiplication difficulty from history.
  * Exposed for the config UI / route so it can show the ladder + mastery status.
@@ -1357,6 +1565,19 @@ export async function getMultiplicationProgress() {
   const { stats, floorLevel } = await getMultiplicationLevelStats(MASTERY_DEFAULTS.windowDays);
   const progression = resolveMultiplicationLevel(stats, {}, floorLevel);
   return { ...progression, windowDays: MASTERY_DEFAULTS.windowDays, thresholds: { minSamples: MASTERY_DEFAULTS.minSamples, targetAccuracy: MASTERY_DEFAULTS.targetAccuracy } };
+}
+
+export async function getPowersProgress() {
+  const { stats, floorLevel } = await getPowersLevelStats(POWERS_MASTERY_DEFAULTS.windowDays);
+  const progression = resolvePowersLevel(stats, {}, floorLevel);
+  return {
+    ...progression,
+    windowDays: POWERS_MASTERY_DEFAULTS.windowDays,
+    thresholds: {
+      minSamples: POWERS_MASTERY_DEFAULTS.minSamples,
+      targetAccuracy: POWERS_MASTERY_DEFAULTS.targetAccuracy,
+    },
+  };
 }
 
 /**
@@ -1472,6 +1693,25 @@ export async function resolveDrillConfig(type, requestedConfig = {}) {
     }
   }
 
+  if (type === 'powers') {
+    const powersCfg = config?.mentalMath?.drillTypes?.powers || {};
+    if (powersCfg.progressive !== false) {
+      const { stats, floorLevel } = await getPowersLevelStats(POWERS_MASTERY_DEFAULTS.windowDays);
+      const progression = resolvePowersLevel(stats, {}, floorLevel);
+      const { bases: _bases, maxExponent: _maxExponent, ...rest } = requestedConfig || {};
+      return {
+        config: {
+          ...rest,
+          count: rest.count ?? powersCfg.count ?? 8,
+          level: progression.level,
+          technique: progression.technique,
+        },
+        adaptive: null,
+        progression,
+      };
+    }
+  }
+
   // Progressive cognitive ladders (default ON) — per-skill difficulty rungs
   // (n-back n/stimulusMs, digit-span span/direction, schulte grid, mental-
   // rotation/stroop trial count). Selects the rung by sustained-accuracy
@@ -1521,6 +1761,7 @@ export async function getAdaptivePreview() {
   const stats = await getPostStats(ADAPTIVE_DEFAULTS.windowDays);
   const savedDrills = config?.mentalMath?.drillTypes || {};
   const multiplicationProgressive = savedDrills.multiplication?.progressive !== false;
+  const powersProgressive = savedDrills.powers?.progressive !== false;
 
   const drills = {};
   for (const type of Object.keys(ADAPTIVE_SPECS)) {
@@ -1528,6 +1769,10 @@ export async function getAdaptivePreview() {
       // Same source of truth resolveDrillConfig uses for the ladder rung —
       // not the generic maxDigits Adaptive signal.
       drills[type] = { ladder: true, ...(await getMultiplicationProgress()) };
+      continue;
+    }
+    if (type === 'powers' && powersProgressive) {
+      drills[type] = { ladder: true, ...(await getPowersProgress()) };
       continue;
     }
     const key = `${MATH_MODULE}:${type}`;
@@ -1658,4 +1903,3 @@ function computeSessionScore(tasks, weights = {}) {
   if (!totalWeight) return 0;
   return Math.round(totalWeighted / totalWeight);
 }
-

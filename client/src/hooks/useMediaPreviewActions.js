@@ -1,5 +1,5 @@
 import { useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import toast from '../components/ui/Toast';
 import { cleanGalleryImage, extractLastFrame, removeImageWatermark } from '../services/apiImageVideo';
 import { VIDEO_TILING_ENUM_SET } from '../lib/videoTilingOptions';

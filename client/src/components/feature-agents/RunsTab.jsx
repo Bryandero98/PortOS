@@ -10,10 +10,20 @@ export default function RunsTab({ agent }) {
   const [expanded, setExpanded] = useState({});
 
   useEffect(() => {
+    let cancelled = false;
+    // Clear the previous agent's runs while the new fetch is in flight —
+    // otherwise they stay on screen as though they belonged to this agent.
+    // `expanded` is keyed by row index, so it has to be dropped too or the new
+    // agent's list opens whichever rows the previous agent had expanded.
+    setRuns([]);
+    setExpanded({});
+    setLoading(true);
     api.getFeatureAgentRuns(agent.id, 50).then(data => {
+      if (cancelled) return;
       setRuns(data || []);
       setLoading(false);
-    }).catch(() => setLoading(false));
+    }).catch(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [agent.id]);
 
   if (loading) {

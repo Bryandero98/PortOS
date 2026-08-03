@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import {
   Check, Film, RefreshCw, Scissors, Lock, Unlock, Terminal, Gauge, RotateCcw,
 } from 'lucide-react';
@@ -421,11 +421,17 @@ function DirectionCard({
           )}
           {candidate && (
             confirming ? (
-              <div className="flex items-center gap-1 text-xs">
-                <span className="text-port-warning">Approve?</span>
-                <button onClick={() => { setConfirming(false); onApprove(direction, candidate.id); }} className="px-1.5 py-0.5 bg-port-accent text-white rounded">Yes</button>
-                <button onClick={() => setConfirming(false)} className="px-1.5 py-0.5 text-gray-400 hover:text-white">No</button>
-              </div>
+              <ConfirmButtonPair
+                className="flex-wrap"
+                prompt="Approve?"
+                confirmText="Yes"
+                cancelText="No"
+                confirmIcon={Check}
+                tone="success"
+                ariaLabel={`Confirm approve ${direction}`}
+                onConfirm={() => { setConfirming(false); onApprove(direction, candidate.id); }}
+                onCancel={() => setConfirming(false)}
+              />
             ) : (
               // Approval is where a direction's geometry gets frozen into the
               // set the atlas compiles, so a drifted candidate can't be approved
@@ -441,7 +447,7 @@ function DirectionCard({
                 title={run?.importedPackaging
                   ? 'This run was packaged by the source pipeline, which kept its frames — reprocess it from its clip first'
                   : drift ? `Re-derive this direction to ${cycleLabel} before approving it` : undefined}
-                className="w-full px-2 py-0.5 text-xs bg-port-success/20 border border-port-success rounded text-port-success disabled:opacity-50"
+                className="min-h-[36px] w-full px-2 py-0.5 text-xs bg-port-success/20 border border-port-success rounded text-port-success disabled:opacity-50"
               >
                 Approve
               </button>

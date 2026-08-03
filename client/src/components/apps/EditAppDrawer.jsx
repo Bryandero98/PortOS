@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { GitBranch, GitPullRequest, Lock, Copy } from 'lucide-react';
 import IconPicker from '../IconPicker';
 import * as api from '../../services/api';

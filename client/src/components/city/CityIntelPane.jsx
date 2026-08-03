@@ -1,5 +1,5 @@
 import { useMemo, useRef, useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { formatClockTime } from '../../utils/formatters';
 import { computeActivityDensity, buildTimelineBuckets } from '../../utils/cityTimeline';
 import useDrawerTab from '../../hooks/useDrawerTab';

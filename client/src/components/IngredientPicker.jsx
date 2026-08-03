@@ -20,7 +20,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { Search, Plus, Loader2, X, Sparkles } from 'lucide-react';
 import Modal from './ui/Modal';
 import { listCatalogIngredients } from '../services/apiCatalog';

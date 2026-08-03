@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router';
 import * as api from '../services/api';
 import { BookOpen, Search, Network, FileText, BarChart3, Activity } from 'lucide-react';
 import PageSkeleton from '../components/ui/PageSkeleton';

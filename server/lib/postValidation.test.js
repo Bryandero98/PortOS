@@ -12,6 +12,7 @@ import {
   POST_MODULES,
   POST_SUPPORTED_MEMORY_TYPES,
 } from './postValidation.js';
+import { getTopic, POST_TOPICS } from './postTopics.js';
 
 describe('postConfigUpdateSchema llmDrills', () => {
   // Regression: the config UI (PostDrillConfig.jsx) exposed only 5 of the 14
@@ -342,6 +343,14 @@ describe('drillTypeConfigSchema numeric bounds', () => {
     expect(parsed.config).toMatchObject({ steps: 50, subtrahend: 100, maxDigits: 4, tolerancePct: 50 });
   });
 
+  it('preserves the server-computed Powers ladder level and technique', () => {
+    const parsed = postDrillRequestSchema.parse({
+      type: 'powers',
+      config: { progressive: true, level: 4, technique: 'split-exponent' },
+    });
+    expect(parsed.config).toMatchObject({ progressive: true, level: 4, technique: 'split-exponent' });
+  });
+
   it('rejects steps above the max (50) and below the min (1)', () => {
     expect(() => postDrillRequestSchema.parse({ type: 'serial-subtraction', config: { steps: 51 } })).toThrow();
     expect(() => postDrillRequestSchema.parse({ type: 'serial-subtraction', config: { steps: 0 } })).toThrow();
@@ -482,5 +491,123 @@ describe('postSessionSubmitSchema client-generated id (issue #2098)', () => {
 
   it('rejects a non-uuid id', () => {
     expect(() => postSessionSubmitSchema.parse({ ...baseBody(), id: 'not-a-uuid' })).toThrow();
+  });
+});
+
+// Practice Plan config blocks (issue #3252). All three are additive: a config
+// saved by the pre-#3252 UI must still validate byte-for-byte unchanged, which
+// is what makes this shippable with no migration.
+// Sourced from the topic registry so this test can't drift from the enums the
+// schema actually validates against (postTopics.test.js asserts registry ↔ enum
+// parity, so registry order IS the enum content).
+const MATH_DRILL_TYPE_IDS = getTopic('math').drillTypes;
+const LLM_DRILL_TYPE_IDS = ['wordplay', 'verbal', 'imagination'].flatMap(id => getTopic(id).drillTypes);
+const COGNITIVE_DRILL_TYPE_IDS = getTopic('cognitive').drillTypes;
+
+describe('postConfigUpdateSchema topics/memory/morse (issue #3252)', () => {
+  it('accepts a topics map and preserves it', () => {
+    const parsed = postConfigUpdateSchema.parse({
+      topics: { wordplay: { enabled: true }, verbal: { enabled: false }, morse: {} }
+    });
+    expect(parsed.topics).toEqual({ wordplay: { enabled: true }, verbal: { enabled: false }, morse: {} });
+  });
+
+  it('rejects a topic id that is not in the registry', () => {
+    expect(() => postConfigUpdateSchema.parse({ topics: { 'not-a-topic': { enabled: false } } })).toThrow();
+  });
+
+  it('accepts a memory block with drill types and per-item flags', () => {
+    const parsed = postConfigUpdateSchema.parse({
+      memory: {
+        enabled: true,
+        drillTypes: { 'memory-sequence': { enabled: false } },
+        items: { 'elements-song': { enabled: false }, raven: { enabled: true } }
+      }
+    });
+    expect(parsed.memory.items['elements-song']).toEqual({ enabled: false });
+    expect(parsed.memory.drillTypes['memory-sequence']).toEqual({ enabled: false });
+  });
+
+  it('rejects a memory drill type that is not a memory drill', () => {
+    expect(() => postConfigUpdateSchema.parse({ memory: { drillTypes: { 'n-back': { enabled: false } } } })).toThrow();
+  });
+
+  it('accepts a morse participation toggle', () => {
+    expect(postConfigUpdateSchema.parse({ morse: { enabled: false } }).morse).toEqual({ enabled: false });
+  });
+
+  it('a memory patch may carry just the flag it changes (partialRecord, not exhaustive)', () => {
+    const parsed = postConfigUpdateSchema.parse({ memory: { drillTypes: { 'memory-sequence': { enabled: false } } } });
+    expect(Object.keys(parsed.memory.drillTypes)).toEqual(['memory-sequence']);
+  });
+
+  it('a legacy config with none of the three keys still validates unchanged', () => {
+    // The pre-#3252 UI's exact save shape: enum-keyed `z.record` is exhaustive
+    // in zod 4, so the module blocks carry a complete drillTypes map.
+    const fullMap = (types, entry) => Object.fromEntries(types.map(t => [t, { ...entry }]));
+    const legacy = {
+      mentalMath: { enabled: true, drillTypes: fullMap(MATH_DRILL_TYPE_IDS, { enabled: true, timeLimitSec: 60 }) },
+      llmDrills: { enabled: true, providerId: null, model: null, drillTypes: fullMap(LLM_DRILL_TYPE_IDS, { enabled: false, count: 5 }) },
+      cognitive: { enabled: true, drillTypes: fullMap(COGNITIVE_DRILL_TYPE_IDS, { enabled: true, progressive: true }) },
+      sessionModules: ['mental-math', 'cognitive'],
+      goals: { dailyMinutes: 20 },
+      scoring: { weights: { 'mental-math': 1 } },
+      adaptive: { enabled: false },
+      reminder: { enabled: true, time: '09:30' }
+    };
+    const parsed = postConfigUpdateSchema.parse(legacy);
+    expect(parsed).toEqual(legacy);
+    // No `topics` / `memory` / `morse` invented on the way through — absent
+    // stays absent, and absent means enabled. That is the no-migration promise.
+    expect(parsed.topics).toBeUndefined();
+    expect(parsed.memory).toBeUndefined();
+    expect(parsed.morse).toBeUndefined();
+  });
+});
+
+// Regression guard for the class of bug where a client suite mocks its API
+// wrapper and a `.strict()`/exhaustive-record rejection is therefore invisible:
+// PracticePlan.test.jsx asserts its save patch against a MOCKED updatePostConfig,
+// so nothing there would catch a body the real schema rejects. This test rebuilds
+// that exact wire body from the topic registry and parses it for real — so a
+// future topic or drill type that desyncs POST_TOPICS from the schema's enums
+// fails here instead of 400-ing every save in production behind two green suites.
+describe('Practice Plan save body ↔ postConfigUpdateSchema (issue #3252)', () => {
+  // Mirrors PracticePlan.jsx's `modules` seeding + handleSave payload exactly.
+  const practicePlanSaveBody = () => {
+    const drillTypesFor = (module) => Object.fromEntries(
+      POST_TOPICS.filter(t => t.module === module)
+        .flatMap(t => t.drillTypes)
+        .map(type => [type, { enabled: true }])
+    );
+    return {
+      topics: Object.fromEntries(POST_TOPICS.map(t => [t.id, { enabled: true }])),
+      mentalMath: { drillTypes: drillTypesFor('mental-math') },
+      llmDrills: { drillTypes: drillTypesFor('llm-drills') },
+      cognitive: { drillTypes: drillTypesFor('cognitive') },
+      memory: { enabled: true, drillTypes: drillTypesFor('memory'), items: { 'elements-song': { enabled: false } } },
+      morse: { enabled: true },
+    };
+  };
+
+  it('the exact body the Practice Plan sends validates and survives round-trip', () => {
+    const body = practicePlanSaveBody();
+    const parsed = postConfigUpdateSchema.parse(body);
+    expect(parsed).toEqual(body);
+  });
+
+  it('every enum-keyed drill-type record the body sends is complete', () => {
+    // The sibling module blocks use an EXHAUSTIVE z.record — a missing key is a
+    // 400, not a silent strip — so assert the registry supplies every enum member.
+    const body = practicePlanSaveBody();
+    expect(Object.keys(body.mentalMath.drillTypes).sort()).toEqual([...MATH_DRILL_TYPE_IDS].sort());
+    expect(Object.keys(body.llmDrills.drillTypes).sort()).toEqual([...LLM_DRILL_TYPE_IDS].sort());
+    expect(Object.keys(body.cognitive.drillTypes).sort()).toEqual([...COGNITIVE_DRILL_TYPE_IDS].sort());
+  });
+
+  it('rejects the same body with one drill type dropped, proving the guard bites', () => {
+    const body = practicePlanSaveBody();
+    delete body.llmDrills.drillTypes['bridge-word'];
+    expect(() => postConfigUpdateSchema.parse(body)).toThrow();
   });
 });

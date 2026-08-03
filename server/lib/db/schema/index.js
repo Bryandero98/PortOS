@@ -25,6 +25,7 @@ import { pipelineDdl } from './pipeline.js';
 import { writersRoomDdl } from './writersRoom.js';
 import { loraDdl } from './lora.js';
 import { privacyDdl } from './privacy.js';
+import { stackerNewsDdl } from './stackerNews.js';
 import { auditDdl, auditedTables, buildAuditTriggers } from './audit.js';
 
 export {
@@ -41,6 +42,7 @@ export {
   writersRoomDdl,
   loraDdl,
   privacyDdl,
+  stackerNewsDdl,
   auditDdl,
   auditedTables,
   buildAuditTriggers,
@@ -72,6 +74,7 @@ export function buildCatalogDdl() {
     ...writersRoomDdl,
     ...loraDdl,
     ...privacyDdl,
+    ...stackerNewsDdl,
     ...auditDdl,
     ...buildAuditTriggers(),
   ];

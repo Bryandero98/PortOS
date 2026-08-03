@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { Trash2 } from 'lucide-react';
 import toast from '../../ui/Toast';
 import ConfirmButtonPair from '../../ui/ConfirmButtonPair';

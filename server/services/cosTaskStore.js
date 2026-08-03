@@ -18,6 +18,8 @@ import { join } from 'path';
 import { parseTasksMarkdown, groupTasksByStatus, getAutoApprovedTasks, getAwaitingApprovalTasks, generateTasksMarkdown, hasKnownPrefix } from '../lib/taskParser.js';
 import { REVIEW_STOP_MODES, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds, normalizeReviewerModels } from '../lib/validation.js';
 import { PR_COMPLETIONS, PR_COMPLETION_VALUES } from '../lib/prDisposition.js';
+import { RETRY_HOLD_KEY, RETRY_HOLD_SINCE_KEY } from '../lib/taskRetryHold.js';
+import { REQUEUED_AT_KEY } from '../lib/taskRequeue.js';
 import { loadState, withStateLock, ROOT_DIR } from './cosState.js';
 import { cosEvents } from './cosEvents.js';
 import { CLAIM_METADATA_KEYS } from './cosTaskClaim.js';
@@ -467,6 +469,17 @@ export async function updateTask(taskId, updates, taskType = 'user', { now = Dat
     delete updatedMetadata.resumeWorktreePath;
   }
 
+  // A retry hold (#3373) only means anything while the task is `in_progress`
+  // waiting on a cleanup to resolve its resume pointer. Any other status the task
+  // reaches — terminal, or a requeue that some other path performed — retires it,
+  // so drop the marker rather than leave a stale one for a late cleanup (or the
+  // orphan sweep) to act on. The release's own write passes these as undefined,
+  // which lands in the same place.
+  if (updates.status && updates.status !== 'in_progress') {
+    delete updatedMetadata[RETRY_HOLD_KEY];
+    delete updatedMetadata[RETRY_HOLD_SINCE_KEY];
+  }
+
   // Release the federation claim/lease when a task leaves `in_progress` (issue
   // #1563). A claim only protects in-flight work; once the task completes, fails
   // back to pending, or is blocked, it must become freely claimable by either
@@ -479,6 +492,24 @@ export async function updateTask(taskId, updates, taskType = 'user', { now = Dat
       delete updatedMetadata[key];
     }
   }
+
+  // Stamp the moment a RUNNING task is requeued (#3376). `in_progress → pending`
+  // is the one backward transition in the lifecycle (the orphan sweep and the
+  // retry-hold release both perform it), and the federated merge has to be able to
+  // tell that requeue apart from an ordinary content edit that merely happens to
+  // land on a peer's stale `pending` copy — the first must beat a stale
+  // `in_progress` snapshot, the second must NOT revert a genuinely running task.
+  // `updatedAt` alone can't distinguish them; this stamp, compared against the
+  // other side's `lastSpawnedAt`, says the requeue came AFTER that spawn. Only the
+  // real transition sets it, so a later edit carries it forward untouched, and the
+  // next spawn clears it below.
+  if (updates.status === 'pending' && tasks[taskIndex].status === 'in_progress') {
+    updatedMetadata[REQUEUED_AT_KEY] = new Date(now).toISOString();
+  }
+  // A fresh spawn retires the marker — from here on THIS run's `lastSpawnedAt` is
+  // what a future requeue must beat, and a leftover stamp from the previous cycle
+  // would let a peer's pre-spawn `pending` copy win on a stale requeue.
+  if (updates.status === 'in_progress') delete updatedMetadata[REQUEUED_AT_KEY];
 
   // Bump the content-edit stamp (#1714) on a genuine content change so the peer's
   // claim-aware merge can resolve a same-status edit by newest-edit-wins. Compared
@@ -518,7 +549,15 @@ export async function updateTask(taskId, updates, taskType = 'user', { now = Dat
   // like an approval. Emit a distinct action so cos.init's listener re-runs the
   // dequeue (#2614) — the generic 'updated' action doesn't wake the scheduler,
   // which left revived tasks stranded until an unrelated event or timer fired.
-  const action = previousStatus === 'blocked' && updatedTask.status === 'pending' ? 'unblocked' : 'updated';
+  //
+  // An in_progress → pending flip is a requeue and needs the same wake (#3373):
+  // a failed run's retry is released from its hold by exactly this transition,
+  // and by then the `agent:completed` dequeue has long since run — without a
+  // signal the retry would idle until the next timer. Same for the orphan sweep's
+  // requeue, which previously depended on its caller remembering to evaluate.
+  const action = updatedTask.status === 'pending' && previousStatus === 'blocked'
+    ? 'unblocked'
+    : (updatedTask.status === 'pending' && previousStatus === 'in_progress' ? 'requeued' : 'updated');
   cosEvents.emit('tasks:changed', { type: taskType, action, task: updatedTask });
   return updatedTask;
   });

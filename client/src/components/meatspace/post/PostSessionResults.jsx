@@ -1,29 +1,26 @@
-import { Save, ArrowLeft, Dumbbell } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
 import PostSessionSummary from './PostSessionSummary';
+import PostCompletionActions from './PostCompletionActions';
 
 export default function PostSessionResults({ session, tags = {}, onSaved, onBack }) {
   const { drillResults, sessionScore, state, saveSession, isTraining } = session;
 
-  async function handleSave() {
+  async function handleSave(continueDaily) {
     const savedSession = await saveSession(tags);
-    if (savedSession) onSaved(savedSession);
+    if (savedSession) onSaved(savedSession, { continueDaily });
   }
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       <PostSessionSummary drillResults={drillResults} sessionScore={sessionScore} isTraining={isTraining} />
 
-      {/* Save Button */}
+      {/* Every completed assessment offers the same explicit daily-routine fork. */}
       {state === 'complete' && (
-        <button
-          onClick={handleSave}
-          className={`w-full flex items-center justify-center gap-2 px-6 py-3 ${
-            isTraining ? 'bg-port-accent-2 hover:bg-port-accent-2/80 text-port-on-accent-2' : 'bg-port-success hover:bg-port-success/80 text-white'
-          } font-medium rounded-lg transition-colors`}
-        >
-          {isTraining ? <Dumbbell size={18} /> : <Save size={18} />}
-          {isTraining ? 'Log Training' : 'Save Session'}
-        </button>
+        <PostCompletionActions
+          saveLabel={isTraining ? 'Log Training' : 'Save Session'}
+          onSave={() => handleSave(false)}
+          onContinue={() => handleSave(true)}
+        />
       )}
 
       {state === 'saving' && (

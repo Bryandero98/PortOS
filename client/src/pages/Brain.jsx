@@ -1,5 +1,5 @@
 import { useCallback, lazy, Suspense } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router';
 import * as api from '../services/api';
 import {Brain as BrainIcon} from 'lucide-react';
 import BrailleSpinner from '../components/BrailleSpinner';

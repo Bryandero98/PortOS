@@ -392,6 +392,37 @@ export function nameFromImageFilename(filename, fallback = 'Untitled 3D model') 
 }
 
 /**
+ * Truncate from the MIDDLE so the distinguishing tail of a long string stays
+ * readable — the failure mode of CSS `line-clamp`/`text-overflow`, which always
+ * eats the end. Use it wherever a list renders many strings that share a long
+ * prefix (auto-generated names, dated run labels, deep paths), where clipping
+ * the end collapses every row to the same visible text.
+ * @param {string} value - Source string (non-strings coerce; nullish → '')
+ * @param {number} [max=48] - Maximum length of the RESULT in CODE POINTS, ellipsis included.
+ *   A non-finite cap returns the string whole rather than discarding it.
+ * @returns {string} `value` when it already fits, else `head…tail`
+ */
+export function middleTruncate(value, max = 48) {
+  const str = value == null ? '' : String(value);
+  // A cap that isn't a real number can't middle-truncate anything — return the
+  // string untouched. (`Math.max(0, NaN)` is NaN, so a naive slice would
+  // silently return '' and swallow the value.)
+  if (!Number.isFinite(max)) return str;
+  const cap = Math.floor(max);
+  // Slice on CODE POINTS, not UTF-16 code units: cutting through a surrogate
+  // pair (any emoji / astral character) emits a lone surrogate that renders as
+  // the replacement glyph.
+  const chars = Array.from(str);
+  // A cap that can't fit the ellipsis plus one char on each side has no
+  // meaningful middle-truncation; fall back to a plain head slice.
+  if (cap < 3) return chars.slice(0, Math.max(0, cap)).join('');
+  if (chars.length <= cap) return str;
+  const head = Math.ceil((cap - 1) / 2);
+  const tail = cap - 1 - head;
+  return `${chars.slice(0, head).join('')}…${chars.slice(chars.length - tail).join('')}`;
+}
+
+/**
  * Format a cooldown countdown in milliseconds as "M:SS" (e.g., "1:05", "0:09").
  * @param {number} ms - Remaining milliseconds (negative values clamp to 0:00)
  * @returns {string} Minutes:seconds countdown string

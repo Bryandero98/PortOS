@@ -4,6 +4,7 @@ import { Plus, Search } from 'lucide-react';
 import toast from '../ui/Toast';
 import { listMediaCollections, createMediaCollection } from '../../services/api';
 import usePopoverPosition, { VIEWPORT_PADDING } from '../../hooks/usePopoverPosition.js';
+import { applyCollectionView } from '../../lib/mediaCollectionList.js';
 
 // Shared popover shell for the list-pick-or-create pickers:
 //
@@ -29,7 +30,9 @@ import usePopoverPosition, { VIEWPORT_PADDING } from '../../hooks/usePopoverPosi
 // collection API so the two collection pickers need no extra wiring, but mood-
 // board (or any future `{ id, name, items }`-shaped) pickers pass their own
 // loader/creator + nouns. The record shape the shell assumes is minimal:
-// `{ id, name }` plus whatever `renderItem` reads.
+// `{ id, name }` plus whatever `renderItem` reads. `orderItems` is injectable
+// for the same reason — the default is the media-collection search/ordering
+// view, which is domain-specific and must be overridden alongside the loader.
 //
 // `excludeId` is a single-item allow-list filter so BulkTargetPicker can hide
 // the current collection from its move/copy target list.
@@ -37,6 +40,22 @@ import usePopoverPosition, { VIEWPORT_PADDING } from '../../hooks/usePopoverPosi
 const DEFAULT_MENU_WIDTH = 260;
 const MENU_GAP = 6;
 const SEARCH_THRESHOLD = 6;
+
+// Default row search + ordering: the same view the /media/collections grid uses
+// (#3283), so the picker and the grid agree on what a query matches and what
+// order rows land in — auto-generated empties sink to the bottom instead of
+// burying the real collections in the raw list order (#3312).
+//
+// "Hide empty" is deliberately NOT applied: filing an item INTO an empty
+// collection is the picker's main job, so the empties are ordered last, never
+// removed. The AND-token matcher replaces the old single-substring filter — it's
+// a strict superset (every token of a query is itself a substring of that
+// query), so nothing that matched before stops matching, and multi-word queries
+// now match in any order, which matters once the shared "Creative Director: "
+// prefix lives in a badge and users type only the tail.
+//
+// Module-scope so the default prop value is referentially stable across renders.
+const orderCollectionRows = (records, query) => applyCollectionView(records, { query });
 
 export default function CollectionPickerShell({
   anchorRef,
@@ -64,6 +83,11 @@ export default function CollectionPickerShell({
   // `{ id, name, ... }`; `createItem({ name })` resolves to the created record.
   loadItems = listMediaCollections,
   createItem = createMediaCollection,
+  // `(records, query) => records` — filters AND orders the rows. Defaults to the
+  // media-collection view; a non-collection data source (mood boards) must pass
+  // its own, since the default's "auto-generated" bucketing is collection
+  // provenance and would misread a board that merely looks like one.
+  orderItems = orderCollectionRows,
   searchPlaceholder = 'Search collections…',
 }) {
   const [collectionsState, setCollectionsState] = useState(collectionsProp ?? null);
@@ -123,9 +147,8 @@ export default function CollectionPickerShell({
   const filtered = useMemo(() => {
     if (!collectionsState) return null;
     const base = excludeId ? collectionsState.filter((c) => c.id !== excludeId) : collectionsState;
-    const q = query.trim().toLowerCase();
-    return q ? base.filter((c) => c.name.toLowerCase().includes(q)) : base;
-  }, [collectionsState, query, excludeId]);
+    return orderItems(base, query);
+  }, [collectionsState, query, excludeId, orderItems]);
 
   // Close on outside-click / Escape — placement and scroll/resize reflow are
   // owned by usePopoverPosition; this effect only handles dismissal.
@@ -176,7 +199,9 @@ export default function CollectionPickerShell({
   if (!open) return null;
 
   const showSearch = (collectionsState?.length || 0) >= SEARCH_THRESHOLD;
-  const list = filtered ?? collectionsState;
+  // `filtered` is null only while the list is still loading (same sentinel as
+  // `collectionsState`), so it is the single render source once loaded.
+  const list = filtered;
 
   return createPortal(
     <div

@@ -174,9 +174,12 @@ export const removeEyeExam = (index) => request(`/meatspace/eyes/${index}`, {
 
 // MeatSpace - POST (Power On Self Test)
 export const getPostConfig = () => request('/meatspace/post/config');
-export const updatePostConfig = (data) => request('/meatspace/post/config', {
+// `options` lets a caller that owns its own error UI pass `{ silent: true }` so
+// the failure only toasts once (see CLAUDE.md's silent-vs-toasting convention).
+export const updatePostConfig = (data, options = {}) => request('/meatspace/post/config', {
   method: 'PUT',
-  body: JSON.stringify(data)
+  body: JSON.stringify(data),
+  ...options
 });
 export const getPostSessions = (from, to) => {
   const params = new URLSearchParams();
@@ -210,6 +213,7 @@ export const getPostRecommendations = (limit, options = {}) => request(
   { silent: true, ...options }
 );
 export const getPostMultiplicationProgress = () => request('/meatspace/post/multiplication-progress');
+export const getPostPowersProgress = () => request('/meatspace/post/powers-progress');
 export const getPostCognitiveProgress = () => request('/meatspace/post/cognitive-progress');
 export const generatePostDrill = (type, config = {}, providerId, model, options = {}) => request('/meatspace/post/drill', {
   method: 'POST',
@@ -229,7 +233,7 @@ export const fillPostDrillCache = (types, providerId, model) => request('/meatsp
 });
 
 // MeatSpace - POST Memory Builder
-export const getMemoryItems = () => request('/meatspace/post/memory-items');
+export const getMemoryItems = (options = {}) => request('/meatspace/post/memory-items', options);
 export const getMemoryItem = (id) => request(`/meatspace/post/memory-items/${id}`);
 export const createMemoryItem = (data) => request('/meatspace/post/memory-items', {
   method: 'POST',
@@ -245,6 +249,11 @@ export const deleteMemoryItem = (id) => request(`/meatspace/post/memory-items/${
 export const submitMemoryPractice = (id, data) => request(`/meatspace/post/memory-items/${id}/practice`, {
   method: 'POST',
   body: JSON.stringify(data)
+});
+export const attestMemoryMastery = (id, options = {}) => request(`/meatspace/post/memory-items/${id}/attest-mastery`, {
+  method: 'POST',
+  body: JSON.stringify({ acknowledged: true }),
+  ...options
 });
 export const getMemoryMastery = (id) => request(`/meatspace/post/memory-items/${id}/mastery`);
 export const getChunkMastery = (id) => request(`/meatspace/post/memory-items/${id}/chunk-mastery`);

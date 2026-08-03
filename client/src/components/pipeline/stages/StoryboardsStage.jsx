@@ -17,7 +17,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { Plus, Trash2, Sparkles, Loader2, Wand2, Film, WandSparkles, Shirt, Layers, Pencil } from 'lucide-react';
 import socket from '../../../services/socket';
 import toast from '../../ui/Toast';

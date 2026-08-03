@@ -6,7 +6,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useNavigate, useParams, Link } from 'react-router-dom';
+import { useNavigate, useParams, Link } from 'react-router';
 import { Sparkles, Save, Trash2, ArrowLeft, Loader2, ExternalLink, Plus, X, History, RotateCcw, Image as ImageIcon, Star, ChevronDown, Upload, Mic, Square } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import FilePickerButton from '../components/ui/FilePickerButton';

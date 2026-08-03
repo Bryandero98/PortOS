@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { FileText, Variable, RefreshCw, Save, Plus, Trash2, Eye, Briefcase } from 'lucide-react';
+import { useState, useEffect, useRef, useMemo } from 'react';
+import { useSearchParams } from 'react-router';
+import { FileText, Variable, RefreshCw, Save, Plus, Trash2, Eye, Briefcase, Search, X, ChevronRight, ChevronDown } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import BrailleSpinner from '../components/BrailleSpinner';
 import ProviderModelSelector from '../components/ProviderModelSelector';
@@ -22,6 +22,8 @@ import {
   getJobSkills, getJobSkill, saveJobSkill as apiSaveJobSkill, previewJobSkill as apiPreviewJobSkill,
 } from '../services/apiPrompts';
 import { getProviders } from '../services/apiProviders';
+import Pill from '../components/ui/Pill';
+import { buildStageGroups, stageGroupKeyFor } from '../lib/promptStageGroups';
 
 const VALID_PROMPT_TABS = ['stages', 'variables', 'job-skills'];
 
@@ -50,15 +52,27 @@ export default function PromptManager() {
   const setSelectedStage = (name) => setParam('stage', name);
   const setSelectedVar = (key) => setParam('var', key);
   const [stages, setStages] = useState({});
+  // The CURATED system-stage keys. Served by GET /api/prompts
+  // (`server/lib/promptSystemStages.js`) rather than mirrored client-side, so
+  // the SYSTEM badge and the "System only" filter can never disagree with the
+  // server's own table (#3314). This is NOT the full delete-protected set —
+  // that one is wider and per-stage, and only `/usage` reports it (#3335).
+  const [systemStageKeys, setSystemStageKeys] = useState([]);
   const [variables, setVariables] = useState({});
   const [loading, setLoading] = useState(true);
 
-  // System stages that are protected
-  const systemStages = [
-    'cos-agent-briefing', 'cos-evaluate', 'cos-report-summary', 'cos-self-improvement',
-    'cos-task-enhance', 'brain-classifier', 'brain-daily-digest', 'brain-weekly-review',
-    'memory-evaluate', 'app-detection'
-  ];
+  // Stage list search / grouping. The query is deliberately LOCAL, not a URL
+  // param: it's a transient way to reach a stage, and the thing worth
+  // deep-linking (`?stage=`) is already in the URL.
+  const [stageQuery, setStageQuery] = useState('');
+  const [systemOnly, setSystemOnly] = useState(false);
+  // Two disclosure sets, because the default flips with the filter: unfiltered,
+  // groups start CLOSED and this tracks the ones opened; filtered, they start
+  // OPEN (hiding a match reads as "no results") and `collapsedWhileFiltering`
+  // tracks the ones folded away — a broad query like "e" matches every stage,
+  // so the user still needs to be able to fold Pipeline's 78 rows out of view.
+  const [expandedGroups, setExpandedGroups] = useState(() => new Set());
+  const [collapsedWhileFiltering, setCollapsedWhileFiltering] = useState(() => new Set());
 
   // Stage editing (selection is URL-driven — see selectedStage above)
   const [stageTemplate, setStageTemplate] = useState('');
@@ -99,12 +113,16 @@ export default function PromptManager() {
   const loadData = async () => {
     setLoading(true);
     const [stagesRes, varsRes, jobSkillsRes, providersRes] = await Promise.all([
-      getPrompts({ silent: true }).catch(() => ({ stages: {} })),
+      getPrompts({ silent: true }).catch(() => ({ stages: {}, systemStages: [] })),
       getPromptVariables({ silent: true }).catch(() => ({ variables: {} })),
       getJobSkills({ silent: true }).catch(() => ({ skills: [] })),
       getProviders({ silent: true }).catch(() => ({ providers: [] }))
     ]);
     setStages(stagesRes.stages || {});
+    // `Array.isArray` rather than `|| []`: an older server that predates the
+    // `systemStages` key sends nothing, which must read as "no system stages
+    // known" (no badges, empty System-only filter) — never as a crash.
+    setSystemStageKeys(Array.isArray(stagesRes.systemStages) ? stagesRes.systemStages : []);
     setVariables(varsRes.variables || {});
     setJobSkills(jobSkillsRes.skills || []);
     setProviders((providersRes.providers || []).filter(p => p.enabled));
@@ -233,18 +251,24 @@ export default function PromptManager() {
   };
 
   const requestDeleteStage = async (stageName) => {
-    // Check if stage is in use
+    // Check if stage is in use. On failure fall back to "deletable" rather
+    // than "protected" — a false `canDelete: false` would silently force-delete
+    // a user stage, while a false `true` just lets the server's own guard
+    // return SYSTEM_STAGE_PROTECTED, which the toast surfaces.
     const usageRes = await getPromptUsage(stageName, { silent: true })
-      .catch(() => ({ isSystemStage: false, usedBy: [] }));
+      .catch(() => ({ isSystemStage: false, usedBy: [], referencedBy: [], canDelete: true }));
 
     setDeleteConfirm({ stageName, ...usageRes });
   };
 
   const confirmDeleteStage = async () => {
-    const { stageName, isSystemStage } = deleteConfirm;
+    const { stageName, canDelete } = deleteConfirm;
     setDeleteConfirm(null);
 
-    const ok = await deletePrompt(stageName, { force: isSystemStage }, { silent: true })
+    // The server refuses without ?force=true for BOTH the curated system set
+    // and any stage its source references by name (#3335), so gate on
+    // `canDelete` — `isSystemStage` alone would 400 on a pipeline stage.
+    const ok = await deletePrompt(stageName, { force: canDelete === false }, { silent: true })
       .then(() => true)
       .catch((err) => { toast.error(`Failed to delete: ${err.message || 'Unknown error'}`); return false; });
 
@@ -282,6 +306,44 @@ export default function PromptManager() {
     const p = providers.find(pr => pr.id === providerId);
     return p ? filterSelectableModels(p.models || [p.defaultModel]) : [];
   };
+
+  const stageFilterActive = stageQuery.trim() !== '' || systemOnly;
+  const { groups: stageGroups, matchCount: stageMatchCount, totalCount: stageTotalCount } = useMemo(
+    () => buildStageGroups(stages, { query: stageQuery, systemOnly, systemStageKeys }),
+    [stages, stageQuery, systemOnly, systemStageKeys],
+  );
+  // Badge lookup for the row render — a Set so the O(n) list render doesn't
+  // re-scan the key array per row.
+  const systemStageSet = useMemo(() => new Set(systemStageKeys), [systemStageKeys]);
+
+  // The group holding the open stage expands itself so a deep link / reload
+  // lands with its row visible. Seeding STATE (rather than forcing it open at
+  // render time) keeps the user free to collapse it again afterwards.
+  const selectedGroupKey = selectedStage && stages[selectedStage]
+    ? stageGroupKeyFor(selectedStage, stages[selectedStage])
+    : null;
+  useEffect(() => {
+    if (!selectedGroupKey) return;
+    setExpandedGroups((prev) => new Set(prev).add(selectedGroupKey));
+  }, [selectedGroupKey]);
+
+  // A fold is scoped to the EXACT filter that motivated it, not merely to
+  // "some filter is on". Carrying it across a refinement is how the refined
+  // query's only hit ends up behind a collapsed header — the "reads as no
+  // results" failure this whole disclosure default exists to avoid.
+  const stageQueryKey = stageQuery.trim();
+  useEffect(() => {
+    setCollapsedWhileFiltering((prev) => (prev.size === 0 ? prev : new Set()));
+  }, [stageQueryKey, systemOnly]);
+
+  const toggleInSet = (set, key) => {
+    const next = new Set(set);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  };
+  const toggleGroup = (key) => (stageFilterActive
+    ? setCollapsedWhileFiltering((prev) => toggleInSet(prev, key))
+    : setExpandedGroups((prev) => toggleInSet(prev, key)));
 
   if (loading) {
     return (
@@ -364,39 +426,106 @@ export default function PromptManager() {
                 <Plus size={16} />
               </button>
             </div>
-            <div className="space-y-1">
-              {Object.entries(stages).sort(([a], [b]) => a.localeCompare(b)).map(([name, config]) => (
-                <div
-                  key={name}
-                  className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm ${
-                    selectedStage === name
-                      ? 'bg-port-accent/20 text-port-accent'
-                      : 'text-gray-300 hover:bg-port-border'
+            {/* Search + SYSTEM filter, pinned above the list so it stays
+                reachable while the grouped rows scroll. */}
+            <div className="sticky top-0 z-10 -mx-4 px-4 pb-3 bg-port-card">
+              <div className="relative">
+                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+                <input
+                  type="search"
+                  aria-label="Search prompt stages"
+                  value={stageQuery}
+                  onChange={(e) => setStageQuery(e.target.value)}
+                  placeholder="Search stages…"
+                  // WebKit paints its own cancel glyph on a non-empty
+                  // type=search, which would sit on top of the labelled clear
+                  // button below; Tailwind's preflight resets only
+                  // ::-webkit-search-decoration, so suppress it here.
+                  className="w-full pl-8 pr-9 py-2.5 bg-port-bg border border-port-border rounded-lg text-sm text-white placeholder:text-gray-500 focus:border-port-accent focus:outline-hidden [&::-webkit-search-cancel-button]:appearance-none"
+                />
+                {stageQuery && (
+                  <button
+                    onClick={() => setStageQuery('')}
+                    aria-label="Clear stage search"
+                    className="absolute right-1 top-1/2 -translate-y-1/2 p-2 text-gray-500 hover:text-white"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+              <div className="flex items-center justify-between gap-2 mt-2">
+                <button
+                  onClick={() => setSystemOnly(v => !v)}
+                  aria-pressed={systemOnly}
+                  className={`text-[10px] px-2.5 py-1.5 rounded uppercase font-semibold transition-colors ${
+                    systemOnly
+                      ? 'bg-port-accent text-white'
+                      : 'bg-port-border text-gray-400 hover:text-white'
                   }`}
                 >
-                  <button
-                    onClick={() => setSelectedStage(name)}
-                    className="flex-1 min-w-0 text-left"
-                  >
-                    <div className="flex items-center gap-1">
-                      <span className="font-medium truncate">{config.name || name}</span>
-                      {systemStages.includes(name) && (
-                        <span className="shrink-0 text-[10px] px-1.5 py-0.5 bg-port-accent/20 text-port-accent rounded uppercase font-semibold">
-                          System
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-xs text-gray-500 truncate">{config.description}</div>
-                  </button>
-                  <button
-                    onClick={() => requestDeleteStage(name)}
-                    className="shrink-0 p-1 text-gray-500 hover:text-port-error"
-                    title="Delete stage"
-                  >
-                    <Trash2 size={14} />
-                  </button>
+                  System only
+                </button>
+                <span className="text-xs text-gray-500">
+                  {stageFilterActive ? `${stageMatchCount} of ${stageTotalCount}` : `${stageTotalCount} stages`}
+                </span>
+              </div>
+            </div>
+            <div className="space-y-1">
+              {stageGroups.map(({ key: groupKey, label, stages: groupStages }) => {
+                // A filter flips the default open — hits hidden behind collapsed
+                // headers read as "no results" — but the toggle stays live so a
+                // broad query's biggest group can still be folded away.
+                const open = stageFilterActive
+                  ? !collapsedWhileFiltering.has(groupKey)
+                  : expandedGroups.has(groupKey);
+                const Chevron = open ? ChevronDown : ChevronRight;
+                return (
+                  <div key={groupKey}>
+                    <button
+                      onClick={() => toggleGroup(groupKey)}
+                      aria-expanded={open}
+                      // Without this the name computes to "Pipeline78" — the
+                      // count span abuts the label with no separator.
+                      aria-label={`${label}, ${groupStages.length} stage${groupStages.length === 1 ? '' : 's'}`}
+                      className="w-full flex items-center gap-1 px-2 py-2 rounded-lg text-xs font-semibold uppercase tracking-wide text-gray-400 hover:bg-port-border hover:text-white"
+                    >
+                      <Chevron size={12} className="shrink-0" />
+                      <span className="min-w-0 truncate">{label}</span>
+                      <span className="ml-auto shrink-0 text-gray-500 normal-case">{groupStages.length}</span>
+                    </button>
+                    {open && (
+                      <div className="space-y-1 pl-2">
+                        {groupStages.map(([name, config]) => (
+                          <button
+                            key={name}
+                            onClick={() => setSelectedStage(name)}
+                            className={`w-full text-left px-3 py-2 rounded-lg text-sm ${
+                              selectedStage === name
+                                ? 'bg-port-accent/20 text-port-accent'
+                                : 'text-gray-300 hover:bg-port-border'
+                            }`}
+                          >
+                            <div className="flex items-center gap-1">
+                              <span className="font-medium truncate">{config.name || name}</span>
+                              {systemStageSet.has(name) && (
+                                <Pill tone="bare" size="xs" bordered={false} className="shrink-0 bg-port-accent/20 text-port-accent uppercase font-semibold">
+                                  System
+                                </Pill>
+                              )}
+                            </div>
+                            <div className="text-xs text-gray-500 truncate">{config.description}</div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              {stageGroups.length === 0 && (
+                <div className="text-sm text-gray-500 px-3 py-2">
+                  {stageFilterActive ? 'No stages match that search' : 'No prompt stages found'}
                 </div>
-              ))}
+              )}
             </div>
           </div>
 
@@ -427,6 +556,16 @@ export default function PromptManager() {
                         className="flex items-center gap-1 px-3 py-1 text-sm bg-port-accent hover:bg-port-accent/80 text-white rounded disabled:opacity-50"
                       >
                         <Save size={14} /> Save
+                      </button>
+                      {/* Delete lives here, not on the list row: a destructive
+                          control sitting beside 120+ select targets is a
+                          mis-tap waiting to happen (#3284). */}
+                      <button
+                        onClick={() => requestDeleteStage(selectedStage)}
+                        title="Delete stage"
+                        className="flex items-center gap-1 px-3 py-1 text-sm bg-port-border hover:bg-port-error text-gray-300 hover:text-white rounded"
+                      >
+                        <Trash2 size={14} /> Delete
                       </button>
                     </div>
                   </div>
@@ -784,9 +923,12 @@ export default function PromptManager() {
                     type="text"
                     value={newStageForm.name}
                     onChange={(e) => setNewStageForm({ ...newStageForm, name: e.target.value })}
-                    placeholder="My Stage"
+                    placeholder="Pipeline — My Stage"
                     className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
                   />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Name it <span className="text-gray-400">Family — Specific</span> to file it under an existing group
+                  </p>
                 </FormField>
               </div>
 
@@ -903,15 +1045,29 @@ export default function PromptManager() {
       >
         <div className="bg-port-card border border-port-border rounded-xl p-6">
           <h3 id="delete-stage-title" className="text-lg font-medium text-white mb-3">
-            {deleteConfirm?.isSystemStage ? 'Delete System Stage?' : 'Delete Stage?'}
+            {deleteConfirm?.canDelete === false
+              ? (deleteConfirm.isSystemStage ? 'Delete System Stage?' : 'Delete Referenced Stage?')
+              : 'Delete Stage?'}
           </h3>
-          {deleteConfirm?.isSystemStage ? (
+          {/* Protected covers both the curated SYSTEM set and any stage the
+              server's source references by name — the latter is badge-less but
+              just as breakable, so it gets the same warning plus the files
+              that name it (#3335). */}
+          {deleteConfirm?.canDelete === false ? (
             <div className="space-y-2 mb-6">
               <p className="text-port-warning text-sm font-medium">
-                "{deleteConfirm.stageName}" is a system stage.
+                "{deleteConfirm.stageName}" is {deleteConfirm.isSystemStage ? 'a system stage' : 'referenced by PortOS source'}.
               </p>
               {deleteConfirm.usedBy?.length > 0 && (
                 <p className="text-gray-400 text-sm">Used by: {deleteConfirm.usedBy.join(', ')}</p>
+              )}
+              {deleteConfirm.referencedBy?.length > 0 && (
+                <div className="text-gray-400 text-sm">
+                  <p className="mb-1">Referenced in:</p>
+                  <ul className="max-h-32 overflow-y-auto space-y-0.5 font-mono text-xs break-all">
+                    {deleteConfirm.referencedBy.map((path) => <li key={path}>{path}</li>)}
+                  </ul>
+                </div>
               )}
               <p className="text-gray-400 text-sm">Deleting this will break PortOS functionality.</p>
             </div>

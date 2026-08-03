@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { Brain, ArrowRight, Compass } from 'lucide-react';
 import * as api from '../services/api';
 import { streakGlyph } from '../lib/streakGlyph.js';

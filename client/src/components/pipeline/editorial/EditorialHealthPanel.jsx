@@ -15,7 +15,7 @@
  * completes), so the score reflects the freshest review.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 import { Activity, Loader2, TrendingUp, TrendingDown, X } from 'lucide-react';
 import toast from '../../ui/Toast';
 import { getEditorialHealth, setEditorialReadinessGate } from '../../../services/api';

@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
-import {
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import MemoryPractice, {
   fuzzyMatch,
   generateHint,
   findChunkForLine,
@@ -7,6 +8,35 @@ import {
   checkSequenceAnswer,
   checkSpacedAnswer,
 } from './MemoryPractice';
+
+const { submitMemoryPractice, getChunkMastery, getMemoryItem, attestMemoryMastery } = vi.hoisted(() => ({
+  submitMemoryPractice: vi.fn(),
+  getChunkMastery: vi.fn(),
+  getMemoryItem: vi.fn(),
+  attestMemoryMastery: vi.fn(),
+}));
+
+vi.mock('../../../services/api', () => ({
+  submitMemoryPractice,
+  getChunkMastery,
+  getMemoryItem,
+  attestMemoryMastery,
+}));
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  submitMemoryPractice.mockResolvedValue({ mastery: {} });
+  getChunkMastery.mockResolvedValue([]);
+  getMemoryItem.mockResolvedValue(null);
+  attestMemoryMastery.mockResolvedValue({
+    mastery: {
+      overallPct: 100,
+      chunks: { 'example-chunk': { correct: 0, attempts: 0, masteredAt: '2026-08-01T00:00:00.000Z', masterySource: 'attested' } },
+      elements: {},
+      retention: { status: 'attested' },
+    },
+  });
+});
 
 // Pure-function tests for MemoryPractice's correctness scorers (issue #2102
 // gap #2). These decide whether a memorization drill answer counts as
@@ -173,5 +203,196 @@ describe('findChunkForLine', () => {
 
   it('returns null when there are no chunks', () => {
     expect(findChunkForLine({ content: {} }, 0)).toBeNull();
+  });
+});
+
+describe('MemoryPractice daily routine actions', () => {
+  it('allows a user to attest mastery and shows the future verification state', async () => {
+    const item = {
+      id: 'example-memory',
+      title: 'Example Memory',
+      content: {
+        lines: [{ text: 'An example line.' }],
+        chunks: [{ id: 'example-chunk', label: 'Example Chunk', lineRange: [0, 0] }],
+      },
+      mastery: { overallPct: 0, chunks: {}, elements: {}, retention: { status: 'learning' } },
+    };
+    const view = render(<MemoryPractice itemId={item.id} item={item} mode={null} onSelectMode={() => {}} onExitMode={() => {}} onBack={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'I already know this' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, I know this' }));
+    await waitFor(() => expect(attestMemoryMastery).toHaveBeenCalledWith('example-memory', { silent: true }));
+    expect(screen.getByText('Mastery attested')).toBeInTheDocument();
+    expect(screen.getByText('One future spot check will verify this permanently.')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Chunk Mastery'));
+    expect(screen.getByText('100%')).toBeInTheDocument();
+
+    const attestedMastery = (await attestMemoryMastery.mock.results[0].value).mastery;
+    const attestedItem = { ...item, mastery: attestedMastery };
+    getMemoryItem.mockResolvedValue(attestedItem);
+    view.unmount();
+    render(<MemoryPractice itemId={item.id} item={item} mode={null} onSelectMode={() => {}} onExitMode={() => {}} onBack={() => {}} />);
+    await waitFor(() => expect(screen.getByText('Mastery attested')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'I already know this' })).not.toBeInTheDocument();
+  });
+
+  it('waits for progress to save before continuing from a completed lesson', async () => {
+    let resolveSave;
+    submitMemoryPractice.mockImplementation(() => new Promise(resolve => { resolveSave = resolve; }));
+    const onContinue = vi.fn();
+    const item = {
+      id: 'example-memory',
+      title: 'Example Memory',
+      content: {
+        lines: [{ text: 'An example line.' }],
+        chunks: [{ id: 'example-chunk', label: 'Example Chunk', lineRange: [0, 0] }],
+      },
+    };
+
+    render(
+      <MemoryPractice
+        itemId={item.id}
+        item={item}
+        mode="learn"
+        onSelectMode={() => {}}
+        onExitMode={() => {}}
+        onBack={() => {}}
+        onContinue={onContinue}
+      />
+    );
+
+    fireEvent.click(screen.getByText('Complete'));
+    fireEvent.click(screen.getByText("Continue Today's Routine"));
+
+    await waitFor(() => expect(submitMemoryPractice).toHaveBeenCalledTimes(1));
+    expect(onContinue).not.toHaveBeenCalled();
+
+    await act(async () => resolveSave({ mastery: {} }));
+    await waitFor(() => expect(onContinue).toHaveBeenCalledTimes(1));
+  });
+
+  it('stays on the result screen when saving fails and allows a retry', async () => {
+    submitMemoryPractice.mockRejectedValueOnce(new Error('offline'));
+    const onContinue = vi.fn();
+    const item = {
+      id: 'example-memory',
+      title: 'Example Memory',
+      content: {
+        lines: [{ text: 'An example line.' }],
+        chunks: [{ id: 'example-chunk', label: 'Example Chunk', lineRange: [0, 0] }],
+      },
+    };
+
+    render(
+      <MemoryPractice
+        itemId={item.id}
+        item={item}
+        mode="learn"
+        onSelectMode={() => {}}
+        onExitMode={() => {}}
+        onBack={() => {}}
+        onContinue={onContinue}
+      />
+    );
+
+    fireEvent.click(screen.getByText('Complete'));
+    fireEvent.click(screen.getByText("Continue Today's Routine"));
+
+    await waitFor(() => expect(submitMemoryPractice).toHaveBeenCalledTimes(1));
+    expect(onContinue).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByText("Continue Today's Routine")).toBeEnabled());
+
+    submitMemoryPractice.mockResolvedValueOnce({ mastery: {} });
+    fireEvent.click(screen.getByText("Continue Today's Routine"));
+    await waitFor(() => expect(onContinue).toHaveBeenCalledTimes(1));
+  });
+
+  it('waits for the final spaced-repetition chunk save before continuing', async () => {
+    let resolveSave;
+    submitMemoryPractice.mockImplementation(() => new Promise(resolve => { resolveSave = resolve; }));
+    getChunkMastery.mockResolvedValue([{
+      id: 'example-chunk',
+      label: 'Example Chunk',
+      lineRange: [0, 0],
+      accuracy: 0,
+      hintLevel: 0,
+    }]);
+    const onContinue = vi.fn();
+    const item = {
+      id: 'example-memory',
+      title: 'Example Memory',
+      content: {
+        lines: [{ text: 'An example line.' }],
+        chunks: [{ id: 'example-chunk', label: 'Example Chunk', lineRange: [0, 0] }],
+      },
+    };
+
+    render(
+      <MemoryPractice
+        itemId={item.id}
+        item={item}
+        mode="spaced"
+        onSelectMode={() => {}}
+        onExitMode={() => {}}
+        onBack={() => {}}
+        onContinue={onContinue}
+      />
+    );
+
+    const input = await screen.findByPlaceholderText('Type the line...');
+    fireEvent.change(input, { target: { value: 'An example line.' } });
+    fireEvent.click(screen.getByText('Check'));
+    fireEvent.click(screen.getByText('Next'));
+
+    await waitFor(() => expect(submitMemoryPractice).toHaveBeenCalledTimes(1));
+    fireEvent.click(await screen.findByText("Continue Today's Routine"));
+    expect(onContinue).not.toHaveBeenCalled();
+
+    await act(async () => resolveSave({ mastery: {} }));
+    await waitFor(() => expect(onContinue).toHaveBeenCalledTimes(1));
+  });
+
+  it('scores a due multi-chunk spot check only after the whole spaced run is finished', async () => {
+    getChunkMastery.mockResolvedValue([
+      { id: 'chunk-a', label: 'Chunk A', lineRange: [0, 0], accuracy: 100, hintLevel: 3 },
+      { id: 'chunk-b', label: 'Chunk B', lineRange: [1, 1], accuracy: 100, hintLevel: 3 },
+    ]);
+    const item = {
+      id: 'example-memory',
+      title: 'Example Memory',
+      content: {
+        lines: [{ text: 'First line.' }, { text: 'Second line.' }],
+        chunks: [
+          { id: 'chunk-a', label: 'Chunk A', lineRange: [0, 0] },
+          { id: 'chunk-b', label: 'Chunk B', lineRange: [1, 1] },
+        ],
+      },
+      mastery: {
+        overallPct: 100,
+        chunks: {},
+        elements: {},
+        retention: { status: 'mastered', spotCheckAt: '2000-01-01T00:00:00.000Z', spotCheckCompletedAt: null },
+      },
+    };
+
+    render(<MemoryPractice itemId={item.id} item={item} mode="spaced" onSelectMode={() => {}} onExitMode={() => {}} onBack={() => {}} onContinue={() => {}} />);
+
+    let input = await screen.findByPlaceholderText('Type the line...');
+    fireEvent.change(input, { target: { value: 'First line.' } });
+    fireEvent.click(screen.getByText('Check'));
+    fireEvent.click(screen.getByText('Next'));
+    await waitFor(() => expect(screen.getByText(/Chunk 2\/2/)).toBeInTheDocument());
+    expect(submitMemoryPractice).not.toHaveBeenCalled();
+
+    input = screen.getByPlaceholderText('Type the line...');
+    fireEvent.change(input, { target: { value: 'wrong' } });
+    fireEvent.click(screen.getByText('Check'));
+    fireEvent.click(screen.getByText('Next'));
+    expect(submitMemoryPractice).not.toHaveBeenCalled();
+
+    fireEvent.click(await screen.findByText('Save Progress'));
+    await waitFor(() => expect(submitMemoryPractice).toHaveBeenCalledTimes(1));
+    const payload = submitMemoryPractice.mock.calls[0][1];
+    expect(payload.results).toHaveLength(2);
+    expect(payload.results.map(result => result.chunkId)).toEqual(['chunk-a', 'chunk-b']);
   });
 });

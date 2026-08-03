@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router';
 import { Skull } from 'lucide-react';
 
 import { TABS } from '../components/meatspace/constants';

@@ -12,7 +12,9 @@ const TRACKED = [
   'server/services/sprites/atlas.test.js',
   'server/services/sprites/atlasGrid.test.js',
   'server/services/sprites/atlasLayout.test.js',
+  'server/services/taskPromptDefaults.test.js',
   'client/src/a11yConventions.test.js',
+  'client/src/hooks/mountedRefConventions.test.js',
   'client/src/components/catalog/CatalogCard.jsx',
   'client/src/components/catalog/CatalogCard.test.jsx',
   'client/src/components/sprites/WalkWorkflow.test.jsx',
@@ -23,7 +25,7 @@ const TRACKED = [
 ];
 
 describe('CI test impact planner', () => {
-  it('skips all expensive jobs for documentation-only changes', () => {
+  it('skips all expensive jobs for documentation-only changes, keeping the always-run guards', () => {
     const plan = buildCiTestPlan([
       '.changelog/NEXT.md',
       'docs/GITHUB_ACTIONS.md',
@@ -32,13 +34,45 @@ describe('CI test impact planner', () => {
     expect(plan).toMatchObject({
       full: false,
       reason: 'documentation-only change',
-      server: { mode: 'skip' },
+      server: { mode: 'files', files: ['server/services/taskPromptDefaults.test.js'] },
       client: { mode: 'skip' },
       db: false,
       lint: { mode: 'skip' },
       build: false,
       smoke: false,
     });
+  });
+
+  // The prompt-integrity snapshot guards a cross-install upgrade contract that
+  // no other test covers, so no impact scope may drop it — including the scopes
+  // that otherwise skip the server runner entirely.
+  it('runs the prompt-integrity guard under every impact scope', () => {
+    const scopes = [
+      [],                                                   // no changed files
+      ['docs/GITHUB_ACTIONS.md'],                           // documentation-only
+      ['client/src/components/catalog/CatalogCard.jsx'],    // client-only (server would skip)
+      ['server/services/auth.js'],                          // server related-mode
+      ['server/services/sprites/atlas.js'],                 // server files-mode
+    ];
+
+    for (const changed of scopes) {
+      const plan = buildCiTestPlan(changed, { trackedFiles: TRACKED });
+      expect(plan.server.mode, JSON.stringify(changed)).not.toBe('skip');
+      expect(plan.server.files, JSON.stringify(changed))
+        .toContain('server/services/taskPromptDefaults.test.js');
+    }
+
+    // A full plan runs everything, so it carries no explicit selector list.
+    const full = buildCiTestPlan(['.github/workflows/ci.yml'], { trackedFiles: TRACKED });
+    expect(full.server.mode).toBe('full');
+  });
+
+  it('omits an untracked always-run guard rather than handing Vitest a missing selector', () => {
+    const plan = buildCiTestPlan(['docs/GITHUB_ACTIONS.md'], {
+      trackedFiles: TRACKED.filter((path) => path !== 'server/services/taskPromptDefaults.test.js'),
+    });
+
+    expect(plan.server).toEqual({ mode: 'skip', files: [] });
   });
 
   it('forces the full suite when CI or shared test configuration changes', () => {
@@ -85,6 +119,7 @@ describe('CI test impact planner', () => {
       'server/services/sprites/atlas.test.js',
       'server/services/sprites/atlasGrid.test.js',
       'server/services/sprites/atlasLayout.test.js',
+      'server/services/taskPromptDefaults.test.js',
     ]);
     expect(plan.client.files).toEqual([
       'client/src/components/sprites/WalkWorkflow.test.jsx',
@@ -101,7 +136,7 @@ describe('CI test impact planner', () => {
     expect(plan.full).toBe(false);
     expect(plan.server).toEqual({
       mode: 'related',
-      files: ['server/services/auth.test.js'],
+      files: ['server/services/auth.test.js', 'server/services/taskPromptDefaults.test.js'],
     });
     expect(plan.client.mode).toBe('skip');
     expect(plan.smoke).toBe(true);
@@ -117,6 +152,7 @@ describe('CI test impact planner', () => {
     expect(plan.client.mode).toBe('related');
     expect(plan.client.files).toContain('client/src/lib/index.test.js');
     expect(plan.client.files).toContain('client/src/a11yConventions.test.js');
+    expect(plan.client.files).toContain('client/src/hooks/mountedRefConventions.test.js');
     expect(plan.lint).toEqual({
       mode: 'files',
       files: [
@@ -125,6 +161,16 @@ describe('CI test impact planner', () => {
       ],
     });
     expect(plan.build).toBe(true);
+  });
+
+  it('selects the mounted-ref guard for a plain-.js client change', () => {
+    // The a11y guard only triggers on `.jsx`, but the StrictMode mounted-ref bug
+    // reached 94 call sites through a `.js` hook — so this guard must be selected
+    // by a change that touches no `.jsx` at all.
+    const plan = buildCiTestPlan(['client/src/hooks/useAsyncAction.js'], { trackedFiles: TRACKED });
+
+    expect(plan.client.files).toContain('client/src/hooks/mountedRefConventions.test.js');
+    expect(plan.client.files).not.toContain('client/src/a11yConventions.test.js');
   });
 
   it('runs the DB suite when a database-backed adapter changes', () => {
@@ -147,7 +193,7 @@ describe('CI test impact planner', () => {
     expect(plan.full).toBe(false);
     expect(plan.server).toEqual({
       mode: 'related',
-      files: ['scripts/migrations/210-example.test.js'],
+      files: ['scripts/migrations/210-example.test.js', 'server/services/taskPromptDefaults.test.js'],
     });
   });
 

@@ -151,8 +151,99 @@ Check {appName} dependencies for updates and security vulnerabilities:
 
 Repository: {repoPath}
 
+Open automated dependency PRs come FIRST. A Dependabot/Renovate PR is a bump already
+proposed and already isolated to one package — redoing it yourself conflicts with the bot
+branch and leaves a stale PR behind. Finish Phase 1 before you touch a manifest.
+
+## Phase 1 — Land or resolve open automated dependency PRs
+
+This phase talks to the repo's forge. Use \`gh\` on GitHub and \`glab\` on GitLab —
+the command pairs are given below, and every \`gh pr <verb> <n>\` has a \`glab mr <verb> <n>\`
+equivalent. Run the right one for this repo's origin; never run \`gh\` against a GitLab
+repo (a globally-configured \`gh\` will silently target an unrelated GitHub repository).
+
+1. List the open PRs. If the repo has no GitHub/GitLab remote, or the matching CLI is
+   unavailable or unauthenticated, say so and skip straight to Phase 2:
+   \`gh pr list --state open --limit 500 --json number,title,headRefName,author,mergeable,mergeStateStatus\`
+   (GitLab: \`glab mr list --state opened --per-page 100 --page <n>\`, paging until a page
+   comes back short.) The limit has to cover EVERY open PR, not just a first page — a bot
+   PR you never listed looks bot-uncovered to Phase 2, which then files the duplicate bump
+   this phase exists to prevent. If the result is exactly at your limit, raise it and re-run.
+   An automated dependency PR is one authored by \`dependabot[bot]\`, \`app/dependabot\`,
+   \`renovate[bot]\`, or whose head branch starts with \`dependabot/\` or \`renovate/\`.
+
+2. For EACH one, gather evidence before deciding:
+   - The version jump: patch, minor, or major (\`gh pr view <n>\` / \`glab mr view <n>\`)
+   - For a major (or a minor from a package that breaks on minors): read the release
+     notes in the PR body, then grep this codebase for the APIs that changed. A breaking
+     change the repo never calls is not a blocker.
+   - CI status: \`gh pr checks <n>\` (GitLab: \`glab ci status --branch <headRefName>\`).
+     For a failure, read the actual log (\`gh run view <run-id> --log-failed\` /
+     \`glab ci trace <job-id>\`) and identify the root cause — a real incompatibility, a
+     flaky test, or an unrelated pre-existing failure on the default branch (check that
+     before blaming the bump).
+   - Mergeability: \`CONFLICTING\` (GitLab: \`cannot_be_merged\`) almost always means
+     lockfile/manifest drift from another dependency PR that already merged.
+   - Diff sanity: the diff should be manifest + lockfile only. Source-file edits, a new
+     postinstall/prepare script, or a changed registry URL in a bot PR is a red flag —
+     do not merge it; comment what you found and leave it open.
+
+3. Then take exactly ONE verdict per PR:
+   - MERGE — patch/minor, CI green, not conflicting, diff is clean, nothing in the
+     release notes affects how this repo uses the package. Merge it, matching the repo's
+     documented merge method (\`gh pr merge <n> --merge\` / \`glab mr merge <n> --yes\`
+     unless the repo says otherwise).
+   - FIX-THEN-MERGE — the bump is wanted but the PR is stuck. Fix it:
+     * Conflicts only: ask the bot to redo it first — comment \`@dependabot rebase\`
+       (Renovate: tick the PR's rebase checkbox), move on, and re-check at the end of
+       the phase. If the bot doesn't respond, resolve it yourself.
+     * Build/test failure caused by the new version (renamed export, changed default,
+       dropped Node/engine support): make the SMALLEST adapting code change on the PR
+       branch. Keep it scoped to the breakage — never bundle unrelated work onto a
+       bot branch.
+     * Either way, work on the bot branch in a THROWAWAY WORKTREE, never by checking
+       it out in {repoPath} — this task usually runs in the app's live checkout, so a
+       \`gh pr checkout\` there hijacks whatever branch the user is on and fails outright
+       on their uncommitted work. The bot branch normally exists only on the remote, so
+       name the remote ref explicitly and let \`-b\` create the local branch. Call the
+       worktree \`dep-{appName}-pr-<n>\` (lowercase the app name and collapse anything
+       non-alphanumeric to \`-\`) — {worktreesRoot} is shared by every app this install
+       manages, so a bare \`dep-pr-<n>\` collides with another app's PR of the same number:
+         \`git -C {repoPath} fetch origin <headRefName>\`
+         \`git -C {repoPath} worktree add -b dep-{appName}-pr-<n> {worktreesRoot}/dep-{appName}-pr-<n> origin/<headRefName>\`
+       Do the work in that worktree: rebase onto the default branch if it was conflicting,
+       regenerate the lockfile with the package manager (\`npm install\` — never hand-edit
+       a lockfile), run the tests, then push back to the PR's own branch:
+       \`git push origin HEAD:<headRefName>\`. Remove the worktree and its local branch
+       when you're done with that PR
+       (\`git -C {repoPath} worktree remove {worktreesRoot}/dep-{appName}-pr-<n>\` then
+       \`git -C {repoPath} branch -D dep-{appName}-pr-<n>\`).
+     * Pushing a rebase rewrites the bot's commits, so a plain push is rejected — add
+       \`--force-with-lease=<headRefName>:origin/<headRefName>\`, which refuses if the bot
+       pushed again while you worked, so you never clobber a newer version of its branch.
+       Never a bare \`--force\`. A push you did NOT rebase needs no force at all.
+     * Merge once it is green.
+   - CLOSE — the PR is superseded (a newer bot PR bumps the same package further) or
+     targets a dependency this repo no longer uses. Close it with a comment saying why.
+   - LEAVE — a major upgrade that needs a real migration, or a bump to something
+     security- or billing-critical that warrants a human call. Comment on the PR with
+     what you found and what the migration would take, and record it in the repo's work
+     tracker (a PLAN.md item or an issue, whichever the repo uses). Do not merge it.
+
+4. Re-check anything you asked the bot to rebase, then merge or leave it accordingly.
+   Summarize each PR and its verdict at the end of the phase.
+
+## Phase 2 — Everything the bots did not cover
+
 1. Run npm audit (or equivalent package manager)
-2. Check for outdated packages
+2. Check for outdated packages — skip any package that still has an open bot PR; that PR
+   owns the bump. Phase 1's list is the first filter, and when Phase 1 had forge access,
+   confirm per package before you bump one it didn't mention
+   (\`gh pr list --state open --search "<package> in:title"\` /
+   \`glab mr list --state opened --search "<package>"\`), so a PR that fell outside the
+   listing can't still get double-bumped here. If Phase 1 was skipped for lack of a
+   working \`gh\`/\`glab\`, skip this confirmation too — there is nothing to query — and
+   say in your summary that bot-PR overlap could not be checked.
 3. Review CRITICAL and HIGH severity vulnerabilities
 4. For each vulnerability:
    - Assess actual risk
@@ -227,6 +318,107 @@ Use Playwright MCP to test the app at different viewport sizes:
 3. Repeat at tablet (768x1024) and desktop (1440x900)
 4. Fix CSS responsive classes as needed
 5. Test fixes and commit changes`,
+
+  'ux': `[Improvement: {appName}] UX / Design Audit
+
+You are reviewing {appName}'s running UI as a UX reviewer, not as an engineer
+fixing bugs. The question you are answering for every screen is **"can a user
+actually get their job done here, and does the design help or fight them?"**
+
+**Read-only on source.** You do NOT edit application code, CSS, or components,
+and you do NOT create branches or PRs. Your deliverable is one item per finding
+in {appName}'s task tracker (described under "Where to record findings" below),
+so a human — or a later \`/claim\`-style task runner — decides what actually gets
+built. Design judgment is proposed, never auto-merged.
+
+Repository: {repoPath}
+
+## Where to record findings
+
+{trackerInstructions}
+
+## Out of scope — sibling task types own these
+
+Duplicate findings are noise. Do NOT file:
+
+- **Raw console errors / broken elements / failed requests** — \`ui-bugs\` owns these.
+- **Viewport breakage** (overflow, sub-44px tap targets, horizontal scroll) — \`mobile-responsive\` owns these.
+- **ARIA labels, contrast ratios, keyboard traps** — \`accessibility\` owns these.
+
+Mention an overlap only when it is the *cause* of a UX failure you are filing
+(e.g. "the empty state is unreachable because the only trigger is a
+keyboard-inaccessible icon") — and file it as the UX finding, not as the a11y one.
+
+## What to do
+
+1. **Inventory existing findings so you don't duplicate.** Follow the
+   "Inventory" step under "Where to record findings" above for this app's
+   tracker. Every prior UX finding carries a \`[ux-…]\` slug — collect the
+   existing slugs and skip any screen/problem pair already filed.
+
+2. **Discover the running app's UI URL** the same way the \`ui-bugs\` and
+   \`mobile-responsive\` audits do — from the app's own config/README/dev-server
+   output. If the UI is not reachable, exit cleanly and say so in your summary;
+   do NOT file speculative findings from source alone.
+
+3. **Walk each main route** with Playwright MCP. For every route:
+   - \`browser_navigate\` to it, then \`browser_snapshot\` to read the structure.
+   - \`browser_resize\` to **1440x900** (desktop) and **375x812** (mobile) and
+     snapshot at each — the fold differs, and a buried primary action is the
+     single most common finding.
+
+4. **Evaluate each route against this named checklist.** Cite the checklist
+   number in the finding so results are reproducible rather than vibes:
+
+   1. **Primary action visible above the fold** at both 1440x900 AND 375x812.
+      What is the one thing a user comes to this screen to do, and can they see
+      it without scrolling?
+   2. **Empty / loading / error states name a next action.** A blank panel, a
+      bare spinner, or "Something went wrong" with no retry/create/back is a
+      finding.
+   3. **Affordances are consistent with sibling screens** — button hierarchy
+      (one primary per view), drawer vs modal for the same class of task,
+      destructive actions confirmed the same way everywhere.
+   4. **Copy states an outcome, not a mechanism.** "Sync now" beats "Execute
+      job"; "3 items couldn't be saved" beats "PATCH failed".
+   5. **No dead ends.** Every state has a way forward or back — a completed
+      wizard, a filtered-to-zero list, a detail view reached by deep link.
+   6. **Visual consistency** — spacing, typography, and color follow the app's
+      own design tokens rather than one-off values drifting per screen.
+   7. **Information hierarchy matches the user's task** — what they came for is
+      the most prominent thing, not the densest table or the newest feature.
+
+5. **File ONE item per finding** using the "Record" mechanics under "Where to
+   record findings" above. Each finding must carry:
+
+   - **A slug-tagged title.** Lowercase kebab-case starting with \`ux-\`,
+     naming the screen and the problem (e.g.
+     \`ux-settings-save-below-fold-on-mobile\`); ≤80 chars total; unique against
+     every existing \`[ux-…]\` slug (re-check before each record).
+   - **The screen/route** you audited and which checklist item (1–7) it failed.
+   - **What the user is trying to do** on that screen.
+   - **Why the current design impedes it** — 1–2 sentences, concrete and
+     observable, referencing what you saw in the snapshot.
+   - **A concrete proposed change** naming the component file(s) in {appName}
+     that would carry it. Describe the BEHAVIOR/layout to change, not a diff.
+   - **\`Scope: small | medium | large\`.**
+
+   A finding that needs a product decision before it can be built (a real
+   problem, but the right answer is a judgment call the user owns) is a
+   **Maybe — needs human call** item: file it the same way and end with the
+   \`**Decision needed:** <one sentence>\` line described in the tracker
+   instructions.
+
+   Be selective — file the findings that would measurably change whether a user
+   succeeds, not every aesthetic preference. A handful of well-argued items
+   beats twenty nitpicks.
+
+6. **Finalize** per the "Finalize" step under "Where to record findings" above.
+   No source edits, no branches, no PRs.
+
+7. Your final assistant message must be a 2–3 sentence summary of: how many
+   routes you audited, how many findings you filed (and their slugs), and which
+   checklist items came up most often.`,
 
   'feature-ideas': `[Improvement: {appName}] Implement Next Planned Feature
 

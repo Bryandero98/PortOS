@@ -1,5 +1,5 @@
 import { useCallback } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router';
 import { ArrowLeft, FileText, RefreshCw, ShieldAlert, ShieldCheck, Skull } from 'lucide-react';
 import * as api from '../services/api';
 import MarkdownOutput from '../components/cos/MarkdownOutput';

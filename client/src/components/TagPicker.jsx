@@ -14,6 +14,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
+import useMounted from '../hooks/useMounted';
 import { X } from 'lucide-react';
 import { listCatalogTags } from '../services/apiCatalog';
 import { canonicalTagKey } from '../lib/catalogTypes';
@@ -29,8 +30,7 @@ export default function TagPicker({
   const [input, setInput] = useState('');
   const [suggestions, setSuggestions] = useState([]);
   const [open, setOpen] = useState(false);
-  const mountedRef = useRef(true);
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  const mountedRef = useMounted();
 
   // Debounced autocomplete fetch. A stale generation counter prevents an
   // earlier-but-slower response from clobbering a later one's results.

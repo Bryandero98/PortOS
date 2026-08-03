@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { formatDurationMs } from '../../utils/formatters';
 import { StatButton, metricColor } from './cityHudBits';
 

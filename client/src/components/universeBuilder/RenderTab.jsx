@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { FolderOpen, Loader2, Sparkles, FolderTree, Layers } from 'lucide-react';
 import { formatDateTime } from '../../utils/formatters';
 import { RUNNER_FAMILIES, loraCompatKey } from '../../lib/runnerFamilies';

@@ -42,6 +42,7 @@ import { getCodeReviewDefaults } from './codeReview.js';
 import { isHeldByOther, getClaimOwner } from './cosTaskClaim.js';
 import { ensureInstanceId } from './instances.js';
 import { PR_COMPLETION_VALUES } from '../lib/prDisposition.js';
+import { resolveAppWorkTracker, isFileTracker, formatTrackerInstructions, TRACKER_FILING_PRESETS, TRACKER_FILING_TASK_TYPES } from '../lib/workTracker.js';
 
 /**
  * Block a task that has exceeded the max spawn limit. Returns true if blocked.
@@ -700,7 +701,16 @@ async function spawnPriority0OnDemand(ctx) {
   // Track apps already marked review-started this cycle so multiple on-demand
   // requests for the same app don't each rewrite its activity record.
   const reviewStartedApps = new Set();
-  if (onDemandRequests.length > 0 && tasksToSpawn.length < availableSlots) {
+  // The app registry can't change mid-loop, so read it once per cycle rather
+  // than once per request (getActiveApps' 2s cache can miss at a boundary).
+  // `null` means the read FAILED, which is not the same as "no active apps":
+  // an empty list would make every app-targeted request below look like it
+  // names an unknown app and get cleared, silently dropping user-initiated
+  // work. On a failure we leave the requests queued for the next cycle.
+  const apps = onDemandRequests.length > 0 ? await getActiveApps().catch(() => null) : [];
+  if (!apps) {
+    emitLog('warn', `On-demand requests deferred — the app registry could not be read this cycle`);
+  } else if (onDemandRequests.length > 0 && tasksToSpawn.length < availableSlots) {
     for (const request of onDemandRequests) {
       if (tasksToSpawn.length >= availableSlots) break;
 
@@ -719,7 +729,6 @@ async function spawnPriority0OnDemand(ctx) {
 
       let task = null;
       // Determine target app (if any)
-      const apps = await getActiveApps().catch(() => []);
       let targetApp = null;
 
       if (request.appId) {
@@ -1773,14 +1782,53 @@ async function generateManagedAppImprovementTask(app, state, { ignoreTaskId = nu
  * @param {Object} state - Current CoS state
  * @returns {Object} Generated task
  */
+// Last transient (non-parking) detector verdict, keyed the same way a park is
+// (`taskType` + appId), so emitOnDemandEmpty can read it right beside
+// getPerpetualParkInfo. A transient skip deliberately does NOT park — there is no
+// park record to hang the reason on — so this is that path's reason channel.
+//
+// Deliberately in-memory and short-lived: the only consumer is the emit that
+// follows the gate a few frames later in the SAME drain, so a persisted schedule
+// field would have nothing left to read it after a restart. The TTL keeps a
+// verdict from a *previous* drain out of an unrelated later toast, and the read
+// consumes it so it can never be reported twice.
+const TRANSIENT_VERDICT_TTL_MS = 60_000;
+const transientVerdicts = new Map();
+const transientVerdictKey = (taskType, appId) => `${taskType}:${appId || 'global'}`;
+
+/**
+ * Record why a perpetual work gate skipped WITHOUT parking. `cli` is the forge
+ * CLI whose probe failed (`gh` / `glab`), or null when no forge was involved.
+ * Passing a null verdict clears any stale entry (the actionable / park paths).
+ */
+export function recordPerpetualTransient(taskType, appId, verdict) {
+  const key = transientVerdictKey(taskType, appId);
+  if (!verdict) {
+    transientVerdicts.delete(key);
+    return;
+  }
+  transientVerdicts.set(key, { ...verdict, at: Date.now() });
+}
+
+/** Read-and-consume the recorded verdict; null when absent or past its TTL. */
+function takePerpetualTransient(taskType, appId) {
+  const key = transientVerdictKey(taskType, appId);
+  const verdict = transientVerdicts.get(key);
+  transientVerdicts.delete(key);
+  if (!verdict || (Date.now() - verdict.at) > TRANSIENT_VERDICT_TTL_MS) return null;
+  return verdict;
+}
+
 /**
  * Surface WHY a user-initiated on-demand "Run" produced no task, so the trigger
  * isn't a silent no-op the user only discovers in the pm2 logs. Emits
  * `schedule:on-demand-empty` (which the client toasts) with an `outcome`:
  *   - 'parked'    → a perpetual detector re-checked and found no actionable work;
  *                   carries the reason + open/in-flight/filtered breakdown.
- *   - 'transient' → a perpetual task that did NOT park — a transient gh/glab
- *                   probe failure — so the check didn't actually complete.
+ *   - 'transient' → a perpetual task that did NOT park — a gh/glab probe
+ *                   failure — so the check didn't actually complete. Carries a
+ *                   `forge` block naming the real fault when the CLI is broken
+ *                   in a way that will NOT clear on its own.
  *   - 'idle'      → a non-perpetual task produced no task: a genuine "nothing to
  *                   do", NOT a failure (e.g. pr-watcher with no new PRs).
  *
@@ -1809,6 +1857,24 @@ export async function emitOnDemandEmpty({ taskScheduleMod, request, targetApp, t
     reason = app?.layeredIntelligence?.lastRunReason || null;
   }
 
+  // 'transient' says "the forge probe failed, try again shortly" — only true when
+  // the forge is momentarily flaky. A gh that is missing, unauthenticated, or
+  // blocked by an outbound firewall fails EVERY tick forever, so that advice sends
+  // the user in circles. Ask the CLI the detector actually ran (recorded by the
+  // work gate moments ago — the task-type NAME can't answer this: `claim-work`
+  // resolves its forge internally, and branch-reconcile/quota-burn go transient
+  // over git/provider faults with no forge involved) whether it is broken in a
+  // way that won't self-clear, and pass the remedy through. No verdict, an
+  // unprobeable CLI, or a healthy one all leave `forge` null and keep the
+  // generic copy — the failure really was a blip, or at least not one we can name.
+  let forge = null;
+  const verdict = outcome === 'transient' ? takePerpetualTransient(request.taskType, appId) : null;
+  if (verdict?.cli === 'gh') {
+    const { checkGhHealth } = await import('./github.js');
+    const health = await checkGhHealth().catch(() => null);
+    if (health && !health.ok && health.remedy) forge = { cli: 'gh', remedy: health.remedy };
+  }
+
   cosEvents.emit('schedule:on-demand-empty', {
     requestId: request.id,
     taskType: request.taskType,
@@ -1816,6 +1882,7 @@ export async function emitOnDemandEmpty({ taskScheduleMod, request, targetApp, t
     appName: targetApp?.name || null,
     outcome,
     reason,
+    forge,
     parkReason: parkInfo?.parkReason || null,
     parkedUntil: parkInfo?.parkedUntil || null,
     actionableCount: parkInfo?.parkActionableCount ?? null,
@@ -1937,13 +2004,19 @@ async function applyPerpetualWorkGate(app, taskType, promptTaskType, metadata, i
   });
   if (detection.actionable) {
     await taskSchedule.clearPerpetualPark(taskType, app.id);
+    recordPerpetualTransient(taskType, app.id, null);
     metadata.perpetual = true;
     return { skip: false };
   }
   if (detection.transient) {
     emitLog('debug', `Perpetual ${taskType} skip for ${app.name} (transient: ${detection.reason})`, { appId: app.id });
+    // The skip is silent by design (the next tick retries), but an explicit user
+    // "Run" ends here too — record which CLI failed so emitOnDemandEmpty can tell
+    // the difference between a blip and a forge that is broken for good.
+    recordPerpetualTransient(taskType, app.id, { cli: detection.cli || null, reason: detection.reason });
     return { skip: true };
   }
+  recordPerpetualTransient(taskType, app.id, null);
   // Carry the detector's open/in-flight/filtered breakdown into the park so an
   // explicit "Run" can explain WHY a non-empty queue yielded no work.
   const counts = detection.total != null
@@ -1986,6 +2059,22 @@ async function resolveBranchReconcileBlock(app, taskType, metadata, taskSchedule
   // A failed scan is treated as transient (git/gh blip) — skip WITHOUT parking
   // so the next tick retries instead of waiting out a full recheck cadence.
   if (!result) return { skip: true };
+  // Same treatment for a cycle the reconciler skipped because `gh` was unreadable
+  // (#3358): its empty in-flight set is "we could not ask", not "nothing to do",
+  // so parking on it would sit out a full recheck cadence over a network blip.
+  if (result.forgeUnavailable) {
+    emitLog('info', `🔀 branch-reconcile skipped for ${app.name}: forge unreachable (gh ${result.forgeStatus || 'error'})`, { appId: app.id, analysisType: taskType });
+    return { skip: true };
+  }
+  // A gh read that failed AFTER the probe passed leaves PR state unknown, so
+  // every un-merged branch classified WIP and the actionable set below would be
+  // empty for a reason that has nothing to do with the repo. Retry next tick
+  // rather than parking. Merged branches were still cleaned (git truth), so log
+  // that before bailing.
+  if (result.prStateUnavailable) {
+    emitLog('info', `🔀 branch-reconcile deferred for ${app.name}: PR state unreadable this cycle (cleaned ${result.cleaned.length} merged branch(es))`, { appId: app.id, analysisType: taskType });
+    return { skip: true };
+  }
   if (result.cleaned.length) {
     emitLog('info', `🔀 branch-reconcile ${app.name}: cleaned ${result.cleaned.length} merged branch(es)`, { appId: app.id, analysisType: taskType });
   }
@@ -2086,24 +2175,48 @@ async function resolveIssueReconcileBlock(app, taskType, metadata, taskSchedule)
 }
 
 /**
+ * Resolve the {trackerInstructions} block naming where a tracker-filing task
+ * records what it found, plus the two metadata signals derived from the SAME
+ * resolved tracker so they can never disagree with the instructions the agent
+ * actually got (#3140, #3102):
+ *   - `workTracker` — traceability
+ *   - `worktreeChangesExpected` — the PLAN.md path commits checklist items
+ *     (dirty tree); the github/gitlab/jira paths file issues/tickets out of band
+ *     and legitimately leave the tree CLEAN.
+ *
+ * Mirrors `triggerReferenceAnalysis` (referenceRepos.js, the on-commit path)
+ * rather than restating its block table — both run `resolveAppWorkTracker` →
+ * `formatTrackerInstructions` / `isFileTracker`.
+ *
+ * A TRACKER-FILING type reads the app read-only and delivers its findings as
+ * items in the app's tracker rather than as a commit. The set is derived from
+ * `TRACKER_FILING_PRESETS`, so a type is gated in exactly when it has wording.
+ *
+ * Returns `{ trackerInstructions: '', workTracker: null }` for every other type.
+ */
+async function resolveTrackerFilingBlock(app, taskType) {
+  if (!TRACKER_FILING_TASK_TYPES.has(taskType)) return { trackerInstructions: '', workTracker: null };
+  // Never throws — degrades to the PLAN.md block, same as the on-commit path.
+  const workTracker = await resolveAppWorkTracker(app).catch(() => ({ resolved: 'plan' }));
+  return {
+    trackerInstructions: formatTrackerInstructions(workTracker.resolved, TRACKER_FILING_PRESETS[taskType]),
+    workTracker: workTracker.resolved,
+    worktreeChangesExpected: isFileTracker(workTracker.resolved),
+  };
+}
+
+/**
  * reference-watch: dynamically build {referenceData} — a Markdown chunk per ref
- * configured on the app + commits since lastReviewedSha — AND the
- * {trackerInstructions} block naming where the agent files its proposals. The
- * check persists status/lastError so a bad URL surfaces in the UI even when
- * dispatch is skipped.
+ * configured on the app + commits since lastReviewedSha. The check persists
+ * status/lastError so a bad URL surfaces in the UI even when dispatch is
+ * skipped. (The {trackerInstructions} half is shared with the other
+ * tracker-filing types — see `resolveTrackerFilingBlock` above.)
  *
  * Returns `{ skip }` when no ref produced reviewable commits, else
- * `{ skip: false, block, trackerInstructions, workTracker }`. Empty
- * block/instructions (and a null tracker) for every non-reference-watch type.
- *
- * The tracker resolution mirrors `triggerReferenceAnalysis` (the on-commit
- * trigger path) rather than restating its block table: both paths run
- * `resolveAppWorkTracker` → `formatTrackerInstructions` / `isFileTracker`, so
- * the prompt the agent gets and the `worktreeChangesExpected` flag stamped on
- * its task can never disagree (#3140, #3102).
+ * `{ skip: false, block }`. Empty block for every non-reference-watch type.
  */
 async function resolveReferenceWatchBlock(app, taskType) {
-  if (taskType !== 'reference-watch') return { skip: false, block: '', trackerInstructions: '', workTracker: null };
+  if (taskType !== 'reference-watch') return { skip: false, block: '' };
   const refs = Array.isArray(app.referenceRepos) ? app.referenceRepos : [];
   if (refs.length === 0) {
     emitLog('info', `Skipping reference-watch for ${app.name}: no reference repos configured`, { appId: app.id });
@@ -2131,19 +2244,7 @@ async function resolveReferenceWatchBlock(app, taskType) {
     emitLog('info', `Skipping reference-watch for ${app.name}: no refs produced reviewable commits`, { appId: app.id });
     return { skip: true };
   }
-  // Where THIS app records autonomous work (PLAN.md / GitHub / GitLab / JIRA).
-  // Never throws — degrades to the PLAN.md block, same as the on-commit path.
-  const { resolveAppWorkTracker, isFileTracker } = await import('../lib/workTracker.js');
-  const workTracker = await resolveAppWorkTracker(app).catch(() => ({ resolved: 'plan' }));
-  return {
-    skip: false,
-    block: blocks.join('\n\n---\n\n'),
-    trackerInstructions: referenceRepos.formatTrackerInstructions(workTracker.resolved),
-    workTracker: workTracker.resolved,
-    // Derived here (not at the call site) so the flag and the instructions come
-    // off the same resolved value in one place.
-    worktreeChangesExpected: isFileTracker(workTracker.resolved),
-  };
+  return { skip: false, block: blocks.join('\n\n---\n\n') };
 }
 
 /**
@@ -2388,23 +2489,26 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
       : await getTaskPrompt(promptKeyForBody));
 
   // reference-watch: dynamically inject {referenceData} — a Markdown chunk
-  // describing each ref configured on the app + commits since lastReviewedSha —
-  // plus the {trackerInstructions} block for the app's resolved work tracker.
+  // describing each ref configured on the app + commits since lastReviewedSha.
   const referenceWatch = await resolveReferenceWatchBlock(app, taskType);
   if (referenceWatch.skip) return null;
   const referenceDataBlock = referenceWatch.block;
-  if (referenceWatch.workTracker) {
+
+  // Tracker-filing types (reference-watch / ux): the {trackerInstructions} block
+  // for the app's resolved work tracker.
+  const trackerFiling = await resolveTrackerFilingBlock(app, taskType);
+  if (trackerFiling.workTracker) {
     // Traceability + the TUI idle-complete gate, derived from the SAME resolved
     // tracker that selected the {trackerInstructions} block above so the flag
     // can't drift from the instructions the agent actually got: the PLAN.md path
     // commits checklist items (dirty tree), while github/gitlab/jira file
     // issues/tickets and leave the tree CLEAN. Without this a scheduled
     // forge-tracker run is recorded as an `idle-no-changes` failure (#3102).
-    metadata.workTracker = referenceWatch.workTracker;
+    metadata.workTracker = trackerFiling.workTracker;
     // Stamped unconditionally — a schedule/per-app `worktreeChangesExpected`
     // override would let the flag disagree with the instructions the agent
     // actually got, which is the exact drift this derivation exists to prevent.
-    metadata.worktreeChangesExpected = referenceWatch.worktreeChangesExpected;
+    metadata.worktreeChangesExpected = trackerFiling.worktreeChangesExpected;
   }
 
   // pr-watcher: poll the app's GitHub repo for PRs newly opened against the
@@ -2429,7 +2533,7 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
     promptTemplate, app, promptTaskType, metadata,
     blocks: {
       referenceData: referenceDataBlock,
-      trackerInstructions: referenceWatch.trackerInstructions,
+      trackerInstructions: trackerFiling.trackerInstructions,
       prData: prDataBlock,
       inFlightBranches: inFlightBranchesBlock,
       zombieIssues: zombieIssuesBlock,

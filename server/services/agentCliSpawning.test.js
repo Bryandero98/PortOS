@@ -89,10 +89,19 @@ vi.mock('child_process', () => ({
   execFile: vi.fn(),
 }));
 
+// Lazily imported by the close handler's cleanup block to record a failed run's
+// resume pointer (#3368). Mocked so the test doesn't pull the real cleanup graph
+// (cos.js, git.js, worktreeManager) in behind it.
+vi.mock('./agentWorktreeCleanup.js', () => ({
+  releaseRetryHold: vi.fn().mockResolvedValue({}),
+}));
+
 import { buildCliSpawnConfig, createStreamJsonParser, spawnDirectly } from './agentCliSpawning.js';
+import { releaseRetryHold } from './agentWorktreeCleanup.js';
 // Real module — the flag is a plain process-local boolean, so driving it
 // directly exercises the same code path production does.
 import { markHostShuttingDown, resetHostShutdownFlagForTests } from '../lib/hostShutdown.js';
+import { existsSync } from 'fs';
 import { spawn } from 'child_process';
 import { prepareCliSpawn, killProcessTree } from '../lib/bufferedSpawn.js';
 
@@ -481,6 +490,7 @@ describe('stream error containment', () => {
     (await import('./agentRunTracking.js')).completeAgentRun.mockResolvedValue(undefined);
     (await import('./agentFinalization.js')).finalizeAgent.mockResolvedValue(undefined);
     minimalArgs.cleanupWorktreeFn.mockResolvedValue(undefined);
+    vi.mocked(existsSync).mockReturnValue(false);
     // Reset the resolve+wrap helper to its POSIX passthrough before each test
     // (afterEach's restoreAllMocks can clear the factory implementation).
     vi.mocked(prepareCliSpawn).mockImplementation((command, args) => ({ command, args }));
@@ -802,6 +812,43 @@ describe('stream error containment', () => {
     expect(opts.reviewer).toBeUndefined();
   });
 
+  // A failed direct-CLI run's branch is preserved by cleanup when it holds commits;
+  // without this call nothing ever points the retry at it and the work is redone
+  // from scratch (#3368). Runs after cleanup so it reflects what actually survived.
+  it('records a resume pointer after cleanup when the run failed', async () => {
+    releaseRetryHold.mockClear();
+    const cleanupWorktreeFn = vi.fn().mockResolvedValue(undefined);
+    const task = { id: 'task-rp', description: 'do stuff', metadata: {} };
+
+    spawnDirectly({ ...minimalArgs, task, cleanupWorktreeFn, isTruthyMetaFn: (v) => v === true });
+    await new Promise((r) => setTimeout(r, 10));
+    fakeProcess.emit('close', 1);
+    await new Promise((r) => setTimeout(r, 80));
+
+    expect(releaseRetryHold).toHaveBeenCalledWith({
+      agentId: minimalArgs.agentId, task, success: false,
+    });
+    expect(cleanupWorktreeFn.mock.invocationCallOrder[0])
+      .toBeLessThan(releaseRetryHold.mock.invocationCallOrder[0]);
+  });
+
+  // The helper no-ops on success (unit-tested in cleanupAgentWorktree.test.js) —
+  // what this pins is that the close handler hands it the real verdict, not a
+  // hardcoded false that would stamp pointers on every completed run.
+  it('passes the success verdict through on a clean run', async () => {
+    releaseRetryHold.mockClear();
+    const task = { id: 'task-rp-ok', description: 'do stuff', metadata: {} };
+
+    spawnDirectly({ ...minimalArgs, task, cleanupWorktreeFn: vi.fn().mockResolvedValue(undefined), isTruthyMetaFn: (v) => v === true });
+    await new Promise((r) => setTimeout(r, 10));
+    fakeProcess.stdout.emit('data', Buffer.from('{"type":"result","result":"ok"}\n'));
+    await new Promise((r) => setTimeout(r, 50));
+    fakeProcess.emit('close', 0);
+    await new Promise((r) => setTimeout(r, 80));
+
+    expect(releaseRetryHold).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+  });
+
   // pm2's TreeKill takes direct-CLI children down with portos-server exactly as
   // it does TUI PTYs (#3202). Finalizing here would charge the task's failure
   // budget — and possibly file an investigation task — for a fault the agent
@@ -819,11 +866,11 @@ describe('stream error containment', () => {
 
     afterEach(() => resetHostShutdownFlagForTests());
 
-    const runToClose = async (args) => {
+    const runToClose = async (args, code = 0) => {
       spawnDirectly(args);
       await new Promise((r) => setTimeout(r, 10));
       markHostShuttingDown();
-      fakeProcess.emit('close', 0);
+      fakeProcess.emit('close', code);
       await new Promise((r) => setTimeout(r, 80));
     };
 
@@ -853,6 +900,21 @@ describe('stream error containment', () => {
         expect.objectContaining({ terminatedByUser: true, success: false }),
       );
       userTerminatedAgents.delete(minimalArgs.agentId);
+    });
+
+    it('still finalizes when the agent already wrote its completion sentinel', async () => {
+      const { finalizeAgent } = await import('./agentFinalization.js');
+      vi.mocked(existsSync).mockImplementation((path) => path === '/tmp/.agent-done');
+
+      await runToClose({ ...minimalArgs }, null);
+
+      expect(finalizeAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: minimalArgs.agentId,
+          success: true,
+          workspacePath: minimalArgs.workspacePath,
+        }),
+      );
     });
   });
 });

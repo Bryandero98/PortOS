@@ -3,7 +3,7 @@ import { ArrowLeft, Flame, Trophy, Clock, Gauge } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
 } from 'recharts';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { getPostProgress } from '../../../services/api';
 import useChartColors from '../../../hooks/useChartColors.js';
 import { formatDurationMin } from '../../../utils/formatters';
@@ -352,11 +352,13 @@ const RETENTION_STATE_CLASS = {
   fresh: 'bg-port-success/10 border-port-success/30 text-port-success',
   due: 'bg-port-warning/10 border-port-warning/30 text-port-warning',
   'needs-refresh': 'bg-port-error/10 border-port-error/30 text-port-error',
+  permanent: 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300',
 };
 const RETENTION_STATE_LABEL = {
   fresh: 'fresh',
   due: 'due for review',
   'needs-refresh': 'needs refresh',
+  permanent: 'mastered permanently',
 };
 
 function ProgressTabs({ subtab, navigate }) {

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 import {Trash2, X, Check, XCircle, Pencil, AlertTriangle, Brain, Bot} from 'lucide-react';
 import toast from '../../ui/Toast';
 import Banner from '../../ui/Banner';

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router';
 import { useSocket } from '../hooks/useSocket';
 import { useLocalStorageBool } from '../hooks/useLocalStorageBool';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';

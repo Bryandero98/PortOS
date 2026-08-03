@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation } from 'react-router';
 import {
   RECENT_KEY, PINNED_KEY,
   recordVisit, togglePin as togglePinPure, isPinned as isPinnedPure,

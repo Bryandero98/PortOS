@@ -12,7 +12,7 @@
  *   backPath  — absolute path to navigate to when the drawer is closed
  */
 
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router';
 import SyncDetailDrawer from '../components/sync/SyncDetailDrawer';
 
 export default function SyncView({ kind, param, backPath }) {

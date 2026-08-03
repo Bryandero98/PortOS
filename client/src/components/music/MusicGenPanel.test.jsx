@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { StrictMode } from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import MusicGenPanel from './MusicGenPanel';
 import * as api from '../../services/api';
@@ -87,5 +88,28 @@ describe('MusicGenPanel', () => {
 
     fireEvent.change(select, { target: { value: 'acestep' } });
     expect(await screen.findByText(/ACE-Step .* is not installed yet/i)).toBeInTheDocument();
+  });
+
+  // The app mounts under <React.StrictMode> (client/src/main.jsx), whose dev
+  // double-mount reuses the component's refs. A cleanup-only mounted guard is
+  // left false by the simulated unmount, so `loadEngines` bailed before
+  // `setLoading(false)` and the panel sat on "Loading generators…" forever
+  // (#3264). Rendering the real StrictMode wrapper is the only way this
+  // regression is visible — every other test here mounts the panel bare.
+  it('loads the engine list under StrictMode instead of hanging on "Loading generators…"', async () => {
+    api.listMusicEngines.mockResolvedValue({
+      defaultEngine: 'musicgen',
+      engines: [engine({ id: 'musicgen', name: 'MusicGen (MLX)', ready: true })],
+    });
+
+    render(
+      <StrictMode>
+        <MusicGenPanel track={{ id: 'track-1' }} prompt="" lyrics="" />
+      </StrictMode>,
+    );
+
+    const select = await screen.findByRole('combobox', { name: /engine/i });
+    expect(select).toHaveValue('musicgen');
+    expect(screen.queryByText(/Loading generators/i)).not.toBeInTheDocument();
   });
 });

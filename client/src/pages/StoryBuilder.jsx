@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { useParams, useNavigate, useSearchParams, useLocation, Link } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams, useLocation, Link } from 'react-router';
 import { filterSelectableModels } from '../utils/providers';
 import { composeCanonStyledPrompt } from '../lib/composeStyledPrompt';
 import { descriptorForCanonEntry } from '../lib/canonPrompt';

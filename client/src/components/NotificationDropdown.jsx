@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { Bell, X, CheckCheck, Trash2, Brain, ListTodo, AlertTriangle, Code, HelpCircle, BellRing, Sparkles } from 'lucide-react';
 import { timeAgo } from '../utils/formatters';
 import { clickableProps } from '../lib/a11yKeyboard';

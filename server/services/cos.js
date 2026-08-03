@@ -18,6 +18,7 @@ import { join } from 'path';
 import { v4 as uuidv4 } from '../lib/uuid.js';
 import { getActiveProvider } from './providers.js';
 import { isInternalTaskId } from '../lib/taskParser.js';
+import { isRetryHeld, isStaleRetryHold } from '../lib/taskRetryHold.js';
 import { isAppOnCooldown, markAppReviewCooldown, bindAppReviewAgent, clearStaleActiveAgents } from './appActivity.js';
 import { getActiveApps } from './apps.js';
 import { getPerformanceSummary, checkAndRehabilitateSkippedTasks, getLearningInsights } from './taskLearning.js';
@@ -39,7 +40,7 @@ import { cosEvents, emitLog } from './cosEvents.js';
 export { cosEvents, emitLog };
 
 // Agent lifecycle (re-export for backward compat with `import * as cos`)
-export { registerAgent, updateAgent, completeAgent, appendAgentOutput, getAgents, getAgentDates, getAgentsByDate, getAgent, getAgentPrompt, terminateAgent, pauseAgent, killAgent, sendBtwToAgent, getAgentProcessStats, cleanupZombieAgents, deleteAgent, submitAgentFeedback, getFeedbackStats, extractTaskType, archiveStaleAgents, clearCompletedAgents, pruneOldAgentArchives } from './cosAgents.js';
+export { registerAgent, updateAgent, completeAgent, appendAgentOutput, getAgents, getAgentDates, getAgentsByDate, getAgent, getAgentRecord, getAgentPrompt, terminateAgent, pauseAgent, killAgent, sendBtwToAgent, getAgentProcessStats, cleanupZombieAgents, deleteAgent, submitAgentFeedback, getFeedbackStats, extractTaskType, archiveStaleAgents, clearCompletedAgents, pruneOldAgentArchives } from './cosAgents.js';
 
 // Reports and activity (re-export for backward compat with `import * as cos`)
 export { generateReport, getReport, getTodayReport, listReports, listBriefings, getBriefing, getLatestBriefing, getTodayActivity, getWhileAwayActivity, getRecentTasks, formatRelativeTime } from './cosReports.js';
@@ -236,7 +237,7 @@ export async function start() {
   ]);
 
   // Then reset any orphaned in_progress tasks (no running agent)
-  await resetOrphanedTasks();
+  await resetOrphanedTasks({ bootRecovery: true });
 
   // Clear stale activeAgentId pointers in app-activity.json. Without this, an
   // idle-review agent that died across a restart (or a long-stale Feb-era state
@@ -510,8 +511,13 @@ export async function forceSpawnTask(taskId) {
 /**
  * Reset orphaned in_progress tasks back to pending
  * (tasks marked in_progress but no running agent)
+ *
+ * `bootRecovery` says this is the startup pass, where no in-process worktree
+ * cleanup can possibly be running — so a retry hold (#3373) is recovered
+ * immediately instead of waiting out its liveness grace, which on the periodic
+ * pass is what stops the sweep stealing a task mid-cleanup.
  */
-async function resetOrphanedTasks() {
+async function resetOrphanedTasks({ bootRecovery = false } = {}) {
   const state = await loadState();
   const { user: userTaskData, cos: cosTaskData } = await getAllTasks();
 
@@ -591,9 +597,27 @@ async function resetOrphanedTasks() {
         }
         continue;
       }
+      // A failed task held non-spawnable while its worktree cleanup resolves the
+      // resume pointer (#3373). While the hold is fresh some in-process cleanup is
+      // still expected to release it, so leave it alone — requeueing here would
+      // resolve the pointer against a branch mid-merge. Once the hold is stale, or
+      // this is the boot pass (nothing can be mid-cleanup in a process that just
+      // started), the process that armed it is gone and `handleOrphanedTask`
+      // finishes the transition instead of treating the task as a fresh orphan.
+      //
+      // Evaluated BEFORE the recently-completed grace below, which it deliberately
+      // bypasses: the hold is armed AFTER `completeAgent`, so a crash-restart
+      // inside that 60s window would otherwise skip the very task the boot pass
+      // exists to recover and strand it until the 15-minute periodic sweep.
+      const held = isRetryHeld(task.metadata);
+      const recoverHold = held && (bootRecovery || isStaleRetryHold(task.metadata));
+      if (held && !recoverHold) {
+        emitLog('debug', `Skipping task ${task.id} — retry held while its worktree cleanup finishes`, { taskId: task.id });
+        continue;
+      }
       // Skip tasks whose agent just completed — updateTask will set them to
       // completed shortly; treating them as orphaned causes spurious retries
-      if (recentlyCompletedTaskIds.has(task.id)) {
+      if (!recoverHold && recentlyCompletedTaskIds.has(task.id)) {
         emitLog('debug', `Skipping task ${task.id} — agent recently completed, awaiting task status update`, { taskId: task.id });
         continue;
       }
@@ -1268,6 +1292,9 @@ export async function init() {
   // - 'approved': a newly approved internal task can now spawn — re-run dequeue.
   // - 'unblocked': a blocked task flipped back to pending (revive/retry, #2614)
   //   is newly spawnable exactly like an approval — re-run dequeue.
+  // - 'requeued': an in_progress task flipped back to pending — a failed run's
+  //   retry released from its cleanup hold (#3373) or an orphan sweep requeue.
+  //   Newly spawnable, and long after the completion dequeue ran — re-run dequeue.
   cosEvents.on('tasks:changed', (data) => {
     if (!isDaemonRunning() || !data?.action) return;
     if (data.action === 'added') {
@@ -1278,7 +1305,7 @@ export async function init() {
       // first; tryImmediateSpawn then handles the just-added task.
       setImmediate(() => dequeueNextTask());
       if (data.type === 'user' && data.task) setImmediate(() => tryImmediateSpawn(data.task));
-    } else if (data.action === 'approved' || data.action === 'unblocked') {
+    } else if (data.action === 'approved' || data.action === 'unblocked' || data.action === 'requeued') {
       setImmediate(() => dequeueNextTask());
     }
   });

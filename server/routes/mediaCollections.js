@@ -1,8 +1,9 @@
 /**
- *   GET    /api/media/collections                  → Collection[]
+ *   GET    /api/media/collections                  → Collection[]       (`?limit`/`?offset` switch it to
+ *                                                                       `{ items, total, limit, offset }`)
  *   POST   /api/media/collections                  → Collection         (body: { name, description? })
  *   GET    /api/media/collections/:id              → Collection
- *   PATCH  /api/media/collections/:id              → Collection         (body: { name?, description?, coverKey? })
+ *   PATCH  /api/media/collections/:id              → Collection         (body: { name?, description?, coverKey?, source? })
  *   DELETE /api/media/collections/:id              → { id }
  *   POST   /api/media/collections/:id/items        → Collection         (body: { kind, ref })
  *   POST   /api/media/collections/:id/items/bulk   → { collection, added, removed }
@@ -13,7 +14,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler, ServerError, createServiceErrorMapper } from '../lib/errorHandler.js';
-import { validateRequest, mediaCollectionBulkItemsSchema } from '../lib/validation.js';
+import { validateRequest, mediaCollectionBulkItemsSchema, isPaginationRequested, paginateArray } from '../lib/validation.js';
 import * as svc from '../services/mediaCollections.js';
 
 const router = Router();
@@ -43,6 +44,12 @@ const patchSchema = z.object({
   description: descriptionSchema.optional(),
   // coverKey: null clears it (auto = newest); a string pins a specific item.
   coverKey: z.union([z.string().trim().min(1).max(svc.REF_MAX_LENGTH + 8), z.null()]).optional(),
+  // Provenance override (#3311) — lets the user correct a collection the
+  // migration's marker classification stamped wrong. Deliberately absent from
+  // `createSchema`: a POST is a person creating a collection, which the service
+  // stamps 'user' on its own, so accepting the field there would only let a
+  // client mislabel its own new collection.
+  source: z.enum(svc.COLLECTION_SOURCES).optional(),
 }).refine((p) => Object.keys(p).length > 0, { message: 'patch must include at least one field' });
 
 const itemSchema = z.object({
@@ -50,8 +57,13 @@ const itemSchema = z.object({
   ref: refSchema,
 });
 
-router.get('/', asyncHandler(async (_req, res) => {
-  res.json(await svc.listCollections());
+// Backward-compatible by default: returns the full collections array. When a
+// client passes `limit`/`offset`, the response becomes the bounded
+// `{ items, total, limit, offset }` envelope every paginated PortOS list shares.
+router.get('/', asyncHandler(async (req, res) => {
+  const list = await svc.listCollections();
+  if (!isPaginationRequested(req.query)) return res.json(list);
+  res.json(paginateArray(list, req.query, { defaultLimit: 50, maxLimit: 500 }));
 }));
 
 router.post('/', asyncHandler(async (req, res) => {

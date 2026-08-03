@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState } from 'react';
 import toast from '../components/ui/Toast';
 
 /**
@@ -16,24 +16,21 @@ import toast from '../components/ui/Toast';
  * single boolean in-flight flag — keyed/indexed loading states (e.g. "which
  * row is saving") need a different abstraction.
  *
- * The trailing `setRunning(false)` is gated on a `mountedRef` so an action
- * that resolves after the component unmounts (navigate-away mid-request)
- * doesn't call `setState` on an unmounted component — React warns about
- * that and it's a latent memory-leak signal.
+ * The trailing `setRunning(false)` is deliberately UNGUARDED: on React 19 a
+ * `setState` after unmount is a silent no-op (the old "update on an unmounted
+ * component" warning is gone), and a mounted-ref guard here is the exact thing
+ * that froze every button backed by this hook under StrictMode (#3264). Don't
+ * re-add one — there is nothing left for it to prevent.
  */
 export function useAsyncAction(fn, { errorMessage } = {}) {
   const [running, setRunning] = useState(false);
-  const mountedRef = useRef(true);
-  // Never reset to `true` on re-mount — this handles dev-mode double-mount
-  // cleanly (the cleanup runs once, the flag stays false for the dead tree).
-  useEffect(() => () => { mountedRef.current = false; }, []);
   const run = async (...args) => {
     setRunning(true);
     const result = await fn(...args).catch((err) => {
       toast.error(err?.message || errorMessage || 'Action failed');
       return null;
     });
-    if (mountedRef.current) setRunning(false);
+    setRunning(false);
     return result;
   };
   return [run, running];

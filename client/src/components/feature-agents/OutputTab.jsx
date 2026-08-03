@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Terminal, RefreshCw } from 'lucide-react';
 import * as api from '../../services/api';
 import socket from '../../services/socket';
@@ -7,17 +7,34 @@ export default function OutputTab({ agent }) {
   const [output, setOutput] = useState('');
   const [agentId, setAgentId] = useState(null);
   const bottomRef = useRef(null);
+  // Monotonic request counter: only the most recently issued fetch may write
+  // state. An effect-local `cancelled` flag can't cover this, because the
+  // refresh button fires outside the effect — and comparing agent ids alone
+  // wouldn't either, since two fetches for the *same* agent (a run starting,
+  // or a second refresh click) can still resolve out of order and repaint an
+  // older run's output.
+  const requestSeqRef = useRef(0);
+
+  const loadOutput = useCallback((id) => {
+    const seq = ++requestSeqRef.current;
+    api.getFeatureAgentOutput(id).then(data => {
+      if (seq !== requestSeqRef.current || !data) return;
+      setOutput(data.output || '');
+      setAgentId(data.agentId);
+    }).catch(() => {});
+  }, []);
+
+  // Drop the previous agent's output the moment the selection changes —
+  // otherwise it lingers until the new fetch lands and reads as though the
+  // newly selected agent had already produced it. Keyed on `agent.id` alone so
+  // a run starting (`currentAgentId` change) doesn't wipe streamed output.
+  useEffect(() => {
+    setOutput('');
+    setAgentId(null);
+  }, [agent.id]);
 
   useEffect(() => {
-    const fetch = () => {
-      api.getFeatureAgentOutput(agent.id).then(data => {
-        if (data) {
-          setOutput(data.output || '');
-          setAgentId(data.agentId);
-        }
-      }).catch(() => {});
-    };
-    fetch();
+    loadOutput(agent.id);
 
     const handler = (data) => {
       if (data.agentId === agent.currentAgentId || data.featureAgentId === agent.id) {
@@ -31,7 +48,7 @@ export default function OutputTab({ agent }) {
       socket.off('cos:agent:output', handler);
       socket.off('cos:feature-agent:output', handler);
     };
-  }, [agent.id, agent.currentAgentId]);
+  }, [agent.id, agent.currentAgentId, loadOutput]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -58,7 +75,7 @@ export default function OutputTab({ agent }) {
           )}
         </div>
         <button
-          onClick={() => api.getFeatureAgentOutput(agent.id).then(d => d && setOutput(d.output || '')).catch(() => {})}
+          onClick={() => loadOutput(agent.id)}
           aria-label="Refresh output"
           className="p-1.5 text-gray-400 hover:text-white hover:bg-port-border/50 rounded transition-colors"
         >

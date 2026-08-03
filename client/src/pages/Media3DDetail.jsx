@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router';
 import { ArrowLeft, Boxes, AlertTriangle, Loader2, RefreshCw, Trash2 } from 'lucide-react';
 import { getImageTo3dModel, generateImageTo3dModel, deleteImageTo3dModel, imageTo3dAssetUrl } from '../services/api';
 import useMounted from '../hooks/useMounted';

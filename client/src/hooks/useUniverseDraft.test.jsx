@@ -1,6 +1,13 @@
+import { StrictMode } from 'react';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+// These constant stand-ins mirror the REAL values exported from
+// services/apiUniverseBuilder.js (WORLD_CATEGORIES, WORLD_LOCKABLE_FIELDS,
+// WORLD_CATEGORY_KEY_MAX). Because the suite mocks the whole api module, a
+// convenience list here that drifts from the shipped one would let a body the
+// server's `.strict()` Zod schemas reject pass green — the exact failure mode
+// this suite's wire-shape assertions exist to catch.
 const apiMocks = vi.hoisted(() => ({
   addUniverseStyleReference: vi.fn(),
   createUniverse: vi.fn(),
@@ -15,8 +22,10 @@ const apiMocks = vi.hoisted(() => ({
   removeUniverseStyleReference: vi.fn(),
   updateUniverse: vi.fn(),
   WORLD_CATEGORY_KEY_MAX: 64,
-  WORLD_CATEGORIES: ['characters', 'places', 'objects'],
-  WORLD_LOCKABLE_FIELDS: ['starterPrompt', 'logline', 'premise', 'styleNotes'],
+  WORLD_CATEGORIES: ['landscapes', 'environments', 'structures', 'vehicles'],
+  WORLD_LOCKABLE_FIELDS: [
+    'starterPrompt', 'logline', 'premise', 'styleNotes', 'influencesEmbrace', 'influencesAvoid',
+  ],
   ensureInfluences: (value) => ({
     embrace: Array.isArray(value?.embrace) ? value.embrace : [],
     avoid: Array.isArray(value?.avoid) ? value.avoid : [],
@@ -78,6 +87,10 @@ beforeEach(() => {
   apiMocks.updateUniverse.mockImplementation(async (id, payload) => ({
     ...universe, id, ...payload, updatedAt: tickServerClock(),
   }));
+  apiMocks.createUniverse.mockImplementation(async (payload) => ({
+    ...universe, ...payload, id: 'u-new', updatedAt: tickServerClock(),
+  }));
+  apiMocks.deleteUniverse.mockResolvedValue({ ok: true });
   apiMocks.addUniverseStyleReference.mockImplementation(async (id, { reference, adopt } = {}) => {
     const next = [...serverRefsFor(id), reference];
     serverReferences.set(id, next);
@@ -92,11 +105,31 @@ beforeEach(() => {
   });
 });
 
-const renderDraft = () => {
+const renderDraft = (options) => {
   const goToWorld = vi.fn();
-  const hook = renderHook(() => useUniverseDraft({ selectedId: 'u1', goToWorld }));
+  const hook = renderHook(() => useUniverseDraft({ selectedId: 'u1', goToWorld }), options);
   return { ...hook, goToWorld };
 };
+
+// An unsaved universe: no `selectedId`, so the draft starts from
+// createEmptyUniverseDraft() and every mutator takes its "nothing to PATCH
+// yet, defer to the next Save" branch.
+const renderUnsaved = () => {
+  const goToWorld = vi.fn();
+  const hook = renderHook(() => useUniverseDraft({ selectedId: null, goToWorld }));
+  return { ...hook, goToWorld };
+};
+
+// The seeded bucket map every draft starts from — the four WORLD_CATEGORIES
+// with no `kind` yet. Spelled out (rather than derived from
+// ensureDraftCategories) so a create payload assertion pins the literal wire
+// shape instead of restating the implementation.
+const seededCategories = () => ({
+  landscapes: { variations: [] },
+  environments: { variations: [] },
+  structures: { variations: [] },
+  vehicles: { variations: [] },
+});
 
 // A second universe to navigate to, for the tests that exercise a selection
 // switch. Overridden per-test where the switch target needs its own references.
@@ -122,6 +155,73 @@ describe('useUniverseDraft', () => {
     expect(result.current.draft.name).toBe('Example Universe');
     expect(result.current.runs).toEqual([{ id: 'run-1' }]);
     expect(result.current.isDraftDirty()).toBe(false);
+  });
+
+  // A failed fetch and an empty response must not land in the same state. The refresh()
+  // fan-out used to `.catch(() => [])` / `.catch(() => ({}))` every call, so a transient
+  // failure was indistinguishable from a real empty answer — and for settings it was
+  // actively destructive, since deriving from a `{}` stand-in reset the user's saved
+  // image-gen mode and pipeline image config to defaults.
+  describe('refresh() failure handling', () => {
+    // NOTE: refresh() runs from a mount-only effect, so a rerender() does NOT re-run it.
+    // These tests invoke result.current.refresh() directly — otherwise the second load
+    // never happens and the assertions pass vacuously against untouched initial state.
+    it('keeps the last-known image-gen mode and config when the settings fetch fails', async () => {
+      apiMocks.getSettings.mockResolvedValue({ imageGen: { mode: 'local' }, localImageGen: {} });
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      const modeBefore = result.current.defaultMode;
+      const cfgBefore = result.current.imageCfg;
+      const backendsBefore = result.current.availableBackends;
+      expect(modeBefore).toBeTruthy();
+
+      // Second load fails. Nothing derived from settings may change.
+      apiMocks.getSettings.mockRejectedValueOnce(new Error('network blip'));
+      await act(async () => { await result.current.refresh(); });
+
+      expect(result.current.defaultMode).toBe(modeBefore);
+      expect(result.current.imageCfg).toEqual(cfgBefore);
+      expect(result.current.availableBackends).toEqual(backendsBefore);
+    });
+
+    it('keeps the previously loaded providers and image models when their fetches fail', async () => {
+      apiMocks.getProviders.mockResolvedValue({
+        providers: [{ id: 'p1', name: 'Provider One' }], activeProvider: 'p1',
+      });
+      apiMocks.listImageModels.mockResolvedValue([{ id: 'm1' }]);
+      apiMocks.listLorasFull.mockResolvedValue([{ id: 'l1' }]);
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.providers).toHaveLength(1));
+
+      apiMocks.getProviders.mockRejectedValueOnce(new Error('down'));
+      apiMocks.listImageModels.mockRejectedValueOnce(new Error('down'));
+      apiMocks.listLorasFull.mockRejectedValueOnce(new Error('down'));
+      await act(async () => { await result.current.refresh(); });
+
+      // Not wiped to [] — a failed read is not evidence that nothing is configured.
+      expect(result.current.providers).toEqual([{ id: 'p1', name: 'Provider One' }]);
+      expect(result.current.activeProviderId).toBe('p1');
+      expect(result.current.imageModels).toEqual([{ id: 'm1' }]);
+      expect(result.current.availableLoras).toEqual([{ id: 'l1' }]);
+    });
+
+    it('still applies a genuinely empty response (empty is not treated as failure)', async () => {
+      apiMocks.getProviders.mockResolvedValue({
+        providers: [{ id: 'p1', name: 'Provider One' }], activeProvider: 'p1',
+      });
+      apiMocks.listImageModels.mockResolvedValue([{ id: 'm1' }]);
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.providers).toHaveLength(1));
+
+      apiMocks.getProviders.mockResolvedValueOnce({ providers: [], activeProvider: null });
+      apiMocks.listImageModels.mockResolvedValueOnce([]);
+      await act(async () => { await result.current.refresh(); });
+
+      expect(result.current.providers).toEqual([]);
+      expect(result.current.activeProviderId).toBe(null);
+      expect(result.current.imageModels).toEqual([]);
+    });
   });
 
   it('saves general draft edits without replacing canon when canon is clean', async () => {
@@ -503,5 +603,592 @@ describe('useUniverseDraft', () => {
     expect(ok).toBe(false);
     expect(toastMock.error).toHaveBeenCalledWith('Reference save failed: at capacity');
     expect(result.current.draft.styleReferences).toEqual([]);
+  });
+
+  // ---- Destructive: delete (#3290) ----
+
+  describe('handleDelete', () => {
+    it('drops the universe from the list, clears the draft, and navigates away', async () => {
+      const { result, goToWorld } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+      act(() => result.current.setPendingDeleteId('u1'));
+
+      await act(async () => { await result.current.handleDelete(); });
+
+      expect(apiMocks.deleteUniverse).toHaveBeenCalledWith('u1', { silent: true });
+      expect(result.current.universes).toEqual([]);
+      expect(result.current.draft.id).toBeUndefined();
+      expect(result.current.draft.name).toBe('');
+      expect(result.current.pendingDeleteId).toBe(null);
+      expect(goToWorld).toHaveBeenCalledWith(null);
+      expect(toastMock.success).toHaveBeenCalledWith('World deleted');
+    });
+
+    // The failure path is the one that matters: a delete that 500s must leave
+    // the user exactly where they were, still looking at the record. Navigating
+    // away (or filtering the list) on a failed delete would make a live
+    // universe look gone until the next reload.
+    it('keeps the universe and stays put when the delete fails', async () => {
+      const { result, goToWorld } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+      apiMocks.deleteUniverse.mockRejectedValueOnce(new Error('record is locked'));
+
+      await act(async () => { await result.current.handleDelete(); });
+
+      expect(toastMock.error).toHaveBeenCalledWith('Delete failed: record is locked');
+      expect(result.current.universes).toEqual([universe]);
+      expect(result.current.draft.id).toBe('u1');
+      expect(goToWorld).not.toHaveBeenCalled();
+      expect(toastMock.success).not.toHaveBeenCalledWith('World deleted');
+    });
+
+    it('is a no-op on an unsaved universe', async () => {
+      const { result, goToWorld } = renderUnsaved();
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      await act(async () => { await result.current.handleDelete(); });
+
+      expect(apiMocks.deleteUniverse).not.toHaveBeenCalled();
+      expect(goToWorld).not.toHaveBeenCalled();
+    });
+  });
+
+  // ---- Fire-and-forget PATCHes: exact wire bodies (#3290) ----
+  //
+  // Each of these sends a targeted PATCH whose body the mocked api module can
+  // never validate. The server's patchSchema is built from `.strict()` pieces
+  // (lockedSchema, influencesSchema) and refuses an empty patch outright, so a
+  // body that drifts here 400s in production behind a green suite. These
+  // assertions therefore pin the EXACT object handed to updateUniverse, not
+  // just "some call happened".
+
+  describe('toggleLock', () => {
+    it('PATCHes only the lock map when a field is locked, and again when it is cleared', async () => {
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+
+      await act(async () => { result.current.toggleLock('logline'); });
+      expect(apiMocks.updateUniverse).toHaveBeenLastCalledWith(
+        'u1',
+        { locked: { logline: true } },
+        { silent: true },
+      );
+      expect(result.current.draft.locked).toEqual({ logline: true });
+
+      // Unlocking DELETES the key rather than writing `false` — the stored map
+      // is sparse, and lockedSchema is strict about nothing else riding along.
+      await act(async () => { result.current.toggleLock('logline'); });
+      expect(apiMocks.updateUniverse).toHaveBeenLastCalledWith(
+        'u1',
+        { locked: {} },
+        { silent: true },
+      );
+      expect(result.current.draft.locked).toEqual({});
+    });
+
+    // Two clicks inside one tick: the lock map has to compose across them.
+    // `draftRef` is normally refreshed by a passive effect that runs a commit
+    // later, so a naive read of it would let the second toggle re-send the
+    // first's write and leave the field locked forever.
+    it('composes back-to-back toggles that land before a re-render', async () => {
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+
+      await act(async () => {
+        result.current.toggleLock('logline');
+        result.current.toggleLock('logline');
+      });
+
+      expect(apiMocks.updateUniverse.mock.calls.map((call) => call[1]))
+        .toEqual([{ locked: { logline: true } }, { locked: {} }]);
+      expect(result.current.draft.locked).toEqual({});
+    });
+
+    // The server replaces `locked` wholesale per PATCH, so if those two writes
+    // reached it reversed the record would persist the lock the user just
+    // cleared. Holding the first request open proves the second is not even
+    // issued until it settles.
+    it('holds the second lock write until the first has settled', async () => {
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+      let releaseFirst;
+      apiMocks.updateUniverse.mockImplementationOnce(
+        () => new Promise((resolve) => { releaseFirst = resolve; }),
+      );
+
+      await act(async () => {
+        result.current.toggleLock('logline');
+        result.current.toggleLock('logline');
+      });
+      expect(apiMocks.updateUniverse).toHaveBeenCalledTimes(1);
+
+      await act(async () => { releaseFirst({ ...universe, locked: { logline: true } }); });
+
+      expect(apiMocks.updateUniverse).toHaveBeenCalledTimes(2);
+      expect(apiMocks.updateUniverse).toHaveBeenLastCalledWith(
+        'u1',
+        { locked: {} },
+        { silent: true },
+      );
+    });
+
+    // The tail is per universe, not per hook. A request has no timeout, so one
+    // stalled write for the universe the user just left must not block every
+    // lock on the one they navigated to — silently, since the draft still
+    // updates optimistically either way.
+    it('does not let a stalled lock write for one universe block another', async () => {
+      apiMocks.getUniverse.mockImplementation(async (id) => (id === 'u2' ? universeTwo : universe));
+      const { result, rerender } = renderSelectable();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+
+      // u1's lock write never settles.
+      apiMocks.updateUniverse.mockImplementationOnce(() => new Promise(() => {}));
+      await act(async () => { result.current.toggleLock('logline'); });
+      expect(apiMocks.updateUniverse).toHaveBeenCalledTimes(1);
+
+      await act(async () => { rerender({ selectedId: 'u2' }); });
+      await waitFor(() => expect(result.current.draft.id).toBe('u2'));
+      await act(async () => { result.current.toggleLock('premise'); });
+
+      expect(apiMocks.updateUniverse).toHaveBeenCalledTimes(2);
+      expect(apiMocks.updateUniverse).toHaveBeenLastCalledWith(
+        'u2',
+        { locked: { premise: true } },
+        { silent: true },
+      );
+    });
+
+    it('accepts the per-influence-list lock keys, not just the bible scalars', async () => {
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+
+      await act(async () => { result.current.toggleLock('influencesEmbrace'); });
+
+      // `influencesEmbrace` / `influencesAvoid` are real LOCKABLE_FIELDS keys;
+      // the legacy whole-block `influences` key is not what the UI writes.
+      expect(apiMocks.updateUniverse).toHaveBeenLastCalledWith(
+        'u1',
+        { locked: { influencesEmbrace: true } },
+        { silent: true },
+      );
+    });
+
+    it('ignores a field that is not lockable', async () => {
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+
+      await act(async () => { result.current.toggleLock('categories'); });
+
+      expect(apiMocks.updateUniverse).not.toHaveBeenCalled();
+      expect(result.current.draft.locked).toEqual({});
+    });
+
+    it('updates the draft without PATCHing an unsaved universe', async () => {
+      const { result } = renderUnsaved();
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      await act(async () => { result.current.toggleLock('premise'); });
+
+      expect(result.current.draft.locked).toEqual({ premise: true });
+      expect(apiMocks.updateUniverse).not.toHaveBeenCalled();
+    });
+
+    // Regression (#3290): the PATCH used to be issued from inside the setDraft
+    // updater. React may invoke an updater more than once per setState — under
+    // StrictMode it always does — so a single lock click sent two identical
+    // PATCHes. State updaters must be pure; the request belongs beside
+    // setRenderPin's, outside the updater.
+    it('sends exactly one PATCH per toggle under StrictMode', async () => {
+      const { result } = renderDraft({ wrapper: StrictMode });
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+
+      await act(async () => { result.current.toggleLock('logline'); });
+
+      expect(apiMocks.updateUniverse).toHaveBeenCalledTimes(1);
+      expect(result.current.draft.locked).toEqual({ logline: true });
+    });
+
+    it('surfaces a failed lock save', async () => {
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+      apiMocks.updateUniverse.mockRejectedValueOnce(new Error('write queue busy'));
+
+      await act(async () => { result.current.toggleLock('premise'); });
+
+      expect(toastMock.error).toHaveBeenCalledWith('Lock save failed: write queue busy');
+    });
+  });
+
+  describe('setRenderPin', () => {
+    it('PATCHes both pin fields together and mirrors them onto the draft', async () => {
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+
+      await act(async () => {
+        result.current.setRenderPin({ imageMode: 'local', imageModelId: null });
+      });
+
+      expect(apiMocks.updateUniverse).toHaveBeenLastCalledWith(
+        'u1',
+        { imageMode: 'local', imageModelId: null },
+        { silent: true },
+      );
+      expect(result.current.draft).toMatchObject({ imageMode: 'local', imageModelId: null });
+    });
+
+    // Clearing the pin must send explicit nulls, never omit the keys: an
+    // all-undefined body JSON.stringifies to `{}`, which the server's
+    // "patch must include at least one field" refinement rejects — and
+    // key-absent means "preserve" there, so the pin would never clear.
+    it('clears the pin with explicit nulls rather than an empty patch', async () => {
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+
+      await act(async () => {
+        result.current.setRenderPin({ imageMode: null, imageModelId: null });
+      });
+
+      const body = apiMocks.updateUniverse.mock.calls.at(-1)[1];
+      expect(body).toEqual({ imageMode: null, imageModelId: null });
+      expect(Object.keys(JSON.parse(JSON.stringify(body)))).toEqual(['imageMode', 'imageModelId']);
+    });
+
+    it('updates the draft without PATCHing an unsaved universe', async () => {
+      const { result } = renderUnsaved();
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      await act(async () => {
+        result.current.setRenderPin({ imageMode: 'agy', imageModelId: 'imagen-3' });
+      });
+
+      expect(result.current.draft).toMatchObject({ imageMode: 'agy', imageModelId: 'imagen-3' });
+      expect(apiMocks.updateUniverse).not.toHaveBeenCalled();
+    });
+
+    it('surfaces a failed pin save', async () => {
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+      apiMocks.updateUniverse.mockRejectedValueOnce(new Error('unknown model'));
+
+      await act(async () => {
+        result.current.setRenderPin({ imageMode: 'agy', imageModelId: 'nope' });
+      });
+
+      expect(toastMock.error).toHaveBeenCalledWith('Render pin save failed: unknown model');
+    });
+  });
+
+  describe('assignBucketKind', () => {
+    it('PATCHes only the moved bucket, keyed by bucket name', async () => {
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+
+      await act(async () => { await result.current.assignBucketKind('heroes', 'places'); });
+
+      // A single-key `categories` map: the server merges per bucket key, so
+      // sending the whole map would be both wasteful and a clobber risk.
+      expect(apiMocks.updateUniverse).toHaveBeenLastCalledWith(
+        'u1',
+        { categories: { heroes: { kind: 'places', variations: [] } } },
+        { silent: true },
+      );
+      expect(result.current.draft.categories.heroes.kind).toBe('places');
+      expect(result.current.universes[0].categories.heroes.kind).toBe('places');
+      expect(toastMock.success).toHaveBeenCalledWith('Moved "Heroes" to Places');
+    });
+
+    it('tags the bucket locally and defers to Save on an unsaved universe', async () => {
+      const { result } = renderUnsaved();
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      await act(async () => { await result.current.assignBucketKind('landscapes', 'places'); });
+
+      expect(apiMocks.updateUniverse).not.toHaveBeenCalled();
+      expect(result.current.draft.categories.landscapes).toEqual({ kind: 'places', variations: [] });
+      expect(toastMock.success).toHaveBeenCalledWith('Tagged "Landscapes" as Places — save to persist');
+    });
+
+    it('ignores an unknown trunk kind or an unknown bucket', async () => {
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+
+      await act(async () => {
+        await result.current.assignBucketKind('heroes', 'sidekicks');
+        await result.current.assignBucketKind('no-such-bucket', 'places');
+      });
+
+      expect(apiMocks.updateUniverse).not.toHaveBeenCalled();
+      expect(result.current.draft.categories.heroes.kind).toBe('characters');
+    });
+
+    it('surfaces a failed move and leaves the list untouched', async () => {
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+      apiMocks.updateUniverse.mockRejectedValueOnce(new Error('bucket cap reached'));
+
+      await act(async () => { await result.current.assignBucketKind('heroes', 'objects'); });
+
+      expect(toastMock.error).toHaveBeenCalledWith('Move failed: bucket cap reached');
+      // The optimistic local move stands (same contract as toggleLock /
+      // setRenderPin); only the shared list is left alone.
+      expect(result.current.universes[0].categories.heroes.kind).toBe('characters');
+    });
+  });
+
+  // ---- Local category + draft editors (#3290) ----
+
+  describe('addCategory', () => {
+    it('normalizes the typed name into a bucket key and clears the input', async () => {
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+
+      act(() => result.current.setNewCategoryName('Ancient Ruins & Relics'));
+      act(() => result.current.addCategory());
+
+      expect(result.current.draft.categories.ancient_ruins_and_relics).toEqual({ variations: [] });
+      expect(result.current.newCategoryName).toBe('');
+      expect(toastMock.error).not.toHaveBeenCalled();
+    });
+
+    it('rejects a name that normalizes onto an existing bucket', async () => {
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+
+      // 'Heroes' normalizes to the `heroes` key the universe already has.
+      act(() => result.current.setNewCategoryName('Heroes'));
+      act(() => result.current.addCategory());
+
+      expect(toastMock.error).toHaveBeenCalledWith('Category already exists');
+      // Untouched — including the input, so the user can correct it in place.
+      expect(result.current.draft.categories.heroes).toEqual({ kind: 'characters', variations: [] });
+      expect(result.current.newCategoryName).toBe('Heroes');
+    });
+
+    it('rejects a name with no usable characters', async () => {
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+      const before = result.current.draft.categories;
+
+      act(() => result.current.setNewCategoryName('!!! ???'));
+      act(() => result.current.addCategory());
+
+      expect(toastMock.error).toHaveBeenCalledWith('Use letters or numbers for the category name');
+      expect(result.current.draft.categories).toEqual(before);
+    });
+  });
+
+  describe('removeCategory', () => {
+    it('removes a custom bucket outright', async () => {
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+
+      act(() => result.current.removeCategory('heroes'));
+
+      expect(result.current.draft.categories).not.toHaveProperty('heroes');
+      expect(result.current.draft.categories).toEqual(seededCategories());
+    });
+
+    // A built-in bucket can't actually be removed — the server re-seeds all
+    // four WORLD_CATEGORIES on every read, so removing one empties it instead.
+    // Mirroring that here keeps the draft from showing a bucket-shaped hole the
+    // next hydration would fill back in.
+    it('empties rather than deletes a built-in bucket', async () => {
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+      const variation = { id: 'v1', label: 'Salt flats', prompt: 'a cracked white plain' };
+      act(() => result.current.updateCategory('landscapes', [variation]));
+      expect(result.current.draft.categories.landscapes.variations).toEqual([variation]);
+
+      act(() => result.current.removeCategory('landscapes'));
+
+      expect(result.current.draft.categories.landscapes).toEqual({ variations: [] });
+    });
+  });
+
+  it('updateCategory replaces one bucket\'s variations while preserving its kind', async () => {
+    const { result } = renderDraft();
+    await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+    const variation = { id: 'v1', label: 'Scout', prompt: 'a wiry outrider' };
+
+    act(() => result.current.updateCategory('heroes', [variation]));
+
+    expect(result.current.draft.categories.heroes).toEqual({
+      kind: 'characters',
+      variations: [variation],
+    });
+    expect(result.current.isDraftDirty()).toBe(true);
+    // Local edit only — it rides along on the next general Save.
+    expect(apiMocks.updateUniverse).not.toHaveBeenCalled();
+  });
+
+  it('updateCompositeSheets replaces the sheet list on the draft', async () => {
+    const { result } = renderDraft();
+    await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+    const sheets = [{ id: 's1', kind: 'reference_sheet', label: 'Cast board', prompt: 'six figures' }];
+
+    act(() => result.current.updateCompositeSheets(sheets));
+
+    expect(result.current.draft.compositeSheets).toEqual(sheets);
+    expect(result.current.isDraftDirty()).toBe(true);
+    expect(apiMocks.updateUniverse).not.toHaveBeenCalled();
+  });
+
+  // ---- Save preflight + canon reconciliation (#3290) ----
+
+  describe('flushDraftIfDirty', () => {
+    it('reports success without saving when the draft is clean', async () => {
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+
+      let flushed;
+      await act(async () => { flushed = await result.current.flushDraftIfDirty(); });
+
+      expect(flushed).toBe(true);
+      expect(apiMocks.updateUniverse).not.toHaveBeenCalled();
+    });
+
+    it('saves a dirty draft first so the server acts on what the user sees', async () => {
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+      act(() => result.current.updateDraft({ premise: 'Pre-flight premise' }));
+
+      let flushed;
+      await act(async () => { flushed = await result.current.flushDraftIfDirty(); });
+
+      expect(flushed).toBe(true);
+      expect(apiMocks.updateUniverse.mock.calls.at(-1)[1].premise).toBe('Pre-flight premise');
+      expect(result.current.isDraftDirty()).toBe(false);
+    });
+
+    it('reports failure when the preflight save fails, so the caller aborts', async () => {
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+      act(() => result.current.updateDraft({ premise: 'Doomed premise' }));
+      apiMocks.updateUniverse.mockRejectedValueOnce(new Error('disk full'));
+
+      let flushed;
+      await act(async () => { flushed = await result.current.flushDraftIfDirty(); });
+
+      expect(flushed).toBe(false);
+      expect(toastMock.error).toHaveBeenCalledWith('Save failed: disk full');
+    });
+  });
+
+  describe('handleCanonChange', () => {
+    it('adopts the canon editor\'s arrays wholesale when nothing is pending', async () => {
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+
+      act(() => result.current.handleCanonChange({
+        characters: [{ name: 'Editor Character' }],
+        places: [{ name: 'Editor Place' }],
+        objects: [],
+        updatedAt: '2026-02-02T00:00:00.000Z',
+      }));
+
+      expect(result.current.draft.characters).toEqual([{ name: 'Editor Character' }]);
+      expect(result.current.draft.places).toEqual([{ name: 'Editor Place' }]);
+      expect(result.current.draft.objects).toEqual([]);
+      expect(result.current.draft.updatedAt).toBe('2026-02-02T00:00:00.000Z');
+    });
+
+    it('preserves unsaved additions when canon is dirty', async () => {
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+      act(() => {
+        result.current.setCanonDirty(true);
+        result.current.pendingCanonAdditionsRef.current.characters = [{ name: 'Pending Character' }];
+      });
+
+      act(() => result.current.handleCanonChange({
+        characters: [{ name: 'Editor Character' }],
+        places: [],
+        objects: [],
+        updatedAt: '2026-02-02T00:00:00.000Z',
+      }));
+
+      // The editor's list wins on collision; the not-yet-saved addition is
+      // appended rather than dropped on the floor.
+      expect(result.current.draft.characters.map((entry) => entry.name))
+        .toEqual(['Editor Character', 'Pending Character']);
+    });
+
+    it('ignores a null payload', async () => {
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+
+      act(() => result.current.handleCanonChange(null));
+
+      expect(result.current.draft.characters).toEqual([{ name: 'Stale Draft Character' }]);
+    });
+  });
+
+  // ---- Create-a-second-universe from the name field (#3290) ----
+
+  describe('handleCreateNamed', () => {
+    it('creates a blank universe alongside the selected one and navigates to it', async () => {
+      const { result, goToWorld } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+
+      await act(async () => { await result.current.handleCreateNamed('  Spin-off World  '); });
+
+      // A named-create is deliberately EMPTY apart from the name — it must not
+      // carry the currently open universe's bible over to the new record.
+      expect(apiMocks.createUniverse).toHaveBeenCalledWith({
+        name: 'Spin-off World',
+        starterPrompt: '',
+        logline: '',
+        premise: '',
+        styleNotes: '',
+        categories: seededCategories(),
+        compositeSheets: [],
+        influences: { embrace: [], avoid: [] },
+        styleReferences: [],
+        locked: {},
+        llm: { provider: null, model: null },
+      }, { silent: true });
+      expect(apiMocks.updateUniverse).not.toHaveBeenCalled();
+      expect(result.current.universes[0].id).toBe('u-new');
+      expect(goToWorld).toHaveBeenCalledWith('u-new');
+      expect(toastMock.success).toHaveBeenCalledWith('World created');
+    });
+
+    it('rejects an all-whitespace name before touching the server', async () => {
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+
+      await act(async () => { await result.current.handleCreateNamed('   '); });
+
+      expect(toastMock.error).toHaveBeenCalledWith('Name is required');
+      expect(apiMocks.createUniverse).not.toHaveBeenCalled();
+    });
+
+    it('falls through to the normal Save on an unsaved universe', async () => {
+      const { result, goToWorld } = renderUnsaved();
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      act(() => result.current.updateDraft({ name: 'Fresh World', premise: 'Typed premise' }));
+
+      await act(async () => { await result.current.handleCreateNamed('Fresh World'); });
+
+      // handleSave's payload, not the blank-draft one — the premise the user
+      // already typed has to survive the create.
+      const payload = apiMocks.createUniverse.mock.calls.at(-1)[0];
+      expect(payload).toMatchObject({ name: 'Fresh World', premise: 'Typed premise' });
+      expect(payload.characters).toEqual([]);
+      expect(goToWorld).toHaveBeenCalledWith('u-new');
+    });
+
+    it('surfaces a failed create and stays on the current universe', async () => {
+      const { result, goToWorld } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+      apiMocks.createUniverse.mockRejectedValueOnce(new Error('name taken'));
+
+      await act(async () => { await result.current.handleCreateNamed('Spin-off World'); });
+
+      expect(toastMock.error).toHaveBeenCalledWith('Create failed: name taken');
+      expect(result.current.universes).toEqual([universe]);
+      expect(result.current.saving).toBe(false);
+      expect(goToWorld).not.toHaveBeenCalled();
+    });
   });
 });

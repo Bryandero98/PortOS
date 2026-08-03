@@ -25,6 +25,7 @@ import {
   updateMemoryItem,
   deleteMemoryItem,
   submitPractice,
+  attestMemoryItemMastery,
   advanceScheduleFromSession,
   mergeMasteryFromSession,
   applySessionToMemoryItems,
@@ -35,6 +36,8 @@ import {
   advanceSchedule,
   mergeScheduleAdvance,
   isMemoryItemDue,
+  isMemorySpotCheckDue,
+  scheduleSpotCheckAt,
   defaultSchedule,
   DEFAULT_EASE,
   ELEMENTS_SONG,
@@ -375,6 +378,53 @@ describe('generateMemoryDrill', () => {
     });
     const drill = await generateMemoryDrill({ mode: 'sequence', count: 1 });
     expect(drill.memoryItemId).toBe('b');
+  });
+
+  // Practice Plan per-item participation (issue #3252). A user who doesn't want
+  // a memorized text in the daily rotation switches it off instead of deleting
+  // it — deletion would throw away its mastery/schedule history.
+  describe('enabled-item candidate pool', () => {
+    const THREE_ITEMS = {
+      items: [
+        { ...ELEMENTS_SONG, mastery: { overallPct: 5, chunks: {}, elements: {} } },
+        { id: 'a', title: 'A', type: 'text', builtin: false, mastery: { overallPct: 90, chunks: {}, elements: {} }, content: { lines: [{ text: 'Line 1' }, { text: 'Line 2' }, { text: 'Line 3' }], chunks: [] } },
+        { id: 'b', title: 'B', type: 'text', builtin: false, mastery: { overallPct: 40, chunks: {}, elements: {} }, content: { lines: [{ text: 'Line A' }, { text: 'Line B' }, { text: 'Line C' }], chunks: [] } },
+      ]
+    };
+
+    it('skips a disabled item when auto-picking the lowest-mastery target', async () => {
+      readJSONFile.mockResolvedValue(THREE_ITEMS);
+      // elements-song has the lowest mastery, so it would win — but it's off.
+      const drill = await generateMemoryDrill(
+        { mode: 'sequence', count: 1 },
+        { memory: { items: { 'elements-song': { enabled: false } } } },
+      );
+      expect(drill.memoryItemId).toBe('b');
+    });
+
+    it('still honors an EXPLICIT memoryItemId for a disabled item (its own page)', async () => {
+      readJSONFile.mockResolvedValue(THREE_ITEMS);
+      const drill = await generateMemoryDrill(
+        { mode: 'sequence', count: 1, memoryItemId: 'elements-song' },
+        { memory: { items: { 'elements-song': { enabled: false } } } },
+      );
+      expect(drill.memoryItemId).toBe('elements-song');
+    });
+
+    it('falls back to every item when the plan leaves none enabled', async () => {
+      readJSONFile.mockResolvedValue(THREE_ITEMS);
+      const drill = await generateMemoryDrill(
+        { mode: 'sequence', count: 1 },
+        { topics: { memory: { enabled: false } } },
+      );
+      expect(drill.memoryItemId).toBe('elements-song');
+    });
+
+    it('behaves exactly as before when no config is passed (legacy callers)', async () => {
+      readJSONFile.mockResolvedValue(THREE_ITEMS);
+      const drill = await generateMemoryDrill({ mode: 'sequence', count: 1 });
+      expect(drill.memoryItemId).toBe('elements-song');
+    });
   });
 });
 
@@ -942,5 +992,100 @@ describe('mastery window is bounded', () => {
     const result = await mergeMasteryFromSession('elements-song', answers, new Date());
     expect(result.elements.H.recent.length).toBe(MASTERY_WINDOW);
     expect(result.elements.H.attempts).toBe(MASTERY_WINDOW + 5); // cumulative unbounded
+  });
+});
+
+describe('durable memory mastery', () => {
+  const masteredCustomItem = (retention = { status: 'learning' }) => ({
+    id: 'custom-durable',
+    title: 'Example Poem',
+    type: 'poem',
+    builtin: false,
+    content: {
+      lines: [{ text: 'Example line' }],
+      chunks: [{ id: 'verse-1', label: 'Verse 1', lineRange: [0, 0] }],
+    },
+    mastery: { overallPct: 0, chunks: {}, elements: {}, retention },
+    schedule: defaultSchedule('2026-07-01T00:00:00.000Z'),
+    createdAt: '2026-07-01T00:00:00.000Z',
+    updatedAt: '2026-07-01T00:00:00.000Z',
+  });
+
+  beforeEach(() => vi.clearAllMocks());
+
+  it('keeps a fact mastered after it clears three checks, even after a later ordinary miss', () => {
+    const stat = { attempts: 4, correct: 3, recent: [1, 1, 1, 0], masteredAt: '2026-07-01T00:00:00.000Z' };
+    expect(isStatMastered(stat)).toBe(true);
+    expect(windowedAccuracy(stat).accuracy).toBe(0.75);
+  });
+
+  it('schedules the one-time spot check 30 to 90 days in the future', () => {
+    const now = new Date('2026-07-01T00:00:00.000Z');
+    expect(scheduleSpotCheckAt(now, () => 0)).toBe('2026-07-31T00:00:00.000Z');
+    expect(scheduleSpotCheckAt(now, () => 0.999999)).toBe('2026-09-29T00:00:00.000Z');
+  });
+
+  it('attests every target and removes the item from routine practice until its audit', async () => {
+    const now = new Date('2026-07-01T00:00:00.000Z');
+    readJSONFile.mockResolvedValueOnce({ items: [masteredCustomItem()] });
+    const result = await attestMemoryItemMastery('custom-durable', now, () => 0);
+    expect(result.mastery.retention).toMatchObject({
+      status: 'attested',
+      attestedAt: now.toISOString(),
+      spotCheckAt: '2026-07-31T00:00:00.000Z',
+    });
+    expect(result.mastery.chunks['verse-1']).toMatchObject({ masterySource: 'attested', masteredAt: now.toISOString() });
+    expect(result.mastery.overallPct).toBe(100);
+    expect(isMemoryItemDue({ mastery: result.mastery, schedule: result.schedule }, now)).toBe(false);
+  });
+
+  it('makes a passed spot check permanent and never due again', async () => {
+    const now = new Date('2026-08-01T00:00:00.000Z');
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    try {
+      const item = masteredCustomItem({
+        status: 'attested',
+        attestedAt: '2026-07-01T00:00:00.000Z',
+        spotCheckAt: now.toISOString(),
+        spotCheckCompletedAt: null,
+      });
+      item.mastery.chunks['verse-1'] = { correct: 0, attempts: 0, masteredAt: '2026-07-01T00:00:00.000Z', masterySource: 'attested' };
+      readJSONFile.mockResolvedValueOnce({ items: [item] }).mockResolvedValueOnce({ entries: [] });
+
+      const result = await submitPractice('custom-durable', {
+        mode: 'sequence', chunkId: 'verse-1', results: [{ correct: true }], totalMs: 100,
+      });
+      expect(result.mastery.retention.status).toBe('mastered');
+      expect(result.mastery.retention.spotCheckCompletedAt).toBe(now.toISOString());
+      expect(isMemoryItemDue({ mastery: result.mastery, schedule: result.schedule }, new Date('2099-01-01T00:00:00.000Z'))).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('resumes training only after a failed due spot check', async () => {
+    const now = new Date('2026-08-01T00:00:00.000Z');
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    try {
+      const item = masteredCustomItem({
+        status: 'mastered', masteredAt: '2026-07-01T00:00:00.000Z',
+        spotCheckAt: now.toISOString(), spotCheckCompletedAt: null,
+      });
+      item.mastery.chunks['verse-1'] = { correct: 3, attempts: 3, recent: [1, 1, 1], masteredAt: '2026-07-01T00:00:00.000Z', masterySource: 'verified' };
+      readJSONFile.mockResolvedValueOnce({ items: [item] }).mockResolvedValueOnce({ entries: [] });
+
+      expect(isMemorySpotCheckDue(item, now)).toBe(true);
+      const result = await submitPractice('custom-durable', {
+        mode: 'sequence', chunkId: 'verse-1', results: [{ correct: false }], totalMs: 100,
+      });
+      expect(result.mastery.retention.status).toBe('lapsed');
+      expect(result.mastery.chunks['verse-1'].masteredAt).toBeUndefined();
+      expect(result.mastery.overallPct).toBe(0);
+      expect(isMemoryItemDue({ mastery: result.mastery, schedule: result.schedule }, now)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

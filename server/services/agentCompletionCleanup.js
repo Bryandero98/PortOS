@@ -27,7 +27,7 @@ import * as jiraService from './jira.js';
 import * as git from './git.js';
 import { isTruthyMeta } from './agentState.js';
 import { resolveReviewLoopOptions } from './codeReview.js';
-import { cleanupAgentWorktree, spawnMergeRecoveryTask, recordTaskResumePointer } from './agentWorktreeCleanup.js';
+import { cleanupAgentWorktree, spawnMergeRecoveryTask, releaseRetryHold } from './agentWorktreeCleanup.js';
 import { resolvePrCompletion } from '../lib/prDisposition.js';
 import { canTypeSlashCommands } from '../lib/slashdoInvocation.js';
 
@@ -175,13 +175,39 @@ export async function handlePipelineProgression(task, agentId, success) {
  * Called from `handleAgentCompletion` after `finalizeAgent`, inside its
  * try/finally so `runnerAgents.delete(agentId)` still fires on a throw here.
  *
+ * The retry hold is released in a `finally` (#3373): a failed task is left
+ * `in_progress` + held by `finalizeAgent` so nothing can dequeue its retry before
+ * the resume pointer is resolved, and ONLY this release makes it spawnable again.
+ * So it cannot hang off the `if (!jiraBranch)` worktree branch below, and it cannot
+ * be skipped by a throw from the JIRA/pipeline/Creative Director steps — either
+ * would leave the task held until the orphan sweep noticed.
+ *
  * @param {{ agentId: string, task: object, agent: object, effectiveSuccess: boolean, outputBuffer: string }} params
  */
 export async function runAgentCompletionCleanup({ agentId, task, agent, effectiveSuccess, outputBuffer }) {
-  // Fetch agent state once for JIRA and plan-question blocks
+  // Fetch agent state once for JIRA, plan-question, and the resume pointer. Its
+  // worktree fields are stamped once at registerAgent and never mutated, so passing
+  // it to the release spares a re-read that would re-split the whole output.txt.
   const { getAgent: getAgentState } = await import('./cos.js');
   const agentState = await getAgentState(agentId).catch(() => null);
 
+  try {
+    await runCompletionCleanupSteps({ agentId, task, agent, agentState, effectiveSuccess, outputBuffer });
+  } finally {
+    await releaseRetryHold({
+      agentId,
+      task,
+      success: effectiveSuccess,
+      agentMetadata: agentState?.metadata ?? null,
+    }).catch(err => emitLog('warn', `Retry-hold release failed for ${agentId}: ${err.message}`, { agentId, taskId: task?.id }));
+  }
+}
+
+/**
+ * The cleanup steps themselves. Split from the public entry point above only so
+ * the retry-hold release can wrap them in a `finally` without re-indenting them.
+ */
+async function runCompletionCleanupSteps({ agentId, task, agent, agentState, effectiveSuccess, outputBuffer }) {
   // JIRA integration: push branch, create PR, comment on ticket
   const jiraTicketId = task?.metadata?.jiraTicketId;
   const jiraBranch = task?.metadata?.jiraBranch;
@@ -318,10 +344,14 @@ export async function runAgentCompletionCleanup({ agentId, task, agent, effectiv
     // `leanMode` are persisted on the agent record for this; a pre-upgrade record
     // carries neither, and a blank command reads as `claude` — which is what the
     // old id allowlist effectively assumed for the claude-code ids anyway.
+    // Read off the PERSISTED record first (#3358): the in-memory `runnerAgents`
+    // entry carries only `providerId`, so a lean `--bare` or path-configured
+    // provider would be misjudged here — and finalizeAgent's PR verification
+    // keys on the same question, so the two must resolve it identically.
     const agentOwnsPR = taskOpenPR && canTypeSlashCommands({
-      providerId: agent.providerId,
-      providerCommand: agent.providerCommand,
-      leanMode: agent.leanMode === true,
+      providerId: agentState?.metadata?.providerId ?? agent.providerId,
+      providerCommand: agentState?.metadata?.providerCommand ?? agent.providerCommand ?? null,
+      leanMode: (agentState?.metadata?.leanMode ?? agent.leanMode) === true,
     });
     // Merge per-task reviewer metadata with the user's Code Review Defaults
     // (AI Providers → Code Review Defaults panel). Settings I/O is cached
@@ -337,33 +367,6 @@ export async function runAgentCompletionCleanup({ agentId, task, agent, effectiv
       agentOutput: outputBuffer,
       originalTask: task
     });
-
-    // A failed agent whose branch — or whole worktree — survived cleanup leaves
-    // real work behind (see `preserveBranchWithCommits` in agentWorktreeCleanup.js;
-    // a dirty tree aborts removal outright). Record where it lives on the TASK so
-    // its retry RESUMES rather than restarting from scratch — the behavior the
-    // agent-d2ae0352 incident exposed, where a run reaped 30s after its PR merged
-    // was re-dispatched to a fresh agent that began the shipped work over.
-    //
-    // Written here (not in cleanupAgentWorktree) because this is where the task
-    // record is in hand, and AFTER cleanup so it reflects what actually survived.
-    // `recordTaskResumePointer` no-ops when there's nothing to resume, in which
-    // case the metadata is left untouched and the retry starts clean.
-    // Only for a task that is actually going to RETRY. `finalizeAgent` has already
-    // written the failure verdict by now, so the persisted status distinguishes a
-    // `pending` retry (wants the pointer) from a `blocked` task that exhausted its
-    // budget and is waiting on a human (a pointer there would be dead metadata
-    // that `updateTask` has to strip again on the next terminal write).
-    if (!effectiveSuccess && task?.id) {
-      const { getTaskById } = await import('./cos.js');
-      const persisted = await getTaskById(task.id).catch(() => null);
-      if ((persisted?.status ?? 'pending') === 'pending') {
-        // `agentState` was fetched at the top of this function; its worktree fields
-        // are stamped once at registerAgent and never mutated, so re-reading the
-        // record here would only re-split the whole output.txt transcript.
-        await recordTaskResumePointer({ task, agentId, agentMetadata: agentState?.metadata });
-      }
-    }
 
     if (cleanupWarnings?.length > 0) {
       const { getAgent: getAgentForResult } = await import('./cos.js');

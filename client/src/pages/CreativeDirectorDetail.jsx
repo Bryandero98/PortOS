@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams, Link } from 'react-router';
 import { ArrowLeft, Play, Pause, RefreshCw, SlidersHorizontal } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import {

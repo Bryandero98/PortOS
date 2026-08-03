@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { ChevronLeft, Check, X, SkipForward, RotateCcw, Target, ChevronDown } from 'lucide-react';
-import { submitMemoryPractice, getChunkMastery } from '../../../services/api';
+import { ChevronLeft, Check, X, SkipForward, RotateCcw, Target, ChevronDown, Loader, ShieldCheck } from 'lucide-react';
+import { submitMemoryPractice, getChunkMastery, getMemoryItem, attestMemoryMastery } from '../../../services/api';
+import PostCompletionActions from './PostCompletionActions';
+import { startRetryableSave } from './completionSave';
 
 const MODES = [
   { id: 'learn', label: 'Learn', desc: 'Progressive reveal — read and absorb line by line' },
@@ -10,8 +12,93 @@ const MODES = [
   { id: 'spaced', label: 'Spaced Repetition', desc: 'Focus on your weakest chunks with graduated hints' },
 ];
 
-export default function MemoryPractice({ item, onBack }) {
-  const [mode, setMode] = useState(null);
+// The routable practice modes (`/post/memory/:itemId/:mode`). PostTab validates
+// the URL segment against this list and degrades an unknown one to the picker,
+// mirroring MorseTrainer's MORSE_MODE_IDS (issue #3249).
+export const MEMORY_PRACTICE_MODE_IDS = MODES.map(m => m.id);
+
+/**
+ * Route-facing entry point: resolves `itemId` to a memory item, then renders the
+ * practice runner. `item` is an optional seed the caller already has in hand (a
+ * fresh navigation from the list) — a cold deep link has none, so the item is
+ * fetched. An id that doesn't resolve renders a not-found fallback rather than a
+ * blank panel, per the deep-link contract in CLAUDE.md.
+ */
+export default function MemoryPractice({ itemId, item: seedItem, mode, onSelectMode, onExitMode, onBack, onContinue }) {
+  const [loadedItem, setLoadedItem] = useState(null);
+  const [notFound, setNotFound] = useState(false);
+  const item = loadedItem || seedItem;
+
+  useEffect(() => {
+    if (!itemId) return;
+    let cancelled = false;
+    setLoadedItem(null);
+    setNotFound(false);
+    getMemoryItem(itemId)
+      .then(data => { if (!cancelled) { if (data) setLoadedItem(data); else if (!seedItem) setNotFound(true); } })
+      .catch(err => {
+        console.warn(`⚠️ Failed to load memory item ${itemId}: ${err.message}`);
+        if (!cancelled && !seedItem) setNotFound(true);
+      });
+    return () => { cancelled = true; };
+  }, [itemId, seedItem]);
+
+  function handleMasteryChange(nextMastery, nextSchedule) {
+    setLoadedItem(current => ({
+      ...(current || seedItem),
+      mastery: nextMastery,
+      ...(nextSchedule ? { schedule: nextSchedule } : {}),
+    }));
+  }
+
+  if (notFound) {
+    return (
+      <div className="space-y-4 max-w-2xl">
+        <div className="flex items-center gap-3">
+          <button aria-label="Back" onClick={onBack} className="text-gray-400 hover:text-white transition-colors">
+            <ChevronLeft size={20} />
+          </button>
+          <h2 className="text-xl font-bold text-white">Item not found</h2>
+        </div>
+        <p className="text-gray-400 text-sm">
+          No memory item with id <span className="font-mono text-gray-300">{itemId}</span> — it may have been deleted.
+        </p>
+        <button
+          onClick={onBack}
+          className="px-4 py-2 text-sm bg-port-accent hover:bg-port-accent/80 text-white rounded-lg transition-colors"
+        >
+          Back to Memory Builder
+        </button>
+      </div>
+    );
+  }
+
+  if (!item) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 gap-3">
+        <Loader size={32} className="text-emerald-400 animate-spin" />
+        <div className="text-gray-400">Loading item...</div>
+      </div>
+    );
+  }
+
+  return (
+    <MemoryPracticeRunner
+      item={item}
+      mode={mode}
+      onSelectMode={onSelectMode}
+      onExitMode={onExitMode}
+      onBack={onBack}
+      onContinue={onContinue}
+      onMasteryChange={handleMasteryChange}
+    />
+  );
+}
+
+// The practice runner itself. `mode` is URL-driven; PostTab keys this component
+// on it, so every mode entry (and every return to the picker) mounts fresh —
+// no manual per-run state reset is needed.
+function MemoryPracticeRunner({ item, mode, onSelectMode, onExitMode, onBack, onContinue, onMasteryChange }) {
   const [results, setResults] = useState([]);
   const [currentIdx, setCurrentIdx] = useState(0);
   const [answer, setAnswer] = useState('');
@@ -19,6 +106,19 @@ export default function MemoryPractice({ item, onBack }) {
   const [done, setDone] = useState(false);
   const [startTime] = useState(Date.now());
   const inputRef = useRef(null);
+  const spacedSavesRef = useRef([]);
+  const [mastery, setMastery] = useState(item.mastery || { overallPct: 0, chunks: {}, elements: {}, retention: { status: 'learning' } });
+  const [attestConfirming, setAttestConfirming] = useState(false);
+  const [attesting, setAttesting] = useState(false);
+  const [attestError, setAttestError] = useState('');
+
+  // The route renders its seed immediately, then replaces it with the
+  // authoritative item from the server. Keep the runner's local display in
+  // step so a stale navigation seed cannot resurrect an attestation or other
+  // mastery change that was already persisted.
+  useEffect(() => {
+    setMastery(item.mastery || { overallPct: 0, chunks: {}, elements: {}, retention: { status: 'learning' } });
+  }, [item.id, item.mastery]);
 
   // Spaced repetition state
   const [chunkMastery, setChunkMastery] = useState(null);
@@ -27,6 +127,24 @@ export default function MemoryPractice({ item, onBack }) {
 
   const lines = item.content?.lines || [];
   const chunks = item.content?.chunks || [];
+  const retention = mastery.retention || { status: 'learning' };
+  const spotCheckTime = Date.parse(retention.spotCheckAt ?? '');
+  const spotCheckDue = (retention.status === 'attested' || retention.status === 'mastered')
+    && !retention.spotCheckCompletedAt
+    && Number.isFinite(spotCheckTime)
+    && spotCheckTime <= Date.now();
+
+  async function confirmAttestation() {
+    setAttesting(true);
+    setAttestError('');
+    const result = await attestMemoryMastery(item.id, { silent: true }).catch(() => null);
+    setAttesting(false);
+    if (result?.mastery) {
+      setMastery(result.mastery);
+      onMasteryChange(result.mastery, result.schedule);
+      setAttestConfirming(false);
+    } else setAttestError('Could not save mastery. Please try again.');
+  }
   const fillBlankLine = lines[currentIdx] || null;
   const fillBlankText = fillBlankLine?.text || '';
   const fillBlankWords = fillBlankText.split(/\s+/).filter(Boolean);
@@ -57,17 +175,14 @@ export default function MemoryPractice({ item, onBack }) {
 
   // Drive terminal transitions from an effect, never during render. The render
   // fallbacks below (chunk exhausted, line exhausted, sequence exhausted) return null
-  // for a frame while this effect saves results, advances the chunk, or marks the
-  // session done — firing setState + an async submitMemoryPractice() POST inside the
-  // render body is fragile under StrictMode/concurrent rendering. Normal per-answer
-  // flow still runs through advanceSpaced / nextSequenceQuestion.
+  // for a frame while this effect advances or marks the session done. Spaced
+  // chunks persist as they advance; other modes wait for the completion choice.
   useEffect(() => {
     if (done) return;
     if (mode === 'spaced') {
       if (!chunkMastery || chunkMastery.length === 0) return;
       const currentChunk = chunkMastery[spacedChunkIdx];
       if (!currentChunk) {
-        savePractice('spaced', results);
         setDone(true);
         return;
       }
@@ -84,6 +199,10 @@ export default function MemoryPractice({ item, onBack }) {
     }
   }, [mode, chunkMastery, spacedChunkIdx, spacedLineIdx, currentIdx, done]);
 
+  // Back goes up exactly one level: from a running mode (or the results screen)
+  // to the mode picker via `onExitMode`, and from the picker out to the item
+  // list via `onBack` — matching how ElementsSong's sub-modes exit, and keeping
+  // the button in step with the URL now that the mode is a route segment.
   if (!mode) {
     return (
       <div className="space-y-6 max-w-4xl">
@@ -96,11 +215,46 @@ export default function MemoryPractice({ item, onBack }) {
 
         <p className="text-gray-400 text-sm">Choose a practice mode:</p>
 
+        <div className="bg-port-card border border-port-border rounded-lg p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <ShieldCheck size={20} className={retention.status === 'lapsed' ? 'text-amber-400' : 'text-emerald-400'} />
+            <div>
+              <div className="text-sm font-medium text-white">
+                {retention.status === 'attested' && 'Mastery attested'}
+                {retention.status === 'mastered' && (retention.spotCheckCompletedAt ? 'Mastery verified permanently' : 'Mastery verified')}
+                {retention.status === 'lapsed' && 'Review resumed'}
+                {retention.status === 'learning' && 'Still learning'}
+              </div>
+              <div className="text-xs text-gray-500 mt-0.5">
+                {retention.status === 'attested' && 'One future spot check will verify this permanently.'}
+                {retention.status === 'mastered' && (retention.spotCheckCompletedAt ? 'No more time decay or scheduled reviews.' : 'One future spot check remains.')}
+                {retention.status === 'lapsed' && 'A missed spot check returned this item to the routine.'}
+                {retention.status === 'learning' && 'Already know it? Attest now and verify it once later.'}
+              </div>
+            </div>
+          </div>
+          {retention.status === 'learning' && (
+            attestConfirming ? (
+              <div className="flex items-center gap-2">
+                <button onClick={() => setAttestConfirming(false)} disabled={attesting} className="min-h-11 px-3 text-sm text-gray-400 hover:text-white">Cancel</button>
+                <button onClick={confirmAttestation} disabled={attesting} className="min-h-11 px-3 text-sm bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-lg">
+                  {attesting ? 'Saving...' : 'Yes, I know this'}
+                </button>
+              </div>
+            ) : (
+              <button onClick={() => setAttestConfirming(true)} className="shrink-0 min-h-11 px-3 text-sm border border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10 rounded-lg">
+                I already know this
+              </button>
+            )
+          )}
+          {attestError && <div role="alert" className="text-xs text-port-error">{attestError}</div>}
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {MODES.map(m => (
             <button
               key={m.id}
-              onClick={() => setMode(m.id)}
+              onClick={() => onSelectMode(m.id)}
               className="w-full bg-port-card border border-port-border rounded-lg p-4 text-left hover:border-port-accent/50 transition-colors"
             >
               <div className="flex items-center gap-2">
@@ -114,7 +268,7 @@ export default function MemoryPractice({ item, onBack }) {
 
         {/* Chunk mastery overview */}
         {chunks.length > 0 && (
-          <ChunkMasteryOverview item={item} />
+          <ChunkMasteryOverview item={{ ...item, mastery }} />
         )}
       </div>
     );
@@ -128,7 +282,7 @@ export default function MemoryPractice({ item, onBack }) {
     return (
       <div className="space-y-6 max-w-2xl">
         <div className="flex items-center gap-3">
-          <button aria-label="Back" onClick={onBack} className="text-gray-400 hover:text-white transition-colors">
+          <button aria-label="Back" onClick={onExitMode} className="text-gray-400 hover:text-white transition-colors">
             <ChevronLeft size={20} />
           </button>
           <h2 className="text-xl font-bold text-white">Practice Complete</h2>
@@ -157,19 +311,17 @@ export default function MemoryPractice({ item, onBack }) {
           </div>
         )}
 
-        <div className="flex gap-3">
+        <div className="space-y-3">
+          <PostCompletionActions
+            onSave={() => saveAndExit(false)}
+            onContinue={() => saveAndExit(true)}
+          />
           <button
-            onClick={() => { setMode(null); setResults([]); setCurrentIdx(0); setDone(false); setShowResult(null); setSpacedChunkIdx(0); setSpacedLineIdx(0); }}
-            className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-port-card border border-port-border rounded-lg text-gray-300 hover:text-white transition-colors"
+            onClick={onExitMode}
+            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-gray-400 hover:text-white transition-colors"
           >
             <RotateCcw size={16} />
-            Try Again
-          </button>
-          <button
-            onClick={onBack}
-            className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-port-accent hover:bg-port-accent/80 text-white rounded-lg transition-colors"
-          >
-            Done
+            Practice Again
           </button>
         </div>
       </div>
@@ -190,7 +342,7 @@ export default function MemoryPractice({ item, onBack }) {
       return (
         <div className="space-y-6 max-w-2xl">
           <div className="flex items-center gap-3">
-            <button aria-label="Back" onClick={onBack} className="text-gray-400 hover:text-white transition-colors">
+            <button aria-label="Back" onClick={onExitMode} className="text-gray-400 hover:text-white transition-colors">
               <ChevronLeft size={20} />
             </button>
             <h2 className="text-lg font-bold text-white">Spaced Repetition — {item.title}</h2>
@@ -225,7 +377,7 @@ export default function MemoryPractice({ item, onBack }) {
     return (
       <div className="space-y-6 max-w-2xl">
         <div className="flex items-center gap-3">
-          <button aria-label="Back" onClick={onBack} className="text-gray-400 hover:text-white transition-colors">
+          <button aria-label="Back" onClick={onExitMode} className="text-gray-400 hover:text-white transition-colors">
             <ChevronLeft size={20} />
           </button>
           <h2 className="text-lg font-bold text-white">Spaced — {item.title}</h2>
@@ -321,7 +473,7 @@ export default function MemoryPractice({ item, onBack }) {
     return (
       <div className="space-y-6 max-w-4xl">
         <div className="flex items-center gap-3">
-          <button aria-label="Back" onClick={onBack} className="text-gray-400 hover:text-white transition-colors">
+          <button aria-label="Back" onClick={onExitMode} className="text-gray-400 hover:text-white transition-colors">
             <ChevronLeft size={20} />
           </button>
           <h2 className="text-lg font-bold text-white">Learn — {item.title}</h2>
@@ -363,7 +515,7 @@ export default function MemoryPractice({ item, onBack }) {
             </button>
           ) : (
             <button
-              onClick={() => { setDone(true); setResults([{ correct: true, expected: 'learn mode', answered: 'learn mode' }]); savePractice('learn', [{ correct: true }]); }}
+              onClick={() => { setDone(true); setResults([{ correct: true, expected: 'learn mode', answered: 'learn mode' }]); }}
               className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-port-success hover:bg-port-success/80 text-white rounded-lg transition-colors"
             >
               <Check size={16} />
@@ -388,7 +540,7 @@ export default function MemoryPractice({ item, onBack }) {
     return (
       <div className="space-y-6 max-w-2xl">
         <div className="flex items-center gap-3">
-          <button aria-label="Back" onClick={onBack} className="text-gray-400 hover:text-white transition-colors">
+          <button aria-label="Back" onClick={onExitMode} className="text-gray-400 hover:text-white transition-colors">
             <ChevronLeft size={20} />
           </button>
           <h2 className="text-lg font-bold text-white">Sequence — {item.title}</h2>
@@ -470,7 +622,7 @@ export default function MemoryPractice({ item, onBack }) {
     return (
       <div className="space-y-6 max-w-2xl">
         <div className="flex items-center gap-3">
-          <button aria-label="Back" onClick={onBack} className="text-gray-400 hover:text-white transition-colors">
+          <button aria-label="Back" onClick={onExitMode} className="text-gray-400 hover:text-white transition-colors">
             <ChevronLeft size={20} />
           </button>
           <h2 className="text-lg font-bold text-white">Fill Blank — {item.title}</h2>
@@ -540,7 +692,7 @@ export default function MemoryPractice({ item, onBack }) {
     return (
       <div className="space-y-6 max-w-4xl">
         <div className="flex items-center gap-3">
-          <button aria-label="Back" onClick={onBack} className="text-gray-400 hover:text-white transition-colors">
+          <button aria-label="Back" onClick={onExitMode} className="text-gray-400 hover:text-white transition-colors">
             <ChevronLeft size={20} />
           </button>
           <h2 className="text-lg font-bold text-white">Speed Run — {item.title}</h2>
@@ -561,7 +713,7 @@ export default function MemoryPractice({ item, onBack }) {
 
         {results.length === lines.length && (
           <button
-            onClick={() => { savePractice('speed-run', results); setDone(true); }}
+            onClick={() => setDone(true)}
             className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-port-success hover:bg-port-success/80 text-white rounded-lg transition-colors"
           >
             <Check size={16} />
@@ -593,7 +745,6 @@ export default function MemoryPractice({ item, onBack }) {
   }
 
   function finishSequence() {
-    savePractice('sequence', results);
     setDone(true);
   }
 
@@ -605,7 +756,6 @@ export default function MemoryPractice({ item, onBack }) {
 
   function nextFillBlank() {
     if (currentIdx + 1 >= lines.length) {
-      savePractice('fill-blank', results);
       setDone(true);
     } else {
       setCurrentIdx(prev => prev + 1);
@@ -630,8 +780,10 @@ export default function MemoryPractice({ item, onBack }) {
     } else {
       // Save practice for this chunk, move to next
       const chunkResults = results.filter(r => r.chunkId === currentChunk.id);
-      if (chunkResults.length > 0) {
-        submitMemoryPractice(item.id, {
+      // A due retention audit is scored over the WHOLE spaced run. Saving each
+      // chunk here would let the first chunk permanently pass/fail the item.
+      if (!spotCheckDue && chunkResults.length > 0) {
+        const payload = {
           mode: 'sequence',
           chunkId: currentChunk.id,
           results: chunkResults.map(r => ({
@@ -640,7 +792,8 @@ export default function MemoryPractice({ item, onBack }) {
             answered: r.answered,
           })),
           totalMs: Date.now() - startTime,
-        }).catch(err => console.warn(`⚠️ Failed to save sequence practice: ${err.message}`));
+        };
+        spacedSavesRef.current.push(startRetryableSave(() => submitMemoryPractice(item.id, payload)));
       }
 
       if (spacedChunkIdx + 1 < chunkMastery.length) {
@@ -667,7 +820,30 @@ export default function MemoryPractice({ item, onBack }) {
         answered: r.answered,
       })),
       totalMs: Date.now() - startTime,
-    }).catch(err => console.warn(`⚠️ Failed to save practice results: ${err.message}`));
+    });
+  }
+
+  async function saveAndExit(continueDaily) {
+    // Spaced repetition persists each completed chunk as the user advances;
+    // the completion action waits for those writes and retries failures. A due
+    // spot check instead submits one aggregate result at this explicit finish
+    // boundary so no individual chunk can decide the whole audit.
+    if (mode === 'spaced' && spotCheckDue) {
+      await submitMemoryPractice(item.id, {
+        mode: 'sequence',
+        chunkId: null,
+        results: results.map(result => ({
+          correct: result.correct,
+          expected: result.expected,
+          answered: result.answered,
+          chunkId: result.chunkId,
+        })),
+        totalMs: Date.now() - startTime,
+      });
+    } else if (mode === 'spaced') await Promise.all(spacedSavesRef.current.map(save => save()));
+    else await savePractice(mode, results);
+    if (continueDaily) onContinue();
+    else onBack();
   }
 }
 
@@ -725,7 +901,9 @@ function ChunkMasteryOverview({ item }) {
         <div className="px-3 pb-3 space-y-1.5">
           {chunks.map(chunk => {
             const stats = item.mastery?.chunks?.[chunk.id];
-            const accuracy = stats?.attempts > 0 ? Math.round((stats.correct / stats.attempts) * 100) : 0;
+            const accuracy = typeof stats?.masteredAt === 'string'
+              ? 100
+              : stats?.attempts > 0 ? Math.round((stats.correct / stats.attempts) * 100) : 0;
             const barColor = accuracy >= 80 ? 'bg-port-success' : accuracy >= 40 ? 'bg-port-warning' : 'bg-gray-600';
 
             return (

@@ -77,7 +77,7 @@ export function GeneralTab() {
     }
 
     // Validate timezone string
-    let isValid = false;
+    let isValid;
     if (allTimezones.length > 0) {
       isValid = allTimezones.includes(tzToSave);
     } else {

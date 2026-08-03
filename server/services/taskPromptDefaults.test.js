@@ -1,5 +1,4 @@
-import { describe, it, expect } from 'vitest';
-import { createHash } from 'crypto';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
@@ -9,7 +8,7 @@ import {
   REFERENCE_WATCH_AUDITED_VERSION,
   PREVIOUS_DEFAULT_PROMPTS,
 } from './taskPromptDefaults.js';
-import { PORTOS_API_URL } from '../lib/ports.js';
+import { hashPromptBody, buildPromptIntegritySnapshot } from './taskPromptDefaults/integrityHash.js';
 
 // Hash snapshot of every exported prompt body and version. This pins the
 // cross-install prompt-upgrade contract (see CLAUDE.md "Distribution model"):
@@ -18,37 +17,65 @@ import { PORTOS_API_URL } from '../lib/ports.js';
 // where the rule is: bump PROMPT_VERSIONS, append the outgoing default to
 // PREVIOUS_DEFAULT_PROMPTS, then regenerate the snapshot:
 //
-//   cd server && node --input-type=module -e "
-//   import('./services/taskPromptDefaults.js').then(async (m) => {
-//     const { PORTOS_API_URL } = await import('./lib/ports.js');
-//     const { createHash } = await import('crypto');
-//     const norm = (s) => s.split(PORTOS_API_URL).join('{{PORTOS_API_URL}}');
-//     const md5 = (s) => createHash('md5').update(norm(s), 'utf8').digest('hex');
-//     const out = {
-//       DEFAULT_TASK_PROMPTS: Object.fromEntries(Object.entries(m.DEFAULT_TASK_PROMPTS).map(([k, v]) => [k, md5(v)])),
-//       PROMPT_VERSIONS: m.PROMPT_VERSIONS,
-//       REFERENCE_WATCH_AUDITED_VERSION: m.REFERENCE_WATCH_AUDITED_VERSION,
-//       PREVIOUS_DEFAULT_PROMPTS: Object.fromEntries(Object.entries(m.PREVIOUS_DEFAULT_PROMPTS).map(([k, a]) => [k, a.map(md5)])),
-//     };
-//     (await import('fs')).writeFileSync('services/taskPromptDefaults/integrity.snapshot.json', JSON.stringify(out, null, 2) + '\n');
-//   })"
+//   node scripts/regen-prompt-integrity-snapshot.js
 //
-// PORTOS_API_URL is interpolated into one prompt at module load and varies by
-// env (PORTOS_HOST/PORT), so it's normalized to a placeholder before hashing.
+// Prompt bodies embed the install's API origin, so hashing normalizes it to a
+// placeholder first — see taskPromptDefaults/integrityHash.js, which both this
+// test and that script share so they can't drift apart. Regenerating to silence
+// a failure without the version bump + preserved outgoing default blesses
+// whatever edited a preserved historical body, which is the failure mode this
+// test exists to catch.
 const SNAPSHOT = JSON.parse(readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), 'taskPromptDefaults', 'integrity.snapshot.json'),
   'utf8',
 ));
 
-const normalize = (s) => s.split(PORTOS_API_URL).join('{{PORTOS_API_URL}}');
-const md5 = (s) => createHash('md5').update(normalize(s), 'utf8').digest('hex');
-
 describe('taskPromptDefaults integrity snapshot', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
   it('DEFAULT_TASK_PROMPTS bodies match the snapshot hashes exactly', () => {
     const actual = Object.fromEntries(
-      Object.entries(DEFAULT_TASK_PROMPTS).map(([k, v]) => [k, md5(v)]),
+      Object.entries(DEFAULT_TASK_PROMPTS).map(([k, v]) => [k, hashPromptBody(v)]),
     );
     expect(actual).toEqual(SNAPSHOT.DEFAULT_TASK_PROMPTS);
+  });
+
+  // The snapshot pins prompt BYTES, not the machine that generated it. Hashing
+  // used to normalize only the runtime PORTOS_API_URL, so the historical bodies
+  // that hardcode the legacy `http://localhost:5555` origin only matched on an
+  // install whose own API origin happened to equal it. Anywhere else — a custom
+  // PORTOS_HOST, or merely a shell with PORT set, as inside a CoS agent — five
+  // untouched bodies hashed differently and this suite failed while nothing had
+  // drifted (issue #3359).
+  it.each([
+    // PORTOS_API_URL cleared so the origin is derived from host/port — and so
+    // the expectation can't inherit whatever the ambient environment sets,
+    // which is the very bug under test.
+    [
+      { PORTOS_API_URL: undefined, PORTOS_HOST: 'portos.example.test', PORT: '5558' },
+      'http://portos.example.test:5558',
+    ],
+    // An origin that is a PREFIX of the legacy literal (port 80). Normalizing
+    // the shorter one first would rewrite `http://localhost:5555` into
+    // `{{PORTOS_API_URL}}:5555`, which the legacy pass can no longer match.
+    [{ PORTOS_API_URL: 'http://localhost' }, 'http://localhost'],
+    [{ PORTOS_API_URL: 'https://portos.example.test:8443' }, 'https://portos.example.test:8443'],
+  ])('reproduces the snapshot on an install whose API origin is %j', async (env, expectedOrigin) => {
+    vi.resetModules();
+    Object.entries(env).forEach(([key, value]) => vi.stubEnv(key, value));
+
+    const [freshDefaults, { PORTOS_API_URL }] = await Promise.all([
+      import('./taskPromptDefaults.js'),
+      import('../lib/ports.js'),
+    ]);
+    // Guard the guard: if the stub stopped taking effect this case would pass
+    // vacuously by re-running the ambient-environment assertions above.
+    expect(PORTOS_API_URL).toBe(expectedOrigin);
+
+    expect(buildPromptIntegritySnapshot(freshDefaults, PORTOS_API_URL)).toEqual(SNAPSHOT);
   });
 
   it('PROMPT_VERSIONS matches the snapshot', () => {
@@ -61,7 +88,7 @@ describe('taskPromptDefaults integrity snapshot', () => {
 
   it('PREVIOUS_DEFAULT_PROMPTS bodies match the snapshot hashes exactly', () => {
     const actual = Object.fromEntries(
-      Object.entries(PREVIOUS_DEFAULT_PROMPTS).map(([k, arr]) => [k, arr.map(md5)]),
+      Object.entries(PREVIOUS_DEFAULT_PROMPTS).map(([k, arr]) => [k, arr.map((p) => hashPromptBody(p))]),
     );
     expect(actual).toEqual(SNAPSHOT.PREVIOUS_DEFAULT_PROMPTS);
   });
@@ -112,6 +139,38 @@ describe('taskPromptDefaults integrity snapshot', () => {
     );
     expect(preDecide).toBeDefined();
     expect(preDecide).not.toBe(current);
+  });
+
+  // dependency-updates v3: open Dependabot/Renovate PRs are triaged BEFORE the agent
+  // bumps anything itself. v2 went straight to `npm outdated`, so a run against a repo
+  // with open bot PRs re-did their work by hand — duplicate bumps, lockfile conflicts
+  // against the bot branches, and a pile of stale bot PRs nobody closed.
+  it('dependency-updates v3 triages bot PRs before updating, preserving the v2 default', () => {
+    const current = DEFAULT_TASK_PROMPTS['dependency-updates'];
+    expect(current).toContain('dependabot[bot]');
+    expect(current).toContain('renovate[bot]');
+    expect(current).toContain('FIX-THEN-MERGE');
+    // Phase 2 must not re-bump a package a bot PR already owns — and must confirm that
+    // per package rather than trusting Phase 1's listing to have been complete.
+    expect(current).toContain('owns the bump');
+    expect(current).toContain('confirm per package');
+    // The task runs in the app's LIVE checkout (no useWorktree default), so repairing a
+    // bot branch has to happen in a throwaway worktree — a bare `gh pr checkout` there
+    // hijacks whatever branch the user is on.
+    // …namespaced per app, since {worktreesRoot} is shared across every managed app.
+    expect(current).toContain('{worktreesRoot}/dep-{appName}-pr-<n>');
+    expect(current).toContain('THROWAWAY WORKTREE');
+    // Rebasing the bot branch rewrites its commits, so the push needs a lease, not a ban.
+    expect(current).toContain('--force-with-lease');
+    expect(PROMPT_VERSIONS['dependency-updates']).toBe(3);
+
+    const previous = PREVIOUS_DEFAULT_PROMPTS['dependency-updates'];
+    const v2 = previous[previous.length - 1];
+    // The outgoing v2 default knew nothing about bot PRs and is preserved verbatim so
+    // installs holding it are recognized and upgraded.
+    expect(v2).not.toContain('dependabot');
+    expect(v2).toContain('Only update one major version bump at a time');
+    expect(v2).not.toBe(current);
   });
 
   // NOTE: PROMPT_VERSIONS keys are SCHEDULE keys, not always prompt keys —

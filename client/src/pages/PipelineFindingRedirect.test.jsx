@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, Routes, Route, useParams, useSearchParams } from 'react-router-dom';
+import { MemoryRouter, Routes, Route, useParams, useSearchParams } from 'react-router';
 import PipelineFindingRedirect from './PipelineFindingRedirect';
 import { locatePipelineFinding } from '../services/api';
 

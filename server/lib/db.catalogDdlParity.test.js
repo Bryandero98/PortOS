@@ -47,6 +47,17 @@ const CATALOG_TABLES = [
   'catalog_ingredient_media',
 ];
 
+const STACKER_NEWS_TABLES = [
+  'stacker_news_accounts',
+  'stacker_news_credentials',
+  'stacker_news_territories',
+  'stacker_news_items',
+  'stacker_news_media',
+  'stacker_news_analyses',
+  'stacker_news_actions',
+  'stacker_news_action_events',
+];
+
 // Strip line comments + collapse whitespace so column lists compare cleanly.
 const normalize = (s) => s
   .replace(/--[^\n]*\n/g, '\n')
@@ -139,6 +150,22 @@ describe('catalog DDL parity (init-db.sql ↔ db.js ensureSchema)', () => {
     const sqlCols = new Set(extractColumnNames(sqlBody));
     const jsCols = new Set(extractColumnNames(jsBody));
     expect([...sqlCols].sort()).toEqual([...jsCols].sort());
+  });
+
+  it.each(STACKER_NEWS_TABLES)('Stacker News table %s has the same columns in both files', (table) => {
+    const sqlBody = extractCreateTable(INIT_SQL, table);
+    const jsBody = extractCreateTable(DB_JS, table);
+    expect(sqlBody, `init-db.sql missing CREATE TABLE ${table}`).toBeTruthy();
+    expect(jsBody, `db.js missing CREATE TABLE ${table}`).toBeTruthy();
+    expect([...new Set(extractColumnNames(sqlBody))].sort())
+      .toEqual([...new Set(extractColumnNames(jsBody))].sort());
+  });
+
+  it('every idx_stacker_news_* index name appears in both files', () => {
+    const sqlIdx = extractIndexNames(INIT_SQL, 'idx_stacker_news_');
+    const jsIdx = extractIndexNames(DB_JS, 'idx_stacker_news_');
+    expect([...sqlIdx].sort()).toEqual([...jsIdx].sort());
+    expect(sqlIdx.size).toBeGreaterThan(0);
   });
 
   it('every idx_catalog_* index name appears in both files', () => {

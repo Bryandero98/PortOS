@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { NotebookPen, ArrowLeft, Ruler, BookOpen, Lightbulb, Sparkles } from 'lucide-react';
 import {
   WRITING_LENGTH_TARGETS,

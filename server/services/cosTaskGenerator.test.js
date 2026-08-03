@@ -11,7 +11,7 @@
  * (under-report). These tests pin both behaviors.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -27,8 +27,15 @@ vi.mock('./codeReview.js', async (importActual) => ({
   ...(await importActual()),
   getCodeReviewDefaults: vi.fn(async () => ({ reviewers: ['copilot'], usernames: ['alice'], optionalReviewers: [] })),
 }));
+// emitOnDemandEmpty's gh-health read spawns `gh api rate_limit` for real. Stub it
+// so the transient-verdict tests assert OUR branching, not the machine's gh.
+const ghHealth = vi.fn(async () => ({ status: 'ok', ok: true, detail: null, remedy: null }));
+vi.mock('./github.js', async (importActual) => ({
+  ...(await importActual()),
+  checkGhHealth: (...a) => ghHealth(...a),
+}));
 
-import { selectDryRunAutoApproved, exceedsMaxSpawns, resolveIssueAuthorFilterBlock, resolveSwarmBlock, isCooldownExemptTask, emitOnDemandEmpty, buildJiraTicketTask, buildImprovementDedupSets, normalizeWorkItemRef, buildTargetWorkItemBlock, resolveTaskInputHook } from './cosTaskGenerator.js';
+import { selectDryRunAutoApproved, exceedsMaxSpawns, resolveIssueAuthorFilterBlock, resolveSwarmBlock, isCooldownExemptTask, emitOnDemandEmpty, recordPerpetualTransient, buildJiraTicketTask, buildImprovementDedupSets, normalizeWorkItemRef, buildTargetWorkItemBlock, resolveTaskInputHook } from './cosTaskGenerator.js';
 import { cosEvents } from './cosEvents.js';
 import { MAX_TOTAL_SPAWNS } from '../lib/validation.js';
 
@@ -625,6 +632,90 @@ describe('emitOnDemandEmpty', () => {
     expect(events).toHaveLength(1);
     // A non-LI task type never reads a last-run reason (that read is LI-only).
     expect(events[0]).toMatchObject({ taskType: 'pr-watcher', outcome: 'idle', reason: null });
+  });
+
+  // Default: gh is healthy, so no test inherits a previous one's stubbed fault.
+  beforeEach(() => {
+    ghHealth.mockReset();
+    ghHealth.mockResolvedValue({ status: 'ok', ok: true, detail: null, remedy: null });
+  });
+
+  const emitTransient = async (taskType) => {
+    const events = [];
+    const handler = (d) => events.push(d);
+    cosEvents.on('schedule:on-demand-empty', handler);
+    try {
+      await emitOnDemandEmpty({
+        taskScheduleMod: stubMod,
+        request: { id: 'req-2', taskType },
+        targetApp: { id: 'app-1', name: 'App One' },
+        taskConfig: { type: 'perpetual' }
+      });
+    } finally {
+      cosEvents.off('schedule:on-demand-empty', handler);
+    }
+    return events[0];
+  };
+
+  it('emits no forge block when the gate recorded no transient verdict', async () => {
+    // Nothing recorded ⇒ we cannot name the fault, so the client keeps the
+    // generic "try again shortly" copy rather than guessing at a CLI.
+    expect(await emitTransient('claim-issue')).toMatchObject({ outcome: 'transient', forge: null });
+  });
+
+  it('skips the gh probe for a non-gh transient verdict, so a glab/git fault never toasts a gh remedy', async () => {
+    // branch-reconcile and quota-burn go transient over git / provider faults with
+    // no forge at all (cli: null); claim-issue-gitlab fails on glab. None of them
+    // should be attributed to gh — the pre-fix suffix check got all three wrong.
+    for (const [taskType, cli] of [['claim-issue-gitlab', 'glab'], ['branch-reconcile', null], ['quota-burn', null]]) {
+      recordPerpetualTransient(taskType, 'app-1', { cli, reason: 'probe-failed' });
+      expect(await emitTransient(taskType)).toMatchObject({ outcome: 'transient', forge: null });
+    }
+  });
+
+  it('names gh + its remedy when a gh verdict meets a gh that is broken for good', async () => {
+    ghHealth.mockResolvedValueOnce({
+      status: 'unreachable', ok: false, detail: 'bad file descriptor', remedy: 'Allow the gh binary outbound.'
+    });
+    recordPerpetualTransient('claim-issue', 'app-1', { cli: 'gh', reason: 'gh-list-failed' });
+    expect(await emitTransient('claim-issue')).toMatchObject({
+      outcome: 'transient',
+      forge: { cli: 'gh', remedy: 'Allow the gh binary outbound.' }
+    });
+  });
+
+  it('stays generic when gh itself is healthy — that failure really was a blip', async () => {
+    recordPerpetualTransient('claim-issue', 'app-1', { cli: 'gh', reason: 'gh-list-failed' });
+    expect(await emitTransient('claim-issue')).toMatchObject({ forge: null });
+  });
+
+  it('consumes the verdict on read, so a stale one cannot be reported twice', async () => {
+    ghHealth.mockResolvedValue({ status: 'not-installed', ok: false, detail: null, remedy: 'Install gh.' });
+    recordPerpetualTransient('claim-issue', 'app-1', { cli: 'gh', reason: 'gh-list-failed' });
+    expect(await emitTransient('claim-issue')).toMatchObject({ forge: { cli: 'gh' } });
+    // Second emit finds nothing recorded — the verdict belonged to the first run.
+    expect(await emitTransient('claim-issue')).toMatchObject({ forge: null });
+  });
+
+  it('keys the verdict by task type + app, so one type never consumes another\'s', async () => {
+    ghHealth.mockResolvedValue({ status: 'not-installed', ok: false, detail: null, remedy: 'Install gh.' });
+    recordPerpetualTransient('claim-issue', 'app-1', { cli: 'gh', reason: 'gh-list-failed' });
+    // A different task type on the same app must not read claim-issue's verdict…
+    expect(await emitTransient('pr-watcher')).toMatchObject({ forge: null });
+    // …and it is still intact for the type that recorded it.
+    expect(await emitTransient('claim-issue')).toMatchObject({ forge: { cli: 'gh' } });
+  });
+
+  it('drops a verdict older than its TTL rather than explaining an unrelated run', async () => {
+    ghHealth.mockResolvedValue({ status: 'not-installed', ok: false, detail: null, remedy: 'Install gh.' });
+    recordPerpetualTransient('claim-issue', 'app-1', { cli: 'gh', reason: 'gh-list-failed' });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(Date.now() + 61_000);
+    try {
+      expect(await emitTransient('claim-issue')).toMatchObject({ forge: null });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('reads the LI last-run reason only for the layered-intelligence task type', () => {

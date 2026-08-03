@@ -124,6 +124,7 @@ import * as atlas from '../services/sprites/atlas.js';
 import * as publish from '../services/sprites/publish.js';
 import * as assets from '../services/sprites/assets.js';
 import { errorMiddleware } from '../lib/errorHandler.js';
+import { cloudModelIdString } from '../lib/validation.js';
 import spriteRoutes from './sprites.js';
 
 function makeApp() {
@@ -372,10 +373,74 @@ describe('sprites routes', () => {
     expect(reference.forkSprite).toHaveBeenCalledWith('pioneer', expect.objectContaining({ name: 'Pioneer Fork', designPrompt: 'now with a red coat' }));
   });
 
+  // The two bodies ForkSpriteModal.jsx actually builds — full (an id typed and a
+  // backend picked) and minimal (both omitted). The client suite mocks
+  // apiSprites.js, so a schema that rejected or silently stripped one of these
+  // keys would stay invisible behind two green suites; the case above only
+  // proves a HAND-BUILT subset. Keep these in step with the client's
+  // "ForkSpriteModal wire body" cases.
+  it('POST /:id/fork accepts the exact body ForkSpriteModal sends', async () => {
+    const modalBody = {
+      name: 'Example Settler',
+      id: 'example-settler',
+      designPrompt: 'wearing a wide-brim hat',
+      mode: 'grok',
+      initImageStrength: 0.65,
+    };
+    const r = await request(app).post('/api/sprites/pioneer/fork').send(modalBody);
+    expect(r.status).toBe(201);
+    // Exact, not objectContaining: a stripped key must fail here.
+    expect(reference.forkSprite).toHaveBeenCalledWith('pioneer', modalBody);
+  });
+
+  it('POST /:id/fork accepts the modal body with id and mode omitted', async () => {
+    const modalBody = {
+      name: 'Example Settler',
+      designPrompt: 'wearing a wide-brim hat',
+      initImageStrength: 0.65,
+    };
+    const r = await request(app).post('/api/sprites/pioneer/fork').send(modalBody);
+    expect(r.status).toBe(201);
+    expect(reference.forkSprite).toHaveBeenCalledWith('pioneer', modalBody);
+  });
+
   it('POST /:id/fork rejects a missing design prompt at the schema', async () => {
     const bad = await request(app).post('/api/sprites/pioneer/fork').send({ name: 'Pioneer Fork' });
     expect(bad.status).toBe(400);
     expect(reference.forkSprite).not.toHaveBeenCalled();
+  });
+
+  it('fork, create, and update share the durable model-id validator', async () => {
+    const invalidModelId = 'gpt image 1; rm';
+    const validation = cloudModelIdString('model must be a valid model id').safeParse(invalidModelId);
+    expect(validation.success).toBe(false);
+    const expectedMessage = validation.error.issues[0].message;
+
+    const attempts = [
+      {
+        response: await request(app).post('/api/sprites/pioneer/fork')
+          .send({ name: 'Pioneer Fork', designPrompt: 'wearing a red coat', model: invalidModelId }),
+        path: 'model',
+      },
+      {
+        response: await request(app).post('/api/sprites')
+          .send({ name: 'Pioneer Fork', imageModelId: invalidModelId }),
+        path: 'imageModelId',
+      },
+      {
+        response: await request(app).patch('/api/sprites/pioneer')
+          .send({ imageModelId: invalidModelId }),
+        path: 'imageModelId',
+      },
+    ];
+
+    for (const { response, path } of attempts) {
+      expect(response.status, path).toBe(400);
+      expect(response.body.context.details).toContainEqual({ path, message: expectedMessage });
+    }
+    expect(reference.forkSprite).not.toHaveBeenCalled();
+    expect(records.createCharacter).not.toHaveBeenCalled();
+    expect(reference.patchSpriteRecord).not.toHaveBeenCalled();
   });
 
   it('POST /:id/reference/generate accepts a gallery/sprite seed source in JSON', async () => {

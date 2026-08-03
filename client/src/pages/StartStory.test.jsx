@@ -3,7 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import StartStory from './StartStory';
 
 const navigateMock = vi.hoisted(() => vi.fn());
-vi.mock('react-router-dom', async (io) => {
+vi.mock('react-router', async (io) => {
   const actual = await io();
   return { ...actual, useNavigate: () => navigateMock };
 });

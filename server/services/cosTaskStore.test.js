@@ -364,6 +364,40 @@ describe('cosTaskStore.addTask', () => {
     expect(mock.events.find(e => e.name === 'tasks:changed').payload.action).toBe('updated');
   });
 
+  it('emits tasks:changed action "requeued" on an in_progress → pending flip (#3373)', async () => {
+    // The retry-hold release and the orphan sweep both requeue this way, long
+    // after the completion dequeue ran — without a wake signal the retry would
+    // idle until an unrelated event or timer fired.
+    const task = await addTask({ description: 'requeue me', app: 'portos', id: 'sys-requeue' }, 'internal');
+    await updateTask(task.id, { status: 'in_progress' }, 'internal');
+    mock.events.length = 0;
+    await updateTask(task.id, { status: 'pending', metadata: { retryPendingCleanup: undefined } }, 'internal');
+    expect(mock.events.find(e => e.name === 'tasks:changed').payload.action).toBe('requeued');
+  });
+
+  // The hold clear has to actually leave the disk: a `null` would serialize as
+  // the string "null" and read back as a live marker on the next boot.
+  it('drops undefined metadata keys entirely rather than persisting them (#3373)', async () => {
+    const task = await addTask({ description: 'clear my marker', app: 'portos', id: 'sys-marker' }, 'internal');
+    await updateTask(task.id, { status: 'in_progress', metadata: { retryPendingCleanup: true } }, 'internal');
+    await updateTask(task.id, { status: 'pending', metadata: { retryPendingCleanup: undefined } }, 'internal');
+    const { tasks } = await getCosTasks();
+    const stored = tasks.find(t => t.id === task.id);
+    expect(stored.status).toBe('pending');
+    expect('retryPendingCleanup' in stored.metadata).toBe(false);
+  });
+
+  // A hold only means anything on an in_progress task waiting for its cleanup. Any
+  // other status retires it, so a late cleanup (or the orphan sweep) can never act
+  // on a marker left behind on a task that has since gone blocked or completed.
+  it('strips a retry hold when the task leaves in_progress (#3373)', async () => {
+    const task = await addTask({ description: 'hold retired', app: 'portos', id: 'sys-hold' }, 'internal');
+    await updateTask(task.id, { status: 'in_progress', metadata: { retryPendingCleanup: 'agent-x', retryPendingSince: new Date().toISOString() } }, 'internal');
+    const blocked = await updateTask(task.id, { status: 'blocked', metadata: { blockedCategory: 'user-terminated' } }, 'internal');
+    expect(blocked.metadata.retryPendingCleanup).toBeUndefined();
+    expect(blocked.metadata.retryPendingSince).toBeUndefined();
+  });
+
   it('reviveBlockedTask flips to pending with a FRESH retry budget (#2614)', async () => {
     // A revived task must behave like a fresh one: without clearing the
     // spawn/orphan budgets it would immediately re-block on the exhausted
@@ -527,6 +561,26 @@ describe('cosTaskStore.updateTask', () => {
     expect(done.metadata.claimedBy).toBeUndefined();
     expect(done.metadata.claimedAt).toBeUndefined();
     expect(done.metadata.leaseExpiresAt).toBeUndefined();
+  });
+
+  it('stamps lastRequeuedAt only on in_progress → pending, and clears it on the next spawn (#3376)', async () => {
+    await addTask({ description: 'requeue', id: 'task-requeue' }, 'user');
+    // A plain content edit on a pending task is not a requeue.
+    const edited = await updateTask('task-requeue', { description: 'requeue edited' }, 'user');
+    expect(edited.metadata.lastRequeuedAt).toBeUndefined();
+
+    await updateTask('task-requeue', { status: 'in_progress' }, 'user');
+    // The orphan sweep / retry-hold release transition — this one IS a requeue.
+    const requeued = await updateTask('task-requeue', { status: 'pending' }, 'user');
+    expect(typeof requeued.metadata.lastRequeuedAt).toBe('string');
+
+    // An edit while pending carries the stamp forward untouched…
+    const stamp = requeued.metadata.lastRequeuedAt;
+    const edit = await updateTask('task-requeue', { description: 'requeue again' }, 'user');
+    expect(edit.metadata.lastRequeuedAt).toBe(stamp);
+    // …and the next spawn retires it, so a peer's pre-spawn copy can't win on it.
+    const respawned = await updateTask('task-requeue', { status: 'in_progress' }, 'user');
+    expect(respawned.metadata.lastRequeuedAt).toBeUndefined();
   });
 
   it('keeps the claim while the task stays in_progress (lease renewal, no status change) (#1563)', async () => {

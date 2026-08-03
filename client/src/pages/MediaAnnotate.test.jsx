@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import { MemoryRouter, Routes, Route } from 'react-router-dom';
+import { MemoryRouter, Routes, Route } from 'react-router';
 import MediaAnnotate from './MediaAnnotate';
 
 // Re-render (issue #2036 phase 2) is the focus: annotate an image, then feed the
@@ -43,7 +43,7 @@ vi.mock('../components/ui/Toast', () => ({
 }));
 
 const navigate = vi.fn();
-vi.mock('react-router-dom', async (importOriginal) => {
+vi.mock('react-router', async (importOriginal) => {
   const actual = await importOriginal();
   return { ...actual, useNavigate: () => navigate };
 });

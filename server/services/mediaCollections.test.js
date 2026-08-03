@@ -1758,3 +1758,114 @@ describe('pruneTombstonedCollections', () => {
     expect(await svc.pruneTombstonedCollections(Infinity)).toEqual({ pruned: 0 });
   });
 });
+
+// Provenance stamp (#3311) — the server records whether a collection was minted
+// by a machine flow or by the user, so the grid stops reverse-engineering it
+// from name/description/id markers.
+describe('source provenance', () => {
+  it('createCollection defaults to user and accepts an explicit auto stamp', async () => {
+    const byUser = await svc.createCollection({ name: 'Concept Art' });
+    expect(byUser.source).toBe('user');
+    expect((await readStored(byUser.id)).source).toBe('user');
+
+    const byMachine = await svc.createCollection({ name: 'Writers Room: Example Work', source: 'auto' });
+    expect(byMachine.source).toBe('auto');
+    expect((await svc.getCollection(byMachine.id)).source).toBe('auto');
+  });
+
+  it('createCollection rejects an unknown source rather than persisting it', async () => {
+    await expect(svc.createCollection({ name: 'A', source: 'robot' }))
+      .rejects.toMatchObject({ code: svc.ERR_VALIDATION });
+    expect(await svc.listCollections()).toEqual([]);
+  });
+
+  it('stamps auto on the universe- and series-linked render buckets', async () => {
+    const uc = await svc.findOrCreateUniverseCollection({ universeId: 'universe-1', universeName: 'Example Universe' });
+    const sc = await svc.findOrCreateSeriesCollection({ seriesId: 'series-1', seriesName: 'Example Series' });
+    expect(uc.source).toBe('auto');
+    expect(sc.source).toBe('auto');
+  });
+
+  it('leaves a legacy record UNSTAMPED rather than defaulting it to user', async () => {
+    // Absent is a third state: the client falls back to its marker heuristic for
+    // these. Defaulting them to 'user' here would mislabel every pre-#3311
+    // auto-created bucket as user-made on a peer that never ran migration 220.
+    await seedState({
+      collections: [{
+        id: 'c-legacy', name: 'Universe: Example Universe', description: '', coverKey: null,
+        universeId: null, seriesId: null, items: [],
+        createdAt: '2026-05-22T00:00:00Z', updatedAt: '2026-05-22T00:00:00Z',
+      }],
+    });
+    const [legacy] = await svc.listCollections();
+    expect('source' in legacy).toBe(false);
+  });
+
+  it('drops a garbage stamp instead of persisting it', async () => {
+    await seedState({
+      collections: [{
+        id: 'c-bogus', name: 'Bogus', description: '', coverKey: null, source: 'robot',
+        universeId: null, seriesId: null, items: [],
+        createdAt: '2026-05-22T00:00:00Z', updatedAt: '2026-05-22T00:00:00Z',
+      }],
+    });
+    expect('source' in (await svc.getCollection('c-bogus'))).toBe(false);
+  });
+
+  it('is correctable via updateCollection WITHOUT advancing the LWW clock', async () => {
+    // The migration classifies from markers a user could in principle have
+    // typed (an `Auto-…` description), so a wrong stamp must be fixable. And
+    // because the field never reaches a peer, fixing it must not bump
+    // `updatedAt` — that would out-race a peer's real edit for a change no peer
+    // can even see.
+    const seeded = '2026-05-22T00:00:00Z';
+    await seedState({
+      collections: [{
+        id: 'c-fix', name: 'Renders', description: '', coverKey: null,
+        universeId: null, seriesId: null, source: 'auto', items: [],
+        createdAt: seeded, updatedAt: seeded,
+      }],
+    });
+    const fixed = await svc.updateCollection('c-fix', { source: 'user' });
+    expect(fixed.source).toBe('user');
+    expect(fixed.updatedAt).toBe(seeded);
+    // A patch that DOES touch wire-visible state still bumps it.
+    const renamed = await svc.updateCollection('c-fix', { name: 'Renders 2', source: 'auto' });
+    expect(renamed.source).toBe('auto');
+    expect(renamed.updatedAt).not.toBe(seeded);
+  });
+
+  it('survives an edit and rides through the tombstone', async () => {
+    const c = await svc.createCollection({ name: 'Writers Room: Example Work', source: 'auto' });
+    expect((await svc.updateCollection(c.id, { description: 'edited' })).source).toBe('auto');
+    await svc.deleteCollection(c.id);
+    expect((await svc.getCollection(c.id, { includeDeleted: true })).source).toBe('auto');
+  });
+
+  it('merge keeps the local stamp when a peer sends the record without one', async () => {
+    // The cross-install case: `source` never crosses the wire (sanitizeRecordForWire
+    // strips it), so every remote record arrives unstamped. Its (newer) scalars
+    // win LWW, but they must not erase local provenance.
+    const c = await svc.createCollection({ name: 'Writers Room: Example Work', source: 'auto' });
+    const result = await svc.mergeMediaCollectionsFromSync([{
+      id: c.id, name: 'Writers Room: Renamed', description: '', coverKey: null,
+      universeId: null, seriesId: null, items: [],
+      createdAt: c.createdAt, updatedAt: '2099-01-01T00:00:00Z',
+    }]);
+    expect(result.applied).toBe(true);
+    const merged = await svc.getCollection(c.id);
+    expect(merged.name).toBe('Writers Room: Renamed');
+    expect(merged.source).toBe('auto');
+  });
+
+  it('merge inserts a stamp that an offline export/import bundle legitimately carries', async () => {
+    // Peer sync always strips `source`, but the merge also backs the import
+    // path — a record that does arrive stamped is inserted verbatim.
+    await svc.mergeMediaCollectionsFromSync([{
+      id: 'c-remote', name: 'Concept Art', description: '', coverKey: null,
+      universeId: null, seriesId: null, items: [], source: 'user',
+      createdAt: '2026-05-22T00:00:00Z', updatedAt: '2026-05-22T00:00:00Z',
+    }]);
+    expect((await svc.getCollection('c-remote')).source).toBe('user');
+  });
+});

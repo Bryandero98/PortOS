@@ -1,5 +1,5 @@
 import { memo, useMemo } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { ChevronRight, AlertTriangle, Target } from 'lucide-react';
 import * as api from '../services/api';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';

@@ -67,6 +67,157 @@ const latheGeometrySchema = z.object({
   segments: z.number().int().min(3).max(96).default(32),
 });
 
+// Shoelace area — a closed outline whose points are coincident or collinear
+// extrudes to nothing, so it is rejected rather than rendered as an empty mesh.
+const MIN_RING_AREA = 1e-6;
+const ringArea = (ring) => {
+  let doubled = 0;
+  for (let index = 0; index < ring.length; index += 1) {
+    const [x1, y1] = ring[index];
+    const [x2, y2] = ring[(index + 1) % ring.length];
+    doubled += (x1 * y2) - (x2 * y1);
+  }
+  return Math.abs(doubled) / 2;
+};
+
+// Even-odd ray cast. A point exactly on an edge reads as outside, which is what
+// we want: a hole touching the outline is a malformed cutout, not a cutout.
+const pointInRing = (ring, [px, py]) => {
+  let inside = false;
+  for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index, index += 1) {
+    const [xi, yi] = ring[index];
+    const [xj, yj] = ring[previous];
+    const straddles = (yi > py) !== (yj > py);
+    if (straddles && px < (((xj - xi) * (py - yi)) / (yj - yi)) + xi) inside = !inside;
+  }
+  return inside;
+};
+
+const turn = (a, b, c) => Math.sign(((b[0] - a[0]) * (c[1] - a[1])) - ((b[1] - a[1]) * (c[0] - a[0])));
+const onSegment = (a, b, p) => turn(a, b, p) === 0
+  && p[0] >= Math.min(a[0], b[0]) && p[0] <= Math.max(a[0], b[0])
+  && p[1] >= Math.min(a[1], b[1]) && p[1] <= Math.max(a[1], b[1]);
+const segmentsCross = (a, b, c, d) => {
+  if (turn(a, b, c) !== turn(a, b, d) && turn(c, d, a) !== turn(c, d, b)) return true;
+  return onSegment(a, b, c) || onSegment(a, b, d) || onSegment(c, d, a) || onSegment(c, d, b);
+};
+
+const ringsCross = (outer, inner) => {
+  for (let i = 0; i < outer.length; i += 1) {
+    const a = outer[i];
+    const b = outer[(i + 1) % outer.length];
+    for (let j = 0; j < inner.length; j += 1) {
+      if (segmentsCross(a, b, inner[j], inner[(j + 1) % inner.length])) return true;
+    }
+  }
+  return false;
+};
+
+// A ring that crosses itself has no defined interior — the shoelace area stays
+// non-zero (the lobes partly cancel) but the triangulator picks an arbitrary
+// filling, so require a simple polygon: no two non-adjacent edges may meet.
+const isSimpleRing = (ring) => {
+  for (let i = 0; i < ring.length; i += 1) {
+    for (let j = i + 1; j < ring.length; j += 1) {
+      const adjacent = j === i + 1 || (i === 0 && j === ring.length - 1);
+      if (!adjacent && segmentsCross(ring[i], ring[(i + 1) % ring.length], ring[j], ring[(j + 1) % ring.length])) {
+        return false;
+      }
+    }
+  }
+  return true;
+};
+
+// Vertex containment alone is not enough: a concave outline can hold every hole
+// vertex while an edge between two of them leaves through the notch. Bounded by
+// the ring caps (160 outline points × 12 holes × 160 hole points), so the O(n·m)
+// edge sweep only runs against provider output that already passed the caps.
+const ringContainsRing = (outer, inner) =>
+  inner.every((point) => pointInRing(outer, point)) && !ringsCross(outer, inner);
+
+// Two holes that touch, cross, or nest are one cutout described twice; the
+// triangulator resolves the doubled winding by leaving material inside them.
+const ringsOverlap = (a, b) => ringsCross(a, b)
+  || b.every((point) => pointInRing(a, point))
+  || a.every((point) => pointInRing(b, point));
+
+const outlineRingSchema = z.array(z.tuple([finite, finite])).min(3).max(160)
+  .refine((ring) => ringArea(ring) > MIN_RING_AREA, 'outline must enclose a non-zero area')
+  .refine(isSimpleRing, 'outline must not cross itself');
+
+const extrudeGeometrySchema = z.object({
+  type: z.literal('extrude'),
+  outline: outlineRingSchema,
+  holes: z.array(outlineRingSchema).max(12).default([]),
+  depth: positive,
+  bevelEnabled: z.boolean().default(false),
+  bevelThickness: z.number().finite().min(0).max(1_000).default(0.1),
+  bevelSize: z.number().finite().min(0).max(1_000).default(0.1),
+  bevelSegments: z.number().int().min(0).max(8).default(2),
+  curveSegments: z.number().int().min(1).max(24).default(8),
+  steps: z.number().int().min(1).max(32).default(1),
+}).superRefine((definition, ctx) => {
+  // A hole that is not strictly inside the outline is not a cutout — Three.js
+  // silently emits a disjoint or self-intersecting face instead of failing.
+  definition.holes.forEach((hole, index) => {
+    if (!ringContainsRing(definition.outline, hole)) {
+      ctx.addIssue({ code: 'custom', message: `extrude hole ${index} falls outside the outline`, path: ['holes', index] });
+    }
+    for (let other = 0; other < index; other += 1) {
+      if (ringsOverlap(definition.holes[other], hole)) {
+        ctx.addIssue({ code: 'custom', message: `extrude hole ${index} overlaps hole ${other}`, path: ['holes', index] });
+      }
+    }
+  });
+});
+
+// Exact collinearity only — the epsilon guards float noise, never near-straight
+// paths, which sweep a perfectly good tube.
+const isCollinearPath = (points) => {
+  const [origin] = points;
+  const spread = points.find((point) => point.some((value, axis) => value !== origin[axis]));
+  if (!spread) return true;
+  const direction = spread.map((value, axis) => value - origin[axis]);
+  return points.every((point) => {
+    const offset = point.map((value, axis) => value - origin[axis]);
+    const cross = [
+      (direction[1] * offset[2]) - (direction[2] * offset[1]),
+      (direction[2] * offset[0]) - (direction[0] * offset[2]),
+      (direction[0] * offset[1]) - (direction[1] * offset[0]),
+    ];
+    return cross.every((component) => Math.abs(component) < 1e-9);
+  });
+};
+
+const tubeGeometrySchema = z.object({
+  type: z.literal('tube'),
+  path: z.array(vec3Schema).min(2).max(96)
+    .refine(
+      (points) => points.every((point, index) => index === 0 || point.some((value, axis) => value !== points[index - 1][axis])),
+      'tube path cannot repeat the same point consecutively',
+    ),
+  radius: positive,
+  tubularSegments: z.number().int().min(2).max(256).default(64),
+  radialSegments: z.number().int().min(3).max(32).default(12),
+  closed: z.boolean().default(false),
+  curveType: z.enum(['centripetal', 'chordal', 'catmullrom']).default('centripetal'),
+  tension: z.number().finite().min(0).max(1).default(0.5),
+}).superRefine((definition, ctx) => {
+  if (!definition.closed) return;
+  const first = definition.path[0];
+  const last = definition.path[definition.path.length - 1];
+  // A closed curve already joins the endpoints; repeating the seam point yields a
+  // zero-length segment and NaN frames in the centripetal/chordal parameterizations.
+  if (first.every((value, axis) => value === last[axis])) {
+    ctx.addIssue({ code: 'custom', message: 'a closed tube path must not repeat its first point at the end', path: ['path'] });
+  }
+  // Fewer than three points — or any number of collinear ones — closes into a
+  // curve that runs out and retraces itself, so the tube overlaps its own surface.
+  if (definition.path.length < 3 || isCollinearPath(definition.path)) {
+    ctx.addIssue({ code: 'custom', message: 'a closed tube path needs at least three non-collinear points', path: ['path'] });
+  }
+});
+
 const customGeometrySchema = z.object({
   type: z.literal('custom'),
   // 900 vertices / 2,700 coordinates is deliberately generous for a
@@ -85,6 +236,8 @@ export const threejsGeometrySchema = z.discriminatedUnion('type', [
   torusGeometrySchema,
   capsuleGeometrySchema,
   latheGeometrySchema,
+  extrudeGeometrySchema,
+  tubeGeometrySchema,
   customGeometrySchema,
 ]);
 
@@ -100,6 +253,15 @@ export const threejsMaterialSchema = z.object({
   wireframe: z.boolean().default(false),
   clearcoat: z.number().finite().min(0).max(1).default(0),
   clearcoatRoughness: z.number().finite().min(0).max(1).default(0),
+  // Physical-only channels. They are parsed for every material type so a spec
+  // round-trips unchanged, but only `type: 'physical'` forwards them to Three.js.
+  // `ior` is bounded to the range MeshPhysicalMaterial itself clamps to.
+  ior: z.number().finite().min(1).max(2.333).default(1.5),
+  transmission: z.number().finite().min(0).max(1).default(0),
+  thickness: z.number().finite().min(0).max(1_000).default(0),
+  sheen: z.number().finite().min(0).max(1).default(0),
+  iridescence: z.number().finite().min(0).max(1).default(0),
+  anisotropy: z.number().finite().min(0).max(1).default(0),
 });
 
 let partSchema;
@@ -247,6 +409,30 @@ function createGeometry(definition) {
       return new THREE.CapsuleGeometry(definition.radius, definition.length, definition.capSegments, definition.radialSegments);
     case 'lathe':
       return new THREE.LatheGeometry(definition.points.map(([x, y]) => new THREE.Vector2(x, y)), definition.segments);
+    case 'extrude': {
+      const shape = new THREE.Shape(definition.outline.map(([x, y]) => new THREE.Vector2(x, y)));
+      for (const hole of definition.holes) {
+        shape.holes.push(new THREE.Path(hole.map(([x, y]) => new THREE.Vector2(x, y))));
+      }
+      return new THREE.ExtrudeGeometry(shape, {
+        depth: definition.depth,
+        bevelEnabled: definition.bevelEnabled,
+        bevelThickness: definition.bevelThickness,
+        bevelSize: definition.bevelSize,
+        bevelSegments: definition.bevelSegments,
+        curveSegments: definition.curveSegments,
+        steps: definition.steps,
+      });
+    }
+    case 'tube': {
+      const curve = new THREE.CatmullRomCurve3(
+        definition.path.map(([x, y, z]) => new THREE.Vector3(x, y, z)),
+        definition.closed,
+        definition.curveType,
+        definition.tension
+      );
+      return new THREE.TubeGeometry(curve, definition.tubularSegments, definition.radius, definition.radialSegments, definition.closed);
+    }
     case 'custom': {
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute('position', new THREE.Float32BufferAttribute(definition.vertices, 3));
@@ -282,6 +468,12 @@ function createMaterial(definition) {
       ...lit,
       clearcoat: definition.clearcoat,
       clearcoatRoughness: definition.clearcoatRoughness,
+      ior: definition.ior,
+      transmission: definition.transmission,
+      thickness: definition.thickness,
+      sheen: definition.sheen,
+      iridescence: definition.iridescence,
+      anisotropy: definition.anisotropy,
     });
   }
   return new THREE.MeshStandardMaterial(lit);

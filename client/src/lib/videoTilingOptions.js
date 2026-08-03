@@ -1,5 +1,6 @@
 // Single source of truth for video tiling modes. Consumed by:
-//   - pages/VideoGen.jsx — the <select> options + remix-prefill guard.
+//   - components/videoGen/AdvancedParamsPanel.jsx — the <select> options.
+//   - pages/VideoGen.jsx — the remix-prefill guard (VIDEO_TILING_ENUM_SET).
 //   - hooks/useMediaPreviewActions.js — the Remix URL builder.
 // The server's z.enum in server/routes/videoGen.js must match these values;
 // add a new mode here and to the server enum together.

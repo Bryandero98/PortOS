@@ -132,6 +132,7 @@ export * from './useKeyboardHelp.js';
 export * from './useLockToggle.js';
 export * from './useScrollLock.js';
 export * from './useSwipeNav.js';
+export { default as useUrlParams } from './useUrlParams.js';
 export * from './useValidTab.js';
 
 // === Storage & persistence ===
@@ -162,5 +163,6 @@ export * from './useSyncIntegrity.js';
 export * from './useTwinEvaluationSuite.js';
 export * from './useUniverseNav.js';
 export * from './useVideoFileSrc.js';
+export * from './useVideoGenForm.js';
 export * from './useVideoGenQueue.js';
 export * from './useVoiceUiSync.js';

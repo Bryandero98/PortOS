@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { io } from 'socket.io-client';
 import { CheckCircle, Circle, Loader, AlertCircle, Play, Wrench } from 'lucide-react';
 import toast from '../components/ui/Toast';
