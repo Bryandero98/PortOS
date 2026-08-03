@@ -246,7 +246,7 @@ export function autoArrangeScenes(scenes, audioAnalysis, { minSceneSec = DEFAULT
 // from `inSec: 0`).
 export function computeDragSpan({ kind, startSpan, deltaSec, gridPoints, toleranceSec = DEFAULT_TOLERANCE_SEC, minSceneSec = MIN_SCENE_SEC }) {
   let nextStart = startSpan.startSec;
-  let nextEnd = startSpan.endSec;
+  let nextEnd;
   if (kind === 'move') {
     const duration = startSpan.endSec - startSpan.startSec;
     nextStart = Math.max(0, startSpan.startSec + deltaSec);

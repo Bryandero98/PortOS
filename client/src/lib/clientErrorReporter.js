@@ -192,7 +192,7 @@ export async function reportClientError(input) {
   // test globals, CSP-blocked requests that throw before returning a
   // promise); without it the `.then().catch()` chain is never attached and
   // the rejection escapes.
-  let ok = false;
+  let ok;
   try {
     ok = await fetch(ENDPOINT, {
       method: 'POST',

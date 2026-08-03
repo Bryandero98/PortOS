@@ -26,7 +26,7 @@ function loadRunSnapshot() {
   if (typeof sessionStorage === 'undefined') return null;
   const raw = sessionStorage.getItem(RUN_STORAGE_KEY);
   if (!raw) return null;
-  let snap = null;
+  let snap;
   try { snap = JSON.parse(raw); } catch { return null; } // corrupt storage → start fresh
   if (!snap || typeof snap !== 'object') return null;
   if (snap.state === 'saving') {

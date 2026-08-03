@@ -39,7 +39,7 @@ export const storageWorks = (candidate) => {
   const probe = '__portos_storage_probe__';
   // A throwing setItem (e.g. a Storage stubbed to simulate quota/private mode) means
   // "not usable as a baseline" — fall back to the in-memory shim.
-  let ok = false;
+  let ok;
   try {
     candidate.setItem(probe, '1');
     ok = candidate.getItem(probe) === '1';
