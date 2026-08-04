@@ -2,8 +2,8 @@
 
 Living reference of every third-party dependency in PortOS, why it's kept, and what the current verdict is. Updated by `/do:depfree` runs.
 
-**Last audited:** 2026-07-14 (dependency-freedom follow-up, issue #2547); prior full audit 2026-04-28 (default mode), tables corrected 2026-07-01 during a docs audit.
-**Verdict:** All dependencies justified. Since the last full audit: `sax` was removed (replaced with an owned parser, issue #1824), `portos-ai-toolkit` was vendored in-tree (`server/lib/aiToolkit/`), and monolithic `googleapis` was replaced with scoped `@googleapis/*` packages. The 2026-07-14 follow-up bumped `kokoro-js` to its latest patch `1.2.1` (still on maintenance watch — no publish since 2025-05) and aligned the dual `pm2` pins (root + server both `7.0.3`).
+**Last audited:** 2026-08-04 (scoped audit of the `keyv`/`cacheable` supply-chain compromise); prior follow-up 2026-07-14 (issue #2547), prior full audit 2026-04-28 (default mode), tables corrected 2026-07-01 during a docs audit.
+**Verdict:** All dependencies justified. The 2026-08-04 audit replaced the entire `eslint` stack with `@biomejs/biome`, dropping 108 net client packages including the `file-entry-cache → flat-cache → keyv` chain named in the August 2026 Shai-Hulud npm compromise (PortOS held safe versions throughout — see the detailed finding below). The same pass closed a latent hole where `ignore-scripts=true` was only active for repo-root installs, not for any workspace install or CI. Since the last full audit: `sax` was removed (replaced with an owned parser, issue #1824), `portos-ai-toolkit` was vendored in-tree (`server/lib/aiToolkit/`), and monolithic `googleapis` was replaced with scoped `@googleapis/*` packages. The 2026-07-14 follow-up bumped `kokoro-js` to its latest patch `1.2.1` (still on maintenance watch — no publish since 2025-05) and aligned the dual `pm2` pins (root + server both `7.0.3`).
 
 ## Audit Methodology
 
@@ -56,10 +56,11 @@ Before removing a Tier 3 candidate, run a transitive-dep check (`npm ls <pkg>`).
 | `socket.io-client` | 1 | KEEP | realtime client | |
 | `three` | 1 | KEEP | 3D | |
 | **Client devDeps** | | | | |
-| `@eslint/js` | 1 | KEEP | linting | |
-| `eslint` | 1 | KEEP | linting | |
-| `eslint-plugin-react` | 1 | KEEP | linting | |
-| `eslint-plugin-react-hooks` | 1 | KEEP | linting | |
+| `@biomejs/biome` | 1 | KEEP | linting | Replaced the whole eslint stack 2026-08-04; native binary, 0 regular deps + 8 platform optionals (1 installed) |
+| `eslint` | — | REMOVED | linting | 2026-08-04 → `@biomejs/biome`. Pulled 53 exclusive packages incl. the `file-entry-cache → flat-cache → keyv` chain |
+| `@eslint/js` | — | REMOVED | linting | Removed with `eslint` |
+| `@eslint-react/eslint-plugin` | — | REMOVED | linting | Removed with `eslint`; its 8 enabled rules map to Biome rules + one GritQL plugin |
+| `eslint-plugin-react-hooks` | — | REMOVED | linting | Removed with `eslint`; `rules-of-hooks` → Biome `useHookAtTopLevel` |
 | `@tailwindcss/postcss` | 1 | KEEP | styling | |
 | `tailwindcss` | 1 | KEEP | styling | |
 | `@vitejs/plugin-react` | 1 | KEEP | build | |
@@ -82,6 +83,17 @@ Before removing a Tier 3 candidate, run a transitive-dep check (`npm ls <pkg>`).
 - **Decision**: KEEP (on maintenance watch). The only pure-JS in-process TTS option; Web Speech API is cloud-dependent and Piper requires CLI install.
 - **Re-audit trigger**: the >12-months-stale trigger already fired and was actioned by this audit (bumped to latest, put on watch). Re-evaluate on any of: a CVE reported, the model-load path breaking against a newer Transformers.js, or the package still showing no upstream publish at the next dependency audit — then revisit and migrate (see escape hatch below).
 - **Piper escape hatch (if dropped later)**: Piper is **already implemented** as a peer backend — `server/services/voice/tts-piper.js` (`synthesizePiper(text, cfg, signal) → { wav, latencyMs }`, plus `listPiperVoices`), which `server/services/voice/tts.js` already dispatches to alongside `synthesizeKokoro`. Both backends share the same `(text, cfg, signal) → { wav, latencyMs }` contract, so dropping `kokoro-js` is a delete, not a rewrite: remove the `kokoro` branch (and the `tts-kokoro.js` module + its `kokoro-js` dependency) from the dispatcher in `tts.js` and let Piper be the default engine. The tradeoff Piper carries — and the reason it isn't the default today — is a native `piper` binary + ONNX voice download (vs. `kokoro-js`'s npm-only, in-process install).
+
+### `eslint` (and the `keyv` / `flat-cache` / `file-entry-cache` chain) — REMOVED 2026-08-04
+
+- **Trigger**: the August 2026 Shai-Hulud npm compromise hit `keyv`, `flat-cache`, and `file-entry-cache` (among ~430 packages). PortOS was **never exposed** — it held `keyv@4.5.4`, `flat-cache@4.0.1`, `file-entry-cache@8.0.0`, while the malicious releases were the *next major* in each line (`6.0.0` / `6.1.24` / `11.1.6`), unreachable from the `^4` / `^4.0.0` / `^8.0.0` ranges. npm has since unpublished all three, and no install hook ever existed in the tree.
+- **Why they were here at all**: not direct dependencies. A single chain under one root — `eslint → file-entry-cache → flat-cache → keyv` — client workspace, devDependencies only. `eslint@10.8.0` (latest) hard-requires `file-entry-cache@^8.0.0`; no eslint release drops it. So the only way to shed them was to stop using eslint.
+- **Semver headroom was already zero**: the highest published `file-entry-cache@8.x` *is* `8.0.0`, `flat-cache@4.x` *is* `4.0.1`, `keyv@4.x` *is* `4.5.4`. An `overrides` pin would have been a no-op — there was nowhere to float. Removal was therefore a **maintenance** win, not a security fix.
+- **Resolution**: replaced eslint with `@biomejs/biome@2.5.7`. Client lockfile **446 → 338 packages** (−108; 118 eslint packages out, 9 Biome entries in, only 1 platform binary installed). All four eslint-chain packages now report 0 occurrences in `client/package-lock.json`.
+- **Rule parity was proven with fixtures, not inferred from a clean run** — a linter with no rules also reports "0 problems". Every rule the old config enforced fires under Biome; `npm run lint` covers the same **1859 files** with 0 problems. `exhaustive-deps` was already `off` (documented, deliberate), which is what made this a half-day swap instead of a risky one.
+- **The `crypto.randomUUID` ban survives as a GritQL plugin** (`client/lint-no-random-uuid.grit`). This rule is load-bearing: `crypto.randomUUID` is undefined on insecure origins, and PortOS is routinely reached over plain HTTP via Tailscale. It matches on the CST node kind rather than code snippets, so it catches `crypto.`, `globalThis.crypto.`, `window.`, `self.`, optional chaining, bare `typeof` references, and assignment targets — and, matching the old ESLint rule exactly, *not* `crypto['randomUUID']`. Exemptions for `src/lib/uuid.js` and `src/**/*.test.{js,jsx}` are expressed as **negated globs**, because a Biome override's `plugins` list is *additive*: `plugins: []` does NOT disable an inherited plugin. Do not "simplify" that back.
+- **Deliberately scoped**: Biome's formatter and `assist` are disabled (enabling them would rewrite all 1859 files in one unreviewable diff), and the rule set uses `preset: "none"` with an explicit list rather than Biome's broader `recommended` — keeping this a tooling swap, not a smuggled lint-policy change. Adopting more Biome rules is a separate decision.
+- **Config is `biome.jsonc`, not `biome.json`** — the latter rejects comments, failing with a misleading "expected an object, received an array", and the rationale comments inherited from `eslint.config.js` are worth keeping.
 
 ### `sax` — REMOVED (issue #1824)
 
@@ -120,3 +132,11 @@ Defined in `package.json` (root + server + client) — kept current to dodge kno
 - `three@0.184.0` (client only, keeps drei/fiber on one three copy)
 
 These exist purely to force-bump transitive deps; revisit if `npm audit` flags new advisories.
+
+**Not every compromised package warrants a pin.** A pin only helps when the installed version is *below* the top of its permitted range — otherwise there is nothing to force. The August 2026 `keyv` / `flat-cache` / `file-entry-cache` compromise deliberately got **no** pin: each range was already at its ceiling (highest published `keyv@4.x` *is* `4.5.4`, etc.), so a pin would have been a no-op, and the packages were removed outright instead. Check headroom (`npm view <pkg>@<major> version`) before adding an entry here.
+
+## Install-Script Policy
+
+`ignore-scripts=true` is pinned in **every** workspace's own `.npmrc` (root, `client/`, `server/`, `autofixer/`) — not just the repo root. npm resolves the project `.npmrc` from the *local prefix* and never walks up the directory tree, so a root-only setting does not cover `cd client && npm install` or `npm ci --prefix server` (what CI runs). Deleting any workspace `.npmrc` silently re-grants every dependency in that workspace an install-time code-execution slot — the vector the Shai-Hulud worm used.
+
+Packages that legitimately need an install script are named explicitly in the allowlist in `scripts/trusted-rebuilds.js`, the single source consumed by `npm run setup`, `scripts/ensure-deps.js`, `update.sh` / `update.ps1`, and CI. `scripts/trusted-rebuilds.test.js` fails if a workspace `.npmrc` loses the setting, or if a dependency appears with an install hook that nobody has explicitly decided about.
