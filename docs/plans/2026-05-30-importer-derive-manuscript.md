@@ -62,7 +62,7 @@ No one-off script needed — Workstream 2 *is* the repair tool. On the existing 
 3. Delete the now-empty V2/V3/V4 if `commitSeasonsWithRemap` leaves any (the existing `deletePipelineSeason(seriesId, seasonId, { reassignTo })` wrapper at `apiPipeline.js:344` handles reassign-then-delete).
 4. Optionally re-split into 3–4 acts using the editable issue mapping in the preview.
 
-Verify end-to-end on `https://null.taile8179.ts.net:5555/pipeline/series/ser-c22c6c9e-...` after implementing.
+Verify end-to-end on `https://host-beta.example-tailnet.ts.net:5555/pipeline/series/ser-c22c6c9e-...` after implementing.
 
 ## Workstream 4 — Manuscript-completeness ("finish the draft") editor action
 
