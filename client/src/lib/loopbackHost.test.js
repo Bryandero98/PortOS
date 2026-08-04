@@ -18,7 +18,7 @@ describe('isLoopbackHost', () => {
     ['[::1]', true],
     ['0.0.0.0', false],
     ['10.0.0.1', false],
-    ['100.111.11.146', false],
+    ['100.64.0.50', false],
     ['192.168.1.1', false],
     ['portos.tailnet.ts.net', false],
     ['126.0.0.1', false],
@@ -58,7 +58,7 @@ describe('isLoopbackOrigin', () => {
   });
 
   it('returns false for Tailscale hostname', () => {
-    vi.stubGlobal('window', { location: { hostname: 'void.taile8179.ts.net', protocol: 'http:' } });
+    vi.stubGlobal('window', { location: { hostname: 'host-alpha.example-tailnet.ts.net', protocol: 'http:' } });
     expect(isLoopbackOrigin()).toBe(false);
   });
 });
@@ -92,7 +92,7 @@ describe('describeMicAvailability', () => {
 
   it('reports insecure-context for http on a non-loopback origin', () => {
     vi.stubGlobal('window', {
-      location: { hostname: '100.111.11.146', protocol: 'http:' },
+      location: { hostname: '100.64.0.50', protocol: 'http:' },
     });
     expect(describeMicAvailability()).toEqual({ available: false, reason: 'insecure-context' });
   });

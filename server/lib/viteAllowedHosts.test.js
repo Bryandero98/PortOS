@@ -51,11 +51,11 @@ describe('hostIsAllowed', () => {
   const tailnet = { allowsAll: false, hosts: ['.ts.net'] };
 
   it('blocks an unknown host when allowedHosts is empty', () => {
-    expect(hostIsAllowed(none, 'box.taile8179.ts.net')).toBe(false);
+    expect(hostIsAllowed(none, 'host-gamma.example-tailnet.ts.net')).toBe(false);
   });
 
   it('allows everything when allowsAll', () => {
-    expect(hostIsAllowed(all, 'null.taile8179.ts.net')).toBe(true);
+    expect(hostIsAllowed(all, 'host-beta.example-tailnet.ts.net')).toBe(true);
   });
 
   it('always allows localhost regardless of config', () => {
@@ -71,8 +71,8 @@ describe('hostIsAllowed', () => {
   });
 
   it('matches a leading-dot suffix entry against subdomains', () => {
-    expect(hostIsAllowed(tailnet, 'box.taile8179.ts.net')).toBe(true);
-    expect(hostIsAllowed(tailnet, 'null.taile8179.ts.net')).toBe(true);
+    expect(hostIsAllowed(tailnet, 'host-gamma.example-tailnet.ts.net')).toBe(true);
+    expect(hostIsAllowed(tailnet, 'host-beta.example-tailnet.ts.net')).toBe(true);
   });
 
   it('matches a leading-dot entry against the bare domain', () => {
@@ -84,7 +84,7 @@ describe('hostIsAllowed', () => {
   });
 
   it('matches an exact array entry', () => {
-    expect(hostIsAllowed({ allowsAll: false, hosts: ['box.taile8179.ts.net'] }, 'box.taile8179.ts.net')).toBe(true);
+    expect(hostIsAllowed({ allowsAll: false, hosts: ['host-gamma.example-tailnet.ts.net'] }, 'host-gamma.example-tailnet.ts.net')).toBe(true);
   });
 
   it('returns false for an empty hostname', () => {
@@ -253,7 +253,7 @@ export default defineConfig({ server: { allowedHosts: true } });`;
   it('reports host allowed for an admin/ config that allows all hosts', async () => {
     await mkdir(join(repo, 'admin'), { recursive: true });
     await writeFile(join(repo, 'admin', 'vite.config.js'), ALLOW_ALL);
-    const status = await checkViteHost(repo, 'void.taile8179.ts.net');
+    const status = await checkViteHost(repo, 'host-alpha.example-tailnet.ts.net');
     expect(status.hasViteConfig).toBe(true);
     expect(status.allowsAll).toBe(true);
     expect(status.hostAllowed).toBe(true);

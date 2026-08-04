@@ -3,7 +3,7 @@
  * managed app's config.
  *
  * Why this exists: PortOS is served over a Tailscale MagicDNS name (e.g.
- * `box.taile8179.ts.net`). When a managed app's Dev UI is launched, the browser
+ * `host-gamma.example-tailnet.ts.net`). When a managed app's Dev UI is launched, the browser
  * hits the app's Vite dev server at that same hostname — and Vite ≥5 rejects it
  * with "Blocked request. This host ("…") is not allowed. … add it to
  * server.allowedHosts in vite.config.js" unless the host is allow-listed.

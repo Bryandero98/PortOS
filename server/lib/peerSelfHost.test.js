@@ -38,16 +38,16 @@ describe('peerSelfHost.getSelfHost', () => {
     statSync.mockReturnValue({ mtimeMs: 1 });
     readFileSync.mockReturnValue(JSON.stringify({
       mode: 'tailscale',
-      hostname: 'void.taile8179.ts.net'
+      hostname: 'host-alpha.example-tailnet.ts.net'
     }));
-    expect(getSelfHost()).toBe('void.taile8179.ts.net');
+    expect(getSelfHost()).toBe('host-alpha.example-tailnet.ts.net');
   });
 
   it('returns null for self-signed mode (no announceable hostname)', () => {
     statSync.mockReturnValue({ mtimeMs: 1 });
     readFileSync.mockReturnValue(JSON.stringify({
       mode: 'self-signed',
-      ips: ['127.0.0.1', '100.111.11.146']
+      ips: ['127.0.0.1', '100.64.0.50']
     }));
     expect(getSelfHost()).toBeNull();
   });

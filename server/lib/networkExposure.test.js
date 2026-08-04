@@ -30,8 +30,8 @@ describe('networkExposure.isLoopbackHost', () => {
     ['127.0.0.1', true],
     ['::1', true],
     ['0.0.0.0', false],
-    ['100.111.11.146', false],
-    ['void.taile8179.ts.net', false],
+    ['100.64.0.50', false],
+    ['host-alpha.example-tailnet.ts.net', false],
     ['', false],
     [null, false],
     [undefined, false],
@@ -69,12 +69,12 @@ describe('networkExposure.getNetworkExposureStatus', () => {
 
   it('reports HTTPS + tailscale mode when cert meta.json indicates tailscale', () => {
     getHttpsEnabledAtBoot.mockReturnValue({ value: true, initialized: true });
-    getSelfHost.mockReturnValue('void.taile8179.ts.net');
+    getSelfHost.mockReturnValue('host-alpha.example-tailnet.ts.net');
     statSync.mockReturnValue({ mtimeMs: 1 });
     readFileSync.mockReturnValue(JSON.stringify({
       mode: 'tailscale',
-      hostname: 'void.taile8179.ts.net',
-      ips: ['100.111.11.146']
+      hostname: 'host-alpha.example-tailnet.ts.net',
+      ips: ['100.64.0.50']
     }));
 
     const status = getNetworkExposureStatus();
@@ -82,8 +82,8 @@ describe('networkExposure.getNetworkExposureStatus', () => {
     expect(status.httpsEnabled).toBe(true);
     expect(status.loopbackMirror.enabled).toBe(true);
     expect(status.cert.mode).toBe('tailscale');
-    expect(status.cert.tailscaleHost).toBe('void.taile8179.ts.net');
-    expect(status.cert.ips).toEqual(['100.111.11.146']);
+    expect(status.cert.tailscaleHost).toBe('host-alpha.example-tailnet.ts.net');
+    expect(status.cert.ips).toEqual(['100.64.0.50']);
   });
 
   it('reports HTTPS + self-signed mode when meta.json mode is self-signed', () => {
@@ -92,13 +92,13 @@ describe('networkExposure.getNetworkExposureStatus', () => {
     statSync.mockReturnValue({ mtimeMs: 1 });
     readFileSync.mockReturnValue(JSON.stringify({
       mode: 'self-signed',
-      ips: ['127.0.0.1', '100.111.11.146']
+      ips: ['127.0.0.1', '100.64.0.50']
     }));
 
     const status = getNetworkExposureStatus();
     expect(status.cert.mode).toBe('self-signed');
     expect(status.cert.tailscaleHost).toBeNull();
-    expect(status.cert.ips).toEqual(['127.0.0.1', '100.111.11.146']);
+    expect(status.cert.ips).toEqual(['127.0.0.1', '100.64.0.50']);
   });
 
   it('returns "unknown" cert mode when HTTPS is on but meta.json is missing', () => {
@@ -120,7 +120,7 @@ describe('networkExposure.getNetworkExposureStatus', () => {
     process.env.HOST = '127.0.0.1';
     expect(getNetworkExposureStatus().bind.audience).toBe('loopback-only');
 
-    process.env.HOST = '100.111.11.146';
+    process.env.HOST = '100.64.0.50';
     expect(getNetworkExposureStatus().bind.audience).toBe('specific-interface');
   });
 
