@@ -1,0 +1,40 @@
+language js
+
+// Replaces the ESLint `no-restricted-syntax` rule that banned
+// `MemberExpression[property.name='randomUUID']`.
+//
+// `crypto.randomUUID` only exists in a SECURE context. PortOS is routinely reached
+// over plain HTTP via Tailscale, where it is undefined — so every bare call is a
+// crash for the users on that deployment (it took out every toast until
+// `lib/uuid.js` landed). The footgun was independently rediscovered at half a dozen
+// sites, each inventing a different workaround, so a shared helper alone was not
+// enough to stop it: this rule is what actually holds the line.
+//
+// Biome's `nursery/noJsRestrictedProperties` is NOT a substitute, for the same
+// reason `no-restricted-properties` was not: it misses `globalThis.crypto.randomUUID`.
+//
+// Matching on the CST node kind with a `member` constraint (rather than on code
+// snippets) is what makes this exhaustive. It reaches every form ESLint's AST
+// selector did, in one pattern per node kind:
+//   * `crypto.randomUUID()`            plain member call
+//   * `globalThis.crypto.randomUUID()` nested — the case that defeats property bans
+//   * `window.crypto.randomUUID()` / `self.crypto.randomUUID()`
+//   * `crypto?.randomUUID?.()`         optional chaining (`?.` is the same CST kind)
+//   * `typeof crypto.randomUUID`       bare reference, not just calls
+//   * `crypto.randomUUID = fn`         assignment target (JsStaticMemberAssignment)
+// Like the ESLint selector, it deliberately does NOT match the computed form
+// `crypto['randomUUID']` (no `property.name`) or destructuring.
+//
+// Exemptions (`src/lib/uuid.js`, `src/**/*.test.{js,jsx}`) are applied in biome.json
+// via negated globs on the override that loads this plugin.
+or {
+  JsStaticMemberExpression(member = $member),
+  JsStaticMemberAssignment(member = $member)
+} as $node where {
+  $member <: `randomUUID`,
+  register_diagnostic(
+    span = $node,
+    message = "crypto.randomUUID is undefined on insecure origins (PortOS over plain HTTP via Tailscale). Import { uuidv4 } from lib/uuid.js instead.",
+    severity = "error"
+  )
+}

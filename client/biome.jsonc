@@ -1,0 +1,222 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "root": true,
+  "vcs": { "enabled": false },
+  "files": {
+    "includes": ["src/**/*.js", "src/**/*.jsx"]
+  },
+  // Formatter and assist stay OFF. ESLint never formatted this codebase, so turning
+  // Biome's formatter on would rewrite all 1859 files in one unreviewable diff.
+  // This config is a like-for-like replacement for the old ESLint setup: lint only.
+  "formatter": { "enabled": false },
+  "assist": { "enabled": false },
+  "javascript": {
+    // JSX lives in both .jsx and .js files in this tree.
+    "parser": { "jsxEverywhere": true },
+    // Ported verbatim from the old eslint.config.js `globals` list, which backed
+    // `no-undef` (now `correctness/noUndeclaredVariables`). Biome has no
+    // readonly/writable distinction, so the names collapse to a flat list.
+    // __dirname/__filename/require/module/exports are deliberately absent — they
+    // are not valid in the ESM browser bundles this client ships.
+    //
+    // `__APP_VERSION__` is a Vite build-time define (see vite.config.js). ESLint
+    // picked it up from a `/* global __APP_VERSION__ */` comment in Layout.jsx;
+    // Biome does not honour those comments, so it is declared here instead.
+    "globals": [
+      "__APP_VERSION__",
+      "AbortController", "AbortSignal", "ArrayBuffer", "Audio", "AudioContext",
+      "AudioWorkletNode", "Blob", "BroadcastChannel", "Buffer", "CSS", "CustomEvent",
+      "DOMException", "DOMParser", "DataView", "DecompressionStream", "Element", "Event",
+      "EventSource", "EventTarget", "File", "FileReader", "Float32Array", "Float64Array",
+      "FormData", "HTMLAudioElement", "HTMLButtonElement", "HTMLCanvasElement",
+      "HTMLDivElement", "HTMLElement", "HTMLInputElement", "HTMLMediaElement",
+      "HTMLSelectElement", "HTMLTextAreaElement", "HTMLVideoElement", "Image", "Int16Array",
+      "Int32Array", "Int8Array", "IntersectionObserver", "MediaRecorder", "MediaStream",
+      "MediaStreamTrack", "MessageChannel", "MessageEvent", "MutationObserver", "Node",
+      "NodeList", "OfflineAudioContext", "RTCPeerConnection", "RTCSessionDescription",
+      "ReadableStream", "Request", "ResizeObserver", "Response", "SVGElement", "SharedWorker",
+      "SpeechRecognition", "SpeechSynthesisUtterance", "Text", "TextDecoder", "TextEncoder",
+      "TransformStream", "URL", "URLSearchParams", "Uint16Array", "Uint32Array", "Uint8Array",
+      "WebGL2RenderingContext", "WebGLRenderingContext", "WebSocket", "Worker",
+      "WritableStream", "alert", "atob", "btoa", "caches", "cancelAnimationFrame",
+      "clearImmediate", "clearInterval", "clearTimeout", "confirm", "console", "crypto",
+      "document", "fetch", "getComputedStyle", "global", "globalThis", "history", "indexedDB",
+      "localStorage", "location", "matchMedia", "navigator", "performance", "process", "prompt",
+      "queueMicrotask", "requestAnimationFrame", "screen", "self", "sessionStorage",
+      "setImmediate", "setInterval", "setTimeout", "speechSynthesis", "webkitSpeechRecognition",
+      "window"
+    ]
+  },
+  "linter": {
+    "enabled": true,
+    // Lint policy (carried over from eslint.config.js): every rule is either 'error'
+    // (enforced) or absent/'off' (gone). We do not use 'warn' — a warning is a rule
+    // nobody acts on, i.e. noise that hides real errors. Biome defaults many rules to
+    // 'warn', so every rule below sets 'error' explicitly.
+    //
+    // `preset: "none"` + an explicit list keeps this a faithful port of the ESLint
+    // rule set (js.configs.recommended + 8 @eslint-react rules + react-hooks). Biome's
+    // own `recommended` preset is much broader; adopting it is a separate policy
+    // decision, not part of this migration.
+    "rules": {
+      "preset": "none",
+      "complexity": {
+        // eslint: no-regex-spaces
+        "noAdjacentSpacesInRegex": "error",
+        // eslint: no-extra-boolean-cast
+        "noExtraBooleanCast": "error",
+        // eslint: no-useless-catch
+        "noUselessCatch": "error",
+        // eslint: no-useless-escape (regex half)
+        "noUselessEscapeInRegex": "error"
+      },
+      "correctness": {
+        // @eslint-react/jsx-no-children-prop
+        "noChildrenProp": "error",
+        // eslint: no-const-assign
+        "noConstAssign": "error",
+        // eslint: no-constant-condition
+        "noConstantCondition": "error",
+        // eslint: no-empty-character-class
+        "noEmptyCharacterClassInRegex": "error",
+        // eslint: no-empty-pattern
+        "noEmptyPattern": "error",
+        // eslint: no-obj-calls
+        "noGlobalObjectCalls": "error",
+        // eslint: no-new-native-nonconstructor
+        "noInvalidBuiltinInstantiation": "error",
+        // eslint: constructor-super
+        "noInvalidConstructorSuper": "error",
+        // eslint: no-nonoctal-decimal-escape
+        "noNonoctalDecimalEscape": "error",
+        // eslint: no-loss-of-precision
+        "noPrecisionLoss": "error",
+        // @eslint-react/dom-no-render-return-value
+        "noRenderReturnValue": "error",
+        // eslint: no-self-assign
+        "noSelfAssign": "error",
+        // eslint: no-setter-return
+        "noSetterReturn": "error",
+        // eslint: no-case-declarations
+        "noSwitchDeclarations": "error",
+        // eslint: no-undef (backed by javascript.globals above)
+        "noUndeclaredVariables": "error",
+        // eslint: no-unreachable
+        "noUnreachable": "error",
+        // eslint: no-this-before-super
+        "noUnreachableSuper": "error",
+        // eslint: no-unsafe-finally
+        "noUnsafeFinally": "error",
+        // eslint: no-unsafe-optional-chaining
+        "noUnsafeOptionalChaining": "error",
+        // eslint: no-unused-vars (args half; `^_` ignored by default)
+        "noUnusedFunctionParameters": "error",
+        // eslint: no-unused-vars (unused imports)
+        "noUnusedImports": "error",
+        // eslint: no-unused-labels
+        "noUnusedLabels": "error",
+        // eslint: no-unused-private-class-members
+        "noUnusedPrivateClassMembers": "error",
+        // eslint: no-unused-vars (vars + caught errors; `^_` ignored by default)
+        "noUnusedVariables": "error",
+        // react-hooks/rules-of-hooks
+        "useHookAtTopLevel": "error",
+        // eslint: use-isnan
+        "useIsNan": "error",
+        // @eslint-react/no-missing-key
+        "useJsxKeyInIterable": "error",
+        // eslint: for-direction
+        "useValidForDirection": "error",
+        // eslint: valid-typeof
+        "useValidTypeof": "error",
+        // eslint: require-yield
+        "useYield": "error"
+      },
+      "security": {
+        // @eslint-react/dom-no-unsafe-target-blank
+        "noBlankTarget": "error",
+        // @eslint-react/dom-no-dangerously-set-innerhtml-with-children
+        "noDangerouslySetInnerHtmlWithChildren": "error"
+      },
+      "suspicious": {
+        // eslint: no-async-promise-executor
+        "noAsyncPromiseExecutor": "error",
+        // eslint: no-ex-assign
+        "noCatchAssign": "error",
+        // eslint: no-class-assign
+        "noClassAssign": "error",
+        // eslint: no-compare-neg-zero
+        "noCompareNegZero": "error",
+        // eslint: no-control-regex
+        "noControlCharactersInRegex": "error",
+        // eslint: no-debugger
+        "noDebugger": "error",
+        // eslint: no-duplicate-case
+        "noDuplicateCase": "error",
+        // eslint: no-dupe-class-members
+        "noDuplicateClassMembers": "error",
+        // eslint: no-dupe-else-if
+        "noDuplicateElseIf": "error",
+        // eslint: no-dupe-keys
+        "noDuplicateObjectKeys": "error",
+        // eslint: no-dupe-args
+        "noDuplicateParameters": "error",
+        // eslint: no-fallthrough
+        "noFallthroughSwitchClause": "error",
+        // eslint: no-func-assign
+        "noFunctionAssign": "error",
+        // eslint: no-global-assign
+        "noGlobalAssign": "error",
+        // eslint: no-import-assign
+        "noImportAssign": "error",
+        // eslint: no-irregular-whitespace
+        "noIrregularWhitespace": "error",
+        // eslint: no-misleading-character-class
+        "noMisleadingCharacterClass": "error",
+        // eslint: no-octal / no-octal-escape
+        "noOctalEscape": "error",
+        // eslint: no-prototype-builtins
+        "noPrototypeBuiltins": "error",
+        // eslint: no-redeclare
+        "noRedeclare": "error",
+        // eslint: no-shadow-restricted-names
+        "noShadowRestrictedNames": "error",
+        // eslint: no-sparse-arrays
+        "noSparseArray": "error",
+        // eslint: no-unassigned-vars
+        "noUnassignedVariables": "error",
+        // eslint: no-unsafe-negation
+        "noUnsafeNegation": "error",
+        // eslint: no-useless-escape (string half)
+        "noUselessEscapeInString": "error",
+        // eslint: no-useless-backreference
+        "noUselessRegexBackrefs": "error",
+        // eslint: no-with
+        "noWith": "error",
+        // eslint: getter-return
+        "useGetterReturn": "error"
+      }
+    }
+  },
+  // GritQL plugins cover rules Biome 2.5 has no native equivalent for. This one
+  // replaces three @eslint-react rules and applies everywhere under src/.
+  "plugins": ["./lint-react-legacy-apis.grit"],
+  "overrides": [
+    {
+      // The randomUUID ban (formerly `no-restricted-syntax`) is scoped by negated
+      // globs rather than by an `overrides` entry that turns it off, because an
+      // override's `plugins` list is ADDITIVE to the top-level one — `plugins: []`
+      // in an override does not disable an inherited plugin. So the exemptions for
+      // `lib/uuid.js` (the wrapper that is allowed to probe crypto.randomUUID) and
+      // for tests (which simulate an insecure origin) live in these `!` patterns.
+      "includes": [
+        "src/**/*.js",
+        "src/**/*.jsx",
+        "!src/lib/uuid.js",
+        "!src/**/*.test.js",
+        "!src/**/*.test.jsx"
+      ],
+      "plugins": ["./lint-no-random-uuid.grit"]
+    }
+  ]
+}
