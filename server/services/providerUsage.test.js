@@ -23,6 +23,7 @@ vi.mock('./settings.js', () => ({
   getSettings: vi.fn().mockResolvedValue({ imageGen: {} })
 }));
 vi.mock('./imageGenQuota.js', () => ({
+  IMAGE_GEN_FAMILY: 'imagegen',
   getImageGenQuota: vi.fn(async ({ enabledModes }) => (enabledModes.length ? {
     family: 'imagegen', label: 'Image Gen', supported: true, burnable: false,
     limits: [], activity: [], metrics: enabledModes.map((m) => ({ key: m, label: m, value: '0 renders · 24h' })),
@@ -164,6 +165,14 @@ describe('resolveEnabledFamilies', () => {
 });
 
 describe('getProviderQuotas', () => {
+  // The TUI-scrape cache and the mock call counts both outlive a single test —
+  // reset so the per-family assertions below aren't order-dependent.
+  beforeEach(() => {
+    __resetUsageScrapeCache();
+    scrapeTuiUsage.mockReset();
+    getImageGenQuota.mockClear();
+  });
+
   it('unwraps the { providers } object shape from getAllProviders', async () => {
     // Regression: getAllProviders returns { activeProvider, providers }, not a
     // bare array — passing the object straight into resolveEnabledFamilies threw
@@ -194,6 +203,40 @@ describe('getProviderQuotas', () => {
     getAllProviders.mockResolvedValueOnce({ activeProvider: null, providers: [] });
     getSettings.mockResolvedValueOnce({ imageGen: { local: { enabled: true } } });
     expect(await getProviderQuotas()).toEqual([]);
+  });
+
+  it('reads only the requested family — the point of the per-card refresh', async () => {
+    // A second family's reading is a second multi-second TUI spawn, so asking
+    // for one card must not scrape the other (nor derive the image card).
+    getAllProviders.mockResolvedValueOnce({
+      activeProvider: null,
+      providers: [
+        { id: 'grok', enabled: true, type: 'tui', command: 'grok' },
+        { id: 'agy', enabled: true, type: 'tui', command: 'agy' }
+      ]
+    });
+    getSettings.mockResolvedValueOnce({ imageGen: { agy: { enabled: true } } });
+    scrapeTuiUsage.mockResolvedValue('Weekly limit: 5% Next reset: Jan 1, 00:00');
+    const quotas = await getProviderQuotas({ family: 'grok' });
+    expect(quotas.map((q) => q.family)).toEqual(['grok']);
+    expect(scrapeTuiUsage).toHaveBeenCalledTimes(1);
+    expect(getImageGenQuota).not.toHaveBeenCalled();
+  });
+
+  it('reads the image-gen card alone when it is the requested family', async () => {
+    getAllProviders.mockResolvedValueOnce({
+      activeProvider: null,
+      providers: [{ id: 'grok', enabled: true, type: 'tui', command: 'grok' }]
+    });
+    getSettings.mockResolvedValueOnce({ imageGen: { agy: { enabled: true } } });
+    const quotas = await getProviderQuotas({ family: 'imagegen' });
+    expect(quotas.map((q) => q.family)).toEqual(['imagegen']);
+    expect(scrapeTuiUsage).not.toHaveBeenCalled();
+  });
+
+  it('returns nothing for a family that is no longer enabled', async () => {
+    getAllProviders.mockResolvedValueOnce({ activeProvider: null, providers: [] });
+    expect(await getProviderQuotas({ family: 'grok' })).toEqual([]);
   });
 });
 
@@ -267,21 +310,29 @@ describe('parseAgyUsage', () => {
 });
 
 describe('parseGrokUsage', () => {
-  it('reads the weekly limit as percent USED and passes the reset string through', () => {
-    const { limits } = parseGrokUsage(GROK_PANEL);
+  // The panel's `Next reset` states no year and no zone, so it resolves against
+  // an injected `now` + the zone the fetcher forced on the child.
+  const opts = { now: Date.parse('2026-07-26T12:00:00.000Z'), timezone: 'UTC' };
+
+  it('reads the weekly limit as percent USED and normalizes the reset to ISO', () => {
+    const { limits } = parseGrokUsage(GROK_PANEL, opts);
     expect(limits).toHaveLength(1);
-    expect(limits[0]).toMatchObject({ key: 'weekly', label: 'Weekly', percentUsed: 42, percentRemaining: 58, resetsAt: 'August 1, 06:07' });
+    expect(limits[0]).toMatchObject({ key: 'weekly', label: 'Weekly', percentUsed: 42, percentRemaining: 58, resetsAt: '2026-08-01T06:07:00.000Z' });
   });
 
   it('returns no limits when the panel has no weekly-limit line', () => {
-    expect(parseGrokUsage('Grok Build Beta  0.2.101').limits).toEqual([]);
-    expect(parseGrokUsage(undefined).limits).toEqual([]);
+    expect(parseGrokUsage('Grok Build Beta  0.2.101', opts).limits).toEqual([]);
+    expect(parseGrokUsage(undefined, opts).limits).toEqual([]);
   });
 
   it('takes the freshest (last) frame when the panel is repainted', () => {
     const repainted = 'Weekly limit: 10% Next reset: July 1, 00:00\nWeekly limit: 73% Next reset: August 1, 06:07';
-    const { limits } = parseGrokUsage(repainted);
-    expect(limits[0]).toMatchObject({ percentUsed: 73, percentRemaining: 27, resetsAt: 'August 1, 06:07' });
+    const { limits } = parseGrokUsage(repainted, opts);
+    expect(limits[0]).toMatchObject({ percentUsed: 73, percentRemaining: 27, resetsAt: '2026-08-01T06:07:00.000Z' });
+  });
+
+  it('emits a null reset rather than a raw string when the panel states none', () => {
+    expect(parseGrokUsage('Weekly limit: 42%', opts).limits[0]).toMatchObject({ percentUsed: 42, resetsAt: null });
   });
 
   it('parses a Monthly window and both windows when present', () => {
@@ -392,7 +443,78 @@ describe('TUI usage fetchers (via getProviderQuotas)', () => {
     await getProviderQuotas();
     await getProviderQuotas(); // cache hit — no second scrape
     expect(scrapeTuiUsage).toHaveBeenCalledTimes(1);
-    await getProviderQuotas({ refresh: true }); // bypasses cache
+    await getProviderQuotas({ wait: 'fresh' }); // bypasses cache
     expect(scrapeTuiUsage).toHaveBeenCalledTimes(2);
+  });
+
+  // A scrape is a multi-second PTY spawn. Blocking on the TTL lapse is what made
+  // the Quota Burn / Usage pages take ~7s to open after a few idle minutes.
+  it('serves a STALE reading without waiting on the revalidating scrape', async () => {
+    vi.useFakeTimers();
+    getAllProviders.mockResolvedValue({ activeProvider: 'agy', providers: [{ id: 'antigravity-cli', enabled: true, type: 'cli', command: 'agy' }] });
+    scrapeTuiUsage.mockResolvedValueOnce(AGY_PANEL);
+    const [first] = await getProviderQuotas();
+
+    // Past the 5-minute TTL, with a scrape that never settles: a blocking cache
+    // would hang here forever. Stale-while-revalidate answers immediately.
+    vi.advanceTimersByTime(6 * 60 * 1000);
+    scrapeTuiUsage.mockReturnValueOnce(new Promise(() => {}));
+    const [stale] = await getProviderQuotas();
+    expect(stale.fetchedAt).toBe(first.fetchedAt); // the honest age of what we served
+    expect(scrapeTuiUsage).toHaveBeenCalledTimes(2); // …and the refresh did start
+    vi.useRealTimers();
+  });
+
+  // The cold case a stale value can't cover: nothing cached at all, e.g. the
+  // first page load after a server restart.
+  it("returns a pending card instead of blocking on a COLD cache under wait:'never'", async () => {
+    getAllProviders.mockResolvedValue({ activeProvider: 'agy', providers: [{ id: 'antigravity-cli', enabled: true, type: 'cli', command: 'agy' }] });
+    let release;
+    scrapeTuiUsage.mockReturnValueOnce(new Promise((resolve) => { release = resolve; }));
+
+    const [pending] = await getProviderQuotas({ wait: 'never' });
+    expect(pending).toMatchObject({ family: 'agy', supported: true, pending: true, limits: [] });
+
+    // The scrape was STARTED, not skipped — once it lands the next read is real.
+    release(AGY_PANEL);
+    await vi.waitFor(async () => {
+      const [card] = await getProviderQuotas({ wait: 'never' });
+      expect(card.pending).toBeUndefined();
+      expect(card.limits).toHaveLength(4);
+    });
+    expect(scrapeTuiUsage).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks for a real reading under the default wait and under wait:'fresh'", async () => {
+    getAllProviders.mockResolvedValue({ activeProvider: 'agy', providers: [{ id: 'antigravity-cli', enabled: true, type: 'cli', command: 'agy' }] });
+    scrapeTuiUsage.mockResolvedValueOnce(AGY_PANEL);
+    const [card] = await getProviderQuotas(); // default 'cached': cold ⇒ waits
+    expect(card.pending).toBeUndefined();
+    expect(card.limits).toHaveLength(4);
+
+    scrapeTuiUsage.mockResolvedValueOnce(AGY_PANEL);
+    const [refreshed] = await getProviderQuotas({ wait: 'fresh' });
+    expect(refreshed.pending).toBeUndefined();
+    expect(refreshed.limits).toHaveLength(4);
+  });
+
+  it('keeps the last good reading when a background revalidation fails', async () => {
+    vi.useFakeTimers();
+    getAllProviders.mockResolvedValue({ activeProvider: 'agy', providers: [{ id: 'antigravity-cli', enabled: true, type: 'cli', command: 'agy' }] });
+    scrapeTuiUsage.mockResolvedValueOnce(AGY_PANEL);
+    const [first] = await getProviderQuotas();
+
+    vi.advanceTimersByTime(6 * 60 * 1000);
+    scrapeTuiUsage.mockRejectedValueOnce(new Error('pty spawn failed'));
+    const [served] = await getProviderQuotas();
+    expect(served.limits).toHaveLength(4); // stale, not an error card
+    await vi.advanceTimersByTimeAsync(0); // let the failed revalidation settle
+
+    // A transient PTY hiccup must not evict the entry and force the next caller
+    // to block on a full scrape.
+    scrapeTuiUsage.mockReturnValueOnce(new Promise(() => {}));
+    const [afterFailure] = await getProviderQuotas();
+    expect(afterFailure.fetchedAt).toBe(first.fetchedAt);
+    vi.useRealTimers();
   });
 });

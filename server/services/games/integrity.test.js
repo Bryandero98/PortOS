@@ -189,6 +189,45 @@ describe('Game bundle integrity', () => {
     expect(current.verifiedFileCount).toBe(1);
   });
 
+  it('reports music publish state without disturbing destination-less bindings', async () => {
+    state.game.spriteBindings = [];
+
+    // A binding with no destination (pre-publish record, or an older peer)
+    // keeps the exact manifest-item shape it always hashed — an upgrade alone
+    // must not flip an existing bundle to "stale".
+    const legacy = await resolveGameAssets(state.game);
+    expect(legacy.music[0]).not.toHaveProperty('destinationPath');
+    expect(legacy.music[0]).not.toHaveProperty('publishedSha256');
+    expect(legacy.summaries.music[0]).toMatchObject({ status: 'ready', message: 'Audio ready' });
+    expect(legacy.summaries.music[0].publicationStatus).toBeUndefined();
+
+    state.game.musicBindings = [{
+      id: 'music-1',
+      trackId: 'theme',
+      destinationPath: 'game/assets/music/example-theme.ogg',
+      publication: null,
+    }];
+    const pending = await resolveGameAssets(state.game);
+    expect(pending.music[0]).toMatchObject({
+      destinationPath: 'game/assets/music/example-theme.ogg',
+      publishedSha256: null,
+    });
+    expect(pending.summaries.music[0]).toMatchObject({
+      publicationStatus: 'pending',
+      message: 'Audio verified · publish pending',
+    });
+
+    state.game.musicBindings[0].publication = {
+      sourceSha256: 'music-sha',
+      destinationSha256: 'music-sha',
+      destinationPath: 'game/assets/music/example-theme.ogg',
+      publishedAt: '2026-01-01T00:00:00.000Z',
+    };
+    const current = await resolveGameAssets(state.game);
+    expect(current.music[0].publishedSha256).toBe('music-sha');
+    expect(current.summaries.music[0].publicationStatus).toBe('current');
+  });
+
   it('blocks missing gallery artwork without failing the whole preflight', async () => {
     state.game.spriteBindings = [];
     state.game.musicBindings = [];

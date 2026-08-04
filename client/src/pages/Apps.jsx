@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Link } from 'react-router';
-import { ExternalLink, Gamepad2, Play, Square, RotateCcw, FolderOpen, Terminal, Code, RefreshCw, Wrench, Archive, ArchiveRestore, Ticket, Download, Hammer, Smartphone, Trash2 } from 'lucide-react';
+import { ExternalLink, Gamepad2, Play, Square, RotateCcw, FolderOpen, Terminal, Code, RefreshCw, Wrench, Archive, ArchiveRestore, Ticket, Download, Hammer, Smartphone, Trash2, AlertTriangle } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import InlineConfirmRow from '../components/ui/InlineConfirmRow';
 import OverflowMenu from '../components/ui/OverflowMenu';
@@ -9,8 +9,9 @@ import BrailleSpinner from '../components/BrailleSpinner';
 import PageSkeleton from '../components/ui/PageSkeleton';
 import KanbanBoard from '../components/KanbanBoard';
 import StatusBadge from '../components/StatusBadge';
-import ActivityLog from '../components/apps/ActivityLog';
+import AppOperationBanner from '../components/apps/AppOperationBanner';
 import { useAppOperation } from '../hooks/useAppOperation';
+import useUrlParams from '../hooks/useUrlParams';
 import * as api from '../services/api';
 import socket from '../services/socket';
 import { NON_PM2_TYPES, getAppTypeLabel } from '../components/apps/constants';
@@ -26,13 +27,24 @@ export default function Apps() {
   const [refreshingConfig, setRefreshingConfig] = useState({});
   const [building, setBuilding] = useState({});
   const [archiving, setArchiving] = useState({});
-  const [showArchived, setShowArchived] = useState(false);
+  // The archived filter lives in the URL (`/apps?view=archived`) so the archived
+  // list is linkable/bookmarkable and — critically — survivable: unarchiving the
+  // last archived app used to strand the user on an empty card with no control
+  // to get back (#3434).
+  const [searchParams, updateParams] = useUrlParams();
+  const showArchived = searchParams.get('view') === 'archived';
+  const setShowArchived = (next) => updateParams({ view: next ? 'archived' : null });
   const [jiraTickets, setJiraTickets] = useState({});
   const [loadingTickets, setLoadingTickets] = useState({});
+  // Parallel to jiraTickets: `undefined` tickets + a message here means "the
+  // fetch failed", which is a different thing from a fetched empty sprint.
+  const [ticketErrors, setTicketErrors] = useState({});
   // Per-row "…" trigger refs, so dismissing a row's delete confirmation hands
   // focus back to the control that opened it instead of dropping it on <body>.
   const menuTriggerRefs = useRef({});
   const menuTriggerRef = (id) => (menuTriggerRefs.current[id] ||= { current: null });
+  // Per-app sprint-ticket request tracking: `{ generation, active }`.
+  const ticketRequestsRef = useRef({});
 
   const fetchApps = useCallback(async () => {
     const data = await api.getApps().catch(() => []);
@@ -40,7 +52,7 @@ export default function Apps() {
     setLoading(false);
   }, []);
 
-  const { steps, isOperating, operatingAppId, operationType, error, completed, startUpdate, startStandardize } = useAppOperation({ onComplete: fetchApps });
+  const { operations, isOperating, startUpdate, startStandardize, dismiss } = useAppOperation({ onComplete: fetchApps });
 
   useEffect(() => {
     fetchApps();
@@ -91,7 +103,7 @@ export default function Apps() {
     if (result?.success) toast.success(`${app.nativeLaunch.label} is running`);
   };
 
-  const handleUpdate = (app) => startUpdate(app.id);
+  const handleUpdate = (app) => startUpdate(app.id, app.name);
 
   const handleBuild = async (app) => {
     setBuilding(prev => ({ ...prev, [app.id]: true }));
@@ -109,39 +121,76 @@ export default function Apps() {
     fetchApps();
   };
 
-  const handleStandardize = (app) => startStandardize(app.id);
+  const handleStandardize = (app) => startStandardize(app.id, app.name);
 
-  const toggleExpand = async (id) => {
+  // Ticket state is keyed by app + JIRA target, not app id alone: editing an
+  // app's instance or project key must not serve the previous project's cached
+  // board (and must not be blocked from fetching by it).
+  const sprintKey = (app) => `${app.id}:${app.jira?.instanceId}:${app.jira?.projectKey}`;
+
+  // A failed fetch must NOT be cached as `[]` — that read as "you have no
+  // sprint tickets" and, because the `!jiraTickets[id]` guard was satisfied by
+  // the cached empty array, never retried for the life of the page (#3437).
+  // Failure records a message and leaves `jiraTickets[id]` undefined, so both
+  // Retry and a re-expand re-issue the request; a genuine `[]` is still cached.
+  // Per-app request generation, so a slow earlier fetch can't land after a newer
+  // one and overwrite a good board with its stale error (the pending-request
+  // convention in client/src/CLAUDE.md).
+  const loadSprintTickets = useCallback(async (app) => {
+    const key = sprintKey(app);
+    const generation = (ticketRequestsRef.current[key]?.generation || 0) + 1;
+    ticketRequestsRef.current[key] = { generation, active: true };
+    const isCurrent = () => ticketRequestsRef.current[key]?.generation === generation;
+
+    setLoadingTickets(prev => ({ ...prev, [key]: true }));
+    setTicketErrors(prev => ({ ...prev, [key]: null }));
+    const tickets = await api
+      .getMySprintTickets(app.jira.instanceId, app.jira.projectKey, { silent: true })
+      .catch(err => {
+        if (isCurrent()) setTicketErrors(prev => ({ ...prev, [key]: err?.message || 'Request failed' }));
+        return null;
+      });
+    if (!isCurrent()) return;   // superseded — the newer request owns the state
+    ticketRequestsRef.current[key].active = false;
+    if (Array.isArray(tickets)) setJiraTickets(prev => ({ ...prev, [key]: tickets }));
+    setLoadingTickets(prev => ({ ...prev, [key]: false }));
+  }, []);
+
+  const toggleExpand = (id) => {
     const newExpandedId = expandedId === id ? null : id;
     setExpandedId(newExpandedId);
 
     // Fetch JIRA tickets when expanding an app with JIRA enabled
-    if (newExpandedId) {
-      const app = apps.find(a => a.id === newExpandedId);
-      if (app?.jira?.enabled && app.jira.instanceId && app.jira.projectKey) {
-        if (!jiraTickets[id]) {
-          setLoadingTickets(prev => ({ ...prev, [id]: true }));
-          const tickets = await api.getMySprintTickets(app.jira.instanceId, app.jira.projectKey).catch(() => []);
-          setJiraTickets(prev => ({ ...prev, [id]: tickets }));
-          setLoadingTickets(prev => ({ ...prev, [id]: false }));
-        }
-      }
-    }
+    if (!newExpandedId) return;
+    const app = apps.find(a => a.id === newExpandedId);
+    if (!app?.jira?.enabled || !app.jira.instanceId || !app.jira.projectKey) return;
+    const key = sprintKey(app);
+    if (!jiraTickets[key] && !ticketRequestsRef.current[key]?.active) loadSprintTickets(app);
   };
 
-  const handleArchive = async (app) => {
+  // Archive/unarchive gate their success toast on a response, the way
+  // handleBuild does: `request()` already toasted the failure, and a green
+  // "archived" on top of it told the user an app was excluded from CoS
+  // scheduling when it was not (#3436).
+  const setArchived = async (app, archived) => {
     setArchiving(prev => ({ ...prev, [app.id]: true }));
-    await api.archiveApp(app.id).catch(() => null);
+    const result = await (archived ? api.archiveApp(app.id) : api.unarchiveApp(app.id)).catch(() => null);
     setArchiving(prev => ({ ...prev, [app.id]: false }));
-    toast.success(`${app.name} archived - excluded from COS tasks`);
+    if (!result) return;
+    setApps(prev => prev.map(a => (a.id === app.id ? { ...a, archived } : a)));
+    toast.success(archived
+      ? `${app.name} archived — excluded from CoS tasks`
+      : `${app.name} unarchived — included in CoS tasks`);
   };
 
-  const handleUnarchive = async (app) => {
-    setArchiving(prev => ({ ...prev, [app.id]: true }));
-    await api.unarchiveApp(app.id).catch(() => null);
-    setArchiving(prev => ({ ...prev, [app.id]: false }));
-    toast.success(`${app.name} unarchived - included in COS tasks`);
-  };
+  const handleArchive = (app) => setArchived(app, true);
+
+  const handleUnarchive = (app) => setArchived(app, false);
+
+  // The server names the app it is operating on (so a rehydrated operation is
+  // labelled even before the list loads); fall back to the loaded list.
+  const operationName = (op) => op.appName || apps.find(app => app.id === op.appId)?.name;
+  const liveOperation = operations.find(op => !op.completed && !op.error);
 
   // Filter apps based on archive status
   const activeApps = apps.filter(app => !app.archived);
@@ -162,10 +211,11 @@ export default function Apps() {
           <p className="text-gray-500 text-sm sm:text-base">Manage registered applications</p>
         </div>
         <div className="flex items-center gap-3">
-          {/* Archive Toggle */}
-          {archivedApps.length > 0 && (
+          {/* Archive Toggle — stays mounted while the archived view is open even
+              once it empties, so the way back never disappears. */}
+          {(showArchived || archivedApps.length > 0) && (
             <button
-              onClick={() => setShowArchived(prev => !prev)}
+              onClick={() => setShowArchived(!showArchived)}
               className={`px-3 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors ${
                 showArchived
                   ? 'bg-port-warning/20 text-port-warning border border-port-warning/30'
@@ -185,6 +235,24 @@ export default function Apps() {
         </div>
       </div>
 
+      {/* In-flight update/standardize — page-level so it survives collapsing
+          the row and remounting the page. */}
+      {operations.length > 0 && (
+      <div className="sticky top-0 z-20 mb-4 space-y-2">
+      {operations.map(op => (
+        <AppOperationBanner
+          key={op.appId}
+          appName={operationName(op)}
+          type={op.type}
+          steps={op.steps}
+          error={op.error}
+          completed={op.completed}
+          onDismiss={op.error || op.completed ? () => dismiss(op.appId) : null}
+        />
+      ))}
+      </div>
+      )}
+
       {/* App List */}
       {displayedApps.length === 0 ? (
         <div className="bg-port-card border border-port-border rounded-xl p-12 text-center">
@@ -195,7 +263,14 @@ export default function Apps() {
           <p className="text-gray-500 mb-6">
             {showArchived ? 'Archived apps will appear here' : 'Register your first app to monitor its health, restart it, and surface it on your dashboard.'}
           </p>
-          {!showArchived && (
+          {showArchived ? (
+            <button
+              onClick={() => setShowArchived(false)}
+              className="inline-block px-4 py-2 bg-port-accent hover:bg-port-accent/80 text-white rounded-lg transition-colors"
+            >
+              Back to active apps
+            </button>
+          ) : (
             <Link
               to="/apps/create"
               className="inline-block px-4 py-2 bg-port-accent hover:bg-port-accent/80 text-white rounded-lg transition-colors"
@@ -208,6 +283,13 @@ export default function Apps() {
         <div className="space-y-4">
           {displayedApps.map(app => {
             const isNonPm2 = NON_PM2_TYPES.has(app.type);
+            // One update/standardize at a time. Rows that aren't the one
+            // operating say so in the button label — a bare greyed control with
+            // a tooltip explains nothing on touch.
+            const rowOperation = operations.find(op => op.appId === app.id);
+            const rowOperating = !!rowOperation && !rowOperation.completed && !rowOperation.error;
+            const busyElsewhere = isOperating && !rowOperating;
+            const busyReason = `${(liveOperation && operationName(liveOperation)) || 'Another app'} is ${liveOperation?.type === 'standardize' ? 'being standardized' : 'updating'}`;
             return (
             <div
               key={app.id}
@@ -531,16 +613,30 @@ export default function Apps() {
                         {app.jira.instanceId && app.jira.projectKey && (
                           <div className="mt-3">
                             <div className="text-xs text-gray-500 uppercase tracking-wide mb-2">My Sprint Tickets</div>
-                            {loadingTickets[app.id] ? (
+                            {loadingTickets[sprintKey(app)] ? (
                               <div className="flex items-center gap-2 px-3 py-2 text-sm text-gray-400">
                                 <BrailleSpinner text="" />
                                 <span>Loading tickets...</span>
                               </div>
-                            ) : jiraTickets[app.id]?.length > 0 ? (
+                            ) : ticketErrors[sprintKey(app)] ? (
+                              <div className="flex flex-wrap items-center gap-3 px-3 py-2 bg-port-card border border-port-error/30 rounded-lg">
+                                <AlertTriangle size={16} aria-hidden="true" className="text-port-error shrink-0" />
+                                <span className="text-sm text-gray-300 min-w-0">
+                                  Couldn&apos;t load sprint tickets — {ticketErrors[sprintKey(app)]}
+                                </span>
+                                <button
+                                  onClick={() => loadSprintTickets(app)}
+                                  className="px-3 py-1.5 min-h-[40px] sm:min-h-0 bg-port-border hover:bg-port-border/80 text-white rounded-lg text-xs flex items-center gap-1 focus:outline-hidden focus:ring-2 focus:ring-port-accent"
+                                  aria-label={`Retry loading sprint tickets for ${app.name}`}
+                                >
+                                  <RefreshCw size={14} aria-hidden="true" /> Retry
+                                </button>
+                              </div>
+                            ) : jiraTickets[sprintKey(app)]?.length > 0 ? (
                               <KanbanBoard
-                                tickets={jiraTickets[app.id]}
+                                tickets={jiraTickets[sprintKey(app)]}
                                 instanceId={app.jira.instanceId}
-                                onTicketsChange={(updated) => setJiraTickets(prev => ({ ...prev, [app.id]: updated }))}
+                                onTicketsChange={(updated) => setJiraTickets(prev => ({ ...prev, [sprintKey(app)]: updated }))}
                                 appId={app.id}
                                 projectKey={app.jira.projectKey}
                                 boardId={app.jira.boardId}
@@ -572,11 +668,14 @@ export default function Apps() {
                       <button
                         onClick={() => handleUpdate(app)}
                         disabled={isOperating}
-                        className="px-3 py-1.5 min-h-[40px] sm:min-h-0 bg-port-success/20 text-port-success hover:bg-port-success/30 rounded-lg text-xs flex items-center gap-1 disabled:opacity-50"
-                        aria-label="Pull latest code, install dependencies, run setup, and restart"
+                        className="px-3 py-1.5 min-h-[40px] sm:min-h-0 bg-port-success/20 text-port-success enabled:hover:bg-port-success/30 rounded-lg text-xs flex items-center gap-1 disabled:opacity-50"
+                        aria-label={busyElsewhere ? `Update unavailable — ${busyReason}` : 'Pull latest code, install dependencies, run setup, and restart'}
+                        title={busyElsewhere ? busyReason : undefined}
                       >
-                        <Download size={14} aria-hidden="true" className={operatingAppId === app.id && operationType === 'update' ? 'animate-bounce' : ''} />
-                        {operatingAppId === app.id && operationType === 'update' ? 'Updating...' : 'Update'}
+                        <Download size={14} aria-hidden="true" className={rowOperating && rowOperation.type === 'update' ? 'animate-bounce' : ''} />
+                        {rowOperating && rowOperation.type === 'update'
+                          ? 'Updating...'
+                          : busyElsewhere ? 'Update (busy)' : 'Update'}
                       </button>
                       {app.buildCommand && (
                         <button
@@ -605,11 +704,14 @@ export default function Apps() {
                             <button
                               onClick={() => handleStandardize(app)}
                               disabled={isOperating}
-                              className="px-3 py-1.5 min-h-[40px] sm:min-h-0 bg-port-accent/20 text-port-accent hover:bg-port-accent/30 rounded-lg text-xs flex items-center gap-1 disabled:opacity-50"
-                              aria-label="Standardize PM2 config: move all ports to ecosystem.config.cjs"
+                              className="px-3 py-1.5 min-h-[40px] sm:min-h-0 bg-port-accent/20 text-port-accent enabled:hover:bg-port-accent/30 rounded-lg text-xs flex items-center gap-1 disabled:opacity-50"
+                              aria-label={busyElsewhere ? `Standardize PM2 unavailable — ${busyReason}` : 'Standardize PM2 config: move all ports to ecosystem.config.cjs'}
+                              title={busyElsewhere ? busyReason : undefined}
                             >
-                              <Wrench size={14} aria-hidden="true" className={operatingAppId === app.id && operationType === 'standardize' ? 'animate-spin' : ''} />
-                              {operatingAppId === app.id && operationType === 'standardize' ? 'Standardizing...' : 'Standardize PM2'}
+                              <Wrench size={14} aria-hidden="true" className={rowOperating && rowOperation.type === 'standardize' ? 'animate-spin' : ''} />
+                              {rowOperating && rowOperation.type === 'standardize'
+                                ? 'Standardizing...'
+                                : busyElsewhere ? 'Standardize PM2 (busy)' : 'Standardize PM2'}
                             </button>
                           )}
                         </>
@@ -617,10 +719,9 @@ export default function Apps() {
                       {/* Xcode-specific actions */}
                       {isNonPm2 && (
                         <button
-                          onClick={() => {
-                            const xcodeprojName = app.name + '.xcodeproj';
-                            window.open(`xcode://open?url=file://${app.repoPath}/${xcodeprojName}`, '_self');
-                          }}
+                          onClick={() => api.openAppInXcode(app.id)
+                            .then(result => { if (result?.success) toast.success(`Opening ${app.name} in Xcode`); })
+                            .catch(() => null)}
                           className="px-3 py-1.5 min-h-[40px] sm:min-h-0 bg-port-accent/20 text-port-accent hover:bg-port-accent/30 rounded-lg text-xs flex items-center gap-1"
                           aria-label={`Open ${app.name} in Xcode`}
                         >
@@ -628,11 +729,6 @@ export default function Apps() {
                         </button>
                       )}
                     </div>
-
-                    {/* Activity Log */}
-                    {operatingAppId === app.id && (
-                      <ActivityLog steps={steps} error={error} completed={completed} />
-                    )}
                   </div>
                 </div>
               )}

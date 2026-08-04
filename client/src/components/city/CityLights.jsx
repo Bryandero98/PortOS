@@ -1,7 +1,7 @@
 import { useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import { getTimeOfDayPreset } from './cityConstants';
+import { cityShowDetail, getTimeOfDayPreset } from './cityConstants';
 import { useCityPalette } from './CityPaletteContext';
 
 // Animated accent light that slowly shifts color, with reactive brightness
@@ -80,7 +80,7 @@ function ReactivePointLight({ position, baseIntensity, color, distance, brightne
   );
 }
 
-export default function CityLights({ settings }) {
+export default function CityLights({ settings, lightingTier }) {
   const { ground } = useCityPalette();
   const brightnessRef = useRef(settings?.ambientBrightness ?? 1.2);
   brightnessRef.current = settings?.ambientBrightness ?? 1.2;
@@ -89,6 +89,17 @@ export default function CityLights({ settings }) {
   const skyTheme = settings?.skyTheme ?? 'cyberpunk';
   const preset = getTimeOfDayPreset(timeOfDay, skyTheme);
   const nightGlow = 1 - Math.min(1, preset.daylightFactor ?? 0);
+
+  // Medium tier and up — the same gate the rest of the optional set dressing uses, so the
+  // low tier sheds light count along with the props those lights were there to accent.
+  //
+  // Gated on the SETTLED tier, not the render tier the rest of the set dressing
+  // reads. CityScene pins `effectiveTier: 'low'` for the first 1.2s of every mount
+  // and visibility resume, and light count is part of three.js's program cache key
+  // — so reading the clamped tier here would recompile every MeshStandardMaterial
+  // in the scene at the warm-up boundary, a stall at exactly the moment the warm-up
+  // exists to avoid one. Falls back to `settings` when the prop is absent.
+  const showAccentLights = cityShowDetail(lightingTier ? { effectiveTier: lightingTier } : settings);
 
   // Neon scale: dim neon point lights during daytime (30% at noon, 100% at night)
   const neonScaleRef = useRef(1);
@@ -151,10 +162,21 @@ export default function CityLights({ settings }) {
       <ReactivePointLight position={[0, 15, -25]} baseIntensity={0.5} color="#8b5cf6" distance={60} brightnessRef={brightnessRef} neonScaleRef={neonScaleRef} />
       {/* Warm orange ground level accent */}
       <ReactivePointLight position={[10, 3, 5]} baseIntensity={0.35} color="#f97316" distance={35} brightnessRef={brightnessRef} neonScaleRef={neonScaleRef} />
-      {/* Additional green accent - ground level from opposite side */}
-      <ReactivePointLight position={[-12, 3, 8]} baseIntensity={0.2} color="#22c55e" distance={25} brightnessRef={brightnessRef} neonScaleRef={neonScaleRef} />
-      {/* Red warning accent from below-right */}
-      <ReactivePointLight position={[15, 2, -10]} baseIntensity={0.15} color="#f43f5e" distance={22} brightnessRef={brightnessRef} neonScaleRef={neonScaleRef} />
+      {/* Ground-level small-radius accents (green + red warning). Culled on the low tier:
+          every mounted light costs a per-fragment iteration in the lighting loop of every
+          MeshStandardMaterial in the scene, whatever its intensity — so dimming them saves
+          nothing and only unmounting does (#3397). These two are the least visually
+          significant of the set: lowest intensity (0.2 / 0.15) and smallest radius (25 / 22
+          units), so they only tint a small patch of street the low tier already renders
+          without its set dressing. */}
+      {showAccentLights && (
+        <>
+          {/* Additional green accent - ground level from opposite side */}
+          <ReactivePointLight position={[-12, 3, 8]} baseIntensity={0.2} color="#22c55e" distance={25} brightnessRef={brightnessRef} neonScaleRef={neonScaleRef} />
+          {/* Red warning accent from below-right */}
+          <ReactivePointLight position={[15, 2, -10]} baseIntensity={0.15} color="#f43f5e" distance={22} brightnessRef={brightnessRef} neonScaleRef={neonScaleRef} />
+        </>
+      )}
       {/* Sweeping searchlight */}
       <Searchlight brightnessRef={brightnessRef} neonScaleRef={neonScaleRef} />
     </>

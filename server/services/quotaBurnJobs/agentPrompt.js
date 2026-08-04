@@ -1,0 +1,171 @@
+/**
+ * Burn job — queue a CoS agent in a managed app with a custom prompt.
+ *
+ * This is the original quota-burn behavior, now expressed as one job type among
+ * several rather than as a per-app scheduled task type. The loop lives in
+ * PortOS; only the WORK targets a managed app, named per job — so one install
+ * can point its codex window at one repo and its claude window at another.
+ *
+ * The task is queued (not spawned directly) so the burn is visible in the CoS
+ * queue and Active Agents like any other task, and inherits the daemon's
+ * provider/worktree/PR handling instead of forking a second dispatch path.
+ */
+
+import { addTask } from '../cosTaskStore.js';
+import { getAppById } from '../apps.js';
+import { getAllProviders } from '../providers.js';
+import { commandBasename } from '../../lib/providerModels.js';
+
+/**
+ * An agent-capable provider in the burning family. An explicit `providerId`
+ * (job first, then family) wins; otherwise match the family id against the
+ * enabled providers, PREFERRING the TUI.
+ *
+ * Preferring the TUI is the point: a burn runs unattended for minutes on the
+ * user's own subscription, and a TUI agent is watchable in Active Agents and can
+ * be steered mid-run, where a headless CLI run can only be read after it has
+ * finished. Most families have both registered (`claude-code` + `claude-code-tui`,
+ * `codex` + `codex-tui`, …) and the CLI sorts first, so a plain `find` silently
+ * picked the unobservable one every time. `pickScrapeProvider` applies the same
+ * preference when reading `/usage`.
+ *
+ * Two exclusions, both about what a burn is FOR — spending a subscription window
+ * that would otherwise expire unused:
+ * - API-type providers bill per token rather than drawing down a window.
+ * - Ollama-backed wrappers run a LOCAL model, so there is no window to spend and
+ *   burning through one accomplishes nothing. `resolveEnabledFamilies` drops
+ *   them from the quota cards for exactly this reason; a `claude-ollama-tui`
+ *   would otherwise be a perfectly good match for the `claude` family.
+ */
+export function providerForFamily(providers, { familyId, providerId }) {
+  const available = (providers || []).filter((provider) =>
+    provider?.enabled && provider.ollamaBacked !== true
+    && (provider.type === 'cli' || provider.type === 'tui'));
+  if (providerId) return available.find((provider) => provider.id === providerId) || null;
+  const inFamily = available.filter((provider) => matchesFamily(provider, familyId));
+  return inFamily.find((provider) => provider.type === 'tui') || inFamily[0] || null;
+}
+
+/**
+ * Does this provider belong to `familyId`?
+ *
+ * The BINARY is what actually identifies the family — the provider id is a
+ * user-facing label and does not have to contain the family name. Matching on
+ * the id alone silently stranded the whole `agy` family: its providers ship as
+ * `antigravity-cli` / `antigravity-tui`, neither of which contains "agy", so a
+ * configured Antigravity burn plan reported "no enabled CLI/TUI provider" and
+ * could never dispatch — while the quota card sat right above it showing a
+ * healthy window, because `providerUsage`'s own matcher checks the command.
+ *
+ * The id substring stays as a fallback for a provider registered under a wrapper
+ * script whose basename isn't the family name.
+ */
+const matchesFamily = (provider, familyId) => {
+  const needle = String(familyId || '').toLowerCase();
+  if (!needle) return false;
+  return commandBasename(provider.command) === needle
+    || String(provider.id || '').toLowerCase().includes(needle);
+};
+
+async function resolve({ params, job, family }) {
+  const appId = typeof params?.appId === 'string' ? params.appId.trim() : '';
+  const prompt = typeof params?.prompt === 'string' ? params.prompt.trim() : '';
+  if (!appId) return { error: 'no managed app selected' };
+  if (!prompt) return { error: 'no work prompt configured' };
+  const app = await getAppById(appId);
+  if (!app) return { error: `managed app ${appId} no longer exists` };
+  const result = await getAllProviders();
+  const provider = providerForFamily(
+    Array.isArray(result) ? result : result?.providers,
+    { familyId: family?.id, providerId: job?.providerId || family?.providerId || null },
+  );
+  if (!provider) return { error: `no enabled CLI/TUI provider in the ${family?.id} family` };
+  return { app, prompt, provider };
+}
+
+export async function countPending({ params, job, family } = {}) {
+  const resolved = await resolve({ params, job, family });
+  return resolved.error
+    ? { count: 0, detail: resolved.error }
+    // Handed back to run() by the runner so the app + provider lookups happen
+    // once per dispatch instead of twice — see the registry's hook contract.
+    : { count: 1, context: resolved, detail: `ready to queue an agent in ${resolved.app.name}` };
+}
+
+/** The burn context the agent sees above the user's own prompt. */
+export function renderBurnPrompt({ family, candidate, prompt }) {
+  const hours = Math.max(0, Math.ceil(candidate?.hoursUntilReset ?? 0));
+  return [
+    `# ${family.id} quota-burn task`,
+    '',
+    `This ${family.id} quota window resets in about ${hours} hour${hours === 1 ? '' : 's'}.`,
+    `Window: ${candidate?.limit?.label || candidate?.limit?.scope || 'provider window'}; remaining: ${candidate?.limit?.percentRemaining}%; reserve: ${family.reservePercent}%.`,
+    `Dispatch cap: ${family.maxDispatchesPerWindow} for this reset window.`,
+    '',
+    'Carry out the configured work below. Do not use another provider family as a substitute.',
+    '',
+    prompt,
+  ].join('\n');
+}
+
+export async function run({ params, job, family, candidate, context } = {}) {
+  // Reuse the probe's lookups when the runner supplied them; the page's force
+  // path calls run() with no probe, so fall back to resolving here.
+  const resolved = context ?? await resolve({ params, job, family });
+  if (resolved.error) return { dispatched: false, reason: resolved.error };
+  const { app, prompt, provider } = resolved;
+
+  const label = job?.label?.trim() || 'quota-burn work';
+  // The two "lands no code" postures. `noCodeOutput` = the deliverable is an
+  // action performed during the run (a filed issue, an endpoint call), so the
+  // job needs no branch at all. `discardWorktree` = the job wants a scratch
+  // checkout but nothing in it may land. Either one means there is no diff to
+  // ship, which is what the coercions below rest on.
+  const discardsWorktree = params?.discardWorktree === true;
+  const landsNoCode = params?.noCodeOutput === true || discardsWorktree;
+  const task = await addTask({
+    description: `[Quota burn: ${family.id}] ${label} for ${app.name}`,
+    app: app.id,
+    context: renderBurnPrompt({ family, candidate, prompt }),
+    provider: provider.id,
+    model: job?.model || undefined,
+    useWorktree: params?.useWorktree !== false,
+    // A job that lands no code can never produce a PR. Leaving `openPR: true`
+    // on it (the param's default, one checkbox away) makes the spawner expect a
+    // PR that cannot exist: the run is downgraded to `pr-missing` and RETRIED,
+    // burning up to five agent runs of subscription quota per misconfigured job.
+    // `/simplify` reviews changed code ahead of a commit that never happens.
+    // Coerced here rather than only in the UI so a hand-edited plan can't reach
+    // that state.
+    openPR: !landsNoCode && params?.openPR !== false,
+    simplify: !landsNoCode && params?.simplify !== false,
+    // Scratch-checkout posture. Without it, `useWorktree + !openPR` auto-merges
+    // whatever the agent happened to commit onto the managed app's default
+    // branch, unreviewed.
+    discardWorktree: discardsWorktree,
+    // Where the deliverable goes: the action the agent takes DURING the run, not
+    // a commit and not the completion sentinel (which is only the done-signal).
+    // Without this the prompt tells it "write your result to the sentinel" — so
+    // an audit writes its findings into a file instead of filing anything — and,
+    // on a no-worktree job, tells it to `/do:push` to the branch it is standing
+    // on, which is the app's default branch.
+    noCodeOutput: landsNoCode,
+    // A run that correctly changed nothing must not be failed by the
+    // idle-complete gate, which otherwise requires a dirty tree.
+    worktreeChangesExpected: !landsNoCode,
+    reviewLoop: false,
+  }, 'internal');
+
+  // A duplicate means an identical burn task for this app is still pending or
+  // running. Report it as NOT dispatched so the window's cap isn't charged for
+  // a task that already exists — otherwise a family whose burn keeps colliding
+  // would exhaust its budget without ever adding work.
+  if (task?.duplicate) return { dispatched: false, reason: `an identical burn task is already ${task.status}` };
+
+  console.log(`🔥 Quota-burn queued agent task ${task.id} for ${app.name} via ${provider.id}`);
+  return {
+    dispatched: true,
+    summary: `Queued "${label}" in ${app.name} via ${provider.id}`,
+    detail: { taskId: task.id, appId: app.id, providerId: provider.id, model: job?.model || null },
+  };
+}

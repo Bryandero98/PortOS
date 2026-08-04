@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import {
   Clapperboard, Loader2, Users, MapPin as MapPinIcon,
@@ -43,7 +43,13 @@ const RUN_LABEL = {
   format: 'Format pass',
 };
 
-export default function StoryboardPanel({
+// Memoized (#3387): this is a heavy sibling of the WorkEditor prose textarea
+// with no dependency on the body text, so a per-keystroke `setBody` in the
+// parent would otherwise re-render the whole storyboard tree. The memo boundary
+// only pays off while every prop stays referentially stable across keystrokes —
+// WorkEditor wraps its handlers in useCallback and reads `body` through a ref
+// for exactly that reason, and `WorkEditor.perf.test.jsx` guards the invariant.
+function StoryboardPanel({
   work,
   characters = [],
   places = [],
@@ -71,6 +77,7 @@ export default function StoryboardPanel({
   onSceneRenderStart,
   tab,
   onTabChange,
+  dirty = false,
 }) {
   const setTab = onTabChange;
   const [searchParams, setSearchParams] = useSearchParams();
@@ -322,6 +329,7 @@ export default function StoryboardPanel({
             onRefresh={onRunCharacters}
             running={runningKind === 'characters'}
             anyRunning={!!runningKind}
+            dirty={dirty}
             readingTheme={readingTheme}
             hotRefId={hotRef?.kind === 'char' ? hotRef.refId : null}
           />
@@ -335,6 +343,7 @@ export default function StoryboardPanel({
             onRefresh={onRunPlaces}
             running={runningKind === 'places'}
             anyRunning={!!runningKind}
+            dirty={dirty}
             readingTheme={readingTheme}
             hotRefId={hotRef?.kind === 'place' ? hotRef.refId : null}
           />
@@ -348,6 +357,7 @@ export default function StoryboardPanel({
             onRefresh={onRunObjects}
             running={runningKind === 'objects'}
             anyRunning={!!runningKind}
+            dirty={dirty}
             readingTheme={readingTheme}
             hotRefId={hotRef?.kind === 'object' ? hotRef.refId : null}
           />
@@ -386,6 +396,7 @@ export default function StoryboardPanel({
             hotRef={hotRef}
             onSceneHover={onSceneHover}
             onSceneRenderStart={onSceneRenderStart}
+            dirty={dirty}
           />
         )}
         {tab === TAB.CONFIG && (
@@ -408,3 +419,5 @@ export default function StoryboardPanel({
     </div>
   );
 }
+
+export default memo(StoryboardPanel);

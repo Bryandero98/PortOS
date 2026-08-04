@@ -1,193 +1,252 @@
-import { getProviderQuotas } from './providerUsage.js';
+/**
+ * Quota-burn candidate selection + the per-window dispatch ledger.
+ *
+ * Quota-burn spends subscription-backed CLI quota that would otherwise expire
+ * unused: it watches each enabled provider family's reset clock and, only once
+ * a window is close to resetting and still has headroom above the family's
+ * reserve, runs the next job in that family's ordered burn plan.
+ *
+ * This module owns the SELECTION half (which family, which window, is the
+ * window's dispatch cap spent) and nothing else. The plan lives in
+ * `quotaBurnStore.js`, the jobs in `quotaBurnJobs/`, and the loop that ties
+ * them together in `quotaBurnRunner.js`.
+ *
+ * Everything here fails CLOSED: an unknown reset time, an unsupported provider,
+ * a quota-read error, or a card that declares itself unburnable all mean "do not
+ * dispatch". Burning is opt-in spending of the user's own subscription — a
+ * guess in the permissive direction costs them real quota.
+ */
+
 import { join } from 'path';
 import { atomicWrite, PATHS, readJSONFile } from '../lib/fileUtils.js';
 import { createFileWriteQueue } from '../lib/fileWriteQueue.js';
+import { familyIsActionable, normalizeQuotaBurnFamily } from '../lib/quotaBurnConfig.js';
+import { isPlainObject } from '../lib/objects.js';
 import { hoursUntilReset, normalizeResetAt } from '../lib/quotaReset.js';
 
-export const QUOTA_BURN_TASK_TYPE = 'quota-burn';
-const LEDGER_FILE = join(PATHS.cos, 'quota-burn-dispatches.json');
-const AGENT_DISPATCH_LEDGER_KEY = '__agentDispatches';
-export const DEFAULT_QUOTA_BURN_FAMILY = {
-  enabled: false,
-  providerId: null,
-  model: null,
-  scope: null,
-  resetWithinHours: 24,
-  reservePercent: 0,
-  maxDispatchesPerWindow: 5,
-  priority: 0,
-  prompt: '',
-};
+const LEDGER_FILE = () => join(PATHS.cos, 'quota-burn-dispatches.json');
 
-export function quotaBurnConfig(app) {
-  const metadata = app?.taskTypeOverrides?.[QUOTA_BURN_TASK_TYPE]?.taskMetadata;
-  return metadata && typeof metadata === 'object' ? metadata : { families: {} };
-}
+// Window keys older than this fall out of the ledger on the next write. A key is
+// `<family>:<resetEpochMs>`, so a passed window can never be selected again and
+// its count is dead weight; without a prune the file grows for the life of the
+// install.
+const LEDGER_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
-async function readQuotaBurnLedger() {
-  const loaded = await readJSONFile(LEDGER_FILE, {});
-  return loaded && typeof loaded === 'object' ? loaded : {};
-}
-
+/** Dispatch counts per `<family>:<resetEpochMs>` window key. */
 export async function getQuotaBurnDispatches() {
-  const { [AGENT_DISPATCH_LEDGER_KEY]: _agentDispatches, ...counts } = await readQuotaBurnLedger();
-  return counts;
+  const loaded = await readJSONFile(LEDGER_FILE(), {});
+  return isPlainObject(loaded) ? loaded : {};
 }
 
-// Single-tail queue for the dispatch ledger's read-modify-write. Two quota-burn
-// agents (one per app) can finalize concurrently, and each finalization records a
-// dispatch — unserialized, both would read the same count and write the same
-// increment, losing one burn. An undercounted ledger then lets the window
-// dispatch past `maxDispatchesPerWindow`, which is real quota overspend. This is
-// the "serialize two write paths that mutate the same record" case, not a
-// defense against competing users. It only became reachable when the write moved
-// from generation (sequential, one app at a time) to finalize (#3179).
-//
-// `__agentDispatches` keeps the increment idempotent across a crash between the
-// hook side effect and finalizeAgent's separate agent-marker write (#3182). It
-// lives in this SAME atomic ledger write and leaves window counts as top-level
-// numbers, so an older PortOS version still reads and updates the file safely.
+const windowEpoch = (key) => Number(String(key).split(':').pop());
+
+function pruneLedger(ledger, now) {
+  return Object.fromEntries(Object.entries(ledger).filter(([key]) => {
+    const epoch = windowEpoch(key);
+    // Keep anything we can't date — an unparseable key is not evidence of age.
+    return !Number.isFinite(epoch) || now - epoch < LEDGER_RETENTION_MS;
+  }));
+}
+
+// Single tail for the ledger's read-modify-write. The scheduler tick and an
+// on-demand "Run now" can both land a dispatch at once; unserialized, both would
+// read the same count and write the same increment, losing one burn. An
+// undercounted ledger then lets the window dispatch past
+// `maxDispatchesPerWindow`, which is real quota overspend. This is the
+// "serialize two write paths that mutate the same record" case, not a defense
+// against competing users.
 const ledgerWriteQueue = createFileWriteQueue();
 
-export async function recordQuotaBurnDispatch(key, { agentId = null } = {}) {
+export async function recordQuotaBurnDispatch(key, { now = Date.now() } = {}) {
   return ledgerWriteQueue(async () => {
-    const ledger = await readQuotaBurnLedger();
-    const agentDispatches = ledger[AGENT_DISPATCH_LEDGER_KEY];
-    const seenAgents = agentDispatches && typeof agentDispatches === 'object' ? agentDispatches : {};
-    if (agentId && seenAgents[agentId]) return ledger;
-    const next = {
-      ...ledger,
-      [key]: Number(ledger[key] || 0) + 1,
-      ...(agentId ? {
-        [AGENT_DISPATCH_LEDGER_KEY]: { ...seenAgents, [agentId]: key }
-      } : {}),
-    };
-    await atomicWrite(LEDGER_FILE, next);
+    const ledger = pruneLedger(await getQuotaBurnDispatches(), now);
+    const next = { ...ledger, [key]: Number(ledger[key] || 0) + 1 };
+    await atomicWrite(LEDGER_FILE(), next);
     return next;
   });
 }
 
 /**
- * The task-metadata key a resolved `dispatchKey` rides across on, from the
- * pre-agent `buildTaskInput` hook to the post-agent `processTaskOutput` that
- * writes the ledger (#3179). Lives here, beside the ledger it guards, so the
- * producer, the consumer, and the in-flight count below can't drift on spelling.
+ * The soonest-resetting limit on a card that is still in scope for the family,
+ * or null when none of them state a reset time we can read.
  */
-export const QUOTA_BURN_DISPATCH_KEY_FIELD = 'quotaBurnDispatchKey';
-
-/**
- * Dispatch counts to select the next burn candidate against: the persisted
- * ledger PLUS every quota-burn task already queued or running that carries a
- * dispatch key but has not reached its post-agent ledger write yet.
- *
- * Counting the in-flight tasks is what keeps the window cap honest now that the
- * ledger is written post-agent (#3179). The ledger write used to happen during
- * generation, which incidentally serialized sibling candidates — the next reader
- * always saw it. Deferring the write opens a gap between "task created" and
- * "dispatch recorded", and two paths generate inside that gap: the per-app
- * improvement loop runs once per managed app while `dispatchKey` is
- * `<family>:<resetEpoch>` (app-independent, one global ledger), and an on-demand
- * "Run" calls the generator directly, bypassing the per-app pending-task cap
- * entirely. Without this, either could dispatch past `maxDispatchesPerWindow` —
- * real quota overspend, the exact thing the cap exists to prevent, and a worse
- * failure than the over-counting #3179 fixed.
- *
- * `ignoreTaskId` excludes one task from the in-flight tally — the same exclusion
- * `buildImprovementDedupSets` takes, for the same reason. `agent:completed` fires
- * from `completeAgent`, which runs AFTER the output hook wrote this run's ledger
- * entry but BEFORE the completion flow's `updateTask` marks the task done. So
- * during the perpetual drain-on-completion refill the just-finished burn is
- * counted twice — once in the ledger, once as a still-`in_progress` task — and a
- * family with `maxDispatchesPerWindow: 2` would stop after one run and likely
- * miss its reset window. Callers on that path pass the completing task's id.
- *
- * An unreadable task file degrades to the ledger-only count rather than throwing:
- * COS-TASKS.md is the file the whole CoS queue reads, so if it is unavailable
- * nothing is dispatching anyway, and failing the probe closed would wedge
- * quota-burn until the next 12-hourly recheck.
- */
-export async function getEffectiveQuotaBurnDispatches({ ignoreTaskId = null } = {}) {
-  const counts = { ...(await getQuotaBurnDispatches()) };
-  // Lazy import: cosTaskStore pulls a heavy graph (state, code review, merge),
-  // and quotaBurn.js is imported by the perpetual-work detector on a hot path.
-  const { getCosTasks } = await import('./cosTaskStore.js');
-  const cosTasks = await getCosTasks().catch((err) => {
-    console.error(`❌ Quota-burn in-flight probe failed, falling back to the ledger alone: ${err.message}`);
-    return null;
-  });
-  for (const task of cosTasks?.tasks || []) {
-    if (ignoreTaskId && task?.id === ignoreTaskId) continue;
-    if (task?.status !== 'pending' && task?.status !== 'in_progress') continue;
-    const key = task?.metadata?.[QUOTA_BURN_DISPATCH_KEY_FIELD];
-    if (typeof key !== 'string' || !key) continue;
-    counts[key] = Number(counts[key] || 0) + 1;
-  }
-  return counts;
-}
-
-function normalizedFamily(id, value) {
-  if (!value || typeof value !== 'object' || value.enabled !== true) return null;
-  const config = { ...DEFAULT_QUOTA_BURN_FAMILY, ...value };
-  return {
-    id,
-    ...config,
-    resetWithinHours: Math.max(0, Number(config.resetWithinHours) || 24),
-    reservePercent: Math.min(100, Math.max(0, Number(config.reservePercent) || 0)),
-    maxDispatchesPerWindow: Math.max(1, Math.floor(Number(config.maxDispatchesPerWindow) || 5)),
-    priority: Number(config.priority) || 0,
-  };
-}
-
 function selectLimit(card, family, now) {
   const scoped = (card.limits || []).filter((limit) => !family.scope || limit.scope === family.scope);
   return scoped
-    .map((limit) => ({ limit, hours: hoursUntilReset(limit, { now, timeZone: family.timeZone }) }))
+    .map((limit) => ({ limit, hours: hoursUntilReset(limit, { now }) }))
     .filter((entry) => entry.hours !== null)
     .sort((a, b) => a.hours - b.hours)[0] || null;
 }
 
+/** Headroom the family is willing to spend on ONE window: what's left, minus its reserve. */
 export function burnBudgetRemaining(limit, family) {
   return Math.max(0, Number(limit?.percentRemaining) - family.reservePercent);
 }
 
-/** Select only safely-known, still-burnable provider windows. */
-export function selectBurnCandidates(quotas, config, { now = Date.now(), dispatches = {} } = {}) {
+/**
+ * The window with the LEAST headroom among everything in scope — what the
+ * reserve is actually protecting.
+ *
+ * Checking only the soonest-resetting window (which is what selection keys on)
+ * makes the reserve inert for every provider that reports two: claude, codex and
+ * agy each expose a short rolling window AND a weekly one on the same card, and
+ * the short one is always the soonest. A card at `session: 100%` / `week: 2%`
+ * with a 40% reserve would pass the gate on the session number and drain a
+ * weekly allowance already far below the floor the user set — while the field's
+ * own hint reads "Never spend below this much headroom".
+ */
+function tightestBudget(card, family) {
+  const scoped = (card.limits || []).filter((limit) =>
+    (!family.scope || limit.scope === family.scope) && Number.isFinite(Number(limit?.percentRemaining)));
+  if (!scoped.length) return null;
+  return scoped.reduce((tightest, limit) =>
+    (burnBudgetRemaining(limit, family) < burnBudgetRemaining(tightest, family) ? limit : tightest));
+}
+
+/**
+ * The ledger key for one window: `<family>:<resetEpoch rounded to the hour>`.
+ *
+ * The rounding is load-bearing. Antigravity states its reset only as a RELATIVE
+ * string ("Refreshes in 4h 57m"), which `parseAgyUsage` turns into
+ * `now + duration` — so an exact-epoch key drifts by a minute or two on every
+ * scrape and each cycle mints a FRESH key with a count of zero. The per-window
+ * cap then never engages: an agy family would burn once per tick forever
+ * (~48/day at the default interval) while the page's "1/5 used" badge showed
+ * 0/5, and the ledger accumulated a dead key per cycle. Rounding to the hour
+ * collapses that drift into one bucket. The residual cost is a window whose true
+ * reset sits within a scrape's drift of a half-hour boundary, which can straddle
+ * two buckets and allow one extra dispatch — a bounded overshoot, versus an
+ * unbounded one.
+ */
+const HOUR_MS = 60 * 60 * 1000;
+export function windowKey(familyId, limit, { now = Date.now() } = {}) {
+  const epoch = normalizeResetAt(limit, { now }).epochMs;
+  return `${familyId}:${Math.round(epoch / HOUR_MS) * HOUR_MS}`;
+}
+
+/**
+ * THE gate ladder. Evaluates one family against its live quota card and returns
+ * either a burn candidate or the reason it isn't one — never both, never
+ * neither.
+ *
+ * Deliberately one function rather than a selector plus a matching explainer.
+ * Those were written twice, and the status page renders the explanation
+ * verbatim: a gate added to one and not the other makes the page confidently
+ * report "will burn" for a family the runner then skips forever, which is
+ * exactly the question the page exists to answer.
+ *
+ * `bypassGates` is the page's per-job "Run now": the user named a family and
+ * clicked, which is a direct instruction to spend that quota. The window /
+ * reserve / cap gates bound UNATTENDED burns, so they are skipped — but the card
+ * and limit are still read, so a forced run reports its real remaining
+ * percentage and reset time instead of a fabricated one. It comes back
+ * `charge: false` so it never eats the automatic budget.
+ */
+export function evaluateFamily(family, card, { now = Date.now(), dispatches = {}, bypassGates = false } = {}) {
+  // The two "switched off" gates. A forced run passes both: `enabled` on the
+  // family and on a job governs the UNATTENDED loop, and the user clicking ▶ on
+  // a specific row is a more specific instruction than a checkbox they set
+  // earlier. Everything below — no provider, unreadable quota, unburnable card
+  // — is a fact about the world and holds even under force.
+  if (!bypassGates) {
+    if (!family.enabled) return { skipReason: 'disabled' };
+    if (!familyIsActionable(family)) return { skipReason: 'no enabled jobs configured' };
+  }
+  if (!card) return { skipReason: 'no enabled provider in this family' };
+  if (card.supported === false) return { skipReason: 'provider has no queryable quota surface' };
+  // The reading is still being taken (a cold-cache status read starts the scrape
+  // rather than blocking the page on a 20s PTY spawn). NOT an error and NOT an
+  // empty allowance — it is "ask again in a moment". A candidate here would burn
+  // against a card with no numbers on it, so it fails closed like every other
+  // unknown, and holds even under force.
+  if (card.pending) return { skipReason: 'reading provider quota…' };
+  if (card.error) return { skipReason: `quota read failed: ${card.error}` };
+  // A card can declare it carries no spendable headroom (`burnable: false`) —
+  // e.g. the Image Gen card, whose 0%-left meter is an OBSERVED refusal, not a
+  // measured allowance. Burning against it would dispatch work to a backend that
+  // just refused. Opt-out only: absent means burnable.
+  if (card.burnable === false) return { skipReason: 'provider reports no spendable headroom' };
+
+  // Distinguish "your scope filter matched nothing" from "the provider states
+  // no reset time". `scope` is a free-text field on the page, so a typo (`weekly`
+  // against a card whose windows are `week`/`month`) otherwise reads as a fault
+  // in the quota adapter and the family silently never burns.
+  if (family.scope && !(card.limits || []).some((limit) => limit.scope === family.scope)) {
+    const available = [...new Set((card.limits || []).map((limit) => limit.scope).filter(Boolean))];
+    return { skipReason: `no window matches scope "${family.scope}"${available.length ? ` (this provider has: ${available.join(', ')})` : ''}` };
+  }
+  const selected = selectLimit(card, family, now);
+  // A window with no readable reset time is unknowable, not merely closed — a
+  // forced run can't invent one either, so this gate holds even under bypass.
+  if (!selected) return { skipReason: 'no window states a reset time' };
+
+  const dispatchKey = windowKey(family.id, selected.limit, { now });
+  const dispatchesUsed = Number(dispatches[dispatchKey] || 0);
+  // The reserve guards the TIGHTEST window in scope, not the one selection
+  // happens to key on (see `tightestBudget`).
+  const tightest = tightestBudget(card, family) || selected.limit;
+
+  // The three gates a forced run is allowed past. Evaluated regardless so the
+  // ordering (and the wording) stays in one place; only the return is skipped.
+  if (!bypassGates) {
+    if (selected.hours < 0) return { skipReason: 'window already reset' };
+    if (selected.hours > family.resetWithinHours) {
+      return { skipReason: `resets in ${Math.ceil(selected.hours)}h — outside the ${family.resetWithinHours}h window` };
+    }
+    if (dispatchesUsed >= family.maxDispatchesPerWindow) {
+      return { skipReason: `dispatch cap reached (${dispatchesUsed}/${family.maxDispatchesPerWindow})` };
+    }
+    if (burnBudgetRemaining(tightest, family) <= 0) {
+      const which = tightest.label || tightest.scope || 'window';
+      return { skipReason: `${which} at ${tightest.percentRemaining}% left is at or below the ${family.reservePercent}% reserve` };
+    }
+  }
+
+  return {
+    candidate: {
+      family,
+      card,
+      limit: selected.limit,
+      hoursUntilReset: selected.hours,
+      dispatchKey,
+      dispatchesUsed,
+      // Only an unforced burn is charged against the window's automatic budget.
+      charge: !bypassGates,
+    },
+  };
+}
+
+/** The family entries of a config, normalized and id-stamped. */
+const familiesOf = (config) => Object.entries(config?.families || {})
+  .map(([id, value]) => ({ id, ...normalizeQuotaBurnFamily(value) }));
+
+/**
+ * Select only safely-known, still-burnable provider windows, soonest reset
+ * first (ties broken by the family's `priority`).
+ *
+ * `config` is a normalized quota-burn config; `quotas` the provider cards from
+ * `providerUsage.getProviderQuotas()`. `bypassGatesFor` names one family whose
+ * window/reserve/cap gates are skipped (see `evaluateFamily`).
+ */
+export function selectBurnCandidates(quotas, config, { now = Date.now(), dispatches = {}, bypassGatesFor = null } = {}) {
   const cards = new Map((quotas || []).map((card) => [card.family, card]));
-  return Object.entries(config?.families || {})
-    .map(([id, value]) => normalizedFamily(id, value))
-    .filter(Boolean)
-    .map((family) => {
-      const card = cards.get(family.id);
-      if (!card || card.supported === false || card.error) return null;
-      // A card can declare it carries no spendable headroom (`burnable: false`)
-      // — e.g. the Image Gen card, whose 0%-left meter is an OBSERVED refusal,
-      // not a measured allowance. Burning against it would dispatch work to a
-      // backend that just refused. Opt-out only: absent means burnable.
-      if (card.burnable === false) return null;
-      const selected = selectLimit(card, family, now);
-      if (!selected || selected.hours < 0 || selected.hours > family.resetWithinHours) return null;
-      const dispatchKey = `${family.id}:${normalizeResetAt(selected.limit, { now, timeZone: family.timeZone }).epochMs}`;
-      if (Number(dispatches[dispatchKey] || 0) >= family.maxDispatchesPerWindow) return null;
-      if (burnBudgetRemaining(selected.limit, family) <= 0) return null;
-      return { family, card, limit: selected.limit, hoursUntilReset: selected.hours, dispatchKey };
-    })
+  return familiesOf(config)
+    .map((family) => evaluateFamily(family, cards.get(family.id), {
+      now, dispatches, bypassGates: bypassGatesFor === family.id,
+    }).candidate)
     .filter(Boolean)
     .sort((a, b) => a.hoursUntilReset - b.hoursUntilReset || a.family.priority - b.family.priority);
 }
 
-export async function detectQuotaBurn(app, { getQuotas = getProviderQuotas, now = Date.now(), dispatches, ignoreTaskId = null } = {}) {
-  const config = quotaBurnConfig(app);
-  const configured = Object.entries(config.families || {})
-    .filter(([, family]) => family?.enabled === true)
-    .map(([id, family]) => ({ id, ...family }));
-  if (!configured.length) return { actionable: false, count: 0, reason: 'no-enabled-families' };
-  const quotas = await getQuotas({ refresh: false });
-  const configuredCards = quotas.filter((card) => configured.some((family) => family?.id === card?.family));
-  if (configuredCards.length && configuredCards.every((card) => card?.error)) {
-    return { actionable: false, count: 0, transient: true, reason: 'all-provider-quota-checks-failed' };
-  }
-  const candidates = selectBurnCandidates(quotas, config, { now, dispatches: dispatches || await getEffectiveQuotaBurnDispatches({ ignoreTaskId }) });
-  return candidates.length
-    ? { actionable: true, count: candidates.length, reason: `${candidates[0].family.id} resets in ${Math.ceil(candidates[0].hoursUntilReset)}h`, candidates }
-    : { actionable: false, count: 0, reason: 'no-family-within-reset-window' };
+/**
+ * Per-family verdicts for the status page: the candidate when the family would
+ * burn on the next tick, otherwise the exact gate that closed. One pass over the
+ * SAME ladder the runner uses, so the two can't disagree.
+ */
+export function evaluateFamilies(quotas, config, { now = Date.now(), dispatches = {} } = {}) {
+  const cards = new Map((quotas || []).map((card) => [card.family, card]));
+  return familiesOf(config).map((family) => ({
+    family,
+    ...evaluateFamily(family, cards.get(family.id), { now, dispatches }),
+  }));
 }

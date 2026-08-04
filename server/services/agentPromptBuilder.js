@@ -902,11 +902,20 @@ export function buildCompletionGuidelineBullet({
   if (isPrFollowUp && !discardWorktree && !noCodeOutput && !isReadOnly) {
     return 'Follow the follow-up section above — it is the whole task. Commit and push only fixes you actually make; the deliverable is the PR\'s final state, not a commit. Do NOT open a new PR, and do NOT expect this branch to be merged back for you.';
   }
+  // `noCodeOutput` is checked FIRST because the two flags answer different
+  // questions: `discardWorktree` decides what happens to the checkout, while
+  // `noCodeOutput` decides where the deliverable goes. A task that sets both —
+  // "do your work through an API/CLI action during the run, and never land
+  // code" — must be told its output channel is that action, NOT the sentinel.
+  // Telling it "write your result to the sentinel" is how a run files nothing
+  // and reports its findings into a file that gets thrown away (PLAN.md records
+  // this exact hazard from the 2026-07-16 codex review). No pre-existing task
+  // sets both, so this ordering changes nothing that shipped before it.
+  if (noCodeOutput) {
+    return '**This task produces no code output.** Its result is the API request or command your instructions describe (a PortOS endpoint call, a filed tracker issue, …) — do NOT run `/do:push`, `/do:pr`, `/simplify`, `git commit`, `git push`, or open a PR. Write the completion sentinel (see the Completion section) and stop.';
+  }
   if (discardWorktree) {
     return '**This is a reasoning-only task.** The worktree is discarded on exit — do NOT commit, push, merge, or open a PR. Write your result to the completion sentinel (see the Completion section) and stop.';
-  }
-  if (noCodeOutput) {
-    return '**This task produces no code output.** Its result is the API request your instructions describe — do NOT run `/do:push`, `/do:pr`, `/simplify`, `git commit`, `git push`, or open a PR. Write the completion sentinel (see the Completion section) and stop.';
   }
   if (isReadOnly) {
     return '**This is a read-only task.** Do NOT commit, push, or modify any files in the repository. Only read data and generate reports.';
@@ -1075,7 +1084,7 @@ export function buildReadOnlyCompletionSection({ isTui = false, sentinelPath = n
  * reaper.
  */
 export function buildActionOutputCompletionSection({ isTui = false, sentinelPath = null } = {}) {
-  const notice = '## Completion (No Code Output)\nThis task produces **no code change** — its result is delivered by the API request your instructions describe (a PATCH to a PortOS endpoint), not by a commit. Do NOT run `/do:push`, `/do:pr`, `/simplify`, `git commit`, `git push`, or open a pull request; there is nothing to push.';
+  const notice = '## Completion (No Code Output)\nThis task produces **no code change** — its result is delivered DURING the run by the API request or command your instructions describe (a PATCH to a PortOS endpoint, a filed tracker issue, …), not by a commit and not by this sentinel. Do NOT run `/do:push`, `/do:pr`, `/simplify`, `git commit`, `git push`, or open a pull request; there is nothing to push.';
   if (!isTui || !sentinelPath) return notice;
   return [
     notice,
@@ -1304,10 +1313,15 @@ After completing your work and before committing, ${simplifyInstruction}. Fix an
   // A discard task's completion is the sentinel-only contract (no push/PR/merge),
   // and this applies to every provider type — so it wins over the isTui fork and
   // over the fallback template's commit/push instructions below.
-  const tuiCompletionSection = discardWorktree
-    ? buildProgrammaticOutputCompletionSection(sentinelPath)
-    : noCodeOutput
-      ? buildActionOutputCompletionSection({ isTui, sentinelPath })
+  // Same precedence as buildCompletionGuidelineBullet: where the deliverable
+  // goes (`noCodeOutput`) decides the completion contract, and only then does
+  // worktree disposal (`discardWorktree`) pick the reasoning-payload contract.
+  // A task doing external work during the run must not be told the sentinel is
+  // its output channel.
+  const tuiCompletionSection = noCodeOutput
+    ? buildActionOutputCompletionSection({ isTui, sentinelPath })
+    : discardWorktree
+      ? buildProgrammaticOutputCompletionSection(sentinelPath)
       : isTui
         ? buildTuiCompletionSection({
             willOpenPR, prCompletion, simplifyEnabled,
@@ -1479,7 +1493,9 @@ ${skillSection ? `## Task-Type Skill Guidelines\n\n${skillSection}\n` : ''}${too
 1. Analyze the task requirements carefully
 2. Make necessary changes to complete the task
 3. Test your changes when possible
-4. ${discardWorktree
+4. ${noCodeOutput
+  ? 'Deliver your result the way the task describes (the API call or command it names) — do NOT commit, push, or open a PR; this task changes no code'
+  : discardWorktree
   ? 'Write your result to the completion sentinel (see the Completion section above) — do NOT commit, push, or open a PR; this worktree is discarded on exit'
   : isReviewLoopFollowUp
     ? 'Follow the follow-up section above — push any fixes you make to the PR branch; a run that needed no fix makes no commit and that is a success, not a miss'
@@ -1512,7 +1528,9 @@ ${(() => {
 - **Before starting work**, run \`git status\` to verify a clean working tree. Do NOT stash or discard uncommitted changes — other agents may be working concurrently and expecting those changes to be present. If the tree is dirty, only commit files YOU changed for this task.
 - **NEVER use \`git stash\`** in any form (\`git stash push\`, \`git stash pop\`, etc.). This is a multi-agent system — stashing can silently destroy or corrupt another agent's or the user's in-progress work. Work around uncommitted changes instead. (Note: the backend may use \`--autostash\` in user-triggered pull operations — that is safe because those are single-user UI actions, not concurrent agent operations.)
 - **Only commit files YOU changed** for this task. Never use \`git add -A\` or \`git add .\` — always stage specific files by name.
-${discardWorktree
+${noCodeOutput
+  ? `- **Do NOT commit, push, or open a PR.** This task changes no code — its result is delivered by the API call or command described above. Without this, a no-worktree task of this shape was told to \`/do:push\` **directly to the branch it is standing on**, which for a task running in the app's live checkout is its default branch.`
+  : discardWorktree
   ? `- **Do NOT commit, push, or open a PR.** This worktree is discarded on exit — your only output is the completion sentinel (see the Completion section above).`
   : isReviewLoopFollowUp
     ? `- **Push fixes straight to the PR branch you are on** (the follow-up section above is the procedure). Stage specific files, use a \`fix:\` prefix, no Co-Authored-By annotations. Do NOT open a new PR.`
@@ -1523,7 +1541,7 @@ ${discardWorktree
     : worktreeInfo && willOpenPR
       ? `- **Commit only — do NOT push.** Stage specific files, use \`feat:\`/\`fix:\`/\`breaking:\` prefix in the commit message, no Co-Authored-By annotations. The system will push your branch and open the PR after you exit, so do NOT run \`git push\` or \`/do:push\` yourself.`
       : `- **Commit and push using \`/do:push\`** — this handles changelog updates, staging specific files, writing a conventional commit message, and pushing safely. If \`/do:push\` is unavailable, follow its conventions manually: stage specific files, use \`feat:\`/\`fix:\`/\`breaking:\` prefix, no Co-Authored-By annotations, and push with \`git pull --rebase && git push\`.`}
-${discardWorktree ? '' : worktreeInfo ? `- **Your PR should contain only your task's commits.** If you see unrelated commits in your branch history, something is wrong — do not open a PR with other agents' work.` : `- **Commit directly to the current branch.** Do NOT create feature branches or PRs unless explicitly instructed.`}
+${discardWorktree || noCodeOutput ? '' : worktreeInfo ? `- **Your PR should contain only your task's commits.** If you see unrelated commits in your branch history, something is wrong — do not open a PR with other agents' work.` : `- **Commit directly to the current branch.** Do NOT create feature branches or PRs unless explicitly instructed.`}
 
 ## Working Directory
 ${task.metadata?.app ? `You are working in the target app directory: \`${workspaceDir}\`. All code changes, research, plans, and docs for this task belong in this directory — NOT in the PortOS repo.` : 'You are working in the project directory.'} Use the available tools to explore, modify, and test code.
@@ -1708,16 +1726,23 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   }
 
   // --- Completion / review-loop ------------------------------------------
-  if (discardWorktree) {
-    // Reasoning-only task: the sentinel payload (shape set by the task-type
-    // output hook) is the sole output; the worktree is discarded on exit. Wins
-    // over the isTui / CLI push-and-PR completion workflows below.
-    sections.push(buildProgrammaticOutputCompletionSection(`${worktreeInfo?.worktreePath || workspaceDir}/.agent-done`));
-  } else if (noCodeOutput) {
+  // Ordering matches the full path's (buildCompletionGuidelineBullet and the
+  // tuiCompletionSection ternary): the deliverable's destination
+  // (`noCodeOutput`) decides the contract, and only then does worktree disposal
+  // (`discardWorktree`) pick the reasoning-payload one. THIS is the branch that
+  // matters in production — every `tui`/`cli` provider returns from the light
+  // path above and never reaches the other two, so a fix applied only there is
+  // no fix at all for anything a subscription-quota job can run.
+  if (noCodeOutput) {
     sections.push(buildActionOutputCompletionSection({
       isTui,
       sentinelPath: `${worktreeInfo?.worktreePath || workspaceDir}/.agent-done`,
     }));
+  } else if (discardWorktree) {
+    // Reasoning-only task: the sentinel payload (shape set by the task-type
+    // output hook) is the sole output; the worktree is discarded on exit. Wins
+    // over the isTui / CLI push-and-PR completion workflows below.
+    sections.push(buildProgrammaticOutputCompletionSection(`${worktreeInfo?.worktreePath || workspaceDir}/.agent-done`));
   } else if (isReadOnly) {
     sections.push(buildReadOnlyCompletionSection({
       isTui,

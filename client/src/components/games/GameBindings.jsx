@@ -138,6 +138,140 @@ function BindingRow({
   );
 }
 
+// Music rows mirror the artwork publish UX (editable repo destination, publish
+// behind saved details, published/pending pill) in the compact row layout the
+// music list uses. A destination-less binding (created before the publish lane
+// existed, or synced from an older peer) shows the editor with an empty input
+// and keeps Publish disabled until a destination is saved.
+function MusicBindingRow({
+  binding,
+  track,
+  health,
+  issue,
+  busy,
+  overwriteRequested,
+  onUpdate,
+  onPublish,
+  onUnbind,
+  onDismissOverwrite,
+}) {
+  const [destinationPath, setDestinationPath] = useState(binding.destinationPath || '');
+  // Key on the persisted VALUE, not the binding object: every mutation on this
+  // page mints a fresh `game` (and so a fresh `binding`), so depending on the
+  // object reset this input on unrelated saves — silently discarding a
+  // destination the user was mid-way through typing.
+  useEffect(() => {
+    setDestinationPath(binding.destinationPath || '');
+  }, [binding.id, binding.destinationPath]);
+  const dirty = destinationPath.trim() !== (binding.destinationPath || '');
+  const publicationCurrent = health?.publicationStatus === 'current';
+  const { Icon, className } = healthTone(health);
+  // Shown only when the preflight has no verdict for this track, so it must
+  // state what the RECORD says, not claim a verification result — "Audio
+  // ready" here would assert bytes nobody hashed. The server's message wins.
+  const message = health?.message || (track?.audioFilename ? 'Audio attached' : 'No audio yet');
+  const needsAttention = health?.status === 'blocked';
+  const explanation = missingHelp[issue?.code] || issue?.message;
+  return (
+    <li className="rounded-lg border border-port-border bg-port-bg/50 px-3 py-2">
+      <div className="flex min-h-[54px] items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <Icon className={`h-3.5 w-3.5 shrink-0 ${className}`} aria-hidden="true" />
+            <div className="truncate text-sm font-medium text-white">{track?.title || binding.trackId}</div>
+            {binding.destinationPath ? (
+              <Pill tone={publicationCurrent ? 'success' : 'warning'} bordered={false}>
+                {publicationCurrent ? 'Published' : 'Publish pending'}
+              </Pill>
+            ) : null}
+          </div>
+          <div className="truncate text-xs text-gray-500" title={message}>{message}</div>
+          {needsAttention && explanation ? (
+            <p className="mt-1 text-xs leading-5 text-gray-400">{explanation}</p>
+          ) : null}
+          {needsAttention && track && !sourceIsMissing(issue) ? (
+            <Link
+              to={`/music/tracks/${encodeURIComponent(binding.trackId)}`}
+              className="mt-1 inline-flex min-h-[32px] items-center gap-1 text-xs font-medium text-port-accent hover:underline"
+            >
+              Open in Music
+              <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
+            </Link>
+          ) : null}
+        </div>
+        <button
+          type="button"
+          onClick={() => onUnbind(binding.id)}
+          disabled={busy}
+          className="min-h-[44px] min-w-[44px] shrink-0 rounded-lg p-2 text-gray-400 hover:text-port-error disabled:opacity-50"
+          aria-label={`Unbind ${track?.title || binding.trackId}`}
+          title="Unbind music track"
+        >
+          <Unlink className="h-4 w-4" aria-hidden="true" />
+        </button>
+      </div>
+      <div className="mt-2">
+        <label htmlFor={`music-dest-${binding.id}`} className="mb-1 block text-xs text-gray-400">Game destination</label>
+        <input
+          id={`music-dest-${binding.id}`}
+          value={destinationPath}
+          maxLength={500}
+          placeholder="game/assets/music/track.mp3"
+          onChange={(event) => setDestinationPath(event.target.value)}
+          className={`${inputClass} font-mono text-xs`}
+        />
+      </div>
+      <div className="mt-2 flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={busy || !dirty || !destinationPath.trim()}
+          onClick={() => onUpdate(binding.id, { destinationPath: destinationPath.trim() })}
+          className="inline-flex min-h-[40px] items-center gap-2 rounded-lg border border-port-border px-3 text-xs font-medium text-gray-200 hover:border-port-accent/60 disabled:opacity-40"
+        >
+          <Save className="h-3.5 w-3.5" aria-hidden="true" />
+          Save destination
+        </button>
+        <button
+          type="button"
+          disabled={busy || dirty || !binding.destinationPath}
+          onClick={() => onPublish(binding.id)}
+          title={dirty
+            ? 'Save destination changes before publishing'
+            : (!binding.destinationPath ? 'Set a game destination before publishing' : undefined)}
+          className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-port-accent px-3 text-xs font-semibold text-white disabled:opacity-40"
+        >
+          <Send className="h-3.5 w-3.5" aria-hidden="true" />
+          {publicationCurrent ? 'Republish' : 'Publish to game'}
+        </button>
+      </div>
+      {overwriteRequested ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+          <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" aria-hidden="true" />
+          <p className="min-w-0 flex-1 text-xs leading-5 text-amber-200">
+            {binding.destinationPath} contains bytes PortOS did not publish. Overwrite it?
+          </p>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => onPublish(binding.id, true)}
+            className="inline-flex min-h-[36px] items-center rounded-lg bg-amber-500/80 px-3 text-xs font-semibold text-black disabled:opacity-40"
+          >
+            Overwrite
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onDismissOverwrite}
+            className="inline-flex min-h-[36px] items-center rounded-lg border border-port-border px-3 text-xs text-gray-300 disabled:opacity-40"
+          >
+            Cancel
+          </button>
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
 function BindingSection({
   title,
   icon: Icon,
@@ -316,7 +450,11 @@ export default function GameBindings({
   onBindSprite,
   onUnbindSprite,
   onBindMusic,
+  onUpdateMusic,
+  onPublishMusic,
   onUnbindMusic,
+  musicOverwriteFor,
+  onDismissMusicOverwrite,
   onBindArtwork,
   onUpdateArtwork,
   onPublishArtwork,
@@ -438,30 +576,22 @@ export default function GameBindings({
       >
         {game.musicBindings.length > 0 ? (
           <ul className="max-h-72 space-y-2 overflow-y-auto pr-1">
-            {game.musicBindings.map((binding) => {
-              const track = trackMap.get(binding.trackId);
-              const issue = musicIssues.get(binding.trackId);
-              return (
-                <BindingRow
-                  key={binding.id}
-                  label={track?.title || binding.trackId}
-                  // Shown only when the preflight has no verdict for this track,
-                  // so it must state what the RECORD says, not claim a
-                  // verification result — "Audio ready" here would assert bytes
-                  // nobody hashed. The server's own message wins when present.
-                  detail={track?.audioFilename ? 'Audio attached' : 'No audio yet'}
-                  health={musicIntegrity.get(binding.id)}
-                  issue={issue}
-                  manageTo={track && !sourceIsMissing(issue)
-                    ? `/music/tracks/${encodeURIComponent(binding.trackId)}`
-                    : null}
-                  manageLabel="Open in Music"
-                  disabled={busy}
-                  onUnbind={() => onUnbindMusic(binding.id)}
-                  unbindTitle="Unbind music track"
-                />
-              );
-            })}
+            {game.musicBindings.map((binding) => (
+              <MusicBindingRow
+                key={binding.id}
+                binding={binding}
+                track={trackMap.get(binding.trackId)}
+                health={musicIntegrity.get(binding.id)}
+                issue={musicIssues.get(binding.trackId)}
+                busy={busy}
+                overwriteRequested={musicOverwriteFor?.bindingId === binding.id
+                  && musicOverwriteFor?.destinationPath === (binding.destinationPath || '')}
+                onUpdate={onUpdateMusic}
+                onPublish={onPublishMusic}
+                onUnbind={onUnbindMusic}
+                onDismissOverwrite={onDismissMusicOverwrite}
+              />
+            ))}
           </ul>
         ) : null}
       </BindingSection>

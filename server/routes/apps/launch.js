@@ -1,18 +1,52 @@
 /**
- * Local launch helpers: open the app in an editor, in Claude Code, or in the
- * OS file manager. Each spawns a detached child process.
+ * Local launch helpers: open the app in an editor, in Claude Code, in Xcode, or
+ * in the OS file manager. Each spawns a detached child process.
  *
  *   POST /:id/open-editor → { success, command, path }
  *   POST /:id/open-claude → { success, path }
  *   POST /:id/open-folder → { success, path }
+ *   POST /:id/open-xcode  → { success, path }
  */
 
 import { Router } from 'express';
 import { spawn } from 'child_process';
+import { basename, join } from 'path';
 import { asyncHandler, ServerError } from '../../lib/errorHandler.js';
+import { deriveProjectInfo } from '../../services/xcodeScripts.js';
 import { loadApp, pathExists } from './shared.js';
 
 const router = Router();
+
+/**
+ * Spawn a detached launcher and drop it. Every launch route responds as soon as
+ * the child is handed off, so a spawn failure (binary missing, no desktop
+ * session) has no request left to fail — but an unlistened `error` event on a
+ * ChildProcess is an uncaught exception that takes the server down, so it is
+ * logged instead.
+ */
+function spawnDetached(cmd, args, options = {}) {
+  const child = spawn(cmd, args, {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+    ...options
+  });
+  child.on('error', (err) => console.error(`❌ Failed to launch '${cmd}': ${err.message}`));
+  child.unref();
+}
+
+/**
+ * Hand a path to the OS's default handler. `open`/`explorer`/`xdg-open` all take
+ * the path as their only argument, so folder-opening and project-opening share
+ * this one launcher.
+ */
+function openWithSystemHandler(targetPath) {
+  const cmd = process.platform === 'darwin'
+    ? 'open'
+    : process.platform === 'win32' ? 'explorer' : 'xdg-open';
+
+  spawnDetached(cmd, [targetPath]);
+}
 
 // Allowlist of safe editor commands
 // Security: Only allow known-safe editor commands to prevent arbitrary code execution
@@ -75,14 +109,10 @@ router.post('/:id/open-editor', loadApp, asyncHandler(async (req, res) => {
   // `cursor.cmd`) which Node refuses to spawn without a shell since 20.12.2 — so we
   // opt into the shell on win32. Args are pre-sanitized for shell metacharacters
   // above, and the command is allowlisted.
-  const child = spawn(cmd, args, {
+  spawnDetached(cmd, args, {
     cwd: app.repoPath,
-    detached: true,
-    stdio: 'ignore',
-    shell: process.platform === 'win32',
-    windowsHide: true
+    shell: process.platform === 'win32'
   });
-  child.unref();
 
   res.json({ success: true, command: editorCommand, path: app.repoPath });
 }));
@@ -97,14 +127,10 @@ router.post('/:id/open-claude', loadApp, asyncHandler(async (req, res) => {
 
   // shell:true on Windows so `claude.cmd` resolves (see open-editor above for the
   // Node 20.12.2 rationale). No user args reach the command line here.
-  const child = spawn('claude', [], {
+  spawnDetached('claude', [], {
     cwd: app.repoPath,
-    detached: true,
-    stdio: 'ignore',
-    shell: process.platform === 'win32',
-    windowsHide: true
+    shell: process.platform === 'win32'
   });
-  child.unref();
 
   console.log(`🤖 Opened Claude Code in ${app.name}`);
   res.json({ success: true, path: app.repoPath });
@@ -118,29 +144,51 @@ router.post('/:id/open-folder', loadApp, asyncHandler(async (req, res) => {
     throw new ServerError('App path does not exist', { status: 400, code: 'PATH_NOT_FOUND' });
   }
 
-  // Cross-platform folder open command
-  const platform = process.platform;
-  let cmd, args;
-
-  if (platform === 'darwin') {
-    cmd = 'open';
-    args = [app.repoPath];
-  } else if (platform === 'win32') {
-    cmd = 'explorer';
-    args = [app.repoPath];
-  } else {
-    cmd = 'xdg-open';
-    args = [app.repoPath];
-  }
-
-  const child = spawn(cmd, args, {
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: true
-  });
-  child.unref();
+  openWithSystemHandler(app.repoPath);
 
   res.json({ success: true, path: app.repoPath });
+}));
+
+// POST /api/apps/:id/open-xcode - Open the app's Xcode workspace/project
+//
+// The project filename is resolved server-side (project.yml `name:` → the
+// `*.xcodeproj` on disk → the sanitized app name) rather than guessed from the
+// display name on the client, and the project is opened on the machine Xcode is
+// installed on — so this still works when the click comes from a phone.
+router.post('/:id/open-xcode', loadApp, asyncHandler(async (req, res) => {
+  const app = req.loadedApp;
+
+  if (!await pathExists(app.repoPath)) {
+    throw new ServerError('App path does not exist', { status: 400, code: 'PATH_NOT_FOUND' });
+  }
+
+  const { targetName } = await deriveProjectInfo(app.repoPath, app.name);
+
+  // In preference order: a workspace supersedes the project it wraps (CocoaPods
+  // / multi-project setups), and a plain SPM package (`swift` apps, which have
+  // no .xcodeproj at all) opens in Xcode straight from its manifest.
+  const candidates = [`${targetName}.xcworkspace`, `${targetName}.xcodeproj`, 'Package.swift'];
+
+  let projectPath = null;
+  for (const candidate of candidates) {
+    const fullPath = join(app.repoPath, candidate);
+    if (await pathExists(fullPath)) {
+      projectPath = fullPath;
+      break;
+    }
+  }
+
+  if (!projectPath) {
+    throw new ServerError(
+      `No Xcode project in ${app.repoPath} — looked for ${candidates.join(', ')}`,
+      { status: 404, code: 'XCODE_PROJECT_NOT_FOUND', context: { targetName, repoPath: app.repoPath } }
+    );
+  }
+
+  openWithSystemHandler(projectPath);
+
+  console.log(`📱 Opened Xcode project for ${app.name}: ${basename(projectPath)}`);
+  res.json({ success: true, path: projectPath });
 }));
 
 export default router;

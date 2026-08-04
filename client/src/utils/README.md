@@ -37,7 +37,7 @@ grep -i "what you want to do" client/src/utils/README.md
 | `easing` | `smoothstep` interpolation easing curve. |
 | `hashString` | Deterministic string → 32-bit hash (stable colors, keys, seeds). |
 | `sleep` | `sleep(ms)` — promise-returning `setTimeout` for retry backoffs and race timeouts. Use instead of re-declaring a local `delay`. |
-| `urlNormalize` | `isUrl` detection, `normalizeUrl` (optional git/`requireDot` modes), and `isHttpUrl` (explicit http(s) only — safe-href check). |
+| `urlNormalize` | `isUrl` detection, `normalizeUrl` (optional git/`requireDot` modes), `isHttpUrl` (explicit http(s) only — safe-href check), and `tiktokVideoId` / `tiktokEmbedSrc` (host-anchored TikTok video-id extraction + its Embed Player URL, so a reference embeds without loading TikTok's embed.js). |
 | `platform` | `isMac` detection and `modKey` (⌘/Ctrl) for keyboard-shortcut display. |
 | `navWorkingSet` | Recent/pinned nav persistence (`recordVisit`, `togglePin`, `isPinned`) plus `resolveRecentNavEntries` for mapping stored deep links back to their longest matching nav-manifest entry. |
 | `providers` | AI-provider type predicates and helpers (`isCliProvider`, `isApiProvider`, `isCodexProvider`, `isAntigravityProvider`, `filterSelectableModels`, `resolveCliEffort` (mirror — what a stored effort actually runs as, so the picker can name a clamped level), `configuredDefaultIn` — the sentinel a provider's catalog carries, so a picker can render an option matching a sentinel-valued tier instead of a blank select — `getProviderTimeout`, configured-default sentinels, and the claude/codex/agy thinking-effort levels — `effortLevelsForProvider`, mirror of server `providerModels.js`). |
@@ -97,7 +97,7 @@ its tunable constants and placement helpers.
 | `cityRooftops` | Deterministic rooftop fixture kits (antenna/tank/AC/dish) per app name (`computeRooftopKit`). |
 | `cityProductivity` | Productivity monument from streak/velocity tiers (`computeProductivityMonument`). |
 | `citySeasonalDecor` | Season/holiday resolution → seasonal decoration placements (`computeSeasonalDecor`). |
-| `citySoundscape` | Ambient soundscape: mood/energy classification and chord selection (`computeSoundscape`). |
+| `citySoundscape` | Ambient soundscape: mood/energy classification, chord selection (`computeSoundscape`), and the manual mood override (`applyMoodOverride`). |
 | `cityTaskFlowRiver` | Task-flow river width/speed from backlog & throughput (`computeTaskFlowRiver`). |
 | `cityTaskQueue` | Task-queue state/color from status counts (`computeTaskQueue`). |
 | `cityTimeline` | Activity-log density bins and timeline buckets (`computeActivityDensity`, `buildTimelineBuckets`). |

@@ -62,6 +62,19 @@ const EMPTY = [];
 const VIEW_MODE_KEY = 'portos.manuscript.viewMode';
 const initialViewMode = () => (safeReadStorage(VIEW_MODE_KEY) === 'review' ? 'review' : 'live');
 
+// A section's saved-content key. Includes the stage so switching formats can't
+// compare a teleplay draft against the prose baseline.
+const baselineKey = (section) => `${section.issueId}:${section.stageId}`;
+
+// Has this section drifted from what the server last confirmed? `has` first:
+// an un-seeded key means "we don't know the saved text yet", NOT "unsaved" —
+// without that gate every section reads dirty in the frame before the load
+// resolves, flashing the tab badges on.
+const isSectionDirty = (baselines, section) => {
+  const key = baselineKey(section);
+  return baselines.has(key) && baselines.get(key) !== section.content;
+};
+
 export default function PipelineManuscriptEditor() {
   const params = useParams();
   const { seriesId } = params;
@@ -112,9 +125,24 @@ export default function PipelineManuscriptEditor() {
     setFixDrafts((prev) => ({ ...prev, [commentId]: entry }));
   // textarea elements keyed by issue number, for reveal-to-section scroll/focus.
   const sectionRefs = useRef(new Map());
-  const baselineRef = useRef(new Map());
-  const seedBaselines = (list) => {
-    baselineRef.current = new Map((list || []).map((s) => [`${s.issueId}:${s.stageId}`, s.content]));
+  // Last server-confirmed content per section, as STATE so the issue tabs can
+  // subscribe to unsaved-edit state (sections only persist onBlur, so a tab
+  // switch away from a pending edit needs a visible cue). `baselineRef` mirrors
+  // it for the handlers that read it outside the render cycle (the unload guard,
+  // and the save path's synchronous no-op check) — every write goes through
+  // `commitBaselines` so the ref never trails the state.
+  const [baselines, setBaselines] = useState(() => new Map());
+  const baselineRef = useRef(baselines);
+  const commitBaselines = (next) => {
+    baselineRef.current = next;
+    setBaselines(next);
+  };
+  const seedBaselines = (list) =>
+    commitBaselines(new Map((list || []).map((s) => [baselineKey(s), s.content])));
+  const setBaseline = (key, content) => {
+    const next = new Map(baselineRef.current);
+    next.set(key, content);
+    commitBaselines(next);
   };
 
   const patchSection = (issueId, fields) =>
@@ -126,6 +154,18 @@ export default function PipelineManuscriptEditor() {
   const liveSectionsRef = useRef([]);
   liveSectionsRef.current = sections;
   const liveContentFor = (issueId) => liveSectionsRef.current.find((s) => s.issueId === issueId)?.content ?? '';
+
+  // Sections only persist onBlur, so a tab close/navigation right after typing
+  // (before the field blurs) would silently drop the edit. Warn on unload
+  // whenever any section's live content has drifted from its saved baseline.
+  useEffect(() => {
+    const onBeforeUnload = (e) => {
+      const dirty = liveSectionsRef.current.some((s) => isSectionDirty(baselineRef.current, s));
+      if (dirty) e.preventDefault();
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, []);
 
   useEffect(() => {
     safeWriteStorage(VIEW_MODE_KEY, viewMode);
@@ -347,9 +387,20 @@ export default function PipelineManuscriptEditor() {
     return reviewing ? 'Running editorial review…' : 'Run editorial review';
   }, [reviewActive, reviewLatest, reviewing]);
 
+  // Switching formats replaces `sections` (and their baselines) wholesale, so an
+  // unsaved edit in the outgoing format would be dropped on the floor — the
+  // refetch on switching back returns the server's older text. Flush first and
+  // bail out if that save failed, leaving the text (and its tab dot) on screen.
+  // `flushPendingSectionSaves` is declared below; this only runs on click, long
+  // after the component body has evaluated.
   const changeView = async (type) => {
     if (type === viewType || switching) return;
     setSwitching(true);
+    if (!(await flushPendingSectionSaves())) {
+      setSwitching(false);
+      toast('Kept this format open — your unsaved edit could not be saved');
+      return;
+    }
     const manuscript = await getPipelineManuscript(seriesId, type, { silent: true }).catch((err) => {
       toast.error(err.message || 'Failed to load that format');
       return null;
@@ -379,8 +430,15 @@ export default function PipelineManuscriptEditor() {
 
   const setSectionContent = (issueId, content) => patchSection(issueId, { content });
 
-  const saveSectionContent = async (section, content) => {
-    const key = `${section.issueId}:${section.stageId}`;
+  // Tail of each section's save chain, keyed by section. Two paths can target
+  // the same section at once — the onBlur save and the flush below (clicking the
+  // format switcher blurs the textarea, then immediately asks to swap formats) —
+  // and firing both PATCHes would snapshot a redundant version.
+  const pendingSaves = useRef(new Map());
+
+  const persistSection = async (section, key, content) => {
+    // Re-checked HERE, not before queueing: by the time this link runs, the save
+    // ahead of it may have already persisted this exact text.
     if (baselineRef.current.get(key) === content) return;
     setSaveState((prev) => ({ ...prev, [section.issueId]: 'saving' }));
     const result = await savePipelineManuscriptSection(
@@ -393,11 +451,47 @@ export default function PipelineManuscriptEditor() {
       return null;
     });
     if (result?.section) {
-      baselineRef.current.set(key, result.section.content);
+      setBaseline(key, result.section.content);
       patchSection(section.issueId, { versions: result.section.versions });
     }
     setSaveState((prev) => ({ ...prev, [section.issueId]: result ? 'saved' : undefined }));
     return result;
+  };
+
+  // Chain onto the section's tail rather than awaiting the in-flight save: two
+  // callers that both wait on the SAME in-flight save would each wake up seeing
+  // a stale baseline and fire their own PATCH for identical text. Each call
+  // extends the chain, so every link re-checks against what the link before it
+  // persisted. `link` swallows rejections so one failure can't poison the tail.
+  const saveSectionContent = (section, content) => {
+    const key = baselineKey(section);
+    const prior = pendingSaves.current.get(key) || Promise.resolve();
+    const run = prior.then(() => persistSection(section, key, content));
+    const link = run.catch(() => null);
+    pendingSaves.current.set(key, link);
+    link.then(() => {
+      if (pendingSaves.current.get(key) === link) pendingSaves.current.delete(key);
+    });
+    return run;
+  };
+
+  // Persist every pending onBlur edit before an action that swaps `sections`
+  // out from under them. Returns false when a save FAILED, so the caller aborts
+  // rather than discarding the user's text — `undefined` means the save was a
+  // no-op (an in-flight save already persisted it), which is not a failure.
+  const flushPendingSectionSaves = async () => {
+    // Drain what's already queued first: a section can be mid-save while its
+    // live text happens to match the baseline (typed, blurred, then typed back),
+    // which reads as "clean" — switching formats under that in-flight save would
+    // swap `sections` out from under it and land its result on the new format's
+    // badge. Re-derive dirty afterwards, so a queued save that FAILED shows up
+    // here and gets retried rather than silently passing the gate.
+    const queued = [...pendingSaves.current.values()];
+    if (queued.length) await Promise.all(queued);
+    const dirty = liveSectionsRef.current.filter((s) => isSectionDirty(baselineRef.current, s));
+    if (dirty.length === 0) return true;
+    const results = await Promise.all(dirty.map((s) => saveSectionContent(s, s.content)));
+    return results.every((r) => r !== null);
   };
 
   const saveSection = (section) => saveSectionContent(section, section.content);
@@ -462,7 +556,7 @@ export default function PipelineManuscriptEditor() {
     if (!result?.stage) return null;
     const content = result.stage.output || '';
     const versions = (result.stage.runHistory || []).map((h) => ({ runId: h.runId, createdAt: h.createdAt }));
-    baselineRef.current.set(`${section.issueId}:${section.stageId}`, content);
+    setBaseline(baselineKey(section), content);
     patchSection(section.issueId, { content, versions });
     setSaveState((prev) => ({ ...prev, [section.issueId]: 'saved' }));
     toast.success('Reverted to the selected version');
@@ -512,7 +606,7 @@ export default function PipelineManuscriptEditor() {
     list.forEach((changed) => {
       if (changed?.issueId && changed.stageId === viewType) {
         patchSection(changed.issueId, { content: changed.content, versions: changed.versions });
-        baselineRef.current.set(`${changed.issueId}:${changed.stageId}`, changed.content);
+        setBaseline(baselineKey(changed), changed.content);
         setSaveState((prev) => ({ ...prev, [changed.issueId]: 'saved' }));
       }
     });
@@ -549,6 +643,15 @@ export default function PipelineManuscriptEditor() {
     sectionSpans.forEach((spans) => spans.forEach((span) => set.add(span.commentId)));
     return set;
   }, [sectionSpans]);
+
+  // Issue numbers holding an unsaved edit, for the tab dirty dots. Sections save
+  // onBlur, so tabbing away from a pending edit leaves it unsaved with no cue
+  // unless the tab itself carries one (#3399).
+  const dirtyNumbers = useMemo(() => {
+    const set = new Set();
+    sections.forEach((s) => { if (isSectionDirty(baselines, s)) set.add(s.number); });
+    return set;
+  }, [sections, baselines]);
 
   // Open-note count per issue, for the tab badges.
   const openCountByNumber = useMemo(() => {
@@ -725,6 +828,7 @@ export default function PipelineManuscriptEditor() {
                 sections={sections}
                 activeNumber={activeNumber}
                 openCountByNumber={openCountByNumber}
+                dirtyNumbers={dirtyNumbers}
               />
               {activeSection ? (() => {
                 const section = activeSection;

@@ -253,6 +253,14 @@ async function resolveMusic(binding) {
     );
   }
 
+  // Publish state mirrors the artwork lane — but only for bindings that HAVE a
+  // destination. The conditional spread is load-bearing: destination-less
+  // bindings (pre-publish records, older peers) keep the exact item shape they
+  // hashed before, so upgrading PortOS alone can't flip an existing bundle to
+  // "stale" for music that never opted into publishing.
+  const publicationCurrent = Boolean(binding.destinationPath)
+    && binding.publication?.sourceSha256 === audioSha256
+    && binding.publication?.destinationPath === binding.destinationPath;
   return {
     item: {
       bindingId: binding.id,
@@ -260,12 +268,20 @@ async function resolveMusic(binding) {
       title: track.title,
       audioPath: `music/${track.audioFilename}`,
       audioSha256,
+      ...(binding.destinationPath ? {
+        destinationPath: binding.destinationPath,
+        publishedSha256: publicationCurrent ? audioSha256 : null,
+      } : {}),
     },
     summary: {
       ...identity,
       status: 'ready',
       fileCount: 1,
-      message: 'Audio ready',
+      ...(binding.destinationPath ? {
+        destinationPath: binding.destinationPath,
+        publicationStatus: publicationCurrent ? 'current' : 'pending',
+        message: publicationCurrent ? 'Audio verified · published' : 'Audio verified · publish pending',
+      } : { message: 'Audio ready' }),
     },
   };
 }

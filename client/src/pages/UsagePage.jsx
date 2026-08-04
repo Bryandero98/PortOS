@@ -1,12 +1,17 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router';
 import { RefreshCw, Clock, AlertTriangle, DatabaseZap } from 'lucide-react';
 import * as api from '../services/api';
 import BrailleSpinner from '../components/BrailleSpinner';
 import PageSkeleton from '../components/ui/PageSkeleton';
 import Pill from '../components/ui/Pill';
-import { formatCompactCount } from '../utils/formatters';
+import { formatCompactCount, timeUntil } from '../utils/formatters';
 import { useAsyncAction } from '../hooks/useAsyncAction';
+import { useAutoRefetch } from '../hooks/useAutoRefetch';
+
+// How often to re-ask while a provider's quota reading is still being taken. A
+// CLI/TUI scrape is a 10-20s spawn, so this is a handful of polls, not a loop.
+const PENDING_POLL_MS = 4000;
 
 const PERIOD_OPTIONS = [
   { id: '7d', label: '7 days' },
@@ -20,12 +25,17 @@ const formatNumber = (num) => (num == null ? '—' : formatCompactCount(num));
 
 const formatCost = (cost) => `$${(cost ?? 0).toFixed(2)}`;
 
-// Reset times arrive either as human text from the Claude CLI ("Jul 15, 3am")
-// or as an ISO timestamp from telemetry-based adapters — localize the latter.
+// Every provider adapter normalizes its reset to ISO before it reaches here, so
+// this localizes and adds the relative "in 3h" that makes a reset time useful at
+// a glance. The raw-text fallback stays for a reading off an older peer that
+// still emits its CLI's own wording.
 const formatResetsAt = (resetsAt) => {
   if (!resetsAt || !/^\d{4}-\d{2}-\d{2}T/.test(resetsAt)) return resetsAt;
   const d = new Date(resetsAt);
-  return Number.isNaN(d.getTime()) ? resetsAt : d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  if (Number.isNaN(d.getTime())) return resetsAt;
+  const local = d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  const relative = timeUntil(d, '');
+  return relative ? `${local} (${relative})` : local;
 };
 
 // Color a usage meter by how much is consumed: comfortable → warning → critical.
@@ -80,28 +90,54 @@ function StatTile({ label, value, detail }) {
 // One subscription-quota card per enabled provider family. Providers with no
 // queryable usage surface (supported: false) render a muted note, never an
 // error; a supported adapter that failed transiently shows a soft warning.
-function ProviderQuotaCard({ quota }) {
+function ProviderQuotaCard({ quota, onRefresh, refreshing, disabled }) {
   return (
     <div className="bg-port-card border border-port-border rounded-xl p-3 sm:p-4">
-      <div className="flex items-center justify-between mb-2">
+      <div className="flex items-center justify-between gap-2 mb-2">
         <h3 className="text-base font-semibold text-white">{quota.label}</h3>
-        {quota.plan && quota.plan !== 'unknown' && (
-          <Pill tone="context" size="xs">{quota.plan}</Pill>
-        )}
+        <div className="flex items-center gap-2 shrink-0">
+          {quota.plan && quota.plan !== 'unknown' && (
+            <Pill tone="context" size="xs">{quota.plan}</Pill>
+          )}
+          {/* Per-card refresh: every family's reading is its own multi-second
+              CLI/TUI scrape, so re-reading one provider must not respawn all
+              of them. */}
+          <button
+            type="button"
+            onClick={() => onRefresh(quota.family)}
+            disabled={refreshing || disabled}
+            className="text-gray-400 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed"
+            title={`Refresh ${quota.label} usage`}
+            aria-label={`Refresh ${quota.label} usage`}
+          >
+            <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+          </button>
+        </div>
       </div>
 
       {!quota.supported && (
         <p className="text-sm text-gray-500">{quota.note || 'Usage reporting is not available for this provider.'}</p>
       )}
 
-      {quota.supported && quota.error && (
+      {/* The reading is still being taken. It comes BEFORE the error and empty
+          branches because a pending card has no limits — rendering it through
+          those says "No rate-limit data reported", which is a verdict about the
+          provider rather than a statement about a scrape still in flight. */}
+      {quota.supported && quota.pending && (
+        <div className="flex items-center gap-2 text-sm text-gray-400 py-1">
+          <BrailleSpinner />
+          <span>{quota.note || 'Reading quota…'}</span>
+        </div>
+      )}
+
+      {quota.supported && !quota.pending && quota.error && (
         <div className="flex items-start gap-2 text-sm text-gray-400 py-1">
           <AlertTriangle size={15} className="text-port-warning mt-0.5 shrink-0" />
           <span>{quota.error}</span>
         </div>
       )}
 
-      {quota.supported && !quota.error && (
+      {quota.supported && !quota.pending && !quota.error && (
         <div className="space-y-2">
           {quota.limits?.length > 0 && (
             <div>
@@ -159,8 +195,9 @@ function ProviderQuotaSection() {
   const [quotas, setQuotas] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [refreshingFamilies, setRefreshingFamilies] = useState(() => new Set());
 
-  const load = async (refresh = false) => {
+  const load = useCallback(async (refresh = false) => {
     setLoading(true);
     setError(false);
     const result = await api.getProviderUsage({ refresh }).catch(() => null);
@@ -171,9 +208,41 @@ function ProviderQuotaSection() {
       setError(true);
     }
     setLoading(false);
-  };
+  }, []);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [load]);
+
+  // Refresh ONE provider card. The whole-section Refresh spawns every family's
+  // scrape at once (10-20s each); this asks for the single card the user
+  // clicked and swaps it in when the reading lands, leaving every other card's
+  // reading — and its age — untouched. A failure toasts through the request
+  // helper; the catch here only clears the spinner, it owns no error UI.
+  const refreshFamily = useCallback(async (family) => {
+    setRefreshingFamilies((prev) => new Set(prev).add(family));
+    const result = await api.getProviderUsage({ refresh: true, family, silent: false }).catch(() => null);
+    if (result?.providers) {
+      const card = result.providers.find((q) => q.family === family);
+      // No card back for a family we asked for means it is no longer enabled
+      // (its provider was turned off) — drop it rather than leave a reading
+      // that can never refresh again. `prev` is always an array here: the
+      // button that got us here only renders once quotas have loaded.
+      setQuotas((prev) => (card
+        ? prev.map((q) => (q.family === family ? card : q))
+        : prev.filter((q) => q.family !== family)));
+    }
+    setRefreshingFamilies((prev) => {
+      const next = new Set(prev);
+      next.delete(family);
+      return next;
+    });
+  }, []);
+
+  // A quota read never blocks the response: a cold cache answers with `pending`
+  // cards and the reading lands behind it. Without this poll those cards would
+  // sit on "reading quota…" until the user hit Refresh by hand. Enabled only
+  // while something is pending — the section does not otherwise auto-refresh.
+  const anyPending = (quotas || []).some((quota) => quota.pending);
+  useAutoRefetch(load, PENDING_POLL_MS, { enabled: anyPending, immediate: false, pollOnly: true });
 
   return (
     <div className="space-y-3">
@@ -183,9 +252,9 @@ function ProviderQuotaSection() {
           onClick={() => load(true)}
           disabled={loading}
           className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-white disabled:opacity-50"
-          title="Refresh provider usage"
+          title="Refresh every provider's usage"
         >
-          <RefreshCw size={15} className={loading ? 'animate-spin' : ''} /> Refresh
+          <RefreshCw size={15} className={loading ? 'animate-spin' : ''} /> Refresh all
         </button>
       </div>
 
@@ -203,7 +272,13 @@ function ProviderQuotaSection() {
       {quotas && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4">
           {quotas.map((quota) => (
-            <ProviderQuotaCard key={quota.family} quota={quota} />
+            <ProviderQuotaCard
+              key={quota.family}
+              quota={quota}
+              onRefresh={refreshFamily}
+              refreshing={refreshingFamilies.has(quota.family)}
+              disabled={loading}
+            />
           ))}
           {quotas.length === 0 && (
             <div className="text-gray-500 text-sm">No enabled providers report subscription usage.</div>

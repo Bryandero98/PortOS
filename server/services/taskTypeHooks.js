@@ -10,14 +10,14 @@
  *     issues, …) and returns `{ prompt?, providerId?, model?, hookMetadata?, skip? }`.
  *     `ignoreTaskId` is set on the drain-on-completion refill and names the task
  *     that just finished but is still `in_progress` on disk — a hook that counts
- *     in-flight work must exclude it (see quotaBurnHooks.js):
+ *     in-flight work must exclude it:
  *       • `prompt`     — a fully-rendered prompt that REPLACES the template.
  *       • `providerId` / `model` — pin the agent's provider/model (per-app choice).
  *       • `hookMetadata` — a free-form bag merged into the task's persisted
  *         `metadata`, so a value resolved pre-agent survives to `processTaskOutput`.
  *         The generator applies it only AFTER every gate that can still skip task
  *         creation has passed, so a hook can safely defer a side effect until the
- *         task really exists (quota-burn's dispatch ledger, #3179) instead of
+ *         task really exists (a spend ledger, say — #3179) instead of
  *         performing it speculatively here. Untyped by design — a passthrough, not
  *         a schema; keep the keys namespaced to the task type. A key that collides
  *         with generator-computed metadata is DROPPED with a warning, so the bag
@@ -42,16 +42,15 @@
  * importing anything, so a normal task type pays ~zero cost.
  */
 
-import { isFalsyMeta } from './agentState.js';
+import { isFalsyMeta, isTruthyMeta } from './agentState.js';
 import { TRACKER_FILING_TASK_TYPES } from '../lib/workTracker.js';
 
 // taskType → () => import('./path/to/hookModule.js'). A module may export either
 // or both hooks; a missing export means "no hook of that kind for this type".
 const HOOK_MODULES = {
   'layered-intelligence': () => import('./autonomousJobs/layeredIntelligenceHooks.js'),
-  'quota-burn': () => import('./autonomousJobs/quotaBurnHooks.js'),
 };
-const PAYLOAD_OPTIONAL_OUTPUT_HOOKS = new Set(['quota-burn']);
+const PAYLOAD_OPTIONAL_OUTPUT_HOOKS = new Set();
 
 async function loadHookModule(taskType) {
   if (!isProgrammaticIoTaskType(taskType)) return null;
@@ -193,6 +192,12 @@ export function isNonCommittingCoordinatorTask(task) {
  */
 export function declaresNoCommitCriterion(task) {
   if (isNonCommittingCoordinatorTask(task)) return true;
+  // A discarded worktree cannot leave a `[task-<id>]` commit behind by
+  // construction — cleanup removes it without merging, and the prompt forbids
+  // committing at all. Scoring the commit check against it marks every
+  // SUCCESSFUL run a validation miss and drags that provider/model's learning
+  // bucket toward 0% — the #2696/#3273 artifact, arriving by a third route.
+  if (isTruthyMeta(task?.metadata?.discardWorktree)) return true;
   // Resolved the same way isNonCommittingCoordinatorTask (and the learning
   // bucket) resolves it, so a LIVE queue task (`analysisType`) and the archived
   // agent projection (`taskAnalysisType`) agree.

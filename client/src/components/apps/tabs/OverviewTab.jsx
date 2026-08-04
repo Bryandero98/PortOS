@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { Link } from 'react-router';
 import { FolderOpen, Gamepad2, Terminal, Code, RefreshCw, Wrench, Archive, ArchiveRestore, Ticket, Download, Tag, AlertTriangle, Rocket, Camera, Image, Sparkles } from 'lucide-react';
 import toast from '../../ui/Toast';
@@ -23,25 +23,40 @@ export default function OverviewTab({ app, onRefresh }) {
   const [archiving, setArchiving] = useState(false);
   const [jiraTickets, setJiraTickets] = useState(null);
   const [loadingTickets, setLoadingTickets] = useState(false);
+  const [ticketError, setTicketError] = useState(null);
+  const ticketRequestRef = useRef(0);
   const [installingScripts, setInstallingScripts] = useState(false);
   const [detectingIcon, setDetectingIcon] = useState(false);
   // Reverse lookup (#2991): sprite records that publish assets into this app.
   const [spriteBindings, setSpriteBindings] = useState([]);
 
   const onComplete = useMemo(() => () => onRefresh(), [onRefresh]);
-  const { steps, isOperating, operationType, error, completed, startUpdate, startStandardize } = useAppOperation({ onComplete });
+  // Scoped to this app: the shared hook otherwise reports whichever operation
+  // is running, which would stream another app's steps into this tab.
+  const { steps, isOperating, operationType, error, completed, startUpdate, startStandardize } = useAppOperation({ onComplete, appId: app?.id });
   const updating = isOperating && operationType === 'update';
   const standardizing = isOperating && operationType === 'standardize';
 
-  useEffect(() => {
-    if (app?.jira?.enabled && app.jira.instanceId && app.jira.projectKey) {
-      setLoadingTickets(true);
-      api.getMySprintTickets(app.jira.instanceId, app.jira.projectKey)
-        .then(setJiraTickets)
-        .catch(() => setJiraTickets([]))
-        .finally(() => setLoadingTickets(false));
-    }
+  // Same sentinel contract as the /apps list (#3437): a failed fetch records a
+  // message instead of collapsing into `[]`, which read as "you have no sprint
+  // tickets" and offered no way to retry.
+  const loadSprintTickets = useCallback(() => {
+    if (!app?.jira?.enabled || !app.jira.instanceId || !app.jira.projectKey) return;
+    // Generation guard: a Retry (or a JIRA-config change) while an earlier
+    // request is still open must not let the older response land last.
+    const generation = ticketRequestRef.current + 1;
+    ticketRequestRef.current = generation;
+    const isCurrent = () => ticketRequestRef.current === generation;
+
+    setLoadingTickets(true);
+    setTicketError(null);
+    api.getMySprintTickets(app.jira.instanceId, app.jira.projectKey, { silent: true })
+      .then(tickets => { if (isCurrent()) setJiraTickets(Array.isArray(tickets) ? tickets : []); })
+      .catch(err => { if (isCurrent()) setTicketError(err?.message || 'Request failed'); })
+      .finally(() => { if (isCurrent()) setLoadingTickets(false); });
   }, [app?.jira?.enabled, app?.jira?.instanceId, app?.jira?.projectKey]);
+
+  useEffect(() => { loadSprintTickets(); }, [loadSprintTickets]);
 
   // Load the sprite records bound to this app (empty for an app with none).
   useEffect(() => {
@@ -53,7 +68,7 @@ export default function OverviewTab({ app, onRefresh }) {
     return () => { cancelled = true; };
   }, [app?.id]);
 
-  const handleUpdate = () => startUpdate(app.id);
+  const handleUpdate = () => startUpdate(app.id, app.name);
 
   const handleRefreshConfig = async () => {
     setRefreshingConfig(true);
@@ -62,7 +77,7 @@ export default function OverviewTab({ app, onRefresh }) {
     onRefresh();
   };
 
-  const handleStandardize = () => startStandardize(app.id);
+  const handleStandardize = () => startStandardize(app.id, app.name);
 
   const handleDetectIcon = async () => {
     setDetectingIcon(true);
@@ -95,21 +110,23 @@ export default function OverviewTab({ app, onRefresh }) {
     }
   };
 
-  const handleArchive = async () => {
+  // Same contract as the /apps list (#3436): `request()` already toasted the
+  // failure, so a success toast on top of it would tell the user the app was
+  // excluded from CoS scheduling when nothing changed.
+  const setArchived = async (archived) => {
     setArchiving(true);
-    await api.archiveApp(app.id).catch(() => null);
+    const result = await (archived ? api.archiveApp(app.id) : api.unarchiveApp(app.id)).catch(() => null);
     setArchiving(false);
-    toast.success(`${app.name} archived - excluded from COS tasks`);
+    if (!result) return;
+    toast.success(archived
+      ? `${app.name} archived — excluded from CoS tasks`
+      : `${app.name} unarchived — included in CoS tasks`);
     onRefresh();
   };
 
-  const handleUnarchive = async () => {
-    setArchiving(true);
-    await api.unarchiveApp(app.id).catch(() => null);
-    setArchiving(false);
-    toast.success(`${app.name} unarchived - included in COS tasks`);
-    onRefresh();
-  };
+  const handleArchive = () => setArchived(true);
+
+  const handleUnarchive = () => setArchived(false);
 
   return (
     <div className="space-y-6">
@@ -303,6 +320,18 @@ export default function OverviewTab({ app, onRefresh }) {
             <div className="flex items-center gap-2 px-3 py-2 text-sm text-gray-400">
               <BrailleSpinner text="" />
               <span>Loading tickets...</span>
+            </div>
+          ) : ticketError ? (
+            <div className="flex flex-wrap items-center gap-3 px-3 py-2 bg-port-card border border-port-error/30 rounded-lg max-w-5xl">
+              <AlertTriangle size={16} className="text-port-error shrink-0" />
+              <span className="text-sm text-gray-300 min-w-0">Couldn&apos;t load sprint tickets — {ticketError}</span>
+              <button
+                onClick={loadSprintTickets}
+                className="px-3 py-1.5 bg-port-border hover:bg-port-border/80 text-white rounded-lg text-xs flex items-center gap-1"
+                aria-label={`Retry loading sprint tickets for ${app.name}`}
+              >
+                <RefreshCw size={14} /> Retry
+              </button>
             </div>
           ) : jiraTickets?.length > 0 ? (
             <KanbanBoard tickets={jiraTickets} instanceId={app.jira?.instanceId} onTicketsChange={setJiraTickets} appId={app.id} projectKey={app.jira?.projectKey} boardId={app.jira?.boardId} />

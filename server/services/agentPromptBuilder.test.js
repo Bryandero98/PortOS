@@ -1565,6 +1565,25 @@ describe('buildCompletionGuidelineBullet', () => {
     expect(bullet).toMatch(/discarded on exit/);
     expect(bullet).not.toMatch(/`\/do:pr`/);
   });
+
+  it('noCodeOutput wins over discardWorktree — the deliverable is the action, not the sentinel', () => {
+    // The two flags answer different questions: discardWorktree decides what
+    // happens to the checkout, noCodeOutput decides where the deliverable goes.
+    // A task that does its work through an external action DURING the run (an
+    // endpoint call, a filed issue) and also throws the tree away must not be
+    // told "write your result to the sentinel" — that is how a run performs no
+    // action and reports its findings into a file that is then discarded.
+    const bullet = buildCompletionGuidelineBullet({
+      isReadOnly: false, isTui: true, tuiCompletionCommand: '/do:pr',
+      worktreeInfo: { worktreePath: '/wt' }, willOpenPR: true,
+      discardWorktree: true, noCodeOutput: true,
+    });
+    expect(bullet).toMatch(/produces no code output/i);
+    expect(bullet).not.toMatch(/reasoning-only task/i);
+    // It names /do:pr only to forbid it — the TUI arm would have INSTRUCTED it.
+    expect(bullet).toMatch(/do NOT run `\/do:push`, `\/do:pr`/);
+    expect(bullet).not.toMatch(/YOU run the Completion Workflow/);
+  });
 });
 
 // A discardWorktree (reasoning-only) task — the layered-intelligence pattern —
@@ -1600,6 +1619,61 @@ describe('discardWorktree (reasoning-only) completion contract', () => {
   it('light CLI (non-TUI) path emits the sentinel-only completion', () => {
     const prompt = buildLightContextPrompt(liTask(), '/r', wt, isTruthyMeta, { isTui: false, providerId: 'codex' });
     assertReasoningOnly(prompt);
+  });
+
+  // A discard task whose deliverable is an EXTERNAL action performed during the
+  // run (a filed issue, an endpoint call) must get the no-code-output contract,
+  // NOT "write your result to the sentinel" — otherwise it reports its findings
+  // into a file the cleanup then throws away, and the window produces nothing.
+  //
+  // Asserted on the LIGHT path specifically: every `tui`/`cli` provider returns
+  // from buildLightContextPrompt, so a quota-burn job (which only ever selects
+  // CLI/TUI providers — it exists to spend a subscription window) never reaches
+  // the full path. A unit test on buildCompletionGuidelineBullet alone passes
+  // while production is unchanged; that false green is how this shipped broken
+  // once already.
+  describe('with noCodeOutput — the deliverable is the action, not the sentinel', () => {
+    const auditTask = () => makeTask({ metadata: { discardWorktree: true, noCodeOutput: true, useWorktree: true, openPR: false } });
+
+    const assertActionOutput = (prompt) => {
+      expect(prompt).toMatch(/## Completion \(No Code Output\)/);
+      expect(prompt).not.toMatch(/## Completion \(Reasoning-Only Task\)/);
+      expect(prompt).not.toMatch(/in the exact payload format/);
+      expect(prompt).not.toMatch(/## Completion Workflow/);
+    };
+
+    it('light TUI path', () => {
+      const prompt = buildLightContextPrompt(auditTask(), '/r', wt, isTruthyMeta, { isTui: true });
+      assertActionOutput(prompt);
+      // The sentinel is still the done-signal for a TUI run — just not the
+      // place the deliverable goes.
+      expect(prompt).toMatch(/\.agent-done/);
+    });
+
+    it('light CLI (non-TUI) path', () => {
+      const prompt = buildLightContextPrompt(auditTask(), '/r', wt, isTruthyMeta, { isTui: false, providerId: 'codex' });
+      assertActionOutput(prompt);
+    });
+
+    it('full (api) path', async () => {
+      const prompt = await buildAgentPrompt(auditTask(), {}, '/r', wt, isTruthyMeta, { providerType: 'api' });
+      assertActionOutput(prompt);
+    });
+
+    it('a no-code task with NO worktree is never told to commit to the branch it is on', async () => {
+      // The dangerous shape: no worktree means the agent stands in the app's own
+      // checkout, on its default branch. Git Hygiene's fallback arm ("Commit and
+      // push using `/do:push`" + "Commit directly to the current branch") would
+      // aim a push straight at that branch — and for a task that changes no code,
+      // whatever it swept up would be the user's own uncommitted work.
+      const task = makeTask({ metadata: { noCodeOutput: true, useWorktree: false, openPR: false } });
+      const prompt = await buildAgentPrompt(task, {}, '/r', null, isTruthyMeta, { providerType: 'api' });
+      expect(prompt).toMatch(/## Completion \(No Code Output\)/);
+      expect(prompt).toMatch(/Do NOT commit, push, or open a PR/);
+      expect(prompt).not.toMatch(/Commit and push using/);
+      expect(prompt).not.toMatch(/Commit directly to the current branch/);
+      expect(prompt).not.toMatch(/Commit and push your changes/);
+    });
   });
 
   it('full (api) path suppresses the commit/push instructions in Instructions + Git Hygiene', async () => {

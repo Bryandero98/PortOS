@@ -22,6 +22,8 @@ import {
   musicVideoManualAnalysisSchema,
   musicVideoTranscribeMidiRequestSchema,
   recordRenderPinFields,
+  isPaginationRequested,
+  paginateArray,
 } from '../lib/validation.js';
 import { PATHS } from '../lib/fileUtils.js';
 import { safeUnder } from '../lib/ffmpeg.js';
@@ -54,14 +56,21 @@ const router = Router();
 // #3231 Phase 4 — the per-record image render pin (`imageMode`/`imageModelId`,
 // the shared universe/series/sprite field pair) on Music Video projects: scene
 // reference-frame renders resolve through it (imageGen/prepareParams.js).
-// Extended at the route layer — the same pattern as routes/universeBuilder.js —
+// Extended at the route layer — the same pattern as routes/universeBuilder/ —
 // because musicVideoValidation.js can't import recordRenderPinFields from
 // validation.js without a circular import (validation.js re-exports it).
 const projectCreateSchema = musicVideoProjectCreateSchema.extend(recordRenderPinFields);
 const projectUpdateSchema = musicVideoProjectUpdateSchema.extend(recordRenderPinFields);
 
-router.get('/', asyncHandler(async (_req, res) => {
-  res.json(await listProjects());
+// Backward-compatible by default: returns the full projects array. When a client
+// passes `limit`/`offset`, the response becomes the bounded
+// `{ items, total, limit, offset }` envelope every paginated PortOS list shares.
+router.get('/', asyncHandler(async (req, res) => {
+  const projects = await listProjects();
+  if (!isPaginationRequested(req.query)) {
+    return res.json(projects);
+  }
+  res.json(paginateArray(projects, req.query, { defaultLimit: 50, maxLimit: 500 }));
 }));
 
 router.get('/:id', asyncHandler(async (req, res) => {

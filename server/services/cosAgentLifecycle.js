@@ -77,12 +77,97 @@ export async function updateAgent(agentId, updates) {
   });
 }
 
+async function copyDirContents(fromDir, toDir) {
+  const files = await readdir(fromDir);
+  for (const file of files) {
+    const content = await readFile(join(fromDir, file));
+    await writeFile(join(toDir, file), content);
+  }
+}
+
+/**
+ * Move a completed agent's directory into its `YYYY-MM-DD` bucket and index it.
+ * Split out of `completeAgent` and made idempotent so the duplicate-completion
+ * path can re-run it to finish an archive a prior call left half-done (an fs
+ * failure anywhere after the state write) without touching the recorded verdict.
+ */
+async function archiveCompletedAgent(agentId, agent) {
+  // Determine date bucket from completedAt
+  const dateStr = agent.completedAt.slice(0, 10);
+  const targetDir = join(AGENTS_DIR, dateStr, agentId);
+
+  // Skipped once the bucket dir exists — a prior completion already moved it.
+  // Rewriting metadata into a recreated flat dir would both litter and let a
+  // later caller's verdict reach the archive the state record no longer accepts.
+  if (!existsSync(targetDir)) {
+    await ensureDir(join(AGENTS_DIR, dateStr));
+
+    // Write metadata to flat dir first (may already have output.txt/prompt.txt there)
+    const flatDir = join(AGENTS_DIR, agentId);
+    if (!existsSync(flatDir)) {
+      await ensureDir(flatDir);
+    }
+    const { output: _output, ...agentWithoutOutput } = agent;
+    await atomicWrite(join(flatDir, 'metadata.json'), agentWithoutOutput);
+
+    // Move entire agent dir into date bucket (atomic on same filesystem)
+    await rename(flatDir, targetDir).catch(async () => {
+      // Fallback for cross-filesystem: copy files then remove
+      await ensureDir(targetDir);
+      await copyDirContents(flatDir, targetDir).catch(async (err) => {
+        // Roll the half-copied target back. `existsSync(targetDir)` is what every
+        // later archive attempt (including the duplicate-completion repair) reads
+        // as "already archived", so leaving a partial directory behind would
+        // strand the rest of the run's output.txt/prompt.txt permanently.
+        await rm(targetDir, { recursive: true, force: true })
+          .catch(rmErr => console.error(`❌ Failed to roll back partial archive for ${agentId}: ${rmErr.message}`));
+        throw err;
+      });
+      await rm(flatDir, { recursive: true });
+    });
+  }
+
+  // Update index — deliberately NOT gated on the in-memory map already holding
+  // this entry. `saveAgentIndex` swallows its own write errors, so a failed write
+  // leaves the map correct while index.json on disk is missing the agent; after a
+  // restart the archive would be unreachable from history. Re-running the write
+  // is cheap (a small map, atomically written) and repairs exactly that.
+  const idx = await loadAgentIndex();
+  idx.set(agentId, dateStr);
+  await saveAgentIndex();
+}
+
 export async function completeAgent(agentId, result = {}) {
+  // Set inside the lock when the record is already terminal, so the post-lock
+  // tail below (budget ledger + `agent:completed`) is skipped too — see #3384.
+  let alreadyCompleted = false;
+
   const completed = await withStateLock(async () => {
     const state = await loadState();
 
     if (!state.agents[agentId]) {
       return null;
+    }
+
+    // Idempotence (#3384): six call sites funnel here and each carries the
+    // "I might be second" assumption. A duplicate completion used to overwrite
+    // the recorded verdict — a stray runner `agent:completed` once replaced a
+    // real success with `success: false, exitCode: 143`, flipping the card to
+    // Failed and requeueing a finished task. Caller-level guards read the record
+    // outside this lock, so they narrow the window rather than closing it.
+    // Guard on `completed` specifically, NOT `!== 'running'`: `paused` records
+    // are legitimately completed on resume.
+    if (state.agents[agentId].status === 'completed') {
+      alreadyCompleted = true;
+      // One exception to "do nothing": if a prior completion threw partway
+      // through archiving, the record says completed but its directory never
+      // reached the date bucket (or never got indexed). `archiveCompletedAgent`
+      // is idempotent, so re-running it finishes the job with the ALREADY-
+      // RECORDED result rather than the second caller's (typically bogus) one.
+      if (state.agents[agentId].completedAt) {
+        await archiveCompletedAgent(agentId, state.agents[agentId]);
+      }
+      return state.agents[agentId];
     }
 
     state.agents[agentId] = {
@@ -110,41 +195,18 @@ export async function completeAgent(agentId, result = {}) {
     // stays inside the lock.
     cosEvents.emit('agent:updated', state.agents[agentId]);
 
-    // Determine date bucket from completedAt
-    const dateStr = state.agents[agentId].completedAt.slice(0, 10);
-    const bucketDir = join(AGENTS_DIR, dateStr);
-    await ensureDir(bucketDir);
-
-    // Write metadata to flat dir first (may already have output.txt/prompt.txt there)
-    const flatDir = join(AGENTS_DIR, agentId);
-    if (!existsSync(flatDir)) {
-      await ensureDir(flatDir);
-    }
-    const { output: _output, ...agentWithoutOutput } = state.agents[agentId];
-    await atomicWrite(join(flatDir, 'metadata.json'), agentWithoutOutput);
-
-    // Move entire agent dir into date bucket (atomic on same filesystem)
-    const targetDir = join(bucketDir, agentId);
-    if (!existsSync(targetDir)) {
-      await rename(flatDir, targetDir).catch(async () => {
-        // Fallback for cross-filesystem: copy files then remove
-        await ensureDir(targetDir);
-        const files = await readdir(flatDir);
-        for (const file of files) {
-          const content = await readFile(join(flatDir, file));
-          await writeFile(join(targetDir, file), content);
-        }
-        await rm(flatDir, { recursive: true });
-      });
-    }
-
-    // Update index
-    const idx = await loadAgentIndex();
-    idx.set(agentId, dateStr);
-    await saveAgentIndex();
+    await archiveCompletedAgent(agentId, state.agents[agentId]);
 
     return state.agents[agentId];
   });
+
+  // A duplicate completion never runs the completion tail: re-recording the
+  // domain-usage action would double-charge the daily budget, and re-emitting
+  // `agent:completed` would re-run the scheduler hand-off for an agent that
+  // already finished (#3384). The existing record still comes back to the caller.
+  if (alreadyCompleted) {
+    return completed;
+  }
 
   // Daily CoS budget accounting (#711): count only AUTONOMOUS runs (non-user
   // tasks) — the same set the CoS auto-run gate withholds when over budget —

@@ -18,6 +18,7 @@ import useProviderModels from '../../hooks/useProviderModels';
 import useMounted from '../../hooks/useMounted';
 import ProviderModelSelector from '../ProviderModelSelector';
 import { buildChiptuneSchedule, createChiptunePlayer } from '../../lib/chiptunePlayback.js';
+import { formatTimecode } from '../../utils/formatters';
 import {
   generateTrackChiptune, renderTrackChiptune, publishTrackChiptune,
   getApps, getSettings, updateSettings,
@@ -128,8 +129,44 @@ export default function ChiptunePanel({ track, onTrackUpdate, remix }) {
       patterns: Object.keys(score.patterns || {}).length,
       order: (score.order || []).join(' '),
       seconds: Math.round(totalSec * 10) / 10,
+      totalSec,
     };
   }, [score]);
+
+  // Preview playhead — painted straight into the DOM by the rAF loop below, so
+  // the bar tracks at frame rate without re-rendering the panel 60x a second.
+  const progressRef = useRef(null);
+  const elapsedRef = useRef(null);
+  const totalRef = useRef(null);
+  // Idle loop length — the CURRENT score's, shown before playback starts and
+  // again once it stops.
+  const idleTotalSec = summary?.totalSec || 0;
+
+  // rAF clock, mirroring PianoRoll's: animate while playing, paint one idle
+  // frame otherwise. Cancelled on stop (the effect re-runs) and on unmount.
+  useEffect(() => {
+    const paint = (fraction, sec, totalSec) => {
+      if (progressRef.current) progressRef.current.style.transform = `scaleX(${fraction})`;
+      if (elapsedRef.current) elapsedRef.current.textContent = formatTimecode(sec);
+      if (totalRef.current) totalRef.current.textContent = formatTimecode(totalSec);
+    };
+    if (!playing) { paint(0, 0, idleTotalSec); return undefined; }
+    let raf = 0;
+    const loop = () => {
+      const player = playerRef.current;
+      // The SOUNDING schedule's length, not the current score's — a
+      // regeneration mid-preview must not re-scale the bar (or the readout)
+      // against a loop nobody is hearing yet.
+      const loopSec = player.loopSec();
+      // position() is monotonic across loop passes and NEGATIVE during the
+      // transport's lead-in — clamp, then modulo onto the current pass.
+      const within = loopSec > 0 ? Math.max(0, player.position()) % loopSec : 0;
+      paint(loopSec > 0 ? within / loopSec : 0, within, loopSec > 0 ? loopSec : idleTotalSec);
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, [playing, idleTotalSec]);
 
   const persistChiptunePrefs = (patch) => {
     const music = musicSettingsRef.current;
@@ -223,7 +260,11 @@ export default function ChiptunePanel({ track, onTrackUpdate, remix }) {
     }
   };
 
-  const canGenerate = !!track?.id && !!prompt.trim() && !!selectedProviderId && !generating;
+  // Generate/render/publish all mutate the same track record via RMW writes —
+  // letting two fire concurrently races those writes, so gate all three on
+  // any one being in flight rather than just their own flag.
+  const busy = generating || rendering || publishing;
+  const canGenerate = !!track?.id && !!prompt.trim() && !!selectedProviderId && !busy;
 
   return (
     <div className="space-y-2 border border-port-border rounded-lg p-3 bg-port-bg/40">
@@ -291,7 +332,7 @@ export default function ChiptunePanel({ track, onTrackUpdate, remix }) {
             <button
               type="button"
               onClick={handleRender}
-              disabled={rendering}
+              disabled={busy}
               title="Render the loop to audio and add it to this track's renders"
               className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-bg border border-port-border text-white text-sm hover:border-port-accent disabled:opacity-50"
             >
@@ -301,10 +342,29 @@ export default function ChiptunePanel({ track, onTrackUpdate, remix }) {
             <button
               type="button"
               onClick={openPublish}
-              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-bg border border-port-border text-white text-sm hover:border-port-accent"
+              disabled={busy}
+              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-bg border border-port-border text-white text-sm hover:border-port-accent disabled:opacity-50"
             >
               <Gamepad2 size={14} /> Publish to app…
             </button>
+          </div>
+
+          {/* Preview position. The bar is decorative (aria-hidden) — the
+              timecode beside it carries the same information as text. */}
+          <div className="flex items-center gap-2">
+            <div className="flex-1 h-1.5 rounded-full bg-port-border overflow-hidden" aria-hidden="true">
+              <div
+                ref={progressRef}
+                data-testid="chiptune-progress-bar"
+                className="h-full w-full origin-left bg-port-accent"
+                style={{ transform: 'scaleX(0)' }}
+              />
+            </div>
+            <span className="text-[11px] font-mono text-gray-500 tabular-nums whitespace-nowrap">
+              <span ref={elapsedRef} data-testid="chiptune-progress-time">0:00.00</span>
+              {' / '}
+              <span ref={totalRef} data-testid="chiptune-progress-total">{formatTimecode(summary.totalSec)}</span>
+            </span>
           </div>
 
           {publishOpen ? (
@@ -347,7 +407,7 @@ export default function ChiptunePanel({ track, onTrackUpdate, remix }) {
                   <button
                     type="button"
                     onClick={handlePublish}
-                    disabled={publishing || !publishAppId}
+                    disabled={busy || !publishAppId}
                     className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-accent text-white text-sm font-medium disabled:opacity-50"
                   >
                     {publishing ? <Loader2 size={14} className="animate-spin" /> : <Gamepad2 size={14} />}

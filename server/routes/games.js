@@ -11,8 +11,12 @@ import {
   gameArtworkPublishSchema,
   gameFeedbackSchema,
   gameMusicBindingSchema,
+  gameMusicBindingUpdateSchema,
+  gameMusicPublishSchema,
   gameSpriteBindingSchema,
   gameUpdateSchema,
+  isPaginationRequested,
+  paginateArray,
   validateRequest,
 } from '../lib/validation.js';
 import {
@@ -26,18 +30,27 @@ import {
   getGameIntegrity,
   listGames,
   publishGameArtwork,
+  publishGameMusic,
   requestGameFeedback,
   unbindMusic,
   unbindArtwork,
   unbindSprite,
   updateArtwork,
   updateGame,
+  updateMusic,
 } from '../services/games/index.js';
 
 const router = Router();
 
-router.get('/', asyncHandler(async (_req, res) => {
-  res.json(await listGames());
+// Backward-compatible by default: returns the full games array. When a client
+// passes `limit`/`offset`, the response becomes the bounded
+// `{ items, total, limit, offset }` envelope every paginated PortOS list shares.
+router.get('/', asyncHandler(async (req, res) => {
+  const games = await listGames();
+  if (!isPaginationRequested(req.query)) {
+    return res.json(games);
+  }
+  res.json(paginateArray(games, req.query, { defaultLimit: 50, maxLimit: 500 }));
 }));
 
 router.post('/', asyncHandler(async (req, res) => {
@@ -80,8 +93,18 @@ router.post('/:id/music', asyncHandler(async (req, res) => {
   res.status(201).json(await bindMusic(req.params.id, binding));
 }));
 
+router.patch('/:id/music/:bindingId', asyncHandler(async (req, res) => {
+  const patch = validateRequest(gameMusicBindingUpdateSchema, req.body);
+  res.json(await updateMusic(req.params.id, req.params.bindingId, patch));
+}));
+
 router.delete('/:id/music/:bindingId', asyncHandler(async (req, res) => {
   res.json(await unbindMusic(req.params.id, req.params.bindingId));
+}));
+
+router.post('/:id/music/:bindingId/publish', asyncHandler(async (req, res) => {
+  const options = validateRequest(gameMusicPublishSchema, req.body || {});
+  res.json(await publishGameMusic(req.params.id, req.params.bindingId, options));
 }));
 
 router.post('/:id/artwork', asyncHandler(async (req, res) => {

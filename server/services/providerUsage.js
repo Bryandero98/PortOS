@@ -6,8 +6,10 @@ import { getClaudeCodeUsage, systemTimeZone } from './claudeCodeUsage.js';
 import { commandBasename, isClaudeCommand } from '../lib/providerModels.js';
 import { isGrokCommand } from '../lib/grok.js';
 import { scrapeTuiUsage } from '../lib/tuiUsageScrape.js';
+import { createStaleWhileRevalidate, PENDING, WAIT } from '../lib/staleWhileRevalidate.js';
+import { parseHumanReset } from '../lib/quotaReset.js';
 import { getSettings } from './settings.js';
-import { getImageGenQuota } from './imageGenQuota.js';
+import { getImageGenQuota, IMAGE_GEN_FAMILY } from './imageGenQuota.js';
 import { enabledCloudImageModes } from './imageGen/modes.js';
 
 /**
@@ -205,31 +207,25 @@ async function fetchCodexQuota({ codexHome = codexHomeDir() } = {}) {
 // sandbox PTY (see lib/tuiUsageScrape.js) and parse the rendered screen. The
 // slash command renders synchronously (no LLM turn) → 0-token, user-triggered.
 
-// A short TTL cache: a TUI scrape costs ~10-15s (spawn + sign-in + render), far
-// too slow to repeat on every page poll. `refresh: true` bypasses it. Single-
-// user install, single process — a plain module-level map is sufficient.
-const SCRAPE_CACHE_TTL_MS = 5 * 60 * 1000;
-const scrapeCache = new Map(); // familyId -> { at, value } | { inflight }
+// A TUI scrape costs ~10-15s (spawn + sign-in + render) — far too slow to repeat
+// on every page poll, and far too slow to BLOCK one on. Stale-while-revalidate:
+// a cached reading goes out immediately and the refresh lands behind the
+// response, so only a genuinely cold cache (or an explicit `wait: 'fresh'`) ever
+// waits. Each card stamps its own `fetchedAt` inside the producer, so a served
+// stale reading still reports its real age. See lib/staleWhileRevalidate.js for
+// the failure-backoff and PENDING contracts.
+//
+// A scrape that produced NO limits is a degraded panel, not a real reading — it
+// gets the short TTL so the next view self-heals, while still being cached
+// (leaving it uncached turns each poll into a fresh PTY spawn).
+const scrapeCache = createStaleWhileRevalidate({
+  ttlMs: 5 * 60 * 1000,
+  isComplete: (card) => Boolean(card?.limits?.length),
+});
 
 /** Test-only: clear the TUI-scrape TTL cache so a suite isn't order-dependent. */
 export function __resetUsageScrapeCache() {
   scrapeCache.clear();
-}
-
-async function cachedScrape(familyId, { refresh }, produce) {
-  const hit = scrapeCache.get(familyId);
-  if (!refresh && hit?.value && Date.now() - hit.at < SCRAPE_CACHE_TTL_MS) return hit.value;
-  if (hit?.inflight) return hit.inflight; // fold concurrent callers into one scrape
-  const inflight = (async () => {
-    const value = await produce();
-    scrapeCache.set(familyId, { at: Date.now(), value });
-    return value;
-  })().catch((err) => {
-    scrapeCache.delete(familyId);
-    throw err;
-  });
-  scrapeCache.set(familyId, { inflight });
-  return inflight;
 }
 
 /**
@@ -340,11 +336,16 @@ const GROK_WINDOWS = { weekly: { label: 'Weekly', scope: 'week' }, monthly: { la
 /**
  * Parse the Grok Build `/usage show` panel text. Emits one row per usage window
  * present (`Weekly limit: N%` and/or `Monthly limit: N%`, percent USED) plus a
- * shared `Next reset: <date>`. Exported for tests. Pure.
+ * shared `Next reset: <date>`. Exported for tests. Pure given `now`.
+ *
+ * The panel's reset is a local-time date with no year and no zone (`August 10,
+ * 06:07`); it is normalized to ISO here, at the adapter, so the Usage page can
+ * localize it. `timezone` is the zone the TUI rendered in — the fetcher forces
+ * the machine's zone on the child, so it passes the same one back in.
  *
  * @returns {{ limits: Array }}
  */
-export function parseGrokUsage(text) {
+export function parseGrokUsage(text, { now = Date.now(), timezone } = {}) {
   const str = String(text || '');
   // Append-only terminal stream: a repaint leaves an older copy of a line ahead
   // of the newer one, so keep the LAST value seen per window (freshest frame) —
@@ -355,7 +356,7 @@ export function parseGrokUsage(text) {
   }
   if (!byWindow.size) return { limits: [] };
   const resets = [...str.matchAll(/next reset:\s*([A-Za-z0-9 ,:]+?)(?:\s{2,}|$)/gi)];
-  const resetsAt = resets.length ? resets[resets.length - 1][1].trim() : null;
+  const resetsAt = resets.length ? parseHumanReset(resets[resets.length - 1][1], { now, timezone }) : null;
   const limits = [...byWindow].map(([window, percentUsed]) => ({
     key: window,
     label: GROK_WINDOWS[window].label,
@@ -363,8 +364,6 @@ export function parseGrokUsage(text) {
     model: null,
     percentUsed,
     percentRemaining: Math.max(0, 100 - percentUsed),
-    // Grok gives a local-time date string without a year/zone; pass it through
-    // verbatim (the UI renders non-ISO reset strings as-is).
     resetsAt,
     timezone: null,
   }));
@@ -402,7 +401,7 @@ function pickScrapeProvider(providers, binary) {
  * than a blank card. `name` is the human product name spliced into the copy.
  */
 function makeTuiUsageFetcher({ id, binary, slashCommand, label, parse, name, readyMarker }) {
-  return ({ refresh = false, providers = [] } = {}) => {
+  return async ({ wait = WAIT.CACHED, providers = [] } = {}) => {
     const base = { family: id, label, plan: null, activity: [], approximate: true, fetchedAt: new Date().toISOString() };
     const provider = pickScrapeProvider(providers, binary);
     // No CLI/TUI provider (e.g. only the API provider is enabled) → unsupported.
@@ -426,20 +425,42 @@ function makeTuiUsageFetcher({ id, binary, slashCommand, label, parse, name, rea
     // provider edit (different account via envVars, tui↔cli switch, arg change)
     // doesn't serve the previous account's quota from a stale entry.
     const cacheKey = `${id}:${command}:${provider.type}:${JSON.stringify(env)}:${JSON.stringify(args)}`;
-    return cachedScrape(cacheKey, { refresh }, async () => {
+    const card = await scrapeCache.read(cacheKey, async () => {
       const text = await scrapeTuiUsage({ command, args, slashCommand, env, readyMarker });
-      const { limits } = parse(text);
+      // The panel's reset is relative (agy) or zone-less (grok) — both resolve
+      // against the read's own clock and the zone the child rendered in.
+      const { limits } = parse(text, { now: Date.now(), timezone: tz });
       return limits.length
         ? { ...base, supported: true, limits, note: `Scraped from the ${name} /usage panel — local, approximate.` }
         : { ...base, supported: true, limits: [], error: `No quota data found in the ${name} /usage panel.` };
-    });
+    }, { wait });
+    return card === PENDING ? pendingCard(base, name) : card;
   };
 }
 
+/**
+ * A cold-cache placeholder: the reading has STARTED but there is none yet.
+ *
+ * Distinct from both an error card and an empty one — `pending` is what lets a
+ * consumer say "still reading" and come back, rather than rendering a provider
+ * that looks broken or out of quota. It carries no limits, so every gate that
+ * needs a number fails closed on it (see `evaluateFamily`). One definition, used
+ * by every family: a field added here must reach the claude card too.
+ */
+const pendingCard = (base, name) => ({
+  ...base, supported: true, limits: [], pending: true,
+  note: `Reading the ${name} /usage panel…`,
+});
+
 // --- Claude: wrap the existing /usage CLI parser ---------------------------
 
-async function fetchClaudeQuota({ refresh = false } = {}) {
-  const data = await getClaudeCodeUsage({ refresh });
+const CLAUDE_BASE = { family: 'claude', label: 'Claude Code', plan: null, activity: [], approximate: true };
+
+async function fetchClaudeQuota({ wait = WAIT.CACHED } = {}) {
+  const data = await getClaudeCodeUsage({ wait });
+  // Cold cache and the caller can poll — the CLI run has been started, so the
+  // next read gets a real card.
+  if (data === PENDING) return pendingCard({ ...CLAUDE_BASE, fetchedAt: new Date().toISOString() }, 'Claude Code');
   return {
     family: 'claude',
     label: 'Claude Code',
@@ -500,8 +521,8 @@ export function resolveEnabledFamilies(providers) {
   return FAMILIES.filter((family) => enabled.some((p) => family.matches(p)));
 }
 
-const fetchFamilyQuota = (family, { refresh, providers }) =>
-  Promise.resolve(family.fetch({ refresh, providers })).catch((err) => ({
+const fetchFamilyQuota = (family, { wait, providers }) =>
+  Promise.resolve(family.fetch({ wait, providers })).catch((err) => ({
     family: family.id,
     label: family.label,
     supported: true,
@@ -513,23 +534,35 @@ const fetchFamilyQuota = (family, { refresh, providers }) =>
   }));
 
 /**
- * Quota status for every enabled provider family. `refresh: true` bypasses
- * the claude adapter's 60s cache. Never rejects — per-family failures surface
- * as `error` entries. Each family fetch receives the enabled providers that
- * matched it, so TUI-scrape adapters drive the actual configured provider
- * (command + envVars), not a hardcoded binary.
+ * Quota status for every enabled provider family. Never rejects — per-family
+ * failures surface as `error` entries. Each family fetch receives the enabled
+ * providers that matched it, so TUI-scrape adapters drive the actual configured
+ * provider (command + envVars), not a hardcoded binary.
+ *
+ * `wait` (see lib/staleWhileRevalidate.js) decides what a slow reading costs the
+ * caller. The default `'cached'` serves what is cached and blocks only on a cold
+ * one; `'never'` answers a cold cache with a `pending: true` card, for pages
+ * that render "still reading" and poll; `'fresh'` bypasses the caches entirely
+ * and waits — an explicit Refresh, or a burn cycle about to spend real quota.
+ *
+ * `family` narrows the read to one card. Each family's reading is an
+ * independent multi-second scrape, so the usage page's per-card Refresh asks
+ * for exactly the one the user clicked instead of respawning every provider's
+ * TUI. A family id that isn't enabled resolves to an empty list — the caller
+ * reads that as "this card is gone", not as an error.
  */
-export async function getProviderQuotas({ refresh = false } = {}) {
+export async function getProviderQuotas({ wait = WAIT.CACHED, family = null } = {}) {
   const result = await getAllProviders();
   const providers = Array.isArray(result) ? result : (result?.providers || []);
   const enabled = providers.filter((p) => p?.enabled && p.ollamaBacked !== true);
-  const families = resolveEnabledFamilies(providers);
-  const familyCards = await Promise.all(families.map((family) =>
-    fetchFamilyQuota(family, { refresh, providers: enabled.filter((p) => family.matches(p)) })));
+  const families = resolveEnabledFamilies(providers).filter((f) => !family || f.id === family);
+  const familyCards = await Promise.all(families.map((f) =>
+    fetchFamilyQuota(f, { wait, providers: enabled.filter((p) => f.matches(p)) })));
   // Image gen last: it is a derived/observed card, not a provider-family
   // scrape, and it reads as a footnote to the model-quota cards above it. Not
   // raced with the family scrapes — this is two small local file reads against
   // their multi-second TUI PTY spawns, so concurrency would buy no wall-clock.
+  if (family && family !== IMAGE_GEN_FAMILY) return familyCards;
   const imageCard = await fetchImageGenQuota();
   return imageCard ? [...familyCards, imageCard] : familyCards;
 }

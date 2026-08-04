@@ -5,12 +5,14 @@
  * generate button that calls the server's text-stage runner.
  */
 
-import { useEffect, useMemo, useState } from 'react';
-import { Loader2, Sparkles, Save, History } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Loader2, Sparkles, Save, History, Check, X, GitCompare } from 'lucide-react';
 import toast from '../../ui/Toast';
+import InlineDiff from '../../ui/InlineDiff';
 import ProseEditor from '../../ui/ProseEditor';
 import {
   generatePipelineStage, updatePipelineIssue,
+  pipelineStageProgressUrl,
   PIPELINE_STAGE_LABELS,
   PIPELINE_TEXT_STAGES,
   PIPELINE_DEFAULT_FORWARD_SOURCE as DEFAULT_FORWARD_SOURCE,
@@ -18,9 +20,28 @@ import {
   PIPELINE_STAGE_STATUS_COLOR as STATUS_COLOR,
 } from '../../../services/api';
 import { useAsyncAction } from '../../../hooks/useAsyncAction';
+import { useSseProgress, isTerminalSseFrame } from '../../../hooks/useSseProgress';
+import { formatDurationMs } from '../../../utils/formatters';
 import StageHistoryModal from './StageHistoryModal';
 
 const stageHasContent = (stage) => Boolean(stage?.input?.trim() || stage?.output?.trim());
+
+// Human-readable labels for the live progress line, mirroring PolishPanel's
+// phase-label pattern. The server's own `label` is the fallback so a new phase
+// still reads sensibly before this map catches up.
+const PHASE_LABEL = {
+  context: 'Building prompt context…',
+  generate: 'Drafting…',
+  judge: 'Judging the draft…',
+  restore: 'Restoring the best draft…',
+  budget: 'Budget spent — keeping the best draft…',
+  canon: 'Extracting canon…',
+};
+
+// null/undefined = the judge never scored this attempt, which is NOT the same as
+// a legitimate score of 0 — render the two differently rather than gating on
+// truthiness.
+const fmtScore = (v) => (Number.isFinite(v) ? (Math.round(v * 10) / 10).toString() : '—');
 
 export default function TextStagePanel({
   issue,
@@ -46,6 +67,46 @@ export default function TextStagePanel({
   const [serverGenerating, setServerGenerating] = useState(stage.status === 'generating');
   const [historyOpen, setHistoryOpen] = useState(false);
   const runHistory = stage.runHistory || [];
+
+  // Regenerating over unsaved output edits (#3398). Two steps, so nothing the
+  // user typed is ever replaced without them seeing what replaces it:
+  //   1. `confirmRegenerate` — inline confirm row shown instead of firing the
+  //      generate immediately when the editor is dirty.
+  //   2. `pendingDiff` — the incoming result held next to the unsaved text in an
+  //      InlineDiff until the user applies it or keeps their edits.
+  // `null` = nothing pending, which is NOT the same as a pending empty result.
+  const [confirmRegenerate, setConfirmRegenerate] = useState(false);
+  const [pendingDiff, setPendingDiff] = useState(null);
+  // Mirrored in a ref so the parent-driven reset effect can check it without
+  // listing it as a dependency — resolving the review must not re-trigger that
+  // effect and clobber the text the user just chose to keep.
+  const pendingDiffRef = useRef(null);
+  const setPending = (next) => {
+    pendingDiffRef.current = next;
+    setPendingDiff(next);
+  };
+  // Read at generation-resolve time: a run that takes minutes can land after the
+  // user typed into the editor, or after the panel moved to another record.
+  const draftOutputRef = useRef(draftOutput);
+  useEffect(() => { draftOutputRef.current = draftOutput; }, [draftOutput]);
+
+  // Live generation progress (#3393). The URL is set for the duration of one
+  // generate call. Note this attaches CONCURRENTLY with the POST, not strictly
+  // before it: setting the URL is a state update, so the EventSource is not
+  // constructed until React commits, while the POST leaves synchronously on the
+  // next line. `emitStageProgress` is a no-op with no subscriber, so the
+  // opening `context` frame can be dropped — the channel is advisory, and the
+  // panel falls back to the spinner. Don't build anything on top of this that
+  // needs the first frame. Frames survive the teardown so the attempt scorecard
+  // stays on screen after the run finishes.
+  const [progressUrl, setProgressUrl] = useState(null);
+  // Which issue+stage the retained frames describe — the panel is reused across
+  // issues, and a stale scorecard from a different record must not linger.
+  const [progressFor, setProgressFor] = useState(null);
+  const { frames } = useSseProgress(progressUrl, { enabled: !!progressUrl });
+  const progressKey = `${issue.id}:${stageId}`;
+  const activeKeyRef = useRef(progressKey);
+  useEffect(() => { activeKeyRef.current = progressKey; }, [progressKey]);
 
   // Other text stages that currently have content — the candidate source
   // material for this generation. Excludes the target stage itself. Lets you
@@ -73,10 +134,16 @@ export default function TextStagePanel({
   // Reset local edits when the stage record changes from the parent (e.g.
   // auto-run pushed a new output).
   useEffect(() => {
+    setServerGenerating(stage.status === 'generating');
+    // A regeneration held for review keeps the unsaved editor text until the
+    // user decides — but only for the record it was generated against. Switching
+    // issue/stage drops the review and reloads normally.
+    if (pendingDiffRef.current?.key === progressKey) return;
+    setPending(null);
+    setConfirmRegenerate(false);
     setDraftOutput(stage.output || '');
     setDraftInput(stage.input || '');
-    setServerGenerating(stage.status === 'generating');
-  }, [stage.output, stage.input, stage.status, stage.lastRunId]);
+  }, [stage.output, stage.input, stage.status, stage.lastRunId, progressKey]);
 
   const [runGenerate, localGenerating] = useAsyncAction(
     () => generatePipelineStage(issue.id, stageId, {
@@ -92,13 +159,87 @@ export default function TextStagePanel({
   const generating = localGenerating || serverGenerating;
 
   const handleGenerate = async () => {
+    setConfirmRegenerate(false);
+    // Captured at kickoff: the persisted text this run started from, and which
+    // record it belongs to. Anything the editor holds that differs from the
+    // baseline once the result lands is an unsaved edit worth reviewing —
+    // whether it was typed before the run or while it was in flight.
+    const baseline = stage.output || '';
+    const requestKey = progressKey;
+    // Subscribe to the progress stream first. It is purely advisory — an
+    // environment without EventSource (or a channel that never opens) just
+    // falls back to the spinner; generation itself is unaffected.
+    setProgressFor(progressKey);
+    if (typeof EventSource !== 'undefined') {
+      setProgressUrl(pipelineStageProgressUrl(issue.id, stageId));
+    }
     const result = await runGenerate();
+    // Close the stream once the POST has settled — the terminal frame has
+    // already landed, and the frames stay rendered after the teardown.
+    setProgressUrl(null);
     if (!result) return;
+    const incoming = result.stage?.output || '';
+    const latestDraft = draftOutputRef.current;
+    // Nothing to decide when the editor never diverged from what this run
+    // started from, or when the result already matches what's in the editor.
+    // A result that lands after the panel moved to another issue/stage is never
+    // reviewed against the record now on screen.
+    if (activeKeyRef.current !== requestKey) {
+      // The panel moved on while this ran. The run is persisted server-side, so
+      // say so — but lifting it would patch whichever record is on screen NOW.
+      toast.success(`${PIPELINE_STAGE_LABELS[stageId]} generated`);
+      return;
+    }
+    if (latestDraft !== baseline && latestDraft !== incoming) {
+      setPending({ key: requestKey, incoming });
+    }
     onStageUpdate?.(stageId, result.stage);
     toast.success(`${PIPELINE_STAGE_LABELS[stageId]} generated`);
   };
 
+  // A review only ever belongs to the record it was generated against — a
+  // lingering one from another issue/stage is inert, never rendered or applied.
+  const activeDiff = pendingDiff?.key === progressKey ? pendingDiff : null;
+
+  // Apply the reviewed generation: the server already persisted it, so this is
+  // purely "stop holding my unsaved text over it."
+  const applyPendingDiff = () => {
+    if (!activeDiff) return;
+    const { incoming } = activeDiff;
+    setPending(null);
+    setDraftOutput(incoming);
+  };
+
+  // Keep the unsaved edits. The draft is left exactly as the user typed it —
+  // it now reads as dirty against the newly persisted output, so Save still
+  // works to push their version back over it.
+  const keepMyEdits = () => setPending(null);
+
+  // Derived progress view. `activePhase` is the most recent phase frame that
+  // hasn't been superseded by a terminal frame — same walk PolishPanel does.
+  const showProgress = progressFor === progressKey;
+  const attemptFrames = useMemo(
+    () => (showProgress ? frames.filter((f) => f.type === 'attempt') : []),
+    [frames, showProgress],
+  );
+  const gateFrame = useMemo(
+    () => (showProgress ? frames.find((f) => f.type === 'gate') || null : null),
+    [frames, showProgress],
+  );
+  const activePhase = useMemo(() => {
+    if (!generating || !showProgress) return null;
+    for (let i = frames.length - 1; i >= 0; i -= 1) {
+      if (isTerminalSseFrame(frames[i])) return null;
+      if (frames[i].type === 'phase') return frames[i];
+    }
+    return null;
+  }, [frames, generating, showProgress]);
+
   const dirty = draftOutput !== (stage.output || '') || draftInput !== (stage.input || '');
+  // Generate gates on OUTPUT drift only: the seed input is sent live with the
+  // request (seedInput: draftInput), so unsaved seed edits are consumed, not
+  // skipped — only an unsaved output edit would be clobbered by the result.
+  const outputDirty = draftOutput !== (stage.output || '');
 
   const [runSave, saving] = useAsyncAction(
     () => updatePipelineIssue(issue.id, {
@@ -133,7 +274,7 @@ export default function TextStagePanel({
           ) : null}
         </div>
         <div className="flex items-center gap-2">
-          {extraActions}
+          {typeof extraActions === 'function' ? extraActions({ dirty: outputDirty }) : extraActions}
           <button
             type="button"
             onClick={() => setHistoryOpen(true)}
@@ -147,7 +288,8 @@ export default function TextStagePanel({
           <button
             type="button"
             onClick={handleSave}
-            disabled={!dirty || saving}
+            disabled={!dirty || saving || !!activeDiff}
+            title={activeDiff ? 'Resolve the new-version comparison first' : undefined}
             className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-card border border-port-border text-white text-sm hover:border-port-accent/50 disabled:opacity-40"
           >
             {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
@@ -155,9 +297,13 @@ export default function TextStagePanel({
           </button>
           <button
             type="button"
-            onClick={handleGenerate}
-            disabled={generating || actionsGated}
-            title={actionsGated ? 'Saving settings…' : undefined}
+            onClick={outputDirty ? () => setConfirmRegenerate(true) : handleGenerate}
+            // `saving` too: an in-flight save PATCH writes the same stage record
+            // this run will overwrite when it lands.
+            disabled={generating || actionsGated || saving || !!activeDiff}
+            title={actionsGated
+              ? 'Saving settings…'
+              : (outputDirty ? 'You have unsaved edits — you’ll compare them against the new version first' : undefined)}
             className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-accent text-white text-sm font-medium disabled:opacity-50"
           >
             {generating ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
@@ -165,6 +311,68 @@ export default function TextStagePanel({
           </button>
         </div>
       </div>
+
+      {confirmRegenerate && outputDirty ? (
+        <div className="flex items-center justify-between gap-3 flex-wrap border border-port-warning/40 rounded p-3 bg-port-warning/5">
+          <span className="text-xs text-gray-300">
+            You have unsaved edits. Generating won’t replace them — you’ll see the new version diffed against your text and choose.
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleGenerate}
+              // Same gates as the Generate button it stands in for — the confirm
+              // row can sit open while a save or a settings write starts.
+              disabled={generating || actionsGated || saving}
+              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-accent text-white text-sm font-medium disabled:opacity-50"
+            >
+              <GitCompare size={14} />
+              Generate & compare
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirmRegenerate(false)}
+              className="px-3 py-1.5 rounded-lg bg-port-card border border-port-border text-white text-sm hover:border-port-accent/50"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {activeDiff ? (
+        <div className="border border-port-accent/50 rounded bg-port-bg/40 overflow-hidden">
+          <div className="flex items-center justify-between gap-3 flex-wrap p-3">
+            <span className="text-xs text-gray-300">
+              <span className="uppercase tracking-wider text-gray-500 mr-2">New version</span>
+              Your unsaved edits in red, the new version in green.
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={applyPendingDiff}
+                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-accent text-white text-sm font-medium"
+              >
+                <Check size={14} />
+                Use new version
+              </button>
+              <button
+                type="button"
+                onClick={keepMyEdits}
+                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-card border border-port-border text-white text-sm hover:border-port-accent/50"
+              >
+                <X size={14} />
+                Keep my edits
+              </button>
+            </div>
+          </div>
+          <div className="max-h-72 overflow-y-auto">
+            {/* Diffed against the live editor text, not a kickoff snapshot, so
+                typing while the review is open keeps the comparison honest. */}
+            <InlineDiff oldText={draftOutput} newText={activeDiff.incoming} />
+          </div>
+        </div>
+      ) : null}
 
       {availableSources.length > 0 ? (
         <div className="flex items-center gap-2 flex-wrap text-xs">
@@ -187,6 +395,57 @@ export default function TextStagePanel({
               </button>
             );
           })}
+        </div>
+      ) : null}
+
+      {(activePhase || attemptFrames.length > 0) ? (
+        <div className="border border-port-border rounded p-3 space-y-2 bg-port-bg/40">
+          <div className="flex items-center justify-between gap-2 text-[11px] flex-wrap">
+            <span className="uppercase tracking-wider text-gray-500">Generation progress</span>
+            {activePhase ? (
+              <span className="flex items-center gap-1.5 text-port-accent">
+                <Loader2 size={11} className="animate-spin" />
+                {PHASE_LABEL[activePhase.phase] || activePhase.label || activePhase.phase}
+                {activePhase.attempts > 1 ? (
+                  <span className="text-gray-500">· attempt {activePhase.attempt} of {activePhase.attempts}</span>
+                ) : null}
+              </span>
+            ) : null}
+          </div>
+          {attemptFrames.length > 0 ? (
+            <ul className="space-y-1">
+              {attemptFrames.map((f) => {
+                // Before the gate frame lands nothing is decided yet — don't
+                // pre-label an attempt as rejected mid-run.
+                const decided = !!gateFrame;
+                const won = decided && f.runId === gateFrame.winner;
+                return (
+                  <li key={f.runId || f.attempt} className="flex items-center gap-2 text-[12px]">
+                    <span className="text-gray-500 w-20 shrink-0">Attempt {f.attempt}</span>
+                    <span className="px-1.5 py-0.5 rounded border border-port-border bg-port-card text-[11px] tabular-nums shrink-0">
+                      {fmtScore(f.qualityScore)}
+                    </span>
+                    {decided ? (
+                      won ? (
+                        <span className="flex items-center gap-1 text-port-success text-[11px]"><Check size={11} /> kept</span>
+                      ) : (
+                        <span className="flex items-center gap-1 text-gray-500 text-[11px]"><X size={11} /> rejected</span>
+                      )
+                    ) : null}
+                    <span className="text-gray-600 text-[10px] tabular-nums ml-auto">
+                      {Number.isFinite(f.outputLength) ? `${f.outputLength.toLocaleString()} chars · ` : ''}
+                      {formatDurationMs(f.ms)}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : null}
+          {gateFrame?.stoppedEarly ? (
+            <div className="text-[11px] text-gray-500 italic">
+              Stopped early after {gateFrame.ran} of {gateFrame.attempts} attempts.
+            </div>
+          ) : null}
         </div>
       ) : null}
 

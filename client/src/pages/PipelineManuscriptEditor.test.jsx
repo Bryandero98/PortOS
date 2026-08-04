@@ -234,6 +234,151 @@ describe('PipelineManuscriptEditor', () => {
     expect(await screen.findByTitle('Show prior saved versions')).toBeInTheDocument();
   });
 
+  it('marks the issue tab while an edit is unsaved and clears it once the save lands (#3399)', async () => {
+    api.savePipelineManuscriptSection.mockResolvedValue({
+      section: { issueId: 'iss-1', number: 1, title: 'One', stageId: 'prose', content: 'The hero walked in. She stayed.', versions: [] },
+    });
+    renderEditor();
+    const ta = await screen.findByDisplayValue('The hero walked in. She left.');
+    // Loaded and untouched — no dirty dot.
+    expect(screen.queryByLabelText('Issue 1 has unsaved edits')).not.toBeInTheDocument();
+
+    // Sections persist onBlur, so typing alone leaves the edit pending — the tab
+    // must say so, since the user can navigate away before the field blurs.
+    fireEvent.change(ta, { target: { value: 'The hero walked in. She stayed.' } });
+    expect(await screen.findByLabelText('Issue 1 has unsaved edits')).toBeInTheDocument();
+
+    fireEvent.blur(ta);
+    await waitFor(() => expect(screen.queryByLabelText('Issue 1 has unsaved edits')).not.toBeInTheDocument());
+  });
+
+  it('keeps the tab marked when a save fails, so the pending edit stays visible (#3399)', async () => {
+    api.savePipelineManuscriptSection.mockResolvedValue(null); // service rejected → caller toasts + resolves null
+    renderEditor();
+    const ta = await screen.findByDisplayValue('The hero walked in. She left.');
+    fireEvent.change(ta, { target: { value: 'The hero walked in. She stayed.' } });
+    fireEvent.blur(ta);
+    await waitFor(() => expect(api.savePipelineManuscriptSection).toHaveBeenCalled());
+    expect(screen.getByLabelText('Issue 1 has unsaved edits')).toBeInTheDocument();
+  });
+
+  // A format switch replaces `sections` (and their baselines) wholesale, so an
+  // unsaved edit in the outgoing format has to be persisted first or it's gone.
+  const mockBothFormats = () => api.getPipelineManuscript.mockImplementation((_id, type) => Promise.resolve(type === 'teleplay'
+    ? { sections: [{ issueId: 'iss-1', number: 1, title: 'One', stageId: 'teleplay', content: 'INT. ROOM - DAY' }], viewType: 'teleplay', availableTypes: ['prose', 'teleplay'] }
+    : { sections: [{ issueId: 'iss-1', number: 1, title: 'One', stageId: 'prose', content: 'The hero walked in. She left.' }], viewType: 'prose', pinnedPrimary: 'prose', availableTypes: ['prose', 'teleplay'] }));
+
+  const savedProse = {
+    section: { issueId: 'iss-1', number: 1, title: 'One', stageId: 'prose', content: 'The hero walked in. She stayed.', versions: [] },
+  };
+
+  it('flushes an unblurred edit before switching formats, so it is not discarded (#3399)', async () => {
+    mockBothFormats();
+    api.savePipelineManuscriptSection.mockResolvedValue(savedProse);
+    renderEditor();
+    const ta = await screen.findByDisplayValue('The hero walked in. She left.');
+    fireEvent.change(ta, { target: { value: 'The hero walked in. She stayed.' } });
+
+    // No blur — the switch itself has to persist the pending text.
+    fireEvent.click(screen.getByText('Teleplay'));
+
+    expect(await screen.findByDisplayValue('INT. ROOM - DAY')).toBeInTheDocument();
+    expect(api.savePipelineManuscriptSection).toHaveBeenCalledWith(
+      'ser-1', 'iss-1', { stageId: 'prose', output: 'The hero walked in. She stayed.' }, { silent: true },
+    );
+    // …and the format fetch waited for it, so it can't read back pre-save text.
+    expect(api.savePipelineManuscriptSection.mock.invocationCallOrder[0])
+      .toBeLessThan(api.getPipelineManuscript.mock.invocationCallOrder.at(-1));
+  });
+
+  it('does not double-PATCH when the blur save and the format flush race (#3399)', async () => {
+    mockBothFormats();
+    api.savePipelineManuscriptSection.mockResolvedValue(savedProse);
+    renderEditor();
+    const ta = await screen.findByDisplayValue('The hero walked in. She left.');
+    fireEvent.change(ta, { target: { value: 'The hero walked in. She stayed.' } });
+
+    // A real click blurs the textarea first, so the blur save is already in
+    // flight when the switch flushes — the flush must queue behind it and
+    // no-op, not snapshot a second version of identical text.
+    fireEvent.blur(ta);
+    fireEvent.click(screen.getByText('Teleplay'));
+
+    expect(await screen.findByDisplayValue('INT. ROOM - DAY')).toBeInTheDocument();
+    expect(api.savePipelineManuscriptSection).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not double-PATCH text edited while an earlier save is still in flight (#3399)', async () => {
+    mockBothFormats();
+    let resolveFirst;
+    const echoSave = (_s, _i, body) => Promise.resolve({
+      section: { issueId: 'iss-1', number: 1, title: 'One', stageId: 'prose', content: body.output, versions: [] },
+    });
+    api.savePipelineManuscriptSection
+      .mockImplementationOnce(() => new Promise((res) => { resolveFirst = res; }))
+      .mockImplementation(echoSave);
+    renderEditor();
+    const ta = await screen.findByDisplayValue('The hero walked in. She left.');
+
+    // Save A goes out and stays in flight…
+    fireEvent.change(ta, { target: { value: 'first edit' } });
+    fireEvent.blur(ta);
+    await waitFor(() => expect(api.savePipelineManuscriptSection).toHaveBeenCalledTimes(1));
+
+    // …while the user types more and then switches formats. Both the blur save
+    // and the switch's flush queue behind A with the SAME text — waiting on A
+    // instead of chaining would wake both with a stale baseline and PATCH twice.
+    fireEvent.change(ta, { target: { value: 'second edit' } });
+    fireEvent.blur(ta);
+    fireEvent.click(screen.getByText('Teleplay'));
+
+    await act(async () => { resolveFirst(await echoSave(null, null, { output: 'first edit' })); });
+    expect(await screen.findByDisplayValue('INT. ROOM - DAY')).toBeInTheDocument();
+    expect(api.savePipelineManuscriptSection).toHaveBeenCalledTimes(2); // A, then one for 'second edit'
+    expect(api.savePipelineManuscriptSection).toHaveBeenLastCalledWith(
+      'ser-1', 'iss-1', { stageId: 'prose', output: 'second edit' }, { silent: true },
+    );
+  });
+
+  it('waits out an in-flight save whose text was typed back to the baseline (#3399)', async () => {
+    mockBothFormats();
+    const original = 'The hero walked in. She left.';
+    let resolveFirst;
+    api.savePipelineManuscriptSection.mockImplementationOnce(() => new Promise((res) => { resolveFirst = res; }));
+    renderEditor();
+    const ta = await screen.findByDisplayValue(original);
+    fireEvent.change(ta, { target: { value: 'edited' } });
+    fireEvent.blur(ta);
+    await waitFor(() => expect(api.savePipelineManuscriptSection).toHaveBeenCalledTimes(1));
+
+    // Typed back to the saved text: the section now reads CLEAN, but its save is
+    // still in flight — switching formats here would swap `sections` out from
+    // under it and land its result on the incoming format.
+    fireEvent.change(ta, { target: { value: original } });
+    fireEvent.click(screen.getByText('Teleplay'));
+    await act(async () => {});
+    expect(api.getPipelineManuscript).not.toHaveBeenCalledWith('ser-1', 'teleplay', { silent: true });
+
+    await act(async () => {
+      resolveFirst({ section: { issueId: 'iss-1', number: 1, title: 'One', stageId: 'prose', content: 'edited', versions: [] } });
+    });
+    expect(await screen.findByDisplayValue('INT. ROOM - DAY')).toBeInTheDocument();
+  });
+
+  it('aborts a format switch when the pending edit fails to save (#3399)', async () => {
+    api.savePipelineManuscriptSection.mockResolvedValue(null);
+    renderEditor();
+    const ta = await screen.findByDisplayValue('The hero walked in. She left.');
+    fireEvent.change(ta, { target: { value: 'The hero walked in. She stayed.' } });
+    fireEvent.click(screen.getByText('Teleplay'));
+
+    await waitFor(() => expect(api.savePipelineManuscriptSection).toHaveBeenCalled());
+    // Still on prose, with the edit and its tab marker intact.
+    expect(screen.getByDisplayValue('The hero walked in. She stayed.')).toBeInTheDocument();
+    expect(screen.getByLabelText('Issue 1 has unsaved edits')).toBeInTheDocument();
+    expect(api.getPipelineManuscript).not.toHaveBeenCalledWith('ser-1', 'teleplay', { silent: true });
+  });
+
   it('Review mode renders annotated prose with an Edit toggle that swaps in the textarea', async () => {
     renderEditor();
     await screen.findByText('My Series');

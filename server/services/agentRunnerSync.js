@@ -13,13 +13,25 @@
 
 import { connectTuiSessionViaRunner, getActiveAgentsFromRunner } from './cosRunnerClient.js';
 import { isInternalTaskId } from '../lib/taskParser.js';
-import { runnerAgents } from './agentState.js';
+import { isAgentOwnedLocally, runnerAgents } from './agentState.js';
 import { getAgent } from './cosAgents.js';
 import * as shellService from './shell.js';
 
 /**
  * Sync running agents from the runner (recovery after server restart).
  * This allows us to receive completion events for agents spawned before restart.
+ *
+ * Recovery adopts only agents this process does NOT already own — see
+ * `isAgentOwnedLocally` for why that question needs both maps, and why asking
+ * `runnerAgents` alone silently hoisted live TUI runs. `cleanupOrphanedAgents`
+ * calls this every 15 minutes, so the bug reached any TUI run that outlived a
+ * single health-check tick: once hoisted, the `agent:completed` the runner emits
+ * when the TUI spawner's own `finish()` kills the session passed subAgentSpawner's
+ * `if (!agent) return` guard and ran a SECOND `finalizeAgent`, overwriting a
+ * sentinel-signalled success with `success: false, exitCode: 143` and a bogus
+ * `startup-failure` analysis — which flipped the agent card to Failed and requeued
+ * the finished task. Observed on a 55-min release-check run that had already
+ * published its release and merged all of its PRs.
  */
 export async function syncRunnerAgents() {
   const agents = await getActiveAgentsFromRunner().catch(err => {
@@ -52,8 +64,8 @@ export async function syncRunnerAgents() {
 
   let syncedCount = 0;
   for (const agent of agents) {
-    // Only sync if not already tracked
-    if (!runnerAgents.has(agent.id)) {
+    // Only sync if this process isn't already driving it
+    if (!isAgentOwnedLocally(agent.id)) {
       const task = taskMap.get(agent.taskId);
 
       const inferredType = isInternalTaskId(agent.taskId) ? 'internal' : 'user';

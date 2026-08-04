@@ -7,6 +7,7 @@ import { join } from 'path';
 import { ServerError } from '../../lib/errorHandler.js';
 import { PATHS, pathExists } from '../../lib/fileUtils.js';
 import { getAppById } from '../apps.js';
+import { isSafeMusicFilename } from '../pipeline/musicLibrary.js';
 import { getRecord as getSpriteRecord } from '../sprites/records.js';
 import { getTrack } from '../tracks/index.js';
 import {
@@ -25,7 +26,7 @@ const objectArray = (value) =>
 const boundedHistory = (value) => objectArray(value).slice(-HISTORY_LIMIT);
 const isSafeArtworkFilename = (value) =>
   typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]*\.png$/i.test(value);
-const sanitizeArtworkPublication = (value) => {
+const sanitizePublication = (value) => {
   if (!value || typeof value !== 'object') return null;
   if (typeof value.sourceSha256 !== 'string'
     || typeof value.destinationSha256 !== 'string'
@@ -52,7 +53,23 @@ const sanitizeArtworkBinding = (binding) => {
     role: binding.role,
     destinationPath: binding.destinationPath,
     boundAt: typeof binding.boundAt === 'string' ? binding.boundAt : new Date().toISOString(),
-    publication: sanitizeArtworkPublication(binding.publication),
+    publication: sanitizePublication(binding.publication),
+  };
+};
+const sanitizeMusicBinding = (binding) => {
+  if (!binding || typeof binding !== 'object') return null;
+  if (typeof binding.id !== 'string' || typeof binding.trackId !== 'string') return null;
+  return {
+    id: binding.id,
+    trackId: binding.trackId,
+    // Optional: bindings created before the music publish lane (and bindings
+    // synced from older peers) carry no destination — they stay bindable and
+    // compilable, and gain a destination via PATCH before publishing.
+    destinationPath: typeof binding.destinationPath === 'string' && binding.destinationPath
+      ? binding.destinationPath
+      : null,
+    boundAt: typeof binding.boundAt === 'string' ? binding.boundAt : new Date().toISOString(),
+    publication: sanitizePublication(binding.publication),
   };
 };
 
@@ -67,8 +84,7 @@ export function sanitizeGame(raw) {
     appId: raw.appId,
     name,
     spriteBindings: objectArray(raw.spriteBindings).filter((binding) => typeof binding.spriteId === 'string'),
-    musicBindings: objectArray(raw.musicBindings).filter((binding) =>
-      typeof binding.id === 'string' && typeof binding.trackId === 'string'),
+    musicBindings: objectArray(raw.musicBindings).map(sanitizeMusicBinding).filter(Boolean),
     artworkBindings: objectArray(raw.artworkBindings).map(sanitizeArtworkBinding).filter(Boolean),
     compiledManifest: raw.compiledManifest && typeof raw.compiledManifest === 'object'
       ? raw.compiledManifest
@@ -191,9 +207,15 @@ export async function unbindSprite(id, spriteId) {
   });
 }
 
-export async function bindMusic(id, { trackId }) {
+export async function bindMusic(id, { trackId, destinationPath }) {
   const track = await getTrack(trackId);
   if (!track) throw new ServerError('Music track not found', { status: 400, code: 'INVALID_TRACK' });
+  // Default the publish destination from the rendered audio when it exists and
+  // carries a safe library filename; a track bound before its audio renders
+  // gets a destination via PATCH (mirroring the artwork lane's editable path).
+  const defaultDestination = isSafeMusicFilename(track.audioFilename)
+    ? `game/assets/music/${track.audioFilename}`
+    : null;
   return mutateGame(id, (current) => {
     if (current.musicBindings.some((binding) => binding.trackId === trackId)) {
       throw new ServerError('Music track is already bound to this game', { status: 409, code: 'ALREADY_BOUND' });
@@ -203,8 +225,24 @@ export async function bindMusic(id, { trackId }) {
       musicBindings: [...current.musicBindings, {
         id: `music-${randomUUID()}`,
         trackId,
+        destinationPath: destinationPath || defaultDestination,
         boundAt: new Date().toISOString(),
+        publication: null,
       }],
+    };
+  });
+}
+
+export async function updateMusic(id, bindingId, patch) {
+  return mutateGame(id, (current) => {
+    if (!current.musicBindings.some((binding) => binding.id === bindingId)) {
+      throw new ServerError('Music binding not found', { status: 404, code: 'NOT_FOUND' });
+    }
+    return {
+      ...current,
+      musicBindings: current.musicBindings.map((binding) => (
+        binding.id === bindingId ? { ...binding, ...patch } : binding
+      )),
     };
   });
 }
