@@ -63,6 +63,10 @@ const MODE_LABELS = Object.freeze({
 
 export const isQuotaTrackedImageMode = (mode) => CLOUD_IMAGE_GEN_MODES.includes(mode);
 
+/** Card id for the image-gen quota card, in the same namespace as the provider
+ * family ids in providerUsage.js — a per-family read has to be able to name it. */
+export const IMAGE_GEN_FAMILY = 'imagegen';
+
 const rowLabel = (mode) =>
   `${MODE_LABELS[mode] || mode} · ${IMAGE_TOOL_NAMES[mode] || 'image tool'}`;
 
@@ -240,7 +244,7 @@ export async function getImageGenQuota({ enabledModes = [], now = Date.now() } =
   // to avoid. Say so instead.
   if (!ledger) {
     return {
-      family: 'imagegen',
+      family: IMAGE_GEN_FAMILY,
       label: 'Image Gen',
       supported: true,
       burnable: false,
@@ -291,7 +295,7 @@ export async function getImageGenQuota({ enabledModes = [], now = Date.now() } =
   }
 
   return {
-    family: 'imagegen',
+    family: IMAGE_GEN_FAMILY,
     label: 'Image Gen',
     supported: true,
     // Not a burnable quota target: these cards carry no measurable headroom,

@@ -4,7 +4,7 @@ import { getClaudeCodeUsage } from '../services/claudeCodeUsage.js';
 import { getProviderQuotas } from '../services/providerUsage.js';
 import { getAllProviders } from '../services/providers.js';
 import { asyncHandler } from '../lib/errorHandler.js';
-import { validateRequest, usageQuerySchema, usageMessagesSchema } from '../lib/validation.js';
+import { validateRequest, usageQuerySchema, usageMessagesSchema, providerUsageQuerySchema } from '../lib/validation.js';
 import { resolveUsageRange } from '../lib/usageRange.js';
 import { WAIT } from '../lib/staleWhileRevalidate.js';
 import {
@@ -35,9 +35,15 @@ router.get('/', asyncHandler(async (req, res) => {
 // Holding an HTTP response open for a 10-20s PTY spawn is what made this page —
 // and Quota Burn — look broken, and it is the shape that trips proxy timeouts.
 // `?refresh=1` is the explicit "get me a live reading" and does wait.
+//
+// `?family=<id>` narrows the read to a single card, so the page's per-card
+// Refresh re-reads only the provider the user clicked instead of respawning
+// every provider's TUI scrape. An id that no longer resolves to an enabled
+// family answers with an empty list — the card is gone, not broken.
 router.get('/providers', asyncHandler(async (req, res) => {
-  const refresh = req.query.refresh === '1' || req.query.refresh === 'true';
-  const providers = await getProviderQuotas({ wait: refresh ? WAIT.FRESH : WAIT.NEVER });
+  const { refresh: refreshParam, family } = validateRequest(providerUsageQuerySchema, req.query);
+  const refresh = refreshParam === '1' || refreshParam === 'true';
+  const providers = await getProviderQuotas({ wait: refresh ? WAIT.FRESH : WAIT.NEVER, family: family ?? null });
   res.json({ providers });
 }));
 

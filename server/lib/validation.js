@@ -801,6 +801,14 @@ export const usageQuerySchema = z.object({
   to: isoDay.optional()
 }).refine((q) => !(q.from && q.to) || q.from <= q.to, { message: 'from must be on or before to' });
 
+/** Query for GET /api/usage/providers. `family` narrows the read to a single
+ * quota card (the per-card Refresh on the usage page) so one slow TUI scrape
+ * isn't paid for every provider at once. */
+export const providerUsageQuerySchema = z.object({
+  refresh: z.enum(['0', '1', 'true', 'false']).optional(),
+  family: z.string().regex(/^[a-z0-9-]{1,32}$/, 'family must be a provider family id').optional()
+});
+
 /** Body for POST /api/usage/messages — token counts persist forever, so
  * reject non-integer/negative garbage instead of coercing it into counters. */
 export const usageMessagesSchema = z.object({

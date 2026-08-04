@@ -110,7 +110,21 @@ describe('usage routes', () => {
     const res = await request(buildApp()).get('/api/usage/providers?refresh=1');
     expect(res.status).toBe(200);
     expect(res.body.providers).toHaveLength(2);
-    expect(getProviderQuotas).toHaveBeenCalledWith({ wait: 'fresh' });
+    expect(getProviderQuotas).toHaveBeenCalledWith({ wait: 'fresh', family: null });
+  });
+
+  it('GET /api/usage/providers narrows the read to one family', async () => {
+    getProviderQuotas.mockResolvedValue([{ family: 'grok', supported: true, limits: [] }]);
+    const res = await request(buildApp()).get('/api/usage/providers?refresh=1&family=grok');
+    expect(res.status).toBe(200);
+    expect(res.body.providers).toEqual([{ family: 'grok', supported: true, limits: [] }]);
+    expect(getProviderQuotas).toHaveBeenCalledWith({ wait: 'fresh', family: 'grok' });
+  });
+
+  it('GET /api/usage/providers rejects a malformed family id', async () => {
+    const res = await request(buildApp()).get('/api/usage/providers?family=../etc');
+    expect(res.status).toBe(400);
+    expect(getProviderQuotas).not.toHaveBeenCalled();
   });
 
   it('POST /api/usage/messages rejects negative or non-integer token counts', async () => {

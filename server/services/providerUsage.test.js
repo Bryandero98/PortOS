@@ -23,6 +23,7 @@ vi.mock('./settings.js', () => ({
   getSettings: vi.fn().mockResolvedValue({ imageGen: {} })
 }));
 vi.mock('./imageGenQuota.js', () => ({
+  IMAGE_GEN_FAMILY: 'imagegen',
   getImageGenQuota: vi.fn(async ({ enabledModes }) => (enabledModes.length ? {
     family: 'imagegen', label: 'Image Gen', supported: true, burnable: false,
     limits: [], activity: [], metrics: enabledModes.map((m) => ({ key: m, label: m, value: '0 renders · 24h' })),
@@ -164,6 +165,14 @@ describe('resolveEnabledFamilies', () => {
 });
 
 describe('getProviderQuotas', () => {
+  // The TUI-scrape cache and the mock call counts both outlive a single test —
+  // reset so the per-family assertions below aren't order-dependent.
+  beforeEach(() => {
+    __resetUsageScrapeCache();
+    scrapeTuiUsage.mockReset();
+    getImageGenQuota.mockClear();
+  });
+
   it('unwraps the { providers } object shape from getAllProviders', async () => {
     // Regression: getAllProviders returns { activeProvider, providers }, not a
     // bare array — passing the object straight into resolveEnabledFamilies threw
@@ -194,6 +203,40 @@ describe('getProviderQuotas', () => {
     getAllProviders.mockResolvedValueOnce({ activeProvider: null, providers: [] });
     getSettings.mockResolvedValueOnce({ imageGen: { local: { enabled: true } } });
     expect(await getProviderQuotas()).toEqual([]);
+  });
+
+  it('reads only the requested family — the point of the per-card refresh', async () => {
+    // A second family's reading is a second multi-second TUI spawn, so asking
+    // for one card must not scrape the other (nor derive the image card).
+    getAllProviders.mockResolvedValueOnce({
+      activeProvider: null,
+      providers: [
+        { id: 'grok', enabled: true, type: 'tui', command: 'grok' },
+        { id: 'agy', enabled: true, type: 'tui', command: 'agy' }
+      ]
+    });
+    getSettings.mockResolvedValueOnce({ imageGen: { agy: { enabled: true } } });
+    scrapeTuiUsage.mockResolvedValue('Weekly limit: 5% Next reset: Jan 1, 00:00');
+    const quotas = await getProviderQuotas({ family: 'grok' });
+    expect(quotas.map((q) => q.family)).toEqual(['grok']);
+    expect(scrapeTuiUsage).toHaveBeenCalledTimes(1);
+    expect(getImageGenQuota).not.toHaveBeenCalled();
+  });
+
+  it('reads the image-gen card alone when it is the requested family', async () => {
+    getAllProviders.mockResolvedValueOnce({
+      activeProvider: null,
+      providers: [{ id: 'grok', enabled: true, type: 'tui', command: 'grok' }]
+    });
+    getSettings.mockResolvedValueOnce({ imageGen: { agy: { enabled: true } } });
+    const quotas = await getProviderQuotas({ family: 'imagegen' });
+    expect(quotas.map((q) => q.family)).toEqual(['imagegen']);
+    expect(scrapeTuiUsage).not.toHaveBeenCalled();
+  });
+
+  it('returns nothing for a family that is no longer enabled', async () => {
+    getAllProviders.mockResolvedValueOnce({ activeProvider: null, providers: [] });
+    expect(await getProviderQuotas({ family: 'grok' })).toEqual([]);
   });
 });
 

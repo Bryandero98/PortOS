@@ -9,7 +9,7 @@ import { scrapeTuiUsage } from '../lib/tuiUsageScrape.js';
 import { createStaleWhileRevalidate, PENDING, WAIT } from '../lib/staleWhileRevalidate.js';
 import { parseHumanReset } from '../lib/quotaReset.js';
 import { getSettings } from './settings.js';
-import { getImageGenQuota } from './imageGenQuota.js';
+import { getImageGenQuota, IMAGE_GEN_FAMILY } from './imageGenQuota.js';
 import { enabledCloudImageModes } from './imageGen/modes.js';
 
 /**
@@ -544,18 +544,25 @@ const fetchFamilyQuota = (family, { wait, providers }) =>
  * one; `'never'` answers a cold cache with a `pending: true` card, for pages
  * that render "still reading" and poll; `'fresh'` bypasses the caches entirely
  * and waits — an explicit Refresh, or a burn cycle about to spend real quota.
+ *
+ * `family` narrows the read to one card. Each family's reading is an
+ * independent multi-second scrape, so the usage page's per-card Refresh asks
+ * for exactly the one the user clicked instead of respawning every provider's
+ * TUI. A family id that isn't enabled resolves to an empty list — the caller
+ * reads that as "this card is gone", not as an error.
  */
-export async function getProviderQuotas({ wait = WAIT.CACHED } = {}) {
+export async function getProviderQuotas({ wait = WAIT.CACHED, family = null } = {}) {
   const result = await getAllProviders();
   const providers = Array.isArray(result) ? result : (result?.providers || []);
   const enabled = providers.filter((p) => p?.enabled && p.ollamaBacked !== true);
-  const families = resolveEnabledFamilies(providers);
-  const familyCards = await Promise.all(families.map((family) =>
-    fetchFamilyQuota(family, { wait, providers: enabled.filter((p) => family.matches(p)) })));
+  const families = resolveEnabledFamilies(providers).filter((f) => !family || f.id === family);
+  const familyCards = await Promise.all(families.map((f) =>
+    fetchFamilyQuota(f, { wait, providers: enabled.filter((p) => f.matches(p)) })));
   // Image gen last: it is a derived/observed card, not a provider-family
   // scrape, and it reads as a footnote to the model-quota cards above it. Not
   // raced with the family scrapes — this is two small local file reads against
   // their multi-second TUI PTY spawns, so concurrency would buy no wall-clock.
+  if (family && family !== IMAGE_GEN_FAMILY) return familyCards;
   const imageCard = await fetchImageGenQuota();
   return imageCard ? [...familyCards, imageCard] : familyCards;
 }
