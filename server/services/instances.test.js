@@ -287,9 +287,9 @@ describe('instances.js', () => {
       readJSONFile.mockResolvedValue({ self: null, peers: [] });
       fetch.mockRejectedValue(new Error('not reachable'));
 
-      const peer = await addPeer({ address: '10.0.0.7', host: 'machine.taile8179.ts.net' });
+      const peer = await addPeer({ address: '10.0.0.7', host: 'host-delta.example-tailnet.ts.net' });
 
-      expect(peer.host).toBe('machine.taile8179.ts.net');
+      expect(peer.host).toBe('host-delta.example-tailnet.ts.net');
       expect(peer.hostManual).toBe(true);
     });
 
@@ -521,9 +521,9 @@ describe('instances.js', () => {
       const peers = [{ id: 'peer-1', name: 'host', enabled: true, host: null }];
       readJSONFile.mockResolvedValue({ self: null, peers });
 
-      const result = await updatePeer('peer-1', { host: 'void.taile8179.ts.net' });
+      const result = await updatePeer('peer-1', { host: 'host-alpha.example-tailnet.ts.net' });
 
-      expect(result.host).toBe('void.taile8179.ts.net');
+      expect(result.host).toBe('host-alpha.example-tailnet.ts.net');
       expect(disconnectFromPeer).toHaveBeenCalledWith('peer-1');
     });
 
@@ -540,14 +540,14 @@ describe('instances.js', () => {
       const peers = [{ id: 'peer-1', name: 'host', enabled: true, host: null, hostManual: false }];
       readJSONFile.mockResolvedValue({ self: null, peers });
 
-      const result = await updatePeer('peer-1', { host: 'machine.taile8179.ts.net' });
+      const result = await updatePeer('peer-1', { host: 'host-delta.example-tailnet.ts.net' });
 
-      expect(result.host).toBe('machine.taile8179.ts.net');
+      expect(result.host).toBe('host-delta.example-tailnet.ts.net');
       expect(result.hostManual).toBe(true);
     });
 
     it('should latch hostManual when user explicitly clears host (the un-revert bug)', async () => {
-      const peers = [{ id: 'peer-1', name: 'host', enabled: true, host: 'machine.taile8179.ts.net', hostManual: false }];
+      const peers = [{ id: 'peer-1', name: 'host', enabled: true, host: 'host-delta.example-tailnet.ts.net', hostManual: false }];
       readJSONFile.mockResolvedValue({ self: null, peers });
 
       const result = await updatePeer('peer-1', { host: '' });
@@ -1395,21 +1395,21 @@ describe('instances.js', () => {
       fetch.mockRejectedValue(new Error('offline'));
 
       const result = await handleAnnounce({
-        address: '100.111.11.146',
+        address: '100.64.0.50',
         port: 5555,
         instanceId: 'remote-instance',
         name: 'null',
-        host: 'null.taile8179.ts.net'
+        host: 'host-beta.example-tailnet.ts.net'
       });
 
       expect(result.created).toBe(true);
-      expect(result.peer.host).toBe('null.taile8179.ts.net');
+      expect(result.peer.host).toBe('host-beta.example-tailnet.ts.net');
     });
 
     it('should learn host on existing peer when previously absent', async () => {
       const existing = {
         id: 'p1',
-        address: '100.111.11.146',
+        address: '100.64.0.50',
         port: 5555,
         instanceId: 'remote-instance',
         name: 'null',
@@ -1420,20 +1420,20 @@ describe('instances.js', () => {
       readJSONFile.mockResolvedValue({ self: null, peers: [existing] });
 
       const result = await handleAnnounce({
-        address: '100.111.11.146',
+        address: '100.64.0.50',
         port: 5555,
         instanceId: 'remote-instance',
         name: 'null',
-        host: 'null.taile8179.ts.net'
+        host: 'host-beta.example-tailnet.ts.net'
       });
 
-      expect(result.peer.host).toBe('null.taile8179.ts.net');
+      expect(result.peer.host).toBe('host-beta.example-tailnet.ts.net');
     });
 
     it('should not overwrite a user-set host on existing peer', async () => {
       const existing = {
         id: 'p1',
-        address: '100.111.11.146',
+        address: '100.64.0.50',
         port: 5555,
         instanceId: 'remote-instance',
         name: 'null',
@@ -1444,7 +1444,7 @@ describe('instances.js', () => {
       readJSONFile.mockResolvedValue({ self: null, peers: [existing] });
 
       const result = await handleAnnounce({
-        address: '100.111.11.146',
+        address: '100.64.0.50',
         port: 5555,
         instanceId: 'remote-instance',
         name: 'null',
@@ -1460,7 +1460,7 @@ describe('instances.js', () => {
       // name because the only safeguard was "is existing.host empty?".
       const existing = {
         id: 'p1',
-        address: '100.111.11.146',
+        address: '100.64.0.50',
         port: 5555,
         instanceId: 'remote-instance',
         name: 'null',
@@ -1472,11 +1472,11 @@ describe('instances.js', () => {
       readJSONFile.mockResolvedValue({ self: null, peers: [existing] });
 
       const result = await handleAnnounce({
-        address: '100.111.11.146',
+        address: '100.64.0.50',
         port: 5555,
         instanceId: 'remote-instance',
         name: 'null',
-        host: 'null.taile8179.ts.net'
+        host: 'host-beta.example-tailnet.ts.net'
       });
 
       expect(result.peer.host).toBeNull();
@@ -1488,7 +1488,7 @@ describe('instances.js', () => {
       // explicit user intervention should latch hostManual.
       const existing = {
         id: 'p1',
-        address: '100.111.11.146',
+        address: '100.64.0.50',
         port: 5555,
         instanceId: 'remote-instance',
         name: 'null',
@@ -1499,14 +1499,14 @@ describe('instances.js', () => {
       readJSONFile.mockResolvedValue({ self: null, peers: [existing] });
 
       const result = await handleAnnounce({
-        address: '100.111.11.146',
+        address: '100.64.0.50',
         port: 5555,
         instanceId: 'remote-instance',
         name: 'null',
-        host: 'null.taile8179.ts.net'
+        host: 'host-beta.example-tailnet.ts.net'
       });
 
-      expect(result.peer.host).toBe('null.taile8179.ts.net');
+      expect(result.peer.host).toBe('host-beta.example-tailnet.ts.net');
     });
 
     it('should drop invalid host strings via validHost', async () => {
@@ -1514,7 +1514,7 @@ describe('instances.js', () => {
       fetch.mockRejectedValue(new Error('offline'));
 
       const result = await handleAnnounce({
-        address: '100.111.11.146',
+        address: '100.64.0.50',
         port: 5555,
         instanceId: 'remote-instance',
         name: 'null',

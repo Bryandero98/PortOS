@@ -10,7 +10,7 @@ vi.mock('../lib/networkExposure.js', () => ({
     httpsStateInitialized: true,
     bind: { host: '0.0.0.0', port: 5555, audience: 'all-interfaces' },
     loopbackMirror: { enabled: true, port: 5553 },
-    cert: { mode: 'tailscale', tailscaleHost: 'void.taile8179.ts.net', ips: [] },
+    cert: { mode: 'tailscale', tailscaleHost: 'host-alpha.example-tailnet.ts.net', ips: [] },
     docsUrl: 'https://github.com/atomantic/PortOS/blob/main/docs/PORTS.md',
   }),
 }));
@@ -26,7 +26,7 @@ describe('Network Exposure Routes', () => {
     expect(res.body.scheme).toBe('https');
     expect(res.body.bind.port).toBe(5555);
     expect(res.body.loopbackMirror.port).toBe(5553);
-    expect(res.body.cert.tailscaleHost).toBe('void.taile8179.ts.net');
+    expect(res.body.cert.tailscaleHost).toBe('host-alpha.example-tailnet.ts.net');
     expect(res.body.docsUrl).toMatch(/PORTS\.md$/);
   });
 });

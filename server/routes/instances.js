@@ -164,7 +164,7 @@ router.get('/sync-status', asyncHandler(async (req, res) => {
 }));
 
 // GET /api/instances/tailnet-suffix — detect local Tailscale MagicDNS suffix
-// so the UI can auto-suggest DNS names (e.g., `iphone181` + `.taile8179.ts.net`)
+// so the UI can auto-suggest DNS names (e.g., `phone-example` + `.example-tailnet.ts.net`)
 // for peers that currently use bare IP addresses.
 router.get('/tailnet-suffix', asyncHandler(async (req, res) => {
   const bin = findTailscale();

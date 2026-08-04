@@ -1,0 +1,7 @@
+# Unreleased
+
+## Fixed
+
+- **Replaced a real Tailscale identity with placeholders across tracked files, and added a guard so it can't come back.** A real MagicDNS tailnet suffix, real device names, and a real CGNAT peer IP had been committed across server routes/lib, client lib, several test fixtures, two design-plan docs, and two released changelog entries — ~14 tracked files in a public repo. This violates the repo's own `CLAUDE.md` "Sensitive Data & Privacy" rule, which lists Tailscale node/MagicDNS names and Tailscale/LAN IPs as never-commit categories. Every occurrence is now an obviously-fake placeholder (`example-tailnet.ts.net`, `host-alpha`/`beta`/`gamma`/`delta`, a documented CGNAT test IP), preserving the two-host distinctness some tests relied on. A new `scripts/tailnet-identity-leak.test.js` enumerates *tracked* files via `git grep` and fails the moment a real-looking tailnet host or CGNAT address lands again — whether via a pasted log line, a doc example lifted from a live install, or a copy-pasted test fixture.
+
+  These are identifiers, not credentials — Tailscale ACLs still gate all actual network access, and no auth key, token, or secret was ever committed. The historical occurrences remain in git history by deliberate decision (see #3455): a `git filter-repo` rewrite would break every fork and clone of this fork-aware project to remove values that grant no access on their own.

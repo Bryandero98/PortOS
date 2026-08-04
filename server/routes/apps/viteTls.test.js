@@ -46,7 +46,7 @@ describe('Apps Vite Dev-UI host guard', () => {
       appsService.getAppById.mockResolvedValue({ id: 'app-001', name: 'A', repoPath: repoDir });
 
       const response = await request(app)
-        .get('/api/apps/app-001/vite-host-check?host=null.taile8179.ts.net');
+        .get('/api/apps/app-001/vite-host-check?host=host-beta.example-tailnet.ts.net');
 
       expect(response.status).toBe(200);
       expect(response.body.hasViteConfig).toBe(true);
@@ -60,7 +60,7 @@ describe('Apps Vite Dev-UI host guard', () => {
       appsService.getAppById.mockResolvedValue({ id: 'app-001', name: 'A', repoPath: repoDir });
 
       const response = await request(app)
-        .get('/api/apps/app-001/vite-host-check?host=box.taile8179.ts.net');
+        .get('/api/apps/app-001/vite-host-check?host=host-gamma.example-tailnet.ts.net');
 
       expect(response.status).toBe(200);
       expect(response.body.hostAllowed).toBe(true);
@@ -71,7 +71,7 @@ describe('Apps Vite Dev-UI host guard', () => {
       appsService.getAppById.mockResolvedValue({ id: 'app-001', name: 'A', repoPath: repoDir });
 
       const response = await request(app)
-        .get('/api/apps/app-001/vite-host-check?host=box.taile8179.ts.net');
+        .get('/api/apps/app-001/vite-host-check?host=host-gamma.example-tailnet.ts.net');
 
       expect(response.status).toBe(200);
       expect(response.body.hasViteConfig).toBe(false);
@@ -86,7 +86,7 @@ describe('Apps Vite Dev-UI host guard', () => {
 
       const response = await request(app)
         .post('/api/apps/app-001/fix-vite-hosts')
-        .send({ mode: 'allow-all', host: 'null.taile8179.ts.net' });
+        .send({ mode: 'allow-all', host: 'host-beta.example-tailnet.ts.net' });
 
       expect(response.status).toBe(200);
       expect(response.body.strategy).toBe('inject-into-server');
@@ -113,7 +113,7 @@ describe('Apps Vite Dev-UI host guard', () => {
 
       const response = await request(app)
         .post('/api/apps/app-001/fix-vite-hosts')
-        .send({ mode: 'ai', host: 'null.taile8179.ts.net' });
+        .send({ mode: 'ai', host: 'host-beta.example-tailnet.ts.net' });
 
       expect(response.status).toBe(200);
       expect(response.body.taskId).toBe('task-vite-1');
