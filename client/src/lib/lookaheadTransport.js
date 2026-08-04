@@ -1,8 +1,8 @@
 // Shared lookahead-transport for the synth players (#2493). The three players —
 // createScorePlayer + createMultiScorePlayer (scorePlayback.js) and
 // createMidiPlayer (midiPlayback.js) — all drive a Web Audio OscillatorNode
-// graph through the same lookahead-scheduler state machine: a suspended-context
-// resume with a teardown-race guard, an interval that hands due tones to the
+// graph through the same lookahead-scheduler state machine: a not-yet-running
+// context resume with a teardown-race guard, an interval that hands due tones to the
 // audio clock, live-node teardown, and pause/stop/finish/seek sequences that
 // only differ in WHAT they schedule and WHAT the UI is told. This module owns
 // that transport (the clock + node lifecycle); each player supplies the
@@ -150,10 +150,13 @@ export const createLookaheadTransport = ({
     if (audioSession) declareAudioSession(audioSession);
     // Covers iOS Safari's `'interrupted'` state, not just `'suspended'`.
     await resumeAudioContext(c);
-    // A stop/pause landing during the resume await already ran the teardown, so
-    // it has handed the session back; an empty schedule never sounds, so it hands
-    // it back here rather than holding a document-wide declaration for nothing.
+    // Bail WITHOUT releasing the session: whatever bumped the token (stop, pause,
+    // or a newer play) owns it now. A stop/pause has already handed it back, and
+    // a newer play has re-declared it — releasing here would silence that one.
     if (token !== playToken) return;
+    // An empty schedule never sounds, so it hands the session back rather than
+    // holding a document-wide declaration for nothing. No await runs between the
+    // token check and here, so no newer play() can have taken it over.
     if (doPrepare() === false) {         // empty schedule — prepare fired onEnded
       if (audioSession) releaseAudioSession();
       return;
@@ -168,7 +171,15 @@ export const createLookaheadTransport = ({
   // Pause — stop sounding, remember position, keep the cursor for resume.
   const pause = () => {
     playToken++; // abort an in-flight play() still awaiting ctx.resume()
-    if (!playing) return;
+    if (!playing) {
+      // The token bump above just cancelled a play() that is still awaiting its
+      // resume — and that play() already declared the session. Nothing is
+      // sounding and no teardown will run for it, so hand the session back here
+      // or a play-then-immediately-pause leaves the document pinned output-only.
+      // (`stop()` needs no such branch: it runs the teardown unconditionally.)
+      if (audioSession) releaseAudioSession();
+      return;
+    }
     offsetSec = Math.min(Math.max(0, ctx().currentTime - startTime), getTotalSec());
     clearTick();
     stopNodes();

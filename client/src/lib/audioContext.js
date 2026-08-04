@@ -44,15 +44,11 @@ let sharedCtx = null;
 // play handler — a partial WebKit implementation rejecting the value must not
 // take playback down with it.
 
-const setAudioSessionType = (type) => {
+/** Declare this document's iOS audio session (e.g. `'playback'`). */
+export function declareAudioSession(type) {
   const session = globalThis.navigator?.audioSession;
   if (!session) return;
   try { session.type = type; } catch { /* older/partial WebKit */ }
-};
-
-/** Declare this document's iOS audio session (e.g. `'playback'`). */
-export function declareAudioSession(type) {
-  setAudioSessionType(type);
 }
 
 /**
@@ -63,7 +59,7 @@ export function declareAudioSession(type) {
  * feature happened to declare.
  */
 export function releaseAudioSession() {
-  setAudioSessionType('auto');
+  declareAudioSession('auto');
 }
 
 /**

@@ -19,9 +19,12 @@
 // resume() attempts.
 
 export const createFakeAudio = ({ state: initialState = 'running' } = {}) => {
-  // Pending resolver for a non-running context's in-flight resume() (null until
-  // a resume() is awaiting, cleared once flushed).
-  let resolveResume = null;
+  // Pending resolvers for in-flight resume() calls. A LIST, not a single slot:
+  // two overlapping play()s (the second superseding the first mid-await) each
+  // park their own resume, and a single slot would drop the first one's resolver
+  // so its continuation never ran — the superseded play would hang instead of
+  // reaching its stale-token bail.
+  let resumeResolvers = [];
   const audio = {
     now: 0,
     // Live context state — flips to 'running' once a pending resume resolves,
@@ -47,16 +50,16 @@ export const createFakeAudio = ({ state: initialState = 'running' } = {}) => {
       this.gains.length = 0;
       this.filters.length = 0;
       this.shapers.length = 0;
-      resolveResume = null;
+      resumeResolvers = [];
     },
-    // Resolve a pending resume() so play()'s await continues, bringing the
+    // Resolve every pending resume() so the parked play()s continue, bringing the
     // context up exactly as a real one does.
     flushResume() {
-      const r = resolveResume;
-      resolveResume = null;
-      if (!r) return;
+      const pending = resumeResolvers;
+      resumeResolvers = [];
+      if (!pending.length) return;
       this.state = 'running';
-      r();
+      for (const r of pending) r();
     },
   };
   // Every node records what it was connected TO, so a test can assert ROUTING
@@ -84,7 +87,7 @@ export const createFakeAudio = ({ state: initialState = 'running' } = {}) => {
       resume: () => {
         audio.resumeCalls += 1;
         if (audio.state === 'running') return Promise.resolve();
-        return new Promise((r) => { resolveResume = r; });
+        return new Promise((r) => { resumeResolvers.push(r); });
       },
       get currentTime() { return audio.now; },
       destination: { id: 'destination' },
