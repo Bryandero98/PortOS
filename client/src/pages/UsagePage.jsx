@@ -90,14 +90,29 @@ function StatTile({ label, value, detail }) {
 // One subscription-quota card per enabled provider family. Providers with no
 // queryable usage surface (supported: false) render a muted note, never an
 // error; a supported adapter that failed transiently shows a soft warning.
-function ProviderQuotaCard({ quota }) {
+function ProviderQuotaCard({ quota, onRefresh, refreshing, disabled }) {
   return (
     <div className="bg-port-card border border-port-border rounded-xl p-3 sm:p-4">
-      <div className="flex items-center justify-between mb-2">
+      <div className="flex items-center justify-between gap-2 mb-2">
         <h3 className="text-base font-semibold text-white">{quota.label}</h3>
-        {quota.plan && quota.plan !== 'unknown' && (
-          <Pill tone="context" size="xs">{quota.plan}</Pill>
-        )}
+        <div className="flex items-center gap-2 shrink-0">
+          {quota.plan && quota.plan !== 'unknown' && (
+            <Pill tone="context" size="xs">{quota.plan}</Pill>
+          )}
+          {/* Per-card refresh: every family's reading is its own multi-second
+              CLI/TUI scrape, so re-reading one provider must not respawn all
+              of them. */}
+          <button
+            type="button"
+            onClick={() => onRefresh(quota.family)}
+            disabled={refreshing || disabled}
+            className="text-gray-400 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed"
+            title={`Refresh ${quota.label} usage`}
+            aria-label={`Refresh ${quota.label} usage`}
+          >
+            <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+          </button>
+        </div>
       </div>
 
       {!quota.supported && (
@@ -180,6 +195,7 @@ function ProviderQuotaSection() {
   const [quotas, setQuotas] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [refreshingFamilies, setRefreshingFamilies] = useState(() => new Set());
 
   const load = useCallback(async (refresh = false) => {
     setLoading(true);
@@ -196,6 +212,31 @@ function ProviderQuotaSection() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Refresh ONE provider card. The whole-section Refresh spawns every family's
+  // scrape at once (10-20s each); this asks for the single card the user
+  // clicked and swaps it in when the reading lands, leaving every other card's
+  // reading — and its age — untouched. A failure toasts through the request
+  // helper; the catch here only clears the spinner, it owns no error UI.
+  const refreshFamily = useCallback(async (family) => {
+    setRefreshingFamilies((prev) => new Set(prev).add(family));
+    const result = await api.getProviderUsage({ refresh: true, family, silent: false }).catch(() => null);
+    if (result?.providers) {
+      const card = result.providers.find((q) => q.family === family);
+      // No card back for a family we asked for means it is no longer enabled
+      // (its provider was turned off) — drop it rather than leave a reading
+      // that can never refresh again. `prev` is always an array here: the
+      // button that got us here only renders once quotas have loaded.
+      setQuotas((prev) => (card
+        ? prev.map((q) => (q.family === family ? card : q))
+        : prev.filter((q) => q.family !== family)));
+    }
+    setRefreshingFamilies((prev) => {
+      const next = new Set(prev);
+      next.delete(family);
+      return next;
+    });
+  }, []);
+
   // A quota read never blocks the response: a cold cache answers with `pending`
   // cards and the reading lands behind it. Without this poll those cards would
   // sit on "reading quota…" until the user hit Refresh by hand. Enabled only
@@ -211,9 +252,9 @@ function ProviderQuotaSection() {
           onClick={() => load(true)}
           disabled={loading}
           className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-white disabled:opacity-50"
-          title="Refresh provider usage"
+          title="Refresh every provider's usage"
         >
-          <RefreshCw size={15} className={loading ? 'animate-spin' : ''} /> Refresh
+          <RefreshCw size={15} className={loading ? 'animate-spin' : ''} /> Refresh all
         </button>
       </div>
 
@@ -231,7 +272,13 @@ function ProviderQuotaSection() {
       {quotas && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4">
           {quotas.map((quota) => (
-            <ProviderQuotaCard key={quota.family} quota={quota} />
+            <ProviderQuotaCard
+              key={quota.family}
+              quota={quota}
+              onRefresh={refreshFamily}
+              refreshing={refreshingFamilies.has(quota.family)}
+              disabled={loading}
+            />
           ))}
           {quotas.length === 0 && (
             <div className="text-gray-500 text-sm">No enabled providers report subscription usage.</div>

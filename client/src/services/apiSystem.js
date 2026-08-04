@@ -119,9 +119,16 @@ export const startUsageBackfill = (options = {}) => request('/usage/backfill', {
 
 
 // Subscription-quota status for every enabled provider family (claude, codex,
-// agy, grok). Callers own their inline error UI — silent by default.
-export const getProviderUsage = ({ refresh = false, ...options } = {}) =>
-  request(`/usage/providers${refresh ? '?refresh=1' : ''}`, { silent: true, ...options });
+// agy, grok). Callers own their inline error UI — silent by default. `family`
+// narrows the read to a single card (the usage page's per-card Refresh) so one
+// provider's multi-second scrape isn't paid for all of them.
+export const getProviderUsage = ({ refresh = false, family = null, ...options } = {}) => {
+  const qs = new URLSearchParams();
+  if (refresh) qs.set('refresh', '1');
+  if (family) qs.set('family', family);
+  const query = qs.toString();
+  return request(`/usage/providers${query ? `?${query}` : ''}`, { silent: true, ...options });
+};
 
 // Backup
 export const getBackupStatus = (options) => request('/backup/status', options);

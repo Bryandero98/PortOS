@@ -104,6 +104,48 @@ describe('UsagePage breakdown visualization and responsiveness', () => {
   });
 });
 
+describe('UsagePage per-provider refresh', () => {
+  const card = (family, label, percentUsed) => ({
+    family,
+    label,
+    supported: true,
+    limits: [{ key: 'week', label: 'Weekly', percentUsed, percentRemaining: 100 - percentUsed }],
+    activity: [],
+    approximate: true,
+    fetchedAt: new Date().toISOString()
+  });
+
+  beforeEach(() => {
+    api.getProviderUsage.mockResolvedValue({ providers: [card('claude', 'Claude Code', 10), card('grok', 'Grok', 20)] });
+  });
+
+  it('re-reads only the clicked provider and swaps that card in', async () => {
+    render(<MemoryRouter><UsagePage /></MemoryRouter>);
+
+    await screen.findByText('Grok');
+    expect(await screen.findByText('20% used')).toBeInTheDocument();
+
+    api.getProviderUsage.mockResolvedValueOnce({ providers: [card('grok', 'Grok', 77)] });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh Grok usage' }));
+
+    await waitFor(() => expect(api.getProviderUsage).toHaveBeenCalledWith({ refresh: true, family: 'grok', silent: false }));
+    // The refreshed card updates; the untouched Claude card keeps its reading.
+    expect(await screen.findByText('77% used')).toBeInTheDocument();
+    expect(screen.getByText('10% used')).toBeInTheDocument();
+  });
+
+  it('drops a card whose provider is no longer enabled', async () => {
+    render(<MemoryRouter><UsagePage /></MemoryRouter>);
+    await screen.findByText('Grok');
+
+    api.getProviderUsage.mockResolvedValueOnce({ providers: [] });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh Grok usage' }));
+
+    await waitFor(() => expect(screen.queryByText('Grok')).not.toBeInTheDocument());
+    expect(screen.getByText('Claude Code')).toBeInTheDocument();
+  });
+});
+
 describe('UsagePage provider reset times', () => {
   it('localizes an ISO reset and adds the relative countdown', async () => {
     // A minute past the 3h mark, so the floor in `timeUntil` can't round to 2h.
