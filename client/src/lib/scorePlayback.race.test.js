@@ -8,12 +8,12 @@ import { parseScore } from './scoreNotation.js';
 import { createScorePlayer, createMultiScorePlayer } from './scorePlayback.js';
 import { createFakeAudio } from '../test/fakeAudioContext.js';
 
-// The shared fake in suspended mode starts the context suspended and only
-// resolves resume() when we call audio.flushResume() — so a test can interleave
-// a stop()/pause() between play()'s `await ctx.resume()` and its continuation,
-// reproducing the teardown-during-await race the playToken guard fixes. One
-// pair for the whole file (lib/audioContext.js caches the context).
-const { FakeAudioContext, audio } = createFakeAudio({ suspended: true });
+// The shared fake started suspended only resolves resume() when we call
+// audio.flushResume() — so a test can interleave a stop()/pause() between
+// play()'s `await ctx.resume()` and its continuation, reproducing the
+// teardown-during-await race the playToken guard fixes. One pair for the whole
+// file (lib/audioContext.js caches the context).
+const { FakeAudioContext, audio } = createFakeAudio({ state: 'suspended' });
 
 describe('resume-window teardown race', () => {
   beforeEach(() => {

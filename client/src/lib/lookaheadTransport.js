@@ -12,7 +12,9 @@
 // Pure of any player specifics — no React, no score/MIDI concepts. Imports only
 // the shared AudioContext; players import createLookaheadTransport from here.
 
-import { getAudioContext as ctx } from './audioContext.js';
+import {
+  getAudioContext as ctx, resumeAudioContext, declareAudioSession, releaseAudioSession,
+} from './audioContext.js';
 
 // Shared lookahead-scheduler timing — one definition so every synth player
 // can't drift apart on feel. Lives here (not in scorePlayback.js) so the
@@ -55,6 +57,12 @@ const { LEAD, LOOKAHEAD_MS } = SYNTH_TIMING;
  * @param {() => void} [hooks.onTeardown] — extra teardown after the live nodes
  *   are stopped on pause/stop/finish (e.g. drop the master-bus ref). NOT called
  *   on seek, which reuses the same bus to keep scheduling.
+ * @param {string} [hooks.audioSession] — the iOS audio session type to hold
+ *   WHILE this transport sounds, released on teardown. Only output-only players
+ *   set it, and only to `'playback'`: that is what stops the iPhone's ring/silent
+ *   switch from muting a pure-synth page. It is a capability of the player rather
+ *   than something the transport assumes, because the declaration is
+ *   document-wide — see the audio-session note in audioContext.js.
  * @returns {{ play, pause, stop, seek, position, isPlaying, track }}
  */
 export const createLookaheadTransport = ({
@@ -65,13 +73,20 @@ export const createLookaheadTransport = ({
   onStop,
   onEnded,
   onTeardown,
+  audioSession,
 }) => {
   const noop = () => {};
   const doPrepare = prepare || (() => true);
   const doSeekCursors = seekCursors || noop;
   const doStop = onStop || noop;
   const doEnded = onEnded || noop;
-  const doTeardown = onTeardown || noop;
+  // The player's own teardown, plus handing back any audio session this
+  // transport declared — so an output-only player holds the document-wide
+  // `playback` session only while it is actually sounding.
+  const doTeardown = () => {
+    if (onTeardown) onTeardown();
+    if (audioSession) releaseAudioSession();
+  };
 
   let playing = false;
   let interval = null;
@@ -129,9 +144,20 @@ export const createLookaheadTransport = ({
     if (playing) return;
     const c = ctx();
     const token = ++playToken;
-    if (c.state === 'suspended' && c.resume) await c.resume();
-    if (token !== playToken) return;     // a stop/pause landed during the resume await
-    if (doPrepare() === false) return;   // empty schedule — prepare fired onEnded
+    // Declared BEFORE the resume so the context comes up on the right session,
+    // and re-declared every play because another view on this document may have
+    // released it since (see the audio-session note in audioContext.js).
+    if (audioSession) declareAudioSession(audioSession);
+    // Covers iOS Safari's `'interrupted'` state, not just `'suspended'`.
+    await resumeAudioContext(c);
+    // A stop/pause landing during the resume await already ran the teardown, so
+    // it has handed the session back; an empty schedule never sounds, so it hands
+    // it back here rather than holding a document-wide declaration for nothing.
+    if (token !== playToken) return;
+    if (doPrepare() === false) {         // empty schedule — prepare fired onEnded
+      if (audioSession) releaseAudioSession();
+      return;
+    }
     playing = true;
     startTime = c.currentTime + LEAD - offsetSec;
     doSeekCursors(offsetSec, offsetSec > 0, startTime, track);

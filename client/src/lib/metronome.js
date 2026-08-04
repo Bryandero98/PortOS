@@ -15,7 +15,7 @@
 // same grid. Pure-ish: no React; the <Metronome> component wraps it for UI.
 
 import { parseScore } from './scoreNotation.js';
-import { getAudioContext as audioContext } from './audioContext.js';
+import { getAudioContext as audioContext, resumeAudioContext } from './audioContext.js';
 
 // BPM band — mirrors the server `tempo` validation (services/rounds.js
 // TEMPO_MIN / TEMPO_MAX, also enforced by the Zod schema in routes/rounds.js).
@@ -165,8 +165,9 @@ export function createMetronome({
   const start = async () => {
     if (running) return;
     const c = audioContext();
-    // Autoplay policy starts the context suspended until a user gesture.
-    if (c.state === 'suspended') await c.resume();
+    // Autoplay policy starts the context suspended until a user gesture, and on
+    // iOS it can also come back `'interrupted'` — see lib/audioContext.js.
+    await resumeAudioContext(c);
     running = true;
     tickIndex = 0;
     nextNoteTime = c.currentTime + START_LEAD_S;

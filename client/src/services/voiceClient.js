@@ -8,6 +8,7 @@
 import socket from './socket';
 import { subscribeVisibility } from '../hooks/useVisibilityEvent.js';
 import { sleep } from '../utils/sleep.js';
+import { resumeAudioContext } from '../lib/audioContext.js';
 
 let stream = null;
 let recorder = null;
@@ -42,7 +43,9 @@ const ensureCtx = () => {
     const Ctor = window.AudioContext || window.webkitAudioContext;
     audioCtx = new Ctor();
   }
-  if (audioCtx.state === 'suspended') audioCtx.resume();
+  // Fire-and-forget so ensureCtx stays sync — TTS playback schedules against the
+  // context a beat later. Covers iOS's `'interrupted'`, not just `'suspended'`.
+  resumeAudioContext(audioCtx).catch(() => {});
   return audioCtx;
 };
 
@@ -951,7 +954,7 @@ export const startContinuous = async (callbacks = {}) => {
 
   const Ctor = window.AudioContext || window.webkitAudioContext;
   continuousCtx = new Ctor();
-  if (continuousCtx.state === 'suspended') await continuousCtx.resume();
+  await resumeAudioContext(continuousCtx);
 
   // Inline worklet module so we don't need a separate file in the build
   const blobUrl = URL.createObjectURL(new Blob([WORKLET_SOURCE], { type: 'application/javascript' }));

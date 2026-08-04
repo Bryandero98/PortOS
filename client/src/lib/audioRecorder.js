@@ -6,6 +6,8 @@
 // recorder is wired to the live voice-agent socket pipeline (echo gating, VAD,
 // streaming TTS). This is a standalone "record a clip, get a WAV" helper.
 
+import { resumeAudioContext } from './audioContext.js';
+
 const TARGET_SAMPLE_RATE = 16000;
 
 // Pick a MediaRecorder mime the browser supports; Safari lands on mp4, others
@@ -95,8 +97,10 @@ export function arrayBufferToBase64(buffer) {
 export function createStreamAnalyser(stream, { fftSize = 2048 } = {}) {
   const context = new (window.AudioContext || window.webkitAudioContext)();
   // A context created outside a user gesture (e.g. in a render-driven effect)
-  // can start `suspended`; resume so frame reads aren't browser-dependent.
-  if (context.state === 'suspended') context.resume().catch(() => {});
+  // can start `suspended` — or, on iOS, `'interrupted'`; resume so frame reads
+  // aren't browser-dependent. Fire-and-forget: the analyser is read per frame,
+  // so a late resume just means the first frames read zeros.
+  resumeAudioContext(context).catch(() => {});
   const source = context.createMediaStreamSource(stream);
   const analyser = context.createAnalyser();
   analyser.fftSize = fftSize;

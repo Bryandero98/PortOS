@@ -7,18 +7,27 @@
 // scorePlayback.race.test.js use — new audio tests should import this instead
 // of copying another one.
 //
-// Pass { suspended: true } to model a context that starts suspended and only
-// resumes when the test calls `audio.flushResume()` — this reproduces the
-// teardown-during-await race the players' playToken guard fixes, letting a test
+// Pass { state } for a context that doesn't start running: `'suspended'` (the
+// autoplay policy) or iOS Safari's non-standard `'interrupted'` (a call / Siri /
+// the screen locking parks it there, and a resume gate written as
+// `state === 'suspended'` walks straight past it). Either way resume() parks
+// until the test calls `audio.flushResume()`, which reproduces the
+// teardown-during-await race the players' playToken guard fixes — a test can
 // interleave a stop()/pause() between play()'s `await ctx.resume()` and its
-// continuation.
+// continuation. `audio.state` is live (flipped to `'running'` by flushResume, so
+// the fake models the real state machine) and `audio.resumeCalls` counts the
+// resume() attempts.
 
-export const createFakeAudio = ({ suspended = false } = {}) => {
-  // Pending resolver for a suspended context's in-flight resume() (null until
+export const createFakeAudio = ({ state: initialState = 'running' } = {}) => {
+  // Pending resolver for a non-running context's in-flight resume() (null until
   // a resume() is awaiting, cleared once flushed).
   let resolveResume = null;
   const audio = {
     now: 0,
+    // Live context state — flips to 'running' once a pending resume resolves,
+    // so a test can assert the transport actually brought the clock up.
+    state: initialState,
+    resumeCalls: 0,
     oscillators: [],
     gains: [],
     // Bandpassed noise voices (createBufferSource + createBiquadFilter) — the
@@ -32,14 +41,23 @@ export const createFakeAudio = ({ suspended = false } = {}) => {
     shapers: [],
     reset() {
       this.now = 0;
+      this.state = initialState;
+      this.resumeCalls = 0;
       this.oscillators.length = 0;
       this.gains.length = 0;
       this.filters.length = 0;
       this.shapers.length = 0;
       resolveResume = null;
     },
-    // Resolve a suspended context's pending resume() so play()'s await continues.
-    flushResume() { const r = resolveResume; resolveResume = null; if (r) r(); },
+    // Resolve a pending resume() so play()'s await continues, bringing the
+    // context up exactly as a real one does.
+    flushResume() {
+      const r = resolveResume;
+      resolveResume = null;
+      if (!r) return;
+      this.state = 'running';
+      r();
+    },
   };
   // Every node records what it was connected TO, so a test can assert ROUTING
   // ("the kick's oscillator feeds a drive shaper") rather than inferring it from
@@ -62,10 +80,12 @@ export const createFakeAudio = ({ suspended = false } = {}) => {
   };
   function FakeAudioContext() {
     return {
-      state: suspended ? 'suspended' : 'running',
-      resume: suspended
-        ? () => new Promise((r) => { resolveResume = r; })
-        : () => Promise.resolve(),
+      get state() { return audio.state; },
+      resume: () => {
+        audio.resumeCalls += 1;
+        if (audio.state === 'running') return Promise.resolve();
+        return new Promise((r) => { resolveResume = r; });
+      },
       get currentTime() { return audio.now; },
       destination: { id: 'destination' },
       createOscillator() {
