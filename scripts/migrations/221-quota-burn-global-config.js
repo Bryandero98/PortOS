@@ -160,44 +160,63 @@ export function buildGlobalPlan(apps, { scheduleArmed = true } = {}) {
   };
 }
 
+function scheduleFilePath(rootDir) {
+  return join(rootDir, 'data', 'cos', 'task-schedule.json');
+}
+
 /**
- * Read the install-wide schedule switch, then drop the dead `quota-burn` entry
- * from the schedule file. Returns `{ armed, pruned }`.
+ * Read the install-wide schedule switch — switch #1 of the three the old shape
+ * required. Read-only ON PURPOSE: this value is the only record of whether the
+ * install had ever armed quota-burn, and `up()` must not destroy it until the
+ * plan it feeds has landed on disk (see `pruneScheduleEntry`).
  *
- * `armed` MUST be read before the prune — it is switch #1 of the three the old
- * shape required, and pruning first would delete the only record of whether
- * this install had ever turned quota-burn on. An ABSENT entry reads as armed:
- * `loadSchedule` merges `DEFAULT_TASK_INTERVALS` over what's on disk, so a file
- * predating the type simply inherited the default — the per-app switches are
- * then the deciding vote, exactly as they were at runtime.
+ * An ABSENT or unreadable entry reads as NOT armed. `loadSchedule` merges
+ * `DEFAULT_TASK_INTERVALS` over what's on disk and the shipped default was
+ * `enabled: false`, so a file predating the type inherited *disabled* — and a
+ * corrupt file tells us nothing at all. This gates real provider spend, so the
+ * unknown case fails closed.
  */
-async function readAndPruneSchedule(rootDir) {
-  const scheduleFile = join(rootDir, 'data', 'cos', 'task-schedule.json');
+async function readScheduleArmed(rootDir) {
+  const schedule = await readJson(scheduleFilePath(rootDir));
+  if (!schedule?.tasks || !Object.hasOwn(schedule.tasks, 'quota-burn')) return false;
+  return schedule.tasks['quota-burn']?.enabled === true;
+}
+
+/**
+ * Drop the dead `quota-burn` entry from the schedule file. Called LAST in
+ * `up()`, after the global plan and the pruned apps.json have both landed:
+ * a failed migration is only logged at boot (`bootstrap.js`) and is NOT
+ * recorded as applied, so it re-runs on the next start. Pruning first would
+ * mean that re-run reads an absent entry and — before this ordering — armed a
+ * burn the user had switched off. Losing the write in the other direction just
+ * leaves an inert schedule row that the next run removes.
+ */
+async function pruneScheduleEntry(rootDir, armed) {
+  const scheduleFile = scheduleFilePath(rootDir);
   const schedule = await readJson(scheduleFile);
-  if (!schedule?.tasks || !Object.hasOwn(schedule.tasks, 'quota-burn')) return { armed: true, pruned: false };
-  const armed = schedule.tasks['quota-burn']?.enabled === true;
+  if (!schedule?.tasks || !Object.hasOwn(schedule.tasks, 'quota-burn')) return false;
   const { 'quota-burn': _dropped, ...tasks } = schedule.tasks;
   await writeJsonAtomic(scheduleFile, { ...schedule, tasks });
   console.log(`🔥 migration 221: removed the dead quota-burn entry from the CoS schedule (was ${armed ? 'enabled' : 'disabled'})`);
-  return { armed, pruned: true };
+  return true;
 }
 
 export default {
   async up({ rootDir }) {
-    const { armed: scheduleArmed, pruned: prunedSchedule } = await readAndPruneSchedule(rootDir);
+    const scheduleArmed = await readScheduleArmed(rootDir);
     const appsFile = join(rootDir, 'data', 'apps.json');
     const data = await readJson(appsFile);
     const appsMap = data?.apps && typeof data.apps === 'object' ? data.apps : null;
     if (!appsMap) {
       console.log('🔥 migration 221: no data/apps.json — fresh install, no-op');
-      return { ok: true, reason: 'no-apps', prunedSchedule };
+      return { ok: true, reason: 'no-apps', prunedSchedule: await pruneScheduleEntry(rootDir, scheduleArmed) };
     }
 
     const apps = Object.entries(appsMap).map(([id, app]) => ({ id, ...app }));
     const { config, touchedAppIds } = buildGlobalPlan(apps, { scheduleArmed });
     if (!touchedAppIds.length) {
       console.log('🔥 migration 221: no app carries a quota-burn override — nothing to migrate');
-      return { ok: true, reason: 'no-overrides', prunedSchedule };
+      return { ok: true, reason: 'no-overrides', prunedSchedule: await pruneScheduleEntry(rootDir, scheduleArmed) };
     }
 
     const cosDir = join(rootDir, 'data', 'cos');
@@ -220,6 +239,7 @@ export default {
     }
     await writeJsonAtomic(appsFile, { ...data, apps: appsMap });
     console.log(`🔥 migration 221: removed the quota-burn task-type override from ${touchedAppIds.length} app(s)`);
-    return { ok: true, apps: touchedAppIds.length, prunedSchedule };
+    // Last: the schedule entry is the re-run's only record of `scheduleArmed`.
+    return { ok: true, apps: touchedAppIds.length, prunedSchedule: await pruneScheduleEntry(rootDir, scheduleArmed) };
   },
 };

@@ -223,4 +223,47 @@ describe('migration 221 reads the schedule switch before pruning it', () => {
     const plan = JSON.parse(await readFile(join(rootDir, 'data', 'cos', 'quota-burn.json'), 'utf-8'));
     expect(plan.enabled).toBe(true);
   });
+
+  it.each([
+    ['absent', null],
+    ['present but carrying no quota-burn entry', { version: 2, tasks: { 'code-review': { enabled: true } } }],
+    ['unparseable', 'not json at all'],
+  ])('fails closed when the schedule file is %s', async (_label, schedule) => {
+    // The shipped default was `enabled: false`, so an install with no entry
+    // inherited DISABLED — and a corrupt file states nothing. Reading either as
+    // armed would spend real provider quota the user never switched on.
+    await write(['data', 'apps.json'], {
+      apps: { a1: { taskTypeOverrides: { 'quota-burn': { enabled: true, taskMetadata: { families: { grok: { enabled: true, prompt: 'x' } } } } } } },
+    });
+    if (typeof schedule === 'string') await writeFile(join(rootDir, 'data', 'cos', 'task-schedule.json'), schedule);
+    else if (schedule) await write(['data', 'cos', 'task-schedule.json'], schedule);
+
+    await migration.up({ rootDir });
+    const plan = JSON.parse(await readFile(join(rootDir, 'data', 'cos', 'quota-burn.json'), 'utf-8'));
+    expect(plan.enabled).toBe(false);
+    expect(plan.families.grok.enabled).toBe(false);
+  });
+
+  it('keeps the schedule switch readable when the plan write fails, so the re-run still sees "disabled"', async () => {
+    // A migration that throws is only LOGGED at boot and is NOT recorded as
+    // applied, so it re-runs next start. If the prune landed before the plan,
+    // that re-run would read an absent entry — and before the ordering fix,
+    // absent meant armed, flipping a disabled install into spending quota.
+    await write(['data', 'apps.json'], {
+      apps: { a1: { taskTypeOverrides: { 'quota-burn': { enabled: true, taskMetadata: { families: { grok: { enabled: true, prompt: 'x' } } } } } } },
+    });
+    await write(['data', 'cos', 'task-schedule.json'], { version: 2, tasks: { 'quota-burn': { enabled: false } } });
+    // Make the plan write fail: occupy its path with a directory.
+    await mkdir(join(rootDir, 'data', 'cos', 'quota-burn.json'), { recursive: true });
+
+    await expect(migration.up({ rootDir })).rejects.toThrow();
+    const schedule = JSON.parse(await readFile(join(rootDir, 'data', 'cos', 'task-schedule.json'), 'utf-8'));
+    expect(schedule.tasks['quota-burn']).toEqual({ enabled: false });
+
+    // The re-run (after the operator clears the blockage) still reads disabled.
+    await rm(join(rootDir, 'data', 'cos', 'quota-burn.json'), { recursive: true, force: true });
+    await migration.up({ rootDir });
+    const plan = JSON.parse(await readFile(join(rootDir, 'data', 'cos', 'quota-burn.json'), 'utf-8'));
+    expect(plan.enabled).toBe(false);
+  });
 });
