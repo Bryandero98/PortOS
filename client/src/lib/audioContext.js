@@ -28,38 +28,69 @@ let sharedCtx = null;
 // fix: that session ignores the switch, which is what every other platform
 // already does for a backing track or a metronome.
 //
-// The catch, and the reason this is a SCOPED pair rather than a one-way switch:
-// the session belongs to the DOCUMENT, not to an AudioContext, and `playback`
-// declares the page output-only. PortOS is a single-page app, so a document
-// outlives every route — declare it on the SongBook drum page and never release
-// it and the Songs training views, `audioRecorder` and the voice client, all of
-// which `getUserMedia` on the same document, inherit an output-only session and
-// lose the microphone. So a feature holds the declaration only while it is
-// actually sounding: `createLookaheadTransport`'s `audioSession` option declares
-// on play and releases on teardown, which is where every caller should get this
-// from rather than calling these two by hand.
+// The catch: the session belongs to the DOCUMENT, not to an AudioContext, and
+// `playback` declares the page output-only — it REFUSES capture. PortOS is a
+// single-page app with a globally-mounted VoiceWidget (`Layout.jsx`), so the
+// naive "set it when you start playing" is wrong twice over: it outlives the
+// route that set it, and it collides head-on with a mic that can open at any
+// moment on any page. Either way the user loses `getUserMedia` — voice, the
+// Songs training views, `audioRecorder` — with nothing to explain it.
+//
+// So the session is ARBITRATED, not assigned. Each feature acquires the session
+// it needs for exactly as long as it needs it, and the arbiter declares the
+// union: a live capture always wins, because `play-and-record` satisfies BOTH
+// sides (it ignores the ring/silent switch just like `playback`, so a play-along
+// stays audible through it) while `playback` satisfies only one. When the last
+// holder releases, the document goes back to `auto` — the platform default,
+// deliberately not a remembered previous value, which would just re-pin whatever
+// the last feature happened to want.
+//
+// Callers rarely reach for this directly: an output-only player passes
+// `audioSession: 'playback'` to `createLookaheadTransport`, which acquires on
+// play and releases on teardown. Capture surfaces acquire `'play-and-record'`
+// around the window their `getUserMedia` stream is open.
 //
 // Safari 16.4+ only; `navigator.audioSession` is absent everywhere else and
 // those browsers need nothing. Assignment is guarded because it runs from the
 // play handler — a partial WebKit implementation rejecting the value must not
 // take playback down with it.
 
-/** Declare this document's iOS audio session (e.g. `'playback'`). */
-export function declareAudioSession(type) {
+// Most-capable first: the first type any live holder wants is what gets declared.
+const SESSION_PRECEDENCE = ['play-and-record', 'playback'];
+
+// Live holders, one per un-released acquire. A LIST rather than a count per type
+// because two features can hold the same type independently (push-to-talk over
+// hands-free listening) and each must be able to release only its own claim.
+const sessionHolders = [];
+
+const declareSession = (type) => {
   const session = globalThis.navigator?.audioSession;
   if (!session) return;
   try { session.type = type; } catch { /* older/partial WebKit */ }
-}
+};
+
+const applyEffectiveSession = () => {
+  declareSession(SESSION_PRECEDENCE.find(
+    (type) => sessionHolders.some((h) => h.type === type),
+  ) || 'auto');
+};
 
 /**
- * Hand the document's audio session back to the platform default. `'auto'` — not
- * a remembered previous value — because `auto` is what lets WebKit pick per
- * activity, including promoting to a record-capable session when a later view
- * opens the mic. Restoring a captured value would just re-pin whatever the last
- * feature happened to declare.
+ * Claim the document's iOS audio session as `type` (`'playback'` for output-only,
+ * `'play-and-record'` while a mic stream is open) until the returned release
+ * function is called. Release is idempotent, so a caller with several teardown
+ * paths can call it from all of them.
  */
-export function releaseAudioSession() {
-  declareAudioSession('auto');
+export function acquireAudioSession(type) {
+  const holder = { type };
+  sessionHolders.push(holder);
+  applyEffectiveSession();
+  return () => {
+    const i = sessionHolders.indexOf(holder);
+    if (i < 0) return;            // already released
+    sessionHolders.splice(i, 1);
+    applyEffectiveSession();
+  };
 }
 
 /**

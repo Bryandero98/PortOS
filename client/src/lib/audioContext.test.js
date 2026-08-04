@@ -3,7 +3,7 @@
 // ambient (silenced by the hardware ring/silent switch).
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { declareAudioSession, releaseAudioSession, resumeAudioContext } from './audioContext.js';
+import { acquireAudioSession, resumeAudioContext } from './audioContext.js';
 
 const stubNavigator = (audioSession) => {
   vi.stubGlobal('navigator', audioSession ? { audioSession } : {});
@@ -18,33 +18,99 @@ const fakeCtx = (state) => {
   return c;
 };
 
-describe('audio session', () => {
-  beforeEach(() => { vi.unstubAllGlobals(); });
-  afterEach(() => { vi.unstubAllGlobals(); });
+describe('audio session arbiter', () => {
+  // The arbiter's holder list is module state that outlives a test — by design,
+  // since the session it tracks belongs to the document. So every claim a test
+  // takes has to be handed back, or the next test starts with a stale holder
+  // pinning the session. `acquire` records the releases; afterEach drains them.
+  let releases = [];
+  const acquire = (type) => {
+    const release = acquireAudioSession(type);
+    releases.push(release);
+    return release;
+  };
 
-  it('declares the requested session so the silent switch cannot mute the synth', () => {
+  beforeEach(() => { vi.unstubAllGlobals(); releases = []; });
+  afterEach(() => {
+    for (const release of releases) release();
+    vi.unstubAllGlobals();
+  });
+
+  it('declares the claimed session so the silent switch cannot mute the synth', () => {
     const audioSession = { type: 'auto' };
     stubNavigator(audioSession);
-    declareAudioSession('playback');
+    acquire('playback');
     expect(audioSession.type).toBe('playback');
   });
 
-  it('releases back to auto, so an output-only declaration cannot follow the user', () => {
-    const audioSession = { type: 'playback' };
+  it('goes back to auto when the last holder releases', () => {
+    const audioSession = { type: 'auto' };
     stubNavigator(audioSession);
-    releaseAudioSession();
+    const release = acquire('playback');
+    release();
+    expect(audioSession.type).toBe('auto');
+  });
+
+  // The whole reason this is arbitrated: the VoiceWidget is mounted on every
+  // page, so a mic can open while a play-along is sounding. `playback` REFUSES
+  // capture, so a naive last-writer-wins would kill the mic — `play-and-record`
+  // satisfies both (it ignores the ring/silent switch too).
+  it('lets a live capture outrank a play-along holding playback', () => {
+    const audioSession = { type: 'auto' };
+    stubNavigator(audioSession);
+    const releasePlayer = acquire('playback');
+    const releaseMic = acquire('play-and-record');
+    expect(audioSession.type).toBe('play-and-record');
+    // The play-along stopping must not drop the still-open mic to a weaker session.
+    releasePlayer();
+    expect(audioSession.type).toBe('play-and-record');
+    releaseMic();
+    expect(audioSession.type).toBe('auto');
+  });
+
+  it('keeps playback while a player is still sounding after the mic closes', () => {
+    const audioSession = { type: 'auto' };
+    stubNavigator(audioSession);
+    const releasePlayer = acquire('playback');
+    acquire('play-and-record')();
+    expect(audioSession.type).toBe('playback');
+    releasePlayer();
+    expect(audioSession.type).toBe('auto');
+  });
+
+  // Push-to-talk over hands-free listening: two independent claims of the same
+  // type, so a count would be wrong and the first release must not free both.
+  it('tracks same-type holders independently', () => {
+    const audioSession = { type: 'auto' };
+    stubNavigator(audioSession);
+    const releaseA = acquire('play-and-record');
+    const releaseB = acquire('play-and-record');
+    releaseA();
+    expect(audioSession.type).toBe('play-and-record');
+    releaseB();
+    expect(audioSession.type).toBe('auto');
+  });
+
+  it("ignores a double release rather than freeing someone else's claim", () => {
+    const audioSession = { type: 'auto' };
+    stubNavigator(audioSession);
+    const releaseA = acquire('playback');
+    releaseA();
+    const releaseB = acquire('playback');
+    releaseA(); // idempotent — must not drop B's claim
+    expect(audioSession.type).toBe('playback');
+    releaseB();
     expect(audioSession.type).toBe('auto');
   });
 
   it('is a no-op where navigator.audioSession does not exist (every non-Safari browser)', () => {
     stubNavigator(null);
-    expect(() => declareAudioSession('playback')).not.toThrow();
-    expect(() => releaseAudioSession()).not.toThrow();
+    expect(() => acquire('playback')()).not.toThrow();
   });
 
   it('swallows a throwing setter — a partial WebKit must not take playback down', () => {
     stubNavigator({ set type(_v) { throw new TypeError('unsupported'); } });
-    expect(() => declareAudioSession('playback')).not.toThrow();
+    expect(() => acquire('playback')()).not.toThrow();
   });
 });
 

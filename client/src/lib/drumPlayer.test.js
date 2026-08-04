@@ -3,6 +3,7 @@ import { parseDrumChart } from './drumNotation.js';
 import { createDrumPlayer } from './drumPlayback.js';
 import { parseScore } from './scoreNotation.js';
 import { createScorePlayer } from './scorePlayback.js';
+import { acquireAudioSession } from './audioContext.js';
 import { createFakeAudio } from '../test/fakeAudioContext.js';
 
 // The AUDIBLE half of drumPlayback.js — buildDrumSchedule's pure math is covered
@@ -439,6 +440,21 @@ describe('createDrumPlayer', () => {
     it('hands the session back on stop', async () => {
       const player = createDrumPlayer(CHART, {});
       await player.play();
+      player.stop();
+      expect(globalThis.navigator.audioSession.type).toBe('auto');
+    });
+
+    // The VoiceWidget is mounted on every page (Layout.jsx), so push-to-talk can
+    // open the mic while a chart is playing. `playback` REFUSES capture, so the
+    // arbiter has to promote — otherwise the fix for this page's silence would
+    // have made the mic dead on it instead.
+    it('yields to a mic opened mid-playback, then takes playback back', async () => {
+      const player = createDrumPlayer(CHART, {});
+      await player.play();
+      const releaseMic = acquireAudioSession('play-and-record');
+      expect(globalThis.navigator.audioSession.type).toBe('play-and-record');
+      releaseMic();
+      expect(globalThis.navigator.audioSession.type).toBe('playback');
       player.stop();
       expect(globalThis.navigator.audioSession.type).toBe('auto');
     });

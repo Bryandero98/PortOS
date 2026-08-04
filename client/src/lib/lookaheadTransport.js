@@ -12,9 +12,7 @@
 // Pure of any player specifics — no React, no score/MIDI concepts. Imports only
 // the shared AudioContext; players import createLookaheadTransport from here.
 
-import {
-  getAudioContext as ctx, resumeAudioContext, declareAudioSession, releaseAudioSession,
-} from './audioContext.js';
+import { getAudioContext as ctx, resumeAudioContext, acquireAudioSession } from './audioContext.js';
 
 // Shared lookahead-scheduler timing — one definition so every synth player
 // can't drift apart on feel. Lives here (not in scorePlayback.js) so the
@@ -61,8 +59,9 @@ const { LEAD, LOOKAHEAD_MS } = SYNTH_TIMING;
  *   WHILE this transport sounds, released on teardown. Only output-only players
  *   set it, and only to `'playback'`: that is what stops the iPhone's ring/silent
  *   switch from muting a pure-synth page. It is a capability of the player rather
- *   than something the transport assumes, because the declaration is
- *   document-wide — see the audio-session note in audioContext.js.
+ *   than something the transport assumes, because the session is document-wide
+ *   and shared with whatever else is making sound — see the audio-session note in
+ *   audioContext.js (a live mic still wins; the arbiter handles that).
  * @returns {{ play, pause, stop, seek, position, isPlaying, track }}
  */
 export const createLookaheadTransport = ({
@@ -80,12 +79,27 @@ export const createLookaheadTransport = ({
   const doSeekCursors = seekCursors || noop;
   const doStop = onStop || noop;
   const doEnded = onEnded || noop;
-  // The player's own teardown, plus handing back any audio session this
-  // transport declared — so an output-only player holds the document-wide
-  // `playback` session only while it is actually sounding.
+  // The audio-session claim this transport currently holds, if any (see the
+  // `audioSession` option). One claim at a time: re-acquiring on a fresh play
+  // drops the previous one, so a play → play can't strand a holder in the
+  // arbiter and pin the document forever.
+  let releaseSession = null;
+  const dropSession = () => {
+    if (!releaseSession) return;
+    releaseSession();
+    releaseSession = null;
+  };
+  const takeSession = () => {
+    if (!audioSession) return;
+    dropSession();
+    releaseSession = acquireAudioSession(audioSession);
+  };
+
+  // The player's own teardown, plus handing back the audio session — so an
+  // output-only player holds its claim only while it is actually sounding.
   const doTeardown = () => {
     if (onTeardown) onTeardown();
-    if (audioSession) releaseAudioSession();
+    dropSession();
   };
 
   let playing = false;
@@ -144,28 +158,27 @@ export const createLookaheadTransport = ({
     if (playing) return;
     const c = ctx();
     const token = ++playToken;
-    // Declared BEFORE the resume so the context comes up on the right session,
-    // and re-declared every play because another view on this document may have
-    // released it since (see the audio-session note in audioContext.js).
-    if (audioSession) declareAudioSession(audioSession);
+    // Claimed BEFORE the resume so the context comes up on the right session.
+    takeSession();
     // Covers iOS Safari's `'interrupted'` state, not just `'suspended'`. A
     // rejection here (autoplay policy, or a session iOS won't hand back) leaves
-    // play() before any teardown can run, so the session goes back on the way
-    // out — unless a newer play() already took it over. The rejection still
+    // play() before any teardown can run, so the claim goes back on the way out
+    // — unless a newer play() already replaced it. The rejection still
     // propagates: the caller resets its Play button on it.
     await resumeAudioContext(c).catch((err) => {
-      if (audioSession && token === playToken) releaseAudioSession();
+      if (token === playToken) dropSession();
       throw err;
     });
-    // Bail WITHOUT releasing the session: whatever bumped the token (stop, pause,
-    // or a newer play) owns it now. A stop/pause has already handed it back, and
-    // a newer play has re-declared it — releasing here would silence that one.
+    // Bail WITHOUT dropping the claim: whatever bumped the token (stop, pause, or
+    // a newer play) owns it now. A stop/pause already handed it back, and a newer
+    // play's takeSession() already replaced it — dropping here would silence that
+    // one.
     if (token !== playToken) return;
-    // An empty schedule never sounds, so it hands the session back rather than
-    // holding a document-wide declaration for nothing. No await runs between the
-    // token check and here, so no newer play() can have taken it over.
+    // An empty schedule never sounds, so it hands the claim back rather than
+    // holding the document's session for nothing. No await runs between the token
+    // check and here, so no newer play() can have taken over in between.
     if (doPrepare() === false) {         // empty schedule — prepare fired onEnded
-      if (audioSession) releaseAudioSession();
+      dropSession();
       return;
     }
     playing = true;
@@ -180,11 +193,11 @@ export const createLookaheadTransport = ({
     playToken++; // abort an in-flight play() still awaiting ctx.resume()
     if (!playing) {
       // The token bump above just cancelled a play() that is still awaiting its
-      // resume — and that play() already declared the session. Nothing is
-      // sounding and no teardown will run for it, so hand the session back here
-      // or a play-then-immediately-pause leaves the document pinned output-only.
+      // resume — and that play() already claimed the session. Nothing is
+      // sounding and no teardown will run for it, so hand the claim back here or
+      // a play-then-immediately-pause leaves the document pinned output-only.
       // (`stop()` needs no such branch: it runs the teardown unconditionally.)
-      if (audioSession) releaseAudioSession();
+      dropSession();
       return;
     }
     offsetSec = Math.min(Math.max(0, ctx().currentTime - startTime), getTotalSec());
