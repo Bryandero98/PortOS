@@ -52,17 +52,49 @@ function TrainerHarness(props) {
   );
 }
 
+// The exact promise the component's mount effect chained `setCacheStatus` off,
+// so `selectMode` can await THAT rather than guessing at a microtask count.
+let cacheStatusPromise;
+
 beforeEach(() => {
   vi.clearAllMocks();
   submitTrainingEntry.mockResolvedValue({});
   // Cache reported warm for every mode so startMode skips the cache-fill
   // consent modal and goes straight to runMode — the modal flow is covered
   // separately and isn't the concern of these tests.
-  getPostDrillCacheStatus.mockResolvedValue({
-    'compound-chain': { cold: false },
-    'bridge-word': { cold: false },
+  getPostDrillCacheStatus.mockImplementation(() => {
+    cacheStatusPromise = Promise.resolve({
+      'compound-chain': { cold: false },
+      'bridge-word': { cold: false },
+    });
+    return cacheStatusPromise;
   });
 });
+
+/**
+ * Click a mode button on the grid, but only once the cache-status fetch has
+ * actually landed in state.
+ *
+ * `cacheStatus` starts `null`, and both `handleModeSelect` and `startMode`
+ * read `cacheStatus?.[modeId]?.cold ?? true` — so until that fetch resolves,
+ * EVERY mode reads as cold. That default is deliberate on the component's side
+ * (never skip the consent modal on an unresolved fetch, per the
+ * no-surprise-LLM-calls rule), which means a click that beats the fetch opens
+ * the consent modal instead of generating: the drill text then never appears
+ * and the test dies on a `waitFor` timeout that looks like slowness.
+ *
+ * Locally the mocked promise always wins that race, so this only bit on a
+ * loaded CI runner — `WordplayTrainer.test.jsx` timing out at ~5s while the
+ * same commit passed in a parallel run. Awaiting the component's own promise
+ * inside `act` makes the ordering deterministic instead of wall-clock-bound;
+ * do NOT replace this with a bare timeout bump, which cannot fix an ordering
+ * bug.
+ */
+async function selectMode(name) {
+  const button = await screen.findByText(name);
+  await act(async () => { await cacheStatusPromise; });
+  fireEvent.click(button);
+}
 
 describe('WordplayTrainer — training-log persistence (issue #2097)', () => {
   it('submits a training entry on round completion, with correctCount derived from the scored responses', async () => {
@@ -79,7 +111,7 @@ describe('WordplayTrainer — training-log persistence (issue #2097)', () => {
 
     render(<TrainerHarness onBack={() => {}} onContinue={onContinue} config={{}} onConfigUpdate={() => {}} />);
 
-    fireEvent.click(await screen.findByText('Compound Chain'));
+    await selectMode('Compound Chain');
 
     // Drill generated — a single-challenge round keeps this test to one round.
     await waitFor(() => expect(screen.getByText('fire')).toBeInTheDocument(), { timeout: GENERATED_DRILL_TIMEOUT });
@@ -134,7 +166,7 @@ describe('WordplayTrainer — training-log persistence (issue #2097)', () => {
     });
 
     render(<TrainerHarness onBack={() => {}} onContinue={onContinue} config={{}} onConfigUpdate={() => {}} />);
-    fireEvent.click(await screen.findByText('Compound Chain'));
+    await selectMode('Compound Chain');
     await waitFor(() => expect(screen.getByText('fire')).toBeInTheDocument(), { timeout: GENERATED_DRILL_TIMEOUT });
     fireEvent.change(screen.getByPlaceholderText(/other half/i), { target: { value: 'firehouse' } });
     fireEvent.click(screen.getByText('Add'));
@@ -158,7 +190,7 @@ describe('WordplayTrainer — training-log persistence (issue #2097)', () => {
 
     render(<TrainerHarness onBack={() => {}} config={{}} onConfigUpdate={() => {}} />);
 
-    fireEvent.click(await screen.findByText('Compound Chain')); // enter mode A → loading (hangs)
+    await selectMode('Compound Chain'); // enter mode A → loading (hangs)
     await waitFor(() => expect(screen.getByText(/Generating/i)).toBeInTheDocument());
 
     // Leave mid-generation via the header Back (mirrors browser-back off the URL).
@@ -182,7 +214,7 @@ describe('WordplayTrainer — training-log persistence (issue #2097)', () => {
 
     render(<TrainerHarness onBack={() => {}} config={{}} onConfigUpdate={() => {}} />);
 
-    fireEvent.click(await screen.findByText('Compound Chain')); // enter A → run #1 (deferred)
+    await selectMode('Compound Chain'); // enter A → run #1 (deferred)
     await waitFor(() => expect(screen.getByText(/Generating/i)).toBeInTheDocument());
     fireEvent.click(screen.getAllByRole('button')[0]);         // back to grid (invalidates run #1)
     await screen.findByText('Compound Chain');
@@ -212,7 +244,7 @@ describe('WordplayTrainer — training-log persistence (issue #2097)', () => {
 
     render(<TrainerHarness onBack={() => {}} config={{}} onConfigUpdate={() => {}} />);
 
-    fireEvent.click(await screen.findByText('Bridge Word'));
+    await selectMode('Bridge Word');
 
     await waitFor(() => expect(screen.getByText('news___')).toBeInTheDocument(), { timeout: GENERATED_DRILL_TIMEOUT });
 
@@ -257,7 +289,7 @@ describe('WordplayTrainer — training-log persistence (issue #2097)', () => {
 
     render(<TrainerHarness onBack={() => {}} config={{}} onConfigUpdate={() => {}} />);
 
-    fireEvent.click(await screen.findByText('Bridge Word'));
+    await selectMode('Bridge Word');
     await waitFor(() => expect(screen.getByText('news___')).toBeInTheDocument(), { timeout: GENERATED_DRILL_TIMEOUT });
 
     const input = screen.getByPlaceholderText(/bridge word is/i);
