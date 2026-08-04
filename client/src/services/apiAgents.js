@@ -177,7 +177,7 @@ export const createCosTemplateFromTask = (task, templateName) => request('/cos/t
   method: 'POST',
   body: JSON.stringify({ task, templateName })
 });
-export const useCosTaskTemplate = (id) => request(`/cos/templates/${id}/use`, { method: 'POST' });
+export const applyCosTaskTemplate = (id) => request(`/cos/templates/${id}/use`, { method: 'POST' });
 export const updateCosTaskTemplate = (id, data) => request(`/cos/templates/${id}`, {
   method: 'PUT',
   body: JSON.stringify(data)

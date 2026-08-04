@@ -16,11 +16,41 @@
  *   node scripts/trusted-rebuilds.js server
  */
 import { execFileSync } from 'child_process';
-import { join, dirname } from 'path';
+import { existsSync, readdirSync } from 'fs';
+import { join, dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+
+/** npm's Windows shim. Shared so callers don't re-derive it. */
+export const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+
+/**
+ * Every directory npm can install into with that directory as the local prefix:
+ * the repo root plus each top-level directory carrying its own package.json.
+ * Discovered rather than hand-listed — a hardcoded roster is the same drift this
+ * module exists to eliminate, one level up: add a 5th workspace, forget to add it
+ * to the list, and its `ignore-scripts` guard is silently absent while CI stays
+ * green. Nested manifests (`server/cos-runner`) and the vendored `lib/slashdo`
+ * submodule are deliberately excluded — nobody installs with those as the prefix,
+ * and the submodule is not ours to configure.
+ *
+ * Returns labels; pair with `workspaceDir()` for the path. Root sorts first, the
+ * rest alphabetically, so callers get a stable order.
+ */
+export function discoverWorkspaces() {
+  const nested = readdirSync(ROOT, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name !== 'node_modules' && !entry.name.startsWith('.'))
+    .map((entry) => entry.name)
+    .filter((name) => existsSync(join(ROOT, name, 'package.json')))
+    .sort();
+  return ['root', ...nested];
+}
+
+/** Absolute path for a workspace label from `discoverWorkspaces()`. */
+export function workspaceDir(label) {
+  return label === 'root' ? ROOT : join(ROOT, label);
+}
 
 /**
  * `fatal: true` means a failed rebuild fails the install — the package is
@@ -32,15 +62,18 @@ const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
  */
 export const TRUSTED_REBUILDS = {
   server: [
-    // Builds the native PTY addon. The shell/TUI features hard-require it.
-    { pkgs: ['node-pty'], fatal: true },
-    // Retained as insurance: sharp ships prebuilt bindings via
-    // optionalDependencies today (no lifecycle hook), so this is currently a
-    // no-op — but it is runtime-critical if it ever regains one.
-    { pkgs: ['sharp'], fatal: true },
-    // Transitive, behind optional local-inference features. Its postinstall
-    // fetches platform binaries; absent them the feature is unavailable, not
-    // fatal. protobufjs's postinstall only generates a minimal build.
+    // node-pty builds the native PTY addon and the shell/TUI features hard-require
+    // it. sharp rides along in the same call: it ships prebuilt bindings via
+    // optionalDependencies today so its rebuild is currently a no-op, but it is
+    // equally runtime-critical if it ever regains a lifecycle hook. Grouped
+    // because they share `fatal` — a group exists to give *different* failure
+    // semantics, not to hang a different comment on each package, and every extra
+    // group costs another npm spawn (~180ms) for no behavioral gain.
+    { pkgs: ['node-pty', 'sharp'], fatal: true },
+    // Transitive, behind optional local-inference features. onnxruntime-node's
+    // postinstall fetches platform binaries; absent them the feature is
+    // unavailable, not fatal. protobufjs's postinstall only generates a minimal
+    // build.
     { pkgs: ['onnxruntime-node', 'protobufjs'], fatal: false }
   ]
 };
@@ -65,17 +98,23 @@ export function rebuildTrusted(dir, label) {
 }
 
 // CLI entry: `node scripts/trusted-rebuilds.js <label> [dir]`
-if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+function main() {
   const label = process.argv[2];
   if (!label) {
     console.error(`❌ usage: node scripts/trusted-rebuilds.js <${Object.keys(TRUSTED_REBUILDS).join('|')}>`);
     process.exit(1);
   }
-  const dir = process.argv[3] ?? (label === 'root' ? ROOT : join(ROOT, label));
   if (!TRUSTED_REBUILDS[label]) {
     console.log(`✅ no trusted rebuilds needed for ${label}`);
     process.exit(0);
   }
   console.log(`🔨 Rebuilding trusted install-script packages for ${label}`);
-  process.exit(rebuildTrusted(dir, label) ? 0 : 1);
+  process.exit(rebuildTrusted(process.argv[3] ?? workspaceDir(label), label) ? 0 : 1);
 }
+
+// Matches the entry-guard idiom in scripts/run-ci-lint.js — `resolve()` on both
+// sides so a relative `node scripts/…` invocation still matches.
+const isMain = process.argv[1]
+  && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+
+if (isMain) main();

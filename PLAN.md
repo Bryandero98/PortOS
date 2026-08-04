@@ -301,13 +301,17 @@ is not reliably announced.
   `MoodBoardDetail.jsx`, `OpenClaw.jsx`, `LoraDatasetDetail.jsx`, `Browser.jsx`.
   Prefer wrapping in `FormField` (visible label + `htmlFor`/`id` pairing) over an
   `aria-label` when the surface has room for a visible label.
-- [ ] **Consider `eslint-plugin-jsx-a11y` in `client/eslint.config.js`.** It would
-  enforce this class automatically instead of relying on periodic audits. Skipped in
-  this pass because enabling it surfaces hundreds of findings at once and would fail
-  CI until the backlog above is drained — sequence it after the sweep, and start with
-  only the rules the repo already honors (`jsx-a11y/alt-text`,
-  `jsx-a11y/aria-props`, `jsx-a11y/role-has-required-aria-props`,
-  `jsx-a11y/label-has-associated-control`) rather than the full `recommended` set.
+- [ ] **Enable Biome's `a11y` rules in `client/biome.jsonc`.** It would enforce this
+  class automatically instead of relying on periodic audits. Note this got *cheaper*
+  when the client moved from ESLint to Biome: the rules ship in Biome's `a11y` group,
+  so this no longer needs a new dependency (`eslint-plugin-jsx-a11y`) at all — it is
+  now purely a config change. Still skipped in this pass because enabling the group
+  surfaces hundreds of findings at once and would fail CI until the backlog above is
+  drained — sequence it after the sweep, and start with only the rules the repo
+  already honors (`a11y/useAltText`, `a11y/useValidAriaProps`,
+  `a11y/useAriaPropsForRole`, `a11y/noLabelWithoutControl`) rather than the whole
+  group. The config already uses an explicit per-rule list, so adding a handful is
+  the established shape.
 
 
 ### Factor the "bump a seeded Claude provider tier" migration skeleton into `_lib.js`

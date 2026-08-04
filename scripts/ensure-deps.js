@@ -8,10 +8,9 @@ import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { rebuildTrusted } from './trusted-rebuilds.js';
+import { rebuildTrusted, NPM } from './trusted-rebuilds.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
 // Persisted package.json hashes (per workspace) from the last successful install.
 // A changed hash means the manifest moved since we last resolved the tree, so an

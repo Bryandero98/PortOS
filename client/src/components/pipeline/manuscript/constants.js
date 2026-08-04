@@ -75,8 +75,7 @@ export const SUBTYPE_LABEL = {
 // an inherited Object.prototype member — a truthy non-string that the `|| subtype`
 // fallback wouldn't catch and that React then throws on as a non-element child.
 export const subtypeLabel = (subtype) =>
-  // biome-ignore lint/suspicious/noPrototypeBuiltins: `Object.prototype.hasOwnProperty.call(obj, k)` IS the safe form — Biome flags it anyway, unlike ESLint's no-prototype-builtins.
-  (Object.prototype.hasOwnProperty.call(SUBTYPE_LABEL, subtype) ? SUBTYPE_LABEL[subtype] : null) || subtype;
+  (Object.hasOwn(SUBTYPE_LABEL, subtype) ? SUBTYPE_LABEL[subtype] : null) || subtype;
 
 // Approximate a textarea's height to its content so the manuscript reads as one
 // continuous scroll (lets jump-to-anchor scroll the page, not an inner box).

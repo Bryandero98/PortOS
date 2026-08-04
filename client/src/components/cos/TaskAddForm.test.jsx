@@ -9,7 +9,7 @@ const api = vi.hoisted(() => ({
   // Back the reviewer table's Model column (useReviewerModelOptions).
   getLocalLlmStatus: vi.fn(),
   getProviders: vi.fn(),
-  useCosTaskTemplate: vi.fn()
+  applyCosTaskTemplate: vi.fn()
 }));
 
 vi.mock('../../services/api', () => api);
@@ -21,7 +21,7 @@ describe('TaskAddForm responsive layout', () => {
     api.getCodeReviewDefaults.mockResolvedValue(null);
     api.getLocalLlmStatus.mockResolvedValue({ ollama: { models: [] }, lmstudio: { models: [] } });
     api.getProviders.mockResolvedValue({ providers: [] });
-    api.useCosTaskTemplate.mockResolvedValue({ success: true });
+    api.applyCosTaskTemplate.mockResolvedValue({ success: true });
   });
 
   it('keeps PR completion controls full-width on mobile', async () => {
@@ -72,7 +72,7 @@ describe('TaskAddForm quick templates', () => {
     api.getCodeReviewDefaults.mockResolvedValue(null);
     api.getLocalLlmStatus.mockResolvedValue({ ollama: { models: [] }, lmstudio: { models: [] } });
     api.getProviders.mockResolvedValue({ providers: [] });
-    api.useCosTaskTemplate.mockResolvedValue({ success: true });
+    api.applyCosTaskTemplate.mockResolvedValue({ success: true });
   });
 
   it('applies a slashdo template settings block to the run-shape toggles', async () => {
@@ -98,7 +98,7 @@ describe('TaskAddForm quick templates', () => {
 
     await waitFor(() => expect(worktreeToggle()).not.toBeChecked());
     expect(screen.getByPlaceholderText('Task description *')).toHaveValue('Investigate and file an issue for: ');
-    expect(api.useCosTaskTemplate).toHaveBeenCalledWith('builtin-do-plan-task');
+    expect(api.applyCosTaskTemplate).toHaveBeenCalledWith('builtin-do-plan-task');
   });
 
   it('leaves the toggles as-is for a template with no settings block', async () => {
