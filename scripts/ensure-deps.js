@@ -8,6 +8,7 @@ import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { rebuildTrusted } from './trusted-rebuilds.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
@@ -97,33 +98,13 @@ function cleanWorkspaceDeps(dir) {
   }
 }
 
-// Trusted install scripts skipped by `ignore-scripts=true` in the repo .npmrc,
-// per workspace. Mirrors the explicit `npm rebuild` calls in update.sh / the
-// `setup` script: a plain `npm install` leaves these native/scripted deps
-// unbuilt, so the server crashes on a missing node-pty/sharp binding. Run after
-// every (re)install — not just the clean-reinstall path — so a fresh install
-// into a missing node_modules is equally whole.
-const TRUSTED_REBUILDS = {
-  client: [{ pkgs: ['esbuild'], fatal: true }],
-  server: [{ pkgs: ['esbuild'], fatal: false }, { pkgs: ['node-pty', 'sharp'], fatal: true }]
-};
-
-function rebuildTrusted(dir, label) {
-  const groups = TRUSTED_REBUILDS[label];
-  if (!groups) return true;
-  for (const { pkgs, fatal } of groups) {
-    try {
-      execFileSync(NPM, ['rebuild', ...pkgs], { cwd: dir, stdio: 'inherit', windowsHide: true });
-    } catch (err) {
-      // esbuild on the server is a test-only transitive (fatal: false) — its
-      // absence never breaks runtime, matching update.sh's `|| true`. node-pty
-      // and sharp are runtime-critical, so a failure there fails the install.
-      console.error(`⚠️  npm rebuild ${pkgs.join(' ')} failed for ${label}: ${err.message ?? err}`);
-      if (fatal) return false;
-    }
-  }
-  return true;
-}
+// The trusted install-script allowlist lives in scripts/trusted-rebuilds.js —
+// shared with the root `setup` script and CI so the list has exactly one home.
+// Every workspace pins `ignore-scripts=true` in its own .npmrc, so a plain
+// `npm install` leaves these native deps unbuilt and the server crashes on a
+// missing node-pty binding. Run after every (re)install — not just the
+// clean-reinstall path — so a fresh install into a missing node_modules is
+// equally whole.
 
 function install(dir, label) {
   try {

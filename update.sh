@@ -187,19 +187,14 @@ safe_install client
 safe_install server
 safe_install autofixer
 
-# Run trusted install scripts skipped by ignore-scripts=true in .npmrc.
-# Use `npm rebuild esbuild` rather than a hardcoded node_modules/esbuild/install.js
-# path: esbuild is no longer hoisted to the top of either tree (it nests under
-# vite/vitest), and the server has no direct esbuild dependency at all since
-# vitest 4 → vite 8 dropped it — so the old `node server/node_modules/esbuild/install.js`
-# path 404'd and hard-crashed the whole update under `set -e`. `npm rebuild`
-# finds esbuild wherever it lives, runs its install script, and no-ops cleanly
-# when the package is absent. Server rebuild is fault-tolerant (esbuild is a
-# test-only transitive there, not needed for runtime or the production build).
-log "🔧 Rebuilding esbuild, node-pty & sharp..."
-run npm rebuild esbuild --prefix client
-run npm rebuild esbuild --prefix server || true
-run npm rebuild node-pty sharp --prefix server
+# Run trusted install scripts skipped by ignore-scripts=true in each workspace's
+# .npmrc. The allowlist lives in scripts/trusted-rebuilds.js — a single home
+# shared with `npm run setup`, scripts/ensure-deps.js and CI, so a package can
+# never be granted an install-time execution slot in one path but not another.
+# Only the server needs rebuilds; client/autofixer have no install-script deps
+# (vite 8 dropped the esbuild binary dependency that used to be the reason).
+log "🔧 Rebuilding trusted native dependencies..."
+run node scripts/trusted-rebuilds.js server
 log ""
 
 # Verify critical dependencies exist
