@@ -8,6 +8,7 @@
  */
 
 import { ChevronDown, ChevronRight, Flame, Plus } from 'lucide-react';
+import BrailleSpinner from '../BrailleSpinner';
 import JobRow from './JobRow';
 import PresetPicker from './PresetPicker';
 import { jobFromPreset } from '../../lib/quotaBurnPatch';
@@ -82,7 +83,15 @@ export default function FamilyCard({
           {status?.label || familyId}
         </label>
 
-        {status?.willBurn ? (
+        {/* Pending is its own state, ahead of the verdict: reading this family's
+            quota is a multi-second CLI/TUI spawn that the page deliberately does
+            not block on, and "no window states a reset time" would read as a
+            verdict when the reading simply hasn't landed yet. */}
+        {status?.pending ? (
+          <span className="inline-flex items-center gap-1 text-xs text-gray-400">
+            <BrailleSpinner /> reading quota…
+          </span>
+        ) : status?.willBurn ? (
           <span className="inline-flex items-center gap-1 text-xs text-emerald-400">
             <Flame size={13} />
             {status.percentRemaining}% left · resets in {status.hoursUntilReset}h · {status.dispatchesUsed}/{config.maxDispatchesPerWindow} used

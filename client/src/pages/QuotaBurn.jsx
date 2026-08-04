@@ -21,6 +21,7 @@ import BrailleSpinner from '../components/BrailleSpinner';
 import FamilyCard from '../components/quotaBurn/FamilyCard';
 import { NumberField } from '../components/quotaBurn/fields';
 import * as api from '../services/api';
+import { useAutoRefetch } from '../hooks/useAutoRefetch';
 import { mergeQuotaBurnPatch } from '../lib/quotaBurnPatch';
 import { coalesce } from '../utils/coalesce';
 import { timeAgo } from '../utils/formatters';
@@ -29,6 +30,10 @@ import { timeAgo } from '../utils/formatters';
 // re-read the status, and a `universe-bible-images` job's pending probe walks
 // every universe bible — one full scan per character typed.
 const SAVE_DEBOUNCE_MS = 500;
+
+// How often to re-ask while a family's quota scrape is still running. A scrape
+// is a 10-20s PTY spawn, so this is a handful of polls, not a busy loop.
+const PENDING_POLL_MS = 4000;
 
 const EMPTY_CATALOG = { jobTypes: [], apps: [], universes: [], imageModes: [] };
 
@@ -83,6 +88,16 @@ export default function QuotaBurn() {
       api.getQuotaBurnCatalog({ silent: true }).then(setCatalog).catch(() => {}),
     ]).finally(() => setLoading(false));
   }, [load]);
+
+  // A cold quota cache comes back as `pending` families rather than holding the
+  // response open for a 20s-per-family PTY scrape, so the page renders its plan
+  // immediately and fills the numbers in when the scrape lands. Enabled ONLY
+  // while something is actually pending — this is not a background refresh loop
+  // — and `useAutoRefetch` (rather than a hand-rolled timer) so it pauses on a
+  // hidden tab: re-requesting a multi-second scrape behind a backgrounded tab is
+  // the one thing this poll must not do.
+  const anyPending = (status?.families || []).some((row) => row.pending);
+  useAutoRefetch(load, PENDING_POLL_MS, { enabled: anyPending, immediate: false, pollOnly: true });
 
   // There is no Save button: an edit lands in local state immediately and is
   // persisted on a trailing edge. Successive edits fold into ONE patch body, so

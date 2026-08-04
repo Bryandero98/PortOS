@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import { existsSync, lstatSync, readlinkSync, readFileSync } from 'fs';
 import { stripAnsi } from '../lib/ansiStrip.js';
+import { createStaleWhileRevalidate, WAIT } from '../lib/staleWhileRevalidate.js';
 
 /**
  * Claude Code SUBSCRIPTION usage — the plan rate-limit numbers surfaced by the
@@ -169,8 +170,25 @@ export function parseUsageOutput(text) {
 
 // --- fetch + cache -------------------------------------------------------
 
-let cache = null; // { data, at }
-let inflight = null;
+// One reading, so one cache key. Stale-while-revalidate for the same reason the
+// TUI scrapes use it: the CLI spawn costs seconds, and on a 60s TTL nearly every
+// page load paid for it while rendering nothing — a usage percentage one minute
+// old is not a wrong answer, and the payload carries its own `fetchedAt`.
+//
+// A read that produced no rate-limit lines is a degraded `/usage` (a transient
+// hiccup can drop them), so it earns only the short TTL and the next view
+// self-heals. It is still CACHED, though: an API-key user legitimately has no
+// limit lines, and not caching that turned every poll into a fresh CLI spawn.
+const CACHE_KEY = 'claude-code-usage';
+const usageCache = createStaleWhileRevalidate({
+  ttlMs: CACHE_TTL_MS,
+  isComplete: (data) => data.limits.length > 0,
+});
+
+/** Test-only: drop the cached reading so a suite isn't order-dependent. */
+export function __resetClaudeCodeUsageCache() {
+  usageCache.clear();
+}
 
 /**
  * Spawn the Claude Code CLI in print mode, feed `/usage` on stdin, and resolve
@@ -231,29 +249,17 @@ function runUsageCli() {
 }
 
 /**
- * Get parsed Claude Code subscription usage, cached for 60s. Concurrent callers
- * share one in-flight CLI run. `refresh: true` bypasses the cache.
+ * Get parsed Claude Code subscription usage. Concurrent callers share one
+ * in-flight CLI run; see the cache above for the staleness contract.
+ *
+ * `wait` (see lib/staleWhileRevalidate.js): `'cached'` (default) serves what is
+ * cached and blocks only when nothing is; `'never'` returns the `PENDING`
+ * sentinel on a cold cache, for callers that render "still reading" and poll —
+ * the CLI run starts either way; `'fresh'` bypasses the cache and waits.
  */
-export async function getClaudeCodeUsage({ refresh = false } = {}) {
-  if (!refresh && cache && Date.now() - cache.at < CACHE_TTL_MS) {
-    return cache.data;
-  }
-  if (inflight) return inflight;
-
-  inflight = runUsageCli()
-    .then((stdout) => {
-      const parsed = parseUsageOutput(stdout);
-      const data = { ...parsed, fetchedAt: new Date().toISOString() };
-      // Only cache a read that actually produced rate-limit lines. A transient
-      // degraded /usage (e.g. the live-limit lines dropped by a hiccup) would
-      // otherwise poison the panel with an empty state for the full 60s TTL; not
-      // caching it lets the next view self-heal. A subscription always has limit
-      // lines — an API-key user legitimately has none, but re-reading on each
-      // view for that minority is cheap (the call is 0-token).
-      if (data.limits.length > 0) cache = { data, at: Date.now() };
-      return data;
-    })
-    .finally(() => { inflight = null; });
-
-  return inflight;
+export async function getClaudeCodeUsage({ wait = WAIT.CACHED } = {}) {
+  return usageCache.read(CACHE_KEY, async () => {
+    const stdout = await runUsageCli();
+    return { ...parseUsageOutput(stdout), fetchedAt: new Date().toISOString() };
+  }, { wait });
 }

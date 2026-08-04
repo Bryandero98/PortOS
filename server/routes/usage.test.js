@@ -110,7 +110,7 @@ describe('usage routes', () => {
     const res = await request(buildApp()).get('/api/usage/providers?refresh=1');
     expect(res.status).toBe(200);
     expect(res.body.providers).toHaveLength(2);
-    expect(getProviderQuotas).toHaveBeenCalledWith({ refresh: true });
+    expect(getProviderQuotas).toHaveBeenCalledWith({ wait: 'fresh' });
   });
 
   it('POST /api/usage/messages rejects negative or non-integer token counts', async () => {

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router';
 import { RefreshCw, Clock, AlertTriangle, DatabaseZap } from 'lucide-react';
 import * as api from '../services/api';
@@ -7,6 +7,11 @@ import PageSkeleton from '../components/ui/PageSkeleton';
 import Pill from '../components/ui/Pill';
 import { formatCompactCount } from '../utils/formatters';
 import { useAsyncAction } from '../hooks/useAsyncAction';
+import { useAutoRefetch } from '../hooks/useAutoRefetch';
+
+// How often to re-ask while a provider's quota reading is still being taken. A
+// CLI/TUI scrape is a 10-20s spawn, so this is a handful of polls, not a loop.
+const PENDING_POLL_MS = 4000;
 
 const PERIOD_OPTIONS = [
   { id: '7d', label: '7 days' },
@@ -94,14 +99,25 @@ function ProviderQuotaCard({ quota }) {
         <p className="text-sm text-gray-500">{quota.note || 'Usage reporting is not available for this provider.'}</p>
       )}
 
-      {quota.supported && quota.error && (
+      {/* The reading is still being taken. It comes BEFORE the error and empty
+          branches because a pending card has no limits — rendering it through
+          those says "No rate-limit data reported", which is a verdict about the
+          provider rather than a statement about a scrape still in flight. */}
+      {quota.supported && quota.pending && (
+        <div className="flex items-center gap-2 text-sm text-gray-400 py-1">
+          <BrailleSpinner />
+          <span>{quota.note || 'Reading quota…'}</span>
+        </div>
+      )}
+
+      {quota.supported && !quota.pending && quota.error && (
         <div className="flex items-start gap-2 text-sm text-gray-400 py-1">
           <AlertTriangle size={15} className="text-port-warning mt-0.5 shrink-0" />
           <span>{quota.error}</span>
         </div>
       )}
 
-      {quota.supported && !quota.error && (
+      {quota.supported && !quota.pending && !quota.error && (
         <div className="space-y-2">
           {quota.limits?.length > 0 && (
             <div>
@@ -160,7 +176,7 @@ function ProviderQuotaSection() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
-  const load = async (refresh = false) => {
+  const load = useCallback(async (refresh = false) => {
     setLoading(true);
     setError(false);
     const result = await api.getProviderUsage({ refresh }).catch(() => null);
@@ -171,9 +187,16 @@ function ProviderQuotaSection() {
       setError(true);
     }
     setLoading(false);
-  };
+  }, []);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [load]);
+
+  // A quota read never blocks the response: a cold cache answers with `pending`
+  // cards and the reading lands behind it. Without this poll those cards would
+  // sit on "reading quota…" until the user hit Refresh by hand. Enabled only
+  // while something is pending — the section does not otherwise auto-refresh.
+  const anyPending = (quotas || []).some((quota) => quota.pending);
+  useAutoRefetch(load, PENDING_POLL_MS, { enabled: anyPending, immediate: false, pollOnly: true });
 
   return (
     <div className="space-y-3">

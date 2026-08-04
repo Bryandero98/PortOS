@@ -24,6 +24,7 @@ import { getQuotaBurnDispatches, evaluateFamilies, recordQuotaBurnDispatch, sele
 import { getQuotaBurnConfig, getQuotaBurnRuns, recordQuotaBurnRun } from './quotaBurnStore.js';
 import { countJobPending, runBurnJob } from './quotaBurnJobs/index.js';
 import { familyIsActionable } from '../lib/quotaBurnConfig.js';
+import { WAIT } from '../lib/staleWhileRevalidate.js';
 
 const TICK_MS = 60_000;
 
@@ -109,6 +110,13 @@ async function evaluate({ trigger = 'scheduled', familyId = null, jobId = null, 
     // automatic cycle a full interval out — on a 12-hour interval, one curiosity
     // click can defer the tick past the reset the feature exists to spend.
     if (trigger === 'scheduled') lastRunAt = Date.now();
+    // Every cycle says what it decided. Previously ONLY the error paths logged,
+    // so clicking "Evaluate now" — which can spend a provider's quota — left no
+    // trace in the server log at all, and a cycle that correctly declined was
+    // indistinguishable from one that never ran.
+    console.log(entry.dispatched
+      ? `🔥 Quota-burn ${trigger}: dispatched ${entry.familyId}/${entry.jobId} — ${entry.summary}`
+      : `💤 Quota-burn ${trigger}: nothing dispatched — ${entry.reason}`);
     await recordQuotaBurnRun({ trigger, ...entry });
     return entry;
   };
@@ -122,7 +130,7 @@ async function evaluate({ trigger = 'scheduled', familyId = null, jobId = null, 
   // the log with "disabled" rows and bury the last real run.
   if (!config.enabled && trigger === 'scheduled') return { skipped: 'disabled' };
 
-  // Check the plan BEFORE the quota read. `getProviderQuotas({ refresh: true })`
+  // Check the plan BEFORE the quota read. `getProviderQuotas({ wait: WAIT.FRESH })`
   // spawns a multi-second TUI scrape per enabled family; with no actionable
   // family configured that scrape could never produce a dispatch, and it would
   // otherwise run every `checkIntervalMinutes` forever.
@@ -136,7 +144,7 @@ async function evaluate({ trigger = 'scheduled', familyId = null, jobId = null, 
     return finish({ dispatched: false, reason: 'no families enabled' });
   }
 
-  const quotas = await getProviderQuotas({ refresh: true }).catch((err) => {
+  const quotas = await getProviderQuotas({ wait: WAIT.FRESH }).catch((err) => {
     console.error(`❌ Quota-burn could not read provider quota: ${err.message}`);
     return null;
   });
@@ -210,16 +218,22 @@ async function evaluate({ trigger = 'scheduled', familyId = null, jobId = null, 
  * burn on the next tick (and if not, exactly why) and each job's pending count.
  *
  * Returns the config it loaded so the route doesn't read and normalize the same
- * file a second time. Reads quota from cache by default — the page's explicit
- * Refresh passes `refresh: true` — so opening the page doesn't spawn a TUI
- * scrape per family.
+ * file a second time.
+ *
+ * NEVER blocks on a quota reading. A cached one is served immediately (and
+ * refreshed behind the response once stale); a cold cache comes back as a
+ * `pending: true` card while the scrape runs, which `evaluateFamily` reports as
+ * "reading provider quota…" and never turns into a burn. Waiting instead cost
+ * this page 20-30s per open — a PTY spawn per family — for numbers that move by
+ * single digits an hour. The page's explicit Refresh passes `refresh: true` and
+ * does wait, because that click IS the request for a live reading.
  */
 export async function getQuotaBurnStatus({ refresh = false } = {}) {
   // Independent reads: only `quotas` is slow (a PTY scrape on the Refresh path),
   // and nothing else waits on it.
   const [config, quotas, dispatches, runs] = await Promise.all([
     getQuotaBurnConfig(),
-    getProviderQuotas({ refresh }).catch((err) => {
+    getProviderQuotas({ wait: refresh ? WAIT.FRESH : WAIT.NEVER }).catch((err) => {
       console.error(`❌ Quota-burn status could not read provider quota: ${err.message}`);
       return [];
     }),
@@ -227,24 +241,31 @@ export async function getQuotaBurnStatus({ refresh = false } = {}) {
     getQuotaBurnRuns(),
   ]);
 
+  const cards = new Map(quotas.map((card) => [card.family, card]));
   // ONE pass over the gate ladder the runner uses — the page's "will burn" and
   // its reason come from the same verdict, so they can't contradict each other.
   const families = await Promise.all(evaluateFamilies(quotas, config, { dispatches })
-    .map(async ({ family, candidate, skipReason }) => ({
-      id: family.id,
-      label: candidate?.card?.label || quotas.find((entry) => entry.family === family.id)?.label || family.id,
-      percentRemaining: candidate?.limit?.percentRemaining ?? null,
-      hoursUntilReset: candidate ? Math.round(candidate.hoursUntilReset * 10) / 10 : null,
-      dispatchesUsed: candidate?.dispatchesUsed ?? null,
-      willBurn: Boolean(candidate),
-      skipReason: skipReason || null,
-      // Probe pending work only for families the user actually enabled — a probe
-      // is not free (the universe job reads every bible), and a disabled
-      // family's counts are never acted on.
-      jobs: family.enabled
-        ? await Promise.all(family.jobs.map(async (job) => ({ id: job.id, pending: await countJobPending({ job, family }) })))
-        : family.jobs.map((job) => ({ id: job.id, pending: null })),
-    })));
+    .map(async ({ family, candidate, skipReason }) => {
+      const card = cards.get(family.id);
+      return {
+        id: family.id,
+        label: candidate?.card?.label || card?.label || family.id,
+        percentRemaining: candidate?.limit?.percentRemaining ?? null,
+        hoursUntilReset: candidate ? Math.round(candidate.hoursUntilReset * 10) / 10 : null,
+        dispatchesUsed: candidate?.dispatchesUsed ?? null,
+        willBurn: Boolean(candidate),
+        skipReason: skipReason || null,
+        // The reading for this family is being taken right now — the page polls
+        // again instead of leaving a card that looks like it has no quota.
+        pending: Boolean(card?.pending),
+        // Probe pending work only for families the user actually enabled — a probe
+        // is not free (the universe job reads every bible), and a disabled
+        // family's counts are never acted on.
+        jobs: family.enabled
+          ? await Promise.all(family.jobs.map(async (job) => ({ id: job.id, pending: await countJobPending({ job, family }) })))
+          : family.jobs.map((job) => ({ id: job.id, pending: null })),
+      };
+    }));
 
   return { config, status: { running, families, runs } };
 }

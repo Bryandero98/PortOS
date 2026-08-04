@@ -30,6 +30,21 @@ describe('selectBurnCandidates', () => {
     expect(selectBurnCandidates([quota('grok', '2026-07-26T18:00:00.000Z')], config, { now: NOW })).toHaveLength(1);
   });
 
+  it('never burns against a card whose reading is still PENDING', () => {
+    // A cold-cache status read starts the scrape and returns `pending` rather
+    // than holding the page for a 20s PTY spawn. The card carries real-looking
+    // fields but no reading — it must fail closed, and say so as its own state
+    // rather than borrowing an error or empty-quota verdict.
+    const pending = { family: 'grok', supported: true, pending: true, limits: [] };
+    expect(selectBurnCandidates([pending], config, { now: NOW })).toEqual([]);
+    const [verdict] = evaluateFamilies([pending], config, { now: NOW }).filter((row) => row.family.id === 'grok');
+    expect(verdict.candidate).toBeUndefined();
+    expect(verdict.skipReason).toMatch(/reading provider quota/i);
+
+    // Pending holds even under force — a forced run can't invent a reading.
+    expect(selectBurnCandidates([pending], config, { now: NOW, bypassGatesFor: 'grok' })).toEqual([]);
+  });
+
   it('selects burnable windows by reset time then priority', () => {
     const candidates = selectBurnCandidates([
       quota('codex', '2026-07-27T00:00:00.000Z'),

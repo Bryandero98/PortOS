@@ -3,6 +3,7 @@ import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import QuotaBurn from './QuotaBurn';
+import { sleep } from '../utils/sleep';
 
 vi.mock('../services/api', () => ({
   getQuotaBurn: vi.fn(),
@@ -88,6 +89,36 @@ describe('QuotaBurn page', () => {
     // A family that will not burn states WHY — the same predicate the runner
     // evaluates, so the page can never disagree with what actually happens.
     expect(screen.getByText('disabled')).toBeInTheDocument();
+  });
+
+  it('renders immediately while a family\'s quota is still being read, then polls it in', async () => {
+    // The server does not hold the response open for a 10-20s CLI/TUI spawn on a
+    // cold cache — it answers with `pending` and the page fills the number in.
+    // "reading quota…" must not be confused with a verdict: a pending family
+    // has no reading yet, so neither "will burn" nor a skip reason is true.
+    const pendingStatus = {
+      ...status,
+      families: [{ ...status.families[0], willBurn: false, percentRemaining: null, skipReason: 'reading provider quota…', pending: true }, status.families[1]],
+    };
+    api.getQuotaBurn.mockResolvedValueOnce({ config, status: pendingStatus });
+    renderPage();
+
+    expect(await screen.findByText(/reading quota…/)).toBeInTheDocument();
+    // The plan itself rendered on that same first paint — the page is usable
+    // before any provider has answered.
+    expect(screen.getByLabelText(/Run the quota-burn loop automatically/)).toBeInTheDocument();
+
+    // The poll (default mock: no longer pending) replaces it with the reading.
+    expect(await screen.findByText(/62% left/, undefined, { timeout: 8000 })).toBeInTheDocument();
+    expect(screen.queryByText(/reading quota…/)).not.toBeInTheDocument();
+  });
+
+  it('does NOT poll when nothing is pending', async () => {
+    renderPage();
+    await screen.findByText(/62% left/);
+    // One load on mount, and no timer re-arming behind it.
+    await sleep(100);
+    expect(api.getQuotaBurn).toHaveBeenCalledTimes(1);
   });
 
   it('saves the master switch as a partial patch', async () => {

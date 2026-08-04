@@ -6,6 +6,7 @@ import { getAllProviders } from '../services/providers.js';
 import { asyncHandler } from '../lib/errorHandler.js';
 import { validateRequest, usageQuerySchema, usageMessagesSchema } from '../lib/validation.js';
 import { resolveUsageRange } from '../lib/usageRange.js';
+import { WAIT } from '../lib/staleWhileRevalidate.js';
 import {
   getHistoricalUsageBackfillStatus,
   startHistoricalUsageBackfill
@@ -26,19 +27,30 @@ router.get('/', asyncHandler(async (req, res) => {
 
 // GET /api/usage/providers - Subscription-quota status for every enabled
 // provider family (claude, codex, agy, grok). Providers without a queryable
-// usage surface report `supported: false`. `?refresh=1` bypasses the cache.
+// usage surface report `supported: false`.
+//
+// ONE policy for every status read: it never blocks on a slow reading. A cached
+// one is served immediately (and revalidated behind the response); a cold one
+// comes back as a `pending: true` card the UI renders as "reading…" and polls.
+// Holding an HTTP response open for a 10-20s PTY spawn is what made this page —
+// and Quota Burn — look broken, and it is the shape that trips proxy timeouts.
+// `?refresh=1` is the explicit "get me a live reading" and does wait.
 router.get('/providers', asyncHandler(async (req, res) => {
   const refresh = req.query.refresh === '1' || req.query.refresh === 'true';
-  const providers = await getProviderQuotas({ refresh });
+  const providers = await getProviderQuotas({ wait: refresh ? WAIT.FRESH : WAIT.NEVER });
   res.json({ providers });
 }));
 
 // GET /api/usage/claude-code - Claude Code SUBSCRIPTION rate-limit usage,
 // parsed from the CLI's `/usage` output. Kept for back-compat — the usage page
 // now reads the generalized /providers endpoint. `?refresh=1` bypasses cache.
+//
+// This one still BLOCKS on a cold cache: its response is the reading itself,
+// with no card shape to carry a `pending` flag, so a caller has nothing to
+// render or poll on. The wait is bounded by the CLI's own spawn timeout.
 router.get('/claude-code', asyncHandler(async (req, res) => {
   const refresh = req.query.refresh === '1' || req.query.refresh === 'true';
-  const data = await getClaudeCodeUsage({ refresh });
+  const data = await getClaudeCodeUsage({ wait: refresh ? WAIT.FRESH : WAIT.CACHED });
   res.json(data);
 }));
 

@@ -392,7 +392,78 @@ describe('TUI usage fetchers (via getProviderQuotas)', () => {
     await getProviderQuotas();
     await getProviderQuotas(); // cache hit — no second scrape
     expect(scrapeTuiUsage).toHaveBeenCalledTimes(1);
-    await getProviderQuotas({ refresh: true }); // bypasses cache
+    await getProviderQuotas({ wait: 'fresh' }); // bypasses cache
     expect(scrapeTuiUsage).toHaveBeenCalledTimes(2);
+  });
+
+  // A scrape is a multi-second PTY spawn. Blocking on the TTL lapse is what made
+  // the Quota Burn / Usage pages take ~7s to open after a few idle minutes.
+  it('serves a STALE reading without waiting on the revalidating scrape', async () => {
+    vi.useFakeTimers();
+    getAllProviders.mockResolvedValue({ activeProvider: 'agy', providers: [{ id: 'antigravity-cli', enabled: true, type: 'cli', command: 'agy' }] });
+    scrapeTuiUsage.mockResolvedValueOnce(AGY_PANEL);
+    const [first] = await getProviderQuotas();
+
+    // Past the 5-minute TTL, with a scrape that never settles: a blocking cache
+    // would hang here forever. Stale-while-revalidate answers immediately.
+    vi.advanceTimersByTime(6 * 60 * 1000);
+    scrapeTuiUsage.mockReturnValueOnce(new Promise(() => {}));
+    const [stale] = await getProviderQuotas();
+    expect(stale.fetchedAt).toBe(first.fetchedAt); // the honest age of what we served
+    expect(scrapeTuiUsage).toHaveBeenCalledTimes(2); // …and the refresh did start
+    vi.useRealTimers();
+  });
+
+  // The cold case a stale value can't cover: nothing cached at all, e.g. the
+  // first page load after a server restart.
+  it("returns a pending card instead of blocking on a COLD cache under wait:'never'", async () => {
+    getAllProviders.mockResolvedValue({ activeProvider: 'agy', providers: [{ id: 'antigravity-cli', enabled: true, type: 'cli', command: 'agy' }] });
+    let release;
+    scrapeTuiUsage.mockReturnValueOnce(new Promise((resolve) => { release = resolve; }));
+
+    const [pending] = await getProviderQuotas({ wait: 'never' });
+    expect(pending).toMatchObject({ family: 'agy', supported: true, pending: true, limits: [] });
+
+    // The scrape was STARTED, not skipped — once it lands the next read is real.
+    release(AGY_PANEL);
+    await vi.waitFor(async () => {
+      const [card] = await getProviderQuotas({ wait: 'never' });
+      expect(card.pending).toBeUndefined();
+      expect(card.limits).toHaveLength(4);
+    });
+    expect(scrapeTuiUsage).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks for a real reading under the default wait and under wait:'fresh'", async () => {
+    getAllProviders.mockResolvedValue({ activeProvider: 'agy', providers: [{ id: 'antigravity-cli', enabled: true, type: 'cli', command: 'agy' }] });
+    scrapeTuiUsage.mockResolvedValueOnce(AGY_PANEL);
+    const [card] = await getProviderQuotas(); // default 'cached': cold ⇒ waits
+    expect(card.pending).toBeUndefined();
+    expect(card.limits).toHaveLength(4);
+
+    scrapeTuiUsage.mockResolvedValueOnce(AGY_PANEL);
+    const [refreshed] = await getProviderQuotas({ wait: 'fresh' });
+    expect(refreshed.pending).toBeUndefined();
+    expect(refreshed.limits).toHaveLength(4);
+  });
+
+  it('keeps the last good reading when a background revalidation fails', async () => {
+    vi.useFakeTimers();
+    getAllProviders.mockResolvedValue({ activeProvider: 'agy', providers: [{ id: 'antigravity-cli', enabled: true, type: 'cli', command: 'agy' }] });
+    scrapeTuiUsage.mockResolvedValueOnce(AGY_PANEL);
+    const [first] = await getProviderQuotas();
+
+    vi.advanceTimersByTime(6 * 60 * 1000);
+    scrapeTuiUsage.mockRejectedValueOnce(new Error('pty spawn failed'));
+    const [served] = await getProviderQuotas();
+    expect(served.limits).toHaveLength(4); // stale, not an error card
+    await vi.advanceTimersByTimeAsync(0); // let the failed revalidation settle
+
+    // A transient PTY hiccup must not evict the entry and force the next caller
+    // to block on a full scrape.
+    scrapeTuiUsage.mockReturnValueOnce(new Promise(() => {}));
+    const [afterFailure] = await getProviderQuotas();
+    expect(afterFailure.fetchedAt).toBe(first.fetchedAt);
+    vi.useRealTimers();
   });
 });

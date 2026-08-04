@@ -154,6 +154,12 @@ export function evaluateFamily(family, card, { now = Date.now(), dispatches = {}
   }
   if (!card) return { skipReason: 'no enabled provider in this family' };
   if (card.supported === false) return { skipReason: 'provider has no queryable quota surface' };
+  // The reading is still being taken (a cold-cache status read starts the scrape
+  // rather than blocking the page on a 20s PTY spawn). NOT an error and NOT an
+  // empty allowance — it is "ask again in a moment". A candidate here would burn
+  // against a card with no numbers on it, so it fails closed like every other
+  // unknown, and holds even under force.
+  if (card.pending) return { skipReason: 'reading provider quota…' };
   if (card.error) return { skipReason: `quota read failed: ${card.error}` };
   // A card can declare it carries no spendable headroom (`burnable: false`) —
   // e.g. the Image Gen card, whose 0%-left meter is an OBSERVED refusal, not a
