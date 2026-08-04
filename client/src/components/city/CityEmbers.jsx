@@ -1,6 +1,7 @@
 import { useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
+import { seededRand } from './cityConstants';
 
 // Rising ember/spark particles that float upward from the city streets
 
@@ -74,17 +75,25 @@ export default function CityEmbers({ settings }) {
       [0.4, 0.3, 1.0],  // blue
     ];
 
+    // Seeded, like CityDataRain: `density` is clamped for the first 1.2s of
+    // every mount and every visibility resume, so this memo re-runs on a
+    // boundary the user is looking at. Bare Math.random() re-draws every
+    // position and color there — the whole ember field teleports rather than
+    // just changing count. A fixed seed keeps the first `n` embers identical
+    // across that transition.
+    const rand = seededRand(41);
+
     for (let i = 0; i < n; i++) {
       // Spread across the city area
-      pos[i * 3] = (Math.random() - 0.5) * 50;
+      pos[i * 3] = (rand() - 0.5) * 50;
       pos[i * 3 + 1] = 0; // Animated in shader
-      pos[i * 3 + 2] = (Math.random() - 0.5) * 50;
+      pos[i * 3 + 2] = (rand() - 0.5) * 50;
 
-      sz[i] = 0.8 + Math.random() * 1.5;
-      spd[i] = 0.03 + Math.random() * 0.06;
-      ph[i] = Math.random();
+      sz[i] = 0.8 + rand() * 1.5;
+      spd[i] = 0.03 + rand() * 0.06;
+      ph[i] = rand();
 
-      const c = palette[Math.floor(Math.random() * palette.length)];
+      const c = palette[Math.floor(rand() * palette.length)];
       col[i * 3] = c[0];
       col[i * 3 + 1] = c[1];
       col[i * 3 + 2] = c[2];

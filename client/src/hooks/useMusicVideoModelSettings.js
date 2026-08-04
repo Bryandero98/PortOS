@@ -26,6 +26,7 @@ export default function useMusicVideoModelSettings({ project, onProjectPatch } =
   const [loras, setLoras] = useState([]);
   const [defaultModel, setDefaultModel] = useState('');
   const [saving, setSaving] = useState(false);
+  const [framePinSaving, setFramePinSaving] = useState(false);
 
   useEffect(() => {
     getVideoGenStatus({ silent: true })
@@ -98,11 +99,18 @@ export default function useMusicVideoModelSettings({ project, onProjectPatch } =
   // the image-side sibling of the video renderer pin above. Scene
   // reference-frame renders send no explicit mode, so the server resolves this
   // record pin directly (imageGen/prepareParams) — no client seeding needed.
+  // `framePinSaving` is the image-side counterpart of `saving`, and carries the
+  // same obligation: the optimistic patch repaints the picker immediately, but
+  // the server resolves the RECORD pin at kickoff — so a frame render started
+  // before the PATCH lands renders on the previous model while the board claims
+  // the new one. It also serializes two quick pin changes, which would
+  // otherwise race and could settle the record on the older of the two.
   const changeFramePin = ({ imageMode, imageModelId }) => {
-    if (!project) return;
+    if (!project || framePinSaving) return;
     const projectId = project.id;
     const previous = { imageMode: project.imageMode ?? null, imageModelId: project.imageModelId ?? null };
     onProjectPatch?.(projectId, { imageMode, imageModelId });
+    setFramePinSaving(true);
     updateMusicVideoProject(projectId, { imageMode, imageModelId }, { silent: true })
       .then((updated) => onProjectPatch?.(projectId, {
         imageMode: updated.imageMode ?? null,
@@ -112,7 +120,8 @@ export default function useMusicVideoModelSettings({ project, onProjectPatch } =
       .catch((err) => {
         onProjectPatch?.(projectId, previous);
         toast.error(err?.message || 'Failed to save frame renderer');
-      });
+      })
+      .finally(() => setFramePinSaving(false));
   };
 
   return {
@@ -120,6 +129,7 @@ export default function useMusicVideoModelSettings({ project, onProjectPatch } =
     modelsLoading,
     defaultModel,
     saving,
+    framePinSaving,
     settings,
     effectiveModelId,
     activeModel,

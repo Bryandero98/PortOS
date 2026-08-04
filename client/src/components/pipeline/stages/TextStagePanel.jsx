@@ -91,9 +91,14 @@ export default function TextStagePanel({
   useEffect(() => { draftOutputRef.current = draftOutput; }, [draftOutput]);
 
   // Live generation progress (#3393). The URL is set for the duration of one
-  // generate call; the server opens the channel when we attach, so subscribing
-  // just before the POST can't race it. Frames survive the teardown so the
-  // attempt scorecard stays on screen after the run finishes.
+  // generate call. Note this attaches CONCURRENTLY with the POST, not strictly
+  // before it: setting the URL is a state update, so the EventSource is not
+  // constructed until React commits, while the POST leaves synchronously on the
+  // next line. `emitStageProgress` is a no-op with no subscriber, so the
+  // opening `context` frame can be dropped — the channel is advisory, and the
+  // panel falls back to the spinner. Don't build anything on top of this that
+  // needs the first frame. Frames survive the teardown so the attempt scorecard
+  // stays on screen after the run finishes.
   const [progressUrl, setProgressUrl] = useState(null);
   // Which issue+stage the retained frames describe — the panel is reused across
   // issues, and a stale scorecard from a different record must not linger.

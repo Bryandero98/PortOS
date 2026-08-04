@@ -1160,7 +1160,12 @@ export const startWebSpeechCapture = ({ language, ...callbacks } = {}) => {
     if (!webSpeechShouldListen) return;
     webSpeechRestartFailures += 1;
     if (webSpeechRestartFailures >= WEB_SPEECH_MAX_RESTART_FAILURES) {
-      webSpeechShouldListen = false;
+      // Full teardown, not a bare flag flip: every caller-side cleanup is gated
+      // on isWebSpeechCapturing(), so clearing the flag without releasing the
+      // audio-session claim strands it — pinning the document to
+      // 'play-and-record' for the rest of the page session, which outranks the
+      // 'playback' claim a SongBook play-along needs to beat the silent switch.
+      stopWebSpeechCapture();
       callbacks.onError?.('restart-loop');
       return;
     }
@@ -1176,7 +1181,9 @@ export const startWebSpeechCapture = ({ language, ...callbacks } = {}) => {
 
   recognition.onerror = (event) => {
     if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-      webSpeechShouldListen = false;
+      // Same reason as onend's restart-cap branch: release the claim here or a
+      // denied mic leaves the session pinned record-capable forever.
+      stopWebSpeechCapture();
       callbacks.onError?.(event.error);
     }
     // "no-speech" and "aborted" are expected, ignore them

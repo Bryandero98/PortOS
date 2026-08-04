@@ -155,7 +155,7 @@ describe('GameBindings', () => {
   });
 
   it('escalates an occupied music destination to explicit overwrite consent', () => {
-    renderBindings({ musicOverwriteFor: 'binding-1' });
+    renderBindings({ musicOverwriteFor: { bindingId: 'binding-1', destinationPath: 'game/assets/music/example-theme.ogg' } });
     const section = musicSection();
 
     expect(within(section).getByText(
@@ -166,6 +166,19 @@ describe('GameBindings', () => {
 
     fireEvent.click(within(section).getByRole('button', { name: 'Cancel' }));
     expect(onDismissMusicOverwrite).toHaveBeenCalled();
+  });
+
+  it('drops overwrite consent when the destination it was granted for changed', () => {
+    // The consent is for a SPECIFIC path. The server applies
+    // `acknowledgeOverwrite` to whatever the binding points at when the request
+    // lands, so a consent keyed on the binding alone would let a "yes" for the
+    // occupied path silently authorize destroying a different, never-checked
+    // file after the destination is edited.
+    renderBindings({ musicOverwriteFor: { bindingId: 'binding-1', destinationPath: 'game/assets/music/some-other.ogg' } });
+    const section = musicSection();
+
+    expect(within(section).queryByRole('button', { name: 'Overwrite' })).not.toBeInTheDocument();
+    expect(within(section).queryByText(/contains bytes PortOS did not publish/)).not.toBeInTheDocument();
   });
 
   it('keeps publish disabled for a binding with no destination yet', () => {

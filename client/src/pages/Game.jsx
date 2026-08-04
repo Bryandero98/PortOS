@@ -237,7 +237,14 @@ export default function Game() {
     setBusy('');
     if (!result?.game) {
       if (occupied) {
-        setMusicOverwrite(bindingId);
+        // Key the consent to the destination it was granted FOR, not just the
+        // binding. The path is editable inline, and the server applies
+        // `acknowledgeOverwrite` to whatever the binding points at when the
+        // request lands — so a bare id would let consent for A authorize an
+        // unguarded overwrite of B. Same invariant the sprite publish lane
+        // states in PublishWorkflow.jsx.
+        const target = (game.musicBindings || []).find((entry) => entry.id === bindingId);
+        setMusicOverwrite({ bindingId, destinationPath: target?.destinationPath || '' });
         return false;
       }
       toast.error('Music publish failed');

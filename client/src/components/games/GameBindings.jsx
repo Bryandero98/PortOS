@@ -156,9 +156,13 @@ function MusicBindingRow({
   onDismissOverwrite,
 }) {
   const [destinationPath, setDestinationPath] = useState(binding.destinationPath || '');
+  // Key on the persisted VALUE, not the binding object: every mutation on this
+  // page mints a fresh `game` (and so a fresh `binding`), so depending on the
+  // object reset this input on unrelated saves — silently discarding a
+  // destination the user was mid-way through typing.
   useEffect(() => {
     setDestinationPath(binding.destinationPath || '');
-  }, [binding]);
+  }, [binding.id, binding.destinationPath]);
   const dirty = destinationPath.trim() !== (binding.destinationPath || '');
   const publicationCurrent = health?.publicationStatus === 'current';
   const { Icon, className } = healthTone(health);
@@ -580,7 +584,8 @@ export default function GameBindings({
                 health={musicIntegrity.get(binding.id)}
                 issue={musicIssues.get(binding.trackId)}
                 busy={busy}
-                overwriteRequested={musicOverwriteFor === binding.id}
+                overwriteRequested={musicOverwriteFor?.bindingId === binding.id
+                  && musicOverwriteFor?.destinationPath === (binding.destinationPath || '')}
                 onUpdate={onUpdateMusic}
                 onPublish={onPublishMusic}
                 onUnbind={onUnbindMusic}

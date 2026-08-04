@@ -255,7 +255,11 @@ export default function CityScene({ apps, agentMap, onBuildingClick, onToggleCam
         </ErrorBoundary>
       )}
       <CitySky settings={renderSettings} />
-      <CityLights settings={renderSettings} />
+      {/* `lightingTier` is the SETTLED tier, deliberately not the warm-up-clamped
+          one: the accent-light gate changes the scene's light COUNT, which is part
+          of three.js's shader program cache key, so letting the clamp toggle it
+          would recompile every lit material 1.2s into each load. */}
+      <CityLights settings={renderSettings} lightingTier={settings?.effectiveTier} />
       <CityLandscape settings={renderSettings} />
       <CityWater settings={renderSettings} />
       <CityEnergyOverlay chronotype={chronotype} settings={renderSettings} />

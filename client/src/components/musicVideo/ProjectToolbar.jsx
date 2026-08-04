@@ -88,8 +88,10 @@ export default function ProjectToolbar({
         <VideoRenderSettings videoSettings={videoSettings} generating={generatingVideos} />
         <button
           onClick={sceneMedia.generateMissingFrames}
-          disabled={sceneCount === 0 || missingFrameCount === 0 || generatingFrames}
-          title={missingFrameCount > 0 ? `Generate ${missingFrameCount} missing reference frame${missingFrameCount === 1 ? '' : 's'}` : 'Every scene has a reference frame'}
+          disabled={videoSettings.framePinSaving || sceneCount === 0 || missingFrameCount === 0 || generatingFrames}
+          title={videoSettings.framePinSaving
+            ? 'Saving the frame renderer…'
+            : (missingFrameCount > 0 ? `Generate ${missingFrameCount} missing reference frame${missingFrameCount === 1 ? '' : 's'}` : 'Every scene has a reference frame')}
           className="flex items-center gap-1 bg-port-bg border border-port-border rounded px-2 py-1.5 text-sm min-h-[44px] sm:min-h-0 disabled:opacity-50"
         >
           <ImageIcon size={15} /> Frames {referenceFrameCount}/{sceneCount}

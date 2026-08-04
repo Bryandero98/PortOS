@@ -71,6 +71,7 @@ export default function QuotaBurn() {
   // re-arm the debounce it lives inside.
   const retriedRef = useRef(false);
   const persistRef = useRef(null);
+  const savingRef = useRef(false);
 
   const load = useCallback(async (refresh = false) => {
     const seq = editSeqRef.current;
@@ -79,7 +80,14 @@ export default function QuotaBurn() {
     // `status` is derived server-side and never edited here, so it is always
     // safe to adopt; `config` is the form's own state and must not be rewound.
     setStatus(data.status);
-    if (editSeqRef.current === seq) setConfig(data.config);
+    // The counter alone only catches an edit that landed WHILE this GET was in
+    // flight. An edit made just BEFORE it was issued leaves the counter
+    // unmoved, so the response — which predates the still-debounced PUT —
+    // would roll the textarea back to the last saved text, and the next
+    // keystroke would rebuild the patch from that rewound value and persist
+    // it. Anything unsaved or in flight means the server's copy is stale by
+    // definition; don't adopt it.
+    if (editSeqRef.current === seq && !pendingRef.current && !savingRef.current) setConfig(data.config);
   }, []);
 
   useEffect(() => {
@@ -107,8 +115,13 @@ export default function QuotaBurn() {
     pendingRef.current = null;
     if (!patch) return;
     const seq = editSeqRef.current;
+    savingRef.current = true;
     const result = await api.saveQuotaBurn(patch, { silent: true })
       .catch((err) => { toast.error(`Could not save: ${err.message}`); return null; });
+    // Cleared before the `load()` below so that read can still adopt the
+    // server's normalization — the flag exists to fence concurrent POLL reads,
+    // not this function's own follow-up read.
+    savingRef.current = false;
 
     if (!result) {
       // Put the patch BACK rather than dropping it. One rejected field (a 400

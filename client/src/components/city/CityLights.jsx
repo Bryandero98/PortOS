@@ -80,7 +80,7 @@ function ReactivePointLight({ position, baseIntensity, color, distance, brightne
   );
 }
 
-export default function CityLights({ settings }) {
+export default function CityLights({ settings, lightingTier }) {
   const { ground } = useCityPalette();
   const brightnessRef = useRef(settings?.ambientBrightness ?? 1.2);
   brightnessRef.current = settings?.ambientBrightness ?? 1.2;
@@ -92,7 +92,14 @@ export default function CityLights({ settings }) {
 
   // Medium tier and up — the same gate the rest of the optional set dressing uses, so the
   // low tier sheds light count along with the props those lights were there to accent.
-  const showAccentLights = cityShowDetail(settings);
+  //
+  // Gated on the SETTLED tier, not the render tier the rest of the set dressing
+  // reads. CityScene pins `effectiveTier: 'low'` for the first 1.2s of every mount
+  // and visibility resume, and light count is part of three.js's program cache key
+  // — so reading the clamped tier here would recompile every MeshStandardMaterial
+  // in the scene at the warm-up boundary, a stall at exactly the moment the warm-up
+  // exists to avoid one. Falls back to `settings` when the prop is absent.
+  const showAccentLights = cityShowDetail(lightingTier ? { effectiveTier: lightingTier } : settings);
 
   // Neon scale: dim neon point lights during daytime (30% at noon, 100% at night)
   const neonScaleRef = useRef(1);
