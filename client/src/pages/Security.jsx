@@ -4,6 +4,7 @@ import api from '../services/api';
 import Banner from '../components/ui/Banner';
 import { FormField } from '../components/ui/FormField';
 import { safeReadStorage, safeReadJsonStorage, safeWriteStorage, safeRemoveStorage } from '../lib/safeStorage';
+import { resumeAudioContext } from '../lib/audioContext.js';
 
 const MEDIA_CONSTRAINTS_KEY = 'portos-media-constraints';
 
@@ -76,12 +77,11 @@ export default function Security() {
 
     const audioContext = new (window.AudioContext || window.webkitAudioContext)();
 
-    // Resume AudioContext if suspended (browser autoplay policy)
-    if (audioContext.state === 'suspended') {
-      await audioContext.resume().catch(() => {
-        setAudioNeedsInteraction(true);
-      });
-    }
+    // Bring the context up if it isn't running (browser autoplay policy, or
+    // iOS's `'interrupted'` after a call/lock) — see lib/audioContext.js.
+    await resumeAudioContext(audioContext).catch(() => {
+      setAudioNeedsInteraction(true);
+    });
 
     const analyser = audioContext.createAnalyser();
     const source = audioContext.createMediaElementSource(audioElement);
@@ -115,10 +115,9 @@ export default function Security() {
   // Enable audio with user interaction (for mobile browsers)
   const enableAudio = useCallback(async () => {
     if (audioRef.current && audioContextRef.current) {
-      // Resume AudioContext
-      if (audioContextRef.current.state === 'suspended') {
-        await audioContextRef.current.resume();
-      }
+      // Resume AudioContext — the whole point of this button, so it has to cover
+      // every non-running state, not just `'suspended'`.
+      await resumeAudioContext(audioContextRef.current);
 
       // Play audio element
       await audioRef.current.play();

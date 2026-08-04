@@ -1,8 +1,8 @@
 // Shared lookahead-transport for the synth players (#2493). The three players —
 // createScorePlayer + createMultiScorePlayer (scorePlayback.js) and
 // createMidiPlayer (midiPlayback.js) — all drive a Web Audio OscillatorNode
-// graph through the same lookahead-scheduler state machine: a suspended-context
-// resume with a teardown-race guard, an interval that hands due tones to the
+// graph through the same lookahead-scheduler state machine: a not-yet-running
+// context resume with a teardown-race guard, an interval that hands due tones to the
 // audio clock, live-node teardown, and pause/stop/finish/seek sequences that
 // only differ in WHAT they schedule and WHAT the UI is told. This module owns
 // that transport (the clock + node lifecycle); each player supplies the
@@ -12,7 +12,7 @@
 // Pure of any player specifics — no React, no score/MIDI concepts. Imports only
 // the shared AudioContext; players import createLookaheadTransport from here.
 
-import { getAudioContext as ctx } from './audioContext.js';
+import { getAudioContext as ctx, resumeAudioContext, acquireAudioSession } from './audioContext.js';
 
 // Shared lookahead-scheduler timing — one definition so every synth player
 // can't drift apart on feel. Lives here (not in scorePlayback.js) so the
@@ -55,6 +55,13 @@ const { LEAD, LOOKAHEAD_MS } = SYNTH_TIMING;
  * @param {() => void} [hooks.onTeardown] — extra teardown after the live nodes
  *   are stopped on pause/stop/finish (e.g. drop the master-bus ref). NOT called
  *   on seek, which reuses the same bus to keep scheduling.
+ * @param {string} [hooks.audioSession] — the iOS audio session type to hold
+ *   WHILE this transport sounds, released on teardown. Only output-only players
+ *   set it, and only to `'playback'`: that is what stops the iPhone's ring/silent
+ *   switch from muting a pure-synth page. It is a capability of the player rather
+ *   than something the transport assumes, because the session is document-wide
+ *   and shared with whatever else is making sound — see the audio-session note in
+ *   audioContext.js (a live mic still wins; the arbiter handles that).
  * @returns {{ play, pause, stop, seek, position, isPlaying, track }}
  */
 export const createLookaheadTransport = ({
@@ -65,13 +72,35 @@ export const createLookaheadTransport = ({
   onStop,
   onEnded,
   onTeardown,
+  audioSession,
 }) => {
   const noop = () => {};
   const doPrepare = prepare || (() => true);
   const doSeekCursors = seekCursors || noop;
   const doStop = onStop || noop;
   const doEnded = onEnded || noop;
-  const doTeardown = onTeardown || noop;
+  // The audio-session claim this transport currently holds, if any (see the
+  // `audioSession` option). One claim at a time: re-acquiring on a fresh play
+  // drops the previous one, so a play → play can't strand a holder in the
+  // arbiter and pin the document forever.
+  let releaseSession = null;
+  const dropSession = () => {
+    if (!releaseSession) return;
+    releaseSession();
+    releaseSession = null;
+  };
+  const takeSession = () => {
+    if (!audioSession) return;
+    dropSession();
+    releaseSession = acquireAudioSession(audioSession);
+  };
+
+  // The player's own teardown, plus handing back the audio session — so an
+  // output-only player holds its claim only while it is actually sounding.
+  const doTeardown = () => {
+    if (onTeardown) onTeardown();
+    dropSession();
+  };
 
   let playing = false;
   let interval = null;
@@ -129,9 +158,29 @@ export const createLookaheadTransport = ({
     if (playing) return;
     const c = ctx();
     const token = ++playToken;
-    if (c.state === 'suspended' && c.resume) await c.resume();
-    if (token !== playToken) return;     // a stop/pause landed during the resume await
-    if (doPrepare() === false) return;   // empty schedule — prepare fired onEnded
+    // Claimed BEFORE the resume so the context comes up on the right session.
+    takeSession();
+    // Covers iOS Safari's `'interrupted'` state, not just `'suspended'`. A
+    // rejection here (autoplay policy, or a session iOS won't hand back) leaves
+    // play() before any teardown can run, so the claim goes back on the way out
+    // — unless a newer play() already replaced it. The rejection still
+    // propagates: the caller resets its Play button on it.
+    await resumeAudioContext(c).catch((err) => {
+      if (token === playToken) dropSession();
+      throw err;
+    });
+    // Bail WITHOUT dropping the claim: whatever bumped the token (stop, pause, or
+    // a newer play) owns it now. A stop/pause already handed it back, and a newer
+    // play's takeSession() already replaced it — dropping here would silence that
+    // one.
+    if (token !== playToken) return;
+    // An empty schedule never sounds, so it hands the claim back rather than
+    // holding the document's session for nothing. No await runs between the token
+    // check and here, so no newer play() can have taken over in between.
+    if (doPrepare() === false) {         // empty schedule — prepare fired onEnded
+      dropSession();
+      return;
+    }
     playing = true;
     startTime = c.currentTime + LEAD - offsetSec;
     doSeekCursors(offsetSec, offsetSec > 0, startTime, track);
@@ -142,7 +191,15 @@ export const createLookaheadTransport = ({
   // Pause — stop sounding, remember position, keep the cursor for resume.
   const pause = () => {
     playToken++; // abort an in-flight play() still awaiting ctx.resume()
-    if (!playing) return;
+    if (!playing) {
+      // The token bump above just cancelled a play() that is still awaiting its
+      // resume — and that play() already claimed the session. Nothing is
+      // sounding and no teardown will run for it, so hand the claim back here or
+      // a play-then-immediately-pause leaves the document pinned output-only.
+      // (`stop()` needs no such branch: it runs the teardown unconditionally.)
+      dropSession();
+      return;
+    }
     offsetSec = Math.min(Math.max(0, ctx().currentTime - startTime), getTotalSec());
     clearTick();
     stopNodes();

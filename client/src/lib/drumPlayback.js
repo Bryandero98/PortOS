@@ -565,6 +565,13 @@ export const createDrumPlayer = (chart, options = {}) => {
   };
 
   const transport = createLookaheadTransport({
+    // A play-along is output-only — there is no capture anywhere on the SongBook
+    // — so it holds the iOS `playback` session while it sounds. Without it iOS
+    // leaves the page on the ambient session and the hardware ring/silent switch
+    // mutes the whole kit AND the metronome: the transport counts, the playhead
+    // scrolls, and the phone makes no sound. The transport releases it on
+    // teardown, so the declaration can't follow the user to a page that records.
+    audioSession: 'playback',
     // A LOOPING player never "ends" on its own, so the transport's end check must
     // not finish it — unbounded until stop(). But `canLoop()` is the same gate the
     // scheduler uses: when a selected range holds no music (a rest-only bar) there

@@ -8,6 +8,18 @@
 import socket from './socket';
 import { subscribeVisibility } from '../hooks/useVisibilityEvent.js';
 import { sleep } from '../utils/sleep.js';
+import { resumeAudioContext, acquireAudioSession } from '../lib/audioContext.js';
+
+// iOS audio-session claims held while a mic stream is open — one per capture
+// mode, because push-to-talk and hands-free listening can overlap. `getUserMedia`
+// is refused under the output-only `playback` session a play-along holds (the
+// VoiceWidget is mounted on EVERY page, so that overlap is routine on the
+// SongBook drum pages); claiming `play-and-record` wins the arbiter and keeps
+// both working — that session ignores the ring/silent switch too, so whatever is
+// playing stays audible. See the audio-session note in lib/audioContext.js.
+let releaseCaptureSession = null;
+let releaseContinuousSession = null;
+let releaseWebSpeechSession = null;
 
 let stream = null;
 let recorder = null;
@@ -42,7 +54,9 @@ const ensureCtx = () => {
     const Ctor = window.AudioContext || window.webkitAudioContext;
     audioCtx = new Ctor();
   }
-  if (audioCtx.state === 'suspended') audioCtx.resume();
+  // Fire-and-forget so ensureCtx stays sync — TTS playback schedules against the
+  // context a beat later. Covers iOS's `'interrupted'`, not just `'suspended'`.
+  resumeAudioContext(audioCtx).catch(() => {});
   return audioCtx;
 };
 
@@ -458,6 +472,11 @@ export const startCapture = async () => {
   socket.emit('voice:interrupt');
   stopPlayback();
 
+  // Claimed BEFORE getUserMedia — an output-only session already in force would
+  // refuse the request outright.
+  releaseCaptureSession?.();
+  releaseCaptureSession = acquireAudioSession('play-and-record');
+
   // autoGainControl is critical — without it, quiet mics record near-silent audio
   // that whisper transcribes as [BLANK_AUDIO].
   stream = await navigator.mediaDevices.getUserMedia({
@@ -466,6 +485,13 @@ export const startCapture = async () => {
       noiseSuppression: true,
       autoGainControl: true,
     },
+  }).catch((err) => {
+    // A denied/failed mic never reaches stopCapture (`recorder` is still null),
+    // so the claim is handed back here or it pins the document record-capable
+    // for the rest of the session.
+    releaseCaptureSession?.();
+    releaseCaptureSession = null;
+    throw err;
   });
   // Run after permission is granted — `enumerateDevices` only returns
   // device labels post-grant, and the headset heuristic relies on labels.
@@ -489,6 +515,8 @@ export const stopCapture = async ({ submit = true } = {}) => {
   });
   stream?.getTracks().forEach((t) => t.stop());
   stream = null;
+  releaseCaptureSession?.();
+  releaseCaptureSession = null;
 
   const blob = new Blob(chunks, { type: rec.mimeType });
   chunks = [];
@@ -938,6 +966,12 @@ export const startContinuous = async (callbacks = {}) => {
   if (continuousCtx) return;
   continuousCallbacks = callbacks;
 
+  // Claimed BEFORE getUserMedia — an output-only session already in force would
+  // refuse the request outright — and handed back on failure, since a denied mic
+  // never reaches stopContinuous (`continuousCtx` is still null).
+  releaseContinuousSession?.();
+  releaseContinuousSession = acquireAudioSession('play-and-record');
+
   // AGC is intentionally OFF here — it boosts silence to maintain a target
   // output level, which destroys the energy-difference signal the VAD needs.
   continuousStream = await navigator.mediaDevices.getUserMedia({
@@ -946,16 +980,31 @@ export const startContinuous = async (callbacks = {}) => {
       noiseSuppression: true,
       autoGainControl: false,
     },
+  }).catch((err) => {
+    releaseContinuousSession?.();
+    releaseContinuousSession = null;
+    throw err;
   });
   detectAudioRoute(continuousStream).catch(() => {});
 
+  // Everything from here on can reject — a refused resume, a worklet module that
+  // fails to compile — and `continuousCtx` is already assigned by then, so an
+  // unwound setup would leave the mic open, the claim held, AND every later
+  // Start returning at the `if (continuousCtx) return` guard with no way back
+  // short of a reload. Tear the whole partial setup down before rethrowing.
+  const unwindSetup = async (err) => {
+    await stopContinuous();
+    throw err;
+  };
+
   const Ctor = window.AudioContext || window.webkitAudioContext;
   continuousCtx = new Ctor();
-  if (continuousCtx.state === 'suspended') await continuousCtx.resume();
+  await resumeAudioContext(continuousCtx).catch(unwindSetup);
 
   // Inline worklet module so we don't need a separate file in the build
   const blobUrl = URL.createObjectURL(new Blob([WORKLET_SOURCE], { type: 'application/javascript' }));
-  await continuousCtx.audioWorklet.addModule(blobUrl);
+  await continuousCtx.audioWorklet.addModule(blobUrl)
+    .catch(async (err) => { URL.revokeObjectURL(blobUrl); await unwindSetup(err); });
   URL.revokeObjectURL(blobUrl);
 
   continuousSource = continuousCtx.createMediaStreamSource(continuousStream);
@@ -995,6 +1044,8 @@ export const stopContinuous = async () => {
   } catch { /* ignore teardown errors */ }
   continuousStream?.getTracks().forEach((t) => t.stop());
   await continuousCtx.close().catch(() => {});
+  releaseContinuousSession?.();
+  releaseContinuousSession = null;
   continuousCtx = null;
   continuousStream = null;
   continuousWorkletNode = null;
@@ -1134,6 +1185,13 @@ export const startWebSpeechCapture = ({ language, ...callbacks } = {}) => {
   webSpeechRecognition = recognition;
   webSpeechShouldListen = true;
   webSpeechRestartFailures = 0;
+  // The recognizer opens the mic itself — no getUserMedia here to hang a claim
+  // off — so it needs the same record-capable session the other two capture
+  // paths take, or an output-only session held by a play-along gets its request
+  // refused. Held for the whole recognition lifetime, including the auto-restart
+  // cycles, since those re-open the mic too.
+  releaseWebSpeechSession?.();
+  releaseWebSpeechSession = acquireAudioSession('play-and-record');
   recognition.start();
 };
 
@@ -1146,6 +1204,8 @@ export const stopWebSpeechCapture = () => {
     webSpeechRecognition.stop();
     webSpeechRecognition = null;
   }
+  releaseWebSpeechSession?.();
+  releaseWebSpeechSession = null;
 };
 
 export const isWebSpeechCapturing = () => webSpeechShouldListen;

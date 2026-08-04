@@ -5,6 +5,7 @@ import { submitTrainingEntry, getTrainingStats, submitMorseRound, getMorseProgre
 import MorseProgressPanel from './MorseProgressPanel';
 import { streakGlyph } from '../../../lib/streakGlyph.js';
 import { safeReadJsonStorage, safeWriteStorage } from '../../../lib/safeStorage';
+import { resumeAudioContext } from '../../../lib/audioContext.js';
 import PostCompletionActions from './PostCompletionActions';
 import { startRetryableSaves } from './completionSave';
 
@@ -225,9 +226,11 @@ function useAudioContext() {
     // Autoplay policy starts the context suspended until a user gesture — and on
     // iOS Safari resume() is async, so we MUST await it before scheduling any
     // oscillator. Firing resume() without awaiting (the old behavior) laid tones
-    // down against a still-suspended clock: silent on mobile Safari. Mirrors the
-    // await-resume idiom in metronome.js / scorePlayback.js / songPlayback.js.
-    if (ctxRef.current.state === 'suspended') await ctxRef.current.resume();
+    // down against a still-suspended clock: silent on mobile Safari. The shared
+    // helper is the one gate every playback entry point uses (it also covers
+    // iOS's `'interrupted'`), and it no-ops on the closed context this component
+    // leaves behind on unmount.
+    await resumeAudioContext(ctxRef.current);
     return ctxRef.current;
   }, []);
   useEffect(() => () => {

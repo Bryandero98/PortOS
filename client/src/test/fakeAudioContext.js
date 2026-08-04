@@ -7,18 +7,36 @@
 // scorePlayback.race.test.js use — new audio tests should import this instead
 // of copying another one.
 //
-// Pass { suspended: true } to model a context that starts suspended and only
-// resumes when the test calls `audio.flushResume()` — this reproduces the
-// teardown-during-await race the players' playToken guard fixes, letting a test
+// Pass { state } for a context that doesn't start running: `'suspended'` (the
+// autoplay policy) or iOS Safari's non-standard `'interrupted'` (a call / Siri /
+// the screen locking parks it there, and a resume gate written as
+// `state === 'suspended'` walks straight past it). Either way resume() parks
+// until the test calls `audio.flushResume()`, which reproduces the
+// teardown-during-await race the players' playToken guard fixes — a test can
 // interleave a stop()/pause() between play()'s `await ctx.resume()` and its
-// continuation.
+// continuation. `audio.state` is live (flipped to `'running'` by flushResume, so
+// the fake models the real state machine) and `audio.resumeCalls` counts the
+// resume() attempts.
 
-export const createFakeAudio = ({ suspended = false } = {}) => {
-  // Pending resolver for a suspended context's in-flight resume() (null until
-  // a resume() is awaiting, cleared once flushed).
-  let resolveResume = null;
+export const createFakeAudio = ({ state: initialState = 'running' } = {}) => {
+  // Pending resolvers for in-flight resume() calls. A LIST, not a single slot:
+  // two overlapping play()s (the second superseding the first mid-await) each
+  // park their own resume, and a single slot would drop the first one's resolver
+  // so its continuation never ran — the superseded play would hang instead of
+  // reaching its stale-token bail.
+  let resumeResolvers = [];
   const audio = {
     now: 0,
+    // Live context state — flips to 'running' once a pending resume resolves,
+    // so a test can assert the transport actually brought the clock up.
+    state: initialState,
+    resumeCalls: 0,
+    // Set to an Error to make resume() reject instead of parking — the autoplay
+    // policy refusing a gesture, or iOS declining to hand the session back. Set
+    // on the shared `audio` (not via a re-stubbed constructor) because
+    // lib/audioContext.js memoizes the context on first use, so a later stub
+    // never reaches the instance the code under test is already holding.
+    resumeRejection: null,
     oscillators: [],
     gains: [],
     // Bandpassed noise voices (createBufferSource + createBiquadFilter) — the
@@ -32,14 +50,24 @@ export const createFakeAudio = ({ suspended = false } = {}) => {
     shapers: [],
     reset() {
       this.now = 0;
+      this.state = initialState;
+      this.resumeCalls = 0;
+      this.resumeRejection = null;
       this.oscillators.length = 0;
       this.gains.length = 0;
       this.filters.length = 0;
       this.shapers.length = 0;
-      resolveResume = null;
+      resumeResolvers = [];
     },
-    // Resolve a suspended context's pending resume() so play()'s await continues.
-    flushResume() { const r = resolveResume; resolveResume = null; if (r) r(); },
+    // Resolve every pending resume() so the parked play()s continue, bringing the
+    // context up exactly as a real one does.
+    flushResume() {
+      const pending = resumeResolvers;
+      resumeResolvers = [];
+      if (!pending.length) return;
+      this.state = 'running';
+      for (const r of pending) r();
+    },
   };
   // Every node records what it was connected TO, so a test can assert ROUTING
   // ("the kick's oscillator feeds a drive shaper") rather than inferring it from
@@ -62,10 +90,13 @@ export const createFakeAudio = ({ suspended = false } = {}) => {
   };
   function FakeAudioContext() {
     return {
-      state: suspended ? 'suspended' : 'running',
-      resume: suspended
-        ? () => new Promise((r) => { resolveResume = r; })
-        : () => Promise.resolve(),
+      get state() { return audio.state; },
+      resume: () => {
+        audio.resumeCalls += 1;
+        if (audio.resumeRejection) return Promise.reject(audio.resumeRejection);
+        if (audio.state === 'running') return Promise.resolve();
+        return new Promise((r) => { resumeResolvers.push(r); });
+      },
       get currentTime() { return audio.now; },
       destination: { id: 'destination' },
       createOscillator() {

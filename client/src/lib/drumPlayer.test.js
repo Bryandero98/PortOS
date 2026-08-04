@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { parseDrumChart } from './drumNotation.js';
 import { createDrumPlayer } from './drumPlayback.js';
+import { parseScore } from './scoreNotation.js';
+import { createScorePlayer } from './scorePlayback.js';
+import { acquireAudioSession } from './audioContext.js';
 import { createFakeAudio } from '../test/fakeAudioContext.js';
 
 // The AUDIBLE half of drumPlayback.js — buildDrumSchedule's pure math is covered
@@ -400,5 +403,88 @@ describe('createDrumPlayer', () => {
     expect(audio.oscillators.length).toBeGreaterThan(0); // the count-in still sounds
     expect(ended).toHaveBeenCalledTimes(1);
     expect(player.isPlaying()).toBe(false);
+  });
+
+  // The two iOS Safari failures that made the whole play-along silent on an
+  // iPhone while the transport counted and the playhead scrolled.
+  describe('on iOS Safari', () => {
+    beforeEach(() => { vi.stubGlobal('navigator', { audioSession: { type: 'auto' } }); });
+
+    it("resumes an 'interrupted' context instead of playing against a dead clock", async () => {
+      // A call / Siri / the screen locking parks the context here. The old gate
+      // read `state === 'suspended'`, walked past this, and armed the scheduler
+      // against a clock that never advanced.
+      audio.state = 'interrupted';
+      const player = createDrumPlayer(CHART, {});
+      const playing = player.play(); // parks on ctx.resume()
+      expect(audio.resumeCalls).toBe(1);
+      audio.flushResume();
+      await playing;
+
+      expect(player.isPlaying()).toBe(true);
+      drive(1.5);
+      expect(audio.oscillators.length).toBeGreaterThan(0);
+      player.stop();
+    });
+
+    it('holds the playback audio session while sounding so the silent switch cannot mute it', async () => {
+      const player = createDrumPlayer(CHART, {});
+      await player.play();
+      expect(globalThis.navigator.audioSession.type).toBe('playback');
+      player.stop();
+    });
+
+    // The declaration is document-wide and marks the page output-only, so
+    // holding it past playback would follow the user (SPA — no reload) onto the
+    // Songs training views and kill their microphone.
+    it('hands the session back on stop', async () => {
+      const player = createDrumPlayer(CHART, {});
+      await player.play();
+      player.stop();
+      expect(globalThis.navigator.audioSession.type).toBe('auto');
+    });
+
+    // The VoiceWidget is mounted on every page (Layout.jsx), so push-to-talk can
+    // open the mic while a chart is playing. `playback` REFUSES capture, so the
+    // arbiter has to promote — otherwise the fix for this page's silence would
+    // have made the mic dead on it instead.
+    it('yields to a mic opened mid-playback, then takes playback back', async () => {
+      const player = createDrumPlayer(CHART, {});
+      await player.play();
+      const releaseMic = acquireAudioSession('play-and-record');
+      expect(globalThis.navigator.audioSession.type).toBe('play-and-record');
+      releaseMic();
+      expect(globalThis.navigator.audioSession.type).toBe('playback');
+      player.stop();
+      expect(globalThis.navigator.audioSession.type).toBe('auto');
+    });
+
+    it('hands the session back when the chart ends on its own', async () => {
+      const player = createDrumPlayer(CHART, {});
+      await player.play();
+      drive(3); // CHART is 2s — runs to its natural end
+      expect(player.isPlaying()).toBe(false);
+      expect(globalThis.navigator.audioSession.type).toBe('auto');
+    });
+  });
+});
+
+// Players hosted on pages that ALSO record must not declare an output-only
+// session — the mic would go dead. Only a player that opts in via the
+// transport's `audioSession` option touches it.
+describe('players that do not opt into an audio session', () => {
+  beforeEach(() => {
+    audio.reset();
+    vi.stubGlobal('AudioContext', FakeAudioContext);
+    vi.stubGlobal('navigator', { audioSession: { type: 'auto' } });
+    vi.useFakeTimers();
+  });
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+  it('leaves the document audio session alone', async () => {
+    const player = createScorePlayer(parseScore('tempo: 120\n| C4q D4q |'), { bpm: 120 });
+    await player.play();
+    expect(globalThis.navigator.audioSession.type).toBe('auto');
+    player.stop();
   });
 });
