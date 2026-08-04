@@ -255,7 +255,9 @@ export default function PipelineIssue() {
         ? `${PIPELINE_STAGE_LABELS[id]} stage is locked — unlock it to regenerate`
         : ambientLockHint;
       const trailing = tabLockHint
+        // biome-ignore lint/correctness/useJsxKeyInIterable: this callback returns an object, not JSX — `trailing` is passed as a prop, so it needs no key.
         ? <Lock size={11} className="text-port-warning" aria-label={tabLockHint} />
+        // biome-ignore lint/correctness/useJsxKeyInIterable: this callback returns an object, not JSX — `trailing` is passed as a prop, so it needs no key.
         : <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[status] || STATUS_DOT.empty}`} aria-hidden="true" />;
       return {
         id,

@@ -70,6 +70,7 @@ const loadSettings = () => {
   // Such installs keep their chosen fixed preset — Manual — rather than being
   // silently opted into adaptation. Presence of the key (even 'auto') is honored;
   // this is the "absent vs. present" distinction, so a stored 'auto' survives.
+  // biome-ignore lint/suspicious/noPrototypeBuiltins: `Object.prototype.hasOwnProperty.call(obj, k)` IS the safe form — Biome flags it anyway, unlike ESLint's no-prototype-builtins.
   if (!Object.prototype.hasOwnProperty.call(parsed, 'qualityMode')) {
     merged.qualityMode = 'manual';
   }

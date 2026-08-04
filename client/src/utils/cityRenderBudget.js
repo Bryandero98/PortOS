@@ -155,7 +155,7 @@ function classifyWindow(state, { p75, fps, sampleCount, now, windowStart }, conf
 
 // Reset the whole machine to a fresh start at `startTier` (e.g. Manual→Auto switch, or
 // the Auto starting tier changing). Keeps the module pure — caller passes `now`.
-export function resetRenderBudget(state, startTier, now) {
+export function resetRenderBudget(_state, startTier, now) {
   return createRenderBudget(startTier, now);
 }
 

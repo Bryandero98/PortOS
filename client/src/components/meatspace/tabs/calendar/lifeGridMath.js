@@ -55,7 +55,7 @@ export const EVENT_TYPE_STYLES = {
  * Uses server-provided events plus birthdays.
  * Returns a Map<string, { type, name }> where key is "age-week".
  */
-export function computeEventWeeks(birthDate, grid, stats, lifeEvents) {
+export function computeEventWeeks(birthDate, grid, _stats, lifeEvents) {
   const events = new Map();
   if (!birthDate) return events;
 

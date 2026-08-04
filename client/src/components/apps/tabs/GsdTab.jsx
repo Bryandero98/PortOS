@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useSearchParams, useNavigate } from 'react-router';
-import { RefreshCw, Compass, CheckCircle, ArrowRight, FolderSearch, FileText, Map, Play, Terminal } from 'lucide-react';
+import { RefreshCw, Compass, CheckCircle, ArrowRight, FolderSearch, FileText, Map as MapIcon, Play, Terminal } from 'lucide-react';
 import toast from '../../ui/Toast';
 import BrailleSpinner from '../../BrailleSpinner';
 import GsdProjectHeader from '../../gsd/GsdProjectHeader';
@@ -43,7 +43,7 @@ function GsdSetupGuide({ gsd, appId, repoPath, onRefresh }) {
       command: '/gsd:plan-phase',
       description: 'Create a roadmap with phase breakdown and execution plans',
       done: gsd.hasRoadmap,
-      icon: Map,
+      icon: MapIcon,
     },
   ];
 
