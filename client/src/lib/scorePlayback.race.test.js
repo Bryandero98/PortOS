@@ -79,6 +79,18 @@ describe('audio session across the resume window', () => {
     expect(globalThis.navigator.audioSession.type).toBe('auto');
   });
 
+  it('releases when the resume itself rejects', async () => {
+    // Autoplay policy (or a session iOS won't hand back) rejects the resume, and
+    // that exits play() before any teardown — so without an explicit release the
+    // failed play leaves the document pinned output-only for good. The rejection
+    // must still reach the caller, which resets its Play button on it.
+    audio.resumeRejection = new Error('not allowed');
+    const t = transport();
+    await expect(t.play()).rejects.toThrow('not allowed');
+    expect(t.isPlaying()).toBe(false);
+    expect(globalThis.navigator.audioSession.type).toBe('auto');
+  });
+
   it('does not release out from under a newer play that took over mid-await', async () => {
     // The superseded play() must bail WITHOUT releasing: the newer one already
     // re-declared the session and is about to sound against it.

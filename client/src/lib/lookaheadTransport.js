@@ -148,8 +148,15 @@ export const createLookaheadTransport = ({
     // and re-declared every play because another view on this document may have
     // released it since (see the audio-session note in audioContext.js).
     if (audioSession) declareAudioSession(audioSession);
-    // Covers iOS Safari's `'interrupted'` state, not just `'suspended'`.
-    await resumeAudioContext(c);
+    // Covers iOS Safari's `'interrupted'` state, not just `'suspended'`. A
+    // rejection here (autoplay policy, or a session iOS won't hand back) leaves
+    // play() before any teardown can run, so the session goes back on the way
+    // out — unless a newer play() already took it over. The rejection still
+    // propagates: the caller resets its Play button on it.
+    await resumeAudioContext(c).catch((err) => {
+      if (audioSession && token === playToken) releaseAudioSession();
+      throw err;
+    });
     // Bail WITHOUT releasing the session: whatever bumped the token (stop, pause,
     // or a newer play) owns it now. A stop/pause has already handed it back, and
     // a newer play has re-declared it — releasing here would silence that one.

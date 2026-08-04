@@ -31,6 +31,12 @@ export const createFakeAudio = ({ state: initialState = 'running' } = {}) => {
     // so a test can assert the transport actually brought the clock up.
     state: initialState,
     resumeCalls: 0,
+    // Set to an Error to make resume() reject instead of parking — the autoplay
+    // policy refusing a gesture, or iOS declining to hand the session back. Set
+    // on the shared `audio` (not via a re-stubbed constructor) because
+    // lib/audioContext.js memoizes the context on first use, so a later stub
+    // never reaches the instance the code under test is already holding.
+    resumeRejection: null,
     oscillators: [],
     gains: [],
     // Bandpassed noise voices (createBufferSource + createBiquadFilter) — the
@@ -46,6 +52,7 @@ export const createFakeAudio = ({ state: initialState = 'running' } = {}) => {
       this.now = 0;
       this.state = initialState;
       this.resumeCalls = 0;
+      this.resumeRejection = null;
       this.oscillators.length = 0;
       this.gains.length = 0;
       this.filters.length = 0;
@@ -86,6 +93,7 @@ export const createFakeAudio = ({ state: initialState = 'running' } = {}) => {
       get state() { return audio.state; },
       resume: () => {
         audio.resumeCalls += 1;
+        if (audio.resumeRejection) return Promise.reject(audio.resumeRejection);
         if (audio.state === 'running') return Promise.resolve();
         return new Promise((r) => { resumeResolvers.push(r); });
       },
