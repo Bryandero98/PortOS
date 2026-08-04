@@ -19,6 +19,7 @@ import { resumeAudioContext, acquireAudioSession } from '../lib/audioContext.js'
 // playing stays audible. See the audio-session note in lib/audioContext.js.
 let releaseCaptureSession = null;
 let releaseContinuousSession = null;
+let releaseWebSpeechSession = null;
 
 let stream = null;
 let recorder = null;
@@ -986,13 +987,24 @@ export const startContinuous = async (callbacks = {}) => {
   });
   detectAudioRoute(continuousStream).catch(() => {});
 
+  // Everything from here on can reject — a refused resume, a worklet module that
+  // fails to compile — and `continuousCtx` is already assigned by then, so an
+  // unwound setup would leave the mic open, the claim held, AND every later
+  // Start returning at the `if (continuousCtx) return` guard with no way back
+  // short of a reload. Tear the whole partial setup down before rethrowing.
+  const unwindSetup = async (err) => {
+    await stopContinuous();
+    throw err;
+  };
+
   const Ctor = window.AudioContext || window.webkitAudioContext;
   continuousCtx = new Ctor();
-  await resumeAudioContext(continuousCtx);
+  await resumeAudioContext(continuousCtx).catch(unwindSetup);
 
   // Inline worklet module so we don't need a separate file in the build
   const blobUrl = URL.createObjectURL(new Blob([WORKLET_SOURCE], { type: 'application/javascript' }));
-  await continuousCtx.audioWorklet.addModule(blobUrl);
+  await continuousCtx.audioWorklet.addModule(blobUrl)
+    .catch(async (err) => { URL.revokeObjectURL(blobUrl); await unwindSetup(err); });
   URL.revokeObjectURL(blobUrl);
 
   continuousSource = continuousCtx.createMediaStreamSource(continuousStream);
@@ -1173,6 +1185,13 @@ export const startWebSpeechCapture = ({ language, ...callbacks } = {}) => {
   webSpeechRecognition = recognition;
   webSpeechShouldListen = true;
   webSpeechRestartFailures = 0;
+  // The recognizer opens the mic itself — no getUserMedia here to hang a claim
+  // off — so it needs the same record-capable session the other two capture
+  // paths take, or an output-only session held by a play-along gets its request
+  // refused. Held for the whole recognition lifetime, including the auto-restart
+  // cycles, since those re-open the mic too.
+  releaseWebSpeechSession?.();
+  releaseWebSpeechSession = acquireAudioSession('play-and-record');
   recognition.start();
 };
 
@@ -1185,6 +1204,8 @@ export const stopWebSpeechCapture = () => {
     webSpeechRecognition.stop();
     webSpeechRecognition = null;
   }
+  releaseWebSpeechSession?.();
+  releaseWebSpeechSession = null;
 };
 
 export const isWebSpeechCapturing = () => webSpeechShouldListen;
