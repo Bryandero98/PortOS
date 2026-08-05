@@ -25,7 +25,8 @@ const vec3Schema = z.tuple([finite, finite, finite]);
 // modeling choice, and a plain `finite` triple accepts either. This spec has no
 // reflection concept — the prompt never asks for one, an LLM-authored negative
 // component is an authoring slip, and the exported factory is consumed by tools
-// that do not all compensate for a mirrored node — so both are rejected here.
+// that do not all compensate for a mirrored node — so the authoring contract
+// rejects both. `storedThreejsSculptSpecSchema` keeps accepting them on read.
 const MIN_PART_SCALE = 1e-4;
 const scaleComponent = positive.min(MIN_PART_SCALE);
 const scale3Schema = z.tuple([scaleComponent, scaleComponent, scaleComponent]);
@@ -279,19 +280,25 @@ export const threejsMaterialSchema = z.object({
   anisotropy: z.number().finite().min(0).max(1).default(0),
 });
 
-let partSchema;
-partSchema = z.lazy(() => z.object({
-  id: idSchema,
-  name: z.string().trim().min(1).max(120),
-  geometry: threejsGeometrySchema.optional(),
-  material: idSchema.optional(),
-  position: vec3Schema.default([0, 0, 0]),
-  rotationDegrees: vec3Schema.default([0, 0, 0]),
-  scale: scale3Schema.default([1, 1, 1]),
-  castShadow: z.boolean().default(true),
-  receiveShadow: z.boolean().default(true),
-  children: z.array(partSchema).max(40).default([]),
-}));
+// The scale bound is the ONE thing that differs between what a provider may
+// author and what an install may already have stored, so the part hierarchy is
+// built from it rather than written twice.
+const makePartSchema = (scaleSchema) => {
+  let partSchema;
+  partSchema = z.lazy(() => z.object({
+    id: idSchema,
+    name: z.string().trim().min(1).max(120),
+    geometry: threejsGeometrySchema.optional(),
+    material: idSchema.optional(),
+    position: vec3Schema.default([0, 0, 0]),
+    rotationDegrees: vec3Schema.default([0, 0, 0]),
+    scale: scaleSchema.default([1, 1, 1]),
+    castShadow: z.boolean().default(true),
+    receiveShadow: z.boolean().default(true),
+    children: z.array(partSchema).max(40).default([]),
+  }));
+  return partSchema;
+};
 
 const lightSchema = z.object({
   type: z.enum(['ambient', 'hemisphere', 'directional', 'point', 'spot']),
@@ -317,7 +324,7 @@ const detailSchema = z.object({
   priority: z.enum(['identity', 'major', 'minor']).default('major'),
 });
 
-export const threejsSculptSpecSchema = z.object({
+const makeSpecSchema = (partSchema) => z.object({
   schemaVersion: z.literal(1),
   name: z.string().trim().min(1).max(120),
   summary: z.string().trim().min(1).max(1_000),
@@ -385,6 +392,28 @@ export const threejsSculptSpecSchema = z.object({
   }
 });
 
+/**
+ * The AUTHORING contract: what a provider is allowed to hand back. Part scale is
+ * floored here, so a spec that would render a part reflected or collapsed is
+ * rejected at the one moment the model can still be asked for another pass.
+ */
+export const threejsSculptSpecSchema = makeSpecSchema(makePartSchema(scale3Schema));
+
+/**
+ * The READ contract for a spec an install has already stored. Identical except
+ * that part scale keeps the original unbounded `finite` triple.
+ *
+ * Tightening an authoring bound must not retroactively invalidate data that was
+ * accepted under the old one. A stored spec is rendered from the record verbatim
+ * (the preview never re-validates), so rejecting it on the way OUT would take
+ * Copy/Download away from a `ready` model whose only remedy is a paid
+ * regeneration — and machine-repairing it instead would silently un-mirror an
+ * asymmetric part or resize a collapsed one back into view. Neither is a repair
+ * this schema is entitled to make, so an existing record exports exactly as it
+ * renders, while the bound above keeps any NEW spec from acquiring the problem.
+ */
+export const storedThreejsSculptSpecSchema = makeSpecSchema(makePartSchema(vec3Schema));
+
 const toIdentifier = (name) => {
   const words = String(name || 'Procedural').replace(/[^A-Za-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean);
   const joined = words.map((word) => word[0].toUpperCase() + word.slice(1)).join('') || 'Procedural';
@@ -396,12 +425,12 @@ const toIdentifier = (name) => {
  * Group factory. No model-authored JavaScript is executed by PortOS.
  */
 export function buildThreejsFactorySource(input) {
-  // A spec is stored verbatim and re-validated only here, so this is where a
-  // record an older install generated under a looser bound surfaces. A raw
-  // ZodError normalizes to an opaque 500, which says nothing a user can act on;
-  // `failValidation` names the offending path (`parts.0.scale.1`) in a 400, so
-  // "the download fails" points at the one part to fix or regenerate.
-  const parsed = threejsSculptSpecSchema.safeParse(input);
+  // Exporting reads a STORED spec, so it validates against the read contract —
+  // an install's existing model stays downloadable even if it predates a bound.
+  // The parse still has to happen (the emitted source must be well-formed), and
+  // a raw ZodError would normalize to an opaque 500 saying nothing a user can act
+  // on, so `failValidation` names the offending path in a 400 instead.
+  const parsed = storedThreejsSculptSpecSchema.safeParse(input);
   if (!parsed.success) failValidation(parsed);
   const spec = parsed.data;
   const factoryName = `create${toIdentifier(spec.name)}Model`;

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildThreejsFactorySource, threejsGeometrySchema, threejsSculptSpecSchema } from './threejsModel.js';
+import {
+  buildThreejsFactorySource,
+  storedThreejsSculptSpecSchema,
+  threejsGeometrySchema,
+  threejsSculptSpecSchema,
+} from './threejsModel.js';
 
 const squareOutline = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
 const validExtrude = () => ({
@@ -134,6 +139,15 @@ describe('threejsSculptSpecSchema', () => {
       const nested = validSpec();
       nested.parts[0].children[0].scale = bad;
       expect(threejsSculptSpecSchema.safeParse(nested).success).toBe(false);
+    }
+  });
+
+  it('keeps accepting a legacy stored scale that the authoring contract now rejects', () => {
+    for (const legacy of [[1, -1, 1], [1, 0, 1], [1, 5e-5, 1]]) {
+      const spec = validSpec();
+      spec.parts[0].children[0].scale = legacy;
+      expect(threejsSculptSpecSchema.safeParse(spec).success).toBe(false);
+      expect(storedThreejsSculptSpecSchema.parse(spec).parts[0].children[0].scale).toEqual(legacy);
     }
   });
 
@@ -317,19 +331,29 @@ describe('buildThreejsFactorySource', () => {
     }
   });
 
-  // Specs are stored verbatim and re-validated only here, so a record generated
-  // by an older install under the looser `finite` scale bound reaches this parse
-  // unrepaired. It must name the part rather than normalizing to an opaque 500.
-  it('rejects a legacy spec with a non-positive scale as a 400 naming the part path', () => {
+  // A spec an older install stored under the looser bound must stay exportable —
+  // tightening what a provider may author cannot retroactively take Copy/Download
+  // away from a `ready` model — and it exports verbatim, since neither dropping
+  // the sign nor flooring the zero is a repair this module is entitled to make.
+  it('still exports a stored spec whose part scale predates the authoring bound', () => {
     const legacy = validSpec();
-    legacy.parts[0].children[0].scale = [1, -1, 1];
+    legacy.parts[0].children[0].scale = [1, -1, 0];
+    expect(threejsSculptSpecSchema.safeParse(legacy).success).toBe(false);
+
+    const source = buildThreejsFactorySource(legacy);
+    expect(source.replace(/\s+/g, '')).toContain('"scale":[1,-1,0]');
+  });
+
+  it('reports a malformed stored spec as a 400 naming the offending path', () => {
+    const broken = validSpec();
+    broken.parts[0].material = 'missing';
     let thrown = null;
     try {
-      buildThreejsFactorySource(legacy);
+      buildThreejsFactorySource(broken);
     } catch (error) {
       thrown = error;
     }
-    expect(thrown?.message).toMatch(/parts\.0\.children\.0\.scale\.1/);
+    expect(thrown?.message).toMatch(/parts\.0\.material: unknown material: missing/);
     expect(thrown?.status).toBe(400);
     expect(thrown?.code).toBe('VALIDATION_ERROR');
   });
