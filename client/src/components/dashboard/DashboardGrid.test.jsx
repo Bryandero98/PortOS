@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 
 // Stub @dnd-kit/core's DndContext so drag-end can be fired imperatively. The
@@ -57,9 +57,23 @@ class FakeResizeObserver {
   disconnect() {}
 }
 
+// jsdom does no layout, so every element reports offsetHeight 0 — and the grid
+// now believes that ("renders nothing, so occupy nothing"). Give cells a
+// height so the packing assertions below exercise the measured path instead of
+// a collapsed one.
+const MEASURED_PX = 100;
+
 beforeEach(() => {
   vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+  Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+    configurable: true,
+    get() { return MEASURED_PX; },
+  });
   dndState.onDragEnd = null;
+});
+
+afterEach(() => {
+  delete HTMLElement.prototype.offsetHeight;
 });
 
 const THREE = [
@@ -139,8 +153,14 @@ describe('itemHeightPx', () => {
 
   it('falls back to the declared rows until a measurement lands', () => {
     expect(itemHeightPx(item, {})).toBe(rowsToPx(4));
-    // A zero measurement means "not painted yet", not "zero tall".
-    expect(itemHeightPx(item, { a: 0 })).toBe(rowsToPx(4));
+  });
+
+  // Several widgets render nothing on empty data. Treating that 0 as "not
+  // measured yet" would hand the widget back its whole declared slot — the
+  // dead band this grid exists to reclaim, in the case where the reclaim is
+  // total. So the sentinel is presence, not truthiness.
+  it('honors a measured zero instead of reading it as "not measured yet"', () => {
+    expect(itemHeightPx(item, { a: 0 })).toBe(0);
   });
 
   it('ignores the measurement for a cell whose height the user pinned', () => {
@@ -173,6 +193,25 @@ describe('packVertically', () => {
     // push the whole right-hand stack down.
     expect(rects.get('right').top).toBe(0);
     expect(rects.get('under').top).toBe(116);
+  });
+
+  it('lets a widget that renders nothing occupy nothing, and closes over it', () => {
+    const rects = packVertically([
+      { id: 'empty', x: 0, y: 0, w: 12, h: 5 },
+      { id: 'below', x: 0, y: 5, w: 12, h: 2 },
+    ], { empty: 0, below: 100 });
+    expect(rects.get('empty').height).toBe(0);
+    expect(rects.get('below').top).toBe(16);
+  });
+
+  it('floors cells to a grabbable height when edit mode asks for one', () => {
+    const rects = packVertically(
+      [{ id: 'empty', x: 0, y: 0, w: 12, h: 5 }, { id: 'below', x: 0, y: 5, w: 12, h: 2 }],
+      { empty: 0, below: 100 },
+      48
+    );
+    expect(rects.get('empty').height).toBe(48);
+    expect(rects.get('below').top).toBe(64);
   });
 
   it('clears every cell it overlaps, not just the last one placed', () => {
@@ -274,11 +313,13 @@ describe('DashboardGrid cell sizing', () => {
   // Every cell is laid out at exactly the height the pack assigned it — an
   // auto cell that sized itself would overlap its neighbours for every frame
   // its content was taller than the last measurement.
-  it('lays every cell out at its packed height, and stacks from the pack', () => {
+  it('lays every cell out at its MEASURED height, not its declared rows', () => {
+    // All three declare h:2 (176px) but measure 100px.
     renderGrid();
-    expect(cellFor('a').style.height).toBe(`${rowsToPx(2)}px`);
+    expect(cellFor('a').style.height).toBe(`${MEASURED_PX}px`);
     expect(cellFor('a').style.top).toBe('0px');
-    expect(cellFor('b').style.top).toBe(`${rowsToPx(2) + 16}px`);
+    expect(cellFor('b').style.top).toBe(`${MEASURED_PX + 16}px`);
+    expect(cellFor('c').style.top).toBe(`${(MEASURED_PX + 16) * 2}px`);
   });
 
   it('measures the widget free of the cell height, and stretches it when pinned', () => {

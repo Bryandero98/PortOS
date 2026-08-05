@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo, useCallback, memo } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback, memo } from 'react';
 import { GripVertical, MoveDiagonal2, GripHorizontal, ChevronsDownUp } from 'lucide-react';
 import {
   DndContext,
@@ -44,10 +44,12 @@ import { dndTransformToCss } from '../../lib/dndTransform';
 // result always matches the order the user arranged.
 //
 // In edit mode each item exposes a top-right move handle and a bottom-right
-// resize handle. Pointer events power both so the same handlers work for
-// mouse and touch. Pointer capture isn't used because the drag math reads
-// window-level coordinates regardless of which element the pointer crosses
-// — the listener lives on `window` for the duration of the gesture.
+// resize handle — plus, on a cell that's already pinned, a bottom-left
+// auto-fit handle that hands the height back to the content. Pointer events
+// power the two drags so the same handlers work for mouse and touch. Pointer
+// capture isn't used because the drag math reads window-level coordinates
+// regardless of which element the pointer crosses — the listener lives on
+// `window` for the duration of the gesture.
 //
 // Below MOBILE_BREAKPOINT_PX the grid collapses to a single column, so x/w
 // have nowhere to go — but ORDER still does. There, edit mode swaps the two
@@ -59,16 +61,25 @@ import { dndTransformToCss } from '../../lib/dndTransform';
 // but the 1-D case is exactly dnd-kit's job, and going through it is what
 // buys touch, keyboard, multi-pointer and edge auto-scroll for free.
 //
-// Collision policy after drag/resize: pin the moved item at its dropped
-// position, then slot every other item into the smallest y that doesn't
-// collide with anything already placed (top-left items processed first).
-// Tetris-style compaction — same feel as react-grid-layout / gridstack.
+// Collision policy after drag/resize (`placeAndCompact`): pin the moved item
+// at its dropped position, then slot every other item into the smallest y that
+// doesn't collide with anything already placed (top-left items processed
+// first). Tetris-style compaction — same feel as react-grid-layout /
+// gridstack. This runs in GRID UNITS and settles what gets persisted; the
+// pixel pack above is what actually gets drawn. The two agree because a
+// commit first re-expresses the layout in pack space (`toPackSpace`), so the
+// y/h it compacts are the ones the pack produced.
 
 const ROW_HEIGHT_PX = 80;
 const GAP_PX = 16;
 const ROW_STEP_PX = ROW_HEIGHT_PX + GAP_PX;
 const MIN_W = 2;
 const MIN_H = 2;
+// Floor applied to every cell in edit mode only. A widget that renders nothing
+// collapses to zero out of view — which is the point — but a zero-height cell
+// has nowhere to put the move/resize handles, so Arrange gives it enough room
+// to grab.
+const EDIT_MIN_HEIGHT_PX = 48;
 // Mobile breakpoint: below this width the grid collapses to a single column
 // stacked vertically. Free-form move/resize is off there — a phone has no
 // room for positional editing — but drag-to-reorder is on (see above).
@@ -103,16 +114,22 @@ export function pxToRows(px) {
 // tall as they measured; `fixedH` cells keep the height the user dragged onto
 // them. `h` is the fallback until the first measurement lands — which is also
 // why every commit refreshes it (see `toPackSpace`).
+//
+// Keyed on PRESENCE, not truthiness: a widget that renders nothing (several
+// self-hide on empty data) measures a legitimate 0, and collapsing that into
+// "not measured yet" would hand it back the whole declared slot — the exact
+// dead band this grid exists to reclaim, in the one case where the reclaim is
+// total.
 export function itemHeightPx(item, heights = {}) {
-  if (!item.fixedH) {
-    const measured = heights[item.id];
-    if (measured > 0) return measured;
-  }
+  if (!item.fixedH && item.id in heights) return heights[item.id];
   return rowsToPx(item.h);
 }
 
 function shareColumns(a, b) {
   return !(a.x + a.w <= b.x || b.x + b.w <= a.x);
+}
+function shareRows(a, b) {
+  return !(a.y + a.h <= b.y || b.y + b.h <= a.y);
 }
 
 // Masonry float. Walk cells in reading order and drop each one as high as it
@@ -124,11 +141,13 @@ function shareColumns(a, b) {
 // through the gap instead of leaving a band of dead space across the row.
 // Reading order (not grid-array order) is what keeps the result stable — the
 // caller must pass items already sorted by `byReadingOrder`.
-export function packVertically(ordered, heights = {}) {
+// `minHeight` floors every cell — passed in edit mode so a widget that
+// currently renders nothing still has something to grab the handles on.
+export function packVertically(ordered, heights = {}, minHeight = 0) {
   const placed = [];
   const rects = new Map();
   for (const item of ordered) {
-    const height = itemHeightPx(item, heights);
+    const height = Math.max(minHeight, itemHeightPx(item, heights));
     let top = 0;
     for (const p of placed) {
       if (!shareColumns(item, p)) continue;
@@ -165,7 +184,7 @@ function toPackSpace(items, rects) {
 }
 
 function overlaps(a, b) {
-  return !(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y);
+  return shareColumns(a, b) && shareRows(a, b);
 }
 
 function sameRect(a, b) {
@@ -325,34 +344,55 @@ const GridCell = memo(function GridCell({
     disabled: !sortable,
   });
   const measureRef = useRef(null);
-  const pinned = Boolean(item.fixedH);
 
-  // Report the widget's natural height so the parent can pack around it. The
-  // measured node is INSIDE the clipping wrapper, so a pinned cell still
-  // reports the size its content wants — it just gets clipped to `height`.
-  // Off on mobile: the single-column stack measures at a totally different
-  // width, and those numbers would be wrong for the desktop pack.
+  // Report the widget's natural height so the parent can pack around it.
+  // Skipped when:
+  //  - mobile, where the single-column stack measures at a totally different
+  //    width and those numbers would be wrong for the desktop pack;
+  //  - pinned, where the measured node is stretched to the declared height, so
+  //    all it could publish is that height back — and the pack would then spend
+  //    the frame after an unpin laying the cell out at its clipped size.
+  //    Skipping leaves the last natural height in place, which is a far better
+  //    starting guess.
+  // Post-commit measurement, pre-paint. This is the AUTHORITATIVE one: it
+  // catches whatever React just put in the cell — a lazy chunk resolving out
+  // of Suspense, a list arriving — without depending on the observer having
+  // noticed. Relying on the observer alone made this racy: a widget whose
+  // content landed without a delivered resize notification kept whatever it
+  // measured while it was still a skeleton, so it packed (and clipped) at the
+  // wrong height. No dep array — every render of this cell re-measures, and
+  // `onMeasure` bails on an unchanged value, so a settled cell costs one read
+  // and one comparison.
+  useLayoutEffect(() => {
+    const node = measureRef.current;
+    if (node && !isMobile && !item.fixedH) onMeasure(item.id, node.offsetHeight);
+  });
+
+  // The observer covers what the commit pass can't see: growth with no render
+  // of this cell at all — images and fonts loading, a widget's own async DOM
+  // work, or a state change inside the memoized widget subtree.
+  //
+  // Published straight from the callback, same as `useContainerWidth`. There
+  // is no feedback loop to defer around: the measured node's height comes from
+  // its content, never from the cell height this publish goes on to set. An
+  // rAF here is not just unnecessary, it's harmful — a frame in which the
+  // pack is still using the old height is a frame in which this cell is drawn
+  // shorter than its content and the one below it sits on top.
   useEffect(() => {
     const node = measureRef.current;
-    if (!node || isMobile) return undefined;
-    let raf = 0;
-    const ro = new ResizeObserver((entries) => {
-      if (!Number.isFinite(entries[0]?.contentRect?.height)) return;
-      // Defer out of the observer callback: publishing a height re-packs every
-      // cell below this one, and mutating layout synchronously from inside the
-      // callback is what trips the "ResizeObserver loop" warning.
-      if (raf) return;
-      raf = requestAnimationFrame(() => {
-        raf = 0;
-        onMeasure(item.id, Math.ceil(node.offsetHeight));
-      });
-    });
+    if (!node || isMobile || item.fixedH) return undefined;
+    // 0 is published like any other height — a widget that renders nothing
+    // should occupy nothing. `itemHeightPx` keys on presence, so this is what
+    // tells it apart from "not measured yet".
+    const ro = new ResizeObserver(() => onMeasure(item.id, node.offsetHeight));
     ro.observe(node);
-    return () => {
-      ro.disconnect();
-      if (raf) cancelAnimationFrame(raf);
-    };
-  }, [isMobile, item.id, onMeasure]);
+    return () => ro.disconnect();
+  }, [isMobile, item.fixedH, item.id, onMeasure]);
+
+  // Memoized so a cell that merely MOVED doesn't re-render its widget: every
+  // measurement anywhere in the grid repacks, and without this each repack
+  // would re-render the whole subtree of every cell it shifted.
+  const content = useMemo(() => renderItem(item), [renderItem, item]);
 
   // The cell is ALWAYS laid out at exactly the height the pack gave it, even
   // when that height is auto-derived. Letting an auto cell size itself would
@@ -379,13 +419,13 @@ const GridCell = memo(function GridCell({
             one case where the declared height is the answer. `flow-root` keeps
             a widget root's margin from collapsing out of the measurement. */}
         <div ref={measureRef} className={autoHeight ? 'flow-root' : 'h-full flow-root'}>
-          {renderItem(item)}
+          {content}
         </div>
         {editable && !isMobile && (
           <>
             <DragHandle kind="move" item={item} onPointerDown={(e) => onStartGridDrag(e, item, 'move')} />
             <DragHandle kind="resize" item={item} onPointerDown={(e) => onStartGridDrag(e, item, 'resize')} />
-            {pinned && (
+            {item.fixedH && (
               <DragHandle kind="auto-height" item={item} onClick={() => onClearFixedHeight(item)} />
             )}
           </>
@@ -402,14 +442,16 @@ export default function DashboardGrid({ items, editable, onChange, onLayoutModeC
   const [containerRef, containerWidth] = useContainerWidth();
   // Drag state lives outside React when active to avoid a setState on every
   // pointermove (would spam re-renders of every widget). React only learns
-  // about the new ghost when we call setDragGhost, throttled by RAF.
+  // about the new ghost when we call setDrag, throttled by RAF.
+  //
+  // `drag` is `{ kind, baseline, ghost }`. `baseline` is the layout as it
+  // stood when the gesture started, in pack space (see `toPackSpace`):
+  // everything the drag reasons about — the ghost, the live preview, the
+  // committed grid — is relative to it, not to the stored coordinates, which
+  // no longer describe where anything is drawn. `ghost` stays a plain grid
+  // item so the commit can spread it straight onto one.
   const dragRef = useRef(null);
-  const [dragGhost, setDragGhost] = useState(null);
-  // The layout as it stood when the gesture started, in pack space (see
-  // `toPackSpace`). Everything the drag reasons about — the ghost, the live
-  // preview, the committed grid — is relative to this, not to the stored
-  // coordinates, which no longer describe where anything is drawn.
-  const [dragBaseline, setDragBaseline] = useState(null);
+  const [drag, setDrag] = useState(null);
   // Measured natural heights, px, keyed by widget id.
   const [heights, setHeights] = useState({});
 
@@ -437,17 +479,17 @@ export default function DashboardGrid({ items, editable, onChange, onLayoutModeC
   // as a pinned cell — the drag is defining a height, so the preview must
   // show that height and not the content's.
   const previewItems = useMemo(() => {
-    if (!dragGhost || !dragBaseline) return ordered;
-    return dragBaseline
-      .map((it) => (it.id === dragGhost.id
-        ? { ...it, ...dragGhost, ...(dragGhost.kind === 'resize' ? { fixedH: true } : {}) }
+    if (!drag) return ordered;
+    return drag.baseline
+      .map((it) => (it.id === drag.ghost.id
+        ? { ...it, ...drag.ghost, ...(drag.kind === 'resize' ? { fixedH: true } : {}) }
         : it))
       .sort(byReadingOrder);
-  }, [ordered, dragBaseline, dragGhost]);
+  }, [ordered, drag]);
 
   const rects = useMemo(
-    () => (isMobile ? new Map() : packVertically(previewItems, heights)),
-    [isMobile, previewItems, heights]
+    () => (isMobile ? new Map() : packVertically(previewItems, heights, editable ? EDIT_MIN_HEIGHT_PX : 0)),
+    [isMobile, previewItems, heights, editable]
   );
   // Read by the drag handlers, which must not re-bind every time a widget
   // re-measures (that would churn every memoized cell mid-gesture).
@@ -465,7 +507,9 @@ export default function DashboardGrid({ items, editable, onChange, onLayoutModeC
   // load open with a 150ms shuffle. Cells snap into place instead, and the
   // transition switches on for genuine edits afterwards.
   const settled = useMemo(
-    () => ordered.every((it) => it.fixedH || heights[it.id] > 0),
+    // Presence again, not truthiness — a legitimately 0-tall widget has
+    // reported, and gating on `> 0` would latch the transition off forever.
+    () => ordered.every((it) => it.fixedH || it.id in heights),
     [ordered, heights]
   );
 
@@ -480,73 +524,80 @@ export default function DashboardGrid({ items, editable, onChange, onLayoutModeC
     // drawn — grabbing the resize handle on an auto-height cell would
     // otherwise snap it to a stale row count before the pointer has moved.
     const baseline = toPackSpace(items, rectsRef.current);
-    const startItem = { ...(baseline.find((it) => it.id === item.id) ?? item), kind };
+    const found = baseline.find((it) => it.id === item.id) ?? item;
+    // A resize gesture's floor applies to where the drag STARTS too. Without
+    // it, a cell measuring under MIN_H rows (a widget rendering little or
+    // nothing) has its height "changed" by the clamp alone — so a purely
+    // horizontal drag would silently pin it.
+    const startItem = kind === 'resize' ? { ...found, h: Math.max(MIN_H, found.h) } : found;
     dragRef.current = {
       id: item.id,
       kind,
       startPointer: { x: e.clientX, y: e.clientY },
       startItem,
       ghost: { ...startItem },
-      baseline,
     };
-    setDragBaseline(baseline);
-    setDragGhost({ ...startItem });
+    setDrag({ kind, baseline, ghost: { ...startItem } });
   }, [editable, isMobile, items]);
 
   useEffect(() => {
-    if (!dragGhost) return undefined;
+    if (!drag) return undefined;
     const colWidth = getColWidth(containerWidth);
+    // Both are fixed for the life of the gesture, and this effect re-installs
+    // exactly when one starts — so capturing them here can't go stale, and the
+    // per-snap `setDrag` doesn't have to re-bind the window listeners.
+    const { kind, baseline } = drag;
     let raf = 0;
 
     const onPointerMove = (e) => {
-      const drag = dragRef.current;
-      if (!drag) return;
-      const dx = e.clientX - drag.startPointer.x;
-      const dy = e.clientY - drag.startPointer.y;
+      const gesture = dragRef.current;
+      if (!gesture) return;
+      const dx = e.clientX - gesture.startPointer.x;
+      const dy = e.clientY - gesture.startPointer.y;
       const colStep = colWidth + GAP_PX;
-      const rowStep = ROW_HEIGHT_PX + GAP_PX;
+      const start = gesture.startItem;
 
       let next;
-      if (drag.kind === 'move') {
-        const newX = Math.max(0, Math.min(GRID_COLS - drag.startItem.w, Math.round(drag.startItem.x + dx / colStep)));
-        const newY = Math.max(0, Math.round(drag.startItem.y + dy / rowStep));
-        next = { ...drag.startItem, x: newX, y: newY };
+      if (kind === 'move') {
+        const newX = Math.max(0, Math.min(GRID_COLS - start.w, Math.round(start.x + dx / colStep)));
+        const newY = Math.max(0, Math.round(start.y + dy / ROW_STEP_PX));
+        next = { ...start, x: newX, y: newY };
       } else {
-        const newW = Math.max(MIN_W, Math.min(GRID_COLS - drag.startItem.x, Math.round(drag.startItem.w + dx / colStep)));
-        const newH = Math.max(MIN_H, Math.round(drag.startItem.h + dy / rowStep));
-        next = { ...drag.startItem, w: newW, h: newH };
+        const newW = Math.max(MIN_W, Math.min(GRID_COLS - start.x, Math.round(start.w + dx / colStep)));
+        const newH = Math.max(MIN_H, Math.round(start.h + dy / ROW_STEP_PX));
+        next = { ...start, w: newW, h: newH };
       }
       // Snap dedup: pointermove fires at 200+ Hz, but `next` only changes
       // when the cursor crosses a snap boundary. Skip the React update
       // when we're still inside the same snap cell — saves ~60 widget
       // re-renders per drag and keeps the rAF callback a no-op.
-      if (sameRect(drag.ghost, next)) return;
-      drag.ghost = next;
+      if (sameRect(gesture.ghost, next)) return;
+      gesture.ghost = next;
       if (!raf) {
         raf = requestAnimationFrame(() => {
           raf = 0;
-          if (dragRef.current) setDragGhost({ ...dragRef.current.ghost });
+          const ghost = dragRef.current?.ghost;
+          if (ghost) setDrag((prev) => (prev ? { ...prev, ghost: { ...ghost } } : prev));
         });
       }
     };
 
     const finish = (commit) => {
       if (raf) { cancelAnimationFrame(raf); raf = 0; }
-      const drag = dragRef.current;
+      const gesture = dragRef.current;
       dragRef.current = null;
-      setDragGhost(null);
-      setDragBaseline(null);
-      if (!drag || !commit) return;
+      setDrag(null);
+      if (!gesture || !commit) return;
       // Skip the write entirely when nothing actually changed — avoids a
       // 200 OK on every accidental click on the drag handle.
-      if (sameRect(drag.startItem, drag.ghost)) return;
+      if (sameRect(gesture.startItem, gesture.ghost)) return;
       // A resize that actually changed the HEIGHT is the user declaring one:
       // pin it. A width-only resize (or a move) leaves the cell auto-sized.
-      const pins = drag.kind === 'resize' && drag.ghost.h !== drag.startItem.h;
-      const updated = drag.baseline.map((it) => (it.id === drag.id
-        ? { ...it, x: drag.ghost.x, y: drag.ghost.y, w: drag.ghost.w, h: drag.ghost.h, ...(pins ? { fixedH: true } : {}) }
+      const pins = kind === 'resize' && gesture.ghost.h !== gesture.startItem.h;
+      const updated = baseline.map((it) => (it.id === gesture.id
+        ? { ...it, ...gesture.ghost, ...(pins ? { fixedH: true } : {}) }
         : it));
-      onChange(placeAndCompact(updated, drag.id));
+      onChange(placeAndCompact(updated, gesture.id));
     };
 
     const onPointerUp = () => finish(true);
@@ -564,9 +615,10 @@ export default function DashboardGrid({ items, editable, onChange, onLayoutModeC
       window.removeEventListener('pointercancel', onPointerCancel);
       if (raf) cancelAnimationFrame(raf);
     };
-  // dragGhost in the deps array re-installs the listeners only when the
-  // gesture starts/ends — pointermove updates dragRef.current directly.
-  }, [dragGhost ? 'active' : 'idle', onChange, containerWidth]);
+  // The active/idle key re-installs the listeners only when the gesture
+  // starts/ends, never on a snap — pointermove writes dragRef.current
+  // directly, and the `kind`/`baseline` captured above are gesture-constant.
+  }, [drag ? 'active' : 'idle', onChange, containerWidth]);
 
   // A short activation distance keeps a tap on the handle from registering as
   // a drag; the keyboard sensor is what makes the handle usable without one.
@@ -587,8 +639,13 @@ export default function DashboardGrid({ items, editable, onChange, onLayoutModeC
   // unconstrained, the observer reports its natural height, and the pack
   // closes the gap on the next frame.
   const clearFixedHeight = useCallback((item) => {
-    const next = toPackSpace(items, rectsRef.current)
-      .map((it) => (it.id === item.id ? { id: it.id, x: it.x, y: it.y, w: it.w, h: it.h } : it));
+    const next = toPackSpace(items, rectsRef.current).map((it) => {
+      if (it.id !== item.id) return it;
+      // Drop the pin by omission rather than whitelisting the fields to keep,
+      // so a field added to the grid item later doesn't get eaten here.
+      const { fixedH: _pinned, ...rest } = it;
+      return rest;
+    });
     onChange(placeAndCompact(next, item.id));
   }, [items, onChange]);
 
@@ -615,12 +672,13 @@ export default function DashboardGrid({ items, editable, onChange, onLayoutModeC
           style={isMobile ? undefined : { height: containerWidth ? containerHeight : 'auto', minHeight: '4rem' }}
         >
           {ordered.map((item) => {
+            const dragged = drag?.ghost.id === item.id;
             const rect = rects.get(item.id);
-            const { left, width } = columnRect(dragGhost?.id === item.id ? { ...item, ...dragGhost } : item, colWidth);
+            const { left, width } = columnRect(dragged ? drag.ghost : item, colWidth);
             // A cell's height comes from its content unless it is pinned OR is
             // the one currently being resized (where the drag, not the content,
             // is defining the height).
-            const pinned = item.fixedH || (dragGhost?.id === item.id && dragGhost.kind === 'resize');
+            const pinned = item.fixedH || (dragged && drag.kind === 'resize');
             return (
               <GridCell
                 key={item.id}
@@ -633,8 +691,8 @@ export default function DashboardGrid({ items, editable, onChange, onLayoutModeC
                 width={width}
                 height={rect?.height ?? rowsToPx(item.h)}
                 autoHeight={!pinned}
-                isGridDragging={!isMobile && dragGhost?.id === item.id}
-                suppressTransition={Boolean(dragGhost) || !settled}
+                isGridDragging={!isMobile && dragged}
+                suppressTransition={Boolean(drag) || !settled}
                 onStartGridDrag={startDrag}
                 onClearFixedHeight={clearFixedHeight}
                 onMeasure={onMeasure}
@@ -646,10 +704,10 @@ export default function DashboardGrid({ items, editable, onChange, onLayoutModeC
           {/* Drop preview during the free-form drag — outline over the packed
               position the item will actually land in. Pointer-events:none so
               it never intercepts the gesture. */}
-          {!isMobile && dragGhost && containerWidth > 0 && rects.has(dragGhost.id) && (
+          {!isMobile && drag && containerWidth > 0 && rects.has(drag.ghost.id) && (
             <div
               className="absolute pointer-events-none border-2 border-dashed border-port-accent rounded-xl bg-port-accent/10 z-30"
-              style={{ ...columnRect(dragGhost, colWidth), ...rects.get(dragGhost.id) }}
+              style={{ ...columnRect(drag.ghost, colWidth), ...rects.get(drag.ghost.id) }}
             />
           )}
         </div>

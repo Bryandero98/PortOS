@@ -210,9 +210,12 @@ describe('dashboardLayouts service', () => {
   });
 
   describe('built-in layout grids have no overlapping cells', () => {
-    // Regression: a hand-tuned grid edit can place two widgets in the same
-    // rows/cols, so fresh installs render stacked cards. Every built-in
-    // layout's grid rectangles must be pairwise non-overlapping.
+    // A hand-tuned grid edit can place two widgets in the same rows/cols. The
+    // renderer no longer stacks them — it packs measured heights and resolves
+    // any declared overlap — but `y` is what it sorts reading order by, so an
+    // overlap means two widgets with an arbitrary relative order that will
+    // flip on an unrelated edit. Keep every built-in's rectangles pairwise
+    // non-overlapping so the seeded order is the one that was intended.
     const rectsOverlap = (a, b) =>
       a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 
