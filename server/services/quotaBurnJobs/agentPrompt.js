@@ -15,6 +15,7 @@ import { addTask } from '../cosTaskStore.js';
 import { getAppById } from '../apps.js';
 import { getAllProviders } from '../providers.js';
 import { commandBasename } from '../../lib/providerModels.js';
+import { burnTaskDescription } from '../../lib/quotaBurnConfig.js';
 
 /**
  * An agent-capable provider in the burning family. An explicit `providerId`
@@ -124,7 +125,7 @@ export async function run({ params, job, family, candidate, context } = {}) {
   const discardsWorktree = params?.discardWorktree === true;
   const landsNoCode = params?.noCodeOutput === true || discardsWorktree;
   const task = await addTask({
-    description: `[Quota burn: ${family.id}] ${label} for ${app.name}`,
+    description: burnTaskDescription(family.id, label, app.name),
     app: app.id,
     context: renderBurnPrompt({ family, candidate, prompt }),
     provider: provider.id,
@@ -154,6 +155,10 @@ export async function run({ params, job, family, candidate, context } = {}) {
     // idle-complete gate, which otherwise requires a dirty tree.
     worktreeChangesExpected: !landsNoCode,
     reviewLoop: false,
+    // Burn provenance, read back after the task round-trips through
+    // COS-TASKS.md by `isCooldownExemptTask` (cosTaskGenerator.js, which owns
+    // the why) and by the runner's completion continuation.
+    quotaBurnFamily: family.id,
   }, 'internal');
 
   // A duplicate means an identical burn task for this app is still pending or

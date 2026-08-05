@@ -9,6 +9,7 @@ vi.mock('../apps.js', () => ({ getAppById: vi.fn(async (id) => state.apps[id] ||
 vi.mock('../providers.js', () => ({ getAllProviders: vi.fn(async () => state.providers) }));
 
 const { countPending, providerForFamily, renderBurnPrompt, run } = await import('./agentPrompt.js');
+const { quotaBurnFamilyOfDescription } = await import('../../lib/quotaBurnConfig.js');
 
 const family = { id: 'grok', reservePercent: 10, maxDispatchesPerWindow: 3 };
 const candidate = { hoursUntilReset: 2.4, limit: { label: 'Weekly', percentRemaining: 62 } };
@@ -113,6 +114,22 @@ describe('run', () => {
       app: 'app-1', provider: 'grok-cli', model: 'grok-4', useWorktree: true, openPR: true, simplify: true, reviewLoop: false,
     });
     expect(state.added[0].task.context).toContain('Do the thing');
+  });
+
+  it('stamps the burn provenance the cooldown exemption and the continuation read', async () => {
+    // Without it the queued task is indistinguishable from any other system
+    // task: it inherits the per-app review cooldown (which a busy app never lets
+    // lapse, so the burn strands in Pending) and no completion continues the
+    // family's plan to its next job.
+    await run({ params: { appId: 'app-1', prompt: 'x' }, job: { id: 'j1' }, family, candidate });
+    expect(state.added[0].task.quotaBurnFamily).toBe('grok');
+  });
+
+  it('names the task through the shared description builder', async () => {
+    // Migration 225 parses this shape back to recover the family for tasks
+    // queued before the metadata stamp existed, so the two must not drift.
+    await run({ params: { appId: 'app-1', prompt: 'x' }, job: { id: 'j1', label: 'Nightly' }, family, candidate });
+    expect(quotaBurnFamilyOfDescription(state.added[0].task.description)).toBe('grok');
   });
 
   it('reports a duplicate as NOT dispatched', async () => {
