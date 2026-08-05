@@ -15,7 +15,7 @@ import { TASK_FILTERS, DEFAULT_FILTER_ID } from './schedule/scheduleConstants';
 // passed down — same convention as TasksTab/AgentsTab — so this tab's provider/
 // model pickers stay live without standing up a second independent poll of the
 // same data.
-export default function ScheduleTab({ apps, providers }) {
+export default function ScheduleTab({ apps, providers, activeProviderId }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const [schedule, setSchedule] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -48,15 +48,20 @@ export default function ScheduleTab({ apps, providers }) {
     fetchSchedule();
   }, [fetchSchedule]);
 
+  // Resolves a boolean so optimistic callers (the card's quick model pins) can
+  // roll their local selection back — this handler owns the error toast, so it
+  // never rejects.
   const handleUpdateTask = async (taskType, settings) => {
     const result = await api.updateCosTaskInterval(taskType, settings, { silent: true }).catch(err => {
       toast.error(err.message);
       return null;
     });
-    if (result?.success) {
-      toast.success(`Updated ${taskType} interval`);
-      fetchSchedule();
-    }
+    if (!result?.success) return false;
+    // Not "interval" — this handler carries every task setting (provider, model,
+    // effort, prompt, dependencies), and the card's pins now use it too.
+    toast.success(`Updated ${taskType}`);
+    fetchSchedule();
+    return true;
   };
 
   const handleTriggerTask = async (taskType, appId = null) => {
@@ -151,7 +156,10 @@ export default function ScheduleTab({ apps, providers }) {
       <AppTaskTypeSection
         tasks={tasks}
         apps={apps}
+        providers={providers}
+        activeProviderId={activeProviderId}
         onTrigger={handleTriggerAppImprovement}
+        onUpdate={handleUpdateTask}
         onSelectTask={setSelectedTask}
         improvementDisabled={improvementDisabled}
         filter={filter}
@@ -173,6 +181,7 @@ export default function ScheduleTab({ apps, providers }) {
         onTrigger={handleTriggerAppImprovement}
         onReset={handleResetTask}
         providers={providers}
+        activeProviderId={activeProviderId}
         apps={apps}
         onUpdateOverride={handleUpdateOverride}
         onBulkToggleOverride={handleBulkToggleOverride}

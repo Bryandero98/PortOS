@@ -11,7 +11,7 @@ import { useCodeReviewDefaults } from '../../../../hooks/useCodeReviewDefaults';
 import useReviewerModelOptions from '../../../../hooks/useReviewerModelOptions';
 import { reviewerModelsFromDefaults } from '../../../../lib/reviewerModels';
 import ToggleSwitch from '../../../ToggleSwitch';
-import { filterSelectableModels } from '../../../../utils/providers';
+import useTaskModelPins from '../../../../hooks/useTaskModelPins';
 import EffortSelect from '../../EffortSelect';
 import PromptEditor from './PromptEditor';
 import RunTaskButton from './RunTaskButton';
@@ -22,27 +22,34 @@ import { INTERVAL_DESCRIPTIONS, toggleMetadataField } from './scheduleConstants'
 // runs (no app) land on the server-side fallback.
 const PR_COMPLETION_INHERIT_HINT = `Uses the target app's "After opening PR" default (Apps → Edit App), or "${prCompletionOption(IMPLICIT_PR_COMPLETION)?.label}" when it has none.`;
 
-export default function GlobalConfigControls({ taskType, config, onUpdate, onTrigger, onReset, category: _category, providers, apps, updating, setUpdating, allTaskTypes, improvementDisabled }) {
+export default function GlobalConfigControls({ taskType, config, onUpdate, onTrigger, onReset, category: _category, providers, activeProviderId, apps, updating, setUpdating, allTaskTypes, improvementDisabled }) {
   const reviewDefaults = useCodeReviewDefaults();
   // Resolved model lists for the reviewer table's Model column (the picker itself
   // never fetches — see its `modelOptions` prop).
   const reviewerModelOptions = useReviewerModelOptions();
   const [selectedType, setSelectedType] = useState(config.type);
-  const [selectedProviderId, setSelectedProviderId] = useState(config.providerId || '');
-  const [selectedModel, setSelectedModel] = useState(config.model || '');
-  const [selectedEffort, setSelectedEffort] = useState(config.effort || '');
   const [editingPrompt, setEditingPrompt] = useState(false);
   const [promptValue, setPromptValue] = useState(config.prompt || '');
+  // Provider/model/effort pins are shared with the schedule card's quick
+  // controls — same optimistic write + rollback, one implementation.
+  const {
+    providerId: selectedProviderId,
+    model: selectedModel,
+    effort: selectedEffort,
+    provider: selectedProvider,
+    usingActiveProvider,
+    availableModels,
+    changeProvider: handleProviderChange,
+    changeModel: handleModelChange,
+    changeEffort: handleEffortChange,
+  } = useTaskModelPins({ taskType, config, providers, activeProviderId, onUpdate, onBusyChange: setUpdating });
 
   useEffect(() => {
     setSelectedType(config.type);
-    setSelectedProviderId(config.providerId || '');
-    setSelectedModel(config.model || '');
-    setSelectedEffort(config.effort || '');
     if (!editingPrompt) {
       setPromptValue(config.prompt || '');
     }
-  }, [config.type, config.providerId, config.model, config.effort, config.prompt, editingPrompt]);
+  }, [config.type, config.prompt, editingPrompt]);
 
   const activeApps = apps?.filter(app => !app.archived) || [];
 
@@ -102,34 +109,6 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
     await onUpdate(taskType, { enabled: isPaused });
     setUpdating(false);
   };
-
-  const handleProviderChange = async (newProviderId) => {
-    setUpdating(true);
-    setSelectedProviderId(newProviderId);
-    setSelectedModel('');
-    setSelectedEffort('');
-    const providerId = newProviderId === '' ? null : newProviderId;
-    await onUpdate(taskType, { providerId, model: null, effort: null }).catch(() => {
-      setSelectedProviderId(config.providerId || '');
-      setSelectedModel(config.model || '');
-      setSelectedEffort(config.effort || '');
-    });
-    setUpdating(false);
-  };
-
-  // Optimistic single-field update: set locally, PUT ('' → null clears the
-  // pin), roll back to the persisted value on failure. Shared by the model and
-  // effort selects (provider has its own handler — it also resets these two).
-  const makeScalarFieldHandler = (field, setter) => async (newValue) => {
-    setUpdating(true);
-    setter(newValue);
-    await onUpdate(taskType, { [field]: newValue === '' ? null : newValue }).catch(() => {
-      setter(config[field] || '');
-    });
-    setUpdating(false);
-  };
-  const handleModelChange = makeScalarFieldHandler('model', setSelectedModel);
-  const handleEffortChange = makeScalarFieldHandler('effort', setSelectedEffort);
 
   const handlePrAuthorFilterChange = async (value) => {
     setUpdating(true);
@@ -191,8 +170,8 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
     ? prCompletion === '' || prCompletion === 'review-then-merge'
     : !!config.taskMetadata?.reviewLoop;
 
-  const selectedProvider = providers?.find(p => p.id === (selectedProviderId || ''));
-  const availableModels = filterSelectableModels(selectedProvider?.models);
+  // `selectedProvider` / `availableModels` come from useTaskModelPins above —
+  // it resolves the pin against the active provider and keeps a stale pin listed.
   const status = config.status || {};
 
   return (
@@ -311,7 +290,9 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
               disabled={updating}
               className="w-full bg-port-card border border-port-border rounded px-3 py-2 text-white text-sm"
             >
-              <option value="">Default (active provider)</option>
+              <option value="">
+              {usingActiveProvider ? `Default (active: ${selectedProvider.name})` : 'Default (active provider)'}
+            </option>
               {providers?.map(provider => (
                 <option key={provider.id} value={provider.id}>{provider.name}</option>
               ))}
@@ -339,6 +320,7 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
 
           <EffortSelect
             provider={selectedProvider}
+            model={selectedModel}
             value={selectedEffort}
             onChange={handleEffortChange}
             disabled={updating}

@@ -3,7 +3,7 @@ import { Search, X } from 'lucide-react';
 import AppTaskCard from './AppTaskCard';
 import { TASK_FILTERS, DEFAULT_FILTER_ID, taskSortKey } from './scheduleConstants';
 
-export default function AppTaskTypeSection({ tasks, apps, onTrigger, onSelectTask, improvementDisabled, filter, onFilterChange }) {
+export default function AppTaskTypeSection({ tasks, apps, providers, activeProviderId, onTrigger, onUpdate, onSelectTask, improvementDisabled, filter, onFilterChange }) {
   const [search, setSearch] = useState('');
   const taskEntries = Object.entries(tasks || {});
 
@@ -89,7 +89,10 @@ export default function AppTaskTypeSection({ tasks, apps, onTrigger, onSelectTas
               taskType={taskType}
               config={config}
               apps={apps}
+              providers={providers}
+              activeProviderId={activeProviderId}
               onTrigger={onTrigger}
+              onUpdate={onUpdate}
               onConfigure={onSelectTask}
               improvementDisabled={improvementDisabled}
             />
