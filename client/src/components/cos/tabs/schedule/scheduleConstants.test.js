@@ -1,5 +1,44 @@
 import { describe, it, expect } from 'vitest';
-import { getTaskStatusGroup, taskSortKey, TASK_FILTERS, STATUS_GROUPS, describeNextRun, coverageTone } from './scheduleConstants';
+import { getTaskStatusGroup, taskSortKey, TASK_FILTERS, STATUS_GROUPS, describeNextRun, coverageTone, setMetadataOverride, toggleMetadataField } from './scheduleConstants';
+
+describe('setMetadataOverride', () => {
+  it('sets a key without disturbing the app\'s other overrides', () => {
+    expect(setMetadataOverride({ useWorktree: true }, 'prCompletion', 'merge-on-green'))
+      .toEqual({ useWorktree: true, prCompletion: 'merge-on-green' });
+  });
+
+  it('deletes the key on the Inherit sentinel', () => {
+    expect(setMetadataOverride({ useWorktree: true, prCompletion: 'leave-open' }, 'prCompletion', ''))
+      .toEqual({ useWorktree: true });
+  });
+
+  it('keeps an explicit 0 — only "" means inherit', () => {
+    expect(setMetadataOverride(null, 'swarmCount', 0)).toEqual({ swarmCount: 0 });
+  });
+
+  it('returns null once nothing is overridden so the row drops its object', () => {
+    expect(setMetadataOverride({ prCompletion: 'leave-open' }, 'prCompletion', '')).toBeNull();
+  });
+});
+
+describe('toggleMetadataField', () => {
+  it('turns openPR on with the worktree it implies', () => {
+    expect(toggleMetadataField({ useWorktree: false, openPR: false }, 'openPR'))
+      .toEqual({ useWorktree: true, openPR: true });
+  });
+
+  it('turns openPR off with the worktree it depends on', () => {
+    expect(toggleMetadataField({ useWorktree: true, openPR: false }, 'useWorktree'))
+      .toEqual({ useWorktree: false, openPR: false });
+  });
+
+  // The invariant resolves in openPR's favor, so the worktree toggle can't strand
+  // a PR task with nowhere to branch — turn Open PR off first.
+  it('refuses to drop the worktree out from under an open PR', () => {
+    expect(toggleMetadataField({ useWorktree: true, openPR: true }, 'useWorktree'))
+      .toEqual({ useWorktree: true, openPR: true });
+  });
+});
 
 describe('getTaskStatusGroup', () => {
   it('classifies a disabled task as disabled regardless of type', () => {

@@ -1,0 +1,72 @@
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { render, screen, fireEvent, cleanup, act } from '@testing-library/react';
+
+import AppOverrideRow from './AppOverrideRow';
+
+const APP = { id: 'app-1', name: 'Acme' };
+
+function renderRow({ globalTaskMetadata = {}, override = null, onUpdate = vi.fn().mockResolvedValue(undefined) } = {}) {
+  render(
+    <AppOverrideRow
+      app={APP}
+      taskType="feature-ideas"
+      globalIntervalType="daily"
+      globalTaskMetadata={globalTaskMetadata}
+      managedAgentOptions={[]}
+      override={override}
+      onUpdate={onUpdate}
+    />
+  );
+  return onUpdate;
+}
+
+const prSelect = () => screen.queryByLabelText('After opening PR for Acme');
+
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
+
+describe('AppOverrideRow — After opening PR override', () => {
+  it('is absent when neither the app nor the global config opens a PR', () => {
+    renderRow({ globalTaskMetadata: { useWorktree: true, openPR: false } });
+    expect(prSelect()).not.toBeInTheDocument();
+  });
+
+  it('appears when the app override turns Open PR on for an otherwise-off task', () => {
+    renderRow({ globalTaskMetadata: { openPR: false }, override: { taskMetadata: { openPR: true } } });
+    expect(prSelect()).toBeInTheDocument();
+  });
+
+  it('names the inherited policy on the Inherit option', () => {
+    renderRow({ globalTaskMetadata: { openPR: true, prCompletion: 'merge-on-green' } });
+    expect(prSelect()).toHaveValue('');
+    expect(screen.getByRole('option', { name: 'Inherit (Merge on green CI)' })).toBeInTheDocument();
+  });
+
+  it('falls back to "app default" when the global config pins nothing', () => {
+    renderRow({ globalTaskMetadata: { openPR: true } });
+    expect(screen.getByRole('option', { name: 'Inherit (app default)' })).toBeInTheDocument();
+  });
+
+  it('writes the override without disturbing the app\'s other overrides', async () => {
+    const onUpdate = renderRow({
+      globalTaskMetadata: { openPR: true },
+      override: { taskMetadata: { simplify: false } },
+    });
+    await act(async () => { fireEvent.change(prSelect(), { target: { value: 'leave-open' } }); });
+    expect(onUpdate).toHaveBeenCalledWith('app-1', 'feature-ideas', {
+      taskMetadata: { simplify: false, prCompletion: 'leave-open' },
+    });
+  });
+
+  it('clears the override back to inherit', async () => {
+    const onUpdate = renderRow({
+      globalTaskMetadata: { openPR: true },
+      override: { taskMetadata: { prCompletion: 'leave-open' } },
+    });
+    expect(prSelect()).toHaveValue('leave-open');
+    await act(async () => { fireEvent.change(prSelect(), { target: { value: '' } }); });
+    expect(onUpdate).toHaveBeenCalledWith('app-1', 'feature-ideas', { taskMetadata: null });
+  });
+});

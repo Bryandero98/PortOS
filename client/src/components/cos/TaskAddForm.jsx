@@ -8,7 +8,7 @@ import { ATTACHMENT_ACCEPT } from '../../utils/fileUpload';
 import FilePickerButton from '../ui/FilePickerButton';
 import { formatBytes } from '../../utils/formatters';
 import { filterSelectableModels, isTuiProvider, isCliProvider, isProcessProvider, isCodexProvider } from '../../utils/providers';
-import { DEFAULT_PR_COMPLETION, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, PR_COMPLETION_OPTIONS } from './constants';
+import { DEFAULT_PR_COMPLETION, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, PR_COMPLETION_OPTIONS, prCompletionOption } from './constants';
 import { clickableProps } from '../../lib/a11yKeyboard';
 import { slashdoLabel } from '../../lib/slashdoCatalog';
 import ReviewerPicker from './ReviewerPicker';
@@ -558,7 +558,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
               <select
                 id="task-pr-completion"
                 value={prCompletion}
-                title={PR_COMPLETION_OPTIONS.find(option => option.value === prCompletion)?.description}
+                title={prCompletionOption(prCompletion)?.description}
                 onChange={(e) => setPrCompletion(e.target.value)}
                 className="min-w-44 rounded border border-port-border bg-port-bg px-2 py-1 text-sm text-white focus:border-port-accent focus:outline-hidden"
               >

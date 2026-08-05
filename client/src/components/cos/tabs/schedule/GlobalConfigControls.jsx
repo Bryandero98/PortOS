@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { RotateCcw, AlertCircle } from 'lucide-react';
 import CronInput from '../../../CronInput';
-import { AGENT_OPTIONS, DEFAULT_REVIEW_STOP_MODE, PR_AUTHOR_FILTER_OPTIONS, ISSUE_AUTHOR_FILTER_OPTIONS, ISSUE_AUTHOR_FILTER_TASK_TYPES, SWARM_COUNT_OPTIONS, SWARM_TASK_TYPES } from '../../constants';
+import { AGENT_OPTIONS, DEFAULT_REVIEW_STOP_MODE, IMPLICIT_PR_COMPLETION, PR_AUTHOR_FILTER_OPTIONS, PR_COMPLETION_OPTIONS, pinnedPrCompletion, prCompletionOption, ISSUE_AUTHOR_FILTER_OPTIONS, ISSUE_AUTHOR_FILTER_TASK_TYPES, SWARM_COUNT_OPTIONS, SWARM_TASK_TYPES } from '../../constants';
 import ReviewerPicker from '../../ReviewerPicker';
 import Banner from '../../../ui/Banner';
 import InfoTooltip from '../../../ui/InfoTooltip';
@@ -16,6 +16,11 @@ import EffortSelect from '../../EffortSelect';
 import PromptEditor from './PromptEditor';
 import RunTaskButton from './RunTaskButton';
 import { INTERVAL_DESCRIPTIONS, toggleMetadataField } from './scheduleConstants';
+
+// Shown for the unpinned ('' → inherit) choice: the task type is global, so the
+// policy is whatever each target app configured, and PortOS's own self-improvement
+// runs (no app) land on the server-side fallback.
+const PR_COMPLETION_INHERIT_HINT = `Uses the target app's "After opening PR" default (Apps → Edit App), or "${prCompletionOption(IMPLICIT_PR_COMPLETION)?.label}" when it has none.`;
 
 export default function GlobalConfigControls({ taskType, config, onUpdate, onTrigger, onReset, category: _category, providers, apps, updating, setUpdating, allTaskTypes, improvementDisabled }) {
   const reviewDefaults = useCodeReviewDefaults();
@@ -154,6 +159,20 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
     setUpdating(false);
   };
 
+  // '' drops the key so the task inherits its app's `defaultPrCompletion` —
+  // which works because no DEFAULT_TASK_INTERVALS entry ships a `prCompletion`
+  // for loadSchedule to merge back underneath. The legacy `reviewLoop` bit is
+  // the pre-`prCompletion` spelling of the same decision, so it goes too rather
+  // than outvoting whatever the user just picked.
+  const handlePrCompletionChange = async (value) => {
+    setUpdating(true);
+    const { prCompletion: _pinned, reviewLoop: _legacy, ...rest } = config.taskMetadata || {};
+    await onUpdate(taskType, {
+      taskMetadata: value ? { ...rest, prCompletion: value } : rest
+    });
+    setUpdating(false);
+  };
+
   const handleSavePrompt = async () => {
     setUpdating(true);
     const prompt = promptValue.trim() === '' ? null : promptValue;
@@ -163,6 +182,14 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
     setEditingPrompt(false);
     setUpdating(false);
   };
+
+  const prCompletion = pinnedPrCompletion(config.taskMetadata);
+  // Reviewers only run under review-then-merge, so the picker hides for the two
+  // policies that never reach them — but an unpinned ('') task may still inherit
+  // review-then-merge from its app, so that keeps it.
+  const reviewersApply = config.taskMetadata?.openPR
+    ? prCompletion === '' || prCompletion === 'review-then-merge'
+    : !!config.taskMetadata?.reviewLoop;
 
   const selectedProvider = providers?.find(p => p.id === (selectedProviderId || ''));
   const availableModels = filterSelectableModels(selectedProvider?.models);
@@ -433,7 +460,25 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
             );
           })}
         </div>
-        {(config.taskMetadata?.reviewLoop || config.taskMetadata?.openPR) && (
+        {config.taskMetadata?.openPR && (
+          <FormField label="After opening PR" className="mt-3" labelClassName="text-sm text-gray-400 block mb-2">
+            <select
+              value={prCompletion}
+              onChange={(e) => handlePrCompletionChange(e.target.value)}
+              disabled={updating}
+              className="w-full bg-port-card border border-port-border rounded px-3 py-2 text-white text-sm"
+            >
+              <option value="">App default</option>
+              {PR_COMPLETION_OPTIONS.map(option => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-500 mt-1">
+              {prCompletionOption(prCompletion)?.description || PR_COMPLETION_INHERIT_HINT}
+            </p>
+          </FormField>
+        )}
+        {reviewersApply && (
           <div className="mt-3 pl-2">
             <ReviewerPicker
               reviewers={config.taskMetadata?.reviewers ?? (config.taskMetadata?.reviewer ? [config.taskMetadata.reviewer] : reviewDefaults.reviewers)}
