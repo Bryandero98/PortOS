@@ -2,6 +2,7 @@ import { useState } from 'react';
 import Drawer from '../../../Drawer';
 import useDrawerTab from '../../../../hooks/useDrawerTab';
 import TaskHeader from './TaskHeader';
+import { pipelineStages } from './scheduleConstants';
 import PipelineStageConfig from './PipelineStageConfig';
 import GlobalConfigControls from './GlobalConfigControls';
 import PerAppOverrideList from './PerAppOverrideList';
@@ -28,6 +29,7 @@ export default function TaskConfigDrawer({
   onTrigger,
   onReset,
   providers,
+  activeProviderId,
   apps,
   onUpdateOverride,
   onBulkToggleOverride,
@@ -36,7 +38,7 @@ export default function TaskConfigDrawer({
 }) {
   const [updating, setUpdating] = useState(false);
 
-  const stages = config?.taskMetadata?.pipeline?.stages || [];
+  const stages = pipelineStages(config);
   const hasStages = stages.length > 0;
   const activeApps = apps?.filter(app => !app.archived) || [];
   const hasOverrides = activeApps.length > 0;
@@ -88,6 +90,7 @@ export default function TaskConfigDrawer({
               onReset={onReset}
               category="appImprovement"
               providers={providers}
+              activeProviderId={activeProviderId}
               apps={apps}
               updating={updating}
               setUpdating={setUpdating}

@@ -8,6 +8,12 @@
  *   caller that already filtered (e.g. via the hook's default `enabled` filter) is
  *   unaffected since re-filtering enabled entries is idempotent.
  * @param {string} props.selectedProviderId - Currently selected provider ID
+ * @param {string} [props.effectiveProviderId] - The provider a blank selection
+ *   actually resolves to at run time (the install's active provider). The select
+ *   still shows the blank `emptyProviderOption`, but the model annotations,
+ *   tool-use warning and effort ladder resolve against this — otherwise "no
+ *   provider pinned" would also mean "no model or effort can be picked".
+ *   Defaults to `selectedProviderId`. See `resolveEffectiveProvider`.
  * @param {string} props.selectedModel - Currently selected model
  * @param {Array} props.availableModels - Models for the selected provider. Entries
  *   may be plain strings, or `{ id, name }` objects (the world builder passes the
@@ -62,6 +68,7 @@ function modelOption(m) {
 export default function ProviderModelSelector({
   providers,
   selectedProviderId,
+  effectiveProviderId,
   selectedModel,
   availableModels,
   onProviderChange,
@@ -85,7 +92,9 @@ export default function ProviderModelSelector({
   // the annotation only fires for local backends (the heuristic mislabels cloud
   // ids). `localToolUseHint` returns null for cloud/blank, so the warning stays
   // scoped to a genuinely tool-incapable local pin.
-  const selectedProvider = providers.find((p) => p.id === selectedProviderId);
+  // Resolve against the effective provider (the pin, or what a blank selection
+  // falls back to) — everything below describes what a run would actually use.
+  const selectedProvider = providers.find((p) => p.id === (effectiveProviderId ?? selectedProviderId));
   // A blank model ("Default model") isn't a no-op: the agent resolver then runs
   // the provider's own defaultModel — which for an Ollama-backed provider can be
   // a non-tool model that silently wedges the stage. So evaluate the EFFECTIVE

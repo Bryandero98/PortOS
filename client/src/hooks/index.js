@@ -164,6 +164,7 @@ export * from './useSidebarUniverses.js';
 export * from './useAppDeploy.js';
 export * from './useAppOperation.js';
 export * from './useAppOverrideActions.js';
+export * from './useTaskModelPins.js';
 export * from './useCanonPatch.js';
 export * from './useCityData.js';
 export * from './useCityPlayback.js';

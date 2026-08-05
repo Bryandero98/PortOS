@@ -61,6 +61,22 @@ const accountSwitcher = () => screen.getByLabelText('Stacker News account in sco
 const drawerTab = (name) => screen.getByRole('tab', { name });
 const intervalField = (prefix = 'edit') => screen.getByLabelText('Monitoring interval (minutes)', { selector: `#${prefix}-account-interval` });
 
+// A drawer field mounts BEFORE the account fetch settles (the panel remounts per
+// tab via `key={currentTab}`), so the stored value can land *after* a clear or a
+// type and silently restore what the test just removed — `clearSettled` then
+// waits out its timeout on a field that reads 15 again. Find the field and pin
+// its seeded value before editing, so the edit starts from a settled input.
+// Without this the interval tests flake on a loaded CI runner (the failure reads
+// `expect(element).toHaveValue(null)` / `Received: 15`).
+const findSeededField = async (label, selector, seeded) => {
+  const field = await screen.findByLabelText(label, { selector });
+  await waitFor(() => expect(field).toHaveValue(seeded));
+  return field;
+};
+
+const findSeededInterval = (seeded = 15) =>
+  findSeededField('Monitoring interval (minutes)', '#edit-account-interval', seeded);
+
 function deferred() {
   let resolve;
   const promise = new Promise((done) => { resolve = done; });
@@ -105,7 +121,7 @@ describe('StackerNews', () => {
     const user = userEvent.setup();
     api.updateStackerNewsAccount.mockResolvedValue({ ...accounts[0], monitoringIntervalMinutes: 20 });
     renderPage('/stacker-news/a1/accounts?snAccount=edit&snAccountTab=monitoring');
-    const interval = await screen.findByLabelText('Monitoring interval (minutes)', { selector: '#edit-account-interval' });
+    const interval = await findSeededInterval();
     await retypeSettled(user, interval, '20');
     await user.click(screen.getByRole('button', { name: 'Save account' }));
     await waitFor(() => expect(api.updateStackerNewsAccount).toHaveBeenCalledWith('a1', expect.objectContaining({ monitoringIntervalMinutes: 20 }), { silent: true }));
@@ -140,7 +156,9 @@ describe('StackerNews', () => {
   it('keeps entered account values across drawer tab switches and deep-links the open tab', async () => {
     const user = userEvent.setup();
     renderPage('/stacker-news/a1/accounts?snAccount=edit&snAccountTab=stewardship');
-    const tone = await screen.findByLabelText('Tone', { selector: '#edit-account-tone' });
+    // Seeded empty for this account, but a late-landing seed would clobber the
+    // typed value the same way — pin it before typing.
+    const tone = await findSeededField('Tone', '#edit-account-tone', '');
     await typeSettled(user, tone, 'measured');
     await user.click(drawerTab('Budgets'));
     expect(currentUrl()).toContain('snAccountTab=budgets');
@@ -152,7 +170,7 @@ describe('StackerNews', () => {
   it('reports an invalid field from an unmounted drawer tab and switches to it', async () => {
     const user = userEvent.setup();
     renderPage('/stacker-news/a1/accounts?snAccount=edit&snAccountTab=monitoring');
-    const interval = await screen.findByLabelText('Monitoring interval (minutes)', { selector: '#edit-account-interval' });
+    const interval = await findSeededInterval();
     await clearSettled(user, interval);
     await user.click(drawerTab('Budgets'));
     await user.click(screen.getByRole('button', { name: 'Save account' }));
@@ -201,7 +219,7 @@ describe('StackerNews', () => {
     const save = deferred();
     api.updateStackerNewsAccount.mockReturnValue(save.promise);
     renderPage('/stacker-news/a1/accounts?snAccount=edit&snAccountTab=monitoring');
-    const interval = await screen.findByLabelText('Monitoring interval (minutes)', { selector: '#edit-account-interval' });
+    const interval = await findSeededInterval();
     await retypeSettled(user, interval, '20');
     expect(screen.getByText(/Unsaved changes to @art_steward/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Check API identity' })).toBeDisabled();
@@ -216,7 +234,7 @@ describe('StackerNews', () => {
   it('discards an unsaved account draft left behind by closing the drawer', async () => {
     const user = userEvent.setup();
     renderPage('/stacker-news/a1/accounts?snAccount=edit&snAccountTab=monitoring');
-    const interval = await screen.findByLabelText('Monitoring interval (minutes)', { selector: '#edit-account-interval' });
+    const interval = await findSeededInterval();
     await retypeSettled(user, interval, '20');
     // Closing keeps the draft (a 19-field edit should survive a detour), so the
     // dependent actions stay disabled until the draft is saved or discarded.
@@ -275,7 +293,7 @@ describe('StackerNews', () => {
     const save = deferred();
     api.updateStackerNewsAccount.mockReturnValue(save.promise);
     renderPage('/stacker-news/a1/accounts?snAccount=edit&snAccountTab=monitoring');
-    const interval = await screen.findByLabelText('Monitoring interval (minutes)', { selector: '#edit-account-interval' });
+    const interval = await findSeededInterval();
     await retypeSettled(user, interval, '20');
     await user.click(screen.getByRole('button', { name: 'Save account' }));
     // Selecting another account navigates by path, which drops the drawer params.

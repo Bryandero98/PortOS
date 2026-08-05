@@ -43,6 +43,12 @@ export const badge = (variant) => `text-xs font-medium px-2.5 py-1 rounded-full 
 
 export const IMPROVEMENT_DISABLED_TITLE = 'Improvement is disabled — enable it in CoS → Config';
 
+export const SAVING_TITLE = 'Saving provider/model settings — the run will use them once saved';
+
+// The task's pipeline stages (always an array). A non-empty one means its
+// provider/model are resolved per stage, so a task-level pin would be ignored.
+export const pipelineStages = (config) => config?.taskMetadata?.pipeline?.stages || [];
+
 export const triggerButtonClass = (disabled) =>
   `flex items-center gap-1 px-3 py-1.5 text-sm rounded transition-colors ${disabled ? 'bg-port-border/30 text-gray-500 cursor-not-allowed' : 'bg-port-accent/20 hover:bg-port-accent/30 text-port-accent'}`;
 
