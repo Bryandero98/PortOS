@@ -287,6 +287,16 @@ describe('providerModels', () => {
       expect(antigravityModelEffortLevels('gemini-3.6-flash', null)).toBeNull();
       expect(antigravityModelEffortLevels('', AGY_CATALOG)).toBeNull();
     });
+
+    // The sentinel IS the shipped agy defaultModel, so a picker opens on it.
+    // Reporting `[]` would hide the effort control until a model is chosen.
+    it('treats the configured-default sentinel as an UNKNOWN model, not a tier-less one', () => {
+      expect(antigravityModelEffortLevels(ANTIGRAVITY_CONFIGURED_DEFAULT, AGY_CATALOG)).toBeNull();
+      expect(effortLevelsForProvider(
+        { id: 'antigravity-cli', command: 'agy', models: AGY_CATALOG },
+        ANTIGRAVITY_CONFIGURED_DEFAULT,
+      )).toBe(ANTIGRAVITY_EFFORT_LEVELS);
+    });
   });
 
   describe('isCodexProvider', () => {

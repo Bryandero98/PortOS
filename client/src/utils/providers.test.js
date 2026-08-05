@@ -149,6 +149,9 @@ describe('Antigravity base-model split (server mirror)', () => {
     ['gemini-3.1-pro', ['low', 'high']],
     ['gpt-oss-120b', ['medium']],
     ['claude-sonnet-4-6', []],
+    // The sentinel is the shipped agy defaultModel, so a picker opens on it —
+    // it means "model unknown" (full ladder), not "this model has no tiers".
+    [ANTIGRAVITY_CONFIGURED_DEFAULT, null],
   ])('antigravityModelEffortLevels(%s)', (model, expected) => {
     expect(antigravityModelEffortLevels(model, CATALOG)).toEqual(expected);
     expect(serverAntigravityModelEffortLevels(model, CATALOG)).toEqual(expected);

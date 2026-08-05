@@ -207,8 +207,11 @@ export const antigravityBaseModels = (models) => {
 
 /**
  * The effort tiers an Antigravity base model offers per the provider's catalog:
- * the present suffixes, `[]` when the model has none, or `null` when the catalog
- * is unknown (caller falls back to the full ladder).
+ * the present suffixes, `[]` when the model has none, or `null` when the MODEL
+ * is unknown — blank, the configured-default sentinel, or an empty catalog — so
+ * the caller falls back to the full ladder. The sentinel case matters: it is the
+ * shipped agy `defaultModel`, and reporting `[]` for it would hide the effort
+ * control on every freshly-opened picker.
  * @param {string|null|undefined} model
  * @param {unknown[]} models
  * @returns {readonly string[]|null}
@@ -216,6 +219,7 @@ export const antigravityBaseModels = (models) => {
 export const antigravityModelEffortLevels = (model, models) => {
   const list = (Array.isArray(models) ? models : []).filter(m => typeof m === 'string');
   if (list.length === 0) return null;
+  if (isConfiguredDefaultModel(model)) return null;
   const { base } = splitAntigravityModel(model);
   if (typeof base !== 'string' || base === '') return null;
   return Object.freeze(ANTIGRAVITY_EFFORT_LEVELS.filter(level => list.includes(`${base}-${level}`)));

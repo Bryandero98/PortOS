@@ -138,8 +138,12 @@ export function antigravityBaseModels(models) {
  *   - `['low','high']` — the suffixed variants present for that base.
  *   - `[]`             — the base is in the catalog with no suffixed variants
  *                        (`claude-sonnet-4-6`): agy has no effort knob for it.
- *   - `null`           — the catalog is unknown/empty, so the caller should
+ *   - `null`           — the model is UNKNOWN (blank, the configured-default
+ *                        sentinel, or an empty catalog), so the caller should
  *                        fall back to the full ladder rather than assume none.
+ *                        The sentinel case matters: it is the shipped agy
+ *                        `defaultModel`, and reporting `[]` for it would hide
+ *                        the effort control on every freshly-opened picker.
  * @param {string|null|undefined} model - base or suffixed model id
  * @param {unknown[]} models - the provider's model list
  * @returns {readonly string[]|null}
@@ -147,6 +151,7 @@ export function antigravityBaseModels(models) {
 export function antigravityModelEffortLevels(model, models) {
   const list = (Array.isArray(models) ? models : []).filter(m => typeof m === 'string');
   if (list.length === 0) return null;
+  if (isConfiguredDefaultModel(model)) return null;
   const { base } = splitAntigravityModel(model);
   if (typeof base !== 'string' || base === '') return null;
   return Object.freeze(ANTIGRAVITY_EFFORT_LEVELS.filter(level => list.includes(`${base}-${level}`)));
