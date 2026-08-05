@@ -8,9 +8,8 @@ import WidgetSuggestions from '../components/dashboard/WidgetSuggestions';
 import DashboardGrid, { readingOrderIds, reconcileGrid, synthesizeGrid } from '../components/dashboard/DashboardGrid.jsx';
 import { WIDGETS_BY_ID, FALLBACK_LAYOUT } from '../components/dashboard/widgetRegistry.jsx';
 import WidgetSkeleton from '../components/dashboard/WidgetSkeleton';
-import { SchematicLabel } from '../components/micrographics';
 import { DASHBOARD_LAYOUT_CHANGED } from '../constants/events.js';
-import { GripHorizontal, Monitor, Move, Save, X } from 'lucide-react';
+import { ChevronsDownUp, GripHorizontal, Monitor, Move, Save, X } from 'lucide-react';
 import * as api from '../services/api';
 import socket from '../services/socket';
 import toast from '../components/ui/Toast';
@@ -250,28 +249,10 @@ export default function Dashboard() {
     const meta = WIDGETS_BY_ID[item.id];
     if (!meta) return null;
     // Per-cell Suspense so a slow widget can't block sibling cells.
-    const widget = (
+    return (
       <Suspense fallback={<WidgetSkeleton label={meta.label} />}>
         <meta.Component dashboardState={dashboardState} />
       </Suspense>
-    );
-    if (!meta.module) return widget;
-    // Tab sits inside the wrapper (DashboardGrid clips with overflow-hidden);
-    // sm:pt-4 reserves a header zone so the tab doesn't overlap widget
-    // header content.
-    return (
-      <div className="relative h-full sm:pt-4">
-        <span className="hidden sm:inline">
-          <SchematicLabel
-            module={meta.module.id}
-            status={meta.module.status}
-            glyph={meta.module.glyph}
-            state="active"
-            variant="tab"
-          />
-        </span>
-        {widget}
-      </div>
     );
   }, [dashboardState]);
 
@@ -402,8 +383,6 @@ export default function Dashboard() {
 
   if (loading) {
     return (
-      // No BOOTING SchematicLabel here: it exists only while loading, so its
-      // height is exactly the shift this skeleton is meant to eliminate.
       <PageSkeleton
         label="Loading dashboard"
         headerRowClass="flex flex-row items-center justify-between gap-2 sm:gap-4"
@@ -539,7 +518,10 @@ export default function Dashboard() {
               ) : (
                 <>
                   Drag the <Move size={12} className="inline mx-0.5" /> handle to move widgets, or
-                  the <span className="inline-block px-1">↘</span> handle to resize.
+                  the <span className="inline-block px-1">↘</span> handle to resize. Widgets size
+                  themselves to their content and float up into the space above — dragging a
+                  widget&apos;s height pins it, and the{' '}
+                  <ChevronsDownUp size={12} className="inline mx-0.5" /> handle hands it back.
                 </>
               )}
               {' '}Click <strong className="text-white">Save layout</strong> when you&apos;re done.

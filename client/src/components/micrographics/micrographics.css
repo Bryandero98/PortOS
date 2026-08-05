@@ -78,11 +78,14 @@
 .port-schematic-label--muted { color: rgb(var(--port-border)); opacity: 0.85; }
 
 /* Card-tab variant: sits like a blueprint tab on the card's top border.
-   The host needs `position: relative` plus enough top padding/space that
-   the tab isn't clipped by an `overflow: hidden` ancestor (e.g. the
-   dashboard grid wraps each widget in a clipped container). The tab is
-   anchored INSIDE the host so it can't escape; the card's own border
-   line is masked by the tab's own background where they overlap. */
+   The host needs `position: relative` plus enough top padding/space that the
+   tab isn't clipped by an `overflow: hidden` ancestor — the reason the host
+   has to reserve a header strip, and the reason the dashboard grid stopped
+   using this variant (that strip is fixed dead space in the one dimension
+   its cells now size to content). Live hosts are the Chief of Staff task
+   lists. The tab is anchored INSIDE the host so it can't escape; the card's
+   own border line is masked by the tab's own background where they
+   overlap. */
 .port-schematic-label--tab {
   position: absolute;
   top: 0.35rem;

@@ -29,21 +29,15 @@ const MeatSpaceStreakWidget = lazyWithReload(() => import('./builtins/MeatSpaceS
 const AutoFixMetricsWidget  = lazyWithReload(() => import('./builtins/AutoFixMetricsWidget'));
 const DailyDriverWidget     = lazyWithReload(() => import('./builtins/DailyDriverWidget'));
 
-// Each entry: { id, label, Component, width, defaultH?, gate?, module? }.
+// Each entry: { id, label, Component, width, defaultH?, gate? }.
 // `gate(state) => bool` skips the widget when it has nothing useful to show.
 // The Apps tile is intentionally un-gated — it renders its own empty-state
 // CTA so the "add your first app" path is always visible on a blank install.
 //
-// `defaultH` is the row count (each row ≈ 80px) used when a widget is
-// auto-placed into the grid for the first time — picked from the widget's
-// natural content height so unmigrated layouts and newly-added widgets land
-// at a usable size instead of the generic h=4 fallback. Once a layout has
-// been edited, persisted h values win.
-//
-// `module` is optional micrographic chrome — when set, the dashboard
-// renders a SchematicLabel ("MODULE.04 // ALERTS ●") as a tab on the
-// widget's top border. Several widgets carry this by default; the rest are
-// label-free so the dashboard doesn't turn into a wall of HUD chrome.
+// `defaultH` is the row count (each row ≈ 80px) used when a widget is first
+// auto-placed into a grid. It is a STARTING size, not the rendered height:
+// dashboard cells measure their content and float up (see DashboardGrid), so
+// this only has to be in the right ballpark for the first paint.
 export const WIDGETS = [
   // Daily Driver self-hides once the day is handled — gated on the per-day
   // first-visit/handled state so a handled day reserves no grid cell (#2666).
@@ -52,26 +46,26 @@ export const WIDGETS = [
   { id: 'quick-idea',        label: 'Quick Idea (Catalog)',  Component: QuickIdeaCapture,       width: 'half',    defaultH: 4 },
   { id: 'quick-image',       label: 'Quick Image Prompt',    Component: QuickImagePrompt,       width: 'half',    defaultH: 6 },
   { id: 'quick-task',        label: 'Quick Task',            Component: QuickTaskWidget,        width: 'half',    defaultH: 5 },
-  { id: 'apps',              label: 'Apps Grid',             Component: AppsGridWidget,         width: 'full',    defaultH: 5, module: { id: '03', status: 'APPS',    glyph: 'matrix' } },
-  { id: 'cos',               label: 'Chief of Staff',        Component: CosDashboardWidget,     width: 'third',   defaultH: 6, module: { id: '02', status: 'STAFF',   glyph: 'orbit' } },
+  { id: 'apps',              label: 'Apps Grid',             Component: AppsGridWidget,         width: 'full',    defaultH: 5 },
+  { id: 'cos',               label: 'Chief of Staff',        Component: CosDashboardWidget,     width: 'third',   defaultH: 6 },
   { id: 'goal-progress',     label: 'Goal Progress',         Component: GoalProgressWidget,     width: 'third',   defaultH: 5 },
   { id: 'upcoming-tasks',    label: 'Upcoming Tasks',        Component: UpcomingTasksWidget,    width: 'third',   defaultH: 5 },
-  { id: 'proactive-alerts',  label: 'Proactive Alerts',      Component: ProactiveAlertsWidget,  width: 'quarter', defaultH: 4, module: { id: '04', status: 'ALERTS',  glyph: 'warning-tri' } },
-  { id: 'review-hub',        label: 'Review Hub',            Component: ReviewHubCard,          width: 'quarter', defaultH: 4, module: { id: '05', status: 'REVIEW',  glyph: 'reticle' } },
-  { id: 'while-away',        label: 'While You Were Away',   Component: WhileAwayWidget,        width: 'third',   defaultH: 5, module: { id: '08', status: 'AWAY',    glyph: 'orbit' } },
-  { id: 'system-health',     label: 'System Health',         Component: SystemHealthWidget,     width: 'quarter', defaultH: 8, module: { id: '01', status: 'HEALTH',  glyph: 'matrix' } },
-  { id: 'network-exposure',  label: 'Network Exposure',      Component: NetworkExposureWidget,  width: 'quarter', defaultH: 5, module: { id: '07', status: 'EXPOSURE', glyph: 'reticle' } },
+  { id: 'proactive-alerts',  label: 'Proactive Alerts',      Component: ProactiveAlertsWidget,  width: 'quarter', defaultH: 4 },
+  { id: 'review-hub',        label: 'Review Hub',            Component: ReviewHubCard,          width: 'quarter', defaultH: 4 },
+  { id: 'while-away',        label: 'While You Were Away',   Component: WhileAwayWidget,        width: 'third',   defaultH: 5 },
+  { id: 'system-health',     label: 'System Health',         Component: SystemHealthWidget,     width: 'quarter', defaultH: 8 },
+  { id: 'network-exposure',  label: 'Network Exposure',      Component: NetworkExposureWidget,  width: 'quarter', defaultH: 5 },
   { id: 'backup',            label: 'Backup',                Component: BackupWidget,           width: 'quarter', defaultH: 5 },
   { id: 'death-clock',       label: 'Death Clock',           Component: DeathClockWidget,       width: 'quarter', defaultH: 4 },
   { id: 'daily-post',        label: 'Daily POST',            Component: DailyPostWidget,        width: 'quarter', defaultH: 3 },
   { id: 'tribe-care',        label: 'Tribe Care',            Component: TribeCareWidget,        width: 'quarter', defaultH: 4, gate: (s) => !!s.tribeCare?.hasPeople },
   { id: 'quick-stats',       label: 'Quick Stats',           Component: QuickStatsWidget,       width: 'quarter', defaultH: 3, gate: (s) => s.apps.length > 0 },
   { id: 'decision-log',      label: 'Decision Log',          Component: DecisionLogWidget,      width: 'quarter', defaultH: 4 },
-  { id: 'activity-streak',   label: 'Activity Streak',       Component: ActivityStreakWidget,   width: 'third',   defaultH: 3, gate: (s) => s.usage?.currentStreak > 0 || s.usage?.longestStreak > 0, module: { id: '06', status: 'STREAK',  glyph: 'spark' } },
+  { id: 'activity-streak',   label: 'Activity Streak',       Component: ActivityStreakWidget,   width: 'third',   defaultH: 3, gate: (s) => s.usage?.currentStreak > 0 || s.usage?.longestStreak > 0 },
   { id: 'hourly-activity',   label: 'Activity by Hour',      Component: HourlyActivityWidget,   width: 'full',    defaultH: 4, gate: (s) => !!s.usage?.hourlyActivity && s.usage.hourlyActivity.some((v) => v > 0) },
   { id: 'feeds',             label: 'Feeds Digest',          Component: FeedsWidget,            width: 'quarter', defaultH: 4, gate: (s) => (s.feeds?.totalFeeds ?? 0) > 0 },
   { id: 'meatspace-streak',  label: 'Health Logging Streak', Component: MeatSpaceStreakWidget,  width: 'third',   defaultH: 4, gate: (s) => (s.meatspaceLogging?.totalLogged ?? 0) > 0 },
-  { id: 'autofix-metrics',   label: 'Auto-Fix Telemetry',    Component: AutoFixMetricsWidget,   width: 'quarter', defaultH: 5, module: { id: '09', status: 'AUTOFIX', glyph: 'warning-tri' } },
+  { id: 'autofix-metrics',   label: 'Auto-Fix Telemetry',    Component: AutoFixMetricsWidget,   width: 'quarter', defaultH: 5 },
 ];
 
 export const WIDGETS_BY_ID = Object.fromEntries(WIDGETS.map((w) => [w.id, w]));
