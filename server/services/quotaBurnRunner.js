@@ -49,6 +49,9 @@ const TICK_MS = 60_000;
 let tickTimer = null;
 let running = false;
 let lastRunAt = null;
+// Family ids whose completion continuation arrived while a cycle was running —
+// drained by `drainDeferredContinuations` when that cycle releases the guard.
+const deferredContinuations = new Set();
 
 /**
  * The jobs a cycle will consider, in plan order.
@@ -143,7 +146,17 @@ async function dispatchFromCandidate(candidate, { jobId = null, force = false, a
  * gate — the reset window, the reserve, and the per-window dispatch cap.
  */
 export async function runQuotaBurnCycle(options = {}) {
-  if (running) return { skipped: 'already-running' };
+  if (running) {
+    // A continuation that lands mid-cycle is REMEMBERED, not dropped. Two burn
+    // agents from different families finishing within the same cycle is ordinary
+    // — and a dropped continuation stalls that family's plan until the next
+    // interval tick, which at the 12-hour default is most of a day of the window
+    // this feature exists to spend. Keyed by family, so several completions from
+    // one family while it is mid-cycle collapse to the single re-evaluation they
+    // amount to.
+    if (options.trigger === 'continuation' && options.familyId) deferredContinuations.add(options.familyId);
+    return { skipped: 'already-running' };
+  }
   running = true;
   // try/finally, not try/catch: this runs from a timer and from a route, and a
   // throw anywhere below (an ENOSPC on the ledger write, say) would otherwise
@@ -154,6 +167,26 @@ export async function runQuotaBurnCycle(options = {}) {
     return await evaluate(options);
   } finally {
     running = false;
+    await drainDeferredContinuations();
+  }
+}
+
+/**
+ * Run the continuations that arrived while a cycle was in flight, one at a time.
+ *
+ * Bounded by the same ledger every other dispatch charges: a drained family gets
+ * one cycle, which the gate ladder can decline. A completion that lands DURING
+ * the drain re-enters the set legitimately — it is a different agent finishing —
+ * and is likewise bounded by `maxDispatchesPerWindow`. Errors are swallowed here
+ * rather than allowed to replace the outer cycle's result: this runs from the
+ * caller's `finally`, so a throw would mask what that cycle actually decided.
+ */
+async function drainDeferredContinuations() {
+  while (deferredContinuations.size) {
+    const [familyId] = deferredContinuations;
+    deferredContinuations.delete(familyId);
+    await runQuotaBurnCycle({ trigger: 'continuation', familyId })
+      .catch((err) => console.error(`❌ Quota-burn deferred continuation for ${familyId} failed: ${err.message}`));
   }
 }
 
@@ -453,6 +486,7 @@ export function __resetQuotaBurnRunner() {
   if (tickTimer) clearInterval(tickTimer);
   tickTimer = null;
   cosEvents.off('agent:completed', onBurnAgentCompleted);
+  deferredContinuations.clear();
   running = false;
   lastRunAt = null;
 }

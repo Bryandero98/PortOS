@@ -438,6 +438,32 @@ describe('completion continuation', () => {
     expect(getProviderQuotas).toHaveBeenCalledWith(expect.objectContaining({ family: 'grok' }));
   });
 
+  it('runs a continuation that arrived mid-cycle instead of dropping it', async () => {
+    // Two burn agents finishing inside one cycle is ordinary. Dropping the
+    // second on the re-entrancy guard stalls that family until the next interval
+    // tick — most of a day at the 12-hour default.
+    state.config = normalizeQuotaBurnConfig({
+      enabled: true,
+      families: {
+        claude: { enabled: true, resetWithinHours: 24, jobs: [{ id: 'c1', enabled: true, jobType: 'agent-prompt' }] },
+        agy: { enabled: true, resetWithinHours: 24, jobs: [{ id: 'a1', enabled: true, jobType: 'agent-prompt' }] },
+      },
+    });
+    state.quotas = [card('claude'), card('agy')];
+    state.pending = { c1: { count: 1 }, a1: { count: 1 } };
+    // agy's agent finishes while claude's cycle is still mid-dispatch.
+    const { runBurnJob } = await import('./quotaBurnJobs/index.js');
+    runBurnJob.mockImplementationOnce(async ({ job, family, candidate }) => {
+      state.ran.push({ jobId: job.id, familyId: family.id, charge: candidate.charge });
+      await expect(__onBurnAgentCompleted({ metadata: { taskQuotaBurnFamily: 'agy' } }))
+        .resolves.toEqual({ skipped: 'already-running' });
+      return { dispatched: true, summary: `ran ${job.id}` };
+    });
+
+    await runQuotaBurnCycle({ trigger: 'manual', familyId: 'claude' });
+    expect(state.ran.map((entry) => entry.familyId)).toEqual(['claude', 'agy']);
+  });
+
   it('ignores an agent that was not a quota burn', async () => {
     state.pending = { first: { count: 1 } };
     await __onBurnAgentCompleted({ metadata: { taskType: 'user' } });
