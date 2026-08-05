@@ -1,6 +1,6 @@
 import { Link } from 'react-router';
 import AppTile from '../../AppTile';
-import { SchematicLabel, MicroGlyph } from '../../micrographics';
+import { MicroGlyph } from '../../micrographics';
 
 export default function AppsGridWidget({ dashboardState }) {
   const { apps, sortedApps, activeApps, refetch } = dashboardState;
@@ -8,13 +8,6 @@ export default function AppsGridWidget({ dashboardState }) {
   if (apps.length === 0) {
     return (
       <div className="relative bg-port-card border border-port-border rounded-xl p-8 sm:p-12 text-center">
-        <SchematicLabel
-          module="03"
-          status="EMPTY"
-          glyph="bracket-pair"
-          state="idle"
-          variant="tab"
-        />
         <div className="flex justify-center mb-4 text-port-accent/70">
           <MicroGlyph variant="reticle" size={48} state="accent" />
         </div>

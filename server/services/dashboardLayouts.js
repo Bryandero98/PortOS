@@ -238,6 +238,12 @@ const sanitizeActivateWindow = (w) => {
 // unusable (missing id, non-numeric coords, etc.). Numeric fields are
 // floored before clamping so JSON containing decimals can't smuggle in
 // off-grid positions that break the snap math in the client renderer.
+//
+// `fixedH` marks a cell whose height the user pinned by dragging it. Absent
+// (the default) means the client sizes the cell to its content and floats it
+// up, using `h` only as the first-paint fallback — which is also what a
+// client too old to know about `fixedH` renders. Emitted only when true so a
+// hand-read layouts file stays terse.
 const sanitizeGridItem = (g, validIds) => {
   if (!g || typeof g !== 'object') return null;
   if (typeof g.id !== 'string') return null;
@@ -249,7 +255,7 @@ const sanitizeGridItem = (g, validIds) => {
   const wRaw = Math.max(1, Math.min(GRID_COLS, numOr(g.w, 1)));
   const w = Math.min(wRaw, GRID_COLS - x);
   const h = Math.max(1, Math.min(GRID_ITEM_H_MAX, numOr(g.h, 1)));
-  return { id, x, y, w, h };
+  return { id, x, y, w, h, ...(g.fixedH === true ? { fixedH: true } : {}) };
 };
 
 // Sanitize a single layout entry — protect against hand-edits that produce
