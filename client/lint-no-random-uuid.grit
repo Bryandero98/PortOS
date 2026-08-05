@@ -25,7 +25,7 @@ language js
 // Like the ESLint selector, it deliberately does NOT match the computed form
 // `crypto['randomUUID']` (no `property.name`) or destructuring.
 //
-// Exemptions (`src/lib/uuid.js`, `src/**/*.test.{js,jsx}`) are applied in biome.json
+// Exemptions (`src/lib/uuid.js`, `src/**/*.test.{js,jsx}`) are applied in biome.jsonc
 // via negated globs on the override that loads this plugin.
 or {
   JsStaticMemberExpression(member = $member),

@@ -1,7 +1,7 @@
 language js
 
 // Replaces the three @eslint-react rules that Biome 2.5 has no native equivalent
-// for. The other five map onto built-in Biome rules (see biome.json):
+// for. The other five map onto built-in Biome rules (see biome.jsonc):
 //   no-missing-key                            -> correctness/useJsxKeyInIterable
 //   jsx-no-children-prop                      -> correctness/noChildrenProp
 //   dom-no-render-return-value                -> correctness/noRenderReturnValue
