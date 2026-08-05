@@ -7,15 +7,23 @@
  * configuration time. The server ships worked answers
  * (`server/lib/quotaBurnPresets.js`); this is how they get picked.
  *
- * A one-shot ACTION, not a bound field: the select snaps back to its placeholder
- * after firing, because the job it seeded is editable afterward and nothing on
- * disk records which preset it came from — leaving a preset name selected would
- * claim the row still matches text the user may have rewritten.
+ * Two modes, chosen by whether the caller passes `value`:
+ *
+ * - **Bound** (a job row): `value` is the id of the preset whose prompt the row
+ *   STILL matches verbatim, derived by the caller — nothing on disk records a
+ *   preset id. So the control reports a fact rather than a memory: it shows the
+ *   preset while the text is that preset's, and falls back to the placeholder
+ *   the moment the user edits the prompt into something else. Leaving it blank
+ *   at all times (the original behavior) made picking a preset look like a
+ *   no-op, because the only visible effect was 60 lines below the fold.
+ * - **One-shot action** (the family's "add a preset job"): no `value`, so the
+ *   select snaps back to its placeholder after firing — it adds a NEW step
+ *   rather than describing an existing one.
  */
 
 import { inputClass } from './fields';
 
-export default function PresetPicker({ id, label, presets, onPick, hint }) {
+export default function PresetPicker({ id, label, presets, onPick, hint, value = '' }) {
   // Deliberately unfiltered by the row's current job type: a preset carries the
   // job type it needs, so picking one CONVERTS the step rather than being
   // inapplicable to it. Filtering hid the control entirely on a non-agent row,
@@ -29,7 +37,9 @@ export default function PresetPicker({ id, label, presets, onPick, hint }) {
       <select
         id={id}
         className={inputClass}
-        value=""
+        // Guarded against a stale id: a `value` no match exists for would leave
+        // React's <select> on whatever option the browser picked instead.
+        value={rows.some((preset) => preset.id === value) ? value : ''}
         onChange={(event) => {
           const picked = rows.find((preset) => preset.id === event.target.value);
           if (picked) onPick(picked);

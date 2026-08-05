@@ -184,6 +184,27 @@ describe('QuotaBurn page', () => {
     expect(promptBox).toHaveValue('Audit the UI. File issues. Change no code.');
   });
 
+  it('shows which preset a step currently matches, and drops it once the prompt is edited', async () => {
+    // The picker used to snap straight back to "Choose a preset…", so applying
+    // one looked like a no-op — its only visible effect was a textarea further
+    // down the row. The selection is DERIVED from the prompt text (nothing on
+    // disk records a preset id), so it stays honest across an edit.
+    const user = userEvent.setup();
+    renderPage('/devtools/quota-burn/grok');
+    await user.selectOptions(await screen.findByLabelText('Job type'), 'agent-prompt');
+    const picker = screen.getByLabelText(/Start from a preset/);
+    expect(picker).toHaveValue('');
+
+    await user.selectOptions(picker, 'ux-audit');
+    expect(screen.getByLabelText('Work prompt')).toHaveValue('Audit the UI. File issues. Change no code.');
+    expect(picker).toHaveValue('ux-audit');
+
+    // Edited away from the preset ⇒ the row no longer IS that preset, and the
+    // control must stop claiming it is.
+    await user.type(screen.getByLabelText('Work prompt'), ' plus my own note');
+    expect(picker).toHaveValue('');
+  });
+
   it('keeps the work prompt when the job type picker is clicked through', async () => {
     // Params are carried across a type switch: resetting them destroyed a long
     // hand-written prompt with no confirmation and no undo.
