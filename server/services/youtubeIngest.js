@@ -559,15 +559,18 @@ export async function startYoutubeIngest({
     // event's `happenedAt` can't disagree — an ingest that downloads a 3-hour
     // video legitimately crosses midnight.
     const capturedAt = new Date().toISOString();
-    // Read once: the vault/folder decision and the CoS task priority both come
-    // from here, and an ingest should use one settings snapshot throughout.
-    const settings = await getSettings();
     // A dedicated per-job temp dir rather than a shared-prefix scan of
     // os.tmpdir() (which routinely holds thousands of entries on macOS): the
     // captions are found with a 2-entry readdir and removed with one rm.
     const subsDir = captureTranscript ? join(tmpdir(), `portos-yt-subs-${jobId}`) : null;
 
+    // Every await in this fire-and-forget coordinator must sit INSIDE the try:
+    // there is no request lifecycle to bubble to, so a rejection escaping it
+    // takes the whole Node process down (root CLAUDE.md, no-try/catch exception).
     try {
+      // Read once: the vault/folder decision and the CoS task priority both come
+      // from here, and an ingest should use one settings snapshot throughout.
+      const settings = await getSettings();
       await ensureDir(INGEST_DIR);
       if (subsDir) await ensureDir(subsDir);
 
