@@ -5,6 +5,7 @@ import { readClipboard } from '../lib/clipboard';
 import { useShellSession, MAX_SESSIONS } from '../hooks/useShellSession';
 import TerminalHotKeys from '../components/shell/TerminalHotKeys';
 import ShellSessionTabs from '../components/shell/ShellSessionTabs';
+import InfoTooltip from '../components/ui/InfoTooltip';
 
 const QUICK_COMMANDS = [
   { label: 'claude', command: 'claude --dangerously-skip-permissions' },
@@ -35,7 +36,6 @@ export default function Shell() {
     connected,
     sessions,
     activeSessionId,
-    activeSession,
     interactiveCount,
     liveRunCount,
     isLiveRun,
@@ -92,30 +92,50 @@ export default function Shell() {
     if (showPasteInput) pasteInputRef.current?.focus();
   }, [showPasteInput]);
 
+  const statusLabel = connected ? 'Connected' : 'Disconnected';
+
   return (
     <div className={isFullscreen
       ? 'fixed inset-0 z-[70] flex flex-col bg-port-bg p-2'
-      : 'h-full flex flex-col p-4 md:p-6'}>
+      // Deliberately tighter than the app-wide `p-4 md:p-6` mobile gutter: every
+      // pixel here is a terminal row/column, and the chrome above it is already
+      // compressed to three fixed rows. `gap` (not per-child `mb-*`) owns the
+      // vertical rhythm so the tab strip doesn't bake page spacing into itself.
+      : 'h-full flex flex-col gap-2 md:gap-3 p-2 md:p-6'}>
       {/* Header (hidden in fullscreen — the compact bottom bar takes over) */}
       {!isFullscreen && (
-      <div className="flex flex-wrap items-center gap-2 mb-3">
-        <h1 className="text-xl font-semibold text-white">Shell</h1>
-        <div className={`flex items-center gap-2 px-2 py-1 rounded text-sm ${
-          connected ? 'bg-port-success/20 text-port-success' : 'bg-gray-500/20 text-gray-400'
-        }`}>
+      // Single non-wrapping row on mobile: the status pill collapses to a bare dot
+      // and the session count drops out, so the action buttons stay on the title
+      // line instead of wrapping to a second row above the fold.
+      <div className="flex items-center gap-2">
+        <h1 className="text-xl font-semibold text-white shrink-0">Shell</h1>
+        <div
+          className={`flex items-center gap-2 shrink-0 text-sm px-2 py-1 rounded ${
+            connected ? 'text-port-success sm:bg-port-success/20' : 'text-gray-400 sm:bg-gray-500/20'
+          }`}
+        >
           <div className={`w-2 h-2 rounded-full ${connected ? 'bg-port-success' : 'bg-gray-500'}`} />
-          {connected ? 'Connected' : 'Disconnected'}
+          {/* The sr-only twin keeps the state announced when only the dot shows. */}
+          <span className="hidden sm:inline">{statusLabel}</span>
+          <span className="sr-only sm:hidden">{statusLabel}</span>
         </div>
         {interactiveCount > 0 && (
-          <span className="text-xs text-gray-500 font-mono">{interactiveCount}/{MAX_SESSIONS}</span>
+          <span className="hidden sm:inline text-xs text-gray-500 font-mono shrink-0">{interactiveCount}/{MAX_SESSIONS}</span>
         )}
         {liveRunCount > 0 && (
-          <span className="flex items-center gap-1 text-xs text-port-accent font-mono" title={`${liveRunCount} live TUI run${liveRunCount > 1 ? 's' : ''}`}>
+          <span className="flex items-center gap-1 text-xs text-port-accent font-mono shrink-0">
             <Bot size={12} />
             {liveRunCount} live
+            {/* The only surviving home for the live-run explainer the banner used
+                to carry — a `title` tooltip is unreachable by touch and keyboard,
+                which is most of this page's audience. Costs no vertical space. */}
+            <InfoTooltip label="About live TUI runs" align="end" panelClassName="w-60">
+              {liveRunCount} live TUI run{liveRunCount > 1 ? 's' : ''}. Open one to watch it — you can type to
+              answer or correct it, or Stop to end it. It won't idle-close while you have it open.
+            </InfoTooltip>
           </span>
         )}
-        <div className="flex items-center gap-2 ml-auto">
+        <div className="flex items-center gap-2 ml-auto shrink-0">
           <button
             onClick={() => setIsFullscreen(true)}
             className="flex items-center gap-1.5 px-2.5 py-2 bg-port-card hover:bg-port-border text-gray-300 hover:text-white rounded-lg text-sm transition-colors border border-port-border min-h-[40px]"
@@ -169,52 +189,47 @@ export default function Shell() {
         />
       )}
 
-      {/* Live TUI run banner — these views are interactive: type to answer or
-          correct the model, or Stop to end it. It won't auto-close while open. */}
-      {!isFullscreen && connected && isLiveRun && (
-        <div className="flex items-center gap-2 mb-3 px-3 py-2 rounded bg-port-accent/10 border border-port-accent/30 text-port-accent text-xs">
-          <Bot size={14} className="shrink-0" />
-          <span>
-            Live run <span className="font-mono">{activeSession?.label || 'TUI'}</span> — you can type to answer or correct it,
-            or <span className="font-semibold">Stop</span> to end it. It won't idle-close while you have it open.
-          </span>
-        </div>
-      )}
-
-      {/* Quick commands toolbar */}
+      {/* Quick commands toolbar — one horizontally-scrollable row rather than a
+          wrapping grid, so it costs a fixed ~40px of vertical space no matter how
+          many quick commands there are. The folder dropdown sits OUTSIDE the
+          scroller: an absolutely-positioned menu is clipped by `overflow-x-auto`. */}
       {!isFullscreen && connected && (
-        <div className="flex items-center gap-2 mb-3 flex-wrap">
-          <TerminalHotKeys
-            sendCtrlB={sendCtrlB}
-            sendCtrlC={sendCtrlC}
-            handlePaste={handlePaste}
-            sendNavKey={sendNavKey}
-            showPasteInput={showPasteInput}
-            setShowPasteInput={setShowPasteInput}
-            pasteInputRef={pasteInputRef}
-            handlePasteInputEvent={handlePasteInputEvent}
-            sendImage={sendImage}
-          />
-          <div className="w-px h-6 bg-port-border" />
-          {QUICK_COMMANDS.map(({ label, command }) => (
-            <button
-              key={label}
-              onClick={() => sendCommand(command)}
-              className="px-3 py-1.5 bg-port-card hover:bg-port-border text-gray-300 hover:text-white rounded text-xs font-mono transition-colors border border-port-border min-h-[40px]"
-              title={command}
-            >
-              {label}
-            </button>
-          ))}
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-1 min-w-0 overflow-x-auto scrollbar-hide touch-pan-x">
+            <TerminalHotKeys
+              sendCtrlB={sendCtrlB}
+              sendCtrlC={sendCtrlC}
+              handlePaste={handlePaste}
+              sendNavKey={sendNavKey}
+              showPasteInput={showPasteInput}
+              setShowPasteInput={setShowPasteInput}
+              pasteInputRef={pasteInputRef}
+              handlePasteInputEvent={handlePasteInputEvent}
+              sendImage={sendImage}
+            />
+            <div className="w-px h-6 bg-port-border shrink-0" />
+            {QUICK_COMMANDS.map(({ label, command }) => (
+              <button
+                key={label}
+                onClick={() => sendCommand(command)}
+                className="px-3 py-1.5 bg-port-card hover:bg-port-border text-gray-300 hover:text-white rounded text-xs font-mono transition-colors border border-port-border min-h-[40px] shrink-0"
+                title={command}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
 
           {/* App folder cd selector */}
-          <div className="relative ml-auto" ref={dropdownRef}>
+          <div className="relative shrink-0" ref={dropdownRef}>
             <button
               onClick={() => setFolderDropdownOpen(prev => !prev)}
-              className="flex items-center gap-2 px-3 py-1.5 bg-port-card hover:bg-port-border text-gray-300 hover:text-white rounded text-xs transition-colors border border-port-border min-h-[40px]"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-port-card hover:bg-port-border text-gray-300 hover:text-white rounded text-xs transition-colors border border-port-border min-h-[40px]"
+              title="cd to app folder"
+              aria-label="cd to app folder"
             >
               <FolderOpen size={14} />
-              cd to app
+              <span className="hidden sm:inline">cd to app</span>
               <ChevronDown size={12} className={`transition-transform ${folderDropdownOpen ? 'rotate-180' : ''}`} />
             </button>
             {folderDropdownOpen && (
