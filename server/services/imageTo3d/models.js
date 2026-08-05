@@ -110,7 +110,7 @@ async function failGeneration(id, operationId, error) {
   });
 }
 
-async function executeRender({ id, operationId, adapter, sourcePath }) {
+async function executeRender({ id, operationId, adapter, sourcePath, caps }) {
   const outputPath = assetDiskPath(id);
   let lastPersistedPercent = -1;
   try {
@@ -127,6 +127,12 @@ async function executeRender({ id, operationId, adapter, sourcePath }) {
       imagePath: sourcePath,
       outputPath,
       env,
+      // The host capabilities resolved at the request boundary, passed down rather
+      // than re-probed: a target whose output budget scales with the hardware (the
+      // CUDA lane's atlas size, keyed on VRAM) reads the same values the readiness
+      // gate used, instead of reaching for a module-global snapshot that an injected
+      // `caps` would leave unset.
+      caps,
       onProgress: (frame) => {
         // Sparse, low-frequency render progress — persist only when the whole
         // percent actually advances so a chatty parser can't hot-write the row.
@@ -210,7 +216,10 @@ export async function deleteModel(id) {
   return result;
 }
 
-export async function createModel(input, { caps = detectHostCapabilities() } = {}) {
+// `detectHostCapabilities` is async (its CUDA half shells to nvidia-smi), so it
+// can't be a default parameter — resolve it in the body, and only when the caller
+// didn't already supply capabilities.
+export async function createModel(input, { caps } = {}) {
   const sourcePath = resolveGalleryImage(input.filename);
   if (!sourcePath) {
     throw new ServerError('Gallery image not found', { status: 400, code: 'GALLERY_IMAGE_NOT_FOUND' });
@@ -218,16 +227,17 @@ export async function createModel(input, { caps = detectHostCapabilities() } = {
   const targetId = input.target || DEFAULT_IMAGE_TO_3D_TARGET;
   // Validate the target is runnable BEFORE persisting a record so we never leave
   // a dangling draft when the host can't render / the model isn't installed.
-  const adapter = assertTargetReady(targetId, caps);
+  const hostCaps = caps ?? await detectHostCapabilities();
+  const adapter = assertTargetReady(targetId, hostCaps);
   const created = await store.createModel({ ...input, target: targetId });
   // Thread the already-validated adapter + resolved source straight into the
   // render — createModel and startGeneration share `beginRender`, so the create
   // path does NOT re-resolve the gallery image, re-assert readiness, or re-fetch
   // the row it just wrote.
-  return beginRender(created, adapter, sourcePath);
+  return beginRender(created, adapter, sourcePath, hostCaps);
 }
 
-export async function startGeneration(id, { caps = detectHostCapabilities() } = {}) {
+export async function startGeneration(id, { caps } = {}) {
   const current = await store.getModel(id);
   if (!current) throw new ServerError('Image-to-3D model not found', { status: 404, code: 'NOT_FOUND' });
   if (current.status === 'generating'
@@ -235,12 +245,13 @@ export async function startGeneration(id, { caps = detectHostCapabilities() } = 
     throw new ServerError('This model is already generating', { status: 409, code: 'MODEL_BUSY' });
   }
 
-  const adapter = assertTargetReady(current.target, caps);
+  const hostCaps = caps ?? await detectHostCapabilities();
+  const adapter = assertTargetReady(current.target, hostCaps);
   const sourcePath = resolveGalleryImage(current.sourceImage?.filename);
   if (!sourcePath) {
     throw new ServerError('The source gallery image is no longer available', { status: 409, code: 'GALLERY_IMAGE_NOT_FOUND' });
   }
-  return beginRender(current, adapter, sourcePath);
+  return beginRender(current, adapter, sourcePath, hostCaps);
 }
 
 /**
@@ -250,7 +261,7 @@ export async function startGeneration(id, { caps = detectHostCapabilities() } = 
  * adapter + source through. The transactional `status==='generating'` guard here
  * is the authoritative race check (the callers' pre-check is just a fast 409).
  */
-async function beginRender(record, adapter, sourcePath) {
+async function beginRender(record, adapter, sourcePath, caps) {
   const { id } = record;
   const operationId = randomUUID();
   const startedAt = new Date().toISOString();
@@ -280,7 +291,7 @@ async function beginRender(record, adapter, sourcePath) {
 
   activeOperations.add(operationId);
   setImmediate(() => {
-    void executeRender({ id, operationId, adapter, sourcePath });
+    void executeRender({ id, operationId, adapter, sourcePath, caps });
   });
   return next;
 }
