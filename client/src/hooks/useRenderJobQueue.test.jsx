@@ -9,19 +9,21 @@ describe('useRenderJobQueue', () => {
     expect(result.current.pendingHeadByEntryId).toEqual({});
   });
 
-  it('enqueues variation and canon jobs, skipping other kinds', () => {
+  it('enqueues every entryRef kind the server stamps, keyed by entry id', () => {
     const { result } = renderHook(() => useRenderJobQueue());
     act(() => {
       result.current.enqueueEntryJobs([
         { jobId: 'j1', entryRef: { id: 'a', kind: 'variation' } },
         { jobId: 'j2', entryRef: { id: 'b', kind: 'canon' } },
+        // Composite boards render an EntryThumbSlot too, so their jobs are
+        // tracked and settled the same way.
         { jobId: 'j3', entryRef: { id: 'c', kind: 'sheet' } },
         { jobId: 'j4', entryRef: { id: 'a', kind: 'variation' } },
       ]);
     });
-    expect(result.current.pendingByEntryId).toEqual({ a: ['j1', 'j4'], b: ['j2'] });
+    expect(result.current.pendingByEntryId).toEqual({ a: ['j1', 'j4'], b: ['j2'], c: ['j3'] });
     // Head map exposes only the first jobId per entry.
-    expect(result.current.pendingHeadByEntryId).toEqual({ a: 'j1', b: 'j2' });
+    expect(result.current.pendingHeadByEntryId).toEqual({ a: 'j1', b: 'j2', c: 'j3' });
   });
 
   it('ignores malformed entries and no-ops on empty input', () => {

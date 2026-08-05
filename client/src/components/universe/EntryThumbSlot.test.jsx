@@ -74,6 +74,35 @@ describe('EntryThumbSlot — three-state thumbnail', () => {
     expect(onComplete).toHaveBeenCalledWith(null);
   });
 
+  // `useSingleImageRender`'s `handleComplete(filename, key)` is wired straight
+  // into `onComplete` (StyleProbeImage), so a second positional argument here is
+  // read as a job key: it would look up `renderingJobs['failed']`, find nothing,
+  // never clear the real job, and leave the slot spinning after every render.
+  // Terminal status therefore goes to its own prop, and `onComplete` stays
+  // strictly one-argument.
+  it('calls onComplete with exactly one argument, reporting status separately', () => {
+    jobStatus = 'failed';
+    const onComplete = vi.fn();
+    const onTerminalStatus = vi.fn();
+    render(
+      <EntryThumbSlot
+        inFlightJobId="job-w"
+        onComplete={onComplete}
+        onTerminalStatus={onTerminalStatus}
+        canRender={false}
+      />,
+    );
+    expect(onComplete.mock.calls[0]).toHaveLength(1);
+    expect(onTerminalStatus).toHaveBeenCalledWith('failed');
+  });
+
+  it('reports a cancel distinctly so callers can stay silent on one', () => {
+    jobStatus = 'canceled';
+    const onTerminalStatus = vi.fn();
+    render(<EntryThumbSlot inFlightJobId="job-v" onTerminalStatus={onTerminalStatus} canRender={false} />);
+    expect(onTerminalStatus).toHaveBeenCalledWith('canceled');
+  });
+
   it('does NOT clear the in-flight job for non-terminal statuses', () => {
     jobStatus = 'running';
     const onComplete = vi.fn();

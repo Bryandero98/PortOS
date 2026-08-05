@@ -49,18 +49,18 @@ export function useRenderJobQueue() {
     });
   }, []);
 
-  // Append freshly-queued jobs to their per-entry queues. Each `entryJobs`
-  // item is `{ jobId, entryRef: { id, kind } }`; only `variation` / `canon`
-  // kinds have per-row pending UI, so sheet (and other) kinds are skipped —
-  // otherwise their jobIds would accumulate forever with no consumer to clear
-  // them.
+  // Append freshly-queued jobs to their per-entry queues. Each `entryJobs` item
+  // is `{ jobId, entryRef: { id, kind } }`. Kind-agnostic on purpose: every kind
+  // the server stamps an entryRef for (`ENTRY_REF_KIND` — variation, sheet,
+  // canon) now renders a row that settles its own job, so an allowlist here
+  // would only ever fail closed on a kind added later — silently no spinner, no
+  // error — instead of failing visibly.
   const enqueueEntryJobs = useCallback((entryJobs) => {
     if (!Array.isArray(entryJobs) || entryJobs.length === 0) return;
     setPendingByEntryId((prev) => {
       const next = { ...prev };
       for (const { jobId, entryRef } of entryJobs) {
         if (!jobId || !entryRef?.id) continue;
-        if (entryRef.kind !== 'variation' && entryRef.kind !== 'canon') continue;
         const existing = Array.isArray(next[entryRef.id]) ? next[entryRef.id] : [];
         next[entryRef.id] = [...existing, jobId];
       }
