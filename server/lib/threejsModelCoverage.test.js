@@ -116,7 +116,9 @@ describe('evaluateThreejsPartCoverage', () => {
       }],
       detailInventory: [
         detail('Boxy hull', ['hull'], 'identity'),
-        detail('Fine surface stria', ['stria'], 'minor'),
+        // Repeated id — the folded pass must dedupe before its arity test too,
+        // not just the fusion pass.
+        detail('Fine surface stria', ['stria', 'stria'], 'minor'),
       ],
     }));
 
@@ -203,6 +205,47 @@ describe('evaluateThreejsPartCoverage', () => {
     // The children exist as separate meshes — the inventory just points above
     // them, which the orphan warning says in the other direction.
     expect(codes(coverage)).toContain('orphan-geometry');
+  });
+
+  it('tells a group with too few children to build, not re-attribute', () => {
+    // Only one mesh under the group, two features riding it — re-attributing
+    // would put both on that one child and land right back here next pass,
+    // a wasted provider round-trip.
+    const coverage = evaluateThreejsPartCoverage(makeSpec({
+      parts: [{
+        id: 'head',
+        name: 'Head',
+        children: [{ id: 'skull', name: 'Skull', geometry: box(0.8), material: 'shell' }],
+      }],
+      detailInventory: [
+        detail('Domed skull', ['head'], 'identity'),
+        detail('Hinged jaw', ['head'], 'identity'),
+      ],
+    }));
+
+    const fused = coverage.findings.find((finding) => finding.code === 'fused-parts');
+    expect(fused.message).toContain('one fused mesh');
+  });
+
+  it('tells a mesh with an unclaimed geometry child to re-attribute, not rebuild it', () => {
+    // `fin` is already modelled; "build each as its own part" would have the
+    // provider duplicate geometry it got right.
+    const coverage = evaluateThreejsPartCoverage(makeSpec({
+      parts: [{
+        id: 'hull',
+        name: 'Hull',
+        geometry: box(2),
+        material: 'shell',
+        children: [{ id: 'fin', name: 'Fin', geometry: box(0.5), material: 'shell' }],
+      }],
+      detailInventory: [
+        detail('Boxy hull', ['hull'], 'identity'),
+        detail('Swept fin', ['hull'], 'identity'),
+      ],
+    }));
+
+    const fused = coverage.findings.find((finding) => finding.code === 'fused-parts');
+    expect(fused.message).toContain('Point each detail at the specific child part');
   });
 
   it('does not also call folded minor relief unbuilt when its locator part carries no geometry', () => {

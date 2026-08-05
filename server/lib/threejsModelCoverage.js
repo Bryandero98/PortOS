@@ -91,13 +91,20 @@ export function evaluateThreejsPartCoverage(spec) {
     const ranked = group.filter((detail) => RANKED_PRIORITIES.has(detail.priority));
     if (ranked.length >= 2) {
       const features = ranked.map((detail) => detail.feature);
-      // A bare group whose children carry the geometry is an attribution
-      // problem, not a fused mesh — the parts already exist separately, the
-      // inventory just points above them. Telling the provider to "build each
-      // as its own part" there would have it rebuild geometry it got right.
-      const remedy = sharedPart.hasGeometry
-        ? 'Build each as its own part instead of one fused mesh.'
-        : 'Point each detail at the specific child part that implements it.';
+      // Re-attribute or rebuild? The answer is not "is the shared part a mesh"
+      // — it is whether enough unclaimed geometry already exists beneath it to
+      // give every ranked feature a home. Telling the provider to rebuild parts
+      // it already modelled duplicates geometry; telling it to re-attribute to
+      // children that do not exist wastes a whole provider round-trip and lands
+      // back here next pass. A shared part that is itself a mesh houses one of
+      // the features legitimately, so it only needs children for the rest.
+      const unclaimedDescendants = parts.filter((part) => part.hasGeometry
+        && part.ancestorIds.includes(partId)
+        && !implementedIds.has(part.id)).length;
+      const needHomes = ranked.length - (sharedPart.hasGeometry ? 1 : 0);
+      const remedy = unclaimedDescendants >= needHomes
+        ? 'Point each detail at the specific child part that implements it.'
+        : 'Build each as its own part instead of one fused mesh.';
       findings.push({
         code: 'fused-parts',
         severity: 'error',

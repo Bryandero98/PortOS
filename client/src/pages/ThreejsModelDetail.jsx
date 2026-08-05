@@ -149,8 +149,12 @@ export default function ThreejsModelDetail() {
   // Counted from the findings actually rendered rather than read off the stored
   // tallies, so the header can never disagree with the list below it — or print
   // "undefined error" for a record whose coverage arrived without its counts.
+  // An unrecognized severity counts as a note rather than being dropped — the
+  // list below still renders it (styled as a note), and a tally that omitted it
+  // would read "0 note" above a visible finding.
   const coverageCounts = (coverageFindings || []).reduce((counts, finding) => {
-    if (counts[finding.severity] !== undefined) counts[finding.severity] += 1;
+    const bucket = counts[finding.severity] === undefined ? 'note' : finding.severity;
+    counts[bucket] += 1;
     return counts;
   }, { error: 0, warning: 0, note: 0 });
 
