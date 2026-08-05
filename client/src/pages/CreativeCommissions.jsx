@@ -17,6 +17,7 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router';
 import { Plus, Sparkles, Trash2, Clock, Cpu, Pause, Play, Zap } from 'lucide-react';
+import PageSkeleton from '../components/ui/PageSkeleton';
 import toast from '../components/ui/Toast';
 import Drawer from '../components/Drawer';
 import ConfirmButtonPair from '../components/ui/ConfirmButtonPair';
@@ -143,7 +144,7 @@ export default function CreativeCommissions() {
       </div>
 
       {loading ? (
-        <div className="text-gray-500 text-sm">Loading…</div>
+        <PageSkeleton header="none" label="Loading commissions" cards={3} sidebar={false} />
       ) : sorted.length === 0 ? (
         <div className="border border-dashed border-port-border rounded-lg p-10 text-center">
           <Sparkles className="w-8 h-8 text-gray-600 mx-auto mb-3" />
@@ -197,7 +198,7 @@ export default function CreativeCommissions() {
               </button>
               <button
                 onClick={() => toggleEnabled(c)}
-                title={c.enabled ? 'Pause' : 'Resume'}
+                title={c.enabled ? 'Pause' : 'Resume'} aria-label={c.enabled ? 'Pause' : 'Resume'}
                 className="p-2 text-gray-400 hover:text-gray-100"
               >
                 {c.enabled ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}

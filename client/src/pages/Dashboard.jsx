@@ -5,12 +5,11 @@ import PageSkeleton from '../components/ui/PageSkeleton';
 import LayoutPicker from '../components/dashboard/LayoutPicker';
 import LayoutEditor from '../components/dashboard/LayoutEditor';
 import WidgetSuggestions from '../components/dashboard/WidgetSuggestions';
-import DashboardGrid, { reconcileGrid, synthesizeGrid } from '../components/dashboard/DashboardGrid.jsx';
+import DashboardGrid, { readingOrderIds, reconcileGrid, synthesizeGrid } from '../components/dashboard/DashboardGrid.jsx';
 import { WIDGETS_BY_ID, FALLBACK_LAYOUT } from '../components/dashboard/widgetRegistry.jsx';
 import WidgetSkeleton from '../components/dashboard/WidgetSkeleton';
-import { SchematicLabel } from '../components/micrographics';
 import { DASHBOARD_LAYOUT_CHANGED } from '../constants/events.js';
-import { Monitor, Move, Save, X } from 'lucide-react';
+import { ChevronsDownUp, GripHorizontal, Monitor, Move, Save, X } from 'lucide-react';
 import * as api from '../services/api';
 import socket from '../services/socket';
 import toast from '../components/ui/Toast';
@@ -60,6 +59,23 @@ export default function Dashboard() {
   const [editingGrid, setEditingGrid] = useState(false);
   const [draftGrid, setDraftGrid] = useState(null);
   const [savingGrid, setSavingGrid] = useState(false);
+  // Which affordance the grid is actually offering. Reported by DashboardGrid
+  // rather than derived from a Tailwind `sm:` breakpoint, because the grid
+  // measures its own CONTAINER — page padding makes that narrower than the
+  // viewport, so the two disagree in a ~30px band and the hint would describe
+  // handles that aren't on screen.
+  const [gridIsMobile, setGridIsMobile] = useState(false);
+  // Widget just added from a suggestion chip, so the render pass that lands it
+  // in the grid can scroll it into view (new widgets append at the bottom —
+  // off-screen on the single-column mobile stack, which made the suggestion
+  // look like it did nothing when it was actually added). Scoped to the layout
+  // it was added on ({ widgetId, layoutId }) so a layout switch mid-save can't
+  // scroll to an unrelated widget that happens to exist in the new layout.
+  const [pendingScroll, setPendingScroll] = useState(null);
+  // Mirrors activeLayoutId for reads inside the async onAdd handler, whose
+  // closure captured a possibly-stale activeLayout — lets it skip arming the
+  // scroll when the user switched layouts while the add was still saving.
+  const activeLayoutIdRef = useRef(null);
 
   const fetchData = useCallback(async () => {
     setDataError(null);
@@ -218,9 +234,41 @@ export default function Dashboard() {
   // Cancel grid edit mode whenever the user switches layouts so unsaved
   // positional edits don't bleed across layouts.
   useEffect(() => {
+    activeLayoutIdRef.current = activeLayoutId;
     setEditingGrid(false);
     setDraftGrid(null);
+    // Drop any pending "scroll the just-added widget into view" — it was armed
+    // against the previous layout, so honoring it after a switch could scroll
+    // to an unrelated widget (or an existing cell) in the new layout.
+    setPendingScroll(null);
   }, [activeLayoutId]);
+
+  // Stable identity so DashboardGrid's memoized cells actually bail out — a
+  // fresh closure here would re-render every widget on each drag tick.
+  const renderWidget = useCallback((item) => {
+    const meta = WIDGETS_BY_ID[item.id];
+    if (!meta) return null;
+    // Per-cell Suspense so a slow widget can't block sibling cells.
+    return (
+      <Suspense fallback={<WidgetSkeleton label={meta.label} />}>
+        <meta.Component dashboardState={dashboardState} />
+      </Suspense>
+    );
+  }, [dashboardState]);
+
+  // Once a just-added widget lands in the rendered grid, scroll it into view
+  // so the "Add <widget>?" suggestion produces a visible result instead of a
+  // chip that silently vanishes.
+  useEffect(() => {
+    if (!pendingScroll) return;
+    // Only honor the scroll on the layout the widget was actually added to —
+    // a save that resolved after a layout switch must not scroll the new one.
+    if (pendingScroll.layoutId !== activeLayout?.id) return;
+    if (!renderGrid.some((item) => item.id === pendingScroll.widgetId)) return;
+    const el = document.querySelector(`[data-widget-id="${CSS.escape(pendingScroll.widgetId)}"]`);
+    el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setPendingScroll(null);
+  }, [pendingScroll, renderGrid, activeLayout]);
 
   const startGridEdit = () => {
     setDraftGrid(renderGrid);
@@ -235,8 +283,17 @@ export default function Dashboard() {
   const saveGridEdit = async () => {
     if (!activeLayout || !draftGrid) return;
     setSavingGrid(true);
+    // Rewrite `widgets` in the grid's reading order too. The grid is what the
+    // renderer reads, so leaving the widget list in its old order would make
+    // LayoutEditor list widgets in an order the dashboard doesn't show —
+    // widgets hidden by a gate keep their relative position at the end.
+    const orderedIds = readingOrderIds(draftGrid);
+    const widgets = [
+      ...orderedIds,
+      ...activeLayout.widgets.filter((id) => !orderedIds.includes(id)),
+    ];
     const ok = await api
-      .saveDashboardLayout(activeLayout.id, { name: activeLayout.name, widgets: activeLayout.widgets, grid: draftGrid })
+      .saveDashboardLayout(activeLayout.id, { name: activeLayout.name, widgets, grid: draftGrid })
       .then((result) => { setLayouts(result.layouts); return true; }, () => false);
     setSavingGrid(false);
     if (!ok) return;
@@ -326,8 +383,6 @@ export default function Dashboard() {
 
   if (loading) {
     return (
-      // No BOOTING SchematicLabel here: it exists only while loading, so its
-      // height is exactly the shift this skeleton is meant to eliminate.
       <PageSkeleton
         label="Loading dashboard"
         headerRowClass="flex flex-row items-center justify-between gap-2 sm:gap-4"
@@ -369,7 +424,7 @@ export default function Dashboard() {
             <button
               onClick={startGridEdit}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-port-card border border-port-border hover:border-gray-600 transition-colors text-sm text-gray-400 hover:text-white min-h-[40px]"
-              title="Drag and resize widgets"
+              title="Reorder, move and resize widgets"
             >
               <Move size={14} />
               <span className="hidden sm:inline">Arrange</span>
@@ -433,12 +488,20 @@ export default function Dashboard() {
         <WidgetSuggestions
           presentWidgetIds={activeLayout.widgets}
           dashboardState={dashboardState}
-          onAdd={(widgetId) => saveLayout({
-            id: activeLayout.id,
-            name: activeLayout.name,
-            widgets: [...activeLayout.widgets, widgetId],
-            activateWindow: activeLayout.activateWindow ?? null,
-          })}
+          onAdd={async (widgetId) => {
+            const layoutId = activeLayout.id;
+            await saveLayout({
+              id: layoutId,
+              name: activeLayout.name,
+              widgets: [...activeLayout.widgets, widgetId],
+              activateWindow: activeLayout.activateWindow ?? null,
+            });
+            toast.success(`Added ${WIDGETS_BY_ID[widgetId]?.label ?? 'widget'} to your dashboard`);
+            // Only arm the scroll if this layout is still active — a switch
+            // while the save was in flight means the added widget isn't on
+            // screen, so arming would fire a stray scroll on returning here.
+            if (activeLayoutIdRef.current === layoutId) setPendingScroll({ widgetId, layoutId });
+          }}
         />
       )}
 
@@ -446,42 +509,30 @@ export default function Dashboard() {
         <>
           {editingGrid && (
             <div className="rounded-lg border border-port-accent/40 bg-port-accent/5 px-3 py-2 text-sm text-gray-300">
-              Drag the <Move size={12} className="inline mx-0.5" /> handle to move widgets, or
-              the <span className="inline-block px-1">↘</span> handle to resize. Click <strong className="text-white">Save layout</strong> when you&apos;re done.
+              {gridIsMobile ? (
+                <>
+                  Drag the <GripHorizontal size={12} className="inline mx-0.5" /> handle up or down
+                  to reorder widgets — or focus it and press space, then the arrow keys. Reordering
+                  re-packs the wide-screen arrangement to match; widths and heights are unchanged.
+                </>
+              ) : (
+                <>
+                  Drag the <Move size={12} className="inline mx-0.5" /> handle to move widgets, or
+                  the <span className="inline-block px-1">↘</span> handle to resize. Widgets size
+                  themselves to their content and float up into the space above — dragging a
+                  widget&apos;s height pins it, and the{' '}
+                  <ChevronsDownUp size={12} className="inline mx-0.5" /> handle hands it back.
+                </>
+              )}
+              {' '}Click <strong className="text-white">Save layout</strong> when you&apos;re done.
             </div>
           )}
           <DashboardGrid
             items={renderGrid}
             editable={editingGrid}
             onChange={setDraftGrid}
-            renderItem={(item) => {
-              const meta = WIDGETS_BY_ID[item.id];
-              if (!meta) return null;
-              // Per-cell Suspense so a slow widget can't block sibling cells.
-              const widget = (
-                <Suspense fallback={<WidgetSkeleton label={meta.label} />}>
-                  <meta.Component dashboardState={dashboardState} />
-                </Suspense>
-              );
-              if (!meta.module) return widget;
-              // Tab sits inside the wrapper (DashboardGrid clips with
-              // overflow-hidden); sm:pt-4 reserves a header zone so
-              // the tab doesn't overlap widget header content.
-              return (
-                <div className="relative h-full sm:pt-4">
-                  <span className="hidden sm:inline">
-                    <SchematicLabel
-                      module={meta.module.id}
-                      status={meta.module.status}
-                      glyph={meta.module.glyph}
-                      state="active"
-                      variant="tab"
-                    />
-                  </span>
-                  {widget}
-                </div>
-              );
-            }}
+            onLayoutModeChange={setGridIsMobile}
+            renderItem={renderWidget}
           />
         </>
       )}

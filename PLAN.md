@@ -301,13 +301,17 @@ is not reliably announced.
   `MoodBoardDetail.jsx`, `OpenClaw.jsx`, `LoraDatasetDetail.jsx`, `Browser.jsx`.
   Prefer wrapping in `FormField` (visible label + `htmlFor`/`id` pairing) over an
   `aria-label` when the surface has room for a visible label.
-- [ ] **Consider `eslint-plugin-jsx-a11y` in `client/eslint.config.js`.** It would
-  enforce this class automatically instead of relying on periodic audits. Skipped in
-  this pass because enabling it surfaces hundreds of findings at once and would fail
-  CI until the backlog above is drained — sequence it after the sweep, and start with
-  only the rules the repo already honors (`jsx-a11y/alt-text`,
-  `jsx-a11y/aria-props`, `jsx-a11y/role-has-required-aria-props`,
-  `jsx-a11y/label-has-associated-control`) rather than the full `recommended` set.
+- [ ] **Enable Biome's `a11y` rules in `client/biome.jsonc`.** It would enforce this
+  class automatically instead of relying on periodic audits. Note this got *cheaper*
+  when the client moved from ESLint to Biome: the rules ship in Biome's `a11y` group,
+  so this no longer needs a new dependency (`eslint-plugin-jsx-a11y`) at all — it is
+  now purely a config change. Still skipped in this pass because enabling the group
+  surfaces hundreds of findings at once and would fail CI until the backlog above is
+  drained — sequence it after the sweep, and start with only the rules the repo
+  already honors (`a11y/useAltText`, `a11y/useValidAriaProps`,
+  `a11y/useAriaPropsForRole`, `a11y/noLabelWithoutControl`) rather than the whole
+  group. The config already uses an explicit per-rule list, so adding a handful is
+  the established shape.
 
 
 ### Factor the "bump a seeded Claude provider tier" migration skeleton into `_lib.js`
@@ -334,3 +338,11 @@ is not reliably announced.
 ### Hold the iOS `playback` audio session on the other output-only players too
 
 - [ ] The SongBook drum play-along now passes `audioSession: 'playback'` to `createLookaheadTransport` so the iPhone ring/silent switch can't mute it (claimed on play, released on teardown, arbitrated against live mic claims — see the audio-session note in `client/src/lib/audioContext.js`). The same silence still applies to every other output-only surface: `client/src/lib/chiptunePlayback.js` (drives the same transport from `ChiptunePanel`, so it is a one-key change), `client/src/components/meatspace/post/MorseTrainer.jsx` (own per-mount context — needs an `acquireAudioSession('playback')` claim around its own play lifecycle, not the transport option), and `client/src/pages/Security.jsx`'s alert tones. The players NOT to touch are `scorePlayback` / `midiPlayback` / `metronome`: they run on the Songs training views beside `useSingToScore` / `useSingToVerify`, and while the arbiter would now keep those mics working, claiming `playback` there buys nothing those views asked for — that's why the option is per-player rather than baked into the transport. While you're there, claim `play-and-record` in `useSingToScore` / `useSingToVerify` around their own `getUserMedia` for symmetry with `voiceClient` / `audioRecorder`: they are safe today only because no `playback` claimant shares their route, which is an accident of routing rather than an invariant. Each needs an actual iPhone with the ringer switch OFF to verify; a jsdom test can only pin the claim/release calls (as `drumPlayer.test.js` does). Deferred from the drums fix, which was scoped to the reported page. Surfaced by the /simplify altitude review and the codex review pass.
+
+### Make LayoutEditor's Move up/down buttons actually move a widget
+
+- [ ] `client/src/components/dashboard/LayoutEditor.jsx:97` (`move`) reorders the layout's `widgets` array, but `Dashboard.jsx#saveLayout` persists the grid via `reconcileGrid(baseGrid, widgets)`, which iterates the **grid** and uses `widgets` only for membership — and the renderer reads the grid. So once a layout has a `grid` (every layout, after the first Arrange or the `synthesizeGrid` fallback is saved), those buttons produce no visible change at all. The component's own header calls itself a "keyboard-first editor… reorder uses up/down buttons," so this is a control advertising a capability it lost. The mobile reorder handle now edits the same underlying order through `reflowToOrder`, which makes the contradiction user-facing: two reorder affordances for the same widgets, one inert. Fix: have `saveLayout` reflow the grid when the incoming `widgets` order differs from `readingOrderIds(existing.grid)` (both exported from `DashboardGrid.jsx` already). The reason this was NOT rolled into the mobile-drag change: layouts arranged before `saveGridEdit` started syncing `widgets` to reading order can have the two already out of sync, so a naive "orders differ → reflow" would re-pack a carefully arranged desktop layout the first time someone renames it or toggles a widget. Needs either a one-shot migration that stamps `widgets = readingOrderIds(grid)` onto every stored layout (`server/services/dashboardLayouts.js`, `scripts/migrations/`) before the comparison goes live, or a reorder signal from LayoutEditor that says "this save is a reorder" instead of inferring it. Surfaced by the /simplify altitude review.
+
+### Collapse the dashboard grid's two coordinate systems into one
+
+- [ ] Since widget cells became content-measured (`packVertically` in `client/src/components/dashboard/DashboardGrid.jsx`), `y` and `h` carry two contradictory jobs. The renderer packs in PIXELS and treats `y` as reading order only; but `placeAndCompact` still resolves rectangle collisions on `{x,y,w,h}`, `reflowToOrder` still tracks `rowMaxH`, and `GRID_ROW_MAX` still clamps `y` as a position. `toPackSpace` exists purely to reconcile the two, so every gesture round-trips pixels → rows → compact → rows to keep them agreeing. Not a correctness bug — the round-trip is what makes them agree — but anyone touching drag has to hold both models at once, which is why `toPackSpace` needs a six-line comment to justify itself. **The call to make:** demote the persisted shape to `{ id, x, w, order, h?, fixedH? }`, delete `overlaps` + the y-compaction entirely, and let the pack own vertical placement outright. Keep `h` as the first-paint/older-client fallback (that compatibility story is the reason it survives at all — see the `fixedH` note in the dashboard CLAUDE.md). Blocked on nothing technical; it needs a migration in `scripts/migrations/` that rewrites each stored layout's grid to the new shape (`data/dashboard-layouts.json`, plus the seven `DEFAULT_LAYOUTS`/`INTENT_LAYOUTS` grids in `server/services/dashboardLayouts.js`) and a version-gated read so an install that has not upgraded still gets usable geometry. Surfaced by the /simplify altitude review.

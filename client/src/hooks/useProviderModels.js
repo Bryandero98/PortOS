@@ -1,13 +1,20 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import * as api from '../services/api';
-import { filterSelectableModels } from '../utils/providers';
+import { filterSelectableModels, selectableModelsForProvider, withStaleAntigravityPin } from '../utils/providers';
 
 // The provider's selectable model source: its `models` list, or — when that
 // list is empty (a cloud/manual provider configured with only a defaultModel,
 // where `[]` is truthy so `||` wouldn't fall through) — its defaultModel.
-const sourceModels = (provider) => (
-  provider?.models?.length ? provider.models : [provider?.defaultModel]
-);
+//
+// `withEffort` then applies any provider-specific rewrite — today that means
+// Antigravity lists BASE models (`gemini-3.6-flash`) rather than one row per
+// baked-in effort tier. It is OPT-IN because for a picker with no effort
+// control the suffixed ids are the ONLY way to express a tier: collapsing them
+// there would silently strip the capability rather than relocate it.
+const sourceModels = (provider, withEffort) => {
+  const models = provider?.models?.length ? provider.models : [provider?.defaultModel];
+  return withEffort ? selectableModelsForProvider(provider, models) : models;
+};
 
 /**
  * Hook for loading AI providers and managing two-step provider > model selection.
@@ -28,9 +35,16 @@ const sourceModels = (provider) => (
  *   set, the auto-selected / provider-change model is the first model that
  *   passes the filter rather than the provider's `defaultModel` (which may not
  *   qualify). Omit for the full selectable list.
+ * @param {boolean} [options.withEffort] - Set when the caller also renders an
+ *   effort control (`ProviderModelSelector`'s `effort`/`onEffortChange`) and
+ *   threads the value to the server. Providers whose CLI bakes the reasoning
+ *   tier into the model id — Antigravity's `gemini-3.6-flash-low|-medium|-high`
+ *   — then list BASE models instead, with effort picked separately. Leave off
+ *   for a picker with no effort control: there the suffixed ids are the only
+ *   way to express a tier, so collapsing them would strip the capability.
  * @returns {{ providers, selectedProviderId, selectedModel, availableModels, selectedProvider, setSelectedProviderId, setSelectedModel, loading }}
  */
-export default function useProviderModels({ filter, allowDefault = false, silent = false, modelFilter } = {}) {
+export default function useProviderModels({ filter, allowDefault = false, silent = false, modelFilter, withEffort = false } = {}) {
   const [providers, setProviders] = useState([]);
   const [selectedProviderId, setSelectedProviderId] = useState('');
   const [selectedModel, setSelectedModel] = useState('');
@@ -43,10 +57,10 @@ export default function useProviderModels({ filter, allowDefault = false, silent
   // model that passes the filter instead.
   const pickInitialModel = useCallback((provider) => {
     if (!modelFilter) return provider?.defaultModel || '';
-    const models = filterSelectableModels(sourceModels(provider))
+    const models = filterSelectableModels(sourceModels(provider, withEffort))
       .filter((m) => modelFilter(m, provider));
     return models[0] || '';
-  }, [modelFilter]);
+  }, [modelFilter, withEffort]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -84,10 +98,13 @@ export default function useProviderModels({ filter, allowDefault = false, silent
       // sourceModels falls back to [defaultModel] when `models` is empty (an
       // `[]` is truthy, so a bare `||` would leave the dropdown empty for a
       // cloud/manual provider configured with only a defaultModel).
-      const models = filterSelectableModels(sourceModels(currentProvider));
-      return modelFilter ? models.filter((m) => modelFilter(m, currentProvider)) : models;
+      const models = filterSelectableModels(sourceModels(currentProvider, withEffort));
+      const filtered = modelFilter ? models.filter((m) => modelFilter(m, currentProvider)) : models;
+      // Legacy-pin escape hatch (see `withStaleAntigravityPin`): only relevant
+      // once the list has been collapsed to base models, so it rides `withEffort`.
+      return withEffort ? withStaleAntigravityPin(currentProvider, filtered, selectedModel) : filtered;
     },
-    [currentProvider, modelFilter]
+    [currentProvider, modelFilter, selectedModel, withEffort]
   );
 
   const handleProviderChange = useCallback((id) => {

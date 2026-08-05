@@ -266,6 +266,47 @@ export async function createNote(vaultId, notePath, content = '') {
   return await getNote(vaultId, notePath, { includeBacklinks: false });
 }
 
+/**
+ * Write a note whether or not it already exists.
+ *
+ * `createNote` refuses an existing file and `updateNote` refuses a missing one,
+ * so every mirror-a-record-into-the-vault caller has to try one and fall back to
+ * the other. That ordering rule is a property of THIS adapter, not of any
+ * caller, so it lives here — the Daily Log mirror and the YouTube-ingest
+ * transcript mirror both go through this.
+ *
+ * CREATE first, then update on `NOTE_EXISTS` — not the other way round. Only
+ * `createNote` ensures the note's parent folder, and `resolveVaultPath` cannot
+ * containment-check a path whose parent does not exist yet: it falls back to the
+ * un-realpath'd path, which fails the check against the realpath'd vault root
+ * whenever the vault is reached through a symlink (`/var` → `/private/var` on
+ * macOS, and any vault the user reaches via a symlinked home or mount). Trying
+ * `updateNote` first therefore reports `INVALID_PATH` — not `NOTE_NOT_FOUND` —
+ * for the very first note written into a new subfolder, and a caller keyed on
+ * `NOTE_NOT_FOUND` silently mirrors nothing. Creating first sidesteps it: the
+ * folder is ensured before the path is resolved, and by the time `updateNote`
+ * runs the parent provably exists.
+ *
+ * Also swallows the "vault configured but its folder is gone" case (an unplugged
+ * external drive, an iCloud container not yet materialized) as a no-op rather
+ * than an error: a mirror is best-effort by nature, and the record it mirrors is
+ * already stored in PortOS.
+ *
+ * @returns {Promise<string|null>} the note path on success, null when the write
+ *   was skipped or the adapter reported an error.
+ */
+export async function upsertNote(vaultId, notePath, content) {
+  const vault = await getVaultById(vaultId);
+  if (!vault || !existsSync(vault.path)) return null;
+
+  const created = await createNote(vaultId, notePath, content);
+  if (!created?.error) return notePath;
+  if (created.error !== 'NOTE_EXISTS') return null;
+
+  const updated = await updateNote(vaultId, notePath, content);
+  return updated?.error ? null : notePath;
+}
+
 export async function deleteNote(vaultId, notePath) {
   const vault = await getVaultById(vaultId);
   if (!vault) return { error: 'VAULT_NOT_FOUND' };

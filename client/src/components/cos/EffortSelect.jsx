@@ -15,8 +15,15 @@ import { FormField } from '../ui/FormField';
  *
  * @param {object} props
  * @param {object} [props.provider] - The selected provider record (not its id).
+ * @param {string} [props.model] - The selected model. Antigravity's tiers are
+ *   per-model (agy rejects `gemini-3.1-pro --effort medium`), so passing this
+ *   narrows the options to the ones that model actually offers — and hides the
+ *   select entirely for an Antigravity model with no tiers at all. Omit for the
+ *   provider-wide ladder.
  * @param {string} props.value - Current effort ('' = provider default).
  * @param {function} props.onChange - Called with the new effort string.
+ * @param {string} [props.id] - Id for the <select>, when the caller owns the
+ *   `<label htmlFor>`. Defaults to a generated one (used by the FormField mode).
  * @param {string} [props.label] - Field label; enables the FormField wrapper.
  * @param {import('react').ReactNode} [props.hint] - Help text under the select (needs `label`).
  * @param {string} [props.className] - Classes for the <select>.
@@ -26,8 +33,10 @@ import { FormField } from '../ui/FormField';
  */
 export default function EffortSelect({
   provider,
+  model = null,
   value,
   onChange,
+  id: idProp,
   label,
   hint,
   className = '',
@@ -35,8 +44,9 @@ export default function EffortSelect({
   labelClassName,
   disabled = false
 }) {
-  const id = useId();
-  const levels = effortLevelsForProvider(provider);
+  const generatedId = useId();
+  const id = idProp || generatedId;
+  const levels = effortLevelsForProvider(provider, model);
   if (!levels) return null;
 
   // A stored effort can sit outside this provider's ladder — a task/stage
@@ -48,7 +58,7 @@ export default function EffortSelect({
   // the run uses the clamped level. Mirrors the stale-model option the pipeline
   // stage's Model select already renders.
   const outOfLadder = value && !levels.includes(value) ? value : null;
-  const clamped = outOfLadder ? resolveCliEffort(outOfLadder, provider) : null;
+  const clamped = outOfLadder ? resolveCliEffort(outOfLadder, provider, model) : null;
 
   const select = (
     <select

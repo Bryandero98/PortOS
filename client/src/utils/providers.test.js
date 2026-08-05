@@ -46,12 +46,24 @@ import {
   enabledApiProviderFilter,
   providerTypeClass,
   getProviderTimeout,
+  splitAntigravityModel,
+  antigravityBaseModels,
+  antigravityModelEffortLevels,
+  selectableModelsForProvider,
+  withStaleAntigravityPin,
+  effortAwareModelOptions,
+  effectiveModelFor,
+  effortSurvivingModel,
+  seedModelEffort,
 } from './providers.js';
 import { PROVIDER_TYPES as SERVER_PROVIDER_TYPES } from '../../../server/lib/aiToolkit/constants.js';
 import {
   effortLevelsForProvider as serverEffortLevelsForProvider,
   isAntigravityProvider as serverIsAntigravityProvider,
   resolveCliEffort as serverResolveCliEffort,
+  splitAntigravityModel as serverSplitAntigravityModel,
+  antigravityBaseModels as serverAntigravityBaseModels,
+  antigravityModelEffortLevels as serverAntigravityModelEffortLevels,
 } from '../../../server/lib/providerModels.js';
 
 // The client copy drives what EffortSelect DISPLAYS; the server copy decides
@@ -99,6 +111,196 @@ describe('effortLevelsForProvider (server mirror)', () => {
   it.each(CASES)('%s', (_label, provider, expected) => {
     expect(effortLevelsForProvider(provider)).toEqual(expected);
     expect(serverEffortLevelsForProvider(provider)).toEqual(expected);
+  });
+});
+
+// Antigravity lists one model id per effort tier (`gemini-3.6-flash-high`), but
+// agy also takes the BASE id with a separate `--effort` flag — so the pickers
+// show base models and carry effort as its own control. Both sides must agree on
+// the split, or a client-side base id won't match what the server rebuilds.
+describe('Antigravity base-model split (server mirror)', () => {
+  // The catalog `agy models` prints — the shipped provider list mirrors it.
+  const CATALOG = [
+    ANTIGRAVITY_CONFIGURED_DEFAULT,
+    'gemini-3.6-flash-high', 'gemini-3.6-flash-medium', 'gemini-3.6-flash-low',
+    'gemini-3.1-pro-high', 'gemini-3.1-pro-low',
+    'claude-sonnet-4-6', 'claude-opus-4-6-thinking', 'gpt-oss-120b-medium',
+  ];
+  const BASES = [
+    ANTIGRAVITY_CONFIGURED_DEFAULT,
+    'gemini-3.6-flash', 'gemini-3.1-pro',
+    'claude-sonnet-4-6', 'claude-opus-4-6-thinking', 'gpt-oss-120b',
+  ];
+
+  it.each([
+    ['gemini-3.6-flash-high', { base: 'gemini-3.6-flash', effort: 'high' }],
+    ['gpt-oss-120b-medium', { base: 'gpt-oss-120b', effort: 'medium' }],
+    ['claude-opus-4-6-thinking', { base: 'claude-opus-4-6-thinking', effort: null }],
+    [ANTIGRAVITY_CONFIGURED_DEFAULT, { base: ANTIGRAVITY_CONFIGURED_DEFAULT, effort: null }],
+    ['', { base: '', effort: null }],
+  ])('splitAntigravityModel(%s)', (id, expected) => {
+    expect(splitAntigravityModel(id)).toEqual(expected);
+    expect(serverSplitAntigravityModel(id)).toEqual(expected);
+  });
+
+  it('strips + dedupes the catalog into base models on both sides', () => {
+    expect(antigravityBaseModels(CATALOG)).toEqual(BASES);
+    expect(serverAntigravityBaseModels(CATALOG)).toEqual(BASES);
+  });
+
+  it.each([
+    ['gemini-3.6-flash', ['low', 'medium', 'high']],
+    // agy: `gemini-3.1-pro has no "medium" effort (available: low, high)`.
+    ['gemini-3.1-pro', ['low', 'high']],
+    ['gpt-oss-120b', ['medium']],
+    ['claude-sonnet-4-6', []],
+    // The sentinel is the shipped agy defaultModel, so a picker opens on it —
+    // it means "model unknown" (full ladder), not "this model has no tiers".
+    [ANTIGRAVITY_CONFIGURED_DEFAULT, null],
+  ])('antigravityModelEffortLevels(%s)', (model, expected) => {
+    expect(antigravityModelEffortLevels(model, CATALOG)).toEqual(expected);
+    expect(serverAntigravityModelEffortLevels(model, CATALOG)).toEqual(expected);
+  });
+
+  it('narrows the picker ladder per selected model, and hides it for a tier-less model', () => {
+    const agy = { id: 'antigravity-cli', command: 'agy', models: CATALOG };
+    for (const [model, expected] of [
+      ['gemini-3.6-flash', ['low', 'medium', 'high']],
+      ['gemini-3.1-pro', ['low', 'high']],
+      ['claude-sonnet-4-6', null],
+    ]) {
+      expect(effortLevelsForProvider(agy, model)).toEqual(expected);
+      expect(serverEffortLevelsForProvider(agy, model)).toEqual(expected);
+    }
+    // Clamping follows the narrowed ladder, so agy never sees an invalid pair.
+    expect(resolveCliEffort('medium', agy, 'gemini-3.1-pro')).toBe('low');
+    expect(serverResolveCliEffort('medium', agy, 'gemini-3.1-pro')).toBe('low');
+  });
+
+  it('rewrites only Antigravity model lists', () => {
+    expect(selectableModelsForProvider({ id: 'antigravity-cli', command: 'agy' }, CATALOG)).toEqual(BASES);
+    expect(selectableModelsForProvider({ id: 'codex', command: 'codex' }, CATALOG)).toEqual(CATALOG);
+    expect(selectableModelsForProvider(null, CATALOG)).toEqual(CATALOG);
+  });
+
+  // The pickers that carry their own effort control (CoS tasks/schedules/jobs,
+  // the Three.js generator, the /do:* drawer) collapse the list to base models,
+  // so a record saved before the split holds an id the list no longer contains.
+  describe('withStaleAntigravityPin', () => {
+    const agy = { id: 'antigravity-cli', command: 'agy' };
+
+    it('re-adds a stored suffixed id that the base list dropped', () => {
+      expect(withStaleAntigravityPin(agy, BASES, 'gemini-3.6-flash-high'))
+        .toEqual([...BASES, 'gemini-3.6-flash-high']);
+    });
+
+    it('leaves an id the list already offers alone', () => {
+      expect(withStaleAntigravityPin(agy, BASES, 'gemini-3.6-flash')).toEqual(BASES);
+    });
+
+    it('never re-surfaces the configured-default sentinel or an unsuffixed stale pin', () => {
+      // filterSelectableModels exists to hide the sentinel; a typo'd pin is not
+      // a legacy tier, so neither qualifies for the escape hatch.
+      expect(withStaleAntigravityPin(agy, ['gemini-3.6-flash'], ANTIGRAVITY_CONFIGURED_DEFAULT))
+        .toEqual(['gemini-3.6-flash']);
+      expect(withStaleAntigravityPin(agy, ['gemini-3.6-flash'], 'gemini-9-typo'))
+        .toEqual(['gemini-3.6-flash']);
+    });
+
+    it('is a no-op for a non-Antigravity provider whose model merely ends in -high', () => {
+      const codex = { id: 'codex', command: 'codex' };
+      expect(withStaleAntigravityPin(codex, ['gpt-5'], 'some-model-high')).toEqual(['gpt-5']);
+    });
+  });
+
+  describe('effortAwareModelOptions', () => {
+    it('collapses to base models, strips the sentinel, and pins a legacy id', () => {
+      const agy = { id: 'antigravity-cli', command: 'agy', models: CATALOG };
+      expect(effortAwareModelOptions(agy, 'gemini-3.6-flash-high')).toEqual([
+        'gemini-3.6-flash', 'gemini-3.1-pro',
+        'claude-sonnet-4-6', 'claude-opus-4-6-thinking', 'gpt-oss-120b',
+        'gemini-3.6-flash-high',
+      ]);
+    });
+
+    it('passes a non-Antigravity catalog through untouched', () => {
+      const codex = { id: 'codex', command: 'codex', models: ['gpt-5', 'gpt-5-mini'] };
+      expect(effortAwareModelOptions(codex, 'gpt-5')).toEqual(['gpt-5', 'gpt-5-mini']);
+      expect(effortAwareModelOptions(null, '')).toEqual([]);
+    });
+  });
+
+  describe('effectiveModelFor', () => {
+    it('falls back to the provider default when no model is pinned', () => {
+      expect(effectiveModelFor({ defaultModel: 'gemini-3.6-flash' }, '')).toBe('gemini-3.6-flash');
+      expect(effectiveModelFor({ defaultModel: 'gemini-3.6-flash' }, 'gemini-3.1-pro')).toBe('gemini-3.1-pro');
+      expect(effectiveModelFor(null, null)).toBe('');
+    });
+  });
+
+  describe('seedModelEffort', () => {
+    const agy = { id: 'antigravity-cli', command: 'agy' };
+
+    it('reads a legacy suffixed id back as base + its baked tier', () => {
+      expect(seedModelEffort(agy, 'gemini-3.6-flash-high', '')).toEqual({
+        model: 'gemini-3.6-flash', effort: 'high',
+      });
+    });
+
+    it('lets an explicitly stored effort win over the baked suffix', () => {
+      expect(seedModelEffort(agy, 'gemini-3.6-flash-high', 'low')).toEqual({
+        model: 'gemini-3.6-flash', effort: 'low',
+      });
+    });
+
+    it('leaves another provider alone even when its model ends in -high', () => {
+      const codex = { id: 'codex', command: 'codex' };
+      expect(seedModelEffort(codex, 'some-model-high', '')).toEqual({
+        model: 'some-model-high', effort: '',
+      });
+    });
+
+    it('normalizes nullish input to empty strings', () => {
+      expect(seedModelEffort(agy, null, null)).toEqual({ model: '', effort: '' });
+    });
+  });
+
+  // A model with no tiers HIDES the effort select. Without this the previous
+  // effort sat in state with no UI left to clear it, and every submit still sent
+  // it — an invocation agy rejects, plus a persisted level the run never used.
+  describe('effortSurvivingModel', () => {
+    const agy = { id: 'antigravity-cli', command: 'agy', models: CATALOG, defaultModel: ANTIGRAVITY_CONFIGURED_DEFAULT };
+
+    it('drops the effort when the newly-picked model has no tiers at all', () => {
+      // `claude-sonnet-4-6` ships in the agy catalog with no -low/-medium/-high
+      // siblings, so effortLevelsForProvider returns null and the select vanishes.
+      expect(effortSurvivingModel(agy, 'claude-sonnet-4-6', 'high')).toBe('');
+    });
+
+    it('keeps an effort the new model still offers', () => {
+      expect(effortSurvivingModel(agy, 'gemini-3.6-flash', 'high')).toBe('high');
+    });
+
+    it('keeps an out-of-ladder effort when the ladder merely NARROWS', () => {
+      // gemini-3.1-pro has no `medium`, but EffortSelect renders an explicit
+      // "medium (runs as low)" option — the clamp stays visible, so don't
+      // silently discard what the user picked.
+      expect(effortSurvivingModel(agy, 'gemini-3.1-pro', 'medium')).toBe('medium');
+    });
+
+    it('falls back to the provider default when the model is cleared', () => {
+      // Blank model = "use the provider default", which for agy is the sentinel —
+      // an UNKNOWN model, so the full ladder applies and the effort survives.
+      expect(effortSurvivingModel(agy, '', 'high')).toBe('high');
+    });
+
+    it('drops the effort for a provider with no effort control at all', () => {
+      expect(effortSurvivingModel({ id: 'grok-cli', command: 'grok' }, 'grok-4', 'high')).toBe('');
+    });
+
+    it('normalizes a nullish effort to the empty sentinel', () => {
+      expect(effortSurvivingModel(agy, 'gemini-3.6-flash', null)).toBe('');
+    });
   });
 });
 

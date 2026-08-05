@@ -96,7 +96,7 @@ export const TRANSIT = {
 // True when a ground position sits in the bay (used by the skyline ring to skip silhouettes
 // that would otherwise stand in the water, and by the player controller to keep walking
 // players on land). `margin` extends the water zone toward land (positive = stricter).
-export const isInWater = (x, z, margin = 0) => z < WORLD.shorelineZ + margin;
+export const isInWater = (_x, z, margin = 0) => z < WORLD.shorelineZ + margin;
 
 // True where a ground-level player may stand: any land, plus the Data Harbor's piers —
 // the one parcel built over the water (reached by the avenue gangway). Flying players

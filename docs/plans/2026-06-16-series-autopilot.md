@@ -15,7 +15,7 @@ re-implementation of generation logic.
 
 Two hard constraints from the user:
 1. **Never undo in-progress work.** The real test series
-   `https://null.taile8179.ts.net:5555/pipeline/series/ser-b74601a3-221d-4491-b037-bad51df8460a` already has a
+   `https://host-beta.example-tailnet.ts.net:5555/pipeline/series/ser-b74601a3-221d-4491-b037-bad51df8460a` already has a
    partially-generated arc and a partially-built first issue. Autopilot must inspect current state and resume
    from the first *missing* step, never regenerate what exists.
 2. **Arc verification may never fully converge** — re-running verify surfaces *new* findings even after

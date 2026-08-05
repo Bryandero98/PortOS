@@ -70,6 +70,9 @@ export default function ChiefOfStaff() {
   const [agents, setAgents] = useState([]);
   const [health, setHealth] = useState(null);
   const [providers, setProviders] = useState([]);
+  // Which provider an unpinned task actually runs on — the Schedule tab names it
+  // on the "Default" option and resolves model/effort choices against it.
+  const [activeProviderId, setActiveProviderId] = useState(null);
   const [apps, setApps] = useState([]);
   const [loading, setLoading] = useState(true);
   const [agentState, setAgentState] = useState('sleeping');
@@ -160,6 +163,7 @@ export default function ChiefOfStaff() {
       return healthData;
     });
     setProviders(providersData.providers || []);
+    setActiveProviderId(providersData.activeProvider || null);
     // Filter out PortOS Autofixer (it's part of PortOS project)
     setApps(appsData.filter(a => a.id !== 'portos-autofixer'));
     setLearningSummary(learningSummaryData);
@@ -927,7 +931,7 @@ export default function ChiefOfStaff() {
         )}
         {activeTab === 'schedule' && (
           <div role="tabpanel" id="tabpanel-schedule" aria-labelledby="tab-schedule">
-            <ScheduleTab apps={apps} providers={providers} />
+            <ScheduleTab apps={apps} providers={providers} activeProviderId={activeProviderId} />
           </div>
         )}
         {activeTab === 'workflow' && (

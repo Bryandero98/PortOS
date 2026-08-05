@@ -16,6 +16,11 @@ import useClickOutside from '../../hooks/useClickOutside';
 // whether the panel shows; `pinned` only records that a click latched it open so
 // it survives blur. Pass `children` as the help text and `label` as the button's
 // accessible name.
+//
+// `placement` is which way the panel opens. It defaults to `above`, but a trigger
+// near the top of a page needs `below`: full-width routes render inside a
+// `relative overflow-hidden` <main> (see Layout.jsx), which clips a panel that
+// opens upward out of the viewport entirely.
 export default function InfoTooltip({
   children,
   label = 'More information',
@@ -23,6 +28,7 @@ export default function InfoTooltip({
   panelClassName = 'w-56',
   iconSize = 14,
   align = 'center',
+  placement = 'above',
 }) {
   // `pinned` = a click/tap latched it open (survives blur until Escape / outside
   // click / another click). `hovering` = the transient hover-or-focus reveal.
@@ -58,6 +64,7 @@ export default function InfoTooltip({
     : align === 'end'
       ? 'right-0'
       : 'left-1/2 -translate-x-1/2';
+  const placementClass = placement === 'below' ? 'top-full mt-1.5' : 'bottom-full mb-1.5';
 
   return (
     <div
@@ -81,7 +88,7 @@ export default function InfoTooltip({
         <div
           id={panelId}
           role="tooltip"
-          className={`absolute bottom-full ${alignClass} z-50 mb-1.5 rounded-lg border border-port-border bg-gray-800 px-3 py-2 text-xs text-gray-300 shadow-lg ${panelClassName}`}
+          className={`absolute ${placementClass} ${alignClass} z-50 rounded-lg border border-port-border bg-gray-800 px-3 py-2 text-xs text-gray-300 shadow-lg ${panelClassName}`}
         >
           {children}
         </div>

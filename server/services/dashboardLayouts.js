@@ -27,10 +27,13 @@ const makeErr = (message, code) => Object.assign(new Error(message), { code });
 // see client/src/components/dashboard/widgetRegistry.jsx. If a layout refers
 // to an unknown id, the client skips it gracefully.
 // Built-in layouts ship with a `grid` so they look right out-of-the-box
-// instead of falling back to the client's row-flow synthesis. The grids
-// are designed for a typical desktop viewport (12 cols × ~80px rows): the
-// most useful widgets sit in rows 0–7 (~768px) so they're above the fold
-// without scrolling, and lower-priority widgets stack below.
+// instead of falling back to the client's row-flow synthesis. `x`/`w` are
+// real: they place the widget in the 12 columns. `y` decides reading order —
+// and therefore the order the client packs in — while `h` is only the
+// first-paint height, because the renderer measures each widget and floats it
+// up (see client/src/components/dashboard/DashboardGrid.jsx). So order these
+// grids by what should be seen first; do NOT budget above-the-fold space by
+// counting 80px rows, the arithmetic won't hold.
 
 // Intent-named layouts shipped post-029. Exported so the migration that
 // seeds them into existing installs (scripts/migrations/030-…) imports
@@ -206,9 +209,11 @@ export const WIDGETS_MAX = 50;
 export const WIDGET_ID_MAX_LENGTH = 80;
 
 // Grid placement bounds. The dashboard is a 12-column responsive grid; rows
-// are integer steps (each ~80px tall). GRID_ROW_MAX caps total layout depth
-// so a hand-edited file can't push y to absurd values that break the
-// container-height calculation in DashboardGrid.jsx.
+// are integer steps (each ~80px tall). GRID_ROW_MAX caps total layout depth so
+// a hand-edited file can't push `y` to absurd values — the renderer sorts by
+// it, so a runaway value is a nonsense ordering rather than a nonsense
+// position, but it stays clamped for the same reason `h` does: an older
+// client still reads both as literal geometry.
 export const GRID_COLS = 12;
 export const GRID_ROW_MAX = 200;
 export const GRID_ITEM_H_MAX = 50;
@@ -238,6 +243,12 @@ const sanitizeActivateWindow = (w) => {
 // unusable (missing id, non-numeric coords, etc.). Numeric fields are
 // floored before clamping so JSON containing decimals can't smuggle in
 // off-grid positions that break the snap math in the client renderer.
+//
+// `fixedH` marks a cell whose height the user pinned by dragging it. Absent
+// (the default) means the client sizes the cell to its content and floats it
+// up, using `h` only as the first-paint fallback — which is also what a
+// client too old to know about `fixedH` renders. Emitted only when true so a
+// hand-read layouts file stays terse.
 const sanitizeGridItem = (g, validIds) => {
   if (!g || typeof g !== 'object') return null;
   if (typeof g.id !== 'string') return null;
@@ -249,7 +260,7 @@ const sanitizeGridItem = (g, validIds) => {
   const wRaw = Math.max(1, Math.min(GRID_COLS, numOr(g.w, 1)));
   const w = Math.min(wRaw, GRID_COLS - x);
   const h = Math.max(1, Math.min(GRID_ITEM_H_MAX, numOr(g.h, 1)));
-  return { id, x, y, w, h };
+  return { id, x, y, w, h, ...(g.fixedH === true ? { fixedH: true } : {}) };
 };
 
 // Sanitize a single layout entry — protect against hand-edits that produce

@@ -1,0 +1,80 @@
+language js
+
+// Replaces the three @eslint-react rules that Biome 2.5 has no native equivalent
+// for. The other five map onto built-in Biome rules (see biome.jsonc):
+//   no-missing-key                            -> correctness/useJsxKeyInIterable
+//   jsx-no-children-prop                      -> correctness/noChildrenProp
+//   dom-no-render-return-value                -> correctness/noRenderReturnValue
+//   dom-no-unsafe-target-blank                -> security/noBlankTarget
+//   dom-no-dangerously-set-innerhtml-with-children
+//                                             -> security/noDangerouslySetInnerHtmlWithChildren
+or {
+  // --- @eslint-react/dom-no-find-dom-node ----------------------------------
+  // Matches both the imported `findDOMNode(x)` and the `ReactDOM.findDOMNode(x)`
+  // namespaced form.
+  or {
+    `findDOMNode($args)`,
+    `$obj.findDOMNode($args)`
+  } as $findNode where {
+    register_diagnostic(
+      span = $findNode,
+      message = "findDOMNode is deprecated and was removed in React 19. Use a ref instead.",
+      severity = "error"
+    )
+  },
+
+  // --- @eslint-react/no-direct-mutation-state ------------------------------
+  // Flags `this.state.foo = x` (any assignment operator, incl. `??=`), but not
+  // `this.state = {...}` in a constructor, where the object is `this` rather
+  // than something containing `this.state`.
+  JsStaticMemberAssignment(object = $stateObject) as $mutation where {
+    $stateObject <: contains `this.state`,
+    register_diagnostic(
+      span = $mutation,
+      message = "Do not mutate state directly. Use 'setState()' instead.",
+      severity = "error"
+    )
+  },
+
+  // --- @eslint-react/no-missing-component-display-name ---------------------
+  // Flags an anonymous function or arrow passed to memo()/forwardRef().
+  //
+  // The two-argument `memo($fn, $areEqual)` branches are NOT redundant: a single
+  // `$fn` metavariable does not match a two-item argument list, so without them
+  // `memo(() => <div/>, areEqual)` — a legitimate and common form — escaped the rule
+  // entirely. `forwardRef` takes only the render function, so it needs no such pair.
+  //
+  // ORDER IS LOAD-BEARING: the two-arg branches must come FIRST. Grit's `or` takes
+  // the first branch that matches and does not backtrack when the shared `where`
+  // below then fails — so with `memo($fn)` listed first, a two-arg call matched it,
+  // failed the anonymous-function check, and was dropped without the two-arg branch
+  // ever being tried. Verified both ways: specific-first flags all four anonymous
+  // forms, general-first silently flags only two. Do not alphabetize these.
+  //
+  // NOTE: one deliberate divergence from @eslint-react — that rule also accepts a
+  // later `Component.displayName = '...'` assignment as satisfying the requirement;
+  // this pattern does not, so on that axis it is stricter. `client/src` has zero
+  // memo()/forwardRef() call sites today, so the stricter reading costs nothing;
+  // name the function and the diagnostic goes away.
+  or {
+    `memo($fn, $areEqual)`,
+    `$react.memo($fn, $areEqual)`,
+    `memo($fn)`,
+    `forwardRef($fn)`,
+    `$react.memo($fn)`,
+    `$react.forwardRef($fn)`
+  } as $wrapped where {
+    or {
+      $fn <: JsArrowFunctionExpression(),
+      and {
+        $fn <: JsFunctionExpression(id = $fnId),
+        $fnId <: .
+      }
+    },
+    register_diagnostic(
+      span = $wrapped,
+      message = "Add missing 'displayName' for component: name the function passed to memo()/forwardRef().",
+      severity = "error"
+    )
+  }
+}

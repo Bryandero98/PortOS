@@ -23,7 +23,7 @@
  *   onRender, onRenderAll, onRenderCleanPlate, onJobCompleted, onJobFailed,
  *   onPreview, onRefine, onExpandCharacter, onSheetCompleted, onSheetDeleted,
  *   onToggleLock, onBulkLock, onPatchEntry, onDescribeImages,
- *   onCorrectFromImage, onPickFromCatalog, onAddEntry
+ *   onCorrectFromImage, onPickFromCatalog, onAddEntry, onRemoveEntry
  */
 import { createContext, useContext } from 'react';
 

@@ -8,6 +8,12 @@
  *   caller that already filtered (e.g. via the hook's default `enabled` filter) is
  *   unaffected since re-filtering enabled entries is idempotent.
  * @param {string} props.selectedProviderId - Currently selected provider ID
+ * @param {string} [props.effectiveProviderId] - The provider a blank selection
+ *   actually resolves to at run time (the install's active provider). The select
+ *   still shows the blank `emptyProviderOption`, but the model annotations,
+ *   tool-use warning and effort ladder resolve against this — otherwise "no
+ *   provider pinned" would also mean "no model or effort can be picked".
+ *   Defaults to `selectedProviderId`. See `resolveEffectiveProvider`.
  * @param {string} props.selectedModel - Currently selected model
  * @param {Array} props.availableModels - Models for the selected provider. Entries
  *   may be plain strings, or `{ id, name }` objects (the world builder passes the
@@ -30,6 +36,12 @@
  * @param {'row'|'stacked'} [props.layout] - 'row' (default) lays the two selects
  *   side by side; 'stacked' places the model select under the provider select for
  *   narrow columns.
+ * @param {string} [props.effort] - Current reasoning-effort override (`''` = the
+ *   provider's default). Pass with `onEffortChange` to get a third select for
+ *   effort-capable providers (Antigravity, Claude, Codex); it renders itself
+ *   away for every other provider, so no caller-side guard is needed. Omit both
+ *   props for the two-select picker.
+ * @param {function} [props.onEffortChange] - Called with the new effort string.
  * @param {boolean} [props.highlightToolUse] - Opt-in for AGENT / CoS-task pickers:
  *   marks each LOCAL (Ollama / LM Studio) model option with a tool-use indicator
  *   and warns below the select when the chosen local model can't call tools (it
@@ -38,7 +50,8 @@
  *   providers, whose ids don't encode their family.
  */
 import { useId } from 'react';
-import { localToolUseHint, withToolUseOptionLabel } from '../utils/providers.js';
+import { effectiveModelFor, effortLevelsForProvider, effortSurvivingModel, localToolUseHint, withToolUseOptionLabel } from '../utils/providers.js';
+import EffortSelect from './cos/EffortSelect.jsx';
 
 const SELECT_CLASS =
   'w-full px-3 py-1.5 min-h-[36px] bg-port-bg border border-port-border rounded-lg text-white text-sm';
@@ -55,6 +68,7 @@ function modelOption(m) {
 export default function ProviderModelSelector({
   providers,
   selectedProviderId,
+  effectiveProviderId,
   selectedModel,
   availableModels,
   onProviderChange,
@@ -67,20 +81,26 @@ export default function ProviderModelSelector({
   emptyModelOption,
   alwaysShowModel = false,
   layout = 'row',
-  highlightToolUse = false
+  highlightToolUse = false,
+  effort,
+  onEffortChange
 }) {
   const providerSelectId = useId();
   const modelSelectId = useId();
+  const effortSelectId = useId();
   // Agent-picker tool-use highlight (opt-in). Resolve the selected provider so
   // the annotation only fires for local backends (the heuristic mislabels cloud
   // ids). `localToolUseHint` returns null for cloud/blank, so the warning stays
   // scoped to a genuinely tool-incapable local pin.
-  const selectedProvider = providers.find((p) => p.id === selectedProviderId);
+  // Resolve against the effective provider (the pin, or what a blank selection
+  // falls back to) — everything below describes what a run would actually use.
+  const selectedProvider = providers.find((p) => p.id === (effectiveProviderId ?? selectedProviderId));
   // A blank model ("Default model") isn't a no-op: the agent resolver then runs
   // the provider's own defaultModel — which for an Ollama-backed provider can be
   // a non-tool model that silently wedges the stage. So evaluate the EFFECTIVE
-  // model (explicit selection, else the provider default) for the warning.
-  const effectiveModel = selectedModel || selectedProvider?.defaultModel || '';
+  // model (explicit selection, else the provider default) for the warning — and
+  // for the effort ladder, which is per-model on Antigravity.
+  const effectiveModel = effectiveModelFor(selectedProvider, selectedModel);
   const toolHint = highlightToolUse ? localToolUseHint(effectiveModel, selectedProvider) : null;
   const toolIncapable = toolHint?.toolCapable === false;
   // Only offer enabled providers (treat a missing `enabled` as enabled). The
@@ -92,7 +112,24 @@ export default function ProviderModelSelector({
     (p) => p.enabled !== false || p.id === selectedProviderId
   );
   const showModel = alwaysShowModel || availableModels.length > 0;
-  const wrapperClass = layout === 'stacked' ? 'flex flex-col gap-1' : 'flex items-center gap-2';
+  // The effort select is opt-in (`onEffortChange`) AND self-hiding: EffortSelect
+  // renders null for a provider with no effort control, so gate the label+wrapper
+  // on the same predicate or a non-effort provider gets an orphaned label.
+  const showEffort = !!onEffortChange && !!effortLevelsForProvider(selectedProvider, effectiveModel);
+  // Picking a model with NO effort tiers (Antigravity's ladder is per-model) makes
+  // the select above disappear — so clear the effort with it, or the value stays in
+  // state with no UI left to change it and every submit still sends it. Owned here
+  // rather than by each caller so the rule can't be forgotten by the next picker.
+  const handleModelChange = (value) => {
+    onModelChange(value);
+    if (!onEffortChange || !effort) return;
+    const surviving = effortSurvivingModel(selectedProvider, value, effort);
+    if (surviving !== effort) onEffortChange(surviving);
+  };
+  // `row` was sized for two selects; the effort control makes it three, which is
+  // unreadable at phone width — stack until `sm` when it's showing.
+  const rowClass = showEffort ? 'flex flex-col sm:flex-row sm:items-center gap-2' : 'flex items-center gap-2';
+  const wrapperClass = layout === 'stacked' ? 'flex flex-col gap-1' : rowClass;
   return (
     <div className={wrapperClass}>
       <div className="flex-1 min-w-0">
@@ -118,7 +155,7 @@ export default function ProviderModelSelector({
           <select
             id={modelSelectId}
             value={selectedModel}
-            onChange={(e) => onModelChange(e.target.value)}
+            onChange={(e) => handleModelChange(e.target.value)}
             disabled={disabled || modelDisabled}
             title={compact ? 'Model' : undefined}
             aria-label={compact ? 'Model' : undefined}
@@ -142,6 +179,24 @@ export default function ProviderModelSelector({
               stalls an agent. Prefer a recognized tool-capable model (e.g. qwen3.6:35b).
             </p>
           )}
+        </div>
+      )}
+      {showEffort && (
+        <div className="flex-1 min-w-0">
+          {!compact && (
+            <label htmlFor={effortSelectId} className="block text-xs text-gray-500 mb-1">
+              Thinking effort
+            </label>
+          )}
+          <EffortSelect
+            id={effortSelectId}
+            provider={selectedProvider}
+            model={effectiveModel}
+            value={effort || ''}
+            onChange={onEffortChange}
+            disabled={disabled}
+            className={SELECT_CLASS}
+          />
         </div>
       )}
     </div>

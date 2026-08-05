@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { AlertTriangle, Check, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
+import BrailleSpinner from '../BrailleSpinner';
 import toast from '../ui/Toast';
 import useMounted from '../../hooks/useMounted';
 
@@ -91,7 +92,7 @@ export default function BibleSection({ workId, items: itemsProp, onItemsChange, 
       </div>
 
       {loading && items.length === 0 && (
-        <div className="text-gray-500 italic">Loading…</div>
+        <BrailleSpinner text="Loading…" />
       )}
 
       {!loading && items.length === 0 && !creating && (
@@ -183,9 +184,11 @@ function BibleRow({ item, config, onEdit, readingTheme }) {
             </div>
           )}
         </div>
+        {/* 44px tap target; the negative margins let it bleed into the row's
+            own px-3/py-2 padding so a one-line row doesn't grow taller. */}
         <button
           onClick={onEdit}
-          className="text-gray-500 hover:text-port-accent shrink-0"
+          className="shrink-0 flex items-center justify-center min-w-[44px] min-h-[44px] -my-2 -mr-3 text-gray-500 hover:text-port-accent"
           title={config.editButtonTitle}
           aria-label={`Edit ${config.getDisplayName(item)}`}
         >

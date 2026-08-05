@@ -27,6 +27,20 @@ describe('InfoTooltip', () => {
     expect(screen.queryByRole('tooltip')).toBeNull();
   });
 
+  // A trigger near the top of a full-width route sits inside an
+  // `overflow-hidden` <main>, which clips an upward-opening panel out of view.
+  it('opens downward when placement is below, upward by default', () => {
+    const { unmount } = render(<InfoTooltip label="help" placement="below">Down</InfoTooltip>);
+    fireEvent.focus(screen.getByRole('button', { name: 'help' }));
+    expect(screen.getByRole('tooltip').className).toContain('top-full');
+    expect(screen.getByRole('tooltip').className).not.toContain('bottom-full');
+    unmount();
+
+    render(<InfoTooltip label="help">Up</InfoTooltip>);
+    fireEvent.focus(screen.getByRole('button', { name: 'help' }));
+    expect(screen.getByRole('tooltip').className).toContain('bottom-full');
+  });
+
   it('latches open on click for touch users and survives blur', () => {
     render(<InfoTooltip label="help">Tap reachable</InfoTooltip>);
     const btn = screen.getByRole('button', { name: 'help' });

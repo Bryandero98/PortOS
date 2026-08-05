@@ -42,7 +42,15 @@ export default function JobRow({
   const spec = catalog.jobTypes.find((type) => type.id === job.jobType);
   const idPrefix = `burn-job-${job.id}`;
   const setParam = (key, value) => onChange({ ...job, params: { ...job.params, [key]: value } });
-  const hasPromptText = Boolean(String(job.params?.prompt || '').trim());
+  const promptText = String(job.params?.prompt || '').trim();
+  const hasPromptText = Boolean(promptText);
+  // Which preset this row currently IS, derived rather than stored: a preset is
+  // copied into `params.prompt` and nothing on disk points back at its id, so
+  // matching the text is the only claim that stays true after an edit. The
+  // picker shows the preset while the prompt is verbatim and reverts to its
+  // placeholder as soon as the user changes a word.
+  const matchedPreset = (catalog.presets || [])
+    .find((preset) => promptText && String(preset.params?.prompt || '').trim() === promptText);
   const applyPreset = (preset) => { setPendingPreset(null); onChange(applyQuotaBurnPreset(job, preset)); };
   const optionsFor = (descriptor) => ({
     app: catalog.apps,
@@ -51,7 +59,11 @@ export default function JobRow({
   })[descriptor.kind];
 
   return (
-    <div className="rounded border border-port-border/70 bg-port-bg/40 p-3 space-y-3">
+    // `bg-port-bg`, not `bg-port-bg/40`: a step sits INSIDE the family card, so
+    // it reads as a sunken well only if it carries the page color at full
+    // strength. At 40% it composited most of the way back to the card fill and
+    // eight steps ran together as one undifferentiated block.
+    <div className="rounded border border-port-border/70 bg-port-bg p-3 space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <input
           id={`${idPrefix}-enabled`}
@@ -138,7 +150,12 @@ export default function JobRow({
           // the conversion is safe: params carry across the type switch and
           // existing prompt text is confirmed before it is replaced.
           hint="Fills the work prompt below with a ready-made single-focus audit that files issues and changes no code."
-          onPick={(preset) => (hasPromptText ? setPendingPreset(preset) : applyPreset(preset))}
+          value={matchedPreset?.id || ''}
+          // Re-picking the preset the row already matches is a no-op, so it
+          // needs no "replace your text?" confirm — the text IS the preset's.
+          onPick={(preset) => (hasPromptText && preset.id !== matchedPreset?.id
+            ? setPendingPreset(preset)
+            : applyPreset(preset))}
         />
         {(spec?.params || []).map((descriptor) => (
           <JobParamField

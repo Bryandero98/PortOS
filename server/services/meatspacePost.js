@@ -30,9 +30,13 @@ import {
 import { COGNITIVE_DRILL_TYPES, generateCognitiveDrill, scoreCognitiveDrill } from './meatspacePostCognitive.js';
 import { applySessionToMemoryItems, getMemoryItems, getDueMemoryItems, MASTERY_TARGET_ACCURACY } from './meatspacePostMemory.js';
 import { applySessionToReviewSchedule, getDueReviews, getRetentionReport } from './meatspacePostReview.js';
-import { getAllTrainingEntries } from './meatspacePostTraining.js';
+// From postTrainingLogStore.js (NOT meatspacePostTraining.js) — that module
+// imports getUnifiedActivityStreak from postActivityStreak.js, which in turn
+// needs getPostSessions from this file. Importing getAllTrainingEntries via
+// meatspacePostTraining.js would close that into a 3-file circular import.
+import { getAllTrainingEntries } from './postTrainingLogStore.js';
 import { getMorseProgress, MAX_KOCH_LEVEL } from './meatspacePostMorse.js';
-import { computePostStreaks, computeUnifiedStreak, ymdToUTC, ymdShift } from '../lib/postStreak.js';
+import { computePostStreaks, computeUnifiedStreak, normalizeYmd, ymdToUTC, ymdShift } from '../lib/postStreak.js';
 import { userLocalToday as localToday } from '../lib/timezone.js';
 
 // Re-export the shared streak helper so existing importers of
@@ -635,19 +639,6 @@ export function deriveTaskAvgResponseMs(task) {
   return Math.round(timed.reduce((sum, q) => sum + q.responseMs, 0) / timed.length);
 }
 
-/**
- * ONE unified activity streak across scored sessions AND the training log — the
- * single number every POST surface (launcher, Morse trainer, dashboard widgets)
- * should show, so they can't disagree (issue #2091). A day is active with EITHER
- * a scored session or a training-log entry (Morse / memory practice). Computed
- * over ALL history, independent of any stats window.
- */
-export async function getUnifiedActivityStreak(todayStr) {
-  const day = todayStr ?? await localToday();
-  const [sessions, training] = await Promise.all([getPostSessions(), getAllTrainingEntries()]);
-  return computeUnifiedStreak(sessions, training, day);
-}
-
 export async function getPostStats(days = 30) {
   const sessions = await getPostSessions();
   const todayStr = await localToday();
@@ -1020,6 +1011,10 @@ export function stalledProgressions(mulProgress, powersProgress, cogProgress, mo
  *   4. Stalled ladder progressions (N more reps to advance)
  * When nothing is actionable (e.g. a fresh install with no history), a single
  * sensible default ("run a full POST") is returned so the panel is never empty.
+ *
+ * `practicedToday` (from `practicedTodayFromActivity`) then demotes — never
+ * drops — anything already practiced today, and stamps each rec with the flag
+ * the daily routine reads to know it has run out of new work (issue #3563).
  */
 // The built-in Elements Song has its own study surface (`/post/memory/elements`)
 // rather than the generic per-item practice route.
@@ -1057,14 +1052,64 @@ export function memoryItemIdFromReview(review) {
   return itemId || null;
 }
 
+/**
+ * What the user has already practiced today, from BOTH scored POST sessions and
+ * the training log (Morse/Wordplay/Memory practice never post a scored session).
+ * Pure — exported for unit tests.
+ *
+ * "Continue Today's Routine" walks this recommendation list one item at a time,
+ * but every signal feeding it (weakest recent accuracy, stalled ladder) is a
+ * windowed average that a single rep barely moves — so without a
+ * what-have-I-already-done gate the same drill stays pinned at the top and the
+ * routine hands back the drill just finished, forever (issue #3563).
+ *
+ * @param {Array} sessions - all scored sessions (`{ date, tasks: [{ type }] }`)
+ * @param {Array} trainingEntries - all training-log entries
+ * @param {string|null} todayStr - the user's local `YYYY-MM-DD`
+ * @returns {{ drillTypes: Set<string>, memoryItemIds: Set<string>, completedSession: boolean }}
+ */
+export function practicedTodayFromActivity(sessions = [], trainingEntries = [], todayStr = null) {
+  const drillTypes = new Set();
+  const memoryItemIds = new Set();
+  let completedSession = false;
+  // No resolvable local day ⇒ report nothing practiced rather than guessing, so
+  // the routine degrades to its pre-#3563 ordering instead of silently demoting.
+  const today = normalizeYmd(todayStr);
+  if (!today) return { drillTypes, memoryItemIds, completedSession };
+
+  // Both feeds go through normalizeYmd: session dates are stored as the day
+  // prefix already, but some training-log entries (memory practice) carry a full
+  // ISO timestamp, and a raw `!==` would read those as not-practiced.
+  for (const session of sessions || []) {
+    if (normalizeYmd(session?.date) !== today) continue;
+    completedSession = true;
+    for (const task of session.tasks || []) {
+      if (task?.type) drillTypes.add(task.type);
+    }
+  }
+  for (const entry of trainingEntries || []) {
+    if (normalizeYmd(entry?.date) !== today) continue;
+    // Training entries are two shapes sharing one log: drill practice carries
+    // `drillType`, memory practice carries `memoryItemId` + `mode`.
+    if (entry.drillType) drillTypes.add(entry.drillType);
+    if (entry.memoryItemId) memoryItemIds.add(entry.memoryItemId);
+  }
+  return { drillTypes, memoryItemIds, completedSession };
+}
+
 export function composePostRecommendations({
   dueMemoryItems = [],
   dueReviews = [],
   weakestSkill = null,
   stalled = [],
   hasHistory = false,
+  practicedToday = null,
   limit = RECOMMENDATION_LIMIT,
 } = {}) {
+  // Copied into Sets so an array-shaped `practicedToday` (a JSON round-trip, or
+  // a test literal) works the same as the live Set-bearing one.
+  const doneTypes = new Set(practicedToday?.drillTypes || []);
+  const doneItems = new Set(practicedToday?.memoryItemIds || []);
   const recs = [];
 
   for (const item of dueMemoryItems) {
@@ -1075,10 +1120,12 @@ export function composePostRecommendations({
       detail: 'Due for spaced-repetition practice',
       deepLink: memoryPracticeDeepLink(item.id),
       drillType: 'memory-sequence',
+      memoryItemId: item.id,
     });
   }
 
   for (const review of dueReviews) {
+    const reviewItemId = review.kind === 'memory' ? memoryItemIdFromReview(review) : null;
     // A memory-chunk re-verification can't run through the launcher's review-rep
     // path (getPostReviewReps only regenerates multiplication/cognitive reps —
     // memory retention lives under /post/memory), so route it there instead of a
@@ -1092,9 +1139,10 @@ export function composePostRecommendations({
         ? 'Needs a refresh — last review slipped'
         : 'Maintenance rep due',
       deepLink: review.kind === 'memory'
-        ? memoryPracticeDeepLink(memoryItemIdFromReview(review))
+        ? memoryPracticeDeepLink(reviewItemId)
         : '/post/launcher',
       drillType: review.drillType || null,
+      memoryItemId: reviewItemId,
     });
   }
 
@@ -1136,7 +1184,25 @@ export function composePostRecommendations({
     });
   }
 
-  return recs.slice(0, Math.max(1, limit)).map((r, i) => ({ ...r, priority: i }));
+  // One rule, applied after the list is built, so a rec kind added later inherits
+  // it instead of shipping an undefined flag. A rec's identity is whatever it
+  // actually sends the user to practice: a memory ITEM for the two memory-shaped
+  // recs, a drill TYPE for the ladder/weak-skill ones, and — for the "run a full
+  // self-test" fallback, which names neither — any scored session at all.
+  const isPracticedToday = (rec) => {
+    if (rec.memoryItemId) return doneItems.has(rec.memoryItemId);
+    if (rec.drillType) return doneTypes.has(rec.drillType);
+    return Boolean(practicedToday?.completedSession);
+  };
+  // Demoted, not dropped: a fully-practiced day should still show what's up next
+  // rather than an empty panel. `sort` is stable, so the priority order above is
+  // preserved within each group; callers that want to STOP (the daily routine)
+  // read the flag on the top rec.
+  const ordered = recs
+    .map(rec => ({ ...rec, practicedToday: isPracticedToday(rec) }))
+    .sort((a, b) => a.practicedToday - b.practicedToday);
+
+  return ordered.slice(0, Math.max(1, limit)).map((r, i) => ({ ...r, priority: i }));
 }
 
 // Coarse module → config key for the enabled-drill lookup.
@@ -1211,7 +1277,7 @@ export function isRecDrillRunnable(config, module, type, memoryItemId = null) {
  * config can actually run.
  */
 export async function getPostRecommendations({ limit = RECOMMENDATION_LIMIT } = {}) {
-  const [dueMemoryItems, dueReviews, stats, mulProgress, powersProgress, cogProgress, morse, sessions, config] = await Promise.all([
+  const [dueMemoryItems, dueReviews, stats, mulProgress, powersProgress, cogProgress, morse, sessions, config, training, todayStr] = await Promise.all([
     getDueMemoryItems(),
     getDueReviews(new Date(), Infinity),
     getPostStats(MASTERY_DEFAULTS.windowDays),
@@ -1221,6 +1287,8 @@ export async function getPostRecommendations({ limit = RECOMMENDATION_LIMIT } = 
     getMorseProgress(MASTERY_DEFAULTS.windowDays),
     getPostSessions(),
     getPostConfig(),
+    getAllTrainingEntries(),
+    localToday(),
   ]);
 
   // Weakest skill — drop it unless the drill is currently runnable; a memory
@@ -1271,6 +1339,7 @@ export async function getPostRecommendations({ limit = RECOMMENDATION_LIMIT } = 
       weakestSkill,
       stalled,
       hasHistory: sessions.length > 0,
+      practicedToday: practicedTodayFromActivity(sessions, training, todayStr),
       limit,
     }),
   };

@@ -17,7 +17,10 @@ const FULL_TRIGGER_RULES = [
   { re: /^(?:server|client)\/vitest\.config(?:\.db)?\.js$/, reason: 'test runner configuration changed' },
   { re: /^server\/vitest\.setup\.js$/, reason: 'server test setup changed' },
   { re: /^client\/src\/test\/setup\.js$/, reason: 'client test setup changed' },
-  { re: /^client\/eslint\.config\.js$/, reason: 'lint configuration changed' },
+  // Biome config + its GritQL plugins (the former client/eslint.config.js). The
+  // .grit files carry real enforced rules — notably the crypto.randomUUID ban —
+  // so a change there is as load-bearing as a change to the config itself.
+  { re: /^client\/(?:biome\.jsonc|[^/]+\.grit)$/, reason: 'lint configuration changed' },
   { re: /^client\/vite\.config\.js$/, reason: 'client build configuration changed' },
   { re: /^server\/index\.js$/, reason: 'server composition root changed' },
   { re: /^client\/src\/App\.jsx$/, reason: 'client composition root changed' },

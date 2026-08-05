@@ -93,7 +93,7 @@ toasts on throw). **Custom catch ⇒ `silent: true`** — otherwise toasts fire 
 |---|---|
 | `apiImageVideo.js` | Image-gen local backend extras (gallery, models, LoRAs, cancel, delete). |
 | `apiLoraTraining.js` | Character LoRA training — datasets (CRUD, upload, generate, slice, caption), training runs (start/list/cancel/delete + status), character→LoRA link lookup. |
-| `apiMedia.js` | Screenshots + media assets. |
+| `apiMedia.js` | Screenshots + media assets. Also owns the multi-file upload orchestration — `processScreenshotUploads` / `processAttachmentUploads` and their single-file variants (`uploadScreenshotFile` / `uploadAttachmentFile`) — moved from `utils/fileUpload.js` since they perform network I/O, not pure transforms. `utils/fileUpload.js` keeps only the pure helpers/constants and no longer re-exports these. |
 | `apiMediaJobs.js` | Media generation job tracking. |
 | `apiCreativeDirector.js` | Creative Director (video production). |
 | `apiCreativeCommission.js` | Creative Commissions (Autonomous Creation Engine — standing recurring briefs). |
@@ -101,7 +101,7 @@ toasts on throw). **Custom catch ⇒ `silent: true`** — otherwise toasts fire 
 | `apiMusicVideo.js` | Music Video projects + scene board + audio analysis. |
 | `apiSprites.js` | Sprite Manager records, asset library, production-set import (#2895), reference workflow: create/generate/lock (#2896), directional walk and per-track generation/approval, animation-type definition CRUD (#3153), trim/postprocess, and per-run source-frame listing for the Loop Trimmer's re-derive (#2980). |
 | `apiShell.js` | Shell sessions over HTTP: hand a photo (plus a message) to the agent TUI running in a session. Keystrokes/output stay on the `shell:*` socket protocol. |
-| `apiThreejsModels.js` | Procedural Three.js model workspaces: gallery-image generation, refinement, source export, and deletion. |
+| `apiThreejsModels.js` | Procedural Three.js model workspaces: gallery-image generation, refinement, source export, deletion, and the subject-family checklist options. |
 | `apiImageTo3d.js` | Image-to-3D (`/3d`): selectable targets (TRELLIS.2) with host availability/install status, and per-image model records — create/list/get/generate/delete + GLB asset URL. |
 | `apiPipeline.js` | Pipeline (issues + stages + canon). |
 | `apiUniverseBuilder.js` | Universe Builder (generate + edit + commit). |

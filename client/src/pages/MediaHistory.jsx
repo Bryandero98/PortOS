@@ -7,6 +7,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { Combine, Image as ImageIcon, Film, Search, X } from 'lucide-react';
+import PageSkeleton from '../components/ui/PageSkeleton';
 import toast from '../components/ui/Toast';
 import MediaCard from '../components/media/MediaCard';
 import MediaPreview from '../components/media/MediaPreview';
@@ -175,7 +176,7 @@ export default function MediaHistory() {
                 type="button"
                 onClick={() => setQuery('')}
                 className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 text-gray-500 hover:text-white"
-                title="Clear search"
+                title="Clear search" aria-label="Clear search"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -231,7 +232,7 @@ export default function MediaHistory() {
       </div>
 
       {loading ? (
-        <div className="text-gray-500 text-sm">Loading…</div>
+        <PageSkeleton header="none" label="Loading media history" layout="grid" cards={10} gridColsClass="grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5" />
       ) : filtered.length === 0 ? (
         <div className="bg-port-card border border-port-border rounded-xl p-8 text-center text-gray-500 text-sm">
           {query.trim()

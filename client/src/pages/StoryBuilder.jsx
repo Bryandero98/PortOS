@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams, useLocation, Link } from 'react-router';
+import PageSkeleton from '../components/ui/PageSkeleton';
 import { filterSelectableModels } from '../utils/providers';
 import { composeCanonStyledPrompt } from '../lib/composeStyledPrompt';
 import { descriptorForCanonEntry } from '../lib/canonPrompt';
@@ -1307,7 +1308,15 @@ function StoryBuilderDetail({ storyId, stepParam }) {
     toast.success('Re-baselined to this machine');
   };
 
-  if (loading) return <div className="p-6 text-gray-400 flex items-center gap-2"><Loader2 className="w-5 h-5 animate-spin" /> Loading…</div>;
+  if (loading) {
+    return (
+      <div className="h-full overflow-y-auto p-4 md:p-6">
+        <div className="max-w-5xl mx-auto">
+          <PageSkeleton label="Loading story session" titleWidthClass="w-64" cards={3} sidebar={false} />
+        </div>
+      </div>
+    );
+  }
   if (!session) return <div className="p-6 text-gray-400">Session not found. <Link to="/story-builder" className="text-port-accent">Back to Story Builder</Link></div>;
 
   return (

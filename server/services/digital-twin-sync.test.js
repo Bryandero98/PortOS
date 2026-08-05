@@ -11,7 +11,12 @@ import {
   mergeTasteObserved,
   mergeChronotypeObserved,
   safeMdName,
+  TEST_HISTORY_KEYS,
 } from './digital-twin-sync.js';
+
+// Minimal shape of a digital-twin evaluation-run history entry — the real
+// schemas (digitalTwinValidation.js) key each run on `runId`, never `id`.
+const run = (runId, timestamp) => ({ runId, timestamp, providerId: 'example-provider', model: 'example-model', score: 0.5 });
 
 describe('mergeObjectLWW', () => {
   it('takes remote when local is missing', () => {
@@ -155,6 +160,37 @@ describe('unionByKey', () => {
   it('tolerates non-array inputs', () => {
     expect(unionByKey(null, undefined, 'id')).toEqual({ merged: [], changed: false });
   });
+
+  // Regression guard for the whole class of bug behind #3529: a keyField that
+  // no record actually carries must not silently collapse the array.
+  it('keeps every record when NONE of them carry the key field', () => {
+    const { merged } = unionByKey(
+      [{ runId: 'a' }, { runId: 'b' }],
+      [{ runId: 'c' }],
+      'nonexistentKey'
+    );
+    expect(merged.map((x) => x.runId).sort()).toEqual(['a', 'b', 'c']);
+  });
+
+  it('treats a blank-string key as unkeyed rather than collapsing on it', () => {
+    const { merged } = unionByKey([{ id: '', v: 1 }, { id: '', v: 2 }], [], 'id');
+    expect(merged).toHaveLength(2);
+  });
+
+  it('is idempotent for unkeyed records — re-merging the same remote adds nothing', () => {
+    const local = [{ runId: 'a' }];
+    const remote = [{ runId: 'b' }];
+    const first = unionByKey(local, remote, 'nonexistentKey');
+    const second = unionByKey(first.merged, remote, 'nonexistentKey');
+    expect(second.merged).toHaveLength(2);
+    expect(second.changed).toBe(false);
+  });
+
+  it('signature-matches unkeyed records regardless of property order', () => {
+    const { merged, changed } = unionByKey([{ a: 1, b: 2 }], [{ b: 2, a: 1 }], 'id');
+    expect(merged).toHaveLength(1);
+    expect(changed).toBe(false);
+  });
 });
 
 describe('mergeTaste', () => {
@@ -233,21 +269,177 @@ describe('mergeMeta', () => {
     expect(changed).toBe(true);
   });
 
-  it('unions all four test histories and personas by id', () => {
-    const local = { testHistory: [{ id: 't1' }], personas: [{ id: 'p1' }] };
+  it('unions all four test histories by runId and personas by id', () => {
+    const local = { testHistory: [run('t1', '2026-01-01T00:00:00.000Z')], personas: [{ id: 'p1' }] };
     const remote = {
-      testHistory: [{ id: 't2' }],
-      valuesTestHistory: [{ id: 'v1' }],
-      adversarialTestHistory: [{ id: 'a1' }],
-      multiTurnTestHistory: [{ id: 'm1' }],
+      testHistory: [run('t2', '2026-01-02T00:00:00.000Z')],
+      valuesTestHistory: [run('v1', '2026-01-01T00:00:00.000Z')],
+      adversarialTestHistory: [run('a1', '2026-01-01T00:00:00.000Z')],
+      multiTurnTestHistory: [run('m1', '2026-01-01T00:00:00.000Z')],
       personas: [{ id: 'p2' }],
     };
     const { merged } = mergeMeta(local, remote);
-    expect(merged.testHistory.map((x) => x.id).sort()).toEqual(['t1', 't2']);
+    expect(merged.testHistory.map((x) => x.runId).sort()).toEqual(['t1', 't2']);
     expect(merged.valuesTestHistory).toHaveLength(1);
     expect(merged.adversarialTestHistory).toHaveLength(1);
     expect(merged.multiTurnTestHistory).toHaveLength(1);
     expect(merged.personas.map((x) => x.id).sort()).toEqual(['p1', 'p2']);
+  });
+
+  // #3529: these arrays were unioned on 'id', which no run entry carries, so
+  // every entry collided on the `undefined` map key and the merge collapsed
+  // each history down to a single record on the FIRST peer sync.
+  it('preserves multi-entry test histories from BOTH peers without collapsing', () => {
+    const local = Object.fromEntries(TEST_HISTORY_KEYS.map((key) => [key, [
+      run(`${key}-L1`, '2026-01-03T00:00:00.000Z'),
+      run(`${key}-L2`, '2026-01-01T00:00:00.000Z'),
+    ]]));
+    const remote = Object.fromEntries(TEST_HISTORY_KEYS.map((key) => [key, [
+      run(`${key}-R1`, '2026-01-04T00:00:00.000Z'),
+      run(`${key}-R2`, '2026-01-02T00:00:00.000Z'),
+    ]]));
+
+    const { merged, changed } = mergeMeta(local, remote);
+    expect(changed).toBe(true);
+    for (const key of TEST_HISTORY_KEYS) {
+      expect(merged[key].map((x) => x.runId).sort()).toEqual(
+        [`${key}-L1`, `${key}-L2`, `${key}-R1`, `${key}-R2`].sort()
+      );
+    }
+  });
+
+  it('re-sorts a merged history newest-first so the readers\' slice(0, N) stays "most recent N"', () => {
+    const local = { testHistory: [run('L1', '2026-01-03T00:00:00.000Z'), run('L2', '2026-01-01T00:00:00.000Z')] };
+    const remote = { testHistory: [run('R1', '2026-01-04T00:00:00.000Z'), run('R2', '2026-01-02T00:00:00.000Z')] };
+    const { merged } = mergeMeta(local, remote);
+    expect(merged.testHistory.map((x) => x.runId)).toEqual(['R1', 'L1', 'R2', 'L2']);
+  });
+
+  it('orders same-timestamp runs identically on both peers (runId tiebreak)', () => {
+    const a = run('aaa', '2026-01-01T00:00:00.000Z');
+    const b = run('bbb', '2026-01-01T00:00:00.000Z');
+    const onPeerA = mergeMeta({ testHistory: [a] }, { testHistory: [b] }).merged.testHistory;
+    const onPeerB = mergeMeta({ testHistory: [b] }, { testHistory: [a] }).merged.testHistory;
+    expect(onPeerA.map((x) => x.runId)).toEqual(['aaa', 'bbb']);
+    expect(onPeerB.map((x) => x.runId)).toEqual(onPeerA.map((x) => x.runId));
+  });
+
+  it('sorts timestamp-less legacy runs last instead of ahead of dated ones', () => {
+    const local = { testHistory: [{ runId: 'legacy' }] };
+    const remote = { testHistory: [run('R1', '2026-01-04T00:00:00.000Z')] };
+    const { merged } = mergeMeta(local, remote);
+    expect(merged.testHistory.map((x) => x.runId)).toEqual(['R1', 'legacy']);
+  });
+
+  it('keeps the local copy of a run that both peers already have (add-only)', () => {
+    const local = { testHistory: [{ ...run('shared', '2026-01-01T00:00:00.000Z'), score: 0.9 }] };
+    const remote = { testHistory: [{ ...run('shared', '2026-01-01T00:00:00.000Z'), score: 0.1 }] };
+    const { merged, changed } = mergeMeta(local, remote);
+    expect(merged.testHistory).toHaveLength(1);
+    expect(merged.testHistory[0].score).toBe(0.9);
+    expect(changed).toBe(false);
+  });
+
+  // #3530: documents unioned add-only with no deletion tracking, so a peer that
+  // still held a document the user deleted re-inserted its metadata entry (and
+  // applyDocuments re-wrote the .md file) on every subsequent sync.
+  describe('deleted-document tombstones (#3530)', () => {
+    const DELETED_AT = '2026-02-01T00:00:00.000Z';
+    const tomb = (filename, deletedAt = DELETED_AT) => ({ filename, deletedAt });
+    const doc = (filename, extra = {}) => ({ id: `id-${filename}`, filename, weight: 5, ...extra });
+
+    it('does not resurrect a document the local machine deleted', () => {
+      const local = { documents: [doc('SOUL.md')], deletedDocuments: [tomb('CUSTOM_ROUTINE.md')] };
+      const remote = { documents: [doc('SOUL.md'), doc('CUSTOM_ROUTINE.md', { createdAt: '2026-01-01T00:00:00.000Z' })] };
+      const { merged, changed } = mergeMeta(local, remote);
+      expect(merged.documents.map((d) => d.filename)).toEqual(['SOUL.md']);
+      expect(changed).toBe(false);
+    });
+
+    it('suppresses a resurrected document that carries no creation stamp (legacy entry)', () => {
+      const local = { documents: [], deletedDocuments: [tomb('CUSTOM_ROUTINE.md')] };
+      const { merged, changed } = mergeMeta(local, { documents: [doc('CUSTOM_ROUTINE.md')] });
+      expect(merged.documents ?? []).toEqual([]);
+      expect(changed).toBe(false);
+    });
+
+    it('propagates a peer\'s delete: drops the local entry and adopts the tombstone', () => {
+      const local = { documents: [doc('CUSTOM_ROUTINE.md', { createdAt: '2026-01-01T00:00:00.000Z' })], deletedDocuments: [] };
+      const remote = { documents: [], deletedDocuments: [tomb('CUSTOM_ROUTINE.md')] };
+      const { merged, changed } = mergeMeta(local, remote);
+      expect(merged.documents).toEqual([]);
+      expect(merged.deletedDocuments).toEqual([tomb('CUSTOM_ROUTINE.md')]);
+      expect(changed).toBe(true);
+    });
+
+    it('does NOT suppress a document re-created after the delete, and prunes the stale tombstone', () => {
+      const recreated = doc('CUSTOM_ROUTINE.md', { createdAt: '2026-03-01T00:00:00.000Z' });
+      // The peer still holds the tombstone from the earlier delete.
+      const local = { documents: [recreated], deletedDocuments: [] };
+      const remote = { documents: [], deletedDocuments: [tomb('CUSTOM_ROUTINE.md')] };
+      const { merged, changed } = mergeMeta(local, remote);
+      expect(merged.documents ?? local.documents).toEqual([recreated]);
+      expect(merged.deletedDocuments ?? []).toEqual([]);
+      expect(changed).toBe(false);
+      // …and the peer receiving the re-created doc accepts it, dropping its own tombstone.
+      const onPeer = mergeMeta(remote, local);
+      expect(onPeer.merged.documents).toEqual([recreated]);
+      expect(onPeer.merged.deletedDocuments).toEqual([]);
+      expect(onPeer.changed).toBe(true);
+    });
+
+    it('keeps the newer of two competing deletes and converges in both directions', () => {
+      const a = { documents: [], deletedDocuments: [tomb('A.md', '2026-01-01T00:00:00.000Z')] };
+      const b = { documents: [], deletedDocuments: [tomb('A.md', '2026-05-01T00:00:00.000Z'), tomb('B.md')] };
+      expect(mergeMeta(a, b).merged.deletedDocuments)
+        .toEqual(mergeMeta(b, a).merged.deletedDocuments ?? b.deletedDocuments);
+      expect(mergeMeta(a, b).merged.deletedDocuments).toEqual([tomb('A.md', '2026-05-01T00:00:00.000Z'), tomb('B.md')]);
+    });
+
+    it('adopts the peer\'s newer creation stamp so a third peer\'s tombstone can\'t reap the re-created doc', () => {
+      // This machine has the ORIGINAL entry; the peer re-created the document
+      // after a delete. Without propagating the newer stamp, the stale local
+      // entry would later be reaped by a third peer still holding the tombstone.
+      const local = { documents: [doc('CUSTOM_ROUTINE.md', { createdAt: '2026-01-01T00:00:00.000Z', weight: 9 })] };
+      const remote = { documents: [doc('CUSTOM_ROUTINE.md', { createdAt: '2026-03-01T00:00:00.000Z', weight: 1 })] };
+      const { merged, changed } = mergeMeta(local, remote);
+      expect(changed).toBe(true);
+      expect(merged.documents[0].createdAt).toBe('2026-03-01T00:00:00.000Z');
+      expect(merged.documents[0].weight).toBe(9); // the rest of the entry stays add-only
+
+      // …and that refreshed entry now survives the stale tombstone.
+      const third = { documents: [], deletedDocuments: [tomb('CUSTOM_ROUTINE.md')] };
+      expect(mergeMeta(merged, third).merged.documents).toEqual(merged.documents);
+    });
+
+    it('does not reap a document edited after another machine deleted it', () => {
+      const edited = doc('CUSTOM_ROUTINE.md', { createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-03-01T00:00:00.000Z' });
+      const { merged } = mergeMeta({ documents: [edited] }, { documents: [], deletedDocuments: [tomb('CUSTOM_ROUTINE.md')] });
+      expect(merged.documents ?? [edited]).toEqual([edited]);
+      // …and the superseded tombstone is pruned rather than retried every cycle.
+      expect(merged.deletedDocuments ?? []).toEqual([]);
+    });
+
+    it('still reaps a document whose last edit predates the delete', () => {
+      const stale = doc('CUSTOM_ROUTINE.md', { createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-15T00:00:00.000Z' });
+      const { merged } = mergeMeta({ documents: [stale] }, { documents: [], deletedDocuments: [tomb('CUSTOM_ROUTINE.md')] });
+      expect(merged.documents).toEqual([]);
+      expect(merged.deletedDocuments).toEqual([tomb('CUSTOM_ROUTINE.md')]);
+    });
+
+    it('leaves local tombstones untouched when an older peer sends none (key-presence guarded)', () => {
+      const local = { documents: [doc('SOUL.md')], deletedDocuments: [tomb('GONE.md')] };
+      const { merged, changed } = mergeMeta(local, { documents: [doc('SOUL.md')] });
+      expect(merged.deletedDocuments ?? local.deletedDocuments).toEqual([tomb('GONE.md')]);
+      expect(changed).toBe(false);
+    });
+  });
+
+  it('leaves histories the peer did not send untouched (key-presence guarded)', () => {
+    const local = { testHistory: [run('L1', '2026-01-01T00:00:00.000Z'), run('L2', '2026-01-02T00:00:00.000Z')] };
+    const { merged, changed } = mergeMeta(local, { documents: [] });
+    expect(merged.testHistory.map((x) => x.runId)).toEqual(['L1', 'L2']);
+    expect(changed).toBe(false);
   });
 
   it('deep-unions enrichment (categories, max question counts, newest session)', () => {

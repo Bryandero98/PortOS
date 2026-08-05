@@ -8,6 +8,7 @@
 import { randomUUID } from 'crypto';
 import { query, withTransaction } from '../../lib/db.js';
 import { ServerError } from '../../lib/errorHandler.js';
+import { GENERAL_FAMILY_ID } from '../../lib/threejsModelFamilies.js';
 
 const rowToModel = (row) => row?.data ?? null;
 
@@ -63,8 +64,26 @@ export async function createModel(input) {
     prompt: input.prompt || '',
     providerId: input.providerId,
     model: input.model || null,
+    // Reasoning-effort override for effort-capable providers. Additive JSON
+    // field — records written before this shipped simply read back `undefined`,
+    // which every consumer treats the same as "no override".
+    effort: input.effort || null,
+    // Subject-family checklist to narrow generation with. Additive JSON field
+    // with the same contract as `effort`: a record written before this shipped
+    // reads back `undefined`, which every consumer treats as `general` — the
+    // no-checklist default that leaves the prompt unchanged.
+    family: input.family || GENERAL_FAMILY_ID,
     status: 'draft',
     spec: null,
+    // Assembly-coverage findings for `spec`, written alongside it by
+    // `evaluateThreejsPartCoverage`. Records written before this field existed
+    // read back as undefined; every consumer treats that as "not evaluated".
+    coverage: null,
+    // Cross-section findings for `spec`, written alongside it by
+    // `evaluateThreejsFlatness`. Same additive-field contract as `coverage`:
+    // an older record reads back undefined, which every consumer treats as
+    // "not evaluated" rather than "passed".
+    flatness: null,
     error: null,
     generationOperationId: null,
     runs: [],

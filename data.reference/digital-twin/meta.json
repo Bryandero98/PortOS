@@ -18,7 +18,9 @@
       "priority": 100
     }
   ],
+  "deletedDocuments": [],
   "testHistory": [],
+  "deletedPersonas": [],
   "enrichment": {
     "completedCategories": [],
     "lastSession": null,

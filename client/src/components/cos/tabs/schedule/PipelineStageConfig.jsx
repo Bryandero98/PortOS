@@ -1,9 +1,10 @@
-import { filterSelectableModels } from '../../../../utils/providers';
+import { effectiveModelFor, effortAwareModelOptions, effortSurvivingModel } from '../../../../utils/providers';
 import { FormField } from '../../../ui/FormField';
 import EffortSelect from '../../EffortSelect';
+import { pipelineStages } from './scheduleConstants';
 
 export default function PipelineStageConfig({ taskType, config, providers, onUpdate, updating, setUpdating }) {
-  const stages = config.taskMetadata?.pipeline?.stages || [];
+  const stages = pipelineStages(config);
 
   const handleStageUpdate = async (stageIndex, field, value) => {
     setUpdating(true);
@@ -22,6 +23,12 @@ export default function PipelineStageConfig({ taskType, config, providers, onUpd
         delete updated.model;
         delete updated.effort;
       }
+      // A model with NO effort tiers (Antigravity's ladder is per-model) hides the
+      // stage's effort select, so the stored value has to go with it — otherwise the
+      // stage keeps a level the run can never use and no UI is left to clear it.
+      if (field === 'model' && !effortSurvivingModel(providers?.find(p => p.id === stage.providerId), value, updated.effort)) {
+        delete updated.effort;
+      }
       return updated;
     });
     const updatedMeta = {
@@ -38,7 +45,11 @@ export default function PipelineStageConfig({ taskType, config, providers, onUpd
       <div className="space-y-3">
         {stages.map((stage, i) => {
           const stageProvider = providers?.find(p => p.id === stage.providerId);
-          const stageModels = filterSelectableModels(stageProvider?.models);
+          // Each stage persists its own effort, so Antigravity lists BASE models
+          // with the tier picked beside them. A stage saved before the split
+          // keeps its suffixed id as its own option and still runs (the server
+          // splits it into `--model` + `--effort`).
+          const stageModels = effortAwareModelOptions(stageProvider, stage.model);
           return (
             <div key={i} className="bg-port-card border border-port-border rounded-lg p-3">
               <div className="flex items-center gap-2 mb-3">
@@ -83,6 +94,7 @@ export default function PipelineStageConfig({ taskType, config, providers, onUpd
                 </FormField>
                 <EffortSelect
                   provider={stageProvider}
+                  model={effectiveModelFor(stageProvider, stage.model)}
                   value={stage.effort}
                   onChange={(effort) => handleStageUpdate(i, 'effort', effort || null)}
                   disabled={updating}

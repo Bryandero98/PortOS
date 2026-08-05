@@ -12,6 +12,7 @@ import {
   getBrowserLogs, navigateBrowser,
   browserDownloadUrl, deleteBrowserDownload
 } from '../services/api';
+import BrailleSpinner from '../components/BrailleSpinner';
 import toast from '../components/ui/Toast';
 import { FormField } from '../components/ui/FormField';
 import { formatBytes, formatDateTime } from '../utils/formatters';
@@ -303,7 +304,7 @@ export default function BrowserPage() {
             </button>
           </div>
           <pre className="p-3 text-xs text-gray-400 font-mono overflow-auto max-h-64 whitespace-pre-wrap">
-            {logs || 'Loading...'}
+            {logs || <BrailleSpinner text="Loading logs" />}
           </pre>
         </div>
       )}
@@ -603,7 +604,7 @@ export default function BrowserPage() {
                             <button
                               onClick={() => handleDeleteDownload(file.name)}
                               className="p-1.5 rounded-md text-gray-400 hover:text-port-error hover:bg-port-border/50 transition-colors"
-                              title="Delete file"
+                              title="Delete file" aria-label="Delete file"
                             >
                               <Trash2 size={16} />
                             </button>

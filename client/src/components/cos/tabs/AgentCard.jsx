@@ -32,7 +32,7 @@ import toast from '../../ui/Toast';
 import { copyToClipboard } from '../../../lib/clipboard';
 import { extractCosTaskType } from '../../../lib/cosTaskType';
 import { DEFAULT_REVIEWER, normalizeReviewers } from '../constants';
-import { formatDurationMs, formatDateTime } from '../../../utils/formatters';
+import { formatBytes, formatDurationMs, formatDateTime } from '../../../utils/formatters';
 import { useAutoRefetch } from '../../../hooks/useAutoRefetch';
 import ConfirmButtonPair from '../../ui/ConfirmButtonPair';
 import { useConfirmDelete } from '../../../hooks/useConfirmDelete';
@@ -80,6 +80,33 @@ function TaskDescription({ text }) {
           {descExpanded ? 'Show less' : 'Show more'}
         </button>
       )}
+    </div>
+  );
+}
+
+// `GET /api/cos/agents/:id` hydrates a completed agent's transcript as a capped
+// TAIL rather than the whole output.txt (#3498), so keep the truncation marker
+// alongside the lines — the reader has to know the log was clipped.
+function toTranscript(data) {
+  return {
+    lines: data?.output || [],
+    truncated: Boolean(data?.outputTruncated),
+    totalBytes: data?.outputTotalBytes || 0
+  };
+}
+
+function TranscriptTruncationNotice({ transcript }) {
+  if (!transcript?.truncated) return null;
+  const count = transcript.lines.length;
+  const size = transcript.totalBytes > 0 ? ` (${formatBytes(transcript.totalBytes)})` : '';
+  return (
+    <div className="flex items-center gap-1.5 text-xs text-yellow-500 mb-2">
+      <AlertTriangle size={12} aria-hidden="true" className="shrink-0" />
+      <span>
+        {count > 0
+          ? `Showing the last ${count.toLocaleString()} ${count === 1 ? 'line' : 'lines'} — the full transcript${size} is on disk in the agent's output.txt.`
+          : `The tail of this transcript held no readable lines — the full transcript${size} is on disk in the agent's output.txt.`}
+      </span>
     </div>
   );
 }
@@ -227,11 +254,11 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
       setLoadingOutput(true);
       api.getCosAgent(agent.id)
         .then(data => {
-          setFullOutput(data.output || []);
+          setFullOutput(toTranscript(data));
         })
         .catch(() => {
           // Fall back to agent's stored output
-          setFullOutput(agent.output || []);
+          setFullOutput(toTranscript(agent));
         })
         .finally(() => setLoadingOutput(false));
     }
@@ -293,10 +320,10 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
     return { remaining, overBy: 0, isOvertime: false };
   }, [duration, durationEstimate, inactive]);
 
-  // For running agents, use live output; for completed, use fetched full output or stored
+  // For running agents, use live output; for completed, use the fetched transcript tail or stored
   const output = useMemo(() => (
     inactive
-      ? (fullOutput || agent.output || [])
+      ? (fullOutput?.lines || agent.output || [])
       : (liveOutput || agent.output || [])
   ), [inactive, fullOutput, liveOutput, agent.output]);
   const lastOutput = output.length > 0 ? output[output.length - 1]?.line : null;
@@ -351,7 +378,7 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
     if (!stageAgentId || stageOutputs[stageAgentId] || loadingStageId) return;
     setLoadingStageId(stageAgentId);
     const data = await api.getCosAgent(stageAgentId).catch(() => null);
-    setStageOutputs(prev => ({ ...prev, [stageAgentId]: data?.output || [] }));
+    setStageOutputs(prev => ({ ...prev, [stageAgentId]: toTranscript(data) }));
     setLoadingStageId(null);
   }, [stageOutputs, loadingStageId]);
 
@@ -948,8 +975,16 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
                   </div>
                 );
               }
-              if (stageOut && stageOut.length > 0) {
-                return <OutputBlocks key={activeStage.agentId} output={stageOut} />;
+              // A truncated transcript whose tail window yielded no renderable
+              // lines still has to say so — falling through to "No output
+              // captured" would call a multi-MB log empty.
+              if (stageOut?.lines.length > 0 || stageOut?.truncated) {
+                return (
+                  <>
+                    <TranscriptTruncationNotice transcript={stageOut} />
+                    {stageOut.lines.length > 0 && <OutputBlocks key={activeStage.agentId} output={stageOut.lines} />}
+                  </>
+                );
               }
               return <div className="text-gray-500 text-sm">No output captured for this stage</div>;
             }
@@ -966,8 +1001,14 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
                 </div>
               );
             }
-            if (output.length > 0) {
-              return <OutputBlocks output={output} />;
+            const truncated = inactive && fullOutput?.truncated;
+            if (output.length > 0 || truncated) {
+              return (
+                <>
+                  {truncated && <TranscriptTruncationNotice transcript={fullOutput} />}
+                  {output.length > 0 && <OutputBlocks output={output} />}
+                </>
+              );
             }
             return <div className="text-gray-500 text-sm">No output captured</div>;
           })()}
@@ -1002,7 +1043,7 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
             )}
             <button
               onClick={() => setPromptOpen(false)}
-              className="text-xs px-2 py-1 rounded bg-port-border/40 text-gray-400 hover:text-white"
+              className="text-xs px-2 py-1 rounded bg-port-border/40 text-gray-400 hover:text-white min-h-[44px] min-w-[44px] flex items-center justify-center"
               aria-label="Close prompt viewer"
             >
               Close

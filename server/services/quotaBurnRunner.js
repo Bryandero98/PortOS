@@ -4,9 +4,26 @@
  * ONE loop lives in PortOS (not one scheduled task per managed app, which is
  * what this replaced): every `checkIntervalMinutes` it reads the burn plan,
  * takes a zero-token quota reading, and — only when a family's window is inside
- * its reset horizon with headroom above its reserve — runs the first job in that
- * family's ordered plan that reports pending work. At most ONE dispatch per
- * cycle, so a cycle can never blow through several windows' budgets at once.
+ * its reset horizon with headroom above its reserve — runs the next job in that
+ * family's ordered plan that reports pending work.
+ *
+ * The interval only STARTS a family's burn. Once a job is out, each finished burn
+ * agent triggers a fresh evaluation of that family (`onBurnAgentCompleted`), so
+ * the plan is walked one agent at a time until a gate closes — the window's
+ * dispatch cap, the reserve, or the reset horizon.
+ *
+ * "Next job" is literal — the walk resumes after the family's last dispatch
+ * rather than restarting at the top (`rotatePlanAfter`), so an N-job plan cycles
+ * through all N instead of re-running job #1 every time.
+ *
+ * At most one dispatch per FAMILY per cycle. Families do not share a budget:
+ * each one draws down its own subscription window, against its own reserve and
+ * its own `maxDispatchesPerWindow`. Stopping the whole cycle after the first
+ * dispatch (which is what this used to do) therefore didn't protect anything —
+ * it just meant the soonest-resetting family took every cycle, and a family with
+ * a longer window never burned at all while it was enabled. A `claude` window
+ * resetting in 2h beat an `agy` window resetting in 21h on every single tick, so
+ * the agy plan sat at "93% left · 0/5 used" indefinitely.
  *
  * AI-policy posture (CLAUDE.md): this is a sanctioned scheduled automation —
  * disabled by default, armed only by an explicit opt-in on the Quota Burn page,
@@ -21,16 +38,22 @@
 
 import { getProviderQuotas } from './providerUsage.js';
 import { getQuotaBurnDispatches, evaluateFamilies, recordQuotaBurnDispatch, selectBurnCandidates } from './quotaBurn.js';
+import { getActiveQuotaBurnBlocks, recordBurnAgentCompletion } from './quotaBurnDenials.js';
 import { getQuotaBurnConfig, getQuotaBurnRuns, recordQuotaBurnRun } from './quotaBurnStore.js';
 import { countJobPending, runBurnJob } from './quotaBurnJobs/index.js';
 import { familyIsActionable } from '../lib/quotaBurnConfig.js';
+import { windowLabelOf } from '../lib/quotaWindows.js';
 import { WAIT } from '../lib/staleWhileRevalidate.js';
+import { cosEvents } from './cosEvents.js';
 
 const TICK_MS = 60_000;
 
 let tickTimer = null;
 let running = false;
 let lastRunAt = null;
+// Family ids whose completion continuation arrived while a cycle was running —
+// drained by `drainDeferredContinuations` when that cycle releases the guard.
+const deferredContinuations = new Set();
 
 /**
  * The jobs a cycle will consider, in plan order.
@@ -46,16 +69,52 @@ const selectJobs = (family, { jobId = null, force = false } = {}) =>
     (!jobId || job.id === jobId) && (job?.enabled !== false || (jobId && force)));
 
 /**
- * Walk a candidate's plan in order and run the first job with pending work.
- * Returns the dispatch outcome plus the per-job reasons, so a cycle that
- * dispatched nothing still explains itself in the run log.
+ * The plan, re-anchored to start just AFTER the job this family last dispatched.
+ *
+ * A burn plan is an ordered ROTATION, not a priority list. Without this the walk
+ * restarts at index 0 every cycle, and since `agent-prompt` always reports work
+ * pending (its probe only checks that an app and a provider resolve), the first
+ * job in the plan won every dispatch forever — an eight-job agy plan spent its
+ * entire window re-running "Performance issues" and the other seven never ran
+ * once. Rotating preserves the "first job with pending work wins" semantics that
+ * matter for probing jobs like `universe-bible-images`; it only moves where the
+ * walk begins.
+ *
+ * An unknown cursor (first ever dispatch, a job since deleted from the plan, or
+ * one aged out of the capped run log) falls back to plan order.
+ */
+export function rotatePlanAfter(jobs, afterJobId) {
+  const at = afterJobId ? jobs.findIndex((job) => job.id === afterJobId) : -1;
+  return at < 0 ? jobs : [...jobs.slice(at + 1), ...jobs.slice(0, at + 1)];
+}
+
+/**
+ * Each family's most recently dispatched job id, read from the run log rather
+ * than a second persisted cursor file — `recordQuotaBurnRun` already stamps
+ * `familyId` + `jobId` on every dispatch, newest first, so the log IS the cursor.
+ */
+async function lastDispatchedJobByFamily() {
+  const runs = await getQuotaBurnRuns().catch(() => []);
+  const cursors = new Map();
+  for (const entry of runs) {
+    if (!entry?.dispatched || !entry.familyId || !entry.jobId) continue;
+    if (!cursors.has(entry.familyId)) cursors.set(entry.familyId, entry.jobId);
+  }
+  return cursors;
+}
+
+/**
+ * Walk a candidate's plan — starting after the family's last dispatch — and run
+ * the first job with pending work. Returns the dispatch outcome plus the per-job
+ * reasons, so a cycle that dispatched nothing still explains itself in the run
+ * log.
  *
  * The probe's `context` is handed to `run` rather than thrown away: a
  * `universe-bible-images` probe reads every universe bible to count the backlog,
  * and `run` needs the very same scan to know what to render. Without the
  * passthrough that multi-megabyte read happened twice per dispatch.
  */
-async function dispatchFromCandidate(candidate, { jobId = null, force = false } = {}) {
+async function dispatchFromCandidate(candidate, { jobId = null, force = false, afterJobId = null } = {}) {
   const attempts = [];
   // A forced run of a NAMED job skips the pending probe entirely and calls the
   // job directly. The probe exists to pick which job in the plan to run; when
@@ -66,7 +125,7 @@ async function dispatchFromCandidate(candidate, { jobId = null, force = false } 
   // override it from the page. `force` is threaded into the job so it can relax
   // its own cooldown too.
   const targeted = force && jobId;
-  for (const job of selectJobs(candidate.family, { jobId, force })) {
+  for (const job of rotatePlanAfter(selectJobs(candidate.family, { jobId, force }), afterJobId)) {
     const pending = targeted ? null : await countJobPending({ job, family: candidate.family });
     if (pending && !(pending.count > 0)) {
       attempts.push({ jobId: job.id, jobType: job.jobType, skipped: pending.detail || 'no pending work' });
@@ -89,7 +148,17 @@ async function dispatchFromCandidate(candidate, { jobId = null, force = false } 
  * gate — the reset window, the reserve, and the per-window dispatch cap.
  */
 export async function runQuotaBurnCycle(options = {}) {
-  if (running) return { skipped: 'already-running' };
+  if (running) {
+    // A continuation that lands mid-cycle is REMEMBERED, not dropped. Two burn
+    // agents from different families finishing within the same cycle is ordinary
+    // — and a dropped continuation stalls that family's plan until the next
+    // interval tick, which at the 12-hour default is most of a day of the window
+    // this feature exists to spend. Keyed by family, so several completions from
+    // one family while it is mid-cycle collapse to the single re-evaluation they
+    // amount to.
+    if (options.trigger === 'continuation' && options.familyId) deferredContinuations.add(options.familyId);
+    return { skipped: 'already-running' };
+  }
   running = true;
   // try/finally, not try/catch: this runs from a timer and from a route, and a
   // throw anywhere below (an ENOSPC on the ledger write, say) would otherwise
@@ -100,6 +169,26 @@ export async function runQuotaBurnCycle(options = {}) {
     return await evaluate(options);
   } finally {
     running = false;
+    await drainDeferredContinuations();
+  }
+}
+
+/**
+ * Run the continuations that arrived while a cycle was in flight, one at a time.
+ *
+ * Bounded by the same gate ladder every other dispatch faces: a drained family
+ * gets one cycle, which the reserve or the reset horizon can decline. A
+ * completion that lands DURING the drain re-enters the set legitimately — it is
+ * a different agent finishing — and faces that ladder too. Errors are swallowed here
+ * rather than allowed to replace the outer cycle's result: this runs from the
+ * caller's `finally`, so a throw would mask what that cycle actually decided.
+ */
+async function drainDeferredContinuations() {
+  while (deferredContinuations.size) {
+    const [familyId] = deferredContinuations;
+    deferredContinuations.delete(familyId);
+    await runQuotaBurnCycle({ trigger: 'continuation', familyId })
+      .catch((err) => console.error(`❌ Quota-burn deferred continuation for ${familyId} failed: ${err.message}`));
   }
 }
 
@@ -127,8 +216,12 @@ async function evaluate({ trigger = 'scheduled', familyId = null, jobId = null, 
   });
   if (!config) return finish({ dispatched: false, reason: 'config unreadable' });
   // A disabled tick writes NO run-log entry: a silent loop would otherwise fill
-  // the log with "disabled" rows and bury the last real run.
-  if (!config.enabled && trigger === 'scheduled') return { skipped: 'disabled' };
+  // the log with "disabled" rows and bury the last real run. Only a `manual`
+  // trigger — the user asking for this cycle by name — runs while the master
+  // switch is off; everything unattended (the interval tick AND the completion
+  // continuation it hands off to) stops. Phrased as "not manual" rather than an
+  // allowlist of automatic triggers so a trigger added later fails CLOSED.
+  if (!config.enabled && trigger !== 'manual') return { skipped: 'disabled' };
 
   // Check the plan BEFORE the quota read. `getProviderQuotas({ wait: WAIT.FRESH })`
   // spawns a multi-second TUI scrape per enabled family; with no actionable
@@ -144,19 +237,25 @@ async function evaluate({ trigger = 'scheduled', familyId = null, jobId = null, 
     return finish({ dispatched: false, reason: 'no families enabled' });
   }
 
-  const quotas = await getProviderQuotas({ wait: WAIT.FRESH }).catch((err) => {
+  // Scoped to the one family when the caller named it — a per-family "Run now",
+  // or a completion continuation. Every card this read returns for another family
+  // is discarded by the `familyId` filter below, and each one costs its own
+  // multi-second PTY scrape (WAIT.FRESH bypasses the cache by design). Unscoped
+  // that was two wasted scrapes a day; with the continuation it would be N per
+  // finished burn agent, on every link of the chain.
+  const quotas = await getProviderQuotas({ wait: WAIT.FRESH, family: familyId }).catch((err) => {
     console.error(`❌ Quota-burn could not read provider quota: ${err.message}`);
     return null;
   });
   if (!quotas) return finish({ dispatched: false, reason: 'provider quota read failed' });
 
-  const dispatches = await getQuotaBurnDispatches();
-  // `force` is the page's per-job "Run now" — the window/reserve/cap gates that
-  // bound UNATTENDED burns don't apply to a run the user just asked for. It goes
-  // through the same selection, so the candidate still carries the family's real
-  // card and limit; it only comes back `charge: false`.
+  const [dispatches, blocks] = await Promise.all([getQuotaBurnDispatches(), getActiveQuotaBurnBlocks()]);
+  // `force` is the page's per-job "Run now" — the window/reserve/cap/denial gates
+  // that bound UNATTENDED burns don't apply to a run the user just asked for. It
+  // goes through the same selection, so the candidate still carries the family's
+  // real card and limit; it only comes back `charge: false`.
   const candidates = selectBurnCandidates(quotas, config, {
-    dispatches, bypassGatesFor: force ? familyId : null,
+    dispatches, blocks, bypassGatesFor: force ? familyId : null,
   }).filter((candidate) => !familyId || candidate.family.id === familyId);
 
   if (!candidates.length) {
@@ -165,7 +264,7 @@ async function evaluate({ trigger = 'scheduled', familyId = null, jobId = null, 
     // off, "disabled" IS the answer — reporting a different family's verdict
     // instead (or claiming it is "ready" when it did not run) leaves them with
     // no path to the control they need.
-    const reasons = evaluateFamilies(quotas, config, { dispatches })
+    const reasons = evaluateFamilies(quotas, config, { dispatches, blocks })
       .filter(({ family }) => (familyId ? family.id === familyId : family.enabled))
       .map(({ family, skipReason }) => `${family.id}: ${skipReason || 'ready'}`);
     return finish({
@@ -175,8 +274,19 @@ async function evaluate({ trigger = 'scheduled', familyId = null, jobId = null, 
   }
 
   const attempts = [];
+  const dispatched = [];
+  // Where each family's plan walk resumes (see `rotatePlanAfter`). Read once per
+  // cycle, before any dispatch, so two families in the same cycle can't see each
+  // other's fresh run-log entries.
+  const cursors = await lastDispatchedJobByFamily();
+  // Every eligible family gets its own dispatch — see the module header. The
+  // loop does NOT break on the first success: `candidates` is already the set
+  // that passed the full gate ladder, and each entry spends a different
+  // provider's window.
   for (const candidate of candidates) {
-    const outcome = await dispatchFromCandidate(candidate, { jobId, force });
+    const outcome = await dispatchFromCandidate(candidate, {
+      jobId, force, afterJobId: cursors.get(candidate.family.id) || null,
+    });
     attempts.push(...outcome.attempts.map((entry) => ({ familyId: candidate.family.id, ...entry })));
     if (!outcome.dispatched) continue;
     // Charge the window only once work actually started. `runBurnJob` reports a
@@ -184,7 +294,10 @@ async function evaluate({ trigger = 'scheduled', familyId = null, jobId = null, 
     // the cap bounds real burns, not attempts. `charge` is false for a forced
     // run, which the user asked for outside the automatic budget.
     if (candidate.charge) await recordQuotaBurnDispatch(candidate.dispatchKey);
-    return finish({
+    // One run-log entry PER dispatch, recorded as it happens: the page's
+    // "Recent runs" list is how the user audits what their subscriptions were
+    // spent on, and folding three families into one row would hide two of them.
+    dispatched.push(await finish({
       dispatched: true,
       familyId: candidate.family.id,
       jobId: outcome.job.id,
@@ -195,7 +308,19 @@ async function evaluate({ trigger = 'scheduled', familyId = null, jobId = null, 
       percentRemaining: candidate.limit?.percentRemaining ?? null,
       summary: outcome.result.summary || 'dispatched',
       detail: outcome.result.detail || null,
-    });
+    }));
+  }
+
+  // Single dispatch keeps the flat entry shape the route, the run log, and the
+  // tests already speak. Several come back as one aggregate so the caller's
+  // toast names all of them rather than an arbitrary first.
+  if (dispatched.length === 1) return dispatched[0];
+  if (dispatched.length > 1) {
+    return {
+      dispatched: true,
+      summary: `Dispatched ${dispatched.length} jobs — ${dispatched.map((entry) => `${entry.familyId}: ${entry.summary}`).join('; ')}`,
+      dispatches: dispatched,
+    };
   }
 
   // Report what each job actually said. Collapsing every non-dispatch to "no
@@ -203,13 +328,17 @@ async function evaluate({ trigger = 'scheduled', familyId = null, jobId = null, 
   // work and declined ("an identical burn task is already running", "managed
   // app app-x no longer exists", "no enabled CLI/TUI provider in the grok
   // family") is the actionable case, and it was the one being thrown away.
-  const detail = attempts.map((entry) => `${entry.jobId}: ${entry.skipped}`).join('; ');
+  // Prefix each reason with its family once more than one was evaluated —
+  // "j: no managed app selected" is unactionable when three plans were walked.
+  const label = (entry) => (candidates.length > 1 ? `${entry.familyId}/${entry.jobId}` : entry.jobId);
+  const detail = attempts.map((entry) => `${label(entry)}: ${entry.skipped}`).join('; ');
+  const plans = candidates.map((candidate) => candidate.family.id).join(', ');
   return finish({
     dispatched: false,
     familyId: candidates[0].family.id,
     reason: detail
       ? `nothing dispatched — ${detail}`
-      : `no enabled job in the ${candidates[0].family.id} plan`,
+      : `no enabled job in the ${plans} plan${candidates.length > 1 ? 's' : ''}`,
   });
 }
 
@@ -231,30 +360,40 @@ async function evaluate({ trigger = 'scheduled', familyId = null, jobId = null, 
 export async function getQuotaBurnStatus({ refresh = false } = {}) {
   // Independent reads: only `quotas` is slow (a PTY scrape on the Refresh path),
   // and nothing else waits on it.
-  const [config, quotas, dispatches, runs] = await Promise.all([
+  const [config, quotas, dispatches, blocks, runs] = await Promise.all([
     getQuotaBurnConfig(),
     getProviderQuotas({ wait: refresh ? WAIT.FRESH : WAIT.NEVER }).catch((err) => {
       console.error(`❌ Quota-burn status could not read provider quota: ${err.message}`);
       return [];
     }),
     getQuotaBurnDispatches(),
+    getActiveQuotaBurnBlocks(),
     getQuotaBurnRuns(),
   ]);
 
   const cards = new Map(quotas.map((card) => [card.family, card]));
   // ONE pass over the gate ladder the runner uses — the page's "will burn" and
   // its reason come from the same verdict, so they can't contradict each other.
-  const families = await Promise.all(evaluateFamilies(quotas, config, { dispatches })
-    .map(async ({ family, candidate, skipReason }) => {
+  const families = await Promise.all(evaluateFamilies(quotas, config, { dispatches, blocks })
+    .map(async ({ family, candidate, skipReason, block }) => {
       const card = cards.get(family.id);
       return {
         id: family.id,
         label: candidate?.card?.label || card?.label || family.id,
         percentRemaining: candidate?.limit?.percentRemaining ?? null,
         hoursUntilReset: candidate ? Math.round(candidate.hoursUntilReset * 10) / 10 : null,
+        // WHICH window those two numbers describe. Without it the card reports a
+        // percentage and a countdown with no way to tell the weekly allowance
+        // from the 5-hour one — the exact ambiguity that hid the wrong window
+        // being selected in the first place.
+        windowLabel: candidate ? windowLabelOf(candidate.limit) : null,
         dispatchesUsed: candidate?.dispatchesUsed ?? null,
         willBurn: Boolean(candidate),
         skipReason: skipReason || null,
+        // An observed provider refusal, surfaced whether or not it is the gate
+        // that closed — a family blocked AND out of window should say both.
+        blockedUntil: block?.until ? new Date(block.until).toISOString() : null,
+        blockedReason: block?.reason || null,
         // The reading for this family is being taken right now — the page polls
         // again instead of leaving a card that looks like it has no quota.
         pending: Boolean(card?.pending),
@@ -293,6 +432,44 @@ async function lastScheduledRunAt() {
   return lastRunAt;
 }
 
+/**
+ * Continuation: when a burn agent finishes, evaluate its family again so the
+ * NEXT job in the plan goes out.
+ *
+ * Without this the plan advances only once per `checkIntervalMinutes` — at the
+ * 12-hour default, two dispatches a day against a window that resets every 5
+ * hours, so most of the allowance the feature exists to spend expired unspent.
+ * Completion is the right pacing signal: it runs the plan strictly one agent at
+ * a time and asks the gate ladder, every time, whether there is still quota to
+ * spend.
+ *
+ * It cannot run away. The chain is serial by construction — the next dispatch
+ * needs an agent to finish first — and every link re-reads the family's live
+ * quota, so the reserve, the reset horizon, and an observed provider refusal
+ * each close it as soon as the numbers say to. A `maxDispatchesPerWindow` other
+ * than the unlimited default bounds it earlier still, from the same ledger every
+ * continuation dispatch is charged to.
+ */
+function onBurnAgentCompleted(agent) {
+  const familyId = agent?.metadata?.taskQuotaBurnFamily;
+  if (!familyId) return null;
+  // Returned so tests can await the cycle. The emitter ignores it — this is a
+  // fire-and-forget listener, and the `.catch` is what keeps a rejection from
+  // reaching the emitter as an unhandled one.
+  //
+  // The denial ledger is folded in FIRST and awaited. If this run was refused,
+  // the family's short rolling window is spent and the very next thing this
+  // function does — dispatch the next job — would walk straight into the same
+  // wall. Recording after the cycle (or from a second `agent:completed`
+  // subscriber, whose ordering against this one is not guaranteed) is one wasted
+  // agent too late, every single time. A ledger failure must not stop the
+  // continuation, so it degrades to a logged warning.
+  return recordBurnAgentCompletion(agent)
+    .catch((err) => console.error(`⚠️ Quota-burn denial ledger for ${familyId}: ${err.message}`))
+    .then(() => runQuotaBurnCycle({ trigger: 'continuation', familyId }))
+    .catch((err) => console.error(`❌ Quota-burn continuation for ${familyId} failed: ${err.message}`));
+}
+
 async function tick() {
   const config = await getQuotaBurnConfig().catch(() => null);
   if (!config?.enabled) return;
@@ -316,16 +493,25 @@ export function startQuotaBurnScheduler() {
     tick().catch((err) => console.error(`❌ Quota-burn tick failed: ${err.message}`));
   }, TICK_MS);
   tickTimer.unref?.();
+  // Same "outside the request lifecycle" posture as the timer: an emitter
+  // callback that throws would take the process down, so `onBurnAgentCompleted`
+  // never awaits and never rethrows.
+  cosEvents.on('agent:completed', onBurnAgentCompleted);
   console.log('🔥 Quota-burn loop armed (off unless enabled in Quota Burn settings)');
 }
 
 /** Test seam — one interval tick, without waiting on the timer. */
 export const __tickQuotaBurn = tick;
 
-/** Test seam — disarms the timer and clears the in-process cycle state. */
+/** Test seam — the completion continuation, without going through cosEvents. */
+export const __onBurnAgentCompleted = onBurnAgentCompleted;
+
+/** Test seam — disarms the timer/listener and clears the in-process cycle state. */
 export function __resetQuotaBurnRunner() {
   if (tickTimer) clearInterval(tickTimer);
   tickTimer = null;
+  cosEvents.off('agent:completed', onBurnAgentCompleted);
+  deferredContinuations.clear();
   running = false;
   lastRunAt = null;
 }

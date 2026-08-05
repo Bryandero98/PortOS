@@ -15,11 +15,13 @@ import { addTask } from '../cosTaskStore.js';
 import { getAppById } from '../apps.js';
 import { getAllProviders } from '../providers.js';
 import { commandBasename } from '../../lib/providerModels.js';
+import { burnTaskDescription, isUnlimitedDispatchCap } from '../../lib/quotaBurnConfig.js';
+import { windowLabelOf } from '../../lib/quotaWindows.js';
 
 /**
- * An agent-capable provider in the burning family. An explicit `providerId`
- * (job first, then family) wins; otherwise match the family id against the
- * enabled providers, PREFERRING the TUI.
+ * An agent-capable provider in the burning family. A job's explicit
+ * `providerId` wins; otherwise match the family id against the enabled
+ * providers, PREFERRING the TUI.
  *
  * Preferring the TUI is the point: a burn runs unattended for minutes on the
  * user's own subscription, and a TUI agent is watchable in Active Agents and can
@@ -77,7 +79,7 @@ async function resolve({ params, job, family }) {
   const result = await getAllProviders();
   const provider = providerForFamily(
     Array.isArray(result) ? result : result?.providers,
-    { familyId: family?.id, providerId: job?.providerId || family?.providerId || null },
+    { familyId: family?.id, providerId: job?.providerId || null },
   );
   if (!provider) return { error: `no enabled CLI/TUI provider in the ${family?.id} family` };
   return { app, prompt, provider };
@@ -92,15 +94,28 @@ export async function countPending({ params, job, family } = {}) {
     : { count: 1, context: resolved, detail: `ready to queue an agent in ${resolved.app.name}` };
 }
 
-/** The burn context the agent sees above the user's own prompt. */
+/**
+ * The burn context the agent sees above the user's own prompt.
+ *
+ * Names the TARGET window (the weekly allowance this burn is racing) and, when
+ * the family reports a separate short rolling window, that one too — a run that
+ * is refused mid-way is nearly always the short window running out, and an agent
+ * told only "the weekly window has 60% left" reads that refusal as a bug.
+ */
 export function renderBurnPrompt({ family, candidate, prompt }) {
   const hours = Math.max(0, Math.ceil(candidate?.hoursUntilReset ?? 0));
+  const target = windowLabelOf(candidate?.limit);
+  const limiting = candidate?.limitingLimit;
+  const showsLimiting = limiting && limiting !== candidate?.limit;
   return [
     `# ${family.id} quota-burn task`,
     '',
-    `This ${family.id} quota window resets in about ${hours} hour${hours === 1 ? '' : 's'}.`,
-    `Window: ${candidate?.limit?.label || candidate?.limit?.scope || 'provider window'}; remaining: ${candidate?.limit?.percentRemaining}%; reserve: ${family.reservePercent}%.`,
-    `Dispatch cap: ${family.maxDispatchesPerWindow} for this reset window.`,
+    `The ${family.id} ${target} quota window resets in about ${hours} hour${hours === 1 ? '' : 's'}.`,
+    `Window: ${target}; remaining: ${candidate?.limit?.percentRemaining}%; reserve: ${family.reservePercent}%.`,
+    ...(showsLimiting
+      ? [`Shorter window in play: ${windowLabelOf(limiting)} at ${limiting.percentRemaining}% remaining — it is what will refuse this run if it empties.`]
+      : []),
+    `Dispatch cap: ${isUnlimitedDispatchCap(family.maxDispatchesPerWindow) ? 'unlimited' : family.maxDispatchesPerWindow} for this reset window.`,
     '',
     'Carry out the configured work below. Do not use another provider family as a substitute.',
     '',
@@ -124,7 +139,7 @@ export async function run({ params, job, family, candidate, context } = {}) {
   const discardsWorktree = params?.discardWorktree === true;
   const landsNoCode = params?.noCodeOutput === true || discardsWorktree;
   const task = await addTask({
-    description: `[Quota burn: ${family.id}] ${label} for ${app.name}`,
+    description: burnTaskDescription(family.id, label, app.name),
     app: app.id,
     context: renderBurnPrompt({ family, candidate, prompt }),
     provider: provider.id,
@@ -154,6 +169,15 @@ export async function run({ params, job, family, candidate, context } = {}) {
     // idle-complete gate, which otherwise requires a dirty tree.
     worktreeChangesExpected: !landsNoCode,
     reviewLoop: false,
+    // Burn provenance, read back after the task round-trips through
+    // COS-TASKS.md by `isCooldownExemptTask` (cosTaskGenerator.js, which owns
+    // the why), by the runner's completion continuation, and by the denial
+    // ledger — a burn the provider REFUSES is the signal that this family's
+    // short rolling window is spent, but only a run this plan dispatched says
+    // anything about that. The limiting window's reset rides along so the block
+    // can wait on the right clock instead of a bounded guess.
+    quotaBurnFamily: family.id,
+    quotaBurnLimitingResetAt: candidate?.limitingResetAt ?? null,
   }, 'internal');
 
   // A duplicate means an identical burn task for this app is still pending or

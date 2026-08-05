@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { Plus, FolderOpen, Inbox, Trash2, Image as ImageIcon, Film, Search } from 'lucide-react';
+import PageSkeleton from '../components/ui/PageSkeleton';
 import toast from '../components/ui/Toast';
 import {
   listMediaCollections, createMediaCollection, deleteMediaCollection,
@@ -258,7 +259,7 @@ export default function MediaCollections() {
       </div>
 
       {loading ? (
-        <div className="text-gray-500 text-sm">Loading…</div>
+        <PageSkeleton header="none" label="Loading collections" cards={4} sidebar={false} />
       ) : (
         <div className="space-y-2">
           {/* Precedence chain, not independent gates. First run wins only when
@@ -346,7 +347,7 @@ export default function MediaCollections() {
                           type="button"
                           onClick={() => handleDelete(c)}
                           className="px-1.5 py-1 bg-port-error/20 hover:bg-port-error/40 text-port-error text-[10px] rounded flex items-center gap-1"
-                          title="Delete collection"
+                          title="Delete collection" aria-label="Delete collection"
                         >
                           <Trash2 className="w-3 h-3" />
                         </button>

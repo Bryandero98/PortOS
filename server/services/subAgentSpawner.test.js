@@ -24,11 +24,17 @@ vi.mock('./thinkingLevels.js', async (importOriginal) => {
 });
 
 import { describe, it, expect, vi } from 'vitest';
-import { isTruthyMeta, isFalsyMeta, selectModelForTask } from './subAgentSpawner.js';
+import { isTruthyMeta, isFalsyMeta } from './agentState.js';
+import { selectModelForTask } from './agentModelSelection.js';
 import { applyAppWorktreeDefault } from './cos.js';
 
 /**
- * Tests for the subAgentSpawner service
+ * Pure decision helpers from the sub-agent spawn path.
+ *
+ * Kept under this name because it is where these cases were written; each import
+ * now names the module that DEFINES the helper. They used to come through
+ * `subAgentSpawner.js`'s back-compat barrel, retired in #3450 — a test reaching
+ * for a re-export is exactly the kind of consumer that kept that barrel alive.
  *
  * Note: We test the pure functions directly by importing them from production.
  * For functions with complex dependencies (process spawning, file system, etc.)
@@ -358,6 +364,14 @@ describe('Worktree & metadata flag helpers', () => {
       const metadata = {};
       applyAppWorktreeDefault(metadata, { defaultOpenPR: true, defaultPrCompletion: 'leave-open' });
       expect(metadata).toMatchObject({ useWorktree: true, openPR: true, prCompletion: 'leave-open' });
+    });
+
+    it('keeps a task-level PR completion pin over the app default', () => {
+      // The Schedule tab's "After opening PR" select writes this pin into the
+      // interval's taskMetadata — the more specific choice must win.
+      const metadata = { prCompletion: 'merge-on-green' };
+      applyAppWorktreeDefault(metadata, { defaultOpenPR: true, defaultPrCompletion: 'review-then-merge' });
+      expect(metadata.prCompletion).toBe('merge-on-green');
     });
 
     it('does not invent a disposition for a legacy app default', () => {

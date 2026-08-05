@@ -160,22 +160,213 @@ export const CODEX_EFFORT_LEVELS = Object.freeze(['minimal', 'low', 'medium', 'h
 export const ANTIGRAVITY_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high']);
 
 /**
+ * Antigravity base-model ↔ effort-suffix split — MIRROR of
+ * `splitAntigravityModel` / `antigravityBaseModels` / `antigravityModelEffortLevels`
+ * in server/lib/providerModels.js; keep in lockstep.
+ *
+ * `agy models` enumerates the effort tiers as separate model ids
+ * (`gemini-3.6-flash-low|-medium|-high`), which forces the effort choice into
+ * the model dropdown. agy also accepts the BASE id with a separate `--effort`
+ * flag, so PortOS lists base models and carries effort as its own control. agy
+ * validates the PAIR, though (`gemini-3.1-pro` has no `medium`), so the tiers a
+ * base model offers come from the provider's own catalog.
+ */
+const ANTIGRAVITY_EFFORT_SUFFIX_RE = new RegExp(`-(${ANTIGRAVITY_EFFORT_LEVELS.join('|')})$`);
+
+/**
+ * `gemini-3.6-flash-high` → `{ base: 'gemini-3.6-flash', effort: 'high' }`.
+ * Unsuffixed ids, sentinels and non-strings → `{ base: <input>, effort: null }`.
+ * @param {string|null|undefined} id
+ * @returns {{base: string|null|undefined, effort: string|null}}
+ */
+export const splitAntigravityModel = (id) => {
+  if (typeof id !== 'string' || id === '' || isConfiguredDefaultModel(id)) return { base: id, effort: null };
+  const match = ANTIGRAVITY_EFFORT_SUFFIX_RE.exec(id);
+  return match ? { base: id.slice(0, -match[0].length), effort: match[1] } : { base: id, effort: null };
+};
+
+/**
+ * The user-selectable view of an Antigravity model list: effort suffixes
+ * stripped, duplicates collapsed, order preserved. Sentinels and non-string
+ * (`{ id, name }`) entries ride through untouched.
+ * @param {unknown[]} models
+ * @returns {unknown[]}
+ */
+export const antigravityBaseModels = (models) => {
+  const out = [];
+  const seen = new Set();
+  for (const entry of Array.isArray(models) ? models : []) {
+    if (typeof entry !== 'string') { out.push(entry); continue; }
+    const { base } = splitAntigravityModel(entry);
+    if (seen.has(base)) continue;
+    seen.add(base);
+    out.push(base);
+  }
+  return out;
+};
+
+/**
+ * The effort tiers an Antigravity base model offers per the provider's catalog:
+ * the present suffixes, `[]` when the model has none, or `null` when the MODEL
+ * is unknown — blank, the configured-default sentinel, or an empty catalog — so
+ * the caller falls back to the full ladder. The sentinel case matters: it is the
+ * shipped agy `defaultModel`, and reporting `[]` for it would hide the effort
+ * control on every freshly-opened picker.
+ * @param {string|null|undefined} model
+ * @param {unknown[]} models
+ * @returns {readonly string[]|null}
+ */
+export const antigravityModelEffortLevels = (model, models) => {
+  const list = (Array.isArray(models) ? models : []).filter(m => typeof m === 'string');
+  if (list.length === 0) return null;
+  if (isConfiguredDefaultModel(model)) return null;
+  const { base } = splitAntigravityModel(model);
+  if (typeof base !== 'string' || base === '') return null;
+  return Object.freeze(ANTIGRAVITY_EFFORT_LEVELS.filter(level => list.includes(`${base}-${level}`)));
+};
+
+/**
+ * The provider's selectable model list as the pickers should show it. Today that
+ * only rewrites Antigravity (base models instead of one row per effort tier);
+ * every other provider's list passes through untouched. The single place the
+ * normalization lives, so `useProviderModels` and any caller that reads
+ * `provider.models` directly agree.
+ * @param {{id?:string, command?:string}|null|undefined} provider
+ * @param {unknown[]} models
+ * @returns {unknown[]}
+ */
+export const selectableModelsForProvider = (provider, models) =>
+  isAntigravityProvider(provider) ? antigravityBaseModels(models) : (models || []);
+
+/**
+ * Keeps a stored-but-no-longer-listed Antigravity id visible as its own option.
+ *
+ * A record saved before Antigravity split model from effort still holds
+ * `gemini-3.6-flash-high`, which matches no base-model option and would render
+ * the select BLANK (reading as "no model"). The server splits such an id back
+ * into base + `--effort`, so the pin still runs — it just has to stay selectable.
+ * Same posture as `EffortSelect`'s out-of-ladder option.
+ *
+ * Deliberately narrow: only an Antigravity id carrying an effort SUFFIX
+ * qualifies. A bare "not in the list" test would also re-surface the
+ * configured-default sentinel (the shipped agy `defaultModel`, which
+ * `filterSelectableModels` exists to hide) and any typo'd/stale pin.
+ *
+ * CLIENT-ONLY (no server mirror) — this is a rendering concern.
+ * @param {{id?:string, command?:string}|null|undefined} provider
+ * @param {unknown[]} models - the already-filtered option list
+ * @param {string|null|undefined} selectedModel
+ * @returns {unknown[]}
+ */
+export const withStaleAntigravityPin = (provider, models, selectedModel) => {
+  const list = models || [];
+  const stale = isAntigravityProvider(provider)
+    && !!splitAntigravityModel(selectedModel).effort
+    && !list.includes(selectedModel);
+  return stale ? [...list, selectedModel] : list;
+};
+
+/**
+ * The option list for a picker that renders an effort control but reads
+ * `provider.models` directly (no `useProviderModels`): base models, sentinels
+ * stripped, plus any legacy suffixed pin so the stored value stays visible.
+ * The hook's own list is assembled from the same two primitives, so the two
+ * paths can't drift.
+ *
+ * CLIENT-ONLY (no server mirror).
+ * @param {{id?:string, command?:string, models?:unknown[]}|null|undefined} provider
+ * @param {string|null|undefined} selectedModel
+ * @returns {unknown[]}
+ */
+export const effortAwareModelOptions = (provider, selectedModel) => withStaleAntigravityPin(
+  provider,
+  filterSelectableModels(selectableModelsForProvider(provider, provider?.models)),
+  selectedModel,
+);
+
+/**
+ * The model a run will ACTUALLY use: the explicit pin, else the provider's own
+ * default. A blank model isn't a no-op — the resolver falls through to
+ * `defaultModel` — so anything keyed on the model (Antigravity's effort tiers,
+ * the local tool-use warning) has to evaluate this, not the raw selection.
+ *
+ * CLIENT-ONLY (no server mirror).
+ * @param {{defaultModel?:string}|null|undefined} provider
+ * @param {string|null|undefined} model
+ * @returns {string}
+ */
+export const effectiveModelFor = (provider, model) => model || provider?.defaultModel || '';
+
+/**
+ * Seeds a picker's two controls from a record that may predate the split.
+ * `{ model: 'gemini-3.6-flash-high', effort: '' }` reads back as
+ * `{ model: 'gemini-3.6-flash', effort: 'high' }`; a stored `effort` always
+ * wins over the suffix, and a non-Antigravity provider is left alone so a model
+ * that merely ends in `-high` isn't truncated.
+ *
+ * CLIENT-ONLY (no server mirror) — the server reads the suffixed id directly.
+ * @param {{id?:string, command?:string}|null|undefined} provider
+ * @param {string|null|undefined} model
+ * @param {string|null|undefined} effort
+ * @returns {{model: string, effort: string}}
+ */
+export const seedModelEffort = (provider, model, effort) => {
+  if (!isAntigravityProvider(provider)) return { model: model || '', effort: effort || '' };
+  const { base, effort: bakedEffort } = splitAntigravityModel(model || '');
+  return { model: base || '', effort: effort || bakedEffort || '' };
+};
+
+/**
  * The effort levels a provider's CLI accepts, or null when the provider has no
  * effort control (opencode, grok, kimi, HTTP API providers). Keyed on the launch
  * command basename plus the shipped provider ids, so path-configured or renamed
  * claude/codex/agy providers still qualify. Drives the "Effort (optional)"
  * select in task/schedule forms.
- * @param {{id?:string, command?:string}|null|undefined} provider
+ *
+ * `model` narrows the Antigravity ladder to the tiers that base model actually
+ * offers (see above). Omit it — or leave `provider.models` empty — for the full
+ * low/medium/high ladder. MIRROR of the server helper; keep in lockstep.
+ * @param {{id?:string, command?:string, models?:unknown[]}|null|undefined} provider
+ * @param {string|null} [model]
  * @returns {readonly string[]|null}
  */
-export const effortLevelsForProvider = (provider) => {
+export const effortLevelsForProvider = (provider, model = null) => {
   if (!provider) return null;
   if (isCodexProvider(provider)) return CODEX_EFFORT_LEVELS;
-  if (isAntigravityProvider(provider)) return ANTIGRAVITY_EFFORT_LEVELS;
+  if (isAntigravityProvider(provider)) {
+    const perModel = model ? antigravityModelEffortLevels(model, provider.models) : null;
+    if (perModel === null) return ANTIGRAVITY_EFFORT_LEVELS;
+    return perModel.length ? perModel : null;
+  }
   const id = String(provider.id || '').toLowerCase();
   if (id.startsWith('claude-code') || commandBasename(provider.command) === 'claude') return CLAUDE_EFFORT_LEVELS;
   return null;
 };
+
+/**
+ * The effort a picker should keep after its MODEL changed under a fixed provider:
+ * the current one, or `''` when the new model has no effort control at all.
+ *
+ * Antigravity's tiers are per-model, and a model with NO tiers hides the select
+ * entirely (`effortLevelsForProvider` → null — `claude-sonnet-4-6` in the shipped
+ * agy catalog has no `-low|-medium|-high` siblings). Without this the previous
+ * effort stays in state with no UI left to clear it, and every submit path still
+ * sends it: an invocation agy rejects (`--model claude-sonnet-4-6 --effort high`)
+ * and, on the records that persist it, a stored level the run never used.
+ *
+ * A merely NARROWED ladder is deliberately left alone — `EffortSelect` renders an
+ * explicit `medium (runs as low)` option there, so the clamp stays visible rather
+ * than silently discarding the user's choice.
+ *
+ * CLIENT-ONLY (no server mirror) — the server clamps what it is sent; this keeps
+ * the UI from sending something it stopped showing.
+ * @param {{id?:string, command?:string, models?:unknown[], defaultModel?:string}|null|undefined} provider
+ * @param {string|null|undefined} model - the NEWLY selected model
+ * @param {string|null|undefined} effort - the currently selected effort
+ * @returns {string}
+ */
+export const effortSurvivingModel = (provider, model, effort) =>
+  (effortLevelsForProvider(provider, effectiveModelFor(provider, model)) ? (effort || '') : '');
 
 // Every effort value any CLI accepts, weakest→strongest. MIRROR of EFFORT_RANK
 // in server/lib/providerModels.js — keep in lockstep.
@@ -192,12 +383,13 @@ const EFFORT_RANK = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh', 
  * holds a value matching no option, renders blank — reading as "Default effort"
  * — while the run silently uses the clamped level.
  * @param {string|null|undefined} effort
- * @param {{id?:string, command?:string}|null|undefined} provider
+ * @param {{id?:string, command?:string, models?:unknown[]}|null|undefined} provider
+ * @param {string|null} [model] - narrows the Antigravity ladder (see effortLevelsForProvider)
  * @returns {string|null}
  */
-export const resolveCliEffort = (effort, provider) => {
+export const resolveCliEffort = (effort, provider, model = null) => {
   if (!effort) return null;
-  const levels = effortLevelsForProvider(provider);
+  const levels = effortLevelsForProvider(provider, model);
   if (!levels) return null;
   if (levels.includes(effort)) return effort;
   const requested = EFFORT_RANK.indexOf(effort);
@@ -526,6 +718,27 @@ export const getProviderTimeout = (providers, stagePinnedId, activeProviderId) =
   const id = stagePinnedId || activeProviderId;
   if (!id) return undefined;
   return providers.find((p) => p.id === id)?.timeout;
+};
+
+/**
+ * The provider a record will ACTUALLY run on: its own pin when set, else the
+ * install's active provider. Every picker that offers a "use the default"
+ * option needs this — the model list, effort ladder, and "Default (active: X)"
+ * label all have to resolve against the fallback, or leaving a record unpinned
+ * silently means "no model or effort can be picked either".
+ *
+ * `usingActive` distinguishes the two so a caller can say which provider the
+ * blank option currently means rather than just showing "Default".
+ *
+ * @param {Array} providers
+ * @param {string|null|undefined} pinnedId - The record's own provider pin.
+ * @param {string|null|undefined} activeProviderId - The install's active provider.
+ * @returns {{provider: object|undefined, usingActive: boolean}}
+ */
+export const resolveEffectiveProvider = (providers, pinnedId, activeProviderId) => {
+  const id = pinnedId || activeProviderId || '';
+  const provider = id ? (providers || []).find((p) => p.id === id) : undefined;
+  return { provider, usingActive: !pinnedId && !!provider };
 };
 
 /**

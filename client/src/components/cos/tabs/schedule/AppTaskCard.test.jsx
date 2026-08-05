@@ -1,6 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import AppTaskCard from './AppTaskCard';
+
+// `claude-code-*` ids carry the claude effort ladder (see effortLevelsForProvider).
+const providers = [
+  { id: 'claude-code', name: 'Claude Code', models: ['opus', 'sonnet'] },
+  { id: 'gemini', name: 'Gemini', models: ['gemini-3-pro'] },
+];
 
 const baseConfig = {
   enabled: true,
@@ -25,6 +31,12 @@ function renderCard(overrides = {}, props = {}) {
     />
   );
   return { onTrigger, onConfigure };
+}
+
+// Card with the inline provider/model/effort pins wired up.
+function renderCardWithPins(overrides = {}, props = {}) {
+  const onUpdate = props.onUpdate || vi.fn().mockResolvedValue(true);
+  return { onUpdate, ...renderCard(overrides, { providers, ...props, onUpdate }) };
 }
 
 describe('AppTaskCard', () => {
@@ -96,5 +108,105 @@ describe('AppTaskCard', () => {
     expect(screen.queryByText(/^×\d/)).toBeNull();
     renderCard({});
     expect(screen.queryByText(/^×\d/)).toBeNull();
+  });
+
+  it('omits the quick model pins when no onUpdate handler is supplied', () => {
+    renderCard({}, { providers });
+    expect(screen.queryByLabelText('Provider')).toBeNull();
+  });
+
+  describe('quick model pins', () => {
+    it('persists a provider pick and clears the model + effort pins with it', async () => {
+      const { onUpdate } = renderCardWithPins({ providerId: 'gemini', model: 'gemini-3-pro' });
+      fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'claude-code' } });
+      await waitFor(() => expect(onUpdate).toHaveBeenCalledWith('code-review', {
+        providerId: 'claude-code', model: null, effort: null,
+      }));
+      // Model options follow the newly picked provider.
+      expect(screen.getByRole('option', { name: 'opus' })).toBeTruthy();
+    });
+
+    it('persists a model pick on its own', async () => {
+      const { onUpdate } = renderCardWithPins({ providerId: 'claude-code' });
+      fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'sonnet' } });
+      await waitFor(() => expect(onUpdate).toHaveBeenCalledWith('code-review', { model: 'sonnet' }));
+    });
+
+    it('clears a pin back to the provider default', async () => {
+      const { onUpdate } = renderCardWithPins({ providerId: 'claude-code', model: 'opus' });
+      fireEvent.change(screen.getByLabelText('Model'), { target: { value: '' } });
+      await waitFor(() => expect(onUpdate).toHaveBeenCalledWith('code-review', { model: null }));
+    });
+
+    it('offers effort only for effort-capable providers', () => {
+      renderCardWithPins({ providerId: 'claude-code' });
+      expect(screen.getByLabelText('Thinking effort')).toBeTruthy();
+      expect(screen.getByRole('option', { name: 'xhigh' })).toBeTruthy();
+    });
+
+    it('hides effort for a provider with no ladder', () => {
+      renderCardWithPins({ providerId: 'gemini' });
+      expect(screen.queryByLabelText('Thinking effort')).toBeNull();
+    });
+
+    it('resolves model + effort options against the active provider when nothing is pinned', () => {
+      renderCardWithPins({}, { activeProviderId: 'claude-code' });
+      // Naming what "Default" resolves to is what makes the options below it readable.
+      expect(screen.getByRole('option', { name: 'Default (active: Claude Code)' })).toBeTruthy();
+      expect(screen.getByRole('option', { name: 'sonnet' })).toBeTruthy();
+      expect(screen.getByLabelText('Thinking effort')).toBeTruthy();
+    });
+
+    it('falls back to a bare Default when the active provider is unknown', () => {
+      renderCardWithPins();
+      expect(within(screen.getByLabelText('Provider')).getByRole('option', { name: 'Default (active provider)' })).toBeTruthy();
+      expect(screen.queryByLabelText('Thinking effort')).toBeNull();
+    });
+
+    it('hides a disabled provider from the picker unless the task is pinned to it', () => {
+      const withDisabled = [...providers, { id: 'retired', name: 'Retired CLI', enabled: false }];
+      renderCardWithPins({}, { providers: withDisabled });
+      expect(screen.queryByRole('option', { name: 'Retired CLI' })).toBeNull();
+      renderCardWithPins({ providerId: 'retired' }, { providers: withDisabled });
+      expect(screen.getAllByRole('option', { name: 'Retired CLI' }).length).toBe(1);
+    });
+
+    it('keeps a pinned model the provider no longer lists selectable', () => {
+      renderCardWithPins({ providerId: 'claude-code', model: 'retired-model' });
+      expect(screen.getByLabelText('Model').value).toBe('retired-model');
+    });
+
+    it('blocks Run while a pin write is still in flight, then re-enables it', async () => {
+      let resolveUpdate;
+      const onUpdate = vi.fn(() => new Promise(resolve => { resolveUpdate = resolve; }));
+      const { onTrigger } = renderCardWithPins({ providerId: 'claude-code' }, { onUpdate });
+
+      fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'sonnet' } });
+      const run = screen.getByRole('button', { name: /Run Now/i });
+      await waitFor(() => expect(run.disabled).toBe(true));
+      fireEvent.click(run);
+      expect(onTrigger).not.toHaveBeenCalled();
+
+      resolveUpdate(true);
+      await waitFor(() => expect(run.disabled).toBe(false));
+      fireEvent.click(run);
+      expect(onTrigger).toHaveBeenCalledWith('code-review');
+    });
+
+    it('rolls the selection back when the write fails', async () => {
+      const onUpdate = vi.fn().mockResolvedValue(false);
+      renderCardWithPins({ providerId: 'claude-code', model: 'opus' }, { onUpdate });
+      fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'sonnet' } });
+      await waitFor(() => expect(screen.getByLabelText('Model').value).toBe('opus'));
+    });
+
+    it('points pipeline tasks at the drawer instead of a card-level pin', () => {
+      const { onConfigure } = renderCardWithPins({
+        taskMetadata: { pipeline: { stages: [{ name: 'plan' }, { name: 'build' }] } },
+      });
+      expect(screen.queryByLabelText('Provider')).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: /set per stage \(2\)/ }));
+      expect(onConfigure).toHaveBeenCalledWith('code-review');
+    });
   });
 });

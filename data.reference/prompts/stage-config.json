@@ -709,6 +709,13 @@
       "returnsJson": true,
       "variables": []
     },
+    "pipeline-editorial-summary-not-scene": {
+      "name": "Pipeline — Editorial Check: Narrated summary where a scene belongs",
+      "description": "Editorial check (#3591): flags dramatizable beats narrated at helicopter level instead of played out in-scene — compressed-away turning points, reported action, habitual/iterative mode wrapped around a single decisive event, and result-first narration. The reviewer half of the drafting rule \"at least 70% in-scene, not summary\". Reads the stitched manuscript plus the reverse-outline scene segmentation (degrading to a whole-issue scan when absent). Each finding names the summarized beat and where to zoom in. Returns issue-anchored findings.",
+      "model": "default",
+      "returnsJson": true,
+      "variables": []
+    },
     "pipeline-editorial-interiority-balance": {
       "name": "Pipeline — Editorial Check: Interiority balance (description vs. POV reaction)",
       "description": "Editorial check (#1623): flags visually dense but emotionally empty scenes — prose heavy on setting, blocking, and physical detail yet light on the viewpoint character's reaction, emotion, or thought, so description swamps interiority. Judges the description-to-interiority ratio within each scene. Reads the stitched manuscript plus the reverse-outline scene segmentation (degrading to a whole-issue scan when absent). Distinct from sensory.balance (the senses) and interiority.protagonist (whole-issue interiority absence). Returns issue-anchored findings.",
@@ -793,9 +800,23 @@
       "returnsJson": true,
       "variables": []
     },
+    "pipeline-editorial-interiority-register": {
+      "name": "Pipeline — Editorial Check: Interiority register",
+      "description": "Editorial check (#3593): flags rendered thought written in an authored, essayistic register instead of the character's own voice — analytical full-sentence thought where a character under pressure would think in fragments, author intrusion articulating a theme the character would not, register mismatch against how that character speaks elsewhere, and an indistinguishable inner voice across the whole cast (flagged once). The register layer above the other interiority checks, which judge presence and ratio. Reads the stitched manuscript; severity is advisory; skips characterized formality, free indirect discourse, calm reflective beats, and transitional summary interiority. Findings name the register shift rather than rewriting the passage. Returns issue-anchored findings.",
+      "model": "default",
+      "returnsJson": true,
+      "variables": []
+    },
     "pipeline-editorial-on-the-nose": {
       "name": "Pipeline — Editorial Check: On-the-nose / subtext-free dialogue",
       "description": "Editorial check (#1307): the judgment layer for dialogue that states feeling/meaning outright with no subtext and \"maid-and-butler\" exchanges where characters tell each other what they both already know. Reads the stitched manuscript; severity is advisory; skips earned directness, functional exchanges, and dialogue whose subtext already works. Returns issue-anchored findings.",
+      "model": "default",
+      "returnsJson": true,
+      "variables": []
+    },
+    "pipeline-editorial-reported-speech": {
+      "name": "Pipeline — Editorial Check: Reported speech where a quoted line belongs",
+      "description": "Editorial check (#3592): flags a character's decisive utterance delivered as narrated report instead of a quoted line — summarized speech at a turning point (\"she told him she was leaving\"), reported reaction to speech, and confrontations narrated indirectly with no line ever quoted. The inverse of on-the-nose dialogue: too little dialogue on the page rather than dialogue with too little under it. Reads the stitched manuscript; severity is advisory; skips deliberate compression of routine exchanges, between-scene bridges, POV constraints, and free-indirect-discourse voices. Findings name which moment to quote rather than drafting the line. Returns issue-anchored findings.",
       "model": "default",
       "returnsJson": true,
       "variables": []

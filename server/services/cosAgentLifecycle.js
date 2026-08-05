@@ -6,16 +6,17 @@
  * (issue #2530); the date-bucket index + archive layout lives in cosAgentIndex.js
  * and is shared via loadAgentIndex/saveAgentIndex/getAgentDir.
  *
- * The public barrel `cosAgents.js` re-exports everything here.
+ * The `cosAgents.js` barrel that used to re-export this module is retired
+ * (#3450) — callers import from here directly.
  */
 
-import { readFile, writeFile, rename, readdir, rm } from 'fs/promises';
+import { readFile, writeFile, rename, readdir, rm, stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { cosEvents } from './cosEvents.js';
 import { ServerError } from '../lib/errorHandler.js';
 import { loadState, saveState, withStateLock, AGENTS_DIR } from './cosState.js';
-import { atomicWrite, ensureDir, safeJSONParse, tryReadFile } from '../lib/fileUtils.js';
+import { atomicWrite, ensureDir, readFileTail, safeJSONParse, tryReadFile } from '../lib/fileUtils.js';
 import { recordDomainUsage } from './domainUsage.js';
 import { repairCodexTaskSummary } from './codexSummaryRepair.js';
 import { loadAgentIndex, saveAgentIndex, getAgentDir } from './cosAgentIndex.js';
@@ -398,25 +399,91 @@ export async function getAgentRecord(agentId) {
   return { ...rest, id: raw.id || raw.agentId || agentId, status: raw.status || 'completed' };
 }
 
-export async function getAgent(agentId) {
+// Transcript read caps for `getAgent` (#3498). `output.txt` is append-only and
+// has no upper bound — a long TUI run writes tens of MB — so reading it whole
+// and mapping EVERY line to a `{ line, timestamp }` object spiked heap by
+// ~2x the file size per request. Both caps are load-bearing and neither
+// subsumes the other:
+//   - the LINE cap bounds the object count (the allocation the issue is about)
+//   - the BYTE cap bounds the string read, because a repaint-heavy TUI spool
+//     can be one multi-MB "line" with no newlines at all, on which a
+//     line-based tail is a no-op.
+export const AGENT_OUTPUT_TAIL_LINES = 1000;
+export const AGENT_OUTPUT_TAIL_BYTES = 512 * 1024;
+
+/**
+ * Tail an agent's `output.txt` into the `{ line, timestamp }` shape the UI
+ * renders, reading at most `maxBytes` from the end of the file and keeping at
+ * most `limit` lines.
+ *
+ * Deliberately tail-only: an `offset` from the head of the file would have to
+ * read everything before it, which is the exact cost this cap exists to avoid.
+ * The interesting end of an agent transcript is the end (that's where the
+ * failure and the summary are), so the trailing window is what callers want.
+ *
+ * @returns {Promise<{ lines: string[], truncated: boolean, totalBytes: number }|null>}
+ *          null when the file is missing or unreadable. `totalBytes` is the
+ *          size of the WHOLE transcript on disk, not of the window returned.
+ */
+async function readAgentTranscriptTail(outputFile, { limit, maxBytes }) {
+  // Stat separately from the tail read: the caller needs the FULL on-disk size
+  // for the truncation marker, and `readFileTail` only hands back the window.
+  const info = await stat(outputFile).catch(() => null);
+  if (!info) return null;
+  const text = await readFileTail(outputFile, maxBytes);
+  if (text === null) return null;
+  const clippedByBytes = info.size > maxBytes;
+  // The byte window can start mid-line (and mid-multibyte-character), so drop
+  // the leading fragment rather than surfacing a garbled partial line — UNLESS
+  // it is the only thing in the window. A repainted TUI transcript is one
+  // enormous newline-free line, and dropping it would hand the UI an empty
+  // transcript for a file that is plainly not empty; a partial last screen
+  // beats nothing.
+  const split = text.split('\n');
+  const kept = split.filter(line => line.trim());
+  const withoutFragment = clippedByBytes ? split.slice(1).filter(line => line.trim()) : kept;
+  const lines = withoutFragment.length > 0 ? withoutFragment : kept;
+  const clippedByLines = lines.length > limit;
+  return {
+    lines: clippedByLines ? lines.slice(-limit) : lines,
+    truncated: clippedByBytes || clippedByLines,
+    totalBytes: info.size
+  };
+}
+
+/**
+ * The agent record hydrated with the TAIL of its on-disk transcript.
+ *
+ * Callers that only need the record's fields should use `getAgentRecord` —
+ * this one still touches the filesystem. When the transcript is longer than
+ * the caps, the result carries `outputTruncated: true` so the UI can say the
+ * transcript was clipped instead of silently presenting a partial log as whole.
+ *
+ * @param {string} agentId
+ * @param {Object} [options]
+ * @param {number} [options.limit=AGENT_OUTPUT_TAIL_LINES] - Max transcript lines to return (from the tail)
+ * @param {number} [options.maxBytes=AGENT_OUTPUT_TAIL_BYTES] - Max bytes to read from the end of output.txt
+ */
+export async function getAgent(agentId, { limit = AGENT_OUTPUT_TAIL_LINES, maxBytes = AGENT_OUTPUT_TAIL_BYTES } = {}) {
   let agent = await getAgentRecord(agentId);
   if (!agent) return null;
 
   // Completed agents live in date buckets; paused agents remain in the flat
-  // agent dir but should still expose their preserved full transcript.
+  // agent dir but should still expose their preserved transcript.
   if (agent.status === 'completed' || agent.status === 'paused') {
     const dateStr = agent.status === 'completed' ? agent.completedAt?.slice(0, 10) : null;
     const agentDir = dateStr ? getAgentDir(agentId, dateStr) : getAgentDir(agentId);
     const repaired = await repairCodexTaskSummary(agentDir, agent);
     if (repaired) agent = { ...agent, metadata: { ...agent.metadata, taskSummary: repaired } };
     const outputFile = join(agentDir, 'output.txt');
-    if (existsSync(outputFile)) {
-      const fullOutput = await readFile(outputFile, 'utf-8');
-      const lines = fullOutput.split('\n').filter(line => line.trim());
+    const tail = await readAgentTranscriptTail(outputFile, { limit, maxBytes });
+    if (tail) {
       const timestamp = agent.completedAt || agent.pausedAt;
       return {
         ...agent,
-        output: lines.map(line => ({ line, timestamp }))
+        output: tail.lines.map(line => ({ line, timestamp })),
+        outputTruncated: tail.truncated,
+        outputTotalBytes: tail.totalBytes
       };
     }
   }
@@ -446,24 +513,12 @@ export async function terminateAgent(agentId) {
   return { success: true, agentId };
 }
 
-// Pause an agent without completing its task or cleaning up its worktree.
-//
-// The three delegations below stay DYNAMIC on purpose (#2837): this module is
-// the agent STATE layer that `agentManagement.js` builds on (via the
-// `cosAgents.js` barrel), so a static import here would invert the layering and
-// reintroduce a cycle. They now target `agentManagement.js` directly rather than
-// the `subAgentSpawner.js` barrel, so the deferred load pulls in one module
-// instead of the entire spawner graph.
-export async function pauseAgent(agentId, reason = null) {
-  const { pauseAgent: pauseAgentFromSpawner } = await import('./agentManagement.js');
-  return pauseAgentFromSpawner(agentId, reason);
-}
-
-// Force kill an agent with SIGKILL (immediate, no graceful shutdown)
-export async function killAgent(agentId) {
-  const { killAgent: killAgentFromSpawner } = await import('./agentManagement.js');
-  return killAgentFromSpawner(agentId);
-}
+// `pauseAgent` / `killAgent` / `getAgentProcessStats` moved to
+// `agentOrchestrator.js` (#3450). They lived here as deferred-import forwarders
+// into the process layer, which this STATE layer cannot import statically
+// without inverting the layering — so do not re-add one. Ask the facade for a
+// transition; `agentImportCycles.test.js` fails on any new deferred import of
+// `agentManagement.js` from this file.
 
 // Send a BTW (additional context) message to a running agent.
 //
@@ -519,12 +574,6 @@ export async function sendBtwToAgent(agentId, message) {
 
   cosEvents.emit('agent:btw', { agentId, message, timestamp });
   return { success: true, delivered: 'tui-paste', tuiSessionId: agentInfo.tuiSessionId };
-}
-
-// Get process stats for an agent (CPU, memory)
-export async function getAgentProcessStats(agentId) {
-  const { getAgentProcessStats: getStatsFromSpawner } = await import('./agentManagement.js');
-  return getStatsFromSpawner(agentId);
 }
 
 // Check if a PID is still running

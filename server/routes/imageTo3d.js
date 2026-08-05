@@ -7,8 +7,8 @@ import {
   getTarget,
   listTargets,
   detectHostCapabilities,
-  isTargetAvailable,
   unavailableReason,
+  unavailableReasonLabel,
   IMAGE_TO_3D_TARGET_IDS,
 } from '../services/imageTo3d/targets.js';
 import { getTargetAdapter } from '../services/imageTo3d/adapters.js';
@@ -51,7 +51,7 @@ const installsInFlight = new Set();
  * new branch here.
  */
 router.get('/targets', asyncHandler(async (_req, res) => {
-  const capabilities = detectHostCapabilities();
+  const capabilities = await detectHostCapabilities();
   const targets = await Promise.all(listTargets(capabilities).map(async (target) => {
     const adapter = getTargetAdapter(target.id);
     const installed = adapter ? adapter.isInstalled() : null;
@@ -102,11 +102,16 @@ async function handleTargetInstall(targetId, req, res) {
 
   // Refuse on unsupported hardware rather than clone a multi-GB install that can
   // never run.
-  const capabilities = detectHostCapabilities();
-  if (!isTargetAvailable(targetId, capabilities)) {
+  const capabilities = await detectHostCapabilities();
+  // `unavailableReason` is what `isTargetAvailable` asks anyway — take the reason
+  // directly so the refusal doesn't re-run the gate to name what blocked it.
+  const blockedReason = unavailableReason(targetId, capabilities);
+  if (blockedReason !== null) {
     send({
       type: 'error',
-      message: `This host cannot run ${target.label} (${unavailableReason(targetId, capabilities)}). Install skipped.`,
+      // The label, not the raw kebab-case code — this string is read by a human
+      // in the install log, and `requires-linux-host` doesn't tell them to use WSL2.
+      message: `This host cannot run ${target.label} (${unavailableReasonLabel(blockedReason)}). Install skipped.`,
     });
     return safeEnd();
   }

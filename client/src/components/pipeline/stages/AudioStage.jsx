@@ -13,6 +13,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, Sparkles, Wand2, Mic, Music, Upload, Trash2, ListMusic } from 'lucide-react';
+import BrailleSpinner from '../../BrailleSpinner';
 import toast from '../../ui/Toast';
 import InlineConfirmRow from '../../ui/InlineConfirmRow';
 import FilePickerButton from '../../ui/FilePickerButton';
@@ -1125,14 +1126,9 @@ export default function AudioStage({ issue, onStageUpdate }) {
 
         {musicPickerOpen ? (
           <div className="mt-3 p-3 bg-port-bg border border-port-border rounded-lg">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs uppercase tracking-wider text-gray-500">Library</span>
-              {musicLibraryLoading ? (
-                <Loader2 size={12} className="animate-spin text-gray-500" />
-              ) : null}
-            </div>
+            <div className="text-xs uppercase tracking-wider text-gray-500 mb-2">Library</div>
             {musicLibrary === null || musicLibraryLoading ? (
-              <p className="text-xs text-gray-500">Loading…</p>
+              <p className="text-xs"><BrailleSpinner text="Loading…" /></p>
             ) : musicLibrary.length === 0 ? (
               <p className="text-xs text-gray-500 italic">
                 Library is empty. Click <strong>Upload track</strong> above to add your first one.
@@ -1182,7 +1178,7 @@ export default function AudioStage({ issue, onStageUpdate }) {
                           <button
                             type="button"
                             onClick={() => setPendingLibraryDelete(track.filename)}
-                            title="Delete from library (issues that point at this file will fail playback)"
+                            title="Delete from library (issues that point at this file will fail playback)" aria-label="Delete from library (issues that point at this file will fail playback)"
                             className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs border border-port-border text-gray-400 hover:text-port-error hover:border-port-error/50"
                           >
                             <Trash2 size={12} />

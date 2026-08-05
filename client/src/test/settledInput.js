@@ -12,6 +12,9 @@ import { expect } from 'vitest';
 // Pinning the settled input value in between turns a load-dependent flake into
 // either a pass or an honest, immediately-legible failure.
 
+// The timeout `waitFor` uses here comes from the suite-wide
+// `configure({ asyncUtilTimeout: 3000 })` in setup.js — testing-library's 1000ms
+// default is too tight for these under parallel-worker CPU contention.
 const settled = (input, value) => waitFor(() => expect(input).toHaveValue(value));
 
 // A `type="number"` input reads its value back coerced, and empty as `null`.

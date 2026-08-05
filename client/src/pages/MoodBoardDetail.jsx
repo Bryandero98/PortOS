@@ -12,6 +12,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router';
 import { ArrowLeft, ImageIcon, FileText, Trash2, Plus, Save, Link2, Unlink, RefreshCw } from 'lucide-react';
+import PageSkeleton from '../components/ui/PageSkeleton';
 import toast from '../components/ui/Toast';
 import InlineConfirmRow from '../components/ui/InlineConfirmRow';
 import {
@@ -160,7 +161,17 @@ export default function MoodBoardDetail() {
   };
 
   if (loading) {
-    return <div className="text-gray-400 text-sm py-8 text-center">Loading…</div>;
+    return (
+      <div className="max-w-5xl mx-auto">
+        <PageSkeleton
+          label="Loading mood board"
+          titleWidthClass="w-56"
+          layout="grid"
+          cards={8}
+          gridColsClass="grid-cols-2 md:grid-cols-3 lg:grid-cols-4"
+        />
+      </div>
+    );
   }
   if (!board) {
     return (

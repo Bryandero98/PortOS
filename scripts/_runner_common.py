@@ -231,6 +231,31 @@ def pick_device(requested: str) -> str:
     return requested
 
 
+def empty_device_cache(device: str, *, synchronize: bool = False) -> None:
+    """Return cached-but-free blocks to the driver for the RESOLVED device.
+
+    The caching allocator otherwise holds them, which starves a later large
+    contiguous allocation (moving a multi-GB transformer onto the card) even
+    though the memory is nominally free.
+
+    Keyed on the device string `pick_device` resolved — NOT on
+    `torch.cuda.is_available()`. A capability probe is the wrong predicate: on a
+    box that *has* a CUDA card but is running `--device cpu`, probing would clear
+    a cache this process never filled.
+
+    `synchronize=True` blocks on the device afterwards, for callers that want the
+    reclaim to have actually completed before they measure or allocate."""
+    import torch
+    if device == "mps":
+        torch.mps.empty_cache()
+        if synchronize:
+            torch.mps.synchronize()
+    elif device == "cuda":
+        torch.cuda.empty_cache()
+        if synchronize:
+            torch.cuda.synchronize()
+
+
 def make_generator(device: str, seed: int) -> "torch.Generator":
     """Seed a torch Generator on the right device. Accelerator generators
     must be initialised with the device string; the CPU fallback uses the

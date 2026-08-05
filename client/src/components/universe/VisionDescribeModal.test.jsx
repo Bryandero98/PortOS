@@ -20,8 +20,8 @@ vi.mock('../imageGen/GalleryImagePicker', () => ({ default: () => null }));
 vi.mock('../ProviderModelSelector', () => ({ default: () => null }));
 
 // Stub the upload helper so adding an image enables the actions without real I/O.
-vi.mock('../../utils/fileUpload', () => ({
-  processScreenshotUploads: vi.fn(async (files, { onSuccess }) => {
+vi.mock('../../services/apiMedia', () => ({
+  processScreenshotUploads: vi.fn(async (_files, { onSuccess }) => {
     onSuccess({ filename: 'up.png', preview: 'data:image/png;base64,x' });
   }),
 }));

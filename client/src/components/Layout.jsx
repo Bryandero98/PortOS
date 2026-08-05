@@ -98,7 +98,9 @@ import {
   Boxes,
   Gamepad2
 } from 'lucide-react';
-/* global __APP_VERSION__ */
+// `__APP_VERSION__` is a Vite build-time define (see vite.config.js). Biome does
+// not honour ESLint-style "global" block comments, so it is declared in
+// biome.jsonc's `javascript.globals` instead.
 import { safeReadStorage, safeWriteStorage } from '../lib/safeStorage';
 import Logo from './Logo';
 import { useErrorNotifications } from '../hooks/useErrorNotifications';
@@ -574,7 +576,7 @@ export default function Layout() {
 
   // Build dynamic nav items with app children + pipeline series.
   // `decoratePipelineChild` is defined inside the memo so its closure over
-  // `pipelineSeries` doesn't require an eslint-disable, and so it isn't
+  // `pipelineSeries` doesn't require a lint suppression, and so it isn't
   // reallocated on every render.
   const resolvedNavItems = useMemo(() => {
     const decoratePipelineChild = (child) => {

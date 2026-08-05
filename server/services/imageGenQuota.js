@@ -36,6 +36,7 @@ import { IMAGE_GEN_MODE, CLOUD_IMAGE_GEN_MODES, IMAGE_TOOL_NAMES } from './image
 import { imageGenEvents } from './imageGenEvents.js';
 import { atomicWrite, PATHS, readJSONFileStrict } from '../lib/fileUtils.js';
 import { createFileWriteQueue } from '../lib/fileWriteQueue.js';
+import { isObservedBlockActive, parseObservedReset } from '../lib/quotaReset.js';
 
 const STATE_FILE = () => join(PATHS.data, 'imagegen-quota.json');
 
@@ -86,31 +87,6 @@ async function readLedger() {
 }
 
 /**
- * Parse an absolute ISO instant out of provider error text.
- * Antigravity phrases it as `(around 2026-07-31T21:38:09Z)`. Pure.
- */
-const parseAbsoluteReset = (text, now) => {
-  const m = text.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)/);
-  if (!m) return null;
-  const at = new Date(m[1]).getTime();
-  // Narration also carries log lines and session stamps. A timestamp in the
-  // past is not a reset time — accepting one would set `blockedUntil` to an
-  // already-elapsed instant, which reads as "not blocked" downstream.
-  return Number.isNaN(at) || at <= now ? null : at;
-};
-
-/**
- * Parse a relative reset window (`quota will reset in approximately 5 hours`,
- * `try again in 30 minutes`) into an absolute epoch ms. Pure given `now`.
- */
-const parseRelativeReset = (text, now) => {
-  const m = text.match(/(?:reset|retry|try again|available)\b[^.]{0,40}?\bin\s+(?:approximately\s+|about\s+|~\s*)?(\d+(?:\.\d+)?)\s*(second|minute|hour|day)s?/i);
-  if (!m) return null;
-  const unitMs = { second: 1000, minute: 60_000, hour: 3_600_000, day: 86_400_000 }[m[2].toLowerCase()];
-  return now + Number(m[1]) * unitMs;
-};
-
-/**
  * Phrases that mean "the image backend refused because you are out of quota".
  *
  * EVERY pattern here must be anchored to quota context, because the text being
@@ -149,12 +125,9 @@ export function parseImageQuotaSignal(text, { now = Date.now() } = {}) {
   const s = String(text || '');
   if (!s.trim()) return { exhausted: false, resetsAt: null };
   if (!IMAGE_QUOTA_PATTERNS.some((re) => re.test(s))) return { exhausted: false, resetsAt: null };
-  // Absolute wins: a provider that states both ("in ~5 hours (around <ISO>)")
-  // is more precise in the parenthetical, and it survives a slow error path.
-  // Both parsers reject an instant that isn't in the future — narration carries
-  // log/session timestamps too, and a PAST "reset" would read as "not blocked".
-  const resetsAt = parseAbsoluteReset(s, now) ?? parseRelativeReset(s, now);
-  return { exhausted: true, resetsAt };
+  // Shared with the quota-burn denial ledger — a refusal's own stated reset is
+  // parsed the same way wherever it is observed (see `parseObservedReset`).
+  return { exhausted: true, resetsAt: parseObservedReset(s, { now }) };
 }
 
 /**
@@ -267,8 +240,10 @@ export async function getImageGenQuota({ enabledModes = [], now = Date.now() } =
     // never stated one — for a bounded window after we observed it, so an
     // unknown-reset block still shows but can't stick forever on an install
     // that stops rendering. A success clears it either way.
-    const blocked = entry.blockedAt
-      && (entry.blockedUntil ? entry.blockedUntil > now : now - entry.blockedAt < UNKNOWN_BLOCK_TTL_MS);
+    const blocked = isObservedBlockActive(
+      { at: entry.blockedAt, until: entry.blockedUntil },
+      { now, ttlMs: UNKNOWN_BLOCK_TTL_MS },
+    );
     if (blocked) {
       limits.push({
         key,

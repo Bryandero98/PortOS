@@ -3,7 +3,9 @@ import {
   QUOTA_BURN_FAMILIES,
   QUOTA_BURN_JOB_CATALOG,
   QUOTA_BURN_JOB_TYPES,
+  QUOTA_BURN_UNLIMITED_DISPATCHES,
   familyIsActionable,
+  isUnlimitedDispatchCap,
   normalizeQuotaBurnConfig,
   normalizeQuotaBurnJob,
 } from './quotaBurnConfig.js';
@@ -27,6 +29,39 @@ describe('normalizeQuotaBurnConfig', () => {
     expect(config.families.grok).toMatchObject({
       resetWithinHours: 168, reservePercent: 0, maxDispatchesPerWindow: 1, priority: 100,
     });
+  });
+
+  it('drops the retired per-family providerId / scope keys from an older plan', () => {
+    // Both were removed from the family shape; a config file written before that
+    // must still load, minus the keys, rather than carrying dead state forward.
+    const family = normalizeQuotaBurnConfig({
+      families: { grok: { enabled: true, providerId: 'grok-cli', scope: 'session' } },
+    }).families.grok;
+    expect(family.enabled).toBe(true);
+    expect(family).not.toHaveProperty('providerId');
+    expect(family).not.toHaveProperty('scope');
+  });
+
+  it('defaults the dispatch cap to unlimited', () => {
+    const config = normalizeQuotaBurnConfig({ families: { grok: { enabled: true } } });
+    expect(config.families.grok.maxDispatchesPerWindow).toBe(QUOTA_BURN_UNLIMITED_DISPATCHES);
+    expect(normalizeQuotaBurnConfig(undefined).families.claude.maxDispatchesPerWindow)
+      .toBe(QUOTA_BURN_UNLIMITED_DISPATCHES);
+  });
+
+  it('preserves the unlimited sentinel instead of clamping it up to the minimum', () => {
+    // The sentinel sits BELOW the field's own minimum, so the generic clamp
+    // would fold -1 to 1 and silently reinstate a cap of one burn per window.
+    const config = normalizeQuotaBurnConfig({
+      families: { grok: { enabled: true, maxDispatchesPerWindow: -1 }, codex: { maxDispatchesPerWindow: -99 } },
+    });
+    expect(config.families.grok.maxDispatchesPerWindow).toBe(-1);
+    expect(config.families.codex.maxDispatchesPerWindow).toBe(-1);
+  });
+
+  it('keeps a real cap the user set', () => {
+    const config = normalizeQuotaBurnConfig({ families: { grok: { maxDispatchesPerWindow: 3 } } });
+    expect(config.families.grok.maxDispatchesPerWindow).toBe(3);
   });
 
   it('clamps the check interval into the polling bounds', () => {
@@ -66,6 +101,15 @@ describe('familyIsActionable', () => {
     expect(familyIsActionable({ enabled: true, jobs: [] })).toBe(false);
     expect(familyIsActionable({ enabled: true, jobs: [{ enabled: false }] })).toBe(false);
     expect(familyIsActionable({ enabled: true, jobs: [{ enabled: true }] })).toBe(true);
+  });
+});
+
+describe('isUnlimitedDispatchCap', () => {
+  it('reads any negative cap as unlimited and a real cap as bounded', () => {
+    expect(isUnlimitedDispatchCap(QUOTA_BURN_UNLIMITED_DISPATCHES)).toBe(true);
+    expect(isUnlimitedDispatchCap(-5)).toBe(true);
+    expect(isUnlimitedDispatchCap(1)).toBe(false);
+    expect(isUnlimitedDispatchCap(50)).toBe(false);
   });
 });
 

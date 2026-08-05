@@ -87,7 +87,7 @@ describe('PipelineEditorialChecks — muted checks drop out of the health-panel 
       trend: { points: [], regressions: [], checkRegressions: [] },
     });
     getEditorialChecksRunStatus.mockResolvedValue({ active: false });
-    patchEditorialCheck.mockImplementation((id, body) => Promise.resolve({ ...CHECK, ...body }));
+    patchEditorialCheck.mockImplementation((_id, body) => Promise.resolve({ ...CHECK, ...body }));
   });
 
   it('makes the health-panel check + category rows non-interactive after the check is muted in the triage', async () => {
@@ -144,7 +144,7 @@ describe('PipelineEditorialChecks — muted checks drop out of the health-panel 
   });
 
   it('reconciles the health-panel rows back when the disable PATCH fails', async () => {
-    patchEditorialCheck.mockImplementation((id, body) => (
+    patchEditorialCheck.mockImplementation((_id, body) => (
       body.enabled === false ? Promise.reject(new Error('nope')) : Promise.resolve({ ...CHECK, ...body })
     ));
     renderPage();

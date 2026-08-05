@@ -12,7 +12,7 @@
  * logic stays in cos.js while persistence lives here.
  */
 
-import { readFile, writeFile } from 'fs/promises';
+import { readFile, writeFile, stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { parseTasksMarkdown, groupTasksByStatus, getAutoApprovedTasks, getAwaitingApprovalTasks, generateTasksMarkdown, hasKnownPrefix } from '../lib/taskParser.js';
@@ -102,6 +102,66 @@ function isContentEdit(updates, existingMetadata = {}) {
   return false;
 }
 
+// ── Parsed-task cache (issue #3497) ─────────────────────────────────────────
+//
+// `getUserTasks`/`getCosTasks`/`getTaskById` run on every daemon evaluation
+// tick, scheduler sweep, and agent state update, and each call used to do a
+// full `readFile` + regex-heavy `parseTasksMarkdown` of a `COS-TASKS.md` that
+// grows to hundreds of tasks carrying prompt bodies and JSON metadata strings.
+// Cache the parsed array per file so an unchanged file costs one `stat` plus a
+// structured clone instead of a read + full parse.
+//
+// One server process, one user (CLAUDE.md trust model) — no locking, no atomic
+// write dance. Correctness rests on two independent invalidation signals:
+//
+//   1. The stamp (`mtimeMs` + `size`) catches writes this module did NOT make —
+//      a user editing `TASKS.md` in an editor, a restore, a peer's direct write.
+//   2. Every write through `writeTaskFile` DROPS the entry outright. mtime can
+//      be as coarse as one second on some filesystems, so a write-then-read in
+//      the same tick must not depend on the stamp having moved.
+const parsedTaskCache = new Map(); // filePath -> { stamp, tasks }
+
+// `null` = could not stat (missing/unreadable) → do not cache, distinct from a
+// legitimately empty file, which stamps normally and caches its empty parse.
+const taskFileStamp = async (filePath) => {
+  const stats = await stat(filePath).catch(() => null);
+  return stats ? `${stats.mtimeMs}:${stats.size}` : null;
+};
+
+/**
+ * Read + parse a task markdown file, serving the cached parse when the file is
+ * unchanged on disk.
+ *
+ * Always returns a DEEP COPY. Callers (`addTask`, `updateTask`, `reorderTasks`,
+ * the sweeps) mutate both the array and the task objects in place; handing out
+ * the cached originals would let one caller's in-flight edits leak into every
+ * later reader — including edits that were never persisted.
+ */
+async function readTaskFile(filePath) {
+  const stamp = await taskFileStamp(filePath);
+  const cached = parsedTaskCache.get(filePath);
+  if (stamp && cached?.stamp === stamp) return structuredClone(cached.tasks);
+
+  const tasks = parseTasksMarkdown(await readFile(filePath, 'utf-8'));
+  if (stamp) parsedTaskCache.set(filePath, { stamp, tasks });
+  else parsedTaskCache.delete(filePath);
+  return structuredClone(tasks);
+}
+
+/**
+ * Write task markdown, dropping the now-stale parse for that file. Every write
+ * path in this module goes through here — see invalidation signal 2 above.
+ */
+async function writeTaskFile(filePath, markdown) {
+  parsedTaskCache.delete(filePath);
+  await writeFile(filePath, markdown);
+}
+
+/** Test hook: forget every cached parse. */
+export function __resetTaskCache() {
+  parsedTaskCache.clear();
+}
+
 /**
  * Get user tasks from TASKS.md
  */
@@ -113,8 +173,7 @@ export async function getUserTasks(tasksFilePath = null) {
     return { tasks: [], grouped: groupTasksByStatus([]), file: filePath, exists: false, type: 'user' };
   }
 
-  const content = await readFile(filePath, 'utf-8');
-  const tasks = parseTasksMarkdown(content);
+  const tasks = await readTaskFile(filePath);
   const grouped = groupTasksByStatus(tasks);
 
   return { tasks, grouped, file: filePath, exists: true, type: 'user' };
@@ -131,8 +190,7 @@ export async function getCosTasks(tasksFilePath = null) {
     return { tasks: [], grouped: groupTasksByStatus([]), file: filePath, exists: false, type: 'internal' };
   }
 
-  const content = await readFile(filePath, 'utf-8');
-  const tasks = parseTasksMarkdown(content);
+  const tasks = await readTaskFile(filePath);
   const grouped = groupTasksByStatus(tasks);
   const autoApproved = getAutoApprovedTasks(tasks);
   const awaitingApproval = getAwaitingApprovalTasks(tasks);
@@ -192,8 +250,7 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
   // Read existing tasks or start fresh
   let tasks = [];
   if (existsSync(filePath)) {
-    const content = await readFile(filePath, 'utf-8');
-    tasks = parseTasksMarkdown(content);
+    tasks = await readTaskFile(filePath);
   }
 
   // Reject duplicate: same first-line description AND same target app already
@@ -374,6 +431,17 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     if (taskData.liProposal && typeof taskData.liProposal === 'object' && !Array.isArray(taskData.liProposal)) {
       metadata.liProposal = taskData.liProposal;
     }
+    // Which provider family's window this burn task is spending. Read by
+    // `isCooldownExemptTask` (cosTaskGenerator.js, which owns the why) and by
+    // quotaBurnRunner's completion continuation.
+    if (taskData.quotaBurnFamily) metadata.quotaBurnFamily = taskData.quotaBurnFamily;
+    // The reset of the SHORT rolling window that will refuse first, so a run the
+    // provider refuses can block that family until the window rolls rather than
+    // letting the continuation re-dispatch into the same wall (the weekly card
+    // it gates on still reads healthy). See quotaBurnDenials.js.
+    if (Number.isFinite(taskData.quotaBurnLimitingResetAt)) {
+      metadata.quotaBurnLimitingResetAt = taskData.quotaBurnLimitingResetAt;
+    }
     // Content-edit timestamp for cross-peer newest-edit-wins LWW (#1714). Stamped
     // at creation so a freshly-added task always carries a stamp; the merge treats
     // an absent stamp as oldest, so this also keeps a stamped task from losing a
@@ -406,7 +474,7 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
   // Write back to file
   const includeApprovalFlags = taskType === 'internal';
   const markdown = generateTasksMarkdown(tasks, includeApprovalFlags);
-  await writeFile(filePath, markdown);
+  await writeTaskFile(filePath, markdown);
 
   // cos.js init listens for this event. For user tasks it fires
   // tryImmediateSpawn so the task starts instantly if slots are available,
@@ -432,8 +500,7 @@ export async function updateTask(taskId, updates, taskType = 'user', { now = Dat
     return { error: 'Task file not found' };
   }
 
-  const content = await readFile(filePath, 'utf-8');
-  let tasks = parseTasksMarkdown(content);
+  let tasks = await readTaskFile(filePath);
 
   const taskIndex = tasks.findIndex(t => t.id === taskId);
   if (taskIndex === -1) {
@@ -557,7 +624,7 @@ export async function updateTask(taskId, updates, taskType = 'user', { now = Dat
   // Write back to file
   const includeApprovalFlags = taskType === 'internal';
   const markdown = generateTasksMarkdown(tasks, includeApprovalFlags);
-  await writeFile(filePath, markdown);
+  await writeTaskFile(filePath, markdown);
 
   // A blocked → pending flip is a revive: the task is newly spawnable, exactly
   // like an approval. Emit a distinct action so cos.init's listener re-runs the
@@ -633,7 +700,7 @@ export async function mergePeerTasks(taskType, remoteTasks, { now = Date.now() }
       : join(ROOT_DIR, state.config.cosTasksFile);
 
     const localTasks = existsSync(filePath)
-      ? parseTasksMarkdown(await readFile(filePath, 'utf-8'))
+      ? await readTaskFile(filePath)
       : [];
 
     const merged = mergeTaskLists(localTasks, remoteTasks, { now });
@@ -649,7 +716,7 @@ export async function mergePeerTasks(taskType, remoteTasks, { now = Date.now() }
     // never catch up). Re-offering is cheap: the consumer is a durable no-op after the first.
     if (mergedMarkdown === localMarkdown) return { changed: false, merged };
 
-    await writeFile(filePath, mergedMarkdown);
+    await writeTaskFile(filePath, mergedMarkdown);
     cosEvents.emit('tasks:changed', { type: taskType, action: 'peer-merged' });
     return { changed: true, count: merged.length, merged };
   });
@@ -689,8 +756,7 @@ export async function deleteTask(taskId, taskType = 'user') {
     return { error: 'Task file not found' };
   }
 
-  const content = await readFile(filePath, 'utf-8');
-  let tasks = parseTasksMarkdown(content);
+  let tasks = await readTaskFile(filePath);
 
   const taskToDelete = tasks.find(t => t.id === taskId);
   if (!taskToDelete) {
@@ -702,7 +768,7 @@ export async function deleteTask(taskId, taskType = 'user') {
   // Write back to file
   const includeApprovalFlags = taskType === 'internal';
   const markdown = generateTasksMarkdown(tasks, includeApprovalFlags);
-  await writeFile(filePath, markdown);
+  await writeTaskFile(filePath, markdown);
 
   cosEvents.emit('tasks:changed', { type: taskType, action: 'deleted', taskId });
   return { success: true, taskId };
@@ -858,8 +924,7 @@ export async function reorderTasks(taskIds) {
     return { error: 'Task file not found' };
   }
 
-  const content = await readFile(filePath, 'utf-8');
-  const tasks = parseTasksMarkdown(content);
+  const tasks = await readTaskFile(filePath);
 
   // Create a map of tasks by ID for quick lookup. parseTasksMarkdown guarantees
   // unique ids (it suffixes any duplicate it encounters), so this Map can't
@@ -883,7 +948,7 @@ export async function reorderTasks(taskIds) {
 
   // Write back to file
   const markdown = generateTasksMarkdown(reorderedTasks, false);
-  await writeFile(filePath, markdown);
+  await writeTaskFile(filePath, markdown);
 
   cosEvents.emit('tasks:changed', { type: 'user', action: 'reordered' });
   return { success: true, order: reorderedTasks.map(t => t.id) };
@@ -906,8 +971,7 @@ export async function approveTask(taskId, { now = Date.now() } = {}) {
     return { error: 'CoS task file not found' };
   }
 
-  const content = await readFile(filePath, 'utf-8');
-  let tasks = parseTasksMarkdown(content);
+  let tasks = await readTaskFile(filePath);
 
   const taskIndex = tasks.findIndex(t => t.id === taskId);
   if (taskIndex === -1) {
@@ -931,7 +995,7 @@ export async function approveTask(taskId, { now = Date.now() } = {}) {
 
   // Write back to file
   const markdown = generateTasksMarkdown(tasks, true);
-  await writeFile(filePath, markdown);
+  await writeTaskFile(filePath, markdown);
 
   cosEvents.emit('tasks:changed', { type: 'internal', action: 'approved', task: tasks[taskIndex] });
 

@@ -141,7 +141,7 @@ export default function DeployPanel({ appId, appName }) {
             </div>
             <button
               onClick={handleClose}
-              className="text-gray-400 hover:text-white transition-colors"
+              className="flex items-center justify-center min-h-[44px] min-w-[44px] text-gray-400 hover:text-white transition-colors"
               title={isDeploying ? 'Hide (deploy keeps running)' : 'Close'}
               aria-label={isDeploying ? 'Hide deploy output' : 'Close deploy panel'}
             >
@@ -151,7 +151,7 @@ export default function DeployPanel({ appId, appName }) {
 
           <div
             ref={outputRef}
-            className="flex-1 overflow-auto p-4 font-mono text-xs leading-relaxed bg-black/40"
+            className="always-dark flex-1 overflow-auto p-4 font-mono text-xs leading-relaxed bg-black/40"
           >
             {output.map((line, i) => (
               <div

@@ -17,11 +17,13 @@ const FAKE_TARGET = Object.freeze({
   unavailableReason: null,
 });
 
-vi.mock('../services/imageTo3d/targets.js', () => ({
+// Partial mock — the registry resolvers are stubbed to the synthetic target, but
+// the reason→label helpers stay real (the install-refusal message renders them).
+vi.mock('../services/imageTo3d/targets.js', async (importOriginal) => ({
+  ...(await importOriginal()),
   detectHostCapabilities: vi.fn(() => ({ appleSilicon: true, unifiedMemoryGb: 128, cuda: false })),
   getTarget: vi.fn((id) => (id === 'fakegen' ? FAKE_TARGET : null)),
   listTargets: vi.fn(() => [FAKE_TARGET]),
-  isTargetAvailable: vi.fn(() => true),
   unavailableReason: vi.fn(() => null),
   IMAGE_TO_3D_TARGET_IDS: ['fakegen'],
 }));

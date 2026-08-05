@@ -12,6 +12,9 @@ const state = {
   pending: {},
   ran: [],
   contexts: [],
+  blocks: {},
+  settled: [],
+  settleError: null,
 };
 
 vi.mock('./providerUsage.js', () => ({
@@ -43,8 +46,22 @@ vi.mock('./quotaBurn.js', async (importActual) => ({
   recordQuotaBurnDispatch: vi.fn(async (key) => { state.recorded.push(key); }),
 }));
 
+// Same posture as the dispatch ledger: the denial gate stays real (it lives in
+// quotaBurn.js), only its storage is stubbed off the install's `data/cos/`.
+// `recordBurnAgentCompletion` records into `state.settled` so the continuation's
+// ordering — ledger first, THEN the next dispatch — is assertable.
+vi.mock('./quotaBurnDenials.js', async (importActual) => ({
+  ...(await importActual()),
+  getActiveQuotaBurnBlocks: vi.fn(async () => state.blocks),
+  recordBurnAgentCompletion: vi.fn(async (agent) => {
+    state.settled.push(agent?.metadata?.taskQuotaBurnFamily ?? null);
+    if (state.settleError) throw new Error(state.settleError);
+    return null;
+  }),
+}));
+
 const { normalizeQuotaBurnConfig } = await import('../lib/quotaBurnConfig.js');
-const { getQuotaBurnStatus, runQuotaBurnCycle, __tickQuotaBurn, __resetQuotaBurnRunner } = await import('./quotaBurnRunner.js');
+const { getQuotaBurnStatus, runQuotaBurnCycle, rotatePlanAfter, __tickQuotaBurn, __onBurnAgentCompleted, __resetQuotaBurnRunner } = await import('./quotaBurnRunner.js');
 
 const card = (family, percentRemaining = 50) => ({
   family, label: family, supported: true,
@@ -75,6 +92,9 @@ beforeEach(() => {
   state.contexts = [];
   state.dispatches = {};
   state.recorded = [];
+  state.blocks = {};
+  state.settled = [];
+  state.settleError = null;
   state.jobResult = undefined;
   __resetQuotaBurnRunner();
 });
@@ -167,6 +187,71 @@ describe('runQuotaBurnCycle', () => {
     expect(state.recorded).toEqual([]);
   });
 
+  it('burns EVERY eligible family in one cycle, not just the soonest to reset', async () => {
+    // Families don't share a budget — each draws down its own window against its
+    // own reserve and cap. Stopping the cycle at the first dispatch meant the
+    // soonest-resetting family took every tick and a longer-windowed one
+    // (claude at 2h vs agy at 21h) never burned at all while claude was enabled.
+    state.config = normalizeQuotaBurnConfig({
+      enabled: true,
+      families: {
+        claude: { enabled: true, resetWithinHours: 24, jobs: [{ id: 'soon', enabled: true, jobType: 'agent-prompt' }] },
+        agy: { enabled: true, resetWithinHours: 24, jobs: [{ id: 'later', enabled: true, jobType: 'agent-prompt' }] },
+      },
+    });
+    state.quotas = [
+      { family: 'claude', label: 'claude', supported: true, limits: [{ key: 'session', scope: 'session', resetsAt: new Date(now + 2 * 3600_000).toISOString(), percentRemaining: 90 }] },
+      { family: 'agy', label: 'agy', supported: true, limits: [{ key: 'day', scope: 'day', resetsAt: new Date(now + 21 * 3600_000).toISOString(), percentRemaining: 93 }] },
+    ];
+    state.pending = { soon: { count: 1 }, later: { count: 1 } };
+
+    const result = await runQuotaBurnCycle();
+    expect(result.dispatched).toBe(true);
+    expect(state.ran.map((entry) => entry.familyId)).toEqual(['claude', 'agy']);
+    // Both windows charged — each against its OWN dispatch key.
+    expect(state.recorded).toHaveLength(2);
+    expect(new Set(state.recorded).size).toBe(2);
+    // One run-log row per dispatch, so neither family is hidden from the audit.
+    expect(state.runs.filter((entry) => entry.dispatched)).toHaveLength(2);
+    expect(result.dispatches).toHaveLength(2);
+    expect(result.summary).toMatch(/agy/);
+  });
+
+  it('still dispatches the healthy family when another one\'s job declines', async () => {
+    state.config = normalizeQuotaBurnConfig({
+      enabled: true,
+      families: {
+        claude: { enabled: true, resetWithinHours: 24, jobs: [{ id: 'broken', enabled: true, jobType: 'agent-prompt' }] },
+        agy: { enabled: true, resetWithinHours: 24, jobs: [{ id: 'good', enabled: true, jobType: 'agent-prompt' }] },
+      },
+    });
+    state.quotas = [card('claude'), card('agy')];
+    state.pending = { broken: { count: 1 }, good: { count: 1 } };
+    const { runBurnJob } = await import('./quotaBurnJobs/index.js');
+    runBurnJob.mockImplementationOnce(async () => ({ dispatched: false, reason: 'no managed app selected' }));
+
+    const result = await runQuotaBurnCycle();
+    expect(result.dispatched).toBe(true);
+    expect(result.familyId).toBe('agy');
+    // Only the family that actually started work is charged.
+    expect(state.recorded).toHaveLength(1);
+  });
+
+  it('names the family in every skip reason when several plans were walked', async () => {
+    state.config = normalizeQuotaBurnConfig({
+      enabled: true,
+      families: {
+        claude: { enabled: true, resetWithinHours: 24, jobs: [{ id: 'a', enabled: true, jobType: 'agent-prompt' }] },
+        agy: { enabled: true, resetWithinHours: 24, jobs: [{ id: 'b', enabled: true, jobType: 'agent-prompt' }] },
+      },
+    });
+    state.quotas = [card('claude'), card('agy')];
+    state.pending = { a: { count: 0, detail: 'no app' }, b: { count: 0, detail: 'no app' } };
+    const result = await runQuotaBurnCycle();
+    expect(result.reason).toMatch(/claude\/a: no app/);
+    expect(result.reason).toMatch(/agy\/b: no app/);
+  });
+
   it('releases the re-entrancy guard even when a cycle throws', async () => {
     // Without the finally, an ENOSPC on the ledger write (or any other throw)
     // would leave `running` stuck true and wedge the loop for the life of the
@@ -205,6 +290,54 @@ describe('getQuotaBurnStatus', () => {
     expect(codex.skipReason).toBe('disabled');
     // A disabled family's jobs are not probed — the counts would never be acted on.
     expect(codex.jobs.every((job) => job.pending === null)).toBe(true);
+  });
+
+  it('names WHICH window the percentage and countdown describe', async () => {
+    // A family publishes a short rolling window and a weekly one; a bare
+    // "50% left · resets in 2h" says nothing about which allowance that is.
+    const { status } = await getQuotaBurnStatus();
+    expect(status.families.find((family) => family.id === 'grok').windowLabel).toBe('Weekly');
+  });
+
+  it('surfaces an observed provider refusal on the family card', async () => {
+    state.blocks = { grok: { at: now - 1000, until: now + 3_600_000, reason: 'Usage limit exceeded' } };
+    const { status } = await getQuotaBurnStatus();
+    const grok = status.families.find((family) => family.id === 'grok');
+    expect(grok.willBurn).toBe(false);
+    expect(grok.blockedUntil).toBe(new Date(now + 3_600_000).toISOString());
+    expect(grok.blockedReason).toBe('Usage limit exceeded');
+    expect(grok.skipReason).toMatch(/provider refused the last burn/);
+  });
+});
+
+/**
+ * The stop condition the whole denial ledger exists for: a plan spending a
+ * weekly allowance exhausts the SHORT rolling window underneath it, and every
+ * further dispatch fails instantly — while the weekly card it gates on still
+ * reads "50% left, resets in 2h".
+ */
+describe('denial blocks in a cycle', () => {
+  it('dispatches nothing while the family is blocked, and says why', async () => {
+    state.pending = { first: { count: 1 } };
+    state.blocks = { grok: { at: now - 1000, until: now + 3_600_000, reason: 'Usage limit exceeded' } };
+    const entry = await runQuotaBurnCycle({ trigger: 'scheduled' });
+    expect(entry.dispatched).toBe(false);
+    expect(entry.reason).toMatch(/provider refused the last burn/);
+    expect(state.ran).toEqual([]);
+  });
+
+  it('resumes once the block lapses', async () => {
+    state.pending = { first: { count: 1 } };
+    state.blocks = { grok: { at: now - 7_200_000, until: now - 1000, reason: 'Usage limit exceeded' } };
+    const entry = await runQuotaBurnCycle({ trigger: 'scheduled' });
+    expect(entry.dispatched).toBe(true);
+  });
+
+  it('lets a forced run retry through a block', async () => {
+    state.pending = { first: { count: 1 } };
+    state.blocks = { grok: { at: now - 1000, until: now + 3_600_000, reason: 'Usage limit exceeded' } };
+    const entry = await runQuotaBurnCycle({ trigger: 'manual', familyId: 'grok', jobId: 'first', force: true });
+    expect(entry.dispatched).toBe(true);
   });
 });
 
@@ -300,6 +433,156 @@ describe('interval clock', () => {
     state.pending = { first: { count: 1 } };
     await __tickQuotaBurn();
     expect(getProviderQuotas).toHaveBeenCalled();
+  });
+});
+
+describe('plan rotation', () => {
+  it('resumes after the job the family last dispatched instead of restarting at the top', async () => {
+    // `agent-prompt` always probes as "1 pending" (its probe only checks that an
+    // app and a provider resolve), so an un-rotated walk re-ran job #1 on every
+    // cycle forever and jobs 2..N in an ordered plan never ran once.
+    state.pending = { first: { count: 1 }, second: { count: 1 } };
+    await runQuotaBurnCycle({ trigger: 'manual' });
+    await runQuotaBurnCycle({ trigger: 'manual' });
+    expect(state.ran.map((entry) => entry.jobId)).toEqual(['first', 'second']);
+  });
+
+  it('keeps walking to the next job with work when the resume point has none', async () => {
+    // Rotation moves where the walk STARTS; "first job with pending work wins"
+    // still holds, which is what a probing job like universe-bible-images needs.
+    state.pending = { first: { count: 1 }, second: { count: 0, detail: 'all rendered' } };
+    state.runs = [{ at: new Date().toISOString(), dispatched: true, familyId: 'grok', jobId: 'first' }];
+    const result = await runQuotaBurnCycle({ trigger: 'manual' });
+    expect(result.dispatched).toBe(true);
+    expect(state.ran.map((entry) => entry.jobId)).toEqual(['first']);
+  });
+
+  it('falls back to plan order for a cursor that is not in the plan', () => {
+    // A job deleted from the plan, or one aged out of the capped run log.
+    const jobs = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+    expect(rotatePlanAfter(jobs, 'gone').map((job) => job.id)).toEqual(['a', 'b', 'c']);
+    expect(rotatePlanAfter(jobs, null).map((job) => job.id)).toEqual(['a', 'b', 'c']);
+    expect(rotatePlanAfter(jobs, 'a').map((job) => job.id)).toEqual(['b', 'c', 'a']);
+    expect(rotatePlanAfter(jobs, 'c').map((job) => job.id)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('reads every family\'s cursor before any dispatch writes a new one', async () => {
+    // Two families in one cycle must not see each other's fresh run-log rows.
+    state.config = normalizeQuotaBurnConfig({
+      enabled: true,
+      families: {
+        claude: { enabled: true, resetWithinHours: 24, jobs: [{ id: 'c1', enabled: true, jobType: 'agent-prompt' }, { id: 'c2', enabled: true, jobType: 'agent-prompt' }] },
+        agy: { enabled: true, resetWithinHours: 24, jobs: [{ id: 'a1', enabled: true, jobType: 'agent-prompt' }, { id: 'a2', enabled: true, jobType: 'agent-prompt' }] },
+      },
+    });
+    state.quotas = [card('claude'), card('agy')];
+    state.pending = { c1: { count: 1 }, c2: { count: 1 }, a1: { count: 1 }, a2: { count: 1 } };
+    state.runs = [{ at: new Date().toISOString(), dispatched: true, familyId: 'agy', jobId: 'a1' }];
+    await runQuotaBurnCycle({ trigger: 'manual' });
+    expect(state.ran.map((entry) => entry.jobId)).toEqual(['c1', 'a2']);
+  });
+});
+
+describe('completion continuation', () => {
+  it('evaluates the family again when one of its burn agents finishes', async () => {
+    // The interval only STARTS a burn — see the module header for why one
+    // dispatch per `checkIntervalMinutes` cannot spend the window.
+    state.pending = { first: { count: 1 }, second: { count: 1 } };
+    await runQuotaBurnCycle({ trigger: 'manual' });
+    await __onBurnAgentCompleted({ metadata: { taskQuotaBurnFamily: 'grok' } });
+    // The continuation advances the plan and is charged like any unforced burn.
+    expect(state.ran.map((entry) => entry.jobId)).toEqual(['first', 'second']);
+    expect(state.recorded).toHaveLength(2);
+    expect(state.runs[0]).toMatchObject({ trigger: 'continuation', dispatched: true });
+  });
+
+  it('records a refusal BEFORE dispatching the next job', async () => {
+    // The whole point of the ordering: this continuation dispatches the next job
+    // the moment a burn agent finishes, so a block recorded after it runs (or
+    // from a second `agent:completed` subscriber, whose ordering against this
+    // one is not guaranteed) arrives one wasted agent too late, every time.
+    state.pending = { first: { count: 1 } };
+    // Whatever the ledger just learned is what selection reads on this very tick.
+    state.blocks = { grok: { at: now - 1000, until: now + 3_600_000, reason: 'Usage limit exceeded' } };
+    const entry = await __onBurnAgentCompleted({ metadata: { taskQuotaBurnFamily: 'grok' } });
+    expect(state.settled).toEqual(['grok']);
+    expect(entry.dispatched).toBe(false);
+    expect(entry.reason).toMatch(/provider refused the last burn/);
+    expect(state.ran).toEqual([]);
+  });
+
+  it('still continues when the denial ledger itself fails', async () => {
+    // Telemetry must never be able to stall the plan.
+    state.pending = { first: { count: 1 } };
+    state.settleError = 'ENOSPC';
+    const entry = await __onBurnAgentCompleted({ metadata: { taskQuotaBurnFamily: 'grok' } });
+    expect(entry.dispatched).toBe(true);
+  });
+
+  it('scrapes only the burning family\'s quota, not every enabled provider\'s', async () => {
+    // WAIT.FRESH bypasses the cache by design, so each card costs its own
+    // multi-second PTY spawn — and every card but this family's is discarded.
+    // Unscoped, one burn chain would pay N scrapes per link instead of one.
+    const { getProviderQuotas } = await import('./providerUsage.js');
+    state.pending = { first: { count: 1 } };
+    await __onBurnAgentCompleted({ metadata: { taskQuotaBurnFamily: 'grok' } });
+    expect(getProviderQuotas).toHaveBeenCalledWith(expect.objectContaining({ family: 'grok' }));
+  });
+
+  it('runs a continuation that arrived mid-cycle instead of dropping it', async () => {
+    // Two burn agents finishing inside one cycle is ordinary. Dropping the
+    // second on the re-entrancy guard stalls that family until the next interval
+    // tick — most of a day at the 12-hour default.
+    state.config = normalizeQuotaBurnConfig({
+      enabled: true,
+      families: {
+        claude: { enabled: true, resetWithinHours: 24, jobs: [{ id: 'c1', enabled: true, jobType: 'agent-prompt' }] },
+        agy: { enabled: true, resetWithinHours: 24, jobs: [{ id: 'a1', enabled: true, jobType: 'agent-prompt' }] },
+      },
+    });
+    state.quotas = [card('claude'), card('agy')];
+    state.pending = { c1: { count: 1 }, a1: { count: 1 } };
+    // agy's agent finishes while claude's cycle is still mid-dispatch.
+    const { runBurnJob } = await import('./quotaBurnJobs/index.js');
+    runBurnJob.mockImplementationOnce(async ({ job, family, candidate }) => {
+      state.ran.push({ jobId: job.id, familyId: family.id, charge: candidate.charge });
+      await expect(__onBurnAgentCompleted({ metadata: { taskQuotaBurnFamily: 'agy' } }))
+        .resolves.toEqual({ skipped: 'already-running' });
+      return { dispatched: true, summary: `ran ${job.id}` };
+    });
+
+    await runQuotaBurnCycle({ trigger: 'manual', familyId: 'claude' });
+    expect(state.ran.map((entry) => entry.familyId)).toEqual(['claude', 'agy']);
+  });
+
+  it('ignores an agent that was not a quota burn', async () => {
+    state.pending = { first: { count: 1 } };
+    await __onBurnAgentCompleted({ metadata: { taskType: 'user' } });
+    await __onBurnAgentCompleted(null);
+    expect(state.ran).toEqual([]);
+  });
+
+  it('stops when the master switch is off', async () => {
+    // A continuation is unattended spending — switching the feature off must end
+    // the chain, not leave it running until the window cap happens to close it.
+    state.config = plan({ enabled: false });
+    state.pending = { first: { count: 1 } };
+    await __onBurnAgentCompleted({ metadata: { taskQuotaBurnFamily: 'grok' } });
+    expect(state.ran).toEqual([]);
+    expect(state.runs).toEqual([]);
+  });
+
+  it('stops once the window has no quota left to spend', async () => {
+    // The chain is bounded by the same gate ladder every other cycle runs — here
+    // the reserve, which the run log records so the stop is auditable.
+    state.quotas = [card('grok', 10)];
+    state.config = plan({ families: { grok: { enabled: true, resetWithinHours: 24, reservePercent: 40, jobs: [{ id: 'first', enabled: true, jobType: 'agent-prompt' }] } } });
+    state.pending = { first: { count: 1 } };
+    await __onBurnAgentCompleted({ metadata: { taskQuotaBurnFamily: 'grok' } });
+    expect(state.ran).toEqual([]);
+    expect(state.runs).toHaveLength(1);
+    expect(state.runs[0]).toMatchObject({ trigger: 'continuation', dispatched: false });
+    expect(state.runs[0].reason).toMatch(/reserve/);
   });
 });
 

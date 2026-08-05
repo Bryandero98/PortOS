@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Folder, FolderOpen, ChevronUp, HardDrive, Home, X, Check, AlertCircle } from 'lucide-react';
 import * as api from '../services/api';
+import BrailleSpinner from './BrailleSpinner';
 import Modal from './ui/Modal.jsx';
 
 export default function FolderPicker({ value, onChange, defaultPath }) {
@@ -117,7 +118,7 @@ export default function FolderPicker({ value, onChange, defaultPath }) {
             <button
               type="button"
               onClick={() => setIsOpen(false)}
-              className="p-1 text-gray-400 hover:text-white"
+              className="p-1 text-gray-400 hover:text-white min-h-[44px] min-w-[44px] flex items-center justify-center"
               aria-label="Close folder picker"
             >
               <X size={20} />
@@ -134,7 +135,7 @@ export default function FolderPicker({ value, onChange, defaultPath }) {
               type="button"
               onClick={() => handleNavigate('~')}
               className="p-1 text-gray-500 hover:text-white shrink-0"
-              title="Home directory"
+              title="Home directory" aria-label="Home directory"
             >
               <Home size={16} />
             </button>
@@ -164,8 +165,8 @@ export default function FolderPicker({ value, onChange, defaultPath }) {
           {/* Directory List */}
           <div className="flex-1 overflow-auto p-2 min-h-[300px]">
             {loading ? (
-              <div className="flex items-center justify-center h-full text-gray-500">
-                Loading...
+              <div className="flex items-center justify-center h-full">
+                <BrailleSpinner text="Loading" />
               </div>
             ) : error ? (
               <div className="flex flex-col items-center justify-center h-full gap-2 text-gray-500 px-4">

@@ -14,7 +14,12 @@
  */
 
 import { z } from 'zod';
-import { QUOTA_BURN_BOUNDS, QUOTA_BURN_FAMILIES, QUOTA_BURN_JOB_TYPES } from './quotaBurnConfig.js';
+import {
+  QUOTA_BURN_BOUNDS,
+  QUOTA_BURN_FAMILIES,
+  QUOTA_BURN_JOB_TYPES,
+  QUOTA_BURN_UNLIMITED_DISPATCHES,
+} from './quotaBurnConfig.js';
 
 const B = QUOTA_BURN_BOUNDS;
 
@@ -36,11 +41,15 @@ const quotaBurnJobSchema = z.object({
 
 const quotaBurnFamilySchema = z.object({
   enabled: z.boolean().optional(),
-  providerId: z.string().max(B.labelLength.max).nullable().optional(),
-  scope: z.string().max(B.scopeLength.max).nullable().optional(),
   resetWithinHours: z.number().min(B.resetWithinHours.min).max(B.resetWithinHours.max).optional(),
   reservePercent: z.number().min(B.reservePercent.min).max(B.reservePercent.max).optional(),
-  maxDispatchesPerWindow: z.number().int().min(B.maxDispatchesPerWindow.min).max(B.maxDispatchesPerWindow.max).optional(),
+  // The unlimited sentinel sits below the field's own minimum, so it is spelled
+  // as its own branch rather than by widening `min` — which would also let 0
+  // through, and 0 would read as "never burn" where the family switch belongs.
+  maxDispatchesPerWindow: z.union([
+    z.literal(QUOTA_BURN_UNLIMITED_DISPATCHES),
+    z.number().int().min(B.maxDispatchesPerWindow.min).max(B.maxDispatchesPerWindow.max),
+  ]).optional(),
   priority: z.number().int().min(B.priority.min).max(B.priority.max).optional(),
   // Replaced wholesale, never merged element-wise — it is an ordered list, and
   // a positional merge would make reordering and deletion inexpressible.

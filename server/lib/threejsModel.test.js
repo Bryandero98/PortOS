@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { buildThreejsFactorySource, threejsGeometrySchema, threejsSculptSpecSchema } from './threejsModel.js';
+import {
+  buildThreejsFactorySource,
+  buildThreejsFlatnessFeedback,
+  evaluateThreejsFlatness,
+  storedThreejsSculptSpecSchema,
+  threejsGeometrySchema,
+  threejsSculptSpecSchema,
+} from './threejsModel.js';
 
 const squareOutline = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
 const validExtrude = () => ({
@@ -66,6 +73,21 @@ describe('threejsSculptSpecSchema', () => {
     expect(parsed.parts[0].children[0].id).toBe('frontTrim');
   });
 
+  it('defaults surface relief off and preserves an explicit flag', () => {
+    const spec = validSpec();
+    spec.parts[0].children[0].explodeWithParent = true;
+    const parsed = threejsSculptSpecSchema.parse(spec);
+    // A part is a component unless the model says it merely rides one.
+    expect(parsed.parts[0].explodeWithParent).toBe(false);
+    expect(parsed.parts[0].children[0].explodeWithParent).toBe(true);
+  });
+
+  it('rejects a non-boolean surface-relief flag', () => {
+    const spec = validSpec();
+    spec.parts[0].explodeWithParent = 'yes';
+    expect(threejsSculptSpecSchema.safeParse(spec).success).toBe(false);
+  });
+
   it('rejects unknown material and detail references', () => {
     const spec = validSpec();
     spec.parts[0].material = 'missing';
@@ -108,6 +130,52 @@ describe('threejsSculptSpecSchema', () => {
     expect(parsed.materials.trim).toMatchObject({
       ior: 1.5, transmission: 0, thickness: 0, sheen: 0, iridescence: 0, anisotropy: 0,
     });
+  });
+
+  it('defaults an omitted part scale to an untouched [1, 1, 1]', () => {
+    const spec = validSpec();
+    delete spec.parts[0].scale;
+    delete spec.parts[0].children[0].scale;
+    const parsed = threejsSculptSpecSchema.parse(spec);
+    expect(parsed.parts[0].scale).toEqual([1, 1, 1]);
+    expect(parsed.parts[0].children[0].scale).toEqual([1, 1, 1]);
+  });
+
+  // A zero component collapses the part to an invisible plane and a negative one
+  // reflects it — neither throws at render time (three.js flips the front face for a
+  // negative determinant), so the schema is the only place they can be caught.
+  it('rejects a negative or zero part scale component, at any depth', () => {
+    for (const bad of [[1, -1, 1], [1, 0, 1], [-1, -1, -1]]) {
+      const spec = validSpec();
+      spec.parts[0].scale = bad;
+      const result = threejsSculptSpecSchema.safeParse(spec);
+      expect(result.success).toBe(false);
+      expect(result.error.issues.some((issue) => issue.path.join('.') === 'parts.0.scale.1'
+        || issue.path.join('.') === 'parts.0.scale.0')).toBe(true);
+
+      const nested = validSpec();
+      nested.parts[0].children[0].scale = bad;
+      expect(threejsSculptSpecSchema.safeParse(nested).success).toBe(false);
+    }
+  });
+
+  it('keeps accepting a legacy stored scale that the authoring contract now rejects', () => {
+    for (const legacy of [[1, -1, 1], [1, 0, 1], [1, 5e-5, 1]]) {
+      const spec = validSpec();
+      spec.parts[0].children[0].scale = legacy;
+      expect(threejsSculptSpecSchema.safeParse(spec).success).toBe(false);
+      expect(storedThreejsSculptSpecSchema.parse(spec).parts[0].children[0].scale).toEqual(legacy);
+    }
+  });
+
+  it('rejects a near-zero part scale below the floor but accepts the floor itself', () => {
+    const tooSmall = validSpec();
+    tooSmall.parts[0].scale = [1, 5e-5, 1];
+    expect(threejsSculptSpecSchema.safeParse(tooSmall).success).toBe(false);
+
+    const atFloor = validSpec();
+    atFloor.parts[0].scale = [1, 1e-4, 1];
+    expect(threejsSculptSpecSchema.parse(atFloor).parts[0].scale).toEqual([1, 1e-4, 1]);
   });
 
   it('rejects out-of-range physical material channels', () => {
@@ -266,6 +334,17 @@ describe('buildThreejsFactorySource', () => {
     expect(source).toContain('new THREE.MeshBasicMaterial(unlit)');
   });
 
+  it('carries the surface-relief flag into part userData so an export can disassemble too', () => {
+    const spec = validSpec();
+    spec.parts[0].children[0].explodeWithParent = true;
+    const source = buildThreejsFactorySource(spec);
+    expect(source).toContain('node.userData.partId = definition.id;');
+    expect(source).toContain('node.userData.explodeWithParent = definition.explodeWithParent;');
+    // The serialized spec the factory closes over must carry the flag, not just
+    // the code that reads it.
+    expect(source).toContain('"explodeWithParent": true');
+  });
+
   it('emits extrude, tube, and physical-channel construction', () => {
     const spec = validSpec();
     spec.parts[0].geometry = validExtrude();
@@ -278,5 +357,252 @@ describe('buildThreejsFactorySource', () => {
     for (const channel of ['ior', 'transmission', 'thickness', 'sheen', 'iridescence', 'anisotropy']) {
       expect(source).toContain(`${channel}: definition.${channel},`);
     }
+  });
+
+  // A spec an older install stored under the looser bound must stay exportable —
+  // tightening what a provider may author cannot retroactively take Copy/Download
+  // away from a `ready` model — and it exports verbatim, since neither dropping
+  // the sign nor flooring the zero is a repair this module is entitled to make.
+  it('still exports a stored spec whose part scale predates the authoring bound', () => {
+    const legacy = validSpec();
+    legacy.parts[0].children[0].scale = [1, -1, 0];
+    expect(threejsSculptSpecSchema.safeParse(legacy).success).toBe(false);
+
+    const source = buildThreejsFactorySource(legacy);
+    expect(source.replace(/\s+/g, '')).toContain('"scale":[1,-1,0]');
+  });
+
+  it('reports a malformed stored spec as a 400 naming the offending path', () => {
+    const broken = validSpec();
+    broken.parts[0].material = 'missing';
+    let thrown = null;
+    try {
+      buildThreejsFactorySource(broken);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown?.message).toMatch(/parts\.0\.material: unknown material: missing/);
+    expect(thrown?.status).toBe(400);
+    expect(thrown?.code).toBe('VALIDATION_ERROR');
+  });
+});
+
+// A wide, finely-sampled outline that is nonetheless ONE plane in Z: the shape
+// the gate exists to catch, and the one a head-on similarity score rewards.
+const flatFanGeometry = () => {
+  const points = 24;
+  const vertices = [];
+  const indices = [];
+  for (let index = 0; index < points; index += 1) {
+    const angle = (index / points) * Math.PI * 2;
+    vertices.push(Number(Math.cos(angle).toFixed(3)), Number(Math.sin(angle).toFixed(3)), 0);
+  }
+  vertices.push(0, 0, 0);
+  for (let index = 0; index < points; index += 1) indices.push(points, index, (index + 1) % points);
+  return { type: 'custom', vertices, indices };
+};
+
+// A lat/long sphere shell — every axis carries far more than the plane
+// threshold, which is what having a cross-section looks like numerically.
+const solidShellGeometry = () => {
+  const rings = 12;
+  const segments = 12;
+  const vertices = [];
+  const indices = [];
+  for (let ring = 0; ring <= rings; ring += 1) {
+    const phi = (ring / rings) * Math.PI;
+    for (let segment = 0; segment < segments; segment += 1) {
+      const theta = (segment / segments) * Math.PI * 2;
+      vertices.push(
+        Number((Math.sin(phi) * Math.cos(theta)).toFixed(3)),
+        Number(Math.cos(phi).toFixed(3)),
+        Number((Math.sin(phi) * Math.sin(theta)).toFixed(3)),
+      );
+    }
+  }
+  for (let index = 0; index + 2 < vertices.length / 3; index += 3) indices.push(index, index + 1, index + 2);
+  return { type: 'custom', vertices, indices };
+};
+
+const geometryPart = (id, geometry) => ({
+  id,
+  name: `${id} part`,
+  geometry,
+  material: 'body',
+  position: [0, 0, 0],
+  rotationDegrees: [0, 0, 0],
+  scale: [1, 1, 1],
+  children: [],
+});
+
+// Every part gets its own identity-priority detail, so the aggregate ratio is
+// exactly the fraction of parts that are slabs.
+const flatnessSpec = (parts, priority = 'identity') => ({
+  ...validSpec(),
+  parts,
+  sockets: [],
+  detailInventory: parts.map((part) => ({
+    feature: `${part.name} silhouette`,
+    evidence: 'Visible in the reference image.',
+    implementationPartIds: [part.id],
+    priority,
+  })),
+});
+
+describe('evaluateThreejsFlatness', () => {
+  it('keeps the fixtures inside the authoring contract', () => {
+    const spec = flatnessSpec([geometryPart('fan', flatFanGeometry()), geometryPart('shell', solidShellGeometry())]);
+    expect(threejsSculptSpecSchema.safeParse(spec).success).toBe(true);
+  });
+
+  it('flags a spec whose identity parts are all slab custom meshes', () => {
+    const flatness = evaluateThreejsFlatness(flatnessSpec([
+      geometryPart('front', flatFanGeometry()),
+      geometryPart('back', flatFanGeometry()),
+    ]));
+    expect(flatness.findings).toHaveLength(1);
+    expect(flatness.findings[0]).toMatchObject({
+      code: 'flat-identity-parts',
+      severity: 'warning',
+      partIds: ['front', 'back'],
+    });
+    expect(flatness).toMatchObject({
+      errorCount: 0,
+      warningCount: 1,
+      identityDetailCount: 2,
+      flatIdentityDetailCount: 2,
+      flatRatio: 1,
+    });
+  });
+
+  it('accepts a custom mesh with a real cross-section on every axis', () => {
+    const flatness = evaluateThreejsFlatness(flatnessSpec([
+      geometryPart('shellA', solidShellGeometry()),
+      geometryPart('shellB', solidShellGeometry()),
+    ]));
+    expect(flatness.findings).toEqual([]);
+    expect(flatness).toMatchObject({ flatIdentityDetailCount: 0, flatRatio: 0, slabPartIds: [] });
+  });
+
+  it('still catches a flat fan whose rotation was baked into its vertices', () => {
+    // Turned 45° about X, the fan samples a distinct value on every axis, so
+    // axis-aligned plane counting alone would read it as solid.
+    const turned = flatFanGeometry();
+    const half = Math.SQRT1_2;
+    for (let index = 0; index < turned.vertices.length; index += 3) {
+      const y = turned.vertices[index + 1];
+      const z = turned.vertices[index + 2];
+      turned.vertices[index + 1] = Number(((y * half) - (z * half)).toFixed(6));
+      turned.vertices[index + 2] = Number(((y * half) + (z * half)).toFixed(6));
+    }
+    const distinctPerAxis = [0, 1, 2].map((axis) => new Set(
+      turned.vertices.filter((_, index) => index % 3 === axis),
+    ).size);
+    // Every axis is now well past the 11-plane threshold the counter uses.
+    expect(Math.min(...distinctPerAxis)).toBeGreaterThan(11);
+
+    const flatness = evaluateThreejsFlatness(flatnessSpec([geometryPart('badge', turned)]));
+    expect(flatness.findings.map((finding) => finding.code)).toEqual(['flat-identity-parts']);
+  });
+
+  it('judges the shape, not where it was authored', () => {
+    const shifted = solidShellGeometry();
+    shifted.vertices = shifted.vertices.map((value, index) => (index % 3 === 0 ? value + 900 : value));
+    const flatness = evaluateThreejsFlatness(flatnessSpec([geometryPart('shell', shifted)]));
+    expect(flatness).toMatchObject({ flatIdentityDetailCount: 0, findings: [] });
+  });
+
+  it('does not punish a small part for being small', () => {
+    // A fixed absolute plane grid would give a 0.005-unit mesh five planes per
+    // axis however round it is; the quantum is relative to the mesh's own size.
+    const tiny = solidShellGeometry();
+    tiny.vertices = tiny.vertices.map((value) => Number((value * 0.005).toFixed(6)));
+    const flatness = evaluateThreejsFlatness(flatnessSpec([geometryPart('rivet', tiny)]));
+    expect(flatness).toMatchObject({ flatIdentityDetailCount: 0, findings: [] });
+  });
+
+  it('reads an unbevelled extrude as a slab and a bevelled one as solid', () => {
+    const unbevelled = { ...validExtrude(), bevelEnabled: false };
+    const bevelled = { ...validExtrude(), bevelEnabled: true, bevelThickness: 0.15, bevelSize: 0.1 };
+
+    const flat = evaluateThreejsFlatness(flatnessSpec([geometryPart('plate', unbevelled)]));
+    expect(flat.findings.map((finding) => finding.code)).toEqual(['flat-identity-parts']);
+    expect(flat.flatRatio).toBe(1);
+
+    const solid = evaluateThreejsFlatness(flatnessSpec([geometryPart('plate', bevelled)]));
+    expect(solid.findings).toEqual([]);
+    expect(solid.flatRatio).toBe(0);
+  });
+
+  it('does not accept a zero-thickness bevel as depth', () => {
+    // Flipping the flag while leaving the bevel flat is the cheapest way to
+    // answer the gate without touching the geometry, so it stays a slab.
+    const pretend = { ...validExtrude(), bevelEnabled: true, bevelThickness: 0, bevelSize: 0.2 };
+    const flatness = evaluateThreejsFlatness(flatnessSpec([geometryPart('plate', pretend)]));
+    expect(flatness.findings.map((finding) => finding.code)).toEqual(['flat-identity-parts']);
+  });
+
+  it('stays quiet while flat parts are the minority — extrude is right for a plate', () => {
+    const flatness = evaluateThreejsFlatness(flatnessSpec([
+      geometryPart('badge', { ...validExtrude(), bevelEnabled: false }),
+      geometryPart('shellA', solidShellGeometry()),
+      geometryPart('shellB', solidShellGeometry()),
+    ]));
+    expect(flatness.findings).toEqual([]);
+    // Still recorded, so the UI can show which part the one flat feature used.
+    expect(flatness).toMatchObject({ flatIdentityDetailCount: 1, slabPartIds: ['badge'] });
+    expect(flatness.flatRatio).toBeCloseTo(1 / 3);
+  });
+
+  it('ignores flat parts that carry no identity-priority feature', () => {
+    const flatness = evaluateThreejsFlatness(flatnessSpec([
+      geometryPart('vent', flatFanGeometry()),
+      geometryPart('grille', flatFanGeometry()),
+    ], 'minor'));
+    expect(flatness.findings).toEqual([]);
+    expect(flatness).toMatchObject({ identityDetailCount: 0, flatIdentityDetailCount: 0, flatRatio: null });
+  });
+
+  it('measures the meshes beneath a group rather than the group itself', () => {
+    const group = {
+      ...geometryPart('housing', undefined),
+      children: [geometryPart('housingShell', solidShellGeometry())],
+    };
+    delete group.geometry;
+    delete group.material;
+    const flatness = evaluateThreejsFlatness(flatnessSpec([group]));
+    expect(flatness).toMatchObject({ identityDetailCount: 1, flatIdentityDetailCount: 0 });
+  });
+
+  it('leaves a detail nothing was built for to the assembly-coverage gate', () => {
+    const locator = { ...geometryPart('anchor', undefined), children: [] };
+    delete locator.geometry;
+    delete locator.material;
+    const flatness = evaluateThreejsFlatness(flatnessSpec([locator]));
+    // `null`, not 0 — nothing was measured, which is not the same as passing.
+    expect(flatness).toMatchObject({ identityDetailCount: 0, flatRatio: null, findings: [] });
+  });
+
+  it('returns a clean result for a missing spec', () => {
+    expect(evaluateThreejsFlatness(null)).toMatchObject({ findings: [], flatRatio: null });
+  });
+});
+
+describe('buildThreejsFlatnessFeedback', () => {
+  it('returns empty for a missing or clean flatness result', () => {
+    expect(buildThreejsFlatnessFeedback(null)).toBe('');
+    expect(buildThreejsFlatnessFeedback({ findings: [] })).toBe('');
+  });
+
+  it('turns the warning into a numbered instruction naming the offending parts', () => {
+    const flatness = evaluateThreejsFlatness(flatnessSpec([
+      geometryPart('front', flatFanGeometry()),
+      geometryPart('back', flatFanGeometry()),
+    ]));
+    const feedback = buildThreejsFlatnessFeedback(flatness);
+    expect(feedback).toContain('cross-section check');
+    expect(feedback).toContain('1. ');
+    expect(feedback).toContain('front part');
+    expect(feedback).toContain('genuine depth');
   });
 });

@@ -137,34 +137,57 @@ export function useGoalDetail({ goal, allGoals, onClose, onRefresh }) {
     onRefresh();
   };
 
+  // The response is the signal (issue #3518): a failed check-in used to expand the
+  // accordion onto an unchanged list and fire a pointless refresh, so the only
+  // feedback the user got was an empty panel. Now the panel opens only when the
+  // server actually returned the new check-in. No custom toast on purpose —
+  // `request()` already toasts the failure, so this stays a single-layer error UI.
+  // `try/finally` rather than the `.catch(() => null)` used elsewhere in this hook
+  // for the same reason as runSchedulingAction below: a bare `.catch` only covers a
+  // rejected promise, so a call that threw before returning one would skip the reset
+  // and latch the button on "Checking in..." until a full page reload.
   const handleCheckIn = async () => {
     setCheckingIn(true);
-    await api.checkInGoal(goal.id).catch(() => null);
-    setCheckingIn(false);
+    let checkIn = null;
+    try {
+      checkIn = await api.checkInGoal(goal.id);
+    } catch {
+      // Deliberately swallowed — see the single-layer note above.
+    } finally {
+      setCheckingIn(false);
+    }
+    if (checkIn == null) return;
     setCheckInsOpen(true);
     onRefresh();
   };
 
-  const handleSchedule = async () => {
+  // The three time-block actions share one busy flag, so they share one runner
+  // (issue #3517). Swallowing the failure is what clears `schedulingBusy` — without
+  // it the buttons latch on "Scheduling..." forever and the only recovery is a full
+  // page reload. No custom toast here on purpose: `request()` already toasts the
+  // failure, so this stays a single-layer error UI. The refresh runs either way,
+  // because a failed schedule/reschedule can still have written some blocks before
+  // erroring and the panel should show reality.
+  // `finally` rather than the `.catch(() => null)` used elsewhere in this hook:
+  // a bare `.catch` only covers a rejected promise, so an action that threw
+  // before returning one would skip the reset and re-open this very bug.
+  const runSchedulingAction = async (action) => {
     setSchedulingBusy(true);
-    await api.scheduleGoalTimeBlocks(goal.id);
-    setSchedulingBusy(false);
-    onRefresh();
+    try {
+      await action(goal.id);
+    } catch {
+      // Deliberately swallowed — see the single-layer note above.
+    } finally {
+      setSchedulingBusy(false);
+      onRefresh();
+    }
   };
 
-  const handleRemoveSchedule = async () => {
-    setSchedulingBusy(true);
-    await api.removeGoalSchedule(goal.id);
-    setSchedulingBusy(false);
-    onRefresh();
-  };
+  const handleSchedule = () => runSchedulingAction(api.scheduleGoalTimeBlocks);
 
-  const handleReschedule = async () => {
-    setSchedulingBusy(true);
-    await api.rescheduleGoalTimeBlocks(goal.id);
-    setSchedulingBusy(false);
-    onRefresh();
-  };
+  const handleRemoveSchedule = () => runSchedulingAction(api.removeGoalSchedule);
+
+  const handleReschedule = () => runSchedulingAction(api.rescheduleGoalTimeBlocks);
 
   const handleDelete = async () => {
     await api.deleteGoal(goal.id);
@@ -245,9 +268,21 @@ export function useGoalDetail({ goal, allGoals, onClose, onRefresh }) {
     onRefresh();
   };
 
+  // The return value is the signal (issue #3520): ProgressSlider renders its own
+  // dragged `draft`, so a failed PUT has to tell it to snap back — otherwise the
+  // panel keeps showing a percentage the database never took. No custom toast on
+  // purpose — `request()` already toasts the failure, so this stays a single-layer
+  // error UI. `try/catch` rather than a bare `.catch()` for the same reason as
+  // runSchedulingAction above: a call that throws before handing back a promise
+  // would skip the catch and report a save that never happened.
   const handleProgressChange = async (value) => {
-    await api.updateGoalProgress(goal.id, value);
+    try {
+      await api.updateGoalProgress(goal.id, value);
+    } catch {
+      return false;
+    }
     onRefresh();
+    return true;
   };
 
   const handleAddTodo = async () => {

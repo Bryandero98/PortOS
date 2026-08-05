@@ -8,13 +8,18 @@
 import { join } from 'path';
 import { ServerError } from '../lib/errorHandler.js';
 import { emitLog } from './cosEvents.js';
-import { completeAgent, updateAgent } from './cosAgents.js';
-import { updateTask, addTask, getTaskById } from './cos.js';
+// The DEFINING module, not a barrel (#3450). This module is one
+// of the three `agentOrchestrator.js` imports, so it can never reach a transition
+// through the facade — an import back from here closes the loop the facade exists
+// to open. Inside the closure the single address for a transition is the module
+// that declares it; a barrel would be a third answer to "where does completeAgent
+// live", which is the thing this sequencing keeps removing.
+import { completeAgent, updateAgent, getAgents } from './cosAgentLifecycle.js';
+import { updateTask, addTask, getTaskById, evaluateTasks } from './cos.js';
 import { terminateAgentViaRunner, killAgentViaRunner, pauseAgentViaRunner, getAgentStatsFromRunner, getActiveAgentsFromRunner } from './cosRunnerClient.js';
-import { unregisterSpawnedAgent } from './agents.js';
 import { MAX_TOTAL_SPAWNS } from '../lib/validation.js';
 import { isInternalTaskId } from '../lib/taskParser.js';
-import { activeAgents, runnerAgents, userTerminatedAgents, pausedAgents, useRunner, isAgentOwnedLocally } from './agentState.js';
+import { activeAgents, runnerAgents, userTerminatedAgents, pausedAgents, useRunner, isAgentOwnedLocally, unregisterSpawnedAgent } from './agentState.js';
 // Both were extracted out of agentLifecycle.js (issue #2837) so this module no
 // longer depends on the lifecycle orchestrator — which depends on THIS module
 // for handleOrphanedTask. Importing them from their own leaf modules is what
@@ -558,7 +563,12 @@ export async function settleOrphanedCreativeDirectorRun(task) {
 }
 
 export async function cleanupOrphanedAgents() {
-  const { getAgents, completeAgent: markComplete, evaluateTasks, getTaskById: getTask } = await import('./cos.js');
+  // Was `await import('./cos.js')` destructuring all four of these (#3450). The
+  // deferral bought nothing — this module already imports `./cos.js` statically
+  // at the top, so the module was loaded either way — while routing two agent
+  // functions through the `cos.js` re-export block, i.e. reaching a transition
+  // through a barrel. `completeAgent`/`getAgents` now come from the module that
+  // declares them and `evaluateTasks` joined the existing static `cos.js` import.
   const agents = await getAgents();
   let cleanedCount = 0;
   const orphanedTaskIds = [];
@@ -618,7 +628,7 @@ export async function cleanupOrphanedAgents() {
         console.log(interrupted
           ? `🛑 Recovering agent ${agent.id} interrupted by a PortOS restart (PID ${agent.pid || 'unknown'} not running)`
           : `🧹 Cleaning up orphaned agent ${agent.id} (PID ${agent.pid || 'unknown'} not running)`);
-        const task = agent.taskId ? await getTask(agent.taskId).catch(() => null) : null;
+        const task = agent.taskId ? await getTaskById(agent.taskId).catch(() => null) : null;
         await dispatchRecoveredTaskOutputHook({
           agentId: agent.id,
           task,
@@ -640,7 +650,7 @@ export async function cleanupOrphanedAgents() {
             category: interrupted ? 'interrupted' : 'orphaned',
           });
         }
-        await markComplete(agent.id, {
+        await completeAgent(agent.id, {
           success: false,
           error: errorMessage,
           orphaned: true,
@@ -655,9 +665,10 @@ export async function cleanupOrphanedAgents() {
 
         if (agent.taskId) {
           // Carry the agent's metadata forward rather than re-reading the record
-          // later: `getAgent` on a completed agent re-splits its whole output.txt
-          // transcript, and the worktree fields the resume pointer needs are
-          // stamped once at registerAgent and never mutated.
+          // later: `getAgent` on a completed agent still hits the disk to hydrate
+          // its output.txt tail (capped since #3498, but not free), and the
+          // worktree fields the resume pointer needs are stamped once at
+          // registerAgent and never mutated.
           orphanedTaskIds.push({ taskId: agent.taskId, agentId: agent.id, agentMetadata: agent.metadata });
         }
       }
@@ -677,7 +688,7 @@ export async function cleanupOrphanedAgents() {
   // Settle any Creative Director run tied to an orphaned agent (issue #2705)
   // BEFORE the retry below, so the project can advance without a server restart.
   for (const { taskId } of orphanedTaskIds) {
-    const task = await getTask(taskId).catch(() => null);
+    const task = await getTaskById(taskId).catch(() => null);
     await settleOrphanedCreativeDirectorRun(task);
   }
 
@@ -687,7 +698,7 @@ export async function cleanupOrphanedAgents() {
   // pointer reflects what actually survived — a dirty tree aborts removal, leaving
   // the whole worktree in place.
   for (const { taskId, agentId, agentMetadata } of orphanedTaskIds) {
-    await handleOrphanedTask(taskId, agentId, getTask, {
+    await handleOrphanedTask(taskId, agentId, getTaskById, {
       agentMetadata,
       // `|| null`, not a bare boolean: a plain `false` would hard-override the
       // per-agent breadcrumb fallback, leaving this — the path that handles

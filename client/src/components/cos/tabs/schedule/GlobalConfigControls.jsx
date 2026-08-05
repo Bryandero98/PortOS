@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { RotateCcw, AlertCircle } from 'lucide-react';
 import CronInput from '../../../CronInput';
-import { AGENT_OPTIONS, DEFAULT_REVIEW_STOP_MODE, PR_AUTHOR_FILTER_OPTIONS, ISSUE_AUTHOR_FILTER_OPTIONS, ISSUE_AUTHOR_FILTER_TASK_TYPES, SWARM_COUNT_OPTIONS, SWARM_TASK_TYPES } from '../../constants';
+import { AGENT_OPTIONS, DEFAULT_REVIEW_STOP_MODE, IMPLICIT_PR_COMPLETION, PR_AUTHOR_FILTER_OPTIONS, PR_COMPLETION_OPTIONS, pinnedPrCompletion, prCompletionOption, ISSUE_AUTHOR_FILTER_OPTIONS, ISSUE_AUTHOR_FILTER_TASK_TYPES, SWARM_COUNT_OPTIONS, SWARM_TASK_TYPES } from '../../constants';
 import ReviewerPicker from '../../ReviewerPicker';
 import Banner from '../../../ui/Banner';
 import InfoTooltip from '../../../ui/InfoTooltip';
@@ -11,33 +11,46 @@ import { useCodeReviewDefaults } from '../../../../hooks/useCodeReviewDefaults';
 import useReviewerModelOptions from '../../../../hooks/useReviewerModelOptions';
 import { reviewerModelsFromDefaults } from '../../../../lib/reviewerModels';
 import ToggleSwitch from '../../../ToggleSwitch';
-import { filterSelectableModels } from '../../../../utils/providers';
+import useTaskModelPins from '../../../../hooks/useTaskModelPins';
+import { effectiveModelFor } from '../../../../utils/providers';
 import EffortSelect from '../../EffortSelect';
 import PromptEditor from './PromptEditor';
 import RunTaskButton from './RunTaskButton';
-import { INTERVAL_DESCRIPTIONS, toggleMetadataField } from './scheduleConstants';
+import { INTERVAL_DESCRIPTIONS, toggleMetadataField, pipelineStages, IMPROVEMENT_DISABLED_TITLE, SAVING_TITLE } from './scheduleConstants';
 
-export default function GlobalConfigControls({ taskType, config, onUpdate, onTrigger, onReset, category: _category, providers, apps, updating, setUpdating, allTaskTypes, improvementDisabled }) {
+// Shown for the unpinned ('' → inherit) choice: the task type is global, so the
+// policy is whatever each target app configured, and PortOS's own self-improvement
+// runs (no app) land on the server-side fallback.
+const PR_COMPLETION_INHERIT_HINT = `Uses the target app's "After opening PR" default (Apps → Edit App), or "${prCompletionOption(IMPLICIT_PR_COMPLETION)?.label}" when it has none.`;
+
+export default function GlobalConfigControls({ taskType, config, onUpdate, onTrigger, onReset, category: _category, providers, activeProviderId, apps, updating, setUpdating, allTaskTypes, improvementDisabled }) {
   const reviewDefaults = useCodeReviewDefaults();
   // Resolved model lists for the reviewer table's Model column (the picker itself
   // never fetches — see its `modelOptions` prop).
   const reviewerModelOptions = useReviewerModelOptions();
   const [selectedType, setSelectedType] = useState(config.type);
-  const [selectedProviderId, setSelectedProviderId] = useState(config.providerId || '');
-  const [selectedModel, setSelectedModel] = useState(config.model || '');
-  const [selectedEffort, setSelectedEffort] = useState(config.effort || '');
   const [editingPrompt, setEditingPrompt] = useState(false);
   const [promptValue, setPromptValue] = useState(config.prompt || '');
+  // Provider/model/effort pins are shared with the schedule card's quick
+  // controls — same optimistic write + rollback, one implementation.
+  const {
+    providerId: selectedProviderId,
+    model: selectedModel,
+    effort: selectedEffort,
+    provider: selectedProvider,
+    defaultProviderLabel,
+    availableModels,
+    changeProvider: handleProviderChange,
+    changeModel: handleModelChange,
+    changeEffort: handleEffortChange,
+  } = useTaskModelPins({ taskType, config, providers, activeProviderId, onUpdate, onBusyChange: setUpdating });
 
   useEffect(() => {
     setSelectedType(config.type);
-    setSelectedProviderId(config.providerId || '');
-    setSelectedModel(config.model || '');
-    setSelectedEffort(config.effort || '');
     if (!editingPrompt) {
       setPromptValue(config.prompt || '');
     }
-  }, [config.type, config.providerId, config.model, config.effort, config.prompt, editingPrompt]);
+  }, [config.type, config.prompt, editingPrompt]);
 
   const activeApps = apps?.filter(app => !app.archived) || [];
 
@@ -98,34 +111,6 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
     setUpdating(false);
   };
 
-  const handleProviderChange = async (newProviderId) => {
-    setUpdating(true);
-    setSelectedProviderId(newProviderId);
-    setSelectedModel('');
-    setSelectedEffort('');
-    const providerId = newProviderId === '' ? null : newProviderId;
-    await onUpdate(taskType, { providerId, model: null, effort: null }).catch(() => {
-      setSelectedProviderId(config.providerId || '');
-      setSelectedModel(config.model || '');
-      setSelectedEffort(config.effort || '');
-    });
-    setUpdating(false);
-  };
-
-  // Optimistic single-field update: set locally, PUT ('' → null clears the
-  // pin), roll back to the persisted value on failure. Shared by the model and
-  // effort selects (provider has its own handler — it also resets these two).
-  const makeScalarFieldHandler = (field, setter) => async (newValue) => {
-    setUpdating(true);
-    setter(newValue);
-    await onUpdate(taskType, { [field]: newValue === '' ? null : newValue }).catch(() => {
-      setter(config[field] || '');
-    });
-    setUpdating(false);
-  };
-  const handleModelChange = makeScalarFieldHandler('model', setSelectedModel);
-  const handleEffortChange = makeScalarFieldHandler('effort', setSelectedEffort);
-
   const handlePrAuthorFilterChange = async (value) => {
     setUpdating(true);
     // Send the full merged taskMetadata — updateTaskInterval replaces the
@@ -154,6 +139,20 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
     setUpdating(false);
   };
 
+  // '' drops the key so the task inherits its app's `defaultPrCompletion` —
+  // which works because no DEFAULT_TASK_INTERVALS entry ships a `prCompletion`
+  // for loadSchedule to merge back underneath. The legacy `reviewLoop` bit is
+  // the pre-`prCompletion` spelling of the same decision, so it goes too rather
+  // than outvoting whatever the user just picked.
+  const handlePrCompletionChange = async (value) => {
+    setUpdating(true);
+    const { prCompletion: _pinned, reviewLoop: _legacy, ...rest } = config.taskMetadata || {};
+    await onUpdate(taskType, {
+      taskMetadata: value ? { ...rest, prCompletion: value } : rest
+    });
+    setUpdating(false);
+  };
+
   const handleSavePrompt = async () => {
     setUpdating(true);
     const prompt = promptValue.trim() === '' ? null : promptValue;
@@ -164,8 +163,18 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
     setUpdating(false);
   };
 
-  const selectedProvider = providers?.find(p => p.id === (selectedProviderId || ''));
-  const availableModels = filterSelectableModels(selectedProvider?.models);
+  const prCompletion = pinnedPrCompletion(config.taskMetadata);
+  // Reviewers only run under review-then-merge, so the picker hides for the two
+  // policies that never reach them — but an unpinned ('') task may still inherit
+  // review-then-merge from its app, so that keeps it.
+  const reviewersApply = config.taskMetadata?.openPR
+    ? prCompletion === '' || prCompletion === 'review-then-merge'
+    : !!config.taskMetadata?.reviewLoop;
+
+  // `selectedProvider` / `availableModels` come from useTaskModelPins above — it
+  // resolves the pin against the active provider, lists Antigravity's BASE models
+  // (this panel persists a separate Thinking Effort), and keeps a stale suffixed
+  // pin selectable so it still runs while showing what it is.
   const status = config.status || {};
 
   return (
@@ -275,7 +284,7 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
         </div>
       )}
 
-      {!config.taskMetadata?.pipeline?.stages?.length && (
+      {pipelineStages(config).length === 0 && (
         <>
           <FormField label="Provider (optional)" labelClassName="text-sm text-gray-400 block mb-2">
             <select
@@ -284,7 +293,7 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
               disabled={updating}
               className="w-full bg-port-card border border-port-border rounded px-3 py-2 text-white text-sm"
             >
-              <option value="">Default (active provider)</option>
+              <option value="">{defaultProviderLabel}</option>
               {providers?.map(provider => (
                 <option key={provider.id} value={provider.id}>{provider.name}</option>
               ))}
@@ -299,10 +308,9 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
               disabled={updating}
               className="w-full bg-port-card border border-port-border rounded px-3 py-2 text-white text-sm"
             >
+              {/* `availableModels` already carries a pin the provider no longer
+                  lists, so the select can't render blank and read as "Default". */}
               <option value="">Default model</option>
-              {selectedModel && !availableModels.includes(selectedModel) && (
-                <option value={selectedModel}>{selectedModel}</option>
-              )}
               {availableModels.map(model => (
                 <option key={model} value={model}>{model}</option>
               ))}
@@ -312,6 +320,7 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
 
           <EffortSelect
             provider={selectedProvider}
+            model={effectiveModelFor(selectedProvider, selectedModel)}
             value={selectedEffort}
             onChange={handleEffortChange}
             disabled={updating}
@@ -433,7 +442,25 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
             );
           })}
         </div>
-        {(config.taskMetadata?.reviewLoop || config.taskMetadata?.openPR) && (
+        {config.taskMetadata?.openPR && (
+          <FormField label="After opening PR" className="mt-3" labelClassName="text-sm text-gray-400 block mb-2">
+            <select
+              value={prCompletion}
+              onChange={(e) => handlePrCompletionChange(e.target.value)}
+              disabled={updating}
+              className="w-full bg-port-card border border-port-border rounded px-3 py-2 text-white text-sm"
+            >
+              <option value="">App default</option>
+              {PR_COMPLETION_OPTIONS.map(option => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-500 mt-1">
+              {prCompletionOption(prCompletion)?.description || PR_COMPLETION_INHERIT_HINT}
+            </p>
+          </FormField>
+        )}
+        {reviewersApply && (
           <div className="mt-3 pl-2">
             <ReviewerPicker
               reviewers={config.taskMetadata?.reviewers ?? (config.taskMetadata?.reviewer ? [config.taskMetadata.reviewer] : reviewDefaults.reviewers)}
@@ -498,7 +525,8 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
           taskType={taskType}
           apps={apps}
           onTrigger={onTrigger}
-          improvementDisabled={improvementDisabled}
+          // `updating` covers an in-flight pin write here, same race the card gates on.
+          disabledReason={improvementDisabled ? IMPROVEMENT_DISABLED_TITLE : (updating ? SAVING_TITLE : '')}
         />
         {config.type === 'once' && status.reason === 'once-completed' && (
           <button

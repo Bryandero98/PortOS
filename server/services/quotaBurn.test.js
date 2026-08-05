@@ -112,6 +112,18 @@ describe('evaluateFamilies', () => {
     expect(reasonFor(family, [quota('grok', '2026-07-26T18:00:00.000Z')], { dispatches: { [selected.dispatchKey]: 2 } }))
       .toBe('dispatch cap reached (2/2)');
   });
+
+  it('never closes the cap gate when the cap is unlimited (the default)', () => {
+    // -1 means the tally is not consulted at all. The remaining gates — the
+    // reset horizon, the reserve, an observed refusal — still bound the spend,
+    // and they read live numbers rather than a count.
+    const uncapped = { ...family, maxDispatchesPerWindow: -1 };
+    const quotas = [quota('grok', '2026-07-26T18:00:00.000Z')];
+    const selected = selectBurnCandidates(quotas, { families: { grok: uncapped } }, { now: NOW })[0];
+    expect(reasonFor(uncapped, quotas, { dispatches: { [selected.dispatchKey]: 999 } })).toBeUndefined();
+    // …and the horizon still closes on the same plan.
+    expect(reasonFor(uncapped, [quota('grok', '2026-07-28T12:00:00.000Z')])).toMatch(/outside the 24h window/);
+  });
 });
 
 describe('selectBurnCandidates bypassGatesFor', () => {
@@ -219,28 +231,107 @@ describe('windowKey', () => {
   });
 });
 
+/**
+ * Every subscription family publishes a short rolling window AND a weekly one.
+ * They answer different questions and both have to be read correctly: the weekly
+ * allowance is what expires unused (the burn's deadline and its dispatch
+ * budget), the short one is what actually refuses a run.
+ */
+const twoWindow = (sessionLeft, weekLeft, weekResetsAt = '2026-07-27T00:00:00.000Z') => ({
+  family: 'claude', supported: true,
+  limits: [
+    { key: 'session', scope: 'session', label: '5-hour', resetsAt: '2026-07-26T15:00:00.000Z', percentRemaining: sessionLeft },
+    { key: 'week', scope: 'week', label: 'Weekly', resetsAt: weekResetsAt, percentRemaining: weekLeft },
+  ],
+});
+
 describe('reserve across every window', () => {
-  const twoWindow = (sessionLeft, weekLeft) => ({
-    family: 'claude', supported: true,
-    limits: [
-      { key: 'session', scope: 'session', label: '5-hour', resetsAt: '2026-07-26T15:00:00.000Z', percentRemaining: sessionLeft },
-      { key: 'week', scope: 'week', label: 'Weekly', resetsAt: '2026-08-01T00:00:00.000Z', percentRemaining: weekLeft },
-    ],
-  });
   const family = normalizeQuotaBurnConfig({
     families: { claude: { enabled: true, resetWithinHours: 24, reservePercent: 40, jobs: [job()] } },
   });
 
   it('refuses to drain the WEEKLY window just because the session window is full', () => {
-    // Claude/codex/agy all expose a short window AND a weekly one, and the short
-    // one is always the soonest — so checking only the selected limit made the
-    // reserve inert for every provider that has two.
+    // Checking only the selected limit made the reserve inert for every provider
+    // that reports two windows.
     const verdict = evaluateFamilies([twoWindow(100, 2)], family, { now: NOW })[0];
     expect(verdict.candidate).toBeUndefined();
     expect(verdict.skipReason).toMatch(/Weekly at 2% left is at or below the 40% reserve/);
   });
 
-  it('burns when EVERY in-scope window is above the reserve', () => {
+  it('burns when EVERY window on the card is above the reserve', () => {
     expect(evaluateFamilies([twoWindow(100, 90)], family, { now: NOW })[0].candidate).toBeTruthy();
+  });
+});
+
+describe('window targeting', () => {
+  const family = normalizeQuotaBurnConfig({
+    families: { claude: { enabled: true, resetWithinHours: 24, reservePercent: 0, jobs: [job()] } },
+  });
+
+  it('reports the WEEKLY window, not the 5-hour one that resets sooner', () => {
+    // The bug this exists for: the 5-hour window is nearly always the soonest to
+    // reset, so selecting "soonest" made the page say "resets in 3h · 100% left"
+    // for a plan written against a weekly allowance — and re-opened
+    // resetWithinHours every five hours, so the horizon never bounded anything.
+    const [{ candidate }] = evaluateFamilies([twoWindow(100, 62)], family, { now: NOW });
+    expect(candidate.limit.label).toBe('Weekly');
+    expect(candidate.hoursUntilReset).toBeCloseTo(12, 0);
+    expect(candidate.limit.percentRemaining).toBe(62);
+    // And the short window rides along as the one that will refuse first.
+    expect(candidate.limitingLimit.label).toBe('5-hour');
+    expect(candidate.limitingResetAt).toBe(Date.parse('2026-07-26T15:00:00.000Z'));
+  });
+
+  it('keys the dispatch cap on the WEEKLY reset, so the cap is per week', () => {
+    // Keyed on the 5-hour reset, `maxDispatchesPerWindow: 5` silently meant
+    // "5 burns every 5 hours" — ~24/day against a weekly allowance.
+    const [{ candidate }] = evaluateFamilies([twoWindow(100, 62)], family, { now: NOW });
+    expect(candidate.dispatchKey).toBe(windowKey('claude', { resetsAt: '2026-07-27T00:00:00.000Z' }, { now: NOW }));
+  });
+
+  it('falls back to soonest-reset when no window states a period it can classify', () => {
+    // A provider whose vocabulary this doesn't know must keep working, not park.
+    const opaque = {
+      family: 'claude', supported: true,
+      limits: [
+        { key: 'a', scope: 'burst', label: 'Burst', resetsAt: '2026-07-26T15:00:00.000Z', percentRemaining: 80 },
+        { key: 'b', scope: 'pool', label: 'Pool', resetsAt: '2026-07-26T20:00:00.000Z', percentRemaining: 80 },
+      ],
+    };
+    const [{ candidate }] = evaluateFamilies([opaque], family, { now: NOW });
+    expect(candidate.limit.label).toBe('Burst');
+    expect(candidate.limitingLimit).toBeNull();
+  });
+});
+
+/**
+ * A refusal the provider actually issued outranks the numbers it reports: a burn
+ * plan spending a weekly allowance exhausts the 5-hour window underneath it long
+ * before the weekly card stops looking healthy, and without this the runner
+ * re-dispatched into the same wall every tick.
+ */
+describe('denial blocks', () => {
+  const family = normalizeQuotaBurnConfig({
+    families: { claude: { enabled: true, resetWithinHours: 24, reservePercent: 0, jobs: [job()] } },
+  });
+  const quotas = [twoWindow(100, 62)];
+
+  it('skips a family the provider refused, and names the block', () => {
+    const blocks = { claude: { at: NOW - 1000, until: NOW + 3_600_000, reason: 'Usage limit exceeded' } };
+    const [verdict] = evaluateFamilies(quotas, family, { now: NOW, blocks });
+    expect(verdict.candidate).toBeUndefined();
+    expect(verdict.skipReason).toMatch(/provider refused the last burn.*Usage limit exceeded/);
+    expect(selectBurnCandidates(quotas, family, { now: NOW, blocks })).toEqual([]);
+  });
+
+  it('burns again once the block has lapsed', () => {
+    const blocks = { claude: { at: NOW - 7_200_000, until: NOW - 1000, reason: 'Usage limit exceeded' } };
+    expect(selectBurnCandidates(quotas, family, { now: NOW, blocks })).toHaveLength(1);
+  });
+
+  it('lets a forced run retry a block the user believes is stale', () => {
+    // The force path is how a user retries; a run that then succeeds clears it.
+    const blocks = { claude: { at: NOW - 1000, until: NOW + 3_600_000, reason: 'Usage limit exceeded' } };
+    expect(selectBurnCandidates(quotas, family, { now: NOW, blocks, bypassGatesFor: 'claude' })).toHaveLength(1);
   });
 });

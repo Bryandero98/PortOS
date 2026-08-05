@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock the history store so listDownloads/deleteDownload can be exercised
 // without touching disk, and mock deleteHistoryItem so deleteDownload's
@@ -14,16 +14,14 @@ vi.mock('./videoGen/history.js', () => ({
 vi.mock('./videoGen/local.js', () => ({ deleteHistoryItem }));
 vi.mock('./videoGen/events.js', () => ({ videoGenEvents: { emit: vi.fn() } }));
 
-import { mkdtemp, writeFile, rm } from 'fs/promises';
-import { join } from 'path';
-import { tmpdir } from 'os';
 import {
   SUPPORTED_VIDEO_URL_RE,
   assertSupportedVideoUrl,
   listDownloads,
   deleteDownload,
   buildDownloadHistoryEntry,
-  findDownloadedFile,
+  cancelVideoDownload,
+  __testing,
 } from './videoDownload.js';
 
 describe('videoDownload URL allowlist', () => {
@@ -123,31 +121,43 @@ describe('buildDownloadHistoryEntry (contract shape)', () => {
   });
 });
 
-describe('findDownloadedFile (robust output detection)', () => {
-  let dir;
-  beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), 'viddl-')); });
-  afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
+describe('cancelVideoDownload', () => {
+  beforeEach(() => __testing.downloadJobs.clear());
 
-  it('prefers an exact .mp4 over other candidates', async () => {
-    await writeFile(join(dir, 'downloaded-x.mp4'), 'v');
-    await writeFile(join(dir, 'downloaded-x.webm'), 'v');
-    expect(await findDownloadedFile('x', dir)).toBe('downloaded-x.mp4');
+  it('returns false for an unknown or already-finished job', () => {
+    expect(cancelVideoDownload('nope')).toBe(false);
+    // A job past its download has no process to signal.
+    __testing.downloadJobs.set('done', { id: 'done', clients: [], process: null });
+    expect(cancelVideoDownload('done')).toBe(false);
   });
 
-  it('finds a non-mp4 single-file result (the .mp4-assumption bug)', async () => {
-    await writeFile(join(dir, 'downloaded-y.webm'), 'v');
-    expect(await findDownloadedFile('y', dir)).toBe('downloaded-y.webm');
+  // Actually RUNS the cancel body. Without this the path had no coverage at all,
+  // which is how a refactor shipped it calling an unimported killWithEscalation
+  // — a ReferenceError on every cancel, with the whole suite green.
+  it('signals the running child and escalates to SIGKILL if it survives the grace window', () => {
+    vi.useFakeTimers();
+    const proc = { exitCode: null, signalCode: null, kill: vi.fn() };
+    const job = { id: 'live', clients: [], process: proc };
+    __testing.downloadJobs.set('live', job);
+
+    expect(cancelVideoDownload('live')).toBe(true);
+    expect(proc.kill).toHaveBeenCalledWith('SIGTERM');
+
+    vi.advanceTimersByTime(8000);
+    expect(proc.kill).toHaveBeenCalledWith('SIGKILL');
+    vi.useRealTimers();
   });
 
-  it('ignores in-progress and format-fragment intermediates', async () => {
-    await writeFile(join(dir, 'downloaded-z.f137.mp4'), 'v'); // fragment
-    await writeFile(join(dir, 'downloaded-z.mp4.part'), 'v'); // partial
-    await writeFile(join(dir, 'downloaded-z.webm.ytdl'), 'v'); // sidecar
-    expect(await findDownloadedFile('z', dir)).toBeNull();
-  });
+  it('does not escalate when the child already exited', () => {
+    vi.useFakeTimers();
+    const proc = { exitCode: null, signalCode: null, kill: vi.fn() };
+    __testing.downloadJobs.set('live', { id: 'live', clients: [], process: proc });
 
-  it('does not match a different job id', async () => {
-    await writeFile(join(dir, 'downloaded-other.mp4'), 'v');
-    expect(await findDownloadedFile('mine', dir)).toBeNull();
+    cancelVideoDownload('live');
+    proc.exitCode = 0; // the child honored SIGTERM
+    vi.advanceTimersByTime(8000);
+    expect(proc.kill).toHaveBeenCalledTimes(1);
+    expect(proc.kill).not.toHaveBeenCalledWith('SIGKILL');
+    vi.useRealTimers();
   });
 });

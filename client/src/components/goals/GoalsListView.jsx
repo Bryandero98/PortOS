@@ -87,6 +87,7 @@ function GoalRow({ goal, depth, expandedIds, onToggle, onSelect, selectedId, onA
           <button
             onClick={(e) => { e.stopPropagation(); onToggle(goal.id); }}
             className="p-0.5 text-gray-500 hover:text-white shrink-0"
+            title={expanded ? 'Collapse' : 'Expand'} aria-label={expanded ? 'Collapse' : 'Expand'}
           >
             {expanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
           </button>
@@ -151,7 +152,7 @@ function GoalRow({ goal, depth, expandedIds, onToggle, onSelect, selectedId, onA
         <button
           onClick={(e) => { e.stopPropagation(); onAddChild(goal.id); }}
           className="p-1 text-gray-600 hover:text-port-accent shrink-0"
-          title="Add sub-goal"
+          title="Add sub-goal" aria-label="Add sub-goal"
         >
           <Plus className="w-3.5 h-3.5" />
         </button>
@@ -265,12 +266,18 @@ export default function GoalsListView({ data, onRefresh }) {
   const handleOrganize = async () => {
     if (!selectedProviderId) { toast.error('No API provider available'); return; }
     setOrganizing(true);
-    const result = await api.organizeGoals({ providerId: selectedProviderId, model: selectedModel }).catch(() => null);
+    // `silent: true` — this handler owns the failure toast below; without it
+    // request() also toasts and the user sees two stacked errors.
+    const result = await api.organizeGoals({ providerId: selectedProviderId, model: selectedModel }, { silent: true }).catch(() => null);
     setOrganizing(false);
     if (!result) { toast.error('Failed to organize goals'); return; }
-    await applyOrganizationSuggestion(result);
-    toast.success('Goal hierarchy applied');
+    const applied = await applyOrganizationSuggestion(result);
+    // Refresh either way: a failed apply can still have created the apex or some
+    // sub-apex goals before aborting, and leaving the stale list on screen is the
+    // out-of-sync state this guard exists to prevent (issue #3516).
     onRefresh();
+    if (!applied) { toast.error('Failed to apply goal hierarchy'); return; }
+    toast.success('Goal hierarchy applied');
   };
 
   const handleDragStart = useCallback((event) => {

@@ -43,6 +43,8 @@ export * as storyBuilderValidation from './storyBuilderValidation.js';
 export * as telegramValidation from './telegramValidation.js';
 export * from './validation.js';
 export * from './threejsModel.js';
+export * from './threejsModelCoverage.js';
+export * from './threejsModelFamilies.js';
 
 // === Story & narrative ===
 export * from './bibleExtractor.js';
@@ -115,6 +117,7 @@ export * from './quotaBurnConfig.js';
 export * from './quotaBurnPresets.js';
 export * from './quotaBurnValidation.js';
 export * from './quotaReset.js';
+export * from './quotaWindows.js';
 export * from './opencodeConfig.js';
 // `runners.js` re-defines `isFlux2`/`isZImage`/`isErnie` that also live in
 // mediaModels.js — namespace it so the barrel surface is unambiguous.
@@ -169,6 +172,7 @@ export * from './killWithEscalation.js';
 export * from './openFolder.js';
 export * from './processEnv.js';
 export * from './pythonSetup.js';
+export * from './vttTranscript.js';
 export * from './ytdlp.js';
 
 // === Networking ===
@@ -247,6 +251,7 @@ export * from './vaultCrypto.js';
 // === Model & config ===
 export * from './browserConfig.js';
 export * from './buildId.js';
+export * from './cudaCapability.js';
 export * from './db.js';
 export * from './pgTimestamp.js';
 export * from './pgTools.js';
@@ -267,6 +272,7 @@ export * from './domainAutonomy.js';
 export * from './domainBudgets.js';
 export * from './errorHandler.js';
 export * from './extensionErrors.js';
+export * from './isoWeek.js';
 export * from './lwwTimestamp.js';
 export * from './mapWithConcurrency.js';
 export * from './markedSection.js';
@@ -284,6 +290,7 @@ export * from './staleWhileRevalidate.js';
 export * from './staticImportGraph.js';
 export * from './streamBackpressure.js';
 export * from './sseUtils.js';
+export * from './tombstones.js';
 export * from './uploadLimits.js';
 export * from './uuid.js';
 export * from './versionUtils.js';

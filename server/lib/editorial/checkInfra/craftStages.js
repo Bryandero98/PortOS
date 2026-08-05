@@ -54,6 +54,18 @@ export const SAFE_CUT_TYPES = Object.freeze(['OVER-EXPLAIN', 'REDUNDANT']);
 export const SENSORY_BALANCE_STAGE = 'pipeline-editorial-sensory-balance';
 export const WHITE_ROOM_STAGE = 'pipeline-editorial-white-room';
 
+// Stage name for the summary-vs-scene LLM check (#3591): dramatizable beats
+// narrated at helicopter level ("Over the next week, they argued about it, and
+// eventually she agreed") instead of played out in-scene. Ships in
+// data.reference/prompts/stages/ + stage-config.json (fresh installs via
+// setup-data.js) and migrates to existing installs via migration 227 (boot runs
+// migrations but NOT setup-data, so the migration is required). The reviewer
+// half of the drafting rule already encoded in the craft-anti-patterns partial
+// ("at least 70% in-scene, not summary"). Like the scene-grounding checks above
+// it consumes the reverse-outline scene segmentation as context and degrades to
+// a whole-issue manuscript scan when no outline exists.
+export const SUMMARY_NOT_SCENE_STAGE = 'pipeline-editorial-summary-not-scene';
+
 // Stage name for the interiority-balance LLM check (#1623): visually dense but
 // emotionally empty scenes — heavy on description, light on POV reaction. Ships
 // in data.reference/prompts/stages/ + stage-config.json (fresh installs via
@@ -93,6 +105,17 @@ export const ARC_REGRESSION_STAGE = 'pipeline-editorial-arc-regression';
 // prose.sentence-rhythm) need no stage.
 export const TELLING_EMOTION_STAGE = 'pipeline-editorial-telling-emotion';
 
+// Stage name for the interiority-register LLM check (#3593): rendered thought
+// written in an authored, essayistic register ("I thought: this represents a
+// supreme opportunity") instead of the character's own raw, fragmentary voice.
+// Ships in data.reference/prompts/stages/ + stage-config.json (fresh installs
+// via setup-data.js) and migrates to existing installs via migration 230 (boot
+// runs migrations but NOT setup-data, so the migration is required). The third
+// axis of interiority: INTERIORITY_STAGE (revealForeshadowing.js) judges whether
+// thought is PRESENT, INTERIORITY_BALANCE_STAGE above judges how MUCH of a scene
+// it occupies, and this one judges how it SOUNDS.
+export const INTERIORITY_REGISTER_STAGE = 'pipeline-editorial-interiority-register';
+
 // Stage names for the two dialogue-craft LLM checks (#1307): on-the-nose /
 // subtext-free dialogue, and per-character voice distinctiveness. Each prompt
 // ships in data.reference/prompts/stages/ + stage-config.json (fresh installs via
@@ -102,6 +125,16 @@ export const TELLING_EMOTION_STAGE = 'pipeline-editorial-telling-emotion';
 // need no stage.
 export const ON_THE_NOSE_STAGE = 'pipeline-editorial-on-the-nose';
 export const VOICE_DISTINCTIVENESS_STAGE = 'pipeline-editorial-voice-distinctiveness';
+
+// Stage name for the reported-speech LLM check (#3592): a character's decisive
+// utterance delivered as narrated report ("she told him she was leaving")
+// instead of the quoted line that would carry the beat. Ships in
+// data.reference/prompts/stages/ + stage-config.json (fresh installs via
+// setup-data.js) and migrates to existing installs via migration 229 (boot runs
+// migrations but NOT setup-data, so the migration is required). The INVERSE of
+// ON_THE_NOSE_STAGE above — that one judges dialogue with too little under it,
+// this one flags the line that never made it onto the page at all.
+export const REPORTED_SPEECH_STAGE = 'pipeline-editorial-reported-speech';
 
 // Finding subtypes for `dialogue.on-the-nose` (#1626) — the stage prompt classifies
 // each subtext-free line into *why* it reads on-the-nose so the writer gets specific,

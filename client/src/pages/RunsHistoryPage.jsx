@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router';
 import { Trash2, RotateCcw, MessageSquarePlus, ScrollText } from 'lucide-react';
 import * as api from '../services/api';
 import { formatTime, formatRuntime, formatBytes, formatDateTime } from '../utils/formatters';
+import BrailleSpinner from '../components/BrailleSpinner';
 import PageSkeleton from '../components/ui/PageSkeleton';
 import Banner from '../components/ui/Banner';
 import ProcessLogModal from '../components/ui/ProcessLogModal';
@@ -300,7 +301,7 @@ export function RunsHistoryPage() {
                         <button
                           onClick={(e) => handleResume(run, e)}
                           className="p-1 text-gray-500 hover:text-port-accent transition-colors sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 sm:focus-visible:opacity-100"
-                          title="Resume run"
+                          title="Resume run" aria-label="Resume run"
                           data-testid={`resume-run-${run.id}`}
                         >
                           <RotateCcw size={14} />
@@ -309,7 +310,7 @@ export function RunsHistoryPage() {
                       <button
                         onClick={(e) => handleDelete(run.id, e)}
                         className="p-1 text-gray-500 hover:text-port-error transition-colors sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 sm:focus-visible:opacity-100"
-                        title="Delete run"
+                        title="Delete run" aria-label="Delete run"
                         data-testid={`delete-run-${run.id}`}
                       >
                         <Trash2 size={14} />
@@ -381,7 +382,7 @@ export function RunsHistoryPage() {
                         <div className="text-xs text-gray-500 uppercase tracking-wide mb-2">Prompt</div>
                         <div className="bg-port-card border border-port-border rounded-lg p-3 max-h-48 overflow-auto">
                           <pre className="text-sm text-gray-300 font-mono whitespace-pre-wrap break-all">
-                            {expandedDetails[run.id]?.prompt || run.prompt || 'Loading...'}
+                            {expandedDetails[run.id]?.prompt || run.prompt || <BrailleSpinner text="Loading prompt" />}
                           </pre>
                         </div>
                       </div>

@@ -2,9 +2,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { Box, ImagePlus, LoaderCircle, Sparkles } from 'lucide-react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import GalleryImagePicker from '../components/imageGen/GalleryImagePicker';
+import PageSkeleton from '../components/ui/PageSkeleton';
 import MediaImage from '../components/MediaImage';
 import ProviderModelSelector from '../components/ProviderModelSelector';
 import useProviderModels from '../hooks/useProviderModels';
+import SubjectFamilySelect from '../components/threejsModels/SubjectFamilySelect';
+import useThreejsModelFamilies, { GENERAL_FAMILY_ID } from '../hooks/useThreejsModelFamilies';
 import { createThreejsModel, listThreejsModels } from '../services/api';
 import toast from '../components/ui/Toast';
 import { timeAgo, nameFromImageFilename } from '../utils/formatters';
@@ -35,6 +38,9 @@ export default function ThreejsModels() {
   ));
   const [name, setName] = useState(() => nameFromFilename(imageFromRoute));
   const [prompt, setPrompt] = useState('');
+  const families = useThreejsModelFamilies();
+  const [family, setFamily] = useState(GENERAL_FAMILY_ID);
+  const [effort, setEffort] = useState('');
   const [creating, setCreating] = useState(false);
   const {
     providers,
@@ -44,7 +50,9 @@ export default function ThreejsModels() {
     setSelectedProviderId,
     setSelectedModel,
     loading: providersLoading,
-  } = useProviderModels({ filter: providerFilter, silent: true });
+    // This picker renders the effort control and sends the value, so Antigravity
+    // lists base models with effort picked separately.
+  } = useProviderModels({ filter: providerFilter, silent: true, withEffort: true });
 
   useEffect(() => {
     listThreejsModels({ silent: true })
@@ -87,6 +95,8 @@ export default function ThreejsModels() {
       prompt: prompt.trim(),
       providerId: selectedProviderId,
       model: selectedModel || undefined,
+      family,
+      effort: effort || undefined,
     }, { silent: true }).catch((error) => {
       toast.error(error.message || 'Failed to start model generation');
       return null;
@@ -143,6 +153,15 @@ export default function ThreejsModels() {
               className="w-full rounded-lg border border-port-border bg-port-bg px-3 py-2 text-sm text-white placeholder:text-gray-600 focus:border-port-accent focus:outline-none"
             />
           </div>
+          <SubjectFamilySelect
+            id="threejs-model-family"
+            families={families}
+            value={family}
+            onChange={setFamily}
+            disabled={creating}
+            optional
+            showDescription
+          />
           <div>
             <label htmlFor="threejs-model-direction" className="mb-1 block text-xs text-gray-400">
               Modeling direction <span className="text-gray-600">(optional)</span>
@@ -162,8 +181,10 @@ export default function ThreejsModels() {
             selectedProviderId={selectedProviderId}
             selectedModel={selectedModel}
             availableModels={availableModels}
-            onProviderChange={setSelectedProviderId}
+            onProviderChange={(id) => { setSelectedProviderId(id); setEffort(''); }}
             onModelChange={setSelectedModel}
+            effort={effort}
+            onEffortChange={setEffort}
             disabled={providersLoading || creating}
             alwaysShowModel
             emptyModelOption="Provider default"
@@ -191,7 +212,7 @@ export default function ThreejsModels() {
       <section>
         <h2 className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-400">Model workspaces</h2>
         {loading ? (
-          <div className="py-8 text-center text-sm text-gray-500">Loading…</div>
+          <PageSkeleton header="none" label="Loading model workspaces" layout="grid" cards={3} gridColsClass="sm:grid-cols-2 lg:grid-cols-3" />
         ) : models.length === 0 ? (
           <div className="rounded-xl border border-dashed border-port-border py-10 text-center text-sm text-gray-500">
             No procedural models yet.

@@ -144,7 +144,7 @@ const PIXEL_ICONS = [
 
 // Generate a pixel window texture with icon mural for a building face. `tintStructure`
 // is passed in (bound to the active palette accent) so the facade base tracks the theme.
-const createWindowTexture = (accentColor, width, height, seed, tintStructure) => {
+const createWindowTexture = (accentColor, _width, height, seed, tintStructure) => {
   const canvas = document.createElement('canvas');
   const px = 8;
   const cols = 12;

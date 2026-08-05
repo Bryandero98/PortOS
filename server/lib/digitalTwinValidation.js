@@ -60,7 +60,24 @@ export const documentMetaSchema = z.object({
   version: z.string().optional(),
   enabled: z.boolean().default(true),
   priority: z.number().int().min(0).default(0),
-  weight: z.number().int().min(1).max(10).default(5)
+  weight: z.number().int().min(1).max(10).default(5),
+  // When this document was (re-)created, and when it was last edited. Both are
+  // optional because documents predating #3530 — and any rebuilt by
+  // digital-twin-meta's disk scan — carry no stamp. They exist so a document
+  // re-created (or edited) after a delete supersedes the older
+  // `deletedDocuments` tombstone during peer sync instead of being reaped.
+  createdAt: z.string().optional(),
+  updatedAt: z.string().optional()
+});
+
+// Tombstone for a deleted Digital Twin document (#3530). Keyed on `filename`,
+// NOT the document id: ids are minted per-install (`generateId`), so the same
+// logical document can carry a different id on each machine — filename is the
+// only identifier every peer agrees on (it is also what `mergeMeta` unions
+// documents by, and what the `.md` file on disk is named).
+export const deletedDocumentSchema = z.object({
+  filename: z.string().min(1),
+  deletedAt: z.string().min(1)
 });
 
 // Test history entry schema. personaId/personaName are present only when the
@@ -198,6 +215,17 @@ export const personaSchema = z.object({
   updatedAt: z.string().datetime()
 });
 
+// Tombstone for a deleted persona (#3533). Keyed on `id`, unlike the document
+// tombstone above: a persona id is minted ONCE by the machine that created the
+// persona and then travels with the record through peer sync (mergeMeta unions
+// personas by id), so every peer agrees on it. `id` is a plain non-empty string
+// rather than a guid so a tombstone for a legacy/hand-edited persona id still
+// normalizes instead of failing the whole meta parse.
+export const deletedPersonaSchema = z.object({
+  id: z.string().min(1),
+  deletedAt: z.string().min(1)
+});
+
 export const createPersonaInputSchema = z.object({
   name: z.string().min(1).max(100),
   description: z.string().max(500).optional(),
@@ -285,6 +313,7 @@ export const confidenceSchema = z.object({
 export const digitalTwinMetaSchema = z.object({
   version: z.string().default('1.0.0'),
   documents: z.array(documentMetaSchema).default([]),
+  deletedDocuments: z.array(deletedDocumentSchema).default([]),
   testHistory: z.array(testHistoryEntrySchema).default([]),
   valuesTestHistory: z.array(valuesTestHistoryEntrySchema).default([]),
   adversarialTestHistory: z.array(adversarialTestHistoryEntrySchema).default([]),
@@ -292,6 +321,7 @@ export const digitalTwinMetaSchema = z.object({
   enrichment: enrichmentProgressSchema.default({ completedCategories: [], lastSession: null }),
   settings: digitalTwinSettingsSchema.default({ autoInjectToCoS: true, maxContextTokens: 4000, includePrivacyContext: false }),
   personas: z.array(personaSchema).default([]),
+  deletedPersonas: z.array(deletedPersonaSchema).default([]),
   traits: traitsSchema.optional(),
   confidence: confidenceSchema.optional()
 });

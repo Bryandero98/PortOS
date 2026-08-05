@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router';
 import { ArrowLeft, CheckSquare, Copy, DatabaseZap, FolderInput, Inbox, Lock, Pencil, Star, StarOff, Trash2, X } from 'lucide-react';
 import ShareToButton from '../components/sharing/ShareToButton';
+import PageSkeleton from '../components/ui/PageSkeleton';
 import toast from '../components/ui/Toast';
 import MediaCard from '../components/media/MediaCard';
 import MediaPreview from '../components/media/MediaPreview';
@@ -294,7 +295,17 @@ export default function MediaCollectionDetail() {
     },
   });
 
-  if (loading) return <div className="text-gray-500 text-sm">Loading…</div>;
+  if (loading) {
+    return (
+      <PageSkeleton
+        label="Loading collection"
+        titleWidthClass="w-56"
+        layout="grid"
+        cards={10}
+        gridColsClass="grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
+      />
+    );
+  }
   if (!collection) return (
     <div className="text-gray-500 text-sm">
       <Link to="/media/collections" className="text-port-accent hover:underline">← Back to collections</Link>
@@ -533,7 +544,7 @@ export default function MediaCollectionDetail() {
                         ? 'bg-port-accent text-white border-port-accent'
                         : 'bg-black/60 text-gray-300 border-port-border hover:text-white'
                     }`}
-                    title={isCover ? 'Cover (click to reset to newest)' : 'Set as cover'}
+                    title={isCover ? 'Cover (click to reset to newest)' : 'Set as cover'} aria-label={isCover ? 'Cover (click to reset to newest)' : 'Set as cover'}
                   >
                     <Star className="w-3.5 h-3.5" fill={isCover ? 'currentColor' : 'none'} />
                   </button>

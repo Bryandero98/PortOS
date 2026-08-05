@@ -23,6 +23,23 @@ New UI should use semantic PortOS tokens wherever possible:
 
 Avoid hard-coded background colors for major containers. Hard-coded state colors are acceptable only when they are data colors and still pass contrast in all themes.
 
+## Surface Elevation
+
+Three levels, and every theme must render all three distinguishably in both day and night mode:
+
+| Level | Class | What it is |
+| --- | --- | --- |
+| Page | `bg-port-bg` | The backdrop everything sits on. |
+| Card | `bg-port-card` (any opacity) | A content panel raised off the page. |
+| Well | `bg-port-bg` **inside a card** | An inset row, list item, or control — sunken back to the page color. |
+
+Two rules keep this readable across the palettes:
+
+- **`--port-card-min-alpha`** (per theme, in `portosThemes.js`) floors the fill of a card written at reduced opacity. `bg-port-card/40` used to render at 40% of the card color composited over the page — on themes whose card and page differ by design (every day theme), that dissolved the card into the page and left a border floating around nothing. State variants (`hover:bg-port-card/60`) are deliberately **not** floored: a hover that lands on the resting fill is not feedback. Translucent themes set a lower floor so glass stays glass.
+- **Card / page separation ≥ 1.12:1**, measured on that floored fill. Not a WCAG number (WCAG says nothing about surface separation) — it is the empirical floor at which a filled panel reads as raised on these palettes. `portosThemes.test.js` asserts it for every theme, along with body/muted text still clearing AA on the resulting fill, so a new theme cannot ship invisible cards.
+
+For a nested panel, prefer `bg-port-bg` at full strength over `bg-port-bg/40`: at 40% it composites most of the way back to the card fill, and a stack of them runs together as one block.
+
 ## Theme Runtime
 
 `useTheme` applies the active theme to `<html>`:

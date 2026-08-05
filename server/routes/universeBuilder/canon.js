@@ -104,6 +104,18 @@ router.patch('/:id/canon/:kind/:entryId/lock', asyncHandler(async (req, res) => 
   res.json(result);
 }));
 
+// Remove ONE canon entry from its bucket. Scoped to the universe's canon
+// array only — rendered images, character reference sheets, and the shared
+// Catalog ingredient the entry may point at are all left intact (see
+// `removeCanonEntry`). Mirrors the X button on category variations /
+// composite sheets, which likewise only drop the bucket entry.
+router.delete('/:id/canon/:kind/:entryId', asyncHandler(async (req, res) => {
+  const { kind } = validateRequest(lockParamsSchema, req.params);
+  const result = await canonSvc.removeCanonEntry(req.params.id, kind, req.params.entryId)
+    .catch((err) => { throw mapServiceError(err); });
+  res.json(result);
+}));
+
 // Bulk lock/unlock every canon entry of a single kind. Powers the
 // "Lock all / Unlock all" buttons in the Universe Builder canon section.
 router.patch('/:id/canon/:kind/lock-all', asyncHandler(async (req, res) => {

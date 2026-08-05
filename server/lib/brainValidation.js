@@ -650,3 +650,37 @@ export const songAttachmentUploadSchema = z.object({
   data: z.string().min(1),
   label: z.string().max(300).optional().default('')
 });
+
+// =============================================================================
+// YOUTUBE INGEST SCHEMAS (POST /api/brain/youtube/*)
+// =============================================================================
+
+// POST /api/brain/youtube/ingest. The URL host/shape allowlist lives in the
+// service (assertYoutubeIngestUrl) so the error names the supported URL forms;
+// the schema guards the payload shape and the bounds.
+//
+// The three capture switches are independently optional — the service rejects
+// an all-false request with NOTHING_TO_INGEST rather than silently doing work
+// the user didn't ask for. `agentPrompt` is what turns an ingest into a queued
+// CoS task; absent/empty means "just store it".
+export const youtubeIngestSchema = z.object({
+  url: z.string().url().max(2048),
+  captureTranscript: z.boolean().optional(),
+  downloadVideo: z.boolean().optional(),
+  ingestAudio: z.boolean().optional(),
+  agentPrompt: z.string().max(10000).optional(),
+  tags: z.array(z.string().min(1).max(60)).max(20).optional(),
+  priority: z.enum(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']).optional()
+});
+
+// PUT /api/brain/youtube/settings. strict() rejects unknown keys so a typo
+// can't quietly accumulate in the settings file.
+export const youtubeIngestSettingsSchema = z.object({
+  obsidianVaultId: z.string().nullable().optional(),
+  obsidianFolder: z.string().max(300).optional(),
+  autoSync: z.boolean().optional(),
+  defaultCaptureTranscript: z.boolean().optional(),
+  defaultDownloadVideo: z.boolean().optional(),
+  defaultIngestAudio: z.boolean().optional(),
+  taskPriority: z.enum(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']).optional()
+}).strict();

@@ -235,7 +235,7 @@ export default function ComicScriptStage({ issue, series, onStageUpdate, actions
     return out;
   }, [comicPages.pages, filenameByJobId, buildPageItem]);
   const [preview, setPreview] = usePreviewRoute(previewItems);
-  const openPreview = useCallback((pageIndex, filename) => {
+  const openPreview = useCallback((_pageIndex, filename) => {
     if (!filename) return;
     const match = previewItems.find((i) => i.filename === filename);
     if (match) setPreview(match);

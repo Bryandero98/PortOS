@@ -19,18 +19,18 @@ const config = {
   checkIntervalMinutes: 30,
   families: {
     grok: {
-      enabled: true, providerId: null, scope: null, resetWithinHours: 24, reservePercent: 10,
+      enabled: true, resetWithinHours: 24, reservePercent: 10,
       maxDispatchesPerWindow: 5, priority: 0,
       jobs: [{ id: 'j1', enabled: true, label: 'Bible images', jobType: 'universe-bible-images', model: null, providerId: null, params: {} }],
     },
-    codex: { enabled: false, providerId: null, scope: null, resetWithinHours: 24, reservePercent: 0, maxDispatchesPerWindow: 5, priority: 0, jobs: [] },
+    codex: { enabled: false, resetWithinHours: 24, reservePercent: 0, maxDispatchesPerWindow: 5, priority: 0, jobs: [] },
   },
 };
 
 const status = {
   enabled: false, checkIntervalMinutes: 30, running: false, lastRunAt: null,
   families: [
-    { id: 'grok', label: 'Grok', willBurn: true, percentRemaining: 62, hoursUntilReset: 2.4, dispatchesUsed: 1, skipReason: null, jobs: [{ id: 'j1', pending: { count: 4, detail: '4 bible entries have no image' } }] },
+    { id: 'grok', label: 'Grok', willBurn: true, percentRemaining: 62, hoursUntilReset: 2.4, windowLabel: 'Weekly', dispatchesUsed: 1, skipReason: null, blockedUntil: null, blockedReason: null, jobs: [{ id: 'j1', pending: { count: 4, detail: '4 bible entries have no image' } }] },
     { id: 'codex', label: 'Codex', willBurn: false, skipReason: 'disabled', jobs: [] },
   ],
   runs: [{ at: new Date().toISOString(), trigger: 'scheduled', dispatched: false, reason: 'no burnable window' }],
@@ -113,6 +113,54 @@ describe('QuotaBurn page', () => {
     expect(screen.queryByText(/reading quota…/)).not.toBeInTheDocument();
   });
 
+  it('names WHICH window the reading describes', async () => {
+    // A family publishes a short rolling window and a weekly one. "62% left ·
+    // resets in 2.4h" is unreadable without knowing which allowance it is —
+    // the ambiguity that hid the wrong window being selected server-side.
+    renderPage();
+    expect(await screen.findByText(/Weekly: 62% left/)).toBeInTheDocument();
+  });
+
+  it('drops the denominator when the dispatch cap is unlimited', async () => {
+    // -1 is the default: the window is still CHARGED (so "1 used" stays useful)
+    // but nothing is counting down to a limit, and "1/-1 used" would read as a
+    // bug in the ledger.
+    api.getQuotaBurn.mockResolvedValue({
+      config: { ...config, families: { ...config.families, grok: { ...config.families.grok, maxDispatchesPerWindow: -1 } } },
+      status,
+    });
+    renderPage();
+    expect(await screen.findByText(/· 1 used/)).toBeInTheDocument();
+    expect(screen.queryByText(/1\/-1 used/)).not.toBeInTheDocument();
+  });
+
+  it('sends the unlimited sentinel rather than a 0 the server would reject', async () => {
+    // Stepping the cap below 1 is "fewer restrictions", and 0 is not a value the
+    // PUT accepts — collapsing it to -1 keeps the spinner from 400ing the save.
+    const user = userEvent.setup();
+    renderPage('/devtools/quota-burn/grok');
+    const cap = await screen.findByLabelText(/Dispatch cap per window/);
+    await user.clear(cap);
+    await user.type(cap, '0');
+    await waitFor(() => expect(api.saveQuotaBurn).toHaveBeenCalled());
+    expect(api.saveQuotaBurn.mock.calls[0][0].families.grok.maxDispatchesPerWindow).toBe(-1);
+  });
+
+  it('shows an observed provider refusal, not just the gate that closed', async () => {
+    // "The provider said no" is the actionable fact, and it is what explains a
+    // family that looks healthy on paper but never burns.
+    const blocked = {
+      ...status,
+      families: [
+        { ...status.families[0], willBurn: false, skipReason: 'provider refused the last burn', blockedUntil: '2026-07-26T18:00:00.000Z', blockedReason: 'Usage limit exceeded' },
+        status.families[1],
+      ],
+    };
+    api.getQuotaBurn.mockResolvedValueOnce({ config, status: blocked });
+    renderPage();
+    expect(await screen.findByText(/provider refused — retrying after/)).toBeInTheDocument();
+  });
+
   it('does NOT poll when nothing is pending', async () => {
     renderPage();
     await screen.findByText(/62% left/);
@@ -182,6 +230,27 @@ describe('QuotaBurn page', () => {
     await user.selectOptions(screen.getByLabelText(/Start from a preset/), 'ux-audit');
     await user.click(screen.getByRole('button', { name: 'Replace' }));
     expect(promptBox).toHaveValue('Audit the UI. File issues. Change no code.');
+  });
+
+  it('shows which preset a step currently matches, and drops it once the prompt is edited', async () => {
+    // The picker used to snap straight back to "Choose a preset…", so applying
+    // one looked like a no-op — its only visible effect was a textarea further
+    // down the row. The selection is DERIVED from the prompt text (nothing on
+    // disk records a preset id), so it stays honest across an edit.
+    const user = userEvent.setup();
+    renderPage('/devtools/quota-burn/grok');
+    await user.selectOptions(await screen.findByLabelText('Job type'), 'agent-prompt');
+    const picker = screen.getByLabelText(/Start from a preset/);
+    expect(picker).toHaveValue('');
+
+    await user.selectOptions(picker, 'ux-audit');
+    expect(screen.getByLabelText('Work prompt')).toHaveValue('Audit the UI. File issues. Change no code.');
+    expect(picker).toHaveValue('ux-audit');
+
+    // Edited away from the preset ⇒ the row no longer IS that preset, and the
+    // control must stop claiming it is.
+    await user.type(screen.getByLabelText('Work prompt'), ' plus my own note');
+    expect(picker).toHaveValue('');
   });
 
   it('keeps the work prompt when the job type picker is clicked through', async () => {

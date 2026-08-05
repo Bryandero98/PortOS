@@ -5,6 +5,8 @@
  * approach, while targeting PortOS's bounded JSON scene schema.
  */
 
+import { buildThreejsFamilyChecklist } from '../../lib/threejsModelFamilies.js';
+
 const geometryContract = `
 Allowed geometry definitions:
 - {"type":"box","width":n,"height":n,"depth":n}
@@ -23,6 +25,15 @@ Choosing between them:
 - tube — anything sweeping a constant round section along a path: cables, hoses, wires, handles, pipes, straps, springs, antennae, bent rods, rope, rims.
 - lathe — profiles that are rotationally symmetric about the Y axis.
 - custom triangles — a last resort, only after none of the above can express the silhouette.
+
+When extrude is the WRONG answer: an unbevelled extrude has exactly two depth planes, so it is
+a slab. A body with a real cross-section — a torso, a limb, a head, a housing, a grip, a shell
+that swells or tapers through its thickness — must not be one. Build it from primitives, a
+lathe, or a tube, or compose several. When only an extrude can express the silhouette of a part
+that is not genuinely plate-like, set "bevelEnabled":true with a real bevelThickness/bevelSize,
+or add primitives on top of it that give it depth. The same applies to custom triangles: a fan
+of points sharing one Z value is a cut-out no matter how many triangles it carries — a custom
+mesh standing in for a solid must have depth on every axis.
 `;
 
 const outputContract = `
@@ -55,8 +66,9 @@ Return one raw JSON object and nothing else. It must have exactly this top-level
     "id":"stablePartId","name":"Readable part name",
     "geometry": { ...one allowed geometry... },
     "material":"materialId",
-    "position":[x,y,z],"rotationDegrees":[x,y,z],"scale":[x,y,z],
+    "position":[x,y,z],"rotationDegrees":[x,y,z],"scale":[sx,sy,sz],
     "castShadow":true,"receiveShadow":true,
+    "explodeWithParent":false,
     "children":[ ...same part shape... ]
   }],
   "sockets": [{"name":"socketName","parentPartId":"partId","position":[x,y,z],"rotationDegrees":[x,y,z]}],
@@ -67,6 +79,12 @@ Return one raw JSON object and nothing else. It must have exactly this top-level
     "priority":"identity" | "major" | "minor"
   }]
 }
+
+Every part "scale" component (sx, sy, sz) must be a strictly positive size multiplier of
+at least 0.0001. Zero collapses the part to an invisible plane and a negative component
+reflects it; both are rejected. This format has no reflection and no hidden parts — build
+a mirrored counterpart as its own part with its own position and rotationDegrees, and
+simply omit a part you do not want rendered.
 `;
 
 export function buildThreejsGenerationPrompt({
@@ -75,7 +93,11 @@ export function buildThreejsGenerationPrompt({
   prompt = '',
   currentSpec = null,
   feedback = '',
+  family = null,
 }) {
+  // Empty for the default `general` family, so a user who does not narrow the
+  // subject gets the same general-purpose prompt this contract always shipped.
+  const familyChecklist = buildThreejsFamilyChecklist(family);
   const refinement = currentSpec
     ? `
 This is a refinement pass. Preserve good existing work, but revise the scene spec to address the feedback.
@@ -94,12 +116,12 @@ REFERENCE IMAGE:
 - A local/CLI/TUI agent can inspect the same image at: ${sourcePath}
 - Target name: ${name}
 - User direction: ${prompt || 'Faithfully reconstruct the main subject.'}
-${refinement}
+${refinement}${familyChecklist}
 WORKFLOW:
 1. Inspect the image before deciding geometry.
 2. Classify the subject as object, character, or hybrid.
 3. Inventory every identity-defining visible detail: silhouette, proportions, bevels/rounding, seams, trim, controls, fasteners, facial landmarks, limbs, wear, gloss, emissive regions, and attachment points.
-4. Build from a clear parent/child hierarchy. Put moving or attachable pieces in their own named parts. Add sockets for meaningful pivots/attachments.
+4. Build from a clear parent/child hierarchy. Put moving or attachable pieces in their own named parts. Add sockets for meaningful pivots/attachments. Set "explodeWithParent":true on surface relief — serrations, stria, ridges, trim, engraving, port floors, panel lines and other detail that belongs TO a part rather than being a part — so the viewer takes the model apart into readable components instead of a comb of loose slivers. Leave it false (the default) on anything a person would call a separate component.
 5. Use primitive composition first, then the schema-backed extrude/tube/lathe forms for silhouettes, cutouts, and swept details. Use custom triangles only when no other allowed form can reproduce the shape.
 6. Use physically coherent PBR material channels. Reach for "physical" with ior/transmission/thickness for glass, gems, liquid, and clear plastic, sheen for cloth and velvet, iridescence for oil-slick/soap-film/pearlescent finishes, and anisotropy for brushed metal or spun discs. Do not use textures, external meshes, URLs, downloaded assets, or JavaScript.
 7. Center the subject near the origin, keep dimensions internally consistent, and choose a camera that frames the whole model.
@@ -108,11 +130,17 @@ WORKFLOW:
 
 QUALITY GATE:
 - A compound subject must not collapse into one primitive.
+- The model must come apart into readable components: every piece a person would name is its own part, and every detail that merely rides a surface carries "explodeWithParent":true.
 - Major visible attachments may not float or be omitted.
 - Identity-priority details must be represented by actual geometry/material choices.
 - Do not spend custom triangles on a shape extrude, tube, or lathe already expresses.
+- A subject that is not genuinely plate-like must not have every identity part flat along one axis: the model has to hold up when it is orbited, not only from the camera you choose.
 - Include useful ambient/hemisphere fill plus at least one directional/key light.
-- Keep the full hierarchy at 160 parts or fewer.
+- Keep the full hierarchy at 160 parts or fewer.${familyChecklist ? `
+- Every required component in the subject-family checklist is either built and inventoried, or
+  named in limitations with the reason the reference does not support it. Silence on one is a failure.
+- The checklist is the floor: a spec that inventories only the checklist and nothing else has
+  under-observed the reference.` : ''}
 
 ${geometryContract}
 ${outputContract}`;

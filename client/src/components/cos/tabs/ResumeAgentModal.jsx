@@ -1,11 +1,12 @@
 import { useState, useRef } from 'react';
 import { X, CheckCircle, AlertCircle, RotateCcw, Image, Loader2 } from 'lucide-react';
-import { processScreenshotUploads } from '../../../utils/fileUpload';
+import { processScreenshotUploads } from '../../../services/apiMedia';
 import toast from '../../ui/Toast';
 import Modal from '../../ui/Modal';
 import FilePickerButton from '../../ui/FilePickerButton';
 import { FormField } from '../../ui/FormField';
-import { filterSelectableModels } from '../../../utils/providers';
+import EffortSelect from '../EffortSelect';
+import { effectiveModelFor, effortAwareModelOptions, effortSurvivingModel, seedModelEffort } from '../../../utils/providers';
 
 export default function ResumeAgentModal({ agent, taskType = 'user', providers, apps, onSubmit, onClose }) {
   const taskDescription = agent.metadata?.taskDescription || agent.taskId || 'Resume previous task';
@@ -34,11 +35,23 @@ export default function ResumeAgentModal({ agent, taskType = 'user', providers, 
     outputSummary ? `\n## Last Output:\n\`\`\`\n${outputSummary}\n\`\`\`` : ''
   ].filter(Boolean).join('\n');
 
-  const [formData, setFormData] = useState({
-    refinedInstructions: '',
-    provider: agent.metadata?.providerId || agent.metadata?.provider || '',
-    model: agent.metadata?.model || '',
-    app: agent.metadata?.taskApp || agent.metadata?.app || ''
+  const [formData, setFormData] = useState(() => {
+    const provider = agent.metadata?.providerId || agent.metadata?.provider || '';
+    // The agent being resumed may have run on a pre-split Antigravity id
+    // (`gemini-3.6-flash-high`), which the Model select no longer lists. Seed the
+    // two controls from its halves so the resumed run keeps the same tier.
+    const seeded = seedModelEffort(
+      providers?.find(p => p.id === provider),
+      agent.metadata?.model,
+      agent.metadata?.effort,
+    );
+    return {
+      refinedInstructions: '',
+      provider,
+      model: seeded.model,
+      effort: seeded.effort,
+      app: agent.metadata?.taskApp || agent.metadata?.app || ''
+    };
   });
   const [screenshots, setScreenshots] = useState([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -54,8 +67,10 @@ export default function ResumeAgentModal({ agent, taskType = 'user', providers, 
     setScreenshots(prev => prev.filter(s => s.id !== id));
   };
 
+  // The modal carries its own Thinking Effort select and submits it, so
+  // Antigravity lists BASE models with the tier picked separately.
   const selectedProvider = providers?.find(p => p.id === formData.provider);
-  const availableModels = filterSelectableModels(selectedProvider?.models);
+  const availableModels = effortAwareModelOptions(selectedProvider, formData.model);
 
   const submittingRef = useRef(false);
   const handleSubmit = async (e) => {
@@ -73,6 +88,7 @@ export default function ResumeAgentModal({ agent, taskType = 'user', providers, 
       context: fullContext,
       model: formData.model,
       provider: formData.provider,
+      effort: formData.effort,
       app: formData.app,
       type: taskType,
       screenshots: screenshots.length > 0 ? screenshots.map(s => s.path) : undefined
@@ -110,7 +126,7 @@ export default function ResumeAgentModal({ agent, taskType = 'user', providers, 
           <button
             onClick={onClose}
             aria-label="Close resume agent modal"
-            className="text-gray-500 hover:text-white transition-colors"
+            className="text-gray-500 hover:text-white transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center"
           >
             <X size={20} aria-hidden="true" />
           </button>
@@ -198,12 +214,12 @@ export default function ResumeAgentModal({ agent, taskType = 'user', providers, 
             </select>
           </FormField>
 
-          {/* Provider and Model */}
-          <div className="flex gap-3">
+          {/* Provider, Model and Thinking Effort */}
+          <div className="flex flex-col sm:flex-row gap-3">
             <FormField label="Provider" className="flex-1">
               <select
                 value={formData.provider}
-                onChange={e => setFormData({ ...formData, provider: e.target.value, model: '' })}
+                onChange={e => setFormData({ ...formData, provider: e.target.value, model: '', effort: '' })}
                 className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm focus:border-port-accent focus:outline-hidden"
               >
                 <option value="">Auto (default)</option>
@@ -215,7 +231,13 @@ export default function ResumeAgentModal({ agent, taskType = 'user', providers, 
             <FormField label="Model" className="flex-1">
               <select
                 value={formData.model}
-                onChange={e => setFormData({ ...formData, model: e.target.value })}
+                onChange={e => setFormData(d => ({
+                  ...d,
+                  model: e.target.value,
+                  // A model with no effort tiers hides the select beside it — clear
+                  // the value with it instead of resuming on a level the UI dropped.
+                  effort: effortSurvivingModel(selectedProvider, e.target.value, d.effort),
+                }))}
                 className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm focus:border-port-accent focus:outline-hidden"
                 disabled={!formData.provider}
               >
@@ -225,6 +247,15 @@ export default function ResumeAgentModal({ agent, taskType = 'user', providers, 
                 ))}
               </select>
             </FormField>
+            <EffortSelect
+              provider={selectedProvider}
+              model={effectiveModelFor(selectedProvider, formData.model)}
+              value={formData.effort}
+              onChange={effort => setFormData(d => ({ ...d, effort }))}
+              label="Thinking Effort"
+              fieldClassName="flex-1"
+              className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm focus:border-port-accent focus:outline-hidden"
+            />
           </div>
 
           {/* Context Preview (collapsed) */}

@@ -9,8 +9,9 @@ Non-obvious invocations only — everything else is in `package.json` scripts.
 ```bash
 npm run install:all   # includes git submodule update --init --recursive
 
-# Tests are PER WORKSPACE — there is no root `npm test` that runs both
-cd server && npm test            # Node test runner
+# Root `npm test` runs both workspaces in sequence (server, then client). Run them
+# per workspace to scope to one — both are Vitest, with different environments:
+cd server && npm test            # Vitest (node) — ALSO globs ../scripts, ../lib, ../autofixer
 cd client && npm test            # Vitest (jsdom) — component/unit tests
 npm run test:db                  # DB-backed suites → portos_test ONLY (see Security Model)
 ```

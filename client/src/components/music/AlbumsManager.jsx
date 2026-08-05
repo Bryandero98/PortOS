@@ -11,6 +11,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import { Plus, Loader2, Trash2, Save, Upload, ImageIcon, Sparkles, X, ArrowUp, ArrowDown } from 'lucide-react';
+import BrailleSpinner from '../BrailleSpinner';
 import toast from '../ui/Toast';
 import FilePickerButton from '../ui/FilePickerButton';
 import GalleryImagePicker from '../imageGen/GalleryImagePicker';
@@ -272,7 +273,7 @@ export default function AlbumsManager() {
       <div className="grid grid-cols-1 md:grid-cols-[260px_1fr] gap-4">
         <div className="bg-port-card border border-port-border rounded-lg p-2">
           {loading ? (
-            <div className="text-gray-500 text-sm p-2">Loading…</div>
+            <div className="text-sm p-2"><BrailleSpinner text="Loading…" /></div>
           ) : albums.length === 0 ? (
             <div className="text-gray-500 text-sm p-2">No albums yet. Click <span className="text-port-accent">New Album</span>.</div>
           ) : (
@@ -329,7 +330,7 @@ export default function AlbumsManager() {
                   ) : form.coverImageUrl ? (
                     <div className="relative">
                       <img src={form.coverImageUrl} alt="Album cover" className="w-28 h-28 rounded object-cover border border-port-border bg-port-bg" />
-                      <button type="button" onClick={() => setCover('')} title="Remove cover" className="absolute -top-2 -right-2 p-1 rounded-full bg-port-bg border border-port-border text-gray-400 hover:text-port-error">
+                      <button type="button" onClick={() => setCover('')} title="Remove cover" aria-label="Remove cover" className="absolute -top-2 -right-2 p-1 rounded-full bg-port-bg border border-port-border text-gray-400 hover:text-port-error">
                         <X size={12} />
                       </button>
                     </div>

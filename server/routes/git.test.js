@@ -36,7 +36,7 @@ vi.mock('../services/apps.js', () => ({
   getAppById: vi.fn()
 }));
 
-vi.mock('../services/cosAgents.js', () => ({
+vi.mock('../services/cosAgentLifecycle.js', () => ({
   getAgents: vi.fn().mockResolvedValue([])
 }));
 
@@ -59,7 +59,7 @@ vi.mock('fs', async (importOriginal) => {
 
 import { existsSync, statSync, realpathSync } from 'fs';
 import { isWithinAllowedRoots } from '../lib/workspaceRoots.js';
-import * as cosAgentsService from '../services/cosAgents.js';
+import * as cosAgentLifecycleService from '../services/cosAgentLifecycle.js';
 import * as gitService from '../services/git.js';
 
 function makeApp() {
@@ -167,7 +167,7 @@ describe('git routes — active agent branch exclusion', () => {
 
   describe('POST /api/git/cleanup-merged — active agent branches are passed to service', () => {
     it('passes the active agent worktreeBranch as an excludeBranches Set to deleteMergedBranches', async () => {
-      cosAgentsService.getAgents.mockResolvedValue([
+      cosAgentLifecycleService.getAgents.mockResolvedValue([
         { status: 'running', metadata: { worktreeBranch: 'feature/agent-work' } },
         { status: 'stopped', metadata: { worktreeBranch: 'feature/done-work' } },
       ]);
@@ -193,7 +193,7 @@ describe('git routes — active agent branch exclusion', () => {
     });
 
     it('passes an empty Set when no agents are running', async () => {
-      cosAgentsService.getAgents.mockResolvedValue([]);
+      cosAgentLifecycleService.getAgents.mockResolvedValue([]);
       gitService.deleteMergedBranches.mockResolvedValue({ deleted: [] });
 
       const app = makeApp();
@@ -206,7 +206,7 @@ describe('git routes — active agent branch exclusion', () => {
     });
 
     it('still passes an empty Set when getAgents rejects (catch guard)', async () => {
-      cosAgentsService.getAgents.mockRejectedValue(new Error('service down'));
+      cosAgentLifecycleService.getAgents.mockRejectedValue(new Error('service down'));
       gitService.deleteMergedBranches.mockResolvedValue({ deleted: [] });
 
       const app = makeApp();
@@ -223,7 +223,7 @@ describe('git routes — active agent branch exclusion', () => {
 
   describe('POST /api/git/delete-branch — active agent branches are excluded', () => {
     it('passes the active agent branches as excludeBranches to deleteBranch', async () => {
-      cosAgentsService.getAgents.mockResolvedValue([
+      cosAgentLifecycleService.getAgents.mockResolvedValue([
         { status: 'running', metadata: { worktreeBranch: 'feature/agent-active' } },
       ]);
       gitService.deleteBranch.mockResolvedValue({ branch: 'feature/other', results: { local: 'deleted' } });
@@ -268,7 +268,7 @@ describe('git routes — active agent branch exclusion', () => {
     });
 
     it('service error propagates as 500', async () => {
-      cosAgentsService.getAgents.mockResolvedValue([]);
+      cosAgentLifecycleService.getAgents.mockResolvedValue([]);
       gitService.deleteBranch.mockRejectedValue(
         Object.assign(new Error('Cannot delete branch in active use by an agent: feature/agent-active'), { status: 500 })
       );

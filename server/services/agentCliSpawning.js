@@ -11,14 +11,16 @@ import { existsSync } from 'fs';
 import { spawn } from 'child_process';
 import { homedir } from 'os';
 import { cosEvents, emitLog } from './cosEvents.js';
-import { updateAgent, completeAgent, createAgentOutputBatcher } from './cosAgents.js';
-import { registerSpawnedAgent, unregisterSpawnedAgent } from './agents.js';
+// The DEFINING module, not a barrel (#3450) — see the note in
+// `agentManagement.js`. This module is a LEAF that `agentLifecycle.js` imports,
+// which puts it inside the facade's closure, so the facade is out of reach here.
+import { updateAgent, completeAgent, createAgentOutputBatcher } from './cosAgentLifecycle.js';
 import { release } from './executionLanes.js';
 import { completeExecution, errorExecution } from './toolStateMachine.js';
 import { analyzeAgentFailure } from './agentErrorAnalysis.js';
 import { completeAgentRun } from './agentRunTracking.js';
 import { finalizeAgent, releaseAgentLane } from './agentFinalization.js';
-import { activeAgents, userTerminatedAgents, pausedAgents } from './agentState.js';
+import { activeAgents, userTerminatedAgents, pausedAgents, registerSpawnedAgent, unregisterSpawnedAgent } from './agentState.js';
 import { normalizeReviewers } from '../lib/validation.js';
 import { resolveReviewLoopOptions } from './codeReview.js';
 import { safeJSONParse, PATHS } from '../lib/fileUtils.js';
@@ -295,7 +297,13 @@ export function buildCliSpawnConfig(provider, model, settingsEnv = {}, { systemP
   // Per-task `--model` / `--effort` overrides are threaded in the same way as
   // claude/codex — agy documents both as session-scoped flags.
   if (isAntigravityCliProvider(provider)) {
-    const args = ensureAntigravityPrintArgs(provider?.args || [], { model: effectiveModel, effort });
+    // `models` narrows the effort ladder to the tiers the chosen base model
+    // actually offers — agy rejects `--model gemini-3.1-pro --effort medium`.
+    const args = ensureAntigravityPrintArgs(provider?.args || [], {
+      model: effectiveModel,
+      effort,
+      models: provider?.models,
+    });
     return {
       command: provider?.command || 'agy',
       args,

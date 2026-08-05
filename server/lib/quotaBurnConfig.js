@@ -28,6 +28,44 @@ import { isPlainObject, POLLUTING_KEYS } from './objects.js';
 export const QUOTA_BURN_FAMILIES = Object.freeze(['claude', 'codex', 'agy', 'grok']);
 
 /**
+ * How a queued burn task's description opens: `[Quota burn: <family>] …`.
+ *
+ * `quotaBurnJobs/agentPrompt.js` mints it; migration 225 matches it to back-fill
+ * `metadata.quotaBurnFamily` onto tasks queued before that stamp existed. Shared
+ * because the two live in different trees and a reworded description would
+ * silently make the migration a no-op — leaving exactly the stranded tasks it
+ * exists to rescue.
+ */
+export const QUOTA_BURN_TASK_PREFIX = '[Quota burn: ';
+
+/** The description a burn task is queued under. Parsed back by `quotaBurnFamilyOfDescription`. */
+export const burnTaskDescription = (familyId, label, appName) =>
+  `${QUOTA_BURN_TASK_PREFIX}${familyId}] ${label} for ${appName}`;
+
+/**
+ * The family id in a burn-task description, or null when it isn't one. Only the
+ * migration needs this — a live task carries `metadata.quotaBurnFamily` — so it
+ * deliberately requires the exact minted shape rather than sniffing loosely.
+ */
+export function quotaBurnFamilyOfDescription(description) {
+  if (typeof description !== 'string' || !description.startsWith(QUOTA_BURN_TASK_PREFIX)) return null;
+  const family = description.slice(QUOTA_BURN_TASK_PREFIX.length).split(']')[0].trim();
+  return QUOTA_BURN_FAMILIES.includes(family) ? family : null;
+}
+
+/**
+ * `maxDispatchesPerWindow` sentinel for "no cap on how many burns this window
+ * may spend" — and the default. Why the cap is opt-in rather than a safety
+ * property is argued once, in `docs/QUOTA-BURN.md`.
+ *
+ * -1 rather than 0/null: it stays a number for the client's `<input
+ * type="number">` and the run log, and it can never be confused with "0 burns
+ * allowed" (which is what disabling the family already means). It sits BELOW
+ * the field's own minimum, which is what `clampDispatchCap` exists to handle.
+ */
+export const QUOTA_BURN_UNLIMITED_DISPATCHES = -1;
+
+/**
  * Every numeric/length bound in the plan, in ONE place.
  *
  * Three consumers read these and must agree: the normalizer below (which
@@ -42,16 +80,19 @@ export const QUOTA_BURN_BOUNDS = Object.freeze({
   checkIntervalMinutes: { min: 5, max: 720, default: 30 },
   resetWithinHours: { min: 0, max: 168, default: 24 },
   reservePercent: { min: 0, max: 100, default: 0 },
-  maxDispatchesPerWindow: { min: 1, max: 50, default: 5 },
+  // `min` is the smallest REAL cap; the default opts out of capping entirely.
+  maxDispatchesPerWindow: { min: 1, max: 50, default: QUOTA_BURN_UNLIMITED_DISPATCHES },
   priority: { min: 0, max: 100, default: 0 },
   maxEntries: { min: 1, max: 50, default: 10 },
   jobsPerFamily: { max: 25 },
   idLength: { max: 64 },
   labelLength: { max: 120 },
-  scopeLength: { max: 60 },
   paramLength: { max: 8000 },
 });
 const BOUNDS = QUOTA_BURN_BOUNDS;
+
+/** Whether a family's dispatch cap means "no cap". Any negative value reads as unlimited. */
+export const isUnlimitedDispatchCap = (cap) => Number(cap) < 0;
 
 /**
  * Burn job types. `agent-prompt` is the original behavior (spawn a CoS agent in
@@ -113,17 +154,6 @@ export const QUOTA_BURN_JOB_CATALOG = Object.freeze([
   },
 ]);
 
-const DEFAULT_QUOTA_BURN_FAMILY = Object.freeze({
-  enabled: false,
-  providerId: null,
-  scope: null,
-  resetWithinHours: BOUNDS.resetWithinHours.default,
-  reservePercent: BOUNDS.reservePercent.default,
-  maxDispatchesPerWindow: BOUNDS.maxDispatchesPerWindow.default,
-  priority: BOUNDS.priority.default,
-  jobs: Object.freeze([]),
-});
-
 // Clamp against one QUOTA_BURN_BOUNDS entry, falling back to its documented
 // default when the value is missing or non-numeric.
 const clamp = ({ min, max, default: fallback }, value) => {
@@ -133,6 +163,20 @@ const clamp = ({ min, max, default: fallback }, value) => {
 };
 
 const clampInt = (bounds, value) => Math.round(clamp(bounds, value));
+
+/**
+ * The dispatch cap can't go straight through `clampInt`: its sentinel sits
+ * BELOW its own minimum, so the generic clamp would fold -1 back up to 1 and
+ * silently reinstate a cap of one burn per window. Any negative reads as
+ * unlimited; a real cap still clamps into 1–50 (so a legacy 0 keeps landing on
+ * 1 rather than meaning "never burn", which is what disabling the family is
+ * for).
+ */
+const clampDispatchCap = (value) => {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return BOUNDS.maxDispatchesPerWindow.default;
+  return num < 0 ? QUOTA_BURN_UNLIMITED_DISPATCHES : clampInt(BOUNDS.maxDispatchesPerWindow, num);
+};
 
 const trimString = (value, max) =>
   (typeof value === 'string' ? value.trim().slice(0, max) : '');
@@ -188,7 +232,8 @@ export function normalizeQuotaBurnJob(raw, index = 0) {
 /**
  * Normalize one provider family's burn plan. Bounds mirror the pre-#3179
  * per-app sanitizer so a migrated config keeps its meaning: reset window up to
- * a week, reserve 0–100%, 1–50 dispatches per window.
+ * a week, reserve 0–100%, and 1–50 dispatches per window (or -1 for no cap,
+ * which is the default).
  */
 export function normalizeQuotaBurnFamily(raw) {
   const value = isPlainObject(raw) ? raw : {};
@@ -198,11 +243,9 @@ export function normalizeQuotaBurnFamily(raw) {
     .filter(Boolean);
   return {
     enabled: value.enabled === true,
-    providerId: nullableString(value.providerId, BOUNDS.labelLength.max),
-    scope: nullableString(value.scope, BOUNDS.scopeLength.max),
     resetWithinHours: clamp(BOUNDS.resetWithinHours, value.resetWithinHours),
     reservePercent: clamp(BOUNDS.reservePercent, value.reservePercent),
-    maxDispatchesPerWindow: clampInt(BOUNDS.maxDispatchesPerWindow, value.maxDispatchesPerWindow),
+    maxDispatchesPerWindow: clampDispatchCap(value.maxDispatchesPerWindow),
     priority: clampInt(BOUNDS.priority, value.priority),
     jobs,
   };

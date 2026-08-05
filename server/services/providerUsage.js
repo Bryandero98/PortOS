@@ -1,4 +1,4 @@
-import { open, readdir, readFile, stat } from 'fs/promises';
+import { readdir } from 'fs/promises';
 import { homedir } from 'os';
 import { join } from 'path';
 import { getAllProviders } from './providers.js';
@@ -8,6 +8,7 @@ import { isGrokCommand } from '../lib/grok.js';
 import { scrapeTuiUsage } from '../lib/tuiUsageScrape.js';
 import { createStaleWhileRevalidate, PENDING, WAIT } from '../lib/staleWhileRevalidate.js';
 import { parseHumanReset } from '../lib/quotaReset.js';
+import { readFileTail } from '../lib/fileUtils.js';
 import { getSettings } from './settings.js';
 import { getImageGenQuota, IMAGE_GEN_FAMILY } from './imageGenQuota.js';
 import { enabledCloudImageModes } from './imageGen/modes.js';
@@ -100,7 +101,13 @@ function codexLimitEntry(scopeKey, window) {
     percentUsed,
     percentRemaining: Math.max(0, 100 - percentUsed),
     resetsAt: Number.isFinite(window.resets_at) ? new Date(window.resets_at * 1000).toISOString() : null,
-    timezone: null
+    timezone: null,
+    // How long this window's allowance lasts — stated exactly by the telemetry,
+    // so quota-burn ranks it without inferring from the scope word (a plan whose
+    // primary window is 7h must not be read as the 5h `session` default). See
+    // `lib/quotaWindows.js`; omitted when the payload doesn't state it, which
+    // falls back to that classifier.
+    ...(Number.isFinite(window.window_minutes) ? { periodHours: window.window_minutes / 60 } : {})
   };
 }
 
@@ -163,23 +170,10 @@ async function listCodexRolloutFiles(codexHome) {
   return files;
 }
 
-async function readFileTail(file, bytes) {
-  const info = await stat(file);
-  if (info.size <= bytes) return readFile(file, 'utf-8');
-  const handle = await open(file, 'r');
-  try {
-    const buffer = Buffer.alloc(bytes);
-    await handle.read(buffer, 0, bytes, info.size - bytes);
-    return buffer.toString('utf-8');
-  } finally {
-    await handle.close();
-  }
-}
-
 async function fetchCodexQuota({ codexHome = codexHomeDir() } = {}) {
   const files = await listCodexRolloutFiles(codexHome);
   for (const file of files) {
-    const tail = await readFileTail(file, CODEX_TAIL_BYTES).catch(() => null);
+    const tail = await readFileTail(file, CODEX_TAIL_BYTES);
     if (!tail) continue;
     const found = parseCodexRateLimits(tail);
     if (found) return mapCodexQuota(found.rateLimits, found.timestamp);
@@ -331,7 +325,13 @@ export function parseAgyUsage(text, { now = Date.now() } = {}) {
 // Grok's `/usage show` panel reports usage as `<Window> limit: N%` (percent
 // USED). Its binary strings expose both `Weekly limit` and `Monthly limit`, so
 // different plans surface different windows — parse whichever appear.
-const GROK_WINDOWS = { weekly: { label: 'Weekly', scope: 'week' }, monthly: { label: 'Monthly', scope: 'month' } };
+// `periodHours` is stated rather than left to `quotaWindows.js` to infer from
+// the scope word: this table already knows the answer exactly, and quota-burn
+// ranks the target/limiting windows off it (see lib/quotaWindows.js).
+const GROK_WINDOWS = {
+  weekly: { label: 'Weekly', scope: 'week', periodHours: 7 * 24 },
+  monthly: { label: 'Monthly', scope: 'month', periodHours: 30 * 24 },
+};
 
 /**
  * Parse the Grok Build `/usage show` panel text. Emits one row per usage window
@@ -361,6 +361,7 @@ export function parseGrokUsage(text, { now = Date.now(), timezone } = {}) {
     key: window,
     label: GROK_WINDOWS[window].label,
     scope: GROK_WINDOWS[window].scope,
+    periodHours: GROK_WINDOWS[window].periodHours,
     model: null,
     percentUsed,
     percentRemaining: Math.max(0, 100 - percentUsed),

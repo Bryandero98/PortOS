@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router';
 import { PersonStanding, LayoutGrid, Images, Scissors, Film } from 'lucide-react';
+import PageSkeleton from '../components/ui/PageSkeleton';
 import toast from '../components/ui/Toast';
 import {
   listSpriteRecords, getSpriteRecord,
@@ -439,7 +440,13 @@ export default function Sprites() {
           {!id ? (
             // The bare /sprites route IS the Library catalog now.
             records === null ? (
-              <p className="text-sm text-gray-500">Loading…</p>
+              <PageSkeleton
+                header="none"
+                label="Loading sprite library"
+                layout="grid"
+                cards={10}
+                gridColsClass="grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
+              />
             ) : records.length === 0 ? (
               <p className="text-sm text-gray-500">
                 No sprites yet. Import a production set from a sprite-pipeline checkout to get started.
@@ -464,7 +471,7 @@ export default function Sprites() {
               <button onClick={() => setRetryTick((t) => t + 1)} className="text-port-accent hover:underline">Retry</button>
             </div>
           ) : !detail ? (
-            <p className="text-sm text-gray-500">Loading…</p>
+            <PageSkeleton header="none" label="Loading sprite" cards={3} sidebar={false} />
           ) : (
             <div className="space-y-4">
               <SpriteDetailHeader

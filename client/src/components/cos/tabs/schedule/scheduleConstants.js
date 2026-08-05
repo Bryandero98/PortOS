@@ -43,6 +43,12 @@ export const badge = (variant) => `text-xs font-medium px-2.5 py-1 rounded-full 
 
 export const IMPROVEMENT_DISABLED_TITLE = 'Improvement is disabled — enable it in CoS → Config';
 
+export const SAVING_TITLE = 'Saving provider/model settings — the run will use them once saved';
+
+// The task's pipeline stages (always an array). A non-empty one means its
+// provider/model are resolved per stage, so a task-level pin would be ignored.
+export const pipelineStages = (config) => config?.taskMetadata?.pipeline?.stages || [];
+
 export const triggerButtonClass = (disabled) =>
   `flex items-center gap-1 px-3 py-1.5 text-sm rounded transition-colors ${disabled ? 'bg-port-border/30 text-gray-500 cursor-not-allowed' : 'bg-port-accent/20 hover:bg-port-accent/30 text-port-accent'}`;
 
@@ -155,6 +161,18 @@ export const TASK_FILTERS = [
   { id: 'disabled', label: 'Disabled', emptyMessage: 'No disabled tasks.', match: ([, config]) => getTaskStatusGroup(config) === 'disabled' },
 ];
 export const DEFAULT_FILTER_ID = TASK_FILTERS[0].id;
+
+// Set or clear one per-app taskMetadata override key. '' is every override
+// select's "Inherit" option, and deletes the key so the global config decides
+// again; the server replaces taskMetadata wholesale, so the app's other override
+// keys ride along. Returns null once nothing is overridden, which is how a row
+// drops its override object entirely.
+export function setMetadataOverride(taskMetadata, field, value) {
+  const next = { ...(taskMetadata || {}) };
+  if (value === '') delete next[field];
+  else next[field] = value;
+  return Object.keys(next).length ? next : null;
+}
 
 // Toggle a global taskMetadata field, enforcing the openPR→useWorktree invariant.
 // Persists both true and false values so explicit overrides survive the server-side

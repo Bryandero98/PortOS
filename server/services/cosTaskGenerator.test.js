@@ -171,6 +171,21 @@ describe('isCooldownExemptTask', () => {
   it('does NOT exempt an ordinary app task', () => {
     expect(isCooldownExemptTask({ metadata: { app: 'app-1', analysisType: 'security-audit' } })).toBe(false);
   });
+  // A burn task's throttle is its family's gate ladder (reset horizon, reserve,
+  // maxDispatchesPerWindow), all checked before it is queued. The app cooldown is
+  // re-stamped by EVERY task that completes on that app, so on an app carrying a
+  // perpetual drain — itself exempt, so it keeps completing — the cooldown never
+  // lapses and the burn sits in Pending until its window expires unspent.
+  it('exempts a quota-burn task so a busy app cannot starve it', () => {
+    expect(isCooldownExemptTask({ metadata: { app: 'app-1', quotaBurnFamily: 'agy' } })).toBe(true);
+  });
+  // Deliberately metadata-only — a task queued before the stamp existed is
+  // back-filled by scripts/migrations/225-quota-burn-task-provenance.js, not
+  // recognised here by sniffing its description. That keeps a user-visible
+  // display string from becoming load-bearing for a scheduling gate.
+  it('does NOT exempt a burn-shaped description with no marker', () => {
+    expect(isCooldownExemptTask({ description: '[Quota burn: agy] Perf', metadata: { app: 'app-1' } })).toBe(false);
+  });
   it('is null-safe for a task with no metadata', () => {
     expect(isCooldownExemptTask(null)).toBe(false);
     expect(isCooldownExemptTask({})).toBe(false);
@@ -440,11 +455,67 @@ describe('resolveSwarmBlock', () => {
     expect(block).toContain('Completion Workflow');
   });
 
+  it('gives every fan-out agent its own scratch subdirectory', () => {
+    // All fan-out agents share ONE session scratchpad and run byte-identical
+    // instructions, so without an assigned per-agent directory two of them pick
+    // the same obvious filename (pr-body.md) and clobber each other silently —
+    // which once published one worker's PR body onto another worker's PR.
+    const block = resolveSwarmBlock('claim-issue', 3);
+    expect(block).toContain('<scratchpad>/issue-<num>/');
+    expect(block).toMatch(/scratchpad root/i);
+    // The scope is ALL temp files, not just the PR body that surfaced the bug.
+    expect(block).toMatch(/ALL temp files/i);
+    // CoS agents also run under codex/agy/grok/opencode, which inject no
+    // scratchpad path. Without a named fallback such an agent picks its cwd —
+    // the source repo the prompt otherwise forbids writing to.
+    expect(block).toContain('$(mktemp -d)/issue-<num>');
+  });
+
+  it('instructs each agent to verify its own issue trailer after create and after each edit', () => {
+    // Belt to the namespacing's braces: the PR-body flow is create-then-edit, so
+    // a stale/foreign body can land minutes later during the review loop. `gh`
+    // exits 0 either way, so only a read-back catches it.
+    const block = resolveSwarmBlock('claim-issue', 3);
+    expect(block).toContain('Closes #<num>');
+    expect(block).toContain('Refs #<num>');
+    expect(block).toMatch(/after each edit|after every edit/i);
+  });
+
+  it('reads the PR body back by branch, never by a number that could be the issue number', () => {
+    // `<num>` is the ISSUE number everywhere else in this block, and an issue
+    // number is not a PR number. Passing one to `gh pr view` reads the wrong
+    // object (on GitLab, a real but unrelated MR) — so the agent "corrects" a
+    // stranger's PR body, which is the very bug #3489 is about. Both CLIs infer
+    // the PR/MR from the agent's own claim/issue-<num> branch, so no id is needed.
+    const block = resolveSwarmBlock('claim-issue', 3);
+    expect(block).toContain('gh pr view --json body -q .body');
+    expect(block).not.toContain('gh pr view <num>');
+    expect(block).not.toContain('gh pr view <pr-num>');
+  });
+
+  it('caps the rewrite-and-re-verify loop so one stuck agent cannot stall Phase C', () => {
+    // Phase C waits on every agent, so an unbounded "rewrite from scratch file
+    // and re-verify" blocks the whole batch's merges when the scratch file is
+    // itself the wrong one and republishing can never satisfy the check.
+    const block = resolveSwarmBlock('claim-issue', 3);
+    expect(block).toMatch(/Cap this at 2 rewrites/i);
+    expect(block).toMatch(/Never loop on it/i);
+  });
+
   it('returns a glab/MR swarm directive for the gitlab claim body', () => {
     const block = resolveSwarmBlock('claim-issue-gitlab', 4);
     expect(block).toContain('--swarm=4');
     expect(block).toContain('glab mr merge');
     expect(block).toContain('open the MR');
+    // The scratch/read-back guidance is forge-agnostic — the MR body read-back
+    // uses the glab command, not the gh one.
+    expect(block).toContain('<scratchpad>/issue-<num>/');
+    // Same no-identifier rule as the gh path — and it matters MORE here: issue
+    // iids and MR iids are separate sequences on GitLab, so an issue number
+    // passed to `glab mr view` usually resolves to a real, unrelated MR.
+    expect(block).toContain('glab mr view --output json | jq -r .description');
+    expect(block).not.toContain('glab mr view <iid>');
+    expect(block).not.toContain('gh pr view');
   });
 
   it('is a no-op for non-forge claim types (plan-task / jira have no swarm flow)', () => {

@@ -17,7 +17,7 @@ const ACTION_CONFIG = {
   verify: { label: 'Verify', icon: ShieldCheck, style: 'bg-port-accent-2/20 text-port-accent-2 border-port-accent-2/30 hover:bg-port-accent-2/30' },
 };
 
-function getPhaseStatus(phase, pendingAction) {
+function getPhaseStatus(_phase, pendingAction) {
   if (!pendingAction) return 'completed';
   return pendingAction.currentStep;
 }

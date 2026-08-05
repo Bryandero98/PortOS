@@ -13,7 +13,7 @@
 // A date key is always the local `YYYY-MM-DD` prefix. Session dates are stored
 // that way already; some training-log entries (memory practice) store a full
 // ISO timestamp, so normalize both to the day prefix before any set math.
-function normalizeYmd(value) {
+export function normalizeYmd(value) {
   if (!value) return null;
   return String(value).split('T')[0];
 }

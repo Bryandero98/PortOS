@@ -14,9 +14,11 @@ Every `checkIntervalMinutes` (default 30, bounded 5–720) the runner:
 1. Reads the plan from `data/cos/quota-burn.json`. If the master switch is off it
    stops here — **no provider is contacted**.
 2. Takes a zero-token quota reading for every enabled provider family.
-3. Selects families whose soonest window is inside `resetWithinHours`, still has
-   headroom above `reservePercent`, and has not spent `maxDispatchesPerWindow`
-   for that window. Ties break on `priority` (lower wins).
+3. Selects families whose **target window** (see below) is inside
+   `resetWithinHours`, that no provider refusal is currently blocking, that still
+   have headroom above `reservePercent` in *every* window on the card, and that have
+   not spent `maxDispatchesPerWindow` for that window (`-1`, the default, means
+   no cap — see below). Ties break on `priority` (lower wins).
 4. Runs the **first enabled job in that family's ordered plan that reports
    pending work** — at most one dispatch per cycle.
 5. Charges the window in `data/cos/quota-burn-dispatches.json` and appends the
@@ -25,6 +27,85 @@ Every `checkIntervalMinutes` (default 30, bounded 5–720) the runner:
 Everything fails closed: an unknown reset time, an unsupported provider, a
 quota-read error, a card that declares itself unburnable (`burnable: false`, e.g.
 the Image Gen card), or a family with no enabled jobs all mean "do not dispatch".
+
+## Which window a family burns against
+
+Every subscription family publishes **two** windows on the same card — a short
+rolling one (claude/codex `session` ≈ 5h, antigravity `5-hour`) and a long one
+(`week`, `month`). They answer different questions, and quota-burn reads both:
+
+| | Which window | What it is used for |
+| --- | --- | --- |
+| **Target** | The **broadest** window on the card (usually weekly) | The allowance that expires unused. Its reset is the deadline `resetWithinHours` measures, its percentage and countdown are what the family card shows, and its reset epoch is the key `maxDispatchesPerWindow` counts against — so the cap means "per weekly window". |
+| **Limiting** | The **narrowest** window on the card (usually 5-hour) | What actually refuses a run. It is the horizon a denial backs off to, and it is named in the burn prompt so the agent understands a mid-run refusal. |
+| **Tightest** | Whichever window on the card has the least headroom | What `reservePercent` guards, so a full session window can't be used to justify draining a nearly-empty weekly one. |
+
+Selecting the *soonest-resetting* window instead conflated target with limiting:
+the 5-hour window is nearly always the soonest, so the page reported "resets in
+3h" for a plan written against a weekly allowance, `resetWithinHours` re-opened
+every five hours (so "only spend as the window is about to expire" bounded
+nothing), and the dispatch cap meant "N burns every 5 hours".
+
+Periods are classified in `server/lib/quotaWindows.js` from the `scope`/`label`
+words the adapters emit, or from an exact `periodHours` when a provider states
+one (codex's telemetry carries `window_minutes`). A family whose windows can't be
+classified at all falls back to soonest-reset ordering.
+
+## The dispatch cap is opt-in
+
+`maxDispatchesPerWindow` defaults to **-1 (unlimited)**: the tally is not
+consulted at all, and the window's spend is bounded by the gates that read live
+numbers — `resetWithinHours`, `reservePercent`, and the provider's own refusal
+(below). A count-based ceiling stacked on top of those read like a safety
+property but mostly stopped a plan mid-window with quota still on the table,
+which is the outcome quota-burn exists to prevent.
+
+Set 1–50 for a hard ceiling per target window. **0 is not a value** — "never
+burn" is what switching the family off means. The window is charged in
+`quota-burn-dispatches.json` either way, so the family card still shows how many
+burns the current window has spent (without a denominator when uncapped).
+
+Migration 226 lifts an existing plan that still carries the old default of 5;
+any other stored value is a number the user chose and is left alone.
+
+## Stop condition: an observed refusal
+
+Reported numbers are stale by design (scraped every few minutes, rounded to whole
+percent) and they describe the *target* window. What actually stops a burn is the
+short window emptying underneath it: a plan spending a weekly allowance runs task
+after task until the 5-hour window is gone, at which point every further dispatch
+fails instantly, wastes an agent spawn, and leaves a red card in the CoS queue —
+while the weekly card still reads "60% left, resets in 2 days".
+
+So a refusal is recorded as a fact. When an agent a burn dispatched dies with a
+usage-limit failure, `server/services/quotaBurnDenials.js` blocks that family in
+`data/cos/quota-burn-denials.json` and `evaluateFamily` reports it as the gate:
+
+- **Recorded inside the completion continuation, before it dispatches.** The
+  runner's `onBurnAgentCompleted` awaits `recordBurnAgentCompletion` and only
+  then re-evaluates the family. That ordering is load-bearing: the continuation
+  sends the next job out the moment a burn agent finishes, so a block recorded
+  after it — or from a second `agent:completed` subscriber, whose ordering
+  against the continuation is not guaranteed — arrives one wasted agent too late,
+  every time. A ledger failure degrades to a logged warning; telemetry never
+  stalls the plan.
+- **Until when** — the reset the provider stated in its own refusal, else the
+  reset of the family's limiting (short) window, else a 5-hour TTL so a
+  reset-less block can't hold forever.
+- **Cleared** the moment a burn run for that family *succeeds* — the provider
+  serving is more current evidence than any stated reset.
+- **Only burn-dispatched agents count.** The family and the limiting window's
+  reset ride on the task as `metadata.quotaBurnFamily` /
+  `metadata.quotaBurnLimitingResetAt` (the same provenance the cooldown exemption
+  and the continuation already read); an unrelated task that happens to hit a
+  usage limit says nothing about the burn plan.
+- **Narrower than a generic rate limit.** A transient `429` is a retry, not a
+  spent window — blocking a family for hours over one would be worse than missing
+  a burn. An analyzer `usage-limit` verdict is trusted only when it came from a
+  structured provider marker, not a loose keyword sweep over the agent's own
+  narration.
+- **Bypassable by a forced run** (the ▶ on a job row), which is how a user
+  retries a block they believe is stale.
 
 ## Burn jobs
 
@@ -129,7 +210,7 @@ request), and the catalog descriptors the client renders as `min`/`max`.
 
 ## Storage
 
-Four files under `data/cos/`, all machine-local and intentionally **not federated**: the plan (`quota-burn.json`), the per-window dispatch ledger (`quota-burn-dispatches.json`), the run log (`quota-burn-runs.json`), and the in-flight set (`quota-burn-inflight.json` — entries a job enqueued whose renders have not landed yet, so the next cycle does not re-queue them; 6-hour TTL). They are not federated: quota belongs to a
+Five files under `data/cos/`, all machine-local and intentionally **not federated**: the plan (`quota-burn.json`), the per-window dispatch ledger (`quota-burn-dispatches.json`), the run log (`quota-burn-runs.json`), the in-flight set (`quota-burn-inflight.json` — entries a job enqueued whose renders have not landed yet, so the next cycle does not re-queue them; 6-hour TTL), and the denial ledger (`quota-burn-denials.json` — per-family blocks from an observed provider refusal, cleared by the next successful burn or a 5-hour TTL). They are not federated: quota belongs to a
 particular machine and provider account, and the "which managed app" targets
 differ per machine.
 
@@ -148,8 +229,10 @@ folds those overrides into the single plan (each app's family prompt becomes an
 | --- | --- |
 | `server/lib/quotaBurnConfig.js` | Plan shape, job-type catalog, total normalization |
 | `server/lib/quotaBurnPresets.js` | Ready-made single-focus audit prompts for `agent-prompt` jobs |
+| `server/lib/quotaWindows.js` | Classifies a window by period — target (broadest) vs limiting (narrowest) |
 | `server/services/quotaBurnStore.js` | `data/cos/quota-burn.json` + the run log |
 | `server/services/quotaBurn.js` | `evaluateFamily` — the one gate ladder both selection and the page's skip reasons read — plus the dispatch ledger |
+| `server/services/quotaBurnDenials.js` | The observed-refusal ledger and its `agent:completed` subscriber |
 | `server/services/quotaBurnJobs/` | The job registry and its modules |
 | `server/services/quotaBurnRunner.js` | The loop, the cycle, and the status feed |
 | `server/routes/quotaBurn.js` | `/api/quota-burn` |

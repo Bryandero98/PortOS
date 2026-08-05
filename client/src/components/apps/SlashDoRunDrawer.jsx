@@ -3,7 +3,6 @@ import { Loader2, Terminal, Wand2 } from 'lucide-react';
 import Drawer from '../Drawer';
 import ProviderModelSelector from '../ProviderModelSelector';
 import ReviewerPicker from '../cos/ReviewerPicker';
-import EffortSelect from '../cos/EffortSelect';
 import useProviderModels from '../../hooks/useProviderModels';
 import useReviewerModelOptions from '../../hooks/useReviewerModelOptions';
 import { reviewerModelsFromDefaults } from '../../lib/reviewerModels';
@@ -15,8 +14,6 @@ import * as api from '../../services/api';
 // Module-scoped so `useProviderModels` sees a stable predicate — an inline arrow
 // would be a new identity each render, re-firing the hook's fetch effect forever.
 const enabledProcessProviderFilter = (p) => Boolean(p?.enabled) && isProcessProvider(p);
-
-const SELECT_CLASS = 'w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm min-h-[44px]';
 
 /**
  * Pre-flight settings for an Agent Operations `/do:*` run: for `/do:next`, which
@@ -37,9 +34,11 @@ function SlashDoRunDrawerBody({ open, command, label, appId, appName, onClose, o
   // fetches — see its `modelOptions` prop).
   const reviewerModelOptions = useReviewerModelOptions();
   const {
-    providers, selectedProviderId, selectedModel, availableModels, selectedProvider,
+    providers, selectedProviderId, selectedModel, availableModels,
     setSelectedProviderId, setSelectedModel
-  } = useProviderModels({ filter: enabledProcessProviderFilter, allowDefault: true, silent: true });
+    // This picker renders the effort control and sends the value, so Antigravity
+    // lists base models with the effort picked separately.
+  } = useProviderModels({ filter: enabledProcessProviderFilter, allowDefault: true, silent: true, withEffort: true });
 
   const [effort, setEffort] = useState('');
   const [simplify, setSimplify] = useState(true);
@@ -117,18 +116,12 @@ function SlashDoRunDrawerBody({ open, command, label, appId, appName, onClose, o
             availableModels={availableModels}
             onProviderChange={(id) => { setSelectedProviderId(id); setEffort(''); }}
             onModelChange={setSelectedModel}
+            effort={effort}
+            onEffortChange={setEffort}
             emptyProviderOption="Auto (default)"
             emptyModelOption="Default model"
             highlightToolUse
           />
-          <div className="sm:max-w-xs">
-            <EffortSelect
-              provider={selectedProvider}
-              value={effort}
-              onChange={setEffort}
-              className={SELECT_CLASS}
-            />
-          </div>
         </section>
 
         <section className="space-y-3">

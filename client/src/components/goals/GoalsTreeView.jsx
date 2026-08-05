@@ -273,7 +273,7 @@ function OrganizePanel({ suggestion, goals, onApply, onClose, applying }) {
           <Wand2 className="w-4 h-4 text-port-accent" />
           <h3 className="text-sm font-semibold text-white">Goal Organization</h3>
         </div>
-        <button onClick={onClose} aria-label="Close" className="p-1 text-gray-400 hover:text-white"><X className="w-4 h-4" /></button>
+        <button onClick={onClose} aria-label="Close" className="p-1 text-gray-400 hover:text-white min-h-[44px] min-w-[44px] flex items-center justify-center"><X className="w-4 h-4" /></button>
       </div>
 
       {suggestion.analysis && (
@@ -450,7 +450,9 @@ export default function GoalsTreeView({ data, onRefresh }) {
   const handleOrganize = async () => {
     if (!selectedProviderId) { toast.error('No API provider available'); return; }
     setOrganizing(true);
-    const result = await api.organizeGoals({ providerId: selectedProviderId, model: selectedModel }).catch(() => null);
+    // `silent: true` — this handler owns the failure toast below; without it
+    // request() also toasts and the user sees two stacked errors.
+    const result = await api.organizeGoals({ providerId: selectedProviderId, model: selectedModel }, { silent: true }).catch(() => null);
     setOrganizing(false);
     if (result) {
       setOrgSuggestion(result);
@@ -462,11 +464,14 @@ export default function GoalsTreeView({ data, onRefresh }) {
   const handleApplyOrganization = async () => {
     if (!orgSuggestion) return;
     setApplyingOrg(true);
-    await applyOrganizationSuggestion(orgSuggestion);
+    const applied = await applyOrganizationSuggestion(orgSuggestion);
     setApplyingOrg(false);
     setOrgSuggestion(null);
-    toast.success('Goal hierarchy applied');
+    // Refresh either way — a failed apply can still have landed part of the hierarchy
+    // (issue #3516).
     onRefresh();
+    if (!applied) { toast.error('Failed to apply goal hierarchy'); return; }
+    toast.success('Goal hierarchy applied');
   };
 
   return (

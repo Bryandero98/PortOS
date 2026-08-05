@@ -11,7 +11,7 @@ import useDrawerTab from '../../hooks/useDrawerTab';
 import { copyToClipboard } from '../../lib/clipboard';
 import LayeredIntelligenceTab, { buildLayeredIntelligenceUpdate, buildLayeredIntelligenceScheduleUpdate } from './LayeredIntelligenceTab';
 import { PROVIDER_TYPES } from '../../utils/providers';
-import { DEFAULT_PR_COMPLETION, PR_COMPLETION_OPTIONS } from '../cos/constants';
+import { DEFAULT_PR_COMPLETION, PR_COMPLETION_OPTIONS, prCompletionOption } from '../cos/constants';
 import { WORK_TRACKER_OPTIONS, WORK_TRACKER_LABELS } from './constants';
 
 const TABS = [
@@ -585,7 +585,7 @@ export default function EditAppDrawer({ app, onClose, onSave }) {
                         Wire it up in your server entry:
                       </div>
                       <div className="relative">
-                        <pre className="bg-black/40 text-gray-200 p-2 rounded overflow-x-auto font-mono text-[11px] leading-tight">{tlsResult.snippet}</pre>
+                        <pre className="always-dark bg-black/40 text-gray-200 p-2 rounded overflow-x-auto font-mono text-[11px] leading-tight">{tlsResult.snippet}</pre>
                         <button
                           type="button"
                           onClick={() => copyToClipboard(tlsResult.snippet, 'Snippet copied')}
@@ -776,7 +776,7 @@ export default function EditAppDrawer({ app, onClose, onSave }) {
                   ))}
                 </select>
                 <p className="mt-1 text-xs text-gray-500">
-                  {PR_COMPLETION_OPTIONS.find(option => option.value === formData.defaultPrCompletion)?.description}
+                  {prCompletionOption(formData.defaultPrCompletion)?.description}
                 </p>
               </div>
             </div>

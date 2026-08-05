@@ -8,7 +8,15 @@ import { ServerError } from '../../lib/errorHandler.js';
 import { PATHS, resolveGalleryImage } from '../../lib/fileUtils.js';
 import { runPromptThroughProvider } from '../../lib/promptRunner.js';
 import { extractJson } from '../../lib/jsonExtract.js';
-import { buildThreejsFactorySource, threejsSculptSpecSchema } from '../../lib/threejsModel.js';
+import {
+  buildThreejsFactorySource,
+  buildThreejsFlatnessFeedback,
+  evaluateThreejsFlatness,
+  threejsSculptSpecSchema,
+} from '../../lib/threejsModel.js';
+import { buildThreejsCoverageFeedback, evaluateThreejsPartCoverage } from '../../lib/threejsModelCoverage.js';
+import { GENERAL_FAMILY_ID } from '../../lib/threejsModelFamilies.js';
+import { resolveCliEffort } from '../../lib/providerModels.js';
 import { getProviderById } from '../providers.js';
 import { buildThreejsGenerationPrompt } from './prompt.js';
 import * as store from './db.js';
@@ -65,13 +73,18 @@ async function executeGeneration({
   operationId,
   provider,
   requestedModel,
+  requestedEffort,
   sourcePath,
   prompt,
+  family,
 }) {
   try {
     const result = await runPromptThroughProvider({
       provider,
       model: requestedModel || undefined,
+      // No-op for API providers and for CLI/TUI providers with no effort
+      // control — runPromptThroughProvider clamps/drops it per provider.
+      effort: requestedEffort || undefined,
       prompt,
       source: 'threejs-model-generation',
       // CLI/TUI agents only need the gallery image and JSON contract. Keep
@@ -87,6 +100,14 @@ async function executeGeneration({
       shapePredicate: (value) => threejsSculptSpecSchema.safeParse(value).success,
     });
     const spec = threejsSculptSpecSchema.parse(extracted.value);
+    // A structural miss is not a parse failure — a spec that promises more than
+    // it builds is still a usable generation, so the gate is recorded on the
+    // record and surfaced as refinement feedback rather than thrown away.
+    const coverage = evaluateThreejsPartCoverage(spec, { family });
+    // Likewise for a spec that builds everything it promised out of slabs: it
+    // renders correctly from the generated camera, so it is recorded rather than
+    // rejected — the user sees it and an unsteered refinement asks for depth.
+    const flatness = evaluateThreejsFlatness(spec);
     const completedAt = new Date().toISOString();
     const effectiveProvider = result.provider?.id || result.fallbackProvider?.id || provider.id;
     const effectiveModel = result.model || requestedModel || provider.defaultModel || null;
@@ -99,6 +120,8 @@ async function executeGeneration({
         model: effectiveModel,
         status: 'ready',
         spec,
+        coverage,
+        flatness,
         error: null,
         generationOperationId: null,
         generatedAt: completedAt,
@@ -112,6 +135,12 @@ async function executeGeneration({
       };
     });
     console.log(`🧊 Three.js model ready: ${id} (${effectiveProvider}/${effectiveModel || 'default'})`);
+    if (coverage.errorCount > 0) {
+      console.warn(`⚠️ Three.js model ${id} assembly coverage: ${coverage.errorCount} error, ${coverage.warningCount} warning finding(s)`);
+    }
+    if (flatness.warningCount > 0) {
+      console.warn(`⚠️ Three.js model ${id} cross-section: ${flatness.flatIdentityDetailCount}/${flatness.identityDetailCount} identity feature(s) built only from flat parts`);
+    }
   } catch (error) {
     console.error(`❌ Three.js model generation failed for ${id}: ${cleanError(error)}`);
     await failGeneration(id, operationId, error);
@@ -134,14 +163,18 @@ export async function createModel(input) {
   return startGeneration(created.id, {
     providerId: input.providerId,
     model: input.model,
+    effort: input.effort,
     prompt: input.prompt,
+    family: input.family,
   });
 }
 
 export async function startGeneration(id, {
   providerId,
   model,
+  effort,
   prompt,
+  family,
   feedback = '',
 } = {}) {
   const current = await store.getModel(id);
@@ -160,12 +193,37 @@ export async function startGeneration(id, {
   const operationId = randomUUID();
   const startedAt = new Date().toISOString();
   const effectivePrompt = prompt ?? current.prompt ?? '';
+  // A refinement the user did not steer aims at what the last pass measurably
+  // got wrong — the promises it did not build, and the identity parts it built
+  // without a cross-section — instead of a generic "improve it". Both are sent
+  // when both fired: they are independent defects with independent remedies.
+  const effectiveFeedback = (feedback || '').trim() || [
+    buildThreejsCoverageFeedback(current.coverage),
+    buildThreejsFlatnessFeedback(current.flatness),
+  ].filter(Boolean).join('\n\n');
+  // Absent (`undefined`) keeps whatever the record already had; an explicit
+  // `null` — what the picker's "Default effort" choice sends — clears it.
+  const requestedEffort = effort === undefined ? (current.effort || null) : (effort || null);
+  // Persist what will ACTUALLY run, not what was asked for. The picker hides the
+  // effort control for a provider/model with no tiers but keeps its last value,
+  // so an unhonored level would otherwise be stored and rendered ("high effort")
+  // for a run that never used one — with no way to clear it. resolveCliEffort
+  // returns null for API/effort-less providers and clamps an out-of-range level
+  // to the tier the chosen model really has, matching the CLI arg builders.
+  const effectiveEffort = resolveCliEffort(requestedEffort, provider, model || provider.defaultModel || null);
+  // Absent keeps the record's stored family; the picker's "General" choice sends
+  // the explicit `general` id, which is a real value rather than a clear — it is
+  // how the user turns a checklist back OFF for the next pass.
+  const effectiveFamily = family === undefined
+    ? (current.family || GENERAL_FAMILY_ID)
+    : (family || GENERAL_FAMILY_ID);
   const generationPrompt = buildThreejsGenerationPrompt({
     sourcePath,
     name: current.name,
     prompt: effectivePrompt,
     currentSpec: current.spec,
-    feedback,
+    feedback: effectiveFeedback,
+    family: effectiveFamily,
   });
   const next = await store.mutateModel(id, (fresh) => {
     if (fresh.status === 'generating') {
@@ -176,6 +234,8 @@ export async function startGeneration(id, {
       prompt: effectivePrompt,
       providerId: provider.id,
       model: model || provider.defaultModel || null,
+      effort: effectiveEffort,
+      family: effectiveFamily,
       status: 'generating',
       error: null,
       generationOperationId: operationId,
@@ -186,7 +246,9 @@ export async function startGeneration(id, {
           status: 'running',
           providerId: provider.id,
           model: model || provider.defaultModel || null,
-          feedback: feedback || null,
+          effort: effectiveEffort,
+          family: effectiveFamily,
+          feedback: effectiveFeedback || null,
           startedAt,
           completedAt: null,
           runId: null,
@@ -203,8 +265,10 @@ export async function startGeneration(id, {
       operationId,
       provider,
       requestedModel: model,
+      requestedEffort: effectiveEffort,
       sourcePath,
       prompt: generationPrompt,
+      family: effectiveFamily,
     });
   });
   return next;

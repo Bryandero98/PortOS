@@ -33,6 +33,7 @@ export * from './imageGenBackends.js';
 export * as imageGenModes from './imageGenModes.js';
 export * from './imageGenDefaults.js';
 export * from './imageGenResolutions.js';
+export * from './imageTo3dReasons.js';
 export * from './importerDeepLink.js';
 export * from './letteringDensity.js';
 export * from './issueLength.js';
@@ -88,6 +89,7 @@ export * from './sketchCanvas.js';
 export * from './unsorted.js';
 export * from './upsertByIdPrepend.js';
 export * from './voiceLabel.js';
+export * from './youtubeUrl.js';
 
 // === Page-scoped pure helpers ===
 export * from './audioContext.js';
@@ -130,6 +132,7 @@ export * from './streakGlyph.js';
 export * from './syncCounts.js';
 export * from './tabNotation.js';
 export * from './terminalTheme.js';
+export * from './threejsExplode.js';
 export * from './threejsSculpt.js';
 export * from './tribe.js';
 export * from './quotaBurnPatch.js';

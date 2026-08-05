@@ -40,7 +40,7 @@ grep -i "what you want to do" client/src/utils/README.md
 | `urlNormalize` | `isUrl` detection, `normalizeUrl` (optional git/`requireDot` modes), `isHttpUrl` (explicit http(s) only — safe-href check), and `tiktokVideoId` / `tiktokEmbedSrc` (host-anchored TikTok video-id extraction + its Embed Player URL, so a reference embeds without loading TikTok's embed.js). |
 | `platform` | `isMac` detection and `modKey` (⌘/Ctrl) for keyboard-shortcut display. |
 | `navWorkingSet` | Recent/pinned nav persistence (`recordVisit`, `togglePin`, `isPinned`) plus `resolveRecentNavEntries` for mapping stored deep links back to their longest matching nav-manifest entry. |
-| `providers` | AI-provider type predicates and helpers (`isCliProvider`, `isApiProvider`, `isCodexProvider`, `isAntigravityProvider`, `filterSelectableModels`, `resolveCliEffort` (mirror — what a stored effort actually runs as, so the picker can name a clamped level), `configuredDefaultIn` — the sentinel a provider's catalog carries, so a picker can render an option matching a sentinel-valued tier instead of a blank select — `getProviderTimeout`, configured-default sentinels, and the claude/codex/agy thinking-effort levels — `effortLevelsForProvider`, mirror of server `providerModels.js`). |
+| `providers` | AI-provider type predicates and helpers (`isCliProvider`, `isApiProvider`, `isCodexProvider`, `isAntigravityProvider`, `filterSelectableModels`, `resolveCliEffort` (mirror — what a stored effort actually runs as, so the picker can name a clamped level), `configuredDefaultIn` — the sentinel a provider's catalog carries, so a picker can render an option matching a sentinel-valued tier instead of a blank select — `getProviderTimeout`, `resolveEffectiveProvider` — the provider a record actually runs on (its pin, else the active provider) plus whether it fell back, so a "Default" option can name what it resolves to — configured-default sentinels, and the claude/codex/agy thinking-effort levels — `effortLevelsForProvider`, mirror of server `providerModels.js`). |
 | `layeredIntelligenceReasons` | Canonical gloss for the Layered Intelligence loop's run-outcome reason tokens, shared by the on-demand toast and the durable "Last run" line (`formatLiReason`, `liReasonTone`, `LI_NEUTRAL_REASONS`). |
 
 ## Module loading / resilience
@@ -54,7 +54,7 @@ grep -i "what you want to do" client/src/utils/README.md
 
 | Module | Purpose |
 |---|---|
-| `fileUpload` | Screenshot/attachment upload helpers: base64 read plus `processScreenshotUploads` / `processAttachmentUploads` and their single-file variants. Also the shared upload constants — `JSON_UPLOAD_MAX_FILE_SIZE` (max file size / wire limit, mirrors `server/lib/uploadLimits.js`), `ATTACHMENT_MAX_FILE_SIZE`, `ALLOWED_ATTACHMENT_EXTENSIONS`, and the `accept` strings `ATTACHMENT_ACCEPT` / `IMAGE_ACCEPT`. |
+| `fileUpload` | Pure screenshot/attachment upload helpers: base64 read (`readFileAsBase64`) and image validation (`validateImageFile`). Also the shared upload constants — `JSON_UPLOAD_MAX_FILE_SIZE` (max file size / wire limit, mirrors `server/lib/uploadLimits.js`), `ATTACHMENT_MAX_FILE_SIZE`, `ALLOWED_ATTACHMENT_EXTENSIONS`, and the `accept` strings `ATTACHMENT_ACCEPT` / `IMAGE_ACCEPT`. The actual upload orchestration (`processScreenshotUploads` / `processAttachmentUploads` and their single-file variants) does network I/O and lives in `services/apiMedia.js` — import those from there, not from here. |
 
 ## CyberCity — character & avatar
 

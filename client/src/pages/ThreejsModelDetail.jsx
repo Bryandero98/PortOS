@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Box, Code2, Download, LoaderCircle, RefreshCw, Trash2 } from 'lucide-react';
+import { ArrowLeft, Box, Check, Code2, Download, Info, LoaderCircle, RefreshCw, Trash2, X } from 'lucide-react';
 import { Link, useNavigate, useParams } from 'react-router';
 import MediaImage from '../components/MediaImage';
 import ProviderModelSelector from '../components/ProviderModelSelector';
+import SubjectFamilySelect from '../components/threejsModels/SubjectFamilySelect';
 import ThreejsModelPreview from '../components/threejsModels/ThreejsModelPreview';
+import PageSkeleton from '../components/ui/PageSkeleton';
 import InlineConfirmRow from '../components/ui/InlineConfirmRow';
 import useProviderModels from '../hooks/useProviderModels';
+import useThreejsModelFamilies, { GENERAL_FAMILY_ID, resolveFamilyId } from '../hooks/useThreejsModelFamilies';
 import {
   deleteThreejsModel,
   generateThreejsModel,
@@ -16,9 +19,127 @@ import {
 import toast from '../components/ui/Toast';
 import { copyToClipboard } from '../lib/clipboard';
 import { timeAgo } from '../utils/formatters';
+import { seedModelEffort } from '../utils/providers';
 
 const providerFilter = (provider) =>
   provider.enabled !== false && ['api', 'cli', 'tui'].includes(provider.type);
+
+const SEVERITY_STYLE = {
+  error: 'border-port-error/40 bg-port-error/10 text-port-error',
+  warning: 'border-port-warning/40 bg-port-warning/10 text-port-warning',
+  note: 'border-port-border bg-port-bg/50 text-gray-400',
+};
+
+// Counted from the findings actually rendered rather than read off the stored
+// tallies, so a header can never disagree with the list below it — or print
+// "undefined error" for a record whose gate result arrived without its counts.
+// An unrecognized severity counts as a note rather than being dropped: the list
+// still renders it (styled as a note), and a tally that omitted it would read
+// "0 note" above a visible finding.
+const countSeverities = (findings) => findings.reduce((counts, finding) => {
+  const bucket = counts[finding.severity] === undefined ? 'note' : finding.severity;
+  counts[bucket] += 1;
+  return counts;
+}, { error: 0, warning: 0, note: 0 });
+
+/**
+ * One quality-gate result (assembly coverage, cross-section) rendered as a
+ * severity-styled finding list. Shared so a second gate cannot drift into a
+ * different look for the same data.
+ */
+function GatePanel({ title, findings, cleanLabel, footer }) {
+  const counts = countSeverities(findings);
+  return (
+    <section className="rounded-xl border border-port-border bg-port-card p-4">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-xs font-medium uppercase tracking-wide text-gray-400">{title}</h2>
+        <span className="text-xs text-gray-600">
+          {findings.length === 0
+            ? cleanLabel
+            : `${counts.error} error · ${counts.warning} warning · ${counts.note} note`}
+        </span>
+      </div>
+      {findings.length > 0 && (
+        <ul className="space-y-2">
+          {findings.map((finding, index) => (
+            <li
+              key={`${finding.code}-${index}`}
+              className={`rounded-lg border px-3 py-2 text-xs leading-relaxed ${SEVERITY_STYLE[finding.severity] || SEVERITY_STYLE.note}`}
+            >
+              <span className="mr-2 text-[9px] uppercase tracking-wide opacity-80">{finding.severity}</span>
+              {finding.message}
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="mt-3 flex items-start gap-1.5 text-[11px] leading-relaxed text-gray-500">
+        <Info className="mt-0.5 h-3 w-3 shrink-0" />
+        <span>{footer}</span>
+      </p>
+    </section>
+  );
+}
+
+/**
+ * The chosen subject family's checklist, with each required component marked
+ * resolved or unresolved by the coverage pass, plus the axes and orbit views
+ * worth checking against the live preview above. Snapshotted onto the record at
+ * generation time, so it always describes the spec on screen — not whatever the
+ * taxonomy happens to say today.
+ */
+function FamilyChecklistPanel({ family }) {
+  const missing = new Set(family.missing || []);
+  return (
+    <section className="rounded-xl border border-port-border bg-port-card p-4">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-xs font-medium uppercase tracking-wide text-gray-400">
+          {family.label} checklist
+        </h2>
+        <span className="text-xs text-gray-600">
+          {missing.size === 0
+            ? 'Every expected component is accounted for'
+            : `${missing.size} of ${family.components.length} unaccounted for`}
+        </span>
+      </div>
+      <ul className="grid gap-1.5 sm:grid-cols-2">
+        {family.components.map((component) => {
+          const unresolved = missing.has(component);
+          return (
+            <li
+              key={component}
+              className={`flex items-start gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs ${
+                unresolved ? SEVERITY_STYLE.warning : 'border-port-border bg-port-bg/50 text-gray-300'
+              }`}
+            >
+              {unresolved
+                ? <X className="mt-0.5 h-3 w-3 shrink-0" />
+                : <Check className="mt-0.5 h-3 w-3 shrink-0 text-port-success" />}
+              <span>{component}</span>
+            </li>
+          );
+        })}
+      </ul>
+      {family.reviewAxes?.length > 0 && (
+        <p className="mt-3 text-[11px] leading-relaxed text-gray-500">
+          <span className="text-gray-400">Judge it on:</span> {family.reviewAxes.join('; ')}.
+        </p>
+      )}
+      {family.orbitViews?.length > 0 && (
+        <p className="mt-1 text-[11px] leading-relaxed text-gray-500">
+          <span className="text-gray-400">Orbit the preview to:</span> {family.orbitViews.join(', ')}.
+        </p>
+      )}
+      <p className="mt-3 flex items-start gap-1.5 text-[11px] leading-relaxed text-gray-500">
+        <Info className="mt-0.5 h-3 w-3 shrink-0" />
+        <span>
+          This list is a floor, not a ceiling — it is what this subject family is usually judged on,
+          not the whole inventory. A component is marked accounted for when the spec names it
+          anywhere, including a limitation explaining the reference does not show it.
+        </span>
+      </p>
+    </section>
+  );
+}
 
 export default function ThreejsModelDetail() {
   const { id } = useParams();
@@ -28,6 +149,9 @@ export default function ThreejsModelDetail() {
   const [notFound, setNotFound] = useState(false);
   const [feedback, setFeedback] = useState('');
   const [starting, setStarting] = useState(false);
+  const [effort, setEffort] = useState('');
+  const families = useThreejsModelFamilies();
+  const [family, setFamily] = useState(GENERAL_FAMILY_ID);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const providerSyncRef = useRef('');
   const {
@@ -38,7 +162,9 @@ export default function ThreejsModelDetail() {
     setSelectedProviderId,
     setSelectedModel,
     loading: providersLoading,
-  } = useProviderModels({ filter: providerFilter, silent: true });
+    // This picker renders the effort control and threads the value to the
+    // server, so Antigravity lists base models with effort picked separately.
+  } = useProviderModels({ filter: providerFilter, silent: true, withEffort: true });
 
   const load = async ({ initial = false } = {}) => {
     const next = await getThreejsModel(id, { silent: true }).catch((error) => {
@@ -75,14 +201,30 @@ export default function ThreejsModelDetail() {
 
   useEffect(() => {
     if (!record || providers.length === 0) return;
-    const key = `${record.id}:${record.providerId}:${record.model || ''}`;
+    const key = `${record.id}:${record.providerId}:${record.model || ''}:${record.effort || ''}`;
     if (providerSyncRef.current === key) return;
-    if (providers.some((provider) => provider.id === record.providerId)) {
+    const recordProvider = providers.find((provider) => provider.id === record.providerId);
+    if (recordProvider) {
+      // A record written before Antigravity split model from effort stores the
+      // suffixed id (`gemini-3.6-flash-high`); seedModelEffort reads it back as
+      // a base model + its effort so the pin isn't an option that no longer
+      // exists (and leaves every other provider's id untouched).
+      const seeded = seedModelEffort(recordProvider, record.model, record.effort);
       setSelectedProviderId(record.providerId);
-      setSelectedModel(record.model || '');
+      setSelectedModel(seeded.model);
+      setEffort(seeded.effort);
     }
     providerSyncRef.current = key;
   }, [record, providers, setSelectedProviderId, setSelectedModel]);
+
+  // Kept out of the provider-sync effect above: the family belongs to the record,
+  // not to the provider, so a record whose provider is gone (or an install with
+  // none configured) must still read its stored family back into the picker.
+  // Re-seeds per record id only, so a user's in-form change survives the
+  // 2s poll while a generation is running.
+  useEffect(() => {
+    setFamily(record?.family || GENERAL_FAMILY_ID);
+  }, [record?.id]);
 
   const handleGenerate = async () => {
     if (!selectedProviderId || record?.status === 'generating') return;
@@ -90,6 +232,14 @@ export default function ThreejsModelDetail() {
     const next = await generateThreejsModel(id, {
       providerId: selectedProviderId,
       model: selectedModel || undefined,
+      // Always sent (as `''` when unset) so picking "Default effort" CLEARS the
+      // record's stored override instead of silently re-applying it.
+      effort,
+      // Always sent so switching back to General turns the checklist OFF for
+      // this pass instead of silently re-applying the record's stored family.
+      // Resolved against the served taxonomy so what is sent is what the picker
+      // is showing, even for a record holding a family this install dropped.
+      family: resolveFamilyId(families, family),
       prompt: record.prompt || '',
       feedback: feedback.trim(),
     }, { silent: true }).catch((error) => {
@@ -120,7 +270,13 @@ export default function ThreejsModelDetail() {
     if (ok) navigate('/media/threejs');
   };
 
-  if (loading) return <div className="py-10 text-center text-sm text-gray-500">Loading…</div>;
+  if (loading) {
+    return (
+      <div className="mx-auto max-w-7xl">
+        <PageSkeleton label="Loading model" titleWidthClass="w-56" cards={2} sidebar={false} />
+      </div>
+    );
+  }
   if (notFound || !record) {
     return (
       <div className="py-12 text-center">
@@ -132,6 +288,25 @@ export default function ThreejsModelDetail() {
 
   const generating = record.status === 'generating' || starting;
   const latestRun = Array.isArray(record.runs) ? record.runs[record.runs.length - 1] : null;
+  // A record generated before a gate shipped has no result at all, which is not
+  // the same as passing it — the panel is omitted rather than shown clean.
+  const coverageFindings = Array.isArray(record.coverage?.findings) ? record.coverage.findings : null;
+  const flatnessFindings = Array.isArray(record.flatness?.findings) ? record.flatness.findings : null;
+  const coverageErrors = countSeverities(coverageFindings || []).error;
+  // Only present when the generation ran with a family — a record generated
+  // under `general` (or before families shipped) has no checklist to render.
+  const coverageFamily = Array.isArray(record.coverage?.family?.components)
+    ? record.coverage.family
+    : null;
+  // The record's own family, not the coverage snapshot's — the header should
+  // read the current setting even before the next generation re-runs the gate.
+  // Resolved like the picker is, so a record holding a family this install no
+  // longer ships does not have the header and the picker naming two different
+  // things; the coverage panel below still reports the checklist that ran.
+  const activeFamily = resolveFamilyId(families, record.family);
+  const familyLabel = activeFamily && activeFamily !== GENERAL_FAMILY_ID
+    ? (families.find((option) => option.id === activeFamily)?.label || activeFamily)
+    : '';
 
   return (
     <div className="mx-auto max-w-7xl space-y-4">
@@ -152,7 +327,8 @@ export default function ThreejsModelDetail() {
             </span>
           </div>
           <p className="mt-1 text-xs text-gray-500">
-            {record.providerId}{record.model ? ` · ${record.model}` : ''} · updated {timeAgo(record.updatedAt)}
+            {record.providerId}{record.model ? ` · ${record.model}` : ''}{record.effort ? ` · ${record.effort} effort` : ''}
+            {familyLabel ? ` · ${familyLabel}` : ''} · updated {timeAgo(record.updatedAt)}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -239,6 +415,8 @@ export default function ThreejsModelDetail() {
           availableModels={availableModels}
           onProviderChange={setSelectedProviderId}
           onModelChange={setSelectedModel}
+          effort={effort}
+          onEffortChange={setEffort}
           disabled={providersLoading || generating}
           alwaysShowModel
           emptyModelOption="Provider default"
@@ -246,6 +424,14 @@ export default function ThreejsModelDetail() {
           layout="stacked"
         />
         <div>
+          <SubjectFamilySelect
+            id="threejs-family"
+            families={families}
+            value={family}
+            onChange={setFamily}
+            disabled={generating}
+            className="mb-3"
+          />
           <label htmlFor="threejs-feedback" className="mb-1 block text-xs text-gray-400">
             {record.spec ? 'Refinement feedback' : 'Generation direction'}
           </label>
@@ -272,6 +458,32 @@ export default function ThreejsModelDetail() {
           {record.spec ? 'Refine model' : 'Generate model'}
         </button>
       </section>
+
+      {coverageFindings && (
+        <GatePanel
+          title="Assembly coverage"
+          findings={coverageFindings}
+          cleanLabel="Nothing promised was left unbuilt"
+          footer={`${coverageFamily
+            ? 'This check proves the model built what its own spec promised; the subject-family checklist below is what holds the spec itself to a floor.'
+            : 'This check proves the model built what its own spec promised — never that the spec promised enough.'}${
+            coverageErrors > 0 ? ' Refining without your own feedback will target the errors above.' : ''
+          }`}
+        />
+      )}
+
+      {coverageFamily && <FamilyChecklistPanel family={coverageFamily} />}
+
+      {flatnessFindings && (
+        <GatePanel
+          title="Cross-section"
+          findings={flatnessFindings}
+          cleanLabel="Identity parts carry real depth"
+          footer={`A model can match its reference head-on and still be a stack of cardboard cut-outs, so this check counts how many identity-defining features are built only from flat parts.${
+            flatnessFindings.length > 0 ? ' Refining without your own feedback will also ask for real depth.' : ''
+          }`}
+        />
+      )}
 
       {record.spec?.detailInventory?.length > 0 && (
         <section className="rounded-xl border border-port-border bg-port-card p-4">

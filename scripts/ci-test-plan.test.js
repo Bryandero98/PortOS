@@ -81,12 +81,29 @@ describe('CI test impact planner', () => {
       'server/vitest.config.js',
       'client/src/test/setup.js',
       'server/lib/validation.js',
+      // The client lint configuration. Both of these carry real enforced rules —
+      // the .grit plugins include the crypto.randomUUID ban — so a change to
+      // either must widen CI the same way the former eslint.config.js did. This
+      // trigger went untested when it pointed at eslint.config.js, so the rename
+      // to biome.jsonc could have silently matched nothing.
+      'client/biome.jsonc',
+      'client/lint-no-random-uuid.grit',
+      'client/lint-react-legacy-apis.grit',
     ]) {
       const plan = buildCiTestPlan([path], { trackedFiles: TRACKED });
       expect(plan.full, path).toBe(true);
       expect(plan.server.mode, path).toBe('full');
       expect(plan.client.mode, path).toBe('full');
       expect(plan.db, path).toBe(true);
+    }
+  });
+
+  it('does not treat a source .grit or a mistyped biome.json as lint configuration', () => {
+    // Guards the trigger regex against over-matching: only the client's top-level
+    // config and its sibling .grit plugins should force a full run.
+    for (const path of ['client/src/foo.grit', 'client/biome.json', 'clientx/biome.jsonc']) {
+      const plan = buildCiTestPlan([path], { trackedFiles: TRACKED });
+      expect(plan.reason, path).not.toMatch(/lint configuration changed/);
     }
   });
 

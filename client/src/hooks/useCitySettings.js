@@ -70,7 +70,7 @@ const loadSettings = () => {
   // Such installs keep their chosen fixed preset — Manual — rather than being
   // silently opted into adaptation. Presence of the key (even 'auto') is honored;
   // this is the "absent vs. present" distinction, so a stored 'auto' survives.
-  if (!Object.prototype.hasOwnProperty.call(parsed, 'qualityMode')) {
+  if (!Object.hasOwn(parsed, 'qualityMode')) {
     merged.qualityMode = 'manual';
   }
   return merged;

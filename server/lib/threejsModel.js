@@ -9,11 +9,27 @@
 
 import { z } from 'zod';
 
+import { failValidation } from './errorHandler.js';
+
 const idSchema = z.string().trim().min(1).max(80).regex(/^[A-Za-z][A-Za-z0-9_-]*$/);
 const colorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/);
 const finite = z.number().finite().min(-10_000).max(10_000);
 const positive = z.number().finite().positive().max(10_000);
 const vec3Schema = z.tuple([finite, finite, finite]);
+
+// A part `scale` is a size multiplier, never a mirror or a visibility switch. A
+// component at or near zero collapses the part to an invisible plane; a negative
+// one reflects it, and three.js compensates for the negative world determinant by
+// flipping the front face, so nothing throws and the preview looks plausible.
+// That is what makes both expensive to chase: they are indistinguishable from a
+// modeling choice, and a plain `finite` triple accepts either. This spec has no
+// reflection concept — the prompt never asks for one, an LLM-authored negative
+// component is an authoring slip, and the exported factory is consumed by tools
+// that do not all compensate for a mirrored node — so the authoring contract
+// rejects both. `storedThreejsSculptSpecSchema` keeps accepting them on read.
+const MIN_PART_SCALE = 1e-4;
+const scaleComponent = positive.min(MIN_PART_SCALE);
+const scale3Schema = z.tuple([scaleComponent, scaleComponent, scaleComponent]);
 
 const boxGeometrySchema = z.object({
   type: z.literal('box'),
@@ -264,19 +280,30 @@ export const threejsMaterialSchema = z.object({
   anisotropy: z.number().finite().min(0).max(1).default(0),
 });
 
-let partSchema;
-partSchema = z.lazy(() => z.object({
-  id: idSchema,
-  name: z.string().trim().min(1).max(120),
-  geometry: threejsGeometrySchema.optional(),
-  material: idSchema.optional(),
-  position: vec3Schema.default([0, 0, 0]),
-  rotationDegrees: vec3Schema.default([0, 0, 0]),
-  scale: vec3Schema.default([1, 1, 1]),
-  castShadow: z.boolean().default(true),
-  receiveShadow: z.boolean().default(true),
-  children: z.array(partSchema).max(40).default([]),
-}));
+// The scale bound is the ONE thing that differs between what a provider may
+// author and what an install may already have stored, so the part hierarchy is
+// built from it rather than written twice.
+const makePartSchema = (scaleSchema) => {
+  let partSchema;
+  partSchema = z.lazy(() => z.object({
+    id: idSchema,
+    name: z.string().trim().min(1).max(120),
+    geometry: threejsGeometrySchema.optional(),
+    material: idSchema.optional(),
+    position: vec3Schema.default([0, 0, 0]),
+    rotationDegrees: vec3Schema.default([0, 0, 0]),
+    scale: scaleSchema.default([1, 1, 1]),
+    castShadow: z.boolean().default(true),
+    receiveShadow: z.boolean().default(true),
+    // Surface relief (serrations, stria, trim, port floors) belongs TO a part
+    // rather than being one: it rides its parent when the model is taken apart,
+    // and a click on it selects the parent. Without the flag a disassembly
+    // shatters into a comb of loose slivers nobody can read or pick.
+    explodeWithParent: z.boolean().default(false),
+    children: z.array(partSchema).max(40).default([]),
+  }));
+  return partSchema;
+};
 
 const lightSchema = z.object({
   type: z.enum(['ambient', 'hemisphere', 'directional', 'point', 'spot']),
@@ -302,7 +329,7 @@ const detailSchema = z.object({
   priority: z.enum(['identity', 'major', 'minor']).default('major'),
 });
 
-export const threejsSculptSpecSchema = z.object({
+const makeSpecSchema = (partSchema) => z.object({
   schemaVersion: z.literal(1),
   name: z.string().trim().min(1).max(120),
   summary: z.string().trim().min(1).max(1_000),
@@ -370,6 +397,236 @@ export const threejsSculptSpecSchema = z.object({
   }
 });
 
+/**
+ * The AUTHORING contract: what a provider is allowed to hand back. Part scale is
+ * floored here, so a spec that would render a part reflected or collapsed is
+ * rejected at the one moment the model can still be asked for another pass.
+ */
+export const threejsSculptSpecSchema = makeSpecSchema(makePartSchema(scale3Schema));
+
+/**
+ * The READ contract for a spec an install has already stored. Identical except
+ * that part scale keeps the original unbounded `finite` triple.
+ *
+ * Tightening an authoring bound must not retroactively invalidate data that was
+ * accepted under the old one. A stored spec is rendered from the record verbatim
+ * (the preview never re-validates), so rejecting it on the way OUT would take
+ * Copy/Download away from a `ready` model whose only remedy is a paid
+ * regeneration — and machine-repairing it instead would silently un-mirror an
+ * asymmetric part or resize a collapsed one back into view. Neither is a repair
+ * this schema is entitled to make, so an existing record exports exactly as it
+ * renders, while the bound above keeps any NEW spec from acquiring the problem.
+ */
+export const storedThreejsSculptSpecSchema = makeSpecSchema(makePartSchema(vec3Schema));
+
+const MAX_NAMES_IN_MESSAGE = 8;
+
+/**
+ * Render a capped, comma-joined list of spec-level names (parts or features) for
+ * a finding message. Shared with `threejsModelCoverage.js` so both gates cap the
+ * same way — a finding that prints forty part names is one nobody reads.
+ */
+export const listSpecNames = (names) => (names.length > MAX_NAMES_IN_MESSAGE
+  ? `${names.slice(0, MAX_NAMES_IN_MESSAGE).join(', ')} (+${names.length - MAX_NAMES_IN_MESSAGE} more)`
+  : names.join(', '));
+
+// Cross-section gate. A spec can match its reference head-on — silhouette,
+// colour zones, part count — and still be a diorama of cardboard cut-outs:
+// every load-bearing part a planar extrusion on its own depth plane, correct
+// from the generated camera and hollow the moment the user orbits. Neither the
+// schema nor the assembly-coverage gate sees it, because a slab is well-formed
+// geometry that implements exactly the detail it claims.
+//
+// Evidence of form is PLANE count, not triangle count: a fan of four hundred
+// triangles sharing one Z value has no profile at all. So a `custom` mesh is
+// slab-like when its thinnest axis carries fewer distinct coordinates than a
+// curved surface needs to read as curved (or when the cloud has no volume in
+// any orientation), and an `extrude` with no bevel thickness is one by
+// construction — its sweep has exactly two depth planes no matter how many
+// `steps` subdivide the side walls.
+//
+// Honest limit: a genuinely three-dimensional but very coarse custom mesh (an
+// eight-vertex box) also lands under the plane threshold. That shape is already
+// against the prompt's guidance — `box` exists — so the false positive only
+// fires on geometry that should not have been custom triangles in the first
+// place.
+const SLAB_PLANE_THRESHOLD = 11;
+
+// Planes are quantized relative to the mesh's own size rather than in absolute
+// units: a fixed 1e-3 grid would report a 0.005-unit detail mesh as having five
+// planes on every axis no matter how round it is, so the gate would punish
+// small parts for being small. A thousandth of the largest extent asks the
+// scale-free question the gate actually means — does this axis carry structure
+// at the scale of the part itself.
+const RELATIVE_PLANE_QUANTUM = 1e-3;
+
+// Plane counting is axis-aligned, which a cut-out whose ROTATION was baked into
+// its vertices (rather than carried by the part's `rotationDegrees`) slips past
+// — turned 45°, a single flat fan samples a distinct value on all three axes. A
+// point cloud with no volume is flat in every orientation, so the covariance
+// determinant, normalized by the mean variance so it is scale-free, catches
+// that case however the mesh is turned. The bound is deliberately strict: only
+// an essentially zero-thickness cloud qualifies, leaving thin-but-real parts to
+// the plane count above rather than double-jeopardy here.
+const COPLANAR_DETERMINANT = 1e-6;
+
+// Aggregate, never per-part: `extrude` is the RIGHT answer for a plate, a badge,
+// or a sign, so a flat part is only evidence when the model's identity rides on
+// it. The finding is "the load-bearing parts are predominantly flat", reported
+// once the majority of buildable identity features are backed by nothing else.
+const FLAT_IDENTITY_RATIO_THRESHOLD = 0.6;
+
+const axisBounds = (vertices, axis) => {
+  let min = Infinity;
+  let max = -Infinity;
+  for (let index = axis; index < vertices.length; index += 3) {
+    if (vertices[index] < min) min = vertices[index];
+    if (vertices[index] > max) max = vertices[index];
+  }
+  return [min, max];
+};
+
+const countAxisPlanes = (vertices) => {
+  const bounds = [0, 1, 2].map((axis) => axisBounds(vertices, axis));
+  const quantum = Math.max(...bounds.map(([min, max]) => max - min)) * RELATIVE_PLANE_QUANTUM;
+  // Every vertex sits on one point, so there is exactly one plane per axis.
+  if (!(quantum > 0)) return [1, 1, 1];
+  const axes = [new Set(), new Set(), new Set()];
+  // Bucketed from each axis's own minimum rather than the absolute coordinate,
+  // so the count is a property of the shape and not of where it was authored:
+  // a mesh built far from the origin divides a large offset by a small quantum
+  // and loses distinct planes to float resolution.
+  vertices.forEach((value, index) => {
+    const axis = index % 3;
+    axes[axis].add(Math.round((value - bounds[axis][0]) / quantum));
+  });
+  return axes.map((axis) => axis.size);
+};
+
+const isCoplanarCloud = (vertices) => {
+  const count = vertices.length / 3;
+  const mean = [0, 0, 0];
+  vertices.forEach((value, index) => { mean[index % 3] += value / count; });
+  let xx = 0; let yy = 0; let zz = 0; let xy = 0; let xz = 0; let yz = 0;
+  for (let index = 0; index < count; index += 1) {
+    const x = vertices[index * 3] - mean[0];
+    const y = vertices[(index * 3) + 1] - mean[1];
+    const z = vertices[(index * 3) + 2] - mean[2];
+    xx += (x * x) / count; yy += (y * y) / count; zz += (z * z) / count;
+    xy += (x * y) / count; xz += (x * z) / count; yz += (y * z) / count;
+  }
+  const determinant = (xx * ((yy * zz) - (yz * yz)))
+    - (xy * ((xy * zz) - (yz * xz)))
+    + (xz * ((xy * yz) - (yy * xz)));
+  const meanVariance = (xx + yy + zz) / 3;
+  if (!(meanVariance > 0)) return true;
+  return Math.abs(determinant) / (meanVariance ** 3) < COPLANAR_DETERMINANT;
+};
+
+const isSlabGeometry = (geometry) => {
+  if (!geometry) return false;
+  if (geometry.type === 'extrude') {
+    // `bevelEnabled` defaults to false in the schema, so a parsed spec always
+    // carries it; `!== true` also reads a stored spec that predates it. The
+    // thickness matters as much as the flag: a bevel of zero thickness adds no
+    // depth plane, and flipping the boolean alone is the cheapest way for a
+    // model to answer this gate without changing the geometry at all.
+    return geometry.bevelEnabled !== true || !(geometry.bevelThickness > 0);
+  }
+  if (geometry.type !== 'custom') return false;
+  const vertices = Array.isArray(geometry.vertices) ? geometry.vertices : [];
+  if (vertices.length < 9) return false;
+  return Math.min(...countAxisPlanes(vertices)) < SLAB_PLANE_THRESHOLD || isCoplanarCloud(vertices);
+};
+
+const collectMeshes = (part, out = []) => {
+  if (part.geometry) out.push(part);
+  for (const child of part.children || []) collectMeshes(child, out);
+  return out;
+};
+
+/**
+ * @param {object} spec a spec that has already passed `threejsSculptSpecSchema`
+ * @returns {{findings: Array, errorCount: number, warningCount: number, noteCount: number,
+ *   identityDetailCount: number, flatIdentityDetailCount: number, flatRatio: number|null,
+ *   slabPartIds: string[]}}
+ */
+export function evaluateThreejsFlatness(spec) {
+  const byId = new Map();
+  const indexPart = (part) => {
+    byId.set(part.id, part);
+    for (const child of part.children || []) indexPart(child);
+  };
+  for (const part of spec?.parts || []) indexPart(part);
+
+  const details = Array.isArray(spec?.detailInventory) ? spec.detailInventory : [];
+  const slabPartIds = new Set();
+  const flatFeatures = [];
+  let evaluated = 0;
+
+  for (const detail of details) {
+    if (detail.priority !== 'identity') continue;
+    const meshes = new Map();
+    for (const id of new Set(detail.implementationPartIds || [])) {
+      const part = byId.get(id);
+      if (!part) continue;
+      // A detail may point at a group whose children carry the geometry, and two
+      // of its ids may nest, so meshes are collected by id rather than counted.
+      for (const mesh of collectMeshes(part)) meshes.set(mesh.id, mesh);
+    }
+    // Nothing was built for this feature anywhere — that is the assembly-coverage
+    // gate's `unbuilt-detail`, and counting it here would let a spec that built
+    // almost nothing read as a flat one.
+    if (meshes.size === 0) continue;
+    evaluated += 1;
+    const implementing = [...meshes.values()];
+    if (!implementing.every((mesh) => isSlabGeometry(mesh.geometry))) continue;
+    flatFeatures.push(detail.feature);
+    for (const mesh of implementing) slabPartIds.add(mesh.id);
+  }
+
+  // `null`, not 0: a spec with no buildable identity feature was not measured
+  // flat, it was not measured at all, and a 0 would read as a clean result.
+  const flatRatio = evaluated === 0 ? null : flatFeatures.length / evaluated;
+  const findings = [];
+  if (flatRatio !== null && flatRatio > FLAT_IDENTITY_RATIO_THRESHOLD) {
+    const offenders = [...slabPartIds];
+    findings.push({
+      code: 'flat-identity-parts',
+      severity: 'warning',
+      partIds: offenders,
+      features: flatFeatures,
+      message: `${flatFeatures.length} of ${evaluated} identity-defining features are built only from flat parts (${listSpecNames(offenders.map((id) => byId.get(id)?.name || id))}). The model will read as a projection the moment it is orbited — give the parts the subject's identity rides on a real cross-section instead of stacking unbevelled extrusions and planar triangle fans.`,
+    });
+  }
+
+  return {
+    findings,
+    errorCount: 0,
+    warningCount: findings.length,
+    noteCount: 0,
+    identityDetailCount: evaluated,
+    flatIdentityDetailCount: flatFeatures.length,
+    flatRatio,
+    slabPartIds: [...slabPartIds],
+  };
+}
+
+/**
+ * Default refinement feedback derived from a stored flatness result. Returns ''
+ * when the model has a cross-section, so the caller falls through to whatever
+ * other feedback it has.
+ */
+export function buildThreejsFlatnessFeedback(flatness) {
+  const warnings = (flatness?.findings || []).filter((finding) => finding.severity === 'warning');
+  if (warnings.length === 0) return '';
+  return [
+    'The previous pass failed the cross-section check — it reads as a flat projection rather than a solid:',
+    ...warnings.map((finding, index) => `${index + 1}. ${finding.message}`),
+    'Rebuild those parts with genuine depth: compose them from primitives, or give an extrude a bevel, so the model holds up from any orbit angle.',
+  ].join('\n');
+}
+
 const toIdentifier = (name) => {
   const words = String(name || 'Procedural').replace(/[^A-Za-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean);
   const joined = words.map((word) => word[0].toUpperCase() + word.slice(1)).join('') || 'Procedural';
@@ -381,7 +638,14 @@ const toIdentifier = (name) => {
  * Group factory. No model-authored JavaScript is executed by PortOS.
  */
 export function buildThreejsFactorySource(input) {
-  const spec = threejsSculptSpecSchema.parse(input);
+  // Exporting reads a STORED spec, so it validates against the read contract —
+  // an install's existing model stays downloadable even if it predates a bound.
+  // The parse still has to happen (the emitted source must be well-formed), and
+  // a raw ZodError would normalize to an opaque 500 saying nothing a user can act
+  // on, so `failValidation` names the offending path in a 400 instead.
+  const parsed = storedThreejsSculptSpecSchema.safeParse(input);
+  if (!parsed.success) failValidation(parsed);
+  const spec = parsed.data;
   const factoryName = `create${toIdentifier(spec.name)}Model`;
   const serialized = JSON.stringify(spec, null, 2);
 
@@ -489,6 +753,10 @@ function createPart(definition, materials, nodes) {
   node.scale.set(...definition.scale);
   node.castShadow = definition.castShadow;
   node.receiveShadow = definition.receiveShadow;
+  // Carried through so a standalone consumer of the exported factory can build
+  // the same disassembly the PortOS preview does: relief rides its parent.
+  node.userData.partId = definition.id;
+  node.userData.explodeWithParent = definition.explodeWithParent;
   nodes[definition.id] = node;
   for (const child of definition.children) node.add(createPart(child, materials, nodes));
   return node;

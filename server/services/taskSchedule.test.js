@@ -111,6 +111,7 @@ import {
   shouldRunTask,
   getDueTasks,
   getNextTaskType,
+  getUpcomingTasks,
   addTemplateTask,
   getTemplateTasks,
   deleteTemplateTask,
@@ -1471,6 +1472,71 @@ describe('taskSchedule', () => {
       })
     })
 
+    // Perpetual tasks park PER-APP, so the global shouldRunTask always reads
+    // 'perpetual-drain'. getUpcomingTasks must instead surface the per-app recheck
+    // boundary as a 'scheduled' upcoming task — otherwise scheduleNextImprovementCheck
+    // (which only shortens its wake-up for 'scheduled' tasks) never wakes the daemon
+    // at the recheck cadence (e.g. a 9am recheckCron), and the parked drain resumes
+    // only on the ≤1h fallback poll.
+    describe('getUpcomingTasks — perpetual recheck boundary', () => {
+      it('reports a perpetual task PARKED on every app as scheduled at the soonest recheck', async () => {
+        const nineAm = recentNineAm()
+        nineAm.setDate(nineAm.getDate() + 1) // next 9am (future)
+        const soon = new Date(Date.now() + 30 * 60 * 1000).toISOString() // 30m out
+        mockSchedule({
+          tasks: { 'claim-issue': { type: 'perpetual', enabled: true, recheckCron: '0 9 * * *' } },
+          executions: { 'task:claim-issue': { lastRun: null, count: 0, perApp: {
+            'app-1': { lastRun: null, count: 0, parkedUntil: nineAm.toISOString() },
+            'app-2': { lastRun: null, count: 0, parkedUntil: soon }
+          } } }
+        })
+        const upcoming = await getUpcomingTasks(50)
+        const claim = upcoming.find(t => t.taskType === 'claim-issue')
+        expect(claim).toBeTruthy()
+        expect(claim.status).toBe('scheduled')
+        // Soonest of the two per-app parks (app-2, 30m out).
+        expect(claim.eligibleAt).toBe(new Date(soon).getTime())
+        expect(claim.eligibleIn).toBeGreaterThan(0)
+      })
+
+      it('reports the perpetual task ready when any app park has already elapsed', async () => {
+        const past = new Date(Date.now() - 60 * 1000).toISOString()
+        const future = new Date(Date.now() + 60 * 60 * 1000).toISOString()
+        mockSchedule({
+          tasks: { 'claim-issue': { type: 'perpetual', enabled: true, recheckCron: '0 9 * * *' } },
+          executions: { 'task:claim-issue': { lastRun: null, count: 0, perApp: {
+            'app-1': { lastRun: null, count: 0, parkedUntil: past },   // recheck due now
+            'app-2': { lastRun: null, count: 0, parkedUntil: future }
+          } } }
+        })
+        const upcoming = await getUpcomingTasks(50)
+        const claim = upcoming.find(t => t.taskType === 'claim-issue')
+        expect(claim.status).toBe('ready')
+        expect(claim.eligibleIn).toBeLessThanOrEqual(0)
+      })
+
+      it('treats an app mid-drain (park cleared) as ready even if a sibling app is parked', async () => {
+        const future = new Date(Date.now() + 60 * 60 * 1000).toISOString()
+        mockSchedule({
+          tasks: { 'claim-issue': { type: 'perpetual', enabled: true } },
+          executions: { 'task:claim-issue': { lastRun: null, count: 0, perApp: {
+            'app-1': { lastRun: null, count: 0 },                      // no park → draining
+            'app-2': { lastRun: null, count: 0, parkedUntil: future }
+          } } }
+        })
+        const upcoming = await getUpcomingTasks(50)
+        const claim = upcoming.find(t => t.taskType === 'claim-issue')
+        expect(claim.status).toBe('ready')
+      })
+
+      it('keeps the global ready default for a never-run perpetual task (no per-app records)', async () => {
+        mockSchedule({ tasks: { 'claim-issue': { type: 'perpetual', enabled: true } } })
+        const upcoming = await getUpcomingTasks(50)
+        const claim = upcoming.find(t => t.taskType === 'claim-issue')
+        expect(claim.status).toBe('ready')
+      })
+    })
+
     describe('parkPerpetual / clearPerpetualPark', () => {
       it('parkPerpetual stamps parkedUntil + reason on the per-app record', async () => {
         mockSchedule({ tasks: { 'claim-issue': { type: 'perpetual', enabled: true, recheckIntervalMs: 3600000 } } })
@@ -1796,6 +1862,37 @@ describe('taskSchedule', () => {
         const saved = JSON.parse(writeFile.mock.calls.at(-1)[1])
         expect(saved.executions['task:claim-issue'].perApp['app-1'].parkedUntil).toBeUndefined()
       })
+
+      // #3590: an elapsed park is never cleared when it expires — shouldRunTask
+      // reports `perpetual-recheck` and the dispatch gate clears it — so a record
+      // whose parkedUntil is in the past is DUE RIGHT NOW. Restamping it from a
+      // LENGTHENED cadence would silently delay work the user is already waiting on.
+      it('leaves an already-elapsed park alone while re-deriving a future one', async () => {
+        isTaskTypeEnabledForApp.mockResolvedValue(true)
+        const soon = new Date(Date.now() + 60 * 1000).toISOString()
+        const elapsed = new Date(Date.now() - 60 * 1000).toISOString()
+        mockSchedule({
+          tasks: { 'claim-issue': { type: 'perpetual', enabled: true, recheckIntervalMs: 60 * 1000 } },
+          executions: { 'task:claim-issue': { lastRun: null, count: 0, perApp: {
+            'app-future': { lastRun: null, count: 0, parkedUntil: soon },
+            'app-elapsed': { lastRun: null, count: 0, parkedUntil: elapsed }
+          } } }
+        })
+        // Cadence LENGTHENED from 1 minute to 30 days.
+        await updateTaskInterval('claim-issue', { recheckIntervalMs: 30 * 24 * 60 * 60 * 1000 })
+        const saved = JSON.parse(writeFile.mock.calls.at(-1)[1])
+        const perApp = saved.executions['task:claim-issue'].perApp
+        // The future park is rewritten from the new (longer) cadence.
+        expect(new Date(perApp['app-future'].parkedUntil).getTime())
+          .toBeGreaterThan(new Date(soon).getTime())
+        // The elapsed park is untouched, so the recheck it was owed still fires now.
+        expect(perApp['app-elapsed'].parkedUntil).toBe(elapsed)
+
+        readJSONFile.mockResolvedValue(saved)
+        const result = await shouldRunTask('claim-issue', 'app-elapsed')
+        expect(result.shouldRun).toBe(true)
+        expect(result.reason).toBe('perpetual-recheck')
+      })
     })
 
     describe('getScheduleStatus per-app park aggregate', () => {
@@ -1811,6 +1908,101 @@ describe('taskSchedule', () => {
         const status = await getScheduleStatus()
         const p = status.tasks['claim-issue'].perpetual
         expect(p).toMatchObject({ parkedAppCount: 1, trackedAppCount: 2, globalParked: false, nextRecheckAt: future, parkReason: 'no-actionable-issues' })
+      })
+    })
+
+    // getScheduleStatus (UI rollup) and getUpcomingTasks (daemon wake-up) both
+    // project the shared aggregatePerpetualParks rollup. These fixtures pin them
+    // to the SAME park semantics — including the global-record inclusion rule
+    // the two used to disagree on (status only ever folded in a global park that
+    // hadn't elapsed; eligibility folded in any global record carrying a park).
+    describe('perpetual park aggregate — getScheduleStatus and getUpcomingTasks agree', () => {
+      const perpetualOf = async (taskType = 'claim-issue') =>
+        (await getScheduleStatus()).tasks[taskType].perpetual
+      const upcomingOf = async (taskType = 'claim-issue') =>
+        (await getUpcomingTasks(50)).find(t => t.taskType === taskType)
+
+      it('every app parked: the status nextRecheckAt IS the upcoming eligibleAt', async () => {
+        const soon = new Date(Date.now() + 30 * 60 * 1000).toISOString()
+        const later = new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString()
+        mockSchedule({
+          tasks: { 'claim-issue': { type: 'perpetual', enabled: true } },
+          executions: { 'task:claim-issue': { lastRun: null, count: 0, perApp: {
+            'app-1': { lastRun: null, count: 0, parkedUntil: later, parkReason: 'no-actionable-issues' },
+            'app-2': { lastRun: null, count: 0, parkedUntil: soon, parkReason: 'no-progress' }
+          } } }
+        })
+        const p = await perpetualOf()
+        const claim = await upcomingOf()
+        expect(p).toMatchObject({ parkedAppCount: 2, trackedAppCount: 2, globalParked: false, nextRecheckAt: soon })
+        expect(claim.status).toBe('scheduled')
+        expect(new Date(claim.eligibleAt).toISOString()).toBe(p.nextRecheckAt)
+      })
+
+      it('an ELAPSED app park counts as due for both: ready upcoming, not parked in status', async () => {
+        const past = new Date(Date.now() - 60 * 1000).toISOString()
+        const future = new Date(Date.now() + 60 * 60 * 1000).toISOString()
+        mockSchedule({
+          tasks: { 'claim-issue': { type: 'perpetual', enabled: true } },
+          executions: { 'task:claim-issue': { lastRun: null, count: 0, perApp: {
+            'app-1': { lastRun: null, count: 0, parkedUntil: past, parkReason: 'stale' },
+            'app-2': { lastRun: null, count: 0, parkedUntil: future, parkReason: 'no-actionable-issues' }
+          } } }
+        })
+        const p = await perpetualOf()
+        const claim = await upcomingOf()
+        expect(p).toMatchObject({ parkedAppCount: 1, trackedAppCount: 2, nextRecheckAt: future, parkReason: 'no-actionable-issues' })
+        expect(claim.status).toBe('ready')
+      })
+
+      it('an own-parked GLOBAL record (no per-app) is a tracked scope for both', async () => {
+        const future = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString()
+        mockSchedule({
+          tasks: { 'claim-issue': { type: 'perpetual', enabled: true } },
+          executions: { 'task:claim-issue': { lastRun: null, count: 0, perApp: {}, parkedUntil: future, parkReason: 'no-actionable-issues' } }
+        })
+        const p = await perpetualOf()
+        const claim = await upcomingOf()
+        expect(p).toMatchObject({ globalParked: true, parkedAppCount: 0, trackedAppCount: 0, nextRecheckAt: future, parkReason: 'no-actionable-issues' })
+        expect(claim.status).toBe('scheduled')
+        expect(new Date(claim.eligibleAt).toISOString()).toBe(p.nextRecheckAt)
+      })
+
+      it('an ELAPSED global park is due now for both (no lingering nextRecheckAt)', async () => {
+        const past = new Date(Date.now() - 60 * 1000).toISOString()
+        mockSchedule({
+          tasks: { 'claim-issue': { type: 'perpetual', enabled: true } },
+          executions: { 'task:claim-issue': { lastRun: null, count: 0, perApp: {}, parkedUntil: past, parkReason: 'no-actionable-issues' } }
+        })
+        const p = await perpetualOf()
+        const claim = await upcomingOf()
+        expect(p).toMatchObject({ globalParked: false, nextRecheckAt: null, parkReason: null })
+        expect(claim.status).toBe('ready')
+      })
+
+      it('a global park is folded in alongside per-app parks when it is the soonest', async () => {
+        const globalPark = new Date(Date.now() + 10 * 60 * 1000).toISOString()
+        const appPark = new Date(Date.now() + 60 * 60 * 1000).toISOString()
+        mockSchedule({
+          tasks: { 'claim-issue': { type: 'perpetual', enabled: true } },
+          executions: { 'task:claim-issue': { lastRun: null, count: 0, parkedUntil: globalPark, parkReason: 'global-idle', perApp: {
+            'app-1': { lastRun: null, count: 0, parkedUntil: appPark, parkReason: 'no-actionable-issues' }
+          } } }
+        })
+        const p = await perpetualOf()
+        const claim = await upcomingOf()
+        // parkReason still prefers the first parked APP over the global one.
+        expect(p).toMatchObject({ globalParked: true, parkedAppCount: 1, trackedAppCount: 1, nextRecheckAt: globalPark, parkReason: 'no-actionable-issues' })
+        expect(claim.status).toBe('scheduled')
+        expect(new Date(claim.eligibleAt).toISOString()).toBe(p.nextRecheckAt)
+      })
+
+      it('no tracked scope at all: status reports nothing parked and upcoming stays ready', async () => {
+        mockSchedule({ tasks: { 'claim-issue': { type: 'perpetual', enabled: true } } })
+        const p = await perpetualOf()
+        const claim = await upcomingOf()
+        expect(p).toMatchObject({ globalParked: false, parkedAppCount: 0, trackedAppCount: 0, nextRecheckAt: null, parkReason: null })
+        expect(claim.status).toBe('ready')
       })
     })
   })
