@@ -28,6 +28,10 @@ const gridItemSchema = z.object({
   y: z.number().int().min(0).max(svc.GRID_ROW_MAX),
   w: z.number().int().min(1).max(svc.GRID_COLS),
   h: z.number().int().min(1).max(svc.GRID_ITEM_H_MAX),
+  // Set when the user pinned this cell's height by dragging it. Absent means
+  // the dashboard sizes the cell to its content (and treats `h` as the
+  // first-paint fallback) — see DashboardGrid.jsx.
+  fixedH: z.boolean().optional(),
 });
 
 // Time-window strings (HH:MM, 24h). The route accepts `null` to clear an
