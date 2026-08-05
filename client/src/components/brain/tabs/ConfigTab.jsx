@@ -14,6 +14,7 @@ import {Settings,
   RefreshCw} from 'lucide-react';
 import BrailleSpinner from '../../BrailleSpinner';
 import toast from '../../ui/Toast';
+import YoutubeIngestSettings from '../YoutubeIngestSettings';
 
 const DAYS_OF_WEEK = [
   'monday',
@@ -432,6 +433,10 @@ export default function ConfigTab({ onRefresh }) {
           </p>
         </div>
       </section>
+
+      {/* YouTube ingest — owns its own load/save (like the embeddings block
+          above, its settings live in a separate store from brain settings). */}
+      <YoutubeIngestSettings />
 
       {/* Schedule Settings */}
       <section className="p-4 bg-port-card border border-port-border rounded-lg space-y-4">

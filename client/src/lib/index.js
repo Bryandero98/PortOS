@@ -88,6 +88,7 @@ export * from './sketchCanvas.js';
 export * from './unsorted.js';
 export * from './upsertByIdPrepend.js';
 export * from './voiceLabel.js';
+export * from './youtubeUrl.js';
 
 // === Page-scoped pure helpers ===
 export * from './audioContext.js';

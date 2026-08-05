@@ -16,6 +16,7 @@ import graphRoutes from './brainGraph.js';
 import syncRoutes from './brainSync.js';
 import dailyLogRoutes from './brainDailyLog.js';
 import songbookRoutes from './brainSongbook.js';
+import youtubeRoutes from './brainYoutube.js';
 
 const router = Router();
 
@@ -28,5 +29,6 @@ router.use(graphRoutes);
 router.use(syncRoutes);
 router.use(dailyLogRoutes);
 router.use('/songbook', songbookRoutes);
+router.use('/youtube', youtubeRoutes);
 
 export default router;

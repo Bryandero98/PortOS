@@ -14,19 +14,22 @@
  * immediately, the download runs detached, progress streams over the shared SSE
  * helpers, and the client attaches with useSseProgress. A single yt-dlp
  * invocation does the whole job (best mp4 video+audio merged via ffmpeg).
+ *
+ * The yt-dlp invocation itself lives in ytdlpVideoImport.js — extracted so the
+ * YouTube brain ingest can run the same download as one step of a bigger job
+ * (the same split ytdlpAudioImport.js already made for the audio path). This
+ * module keeps the download-specific concerns: the host allowlist, the SSE job
+ * map, and the `source: 'download'` video-history entry.
  */
 
-import { spawn } from 'child_process';
-import { readdir, unlink } from 'fs/promises';
-import { join, dirname } from 'path';
+import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { ServerError } from '../lib/errorHandler.js';
-import { shortId, PATHS, ensureDir } from '../lib/fileUtils.js';
+import { shortId, PATHS } from '../lib/fileUtils.js';
 import { findFfmpeg, generateThumbnail, probeVideoDuration } from '../lib/ffmpeg.js';
 import { findYtDlp } from '../lib/ytdlp.js';
 import { broadcastSse, attachSseClient as attachSse, closeJobAfterDelay } from '../lib/sseUtils.js';
-import { safeChildProcessEnv } from '../lib/processEnv.js';
-import { createLineReader } from '../lib/streamLines.js';
+import { downloadVideoToDir, cleanupProducedFiles } from './ytdlpVideoImport.js';
 import { loadHistory, mutateVideoHistory } from './videoGen/history.js';
 import { deleteHistoryItem } from './videoGen/local.js';
 import { videoGenEvents } from './videoGen/events.js';
@@ -66,13 +69,7 @@ export function cancelVideoDownload(jobId) {
   const job = downloadJobs.get(jobId);
   if (!job || !job.process) return false;
   const proc = job.process;
-  proc.kill('SIGTERM');
-  setTimeout(() => {
-    if (job.process === proc && proc.exitCode === null && proc.signalCode === null) {
-      console.log(`⚠️ yt-dlp download didn't exit on SIGTERM — escalating to SIGKILL`);
-      proc.kill('SIGKILL');
-    }
-  }, 8000);
+  killWithEscalation(proc, { label: 'yt-dlp download', stillRunning: () => job.process === proc });
   return true;
 }
 
@@ -97,42 +94,10 @@ export async function deleteDownload(id) {
   return deleteHistoryItem(id);
 }
 
-const TITLE_PREFIX = 'PORTOS_TITLE:';
-// Machine-readable progress markers via yt-dlp's --progress-template rather than
-// scraping human-readable console lines — mirrors trackYoutubeImport.
-const PROGRESS_PREFIX = 'PORTOS_PROGRESS:';
-const STAGE_PREFIX = 'PORTOS_STAGE:';
-
 // A cancelled/failed run can leave yt-dlp's pre-merge fragment files behind
 // (`downloaded-<uuid>.f137.mp4`, `.part`, etc.), so cleanup globs every file
 // this job's prefix touched in PATHS.videos rather than unlinking one path.
-async function cleanupDownloadFiles(jobId) {
-  const prefix = `${FILENAME_PREFIX}${jobId}`;
-  const entries = await readdir(PATHS.videos).catch(() => []);
-  await Promise.all(
-    entries.filter((name) => name.startsWith(prefix)).map((name) => unlink(join(PATHS.videos, name)).catch(() => {})),
-  );
-}
-
-// Locate the final produced file for a job. yt-dlp writes intermediate streams
-// as `downloaded-<id>.f<code>.<ext>` and a `.part`/`.ytdl` in progress, then
-// merges/remuxes to a single `downloaded-<id>.<ext>` and deletes the rest. We do
-// NOT hardcode `.mp4`: the format fallback chain can land a single-file webm/mkv
-// (VP9/AV1) that `--merge-output-format`/`--remux-video mp4` only converts on a
-// best-effort basis, so assuming `.mp4` would miss a perfectly-good download and
-// then delete it as a "failure". Prefer an exact `.mp4`, else the lone remaining
-// non-intermediate file. Returns the basename or null when nothing was produced.
-export async function findDownloadedFile(jobId, dir = PATHS.videos) {
-  const prefix = `${FILENAME_PREFIX}${jobId}.`;
-  const entries = await readdir(dir).catch(() => []);
-  const candidates = entries.filter((n) =>
-    n.startsWith(prefix)
-    && !n.endsWith('.part')
-    && !n.endsWith('.ytdl')
-    && !/\.f\d+\.[^.]+$/.test(n), // format-fragment intermediates (.f137.mp4)
-  );
-  return candidates.find((n) => n === `${prefix}mp4`) || candidates[0] || null;
-}
+const cleanupDownloadFiles = (jobId) => cleanupProducedFiles(`${FILENAME_PREFIX}${jobId}`, PATHS.videos);
 
 // Build the `source: 'download'` video-history entry. Pure + exported so the
 // load-bearing shape (the fields normalizeVideo, mediaAssetIndex videoToRow, and
@@ -154,6 +119,74 @@ export function buildDownloadHistoryEntry({ jobId, filename, thumbnail, duration
 }
 
 /**
+ * Download a video and land it in the shared media library.
+ *
+ * This — not the bare yt-dlp spawn — is the unit a second caller wants: it owns
+ * the `downloaded-<id>` filename prefix, the thumbnail + duration probe, the
+ * `source: 'download'` video-history entry, the media-index `completed` event,
+ * and cleanup of partial files when any of that fails. Extracted so the YouTube
+ * brain ingest lands a video EXACTLY the way the Dev Tools downloader does;
+ * duplicating the tail is how the two silently drift.
+ *
+ * `outcome: 'canceled' | 'failed'` are returned rather than thrown (matching
+ * `downloadVideoToDir`) so the caller decides how to surface them; anything that
+ * fails AFTER a successful download throws, with the partial files already
+ * cleaned up.
+ *
+ * `id` is the library id: the filename prefix, the thumbnail name and the
+ * history-entry id all derive from it, so a caller that already has a job id
+ * passes it to keep the two aligned (the SSE downloader does — its terminal
+ * frame's `id` has always been the video's id).
+ *
+ * @returns {Promise<{ outcome:'complete'|'canceled'|'failed', entry?:object, reason?:string }>}
+ */
+export async function downloadVideoIntoLibrary({
+  url, ytDlp, ffmpeg, id, maxBytes = VIDEO_DOWNLOAD_MAX_BYTES,
+  maxDurationSec = VIDEO_DOWNLOAD_MAX_DURATION_SEC, onProgress, registerProcess,
+}) {
+  const jobId = id || randomUUID();
+  try {
+    const result = await downloadVideoToDir({
+      url,
+      ytDlp,
+      ffmpeg,
+      outDir: PATHS.videos,
+      filePrefix: `${FILENAME_PREFIX}${jobId}`,
+      maxBytes,
+      maxDurationSec,
+      onProgress,
+      registerProcess,
+    });
+    if (result.outcome !== 'complete') return result;
+
+    const { filename, title } = result;
+    const outPath = join(PATHS.videos, filename);
+    onProgress?.({ percent: 100, stage: 'finalizing' });
+    const [thumbnail, durationSec] = await Promise.all([
+      generateThumbnail(outPath, jobId),
+      probeVideoDuration(outPath).catch(() => null),
+    ]);
+
+    // Derived, not a generation: a `source: 'download'` video-history entry so
+    // the existing videoToRow / onVideoCompleted media-index path and the
+    // gallery pick it up unmodified. Serialized read-modify-write so two
+    // near-simultaneous downloads can't clobber each other's entry.
+    const entry = buildDownloadHistoryEntry({ jobId, filename, thumbnail, durationSec, title, sourceUrl: url });
+    await mutateVideoHistory((history) => { history.unshift(entry); return history; });
+
+    // Let the live media-asset index hook index this immediately (it loads
+    // history by generationId and upserts one row). Reconcile is the backstop.
+    videoGenEvents.emit('completed', { generationId: jobId, filename, path: `/data/videos/${filename}`, thumbnail });
+    return { outcome: 'complete', entry };
+  } catch (err) {
+    // A throw between the download and the history write would otherwise orphan
+    // a multi-GB file in data/videos with nothing pointing at it.
+    await cleanupDownloadFiles(jobId);
+    throw err;
+  }
+}
+
+/**
  * Kick off a full-video download. Returns `{ jobId }` immediately; the download
  * runs detached and streams progress over SSE. Terminal frames:
  * `{ type: 'complete', id, video }`, `{ type: 'error', error }`, or
@@ -167,134 +200,34 @@ export async function startVideoDownload(url) {
   if (!ffmpeg) throw new ServerError('ffmpeg not found on PATH', { status: 500, code: 'FFMPEG_MISSING' });
 
   const jobId = randomUUID();
-  // The final filename/extension isn't known until the download resolves (the
-  // format fallback can produce a non-mp4 single file), so it's detected from
-  // disk on success via findDownloadedFile rather than assumed here.
-  const outTemplate = join(PATHS.videos, `${FILENAME_PREFIX}${jobId}.%(ext)s`);
-
   const job = { id: jobId, status: 'running', clients: [], process: null };
   downloadJobs.set(jobId, job);
   console.log(`📥 Video download ${shortId(jobId)} — ${url}`);
 
   (async () => {
-    let title = '';
     try {
-      // On a fresh install data/videos may not exist yet (setup-data.js doesn't
-      // create it, and no prior render/import may have). Every other video
-      // writer ensures it first; without this the first download points yt-dlp
-      // at a missing directory and fails before producing a file.
-      await ensureDir(PATHS.videos);
-      const args = [
-        // Prefer an mp4 (h264/aac) video+audio pair that merges cleanly for
-        // broad browser playback; fall back to best single-file mp4, then best.
-        '-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        '--merge-output-format', 'mp4',
-        // Best-effort remux a single-file/non-mp4 result into an mp4 container so
-        // browser playback is broad; when the codec can't be remuxed losslessly
-        // yt-dlp leaves the native container, which findDownloadedFile handles.
-        '--remux-video', 'mp4',
-        '--no-playlist',
-        '--ffmpeg-location', dirname(ffmpeg),
-        '--newline',
-        '--print', `${TITLE_PREFIX}%(title)s`,
-        '--progress-template', `download:${PROGRESS_PREFIX}%(progress._percent_str)s`,
-        '--progress-template', `postprocess:${STAGE_PREFIX}merging`,
-        // --print implies --simulate AND suppresses normal progress reporting;
-        // --no-simulate + --progress restore the real run + machine markers
-        // (same yt-dlp quirk documented in trackYoutubeImport).
-        '--no-simulate',
-        '--progress',
-        '--max-filesize', String(VIDEO_DOWNLOAD_MAX_BYTES),
-        // Two --match-filters are OR'd by yt-dlp: bound KNOWN-duration videos to
-        // the cap, but let a post whose duration can't be resolved pre-download
-        // (common on x.com/Twitter) through rather than silently rejecting it —
-        // the byte cap above still bounds it. A known video longer than the cap
-        // matches neither filter and is skipped.
-        '--match-filters', `duration <= ${VIDEO_DOWNLOAD_MAX_DURATION_SEC}`,
-        '--match-filters', '!duration',
-        '-o', outTemplate,
+      const result = await downloadVideoIntoLibrary({
         url,
-      ];
-      const proc = spawn(ytDlp, args, { env: safeChildProcessEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
-      job.process = proc;
-
-      const onLine = (line) => {
-        if (line.startsWith(TITLE_PREFIX)) {
-          title = line.slice(TITLE_PREFIX.length).trim();
-          return;
-        }
-        if (line.startsWith(PROGRESS_PREFIX)) {
-          const percent = parseFloat(line.slice(PROGRESS_PREFIX.length));
-          if (Number.isFinite(percent)) broadcastSse(job, { type: 'progress', percent });
-          return;
-        }
-        if (line.startsWith(STAGE_PREFIX)) {
-          broadcastSse(job, { type: 'progress', percent: 100, stage: line.slice(STAGE_PREFIX.length) });
-        }
-      };
-      // Separate readers per stream — a shared buffer can complete a partial
-      // line from one stream with a chunk from the other, corrupting a marker.
-      const stdoutReader = createLineReader(onLine);
-      const stderrReader = createLineReader(onLine);
-      proc.stdout.on('data', stdoutReader.push);
-      proc.stderr.on('data', stderrReader.push); // yt-dlp writes some progress/info lines to stderr too
-
-      const exit = await new Promise((resolve) => {
-        proc.on('error', (err) => resolve({ code: null, reason: `spawn failed: ${err.message}` }));
-        proc.on('close', (code, signal) => resolve({ code, signal }));
+        ytDlp,
+        ffmpeg,
+        id: jobId, // keep the library id == the SSE job id, as it has always been
+        onProgress: ({ percent, stage }) => broadcastSse(job, { type: 'progress', percent, ...(stage ? { stage } : {}) }),
+        registerProcess: (proc) => { job.process = proc; },
       });
-      job.process = null;
 
-      if (exit.signal === 'SIGTERM' || exit.signal === 'SIGKILL') {
-        // Don't flush on cancel — a SIGKILL'd child leaves only a partial
-        // marker line in the carry, and emitting it would broadcast a stray
-        // progress/stage SSE frame right before the cancellation frame.
+      if (result.outcome === 'canceled') {
         console.log(`🛑 Video download ${shortId(jobId)} cancelled`);
         broadcastSse(job, { type: 'canceled' });
-        await cleanupDownloadFiles(jobId);
         return;
       }
-      // Flush any final line the child wrote without a trailing newline.
-      stdoutReader.flush();
-      stderrReader.flush();
-      const produced = await findDownloadedFile(jobId);
-      if (exit.code !== 0 || !produced) {
-        // A --match-filters/--max-filesize rejection exits 0 with no output
-        // file (yt-dlp treats a filtered-out video as "nothing to do") — and
-        // --print suppresses the specific reason, so name the known bounds.
-        // x.com/Twitter downloads also fail here on login-walled/rate-limited
-        // content; surface a clear message rather than a bare exit code.
-        const reason = exit.code === 0
-          ? `no video was produced — it may be longer than ${VIDEO_DOWNLOAD_MAX_DURATION_SEC / 60} minutes or larger than ${Math.round(VIDEO_DOWNLOAD_MAX_BYTES / 1024 / 1024 / 1024)}GB, or (for x.com) login-walled, rate-limited, or otherwise unavailable`
-          : (exit.reason || `yt-dlp exited ${exit.code}`);
-        throw new Error(reason);
-      }
+      if (result.outcome === 'failed') throw new Error(result.reason);
 
-      const filename = produced;
-      const outPath = join(PATHS.videos, filename);
-      broadcastSse(job, { type: 'progress', percent: 100, stage: 'finalizing' });
-      const [thumbnail, durationSec] = await Promise.all([
-        generateThumbnail(outPath, jobId),
-        probeVideoDuration(outPath).catch(() => null),
-      ]);
-
-      // Derived, not a generation: a `source: 'download'` video-history entry so
-      // the existing videoToRow / onVideoCompleted media-index path and the
-      // gallery pick it up unmodified. Serialized read-modify-write so two
-      // near-simultaneous downloads can't clobber each other's entry.
-      const entry = buildDownloadHistoryEntry({ jobId, filename, thumbnail, durationSec, title, sourceUrl: url });
-      await mutateVideoHistory((history) => { history.unshift(entry); return history; });
-
-      // Let the live media-asset index hook index this immediately (it loads
-      // history by generationId and upserts one row). Reconcile is the backstop.
-      videoGenEvents.emit('completed', { generationId: jobId, filename, path: `/data/videos/${filename}`, thumbnail });
-
-      console.log(`📥 Video download ${shortId(jobId)} complete — "${entry.title}" (${filename})`);
+      const { entry } = result;
+      console.log(`📥 Video download ${shortId(jobId)} complete — "${entry.title}" (${entry.filename})`);
       broadcastSse(job, { type: 'complete', id: jobId, video: entry });
     } catch (err) {
       console.error(`❌ Video download ${shortId(jobId)} failed: ${err?.message || err}`);
       broadcastSse(job, { type: 'error', error: err?.message || String(err) });
-      await cleanupDownloadFiles(jobId);
     } finally {
       closeJobAfterDelay(downloadJobs, jobId);
     }

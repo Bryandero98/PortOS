@@ -76,6 +76,7 @@ export { default as useUniverseRender } from './useUniverseRender.js';
 export { default as useUniverseTabs } from './useUniverseTabs.js';
 export { default as useVideoDownload } from './useVideoDownload.js';
 export { default as useWakeLock } from './useWakeLock.js';
+export { default as useYoutubeIngest } from './useYoutubeIngest.js';
 export { default as useYoutubeTrackImport } from './useYoutubeTrackImport.js';
 export { default as useReferenceAudioImport } from './useReferenceAudioImport.js';
 export { default as useMidiTranscription } from './useMidiTranscription.js';

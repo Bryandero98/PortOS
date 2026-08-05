@@ -22,7 +22,6 @@
  * — that would bypass the sync log and silently diverge peers again.
  */
 
-import { existsSync } from 'fs';
 import { join } from 'path';
 import { atomicWrite, ensureDir, readJSONFile, PATHS } from '../lib/fileUtils.js';
 import { createMutex } from '../lib/asyncMutex.js';
@@ -402,22 +401,15 @@ export async function syncToObsidian(entry, { force = false } = {}) {
   if (!settings.obsidianVaultId) return null;
   if (!force && !settings.autoSync) return null;
 
-  const vault = await obsidian.getVaultById(settings.obsidianVaultId);
-  if (!vault || !existsSync(vault.path)) return null;
-
   const vaultId = settings.obsidianVaultId;
   const notePath = buildObsidianNotePath(settings, entry.date);
-  const markdown = buildMarkdown(entry);
 
-  // createNote errors when the file exists; try update first then create.
-  const update = await obsidian.updateNote(vaultId, notePath, markdown);
-  if (update?.error === 'NOTE_NOT_FOUND') {
-    const created = await obsidian.createNote(vaultId, notePath, markdown);
-    if (created?.error) return null;
-    await persistObsidianLocation(entry.date, notePath, vaultId);
-    return notePath;
-  }
-  if (update?.error) return null;
+  // upsertNote owns the update-then-create ordering (createNote errors when the
+  // file exists) and the missing-vault-folder no-op — both properties of the
+  // Obsidian adapter, not of this caller.
+  const written = await obsidian.upsertNote(vaultId, notePath, buildMarkdown(entry));
+  if (!written) return null;
+
   // Persist whenever the path OR the vault changes — a folder rename or
   // a vault swap in Settings both need to update the store so a later
   // deleteJournal() unlinks the right file in the right vault.

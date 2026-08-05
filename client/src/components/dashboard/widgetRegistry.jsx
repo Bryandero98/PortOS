@@ -48,7 +48,7 @@ export const WIDGETS = [
   // Daily Driver self-hides once the day is handled — gated on the per-day
   // first-visit/handled state so a handled day reserves no grid cell (#2666).
   { id: 'daily-driver',      label: 'Daily Driver',          Component: DailyDriverWidget,      width: 'third',   defaultH: 6, gate: (s) => !!s.dailyDriver && !s.dailyDriver.handledToday },
-  { id: 'quick-brain',       label: 'Quick Brain Capture',   Component: QuickBrainCapture,      width: 'half',    defaultH: 3 },
+  { id: 'quick-brain',       label: 'Quick Brain Capture',   Component: QuickBrainCapture,      width: 'half',    defaultH: 4 },
   { id: 'quick-idea',        label: 'Quick Idea (Catalog)',  Component: QuickIdeaCapture,       width: 'half',    defaultH: 4 },
   { id: 'quick-image',       label: 'Quick Image Prompt',    Component: QuickImagePrompt,       width: 'half',    defaultH: 6 },
   { id: 'quick-task',        label: 'Quick Task',            Component: QuickTaskWidget,        width: 'half',    defaultH: 5 },

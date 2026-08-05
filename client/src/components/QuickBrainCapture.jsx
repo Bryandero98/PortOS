@@ -1,10 +1,11 @@
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { Link } from 'react-router';
-import { Send, Sparkles } from 'lucide-react';
+import { ChevronDown, Film, Send, Sliders, Sparkles, X } from 'lucide-react';
 import toast from './ui/Toast';
 import * as api from '../services/api';
-import { useLocalStorageBool } from '../hooks';
+import { useLocalStorageBool, useYoutubeIngest } from '../hooks';
 import { parseBareUrl } from '../lib/bareUrl';
+import { INGEST_OPTIONS, defaultIngestOptions, ingestOptionsFromSettings, isYoutubeVideoUrl } from '../lib/youtubeUrl';
 
 export default function QuickBrainCapture() {
   const [input, setInput] = useState('');
@@ -17,11 +18,57 @@ export default function QuickBrainCapture() {
   // Mirrors the server's filing rule (client/src/lib/bareUrl.js) so the hint and
   // the Creative lockout match where the capture actually lands.
   const isUrl = useMemo(() => !!parseBareUrl(input), [input]);
+  // A single-video YouTube URL takes a different path entirely (ingest, not
+  // capture) and unlocks the advanced panel below.
+  const isYoutube = useMemo(() => isYoutubeVideoUrl(input), [input]);
+
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [ingestOpts, setIngestOpts] = useState(defaultIngestOptions);
+  const [agentPrompt, setAgentPrompt] = useState('');
+  const [tagsInput, setTagsInput] = useState('');
+
+  // Server-side defaults for the checkboxes, so a user who always wants audio
+  // sets it once in settings instead of every capture. Fetched lazily — the
+  // first time the panel is opened — so the dashboard doesn't pay for it.
+  const seededRef = useRef(false);
+  useEffect(() => {
+    if (!showAdvanced || seededRef.current) return;
+    seededRef.current = true;
+    api.getYoutubeIngestSettings({ silent: true })
+      .then((settings) => setIngestOpts(ingestOptionsFromSettings(settings)))
+      .catch(() => {}); // defaultIngestOptions() is already sensible
+  }, [showAdvanced]);
+
+  const ingest = useYoutubeIngest({
+    onComplete: () => {
+      setAgentPrompt('');
+      setTagsInput('');
+    },
+  });
+
+  const nothingSelected = !INGEST_OPTIONS.some((o) => ingestOpts[o.key]);
 
   const handleSubmit = async (e) => {
     e?.preventDefault();
     const text = input.trim();
     if (!text || submittingRef.current) return;
+
+    if (isYoutube) {
+      if (nothingSelected) {
+        toast.error('Pick at least one of transcript, video, or audio');
+        return;
+      }
+      // The ingest job is long-running and streams its own progress/toasts, so
+      // the input clears immediately and the widget stays usable.
+      setInput('');
+      ingest.start({
+        url: text,
+        ...ingestOpts,
+        agentPrompt: agentPrompt.trim(),
+        tags: tagsInput.split(',').map((t) => t.trim()).filter(Boolean),
+      });
+      return;
+    }
 
     // Synchronous ref lock prevents duplicate requests from rapid clicks/Enter
     submittingRef.current = true;
@@ -46,6 +93,8 @@ export default function QuickBrainCapture() {
     setIsSubmitting(false);
   };
 
+  const toggleOption = (key) => setIngestOpts((prev) => ({ ...prev, [key]: !prev[key] }));
+
   return (
     <div className="bg-port-card border border-port-border rounded-xl p-4">
       <div className="flex items-center justify-between mb-3">
@@ -59,36 +108,134 @@ export default function QuickBrainCapture() {
         <input
           id="quick-brain-input"
           type="text"
-          placeholder="Thought, URL, or link..."
+          placeholder="Thought, URL, or YouTube link..."
           value={input}
           onChange={e => setInput(e.target.value)}
-          className="flex-1 px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm"
+          className="flex-1 min-w-0 px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm"
         />
-        <button
-          type="button"
-          onClick={() => setCreative(v => !v)}
-          aria-pressed={creative}
-          aria-label="Toggle creative capture mode"
-          disabled={isUrl}
-          className={`flex items-center px-2.5 py-2 rounded-lg border text-sm transition-colors min-h-[40px] disabled:opacity-40 disabled:cursor-not-allowed ${creative
-            ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
-            : 'bg-port-bg text-gray-400 border-port-border hover:text-gray-200'}`}
-          title={isUrl ? 'URLs are saved as links, not creative ideas' : 'Creative mode: flag this thought for the Catalog'}
-        >
-          <Sparkles size={14} />
-        </button>
+        {isYoutube ? (
+          <button
+            type="button"
+            onClick={() => setShowAdvanced(v => !v)}
+            aria-expanded={showAdvanced}
+            aria-controls="quick-brain-advanced"
+            aria-label="Toggle ingest options"
+            className={`flex items-center px-2.5 py-2 rounded-lg border text-sm transition-colors min-h-[40px] ${showAdvanced
+              ? 'bg-red-500/20 text-red-300 border-red-500/40'
+              : 'bg-port-bg text-gray-400 border-port-border hover:text-gray-200'}`}
+            title="YouTube ingest options"
+          >
+            <Sliders size={14} />
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setCreative(v => !v)}
+            aria-pressed={creative}
+            aria-label="Toggle creative capture mode"
+            disabled={isUrl}
+            className={`flex items-center px-2.5 py-2 rounded-lg border text-sm transition-colors min-h-[40px] disabled:opacity-40 disabled:cursor-not-allowed ${creative
+              ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
+              : 'bg-port-bg text-gray-400 border-port-border hover:text-gray-200'}`}
+            title={isUrl ? 'URLs are saved as links, not creative ideas' : 'Creative mode: flag this thought for the Catalog'}
+          >
+            <Sparkles size={14} />
+          </button>
+        )}
         <button
           type="submit"
-          disabled={!input.trim() || isSubmitting}
+          disabled={!input.trim() || isSubmitting || ingest.active}
           aria-label="Capture"
           className="flex items-center gap-1 px-3 py-2 bg-port-accent/20 hover:bg-port-accent/30 text-port-accent rounded-lg text-sm transition-colors disabled:opacity-50 min-h-[40px]"
         >
           <Send size={14} />
         </button>
       </form>
-      {input.trim() && (
+
+      {isYoutube && showAdvanced && (
+        <div id="quick-brain-advanced" className="mt-3 pt-3 border-t border-port-border space-y-3">
+          <div className="flex flex-wrap gap-2">
+            {INGEST_OPTIONS.map(({ key, label, hint }) => (
+              <label
+                key={key}
+                htmlFor={`quick-brain-${key}`}
+                title={hint}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs cursor-pointer transition-colors ${ingestOpts[key]
+                  ? 'bg-port-accent/20 text-port-accent border-port-accent/40'
+                  : 'bg-port-bg text-gray-400 border-port-border hover:text-gray-200'}`}
+              >
+                <input
+                  id={`quick-brain-${key}`}
+                  type="checkbox"
+                  checked={ingestOpts[key]}
+                  onChange={() => toggleOption(key)}
+                  className="accent-port-accent"
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+
+          <div>
+            <label htmlFor="quick-brain-prompt" className="block text-xs text-gray-400 mb-1">
+              What should an agent do with this? <span className="text-gray-600">(optional — queues a CoS task)</span>
+            </label>
+            <textarea
+              id="quick-brain-prompt"
+              rows={3}
+              value={agentPrompt}
+              onChange={e => setAgentPrompt(e.target.value)}
+              placeholder="e.g. Review for features and improvements to our writing tools; file issues for anything actionable."
+              className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm"
+            />
+          </div>
+
+          <div>
+            <label htmlFor="quick-brain-tags" className="block text-xs text-gray-400 mb-1">
+              Tags <span className="text-gray-600">(comma separated)</span>
+            </label>
+            <input
+              id="quick-brain-tags"
+              type="text"
+              value={tagsInput}
+              onChange={e => setTagsInput(e.target.value)}
+              placeholder="writing-tools, research"
+              className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm"
+            />
+          </div>
+        </div>
+      )}
+
+      {ingest.active && (
+        <div className="mt-3 flex items-center gap-2 text-xs text-gray-400">
+          <Film size={14} className="text-red-400 shrink-0" />
+          <span className="capitalize">{ingest.stage || 'starting'}…</span>
+          <div className="flex-1 h-1.5 bg-port-bg rounded-full overflow-hidden">
+            <div className="h-full bg-port-accent transition-all" style={{ width: `${ingest.percent}%` }} />
+          </div>
+          <button
+            type="button"
+            onClick={ingest.cancel}
+            aria-label="Cancel ingest"
+            className="text-gray-500 hover:text-red-400 transition-colors"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
+      {input.trim() && !ingest.active && (
         <p className="mt-2 text-xs text-gray-500">
-          {isUrl ? 'Will save as link' : creative ? 'Will capture as a creative thought' : 'Will capture as thought'}
+          {isYoutube ? (
+            <button
+              type="button"
+              onClick={() => setShowAdvanced(v => !v)}
+              className="inline-flex items-center gap-1 hover:text-gray-300 transition-colors"
+            >
+              Will ingest {INGEST_OPTIONS.filter(o => ingestOpts[o.key]).map(o => o.label.toLowerCase()).join(' + ') || 'nothing — pick an option'}
+              <ChevronDown size={12} className={showAdvanced ? 'rotate-180 transition-transform' : 'transition-transform'} />
+            </button>
+          ) : isUrl ? 'Will save as link' : creative ? 'Will capture as a creative thought' : 'Will capture as thought'}
         </p>
       )}
     </div>
