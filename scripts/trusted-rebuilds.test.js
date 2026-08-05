@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 
-import { TRUSTED_REBUILDS, discoverWorkspaces, workspaceDir } from './trusted-rebuilds.js';
+import { TRUSTED_REBUILDS, discoverWorkspaces, workspaceDir, rebuildTrusted, runCli } from './trusted-rebuilds.js';
 
 // Discovered, not hand-listed: a hardcoded roster here would silently miss a
 // workspace added later, leaving it with no `ignore-scripts` guard while this
@@ -10,6 +10,32 @@ import { TRUSTED_REBUILDS, discoverWorkspaces, workspaceDir } from './trusted-re
 const WORKSPACES = discoverWorkspaces();
 
 const LIFECYCLE_HOOKS = ['preinstall', 'install', 'postinstall'];
+
+/**
+ * Packages a workspace declares an install hook for, read from the committed
+ * lockfile. This is the CI-safe path: `scripts/**` is globbed only by the SERVER
+ * vitest runner, and the server CI job installs only server deps — so for
+ * client/autofixer/browser there is no node_modules and a node_modules-only scan
+ * silently skipped, meaning the accounting assertion below never ran for them in
+ * CI. A dependency there gaining a postinstall (a Dependabot bump, or a
+ * compromised release) would have sailed through green. The lockfile is committed,
+ * so this works with zero installs.
+ */
+function lockfileInstallScriptPackages(label) {
+  const lock = join(workspaceDir(label), 'package-lock.json');
+  if (!existsSync(lock)) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(lock, 'utf8'));
+  } catch {
+    return null;
+  }
+  return new Set(
+    Object.entries(parsed?.packages ?? {})
+      .filter(([, meta]) => meta?.hasInstallScript === true)
+      .map(([path]) => path.replace(/.*node_modules\//, ''))
+  );
+}
 
 /**
  * Packages in a workspace's installed tree that declare a lifecycle install hook.
@@ -112,7 +138,18 @@ describe('trusted rebuild allowlist', () => {
   // postinstall and nobody decides about it, it is silently left unbuilt — which
   // surfaces much later as a confusing runtime crash on a missing native binding.
   // Fail here instead, when the dependency lands, and force the decision.
-  const DELIBERATELY_UNBUILT = {};
+  // `fsevents` carries `hasInstallScript: true` in the lockfiles, but that is stale
+  // registry metadata: the installed 2.3.3 ships `fsevents.node` prebuilt and
+  // declares no hook and no binding.gyp (verified in all three trees that have it).
+  // It is also darwin-only and optional, so it is absent entirely on CI. Nothing to
+  // rebuild — recorded here so the lockfile-derived check stays honest rather than
+  // being loosened.
+  const FSEVENTS_STALE_FLAG = ['fsevents'];
+  const DELIBERATELY_UNBUILT = {
+    root: FSEVENTS_STALE_FLAG,
+    client: FSEVENTS_STALE_FLAG,
+    server: FSEVENTS_STALE_FLAG
+  };
 
   it('detects install hooks at all, so the accounting assertion is not vacuous', () => {
     // `unaccounted === []` also passes when the scan finds nothing, so a scan that
@@ -131,6 +168,30 @@ describe('trusted rebuild allowlist', () => {
     expect(hooked.size).toBeGreaterThanOrEqual(3);
   });
 
+  // The lockfile-driven twin of the test below. This one runs in EVERY CI job for
+  // EVERY workspace, installed or not, which is what closes the silent-skip hole.
+  it.each(WORKSPACES)('%s: every lockfile-declared install hook is accounted for', (label) => {
+    const declared = lockfileInstallScriptPackages(label);
+    if (declared === null) return; // no lockfile (browser/ has no dependencies)
+    const allowed = new Set([
+      ...(TRUSTED_REBUILDS[label] ?? []).flatMap((group) => group.pkgs),
+      ...(DELIBERATELY_UNBUILT[label] ?? [])
+    ]);
+    const unaccounted = [...declared].filter((name) => !allowed.has(name));
+    expect(
+      unaccounted,
+      `${label}: package-lock.json marks these with hasInstallScript, but they are not in the allowlist in scripts/trusted-rebuilds.js. ignore-scripts=true blocks their build, so either add them (if the build is needed) or list them under DELIBERATELY_UNBUILT with the reason: ${unaccounted.join(', ')}`
+    ).toEqual([]);
+  });
+
+  it('reads install-script flags from the lockfile, so the check is not vacuous', () => {
+    // Same vacuity trap as below: an empty result passes. The server lock is known
+    // to flag node-pty, so a broken read fails loudly instead of looking clean.
+    const declared = lockfileInstallScriptPackages('server');
+    expect(declared).not.toBeNull();
+    expect(declared.has('node-pty'), 'server lockfile should mark node-pty hasInstallScript').toBe(true);
+  });
+
   it.each(WORKSPACES)('%s: every installed package with an install hook is accounted for', (label) => {
     const hooked = packagesWithInstallHooks(label);
     if (hooked === null) return; // node_modules absent in this job
@@ -143,5 +204,69 @@ describe('trusted rebuild allowlist', () => {
       unaccounted,
       `${label}: these packages declare an install hook that ignore-scripts=true blocks, but are not in the allowlist in scripts/trusted-rebuilds.js. Either add them (if the build is needed) or list them under DELIBERATELY_UNBUILT: ${unaccounted.join(', ')}`
     ).toEqual([]);
+  });
+});
+
+// The fatal/non-fatal decision is the module's entire purpose: if it inverts or is
+// dropped, a failed node-pty build exits 0, `npm run setup` and the CI rebuild step
+// both report success, and the missing binding resurfaces much later as a confusing
+// MODULE_NOT_FOUND at smoke-boot. Assert the decision directly with an injected
+// spawner rather than only asserting the shape of TRUSTED_REBUILDS.
+describe('rebuildTrusted failure semantics', () => {
+  const failFor = (needle) => (_bin, args) => {
+    if (args.some((arg) => arg === needle)) throw new Error(`boom: ${needle}`);
+  };
+
+  it('spawns one npm rebuild per group, with the group\'s packages', () => {
+    const calls = [];
+    rebuildTrusted('/tmp', 'server', { spawn: (_bin, args) => calls.push(args) });
+    expect(calls).toEqual(TRUSTED_REBUILDS.server.map((group) => ['rebuild', ...group.pkgs]));
+  });
+
+  it('fails when a fatal group fails', () => {
+    expect(rebuildTrusted('/tmp', 'server', { spawn: failFor('node-pty') })).toBe(false);
+  });
+
+  it('still succeeds when only a non-fatal group fails', () => {
+    expect(rebuildTrusted('/tmp', 'server', { spawn: failFor('onnxruntime-node') })).toBe(true);
+  });
+
+  it('attempts every group even after one fails', () => {
+    const calls = [];
+    rebuildTrusted('/tmp', 'server', {
+      spawn: (_bin, args) => { calls.push(args); if (args.includes('node-pty')) throw new Error('boom'); }
+    });
+    expect(calls.length).toBe(TRUSTED_REBUILDS.server.length);
+  });
+
+  it('is a no-op for a workspace with no trusted rebuilds', () => {
+    const calls = [];
+    expect(rebuildTrusted('/tmp', 'client', { spawn: (...a) => calls.push(a) })).toBe(true);
+    expect(calls).toEqual([]);
+  });
+});
+
+describe('runCli exit codes', () => {
+  const noop = () => {};
+
+  it('exits 1 with usage when no label is given', () => {
+    expect(runCli([], { spawn: noop })).toBe(1);
+  });
+
+  it('exits 1 on an unknown label instead of reporting a green no-op', () => {
+    // The regression this guards: `sever` previously printed "✅ no trusted rebuilds
+    // needed" and exited 0, leaving node-pty unbuilt behind a passing CI step.
+    expect(runCli(['sever'], { spawn: noop })).toBe(1);
+  });
+
+  it('exits 0 for a real workspace that needs no rebuilds', () => {
+    expect(runCli(['browser'], { spawn: noop })).toBe(0);
+  });
+
+  it('exits 0 when every rebuild succeeds and 1 when a fatal one fails', () => {
+    expect(runCli(['server', '/tmp'], { spawn: noop })).toBe(0);
+    expect(runCli(['server', '/tmp'], {
+      spawn: (_bin, args) => { if (args.includes('node-pty')) throw new Error('boom'); }
+    })).toBe(1);
   });
 });

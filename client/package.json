@@ -7,7 +7,7 @@
     "dev": "vite --host 0.0.0.0 --port 5554",
     "build": "vite build",
     "build:analyze": "ANALYZE=true vite build",
-    "lint": "biome lint src",
+    "lint": "biome lint --error-on-warnings src",
     "preview": "vite preview",
     "test": "vitest run",
     "test:ci": "vitest run --bail=1 --reporter=default --reporter=github-actions",

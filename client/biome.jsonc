@@ -53,10 +53,20 @@
     // nobody acts on, i.e. noise that hides real errors. Biome defaults many rules to
     // 'warn', so every rule below sets 'error' explicitly.
     //
-    // `preset: "none"` + an explicit list keeps this a faithful port of the ESLint
-    // rule set (js.configs.recommended + 8 @eslint-react rules + react-hooks). Biome's
-    // own `recommended` preset is much broader; adopting it is a separate policy
+    // `preset: "none"` + an explicit list ports the ESLint rule set
+    // (js.configs.recommended + 8 @eslint-react rules + react-hooks). Biome's own
+    // `recommended` preset is much broader; adopting it is a separate policy
     // decision, not part of this migration.
+    //
+    // KNOWN PARITY GAPS — this is a near-port, not a total one. Measured, not assumed:
+    //   * `no-cond-assign` and `no-empty` have only *broader* Biome analogues
+    //     (`noAssignInExpressions` ~400 hits, `noEmptyBlockStatements` ~705 hits on
+    //     today's src — mostly `while ((m = re.exec(s)))` and `() => {}` mocks), so
+    //     enabling them as-is would be a lint-policy change, not a port. Left off.
+    //   * No Biome equivalent exists for `no-invalid-regexp`, `no-useless-assignment`,
+    //     `no-unexpected-multiline`, `no-delete-var`, or `no-empty-static-block`.
+    //     Most are parse-level or moot in ESM.
+    // Do not upgrade this comment to a claim of full parity without re-measuring.
     "rules": {
       "preset": "none",
       "complexity": {
@@ -131,6 +141,11 @@
         // eslint: require-yield
         "useYield": "error"
       },
+      "style": {
+        // eslint: preserve-caught-error — re-throwing without `{ cause }` loses the
+        // original error. 0 hits on today's src, so enforcing it is free.
+        "useErrorCause": "error"
+      },
       "security": {
         // @eslint-react/dom-no-unsafe-target-blank
         "noBlankTarget": "error",
@@ -146,6 +161,9 @@
         "noClassAssign": "error",
         // eslint: no-compare-neg-zero
         "noCompareNegZero": "error",
+        // eslint: no-constant-binary-expression — 0 hits on today's src, so
+        // enforcing it is free and closes one of the recommended-set gaps above.
+        "noConstantBinaryExpressions": "error",
         // eslint: no-control-regex
         "noControlCharactersInRegex": "error",
         // eslint: no-debugger

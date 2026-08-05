@@ -9,8 +9,10 @@
  * Those are rebuilt explicitly here — an allowlist, so adding a dependency
  * never silently grants it an install-time code-execution slot.
  *
- * Consumed by scripts/ensure-deps.js, the root `setup` script, and CI. Keep the
- * list here only — a second copy in a workflow file is how it drifts.
+ * Consumed by scripts/ensure-deps.js, the root `setup` script, setup.ps1,
+ * update.sh, update.ps1, and CI. Keep the list here only — a second copy is how it
+ * drifts, which is exactly how setup.ps1 ended up rebuilding a package that no
+ * longer exists while missing two that do.
  *
  * Usage as a CLI (what CI and `npm run setup` call):
  *   node scripts/trusted-rebuilds.js server
@@ -81,14 +83,20 @@ export const TRUSTED_REBUILDS = {
 /**
  * Rebuild the trusted packages for one workspace.
  * Returns true when every fatal group succeeded.
+ *
+ * `spawn` is injectable so the fatal/non-fatal decision is testable without
+ * actually invoking npm. That decision is the whole point of the module — if it
+ * inverts, a failed node-pty build exits 0 and the missing binding resurfaces as
+ * a confusing MODULE_NOT_FOUND at smoke-boot — so it needs real coverage rather
+ * than only a shape assertion on TRUSTED_REBUILDS.
  */
-export function rebuildTrusted(dir, label) {
+export function rebuildTrusted(dir, label, { spawn = execFileSync } = {}) {
   const groups = TRUSTED_REBUILDS[label];
   if (!groups) return true;
   let ok = true;
   for (const { pkgs, fatal } of groups) {
     try {
-      execFileSync(NPM, ['rebuild', ...pkgs], { cwd: dir, stdio: 'inherit', windowsHide: true });
+      spawn(NPM, ['rebuild', ...pkgs], { cwd: dir, stdio: 'inherit', windowsHide: true });
     } catch (err) {
       console.error(`⚠️  npm rebuild ${pkgs.join(' ')} failed for ${label}: ${err.message ?? err}`);
       if (fatal) ok = false;
@@ -97,15 +105,19 @@ export function rebuildTrusted(dir, label) {
   return ok;
 }
 
-// CLI entry: `node scripts/trusted-rebuilds.js <label> [dir]`
-function main() {
-  const label = process.argv[2];
+/**
+ * CLI body, returning an exit code instead of calling process.exit, so every
+ * branch (usage, unknown label, rebuild-free workspace, rebuild failure) is
+ * assertable. `node scripts/trusted-rebuilds.js <label> [dir]`
+ */
+export function runCli(argv, { spawn = execFileSync } = {}) {
+  const [label, dirOverride] = argv;
   if (!label) {
     // List the real workspaces, not just the keys of TRUSTED_REBUILDS — the CLI
     // accepts any workspace (a rebuild-free one is a documented no-op), so
     // advertising only `server` misrepresents what is valid.
     console.error(`❌ usage: node scripts/trusted-rebuilds.js <${discoverWorkspaces().join('|')}>`);
-    process.exit(1);
+    return 1;
   }
   // Validate the label against the real workspace list BEFORE the "nothing to do"
   // check below. Otherwise a typo (`sever`) falls through to a green "✅ no trusted
@@ -115,14 +127,14 @@ function main() {
   const workspaces = discoverWorkspaces();
   if (!workspaces.includes(label)) {
     console.error(`❌ unknown workspace '${label}'. Known workspaces: ${workspaces.join(', ')}`);
-    process.exit(1);
+    return 1;
   }
   if (!TRUSTED_REBUILDS[label]) {
     console.log(`✅ no trusted rebuilds needed for ${label}`);
-    process.exit(0);
+    return 0;
   }
   console.log(`🔨 Rebuilding trusted install-script packages for ${label}`);
-  process.exit(rebuildTrusted(process.argv[3] ?? workspaceDir(label), label) ? 0 : 1);
+  return rebuildTrusted(dirOverride ?? workspaceDir(label), label, { spawn }) ? 0 : 1;
 }
 
 // Matches the entry-guard idiom in scripts/run-ci-lint.js — `resolve()` on both
@@ -130,4 +142,4 @@ function main() {
 const isMain = process.argv[1]
   && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
 
-if (isMain) main();
+if (isMain) process.exit(runCli(process.argv.slice(2)));
