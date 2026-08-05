@@ -6,7 +6,8 @@ procedural Three.js scene with:
 - an explicit AI provider/model choice per generation or refinement;
 - a validated, bounded JSON scene spec rather than model-authored executable
   JavaScript;
-- a live in-browser orbit/zoom preview using PortOS's existing Three.js stack;
+- a live in-browser orbit/zoom preview using PortOS's existing Three.js stack,
+  with explode-to-disassemble and click-to-identify part picking;
 - deterministic download/copy of a standalone `THREE.Group` factory;
 - gallery-image lineage, run attribution, detail inventory, and honest
   single-view limitations.
@@ -28,6 +29,35 @@ triangle indices, sockets, and detail-inventory references before persisting or
 rendering it. The client maps that allowlist to Three.js primitives and bounded
 `BufferGeometry`; it never evaluates provider-written JavaScript. Exported
 source is produced deterministically from the validated spec.
+
+## Disassembly and part picking
+
+The preview's Explode slider separates the assembly and clicking any surface
+names the part it belongs to, highlighting that whole component. This is the
+only *structural* check that a model was actually built from parts rather than
+fused into one shape — every other check scores pixels.
+
+Separation is a layout **scale about the model centre** plus a base clearance,
+never a uniform outward push: displacing every part the same distance slides the
+arrangement without opening a gap between neighbours, so parts that touched
+would still touch. The camera re-frames to the disassembly's measured size.
+
+Explode and the picker share one definition of "a part"
+(`client/src/lib/threejsExplode.js`) — if they disagreed, both would be wrong:
+
+- `explodeWithParent: true` marks **surface relief** — serrations, stria, trim,
+  engraving, port floors: detail that belongs *to* a part rather than being one.
+  It rides its parent when the model comes apart, and a click on it selects the
+  parent, so a disassembly does not shatter into a comb of loose slivers.
+  Generation prompts instruct the provider to set it; it defaults to `false`.
+- Every other part carrying geometry is both a movable unit and a selectable
+  component. A part whose children carry the geometry is additionally descended
+  through, so those children separate too; a part with geometry *and*
+  geometry-bearing children moves its own shell while its children move freely.
+
+The exported standalone factory carries the same information —
+`buildThreejsFactorySource()` writes `partId` and `explodeWithParent` into each
+node's `userData` — so a consumer outside PortOS can build the same disassembly.
 
 ## Geometry vocabulary
 

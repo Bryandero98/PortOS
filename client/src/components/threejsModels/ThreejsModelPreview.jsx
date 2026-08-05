@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useId, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router';
 import { Canvas } from '@react-three/fiber';
 import { Bounds, OrbitControls, useBounds } from '@react-three/drei';
 import * as THREE from 'three';
 import { createSculptBufferGeometry, needsSculptBufferGeometry, sculptMaterialProps } from '../../lib/threejsSculpt';
-import { buildPartSelectionIndex, computeExplodeLayout } from '../../lib/threejsExplode';
+import { buildPartSelectionIndex, computeExplodeLayout, isReliefPart } from '../../lib/threejsExplode';
 
 const radians = (degrees = 0) => THREE.MathUtils.degToRad(degrees);
 const rotation = (degrees = [0, 0, 0]) => degrees.map(radians);
@@ -73,13 +74,15 @@ function Material({ definition, highlighted = false }) {
   return <meshStandardMaterial {...lit} />;
 }
 
+// Part ids are provider-authored and the schema accepts `toString`, so a bare
+// lookup can hand back an inherited function; only a real triple is an offset.
 const offsetPosition = (position = [0, 0, 0], offset) =>
-  (offset ? position.map((value, axis) => value + offset[axis]) : position);
+  (Array.isArray(offset) ? position.map((value, axis) => value + offset[axis]) : position);
 
-function Part({ part, materials, offsets, selection, selectedId, onSelect }) {
+function Part({ part, materials, layout, selection, selectedId, onSelect }) {
   const transform = {
     name: part.name,
-    position: offsetPosition(part.position, offsets[part.id]),
+    position: offsetPosition(part.position, layout.offsets[part.id]),
     rotation: rotation(part.rotationDegrees),
     scale: part.scale,
   };
@@ -91,20 +94,32 @@ function Part({ part, materials, offsets, selection, selectedId, onSelect }) {
     event.stopPropagation();
     onSelect(selection.owners[part.id] || part.id);
   };
-  return (
-    <group {...transform}>
+  // Relief rides this part's own geometry, so both sit inside the mesh offset
+  // when this part is a container that moves its shell independently of its
+  // children. Everything else is a part in its own right and stays outside it.
+  const own = (
+    <>
       {part.geometry && (
-        <mesh castShadow={part.castShadow} receiveShadow={part.receiveShadow} onPointerDown={select}>
+        <mesh castShadow={part.castShadow} receiveShadow={part.receiveShadow} onClick={select}>
           <Geometry definition={part.geometry} />
           <Material definition={materials[part.material]} highlighted={highlighted} />
         </mesh>
       )}
-      {part.children.map((child) => (
+      {part.children.filter(isReliefPart).map((child) => (
+        <Part key={child.id} part={child} materials={materials} layout={layout} selection={selection} selectedId={selectedId} onSelect={onSelect} />
+      ))}
+    </>
+  );
+  const meshOffset = layout.meshOffsets[part.id];
+  return (
+    <group {...transform}>
+      {Array.isArray(meshOffset) ? <group position={meshOffset}>{own}</group> : own}
+      {part.children.filter((child) => !isReliefPart(child)).map((child) => (
         <Part
           key={child.id}
           part={child}
           materials={materials}
-          offsets={offsets}
+          layout={layout}
           selection={selection}
           selectedId={selectedId}
           onSelect={onSelect}
@@ -165,7 +180,7 @@ function ProceduralScene({ spec, background, layout, selection, selectedId, onSe
               key={part.id}
               part={part}
               materials={spec.materials}
-              offsets={layout.offsets}
+              layout={layout}
               selection={selection}
               selectedId={selectedId}
               onSelect={onSelect}
@@ -189,21 +204,41 @@ function ProceduralScene({ spec, background, layout, selection, selectedId, onSe
 export default function ThreejsModelPreview({ spec, className = '' }) {
   const [background, setBackground] = useState(() => spec?.background || '#000000');
   const [explode, setExplode] = useState(0);
-  const [selectedId, setSelectedId] = useState(null);
+  const [searchParams, setSearchParams] = useSearchParams();
   const explodeSliderId = useId();
 
+  // Keyed on the authored background, not on `spec` — the detail page re-fetches
+  // the record every 2s while a generation runs, and a fresh object with the
+  // same content would throw away the background the user just picked.
+  const authoredBackground = spec?.background;
   useEffect(() => {
-    setBackground(spec?.background || '#000000');
-    // A new model has different parts — a carried-over selection or explode
-    // amount would point at geometry that no longer exists.
-    setExplode(0);
-    setSelectedId(null);
-  }, [spec]);
+    setBackground(authoredBackground || '#000000');
+  }, [authoredBackground]);
 
   const parts = spec?.parts;
   const selection = useMemo(() => buildPartSelectionIndex(parts || []), [parts]);
   const layout = useMemo(() => computeExplodeLayout(parts || [], explode), [parts, explode]);
-  const handleSelect = useCallback((partId) => setSelectedId(partId || null), []);
+
+  // Same reason: reset the disassembly only when the part set actually changes,
+  // not on every poll that hands back an equivalent spec.
+  const partSignature = useMemo(() => Object.keys(selection.names).join('|'), [selection]);
+  useEffect(() => {
+    setExplode(0);
+  }, [partSignature]);
+
+  // The URL is the source of truth for what is selected, so a picked part is
+  // shareable and reload-safe; an id the current model doesn't have degrades to
+  // no selection instead of an empty label.
+  const requestedPartId = searchParams.get('part');
+  const selectedId = requestedPartId && selection.names[requestedPartId] ? requestedPartId : null;
+  const handleSelect = useCallback((partId) => {
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous);
+      if (partId) next.set('part', partId);
+      else next.delete('part');
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
 
   if (!spec) {
     return (
@@ -294,7 +329,7 @@ export default function ThreejsModelPreview({ spec, className = '' }) {
           <button
             type="button"
             aria-label="Clear part selection"
-            onClick={() => setSelectedId(null)}
+            onClick={() => handleSelect(null)}
             className="rounded px-1.5 py-0.5 hover:bg-white/15"
           >
             Clear

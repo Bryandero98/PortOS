@@ -36,6 +36,61 @@ describe('the shared part definition', () => {
     expect(computeExplodeLayout([blade], 0).unitIds).toEqual(['blade']);
   });
 
+  it('moves a geometry-bearing container as a unit AND descends into its children', () => {
+    // The canonical authored shape: a crate body with a trim strip on it. If the
+    // body were treated as a pure container it would be pinned in place and,
+    // with only one child, there would be nothing to separate at all.
+    const crate = part('crateBody', {
+      position: [0, 0, 0],
+      children: [part('frontTrim', { position: [0, 0, 0.64] })],
+    });
+    const layout = computeExplodeLayout([crate], 1);
+
+    expect(layout.unitIds).toEqual(['crateBody', 'frontTrim']);
+    // The body's offset applies to its own geometry, not to its group — moving
+    // the group would drag the trim along and separate nothing.
+    expect(layout.meshOffsets.crateBody).toBeDefined();
+    expect(layout.offsets.crateBody).toBeUndefined();
+    expect(magnitude(layout.meshOffsets.crateBody)).toBeGreaterThan(0);
+    expect(magnitude(offsetOf(layout, 'frontTrim'))).toBeGreaterThan(0);
+  });
+
+  it('ignores an organizational group that carries no geometry anywhere', () => {
+    const layout = computeExplodeLayout([
+      part('body', { position: [1, 0, 0] }),
+      part('anchor', { geometry: undefined, material: undefined, position: [-4, 0, 0] }),
+    ], 1);
+
+    // An invisible node must not become a unit — it would drag the centre and
+    // enable a slider that has nothing to move.
+    expect(layout.unitIds).toEqual(['body']);
+    expect(layout.offsets).toEqual({});
+  });
+
+  it('treats root-level relief as an ordinary part, matching what the picker owns', () => {
+    const parts = [part('floatingTrim', { explodeWithParent: true, position: [-1, 0, 0] }), part('body', { position: [1, 0, 0] })];
+    const layout = computeExplodeLayout(parts, 1);
+
+    // There is no parent to ride, and the picker self-owns it — so the two
+    // halves of the definition must not disagree about whether it is a part.
+    expect(layout.unitIds).toEqual(['floatingTrim', 'body']);
+    expect(buildPartSelectionIndex(parts).owners.floatingTrim).toBe('floatingTrim');
+  });
+
+  it('does not read part ids through Object.prototype', () => {
+    // idSchema accepts `toString`, and a plain-object lookup would hand back an
+    // inherited function that reads as an offset and renders NaN positions.
+    const parts = [part('toString', { position: [-1, 0, 0] }), part('constructor', { position: [1, 0, 0] })];
+    const layout = computeExplodeLayout(parts, 0);
+    const { owners, names, ancestry } = buildPartSelectionIndex(parts);
+
+    expect(layout.offsets.toString).toBeUndefined();
+    expect(layout.meshOffsets.constructor).toBeUndefined();
+    expect(owners.toString).toBe('toString');
+    expect(names.constructor).toBe('constructor name');
+    expect(ancestry.valueOf).toBeUndefined();
+  });
+
   it('descends through a part whose children carry the geometry', () => {
     const rig = part('rig', {
       geometry: undefined,

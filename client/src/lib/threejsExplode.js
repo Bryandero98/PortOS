@@ -9,11 +9,21 @@
  * - A part flagged `explodeWithParent` is **surface relief** (serrations, stria,
  *   trim, port floors). It rides its parent: it never moves on its own, and a
  *   click on it resolves up to the part it belongs to. Without this, a
- *   disassembly shatters into a comb of loose slivers.
- * - A part whose (non-relief) descendants carry the geometry is a **container**:
- *   it is descended through, and its children are the things that move.
- * - Anything else that is not relief is a **leaf**: it moves as one rigid unit
- *   (with its relief) and selects on its own.
+ *   disassembly shatters into a comb of loose slivers. (Relief with no parent to
+ *   ride is a contradiction the schema allows — a root-level flagged part is
+ *   treated as an ordinary part, exactly as the picker self-owns it.)
+ * - Every other part that carries its own geometry is a **movable unit**, which
+ *   is also precisely what the picker selects. That equivalence is the whole
+ *   point: the things you can take apart and the things you can click are the
+ *   same set.
+ * - A part whose (non-relief) descendants carry geometry is additionally a
+ *   **container** — it is descended through, so those descendants are units of
+ *   their own. A container that also has its own geometry moves that geometry
+ *   (and its relief) as a unit while its children move independently; the
+ *   offset for it therefore applies to the mesh inside the part, not to the
+ *   part's group, which would drag every child along with it.
+ * - A part with no geometry anywhere in its subtree moves nothing and is not a
+ *   unit — an empty organizational group must not drag the model centre.
  *
  * Separation is a layout **scale about the model centre**, not a uniform outward
  * push: pushing every part the same distance slides the arrangement without ever
@@ -60,27 +70,35 @@ const localMatrix = (part) => {
 
 /**
  * Walk the tree to the parts that actually move, carrying each one's model-space
- * position and the parent basis its offset has to be expressed in (offsets are
- * applied to the part's own `position`, which lives in parent space).
+ * position and the basis its offset has to be expressed in.
+ *
+ * `onMesh` distinguishes the two places an offset can land: a plain unit moves
+ * its whole group (offset in the PARENT's space, added to `position`), while a
+ * container that has geometry of its own moves only that geometry (offset in
+ * its OWN space, applied to a group around the mesh) so its child units stay
+ * free to move independently.
  */
 const collectExplodeUnits = (parts) => {
   const units = [];
-  const walk = (list, parentMatrix) => {
+  const walk = (list, parentMatrix, hasOwner) => {
     for (const part of list || []) {
-      if (isReliefPart(part)) continue;
+      // Relief rides its parent — unless there is no parent to ride, which the
+      // picker also treats as an ordinary part.
+      if (isReliefPart(part) && hasOwner) continue;
       const matrix = parentMatrix.clone().multiply(localMatrix(part));
-      if (isContainerPart(part)) {
-        walk(childrenOf(part), matrix);
-        continue;
+      const container = isContainerPart(part);
+      if (part?.geometry) {
+        units.push({
+          id: part.id,
+          position: new THREE.Vector3().setFromMatrixPosition(matrix),
+          basis: container ? matrix : parentMatrix,
+          onMesh: container,
+        });
       }
-      units.push({
-        id: part.id,
-        position: new THREE.Vector3().setFromMatrixPosition(matrix),
-        parentMatrix,
-      });
+      if (container) walk(childrenOf(part), matrix, true);
     }
   };
-  walk(parts, new THREE.Matrix4());
+  walk(parts, new THREE.Matrix4(), false);
   return units;
 };
 
@@ -95,11 +113,11 @@ const fallbackDirection = (index, count) => {
   return direction.lengthSq() > EPSILON ? direction.normalize() : new THREE.Vector3(0, 1, 0);
 };
 
-// A world-space delta becomes a parent-space delta through the inverse of the
-// parent's basis. A degenerate (zero-scaled) parent has no inverse — fall back
-// to the world delta rather than emitting NaN positions.
-const toParentSpace = (delta, parentMatrix) => {
-  const basis = new THREE.Matrix3().setFromMatrix4(parentMatrix);
+// A world-space delta becomes a local delta through the inverse of the frame it
+// will be applied in. A degenerate (zero-scaled) frame has no inverse — fall
+// back to the world delta rather than emitting NaN positions.
+const toLocalDelta = (delta, frame) => {
+  const basis = new THREE.Matrix3().setFromMatrix4(frame);
   if (Math.abs(basis.determinant()) < EPSILON) return delta.clone();
   return delta.clone().applyMatrix3(basis.clone().invert());
 };
@@ -107,10 +125,15 @@ const toParentSpace = (delta, parentMatrix) => {
 /**
  * Explode layout for a spec's parts at `amount` (0 assembled → 1 fully apart).
  *
- * Returns the per-part offsets to add to each unit's `position`, the ids of the
- * units that moved, and `growth` — how much the layout actually grew, measured
- * from the moved parts rather than guessed, so the camera can re-fit on real
- * change instead of on every slider tick.
+ * Returns `offsets` (added to a unit's own `position`), `meshOffsets` (applied
+ * to a group around a container's own geometry, so moving it does not drag the
+ * container's child units), the ids of the units that moved, and `growth` — how
+ * much the layout actually grew, measured from the moved parts rather than
+ * guessed, so the camera re-fits on real change instead of every slider tick.
+ *
+ * Both maps are null-prototype: part ids are provider-authored and the schema
+ * happily accepts `toString` or `constructor`, which on a plain object would
+ * read back an inherited function and produce NaN positions.
  */
 export function computeExplodeLayout(parts, amount = 0) {
   const units = collectExplodeUnits(parts);
@@ -118,14 +141,17 @@ export function computeExplodeLayout(parts, amount = 0) {
   const progress = clamp01(amount);
   // One unit has nothing to separate from, and any offset would just translate
   // the whole model out of frame.
-  if (progress <= 0 || units.length < 2) return { offsets: {}, unitIds, growth: 1 };
+  if (progress <= 0 || units.length < 2) {
+    return { offsets: Object.create(null), meshOffsets: Object.create(null), unitIds, growth: 1 };
+  }
 
   const box = new THREE.Box3();
   for (const unit of units) box.expandByPoint(unit.position);
   const centre = box.getCenter(new THREE.Vector3());
   const assembledRadius = units.reduce((max, unit) => Math.max(max, unit.position.distanceTo(centre)), 0);
 
-  const offsets = {};
+  const offsets = Object.create(null);
+  const meshOffsets = Object.create(null);
   let explodedRadius = 0;
   units.forEach((unit, index) => {
     const delta = unit.position.clone().sub(centre);
@@ -137,11 +163,14 @@ export function computeExplodeLayout(parts, amount = 0) {
     const clearance = (assembledRadius || 1) * EXPLODE_BASE_CLEARANCE * progress;
     const worldOffset = direction.multiplyScalar(scaled + clearance);
     explodedRadius = Math.max(explodedRadius, unit.position.clone().add(worldOffset).distanceTo(centre));
-    offsets[unit.id] = toParentSpace(worldOffset, unit.parentMatrix).toArray();
+    const local = toLocalDelta(worldOffset, unit.basis).toArray();
+    if (unit.onMesh) meshOffsets[unit.id] = local;
+    else offsets[unit.id] = local;
   });
 
   return {
     offsets,
+    meshOffsets,
     unitIds,
     // Units stacked on one point have no assembled radius to grow FROM, but the
     // clearance still moved them — report absolute growth there so the camera
@@ -158,11 +187,14 @@ export function computeExplodeLayout(parts, amount = 0) {
  * - `ancestry[id]` — root-to-self id chain, so "is this part inside the
  *   selection?" (subtree highlight) is a membership test.
  * - `names[id]` — readable part name for the selection label.
+ *
+ * Null-prototype for the same reason the layout maps are: a provider may name a
+ * part `toString`, and an inherited hit would resolve a click to a function.
  */
 export function buildPartSelectionIndex(parts) {
-  const owners = {};
-  const ancestry = {};
-  const names = {};
+  const owners = Object.create(null);
+  const ancestry = Object.create(null);
+  const names = Object.create(null);
   const walk = (list, chain, owner) => {
     for (const part of list || []) {
       if (!part?.id) continue;

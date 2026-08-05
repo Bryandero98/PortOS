@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
+import { MemoryRouter } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@react-three/fiber', () => ({
@@ -82,6 +83,10 @@ const part = (id, geometry, materialId, overrides = {}) => ({
   ...overrides,
 });
 
+// The preview keeps the picked part in the URL, so every render needs a router.
+const renderPreview = (ui, entry = '/') =>
+  render(ui, { wrapper: ({ children }) => <MemoryRouter initialEntries={[entry]}>{children}</MemoryRouter> });
+
 const box = { type: 'box', width: 1, height: 1, depth: 1 };
 const positionOf = (container, name) =>
   container.querySelector(`group[name="${name}"]`).getAttribute('position').split(',').map(Number);
@@ -89,7 +94,7 @@ const setExplode = (value) => fireEvent.change(screen.getByLabelText('Explode'),
 
 describe('ThreejsModelPreview', () => {
   it('offers preset and custom preview backgrounds without changing the scene spec', () => {
-    render(<ThreejsModelPreview spec={SPEC} />);
+    renderPreview(<ThreejsModelPreview spec={SPEC} />);
 
     expect(screen.getByRole('button', { name: 'Black' })).toHaveAttribute('aria-pressed', 'false');
     expect(screen.getByRole('button', { name: 'Green screen' })).toHaveAttribute('aria-pressed', 'false');
@@ -105,7 +110,7 @@ describe('ThreejsModelPreview', () => {
   });
 
   it('renders extrude and tube parts as built buffer geometries', () => {
-    const { container } = render(<ThreejsModelPreview spec={{
+    const { container } = renderPreview(<ThreejsModelPreview spec={{
       ...SPEC,
       materials: { body: material() },
       parts: [
@@ -140,7 +145,7 @@ describe('ThreejsModelPreview', () => {
   });
 
   it('forwards physical material channels only to physical materials', () => {
-    const { container } = render(<ThreejsModelPreview spec={{
+    const { container } = renderPreview(<ThreejsModelPreview spec={{
       ...SPEC,
       materials: {
         glass: material({ type: 'physical', ior: 1.45, transmission: 0.8, thickness: 0.6, sheen: 0.3, iridescence: 0.7, anisotropy: 0.9 }),
@@ -187,7 +192,7 @@ describe('ThreejsModelPreview disassembly', () => {
   });
 
   it('separates the parts by scaling the layout about the centre, keeping relief on its part', () => {
-    const { container } = render(<ThreejsModelPreview spec={knifeSpec()} />);
+    const { container } = renderPreview(<ThreejsModelPreview spec={knifeSpec()} />);
 
     expect(positionOf(container, 'Blade')).toEqual([-1, 0, 0]);
     expect(positionOf(container, 'Handle')).toEqual([1, 0, 0]);
@@ -206,7 +211,7 @@ describe('ThreejsModelPreview disassembly', () => {
   });
 
   it('re-fits the camera when the layout actually grows', () => {
-    render(<ThreejsModelPreview spec={knifeSpec()} />);
+    renderPreview(<ThreejsModelPreview spec={knifeSpec()} />);
     boundsApi.fit.mockClear();
 
     setExplode(0.5);
@@ -219,16 +224,16 @@ describe('ThreejsModelPreview disassembly', () => {
   });
 
   it('disables the explode control when there is only one part to move', () => {
-    render(<ThreejsModelPreview spec={{ ...SPEC, materials: { steel: material() }, parts: [part('solo', box, 'steel')] }} />);
+    renderPreview(<ThreejsModelPreview spec={{ ...SPEC, materials: { steel: material() }, parts: [part('solo', box, 'steel')] }} />);
     expect(screen.getByLabelText('Explode')).toBeDisabled();
   });
 
   it('resolves a click on surface relief up to the part it belongs to and highlights that subtree', () => {
-    const { container } = render(<ThreejsModelPreview spec={knifeSpec()} />);
+    const { container } = renderPreview(<ThreejsModelPreview spec={knifeSpec()} />);
 
     expect(screen.queryByRole('button', { name: 'Clear part selection' })).not.toBeInTheDocument();
 
-    fireEvent.pointerDown(container.querySelector('group[name="Serrations"] mesh'));
+    fireEvent.click(container.querySelector('group[name="Serrations"] mesh'));
 
     // The sliver is not the answer — the blade it rides is.
     expect(screen.getByText('Blade')).toBeInTheDocument();
@@ -240,10 +245,46 @@ describe('ThreejsModelPreview disassembly', () => {
     expect(container.querySelector('group[name="Handle"] meshStandardMaterial').getAttribute('emissive')).toBe('#000000');
   });
 
-  it('selects a plain part on its own and clears the selection', () => {
-    const { container } = render(<ThreejsModelPreview spec={knifeSpec()} />);
+  it('moves a container-with-geometry\'s own shell without dragging its child part', () => {
+    const { container } = renderPreview(<ThreejsModelPreview spec={{
+      ...SPEC,
+      materials: { steel: material() },
+      parts: [part('body', box, 'steel', {
+        name: 'Body',
+        children: [part('trim', box, 'steel', { name: 'Trim', position: [0, 0, 1] })],
+      })],
+    }} />);
 
-    fireEvent.pointerDown(container.querySelector('group[name="Handle"] mesh'));
+    // Assembled: the body's group sits at the origin and its shell is not offset.
+    expect(container.querySelector('group[name="Body"] > group:not([name])')).toBeNull();
+
+    setExplode(1);
+
+    // The body's GROUP must not move — that would carry the trim with it and
+    // separate nothing. Its shell moves inside an offset group instead.
+    expect(positionOf(container, 'Body')).toEqual([0, 0, 0]);
+    const shell = container.querySelector('group[name="Body"] > group:not([name])');
+    expect(shell.getAttribute('position').split(',').map(Number).some((value) => value !== 0)).toBe(true);
+    expect(shell.querySelector('mesh')).not.toBeNull();
+    // And the trim moves on its own.
+    expect(positionOf(container, 'Trim')).not.toEqual([0, 0, 1]);
+  });
+
+  it('keeps the picked part in the URL so it survives a reload and a stale id degrades', () => {
+    const { container, unmount } = renderPreview(<ThreejsModelPreview spec={knifeSpec()} />, '/?part=handle');
+    expect(screen.getByText('Handle')).toBeInTheDocument();
+    expect(container.querySelectorAll('meshStandardMaterial[emissive="#38bdf8"]')).toHaveLength(1);
+    unmount();
+
+    // A link to a part this model no longer has must not render an empty label.
+    renderPreview(<ThreejsModelPreview spec={knifeSpec()} />, '/?part=noSuchPart');
+    expect(screen.queryByRole('button', { name: 'Clear part selection' })).not.toBeInTheDocument();
+  });
+
+  it('selects a plain part on its own and clears the selection', () => {
+    const { container } = renderPreview(<ThreejsModelPreview spec={knifeSpec()} />);
+
+    fireEvent.click(container.querySelector('group[name="Handle"] mesh'));
     expect(screen.getByText('Handle')).toBeInTheDocument();
     expect(container.querySelectorAll('meshStandardMaterial[emissive="#38bdf8"]')).toHaveLength(1);
 
