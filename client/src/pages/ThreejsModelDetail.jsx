@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Box, Code2, Download, LoaderCircle, RefreshCw, Trash2 } from 'lucide-react';
+import { ArrowLeft, Box, Code2, Download, Info, LoaderCircle, RefreshCw, Trash2 } from 'lucide-react';
 import { Link, useNavigate, useParams } from 'react-router';
 import MediaImage from '../components/MediaImage';
 import ProviderModelSelector from '../components/ProviderModelSelector';
@@ -21,6 +21,12 @@ import { isAntigravityProvider, splitAntigravityModel } from '../utils/providers
 
 const providerFilter = (provider) =>
   provider.enabled !== false && ['api', 'cli', 'tui'].includes(provider.type);
+
+const SEVERITY_STYLE = {
+  error: 'border-port-error/40 bg-port-error/10 text-port-error',
+  warning: 'border-port-warning/40 bg-port-warning/10 text-port-warning',
+  note: 'border-port-border bg-port-bg/50 text-gray-400',
+};
 
 export default function ThreejsModelDetail() {
   const { id } = useParams();
@@ -156,6 +162,18 @@ export default function ThreejsModelDetail() {
 
   const generating = record.status === 'generating' || starting;
   const latestRun = Array.isArray(record.runs) ? record.runs[record.runs.length - 1] : null;
+  const coverageFindings = Array.isArray(record.coverage?.findings) ? record.coverage.findings : null;
+  // Counted from the findings actually rendered rather than read off the stored
+  // tallies, so the header can never disagree with the list below it — or print
+  // "undefined error" for a record whose coverage arrived without its counts.
+  // An unrecognized severity counts as a note rather than being dropped — the
+  // list below still renders it (styled as a note), and a tally that omitted it
+  // would read "0 note" above a visible finding.
+  const coverageCounts = (coverageFindings || []).reduce((counts, finding) => {
+    const bucket = counts[finding.severity] === undefined ? 'note' : finding.severity;
+    counts[bucket] += 1;
+    return counts;
+  }, { error: 0, warning: 0, note: 0 });
 
   return (
     <div className="mx-auto max-w-7xl space-y-4">
@@ -298,6 +316,40 @@ export default function ThreejsModelDetail() {
           {record.spec ? 'Refine model' : 'Generate model'}
         </button>
       </section>
+
+      {coverageFindings && (
+        <section className="rounded-xl border border-port-border bg-port-card p-4">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-xs font-medium uppercase tracking-wide text-gray-400">Assembly coverage</h2>
+            <span className="text-xs text-gray-600">
+              {coverageFindings.length === 0
+                ? 'Nothing promised was left unbuilt'
+                : `${coverageCounts.error} error · ${coverageCounts.warning} warning · ${coverageCounts.note} note`}
+            </span>
+          </div>
+          {coverageFindings.length > 0 && (
+            <ul className="space-y-2">
+              {coverageFindings.map((finding, index) => (
+                <li
+                  key={`${finding.code}-${index}`}
+                  className={`rounded-lg border px-3 py-2 text-xs leading-relaxed ${SEVERITY_STYLE[finding.severity] || SEVERITY_STYLE.note}`}
+                >
+                  <span className="mr-2 text-[9px] uppercase tracking-wide opacity-80">{finding.severity}</span>
+                  {finding.message}
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="mt-3 flex items-start gap-1.5 text-[11px] leading-relaxed text-gray-500">
+            <Info className="mt-0.5 h-3 w-3 shrink-0" />
+            <span>
+              This check proves the model built what its own spec promised — never that the spec promised enough.
+              {coverageCounts.error > 0
+                && ' Refining without your own feedback will target the errors above.'}
+            </span>
+          </p>
+        </section>
+      )}
 
       {record.spec?.detailInventory?.length > 0 && (
         <section className="rounded-xl border border-port-border bg-port-card p-4">

@@ -69,6 +69,10 @@ export async function createModel(input) {
     effort: input.effort || null,
     status: 'draft',
     spec: null,
+    // Assembly-coverage findings for `spec`, written alongside it by
+    // `evaluateThreejsPartCoverage`. Records written before this field existed
+    // read back as undefined; every consumer treats that as "not evaluated".
+    coverage: null,
     error: null,
     generationOperationId: null,
     runs: [],
