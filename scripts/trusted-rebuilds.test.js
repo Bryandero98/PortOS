@@ -171,8 +171,14 @@ describe('trusted rebuild allowlist', () => {
   // The lockfile-driven twin of the test below. This one runs in EVERY CI job for
   // EVERY workspace, installed or not, which is what closes the silent-skip hole.
   it.each(WORKSPACES)('%s: every lockfile-declared install hook is accounted for', (label) => {
+    // Decide "no lockfile" from the file itself, not from the helper's `null` — the
+    // helper also returns `null` when the lockfile is unreadable or unparseable, so
+    // trusting its `null` would silently skip exactly the broken cases. This is the
+    // same vacuity trap called out for the node_modules twin below; do not collapse
+    // it back into `if (declared === null) return`.
+    if (!existsSync(join(workspaceDir(label), 'package-lock.json'))) return; // browser/ has no deps
     const declared = lockfileInstallScriptPackages(label);
-    if (declared === null) return; // no lockfile (browser/ has no dependencies)
+    expect(declared, `${label}/package-lock.json exists but could not be parsed`).not.toBeNull();
     const allowed = new Set([
       ...(TRUSTED_REBUILDS[label] ?? []).flatMap((group) => group.pkgs),
       ...(DELIBERATELY_UNBUILT[label] ?? [])

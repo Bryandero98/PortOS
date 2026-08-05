@@ -58,11 +58,17 @@
     // `recommended` preset is much broader; adopting it is a separate policy
     // decision, not part of this migration.
     //
-    // KNOWN PARITY GAPS — this is a near-port, not a total one. Measured, not assumed:
-    //   * `no-cond-assign` and `no-empty` have only *broader* Biome analogues
-    //     (`noAssignInExpressions` ~400 hits, `noEmptyBlockStatements` ~705 hits on
-    //     today's src — mostly `while ((m = re.exec(s)))` and `() => {}` mocks), so
-    //     enabling them as-is would be a lint-policy change, not a port. Left off.
+    // KNOWN PARITY GAPS — this is a near-port, not a total one. Counts below are
+    // measured with `--max-diagnostics=none --reporter=json`, excluding
+    // `suppressions/unused` noise; Biome's default reporter caps at 20, so a bare
+    // `biome lint` undercounts and must not be used to re-derive these.
+    //   * `no-empty` -> `noEmptyBlockStatements`: **705** violations today, nearly all
+    //     `() => {}` test mocks and intentionally-empty catches. Enabling it is a
+    //     lint-policy change, not a port. Left off.
+    //   * `no-cond-assign` -> `noAssignInExpressions`: **22** violations, essentially
+    //     all the idiomatic `while ((m = re.exec(s)))` loop. Small enough to be a
+    //     reasonable follow-up (rewrite the 22 sites, then enable), but it is a source
+    //     change unrelated to a dependency swap, so it is deliberately not bundled here.
     //   * No Biome equivalent exists for `no-invalid-regexp`, `no-useless-assignment`,
     //     `no-unexpected-multiline`, `no-delete-var`, or `no-empty-static-block`.
     //     Most are parse-level or moot in ESM.

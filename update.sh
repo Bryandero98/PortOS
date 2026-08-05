@@ -189,8 +189,9 @@ safe_install autofixer
 
 # Run trusted install scripts skipped by ignore-scripts=true in each workspace's
 # .npmrc. The allowlist lives in scripts/trusted-rebuilds.js — a single home
-# shared with `npm run setup`, scripts/ensure-deps.js and CI, so a package can
-# never be granted an install-time execution slot in one path but not another.
+# shared with `npm run setup`, scripts/ensure-deps.js, setup.ps1, update.ps1 and CI,
+# so a package can never be granted an install-time execution slot in one path but
+# not another.
 # Only the server needs rebuilds; client/autofixer have no install-script deps
 # (vite 8 dropped the esbuild binary dependency that used to be the reason).
 log "🔧 Rebuilding trusted native dependencies..."
