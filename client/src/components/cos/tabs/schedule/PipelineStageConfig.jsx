@@ -1,4 +1,4 @@
-import { filterSelectableModels } from '../../../../utils/providers';
+import { effectiveModelFor, effortAwareModelOptions } from '../../../../utils/providers';
 import { FormField } from '../../../ui/FormField';
 import EffortSelect from '../../EffortSelect';
 import { pipelineStages } from './scheduleConstants';
@@ -39,7 +39,11 @@ export default function PipelineStageConfig({ taskType, config, providers, onUpd
       <div className="space-y-3">
         {stages.map((stage, i) => {
           const stageProvider = providers?.find(p => p.id === stage.providerId);
-          const stageModels = filterSelectableModels(stageProvider?.models);
+          // Each stage persists its own effort, so Antigravity lists BASE models
+          // with the tier picked beside them. A stage saved before the split
+          // keeps its suffixed id as its own option and still runs (the server
+          // splits it into `--model` + `--effort`).
+          const stageModels = effortAwareModelOptions(stageProvider, stage.model);
           return (
             <div key={i} className="bg-port-card border border-port-border rounded-lg p-3">
               <div className="flex items-center gap-2 mb-3">
@@ -84,6 +88,7 @@ export default function PipelineStageConfig({ taskType, config, providers, onUpd
                 </FormField>
                 <EffortSelect
                   provider={stageProvider}
+                  model={effectiveModelFor(stageProvider, stage.model)}
                   value={stage.effort}
                   onChange={(effort) => handleStageUpdate(i, 'effort', effort || null)}
                   disabled={updating}

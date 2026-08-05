@@ -12,6 +12,7 @@ import useReviewerModelOptions from '../../../../hooks/useReviewerModelOptions';
 import { reviewerModelsFromDefaults } from '../../../../lib/reviewerModels';
 import ToggleSwitch from '../../../ToggleSwitch';
 import useTaskModelPins from '../../../../hooks/useTaskModelPins';
+import { effectiveModelFor } from '../../../../utils/providers';
 import EffortSelect from '../../EffortSelect';
 import PromptEditor from './PromptEditor';
 import RunTaskButton from './RunTaskButton';
@@ -170,8 +171,10 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
     ? prCompletion === '' || prCompletion === 'review-then-merge'
     : !!config.taskMetadata?.reviewLoop;
 
-  // `selectedProvider` / `availableModels` come from useTaskModelPins above —
-  // it resolves the pin against the active provider and keeps a stale pin listed.
+  // `selectedProvider` / `availableModels` come from useTaskModelPins above — it
+  // resolves the pin against the active provider, lists Antigravity's BASE models
+  // (this panel persists a separate Thinking Effort), and keeps a stale suffixed
+  // pin selectable so it still runs while showing what it is.
   const status = config.status || {};
 
   return (
@@ -317,7 +320,7 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
 
           <EffortSelect
             provider={selectedProvider}
-            model={selectedModel}
+            model={effectiveModelFor(selectedProvider, selectedModel)}
             value={selectedEffort}
             onChange={handleEffortChange}
             disabled={updating}

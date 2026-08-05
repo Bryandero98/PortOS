@@ -50,7 +50,7 @@
  *   providers, whose ids don't encode their family.
  */
 import { useId } from 'react';
-import { effortLevelsForProvider, localToolUseHint, withToolUseOptionLabel } from '../utils/providers.js';
+import { effectiveModelFor, effortLevelsForProvider, localToolUseHint, withToolUseOptionLabel } from '../utils/providers.js';
 import EffortSelect from './cos/EffortSelect.jsx';
 
 const SELECT_CLASS =
@@ -98,8 +98,9 @@ export default function ProviderModelSelector({
   // A blank model ("Default model") isn't a no-op: the agent resolver then runs
   // the provider's own defaultModel — which for an Ollama-backed provider can be
   // a non-tool model that silently wedges the stage. So evaluate the EFFECTIVE
-  // model (explicit selection, else the provider default) for the warning.
-  const effectiveModel = selectedModel || selectedProvider?.defaultModel || '';
+  // model (explicit selection, else the provider default) for the warning — and
+  // for the effort ladder, which is per-model on Antigravity.
+  const effectiveModel = effectiveModelFor(selectedProvider, selectedModel);
   const toolHint = highlightToolUse ? localToolUseHint(effectiveModel, selectedProvider) : null;
   const toolIncapable = toolHint?.toolCapable === false;
   // Only offer enabled providers (treat a missing `enabled` as enabled). The

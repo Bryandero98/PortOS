@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { filterSelectableModels, mergeModelLists, resolveEffectiveProvider } from '../utils/providers';
+import { effortAwareModelOptions, mergeModelLists, resolveEffectiveProvider } from '../utils/providers';
 
 /**
  * Provider / model / effort pins for one CoS scheduled task, shared by the
@@ -69,12 +69,17 @@ export function useTaskModelPins({ taskType, config, providers, activeProviderId
     [providers, pins.providerId, activeProviderId]
   );
 
-  // A pin the provider no longer lists stays selectable, or the select would
-  // hold a value matching no option, render blank, and read as "Default".
+  // Both surfaces that use these pins persist a separate effort, so Antigravity
+  // lists BASE models (`gemini-3.6-flash`) with the tier picked beside them —
+  // `effortAwareModelOptions` also keeps a legacy suffixed pin selectable, since
+  // the server splits it back into `--model` + `--effort` and it still runs.
+  // Any OTHER pin the provider no longer lists stays selectable too, or the
+  // select would hold a value matching no option, render blank, and read as
+  // "Default".
   const availableModels = useMemo(() => {
-    const selectable = filterSelectableModels(provider?.models);
+    const selectable = effortAwareModelOptions(provider, pins.model);
     return pins.model ? mergeModelLists([pins.model], selectable) : selectable;
-  }, [provider?.models, pins.model]);
+  }, [provider, pins.model]);
 
   return {
     ...pins,

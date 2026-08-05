@@ -40,6 +40,7 @@ export default function ThreejsModels() {
   const [prompt, setPrompt] = useState('');
   const families = useThreejsModelFamilies();
   const [family, setFamily] = useState(GENERAL_FAMILY_ID);
+  const [effort, setEffort] = useState('');
   const [creating, setCreating] = useState(false);
   const {
     providers,
@@ -49,7 +50,9 @@ export default function ThreejsModels() {
     setSelectedProviderId,
     setSelectedModel,
     loading: providersLoading,
-  } = useProviderModels({ filter: providerFilter, silent: true });
+    // This picker renders the effort control and sends the value, so Antigravity
+    // lists base models with effort picked separately.
+  } = useProviderModels({ filter: providerFilter, silent: true, withEffort: true });
 
   useEffect(() => {
     listThreejsModels({ silent: true })
@@ -93,6 +96,7 @@ export default function ThreejsModels() {
       providerId: selectedProviderId,
       model: selectedModel || undefined,
       family,
+      effort: effort || undefined,
     }, { silent: true }).catch((error) => {
       toast.error(error.message || 'Failed to start model generation');
       return null;
@@ -177,8 +181,10 @@ export default function ThreejsModels() {
             selectedProviderId={selectedProviderId}
             selectedModel={selectedModel}
             availableModels={availableModels}
-            onProviderChange={setSelectedProviderId}
+            onProviderChange={(id) => { setSelectedProviderId(id); setEffort(''); }}
             onModelChange={setSelectedModel}
+            effort={effort}
+            onEffortChange={setEffort}
             disabled={providersLoading || creating}
             alwaysShowModel
             emptyModelOption="Provider default"
