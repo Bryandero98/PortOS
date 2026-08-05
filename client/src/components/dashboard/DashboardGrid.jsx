@@ -345,32 +345,31 @@ const GridCell = memo(function GridCell({
   });
   const measureRef = useRef(null);
 
-  // Report the widget's natural height so the parent can pack around it.
-  // Skipped when:
+  // Two sources report this widget's natural height so the parent can pack
+  // around it. Both skip the same two cases:
   //  - mobile, where the single-column stack measures at a totally different
   //    width and those numbers would be wrong for the desktop pack;
   //  - pinned, where the measured node is stretched to the declared height, so
   //    all it could publish is that height back — and the pack would then spend
   //    the frame after an unpin laying the cell out at its clipped size.
-  //    Skipping leaves the last natural height in place, which is a far better
-  //    starting guess.
-  // Post-commit measurement, pre-paint. This is the AUTHORITATIVE one: it
-  // catches whatever React just put in the cell — a lazy chunk resolving out
-  // of Suspense, a list arriving — without depending on the observer having
-  // noticed. Relying on the observer alone made this racy: a widget whose
-  // content landed without a delivered resize notification kept whatever it
-  // measured while it was still a skeleton, so it packed (and clipped) at the
-  // wrong height. No dep array — every render of this cell re-measures, and
-  // `onMeasure` bails on an unchanged value, so a settled cell costs one read
-  // and one comparison.
+  //    Skipping leaves the last natural height in place, a far better guess.
+
+  // (1) Post-commit, pre-paint — the AUTHORITATIVE one. It catches whatever
+  // React just put in the cell (a lazy chunk resolving out of Suspense, a list
+  // arriving) without depending on the observer having noticed. The observer
+  // alone was racy: a widget whose content landed without a delivered resize
+  // notification kept whatever it measured while it was still a skeleton, so
+  // it packed — and clipped — at the wrong height. No dep array, so every
+  // render re-measures; `onMeasure` bails on an unchanged value, so a settled
+  // cell costs one read and one comparison.
   useLayoutEffect(() => {
     const node = measureRef.current;
     if (node && !isMobile && !item.fixedH) onMeasure(item.id, node.offsetHeight);
   });
 
-  // The observer covers what the commit pass can't see: growth with no render
-  // of this cell at all — images and fonts loading, a widget's own async DOM
-  // work, or a state change inside the memoized widget subtree.
+  // (2) The observer covers what the commit pass can't see: growth with no
+  // render of this cell at all — images and fonts loading, a widget's own
+  // async DOM work, or a state change inside the memoized widget subtree.
   //
   // Published straight from the callback, same as `useContainerWidth`. There
   // is no feedback loop to defer around: the measured node's height comes from
