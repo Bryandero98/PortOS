@@ -16,6 +16,11 @@ import { dirname, join } from 'path';
 
 const mock = vi.hoisted(() => ({
   files: new Map(),
+  // Mocked mtimes for the parsed-task cache (#3497). Each mocked write bumps the
+  // path's stamp; a test that wants to simulate an EXTERNAL edit sets it itself.
+  mtimes: new Map(),
+  // Counts real parses so the cache tests can prove a hit did no work.
+  parseCalls: 0,
   state: null,
   events: [],
   // Controls the mocked codeReview.js for resolveTaskChallengeWithRecheck (#2471).
@@ -41,8 +46,26 @@ vi.mock('fs/promises', () => ({
     if (!mock.files.has(p)) throw new Error(`ENOENT: ${p}`);
     return mock.files.get(p);
   }),
-  writeFile: vi.fn(async (p, content) => { mock.files.set(p, content); })
+  writeFile: vi.fn(async (p, content) => {
+    mock.files.set(p, content);
+    mock.mtimes.set(p, (mock.mtimes.get(p) || 0) + 1000);
+  }),
+  // The parsed-task cache stamps on mtimeMs + size, so the mock must model both.
+  stat: vi.fn(async (p) => {
+    if (!mock.files.has(p)) throw new Error(`ENOENT: ${p}`);
+    return { mtimeMs: mock.mtimes.get(p) || 0, size: mock.files.get(p).length };
+  })
 }));
+
+// Counts parseTasksMarkdown calls (cache-hit assertions) while keeping every
+// other taskParser export real — the store's whole read path depends on them.
+vi.mock('../lib/taskParser.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    parseTasksMarkdown: (content) => { mock.parseCalls += 1; return actual.parseTasksMarkdown(content); }
+  };
+});
 
 vi.mock('./cosState.js', () => ({
   loadState: vi.fn(async () => mock.state),
@@ -90,7 +113,8 @@ import {
   isReapableBlockedFailure,
   isReapableInvestigation,
   sweepResolvedFailureTasks,
-  DEFAULT_FAILURE_TASK_MAX_AGE_MS
+  DEFAULT_FAILURE_TASK_MAX_AGE_MS,
+  __resetTaskCache
 } from './cosTaskStore.js';
 import { MAX_TOTAL_SPAWNS } from '../lib/cosValidation.js';
 
@@ -103,6 +127,11 @@ const baseState = () => ({
 
 beforeEach(() => {
   mock.files = new Map();
+  mock.mtimes = new Map();
+  mock.parseCalls = 0;
+  // The parse cache is module-level state; a leftover entry from the previous
+  // test would answer for a path this test just re-created from scratch.
+  __resetTaskCache();
   mock.state = baseState();
   mock.events = [];
   mock.review = { ok: true, findings: 'No findings.' };
@@ -150,6 +179,95 @@ describe('cosTaskStore.getUserTasks / getCosTasks', () => {
     expect(result.type).toBe('internal');
     expect(result.autoApproved.some(t => t.description === 'auto sys')).toBe(true);
     expect(result.awaitingApproval.some(t => t.description === 'needs approval')).toBe(true);
+  });
+});
+
+// Parsed-task cache (#3497). The daemon's evaluation tick re-reads both task
+// files many times a minute; these pin that an unchanged file is parsed once,
+// that every invalidation signal fires, and that a cached read can never leak a
+// caller's in-place mutations into the next reader.
+describe('cosTaskStore parsed-task cache (#3497)', () => {
+  it('serves a cached parse while the file is unchanged', async () => {
+    await addTask({ description: 'cached thing' }, 'user');
+    mock.parseCalls = 0;
+
+    const first = await getUserTasks();
+    expect(mock.parseCalls).toBe(1);
+
+    const second = await getUserTasks();
+    expect(mock.parseCalls).toBe(1); // no re-parse — the file did not move
+    expect(second.tasks).toEqual(first.tasks);
+  });
+
+  it('re-parses after an external edit bumps mtime', async () => {
+    await addTask({ description: 'first' }, 'user');
+    await getUserTasks();
+    mock.parseCalls = 0;
+
+    // Simulate an out-of-band write (user editing TASKS.md, a restore, a peer).
+    mock.files.set(USER_FILE, mock.files.get(USER_FILE).replace('first', 'edited outside the store'));
+    mock.mtimes.set(USER_FILE, mock.mtimes.get(USER_FILE) + 5000);
+
+    const after = await getUserTasks();
+    expect(mock.parseCalls).toBe(1);
+    expect(after.tasks[0].description).toBe('edited outside the store');
+  });
+
+  it('re-parses after a write through the store even when mtime has not moved', async () => {
+    await addTask({ description: 'original' }, 'user');
+    await getUserTasks();
+
+    // Freeze mtime+size across the update: a coarse-granularity filesystem can
+    // report an identical stamp for a same-second, same-length rewrite, so the
+    // write path must drop the entry itself rather than trust the stamp.
+    const frozenMtime = mock.mtimes.get(USER_FILE);
+    const created = (await getUserTasks()).tasks[0];
+    await updateTask(created.id, { description: 'original' }, 'user');
+    mock.mtimes.set(USER_FILE, frozenMtime);
+    mock.files.set(USER_FILE, mock.files.get(USER_FILE).replace('original', 'rewritten'));
+    mock.parseCalls = 0;
+
+    const after = await getUserTasks();
+    expect(mock.parseCalls).toBe(1);
+    expect(after.tasks[0].description).toBe('rewritten');
+  });
+
+  it('invalidates on deleteTask so the removed task never comes back cached', async () => {
+    const created = await addTask({ description: 'doomed' }, 'user');
+    expect((await getUserTasks()).tasks).toHaveLength(1);
+
+    await deleteTask(created.id, 'user');
+    expect((await getUserTasks()).tasks).toHaveLength(0);
+  });
+
+  it('invalidates on mergePeerTasks so a merged peer task is visible immediately', async () => {
+    await addTask({ description: 'local one', id: 'task-local' }, 'user');
+    await getUserTasks();
+
+    await mergePeerTasks('user', [{
+      id: 'task-remote',
+      description: 'remote one',
+      status: 'pending',
+      priority: 'MEDIUM',
+      metadata: { updatedAt: new Date(Date.now()).toISOString() }
+    }]);
+
+    const after = await getUserTasks();
+    expect(after.tasks.some(t => t.id === 'task-remote')).toBe(true);
+  });
+
+  it('hands every reader its own copy, so mutating one result cannot poison the cache', async () => {
+    await addTask({ description: 'pristine' }, 'user');
+
+    const first = await getUserTasks();
+    first.tasks[0].description = 'mutated in place';
+    first.tasks[0].metadata.injected = 'nope';
+    first.tasks.push({ id: 'task-ghost' });
+
+    const second = await getUserTasks();
+    expect(second.tasks).toHaveLength(1);
+    expect(second.tasks[0].description).toBe('pristine');
+    expect(second.tasks[0].metadata.injected).toBeUndefined();
   });
 });
 
@@ -755,6 +873,42 @@ describe('cosTaskStore.approveTask', () => {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STORE_SRC = realReadFileSync(join(__dirname, 'cosTaskStore.js'), 'utf-8');
+
+describe('parsed-task cache — no bypass (source guards, #3497)', () => {
+  // Everything outside the two cache accessors. Any fs call the rest of the
+  // module makes to the task files is a bypass by definition.
+  const ACCESSOR_START = 'async function readTaskFile';
+  const ACCESSOR_END = '/** Test hook: forget every cached parse. */';
+  const outsideAccessors = (() => {
+    const start = STORE_SRC.indexOf(ACCESSOR_START);
+    const end = STORE_SRC.indexOf(ACCESSOR_END);
+    if (start === -1 || end <= start) return null; // asserted below, not thrown here
+    return (STORE_SRC.slice(0, start) + STORE_SRC.slice(end))
+      .split('\n')
+      .filter(line => !line.trim().startsWith('//') && !line.trim().startsWith('*'));
+  })();
+
+  it('locates the cache accessors it is guarding', () => {
+    // If this fails the two guards below are vacuous — the anchors drifted.
+    expect(outsideAccessors, `anchors "${ACCESSOR_START}" / "${ACCESSOR_END}" not found in order`).not.toBeNull();
+  });
+
+  it('every task-file read goes through readTaskFile', () => {
+    // A read path calling readFile + parseTasksMarkdown directly still works,
+    // but pays the full parse the cache exists to avoid and skips the
+    // copy-on-read that keeps a caller's in-place mutations out of the cache.
+    const bypasses = outsideAccessors.filter(line => /\breadFile\(/.test(line));
+    expect(bypasses, `direct readFile call(s): ${bypasses.join(' | ')}`).toEqual([]);
+  });
+
+  it('every task-file write goes through writeTaskFile', () => {
+    // A write calling writeFile directly leaves the previous parse cached, and
+    // mtime granularity is too coarse to be relied on to catch it — the next
+    // read would serve pre-write tasks.
+    const bypasses = outsideAccessors.filter(line => /\bwriteFile\(/.test(line));
+    expect(bypasses, `direct writeFile call(s): ${bypasses.join(' | ')}`).toEqual([]);
+  });
+});
 
 describe('addTask — first-line dedup (source guards)', () => {
   it('addTask uses firstLine for dedup', () => {
