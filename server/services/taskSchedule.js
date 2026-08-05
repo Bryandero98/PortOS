@@ -1835,6 +1835,43 @@ export async function resetExecutionHistory(taskType, appId = null) {
 // Upcoming Tasks Preview
 // ============================================================
 
+/**
+ * Aggregate a perpetual task's park records into a single upcoming-eligibility
+ * verdict for getUpcomingTasks.
+ *
+ * Perpetual parks are recorded PER-APP (parkPerpetual is always called with an
+ * appId — see applyPerpetualWorkGate / the reconcile blocks in cosTaskGenerator),
+ * so the top-level execution record is only a container and never carries its own
+ * `parkedUntil` for the app-scoped drains (claim-issue, claim-work, branch-/
+ * issue-reconcile). The GLOBAL `shouldRunTask` therefore always reads
+ * 'perpetual-drain' (shouldRun:true) even when every app is parked on its recheck
+ * cadence — which made getUpcomingTasks report the task 'ready' forever and hid
+ * its real next-recheck boundary (e.g. a `recheckCron: '0 9 * * *'`) from
+ * scheduleNextImprovementCheck. The daemon then never woke AT 9am; the parked
+ * drain only resumed on the ≤1h fallback poll, so a task configured for 9am ran
+ * up to an hour late (or read as "didn't run").
+ *
+ * Derive eligibility from the per-app records instead — plus the top-level record
+ * only when it carries its OWN park (a future global-park perpetual; none ship
+ * today, but keep it general). Returns:
+ *   - null                                    → no tracked scope yet (caller keeps its global 'ready' default)
+ *   - { status:'ready', eligibleAt:now }      → some tracked scope is due now (unparked or park elapsed)
+ *   - { status:'scheduled', eligibleAt:<ms> } → every tracked scope parked; soonest recheck
+ */
+function perpetualUpcomingEligibility(execution, now) {
+  const scopes = Object.values(execution?.perApp || {});
+  if (execution?.parkedUntil) scopes.push(execution);
+  if (scopes.length === 0) return null;
+  let soonest = Infinity;
+  for (const rec of scopes) {
+    const until = rec?.parkedUntil ? new Date(rec.parkedUntil).getTime() : 0;
+    // Unparked (mid-drain) or park already elapsed → this scope is due now.
+    if (!until || until <= now) return { status: 'ready', eligibleAt: now };
+    if (until < soonest) soonest = until;
+  }
+  return { status: 'scheduled', eligibleAt: soonest };
+}
+
 export async function getUpcomingTasks(limit = 10) {
   const schedule = await loadSchedule();
   const now = Date.now();
@@ -1859,6 +1896,18 @@ export async function getUpcomingTasks(limit = 10) {
     } else if (interval.type === INTERVAL_TYPES.ONCE && execution.count > 0) {
       taskStatus = 'completed';
       eligibleAt = Infinity;
+    }
+
+    // Perpetual tasks park per-app, so the global `check` above can't see the
+    // recheck boundary — re-derive status/eligibility from the park records so
+    // scheduleNextImprovementCheck wakes the daemon AT the next recheck (e.g. 9am)
+    // instead of only on the ≤1h fallback poll. See perpetualUpcomingEligibility.
+    if (interval.type === INTERVAL_TYPES.PERPETUAL) {
+      const perpetual = perpetualUpcomingEligibility(execution, now);
+      if (perpetual) {
+        taskStatus = perpetual.status;
+        eligibleAt = perpetual.eligibleAt;
+      }
     }
 
     if (taskStatus === 'completed') continue;
