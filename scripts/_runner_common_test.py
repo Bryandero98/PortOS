@@ -9,9 +9,15 @@ scripts/train_mflux_lora_test.py.
 import sys
 from pathlib import Path
 
+# ✅/❌ are cp1252-unencodable on a Windows console, which would abort the run
+# before the first result printed — these runners are used on CUDA/Windows too.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _runner_common import (  # noqa: E402
     apply_memory_optimizations,
+    empty_device_cache,
     set_vae_tiling,
     _VAE_TILING_MIN_PIXELS,
 )
@@ -151,6 +157,61 @@ p = _BareRecorder()
 set_vae_tiling(p, False)
 check("set_vae_tiling on bare pipe is a no-op (no crash)", p.calls == [])
 
+
+# --- empty_device_cache: dispatches on the RESOLVED device, not on capability -
+# `empty_device_cache` defers its `import torch`, so a stub in sys.modules is
+# enough to observe the dispatch without needing real torch (or a GPU).
+
+
+class _FakeBackend:
+    def __init__(self):
+        self.emptied = self.synced = 0
+
+    def empty_cache(self):
+        self.emptied += 1
+
+    def synchronize(self):
+        self.synced += 1
+
+
+class _FakeTorch:
+    def __init__(self):
+        self.cuda = _FakeBackend()
+        self.mps = _FakeBackend()
+
+
+def _clear(device, **kw):
+    """Run empty_device_cache against a stub torch; return it for assertions."""
+    fake = _FakeTorch()
+    saved = sys.modules.get("torch")
+    sys.modules["torch"] = fake
+    try:
+        empty_device_cache(device, **kw)
+    finally:
+        if saved is None:
+            del sys.modules["torch"]
+        else:
+            sys.modules["torch"] = saved
+    return fake
+
+
+_cuda = _clear("cuda")
+check("empty_device_cache('cuda') clears the CUDA cache", _cuda.cuda.emptied == 1)
+check("empty_device_cache('cuda') leaves MPS alone", _cuda.mps.emptied == 0)
+
+_mps = _clear("mps")
+check("empty_device_cache('mps') clears the MPS cache", _mps.mps.emptied == 1)
+check("empty_device_cache('mps') leaves CUDA alone", _mps.cuda.emptied == 0)
+
+# The resolved-device predicate is the point: a `--device cpu` run on a machine
+# that HAS a CUDA card must not clear a cache this process never filled.
+_cpu = _clear("cpu")
+check("empty_device_cache('cpu') clears nothing",
+      _cpu.cuda.emptied == 0 and _cpu.mps.emptied == 0)
+
+check("empty_device_cache does not synchronize by default", _clear("cuda").cuda.synced == 0)
+check("empty_device_cache(synchronize=True) drains the queue",
+      _clear("cuda", synchronize=True).cuda.synced == 1)
 
 if FAILS:
     print(f"\n❌ {len(FAILS)} test(s) failed:")

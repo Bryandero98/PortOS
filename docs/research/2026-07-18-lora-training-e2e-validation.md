@@ -114,3 +114,13 @@ precomputes latents for minutes only to crash, the fallback now refuses up front
   the current pinned stack. The user's real character LoRAs train on this hardware.
 - torch fallback: confirmed non-viable on MPS and now guarded with actionable
   guidance; CUDA/CPU e2e validation deferred to appropriate hardware.
+
+> **Update 2026-08-05 (#2786):** the CUDA validation is done — see
+> [2026-08-05-torch-flux2-lora-cuda-validation.md](./2026-08-05-torch-flux2-lora-cuda-validation.md).
+> bf16 `linear_backward` does exist on CUDA and the fallback trains, resumes,
+> and round-trips there. Getting it working first required fixing two memory
+> bugs this 128 GB unified-memory machine had silently absorbed: precompute ran
+> without `torch.no_grad()` (leaking ~2.6 GB per caption), and `render_sample`
+> decoded the VAE on CPU in bf16 (>18 min for one 512-px decode). Both were
+> latent here too — the MPS run just died at the first backward, before either
+> could bite.
