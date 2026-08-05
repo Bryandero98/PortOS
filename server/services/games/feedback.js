@@ -4,7 +4,6 @@
 
 import { randomUUID } from 'crypto';
 import { ServerError } from '../../lib/errorHandler.js';
-import { buildEffortArgs } from '../../lib/providerModels.js';
 import {
   resolveEffectiveModel,
   runPromptThroughProvider,
@@ -72,10 +71,16 @@ export async function requestGameFeedback(id, { providerId, model, effort, promp
     throw new ServerError('Choose an enabled AI provider', { status: 400, code: 'PROVIDER_UNAVAILABLE' });
   }
   const selectedModel = resolveEffectiveModel(provider, model);
-  const effortArgs = buildEffortArgs(effort, provider, provider.args || []);
+  // Effort rides the runner's own first-class argument rather than being baked
+  // into `provider.args` here: the runner clamps it against the provider AND the
+  // selected model, which Antigravity requires — agy validates the PAIR and
+  // rejects `--model gemini-3.1-pro --effort medium`. Hand-baking it (as this
+  // predated #3480 doing) resolved against the provider-wide ladder only, so a
+  // tier the chosen model doesn't offer produced an invocation agy refuses.
   const run = await runPromptThroughProvider({
-    provider: effortArgs.length ? { ...provider, args: [...(provider.args || []), ...effortArgs] } : provider,
+    provider,
     model: selectedModel ?? undefined,
+    effort: effort || undefined,
     prompt: await buildGameFeedbackPrompt(game, prompt),
     source: 'game-asset-feedback',
   });

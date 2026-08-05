@@ -53,6 +53,7 @@ import {
   withStaleAntigravityPin,
   effortAwareModelOptions,
   effectiveModelFor,
+  effortSurvivingModel,
   seedModelEffort,
 } from './providers.js';
 import { PROVIDER_TYPES as SERVER_PROVIDER_TYPES } from '../../../server/lib/aiToolkit/constants.js';
@@ -261,6 +262,44 @@ describe('Antigravity base-model split (server mirror)', () => {
 
     it('normalizes nullish input to empty strings', () => {
       expect(seedModelEffort(agy, null, null)).toEqual({ model: '', effort: '' });
+    });
+  });
+
+  // A model with no tiers HIDES the effort select. Without this the previous
+  // effort sat in state with no UI left to clear it, and every submit still sent
+  // it — an invocation agy rejects, plus a persisted level the run never used.
+  describe('effortSurvivingModel', () => {
+    const agy = { id: 'antigravity-cli', command: 'agy', models: CATALOG, defaultModel: ANTIGRAVITY_CONFIGURED_DEFAULT };
+
+    it('drops the effort when the newly-picked model has no tiers at all', () => {
+      // `claude-sonnet-4-6` ships in the agy catalog with no -low/-medium/-high
+      // siblings, so effortLevelsForProvider returns null and the select vanishes.
+      expect(effortSurvivingModel(agy, 'claude-sonnet-4-6', 'high')).toBe('');
+    });
+
+    it('keeps an effort the new model still offers', () => {
+      expect(effortSurvivingModel(agy, 'gemini-3.6-flash', 'high')).toBe('high');
+    });
+
+    it('keeps an out-of-ladder effort when the ladder merely NARROWS', () => {
+      // gemini-3.1-pro has no `medium`, but EffortSelect renders an explicit
+      // "medium (runs as low)" option — the clamp stays visible, so don't
+      // silently discard what the user picked.
+      expect(effortSurvivingModel(agy, 'gemini-3.1-pro', 'medium')).toBe('medium');
+    });
+
+    it('falls back to the provider default when the model is cleared', () => {
+      // Blank model = "use the provider default", which for agy is the sentinel —
+      // an UNKNOWN model, so the full ladder applies and the effort survives.
+      expect(effortSurvivingModel(agy, '', 'high')).toBe('high');
+    });
+
+    it('drops the effort for a provider with no effort control at all', () => {
+      expect(effortSurvivingModel({ id: 'grok-cli', command: 'grok' }, 'grok-4', 'high')).toBe('');
+    });
+
+    it('normalizes a nullish effort to the empty sentinel', () => {
+      expect(effortSurvivingModel(agy, 'gemini-3.6-flash', null)).toBe('');
     });
   });
 });

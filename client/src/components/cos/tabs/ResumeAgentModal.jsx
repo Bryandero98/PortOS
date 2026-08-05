@@ -6,7 +6,7 @@ import Modal from '../../ui/Modal';
 import FilePickerButton from '../../ui/FilePickerButton';
 import { FormField } from '../../ui/FormField';
 import EffortSelect from '../EffortSelect';
-import { effectiveModelFor, effortAwareModelOptions, seedModelEffort } from '../../../utils/providers';
+import { effectiveModelFor, effortAwareModelOptions, effortSurvivingModel, seedModelEffort } from '../../../utils/providers';
 
 export default function ResumeAgentModal({ agent, taskType = 'user', providers, apps, onSubmit, onClose }) {
   const taskDescription = agent.metadata?.taskDescription || agent.taskId || 'Resume previous task';
@@ -231,7 +231,13 @@ export default function ResumeAgentModal({ agent, taskType = 'user', providers, 
             <FormField label="Model" className="flex-1">
               <select
                 value={formData.model}
-                onChange={e => setFormData({ ...formData, model: e.target.value })}
+                onChange={e => setFormData(d => ({
+                  ...d,
+                  model: e.target.value,
+                  // A model with no effort tiers hides the select beside it — clear
+                  // the value with it instead of resuming on a level the UI dropped.
+                  effort: effortSurvivingModel(selectedProvider, e.target.value, d.effort),
+                }))}
                 className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm focus:border-port-accent focus:outline-hidden"
                 disabled={!formData.provider}
               >

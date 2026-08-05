@@ -50,7 +50,7 @@
  *   providers, whose ids don't encode their family.
  */
 import { useId } from 'react';
-import { effectiveModelFor, effortLevelsForProvider, localToolUseHint, withToolUseOptionLabel } from '../utils/providers.js';
+import { effectiveModelFor, effortLevelsForProvider, effortSurvivingModel, localToolUseHint, withToolUseOptionLabel } from '../utils/providers.js';
 import EffortSelect from './cos/EffortSelect.jsx';
 
 const SELECT_CLASS =
@@ -116,7 +116,20 @@ export default function ProviderModelSelector({
   // renders null for a provider with no effort control, so gate the label+wrapper
   // on the same predicate or a non-effort provider gets an orphaned label.
   const showEffort = !!onEffortChange && !!effortLevelsForProvider(selectedProvider, effectiveModel);
-  const wrapperClass = layout === 'stacked' ? 'flex flex-col gap-1' : 'flex items-center gap-2';
+  // Picking a model with NO effort tiers (Antigravity's ladder is per-model) makes
+  // the select above disappear — so clear the effort with it, or the value stays in
+  // state with no UI left to change it and every submit still sends it. Owned here
+  // rather than by each caller so the rule can't be forgotten by the next picker.
+  const handleModelChange = (value) => {
+    onModelChange(value);
+    if (!onEffortChange || !effort) return;
+    const surviving = effortSurvivingModel(selectedProvider, value, effort);
+    if (surviving !== effort) onEffortChange(surviving);
+  };
+  // `row` was sized for two selects; the effort control makes it three, which is
+  // unreadable at phone width — stack until `sm` when it's showing.
+  const rowClass = showEffort ? 'flex flex-col sm:flex-row sm:items-center gap-2' : 'flex items-center gap-2';
+  const wrapperClass = layout === 'stacked' ? 'flex flex-col gap-1' : rowClass;
   return (
     <div className={wrapperClass}>
       <div className="flex-1 min-w-0">
@@ -142,7 +155,7 @@ export default function ProviderModelSelector({
           <select
             id={modelSelectId}
             value={selectedModel}
-            onChange={(e) => onModelChange(e.target.value)}
+            onChange={(e) => handleModelChange(e.target.value)}
             disabled={disabled || modelDisabled}
             title={compact ? 'Model' : undefined}
             aria-label={compact ? 'Model' : undefined}

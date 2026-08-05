@@ -343,6 +343,31 @@ export const effortLevelsForProvider = (provider, model = null) => {
   return null;
 };
 
+/**
+ * The effort a picker should keep after its MODEL changed under a fixed provider:
+ * the current one, or `''` when the new model has no effort control at all.
+ *
+ * Antigravity's tiers are per-model, and a model with NO tiers hides the select
+ * entirely (`effortLevelsForProvider` → null — `claude-sonnet-4-6` in the shipped
+ * agy catalog has no `-low|-medium|-high` siblings). Without this the previous
+ * effort stays in state with no UI left to clear it, and every submit path still
+ * sends it: an invocation agy rejects (`--model claude-sonnet-4-6 --effort high`)
+ * and, on the records that persist it, a stored level the run never used.
+ *
+ * A merely NARROWED ladder is deliberately left alone — `EffortSelect` renders an
+ * explicit `medium (runs as low)` option there, so the clamp stays visible rather
+ * than silently discarding the user's choice.
+ *
+ * CLIENT-ONLY (no server mirror) — the server clamps what it is sent; this keeps
+ * the UI from sending something it stopped showing.
+ * @param {{id?:string, command?:string, models?:unknown[], defaultModel?:string}|null|undefined} provider
+ * @param {string|null|undefined} model - the NEWLY selected model
+ * @param {string|null|undefined} effort - the currently selected effort
+ * @returns {string}
+ */
+export const effortSurvivingModel = (provider, model, effort) =>
+  (effortLevelsForProvider(provider, effectiveModelFor(provider, model)) ? (effort || '') : '');
+
 // Every effort value any CLI accepts, weakest→strongest. MIRROR of EFFORT_RANK
 // in server/lib/providerModels.js — keep in lockstep.
 const EFFORT_RANK = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);

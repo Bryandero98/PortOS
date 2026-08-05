@@ -1,4 +1,4 @@
-import { effectiveModelFor, effortAwareModelOptions } from '../../../../utils/providers';
+import { effectiveModelFor, effortAwareModelOptions, effortSurvivingModel } from '../../../../utils/providers';
 import { FormField } from '../../../ui/FormField';
 import EffortSelect from '../../EffortSelect';
 import { pipelineStages } from './scheduleConstants';
@@ -21,6 +21,12 @@ export default function PipelineStageConfig({ taskType, config, providers, onUpd
       // providers have none).
       if (field === 'providerId') {
         delete updated.model;
+        delete updated.effort;
+      }
+      // A model with NO effort tiers (Antigravity's ladder is per-model) hides the
+      // stage's effort select, so the stored value has to go with it — otherwise the
+      // stage keeps a level the run can never use and no UI is left to clear it.
+      if (field === 'model' && !effortSurvivingModel(providers?.find(p => p.id === stage.providerId), value, updated.effort)) {
         delete updated.effort;
       }
       return updated;

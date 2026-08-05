@@ -7,7 +7,7 @@ import { processScreenshotUploads, processAttachmentUploads } from '../../servic
 import { ATTACHMENT_ACCEPT } from '../../utils/fileUpload';
 import FilePickerButton from '../ui/FilePickerButton';
 import { formatBytes } from '../../utils/formatters';
-import { effectiveModelFor, effortAwareModelOptions, isTuiProvider, isCliProvider, isProcessProvider, isCodexProvider, seedModelEffort } from '../../utils/providers';
+import { effectiveModelFor, effortAwareModelOptions, effortSurvivingModel, isTuiProvider, isCliProvider, isProcessProvider, isCodexProvider, seedModelEffort } from '../../utils/providers';
 import { DEFAULT_PR_COMPLETION, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, PR_COMPLETION_OPTIONS, prCompletionOption } from './constants';
 import { clickableProps } from '../../lib/a11yKeyboard';
 import { slashdoLabel } from '../../lib/slashdoCatalog';
@@ -639,7 +639,13 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
               <select
                 id="task-model"
                 value={newTask.model}
-                onChange={e => setNewTask(t => ({ ...t, model: e.target.value }))}
+                onChange={e => setNewTask(t => ({
+                  ...t,
+                  model: e.target.value,
+                  // A model with no effort tiers hides the select below — clear the
+                  // value with it rather than submitting a level the UI stopped showing.
+                  effort: effortSurvivingModel(selectedProvider, e.target.value, t.effort),
+                }))}
                 className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm min-h-[44px]"
               >
                 <option value="">Select model...</option>
