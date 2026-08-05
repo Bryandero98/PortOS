@@ -3,6 +3,7 @@ import {
   TRUNK_TABS, TRUNK_BY_ID, TRUNK_BY_KIND, BUCKET_CANON,
   groupBucketsByKind, normalizeCategoryKey, humanizeCategory,
   ensureDraftCategories, getCategoryKeys, compositeKindLabel, COMPOSITE_BOARD_KINDS,
+  adoptServerEntryIds, adoptServerCategoryIds,
 } from './universeBuilderShared.js';
 
 describe('universeBuilderShared — trunk maps', () => {
@@ -87,5 +88,70 @@ describe('universeBuilderShared — compositeKindLabel', () => {
     expect(compositeKindLabel('world_pitch_poster')).toBe('World pitch poster');
     expect(compositeKindLabel('nonsense')).toBe('Reference sheet');
     expect(COMPOSITE_BOARD_KINDS.length).toBeGreaterThan(0);
+  });
+});
+
+describe('adoptServerEntryIds', () => {
+  it('fills ids onto id-less entries by label', () => {
+    const local = [{ label: 'A' }, { label: 'B', id: 'keep-me' }];
+    const server = [{ label: 'A', id: 'sheet-a' }, { label: 'B', id: 'keep-me' }];
+    expect(adoptServerEntryIds(local, server)).toEqual([
+      { label: 'A', id: 'sheet-a' },
+      { label: 'B', id: 'keep-me' },
+    ]);
+  });
+
+  it('never rewrites an id the local entry already has', () => {
+    const local = [{ label: 'A', id: 'local-a' }];
+    const server = [{ label: 'A', id: 'server-a' }];
+    expect(adoptServerEntryIds(local, server)[0].id).toBe('local-a');
+  });
+
+  // Two boards can legitimately share a label. Claiming each server id at most
+  // once makes them fill in order rather than both taking the first match — and
+  // an id already held locally is excluded from the pool so it can't be handed
+  // to a different row.
+  it('claims each server id once across duplicate labels', () => {
+    const local = [{ label: 'Dup' }, { label: 'Dup' }, { label: 'Dup', id: 'held' }];
+    const server = [
+      { label: 'Dup', id: 'held' },
+      { label: 'Dup', id: 's1' },
+      { label: 'Dup', id: 's2' },
+    ];
+    expect(adoptServerEntryIds(local, server).map((e) => e.id)).toEqual(['s1', 's2', 'held']);
+  });
+
+  // Same-reference-when-unchanged is the contract callers use to skip a setState.
+  it('returns the same array when nothing needed filling', () => {
+    const local = [{ label: 'A', id: 'a' }];
+    expect(adoptServerEntryIds(local, [{ label: 'A', id: 'a' }])).toBe(local);
+    expect(adoptServerEntryIds(local, [])).toBe(local);
+    expect(adoptServerEntryIds(local, null)).toBe(local);
+  });
+
+  it('leaves an entry alone when no server entry shares its label', () => {
+    const local = [{ label: 'Missing' }];
+    expect(adoptServerEntryIds(local, [{ label: 'Other', id: 'x' }])).toBe(local);
+  });
+});
+
+describe('adoptServerCategoryIds', () => {
+  it('fills variation ids per bucket and preserves untouched buckets by reference', () => {
+    const untouched = { kind: 'places', variations: [{ label: 'P', id: 'p1' }] };
+    const local = { cast: { kind: 'characters', variations: [{ label: 'V' }] }, places: untouched };
+    const server = {
+      cast: { variations: [{ label: 'V', id: 'v1' }] },
+      places: { variations: [{ label: 'P', id: 'p1' }] },
+    };
+    const next = adoptServerCategoryIds(local, server);
+    expect(next.cast.variations[0].id).toBe('v1');
+    expect(next.cast.kind).toBe('characters');
+    expect(next.places).toBe(untouched);
+  });
+
+  it('returns the same object when no bucket changed', () => {
+    const local = { cast: { variations: [{ label: 'V', id: 'v1' }] } };
+    expect(adoptServerCategoryIds(local, { cast: { variations: [{ label: 'V', id: 'v1' }] } })).toBe(local);
+    expect(adoptServerCategoryIds(local, null)).toBe(local);
   });
 });

@@ -24,6 +24,8 @@ import { upsertByIdPrepend } from '../lib/upsertByIdPrepend';
 import { mergeCanonByName } from '../lib/universeBuilderExpand';
 import {
   TRUNK_BY_KIND,
+  adoptServerCategoryIds,
+  adoptServerEntryIds,
   ensureDraftCategories,
   humanizeCategory,
   normalizeCategoryKey,
@@ -311,7 +313,24 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
       setCanonDirty(false);
       clearPendingCanonAdditions();
     }
-    markDraftSaved(payload);
+    // Adopt the ids the server sanitizer minted for entries this save created,
+    // so per-entry client state keyed by id (the render queue's pending-job map)
+    // can match a board or variation added and used in the same session. Both
+    // the draft AND the saved baseline take the ids — backfilling only the draft
+    // would read as an unsaved edit and leave the page permanently dirty.
+    const savedSheets = adoptServerEntryIds(payload.compositeSheets, result.compositeSheets);
+    const savedCategories = adoptServerCategoryIds(payload.categories, result.categories);
+    markDraftSaved({ ...payload, compositeSheets: savedSheets, categories: savedCategories });
+    if (savedSheets !== payload.compositeSheets || savedCategories !== payload.categories) {
+      // Re-derive from the CURRENT draft rather than assigning `savedSheets`
+      // wholesale — edits made while the save was in flight must survive, and
+      // adopting an id is additive to whatever the row looks like now.
+      setDraft((d) => ({
+        ...d,
+        compositeSheets: adoptServerEntryIds(d.compositeSheets, result.compositeSheets),
+        categories: adoptServerCategoryIds(d.categories, result.categories),
+      }));
+    }
     // Watermark this save so a re-hydration GET it raced (navigate away and back
     // mid-save) re-reads instead of showing the pre-save record — the same guard
     // the style-reference mutators get, which is why it keys on the server's

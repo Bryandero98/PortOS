@@ -118,3 +118,58 @@ export const COMPOSITE_BOARD_KINDS = [
 
 export const compositeKindLabel = (kind) =>
   COMPOSITE_BOARD_KINDS.find((k) => k.value === kind)?.label || 'Reference sheet';
+
+// The server sanitizer mints an `id` for every entry that arrives without one,
+// but a save returns that record without the draft adopting it — so an entry
+// created and used in the same session stays id-less on the client. That breaks
+// any client state keyed by entry id: the render queue's per-row pending-job map
+// is keyed by the id the SERVER stamped onto `entryJobs`, so a board (or
+// variation) added and immediately rendered would never match its own job — no
+// spinner, no thumbnail until reload, and a pending entry with no consumer to
+// clear it.
+//
+// Copy the minted ids back onto the local list. Matching is by `label`, the same
+// key the render `selection` / `sheetSelection` payloads already use to name an
+// entry across the wire. Only id-less entries are filled, so an existing id is
+// never rewritten, and each server id is claimed at most once — duplicate labels
+// fill in order instead of collapsing onto the first match. Returns the SAME
+// array when nothing was filled (the common case, since the sanitizer has
+// already stamped ids on anything round-tripped) so callers can skip the write.
+export const adoptServerEntryIds = (local, server) => {
+  if (!Array.isArray(local) || !Array.isArray(server)) return local;
+  const claimed = new Set(local.map((entry) => entry?.id).filter(Boolean));
+  const idsByLabel = new Map();
+  for (const entry of server) {
+    if (!entry?.id || typeof entry.label !== 'string' || claimed.has(entry.id)) continue;
+    const queue = idsByLabel.get(entry.label);
+    if (queue) queue.push(entry.id);
+    else idsByLabel.set(entry.label, [entry.id]);
+  }
+  let changed = false;
+  const next = local.map((entry) => {
+    if (!entry || entry.id) return entry;
+    const id = idsByLabel.get(entry.label)?.shift();
+    if (!id) return entry;
+    changed = true;
+    return { ...entry, id };
+  });
+  return changed ? next : local;
+};
+
+// `adoptServerEntryIds` over every bucket's `variations`, for the keyed
+// `categories` map. Same same-reference-when-unchanged contract.
+export const adoptServerCategoryIds = (local, server) => {
+  if (!local || typeof local !== 'object' || !server || typeof server !== 'object') return local;
+  let changed = false;
+  const next = {};
+  for (const [key, bucket] of Object.entries(local)) {
+    const variations = adoptServerEntryIds(bucket?.variations, server[key]?.variations);
+    if (variations !== bucket?.variations) {
+      changed = true;
+      next[key] = { ...bucket, variations };
+    } else {
+      next[key] = bucket;
+    }
+  }
+  return changed ? next : local;
+};

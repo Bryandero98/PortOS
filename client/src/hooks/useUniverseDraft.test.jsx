@@ -238,6 +238,60 @@ describe('useUniverseDraft', () => {
     expect(result.current.isDraftDirty()).toBe(false);
   });
 
+  // The render flow keys its per-row pending-job map on the id the SERVER
+  // stamped onto `entryJobs`. A board or variation created in this session has
+  // no id until a save mints one, so without adopting it the row can never match
+  // its own job — no spinner, no thumbnail until reload, and a pending entry
+  // with no consumer to clear it.
+  describe('adopting server-minted entry ids on save', () => {
+    it('backfills ids onto sheets and variations the save created', async () => {
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+
+      act(() => {
+        result.current.updateCompositeSheets([{ kind: 'reference_sheet', label: 'New board', prompt: 'p', locked: true }]);
+        result.current.updateCategory('heroes', [{ label: 'New hero', prompt: 'p' }]);
+      });
+      // The server sanitizer mints ids for both id-less entries.
+      apiMocks.updateUniverse.mockImplementationOnce(async (id, payload) => ({
+        ...universe,
+        id,
+        compositeSheets: payload.compositeSheets.map((s) => ({ ...s, id: 'sheet-minted' })),
+        categories: {
+          heroes: { ...payload.categories.heroes, variations: [{ ...payload.categories.heroes.variations[0], id: 'var-minted' }] },
+        },
+        updatedAt: tickServerClock(),
+      }));
+      await act(async () => { await result.current.handleSave(); });
+
+      expect(result.current.draft.compositeSheets[0].id).toBe('sheet-minted');
+      expect(result.current.draft.categories.heroes.variations[0].id).toBe('var-minted');
+      // Adopting the ids is not a user edit — the page must not read as dirty.
+      expect(result.current.isDraftDirty()).toBe(false);
+    });
+
+    it('leaves the draft untouched when every entry already carries an id', async () => {
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.draft.id).toBe('u1'));
+
+      act(() => {
+        result.current.updateCompositeSheets([{ id: 'mine', kind: 'reference_sheet', label: 'Board', prompt: 'p', locked: true }]);
+      });
+      apiMocks.updateUniverse.mockImplementationOnce(async (id, payload) => ({
+        ...universe,
+        id,
+        // Server echoes a DIFFERENT id for the same label — an existing local id
+        // must win, or a row would be re-keyed out from under its in-flight job.
+        compositeSheets: payload.compositeSheets.map((s) => ({ ...s, id: 'server-other' })),
+        updatedAt: tickServerClock(),
+      }));
+      await act(async () => { await result.current.handleSave(); });
+
+      expect(result.current.draft.compositeSheets[0].id).toBe('mine');
+      expect(result.current.isDraftDirty()).toBe(false);
+    });
+  });
+
   it('merges only pending canon additions onto a fresh server snapshot', async () => {
     const { result } = renderDraft();
     await waitFor(() => expect(result.current.draft.id).toBe('u1'));
