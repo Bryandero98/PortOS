@@ -110,6 +110,43 @@ describe('threejsSculptSpecSchema', () => {
     });
   });
 
+  it('defaults an omitted part scale to an untouched [1, 1, 1]', () => {
+    const spec = validSpec();
+    delete spec.parts[0].scale;
+    delete spec.parts[0].children[0].scale;
+    const parsed = threejsSculptSpecSchema.parse(spec);
+    expect(parsed.parts[0].scale).toEqual([1, 1, 1]);
+    expect(parsed.parts[0].children[0].scale).toEqual([1, 1, 1]);
+  });
+
+  // A negative component flips the winding order (the part renders inside-out) and a
+  // zero collapses it to an invisible plane — neither throws at render time, so the
+  // schema is the only place they can be caught.
+  it('rejects a negative or zero part scale component, at any depth', () => {
+    for (const bad of [[1, -1, 1], [1, 0, 1], [-1, -1, -1]]) {
+      const spec = validSpec();
+      spec.parts[0].scale = bad;
+      const result = threejsSculptSpecSchema.safeParse(spec);
+      expect(result.success).toBe(false);
+      expect(result.error.issues.some((issue) => issue.path.join('.') === 'parts.0.scale.1'
+        || issue.path.join('.') === 'parts.0.scale.0')).toBe(true);
+
+      const nested = validSpec();
+      nested.parts[0].children[0].scale = bad;
+      expect(threejsSculptSpecSchema.safeParse(nested).success).toBe(false);
+    }
+  });
+
+  it('rejects a near-zero part scale below the floor but accepts the floor itself', () => {
+    const tooSmall = validSpec();
+    tooSmall.parts[0].scale = [1, 5e-5, 1];
+    expect(threejsSculptSpecSchema.safeParse(tooSmall).success).toBe(false);
+
+    const atFloor = validSpec();
+    atFloor.parts[0].scale = [1, 1e-4, 1];
+    expect(threejsSculptSpecSchema.parse(atFloor).parts[0].scale).toEqual([1, 1e-4, 1]);
+  });
+
   it('rejects out-of-range physical material channels', () => {
     const spec = validSpec();
     spec.materials.trim.ior = 4;

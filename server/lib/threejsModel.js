@@ -15,6 +15,16 @@ const finite = z.number().finite().min(-10_000).max(10_000);
 const positive = z.number().finite().positive().max(10_000);
 const vec3Schema = z.tuple([finite, finite, finite]);
 
+// A part `scale` is a multiplier, never a mirror. A negative component reverses
+// the winding order, so the part renders inside-out — lit from within, silhouette
+// unchanged, nothing thrown — and a component at (or near) zero collapses it to an
+// invisible plane. Both are indistinguishable from a modeling choice in the preview,
+// so a plain `finite` triple lets either through as a silent normals/geometry bug.
+// Mirroring belongs in `rotationDegrees`.
+const MIN_PART_SCALE = 1e-4;
+const scaleComponent = positive.min(MIN_PART_SCALE);
+const scale3Schema = z.tuple([scaleComponent, scaleComponent, scaleComponent]);
+
 const boxGeometrySchema = z.object({
   type: z.literal('box'),
   width: positive,
@@ -272,7 +282,7 @@ partSchema = z.lazy(() => z.object({
   material: idSchema.optional(),
   position: vec3Schema.default([0, 0, 0]),
   rotationDegrees: vec3Schema.default([0, 0, 0]),
-  scale: vec3Schema.default([1, 1, 1]),
+  scale: scale3Schema.default([1, 1, 1]),
   castShadow: z.boolean().default(true),
   receiveShadow: z.boolean().default(true),
   children: z.array(partSchema).max(40).default([]),

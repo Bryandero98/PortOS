@@ -55,7 +55,7 @@ Return one raw JSON object and nothing else. It must have exactly this top-level
     "id":"stablePartId","name":"Readable part name",
     "geometry": { ...one allowed geometry... },
     "material":"materialId",
-    "position":[x,y,z],"rotationDegrees":[x,y,z],"scale":[x,y,z],
+    "position":[x,y,z],"rotationDegrees":[x,y,z],"scale":[sx,sy,sz],
     "castShadow":true,"receiveShadow":true,
     "children":[ ...same part shape... ]
   }],
@@ -67,6 +67,11 @@ Return one raw JSON object and nothing else. It must have exactly this top-level
     "priority":"identity" | "major" | "minor"
   }]
 }
+
+Every part "scale" component (sx, sy, sz) must be a strictly positive multiplier of at
+least 0.0001. Zero collapses the part to an invisible plane, and a negative component
+reverses the winding order so the part renders inside-out — both are rejected. Mirror a
+part with "rotationDegrees", never with a negative scale.
 `;
 
 export function buildThreejsGenerationPrompt({
