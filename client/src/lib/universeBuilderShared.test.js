@@ -101,10 +101,28 @@ describe('adoptServerEntryIds', () => {
     ]);
   });
 
-  it('never rewrites an id the local entry already has', () => {
-    const local = [{ label: 'A', id: 'local-a' }];
-    const server = [{ label: 'A', id: 'server-a' }];
-    expect(adoptServerEntryIds(local, server)[0].id).toBe('local-a');
+  it('keeps an id the server record also has', () => {
+    const local = [{ label: 'A', id: 'real-a' }, { label: 'B', id: 'real-b' }];
+    const server = [{ label: 'A', id: 'real-a' }, { label: 'B', id: 'real-b' }];
+    expect(adoptServerEntryIds(local, server)).toBe(local);
+  });
+
+  // Records written before entry ids were persisted get a FRESH uuid minted on
+  // every read, so the draft's copy is transient — and /render persists a
+  // different set before queueing jobs against it. An id the server doesn't have
+  // is not the key anything is stored under, so it gets replaced.
+  it('replaces a transient id the server record does not have', () => {
+    const local = [{ label: 'A', id: 'transient-a' }];
+    const server = [{ label: 'A', id: 'persisted-a' }];
+    expect(adoptServerEntryIds(local, server)[0].id).toBe('persisted-a');
+  });
+
+  // The guard that keeps this from re-keying a row out from under an in-flight
+  // job: a real id always wins, even when a sibling row shares its label.
+  it('does not hand a real id to a different row that shares the label', () => {
+    const local = [{ label: 'Dup', id: 'transient' }, { label: 'Dup', id: 'real' }];
+    const server = [{ label: 'Dup', id: 'real' }];
+    expect(adoptServerEntryIds(local, server).map((e) => e.id)).toEqual(['transient', 'real']);
   });
 
   // Two boards can legitimately share a label. Claiming each server id at most
@@ -127,6 +145,14 @@ describe('adoptServerEntryIds', () => {
     expect(adoptServerEntryIds(local, [{ label: 'A', id: 'a' }])).toBe(local);
     expect(adoptServerEntryIds(local, [])).toBe(local);
     expect(adoptServerEntryIds(local, null)).toBe(local);
+  });
+
+  // An empty/failed server list must not strip ids off every row — "no server
+  // entries" is not evidence that the local ids are fake.
+  it('leaves ids alone when the server list has none to offer', () => {
+    const local = [{ label: 'A', id: 'a' }, { label: 'B' }];
+    expect(adoptServerEntryIds(local, [])).toBe(local);
+    expect(adoptServerEntryIds(local, [{ label: 'C', id: 'c' }])).toBe(local);
   });
 
   it('leaves an entry alone when no server entry shares its label', () => {

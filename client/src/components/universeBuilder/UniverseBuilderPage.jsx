@@ -15,6 +15,7 @@ import {
   MapPin, Package, Plus, Save, Trash2, Users,
 } from 'lucide-react';
 import InlineConfirmRow from '../ui/InlineConfirmRow';
+import toast from '../ui/Toast';
 import { WORLD_CATEGORY_KEY_MAX } from '../../services/api';
 import useUniverseBucketActions from '../../hooks/useUniverseBucketActions';
 import useUniverseDraft from '../../hooks/useUniverseDraft';
@@ -143,6 +144,7 @@ export default function UniverseBuilder() {
     setSaving,
     setWorlds,
     styleProbeDirty,
+    syncEntryIdsFromServer,
     toggleLock,
     universes,
     updateCategory,
@@ -177,6 +179,7 @@ export default function UniverseBuilder() {
     runs,
     setRuns,
     preflight: flushDraftIfDirty,
+    syncEntryIdsFromServer,
   });
   const { expanding, handleExpand, refine } = useUniverseExpand({
     selectedId,
@@ -290,8 +293,12 @@ export default function UniverseBuilder() {
     );
   }, [settleEntryJob]);
 
-  // Composite boards on the Composites tab.
-  const handleSheetJobSettled = useCallback((sheetId, filename, settledJobId = null) => {
+  // Composite boards on the Composites tab. A failed render is reported the same
+  // way the variation and canon rows report theirs — otherwise the spinner just
+  // vanishes and the user is left guessing. A user-initiated cancel is not a
+  // failure, so it settles silently.
+  const handleSheetJobSettled = useCallback((sheetId, filename, settledJobId = null, status = null) => {
+    if (!filename && status === 'failed') toast.error('Render failed');
     settleEntryJob(
       sheetId,
       filename,

@@ -64,14 +64,16 @@ describe('EntryThumbSlot — three-state thumbnail', () => {
     render(<EntryThumbSlot inFlightJobId="job-x" onComplete={onComplete} canRender={false} />);
     // Terminal failure yields no filename, so without this the scoped job would
     // stay pinned forever (no remount to reset it) and regenerate stays disabled.
-    expect(onComplete).toHaveBeenCalledWith(null);
+    // The status rides along so a caller can tell a failure worth reporting from
+    // a user-initiated cancel.
+    expect(onComplete).toHaveBeenCalledWith(null, 'failed');
   });
 
-  it('clears the in-flight job when the render is canceled', () => {
+  it('clears the in-flight job when the render is canceled, tagged as a cancel', () => {
     jobStatus = 'canceled';
     const onComplete = vi.fn();
     render(<EntryThumbSlot inFlightJobId="job-y" onComplete={onComplete} canRender={false} />);
-    expect(onComplete).toHaveBeenCalledWith(null);
+    expect(onComplete).toHaveBeenCalledWith(null, 'canceled');
   });
 
   it('does NOT clear the in-flight job for non-terminal statuses', () => {

@@ -27,6 +27,10 @@ export default function useUniverseRender({
   // render") on one the UI is showing. A caller that forgets it should fail
   // loudly, not silently regress.
   preflight,
+  // `useUniverseDraft`'s entry-id reconcile, run once per successful render.
+  // Optional so a caller that only needs the render form isn't forced to wire
+  // it; without it, a legacy universe's first render simply doesn't animate.
+  syncEntryIdsFromServer = null,
 }) {
   const [rendering, setRendering] = useState(false);
   const [renderOpts, setRenderOpts] = useLocalStoragePersisted(
@@ -103,6 +107,11 @@ export default function useUniverseRender({
     setRendering(false);
     if (!result) return;
 
+    // BEFORE enqueueing: `/render` migrates a universe whose entries predate
+    // persisted ids, minting a real set that these jobs are keyed by — while the
+    // draft still holds the transient ids its own GET produced. Reconcile first
+    // so every row can match its own job the moment the spinner would start.
+    await syncEntryIdsFromServer?.();
     enqueueEntryJobs(result.entryJobs);
     toast.success(`Queued ${result.promptCount} renders → "${result.collectionName}"`);
     const updatedRuns = await listWorldRuns(selectedId).catch(() => runs);

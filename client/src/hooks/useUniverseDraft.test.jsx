@@ -270,24 +270,42 @@ describe('useUniverseDraft', () => {
       expect(result.current.isDraftDirty()).toBe(false);
     });
 
-    it('leaves the draft untouched when every entry already carries an id', async () => {
+    // The sanitizer echoes back any id the payload carried, so a row whose id the
+    // server confirms must keep it — re-keying it would strand an in-flight job.
+    it('keeps an id the saved record confirms', async () => {
       const { result } = renderDraft();
       await waitFor(() => expect(result.current.draft.id).toBe('u1'));
 
       act(() => {
         result.current.updateCompositeSheets([{ id: 'mine', kind: 'reference_sheet', label: 'Board', prompt: 'p', locked: true }]);
       });
-      apiMocks.updateUniverse.mockImplementationOnce(async (id, payload) => ({
-        ...universe,
-        id,
-        // Server echoes a DIFFERENT id for the same label — an existing local id
-        // must win, or a row would be re-keyed out from under its in-flight job.
-        compositeSheets: payload.compositeSheets.map((s) => ({ ...s, id: 'server-other' })),
-        updatedAt: tickServerClock(),
-      }));
       await act(async () => { await result.current.handleSave(); });
 
       expect(result.current.draft.compositeSheets[0].id).toBe('mine');
+      expect(result.current.isDraftDirty()).toBe(false);
+    });
+
+    // The legacy shape: entries written before ids were persisted get a fresh
+    // uuid minted on every read, so this draft's copy is transient. POST /render
+    // persists a real set before queueing jobs against it — syncEntryIdsFromServer
+    // is what re-points the rows at those ids.
+    it('replaces transient ids with the persisted ones after a render migration', async () => {
+      apiMocks.getUniverse.mockResolvedValue({
+        ...universe,
+        compositeSheets: [{ id: 'transient-1', kind: 'reference_sheet', label: 'Legacy board', prompt: 'p', locked: true }],
+      });
+      const { result } = renderDraft();
+      await waitFor(() => expect(result.current.draft.compositeSheets[0]?.id).toBe('transient-1'));
+      expect(result.current.isDraftDirty()).toBe(false);
+
+      apiMocks.getUniverse.mockResolvedValueOnce({
+        ...universe,
+        compositeSheets: [{ id: 'persisted-1', kind: 'reference_sheet', label: 'Legacy board', prompt: 'p', locked: true }],
+      });
+      await act(async () => { await result.current.syncEntryIdsFromServer(); });
+
+      expect(result.current.draft.compositeSheets[0].id).toBe('persisted-1');
+      // Re-pointing an id is not a user edit.
       expect(result.current.isDraftDirty()).toBe(false);
     });
   });

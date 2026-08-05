@@ -92,7 +92,7 @@ describe('CompositeSheetsEditor', () => {
         onJobSettled={onJobSettled}
       />,
     );
-    await waitFor(() => expect(onJobSettled).toHaveBeenCalledWith('sheet-1', 'fresh.png', 'job-9'));
+    await waitFor(() => expect(onJobSettled).toHaveBeenCalledWith('sheet-1', 'fresh.png', 'job-9', 'completed'));
   });
 
   // MediaJobThumb fires its onFilename effect on [effectiveFilename, onFilename],
@@ -126,6 +126,6 @@ describe('CompositeSheetsEditor', () => {
         onJobSettled={onJobSettled}
       />,
     );
-    await waitFor(() => expect(onJobSettled).toHaveBeenCalledWith('sheet-1', null, 'job-9'));
+    await waitFor(() => expect(onJobSettled).toHaveBeenCalledWith('sheet-1', null, 'job-9', 'failed'));
   });
 });

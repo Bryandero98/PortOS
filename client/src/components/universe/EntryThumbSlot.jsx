@@ -19,7 +19,7 @@
  * rendered states. Disabled when `canRender` is false (no backend selected,
  * save pending, etc.) so the button shape is still visible but inert.
  */
-import { useState, useEffect } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import { Sparkles, Star } from 'lucide-react';
 import MediaJobThumb from '../pipeline/MediaJobThumb';
 
@@ -29,9 +29,12 @@ export default function EntryThumbSlot({
   primaryImageRef = null,
   onRender = null,
   onPreview = null,
-  // Fired with the rendered filename when an in-flight job completes (forwarded
-  // to MediaJobThumb's onFilename) so callers can persist the new ref + clear
-  // the in-flight job without their own job subscription.
+  // Fired as `(filename, status)` when an in-flight job reaches a terminal
+  // state, so callers can persist the new ref + clear the in-flight job without
+  // their own job subscription. `('<file>', 'completed')` on success;
+  // `(null, 'failed' | 'canceled')` on a terminal failure, which carries no
+  // filename — the status is what lets a caller tell a failed render (worth
+  // surfacing) from a user-initiated cancel (not worth a toast).
   onComplete = null,
   canRender = true,
   alt = 'Render',
@@ -43,6 +46,17 @@ export default function EntryThumbSlot({
   // 1024x1536 universe renders so the slot doesn't crop the subject.
   size = 'sm',
 }) {
+  // Stable identities: MediaJobThumb fires these from effects keyed on
+  // `[value, callback]`, so a fresh arrow per render would re-fire the terminal
+  // callback on every parent render instead of once when the job settles.
+  const onFilename = useCallback(
+    (filename) => onComplete?.(filename, 'completed'),
+    [onComplete],
+  );
+  const onStatus = useCallback(
+    (s) => { if (s === 'failed' || s === 'canceled') onComplete?.(null, s); },
+    [onComplete],
+  );
   if (inFlightJobId) {
     // `xs` (48x80) matches the empty + completed states below so all three
     // states share a footprint and the row doesn't jump mid-render. `'lg'`
@@ -57,14 +71,14 @@ export default function EntryThumbSlot({
         label={alt}
         size={pendingSize}
         onPreview={onPreview}
-        onFilename={onComplete}
+        onFilename={onFilename}
         // A terminal failure/cancel never yields a filename, so `onComplete`
         // (which clears the in-flight job) would otherwise never fire and the
         // job stays pinned. Callers that scope render state per entity keep that
         // state across switches (no remount to reset it), so a failed job would
         // leave the slot stuck — clear it via the no-filename path so the slot
         // returns to an actionable state and the entity can be re-rendered.
-        onStatus={(s) => { if (s === 'failed' || s === 'canceled') onComplete?.(null); }}
+        onStatus={onStatus}
       />
     );
   }

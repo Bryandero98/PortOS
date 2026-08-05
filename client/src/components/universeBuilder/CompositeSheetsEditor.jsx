@@ -16,11 +16,12 @@ export default function CompositeSheetsEditor({
   onPreview = null,
   // Per-row render-pending plumbing, mirroring the variation grid:
   // `pendingByEntryId[sheet.id]` is the in-flight jobId (or undefined), and
-  // `onJobSettled(sheetId, filename | null, jobId)` fires when that job reaches
-  // a terminal state so the parent can append the new filename to the board's
-  // imageRefs[] and clear the pending entry. A terminal failure/cancel yields no
-  // filename, so it settles with `null` on the same callback rather than a
-  // second one — the parent's clear path is identical either way.
+  // `onJobSettled(sheetId, filename | null, jobId, status)` fires when that job
+  // reaches a terminal state so the parent can append the new filename to the
+  // board's imageRefs[] and clear the pending entry. A terminal failure/cancel
+  // yields no filename, so it settles with `null` on the same callback rather
+  // than a second one — the parent's clear path is identical either way, and
+  // `status` is what lets it tell a failure worth reporting from a cancel.
   pendingByEntryId = {}, onJobSettled = null,
 }) {
   const [adding, setAdding] = useState(false);
@@ -251,7 +252,7 @@ function SheetRow({
   // draft) — each one a full listImageGallery() refetch — instead of once when
   // the job lands.
   const handleSettled = useCallback(
-    (filename) => onJobSettled?.(sheet.id, filename, inFlightJobId),
+    (filename, status) => onJobSettled?.(sheet.id, filename, inFlightJobId, status),
     [onJobSettled, sheet.id, inFlightJobId],
   );
   // Three-state thumbnail (pending spinner / rendered image / empty placeholder
