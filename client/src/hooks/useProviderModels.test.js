@@ -33,9 +33,11 @@ const CODEX = {
   models: ['gpt-5', 'gpt-5-high'],
 };
 
-const mountWith = async (providers) => {
+// `withEffort` is what opts a picker into base models — it declares that the
+// caller also renders an effort control, so the tiers aren't lost.
+const mountWith = async (providers, options = { withEffort: true }) => {
   api.getProviders.mockResolvedValue({ providers });
-  const hook = renderHook(() => useProviderModels());
+  const hook = renderHook(() => useProviderModels(options));
   await waitFor(() => expect(hook.result.current.loading).toBe(false));
   return hook;
 };
@@ -75,5 +77,16 @@ describe('useProviderModels — Antigravity base models', () => {
     const { result } = await mountWith([CODEX]);
     // `gpt-5-high` is NOT an Antigravity id, so its `-high` is not a tier suffix.
     expect(result.current.availableModels).toEqual(['gpt-5', 'gpt-5-high']);
+  });
+
+  it('keeps the per-tier ids for a picker with no effort control (the default)', async () => {
+    // Without an effort select, the suffixed ids are the ONLY way to pick a
+    // tier — collapsing them there would strip the capability, not relocate it.
+    const { result } = await mountWith([AGY], {});
+    expect(result.current.availableModels).toEqual([
+      'gemini-3.6-flash-high', 'gemini-3.6-flash-medium', 'gemini-3.6-flash-low',
+      'gemini-3.1-pro-high', 'gemini-3.1-pro-low',
+      'claude-sonnet-4-6', 'gpt-oss-120b-medium',
+    ]);
   });
 });

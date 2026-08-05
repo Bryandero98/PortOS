@@ -250,6 +250,38 @@ describe('Three.js model generation orchestration', () => {
       expect(read().effort).toBe('medium');
     });
 
+    it('drops an effort the resolved provider/model cannot honor instead of persisting a lie', async () => {
+      // The picker hides the effort control for a provider with no tiers but
+      // keeps its last value, so the request can still carry one.
+      getProviderById.mockResolvedValue({
+        id: 'vision-api', name: 'Vision API', type: 'api', enabled: true, defaultModel: 'vision-default',
+      });
+      const read = primeRecord({ providerId: 'vision-api' });
+
+      await startGeneration('threejs-effort', { providerId: 'vision-api', model: 'vision-pro', effort: 'high' });
+
+      await vi.waitFor(() => expect(read().status).toBe('ready'));
+      expect(runPromptThroughProvider).toHaveBeenCalledWith(expect.objectContaining({ effort: undefined }));
+      expect(read().effort).toBeNull();
+    });
+
+    it('persists the CLAMPED effort when the chosen agy model lacks that tier', async () => {
+      getProviderById.mockResolvedValue({
+        ...agyProvider,
+        models: ['gemini-3.1-pro-low', 'gemini-3.1-pro-high'],
+      });
+      const read = primeRecord({ model: 'gemini-3.1-pro' });
+
+      // agy rejects `--model gemini-3.1-pro --effort medium`, so it runs as low.
+      await startGeneration('threejs-effort', {
+        providerId: 'antigravity-cli', model: 'gemini-3.1-pro', effort: 'medium',
+      });
+
+      await vi.waitFor(() => expect(read().status).toBe('ready'));
+      expect(runPromptThroughProvider).toHaveBeenCalledWith(expect.objectContaining({ effort: 'low' }));
+      expect(read().effort).toBe('low');
+    });
+
     it('clears the stored effort on an explicit null (the picker\'s "Default effort")', async () => {
       getProviderById.mockResolvedValue(agyProvider);
       const read = primeRecord({ effort: 'medium' });

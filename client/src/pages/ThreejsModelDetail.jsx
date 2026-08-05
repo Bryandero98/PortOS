@@ -41,7 +41,9 @@ export default function ThreejsModelDetail() {
     setSelectedProviderId,
     setSelectedModel,
     loading: providersLoading,
-  } = useProviderModels({ filter: providerFilter, silent: true });
+    // This picker renders the effort control and threads the value to the
+    // server, so Antigravity lists base models with effort picked separately.
+  } = useProviderModels({ filter: providerFilter, silent: true, withEffort: true });
 
   const load = async ({ initial = false } = {}) => {
     const next = await getThreejsModel(id, { silent: true }).catch((error) => {

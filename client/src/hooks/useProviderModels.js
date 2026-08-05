@@ -5,13 +5,16 @@ import { filterSelectableModels, isAntigravityProvider, selectableModelsForProvi
 // The provider's selectable model source: its `models` list, or — when that
 // list is empty (a cloud/manual provider configured with only a defaultModel,
 // where `[]` is truthy so `||` wouldn't fall through) — its defaultModel.
-// `selectableModelsForProvider` then applies any provider-specific rewrite —
-// today that means Antigravity lists BASE models (`gemini-3.6-flash`) rather
-// than one row per baked-in effort tier, since effort is its own control now.
-const sourceModels = (provider) => selectableModelsForProvider(
-  provider,
-  provider?.models?.length ? provider.models : [provider?.defaultModel],
-);
+//
+// `withEffort` then applies any provider-specific rewrite — today that means
+// Antigravity lists BASE models (`gemini-3.6-flash`) rather than one row per
+// baked-in effort tier. It is OPT-IN because for a picker with no effort
+// control the suffixed ids are the ONLY way to express a tier: collapsing them
+// there would silently strip the capability rather than relocate it.
+const sourceModels = (provider, withEffort) => {
+  const models = provider?.models?.length ? provider.models : [provider?.defaultModel];
+  return withEffort ? selectableModelsForProvider(provider, models) : models;
+};
 
 /**
  * Hook for loading AI providers and managing two-step provider > model selection.
@@ -32,9 +35,16 @@ const sourceModels = (provider) => selectableModelsForProvider(
  *   set, the auto-selected / provider-change model is the first model that
  *   passes the filter rather than the provider's `defaultModel` (which may not
  *   qualify). Omit for the full selectable list.
+ * @param {boolean} [options.withEffort] - Set when the caller also renders an
+ *   effort control (`ProviderModelSelector`'s `effort`/`onEffortChange`) and
+ *   threads the value to the server. Providers whose CLI bakes the reasoning
+ *   tier into the model id — Antigravity's `gemini-3.6-flash-low|-medium|-high`
+ *   — then list BASE models instead, with effort picked separately. Leave off
+ *   for a picker with no effort control: there the suffixed ids are the only
+ *   way to express a tier, so collapsing them would strip the capability.
  * @returns {{ providers, selectedProviderId, selectedModel, availableModels, selectedProvider, setSelectedProviderId, setSelectedModel, loading }}
  */
-export default function useProviderModels({ filter, allowDefault = false, silent = false, modelFilter } = {}) {
+export default function useProviderModels({ filter, allowDefault = false, silent = false, modelFilter, withEffort = false } = {}) {
   const [providers, setProviders] = useState([]);
   const [selectedProviderId, setSelectedProviderId] = useState('');
   const [selectedModel, setSelectedModel] = useState('');
@@ -47,10 +57,10 @@ export default function useProviderModels({ filter, allowDefault = false, silent
   // model that passes the filter instead.
   const pickInitialModel = useCallback((provider) => {
     if (!modelFilter) return provider?.defaultModel || '';
-    const models = filterSelectableModels(sourceModels(provider))
+    const models = filterSelectableModels(sourceModels(provider, withEffort))
       .filter((m) => modelFilter(m, provider));
     return models[0] || '';
-  }, [modelFilter]);
+  }, [modelFilter, withEffort]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -88,7 +98,7 @@ export default function useProviderModels({ filter, allowDefault = false, silent
       // sourceModels falls back to [defaultModel] when `models` is empty (an
       // `[]` is truthy, so a bare `||` would leave the dropdown empty for a
       // cloud/manual provider configured with only a defaultModel).
-      const models = filterSelectableModels(sourceModels(currentProvider));
+      const models = filterSelectableModels(sourceModels(currentProvider, withEffort));
       const filtered = modelFilter ? models.filter((m) => modelFilter(m, currentProvider)) : models;
       // Legacy-pin escape hatch: a record saved before Antigravity switched to
       // base models still holds `gemini-3.6-flash-high`, which now matches no
@@ -101,12 +111,13 @@ export default function useProviderModels({ filter, allowDefault = false, silent
       // SUFFIX qualifies. A bare "not in the list" test would also re-surface
       // the configured-default sentinel (the shipped agy `defaultModel`, which
       // filterSelectableModels exists to hide) and any typo'd/stale pin.
-      const staleAntigravityPin = isAntigravityProvider(currentProvider)
+      const staleAntigravityPin = withEffort
+        && isAntigravityProvider(currentProvider)
         && !!splitAntigravityModel(selectedModel).effort
         && !filtered.includes(selectedModel);
       return staleAntigravityPin ? [...filtered, selectedModel] : filtered;
     },
-    [currentProvider, modelFilter, selectedModel]
+    [currentProvider, modelFilter, selectedModel, withEffort]
   );
 
   const handleProviderChange = useCallback((id) => {

@@ -9,6 +9,7 @@ import { PATHS, resolveGalleryImage } from '../../lib/fileUtils.js';
 import { runPromptThroughProvider } from '../../lib/promptRunner.js';
 import { extractJson } from '../../lib/jsonExtract.js';
 import { buildThreejsFactorySource, threejsSculptSpecSchema } from '../../lib/threejsModel.js';
+import { resolveCliEffort } from '../../lib/providerModels.js';
 import { getProviderById } from '../providers.js';
 import { buildThreejsGenerationPrompt } from './prompt.js';
 import * as store from './db.js';
@@ -168,7 +169,14 @@ export async function startGeneration(id, {
   const effectivePrompt = prompt ?? current.prompt ?? '';
   // Absent (`undefined`) keeps whatever the record already had; an explicit
   // `null` — what the picker's "Default effort" choice sends — clears it.
-  const effectiveEffort = effort === undefined ? (current.effort || null) : (effort || null);
+  const requestedEffort = effort === undefined ? (current.effort || null) : (effort || null);
+  // Persist what will ACTUALLY run, not what was asked for. The picker hides the
+  // effort control for a provider/model with no tiers but keeps its last value,
+  // so an unhonored level would otherwise be stored and rendered ("high effort")
+  // for a run that never used one — with no way to clear it. resolveCliEffort
+  // returns null for API/effort-less providers and clamps an out-of-range level
+  // to the tier the chosen model really has, matching the CLI arg builders.
+  const effectiveEffort = resolveCliEffort(requestedEffort, provider, model || provider.defaultModel || null);
   const generationPrompt = buildThreejsGenerationPrompt({
     sourcePath,
     name: current.name,
