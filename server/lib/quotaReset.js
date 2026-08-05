@@ -207,7 +207,11 @@ export function parseObservedReset(text, { now = Date.now() } = {}) {
  * `quotaBurnDenials.js`); each supplies its own TTL, but the predicate — and the
  * reason `until`-alone is wrong — lives once. Pure.
  */
-export function isObservedBlockActive({ at, until } = {}, { now = Date.now(), ttlMs } = {}) {
+export function isObservedBlockActive(block, { now = Date.now(), ttlMs } = {}) {
+  // Read through `?.` rather than destructuring with a default: a default
+  // parameter only covers `undefined`, and an absent block legitimately arrives
+  // as `null` from a ledger lookup that already normalized it.
+  const at = block?.at;
   if (!at) return false;
-  return until ? until > now : now - at < ttlMs;
+  return block.until ? block.until > now : now - at < ttlMs;
 }

@@ -111,6 +111,9 @@ describe('recordQuotaBurnDenial', () => {
     expect(entry.until).toBeNull();
     expect(isBlockActive(entry, NOW + UNKNOWN_BLOCK_TTL_MS - 1)).toBe(true);
     expect(isBlockActive(entry, NOW + UNKNOWN_BLOCK_TTL_MS)).toBe(false);
+    // An absent block arrives as either shape from a ledger lookup.
+    expect(isBlockActive(undefined, NOW)).toBe(false);
+    expect(isBlockActive(null, NOW)).toBe(false);
   });
 
   it('never clobbers a ledger it could not read', async () => {
