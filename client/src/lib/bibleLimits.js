@@ -103,3 +103,24 @@ export const capImageRefs = (refs) => (
     ? refs.slice(-BIBLE_LIMITS.IMAGE_REFS_PER_ENTRY_MAX)
     : refs
 );
+
+// Optimistic client mirror of the server's `mapAppendImageRef` (see
+// `server/services/universeBuilder/crud.js`): append `filename` to the
+// id-matched entry's imageRefs[], deduped and capped. The server's completion
+// hook has already made this durable — this only swaps the row from spinner to
+// thumbnail without waiting for the next refetch, so it returns the SAME array
+// and entry references when nothing changed (unknown id, or the ref is already
+// there) and callers can hand the result straight to setState without forcing a
+// re-render. Non-array input returns `null` so a caller can bail on its update.
+export const appendImageRefById = (entries, id, filename) => {
+  if (!Array.isArray(entries) || !id || !filename) return null;
+  let changed = false;
+  const next = entries.map((entry) => {
+    if (entry?.id !== id) return entry;
+    const refs = Array.isArray(entry.imageRefs) ? entry.imageRefs : [];
+    if (refs.includes(filename)) return entry;
+    changed = true;
+    return { ...entry, imageRefs: capImageRefs([...refs, filename]) };
+  });
+  return changed ? next : entries;
+};
