@@ -15,12 +15,15 @@ const finite = z.number().finite().min(-10_000).max(10_000);
 const positive = z.number().finite().positive().max(10_000);
 const vec3Schema = z.tuple([finite, finite, finite]);
 
-// A part `scale` is a multiplier, never a mirror. A negative component reverses
-// the winding order, so the part renders inside-out — lit from within, silhouette
-// unchanged, nothing thrown — and a component at (or near) zero collapses it to an
-// invisible plane. Both are indistinguishable from a modeling choice in the preview,
-// so a plain `finite` triple lets either through as a silent normals/geometry bug.
-// Mirroring belongs in `rotationDegrees`.
+// A part `scale` is a size multiplier, never a mirror or a visibility switch. A
+// component at or near zero collapses the part to an invisible plane; a negative
+// one reflects it, and three.js compensates for the negative world determinant by
+// flipping the front face, so nothing throws and the preview looks plausible.
+// That is what makes both expensive to chase: they are indistinguishable from a
+// modeling choice, and a plain `finite` triple accepts either. This spec has no
+// reflection concept — the prompt never asks for one, an LLM-authored negative
+// component is an authoring slip, and the exported factory is consumed by tools
+// that do not all compensate for a mirrored node — so both are rejected here.
 const MIN_PART_SCALE = 1e-4;
 const scaleComponent = positive.min(MIN_PART_SCALE);
 const scale3Schema = z.tuple([scaleComponent, scaleComponent, scaleComponent]);

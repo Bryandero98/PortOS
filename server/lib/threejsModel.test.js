@@ -119,9 +119,9 @@ describe('threejsSculptSpecSchema', () => {
     expect(parsed.parts[0].children[0].scale).toEqual([1, 1, 1]);
   });
 
-  // A negative component flips the winding order (the part renders inside-out) and a
-  // zero collapses it to an invisible plane — neither throws at render time, so the
-  // schema is the only place they can be caught.
+  // A zero component collapses the part to an invisible plane and a negative one
+  // reflects it — neither throws at render time (three.js flips the front face for a
+  // negative determinant), so the schema is the only place they can be caught.
   it('rejects a negative or zero part scale component, at any depth', () => {
     for (const bad of [[1, -1, 1], [1, 0, 1], [-1, -1, -1]]) {
       const spec = validSpec();
