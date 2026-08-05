@@ -213,23 +213,33 @@ describe('cosTaskStore parsed-task cache (#3497)', () => {
     expect(after.tasks[0].description).toBe('edited outside the store');
   });
 
-  it('re-parses after a write through the store even when mtime has not moved', async () => {
+  it('re-parses after a write through the store even when the stamp has not moved', async () => {
     await addTask({ description: 'original' }, 'user');
-    await getUserTasks();
+    const created = (await getUserTasks()).tasks[0]; // primes the cache
 
-    // Freeze mtime+size across the update: a coarse-granularity filesystem can
-    // report an identical stamp for a same-second, same-length rewrite, so the
-    // write path must drop the entry itself rather than trust the stamp.
-    const frozenMtime = mock.mtimes.get(USER_FILE);
-    const created = (await getUserTasks()).tasks[0];
+    // Snapshot the EXACT stamp the cache is now holding, so it can be restored
+    // byte-for-byte after the write below.
+    const cachedContent = mock.files.get(USER_FILE);
+    const cachedMtime = mock.mtimes.get(USER_FILE);
+
     await updateTask(created.id, { description: 'original' }, 'user');
-    mock.mtimes.set(USER_FILE, frozenMtime);
-    mock.files.set(USER_FILE, mock.files.get(USER_FILE).replace('original', 'rewritten'));
+
+    // Put back content of the identical LENGTH ('original' and 'REWRITTN' are
+    // both 8 chars) at the identical mtime, so `mtimeMs:size` is bit-for-bit
+    // what the cached entry carries. The stamp check therefore cannot save this
+    // read — only writeTaskFile having dropped the entry itself can. Restoring
+    // a different-length string instead would move `size`, the stamp would
+    // differ anyway, and this test would pass with the write-side invalidation
+    // deleted. That matters because the length-neutral rewrite is the COMMON
+    // production case (a status flip, an `updatedAt` restamp), and on a
+    // coarse-mtime filesystem two writes inside one tick stamp identically.
+    mock.files.set(USER_FILE, cachedContent.replace('original', 'REWRITTN'));
+    mock.mtimes.set(USER_FILE, cachedMtime);
     mock.parseCalls = 0;
 
     const after = await getUserTasks();
     expect(mock.parseCalls).toBe(1);
-    expect(after.tasks[0].description).toBe('rewritten');
+    expect(after.tasks[0].description).toBe('REWRITTN');
   });
 
   it('invalidates on deleteTask so the removed task never comes back cached', async () => {

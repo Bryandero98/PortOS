@@ -84,4 +84,4 @@
 
 ## Internal
 
-- **[issue-3497] The Chief of Staff stops re-reading and re-parsing its task lists dozens of times a minute.** Every daemon evaluation tick, scheduler sweep, and agent status update read both task files off disk and parsed them from scratch — work that grows with the task list and was already the single busiest thing the idle daemon did. Parsed tasks are now kept in memory and reused while the file on disk is unchanged, so an unchanged list costs a file-timestamp check instead of a full re-parse. Edits made outside PortOS (a text editor, a restore, a sync peer) are still picked up, because the check keys on both the file's timestamp and its size, and every write PortOS makes drops the remembered copy outright rather than trusting a timestamp that some filesystems only record to the nearest second.
+- **[issue-3497] The Chief of Staff no longer re-reads and re-parses its task lists on every scheduler tick** — an unchanged list is served from memory instead, which matters most on installs whose task history has grown large. Edits made outside PortOS (a text editor, a restore, a sync peer) are still picked up immediately.
