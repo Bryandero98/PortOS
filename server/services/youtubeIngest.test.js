@@ -125,7 +125,7 @@ describe('buildIngestNote', () => {
     expect(note).toContain('duration: "1:02:03"');
     expect(note).toContain('published: 2026-01-15');
     expect(note).toContain('captured: 2026-08-05');
-    expect(note).toContain('tags: [youtube, consumed, portos, writing-tools]');
+    expect(note).toContain(`tags: ["youtube", "consumed", "portos", "writing-tools"]`);
   });
 
   it('carries the transcript, description, and the "why I kept this" callout', () => {
@@ -212,5 +212,49 @@ describe('cancelYoutubeIngest', () => {
     vi.advanceTimersByTime(8000);
     expect(proc.kill).toHaveBeenCalledWith('SIGKILL');
     vi.useRealTimers();
+  });
+});
+
+describe('buildIngestNote frontmatter safety', () => {
+  // The note advertises parseable YAML frontmatter, and a tag is free user text.
+  // Bare in a flow sequence, each of these breaks the block: `#` comments out the
+  // rest of the line, `: ` turns the entry into a mapping, `]` closes the
+  // sequence early, and `"` unbalances the scalar.
+  it.each([
+    ['#research', 'a leading hash'],
+    ['topic: notes', 'a colon-space'],
+    ['bad]tag', 'a closing bracket'],
+    ['say "hi"', 'embedded quotes'],
+    ['back\\slash', 'a backslash'],
+  ])('quotes a tag containing %j (%s)', (tag) => {
+    const note = buildIngestNote({
+      meta: META,
+      url: 'https://youtu.be/oCnxnaVg0bY',
+      transcript: { text: 'x', language: 'en', source: 'captions' },
+      tags: [tag],
+      agentPrompt: '',
+      capturedAt: '2026-08-05T12:00:00.000Z',
+    });
+    const tagsLine = note.split('\n').find((l) => l.startsWith('tags: '));
+    // The escaped form of the tag appears, and nothing outside quotes can break out.
+    const escaped = tag.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    expect(tagsLine).toContain(`"${escaped}"`);
+    // Every value on the line is a quoted scalar — no bare tokens survived.
+    const inner = tagsLine.slice('tags: ['.length, -1);
+    for (const part of inner.split('", "')) {
+      expect(part.startsWith('"') || part.endsWith('"') || inner.startsWith('"')).toBe(true);
+    }
+  });
+
+  it('quotes a title containing a colon so the frontmatter stays one mapping', () => {
+    const note = buildIngestNote({
+      meta: { ...META, title: 'Storytelling: the eight principles' },
+      url: 'https://youtu.be/oCnxnaVg0bY',
+      transcript: null,
+      tags: [],
+      agentPrompt: '',
+      capturedAt: '2026-08-05T12:00:00.000Z',
+    });
+    expect(note).toContain('title: "Storytelling: the eight principles"');
   });
 });

@@ -48,8 +48,8 @@ const submit = (text) => {
 
 // Open the advanced panel and wait for the settings-seeded checkbox state.
 const openAdvanced = async () => {
-  fireEvent.click(screen.getByLabelText('Toggle ingest options'));
   await waitFor(() => expect(getYoutubeIngestSettings).toHaveBeenCalled());
+  fireEvent.click(screen.getByLabelText('Toggle ingest options'));
 };
 
 describe('QuickBrainCapture', () => {
@@ -103,7 +103,7 @@ describe('QuickBrainCapture', () => {
   });
 
   describe('YouTube ingest path', () => {
-    it('offers ingest options only for a single-video YouTube URL', () => {
+    it('offers ingest options only for a single-video YouTube URL', async () => {
       renderWidget();
       type('https://example.com/article');
       expect(screen.queryByLabelText('Toggle ingest options')).toBeNull();
@@ -113,6 +113,9 @@ describe('QuickBrainCapture', () => {
       expect(screen.getByLabelText('Toggle ingest options')).toBeInTheDocument();
       // The creative flag is meaningless for an ingest — don't offer it.
       expect(screen.queryByLabelText('Toggle creative capture mode')).toBeNull();
+      // Typing a YouTube URL kicks off the settings fetch; settle it so its
+      // state update lands inside the test.
+      await waitFor(() => expect(getYoutubeIngestSettings).toHaveBeenCalled());
     });
 
     it('treats a playlist URL as an ordinary link, not an ingest', () => {
@@ -162,7 +165,9 @@ describe('QuickBrainCapture', () => {
 
     it('ingests with no prompt or tags when the panel was never opened', async () => {
       renderWidget();
-      submit(YT);
+      type(YT);
+      await waitFor(() => expect(getYoutubeIngestSettings).toHaveBeenCalled());
+      fireEvent.click(screen.getByLabelText('Capture'));
       await waitFor(() => expect(startYoutubeIngest).toHaveBeenCalled());
       expect(startYoutubeIngest.mock.calls[0][0]).toEqual({
         url: YT,
@@ -172,6 +177,28 @@ describe('QuickBrainCapture', () => {
         agentPrompt: '',
         tags: [],
       });
+    });
+
+    // The panel is optional and most captures never open it, so saved defaults
+    // have to govern the plain paste-and-send path — not just the expanded one.
+    it('honors saved defaults on a submit that never opened the panel', async () => {
+      getYoutubeIngestSettings.mockResolvedValue({
+        defaultCaptureTranscript: true,
+        defaultDownloadVideo: false,
+        defaultIngestAudio: true,
+      });
+      renderWidget();
+      type(YT);
+      await waitFor(() => expect(getYoutubeIngestSettings).toHaveBeenCalled());
+      fireEvent.click(screen.getByLabelText('Capture'));
+      await waitFor(() => expect(startYoutubeIngest).toHaveBeenCalled());
+      expect(startYoutubeIngest.mock.calls[0][0]).toMatchObject({ ingestAudio: true, captureTranscript: true });
+    });
+
+    it('does not fetch ingest settings until a YouTube URL is typed', () => {
+      renderWidget();
+      type('just a thought');
+      expect(getYoutubeIngestSettings).not.toHaveBeenCalled();
     });
 
     it('refuses to start an ingest with every artifact unchecked', async () => {

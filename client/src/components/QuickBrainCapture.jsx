@@ -28,16 +28,22 @@ export default function QuickBrainCapture() {
   const [tagsInput, setTagsInput] = useState('');
 
   // Server-side defaults for the checkboxes, so a user who always wants audio
-  // sets it once in settings instead of every capture. Fetched lazily — the
-  // first time the panel is opened — so the dashboard doesn't pay for it.
+  // sets it once in settings instead of every capture.
+  //
+  // Fetched as soon as a YouTube URL is in the box — NOT when the panel opens.
+  // The panel is optional: the common path is paste-and-send without ever
+  // expanding it, and seeding only on open meant those saved defaults never
+  // governed the submit that actually matters (a configured "always download
+  // audio" silently sent transcript-only). Still lazy enough that a dashboard
+  // showing this widget pays nothing until a YouTube link is typed.
   const seededRef = useRef(false);
   useEffect(() => {
-    if (!showAdvanced || seededRef.current) return;
+    if (!isYoutube || seededRef.current) return;
     seededRef.current = true;
     api.getYoutubeIngestSettings({ silent: true })
       .then((settings) => setIngestOpts(ingestOptionsFromSettings(settings)))
       .catch(() => {}); // defaultIngestOptions() is already sensible
-  }, [showAdvanced]);
+  }, [isYoutube]);
 
   const ingest = useYoutubeIngest({
     onComplete: () => {
