@@ -14,10 +14,14 @@ import {
 } from './targets.js';
 
 // A host that can run TRELLIS.2's local-MPS lane, and one that can't.
-const APPLE_128GB = { appleSilicon: true, unifiedMemoryGb: 128, cuda: false };
-const APPLE_16GB = { appleSilicon: true, unifiedMemoryGb: 16, cuda: false };
-const INTEL_MAC = { appleSilicon: false, unifiedMemoryGb: 64, cuda: false };
-const CUDA_BOX = { appleSilicon: false, unifiedMemoryGb: 64, cuda: true };
+const APPLE_128GB = { appleSilicon: true, unifiedMemoryGb: 128, cuda: false, cudaProbe: 'absent' };
+const APPLE_16GB = { appleSilicon: true, unifiedMemoryGb: 16, cuda: false, cudaProbe: 'absent' };
+const INTEL_MAC = { appleSilicon: false, unifiedMemoryGb: 64, cuda: false, cudaProbe: 'absent' };
+// A Linux box with a 24 GB card — the supported host for the local-CUDA lane.
+const CUDA_BOX = {
+  appleSilicon: false, unifiedMemoryGb: 64, linuxHost: true,
+  cuda: true, cudaVramGb: 24, cudaProbe: 'available',
+};
 
 describe('image-to-3d target registry', () => {
   it('registers trellis2 as the default target with a stable descriptor shape', () => {
@@ -41,6 +45,27 @@ describe('image-to-3d target registry', () => {
         url: 'https://huggingface.co/briaai/RMBG-2.0',
       },
     ]);
+  });
+
+  it('registers trellis2Cuda on the local-cuda lane with upstream’s stated floor', () => {
+    expect(IMAGE_TO_3D_TARGET_IDS).toContain('trellis2Cuda');
+    const t = getTarget('trellis2Cuda');
+    expect(t).toMatchObject({
+      id: 'trellis2Cuda',
+      executionLane: EXECUTION_LANE.LOCAL_CUDA,
+      outputKind: OUTPUT_KIND.GLB_MESH,
+      upstream: 'https://github.com/microsoft/TRELLIS.2',
+    });
+    // Upstream: "An NVIDIA GPU with at least 24GB of memory is necessary" and
+    // "currently tested only on Linux".
+    expect(t.requires).toMatchObject({ cuda: true, minVramGb: 24, linuxHost: true });
+    // Unlike the MPS port, this lane does not pull RMBG-2.0 — only DINOv3 is gated.
+    expect(t.gatedRepos.map((r) => r.label)).toEqual(['facebook/dinov3-vitl16-pretrain-lvd1689m']);
+  });
+
+  it('leaves trellis2 (MPS) as the default target', () => {
+    // Adding the CUDA lane must not change which target an unqualified request gets.
+    expect(DEFAULT_IMAGE_TO_3D_TARGET).toBe('trellis2');
   });
 
   it('freezes the registry and its descriptors so a target cannot be mutated at runtime', () => {
@@ -129,34 +154,124 @@ describe('resolveTarget', () => {
 describe('listTargets', () => {
   it('annotates every registered target with availability for the host', () => {
     const available = listTargets(APPLE_128GB);
-    expect(available).toHaveLength(IMAGE_TO_3D_TARGET_IDS.length);
     expect(available.find((t) => t.id === 'trellis2')).toMatchObject({
       available: true,
       unavailableReason: null,
       gatedRepos: IMAGE_TO_3D_TARGETS.trellis2.gatedRepos,
     });
 
-    const blocked = listTargets(CUDA_BOX);
-    expect(blocked.find((t) => t.id === 'trellis2')).toMatchObject({
+    // A blocked-but-listed target keeps its reason for the UI to render.
+    const blocked = listTargets({ ...CUDA_BOX, linuxHost: false });
+    expect(blocked.find((t) => t.id === 'trellis2Cuda')).toMatchObject({
       available: false,
-      unavailableReason: 'requires-apple-silicon',
+      unavailableReason: 'requires-linux-host',
+    });
+  });
+
+  it('hides a target blocked for hardware the host simply does not have', () => {
+    // A Mac has no NVIDIA GPU and never will — a permanently-red CUDA card is noise.
+    expect(listTargets(APPLE_128GB).map((t) => t.id)).toEqual(['trellis2']);
+  });
+
+  it('applies that hiding symmetrically, not just to the newer lane', () => {
+    // The mirror of the case above: an NVIDIA box is no more able to grow an Apple
+    // Silicon chip than a Mac is to grow a GPU, so neither gets a dead card.
+    expect(listTargets(CUDA_BOX).map((t) => t.id)).toEqual(['trellis2Cuda']);
+  });
+
+  it('still SHOWS a target when the blocker is one the user can fix', () => {
+    // Windows + a qualifying card: the lane is reachable via WSL2, so the card must
+    // appear with that actionable reason rather than vanish.
+    const shown = listTargets({ ...CUDA_BOX, linuxHost: false });
+    expect(shown.find((t) => t.id === 'trellis2Cuda')).toMatchObject({
+      available: false,
+      unavailableReason: 'requires-linux-host',
+    });
+  });
+
+  it('shows a target whose GPU could not be probed rather than hiding it', () => {
+    // "Couldn't tell" is worth surfacing — it only arises on a host that has a driver.
+    const shown = listTargets({
+      appleSilicon: false, linuxHost: true, cuda: false, cudaProbe: 'unknown',
+    });
+    expect(shown.find((t) => t.id === 'trellis2Cuda')?.unavailableReason).toBe('cuda-probe-failed');
+  });
+
+  it('lists the CUDA target as available on a supported Linux + 24 GB host', () => {
+    expect(listTargets(CUDA_BOX).find((t) => t.id === 'trellis2Cuda')).toMatchObject({
+      available: true,
+      unavailableReason: null,
     });
   });
 });
 
-describe('detectHostCapabilities', () => {
-  it('rounds unified memory to whole GB and normalizes flags', () => {
-    const caps = detectHostCapabilities({
-      appleSilicon: true,
-      totalMemBytes: 128 * 1024 ** 3,
-      cuda: false,
-    });
-    expect(caps).toEqual({ appleSilicon: true, unifiedMemoryGb: 128, cuda: false });
+describe('unavailableReason (local-cuda gating)', () => {
+  it('is available on a Linux host with a 24 GB card', () => {
+    expect(unavailableReason('trellis2Cuda', CUDA_BOX)).toBeNull();
+    expect(isTargetAvailable('trellis2Cuda', CUDA_BOX)).toBe(true);
   });
 
-  it('rounds a hair-under-marketed RAM reading up to the marketed size', () => {
+  it('is available at exactly the VRAM floor', () => {
+    expect(isTargetAvailable('trellis2Cuda', { ...CUDA_BOX, cudaVramGb: 24 })).toBe(true);
+  });
+
+  it('reports requires-cuda on a host with no NVIDIA GPU', () => {
+    expect(unavailableReason('trellis2Cuda', APPLE_128GB)).toBe('requires-cuda');
+  });
+
+  it('reports the missing GPU before the missing Linux host', () => {
+    // A Mac needs to hear "you need an NVIDIA GPU" (final), not "you need Linux"
+    // (true, but not the thing standing in the way).
+    expect(unavailableReason('trellis2Cuda', { ...APPLE_128GB, linuxHost: false })).toBe('requires-cuda');
+  });
+
+  it('reports requires-linux-host on Windows WITH a qualifying card', () => {
+    // Upstream builds CUDA extensions against a POSIX toolchain; WSL2 is the route.
+    expect(unavailableReason('trellis2Cuda', { ...CUDA_BOX, linuxHost: false }))
+      .toBe('requires-linux-host');
+  });
+
+  it('reports insufficient-vram for an under-spec card', () => {
+    expect(unavailableReason('trellis2Cuda', { ...CUDA_BOX, cudaVramGb: 12 }))
+      .toBe('insufficient-vram');
+  });
+
+  it('reports cuda-probe-failed — never requires-cuda — when the probe could not run', () => {
+    // "We failed to look" must not be reported as "there is no GPU".
+    expect(unavailableReason('trellis2Cuda', {
+      appleSilicon: false, linuxHost: true, cuda: false, cudaProbe: 'unknown',
+    })).toBe('cuda-probe-failed');
+  });
+
+  it('reports cuda-probe-failed — never insufficient-vram — for a card of unknown size', () => {
+    // A [N/A] VRAM reading is a failed measurement, not a small card; telling the
+    // user to buy a bigger GPU they may already own would be wrong.
+    expect(unavailableReason('trellis2Cuda', { ...CUDA_BOX, cudaVramGb: null }))
+      .toBe('cuda-probe-failed');
+  });
+});
+
+describe('detectHostCapabilities', () => {
+  it('rounds unified memory to whole GB and normalizes flags', async () => {
+    const caps = await detectHostCapabilities({
+      appleSilicon: true,
+      totalMemBytes: 128 * 1024 ** 3,
+      linuxHost: false,
+      cuda: false,
+    });
+    expect(caps).toEqual({
+      appleSilicon: true,
+      unifiedMemoryGb: 128,
+      linuxHost: false,
+      cuda: false,
+      cudaVramGb: null,
+      cudaProbe: 'absent',
+    });
+  });
+
+  it('rounds a hair-under-marketed RAM reading up to the marketed size', async () => {
     // Physical RAM on a "24 GB" Mac reads slightly under 24*1024^3.
-    const caps = detectHostCapabilities({
+    const caps = await detectHostCapabilities({
       appleSilicon: true,
       totalMemBytes: 24 * 1024 ** 3 - 50 * 1024 ** 2,
       cuda: false,
@@ -165,9 +280,31 @@ describe('detectHostCapabilities', () => {
     expect(isTargetAvailable('trellis2', caps)).toBe(true);
   });
 
-  it('coerces truthy non-boolean overrides to strict booleans', () => {
-    const caps = detectHostCapabilities({ appleSilicon: 1, totalMemBytes: 8 * 1024 ** 3, cuda: 'yes' });
+  it('coerces truthy non-boolean overrides to strict booleans', async () => {
+    const caps = await detectHostCapabilities({
+      appleSilicon: 1, totalMemBytes: 8 * 1024 ** 3, cuda: 'yes',
+    });
     expect(caps.appleSilicon).toBe(true);
     expect(caps.cuda).toBe(true);
+  });
+
+  it('carries an injected CUDA card straight through to the CUDA lane gate', async () => {
+    const caps = await detectHostCapabilities({
+      appleSilicon: false,
+      totalMemBytes: 64 * 1024 ** 3,
+      linuxHost: true,
+      cuda: true,
+      cudaVramGb: 24,
+    });
+    expect(caps).toMatchObject({ cuda: true, cudaVramGb: 24, cudaProbe: 'available' });
+    expect(isTargetAvailable('trellis2Cuda', caps)).toBe(true);
+  });
+
+  it('does not probe the machine when the caller states the CUDA answer', async () => {
+    // An injected `cuda` must skip the nvidia-smi subprocess entirely — that is what
+    // keeps this deterministic on any CI host, with or without a GPU.
+    const caps = await detectHostCapabilities({ cuda: false, totalMemBytes: 8 * 1024 ** 3 });
+    expect(caps.cudaProbe).toBe('absent');
+    expect(caps.cudaVramGb).toBeNull();
   });
 });

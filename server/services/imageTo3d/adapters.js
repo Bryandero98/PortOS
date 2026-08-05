@@ -42,6 +42,11 @@ import {
   probeTrellis2TextureBake,
   probeMetalToolchain,
 } from './trellis2.js';
+import {
+  isTrellis2CudaInstalled,
+  installTrellis2Cuda,
+  runTrellis2CudaGenerate,
+} from './trellis2Cuda.js';
 
 export const TARGET_ADAPTERS = Object.freeze({
   trellis2: Object.freeze({
@@ -79,6 +84,24 @@ export const TARGET_ADAPTERS = Object.freeze({
         warnings: textureBake.quality === 'fallback' ? [textureBake.help] : [],
       };
     },
+  }),
+  trellis2Cuda: Object.freeze({
+    isInstalled: isTrellis2CudaInstalled,
+    // Upstream's 4B pipeline conditions on the gated DINOv3 repo, so this lane needs
+    // the resolved Hugging Face token for both install and render — same as the MPS
+    // lane, resolved through the same helper.
+    resolveEnv: hfChildEnv,
+    install: installTrellis2Cuda,
+    // The export budget (atlas size + decimation target) scales with the card. `run`
+    // must stay synchronous to keep its { promise, kill } contract, so it cannot
+    // probe — it reads the VRAM out of the capabilities the dispatcher resolved at
+    // the request boundary and passed down. An absent/unsized card yields `null`, and
+    // the runner picks the conservative 24 GB-floor lane: degraded quality, never an
+    // overcommitted GPU.
+    run: ({ caps, ...opts }) => runTrellis2CudaGenerate({
+      ...opts,
+      vramGb: caps?.cudaVramGb ?? null,
+    }),
   }),
 });
 

@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { PATHS } from './fileUtils.js';
 import { safeChildProcessEnv, whichFirst } from './processEnv.js';
 import { createLineReader } from './streamLines.js';
+import { getCudaCapability } from './cudaCapability.js';
 
 const execFileAsync = promisify(execFile);
 const IS_WIN = platform() === 'win32';
@@ -133,14 +134,17 @@ export async function detectArm64Python() {
   return firstArchMatch(present, (a) => a === 'arm64');
 }
 
-// True when an NVIDIA GPU is present (nvidia-smi lists at least one device).
-// Used to decide whether the Windows FLUX.2 install pulls CUDA torch from the
-// PyTorch index vs. the default CPU wheel. Best-effort: a missing nvidia-smi
-// or any failure reads as "no GPU".
+// True when an NVIDIA GPU is present. Used to decide whether the Windows FLUX.2
+// install pulls CUDA torch from the PyTorch index vs. the default CPU wheel.
+// Delegates to the shared probe in `cudaCapability.js` so there is one place that
+// knows how to interrogate `nvidia-smi` (the image-to-3D `local-cuda` lane reads
+// the richer result — VRAM per card — from the same cached call).
+//
+// Collapses the probe's three-way answer to a boolean deliberately: for a torch wheel
+// choice, "couldn't detect" must behave like "no GPU" — a CUDA wheel on a host without
+// one is an unusable venv, while the CPU wheel is merely slow.
 export async function hasNvidiaGpu() {
-  const { stdout } = await execFileAsync('nvidia-smi', ['-L'], { timeout: 8000 })
-    .catch(() => ({ stdout: '' }));
-  return /GPU \d+:/.test(stdout);
+  return (await getCudaCapability()).status === 'available';
 }
 
 // FLUX.2 runs in its own venv because mflux (MLX) and torch+diffusers-from-git

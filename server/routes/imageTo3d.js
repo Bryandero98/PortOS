@@ -51,7 +51,7 @@ const installsInFlight = new Set();
  * new branch here.
  */
 router.get('/targets', asyncHandler(async (_req, res) => {
-  const capabilities = detectHostCapabilities();
+  const capabilities = await detectHostCapabilities();
   const targets = await Promise.all(listTargets(capabilities).map(async (target) => {
     const adapter = getTargetAdapter(target.id);
     const installed = adapter ? adapter.isInstalled() : null;
@@ -102,7 +102,7 @@ async function handleTargetInstall(targetId, req, res) {
 
   // Refuse on unsupported hardware rather than clone a multi-GB install that can
   // never run.
-  const capabilities = detectHostCapabilities();
+  const capabilities = await detectHostCapabilities();
   if (!isTargetAvailable(targetId, capabilities)) {
     send({
       type: 'error',

@@ -71,6 +71,13 @@ const REASON_LABEL = {
   'requires-apple-silicon': 'Requires an Apple Silicon Mac',
   'insufficient-memory': 'Needs 24 GB+ of unified memory',
   'requires-cuda': 'Requires an NVIDIA CUDA GPU',
+  'insufficient-vram': 'Needs a 24 GB+ NVIDIA GPU',
+  // Shown on a Windows host that HAS a qualifying card: upstream TRELLIS.2 builds
+  // its CUDA extensions against a POSIX toolchain and is Linux-only, so WSL2 is the
+  // supported route — name it, since this blocker is the one the user can act on.
+  'requires-linux-host': 'Requires a Linux host (use WSL2 on Windows)',
+  // The probe itself failed — say so rather than claiming the GPU isn't there.
+  'cuda-probe-failed': 'Could not detect this host’s GPU',
   'unknown-target': 'Unavailable',
 };
 

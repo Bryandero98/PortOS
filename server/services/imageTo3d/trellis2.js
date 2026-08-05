@@ -23,37 +23,16 @@ import { homedir, platform, totalmem } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, execFile } from 'node:child_process';
-import { killWithEscalation } from '../../lib/killWithEscalation.js';
 import { rewriteGlbMaterialsOpaque } from './glbMaterials.js';
 import { getTarget } from './targets.js';
+import { textMatcher, runInstallSteps, runGenerateSubprocess } from './laneRunner.js';
 
 const HOME = homedir();
 const IS_WIN = platform() === 'win32';
 
-/**
- * Build a case-insensitive predicate that tests text against an alternation of
- * signature phrases — the shared shape both subprocess-error classifiers below use
- * (each keeps its own domain-specific phrase list; only the plumbing is shared).
- * @param {string[]} phrases
- * @returns {(text: string) => boolean}
- */
-function textMatcher(phrases) {
-  const re = new RegExp(phrases.join('|'), 'i');
-  return (text) => re.test(String(text ?? ''));
-}
-
-/**
- * Append a chunk of subprocess output to a bounded tail (the last `max` chars), so a
- * non-zero exit can be classified from the trailing output without retaining the
- * whole stream. Used at both child-process boundaries (install + generate).
- * @param {string} prev
- * @param {*} buf
- * @param {number} [max]
- * @returns {string}
- */
-function appendTail(prev, buf, max = 4000) {
-  return `${prev}${buf}`.slice(-max);
-}
+/** Error-code namespace and user-facing name for this lane's subprocess failures. */
+const CODE_PREFIX = 'TRELLIS2';
+const LABEL = 'TRELLIS.2';
 
 /** The Apple Silicon MPS port of Microsoft TRELLIS.2. */
 export const TRELLIS2_REPO = 'https://github.com/shivampkumar/trellis-mac';
@@ -558,7 +537,7 @@ export function installTrellis2({
   onEvent = () => {},
   spawnImpl = spawn,
   maxRetries = 3,
-  sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+  sleep,
   exists = existsSync,
   env,
   probeBake = probeTrellis2TextureBake,
@@ -568,116 +547,28 @@ export function installTrellis2({
   // after a setup-stage failure); `installMetalToolchain` is resolved by the CALLER
   // from `probeMetalToolchain()` and passed in as a plain boolean, so this function
   // keeps returning `{ promise, kill }` synchronously — see buildInstallSteps.
-  const steps = buildInstallSteps(base, { exists, installMetalToolchain });
-  let currentChild = null;
-  let canceled = false;
-
-  const runStep = (step) => new Promise((resolve, reject) => {
-    onEvent({ type: 'stage', stage: step.stage, message: `${step.command} ${step.args.join(' ')}` });
-    // Child-process boundary — outcomes flow through events, not a throw into the
-    // request lifecycle (CLAUDE.md child-process exception).
-    const child = spawnImpl(step.command, step.args, {
-      ...(step.cwd ? { cwd: step.cwd } : {}),
-      ...(env ? { env } : {}),
-    });
-    currentChild = child;
-    // Retain a bounded tail of combined output so a non-zero exit can be classified
-    // as transient-network vs. a real failure (the clue is in the subprocess text,
-    // not the exit code — git exits 128 for both a network drop and a bad ref).
-    let outputTail = '';
-    const log = (buf) => {
-      const message = String(buf).trim();
-      if (message) onEvent({ type: 'log', stage: step.stage, message });
-      outputTail = appendTail(outputTail, buf);
-    };
-    child.stdout?.on('data', log);
-    child.stderr?.on('data', log);
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      const err = new Error(`TRELLIS.2 install step '${step.stage}' exited ${code}`);
-      err.code = 'TRELLIS2_INSTALL_FAILED';
-      err.stage = step.stage;
-      err.transient = isTransientInstallError(outputTail);
-      reject(err);
-    });
-  });
-
-  // Retry an idempotent step in place while its failure looks like a transient
-  // network drop and attempts remain; otherwise surface the error unchanged.
-  const runStepWithRetry = async (step) => {
-    for (let attempt = 0; ; attempt += 1) {
-      if (canceled) {
-        const err = new Error('TRELLIS.2 install canceled');
-        err.code = 'TRELLIS2_INSTALL_CANCELED';
-        throw err;
-      }
-      try {
-        await runStep(step);
-        return;
-      } catch (err) {
-        const canRetry = err?.code === 'TRELLIS2_INSTALL_FAILED'
-          && err.transient && attempt < maxRetries && !canceled;
-        if (!canRetry) {
-          // An `optional` step degrades the install rather than breaking it (the
-          // Metal Toolchain fetch: without it textures bake badly, but geometry
-          // renders fine and the `verify` step reports the degraded outcome). Warn
-          // and continue instead of aborting — checked AFTER the retry decision so
-          // a transient failure still burns its retries first, and scoped to a step
-          // failure so a cancel still propagates.
-          if (step.optional && err?.code === 'TRELLIS2_INSTALL_FAILED') {
-            onEvent({
-              type: 'log',
-              stage: step.stage,
-              message: `⚠️ Optional step '${step.stage}' failed (${err.message}) — continuing; textures may bake at reduced quality.`,
-            });
-            return;
-          }
-          throw err;
-        }
-        const backoffMs = Math.min(30000, 2000 * 2 ** attempt);
-        onEvent({
-          type: 'log',
-          stage: step.stage,
-          message: `⚠️ Transient network error — retrying in ${Math.round(backoffMs / 1000)}s (attempt ${attempt + 2}/${maxRetries + 1})…`,
-        });
-        await sleep(backoffMs);
-      }
-    }
-  };
-
-  const promise = (async () => {
-    for (const step of steps) {
-      if (canceled) {
-        const err = new Error('TRELLIS.2 install canceled');
-        err.code = 'TRELLIS2_INSTALL_CANCELED';
-        throw err;
-      }
-      await runStepWithRetry(step);
-    }
+  return runInstallSteps({
+    steps: buildInstallSteps(base, { exists, installMetalToolchain }),
+    label: LABEL,
+    codePrefix: CODE_PREFIX,
+    isTransient: isTransientInstallError,
+    onEvent,
+    spawnImpl,
+    maxRetries,
+    sleep,
+    env,
     // `setup.sh` exits 0 even when its Metal texture-baking backends failed to
     // build, so a bare success would report an install that silently renders
-    // scrambled surfaces (#2952). Verify what actually landed and say so — BEFORE
-    // the terminal `complete` frame, which closes the client's EventSource.
-    const bake = await probeBake({ base });
-    if (bake.quality === 'fallback') {
-      onEvent({ type: 'log', stage: 'verify', message: `⚠️ ${bake.help}` });
-    } else if (bake.quality === 'metal') {
-      onEvent({ type: 'log', stage: 'verify', message: '✅ Metal texture baking is available.' });
-    }
-    onEvent({ type: 'complete', message: 'TRELLIS.2 installed.' });
-    return { ok: true };
-  })();
-
-  const kill = () => {
-    canceled = true;
-    if (currentChild && typeof currentChild.kill === 'function') currentChild.kill('SIGTERM');
-  };
-
-  return { promise, kill };
+    // scrambled surfaces (#2952). Report what actually landed.
+    verify: async (emit) => {
+      const bake = await probeBake({ base });
+      if (bake.quality === 'fallback') {
+        emit({ type: 'log', stage: 'verify', message: `⚠️ ${bake.help}` });
+      } else if (bake.quality === 'metal') {
+        emit({ type: 'log', stage: 'verify', message: '✅ Metal texture baking is available.' });
+      }
+    },
+  });
 }
 
 /**
@@ -710,14 +601,27 @@ export const isHfAuthError = textMatcher([
  * page is the fix; the CLI/env route is the fallback for someone already set up that
  * way. Terms acceptance is a separate step a token alone doesn't cover.
  */
-const HF_AUTH_REPOS = getTarget('trellis2')?.gatedRepos ?? [];
-const HF_AUTH_REPO_HELP = HF_AUTH_REPOS
-  .map(({ label, url }) => `${label} at ${url}`)
-  .join(' and ') || 'the required model at https://huggingface.co';
-const HF_AUTH_HELP = 'TRELLIS.2 could not download a gated model dependency from '
-  + `Hugging Face. Accept the terms for ${HF_AUTH_REPO_HELP}, then add your `
-  + 'Hugging Face token on the 3D page (or set HF_TOKEN / run `huggingface-cli login`) '
-  + 'and try again.';
+/**
+ * Build that guidance for a target, naming its own gated repos so the registry stays
+ * the single source and the two lanes can't drift on the wording.
+ *
+ * Resolved lazily, at failure time, rather than at module scope: this module is in the
+ * import graph of every registry consumer, and reading a descriptor at import time
+ * makes merely LOADING it depend on `targets.js` being fully materialized — which a
+ * partial test mock of that module breaks, taking the whole graph down with it.
+ * @param {string} targetId
+ * @returns {string}
+ */
+export function hfGatedRepoHelp(targetId) {
+  const repos = getTarget(targetId)?.gatedRepos ?? [];
+  const repoHelp = repos
+    .map(({ label, url }) => `${label} at ${url}`)
+    .join(' and ') || 'the required model at https://huggingface.co';
+  return 'TRELLIS.2 could not download a gated model dependency from '
+    + `Hugging Face. Accept the terms for ${repoHelp}, then add your `
+    + 'Hugging Face token on the 3D page (or set HF_TOKEN / run `huggingface-cli login`) '
+    + 'and try again.';
+}
 
 /**
  * Run a single image→GLB generation. The one real-subprocess boundary — GUARDED:
@@ -776,59 +680,22 @@ export function runTrellis2Generate({
     textureSize: resolvedTextureSize,
     pipelineType: resolvedPipelineType,
   });
-  // Child-process boundary — errors surface via the 'error'/'close' events, not a
-  // throw into the request lifecycle (CLAUDE.md child-process exception).
-  const child = spawnImpl(command, args, { cwd: trellis2Root(base), ...(env ? { env } : {}) });
-  let assetPath = outputPath || null;
-  // Retain a bounded tail of combined output so a non-zero exit can be classified
-  // (HF auth/gated-repo vs. a real crash) — the clue is in the text, not the code.
-  let outputTail = '';
-  const promise = new Promise((resolve, reject) => {
-    const ingest = (buf) => {
-      outputTail = appendTail(outputTail, buf);
-      // Split on \r AND \n: tqdm redraws its sampling bar in place with carriage
-      // returns, so a single chunk can carry several progress frames separated only
-      // by \r. Splitting on \n alone would treat them as one line and parse just the
-      // first (lowest) percent — under-reporting progress during the long sampling phase.
-      for (const line of String(buf).split(/[\r\n]+/)) {
-        const frame = parseGenerateProgress(line);
-        if (!frame) continue;
-        if (frame.assetPath) assetPath = frame.assetPath;
-        if (onProgress) onProgress(frame);
-      }
-    };
-    child.stdout?.on('data', ingest);
-    child.stderr?.on('data', ingest);
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code === 0 && assetPath) {
-        Promise.resolve()
-          .then(() => postprocessGlb(assetPath))
-          .then(() => resolve({ assetPath }))
-          .catch((cause) => {
-            const error = new Error(`TRELLIS.2 produced a GLB but material normalization failed: ${cause.message}`);
-            error.code = 'TRELLIS2_GLB_POSTPROCESS_FAILED';
-            reject(error);
-          });
-        return;
-      }
-      // A gated-dependency / HF-auth failure is a user-fixable setup problem, not a
-      // crash — surface it as such with actionable guidance instead of "exited N".
-      if (code !== 0 && isHfAuthError(outputTail)) {
-        const err = new Error(HF_AUTH_HELP);
-        err.code = 'TRELLIS2_HF_AUTH_REQUIRED';
-        reject(err);
-        return;
-      }
-      const err = new Error(
-        code === 0 ? 'TRELLIS.2 finished but produced no .glb' : `TRELLIS.2 generate exited ${code}`,
-      );
-      err.code = 'TRELLIS2_GENERATE_FAILED';
-      reject(err);
-    });
+  return runGenerateSubprocess({
+    command,
+    args,
+    cwd: trellis2Root(base),
+    env,
+    label: LABEL,
+    codePrefix: CODE_PREFIX,
+    parseProgress: parseGenerateProgress,
+    assetPath: outputPath || null,
+    onProgress,
+    spawnImpl,
+    postprocessGlb,
+    // A gated-dependency / HF-auth failure is a user-fixable setup problem, not a
+    // crash — surface it as such with actionable guidance instead of "exited N".
+    classifiers: [
+      { test: isHfAuthError, code: `${CODE_PREFIX}_HF_AUTH_REQUIRED`, help: () => hfGatedRepoHelp('trellis2') },
+    ],
   });
-  // Single captured child, never replaced — the helper's own exit check gates the
-  // SIGKILL escalation, so `stillRunning` is unconditionally true here.
-  const kill = () => killWithEscalation(child, { label: 'trellis2 generate', stillRunning: () => true });
-  return { promise, kill };
 }
