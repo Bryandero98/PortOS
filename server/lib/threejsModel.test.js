@@ -316,4 +316,21 @@ describe('buildThreejsFactorySource', () => {
       expect(source).toContain(`${channel}: definition.${channel},`);
     }
   });
+
+  // Specs are stored verbatim and re-validated only here, so a record generated
+  // by an older install under the looser `finite` scale bound reaches this parse
+  // unrepaired. It must name the part rather than normalizing to an opaque 500.
+  it('rejects a legacy spec with a non-positive scale as a 400 naming the part path', () => {
+    const legacy = validSpec();
+    legacy.parts[0].children[0].scale = [1, -1, 1];
+    let thrown = null;
+    try {
+      buildThreejsFactorySource(legacy);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown?.message).toMatch(/parts\.0\.children\.0\.scale\.1/);
+    expect(thrown?.status).toBe(400);
+    expect(thrown?.code).toBe('VALIDATION_ERROR');
+  });
 });

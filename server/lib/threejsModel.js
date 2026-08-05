@@ -9,6 +9,8 @@
 
 import { z } from 'zod';
 
+import { failValidation } from './errorHandler.js';
+
 const idSchema = z.string().trim().min(1).max(80).regex(/^[A-Za-z][A-Za-z0-9_-]*$/);
 const colorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/);
 const finite = z.number().finite().min(-10_000).max(10_000);
@@ -394,7 +396,14 @@ const toIdentifier = (name) => {
  * Group factory. No model-authored JavaScript is executed by PortOS.
  */
 export function buildThreejsFactorySource(input) {
-  const spec = threejsSculptSpecSchema.parse(input);
+  // A spec is stored verbatim and re-validated only here, so this is where a
+  // record an older install generated under a looser bound surfaces. A raw
+  // ZodError normalizes to an opaque 500, which says nothing a user can act on;
+  // `failValidation` names the offending path (`parts.0.scale.1`) in a 400, so
+  // "the download fails" points at the one part to fix or regenerate.
+  const parsed = threejsSculptSpecSchema.safeParse(input);
+  if (!parsed.success) failValidation(parsed);
+  const spec = parsed.data;
   const factoryName = `create${toIdentifier(spec.name)}Model`;
   const serialized = JSON.stringify(spec, null, 2);
 
