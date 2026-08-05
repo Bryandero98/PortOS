@@ -213,7 +213,6 @@ describe('every cwd-passing spawn pins PWD', () => {
     ['services/pm2.js', 'pm2 only'],
     ['services/appDeployer.js', 'deploy shell commands, not an AI CLI'],
     ['services/xcodeScripts.js', 'xcodebuild/ls, not an AI CLI'],
-    ['services/imageTo3d/trellis2.js', 'python/uv toolchain inside its own install root'],
     ['services/imageTo3d/laneRunner.js', 'git/bash/python install + render steps inside a target install root, not an AI CLI'],
     ['services/updateExecutor.js', "PortOS's own update scripts, run in the PortOS root by design"],
     ['routes/database.js', 'psql/pg_dump, not an AI CLI'],
