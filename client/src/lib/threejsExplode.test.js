@@ -68,13 +68,21 @@ describe('the shared part definition', () => {
   });
 
   it('treats root-level relief as an ordinary part, matching what the picker owns', () => {
-    const parts = [part('floatingTrim', { explodeWithParent: true, position: [-1, 0, 0] }), part('body', { position: [1, 0, 0] })];
+    const parts = [
+      part('floatingTrim', { explodeWithParent: true, position: [-1, 0, 0], children: [part('realPart', { position: [0, 0, 0.5] })] }),
+      part('body', { position: [1, 0, 0] }),
+    ];
     const layout = computeExplodeLayout(parts, 1);
+    const { owners } = buildPartSelectionIndex(parts);
 
     // There is no parent to ride, and the picker self-owns it — so the two
     // halves of the definition must not disagree about whether it is a part.
-    expect(layout.unitIds).toEqual(['floatingTrim', 'body']);
-    expect(buildPartSelectionIndex(parts).owners.floatingTrim).toBe('floatingTrim');
+    expect(layout.unitIds).toEqual(['floatingTrim', 'realPart', 'body']);
+    expect(owners.floatingTrim).toBe('floatingTrim');
+    // Nor may the ownership carry down: the layout separates this child, so the
+    // picker must name it rather than the contradictory root "relief" above it.
+    expect(layout.offsets.realPart).toBeDefined();
+    expect(owners.realPart).toBe('realPart');
   });
 
   it('does not read part ids through Object.prototype', () => {
