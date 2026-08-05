@@ -400,13 +400,6 @@ async function detectForgeIssues(forgeKey, app, { issueAuthorFilter = 'self' } =
     actionable: false, count: 0, total, inFlightCount: 0, filteredCount: 0, items: [], reason
   });
 
-  const args = [...cfg.listArgs];
-  // Resolve the author filter symmetrically with resolveIssueAuthorFilterBlock:
-  // 'any' = no filter; 'collaborators' = you + everyone with repo/project access
-  // (applied to the listing, since neither CLI's `--author` accepts a SET);
-  // 'owner' = repo/project owner; everything else (the 'self' default plus any
-  // out-of-vocab value) = the @me security boundary. Transient resolver failures
-  // skip this dispatch and retry next tick rather than parking a full cadence.
   // Shared shape for a transient (non-parking) probe failure. Carries the CLI
   // that failed so the caller can attribute the fault to `gh` vs `glab` instead
   // of guessing from the task-type name — a `claim-work` request only resolves to
@@ -418,6 +411,13 @@ async function detectForgeIssues(forgeKey, app, { issueAuthorFilter = 'self' } =
     actionable: false, count: 0, cli: cfg.cli, reason, remedy, transient: true
   });
 
+  const args = [...cfg.listArgs];
+  // Resolve the author filter symmetrically with resolveIssueAuthorFilterBlock:
+  // 'any' = no filter; 'collaborators' = you + everyone with repo/project access
+  // (applied to the listing, since neither CLI's `--author` accepts a SET);
+  // 'owner' = repo/project owner; everything else (the 'self' default plus any
+  // out-of-vocab value) = the @me security boundary. Transient resolver failures
+  // skip this dispatch and retry next tick rather than parking a full cadence.
   let authorApplied = false;
   // Trusted login set for `collaborators` mode (null on every other path). The
   // gate is applied AFTER the list returns rather than as a `--author` arg —
