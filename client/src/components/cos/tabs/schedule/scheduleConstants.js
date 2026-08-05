@@ -156,6 +156,18 @@ export const TASK_FILTERS = [
 ];
 export const DEFAULT_FILTER_ID = TASK_FILTERS[0].id;
 
+// Set or clear one per-app taskMetadata override key. '' is every override
+// select's "Inherit" option, and deletes the key so the global config decides
+// again; the server replaces taskMetadata wholesale, so the app's other override
+// keys ride along. Returns null once nothing is overridden, which is how a row
+// drops its override object entirely.
+export function setMetadataOverride(taskMetadata, field, value) {
+  const next = { ...(taskMetadata || {}) };
+  if (value === '') delete next[field];
+  else next[field] = value;
+  return Object.keys(next).length ? next : null;
+}
+
 // Toggle a global taskMetadata field, enforcing the openPR→useWorktree invariant.
 // Persists both true and false values so explicit overrides survive the server-side
 // merge with task-type defaults (e.g., feature-ideas defaults openPR to true).

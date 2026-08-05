@@ -366,6 +366,14 @@ describe('Worktree & metadata flag helpers', () => {
       expect(metadata).toMatchObject({ useWorktree: true, openPR: true, prCompletion: 'leave-open' });
     });
 
+    it('keeps a task-level PR completion pin over the app default', () => {
+      // The Schedule tab's "After opening PR" select writes this pin into the
+      // interval's taskMetadata — the more specific choice must win.
+      const metadata = { prCompletion: 'merge-on-green' };
+      applyAppWorktreeDefault(metadata, { defaultOpenPR: true, defaultPrCompletion: 'review-then-merge' });
+      expect(metadata.prCompletion).toBe('merge-on-green');
+    });
+
     it('does not invent a disposition for a legacy app default', () => {
       const metadata = {};
       applyAppWorktreeDefault(metadata, { defaultOpenPR: true });

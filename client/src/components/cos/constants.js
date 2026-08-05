@@ -171,7 +171,26 @@ export const PR_COMPLETION_OPTIONS = [
   { value: 'leave-open', label: 'Leave PR open', description: 'Open the PR and stop so you can inspect and merge it yourself.' }
 ];
 
+export const prCompletionOption = (value) => PR_COMPLETION_OPTIONS.find(option => option.value === value);
+
 export const DEFAULT_PR_COMPLETION = 'review-then-merge';
+
+// The policy a task falls back to when nothing pins `prCompletion` — mirrors the
+// `resolvePrCompletion` fallback in server/lib/prDisposition.js (legacy
+// `reviewLoop` records aside). Scheduled tasks inherit their app's
+// `defaultPrCompletion` first, so this is only the floor.
+export const IMPLICIT_PR_COMPLETION = 'merge-on-green';
+
+// Which option a stored taskMetadata pins, or '' when nothing does (inherit).
+// Legacy `reviewLoop` records are the pre-`prCompletion` spelling of
+// review-then-merge, so a control seeded from this shows what will actually
+// happen rather than claiming to be unpinned. Client mirror of
+// `resolvePrCompletion` in server/lib/prDisposition.js, minus its
+// IMPLICIT_PR_COMPLETION floor — that floor is what "inherit" resolves to.
+export function pinnedPrCompletion(metadata) {
+  if (prCompletionOption(metadata?.prCompletion)) return metadata.prCompletion;
+  return metadata?.reviewLoop === true || metadata?.reviewLoop === 'true' ? 'review-then-merge' : '';
+}
 
 // Reviewer choices for the Review Loop. `copilot` requests a GitHub Copilot
 // review via the native reviewer API; CLI reviewers (claude/antigravity/codex/grok)

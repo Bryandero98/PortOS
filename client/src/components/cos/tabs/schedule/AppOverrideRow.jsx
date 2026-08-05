@@ -1,10 +1,10 @@
 import { useState, memo } from 'react';
 import AppIcon from '../../../AppIcon';
 import CronInput from '../../../CronInput';
-import { AGENT_OPTIONS, ISSUE_AUTHOR_FILTER_OPTIONS, ISSUE_AUTHOR_FILTER_TASK_TYPES, SWARM_COUNT_OPTIONS, SWARM_TASK_TYPES, toggleAppMetadataOverride, agentOptionButtonClass } from '../../constants';
+import { AGENT_OPTIONS, ISSUE_AUTHOR_FILTER_OPTIONS, ISSUE_AUTHOR_FILTER_TASK_TYPES, PR_COMPLETION_OPTIONS, pinnedPrCompletion, prCompletionOption, SWARM_COUNT_OPTIONS, SWARM_TASK_TYPES, toggleAppMetadataOverride, agentOptionButtonClass } from '../../constants';
 import { isCronExpression, describeCron } from '../../../../utils/cronHelpers';
 import ToggleSwitch from '../../../ToggleSwitch';
-import { INTERVAL_LABELS } from './scheduleConstants';
+import { INTERVAL_LABELS, setMetadataOverride } from './scheduleConstants';
 
 const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalIntervalType, globalTaskMetadata, managedAgentOptions, override, onUpdate }) {
   const [updating, setUpdating] = useState(false);
@@ -12,6 +12,9 @@ const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalInter
   const isEnabled = override?.enabled === true;
   const currentInterval = override?.interval || null;
   const hasCron = isCronExpression(currentInterval);
+  // Same effective-value rule the AGENT_OPTIONS buttons use: this app's override
+  // wins, else the global config. No PR, nothing to decide about one.
+  const opensPR = (override?.taskMetadata?.openPR ?? globalTaskMetadata?.openPR) === true;
 
   const handleToggle = async () => {
     setUpdating(true);
@@ -45,34 +48,20 @@ const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalInter
     setUpdating(false);
   };
 
-  // claim-issue per-app author filter. '' = inherit the global default; any
-  // other value writes a per-app override. The server replaces taskMetadata
-  // wholesale, so preserve the app's other override keys (worktree, etc.).
-  const handleIssueAuthorFilterChange = async (value) => {
+  // Per-app override for one non-boolean knob. '' = inherit the global default
+  // (see setMetadataOverride for the set-or-clear rule).
+  const handleOverrideChange = async (field, value) => {
     setUpdating(true);
-    const next = { ...(override?.taskMetadata || {}) };
-    if (value === '') delete next.issueAuthorFilter;
-    else next.issueAuthorFilter = value;
-    const taskMetadata = Object.keys(next).length ? next : null;
+    const taskMetadata = setMetadataOverride(override?.taskMetadata, field, value);
     await onUpdate(app.id, taskType, { taskMetadata }).catch(() => {});
     setUpdating(false);
   };
 
-  // claim-issue per-app swarm override. '' = inherit the global default; '0'
-  // = explicit off; 2..6 = swarm with that many agents. Sent as a Number: the
-  // server's sanitizer KEEPS an explicit 0 (it's how a per-app override turns
-  // swarm off even when the global default has it on) and 2..6; only 1 /
-  // out-of-range / non-integer are dropped. Inherit is the absent key (deleted
-  // above), distinct from a stored 0.
-  const handleSwarmCountChange = async (raw) => {
-    setUpdating(true);
-    const next = { ...(override?.taskMetadata || {}) };
-    if (raw === '') delete next.swarmCount;
-    else next.swarmCount = Number(raw);
-    const taskMetadata = Object.keys(next).length ? next : null;
-    await onUpdate(app.id, taskType, { taskMetadata }).catch(() => {});
-    setUpdating(false);
-  };
+  // Swarm count goes as a Number: the server's sanitizer KEEPS an explicit 0
+  // (how a per-app override turns swarm off even when the global default has it
+  // on) and 2..6; only 1 / out-of-range / non-integer are dropped. Inherit is
+  // the absent key, distinct from a stored 0.
+  const handleSwarmCountChange = (raw) => handleOverrideChange('swarmCount', raw === '' ? '' : Number(raw));
 
   return (
     <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2 sm:gap-3 py-2 px-3 rounded hover:bg-port-card/30">
@@ -149,10 +138,26 @@ const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalInter
           })}
         </div>
 
+        {opensPR && (
+          <select
+            value={pinnedPrCompletion(override?.taskMetadata)}
+            onChange={(e) => handleOverrideChange('prCompletion', e.target.value)}
+            disabled={updating}
+            aria-label={`After opening PR for ${app.name}`}
+            title="What happens to the PR this app's runs open"
+            className="bg-port-card border border-port-border rounded px-2 py-1.5 text-xs text-white min-w-[120px] min-h-[40px]"
+          >
+            <option value="">Inherit ({prCompletionOption(pinnedPrCompletion(globalTaskMetadata))?.label || 'app default'})</option>
+            {PR_COMPLETION_OPTIONS.map(opt => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+        )}
+
         {ISSUE_AUTHOR_FILTER_TASK_TYPES.has(taskType) && (
           <select
             value={override?.taskMetadata?.issueAuthorFilter || ''}
-            onChange={(e) => handleIssueAuthorFilterChange(e.target.value)}
+            onChange={(e) => handleOverrideChange('issueAuthorFilter', e.target.value)}
             disabled={updating}
             aria-label={`Issue author filter for ${app.name}`}
             title="Which open issues this app may claim"
