@@ -11,7 +11,7 @@ import { existsSync } from 'fs';
 import { readFile, rm } from 'fs/promises';
 import * as shellService from './shell.js';
 import { emitLog } from './cosEvents.js';
-import { updateAgent } from './cosAgents.js';
+import { updateAgent } from './cosAgentLifecycle.js';
 import { createOutputSpooler } from './agentTuiSpawning/outputSpooler.js';
 import { captureWorktreeDiff, worktreeHasChanges, resolveErrorAnalysis } from './agentTuiSpawning/finalizeHelpers.js';
 import { finalizeAgent, releaseAgentLane } from './agentFinalization.js';
@@ -31,7 +31,7 @@ import { resolveCliModel, buildEffortArgs, resolveBedrockCliModel, prefixOpencod
 import { createStreamingAnsiStripper, stripAnsi } from '../lib/ansiStrip.js';
 import { createImmediateFallbackSignalDetector } from '../lib/aiToolkit/errorDetection.js';
 import { isMachineOnline } from '../lib/connectivity.js';
-import { isAntigravityCommand } from '../lib/antigravity.js';
+import { isAntigravityCommand, resolveAntigravityModelAndEffort } from '../lib/antigravity.js';
 import {
   DEFAULT_TUI_PROMPT_DELAY_MS,
   DEFAULT_TUI_IDLE_TIMEOUT_MS,
@@ -233,13 +233,9 @@ function appendModelArgs(args, model, command, provider) {
     if (hasModelFlag(args)) return args;
     return [...args, '--model', prefixOpencodeModel(provider, effectiveModel)];
   }
-  // Antigravity (`agy --model <id>`). No Bedrock mapping: agy serves
-  // `claude-*` ids through Google's own gateway, so rewriting them to
-  // `global.anthropic.*` would hand it an id it can't resolve.
-  if (isAntigravityCommand(command)) {
-    if (hasModelFlag(args)) return args;
-    return [...args, '--model', effectiveModel];
-  }
+  // Antigravity never reaches here: buildTuiSpawnConfig resolves its model and
+  // effort together up front (agy validates the pair) — see antigravity.js.
+
   // Bedrock box: map a bare Claude id to its region-prefixed form just-in-time
   // (no-op off Bedrock / for non-Claude ids).
   const injectedModel = resolveBedrockCliModel(effectiveModel, {
@@ -252,10 +248,20 @@ function appendModelArgs(args, model, command, provider) {
 export function buildTuiSpawnConfig(provider, model, { systemPromptFile = null, effort = null } = {}) {
   const command = provider?.command || inferTuiCommand(provider?.id);
   const baseArgs = applyCommandDefaults(command, [...(provider?.args || [])]);
-  let args = appendModelArgs(baseArgs, model, command, provider);
-  // Reasoning-effort override — the provider is re-keyed on the RESOLVED launch
-  // command so an inferred command (blank provider.command) still qualifies.
-  args = [...args, ...buildEffortArgs(effort, { id: provider?.id, command }, args)];
+  let args;
+  if (isAntigravityCommand(command)) {
+    // agy validates the (model, effort) PAIR — `gemini-3.1-pro` has no `medium`
+    // tier — and a legacy suffixed id carries its own effort, so the two are
+    // resolved together against the provider's catalog (see antigravity.js).
+    const resolved = resolveAntigravityModelAndEffort(baseArgs, { model, effort, models: provider?.models });
+    args = resolved.model ? [...baseArgs, '--model', resolved.model] : baseArgs;
+    args = [...args, ...buildEffortArgs(resolved.effort, resolved.provider, args, resolved.base)];
+  } else {
+    args = appendModelArgs(baseArgs, model, command, provider);
+    // Reasoning-effort override — the provider is re-keyed on the RESOLVED launch
+    // command so an inferred command (blank provider.command) still qualifies.
+    args = [...args, ...buildEffortArgs(effort, { id: provider?.id, command }, args)];
+  }
   // Lean mode for Ollama-backed claude sessions (no-op otherwise) — must come
   // before the system-prompt flag so `--bare` is present when the contract
   // file rides along.

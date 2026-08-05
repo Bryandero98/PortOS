@@ -18,7 +18,7 @@
  *   - Claude Code: `-p -`                (+ `--model <id>`)
  */
 
-import { resolveCliModel, hasModelFlag, resolveBedrockCliModel, prefixOpencodeModel, isOpencodeCommand, buildCodexStartupArgs, stripBrokenModelFlags } from './providerModels.js';
+import { resolveCliModel, hasModelFlag, resolveBedrockCliModel, prefixOpencodeModel, isOpencodeCommand, buildCodexStartupArgs, buildEffortArgs, stripBrokenModelFlags } from './providerModels.js';
 import { ensureAntigravityPrintArgs, isAntigravityCliProvider, isAntigravityCommand, prepareAntigravityPrompt } from './antigravity.js';
 import { isGrokCommand, ensureGrokHeadlessArgs, prepareGrokPromptFile } from './grok.js';
 import { isKimiCommand, ensureKimiHeadlessArgs, prepareKimiPrompt } from './kimi.js';
@@ -33,9 +33,16 @@ import { isKimiCommand, ensureKimiHeadlessArgs, prepareKimiPrompt } from './kimi
  * Model-flag injection is GATED on `provider.args` not already containing a
  * model flag — users who hard-coded e.g. `--model gemini-2.5-pro` in their
  * saved provider config keep that override and don't get a duplicate flag.
+ *
+ * `provider.effort` carries a per-run reasoning-effort override the same way
+ * `provider.defaultModel` carries the per-run model: callers clone the provider
+ * with both pinned (see `promptRunner.js#executeProviderRunOnce`). It becomes
+ * `--effort <level>` on claude/agy and `-c model_reasoning_effort=<level>` on
+ * codex, and is suppressed when the saved args already bake an effort pin.
  */
 export function buildCliArgs(provider) {
   const providerId = provider?.id || '';
+  const effort = provider?.effort || null;
   // Sanitize: drop any broken/dangling `--model` / `-m` tokens before
   // appending. hasModelFlag treats those as "not a real pin" so the
   // injection path fires — but if we kept the bogus token in baseArgs the
@@ -59,6 +66,7 @@ export function buildCliArgs(provider) {
     if (effectiveDefaultModel) {
       args.push('--model', effectiveDefaultModel);
     }
+    args.push(...buildEffortArgs(effort, provider, args));
     args.push('-'); // stdin marker
     return args;
   }
@@ -69,7 +77,11 @@ export function buildCliArgs(provider) {
   // `--model` is honored like every other CLI here — the configured-default
   // sentinel resolves to null so agy falls back to its own configured model.
   if (isAntigravityCliProvider(provider)) {
-    return ensureAntigravityPrintArgs(baseArgs, { model: effectiveDefaultModel });
+    return ensureAntigravityPrintArgs(baseArgs, {
+      model: effectiveDefaultModel,
+      effort,
+      models: provider?.models,
+    });
   }
 
   // Grok Build CLI (`grok`): headless one-shot. The prompt is delivered through
@@ -135,6 +147,7 @@ export function buildCliArgs(provider) {
     });
     args.push('--model', model);
   }
+  args.push(...buildEffortArgs(effort, provider, args));
   return args;
 }
 

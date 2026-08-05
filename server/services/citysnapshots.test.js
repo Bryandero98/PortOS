@@ -21,7 +21,7 @@ describe('citysnapshots service', () => {
     vi.doUnmock('./settings.js');
     vi.doUnmock('./apps.js');
     vi.doUnmock('./cos.js');
-    vi.doUnmock('./cosAgents.js');
+    vi.doUnmock('./cosAgentLifecycle.js');
     vi.doUnmock('./cosTaskStore.js');
     vi.doUnmock('./review.js');
     vi.doUnmock('./instances.js');
@@ -61,7 +61,7 @@ describe('citysnapshots service', () => {
         stats: { tasksCompleted: 7 },
       })),
     }));
-    vi.doMock('./cosAgents.js', () => ({
+    vi.doMock('./cosAgentLifecycle.js', () => ({
       getAgents: mock('agents', src('agents', [
         { id: 'agent-1', status: 'running', workspacePath: '/repos/a1/sub' },
         { id: 'agent-2', status: 'completed', workspacePath: '/repos/a2' },

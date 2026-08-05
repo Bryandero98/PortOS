@@ -46,12 +46,12 @@ vi.mock('fs/promises', async (importOriginal) => {
   };
 });
 
-import { getAgent, createAgentOutputBatcher, completeAgent, updateAgent, registerAgent } from './cosAgents.js';
+import { getAgent, createAgentOutputBatcher, completeAgent, updateAgent, registerAgent } from './cosAgentLifecycle.js';
 import { saveState } from './cosState.js';
 import { recordDomainUsage } from './domainUsage.js';
 import { cosEvents } from './cosEvents.js';
 
-describe('cosAgents', () => {
+describe('cosAgentLifecycle', () => {
   beforeEach(async () => {
     await rm(mockCosState.agentsDir, { recursive: true, force: true });
     await mkdir(mockCosState.agentsDir, { recursive: true });

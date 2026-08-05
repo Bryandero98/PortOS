@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildThreejsFactorySource, threejsGeometrySchema, threejsSculptSpecSchema } from './threejsModel.js';
+import {
+  buildThreejsFactorySource,
+  storedThreejsSculptSpecSchema,
+  threejsGeometrySchema,
+  threejsSculptSpecSchema,
+} from './threejsModel.js';
 
 const squareOutline = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
 const validExtrude = () => ({
@@ -123,6 +128,52 @@ describe('threejsSculptSpecSchema', () => {
     expect(parsed.materials.trim).toMatchObject({
       ior: 1.5, transmission: 0, thickness: 0, sheen: 0, iridescence: 0, anisotropy: 0,
     });
+  });
+
+  it('defaults an omitted part scale to an untouched [1, 1, 1]', () => {
+    const spec = validSpec();
+    delete spec.parts[0].scale;
+    delete spec.parts[0].children[0].scale;
+    const parsed = threejsSculptSpecSchema.parse(spec);
+    expect(parsed.parts[0].scale).toEqual([1, 1, 1]);
+    expect(parsed.parts[0].children[0].scale).toEqual([1, 1, 1]);
+  });
+
+  // A zero component collapses the part to an invisible plane and a negative one
+  // reflects it — neither throws at render time (three.js flips the front face for a
+  // negative determinant), so the schema is the only place they can be caught.
+  it('rejects a negative or zero part scale component, at any depth', () => {
+    for (const bad of [[1, -1, 1], [1, 0, 1], [-1, -1, -1]]) {
+      const spec = validSpec();
+      spec.parts[0].scale = bad;
+      const result = threejsSculptSpecSchema.safeParse(spec);
+      expect(result.success).toBe(false);
+      expect(result.error.issues.some((issue) => issue.path.join('.') === 'parts.0.scale.1'
+        || issue.path.join('.') === 'parts.0.scale.0')).toBe(true);
+
+      const nested = validSpec();
+      nested.parts[0].children[0].scale = bad;
+      expect(threejsSculptSpecSchema.safeParse(nested).success).toBe(false);
+    }
+  });
+
+  it('keeps accepting a legacy stored scale that the authoring contract now rejects', () => {
+    for (const legacy of [[1, -1, 1], [1, 0, 1], [1, 5e-5, 1]]) {
+      const spec = validSpec();
+      spec.parts[0].children[0].scale = legacy;
+      expect(threejsSculptSpecSchema.safeParse(spec).success).toBe(false);
+      expect(storedThreejsSculptSpecSchema.parse(spec).parts[0].children[0].scale).toEqual(legacy);
+    }
+  });
+
+  it('rejects a near-zero part scale below the floor but accepts the floor itself', () => {
+    const tooSmall = validSpec();
+    tooSmall.parts[0].scale = [1, 5e-5, 1];
+    expect(threejsSculptSpecSchema.safeParse(tooSmall).success).toBe(false);
+
+    const atFloor = validSpec();
+    atFloor.parts[0].scale = [1, 1e-4, 1];
+    expect(threejsSculptSpecSchema.parse(atFloor).parts[0].scale).toEqual([1, 1e-4, 1]);
   });
 
   it('rejects out-of-range physical material channels', () => {
@@ -304,5 +355,32 @@ describe('buildThreejsFactorySource', () => {
     for (const channel of ['ior', 'transmission', 'thickness', 'sheen', 'iridescence', 'anisotropy']) {
       expect(source).toContain(`${channel}: definition.${channel},`);
     }
+  });
+
+  // A spec an older install stored under the looser bound must stay exportable —
+  // tightening what a provider may author cannot retroactively take Copy/Download
+  // away from a `ready` model — and it exports verbatim, since neither dropping
+  // the sign nor flooring the zero is a repair this module is entitled to make.
+  it('still exports a stored spec whose part scale predates the authoring bound', () => {
+    const legacy = validSpec();
+    legacy.parts[0].children[0].scale = [1, -1, 0];
+    expect(threejsSculptSpecSchema.safeParse(legacy).success).toBe(false);
+
+    const source = buildThreejsFactorySource(legacy);
+    expect(source.replace(/\s+/g, '')).toContain('"scale":[1,-1,0]');
+  });
+
+  it('reports a malformed stored spec as a 400 naming the offending path', () => {
+    const broken = validSpec();
+    broken.parts[0].material = 'missing';
+    let thrown = null;
+    try {
+      buildThreejsFactorySource(broken);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown?.message).toMatch(/parts\.0\.material: unknown material: missing/);
+    expect(thrown?.status).toBe(400);
+    expect(thrown?.code).toBe('VALIDATION_ERROR');
   });
 });

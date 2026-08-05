@@ -9,7 +9,7 @@ vi.mock('./cosAgentLifecycle.js', () => {
   // Faithful stand-in for the real debounced batcher: accumulates pushed lines
   // and, on flush(), routes them through the mocked appendAgentOutputLines while
   // swallowing+logging failures (mirrors the real createAgentOutputBatcher in
-  // cosAgentLifecycle.js — whose error handling is unit-tested in cosAgents.test.js).
+  // cosAgentLifecycle.js — whose error handling is unit-tested in cosAgentLifecycle.test.js).
   const createAgentOutputBatcher = vi.fn((agentId) => {
     let pending = [];
     return {

@@ -9,7 +9,7 @@ import { readFile, readdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { loadState, ensureDirectories, REPORTS_DIR, isDaemonRunning } from './cosState.js';
-import { getAgentsByDate } from './cosAgents.js';
+import { getAgentsByDate } from './cosAgentIndex.js';
 import { formatDuration, safeJSONParse, atomicWrite } from '../lib/fileUtils.js';
 
 // A completed agent's work duration in ms: prefer the recorded `result.duration`,

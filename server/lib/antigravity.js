@@ -1,4 +1,4 @@
-import { buildEffortArgs, commandBasename, hasModelFlag, resolveCliModel, stripBrokenModelFlags } from './providerModels.js';
+import { buildEffortArgs, commandBasename, extractBakedModel, hasModelFlag, resolveCliEffort, resolveCliModel, splitAntigravityModel, stripBrokenModelFlags } from './providerModels.js';
 
 export const ANTIGRAVITY_CLI_ID = 'antigravity-cli';
 export const ANTIGRAVITY_TUI_ID = 'antigravity-tui';
@@ -40,23 +40,67 @@ export const ANTIGRAVITY_PRINT_FLAGS = ['--print', '-p', '--prompt'];
  * `claude-opus-4-6-thinking` through Google's own gateway, so rewriting those
  * to `global.anthropic.*` on a Bedrock host would hand agy an id it can't
  * resolve.
+ *
+ * See `resolveAntigravityModelAndEffort` for how the two are paired.
  */
-function appendAntigravityModelAndEffort(args, { model = null, effort = null } = {}) {
+function appendAntigravityModelAndEffort(args, overrides = {}) {
   // Drop a dangling `--model` before appending: `hasModelFlag` (correctly)
   // reports a value-less flag as "not a pin", so leaving it in would hand agy
   // two `--model` occurrences.
   const out = stripBrokenModelFlags(args);
-  const effectiveModel = resolveCliModel(model);
-  if (effectiveModel && !hasModelFlag(out)) {
-    out.push('--model', effectiveModel);
-  }
-  out.push(...buildEffortArgs(effort, { id: ANTIGRAVITY_CLI_ID, command: 'agy' }, out));
+  const { model, effort, base, provider } = resolveAntigravityModelAndEffort(out, overrides);
+  if (model) out.push('--model', model);
+  out.push(...buildEffortArgs(effort, provider, out, base));
   return out;
 }
 
 /**
+ * Pair an agy `--model` with an `--effort`, honoring a user-baked `--model` pin.
+ *
+ * `model` may arrive as either a BASE id (`gemini-3.6-flash` — what the pickers
+ * now offer) or a legacy effort-suffixed id (`gemini-3.6-flash-high`, still what
+ * older installs and federated peers have persisted). A suffixed id is split so
+ * the base goes to `--model` and its baked tier becomes the `--effort` — an
+ * explicitly selected `effort` wins over the baked one. That keeps a stored
+ * suffixed id working unchanged (`--model X --effort high` is equivalent to
+ * `--model X-high`) instead of orphaning it.
+ *
+ * `models` is the provider's model catalog; it narrows the effort ladder to the
+ * tiers the chosen base actually offers, because agy validates the PAIR — it
+ * rejects `--model gemini-3.1-pro --effort medium` outright. An unresolvable
+ * effort leaves the model id untouched, so a suffix carrying the only usable
+ * tier is never stripped away into an invalid invocation.
+ *
+ * When the saved argv already pins `--model`, that pin wins (same gate as
+ * `buildCliArgs`) and `model` comes back null. The effort ladder is then read
+ * off the PINNED id, and only an explicitly selected `effort` applies — a pin's
+ * own baked suffix already says what it means and isn't restated as a redundant
+ * `--effort`.
+ *
+ * @param {string[]} args - the argv built so far (post `stripBrokenModelFlags`)
+ * @param {{model?:string|null, effort?:string|null, models?:unknown[]|null}} [overrides]
+ * @returns {{model: string|null, effort: string|null, base: string|null, provider: object}}
+ *   `model` is the id to inject (null = don't), `provider` the synthetic agy
+ *   provider to hand `buildEffortArgs`.
+ */
+export function resolveAntigravityModelAndEffort(args = [], { model = null, effort = null, models = null } = {}) {
+  const provider = { id: ANTIGRAVITY_CLI_ID, command: 'agy', models };
+  const pinned = hasModelFlag(args);
+  const requested = resolveCliModel(model);
+  // The id agy will actually receive — a user-baked pin always wins.
+  const { base, effort: bakedEffort } = splitAntigravityModel(pinned ? extractBakedModel(args) : requested);
+  const effectiveEffort = resolveCliEffort(pinned ? effort : (effort || bakedEffort), provider, base);
+  return {
+    model: pinned ? null : (effectiveEffort ? base : requested),
+    effort: effectiveEffort,
+    base,
+    provider,
+  };
+}
+
+/**
  * @param {string[]} [args] - the provider's saved argv
- * @param {{model?:string|null, effort?:string|null}} [overrides] - per-run selections
+ * @param {{model?:string|null, effort?:string|null, models?:unknown[]|null}} [overrides] - per-run selections
  */
 export function ensureAntigravityPrintArgs(args = [], overrides = {}) {
   // Drop any bare print flag the caller baked in — we re-add exactly one as the
@@ -112,10 +156,11 @@ export function prepareAntigravityPrompt(args = [], prompt = '') {
 // permission auto-approval actually takes effect. Do NOT add --print here.
 /**
  * Deliberately takes NO per-run model/effort overrides, unlike its `--print`
- * sibling: the TUI path injects those in `agentTuiSpawning.js#appendModelArgs`
- * + `buildEffortArgs`, after this normalizer has run (this is only reached via
- * the provider-agnostic `applyCommandDefaults`). It still drops a dangling
- * `--model` so that later append can't produce two of them.
+ * sibling: the TUI paths inject those via `resolveAntigravityModelAndEffort` +
+ * `buildEffortArgs` (in `tuiHandshake.js#buildTuiInvocation` and
+ * `agentTuiSpawning.js#buildTuiSpawnConfig`), after this normalizer has run —
+ * this is only reached via the provider-agnostic `applyCommandDefaults`. It
+ * still drops a dangling `--model` so that later append can't produce two.
  * @param {string[]} [args] - the provider's saved argv
  */
 export function ensureAntigravityTuiArgs(args = []) {

@@ -63,6 +63,10 @@ export async function createModel(input) {
     prompt: input.prompt || '',
     providerId: input.providerId,
     model: input.model || null,
+    // Reasoning-effort override for effort-capable providers. Additive JSON
+    // field — records written before this shipped simply read back `undefined`,
+    // which every consumer treats the same as "no override".
+    effort: input.effort || null,
     status: 'draft',
     spec: null,
     error: null,

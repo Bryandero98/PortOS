@@ -5,7 +5,8 @@
  * stay on date-bucketed disk) and the destructive clear-completed sweep.
  * Extracted from the former monolithic cosAgents.js (issue #2530).
  *
- * The public barrel `cosAgents.js` re-exports everything here.
+ * The `cosAgents.js` barrel that used to re-export this module is retired
+ * (#3450) — callers import from here directly.
  */
 
 import { writeFile, rename, readdir, rm } from 'fs/promises';
