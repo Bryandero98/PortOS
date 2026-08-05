@@ -29,7 +29,7 @@ import { join } from 'path';
 import { readFile, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { cosEvents, emitLog } from './cosEvents.js';
-// The DEFINING module, not the `cosAgents.js` barrel (#3450) — see the note in
+// The DEFINING module, not a barrel (#3450) — see the note in
 // `agentManagement.js`. This module owns the `spawnAgentForTask` transition the
 // facade re-exports, so it is permanently inside the facade's closure and must
 // name `completeAgent`'s home directly.

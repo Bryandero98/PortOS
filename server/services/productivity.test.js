@@ -4,7 +4,7 @@
  * Before this suite the module existed only as a `vi.mock()` target in
  * `routes/cosInsightRoutes.test.js` — referenced by a test, executed by none.
  * Here the real module runs: only the file-I/O boundary is redirected
- * (`PATHS.cos` → a temp dir) and the agent history source (`cosAgents.js`) is
+ * (`PATHS.cos` → a temp dir) and the agent history source (`cosAgentLifecycle.js` / `cosAgentIndex.js`) is
  * stubbed, so the streak arithmetic, the day/week boundary handling, and the
  * insight derivation are all exercised for real.
  *
@@ -35,7 +35,7 @@ vi.mock('../lib/fileUtils.js', async (importOriginal) =>
 
 const mock = vi.hoisted(() => ({ agents: [] }));
 
-vi.mock('./cosAgents.js', () => ({
+vi.mock('./cosAgentLifecycle.js', () => ({
   getAgents: vi.fn(async () => mock.agents),
 }));
 

@@ -29,7 +29,7 @@ import { createFileWriteQueue } from '../lib/fileWriteQueue.js';
 import { getSettings } from './settings.js';
 import * as apps from './apps.js';
 import * as cos from './cos.js';
-import { getAgents } from './cosAgents.js';
+import { getAgents } from './cosAgentLifecycle.js';
 import { getCosTasks } from './cosTaskStore.js';
 import { getPendingCounts } from './review.js';
 import { getSelf, getPeers } from './instances.js';

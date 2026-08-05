@@ -19,7 +19,7 @@
 import { join, relative, resolve, sep } from 'path';
 import { unlink, rm } from 'fs/promises';
 import { emitLog } from './cosEvents.js';
-import { updateAgent } from './cosAgents.js';
+import { updateAgent } from './cosAgentLifecycle.js';
 import { updateTask, addTask, reviveBlockedTask, checkStagePrecondition } from './cos.js';
 import { PIPELINE_BEHAVIOR_FLAGS, normalizeReviewers } from '../lib/validation.js';
 import { PATHS, tryReadFile } from '../lib/fileUtils.js';

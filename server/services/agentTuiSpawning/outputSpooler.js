@@ -17,7 +17,7 @@
  */
 
 import { appendFile, writeFile } from 'fs/promises';
-import { appendAgentOutputLines, updateAgent } from '../cosAgents.js';
+import { appendAgentOutputLines, updateAgent } from '../cosAgentLifecycle.js';
 import { OUTPUT_BUFFER_CAP, OUTPUT_BUFFER_HEADROOM, RAW_SPOOL_MAX_BYTES } from '../../lib/tuiHandshake.js';
 
 // Debounce window for batching parsed output AND raw chunks to disk + state.

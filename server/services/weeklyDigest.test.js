@@ -5,7 +5,7 @@
  * `routes/cosLearningRoutes.test.js`, so none of the aggregation, the
  * week-over-week math, or the insight copy was ever executed. Here the real
  * module runs against a temp digests dir (the only file-I/O boundary) with the
- * agent history source (`cosAgents.js`) stubbed.
+ * agent history source (`cosAgentLifecycle.js` / `cosAgentIndex.js`) stubbed.
  *
  * Fixture timestamps are built from LOCAL date components so every expectation
  * holds regardless of the runner's timezone — the service reads local getters.
@@ -34,8 +34,11 @@ const mock = vi.hoisted(() => ({
   agentsByDate: {},  // getAgentsByDate(date)
 }));
 
-vi.mock('./cosAgents.js', () => ({
+vi.mock('./cosAgentLifecycle.js', () => ({
   getAgents: vi.fn(async () => mock.agents),
+}));
+
+vi.mock('./cosAgentIndex.js', () => ({
   getAgentDates: vi.fn(async () => Object.keys(mock.agentsByDate).map(date => ({ date }))),
   getAgentsByDate: vi.fn(async (date) => mock.agentsByDate[date] || []),
 }));
@@ -448,7 +451,7 @@ describe('generateWeeklyDigest — insights', () => {
 describe('getWeeklyDigest', () => {
   it('returns a stored digest for a past week without recomputing', async () => {
     writeDigest('2026-W05', storedDigest('2026-W05', { totalTasks: 99, successRate: 42, totalWorkTimeMs: 5000 }));
-    const { getAgents } = await import('./cosAgents.js');
+    const { getAgents } = await import('./cosAgentLifecycle.js');
 
     const digest = await digestService.getWeeklyDigest('2026-W05');
 

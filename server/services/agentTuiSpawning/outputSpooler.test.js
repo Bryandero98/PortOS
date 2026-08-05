@@ -8,7 +8,7 @@ vi.mock('fs/promises', () => ({
   writeFile: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../cosAgents.js', () => ({
+vi.mock('../cosAgentLifecycle.js', () => ({
   appendAgentOutputLines: vi.fn().mockResolvedValue(undefined),
   updateAgent: vi.fn().mockResolvedValue(undefined),
 }));
@@ -20,7 +20,7 @@ vi.mock('../../lib/tuiHandshake.js', () => ({
 }));
 
 import { appendFile, writeFile } from 'fs/promises';
-import { appendAgentOutputLines, updateAgent } from '../cosAgents.js';
+import { appendAgentOutputLines, updateAgent } from '../cosAgentLifecycle.js';
 import { createOutputSpooler } from './outputSpooler.js';
 
 const OUTPUT_FILE = '/tmp/agent/output.txt';

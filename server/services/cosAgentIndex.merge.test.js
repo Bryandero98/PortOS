@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdir, rm, writeFile, readFile } from 'fs/promises';
 import { join } from 'path';
 
-// Isolated file so cosAgents' lazy agentIndex singleton starts clean (a shared
+// Isolated file so cosAgentIndex's lazy agentIndex singleton starts clean (a shared
 // file would carry the cache across describes). cosState is mocked to point
 // AGENTS_DIR at a tmpdir so addAgentArchivesToIndex (#1650 receiver hook) never
 // touches the real data/cos/agents index.
@@ -18,7 +18,7 @@ vi.mock('./cosState.js', () => ({
 }));
 vi.mock('./domainUsage.js', () => ({ recordDomainUsage: vi.fn(async () => {}) }));
 
-import { addAgentArchivesToIndex, loadAgentIndex } from './cosAgents.js';
+import { addAgentArchivesToIndex, loadAgentIndex } from './cosAgentIndex.js';
 
 const INDEX_FILE = join(mockCosState.agentsDir, 'index.json');
 
