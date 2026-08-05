@@ -175,7 +175,7 @@ export default function BriefingTab() {
       // Expand all sections by default
       const parsed = parseBriefingMarkdown(latest.content);
       const expanded = {};
-      parsed.sections.forEach((s, i) => { expanded[i] = true; });
+      parsed.sections.forEach((_s, i) => { expanded[i] = true; });
       setExpandedSections(expanded);
     }
     setLoading(false);
@@ -189,7 +189,7 @@ export default function BriefingTab() {
       setCurrentBriefing(briefing);
       const parsed = parseBriefingMarkdown(briefing.content);
       const expanded = {};
-      parsed.sections.forEach((s, i) => { expanded[i] = true; });
+      parsed.sections.forEach((_s, i) => { expanded[i] = true; });
       setExpandedSections(expanded);
     }
     setLoading(false);

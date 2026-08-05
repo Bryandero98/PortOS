@@ -17,7 +17,7 @@ vi.mock('../../lib/pitchDetect.js', async (importActual) => {
   const actual = await importActual(); // keep the real tuningQuality
   return {
     ...actual,
-    createPitchTracker: vi.fn((analyser, opts) => {
+    createPitchTracker: vi.fn((_analyser, opts) => {
       lastOnUpdate = opts.onUpdate;
       return { stop: trackerStop };
     }),

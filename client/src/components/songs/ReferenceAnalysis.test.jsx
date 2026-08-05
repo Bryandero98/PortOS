@@ -107,7 +107,7 @@ function ControlledAnalysis({ initialRef, ...props }) {
   return (
     <ReferenceAnalysis
       reference={ref}
-      onUpdateReference={(id, key, val) => setRef((r) => ({ ...r, [key]: val }))}
+      onUpdateReference={(_id, key, val) => setRef((r) => ({ ...r, [key]: val }))}
       {...props}
     />
   );

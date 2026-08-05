@@ -403,7 +403,7 @@ K:  o - - - - - o -`;
         instrument: 'hurdy-gurdy',
         content: { format: 'futureformat', text: 'anything' },
       }));
-      api.updateSong.mockImplementation((sid, patch) => Promise.resolve(song({ ...patch })));
+      api.updateSong.mockImplementation((_sid, patch) => Promise.resolve(song({ ...patch })));
       renderPage('/songbook/abc?mode=edit');
       const instrument = await screen.findByLabelText('Instrument');
       expect(instrument.value).toBe('hurdy-gurdy');
@@ -434,7 +434,7 @@ K:  o - - - - - o -`;
   });
 
   it('renders the edit form in ?mode=edit and saves the whole content object', async () => {
-    api.updateSong.mockImplementation((id, patch) => Promise.resolve(song({ ...patch })));
+    api.updateSong.mockImplementation((_id, patch) => Promise.resolve(song({ ...patch })));
     renderPage('/songbook/abc?mode=edit');
     const titleInput = await screen.findByLabelText('Title');
     expect(titleInput.value).toBe('Example Song');

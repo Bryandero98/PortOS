@@ -261,19 +261,15 @@ Safe-Install -Dir "client" -Label "client"
 Safe-Install -Dir "server" -Label "server"
 Safe-Install -Dir "autofixer" -Label "autofixer"
 
-# Run trusted install scripts skipped by ignore-scripts=true in .npmrc.
-# Use `npm rebuild esbuild` rather than a hardcoded node_modules/esbuild/install.js
-# path: esbuild is no longer hoisted to the top of either tree (it nests under
-# vite/vitest), and the server has no direct esbuild dependency at all since
-# vitest 4 → vite 8 dropped it — so the old install.js path 404'd and crashed
-# the update. `npm rebuild` finds esbuild wherever it lives and no-ops cleanly
-# when absent. Server rebuild is non-fatal (esbuild is a test-only transitive
-# there, not needed for runtime or the production build).
-Write-SafeHost "🔧 Rebuilding esbuild, node-pty & sharp..." -ForegroundColor Yellow
-Invoke-Logged npm rebuild esbuild --prefix client
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-Invoke-Logged npm rebuild esbuild --prefix server
-Invoke-Logged npm rebuild node-pty sharp --prefix server
+# Run trusted install scripts skipped by ignore-scripts=true in each workspace's
+# .npmrc. The allowlist lives in scripts/trusted-rebuilds.js — a single home
+# shared with `npm run setup`, scripts/ensure-deps.js, setup.ps1, update.sh and CI,
+# so a package can never be granted an install-time execution slot in one path but
+# not another.
+# Only the server needs rebuilds; client/autofixer have no install-script deps
+# (vite 8 dropped the esbuild binary dependency that used to be the reason).
+Write-SafeHost "🔧 Rebuilding trusted native dependencies..." -ForegroundColor Yellow
+Invoke-Logged node scripts/trusted-rebuilds.js server
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-SafeHost ""
 

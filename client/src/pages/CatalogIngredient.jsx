@@ -1368,6 +1368,7 @@ function RefsPanel({ refsByKind }) {
                   const label = r.refName || r.refId || '(unnamed)';
                   const role = r.role ? ` · ${r.role}` : '';
                   const chip = (
+                    // biome-ignore lint/correctness/useJsxKeyInIterable: `chip` is a child of the keyed <Link>/<span> returned below, not the list element itself.
                     <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded border border-port-border bg-port-bg text-gray-200">
                       {label}{role}
                       {path && <ExternalLink size={10} aria-hidden="true" />}

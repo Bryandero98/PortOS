@@ -15,7 +15,7 @@ vi.mock('../lib/audioRecorder.js', () => ({
 }));
 
 vi.mock('../lib/pitchDetect.js', () => ({
-  createPitchTracker: vi.fn((analyser, options) => {
+  createPitchTracker: vi.fn((_analyser, options) => {
     trackerOnUpdate = options.onUpdate;
     return { stop: trackerStop };
   }),

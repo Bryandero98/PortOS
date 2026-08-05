@@ -60,24 +60,17 @@ npm install
 if ($LASTEXITCODE -ne 0) { Pop-Location; exit $LASTEXITCODE }
 Pop-Location
 
-# Rebuild native bindings. Use `npm rebuild esbuild` instead of invoking a
-# hardcoded client/node_modules/esbuild/install.js path: esbuild is a transitive
-# dep (via vite) that npm may place anywhere inside the client dependency tree, so
-# the fixed client/node_modules/esbuild/install.js path doesn't exist when npm
-# nests it deeper — that path mismatch is what aborted setup.ps1 with
-# MODULE_NOT_FOUND on Windows (issue #1792). `npm rebuild esbuild --prefix client`
-# resolves esbuild wherever it landed within client's tree and re-runs its
-# binary-download postinstall. Mirrors the cross-platform `npm run setup` script
-# and setup.sh.
+# Run trusted install scripts skipped by ignore-scripts=true in each workspace's
+# .npmrc. The allowlist lives in scripts/trusted-rebuilds.js — a single home shared
+# with `npm run setup`, scripts/ensure-deps.js, update.sh/update.ps1 and CI, so a
+# package can never be granted an install-time execution slot in one path but not
+# another. Only the server needs rebuilds; client/autofixer/browser have no
+# install-script deps — vite 8 dropped the esbuild binary dependency that used to be
+# the reason, which is also what made the old hardcoded esbuild/install.js path fail
+# with MODULE_NOT_FOUND on Windows (issue #1792).
 Write-Host ""
-Write-Host "Rebuilding esbuild, node-pty & sharp..." -ForegroundColor Yellow
-npm rebuild esbuild --prefix client
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-# esbuild may not be a direct server dependency — don't fail setup if it's absent
-# (matches the `|| true` guard around the same step in `npm run setup`).
-npm rebuild esbuild --prefix server
-$global:LASTEXITCODE = 0
-npm rebuild node-pty sharp --prefix server
+Write-Host "Rebuilding trusted native dependencies..." -ForegroundColor Yellow
+node scripts/trusted-rebuilds.js server
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 # Run data setup scripts

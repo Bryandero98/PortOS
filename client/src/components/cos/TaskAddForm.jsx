@@ -190,7 +190,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
       if (settings.simplify !== undefined) setSimplify(settings.simplify);
     }
     descriptionRef.current?.focus();
-    await api.useCosTaskTemplate(template.id).catch(() => {});
+    await api.applyCosTaskTemplate(template.id).catch(() => {});
     toast.success(`Template applied: ${template.name}`);
   }, [newTask.app]);
 

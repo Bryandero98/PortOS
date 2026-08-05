@@ -97,6 +97,11 @@ jobs:
       - name: Install server dependencies
         run: npm ci --prefix server
 
+      # server/.npmrc pins ignore-scripts=true, so the native deps npm skipped
+      # need the explicit allowlist rebuild to be usable (node-pty et al).
+      - name: Rebuild trusted native dependencies
+        run: node scripts/trusted-rebuilds.js server
+
       - name: Check server entry-point syntax
         run: node --check server/index.js
 
@@ -175,6 +180,11 @@ jobs:
 
       - name: Install server dependencies
         run: npm ci --prefix server
+
+      # server/.npmrc pins ignore-scripts=true — the smoke-boot below needs the
+      # native bindings, so run the explicit allowlist rebuild first.
+      - name: Rebuild trusted native dependencies
+        run: node scripts/trusted-rebuilds.js server
 
       - name: Provision test database (portos_test)
         if: needs.impact.outputs.db == 'true'

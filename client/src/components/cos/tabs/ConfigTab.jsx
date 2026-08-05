@@ -38,7 +38,7 @@ const PARAM_LABELS = {
 };
 
 // Format param value for display
-const formatParamValue = (key, value) => {
+const formatParamValue = (_key, value) => {
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
   return String(value);
 };

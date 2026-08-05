@@ -25,7 +25,7 @@ if [ "$NODE_VERSION" -lt 18 ]; then
 fi
 
 # `npm run setup` is the all-in-one: submodules + root/client/server/autofixer
-# deps + esbuild postinstall + node-pty rebuild + data dir, db, and browser
+# deps + the trusted native rebuilds (scripts/trusted-rebuilds.js) + data dir, db, and browser
 # setup. install:all is kept as a backward-compat alias.
 echo "Installing dependencies and running setup..."
 if ! npm run setup; then
