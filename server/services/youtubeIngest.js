@@ -477,6 +477,10 @@ const ingestJobs = new Map();
 
 export const attachIngestSseClient = (jobId, res) => attachSse(ingestJobs, jobId, res);
 
+// Exposed for the same reason as videoDownload's — so the cancel path is
+// reachable from a test instead of only from a live ingest.
+export const __testing = { ingestJobs };
+
 /**
  * Cancel an in-flight ingest. Returns false if the job is unknown or finished.
  *

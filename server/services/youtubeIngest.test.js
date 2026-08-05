@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // The ingest module pulls in the brain/cos/media graphs at import time for its
 // spawn path; the pure helpers under test need none of it. Stub the heavy edges
@@ -18,6 +18,8 @@ import {
   parseVideoMetadata,
   buildIngestNote,
   buildAgentTaskContext,
+  cancelYoutubeIngest,
+  __testing,
 } from './youtubeIngest.js';
 
 const META = {
@@ -177,5 +179,38 @@ describe('buildAgentTaskContext', () => {
     });
     expect(context).toContain('not available');
     expect(context).not.toContain('read this first');
+  });
+});
+
+describe('cancelYoutubeIngest', () => {
+  beforeEach(() => __testing.ingestJobs.clear());
+
+  it('returns false for an unknown job', () => {
+    expect(cancelYoutubeIngest('nope')).toBe(false);
+  });
+
+  it('flags a job with no live child so the between-steps cancel is still honored', () => {
+    // An ingest is a chain of steps; cancelling between two of them (or during
+    // the non-spawn persist phase) has no process to signal, so the flag — not
+    // the kill — is what stops it.
+    const job = { id: 'j', clients: [], process: null, canceled: false };
+    __testing.ingestJobs.set('j', job);
+    expect(cancelYoutubeIngest('j')).toBe(true);
+    expect(job.canceled).toBe(true);
+  });
+
+  it('signals the running yt-dlp child and escalates if it survives the grace window', () => {
+    vi.useFakeTimers();
+    const proc = { exitCode: null, signalCode: null, kill: vi.fn() };
+    const job = { id: 'j', clients: [], process: proc, canceled: false };
+    __testing.ingestJobs.set('j', job);
+
+    expect(cancelYoutubeIngest('j')).toBe(true);
+    expect(job.canceled).toBe(true);
+    expect(proc.kill).toHaveBeenCalledWith('SIGTERM');
+
+    vi.advanceTimersByTime(8000);
+    expect(proc.kill).toHaveBeenCalledWith('SIGKILL');
+    vi.useRealTimers();
   });
 });

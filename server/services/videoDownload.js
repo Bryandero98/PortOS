@@ -28,6 +28,7 @@ import { ServerError } from '../lib/errorHandler.js';
 import { shortId, PATHS } from '../lib/fileUtils.js';
 import { findFfmpeg, generateThumbnail, probeVideoDuration } from '../lib/ffmpeg.js';
 import { findYtDlp } from '../lib/ytdlp.js';
+import { killWithEscalation } from '../lib/killWithEscalation.js';
 import { broadcastSse, attachSseClient as attachSse, closeJobAfterDelay } from '../lib/sseUtils.js';
 import { downloadVideoToDir, cleanupProducedFiles } from './ytdlpVideoImport.js';
 import { loadHistory, mutateVideoHistory } from './videoGen/history.js';
@@ -63,6 +64,12 @@ const FILENAME_PREFIX = 'downloaded-';
 const downloadJobs = new Map();
 
 export const attachDownloadSseClient = (jobId, res) => attachSse(downloadJobs, jobId, res);
+
+// The job map is module-private, which left cancelVideoDownload untestable — and
+// an untested cancel path is exactly how a refactor shipped it referencing an
+// unimported killWithEscalation while the whole suite stayed green. Exposing the
+// map lets a test register a fake job and actually run the cancel.
+export const __testing = { downloadJobs };
 
 /** Cancel an in-flight download. Returns false if the job is unknown or already finished. */
 export function cancelVideoDownload(jobId) {
