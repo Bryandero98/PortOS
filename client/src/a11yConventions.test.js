@@ -179,7 +179,7 @@ function matchTernaryIcons(inner) {
   if (cIdx === -1) return false;
   const a = inner.slice(qIdx + 1, cIdx).trim();
   const b = inner.slice(cIdx + 1).trim();
-  const iconRe = /^<[A-Z][\w.]*(\s[^]*)?\/>$/;
+  const iconRe = /^<[A-Z][\w.]*(\s[\s\S]*)?\/>$/;
   return iconRe.test(a) && iconRe.test(b);
 }
 
@@ -207,9 +207,9 @@ function isIconOnlyBody(rawBodyIn) {
   if (node.kind === 'element') return node.selfClosing && /^<[A-Z]/.test(node.raw);
   const inner = node.inner;
   if (matchTernaryIcons(inner)) return true;
-  const andMatch = inner.match(/^.*&&\s*(<[A-Z][\w.]*(\s[^]*)?\/>)\s*$/s);
+  const andMatch = inner.match(/^.*&&\s*(<[A-Z][\w.]*(\s[\s\S]*)?\/>)\s*$/s);
   if (!andMatch) return false;
-  return /^<[A-Z][\w.]*(\s[^]*)?\/>$/.test(andMatch[1].trim());
+  return /^<[A-Z][\w.]*(\s[\s\S]*)?\/>$/.test(andMatch[1].trim());
 }
 
 // Buttons don't nest in valid HTML/JSX, so the first `</button>` after the
