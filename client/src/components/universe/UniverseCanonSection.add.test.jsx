@@ -26,6 +26,7 @@ vi.mock('../../services/apiUniverseBuilder', () => ({
   getUniverseCanonUsage: vi.fn(),
   setUniverseCanonLock: vi.fn(),
   setUniverseCanonLockAll: vi.fn(),
+  removeUniverseCanonEntry: vi.fn(),
   expandUniverseCharacter: vi.fn(),
 }));
 

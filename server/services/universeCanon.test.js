@@ -123,6 +123,69 @@ describe('universeCanon — setCanonEntryLock', () => {
   });
 });
 
+describe('universeCanon — removeCanonEntry', () => {
+  it('drops only the target entry, persists, and scrubs neither its image refs nor its catalog link', async () => {
+    // Removal is scoped to the canon array: it must not purge imageRefs (the
+    // files stay in the gallery) or the shared catalog ingredient the entry
+    // points at. Asserting on the RETURNED entry proves the service hands back
+    // the record whole rather than a stripped shell; the sibling assertions
+    // prove no cross-entry ref purge ran.
+    const w = await seedUniverseWithCharacters([
+      { name: 'Alex', physicalDescription: 'jacket', imageRefs: ['alex-a.png', 'alex-b.png'], primaryImageRef: 'alex-a.png', ingredientId: 'ing-alex' },
+      { name: 'Blair', physicalDescription: 'scarf', imageRefs: ['blair.png'], ingredientId: 'ing-blair' },
+    ]);
+    const target = w.characters.find((c) => c.name === 'Alex');
+    const { entry, universe } = await canonSvc.removeCanonEntry(w.id, 'character', target.id);
+    expect(entry.name).toBe('Alex');
+    expect(entry.imageRefs).toEqual(['alex-a.png', 'alex-b.png']);
+    expect(entry.primaryImageRef).toBe('alex-a.png');
+    expect(entry.ingredientId).toBe('ing-alex');
+    expect(universe.characters.map((c) => c.name)).toEqual(['Blair']);
+    const survivor = universe.characters[0];
+    expect(survivor.imageRefs).toEqual(['blair.png']);
+    expect(survivor.ingredientId).toBe('ing-blair');
+    // Persisted: a fresh read no longer carries the removed entry.
+    const reread = (await svc.listUniverses())[0];
+    expect(reread.characters.map((c) => c.name)).toEqual(['Blair']);
+  });
+
+  it('removes a locked entry — the lock guards AI rewrites, not user removal', async () => {
+    const w = await seedUniverseWithCharacters([
+      { name: 'Alex', physicalDescription: 'jacket', locked: true },
+    ]);
+    const target = w.characters[0];
+    const { universe } = await canonSvc.removeCanonEntry(w.id, 'character', target.id);
+    expect(universe.characters).toEqual([]);
+  });
+
+  it('removes from the places and objects buckets too', async () => {
+    const seeded = await seedUniverseWithCharacters([]);
+    const w = await svc.updateUniverse(seeded.id, {
+      places: [{ name: 'The Vault', slugline: 'INT. THE VAULT', description: 'a room' }],
+      objects: [{ name: 'The Key', description: 'brass' }],
+    });
+    const afterPlace = await canonSvc.removeCanonEntry(w.id, 'place', w.places[0].id);
+    expect(afterPlace.universe.places).toEqual([]);
+    expect(afterPlace.universe.objects).toHaveLength(1);
+    const afterObject = await canonSvc.removeCanonEntry(w.id, 'object', w.objects[0].id);
+    expect(afterObject.universe.objects).toEqual([]);
+  });
+
+  it('rejects unknown kind with a 400-coded ServerError', async () => {
+    const w = await seedUniverseWithCharacters([{ name: 'Alex', physicalDescription: 'jacket' }]);
+    await expect(
+      canonSvc.removeCanonEntry(w.id, 'monster', w.characters[0].id),
+    ).rejects.toMatchObject({ status: 400, code: 'UNIVERSE_CANON_INVALID_KIND' });
+  });
+
+  it('rejects unknown entry with a 404-coded ServerError', async () => {
+    const w = await seedUniverseWithCharacters([{ name: 'Alex', physicalDescription: 'jacket' }]);
+    await expect(
+      canonSvc.removeCanonEntry(w.id, 'character', 'chr-not-real'),
+    ).rejects.toMatchObject({ status: 404, code: 'UNIVERSE_CANON_NOT_FOUND' });
+  });
+});
+
 describe('universeCanon — applyCanonImageCorrection', () => {
   it('overwrites the descriptor field and pins the image as primaryImageRef', async () => {
     const w = await seedUniverseWithCharacters([
