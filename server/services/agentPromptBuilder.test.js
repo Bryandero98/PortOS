@@ -1896,6 +1896,68 @@ describe('buildReviewLoopFollowUpSection — CLI reviewer procedure inlining', (
   });
 });
 
+describe('buildReviewLoopFollowUpSection — reviewer slug → CLI binary', () => {
+  // `antigravity` is the stored, federated reviewer slug; the executable is
+  // `agy`. The prompt used to say "Invoke the `antigravity` CLI" and list a
+  // fixed "codex / antigravity / claude / grok" bullet, so a follow-up agent ran
+  // `command -v antigravity`, found nothing, announced "the only configured
+  // reviewer is antigravity … isn't available", self-reviewed, and merged.
+  const baseMeta = {
+    reviewLoopFollowUp: true,
+    sourceTaskId: 't1',
+    reviewLoopPRUrl: 'https://github.com/o/r/pull/1',
+    reviewLoopPRBranch: 'feature-b',
+  };
+  const build = (reviewers, verbose = false) => buildReviewLoopFollowUpSection(
+    { ...baseMeta, reviewLoopReviewers: reviewers },
+    { verbose, localAgentLoopBody: null },
+  );
+
+  for (const verbose of [false, true]) {
+    it(`names \`agy\`, not \`antigravity\`, as the command to invoke (verbose=${verbose})`, () => {
+      const out = build(['antigravity'], verbose);
+      expect(out).toContain('Invoke `agy` (the `antigravity` reviewer) to review');
+      expect(out).not.toMatch(/Invoke the `antigravity` CLI/);
+    });
+  }
+
+  it('heads the multi-reviewer bullet with the configured binaries and maps the slug', () => {
+    const out = build(['antigravity', 'codex']);
+    expect(out).toContain('**agy / codex**');
+    expect(out).toContain('the `antigravity` reviewer runs the `agy` binary (there is no `antigravity` command)');
+    // The old hardcoded roster listed reviewers this loop never configured.
+    expect(out).not.toContain('codex / antigravity / claude / grok');
+  });
+
+  it('omits the slug→binary note when every reviewer names its own binary', () => {
+    const out = build(['codex', 'claude']);
+    expect(out).toContain('**codex / claude**');
+    expect(out).not.toContain('Reviewer slug → command');
+  });
+
+  it('titles the inlined CLI procedure with the configured binaries', () => {
+    const out = buildReviewLoopFollowUpSection(
+      { ...baseMeta, reviewLoopReviewers: ['antigravity'] },
+      { verbose: false, localAgentLoopBody: 'BODY' },
+    );
+    expect(out).toContain('### CLI Reviewer Procedure (agy)');
+  });
+
+  // The second half of the failure: a reviewer that cannot run is not a clean
+  // review, but the agent substituted its own self-review and merged anyway.
+  it('forbids merging on a self-review when a reviewer binary is missing', () => {
+    const out = build(['antigravity']);
+    expect(out).toContain('command -v agy');
+    expect(out).toMatch(/do NOT substitute your own self-review and do NOT merge/);
+  });
+
+  it('emits no missing-CLI note for a loop with no spawnable CLI reviewer', () => {
+    const out = build(['copilot', 'ollama']);
+    expect(out).not.toContain('Missing reviewer CLI');
+    expect(out).not.toContain('command -v');
+  });
+});
+
 // -----------------------------------------------------------------------------
 // Slashdo-backed tasks (#3089)
 // -----------------------------------------------------------------------------

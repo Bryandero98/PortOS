@@ -12,9 +12,14 @@ export const ANTIGRAVITY_CONFIGURED_DEFAULT = 'antigravity-configured-default';
 // through to stdin delivery for a path-configured agy — losing the prompt AND
 // leaving the trailing `--print` marker dangling (buildCliArgs adds it by
 // provider id, which DOES survive a path command).
+// The shipped executable. Exported because the reviewer vocabulary needs to map
+// its `antigravity` slug to a real command (cosValidation's
+// REVIEWER_CLI_BINARIES) — retyping the string there is how a rename drifts.
+export const ANTIGRAVITY_COMMAND = 'agy';
+
 export function isAntigravityCommand(command) {
   const base = commandBasename(command);
-  return base === 'agy' || base === 'antigravity';
+  return base === ANTIGRAVITY_COMMAND || base === 'antigravity';
 }
 
 export function isAntigravityCliProvider(provider) {
