@@ -9,6 +9,7 @@ import { PATHS, resolveGalleryImage } from '../../lib/fileUtils.js';
 import { runPromptThroughProvider } from '../../lib/promptRunner.js';
 import { extractJson } from '../../lib/jsonExtract.js';
 import { buildThreejsFactorySource, threejsSculptSpecSchema } from '../../lib/threejsModel.js';
+import { buildThreejsCoverageFeedback, evaluateThreejsPartCoverage } from '../../lib/threejsModelCoverage.js';
 import { getProviderById } from '../providers.js';
 import { buildThreejsGenerationPrompt } from './prompt.js';
 import * as store from './db.js';
@@ -87,6 +88,10 @@ async function executeGeneration({
       shapePredicate: (value) => threejsSculptSpecSchema.safeParse(value).success,
     });
     const spec = threejsSculptSpecSchema.parse(extracted.value);
+    // A structural miss is not a parse failure — a spec that promises more than
+    // it builds is still a usable generation, so the gate is recorded on the
+    // record and surfaced as refinement feedback rather than thrown away.
+    const coverage = evaluateThreejsPartCoverage(spec);
     const completedAt = new Date().toISOString();
     const effectiveProvider = result.provider?.id || result.fallbackProvider?.id || provider.id;
     const effectiveModel = result.model || requestedModel || provider.defaultModel || null;
@@ -99,6 +104,7 @@ async function executeGeneration({
         model: effectiveModel,
         status: 'ready',
         spec,
+        coverage,
         error: null,
         generationOperationId: null,
         generatedAt: completedAt,
@@ -112,6 +118,9 @@ async function executeGeneration({
       };
     });
     console.log(`🧊 Three.js model ready: ${id} (${effectiveProvider}/${effectiveModel || 'default'})`);
+    if (coverage.errorCount > 0) {
+      console.warn(`⚠️ Three.js model ${id} assembly coverage: ${coverage.errorCount} error, ${coverage.warningCount} warning finding(s)`);
+    }
   } catch (error) {
     console.error(`❌ Three.js model generation failed for ${id}: ${cleanError(error)}`);
     await failGeneration(id, operationId, error);
@@ -160,12 +169,16 @@ export async function startGeneration(id, {
   const operationId = randomUUID();
   const startedAt = new Date().toISOString();
   const effectivePrompt = prompt ?? current.prompt ?? '';
+  // A refinement the user did not steer aims at the last pass's assembly-coverage
+  // errors — the promises the model measurably did not build — instead of a
+  // generic "improve it".
+  const effectiveFeedback = (feedback || '').trim() || buildThreejsCoverageFeedback(current.coverage);
   const generationPrompt = buildThreejsGenerationPrompt({
     sourcePath,
     name: current.name,
     prompt: effectivePrompt,
     currentSpec: current.spec,
-    feedback,
+    feedback: effectiveFeedback,
   });
   const next = await store.mutateModel(id, (fresh) => {
     if (fresh.status === 'generating') {
@@ -186,7 +199,7 @@ export async function startGeneration(id, {
           status: 'running',
           providerId: provider.id,
           model: model || provider.defaultModel || null,
-          feedback: feedback || null,
+          feedback: effectiveFeedback || null,
           startedAt,
           completedAt: null,
           runId: null,

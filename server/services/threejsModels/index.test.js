@@ -137,12 +137,65 @@ describe('Three.js model generation orchestration', () => {
       source: 'threejs-model-generation',
     }));
     expect(current.spec.name).toBe('Example Beacon');
+    // The body mesh is claimed by no detail entry, so the assembly gate records
+    // it alongside the spec instead of failing an otherwise usable generation.
+    expect(current.coverage).toMatchObject({ errorCount: 0, warningCount: 1 });
+    expect(current.coverage.findings[0]).toMatchObject({ code: 'orphan-geometry', partIds: ['body'] });
     expect(current.runs.at(-1)).toMatchObject({
       status: 'completed',
       runId: 'run-example',
       providerId: 'vision-api',
       model: 'vision-pro',
     });
+  });
+
+  it('aims an unsteered refinement at the previous pass coverage errors', async () => {
+    const fusedSpec = {
+      ...spec,
+      detailInventory: [
+        { ...spec.detailInventory[0], implementationPartIds: ['body'] },
+        {
+          feature: 'Ribbed collar',
+          evidence: 'A ribbed collar wraps the reference object.',
+          implementationPartIds: ['body'],
+          priority: 'identity',
+        },
+      ],
+    };
+    let current = {
+      id: 'threejs-fused',
+      name: 'Example Beacon',
+      sourceImage: { filename: 'example.png' },
+      providerId: 'vision-api',
+      model: null,
+      prompt: '',
+      status: 'draft',
+      spec: null,
+      coverage: null,
+      runs: [],
+    };
+    store.getModel.mockImplementation(async () => current);
+    store.mutateModel.mockImplementation(async (_id, mutate) => {
+      const next = mutate(current);
+      if (next) current = next;
+      return current;
+    });
+    runPromptThroughProvider.mockResolvedValue({
+      text: JSON.stringify(fusedSpec),
+      runId: 'run-fused',
+      provider: { id: 'vision-api' },
+      model: null,
+    });
+
+    await startGeneration(current.id, { providerId: 'vision-api' });
+    await vi.waitFor(() => expect(current.status).toBe('ready'));
+    expect(current.coverage.errorCount).toBe(1);
+
+    await startGeneration(current.id, { providerId: 'vision-api' });
+    expect(current.runs.at(-1).feedback).toContain('assembly-coverage check');
+    await vi.waitFor(() => expect(runPromptThroughProvider).toHaveBeenLastCalledWith(expect.objectContaining({
+      prompt: expect.stringContaining('collapsed onto the single part'),
+    })));
   });
 
   it('gives CLI agents a gallery path without passing an API attachment', async () => {

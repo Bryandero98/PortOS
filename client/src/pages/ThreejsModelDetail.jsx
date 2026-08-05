@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Box, Code2, Download, LoaderCircle, RefreshCw, Trash2 } from 'lucide-react';
+import { ArrowLeft, Box, Code2, Download, Info, LoaderCircle, RefreshCw, Trash2 } from 'lucide-react';
 import { Link, useNavigate, useParams } from 'react-router';
 import MediaImage from '../components/MediaImage';
 import ProviderModelSelector from '../components/ProviderModelSelector';
@@ -20,6 +20,12 @@ import { timeAgo } from '../utils/formatters';
 
 const providerFilter = (provider) =>
   provider.enabled !== false && ['api', 'cli', 'tui'].includes(provider.type);
+
+const SEVERITY_STYLE = {
+  error: 'border-port-error/40 bg-port-error/10 text-port-error',
+  warning: 'border-port-warning/40 bg-port-warning/10 text-port-warning',
+  note: 'border-port-border bg-port-bg/50 text-gray-400',
+};
 
 export default function ThreejsModelDetail() {
   const { id } = useParams();
@@ -139,6 +145,7 @@ export default function ThreejsModelDetail() {
 
   const generating = record.status === 'generating' || starting;
   const latestRun = Array.isArray(record.runs) ? record.runs[record.runs.length - 1] : null;
+  const coverageFindings = Array.isArray(record.coverage?.findings) ? record.coverage.findings : null;
 
   return (
     <div className="mx-auto max-w-7xl space-y-4">
@@ -279,6 +286,40 @@ export default function ThreejsModelDetail() {
           {record.spec ? 'Refine model' : 'Generate model'}
         </button>
       </section>
+
+      {coverageFindings && (
+        <section className="rounded-xl border border-port-border bg-port-card p-4">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-xs font-medium uppercase tracking-wide text-gray-400">Assembly coverage</h2>
+            <span className="text-xs text-gray-600">
+              {coverageFindings.length === 0
+                ? 'Every promised feature has its own geometry'
+                : `${record.coverage.errorCount} error · ${record.coverage.warningCount} warning · ${record.coverage.noteCount} note`}
+            </span>
+          </div>
+          {coverageFindings.length > 0 && (
+            <ul className="space-y-2">
+              {coverageFindings.map((finding, index) => (
+                <li
+                  key={`${finding.code}-${index}`}
+                  className={`rounded-lg border px-3 py-2 text-xs leading-relaxed ${SEVERITY_STYLE[finding.severity] || SEVERITY_STYLE.note}`}
+                >
+                  <span className="mr-2 text-[9px] uppercase tracking-wide opacity-80">{finding.severity}</span>
+                  {finding.message}
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="mt-3 flex items-start gap-1.5 text-[11px] leading-relaxed text-gray-500">
+            <Info className="mt-0.5 h-3 w-3 shrink-0" />
+            <span>
+              This check proves the model built what its own spec promised — never that the spec promised enough.
+              {record.coverage.errorCount > 0
+                && ' Refining without your own feedback will target the errors above.'}
+            </span>
+          </p>
+        </section>
+      )}
 
       {record.spec?.detailInventory?.length > 0 && (
         <section className="rounded-xl border border-port-border bg-port-card p-4">
