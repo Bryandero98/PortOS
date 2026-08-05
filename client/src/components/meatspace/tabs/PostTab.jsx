@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from 'react-router';
 import { Loader } from 'lucide-react';
 import { getPostConfig, getPostRecommendations, getPostSessions, getPostStats } from '../../../services/api';
 import { usePostSession } from '../../../hooks/usePostSession';
+import toast from '../../ui/Toast';
 import PostSessionLauncher from '../post/PostSessionLauncher';
 import PostDrillRunner from '../post/PostDrillRunner';
 import PostLlmDrillRunner from '../post/PostLlmDrillRunner';
@@ -108,7 +109,11 @@ export default function PostTab({ tab = 'launcher', subtab, mode }) {
   async function continueDailyRoutine() {
     const result = await getPostRecommendations(1).catch(() => null);
     const recommendation = result?.recommendations?.[0];
-    if (!recommendation) {
+    // The server sinks anything already practiced today to the bottom, so a top
+    // rec still flagged means nothing NEW is left in the rotation — end at the
+    // launcher rather than handing back the drill just finished (issue #3563).
+    if (!recommendation || recommendation.practicedToday) {
+      if (recommendation) toast.success("That's everything in today's routine — nice work");
       navigate('/post/launcher');
       return;
     }
