@@ -1,7 +1,7 @@
-import { useState } from 'react';
 import { Clock, AlertTriangle, SlidersHorizontal, GitMerge } from 'lucide-react';
 import { timeAgo } from '../../../../utils/formatters';
-import { describeNextRun, coverageTone } from './scheduleConstants';
+import useTaskModelPins from '../../../../hooks/useTaskModelPins';
+import { describeNextRun, coverageTone, pipelineStages, IMPROVEMENT_DISABLED_TITLE, SAVING_TITLE } from './scheduleConstants';
 import TaskHeader from './TaskHeader';
 import RunTaskButton from './RunTaskButton';
 import TaskModelQuickControls from './TaskModelQuickControls';
@@ -10,9 +10,9 @@ import TaskModelQuickControls from './TaskModelQuickControls';
 // "retarget the model and run it" loop happen here; the rest of the
 // configuration lives in the slide-over drawer (opened via Configure).
 export default function AppTaskCard({ taskType, config, apps, onTrigger, onConfigure, onUpdate, providers, activeProviderId, improvementDisabled }) {
-  // A pin write is async; Run reads the server-side config, so it must stay
-  // disabled until the write lands (see TaskModelQuickControls).
-  const [savingPins, setSavingPins] = useState(false);
+  // Owned here, not in the controls, so Run can gate on the same `saving` flag —
+  // it reads the server-side config, so a run fired mid-write uses the old pins.
+  const pins = useTaskModelPins({ taskType, config, providers, activeProviderId, onUpdate });
   const enabledCount = config.enabledAppCount ?? 0;
   const totalCount = config.totalAppCount ?? 0;
   const hasApps = totalCount > 0;
@@ -21,7 +21,7 @@ export default function AppTaskCard({ taskType, config, apps, onTrigger, onConfi
   const nextRun = describeNextRun(config);
   // A pipeline task resolves provider/model per stage — a single card-level pin
   // would be ignored, so point at the drawer instead of offering one.
-  const pipelineStages = config.taskMetadata?.pipeline?.stages?.length || 0;
+  const stageCount = pipelineStages(config).length;
 
   return (
     <div className="flex flex-col border border-port-border rounded-lg bg-port-card hover:border-port-border/60 transition-colors">
@@ -68,24 +68,17 @@ export default function AppTaskCard({ taskType, config, apps, onTrigger, onConfi
       </button>
 
       {/* Quick model pins — the drawer's Global defaults, inline */}
-      {onUpdate && (pipelineStages > 0 ? (
+      {onUpdate && (stageCount > 0 ? (
         <button
           type="button"
           onClick={() => onConfigure(taskType)}
           className="flex items-center gap-1.5 px-4 py-2.5 text-xs text-left text-gray-500 border-t border-port-border hover:text-gray-300 transition-colors"
         >
           <GitMerge size={12} className="shrink-0" />
-          Provider/model is set per stage ({pipelineStages}) — configure
+          Provider/model is set per stage ({stageCount}) — configure
         </button>
       ) : (
-        <TaskModelQuickControls
-          taskType={taskType}
-          config={config}
-          providers={providers}
-          activeProviderId={activeProviderId}
-          onUpdate={onUpdate}
-          onSavingChange={setSavingPins}
-        />
+        <TaskModelQuickControls pins={pins} providers={providers} />
       ))}
 
       {/* Footer actions */}
@@ -94,8 +87,7 @@ export default function AppTaskCard({ taskType, config, apps, onTrigger, onConfi
           taskType={taskType}
           apps={apps}
           onTrigger={onTrigger}
-          improvementDisabled={improvementDisabled}
-          saving={savingPins}
+          disabledReason={improvementDisabled ? IMPROVEMENT_DISABLED_TITLE : (pins.saving ? SAVING_TITLE : '')}
         />
         <button
           type="button"

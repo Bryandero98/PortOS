@@ -50,8 +50,9 @@ export default function ScheduleTab({ apps, providers, activeProviderId }) {
 
   // Resolves a boolean so optimistic callers (the card's quick model pins) can
   // roll their local selection back — this handler owns the error toast, so it
-  // never rejects.
-  const handleUpdateTask = async (taskType, settings) => {
+  // never rejects. Stable identity: every card holds it through useTaskModelPins,
+  // so a fresh arrow per render would invalidate their memoized handlers.
+  const handleUpdateTask = useCallback(async (taskType, settings) => {
     const result = await api.updateCosTaskInterval(taskType, settings, { silent: true }).catch(err => {
       toast.error(err.message);
       return null;
@@ -62,9 +63,9 @@ export default function ScheduleTab({ apps, providers, activeProviderId }) {
     toast.success(`Updated ${taskType}`);
     fetchSchedule();
     return true;
-  };
+  }, [fetchSchedule]);
 
-  const handleTriggerTask = async (taskType, appId = null) => {
+  const handleTriggerTask = useCallback(async (taskType, appId = null) => {
     const result = await api.triggerCosOnDemandTask(taskType, appId, { silent: true }).catch(err => {
       toast.error(err.message);
       return null;
@@ -73,7 +74,7 @@ export default function ScheduleTab({ apps, providers, activeProviderId }) {
       toast.success(`Triggered ${taskType} task${appId ? ' for app' : ''} - will run on next evaluation`);
       fetchSchedule();
     }
-  };
+  }, [fetchSchedule]);
 
   const handleResetTask = async (taskType) => {
     const result = await api.resetCosTaskHistory(taskType, null, { silent: true }).catch(err => {
@@ -86,7 +87,7 @@ export default function ScheduleTab({ apps, providers, activeProviderId }) {
     }
   };
 
-  const handleTriggerAppImprovement = (taskType, appId) => handleTriggerTask(taskType, appId);
+  const handleTriggerAppImprovement = handleTriggerTask;
 
   const { handleUpdateOverride, handleBulkToggleOverride } = useAppOverrideActions(apps, fetchSchedule);
 

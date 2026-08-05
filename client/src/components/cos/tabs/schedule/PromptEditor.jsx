@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
+import { pipelineStages } from './scheduleConstants';
 
 export default function PromptEditor({ config, promptValue, setPromptValue, editingPrompt, setEditingPrompt, handleSavePrompt, updating, activeApps }) {
-  const stages = config.taskMetadata?.pipeline?.stages;
+  const stages = pipelineStages(config);
   const stagePrompts = config.stagePrompts;
   const hasPipeline = stages?.length > 0 && stagePrompts?.length > 0;
   const [activeTab, setActiveTab] = useState(0);

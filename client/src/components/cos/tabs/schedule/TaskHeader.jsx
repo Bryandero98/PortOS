@@ -1,5 +1,5 @@
 import { GitMerge, Users } from 'lucide-react';
-import { badge, statusDot, getTaskStatusGroup } from './scheduleConstants';
+import { badge, statusDot, getTaskStatusGroup, pipelineStages } from './scheduleConstants';
 import IntervalBadge from './IntervalBadge';
 
 // Shared task identity row — status dot, monospace name, pipeline + swarm
@@ -7,7 +7,7 @@ import IntervalBadge from './IntervalBadge';
 // drawer so the header stays consistent in one place.
 export default function TaskHeader({ taskType, config }) {
   const group = getTaskStatusGroup(config);
-  const stages = config.taskMetadata?.pipeline?.stages;
+  const stages = pipelineStages(config);
   // Swarm (`/do:next --swarm`) is on when the global default carries a size ≥2.
   // Per-app overrides aren't reflected in this global header (the per-app row
   // shows its own override select).

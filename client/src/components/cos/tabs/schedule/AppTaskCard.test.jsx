@@ -140,27 +140,35 @@ describe('AppTaskCard', () => {
 
     it('offers effort only for effort-capable providers', () => {
       renderCardWithPins({ providerId: 'claude-code' });
-      expect(screen.getByLabelText('Effort')).toBeTruthy();
+      expect(screen.getByLabelText('Thinking effort')).toBeTruthy();
       expect(screen.getByRole('option', { name: 'xhigh' })).toBeTruthy();
     });
 
     it('hides effort for a provider with no ladder', () => {
       renderCardWithPins({ providerId: 'gemini' });
-      expect(screen.queryByLabelText('Effort')).toBeNull();
+      expect(screen.queryByLabelText('Thinking effort')).toBeNull();
     });
 
     it('resolves model + effort options against the active provider when nothing is pinned', () => {
       renderCardWithPins({}, { activeProviderId: 'claude-code' });
       // Naming what "Default" resolves to is what makes the options below it readable.
-      expect(screen.getByRole('option', { name: 'Active: Claude Code' })).toBeTruthy();
+      expect(screen.getByRole('option', { name: 'Default (active: Claude Code)' })).toBeTruthy();
       expect(screen.getByRole('option', { name: 'sonnet' })).toBeTruthy();
-      expect(screen.getByLabelText('Effort')).toBeTruthy();
+      expect(screen.getByLabelText('Thinking effort')).toBeTruthy();
     });
 
     it('falls back to a bare Default when the active provider is unknown', () => {
       renderCardWithPins();
-      expect(within(screen.getByLabelText('Provider')).getByRole('option', { name: 'Default' })).toBeTruthy();
-      expect(screen.queryByLabelText('Effort')).toBeNull();
+      expect(within(screen.getByLabelText('Provider')).getByRole('option', { name: 'Default (active provider)' })).toBeTruthy();
+      expect(screen.queryByLabelText('Thinking effort')).toBeNull();
+    });
+
+    it('hides a disabled provider from the picker unless the task is pinned to it', () => {
+      const withDisabled = [...providers, { id: 'retired', name: 'Retired CLI', enabled: false }];
+      renderCardWithPins({}, { providers: withDisabled });
+      expect(screen.queryByRole('option', { name: 'Retired CLI' })).toBeNull();
+      renderCardWithPins({ providerId: 'retired' }, { providers: withDisabled });
+      expect(screen.getAllByRole('option', { name: 'Retired CLI' }).length).toBe(1);
     });
 
     it('keeps a pinned model the provider no longer lists selectable', () => {

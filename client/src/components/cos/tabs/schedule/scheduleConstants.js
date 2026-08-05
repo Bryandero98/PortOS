@@ -45,6 +45,10 @@ export const IMPROVEMENT_DISABLED_TITLE = 'Improvement is disabled — enable it
 
 export const SAVING_TITLE = 'Saving provider/model settings — the run will use them once saved';
 
+// The task's pipeline stages (always an array). A non-empty one means its
+// provider/model are resolved per stage, so a task-level pin would be ignored.
+export const pipelineStages = (config) => config?.taskMetadata?.pipeline?.stages || [];
+
 export const triggerButtonClass = (disabled) =>
   `flex items-center gap-1 px-3 py-1.5 text-sm rounded transition-colors ${disabled ? 'bg-port-border/30 text-gray-500 cursor-not-allowed' : 'bg-port-accent/20 hover:bg-port-accent/30 text-port-accent'}`;
 

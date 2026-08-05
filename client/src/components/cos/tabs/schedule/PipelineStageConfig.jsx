@@ -1,9 +1,10 @@
 import { filterSelectableModels } from '../../../../utils/providers';
 import { FormField } from '../../../ui/FormField';
 import EffortSelect from '../../EffortSelect';
+import { pipelineStages } from './scheduleConstants';
 
 export default function PipelineStageConfig({ taskType, config, providers, onUpdate, updating, setUpdating }) {
-  const stages = config.taskMetadata?.pipeline?.stages || [];
+  const stages = pipelineStages(config);
 
   const handleStageUpdate = async (stageIndex, field, value) => {
     setUpdating(true);

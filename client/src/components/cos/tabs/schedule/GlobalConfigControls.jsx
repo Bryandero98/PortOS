@@ -15,7 +15,7 @@ import useTaskModelPins from '../../../../hooks/useTaskModelPins';
 import EffortSelect from '../../EffortSelect';
 import PromptEditor from './PromptEditor';
 import RunTaskButton from './RunTaskButton';
-import { INTERVAL_DESCRIPTIONS, toggleMetadataField } from './scheduleConstants';
+import { INTERVAL_DESCRIPTIONS, toggleMetadataField, pipelineStages, IMPROVEMENT_DISABLED_TITLE, SAVING_TITLE } from './scheduleConstants';
 
 // Shown for the unpinned ('' → inherit) choice: the task type is global, so the
 // policy is whatever each target app configured, and PortOS's own self-improvement
@@ -37,7 +37,7 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
     model: selectedModel,
     effort: selectedEffort,
     provider: selectedProvider,
-    usingActiveProvider,
+    defaultProviderLabel,
     availableModels,
     changeProvider: handleProviderChange,
     changeModel: handleModelChange,
@@ -281,7 +281,7 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
         </div>
       )}
 
-      {!config.taskMetadata?.pipeline?.stages?.length && (
+      {pipelineStages(config).length === 0 && (
         <>
           <FormField label="Provider (optional)" labelClassName="text-sm text-gray-400 block mb-2">
             <select
@@ -290,9 +290,7 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
               disabled={updating}
               className="w-full bg-port-card border border-port-border rounded px-3 py-2 text-white text-sm"
             >
-              <option value="">
-              {usingActiveProvider ? `Default (active: ${selectedProvider.name})` : 'Default (active provider)'}
-            </option>
+              <option value="">{defaultProviderLabel}</option>
               {providers?.map(provider => (
                 <option key={provider.id} value={provider.id}>{provider.name}</option>
               ))}
@@ -307,10 +305,9 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
               disabled={updating}
               className="w-full bg-port-card border border-port-border rounded px-3 py-2 text-white text-sm"
             >
+              {/* `availableModels` already carries a pin the provider no longer
+                  lists, so the select can't render blank and read as "Default". */}
               <option value="">Default model</option>
-              {selectedModel && !availableModels.includes(selectedModel) && (
-                <option value={selectedModel}>{selectedModel}</option>
-              )}
               {availableModels.map(model => (
                 <option key={model} value={model}>{model}</option>
               ))}
@@ -525,7 +522,8 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
           taskType={taskType}
           apps={apps}
           onTrigger={onTrigger}
-          improvementDisabled={improvementDisabled}
+          // `updating` covers an in-flight pin write here, same race the card gates on.
+          disabledReason={improvementDisabled ? IMPROVEMENT_DISABLED_TITLE : (updating ? SAVING_TITLE : '')}
         />
         {config.type === 'once' && status.reason === 'once-completed' && (
           <button

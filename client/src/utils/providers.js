@@ -618,6 +618,27 @@ export const getProviderTimeout = (providers, stagePinnedId, activeProviderId) =
 };
 
 /**
+ * The provider a record will ACTUALLY run on: its own pin when set, else the
+ * install's active provider. Every picker that offers a "use the default"
+ * option needs this — the model list, effort ladder, and "Default (active: X)"
+ * label all have to resolve against the fallback, or leaving a record unpinned
+ * silently means "no model or effort can be picked either".
+ *
+ * `usingActive` distinguishes the two so a caller can say which provider the
+ * blank option currently means rather than just showing "Default".
+ *
+ * @param {Array} providers
+ * @param {string|null|undefined} pinnedId - The record's own provider pin.
+ * @param {string|null|undefined} activeProviderId - The install's active provider.
+ * @returns {{provider: object|undefined, usingActive: boolean}}
+ */
+export const resolveEffectiveProvider = (providers, pinnedId, activeProviderId) => {
+  const id = pinnedId || activeProviderId || '';
+  const provider = id ? (providers || []).find((p) => p.id === id) : undefined;
+  return { provider, usingActive: !pinnedId && !!provider };
+};
+
+/**
  * Tailwind chip classes for the provider type badge ('cli' / 'tui' / 'api').
  * Lifted out of AIProviders.jsx so other components can render the same
  * color treatment without redefining it.
