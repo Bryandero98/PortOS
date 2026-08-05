@@ -322,3 +322,31 @@ export const draftActivityDigest = (date = 'today', options = {}) => request(
   `/brain/daily-log/${encodeURIComponent(date)}/draft`,
   { method: 'POST', ...options }
 );
+
+// Brain - YouTube ingest (transcript / video / audio → brain + Obsidian)
+export const startYoutubeIngest = (body, options = {}) => request('/brain/youtube/ingest', {
+  method: 'POST',
+  body: JSON.stringify(body),
+  ...options
+});
+export const cancelYoutubeIngest = (jobId, options = {}) => request(
+  `/brain/youtube/ingest/${encodeURIComponent(jobId)}/cancel`,
+  { method: 'POST', ...options }
+);
+export const getYoutubeIngests = (options = {}) => request('/brain/youtube/ingests', options);
+export const getYoutubeIngest = (videoId, options = {}) => request(
+  `/brain/youtube/ingests/${encodeURIComponent(videoId)}`,
+  options
+);
+export const deleteYoutubeIngest = (videoId, options = {}) => request(
+  `/brain/youtube/ingests/${encodeURIComponent(videoId)}`,
+  { method: 'DELETE', ...options }
+);
+export const getYoutubeIngestSettings = (options = {}) => request('/brain/youtube/settings', options);
+export const updateYoutubeIngestSettings = (settings, options = {}) => request('/brain/youtube/settings', {
+  method: 'PUT',
+  body: JSON.stringify(settings),
+  ...options
+});
+export const youtubeIngestEventsUrl = (jobId) =>
+  `/api/brain/youtube/ingest/${encodeURIComponent(jobId)}/events`;

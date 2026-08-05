@@ -21,6 +21,7 @@ Brain provides a capture-classify-store-surface workflow:
 6. **Daily Digest**: AI-generated summary of actions and status
 7. **Weekly Review**: GTD-style open loops and accomplishments
 8. **Trust Panel**: Full audit trail of classifications
+9. **YouTube Ingest**: Pull a video's transcript (and optionally the video/audio) into the brain, mirror the transcript to Obsidian, and queue an agent to act on it
 
 ## Databases
 
@@ -117,6 +118,53 @@ Generated weekly (GTD-style):
 - Ideas to explore
 - Admin items to address
 
+## YouTube Ingest
+
+Paste a single-video YouTube URL into **Quick Capture** (dashboard widget) and the
+submit path switches from `/api/brain/capture` to `/api/brain/youtube/ingest`. A
+sliders button next to the input expands the advanced panel: which artifacts to
+capture, a free-text prompt for a follow-up agent, and tags.
+
+**Three independent switches** — at least one is required:
+
+| Switch | Produces |
+|--------|----------|
+| `captureTranscript` (default) | `data/brain/youtube/<videoId>.md`, mirrored into the Obsidian vault |
+| `downloadVideo` | A `source: 'download'` entry in the shared media library (same shape the Dev Tools downloader writes) |
+| `ingestAudio` | `data/brain/youtube/<videoId>.mp3`, kept next to the transcript |
+
+**Always recorded, regardless of switches:**
+
+- a brain `links` record (federated — the durable "saved for future reference" artifact), and
+- a `media.watch` row in `human_activity_events` (machine-local), so the video appears on the Timeline next to passively-synced watch history.
+
+**The agent prompt.** Supplying `agentPrompt` queues a CoS task pointed at the
+stored transcript with that prompt as its brief — "here is what I want done with
+this content." Leaving it blank queues nothing: PortOS never starts AI work the
+user did not ask for (see the AI Provider Usage Policy in the root `CLAUDE.md`).
+
+**Transcripts.** yt-dlp is asked for English captions; the metadata dump's
+`subtitles` key (not the produced filename, which is identical for both kinds)
+distinguishes human-authored captions from auto-generated ones, and that lands on
+the record as `transcript.source`. YouTube's auto-captions are a rolling two-line
+display where each cue repeats the previous one, so `server/lib/vttTranscript.js`
+collapses the repetition and strips inline markup — a 14-minute talk goes from
+128 KB of VTT to ~14 KB of prose. A video with no captions is **not** a failure:
+the ingest completes with a warning and everything else is still stored.
+
+**Obsidian.** The transcript note is written to the vault configured under
+**Brain → Config → YouTube Ingest**. An unset vault inherits the Daily Log's, so
+anyone who already pointed the journal at Obsidian needs no setup. The note
+carries YAML frontmatter (title, source, channel, duration, published, captured,
+tags) so vault queries and Dataview can find it.
+
+**Storage.** `data/brain/youtube/index.json` is machine-local and never
+federated — every field in it is a local path, an Obsidian vault id, or a local
+video-history id. See [STORAGE.md](../STORAGE.md).
+
+**Requirements.** `yt-dlp` on PATH for any ingest; `ffmpeg` additionally for the
+video/audio switches (a transcript-only ingest works without it).
+
 ## API Endpoints
 
 | Route | Description |
@@ -134,6 +182,13 @@ Generated weekly (GTD-style):
 | POST /api/brain/digest/run | Trigger daily digest |
 | POST /api/brain/review/run | Trigger weekly review |
 | GET/PUT /api/brain/settings | Get/update settings |
+| POST /api/brain/youtube/ingest | Start a YouTube ingest → `{ jobId, videoId }` |
+| GET /api/brain/youtube/ingest/:jobId/events | SSE progress for an ingest |
+| POST /api/brain/youtube/ingest/:jobId/cancel | Cancel an in-flight ingest |
+| GET /api/brain/youtube/ingests | List ingests, newest first |
+| GET/DELETE /api/brain/youtube/ingests/:videoId | One ingest / forget it |
+| GET /api/brain/youtube/ingests/:videoId/transcript | Stored transcript markdown |
+| GET/PUT /api/brain/youtube/settings | Ingest vault/folder + option defaults |
 
 ## Prompt Templates
 
@@ -158,7 +213,9 @@ Generated weekly (GTD-style):
 | `server/services/brain.js` | Core business logic |
 | `server/services/brainStorage.js` | JSONL/JSON file operations |
 | `server/services/brainScheduler.js` | Daily/weekly job scheduler |
-| `server/routes/brain.js` | Aggregator router mounting brainCapture, brainCrud, brainDigest, brainSettings, brainLinks, brainGraph, brainSync, and brainDailyLog |
+| `server/services/youtubeIngest.js` | YouTube ingest orchestration (transcript / video / audio → brain + Obsidian + CoS task) |
+| `server/lib/vttTranscript.js` | WebVTT/SRT → readable prose (collapses auto-caption repetition) |
+| `server/routes/brain.js` | Aggregator router mounting brainCapture, brainCrud, brainDigest, brainSettings, brainLinks, brainGraph, brainSync, brainDailyLog, brainSongbook, and brainYoutube |
 | `client/src/pages/Brain.jsx` | Main page with tabs |
 | `client/src/components/brain/tabs/*.jsx` | Tab components |
 | `data/prompts/stages/brain-*.md` | Prompt templates |

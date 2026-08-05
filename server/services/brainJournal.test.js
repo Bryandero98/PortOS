@@ -27,8 +27,10 @@ tryReadFile: vi.fn().mockResolvedValue(null),
 
 vi.mock('./obsidian.js', () => ({
   getVaultById: vi.fn(),
-  updateNote: vi.fn(),
-  createNote: vi.fn(),
+  // The update-then-create ordering lives inside the real upsertNote and is
+  // tested against a real vault in obsidian.test.js — from the journal's side
+  // the contract is just 'mirror this markdown to this vault path'.
+  upsertNote: vi.fn(),
   deleteNote: vi.fn(),
 }));
 
@@ -233,57 +235,54 @@ describe('brainJournal', () => {
     it('skips sync when autoSync is false', async () => {
       await journal.updateSettings({ obsidianVaultId: 'v1', autoSync: false });
       await journal.appendJournal('2026-04-17', 'hi');
-      expect(obsidian.updateNote).not.toHaveBeenCalled();
-      expect(obsidian.createNote).not.toHaveBeenCalled();
+      expect(obsidian.upsertNote).not.toHaveBeenCalled();
     });
 
     it('honors force:true even when autoSync is false (manual resync path)', async () => {
       obsidian.getVaultById.mockResolvedValue({ id: 'v1', path: '/' });
-      obsidian.updateNote.mockResolvedValueOnce({ path: 'Daily Log/2026-04-17.md' });
+      obsidian.upsertNote.mockResolvedValue('Daily Log/2026-04-17.md');
 
       await journal.updateSettings({ obsidianVaultId: 'v1', autoSync: false, obsidianFolder: 'Daily Log' });
       // Regular syncToObsidian() still no-ops without force.
       await journal.syncToObsidian({ id: 'j1', date: '2026-04-17', content: 'hi', segments: [] });
-      expect(obsidian.updateNote).not.toHaveBeenCalled();
+      expect(obsidian.upsertNote).not.toHaveBeenCalled();
 
       // force bypasses autoSync so the manual "Re-sync all" action works.
       await journal.syncToObsidian(
         { id: 'j1', date: '2026-04-17', content: 'hi', segments: [] },
         { force: true },
       );
-      expect(obsidian.updateNote).toHaveBeenCalled();
+      expect(obsidian.upsertNote).toHaveBeenCalled();
     });
 
     // Test syncToObsidian() directly rather than going through
     // appendJournal()'s fire-and-forget scheduleObsidianSync() — the
     // background promise isn't awaited, so assertions against mocked
     // obsidian calls would otherwise race with the test runner.
-    it('creates an obsidian note on first sync and updates on later syncs', async () => {
+    it('mirrors the day as markdown to the configured vault and folder', async () => {
       obsidian.getVaultById.mockResolvedValue({ id: 'v1', path: '/' });
-      obsidian.updateNote.mockResolvedValueOnce({ error: 'NOTE_NOT_FOUND' });
-      obsidian.createNote.mockResolvedValueOnce({ path: 'Daily Log/2026-04-17.md' });
-      obsidian.updateNote.mockResolvedValueOnce({ path: 'Daily Log/2026-04-17.md' });
+      obsidian.upsertNote.mockResolvedValue('Daily Log/2026-04-17.md');
 
       await journal.updateSettings({ obsidianVaultId: 'v1', autoSync: true, obsidianFolder: 'Daily Log' });
       const entry = { id: 'j1', date: '2026-04-17', content: 'first', segments: [] };
       await journal.syncToObsidian(entry);
       await journal.syncToObsidian({ ...entry, content: 'first\n\nsecond' });
 
-      expect(obsidian.createNote).toHaveBeenCalledTimes(1);
-      const [vaultIdArg, pathArg, markdownArg] = obsidian.createNote.mock.calls[0];
+      // Both syncs go through the SAME call — whether the note already existed
+      // is upsertNote's problem (covered against a real vault in obsidian.test.js),
+      // not something the journal branches on.
+      expect(obsidian.upsertNote).toHaveBeenCalledTimes(2);
+      const [vaultIdArg, pathArg, markdownArg] = obsidian.upsertNote.mock.calls[0];
       expect(vaultIdArg).toBe('v1');
       expect(pathArg).toBe('Daily Log/2026-04-17.md');
       expect(markdownArg).toContain('# Daily Log — 2026-04-17');
       expect(markdownArg).toContain('first');
-
-      // Second sync updates, not creates
-      expect(obsidian.updateNote).toHaveBeenCalled();
+      expect(obsidian.upsertNote.mock.calls[1][2]).toContain('second');
     });
 
     it('refuses to delete notes from a different vault than the one the entry was mirrored to', async () => {
       obsidian.getVaultById.mockResolvedValue({ id: 'v1', path: '/' });
-      obsidian.updateNote.mockResolvedValueOnce({ error: 'NOTE_NOT_FOUND' });
-      obsidian.createNote.mockResolvedValueOnce({ path: 'Daily Log/2026-04-17.md' });
+      obsidian.upsertNote.mockResolvedValue('Daily Log/2026-04-17.md');
 
       // Mirror a note to vault v1.
       await journal.updateSettings({ obsidianVaultId: 'v1', autoSync: true, obsidianFolder: 'Daily Log' });
@@ -305,7 +304,7 @@ describe('brainJournal', () => {
 
     it('does not resurrect an Obsidian-location sidecar entry for a day deleted before a deferred sync lands', async () => {
       obsidian.getVaultById.mockResolvedValue({ id: 'v1', path: '/' });
-      obsidian.updateNote.mockResolvedValue({ path: 'Daily Log/2026-04-17.md' });
+      obsidian.upsertNote.mockResolvedValue('Daily Log/2026-04-17.md');
       await journal.updateSettings({ obsidianVaultId: 'v1', autoSync: true, obsidianFolder: 'Daily Log' });
 
       // Create the day, then delete it (tombstone + clear sidecar).

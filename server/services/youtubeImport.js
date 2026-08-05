@@ -48,7 +48,10 @@ export function youtubeVideoIdFromUrl(url) {
   const s = String(url).trim();
   const vParam = /[?&]v=([A-Za-z0-9_-]{6,20})/.exec(s);
   if (vParam) return vParam[1];
-  const pathId = /(?:youtu\.be\/|\/shorts\/|\/embed\/|\/v\/)([A-Za-z0-9_-]{6,20})/.exec(s);
+  // `/live/` is the permalink shape a finished livestream keeps — Takeout watch
+  // records for streams carry it, and the brain ingest accepts it, so it must
+  // resolve to an id here rather than being silently dropped as unrecognized.
+  const pathId = /(?:youtu\.be\/|\/shorts\/|\/embed\/|\/live\/|\/v\/)([A-Za-z0-9_-]{6,20})/.exec(s);
   if (pathId) return pathId[1];
   return null;
 }
