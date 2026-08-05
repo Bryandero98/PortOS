@@ -108,7 +108,10 @@ export default function Shell() {
       // and the session count drops out, so the action buttons stay on the title
       // line instead of wrapping to a second row above the fold.
       <div className="flex items-center gap-2">
-        <h1 className="text-xl font-semibold text-white shrink-0">Shell</h1>
+        {/* Everything else in this row is `shrink-0`, so the title is what absorbs
+            an overflow — without it a narrow phone would push the row wider than
+            the page and give the whole document a horizontal scrollbar. */}
+        <h1 className="text-xl font-semibold text-white min-w-0 truncate">Shell</h1>
         <div
           className={`flex items-center gap-2 shrink-0 text-sm px-2 py-1 rounded ${
             connected ? 'text-port-success sm:bg-port-success/20' : 'text-gray-400 sm:bg-gray-500/20'
@@ -123,13 +126,17 @@ export default function Shell() {
           <span className="hidden sm:inline text-xs text-gray-500 font-mono shrink-0">{interactiveCount}/{MAX_SESSIONS}</span>
         )}
         {liveRunCount > 0 && (
-          <span className="flex items-center gap-1 text-xs text-port-accent font-mono shrink-0">
-            <Bot size={12} />
-            {liveRunCount} live
+          <span className="flex items-center gap-1 text-xs shrink-0">
+            <span className="flex items-center gap-1 text-port-accent font-mono">
+              <Bot size={12} />
+              {liveRunCount} live
+            </span>
             {/* The only surviving home for the live-run explainer the banner used
                 to carry — a `title` tooltip is unreachable by touch and keyboard,
-                which is most of this page's audience. Costs no vertical space. */}
-            <InfoTooltip label="About live TUI runs" align="end" panelClassName="w-60">
+                which is most of this page's audience. Costs no vertical space, and
+                sits outside the `font-mono` span so the prose isn't monospaced.
+                Opens downward: this row is at the top of a clipped full-width main. */}
+            <InfoTooltip label="About live TUI runs" align="end" placement="below" panelClassName="w-60">
               {liveRunCount} live TUI run{liveRunCount > 1 ? 's' : ''}. Open one to watch it — you can type to
               answer or correct it, or Stop to end it. It won't idle-close while you have it open.
             </InfoTooltip>
