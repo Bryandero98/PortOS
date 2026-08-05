@@ -24,6 +24,8 @@ import { upsertByIdPrepend } from '../lib/upsertByIdPrepend';
 import { mergeCanonByName } from '../lib/universeBuilderExpand';
 import {
   TRUNK_BY_KIND,
+  adoptServerCategoryIds,
+  adoptServerEntryIds,
   ensureDraftCategories,
   humanizeCategory,
   normalizeCategoryKey,
@@ -311,7 +313,24 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
       setCanonDirty(false);
       clearPendingCanonAdditions();
     }
-    markDraftSaved(payload);
+    // Adopt the ids the server sanitizer minted for entries this save created,
+    // so per-entry client state keyed by id (the render queue's pending-job map)
+    // can match a board or variation added and used in the same session. Both
+    // the draft AND the saved baseline take the ids — backfilling only the draft
+    // would read as an unsaved edit and leave the page permanently dirty.
+    const savedSheets = adoptServerEntryIds(payload.compositeSheets, result.compositeSheets);
+    const savedCategories = adoptServerCategoryIds(payload.categories, result.categories);
+    markDraftSaved({ ...payload, compositeSheets: savedSheets, categories: savedCategories });
+    if (savedSheets !== payload.compositeSheets || savedCategories !== payload.categories) {
+      // Re-derive from the CURRENT draft rather than assigning `savedSheets`
+      // wholesale — edits made while the save was in flight must survive, and
+      // adopting an id is additive to whatever the row looks like now.
+      setDraft((d) => ({
+        ...d,
+        compositeSheets: adoptServerEntryIds(d.compositeSheets, result.compositeSheets),
+        categories: adoptServerCategoryIds(d.categories, result.categories),
+      }));
+    }
     // Watermark this save so a re-hydration GET it raced (navigate away and back
     // mid-save) re-reads instead of showing the pre-save record — the same guard
     // the style-reference mutators get, which is why it keys on the server's
@@ -322,6 +341,39 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
     if (result.id !== selectedId) goToWorld(result.id);
     return result;
   };
+
+  // Reconcile the draft's entry ids with the persisted record. `POST /render`
+  // migrates a universe whose entries predate persisted ids — before that write,
+  // `ensureEntryId` mints a fresh uuid on every read, so this draft is holding
+  // transient ids while the queued jobs are keyed by the ones the migration just
+  // wrote. Without this the pending-job map and the rows it drives use different
+  // keys, and no row picks up its own render.
+  //
+  // Only the ids move: `adoptServerEntryIds` keeps every local id the server also
+  // has, so a row is never re-keyed out from under an in-flight job, and nothing
+  // else from the fetched record is merged in (it would clobber edits made since).
+  // The saved baseline takes the same ids, or adopting them reads as a user edit
+  // and the page stays permanently dirty.
+  const syncEntryIdsFromServer = useCallback(async () => {
+    const id = selectedIdRef.current;
+    if (!id) return;
+    const fresh = await getUniverse(id, { silent: true }).catch(() => null);
+    // Dropping a response for a universe the user has navigated away from —
+    // same rule every other mutator here follows.
+    if (!fresh || !mountedRef.current || selectedIdRef.current !== id) return;
+    const current = draftRef.current || {};
+    if (adoptServerEntryIds(current.compositeSheets, fresh.compositeSheets) === current.compositeSheets
+      && adoptServerCategoryIds(current.categories, fresh.categories) === current.categories) return;
+    const saved = JSON.parse(savedDraftSnapshotRef.current);
+    saved.compositeSheets = adoptServerEntryIds(saved.compositeSheets, fresh.compositeSheets);
+    saved.categories = adoptServerCategoryIds(saved.categories, fresh.categories);
+    savedDraftSnapshotRef.current = JSON.stringify(saved);
+    setDraft((d) => ({
+      ...d,
+      compositeSheets: adoptServerEntryIds(d.compositeSheets, fresh.compositeSheets),
+      categories: adoptServerCategoryIds(d.categories, fresh.categories),
+    }));
+  }, [mountedRef]);
 
   // Preflight for any server action that reads the PERSISTED universe (the LLM
   // actions, batch render): persist a dirty draft first, so the server operates
@@ -647,6 +699,7 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
     setSaving,
     setWorlds,
     styleProbeDirty,
+    syncEntryIdsFromServer,
     toggleLock,
     universes,
     updateCategory,

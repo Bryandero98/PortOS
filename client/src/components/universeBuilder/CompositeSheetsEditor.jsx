@@ -1,13 +1,30 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { Plus, Play, Lock, Unlock, Edit3, X } from 'lucide-react';
 import { COMPOSITE_PROMPT_MAX } from '../../services/api';
 import { COMPOSITE_BOARD_KINDS, compositeKindLabel } from '../../lib/universeBuilderShared';
+import EntryCard from '../universe/EntryCard';
+import EntryThumbSlot from '../universe/EntryThumbSlot';
 
 // Composite-boards editor for the Universe Builder Composites tab. Add / edit /
 // remove reference sheets + world-pitch posters, with per-board + bulk lock
 // toggles (locked boards survive AI Expand). Extracted from UniverseBuilder.jsx
 // (#2374). Pure presentational — `onChange(nextSheets)` owns persistence.
-export default function CompositeSheetsEditor({ sheets, onChange, canRender = false, onRender = null }) {
+export default function CompositeSheetsEditor({
+  sheets, onChange, canRender = false, onRender = null,
+  // Clicking a board's thumbnail opens the page-level MediaPreview lightbox,
+  // same as variation / canon rows. Receives the visible filename.
+  onPreview = null,
+  // Per-row render-pending plumbing, mirroring the variation grid.
+  // `pendingByEntryId[sheet.id]` is the in-flight jobId (or undefined).
+  // `onJobSettled(sheetId, filename | null, jobId)` fires when that job reaches
+  // a terminal state, so the parent can append the new filename to the board's
+  // imageRefs[] and clear the pending entry — a failure/cancel yields no
+  // filename and settles with `null`, which is the same clear either way.
+  // `onJobFailed(sheetId, 'failed' | 'canceled')` fires after it, only on a
+  // terminal failure, so the parent can report a failed render without having
+  // to tell one apart from a user-initiated cancel.
+  pendingByEntryId = {}, onJobSettled = null, onJobFailed = null,
+}) {
   const [adding, setAdding] = useState(false);
   const [newKind, setNewKind] = useState('reference_sheet');
   const [newLabel, setNewLabel] = useState('');
@@ -158,87 +175,151 @@ export default function CompositeSheetsEditor({ sheets, onChange, canRender = fa
       ) : (
         <ul className="flex flex-col gap-1.5 max-h-96 overflow-y-auto">
           {sheets.map((sheet, idx) => (
-            <li key={`${sheet.label}-${idx}`} className={`bg-port-bg border rounded p-2 text-sm ${sheet.locked ? 'border-port-accent/50' : 'border-port-border'}`}>
-              {editIdx === idx ? (
-                <div className="flex flex-col gap-1">
-                  <select
-                    value={editKind}
-                    onChange={(e) => setEditKind(e.target.value)}
-                    className="bg-port-card border border-port-border rounded px-2 py-1 text-white text-sm min-h-[40px]"
-                  >
-                    {COMPOSITE_BOARD_KINDS.map((kind) => (
-                      <option key={kind.value} value={kind.value}>{kind.label}</option>
-                    ))}
-                  </select>
-                  <input
-                    value={editLabel}
-                    onChange={(e) => setEditLabel(e.target.value)}
-                    className="bg-port-card border border-port-border rounded px-2 py-1 text-white text-sm"
-                    maxLength={120}
-                  />
-                  <textarea
-                    value={editPrompt}
-                    onChange={(e) => setEditPrompt(e.target.value)}
-                    rows={8}
-                    className="bg-port-card border border-port-border rounded px-2 py-1 text-white text-sm"
-                    maxLength={COMPOSITE_PROMPT_MAX}
-                  />
-                  <div className="flex gap-2">
-                    <button onClick={saveEdit} className="text-xs px-2 py-1 bg-port-accent text-white rounded min-h-[40px] sm:min-h-0">Save</button>
-                    <button onClick={() => setEditIdx(null)} className="text-xs px-2 py-1 bg-port-bg text-gray-300 rounded min-h-[40px] sm:min-h-0">Cancel</button>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <div className="text-white font-medium truncate">{sheet.label}</div>
-                      <span className="shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-port-accent/10 text-port-accent border border-port-accent/20">
-                        {compositeKindLabel(sheet.kind)}
-                      </span>
+            editIdx === idx ? (
+              <EntryCard
+                key={`${sheet.label}-${idx}`}
+                locked={!!sheet.locked}
+                body={(
+                  <div className="flex flex-col gap-1">
+                    <select
+                      value={editKind}
+                      onChange={(e) => setEditKind(e.target.value)}
+                      className="bg-port-card border border-port-border rounded px-2 py-1 text-white text-sm min-h-[40px]"
+                    >
+                      {COMPOSITE_BOARD_KINDS.map((kind) => (
+                        <option key={kind.value} value={kind.value}>{kind.label}</option>
+                      ))}
+                    </select>
+                    <input
+                      value={editLabel}
+                      onChange={(e) => setEditLabel(e.target.value)}
+                      className="bg-port-card border border-port-border rounded px-2 py-1 text-white text-sm"
+                      maxLength={120}
+                    />
+                    <textarea
+                      value={editPrompt}
+                      onChange={(e) => setEditPrompt(e.target.value)}
+                      rows={8}
+                      className="bg-port-card border border-port-border rounded px-2 py-1 text-white text-sm"
+                      maxLength={COMPOSITE_PROMPT_MAX}
+                    />
+                    <div className="flex gap-2">
+                      <button onClick={saveEdit} className="text-xs px-2 py-1 bg-port-accent text-white rounded min-h-[40px] sm:min-h-0">Save</button>
+                      <button onClick={() => setEditIdx(null)} className="text-xs px-2 py-1 bg-port-bg text-gray-300 rounded min-h-[40px] sm:min-h-0">Cancel</button>
                     </div>
-                    <div className="text-xs text-gray-400 line-clamp-3">{sheet.prompt}</div>
                   </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    {onRender && (
-                      <button
-                        onClick={() => onRender(sheet)}
-                        disabled={!canRender}
-                        className="p-1 text-gray-400 hover:text-port-accent disabled:opacity-30 disabled:cursor-not-allowed rounded"
-                        title={canRender ? 'Render this board' : 'Save the world and configure a render backend to enable'} aria-label={canRender ? 'Render this board' : 'Save the world and configure a render backend to enable'}
-                      >
-                        <Play size={14} />
-                      </button>
-                    )}
-                    <button
-                      onClick={() => toggleLockAt(idx)}
-                      className={`p-1 rounded ${sheet.locked ? 'text-port-accent hover:bg-port-accent/20' : 'text-gray-500 hover:text-gray-300'}`}
-                      title={sheet.locked ? 'Locked — AI expand will preserve this board' : 'Lock this board against AI expand'} aria-label={sheet.locked ? 'Locked — AI expand will preserve this board' : 'Lock this board against AI expand'}
-                      aria-pressed={!!sheet.locked}
-                    >
-                      {sheet.locked ? <Lock size={14} /> : <Unlock size={14} />}
-                    </button>
-                    <button
-                      onClick={() => startEdit(idx, sheet)}
-                      className="p-1 text-gray-400 hover:text-port-accent rounded"
-                      title="Edit" aria-label="Edit"
-                    >
-                      <Edit3 size={14} />
-                    </button>
-                    <button
-                      onClick={() => removeAt(idx)}
-                      className="p-1 text-gray-400 hover:text-port-error rounded"
-                      title="Remove" aria-label="Remove"
-                    >
-                      <X size={14} />
-                    </button>
-                  </div>
-                </div>
-              )}
-            </li>
+                )}
+              />
+            ) : (
+              <SheetRow
+                key={`${sheet.label}-${idx}`}
+                sheet={sheet}
+                canRender={canRender}
+                onRender={onRender ? () => onRender(sheet) : null}
+                onPreview={onPreview}
+                inFlightJobId={pendingByEntryId?.[sheet.id] || null}
+                onJobSettled={onJobSettled}
+                onJobFailed={onJobFailed}
+                onToggleLock={() => toggleLockAt(idx)}
+                onStartEdit={() => startEdit(idx, sheet)}
+                onRemove={() => removeAt(idx)}
+              />
+            )
           ))}
         </ul>
       )}
     </section>
   );
+}
+
+// Display row for one composite board. Renders through `EntryCard` for the same
+// reason VariationCard and CanonCard do — the locked-accent border and the
+// thumbnail / title / body / actions slot layout stay in lock-step across every
+// universe surface instead of drifting per editor.
+function SheetRow({
+  sheet, canRender, onRender, onPreview,
+  inFlightJobId, onJobSettled, onJobFailed,
+  onToggleLock, onStartEdit, onRemove,
+}) {
+  const renders = Array.isArray(sheet.imageRefs) ? sheet.imageRefs : [];
+  // `onComplete` is EntryThumbSlot's own settle bridge — it fires with the
+  // rendered filename, or with `null` on a terminal failure/cancel — so the row
+  // needs no second `useMediaJobProgress` subscription against a jobId the slot
+  // is already watching. `inFlightJobId` rides in from the closure because the
+  // parent shifts exactly that jobId out of the board's pending queue.
+  //
+  // The identity MUST be stable: MediaJobThumb fires its `onFilename` effect on
+  // `[effectiveFilename, onFilename]`, so a fresh arrow per render would settle
+  // the same job again on every page re-render (every keystroke in the builder
+  // draft) — each one a full listImageGallery() refetch — instead of once when
+  // the job lands.
+  const handleSettled = useCallback(
+    (filename) => onJobSettled?.(sheet.id, filename, inFlightJobId),
+    [onJobSettled, sheet.id, inFlightJobId],
+  );
+  const handleFailed = useCallback(
+    (status) => onJobFailed?.(sheet.id, status),
+    [onJobFailed, sheet.id],
+  );
+  // Three-state thumbnail (pending spinner / rendered image / empty placeholder
+  // with a one-click render button), matching the variation + canon rows so a
+  // rendered board reads the same way its characters / places / objects do.
+  const thumbnail = (
+    <EntryThumbSlot
+      inFlightJobId={inFlightJobId}
+      imageRefs={renders}
+      alt={`${sheet.label} render`}
+      canRender={canRender}
+      onRender={onRender}
+      onPreview={onPreview}
+      onComplete={handleSettled}
+      onTerminalStatus={handleFailed}
+    />
+  );
+  const title = (
+    <div className="flex items-center gap-2">
+      <div className="text-sm text-white font-medium truncate">{sheet.label}</div>
+      <span className="shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-port-accent/10 text-port-accent border border-port-accent/20">
+        {compositeKindLabel(sheet.kind)}
+      </span>
+    </div>
+  );
+  const body = <div className="text-xs text-gray-400 line-clamp-3">{sheet.prompt}</div>;
+  const actions = (
+    <div className="flex items-center gap-1">
+      {onRender && (
+        <button
+          onClick={onRender}
+          disabled={!canRender}
+          className="p-1 text-gray-400 hover:text-port-accent disabled:opacity-30 disabled:cursor-not-allowed rounded"
+          title={canRender ? 'Render this board' : 'Save the world and configure a render backend to enable'} aria-label={canRender ? 'Render this board' : 'Save the world and configure a render backend to enable'}
+        >
+          <Play size={14} />
+        </button>
+      )}
+      <button
+        onClick={onToggleLock}
+        className={`p-1 rounded ${sheet.locked ? 'text-port-accent hover:bg-port-accent/20' : 'text-gray-500 hover:text-gray-300'}`}
+        title={sheet.locked ? 'Locked — AI expand will preserve this board' : 'Lock this board against AI expand'} aria-label={sheet.locked ? 'Locked — AI expand will preserve this board' : 'Lock this board against AI expand'}
+        aria-pressed={!!sheet.locked}
+      >
+        {sheet.locked ? <Lock size={14} /> : <Unlock size={14} />}
+      </button>
+      <button
+        onClick={onStartEdit}
+        className="p-1 text-gray-400 hover:text-port-accent rounded"
+        title="Edit" aria-label="Edit"
+      >
+        <Edit3 size={14} />
+      </button>
+      <button
+        onClick={onRemove}
+        className="p-1 text-gray-400 hover:text-port-error rounded"
+        title="Remove" aria-label="Remove"
+      >
+        <X size={14} />
+      </button>
+    </div>
+  );
+  return <EntryCard locked={!!sheet.locked} thumbnail={thumbnail} title={title} body={body} actions={actions} />;
 }
