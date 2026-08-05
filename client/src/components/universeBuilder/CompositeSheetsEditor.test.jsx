@@ -95,6 +95,26 @@ describe('CompositeSheetsEditor', () => {
     await waitFor(() => expect(onJobSettled).toHaveBeenCalledWith('sheet-1', 'fresh.png', 'job-9'));
   });
 
+  // MediaJobThumb fires its onFilename effect on [effectiveFilename, onFilename],
+  // so an unstable callback identity would re-settle the same job on every parent
+  // re-render — each one a full gallery refetch. Re-rendering with untouched props
+  // must not produce a second settle.
+  it('settles a completed job once, not once per parent re-render', async () => {
+    job = { status: 'completed', filename: 'fresh.png', error: null };
+    const onJobSettled = vi.fn();
+    const props = {
+      sheets: [sheet({ id: 'sheet-1' })],
+      onChange: () => {},
+      pendingByEntryId: { 'sheet-1': 'job-9' },
+      onJobSettled,
+    };
+    const { rerender } = render(<CompositeSheetsEditor {...props} />);
+    await waitFor(() => expect(onJobSettled).toHaveBeenCalled());
+    rerender(<CompositeSheetsEditor {...props} />);
+    rerender(<CompositeSheetsEditor {...props} />);
+    expect(onJobSettled).toHaveBeenCalledTimes(1);
+  });
+
   it('settles with a null filename on a terminal failure so the parent still clears the pending entry', async () => {
     job = { status: 'failed', filename: null, error: 'boom' };
     const onJobSettled = vi.fn();

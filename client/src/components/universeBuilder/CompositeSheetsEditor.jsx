@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { Plus, Play, Lock, Unlock, Edit3, X } from 'lucide-react';
 import { COMPOSITE_PROMPT_MAX } from '../../services/api';
 import { COMPOSITE_BOARD_KINDS, compositeKindLabel } from '../../lib/universeBuilderShared';
@@ -239,14 +239,24 @@ function SheetRow({
   onToggleLock, onStartEdit, onRemove,
 }) {
   const renders = Array.isArray(sheet.imageRefs) ? sheet.imageRefs : [];
-  // Three-state thumbnail (pending spinner / rendered image / empty placeholder
-  // with a one-click render button), matching the variation + canon rows so a
-  // rendered board reads the same way its characters / places / objects do.
   // `onComplete` is EntryThumbSlot's own settle bridge — it fires with the
   // rendered filename, or with `null` on a terminal failure/cancel — so the row
   // needs no second `useMediaJobProgress` subscription against a jobId the slot
-  // is already watching. `inFlightJobId` comes back from the closure because the
+  // is already watching. `inFlightJobId` rides in from the closure because the
   // parent shifts exactly that jobId out of the board's pending queue.
+  //
+  // The identity MUST be stable: MediaJobThumb fires its `onFilename` effect on
+  // `[effectiveFilename, onFilename]`, so a fresh arrow per render would settle
+  // the same job again on every page re-render (every keystroke in the builder
+  // draft) — each one a full listImageGallery() refetch — instead of once when
+  // the job lands.
+  const handleSettled = useCallback(
+    (filename) => onJobSettled?.(sheet.id, filename, inFlightJobId),
+    [onJobSettled, sheet.id, inFlightJobId],
+  );
+  // Three-state thumbnail (pending spinner / rendered image / empty placeholder
+  // with a one-click render button), matching the variation + canon rows so a
+  // rendered board reads the same way its characters / places / objects do.
   const thumbnail = (
     <EntryThumbSlot
       inFlightJobId={inFlightJobId}
@@ -255,7 +265,7 @@ function SheetRow({
       canRender={canRender}
       onRender={onRender}
       onPreview={onPreview}
-      onComplete={onJobSettled ? (filename) => onJobSettled(sheet.id, filename, inFlightJobId) : null}
+      onComplete={handleSettled}
     />
   );
   const title = (
