@@ -49,7 +49,12 @@ function packagesWithInstallHooks(label) {
     } catch {
       continue;
     }
-    if (LIFECYCLE_HOOKS.some((hook) => pkg?.scripts?.[hook])) found.add(pkg.name);
+    // A `binding.gyp` counts even with no explicit hook: npm runs node-gyp
+    // implicitly for such a package, and `ignore-scripts=true` blocks that too —
+    // so a gyp-only native dependency would otherwise be left unbuilt AND
+    // unflagged, which is the exact silent-failure this guard exists to prevent.
+    const hasImplicitGypBuild = existsSync(join(packageDir, 'binding.gyp'));
+    if (hasImplicitGypBuild || LIFECYCLE_HOOKS.some((hook) => pkg?.scripts?.[hook])) found.add(pkg.name);
   }
   return found;
 }
@@ -108,6 +113,23 @@ describe('trusted rebuild allowlist', () => {
   // surfaces much later as a confusing runtime crash on a missing native binding.
   // Fail here instead, when the dependency lands, and force the decision.
   const DELIBERATELY_UNBUILT = {};
+
+  it('detects install hooks at all, so the accounting assertion is not vacuous', () => {
+    // `unaccounted === []` also passes when the scan finds nothing, so a scan that
+    // silently broke (wrong path, changed npm layout, a `readdirSync` throw swallowed
+    // by the catch) would look exactly like a clean tree. Pin the known-hooked server
+    // packages so a broken scan fails loudly instead of reporting success.
+    //
+    // Deciding "absent" from the directory directly rather than from a `null` return
+    // is what makes this non-vacuous: the helper also returns `null` when it looks at
+    // the WRONG path, so trusting its own `null` would let exactly the broken-scan
+    // case skip the assertion it exists to make.
+    if (!existsSync(join(workspaceDir('server'), 'node_modules'))) return;
+    const hooked = packagesWithInstallHooks('server');
+    expect(hooked, 'scan returned null even though server/node_modules exists — it is looking at the wrong path').not.toBeNull();
+    expect(hooked.has('node-pty'), 'scan did not find node-pty — it declares install+postinstall').toBe(true);
+    expect(hooked.size).toBeGreaterThanOrEqual(3);
+  });
 
   it.each(WORKSPACES)('%s: every installed package with an install hook is accounted for', (label) => {
     const hooked = packagesWithInstallHooks(label);

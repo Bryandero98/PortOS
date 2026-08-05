@@ -38,12 +38,27 @@ or {
 
   // --- @eslint-react/no-missing-component-display-name ---------------------
   // Flags an anonymous function or arrow passed to memo()/forwardRef().
+  //
+  // The two-argument `memo($fn, $areEqual)` branches are NOT redundant: a single
+  // `$fn` metavariable does not match a two-item argument list, so without them
+  // `memo(() => <div/>, areEqual)` — a legitimate and common form — escaped the rule
+  // entirely. `forwardRef` takes only the render function, so it needs no such pair.
+  //
+  // ORDER IS LOAD-BEARING: the two-arg branches must come FIRST. Grit's `or` takes
+  // the first branch that matches and does not backtrack when the shared `where`
+  // below then fails — so with `memo($fn)` listed first, a two-arg call matched it,
+  // failed the anonymous-function check, and was dropped without the two-arg branch
+  // ever being tried. Verified both ways: specific-first flags all four anonymous
+  // forms, general-first silently flags only two. Do not alphabetize these.
+  //
   // NOTE: one deliberate divergence from @eslint-react — that rule also accepts a
-  // later `Component.displayName = '...'` assignment as satisfying the
-  // requirement; this pattern does not, so it is slightly STRICTER (never weaker).
-  // `client/src` has zero memo()/forwardRef() call sites today, so the stricter
-  // reading costs nothing; name the function and the diagnostic goes away.
+  // later `Component.displayName = '...'` assignment as satisfying the requirement;
+  // this pattern does not, so on that axis it is stricter. `client/src` has zero
+  // memo()/forwardRef() call sites today, so the stricter reading costs nothing;
+  // name the function and the diagnostic goes away.
   or {
+    `memo($fn, $areEqual)`,
+    `$react.memo($fn, $areEqual)`,
     `memo($fn)`,
     `forwardRef($fn)`,
     `$react.memo($fn)`,

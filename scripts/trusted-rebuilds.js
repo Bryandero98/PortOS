@@ -101,7 +101,20 @@ export function rebuildTrusted(dir, label) {
 function main() {
   const label = process.argv[2];
   if (!label) {
-    console.error(`❌ usage: node scripts/trusted-rebuilds.js <${Object.keys(TRUSTED_REBUILDS).join('|')}>`);
+    // List the real workspaces, not just the keys of TRUSTED_REBUILDS — the CLI
+    // accepts any workspace (a rebuild-free one is a documented no-op), so
+    // advertising only `server` misrepresents what is valid.
+    console.error(`❌ usage: node scripts/trusted-rebuilds.js <${discoverWorkspaces().join('|')}>`);
+    process.exit(1);
+  }
+  // Validate the label against the real workspace list BEFORE the "nothing to do"
+  // check below. Otherwise a typo (`sever`) falls through to a green "✅ no trusted
+  // rebuilds needed" and exit 0 — reproducing the exact failure this module exists
+  // to prevent (node-pty left unbuilt, surfacing much later as a confusing
+  // MODULE_NOT_FOUND at smoke-boot) behind a CI step that reported success.
+  const workspaces = discoverWorkspaces();
+  if (!workspaces.includes(label)) {
+    console.error(`❌ unknown workspace '${label}'. Known workspaces: ${workspaces.join(', ')}`);
     process.exit(1);
   }
   if (!TRUSTED_REBUILDS[label]) {
