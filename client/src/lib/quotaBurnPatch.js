@@ -61,3 +61,25 @@ export function jobFromPreset(preset, { id, appId = null } = {}) {
     params: appId ? { appId } : {},
   }, preset);
 }
+
+/**
+ * `QUOTA_BURN_UNLIMITED_DISPATCHES` in `server/lib/quotaBurnConfig.js`: the
+ * `maxDispatchesPerWindow` value that means the window is not counted at all,
+ * and the default. Mirrored (not imported) for the same reason the merge above
+ * is — the client cannot reach into `server/`.
+ */
+export const UNLIMITED_DISPATCHES = -1;
+
+/** Mirrors the server's `isUnlimitedDispatchCap`: any negative cap means no cap. */
+export const isUnlimitedDispatchCap = (cap) => Number(cap) < 0;
+
+/**
+ * What to PUT for a dispatch cap the user just typed.
+ *
+ * Anything below the real minimum of 1 collapses to the sentinel rather than
+ * being sent as-is: 0 is not a value the PUT schema accepts (it would read as
+ * "never burn", which the family switch already expresses), so stepping the
+ * spinner down past 1 would otherwise 400 — taking every edit coalesced into
+ * that body with it. -1 is the natural continuation of "fewer restrictions".
+ */
+export const dispatchCapInput = (value) => (value < 1 ? UNLIMITED_DISPATCHES : value);

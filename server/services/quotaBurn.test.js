@@ -112,6 +112,18 @@ describe('evaluateFamilies', () => {
     expect(reasonFor(family, [quota('grok', '2026-07-26T18:00:00.000Z')], { dispatches: { [selected.dispatchKey]: 2 } }))
       .toBe('dispatch cap reached (2/2)');
   });
+
+  it('never closes the cap gate when the cap is unlimited (the default)', () => {
+    // -1 means the tally is not consulted at all. The remaining gates — the
+    // reset horizon, the reserve, an observed refusal — still bound the spend,
+    // and they read live numbers rather than a count.
+    const uncapped = { ...family, maxDispatchesPerWindow: -1 };
+    const quotas = [quota('grok', '2026-07-26T18:00:00.000Z')];
+    const selected = selectBurnCandidates(quotas, { families: { grok: uncapped } }, { now: NOW })[0];
+    expect(reasonFor(uncapped, quotas, { dispatches: { [selected.dispatchKey]: 999 } })).toBeUndefined();
+    // …and the horizon still closes on the same plan.
+    expect(reasonFor(uncapped, [quota('grok', '2026-07-28T12:00:00.000Z')])).toMatch(/outside the 24h window/);
+  });
 });
 
 describe('selectBurnCandidates bypassGatesFor', () => {

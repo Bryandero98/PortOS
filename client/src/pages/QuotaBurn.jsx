@@ -259,7 +259,7 @@ export default function QuotaBurn() {
         </div>
         <p className="text-xs text-gray-400">
           One loop for this install, but each provider family burns independently: every family whose window is inside its reset
-          horizon, above its reserve, and under its dispatch cap runs the first job in its plan that has work waiting — one job
+          horizon, above its reserve, and under its dispatch cap (unlimited by default) runs the first job in its plan that has work waiting — one job
           per family per cycle. Turning this on is explicit consent to spend those subscriptions on a schedule.
         </p>
         {lastRun && (

@@ -121,6 +121,31 @@ describe('QuotaBurn page', () => {
     expect(await screen.findByText(/Weekly: 62% left/)).toBeInTheDocument();
   });
 
+  it('drops the denominator when the dispatch cap is unlimited', async () => {
+    // -1 is the default: the window is still CHARGED (so "1 used" stays useful)
+    // but nothing is counting down to a limit, and "1/-1 used" would read as a
+    // bug in the ledger.
+    api.getQuotaBurn.mockResolvedValue({
+      config: { ...config, families: { ...config.families, grok: { ...config.families.grok, maxDispatchesPerWindow: -1 } } },
+      status,
+    });
+    renderPage();
+    expect(await screen.findByText(/· 1 used/)).toBeInTheDocument();
+    expect(screen.queryByText(/1\/-1 used/)).not.toBeInTheDocument();
+  });
+
+  it('sends the unlimited sentinel rather than a 0 the server would reject', async () => {
+    // Stepping the cap below 1 is "fewer restrictions", and 0 is not a value the
+    // PUT accepts — collapsing it to -1 keeps the spinner from 400ing the save.
+    const user = userEvent.setup();
+    renderPage('/devtools/quota-burn/grok');
+    const cap = await screen.findByLabelText(/Dispatch cap per window/);
+    await user.clear(cap);
+    await user.type(cap, '0');
+    await waitFor(() => expect(api.saveQuotaBurn).toHaveBeenCalled());
+    expect(api.saveQuotaBurn.mock.calls[0][0].families.grok.maxDispatchesPerWindow).toBe(-1);
+  });
+
   it('shows an observed provider refusal, not just the gate that closed', async () => {
     // "The provider said no" is the actionable fact, and it is what explains a
     // family that looks healthy on paper but never burns.

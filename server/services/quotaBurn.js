@@ -20,7 +20,7 @@
 import { join } from 'path';
 import { atomicWrite, PATHS, readJSONFile } from '../lib/fileUtils.js';
 import { createFileWriteQueue } from '../lib/fileWriteQueue.js';
-import { familyIsActionable, normalizeQuotaBurnFamily } from '../lib/quotaBurnConfig.js';
+import { familyIsActionable, isUnlimitedDispatchCap, normalizeQuotaBurnFamily } from '../lib/quotaBurnConfig.js';
 import { isPlainObject } from '../lib/objects.js';
 import { hoursUntilReset, normalizeResetAt } from '../lib/quotaReset.js';
 import { classifyWindows, windowLabelOf } from '../lib/quotaWindows.js';
@@ -201,7 +201,10 @@ export function evaluateFamily(family, card, { now = Date.now(), dispatches = {}
     if (target.hours > family.resetWithinHours) {
       return { skipReason: `resets in ${Math.ceil(target.hours)}h — outside the ${family.resetWithinHours}h window` };
     }
-    if (dispatchesUsed >= family.maxDispatchesPerWindow) {
+    // A cap of -1 (the default) opts out of counting entirely — the window is
+    // still bounded by `resetWithinHours`, the reserve, and provider refusals,
+    // all of which read live numbers rather than a tally.
+    if (!isUnlimitedDispatchCap(family.maxDispatchesPerWindow) && dispatchesUsed >= family.maxDispatchesPerWindow) {
       return { skipReason: `dispatch cap reached (${dispatchesUsed}/${family.maxDispatchesPerWindow})` };
     }
     if (burnBudgetRemaining(tightest, family) <= 0) {
