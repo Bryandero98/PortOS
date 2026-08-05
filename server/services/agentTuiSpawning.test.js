@@ -345,7 +345,9 @@ describe('agent TUI spawning', () => {
       'gemini-3.1-pro-high',
       { effort: 'low' },
     );
-    expect(agy.args).toEqual(['--dangerously-skip-permissions', '--model', 'gemini-3.1-pro-high', '--effort', 'low']);
+    // An explicitly selected effort wins over the tier baked into the model id,
+    // and the id is passed as its base so agy sees exactly one effort source.
+    expect(agy.args).toEqual(['--dangerously-skip-permissions', '--model', 'gemini-3.1-pro', '--effort', 'low']);
   });
 
   it('adds lean-mode flags and the system-prompt file for an Ollama-backed claude TUI', () => {

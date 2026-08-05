@@ -35,8 +35,19 @@ import {
   hasCodexUpdateCheckConfig,
   buildCodexStartupArgs,
   isCodexProvider,
-  isKimiProvider
+  isKimiProvider,
+  splitAntigravityModel,
+  antigravityBaseModels,
+  antigravityModelEffortLevels
 } from './providerModels.js';
+
+// The catalog `agy models` prints — the shipped provider list mirrors it.
+const AGY_CATALOG = [
+  'antigravity-configured-default',
+  'gemini-3.6-flash-high', 'gemini-3.6-flash-medium', 'gemini-3.6-flash-low',
+  'gemini-3.1-pro-high', 'gemini-3.1-pro-low',
+  'claude-sonnet-4-6', 'gpt-oss-120b-medium',
+];
 
 describe('providerModels', () => {
   describe('providerSuppliesGithubToken', () => {
@@ -192,6 +203,90 @@ describe('providerModels', () => {
       expect(effortLevelsForProvider(null)).toBeNull();
     });
 
+    it('narrows the agy ladder to the tiers the selected model actually offers', () => {
+      const agy = { id: 'antigravity-cli', command: 'agy', models: AGY_CATALOG };
+      expect(effortLevelsForProvider(agy, 'gemini-3.6-flash')).toEqual(['low', 'medium', 'high']);
+      // agy: `gemini-3.1-pro has no "medium" effort (available: low, high)`.
+      expect(effortLevelsForProvider(agy, 'gemini-3.1-pro')).toEqual(['low', 'high']);
+      expect(effortLevelsForProvider(agy, 'gpt-oss-120b')).toEqual(['medium']);
+      // A suffixed id resolves through its base — same tiers.
+      expect(effortLevelsForProvider(agy, 'gemini-3.1-pro-high')).toEqual(['low', 'high']);
+    });
+
+    it('returns null for an agy model the catalog gives no tiers, so no --effort is emitted', () => {
+      const agy = { id: 'antigravity-cli', command: 'agy', models: AGY_CATALOG };
+      expect(effortLevelsForProvider(agy, 'claude-sonnet-4-6')).toBeNull();
+    });
+
+    it('falls back to the full agy ladder when the catalog is unknown', () => {
+      expect(effortLevelsForProvider({ id: 'antigravity-cli', command: 'agy' }, 'gemini-3.1-pro'))
+        .toBe(ANTIGRAVITY_EFFORT_LEVELS);
+      expect(effortLevelsForProvider({ id: 'antigravity-cli', command: 'agy', models: [] }, 'gemini-3.1-pro'))
+        .toBe(ANTIGRAVITY_EFFORT_LEVELS);
+    });
+
+    it('ignores `model` for non-antigravity providers', () => {
+      expect(effortLevelsForProvider({ id: 'codex', command: 'codex' }, 'gpt-5-high')).toBe(CODEX_EFFORT_LEVELS);
+      expect(effortLevelsForProvider({ id: 'claude-code', command: 'claude' }, 'claude-opus-5-high'))
+        .toBe(CLAUDE_EFFORT_LEVELS);
+    });
+  });
+
+  describe('splitAntigravityModel', () => {
+    it('splits an effort-suffixed id into base + tier', () => {
+      expect(splitAntigravityModel('gemini-3.6-flash-high')).toEqual({ base: 'gemini-3.6-flash', effort: 'high' });
+      expect(splitAntigravityModel('gemini-3.6-flash-medium')).toEqual({ base: 'gemini-3.6-flash', effort: 'medium' });
+      expect(splitAntigravityModel('gpt-oss-120b-medium')).toEqual({ base: 'gpt-oss-120b', effort: 'medium' });
+    });
+
+    it('leaves unsuffixed ids, sentinels and non-strings alone', () => {
+      expect(splitAntigravityModel('claude-sonnet-4-6')).toEqual({ base: 'claude-sonnet-4-6', effort: null });
+      // `-thinking` is not an effort tier.
+      expect(splitAntigravityModel('claude-opus-4-6-thinking'))
+        .toEqual({ base: 'claude-opus-4-6-thinking', effort: null });
+      expect(splitAntigravityModel(ANTIGRAVITY_CONFIGURED_DEFAULT))
+        .toEqual({ base: ANTIGRAVITY_CONFIGURED_DEFAULT, effort: null });
+      expect(splitAntigravityModel('')).toEqual({ base: '', effort: null });
+      expect(splitAntigravityModel(null)).toEqual({ base: null, effort: null });
+      expect(splitAntigravityModel(undefined)).toEqual({ base: undefined, effort: null });
+    });
+
+    it('only strips the trailing tier, not a mid-id match', () => {
+      expect(splitAntigravityModel('gemini-high-pro')).toEqual({ base: 'gemini-high-pro', effort: null });
+    });
+  });
+
+  describe('antigravityBaseModels', () => {
+    it('strips suffixes and dedupes, preserving order', () => {
+      expect(antigravityBaseModels(AGY_CATALOG)).toEqual([
+        'antigravity-configured-default',
+        'gemini-3.6-flash',
+        'gemini-3.1-pro',
+        'claude-sonnet-4-6',
+        'gpt-oss-120b',
+      ]);
+    });
+
+    it('passes non-string entries through and tolerates non-arrays', () => {
+      const obj = { id: 'x', name: 'X' };
+      expect(antigravityBaseModels(['a-low', obj, 'a-high'])).toEqual(['a', obj]);
+      expect(antigravityBaseModels(null)).toEqual([]);
+      expect(antigravityBaseModels(undefined)).toEqual([]);
+    });
+  });
+
+  describe('antigravityModelEffortLevels', () => {
+    it('reports only the tiers present in the catalog', () => {
+      expect(antigravityModelEffortLevels('gemini-3.6-flash', AGY_CATALOG)).toEqual(['low', 'medium', 'high']);
+      expect(antigravityModelEffortLevels('gemini-3.1-pro', AGY_CATALOG)).toEqual(['low', 'high']);
+      expect(antigravityModelEffortLevels('claude-sonnet-4-6', AGY_CATALOG)).toEqual([]);
+    });
+
+    it('returns null (unknown, not "none") for an empty/absent catalog', () => {
+      expect(antigravityModelEffortLevels('gemini-3.6-flash', [])).toBeNull();
+      expect(antigravityModelEffortLevels('gemini-3.6-flash', null)).toBeNull();
+      expect(antigravityModelEffortLevels('', AGY_CATALOG)).toBeNull();
+    });
   });
 
   describe('isCodexProvider', () => {
@@ -231,6 +326,13 @@ describe('providerModels', () => {
       expect(buildEffortArgs('high', { id: 'grok-cli', command: 'grok' })).toEqual([]);
       expect(buildEffortArgs('max', { id: 'claude-code', command: 'claude' }, ['--effort', 'low'])).toEqual([]);
     });
+
+    it('honors the per-model agy ladder when a model is supplied', () => {
+      const agy = { id: 'antigravity-cli', command: 'agy', models: AGY_CATALOG };
+      expect(buildEffortArgs('medium', agy, [], 'gemini-3.6-flash')).toEqual(['--effort', 'medium']);
+      expect(buildEffortArgs('medium', agy, [], 'gemini-3.1-pro')).toEqual(['--effort', 'low']);
+      expect(buildEffortArgs('high', agy, [], 'claude-sonnet-4-6')).toEqual([]);
+    });
   });
 
   describe('resolveCliEffort', () => {
@@ -262,6 +364,19 @@ describe('providerModels', () => {
       expect(resolveCliEffort('bogus', { id: 'codex', command: 'codex' })).toBeNull();
       expect(resolveCliEffort('bogus', { id: 'antigravity-cli', command: 'agy' })).toBeNull();
       expect(resolveCliEffort('high', { id: 'grok-cli', command: 'grok' })).toBeNull();
+    });
+
+    it('clamps to the tiers the selected agy model has, so agy never sees an invalid pair', () => {
+      const agy = { id: 'antigravity-cli', command: 'agy', models: AGY_CATALOG };
+      expect(resolveCliEffort('medium', agy, 'gemini-3.6-flash')).toBe('medium');
+      // agy rejects `--model gemini-3.1-pro --effort medium` — clamp to `low`.
+      expect(resolveCliEffort('medium', agy, 'gemini-3.1-pro')).toBe('low');
+      expect(resolveCliEffort('high', agy, 'gemini-3.1-pro')).toBe('high');
+      // gpt-oss-120b ships only a medium tier: everything lands on it.
+      expect(resolveCliEffort('high', agy, 'gpt-oss-120b')).toBe('medium');
+      expect(resolveCliEffort('low', agy, 'gpt-oss-120b')).toBe('medium');
+      // No tiers at all → no flag.
+      expect(resolveCliEffort('high', agy, 'claude-sonnet-4-6')).toBeNull();
     });
   });
 

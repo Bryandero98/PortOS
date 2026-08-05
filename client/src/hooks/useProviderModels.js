@@ -1,12 +1,16 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import * as api from '../services/api';
-import { filterSelectableModels } from '../utils/providers';
+import { filterSelectableModels, isAntigravityProvider, selectableModelsForProvider, splitAntigravityModel } from '../utils/providers';
 
 // The provider's selectable model source: its `models` list, or — when that
 // list is empty (a cloud/manual provider configured with only a defaultModel,
 // where `[]` is truthy so `||` wouldn't fall through) — its defaultModel.
-const sourceModels = (provider) => (
-  provider?.models?.length ? provider.models : [provider?.defaultModel]
+// `selectableModelsForProvider` then applies any provider-specific rewrite —
+// today that means Antigravity lists BASE models (`gemini-3.6-flash`) rather
+// than one row per baked-in effort tier, since effort is its own control now.
+const sourceModels = (provider) => selectableModelsForProvider(
+  provider,
+  provider?.models?.length ? provider.models : [provider?.defaultModel],
 );
 
 /**
@@ -85,9 +89,24 @@ export default function useProviderModels({ filter, allowDefault = false, silent
       // `[]` is truthy, so a bare `||` would leave the dropdown empty for a
       // cloud/manual provider configured with only a defaultModel).
       const models = filterSelectableModels(sourceModels(currentProvider));
-      return modelFilter ? models.filter((m) => modelFilter(m, currentProvider)) : models;
+      const filtered = modelFilter ? models.filter((m) => modelFilter(m, currentProvider)) : models;
+      // Legacy-pin escape hatch: a record saved before Antigravity switched to
+      // base models still holds `gemini-3.6-flash-high`, which now matches no
+      // option and would render the select BLANK (reading as "no model"). Keep
+      // the stored id as its own option so the pin stays visible — the server
+      // splits it back into base + `--effort`, so it still runs. Same posture as
+      // EffortSelect's out-of-ladder option.
+      //
+      // Deliberately narrow: only an Antigravity id that carries an effort
+      // SUFFIX qualifies. A bare "not in the list" test would also re-surface
+      // the configured-default sentinel (the shipped agy `defaultModel`, which
+      // filterSelectableModels exists to hide) and any typo'd/stale pin.
+      const staleAntigravityPin = isAntigravityProvider(currentProvider)
+        && !!splitAntigravityModel(selectedModel).effort
+        && !filtered.includes(selectedModel);
+      return staleAntigravityPin ? [...filtered, selectedModel] : filtered;
     },
-    [currentProvider, modelFilter]
+    [currentProvider, modelFilter, selectedModel]
   );
 
   const handleProviderChange = useCallback((id) => {

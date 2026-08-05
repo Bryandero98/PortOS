@@ -289,6 +289,71 @@ describe('promptRunner — happy paths', () => {
     expect(out.text).toBe('ran with defaultModel=user-picked-this');
   });
 
+  // `effort` has no parameter on executeCliRun/executeTuiRun — it rides the
+  // provider clone, which is what buildCliArgs/buildTuiInvocation read.
+  it('pins a per-call effort onto the CLI provider clone alongside the model', async () => {
+    runner.executeCliRun.mockImplementation(async ({ provider: providerArg, onData, onComplete }) => {
+      onData(`${providerArg.defaultModel}/${providerArg.effort}`);
+      onComplete({ success: true });
+    });
+
+    const out = await runPromptThroughProvider({
+      provider: cliProvider({ defaultModel: 'old' }), // id: 'codex'
+      prompt: 'p',
+      source: 't',
+      model: 'new',
+      effort: 'xhigh',
+    });
+
+    expect(out.text).toBe('new/xhigh');
+  });
+
+  it('pins a per-call effort even when the model needs no override', async () => {
+    runner.executeCliRun.mockImplementation(async ({ provider: providerArg, onData, onComplete }) => {
+      onData(`${providerArg.defaultModel}/${providerArg.effort}`);
+      onComplete({ success: true });
+    });
+
+    const out = await runPromptThroughProvider({
+      provider: cliProvider({ defaultModel: 'm-default' }),
+      prompt: 'p',
+      source: 't',
+      effort: 'high',
+    });
+
+    expect(out.text).toBe('m-default/high');
+  });
+
+  it('leaves the provider untouched when no effort is given', async () => {
+    runner.executeCliRun.mockImplementation(async ({ provider: providerArg, onData, onComplete }) => {
+      onData(`effort=${'effort' in providerArg}`);
+      onComplete({ success: true });
+    });
+
+    const out = await runPromptThroughProvider({
+      provider: cliProvider({ defaultModel: 'm-default' }),
+      prompt: 'p',
+      source: 't',
+    });
+
+    expect(out.text).toBe('effort=false');
+  });
+
+  it('pins a per-call effort onto the TUI provider clone', async () => {
+    tuiRunner.executeTuiRun.mockImplementation(async ({ provider: providerArg, onComplete }) => {
+      onComplete({ success: true, text: `${providerArg.defaultModel}/${providerArg.effort}` });
+    });
+
+    const out = await runPromptThroughProvider({
+      provider: tuiProvider({ defaultModel: 'm-default' }),
+      prompt: 'p',
+      source: 't',
+      effort: 'max',
+    });
+
+    expect(out.text).toBe('m-default/max');
+  });
+
   it('does NOT clone CLI providers when args have a baked-in --model flag (args win)', async () => {
     // When the user has pinned a model in provider.args, runner.js
     // suppresses its own --model injection. Per-call override is

@@ -65,6 +65,7 @@ async function executeGeneration({
   operationId,
   provider,
   requestedModel,
+  requestedEffort,
   sourcePath,
   prompt,
 }) {
@@ -72,6 +73,9 @@ async function executeGeneration({
     const result = await runPromptThroughProvider({
       provider,
       model: requestedModel || undefined,
+      // No-op for API providers and for CLI/TUI providers with no effort
+      // control — runPromptThroughProvider clamps/drops it per provider.
+      effort: requestedEffort || undefined,
       prompt,
       source: 'threejs-model-generation',
       // CLI/TUI agents only need the gallery image and JSON contract. Keep
@@ -134,6 +138,7 @@ export async function createModel(input) {
   return startGeneration(created.id, {
     providerId: input.providerId,
     model: input.model,
+    effort: input.effort,
     prompt: input.prompt,
   });
 }
@@ -141,6 +146,7 @@ export async function createModel(input) {
 export async function startGeneration(id, {
   providerId,
   model,
+  effort,
   prompt,
   feedback = '',
 } = {}) {
@@ -160,6 +166,9 @@ export async function startGeneration(id, {
   const operationId = randomUUID();
   const startedAt = new Date().toISOString();
   const effectivePrompt = prompt ?? current.prompt ?? '';
+  // Absent (`undefined`) keeps whatever the record already had; an explicit
+  // `null` — what the picker's "Default effort" choice sends — clears it.
+  const effectiveEffort = effort === undefined ? (current.effort || null) : (effort || null);
   const generationPrompt = buildThreejsGenerationPrompt({
     sourcePath,
     name: current.name,
@@ -176,6 +185,7 @@ export async function startGeneration(id, {
       prompt: effectivePrompt,
       providerId: provider.id,
       model: model || provider.defaultModel || null,
+      effort: effectiveEffort,
       status: 'generating',
       error: null,
       generationOperationId: operationId,
@@ -186,6 +196,7 @@ export async function startGeneration(id, {
           status: 'running',
           providerId: provider.id,
           model: model || provider.defaultModel || null,
+          effort: effectiveEffort,
           feedback: feedback || null,
           startedAt,
           completedAt: null,
@@ -203,6 +214,7 @@ export async function startGeneration(id, {
       operationId,
       provider,
       requestedModel: model,
+      requestedEffort: effectiveEffort,
       sourcePath,
       prompt: generationPrompt,
     });

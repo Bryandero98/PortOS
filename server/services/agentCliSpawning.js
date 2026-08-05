@@ -297,7 +297,13 @@ export function buildCliSpawnConfig(provider, model, settingsEnv = {}, { systemP
   // Per-task `--model` / `--effort` overrides are threaded in the same way as
   // claude/codex — agy documents both as session-scoped flags.
   if (isAntigravityCliProvider(provider)) {
-    const args = ensureAntigravityPrintArgs(provider?.args || [], { model: effectiveModel, effort });
+    // `models` narrows the effort ladder to the tiers the chosen base model
+    // actually offers — agy rejects `--model gemini-3.1-pro --effort medium`.
+    const args = ensureAntigravityPrintArgs(provider?.args || [], {
+      model: effectiveModel,
+      effort,
+      models: provider?.models,
+    });
     return {
       command: provider?.command || 'agy',
       args,

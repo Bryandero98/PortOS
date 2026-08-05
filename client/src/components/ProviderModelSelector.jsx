@@ -30,6 +30,12 @@
  * @param {'row'|'stacked'} [props.layout] - 'row' (default) lays the two selects
  *   side by side; 'stacked' places the model select under the provider select for
  *   narrow columns.
+ * @param {string} [props.effort] - Current reasoning-effort override (`''` = the
+ *   provider's default). Pass with `onEffortChange` to get a third select for
+ *   effort-capable providers (Antigravity, Claude, Codex); it renders itself
+ *   away for every other provider, so no caller-side guard is needed. Omit both
+ *   props for the two-select picker.
+ * @param {function} [props.onEffortChange] - Called with the new effort string.
  * @param {boolean} [props.highlightToolUse] - Opt-in for AGENT / CoS-task pickers:
  *   marks each LOCAL (Ollama / LM Studio) model option with a tool-use indicator
  *   and warns below the select when the chosen local model can't call tools (it
@@ -38,7 +44,8 @@
  *   providers, whose ids don't encode their family.
  */
 import { useId } from 'react';
-import { localToolUseHint, withToolUseOptionLabel } from '../utils/providers.js';
+import { effortLevelsForProvider, localToolUseHint, withToolUseOptionLabel } from '../utils/providers.js';
+import EffortSelect from './cos/EffortSelect.jsx';
 
 const SELECT_CLASS =
   'w-full px-3 py-1.5 min-h-[36px] bg-port-bg border border-port-border rounded-lg text-white text-sm';
@@ -67,10 +74,13 @@ export default function ProviderModelSelector({
   emptyModelOption,
   alwaysShowModel = false,
   layout = 'row',
-  highlightToolUse = false
+  highlightToolUse = false,
+  effort,
+  onEffortChange
 }) {
   const providerSelectId = useId();
   const modelSelectId = useId();
+  const effortSelectId = useId();
   // Agent-picker tool-use highlight (opt-in). Resolve the selected provider so
   // the annotation only fires for local backends (the heuristic mislabels cloud
   // ids). `localToolUseHint` returns null for cloud/blank, so the warning stays
@@ -92,6 +102,10 @@ export default function ProviderModelSelector({
     (p) => p.enabled !== false || p.id === selectedProviderId
   );
   const showModel = alwaysShowModel || availableModels.length > 0;
+  // The effort select is opt-in (`onEffortChange`) AND self-hiding: EffortSelect
+  // renders null for a provider with no effort control, so gate the label+wrapper
+  // on the same predicate or a non-effort provider gets an orphaned label.
+  const showEffort = !!onEffortChange && !!effortLevelsForProvider(selectedProvider, effectiveModel);
   const wrapperClass = layout === 'stacked' ? 'flex flex-col gap-1' : 'flex items-center gap-2';
   return (
     <div className={wrapperClass}>
@@ -142,6 +156,24 @@ export default function ProviderModelSelector({
               stalls an agent. Prefer a recognized tool-capable model (e.g. qwen3.6:35b).
             </p>
           )}
+        </div>
+      )}
+      {showEffort && (
+        <div className="flex-1 min-w-0">
+          {!compact && (
+            <label htmlFor={effortSelectId} className="block text-xs text-gray-500 mb-1">
+              Thinking effort
+            </label>
+          )}
+          <EffortSelect
+            id={effortSelectId}
+            provider={selectedProvider}
+            model={effectiveModel}
+            value={effort || ''}
+            onChange={onEffortChange}
+            disabled={disabled}
+            className={SELECT_CLASS}
+          />
         </div>
       )}
     </div>

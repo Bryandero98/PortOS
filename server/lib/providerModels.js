@@ -71,6 +71,87 @@ export const EFFORT_LEVELS = Object.freeze([...new Set([
   ...ANTIGRAVITY_EFFORT_LEVELS,
 ])]);
 
+// ---------------------------------------------------------------------------
+// Antigravity base-model ↔ effort-suffix split.
+//
+// `agy models` enumerates the effort tiers as separate model ids
+// (`gemini-3.6-flash-low|-medium|-high`), which forces the user to pick their
+// reasoning effort *inside* the model dropdown. agy also accepts the BASE id
+// with a separate `--effort` flag (`--model gemini-3.6-flash --effort high`) —
+// verified against the real binary — so PortOS lists base models and carries
+// effort as its own control.
+//
+// agy validates the PAIR, though: `--model gemini-3.1-pro --effort medium`
+// errors with `gemini-3.1-pro has no "medium" effort (available: low, high)`.
+// So the tiers a base model offers are derived from the provider's own model
+// catalog rather than assumed to be the full low/medium/high ladder.
+// Mirrored in client/src/utils/providers.js — keep in lockstep.
+// ---------------------------------------------------------------------------
+
+const ANTIGRAVITY_EFFORT_SUFFIX_RE = new RegExp(`-(${ANTIGRAVITY_EFFORT_LEVELS.join('|')})$`);
+
+/**
+ * Split an Antigravity model id into its base id and baked-in effort tier —
+ * `gemini-3.6-flash-high` → `{ base: 'gemini-3.6-flash', effort: 'high' }`.
+ * Ids with no effort suffix (`claude-sonnet-4-6`), configured-default sentinels,
+ * and non-strings come back as `{ base: <input>, effort: null }`.
+ * @param {string|null|undefined} id
+ * @returns {{base: string|null|undefined, effort: string|null}}
+ */
+export function splitAntigravityModel(id) {
+  if (typeof id !== 'string' || id === '' || isConfiguredDefaultModel(id)) {
+    return { base: id, effort: null };
+  }
+  const match = ANTIGRAVITY_EFFORT_SUFFIX_RE.exec(id);
+  return match
+    ? { base: id.slice(0, -match[0].length), effort: match[1] }
+    : { base: id, effort: null };
+}
+
+/**
+ * The user-selectable view of an Antigravity model list: effort suffixes
+ * stripped, duplicates collapsed, original order preserved. Configured-default
+ * sentinels and non-string entries (`{ id, name }` objects some pickers pass)
+ * ride through untouched so callers can hand this any `provider.models`.
+ * @param {unknown[]} models
+ * @returns {unknown[]}
+ */
+export function antigravityBaseModels(models) {
+  const out = [];
+  const seen = new Set();
+  for (const entry of Array.isArray(models) ? models : []) {
+    if (typeof entry !== 'string') {
+      out.push(entry);
+      continue;
+    }
+    const { base } = splitAntigravityModel(entry);
+    if (seen.has(base)) continue;
+    seen.add(base);
+    out.push(base);
+  }
+  return out;
+}
+
+/**
+ * The effort tiers an Antigravity base model actually offers, read off the
+ * provider's own model catalog:
+ *   - `['low','high']` — the suffixed variants present for that base.
+ *   - `[]`             — the base is in the catalog with no suffixed variants
+ *                        (`claude-sonnet-4-6`): agy has no effort knob for it.
+ *   - `null`           — the catalog is unknown/empty, so the caller should
+ *                        fall back to the full ladder rather than assume none.
+ * @param {string|null|undefined} model - base or suffixed model id
+ * @param {unknown[]} models - the provider's model list
+ * @returns {readonly string[]|null}
+ */
+export function antigravityModelEffortLevels(model, models) {
+  const list = (Array.isArray(models) ? models : []).filter(m => typeof m === 'string');
+  if (list.length === 0) return null;
+  const { base } = splitAntigravityModel(model);
+  if (typeof base !== 'string' || base === '') return null;
+  return Object.freeze(ANTIGRAVITY_EFFORT_LEVELS.filter(level => list.includes(`${base}-${level}`)));
+}
+
 /**
  * True when a provider is codex-flavored — the shipped `codex`/`codex-tui`
  * provider ids or any provider whose launch command basename is `codex`
@@ -154,13 +235,24 @@ export function isAntigravityProvider(provider) {
  * `isClaudeCommand`/`isOpencodeCommand`. A blank command does NOT default to
  * Claude here (unlike `isClaudeCommand`): effort is an opt-in enhancement, and
  * only a provider we can positively identify should advertise levels.
- * @param {{id?:string, command?:string}|null|undefined} provider
+ *
+ * `model` narrows the Antigravity ladder to the tiers that base model actually
+ * offers (agy rejects `gemini-3.1-pro --effort medium`), read off
+ * `provider.models`. Omit it — or leave the catalog empty — to get the full
+ * low/medium/high ladder. Returns null for an Antigravity model the catalog
+ * says has no tiers at all (`claude-sonnet-4-6`), so no `--effort` is emitted.
+ * @param {{id?:string, command?:string, models?:unknown[]}|null|undefined} provider
+ * @param {string|null} [model]
  * @returns {readonly string[]|null}
  */
-export function effortLevelsForProvider(provider) {
+export function effortLevelsForProvider(provider, model = null) {
   if (!provider) return null;
   if (isCodexProvider(provider)) return CODEX_EFFORT_LEVELS;
-  if (isAntigravityProvider(provider)) return ANTIGRAVITY_EFFORT_LEVELS;
+  if (isAntigravityProvider(provider)) {
+    const perModel = model ? antigravityModelEffortLevels(model, provider.models) : null;
+    if (perModel === null) return ANTIGRAVITY_EFFORT_LEVELS;
+    return perModel.length ? perModel : null;
+  }
   if (isClaudeProvider(provider)) return CLAUDE_EFFORT_LEVELS;
   return null;
 }
@@ -180,12 +272,13 @@ const EFFORT_RANK = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh', 
  * back to the provider's weakest level when nothing sits below it
  * (`minimal`→`low`) — rather than being dropped.
  * @param {string|null|undefined} effort
- * @param {{id?:string, command?:string}|null|undefined} provider
+ * @param {{id?:string, command?:string, models?:unknown[]}|null|undefined} provider
+ * @param {string|null} [model] - narrows the Antigravity ladder (see effortLevelsForProvider)
  * @returns {string|null}
  */
-export function resolveCliEffort(effort, provider) {
+export function resolveCliEffort(effort, provider, model = null) {
   if (!effort) return null;
-  const levels = effortLevelsForProvider(provider);
+  const levels = effortLevelsForProvider(provider, model);
   if (!levels) return null;
   if (levels.includes(effort)) return effort;
   const requested = EFFORT_RANK.indexOf(effort);
@@ -225,12 +318,13 @@ export function hasEffortFlag(args) {
  * home for both the detection AND the arg shape, so the two can't drift — spawn
  * builders just spread the result.
  * @param {string|null|undefined} effort
- * @param {{id?:string, command?:string}|null|undefined} provider
+ * @param {{id?:string, command?:string, models?:unknown[]}|null|undefined} provider
  * @param {unknown[]} [existingArgs]
+ * @param {string|null} [model] - narrows the Antigravity ladder (see effortLevelsForProvider)
  * @returns {string[]}
  */
-export function buildEffortArgs(effort, provider, existingArgs = []) {
-  const effectiveEffort = resolveCliEffort(effort, provider);
+export function buildEffortArgs(effort, provider, existingArgs = [], model = null) {
+  const effectiveEffort = resolveCliEffort(effort, provider, model);
   if (!effectiveEffort || hasEffortFlag(existingArgs)) return [];
   return isCodexProvider(provider)
     ? ['-c', `model_reasoning_effort=${effectiveEffort}`]

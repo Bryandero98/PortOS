@@ -12,8 +12,8 @@
  * No cycle risk: this module imports nothing from either consumer.
  */
 
-import { resolveCliModel, hasModelFlag, resolveBedrockCliModel, prefixOpencodeModel, isOpencodeCommand, buildCodexStartupArgs, commandBasename } from './providerModels.js';
-import { ensureAntigravityTuiArgs, isAntigravityCommand } from './antigravity.js';
+import { resolveCliModel, hasModelFlag, resolveBedrockCliModel, prefixOpencodeModel, isOpencodeCommand, buildCodexStartupArgs, buildEffortArgs, commandBasename } from './providerModels.js';
+import { ensureAntigravityTuiArgs, isAntigravityCommand, resolveAntigravityModelAndEffort } from './antigravity.js';
 import { ensureGrokTuiArgs, isGrokCommand } from './grok.js';
 import { ensureKimiTuiArgs, isKimiCommand } from './kimi.js';
 
@@ -955,15 +955,36 @@ function codexHasApprovalPolicy(args) {
  * the per-call --model append — otherwise the CLI would see two flags and
  * either error or take the last one (provider-specific). Matches the same
  * gate `runner.js#buildCliArgs` uses for CLI providers.
+ *
+ * `provider.effort` carries a per-run reasoning-effort override (callers clone
+ * the provider with it pinned, same as `defaultModel`) and becomes
+ * `--effort <level>` / codex's `-c model_reasoning_effort=<level>`. For agy an
+ * effort-suffixed model id is split so the base rides `--model` and its baked
+ * tier becomes the `--effort` — see antigravity.js for why.
  */
 export function buildTuiInvocation(provider, model) {
   const command = provider?.command || inferTuiCommand(provider?.id);
   const baseArgs = applyCommandDefaults(command, [...(provider?.args || [])]);
+  const effort = provider?.effort || null;
+
+  // Antigravity pairs `--model` with `--effort` under its own rules (an
+  // effort-suffixed id is split; agy validates the pair) — see antigravity.js.
+  if (isAntigravityCommand(command)) {
+    const resolved = resolveAntigravityModelAndEffort(baseArgs, {
+      model,
+      effort,
+      models: provider?.models,
+    });
+    const withModel = resolved.model ? [...baseArgs, '--model', resolved.model] : baseArgs;
+    return {
+      command,
+      args: [...withModel, ...buildEffortArgs(resolved.effort, resolved.provider, withModel, resolved.base)],
+    };
+  }
+
   const effectiveModel = resolveCliModel(model);
   const shouldInject = !!effectiveModel && !hasModelFlag(baseArgs);
   // OpenCode TUI: namespace the bare Ollama id (`opencode --model ollama/<id>`).
-  // Antigravity takes the id verbatim — its `claude-*` ids are served by Google's
-  // own gateway, so a Bedrock rewrite would produce an id agy can't resolve.
   // Otherwise map a bare Claude id to its Bedrock form when the box is in Bedrock
   // mode (no-op otherwise / for non-Claude ids) — mirrors buildCliArgs for the
   // claude-code-tui runner.
@@ -971,14 +992,15 @@ export function buildTuiInvocation(provider, model) {
     ? effectiveModel
     : isOpencodeCommand(command)
       ? prefixOpencodeModel(provider, effectiveModel)
-      : isAntigravityCommand(command)
-        ? effectiveModel
-        : resolveBedrockCliModel(effectiveModel, {
-          env: { ...process.env, ...provider?.envVars },
-          providerId: provider?.id,
-        });
-  const args = shouldInject ? [...baseArgs, '--model', injectedModel] : baseArgs;
-  return { command, args };
+      : resolveBedrockCliModel(effectiveModel, {
+        env: { ...process.env, ...provider?.envVars },
+        providerId: provider?.id,
+      });
+  const withModel = shouldInject ? [...baseArgs, '--model', injectedModel] : baseArgs;
+  return {
+    command,
+    args: [...withModel, ...buildEffortArgs(effort, { id: provider?.id, command }, withModel)],
+  };
 }
 
 /**

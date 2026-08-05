@@ -46,12 +46,19 @@ import {
   enabledApiProviderFilter,
   providerTypeClass,
   getProviderTimeout,
+  splitAntigravityModel,
+  antigravityBaseModels,
+  antigravityModelEffortLevels,
+  selectableModelsForProvider,
 } from './providers.js';
 import { PROVIDER_TYPES as SERVER_PROVIDER_TYPES } from '../../../server/lib/aiToolkit/constants.js';
 import {
   effortLevelsForProvider as serverEffortLevelsForProvider,
   isAntigravityProvider as serverIsAntigravityProvider,
   resolveCliEffort as serverResolveCliEffort,
+  splitAntigravityModel as serverSplitAntigravityModel,
+  antigravityBaseModels as serverAntigravityBaseModels,
+  antigravityModelEffortLevels as serverAntigravityModelEffortLevels,
 } from '../../../server/lib/providerModels.js';
 
 // The client copy drives what EffortSelect DISPLAYS; the server copy decides
@@ -99,6 +106,73 @@ describe('effortLevelsForProvider (server mirror)', () => {
   it.each(CASES)('%s', (_label, provider, expected) => {
     expect(effortLevelsForProvider(provider)).toEqual(expected);
     expect(serverEffortLevelsForProvider(provider)).toEqual(expected);
+  });
+});
+
+// Antigravity lists one model id per effort tier (`gemini-3.6-flash-high`), but
+// agy also takes the BASE id with a separate `--effort` flag — so the pickers
+// show base models and carry effort as its own control. Both sides must agree on
+// the split, or a client-side base id won't match what the server rebuilds.
+describe('Antigravity base-model split (server mirror)', () => {
+  // The catalog `agy models` prints — the shipped provider list mirrors it.
+  const CATALOG = [
+    ANTIGRAVITY_CONFIGURED_DEFAULT,
+    'gemini-3.6-flash-high', 'gemini-3.6-flash-medium', 'gemini-3.6-flash-low',
+    'gemini-3.1-pro-high', 'gemini-3.1-pro-low',
+    'claude-sonnet-4-6', 'claude-opus-4-6-thinking', 'gpt-oss-120b-medium',
+  ];
+  const BASES = [
+    ANTIGRAVITY_CONFIGURED_DEFAULT,
+    'gemini-3.6-flash', 'gemini-3.1-pro',
+    'claude-sonnet-4-6', 'claude-opus-4-6-thinking', 'gpt-oss-120b',
+  ];
+
+  it.each([
+    ['gemini-3.6-flash-high', { base: 'gemini-3.6-flash', effort: 'high' }],
+    ['gpt-oss-120b-medium', { base: 'gpt-oss-120b', effort: 'medium' }],
+    ['claude-opus-4-6-thinking', { base: 'claude-opus-4-6-thinking', effort: null }],
+    [ANTIGRAVITY_CONFIGURED_DEFAULT, { base: ANTIGRAVITY_CONFIGURED_DEFAULT, effort: null }],
+    ['', { base: '', effort: null }],
+  ])('splitAntigravityModel(%s)', (id, expected) => {
+    expect(splitAntigravityModel(id)).toEqual(expected);
+    expect(serverSplitAntigravityModel(id)).toEqual(expected);
+  });
+
+  it('strips + dedupes the catalog into base models on both sides', () => {
+    expect(antigravityBaseModels(CATALOG)).toEqual(BASES);
+    expect(serverAntigravityBaseModels(CATALOG)).toEqual(BASES);
+  });
+
+  it.each([
+    ['gemini-3.6-flash', ['low', 'medium', 'high']],
+    // agy: `gemini-3.1-pro has no "medium" effort (available: low, high)`.
+    ['gemini-3.1-pro', ['low', 'high']],
+    ['gpt-oss-120b', ['medium']],
+    ['claude-sonnet-4-6', []],
+  ])('antigravityModelEffortLevels(%s)', (model, expected) => {
+    expect(antigravityModelEffortLevels(model, CATALOG)).toEqual(expected);
+    expect(serverAntigravityModelEffortLevels(model, CATALOG)).toEqual(expected);
+  });
+
+  it('narrows the picker ladder per selected model, and hides it for a tier-less model', () => {
+    const agy = { id: 'antigravity-cli', command: 'agy', models: CATALOG };
+    for (const [model, expected] of [
+      ['gemini-3.6-flash', ['low', 'medium', 'high']],
+      ['gemini-3.1-pro', ['low', 'high']],
+      ['claude-sonnet-4-6', null],
+    ]) {
+      expect(effortLevelsForProvider(agy, model)).toEqual(expected);
+      expect(serverEffortLevelsForProvider(agy, model)).toEqual(expected);
+    }
+    // Clamping follows the narrowed ladder, so agy never sees an invalid pair.
+    expect(resolveCliEffort('medium', agy, 'gemini-3.1-pro')).toBe('low');
+    expect(serverResolveCliEffort('medium', agy, 'gemini-3.1-pro')).toBe('low');
+  });
+
+  it('rewrites only Antigravity model lists', () => {
+    expect(selectableModelsForProvider({ id: 'antigravity-cli', command: 'agy' }, CATALOG)).toEqual(BASES);
+    expect(selectableModelsForProvider({ id: 'codex', command: 'codex' }, CATALOG)).toEqual(CATALOG);
+    expect(selectableModelsForProvider(null, CATALOG)).toEqual(CATALOG);
   });
 });
 

@@ -194,4 +194,68 @@ describe('ProviderModelSelector', () => {
       expect(screen.queryByText(/recognized tool-calling model/i)).not.toBeInTheDocument();
     });
   });
+
+  describe('effort select', () => {
+    const AGY = [{
+      id: 'antigravity-cli',
+      name: 'Antigravity',
+      command: 'agy',
+      models: ['gemini-3.6-flash-high', 'gemini-3.6-flash-medium', 'gemini-3.6-flash-low', 'gemini-3.1-pro-high', 'gemini-3.1-pro-low', 'claude-sonnet-4-6'],
+    }];
+
+    const renderEffort = (props = {}) => renderSelector({
+      providers: AGY,
+      selectedProviderId: 'antigravity-cli',
+      selectedModel: 'gemini-3.6-flash',
+      availableModels: ['gemini-3.6-flash', 'gemini-3.1-pro', 'claude-sonnet-4-6'],
+      effort: '',
+      onEffortChange: () => {},
+      ...props,
+    });
+
+    it('is absent unless onEffortChange is supplied', () => {
+      renderEffort({ effort: undefined, onEffortChange: undefined });
+      expect(screen.getAllByRole('combobox')).toHaveLength(2);
+      expect(screen.queryByLabelText('Thinking effort')).not.toBeInTheDocument();
+    });
+
+    it('renders a labeled effort select for an effort-capable provider', () => {
+      renderEffort();
+      const effortSelect = screen.getByLabelText('Thinking effort');
+      const options = [...effortSelect.querySelectorAll('option')].map((o) => o.value);
+      expect(options).toEqual(['', 'low', 'medium', 'high']);
+    });
+
+    it('narrows the options to the tiers the selected Antigravity model offers', () => {
+      // agy rejects `--model gemini-3.1-pro --effort medium`.
+      renderEffort({ selectedModel: 'gemini-3.1-pro' });
+      const options = [...screen.getByLabelText('Thinking effort').querySelectorAll('option')].map((o) => o.value);
+      expect(options).toEqual(['', 'low', 'high']);
+    });
+
+    it('hides itself (label and all) for an Antigravity model with no tiers', () => {
+      renderEffort({ selectedModel: 'claude-sonnet-4-6' });
+      expect(screen.queryByLabelText('Thinking effort')).not.toBeInTheDocument();
+      expect(screen.queryByText('Thinking effort')).not.toBeInTheDocument();
+    });
+
+    it('hides itself for a provider with no effort control', () => {
+      renderSelector({
+        providers: [{ id: 'ollama', name: 'Ollama', endpoint: 'http://localhost:11434' }],
+        selectedProviderId: 'ollama',
+        selectedModel: 'qwen3',
+        availableModels: ['qwen3'],
+        effort: '',
+        onEffortChange: () => {},
+      });
+      expect(screen.queryByLabelText('Thinking effort')).not.toBeInTheDocument();
+    });
+
+    it('reports the picked level to onEffortChange', () => {
+      const onEffortChange = vi.fn();
+      renderEffort({ onEffortChange });
+      fireEvent.change(screen.getByLabelText('Thinking effort'), { target: { value: 'high' } });
+      expect(onEffortChange).toHaveBeenCalledWith('high');
+    });
+  });
 });
