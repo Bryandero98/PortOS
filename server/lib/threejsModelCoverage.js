@@ -60,9 +60,16 @@ export function evaluateThreejsPartCoverage(spec) {
   const findings = [];
 
   // 1. Fusion — details whose ONLY implementing part is the same single part.
+  // `detailSchema` does not constrain `implementationPartIds` to be unique, so
+  // `['hull','hull']` validates; without the dedupe the arity test below reads
+  // it as a two-part detail and the fusion gate silently stops looking at the
+  // most fused spec there is. Deliberate scope limit: a group of details that
+  // all name the SAME multi-part set is not reported — the issue defines fusion
+  // as collapsing onto one part, and two parts is already an assembly.
+  const partIdsOf = (detail) => [...new Set(detail.implementationPartIds || [])];
   const soleImplementers = new Map();
   for (const detail of details) {
-    const ids = detail.implementationPartIds || [];
+    const ids = partIdsOf(detail);
     if (ids.length !== 1) continue;
     const group = soleImplementers.get(ids[0]) || [];
     group.push(detail);
@@ -73,17 +80,30 @@ export function evaluateThreejsPartCoverage(spec) {
   // pass below cannot report the same detail a second time.
   const groupedDetails = new Set();
   for (const [partId, group] of soleImplementers) {
-    if (group.length < 2) continue;
+    const sharedPart = byId.get(partId);
+    // Nothing was built on this part or anywhere beneath it, so the details did
+    // not fuse onto it — they went unbuilt. Leaving the group to the folded and
+    // unbuilt passes below keeps the gate from reporting a fusion that never
+    // happened alongside the "nothing was built" finding that describes the same
+    // details, which would hand the next refinement pass two opposite orders.
+    if (group.length < 2 || !sharedPart?.subtreeHasGeometry) continue;
     for (const detail of group) groupedDetails.add(detail);
     const ranked = group.filter((detail) => RANKED_PRIORITIES.has(detail.priority));
     if (ranked.length >= 2) {
       const features = ranked.map((detail) => detail.feature);
+      // A bare group whose children carry the geometry is an attribution
+      // problem, not a fused mesh — the parts already exist separately, the
+      // inventory just points above them. Telling the provider to "build each
+      // as its own part" there would have it rebuild geometry it got right.
+      const remedy = sharedPart.hasGeometry
+        ? 'Build each as its own part instead of one fused mesh.'
+        : 'Point each detail at the specific child part that implements it.';
       findings.push({
         code: 'fused-parts',
         severity: 'error',
         partIds: [partId],
         features,
-        message: `${features.length} promised features collapsed onto the single part "${label(partId)}" (${listNames(features)}). Build each as its own part instead of one fused mesh.`,
+        message: `${features.length} promised features collapsed onto the single part "${label(partId)}" (${listNames(features)}). ${remedy}`,
       });
       continue;
     }
@@ -124,7 +144,7 @@ export function evaluateThreejsPartCoverage(spec) {
   const foldedDetails = new Set();
   for (const detail of details) {
     if (detail.priority !== 'minor' || groupedDetails.has(detail)) continue;
-    const ids = detail.implementationPartIds || [];
+    const ids = partIdsOf(detail);
     if (ids.length !== 1) continue;
     const part = byId.get(ids[0]);
     const parentId = part?.ancestorIds.findLast((id) => implementedIds.has(id) && byId.get(id)?.hasGeometry);
@@ -144,7 +164,7 @@ export function evaluateThreejsPartCoverage(spec) {
   // nothing was ever built for it.
   for (const detail of details) {
     if (foldedDetails.has(detail)) continue;
-    const resolved = (detail.implementationPartIds || []).map((id) => byId.get(id)).filter(Boolean);
+    const resolved = partIdsOf(detail).map((id) => byId.get(id)).filter(Boolean);
     if (resolved.length === 0 || resolved.some((part) => part.subtreeHasGeometry)) continue;
     findings.push({
       code: 'unbuilt-detail',

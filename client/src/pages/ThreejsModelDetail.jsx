@@ -146,6 +146,13 @@ export default function ThreejsModelDetail() {
   const generating = record.status === 'generating' || starting;
   const latestRun = Array.isArray(record.runs) ? record.runs[record.runs.length - 1] : null;
   const coverageFindings = Array.isArray(record.coverage?.findings) ? record.coverage.findings : null;
+  // Counted from the findings actually rendered rather than read off the stored
+  // tallies, so the header can never disagree with the list below it — or print
+  // "undefined error" for a record whose coverage arrived without its counts.
+  const coverageCounts = (coverageFindings || []).reduce((counts, finding) => {
+    if (counts[finding.severity] !== undefined) counts[finding.severity] += 1;
+    return counts;
+  }, { error: 0, warning: 0, note: 0 });
 
   return (
     <div className="mx-auto max-w-7xl space-y-4">
@@ -293,8 +300,8 @@ export default function ThreejsModelDetail() {
             <h2 className="text-xs font-medium uppercase tracking-wide text-gray-400">Assembly coverage</h2>
             <span className="text-xs text-gray-600">
               {coverageFindings.length === 0
-                ? 'Every promised feature has its own geometry'
-                : `${record.coverage.errorCount} error · ${record.coverage.warningCount} warning · ${record.coverage.noteCount} note`}
+                ? 'Nothing promised was left unbuilt'
+                : `${coverageCounts.error} error · ${coverageCounts.warning} warning · ${coverageCounts.note} note`}
             </span>
           </div>
           {coverageFindings.length > 0 && (
@@ -314,7 +321,7 @@ export default function ThreejsModelDetail() {
             <Info className="mt-0.5 h-3 w-3 shrink-0" />
             <span>
               This check proves the model built what its own spec promised — never that the spec promised enough.
-              {record.coverage.errorCount > 0
+              {coverageCounts.error > 0
                 && ' Refining without your own feedback will target the errors above.'}
             </span>
           </p>

@@ -125,6 +125,86 @@ describe('evaluateThreejsPartCoverage', () => {
     expect(coverage.findings[0].message).toContain('Hull');
   });
 
+  it('sees through a part id repeated inside one detail', () => {
+    // `detailSchema` does not require implementationPartIds to be unique, so a
+    // maximally fused spec can hide from the arity test by naming its one part
+    // twice.
+    const coverage = evaluateThreejsPartCoverage(makeSpec({
+      parts: [{ id: 'hull', name: 'Hull', geometry: box(2), material: 'shell' }],
+      detailInventory: [
+        detail('Boxy hull', ['hull', 'hull'], 'identity'),
+        detail('Recessed lens', ['hull', 'hull'], 'identity'),
+      ],
+    }));
+
+    expect(codes(coverage)).toEqual(['fused-parts']);
+    expect(coverage.errorCount).toBe(1);
+  });
+
+  it('does not report a fusion onto a part nothing was built on', () => {
+    // Two details sharing a locator that carries no geometry anywhere did not
+    // fuse — they went unbuilt. Reporting both would tell the next refinement
+    // pass to split a mesh that does not exist AND to build one that does not.
+    const coverage = evaluateThreejsPartCoverage(makeSpec({
+      parts: [
+        { id: 'hull', name: 'Hull', geometry: box(2), material: 'shell' },
+        { id: 'anchor', name: 'Anchor' },
+      ],
+      detailInventory: [
+        detail('Boxy hull', ['hull'], 'identity'),
+        detail('Recessed lens', ['anchor'], 'identity'),
+        detail('Sensor ring', ['anchor'], 'identity'),
+      ],
+    }));
+
+    expect(codes(coverage)).toEqual(['unbuilt-detail', 'unbuilt-detail']);
+    expect(coverage.errorCount).toBe(2);
+  });
+
+  it('does not call two minor details on a geometry-less locator unbuilt', () => {
+    const coverage = evaluateThreejsPartCoverage(makeSpec({
+      parts: [{
+        id: 'hull',
+        name: 'Hull',
+        geometry: box(2),
+        material: 'shell',
+        children: [{ id: 'anchor', name: 'Anchor' }],
+      }],
+      detailInventory: [
+        detail('Boxy hull', ['hull'], 'identity'),
+        detail('Fine stria', ['anchor'], 'minor'),
+        detail('Faint scuffing', ['anchor'], 'minor'),
+      ],
+    }));
+
+    expect(codes(coverage)).toEqual(['folded-detail', 'folded-detail']);
+    expect(coverage).toMatchObject({ errorCount: 0, warningCount: 0, noteCount: 2 });
+  });
+
+  it('tells a bare group to re-attribute rather than rebuild what its children already are', () => {
+    const coverage = evaluateThreejsPartCoverage(makeSpec({
+      parts: [{
+        id: 'head',
+        name: 'Head',
+        children: [
+          { id: 'skull', name: 'Skull', geometry: box(0.8), material: 'shell' },
+          { id: 'jaw', name: 'Jaw', geometry: box(0.4), material: 'shell' },
+        ],
+      }],
+      detailInventory: [
+        detail('Domed skull', ['head'], 'identity'),
+        detail('Hinged jaw', ['head'], 'identity'),
+      ],
+    }));
+
+    const fused = coverage.findings.find((finding) => finding.code === 'fused-parts');
+    expect(fused.message).toContain('Point each detail at the specific child part');
+    expect(fused.message).not.toContain('one fused mesh');
+    // The children exist as separate meshes — the inventory just points above
+    // them, which the orphan warning says in the other direction.
+    expect(codes(coverage)).toContain('orphan-geometry');
+  });
+
   it('does not also call folded minor relief unbuilt when its locator part carries no geometry', () => {
     // The child part is a pure locator — the relief itself lives in the parent
     // mesh. Reporting "nothing was built for it" alongside "folding it in is
