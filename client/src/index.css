@@ -61,6 +61,16 @@
   --wr-reading-ink: #1a1a1a;
   --port-bg-alpha: 1;
   --port-card-alpha: 1;
+  /* Floor for a CONTENT-CARD fill (see the `bg-port-card/NN` block below).
+     A card written as `bg-port-card/40` used to render at 40% of the card
+     color over the page background — on themes whose card and page colors are
+     close by design (every day theme; Phosphor Paper is 251/246/232 on
+     243/237/220), that dissolved the card into the page and left a border
+     floating around nothing. The floor keeps a card reading as a raised
+     surface; translucent themes set their own lower value so glass stays
+     glass. State variants (hover/active) are deliberately NOT floored — they
+     need the full alpha range to register as feedback. */
+  --port-card-min-alpha: 1;
   --port-border-alpha: 1;
   --port-sidebar-alpha: 1;
   --port-overlay-alpha: 0.72;
@@ -275,22 +285,33 @@ html[data-port-theme] [class~="hover:bg-port-bg/80"]:hover { background-color: r
 html[data-port-theme] [class~="bg-port-bg/90"],
 html[data-port-theme] [class~="hover:bg-port-bg/90"]:hover { background-color: rgb(var(--port-bg) / calc(var(--port-bg-alpha) * 0.9)) !important; }
 
-html[data-port-theme] [class~="bg-port-card/30"],
+/*
+ * Card fills carry a per-theme floor (`--port-card-min-alpha`), so a card
+ * written at any opacity still reads as a surface raised off the page instead
+ * of dissolving into it. `max()` means a theme that WANTS translucency (Lumen
+ * Glass) simply sets a lower floor — the modifier's intent is preserved, its
+ * ability to vanish is not.
+ *
+ * State variants are split into their own rules and left unfloored: a hover
+ * that lands on the same color as the resting fill is not feedback.
+ */
+html[data-port-theme] [class~="bg-port-card/30"] { background-color: rgb(var(--port-card) / max(var(--port-card-min-alpha), calc(var(--port-card-alpha) * 0.3))) !important; }
+html[data-port-theme] [class~="bg-port-card/40"] { background-color: rgb(var(--port-card) / max(var(--port-card-min-alpha), calc(var(--port-card-alpha) * 0.4))) !important; }
+html[data-port-theme] [class~="bg-port-card/50"] { background-color: rgb(var(--port-card) / max(var(--port-card-min-alpha), calc(var(--port-card-alpha) * 0.5))) !important; }
+html[data-port-theme] [class~="bg-port-card/60"] { background-color: rgb(var(--port-card) / max(var(--port-card-min-alpha), calc(var(--port-card-alpha) * 0.6))) !important; }
+html[data-port-theme] [class~="bg-port-card/70"] { background-color: rgb(var(--port-card) / max(var(--port-card-min-alpha), calc(var(--port-card-alpha) * 0.7))) !important; }
+html[data-port-theme] [class~="bg-port-card/80"] { background-color: rgb(var(--port-card) / max(var(--port-card-min-alpha), calc(var(--port-card-alpha) * 0.8))) !important; }
+html[data-port-theme] [class~="bg-port-card/90"] { background-color: rgb(var(--port-card) / max(var(--port-card-min-alpha), calc(var(--port-card-alpha) * 0.9))) !important; }
+html[data-port-theme] [class~="bg-port-card/95"] { background-color: rgb(var(--port-card) / max(var(--port-card-min-alpha), calc(var(--port-card-alpha) * 0.95))) !important; }
+
 html[data-port-theme] [class~="hover:bg-port-card/30"]:hover { background-color: rgb(var(--port-card) / calc(var(--port-card-alpha) * 0.3)) !important; }
-html[data-port-theme] [class~="bg-port-card/40"],
 html[data-port-theme] [class~="hover:bg-port-card/40"]:hover { background-color: rgb(var(--port-card) / calc(var(--port-card-alpha) * 0.4)) !important; }
-html[data-port-theme] [class~="bg-port-card/50"],
 html[data-port-theme] [class~="hover:bg-port-card/50"]:hover,
 html[data-port-theme] [class~="active:bg-port-card/50"]:active { background-color: rgb(var(--port-card) / calc(var(--port-card-alpha) * 0.5)) !important; }
-html[data-port-theme] [class~="bg-port-card/60"],
 html[data-port-theme] [class~="hover:bg-port-card/60"]:hover { background-color: rgb(var(--port-card) / calc(var(--port-card-alpha) * 0.6)) !important; }
-html[data-port-theme] [class~="bg-port-card/70"],
 html[data-port-theme] [class~="hover:bg-port-card/70"]:hover { background-color: rgb(var(--port-card) / calc(var(--port-card-alpha) * 0.7)) !important; }
-html[data-port-theme] [class~="bg-port-card/80"],
 html[data-port-theme] [class~="hover:bg-port-card/80"]:hover { background-color: rgb(var(--port-card) / calc(var(--port-card-alpha) * 0.8)) !important; }
-html[data-port-theme] [class~="bg-port-card/90"],
 html[data-port-theme] [class~="hover:bg-port-card/90"]:hover { background-color: rgb(var(--port-card) / calc(var(--port-card-alpha) * 0.9)) !important; }
-html[data-port-theme] [class~="bg-port-card/95"],
 html[data-port-theme] [class~="hover:bg-port-card/95"]:hover { background-color: rgb(var(--port-card) / calc(var(--port-card-alpha) * 0.95)) !important; }
 
 html[data-port-theme] .border-port-border,
@@ -348,7 +369,22 @@ html[data-port-theme] [role="button"] {
     opacity var(--port-motion-fast) ease;
 }
 
-html[data-port-theme] :is(.bg-port-card, [class~="bg-port-card/50"]):is(.border, .rounded, .rounded-lg, .rounded-xl, .rounded-2xl) {
+/* Every rounded/bordered CONTENT CARD gets the theme's card elevation, at any
+   fill opacity. Listing only `/50` meant a card written `bg-port-card/40` — the
+   other common spelling — silently lost both its shadow and its glass blur, so
+   two adjacent cards on one page could sit at different elevations for no
+   reason a reader could see. */
+html[data-port-theme] :is(
+  .bg-port-card,
+  [class~="bg-port-card/30"],
+  [class~="bg-port-card/40"],
+  [class~="bg-port-card/50"],
+  [class~="bg-port-card/60"],
+  [class~="bg-port-card/70"],
+  [class~="bg-port-card/80"],
+  [class~="bg-port-card/90"],
+  [class~="bg-port-card/95"]
+):is(.border, .rounded, .rounded-lg, .rounded-xl, .rounded-2xl) {
   backdrop-filter: var(--port-backdrop-filter);
   box-shadow: var(--port-shadow-card);
 }
@@ -889,7 +925,19 @@ html[data-port-theme] .cybercity-themed [class~="hover:bg-cyan-500/10"]:hover { 
 html[data-port-theme] .cybercity-themed [class~="hover:bg-cyan-500/5"]:hover { background-color: rgb(var(--port-accent) / 0.08) !important; }
 
 /* === Lumen Glass Day === */
-html[data-port-theme="lumen-glass-day"] :is(.bg-port-card, [class~="bg-port-card/50"]):is(.border, .rounded, .rounded-lg, .rounded-xl, .rounded-2xl) {
+/* Same card set as the base elevation rule above — every fill opacity, not just
+   `/50` — so this theme's softened border lands on all of its cards. */
+html[data-port-theme="lumen-glass-day"] :is(
+  .bg-port-card,
+  [class~="bg-port-card/30"],
+  [class~="bg-port-card/40"],
+  [class~="bg-port-card/50"],
+  [class~="bg-port-card/60"],
+  [class~="bg-port-card/70"],
+  [class~="bg-port-card/80"],
+  [class~="bg-port-card/90"],
+  [class~="bg-port-card/95"]
+):is(.border, .rounded, .rounded-lg, .rounded-xl, .rounded-2xl) {
   border-color: rgb(var(--port-border) / 0.22) !important;
   box-shadow: var(--port-shadow-card);
 }

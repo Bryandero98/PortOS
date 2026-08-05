@@ -59,7 +59,11 @@ export default function JobRow({
   })[descriptor.kind];
 
   return (
-    <div className="rounded border border-port-border/70 bg-port-bg/40 p-3 space-y-3">
+    // `bg-port-bg`, not `bg-port-bg/40`: a step sits INSIDE the family card, so
+    // it reads as a sunken well only if it carries the page color at full
+    // strength. At 40% it composited most of the way back to the card fill and
+    // eight steps ran together as one undifferentiated block.
+    <div className="rounded border border-port-border/70 bg-port-bg p-3 space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <input
           id={`${idPrefix}-enabled`}
