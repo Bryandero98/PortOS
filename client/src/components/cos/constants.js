@@ -252,9 +252,12 @@ export const PR_AUTHOR_FILTER_OPTIONS = [
 // claim-issue author gate (taskMetadata.issueAuthorFilter). Mirrors
 // ISSUE_AUTHOR_FILTERS in server/lib/validation.js. 'self' = only claim issues
 // YOU filed (the slashdo /do:next --self security boundary; the default);
-// 'owner' = only claim issues the repo owner filed; 'any' = claim any open issue.
+// 'collaborators' = you plus everyone with repo/project access; 'owner' = only
+// claim issues the repo owner filed; 'any' = claim any open issue. Listed
+// narrowest-first so the dropdown reads as a widening scale.
 export const ISSUE_AUTHOR_FILTER_OPTIONS = [
   { value: 'self', label: 'Filed by me only', description: 'Only claim open issues you filed (the /do:next --self security boundary — avoids acting on work embedded in a third party\'s issue)' },
+  { value: 'collaborators', label: 'Me + collaborators', description: 'Claim open issues filed by you or by any account with access to the repo (GitHub collaborators / GitLab project members, including group-inherited access)' },
   { value: 'owner', label: 'Owner-filed only', description: 'Only claim open issues filed by the repository owner/creator' },
   { value: 'any', label: 'Any author', description: 'Claim the next eligible open issue regardless of who filed it' }
 ];

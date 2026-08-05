@@ -327,8 +327,10 @@ export const DEFAULT_TASK_INTERVALS = {
   // and trigger cleanupAgentWorktree's auto-merge into the source repo's HEAD).
   // `issueAuthorFilter` gates which issues are claimable: 'self' (default, the
   // slashdo `/do:next --self` security boundary) only claims issues YOU filed
-  // (`@me`); 'owner' only claims issues the repo owner filed; 'any' claims any
-  // open issue. Per-app override supported via taskTypeOverrides.
+  // (`@me`); 'collaborators' widens that to you plus every account with repo
+  // access (GitHub collaborators / GitLab project members); 'owner' only claims
+  // issues the repo owner filed; 'any' claims any open issue. Per-app override
+  // supported via taskTypeOverrides.
   'claim-issue':         { type: INTERVAL_TYPES.DAILY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: false, openPR: false, simplify: true, issueAuthorFilter: 'self' } },
   // claim-work is the SINGLE-SOURCE router: one toggle per app that ships the
   // next work item from whatever tracker the app is configured for

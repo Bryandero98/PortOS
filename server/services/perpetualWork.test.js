@@ -388,6 +388,81 @@ describe('perpetualWork', () => {
       const listCall = spawn.mock.calls.find(([cmd, args]) => cmd === 'gh' && args[0] === 'issue');
       expect(listCall[1]).toContain('@me');
     });
+
+    // `gh issue list --author` takes exactly ONE account, so the collaborators
+    // gate can't be a query — it's a client-side filter over the unfiltered list,
+    // which is what these cover.
+    describe('collaborators filter', () => {
+      // gh api probes: `.login` (self) then the paginated collaborator logins.
+      const routeCollaborators = ({ me = 'alice', collaborators = 'bob\ncarol\n', collabCode = 0, issues = [] } = {}) => {
+        spawn.mockImplementation((cmd, args = []) => {
+          if (cmd === 'gh' && args[0] === 'api' && args.includes('user')) return fakeChild(`${me}\n`);
+          if (cmd === 'gh' && args[0] === 'api') return fakeChild(collabCode === 0 ? collaborators : '', collabCode);
+          if (cmd === 'gh' && args[0] === 'issue') return fakeChild(JSON.stringify(issues));
+          if (cmd === 'git' && args[0] === 'branch') return fakeChild('main\n');
+          return fakeChild('');
+        });
+      };
+
+      it('keeps issues filed by you or a collaborator and drops everyone else', async () => {
+        routeCollaborators({ issues: [
+          { number: 1, title: 'mine', assignees: [], labels: [], author: { login: 'alice' } },
+          { number: 2, title: 'a teammate\'s', assignees: [], labels: [], author: { login: 'Bob' } },
+          { number: 3, title: 'a stranger\'s', assignees: [], labels: [], author: { login: 'mallory' } }
+        ] });
+        const out = await detectGithubIssues(app, { issueAuthorFilter: 'collaborators' });
+        expect(out.actionable).toBe(true);
+        // #2's login differs in case from the collaborator listing — the gate is
+        // case-insensitive, so a teammate isn't silently dropped.
+        expect(out.sample).toEqual([1, 2]);
+        expect(out.total).toBe(2);
+        // The listing itself is unfiltered: the trusted SET can't be a --author arg.
+        const listCall = spawn.mock.calls.find(([cmd, a]) => cmd === 'gh' && a[0] === 'issue');
+        expect(listCall[1]).not.toContain('--author');
+        expect(listCall[1].join(' ')).toContain('author'); // …but the payload carries it
+      });
+
+      it('drops an issue whose author is unresolvable (unknown ⇒ untrusted)', async () => {
+        routeCollaborators({ issues: [
+          { number: 1, title: 'mine', assignees: [], labels: [], author: { login: 'alice' } },
+          { number: 2, title: 'no author field', assignees: [], labels: [] }
+        ] });
+        const out = await detectGithubIssues(app, { issueAuthorFilter: 'collaborators' });
+        expect(out.sample).toEqual([1]);
+      });
+
+      it('reports no-authored-issues with the real open count, reusing the list it already fetched', async () => {
+        routeCollaborators({ issues: [
+          { number: 1, title: 'x', assignees: [], labels: [], author: { login: 'mallory' } },
+          { number: 2, title: 'y', assignees: [], labels: [], author: { login: 'eve' } }
+        ] });
+        const out = await detectGithubIssues(app, { issueAuthorFilter: 'collaborators' });
+        expect(out).toMatchObject({ actionable: false, count: 0, total: 2, reason: 'no-authored-issues' });
+        // The gate ran client-side over an UNfiltered query, so the open-issue
+        // denominator was already in hand — no duplicate list call.
+        expect(spawn.mock.calls.filter(([cmd, a]) => cmd === 'gh' && a[0] === 'issue')).toHaveLength(1);
+      });
+
+      it('goes transient with a remedy (never silently narrows to self) when the collaborators probe fails', async () => {
+        // A token without push access gets 403 here. Falling back to just `alice`
+        // would hide a teammate's claimable issue with no explanation — and since
+        // it fails identically forever, the result must name the way out rather
+        // than leaving the caller to say "try again shortly".
+        routeCollaborators({ collabCode: 1, issues: [
+          { number: 1, title: 'mine', assignees: [], labels: [], author: { login: 'alice' } }
+        ] });
+        const out = await detectGithubIssues(app, { issueAuthorFilter: 'collaborators' });
+        expect(out).toMatchObject({ actionable: false, reason: 'gh-collaborators-failed', transient: true, cli: 'gh' });
+        expect(out.remedy).toMatch(/push access/);
+        expect(spawn.mock.calls.some(([cmd, a]) => cmd === 'gh' && a[0] === 'issue')).toBe(false);
+      });
+
+      it('goes transient when the authenticated login can\'t be resolved', async () => {
+        routeCollaborators({ me: '', issues: [] });
+        const out = await detectGithubIssues(app, { issueAuthorFilter: 'collaborators' });
+        expect(out).toMatchObject({ reason: 'gh-unavailable', transient: true });
+      });
+    });
   });
 
   describe('detectGitlabIssues (spawn-mocked)', () => {
@@ -523,6 +598,42 @@ describe('perpetualWork', () => {
       expect(out).toMatchObject({ reason: 'owner-is-group', total: 1 });
       const probeCall = spawn.mock.calls.find(([cmd, a]) => cmd === 'glab' && a[0] === 'api' && String(a[1]).startsWith('groups/'));
       expect(probeCall[1][1]).toBe('groups/group');
+    });
+
+    it('collaborators filter keeps you + project members (via members/all) and drops outsiders', async () => {
+      // `members/all` (not `members`) so GROUP-inherited access counts — that's how
+      // most GitLab teams are granted, and `members` alone would drop them.
+      spawn.mockImplementation((cmd, args = []) => {
+        if (cmd === 'glab' && args[0] === 'api' && args.includes('user')) return fakeChild('octo\n');
+        if (cmd === 'glab' && args[0] === 'api') return fakeChild('teammate\n');
+        if (cmd === 'glab' && args[0] === 'issue') {
+          return fakeChild(JSON.stringify([
+            { iid: 10, title: 'mine', assignees: [], labels: [], author: { username: 'octo' } },
+            { iid: 11, title: 'a member\'s', assignees: [], labels: [], author: { username: 'teammate' } },
+            { iid: 12, title: 'a stranger\'s', assignees: [], labels: [], author: { username: 'drive-by' } }
+          ]));
+        }
+        if (cmd === 'git' && args[0] === 'branch') return fakeChild('main\n');
+        if (cmd === 'glab' && args[0] === 'mr') return fakeChild('[]');
+        return fakeChild('');
+      });
+      const out = await detectGitlabIssues(app, { issueAuthorFilter: 'collaborators' });
+      expect(out.sample).toEqual([10, 11]);
+      const membersCall = spawn.mock.calls.find(([cmd, a]) => cmd === 'glab' && a[0] === 'api' && String(a[2] || '').includes('members'));
+      expect(membersCall[1]).toContain('projects/:id/members/all');
+      const listCall = spawn.mock.calls.find(([cmd, a]) => cmd === 'glab' && a[0] === 'issue');
+      expect(listCall[1]).not.toContain('--author');
+    });
+
+    it('collaborators filter goes transient when the members probe fails', async () => {
+      spawn.mockImplementation((cmd, args = []) => {
+        if (cmd === 'glab' && args[0] === 'api' && args.includes('user')) return fakeChild('octo\n');
+        if (cmd === 'glab' && args[0] === 'api') return fakeChild('', 1);
+        return fakeChild('');
+      });
+      const out = await detectGitlabIssues(app, { issueAuthorFilter: 'collaborators' });
+      expect(out).toMatchObject({ reason: 'glab-members-failed', transient: true, cli: 'glab' });
+      expect(out.remedy).toMatch(/member list/);
     });
 
     it('owner filter on a USER-owned project passes --author <namespace> (groups probe 404)', async () => {

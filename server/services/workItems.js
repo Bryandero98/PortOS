@@ -56,7 +56,7 @@ async function listJiraTickets(app) {
  * author filter the claim flow uses on forge trackers.
  *
  * @param {object} app - managed app record (needs `id`, `repoPath`, `jira`)
- * @param {{ issueAuthorFilter?: 'self'|'owner'|'any' }} [opts]
+ * @param {{ issueAuthorFilter?: 'self'|'collaborators'|'owner'|'any' }} [opts]
  * @returns {Promise<{tracker, source, promptTaskType, items, count, reason, transient}>}
  */
 export async function listWorkItems(app, { issueAuthorFilter } = {}) {
@@ -73,6 +73,10 @@ export async function listWorkItems(app, { issueAuthorFilter } = {}) {
     items: Array.isArray(result.items) ? result.items : [],
     count: Number.isFinite(result.count) ? result.count : 0,
     reason: result.reason || null,
-    transient: result.transient === true
+    transient: result.transient === true,
+    // Present only when the detector named a fault that won't self-clear (a
+    // permission the token lacks), so the picker can print the way out instead of
+    // the generic "retry" copy every other transient gets.
+    remedy: result.remedy || null
   };
 }
