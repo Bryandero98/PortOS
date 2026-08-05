@@ -7,11 +7,12 @@
  * runner evaluates, so the card can't disagree with what actually happens.
  */
 
-import { ChevronDown, ChevronRight, Flame, Plus } from 'lucide-react';
+import { Ban, ChevronDown, ChevronRight, Flame, Plus } from 'lucide-react';
 import BrailleSpinner from '../BrailleSpinner';
 import JobRow from './JobRow';
 import PresetPicker from './PresetPicker';
 import { jobFromPreset } from '../../lib/quotaBurnPatch';
+import { formatDateTime } from '../../utils/formatters';
 import { NumberField, TextField } from './fields';
 
 export default function FamilyCard({
@@ -92,12 +93,27 @@ export default function FamilyCard({
             <BrailleSpinner /> reading quota…
           </span>
         ) : status?.willBurn ? (
+          /* The window is NAMED, not just measured: a family publishes a short
+             rolling window and a weekly one, and "62% left · resets in 30h" is
+             unreadable without knowing which allowance it describes. */
           <span className="inline-flex items-center gap-1 text-xs text-emerald-400">
             <Flame size={13} />
-            {status.percentRemaining}% left · resets in {status.hoursUntilReset}h · {status.dispatchesUsed}/{config.maxDispatchesPerWindow} used
+            {status.windowLabel ? `${status.windowLabel}: ` : ''}{status.percentRemaining}% left · resets in {status.hoursUntilReset}h · {status.dispatchesUsed}/{config.maxDispatchesPerWindow} used
           </span>
         ) : (
           <span className="text-xs text-gray-500">{status?.skipReason || 'not evaluated yet'}</span>
+        )}
+
+        {/* An observed refusal, shown even when some other gate is the one
+            reported — "the provider said no" is the actionable fact, and it
+            explains a family that looks healthy on paper but never burns. The
+            server's skip reason deliberately omits the instant so this badge
+            owns it, in the app's shared timestamp format. */}
+        {status?.blockedUntil && (
+          <span className="inline-flex items-center gap-1 text-xs text-amber-400" title={status.blockedReason || 'The provider refused the last burn.'}>
+            <Ban size={13} />
+            provider refused — retrying after {formatDateTime(status.blockedUntil)}
+          </span>
         )}
 
         {/* A collapsed card otherwise says nothing about whether this family has
@@ -133,7 +149,7 @@ export default function FamilyCard({
       {expanded && (
         <div className="border-t border-port-border/60 p-3 space-y-4">
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <NumberField id={`burn-${familyId}-window`} label="Burn within (hours of reset)" value={config.resetWithinHours} onChange={(v) => onPatch({ resetWithinHours: v })} min={0} max={168} hint="Only spend as the window is about to expire." />
+            <NumberField id={`burn-${familyId}-window`} label="Burn within (hours of reset)" value={config.resetWithinHours} onChange={(v) => onPatch({ resetWithinHours: v })} min={0} max={168} hint="Measured against the broadest window (the weekly one) — the allowance that expires unused." />
             <NumberField id={`burn-${familyId}-reserve`} label="Reserve (%)" value={config.reservePercent} onChange={(v) => onPatch({ reservePercent: v })} min={0} max={100} hint="Never spend below this much headroom." />
             <NumberField id={`burn-${familyId}-cap`} label="Dispatch cap per window" value={config.maxDispatchesPerWindow} onChange={(v) => onPatch({ maxDispatchesPerWindow: v })} min={1} max={50} hint="Max automatic burns per reset window." />
             <NumberField id={`burn-${familyId}-priority`} label="Priority" value={config.priority} onChange={(v) => onPatch({ priority: v })} min={0} max={100} hint="Lower wins when two windows reset together." />
@@ -141,7 +157,7 @@ export default function FamilyCard({
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <TextField id={`burn-${familyId}-provider`} label="Provider ID (optional)" value={config.providerId} onChange={(v) => onPatch({ providerId: v })} placeholder="auto-match by family" />
-            <TextField id={`burn-${familyId}-scope`} label="Window scope (optional)" value={config.scope} onChange={(v) => onPatch({ scope: v })} placeholder="e.g. week — blank watches every window" />
+            <TextField id={`burn-${familyId}-scope`} label="Window scope (optional)" value={config.scope} onChange={(v) => onPatch({ scope: v })} placeholder="e.g. week — blank targets the broadest window" />
           </div>
 
           <div className="space-y-3">

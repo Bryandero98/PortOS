@@ -116,6 +116,7 @@ export * from './quotaBurnConfig.js';
 export * from './quotaBurnPresets.js';
 export * from './quotaBurnValidation.js';
 export * from './quotaReset.js';
+export * from './quotaWindows.js';
 export * from './opencodeConfig.js';
 // `runners.js` re-defines `isFlux2`/`isZImage`/`isErnie` that also live in
 // mediaModels.js — namespace it so the barrel surface is unambiguous.

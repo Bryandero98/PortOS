@@ -435,6 +435,13 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     // `isCooldownExemptTask` (cosTaskGenerator.js, which owns the why) and by
     // quotaBurnRunner's completion continuation.
     if (taskData.quotaBurnFamily) metadata.quotaBurnFamily = taskData.quotaBurnFamily;
+    // The reset of the SHORT rolling window that will refuse first, so a run the
+    // provider refuses can block that family until the window rolls rather than
+    // letting the continuation re-dispatch into the same wall (the weekly card
+    // it gates on still reads healthy). See quotaBurnDenials.js.
+    if (Number.isFinite(taskData.quotaBurnLimitingResetAt)) {
+      metadata.quotaBurnLimitingResetAt = taskData.quotaBurnLimitingResetAt;
+    }
     // Content-edit timestamp for cross-peer newest-edit-wins LWW (#1714). Stamped
     // at creation so a freshly-added task always carries a stamp; the merge treats
     // an absent stamp as oldest, so this also keeps a stamped task from losing a

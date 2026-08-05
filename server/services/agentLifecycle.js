@@ -471,6 +471,12 @@ async function runAgentSpawn(task) {
       // so it must be able to tell a burn run from any other agent from the
       // agent record alone.
       taskQuotaBurnFamily: task.metadata?.quotaBurnFamily || null,
+      // The reset of the short rolling window that refuses first, carried for the
+      // same reason: when this run is REFUSED, the continuation blocks the family
+      // until that window rolls instead of re-dispatching into the same wall
+      // (see quotaBurnDenials.js). A COS-TASKS.md round-trip can hand it back as
+      // a string, so coerce rather than projecting whatever arrived.
+      taskQuotaBurnLimitingResetAt: Number(task.metadata?.quotaBurnLimitingResetAt) || null,
       // Same reason as taskLiProposal — a hand-picked projection, so this must be
       // listed explicitly. `declaresNoCommitCriterion` (taskTypeHooks.js) reads it
       // to decide whether a run declared a `[task-<id>]` commit criterion at all,

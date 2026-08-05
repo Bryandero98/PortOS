@@ -30,7 +30,7 @@ const config = {
 const status = {
   enabled: false, checkIntervalMinutes: 30, running: false, lastRunAt: null,
   families: [
-    { id: 'grok', label: 'Grok', willBurn: true, percentRemaining: 62, hoursUntilReset: 2.4, dispatchesUsed: 1, skipReason: null, jobs: [{ id: 'j1', pending: { count: 4, detail: '4 bible entries have no image' } }] },
+    { id: 'grok', label: 'Grok', willBurn: true, percentRemaining: 62, hoursUntilReset: 2.4, windowLabel: 'Weekly', dispatchesUsed: 1, skipReason: null, blockedUntil: null, blockedReason: null, jobs: [{ id: 'j1', pending: { count: 4, detail: '4 bible entries have no image' } }] },
     { id: 'codex', label: 'Codex', willBurn: false, skipReason: 'disabled', jobs: [] },
   ],
   runs: [{ at: new Date().toISOString(), trigger: 'scheduled', dispatched: false, reason: 'no burnable window' }],
@@ -111,6 +111,29 @@ describe('QuotaBurn page', () => {
     // The poll (default mock: no longer pending) replaces it with the reading.
     expect(await screen.findByText(/62% left/, undefined, { timeout: 8000 })).toBeInTheDocument();
     expect(screen.queryByText(/reading quota…/)).not.toBeInTheDocument();
+  });
+
+  it('names WHICH window the reading describes', async () => {
+    // A family publishes a short rolling window and a weekly one. "62% left ·
+    // resets in 2.4h" is unreadable without knowing which allowance it is —
+    // the ambiguity that hid the wrong window being selected server-side.
+    renderPage();
+    expect(await screen.findByText(/Weekly: 62% left/)).toBeInTheDocument();
+  });
+
+  it('shows an observed provider refusal, not just the gate that closed', async () => {
+    // "The provider said no" is the actionable fact, and it is what explains a
+    // family that looks healthy on paper but never burns.
+    const blocked = {
+      ...status,
+      families: [
+        { ...status.families[0], willBurn: false, skipReason: 'provider refused the last burn', blockedUntil: '2026-07-26T18:00:00.000Z', blockedReason: 'Usage limit exceeded' },
+        status.families[1],
+      ],
+    };
+    api.getQuotaBurn.mockResolvedValueOnce({ config, status: blocked });
+    renderPage();
+    expect(await screen.findByText(/provider refused — retrying after/)).toBeInTheDocument();
   });
 
   it('does NOT poll when nothing is pending', async () => {

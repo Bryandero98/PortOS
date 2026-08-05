@@ -12,6 +12,9 @@ const state = {
   pending: {},
   ran: [],
   contexts: [],
+  blocks: {},
+  settled: [],
+  settleError: null,
 };
 
 vi.mock('./providerUsage.js', () => ({
@@ -41,6 +44,20 @@ vi.mock('./quotaBurn.js', async (importActual) => ({
   ...(await importActual()),
   getQuotaBurnDispatches: vi.fn(async () => state.dispatches),
   recordQuotaBurnDispatch: vi.fn(async (key) => { state.recorded.push(key); }),
+}));
+
+// Same posture as the dispatch ledger: the denial gate stays real (it lives in
+// quotaBurn.js), only its storage is stubbed off the install's `data/cos/`.
+// `recordBurnAgentCompletion` records into `state.settled` so the continuation's
+// ordering — ledger first, THEN the next dispatch — is assertable.
+vi.mock('./quotaBurnDenials.js', async (importActual) => ({
+  ...(await importActual()),
+  getActiveQuotaBurnBlocks: vi.fn(async () => state.blocks),
+  recordBurnAgentCompletion: vi.fn(async (agent) => {
+    state.settled.push(agent?.metadata?.taskQuotaBurnFamily ?? null);
+    if (state.settleError) throw new Error(state.settleError);
+    return null;
+  }),
 }));
 
 const { normalizeQuotaBurnConfig } = await import('../lib/quotaBurnConfig.js');
@@ -75,6 +92,9 @@ beforeEach(() => {
   state.contexts = [];
   state.dispatches = {};
   state.recorded = [];
+  state.blocks = {};
+  state.settled = [];
+  state.settleError = null;
   state.jobResult = undefined;
   __resetQuotaBurnRunner();
 });
@@ -271,6 +291,54 @@ describe('getQuotaBurnStatus', () => {
     // A disabled family's jobs are not probed — the counts would never be acted on.
     expect(codex.jobs.every((job) => job.pending === null)).toBe(true);
   });
+
+  it('names WHICH window the percentage and countdown describe', async () => {
+    // A family publishes a short rolling window and a weekly one; a bare
+    // "50% left · resets in 2h" says nothing about which allowance that is.
+    const { status } = await getQuotaBurnStatus();
+    expect(status.families.find((family) => family.id === 'grok').windowLabel).toBe('Weekly');
+  });
+
+  it('surfaces an observed provider refusal on the family card', async () => {
+    state.blocks = { grok: { at: now - 1000, until: now + 3_600_000, reason: 'Usage limit exceeded' } };
+    const { status } = await getQuotaBurnStatus();
+    const grok = status.families.find((family) => family.id === 'grok');
+    expect(grok.willBurn).toBe(false);
+    expect(grok.blockedUntil).toBe(new Date(now + 3_600_000).toISOString());
+    expect(grok.blockedReason).toBe('Usage limit exceeded');
+    expect(grok.skipReason).toMatch(/provider refused the last burn/);
+  });
+});
+
+/**
+ * The stop condition the whole denial ledger exists for: a plan spending a
+ * weekly allowance exhausts the SHORT rolling window underneath it, and every
+ * further dispatch fails instantly — while the weekly card it gates on still
+ * reads "50% left, resets in 2h".
+ */
+describe('denial blocks in a cycle', () => {
+  it('dispatches nothing while the family is blocked, and says why', async () => {
+    state.pending = { first: { count: 1 } };
+    state.blocks = { grok: { at: now - 1000, until: now + 3_600_000, reason: 'Usage limit exceeded' } };
+    const entry = await runQuotaBurnCycle({ trigger: 'scheduled' });
+    expect(entry.dispatched).toBe(false);
+    expect(entry.reason).toMatch(/provider refused the last burn/);
+    expect(state.ran).toEqual([]);
+  });
+
+  it('resumes once the block lapses', async () => {
+    state.pending = { first: { count: 1 } };
+    state.blocks = { grok: { at: now - 7_200_000, until: now - 1000, reason: 'Usage limit exceeded' } };
+    const entry = await runQuotaBurnCycle({ trigger: 'scheduled' });
+    expect(entry.dispatched).toBe(true);
+  });
+
+  it('lets a forced run retry through a block', async () => {
+    state.pending = { first: { count: 1 } };
+    state.blocks = { grok: { at: now - 1000, until: now + 3_600_000, reason: 'Usage limit exceeded' } };
+    const entry = await runQuotaBurnCycle({ trigger: 'manual', familyId: 'grok', jobId: 'first', force: true });
+    expect(entry.dispatched).toBe(true);
+  });
 });
 
 describe('run-now targeting', () => {
@@ -426,6 +494,29 @@ describe('completion continuation', () => {
     expect(state.ran.map((entry) => entry.jobId)).toEqual(['first', 'second']);
     expect(state.recorded).toHaveLength(2);
     expect(state.runs[0]).toMatchObject({ trigger: 'continuation', dispatched: true });
+  });
+
+  it('records a refusal BEFORE dispatching the next job', async () => {
+    // The whole point of the ordering: this continuation dispatches the next job
+    // the moment a burn agent finishes, so a block recorded after it runs (or
+    // from a second `agent:completed` subscriber, whose ordering against this
+    // one is not guaranteed) arrives one wasted agent too late, every time.
+    state.pending = { first: { count: 1 } };
+    // Whatever the ledger just learned is what selection reads on this very tick.
+    state.blocks = { grok: { at: now - 1000, until: now + 3_600_000, reason: 'Usage limit exceeded' } };
+    const entry = await __onBurnAgentCompleted({ metadata: { taskQuotaBurnFamily: 'grok' } });
+    expect(state.settled).toEqual(['grok']);
+    expect(entry.dispatched).toBe(false);
+    expect(entry.reason).toMatch(/provider refused the last burn/);
+    expect(state.ran).toEqual([]);
+  });
+
+  it('still continues when the denial ledger itself fails', async () => {
+    // Telemetry must never be able to stall the plan.
+    state.pending = { first: { count: 1 } };
+    state.settleError = 'ENOSPC';
+    const entry = await __onBurnAgentCompleted({ metadata: { taskQuotaBurnFamily: 'grok' } });
+    expect(entry.dispatched).toBe(true);
   });
 
   it('scrapes only the burning family\'s quota, not every enabled provider\'s', async () => {

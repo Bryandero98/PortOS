@@ -149,3 +149,69 @@ export function hoursUntilReset(limit, opts = {}) {
   const { epochMs } = normalizeResetAt(limit, opts);
   return epochMs === null ? null : (epochMs - (opts.now ?? Date.now())) / HOUR_MS;
 }
+
+/**
+ * Parse an absolute ISO instant out of free-form provider text.
+ * Antigravity phrases it as `(around 2026-07-31T21:38:09Z)`. Pure.
+ */
+const parseAbsoluteObservedReset = (text, now) => {
+  const match = text.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)/);
+  if (!match) return null;
+  const at = new Date(match[1]).getTime();
+  // Narration also carries log lines and session stamps. A timestamp in the
+  // past is not a reset time — accepting one would set a block to an
+  // already-elapsed instant, which reads as "not blocked" downstream.
+  return Number.isNaN(at) || at <= now ? null : at;
+};
+
+/**
+ * Parse a relative reset window (`quota will reset in approximately 5 hours`,
+ * `try again in 30 minutes`) into an absolute epoch ms. Pure given `now`.
+ */
+const parseRelativeObservedReset = (text, now) => {
+  const match = text.match(/(?:reset|retry|try again|available)\b[^.]{0,40}?\bin\s+(?:approximately\s+|about\s+|~\s*)?(\d+(?:\.\d+)?)\s*(second|minute|hour|day)s?/i);
+  if (!match) return null;
+  const unitMs = { second: 1000, minute: 60_000, hour: 3_600_000, day: 86_400_000 }[match[2].toLowerCase()];
+  return now + Number(match[1]) * unitMs;
+};
+
+/**
+ * The reset instant a provider stated in its own refusal text, as epoch ms —
+ * null when it stated none we can read.
+ *
+ * This is the OBSERVED half of quota state: a refusal is the only quota signal
+ * some backends emit at all (see `imageGenQuota.js`), and it is what tells a
+ * quota burn how long to back off after a CLI denied it (`quotaBurnDenials.js`).
+ * Absolute wins over relative — a provider that states both ("in ~5 hours
+ * (around <ISO>)") is more precise in the parenthetical, and the absolute form
+ * survives a slow error path. Both reject an instant that is not in the future.
+ *
+ * Pure given `now`.
+ */
+export function parseObservedReset(text, { now = Date.now() } = {}) {
+  const raw = typeof text === 'string' ? text : '';
+  if (!raw.trim()) return null;
+  return parseAbsoluteObservedReset(raw, now) ?? parseRelativeObservedReset(raw, now);
+}
+
+/**
+ * Is a block recorded from an observed refusal still holding?
+ *
+ * `at` is what marks it blocked; `until` only says WHEN it lifts and is
+ * legitimately unknown (a refusal need not state a reset). Keying "blocked" off
+ * `until` alone collapses "blocked, reset unknown" into "not blocked" — so an
+ * unknown reset holds for a bounded `ttlMs` instead, since nothing forces a
+ * later attempt to happen and prove the provider is serving again.
+ *
+ * Shared by every observed-refusal ledger (`imageGenQuota.js`,
+ * `quotaBurnDenials.js`); each supplies its own TTL, but the predicate — and the
+ * reason `until`-alone is wrong — lives once. Pure.
+ */
+export function isObservedBlockActive(block, { now = Date.now(), ttlMs } = {}) {
+  // Read through `?.` rather than destructuring with a default: a default
+  // parameter only covers `undefined`, and an absent block legitimately arrives
+  // as `null` from a ledger lookup that already normalized it.
+  const at = block?.at;
+  if (!at) return false;
+  return block.until ? block.until > now : now - at < ttlMs;
+}
