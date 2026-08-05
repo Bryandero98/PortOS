@@ -5,8 +5,16 @@
  * what this replaced): every `checkIntervalMinutes` it reads the burn plan,
  * takes a zero-token quota reading, and — only when a family's window is inside
  * its reset horizon with headroom above its reserve — runs the first job in that
- * family's ordered plan that reports pending work. At most ONE dispatch per
- * cycle, so a cycle can never blow through several windows' budgets at once.
+ * family's ordered plan that reports pending work.
+ *
+ * At most one dispatch per FAMILY per cycle. Families do not share a budget:
+ * each one draws down its own subscription window, against its own reserve and
+ * its own `maxDispatchesPerWindow`. Stopping the whole cycle after the first
+ * dispatch (which is what this used to do) therefore didn't protect anything —
+ * it just meant the soonest-resetting family took every cycle, and a family with
+ * a longer window never burned at all while it was enabled. A `claude` window
+ * resetting in 2h beat an `agy` window resetting in 21h on every single tick, so
+ * the agy plan sat at "93% left · 0/5 used" indefinitely.
  *
  * AI-policy posture (CLAUDE.md): this is a sanctioned scheduled automation —
  * disabled by default, armed only by an explicit opt-in on the Quota Burn page,
@@ -175,6 +183,11 @@ async function evaluate({ trigger = 'scheduled', familyId = null, jobId = null, 
   }
 
   const attempts = [];
+  const dispatched = [];
+  // Every eligible family gets its own dispatch — see the module header. The
+  // loop does NOT break on the first success: `candidates` is already the set
+  // that passed the full gate ladder, and each entry spends a different
+  // provider's window.
   for (const candidate of candidates) {
     const outcome = await dispatchFromCandidate(candidate, { jobId, force });
     attempts.push(...outcome.attempts.map((entry) => ({ familyId: candidate.family.id, ...entry })));
@@ -184,7 +197,10 @@ async function evaluate({ trigger = 'scheduled', familyId = null, jobId = null, 
     // the cap bounds real burns, not attempts. `charge` is false for a forced
     // run, which the user asked for outside the automatic budget.
     if (candidate.charge) await recordQuotaBurnDispatch(candidate.dispatchKey);
-    return finish({
+    // One run-log entry PER dispatch, recorded as it happens: the page's
+    // "Recent runs" list is how the user audits what their subscriptions were
+    // spent on, and folding three families into one row would hide two of them.
+    dispatched.push(await finish({
       dispatched: true,
       familyId: candidate.family.id,
       jobId: outcome.job.id,
@@ -195,7 +211,19 @@ async function evaluate({ trigger = 'scheduled', familyId = null, jobId = null, 
       percentRemaining: candidate.limit?.percentRemaining ?? null,
       summary: outcome.result.summary || 'dispatched',
       detail: outcome.result.detail || null,
-    });
+    }));
+  }
+
+  // Single dispatch keeps the flat entry shape the route, the run log, and the
+  // tests already speak. Several come back as one aggregate so the caller's
+  // toast names all of them rather than an arbitrary first.
+  if (dispatched.length === 1) return dispatched[0];
+  if (dispatched.length > 1) {
+    return {
+      dispatched: true,
+      summary: `Dispatched ${dispatched.length} jobs — ${dispatched.map((entry) => `${entry.familyId}: ${entry.summary}`).join('; ')}`,
+      dispatches: dispatched,
+    };
   }
 
   // Report what each job actually said. Collapsing every non-dispatch to "no
@@ -203,13 +231,17 @@ async function evaluate({ trigger = 'scheduled', familyId = null, jobId = null, 
   // work and declined ("an identical burn task is already running", "managed
   // app app-x no longer exists", "no enabled CLI/TUI provider in the grok
   // family") is the actionable case, and it was the one being thrown away.
-  const detail = attempts.map((entry) => `${entry.jobId}: ${entry.skipped}`).join('; ');
+  // Prefix each reason with its family once more than one was evaluated —
+  // "j: no managed app selected" is unactionable when three plans were walked.
+  const label = (entry) => (candidates.length > 1 ? `${entry.familyId}/${entry.jobId}` : entry.jobId);
+  const detail = attempts.map((entry) => `${label(entry)}: ${entry.skipped}`).join('; ');
+  const plans = candidates.map((candidate) => candidate.family.id).join(', ');
   return finish({
     dispatched: false,
     familyId: candidates[0].family.id,
     reason: detail
       ? `nothing dispatched — ${detail}`
-      : `no enabled job in the ${candidates[0].family.id} plan`,
+      : `no enabled job in the ${plans} plan${candidates.length > 1 ? 's' : ''}`,
   });
 }
 
