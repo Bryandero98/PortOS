@@ -87,3 +87,7 @@
 ## Three.js Models
 
 - **[issue-3483] Take a generated model apart and click any piece to find out what it is.** The preview used to render a finished model as one inert lump — the only way to check it was actually built from parts, rather than fused into a single shape, was to export the source and read it. An Explode slider now separates the assembly, and clicking any surface names the part it belongs to and lights up that whole component. Separation scales the layout outward from the model's centre instead of shoving every piece the same distance, so parts that were touching genuinely come apart, pieces sitting at the centre still clear their neighbours, and the camera re-frames to whatever the disassembly actually grew to. Surface detail — serrations, stria, trim, port floors — rides the part it belongs to instead of shattering into loose slivers, and clicking it selects that part; models are now generated with that distinction marked, and exported models carry it too.
+
+## Internal
+
+- **[issue-3497] The Chief of Staff no longer re-reads and re-parses its task lists on every scheduler tick** — an unchanged list is served from memory instead, which matters most on installs whose task history has grown large. Edits made outside PortOS (a text editor, a restore, a sync peer) are still picked up immediately.
