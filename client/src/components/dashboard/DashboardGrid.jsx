@@ -243,7 +243,7 @@ const GridCell = memo(function GridCell({
     : `relative w-full h-full overflow-hidden rounded-xl ${editable ? 'ring-1 ring-port-border' : ''}`;
 
   return (
-    <div ref={setNodeRef} className={itemClass} style={itemStyle}>
+    <div ref={setNodeRef} data-widget-id={item.id} className={itemClass} style={itemStyle}>
       <div className={innerClass}>
         {renderItem(item)}
         {editable && !isMobile && (

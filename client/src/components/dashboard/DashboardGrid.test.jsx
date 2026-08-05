@@ -196,3 +196,16 @@ describe('DashboardGrid desktop', () => {
     expect(screen.queryByLabelText('Reorder a')).not.toBeInTheDocument();
   });
 });
+
+describe('DashboardGrid scroll target', () => {
+  beforeEach(() => { mockWidth = 1200; });
+
+  // The Dashboard scrolls a just-added widget into view by querying
+  // [data-widget-id="…"]; that attribute is the scroll-target contract.
+  it('tags each cell with its widget id', () => {
+    renderGrid();
+    expect(document.querySelector('[data-widget-id="a"]')).not.toBeNull();
+    expect(document.querySelector('[data-widget-id="b"]')).not.toBeNull();
+    expect(document.querySelector('[data-widget-id="c"]')).not.toBeNull();
+  });
+});
