@@ -89,12 +89,13 @@ export function isCliReviewer(reviewer) {
  * The PATH executable for a CLI reviewer slug, or `null` when the reviewer is
  * not a spawnable CLI. Accepts the `gemini` alias.
  *
- * Unmapped-but-spawnable is deliberately NOT possible to express: a new CLI
- * reviewer added to REVIEWER_VALUES without a REVIEWER_CLI_BINARIES entry
- * returns null here, so callers that derive "is a CLI" from the broader
- * copilot/local-LLM exclusion (see agentPromptBuilder) still treat it as a CLI
- * and fall back to naming the slug — the pre-existing behavior — rather than
- * silently dropping it from the review loop.
+ * A null here means "no binary is mapped", NOT "not a CLI" — use isCliReviewer
+ * for that question. The two can disagree for exactly one reviewer: a new CLI
+ * reviewer added to REVIEWER_VALUES before its REVIEWER_CLI_BINARIES entry.
+ * That reviewer still drives the loop (isCliReviewer says yes) and its prompt
+ * falls back to naming the slug — the pre-existing behavior — rather than being
+ * silently dropped. cosValidation.test.js pins the map's coverage so the window
+ * closes at review time.
  *
  * @param {string} reviewer - reviewer slug (`antigravity`, `gemini`, `codex`, …)
  * @returns {string|null}
