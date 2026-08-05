@@ -130,6 +130,7 @@ export * from './streakGlyph.js';
 export * from './syncCounts.js';
 export * from './tabNotation.js';
 export * from './terminalTheme.js';
+export * from './threejsExplode.js';
 export * from './threejsSculpt.js';
 export * from './tribe.js';
 export * from './quotaBurnPatch.js';

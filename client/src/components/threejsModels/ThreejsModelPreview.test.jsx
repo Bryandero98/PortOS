@@ -1,11 +1,21 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@react-three/fiber', () => ({
   Canvas: ({ children, ...props }) => <div data-testid="threejs-canvas" data-alpha={String(props.gl?.alpha)}>{children}</div>,
 }));
+// A chainable stand-in for drei's Bounds api, so the explode re-fit is
+// observable without a real renderer.
+const boundsApi = vi.hoisted(() => {
+  const api = {};
+  api.refresh = vi.fn(() => api);
+  api.clip = vi.fn(() => api);
+  api.fit = vi.fn(() => api);
+  return api;
+});
 vi.mock('@react-three/drei', () => ({
   Bounds: ({ children }) => children,
+  useBounds: () => boundsApi,
   OrbitControls: () => null,
 }));
 
@@ -58,7 +68,7 @@ const material = (overrides) => ({
   ...overrides,
 });
 
-const part = (id, geometry, materialId) => ({
+const part = (id, geometry, materialId, overrides = {}) => ({
   id,
   name: id,
   geometry,
@@ -69,7 +79,13 @@ const part = (id, geometry, materialId) => ({
   castShadow: true,
   receiveShadow: true,
   children: [],
+  ...overrides,
 });
+
+const box = { type: 'box', width: 1, height: 1, depth: 1 };
+const positionOf = (container, name) =>
+  container.querySelector(`group[name="${name}"]`).getAttribute('position').split(',').map(Number);
+const setExplode = (value) => fireEvent.change(screen.getByLabelText('Explode'), { target: { value: String(value) } });
 
 describe('ThreejsModelPreview', () => {
   it('offers preset and custom preview backgrounds without changing the scene spec', () => {
@@ -147,5 +163,91 @@ describe('ThreejsModelPreview', () => {
     const standard = container.querySelector('meshStandardMaterial');
     expect(standard.getAttribute('ior')).toBeNull();
     expect(standard.getAttribute('transmission')).toBeNull();
+  });
+});
+
+// A knife: one blade carrying surface relief that must not fly off on its own,
+// plus a separate handle so there is something to separate FROM.
+const knifeSpec = () => ({
+  ...SPEC,
+  materials: { steel: material() },
+  parts: [
+    part('blade', box, 'steel', {
+      name: 'Blade',
+      position: [-1, 0, 0],
+      children: [part('serrations', box, 'steel', { name: 'Serrations', position: [0, 0.5, 0], explodeWithParent: true })],
+    }),
+    part('handle', box, 'steel', { name: 'Handle', position: [1, 0, 0] }),
+  ],
+});
+
+describe('ThreejsModelPreview disassembly', () => {
+  beforeEach(() => {
+    boundsApi.fit.mockClear();
+  });
+
+  it('separates the parts by scaling the layout about the centre, keeping relief on its part', () => {
+    const { container } = render(<ThreejsModelPreview spec={knifeSpec()} />);
+
+    expect(positionOf(container, 'Blade')).toEqual([-1, 0, 0]);
+    expect(positionOf(container, 'Handle')).toEqual([1, 0, 0]);
+
+    setExplode(1);
+
+    // Assembled spread is ±1, so a full explode puts each part at ±(2 + clearance) —
+    // a real gap opens between them rather than the pair sliding together.
+    const [bladeX] = positionOf(container, 'Blade');
+    const [handleX] = positionOf(container, 'Handle');
+    expect(bladeX).toBeCloseTo(-2.18, 6);
+    expect(handleX).toBeCloseTo(2.18, 6);
+
+    // Relief rides the blade — its own transform never changes.
+    expect(positionOf(container, 'Serrations')).toEqual([0, 0.5, 0]);
+  });
+
+  it('re-fits the camera when the layout actually grows', () => {
+    render(<ThreejsModelPreview spec={knifeSpec()} />);
+    boundsApi.fit.mockClear();
+
+    setExplode(0.5);
+    expect(boundsApi.refresh).toHaveBeenCalled();
+    expect(boundsApi.fit).toHaveBeenCalledTimes(1);
+
+    // Same layout, no wasted re-fit.
+    setExplode(0.5);
+    expect(boundsApi.fit).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables the explode control when there is only one part to move', () => {
+    render(<ThreejsModelPreview spec={{ ...SPEC, materials: { steel: material() }, parts: [part('solo', box, 'steel')] }} />);
+    expect(screen.getByLabelText('Explode')).toBeDisabled();
+  });
+
+  it('resolves a click on surface relief up to the part it belongs to and highlights that subtree', () => {
+    const { container } = render(<ThreejsModelPreview spec={knifeSpec()} />);
+
+    expect(screen.queryByRole('button', { name: 'Clear part selection' })).not.toBeInTheDocument();
+
+    fireEvent.pointerDown(container.querySelector('group[name="Serrations"] mesh'));
+
+    // The sliver is not the answer — the blade it rides is.
+    expect(screen.getByText('Blade')).toBeInTheDocument();
+    expect(screen.getByText('blade')).toBeInTheDocument();
+
+    const highlighted = container.querySelectorAll('meshStandardMaterial[emissive="#38bdf8"]');
+    // Blade + its relief light up together; the handle stays as authored.
+    expect(highlighted).toHaveLength(2);
+    expect(container.querySelector('group[name="Handle"] meshStandardMaterial').getAttribute('emissive')).toBe('#000000');
+  });
+
+  it('selects a plain part on its own and clears the selection', () => {
+    const { container } = render(<ThreejsModelPreview spec={knifeSpec()} />);
+
+    fireEvent.pointerDown(container.querySelector('group[name="Handle"] mesh'));
+    expect(screen.getByText('Handle')).toBeInTheDocument();
+    expect(container.querySelectorAll('meshStandardMaterial[emissive="#38bdf8"]')).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear part selection' }));
+    expect(container.querySelectorAll('meshStandardMaterial[emissive="#38bdf8"]')).toHaveLength(0);
   });
 });

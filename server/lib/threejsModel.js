@@ -275,6 +275,11 @@ partSchema = z.lazy(() => z.object({
   scale: vec3Schema.default([1, 1, 1]),
   castShadow: z.boolean().default(true),
   receiveShadow: z.boolean().default(true),
+  // Surface relief (serrations, stria, trim, port floors) belongs TO a part
+  // rather than being one: it rides its parent when the model is taken apart,
+  // and a click on it selects the parent. Without the flag a disassembly
+  // shatters into a comb of loose slivers nobody can read or pick.
+  explodeWithParent: z.boolean().default(false),
   children: z.array(partSchema).max(40).default([]),
 }));
 
@@ -489,6 +494,10 @@ function createPart(definition, materials, nodes) {
   node.scale.set(...definition.scale);
   node.castShadow = definition.castShadow;
   node.receiveShadow = definition.receiveShadow;
+  // Carried through so a standalone consumer of the exported factory can build
+  // the same disassembly the PortOS preview does: relief rides its parent.
+  node.userData.partId = definition.id;
+  node.userData.explodeWithParent = definition.explodeWithParent;
   nodes[definition.id] = node;
   for (const child of definition.children) node.add(createPart(child, materials, nodes));
   return node;
