@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""FLUX.2 Klein LoRA trainer — vendored, MPS-aware (PortOS).
+"""FLUX.2 Klein LoRA trainer — vendored, CUDA/CPU (PortOS).
 
 Trains a character LoRA on the bf16 Klein base (NEVER the SDNQ/int8
 quantized inference repos — no useful gradients through quant layers).

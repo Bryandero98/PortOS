@@ -243,8 +243,8 @@ def empty_device_cache(device: str, *, synchronize: bool = False) -> None:
     box that *has* a CUDA card but is running `--device cpu`, probing would clear
     a cache this process never filled.
 
-    `synchronize=True` also drains the queue first, for callers that want the
-    reclaim to have actually happened before they measure or allocate."""
+    `synchronize=True` blocks on the device afterwards, for callers that want the
+    reclaim to have actually completed before they measure or allocate."""
     import torch
     if device == "mps":
         torch.mps.empty_cache()
