@@ -6,7 +6,8 @@ quantized inference repos — no useful gradients through quant layers).
 The trained adapter loads onto quantized inference pipelines of the same
 size variant because the transformer hidden dims match.
 
-Two phases keep peak memory survivable on Apple Silicon:
+Two phases keep peak memory survivable — on Apple Silicon's unified memory and,
+just as much, on a consumer CUDA card (a 24 GB 3090 has no headroom to spare):
 
   1. STAGE:precompute-latents — encode every dataset image to VAE latents
      and every caption to Qwen3 text embeddings ONCE, then free the text
@@ -60,6 +61,19 @@ signal.signal(signal.SIGTERM, _on_sigterm)
 
 def log(msg: str) -> None:
     print(msg, flush=True)
+
+
+def empty_device_cache(device: str) -> None:
+    """Return freed blocks to the driver on whichever accelerator we're on.
+
+    The caching allocator otherwise keeps them reserved, which starves the one
+    big contiguous `transformer.to(device)` allocation that follows precompute.
+    CUDA needs this as much as MPS does — on a 24 GB card the leftover reserve
+    is the difference between a clean move and an out-of-memory abort."""
+    if device == "mps":
+        torch.mps.empty_cache()
+    elif device == "cuda":
+        torch.cuda.empty_cache()
 
 
 def parse_args():
@@ -176,8 +190,20 @@ def render_sample(pipe, transformer, embeds, text_ids, resolution, device, dtype
     )
     unpacked = unpacked * bn_std + bn_mean
     unpacked = pipe._unpatchify_latents(unpacked)
-    vae_device = next(pipe.vae.parameters()).device
-    image = pipe.vae.decode(unpacked.to(vae_device, pipe.vae.dtype), return_dict=False)[0]
+    # Decode on the training device, not wherever precompute parked the VAE.
+    # Phase 1 deliberately leaves the VAE on CPU to keep it out of the training
+    # footprint, but the pipeline is bf16 on an accelerator — and x86 has no
+    # fast bf16 convolution path, so decoding there reads as a hang (a single
+    # 512-px decode ran >18 min on CUDA/Windows before this moved it back).
+    # The VAE is ~0.17 GB against a ~8 GB resident transformer, so borrowing the
+    # device for one decode is cheap; it goes straight back so the training
+    # loop's footprint is unchanged.
+    vae_home = next(pipe.vae.parameters()).device
+    pipe.vae.to(device)
+    try:
+        image = pipe.vae.decode(unpacked.to(device, pipe.vae.dtype), return_dict=False)[0]
+    finally:
+        pipe.vae.to(vae_home)
     image = pipe.image_processor.postprocess(image, output_type="pil")[0]
     image.save(out_path)
 
@@ -229,7 +255,16 @@ def main():
     log("STAGE:precompute-latents")
     sample_prompt = args.sample_prompt or f"{args.trigger_word} portrait, neutral background"
     examples = []
-    with heartbeat("precompute-latents"):
+    # `no_grad` here is load-bearing, not a micro-optimization. Precompute is
+    # pure inference, but the freshly-loaded text encoder and VAE still carry
+    # `requires_grad=True` params — so without it every encode builds and keeps
+    # a full autograd graph, and the `.to("cpu")` cache copy inherits that
+    # `grad_fn`, pinning the whole graph on-device. Measured on FLUX.2-klein-4B:
+    # ~2.6 GB of Qwen3 activations retained PER UNIQUE CAPTION. A 128 GB
+    # unified-memory Mac silently absorbs that; a 24 GB CUDA card spills into
+    # driver shared memory (encode slows from 0.09 s to minutes) and then aborts
+    # with OOM at `transformer.to(device)` below.
+    with torch.no_grad(), heartbeat("precompute-latents"):
         pipe.text_encoder.to(device)
         embed_cache = {}
         for entry in images + [{"caption": sample_prompt, "path": None}]:
@@ -238,12 +273,12 @@ def main():
                 embeds, text_ids = pipe.encode_prompt(caption, device=device)
                 embed_cache[caption] = (embeds.to("cpu"), text_ids.to("cpu"))
         sample_embeds = embed_cache[sample_prompt]
-        # Free the text encoder — the make-or-break memory move on MPS.
+        # Free the text encoder — the make-or-break memory move on every
+        # backend: its ~8 GB has to be gone before the transformer moves on.
         pipe.text_encoder.to("cpu")
         pipe.text_encoder = None
         gc.collect()
-        if device == "mps":
-            torch.mps.empty_cache()
+        empty_device_cache(device)
 
         pipe.vae.to(device)
         gen = torch.Generator(device="cpu").manual_seed(args.seed)
@@ -263,8 +298,7 @@ def main():
         # VAE only needed again for samples — keep it, but off-device.
         pipe.vae.to("cpu")
         gc.collect()
-        if device == "mps":
-            torch.mps.empty_cache()
+        empty_device_cache(device)
 
     # ---- Phase 2: training ----
     log("STAGE:training")
@@ -387,8 +421,7 @@ def main():
                 log(f"STATUS:sample render failed (training continues): {err}")
             finally:
                 transformer.train()
-                if device == "mps":
-                    torch.mps.empty_cache()
+                empty_device_cache(device)
 
     # ---- Finalize ----
     adapter_dir = out_dir / "adapter"
