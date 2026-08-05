@@ -23,14 +23,18 @@ const TRELLIS2_TARGET = {
   ],
 };
 
-vi.mock('../services/imageTo3d/targets.js', () => ({
+// Partial mock: the resolver/probe functions are stubbed so the route tests stay
+// hardware-independent, but the reason→label map + `unavailableReasonLabel` come
+// from the real module, so the refusal message asserted below is the exact string
+// a user would see.
+vi.mock('../services/imageTo3d/targets.js', async (importOriginal) => ({
+  ...(await importOriginal()),
   detectHostCapabilities: vi.fn(() => ({ appleSilicon: true, unifiedMemoryGb: 128, cuda: false })),
   getTarget: vi.fn((id) => (id === 'trellis2' ? TRELLIS2_TARGET : null)),
   listTargets: vi.fn((caps) => [
     { ...TRELLIS2_TARGET, available: caps.appleSilicon && caps.unifiedMemoryGb >= 24 },
   ]),
-  isTargetAvailable: vi.fn(() => true),
-  unavailableReason: vi.fn(() => 'requires-apple-silicon'),
+  unavailableReason: vi.fn(() => null),
   IMAGE_TO_3D_TARGET_IDS: ['trellis2'],
 }));
 
@@ -170,7 +174,6 @@ describe('image-to-3d routes', () => {
 describe('GET /trellis2/install (SSE)', () => {
   it('streams stage → complete on the happy path', async () => {
     trellis2.isTrellis2Installed.mockReturnValueOnce(false);
-    targets.isTargetAvailable.mockReturnValueOnce(true);
     const res = await request(makeApp()).get('/api/image-to-3d/trellis2/install');
     const frames = sseFrames(res.text);
     expect(frames).toContainEqual({ type: 'stage', stage: 'clone', message: 'git clone …' });
@@ -183,7 +186,6 @@ describe('GET /trellis2/install (SSE)', () => {
   it('tells the install to download the Metal Toolchain when it is missing but fetchable', async () => {
     trellis2.installTrellis2.mockClear();
     trellis2.isTrellis2Installed.mockReturnValueOnce(false);
-    targets.isTargetAvailable.mockReturnValueOnce(true);
     trellis2.probeMetalToolchain.mockResolvedValueOnce({
       available: false, installable: true, hint: 'it will be downloaded',
     });
@@ -199,7 +201,6 @@ describe('GET /trellis2/install (SSE)', () => {
   it('warns but still installs when the toolchain cannot be fetched (Command Line Tools only)', async () => {
     trellis2.installTrellis2.mockClear();
     trellis2.isTrellis2Installed.mockReturnValueOnce(false);
-    targets.isTargetAvailable.mockReturnValueOnce(true);
     trellis2.probeMetalToolchain.mockResolvedValueOnce({
       available: false, installable: false, blocker: 'requires-xcode', hint: 'install Xcode',
     });
@@ -214,7 +215,6 @@ describe('GET /trellis2/install (SSE)', () => {
   it('adds no toolchain step or warning when it is already present', async () => {
     trellis2.installTrellis2.mockClear();
     trellis2.isTrellis2Installed.mockReturnValueOnce(false);
-    targets.isTargetAvailable.mockReturnValueOnce(true);
     const res = await request(makeApp()).get('/api/image-to-3d/trellis2/install');
     expect(sseFrames(res.text).find((f) => f.stage === 'preflight')).toBeUndefined();
     expect(trellis2.installTrellis2).toHaveBeenCalledWith(
@@ -227,7 +227,6 @@ describe('GET /trellis2/install (SSE)', () => {
     // existing install once the Metal Toolchain is present (#2952).
     trellis2.installTrellis2.mockClear();
     trellis2.isTrellis2Installed.mockReturnValueOnce(true);
-    targets.isTargetAvailable.mockReturnValueOnce(true);
     const res = await request(makeApp()).get('/api/image-to-3d/trellis2/install?repair=1');
     expect(trellis2.installTrellis2).toHaveBeenCalled();
     expect(sseFrames(res.text).at(-1)).toMatchObject({ type: 'complete' });
@@ -249,7 +248,6 @@ describe('GET /trellis2/install (SSE)', () => {
     // not just whatever the server process happened to be launched with.
     trellis2.installTrellis2.mockClear();
     trellis2.isTrellis2Installed.mockReturnValueOnce(false);
-    targets.isTargetAvailable.mockReturnValueOnce(true);
     await request(makeApp()).get('/api/image-to-3d/trellis2/install');
     expect(trellis2.installTrellis2).toHaveBeenCalledWith(expect.objectContaining({
       env: expect.objectContaining({ HF_TOKEN: 'hf_test', HUGGINGFACE_HUB_TOKEN: 'hf_test' }),
@@ -261,7 +259,6 @@ describe('GET /trellis2/install (SSE)', () => {
     // reach the error middleware as JSON; it has to surface as an error frame.
     trellis2.installTrellis2.mockClear();
     trellis2.isTrellis2Installed.mockReturnValueOnce(false);
-    targets.isTargetAvailable.mockReturnValueOnce(true);
     hfChildEnv.mockRejectedValueOnce(new Error('settings.json is not valid JSON'));
     const res = await request(makeApp()).get('/api/image-to-3d/trellis2/install');
     const frames = sseFrames(res.text);
@@ -284,7 +281,6 @@ describe('GET /trellis2/install (SSE)', () => {
 
   it('appends a resume hint when the install fails with a transient network error', async () => {
     trellis2.isTrellis2Installed.mockReturnValueOnce(false);
-    targets.isTargetAvailable.mockReturnValueOnce(true);
     trellis2.installTrellis2.mockImplementationOnce(() => ({
       promise: Promise.reject(Object.assign(
         new Error("TRELLIS.2 install step 'setup' exited 128"),
@@ -303,7 +299,6 @@ describe('GET /trellis2/install (SSE)', () => {
 
   it('does NOT append the resume hint for a non-transient failure', async () => {
     trellis2.isTrellis2Installed.mockReturnValueOnce(false);
-    targets.isTargetAvailable.mockReturnValueOnce(true);
     trellis2.installTrellis2.mockImplementationOnce(() => ({
       promise: Promise.reject(Object.assign(
         new Error('TRELLIS.2 install step \'setup\' exited 1'),
@@ -320,11 +315,12 @@ describe('GET /trellis2/install (SSE)', () => {
   it('refuses on unsupported hardware', async () => {
     trellis2.installTrellis2.mockClear();
     trellis2.isTrellis2Installed.mockReturnValueOnce(false);
-    targets.isTargetAvailable.mockReturnValueOnce(false);
     targets.unavailableReason.mockReturnValueOnce('requires-apple-silicon');
     const res = await request(makeApp()).get('/api/image-to-3d/trellis2/install');
     const frames = sseFrames(res.text);
-    expect(frames.at(-1)).toMatchObject({ type: 'error', message: expect.stringMatching(/requires-apple-silicon/) });
+    // The human label, not the raw kebab-case reason code (#3579).
+    expect(frames.at(-1)).toMatchObject({ type: 'error', message: expect.stringMatching(/Requires an Apple Silicon Mac/) });
+    expect(frames.at(-1).message).not.toMatch(/requires-apple-silicon/);
     expect(trellis2.installTrellis2).not.toHaveBeenCalled();
   });
 });
