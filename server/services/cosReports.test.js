@@ -14,7 +14,7 @@ vi.mock('./cosState.js', () => ({
   isDaemonRunning: () => mock.daemonRunning
 }));
 
-vi.mock('./cosAgents.js', () => ({
+vi.mock('./cosAgentIndex.js', () => ({
   getAgentsByDate: vi.fn(async (date) => mock.agentsByDate[date] || [])
 }));
 

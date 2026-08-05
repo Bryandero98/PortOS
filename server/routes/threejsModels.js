@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import { validateRequest } from '../lib/validation.js';
+import { EFFORT_LEVELS } from '../lib/providerModels.js';
+import { emptyToNull } from '../lib/zodCompat.js';
 import {
   listModels,
   getModel,
@@ -16,17 +18,24 @@ const router = Router();
 const galleryFilenameSchema = z.string().trim().min(1).max(256)
   .regex(/^[^/\\]+\.png$/i, 'filename must be a gallery PNG basename');
 
+// Reasoning-effort override. The picker's "Default effort" choice submits `''`,
+// which maps to an explicit `null` CLEAR — distinct from the key being absent,
+// which leaves the record's stored effort alone (see startGeneration).
+const effortSchema = z.preprocess(emptyToNull, z.enum(EFFORT_LEVELS).nullable().optional());
+
 const createSchema = z.object({
   name: z.string().trim().min(1).max(120),
   filename: galleryFilenameSchema,
   prompt: z.string().trim().max(2_000).default(''),
   providerId: z.string().trim().min(1).max(128),
   model: z.string().trim().max(256).optional(),
+  effort: effortSchema,
 });
 
 const generateSchema = z.object({
   providerId: z.string().trim().min(1).max(128).optional(),
   model: z.string().trim().max(256).optional(),
+  effort: effortSchema,
   prompt: z.string().trim().max(2_000).optional(),
   feedback: z.string().trim().max(2_000).default(''),
 });

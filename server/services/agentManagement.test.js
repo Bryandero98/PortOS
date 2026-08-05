@@ -59,7 +59,7 @@ vi.mock('./agentRunTracking.js', () => ({
 }));
 
 // Stub other transitive imports we don't exercise in handleOrphanedTask.
-// The DEFINING module, not the `cosAgents.js` barrel — mirrors the production
+// The DEFINING module, not the `cosAgentLifecycle.js` module — mirrors the production
 // import (#3450). Mocking the barrel here would silently stop applying and let
 // the real state layer load.
 vi.mock('./cosAgentLifecycle.js', () => ({

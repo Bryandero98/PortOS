@@ -327,7 +327,7 @@ export const COS_ARCHIVE_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 // agentIds are `agent-<id>` — alphanumerics, `_` and `-` only. NO dots, so a
 // `..` traversal can't form, and NO slash. Capped well above any real id.
 export const COS_AGENT_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
-// The exact set of files an archive holds (cosAgents.js). A fixed enum is the
+// The exact set of files an archive holds (cosAgentIndex.js). A fixed enum is the
 // tightest possible filename allowlist.
 export const COS_ARCHIVE_FILES = Object.freeze(['metadata.json', 'output.txt', 'prompt.txt']);
 const peerCosHistoryManifestEntrySchema = z.object({

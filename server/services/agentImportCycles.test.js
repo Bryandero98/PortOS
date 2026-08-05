@@ -2,7 +2,7 @@
  * Regression guard for the agent-lifecycle circular-dependency cluster (#2837).
  *
  * The cluster — agentLifecycle / agentCliSpawning / agentTuiSpawning /
- * agentManagement / subAgentSpawner / cosAgents — used to contain two real
+ * agentManagement / subAgentSpawner / cosAgentLifecycle — used to contain two real
  * STATIC cycles plus three `await import(...)` workarounds whose only job was to
  * dodge the load-time cycle. Both were fixed by extracting the shared pieces
  * (finalize, summary extraction, runner sync, runner output batchers) into leaf
@@ -33,7 +33,6 @@ const CLUSTER = [
   'agentTuiSpawning.js',
   'agentManagement.js',
   'subAgentSpawner.js',
-  'cosAgents.js',
   'cosAgentLifecycle.js',
   'agentFinalization.js',
   'agentSummaryExtraction.js',
@@ -52,7 +51,7 @@ const CLUSTER = [
 // directory (`agentLifecycle.js`, `agentTuiSpawning/outputSpooler.js`). The
 // walk recurses: scanning only top-level files left a hole big enough to drive
 // the cycle back through, because a subdirectory module can import back up
-// (`agentTuiSpawning/outputSpooler.js` → `../cosAgents.js` is a live example),
+// (`agentTuiSpawning/outputSpooler.js` → `../cosAgentLifecycle.js` is a live example),
 // so a cycle routed through one subdirectory hop was invisible to this guard.
 function listServiceFiles(dir = SERVICES_DIR, prefix = '') {
   const out = [];
@@ -143,6 +142,13 @@ const MODULE_LOADERS = {
   'agentLifecycle.js': () => import('./agentLifecycle.js'),
 };
 const exportedNames = async (mod) => Object.keys(await MODULE_LOADERS[mod]());
+
+// Whichever assertion loads first pays for transforming `cos.js`'s whole service
+// graph — measured at 5–10s here depending on machine load, i.e. straddling the
+// 10s default, which turns a green guard into an intermittent red one that says
+// nothing about the invariant. Every `it()` below that calls `exportedNames`
+// carries this, not just the one that happens to run first today.
+const MODULE_LOAD_TIMEOUT_MS = 60_000;
 
 function findCycles(graph) {
   const cycles = new Set();
@@ -262,7 +268,7 @@ describe('agent lifecycle cluster — no static import cycles (#2837)', () => {
           .not.toContain(name);
       }
     }
-  });
+  }, MODULE_LOAD_TIMEOUT_MS);
 
   it('keeps the cluster orchestrators from re-growing a re-export barrel (#3450)', async () => {
     // `subAgentSpawner.js` re-exported ~40 symbols from nine siblings, and
@@ -291,7 +297,7 @@ describe('agent lifecycle cluster — no static import cycles (#2837)', () => {
         `${mod} must declare what it exports — ${forwarded.join(', ')} is forwarded from another module; import it from the one that defines it`
       ).toEqual([]);
     }
-  });
+  }, MODULE_LOAD_TIMEOUT_MS);
 
   it('makes every transition caller name the facade or the defining module, never a barrel (#3450)', () => {
     // Step 3 of the #3450 sequencing, for the callers the "move the caller out"
@@ -332,12 +338,13 @@ describe('agent lifecycle cluster — no static import cycles (#2837)', () => {
       .toContain('requestAgentTermination');
 
     // A FORWARDER is any module that re-exports its way to a declaring module, at
-    // any depth: `cosAgents.js` is one hop (`export * from './cosAgentLifecycle.js'`),
-    // `cos.js` is two (`export { … } from './cosAgents.js'`). Walking the
-    // re-export edges instead of listing the barrels means a NEW barrel is
-    // covered the day it is written, and the two this issue has yet to collapse
-    // need no naming here. Asserted rather than merely computed, so collapsing
-    // one has to come here and say so.
+    // any depth: `cos.js` is one hop (`export { … } from './cosAgentLifecycle.js'`).
+    // It used to be two, through the `cosAgents.js` barrel that sat between them;
+    // that barrel is retired (#3450), leaving `cos.js`'s agent re-export block as
+    // the last forwarder. Walking the re-export edges instead of listing the
+    // barrels means a NEW barrel is covered the day it is written. Asserted
+    // rather than merely computed, so collapsing this last one has to come here
+    // and say so.
     const reexportEdges = (file) => [
       ...readFileSync(join(SERVICES_DIR, file), 'utf-8')
         .matchAll(/export\s*(?:\*|\{[^}]*\})\s*(?:as\s+\w+\s*)?from\s*['"]([^'"]+)['"]/g)
@@ -358,7 +365,7 @@ describe('agent lifecycle cluster — no static import cycles (#2837)', () => {
       }
     }
     expect([...forwarders].sort(), 'the set of barrels still forwarding a transition changed — intended?')
-      .toEqual(['cos.js', 'cosAgents.js']);
+      .toEqual(['cos.js']);
 
     // Production sources only. A test mirrors whatever its subject imports (a
     // mock pointed at a module the subject no longer imports silently stops

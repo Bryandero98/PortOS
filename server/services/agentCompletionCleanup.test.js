@@ -11,7 +11,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('./cosEvents.js', () => ({ emitLog: vi.fn() }));
-vi.mock('./cosAgents.js', () => ({ updateAgent: vi.fn() }));
+vi.mock('./cosAgentLifecycle.js', () => ({ updateAgent: vi.fn() }));
 vi.mock('./cos.js', () => ({
   updateTask: vi.fn().mockResolvedValue({}),
   addTask: vi.fn().mockResolvedValue({}),

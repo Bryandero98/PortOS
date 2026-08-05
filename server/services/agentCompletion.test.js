@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock dependencies before importing the module under test
-vi.mock('./cosAgents.js', () => ({
+vi.mock('./cosAgentLifecycle.js', () => ({
   updateAgent: vi.fn().mockResolvedValue(undefined)
 }));
 vi.mock('./cos.js', () => ({

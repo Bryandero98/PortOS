@@ -17,6 +17,7 @@ import {
 import toast from '../components/ui/Toast';
 import { copyToClipboard } from '../lib/clipboard';
 import { timeAgo } from '../utils/formatters';
+import { isAntigravityProvider, splitAntigravityModel } from '../utils/providers';
 
 const providerFilter = (provider) =>
   provider.enabled !== false && ['api', 'cli', 'tui'].includes(provider.type);
@@ -35,6 +36,7 @@ export default function ThreejsModelDetail() {
   const [notFound, setNotFound] = useState(false);
   const [feedback, setFeedback] = useState('');
   const [starting, setStarting] = useState(false);
+  const [effort, setEffort] = useState('');
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const providerSyncRef = useRef('');
   const {
@@ -45,7 +47,9 @@ export default function ThreejsModelDetail() {
     setSelectedProviderId,
     setSelectedModel,
     loading: providersLoading,
-  } = useProviderModels({ filter: providerFilter, silent: true });
+    // This picker renders the effort control and threads the value to the
+    // server, so Antigravity lists base models with effort picked separately.
+  } = useProviderModels({ filter: providerFilter, silent: true, withEffort: true });
 
   const load = async ({ initial = false } = {}) => {
     const next = await getThreejsModel(id, { silent: true }).catch((error) => {
@@ -82,11 +86,21 @@ export default function ThreejsModelDetail() {
 
   useEffect(() => {
     if (!record || providers.length === 0) return;
-    const key = `${record.id}:${record.providerId}:${record.model || ''}`;
+    const key = `${record.id}:${record.providerId}:${record.model || ''}:${record.effort || ''}`;
     if (providerSyncRef.current === key) return;
-    if (providers.some((provider) => provider.id === record.providerId)) {
+    const recordProvider = providers.find((provider) => provider.id === record.providerId);
+    if (recordProvider) {
+      // A record written before Antigravity split model from effort stores the
+      // suffixed id (`gemini-3.6-flash-high`). Seed the two controls from its
+      // two halves so the pin reads back as a base model + its effort rather
+      // than an option that no longer exists. Scoped to Antigravity so another
+      // provider's model that merely ends in `-high` isn't truncated.
+      const { base, effort: bakedEffort } = isAntigravityProvider(recordProvider)
+        ? splitAntigravityModel(record.model || '')
+        : { base: record.model || '', effort: null };
       setSelectedProviderId(record.providerId);
-      setSelectedModel(record.model || '');
+      setSelectedModel(base || '');
+      setEffort(record.effort || bakedEffort || '');
     }
     providerSyncRef.current = key;
   }, [record, providers, setSelectedProviderId, setSelectedModel]);
@@ -97,6 +111,9 @@ export default function ThreejsModelDetail() {
     const next = await generateThreejsModel(id, {
       providerId: selectedProviderId,
       model: selectedModel || undefined,
+      // Always sent (as `''` when unset) so picking "Default effort" CLEARS the
+      // record's stored override instead of silently re-applying it.
+      effort,
       prompt: record.prompt || '',
       feedback: feedback.trim(),
     }, { silent: true }).catch((error) => {
@@ -177,7 +194,7 @@ export default function ThreejsModelDetail() {
             </span>
           </div>
           <p className="mt-1 text-xs text-gray-500">
-            {record.providerId}{record.model ? ` · ${record.model}` : ''} · updated {timeAgo(record.updatedAt)}
+            {record.providerId}{record.model ? ` · ${record.model}` : ''}{record.effort ? ` · ${record.effort} effort` : ''} · updated {timeAgo(record.updatedAt)}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -264,6 +281,8 @@ export default function ThreejsModelDetail() {
           availableModels={availableModels}
           onProviderChange={setSelectedProviderId}
           onModelChange={setSelectedModel}
+          effort={effort}
+          onEffortChange={setEffort}
           disabled={providersLoading || generating}
           alwaysShowModel
           emptyModelOption="Provider default"

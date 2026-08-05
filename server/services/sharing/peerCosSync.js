@@ -202,7 +202,7 @@ async function pullOneCosArchiveFile(peer, base, entry) {
  * index so the CoS history UI lists them. Called ONLY when the manifest's files
  * are confirmed present on disk (the diff returned empty), so every referenced
  * agent — including its metadata.json — exists; a half-pulled agent is never
- * indexed. Dynamic import keeps cosAgents out of peerSync's static graph (mirrors
+ * indexed. Dynamic import keeps cosAgentIndex out of peerSync's static graph (mirrors
  * reconcileMediaLibraryIndex). addAgentArchivesToIndex unions and never
  * overwrites a locally-owned id.
  */
@@ -217,7 +217,7 @@ async function reconcileCosHistoryIndex(entries) {
     seen.add(key);
     pairs.push({ date: e.date, agentId: e.agentId });
   }
-  const mod = await import('../cosAgents.js').catch(() => null);
+  const mod = await import('../cosAgentIndex.js').catch(() => null);
   if (!mod?.addAgentArchivesToIndex) return;
   await mod.addAgentArchivesToIndex(pairs).catch((err) => {
     console.log(`⚠️ peerSync: cos-history index merge failed: ${err.message}`);

@@ -237,4 +237,113 @@ describe('Three.js model generation orchestration', () => {
       prompt: expect.stringContaining('/mock/data/images/example.png'),
     }));
   });
+
+  describe('effort threading', () => {
+    // A CLI provider whose CLI has an effort knob (`agy --effort <level>`).
+    const agyProvider = {
+      id: 'antigravity-cli',
+      name: 'Antigravity',
+      type: 'cli',
+      enabled: true,
+      command: 'agy',
+    };
+
+    const primeRecord = (overrides = {}) => {
+      let current = {
+        id: 'threejs-effort',
+        name: 'Example Beacon',
+        sourceImage: { filename: 'example.png' },
+        providerId: 'antigravity-cli',
+        model: 'gemini-3.6-flash',
+        prompt: '',
+        status: 'draft',
+        spec: null,
+        runs: [],
+        ...overrides,
+      };
+      store.getModel.mockResolvedValue(current);
+      store.mutateModel.mockImplementation(async (_id, mutate) => {
+        const next = mutate(current);
+        if (next) current = next;
+        return current;
+      });
+      runPromptThroughProvider.mockResolvedValue({
+        text: JSON.stringify(spec),
+        runId: 'run-effort',
+        provider: { id: 'antigravity-cli' },
+        model: 'gemini-3.6-flash',
+      });
+      return () => current;
+    };
+
+    it('forwards the selected effort to the prompt runner and persists it', async () => {
+      getProviderById.mockResolvedValue(agyProvider);
+      const read = primeRecord();
+
+      await startGeneration('threejs-effort', {
+        providerId: 'antigravity-cli',
+        model: 'gemini-3.6-flash',
+        effort: 'high',
+      });
+
+      await vi.waitFor(() => expect(read().status).toBe('ready'));
+      expect(runPromptThroughProvider).toHaveBeenCalledWith(expect.objectContaining({ effort: 'high' }));
+      expect(read().effort).toBe('high');
+      expect(read().runs.at(-1)).toMatchObject({ effort: 'high' });
+    });
+
+    it('keeps the stored effort when the caller omits the key entirely', async () => {
+      getProviderById.mockResolvedValue(agyProvider);
+      const read = primeRecord({ effort: 'medium' });
+
+      await startGeneration('threejs-effort', { providerId: 'antigravity-cli' });
+
+      await vi.waitFor(() => expect(read().status).toBe('ready'));
+      expect(runPromptThroughProvider).toHaveBeenCalledWith(expect.objectContaining({ effort: 'medium' }));
+      expect(read().effort).toBe('medium');
+    });
+
+    it('drops an effort the resolved provider/model cannot honor instead of persisting a lie', async () => {
+      // The picker hides the effort control for a provider with no tiers but
+      // keeps its last value, so the request can still carry one.
+      getProviderById.mockResolvedValue({
+        id: 'vision-api', name: 'Vision API', type: 'api', enabled: true, defaultModel: 'vision-default',
+      });
+      const read = primeRecord({ providerId: 'vision-api' });
+
+      await startGeneration('threejs-effort', { providerId: 'vision-api', model: 'vision-pro', effort: 'high' });
+
+      await vi.waitFor(() => expect(read().status).toBe('ready'));
+      expect(runPromptThroughProvider).toHaveBeenCalledWith(expect.objectContaining({ effort: undefined }));
+      expect(read().effort).toBeNull();
+    });
+
+    it('persists the CLAMPED effort when the chosen agy model lacks that tier', async () => {
+      getProviderById.mockResolvedValue({
+        ...agyProvider,
+        models: ['gemini-3.1-pro-low', 'gemini-3.1-pro-high'],
+      });
+      const read = primeRecord({ model: 'gemini-3.1-pro' });
+
+      // agy rejects `--model gemini-3.1-pro --effort medium`, so it runs as low.
+      await startGeneration('threejs-effort', {
+        providerId: 'antigravity-cli', model: 'gemini-3.1-pro', effort: 'medium',
+      });
+
+      await vi.waitFor(() => expect(read().status).toBe('ready'));
+      expect(runPromptThroughProvider).toHaveBeenCalledWith(expect.objectContaining({ effort: 'low' }));
+      expect(read().effort).toBe('low');
+    });
+
+    it('clears the stored effort on an explicit null (the picker\'s "Default effort")', async () => {
+      getProviderById.mockResolvedValue(agyProvider);
+      const read = primeRecord({ effort: 'medium' });
+
+      await startGeneration('threejs-effort', { providerId: 'antigravity-cli', effort: null });
+
+      await vi.waitFor(() => expect(read().status).toBe('ready'));
+      expect(runPromptThroughProvider).toHaveBeenCalledWith(expect.objectContaining({ effort: undefined }));
+      expect(read().effort).toBeNull();
+    });
+  });
 });

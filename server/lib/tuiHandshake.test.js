@@ -683,7 +683,63 @@ describe('tuiHandshake.buildTuiInvocation', () => {
   it('appends --model for Antigravity TUI when a real model is selected', () => {
     const out = buildTuiInvocation({ id: 'antigravity-tui', command: 'agy', args: [] }, 'gemini-3.1-pro-high');
     expect(out.command).toBe('agy');
-    expect(out.args).toEqual(['--dangerously-skip-permissions', '--model', 'gemini-3.1-pro-high']);
+    // A legacy effort-suffixed id splits into base + `--effort` — the same
+    // invocation agy resolves `gemini-3.1-pro-high` to.
+    expect(out.args).toEqual(['--dangerously-skip-permissions', '--model', 'gemini-3.1-pro', '--effort', 'high']);
+  });
+
+  it('pairs a base Antigravity model with provider.effort', () => {
+    const out = buildTuiInvocation(
+      { id: 'antigravity-tui', command: 'agy', args: [], effort: 'medium' },
+      'gemini-3.6-flash',
+    );
+    expect(out.args).toEqual(['--dangerously-skip-permissions', '--model', 'gemini-3.6-flash', '--effort', 'medium']);
+  });
+
+  it('clamps provider.effort to a tier the selected Antigravity model actually has', () => {
+    // agy rejects `--model gemini-3.1-pro --effort medium` outright, so the
+    // catalog narrows the ladder to the tiers that base really offers.
+    const out = buildTuiInvocation(
+      {
+        id: 'antigravity-tui',
+        command: 'agy',
+        args: [],
+        effort: 'medium',
+        models: ['gemini-3.1-pro-low', 'gemini-3.1-pro-high'],
+      },
+      'gemini-3.1-pro',
+    );
+    expect(out.args).toEqual(['--dangerously-skip-permissions', '--model', 'gemini-3.1-pro', '--effort', 'low']);
+  });
+
+  it('emits no --effort for an Antigravity model the catalog gives no tiers', () => {
+    const out = buildTuiInvocation(
+      {
+        id: 'antigravity-tui',
+        command: 'agy',
+        args: [],
+        effort: 'high',
+        models: ['gemini-3.6-flash-high', 'claude-sonnet-4-6'],
+      },
+      'claude-sonnet-4-6',
+    );
+    expect(out.args).toEqual(['--dangerously-skip-permissions', '--model', 'claude-sonnet-4-6']);
+  });
+
+  it('appends --effort for a claude TUI provider carrying provider.effort', () => {
+    const out = buildTuiInvocation(
+      { id: 'claude-code-tui', command: 'claude', args: [], effort: 'max' },
+      'claude-opus-5',
+    );
+    expect(out.args).toEqual(['--model', 'claude-opus-5', '--effort', 'max']);
+  });
+
+  it('emits no --effort for a TUI provider with no effort control', () => {
+    const out = buildTuiInvocation(
+      { id: 'opencode-tui', command: 'opencode', args: [], effort: 'high' },
+      'qwen3',
+    );
+    expect(out.args).toEqual(['--model', 'qwen3']);
   });
 
   // agy serves its `claude-*` ids through Google's own gateway, so a Bedrock box

@@ -10,6 +10,7 @@ import { runPromptThroughProvider } from '../../lib/promptRunner.js';
 import { extractJson } from '../../lib/jsonExtract.js';
 import { buildThreejsFactorySource, threejsSculptSpecSchema } from '../../lib/threejsModel.js';
 import { buildThreejsCoverageFeedback, evaluateThreejsPartCoverage } from '../../lib/threejsModelCoverage.js';
+import { resolveCliEffort } from '../../lib/providerModels.js';
 import { getProviderById } from '../providers.js';
 import { buildThreejsGenerationPrompt } from './prompt.js';
 import * as store from './db.js';
@@ -66,6 +67,7 @@ async function executeGeneration({
   operationId,
   provider,
   requestedModel,
+  requestedEffort,
   sourcePath,
   prompt,
 }) {
@@ -73,6 +75,9 @@ async function executeGeneration({
     const result = await runPromptThroughProvider({
       provider,
       model: requestedModel || undefined,
+      // No-op for API providers and for CLI/TUI providers with no effort
+      // control — runPromptThroughProvider clamps/drops it per provider.
+      effort: requestedEffort || undefined,
       prompt,
       source: 'threejs-model-generation',
       // CLI/TUI agents only need the gallery image and JSON contract. Keep
@@ -143,6 +148,7 @@ export async function createModel(input) {
   return startGeneration(created.id, {
     providerId: input.providerId,
     model: input.model,
+    effort: input.effort,
     prompt: input.prompt,
   });
 }
@@ -150,6 +156,7 @@ export async function createModel(input) {
 export async function startGeneration(id, {
   providerId,
   model,
+  effort,
   prompt,
   feedback = '',
 } = {}) {
@@ -173,6 +180,16 @@ export async function startGeneration(id, {
   // errors — the promises the model measurably did not build — instead of a
   // generic "improve it".
   const effectiveFeedback = (feedback || '').trim() || buildThreejsCoverageFeedback(current.coverage);
+  // Absent (`undefined`) keeps whatever the record already had; an explicit
+  // `null` — what the picker's "Default effort" choice sends — clears it.
+  const requestedEffort = effort === undefined ? (current.effort || null) : (effort || null);
+  // Persist what will ACTUALLY run, not what was asked for. The picker hides the
+  // effort control for a provider/model with no tiers but keeps its last value,
+  // so an unhonored level would otherwise be stored and rendered ("high effort")
+  // for a run that never used one — with no way to clear it. resolveCliEffort
+  // returns null for API/effort-less providers and clamps an out-of-range level
+  // to the tier the chosen model really has, matching the CLI arg builders.
+  const effectiveEffort = resolveCliEffort(requestedEffort, provider, model || provider.defaultModel || null);
   const generationPrompt = buildThreejsGenerationPrompt({
     sourcePath,
     name: current.name,
@@ -189,6 +206,7 @@ export async function startGeneration(id, {
       prompt: effectivePrompt,
       providerId: provider.id,
       model: model || provider.defaultModel || null,
+      effort: effectiveEffort,
       status: 'generating',
       error: null,
       generationOperationId: operationId,
@@ -199,6 +217,7 @@ export async function startGeneration(id, {
           status: 'running',
           providerId: provider.id,
           model: model || provider.defaultModel || null,
+          effort: effectiveEffort,
           feedback: effectiveFeedback || null,
           startedAt,
           completedAt: null,
@@ -216,6 +235,7 @@ export async function startGeneration(id, {
       operationId,
       provider,
       requestedModel: model,
+      requestedEffort: effectiveEffort,
       sourcePath,
       prompt: generationPrompt,
     });

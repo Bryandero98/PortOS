@@ -30,13 +30,13 @@ vi.mock('./cos.js', () => ({
   }),
 }));
 
-vi.mock('./cosAgents.js', () => ({
+vi.mock('./cosAgentLifecycle.js', () => ({
   getAgent: vi.fn(),
 }));
 
 import { connectTuiSessionViaRunner, getActiveAgentsFromRunner } from './cosRunnerClient.js';
 import * as shellService from './shell.js';
-import { getAgent } from './cosAgents.js';
+import { getAgent } from './cosAgentLifecycle.js';
 import { activeAgents, runnerAgents } from './agentState.js';
 import { syncRunnerAgents } from './agentRunnerSync.js';
 
