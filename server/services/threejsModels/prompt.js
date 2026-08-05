@@ -57,6 +57,7 @@ Return one raw JSON object and nothing else. It must have exactly this top-level
     "material":"materialId",
     "position":[x,y,z],"rotationDegrees":[x,y,z],"scale":[sx,sy,sz],
     "castShadow":true,"receiveShadow":true,
+    "explodeWithParent":false,
     "children":[ ...same part shape... ]
   }],
   "sockets": [{"name":"socketName","parentPartId":"partId","position":[x,y,z],"rotationDegrees":[x,y,z]}],
@@ -105,7 +106,7 @@ WORKFLOW:
 1. Inspect the image before deciding geometry.
 2. Classify the subject as object, character, or hybrid.
 3. Inventory every identity-defining visible detail: silhouette, proportions, bevels/rounding, seams, trim, controls, fasteners, facial landmarks, limbs, wear, gloss, emissive regions, and attachment points.
-4. Build from a clear parent/child hierarchy. Put moving or attachable pieces in their own named parts. Add sockets for meaningful pivots/attachments.
+4. Build from a clear parent/child hierarchy. Put moving or attachable pieces in their own named parts. Add sockets for meaningful pivots/attachments. Set "explodeWithParent":true on surface relief — serrations, stria, ridges, trim, engraving, port floors, panel lines and other detail that belongs TO a part rather than being a part — so the viewer takes the model apart into readable components instead of a comb of loose slivers. Leave it false (the default) on anything a person would call a separate component.
 5. Use primitive composition first, then the schema-backed extrude/tube/lathe forms for silhouettes, cutouts, and swept details. Use custom triangles only when no other allowed form can reproduce the shape.
 6. Use physically coherent PBR material channels. Reach for "physical" with ior/transmission/thickness for glass, gems, liquid, and clear plastic, sheen for cloth and velvet, iridescence for oil-slick/soap-film/pearlescent finishes, and anisotropy for brushed metal or spun discs. Do not use textures, external meshes, URLs, downloaded assets, or JavaScript.
 7. Center the subject near the origin, keep dimensions internally consistent, and choose a camera that frames the whole model.
@@ -114,6 +115,7 @@ WORKFLOW:
 
 QUALITY GATE:
 - A compound subject must not collapse into one primitive.
+- The model must come apart into readable components: every piece a person would name is its own part, and every detail that merely rides a surface carries "explodeWithParent":true.
 - Major visible attachments may not float or be omitted.
 - Identity-priority details must be represented by actual geometry/material choices.
 - Do not spend custom triangles on a shape extrude, tube, or lathe already expresses.

@@ -10,13 +10,14 @@
  *
  * Until #3450 this file also re-exported ~40 symbols from nine sibling modules
  * "for backward compatibility" — a second, partial view of the cluster layered
- * over `cosAgents.js` and `cos.js`'s agent block, including three process-layer
- * transitions `agentOrchestrator.js` also owns. Two barrels naming the same
- * transition is how a caller ends up importing the wrong one and the layering
- * stops meaning anything. The re-exports are gone; the surviving consumers of
- * this module import `initSpawner` (`bootstrap.js`) and `loadSlashdoCommand`
- * (CoS agent prompts), and everything else now imports the module that actually
- * defines it — or, for a lifecycle transition, `agentOrchestrator.js`.
+ * over the `cosAgents.js` barrel (since retired too) and `cos.js`'s agent block,
+ * including three process-layer transitions `agentOrchestrator.js` also owns.
+ * Two barrels naming the same transition is how a caller ends up importing the
+ * wrong one and the layering stops meaning anything. The re-exports are gone;
+ * the surviving consumers of this module import `initSpawner` (`bootstrap.js`)
+ * and `loadSlashdoCommand` (CoS agent prompts), and everything else now imports
+ * the module that actually defines it — or, for a lifecycle transition,
+ * `agentOrchestrator.js`.
  *
  * That is also why this module can take a static `agentOrchestrator.js` import
  * while the modules it wires cannot: with the barrel retired, nothing in the
@@ -31,7 +32,7 @@ import { join } from 'path';
 import { readdir, rm, stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { emitLog, cosEvents } from './cosEvents.js';
-import { updateAgent } from './cosAgents.js';
+import { updateAgent } from './cosAgentLifecycle.js';
 import { initProviderStatus } from './providerStatus.js';
 import { onCosRunnerEvent, initCosRunnerConnection, isRunnerAvailable } from './cosRunnerClient.js';
 import { PATHS } from '../lib/fileUtils.js';

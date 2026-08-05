@@ -585,7 +585,7 @@ async function* streamCompletion(provider, model, prompt, signal) {
     // the final token — anything appended after it (headlessArgs, --model) would
     // be swallowed as the prompt text. `--model` is injected here, gated on the
     // configured-default sentinel and any user-baked pin.
-    args = ensureAntigravityPrintArgs(args, { model: cliModel });
+    args = ensureAntigravityPrintArgs(args, { model: cliModel, models: provider?.models });
   } else if (provider.id === 'gemini-cli') {
     if (!args.includes('--output-format') && !args.includes('-o')) args.push('--output-format', 'text');
     if (cliModel) args.push('--model', cliModel);

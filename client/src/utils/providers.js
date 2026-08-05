@@ -160,18 +160,106 @@ export const CODEX_EFFORT_LEVELS = Object.freeze(['minimal', 'low', 'medium', 'h
 export const ANTIGRAVITY_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high']);
 
 /**
+ * Antigravity base-model ↔ effort-suffix split — MIRROR of
+ * `splitAntigravityModel` / `antigravityBaseModels` / `antigravityModelEffortLevels`
+ * in server/lib/providerModels.js; keep in lockstep.
+ *
+ * `agy models` enumerates the effort tiers as separate model ids
+ * (`gemini-3.6-flash-low|-medium|-high`), which forces the effort choice into
+ * the model dropdown. agy also accepts the BASE id with a separate `--effort`
+ * flag, so PortOS lists base models and carries effort as its own control. agy
+ * validates the PAIR, though (`gemini-3.1-pro` has no `medium`), so the tiers a
+ * base model offers come from the provider's own catalog.
+ */
+const ANTIGRAVITY_EFFORT_SUFFIX_RE = new RegExp(`-(${ANTIGRAVITY_EFFORT_LEVELS.join('|')})$`);
+
+/**
+ * `gemini-3.6-flash-high` → `{ base: 'gemini-3.6-flash', effort: 'high' }`.
+ * Unsuffixed ids, sentinels and non-strings → `{ base: <input>, effort: null }`.
+ * @param {string|null|undefined} id
+ * @returns {{base: string|null|undefined, effort: string|null}}
+ */
+export const splitAntigravityModel = (id) => {
+  if (typeof id !== 'string' || id === '' || isConfiguredDefaultModel(id)) return { base: id, effort: null };
+  const match = ANTIGRAVITY_EFFORT_SUFFIX_RE.exec(id);
+  return match ? { base: id.slice(0, -match[0].length), effort: match[1] } : { base: id, effort: null };
+};
+
+/**
+ * The user-selectable view of an Antigravity model list: effort suffixes
+ * stripped, duplicates collapsed, order preserved. Sentinels and non-string
+ * (`{ id, name }`) entries ride through untouched.
+ * @param {unknown[]} models
+ * @returns {unknown[]}
+ */
+export const antigravityBaseModels = (models) => {
+  const out = [];
+  const seen = new Set();
+  for (const entry of Array.isArray(models) ? models : []) {
+    if (typeof entry !== 'string') { out.push(entry); continue; }
+    const { base } = splitAntigravityModel(entry);
+    if (seen.has(base)) continue;
+    seen.add(base);
+    out.push(base);
+  }
+  return out;
+};
+
+/**
+ * The effort tiers an Antigravity base model offers per the provider's catalog:
+ * the present suffixes, `[]` when the model has none, or `null` when the MODEL
+ * is unknown — blank, the configured-default sentinel, or an empty catalog — so
+ * the caller falls back to the full ladder. The sentinel case matters: it is the
+ * shipped agy `defaultModel`, and reporting `[]` for it would hide the effort
+ * control on every freshly-opened picker.
+ * @param {string|null|undefined} model
+ * @param {unknown[]} models
+ * @returns {readonly string[]|null}
+ */
+export const antigravityModelEffortLevels = (model, models) => {
+  const list = (Array.isArray(models) ? models : []).filter(m => typeof m === 'string');
+  if (list.length === 0) return null;
+  if (isConfiguredDefaultModel(model)) return null;
+  const { base } = splitAntigravityModel(model);
+  if (typeof base !== 'string' || base === '') return null;
+  return Object.freeze(ANTIGRAVITY_EFFORT_LEVELS.filter(level => list.includes(`${base}-${level}`)));
+};
+
+/**
+ * The provider's selectable model list as the pickers should show it. Today that
+ * only rewrites Antigravity (base models instead of one row per effort tier);
+ * every other provider's list passes through untouched. The single place the
+ * normalization lives, so `useProviderModels` and any caller that reads
+ * `provider.models` directly agree.
+ * @param {{id?:string, command?:string}|null|undefined} provider
+ * @param {unknown[]} models
+ * @returns {unknown[]}
+ */
+export const selectableModelsForProvider = (provider, models) =>
+  isAntigravityProvider(provider) ? antigravityBaseModels(models) : (models || []);
+
+/**
  * The effort levels a provider's CLI accepts, or null when the provider has no
  * effort control (opencode, grok, kimi, HTTP API providers). Keyed on the launch
  * command basename plus the shipped provider ids, so path-configured or renamed
  * claude/codex/agy providers still qualify. Drives the "Effort (optional)"
  * select in task/schedule forms.
- * @param {{id?:string, command?:string}|null|undefined} provider
+ *
+ * `model` narrows the Antigravity ladder to the tiers that base model actually
+ * offers (see above). Omit it — or leave `provider.models` empty — for the full
+ * low/medium/high ladder. MIRROR of the server helper; keep in lockstep.
+ * @param {{id?:string, command?:string, models?:unknown[]}|null|undefined} provider
+ * @param {string|null} [model]
  * @returns {readonly string[]|null}
  */
-export const effortLevelsForProvider = (provider) => {
+export const effortLevelsForProvider = (provider, model = null) => {
   if (!provider) return null;
   if (isCodexProvider(provider)) return CODEX_EFFORT_LEVELS;
-  if (isAntigravityProvider(provider)) return ANTIGRAVITY_EFFORT_LEVELS;
+  if (isAntigravityProvider(provider)) {
+    const perModel = model ? antigravityModelEffortLevels(model, provider.models) : null;
+    if (perModel === null) return ANTIGRAVITY_EFFORT_LEVELS;
+    return perModel.length ? perModel : null;
+  }
   const id = String(provider.id || '').toLowerCase();
   if (id.startsWith('claude-code') || commandBasename(provider.command) === 'claude') return CLAUDE_EFFORT_LEVELS;
   return null;
@@ -192,12 +280,13 @@ const EFFORT_RANK = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh', 
  * holds a value matching no option, renders blank — reading as "Default effort"
  * — while the run silently uses the clamped level.
  * @param {string|null|undefined} effort
- * @param {{id?:string, command?:string}|null|undefined} provider
+ * @param {{id?:string, command?:string, models?:unknown[]}|null|undefined} provider
+ * @param {string|null} [model] - narrows the Antigravity ladder (see effortLevelsForProvider)
  * @returns {string|null}
  */
-export const resolveCliEffort = (effort, provider) => {
+export const resolveCliEffort = (effort, provider, model = null) => {
   if (!effort) return null;
-  const levels = effortLevelsForProvider(provider);
+  const levels = effortLevelsForProvider(provider, model);
   if (!levels) return null;
   if (levels.includes(effort)) return effort;
   const requested = EFFORT_RANK.indexOf(effort);

@@ -7,7 +7,7 @@ import { createHash } from 'crypto';
 
 // Completed-agent CoS history federation (#1650). We exercise peerSync.js's
 // cos-history functions against a tmpdir-redirected PATHS.cos, stubbing the
-// network (peerFetch) and the peer registry (instances). cosAgents.js is mocked
+// network (peerFetch) and the peer registry (instances). cosAgentIndex.js is mocked
 // so the receiver's index merge is a spy — it must NEVER touch the real
 // data/cos/agents index. The heavy record-graph modules are mocked exactly as
 // peerSync.test.js does, purely so importing peerSync.js stays cheap + offline.
@@ -32,9 +32,9 @@ vi.mock('../mediaCollections.js', async () => ({
 }));
 vi.mock('../mediaAssetIndex/index.js', () => ({ reconcileMediaAssets: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../../lib/peerHttpClient.js', async () => ({ peerFetch: vi.fn() }));
-// cosAgents is dynamic-imported by the receiver to merge the agentId→date index.
+// cosAgentIndex is dynamic-imported by the receiver to merge the agentId→date index.
 // Spy it so the merge is observable AND can't write the real data/cos index.
-vi.mock('../cosAgents.js', () => ({ addAgentArchivesToIndex: vi.fn().mockResolvedValue(0) }));
+vi.mock('../cosAgentIndex.js', () => ({ addAgentArchivesToIndex: vi.fn().mockResolvedValue(0) }));
 
 import {
   buildCosHistoryManifest,
@@ -43,7 +43,7 @@ import {
 } from './peerSync.js';
 import { getPeers } from '../instances.js';
 import { peerFetch } from '../../lib/peerHttpClient.js';
-import { addAgentArchivesToIndex } from '../cosAgents.js';
+import { addAgentArchivesToIndex } from '../cosAgentIndex.js';
 
 const sha = (s) => createHash('sha256').update(s).digest('hex');
 

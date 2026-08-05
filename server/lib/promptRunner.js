@@ -509,6 +509,12 @@ export function assertVisionRunUsedImages(result, requestedProvider) {
  *   `'media-prompt-refine'`, `'messages-triage'`, `'staged-llm'`, etc.)
  * @param {string} [args.model]  — model id hint; ignored when the
  *   provider doesn't honor it (claude-code, antigravity-cli today).
+ * @param {string} [args.effort] — reasoning-effort override for effort-capable
+ *   CLI/TUI providers (claude `--effort`, agy `--effort`, codex
+ *   `-c model_reasoning_effort=`). Clamped to the provider's (and, for agy, the
+ *   selected model's) ladder and dropped entirely for providers with no effort
+ *   control, so it is safe to pass unconditionally — including through the
+ *   fallback cascade, which may land on a provider that has none.
  * @param {string} [args.runId]  — caller-supplied run id (skip createRun
  *   round-trip when the caller has already created the run)
  * @param {(chunk: string) => void} [args.onData] — incremental stream
@@ -1122,7 +1128,7 @@ function stripFallbackContext(err) {
  * swapped to a fallback when the requested provider was already marked
  * unavailable).
  */
-async function executeProviderRunOnce({ provider, prompt, source, model, runId: callerRunId, onData: onDataCallback, timeout: timeoutOverride, cwd: cwdOverride, screenshots = [] }) {
+async function executeProviderRunOnce({ provider, prompt, source, model, effort = null, runId: callerRunId, onData: onDataCallback, timeout: timeoutOverride, cwd: cwdOverride, screenshots = [] }) {
   // Resolve the model that'll actually run BEFORE creating the run record
   // so the record reflects reality. resolveEffectiveModel handles both
   // the override-honored fallback chain AND the args-baked-CLI case
@@ -1263,8 +1269,19 @@ async function executeProviderRunOnce({ provider, prompt, source, model, runId: 
     // guard skips the clone when effectiveModel already equals
     // provider.defaultModel — typical for non-codex CLI providers where
     // resolveEffectiveModel falls through to defaultModel anyway.
-    const providerForRun = effectiveModel && effectiveModel !== effectiveProvider.defaultModel
-      ? { ...effectiveProvider, defaultModel: effectiveModel }
+    //
+    // A per-call reasoning-effort override rides the same clone (there is no
+    // `effort` argument on executeCliRun/executeTuiRun): `buildCliArgs` and
+    // `buildTuiInvocation` both read `provider.effort`. It is a no-op for
+    // providers with no effort control, so a caller that always passes one
+    // can't corrupt an opencode/grok/API run.
+    const needsModelPin = effectiveModel && effectiveModel !== effectiveProvider.defaultModel;
+    const providerForRun = (needsModelPin || effort)
+      ? {
+        ...effectiveProvider,
+        ...(needsModelPin ? { defaultModel: effectiveModel } : {}),
+        ...(effort ? { effort } : {}),
+      }
       : effectiveProvider;
 
     if (effectiveProvider.type === PROVIDER_TYPES.CLI) {

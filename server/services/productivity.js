@@ -7,7 +7,7 @@
 
 import { join } from 'path';
 import { cosEvents } from './cosEvents.js';
-import { getAgents } from './cosAgents.js';
+import { getAgents } from './cosAgentLifecycle.js';
 import { ensureDir, getDateString, PATHS, readJSONFile, atomicWrite } from '../lib/fileUtils.js';
 import { getWeekId, isConsecutiveWeek } from '../lib/isoWeek.js';
 

@@ -58,7 +58,7 @@
     { "id": "svc.cos", "label": "cos", "group": "server-services", "file": "server/services/cos.js", "desc": "CoS task lifecycle: create/approve/queue; emits task:ready." },
     { "id": "svc.subAgentSpawner", "label": "subAgentSpawner", "group": "server-services", "file": "server/services/subAgentSpawner.js", "desc": "Wires task:ready and the CoS Runner events to the spawn path; agentLifecycle.js does the prompt build, model selection and worktree prep." },
     { "id": "svc.cosRunnerClient", "label": "cosRunnerClient", "group": "server-services", "file": "server/services/cosRunnerClient.js", "desc": "Client for the standalone CoS Runner process (Socket.IO + HTTP health)." },
-    { "id": "svc.cosAgents", "label": "cosAgents", "group": "server-services", "file": "server/services/cosAgents.js", "desc": "Agent state index (date-bucketed JSON) + agent:* event fan-out to the UI." },
+    { "id": "svc.cosAgentLifecycle", "label": "cosAgentLifecycle", "group": "server-services", "file": "server/services/cosAgentLifecycle.js", "desc": "Agent state index (date-bucketed JSON) + agent:* event fan-out to the UI." },
     { "id": "svc.pm2", "label": "pm2 service", "group": "server-services", "file": "server/services/pm2.js", "desc": "PM2 wrapper: CLI spawn + programmatic connect, strict jlist status." },
     { "id": "svc.shell", "label": "shell", "group": "server-services", "file": "server/services/shell.js", "desc": "PTY session manager: spawn, single-subscriber attach, safe env allowlist." },
     { "id": "svc.backup", "label": "backup", "group": "server-services", "file": "server/services/backup.js", "desc": "rsync snapshots + pg_dump + manifest; effective-exclude computation." },
@@ -157,9 +157,9 @@
         { "from": "svc.cosRunnerClient", "to": "ext.cosRunner", "transport": "socket", "label": "spawn request", "payload": "Socket.IO + HTTP to portos-cos on PORTS.COS" },
         { "from": "ext.cosRunner", "to": "ext.aiCli", "transport": "spawn", "label": "run agent CLI", "payload": "claude/codex spawned in the task's worktree with the prompt" },
         { "from": "ext.cosRunner", "to": "svc.cosRunnerClient", "transport": "socket", "label": "output stream", "payload": "parsed agent output lines + completion status" },
-        { "from": "svc.cosRunnerClient", "to": "svc.cosAgents", "transport": "call", "label": "record output", "payload": "batched output lines + lifecycle updates" },
-        { "from": "svc.cosAgents", "to": "store.jsonFiles", "transport": "storage", "label": "persist agent index", "payload": "date-bucketed agent state JSON" },
-        { "from": "svc.cosAgents", "to": "page.chiefOfStaff", "transport": "socket", "label": "agent:output / agent:completed", "payload": "live output lines and final summary rendered in the UI" }
+        { "from": "svc.cosRunnerClient", "to": "svc.cosAgentLifecycle", "transport": "call", "label": "record output", "payload": "batched output lines + lifecycle updates" },
+        { "from": "svc.cosAgentLifecycle", "to": "store.jsonFiles", "transport": "storage", "label": "persist agent index", "payload": "date-bucketed agent state JSON" },
+        { "from": "svc.cosAgentLifecycle", "to": "page.chiefOfStaff", "transport": "socket", "label": "agent:output / agent:completed", "payload": "live output lines and final summary rendered in the UI" }
       ]
     },
     {

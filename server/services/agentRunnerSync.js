@@ -14,7 +14,7 @@
 import { connectTuiSessionViaRunner, getActiveAgentsFromRunner } from './cosRunnerClient.js';
 import { isInternalTaskId } from '../lib/taskParser.js';
 import { isAgentOwnedLocally, runnerAgents } from './agentState.js';
-import { getAgent } from './cosAgents.js';
+import { getAgent } from './cosAgentLifecycle.js';
 import * as shellService from './shell.js';
 
 /**

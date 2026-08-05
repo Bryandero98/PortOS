@@ -71,6 +71,21 @@ describe('threejsSculptSpecSchema', () => {
     expect(parsed.parts[0].children[0].id).toBe('frontTrim');
   });
 
+  it('defaults surface relief off and preserves an explicit flag', () => {
+    const spec = validSpec();
+    spec.parts[0].children[0].explodeWithParent = true;
+    const parsed = threejsSculptSpecSchema.parse(spec);
+    // A part is a component unless the model says it merely rides one.
+    expect(parsed.parts[0].explodeWithParent).toBe(false);
+    expect(parsed.parts[0].children[0].explodeWithParent).toBe(true);
+  });
+
+  it('rejects a non-boolean surface-relief flag', () => {
+    const spec = validSpec();
+    spec.parts[0].explodeWithParent = 'yes';
+    expect(threejsSculptSpecSchema.safeParse(spec).success).toBe(false);
+  });
+
   it('rejects unknown material and detail references', () => {
     const spec = validSpec();
     spec.parts[0].material = 'missing';
@@ -315,6 +330,17 @@ describe('buildThreejsFactorySource', () => {
     expect(source).toContain('root.userData.sculptRuntime');
     expect(source).toContain("case 'custom'");
     expect(source).toContain('new THREE.MeshBasicMaterial(unlit)');
+  });
+
+  it('carries the surface-relief flag into part userData so an export can disassemble too', () => {
+    const spec = validSpec();
+    spec.parts[0].children[0].explodeWithParent = true;
+    const source = buildThreejsFactorySource(spec);
+    expect(source).toContain('node.userData.partId = definition.id;');
+    expect(source).toContain('node.userData.explodeWithParent = definition.explodeWithParent;');
+    // The serialized spec the factory closes over must carry the flag, not just
+    // the code that reads it.
+    expect(source).toContain('"explodeWithParent": true');
   });
 
   it('emits extrude, tube, and physical-channel construction', () => {

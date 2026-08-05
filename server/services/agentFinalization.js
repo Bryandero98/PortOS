@@ -20,7 +20,7 @@
 import { join } from 'path';
 import { execGit } from '../lib/execGit.js';
 import { emitLog } from './cosEvents.js';
-// The DEFINING module, not the `cosAgents.js` barrel (#3450) — see the note in
+// The DEFINING module, not a barrel (#3450) — see the note in
 // `agentManagement.js`. This module is a LEAF that both transition modules
 // import, which puts it inside the facade's closure, so the facade is out of
 // reach here.
