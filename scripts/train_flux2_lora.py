@@ -6,8 +6,10 @@ quantized inference repos — no useful gradients through quant layers).
 The trained adapter loads onto quantized inference pipelines of the same
 size variant because the transformer hidden dims match.
 
-Two phases keep peak memory survivable — on Apple Silicon's unified memory and,
-just as much, on a consumer CUDA card (a 24 GB 3090 has no headroom to spare):
+Two phases keep peak memory survivable on a consumer CUDA card (a 24 GB 3090
+has no headroom to spare). The split was written for Apple Silicon's unified
+memory, but `main()` now refuses MPS outright — see the guard below — so CUDA
+and CPU are the runtimes this actually serves:
 
   1. STAGE:precompute-latents — encode every dataset image to VAE latents
      and every caption to Qwen3 text embeddings ONCE, then free the text
@@ -42,6 +44,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _runner_common import (  # noqa: E402
+    empty_device_cache,
     heartbeat,
     install_hf_error_handler,
     pick_device,
@@ -61,19 +64,6 @@ signal.signal(signal.SIGTERM, _on_sigterm)
 
 def log(msg: str) -> None:
     print(msg, flush=True)
-
-
-def empty_device_cache(device: str) -> None:
-    """Return freed blocks to the driver on whichever accelerator we're on.
-
-    The caching allocator otherwise keeps them reserved, which starves the one
-    big contiguous `transformer.to(device)` allocation that follows precompute.
-    CUDA needs this as much as MPS does — on a 24 GB card the leftover reserve
-    is the difference between a clean move and an out-of-memory abort."""
-    if device == "mps":
-        torch.mps.empty_cache()
-    elif device == "cuda":
-        torch.cuda.empty_cache()
 
 
 def parse_args():
@@ -196,11 +186,15 @@ def render_sample(pipe, transformer, embeds, text_ids, resolution, device, dtype
     # fast bf16 convolution path, so decoding there reads as a hang (a single
     # 512-px decode ran >18 min on CUDA/Windows before this moved it back).
     # The VAE is ~0.17 GB against a ~8 GB resident transformer, so borrowing the
-    # device for one decode is cheap; it goes straight back so the training
-    # loop's footprint is unchanged.
+    # device for one decode is cheap.
+    # The move goes INSIDE the try: `.to()` walks parameters one at a time, so a
+    # throw partway leaves the VAE straddling both devices. Outside the try the
+    # `finally` would never run, and the next sample would read the now-`cuda`
+    # resting place as `vae_home` — silently latching it on-device for the rest
+    # of the run, on the card that just proved it has no headroom to spare.
     vae_home = next(pipe.vae.parameters()).device
-    pipe.vae.to(device)
     try:
+        pipe.vae.to(device)
         image = pipe.vae.decode(unpacked.to(device, pipe.vae.dtype), return_dict=False)[0]
     finally:
         pipe.vae.to(vae_home)
@@ -251,19 +245,34 @@ def main():
     with heartbeat("load-pipeline"):
         pipe = Flux2KleinPipeline.from_pretrained(args.model_repo, torch_dtype=dtype)
 
+    # Nothing in this pipeline is trainable until `add_adapter` introduces the
+    # LoRA below — say so once, here, rather than leaving it to whatever
+    # `from_pretrained` happened to return. This is the root-cause form of the
+    # precompute leak described further down: `requires_grad` is a property of
+    # the module, so clearing it makes the whole class of "inference forward
+    # silently built an autograd graph" unreachable from EVERY call site,
+    # present and future — where a `torch.no_grad()` block only protects the one
+    # region someone remembered to wrap. Both encoders take grad-free inputs
+    # (token ids; a tensor built from numpy), so this alone is sufficient; the
+    # `no_grad` below is kept as the belt to this pair of braces.
+    pipe.text_encoder.requires_grad_(False)
+    pipe.vae.requires_grad_(False)
+    pipe.transformer.requires_grad_(False)
+
     # ---- Phase 1: precompute text embeddings + image latents ----
     log("STAGE:precompute-latents")
     sample_prompt = args.sample_prompt or f"{args.trigger_word} portrait, neutral background"
     examples = []
-    # `no_grad` here is load-bearing, not a micro-optimization. Precompute is
-    # pure inference, but the freshly-loaded text encoder and VAE still carry
-    # `requires_grad=True` params — so without it every encode builds and keeps
-    # a full autograd graph, and the `.to("cpu")` cache copy inherits that
-    # `grad_fn`, pinning the whole graph on-device. Measured on FLUX.2-klein-4B:
-    # ~2.6 GB of Qwen3 activations retained PER UNIQUE CAPTION. A 128 GB
-    # unified-memory Mac silently absorbs that; a 24 GB CUDA card spills into
-    # driver shared memory (encode slows from 0.09 s to minutes) and then aborts
-    # with OOM at `transformer.to(device)` below.
+    # `no_grad` is load-bearing here, not a micro-optimization — it is the
+    # second half of the `requires_grad_(False)` pair above. Left unguarded with
+    # trainable params, every encode builds and keeps a full autograd graph, and
+    # the `.to("cpu")` cache copy inherits that `grad_fn` and pins it on-device:
+    # ~2.6 GB of Qwen3 activations PER UNIQUE CAPTION on FLUX.2-klein-4B. A
+    # 128 GB unified-memory Mac absorbs that silently; a 24 GB CUDA card spills
+    # into driver shared memory (encode slows from 0.09 s to minutes) and then
+    # aborts with OOM at `transformer.to(device)` below. Keeping both is
+    # deliberate: `no_grad` additionally suppresses graph-building when an INPUT
+    # carries a `grad_fn`, which clearing the params cannot.
     with torch.no_grad(), heartbeat("precompute-latents"):
         pipe.text_encoder.to(device)
         embed_cache = {}
@@ -302,8 +311,7 @@ def main():
 
     # ---- Phase 2: training ----
     log("STAGE:training")
-    transformer = pipe.transformer
-    transformer.requires_grad_(False)
+    transformer = pipe.transformer  # already frozen at load, with the encoders
     targets = lora_target_modules(transformer)
     log(f"STATUS:LoRA targets: {', '.join(targets)} (rank {args.rank})")
     # Always create the single trainable `default` adapter (gaussian init). On

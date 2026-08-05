@@ -83,10 +83,29 @@ at 7.77 GB.
 2.6 GB × N leak without complaint, and the MPS run died at the first backward —
 well after precompute — so the leak never had consequences there.
 
-**Fix.** Wrap precompute in `torch.no_grad()`, and clear the allocator cache on
-CUDA as well as MPS (a new `empty_device_cache(device)` helper replaces three
-`if device == "mps"`-only call sites — the leftover reserve was otherwise enough
-to starve the one big contiguous `transformer.to(device)` allocation).
+**Fix.** Two layers, because the region-level fix alone leaves the class of bug
+alive:
+
+- **Root cause — freeze at load.** `pipe.text_encoder.requires_grad_(False)` and
+  `pipe.vae.requires_grad_(False)` right after `from_pretrained`, joining the
+  `transformer.requires_grad_(False)` the trainer already did (hoisted up beside
+  them, so one place states the real invariant: nothing is trainable until
+  `add_adapter` runs). `requires_grad` is a property of the *module*, so
+  clearing it makes "an inference forward silently built a graph" unreachable
+  from every call site — where a `no_grad` block only protects the one region
+  someone remembered to wrap. Both encoders take grad-free inputs (token ids; a
+  tensor built from numpy), so this alone is sufficient.
+- **Belt — `torch.no_grad()` on precompute.** Kept, because it additionally
+  suppresses graph-building when an *input* carries a `grad_fn`, which clearing
+  the params cannot.
+
+Separately, the allocator cache is now cleared on CUDA as well as MPS. That
+became `empty_device_cache(device, *, synchronize=False)` in
+`scripts/_runner_common.py` — the shared runner module — rather than a local
+helper, since `flux2_macos.py` and `z_image_turbo.py` already carry their own
+copies of the same dispatch. It keys on the **resolved device string** rather
+than `torch.cuda.is_available()`, so a `--device cpu` run on a CUDA box no
+longer clears a cache it never filled.
 
 ## Bug 2 — sample render decoded the VAE on CPU in bf16 (reads as a hang)
 
@@ -109,6 +128,13 @@ backend, not just CUDA.
 and returns it to where precompute parked it. The VAE is ~0.17 GB against a
 ~8 GB resident transformer, so borrowing the device costs nothing and the
 training loop's footprint is unchanged. Decode time: >18 min → **~2 s**.
+
+Both the move and the decode sit inside the `try` whose `finally` restores the
+VAE. `.to()` walks parameters one at a time, so a throw partway through the move
+would otherwise leave the VAE straddling two devices with the `finally` never
+entered — and since the caller treats samples as best-effort and swallows the
+exception, the next sample would read the now-`cuda` resting place as its
+"home" and latch the VAE on-device for the rest of the run.
 
 ## Result — full end-to-end run
 
@@ -173,13 +199,26 @@ mechanics and a clean LoRA load were the goal; both confirmed.
 ## Regression guard
 
 `scripts/train_flux2_lora_test.py` (standalone, no pytest, no torch — it parses
-the trainer's AST) pins both invariants: precompute stays inside
-`torch.no_grad()`, `render_sample` decodes on the training device and restores
-the VAE, and every cache clear routes through `empty_device_cache`. Verified to
-fail on a deliberately reverted copy, not just to pass on the fixed one.
+the trainer's AST) pins the invariants: the three modules are frozen at load,
+precompute's `encode_prompt`/`_encode_vae_image` run under `torch.no_grad()`,
+`render_sample` moves the VAE on-device inside the `try` and restores it in the
+`finally`, and no bare `torch.{mps,cuda}.empty_cache` survives anywhere in the
+module. Behavioral tests aren't possible here — exercising these paths needs
+torch, a ~16 GB download, and a CUDA card.
 
-Behavioral tests aren't possible here — exercising these paths needs torch, a
-~16 GB download, and a CUDA card.
+Each check was **mutation-tested**, since a guard that cannot fail is worthless:
+all seven regressions (stripping the `try/finally`, a bare
+`torch.cuda.empty_cache()`, re-declaring the helper locally as MPS-only,
+dropping `no_grad`, dropping either `requires_grad_(False)`, decoding off-device)
+are caught, while two legitimate refactors that change no behavior — nesting the
+`with` guards, and the `pipe.vae.to(device=device)` keyword form — stay green.
+That last pair matters: an earlier draft of this test keyed on one `with`
+statement's shape and went red on the nesting refactor while *passing* three of
+the regressions above.
+
+`scripts/_runner_common_test.py` covers the relocated helper directly, stubbing
+`sys.modules["torch"]` (the helper defers its import) to assert it dispatches on
+the resolved device and clears nothing on `cpu`.
 
 ## Outcome
 
