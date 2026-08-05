@@ -160,6 +160,9 @@ describe('computeExplodeLayout', () => {
     for (const id of ['stackA', 'stackB', 'stackC']) {
       expect(magnitude(offsetOf(layout, id))).toBeGreaterThan(0);
     }
+    // There is no assembled radius to divide by, but the parts DID move — a
+    // growth of exactly 1 would tell the camera nothing changed.
+    expect(layout.growth).toBeGreaterThan(1);
   });
 
   it('never moves relief off the part it rides', () => {

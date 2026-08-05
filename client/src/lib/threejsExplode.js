@@ -143,7 +143,10 @@ export function computeExplodeLayout(parts, amount = 0) {
   return {
     offsets,
     unitIds,
-    growth: assembledRadius > EPSILON ? explodedRadius / assembledRadius : 1,
+    // Units stacked on one point have no assembled radius to grow FROM, but the
+    // clearance still moved them — report absolute growth there so the camera
+    // re-fit still fires instead of reading as "nothing changed".
+    growth: assembledRadius > EPSILON ? explodedRadius / assembledRadius : 1 + explodedRadius,
   };
 }
 
