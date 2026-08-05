@@ -246,7 +246,7 @@ describe('reserve across every window', () => {
     expect(verdict.skipReason).toMatch(/Weekly at 2% left is at or below the 40% reserve/);
   });
 
-  it('burns when EVERY in-scope window is above the reserve', () => {
+  it('burns when EVERY window on the card is above the reserve', () => {
     expect(evaluateFamilies([twoWindow(100, 90)], family, { now: NOW })[0].candidate).toBeTruthy();
   });
 });
@@ -275,14 +275,6 @@ describe('window targeting', () => {
     // "5 burns every 5 hours" — ~24/day against a weekly allowance.
     const [{ candidate }] = evaluateFamilies([twoWindow(100, 62)], family, { now: NOW });
     expect(candidate.dispatchKey).toBe(windowKey('claude', { resetsAt: '2026-07-27T00:00:00.000Z' }, { now: NOW }));
-  });
-
-  it('honors an explicit scope filter over the broadest window', () => {
-    const scoped = normalizeQuotaBurnConfig({
-      families: { claude: { enabled: true, scope: 'session', resetWithinHours: 24, jobs: [job()] } },
-    });
-    const [{ candidate }] = evaluateFamilies([twoWindow(100, 62)], scoped, { now: NOW });
-    expect(candidate.limit.label).toBe('5-hour');
   });
 
   it('falls back to soonest-reset when no window states a period it can classify', () => {

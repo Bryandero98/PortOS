@@ -13,7 +13,7 @@ import JobRow from './JobRow';
 import PresetPicker from './PresetPicker';
 import { jobFromPreset } from '../../lib/quotaBurnPatch';
 import { formatDateTime } from '../../utils/formatters';
-import { NumberField, TextField } from './fields';
+import { NumberField } from './fields';
 
 export default function FamilyCard({
   familyId, config, status, catalog, expanded, actionsBusy,
@@ -24,7 +24,8 @@ export default function FamilyCard({
   // prop — merging them into the job objects would mean stripping them back off
   // before every save (the PUT schema is strict). Matched by id so a reorder
   // mid-save can't mis-pair them.
-  const pendingFor = (id) => (status?.jobs || []).find((row) => row.id === id)?.pending ?? null;
+  const statusJobs = status?.jobs || [];
+  const pendingFor = (id) => statusJobs.find((row) => row.id === id)?.pending ?? null;
 
   const patchJobs = (next) => onPatch({ jobs: next });
   const changeJob = (index, next) => patchJobs(jobs.map((job, i) => (i === index ? next : job)));
@@ -64,12 +65,15 @@ export default function FamilyCard({
   }]);
   // A preset job inherits the app the plan is already pointed at, when the plan
   // is unambiguous about it — otherwise a one-click "add a UX audit" lands as a
-  // step that cannot run until the user notices the unset app picker.
-  const targetedAppIds = [...new Set(jobs.map((job) => job.params?.appId).filter(Boolean))];
-  const addPresetJob = (preset) => patchJobs([...jobs, jobFromPreset(preset, {
-    id: nextJobId(),
-    appId: targetedAppIds.length === 1 ? targetedAppIds[0] : null,
-  })]);
+  // step that cannot run until the user notices the unset app picker. Derived at
+  // click time, not per render: the page polls while any family is pending.
+  const addPresetJob = (preset) => {
+    const targetedAppIds = [...new Set(jobs.map((job) => job.params?.appId).filter(Boolean))];
+    patchJobs([...jobs, jobFromPreset(preset, {
+      id: nextJobId(),
+      appId: targetedAppIds.length === 1 ? targetedAppIds[0] : null,
+    })]);
+  };
 
   return (
     <div className="rounded border border-port-border bg-port-card/40">
@@ -153,11 +157,6 @@ export default function FamilyCard({
             <NumberField id={`burn-${familyId}-reserve`} label="Reserve (%)" value={config.reservePercent} onChange={(v) => onPatch({ reservePercent: v })} min={0} max={100} hint="Never spend below this much headroom." />
             <NumberField id={`burn-${familyId}-cap`} label="Dispatch cap per window" value={config.maxDispatchesPerWindow} onChange={(v) => onPatch({ maxDispatchesPerWindow: v })} min={1} max={50} hint="Max automatic burns per reset window." />
             <NumberField id={`burn-${familyId}-priority`} label="Priority" value={config.priority} onChange={(v) => onPatch({ priority: v })} min={0} max={100} hint="Lower wins when two windows reset together." />
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <TextField id={`burn-${familyId}-provider`} label="Provider ID (optional)" value={config.providerId} onChange={(v) => onPatch({ providerId: v })} placeholder="auto-match by family" />
-            <TextField id={`burn-${familyId}-scope`} label="Window scope (optional)" value={config.scope} onChange={(v) => onPatch({ scope: v })} placeholder="e.g. week — blank targets the broadest window" />
           </div>
 
           <div className="space-y-3">

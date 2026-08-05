@@ -74,7 +74,6 @@ export const QUOTA_BURN_BOUNDS = Object.freeze({
   jobsPerFamily: { max: 25 },
   idLength: { max: 64 },
   labelLength: { max: 120 },
-  scopeLength: { max: 60 },
   paramLength: { max: 8000 },
 });
 const BOUNDS = QUOTA_BURN_BOUNDS;
@@ -138,17 +137,6 @@ export const QUOTA_BURN_JOB_CATALOG = Object.freeze([
     ]),
   },
 ]);
-
-const DEFAULT_QUOTA_BURN_FAMILY = Object.freeze({
-  enabled: false,
-  providerId: null,
-  scope: null,
-  resetWithinHours: BOUNDS.resetWithinHours.default,
-  reservePercent: BOUNDS.reservePercent.default,
-  maxDispatchesPerWindow: BOUNDS.maxDispatchesPerWindow.default,
-  priority: BOUNDS.priority.default,
-  jobs: Object.freeze([]),
-});
 
 // Clamp against one QUOTA_BURN_BOUNDS entry, falling back to its documented
 // default when the value is missing or non-numeric.
@@ -224,8 +212,6 @@ export function normalizeQuotaBurnFamily(raw) {
     .filter(Boolean);
   return {
     enabled: value.enabled === true,
-    providerId: nullableString(value.providerId, BOUNDS.labelLength.max),
-    scope: nullableString(value.scope, BOUNDS.scopeLength.max),
     resetWithinHours: clamp(BOUNDS.resetWithinHours, value.resetWithinHours),
     reservePercent: clamp(BOUNDS.reservePercent, value.reservePercent),
     maxDispatchesPerWindow: clampInt(BOUNDS.maxDispatchesPerWindow, value.maxDispatchesPerWindow),

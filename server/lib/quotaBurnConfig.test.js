@@ -29,6 +29,17 @@ describe('normalizeQuotaBurnConfig', () => {
     });
   });
 
+  it('drops the retired per-family providerId / scope keys from an older plan', () => {
+    // Both were removed from the family shape; a config file written before that
+    // must still load, minus the keys, rather than carrying dead state forward.
+    const family = normalizeQuotaBurnConfig({
+      families: { grok: { enabled: true, providerId: 'grok-cli', scope: 'session' } },
+    }).families.grok;
+    expect(family.enabled).toBe(true);
+    expect(family).not.toHaveProperty('providerId');
+    expect(family).not.toHaveProperty('scope');
+  });
+
   it('clamps the check interval into the polling bounds', () => {
     expect(normalizeQuotaBurnConfig({ checkIntervalMinutes: 1 }).checkIntervalMinutes).toBe(5);
     expect(normalizeQuotaBurnConfig({ checkIntervalMinutes: 99999 }).checkIntervalMinutes).toBe(720);

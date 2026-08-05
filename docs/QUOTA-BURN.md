@@ -16,7 +16,7 @@ Every `checkIntervalMinutes` (default 30, bounded 5–720) the runner:
 2. Takes a zero-token quota reading for every enabled provider family.
 3. Selects families whose **target window** (see below) is inside
    `resetWithinHours`, that no provider refusal is currently blocking, that still
-   have headroom above `reservePercent` in *every* window in scope, and that have
+   have headroom above `reservePercent` in *every* window on the card, and that have
    not spent `maxDispatchesPerWindow` for that window. Ties break on `priority`
    (lower wins).
 4. Runs the **first enabled job in that family's ordered plan that reports
@@ -36,9 +36,9 @@ rolling one (claude/codex `session` ≈ 5h, antigravity `5-hour`) and a long one
 
 | | Which window | What it is used for |
 | --- | --- | --- |
-| **Target** | The **broadest** window in scope (usually weekly) | The allowance that expires unused. Its reset is the deadline `resetWithinHours` measures, its percentage and countdown are what the family card shows, and its reset epoch is the key `maxDispatchesPerWindow` counts against — so the cap means "per weekly window". |
-| **Limiting** | The **narrowest** window in scope (usually 5-hour) | What actually refuses a run. It is the horizon a denial backs off to, and it is named in the burn prompt so the agent understands a mid-run refusal. |
-| **Tightest** | Whichever window in scope has the least headroom | What `reservePercent` guards, so a full session window can't be used to justify draining a nearly-empty weekly one. |
+| **Target** | The **broadest** window on the card (usually weekly) | The allowance that expires unused. Its reset is the deadline `resetWithinHours` measures, its percentage and countdown are what the family card shows, and its reset epoch is the key `maxDispatchesPerWindow` counts against — so the cap means "per weekly window". |
+| **Limiting** | The **narrowest** window on the card (usually 5-hour) | What actually refuses a run. It is the horizon a denial backs off to, and it is named in the burn prompt so the agent understands a mid-run refusal. |
+| **Tightest** | Whichever window on the card has the least headroom | What `reservePercent` guards, so a full session window can't be used to justify draining a nearly-empty weekly one. |
 
 Selecting the *soonest-resetting* window instead conflated target with limiting:
 the 5-hour window is nearly always the soonest, so the page reported "resets in
@@ -49,9 +49,7 @@ nothing), and the dispatch cap meant "N burns every 5 hours".
 Periods are classified in `server/lib/quotaWindows.js` from the `scope`/`label`
 words the adapters emit, or from an exact `periodHours` when a provider states
 one (codex's telemetry carries `window_minutes`). A family whose windows can't be
-classified at all falls back to soonest-reset ordering. The per-family **Window
-scope** field still filters: set it to `week` to pin the target explicitly, or to
-`session` to deliberately burn against the short window.
+classified at all falls back to soonest-reset ordering.
 
 ## Stop condition: an observed refusal
 

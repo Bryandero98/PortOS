@@ -119,8 +119,6 @@ export function buildGlobalPlan(apps, { scheduleArmed = true } = {}) {
         });
       }
       const windowSettings = {
-        providerId: value.providerId || null,
-        scope: typeof value.scope === 'string' ? value.scope : null,
         resetWithinHours: Number.isFinite(Number(value.resetWithinHours)) ? Number(value.resetWithinHours) : 24,
         reservePercent: Number.isFinite(Number(value.reservePercent)) ? Number(value.reservePercent) : 0,
         maxDispatchesPerWindow: Number.isFinite(Number(value.maxDispatchesPerWindow)) ? Number(value.maxDispatchesPerWindow) : 5,

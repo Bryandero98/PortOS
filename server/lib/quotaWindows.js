@@ -85,14 +85,14 @@ export function windowPeriodHours(limit) {
 export const windowLabelOf = (limit) => limit?.label || limit?.scope || 'window';
 
 /**
- * Split one card's in-scope windows into the two roles a burn reasons about, in
- * a single scoring pass:
+ * Split one card's windows into the two roles a burn reasons about, in a single
+ * scoring pass:
  *
  *   `target`  — `{ limit, hours }` for the BROADEST window that states a
  *               readable reset: the allowance that expires unused. Its reset is
  *               the deadline, and its epoch is what the dispatch cap keys on.
- *               Ties break on the soonest reset. Null when no window in scope
- *               states a reset at all.
+ *               Ties break on the soonest reset. Null when no window on the
+ *               card states a reset at all.
  *   `limiting` — the NARROWEST window: what refuses first. Exhausting a 5-hour
  *               window stops every dispatch for hours while the weekly allowance
  *               the plan targets is still mostly unspent, so it is the horizon a
