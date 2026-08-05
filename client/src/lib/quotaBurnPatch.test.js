@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { applyQuotaBurnPreset, jobFromPreset, mergeQuotaBurnPatch } from './quotaBurnPatch';
+import {
+  applyQuotaBurnPreset,
+  dispatchCapInput,
+  isUnlimitedDispatchCap,
+  jobFromPreset,
+  mergeQuotaBurnPatch,
+  UNLIMITED_DISPATCHES,
+} from './quotaBurnPatch';
 
 describe('mergeQuotaBurnPatch', () => {
   it('merges top-level keys and leaves families untouched', () => {
@@ -87,5 +94,22 @@ describe('jobFromPreset', () => {
     // `appId: ''` would read as a configured-but-blank app; absent is the honest
     // shape, and the row's own status line then says the app is unset.
     expect(jobFromPreset(preset, { id: 'job-x' }).params).not.toHaveProperty('appId');
+  });
+});
+
+describe('dispatch cap helpers', () => {
+  it('reads any negative cap as unlimited and a real cap as bounded', () => {
+    expect(isUnlimitedDispatchCap(UNLIMITED_DISPATCHES)).toBe(true);
+    expect(isUnlimitedDispatchCap(1)).toBe(false);
+    expect(isUnlimitedDispatchCap(50)).toBe(false);
+  });
+
+  it('collapses anything below the real minimum to the sentinel the PUT accepts', () => {
+    // 0 is what a spinner step down from 1 produces, and the schema rejects it —
+    // sending it would 400 and take every co-pending edit with it.
+    expect(dispatchCapInput(0)).toBe(UNLIMITED_DISPATCHES);
+    expect(dispatchCapInput(-4)).toBe(UNLIMITED_DISPATCHES);
+    expect(dispatchCapInput(1)).toBe(1);
+    expect(dispatchCapInput(50)).toBe(50);
   });
 });

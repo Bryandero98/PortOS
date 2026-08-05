@@ -17,8 +17,8 @@ Every `checkIntervalMinutes` (default 30, bounded 5–720) the runner:
 3. Selects families whose **target window** (see below) is inside
    `resetWithinHours`, that no provider refusal is currently blocking, that still
    have headroom above `reservePercent` in *every* window on the card, and that have
-   not spent `maxDispatchesPerWindow` for that window. Ties break on `priority`
-   (lower wins).
+   not spent `maxDispatchesPerWindow` for that window (`-1`, the default, means
+   no cap — see below). Ties break on `priority` (lower wins).
 4. Runs the **first enabled job in that family's ordered plan that reports
    pending work** — at most one dispatch per cycle.
 5. Charges the window in `data/cos/quota-burn-dispatches.json` and appends the
@@ -50,6 +50,23 @@ Periods are classified in `server/lib/quotaWindows.js` from the `scope`/`label`
 words the adapters emit, or from an exact `periodHours` when a provider states
 one (codex's telemetry carries `window_minutes`). A family whose windows can't be
 classified at all falls back to soonest-reset ordering.
+
+## The dispatch cap is opt-in
+
+`maxDispatchesPerWindow` defaults to **-1 (unlimited)**: the tally is not
+consulted at all, and the window's spend is bounded by the gates that read live
+numbers — `resetWithinHours`, `reservePercent`, and the provider's own refusal
+(below). A count-based ceiling stacked on top of those read like a safety
+property but mostly stopped a plan mid-window with quota still on the table,
+which is the outcome quota-burn exists to prevent.
+
+Set 1–50 for a hard ceiling per target window. **0 is not a value** — "never
+burn" is what switching the family off means. The window is charged in
+`quota-burn-dispatches.json` either way, so the family card still shows how many
+burns the current window has spent (without a denominator when uncapped).
+
+Migration 226 lifts an existing plan that still carries the old default of 5;
+any other stored value is a number the user chose and is left alone.
 
 ## Stop condition: an observed refusal
 

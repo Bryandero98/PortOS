@@ -176,10 +176,10 @@ export async function runQuotaBurnCycle(options = {}) {
 /**
  * Run the continuations that arrived while a cycle was in flight, one at a time.
  *
- * Bounded by the same ledger every other dispatch charges: a drained family gets
- * one cycle, which the gate ladder can decline. A completion that lands DURING
- * the drain re-enters the set legitimately — it is a different agent finishing —
- * and is likewise bounded by `maxDispatchesPerWindow`. Errors are swallowed here
+ * Bounded by the same gate ladder every other dispatch faces: a drained family
+ * gets one cycle, which the reserve or the reset horizon can decline. A
+ * completion that lands DURING the drain re-enters the set legitimately — it is
+ * a different agent finishing — and faces that ladder too. Errors are swallowed here
  * rather than allowed to replace the outer cycle's result: this runs from the
  * caller's `finally`, so a throw would mask what that cycle actually decided.
  */
@@ -437,15 +437,18 @@ async function lastScheduledRunAt() {
  * NEXT job in the plan goes out.
  *
  * Without this the plan advances only once per `checkIntervalMinutes` — at the
- * 12-hour default, two dispatches a day against a `maxDispatchesPerWindow` of 5
- * on a window that resets every 5 hours, so most of the allowance the feature
- * exists to spend expired unspent. Completion is the right pacing signal: it
- * runs the plan strictly one agent at a time and asks the gate ladder, every
- * time, whether there is still quota to spend.
+ * 12-hour default, two dispatches a day against a window that resets every 5
+ * hours, so most of the allowance the feature exists to spend expired unspent.
+ * Completion is the right pacing signal: it runs the plan strictly one agent at
+ * a time and asks the gate ladder, every time, whether there is still quota to
+ * spend.
  *
- * It cannot run away. Every continuation dispatch is charged to the window's
- * ledger, so `maxDispatchesPerWindow` bounds the chain, and the reserve /
- * reset-horizon gates close it earlier when the quota actually runs out.
+ * It cannot run away. The chain is serial by construction — the next dispatch
+ * needs an agent to finish first — and every link re-reads the family's live
+ * quota, so the reserve, the reset horizon, and an observed provider refusal
+ * each close it as soon as the numbers say to. A `maxDispatchesPerWindow` other
+ * than the unlimited default bounds it earlier still, from the same ledger every
+ * continuation dispatch is charged to.
  */
 function onBurnAgentCompleted(agent) {
   const familyId = agent?.metadata?.taskQuotaBurnFamily;

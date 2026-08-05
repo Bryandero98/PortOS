@@ -11,7 +11,7 @@ import { Ban, ChevronDown, ChevronRight, Flame, Plus } from 'lucide-react';
 import BrailleSpinner from '../BrailleSpinner';
 import JobRow from './JobRow';
 import PresetPicker from './PresetPicker';
-import { jobFromPreset } from '../../lib/quotaBurnPatch';
+import { dispatchCapInput, isUnlimitedDispatchCap, jobFromPreset, UNLIMITED_DISPATCHES } from '../../lib/quotaBurnPatch';
 import { formatDateTime } from '../../utils/formatters';
 import { NumberField } from './fields';
 
@@ -102,7 +102,7 @@ export default function FamilyCard({
              unreadable without knowing which allowance it describes. */
           <span className="inline-flex items-center gap-1 text-xs text-emerald-400">
             <Flame size={13} />
-            {status.windowLabel ? `${status.windowLabel}: ` : ''}{status.percentRemaining}% left · resets in {status.hoursUntilReset}h · {status.dispatchesUsed}/{config.maxDispatchesPerWindow} used
+            {status.windowLabel ? `${status.windowLabel}: ` : ''}{status.percentRemaining}% left · resets in {status.hoursUntilReset}h · {status.dispatchesUsed}{isUnlimitedDispatchCap(config.maxDispatchesPerWindow) ? '' : `/${config.maxDispatchesPerWindow}`} used
           </span>
         ) : (
           <span className="text-xs text-gray-500">{status?.skipReason || 'not evaluated yet'}</span>
@@ -155,7 +155,7 @@ export default function FamilyCard({
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <NumberField id={`burn-${familyId}-window`} label="Burn within (hours of reset)" value={config.resetWithinHours} onChange={(v) => onPatch({ resetWithinHours: v })} min={0} max={168} hint="Measured against the broadest window (the weekly one) — the allowance that expires unused." />
             <NumberField id={`burn-${familyId}-reserve`} label="Reserve (%)" value={config.reservePercent} onChange={(v) => onPatch({ reservePercent: v })} min={0} max={100} hint="Never spend below this much headroom." />
-            <NumberField id={`burn-${familyId}-cap`} label="Dispatch cap per window" value={config.maxDispatchesPerWindow} onChange={(v) => onPatch({ maxDispatchesPerWindow: v })} min={1} max={50} hint="Max automatic burns per reset window." />
+            <NumberField id={`burn-${familyId}-cap`} label="Dispatch cap per window" value={config.maxDispatchesPerWindow} onChange={(v) => onPatch({ maxDispatchesPerWindow: dispatchCapInput(v) })} min={UNLIMITED_DISPATCHES} max={50} hint="Max automatic burns per reset window. -1 = unlimited (the default) — the reset window, the reserve, and provider refusals still bound it." />
             <NumberField id={`burn-${familyId}-priority`} label="Priority" value={config.priority} onChange={(v) => onPatch({ priority: v })} min={0} max={100} hint="Lower wins when two windows reset together." />
           </div>
 

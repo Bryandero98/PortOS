@@ -87,6 +87,20 @@ describe('PUT /api/quota-burn', () => {
     });
   });
 
+  it('accepts the unlimited dispatch cap, which sits below the field\'s own minimum', async () => {
+    saveQuotaBurnConfig.mockResolvedValue({ enabled: true });
+    const res = await request(buildApp()).put('/api/quota-burn')
+      .send({ families: { grok: { maxDispatchesPerWindow: -1 } } });
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects a dispatch cap of 0 — "never burn" is the family switch, not a cap', async () => {
+    const res = await request(buildApp()).put('/api/quota-burn')
+      .send({ families: { grok: { maxDispatchesPerWindow: 0 } } });
+    expect(res.status).toBe(400);
+    expect(saveQuotaBurnConfig).not.toHaveBeenCalled();
+  });
+
   it('rejects an unknown family, an unknown job type, and an out-of-range interval', async () => {
     const app = buildApp();
     expect((await request(app).put('/api/quota-burn').send({ families: { nope: { enabled: true } } })).status).toBe(400);

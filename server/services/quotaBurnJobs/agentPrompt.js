@@ -15,7 +15,7 @@ import { addTask } from '../cosTaskStore.js';
 import { getAppById } from '../apps.js';
 import { getAllProviders } from '../providers.js';
 import { commandBasename } from '../../lib/providerModels.js';
-import { burnTaskDescription } from '../../lib/quotaBurnConfig.js';
+import { burnTaskDescription, isUnlimitedDispatchCap } from '../../lib/quotaBurnConfig.js';
 import { windowLabelOf } from '../../lib/quotaWindows.js';
 
 /**
@@ -115,7 +115,7 @@ export function renderBurnPrompt({ family, candidate, prompt }) {
     ...(showsLimiting
       ? [`Shorter window in play: ${windowLabelOf(limiting)} at ${limiting.percentRemaining}% remaining — it is what will refuse this run if it empties.`]
       : []),
-    `Dispatch cap: ${family.maxDispatchesPerWindow} for this reset window.`,
+    `Dispatch cap: ${isUnlimitedDispatchCap(family.maxDispatchesPerWindow) ? 'unlimited' : family.maxDispatchesPerWindow} for this reset window.`,
     '',
     'Carry out the configured work below. Do not use another provider family as a substitute.',
     '',
