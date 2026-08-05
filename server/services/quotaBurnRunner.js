@@ -38,9 +38,11 @@
 
 import { getProviderQuotas } from './providerUsage.js';
 import { getQuotaBurnDispatches, evaluateFamilies, recordQuotaBurnDispatch, selectBurnCandidates } from './quotaBurn.js';
+import { getActiveQuotaBurnBlocks, recordBurnAgentCompletion } from './quotaBurnDenials.js';
 import { getQuotaBurnConfig, getQuotaBurnRuns, recordQuotaBurnRun } from './quotaBurnStore.js';
 import { countJobPending, runBurnJob } from './quotaBurnJobs/index.js';
 import { familyIsActionable } from '../lib/quotaBurnConfig.js';
+import { windowLabelOf } from '../lib/quotaWindows.js';
 import { WAIT } from '../lib/staleWhileRevalidate.js';
 import { cosEvents } from './cosEvents.js';
 
@@ -247,13 +249,13 @@ async function evaluate({ trigger = 'scheduled', familyId = null, jobId = null, 
   });
   if (!quotas) return finish({ dispatched: false, reason: 'provider quota read failed' });
 
-  const dispatches = await getQuotaBurnDispatches();
-  // `force` is the page's per-job "Run now" — the window/reserve/cap gates that
-  // bound UNATTENDED burns don't apply to a run the user just asked for. It goes
-  // through the same selection, so the candidate still carries the family's real
-  // card and limit; it only comes back `charge: false`.
+  const [dispatches, blocks] = await Promise.all([getQuotaBurnDispatches(), getActiveQuotaBurnBlocks()]);
+  // `force` is the page's per-job "Run now" — the window/reserve/cap/denial gates
+  // that bound UNATTENDED burns don't apply to a run the user just asked for. It
+  // goes through the same selection, so the candidate still carries the family's
+  // real card and limit; it only comes back `charge: false`.
   const candidates = selectBurnCandidates(quotas, config, {
-    dispatches, bypassGatesFor: force ? familyId : null,
+    dispatches, blocks, bypassGatesFor: force ? familyId : null,
   }).filter((candidate) => !familyId || candidate.family.id === familyId);
 
   if (!candidates.length) {
@@ -262,7 +264,7 @@ async function evaluate({ trigger = 'scheduled', familyId = null, jobId = null, 
     // off, "disabled" IS the answer — reporting a different family's verdict
     // instead (or claiming it is "ready" when it did not run) leaves them with
     // no path to the control they need.
-    const reasons = evaluateFamilies(quotas, config, { dispatches })
+    const reasons = evaluateFamilies(quotas, config, { dispatches, blocks })
       .filter(({ family }) => (familyId ? family.id === familyId : family.enabled))
       .map(({ family, skipReason }) => `${family.id}: ${skipReason || 'ready'}`);
     return finish({
@@ -358,30 +360,40 @@ async function evaluate({ trigger = 'scheduled', familyId = null, jobId = null, 
 export async function getQuotaBurnStatus({ refresh = false } = {}) {
   // Independent reads: only `quotas` is slow (a PTY scrape on the Refresh path),
   // and nothing else waits on it.
-  const [config, quotas, dispatches, runs] = await Promise.all([
+  const [config, quotas, dispatches, blocks, runs] = await Promise.all([
     getQuotaBurnConfig(),
     getProviderQuotas({ wait: refresh ? WAIT.FRESH : WAIT.NEVER }).catch((err) => {
       console.error(`❌ Quota-burn status could not read provider quota: ${err.message}`);
       return [];
     }),
     getQuotaBurnDispatches(),
+    getActiveQuotaBurnBlocks(),
     getQuotaBurnRuns(),
   ]);
 
   const cards = new Map(quotas.map((card) => [card.family, card]));
   // ONE pass over the gate ladder the runner uses — the page's "will burn" and
   // its reason come from the same verdict, so they can't contradict each other.
-  const families = await Promise.all(evaluateFamilies(quotas, config, { dispatches })
-    .map(async ({ family, candidate, skipReason }) => {
+  const families = await Promise.all(evaluateFamilies(quotas, config, { dispatches, blocks })
+    .map(async ({ family, candidate, skipReason, block }) => {
       const card = cards.get(family.id);
       return {
         id: family.id,
         label: candidate?.card?.label || card?.label || family.id,
         percentRemaining: candidate?.limit?.percentRemaining ?? null,
         hoursUntilReset: candidate ? Math.round(candidate.hoursUntilReset * 10) / 10 : null,
+        // WHICH window those two numbers describe. Without it the card reports a
+        // percentage and a countdown with no way to tell the weekly allowance
+        // from the 5-hour one — the exact ambiguity that hid the wrong window
+        // being selected in the first place.
+        windowLabel: candidate ? windowLabelOf(candidate.limit) : null,
         dispatchesUsed: candidate?.dispatchesUsed ?? null,
         willBurn: Boolean(candidate),
         skipReason: skipReason || null,
+        // An observed provider refusal, surfaced whether or not it is the gate
+        // that closed — a family blocked AND out of window should say both.
+        blockedUntil: block?.until ? new Date(block.until).toISOString() : null,
+        blockedReason: block?.reason || null,
         // The reading for this family is being taken right now — the page polls
         // again instead of leaving a card that looks like it has no quota.
         pending: Boolean(card?.pending),
@@ -441,7 +453,17 @@ function onBurnAgentCompleted(agent) {
   // Returned so tests can await the cycle. The emitter ignores it — this is a
   // fire-and-forget listener, and the `.catch` is what keeps a rejection from
   // reaching the emitter as an unhandled one.
-  return runQuotaBurnCycle({ trigger: 'continuation', familyId })
+  //
+  // The denial ledger is folded in FIRST and awaited. If this run was refused,
+  // the family's short rolling window is spent and the very next thing this
+  // function does — dispatch the next job — would walk straight into the same
+  // wall. Recording after the cycle (or from a second `agent:completed`
+  // subscriber, whose ordering against this one is not guaranteed) is one wasted
+  // agent too late, every single time. A ledger failure must not stop the
+  // continuation, so it degrades to a logged warning.
+  return recordBurnAgentCompletion(agent)
+    .catch((err) => console.error(`⚠️ Quota-burn denial ledger for ${familyId}: ${err.message}`))
+    .then(() => runQuotaBurnCycle({ trigger: 'continuation', familyId }))
     .catch((err) => console.error(`❌ Quota-burn continuation for ${familyId} failed: ${err.message}`));
 }
 

@@ -16,6 +16,7 @@ import { getAppById } from '../apps.js';
 import { getAllProviders } from '../providers.js';
 import { commandBasename } from '../../lib/providerModels.js';
 import { burnTaskDescription } from '../../lib/quotaBurnConfig.js';
+import { windowLabelOf } from '../../lib/quotaWindows.js';
 
 /**
  * An agent-capable provider in the burning family. An explicit `providerId`
@@ -93,14 +94,27 @@ export async function countPending({ params, job, family } = {}) {
     : { count: 1, context: resolved, detail: `ready to queue an agent in ${resolved.app.name}` };
 }
 
-/** The burn context the agent sees above the user's own prompt. */
+/**
+ * The burn context the agent sees above the user's own prompt.
+ *
+ * Names the TARGET window (the weekly allowance this burn is racing) and, when
+ * the family reports a separate short rolling window, that one too — a run that
+ * is refused mid-way is nearly always the short window running out, and an agent
+ * told only "the weekly window has 60% left" reads that refusal as a bug.
+ */
 export function renderBurnPrompt({ family, candidate, prompt }) {
   const hours = Math.max(0, Math.ceil(candidate?.hoursUntilReset ?? 0));
+  const target = windowLabelOf(candidate?.limit);
+  const limiting = candidate?.limitingLimit;
+  const showsLimiting = limiting && limiting !== candidate?.limit;
   return [
     `# ${family.id} quota-burn task`,
     '',
-    `This ${family.id} quota window resets in about ${hours} hour${hours === 1 ? '' : 's'}.`,
-    `Window: ${candidate?.limit?.label || candidate?.limit?.scope || 'provider window'}; remaining: ${candidate?.limit?.percentRemaining}%; reserve: ${family.reservePercent}%.`,
+    `The ${family.id} ${target} quota window resets in about ${hours} hour${hours === 1 ? '' : 's'}.`,
+    `Window: ${target}; remaining: ${candidate?.limit?.percentRemaining}%; reserve: ${family.reservePercent}%.`,
+    ...(showsLimiting
+      ? [`Shorter window in play: ${windowLabelOf(limiting)} at ${limiting.percentRemaining}% remaining — it is what will refuse this run if it empties.`]
+      : []),
     `Dispatch cap: ${family.maxDispatchesPerWindow} for this reset window.`,
     '',
     'Carry out the configured work below. Do not use another provider family as a substitute.',
@@ -157,8 +171,13 @@ export async function run({ params, job, family, candidate, context } = {}) {
     reviewLoop: false,
     // Burn provenance, read back after the task round-trips through
     // COS-TASKS.md by `isCooldownExemptTask` (cosTaskGenerator.js, which owns
-    // the why) and by the runner's completion continuation.
+    // the why), by the runner's completion continuation, and by the denial
+    // ledger — a burn the provider REFUSES is the signal that this family's
+    // short rolling window is spent, but only a run this plan dispatched says
+    // anything about that. The limiting window's reset rides along so the block
+    // can wait on the right clock instead of a bounded guess.
     quotaBurnFamily: family.id,
+    quotaBurnLimitingResetAt: candidate?.limitingResetAt ?? null,
   }, 'internal');
 
   // A duplicate means an identical burn task for this app is still pending or
