@@ -15,6 +15,7 @@ import {
   MapPin, Package, Plus, Save, Trash2, Users,
 } from 'lucide-react';
 import InlineConfirmRow from '../ui/InlineConfirmRow';
+import toast from '../ui/Toast';
 import { WORLD_CATEGORY_KEY_MAX } from '../../services/api';
 import useUniverseBucketActions from '../../hooks/useUniverseBucketActions';
 import useUniverseDraft from '../../hooks/useUniverseDraft';
@@ -33,7 +34,7 @@ import CompositeSheetsEditor from './CompositeSheetsEditor';
 import RenderTab from './RenderTab';
 import UniverseBibleTab from './UniverseBibleTab';
 import { OtherTab, TrunkView } from './UniverseTrunkPanels';
-import { capImageRefs } from '../../lib/bibleLimits';
+import { appendImageRefById } from '../../lib/bibleLimits';
 import { totalVariationCount } from '../../lib/universeBuilderCounts';
 import {
   TAB_BIBLE,
@@ -143,6 +144,7 @@ export default function UniverseBuilder() {
     setSaving,
     setWorlds,
     styleProbeDirty,
+    syncEntryIdsFromServer,
     toggleLock,
     universes,
     updateCategory,
@@ -177,6 +179,7 @@ export default function UniverseBuilder() {
     runs,
     setRuns,
     preflight: flushDraftIfDirty,
+    syncEntryIdsFromServer,
   });
   const { expanding, handleExpand, refine } = useUniverseExpand({
     selectedId,
@@ -252,31 +255,61 @@ export default function UniverseBuilder() {
   const totalVariations = totalVariationCount(draft);
   const totalSheets = draft.compositeSheets?.length || 0;
 
-  // Shared by every bucket grid (trunk tabs + Other). Optimistically append the
-  // new filename to the variation's imageRefs[] so the row swaps from spinner →
-  // rendered image without a roundtrip. Server already stamped this via the
-  // collection hook; the next universe refetch will agree. Then pull the fresh
-  // sidecar into galleryByFilename so the lightbox opens with the real
-  // prompt/settings rather than label-only metadata.
-  const handleEntryJobCompleted = useCallback((entryId, filename, bucket, completedJobId = null) => {
-    if (!filename || !bucket) {
-      clearPendingForEntry(entryId, completedJobId);
-      return;
-    }
-    setDraft((d) => {
-      const cat = d.categories?.[bucket];
-      if (!cat?.variations) return d;
-      const variations = cat.variations.map((v) => {
-        if (v.id !== entryId) return v;
-        const refs = Array.isArray(v.imageRefs) ? v.imageRefs : [];
-        if (refs.includes(filename)) return v;
-        return { ...v, imageRefs: capImageRefs([...refs, filename]) };
+  // Settle one row's render job: optimistically append the new filename to that
+  // entry's imageRefs[] so the row swaps from spinner → rendered image without a
+  // roundtrip, then shift the jobId out of the row's pending queue and pull the
+  // fresh sidecar into galleryByFilename so the lightbox opens with the real
+  // prompt/settings rather than label-only metadata. The server's completion
+  // hook already stamped the ref durably; the next universe refetch will agree.
+  // `applyAppend(draft, appended)` is the only per-surface part — it splices the
+  // updated list back into whichever collection owns the row (a category's
+  // variations vs. the top-level compositeSheets), and returns the draft
+  // unchanged when the collection isn't there.
+  const settleEntryJob = useCallback((entryId, filename, completedJobId, selectList, applyAppend) => {
+    if (filename) {
+      setDraft((d) => {
+        const appended = appendImageRefById(selectList(d), entryId, filename);
+        // `null` (no such collection) or an unchanged array (unknown id / ref
+        // already present) both mean there's nothing to re-render for.
+        if (!appended || appended === selectList(d)) return d;
+        return applyAppend(d, appended);
       });
-      return { ...d, categories: { ...d.categories, [bucket]: { ...cat, variations } } };
-    });
+      bumpGalleryRefresh();
+    }
     clearPendingForEntry(entryId, completedJobId);
-    bumpGalleryRefresh();
   }, [clearPendingForEntry, setDraft, bumpGalleryRefresh]);
+
+  // Shared by every bucket grid (trunk tabs + Other).
+  const handleEntryJobCompleted = useCallback((entryId, filename, bucket, completedJobId = null) => {
+    settleEntryJob(
+      entryId,
+      bucket ? filename : null,
+      completedJobId,
+      (d) => d.categories?.[bucket]?.variations,
+      (d, variations) => ({
+        ...d,
+        categories: { ...d.categories, [bucket]: { ...d.categories[bucket], variations } },
+      }),
+    );
+  }, [settleEntryJob]);
+
+  // Composite boards on the Composites tab.
+  const handleSheetJobSettled = useCallback((sheetId, filename, settledJobId = null) => {
+    settleEntryJob(
+      sheetId,
+      filename,
+      settledJobId,
+      (d) => d.compositeSheets,
+      (d, compositeSheets) => ({ ...d, compositeSheets }),
+    );
+  }, [settleEntryJob]);
+
+  // A failed board render is reported the same way the variation and canon rows
+  // report theirs — otherwise the spinner just vanishes and the user is left
+  // guessing. A user-initiated cancel is not a failure, so it stays silent.
+  const handleSheetJobFailed = useCallback((_sheetId, status) => {
+    if (status === 'failed') toast.error('Render failed');
+  }, []);
 
   return (
     <div className="flex flex-col h-full">
@@ -459,6 +492,10 @@ export default function UniverseBuilder() {
               onChange={updateCompositeSheets}
               canRender={canRender}
               onRender={(sheet) => runRender({ promptMode: 'sheets', sheetSelection: [sheet.label] })}
+              onPreview={openPreviewByFilename}
+              pendingByEntryId={pendingHeadByEntryId}
+              onJobSettled={handleSheetJobSettled}
+              onJobFailed={handleSheetJobFailed}
             />
             {/* Add-bucket row stays available here for power users who want to
                 introduce a brand-new custom bucket without going through

@@ -19,7 +19,7 @@
  * rendered states. Disabled when `canRender` is false (no backend selected,
  * save pending, etc.) so the button shape is still visible but inert.
  */
-import { useState, useEffect } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import { Sparkles, Star } from 'lucide-react';
 import MediaJobThumb from '../pipeline/MediaJobThumb';
 
@@ -31,8 +31,19 @@ export default function EntryThumbSlot({
   onPreview = null,
   // Fired with the rendered filename when an in-flight job completes (forwarded
   // to MediaJobThumb's onFilename) so callers can persist the new ref + clear
-  // the in-flight job without their own job subscription.
+  // the in-flight job without their own job subscription. Called with `null` on
+  // a terminal failure, which yields no filename.
+  //
+  // ONE argument, always. Do not overload the second positional slot with a
+  // status: `useSingleImageRender`'s `handleComplete(filename, key)` is wired
+  // straight into this prop (StyleProbeImage), and a status arriving where it
+  // expects a key re-keys its job map so the in-flight job is never cleared and
+  // the slot spins forever. Terminal status goes to `onTerminalStatus` instead.
   onComplete = null,
+  // `('failed' | 'canceled')` when the job terminates without a filename, for
+  // callers that report a failed render. Separate from `onComplete` per the
+  // arity note above; fires after it, so the clear happens first either way.
+  onTerminalStatus = null,
   canRender = true,
   alt = 'Render',
   // `'lg'` renders the empty-state box at 64x96 with a bigger Sparkles
@@ -43,6 +54,18 @@ export default function EntryThumbSlot({
   // 1024x1536 universe renders so the slot doesn't crop the subject.
   size = 'sm',
 }) {
+  // MediaJobThumb fires this from an effect keyed on `[effectiveStatus, onStatus]`,
+  // so it must not be a fresh arrow per render or it re-fires on every parent
+  // render instead of once when the job settles. (`onComplete` goes to
+  // `onFilename` unwrapped, so its identity — and arity — stay the caller's.)
+  const onStatus = useCallback(
+    (s) => {
+      if (s !== 'failed' && s !== 'canceled') return;
+      onComplete?.(null);
+      onTerminalStatus?.(s);
+    },
+    [onComplete, onTerminalStatus],
+  );
   if (inFlightJobId) {
     // `xs` (48x80) matches the empty + completed states below so all three
     // states share a footprint and the row doesn't jump mid-render. `'lg'`
@@ -64,7 +87,7 @@ export default function EntryThumbSlot({
         // state across switches (no remount to reset it), so a failed job would
         // leave the slot stuck — clear it via the no-filename path so the slot
         // returns to an actionable state and the entity can be re-rendered.
-        onStatus={(s) => { if (s === 'failed' || s === 'canceled') onComplete?.(null); }}
+        onStatus={onStatus}
       />
     );
   }
