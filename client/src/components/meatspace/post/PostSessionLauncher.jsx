@@ -3,6 +3,7 @@ import { Link } from 'react-router';
 import { Zap, History, Settings, Play, Brain, BookOpen, Dumbbell, Timer, Radio, Target, TrendingUp, TrendingDown, Minus, Compass, ArrowRight, ChevronRight, Layers } from 'lucide-react';
 import { getPostReviewReps, getPostRecommendations, getMorseProgress, getPostProgress, getMemoryItems } from '../../../services/api';
 import { FormField } from '../../ui/FormField';
+import Pill from '../../ui/Pill';
 import { enabledApiProviderFilter } from '../../../utils/providers';
 import useProviderModels from '../../../hooks/useProviderModels.js';
 import { DOMAINS, DRILL_TO_DOMAIN, DRILL_LABELS, computeDomainAverages, computeGoalProgress, isTopicEnabled, selectMemoryItemForDrill, resolveTopicForDrillType } from './constants';
@@ -552,7 +553,14 @@ export default function PostSessionLauncher({
   const topRec = recommendations[0] || null;
   const topRecAction = recAction(topRec);
   const primaryAction = topRecAction
-    ? { ...topRecAction, label: `Start: ${topRec.title}`, detail: topRec.detail || null }
+    // Once everything in the rotation has been practiced today the top rec is
+    // one of those (they're demoted, not dropped) — say so on the CTA, matching
+    // the "Done today" badge the same rec carries in Up next (#3563).
+    ? {
+      ...topRecAction,
+      label: `Start: ${topRec.title}`,
+      detail: [topRec.detail, topRec.practicedToday ? 'Already done today' : null].filter(Boolean).join(' · ') || null,
+    }
     : (hasSessionDrills
       ? { onClick: handleStart, label: `Start: ${mode === 'train' ? 'Full Training' : 'Full POST'}`, detail: null }
       : null);
@@ -848,6 +856,10 @@ export default function PostSessionLauncher({
                         <div className="text-sm text-white truncate">{rec.title}</div>
                         {rec.detail && <div className="text-xs text-gray-500 truncate">{rec.detail}</div>}
                       </div>
+                      {/* The server sinks these to the bottom, so the badge
+                          explains the reorder. Still clickable — a second rep is
+                          allowed, just not what the routine hands you (#3563). */}
+                      {rec.practicedToday && <Pill tone="context" size="xs" className="shrink-0">Done today</Pill>}
                       <ArrowRight size={14} className="text-gray-600 group-hover:text-port-accent shrink-0" />
                     </>
                   );

@@ -18,9 +18,12 @@ import PostTab from './PostTab';
 
 const settle = () => act(async () => {});
 
-const { getPostRecommendations } = vi.hoisted(() => ({
+const { getPostRecommendations, toastSuccess } = vi.hoisted(() => ({
   getPostRecommendations: vi.fn().mockResolvedValue({ recommendations: [] }),
+  toastSuccess: vi.fn(),
 }));
+
+vi.mock('../../ui/Toast', () => ({ default: { success: toastSuccess, error: vi.fn() } }));
 
 vi.mock('../../../services/api', () => ({
   getPostConfig: () => Promise.resolve({}),
@@ -86,8 +89,8 @@ const renderAt = (path, props) => render(
   </MemoryRouter>,
 );
 
-const recommend = (deepLink) => getPostRecommendations.mockResolvedValueOnce({
-  recommendations: [{ id: 'rec-1', kind: 'memory-due', title: 'Practice this again', deepLink, priority: 0 }],
+const recommend = (deepLink, extra = {}) => getPostRecommendations.mockResolvedValueOnce({
+  recommendations: [{ id: 'rec-1', kind: 'memory-due', title: 'Practice this again', deepLink, priority: 0, ...extra }],
 });
 
 // Drive one surface from "finish the drill" through "Continue".
@@ -103,6 +106,7 @@ describe('PostTab continueDailyRoutine', () => {
   beforeEach(() => {
     getPostRecommendations.mockReset();
     getPostRecommendations.mockResolvedValue({ recommendations: [] });
+    toastSuccess.mockClear();
   });
 
   it('restarts the Morse drill in place, preserving the ?ref reference tab', async () => {
@@ -177,6 +181,32 @@ describe('PostTab continueDailyRoutine', () => {
     await finishAndContinue('Morse');
 
     expect(screen.getByTestId('loc').textContent).toBe('/post/launcher');
+  });
+
+  // Issue #3563 — the server sinks anything already practiced today to the
+  // bottom, so a top rec still flagged means the rotation is exhausted. Before
+  // this, the routine re-ran the drill just finished forever (a stalled/weakest
+  // digit-span signal barely moves on one rep, so it stayed rec #0).
+  it('ends the routine at the launcher when the top rec was already practiced today', async () => {
+    recommend('/post/morse/copy', { practicedToday: true });
+    renderAt('/post/morse/copy', { tab: 'morse', subtab: 'copy' });
+    await settle();
+
+    await finishAndContinue('Morse');
+
+    expect(screen.getByTestId('loc').textContent).toBe('/post/launcher');
+    expect(toastSuccess).toHaveBeenCalledWith(expect.stringMatching(/today's routine/i));
+  });
+
+  it('still restarts in place when the top rec has NOT been practiced today', async () => {
+    recommend('/post/morse/copy', { practicedToday: false });
+    renderAt('/post/morse/copy', { tab: 'morse', subtab: 'copy' });
+    await settle();
+
+    await finishAndContinue('Morse');
+
+    expect(screen.getByTestId('loc').textContent).toBe('/post/morse/copy?run=1');
+    expect(toastSuccess).not.toHaveBeenCalled();
   });
 
   it('routes a launcher recommendation through the autostart param, not a restart', async () => {
