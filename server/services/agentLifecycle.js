@@ -445,6 +445,11 @@ async function runAgentSpawn(task) {
       providerCommand: provider.command || null,
       leanMode,
       model: selectedModel,
+      // The reasoning-effort override this run was dispatched with (null when the
+      // task pinned none). Persisted next to the model because the Resume Agent
+      // modal seeds its own effort select from here — without it a resume of an
+      // effort-pinned run silently drops back to the provider default.
+      effort: task.metadata?.effort || null,
       modelTier: modelSelection.tier,
       modelReason: modelSelection.reason,
       runId,

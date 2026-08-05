@@ -5,7 +5,7 @@ import * as api from '../../../services/api';
 import { timeAgo, formatDateTime } from '../../../utils/formatters';
 import { CRON_PRESETS, DEFAULT_CRON, describeCron } from '../../../utils/cronHelpers';
 import WeekdayTimePicker from '../../WeekdayTimePicker';
-import { filterSelectableModels } from '../../../utils/providers';
+import { effectiveModelFor, effortAwareModelOptions } from '../../../utils/providers';
 import ProviderModelSelector from '../../ProviderModelSelector';
 import EffortSelect from '../EffortSelect';
 import InlineConfirmRow from '../../ui/InlineConfirmRow';
@@ -120,12 +120,18 @@ function BriefingConfig({ config, onChange }) {
 // active provider / its default model / default effort. Only rendered for agent
 // jobs (shell/script jobs never reach the AI runner). `data` carries
 // `providerId`/`model`/`effort`; `onChange` applies a partial patch back onto the
-// form state. Effort only renders for effort-capable providers (claude/codex) and
-// resets when the provider changes.
+// form state. Effort only renders for effort-capable providers (claude/codex/agy)
+// and resets when the provider changes.
+//
+// The stored model is left as-is rather than split into base + effort on read:
+// this edits a saved record in place, so rewriting the displayed value without
+// saving would put the form and the record out of sync. A legacy suffixed id
+// stays visible via `effortAwareModelOptions`' pin and still runs — the server
+// splits it into base + `--effort`.
 function JobProviderModelFields({ data, providers, onChange }) {
   if (!providers?.length) return null;
   const selectedProvider = providers.find(p => p.id === data.providerId);
-  const availableModels = filterSelectableModels(selectedProvider?.models);
+  const availableModels = effortAwareModelOptions(selectedProvider, data.model);
   return (
     <div>
       <span className="text-xs text-gray-400 block mb-1">AI Provider &amp; Model (optional)</span>
@@ -143,6 +149,7 @@ function JobProviderModelFields({ data, providers, onChange }) {
       />
       <EffortSelect
         provider={selectedProvider}
+        model={effectiveModelFor(selectedProvider, data.model)}
         value={data.effort}
         onChange={effort => onChange({ effort })}
         label="Thinking Effort (optional)"

@@ -19,7 +19,7 @@ import {
 import toast from '../components/ui/Toast';
 import { copyToClipboard } from '../lib/clipboard';
 import { timeAgo } from '../utils/formatters';
-import { isAntigravityProvider, splitAntigravityModel } from '../utils/providers';
+import { seedModelEffort } from '../utils/providers';
 
 const providerFilter = (provider) =>
   provider.enabled !== false && ['api', 'cli', 'tui'].includes(provider.type);
@@ -206,16 +206,13 @@ export default function ThreejsModelDetail() {
     const recordProvider = providers.find((provider) => provider.id === record.providerId);
     if (recordProvider) {
       // A record written before Antigravity split model from effort stores the
-      // suffixed id (`gemini-3.6-flash-high`). Seed the two controls from its
-      // two halves so the pin reads back as a base model + its effort rather
-      // than an option that no longer exists. Scoped to Antigravity so another
-      // provider's model that merely ends in `-high` isn't truncated.
-      const { base, effort: bakedEffort } = isAntigravityProvider(recordProvider)
-        ? splitAntigravityModel(record.model || '')
-        : { base: record.model || '', effort: null };
+      // suffixed id (`gemini-3.6-flash-high`); seedModelEffort reads it back as
+      // a base model + its effort so the pin isn't an option that no longer
+      // exists (and leaves every other provider's id untouched).
+      const seeded = seedModelEffort(recordProvider, record.model, record.effort);
       setSelectedProviderId(record.providerId);
-      setSelectedModel(base || '');
-      setEffort(record.effort || bakedEffort || '');
+      setSelectedModel(seeded.model);
+      setEffort(seeded.effort);
     }
     providerSyncRef.current = key;
   }, [record, providers, setSelectedProviderId, setSelectedModel]);

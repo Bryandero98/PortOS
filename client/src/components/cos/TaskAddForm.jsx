@@ -7,7 +7,7 @@ import { processScreenshotUploads, processAttachmentUploads } from '../../servic
 import { ATTACHMENT_ACCEPT } from '../../utils/fileUpload';
 import FilePickerButton from '../ui/FilePickerButton';
 import { formatBytes } from '../../utils/formatters';
-import { filterSelectableModels, isTuiProvider, isCliProvider, isProcessProvider, isCodexProvider } from '../../utils/providers';
+import { effectiveModelFor, effortAwareModelOptions, effortSurvivingModel, isTuiProvider, isCliProvider, isProcessProvider, isCodexProvider, seedModelEffort } from '../../utils/providers';
 import { DEFAULT_PR_COMPLETION, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, PR_COMPLETION_OPTIONS, prCompletionOption } from './constants';
 import { clickableProps } from '../../lib/a11yKeyboard';
 import { slashdoLabel } from '../../lib/slashdoCatalog';
@@ -148,9 +148,12 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
     setPrCompletion(selectedApp?.defaultPrCompletion || DEFAULT_PR_COMPLETION);
   }, [appDefaultsSig]);
 
-  // Get models for selected provider
+  // Get models for selected provider. The form carries its own Thinking Effort
+  // select and submits it, so Antigravity lists BASE models (`gemini-3.6-flash`)
+  // with the tier picked separately — a legacy suffixed id saved in a template
+  // stays selectable as its own option.
   const selectedProvider = providers?.find(p => p.id === newTask.provider);
-  const availableModels = filterSelectableModels(selectedProvider?.models);
+  const availableModels = effortAwareModelOptions(selectedProvider, newTask.model);
   const providerModelNote = (() => {
     if (!selectedProvider) return '';
     if (isTuiProvider(selectedProvider)) return `${selectedProvider.name} runs in an attachable terminal UI session.`;
@@ -166,6 +169,15 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
   // untouched, `false` turns it off. Collapsing absent to false would make a
   // plain user template silently clear toggles it never meant to touch.
   const applyTemplate = useCallback(async (template) => {
+    // A template saved before Antigravity split model from effort pins the
+    // suffixed id (`gemini-3.6-flash-high`). Seed the two controls from its two
+    // halves so the pin lands on a base model + its tier rather than an option
+    // the Model select no longer offers.
+    const seeded = seedModelEffort(
+      providers?.find(p => p.id === template.provider),
+      template.model,
+      template.effort,
+    );
     setNewTask(t => ({
       ...t,
       description: template.description,
@@ -176,7 +188,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
       // different provider in the form.
       ...(template.app ? { app: template.app } : {}),
       ...(template.provider
-        ? { provider: template.provider, model: template.model || '', effort: template.effort || '' }
+        ? { provider: template.provider, model: seeded.model, effort: seeded.effort }
         : {})
     }));
     setSlashdoCommand(template.slashdoCommand || '');
@@ -192,7 +204,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
     descriptionRef.current?.focus();
     await api.applyCosTaskTemplate(template.id).catch(() => {});
     toast.success(`Template applied: ${template.name}`);
-  }, [newTask.app]);
+  }, [newTask.app, providers]);
 
   // Save current form as template (inline input instead of window.prompt)
   const saveAsTemplate = useCallback(async () => {
@@ -627,7 +639,13 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
               <select
                 id="task-model"
                 value={newTask.model}
-                onChange={e => setNewTask(t => ({ ...t, model: e.target.value }))}
+                onChange={e => setNewTask(t => ({
+                  ...t,
+                  model: e.target.value,
+                  // A model with no effort tiers hides the select below — clear the
+                  // value with it rather than submitting a level the UI stopped showing.
+                  effort: effortSurvivingModel(selectedProvider, e.target.value, t.effort),
+                }))}
                 className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm min-h-[44px]"
               >
                 <option value="">Select model...</option>
@@ -643,6 +661,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
           ) : null}
           <EffortSelect
             provider={selectedProvider}
+            model={effectiveModelFor(selectedProvider, newTask.model)}
             value={newTask.effort}
             onChange={effort => setNewTask(t => ({ ...t, effort }))}
             className="sm:w-40 w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm min-h-[44px]"

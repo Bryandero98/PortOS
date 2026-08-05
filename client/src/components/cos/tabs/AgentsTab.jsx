@@ -109,12 +109,13 @@ export default function AgentsTab({ agents, onRefresh, liveOutputs, providers, a
     onRefresh();
   }, [onRefresh]);
 
-  const handleResumeSubmit = async ({ description, context, model, provider, app, type = 'user', screenshots }) => {
+  const handleResumeSubmit = async ({ description, context, model, provider, effort, app, type = 'user', screenshots }) => {
     const result = await api.addCosTask({
       description,
       context,
       model: model || undefined,
       provider: provider || undefined,
+      effort: effort || undefined,
       app: app || undefined,
       type,
       screenshots

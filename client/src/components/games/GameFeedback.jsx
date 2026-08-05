@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { MessageSquareText, Send } from 'lucide-react';
 import ProviderModelSelector from '../ProviderModelSelector.jsx';
-import EffortSelect from '../cos/EffortSelect.jsx';
 import useProviderModels from '../../hooks/useProviderModels.js';
 import { formatDateShort } from '../../utils/formatters.js';
 
@@ -16,8 +15,9 @@ export default function GameFeedback({ history, submitting, onSubmit }) {
     setSelectedProviderId,
     setSelectedModel,
     loading,
-  } = useProviderModels({ silent: true });
-  const selectedProvider = providers.find((provider) => provider.id === selectedProviderId);
+    // This picker renders the effort control and sends the value, so Antigravity
+    // lists base models with the effort picked separately.
+  } = useProviderModels({ silent: true, withEffort: true });
   const promptId = 'game-feedback-prompt';
 
   const submit = async (event) => {
@@ -48,18 +48,12 @@ export default function GameFeedback({ history, submitting, onSubmit }) {
           selectedProviderId={selectedProviderId}
           selectedModel={selectedModel}
           availableModels={availableModels}
-          onProviderChange={setSelectedProviderId}
+          onProviderChange={(id) => { setSelectedProviderId(id); setEffort(''); }}
           onModelChange={setSelectedModel}
+          effort={effort}
+          onEffortChange={setEffort}
           disabled={loading || submitting}
           layout="stacked"
-        />
-        <EffortSelect
-          provider={selectedProvider}
-          value={effort}
-          onChange={setEffort}
-          label="Thinking effort"
-          disabled={submitting}
-          className="w-full min-h-[44px] rounded-lg border border-port-border bg-port-bg px-3 py-2 text-sm text-white"
         />
         <div>
           <label htmlFor={promptId} className="mb-1 block text-xs text-gray-400">Review request</label>

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import * as api from '../services/api';
-import { filterSelectableModels, isAntigravityProvider, selectableModelsForProvider, splitAntigravityModel } from '../utils/providers';
+import { filterSelectableModels, selectableModelsForProvider, withStaleAntigravityPin } from '../utils/providers';
 
 // The provider's selectable model source: its `models` list, or — when that
 // list is empty (a cloud/manual provider configured with only a defaultModel,
@@ -100,22 +100,9 @@ export default function useProviderModels({ filter, allowDefault = false, silent
       // cloud/manual provider configured with only a defaultModel).
       const models = filterSelectableModels(sourceModels(currentProvider, withEffort));
       const filtered = modelFilter ? models.filter((m) => modelFilter(m, currentProvider)) : models;
-      // Legacy-pin escape hatch: a record saved before Antigravity switched to
-      // base models still holds `gemini-3.6-flash-high`, which now matches no
-      // option and would render the select BLANK (reading as "no model"). Keep
-      // the stored id as its own option so the pin stays visible — the server
-      // splits it back into base + `--effort`, so it still runs. Same posture as
-      // EffortSelect's out-of-ladder option.
-      //
-      // Deliberately narrow: only an Antigravity id that carries an effort
-      // SUFFIX qualifies. A bare "not in the list" test would also re-surface
-      // the configured-default sentinel (the shipped agy `defaultModel`, which
-      // filterSelectableModels exists to hide) and any typo'd/stale pin.
-      const staleAntigravityPin = withEffort
-        && isAntigravityProvider(currentProvider)
-        && !!splitAntigravityModel(selectedModel).effort
-        && !filtered.includes(selectedModel);
-      return staleAntigravityPin ? [...filtered, selectedModel] : filtered;
+      // Legacy-pin escape hatch (see `withStaleAntigravityPin`): only relevant
+      // once the list has been collapsed to base models, so it rides `withEffort`.
+      return withEffort ? withStaleAntigravityPin(currentProvider, filtered, selectedModel) : filtered;
     },
     [currentProvider, modelFilter, selectedModel, withEffort]
   );

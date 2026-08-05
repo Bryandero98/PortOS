@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { filterSelectableModels, mergeModelLists, resolveEffectiveProvider } from '../utils/providers';
+import { effortAwareModelOptions, effortSurvivingModel, mergeModelLists, resolveEffectiveProvider } from '../utils/providers';
 
 /**
  * Provider / model / effort pins for one CoS scheduled task, shared by the
@@ -9,7 +9,8 @@ import { filterSelectableModels, mergeModelLists, resolveEffectiveProvider } fro
  * Each change is written immediately (`'' → null` clears the pin) and rolled
  * back to the persisted value when the write fails. Picking a provider also
  * clears model + effort in the same PUT — a model from the previous provider
- * would not resolve.
+ * would not resolve. Picking a model clears the effort in the same PUT only when
+ * that model has no effort tiers at all (see `changeModel`).
  *
  * `saving` is the in-flight flag callers must use to gate any action that reads
  * these pins server-side (the "Run Now" button), per the repo's
@@ -58,23 +59,36 @@ export function useTaskModelPins({ taskType, config, providers, activeProviderId
     onBusyChange?.(false);
   }, [onUpdate, taskType, persisted, onBusyChange]);
 
-  // Provider is the only one that clears its siblings: a model (and the effort
-  // ladder behind it) belongs to the provider it came from.
-  const changeProvider = useCallback((next) => change({ providerId: next, model: '', effort: '' }), [change]);
-  const changeModel = useCallback((next) => change({ model: next }), [change]);
-  const changeEffort = useCallback((next) => change({ effort: next }), [change]);
-
   const { provider, usingActive } = useMemo(
     () => resolveEffectiveProvider(providers, pins.providerId, activeProviderId),
     [providers, pins.providerId, activeProviderId]
   );
 
-  // A pin the provider no longer lists stays selectable, or the select would
-  // hold a value matching no option, render blank, and read as "Default".
+  // Provider is the only one that clears its siblings outright: a model (and the
+  // effort ladder behind it) belongs to the provider it came from.
+  const changeProvider = useCallback((next) => change({ providerId: next, model: '', effort: '' }), [change]);
+  // Model clears the effort CONDITIONALLY, in the same write: picking a model with
+  // no effort tiers (Antigravity's ladder is per-model) hides the effort select,
+  // and a stored level with no UI left to change it would keep being sent on every
+  // run — an invocation agy rejects. A merely narrowed ladder is left alone, since
+  // EffortSelect still renders the clamp as a visible option.
+  const changeModel = useCallback((next) => {
+    const surviving = effortSurvivingModel(provider, next, pins.effort);
+    return change(surviving === pins.effort ? { model: next } : { model: next, effort: surviving });
+  }, [change, provider, pins.effort]);
+  const changeEffort = useCallback((next) => change({ effort: next }), [change]);
+
+  // Both surfaces that use these pins persist a separate effort, so Antigravity
+  // lists BASE models (`gemini-3.6-flash`) with the tier picked beside them —
+  // `effortAwareModelOptions` also keeps a legacy suffixed pin selectable, since
+  // the server splits it back into `--model` + `--effort` and it still runs.
+  // Any OTHER pin the provider no longer lists stays selectable too, or the
+  // select would hold a value matching no option, render blank, and read as
+  // "Default".
   const availableModels = useMemo(() => {
-    const selectable = filterSelectableModels(provider?.models);
+    const selectable = effortAwareModelOptions(provider, pins.model);
     return pins.model ? mergeModelLists([pins.model], selectable) : selectable;
-  }, [provider?.models, pins.model]);
+  }, [provider, pins.model]);
 
   return {
     ...pins,

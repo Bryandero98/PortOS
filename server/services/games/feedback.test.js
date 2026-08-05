@@ -72,12 +72,16 @@ describe('requestGameFeedback', () => {
       prompt: 'Review the bundle.',
     });
     expect(getProviderById).toHaveBeenCalledWith('codex');
+    // The effort rides the runner's own `effort` argument rather than being baked
+    // into `provider.args` here. That is what makes it MODEL-clamped: Antigravity
+    // validates the model/effort PAIR (`gemini-3.1-pro` has no `medium`), and a
+    // hand-baked flag resolves against the provider-wide ladder only. So assert the
+    // provider is forwarded UNMODIFIED — a regression that re-bakes the flag would
+    // both fail the `args: []` match and re-introduce the unclamped invocation.
     expect(runPromptThroughProvider).toHaveBeenCalledWith(expect.objectContaining({
-      provider: expect.objectContaining({
-        id: 'codex',
-        args: ['-c', 'model_reasoning_effort=high'],
-      }),
+      provider: expect.objectContaining({ id: 'codex', args: [] }),
       model: 'gpt-5.6-terra',
+      effort: 'high',
       source: 'game-asset-feedback',
     }));
     expect(result.feedback).toEqual(expect.objectContaining({
