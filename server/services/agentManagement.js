@@ -8,7 +8,7 @@
 import { join } from 'path';
 import { ServerError } from '../lib/errorHandler.js';
 import { emitLog } from './cosEvents.js';
-// The DEFINING module, not the `cosAgents.js` barrel (#3450). This module is one
+// The DEFINING module, not a barrel (#3450). This module is one
 // of the three `agentOrchestrator.js` imports, so it can never reach a transition
 // through the facade — an import back from here closes the loop the facade exists
 // to open. Inside the closure the single address for a transition is the module

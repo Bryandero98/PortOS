@@ -6,7 +6,10 @@
  *
  * Decomposed modules:
  * - cosState.js          — shared state management (loadState, saveState, config, mutex)
- * - cosAgents.js         — agent lifecycle (register, complete, archive, feedback)
+ * - cosAgentLifecycle.js — agent lifecycle (register, update, complete, terminate)
+ * - cosAgentIndex.js     — date-bucket index + on-disk archive layout
+ * - cosAgentFeedback.js  — per-agent feedback capture + task-type classifier
+ * - cosAgentArchive.js   — state-eviction sweeps
  * - cosReports.js        — reports, briefings, and activity tracking
  * - cosEvents.js         — event emitter and logging
  * - cosHealthMonitor.js  — daemon health checks (PM2/memory, auto-restart)
@@ -41,11 +44,19 @@ export { cosEvents, emitLog };
 
 // Agent lifecycle (re-export for backward compat with `import * as cos`).
 //
+// Sourced from the four modules that DECLARE these, not from a barrel: the
+// `cosAgents.js` barrel these used to come through is retired (#3450), so this
+// block is the last remaining second address for an agent function and the next
+// one to collapse.
+//
 // `pauseAgent` / `killAgent` / `getAgentProcessStats` are deliberately NOT here:
 // they are process-layer transitions, and re-exporting them from the task store
 // is what forced the `await import()` forwarders in `cosAgentLifecycle.js`.
 // Callers ask `agentOrchestrator.js` for those (#3450).
-export { registerAgent, updateAgent, completeAgent, appendAgentOutput, getAgents, getAgentDates, getAgentsByDate, getAgent, getAgentRecord, getAgentPrompt, terminateAgent, sendBtwToAgent, cleanupZombieAgents, deleteAgent, submitAgentFeedback, getFeedbackStats, extractTaskType, archiveStaleAgents, clearCompletedAgents, pruneOldAgentArchives } from './cosAgents.js';
+export { registerAgent, updateAgent, completeAgent, appendAgentOutput, getAgents, getAgent, getAgentRecord, getAgentPrompt, terminateAgent, sendBtwToAgent, cleanupZombieAgents, deleteAgent } from './cosAgentLifecycle.js';
+export { getAgentDates, getAgentsByDate, pruneOldAgentArchives } from './cosAgentIndex.js';
+export { submitAgentFeedback, getFeedbackStats, extractTaskType } from './cosAgentFeedback.js';
+export { archiveStaleAgents, clearCompletedAgents } from './cosAgentArchive.js';
 
 // Reports and activity (re-export for backward compat with `import * as cos`)
 export { generateReport, getReport, getTodayReport, listReports, listBriefings, getBriefing, getLatestBriefing, getTodayActivity, getWhileAwayActivity, getRecentTasks, formatRelativeTime } from './cosReports.js';
@@ -78,7 +89,8 @@ const POST_STARTUP_QUEUE_DELAY_MS = 30_000;
 const RECENT_COMPLETION_GRACE_MS = 60_000;
 
 // Internal imports for functions used in this module
-import { pruneOldAgentArchives, archiveStaleAgents as _archiveStaleAgents, loadAgentIndex } from './cosAgents.js';
+import { pruneOldAgentArchives, loadAgentIndex } from './cosAgentIndex.js';
+import { archiveStaleAgents as _archiveStaleAgents } from './cosAgentArchive.js';
 import { resolveAgentProviderAndModel } from './agentProviderResolution.js';
 
 // Task generation + evaluation engine (extracted to cosTaskGenerator.js).
@@ -703,7 +715,7 @@ export async function getScript(name) {
   return { name, content, metadata };
 }
 
-// Agent and report functions are now in cosAgents.js and cosReports.js
+// Agent and report functions are now in the cosAgent* modules and cosReports.js
 // Re-exported above for backward compat with `import * as cos from './cos.js'`
 
 /**

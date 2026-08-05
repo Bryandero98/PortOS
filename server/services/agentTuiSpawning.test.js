@@ -22,7 +22,7 @@ vi.mock('./cosEvents.js', () => ({
   emitLog: vi.fn()
 }));
 
-vi.mock('./cosAgents.js', () => ({
+vi.mock('./cosAgentLifecycle.js', () => ({
   appendAgentOutputLines: vi.fn().mockResolvedValue(undefined),
   updateAgent: vi.fn().mockResolvedValue(undefined),
   completeAgent: vi.fn().mockResolvedValue(undefined)
@@ -194,7 +194,7 @@ import { spawnTuiSessionViaRunner } from './cosRunnerClient.js';
 import * as shellService from './shell.js';
 import * as agentLifecycle from './agentFinalization.js';
 import * as agentErrorAnalysis from './agentErrorAnalysis.js';
-import * as cosAgents from './cosAgents.js';
+import * as cosAgentLifecycle from './cosAgentLifecycle.js';
 import * as gitService from './git.js';
 import { activeAgents, userTerminatedAgents } from './agentState.js';
 import { MAX_RUNTIME_WRAP_UP_GRACE_MS } from '../lib/tuiHandshake.js';
@@ -1819,7 +1819,7 @@ describe('spawnTuiAgent runtime', () => {
     );
     expect(inMemTruncWarns).toHaveLength(0);
 
-    const inMemTruncMetaCalls = vi.mocked(cosAgents.updateAgent).mock.calls.filter(
+    const inMemTruncMetaCalls = vi.mocked(cosAgentLifecycle.updateAgent).mock.calls.filter(
       ([_id, payload]) => payload?.metadata?.rawBufferTruncated === true
     );
     expect(inMemTruncMetaCalls).toHaveLength(0);
@@ -1846,7 +1846,7 @@ describe('spawnTuiAgent runtime', () => {
     );
     expect(truncWarns).toHaveLength(1);
 
-    const truncMetaCalls = vi.mocked(cosAgents.updateAgent).mock.calls.filter(
+    const truncMetaCalls = vi.mocked(cosAgentLifecycle.updateAgent).mock.calls.filter(
       ([_id, payload]) => payload?.metadata?.outputBufferTruncated === true
     );
     expect(truncMetaCalls).toHaveLength(1);
@@ -1931,7 +1931,7 @@ describe('spawnTuiAgent runtime', () => {
     );
     expect(truncWarns).toHaveLength(1);
 
-    const truncMetaCalls = vi.mocked(cosAgents.updateAgent).mock.calls.filter(
+    const truncMetaCalls = vi.mocked(cosAgentLifecycle.updateAgent).mock.calls.filter(
       ([_id, payload]) => payload?.metadata?.rawSpoolTruncated === true
     );
     expect(truncMetaCalls).toHaveLength(1);
@@ -2016,7 +2016,7 @@ describe('spawnTuiAgent runtime', () => {
     // in-state output stream (live view / fallback). Both must carry the
     // sentinel resolution — assert on the persistence paths, not outputBuffer,
     // since the test mocks OUTPUT_BUFFER_CAP down to 1 byte.
-    const flushedLines = vi.mocked(cosAgents.appendAgentOutputLines).mock.calls
+    const flushedLines = vi.mocked(cosAgentLifecycle.appendAgentOutputLines).mock.calls
       .flatMap(([, lines]) => lines);
     expect(flushedLines).toContain('✅ Agent signaled completion');
     expect(flushedLines.some(l => l.includes('Implemented the fix.'))).toBe(true);
@@ -2056,7 +2056,7 @@ describe('spawnTuiAgent runtime', () => {
       expect(cleanupWorktreeFn).not.toHaveBeenCalled();
       // The record stays `running`; only the phase label is refined, so boot
       // recovery still sees it as an agent to reconcile from the marker.
-      expect(vi.mocked(cosAgents.updateAgent).mock.calls.some(
+      expect(vi.mocked(cosAgentLifecycle.updateAgent).mock.calls.some(
         ([, patch]) => patch?.metadata?.phase === 'interrupted' && patch?.metadata?.interruptedBy === 'host-shutdown'
       )).toBe(true);
     });

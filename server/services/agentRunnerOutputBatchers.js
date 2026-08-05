@@ -10,10 +10,10 @@
  * import `flushRunnerOutputBatcher` statically. It previously reached for it via
  * `await import('./subAgentSpawner.js')` purely to dodge a cycle — the spawner
  * barrel re-exports agentManagement. Leaf module: only depends on the state
- * layer (`cosAgents.js`).
+ * layer (`cosAgentLifecycle.js`).
  */
 
-import { createAgentOutputBatcher } from './cosAgents.js';
+import { createAgentOutputBatcher } from './cosAgentLifecycle.js';
 
 const runnerOutputBatchers = new Map();
 

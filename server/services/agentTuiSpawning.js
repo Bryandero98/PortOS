@@ -11,7 +11,7 @@ import { existsSync } from 'fs';
 import { readFile, rm } from 'fs/promises';
 import * as shellService from './shell.js';
 import { emitLog } from './cosEvents.js';
-import { updateAgent } from './cosAgents.js';
+import { updateAgent } from './cosAgentLifecycle.js';
 import { createOutputSpooler } from './agentTuiSpawning/outputSpooler.js';
 import { captureWorktreeDiff, worktreeHasChanges, resolveErrorAnalysis } from './agentTuiSpawning/finalizeHelpers.js';
 import { finalizeAgent, releaseAgentLane } from './agentFinalization.js';

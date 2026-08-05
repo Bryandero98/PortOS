@@ -6,7 +6,8 @@
  * concerns live in one focused module. Owns the lazy `agentIndex` singleton and
  * the directory-resolution helper the lifecycle/feedback/archive modules share.
  *
- * The public barrel `cosAgents.js` re-exports everything here.
+ * The `cosAgents.js` barrel that used to re-export this module is retired
+ * (#3450) — callers import from here directly.
  */
 
 import { readFile, writeFile, rename, readdir, rm, stat } from 'fs/promises';

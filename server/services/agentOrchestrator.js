@@ -9,6 +9,9 @@
  *   cos.js → cosAgents.js → cosAgentLifecycle.js → agentManagement.js
  *          → agents.js → subAgentSpawner.js → agentLifecycle.js
  *
+ * (`cosAgents.js` no longer exists — it was the back-compat barrel between
+ * `cos.js` and the four modules the #2530 split produced, and #3450 retired it.)
+ *
  * with several edges reaching back up the chain. There is no correctness bug —
  * the load-bearing back-edges were broken with `await import(...)` before this
  * module existed, and `agentImportCycles.test.js` derives the live static graph
@@ -65,8 +68,7 @@
  * `bufferedSpawn.killProcessTree`), runner RPC (`cosRunnerClient`), the task store
  * (`cos.js` task functions), post-run work (`agentWorktreeCleanup`,
  * `agentFinalization`, `agentRunTracking`, `agentCompletionCleanup`,
- * `agentSummaryExtraction`), and the one remaining re-export barrel
- * (`cosAgents.js`). If it is not exported below, it is a leaf.
+ * `agentSummaryExtraction`). If it is not exported below, it is a leaf.
  *
  * ## Moving a caller out (the shape every migration takes)
  *
@@ -113,9 +115,18 @@
  * and `getAgents` through the `cos.js` re-export block for no cycle-breaking
  * benefit, since that module is a static import here — is gone with it.
  *
- * Remaining: the two barrels that still expose a partial view of the cluster —
- * `cosAgents.js` and `cos.js`'s agent re-export block. Both are wide surfaces
- * (30+ importers, many `vi.mock`ed) and each wants its own PR.
+ * The `cosAgents.js` barrel is retired too. It re-exported all four modules the
+ * #2530 split produced (`cosAgentIndex`, `cosAgentLifecycle`, `cosAgentFeedback`,
+ * `cosAgentArchive`) behind one `export *` wall, so `updateAgent` and
+ * `getAgentsByDate` arrived from the same specifier despite living in different
+ * layers — and the barrel is what made `cos.js` a TWO-hop forwarder of a
+ * transition. Every importer now names the declaring module; the four leaves are
+ * unchanged, and the two test files that only ever exercised one of them are
+ * renamed to sit beside it (`cosAgentLifecycle.test.js`, `cosAgentIndex.merge.test.js`).
+ *
+ * Remaining: `cos.js`'s agent re-export block (`export { … } from` the four
+ * modules above, ~20 names) is the last partial view of the cluster. It is a
+ * wide surface with many `vi.mock`ed importers and wants its own PR.
  */
 
 // Process/runner layer — owns the live agent maps and the OS-level signals.

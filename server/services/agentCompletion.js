@@ -5,7 +5,7 @@
  * and direct mode (spawnDirectly): memory extraction and app cooldown.
  */
 
-import { updateAgent } from './cosAgents.js';
+import { updateAgent } from './cosAgentLifecycle.js';
 import { getConfig } from './cos.js';
 import { startAppCooldown, markAppReviewCompleted } from './appActivity.js';
 import { emitLog } from './cosEvents.js';

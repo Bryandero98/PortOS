@@ -3,7 +3,7 @@ import { existsSync, statSync, realpathSync } from 'fs';
 import { resolve } from 'path';
 import * as git from '../services/git.js';
 import * as appsService from '../services/apps.js';
-import { getAgents } from '../services/cosAgents.js';
+import { getAgents } from '../services/cosAgentLifecycle.js';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import { isWithinAllowedRoots } from '../lib/workspaceRoots.js';
 
