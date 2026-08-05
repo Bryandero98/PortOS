@@ -667,11 +667,18 @@ export default function UniverseCanonSection({
     const stillCurrent = mountedRef.current && currentUniverseIdRef.current === capturedId;
     if (!stillCurrent) return;
     if (!result) {
-      // Revert the optimistic removal off the pre-removal snapshot — the same
-      // one-liner as `handleCreateEntry` / `handlePickFromCatalog`, and safe
-      // for the same documented reason (canon edits are user-driven one at a
-      // time). Restores the entry at its original position for free.
-      onUniverseChange({ ...latest, [kindKey]: list });
+      // Revert against the LIVE draft, not the pre-removal snapshot. The
+      // sibling add paths revert off their snapshot on the grounds that canon
+      // edits are user-driven one-at-a-time — but that doesn't hold here: a
+      // reference render completing mid-request stamps a SIBLING entry's
+      // imageRefs[] through `applyOptimisticCanonRef` with no user action at
+      // all, and a snapshot-based revert would roll that stamp back out of
+      // view. `splice` clamps its own index, so a list that shrank meanwhile
+      // just appends.
+      const cur = latestUniverseRef.current ?? latest;
+      const restored = [...getKindList(cur, kindKey)];
+      restored.splice(list.indexOf(target), 0, target);
+      onUniverseChange({ ...cur, [kindKey]: restored });
       return;
     }
     if (result.universe) onUniverseChange(result.universe);
