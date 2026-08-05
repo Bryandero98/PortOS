@@ -115,9 +115,35 @@ export function evaluateThreejsPartCoverage(spec) {
     });
   }
 
-  // 3. Unbuilt details — a promised feature whose parts contain no geometry
-  // anywhere in their subtrees, so nothing was ever built for it.
+  // 3. Minor detail folded into an implemented mesh above it — reported so the
+  // reviewer sees the modeling decision, never as a defect. Classified BEFORE
+  // the unbuilt pass because the two would otherwise contradict each other on
+  // the same detail: a locator part with no geometry of its own whose parent
+  // mesh is implemented has not gone unbuilt, it has been folded in.
+  const foldedNotes = [];
+  const foldedDetails = new Set();
   for (const detail of details) {
+    if (detail.priority !== 'minor' || groupedDetails.has(detail)) continue;
+    const ids = detail.implementationPartIds || [];
+    if (ids.length !== 1) continue;
+    const part = byId.get(ids[0]);
+    const parentId = part?.ancestorIds.findLast((id) => implementedIds.has(id) && byId.get(id)?.hasGeometry);
+    if (!parentId) continue;
+    foldedDetails.add(detail);
+    foldedNotes.push({
+      code: 'folded-detail',
+      severity: 'note',
+      partIds: [part.id],
+      features: [detail.feature],
+      message: `"${detail.feature}" is minor relief on "${label(parentId)}". Folding it into its parent is the correct modeling choice.`,
+    });
+  }
+
+  // 4. Unbuilt details — a promised feature whose parts contain no geometry
+  // anywhere in their subtrees and which nothing above them carries either, so
+  // nothing was ever built for it.
+  for (const detail of details) {
+    if (foldedDetails.has(detail)) continue;
     const resolved = (detail.implementationPartIds || []).map((id) => byId.get(id)).filter(Boolean);
     if (resolved.length === 0 || resolved.some((part) => part.subtreeHasGeometry)) continue;
     findings.push({
@@ -129,23 +155,7 @@ export function evaluateThreejsPartCoverage(spec) {
     });
   }
 
-  // 4. Minor detail folded into an implemented mesh above it — reported so the
-  // reviewer sees the modeling decision, never as a defect.
-  for (const detail of details) {
-    if (detail.priority !== 'minor' || groupedDetails.has(detail)) continue;
-    const ids = detail.implementationPartIds || [];
-    if (ids.length !== 1) continue;
-    const part = byId.get(ids[0]);
-    const parentId = part?.ancestorIds.findLast((id) => implementedIds.has(id) && byId.get(id)?.hasGeometry);
-    if (!parentId) continue;
-    findings.push({
-      code: 'folded-detail',
-      severity: 'note',
-      partIds: [part.id],
-      features: [detail.feature],
-      message: `"${detail.feature}" is minor relief on "${label(parentId)}". Folding it into its parent is the correct modeling choice.`,
-    });
-  }
+  findings.push(...foldedNotes);
 
   const countBy = (severity) => findings.filter((finding) => finding.severity === severity).length;
   return {

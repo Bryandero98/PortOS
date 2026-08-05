@@ -125,6 +125,50 @@ describe('evaluateThreejsPartCoverage', () => {
     expect(coverage.findings[0].message).toContain('Hull');
   });
 
+  it('does not also call folded minor relief unbuilt when its locator part carries no geometry', () => {
+    // The child part is a pure locator — the relief itself lives in the parent
+    // mesh. Reporting "nothing was built for it" alongside "folding it in is
+    // correct" would hand the refinement pass two opposite instructions.
+    const coverage = evaluateThreejsPartCoverage(makeSpec({
+      parts: [{
+        id: 'hull',
+        name: 'Hull',
+        geometry: box(2),
+        material: 'shell',
+        children: [{ id: 'striaAnchor', name: 'Stria anchor' }],
+      }],
+      detailInventory: [
+        detail('Boxy hull', ['hull'], 'identity'),
+        detail('Fine surface stria', ['striaAnchor'], 'minor'),
+      ],
+    }));
+
+    expect(codes(coverage)).toEqual(['folded-detail']);
+    expect(coverage).toMatchObject({ errorCount: 0, warningCount: 0, noteCount: 1 });
+  });
+
+  it('still errors on an identity feature riding a geometry-less locator under a built parent', () => {
+    // Same shape as the folded-relief case, but the subject's identity rides on
+    // it — a defining feature with no mesh of its own is the fused-model failure
+    // this gate exists to catch, not a modeling shortcut.
+    const coverage = evaluateThreejsPartCoverage(makeSpec({
+      parts: [{
+        id: 'hull',
+        name: 'Hull',
+        geometry: box(2),
+        material: 'shell',
+        children: [{ id: 'lensAnchor', name: 'Lens anchor' }],
+      }],
+      detailInventory: [
+        detail('Boxy hull', ['hull'], 'identity'),
+        detail('Recessed lens', ['lensAnchor'], 'identity'),
+      ],
+    }));
+
+    expect(codes(coverage)).toEqual(['unbuilt-detail']);
+    expect(coverage.findings[0]).toMatchObject({ severity: 'error', partIds: ['lensAnchor'] });
+  });
+
   it('treats a minor detail sharing an identity feature\'s part as a note', () => {
     const coverage = evaluateThreejsPartCoverage(makeSpec({
       parts: [{ id: 'hull', name: 'Hull', geometry: box(2), material: 'shell' }],
