@@ -68,18 +68,14 @@ export async function recordQuotaBurnDispatch(key, { now = Date.now() } = {}) {
   });
 }
 
-/** The limits on a card the family's `scope` filter admits. */
-const scopedLimits = (card, family) =>
-  (card.limits || []).filter((limit) => !family.scope || limit.scope === family.scope);
-
 /** Headroom the family is willing to spend on ONE window: what's left, minus its reserve. */
 export function burnBudgetRemaining(limit, family) {
   return Math.max(0, Number(limit?.percentRemaining) - family.reservePercent);
 }
 
 /**
- * The window with the LEAST headroom among everything in scope — what the
- * reserve is actually protecting.
+ * The window with the LEAST headroom on the card — what the reserve is actually
+ * protecting.
  *
  * Checking only the soonest-resetting window (which is what selection keys on)
  * makes the reserve inert for every provider that reports two: claude, codex and
@@ -89,8 +85,8 @@ export function burnBudgetRemaining(limit, family) {
  * weekly allowance already far below the floor the user set — while the field's
  * own hint reads "Never spend below this much headroom".
  */
-function tightestBudget(scoped, family) {
-  const measured = scoped.filter((limit) => Number.isFinite(Number(limit?.percentRemaining)));
+function tightestBudget(limits, family) {
+  const measured = limits.filter((limit) => Number.isFinite(Number(limit?.percentRemaining)));
   if (!measured.length) return null;
   return measured.reduce((tightest, limit) =>
     (burnBudgetRemaining(limit, family) < burnBudgetRemaining(tightest, family) ? limit : tightest));
@@ -160,15 +156,7 @@ export function evaluateFamily(family, card, { now = Date.now(), dispatches = {}
   // just refused. Opt-out only: absent means burnable.
   if (card.burnable === false) return { skipReason: 'provider reports no spendable headroom' };
 
-  // Distinguish "your scope filter matched nothing" from "the provider states
-  // no reset time". `scope` is a free-text field on the page, so a typo (`weekly`
-  // against a card whose windows are `week`/`month`) otherwise reads as a fault
-  // in the quota adapter and the family silently never burns.
-  if (family.scope && !(card.limits || []).some((limit) => limit.scope === family.scope)) {
-    const available = [...new Set((card.limits || []).map((limit) => limit.scope).filter(Boolean))];
-    return { skipReason: `no window matches scope "${family.scope}"${available.length ? ` (this provider has: ${available.join(', ')})` : ''}` };
-  }
-  // ONE scoring pass over the in-scope windows yields both roles a burn reasons
+  // ONE scoring pass over the card's windows yields both roles a burn reasons
   // about (see `lib/quotaWindows.js`):
   //
   //   `target`   — the BROADEST window: the allowance that expires unused. Not
@@ -183,17 +171,17 @@ export function evaluateFamily(family, card, { now = Date.now(), dispatches = {}
   //   `limiting` — the NARROWEST window: what a weekly burn plan runs out of
   //     long before the weekly allowance is spent, and so the horizon a denial
   //     backs off to (see `quotaBurnDenials.js`).
-  const scoped = scopedLimits(card, family);
-  const { target, limiting } = classifyWindows(scoped, (limit) => hoursUntilReset(limit, { now }));
+  const limits = card.limits || [];
+  const { target, limiting } = classifyWindows(limits, (limit) => hoursUntilReset(limit, { now }));
   // A window with no readable reset time is unknowable, not merely closed — a
   // forced run can't invent one either, so this gate holds even under bypass.
   if (!target) return { skipReason: 'no window states a reset time' };
 
   const dispatchKey = windowKey(family.id, target.limit, { now });
   const dispatchesUsed = Number(dispatches[dispatchKey] || 0);
-  // The reserve guards the TIGHTEST window in scope, not the one selection
+  // The reserve guards the TIGHTEST window on the card, not the one selection
   // happens to key on (see `tightestBudget`).
-  const tightest = tightestBudget(scoped, family) || target.limit;
+  const tightest = tightestBudget(limits, family) || target.limit;
   const block = blocks[family.id];
 
   // The gates a forced run is allowed past. Evaluated regardless so the ordering
@@ -227,7 +215,7 @@ export function evaluateFamily(family, card, { now = Date.now(), dispatches = {}
       card,
       limit: target.limit,
       hoursUntilReset: target.hours,
-      // The narrowest window in scope — what a refusal is actually about. Null
+      // The narrowest window on the card — what a refusal is actually about. Null
       // when the provider reports no window whose period we can classify.
       limitingLimit: limiting,
       limitingResetAt: limiting ? normalizeResetAt(limiting, { now }).epochMs : null,

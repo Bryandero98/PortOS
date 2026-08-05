@@ -36,8 +36,6 @@ const quotaBurnJobSchema = z.object({
 
 const quotaBurnFamilySchema = z.object({
   enabled: z.boolean().optional(),
-  providerId: z.string().max(B.labelLength.max).nullable().optional(),
-  scope: z.string().max(B.scopeLength.max).nullable().optional(),
   resetWithinHours: z.number().min(B.resetWithinHours.min).max(B.resetWithinHours.max).optional(),
   reservePercent: z.number().min(B.reservePercent.min).max(B.reservePercent.max).optional(),
   maxDispatchesPerWindow: z.number().int().min(B.maxDispatchesPerWindow.min).max(B.maxDispatchesPerWindow.max).optional(),

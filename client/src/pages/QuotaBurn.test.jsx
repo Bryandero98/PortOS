@@ -19,11 +19,11 @@ const config = {
   checkIntervalMinutes: 30,
   families: {
     grok: {
-      enabled: true, providerId: null, scope: null, resetWithinHours: 24, reservePercent: 10,
+      enabled: true, resetWithinHours: 24, reservePercent: 10,
       maxDispatchesPerWindow: 5, priority: 0,
       jobs: [{ id: 'j1', enabled: true, label: 'Bible images', jobType: 'universe-bible-images', model: null, providerId: null, params: {} }],
     },
-    codex: { enabled: false, providerId: null, scope: null, resetWithinHours: 24, reservePercent: 0, maxDispatchesPerWindow: 5, priority: 0, jobs: [] },
+    codex: { enabled: false, resetWithinHours: 24, reservePercent: 0, maxDispatchesPerWindow: 5, priority: 0, jobs: [] },
   },
 };
 

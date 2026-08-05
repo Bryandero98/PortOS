@@ -19,9 +19,9 @@ import { burnTaskDescription } from '../../lib/quotaBurnConfig.js';
 import { windowLabelOf } from '../../lib/quotaWindows.js';
 
 /**
- * An agent-capable provider in the burning family. An explicit `providerId`
- * (job first, then family) wins; otherwise match the family id against the
- * enabled providers, PREFERRING the TUI.
+ * An agent-capable provider in the burning family. A job's explicit
+ * `providerId` wins; otherwise match the family id against the enabled
+ * providers, PREFERRING the TUI.
  *
  * Preferring the TUI is the point: a burn runs unattended for minutes on the
  * user's own subscription, and a TUI agent is watchable in Active Agents and can
@@ -79,7 +79,7 @@ async function resolve({ params, job, family }) {
   const result = await getAllProviders();
   const provider = providerForFamily(
     Array.isArray(result) ? result : result?.providers,
-    { familyId: family?.id, providerId: job?.providerId || family?.providerId || null },
+    { familyId: family?.id, providerId: job?.providerId || null },
   );
   if (!provider) return { error: `no enabled CLI/TUI provider in the ${family?.id} family` };
   return { app, prompt, provider };
