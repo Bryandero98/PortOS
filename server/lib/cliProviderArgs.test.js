@@ -193,6 +193,62 @@ describe('cliProviderArgs', () => {
     });
   });
 
+  // `provider.effort` is how promptRunner hands a per-run reasoning-effort
+  // override down to the arg builders (there is no `effort` parameter on
+  // executeCliRun) — see executeProviderRunOnce's providerForRun clone.
+  describe('buildCliArgs — provider.effort', () => {
+    const AGY_CATALOG = [
+      'gemini-3.6-flash-high', 'gemini-3.6-flash-medium', 'gemini-3.6-flash-low',
+      'gemini-3.1-pro-high', 'gemini-3.1-pro-low',
+      'claude-sonnet-4-6',
+    ];
+
+    it('emits --effort for Claude Code', () => {
+      expect(buildCliArgs({ id: 'claude-code', command: 'claude', defaultModel: 'claude-opus-5', effort: 'max' }))
+        .toEqual(['-p', '-', '--model', 'claude-opus-5', '--effort', 'max']);
+    });
+
+    it('emits the -c config pair for Codex', () => {
+      expect(buildCliArgs({ id: 'codex', command: 'codex', defaultModel: 'gpt-5', effort: 'xhigh' }))
+        .toEqual([
+          'exec', '-c', 'check_for_update_on_startup=false',
+          '--model', 'gpt-5', '-c', 'model_reasoning_effort=xhigh', '-',
+        ]);
+    });
+
+    it('emits a base --model plus --effort for Antigravity', () => {
+      expect(buildCliArgs({
+        id: 'antigravity-cli', command: 'agy', defaultModel: 'gemini-3.6-flash', effort: 'high', models: AGY_CATALOG,
+      })).toEqual(['--model', 'gemini-3.6-flash', '--effort', 'high', '--dangerously-skip-permissions', '--print']);
+    });
+
+    it('clamps an Antigravity effort the selected model does not offer', () => {
+      // agy errors on `--model gemini-3.1-pro --effort medium`.
+      expect(buildCliArgs({
+        id: 'antigravity-cli', command: 'agy', defaultModel: 'gemini-3.1-pro', effort: 'medium', models: AGY_CATALOG,
+      })).toEqual(['--model', 'gemini-3.1-pro', '--effort', 'low', '--dangerously-skip-permissions', '--print']);
+    });
+
+    it('splits a legacy suffixed Antigravity model into base + --effort', () => {
+      expect(buildCliArgs({
+        id: 'antigravity-cli', command: 'agy', defaultModel: 'gemini-3.6-flash-medium', models: AGY_CATALOG,
+      })).toEqual(['--model', 'gemini-3.6-flash', '--effort', 'medium', '--dangerously-skip-permissions', '--print']);
+    });
+
+    it('is a no-op for providers with no effort control', () => {
+      expect(buildCliArgs({ id: 'opencode', command: 'opencode', defaultModel: 'qwen3', effort: 'high' }))
+        .toEqual(['run', '-m', 'qwen3']);
+      expect(buildCliArgs({ id: 'grok-cli', command: 'grok', defaultModel: 'grok-4', effort: 'high' }))
+        .not.toContain('--effort');
+    });
+
+    it('lets a user-baked --effort pin win', () => {
+      expect(buildCliArgs({
+        id: 'claude-code', command: 'claude', defaultModel: 'claude-opus-5', effort: 'max', args: ['--effort', 'low'],
+      })).toEqual(['--effort', 'low', '-p', '-', '--model', 'claude-opus-5']);
+    });
+  });
+
   describe('stripBrokenModelFlags', () => {
     it('drops dangling / empty model flags but keeps pinned ones', () => {
       expect(stripBrokenModelFlags(['--model'])).toEqual([]);

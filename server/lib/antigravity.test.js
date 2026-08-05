@@ -108,8 +108,9 @@ describe('ensureAntigravityPrintArgs', () => {
   });
 
   it('drops a dangling --model rather than emitting it twice', () => {
+    // The suffixed id splits into base + `--effort` (equivalent invocation).
     expect(ensureAntigravityPrintArgs(['--model'], { model: 'gemini-3.1-pro-low' }))
-      .toEqual(['--model', 'gemini-3.1-pro-low', '--dangerously-skip-permissions', '--print']);
+      .toEqual(['--model', 'gemini-3.1-pro', '--effort', 'low', '--dangerously-skip-permissions', '--print']);
   });
 
   // This is the path every production caller uses (buildCliArgs,

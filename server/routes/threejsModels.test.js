@@ -68,6 +68,48 @@ describe('Three.js model routes', () => {
     });
   });
 
+  it('forwards a reasoning-effort override on generate and create', async () => {
+    models.startGeneration.mockResolvedValueOnce({ id: 'threejs-1', status: 'generating' });
+    const res = await request(makeApp())
+      .post('/api/threejs-models/threejs-1/generate')
+      .send({ providerId: 'antigravity-cli', model: 'gemini-3.6-flash', effort: 'high' });
+    expect(res.status).toBe(202);
+    expect(models.startGeneration).toHaveBeenCalledWith('threejs-1', {
+      providerId: 'antigravity-cli',
+      model: 'gemini-3.6-flash',
+      effort: 'high',
+      feedback: '',
+    });
+
+    models.createModel.mockResolvedValueOnce({ id: 'threejs-2', status: 'generating' });
+    await request(makeApp())
+      .post('/api/threejs-models')
+      .send({ name: 'R', filename: 'r.png', providerId: 'antigravity-cli', model: 'gemini-3.6-flash', effort: 'low' });
+    expect(models.createModel).toHaveBeenCalledWith(expect.objectContaining({ effort: 'low' }));
+  });
+
+  it('maps the picker\'s empty "Default effort" to an explicit null clear', async () => {
+    models.startGeneration.mockResolvedValueOnce({ id: 'threejs-1', status: 'generating' });
+    const res = await request(makeApp())
+      .post('/api/threejs-models/threejs-1/generate')
+      .send({ providerId: 'antigravity-cli', effort: '' });
+    expect(res.status).toBe(202);
+    // `null` = clear, distinct from the key being absent (= keep what's stored).
+    expect(models.startGeneration).toHaveBeenCalledWith('threejs-1', {
+      providerId: 'antigravity-cli',
+      effort: null,
+      feedback: '',
+    });
+  });
+
+  it('rejects an effort that is not a known level', async () => {
+    const res = await request(makeApp())
+      .post('/api/threejs-models/threejs-1/generate')
+      .send({ providerId: 'antigravity-cli', effort: 'turbo' });
+    expect(res.status).toBe(400);
+    expect(models.startGeneration).not.toHaveBeenCalled();
+  });
+
   it('serves generated source as a JavaScript attachment', async () => {
     models.getModelSource.mockResolvedValueOnce({
       filename: 'example-robot.js',

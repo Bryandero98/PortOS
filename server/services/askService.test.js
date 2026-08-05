@@ -421,7 +421,8 @@ describe('runAsk', () => {
     // with the prompt after it — nothing else may follow the marker.
     expect(args.slice(0, -1)).toEqual([
       '--add-dir', '/tmp/x',
-      '--model', 'gemini-3.1-pro-high',
+      // The suffixed id splits into base + `--effort` (equivalent invocation).
+      '--model', 'gemini-3.1-pro', '--effort', 'high',
       '--dangerously-skip-permissions',
       '--print',
     ]);
