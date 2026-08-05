@@ -400,6 +400,19 @@ describe('cosTaskStore.addTask', () => {
     expect(created.metadata.investigationFingerprint).toBeUndefined();
   });
 
+  it('persists quota-burn provenance and omits it for every other task', async () => {
+    // `metadata` is an allowlist, so an unlisted key is silently dropped — and a
+    // dropped `quotaBurnFamily` makes the queued burn indistinguishable from any
+    // other system task at the cooldown gate and the completion continuation.
+    const burn = await addTask(
+      { description: '[Quota burn: agy] Perf', app: 'portos', quotaBurnFamily: 'agy' },
+      'internal',
+    );
+    expect(burn.metadata.quotaBurnFamily).toBe('agy');
+    const ordinary = await addTask({ description: 'not a burn' }, 'user');
+    expect(ordinary.metadata.quotaBurnFamily).toBeUndefined();
+  });
+
   it('omits diagnostics metadata when none is supplied and ignores a non-object / array value', async () => {
     const created = await addTask({ description: 'no diagnostics here' }, 'user');
     expect(created.metadata.diagnostics).toBeUndefined();

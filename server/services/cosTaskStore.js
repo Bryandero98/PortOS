@@ -431,6 +431,10 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     if (taskData.liProposal && typeof taskData.liProposal === 'object' && !Array.isArray(taskData.liProposal)) {
       metadata.liProposal = taskData.liProposal;
     }
+    // Which provider family's window this burn task is spending. Read by
+    // `isCooldownExemptTask` (cosTaskGenerator.js, which owns the why) and by
+    // quotaBurnRunner's completion continuation.
+    if (taskData.quotaBurnFamily) metadata.quotaBurnFamily = taskData.quotaBurnFamily;
     // Content-edit timestamp for cross-peer newest-edit-wins LWW (#1714). Stamped
     // at creation so a freshly-added task always carries a stamp; the merge treats
     // an absent stamp as oldest, so this also keeps a stamped task from losing a

@@ -465,6 +465,12 @@ async function runAgentSpawn(task) {
       // the proposal's domain. agent.metadata is a hand-picked projection of
       // task.metadata (not a full spread), so this must be listed explicitly.
       taskLiProposal: task.metadata?.liProposal || null,
+      // Quota-burn provenance. Same hand-picked-projection reason as
+      // `taskLiProposal`: the runner listens for `agent:completed` and dispatches
+      // the NEXT job in this family's burn plan when the previous one finishes,
+      // so it must be able to tell a burn run from any other agent from the
+      // agent record alone.
+      taskQuotaBurnFamily: task.metadata?.quotaBurnFamily || null,
       // Same reason as taskLiProposal — a hand-picked projection, so this must be
       // listed explicitly. `declaresNoCommitCriterion` (taskTypeHooks.js) reads it
       // to decide whether a run declared a `[task-<id>]` commit criterion at all,

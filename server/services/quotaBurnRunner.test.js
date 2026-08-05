@@ -44,7 +44,7 @@ vi.mock('./quotaBurn.js', async (importActual) => ({
 }));
 
 const { normalizeQuotaBurnConfig } = await import('../lib/quotaBurnConfig.js');
-const { getQuotaBurnStatus, runQuotaBurnCycle, __tickQuotaBurn, __resetQuotaBurnRunner } = await import('./quotaBurnRunner.js');
+const { getQuotaBurnStatus, runQuotaBurnCycle, rotatePlanAfter, __tickQuotaBurn, __onBurnAgentCompleted, __resetQuotaBurnRunner } = await import('./quotaBurnRunner.js');
 
 const card = (family, percentRemaining = 50) => ({
   family, label: family, supported: true,
@@ -365,6 +365,107 @@ describe('interval clock', () => {
     state.pending = { first: { count: 1 } };
     await __tickQuotaBurn();
     expect(getProviderQuotas).toHaveBeenCalled();
+  });
+});
+
+describe('plan rotation', () => {
+  it('resumes after the job the family last dispatched instead of restarting at the top', async () => {
+    // `agent-prompt` always probes as "1 pending" (its probe only checks that an
+    // app and a provider resolve), so an un-rotated walk re-ran job #1 on every
+    // cycle forever and jobs 2..N in an ordered plan never ran once.
+    state.pending = { first: { count: 1 }, second: { count: 1 } };
+    await runQuotaBurnCycle({ trigger: 'manual' });
+    await runQuotaBurnCycle({ trigger: 'manual' });
+    expect(state.ran.map((entry) => entry.jobId)).toEqual(['first', 'second']);
+  });
+
+  it('keeps walking to the next job with work when the resume point has none', async () => {
+    // Rotation moves where the walk STARTS; "first job with pending work wins"
+    // still holds, which is what a probing job like universe-bible-images needs.
+    state.pending = { first: { count: 1 }, second: { count: 0, detail: 'all rendered' } };
+    state.runs = [{ at: new Date().toISOString(), dispatched: true, familyId: 'grok', jobId: 'first' }];
+    const result = await runQuotaBurnCycle({ trigger: 'manual' });
+    expect(result.dispatched).toBe(true);
+    expect(state.ran.map((entry) => entry.jobId)).toEqual(['first']);
+  });
+
+  it('falls back to plan order for a cursor that is not in the plan', () => {
+    // A job deleted from the plan, or one aged out of the capped run log.
+    const jobs = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+    expect(rotatePlanAfter(jobs, 'gone').map((job) => job.id)).toEqual(['a', 'b', 'c']);
+    expect(rotatePlanAfter(jobs, null).map((job) => job.id)).toEqual(['a', 'b', 'c']);
+    expect(rotatePlanAfter(jobs, 'a').map((job) => job.id)).toEqual(['b', 'c', 'a']);
+    expect(rotatePlanAfter(jobs, 'c').map((job) => job.id)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('reads every family\'s cursor before any dispatch writes a new one', async () => {
+    // Two families in one cycle must not see each other's fresh run-log rows.
+    state.config = normalizeQuotaBurnConfig({
+      enabled: true,
+      families: {
+        claude: { enabled: true, resetWithinHours: 24, jobs: [{ id: 'c1', enabled: true, jobType: 'agent-prompt' }, { id: 'c2', enabled: true, jobType: 'agent-prompt' }] },
+        agy: { enabled: true, resetWithinHours: 24, jobs: [{ id: 'a1', enabled: true, jobType: 'agent-prompt' }, { id: 'a2', enabled: true, jobType: 'agent-prompt' }] },
+      },
+    });
+    state.quotas = [card('claude'), card('agy')];
+    state.pending = { c1: { count: 1 }, c2: { count: 1 }, a1: { count: 1 }, a2: { count: 1 } };
+    state.runs = [{ at: new Date().toISOString(), dispatched: true, familyId: 'agy', jobId: 'a1' }];
+    await runQuotaBurnCycle({ trigger: 'manual' });
+    expect(state.ran.map((entry) => entry.jobId)).toEqual(['c1', 'a2']);
+  });
+});
+
+describe('completion continuation', () => {
+  it('evaluates the family again when one of its burn agents finishes', async () => {
+    // The interval only STARTS a burn — see the module header for why one
+    // dispatch per `checkIntervalMinutes` cannot spend the window.
+    state.pending = { first: { count: 1 }, second: { count: 1 } };
+    await runQuotaBurnCycle({ trigger: 'manual' });
+    await __onBurnAgentCompleted({ metadata: { taskQuotaBurnFamily: 'grok' } });
+    // The continuation advances the plan and is charged like any unforced burn.
+    expect(state.ran.map((entry) => entry.jobId)).toEqual(['first', 'second']);
+    expect(state.recorded).toHaveLength(2);
+    expect(state.runs[0]).toMatchObject({ trigger: 'continuation', dispatched: true });
+  });
+
+  it('scrapes only the burning family\'s quota, not every enabled provider\'s', async () => {
+    // WAIT.FRESH bypasses the cache by design, so each card costs its own
+    // multi-second PTY spawn — and every card but this family's is discarded.
+    // Unscoped, one burn chain would pay N scrapes per link instead of one.
+    const { getProviderQuotas } = await import('./providerUsage.js');
+    state.pending = { first: { count: 1 } };
+    await __onBurnAgentCompleted({ metadata: { taskQuotaBurnFamily: 'grok' } });
+    expect(getProviderQuotas).toHaveBeenCalledWith(expect.objectContaining({ family: 'grok' }));
+  });
+
+  it('ignores an agent that was not a quota burn', async () => {
+    state.pending = { first: { count: 1 } };
+    await __onBurnAgentCompleted({ metadata: { taskType: 'user' } });
+    await __onBurnAgentCompleted(null);
+    expect(state.ran).toEqual([]);
+  });
+
+  it('stops when the master switch is off', async () => {
+    // A continuation is unattended spending — switching the feature off must end
+    // the chain, not leave it running until the window cap happens to close it.
+    state.config = plan({ enabled: false });
+    state.pending = { first: { count: 1 } };
+    await __onBurnAgentCompleted({ metadata: { taskQuotaBurnFamily: 'grok' } });
+    expect(state.ran).toEqual([]);
+    expect(state.runs).toEqual([]);
+  });
+
+  it('stops once the window has no quota left to spend', async () => {
+    // The chain is bounded by the same gate ladder every other cycle runs — here
+    // the reserve, which the run log records so the stop is auditable.
+    state.quotas = [card('grok', 10)];
+    state.config = plan({ families: { grok: { enabled: true, resetWithinHours: 24, reservePercent: 40, jobs: [{ id: 'first', enabled: true, jobType: 'agent-prompt' }] } } });
+    state.pending = { first: { count: 1 } };
+    await __onBurnAgentCompleted({ metadata: { taskQuotaBurnFamily: 'grok' } });
+    expect(state.ran).toEqual([]);
+    expect(state.runs).toHaveLength(1);
+    expect(state.runs[0]).toMatchObject({ trigger: 'continuation', dispatched: false });
+    expect(state.runs[0].reason).toMatch(/reserve/);
   });
 });
 

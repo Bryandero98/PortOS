@@ -28,6 +28,32 @@ import { isPlainObject, POLLUTING_KEYS } from './objects.js';
 export const QUOTA_BURN_FAMILIES = Object.freeze(['claude', 'codex', 'agy', 'grok']);
 
 /**
+ * How a queued burn task's description opens: `[Quota burn: <family>] …`.
+ *
+ * `quotaBurnJobs/agentPrompt.js` mints it; migration 225 matches it to back-fill
+ * `metadata.quotaBurnFamily` onto tasks queued before that stamp existed. Shared
+ * because the two live in different trees and a reworded description would
+ * silently make the migration a no-op — leaving exactly the stranded tasks it
+ * exists to rescue.
+ */
+export const QUOTA_BURN_TASK_PREFIX = '[Quota burn: ';
+
+/** The description a burn task is queued under. Parsed back by `quotaBurnFamilyOfDescription`. */
+export const burnTaskDescription = (familyId, label, appName) =>
+  `${QUOTA_BURN_TASK_PREFIX}${familyId}] ${label} for ${appName}`;
+
+/**
+ * The family id in a burn-task description, or null when it isn't one. Only the
+ * migration needs this — a live task carries `metadata.quotaBurnFamily` — so it
+ * deliberately requires the exact minted shape rather than sniffing loosely.
+ */
+export function quotaBurnFamilyOfDescription(description) {
+  if (typeof description !== 'string' || !description.startsWith(QUOTA_BURN_TASK_PREFIX)) return null;
+  const family = description.slice(QUOTA_BURN_TASK_PREFIX.length).split(']')[0].trim();
+  return QUOTA_BURN_FAMILIES.includes(family) ? family : null;
+}
+
+/**
  * Every numeric/length bound in the plan, in ONE place.
  *
  * Three consumers read these and must agree: the normalizer below (which

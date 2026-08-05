@@ -171,6 +171,21 @@ describe('isCooldownExemptTask', () => {
   it('does NOT exempt an ordinary app task', () => {
     expect(isCooldownExemptTask({ metadata: { app: 'app-1', analysisType: 'security-audit' } })).toBe(false);
   });
+  // A burn task's throttle is its family's gate ladder (reset horizon, reserve,
+  // maxDispatchesPerWindow), all checked before it is queued. The app cooldown is
+  // re-stamped by EVERY task that completes on that app, so on an app carrying a
+  // perpetual drain — itself exempt, so it keeps completing — the cooldown never
+  // lapses and the burn sits in Pending until its window expires unspent.
+  it('exempts a quota-burn task so a busy app cannot starve it', () => {
+    expect(isCooldownExemptTask({ metadata: { app: 'app-1', quotaBurnFamily: 'agy' } })).toBe(true);
+  });
+  // Deliberately metadata-only — a task queued before the stamp existed is
+  // back-filled by scripts/migrations/225-quota-burn-task-provenance.js, not
+  // recognised here by sniffing its description. That keeps a user-visible
+  // display string from becoming load-bearing for a scheduling gate.
+  it('does NOT exempt a burn-shaped description with no marker', () => {
+    expect(isCooldownExemptTask({ description: '[Quota burn: agy] Perf', metadata: { app: 'app-1' } })).toBe(false);
+  });
   it('is null-safe for a task with no metadata', () => {
     expect(isCooldownExemptTask(null)).toBe(false);
     expect(isCooldownExemptTask({})).toBe(false);

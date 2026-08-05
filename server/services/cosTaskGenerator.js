@@ -70,8 +70,8 @@ export function exceedsMaxSpawns(task) {
 }
 
 /**
- * A task that must BYPASS the per-app review cooldown at spawn time. Two classes
- * qualify, for the same reason — the cooldown is not their throttle:
+ * A task that must BYPASS the per-app review cooldown at spawn time. Three
+ * classes qualify, for the same reason — the cooldown is not their throttle:
  *   - **Pipeline continuations** (`metadata.pipeline.currentStage > 0`) — a
  *     multi-stage pipeline's own stage gating sequences the work.
  *   - **Perpetual drains** (`metadata.perpetual`) — the work-detector park is the
@@ -80,6 +80,15 @@ export function exceedsMaxSpawns(task) {
  *     the queue-path cooldown) would still be skipped here at the spawn gate,
  *     because the on-demand "Run" path stamped `lastReviewedAt` and these gates
  *     read it — so a manually-triggered perpetual drain stalls one item in.
+ *   - **Quota burns** (`metadata.quotaBurnFamily`) — the throttle is the burn
+ *     plan's own gate ladder: the reset-window horizon, the family's reserve, and
+ *     `maxDispatchesPerWindow`, all checked before the task is ever queued. The
+ *     app cooldown is re-stamped by EVERY completed task on that app, so on an app
+ *     carrying any other recurring CoS work (a perpetual drain, which is itself
+ *     exempt and therefore keeps completing) it never lapses — and the burn task
+ *     sits in Pending until its window resets unspent, which is the exact outcome
+ *     quota burn exists to prevent. (Tasks queued before this stamp existed are
+ *     back-filled by migration 225, so the predicate reads metadata only.)
  *
  * `metadata.perpetual` is a bare boolean set upstream, but it round-trips through
  * COS-TASKS.md as the STRING `"true"` (taskParser serializes non-string/-object
@@ -94,7 +103,9 @@ export function exceedsMaxSpawns(task) {
 export function isCooldownExemptTask(task) {
   const meta = task?.metadata;
   if (!meta) return false;
-  return meta.pipeline?.currentStage > 0 || meta.perpetual === true || meta.perpetual === 'true';
+  return meta.pipeline?.currentStage > 0
+    || meta.perpetual === true || meta.perpetual === 'true'
+    || Boolean(meta.quotaBurnFamily);
 }
 
 /**
