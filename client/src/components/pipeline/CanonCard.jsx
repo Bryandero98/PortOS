@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { Loader2, ImagePlus, ImageUp, WandSparkles, Lock, Unlock, Shirt, Plus, Trash2, ChevronDown, ChevronRight, Star, Square, BookOpen, ScanText } from 'lucide-react';
+import { Loader2, ImagePlus, ImageUp, WandSparkles, Lock, Unlock, Shirt, Plus, Trash2, X, ChevronDown, ChevronRight, Star, Square, BookOpen, ScanText } from 'lucide-react';
 import useMediaJobProgress from '../../hooks/useMediaJobProgress';
 import useRowDraft from '../../hooks/useRowDraft';
 import useFieldDraft from '../../hooks/useFieldDraft';
@@ -396,6 +396,12 @@ export default function CanonCard({
   // Shape: { castList } — the universe-wide character list feeds the
   // attachment target picker in ObjectAttachmentsEditor.
   objectExtensions = null,
+  // `(entryId) => void` — drop this entry from its canon bucket. Same contract
+  // (and same X-button affordance) as removing a category variation or a
+  // composite sheet: the entry leaves the universe bucket, while its rendered
+  // images and any linked Catalog ingredient are left alone. Null in the
+  // pipeline/series view (NounsStage), which has no removal channel.
+  onRemove = null,
 }) {
   const description = kind.descFor(entry);
   const refs = Array.isArray(entry.imageRefs) ? entry.imageRefs : [];
@@ -647,6 +653,21 @@ export default function CanonCard({
           aria-pressed={locked}
         >
           {togglingLock ? <Loader2 size={14} className="animate-spin" /> : (locked ? <Lock size={14} /> : <Unlock size={14} />)}
+        </button>
+      ) : null}
+      {onRemove ? (
+        // Trailing X, matching the variation + composite-sheet cards so every
+        // universe bucket removes the same way. Deliberately NOT lock-gated:
+        // the lock protects the entry from AI rewrites, not from the user
+        // deciding it doesn't belong in this universe.
+        <button
+          type="button"
+          onClick={() => onRemove(entry.id)}
+          className="p-1 text-gray-400 hover:text-port-error rounded"
+          title={`Remove ${entry.name} from this universe's canon — rendered images and any Catalog entry are kept`}
+          aria-label={`Remove ${entry.name}`}
+        >
+          <X size={14} />
         </button>
       ) : null}
     </div>

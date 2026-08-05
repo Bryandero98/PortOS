@@ -15,6 +15,19 @@ import { runPromptRefine } from './pipeline/refineHelpers.js';
 import { ServerError } from '../lib/errorHandler.js';
 import { shortId } from '../lib/fileUtils.js';
 
+// Every per-entry canon operation below is addressed by singular kind
+// ('character' | 'place' | 'object') and rejects anything else the same way.
+// The routes already validate the enum via `lockParamsSchema`, so this only
+// defends direct service callers — but it's the difference between a 400 and
+// an undefined `BIBLE_FIELD[kind]` silently reading the wrong array.
+const assertCanonKind = (kind) => {
+  if (BIBLE_KINDS.includes(kind)) return;
+  throw new ServerError(
+    `Invalid canon kind "${kind}" — expected one of: ${BIBLE_KINDS.join(', ')}`,
+    { status: 400, code: 'UNIVERSE_CANON_INVALID_KIND' },
+  );
+};
+
 export const peerForPrompt = (entry) => ({
   id: entry.id,
   name: entry.name,
@@ -514,12 +527,7 @@ export async function differentiateUniverseCast(universeId, options = {}) {
 // protected from AI rewrite paths — see `mergeExtractedBible` (evidence-only
 // append) and the refine/differentiate runtime guards.
 export async function setCanonEntryLock(universeId, kind, entryId, locked) {
-  if (!BIBLE_KINDS.includes(kind)) {
-    throw new ServerError(
-      `Invalid canon kind "${kind}" — expected one of: ${BIBLE_KINDS.join(', ')}`,
-      { status: 400, code: 'UNIVERSE_CANON_INVALID_KIND' },
-    );
-  }
+  assertCanonKind(kind);
   const field = BIBLE_FIELD[kind];
   let found = false;
   // Mutator form (same as setCanonKindLockAll) so the flip is computed from
@@ -561,12 +569,7 @@ export async function setCanonEntryLock(universeId, kind, entryId, locked) {
  * and apply) can't be clobbered by a stale read.
  */
 export async function applyCanonImageCorrection(universeId, kind, entryId, { description, imageFilename } = {}) {
-  if (!BIBLE_KINDS.includes(kind)) {
-    throw new ServerError(
-      `Invalid canon kind "${kind}" — expected one of: ${BIBLE_KINDS.join(', ')}`,
-      { status: 400, code: 'UNIVERSE_CANON_INVALID_KIND' },
-    );
-  }
+  assertCanonKind(kind);
   const trimmedDescription = typeof description === 'string' ? description.trim().slice(0, DESC_LIMIT[kind]) : '';
   if (!trimmedDescription) {
     throw new ServerError('A corrected description is required', { status: 400, code: 'VALIDATION_ERROR' });
@@ -614,12 +617,7 @@ export async function applyCanonImageCorrection(universeId, kind, entryId, { des
  * carries enough info for a toast like "Locked 7 characters").
  */
 export async function setCanonKindLockAll(universeId, kind, locked) {
-  if (!BIBLE_KINDS.includes(kind)) {
-    throw new ServerError(
-      `Invalid canon kind "${kind}" — expected one of: ${BIBLE_KINDS.join(', ')}`,
-      { status: 400, code: 'UNIVERSE_CANON_INVALID_KIND' },
-    );
-  }
+  assertCanonKind(kind);
   const field = BIBLE_FIELD[kind];
   let changed = 0;
   let total = 0;
@@ -641,6 +639,53 @@ export async function setCanonKindLockAll(universeId, kind, locked) {
     return { [field]: nextList };
   });
   return { universe: updated, kind, locked, changed, total };
+}
+
+/**
+ * Remove ONE canon entry from a universe's characters/places/objects bucket.
+ *
+ * Deliberately narrow: this drops the entry from the universe's canon array
+ * and NOTHING else. It does NOT
+ *   - delete the entry's rendered `imageRefs[]` / `primaryImageRef` files or
+ *     its character reference-sheet PNGs (they stay in the gallery, reachable
+ *     from Media, and re-attachable to another entry), and
+ *   - delete or unlink the shared Catalog ingredient an entry may point at via
+ *     `ingredientId` (the catalog row is a universe-independent record; other
+ *     universes and series may embed the same ingredient).
+ * Clearing the removed character's in-memory pending sheet-render slot (so an
+ * in-flight sheet render doesn't stamp a pointer onto an entry that's gone) is
+ * NOT done here — `updateUniverse` diffs the character ids across every
+ * canon-touching write and runs that cascade generically.
+ *
+ * Uses the mutator form so the filter runs against the freshest persisted
+ * state inside `updateUniverse`'s write queue. A read-modify-write split
+ * (getUniverse → PATCH the filtered array) would replace the whole array via
+ * PATCHABLE_SCALARS from a stale read, clobbering whatever landed on a SIBLING
+ * entry in between. `preserveImageRefsById` + `mergePreservedSheetPointers`
+ * already shield `imageRefs[]` and sheet pointers on that path — but NOT
+ * `primaryImageRef`, `locked`, or a concurrent refine's rewritten description,
+ * so the stale-read window is real for those.
+ *
+ * Returns `{ universe, entry }` where `entry` is the removed record.
+ */
+export async function removeCanonEntry(universeId, kind, entryId) {
+  assertCanonKind(kind);
+  const field = BIBLE_FIELD[kind];
+  let removed = null;
+  const updated = await updateUniverse(universeId, (cur) => {
+    const list = Array.isArray(cur[field]) ? cur[field] : [];
+    removed = list.find((e) => e.id === entryId);
+    if (!removed) return null;
+    return { [field]: list.filter((e) => e !== removed) };
+  });
+  if (!removed) {
+    throw new ServerError(
+      `Canon ${kind} ${entryId} not found in universe`,
+      { status: 404, code: 'UNIVERSE_CANON_NOT_FOUND' },
+    );
+  }
+  console.log(`🗑️ Removed canon ${kind} "${removed.name}" from universe ${shortId(universeId)} (assets + catalog untouched)`);
+  return { universe: updated, entry: removed };
 }
 
 /**

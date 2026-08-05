@@ -29,6 +29,7 @@ import {
   getUniverseCanonUsage,
   setUniverseCanonLock,
   setUniverseCanonLockAll,
+  removeUniverseCanonEntry,
   expandUniverseCharacter,
 } from '../../services/apiUniverseBuilder';
 import { generateImage } from '../../services/apiSystem';
@@ -647,6 +648,45 @@ export default function UniverseCanonSection({
     return !!updated;
   }, [universe, universeId, onUniverseChange, mountedRef, creatingKindKey]);
 
+  // Remove one entry from a canon bucket. Mirrors the X button on category
+  // variations / composite sheets: the entry leaves this universe's canon and
+  // nothing else is touched — the server drops it from the array only, leaving
+  // its rendered images, reference sheets, and any linked Catalog ingredient
+  // in place. Optimistic so the card disappears on click; reverts on failure.
+  const handleRemoveEntry = useCallback(async (kind, entryId) => {
+    const latest = latestUniverseRef.current;
+    if (!latest) return;
+    const kindKey = kind.key;
+    const list = getKindList(latest, kindKey);
+    const target = list.find((e) => e?.id === entryId);
+    if (!target) return;
+    const capturedId = universeId;
+    onUniverseChange({ ...latest, [kindKey]: list.filter((e) => e !== target) });
+    const result = await removeUniverseCanonEntry(universeId, kind.apiKind, entryId, { silent: true })
+      .catch((err) => { toast.error(err.message || `Remove ${kind.singular} failed`); return null; });
+    const stillCurrent = mountedRef.current && currentUniverseIdRef.current === capturedId;
+    if (!stillCurrent) return;
+    if (!result) {
+      // Revert the optimistic removal off the pre-removal snapshot — the same
+      // one-liner as `handleCreateEntry` / `handlePickFromCatalog`, and safe
+      // for the same documented reason (canon edits are user-driven one at a
+      // time). Restores the entry at its original position for free.
+      onUniverseChange({ ...latest, [kindKey]: list });
+      return;
+    }
+    if (result.universe) onUniverseChange(result.universe);
+    // Drop the removed entry's usage rows locally instead of refetching:
+    // `/canon-usage` re-scans every issue's prose across every linked series,
+    // and removing an entry can't change any SURVIVING entry's usage.
+    setUsage((prev) => {
+      const rows = prev?.[kindKey];
+      if (!rows || !(entryId in rows)) return prev;
+      const { [entryId]: _dropped, ...rest } = rows;
+      return { ...prev, [kindKey]: rest };
+    });
+    toast.success(`Removed ${target.name || kind.singular} from canon — images and catalog entry kept`);
+  }, [universeId, onUniverseChange, mountedRef]);
+
   // Inline-edit channel for canon fields the user types/picks directly
   // (setting intExt + timeOfDay chips, primaryImageRef pinning, wardrobe
   // edits). Optimistic — UI updates before the server roundtrip so chip
@@ -736,6 +776,7 @@ export default function UniverseCanonSection({
     catalogLinking,
     onAddEntry: (payload) => handleCreateEntry(kind, payload),
     creating: creatingKindKey === kind.key,
+    onRemoveEntry: (entryId) => handleRemoveEntry(kind, entryId),
   });
 
   return (
@@ -920,7 +961,7 @@ function KindSection() {
     onBulkLock, bulkLocking, fullList, castList = [],
     externalPendingByEntryId = null, compact = false, onRenderAll = null,
     renderingAll = false, onPickFromCatalog = null, catalogLinking = false,
-    onAddEntry = null, creating = false,
+    onAddEntry = null, creating = false, onRemoveEntry = null,
   } = useKindSection();
   // Universe-only character wiring — `null` for non-character kinds so
   // CanonCard's gate stays `kind === 'characters' && characterExtensions`.
@@ -1100,6 +1141,7 @@ function KindSection() {
             ? { ...characterExtensions, expanding: expandingId === entry.id }
             : null}
           objectExtensions={objectExtensions}
+          onRemove={onRemoveEntry}
         />
       ))}
     </ul>

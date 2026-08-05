@@ -50,9 +50,17 @@ const applyCanonImageCorrectionMock = vi.fn(async (_universeId, kind, entryId, b
   universe: { id: _universeId },
   entry: { id: entryId, [kind === 'character' ? 'physicalDescription' : 'description']: body.description, primaryImageRef: body.imageFilename },
 }));
+const removeCanonEntryMock = vi.fn(async (universeId, kind, entryId) => ({
+  universe: { id: universeId, characters: [], places: [], objects: [] },
+  entry: { id: entryId, name: 'Alex', imageRefs: ['alex.png'], ingredientId: 'ing-alex' },
+}));
 vi.mock('../../services/universeCanon.js', async () => {
   const actual = await vi.importActual('../../services/universeCanon.js');
-  return { ...actual, applyCanonImageCorrection: (...args) => applyCanonImageCorrectionMock(...args) };
+  return {
+    ...actual,
+    applyCanonImageCorrection: (...args) => applyCanonImageCorrectionMock(...args),
+    removeCanonEntry: (...args) => removeCanonEntryMock(...args),
+  };
 });
 const expandEntityFromImagesMock = vi.fn(async () => ({ fields: { pronouns: 'she/her' }, updatedFields: ['pronouns'], llm: { provider: 'mock', model: null } }));
 vi.mock('../../services/universeVisionExpand.js', async () => {
@@ -1395,6 +1403,31 @@ describe('universe-builder routes', () => {
         .send({ description: tooLong, imageFilename: 'g.png' });
       expect(res.status).toBe(400);
       expect(applyCanonImageCorrectionMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('DELETE /:id/canon/:kind/:entryId', () => {
+    it('removes the entry from its canon bucket and returns the removed record', async () => {
+      removeCanonEntryMock.mockClear();
+      const res = await request(buildApp())
+        .delete('/api/universe-builder/uni-1/canon/character/chr-1');
+      expect(res.status).toBe(200);
+      expect(removeCanonEntryMock).toHaveBeenCalledWith('uni-1', 'character', 'chr-1');
+      // The response carries the entry whole — the route must not scrub its
+      // image refs or catalog backlink on the way out, because removal is
+      // scoped to the canon array and leaves both stores alone.
+      expect(res.body.entry).toEqual(expect.objectContaining({
+        id: 'chr-1', imageRefs: ['alex.png'], ingredientId: 'ing-alex',
+      }));
+      expect(res.body.universe.characters).toEqual([]);
+    });
+
+    it('rejects an unknown kind before invoking the service', async () => {
+      removeCanonEntryMock.mockClear();
+      const res = await request(buildApp())
+        .delete('/api/universe-builder/uni-1/canon/monster/chr-1');
+      expect(res.status).toBe(400);
+      expect(removeCanonEntryMock).not.toHaveBeenCalled();
     });
   });
 

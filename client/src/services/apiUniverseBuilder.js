@@ -348,11 +348,21 @@ export const getUniverseSeriesNames = (universeId) =>
 // Toggle the `locked` flag on a single canon entry. Locked entries are
 // protected from AI rewrite paths (refine returns 409; differentiate skips
 // them at apply time; re-extract appends evidence only). `kind` must be
-// 'character' | 'setting' | 'object' (the singular BIBLE_KIND values).
+// 'character' | 'place' | 'object' (the singular BIBLE_KIND values).
 export const setUniverseCanonLock = (universeId, kind, entryId, locked, options = {}) =>
   request(`/universe-builder/${encodeURIComponent(universeId)}/canon/${encodeURIComponent(kind)}/${encodeURIComponent(entryId)}/lock`, {
     method: 'PATCH',
     body: JSON.stringify({ locked }),
+    ...options,
+  });
+
+// Remove one canon entry from its universe bucket. Returns
+// `{ universe, entry }`. Scoped to the canon array ONLY — the entry's rendered
+// images / reference sheets stay in the gallery and the shared Catalog
+// ingredient it may point at is left untouched.
+export const removeUniverseCanonEntry = (universeId, kind, entryId, options = {}) =>
+  request(`/universe-builder/${encodeURIComponent(universeId)}/canon/${encodeURIComponent(kind)}/${encodeURIComponent(entryId)}`, {
+    method: 'DELETE',
     ...options,
   });
 
