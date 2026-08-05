@@ -92,7 +92,7 @@ describe('CompositeSheetsEditor', () => {
         onJobSettled={onJobSettled}
       />,
     );
-    await waitFor(() => expect(onJobSettled).toHaveBeenCalledWith('sheet-1', 'fresh.png', 'job-9', 'completed'));
+    await waitFor(() => expect(onJobSettled).toHaveBeenCalledWith('sheet-1', 'fresh.png', 'job-9'));
   });
 
   // MediaJobThumb fires its onFilename effect on [effectiveFilename, onFilename],
@@ -118,14 +118,35 @@ describe('CompositeSheetsEditor', () => {
   it('settles with a null filename on a terminal failure so the parent still clears the pending entry', async () => {
     job = { status: 'failed', filename: null, error: 'boom' };
     const onJobSettled = vi.fn();
+    const onJobFailed = vi.fn();
     render(
       <CompositeSheetsEditor
         sheets={[sheet({ id: 'sheet-1' })]}
         onChange={() => {}}
         pendingByEntryId={{ 'sheet-1': 'job-9' }}
         onJobSettled={onJobSettled}
+        onJobFailed={onJobFailed}
       />,
     );
-    await waitFor(() => expect(onJobSettled).toHaveBeenCalledWith('sheet-1', null, 'job-9', 'failed'));
+    await waitFor(() => expect(onJobSettled).toHaveBeenCalledWith('sheet-1', null, 'job-9'));
+    // Reported separately so the parent can toast a failure without having to
+    // tell one apart from a user-initiated cancel.
+    expect(onJobFailed).toHaveBeenCalledWith('sheet-1', 'failed');
+  });
+
+  it('does not report a failure when the job merely completes', async () => {
+    job = { status: 'completed', filename: 'fresh.png', error: null };
+    const onJobFailed = vi.fn();
+    render(
+      <CompositeSheetsEditor
+        sheets={[sheet({ id: 'sheet-1' })]}
+        onChange={() => {}}
+        pendingByEntryId={{ 'sheet-1': 'job-9' }}
+        onJobSettled={vi.fn()}
+        onJobFailed={onJobFailed}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText('Costume sheet')).toBeInTheDocument());
+    expect(onJobFailed).not.toHaveBeenCalled();
   });
 });

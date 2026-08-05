@@ -29,13 +29,21 @@ export default function EntryThumbSlot({
   primaryImageRef = null,
   onRender = null,
   onPreview = null,
-  // Fired as `(filename, status)` when an in-flight job reaches a terminal
-  // state, so callers can persist the new ref + clear the in-flight job without
-  // their own job subscription. `('<file>', 'completed')` on success;
-  // `(null, 'failed' | 'canceled')` on a terminal failure, which carries no
-  // filename — the status is what lets a caller tell a failed render (worth
-  // surfacing) from a user-initiated cancel (not worth a toast).
+  // Fired with the rendered filename when an in-flight job completes (forwarded
+  // to MediaJobThumb's onFilename) so callers can persist the new ref + clear
+  // the in-flight job without their own job subscription. Called with `null` on
+  // a terminal failure, which yields no filename.
+  //
+  // ONE argument, always. Do not overload the second positional slot with a
+  // status: `useSingleImageRender`'s `handleComplete(filename, key)` is wired
+  // straight into this prop (StyleProbeImage), and a status arriving where it
+  // expects a key re-keys its job map so the in-flight job is never cleared and
+  // the slot spins forever. Terminal status goes to `onTerminalStatus` instead.
   onComplete = null,
+  // `('failed' | 'canceled')` when the job terminates without a filename, for
+  // callers that report a failed render. Separate from `onComplete` per the
+  // arity note above; fires after it, so the clear happens first either way.
+  onTerminalStatus = null,
   canRender = true,
   alt = 'Render',
   // `'lg'` renders the empty-state box at 64x96 with a bigger Sparkles
@@ -46,16 +54,17 @@ export default function EntryThumbSlot({
   // 1024x1536 universe renders so the slot doesn't crop the subject.
   size = 'sm',
 }) {
-  // Stable identities: MediaJobThumb fires these from effects keyed on
-  // `[value, callback]`, so a fresh arrow per render would re-fire the terminal
-  // callback on every parent render instead of once when the job settles.
-  const onFilename = useCallback(
-    (filename) => onComplete?.(filename, 'completed'),
-    [onComplete],
-  );
+  // MediaJobThumb fires this from an effect keyed on `[effectiveStatus, onStatus]`,
+  // so it must not be a fresh arrow per render or it re-fires on every parent
+  // render instead of once when the job settles. (`onComplete` goes to
+  // `onFilename` unwrapped, so its identity — and arity — stay the caller's.)
   const onStatus = useCallback(
-    (s) => { if (s === 'failed' || s === 'canceled') onComplete?.(null, s); },
-    [onComplete],
+    (s) => {
+      if (s !== 'failed' && s !== 'canceled') return;
+      onComplete?.(null);
+      onTerminalStatus?.(s);
+    },
+    [onComplete, onTerminalStatus],
   );
   if (inFlightJobId) {
     // `xs` (48x80) matches the empty + completed states below so all three
@@ -71,7 +80,7 @@ export default function EntryThumbSlot({
         label={alt}
         size={pendingSize}
         onPreview={onPreview}
-        onFilename={onFilename}
+        onFilename={onComplete}
         // A terminal failure/cancel never yields a filename, so `onComplete`
         // (which clears the in-flight job) would otherwise never fire and the
         // job stays pinned. Callers that scope render state per entity keep that

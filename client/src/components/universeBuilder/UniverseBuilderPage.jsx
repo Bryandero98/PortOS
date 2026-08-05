@@ -293,12 +293,8 @@ export default function UniverseBuilder() {
     );
   }, [settleEntryJob]);
 
-  // Composite boards on the Composites tab. A failed render is reported the same
-  // way the variation and canon rows report theirs — otherwise the spinner just
-  // vanishes and the user is left guessing. A user-initiated cancel is not a
-  // failure, so it settles silently.
-  const handleSheetJobSettled = useCallback((sheetId, filename, settledJobId = null, status = null) => {
-    if (!filename && status === 'failed') toast.error('Render failed');
+  // Composite boards on the Composites tab.
+  const handleSheetJobSettled = useCallback((sheetId, filename, settledJobId = null) => {
     settleEntryJob(
       sheetId,
       filename,
@@ -307,6 +303,13 @@ export default function UniverseBuilder() {
       (d, compositeSheets) => ({ ...d, compositeSheets }),
     );
   }, [settleEntryJob]);
+
+  // A failed board render is reported the same way the variation and canon rows
+  // report theirs — otherwise the spinner just vanishes and the user is left
+  // guessing. A user-initiated cancel is not a failure, so it stays silent.
+  const handleSheetJobFailed = useCallback((_sheetId, status) => {
+    if (status === 'failed') toast.error('Render failed');
+  }, []);
 
   return (
     <div className="flex flex-col h-full">
@@ -492,6 +495,7 @@ export default function UniverseBuilder() {
               onPreview={openPreviewByFilename}
               pendingByEntryId={pendingHeadByEntryId}
               onJobSettled={handleSheetJobSettled}
+              onJobFailed={handleSheetJobFailed}
             />
             {/* Add-bucket row stays available here for power users who want to
                 introduce a brand-new custom bucket without going through

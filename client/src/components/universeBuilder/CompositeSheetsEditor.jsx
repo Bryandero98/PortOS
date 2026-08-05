@@ -14,15 +14,16 @@ export default function CompositeSheetsEditor({
   // Clicking a board's thumbnail opens the page-level MediaPreview lightbox,
   // same as variation / canon rows. Receives the visible filename.
   onPreview = null,
-  // Per-row render-pending plumbing, mirroring the variation grid:
-  // `pendingByEntryId[sheet.id]` is the in-flight jobId (or undefined), and
-  // `onJobSettled(sheetId, filename | null, jobId, status)` fires when that job
-  // reaches a terminal state so the parent can append the new filename to the
-  // board's imageRefs[] and clear the pending entry. A terminal failure/cancel
-  // yields no filename, so it settles with `null` on the same callback rather
-  // than a second one — the parent's clear path is identical either way, and
-  // `status` is what lets it tell a failure worth reporting from a cancel.
-  pendingByEntryId = {}, onJobSettled = null,
+  // Per-row render-pending plumbing, mirroring the variation grid.
+  // `pendingByEntryId[sheet.id]` is the in-flight jobId (or undefined).
+  // `onJobSettled(sheetId, filename | null, jobId)` fires when that job reaches
+  // a terminal state, so the parent can append the new filename to the board's
+  // imageRefs[] and clear the pending entry — a failure/cancel yields no
+  // filename and settles with `null`, which is the same clear either way.
+  // `onJobFailed(sheetId, 'failed' | 'canceled')` fires after it, only on a
+  // terminal failure, so the parent can report a failed render without having
+  // to tell one apart from a user-initiated cancel.
+  pendingByEntryId = {}, onJobSettled = null, onJobFailed = null,
 }) {
   const [adding, setAdding] = useState(false);
   const [newKind, setNewKind] = useState('reference_sheet');
@@ -218,6 +219,7 @@ export default function CompositeSheetsEditor({
                 onPreview={onPreview}
                 inFlightJobId={pendingByEntryId?.[sheet.id] || null}
                 onJobSettled={onJobSettled}
+                onJobFailed={onJobFailed}
                 onToggleLock={() => toggleLockAt(idx)}
                 onStartEdit={() => startEdit(idx, sheet)}
                 onRemove={() => removeAt(idx)}
@@ -236,7 +238,7 @@ export default function CompositeSheetsEditor({
 // universe surface instead of drifting per editor.
 function SheetRow({
   sheet, canRender, onRender, onPreview,
-  inFlightJobId, onJobSettled,
+  inFlightJobId, onJobSettled, onJobFailed,
   onToggleLock, onStartEdit, onRemove,
 }) {
   const renders = Array.isArray(sheet.imageRefs) ? sheet.imageRefs : [];
@@ -252,8 +254,12 @@ function SheetRow({
   // draft) — each one a full listImageGallery() refetch — instead of once when
   // the job lands.
   const handleSettled = useCallback(
-    (filename, status) => onJobSettled?.(sheet.id, filename, inFlightJobId, status),
+    (filename) => onJobSettled?.(sheet.id, filename, inFlightJobId),
     [onJobSettled, sheet.id, inFlightJobId],
+  );
+  const handleFailed = useCallback(
+    (status) => onJobFailed?.(sheet.id, status),
+    [onJobFailed, sheet.id],
   );
   // Three-state thumbnail (pending spinner / rendered image / empty placeholder
   // with a one-click render button), matching the variation + canon rows so a
@@ -267,6 +273,7 @@ function SheetRow({
       onRender={onRender}
       onPreview={onPreview}
       onComplete={handleSettled}
+      onTerminalStatus={handleFailed}
     />
   );
   const title = (

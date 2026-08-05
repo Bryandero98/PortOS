@@ -64,16 +64,43 @@ describe('EntryThumbSlot — three-state thumbnail', () => {
     render(<EntryThumbSlot inFlightJobId="job-x" onComplete={onComplete} canRender={false} />);
     // Terminal failure yields no filename, so without this the scoped job would
     // stay pinned forever (no remount to reset it) and regenerate stays disabled.
-    // The status rides along so a caller can tell a failure worth reporting from
-    // a user-initiated cancel.
-    expect(onComplete).toHaveBeenCalledWith(null, 'failed');
+    expect(onComplete).toHaveBeenCalledWith(null);
   });
 
-  it('clears the in-flight job when the render is canceled, tagged as a cancel', () => {
+  it('clears the in-flight job when the render is canceled', () => {
     jobStatus = 'canceled';
     const onComplete = vi.fn();
     render(<EntryThumbSlot inFlightJobId="job-y" onComplete={onComplete} canRender={false} />);
-    expect(onComplete).toHaveBeenCalledWith(null, 'canceled');
+    expect(onComplete).toHaveBeenCalledWith(null);
+  });
+
+  // `useSingleImageRender`'s `handleComplete(filename, key)` is wired straight
+  // into `onComplete` (StyleProbeImage), so a second positional argument here is
+  // read as a job key: it would look up `renderingJobs['failed']`, find nothing,
+  // never clear the real job, and leave the slot spinning after every render.
+  // Terminal status therefore goes to its own prop, and `onComplete` stays
+  // strictly one-argument.
+  it('calls onComplete with exactly one argument, reporting status separately', () => {
+    jobStatus = 'failed';
+    const onComplete = vi.fn();
+    const onTerminalStatus = vi.fn();
+    render(
+      <EntryThumbSlot
+        inFlightJobId="job-w"
+        onComplete={onComplete}
+        onTerminalStatus={onTerminalStatus}
+        canRender={false}
+      />,
+    );
+    expect(onComplete.mock.calls[0]).toHaveLength(1);
+    expect(onTerminalStatus).toHaveBeenCalledWith('failed');
+  });
+
+  it('reports a cancel distinctly so callers can stay silent on one', () => {
+    jobStatus = 'canceled';
+    const onTerminalStatus = vi.fn();
+    render(<EntryThumbSlot inFlightJobId="job-v" onTerminalStatus={onTerminalStatus} canRender={false} />);
+    expect(onTerminalStatus).toHaveBeenCalledWith('canceled');
   });
 
   it('does NOT clear the in-flight job for non-terminal statuses', () => {
