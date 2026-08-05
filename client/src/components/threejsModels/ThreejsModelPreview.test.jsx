@@ -251,7 +251,10 @@ describe('ThreejsModelPreview disassembly', () => {
       materials: { steel: material() },
       parts: [part('body', box, 'steel', {
         name: 'Body',
-        children: [part('trim', box, 'steel', { name: 'Trim', position: [0, 0, 1] })],
+        children: [
+          part('trim', box, 'steel', { name: 'Trim', position: [0, 0, 1] }),
+          part('engraving', box, 'steel', { name: 'Engraving', position: [0, 0.5, 0], explodeWithParent: true }),
+        ],
       })],
     }} />);
 
@@ -266,6 +269,11 @@ describe('ThreejsModelPreview disassembly', () => {
     const shell = container.querySelector('group[name="Body"] > group:not([name])');
     expect(shell.getAttribute('position').split(',').map(Number).some((value) => value !== 0)).toBe(true);
     expect(shell.querySelector('mesh')).not.toBeNull();
+    // The shell's own engraving rides INSIDE that offset group — its authored
+    // transform is untouched; it moves only because its wrapper does. Hoist it
+    // out and the body separates from its own surface detail.
+    expect(container.querySelector('group[name="Body"] > group:not([name]) > group[name="Engraving"]')).not.toBeNull();
+    expect(positionOf(container, 'Engraving')).toEqual([0, 0.5, 0]);
     // And the trim moves on its own.
     expect(positionOf(container, 'Trim')).not.toEqual([0, 0, 1]);
   });

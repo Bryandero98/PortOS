@@ -173,8 +173,10 @@ function ProceduralScene({ spec, background, layout, selection, selectedId, onSe
       {spec.lights.map((light, index) => <SceneLight key={`${light.type}-${index}`} light={light} />)}
       <Bounds fit clip observe margin={1.25}>
         <ExplodeRefit growth={layout.growth} />
-        {/* Clicking past the model clears the selection, the way a file list does. */}
-        <group name={spec.name} onPointerMissed={() => onSelect(null)}>
+        {/* Clicking past the model clears the selection, the way a file list
+            does — but only when there is one, so a stray click on empty canvas
+            doesn't push a URL write and re-render the page around us. */}
+        <group name={spec.name} onPointerMissed={() => { if (selectedId) onSelect(null); }}>
           {spec.parts.map((part) => (
             <Part
               key={part.id}

@@ -195,17 +195,22 @@ export function buildPartSelectionIndex(parts) {
   const owners = Object.create(null);
   const ancestry = Object.create(null);
   const names = Object.create(null);
-  const walk = (list, chain, owner) => {
+  // "Inside relief" is sticky: the layout skips a relief part's whole subtree,
+  // so anything under it must resolve to the same owner. Without that, a plain
+  // part nested under relief would present as its own component that the slider
+  // can never separate — the exact disagreement this module exists to prevent.
+  const walk = (list, chain, owner, insideRelief) => {
     for (const part of list || []) {
       if (!part?.id) continue;
       const selfChain = [...chain, part.id];
-      const selfOwner = isReliefPart(part) ? (owner ?? part.id) : part.id;
+      const relief = isReliefPart(part) || insideRelief;
+      const selfOwner = relief ? (owner ?? part.id) : part.id;
       owners[part.id] = selfOwner;
       ancestry[part.id] = selfChain;
       names[part.id] = part.name || part.id;
-      walk(childrenOf(part), selfChain, selfOwner);
+      walk(childrenOf(part), selfChain, selfOwner, relief);
     }
   };
-  walk(parts, [], null);
+  walk(parts, [], null, false);
   return { owners, ancestry, names };
 }

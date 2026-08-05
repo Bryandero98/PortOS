@@ -123,6 +123,20 @@ describe('buildPartSelectionIndex', () => {
     expect(names.serrations).toBe('serrations name');
   });
 
+  it('owns everything under relief to the same part, because the layout skips that whole subtree', () => {
+    const parts = [
+      part('body', { children: [part('panelLines', { explodeWithParent: true, children: [part('boltHead')] })] }),
+      part('other', { position: [3, 0, 0] }),
+    ];
+    const { owners } = buildPartSelectionIndex(parts);
+
+    // The bolt is not relief itself, but it rides relief that rides the body —
+    // presenting it as its own component would promise a separation the slider
+    // can never deliver.
+    expect(owners.boltHead).toBe('body');
+    expect(computeExplodeLayout(parts, 1).offsets.boltHead).toBeUndefined();
+  });
+
   it('keeps a non-relief child selectable in its own right', () => {
     const { owners, ancestry } = buildPartSelectionIndex([
       part('body', { children: [part('handle')] }),
