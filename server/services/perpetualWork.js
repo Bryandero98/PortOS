@@ -197,17 +197,70 @@ export function isActionableIssue(issue, inFlight = new Set()) {
   return true;
 }
 
+/**
+ * Resolve the authenticated account's login on `cli`. Shared by GitLab's
+ * `--author`-token lookup and BOTH forges' trusted-set seed, so the probe and
+ * its `<cli>-unavailable` sentinel exist once.
+ */
+async function resolveAuthenticatedLogin(cli, args, repoPath) {
+  const res = await runCli(cli, args, repoPath);
+  const login = (res.stdout || '').trim();
+  return (res.code !== 0 || !login) ? { error: `${cli}-unavailable` } : { login };
+}
+
+/**
+ * Collect the lowercased login of the authenticated account plus every account
+ * the forge reports as having repo/project access — the trusted author set for
+ * the `collaborators` gate. Returns `{ error }` on ANY probe failure rather than
+ * a partial set: degrading to just `self` would silently NARROW the gate (work
+ * hides with no explanation), and degrading to "everyone" would silently WIDEN a
+ * security boundary. Both are worse than retrying next tick, so the failure
+ * carries a `remedy` the caller can surface instead.
+ */
+async function resolveTrustedLogins(cfg, repoPath) {
+  const { login, error } = await resolveAuthenticatedLogin(cfg.cli, cfg.selfLoginArgs, repoPath);
+  if (error) return { error };
+  const res = await runCli(cfg.cli, cfg.membersArgs, repoPath);
+  if (res.code !== 0) return { error: cfg.membersFail, remedy: cfg.membersRemedy };
+  const logins = new Set([login.toLowerCase()]);
+  for (const line of (res.stdout || '').split('\n')) {
+    const member = line.trim().toLowerCase();
+    if (member) logins.add(member);
+  }
+  return { logins };
+}
+
+// Map raw forge issues to the forge-agnostic shape both the skip-list
+// (`isActionableIssue`) and the `collaborators` author gate read. Only the two
+// source keys differ — GitLab keys the number on `iid` and the author login on
+// `username` — so the mapping itself lives once, and every downstream filter
+// sees ONE record shape.
+const normalizeIssues = (raw, numberKey, authorKey) => raw.map((r) => ({
+  number: r[numberKey],
+  title: r.title,
+  labels: r.labels,
+  assignees: r.assignees,
+  authorLogin: (r.author?.[authorKey] || '').toLowerCase()
+}));
+
+const GLAB_SELF_LOGIN_ARGS = ['api', 'user', '-q', '.username'];
+
 // Per-forge config for the shared issue detector. Each entry captures only what
 // differs between GitHub (`gh`) and GitLab (`glab`): the CLI + issue-list args,
-// how owner-mode resolves the author filter, the transient reason strings, and
-// how a raw issue maps to the forge-agnostic `{ number, title, labels, assignees }`
-// shape `isActionableIssue` expects. The control flow itself lives once in
-// `detectForgeIssues`. `inFlightForge` selects the in-flight scan dialect.
+// how owner/self/collaborators mode resolves the author filter, the transient
+// reason strings, and how a raw issue maps to the forge-agnostic
+// `{ number, title, labels, assignees, authorLogin }` shape. The control flow
+// itself lives once in `detectForgeIssues`. `inFlightForge` selects the
+// in-flight scan dialect.
 const FORGE_ISSUE_CONFIG = {
   'claim-issue': {
     cli: 'gh',
     inFlightForge: 'github',
-    listArgs: ['issue', 'list', '--state', 'open', '--search', 'sort:created-asc', '--json', 'number,assignees,labels,title', '--limit', '100'],
+    // `author` is requested unconditionally: it costs nothing on the paths that
+    // ignore it, and the `collaborators` gate can only be applied to the listing
+    // (gh's `--author` takes exactly one account, so a trusted SET can't be
+    // pushed into the query).
+    listArgs: ['issue', 'list', '--state', 'open', '--search', 'sort:created-asc', '--json', 'number,assignees,labels,title,author', '--limit', '100'],
     listFail: 'gh-list-failed',
     parseFail: 'gh-parse-failed',
     // Park reason when the owner filter resolves to a non-authoring owner. On
@@ -233,7 +286,15 @@ const FORGE_ISSUE_CONFIG = {
     // `--self` mode: gh natively understands the `@me` token for `--author`, so
     // no extra lookup is needed — the API resolves it to the authenticated user.
     resolveSelf: async () => ({ author: '@me' }),
-    normalize: (raw) => raw
+    // `collaborators` mode: you + everyone with repo access. `{owner}`/`{repo}`
+    // are gh's own placeholders, resolved from the checked-out remote. A 403 here
+    // (no push access ⇒ the collaborators endpoint is forbidden) is reported with
+    // its remedy, not papered over — see resolveTrustedLogins.
+    selfLoginArgs: ['api', 'user', '-q', '.login'],
+    membersArgs: ['api', '--paginate', 'repos/{owner}/{repo}/collaborators', '-q', '.[].login'],
+    membersFail: 'gh-collaborators-failed',
+    membersRemedy: 'the "Me + collaborators" filter needs a gh account with push access to this repo — pick a different author filter, or re-auth gh',
+    normalize: (raw) => normalizeIssues(raw, 'number', 'login')
   },
   'claim-issue-gitlab': {
     cli: 'glab',
@@ -278,12 +339,20 @@ const FORGE_ISSUE_CONFIG = {
     // resolve the authenticated account via the API; transient if glab is
     // unauthenticated / unreachable.
     resolveSelf: async (repoPath) => {
-      const r = await runCli('glab', ['api', 'user', '-q', '.username'], repoPath);
-      const author = (r.stdout || '').trim();
-      return (r.code !== 0 || !author) ? { error: 'glab-unavailable' } : { author };
+      const { login, error } = await resolveAuthenticatedLogin('glab', GLAB_SELF_LOGIN_ARGS, repoPath);
+      return error ? { error } : { author: login };
     },
-    // GitLab keys the number on `iid` and returns labels as plain strings.
-    normalize: (raw) => raw.map((r) => ({ number: r.iid, title: r.title, labels: r.labels, assignees: r.assignees }))
+    // `collaborators` mode: you + every project member. `members/all` (not
+    // `members`) so members INHERITED from the parent group/subgroup count —
+    // group-level access is how most GitLab teams are actually granted. `:id` is
+    // glab's own project placeholder, resolved from the checked-out remote.
+    selfLoginArgs: GLAB_SELF_LOGIN_ARGS,
+    membersArgs: ['api', '--paginate', 'projects/:id/members/all', '-q', '.[].username'],
+    membersFail: 'glab-members-failed',
+    membersRemedy: 'the "Me + collaborators" filter needs a glab account that can read this project\'s member list — pick a different author filter, or re-auth glab',
+    // GitLab keys the number on `iid`, the author login on `username`, and
+    // returns labels as plain strings.
+    normalize: (raw) => normalizeIssues(raw, 'iid', 'username')
   }
 };
 
@@ -312,10 +381,10 @@ async function countOpenIssuesUnfiltered(cfg, repoPath) {
  * Shared claim-issue detector for both forges (config in FORGE_ISSUE_CONFIG).
  * Counts open issues that pass the same skip-list the claim agent applies,
  * honoring the author filter ('self' = only issues YOU filed (`@me`), the
- * default and the slashdo `/do:next --self` security boundary; 'owner' = only
- * the repo owner's issues; 'any' = every author). The in-flight scan runs only
- * when the list is non-empty, so an empty queue parks without a wasted
- * branch/PR scan.
+ * default and the slashdo `/do:next --self` security boundary; 'collaborators' =
+ * you plus everyone with repo/project access; 'owner' = only the repo owner's
+ * issues; 'any' = every author). The in-flight scan runs only when the list is
+ * non-empty, so an empty queue parks without a wasted branch/PR scan.
  */
 async function detectForgeIssues(forgeKey, app, { issueAuthorFilter = 'self' } = {}) {
   const cfg = FORGE_ISSUE_CONFIG[forgeKey];
@@ -331,21 +400,38 @@ async function detectForgeIssues(forgeKey, app, { issueAuthorFilter = 'self' } =
     actionable: false, count: 0, total, inFlightCount: 0, filteredCount: 0, items: [], reason
   });
 
-  const args = [...cfg.listArgs];
-  // Resolve the author filter symmetrically with resolveIssueAuthorFilterBlock:
-  // 'any' = no filter; 'owner' = repo/project owner; everything else (the 'self'
-  // default plus any out-of-vocab value) = the @me security boundary. Transient
-  // resolver failures skip this dispatch and retry next tick rather than parking
-  // a full cadence.
   // Shared shape for a transient (non-parking) probe failure. Carries the CLI
   // that failed so the caller can attribute the fault to `gh` vs `glab` instead
   // of guessing from the task-type name — a `claim-work` request only resolves to
   // its forge-specific type internally, so the name is not a reliable signal.
-  const transient = (reason) => ({ actionable: false, count: 0, cli: cfg.cli, reason, transient: true });
+  // `remedy` rides along when the probe named a fault that won't self-clear (a
+  // permission the token doesn't have), so the on-demand toast can print the way
+  // out instead of "try again shortly".
+  const transient = (reason, remedy = null) => ({
+    actionable: false, count: 0, cli: cfg.cli, reason, remedy, transient: true
+  });
 
+  const args = [...cfg.listArgs];
+  // Resolve the author filter symmetrically with resolveIssueAuthorFilterBlock:
+  // 'any' = no filter; 'collaborators' = you + everyone with repo/project access
+  // (applied to the listing, since neither CLI's `--author` accepts a SET);
+  // 'owner' = repo/project owner; everything else (the 'self' default plus any
+  // out-of-vocab value) = the @me security boundary. Transient resolver failures
+  // skip this dispatch and retry next tick rather than parking a full cadence.
   let authorApplied = false;
+  // Trusted login set for `collaborators` mode (null on every other path). The
+  // gate is applied AFTER the list returns rather than as a `--author` arg —
+  // both CLIs take a single account there — so `authorApplied` is still set, and
+  // an empty post-filter list gets the same `no-authored-issues` treatment that
+  // tells the user to widen the filter.
+  let trustedLogins = null;
   if (issueAuthorFilter === 'any') {
     // no --author filter
+  } else if (issueAuthorFilter === 'collaborators') {
+    const { logins, error, remedy } = await resolveTrustedLogins(cfg, repoPath);
+    if (error) return transient(error, remedy);
+    trustedLogins = logins;
+    authorApplied = true;
   } else if (issueAuthorFilter === 'owner') {
     const { owner, isOrg, error } = await cfg.resolveOwner(repoPath);
     if (error) return transient(error);
@@ -377,31 +463,42 @@ async function detectForgeIssues(forgeKey, app, { issueAuthorFilter = 'self' } =
     return transient(cfg.parseFail);
   }
   if (!Array.isArray(raw)) return transient(cfg.parseFail);
-  if (raw.length === 0) {
+
+  let issues = cfg.normalize(raw);
+  // `collaborators` gate: keep only issues whose author is in the trusted set.
+  // An unresolvable author (missing/blank login) is DROPPED, never kept — the
+  // gate is a security boundary, so "can't tell who filed it" resolves to "not
+  // trusted". The query carried no `--author` on this path, so `raw.length` IS
+  // the unfiltered open count — remember it instead of re-listing below.
+  const knownOpenCount = trustedLogins ? raw.length : null;
+  if (trustedLogins) issues = issues.filter((i) => trustedLogins.has(i.authorLogin));
+
+  if (issues.length === 0) {
     // An empty *filtered* list is ambiguous: the repo may truly have no open
     // issues, OR it has open issues that just don't match the author filter —
     // e.g. `self`/@me resolving to a different identity than whoever filed the
-    // issues, or a non-org `owner` who simply filed none. (The org/group-owner
+    // issues, a non-org `owner` who simply filed none, or a queue of
+    // outsider-filed issues under the `collaborators` gate. (The org/group-owner
     // trap is caught earlier with the distinct `owner-is-org`/`owner-is-group`
     // reason.)
     // Reporting a flat "no open issues" there hid a claimable queue behind a
     // full recheck park (the "open issues exist but the task still parked"
-    // failure this fixes). Re-probe WITHOUT the author filter; if issues exist,
-    // park with the actionable `no-authored-issues` reason + the real open
+    // failure this fixes). Recover the unfiltered count — free when the gate ran
+    // client-side, otherwise a re-probe WITHOUT the author filter — and if issues
+    // exist, park with the actionable `no-authored-issues` reason + the real open
     // count so the user is told to widen the filter, not that there is nothing
     // to do. The count is raw open issues (any author), not claimable ones —
     // best effort: switching to `any` may still yield `no-actionable-issues`
     // when the other-authored issues are all blocked/assigned/epics. Counting
-    // claimable ones would cost the full normalize + skip-list scan here.
+    // claimable ones would cost the full skip-list scan here.
     if (authorApplied) {
-      const openCount = await countOpenIssuesUnfiltered(cfg, repoPath);
+      const openCount = knownOpenCount ?? (await countOpenIssuesUnfiltered(cfg, repoPath));
       if (openCount > 0) return parked('no-authored-issues', openCount);
     }
     return parked('no-open-issues');
   }
 
   const inFlight = await inFlightIssueNumbers(repoPath, cfg.inFlightForge);
-  const issues = cfg.normalize(raw);
   const total = issues.length;
   // How many of the OPEN issues were skipped only because a claim/PR is already
   // in flight for them (stale post-merge branches count here). Surfacing this

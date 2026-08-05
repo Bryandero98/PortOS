@@ -949,11 +949,14 @@ export const PR_AUTHOR_FILTERS = ['any', 'self', 'others'];
 // claim-issue author-gate values. 'self' = only claim issues YOU filed (the
 // gh/glab-authenticated `@me` account — the slashdo `/do:next --self` security
 // boundary, and the default so a shared/multi-contributor tracker never
-// auto-feeds third-party issues into an agent); 'owner' = only claim issues
-// filed by the repository owner/creator; 'any' = claim any open issue regardless
-// of who filed it. Kept here so both the sanitizer and the claim-issue
-// prompt-builder agree on the vocabulary.
-export const ISSUE_AUTHOR_FILTERS = ['self', 'owner', 'any'];
+// auto-feeds third-party issues into an agent); 'collaborators' = you PLUS every
+// account with repo/project access (a trusted-team widening of 'self' — the
+// people who could already push code are not a lower trust tier than the issues
+// they file); 'owner' = only claim issues filed by the repository
+// owner/creator; 'any' = claim any open issue regardless of who filed it. Kept
+// here so both the sanitizer and the claim-issue prompt-builder agree on the
+// vocabulary.
+export const ISSUE_AUTHOR_FILTERS = ['self', 'collaborators', 'owner', 'any'];
 
 // claim-issue `--swarm` fan-out size. Mirrors slashdo `/do:next --swarm=<N>`,
 // which clamps N to 1..6 and treats bare `--swarm` as 3. Here a swarmCount of

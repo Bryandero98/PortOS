@@ -29,7 +29,15 @@ const SELECT_CLASS = 'w-full px-3 py-2 bg-port-bg border border-port-border roun
 
 /** Sentinel-aware empty copy: never collapse "couldn't reach it" into "nothing to do". */
 function emptyMessage(work) {
-  if (work.transient) return `Couldn't reach the tracker (${work.reason}) — retry, or let the agent decide.`;
+  // A transient the detector could name a `remedy` for is NOT a blip — it's a
+  // permission the token lacks, which fails identically on every retry, so
+  // "retry" would be a dead end. The remedy comes from the server (one wording
+  // for this surface and the on-demand toast alike).
+  if (work.transient) {
+    return work.remedy
+      ? `Couldn't complete the check — ${work.remedy}.`
+      : `Couldn't reach the tracker (${work.reason}) — retry, or let the agent decide.`;
+  }
   return EMPTY_REASONS[work.reason] || `Nothing to pick (${work.reason || 'unknown'}).`;
 }
 
