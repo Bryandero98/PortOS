@@ -73,6 +73,36 @@ describe('POST /api/code-review/local', () => {
     expect(codeReviewSvc.runLocalCodeReview).not.toHaveBeenCalled()
   })
 
+  // The effort check is keyed on the REQUESTED backend, not a flat union of every
+  // local level, so a level the chosen backend doesn't accept is a 400 here rather
+  // than a 200 with the effort silently dropped by the service's own normalizer.
+  it('accepts an effort the requested backend takes, case-folded', async () => {
+    codeReviewSvc.runLocalCodeReview.mockResolvedValue({
+      ok: true, backend: 'ollama', model: 'm', effort: 'high', findings: 'No findings.',
+    })
+
+    const res = await request(makeApp())
+      .post('/api/code-review/local')
+      .send({ backend: 'ollama', model: 'm', effort: 'High', diff: 'diff --git a b' })
+
+    expect(res.status).toBe(200)
+    expect(codeReviewSvc.runLocalCodeReview).toHaveBeenCalledWith(
+      expect.objectContaining({ effort: 'High' }),
+    )
+  })
+
+  it('returns 400 for an effort outside the requested backend ladder', async () => {
+    const res = await request(makeApp())
+      .post('/api/code-review/local')
+      .send({ backend: 'ollama', model: 'm', effort: 'max', diff: 'diff --git a b' })
+
+    expect(res.status).toBe(400)
+    // `max` is a real level for some CLI reviewers, just not for a local backend —
+    // the message names the ladder that DID apply so the caller can tell which.
+    expect(JSON.stringify(res.body)).toContain('low, medium, high')
+    expect(codeReviewSvc.runLocalCodeReview).not.toHaveBeenCalled()
+  })
+
   it('falls back to the settings model when model is omitted', async () => {
     settingsSvc.getSettings.mockResolvedValue({
       codeReview: { lmstudioModel: 'settings-model' },

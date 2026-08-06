@@ -17,7 +17,7 @@ import { getActiveProvider } from './providers.js';
 import { runPromptThroughProvider } from '../lib/promptRunner.js';
 import { readJSONFile, PATHS, tryReadFile, expandHome } from '../lib/fileUtils.js';
 import { loadSlashdoFile, loadSlashdoLib, writeResolvedSlashdoBody } from '../lib/slashdoLoader.js';
-import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, LOCAL_LLM_REVIEWERS, MODEL_CAPABLE_CLI_REVIEWERS, describeReviewerCli, isCliReviewer, reviewerCliBinary, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds, resolveReviewUsernames, resolveOptionalReviewers, resolveReviewerMaxRounds, resolveReviewerModels, reviewerModelsFromDefaults, resolveReviewerEfforts, reviewerEffortsFromDefaults, reviewerEffortArgs, buildReviewerEffortNote, resolveKeyedReviewers, buildReviewWithArgs, buildReviewersCsv } from '../lib/validation.js';
+import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, LOCAL_LLM_REVIEWERS, MODEL_CAPABLE_CLI_REVIEWERS, describeReviewerCli, isCliReviewer, reviewerCliBinary, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds, resolveReviewUsernames, resolveOptionalReviewers, resolveReviewerConfig, reviewerEffortArgs, buildReviewerEffortNote, resolveKeyedReviewers, buildReviewWithArgs, buildReviewersCsv } from '../lib/validation.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { canTypeSlashCommands, resolveSlashdoInvocation, buildSlashdoSection, unreachableReviewerIncludes, SLASHDO_INLINE_BUDGET_CHARS } from '../lib/slashdoInvocation.js';
 import { shellQuote } from '../lib/shellQuote.js';
@@ -386,12 +386,14 @@ async function applySlashdoInvocation(task, {
   // single `reviewer` string and the defaults' `optionalReviewers` — pruning for
   // one reviewer while the run resolved another, and pinning an optional reviewer
   // as blocking.
-  const resolvedReviewers = normalizeReviewers(task.metadata, defaultReviewers);
-  const resolvedUsernames = resolveReviewUsernames(task.metadata?.usernames, codeReviewDefaults?.usernames);
-  const resolvedOptional = resolveOptionalReviewers(task.metadata?.optionalReviewers, codeReviewDefaults?.optionalReviewers);
-  const resolvedMaxRounds = resolveReviewerMaxRounds(task.metadata?.reviewerMaxRounds, codeReviewDefaults?.reviewerMaxRounds);
-  const resolvedModels = resolveReviewerModels(task.metadata?.reviewerModels, reviewerModelsFromDefaults(codeReviewDefaults));
-  const resolvedEfforts = resolveReviewerEfforts(task.metadata?.reviewerEfforts, reviewerEffortsFromDefaults(codeReviewDefaults));
+  const {
+    reviewers: resolvedReviewers,
+    usernames: resolvedUsernames,
+    optionalReviewers: resolvedOptional,
+    reviewerMaxRounds: resolvedMaxRounds,
+    reviewerModels: resolvedModels,
+    reviewerEfforts: resolvedEfforts
+  } = resolveReviewerConfig(task.metadata, codeReviewDefaults, defaultReviewers);
 
   // A resolved lone `copilot` with no usernames is ambiguous: it's what an
   // unconfigured install produces (`pickCodeReviewDefaults` and
@@ -552,7 +554,7 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
   // the literal command line the agent must run. Reviewers are listed rather than
   // filtered to MODEL_CAPABLE_CLI_REVIEWERS because `agy` takes an effort but no
   // PortOS-pinnable model — it would otherwise have no way to receive one.
-  const reviewerModelEntries = cliReviewers
+  const reviewerPinEntries = cliReviewers
     .map((r) => {
       const flags = [];
       // Thread each configured model id VERBATIM. We deliberately don't env-map it
@@ -573,8 +575,8 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
       return flags.length ? `\`${reviewerCliBinary(r) || r} ${flags.join(' ')} …\`` : null;
     })
     .filter(Boolean);
-  const reviewerModelNote = reviewerModelEntries.length
-    ? ` When invoking a reviewer with a pinned model or reasoning effort, pass it: ${reviewerModelEntries.join(', ')}.`
+  const reviewerPinNote = reviewerPinEntries.length
+    ? ` When invoking a reviewer with a pinned model or reasoning effort, pass it: ${reviewerPinEntries.join(', ')}.`
     : '';
   // When the slashdo local-agent review loop is inlined below (a spawnable CLI
   // reviewer is in the list), point the invocation step at it so the agent runs
@@ -647,17 +649,27 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
   // `model: "…"` placeholder would have the agent send the literal ellipsis, and
   // the route's `body.model || configured` prefers that truthy junk over the
   // install default — turning a pinned-effort review into a model-not-found error.
-  const localLlmPinKeys = new Set();
-  const localLlmPinNote = LOCAL_LLM_REVIEWERS
+  const pinnedString = (map, r) => (typeof map[r] === 'string' && map[r] ? map[r] : null);
+  const localLlmPins = LOCAL_LLM_REVIEWERS
     .filter(r => reviewers.includes(r))
-    .map((r) => {
-      const keys = [];
-      if (typeof reviewerModelMap[r] === 'string' && reviewerModelMap[r]) { keys.push(`"model": "${reviewerModelMap[r]}"`); localLlmPinKeys.add('model'); }
-      if (typeof reviewerEffortMap[r] === 'string' && reviewerEffortMap[r]) { keys.push(`"effort": "${reviewerEffortMap[r]}"`); localLlmPinKeys.add('effort'); }
-      return keys.length ? `\`${r}\` → \`${keys.join(', ')}\`` : null;
-    })
-    .filter(Boolean);
-  const localLlmPinJq = ['backend: "…"', ...[...localLlmPinKeys].map(k => `${k}: "…"`), 'diff: .'].join(', ');
+    .map(r => ({ reviewer: r, model: pinnedString(reviewerModelMap, r), effort: pinnedString(reviewerEffortMap, r) }))
+    .filter(p => p.model || p.effort);
+  const localLlmPinNote = localLlmPins.map(({ reviewer, model, effort }) => {
+    const keys = [
+      ...(model ? [`"model": "${model}"`] : []),
+      ...(effort ? [`"effort": "${effort}"`] : [])
+    ];
+    return `\`${reviewer}\` → \`${keys.join(', ')}\``;
+  });
+  // Both strings derive from the same `localLlmPins` array rather than the jq line
+  // reading a Set the note's `.map` filled as a side effect — that coupling meant
+  // hoisting one line above the other silently emptied the key list.
+  const localLlmPinJq = [
+    'backend: "…"',
+    ...(localLlmPins.some(p => p.model) ? ['model: "…"'] : []),
+    ...(localLlmPins.some(p => p.effort) ? ['effort: "…"'] : []),
+    'diff: .'
+  ].join(', ');
   const localLlmInvocation = `POST the diff to PortOS's local reviewer endpoint and extract its review text before evaluating it. Substitute the active reviewer name for \`<lmstudio|ollama>\`:
 \`\`\`bash
 REVIEW_RESPONSE=$(mktemp)
@@ -681,13 +693,13 @@ Only a successfully extracted \`.findings\` value is the review text; treat it l
     hasCopilot ? `**copilot**: ${copilotIsFirst
       ? 'wait for the initial Copilot review the system already pre-requested (Copilot leads the list)'
       : 'request a Copilot review when you reach its turn'} (poll every 5–15s, max 5 min/round), then re-request on later rounds.` : null,
-    hasCli ? `**${cliReviewerHeading}**: invoke that CLI to review this branch's diff against its base (use the CLI's own base-diff mode or \`git diff <base-branch>...HEAD\`; on GitHub \`gh pr diff ${prNumber || ''}\` also works).${cliBinaryNote}${reviewerModelNote}${cliProcedurePointer}` : null,
+    hasCli ? `**${cliReviewerHeading}**: invoke that CLI to review this branch's diff against its base (use the CLI's own base-diff mode or \`git diff <base-branch>...HEAD\`; on GitHub \`gh pr diff ${prNumber || ''}\` also works).${cliBinaryNote}${reviewerPinNote}${cliProcedurePointer}` : null,
     hasLocalLlm ? `**lmstudio / ollama**: ${localLlmInvocation}` : null,
     hasGithubUser ? `**@github reviewers**: ${githubUsersInvocation}` : null,
   ].filter(Boolean).join(' ');
   // Name the BINARY, not the slug: `Invoke the \`antigravity\` CLI` sent a
   // follow-up agent hunting for a command that does not exist.
-  const singleCliInvocation = `Invoke ${describeReviewerCli(cliReviewers[0])} to review this branch's diff against its base (use the CLI's own base-diff mode or \`git diff <base-branch>...HEAD\`; on GitHub \`gh pr diff ${prNumber || ''}\` also works). Capture its findings as concrete issues to address.${reviewerModelNote}${cliProcedurePointer}`;
+  const singleCliInvocation = `Invoke ${describeReviewerCli(cliReviewers[0])} to review this branch's diff against its base (use the CLI's own base-diff mode or \`git diff <base-branch>...HEAD\`; on GitHub \`gh pr diff ${prNumber || ''}\` also works). Capture its findings as concrete issues to address.${reviewerPinNote}${cliProcedurePointer}`;
   // Resolved sequentially so a future reviewer kind only adds one branch
   // instead of deepening the nested ternary.
   let waitOrInvokeStep;
@@ -1371,12 +1383,14 @@ After completing your work and before committing, ${simplifyInstruction}. Fix an
   // a task pinning no reviewer config would silently drop the configured gating
   // reviewers / stop-mode / reviewer-applies here while the non-PR-owning CLI
   // follow-up path honored them — same defaults, different gating by provider.
-  const taskReviewers = normalizeReviewers(task.metadata, defaultReviewers);
-  const taskReviewerUsernames = resolveReviewUsernames(task.metadata?.usernames, codeReviewDefaults?.usernames);
-  const taskOptionalReviewers = resolveOptionalReviewers(task.metadata?.optionalReviewers, codeReviewDefaults?.optionalReviewers);
-  const taskReviewerMaxRounds = resolveReviewerMaxRounds(task.metadata?.reviewerMaxRounds, codeReviewDefaults?.reviewerMaxRounds);
-  const taskReviewerModels = resolveReviewerModels(task.metadata?.reviewerModels, reviewerModelsFromDefaults(codeReviewDefaults));
-  const taskReviewerEfforts = resolveReviewerEfforts(task.metadata?.reviewerEfforts, reviewerEffortsFromDefaults(codeReviewDefaults));
+  const {
+    reviewers: taskReviewers,
+    usernames: taskReviewerUsernames,
+    optionalReviewers: taskOptionalReviewers,
+    reviewerMaxRounds: taskReviewerMaxRounds,
+    reviewerModels: taskReviewerModels,
+    reviewerEfforts: taskReviewerEfforts
+  } = resolveReviewerConfig(task.metadata, codeReviewDefaults, defaultReviewers);
   const taskReviewStopMode = task.metadata?.reviewStopMode || codeReviewDefaults?.stopMode || DEFAULT_REVIEW_STOP_MODE;
   const taskReviewerApplies = task.metadata?.reviewerApplies !== undefined
     ? isTruthyMetaFn(task.metadata?.reviewerApplies)
@@ -1699,12 +1713,14 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   // [--reviewer-applies]`. All five fields fall back to the defaults with
   // task-over-default precedence (see the matching block in buildAgentPrompt and
   // resolveReviewLoopOptions) — not just the reviewer list.
-  const lightReviewers = normalizeReviewers(task.metadata, defaultReviewers);
-  const lightReviewerUsernames = resolveReviewUsernames(task.metadata?.usernames, codeReviewDefaults?.usernames);
-  const lightOptionalReviewers = resolveOptionalReviewers(task.metadata?.optionalReviewers, codeReviewDefaults?.optionalReviewers);
-  const lightReviewerMaxRounds = resolveReviewerMaxRounds(task.metadata?.reviewerMaxRounds, codeReviewDefaults?.reviewerMaxRounds);
-  const lightReviewerModels = resolveReviewerModels(task.metadata?.reviewerModels, reviewerModelsFromDefaults(codeReviewDefaults));
-  const lightReviewerEfforts = resolveReviewerEfforts(task.metadata?.reviewerEfforts, reviewerEffortsFromDefaults(codeReviewDefaults));
+  const {
+    reviewers: lightReviewers,
+    usernames: lightReviewerUsernames,
+    optionalReviewers: lightOptionalReviewers,
+    reviewerMaxRounds: lightReviewerMaxRounds,
+    reviewerModels: lightReviewerModels,
+    reviewerEfforts: lightReviewerEfforts
+  } = resolveReviewerConfig(task.metadata, codeReviewDefaults, defaultReviewers);
   const lightReviewStopMode = task.metadata?.reviewStopMode || codeReviewDefaults?.stopMode || DEFAULT_REVIEW_STOP_MODE;
   const lightReviewerApplies = task.metadata?.reviewerApplies !== undefined
     ? isTruthyMetaFn(task.metadata?.reviewerApplies)

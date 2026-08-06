@@ -547,6 +547,55 @@ export const normalizeReviewerEfforts = keyedReviewerPinNormalizer(normalizeRevi
 export const resolveReviewerEfforts = keyedReviewerPinResolver(normalizeReviewerEfforts);
 
 /**
+ * Resolve a task's whole reviewer configuration against the Code Review Defaults
+ * in one call — the reviewer list plus every per-reviewer pin, each with the same
+ * task-over-default precedence its own resolver defines.
+ *
+ * The prompt builder resolves this set at three separate spawn paths (the review
+ * follow-up, the claim prompt, and the light/cleanup prompt). Hand-copying six
+ * resolver calls per site meant adding a pin kind was a three-site edit where a
+ * missed site is silent: the pin is configured, persisted, and displayed, but
+ * never reaches the reviewer, and no test fails. One bundle, one edit.
+ *
+ * Shape matches `resolveReviewLoopOptions`'s in `services/codeReview.js`, minus
+ * the stop-mode/applies fields that come from elsewhere at these call sites.
+ */
+export function resolveReviewerConfig(metadata, codeReviewDefaults, defaultReviewers) {
+  return {
+    reviewers: normalizeReviewers(metadata, defaultReviewers),
+    usernames: resolveReviewUsernames(metadata?.usernames, codeReviewDefaults?.usernames),
+    optionalReviewers: resolveOptionalReviewers(metadata?.optionalReviewers, codeReviewDefaults?.optionalReviewers),
+    reviewerMaxRounds: resolveReviewerMaxRounds(metadata?.reviewerMaxRounds, codeReviewDefaults?.reviewerMaxRounds),
+    reviewerModels: resolveReviewerModels(metadata?.reviewerModels, reviewerModelsFromDefaults(codeReviewDefaults)),
+    reviewerEfforts: resolveReviewerEfforts(metadata?.reviewerEfforts, reviewerEffortsFromDefaults(codeReviewDefaults))
+  };
+}
+
+/**
+ * Every token-keyed per-reviewer pin, as `[metadataKey, normalizeMap]`.
+ *
+ * The three pins share one persist contract, so the two places that copy them
+ * out of caller input — `sanitizeTaskMetadata` here and `addTask` in
+ * `cosTaskStore.js` — iterate this table instead of hand-copying a block per
+ * pin. Adding a fourth pin kind is then a one-line change that reaches both
+ * persist paths at once; a hand-copied block missed at one site would silently
+ * drop the pin at write time while every other layer still carried it.
+ *
+ * Shared semantics for all three: the value is a MAP keyed by the emitted
+ * `--review-with` token, and an explicitly empty map is KEPT — that's a real
+ * "override the Code Review Defaults back to each reviewer's own default" choice,
+ * distinct from an absent key (fall back to the defaults). Individual entries the
+ * normalizer can't validate are DROPPED rather than coerced, so a hand-edited
+ * settings.json can't smuggle in a cap slashdo would read as "loop until clean"
+ * (`~max=0`), a model a reviewer doesn't take, or an effort level its CLI rejects.
+ */
+export const KEYED_REVIEWER_PINS = [
+  ['reviewerMaxRounds', normalizeReviewerMaxRounds],
+  ['reviewerModels', normalizeReviewerModels],
+  ['reviewerEfforts', normalizeReviewerEfforts]
+];
+
+/**
  * Fold the Code Review Defaults' per-reviewer effort SCALARS (`codexEffort` /
  * `claudeEffort` / `antigravityEffort` / `lmstudioEffort` / `ollamaEffort`) into
  * the token-keyed map shape the resolvers and the picker UI both speak — the
@@ -1346,32 +1395,13 @@ export function sanitizeTaskMetadata(raw) {
     clean.optionalReviewers = normalizeOptionalReviewers(raw.optionalReviewers) || [];
     hasKeys = true;
   }
-  // `reviewerMaxRounds` caps each reviewer's review→fix→re-review cycles (slashdo
-  // `~max=<n>`). Like `optionalReviewers`, an explicitly empty MAP is KEPT so a
-  // task/type can override the Code Review Defaults' caps back to "no caps."
-  // Individual entries with no usable cap are dropped by the normalizer rather
-  // than becoming `0`, which slashdo reads as "loop until clean."
-  if (raw.reviewerMaxRounds && typeof raw.reviewerMaxRounds === 'object' && !Array.isArray(raw.reviewerMaxRounds)) {
-    clean.reviewerMaxRounds = normalizeReviewerMaxRounds(raw.reviewerMaxRounds) || {};
-    hasKeys = true;
-  }
-  // `reviewerModels` pins the model each reviewer runs with (slashdo's
-  // `[<model>]` / the follow-up prompt's `--model <id>`). Like `reviewerMaxRounds`,
-  // an explicitly empty MAP is KEPT so a task/type can override the Code Review
-  // Defaults' pins back to "each reviewer's own default"; an entry naming a
-  // reviewer that takes no model, or a blank id, is dropped by the normalizer.
-  if (raw.reviewerModels && typeof raw.reviewerModels === 'object' && !Array.isArray(raw.reviewerModels)) {
-    clean.reviewerModels = normalizeReviewerModels(raw.reviewerModels) || {};
-    hasKeys = true;
-  }
-  // `reviewerEfforts` pins how hard each reviewer thinks (the follow-up prompt's
-  // `--effort <level>` / `-c model_reasoning_effort=<level>`, or a local reviewer's
-  // `reasoning_effort` body field). Like `reviewerModels`, an explicitly empty MAP
-  // is KEPT so a task/type can override the Code Review Defaults' efforts back to
-  // "each reviewer's own default"; an entry naming a reviewer with no effort
-  // control, or a level that reviewer's CLI rejects, is dropped by the normalizer.
-  if (raw.reviewerEfforts && typeof raw.reviewerEfforts === 'object' && !Array.isArray(raw.reviewerEfforts)) {
-    clean.reviewerEfforts = normalizeReviewerEfforts(raw.reviewerEfforts) || {};
+  // The token-keyed per-reviewer pins (caps / model / effort). Like
+  // `optionalReviewers`, an explicitly empty MAP is KEPT so a task/type can
+  // override the Code Review Defaults back to "each reviewer's own default" —
+  // see KEYED_REVIEWER_PINS for the shared contract.
+  for (const [key, normalizeMap] of KEYED_REVIEWER_PINS) {
+    if (!isPlainObject(raw[key])) continue;
+    clean[key] = normalizeMap(raw[key]) || {};
     hasKeys = true;
   }
   if (Object.prototype.hasOwnProperty.call(raw, 'reviewStopMode') && REVIEW_STOP_MODES.includes(raw.reviewStopMode)) {

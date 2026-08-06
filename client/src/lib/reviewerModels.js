@@ -23,61 +23,67 @@ import {
  */
 
 /**
- * Scalars → `{ codex: 'gpt-…', ollama: 'qwen…' }`. Blank/absent scalars are omitted,
- * as is a value the server's token builders would drop — an over-long id or one
- * carrying a structural delimiter. settings.json is hand-editable, so a stored
- * value that predates the schema's validation must not surface as a pin the picker
+ * Build the scalar↔map adapter pair for ONE pin kind. The two pins differ on
+ * exactly three axes — which reviewers can carry the pin, the scalar's key
+ * suffix, and how a single value is validated — so they're parameters here
+ * rather than a second hand-copied pair of loops. Twin of the server's
+ * `keyedReviewerPinNormalizer` factory.
+ *
+ * `fromDefaults` OMITS anything `validateOne` rejects: settings.json is
+ * hand-editable and a reviewer's accepted values move with its CLI, so a stored
+ * value the server's normalizer would drop must not surface as a pin the picker
  * DISPLAYS but no reviewer ever receives.
+ *
+ * `toDefaults` gives EVERY reviewer in the roster a key, so an unpinned one
+ * sends `undefined` and the schema's `emptyToUndefined` preprocess CLEARS the
+ * stored scalar. Omitting absent keys instead would leave a stale value
+ * persisted after the user cleared the field.
+ *
+ * @param {readonly string[]} roster - reviewers that can carry this pin.
+ * @param {string} suffix - scalar key suffix (`'Model'` → `codexModel`).
+ * @param {(raw: string, reviewer: string) => string|undefined} validateOne
  */
-export function reviewerModelsFromDefaults(defaults) {
-  const out = {};
-  for (const reviewer of MODEL_SELECTABLE_REVIEWERS) {
-    const raw = defaults?.[`${reviewer}Model`];
-    if (typeof raw !== 'string') continue;
-    const model = sanitizeReviewerModelInput(raw).trim();
-    if (model && model.length <= MAX_REVIEWER_MODEL_LENGTH && model === raw.trim()) out[reviewer] = model;
-  }
-  return out;
+function pinScalarAdapters(roster, suffix, validateOne) {
+  return {
+    fromDefaults: (defaults) => {
+      const out = {};
+      for (const reviewer of roster) {
+        const raw = defaults?.[`${reviewer}${suffix}`];
+        if (typeof raw !== 'string') continue;
+        const value = validateOne(raw, reviewer);
+        if (value) out[reviewer] = value;
+      }
+      return out;
+    },
+    toDefaults: (pins) => Object.fromEntries(
+      roster.map((reviewer) => [`${reviewer}${suffix}`, pins?.[reviewer] || undefined])
+    )
+  };
 }
 
-/**
- * Map → scalars, for a settings PATCH. EVERY model-selectable reviewer gets a key,
- * so an unpinned one sends `undefined` and the schema's `emptyToUndefined`
- * preprocess CLEARS the stored scalar. Omitting absent keys instead would leave a
- * stale model persisted after the user cleared the field.
- */
-export function reviewerModelsToDefaults(models) {
-  return Object.fromEntries(
-    MODEL_SELECTABLE_REVIEWERS.map((reviewer) => [`${reviewer}Model`, models?.[reviewer] || undefined])
-  );
-}
+// A model id survives only if it round-trips the sanitizer unchanged — a value
+// carrying a structural delimiter (or an over-long one) is what the server's
+// token builders would drop.
+const modelAdapters = pinScalarAdapters(MODEL_SELECTABLE_REVIEWERS, 'Model', (raw) => {
+  const model = sanitizeReviewerModelInput(raw).trim();
+  return model && model.length <= MAX_REVIEWER_MODEL_LENGTH && model === raw.trim() ? model : undefined;
+});
 
-/**
- * Effort twin of `reviewerModelsFromDefaults`: scalars → `{ codex: 'high' }`.
- * Each value is re-checked against that reviewer's OWN ladder, so a level stored
- * before the reviewer's CLI dropped it (or hand-edited into settings.json) doesn't
- * surface as a pin the server's normalizer would then drop — the picker would
- * otherwise DISPLAY an effort no reviewer ever receives.
- */
-export function reviewerEffortsFromDefaults(defaults) {
-  const out = {};
-  for (const reviewer of EFFORT_SELECTABLE_REVIEWERS) {
-    const raw = defaults?.[`${reviewer}Effort`];
-    if (typeof raw !== 'string') continue;
-    const effort = raw.trim().toLowerCase();
-    if (reviewerEffortLevels(reviewer)?.includes(effort)) out[reviewer] = effort;
-  }
-  return out;
-}
+// An effort is re-checked against that reviewer's OWN ladder, so a level stored
+// before the reviewer's CLI dropped it doesn't survive into the picker.
+const effortAdapters = pinScalarAdapters(EFFORT_SELECTABLE_REVIEWERS, 'Effort', (raw, reviewer) => {
+  const effort = raw.trim().toLowerCase();
+  return reviewerEffortLevels(reviewer)?.includes(effort) ? effort : undefined;
+});
 
-/**
- * Map → scalars, for a settings PATCH. Same every-key contract as
- * `reviewerModelsToDefaults`: an unpinned reviewer sends `undefined` so the
- * schema's `emptyToUndefined` preprocess CLEARS the stored scalar instead of
- * leaving a stale effort behind.
- */
-export function reviewerEffortsToDefaults(efforts) {
-  return Object.fromEntries(
-    EFFORT_SELECTABLE_REVIEWERS.map((reviewer) => [`${reviewer}Effort`, efforts?.[reviewer] || undefined])
-  );
-}
+/** Scalars → `{ codex: 'gpt-…', ollama: 'qwen…' }`. */
+export const reviewerModelsFromDefaults = modelAdapters.fromDefaults;
+
+/** Map → scalars, for a settings PATCH. */
+export const reviewerModelsToDefaults = modelAdapters.toDefaults;
+
+/** Effort twin: scalars → `{ codex: 'high' }`. */
+export const reviewerEffortsFromDefaults = effortAdapters.fromDefaults;
+
+/** Map → scalars, for a settings PATCH. */
+export const reviewerEffortsToDefaults = effortAdapters.toDefaults;

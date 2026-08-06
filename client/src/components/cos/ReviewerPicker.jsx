@@ -220,38 +220,59 @@ export default function ReviewerPicker({
     reviewerEfforts: level ? { ...efforts.without(token), [token]: level } : efforts.without(token)
   });
 
+  // The "this reviewer has no such control" cell, shared by the Model and Effort
+  // columns so both read identically when the pin doesn't apply.
+  const renderNoPinCell = (title) => (
+    <span className="text-[11px] text-gray-700" title={title}>—</span>
+  );
+
+  // The closed-list pin `<select>` behind both the Effort column and the Model
+  // column's local-backend variant. They share one non-obvious contract: a stored
+  // value that is no longer in `options` (pinned on another machine, or before a
+  // CLI dropped a tier / a model was uninstalled) STILL gets an `<option>` — a
+  // select whose value isn't in its list renders blank and reads as "unset" while
+  // the value is in fact stored. `staleSuffix` names why it's absent; `setClass`
+  // differs only so the two columns stay visually distinguishable — passed as a
+  // COMPLETE class string, never interpolated, or Tailwind's scanner won't emit it.
+  const renderPinSelect = ({ selectId, value, options, onChange, ariaLabel, title, staleSuffix, setClass, maxWidthClass }) => (
+    <select
+      id={selectId}
+      value={value}
+      disabled={disabled}
+      onChange={(e) => onChange(e.target.value)}
+      aria-label={ariaLabel}
+      title={title}
+      className={`w-full min-w-0 ${maxWidthClass} px-1.5 py-0.5 text-[11px] font-mono rounded border bg-port-bg min-h-[28px] disabled:opacity-40 focus:outline-none focus:border-port-accent ${value
+        ? setClass
+        : 'text-gray-500 border-port-border/60'}`}
+    >
+      <option value="">— default —</option>
+      {value && !options.includes(value) && <option value={value}>{value} {staleSuffix}</option>}
+      {options.map((option) => <option key={option} value={option}>{option}</option>)}
+    </select>
+  );
+
   // The Effort cell. Only EFFORT_SELECTABLE_REVIEWERS get one, and each offers
   // only its own CLI's ladder — copilot has no CLI, grok's takes no effort flag,
   // and a `@username` reviewer is a person.
   const renderEffortCell = (token) => {
     const levels = reviewerEffortLevels(token);
-    if (!levels?.length) {
-      return <span className="text-[11px] text-gray-700" title={`${labelFor(token)} has no reasoning-effort control`}>—</span>;
-    }
+    if (!levels?.length) return renderNoPinCell(`${labelFor(token)} has no reasoning-effort control`);
     const subject = labelFor(token);
-    // A pin whose level left this reviewer's ladder (set on another machine, or
-    // before a CLI dropped a tier) still needs an <option>, or the select renders
-    // blank and reads as "unset" while the value is in fact stored.
     const stored = efforts.get(token) ?? '';
-    return (
-      <select
-        id={`${id}-effort-${token}`}
-        value={stored}
-        disabled={disabled}
-        onChange={(e) => setEffort(token, e.target.value)}
-        aria-label={`Reasoning effort for ${subject}`}
-        title={stored
-          ? `${subject} reviews at ${stored} reasoning effort. Choose "default" to let it decide.`
-          : `${subject} reasons at its own default. Pick a tier to make it think harder (slower, pricier) or lighter.`}
-        className={`w-full min-w-0 max-w-[8rem] px-1.5 py-0.5 text-[11px] font-mono rounded border bg-port-bg min-h-[28px] disabled:opacity-40 focus:outline-none focus:border-port-accent ${stored
-          ? 'text-port-accent-2 border-port-accent-2/50'
-          : 'text-gray-500 border-port-border/60'}`}
-      >
-        <option value="">— default —</option>
-        {stored && !levels.includes(stored) && <option value={stored}>{stored} (unsupported)</option>}
-        {levels.map((level) => <option key={level} value={level}>{level}</option>)}
-      </select>
-    );
+    return renderPinSelect({
+      selectId: `${id}-effort-${token}`,
+      value: stored,
+      options: levels,
+      onChange: (level) => setEffort(token, level),
+      ariaLabel: `Reasoning effort for ${subject}`,
+      title: stored
+        ? `${subject} reviews at ${stored} reasoning effort. Choose "default" to let it decide.`
+        : `${subject} reasons at its own default. Pick a tier to make it think harder (slower, pricier) or lighter.`,
+      staleSuffix: '(unsupported)',
+      setClass: 'text-port-accent-2 border-port-accent-2/50',
+      maxWidthClass: 'max-w-[8rem]'
+    });
   };
 
   // The `~opt` non-blocking toggle rendered on every reviewer/username row.
@@ -315,9 +336,7 @@ export default function ReviewerPicker({
   // messaging so a pre-fetch render doesn't accuse a healthy backend of being
   // empty.
   const renderModelCell = (token) => {
-    if (!MODEL_SELECTABLE_REVIEWERS.includes(token)) {
-      return <span className="text-[11px] text-gray-700" title={`${labelFor(token)} takes no model`}>—</span>;
-    }
+    if (!MODEL_SELECTABLE_REVIEWERS.includes(token)) return renderNoPinCell(`${labelFor(token)} takes no model`);
     const subject = labelFor(token);
     const value = models.get(token) ?? '';
     const options = modelOptions?.optionsByReviewer?.[token] || [];
@@ -336,28 +355,19 @@ export default function ReviewerPicker({
       : null;
 
     if (!freeText) {
-      return (
-        <select
-          id={inputId}
-          value={value}
-          disabled={disabled}
-          onChange={(e) => setModel(token, e.target.value)}
-          aria-label={`Model for ${subject}`}
-          title={value
-            ? `${subject} reviews with ${value}. Choose "default" to let it pick.`
-            : `${subject} uses the model configured for its backend. Pick one to pin it for this run.`}
-          className={`w-full min-w-0 max-w-[190px] px-1.5 py-0.5 text-[11px] font-mono rounded border bg-port-bg min-h-[28px] disabled:opacity-40 focus:outline-none focus:border-port-accent ${value
-            ? 'text-port-accent border-port-accent/50'
-            : 'text-gray-500 border-port-border/60'}`}
-        >
-          <option value="">— default —</option>
-          {/* A pin the probe no longer lists (model uninstalled, or set on
-              another machine) still needs an <option>, or the select would render
-              blank and read as "unset" while the value is in fact stored. */}
-          {value && !options.includes(value) && <option value={value}>{value} (not installed)</option>}
-          {options.map((m) => <option key={m} value={m}>{m}</option>)}
-        </select>
-      );
+      return renderPinSelect({
+        selectId: inputId,
+        value,
+        options,
+        onChange: (model) => setModel(token, model),
+        ariaLabel: `Model for ${subject}`,
+        title: value
+          ? `${subject} reviews with ${value}. Choose "default" to let it pick.`
+          : `${subject} uses the model configured for its backend. Pick one to pin it for this run.`,
+        staleSuffix: '(not installed)',
+        setClass: 'text-port-accent border-port-accent/50',
+        maxWidthClass: 'max-w-[190px]'
+      });
     }
 
     return (
