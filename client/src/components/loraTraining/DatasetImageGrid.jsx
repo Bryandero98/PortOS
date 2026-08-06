@@ -11,6 +11,7 @@ import toast from '../ui/Toast';
 import Modal from '../ui/Modal';
 import ConfirmButtonPair from '../ui/ConfirmButtonPair';
 import AutoSizeTextarea from '../ui/AutoSizeTextarea';
+import Pill from '../ui/Pill';
 import {
   updateLoraDatasetImageCaption,
   deleteLoraDatasetImage,
@@ -81,11 +82,18 @@ function DatasetImageLightbox({ datasetId, images, index, onIndexChange, onClose
   );
 }
 
+// These chips sit ON TOP of an arbitrary training image, so they can't lean on
+// the theme's card/accent colors for contrast — a translucent tint over a bright
+// photo (or a light user theme) made the labels unreadable. Every chip carries
+// its own near-opaque dark plate (Pill `bare` + `bordered={false}`, so the ring
+// draws the edge); only the text hue distinguishes the source.
+const BADGE_BASE = 'max-w-full leading-tight font-medium bg-black/80 backdrop-blur-sm ring-1 shadow-sm';
+
 const SOURCE_BADGE = {
-  generated: { label: 'generated', cls: 'bg-port-accent/20 text-port-accent' },
-  upload: { label: 'upload', cls: 'bg-emerald-600/20 text-emerald-300' },
-  'refsheet-slice': { label: 'sheet crop', cls: 'bg-purple-600/20 text-purple-300' },
-  gallery: { label: 'gallery', cls: 'bg-sky-600/20 text-sky-300' },
+  generated: { label: 'generated', cls: 'text-blue-200 ring-blue-300/40' },
+  upload: { label: 'upload', cls: 'text-emerald-200 ring-emerald-300/40' },
+  'refsheet-slice': { label: 'sheet crop', cls: 'text-purple-200 ring-purple-300/40' },
+  gallery: { label: 'gallery', cls: 'text-sky-200 ring-sky-300/40' },
 };
 
 export default function DatasetImageGrid({
@@ -206,12 +214,19 @@ export default function DatasetImageGrid({
                     />
                   </button>
                 )}
-                <span className={`absolute top-2 left-2 text-[10px] px-1.5 py-0.5 rounded ${badge.cls}`}>{badge.label}</span>
-                {img.variation?.view && (
-                  <span className="absolute top-2 right-2 text-[10px] px-1.5 py-0.5 rounded bg-black/60 text-gray-300">
-                    {img.variation.view}
-                  </span>
-                )}
+                {/* One wrapping row rather than two independently-anchored corners:
+                    a long view label ("front three-quarter") used to run under the
+                    source chip in a narrow column. */}
+                <div className="absolute inset-x-2 top-2 flex flex-wrap items-start justify-between gap-1 pointer-events-none">
+                  <Pill size="xs" tone="bare" bordered={false} className={`${BADGE_BASE} ${badge.cls}`}>
+                    {badge.label}
+                  </Pill>
+                  {img.variation?.view && (
+                    <Pill size="xs" tone="bare" bordered={false} className={`${BADGE_BASE} text-gray-100 ring-white/25`}>
+                      {img.variation.view}
+                    </Pill>
+                  )}
+                </div>
               </div>
               {showCaptions && (
                 <div className="p-2 flex flex-col gap-2 flex-1">
