@@ -7,7 +7,14 @@
 
 import { basename } from 'path';
 
-/** Commands permitted to be spawned by the runner. */
+/**
+ * Commands permitted to be spawned by the runner.
+ *
+ * Every `command` of a shipped provider in `data.reference/providers.json` (and
+ * the toolkit's `providers.sample.json`) MUST appear here — a provider whose
+ * command is missing 400s at `/spawn-tui` and the agent dies before it ever gets
+ * a shell. `allowedCommands.test.js` enforces that parity.
+ */
 export const ALLOWED_COMMANDS = new Set([
   'claude',
   'aider',
@@ -15,6 +22,8 @@ export const ALLOWED_COMMANDS = new Set([
   'copilot',
   'agy',
   'gemini',
+  'grok',
+  'kimi',
   'opencode'
 ]);
 

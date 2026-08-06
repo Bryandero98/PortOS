@@ -622,13 +622,26 @@ export async function cleanupZombieAgents() {
         if (ageMs < 30000) continue;
       }
 
-      // Agent is not tracked anywhere and process is dead — it's a zombie
-      console.log(`🧟 Zombie agent detected: ${agent.id} (PID ${agent.pid || 'unknown'} not running)`);
+      // Agent is not tracked anywhere and process is dead — it's a zombie.
+      // A record that never recorded a pid never spawned at all (the pid is
+      // written only after a successful spawn), so "terminated unexpectedly"
+      // is the wrong diagnosis: it points at a crash when the real cause is
+      // upstream, at spawn time. Spawn failures now finalize themselves with
+      // the actual error, so reaching here without a pid means the spawn died
+      // somewhere that still doesn't report — say so rather than inventing a
+      // termination that never happened.
+      const neverStarted = !agent.pid;
+      console.log(`🧟 Zombie agent detected: ${agent.id} (${neverStarted ? 'no process was ever launched' : `PID ${agent.pid} not running`})`);
       state.agents[agent.id] = {
         ...agent,
         status: 'completed',
         completedAt: new Date().toISOString(),
-        result: { success: false, error: 'Agent process terminated unexpectedly' }
+        result: {
+          success: false,
+          error: neverStarted
+            ? 'Agent never started — no process was ever launched (check the provider command and CoS Runner logs)'
+            : 'Agent process terminated unexpectedly'
+        }
       };
       cleaned.push(agent.id);
     }

@@ -894,20 +894,41 @@ export async function spawnTuiAgent({
     ? {}
     : await git.resolveForgeTokenEnv(cwd);
 
-  const session = await createAgentTuiSession({
-    agentId,
-    taskId: task.id,
-    provider,
-    model,
-    tuiConfig,
-    cwd,
-    forgeTokenEnv,
-    doneSentinelPath,
-    useDurableRunner,
-    onData: handleData,
-    onExit: handleExit,
-    onInitialCommandSent: () => { commandInjected = true; },
-  });
+  // A spawn failure here (a runner 400 for a command missing from its allowlist,
+  // an unreachable runner, a PTY that won't open) used to propagate raw out of
+  // spawnTuiAgent. The caller in subAgentSpawner only logs it, so the agent
+  // record stayed `initializing` with the real error nowhere but the server log
+  // until the zombie reaper finalized it ~a minute later as the generic "Agent
+  // process terminated unexpectedly". Finalize it here instead, carrying the
+  // spawn error into the record. Runs outside the Express request lifecycle, so
+  // there is no middleware to bubble to.
+  let session;
+  try {
+    session = await createAgentTuiSession({
+      agentId,
+      taskId: task.id,
+      provider,
+      model,
+      tuiConfig,
+      cwd,
+      forgeTokenEnv,
+      doneSentinelPath,
+      useDurableRunner,
+      onData: handleData,
+      onExit: handleExit,
+      onInitialCommandSent: () => { commandInjected = true; },
+    });
+  } catch (err) {
+    const message = err?.message || String(err);
+    appendLine(`❌ Failed to start ${provider.name || provider.id} TUI: ${message}`);
+    await finish({
+      success: false,
+      exitCode: 1,
+      error: `Failed to start TUI session: ${message}`,
+      reason: 'spawn-error',
+    });
+    return null;
+  }
   sessionId = session.sessionId;
 
   if (!sessionId) {
