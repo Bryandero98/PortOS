@@ -17,7 +17,7 @@ import { getActiveProvider } from './providers.js';
 import { runPromptThroughProvider } from '../lib/promptRunner.js';
 import { readJSONFile, PATHS, tryReadFile, expandHome } from '../lib/fileUtils.js';
 import { loadSlashdoFile, loadSlashdoLib, writeResolvedSlashdoBody } from '../lib/slashdoLoader.js';
-import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, LOCAL_LLM_REVIEWERS, MODEL_CAPABLE_CLI_REVIEWERS, describeReviewerCli, isCliReviewer, reviewerCliBinary, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds, resolveReviewUsernames, resolveOptionalReviewers, resolveReviewerMaxRounds, resolveReviewerModels, reviewerModelsFromDefaults, resolveKeyedReviewers, buildReviewWithArgs, buildReviewersCsv } from '../lib/validation.js';
+import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, LOCAL_LLM_REVIEWERS, MODEL_CAPABLE_CLI_REVIEWERS, describeReviewerCli, isCliReviewer, reviewerCliBinary, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds, resolveReviewUsernames, resolveOptionalReviewers, resolveReviewerMaxRounds, resolveReviewerModels, reviewerModelsFromDefaults, resolveReviewerEfforts, reviewerEffortsFromDefaults, reviewerEffortArgs, buildReviewerEffortNote, resolveKeyedReviewers, buildReviewWithArgs, buildReviewersCsv } from '../lib/validation.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { canTypeSlashCommands, resolveSlashdoInvocation, buildSlashdoSection, unreachableReviewerIncludes, SLASHDO_INLINE_BUDGET_CHARS } from '../lib/slashdoInvocation.js';
 import { shellQuote } from '../lib/shellQuote.js';
@@ -391,6 +391,7 @@ async function applySlashdoInvocation(task, {
   const resolvedOptional = resolveOptionalReviewers(task.metadata?.optionalReviewers, codeReviewDefaults?.optionalReviewers);
   const resolvedMaxRounds = resolveReviewerMaxRounds(task.metadata?.reviewerMaxRounds, codeReviewDefaults?.reviewerMaxRounds);
   const resolvedModels = resolveReviewerModels(task.metadata?.reviewerModels, reviewerModelsFromDefaults(codeReviewDefaults));
+  const resolvedEfforts = resolveReviewerEfforts(task.metadata?.reviewerEfforts, reviewerEffortsFromDefaults(codeReviewDefaults));
 
   // A resolved lone `copilot` with no usernames is ambiguous: it's what an
   // unconfigured install produces (`pickCodeReviewDefaults` and
@@ -438,7 +439,12 @@ async function applySlashdoInvocation(task, {
   const reviewWith = skipIncludes.length
     ? buildReviewersCsv(resolvedReviewers, resolvedUsernames, resolvedOptional, resolvedMaxRounds, resolvedModels)
     : '';
-  const section = buildSlashdoSection(resolved, body, { bodyPath, reviewWith });
+  // Unlike `reviewWith` this is NOT gated on pruning: the workflow drives its own
+  // review loop, so a pinned effort has no other route to the reviewer CLI it
+  // spawns — the `/do:pr` completion step further down the prompt is a different
+  // invocation entirely, and for a slashdo-backed task usually isn't reached.
+  const reviewerEffortNote = buildReviewerEffortNote(resolvedReviewers, resolvedEfforts);
+  const section = buildSlashdoSection(resolved, body, { bodyPath, reviewWith, reviewerEffortNote });
   return { ...task, description: `${task.description}\n\n${section}` };
 }
 
@@ -532,23 +538,43 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
     : (typeof metadata.reviewLoopCodexModel === 'string' && metadata.reviewLoopCodexModel
         ? { codex: metadata.reviewLoopCodexModel }
         : {});
-  const reviewerModelEntries = MODEL_CAPABLE_CLI_REVIEWERS
-    .filter(r => reviewers.includes(r) && typeof reviewerModelMap[r] === 'string' && reviewerModelMap[r])
-    // Thread each configured model id VERBATIM. We deliberately don't env-map it
-    // here (e.g. bare Claude tier → Bedrock form): this is a text-template layer
-    // with only a providerId, not the merged spawn env (process.env + settings.json
-    // + provider.envVars) the CLI argv builder normalizes against — and the nested
-    // reviewer CLI is spawned by the agent, not PortOS, so the argv chokepoint never
-    // runs. The Code Review Defaults model field is free-text for exactly this
-    // reason: the user configures the id their environment needs (a Bedrock-form id
-    // on a Bedrock box, an installed Ollama model for an Ollama-backed `claude`).
-    // Binary, not slug: this renders a literal command line. Safe today only
-    // because MODEL_CAPABLE_CLI_REVIEWERS happens to hold two same-named CLIs —
-    // `agy` also takes `--model`, so the moment antigravity is added there the
-    // slug would be emitted as a command again.
-    .map(r => `\`${reviewerCliBinary(r) || r} --model ${reviewerModelMap[r]} …\``);
+  // Optional per-reviewer reasoning-effort pins, same two sources as the models.
+  // A CLI reviewer's effort becomes a flag on the command line the agent runs
+  // (`--effort high` for claude/agy, `-c model_reasoning_effort=high` for codex —
+  // `reviewerEffortArgs` owns that shape); a local-LLM reviewer's becomes the
+  // `reasoning_effort` field of its `/api/code-review/local` body (below). There is
+  // no slashdo `--review-with` suffix for effort, which is why it rides the
+  // invocation rather than `equivArgs`.
+  const reviewerEffortMap = (metadata.reviewLoopReviewerEfforts && typeof metadata.reviewLoopReviewerEfforts === 'object')
+    ? metadata.reviewLoopReviewerEfforts
+    : {};
+  // One entry per CLI reviewer carrying a pinned model and/or effort, rendered as
+  // the literal command line the agent must run. Reviewers are listed rather than
+  // filtered to MODEL_CAPABLE_CLI_REVIEWERS because `agy` takes an effort but no
+  // PortOS-pinnable model — it would otherwise have no way to receive one.
+  const reviewerModelEntries = cliReviewers
+    .map((r) => {
+      const flags = [];
+      // Thread each configured model id VERBATIM. We deliberately don't env-map it
+      // here (e.g. bare Claude tier → Bedrock form): this is a text-template layer
+      // with only a providerId, not the merged spawn env (process.env + settings.json
+      // + provider.envVars) the CLI argv builder normalizes against — and the nested
+      // reviewer CLI is spawned by the agent, not PortOS, so the argv chokepoint never
+      // runs. The Code Review Defaults model field is free-text for exactly this
+      // reason: the user configures the id their environment needs (a Bedrock-form id
+      // on a Bedrock box, an installed Ollama model for an Ollama-backed `claude`).
+      if (MODEL_CAPABLE_CLI_REVIEWERS.includes(r) && typeof reviewerModelMap[r] === 'string' && reviewerModelMap[r]) {
+        flags.push(`--model ${reviewerModelMap[r]}`);
+      }
+      const effortArgs = reviewerEffortArgs(r, reviewerEffortMap[r]);
+      if (effortArgs.length) flags.push(effortArgs.join(' '));
+      // Binary, not slug: this renders a literal command line, and the
+      // `antigravity` slug names no executable.
+      return flags.length ? `\`${reviewerCliBinary(r) || r} ${flags.join(' ')} …\`` : null;
+    })
+    .filter(Boolean);
   const reviewerModelNote = reviewerModelEntries.length
-    ? ` When invoking a reviewer with a pinned model, pass it: ${reviewerModelEntries.join(', ')}.`
+    ? ` When invoking a reviewer with a pinned model or reasoning effort, pass it: ${reviewerModelEntries.join(', ')}.`
     : '';
   // When the slashdo local-agent review loop is inlined below (a spawnable CLI
   // reviewer is in the list), point the invocation step at it so the agent runs
@@ -612,9 +638,18 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
   // in the POST body overrides the configured default (see routes/codeReview.js).
   // Absent pin ⇒ omit the key entirely rather than sending `""`, which would be a
   // model id the backend can't resolve.
-  const localLlmModelNote = LOCAL_LLM_REVIEWERS
-    .filter(r => reviewers.includes(r) && typeof reviewerModelMap[r] === 'string' && reviewerModelMap[r])
-    .map(r => `\`${r}\` → \`"model": "${reviewerModelMap[r]}"\``);
+  // The pinned reasoning effort rides the same body as `effort` — the endpoint
+  // forwards it as the backend's OpenAI-compatible `reasoning_effort`. Same
+  // absent-vs-empty contract as the model: no pin ⇒ the key is omitted, not blank.
+  const localLlmPinNote = LOCAL_LLM_REVIEWERS
+    .filter(r => reviewers.includes(r))
+    .map((r) => {
+      const keys = [];
+      if (typeof reviewerModelMap[r] === 'string' && reviewerModelMap[r]) keys.push(`"model": "${reviewerModelMap[r]}"`);
+      if (typeof reviewerEffortMap[r] === 'string' && reviewerEffortMap[r]) keys.push(`"effort": "${reviewerEffortMap[r]}"`);
+      return keys.length ? `\`${r}\` → \`${keys.join(', ')}\`` : null;
+    })
+    .filter(Boolean);
   const localLlmInvocation = `POST the diff to PortOS's local reviewer endpoint and extract its review text before evaluating it. Substitute the active reviewer name for \`<lmstudio|ollama>\`:
 \`\`\`bash
 REVIEW_RESPONSE=$(mktemp)
@@ -627,8 +662,8 @@ else
   cat "\${REVIEW_RESPONSE}.findings"
 fi
 \`\`\`
-Only a successfully extracted \`.findings\` value is the review text; treat it like any other reviewer's findings.${localLlmModelNote.length
-  ? ` This run pins a model for ${localLlmModelNote.join(', ')} — add that key to the JSON body (\`jq -Rs '{ backend: "…", model: "…", diff: . }'\`) so the review runs on the pinned model instead of the install default.`
+Only a successfully extracted \`.findings\` value is the review text; treat it like any other reviewer's findings.${localLlmPinNote.length
+  ? ` This run pins settings for ${localLlmPinNote.join(', ')} — add those keys to the JSON body (\`jq -Rs '{ backend: "…", model: "…", effort: "…", diff: . }'\`) so the review runs with them instead of the install defaults.`
   : ''}`;
   // Instruct the agent to request each username reviewer as a PR reviewer and
   // gate the merge on their approval. `gh pr edit --add-reviewer` takes the bare
@@ -1333,6 +1368,7 @@ After completing your work and before committing, ${simplifyInstruction}. Fix an
   const taskOptionalReviewers = resolveOptionalReviewers(task.metadata?.optionalReviewers, codeReviewDefaults?.optionalReviewers);
   const taskReviewerMaxRounds = resolveReviewerMaxRounds(task.metadata?.reviewerMaxRounds, codeReviewDefaults?.reviewerMaxRounds);
   const taskReviewerModels = resolveReviewerModels(task.metadata?.reviewerModels, reviewerModelsFromDefaults(codeReviewDefaults));
+  const taskReviewerEfforts = resolveReviewerEfforts(task.metadata?.reviewerEfforts, reviewerEffortsFromDefaults(codeReviewDefaults));
   const taskReviewStopMode = task.metadata?.reviewStopMode || codeReviewDefaults?.stopMode || DEFAULT_REVIEW_STOP_MODE;
   const taskReviewerApplies = task.metadata?.reviewerApplies !== undefined
     ? isTruthyMetaFn(task.metadata?.reviewerApplies)
@@ -1379,6 +1415,7 @@ After completing your work and before committing, ${simplifyInstruction}. Fix an
             optionalReviewers: taskOptionalReviewers,
             reviewerMaxRounds: taskReviewerMaxRounds,
             reviewerModels: taskReviewerModels,
+            reviewerEfforts: taskReviewerEfforts,
             reviewStopMode: taskReviewStopMode,
             reviewerApplies: taskReviewerApplies
           })
@@ -1659,6 +1696,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   const lightOptionalReviewers = resolveOptionalReviewers(task.metadata?.optionalReviewers, codeReviewDefaults?.optionalReviewers);
   const lightReviewerMaxRounds = resolveReviewerMaxRounds(task.metadata?.reviewerMaxRounds, codeReviewDefaults?.reviewerMaxRounds);
   const lightReviewerModels = resolveReviewerModels(task.metadata?.reviewerModels, reviewerModelsFromDefaults(codeReviewDefaults));
+  const lightReviewerEfforts = resolveReviewerEfforts(task.metadata?.reviewerEfforts, reviewerEffortsFromDefaults(codeReviewDefaults));
   const lightReviewStopMode = task.metadata?.reviewStopMode || codeReviewDefaults?.stopMode || DEFAULT_REVIEW_STOP_MODE;
   const lightReviewerApplies = task.metadata?.reviewerApplies !== undefined
     ? isTruthyMetaFn(task.metadata?.reviewerApplies)
@@ -1794,10 +1832,10 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
       branchName: worktreeInfo?.branchName || null,
       baseBranch: worktreeInfo?.baseBranch || null,
       leavePrOpen: leavesPrForHuman(task),
-      reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewerMaxRounds: lightReviewerMaxRounds, reviewerModels: lightReviewerModels, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies
+      reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewerMaxRounds: lightReviewerMaxRounds, reviewerModels: lightReviewerModels, reviewerEfforts: lightReviewerEfforts, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies
     }));
   } else {
-    sections.push(buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion, hasSlashdo, simplifyEnabled, leavePrOpen: leavesPrForHuman(task), reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewerMaxRounds: lightReviewerMaxRounds, reviewerModels: lightReviewerModels, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies }));
+    sections.push(buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion, hasSlashdo, simplifyEnabled, leavePrOpen: leavesPrForHuman(task), reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewerMaxRounds: lightReviewerMaxRounds, reviewerModels: lightReviewerModels, reviewerEfforts: lightReviewerEfforts, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies }));
   }
 
   return { taskSections, contractSections };
@@ -1891,7 +1929,7 @@ function buildPostPRMergeSteps(startStep, { prCompletion = PR_COMPLETIONS.REVIEW
  * return this IS a Claude session, so `/simplify` and `/do:pr` are both safe to
  * emit without a second provider check.
  */
-function buildTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.MERGE_ON_GREEN, simplifyEnabled, sentinelPath, slashdoFree = false, branchName = null, baseBranch = null, leavePrOpen = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewerModels = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false }) {
+function buildTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.MERGE_ON_GREEN, simplifyEnabled, sentinelPath, slashdoFree = false, branchName = null, baseBranch = null, leavePrOpen = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewerModels = {}, reviewerEfforts = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false }) {
   const policyLeavesOpen = prCompletion === PR_COMPLETIONS.LEAVE_OPEN;
   const runsReviewLoop = prCompletion === PR_COMPLETIONS.REVIEW_THEN_MERGE;
   if (slashdoFree) {
@@ -1920,6 +1958,9 @@ function buildTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.M
         ? ' — `/do:pr` runs the Copilot review loop after the PR opens.'
         : ` — \`/do:pr\` runs the review loop for ${reviewerListLabel} in order after the PR opens.`)
     : (willOpenPR ? ' — external review is disabled for this task.' : '');
+  // Effort pins can't ride `--review-with` (no suffix for them in slashdo's
+  // grammar), so they're stated as an instruction on the invocation instead.
+  const effortNote = willOpenPR && runsReviewLoop ? buildReviewerEffortNote(reviewers, reviewerEfforts) : '';
   // Reached only for a Claude TUI (a non-Claude one took the slashdoFree branch
   // above), so `/simplify` — a Claude Code built-in — is invokable here.
   const simplifyStep = simplifyEnabled ? '1. `/simplify`' : '1. (simplify disabled — skip)';
@@ -1938,6 +1979,7 @@ function buildTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.M
     '',
     simplifyStep,
     `2. \`${cmd}${reviewerArg}\`${reviewSuffix}`,
+    ...(effortNote ? [`   ${effortNote}`] : []),
     ...merge.lines,
     `${sentinelStep}. Write a short markdown summary (~5–15 lines) to the completion sentinel, then stop — this sentinel is the done signal. PortOS polls it every 2s, finalizes the run, and closes the session for you. Do NOT run \`/quit\` (it's a UI command, not something you can invoke) and do NOT wait for anything after writing the sentinel.`,
     '',
@@ -2030,7 +2072,7 @@ function buildManualTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLET
  * CLI providers fall through to the legacy commit-only block where PortOS
  * handles push+PR on exit.
  */
-function buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion = PR_COMPLETIONS.MERGE_ON_GREEN, hasSlashdo = false, simplifyEnabled = false, leavePrOpen = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewerModels = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false }) {
+function buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion = PR_COMPLETIONS.MERGE_ON_GREEN, hasSlashdo = false, simplifyEnabled = false, leavePrOpen = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewerModels = {}, reviewerEfforts = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false }) {
   const policyLeavesOpen = prCompletion === PR_COMPLETIONS.LEAVE_OPEN;
   const runsReviewLoop = prCompletion === PR_COMPLETIONS.REVIEW_THEN_MERGE;
   const reviewUsernames = normalizeReviewUsernames(usernames);
@@ -2052,6 +2094,10 @@ function buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion = PR
           : `and drives the review loop for ${[...reviewers, ...reviewUsernames.map(u => `@${u}`)].join(', ')} in order until clean.`)
       : 'with external review disabled.';
     lines.push(`${step++}. \`/do:pr${reviewerArg}\` — commits your changes, pushes the branch, and opens a pull request against the default branch ${completionNote}`);
+    // Effort pins have no `--review-with` suffix to ride, so they're stated as an
+    // instruction on the invocation instead (see buildReviewerEffortNote).
+    const effortNote = runsReviewLoop ? buildReviewerEffortNote(reviewers, reviewerEfforts) : '';
+    if (effortNote) lines.push(`   ${effortNote}`);
     // Merge steps follow — review-gated with a loop, CI-gated without one — unless
     // this PR is a human's to land (JIRA-tracked; see lib/prDisposition.js).
     if (leavePrOpen || policyLeavesOpen) {

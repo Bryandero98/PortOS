@@ -16,7 +16,7 @@ import { readFile, writeFile, stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { parseTasksMarkdown, groupTasksByStatus, getAutoApprovedTasks, getAwaitingApprovalTasks, generateTasksMarkdown, hasKnownPrefix } from '../lib/taskParser.js';
-import { REVIEW_STOP_MODES, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds, normalizeReviewerModels } from '../lib/validation.js';
+import { REVIEW_STOP_MODES, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds, normalizeReviewerModels, normalizeReviewerEfforts } from '../lib/validation.js';
 import { PR_COMPLETIONS, PR_COMPLETION_VALUES } from '../lib/prDisposition.js';
 import { RETRY_HOLD_KEY, RETRY_HOLD_SINCE_KEY } from '../lib/taskRetryHold.js';
 import { REQUEUED_AT_KEY } from '../lib/taskRequeue.js';
@@ -396,6 +396,12 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     // id, is dropped by the normalizer.
     if (taskData.reviewerModels && typeof taskData.reviewerModels === 'object' && !Array.isArray(taskData.reviewerModels)) {
       metadata.reviewerModels = normalizeReviewerModels(taskData.reviewerModels) || {};
+    }
+    // Per-reviewer reasoning-effort pins, same token keying and same explicit-empty
+    // semantics. An entry naming a reviewer with no effort control, or a level that
+    // reviewer's CLI rejects, is dropped by the normalizer.
+    if (taskData.reviewerEfforts && typeof taskData.reviewerEfforts === 'object' && !Array.isArray(taskData.reviewerEfforts)) {
+      metadata.reviewerEfforts = normalizeReviewerEfforts(taskData.reviewerEfforts) || {};
     }
     if (REVIEW_STOP_MODES.includes(taskData.reviewStopMode)) metadata.reviewStopMode = taskData.reviewStopMode;
     if (taskData.reviewerApplies === true) metadata.reviewerApplies = true;

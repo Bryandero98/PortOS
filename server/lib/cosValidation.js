@@ -10,7 +10,8 @@
  */
 import { z } from 'zod';
 import { emptyToUndefined, emptyToNull } from './zodCompat.js';
-import { EFFORT_LEVELS } from './providerModels.js';
+import { isPlainObject } from './objects.js';
+import { EFFORT_LEVELS, effortLevelsForProvider, buildEffortArgs } from './providerModels.js';
 import { ANTIGRAVITY_COMMAND } from './antigravity.js';
 import { isValidSlashdoCommand } from './slashdoInvocation.js';
 import { PR_COMPLETION_VALUES } from './prDisposition.js';
@@ -241,6 +242,58 @@ export function resolveOptionalReviewers(metadataOptional, defaultOptional) {
     : (normalizeOptionalReviewers(defaultOptional) || []);
 }
 
+/**
+ * Factory for the token-keyed per-reviewer PIN normalizers (`~max=<n>` caps,
+ * model ids, reasoning efforts). All three share one contract and only differ in
+ * how they validate a single value, so the contract lives here once:
+ *
+ * - Non-object input → `undefined`, so an omitted field isn't persisted as an
+ *   empty override (an explicitly empty `{}` IS kept — it's a real "clear the
+ *   defaults for this task" choice).
+ * - Keys are normalized to the exact token `--review-with` emits
+ *   (`normalizeReviewerToken`), so the maps can't disagree about what a reviewer
+ *   is called; unknown tokens are dropped.
+ * - First spelling wins for two names of one reviewer (`gemini`/`antigravity`,
+ *   `@Bot`/`@bot`) — mirrors `normalizeOptionalReviewers`' dedupe.
+ * - A value `normalizeOne` rejects is DROPPED, never coerced — for every pin
+ *   kind, "absent" and "a falsy value" mean different things downstream.
+ *
+ * `Object.create(null)` while building so a reviewer token can't collide with
+ * `Object.prototype` keys; spread on return so callers get a plain object.
+ *
+ * @param {(value: unknown, token: string) => unknown} normalizeOne - returns the
+ *   validated value, or a falsy value to drop the entry.
+ */
+function keyedReviewerPinNormalizer(normalizeOne) {
+  return (map) => {
+    if (!isPlainObject(map)) return undefined;
+    const out = Object.create(null);
+    for (const [rawKey, rawValue] of Object.entries(map)) {
+      const token = normalizeReviewerToken(rawKey);
+      if (!token) continue;
+      const value = normalizeOne(rawValue, token);
+      if (!value && value !== 0) continue;
+      if (Object.prototype.hasOwnProperty.call(out, token)) continue;
+      out[token] = value;
+    }
+    return { ...out };
+  };
+}
+
+/**
+ * Factory for the matching task-over-default resolvers: a task-level map — even
+ * an explicitly empty one — overrides the Code Review Defaults; only an
+ * absent/malformed one falls back. Mirrors `resolveOptionalReviewers`.
+ *
+ * @param {(map: unknown) => Object|undefined} normalizeMap - the normalizer this
+ *   pin kind was built with.
+ */
+function keyedReviewerPinResolver(normalizeMap) {
+  return (metadataMap, defaultMap) => (isPlainObject(metadataMap)
+    ? (normalizeMap(metadataMap) || {})
+    : (normalizeMap(defaultMap) || {}));
+}
+
 // Ceiling on a per-reviewer `~max=<n>` cap. slashdo's inner loops carry their own
 // 10-iteration safety guardrail, so a budget above it can never be spent —
 // accepting one would just be a lie in the flag string.
@@ -264,24 +317,18 @@ export const MAX_REVIEWER_MAX_ROUNDS = 10;
  * MAX_REVIEWER_MAX_ROUNDS so a hand-edited settings.json can't smuggle in an
  * unbounded budget. Non-object input → undefined (an omitted field isn't
  * persisted as an empty override).
+ *
+ * `0` is the one pin value that is falsy AND meaningful, which is why the shared
+ * factory keeps it explicitly.
  */
-export function normalizeReviewerMaxRounds(map) {
-  if (!map || typeof map !== 'object' || Array.isArray(map)) return undefined;
-  const out = Object.create(null);
-  for (const [rawKey, rawValue] of Object.entries(map)) {
-    const token = normalizeReviewerToken(rawKey);
-    if (!token) continue;
-    // Only a genuine non-negative integer is a cap. A string "2", null, NaN, or
-    // 1.5 is not — and must NOT fall through to 0, which slashdo reads as
-    // "unlimited".
-    if (!Number.isInteger(rawValue) || rawValue < 0 || rawValue > MAX_REVIEWER_MAX_ROUNDS) continue;
-    // First occurrence wins for two spellings of the same reviewer (`gemini` /
-    // `antigravity`, `@Bot` / `@bot`) — mirrors normalizeOptionalReviewers' dedupe.
-    if (Object.prototype.hasOwnProperty.call(out, token)) continue;
-    out[token] = rawValue;
-  }
-  return { ...out };
-}
+export const normalizeReviewerMaxRounds = keyedReviewerPinNormalizer((rawValue) => (
+  // Only a genuine non-negative integer is a cap. A string "2", null, NaN, or
+  // 1.5 is not — and must NOT fall through to 0, which slashdo reads as
+  // "unlimited".
+  (Number.isInteger(rawValue) && rawValue >= 0 && rawValue <= MAX_REVIEWER_MAX_ROUNDS)
+    ? rawValue
+    : undefined
+));
 
 /**
  * Resolve per-reviewer iteration caps with task-over-default precedence: a
@@ -289,12 +336,7 @@ export function normalizeReviewerMaxRounds(map) {
  * only fall back to the defaults when the task didn't pin its own. Mirrors
  * `resolveOptionalReviewers`.
  */
-export function resolveReviewerMaxRounds(metadataMap, defaultMap) {
-  const isMap = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
-  return isMap(metadataMap)
-    ? (normalizeReviewerMaxRounds(metadataMap) || {})
-    : (normalizeReviewerMaxRounds(defaultMap) || {});
-}
+export const resolveReviewerMaxRounds = keyedReviewerPinResolver(normalizeReviewerMaxRounds);
 
 // Upper bound on a pinned reviewer model id. Generous (Bedrock/Ollama ids get
 // long) but present so a hand-edited settings.json can't smuggle in a blob that
@@ -367,21 +409,7 @@ export const BRACKET_MODEL_REVIEWERS = MODEL_SELECTABLE_REVIEWERS.filter(r => r 
  * Dropping is the safe failure — the reviewer falls back to its own default model
  * instead of running against a corrupt reviewer list.
  */
-export function normalizeReviewerModels(map) {
-  if (!map || typeof map !== 'object' || Array.isArray(map)) return undefined;
-  const out = Object.create(null);
-  for (const [rawKey, rawValue] of Object.entries(map)) {
-    const token = normalizeReviewerToken(rawKey);
-    if (!token) continue;
-    const model = normalizeReviewerModel(rawValue, token);
-    if (!model) continue;
-    // First occurrence wins for two spellings of one reviewer — mirrors the
-    // sibling normalizers' dedupe.
-    if (Object.prototype.hasOwnProperty.call(out, token)) continue;
-    out[token] = model;
-  }
-  return { ...out };
-}
+export const normalizeReviewerModels = keyedReviewerPinNormalizer(normalizeReviewerModel);
 
 /**
  * Resolve per-reviewer model pins with task-over-default precedence: a
@@ -389,12 +417,7 @@ export function normalizeReviewerModels(map) {
  * only fall back to the defaults when the task didn't pin its own. Mirrors
  * `resolveReviewerMaxRounds`.
  */
-export function resolveReviewerModels(metadataMap, defaultMap) {
-  const isMap = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
-  return isMap(metadataMap)
-    ? (normalizeReviewerModels(metadataMap) || {})
-    : (normalizeReviewerModels(defaultMap) || {});
-}
+export const resolveReviewerModels = keyedReviewerPinResolver(normalizeReviewerModels);
 
 /**
  * Fold the Code Review Defaults' per-reviewer model SCALARS
@@ -416,6 +439,175 @@ export function reviewerModelsFromDefaults(defaults) {
     if (model) out[r] = model;
   }
   return out;
+}
+
+// Reasoning-effort ladder for the local-LLM reviewers. Their review request goes
+// out as an OpenAI-compatible `/v1/chat/completions` call, whose `reasoning_effort`
+// field both LM Studio and Ollama accept for thinking models — but only over the
+// low/medium/high tier names. The wider CLI ladder (`minimal`/`xhigh`/`max`/
+// `ultra`) is vendor-CLI vocabulary that an OpenAI-shaped backend can reject, so
+// the local reviewers get their own, narrower set.
+export const LOCAL_LLM_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high']);
+
+/**
+ * Reviewer slug → the reasoning-effort ladder that reviewer accepts. Only
+ * reviewers WITH an effort control appear: `copilot` is a GitHub review, `grok`'s
+ * CLI takes no effort flag, and an `@username` reviewer is a person.
+ *
+ * Built once at module load and DERIVED from `effortLevelsForProvider` rather
+ * than restated, so a reviewer's ladder here is exactly the one
+ * `reviewerEffortArgs` (and the agent-spawn argv builder) will accept — a CLI
+ * that gains or loses a tier moves both at once. The lookup goes through
+ * `reviewerCliBinary` because that's what identifies the CLI: the `antigravity`
+ * slug names no executable, `agy` does.
+ *
+ * Mirrored in `client/src/components/cos/constants.js` (pinned by a parity test)
+ * so the picker only offers a level the server would keep.
+ */
+export const REVIEWER_EFFORT_LEVELS = Object.freeze(Object.fromEntries(
+  REVIEWER_VALUES
+    .map((slug) => {
+      if (LOCAL_LLM_REVIEWERS.includes(slug)) return [slug, LOCAL_LLM_EFFORT_LEVELS];
+      const binary = reviewerCliBinary(slug);
+      return [slug, binary ? effortLevelsForProvider({ id: slug, command: binary }) : null];
+    })
+    .filter(([, levels]) => levels?.length)
+));
+
+/**
+ * Every reviewer the user can pick an effort for — the effort-capable CLIs
+ * (`claude`, `codex`, `antigravity`) plus the local-LLM backends.
+ */
+export const EFFORT_SELECTABLE_REVIEWERS = Object.freeze(Object.keys(REVIEWER_EFFORT_LEVELS));
+
+/**
+ * The ladder for ONE reviewer token, or `null` when it takes no effort. Accepts
+ * the `gemini` alias; an `@username` token resolves to null like any non-reviewer.
+ *
+ * @param {string} reviewer - reviewer slug
+ * @returns {readonly string[]|null}
+ */
+export function reviewerEffortLevels(reviewer) {
+  if (typeof reviewer !== 'string') return null;
+  const slug = reviewer.trim().toLowerCase();
+  return REVIEWER_EFFORT_LEVELS[REVIEWER_ALIASES[slug] ?? slug] || null;
+}
+
+/**
+ * Validate ONE reviewer effort — the single definition shared by the token-keyed
+ * map normalizer and the `<reviewer>Effort` settings scalars, so a level can't be
+ * accepted by one path and dropped by another.
+ *
+ * `reviewer` is REQUIRED — this is the tight branch by design. Defaulting it to
+ * "any known effort" would validate against the union of every ladder, so a
+ * caller that forgot the argument would quietly accept `ollama: 'ultra'` and
+ * `antigravity: 'max'`, the exact values the drop-don't-clamp contract exists to
+ * reject.
+ *
+ * Returns the level, or `undefined` when it isn't usable: a non-string, a level
+ * outside that reviewer's own ladder (`agy` really does reject `--effort max`),
+ * or a reviewer with no effort control at all. Deliberately NOT clamped the way
+ * `resolveCliEffort` clamps a provider pin: this value is user-chosen from a
+ * per-reviewer list, so an out-of-ladder entry means the stored config is stale
+ * or hand-edited, and silently reviewing at a *different* effort than the one
+ * displayed is worse than falling back to the reviewer's own default.
+ */
+export function normalizeReviewerEffort(raw, reviewer) {
+  if (typeof raw !== 'string') return undefined;
+  const effort = raw.trim().toLowerCase();
+  if (!effort) return undefined;
+  return reviewerEffortLevels(reviewer)?.includes(effort) ? effort : undefined;
+}
+
+/**
+ * Per-reviewer reasoning-effort pins — how hard ONE reviewer thinks, keyed by the
+ * same emitted `--review-with` token as `normalizeReviewerModels` (e.g.
+ * `{ codex: 'high', ollama: 'low' }`).
+ *
+ * Unlike the model pin, this never becomes part of a slashdo token: slashdo's
+ * entry grammar has no effort suffix. It reaches a reviewer through the two
+ * places PortOS actually controls the invocation — the review-loop follow-up
+ * prompt's CLI command line (`codex -c model_reasoning_effort=high`, `claude
+ * --effort high`) and the `reasoning_effort` field of the local reviewer's
+ * `/api/code-review/local` request body.
+ *
+ * An absent key means "let that reviewer use its own default effort", which is
+ * NOT the same as a blank string, so an unusable value is DROPPED rather than
+ * persisted. Non-object input → undefined, so an omitted field isn't persisted as
+ * an empty override.
+ */
+export const normalizeReviewerEfforts = keyedReviewerPinNormalizer(normalizeReviewerEffort);
+
+/**
+ * Resolve per-reviewer effort pins with task-over-default precedence: a
+ * task-level map (even explicitly empty) overrides the Code Review Defaults;
+ * only fall back to the defaults when the task didn't pin its own. Mirrors
+ * `resolveReviewerModels`.
+ */
+export const resolveReviewerEfforts = keyedReviewerPinResolver(normalizeReviewerEfforts);
+
+/**
+ * Fold the Code Review Defaults' per-reviewer effort SCALARS (`codexEffort` /
+ * `claudeEffort` / `antigravityEffort` / `lmstudioEffort` / `ollamaEffort`) into
+ * the token-keyed map shape the resolvers and the picker UI both speak — the
+ * effort twin of `reviewerModelsFromDefaults`, and the one adapter between the
+ * two shapes.
+ */
+export function reviewerEffortsFromDefaults(defaults) {
+  const out = {};
+  for (const r of EFFORT_SELECTABLE_REVIEWERS) {
+    // Re-checked, not trusted: settings.json is hand-editable, and a stale level
+    // must not surface as a pin the invocation builders would then drop.
+    const effort = normalizeReviewerEffort(defaults?.[`${r}Effort`], r);
+    if (effort) out[r] = effort;
+  }
+  return out;
+}
+
+/**
+ * The argv fragment a CLI reviewer takes for a reasoning-effort override —
+ * `['--effort', 'high']` for claude/agy, `['-c', 'model_reasoning_effort=high']`
+ * for codex, `[]` for everything else. Delegates to `buildEffortArgs` so the flag
+ * shape has exactly one home (the spawn builders use the same one).
+ *
+ * @param {string} reviewer - reviewer slug
+ * @param {string|null|undefined} effort
+ * @returns {string[]}
+ */
+export function reviewerEffortArgs(reviewer, effort) {
+  const binary = reviewerCliBinary(reviewer);
+  if (!binary || !effort) return [];
+  return buildEffortArgs(effort, { id: reviewer, command: binary });
+}
+
+/**
+ * Prose instruction carrying the per-reviewer effort pins into a **slashdo**
+ * invocation — `/do:pr --review-with …`, where the model pin rides the token's
+ * `[<model>]` bracket but the effort has nowhere to go: slashdo's entry grammar
+ * (`<agent>[<model>](~opt|~max=<n>)*`) has no effort suffix, and inventing one
+ * would just be a token its parser drops.
+ *
+ * So the effort is delivered the only way that actually reaches the nested CLI:
+ * as an instruction to append the flag when the loop invokes it. Scoped to CLI
+ * reviewers on purpose — slashdo's local-model loop calls the backend itself
+ * rather than through PortOS's endpoint, so there is no flag to name for
+ * `ollama`/`lmstudio` there (their effort still applies on the PortOS-driven
+ * review-loop follow-up, which posts to `/api/code-review/local`).
+ *
+ * @param {string[]} reviewers - the reviewer slugs the invocation emits
+ * @param {Object<string, string>} [reviewerEfforts] - token-keyed effort pins
+ * @returns {string} a single sentence, or '' when no reviewer carries an effort
+ */
+export function buildReviewerEffortNote(reviewers, reviewerEfforts = {}) {
+  const efforts = normalizeReviewerEfforts(reviewerEfforts) || {};
+  const entries = (Array.isArray(reviewers) ? reviewers : [])
+    .map((r) => {
+      const args = reviewerEffortArgs(r, efforts[r]);
+      return args.length ? `\`${reviewerCliBinary(r)} ${args.join(' ')}\`` : null;
+    })
+    .filter(Boolean);
+  if (!entries.length) return '';
+  return `When the review loop invokes a reviewer CLI, add its pinned reasoning effort: ${entries.join(', ')}. \`--review-with\` has no effort suffix, so this is the only way it reaches the reviewer.`;
 }
 
 /**
@@ -726,6 +918,15 @@ export const createCosTaskSchema = z.object({
     v => normalizeReviewerModels(v),
     z.record(z.string().min(1).max(MAX_REVIEWER_MODEL_LENGTH)).optional()
   ),
+  // Per-reviewer reasoning-effort pins, keyed by the emitted `--review-with`
+  // token — how hard ONE reviewer thinks (`codex -c model_reasoning_effort=high`,
+  // `claude --effort high`, or a local reviewer's `reasoning_effort` body field).
+  // Normalized so a hand-crafted request can't pin an effort on a reviewer that
+  // takes none, or a level that reviewer's CLI rejects. Absent → undefined (not `{}`).
+  reviewerEfforts: z.preprocess(
+    v => normalizeReviewerEfforts(v),
+    z.record(z.enum(EFFORT_LEVELS)).optional()
+  ),
   // Bundled slashdo workflow this task runs (#3089) — the BARE command name,
   // never a rendered `/do:x` string (see slashdoInvocation.js).
   slashdoCommand: z.preprocess(emptyToUndefined, slashdoCommandSchema.optional()),
@@ -975,6 +1176,21 @@ export const codeReviewSettingsSchema = z.object({
   ollamaModel: z.preprocess(v => normalizeReviewerModel(v, 'ollama'), z.string().optional()),
   codexModel: z.preprocess(v => normalizeReviewerModel(v, 'codex'), z.string().optional()),
   claudeModel: z.preprocess(v => normalizeReviewerModel(v, 'claude'), z.string().optional()),
+  // Per-reviewer reasoning-effort defaults, one scalar per effort-capable reviewer
+  // (the model scalars' twin — same rationale for staying scalars: the encoding
+  // crosses installs). Each is checked against that reviewer's OWN ladder, so
+  // `antigravityEffort: 'max'` — a level `agy` rejects — clears rather than
+  // persisting a pin no invocation would carry.
+  //
+  // GENERATED from the roster rather than hand-listed like the model scalars
+  // above: this object is `.strict()`, so a reviewer that later gains an effort
+  // ladder would have its PATCH REJECTED until someone remembered to add a line
+  // here. Every other site that builds a `<reviewer>Effort` key derives it the
+  // same way.
+  ...Object.fromEntries(EFFORT_SELECTABLE_REVIEWERS.map(reviewer => [
+    `${reviewer}Effort`,
+    z.preprocess(v => normalizeReviewerEffort(v, reviewer), z.string().optional()),
+  ])),
 }).strict();
 
 // =============================================================================
@@ -1053,7 +1269,7 @@ export const slashdoTaskSchema = createCosTaskSchema
   .pick({
     model: true, provider: true, effort: true, simplify: true,
     reviewers: true, usernames: true, optionalReviewers: true, reviewerMaxRounds: true,
-    reviewerModels: true
+    reviewerModels: true, reviewerEfforts: true
   })
   .extend({
     command: z.string().min(1),
@@ -1133,6 +1349,16 @@ export function sanitizeTaskMetadata(raw) {
   // reviewer that takes no model, or a blank id, is dropped by the normalizer.
   if (raw.reviewerModels && typeof raw.reviewerModels === 'object' && !Array.isArray(raw.reviewerModels)) {
     clean.reviewerModels = normalizeReviewerModels(raw.reviewerModels) || {};
+    hasKeys = true;
+  }
+  // `reviewerEfforts` pins how hard each reviewer thinks (the follow-up prompt's
+  // `--effort <level>` / `-c model_reasoning_effort=<level>`, or a local reviewer's
+  // `reasoning_effort` body field). Like `reviewerModels`, an explicitly empty MAP
+  // is KEPT so a task/type can override the Code Review Defaults' efforts back to
+  // "each reviewer's own default"; an entry naming a reviewer with no effort
+  // control, or a level that reviewer's CLI rejects, is dropped by the normalizer.
+  if (raw.reviewerEfforts && typeof raw.reviewerEfforts === 'object' && !Array.isArray(raw.reviewerEfforts)) {
+    clean.reviewerEfforts = normalizeReviewerEfforts(raw.reviewerEfforts) || {};
     hasKeys = true;
   }
   if (Object.prototype.hasOwnProperty.call(raw, 'reviewStopMode') && REVIEW_STOP_MODES.includes(raw.reviewStopMode)) {

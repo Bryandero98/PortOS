@@ -1,19 +1,20 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { asyncHandler, ServerError } from '../lib/errorHandler.js'
-import { validateRequest, LOCAL_LLM_REVIEWERS } from '../lib/validation.js'
+import { validateRequest, LOCAL_LLM_REVIEWERS, LOCAL_LLM_EFFORT_LEVELS, reviewerEffortsFromDefaults } from '../lib/validation.js'
 import { getSettings } from '../services/settings.js'
 import { runLocalCodeReview, getCodeReviewDefaults, getReviewerCliInstalled } from '../services/codeReview.js'
 
 const router = Router()
 
-// Body shape for POST /api/code-review/local. `model` is optional — when
-// omitted (or empty) we fall back to the model configured on the Code Review
-// Defaults panel. The diff is sent as-is; agents can pipe `gh pr diff <N>`
-// straight into it without preprocessing.
+// Body shape for POST /api/code-review/local. `model` and `effort` are optional —
+// when omitted (or empty) we fall back to the model / reasoning effort configured
+// on the Code Review Defaults panel. The diff is sent as-is; agents can pipe
+// `gh pr diff <N>` straight into it without preprocessing.
 const localReviewRequestSchema = z.object({
   backend: z.enum(LOCAL_LLM_REVIEWERS),
   model: z.string().optional(),
+  effort: z.enum(LOCAL_LLM_EFFORT_LEVELS).optional(),
   diff: z.string().min(1, 'diff must be non-empty'),
   timeoutMs: z.number().int().positive().max(600000).optional(),
 }).strict()
@@ -40,9 +41,16 @@ router.post('/local', asyncHandler(async (req, res) => {
     ? settings.codeReview?.lmstudioModel
     : settings.codeReview?.ollamaModel
   const model = body.model || configured
+  // Per-request effort wins over the panel default; absent in both = omit the
+  // field entirely so the model reasons however it normally would. The stored
+  // default is read through the validated accessor rather than off the raw slice,
+  // so this route and `pickCodeReviewDefaults` agree on a hand-edited value
+  // (an open-coded read misses the normalizer's case-folding).
+  const effort = body.effort || reviewerEffortsFromDefaults(settings.codeReview)[body.backend] || null
   const result = await runLocalCodeReview({
     backend: body.backend,
     model,
+    effort,
     diff: body.diff,
     timeoutMs: body.timeoutMs,
   })

@@ -22,7 +22,7 @@
 import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { sanitizeTaskMetadata, PIPELINE_BEHAVIOR_FLAGS, MAX_TOTAL_SPAWNS, normalizeReviewers, resolveReviewUsernames, resolveOptionalReviewers, resolveReviewerMaxRounds, resolveReviewerModels, reviewerModelsFromDefaults, buildReviewersCsv, LOCAL_LLM_REVIEWERS, SWARM_COUNT_MIN, ISSUE_AUTHOR_FILTERS } from '../lib/validation.js';
+import { sanitizeTaskMetadata, PIPELINE_BEHAVIOR_FLAGS, MAX_TOTAL_SPAWNS, normalizeReviewers, resolveReviewUsernames, resolveOptionalReviewers, resolveReviewerMaxRounds, resolveReviewerModels, reviewerModelsFromDefaults, resolveReviewerEfforts, reviewerEffortsFromDefaults, buildReviewerEffortNote, buildReviewersCsv, LOCAL_LLM_REVIEWERS, SWARM_COUNT_MIN, ISSUE_AUTHOR_FILTERS } from '../lib/validation.js';
 import { isPlainObject } from '../lib/objects.js';
 import { parsePlanItems, extractAllIds, findInProgressIds, pickFirstAvailable, diagnoseUnpickablePlan } from '../lib/planIds.js';
 import { loadState, saveState, withStateLock, isImprovementEnabled, isDaemonRunning } from './cosState.js';
@@ -412,7 +412,7 @@ export function resolveClaimAuthorFilter(explicit, metadata) {
  *
  * @returns {Promise<{ tracker, source, promptTaskType, prompt, taskMetadata, target }>}
  */
-export async function buildClaimWorkTask(app, { issueAuthorFilter, reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels, target } = {}) {
+export async function buildClaimWorkTask(app, { issueAuthorFilter, reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels, reviewerEfforts, target } = {}) {
   const { resolveAppWorkTracker, trackerToClaimTaskType } = await import('../lib/workTracker.js');
   const { getTaskPrompt } = await import('./taskPromptService.js');
   const taskSchedule = await import('./taskSchedule.js');
@@ -456,6 +456,9 @@ export async function buildClaimWorkTask(app, { issueAuthorFilter, reviewers, us
   // Per-reviewer model pins (slashdo's `[<model>]` bracket) ride the same
   // explicit-option → task metadata → Code Review Defaults precedence.
   const promptReviewerModels = resolveReviewerModels(reviewerModels ?? metadata.reviewerModels, reviewerModelsFromDefaults(codeReviewDefaults));
+  // Per-reviewer reasoning efforts ride the same precedence. They carry no
+  // `--review-with` token, so they land as an appended instruction below.
+  const promptReviewerEfforts = resolveReviewerEfforts(reviewerEfforts ?? metadata.reviewerEfforts, reviewerEffortsFromDefaults(codeReviewDefaults));
   const reviewersCsv = buildReviewersCsv(reviewersList, promptUsernames, promptOptionalReviewers, promptReviewerMaxRounds, promptReviewerModels);
   const issueAuthorFilterBlock = resolveIssueAuthorFilterBlock(promptTaskType, resolvedAuthorFilter);
   // Swarm mode (`/do:next --swarm`) is prepended (not an in-template
@@ -475,7 +478,8 @@ export async function buildClaimWorkTask(app, { issueAuthorFilter, reviewers, us
     // interpreted as a backreference (see the scheduler's same-pattern note).
     .replace(/\{reviewers\}/g, () => reviewersCsv)
     .replace(/\{issueAuthorFilter\}/g, () => issueAuthorFilterBlock)
-    + appendTargetWorkItemBlock(promptTaskType, targetRef);
+    + appendTargetWorkItemBlock(promptTaskType, targetRef)
+    + appendReviewerEffortBlock(reviewersList, promptReviewerEfforts);
 
   // Mirror the scheduler: inherit the delegated flow's isolation posture so the
   // JIRA route runs in a CoS-managed worktree rather than the live checkout.
@@ -488,12 +492,17 @@ export async function buildClaimWorkTask(app, { issueAuthorFilter, reviewers, us
 }
 
 /**
- * Resolve the reviewers CSV for the claim flow exactly as buildClaimWorkTask
- * does (Code Review Defaults, minus local-LLM reviewers the claim prompt can't
- * drive, falling back to the hardcoded default). Mirrors the scheduled
- * claim-work resolution so the JIRA play button honors the user's reviewer choice.
+ * Resolve the reviewer prompt pieces for the claim flow exactly as
+ * buildClaimWorkTask does (Code Review Defaults, minus local-LLM reviewers the
+ * claim prompt can't drive, falling back to the hardcoded default). Mirrors the
+ * scheduled claim-work resolution so the JIRA play button honors the user's
+ * reviewer choice.
+ *
+ * Returns BOTH pieces because the two travel differently: `csv` fills the
+ * template's `{reviewers}` placeholder, while `effortBlock` is appended prose —
+ * `--review-with` has no effort suffix to carry it.
  */
-async function resolveClaimReviewersCsv() {
+async function resolveClaimReviewerPrompt() {
   const codeReviewDefaults = await getCodeReviewDefaults().catch(() => null);
   const list = normalizeReviewers({}, codeReviewDefaults?.reviewers)
     .filter((r) => !LOCAL_LLM_REVIEWERS.includes(r));
@@ -501,7 +510,10 @@ async function resolveClaimReviewersCsv() {
   // as `@user` tokens so the play button's claim gates the merge on them too.
   // Optional-reviewer set rides along so a `~opt` reviewer stays non-blocking,
   // as do the per-reviewer `~max=<n>` round caps.
-  return buildReviewersCsv(list, codeReviewDefaults?.usernames, codeReviewDefaults?.optionalReviewers, codeReviewDefaults?.reviewerMaxRounds, reviewerModelsFromDefaults(codeReviewDefaults));
+  return {
+    csv: buildReviewersCsv(list, codeReviewDefaults?.usernames, codeReviewDefaults?.optionalReviewers, codeReviewDefaults?.reviewerMaxRounds, reviewerModelsFromDefaults(codeReviewDefaults)),
+    effortBlock: appendReviewerEffortBlock(list, reviewerEffortsFromDefaults(codeReviewDefaults)),
+  };
 }
 
 /**
@@ -566,6 +578,19 @@ const appendTargetWorkItemBlock = (promptTaskType, ref) => {
 };
 
 /**
+ * The per-reviewer reasoning-effort instruction, appended to a claim prompt with
+ * the same blank-line separator. APPENDED rather than substituted into a
+ * `{...}` placeholder because a new placeholder would be silently dropped by
+ * every install whose customized claim template predates it (the same reason
+ * `swarmBlock` is prepended) — and because there is no `--review-with` suffix to
+ * carry it, so it has to be prose. Empty when no reviewer in the list pins one.
+ */
+const appendReviewerEffortBlock = (reviewers, reviewerEfforts) => {
+  const note = buildReviewerEffortNote(reviewers, reviewerEfforts);
+  return note ? `\n\n${note}` : '';
+};
+
+/**
  * Build a one-off "implement THIS JIRA ticket" task for `app` — the per-card
  * "play" button on the app overview's sprint board (the JIRA analogue of the
  * `/do:next` claim button). Resolves the `claim-issue-jira` prompt body directly
@@ -588,9 +613,9 @@ export async function buildJiraTicketTask(app, ticketKey) {
   const key = normalizeWorkItemRef(ticketKey);
 
   // Independent reads (prompt body + Code Review Defaults) — fetch concurrently.
-  const [template, reviewersCsv] = await Promise.all([
+  const [template, { csv: reviewersCsv, effortBlock }] = await Promise.all([
     getTaskPrompt('claim-issue-jira'),
-    resolveClaimReviewersCsv(),
+    resolveClaimReviewerPrompt(),
   ]);
   const prompt = template
     .replace(/\{appName\}/g, app.name)
@@ -599,7 +624,8 @@ export async function buildJiraTicketTask(app, ticketKey) {
     // Function-form replacer so a literal `$` in the reviewers CSV isn't read as
     // a backreference.
     .replace(/\{reviewers\}/g, () => reviewersCsv)
-    + appendTargetWorkItemBlock('claim-issue-jira', key);
+    + appendTargetWorkItemBlock('claim-issue-jira', key)
+    + effortBlock;
 
   return { ticketKey: key, prompt, taskMetadata: { useWorktree: false, openPR: false } };
 }
@@ -2464,6 +2490,9 @@ async function buildImprovementTaskDescription({ promptTemplate, app, promptTask
   // `[<model>]` bracket. Entries for the local-LLM reviewers filtered out above
   // are inert — the emitter only brackets tokens it actually emits.
   const promptReviewerModels = resolveReviewerModels(metadata.reviewerModels, reviewerModelsFromDefaults(codeReviewDefaults));
+  // Per-reviewer reasoning efforts — appended as an instruction after the
+  // substitutions below, since `--review-with` has no suffix for them.
+  const promptReviewerEfforts = resolveReviewerEfforts(metadata.reviewerEfforts, reviewerEffortsFromDefaults(codeReviewDefaults));
   const reviewersCsv = buildReviewersCsv(promptReviewers, promptUsernames, promptOptionalReviewers, promptReviewerMaxRounds, promptReviewerModels);
   // {issueAuthorFilter} directive — the filter was already merged (global →
   // per-app override) and value-constrained by sanitizeTaskMetadata, so read it
@@ -2501,7 +2530,16 @@ async function buildImprovementTaskDescription({ promptTemplate, app, promptTask
     .replace(/\{zombieIssues\}/g, () => blocks.zombieIssues)
     .replace(/\{repoFullName\}/g, () => blocks.repoFullName)
     .replace(/\{defaultBranch\}/g, () => blocks.defaultBranch)
-    .replace(/\{planConstraint\}/g, () => blocks.planConstraint);
+    .replace(/\{planConstraint\}/g, () => blocks.planConstraint)
+    // The effort note accompanies the reviewer CSV, so it's only appended when this
+    // template actually carries one. A task type whose prompt does NOT drive its own
+    // reviewers gets its PR reviewed by the completion workflow instead, and
+    // `buildCliCompletionSection` already states the effort next to that `/do:pr`
+    // step — appending here too would print the same sentence twice and give one
+    // instruction two owners to drift apart.
+    + (/\{reviewers\}/.test(promptTemplate)
+        ? appendReviewerEffortBlock(promptReviewers, promptReviewerEfforts)
+        : '');
 }
 
 /**

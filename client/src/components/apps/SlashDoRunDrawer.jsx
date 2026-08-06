@@ -5,7 +5,7 @@ import ProviderModelSelector from '../ProviderModelSelector';
 import ReviewerPicker from '../cos/ReviewerPicker';
 import useProviderModels from '../../hooks/useProviderModels';
 import useReviewerModelOptions from '../../hooks/useReviewerModelOptions';
-import { reviewerModelsFromDefaults } from '../../lib/reviewerModels';
+import { reviewerModelsFromDefaults, reviewerEffortsFromDefaults } from '../../lib/reviewerModels';
 import { CodeReviewDefaultsProvider, useCodeReviewDefaults } from '../../hooks/useCodeReviewDefaults';
 import { isProcessProvider } from '../../utils/providers';
 import WorkItemPicker from './WorkItemPicker';
@@ -45,10 +45,15 @@ function SlashDoRunDrawerBody({ open, command, label, appId, appName, onClose, o
   // Seeded from the install's Code Review Defaults for display. `reviewDirty`
   // gates whether they're SENT — see the component doc.
   const [review, setReview] = useState(null);
-  // The defaults carry per-reviewer models as `<reviewer>Model` scalars; the picker
-  // takes the token-keyed map, so fold them in for the seeded (untouched) display.
+  // The defaults carry per-reviewer models and efforts as `<reviewer>Model` /
+  // `<reviewer>Effort` scalars; the picker takes the token-keyed maps, so fold them
+  // in for the seeded (untouched) display.
   const seededReview = useMemo(
-    () => ({ ...codeReviewDefaults, reviewerModels: reviewerModelsFromDefaults(codeReviewDefaults) }),
+    () => ({
+      ...codeReviewDefaults,
+      reviewerModels: reviewerModelsFromDefaults(codeReviewDefaults),
+      reviewerEfforts: reviewerEffortsFromDefaults(codeReviewDefaults),
+    }),
     [codeReviewDefaults]
   );
   const reviewValue = review ?? seededReview;
@@ -85,7 +90,8 @@ function SlashDoRunDrawerBody({ open, command, label, appId, appName, onClose, o
         usernames: review.usernames,
         optionalReviewers: review.optionalReviewers,
         reviewerMaxRounds: review.reviewerMaxRounds,
-        reviewerModels: review.reviewerModels
+        reviewerModels: review.reviewerModels,
+        reviewerEfforts: review.reviewerEfforts
       } : {})
     }, { silent: true }).catch((err) => {
       setSubmitError(err.message || 'Failed to queue the task');
@@ -152,13 +158,14 @@ function SlashDoRunDrawerBody({ open, command, label, appId, appName, onClose, o
                 optionalReviewers={reviewValue.optionalReviewers}
                 reviewerMaxRounds={reviewValue.reviewerMaxRounds}
                 reviewerModels={reviewValue.reviewerModels}
+                reviewerEfforts={reviewValue.reviewerEfforts}
                 modelOptions={reviewerModelOptions}
                 installed={codeReviewDefaults.installed}
                 // The claim flows substitute a reviewer CSV into their prompt and have
                 // no slashdo flag string, so stop-mode / reviewer-applies can't be honored.
                 showRunFlags={false}
-                onChange={({ reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels }) =>
-                  setReview({ reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels })}
+                onChange={({ reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels, reviewerEfforts }) =>
+                  setReview({ reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels, reviewerEfforts })}
               />
               <p className="text-xs text-gray-500">
                 The claim flow opens and merges its own PR, so these reviewers gate that merge (slashdo <code>--review-with</code>).

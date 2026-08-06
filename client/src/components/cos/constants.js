@@ -13,6 +13,11 @@ import {
   Newspaper,
   ChartGantt
 } from 'lucide-react';
+import {
+  CLAUDE_EFFORT_LEVELS,
+  CODEX_EFFORT_LEVELS,
+  ANTIGRAVITY_EFFORT_LEVELS
+} from '../../utils/providers';
 
 export const TABS = [
   { id: 'briefing', label: 'Briefing', icon: Newspaper },
@@ -225,6 +230,39 @@ export const MODEL_SELECTABLE_REVIEWERS = [...MODEL_CAPABLE_CLI_REVIEWERS, ...LO
 // MAX_REVIEWER_MODEL_LENGTH in server/lib/cosValidation.js — a longer id is
 // dropped server-side, so the input must not accept one.
 export const MAX_REVIEWER_MODEL_LENGTH = 200;
+
+// Reasoning-effort ladder for the local-LLM reviewers — the OpenAI-compatible
+// `reasoning_effort` tier names both LM Studio and Ollama accept. Client mirror
+// of LOCAL_LLM_EFFORT_LEVELS in server/lib/cosValidation.js.
+export const LOCAL_LLM_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high']);
+
+// The effort ladder each reviewer offers, or absent when it has no effort control
+// (`copilot` is a GitHub review, `grok`'s CLI takes no effort flag, and an
+// `@username` reviewer is a person). Client mirror of `reviewerEffortLevels` in
+// server/lib/cosValidation.js — the CLI ladders come from the same
+// providers.js constants the server derives its own from, so the picker can only
+// offer a level the reviewer's binary actually accepts (`agy` really does reject
+// `--effort max`). Keep in sync; a level offered here but rejected there would
+// show the user a pin that never persists.
+export const REVIEWER_EFFORT_LEVELS = Object.freeze({
+  claude: CLAUDE_EFFORT_LEVELS,
+  codex: CODEX_EFFORT_LEVELS,
+  antigravity: ANTIGRAVITY_EFFORT_LEVELS,
+  lmstudio: LOCAL_LLM_EFFORT_LEVELS,
+  ollama: LOCAL_LLM_EFFORT_LEVELS,
+});
+
+// Every reviewer whose effort the user can pick per row in ReviewerPicker.
+// Client mirror of EFFORT_SELECTABLE_REVIEWERS in server/lib/cosValidation.js.
+export const EFFORT_SELECTABLE_REVIEWERS = Object.freeze(Object.keys(REVIEWER_EFFORT_LEVELS));
+
+// The ladder for one reviewer token, or `null` when it takes no effort. Accepts
+// the `gemini` alias and `@username` tokens (both → null for the latter).
+export const reviewerEffortLevels = (reviewer) => {
+  if (typeof reviewer !== 'string') return null;
+  const slug = reviewer.trim().toLowerCase();
+  return REVIEWER_EFFORT_LEVELS[REVIEWER_ALIASES[slug] || slug] || null;
+};
 
 // Characters that are STRUCTURAL in slashdo's emitted `--review-with` token and
 // have no escape inside the `[<model>]` selector, so the server drops an id

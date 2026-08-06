@@ -334,9 +334,14 @@ export function resolveSlashdoInvocation({
  *   `body`. Pass only when the host has file tools.
  * @param {string} [opts.reviewWith=''] - reviewer CSV to pin (`codex,copilot`).
  *   Required when `body` had reviewer variants pruned out of it.
+ * @param {string} [opts.reviewerEffortNote=''] - the per-reviewer reasoning-effort
+ *   instruction (`buildReviewerEffortNote`). Emitted independently of `reviewWith`:
+ *   this workflow runs its OWN review loop, so an effort pinned on the task has no
+ *   other way to reach the reviewer CLI the workflow spawns — and unlike the CSV it
+ *   applies whether or not the body was pruned.
  * @returns {string} markdown section, or '' when `resolved` is null
  */
-export function buildSlashdoSection(resolved, body = null, { bodyPath = null, reviewWith = '' } = {}) {
+export function buildSlashdoSection(resolved, body = null, { bodyPath = null, reviewWith = '', reviewerEffortNote = '' } = {}) {
   if (!resolved) return '';
 
   // Without explicit args the workflow operates on the task described above —
@@ -363,6 +368,9 @@ export function buildSlashdoSection(resolved, body = null, { bodyPath = null, re
       '',
       `Run this workflow with \`--review-with ${reviewWith}\` — the procedure you were given carries ONLY those reviewers' loops (the others were omitted as unreachable). Do not substitute a different reviewer from a saved slashdo default.`
     );
+  }
+  if (reviewerEffortNote) {
+    lines.push('', reviewerEffortNote);
   }
   if (body && bodyPath && body.length > SLASHDO_INLINE_BUDGET_CHARS) {
     lines.push(
