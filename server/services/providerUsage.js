@@ -241,9 +241,10 @@ function agyGroupLabel(header) {
     .join('/');
 }
 
-/** `Weekly Limit` → `Weekly`; `Five Hour Limit` → `5-hour`. Pure. */
+/** `Weekly Limit` / `Weekly Limit Remaining` → `Weekly`; `Five Hour Limit` → `5-hour`. Pure. */
 function agyWindowLabel(raw) {
-  const core = raw.replace(/\s*Limit\s*$/i, '').trim();
+  // agy 1.1.x renamed the rows from "… Limit" to "… Limit Remaining"; accept both.
+  const core = raw.replace(/\s*Limit(?:\s+Remaining)?\s*$/i, '').trim();
   return /^five hour$/i.test(core) ? '5-hour' : core;
 }
 
@@ -267,8 +268,9 @@ export function agyRefreshToIso(text, now = Date.now()) {
 /**
  * Parse the Antigravity `/usage` panel text into common-shape limit rows.
  * The panel groups models (e.g. `GEMINI MODELS`, `CLAUDE AND GPT MODELS`); each
- * group has one or more `<window> Limit` rows showing a bar `NN.NN%` that is the
- * percent REMAINING (a full bar = full quota), then either
+ * group has one or more window rows — `Weekly Limit` / `Five Hour Limit` on
+ * older builds, or `… Limit Remaining` on agy 1.1.x+ — showing a bar `NN.NN%`
+ * that is the percent REMAINING (a full bar = full quota), then either
  * `NN% remaining · Refreshes in <dur>` or `Quota available` (full, no reset).
  * Exported for tests. Pure given `now`.
  *
@@ -288,7 +290,10 @@ export function parseAgyUsage(text, { now = Date.now() } = {}) {
     const g = line.match(/^([A-Z][A-Z0-9 &/+-]*?MODELS)$/);
     if (g) { group = agyGroupLabel(g[1]); groups.add(group); continue; }
     if (!group) continue;
-    const w = line.match(/^([A-Z][A-Za-z ]{0,24}?Limit)$/);
+    // Optional " Remaining" suffix: agy 1.1.x renamed "Weekly Limit" →
+    // "Weekly Limit Remaining" (and same for Five Hour). Capture stops at
+    // "Limit" so agyWindowLabel stays agnostic of the suffix.
+    const w = line.match(/^([A-Z][A-Za-z ]{0,24}?Limit)(?:\s+Remaining)?$/);
     if (!w) continue;
     // Look ahead a few lines for the bar percentage + reset/quota-available.
     let remaining = null;
@@ -500,7 +505,7 @@ const FAMILIES = [
     id: 'agy',
     label: 'Antigravity',
     matches: (p) => commandBasename(p.command) === 'agy' || /antigravity/i.test(p.id || ''),
-    fetch: makeTuiUsageFetcher({ id: 'agy', binary: 'agy', slashCommand: '/usage', label: 'Antigravity', parse: parseAgyUsage, name: 'Antigravity CLI', readyMarker: /Weekly Limit|Five Hour Limit|Models & Quota/i })
+    fetch: makeTuiUsageFetcher({ id: 'agy', binary: 'agy', slashCommand: '/usage', label: 'Antigravity', parse: parseAgyUsage, name: 'Antigravity CLI', readyMarker: /Weekly Limit(?:\s+Remaining)?|Five Hour Limit(?:\s+Remaining)?|Models & Quota/i })
   },
   {
     id: 'grok',

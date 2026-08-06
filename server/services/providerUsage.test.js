@@ -42,8 +42,8 @@ import { getSettings } from './settings.js';
 import { getImageGenQuota } from './imageGenQuota.js';
 
 // Synthetic Antigravity `/usage` panel — invented values, redacted account, in
-// the real rendered shape. The bar percentage is percent REMAINING; a full bar
-// with "Quota available" has no reset.
+// the agy 1.1.x rendered shape (`… Limit Remaining`). The bar percentage is
+// percent REMAINING; a full bar with "Quota available" has no reset.
 const AGY_PANEL = `└ Models & Quota
 
   Account: user@example.com
@@ -51,11 +51,11 @@ const AGY_PANEL = `└ Models & Quota
 GEMINI MODELS
   Models within this group: Gemini Flash, Gemini Pro
 
-  Weekly Limit
+  Weekly Limit Remaining
     [█████████████████████████████████████████████████░] 98.99%
     99% remaining · Refreshes in 167h 57m
 
-  Five Hour Limit
+  Five Hour Limit Remaining
     [████████████████████████████████████████░░░░░░░░░░] 80.00%
     80% remaining · Refreshes in 4h 30m
 
@@ -63,14 +63,20 @@ GEMINI MODELS
 CLAUDE AND GPT MODELS
   Models within this group: Claude Opus, Claude Sonnet, GPT-OSS
 
-  Weekly Limit
+  Weekly Limit Remaining
     [██████████████████████████████████████████████████] 100.00%
     Quota available
 
-  Five Hour Limit
+  Five Hour Limit Remaining
     [██████████████████████████████████████████████████] 100.00%
     Quota available
 `;
+
+// Pre-1.1.x panel: rows ended in bare "Limit" (no " Remaining" suffix). Kept so
+// an older agy binary still parses after the 1.1.x rename.
+const AGY_PANEL_LEGACY = AGY_PANEL
+  .replaceAll('Weekly Limit Remaining', 'Weekly Limit')
+  .replaceAll('Five Hour Limit Remaining', 'Five Hour Limit');
 
 // Synthetic Grok `/usage show` output — `Weekly limit: N%` is percent USED.
 const GROK_PANEL = 'noise noise  Weekly limit: 42% Next reset: August 1, 06:07   trailing noise';
@@ -275,6 +281,20 @@ describe('parseAgyUsage', () => {
 
     const gem5h = limits.find((l) => l.key === 'gemini-5-hour');
     expect(gem5h).toMatchObject({ label: 'Gemini · 5-hour', percentUsed: 20, percentRemaining: 80 });
+  });
+
+  it('still parses pre-1.1.x panels that end window rows in bare "Limit"', () => {
+    // agy renamed "Weekly Limit" → "Weekly Limit Remaining"; older binaries still
+    // emit the bare form, and both must produce the same keys/labels.
+    const { limits, groups } = parseAgyUsage(AGY_PANEL_LEGACY, { now: NOW });
+    expect(groups).toBe(2);
+    expect(limits).toHaveLength(4);
+    expect(limits.map((l) => l.key).sort()).toEqual([
+      'claude-gpt-5-hour', 'claude-gpt-weekly', 'gemini-5-hour', 'gemini-weekly',
+    ]);
+    expect(limits.find((l) => l.key === 'gemini-weekly')).toMatchObject({
+      label: 'Gemini · Weekly', percentUsed: 1, percentRemaining: 99,
+    });
   });
 
   it('keeps used + remaining summing to 100 on half-percent values', () => {
