@@ -1,0 +1,194 @@
+/**
+ * `spawnViaRunner` — the runner-CLI arm of the spawn dispatch.
+ *
+ * The case under test is a spawn the runner REJECTS: no child process is ever
+ * created, so no `agent:completed` / `agent:error` event will ever arrive to
+ * finalize the record. Before this was handled the throw propagated to
+ * subAgentSpawner's `task:ready` listener, which only logs — and because the
+ * `runnerAgents` entry survived, `isAgentOwnedLocally` made the orphan sweep
+ * skip the record too, so the 3s initialization timer flipped it to `working`
+ * and it stayed there for the life of the process. (The TUI arm of the same
+ * dispatch had the same hole with a shorter tail: the zombie reaper eventually
+ * finalized it with a generic message that named no cause.)
+ *
+ * Lives in its own file because agentLifecycle.test.js deliberately imports no
+ * part of the orchestrator graph — it reads the source as a string. Driving the
+ * real function needs the leaves mocked, which would change that file's whole
+ * character.
+ */
+
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+vi.mock('./cosRunnerClient.js', () => ({
+  spawnAgentViaRunner: vi.fn(),
+  // Reported healthy and long-lived so waitForRunnerStability returns on its
+  // first check — the failure under test is the spawn call, not the wait.
+  getRunnerHealth: vi.fn().mockResolvedValue({ available: true, uptime: 3600 }),
+}));
+
+vi.mock('./cosAgentLifecycle.js', () => ({
+  registerAgent: vi.fn().mockResolvedValue(undefined),
+  updateAgent: vi.fn().mockResolvedValue(undefined),
+  completeAgent: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('./agentRunTracking.js', () => ({
+  createAgentRun: vi.fn().mockResolvedValue(undefined),
+  checkForTaskCommit: vi.fn().mockResolvedValue(false),
+  completeAgentRun: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('./agentFinalization.js', () => ({
+  dispatchRecoveredTaskOutputHook: vi.fn().mockResolvedValue(undefined),
+  finalizeAgent: vi.fn().mockResolvedValue(undefined),
+  releaseAgentLane: vi.fn(),
+  stampLiExecutionVerdict: vi.fn(async (update) => update),
+}));
+
+vi.mock('./cosEvents.js', () => ({
+  emitLog: vi.fn(),
+  cosEvents: { emit: vi.fn(), on: vi.fn() },
+}));
+
+vi.mock('./cos.js', () => ({
+  getConfig: vi.fn().mockResolvedValue({}),
+  updateTask: vi.fn().mockResolvedValue(undefined),
+  getTaskById: vi.fn().mockResolvedValue(null),
+  getAgentRecord: vi.fn().mockResolvedValue(null),
+}));
+
+vi.mock('./git.js', () => ({ resolveForgeTokenEnv: vi.fn().mockResolvedValue({}) }));
+
+vi.mock('./agentCliSpawning.js', () => ({
+  buildCliSpawnConfig: vi.fn(),
+  isClaudeCliProvider: vi.fn().mockReturnValue(false),
+  isTuiProvider: vi.fn().mockReturnValue(false),
+  getClaudeSettingsEnv: vi.fn().mockResolvedValue({}),
+  spawnDirectly: vi.fn(),
+}));
+
+vi.mock('./agentTuiSpawning.js', () => ({
+  buildTuiSpawnConfig: vi.fn(),
+  spawnTuiAgent: vi.fn(),
+}));
+
+vi.mock('./agentProviderResolution.js', () => ({ resolveAgentProviderAndModel: vi.fn() }));
+vi.mock('./agentWorkspacePrep.js', () => ({ prepareAgentWorkspace: vi.fn() }));
+vi.mock('./agentWorktreeCleanup.js', () => ({ cleanupAgentWorktree: vi.fn() }));
+vi.mock('./agentCompletionCleanup.js', () => ({ runAgentCompletionCleanup: vi.fn() }));
+vi.mock('./agentSummaryExtraction.js', () => ({ extractFinalSummary: vi.fn() }));
+vi.mock('./agentManagement.js', () => ({ handleOrphanedTask: vi.fn() }));
+vi.mock('./agentPromptBuilder.js', () => ({ buildAgentPrompt: vi.fn(), getAppWorkspace: vi.fn() }));
+vi.mock('./agentErrorAnalysis.js', () => ({ analyzeAgentFailure: vi.fn().mockReturnValue(null) }));
+vi.mock('./appActivity.js', () => ({ releaseAppReviewMarker: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('./instances.js', () => ({ ensureInstanceId: vi.fn().mockResolvedValue('instance-1') }));
+vi.mock('./toolStateMachine.js', () => ({
+  createToolExecution: vi.fn(() => ({ id: 'exec-1' })),
+  startExecution: vi.fn(),
+  completeExecution: vi.fn(),
+  errorExecution: vi.fn(),
+}));
+vi.mock('./executionLanes.js', () => ({
+  determineLane: vi.fn(() => 'standard'),
+  acquire: vi.fn(() => ({ success: true })),
+  release: vi.fn(),
+}));
+
+import { spawnViaRunner } from './agentLifecycle.js';
+import { spawnAgentViaRunner } from './cosRunnerClient.js';
+import { completeAgent, updateAgent } from './cosAgentLifecycle.js';
+import { completeAgentRun } from './agentRunTracking.js';
+import { releaseAgentLane } from './agentFinalization.js';
+import { runnerAgents } from './agentState.js';
+
+const REJECTION = 'Command not allowed: grok. Permitted commands: claude, codex';
+
+function runnerOpts() {
+  return {
+    prompt: 'do the thing',
+    workspacePath: '/tmp/ws',
+    model: 'some-model',
+    provider: { id: 'grok-cli', name: 'Grok Build CLI', command: 'grok', envVars: {} },
+    runId: 'run-1',
+    cliConfig: { command: 'grok', args: [] },
+    executionId: 'exec-1',
+    laneName: 'standard',
+  };
+}
+
+describe('spawnViaRunner — the runner rejects the spawn', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    runnerAgents.clear();
+  });
+
+  it('resolves instead of throwing, so the caller is not left to log-and-forget', async () => {
+    vi.mocked(spawnAgentViaRunner).mockRejectedValueOnce(new Error(REJECTION));
+    await expect(spawnViaRunner('agent-1', { id: 'task-1' }, runnerOpts())).resolves.toBeNull();
+  });
+
+  it('finalizes the agent record with the runner\'s actual error', async () => {
+    vi.mocked(spawnAgentViaRunner).mockRejectedValueOnce(new Error(REJECTION));
+
+    await spawnViaRunner('agent-1', { id: 'task-1' }, runnerOpts());
+
+    expect(completeAgent).toHaveBeenCalledWith('agent-1', expect.objectContaining({
+      success: false,
+      // No success criterion was ever evaluated — the null sentinel (#2344)
+      // keeps "never ran" out of the declared-and-failed bucket.
+      validationPassed: null,
+      error: expect.stringContaining('Command not allowed: grok'),
+    }));
+    expect(completeAgentRun).toHaveBeenCalledWith(
+      'run-1', '', 1, 0, expect.objectContaining({ category: 'runner-error' })
+    );
+  });
+
+  it('drops the runnerAgents entry so the orphan sweep can see the record', async () => {
+    vi.mocked(spawnAgentViaRunner).mockRejectedValueOnce(new Error(REJECTION));
+
+    await spawnViaRunner('agent-1', { id: 'task-1' }, runnerOpts());
+
+    // Left behind, isAgentOwnedLocally() reports the agent as live and every
+    // sweep skips it — the record never gets reconciled at all.
+    expect(runnerAgents.has('agent-1')).toBe(false);
+  });
+
+  it('releases the lane and tool execution', async () => {
+    vi.mocked(spawnAgentViaRunner).mockRejectedValueOnce(new Error(REJECTION));
+
+    await spawnViaRunner('agent-1', { id: 'task-1' }, runnerOpts());
+
+    expect(releaseAgentLane).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: 'agent-1',
+      success: false,
+      executionId: 'exec-1',
+      laneName: 'standard',
+      errorExecutionMessage: expect.stringContaining('Command not allowed: grok'),
+    }));
+  });
+
+  it('cancels the 3s initialization timer so the record cannot flip to "working"', async () => {
+    vi.useFakeTimers();
+    vi.mocked(spawnAgentViaRunner).mockRejectedValueOnce(new Error(REJECTION));
+
+    await spawnViaRunner('agent-1', { id: 'task-1' }, runnerOpts());
+    vi.mocked(updateAgent).mockClear();
+    await vi.advanceTimersByTimeAsync(5000);
+    vi.useRealTimers();
+
+    expect(vi.mocked(updateAgent).mock.calls.some(
+      ([, patch]) => patch?.metadata?.phase === 'working'
+    )).toBe(false);
+  });
+
+  it('still records the pid and returns the agent id on a successful spawn', async () => {
+    vi.mocked(spawnAgentViaRunner).mockResolvedValueOnce({ pid: 4242 });
+
+    await expect(spawnViaRunner('agent-1', { id: 'task-1' }, runnerOpts())).resolves.toBe('agent-1');
+
+    expect(updateAgent).toHaveBeenCalledWith('agent-1', { pid: 4242 });
+    expect(completeAgent).not.toHaveBeenCalled();
+    expect(runnerAgents.has('agent-1')).toBe(true);
+  });
+});

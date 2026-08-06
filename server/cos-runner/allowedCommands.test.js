@@ -1,5 +1,18 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 import { isAllowedCommand, ALLOWED_COMMANDS } from './allowedCommands.js';
+
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+/** Every `command` declared by a provider in a shipped provider catalog. */
+function shippedProviderCommands(relativePath) {
+  const catalog = JSON.parse(readFileSync(join(REPO_ROOT, relativePath), 'utf8'));
+  return Object.entries(catalog.providers || {})
+    .filter(([, p]) => typeof p?.command === 'string' && p.command)
+    .map(([id, p]) => ({ id, command: p.command }));
+}
 
 describe('isAllowedCommand', () => {
   describe('permitted plain names', () => {
@@ -100,6 +113,32 @@ describe('isAllowedCommand', () => {
 
     it('rejects a path whose basename is an allowed name prefix: /bin/claudeX', () => {
       expect(isAllowedCommand('/bin/claudeX')).toBe(false);
+    });
+  });
+
+  // Regression guard. `grok` (and `kimi`) shipped as enabled-able providers while
+  // absent from this allowlist, so selecting grok-tui 400'd at the runner's
+  // /spawn-tui, the agent never got a PTY, and the zombie reaper finalized it a
+  // minute later as "Agent process terminated unexpectedly" — the user saw a task
+  // that simply never produced a shell. Any future provider added to a shipped
+  // catalog without an allowlist entry fails here instead.
+  describe('parity with shipped provider catalogs', () => {
+    describe.each([
+      ['data.reference/providers.json'],
+      ['server/lib/aiToolkit/defaults/providers.sample.json'],
+    ])('%s', (catalogPath) => {
+      const providers = shippedProviderCommands(catalogPath);
+
+      it('declares at least one provider command (guards against a silently empty parse)', () => {
+        expect(providers.length).toBeGreaterThan(0);
+      });
+
+      it.each(providers.map(({ id, command }) => [id, command]))(
+        'provider "%s" runs allowlisted command "%s"',
+        (_id, command) => {
+          expect(isAllowedCommand(command)).toBe(true);
+        }
+      );
     });
   });
 

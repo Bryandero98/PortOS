@@ -2118,6 +2118,33 @@ describe('spawnTuiAgent runtime', () => {
       );
     });
   });
+
+  // A session that never spawns at all. The runner rejects the spawn (e.g. its
+  // command allowlist doesn't carry the provider's CLI), createAgentTuiSession
+  // throws, and before this was handled the throw propagated out of
+  // spawnTuiAgent to a caller that only logs — leaving the agent record stuck in
+  // `initializing` until the zombie reaper finalized it a minute later with a
+  // generic message, so the real cause never reached the user.
+  describe('spawn failure', () => {
+    it('finalizes with the spawn error instead of throwing', async () => {
+      vi.mocked(spawnTuiSessionViaRunner).mockRejectedValueOnce(
+        new Error('Command not allowed: grok. Permitted commands: claude, codex')
+      );
+
+      // Resolves, does not reject.
+      await expect(runSpawn({ useDurableRunner: true })).resolves.toBeNull();
+      await flushMicrotasks();
+
+      expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: 'agent-1',
+          success: false,
+          completionReason: 'spawn-error',
+          error: expect.stringContaining('Command not allowed: grok'),
+        })
+      );
+    });
+  });
 });
 
 // Issue #2074 — the idle reaper must extend its grace while a swarm orchestrator

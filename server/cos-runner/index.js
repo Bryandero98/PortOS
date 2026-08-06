@@ -146,8 +146,19 @@ app.post('/spawn-tui', async (req, res) => {
     doneSentinelPath = null,
   } = req.body;
 
-  if (!agentId || !taskId || !sessionId || !isAllowedCommand(command)) {
-    return res.status(400).json({ error: 'Missing or invalid TUI spawn fields' });
+  // Name the offending field. A single opaque "missing or invalid fields" 400
+  // sent a grok-tui agent to the zombie reaper with no shell and no clue why —
+  // the real cause (`grok` absent from ALLOWED_COMMANDS) was invisible.
+  const missing = Object.entries({ agentId, taskId, sessionId })
+    .filter(([, value]) => !value)
+    .map(([key]) => key);
+  if (missing.length) {
+    return res.status(400).json({ error: `Missing TUI spawn fields: ${missing.join(', ')}` });
+  }
+  if (!isAllowedCommand(command)) {
+    return res.status(400).json({
+      error: `Command not allowed: ${command}. Permitted commands: ${[...ALLOWED_COMMANDS].join(', ')}`
+    });
   }
   if (!Array.isArray(args)) {
     return res.status(400).json({ error: 'Invalid args: expected an array' });
