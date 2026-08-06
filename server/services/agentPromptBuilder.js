@@ -17,7 +17,7 @@ import { getActiveProvider } from './providers.js';
 import { runPromptThroughProvider } from '../lib/promptRunner.js';
 import { readJSONFile, PATHS, tryReadFile, expandHome } from '../lib/fileUtils.js';
 import { loadSlashdoFile, loadSlashdoLib, writeResolvedSlashdoBody } from '../lib/slashdoLoader.js';
-import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, LOCAL_LLM_REVIEWERS, MODEL_CAPABLE_CLI_REVIEWERS, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds, resolveReviewUsernames, resolveOptionalReviewers, resolveReviewerMaxRounds, resolveReviewerModels, reviewerModelsFromDefaults, resolveKeyedReviewers, buildReviewWithArgs, buildReviewersCsv } from '../lib/validation.js';
+import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, LOCAL_LLM_REVIEWERS, MODEL_CAPABLE_CLI_REVIEWERS, describeReviewerCli, isCliReviewer, reviewerCliBinary, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds, resolveReviewUsernames, resolveOptionalReviewers, resolveReviewerMaxRounds, resolveReviewerModels, reviewerModelsFromDefaults, resolveKeyedReviewers, buildReviewWithArgs, buildReviewersCsv } from '../lib/validation.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { canTypeSlashCommands, resolveSlashdoInvocation, buildSlashdoSection, unreachableReviewerIncludes, SLASHDO_INLINE_BUDGET_CHARS } from '../lib/slashdoInvocation.js';
 import { shellQuote } from '../lib/shellQuote.js';
@@ -515,7 +515,9 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
   const reviewerApplies = metadata.reviewLoopReviewerApplies === true;
   const hasCopilot = reviewers.includes(DEFAULT_REVIEWER);
   const hasLocalLlm = reviewers.some(r => LOCAL_LLM_REVIEWERS.includes(r));
-  const hasCli = reviewers.some(r => r !== DEFAULT_REVIEWER && !LOCAL_LLM_REVIEWERS.includes(r));
+  // Spawnable-CLI reviewers, in configured order.
+  const cliReviewers = reviewers.filter(isCliReviewer);
+  const hasCli = cliReviewers.length > 0;
   const hasGithubUser = usernames.length > 0;
   // Optional per-reviewer model pins (Code Review Defaults panel, or the task's own
   // ReviewerPicker row), threaded as a reviewer-keyed map. A model-capable CLI
@@ -540,7 +542,11 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
     // runs. The Code Review Defaults model field is free-text for exactly this
     // reason: the user configures the id their environment needs (a Bedrock-form id
     // on a Bedrock box, an installed Ollama model for an Ollama-backed `claude`).
-    .map(r => `\`${r} --model ${reviewerModelMap[r]} …\``);
+    // Binary, not slug: this renders a literal command line. Safe today only
+    // because MODEL_CAPABLE_CLI_REVIEWERS happens to hold two same-named CLIs —
+    // `agy` also takes `--model`, so the moment antigravity is added there the
+    // slug would be emitted as a command again.
+    .map(r => `\`${reviewerCliBinary(r) || r} --model ${reviewerModelMap[r]} …\``);
   const reviewerModelNote = reviewerModelEntries.length
     ? ` When invoking a reviewer with a pinned model, pass it: ${reviewerModelEntries.join(', ')}.`
     : '';
@@ -552,6 +558,31 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
   // before it stumbled into a working review call.
   const cliProcedurePointer = (hasCli && localAgentLoopBody)
     ? ' Follow the **CLI Reviewer Procedure** section below for the exact headless invocation and review-only contract — do NOT probe the CLI or guess flags.'
+    : '';
+  // Each configured CLI reviewer paired with the command the agent must actually
+  // run. Resolved ONCE — the slug-vs-binary distinction is the whole point of
+  // this block, so every string below reads it from here rather than restating
+  // the `|| slug` fallback. Unmapped slug ⇒ falls back to itself.
+  const cliBinaries = cliReviewers.map(slug => ({ slug, binary: reviewerCliBinary(slug) || slug }));
+  // `**codex / agy / claude**` — the CLI reviewers THIS loop configured, named by
+  // the binary. Previously a fixed "codex / antigravity / claude / grok" string,
+  // which both listed reviewers that weren't configured and named `antigravity`,
+  // a command that exists on no PATH.
+  const cliReviewerHeading = cliBinaries.map(c => c.binary).join(' / ');
+  // Spell out slug → binary for any reviewer whose command differs from its
+  // slug, so the agent can reconcile the configured list / `--review-with` token
+  // with the executable named in the invocation table.
+  const cliBinaryAliases = cliBinaries
+    .filter(c => c.binary !== c.slug)
+    .map(c => `the \`${c.slug}\` reviewer runs the \`${c.binary}\` binary (there is no \`${c.slug}\` command)`);
+  const cliBinaryNote = cliBinaryAliases.length
+    ? ` Reviewer slug → command: ${cliBinaryAliases.join('; ')}.`
+    : '';
+  // A configured reviewer that cannot run is NOT a clean review. Without this,
+  // an agent whose reviewer binary was missing self-reviewed and merged anyway
+  // — the exact regression this note blocks.
+  const missingCliNote = hasCli
+    ? `**Missing reviewer CLI:** verify each reviewer's binary is on PATH (${cliBinaries.map(c => `\`command -v ${c.binary}\``).join(' / ')}) before concluding it is unavailable. If a configured reviewer's binary genuinely is not installed, that reviewer is UNSATISFIED — do NOT substitute your own self-review and do NOT merge. Post a PR comment naming the missing command and exit.`
     : '';
   // "multi" reflects the TOTAL number of review sources (keyed reviewers +
   // username reviewers) so the ordered per-reviewer loop wording kicks in as
@@ -607,11 +638,13 @@ Only a successfully extracted \`.findings\` value is the review text; treat it l
     hasCopilot ? `**copilot**: ${copilotIsFirst
       ? 'wait for the initial Copilot review the system already pre-requested (Copilot leads the list)'
       : 'request a Copilot review when you reach its turn'} (poll every 5–15s, max 5 min/round), then re-request on later rounds.` : null,
-    hasCli ? `**codex / antigravity / claude / grok**: invoke that CLI to review this branch's diff against its base (use the CLI's own base-diff mode or \`git diff <base-branch>...HEAD\`; on GitHub \`gh pr diff ${prNumber || ''}\` also works).${reviewerModelNote}${cliProcedurePointer}` : null,
+    hasCli ? `**${cliReviewerHeading}**: invoke that CLI to review this branch's diff against its base (use the CLI's own base-diff mode or \`git diff <base-branch>...HEAD\`; on GitHub \`gh pr diff ${prNumber || ''}\` also works).${cliBinaryNote}${reviewerModelNote}${cliProcedurePointer}` : null,
     hasLocalLlm ? `**lmstudio / ollama**: ${localLlmInvocation}` : null,
     hasGithubUser ? `**@github reviewers**: ${githubUsersInvocation}` : null,
   ].filter(Boolean).join(' ');
-  const singleCliInvocation = `Invoke the ${reviewerLabel} CLI to review this branch's diff against its base (use the CLI's own base-diff mode or \`git diff <base-branch>...HEAD\`; on GitHub \`gh pr diff ${prNumber || ''}\` also works). Capture its findings as concrete issues to address.${reviewerModelNote}${cliProcedurePointer}`;
+  // Name the BINARY, not the slug: `Invoke the \`antigravity\` CLI` sent a
+  // follow-up agent hunting for a command that does not exist.
+  const singleCliInvocation = `Invoke ${describeReviewerCli(cliReviewers[0])} to review this branch's diff against its base (use the CLI's own base-diff mode or \`git diff <base-branch>...HEAD\`; on GitHub \`gh pr diff ${prNumber || ''}\` also works). Capture its findings as concrete issues to address.${reviewerModelNote}${cliProcedurePointer}`;
   // Resolved sequentially so a future reviewer kind only adds one branch
   // instead of deepening the nested ternary.
   let waitOrInvokeStep;
@@ -664,7 +697,7 @@ Only a successfully extracted \`.findings\` value is the review text; treat it l
     ? `**Round caps (~max):** stop these reviewers after their budget even if findings remain, then advance: ${maxRoundsEntries.join(', ')}. Spending a configured budget is a SUCCESS, not a failure — do not block the merge on it. Reviewers not listed keep the default cap below.`
     : '';
 
-  const extraNotes = [stopModeNote, applyNote, maxRoundsNote].filter(Boolean);
+  const extraNotes = [stopModeNote, applyNote, maxRoundsNote, missingCliNote].filter(Boolean);
 
   // Inline slashdo's local-agent review loop verbatim when a spawnable CLI
   // reviewer is configured. This is the maintained, precise recipe — exact
@@ -672,11 +705,15 @@ Only a successfully extracted \`.findings\` value is the review text; treat it l
   // `codex --sandbox read-only review --base …`, etc.), the review-only /
   // no-sub-agent-fan-out `$LOCAL_PROMPT` contract, and the parse-and-apply
   // handling. Without it the agent only sees "invoke that CLI" and reverse-
-  // engineers the invocation, wasting calls. Conditionals were resolved to the
+  // engineers the invocation, wasting calls. The inlined body AGREES with
+  // cliBinaryNote rather than contradicting the "follow it verbatim" order —
+  // slashdo's per-CLI invocation table names `agy` and normalizes the
+  // `gemini`/`antigravity` slugs onto it, so the note is a pointer into that
+  // table, not a correction layered over it. Conditionals were resolved to the
   // subprocess (`else`) branch by loadSlashdoLib, so no in-process-Agent-tool
   // branch leaks in to confuse a non-Claude-Code host.
   const cliReviewerProcedure = (hasCli && localAgentLoopBody)
-    ? `\n### CLI Reviewer Procedure (codex / antigravity / claude / grok)\n\nDrive each spawnable CLI reviewer EXACTLY as the slashdo local-agent review loop below specifies — use its per-CLI invocation and review-only prompt contract verbatim; do NOT probe the CLI's \`--help\`, test it with throwaway prompts, or hand-roll flags. Run the reviewer once per round, capture its findings, and (unless reviewer-applies is set) apply the fixes yourself.\n\n${localAgentLoopBody}\n`
+    ? `\n### CLI Reviewer Procedure (${cliReviewerHeading})\n\nDrive each spawnable CLI reviewer EXACTLY as the slashdo local-agent review loop below specifies — use its per-CLI invocation and review-only prompt contract verbatim; do NOT probe the CLI's \`--help\`, test it with throwaway prompts, or hand-roll flags. Run the reviewer once per round, capture its findings, and (unless reviewer-applies is set) apply the fixes yourself.\n\n${localAgentLoopBody}\n`
     : '';
 
   // A JIRA-tracked PR is a human's to land (its ticket is already "In Review" and

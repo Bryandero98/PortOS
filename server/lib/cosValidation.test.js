@@ -1,5 +1,19 @@
 import { describe, it, expect } from 'vitest';
-import { createCosTaskSchema, updateCosTaskSchema, createCosJobSchema, updateCosJobSchema } from './cosValidation.js';
+import {
+  createCosTaskSchema,
+  updateCosTaskSchema,
+  createCosJobSchema,
+  updateCosJobSchema,
+  describeReviewerCli,
+  isCliReviewer,
+  reviewerCliBinary,
+  DEFAULT_REVIEWER,
+  LOCAL_LLM_REVIEWERS,
+  REVIEWER_ALIASES,
+  REVIEWER_CLI_BINARIES,
+  REVIEWER_VALUES,
+} from './cosValidation.js';
+import { LOCAL_AGENT_REVIEWERS } from './slashdoInvocation.js';
 import { EFFORT_LEVELS } from './providerModels.js';
 
 describe('cosValidation effort field', () => {
@@ -60,5 +74,71 @@ describe('cosValidation job taskMetadata.worktreeChangesExpected (#3102)', () =>
     expect(parsed.taskMetadata).toEqual({ useWorktree: true, worktreeChangesExpected: false });
     expect(createCosJobSchema.safeParse({ name: 'j', taskMetadata: { worktreeChangesExpected: 'nope' } }).success)
       .toBe(false);
+  });
+});
+
+describe('cosValidation reviewer CLI binaries', () => {
+  // The bug this exists to prevent: `antigravity` is the stored, federated
+  // reviewer identity, but the shipped executable is `agy` — no `antigravity`
+  // command exists. A review-loop follow-up agent handed the bare slug ran
+  // `command -v antigravity`, got nothing, concluded "no reviewer is available",
+  // self-reviewed, and merged its own PR.
+  it('maps the antigravity slug (and its gemini alias) to the agy binary', () => {
+    expect(reviewerCliBinary('antigravity')).toBe('agy');
+    expect(reviewerCliBinary('gemini')).toBe('agy');
+    expect(reviewerCliBinary('ANTIGRAVITY')).toBe('agy');
+    expect(describeReviewerCli('antigravity')).toBe('`agy` (the `antigravity` reviewer)');
+  });
+
+  it('leaves same-named reviewers alone rather than restating the slug', () => {
+    for (const slug of ['claude', 'codex', 'grok']) {
+      expect(reviewerCliBinary(slug)).toBe(slug);
+      expect(describeReviewerCli(slug)).toBe(`\`${slug}\``);
+    }
+  });
+
+  it('returns null for reviewers that have no spawnable CLI', () => {
+    // copilot is a GitHub API review; lmstudio/ollama go through
+    // POST /api/code-review/local. Prompt builders must not tell an agent to
+    // run these as commands.
+    for (const slug of [DEFAULT_REVIEWER, ...LOCAL_LLM_REVIEWERS]) {
+      expect(reviewerCliBinary(slug)).toBeNull();
+    }
+    expect(reviewerCliBinary(undefined)).toBeNull();
+    expect(describeReviewerCli(undefined)).toBe('');
+  });
+
+  // Guard the guard: a NEW CLI reviewer added to REVIEWER_VALUES without a
+  // binary mapping must be caught here rather than shipping another slug an
+  // agent will fruitlessly probe for. Aliases resolve first, so `gemini` is not
+  // itself expected in the map. Uses isCliReviewer rather than re-spelling the
+  // exclusion, so a change to that rule can actually fail this test.
+  it('every CLI reviewer in REVIEWER_VALUES maps to a binary', () => {
+    const cliReviewers = REVIEWER_VALUES.filter(isCliReviewer);
+    expect(cliReviewers.length).toBeGreaterThan(0);
+    for (const slug of cliReviewers) {
+      expect(reviewerCliBinary(slug), `reviewerCliBinary('${slug}')`).toBeTruthy();
+    }
+    for (const alias of Object.keys(REVIEWER_ALIASES)) {
+      expect(reviewerCliBinary(alias)).toBe(reviewerCliBinary(REVIEWER_ALIASES[alias]));
+    }
+  });
+
+  it('agrees with isCliReviewer on which reviewers are spawnable CLIs', () => {
+    for (const slug of REVIEWER_VALUES) {
+      expect(Boolean(reviewerCliBinary(slug)), slug).toBe(isCliReviewer(slug));
+    }
+    expect(isCliReviewer(DEFAULT_REVIEWER)).toBe(false);
+    expect(LOCAL_LLM_REVIEWERS.some(isCliReviewer)).toBe(false);
+  });
+
+  // slashdoInvocation keeps its own copy of the roster to decide which slashdo
+  // `lib/*` includes a reviewer needs. Two hand-maintained lists of the same
+  // reviewers drift the moment one gains a member — the `grok` addition is the
+  // precedent — so pin them to each other rather than making slashdoInvocation
+  // import this module (cosValidation already imports IT, and a cycle here would
+  // be worse than the duplication).
+  it('matches slashdoInvocation LOCAL_AGENT_REVIEWERS', () => {
+    expect([...LOCAL_AGENT_REVIEWERS].sort()).toEqual(Object.keys(REVIEWER_CLI_BINARIES).sort());
   });
 });

@@ -118,14 +118,15 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // destructive/irreversible or genuinely human-gated (hardware/credentials)
   // cases. Mirrors CLAUDE.md "Decide, don't defer". Pins the version-bump pairing
   // + preserved outgoing defaults for cross-install auto-upgrade.
+  // Version numbers are pinned once, by the `agy` test below — a content test
+  // that also asserts the version has to be edited by every unrelated bump.
   it.each([
-    ['claim-issue', 8],
-    ['claim-issue-gitlab', 7],
-  ])('%s v%d decides an ambiguous issue instead of parking it, preserving the outgoing default', (key, version) => {
+    ['claim-issue'],
+    ['claim-issue-gitlab'],
+  ])('%s decides an ambiguous issue instead of parking it, preserving the outgoing default', (key) => {
     const current = DEFAULT_TASK_PROMPTS[key];
     expect(current).toContain('Ambiguity is NOT a release trigger');
     expect(current).not.toContain('so it\'s excluded from future autonomous claims');
-    expect(PROMPT_VERSIONS[key]).toBe(version);
 
     // The pre-"decide" default parked an ambiguous issue to `needs-input`; it is
     // preserved verbatim so installs holding it are recognized and upgraded.
@@ -189,24 +190,57 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // the target repo's working tree. Pins the version bump + preserved outgoing
   // repo-relative default for each claim flow, for cross-install auto-upgrade.
   it.each([
-    ['plan-task', 11, 'WORKTREE="data/cos/worktrees'],
-    ['claim-issue', 8, 'WORKTREE="data/cos/worktrees'],
-    ['claim-issue-gitlab', 7, 'WORKTREE="data/cos/worktrees'],
-    ['claim-issue-jira', 5, 'WORKTREE="{repoPath}/data/cos/worktrees'],
-  ])('%s v%d creates its worktree under {worktreesRoot}, preserving the outgoing default', (key, version, oldPathMarker) => {
+    ['plan-task', 'WORKTREE="data/cos/worktrees'],
+    ['claim-issue', 'WORKTREE="data/cos/worktrees'],
+    ['claim-issue-gitlab', 'WORKTREE="data/cos/worktrees'],
+    ['claim-issue-jira', 'WORKTREE="{repoPath}/data/cos/worktrees'],
+  ])('%s creates its worktree under {worktreesRoot}, preserving the repo-relative default', (key, oldPathMarker) => {
     const current = DEFAULT_TASK_PROMPTS[key];
     // Current default points the worktree at PortOS's shared worktrees dir…
     expect(current).toContain('{worktreesRoot}');
     // …and no longer at a path inside the target repo.
     expect(current).not.toContain(oldPathMarker);
-    expect(PROMPT_VERSIONS[key]).toBe(version);
 
-    // The outgoing default created the worktree inside the app repo; it is
-    // preserved verbatim so installs holding it are recognized and upgraded.
+    // The pre-{worktreesRoot} default created the worktree inside the app repo;
+    // it is preserved verbatim so installs holding it are recognized and
+    // upgraded. Located by CONTENT, not array position: later revisions append
+    // their own outgoing bodies after it (see the `agy` bump below).
+    const preShared = PREVIOUS_DEFAULT_PROMPTS[key].find(
+      (p) => p.includes(oldPathMarker) && !p.includes('{worktreesRoot}'),
+    );
+    expect(preShared).toBeDefined();
+    expect(preShared).not.toBe(current);
+  });
+
+  // The `antigravity` reviewer slug is a stored, federated identity — its shipped
+  // executable is `agy`, and no `antigravity` command exists on any PATH. A claim
+  // agent handed the bare slug probed `command -v antigravity`, found nothing,
+  // declared the reviewer unavailable, and merged its PR on a self-review. Every
+  // claim/plan prompt that enumerates the CLI reviewers must name the binary.
+  it.each([
+    ['plan-task', 12],
+    ['claim-issue', 9],
+    ['claim-issue-gitlab', 8],
+    ['claim-issue-jira', 6],
+  ])('%s v%d names the antigravity reviewer\'s `agy` binary, preserving the outgoing default', (key, version) => {
+    const current = DEFAULT_TASK_PROMPTS[key];
+    expect(PROMPT_VERSIONS[key]).toBe(version);
+    // EVERY mention of the slug carries the binary — a bare `antigravity`
+    // anywhere in the body is the regression.
+    expect(current).not.toMatch(/`antigravity`(?! \(CLI binary: `agy`\))/);
+    expect(current).toContain('`antigravity` (CLI binary: `agy`)');
+    // …and a reviewer whose binary is missing must not be replaced by the
+    // agent's own self-review, which is what actually merged the bad PR.
+    expect(current).toContain('is UNSATISFIED, not clean');
+    expect(current).toContain('Do NOT substitute your own self-review');
+
+    // The outgoing default named only the slug; preserved verbatim so installs
+    // holding it are recognized and auto-upgraded.
     const previous = PREVIOUS_DEFAULT_PROMPTS[key];
     const outgoing = previous[previous.length - 1];
-    expect(outgoing).toContain(oldPathMarker);
-    expect(outgoing).not.toContain('{worktreesRoot}');
+    expect(outgoing).toContain('`antigravity`');
+    expect(outgoing).not.toContain('CLI binary: `agy`');
+    expect(outgoing).not.toContain('is UNSATISFIED, not clean');
     expect(outgoing).not.toBe(current);
   });
 

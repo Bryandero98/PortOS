@@ -11,6 +11,7 @@
 import { z } from 'zod';
 import { emptyToUndefined, emptyToNull } from './zodCompat.js';
 import { EFFORT_LEVELS } from './providerModels.js';
+import { ANTIGRAVITY_COMMAND } from './antigravity.js';
 import { isValidSlashdoCommand } from './slashdoInvocation.js';
 import { PR_COMPLETION_VALUES } from './prDisposition.js';
 
@@ -50,6 +51,78 @@ export const MODEL_CAPABLE_CLI_REVIEWERS = ['codex', 'claude'];
 // claim flow). `copilot` and `@username` reviewers are excluded — neither is a
 // model-taking backend, matching slashdo rejecting `copilot[…]`/`@login[…]`.
 export const MODEL_SELECTABLE_REVIEWERS = [...MODEL_CAPABLE_CLI_REVIEWERS, ...LOCAL_LLM_REVIEWERS];
+// The executable a CLI reviewer's slug actually resolves to on PATH. Every slug
+// except `antigravity` names its own binary; `antigravity` is the STORED,
+// federated reviewer identity (aliased from the older `gemini`) while the
+// shipped executable is `agy` — there is no `antigravity` command. A prompt that
+// names only the slug sends the follow-up agent looking for a binary that does
+// not exist: one CoS review-loop agent probed `command -v antigravity`, found
+// nothing, declared "no reviewer available", and merged its own PR on a
+// self-review. Prompt builders must resolve the slug through
+// `reviewerCliBinary()` before telling an agent what to invoke.
+// A reviewer absent from this map has no spawnable CLI (`copilot` is a GitHub
+// API review, `lmstudio`/`ollama` go through `POST /api/code-review/local`).
+export const REVIEWER_CLI_BINARIES = {
+  claude: 'claude',
+  antigravity: ANTIGRAVITY_COMMAND,
+  codex: 'codex',
+  grok: 'grok',
+};
+
+/**
+ * Is this reviewer a CLI the agent spawns itself? Derived by EXCLUSION rather
+ * than from REVIEWER_CLI_BINARIES so a newly added CLI reviewer still drives the
+ * review loop before anyone remembers to map its binary (the map's coverage is
+ * pinned separately by cosValidation.test.js).
+ *
+ * The one definition of the rule — the prompt builder and the coverage test both
+ * call it, so neither can re-implement (and quietly diverge from) it.
+ *
+ * @param {string} reviewer - reviewer slug
+ * @returns {boolean}
+ */
+export function isCliReviewer(reviewer) {
+  return reviewer !== DEFAULT_REVIEWER && !LOCAL_LLM_REVIEWERS.includes(reviewer);
+}
+
+/**
+ * The PATH executable for a CLI reviewer slug, or `null` when the reviewer is
+ * not a spawnable CLI. Accepts the `gemini` alias.
+ *
+ * A null here means "no binary is mapped", NOT "not a CLI" — use isCliReviewer
+ * for that question. The two can disagree for exactly one reviewer: a new CLI
+ * reviewer added to REVIEWER_VALUES before its REVIEWER_CLI_BINARIES entry.
+ * That reviewer still drives the loop (isCliReviewer says yes) and its prompt
+ * falls back to naming the slug — the pre-existing behavior — rather than being
+ * silently dropped. cosValidation.test.js pins the map's coverage so the window
+ * closes at review time.
+ *
+ * @param {string} reviewer - reviewer slug (`antigravity`, `gemini`, `codex`, …)
+ * @returns {string|null}
+ */
+export function reviewerCliBinary(reviewer) {
+  if (typeof reviewer !== 'string') return null;
+  const slug = reviewer.trim().toLowerCase();
+  return REVIEWER_CLI_BINARIES[REVIEWER_ALIASES[slug] || slug] || null;
+}
+
+/**
+ * Render a reviewer slug for an agent prompt as the command it must actually
+ * run, keeping the slug visible so the text still lines up with the configured
+ * reviewer list and slashdo's `--review-with` token.
+ *
+ * `antigravity` → ``​`agy` (the `antigravity` reviewer)``; every other reviewer,
+ * whose binary equals its slug, → ``​`codex` `` with no redundant restatement.
+ *
+ * @param {string} reviewer - reviewer slug
+ * @returns {string} markdown fragment
+ */
+export function describeReviewerCli(reviewer) {
+  if (typeof reviewer !== 'string' || !reviewer) return '';
+  const binary = reviewerCliBinary(reviewer);
+  if (!binary || binary === reviewer) return `\`${reviewer}\``;
+  return `\`${binary}\` (the \`${reviewer}\` reviewer)`;
+}
 // Stop-mode for the multi-reviewer loop (slashdo `--review-stop-on-*`).
 export const REVIEW_STOP_MODES = ['all', 'on-findings', 'on-clean'];
 export const DEFAULT_REVIEW_STOP_MODE = 'all';

@@ -81,8 +81,15 @@ export const SLASHDO_REVIEWER_INCLUDES = Object.freeze({
 /** Every reviewer-variant include name — the prunable universe. */
 export const SLASHDO_REVIEWER_INCLUDE_NAMES = Object.freeze(Object.values(SLASHDO_REVIEWER_INCLUDES));
 
-/** Reviewer slugs that drive slashdo's shared local-agent (spawnable CLI) loop. */
-const LOCAL_AGENT_REVIEWERS = new Set(['claude', 'codex', 'antigravity', 'grok']);
+/**
+ * Reviewer slugs that drive slashdo's shared local-agent (spawnable CLI) loop.
+ *
+ * Kept here rather than imported from cosValidation.js, which imports THIS
+ * module — an import back would be a cycle. Exported so cosValidation.test.js
+ * can pin it against `REVIEWER_CLI_BINARIES` (whose keys are the same roster);
+ * a reviewer added to one and not the other is a drift the test catches.
+ */
+export const LOCAL_AGENT_REVIEWERS = new Set(['claude', 'codex', 'antigravity', 'grok']);
 /** Reviewer slugs that drive slashdo's local-model (Ollama-style) loop. */
 const LOCAL_MODEL_REVIEWERS = new Set(['ollama', 'lmstudio']);
 
