@@ -228,6 +228,19 @@ describe('per-reviewer reasoning effort (reviewerEfforts)', () => {
     expect(reviewerEffortArgs('claude', null)).toEqual([]);
   });
 
+  it('DROPS an out-of-ladder effort instead of clamping it, even from unnormalized input', () => {
+    // The underlying `buildEffortArgs` clamps (agy `max` → `--effort high`), which
+    // is right for a provider pin carried across providers but wrong for a reviewer
+    // effort picked from that reviewer's own list: emitting a clamped flag would run
+    // the review at a tier the picker labels `unsupported`. This function is reached
+    // with RAW task metadata (`reviewLoopReviewerEfforts`), so it must normalize
+    // itself rather than trust the caller.
+    expect(reviewerEffortArgs('antigravity', 'max')).toEqual([]);
+    expect(reviewerEffortArgs('antigravity', 'ultra')).toEqual([]);
+    // Case/whitespace still normalize through rather than being rejected.
+    expect(reviewerEffortArgs('codex', ' HIGH ')).toEqual(['-c', 'model_reasoning_effort=high']);
+  });
+
   it('builds the slashdo-invocation note only for CLI reviewers carrying an effort', () => {
     const note = buildReviewerEffortNote(['codex', 'claude', 'copilot'], { codex: 'high', claude: 'low', copilot: 'high' });
     expect(note).toContain('`codex -c model_reasoning_effort=high`');

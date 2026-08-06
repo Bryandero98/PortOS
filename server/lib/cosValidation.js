@@ -570,14 +570,27 @@ export function reviewerEffortsFromDefaults(defaults) {
  * for codex, `[]` for everything else. Delegates to `buildEffortArgs` so the flag
  * shape has exactly one home (the spawn builders use the same one).
  *
+ * **Normalizes first, deliberately.** `buildEffortArgs` CLAMPS an out-of-ladder
+ * value (`agy` + `max` → `--effort high`), which is right for a provider pin the
+ * user set against a different provider, but wrong here: a reviewer effort is
+ * chosen from that reviewer's own list, so an out-of-ladder value means stale or
+ * hand-edited state — and emitting a clamped flag would run the review at an
+ * effort the picker displays as `unsupported`. Dropping to the reviewer's own
+ * default is the honest failure, matching `normalizeReviewerEffort`'s contract.
+ * The normalize is here rather than left to callers because this function is
+ * reached with raw task metadata (`reviewLoopReviewerEfforts`), which no
+ * normalizer has necessarily touched.
+ *
  * @param {string} reviewer - reviewer slug
  * @param {string|null|undefined} effort
  * @returns {string[]}
  */
 export function reviewerEffortArgs(reviewer, effort) {
   const binary = reviewerCliBinary(reviewer);
-  if (!binary || !effort) return [];
-  return buildEffortArgs(effort, { id: reviewer, command: binary });
+  if (!binary) return [];
+  const level = normalizeReviewerEffort(effort, reviewer);
+  if (!level) return [];
+  return buildEffortArgs(level, { id: reviewer, command: binary });
 }
 
 /**

@@ -16,7 +16,7 @@ import { readFile, writeFile, stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { parseTasksMarkdown, groupTasksByStatus, getAutoApprovedTasks, getAwaitingApprovalTasks, generateTasksMarkdown, hasKnownPrefix } from '../lib/taskParser.js';
-import { REVIEW_STOP_MODES, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds, normalizeReviewerModels, normalizeReviewerEfforts } from '../lib/validation.js';
+import { REVIEW_STOP_MODES, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds, normalizeReviewerModels, normalizeReviewerEfforts, reviewerEffortsFromDefaults } from '../lib/validation.js';
 import { PR_COMPLETIONS, PR_COMPLETION_VALUES } from '../lib/prDisposition.js';
 import { RETRY_HOLD_KEY, RETRY_HOLD_SINCE_KEY } from '../lib/taskRetryHold.js';
 import { REQUEUED_AT_KEY } from '../lib/taskRequeue.js';
@@ -1135,10 +1135,17 @@ export async function resolveTaskChallengeWithRecheck(taskId, { recheck, resolve
   }
   const backend = recheck?.backend;
   // Model: explicit override wins, else the Code Review Defaults for this backend.
+  // Effort has no per-request override (a re-check re-runs the SAME reviewer
+  // configuration, it doesn't reconfigure it), so it always comes from the
+  // defaults — but it must come from somewhere: this verdict decides whether a
+  // disputed rejection is upheld or escalated to the user, and deriving it from a
+  // pass run at a weaker effort than the user configured is the same silent
+  // downgrade the pin exists to prevent.
+  const recheckDefaults = await getCodeReviewDefaults().catch(() => null);
+  const effort = reviewerEffortsFromDefaults(recheckDefaults)[backend] || null;
   let model = recheck?.model;
   if (!model) {
-    const defaults = await getCodeReviewDefaults().catch(() => null);
-    model = backend === 'ollama' ? defaults?.ollamaModel : defaults?.lmstudioModel;
+    model = backend === 'ollama' ? recheckDefaults?.ollamaModel : recheckDefaults?.lmstudioModel;
   }
   // A missing model is a config problem (no Code Review Defaults set), not an
   // upstream-reviewer failure — surface it as a 4xx (RECHECK_NO_MODEL → 400), not
@@ -1146,8 +1153,8 @@ export async function resolveTaskChallengeWithRecheck(taskId, { recheck, resolve
   if (!model) {
     return { error: `No model configured for the ${backend} reviewer — set one on the AI Providers → Code Review Defaults panel.`, code: 'RECHECK_NO_MODEL' };
   }
-  console.log(`⚖️ Re-checking challenge on ${taskId} via ${backend} (${model})`);
-  const review = await runLocalCodeReview({ backend, model, diff: recheck?.diff });
+  console.log(`⚖️ Re-checking challenge on ${taskId} via ${backend} (${model}${effort ? `, ${effort} effort` : ''})`);
+  const review = await runLocalCodeReview({ backend, model, effort, diff: recheck?.diff });
   if (!review?.ok) {
     return { error: `Re-check failed: ${review?.error || 'unknown reviewer error'}`, code: 'RECHECK_FAILED' };
   }

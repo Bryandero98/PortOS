@@ -641,15 +641,23 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
   // The pinned reasoning effort rides the same body as `effort` — the endpoint
   // forwards it as the backend's OpenAI-compatible `reasoning_effort`. Same
   // absent-vs-empty contract as the model: no pin ⇒ the key is omitted, not blank.
+  // Which body keys this run actually pins, accumulated across the local-LLM
+  // reviewers in the list. The jq example below is built from THIS set rather than
+  // naming both keys unconditionally: an effort-only run that was shown a
+  // `model: "…"` placeholder would have the agent send the literal ellipsis, and
+  // the route's `body.model || configured` prefers that truthy junk over the
+  // install default — turning a pinned-effort review into a model-not-found error.
+  const localLlmPinKeys = new Set();
   const localLlmPinNote = LOCAL_LLM_REVIEWERS
     .filter(r => reviewers.includes(r))
     .map((r) => {
       const keys = [];
-      if (typeof reviewerModelMap[r] === 'string' && reviewerModelMap[r]) keys.push(`"model": "${reviewerModelMap[r]}"`);
-      if (typeof reviewerEffortMap[r] === 'string' && reviewerEffortMap[r]) keys.push(`"effort": "${reviewerEffortMap[r]}"`);
+      if (typeof reviewerModelMap[r] === 'string' && reviewerModelMap[r]) { keys.push(`"model": "${reviewerModelMap[r]}"`); localLlmPinKeys.add('model'); }
+      if (typeof reviewerEffortMap[r] === 'string' && reviewerEffortMap[r]) { keys.push(`"effort": "${reviewerEffortMap[r]}"`); localLlmPinKeys.add('effort'); }
       return keys.length ? `\`${r}\` → \`${keys.join(', ')}\`` : null;
     })
     .filter(Boolean);
+  const localLlmPinJq = ['backend: "…"', ...[...localLlmPinKeys].map(k => `${k}: "…"`), 'diff: .'].join(', ');
   const localLlmInvocation = `POST the diff to PortOS's local reviewer endpoint and extract its review text before evaluating it. Substitute the active reviewer name for \`<lmstudio|ollama>\`:
 \`\`\`bash
 REVIEW_RESPONSE=$(mktemp)
@@ -663,7 +671,7 @@ else
 fi
 \`\`\`
 Only a successfully extracted \`.findings\` value is the review text; treat it like any other reviewer's findings.${localLlmPinNote.length
-  ? ` This run pins settings for ${localLlmPinNote.join(', ')} — add those keys to the JSON body (\`jq -Rs '{ backend: "…", model: "…", effort: "…", diff: . }'\`) so the review runs with them instead of the install defaults.`
+  ? ` This run pins settings for ${localLlmPinNote.join(', ')} — add those keys to the JSON body (\`jq -Rs '{ ${localLlmPinJq} }'\`) so the review runs with them instead of the install defaults. Send ONLY the keys named above; a key with no pinned value overrides the install default with junk.`
   : ''}`;
   // Instruct the agent to request each username reviewer as a PR reviewer and
   // gate the merge on their approval. `gh pr edit --add-reviewer` takes the bare
