@@ -32,6 +32,10 @@ import {
   resolveReviewerMaxRounds,
   resolveReviewerModels,
   reviewerModelsFromDefaults,
+  resolveReviewerEfforts,
+  reviewerEffortsFromDefaults,
+  normalizeReviewerEffort,
+  EFFORT_SELECTABLE_REVIEWERS,
 } from '../lib/validation.js'
 import { getSettings, settingsEvents } from './settings.js'
 import { getBaseUrl as getLmStudioBaseUrl } from './lmStudioManager.js'
@@ -60,6 +64,7 @@ export function isLocalLlmReviewer(backend) {
  */
 export function pickCodeReviewDefaults(settings) {
   const raw = settings && typeof settings === 'object' ? settings.codeReview : null
+  const effortDefaults = reviewerEffortsFromDefaults(raw)
   const reviewersIn = Array.isArray(raw?.reviewers) ? raw.reviewers : null
   const reviewers = reviewersIn
     ? Array.from(new Set(reviewersIn.map((r) => REVIEWER_ALIASES[r] || r).filter((r) => REVIEWER_VALUES.includes(r))))
@@ -91,6 +96,19 @@ export function pickCodeReviewDefaults(settings) {
     ollamaModel: typeof raw?.ollamaModel === 'string' && raw.ollamaModel ? raw.ollamaModel : null,
     codexModel: typeof raw?.codexModel === 'string' && raw.codexModel ? raw.codexModel : null,
     claudeModel: typeof raw?.claudeModel === 'string' && raw.claudeModel ? raw.claudeModel : null,
+    // Per-reviewer reasoning-effort defaults. Unlike the model scalars above these
+    // ARE checked here: a level is a closed per-reviewer enum, not free text, and
+    // `/api/code-review/local` forwards the value straight into the backend request
+    // — passing through a stale `antigravityEffort: 'ultra'` would just produce a
+    // rejected call rather than something a downstream consumer could use.
+    //
+    // Checked through `reviewerEffortsFromDefaults`, not an inline comparison, so
+    // this path and `resolveReviewLoopOptions` can't disagree about a stored value
+    // (an open-coded check missed the normalizer's case-folding, so a settings.json
+    // holding `"High"` resolved one way here and another there).
+    ...Object.fromEntries(
+      EFFORT_SELECTABLE_REVIEWERS.map((reviewer) => [`${reviewer}Effort`, effortDefaults[reviewer] ?? null])
+    ),
   }
 }
 
@@ -169,7 +187,12 @@ export async function resolveReviewLoopOptions(metadata, { normalize, isTruthyMe
   // mechanism (`--model <id>` for a CLI, the request body's `model` for a local
   // backend); spawnReviewLoopFollowUp narrows to the reviewers actually in the list.
   const reviewerModels = resolveReviewerModels(metadata?.reviewerModels, reviewerModelsFromDefaults(defaults))
-  return { reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewStopMode, reviewerApplies, reviewerModels }
+  // Reviewer-keyed reasoning-effort map, same task-over-default precedence as the
+  // models above. Routed by the prompt builder the same two ways: an effort flag on
+  // a CLI reviewer's command line, or `reasoning_effort` in a local reviewer's
+  // `/api/code-review/local` body.
+  const reviewerEfforts = resolveReviewerEfforts(metadata?.reviewerEfforts, reviewerEffortsFromDefaults(defaults))
+  return { reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewStopMode, reviewerApplies, reviewerModels, reviewerEfforts }
 }
 
 /**
@@ -232,10 +255,15 @@ For each finding, name the file:line (when known) and explain the issue + sugges
  * @param {'lmstudio'|'ollama'} opts.backend
  * @param {string} opts.model - Installed model id (e.g. `qwen2.5-coder:7b`).
  * @param {string} opts.diff - Unified diff text to review.
+ * @param {string} [opts.effort] - Reasoning effort (`low`/`medium`/`high`), sent
+ *   as the OpenAI-compatible `reasoning_effort` field. Omitted from the body
+ *   entirely when unset or not a level this backend accepts — a non-reasoning
+ *   model would otherwise get a field it has no answer for, and `absent` is the
+ *   only spelling of "use the model's own default".
  * @param {number} [opts.timeoutMs=120000] - 2 min default — LM Studio cold-
  *   load of a large coder model regularly exceeds 30s but rarely 2 min.
  */
-export async function runLocalCodeReview({ backend, model, diff, timeoutMs = 120000 } = {}) {
+export async function runLocalCodeReview({ backend, model, diff, effort = null, timeoutMs = 120000 } = {}) {
   if (!isLocalLlmReviewer(backend)) {
     return { ok: false, error: `Unsupported reviewer backend: ${backend}` }
   }
@@ -256,6 +284,10 @@ export async function runLocalCodeReview({ backend, model, diff, timeoutMs = 120
   // can't be closed by the diff's own content (the same technique GitHub uses
   // to nest a fenced block inside a fenced block).
   const fence = '`'.repeat(Math.max(3, ...(trimmedDiff.match(/`+/g) || ['']).map((run) => run.length + 1)))
+  // Re-checked here rather than trusted from the caller: this is the last layer
+  // before the request goes out, and both backends 400 on a `reasoning_effort`
+  // outside the OpenAI tier names.
+  const resolvedEffort = normalizeReviewerEffort(effort, backend) || null
   const body = {
     model,
     messages: [
@@ -264,6 +296,7 @@ export async function runLocalCodeReview({ backend, model, diff, timeoutMs = 120
     ],
     temperature: 0.2,
     stream: false,
+    ...(resolvedEffort ? { reasoning_effort: resolvedEffort } : {}),
   }
 
   const response = await fetchWithTimeout(`${baseUrl}/v1/chat/completions`, {
@@ -290,5 +323,5 @@ export async function runLocalCodeReview({ backend, model, diff, timeoutMs = 120
   if (!findings || typeof findings !== 'string') {
     return { ok: false, backend, model, error: `${backend} returned no content.` }
   }
-  return { ok: true, backend, model, findings: findings.trim() }
+  return { ok: true, backend, model, effort: resolvedEffort, findings: findings.trim() }
 }

@@ -1036,6 +1036,49 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).toMatch(/claude --model qwen2\.5:7b/);
     });
 
+    it('threads a reviewer-keyed effort map onto each CLI invocation, in that CLI-specific flag form', () => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: {
+          reviewLoopFollowUp: true,
+          reviewLoopPRUrl: 'https://github.com/o/r/pull/9',
+          reviewLoopPRBranch: 'b',
+          reviewLoopPRNumber: 9,
+          reviewLoopReviewers: ['codex', 'claude', 'antigravity'],
+          reviewLoopReviewerModels: { codex: 'gpt-5.6-sol' },
+          reviewLoopReviewerEfforts: { codex: 'high', claude: 'xhigh', antigravity: 'low' },
+          sourceTaskId: 'task-src-effort',
+        }}),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta);
+      // codex takes a config pair; claude and agy take --effort. The model pin
+      // and the effort ride the SAME command line when both are set.
+      expect(prompt).toMatch(/codex --model gpt-5\.6-sol -c model_reasoning_effort=high/);
+      expect(prompt).toMatch(/claude --effort xhigh/);
+      // `antigravity` names no executable — the invocation must say `agy`.
+      expect(prompt).toMatch(/agy --effort low/);
+      expect(prompt).not.toMatch(/antigravity --effort/);
+    });
+
+    it('names a pinned local-LLM effort as an /api/code-review/local body key', () => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: {
+          reviewLoopFollowUp: true,
+          reviewLoopPRUrl: 'https://github.com/o/r/pull/9',
+          reviewLoopPRBranch: 'b',
+          reviewLoopPRNumber: 9,
+          reviewLoopReviewers: ['ollama'],
+          reviewLoopReviewerEfforts: { ollama: 'high' },
+          sourceTaskId: 'task-src-local-effort',
+        }}),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta);
+      expect(prompt).toContain('"effort": "high"');
+      // The effort has no slashdo suffix, so it must NOT leak into the flag string.
+      expect(prompt).not.toMatch(/--review-with[^\n]*effort/);
+    });
+
     it('spells out per-reviewer ~max round caps in the follow-up loop instructions', () => {
       const prompt = buildLightContextPrompt(
         makeTask({ metadata: {
@@ -2128,6 +2171,35 @@ describe('buildAgentPrompt — slashdo prompt-size controls', () => {
     warn.mockRestore();
   });
 
+  // The workflow drives its OWN review loop, so an effort pinned on the task has
+  // no other route to the reviewer CLI it spawns — `--review-with` carries a
+  // `[<model>]` bracket but has no effort suffix.
+  it('states a pinned reviewer effort in the slashdo section', async () => {
+    const prompt = await buildAgentPrompt(
+      slashdoTask({ reviewers: ['codex'], reviewerEfforts: { codex: 'high' } }),
+      {}, '/r', null, isTruthyMeta,
+      { providerType: 'cli', providerId: 'codex' });
+    expect(prompt).toContain('`codex -c model_reasoning_effort=high`');
+  });
+
+  it('names only the reviewers this run actually resolved', async () => {
+    // A stale pin for a reviewer that isn't in the list (set on another task, or
+    // left behind by the Code Review Defaults) must not tell the agent to pass a
+    // flag to a CLI it never invokes.
+    const prompt = await buildAgentPrompt(
+      slashdoTask({ reviewers: ['codex'], reviewerEfforts: { codex: 'high', claude: 'xhigh' } }),
+      {}, '/r', null, isTruthyMeta,
+      { providerType: 'cli', providerId: 'codex' });
+    expect(prompt).toContain('`codex -c model_reasoning_effort=high`');
+    expect(prompt).not.toContain('--effort xhigh');
+  });
+
+  it('adds no effort sentence when no reviewer pins one', async () => {
+    const prompt = await buildAgentPrompt(
+      slashdoTask({ reviewers: ['codex'] }), {}, '/r', null, isTruthyMeta,
+      { providerType: 'cli', providerId: 'codex' });
+    expect(prompt).not.toContain('pinned reasoning effort');
+  });
   describe('reviewer-variant pruning', () => {
     const skipArg = () => vi.mocked(loadSlashdoFile).mock.calls.at(-1)[1].skipIncludes;
 

@@ -61,6 +61,15 @@ describe('codeReview helpers', () => {
   })
 
   describe('pickCodeReviewDefaults', () => {
+    // Every effort-capable reviewer reports `null` when nothing is configured;
+    // spread rather than pasted so the roster only has to change in one place.
+    const NO_EFFORTS = {
+      claudeEffort: null,
+      codexEffort: null,
+      antigravityEffort: null,
+      lmstudioEffort: null,
+      ollamaEffort: null,
+    }
     it('returns the hardcoded fallback when settings has no codeReview slice', () => {
       expect(pickCodeReviewDefaults(null)).toEqual({
         reviewers: ['copilot'],
@@ -73,6 +82,7 @@ describe('codeReview helpers', () => {
         ollamaModel: null,
         codexModel: null,
         claudeModel: null,
+        ...NO_EFFORTS,
       })
       expect(pickCodeReviewDefaults({})).toEqual({
         reviewers: ['copilot'],
@@ -85,6 +95,7 @@ describe('codeReview helpers', () => {
         ollamaModel: null,
         codexModel: null,
         claudeModel: null,
+        ...NO_EFFORTS,
       })
     })
 
@@ -150,6 +161,7 @@ describe('codeReview helpers', () => {
         ollamaModel: 'codellama',
         codexModel: 'gpt-5.6-sol',
         claudeModel: 'qwen2.5:7b',
+        ...NO_EFFORTS,
       })
     })
 
@@ -297,9 +309,28 @@ describe('codeReview helpers', () => {
       expect(r.error).toMatch(/Empty diff/)
     })
 
+    it('omits reasoning_effort entirely when no effort is pinned — absent is the only spelling of the model default', async () => {
+      await runLocalCodeReview({ backend: 'ollama', model: 'codellama', diff: 'd' })
+      const body = JSON.parse(global.fetch.mock.calls[0][1].body)
+      expect('reasoning_effort' in body).toBe(false)
+    })
+
+    it('sends a pinned effort as the OpenAI-compatible reasoning_effort field', async () => {
+      const r = await runLocalCodeReview({ backend: 'lmstudio', model: 'm', diff: 'd', effort: 'high' })
+      expect(JSON.parse(global.fetch.mock.calls[0][1].body).reasoning_effort).toBe('high')
+      expect(r.effort).toBe('high')
+    })
+
+    it('drops an effort outside the local ladder rather than letting the backend 400 on it', async () => {
+      // `xhigh`/`ultra` are vendor-CLI tiers; an OpenAI-shaped backend rejects them.
+      const r = await runLocalCodeReview({ backend: 'ollama', model: 'm', diff: 'd', effort: 'ultra' })
+      const body = JSON.parse(global.fetch.mock.calls[0][1].body)
+      expect('reasoning_effort' in body).toBe(false)
+      expect(r.effort).toBeNull()
+    })
     it('posts to the backend chat-completions endpoint and returns the response content', async () => {
       const r = await runLocalCodeReview({ backend: 'ollama', model: 'codellama', diff: 'diff --git a b' })
-      expect(r).toEqual({ ok: true, backend: 'ollama', model: 'codellama', findings: 'No findings.' })
+      expect(r).toEqual({ ok: true, backend: 'ollama', model: 'codellama', effort: null, findings: 'No findings.' })
       expect(global.fetch).toHaveBeenCalledTimes(1)
       const [url, init] = global.fetch.mock.calls[0]
       expect(url).toMatch(/\/v1\/chat\/completions$/)

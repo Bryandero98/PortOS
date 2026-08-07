@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { RotateCcw, AlertCircle } from 'lucide-react';
 import CronInput from '../../../CronInput';
 import { AGENT_OPTIONS, DEFAULT_REVIEW_STOP_MODE, IMPLICIT_PR_COMPLETION, PR_AUTHOR_FILTER_OPTIONS, PR_COMPLETION_OPTIONS, pinnedPrCompletion, prCompletionOption, ISSUE_AUTHOR_FILTER_OPTIONS, ISSUE_AUTHOR_FILTER_TASK_TYPES, SWARM_COUNT_OPTIONS, SWARM_TASK_TYPES } from '../../constants';
@@ -9,7 +9,7 @@ import { FormField } from '../../../ui/FormField';
 import { formatDateTime } from '../../../../utils/formatters';
 import { useCodeReviewDefaults } from '../../../../hooks/useCodeReviewDefaults';
 import useReviewerModelOptions from '../../../../hooks/useReviewerModelOptions';
-import { reviewerModelsFromDefaults } from '../../../../lib/reviewerModels';
+import { reviewerModelsFromDefaults, reviewerEffortsFromDefaults } from '../../../../lib/reviewerModels';
 import ToggleSwitch from '../../../ToggleSwitch';
 import useTaskModelPins from '../../../../hooks/useTaskModelPins';
 import { effectiveModelFor } from '../../../../utils/providers';
@@ -28,6 +28,14 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
   // Resolved model lists for the reviewer table's Model column (the picker itself
   // never fetches — see its `modelOptions` prop).
   const reviewerModelOptions = useReviewerModelOptions();
+  // The install defaults persist per-reviewer models and efforts as `<reviewer>Model`
+  // / `<reviewer>Effort` scalars; the picker takes token-keyed maps. Memoized so a
+  // re-render (every `updating` flip) doesn't re-walk the roster and hand the picker
+  // fresh object identities. Mirrors SlashDoRunDrawer's `seededReview`.
+  const seededPins = useMemo(() => ({
+    models: reviewerModelsFromDefaults(reviewDefaults),
+    efforts: reviewerEffortsFromDefaults(reviewDefaults),
+  }), [reviewDefaults]);
   const [selectedType, setSelectedType] = useState(config.type);
   const [editingPrompt, setEditingPrompt] = useState(false);
   const [promptValue, setPromptValue] = useState(config.prompt || '');
@@ -469,7 +477,8 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
               reviewerMaxRounds={config.taskMetadata?.reviewerMaxRounds ?? reviewDefaults.reviewerMaxRounds}
               // The task type's own pins when it has them, else the install's Code
               // Review Defaults (persisted as `<reviewer>Model` scalars).
-              reviewerModels={config.taskMetadata?.reviewerModels ?? reviewerModelsFromDefaults(reviewDefaults)}
+              reviewerModels={config.taskMetadata?.reviewerModels ?? seededPins.models}
+              reviewerEfforts={config.taskMetadata?.reviewerEfforts ?? seededPins.efforts}
               modelOptions={reviewerModelOptions}
               installed={reviewDefaults.installed}
               stopMode={config.taskMetadata?.reviewStopMode || reviewDefaults.stopMode || DEFAULT_REVIEW_STOP_MODE}
@@ -477,11 +486,11 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
                 ? (config.taskMetadata?.reviewerApplies === true || config.taskMetadata?.reviewerApplies === 'true')
                 : reviewDefaults.reviewerApplies}
               disabled={updating}
-              onChange={({ reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels, stopMode, reviewerApplies }) => {
+              onChange={({ reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels, reviewerEfforts, stopMode, reviewerApplies }) => {
                 // Drop the legacy single `reviewer` key so storage converges on `reviewers`.
                 const { reviewer: _reviewer, ...rest } = config.taskMetadata || {};
                 onUpdate(taskType, {
-                  taskMetadata: { ...rest, reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels, reviewStopMode: stopMode, reviewerApplies }
+                  taskMetadata: { ...rest, reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels, reviewerEfforts, reviewStopMode: stopMode, reviewerApplies }
                 });
               }}
             />

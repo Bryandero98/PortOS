@@ -4,7 +4,7 @@ import toast from '../ui/Toast';
 import * as api from '../../services/api';
 import ReviewerPicker from '../cos/ReviewerPicker';
 import useReviewerModelOptions from '../../hooks/useReviewerModelOptions';
-import { reviewerModelsFromDefaults, reviewerModelsToDefaults } from '../../lib/reviewerModels';
+import { reviewerModelsFromDefaults, reviewerModelsToDefaults, reviewerEffortsFromDefaults, reviewerEffortsToDefaults } from '../../lib/reviewerModels';
 import {
   DEFAULT_REVIEWERS,
   DEFAULT_REVIEW_STOP_MODE,
@@ -24,6 +24,7 @@ export default function CodeReviewDefaultsPanel() {
   const [optionalReviewers, setOptionalReviewers] = useState([]);
   const [reviewerMaxRounds, setReviewerMaxRounds] = useState({});
   const [reviewerModels, setReviewerModels] = useState({});
+  const [reviewerEfforts, setReviewerEfforts] = useState({});
   const [stopMode, setStopMode] = useState(DEFAULT_REVIEW_STOP_MODE);
   const [reviewerApplies, setReviewerApplies] = useState(false);
   const [installed, setInstalled] = useState({});
@@ -43,6 +44,7 @@ export default function CodeReviewDefaultsPanel() {
             ? defaults.reviewerMaxRounds
             : {});
           setReviewerModels(reviewerModelsFromDefaults(defaults));
+          setReviewerEfforts(reviewerEffortsFromDefaults(defaults));
           setStopMode(defaults.stopMode || DEFAULT_REVIEW_STOP_MODE);
           setReviewerApplies(defaults.reviewerApplies === true);
           setInstalled(defaults.installed && typeof defaults.installed === 'object' && !Array.isArray(defaults.installed) ? defaults.installed : {});
@@ -62,6 +64,7 @@ export default function CodeReviewDefaultsPanel() {
       stopMode,
       reviewerApplies,
       ...reviewerModelsToDefaults(reviewerModels),
+      ...reviewerEffortsToDefaults(reviewerEfforts),
     };
     const ok = await api.updateSettings({ codeReview: payload }, { silent: true })
       .then(() => true)
@@ -90,17 +93,19 @@ export default function CodeReviewDefaultsPanel() {
             optionalReviewers={optionalReviewers}
             reviewerMaxRounds={reviewerMaxRounds}
             reviewerModels={reviewerModels}
+            reviewerEfforts={reviewerEfforts}
             modelOptions={modelOptions}
             installed={installed}
             stopMode={stopMode}
             reviewerApplies={reviewerApplies}
             disabled={saving}
-            onChange={({ reviewers: r, usernames: u, optionalReviewers: o, reviewerMaxRounds: m, reviewerModels: dm, stopMode: s, reviewerApplies: a }) => {
+            onChange={({ reviewers: r, usernames: u, optionalReviewers: o, reviewerMaxRounds: m, reviewerModels: dm, reviewerEfforts: de, stopMode: s, reviewerApplies: a }) => {
               setReviewers(r);
               setUsernames(u);
               setOptionalReviewers(o);
               setReviewerMaxRounds(m);
               setReviewerModels(dm);
+              setReviewerEfforts(de);
               setStopMode(s);
               setReviewerApplies(a);
             }}
