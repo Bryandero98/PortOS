@@ -36,6 +36,7 @@ import {
   isKimiProvider,
   isCodexProvider,
   isCursorCommand,
+  supportsModelRefresh,
   isAntigravityProvider,
   effortLevelsForProvider,
   resolveCliEffort,
@@ -732,7 +733,40 @@ describe('isKimiProvider (mirror of server providerModels)', () => {
   });
 });
 
-describe('isCursorCommand (mirror of server lib/providerModels.js)', () => {
+describe('supportsModelRefresh', () => {
+  // Guards the AI Providers page's "Refresh Models" button. Lived as a
+  // module-local in AIProviders.jsx with zero coverage until it moved here.
+  it('hides the button for cursor — no server-side fetcher exists yet', () => {
+    expect(supportsModelRefresh({ id: 'cursor-cli', type: 'cli', command: 'cursor-agent' })).toBe(false);
+    // Path-configured cursor must be hidden too, or the button 404s.
+    expect(supportsModelRefresh({ id: 'custom', type: 'cli', command: '/Users/x/.local/bin/cursor-agent' })).toBe(false);
+  });
+
+  it('hides the button for the TUI variant via the generic TUI gate', () => {
+    expect(supportsModelRefresh({ id: 'cursor-tui', type: 'tui', command: 'cursor-agent' })).toBe(false);
+  });
+
+  it('keeps hiding it for gemini/grok, whose model config is CLI-local', () => {
+    expect(supportsModelRefresh({ id: 'grok-cli', type: 'cli', command: 'grok' })).toBe(false);
+    expect(supportsModelRefresh({ id: 'gemini-cli', type: 'cli', command: 'gemini' })).toBe(false);
+  });
+
+  it('still offers it for the providers the server CAN fetch for', () => {
+    // Ollama-backed and antigravity are checked BEFORE the TUI gate, so their
+    // TUI variants must still refresh — the ordering is the load-bearing part.
+    expect(supportsModelRefresh({ id: 'claude-ollama-tui', type: 'tui', ollamaBacked: true })).toBe(true);
+    expect(supportsModelRefresh({ id: 'antigravity-tui', type: 'tui', command: 'agy' })).toBe(true);
+    expect(supportsModelRefresh({ id: 'claude-code', type: 'cli', command: 'claude' })).toBe(true);
+    expect(supportsModelRefresh({ id: 'lmstudio', type: 'api', endpoint: 'http://localhost:1234/v1' })).toBe(true);
+  });
+
+  it('does not throw on a nullish provider', () => {
+    expect(() => supportsModelRefresh(null)).not.toThrow();
+    expect(() => supportsModelRefresh(undefined)).not.toThrow();
+  });
+});
+
+describe('isCursorCommand (mirror of server lib/cursor.js)', () => {
   it('matches the agent binary bare, by path, and with a Windows .exe', () => {
     expect(isCursorCommand('cursor-agent')).toBe(true);
     expect(isCursorCommand('/Users/x/.local/bin/cursor-agent')).toBe(true);

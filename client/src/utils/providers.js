@@ -125,6 +125,45 @@ export const isAntigravityProvider = (provider) => {
  */
 export const isCursorCommand = (command) => commandBasename(command) === 'cursor-agent';
 
+/**
+ * Whether the AI Providers page should offer a "Refresh Models" button for this
+ * provider — i.e. whether the server has a model fetcher that can answer for it.
+ *
+ * Lives here rather than inside `AIProviders.jsx` so it is unit-testable: as a
+ * module-local in the page it had no coverage at all, and deleting a clause left
+ * the suite green while the button came back and error-toasted on every click.
+ *
+ * MIRRORS the server dispatch in `_refreshCLIProviderModels`
+ * (server/lib/aiToolkit/providers.js) — a provider the server can't fetch for
+ * must return false here, or the button 404s. Keep the two in lockstep.
+ * @param {{type?:string, command?:string, id?:string, name?:string, endpoint?:string}|null|undefined} provider
+ * @returns {boolean}
+ */
+export const supportsModelRefresh = (provider) => {
+  // Claude Ollama (ollama-backed claude CLI/TUI) refreshes its model list from
+  // the local Ollama daemon — including the TUI variant, which the server
+  // refreshes via the type==='tui' && ollamaBacked branch. Check this before
+  // the generic TUI gate so the TUI variant's Refresh Models button shows.
+  if (isOllamaBackedProvider(provider)) return true;
+  // Antigravity (`agy`) exposes a per-session `--model` flag and an
+  // `agy models` catalog, so BOTH its CLI and TUI providers refresh (the
+  // server has a type==='tui' branch for it) — checked before the generic
+  // TUI gate, same as Claude Ollama above.
+  if (isAntigravityProvider(provider)) return true;
+  if (isTuiProvider(provider)) return false;
+  // Gemini/Grok Build CLIs use their own local model configuration (no PortOS
+  // model list to refresh — same as the configured-default sentinel).
+  if (provider?.type === 'cli' && (provider.command === 'gemini' || provider.command === 'grok')) return false;
+  // Cursor is hidden for the OPPOSITE reason, so it gets its own clause rather
+  // than joining the two above: `cursor-agent models` does print an
+  // authoritative per-account catalog, there just isn't a server-side fetcher
+  // for it yet, so the button could only ever produce an error toast. This
+  // clause is temporary where theirs are permanent.
+  if (provider?.type === 'cli' && isCursorCommand(provider.command)) return false;
+  // All other providers support refresh (API and CLI)
+  return true;
+};
+
 export const knownProviderContextWindow = (provider) => {
   if (!isProcessProvider(provider)) return null;
   const id = String(provider?.id || '').toLowerCase();

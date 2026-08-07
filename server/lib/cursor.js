@@ -64,11 +64,17 @@ export function isCursorCommand(command) {
 
 // `--print` (`-p`) puts cursor-agent in non-interactive print mode.
 const PRINT_FLAGS = ['--print', '-p'];
-// Approval/trust postures. `--force`/`-f`/`--yolo` run everything unprompted and
-// also satisfy the workspace-trust gate; `--auto-review` is the server-classifier
-// middle ground; `--trust` clears trust only. Any one present means the user
-// pinned their own posture — don't add another.
-const APPROVAL_FLAGS = ['--force', '-f', '--yolo', '--auto-review', '--trust'];
+// APPROVAL postures — flags that decide what happens when a tool call needs
+// permission. `--force`/`-f`/`--yolo` run everything unprompted; `--auto-review`
+// is the server-classifier middle ground. Any one present means the user pinned
+// their own posture, so don't add another.
+//
+// `--trust` is deliberately NOT in this list. It clears the workspace-trust gate
+// and nothing else, so treating it as an approval posture would suppress
+// `--force` and leave an unattended run to stall on the first tool prompt with
+// nobody to answer it — burning the full provider timeout to produce nothing.
+// A user who pins `--trust` still gets `--force` added, which is a superset of it.
+const APPROVAL_FLAGS = ['--force', '-f', '--yolo', '--auto-review'];
 
 /**
  * Build the headless (one-shot) argv for the Cursor Agent CLI. Ensures, when not

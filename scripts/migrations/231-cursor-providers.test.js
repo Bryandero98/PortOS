@@ -76,28 +76,32 @@ describe('migration 231 — Cursor providers', () => {
     expect(out.providers['cursor-tui']).toBeDefined();
   });
 
-  it('deep-copies shipped arrays/objects so mutating the install cannot corrupt the frozen defaults', async () => {
+  // Replaces a pair of "deep-copy isolation" tests that could not fail: they
+  // mutated a value re-parsed from disk, which has no reference relationship to
+  // the module-level CURSOR_MODELS, so `structuredClone` could be deleted
+  // outright and they would still pass. What is actually worth pinning is the
+  // frozen payload this migration installs — it is the historical record an
+  // upgraded install receives, and it must match what a fresh install seeds.
+  it('installs the exact frozen model catalog and tier pointers', () => {
     writeJson(providersPath, { providers: {} });
-    await migration.up({ rootDir });
-    const first = readJson(providersPath);
-    first.providers['cursor-cli'].models.push('mutated');
-
-    // A second install run must still ship the pristine model list.
-    const rootDir2 = mkdtempSync(join(tmpdir(), 'migration-231-b-'));
-    mkdirSync(join(rootDir2, 'data'), { recursive: true });
-    const providersPath2 = join(rootDir2, 'data/providers.json');
-    writeJson(providersPath2, { providers: {} });
-    await migration.up({ rootDir: rootDir2 });
-    expect(readJson(providersPath2).providers['cursor-cli'].models).not.toContain('mutated');
-    rmSync(rootDir2, { recursive: true, force: true });
-  });
-
-  it('gives the CLI and TUI entries independent model arrays (they share one source list)', async () => {
-    writeJson(providersPath, { providers: {} });
-    await migration.up({ rootDir });
-    const out = readJson(providersPath);
-    out.providers['cursor-cli'].models.push('leaked');
-    expect(out.providers['cursor-tui'].models).not.toContain('leaked');
+    return migration.up({ rootDir }).then(() => {
+      const out = readJson(providersPath);
+      for (const id of ['cursor-cli', 'cursor-tui']) {
+        const p = out.providers[id];
+        expect(p.defaultModel).toBe('auto');
+        expect(p.lightModel).toBe('composer-2.5');
+        expect(p.mediumModel).toBe('claude-sonnet-5-thinking-high');
+        expect(p.heavyModel).toBe('claude-opus-5-thinking-high');
+        expect(p.models).toHaveLength(27);
+        // Every tier pointer must be selectable, or the picker renders blank.
+        for (const tier of [p.defaultModel, p.lightModel, p.mediumModel, p.heavyModel]) {
+          expect(p.models, `${id}: ${tier} missing from models`).toContain(tier);
+        }
+      }
+      // Both entries are built from one shared CURSOR_MODELS constant — they must
+      // ship the same catalog, or a user's CLI and TUI offer different models.
+      expect(out.providers['cursor-cli'].models).toEqual(out.providers['cursor-tui'].models);
+    });
   });
 
   it('is idempotent — a second run makes no changes', async () => {

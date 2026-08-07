@@ -42,10 +42,17 @@ describe('ensureCursorHeadlessArgs', () => {
     expect(ensureCursorHeadlessArgs(['-p'], null)).toEqual(['-p', '--force']);
   });
 
-  it('respects any user-pinned trust/approval posture instead of adding --force', () => {
-    for (const flag of ['--force', '-f', '--yolo', '--auto-review', '--trust']) {
+  it('respects any user-pinned APPROVAL posture instead of adding --force', () => {
+    for (const flag of ['--force', '-f', '--yolo', '--auto-review']) {
       expect(ensureCursorHeadlessArgs(['--print', flag], null)).toEqual(['--print', flag]);
     }
+  });
+
+  // `--trust` only clears the workspace-trust gate — it is NOT an approval
+  // posture. Treating it as one would suppress `--force` and leave an unattended
+  // run stalled on the first tool prompt until the provider timeout expires.
+  it('still adds --force when the user pinned only --trust', () => {
+    expect(ensureCursorHeadlessArgs(['--print', '--trust'], null)).toEqual(['--print', '--trust', '--force']);
   });
 
   it('respects a joined posture flag (--force=true style)', () => {
@@ -76,10 +83,14 @@ describe('ensureCursorTuiArgs', () => {
     expect(ensureCursorTuiArgs([])).toEqual(['--force']);
   });
 
-  it('leaves a user-pinned posture alone', () => {
-    for (const flag of ['--force', '-f', '--yolo', '--auto-review', '--trust']) {
+  it('leaves a user-pinned approval posture alone', () => {
+    for (const flag of ['--force', '-f', '--yolo', '--auto-review']) {
       expect(ensureCursorTuiArgs([flag])).toEqual([flag]);
     }
+  });
+
+  it('still adds --force when the user pinned only --trust (trust is not approval)', () => {
+    expect(ensureCursorTuiArgs(['--trust'])).toEqual(['--trust', '--force']);
   });
 
   it('does not mutate the caller-supplied args array and is idempotent', () => {

@@ -225,11 +225,14 @@ function shellHasLiveChild(shellPid) {
 function appendModelArgs(args, model, command, provider) {
   const effectiveModel = resolveCliModel(model);
   if (!effectiveModel) return args;
-  // OpenCode TUI launches with `opencode --model ollama/<id>` (the top-level
-  // flag preselects the model). Respect a user-baked --model/-m pin (mirrors
-  // buildTuiInvocation/buildCliArgs) rather than appending a second flag that
-  // overrides it.
-  if (isOpencodeCommand(command) && hasModelFlag(args)) return args;
+  // Respect a user-baked --model/-m pin for EVERY command rather than appending
+  // a second flag that overrides it — the same gate `buildTuiInvocation` and
+  // `buildCliArgs` apply, and the documented convention repo-wide ("a baked pin
+  // wins"). This used to be scoped to opencode alone, so a pinned claude/codex —
+  // and now cursor — provider spawned `--model <pin> --model <ui-choice>`, where
+  // last-flag-wins silently discarded the user's pin (or the CLI rejected the
+  // duplicate outright).
+  if (hasModelFlag(args)) return args;
   // Antigravity never reaches here: buildTuiSpawnConfig resolves its model and
   // effort together up front (agy validates the pair) — see antigravity.js.
 

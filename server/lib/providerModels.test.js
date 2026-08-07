@@ -741,11 +741,14 @@ describe('providerModels', () => {
 
     it('maps a bare Claude id on a Bedrock box', () => {
       const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
-      withBedrock(() => {
-        expect(resolveInjectedTuiModel('claude-opus-4-8', { id: 'claude-code-tui' }, 'claude'))
-          .toBe('global.anthropic.claude-opus-4-8');
-      });
-      spy.mockRestore();
+      try {
+        withBedrock(() => {
+          expect(resolveInjectedTuiModel('claude-opus-4-8', { id: 'claude-code-tui' }, 'claude'))
+            .toBe('global.anthropic.claude-opus-4-8');
+        });
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it('namespaces an Ollama id for opencode and never Bedrock-maps it', () => {
@@ -774,16 +777,25 @@ describe('providerModels', () => {
           .map((p) => p.command),
       )];
       expect(commands.length).toBeGreaterThan(1);
+      // Filter with the SAME predicate the helper gates on, not an exact-string
+      // `!== 'claude'` — a seed that ever ships a pathed `/opt/homebrew/bin/claude`
+      // TUI command would otherwise fail this spuriously instead of flagging a
+      // real regression.
+      const nonClaude = commands.filter((c) => !isClaudeCommand(c));
+      expect(nonClaude.length).toBeGreaterThan(0);
       const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
-      withBedrock(() => {
-        for (const command of commands.filter((c) => c !== 'claude')) {
-          expect(
-            resolveInjectedTuiModel('claude-opus-5-thinking-high', { id: `${command}-tui` }, command),
-            `${command} must not have its model id Bedrock-rewritten`,
-          ).toBe('claude-opus-5-thinking-high');
-        }
-      });
-      spy.mockRestore();
+      try {
+        withBedrock(() => {
+          for (const command of nonClaude) {
+            expect(
+              resolveInjectedTuiModel('claude-opus-5-thinking-high', { id: `${command}-tui` }, command),
+              `${command} must not have its model id Bedrock-rewritten`,
+            ).toBe('claude-opus-5-thinking-high');
+          }
+        });
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 

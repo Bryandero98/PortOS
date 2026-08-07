@@ -144,15 +144,17 @@ vi.mock('../lib/providerModels.js', async (importOriginal) => ({
   // Mirror the real behaviour: pass through the model string, return null for
   // the codex-configured-default sentinel or null/undefined input.
   resolveCliModel: vi.fn((m) => (m === 'codex-configured-default' || !m) ? null : m),
-  // Bedrock map is a no-op off Bedrock — mirror that pass-through here (the
-  // mapper itself is unit-tested in providerModels.test.js).
-  resolveBedrockCliModel: vi.fn((m) => m),
+  // NOTE: `appendModelArgs` calls `resolveInjectedTuiModel`, which is pulled in
+  // REAL via importOriginal above and calls `resolveBedrockCliModel` /
+  // `prefixOpencodeModel` as module-INTERNAL references — a vi.mock override of
+  // those two names cannot intercept an internal call, so stubbing them here
+  // would be dead weight that reads as protection. Instead the suite pins the
+  // one input the real mapper keys on (`CLAUDE_CODE_USE_BEDROCK`, cleared in
+  // beforeEach below), so these assertions are deterministic regardless of the
+  // ambient env on a developer's Bedrock box or a CI runner.
   // Mirror the real opencode-command basename match (fully unit-tested in
   // providerModels.test.js).
   isOpencodeCommand: vi.fn((c) => typeof c === 'string' && c.split(/[\\/]/).pop().toLowerCase().replace(/\.exe$/, '') === 'opencode'),
-  // Mirror the real ollama/ namespacing for opencode providers (fully unit-
-  // tested in providerModels.test.js).
-  prefixOpencodeModel: vi.fn((p, m) => (typeof p?.command === 'string' && p.command.split(/[\\/]/).pop().toLowerCase().replace(/\.exe$/, '') === 'opencode' && p?.ollamaBacked === true && m && !String(m).startsWith('ollama/')) ? `ollama/${m}` : m),
   // Mirror hasModelFlag (real impl unit-tested in providerModels.test.js).
   hasModelFlag: vi.fn((a) => Array.isArray(a) && a.some((x) => x === '--model' || x === '-m' || (typeof x === 'string' && (x.startsWith('--model=') || x.startsWith('-m=')))))
 }));
@@ -203,6 +205,62 @@ import { MAX_RUNTIME_WRAP_UP_GRACE_MS } from '../lib/tuiHandshake.js';
 import { markHostShuttingDown, resetHostShutdownFlagForTests } from '../lib/hostShutdown.js';
 
 describe('agent TUI spawning', () => {
+  // `buildTuiSpawnConfig` → `appendModelArgs` → the REAL `resolveInjectedTuiModel`,
+  // whose Bedrock arm reads process.env directly (see the vi.mock note above on why
+  // stubbing the mapper can't intercept that internal call). Pin the var here so a
+  // developer's Bedrock box — or a CI runner that exports it — can't flip these
+  // assertions; the tests that WANT Bedrock set it explicitly.
+  const bedrockBefore = process.env.CLAUDE_CODE_USE_BEDROCK;
+  beforeEach(() => { delete process.env.CLAUDE_CODE_USE_BEDROCK; });
+  afterEach(() => {
+    if (bedrockBefore === undefined) delete process.env.CLAUDE_CODE_USE_BEDROCK;
+    else process.env.CLAUDE_CODE_USE_BEDROCK = bedrockBefore;
+  });
+
+  // Regression guard for the drift this path actually shipped: `appendModelArgs`
+  // was a second, open-coded copy of the model-injection ladder, so cursor's
+  // Bedrock exemption landed only in `buildTuiInvocation` and a cursor CoS agent
+  // on a Bedrock box launched with a rewritten, unroutable model id. Both copies
+  // now delegate to `resolveInjectedTuiModel`; re-inlining the mapper here would
+  // break this test.
+  it('does not Bedrock-map a cursor TUI model id that merely contains "claude"', () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = '1';
+    const config = buildTuiSpawnConfig({
+      id: 'cursor-tui',
+      type: 'tui',
+      command: 'cursor-agent',
+      args: ['--force'],
+    }, 'claude-opus-5-thinking-high');
+    expect(config.args).toEqual(['--force', '--model', 'claude-opus-5-thinking-high']);
+    expect(config.args.join(' ')).not.toContain('anthropic.');
+  });
+
+  it('still Bedrock-maps a claude TUI model id on a Bedrock box', () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = '1';
+    const config = buildTuiSpawnConfig({
+      id: 'claude-code-tui',
+      type: 'tui',
+      command: 'claude',
+      args: ['--dangerously-skip-permissions'],
+    }, 'claude-opus-4-8');
+    expect(config.args).toContain('global.anthropic.claude-opus-4-8');
+  });
+
+  // A user-baked --model pin used to be honored only for opencode here, so a
+  // pinned claude/codex/cursor TUI spawned `--model <pin> --model <ui-choice>`
+  // and last-flag-wins silently discarded the pin.
+  it('honors a user-baked --model pin instead of appending a second flag', () => {
+    const config = buildTuiSpawnConfig({
+      id: 'cursor-tui',
+      type: 'tui',
+      command: 'cursor-agent',
+      args: ['--force', '--model', 'composer-2.5'],
+    }, 'auto');
+    expect(config.args.filter((a) => a === '--model')).toHaveLength(1);
+    expect(config.args).toContain('composer-2.5');
+    expect(config.args).not.toContain('auto');
+  });
+
   it('builds a codex TUI command without a model flag for the configured-default sentinel', () => {
     const config = buildTuiSpawnConfig({
       id: 'codex-tui',
