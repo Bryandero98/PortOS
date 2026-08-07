@@ -126,6 +126,20 @@ export const isAntigravityProvider = (provider) => {
 export const isCursorCommand = (command) => commandBasename(command) === 'cursor-agent';
 
 /**
+ * True when a command points at the Antigravity binary. MIRROR of
+ * `isAntigravityCommand` in server/lib/aiToolkit/internal/antigravity.js — keep
+ * in lockstep. Distinct from {@link isAntigravityProvider}, which also matches
+ * the shipped provider IDs: the server's model-refresh dispatch tests the
+ * COMMAND alone on its TUI arm, so mirroring that needs the narrower predicate.
+ * @param {string|null|undefined} command
+ * @returns {boolean}
+ */
+export const isAntigravityCommand = (command) => {
+  const base = commandBasename(command);
+  return base === 'agy' || base === 'antigravity';
+};
+
+/**
  * Whether the AI Providers page should offer a "Refresh Models" button for this
  * provider — i.e. whether the server has a model fetcher that can answer for it.
  *
@@ -140,34 +154,40 @@ export const isCursorCommand = (command) => commandBasename(command) === 'cursor
  * @returns {boolean}
  */
 export const supportsModelRefresh = (provider) => {
-  // Claude Ollama (ollama-backed claude CLI/TUI) refreshes its model list from
-  // the local Ollama daemon — including the TUI variant, which the server
-  // refreshes via the type==='tui' && ollamaBacked branch. Check this before
-  // the generic TUI gate so the TUI variant's Refresh Models button shows.
-  if (isOllamaBackedProvider(provider)) return true;
-  // Antigravity (`agy`) exposes a per-session `--model` flag and an
-  // `agy models` catalog, so BOTH its CLI and TUI providers refresh (the
-  // server has a type==='tui' branch for it) — checked before the generic
-  // TUI gate, same as Claude Ollama above.
-  if (isAntigravityProvider(provider)) return true;
-  // Every other TUI's model is fixed by the CLI/config — no branch server-side.
-  if (isTuiProvider(provider)) return false;
-  // API providers all route to _refreshAPIProviderModels.
-  if (isApiProvider(provider)) return true;
-  // CLI: the server's `_refreshCLIProviderModels` has exactly two remaining
-  // fetchers past the ollama/antigravity branches above — Anthropic and Gemini —
-  // and THROWS for everything else. So this is an allowlist, not a deny-list.
-  //
-  // It used to be written as a deny-list (`command === 'gemini' || 'grok'`,
-  // plus cursor), which reported true for `codex` and `kimi-cli` — two providers
-  // that ship in the seed and whose Refresh button therefore 404'd on every
-  // click. It also matched on the exact command string, so a path-configured
-  // `/opt/homebrew/bin/gemini` fell through to true and 404'd too. Matching the
-  // server's own name-or-command test (basename-tolerant) fixes both.
+  // Mirrors `refreshProviderModels`, which routes on `provider.type` FIRST and
+  // only then applies per-vendor tests — so this follows the same two-level
+  // shape. It is an ALLOWLIST: the server throws for any CLI it has no fetcher
+  // for. Written as a deny-list previously, it returned true for `codex` and
+  // `kimi-cli` (both shipped), whose Refresh button 404'd on every click.
   const name = String(provider?.name || '').toLowerCase();
-  const command = commandBasename(provider?.command);
-  return name.includes('claude') || command === 'claude'
-    || name.includes('gemini') || command === 'gemini';
+  const command = provider?.command;
+
+  // Every API provider routes to _refreshAPIProviderModels.
+  if (isApiProvider(provider)) return true;
+
+  if (isTuiProvider(provider)) {
+    // A TUI's model is normally fixed by the CLI/config; the server carries
+    // exactly two exceptions, and — unlike its CLI arm — neither consults the
+    // provider NAME, so this must not either.
+    return isOllamaBackedProvider(provider)
+      || provider?.id === 'antigravity-tui'
+      || isAntigravityCommand(command);
+  }
+
+  if (isCliProvider(provider)) {
+    if (isOllamaBackedProvider(provider)) return true;
+    if (name.includes('antigravity') || isAntigravityCommand(command)) return true;
+    // Deliberately the RAW command string, not a basename: the server's claude
+    // and gemini arms compare `provider.command === 'claude'` exactly. Matching
+    // on basename here would re-open the same 404 in a new place — a renamed,
+    // path-configured `/opt/homebrew/bin/claude` would show a button the server
+    // still refuses. Widening BOTH sides is tracked separately; until then the
+    // mirror stays faithful rather than optimistic.
+    return name.includes('claude') || command === 'claude'
+      || name.includes('gemini') || command === 'gemini';
+  }
+
+  return false;
 };
 
 export const knownProviderContextWindow = (provider) => {

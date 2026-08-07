@@ -36,6 +36,7 @@ import {
   isKimiProvider,
   isCodexProvider,
   isCursorCommand,
+  isAntigravityCommand,
   supportsModelRefresh,
   isAntigravityProvider,
   effortLevelsForProvider,
@@ -60,6 +61,7 @@ import {
   seedModelEffort,
 } from './providers.js';
 import { PROVIDER_TYPES as SERVER_PROVIDER_TYPES } from '../../../server/lib/aiToolkit/constants.js';
+import SHIPPED_PROVIDERS from '../../../data.reference/providers.json';
 import {
   effortLevelsForProvider as serverEffortLevelsForProvider,
   isAntigravityProvider as serverIsAntigravityProvider,
@@ -756,12 +758,23 @@ describe('supportsModelRefresh', () => {
     expect(supportsModelRefresh({ id: 'grok-cli', type: 'cli', command: 'grok', name: 'Grok Build CLI' })).toBe(false);
   });
 
-  // Regression: the old clause compared the exact command string, so a
-  // path-configured binary fell through to true and 404'd.
-  it('is basename-tolerant, matching the server test', () => {
-    expect(supportsModelRefresh({ id: 'g', type: 'cli', command: '/opt/homebrew/bin/gemini', name: 'g' })).toBe(true);
-    expect(supportsModelRefresh({ id: 'c', type: 'cli', command: '/opt/homebrew/bin/claude', name: 'c' })).toBe(true);
-    expect(supportsModelRefresh({ id: 'k', type: 'cli', command: '/opt/homebrew/bin/kimi', name: 'k' })).toBe(false);
+  // The server's claude/gemini arms compare the RAW command string, so this
+  // must too — a basename-tolerant client would show a button on a renamed,
+  // path-configured binary that the server still refuses, which is the same
+  // 404 in a new place. (Widening both sides is tracked separately.)
+  it('matches the server on the raw command string, not a basename', () => {
+    expect(supportsModelRefresh({ id: 'c', type: 'cli', command: 'claude', name: 'renamed' })).toBe(true);
+    expect(supportsModelRefresh({ id: 'c', type: 'cli', command: '/opt/homebrew/bin/claude', name: 'renamed' })).toBe(false);
+    // A name carrying the vendor word is the server's other accepted signal.
+    expect(supportsModelRefresh({ id: 'c', type: 'cli', command: '/opt/homebrew/bin/claude', name: 'Claude Code CLI' })).toBe(true);
+  });
+
+  // Antigravity is the one vendor the server matches by NAME on its CLI arm but
+  // NOT on its TUI arm — mirror that asymmetry or the button drifts either way.
+  it('mirrors the antigravity name/command asymmetry between cli and tui', () => {
+    expect(supportsModelRefresh({ id: 'x', type: 'cli', command: '/usr/bin/weird', name: 'Antigravity Nightly' })).toBe(true);
+    expect(supportsModelRefresh({ id: 'x', type: 'tui', command: '/usr/bin/weird', name: 'Antigravity Nightly' })).toBe(false);
+    expect(supportsModelRefresh({ id: 'x', type: 'tui', command: '/opt/bin/agy', name: 'whatever' })).toBe(true);
   });
 
   it('still offers it for the providers the server CAN fetch for', () => {
@@ -777,6 +790,40 @@ describe('supportsModelRefresh', () => {
   it('does not throw on a nullish provider', () => {
     expect(() => supportsModelRefresh(null)).not.toThrow();
     expect(() => supportsModelRefresh(undefined)).not.toThrow();
+  });
+
+  // The real lockstep gate: walk the SHIPPED catalog and compare this predicate
+  // against a transcription of the server's own dispatch. Targeted cases above
+  // can only cover the mismatches someone already thought of; this catches the
+  // next provider added to the seed without a matching client branch, which is
+  // exactly how codex and kimi-cli ended up with a button that 404'd.
+  it('agrees with the server dispatch for every shipped provider', () => {
+    // Transcribed from `refreshProviderModels` + `_refreshCLIProviderModels`
+    // (server/lib/aiToolkit/providers.js). Note the type-routing order and that
+    // the tui arm does NOT consult the provider name.
+    const serverWouldRefresh = (p) => {
+      const name = String(p.name || '').toLowerCase();
+      if (p.type === 'api') return true;
+      if (p.type === 'cli') {
+        if (isOllamaBackedProvider(p)) return true;
+        if (name.includes('claude') || p.command === 'claude') return true;
+        if (name.includes('antigravity') || isAntigravityCommand(p.command)) return true;
+        if (name.includes('gemini') || p.command === 'gemini') return true;
+        return false; // server throws → route 404s
+      }
+      if (p.type === 'tui' && isOllamaBackedProvider(p)) return true;
+      if (p.type === 'tui' && (p.id === 'antigravity-tui' || isAntigravityCommand(p.command))) return true;
+      return false;
+    };
+
+    const providers = Object.values(SHIPPED_PROVIDERS.providers);
+    expect(providers.length).toBeGreaterThan(20);
+    for (const p of providers) {
+      expect(
+        supportsModelRefresh(p),
+        `${p.id}: client and server disagree on model-refresh support`,
+      ).toBe(serverWouldRefresh(p));
+    }
   });
 });
 
