@@ -96,8 +96,14 @@ export function createProvidersRoutes(providerService, options = {}) {
   router.post('/:id/refresh-models', asyncHandler(async (req, res) => {
     const provider = await providerService.refreshProviderModels(req.params.id);
 
+    // `null` now means exactly one thing — no such provider. Every other failure
+    // (probe failed, no fetcher for this type/CLI, missing key, blocked
+    // endpoint) throws from the service with its own status and real message,
+    // which asyncHandler routes straight to the error middleware. The old
+    // "or not an API type" suffix was a guess that covered for those cases and
+    // was wrong for all of them.
     if (!provider) {
-      throw new ServerError('Provider not found or not an API type', { status: 404 });
+      throw new ServerError('Provider not found', { status: 404 });
     }
 
     res.json(provider);

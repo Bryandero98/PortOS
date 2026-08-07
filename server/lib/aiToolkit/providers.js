@@ -15,7 +15,14 @@ import {
   isAntigravityCommand,
   LEGACY_GEMINI_CLI_ID,
   LEGACY_GEMINI_TUI_ID,
+  parseAntigravityModelList,
 } from './internal/antigravity.js';
+import {
+  CURSOR_COMMAND,
+  CURSOR_TUI_ID,
+  isCursorCommand,
+  parseCursorModelList,
+} from './internal/cursor.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_SAMPLE_PATH = join(__dirname, 'defaults/providers.sample.json');
@@ -760,14 +767,60 @@ export function createProviderService(config = {}) {
           // Same exception for the Antigravity TUI: `agy --model` applies to the
           // interactive session too, so its catalog must refresh like the CLI's.
           models = await this._fetchAntigravityModels(provider);
+        } else if (provider.type === 'tui' && (provider.id === CURSOR_TUI_ID || isCursorCommand(provider.command))) {
+          // And for the Cursor TUI: `cursor-agent --model` applies to the
+          // interactive session too — the binary's own `Tip:` line documents
+          // both `--model <id>` and the in-session `/model <id>` — so its
+          // catalog must refresh like the CLI's.
+          // The id test alongside the command one (which the CLI arm below
+          // deliberately does without) carries none of that arm's hazard: it is
+          // an EXACT shipped-id match, not a name substring, so it can only
+          // admit the provider PortOS itself seeds — and if the user repointed
+          // its command at a wrapper, probing that wrapper is the right answer.
+          // Shaped to match the antigravity arm above; both collapse together
+          // when the dispatch becomes a table (#3620).
+          models = await this._fetchCursorModels(provider);
+        } else {
+          // No branch matched — this provider type/shape has no fetcher. Say so,
+          // the same 400 the CLI arm's own fall-through throws. Previously this
+          // fell out as `models === null` and the route rendered it as
+          // `404 Provider not found or not an API type`, which is exactly the
+          // false message the rethrow above set out to stop showing: a plain
+          // `codex-tui`/`grok-tui` provider exists and its type is fine, it just
+          // has no catalog to fetch.
+          const unsupported = new Error(`Model refresh not supported for ${provider.type} provider '${provider.id}'`);
+          unsupported.status = 400;
+          throw unsupported;
         }
       } catch (error) {
         console.error(`Failed to refresh models for ${provider.name}:`, error.message);
-        return null;
+        // RETHROW rather than collapsing to null. `null` means one specific
+        // thing here — "no refreshable branch matched" — and the route turns it
+        // into `404 Provider not found or not an API type`. Folding a fetcher
+        // failure into that same null made the user's toast read "Provider not
+        // found or not an API type" when the provider exists and its type is
+        // fine, burying the actual cause (`'cursor-agent models' failed: …
+        // ENOENT`) in the server log. That defeats the whole point of the
+        // throw-don't-fall-back posture in `_execCliModelList`: it goes to the
+        // trouble of refusing to persist a plausible-looking default precisely
+        // so the user learns WHY the refresh failed.
+        // 502, not 500: the failure is an upstream/vendor probe, not a bug here.
+        // The other caller (localLlm's post-install fan-out) already catches and
+        // logs per provider, so it is unaffected.
+        error.status = error.status || 502;
+        throw error;
       }
 
+      // Belt-and-braces: every branch above returns an array or throws, so this
+      // is unreachable today — but a future fetcher that returns null must not
+      // persist `models: null` over the user's list. Throws rather than
+      // returning null so `null` keeps exactly ONE meaning out of this function:
+      // the provider does not exist. That is what lets the route's 404 say
+      // plainly "Provider not found" instead of guessing at a reason.
       if (models === null) {
-        return null;
+        const unsupported = new Error(`Model refresh returned nothing for provider '${provider.id}'`);
+        unsupported.status = 400;
+        throw unsupported;
       }
 
       const updatedProvider = {
@@ -837,16 +890,51 @@ export function createProviderService(config = {}) {
         return await this._fetchOllamaToolCapableModels(provider);
       }
 
+      // Cursor is keyed on the command BASENAME — path/exe-tolerant like the
+      // antigravity branch, so a binary configured by absolute path still
+      // refreshes rather than falling through to the throw below while the
+      // client's mirrored gate still offers the button. Unlike every vendor
+      // around it there is deliberately NO name test: "cursor" is an ordinary
+      // English word (a DB cursor, a text cursor), so a `name.includes('cursor')`
+      // clause would hijack the refresh for an unrelated provider the user
+      // happened to name "Cursor Notes".
+      //
+      // It sits ABOVE the name-substring branches on purpose, and the order is
+      // load-bearing: those branches match on the DISPLAY NAME, so a cursor
+      // provider a user renamed "Cursor Claude Opus" or "Cursor Antigravity"
+      // would otherwise be routed to _fetchAnthropicModels / _fetchAntigravityModels
+      // and have that vendor's catalog persisted onto it — ids cursor-agent will
+      // reject, written silently because the client (command-keyed) shows the
+      // Refresh button. An exact command match is a stronger identity signal
+      // than a name substring, so it must win. Same reasoning that already puts
+      // the ollama check first.
+      if (isCursorCommand(provider.command)) {
+        return await this._fetchCursorModels(provider);
+      }
+
+      // Antigravity's COMMAND test is hoisted for the same reason, and split from
+      // its name test below to do it. It is path/exe-tolerant (`isAntigravityCommand`,
+      // not `command === 'agy'`) so a provider configured with the absolute binary
+      // path still refreshes; matches the TUI branch in refreshProviderModels.
+      // Left fused below the claude name test, an `agy` provider named
+      // "Antigravity Claude Sonnet 4.6" — the natural name for a second agy
+      // provider, since agy's own catalog carries claude ids — got Anthropic's
+      // static list persisted onto it AND lost the `antigravity-configured-default`
+      // sentinel from `models` while `defaultModel` still pointed at it, which
+      // blanks the model <select> and reads as "unset".
+      if (isAntigravityCommand(provider.command)) {
+        return await this._fetchAntigravityModels(provider);
+      }
+
       if (providerName.includes('claude') || provider.command === 'claude') {
         return await this._fetchAnthropicModels(provider);
       }
 
-      // Path/exe-tolerant (`isAntigravityCommand`, not `command === 'agy'`) so a
-      // provider configured with the absolute binary path still refreshes —
-      // otherwise the client's `isAntigravityProvider` gate offers the Refresh
-      // button and every click falls through to the throw below. Matches the
-      // TUI branch in refreshProviderModels.
-      if (providerName.includes('antigravity') || isAntigravityCommand(provider.command)) {
+      // The NAME tests stay below the command tests above: they are the weaker
+      // signal, so they only get a say once no command has claimed the provider.
+      // `name: 'Claude via Antigravity'` + `command: 'claude'` therefore still
+      // reaches Anthropic, which is the right answer for a claude binary.
+      if (providerName.includes('antigravity')) {
         return await this._fetchAntigravityModels(provider);
       }
 
@@ -854,7 +942,11 @@ export function createProviderService(config = {}) {
         return await this._fetchGeminiModels(provider);
       }
 
-      throw new Error('Model refresh not supported for this CLI provider');
+      // 400, not the rethrow's 502 default: nothing upstream failed — this CLI
+      // simply has no fetcher, which is a bad request, not a bad gateway.
+      const unsupported = new Error('Model refresh not supported for this CLI provider');
+      unsupported.status = 400;
+      throw unsupported;
     },
 
     /**
@@ -862,25 +954,50 @@ export function createProviderService(config = {}) {
      * the authoritative catalog for this user's plan and binary version, which
      * a hardcoded list can only go stale against.
      *
-     * THROWS rather than falling back to `ANTIGRAVITY_MODEL_CATALOG` when the
-     * probe can't run (agy not installed, the service PATH can't resolve it, a
-     * timeout, a non-zero exit) or comes back with nothing parseable. The
-     * shipped catalog is for *seeding and migration* — surfacing it from a
-     * refresh would make a failed probe indistinguishable from a real fetch:
-     * `refreshProviderModels` would persist it and the UI would toast "Models
-     * refreshed", so a user whose PATH can't see agy would pick a model their
-     * plan doesn't have and only find out when the run dies. Throwing makes
-     * `refreshProviderModels` return null → an explicit error toast, and leaves
-     * the existing list untouched (nothing is persisted). Same posture as
-     * `_fetchOllamaToolCapableModels`, and the root CLAUDE.md rule that a
-     * reachable-but-list-failed backend must surface an explicit error rather
-     * than a plausible-looking empty/default result.
+     * Throws rather than falling back to `ANTIGRAVITY_MODEL_CATALOG` on a failed
+     * or unparseable probe — see `_execCliModelList` for why that matters. The
+     * shipped catalog is for *seeding and migration* only.
      *
      * The sentinel is always re-prepended: it is what keeps "use agy's own
      * configured default" selectable after a refresh.
      */
     async _fetchAntigravityModels(provider) {
-      const bin = provider?.command || 'agy';
+      const listed = await this._execCliModelList(provider, 'agy', parseAntigravityModelList);
+      return [ANTIGRAVITY_CONFIGURED_DEFAULT, ...new Set(listed)];
+    },
+
+    /**
+     * Shared scaffolding for every "shell `<bin> models` and parse stdout"
+     * fetcher. Owns the spawn conventions the vendors agree on — the Windows-safe
+     * invocation, the 15s cap, the provider `envVars` merge, closing the child's
+     * stdin, and the two failure messages — so a change to any of them (adding
+     * stderr to the error, reacting to a spawn quirk) is one edit rather than one
+     * per vendor. What differs per vendor is only the default binary and the
+     * parser; a sentinel prepend, if any, belongs to the caller.
+     *
+     * THROWS on a probe that can't run (binary not installed, service PATH can't
+     * resolve it, timeout, non-zero exit) AND on one that returns nothing
+     * parseable — never returns an empty list. That is the load-bearing part:
+     * every caller's alternative would be its shipped seed catalog, and
+     * surfacing that from a refresh would make a failed probe indistinguishable
+     * from a real fetch — `refreshProviderModels` would persist it and the UI
+     * would toast "Models refreshed", so a user whose PATH can't see the binary
+     * would pick a model their plan doesn't have and only find out when the run
+     * dies. `refreshProviderModels` propagates the throw (as a 502) rather than
+     * flattening it to null, so the toast names the actual cause instead of the
+     * route's generic not-found text — and the stored list is left untouched
+     * either way, since nothing is persisted. Same posture as
+     * `_fetchOllamaToolCapableModels`, and the root CLAUDE.md rule that a
+     * reachable-but-list-failed backend must surface an explicit error rather
+     * than a plausible-looking empty/default result.
+     *
+     * @param {object} provider
+     * @param {string} defaultBin - binary to use when the provider pins no command
+     * @param {(stdout: string) => string[]} parse - vendor's stdout → ids parser
+     * @returns {Promise<string[]>} a non-empty id list
+     */
+    async _execCliModelList(provider, defaultBin, parse) {
+      const bin = provider?.command || defaultBin;
       const { command, args } = prepareWindowsSafeSpawn(bin, ['models']);
       const pending = execFileAsync(command, args, {
         timeout: 15000,
@@ -890,21 +1007,45 @@ export function createProviderService(config = {}) {
       // stdin and prints NOTHING until it closes — with execFile's default pipe
       // that's a full 15s hang ending in SIGTERM and an empty catalog. (execFile
       // ignores an `stdio` option, so ending the stream is the way to do it.)
+      // Not every vendor needs it — cursor-agent 2026.08.04 answers in well
+      // under a second either way (measured 848ms with stdin open vs 825ms
+      // closed) — but it costs one FD close and makes the probe immune whether
+      // or not a given binary has the behavior.
       pending.child?.stdin?.end();
       const { stdout } = await pending.catch((err) => {
         throw new Error(`'${bin} models' failed: ${err?.message || 'could not run the binary'}`);
       });
 
-      const listed = (stdout || '')
-        .split(/\r?\n/)
-        .map(line => line.trim())
-        // Drop blanks, banner/status lines, and anything that isn't a bare id.
-        .filter(line => /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(line) && line !== ANTIGRAVITY_CONFIGURED_DEFAULT);
-
+      const listed = parse(stdout);
       if (listed.length === 0) {
         throw new Error(`'${bin} models' returned no model ids`);
       }
-      return [ANTIGRAVITY_CONFIGURED_DEFAULT, ...new Set(listed)];
+      return listed;
+    },
+
+    /**
+     * cursor-agent ships a `models` subcommand that prints the authoritative
+     * catalog for THIS account and binary version — 177 ids at time of writing,
+     * against the 27 hand-curated ones the provider seed ships. Unlike Grok/Kimi
+     * (no catalog subcommand at all, hence their `*-configured-default`
+     * sentinel), cursor can answer for itself, so a refresh asks it rather than
+     * re-serving a list that can only go stale.
+     *
+     * Throws rather than falling back to the shipped 27-id seed on a failed or
+     * unparseable probe — see `_execCliModelList` for why that matters.
+     *
+     * No sentinel is prepended (the one structural difference from the agy
+     * fetcher): cursor exposes a real `auto` id — its own server-side router,
+     * and the binary's default — and `models` lists it first, so "let cursor
+     * choose" survives a refresh as an ordinary catalog entry.
+     *
+     * The full list is persisted as reported, `-fast` priority-compute twins
+     * included. A refresh is an explicit user action and the account catalog is
+     * the authoritative answer; any thinning belongs in the picker, not here, so
+     * the stored list stays faithful to what the binary will actually accept.
+     */
+    async _fetchCursorModels(provider) {
+      return await this._execCliModelList(provider, CURSOR_COMMAND, parseCursorModelList);
     },
 
     async _fetchOllamaToolCapableModels(provider) {
@@ -958,7 +1099,11 @@ export function createProviderService(config = {}) {
       const apiKey = provider.apiKey || process.env.GOOGLE_API_KEY;
 
       if (!apiKey) {
-        throw new Error('Google API key required for model refresh');
+        // 400 for the same reason as the endpoint guard: a missing key is the
+        // user's to fix, not an upstream outage.
+        const missingKey = new Error('Google API key required for model refresh');
+        missingKey.status = 400;
+        throw missingKey;
       }
 
       const response = await fetch(

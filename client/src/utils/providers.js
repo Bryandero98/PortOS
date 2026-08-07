@@ -167,16 +167,27 @@ export const supportsModelRefresh = (provider) => {
 
   if (isTuiProvider(provider)) {
     // A TUI's model is normally fixed by the CLI/config; the server carries
-    // exactly two exceptions, and — unlike its CLI arm — neither consults the
+    // exactly three exceptions, and — unlike its CLI arm — none consults the
     // provider NAME, so this must not either.
     return isOllamaBackedProvider(provider)
       || provider?.id === 'antigravity-tui'
-      || isAntigravityCommand(command);
+      || isAntigravityCommand(command)
+      || provider?.id === 'cursor-tui'
+      || isCursorCommand(command);
   }
 
   if (isCliProvider(provider)) {
     if (isOllamaBackedProvider(provider)) return true;
-    if (name.includes('antigravity') || isAntigravityCommand(command)) return true;
+    // Command-only, matching the server's cursor arm — which deliberately omits
+    // a name test so an unrelated provider named e.g. "Cursor Notes" doesn't
+    // claim a refresh the server would refuse. Kept above the name-substring
+    // tests to mirror the server's own ordering (see `_refreshCLIProviderModels`):
+    // there, a renamed "Cursor Claude Opus" must reach the cursor fetcher rather
+    // than the Anthropic one. Ordering is immaterial to this predicate's boolean
+    // result — every arm here returns true — but the mirror is only readable, and
+    // only stays checkable, if it matches the dispatch it claims to mirror.
+    if (isCursorCommand(command)) return true;
+    if (isAntigravityCommand(command)) return true;
     // Deliberately the RAW command string, not a basename: the server's claude
     // and gemini arms compare `provider.command === 'claude'` exactly. Matching
     // on basename here would re-open the same 404 in a new place — a renamed,
@@ -184,6 +195,7 @@ export const supportsModelRefresh = (provider) => {
     // still refuses. Widening BOTH sides is tracked separately; until then the
     // mirror stays faithful rather than optimistic.
     return name.includes('claude') || command === 'claude'
+      || name.includes('antigravity')
       || name.includes('gemini') || command === 'gemini';
   }
 

@@ -741,13 +741,36 @@ describe('supportsModelRefresh', () => {
   // The contract is a MIRROR of the server's `_refreshCLIProviderModels`
   // dispatch: anything the server throws for must be false here, or the button
   // 404s on every click.
-  it('hides the button for cursor — no server-side fetcher exists yet', () => {
-    expect(supportsModelRefresh({ id: 'cursor-cli', type: 'cli', command: 'cursor-agent', name: 'Cursor Agent CLI' })).toBe(false);
-    expect(supportsModelRefresh({ id: 'custom', type: 'cli', command: '/Users/x/.local/bin/cursor-agent', name: 'Cursor' })).toBe(false);
+  // `_fetchCursorModels` shells `cursor-agent models`, so cursor now refreshes.
+  // Command-keyed on BOTH arms (path- and `.exe`-tolerant), because the server's
+  // cursor branch is — a name test would be wrong in the other direction, see
+  // the "Cursor Notes" case below.
+  it('offers the button for cursor, including a path-configured binary', () => {
+    expect(supportsModelRefresh({ id: 'cursor-cli', type: 'cli', command: 'cursor-agent', name: 'Cursor Agent CLI' })).toBe(true);
+    expect(supportsModelRefresh({ id: 'custom', type: 'cli', command: '/home/x/.local/bin/cursor-agent', name: 'Cursor' })).toBe(true);
   });
 
-  it('hides the button for the TUI variant via the generic TUI gate', () => {
-    expect(supportsModelRefresh({ id: 'cursor-tui', type: 'tui', command: 'cursor-agent', name: 'Cursor Agent TUI' })).toBe(false);
+  it('offers it for the cursor TUI too — `--model` applies to the session', () => {
+    expect(supportsModelRefresh({ id: 'cursor-tui', type: 'tui', command: 'cursor-agent', name: 'Cursor Agent TUI' })).toBe(true);
+    expect(supportsModelRefresh({ id: 'cursor-tui', type: 'tui', command: '/home/x/.local/bin/cursor-agent', name: 'renamed' })).toBe(true);
+  });
+
+  // Pins the `id === '<vendor>-tui'` half of each TUI arm's OR. Every other case
+  // here matches on the COMMAND, so deleting those id clauses left the suite
+  // green while a shipped TUI provider repointed at a wrapper script silently
+  // lost its button (the server's TUI arms still serve it via the same id test).
+  it('offers it for a shipped cursor-tui / antigravity-tui repointed at a wrapper', () => {
+    expect(supportsModelRefresh({ id: 'cursor-tui', type: 'tui', command: '/opt/bin/cursor-wrap', name: 'Cursor Agent TUI' })).toBe(true);
+    expect(supportsModelRefresh({ id: 'antigravity-tui', type: 'tui', command: '/opt/bin/agy-wrap', name: 'Antigravity TUI' })).toBe(true);
+    // …but an unshipped id with an unrelated command still gets nothing.
+    expect(supportsModelRefresh({ id: 'custom-tui', type: 'tui', command: '/opt/bin/cursor-wrap', name: 'Custom' })).toBe(false);
+  });
+
+  it('does not offer it for a provider merely NAMED cursor, or for the GUI binary', () => {
+    // "cursor" is an ordinary English word, and a bare `cursor` is the GUI
+    // editor launcher — neither reaches the server's command-keyed arm.
+    expect(supportsModelRefresh({ id: 'x', type: 'cli', command: 'some-other-binary', name: 'Cursor Notes' })).toBe(false);
+    expect(supportsModelRefresh({ id: 'x', type: 'cli', command: 'cursor', name: 'Cursor' })).toBe(false);
   });
 
   // Regression: these two SHIP in data.reference/providers.json and the old
@@ -775,6 +798,15 @@ describe('supportsModelRefresh', () => {
     expect(supportsModelRefresh({ id: 'x', type: 'cli', command: '/usr/bin/weird', name: 'Antigravity Nightly' })).toBe(true);
     expect(supportsModelRefresh({ id: 'x', type: 'tui', command: '/usr/bin/weird', name: 'Antigravity Nightly' })).toBe(false);
     expect(supportsModelRefresh({ id: 'x', type: 'tui', command: '/opt/bin/agy', name: 'whatever' })).toBe(true);
+  });
+
+  // Pins the COMMAND half of the antigravity CLI test, which the server hoisted
+  // above its name test. Only the NAME half was covered above, so deleting
+  // `isAntigravityCommand(command)` here left the suite green while an
+  // agy-commanded provider under any other name lost a button the server serves.
+  it('offers it for an agy-commanded CLI provider whose name says nothing about it', () => {
+    expect(supportsModelRefresh({ id: 'x', type: 'cli', command: 'agy', name: 'My Coding Agent' })).toBe(true);
+    expect(supportsModelRefresh({ id: 'x', type: 'cli', command: '/opt/homebrew/bin/agy', name: 'My Coding Agent' })).toBe(true);
   });
 
   it('still offers it for the providers the server CAN fetch for', () => {
@@ -806,13 +838,18 @@ describe('supportsModelRefresh', () => {
       if (p.type === 'api') return true;
       if (p.type === 'cli') {
         if (isOllamaBackedProvider(p)) return true;
+        // Command-only, and ABOVE the name tests — the server orders it that way
+        // so a renamed "Cursor Claude Opus" reaches the cursor fetcher.
+        if (isCursorCommand(p.command)) return true;
+        if (isAntigravityCommand(p.command)) return true;
         if (name.includes('claude') || p.command === 'claude') return true;
-        if (name.includes('antigravity') || isAntigravityCommand(p.command)) return true;
+        if (name.includes('antigravity')) return true;
         if (name.includes('gemini') || p.command === 'gemini') return true;
         return false; // server throws → route 404s
       }
       if (p.type === 'tui' && isOllamaBackedProvider(p)) return true;
       if (p.type === 'tui' && (p.id === 'antigravity-tui' || isAntigravityCommand(p.command))) return true;
+      if (p.type === 'tui' && (p.id === 'cursor-tui' || isCursorCommand(p.command))) return true;
       return false;
     };
 

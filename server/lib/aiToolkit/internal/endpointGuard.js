@@ -176,6 +176,13 @@ export function assertSecretEndpoint(endpoint, { hasSecret, allowCustomEndpoint 
   if (!hasSecret) return;
   const { allowed, reason } = evaluateSecretEndpoint(endpoint, { allowCustomEndpoint });
   if (!allowed) {
-    throw new Error(`Blocked outbound API-key request: ${reason}`);
+    // 400, not the caller's 502 default: nothing upstream failed — the endpoint
+    // is misconfigured and the user has to change it (or opt in via
+    // `allowCustomEndpoint`). Reported as BAD_GATEWAY it reads as "the vendor is
+    // down, retry", so the user retries instead of fixing it — and any status
+    // >= 500 also makes errorHandler log a full stack for a plain config error.
+    const blocked = new Error(`Blocked outbound API-key request: ${reason}`);
+    blocked.status = 400;
+    throw blocked;
   }
 }
