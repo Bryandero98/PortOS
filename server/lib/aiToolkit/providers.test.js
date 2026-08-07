@@ -930,6 +930,25 @@ describe('Provider Service', () => {
       expect(after.models).toEqual(stored);
     });
 
+    // Regression: the command-keyed cursor branch must sit ABOVE the
+    // name-substring branches. When it sat below them, a cursor provider the
+    // user renamed "Cursor Claude Opus" matched `name.includes('claude')` first
+    // and had Anthropic's 15 static ids persisted onto it — ids cursor-agent
+    // rejects — written silently, because the client's gate is command-keyed and
+    // showed the Refresh button.
+    it.skipIf(process.platform === 'win32')('routes on the command even when the NAME contains another vendor', async () => {
+      const command = await writeFakeCursor(SAMPLE);
+      for (const name of ['Cursor Claude Opus', 'Cursor Antigravity', 'Cursor Gemini 3.5']) {
+        const p = await providerService.createProvider({
+          name, type: 'cli', command, models: ['auto'], defaultModel: 'auto',
+        });
+        const updated = await providerService.refreshProviderModels(p.id);
+        expect(updated, `${name}: refresh returned null`).not.toBeNull();
+        expect(updated.models, `${name}: got another vendor's catalog`).toContain('gpt-5.3-codex-low');
+        expect(updated.models).not.toContain('claude-opus-5');
+      }
+    });
+
     it('does not hijack an unrelated provider that merely has "cursor" in its name', async () => {
       // The cursor arm is command-keyed on purpose — "cursor" is an ordinary
       // English word, so a name test would claim a refresh for a provider whose

@@ -818,10 +818,11 @@ describe('supportsModelRefresh', () => {
       if (p.type === 'api') return true;
       if (p.type === 'cli') {
         if (isOllamaBackedProvider(p)) return true;
+        // Command-only, and ABOVE the name tests — the server orders it that way
+        // so a renamed "Cursor Claude Opus" reaches the cursor fetcher.
+        if (isCursorCommand(p.command)) return true;
         if (name.includes('claude') || p.command === 'claude') return true;
         if (name.includes('antigravity') || isAntigravityCommand(p.command)) return true;
-        // Command-only — the server's cursor arm carries no name test.
-        if (isCursorCommand(p.command)) return true;
         if (name.includes('gemini') || p.command === 'gemini') return true;
         return false; // server throws → route 404s
       }

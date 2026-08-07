@@ -178,11 +178,16 @@ export const supportsModelRefresh = (provider) => {
 
   if (isCliProvider(provider)) {
     if (isOllamaBackedProvider(provider)) return true;
-    if (name.includes('antigravity') || isAntigravityCommand(command)) return true;
     // Command-only, matching the server's cursor arm — which deliberately omits
     // a name test so an unrelated provider named e.g. "Cursor Notes" doesn't
-    // claim a refresh the server would refuse.
+    // claim a refresh the server would refuse. Kept above the name-substring
+    // tests to mirror the server's own ordering (see `_refreshCLIProviderModels`):
+    // there, a renamed "Cursor Claude Opus" must reach the cursor fetcher rather
+    // than the Anthropic one. Ordering is immaterial to this predicate's boolean
+    // result — every arm here returns true — but the mirror is only readable, and
+    // only stays checkable, if it matches the dispatch it claims to mirror.
     if (isCursorCommand(command)) return true;
+    if (name.includes('antigravity') || isAntigravityCommand(command)) return true;
     // Deliberately the RAW command string, not a basename: the server's claude
     // and gemini arms compare `provider.command === 'claude'` exactly. Matching
     // on basename here would re-open the same 404 in a new place — a renamed,

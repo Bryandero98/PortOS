@@ -857,6 +857,28 @@ export function createProviderService(config = {}) {
         return await this._fetchOllamaToolCapableModels(provider);
       }
 
+      // Cursor is keyed on the command BASENAME — path/exe-tolerant like the
+      // antigravity branch, so a binary configured by absolute path still
+      // refreshes rather than falling through to the throw below while the
+      // client's mirrored gate still offers the button. Unlike every vendor
+      // around it there is deliberately NO name test: "cursor" is an ordinary
+      // English word (a DB cursor, a text cursor), so a `name.includes('cursor')`
+      // clause would hijack the refresh for an unrelated provider the user
+      // happened to name "Cursor Notes".
+      //
+      // It sits ABOVE the name-substring branches on purpose, and the order is
+      // load-bearing: those branches match on the DISPLAY NAME, so a cursor
+      // provider a user renamed "Cursor Claude Opus" or "Cursor Antigravity"
+      // would otherwise be routed to _fetchAnthropicModels / _fetchAntigravityModels
+      // and have that vendor's catalog persisted onto it — ids cursor-agent will
+      // reject, written silently because the client (command-keyed) shows the
+      // Refresh button. An exact command match is a stronger identity signal
+      // than a name substring, so it must win. Same reasoning that already puts
+      // the ollama check first.
+      if (isCursorCommand(provider.command)) {
+        return await this._fetchCursorModels(provider);
+      }
+
       if (providerName.includes('claude') || provider.command === 'claude') {
         return await this._fetchAnthropicModels(provider);
       }
@@ -868,17 +890,6 @@ export function createProviderService(config = {}) {
       // TUI branch in refreshProviderModels.
       if (providerName.includes('antigravity') || isAntigravityCommand(provider.command)) {
         return await this._fetchAntigravityModels(provider);
-      }
-
-      // Keyed on the command basename for the same reason as the antigravity
-      // branch: a path- or `.exe`-configured binary must still refresh, or the
-      // client's mirrored gate offers a Refresh button that falls through to the
-      // throw below. Unlike every vendor around it there is deliberately NO name
-      // test — "cursor" is an ordinary English word (a DB cursor, a text
-      // cursor), so a `name.includes('cursor')` clause would hijack the refresh
-      // for an unrelated provider the user happened to name "Cursor Notes".
-      if (isCursorCommand(provider.command)) {
-        return await this._fetchCursorModels(provider);
       }
 
       if (providerName.includes('gemini') || provider.command === 'gemini') {
