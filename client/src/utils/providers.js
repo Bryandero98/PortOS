@@ -114,6 +114,82 @@ export const isAntigravityProvider = (provider) => {
   return base === 'agy' || base === 'antigravity';
 };
 
+/**
+ * True when a provider command points at Cursor's agent binary. MIRROR of
+ * `isCursorCommand` in server/lib/cursor.js — keep in lockstep.
+ *
+ * Matches ONLY `cursor-agent`, never a bare `cursor`: that is Cursor's GUI
+ * editor launcher, not the coding agent.
+ * @param {string|null|undefined} command
+ * @returns {boolean}
+ */
+export const isCursorCommand = (command) => commandBasename(command) === 'cursor-agent';
+
+/**
+ * True when a command points at the Antigravity binary. MIRROR of
+ * `isAntigravityCommand` in server/lib/aiToolkit/internal/antigravity.js — keep
+ * in lockstep. Distinct from {@link isAntigravityProvider}, which also matches
+ * the shipped provider IDs: the server's model-refresh dispatch tests the
+ * COMMAND alone on its TUI arm, so mirroring that needs the narrower predicate.
+ * @param {string|null|undefined} command
+ * @returns {boolean}
+ */
+export const isAntigravityCommand = (command) => {
+  const base = commandBasename(command);
+  return base === 'agy' || base === 'antigravity';
+};
+
+/**
+ * Whether the AI Providers page should offer a "Refresh Models" button for this
+ * provider — i.e. whether the server has a model fetcher that can answer for it.
+ *
+ * Lives here rather than inside `AIProviders.jsx` so it is unit-testable: as a
+ * module-local in the page it had no coverage at all, and deleting a clause left
+ * the suite green while the button came back and error-toasted on every click.
+ *
+ * MIRRORS the server dispatch in `_refreshCLIProviderModels`
+ * (server/lib/aiToolkit/providers.js) — a provider the server can't fetch for
+ * must return false here, or the button 404s. Keep the two in lockstep.
+ * @param {{type?:string, command?:string, id?:string, name?:string, endpoint?:string}|null|undefined} provider
+ * @returns {boolean}
+ */
+export const supportsModelRefresh = (provider) => {
+  // Mirrors `refreshProviderModels`, which routes on `provider.type` FIRST and
+  // only then applies per-vendor tests — so this follows the same two-level
+  // shape. It is an ALLOWLIST: the server throws for any CLI it has no fetcher
+  // for. Written as a deny-list previously, it returned true for `codex` and
+  // `kimi-cli` (both shipped), whose Refresh button 404'd on every click.
+  const name = String(provider?.name || '').toLowerCase();
+  const command = provider?.command;
+
+  // Every API provider routes to _refreshAPIProviderModels.
+  if (isApiProvider(provider)) return true;
+
+  if (isTuiProvider(provider)) {
+    // A TUI's model is normally fixed by the CLI/config; the server carries
+    // exactly two exceptions, and — unlike its CLI arm — neither consults the
+    // provider NAME, so this must not either.
+    return isOllamaBackedProvider(provider)
+      || provider?.id === 'antigravity-tui'
+      || isAntigravityCommand(command);
+  }
+
+  if (isCliProvider(provider)) {
+    if (isOllamaBackedProvider(provider)) return true;
+    if (name.includes('antigravity') || isAntigravityCommand(command)) return true;
+    // Deliberately the RAW command string, not a basename: the server's claude
+    // and gemini arms compare `provider.command === 'claude'` exactly. Matching
+    // on basename here would re-open the same 404 in a new place — a renamed,
+    // path-configured `/opt/homebrew/bin/claude` would show a button the server
+    // still refuses. Widening BOTH sides is tracked separately; until then the
+    // mirror stays faithful rather than optimistic.
+    return name.includes('claude') || command === 'claude'
+      || name.includes('gemini') || command === 'gemini';
+  }
+
+  return false;
+};
+
 export const knownProviderContextWindow = (provider) => {
   if (!isProcessProvider(provider)) return null;
   const id = String(provider?.id || '').toLowerCase();

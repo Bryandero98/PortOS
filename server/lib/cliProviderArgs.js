@@ -15,6 +15,7 @@
  *   - Gemini CLI:  legacy prompt piped to stdin (+ `-m <model>`)
  *   - Grok Build:  `grok --prompt-file /dev/stdin` (+ `--model <id>`, see grok.js)
  *   - Kimi Code:   `kimi --print --prompt <value>` (argv value, not stdin; see kimi.js)
+ *   - Cursor:      `cursor-agent --print --force` (prompt on stdin; see cursor.js)
  *   - Claude Code: `-p -`                (+ `--model <id>`)
  */
 
@@ -22,6 +23,7 @@ import { resolveCliModel, hasModelFlag, resolveBedrockCliModel, prefixOpencodeMo
 import { ensureAntigravityPrintArgs, isAntigravityCliProvider, isAntigravityCommand, prepareAntigravityPrompt } from './antigravity.js';
 import { isGrokCommand, ensureGrokHeadlessArgs, prepareGrokPromptFile } from './grok.js';
 import { isKimiCommand, ensureKimiHeadlessArgs, prepareKimiPrompt } from './kimi.js';
+import { isCursorCommand, ensureCursorHeadlessArgs } from './cursor.js';
 
 /**
  * Build CLI args based on provider type. Each CLI provider has different
@@ -102,6 +104,16 @@ export function buildCliArgs(provider) {
     return ensureKimiHeadlessArgs(baseArgs, effectiveDefaultModel);
   }
 
+  // Cursor Agent CLI (`cursor-agent`): headless one-shot. `--print` reads the
+  // prompt from raw stdin (so the shared stdin delivery works unchanged) and
+  // `--force` clears cursor's workspace-trust gate — which otherwise EXITS
+  // instead of running — while also auto-approving tool calls. Both are injected
+  // by ensureCursorHeadlessArgs unless the user pinned their own. Cursor's `auto`
+  // model is a real id, not a sentinel, so it rides `--model` like any other.
+  if (isCursorCommand(provider?.command)) {
+    return ensureCursorHeadlessArgs(baseArgs, effectiveDefaultModel);
+  }
+
   // OpenCode CLI (`opencode run`): the headless, non-interactive subcommand. It
   // reads the prompt from stdin (the runner's shell-pipeline delivery, same as
   // every other CLI here) and selects the model with `-m provider/model`. The
@@ -163,8 +175,9 @@ export function buildCliArgs(provider) {
  *     (kimi does NOT read stdin in --print mode) → `useStdin: false`.
  *   - Grok on Windows: the `/dev/stdin` prompt-file is rewritten to a temp file
  *     → `useStdin: false` with a real `cleanup`.
- *   - Every other provider (Claude Code `-p -`, Codex `exec -`, OpenCode `run`):
- *     unchanged, prompt delivered over stdin → `useStdin: true`.
+ *   - Every other provider (Claude Code `-p -`, Codex `exec -`, OpenCode `run`,
+ *     Cursor `cursor-agent --print`): unchanged, prompt delivered over stdin →
+ *     `useStdin: true`.
  *
  * @param {string} command - provider.command (e.g. 'agy', 'claude', 'grok')
  * @param {string[]} args - argv as built by buildCliArgs

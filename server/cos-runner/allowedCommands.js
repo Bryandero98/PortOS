@@ -21,6 +21,7 @@ export const ALLOWED_COMMANDS = new Set([
   'codex',
   'copilot',
   'agy',
+  'cursor-agent',
   'gemini',
   'grok',
   'kimi',

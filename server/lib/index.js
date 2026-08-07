@@ -95,6 +95,7 @@ export * from './cliProviderRun.js';
 export * from './codexAssistantExtract.js';
 export * from './codexCliOutput.js';
 export * from './contextBudget.js';
+export * from './cursor.js';
 export * from './grok.js';
 export * from './grokVideoClip.js';
 export * from './hfToken.js';

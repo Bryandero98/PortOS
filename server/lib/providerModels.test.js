@@ -38,8 +38,12 @@ import {
   isKimiProvider,
   splitAntigravityModel,
   antigravityBaseModels,
-  antigravityModelEffortLevels
+  antigravityModelEffortLevels,
+  resolveInjectedTuiModel
 } from './providerModels.js';
+import { readFileSync } from 'fs';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
 
 // The catalog `agy models` prints — the shipped provider list mirrors it.
 const AGY_CATALOG = [
@@ -716,6 +720,82 @@ describe('providerModels', () => {
         .toBe('us.anthropic.claude-opus-4-7-v1:0');
       expect(spy).not.toHaveBeenCalled();
       spy.mockRestore();
+    });
+  });
+
+  // Both TUI spawn paths (tuiHandshake.js#buildTuiInvocation and
+  // agentTuiSpawning.js#appendModelArgs) delegate here, so this is the single
+  // place the "which model id do we actually pass" rule is decided. It used to
+  // be open-coded in both, which is how cursor's exemption landed in one and not
+  // the other — a Bedrock box mangled every cursor CoS agent's model id.
+  describe('resolveInjectedTuiModel', () => {
+    const BEDROCK = { CLAUDE_CODE_USE_BEDROCK: '1' };
+    const withBedrock = (fn) => {
+      const prev = process.env.CLAUDE_CODE_USE_BEDROCK;
+      Object.assign(process.env, BEDROCK);
+      try { return fn(); } finally {
+        if (prev === undefined) delete process.env.CLAUDE_CODE_USE_BEDROCK;
+        else process.env.CLAUDE_CODE_USE_BEDROCK = prev;
+      }
+    };
+
+    it('maps a bare Claude id on a Bedrock box', () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        withBedrock(() => {
+          expect(resolveInjectedTuiModel('claude-opus-4-8', { id: 'claude-code-tui' }, 'claude'))
+            .toBe('global.anthropic.claude-opus-4-8');
+        });
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('namespaces an Ollama id for opencode and never Bedrock-maps it', () => {
+      const provider = { id: 'opencode-ollama-tui', command: 'opencode', ollamaBacked: true };
+      expect(resolveInjectedTuiModel('qwen2.5:7b', provider, 'opencode')).toBe('ollama/qwen2.5:7b');
+    });
+
+    // The regression this helper exists for: cursor labels Anthropic models with
+    // its OWN ids, which match toBedrockModelId's /claude/i gate.
+    it('passes a cursor model through verbatim on a Bedrock box', () => {
+      withBedrock(() => {
+        expect(resolveInjectedTuiModel('claude-opus-5-thinking-high', { id: 'cursor-tui' }, 'cursor-agent'))
+          .toBe('claude-opus-5-thinking-high');
+      });
+    });
+
+    // Discovery test: walks the SHIPPED catalog so a future vendor that labels
+    // Anthropic models under its own ids is covered without anyone remembering
+    // to add a case. Only `claude` may rewrite; everything else is verbatim.
+    it('rewrites the model id for no shipped non-claude TUI command', () => {
+      const __dirname = dirname(fileURLToPath(import.meta.url));
+      const seed = JSON.parse(readFileSync(resolve(__dirname, '../../data.reference/providers.json'), 'utf8'));
+      const commands = [...new Set(
+        Object.values(seed.providers)
+          .filter((p) => p.type === 'tui' && typeof p.command === 'string')
+          .map((p) => p.command),
+      )];
+      expect(commands.length).toBeGreaterThan(1);
+      // Filter with the SAME predicate the helper gates on, not an exact-string
+      // `!== 'claude'` — a seed that ever ships a pathed `/opt/homebrew/bin/claude`
+      // TUI command would otherwise fail this spuriously instead of flagging a
+      // real regression.
+      const nonClaude = commands.filter((c) => !isClaudeCommand(c));
+      expect(nonClaude.length).toBeGreaterThan(0);
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        withBedrock(() => {
+          for (const command of nonClaude) {
+            expect(
+              resolveInjectedTuiModel('claude-opus-5-thinking-high', { id: `${command}-tui` }, command),
+              `${command} must not have its model id Bedrock-rewritten`,
+            ).toBe('claude-opus-5-thinking-high');
+          }
+        });
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 
