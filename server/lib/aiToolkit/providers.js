@@ -780,6 +780,17 @@ export function createProviderService(config = {}) {
           // Shaped to match the antigravity arm above; both collapse together
           // when the dispatch becomes a table (#3620).
           models = await this._fetchCursorModels(provider);
+        } else {
+          // No branch matched — this provider type/shape has no fetcher. Say so,
+          // the same 400 the CLI arm's own fall-through throws. Previously this
+          // fell out as `models === null` and the route rendered it as
+          // `404 Provider not found or not an API type`, which is exactly the
+          // false message the rethrow above set out to stop showing: a plain
+          // `codex-tui`/`grok-tui` provider exists and its type is fine, it just
+          // has no catalog to fetch.
+          const unsupported = new Error(`Model refresh not supported for ${provider.type} provider '${provider.id}'`);
+          unsupported.status = 400;
+          throw unsupported;
         }
       } catch (error) {
         console.error(`Failed to refresh models for ${provider.name}:`, error.message);
@@ -800,8 +811,16 @@ export function createProviderService(config = {}) {
         throw error;
       }
 
+      // Belt-and-braces: every branch above returns an array or throws, so this
+      // is unreachable today — but a future fetcher that returns null must not
+      // persist `models: null` over the user's list. Throws rather than
+      // returning null so `null` keeps exactly ONE meaning out of this function:
+      // the provider does not exist. That is what lets the route's 404 say
+      // plainly "Provider not found" instead of guessing at a reason.
       if (models === null) {
-        return null;
+        const unsupported = new Error(`Model refresh returned nothing for provider '${provider.id}'`);
+        unsupported.status = 400;
+        throw unsupported;
       }
 
       const updatedProvider = {
@@ -964,8 +983,10 @@ export function createProviderService(config = {}) {
      * from a real fetch — `refreshProviderModels` would persist it and the UI
      * would toast "Models refreshed", so a user whose PATH can't see the binary
      * would pick a model their plan doesn't have and only find out when the run
-     * dies. Throwing makes `refreshProviderModels` return null → an explicit
-     * error toast, with the stored list left untouched. Same posture as
+     * dies. `refreshProviderModels` propagates the throw (as a 502) rather than
+     * flattening it to null, so the toast names the actual cause instead of the
+     * route's generic not-found text — and the stored list is left untouched
+     * either way, since nothing is persisted. Same posture as
      * `_fetchOllamaToolCapableModels`, and the root CLAUDE.md rule that a
      * reachable-but-list-failed backend must surface an explicit error rather
      * than a plausible-looking empty/default result.
@@ -1078,7 +1099,11 @@ export function createProviderService(config = {}) {
       const apiKey = provider.apiKey || process.env.GOOGLE_API_KEY;
 
       if (!apiKey) {
-        throw new Error('Google API key required for model refresh');
+        // 400 for the same reason as the endpoint guard: a missing key is the
+        // user's to fix, not an upstream outage.
+        const missingKey = new Error('Google API key required for model refresh');
+        missingKey.status = 400;
+        throw missingKey;
       }
 
       const response = await fetch(

@@ -800,6 +800,15 @@ describe('supportsModelRefresh', () => {
     expect(supportsModelRefresh({ id: 'x', type: 'tui', command: '/opt/bin/agy', name: 'whatever' })).toBe(true);
   });
 
+  // Pins the COMMAND half of the antigravity CLI test, which the server hoisted
+  // above its name test. Only the NAME half was covered above, so deleting
+  // `isAntigravityCommand(command)` here left the suite green while an
+  // agy-commanded provider under any other name lost a button the server serves.
+  it('offers it for an agy-commanded CLI provider whose name says nothing about it', () => {
+    expect(supportsModelRefresh({ id: 'x', type: 'cli', command: 'agy', name: 'My Coding Agent' })).toBe(true);
+    expect(supportsModelRefresh({ id: 'x', type: 'cli', command: '/opt/homebrew/bin/agy', name: 'My Coding Agent' })).toBe(true);
+  });
+
   it('still offers it for the providers the server CAN fetch for', () => {
     // Ollama-backed and antigravity are checked BEFORE the TUI gate, so their
     // TUI variants must still refresh — the ordering is the load-bearing part.

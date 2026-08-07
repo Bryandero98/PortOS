@@ -806,9 +806,10 @@ describe('Provider Service', () => {
       expect(updated.models).toEqual(['qwen2.5:7b']);
     });
 
-    it('does not refresh a non-ollama-backed TUI provider (returns null)', async () => {
-      // A plain claude TUI provider has no Ollama backing — refresh is a no-op
-      // for tui type, so it returns null (models left as configured).
+    it('reports a non-ollama-backed TUI provider as unsupported, not as missing', async () => {
+      // A plain claude TUI provider has no Ollama backing and no catalog to
+      // fetch. It must say THAT — not fall out as null and get rendered as
+      // "Provider not found", which is false: it exists and its type is fine.
       const p = await providerService.createProvider({
         name: 'Claude Code TUI',
         type: 'tui',
@@ -816,8 +817,49 @@ describe('Provider Service', () => {
         models: ['claude-opus-4-8'],
       });
 
-      const updated = await providerService.refreshProviderModels(p.id);
-      expect(updated).toBeNull();
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const err = await providerService.refreshProviderModels(p.id).catch(e => e);
+      errSpy.mockRestore();
+
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).toMatch(/not supported for tui provider/i);
+      expect(err.status).toBe(400);
+      // The configured list is untouched.
+      const after = await providerService.getProviderById(p.id);
+      expect(after.models).toEqual(['claude-opus-4-8']);
+    });
+
+    it('returns null only for a provider that does not exist', async () => {
+      // The one remaining meaning of null — what lets the route's 404 say
+      // plainly "Provider not found" rather than guessing at a reason.
+      expect(await providerService.refreshProviderModels('no-such-provider')).toBeNull();
+    });
+
+    // Pins the `provider.id === ANTIGRAVITY_TUI_ID` half of that arm's OR — the
+    // same gap that was open on CURSOR_TUI_ID. Every other antigravity-TUI test
+    // matches on the `agy` command, so deleting the id clause left the suite
+    // green while a shipped antigravity-tui repointed at a wrapper lost refresh.
+    it('reaches the agy fetcher for a shipped antigravity-tui repointed at a wrapper', async () => {
+      await writeFile(join(TEST_DATA_DIR, 'providers.json'), JSON.stringify({
+        activeProvider: 'antigravity-tui',
+        providers: {
+          'antigravity-tui': {
+            id: 'antigravity-tui', name: 'Antigravity TUI', type: 'tui',
+            command: '/nonexistent/path/to/agy-wrap', contextWindow: 1048576,
+            models: ['antigravity-configured-default'],
+            defaultModel: 'antigravity-configured-default',
+          },
+        },
+      }, null, 2));
+
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const err = await providerService.refreshProviderModels('antigravity-tui').catch(e => e);
+      errSpy.mockRestore();
+
+      // Reached the agy fetcher (which then failed on the bogus path). Without
+      // the id clause it would fall to the `else` and report "not supported".
+      expect(err.message).toMatch(/agy-wrap models' failed/);
+      expect(err.message).not.toMatch(/not supported/i);
     });
   });
 
@@ -954,6 +996,24 @@ describe('Provider Service', () => {
       expect(updated).not.toBeNull();
       expect(updated.models).toContain('claude-opus-5');
       expect(updated.models).not.toContain('antigravity-configured-default');
+    });
+
+    // …and the residual NAME half of that same split is pinned too. Left
+    // unpinned, a future cleanup deletes it as apparently-redundant while the
+    // client's mirrored `name.includes('antigravity')` keeps offering the
+    // button — every click then 400s. That is precisely the client/server drift
+    // the parity apparatus exists to prevent.
+    it('still routes an antigravity-NAMED provider with an unrelated command to the agy fetcher', async () => {
+      const p = await providerService.createProvider({
+        name: 'Antigravity Nightly', type: 'cli', command: '/nonexistent/path/to/weird-wrapper', models: ['x'],
+      });
+
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const err = await providerService.refreshProviderModels(p.id).catch(e => e);
+      errSpy.mockRestore();
+
+      expect(err.message).toMatch(/weird-wrapper models' failed/);
+      expect(err.message).not.toMatch(/not supported/i);
     });
 
     // A failed `cursor-agent models` probe must be distinguishable from a real

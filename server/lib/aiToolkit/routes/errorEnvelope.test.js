@@ -73,6 +73,48 @@ describe('issue-1084: toolkit routes emit the PortOS error envelope', () => {
     expect(providers.createProvider).not.toHaveBeenCalled();
   });
 
+  // issue-3615 — a refresh that fails must tell the user WHY. This is the seam
+  // the fix lives on: the service throws with a real message and a status, and
+  // the route must pass both through instead of flattening every failure into
+  // its own 404. Asserted here at the HTTP boundary, not just at the service.
+  it('providers refresh-models 502 (probe failed) → BAD_GATEWAY carrying the real reason', async () => {
+    const probeFailed = new Error("'cursor-agent models' failed: spawn cursor-agent ENOENT");
+    probeFailed.status = 502;
+    const providers = { refreshProviderModels: vi.fn().mockRejectedValue(probeFailed) };
+    const app = portosApp('/api/providers', (opts) => createProvidersRoutes(providers, opts));
+
+    const res = await request(app).post('/api/providers/cursor-cli/refresh-models');
+    expect(res.status).toBe(502);
+    expect(res.body.code).toBe('BAD_GATEWAY');
+    // The actual cause, not "Provider not found or not an API type".
+    expect(res.body.error).toMatch(/cursor-agent models' failed/);
+    expect(res.body.error).not.toMatch(/not found/i);
+    // No stack in the response body, even at a 5xx.
+    expect(res.body.stack).toBeUndefined();
+  });
+
+  it('providers refresh-models 400 (no fetcher for this CLI) → BAD_REQUEST, not 502', async () => {
+    const unsupported = new Error('Model refresh not supported for this CLI provider');
+    unsupported.status = 400;
+    const providers = { refreshProviderModels: vi.fn().mockRejectedValue(unsupported) };
+    const app = portosApp('/api/providers', (opts) => createProvidersRoutes(providers, opts));
+
+    const res = await request(app).post('/api/providers/codex/refresh-models');
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ error: 'Model refresh not supported for this CLI provider', code: 'BAD_REQUEST' });
+  });
+
+  it('providers refresh-models 404 → the bare "Provider not found", null having one meaning now', async () => {
+    const providers = { refreshProviderModels: vi.fn().mockResolvedValue(null) };
+    const app = portosApp('/api/providers', (opts) => createProvidersRoutes(providers, opts));
+
+    const res = await request(app).post('/api/providers/ghost/refresh-models');
+    expect(res.status).toBe(404);
+    expect(res.body).toMatchObject({ error: 'Provider not found', code: 'NOT_FOUND' });
+    // The old message guessed at a cause it could not know.
+    expect(res.body.error).not.toMatch(/API type/);
+  });
+
   it('prompts 404 (GET /stages/:name missing) → NOT_FOUND envelope', async () => {
     const prompts = { getStage: vi.fn().mockReturnValue(null) };
     const app = portosApp('/api/prompts', (opts) => createPromptsRoutes(prompts, opts));
