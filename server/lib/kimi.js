@@ -46,14 +46,9 @@
  *      every headless run fail at startup.
  */
 
-import { commandBasename, hasModelFlag } from './providerModels.js';
+import { argvHasFlag, commandBasename, hasModelFlag } from './providerModels.js';
 
 const NOOP_CLEANUP = () => {};
-
-// True when argv contains any of `flags`, in either separated (`--flag`) or
-// joined (`--flag=value`) form. The generic scan behind the kimi arg builders.
-const argvHasFlag = (args = [], flags) =>
-  args.some((a) => typeof a === 'string' && flags.some((f) => a === f || a.startsWith(`${f}=`)));
 
 // True when a token looks like an option flag (leading `-`), so a prompt VALUE is
 // never mistaken for one when deciding whether a separated `--prompt` already

@@ -34,6 +34,8 @@ import {
   isOllamaBackedProvider,
   isGrokBuildCli,
   isKimiProvider,
+  isCodexProvider,
+  isCursorCommand,
   isAntigravityProvider,
   effortLevelsForProvider,
   resolveCliEffort,
@@ -727,6 +729,37 @@ describe('isKimiProvider (mirror of server providerModels)', () => {
   it('treats the kimi configured-default sentinel as a configured default', () => {
     expect(isConfiguredDefaultModel(KIMI_CONFIGURED_DEFAULT)).toBe(true);
     expect(filterSelectableModels([KIMI_CONFIGURED_DEFAULT, 'kimi-k2'])).toEqual(['kimi-k2']);
+  });
+});
+
+describe('isCursorCommand (mirror of server lib/providerModels.js)', () => {
+  it('matches the agent binary bare, by path, and with a Windows .exe', () => {
+    expect(isCursorCommand('cursor-agent')).toBe(true);
+    expect(isCursorCommand('/Users/x/.local/bin/cursor-agent')).toBe(true);
+    expect(isCursorCommand('C:\\tools\\Cursor-Agent.exe')).toBe(true);
+  });
+
+  it('does NOT match a bare `cursor` — that is the GUI editor launcher', () => {
+    expect(isCursorCommand('cursor')).toBe(false);
+    expect(isCursorCommand('/usr/local/bin/cursor')).toBe(false);
+  });
+
+  it('rejects other CLIs and nullish input', () => {
+    expect(isCursorCommand('claude')).toBe(false);
+    expect(isCursorCommand('')).toBe(false);
+    expect(isCursorCommand(null)).toBe(false);
+  });
+
+  it('offers no effort ladder — cursor bakes the reasoning tier into the model id', () => {
+    expect(effortLevelsForProvider({ id: 'cursor-cli', command: 'cursor-agent' })).toBeNull();
+    expect(effortLevelsForProvider({ id: 'cursor-tui', command: 'cursor-agent' }, 'claude-opus-5-thinking-high')).toBeNull();
+  });
+
+  it('is not mistaken for a claude/codex/antigravity provider by its model ids', () => {
+    const cursor = { id: 'cursor-cli', command: 'cursor-agent', models: ['claude-opus-5-thinking-high'] };
+    expect(isCodexProvider(cursor)).toBe(false);
+    expect(isAntigravityProvider(cursor)).toBe(false);
+    expect(isKimiProvider(cursor)).toBe(false);
   });
 });
 

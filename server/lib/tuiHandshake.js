@@ -12,10 +12,11 @@
  * No cycle risk: this module imports nothing from either consumer.
  */
 
-import { resolveCliModel, hasModelFlag, resolveBedrockCliModel, prefixOpencodeModel, isOpencodeCommand, buildCodexStartupArgs, buildEffortArgs, commandBasename } from './providerModels.js';
+import { resolveCliModel, hasModelFlag, resolveInjectedTuiModel, buildCodexStartupArgs, buildEffortArgs, commandBasename } from './providerModels.js';
 import { ensureAntigravityTuiArgs, isAntigravityCommand, resolveAntigravityModelAndEffort } from './antigravity.js';
 import { ensureGrokTuiArgs, isGrokCommand } from './grok.js';
 import { ensureKimiTuiArgs, isKimiCommand } from './kimi.js';
+import { CURSOR_COMMAND, ensureCursorTuiArgs, isCursorCommand } from './cursor.js';
 
 // ─── Paste handshake constants ────────────────────────────────────────────
 
@@ -866,6 +867,7 @@ export function inferTuiCommand(id) {
   if (!id) return 'claude';
   if (id.includes('codex')) return 'codex';
   if (id.includes('antigravity')) return 'agy';
+  if (id.includes('cursor')) return CURSOR_COMMAND;
   if (id.includes('gemini')) return 'gemini';
   if (id.includes('kimi')) return 'kimi';
   if (id.includes('grok')) return 'grok';
@@ -920,6 +922,9 @@ export function applyCommandDefaults(command, args) {
   }
   if (isKimiCommand(command)) {
     return ensureKimiTuiArgs(args);
+  }
+  if (isCursorCommand(command)) {
+    return ensureCursorTuiArgs(args);
   }
   return args;
 }
@@ -984,19 +989,12 @@ export function buildTuiInvocation(provider, model) {
 
   const effectiveModel = resolveCliModel(model);
   const shouldInject = !!effectiveModel && !hasModelFlag(baseArgs);
-  // OpenCode TUI: namespace the bare Ollama id (`opencode --model ollama/<id>`).
-  // Otherwise map a bare Claude id to its Bedrock form when the box is in Bedrock
-  // mode (no-op otherwise / for non-Claude ids) — mirrors buildCliArgs for the
-  // claude-code-tui runner.
-  const injectedModel = !shouldInject
-    ? effectiveModel
-    : isOpencodeCommand(command)
-      ? prefixOpencodeModel(provider, effectiveModel)
-      : resolveBedrockCliModel(effectiveModel, {
-        env: { ...process.env, ...provider?.envVars },
-        providerId: provider?.id,
-      });
-  const withModel = shouldInject ? [...baseArgs, '--model', injectedModel] : baseArgs;
+  // Per-command model rewriting (OpenCode namespacing, cursor passthrough,
+  // Bedrock mapping) lives in resolveInjectedTuiModel — shared with
+  // agentTuiSpawning.js#appendModelArgs so the two spawn paths can't diverge.
+  const withModel = shouldInject
+    ? [...baseArgs, '--model', resolveInjectedTuiModel(effectiveModel, provider, command)]
+    : baseArgs;
   return {
     command,
     args: [...withModel, ...buildEffortArgs(effort, { id: provider?.id, command }, withModel)],

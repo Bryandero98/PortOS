@@ -466,6 +466,10 @@ describe('tuiHandshake.inferTuiCommand', () => {
     ['xai-grok-2', 'grok'],
     ['opencode-tui', 'opencode'],
     ['opencode-ollama-tui', 'opencode'],
+    // `cursor` must map to the AGENT binary, not the `cursor` GUI launcher, and
+    // must not fall through to the blank-command `claude` default.
+    ['cursor-tui', 'cursor-agent'],
+    ['cursor-cli', 'cursor-agent'],
   ])('inferTuiCommand(%p) → %p', (id, expected) => {
     expect(inferTuiCommand(id)).toBe(expected);
   });
@@ -607,6 +611,38 @@ describe('tuiHandshake.buildTuiInvocation', () => {
     const provider = { id: 'kimi-tui', command: 'kimi', args: ['--yolo'] };
     const out = buildTuiInvocation(provider, 'kimi-k2');
     expect(out.args).toEqual(['--yolo', '--model', 'kimi-k2']);
+  });
+
+  it('builds the Cursor TUI with --force and appends the model', () => {
+    const provider = { id: 'cursor-tui', command: 'cursor-agent', args: ['--force'] };
+    const out = buildTuiInvocation(provider, 'auto');
+    expect(out.command).toBe('cursor-agent');
+    expect(out.args).toEqual(['--force', '--model', 'auto']);
+  });
+
+  it('injects --force when a cursor provider’s saved args dropped it', () => {
+    const out = buildTuiInvocation({ id: 'cursor-tui', command: 'cursor-agent', args: [] }, null);
+    expect(out.args).toEqual(['--force']);
+  });
+
+  it('emits no --effort for cursor — its reasoning tier is baked into the model id', () => {
+    const provider = { id: 'cursor-tui', command: 'cursor-agent', args: ['--force'], effort: 'high' };
+    const out = buildTuiInvocation(provider, 'claude-opus-5-thinking-high');
+    expect(out.args).not.toContain('--effort');
+  });
+
+  it('does not Bedrock-map a cursor model id that merely contains "claude"', () => {
+    const prev = process.env.CLAUDE_CODE_USE_BEDROCK;
+    process.env.CLAUDE_CODE_USE_BEDROCK = '1';
+    try {
+      const provider = { id: 'cursor-tui', command: 'cursor-agent', args: ['--force'] };
+      const out = buildTuiInvocation(provider, 'claude-opus-5-thinking-high');
+      expect(out.args).toEqual(['--force', '--model', 'claude-opus-5-thinking-high']);
+      expect(out.args.join(' ')).not.toContain('anthropic.');
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_CODE_USE_BEDROCK;
+      else process.env.CLAUDE_CODE_USE_BEDROCK = prev;
+    }
   });
 
   it('appends --model when caller passes a model and provider.args has no model flag', () => {

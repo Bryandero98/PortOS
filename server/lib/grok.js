@@ -25,14 +25,9 @@ import os from 'os';
 import { writeFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
-import { hasModelFlag, commandBasename } from './providerModels.js';
+import { argvHasFlag, hasModelFlag, commandBasename } from './providerModels.js';
 
 const NOOP_CLEANUP = () => {};
-
-// True when argv contains any of `flags`, in either separated (`--flag`) or
-// joined (`--flag=value`) form. The generic scan behind the grok arg builders.
-const argvHasFlag = (args = [], flags) =>
-  args.some((a) => typeof a === 'string' && flags.some((f) => a === f || a.startsWith(`${f}=`)));
 
 export const GROK_API_ID = 'grok';
 export const GROK_CLI_ID = 'grok-cli';

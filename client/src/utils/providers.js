@@ -114,6 +114,17 @@ export const isAntigravityProvider = (provider) => {
   return base === 'agy' || base === 'antigravity';
 };
 
+/**
+ * True when a provider command points at Cursor's agent binary. MIRROR of
+ * `isCursorCommand` in server/lib/cursor.js — keep in lockstep.
+ *
+ * Matches ONLY `cursor-agent`, never a bare `cursor`: that is Cursor's GUI
+ * editor launcher, not the coding agent.
+ * @param {string|null|undefined} command
+ * @returns {boolean}
+ */
+export const isCursorCommand = (command) => commandBasename(command) === 'cursor-agent';
+
 export const knownProviderContextWindow = (provider) => {
   if (!isProcessProvider(provider)) return null;
   const id = String(provider?.id || '').toLowerCase();

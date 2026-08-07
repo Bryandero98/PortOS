@@ -42,6 +42,22 @@ export function commandBasename(command) {
 }
 
 /**
+ * True when argv contains any of `flags`, in either separated (`--flag`) or
+ * joined (`--flag=value`) form. The generic scan behind the per-vendor argv
+ * builders (`grok.js`, `kimi.js`, `cursor.js`), which each carried a private
+ * byte-identical copy until the third one made it a rule. Lives here next to
+ * its siblings `hasModelFlag` / `hasEffortFlag` / `hasCodexUpdateCheckConfig`,
+ * so a fix to the matching rule is one edit rather than an N-file sweep.
+ * Non-string argv entries are skipped.
+ * @param {unknown[]} args
+ * @param {string[]} flags
+ * @returns {boolean}
+ */
+export function argvHasFlag(args = [], flags = []) {
+  return args.some((a) => typeof a === 'string' && flags.some((f) => a === f || a.startsWith(`${f}=`)));
+}
+
+/**
  * Returns the model string to pass to a CLI's --model flag, or null if the
  * caller should omit --model entirely (configured-default sentinels — the CLI
  * uses its own default: Codex via ~/.codex/config.toml, Antigravity/Grok Build
@@ -398,6 +414,7 @@ export function isOpencodeCommand(command) {
   return commandBasename(command) === 'opencode';
 }
 
+
 /**
  * OpenCode addresses models as `provider/model` (e.g. `ollama/qwen2.5:7b`). The
  * OpenCode Ollama provider declares its local daemon under the config-provider
@@ -529,6 +546,46 @@ export function resolveBedrockCliModel(id, { env = process.env, providerId } = {
   const mapped = toBedrockModelId(id, env);
   if (mapped !== id) warnBareBedrockModel(providerId, id, mapped);
   return mapped;
+}
+
+/**
+ * The model string a TUI spawn should actually pass to `--model`, given the
+ * resolved launch command. The single home for a decision that used to be
+ * open-coded in TWO parallel ladders — `tuiHandshake.js#buildTuiInvocation`
+ * (one-shot TUI prompt runs) and `agentTuiSpawning.js#appendModelArgs` (CoS
+ * agent / TUI-session spawns) — which is exactly how cursor's exemption landed
+ * in one and not the other. Callers keep their own `hasModelFlag` gating; this
+ * only answers "which id".
+ *
+ *  - OpenCode: namespace a bare Ollama id (`ollama/<id>`); never Bedrock-mapped.
+ *  - Claude Code: map a bare Claude id to its region-prefixed Bedrock form when
+ *              the box is in Bedrock mode (no-op off Bedrock / for non-Claude ids).
+ *  - Anything else: passed through verbatim.
+ *
+ * The Bedrock arm is deliberately OPT-IN on the launch command rather than the
+ * default. Bedrock is a Claude *Code* transport, but `toBedrockModelId` gates
+ * only on the model id matching `/claude/i` — so as the default it silently
+ * captured any vendor that labels Anthropic models under its own ids. Cursor is
+ * exactly that case (`claude-opus-5-thinking-high`), and on a Bedrock box it was
+ * being rewritten to `global.anthropic.claude-opus-5-thinking-high`, an id
+ * cursor's router has never heard of. Opting out per-vendor meant every future
+ * vendor had to remember to; keying on `isClaudeCommand` inverts that default so
+ * they don't. (`isClaudeCommand` treats a blank command as Claude, matching both
+ * callers' blank→`claude` spawn fallback, so this is behavior-preserving for
+ * every shipped provider.)
+ *
+ * @param {string} model - the already-resolved (non-sentinel) model id
+ * @param {{id?:string, command?:string, ollamaBacked?:boolean, envVars?:Record<string,string>}|null|undefined} provider
+ * @param {string} [command] - resolved launch command (may differ from provider.command)
+ * @returns {string}
+ */
+export function resolveInjectedTuiModel(model, provider, command = provider?.command) {
+  if (isOpencodeCommand(command)) return prefixOpencodeModel(provider, model);
+  if (!isClaudeCommand(command)) return model;
+  return resolveBedrockCliModel(model, {
+    env: { ...process.env, ...provider?.envVars },
+    providerId: provider?.id,
+  });
 }
 
 /**

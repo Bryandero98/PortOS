@@ -27,7 +27,7 @@ import * as git from './git.js';
 import { resolveReviewLoopOptions } from './codeReview.js';
 import { spawnTuiSessionViaRunner } from './cosRunnerClient.js';
 import { shellQuote } from '../lib/shellQuote.js';
-import { resolveCliModel, buildEffortArgs, resolveBedrockCliModel, prefixOpencodeModel, hasModelFlag, isOpencodeCommand, isClaudeCommand, applyLeanClaudeArgs, providerSuppliesGithubToken } from '../lib/providerModels.js';
+import { resolveCliModel, buildEffortArgs, resolveInjectedTuiModel, hasModelFlag, isOpencodeCommand, isClaudeCommand, applyLeanClaudeArgs, providerSuppliesGithubToken } from '../lib/providerModels.js';
 import { createStreamingAnsiStripper, stripAnsi } from '../lib/ansiStrip.js';
 import { createImmediateFallbackSignalDetector } from '../lib/aiToolkit/errorDetection.js';
 import { isMachineOnline } from '../lib/connectivity.js';
@@ -226,23 +226,17 @@ function appendModelArgs(args, model, command, provider) {
   const effectiveModel = resolveCliModel(model);
   if (!effectiveModel) return args;
   // OpenCode TUI launches with `opencode --model ollama/<id>` (the top-level
-  // flag preselects the model). Namespace the bare Ollama id; no Bedrock mapping.
-  // Respect a user-baked --model/-m pin (mirrors buildTuiInvocation/buildCliArgs)
-  // rather than appending a second flag that overrides it.
-  if (isOpencodeCommand(command)) {
-    if (hasModelFlag(args)) return args;
-    return [...args, '--model', prefixOpencodeModel(provider, effectiveModel)];
-  }
+  // flag preselects the model). Respect a user-baked --model/-m pin (mirrors
+  // buildTuiInvocation/buildCliArgs) rather than appending a second flag that
+  // overrides it.
+  if (isOpencodeCommand(command) && hasModelFlag(args)) return args;
   // Antigravity never reaches here: buildTuiSpawnConfig resolves its model and
   // effort together up front (agy validates the pair) — see antigravity.js.
 
-  // Bedrock box: map a bare Claude id to its region-prefixed form just-in-time
-  // (no-op off Bedrock / for non-Claude ids).
-  const injectedModel = resolveBedrockCliModel(effectiveModel, {
-    env: { ...process.env, ...provider?.envVars },
-    providerId: provider?.id,
-  });
-  return [...args, '--model', injectedModel];
+  // Which id to actually pass (OpenCode namespacing / cursor passthrough /
+  // Bedrock mapping) is shared with tuiHandshake.js#buildTuiInvocation, so the
+  // two spawn paths can't drift — they already had, on cursor.
+  return [...args, '--model', resolveInjectedTuiModel(effectiveModel, provider, command)];
 }
 
 export function buildTuiSpawnConfig(provider, model, { systemPromptFile = null, effort = null } = {}) {

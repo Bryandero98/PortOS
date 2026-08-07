@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import toast from '../components/ui/Toast';
 import * as api from '../services/api';
 import socket from '../services/socket';
-import { filterSelectableModels, filterGenerationModels, isEmbeddingModel, mergeModelLists, configuredDefaultIn, localBackendForProvider, modelOptionLabel, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider, isOllamaBackedProvider, isAntigravityProvider, isGrokBuildCli, isLocalEndpoint, effectiveModelContextWindow } from '../utils/providers';
+import { filterSelectableModels, filterGenerationModels, isEmbeddingModel, mergeModelLists, configuredDefaultIn, localBackendForProvider, modelOptionLabel, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider, isOllamaBackedProvider, isAntigravityProvider, isCursorCommand, isGrokBuildCli, isLocalEndpoint, effectiveModelContextWindow } from '../utils/providers';
 import useLocalModels from '../hooks/useLocalModels';
 import BrailleSpinner from '../components/BrailleSpinner';
 import EmptyState from '../components/EmptyState';
@@ -175,6 +175,14 @@ export default function AIProviders() {
     // Gemini/Grok Build CLIs use their own local model configuration (no PortOS
     // model list to refresh — same as the configured-default sentinel).
     if (provider.type === 'cli' && (provider.command === 'gemini' || provider.command === 'grok')) {
+      return false;
+    }
+    // Cursor is hidden for the OPPOSITE reason, so it gets its own clause rather
+    // than joining the two above: `cursor-agent models` does print an
+    // authoritative per-account catalog, there just isn't a server-side fetcher
+    // for it yet, so the button could only ever produce an error toast. This
+    // clause is temporary where theirs are permanent.
+    if (provider.type === 'cli' && isCursorCommand(provider.command)) {
       return false;
     }
     // All other providers support refresh (API and CLI)

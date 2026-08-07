@@ -193,6 +193,47 @@ describe('cliProviderArgs', () => {
     });
   });
 
+  describe('buildCliArgs — Cursor Agent CLI', () => {
+    it('builds a headless --print --force invocation with the model (seeded args)', () => {
+      const args = buildCliArgs({ id: 'cursor-cli', command: 'cursor-agent', args: ['--print', '--force'], defaultModel: 'auto' });
+      expect(args).toEqual(['--print', '--force', '--model', 'auto']);
+    });
+
+    it('adds --print and --force when the saved args omit them', () => {
+      const args = buildCliArgs({ id: 'cursor-cli', command: 'cursor-agent', args: [], defaultModel: null });
+      expect(args).toEqual(['--print', '--force']);
+    });
+
+    it('is path/exe tolerant', () => {
+      const args = buildCliArgs({ id: 'my-cursor', command: '/Users/x/.local/bin/cursor-agent', args: [], defaultModel: 'composer-2.5' });
+      expect(args).toEqual(['--print', '--force', '--model', 'composer-2.5']);
+    });
+
+    it('respects a user-baked --model and does not duplicate it', () => {
+      const args = buildCliArgs({ id: 'cursor-cli', command: 'cursor-agent', args: ['--print', '--force', '--model', 'mine'], defaultModel: 'auto' });
+      expect(args.filter((a) => a === '--model')).toHaveLength(1);
+      expect(args).toContain('mine');
+      expect(args).not.toContain('auto');
+    });
+
+    it('respects a user-pinned trust/approval posture instead of adding --force', () => {
+      const args = buildCliArgs({ id: 'cursor-cli', command: 'cursor-agent', args: ['--print', '--auto-review'], defaultModel: null });
+      expect(args).toEqual(['--print', '--auto-review']);
+    });
+
+    it('delivers the prompt over stdin (useStdin true) — cursor reads raw stdin in print mode', () => {
+      const built = buildCliArgs({ id: 'cursor-cli', command: 'cursor-agent', args: ['--print', '--force'], defaultModel: 'auto' });
+      const { args, useStdin } = prepareCliPrompt('cursor-agent', built, 'write a haiku');
+      expect(args).toEqual(built);
+      expect(useStdin).toBe(true);
+    });
+
+    it('does not fall through to the Claude Code branch (no `-p -` stdin marker)', () => {
+      const args = buildCliArgs({ id: 'cursor-cli', command: 'cursor-agent', args: [], defaultModel: 'auto' });
+      expect(args).not.toContain('-');
+    });
+  });
+
   // `provider.effort` is how promptRunner hands a per-run reasoning-effort
   // override down to the arg builders (there is no `effort` parameter on
   // executeCliRun) — see executeProviderRunOnce's providerForRun clone.

@@ -29,6 +29,7 @@ import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { createImmediateFallbackSignalDetector } from '../lib/aiToolkit/errorDetection.js';
 import { ensureAntigravityPrintArgs, isAntigravityCliProvider } from '../lib/antigravity.js';
 import { prepareCliPrompt } from '../lib/cliProviderArgs.js';
+import { CURSOR_COMMAND, isCursorCommand, ensureCursorHeadlessArgs } from '../lib/cursor.js';
 import { isGrokCommand, ensureGrokHeadlessArgs } from '../lib/grok.js';
 import { isKimiCommand, ensureKimiHeadlessArgs } from '../lib/kimi.js';
 import { resolveCliModel, buildEffortArgs, buildCodexStartupArgs, resolveBedrockCliModel, prefixOpencodeModel, hasModelFlag, isOpencodeCommand, applyLeanClaudeArgs, providerSuppliesGithubToken, isOllamaClaudeProvider } from '../lib/providerModels.js';
@@ -360,6 +361,23 @@ export function buildCliSpawnConfig(provider, model, settingsEnv = {}, { systemP
     return {
       command: provider?.command || 'kimi',
       args: ensureKimiHeadlessArgs(provider?.args || [], effectiveModel),
+      stdinMode: 'prompt',
+    };
+  }
+
+  // Cursor Agent CLI (`cursor-agent`): headless one-shot. `--print` reads the
+  // combined contract+task prompt from raw stdin (like claude/codex, unlike
+  // grok/kimi). `--force` is load-bearing beyond approvals: without a trust
+  // posture cursor-agent prints "Workspace Trust Required" and EXITS without
+  // doing any work — in a fresh CoS worktree that is every run. Emits plain text
+  // (the live-output handler falls through to its default text path, like
+  // grok/kimi/opencode — see cursor.js on why stream-json isn't selected yet). A
+  // non-Claude command, so agentLifecycle keeps the operating contract in the
+  // stdin prompt (no system-prompt-file split), matching the other CLIs above.
+  if (isCursorCommand(provider?.command)) {
+    return {
+      command: provider?.command || CURSOR_COMMAND,
+      args: ensureCursorHeadlessArgs(provider?.args || [], effectiveModel),
       stdinMode: 'prompt',
     };
   }

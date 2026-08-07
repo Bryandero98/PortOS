@@ -303,6 +303,33 @@ describe('buildCliSpawnConfig', () => {
     expect(config.args).toEqual(['--print', '--model', 'kimi-k2']);
   });
 
+  it('runs `cursor-agent` headless with --print --force and the model on stdin', () => {
+    const config = buildCliSpawnConfig({ id: 'cursor-cli', command: 'cursor-agent', args: ['--print', '--force'] }, 'auto');
+    expect(config.command).toBe('cursor-agent');
+    expect(config.stdinMode).toBe('prompt');
+    expect(config.args).toEqual(['--print', '--force', '--model', 'auto']);
+    // Cursor is non-Claude, so no claude-only flags leak in.
+    expect(config.args).not.toContain('--dangerously-skip-permissions');
+    expect(config.args).not.toContain('--append-system-prompt-file');
+    // Plain text output — no stream-json parser is claimed for cursor (see cursor.js).
+    expect(config.streamFormat).toBeUndefined();
+  });
+
+  it('adds --force to a cursor provider whose saved args dropped it (trust gate is fatal without it)', () => {
+    const config = buildCliSpawnConfig({ id: 'cursor-cli', command: 'cursor-agent', args: [] }, null);
+    expect(config.args).toEqual(['--print', '--force']);
+  });
+
+  it('does not Bedrock-map a cursor model id that merely contains "claude"', () => {
+    const config = buildCliSpawnConfig(
+      { id: 'cursor-cli', command: 'cursor-agent', args: ['--print', '--force'] },
+      'claude-opus-5-thinking-high',
+      { CLAUDE_CODE_USE_BEDROCK: '1' },
+    );
+    expect(config.args).toEqual(['--print', '--force', '--model', 'claude-opus-5-thinking-high']);
+    expect(config.args.join(' ')).not.toContain('anthropic.');
+  });
+
   it('adds lean-mode flags and the system-prompt file for an Ollama-backed claude CLI', () => {
     const config = buildCliSpawnConfig(
       { id: 'claude-ollama', command: 'claude', ollamaBacked: true },
