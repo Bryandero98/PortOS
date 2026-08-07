@@ -24,7 +24,11 @@ const localReviewRequestSchema = z.object({
   diff: z.string().min(1, 'diff must be non-empty'),
   timeoutMs: z.number().int().positive().max(600000).optional(),
 }).strict().superRefine((body, ctx) => {
-  if (body.effort === undefined) return
+  // Blank is "not pinned", not "invalid" — same fallback the sibling `model` field
+  // gets from `body.model || configured` below, and what this route's header
+  // documents ("when omitted or empty we fall back"). Only a NON-empty value that
+  // the backend's ladder rejects is a 400.
+  if (!body.effort) return
   if (normalizeReviewerEffort(body.effort, body.backend)) return
   ctx.addIssue({
     code: z.ZodIssueCode.custom,

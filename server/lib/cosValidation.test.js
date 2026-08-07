@@ -291,7 +291,10 @@ describe('per-reviewer reasoning effort (reviewerEfforts)', () => {
 // pinned rather than trusted to a "keep in sync" comment.
 describe('client mirror of the reviewer effort ladders', () => {
   it('matches server reviewerEffortLevels for every reviewer', async () => {
-    const client = await import('../../client/src/components/cos/constants.js');
+    // The dependency-free leaf, NOT `components/cos/constants.js` (which re-exports
+    // these but also imports `lucide-react` — absent from the server workspace, so
+    // importing it here fails CI with ERR_MODULE_NOT_FOUND).
+    const client = await import('../../client/src/lib/reviewerPins.js');
     expect([...client.EFFORT_SELECTABLE_REVIEWERS].sort()).toEqual([...EFFORT_SELECTABLE_REVIEWERS].sort());
     expect(client.LOCAL_LLM_EFFORT_LEVELS).toEqual(LOCAL_LLM_EFFORT_LEVELS);
     for (const reviewer of REVIEWER_VALUES) {

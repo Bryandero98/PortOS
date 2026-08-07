@@ -91,6 +91,24 @@ describe('POST /api/code-review/local', () => {
     )
   })
 
+  it('treats a blank effort as unpinned and falls back to the configured default', async () => {
+    settingsSvc.getSettings.mockResolvedValue({
+      codeReview: { ollamaModel: 'm', ollamaEffort: 'high' },
+    })
+    codeReviewSvc.runLocalCodeReview.mockResolvedValue({
+      ok: true, backend: 'ollama', model: 'm', effort: 'high', findings: 'No findings.',
+    })
+
+    const res = await request(makeApp())
+      .post('/api/code-review/local')
+      .send({ backend: 'ollama', effort: '', diff: 'diff --git a b' })
+
+    expect(res.status).toBe(200)
+    expect(codeReviewSvc.runLocalCodeReview).toHaveBeenCalledWith(
+      expect.objectContaining({ effort: 'high' }),
+    )
+  })
+
   it('returns 400 for an effort outside the requested backend ladder', async () => {
     const res = await request(makeApp())
       .post('/api/code-review/local')
