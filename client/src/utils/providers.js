@@ -150,18 +150,24 @@ export const supportsModelRefresh = (provider) => {
   // server has a type==='tui' branch for it) — checked before the generic
   // TUI gate, same as Claude Ollama above.
   if (isAntigravityProvider(provider)) return true;
+  // Every other TUI's model is fixed by the CLI/config — no branch server-side.
   if (isTuiProvider(provider)) return false;
-  // Gemini/Grok Build CLIs use their own local model configuration (no PortOS
-  // model list to refresh — same as the configured-default sentinel).
-  if (provider?.type === 'cli' && (provider.command === 'gemini' || provider.command === 'grok')) return false;
-  // Cursor is hidden for the OPPOSITE reason, so it gets its own clause rather
-  // than joining the two above: `cursor-agent models` does print an
-  // authoritative per-account catalog, there just isn't a server-side fetcher
-  // for it yet, so the button could only ever produce an error toast. This
-  // clause is temporary where theirs are permanent.
-  if (provider?.type === 'cli' && isCursorCommand(provider.command)) return false;
-  // All other providers support refresh (API and CLI)
-  return true;
+  // API providers all route to _refreshAPIProviderModels.
+  if (isApiProvider(provider)) return true;
+  // CLI: the server's `_refreshCLIProviderModels` has exactly two remaining
+  // fetchers past the ollama/antigravity branches above — Anthropic and Gemini —
+  // and THROWS for everything else. So this is an allowlist, not a deny-list.
+  //
+  // It used to be written as a deny-list (`command === 'gemini' || 'grok'`,
+  // plus cursor), which reported true for `codex` and `kimi-cli` — two providers
+  // that ship in the seed and whose Refresh button therefore 404'd on every
+  // click. It also matched on the exact command string, so a path-configured
+  // `/opt/homebrew/bin/gemini` fell through to true and 404'd too. Matching the
+  // server's own name-or-command test (basename-tolerant) fixes both.
+  const name = String(provider?.name || '').toLowerCase();
+  const command = commandBasename(provider?.command);
+  return name.includes('claude') || command === 'claude'
+    || name.includes('gemini') || command === 'gemini';
 };
 
 export const knownProviderContextWindow = (provider) => {

@@ -736,28 +736,42 @@ describe('isKimiProvider (mirror of server providerModels)', () => {
 describe('supportsModelRefresh', () => {
   // Guards the AI Providers page's "Refresh Models" button. Lived as a
   // module-local in AIProviders.jsx with zero coverage until it moved here.
+  // The contract is a MIRROR of the server's `_refreshCLIProviderModels`
+  // dispatch: anything the server throws for must be false here, or the button
+  // 404s on every click.
   it('hides the button for cursor — no server-side fetcher exists yet', () => {
-    expect(supportsModelRefresh({ id: 'cursor-cli', type: 'cli', command: 'cursor-agent' })).toBe(false);
-    // Path-configured cursor must be hidden too, or the button 404s.
-    expect(supportsModelRefresh({ id: 'custom', type: 'cli', command: '/Users/x/.local/bin/cursor-agent' })).toBe(false);
+    expect(supportsModelRefresh({ id: 'cursor-cli', type: 'cli', command: 'cursor-agent', name: 'Cursor Agent CLI' })).toBe(false);
+    expect(supportsModelRefresh({ id: 'custom', type: 'cli', command: '/Users/x/.local/bin/cursor-agent', name: 'Cursor' })).toBe(false);
   });
 
   it('hides the button for the TUI variant via the generic TUI gate', () => {
-    expect(supportsModelRefresh({ id: 'cursor-tui', type: 'tui', command: 'cursor-agent' })).toBe(false);
+    expect(supportsModelRefresh({ id: 'cursor-tui', type: 'tui', command: 'cursor-agent', name: 'Cursor Agent TUI' })).toBe(false);
   });
 
-  it('keeps hiding it for gemini/grok, whose model config is CLI-local', () => {
-    expect(supportsModelRefresh({ id: 'grok-cli', type: 'cli', command: 'grok' })).toBe(false);
-    expect(supportsModelRefresh({ id: 'gemini-cli', type: 'cli', command: 'gemini' })).toBe(false);
+  // Regression: these two SHIP in data.reference/providers.json and the old
+  // deny-list reported true for both, so the button 404'd on every click.
+  it('hides the button for shipped CLIs the server has no fetcher for', () => {
+    expect(supportsModelRefresh({ id: 'codex', type: 'cli', command: 'codex', name: 'Codex CLI' })).toBe(false);
+    expect(supportsModelRefresh({ id: 'kimi-cli', type: 'cli', command: 'kimi', name: 'Kimi Code CLI' })).toBe(false);
+    expect(supportsModelRefresh({ id: 'grok-cli', type: 'cli', command: 'grok', name: 'Grok Build CLI' })).toBe(false);
+  });
+
+  // Regression: the old clause compared the exact command string, so a
+  // path-configured binary fell through to true and 404'd.
+  it('is basename-tolerant, matching the server test', () => {
+    expect(supportsModelRefresh({ id: 'g', type: 'cli', command: '/opt/homebrew/bin/gemini', name: 'g' })).toBe(true);
+    expect(supportsModelRefresh({ id: 'c', type: 'cli', command: '/opt/homebrew/bin/claude', name: 'c' })).toBe(true);
+    expect(supportsModelRefresh({ id: 'k', type: 'cli', command: '/opt/homebrew/bin/kimi', name: 'k' })).toBe(false);
   });
 
   it('still offers it for the providers the server CAN fetch for', () => {
     // Ollama-backed and antigravity are checked BEFORE the TUI gate, so their
     // TUI variants must still refresh — the ordering is the load-bearing part.
-    expect(supportsModelRefresh({ id: 'claude-ollama-tui', type: 'tui', ollamaBacked: true })).toBe(true);
-    expect(supportsModelRefresh({ id: 'antigravity-tui', type: 'tui', command: 'agy' })).toBe(true);
-    expect(supportsModelRefresh({ id: 'claude-code', type: 'cli', command: 'claude' })).toBe(true);
-    expect(supportsModelRefresh({ id: 'lmstudio', type: 'api', endpoint: 'http://localhost:1234/v1' })).toBe(true);
+    expect(supportsModelRefresh({ id: 'claude-ollama-tui', type: 'tui', ollamaBacked: true, name: 'Claude Ollama TUI' })).toBe(true);
+    expect(supportsModelRefresh({ id: 'antigravity-tui', type: 'tui', command: 'agy', name: 'Antigravity TUI' })).toBe(true);
+    expect(supportsModelRefresh({ id: 'claude-code', type: 'cli', command: 'claude', name: 'Claude Code CLI' })).toBe(true);
+    expect(supportsModelRefresh({ id: 'lmstudio', type: 'api', endpoint: 'http://localhost:1234/v1', name: 'LM Studio' })).toBe(true);
+    expect(supportsModelRefresh({ id: 'cerebras', type: 'api', name: 'Cerebras' })).toBe(true);
   });
 
   it('does not throw on a nullish provider', () => {

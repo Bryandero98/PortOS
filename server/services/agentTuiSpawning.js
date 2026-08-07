@@ -27,7 +27,7 @@ import * as git from './git.js';
 import { resolveReviewLoopOptions } from './codeReview.js';
 import { spawnTuiSessionViaRunner } from './cosRunnerClient.js';
 import { shellQuote } from '../lib/shellQuote.js';
-import { resolveCliModel, buildEffortArgs, resolveInjectedTuiModel, hasModelFlag, isOpencodeCommand, isClaudeCommand, applyLeanClaudeArgs, providerSuppliesGithubToken } from '../lib/providerModels.js';
+import { resolveCliModel, buildEffortArgs, resolveInjectedTuiModel, hasModelFlag, isClaudeCommand, applyLeanClaudeArgs, providerSuppliesGithubToken } from '../lib/providerModels.js';
 import { createStreamingAnsiStripper, stripAnsi } from '../lib/ansiStrip.js';
 import { createImmediateFallbackSignalDetector } from '../lib/aiToolkit/errorDetection.js';
 import { isMachineOnline } from '../lib/connectivity.js';

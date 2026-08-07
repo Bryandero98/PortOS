@@ -64,25 +64,48 @@ export function isCursorCommand(command) {
 
 // `--print` (`-p`) puts cursor-agent in non-interactive print mode.
 const PRINT_FLAGS = ['--print', '-p'];
-// APPROVAL postures — flags that decide what happens when a tool call needs
-// permission. `--force`/`-f`/`--yolo` run everything unprompted; `--auto-review`
-// is the server-classifier middle ground. Any one present means the user pinned
-// their own posture, so don't add another.
-//
-// `--trust` is deliberately NOT in this list. It clears the workspace-trust gate
-// and nothing else, so treating it as an approval posture would suppress
-// `--force` and leave an unattended run to stall on the first tool prompt with
-// nobody to answer it — burning the full provider timeout to produce nothing.
-// A user who pins `--trust` still gets `--force` added, which is a superset of it.
+// cursor-agent gates an unattended run on TWO orthogonal postures, and a headless
+// run needs BOTH satisfied or it produces nothing:
+//   - TRUST    — without it, cursor prints "Workspace Trust Required" and EXITS
+//                immediately, before any work.
+//   - APPROVAL — without it, the run reaches the first tool call and then stalls
+//                on a permission prompt with nobody to answer, burning the whole
+//                provider timeout.
+// They overlap but are not the same set, so collapsing them into one list breaks
+// in both directions: `--trust` clears trust but grants no approval, while
+// `--auto-review` is an approval posture that does NOT clear trust. Treating
+// either as "the user pinned a posture, we're done" suppresses the flag that
+// covers the OTHER gate. Keep them separate and check each independently.
+const TRUST_FLAGS = ['--force', '-f', '--yolo', '--trust'];
 const APPROVAL_FLAGS = ['--force', '-f', '--yolo', '--auto-review'];
+
+/**
+ * Add whatever posture flag the argv is still missing, honoring anything the
+ * user already pinned. `--force` satisfies both gates at once, so it is the
+ * default; when the user pinned an approval posture we only owe them trust
+ * (`--trust`), and vice-versa. No-op when both gates are already covered.
+ * @param {string[]} out - argv, mutated in place
+ * @returns {string[]} the same array, for chaining
+ */
+function ensureCursorPosture(out) {
+  const hasTrust = argvHasFlag(out, TRUST_FLAGS);
+  const hasApproval = argvHasFlag(out, APPROVAL_FLAGS);
+  if (hasTrust && hasApproval) return out;
+  // `--force` covers trust AND approval; only fall back to the narrow `--trust`
+  // when the user has already chosen an approval posture we must not override.
+  out.push(hasApproval ? '--trust' : '--force');
+  return out;
+}
 
 /**
  * Build the headless (one-shot) argv for the Cursor Agent CLI. Ensures, when not
  * already pinned by the user's saved `args`:
  *   - `--print`      — non-interactive print mode (prompt read from stdin).
- *   - `--force`      — clears the workspace-trust gate AND auto-approves tool
- *                      calls, so an unattended run neither exits on the trust
- *                      block nor stalls on an approval prompt.
+ *   - a posture flag — `--force` by default, which clears the workspace-trust
+ *                      gate AND auto-approves tool calls, so an unattended run
+ *                      neither exits on the trust block nor stalls on a prompt.
+ *                      See `ensureCursorPosture` for how a user-pinned posture
+ *                      narrows this to just the gate they left uncovered.
  *   - `--model <id>` — gated on `model` being set AND no user-baked model flag.
  * The prompt itself is NOT added here — it rides on stdin at spawn time.
  * @param {string[]} baseArgs - user/legacy args (already model-flag-sanitized)
@@ -94,9 +117,7 @@ export function ensureCursorHeadlessArgs(baseArgs = [], model) {
   if (!argvHasFlag(out, PRINT_FLAGS)) {
     out.push('--print');
   }
-  if (!argvHasFlag(out, APPROVAL_FLAGS)) {
-    out.push('--force');
-  }
+  ensureCursorPosture(out);
   if (model && !hasModelFlag(out)) {
     out.push('--model', model);
   }
@@ -114,9 +135,5 @@ export function ensureCursorHeadlessArgs(baseArgs = [], model) {
  * @returns {string[]}
  */
 export function ensureCursorTuiArgs(args = []) {
-  const out = [...args];
-  if (!argvHasFlag(out, APPROVAL_FLAGS)) {
-    out.push('--force');
-  }
-  return out;
+  return ensureCursorPosture([...args]);
 }

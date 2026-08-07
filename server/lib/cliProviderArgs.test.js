@@ -216,9 +216,11 @@ describe('cliProviderArgs', () => {
       expect(args).not.toContain('auto');
     });
 
-    it('respects a user-pinned trust/approval posture instead of adding --force', () => {
+    it('preserves a pinned --auto-review but still clears the trust gate', () => {
+      // --auto-review grants approval but NOT trust; without a trust flag cursor
+      // exits on "Workspace Trust Required" before doing any work.
       const args = buildCliArgs({ id: 'cursor-cli', command: 'cursor-agent', args: ['--print', '--auto-review'], defaultModel: null });
-      expect(args).toEqual(['--print', '--auto-review']);
+      expect(args).toEqual(['--print', '--auto-review', '--trust']);
     });
 
     it('delivers the prompt over stdin (useStdin true) — cursor reads raw stdin in print mode', () => {

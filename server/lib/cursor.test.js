@@ -42,17 +42,25 @@ describe('ensureCursorHeadlessArgs', () => {
     expect(ensureCursorHeadlessArgs(['-p'], null)).toEqual(['-p', '--force']);
   });
 
-  it('respects any user-pinned APPROVAL posture instead of adding --force', () => {
-    for (const flag of ['--force', '-f', '--yolo', '--auto-review']) {
+  // Only a flag covering BOTH gates (trust + approval) means we owe nothing.
+  it('adds nothing when the pinned flag already covers both gates', () => {
+    for (const flag of ['--force', '-f', '--yolo']) {
       expect(ensureCursorHeadlessArgs(['--print', flag], null)).toEqual(['--print', flag]);
     }
   });
 
-  // `--trust` only clears the workspace-trust gate — it is NOT an approval
-  // posture. Treating it as one would suppress `--force` and leave an unattended
-  // run stalled on the first tool prompt until the provider timeout expires.
-  it('still adds --force when the user pinned only --trust', () => {
+  // `--trust` clears trust but grants NO approval — the run would reach the first
+  // tool call and stall there until the provider timeout expires.
+  it('adds --force for approval when the user pinned only --trust', () => {
     expect(ensureCursorHeadlessArgs(['--print', '--trust'], null)).toEqual(['--print', '--trust', '--force']);
+  });
+
+  // `--auto-review` is an approval posture that does NOT clear trust — without a
+  // trust flag cursor prints "Workspace Trust Required" and exits doing no work.
+  // The pinned posture must be preserved, so we add the narrow `--trust`, not `--force`.
+  it('adds --trust (not --force) when the user pinned only --auto-review', () => {
+    expect(ensureCursorHeadlessArgs(['--print', '--auto-review'], null))
+      .toEqual(['--print', '--auto-review', '--trust']);
   });
 
   it('respects a joined posture flag (--force=true style)', () => {
@@ -83,14 +91,18 @@ describe('ensureCursorTuiArgs', () => {
     expect(ensureCursorTuiArgs([])).toEqual(['--force']);
   });
 
-  it('leaves a user-pinned approval posture alone', () => {
-    for (const flag of ['--force', '-f', '--yolo', '--auto-review']) {
+  it('adds nothing when the pinned flag already covers both gates', () => {
+    for (const flag of ['--force', '-f', '--yolo']) {
       expect(ensureCursorTuiArgs([flag])).toEqual([flag]);
     }
   });
 
-  it('still adds --force when the user pinned only --trust (trust is not approval)', () => {
+  it('adds --force for approval when the user pinned only --trust', () => {
     expect(ensureCursorTuiArgs(['--trust'])).toEqual(['--trust', '--force']);
+  });
+
+  it('adds --trust for the trust gate when the user pinned only --auto-review', () => {
+    expect(ensureCursorTuiArgs(['--auto-review'])).toEqual(['--auto-review', '--trust']);
   });
 
   it('does not mutate the caller-supplied args array and is idempotent', () => {

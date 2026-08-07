@@ -152,9 +152,6 @@ vi.mock('../lib/providerModels.js', async (importOriginal) => ({
   // one input the real mapper keys on (`CLAUDE_CODE_USE_BEDROCK`, cleared in
   // beforeEach below), so these assertions are deterministic regardless of the
   // ambient env on a developer's Bedrock box or a CI runner.
-  // Mirror the real opencode-command basename match (fully unit-tested in
-  // providerModels.test.js).
-  isOpencodeCommand: vi.fn((c) => typeof c === 'string' && c.split(/[\\/]/).pop().toLowerCase().replace(/\.exe$/, '') === 'opencode'),
   // Mirror hasModelFlag (real impl unit-tested in providerModels.test.js).
   hasModelFlag: vi.fn((a) => Array.isArray(a) && a.some((x) => x === '--model' || x === '-m' || (typeof x === 'string' && (x.startsWith('--model=') || x.startsWith('-m=')))))
 }));
