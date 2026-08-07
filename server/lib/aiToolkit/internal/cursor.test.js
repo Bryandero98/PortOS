@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { CURSOR_COMMAND, CURSOR_CLI_ID, CURSOR_TUI_ID, isCursorCommand, parseCursorModelList } from './cursor.js';
+import { CURSOR_COMMAND, CURSOR_TUI_ID, isCursorCommand, parseCursorModelList } from './cursor.js';
+// The toolkit SOURCE may not import out to server/lib (see ../CLAUDE.md); a test
+// may, and this is the only way to actually pin the duplication it documents.
+import { CURSOR_COMMAND as UPSTREAM_COMMAND, isCursorCommand as upstreamIsCursorCommand } from '../../cursor.js';
 
 // A verbatim excerpt of `cursor-agent models` (2026.08.04) — the header line,
 // the blank line under it, a run of `<id> - <Label>` rows, and the trailing
@@ -96,10 +99,25 @@ describe('parseCursorModelList', () => {
   });
 });
 
-describe('cursor toolkit constants', () => {
-  it('mirror the shipped provider ids and binary name', () => {
-    expect(CURSOR_COMMAND).toBe('cursor-agent');
-    expect(CURSOR_CLI_ID).toBe('cursor-cli');
+describe('vendored copy stays in sync with server/lib/cursor.js', () => {
+  // The file header promises these two track upstream. Assert it rather than
+  // asserting each constant equals its own literal, which only re-states the
+  // source and would stay green through exactly the drift that matters.
+  it('agrees with upstream on the binary name', () => {
+    expect(CURSOR_COMMAND).toBe(UPSTREAM_COMMAND);
+  });
+
+  it('agrees with upstream on every command-matching case', () => {
+    const cases = [
+      'cursor-agent', '/opt/homebrew/bin/cursor-agent', 'C:\\Tools\\cursor-agent.exe',
+      'CURSOR-AGENT', 'cursor', '/usr/local/bin/cursor', 'cursor-agent.cmd', 'claude', '',
+    ];
+    for (const c of cases) {
+      expect(isCursorCommand(c), `disagreement on ${JSON.stringify(c)}`).toBe(upstreamIsCursorCommand(c));
+    }
+  });
+
+  it('exposes the shipped TUI provider id (toolkit-native, no upstream twin)', () => {
     expect(CURSOR_TUI_ID).toBe('cursor-tui');
   });
 });

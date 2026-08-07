@@ -15,6 +15,7 @@ import {
   isAntigravityCommand,
   LEGACY_GEMINI_CLI_ID,
   LEGACY_GEMINI_TUI_ID,
+  parseAntigravityModelList,
 } from './internal/antigravity.js';
 import {
   CURSOR_COMMAND,
@@ -771,6 +772,13 @@ export function createProviderService(config = {}) {
           // interactive session too — the binary's own `Tip:` line documents
           // both `--model <id>` and the in-session `/model <id>` — so its
           // catalog must refresh like the CLI's.
+          // The id test alongside the command one (which the CLI arm below
+          // deliberately does without) carries none of that arm's hazard: it is
+          // an EXACT shipped-id match, not a name substring, so it can only
+          // admit the provider PortOS itself seeds — and if the user repointed
+          // its command at a wrapper, probing that wrapper is the right answer.
+          // Shaped to match the antigravity arm above; both collapse together
+          // when the dispatch becomes a table (#3620).
           models = await this._fetchCursorModels(provider);
         }
       } catch (error) {
@@ -885,25 +893,48 @@ export function createProviderService(config = {}) {
      * the authoritative catalog for this user's plan and binary version, which
      * a hardcoded list can only go stale against.
      *
-     * THROWS rather than falling back to `ANTIGRAVITY_MODEL_CATALOG` when the
-     * probe can't run (agy not installed, the service PATH can't resolve it, a
-     * timeout, a non-zero exit) or comes back with nothing parseable. The
-     * shipped catalog is for *seeding and migration* — surfacing it from a
-     * refresh would make a failed probe indistinguishable from a real fetch:
-     * `refreshProviderModels` would persist it and the UI would toast "Models
-     * refreshed", so a user whose PATH can't see agy would pick a model their
-     * plan doesn't have and only find out when the run dies. Throwing makes
-     * `refreshProviderModels` return null → an explicit error toast, and leaves
-     * the existing list untouched (nothing is persisted). Same posture as
-     * `_fetchOllamaToolCapableModels`, and the root CLAUDE.md rule that a
-     * reachable-but-list-failed backend must surface an explicit error rather
-     * than a plausible-looking empty/default result.
+     * Throws rather than falling back to `ANTIGRAVITY_MODEL_CATALOG` on a failed
+     * or unparseable probe — see `_execCliModelList` for why that matters. The
+     * shipped catalog is for *seeding and migration* only.
      *
      * The sentinel is always re-prepended: it is what keeps "use agy's own
      * configured default" selectable after a refresh.
      */
     async _fetchAntigravityModels(provider) {
-      const bin = provider?.command || 'agy';
+      const listed = await this._execCliModelList(provider, 'agy', parseAntigravityModelList);
+      return [ANTIGRAVITY_CONFIGURED_DEFAULT, ...new Set(listed)];
+    },
+
+    /**
+     * Shared scaffolding for every "shell `<bin> models` and parse stdout"
+     * fetcher. Owns the spawn conventions the vendors agree on — the Windows-safe
+     * invocation, the 15s cap, the provider `envVars` merge, closing the child's
+     * stdin, and the two failure messages — so a change to any of them (adding
+     * stderr to the error, reacting to a spawn quirk) is one edit rather than one
+     * per vendor. What differs per vendor is only the default binary and the
+     * parser; a sentinel prepend, if any, belongs to the caller.
+     *
+     * THROWS on a probe that can't run (binary not installed, service PATH can't
+     * resolve it, timeout, non-zero exit) AND on one that returns nothing
+     * parseable — never returns an empty list. That is the load-bearing part:
+     * every caller's alternative would be its shipped seed catalog, and
+     * surfacing that from a refresh would make a failed probe indistinguishable
+     * from a real fetch — `refreshProviderModels` would persist it and the UI
+     * would toast "Models refreshed", so a user whose PATH can't see the binary
+     * would pick a model their plan doesn't have and only find out when the run
+     * dies. Throwing makes `refreshProviderModels` return null → an explicit
+     * error toast, with the stored list left untouched. Same posture as
+     * `_fetchOllamaToolCapableModels`, and the root CLAUDE.md rule that a
+     * reachable-but-list-failed backend must surface an explicit error rather
+     * than a plausible-looking empty/default result.
+     *
+     * @param {object} provider
+     * @param {string} defaultBin - binary to use when the provider pins no command
+     * @param {(stdout: string) => string[]} parse - vendor's stdout → ids parser
+     * @returns {Promise<string[]>} a non-empty id list
+     */
+    async _execCliModelList(provider, defaultBin, parse) {
+      const bin = provider?.command || defaultBin;
       const { command, args } = prepareWindowsSafeSpawn(bin, ['models']);
       const pending = execFileAsync(command, args, {
         timeout: 15000,
@@ -913,21 +944,20 @@ export function createProviderService(config = {}) {
       // stdin and prints NOTHING until it closes — with execFile's default pipe
       // that's a full 15s hang ending in SIGTERM and an empty catalog. (execFile
       // ignores an `stdio` option, so ending the stream is the way to do it.)
+      // Not every vendor needs it — cursor-agent 2026.08.04 answers in well
+      // under a second either way (measured 848ms with stdin open vs 825ms
+      // closed) — but it costs one FD close and makes the probe immune whether
+      // or not a given binary has the behavior.
       pending.child?.stdin?.end();
       const { stdout } = await pending.catch((err) => {
         throw new Error(`'${bin} models' failed: ${err?.message || 'could not run the binary'}`);
       });
 
-      const listed = (stdout || '')
-        .split(/\r?\n/)
-        .map(line => line.trim())
-        // Drop blanks, banner/status lines, and anything that isn't a bare id.
-        .filter(line => /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(line) && line !== ANTIGRAVITY_CONFIGURED_DEFAULT);
-
+      const listed = parse(stdout);
       if (listed.length === 0) {
         throw new Error(`'${bin} models' returned no model ids`);
       }
-      return [ANTIGRAVITY_CONFIGURED_DEFAULT, ...new Set(listed)];
+      return listed;
     },
 
     /**
@@ -938,18 +968,8 @@ export function createProviderService(config = {}) {
      * sentinel), cursor can answer for itself, so a refresh asks it rather than
      * re-serving a list that can only go stale.
      *
-     * THROWS rather than falling back to the shipped seed when the probe can't
-     * run (cursor-agent not installed, the service PATH can't resolve it, a
-     * timeout, a non-zero exit) or comes back with nothing parseable — same
-     * posture and same reasoning as `_fetchAntigravityModels`: persisting the
-     * seed here would make a failed probe indistinguishable from a real fetch,
-     * so `refreshProviderModels` would save it and the UI would toast "Models
-     * refreshed", leaving a user whose PATH can't see cursor-agent to pick a
-     * model their account may not have and find out when the run dies. Throwing
-     * returns null instead → an explicit error toast, with the stored list left
-     * untouched. Matches the root CLAUDE.md rule that a reachable-but-list-
-     * failed backend must surface an explicit error rather than a plausible-
-     * looking default.
+     * Throws rather than falling back to the shipped 27-id seed on a failed or
+     * unparseable probe — see `_execCliModelList` for why that matters.
      *
      * No sentinel is prepended (the one structural difference from the agy
      * fetcher): cursor exposes a real `auto` id — its own server-side router,
@@ -962,28 +982,7 @@ export function createProviderService(config = {}) {
      * the stored list stays faithful to what the binary will actually accept.
      */
     async _fetchCursorModels(provider) {
-      const bin = provider?.command || CURSOR_COMMAND;
-      const { command, args } = prepareWindowsSafeSpawn(bin, ['models']);
-      const pending = execFileAsync(command, args, {
-        timeout: 15000,
-        env: { ...process.env, ...provider?.envVars },
-      });
-      // Defensive, not load-bearing. `agy models` prints NOTHING until stdin
-      // closes, so with execFile's default pipe it hangs the full 15s and exits
-      // on SIGTERM; cursor-agent does not share that behavior — measured against
-      // 2026.08.04 it answers in well under a second either way (848ms with
-      // stdin open vs 825ms closed). Ending the stream anyway costs nothing and
-      // keeps the probe immune if a later build grows the agy behavior.
-      pending.child?.stdin?.end();
-      const { stdout } = await pending.catch((err) => {
-        throw new Error(`'${bin} models' failed: ${err?.message || 'could not run the binary'}`);
-      });
-
-      const listed = parseCursorModelList(stdout);
-      if (listed.length === 0) {
-        throw new Error(`'${bin} models' returned no model ids`);
-      }
-      return listed;
+      return await this._execCliModelList(provider, CURSOR_COMMAND, parseCursorModelList);
     },
 
     async _fetchOllamaToolCapableModels(provider) {

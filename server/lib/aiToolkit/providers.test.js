@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdir, rm, writeFile } from 'fs/promises';
+import { chmod, mkdir, rm, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { createProviderService, isOllamaBackedProvider } from './providers.js';
@@ -824,10 +824,9 @@ describe('Provider Service', () => {
     // of `cursor-agent models` — header line, blank line, `<id> - <Label>` rows,
     // trailing `Tip:` paragraph. Shell-script based, so POSIX only; CI is
     // ubuntu-latest and the assertions below are about parsing, not spawning.
-    const writeFakeCursor = async (body, { exitCode = 0 } = {}) => {
+    const writeFakeCursor = async (body) => {
       const path = join(TEST_DATA_DIR, 'cursor-agent');
-      await writeFile(path, `#!/bin/sh\ncat <<'EOF'\n${body}\nEOF\nexit ${exitCode}\n`);
-      const { chmod } = await import('fs/promises');
+      await writeFile(path, `#!/bin/sh\ncat <<'EOF'\n${body}\nEOF\n`);
       await chmod(path, 0o755);
       return path;
     };
