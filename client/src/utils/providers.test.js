@@ -755,6 +755,17 @@ describe('supportsModelRefresh', () => {
     expect(supportsModelRefresh({ id: 'cursor-tui', type: 'tui', command: '/home/x/.local/bin/cursor-agent', name: 'renamed' })).toBe(true);
   });
 
+  // Pins the `id === '<vendor>-tui'` half of each TUI arm's OR. Every other case
+  // here matches on the COMMAND, so deleting those id clauses left the suite
+  // green while a shipped TUI provider repointed at a wrapper script silently
+  // lost its button (the server's TUI arms still serve it via the same id test).
+  it('offers it for a shipped cursor-tui / antigravity-tui repointed at a wrapper', () => {
+    expect(supportsModelRefresh({ id: 'cursor-tui', type: 'tui', command: '/opt/bin/cursor-wrap', name: 'Cursor Agent TUI' })).toBe(true);
+    expect(supportsModelRefresh({ id: 'antigravity-tui', type: 'tui', command: '/opt/bin/agy-wrap', name: 'Antigravity TUI' })).toBe(true);
+    // …but an unshipped id with an unrelated command still gets nothing.
+    expect(supportsModelRefresh({ id: 'custom-tui', type: 'tui', command: '/opt/bin/cursor-wrap', name: 'Custom' })).toBe(false);
+  });
+
   it('does not offer it for a provider merely NAMED cursor, or for the GUI binary', () => {
     // "cursor" is an ordinary English word, and a bare `cursor` is the GUI
     // editor launcher — neither reaches the server's command-keyed arm.
@@ -821,8 +832,9 @@ describe('supportsModelRefresh', () => {
         // Command-only, and ABOVE the name tests — the server orders it that way
         // so a renamed "Cursor Claude Opus" reaches the cursor fetcher.
         if (isCursorCommand(p.command)) return true;
+        if (isAntigravityCommand(p.command)) return true;
         if (name.includes('claude') || p.command === 'claude') return true;
-        if (name.includes('antigravity') || isAntigravityCommand(p.command)) return true;
+        if (name.includes('antigravity')) return true;
         if (name.includes('gemini') || p.command === 'gemini') return true;
         return false; // server throws → route 404s
       }

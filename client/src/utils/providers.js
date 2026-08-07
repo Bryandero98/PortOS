@@ -187,7 +187,7 @@ export const supportsModelRefresh = (provider) => {
     // result — every arm here returns true — but the mirror is only readable, and
     // only stays checkable, if it matches the dispatch it claims to mirror.
     if (isCursorCommand(command)) return true;
-    if (name.includes('antigravity') || isAntigravityCommand(command)) return true;
+    if (isAntigravityCommand(command)) return true;
     // Deliberately the RAW command string, not a basename: the server's claude
     // and gemini arms compare `provider.command === 'claude'` exactly. Matching
     // on basename here would re-open the same 404 in a new place — a renamed,
@@ -195,6 +195,7 @@ export const supportsModelRefresh = (provider) => {
     // still refuses. Widening BOTH sides is tracked separately; until then the
     // mirror stays faithful rather than optimistic.
     return name.includes('claude') || command === 'claude'
+      || name.includes('antigravity')
       || name.includes('gemini') || command === 'gemini';
   }
 

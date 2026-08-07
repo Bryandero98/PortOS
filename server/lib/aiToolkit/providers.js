@@ -783,7 +783,21 @@ export function createProviderService(config = {}) {
         }
       } catch (error) {
         console.error(`Failed to refresh models for ${provider.name}:`, error.message);
-        return null;
+        // RETHROW rather than collapsing to null. `null` means one specific
+        // thing here — "no refreshable branch matched" — and the route turns it
+        // into `404 Provider not found or not an API type`. Folding a fetcher
+        // failure into that same null made the user's toast read "Provider not
+        // found or not an API type" when the provider exists and its type is
+        // fine, burying the actual cause (`'cursor-agent models' failed: …
+        // ENOENT`) in the server log. That defeats the whole point of the
+        // throw-don't-fall-back posture in `_execCliModelList`: it goes to the
+        // trouble of refusing to persist a plausible-looking default precisely
+        // so the user learns WHY the refresh failed.
+        // 502, not 500: the failure is an upstream/vendor probe, not a bug here.
+        // The other caller (localLlm's post-install fan-out) already catches and
+        // logs per provider, so it is unaffected.
+        error.status = error.status || 502;
+        throw error;
       }
 
       if (models === null) {
@@ -879,16 +893,29 @@ export function createProviderService(config = {}) {
         return await this._fetchCursorModels(provider);
       }
 
+      // Antigravity's COMMAND test is hoisted for the same reason, and split from
+      // its name test below to do it. It is path/exe-tolerant (`isAntigravityCommand`,
+      // not `command === 'agy'`) so a provider configured with the absolute binary
+      // path still refreshes; matches the TUI branch in refreshProviderModels.
+      // Left fused below the claude name test, an `agy` provider named
+      // "Antigravity Claude Sonnet 4.6" — the natural name for a second agy
+      // provider, since agy's own catalog carries claude ids — got Anthropic's
+      // static list persisted onto it AND lost the `antigravity-configured-default`
+      // sentinel from `models` while `defaultModel` still pointed at it, which
+      // blanks the model <select> and reads as "unset".
+      if (isAntigravityCommand(provider.command)) {
+        return await this._fetchAntigravityModels(provider);
+      }
+
       if (providerName.includes('claude') || provider.command === 'claude') {
         return await this._fetchAnthropicModels(provider);
       }
 
-      // Path/exe-tolerant (`isAntigravityCommand`, not `command === 'agy'`) so a
-      // provider configured with the absolute binary path still refreshes —
-      // otherwise the client's `isAntigravityProvider` gate offers the Refresh
-      // button and every click falls through to the throw below. Matches the
-      // TUI branch in refreshProviderModels.
-      if (providerName.includes('antigravity') || isAntigravityCommand(provider.command)) {
+      // The NAME tests stay below the command tests above: they are the weaker
+      // signal, so they only get a say once no command has claimed the provider.
+      // `name: 'Claude via Antigravity'` + `command: 'claude'` therefore still
+      // reaches Anthropic, which is the right answer for a claude binary.
+      if (providerName.includes('antigravity')) {
         return await this._fetchAntigravityModels(provider);
       }
 
@@ -896,7 +923,11 @@ export function createProviderService(config = {}) {
         return await this._fetchGeminiModels(provider);
       }
 
-      throw new Error('Model refresh not supported for this CLI provider');
+      // 400, not the rethrow's 502 default: nothing upstream failed — this CLI
+      // simply has no fetcher, which is a bad request, not a bad gateway.
+      const unsupported = new Error('Model refresh not supported for this CLI provider');
+      unsupported.status = 400;
+      throw unsupported;
     },
 
     /**
