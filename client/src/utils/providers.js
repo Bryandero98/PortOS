@@ -167,16 +167,22 @@ export const supportsModelRefresh = (provider) => {
 
   if (isTuiProvider(provider)) {
     // A TUI's model is normally fixed by the CLI/config; the server carries
-    // exactly two exceptions, and — unlike its CLI arm — neither consults the
+    // exactly three exceptions, and — unlike its CLI arm — none consults the
     // provider NAME, so this must not either.
     return isOllamaBackedProvider(provider)
       || provider?.id === 'antigravity-tui'
-      || isAntigravityCommand(command);
+      || isAntigravityCommand(command)
+      || provider?.id === 'cursor-tui'
+      || isCursorCommand(command);
   }
 
   if (isCliProvider(provider)) {
     if (isOllamaBackedProvider(provider)) return true;
     if (name.includes('antigravity') || isAntigravityCommand(command)) return true;
+    // Command-only, matching the server's cursor arm — which deliberately omits
+    // a name test so an unrelated provider named e.g. "Cursor Notes" doesn't
+    // claim a refresh the server would refuse.
+    if (isCursorCommand(command)) return true;
     // Deliberately the RAW command string, not a basename: the server's claude
     // and gemini arms compare `provider.command === 'claude'` exactly. Matching
     // on basename here would re-open the same 404 in a new place — a renamed,

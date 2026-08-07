@@ -741,13 +741,25 @@ describe('supportsModelRefresh', () => {
   // The contract is a MIRROR of the server's `_refreshCLIProviderModels`
   // dispatch: anything the server throws for must be false here, or the button
   // 404s on every click.
-  it('hides the button for cursor — no server-side fetcher exists yet', () => {
-    expect(supportsModelRefresh({ id: 'cursor-cli', type: 'cli', command: 'cursor-agent', name: 'Cursor Agent CLI' })).toBe(false);
-    expect(supportsModelRefresh({ id: 'custom', type: 'cli', command: '/Users/x/.local/bin/cursor-agent', name: 'Cursor' })).toBe(false);
+  // `_fetchCursorModels` shells `cursor-agent models`, so cursor now refreshes.
+  // Command-keyed on BOTH arms (path- and `.exe`-tolerant), because the server's
+  // cursor branch is — a name test would be wrong in the other direction, see
+  // the "Cursor Notes" case below.
+  it('offers the button for cursor, including a path-configured binary', () => {
+    expect(supportsModelRefresh({ id: 'cursor-cli', type: 'cli', command: 'cursor-agent', name: 'Cursor Agent CLI' })).toBe(true);
+    expect(supportsModelRefresh({ id: 'custom', type: 'cli', command: '/home/x/.local/bin/cursor-agent', name: 'Cursor' })).toBe(true);
   });
 
-  it('hides the button for the TUI variant via the generic TUI gate', () => {
-    expect(supportsModelRefresh({ id: 'cursor-tui', type: 'tui', command: 'cursor-agent', name: 'Cursor Agent TUI' })).toBe(false);
+  it('offers it for the cursor TUI too — `--model` applies to the session', () => {
+    expect(supportsModelRefresh({ id: 'cursor-tui', type: 'tui', command: 'cursor-agent', name: 'Cursor Agent TUI' })).toBe(true);
+    expect(supportsModelRefresh({ id: 'cursor-tui', type: 'tui', command: '/home/x/.local/bin/cursor-agent', name: 'renamed' })).toBe(true);
+  });
+
+  it('does not offer it for a provider merely NAMED cursor, or for the GUI binary', () => {
+    // "cursor" is an ordinary English word, and a bare `cursor` is the GUI
+    // editor launcher — neither reaches the server's command-keyed arm.
+    expect(supportsModelRefresh({ id: 'x', type: 'cli', command: 'some-other-binary', name: 'Cursor Notes' })).toBe(false);
+    expect(supportsModelRefresh({ id: 'x', type: 'cli', command: 'cursor', name: 'Cursor' })).toBe(false);
   });
 
   // Regression: these two SHIP in data.reference/providers.json and the old
@@ -808,11 +820,14 @@ describe('supportsModelRefresh', () => {
         if (isOllamaBackedProvider(p)) return true;
         if (name.includes('claude') || p.command === 'claude') return true;
         if (name.includes('antigravity') || isAntigravityCommand(p.command)) return true;
+        // Command-only — the server's cursor arm carries no name test.
+        if (isCursorCommand(p.command)) return true;
         if (name.includes('gemini') || p.command === 'gemini') return true;
         return false; // server throws → route 404s
       }
       if (p.type === 'tui' && isOllamaBackedProvider(p)) return true;
       if (p.type === 'tui' && (p.id === 'antigravity-tui' || isAntigravityCommand(p.command))) return true;
+      if (p.type === 'tui' && (p.id === 'cursor-tui' || isCursorCommand(p.command))) return true;
       return false;
     };
 

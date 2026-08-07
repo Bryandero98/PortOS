@@ -16,6 +16,12 @@ import {
   LEGACY_GEMINI_CLI_ID,
   LEGACY_GEMINI_TUI_ID,
 } from './internal/antigravity.js';
+import {
+  CURSOR_COMMAND,
+  CURSOR_TUI_ID,
+  isCursorCommand,
+  parseCursorModelList,
+} from './internal/cursor.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_SAMPLE_PATH = join(__dirname, 'defaults/providers.sample.json');
@@ -760,6 +766,12 @@ export function createProviderService(config = {}) {
           // Same exception for the Antigravity TUI: `agy --model` applies to the
           // interactive session too, so its catalog must refresh like the CLI's.
           models = await this._fetchAntigravityModels(provider);
+        } else if (provider.type === 'tui' && (provider.id === CURSOR_TUI_ID || isCursorCommand(provider.command))) {
+          // And for the Cursor TUI: `cursor-agent --model` applies to the
+          // interactive session too — the binary's own `Tip:` line documents
+          // both `--model <id>` and the in-session `/model <id>` — so its
+          // catalog must refresh like the CLI's.
+          models = await this._fetchCursorModels(provider);
         }
       } catch (error) {
         console.error(`Failed to refresh models for ${provider.name}:`, error.message);
@@ -850,6 +862,17 @@ export function createProviderService(config = {}) {
         return await this._fetchAntigravityModels(provider);
       }
 
+      // Keyed on the command basename for the same reason as the antigravity
+      // branch: a path- or `.exe`-configured binary must still refresh, or the
+      // client's mirrored gate offers a Refresh button that falls through to the
+      // throw below. Unlike every vendor around it there is deliberately NO name
+      // test — "cursor" is an ordinary English word (a DB cursor, a text
+      // cursor), so a `name.includes('cursor')` clause would hijack the refresh
+      // for an unrelated provider the user happened to name "Cursor Notes".
+      if (isCursorCommand(provider.command)) {
+        return await this._fetchCursorModels(provider);
+      }
+
       if (providerName.includes('gemini') || provider.command === 'gemini') {
         return await this._fetchGeminiModels(provider);
       }
@@ -905,6 +928,62 @@ export function createProviderService(config = {}) {
         throw new Error(`'${bin} models' returned no model ids`);
       }
       return [ANTIGRAVITY_CONFIGURED_DEFAULT, ...new Set(listed)];
+    },
+
+    /**
+     * cursor-agent ships a `models` subcommand that prints the authoritative
+     * catalog for THIS account and binary version — 177 ids at time of writing,
+     * against the 27 hand-curated ones the provider seed ships. Unlike Grok/Kimi
+     * (no catalog subcommand at all, hence their `*-configured-default`
+     * sentinel), cursor can answer for itself, so a refresh asks it rather than
+     * re-serving a list that can only go stale.
+     *
+     * THROWS rather than falling back to the shipped seed when the probe can't
+     * run (cursor-agent not installed, the service PATH can't resolve it, a
+     * timeout, a non-zero exit) or comes back with nothing parseable — same
+     * posture and same reasoning as `_fetchAntigravityModels`: persisting the
+     * seed here would make a failed probe indistinguishable from a real fetch,
+     * so `refreshProviderModels` would save it and the UI would toast "Models
+     * refreshed", leaving a user whose PATH can't see cursor-agent to pick a
+     * model their account may not have and find out when the run dies. Throwing
+     * returns null instead → an explicit error toast, with the stored list left
+     * untouched. Matches the root CLAUDE.md rule that a reachable-but-list-
+     * failed backend must surface an explicit error rather than a plausible-
+     * looking default.
+     *
+     * No sentinel is prepended (the one structural difference from the agy
+     * fetcher): cursor exposes a real `auto` id — its own server-side router,
+     * and the binary's default — and `models` lists it first, so "let cursor
+     * choose" survives a refresh as an ordinary catalog entry.
+     *
+     * The full list is persisted as reported, `-fast` priority-compute twins
+     * included. A refresh is an explicit user action and the account catalog is
+     * the authoritative answer; any thinning belongs in the picker, not here, so
+     * the stored list stays faithful to what the binary will actually accept.
+     */
+    async _fetchCursorModels(provider) {
+      const bin = provider?.command || CURSOR_COMMAND;
+      const { command, args } = prepareWindowsSafeSpawn(bin, ['models']);
+      const pending = execFileAsync(command, args, {
+        timeout: 15000,
+        env: { ...process.env, ...provider?.envVars },
+      });
+      // Defensive, not load-bearing. `agy models` prints NOTHING until stdin
+      // closes, so with execFile's default pipe it hangs the full 15s and exits
+      // on SIGTERM; cursor-agent does not share that behavior — measured against
+      // 2026.08.04 it answers in well under a second either way (848ms with
+      // stdin open vs 825ms closed). Ending the stream anyway costs nothing and
+      // keeps the probe immune if a later build grows the agy behavior.
+      pending.child?.stdin?.end();
+      const { stdout } = await pending.catch((err) => {
+        throw new Error(`'${bin} models' failed: ${err?.message || 'could not run the binary'}`);
+      });
+
+      const listed = parseCursorModelList(stdout);
+      if (listed.length === 0) {
+        throw new Error(`'${bin} models' returned no model ids`);
+      }
+      return listed;
     },
 
     async _fetchOllamaToolCapableModels(provider) {

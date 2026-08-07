@@ -819,6 +819,142 @@ describe('Provider Service', () => {
     });
   });
 
+  describe('Cursor Agent model refresh (`cursor-agent models`)', () => {
+    // Stand in for the real binary with a script that prints a captured excerpt
+    // of `cursor-agent models` — header line, blank line, `<id> - <Label>` rows,
+    // trailing `Tip:` paragraph. Shell-script based, so POSIX only; CI is
+    // ubuntu-latest and the assertions below are about parsing, not spawning.
+    const writeFakeCursor = async (body, { exitCode = 0 } = {}) => {
+      const path = join(TEST_DATA_DIR, 'cursor-agent');
+      await writeFile(path, `#!/bin/sh\ncat <<'EOF'\n${body}\nEOF\nexit ${exitCode}\n`);
+      const { chmod } = await import('fs/promises');
+      await chmod(path, 0o755);
+      return path;
+    };
+
+    const SAMPLE = [
+      'Available models',
+      '',
+      'auto - Auto (current, default)',
+      'gpt-5.3-codex-low - Codex 5.3 Low',
+      'gpt-5.3-codex-low-fast - Codex 5.3 Low Fast',
+      'composer-2.5 - Composer 2.5',
+      'claude-opus-5-thinking-high - Opus 5 1M Thinking',
+      '',
+      "Tip: use --model <id> (or /model <id> in interactive mode) to switch. Parameterized models also accept quoted overrides, e.g. --model 'claude-opus-4-8[context=1m,effort=high,fast=false]'.",
+    ].join('\n');
+
+    it.skipIf(process.platform === 'win32')('persists the live catalog for a cursor CLI provider', async () => {
+      const command = await writeFakeCursor(SAMPLE);
+      const p = await providerService.createProvider({
+        name: 'Cursor Agent CLI',
+        type: 'cli',
+        command,
+        models: ['auto', 'composer-2.5'],
+        defaultModel: 'auto',
+      });
+
+      const updated = await providerService.refreshProviderModels(p.id);
+      expect(updated).not.toBeNull();
+      // The full list as reported — `-fast` priority-compute twins included, and
+      // `auto` retained (cursor's real router id, not a synthetic sentinel).
+      expect(updated.models).toEqual([
+        'auto',
+        'gpt-5.3-codex-low',
+        'gpt-5.3-codex-low-fast',
+        'composer-2.5',
+        'claude-opus-5-thinking-high',
+      ]);
+    });
+
+    it.skipIf(process.platform === 'win32')('refreshes a cursor TUI provider too', async () => {
+      // `cursor-agent --model` applies to the interactive session as well, so
+      // the TUI arm must reach the fetcher rather than no-op to null.
+      const command = await writeFakeCursor(SAMPLE);
+      const p = await providerService.createProvider({
+        name: 'Cursor Agent TUI',
+        type: 'tui',
+        command,
+        models: ['auto'],
+        defaultModel: 'auto',
+      });
+
+      const updated = await providerService.refreshProviderModels(p.id);
+      expect(updated).not.toBeNull();
+      expect(updated.models).toContain('gpt-5.3-codex-low-fast');
+    });
+
+    // A failed `cursor-agent models` probe must be distinguishable from a real
+    // fetch. Returning the shipped 27-id seed here would persist it and toast
+    // "Models refreshed", so a user whose service PATH can't resolve the binary
+    // would pick a model their account may not have and only discover it when
+    // the run dies.
+    it('reports a failed probe as a refresh failure, leaving the stored list intact', async () => {
+      const stored = ['auto', 'composer-2.5'];
+      const p = await providerService.createProvider({
+        name: 'Cursor Agent CLI',
+        type: 'cli',
+        command: '/nonexistent/path/to/cursor-agent',
+        models: [...stored],
+        defaultModel: 'auto',
+      });
+
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const result = await providerService.refreshProviderModels(p.id);
+      errSpy.mockRestore();
+
+      // null = "nothing to persist"; the routes layer turns this into an error.
+      expect(result).toBeNull();
+      const after = await providerService.getProviderById(p.id);
+      expect(after.models).toEqual(stored);
+    });
+
+    it.skipIf(process.platform === 'win32')('treats a prose-only response as a failure, not an empty catalog', async () => {
+      // e.g. an auth/upgrade banner printed in place of the list. Persisting []
+      // here would silently empty the user's model picker.
+      const stored = ['auto', 'composer-2.5'];
+      const command = await writeFakeCursor('Please run cursor-agent login first.');
+      const p = await providerService.createProvider({
+        name: 'Cursor Agent CLI',
+        type: 'cli',
+        command,
+        models: [...stored],
+        defaultModel: 'auto',
+      });
+
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const result = await providerService.refreshProviderModels(p.id);
+      errSpy.mockRestore();
+
+      expect(result).toBeNull();
+      const after = await providerService.getProviderById(p.id);
+      expect(after.models).toEqual(stored);
+    });
+
+    it('does not hijack an unrelated provider that merely has "cursor" in its name', async () => {
+      // The cursor arm is command-keyed on purpose — "cursor" is an ordinary
+      // English word, so a name test would claim a refresh for a provider whose
+      // binary knows nothing about `models`.
+      const p = await providerService.createProvider({
+        name: 'Cursor Notes',
+        type: 'cli',
+        command: 'some-other-binary',
+        models: ['x'],
+      });
+
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const result = await providerService.refreshProviderModels(p.id);
+      // Snapshot the calls BEFORE restoring — mockRestore() also resets the
+      // spy, so reading mock.calls afterwards always sees an empty array.
+      const logged = errSpy.mock.calls.flat().join(' ');
+      errSpy.mockRestore();
+
+      // Falls through to the 'not supported for this CLI provider' throw.
+      expect(result).toBeNull();
+      expect(logged).toMatch(/not supported/i);
+    });
+  });
+
   describe('_refreshAPIProviderModels — network layer', () => {
     afterEach(() => {
       vi.unstubAllGlobals();
