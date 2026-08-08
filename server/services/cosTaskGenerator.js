@@ -1191,9 +1191,16 @@ export async function evaluateTasks(options) {
   // task's, which most installs leave disabled — that coupling stranded every
   // green PortOS-opened PR at `ticks: 0` forever. Runs BEFORE the agent-slot
   // gate below because a deterministic merge claims no lane, so a full agent
-  // roster must not also wedge the merge queue. Gated on `!paused` to match the
-  // autonomous tiers: merging is an autonomous action a global pause suppresses.
-  if (!paused) {
+  // roster must not also wedge the merge queue.
+  //
+  // Gated on `!paused` AND on CoS auto-run being in `execute`, like every other
+  // autonomous tier: merging writes to a default branch, so it is the LAST thing
+  // that may run while the user has auto-run set to `off` or `dry-run`. The mode
+  // is read directly rather than via `resolveAutonomyBudget` (which runs further
+  // down, after the agent-slot gate) because the daily minutes/actions budget
+  // meters agent RUNS — a deterministic merge spawns nothing and consumes none
+  // of it — while the mode is the user's "may PortOS act on its own" switch.
+  if (!paused && getDomainMode(state.config, 'cos') === 'execute') {
     const prWatcher = await import('./prWatcher.js');
     const sweep = await prWatcher.sweepPendingMergePrs();
     if (sweep.merged || sweep.escalated || sweep.timedOut) {

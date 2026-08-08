@@ -43,7 +43,10 @@ vi.mock('./providerStatus.js', () => ({
 
 vi.mock('./executionLanes.js', () => ({ release: vi.fn() }));
 vi.mock('./toolStateMachine.js', () => ({ completeExecution: vi.fn(), errorExecution: vi.fn() }));
-vi.mock('./agentErrorAnalysis.js', () => ({
+// Partial mock: the two finalize-path helpers are stubbed, but `analyzeAgentFailure`
+// passes through to the REAL detector so the banner tests below exercise what ships.
+vi.mock('./agentErrorAnalysis.js', async (importOriginal) => ({
+  ...(await importOriginal()),
   resolveFailedTaskUpdate: vi.fn(async () => ({ status: 'pending', metadata: {} })),
   resolveTypeFailureSignal: vi.fn(() => ({ record: 'skip' })),
 }));
@@ -66,6 +69,7 @@ import { finalizeAgent } from './agentFinalization.js';
 // The real detector and the real cooldown table supply the analysis shape and
 // the window, so the assertions below can't drift from what actually ships.
 import { detectImmediateFallbackSignal } from '../lib/aiToolkit/errorDetection.js';
+import { analyzeAgentFailure } from './agentErrorAnalysis.js';
 import { COOLDOWN_MS_BY_CATEGORY } from '../lib/providerCooldown.js';
 
 const failedRun = (errorAnalysis, providerId = 'antigravity-tui') => finalizeAgent({
@@ -103,6 +107,43 @@ describe('finalizeAgent provider sidelining', () => {
     // Before this fix only usage-limit/rate-limit benched, so an auth-error left
     // the provider healthy and the next dequeued task died on the same banner.
     expect(markProviderUsageLimitMock).not.toHaveBeenCalled();
+  });
+
+  // The provenance gate is only as good as what `analyzeAgentFailure` promotes to
+  // `origin: 'provider'`. The case above hand-stamps that origin, which is exactly
+  // how a real regression shipped green: Claude Code's actual banners classified as
+  // `origin: 'output-scan'`, so a genuine 5-hour window never benched the provider
+  // and every subsequent dequeue re-picked it. These drive the REAL detector.
+  it.each([
+    ['Claude usage limit reached. Your limit will reset at 5pm.'],
+    ['5-hour limit reached · resets 3am'],
+  ])('benches the provider on the real usage-limit banner %#', async (banner) => {
+    const analysis = analyzeAgentFailure(
+      `${banner}\nthe transcript tail continues past the banner.`,
+      { id: 'task-1' },
+      'claude',
+      {}
+    );
+    expect(analysis).toMatchObject({ category: 'usage-limit', origin: 'provider', requiresFallback: true });
+    await failedRun(analysis, 'claude-code-tui');
+    expect(markProviderUsageLimitMock).toHaveBeenCalledWith('claude-code-tui', expect.objectContaining({
+      category: 'usage-limit',
+    }));
+  });
+
+  // The other half of the same gate: a generic limit phrasing a task's own output
+  // can print must stay `output-scan` and leave the provider healthy.
+  it('does not bench on a generic limit phrasing from the agent transcript', async () => {
+    const analysis = analyzeAgentFailure(
+      'Error: the daily limit for widgets was exceeded in our test fixture.\nmore output.',
+      { id: 'task-1' },
+      'claude',
+      {}
+    );
+    expect(analysis).toMatchObject({ category: 'usage-limit', origin: 'output-scan' });
+    await failedRun(analysis, 'claude-code-tui');
+    expect(markProviderUsageLimitMock).not.toHaveBeenCalled();
+    expect(markProviderUnavailableMock).not.toHaveBeenCalled();
   });
 
   it('leaves the usage-limit marker owning its own cooldown', async () => {

@@ -38,11 +38,17 @@ import { normalizeUrl as normalizeUrlShared } from '../../../utils/urlNormalize'
 
 /**
  * True once a link has a malware-scan report that can actually be opened. A
- * capture-time scan is stamped `queued` before the agent runs — it has a
- * reportId but no file yet, so the "Scan Reports" filter must not offer it.
- * Legacy records carry no `status` at all and are treated as readable.
+ * capture-time scan is stamped `queued` before the agent runs, and a scan whose
+ * agent never wrote a report file finalizes as `failed` — both carry a reportId
+ * with no file behind it, so the "Scan Reports" filter must not offer either
+ * (the report route would 404). Legacy records carry no `status` at all and are
+ * treated as readable.
  */
-const hasScanReport = (link) => Boolean(link.malwareScan?.reportId) && link.malwareScan.status !== 'queued';
+const hasScanReport = (link) => {
+  if (!link.malwareScan?.reportId) return false;
+  const { status } = link.malwareScan;
+  return status === undefined || status === 'completed';
+};
 
 /** Normalize a user-entered URL the way the quick-add form does. */
 function normalizeUrl(raw) {
@@ -693,14 +699,20 @@ export default function LinksTab({ onRefresh }) {
                     )}
 
                     {/* A capture-time scan is stamped `queued` before the agent runs,
-                        so there is no report to open yet — say so instead of linking
-                        at a 404. finalizeMalwareScan flips it once the run lands. */}
+                        and `failed` when the run landed without writing a report —
+                        neither has a file to open, so say so instead of linking at a
+                        404. finalizeMalwareScan flips it once the run lands. */}
                     {link.malwareScan?.status === 'queued' ? (
                       <span className="flex items-center gap-1 text-xs text-gray-400" title="Malware scan queued — track it in Chief of Staff">
                         <ShieldCheck size={12} />
                         Scan queued
                       </span>
-                    ) : link.malwareScan?.reportId && (
+                    ) : link.malwareScan?.status === 'failed' ? (
+                      <span className="flex items-center gap-1 text-xs text-port-error" title="Malware scan finished without producing a report — re-run it from Chief of Staff">
+                        <ShieldCheck size={12} />
+                        Scan failed
+                      </span>
+                    ) : hasScanReport(link) && (
                       <Link
                         to={api.brainScanReportPath(link.id)}
                         className={`flex items-center gap-1 text-xs ${link.malwareScan.verdict === 'DANGEROUS' ? 'text-port-error' : 'text-port-accent'} hover:underline`}

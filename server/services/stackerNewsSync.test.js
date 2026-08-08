@@ -172,4 +172,40 @@ describe('Stacker News sync', () => {
       },
     }]);
   });
+
+  // An install that synced BEFORE the image-aware digest landed has legacy hashes
+  // in every stacker_news_items row. If those no longer compare equal, the first
+  // sync after upgrading treats the whole back catalogue as changed: it re-runs
+  // analysis on every item and re-stamps received_at, re-sorting the triage list.
+  it('treats a legacy-digest row as unchanged so an upgrade does not re-analyze the back catalogue', async () => {
+    const { createHash } = await import('node:crypto');
+    // The pre-image-aware digest: sha256 over `${title}\n${body}` with no envelope.
+    const legacyHash = createHash('sha256').update('Example work\nA post').digest('hex');
+    accountRow = { ...baseAccount, read_transport: 'api', analysis_enabled: true };
+    // `beforeEach` only mockClear()s this one, so pin the page explicitly rather
+    // than inheriting whatever a prior test's mockImplementation left behind —
+    // the hash under test is derived from the item's title/body.
+    executeStackerNewsOperation.mockImplementation(async (name, input) => {
+      if (name === 'me') return { me: { id: 'owner-1', name: 'example_user' } };
+      if (name === 'sub') return { sub: { name: 'art', userId: 'owner-1' } };
+      return itemsPage(input.cursor);
+    });
+    query.mockImplementation(async (sql) => {
+      if (sql.startsWith('SELECT * FROM stacker_news_accounts')) return { rows: [accountRow] };
+      if (sql.startsWith('SELECT api_key_enc')) return { rows: credentialRows };
+      if (sql.startsWith('SELECT * FROM stacker_news_territories')) return { rows: [{ id: territoryId, account_id: accountId, slug: 'art', label: 'Art', is_owned: true, monitoring_enabled: true, inherit_account_rules: true, rules: {}, remote_settings: {} }] };
+      if (sql.startsWith('SELECT content_hash')) return { rows: [{ content_hash: legacyHash }] };
+      if (sql.includes('INSERT INTO stacker_news_items')) return { rows: [{ id: '00000000-0000-4000-8000-000000000003', account_id: accountId, territory_id: territoryId, remote_id: '42', kind: 'post', author_name: 'artist', title: 'Example work', body: 'A post', source_url: 'https://stacker.news/items/42', image_urls: [], content_hash: 'hash', received_at: new Date() }] };
+      return { rows: [], rowCount: 1 };
+    });
+
+    await expect(syncAccount(accountId)).resolves.toMatchObject({ ingested: 1, analyzed: 0 });
+
+    // The upsert must also tell Postgres the row is unchanged, or received_at is
+    // re-stamped even though analysis was skipped.
+    const upsert = query.mock.calls.find(([sql]) => sql.includes('INSERT INTO stacker_news_items'));
+    expect(upsert[0]).toContain('stacker_news_items.content_hash IN (EXCLUDED.content_hash, $14)');
+    expect(upsert[1]).toHaveLength(14);
+    expect(upsert[1][13]).toBe(legacyHash);
+  });
 });

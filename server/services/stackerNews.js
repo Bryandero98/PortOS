@@ -59,6 +59,19 @@ const itemContentHash = ({ title = '', body = '', imageUrls = [] } = {}) => stab
   text: normalizedText({ title, body }),
   imageUrls: (Array.isArray(imageUrls) ? imageUrls : []).map(boundedImageUrl).filter(Boolean),
 });
+// The pre-image-aware digest, kept ONLY so an upgrading install's already-stored
+// hashes still compare equal to unchanged content. `itemContentHash` folded the
+// image list into the digest, which changes the value for EVERY row already in
+// `stacker_news_items` — without this, the first sync after upgrading would see
+// the entire back catalogue as "changed" (re-stamping `received_at` and re-sorting
+// it to the top of the triage list), and every action already `pending_review` /
+// `approved` would fail permanently with "Source content changed after review"
+// when nothing about the content had changed. Comparisons accept EITHER digest;
+// the row is rewritten with the current one on ingest, so this self-heals per row
+// and the legacy value stops appearing once an install has synced.
+const legacyItemContentHash = ({ title = '', body = '' } = {}) => stableHash(normalizedText({ title, body }));
+const contentHashMatches = (storedHash, content) => storedHash === itemContentHash(content)
+  || storedHash === legacyItemContentHash(content);
 const normalizeSyncItemLimit = (value) => Number.isInteger(value)
   ? Math.max(1, Math.min(MAX_SYNC_ITEM_LIMIT, value))
   : DEFAULT_SYNC_ITEM_LIMIT;
@@ -327,6 +340,10 @@ export async function ingestItem({
   const content = boundedContent({ title, body });
   const safeImageUrls = [...new Set((Array.isArray(imageUrls) ? imageUrls : []).map(boundedImageUrl).filter(Boolean))].slice(0, 12);
   const contentHash = itemContentHash({ ...content, imageUrls: safeImageUrls });
+  // Accept the pre-image-aware digest as "unchanged" too, so upgrading installs do
+  // not re-stamp `received_at` on every already-stored row and re-sort the whole
+  // back catalogue to the top of the triage list. See `legacyItemContentHash`.
+  const legacyHash = legacyItemContentHash(content);
   const result = await query(
     `INSERT INTO stacker_news_items
      (id,account_id,territory_id,remote_id,kind,author_name,title,body,source_url,image_urls,content_hash,remote_created_at,remote_updated_at)
@@ -335,9 +352,10 @@ export async function ingestItem({
        author_name=EXCLUDED.author_name,title=EXCLUDED.title,body=EXCLUDED.body,source_url=EXCLUDED.source_url,
        image_urls=EXCLUDED.image_urls,content_hash=EXCLUDED.content_hash,remote_created_at=EXCLUDED.remote_created_at,
        remote_updated_at=EXCLUDED.remote_updated_at,
-       received_at=CASE WHEN stacker_news_items.content_hash IS DISTINCT FROM EXCLUDED.content_hash THEN NOW() ELSE stacker_news_items.received_at END,
+       received_at=CASE WHEN stacker_news_items.content_hash IN (EXCLUDED.content_hash, $14)
+         THEN stacker_news_items.received_at ELSE NOW() END,
        updated_at=NOW() RETURNING *`,
-    [randomUUID(), accountId, territoryId, String(remoteId), kind, authorName, content.title, content.body, sourceUrl, safeImageUrls, contentHash, remoteCreatedAt, remoteUpdatedAt],
+    [randomUUID(), accountId, territoryId, String(remoteId), kind, authorName, content.title, content.body, sourceUrl, safeImageUrls, contentHash, remoteCreatedAt, remoteUpdatedAt, legacyHash],
   );
   return itemView(result.rows[0]);
 }
@@ -508,9 +526,11 @@ async function syncAccountUnlocked(accountId, { force = false } = {}) {
       const remoteItems = [...(page?.items || [])].sort(compareRemoteItems).slice(0, remaining);
       for (const remoteItem of remoteItems) {
         const imageUrls = imageUrlsForItem({ body: remoteItem.text || '', url: remoteItem.url || '' });
-        const nextHash = itemContentHash({ title: remoteItem.title || '', body: remoteItem.text || '', imageUrls });
+        const nextContent = { title: remoteItem.title || '', body: remoteItem.text || '', imageUrls };
         const previous = await query('SELECT content_hash FROM stacker_news_items WHERE account_id=$1 AND remote_id=$2', [accountId, String(remoteItem.id)]);
-        const changed = previous.rows[0]?.content_hash !== nextHash;
+        const storedHash = previous.rows[0]?.content_hash;
+        // A row we have never seen has no stored hash — that is new, not unchanged.
+        const changed = storedHash === undefined || !contentHashMatches(storedHash, nextContent);
         const item = await ingestItem({
           accountId,
           territoryId: territory.id,
@@ -730,7 +750,14 @@ export async function executeApprovedAction(id) {
     remoteItemId: item?.remote_id || '',
   };
   if (stableHash(currentTarget) !== stableHash(action.reviewed_target || {})) throw new Error('External account or destination changed after review');
-  if (item && item.content_hash !== action.source_content_hash) throw new Error('Source content changed after review');
+  // An action reviewed BEFORE the image-aware digest landed stamped the legacy
+  // hash, so compare the item's current content against both digests rather than
+  // the two stored strings — otherwise every already-approved action fails
+  // permanently on an upgrade, blaming a content change that never happened.
+  // See `legacyItemContentHash`.
+  if (item && !contentHashMatches(action.source_content_hash, { title: item.title, body: item.body, imageUrls: item.image_urls })) {
+    throw new Error('Source content changed after review');
+  }
   if (action.policy_version !== POLICY_VERSION) throw new Error('Policy version changed after review');
   const rules = resolveStackerNewsRules(account.rules, territory?.rules, territory?.inherit_account_rules ?? true);
   if (hashStackerNewsRules(rules) !== action.rules_hash) throw new Error('Community rules changed after review');
