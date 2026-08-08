@@ -23,6 +23,7 @@ import {
   INVESTIGATION_CIRCUIT_MAX_CREATIONS,
   __resetInvestigationCircuit
 } from './agentErrorAnalysis.js';
+import { detectImmediateFallbackSignal } from '../lib/aiToolkit/errorDetection.js';
 import { API_ACCESS_ERROR_CATEGORIES } from './agentErrorAnalysis.js';
 import { ENVIRONMENTAL_ERROR_CATEGORIES } from './taskLearning/metrics.js';
 import { addTask, updateTask, getAllTasks } from './cos.js';
@@ -263,6 +264,7 @@ describe('resolveFailedTaskDecision', () => {
       const decision = resolveFailedTaskDecision(task({ failureCount: 0 }), { actionable: true, category: 'bad-request', message: 'bad' });
       expect(decision.status).toBe('blocked');
     });
+
   });
 
   describe('non-actionable errors with retry tracking', () => {
@@ -275,6 +277,21 @@ describe('resolveFailedTaskDecision', () => {
       expect(decision.metadataUpdates.retryPendingSince).toBe(new Date(HOLD_NOW).toISOString());
       expect(decision.metadataUpdates.failureCount).toBe(1);
       expect(decision.metadataUpdates.lastErrorCategory).toBe('rate-limit');
+      expect(decision.investigationAnalysis).toBeNull();
+    });
+
+    // The agy "we're still verifying your account eligibility" banner is an
+    // auth-error, but a self-clearing one — blocking the task strands work that
+    // would have succeeded minutes later on a fallback provider. The signal is
+    // emitted non-actionable precisely so it lands here; this pins the two files
+    // together (the analysis comes from the real detector).
+    it('retries — does not block — the self-clearing Antigravity eligibility block', () => {
+      const analysis = detectImmediateFallbackSignal(
+        "We're finishing verifying your account eligibility. This usually takes a moment. Please try again shortly."
+      );
+      expect(analysis.category).toBe('auth-error');
+      const decision = resolveFailedTaskDecision(task(), analysis, { agentId: 'agent-y', now: HOLD_NOW });
+      expect(decision.status).toBe('in_progress');
       expect(decision.investigationAnalysis).toBeNull();
     });
 

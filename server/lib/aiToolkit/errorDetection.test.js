@@ -138,7 +138,25 @@ describe('Error Detection', () => {
         hasError: true,
         category: ERROR_CATEGORIES.AUTH_ERROR,
         requiresFallback: true,
-        suggestedFix: expect.stringContaining('verification')
+        suggestedFix: expect.stringContaining('verification'),
+        // The account is fine and no PortOS setting is wrong — Google is mid-
+        // verification and says the condition clears itself. Actionable would
+        // BLOCK the task (resolveFailedTaskDecision); provider origin is what
+        // benches the provider so the retry resolves onto a fallback.
+        actionable: false,
+        origin: 'provider'
+      });
+    });
+
+    // The banner is a repainted TUI screen, not a log: Antigravity emits the two
+    // sentences on separate lines with a leading space from the erase-to-start
+    // sequence. Fixture is the ANSI-STRIPPED shape observed in a real agy raw.txt
+    // — the exact text the spawner's detector is fed.
+    it('matches the banner as agy actually renders it (two lines, leading space)', () => {
+      const rendered = "  ⎿  We're finishing verifying your account eligibility.\n This usually takes a moment. Please try again shortly.\r\n";
+      expect(detectImmediateFallbackSignal(rendered)).toMatchObject({
+        category: ERROR_CATEGORIES.AUTH_ERROR,
+        actionable: false
       });
     });
 
@@ -158,6 +176,9 @@ describe('Error Detection', () => {
         category: ERROR_CATEGORIES.USAGE_LIMIT,
         requiresFallback: true
       });
+      // Signals stay actionable-by-default; only a signal the provider says
+      // clears itself opts out.
+      expect(result.actionable).toBe(true);
     });
 
     it('does not match quoted prompt text in the middle of a line', () => {

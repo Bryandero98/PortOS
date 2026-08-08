@@ -113,6 +113,7 @@ export * from './promptPartials.js';
 export * from './promptRunner.js';
 export * from './promptSystemStages.js';
 export * from './promptTemplate.js';
+export * from './providerCooldown.js';
 export * from './providerModels.js';
 // Namespaced: providerVendors.js re-exports `inferTuiCommand` /
 // `applyCommandDefaults` (from tuiHandshake.js) and `prepareCliPrompt` (from

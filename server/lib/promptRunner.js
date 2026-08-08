@@ -32,6 +32,7 @@ import { executeTuiRun } from './tuiPromptRunner.js';
 import { ServerError } from './errorHandler.js';
 import { PROVIDER_TYPES } from './aiToolkit/constants.js';
 import { analyzeError, ERROR_CATEGORIES } from './aiToolkit/errorDetection.js';
+import { isSchemaTypeCategory, resolveProviderBench } from './providerCooldown.js';
 import { isGenerationModel } from './localModelHeuristics.js';
 import { getAIToolkitInstance } from './aiToolkitState.js';
 import { createSingleFlight } from './singleFlight.js';
@@ -109,29 +110,6 @@ export async function withLocalConcurrencyGate(provider, fn) {
     releaseLocalSlot(endpoint);
   }
 }
-
-// Cooldown per error category — how long the failed provider is marked
-// unavailable so subsequent calls skip it and proactively use the fallback.
-// USAGE_LIMIT is absent because `markUsageLimit` parses the wait time
-// from the error body (e.g. "resets 5pm"). Values target the timescale
-// the user can plausibly recover the underlying cause:
-//   RATE_LIMIT      — 5m: provider-side counter typically clears in minutes
-//   AUTH_ERROR      — 15m: usually a config issue that needs human action
-//   MODEL_NOT_FOUND — 30m: also config; longer because retry is unlikely
-//   QUOTA_EXCEEDED  — 60m: billing/credits; retry sooner is futile
-//   NETWORK_ERROR   — 2m: usually a transient hiccup
-//   TIMEOUT/UNKNOWN — 1m: short enough to retry, long enough to skip
-//                     while the immediate workload retries via fallback
-const COOLDOWN_MS_BY_CATEGORY = {
-  [ERROR_CATEGORIES.RATE_LIMIT]: 5 * 60 * 1000,
-  [ERROR_CATEGORIES.AUTH_ERROR]: 15 * 60 * 1000,
-  [ERROR_CATEGORIES.MODEL_NOT_FOUND]: 30 * 60 * 1000,
-  [ERROR_CATEGORIES.QUOTA_EXCEEDED]: 60 * 60 * 1000,
-  [ERROR_CATEGORIES.NETWORK_ERROR]: 2 * 60 * 1000,
-  [ERROR_CATEGORIES.TIMEOUT]: 60 * 1000,
-  [ERROR_CATEGORIES.UNKNOWN]: 60 * 1000,
-};
-const DEFAULT_COOLDOWN_MS = 60 * 1000;
 
 /**
  * Returns true when the runner+provider pair will actually honor a
@@ -243,15 +221,10 @@ export function pickConfigCorrectedModel(provider, failedModel) {
 // provider with a schema-strengthened prompt before the cascade escalates to a
 // Tier-3 fallback / Tier-4 investigation task.
 
-// Categories the tiered cascade classifies as schema/type (mirrors
-// autoFixer.CATEGORY_TO_TIER's SCHEMA_TYPE entries; kept LOCAL so promptRunner
-// stays decoupled from the lazily-imported CoS stack — see loadAutoFixer). The
-// synthetic response-schema failure below is tagged 'parse-error' so it lands
-// in this tier when it re-enters the cascade.
-const SCHEMA_TYPE_CATEGORIES = new Set([
-  'parse-error', 'bad-request', 'context-length', 'output-length', 'build-error', 'lint-error',
-]);
-export const isSchemaTypeCategory = (category) => SCHEMA_TYPE_CATEGORIES.has(category);
+// Re-exported from providerCooldown.js, which owns it alongside the cooldown
+// table that consults it (the tier classification and the "don't bench a healthy
+// provider over one off-shape response" rule are the same judgement).
+export { isSchemaTypeCategory };
 
 // Deterministic instruction appended to the prompt on a schema/type re-request
 // when the caller declared a schema but supplied no custom `repair`. Names the
@@ -1066,45 +1039,25 @@ async function markProviderUnavailableFromError(failed, errorMessage, runnerAnal
   const analysis = runnerAnalysis && typeof runnerAnalysis === 'object'
     ? runnerAnalysis
     : analyzeError(errorMessage || '');
-  const category = analysis?.category || ERROR_CATEGORIES.UNKNOWN;
 
-  // A content/safety refusal is prompt-specific, not a provider outage — the
-  // provider is healthy and other prompts still work. Don't bench it (which
-  // would route every subsequent task to the fallback for a full cooldown);
-  // this single call still falls back via the caller's retry path.
-  //
-  // A model-not-found is REQUEST-specific the same way: the request named a
-  // model id the (reachable) endpoint doesn't have — a bad caller/config model,
-  // not the provider being down. Benching the whole provider would take its
-  // OTHER valid models offline for the full cooldown (e.g. one bad
-  // `codex-configured-default` vision call benching Ollama so a correct
-  // `qwen2.5vl` call then proactively swaps to a non-vision fallback). The
-  // single failing call still falls back via the retry path; the provider stays
-  // available for its working models. A genuine endpoint outage surfaces as
-  // NETWORK_ERROR, not MODEL_NOT_FOUND, so it is still benched.
-  //
-  // A schema/type failure (issue #2350) is likewise RESPONSE-specific, not a
-  // provider outage — the provider returned HTTP 200 with content that just
-  // didn't match this caller's declared schema. Benching it would take a healthy
-  // provider offline for every other caller over one off-shape response; the
-  // single failing call still fails over via Tier 3.
-  if (category === ERROR_CATEGORIES.CONTENT_REFUSAL
-    || category === ERROR_CATEGORIES.MODEL_NOT_FOUND
-    || isSchemaTypeCategory(category)) return;
+  // Request/response-specific categories (a content refusal, a bad model id, an
+  // off-shape response) resolve to null — the provider is healthy and the single
+  // failing call still falls back via the caller's retry path.
+  const bench = resolveProviderBench(analysis);
+  if (!bench) return;
 
-  if (category === ERROR_CATEGORIES.USAGE_LIMIT) {
+  if (bench.marker === 'usage-limit') {
     await providerStatus.markUsageLimit(failed.id, {
-      message: analysis.message || errorMessage,
-      waitTime: analysis.waitTime,
+      message: bench.message || errorMessage,
+      waitTime: bench.waitTime,
     });
     return;
   }
 
-  const waitTimeMs = COOLDOWN_MS_BY_CATEGORY[category] ?? DEFAULT_COOLDOWN_MS;
   await providerStatus.markUnavailable(failed.id, {
-    reason: category,
-    message: analysis?.message || errorMessage || `Provider ${failed.name || failed.id} failed`,
-    waitTimeMs,
+    reason: bench.category,
+    message: bench.message || errorMessage || `Provider ${failed.name || failed.id} failed`,
+    waitTimeMs: bench.waitTimeMs,
   });
 }
 

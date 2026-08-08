@@ -90,7 +90,9 @@ export async function captureWorktreeDiff(workspacePath, agentDir) {
  */
 export async function resolveErrorAnalysis({ finalSuccess, rawFile, fallbackText, task, model, immediateFallbackAnalysis, completionReason, completionError }) {
   if (finalSuccess) return null;
+  // Short-circuit BEFORE the tail read: a mid-stream fallback signal already is
+  // the verdict, so reading ~16KB of spool only to discard it is pure waste.
+  if (immediateFallbackAnalysis) return immediateFallbackAnalysis;
   const rawAnalysisText = await readFileTail(rawFile, RAW_TAIL_ANALYSIS_BYTES);
-  return immediateFallbackAnalysis
-    || analyzeAgentFailure(rawAnalysisText ?? fallbackText, task, model, { completionReason, completionError });
+  return analyzeAgentFailure(rawAnalysisText ?? fallbackText, task, model, { completionReason, completionError });
 }
