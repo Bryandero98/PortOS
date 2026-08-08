@@ -13,7 +13,7 @@ import * as shellService from './shell.js';
 import { emitLog } from './cosEvents.js';
 import { updateAgent } from './cosAgentLifecycle.js';
 import { createOutputSpooler } from './agentTuiSpawning/outputSpooler.js';
-import { captureWorktreeDiff, worktreeHasChanges, resolveErrorAnalysis } from './agentTuiSpawning/finalizeHelpers.js';
+import { captureWorktreeDiff, worktreeHasWorkEvidence, resolveErrorAnalysis } from './agentTuiSpawning/finalizeHelpers.js';
 import { finalizeAgent, releaseAgentLane } from './agentFinalization.js';
 import { activeAgents, userTerminatedAgents, pausedAgents, isFalsyMeta, registerSpawnedAgent, unregisterSpawnedAgent } from './agentState.js';
 import { PATHS } from '../lib/fileUtils.js';
@@ -100,8 +100,9 @@ const CONNECTIVITY_RECHECK_MS = 10000;
 const CONNECTIVITY_PROBE_LEAD_MS = 20000;
 
 // Output buffering/spooling (createOutputSpooler) and failure-analysis /
-// worktree-inspection helpers (readFileTail, worktreeHasChanges,
-// captureWorktreeDiff, resolveErrorAnalysis, RAW_TAIL_ANALYSIS_BYTES) live in
+// worktree-inspection helpers (readFileTail, worktreeHasChanges, commitsSince,
+// worktreeHasWorkEvidence, captureWorktreeDiff, resolveErrorAnalysis,
+// RAW_TAIL_ANALYSIS_BYTES) live in
 // ./agentTuiSpawning/ so spawnTuiAgent stays a thin orchestrator.
 
 // Sentinel-file polling. TUI agents write `.agent-done` in their workspace
@@ -1443,6 +1444,9 @@ export async function spawnTuiAgent({
         // An agent that shows activity counters but makes no file changes
         // (rambled, invalid tool calls, hit an error) should fail, not succeed.
         //
+        // "Evidence of work" is a dirty tree OR a commit made during the run,
+        // not a dirty tree alone — see worktreeHasWorkEvidence for why.
+        //
         // ...UNLESS the task declares its work product isn't files (#3102).
         // `worktreeChangesExpected: false` marks a task type whose deliverable
         // lands OUTSIDE the repo — a reference-watch run against a GitHub/GitLab/
@@ -1453,7 +1457,7 @@ export async function spawnTuiAgent({
         // distinguishes "prompt never submitted" → idle-no-activity either way.
         const worktreeChangesExpected = !isFalsyMeta(task?.metadata?.worktreeChangesExpected);
         (async () => {
-          const hasChanges = !worktreeChangesExpected || await worktreeHasChanges(cwd);
+          const hasChanges = !worktreeChangesExpected || await worktreeHasWorkEvidence(cwd, startedAt);
           // Capture any uncommitted changes for post-mortem analysis regardless
           // of outcome — the diff is useful even on success for debugging, and is
           // a no-op on a clean tree.
@@ -1462,7 +1466,7 @@ export async function spawnTuiAgent({
             finish({
               success: false,
               exitCode: 1,
-              error: 'TUI agent idled out with zero uncommitted file changes — the model may have processed but produced no work.',
+              error: 'TUI agent idled out with zero uncommitted file changes and no new commits — the model may have processed but produced no work.',
               reason: 'idle-no-changes',
             }).catch(err => {
               emitLog('error', `Failed to finalize TUI agent ${agentId}: ${err.message}`, { agentId });

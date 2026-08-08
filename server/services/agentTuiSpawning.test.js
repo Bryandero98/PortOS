@@ -94,6 +94,10 @@ vi.mock('./git.js', () => ({
   // to exercise the idle-no-changes failure path override via mockResolvedValueOnce.
   getStatus: vi.fn().mockResolvedValue({ clean: false, files: [{ path: 'file.txt', status: 'M' }] }),
   getDiff: vi.fn().mockResolvedValue('diff content here'),
+  // `git rev-list --count --since=…` for the commit half of the work-evidence
+  // probe. Default: zero commits during the run, so a clean tree still fails —
+  // the commit-and-push test overrides this to a non-zero count.
+  execGit: vi.fn().mockResolvedValue({ exitCode: 0, stdout: '0\n', stderr: '' }),
   // No owner-matched gh account by default → empty overlay (ambient auth kept).
   resolveForgeTokenEnv: vi.fn().mockResolvedValue({}),
 }));
@@ -558,6 +562,7 @@ describe('spawnTuiAgent runtime', () => {
     // Tests that want to exercise the idle-no-changes failure path override this.
     vi.mocked(gitService.getStatus).mockResolvedValue({ clean: false, files: [{ path: 'file.txt', status: 'M' }] });
     vi.mocked(gitService.getDiff).mockResolvedValue('diff content here');
+    vi.mocked(gitService.execGit).mockResolvedValue({ exitCode: 0, stdout: '0\n', stderr: '' });
 
     // Reset input-recency state: no input recorded by default. The
     // recent-input test overrides this — clearAllMocks doesn't undo a
@@ -1012,6 +1017,33 @@ describe('spawnTuiAgent runtime', () => {
 
     expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
       expect.objectContaining({ success: false, completionReason: 'idle-no-changes' })
+    );
+  });
+
+  // ── 1a-quinquies. A COMMIT during the run is evidence of work ────────────────
+  // The #2191 gate above read only UNCOMMITTED changes, so a job whose
+  // deliverable is a commit — `/do:release`, `/do:pr` — idled out on a clean
+  // tree *because it succeeded* and was scored a failure. Rationale and the
+  // 2026-08-08 release incident: worktreeHasWorkEvidence. The clean-tree +
+  // zero-commit failure stays covered by the sibling tests above, which run on
+  // the beforeEach default of `rev-list --count` → 0.
+  it('idle-complete: a commit made during the run counts as work on a clean tree (release/do:pr jobs)', async () => {
+    vi.mocked(gitService.execGit).mockResolvedValue({ exitCode: 0, stdout: '2\n', stderr: '' });
+    await driveIdleWithWorkOnCleanTree();
+
+    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: 'agent-1',
+        success: true,
+        completionReason: 'idle-complete',
+      })
+    );
+    // The probe is scoped to the run window by committer date, so commits that
+    // were already on the branch at spawn can't launder a no-op into a success.
+    expect(gitService.execGit).toHaveBeenCalledWith(
+      ['rev-list', '--count', expect.stringMatching(/^--since=\d{4}-/), 'HEAD'],
+      '/tmp/ws',
+      { ignoreExitCode: true }
     );
   });
 

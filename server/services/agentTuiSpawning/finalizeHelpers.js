@@ -41,6 +41,54 @@ export async function worktreeHasChanges(workspacePath) {
 }
 
 /**
+ * Count commits reachable from HEAD whose COMMITTER date falls inside the run
+ * window. `git rev-list --since` filters on committer date, which is what makes
+ * this a usable "did this agent commit anything?" probe: commits the agent
+ * created (or rewrote via rebase) are stamped now, while commits merely pulled
+ * in from the remote keep the committer date they were written with — usually
+ * before the run started, so they don't count as this agent's work.
+ *
+ * Non-throwing: a repo with no commits yet (`rev-list HEAD` fails), a detached
+ * or broken checkout, or a git timeout all return 0.
+ */
+export async function commitsSince(workspacePath, sinceMs) {
+  if (!workspacePath || typeof workspacePath !== 'string') return 0;
+  if (!Number.isFinite(sinceMs)) return 0;
+  const since = new Date(sinceMs).toISOString();
+  // `ignoreExitCode` so a repo with no HEAD resolves to a non-zero exit we can
+  // read as "no commits" rather than rejecting — the house convention for
+  // probe-shaped git calls (see git.js `isRepo` / `getRemote`).
+  const result = await git
+    .execGit(['rev-list', '--count', `--since=${since}`, 'HEAD'], workspacePath, { ignoreExitCode: true })
+    .catch(() => null);
+  if (!result || result.exitCode !== 0) return 0;
+  const count = parseInt(result.stdout.trim(), 10);
+  return Number.isFinite(count) ? count : 0;
+}
+
+/**
+ * Did this agent leave any evidence of work behind? Dirty tree OR at least one
+ * commit made during the run.
+ *
+ * The commit half is what makes this correct for jobs whose deliverable is a
+ * COMMIT rather than a dirty tree — `/do:release` and `/do:pr` runs commit,
+ * push, and open a PR, so by the time they idle the tree is clean *because they
+ * succeeded*. Gating on `worktreeHasChanges` alone scored those as
+ * `idle-no-changes` failures: two consecutive release runs on 2026-08-08 each
+ * cut the release commit and opened/repaired the release PR, were reported as
+ * failures, and the task retried — holding the release for two days.
+ *
+ * Accepted trade-off: a run that pulls in a merge commit another agent pushed
+ * mid-run sees that commit stamped inside the window and counts it as work.
+ * That false success is rarer, and far cheaper, than failing every
+ * commit-and-push job.
+ */
+export async function worktreeHasWorkEvidence(workspacePath, sinceMs) {
+  if (await worktreeHasChanges(workspacePath)) return true;
+  return (await commitsSince(workspacePath, sinceMs)) > 0;
+}
+
+/**
  * Capture the git diff (staged + unstaged) from a worktree and save it to the
  * agent archive dir. Called before worktree cleanup so post-mortems can see
  * what changes existed even if the worktree is deleted. Non-throwing — a
