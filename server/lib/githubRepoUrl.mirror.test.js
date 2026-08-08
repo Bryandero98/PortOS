@@ -22,8 +22,11 @@ const SERVER_PATH = resolve(__dirname, 'githubRepoUrl.js');
 const CLIENT_PATH = resolve(__dirname, '../../client/src/lib/githubRepoUrl.js');
 
 const MIRRORED_NAMES = [
+  'OWNER',
+  'REPO',
   'SSH_REPO_RE',
   'HTTPS_REPO_RE',
+  'DOT_SEGMENTS',
   'parseGitHubUrl',
   'isGitHubRepoUrl',
 ];
