@@ -588,6 +588,18 @@ export const COMPLETION_REASON_ANALYSES = {
     message: 'Agent idled out with no file changes',
     suggestedFix: 'The agent stopped producing output without writing any files OR committing anything during the run. Check the raw transcript for where it stalled — a provider retry loop or a long-running command can outlast the idle reaper.'
   },
+  // The programmatic-I/O counterpart of the above: a layered-intelligence run
+  // delivers a `.agent-done` JSON payload, never a file change, so "no file
+  // changes" was both the wrong measurement and the wrong advice. Same
+  // `no-changes` category on purpose — the downstream taxonomies keep
+  // classifying it without a new token — but the prose names what actually
+  // went missing.
+  'idle-no-deliverable': {
+    category: 'no-changes',
+    actionable: false,
+    message: 'Agent idled out without writing its structured output',
+    suggestedFix: 'This task type is judged by the `.agent-done` payload an output hook consumes, not by file changes. The transcript often ENDS with the JSON the agent should have written to that file — a smaller model answering in the terminal instead of using a tool. Check the tail of the raw transcript, and prefer a model that reliably follows the write-the-file instruction.'
+  },
   'idle-no-activity': {
     category: 'startup-failure',
     actionable: false,
@@ -685,8 +697,13 @@ export function endsAwaitingUserInput(analysisOutput) {
   return AWAITING_INPUT_MARKERS.some(marker => marker.test(tail));
 }
 
-/** Idle-out reasons worth re-explaining as an unanswered prompt. */
-const AWAITING_INPUT_REFINABLE_REASONS = new Set(['idle-no-changes', 'idle-no-activity']);
+/**
+ * Idle-out reasons worth re-explaining as an unanswered prompt. All three are
+ * "the reaper killed it" verdicts, so when the tail shows a selector or approval
+ * gate that IS the proximate cause — including for a programmatic-I/O run, whose
+ * payload went unwritten precisely because it never got past the prompt.
+ */
+const AWAITING_INPUT_REFINABLE_REASONS = new Set(['idle-no-changes', 'idle-no-activity', 'idle-no-deliverable']);
 
 /**
  * Re-word an idle-out whose transcript ends on an unanswered prompt. The

@@ -16,6 +16,7 @@ import { createOutputSpooler } from './agentTuiSpawning/outputSpooler.js';
 import { captureWorktreeDiff, worktreeHasWorkEvidence, resolveErrorAnalysis } from './agentTuiSpawning/finalizeHelpers.js';
 import { finalizeAgent, releaseAgentLane } from './agentFinalization.js';
 import { activeAgents, userTerminatedAgents, pausedAgents, isFalsyMeta, registerSpawnedAgent, unregisterSpawnedAgent } from './agentState.js';
+import { isProgrammaticIoTaskType, resolveTaskHookType } from './taskTypeHooks.js';
 import { PATHS } from '../lib/fileUtils.js';
 import { DONE_SENTINEL_NAME, parseSentinelPayload } from '../lib/agentSentinel.js';
 import { shouldAbandonForHostShutdown, HOST_SHUTDOWN_REASON } from '../lib/hostShutdown.js';
@@ -1456,18 +1457,43 @@ export async function spawnTuiAgent({
         // on today's behavior; the `workActivity.active` signal above still
         // distinguishes "prompt never submitted" → idle-no-activity either way.
         const worktreeChangesExpected = !isFalsyMeta(task?.metadata?.worktreeChangesExpected);
+        // A PROGRAMMATIC-I/O run answers a DIFFERENT question, not a relaxed
+        // version of this one. Its deliverable is the structured `.agent-done`
+        // payload an output hook consumes — a layered-intelligence run reasons
+        // over the app's goals and returns JSON that a deterministic step files as
+        // one tracker issue — and its prompt FORBIDS touching the repo, so
+        // worktree evidence measures nothing about it. Asking anyway blamed the
+        // run for exactly the thing it was told not to do ("zero file changes"),
+        // while the honest question is right there: did the payload land?
+        // Usually it hasn't — the sentinel watcher below finalizes within
+        // DONE_POLL_INTERVAL_MS of `.agent-done` appearing, so a run that reached
+        // the reaper is normally one whose payload never materialized (the model
+        // printed its JSON into the TUI instead of writing the file, #3640).
+        // `sentinelPresent()` and not `false` because the two timers CAN land on
+        // the same tick, and this one is registered first: an agent that wrote its
+        // sentinel in the last idle window would otherwise be failed for a clean
+        // tree by the interval that happened to run before the watcher.
+        //
+        // Deliberately NOT folded into `worktreeChangesExpected`: exempting it
+        // from the gate would score that same run a PASS with no proposal filed,
+        // trading a misleading failure for a silent one.
+        const programmaticIo = isProgrammaticIoTaskType(resolveTaskHookType(task));
         (async () => {
-          const hasChanges = !worktreeChangesExpected || await worktreeHasWorkEvidence(cwd, startedAt);
+          const delivered = programmaticIo
+            ? sentinelPresent()
+            : !worktreeChangesExpected || await worktreeHasWorkEvidence(cwd, startedAt);
           // Capture any uncommitted changes for post-mortem analysis regardless
           // of outcome — the diff is useful even on success for debugging, and is
           // a no-op on a clean tree.
           await captureWorktreeDiff(cwd, agentDir).catch(() => {});
-          if (!hasChanges) {
+          if (!delivered) {
             finish({
               success: false,
               exitCode: 1,
-              error: 'TUI agent idled out with zero uncommitted file changes and no new commits — the model may have processed but produced no work.',
-              reason: 'idle-no-changes',
+              error: programmaticIo
+                ? 'TUI agent idled out without writing its .agent-done payload — this task type delivers structured output, not file changes, and nothing was left for the output hook to consume.'
+                : 'TUI agent idled out with zero uncommitted file changes and no new commits — the model may have processed but produced no work.',
+              reason: programmaticIo ? 'idle-no-deliverable' : 'idle-no-changes',
             }).catch(err => {
               emitLog('error', `Failed to finalize TUI agent ${agentId}: ${err.message}`, { agentId });
             });
