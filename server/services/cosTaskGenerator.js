@@ -42,7 +42,7 @@ import { getCodeReviewDefaults } from './codeReview.js';
 import { isHeldByOther, getClaimOwner } from './cosTaskClaim.js';
 import { ensureInstanceId } from './instances.js';
 import { PR_COMPLETION_VALUES } from '../lib/prDisposition.js';
-import { resolveAppWorkTracker, isFileTracker, formatTrackerInstructions, TRACKER_FILING_PRESETS, TRACKER_FILING_TASK_TYPES } from '../lib/workTracker.js';
+import { resolveTrackerFilingBlock } from '../lib/workTracker.js';
 
 /**
  * Block a task that has exceeded the max spawn limit. Returns true if blocked.
@@ -2324,37 +2324,6 @@ async function resolveIssueReconcileBlock(app, taskType, metadata, taskSchedule)
   });
   emitLog('info', `🧟 issue-reconcile dispatching for ${app.name}: ${result.zombies.length} zombie issue(s) on ${result.forge}`, { appId: app.id, analysisType: taskType });
   return { skip: false, block };
-}
-
-/**
- * Resolve the {trackerInstructions} block naming where a tracker-filing task
- * records what it found, plus the two metadata signals derived from the SAME
- * resolved tracker so they can never disagree with the instructions the agent
- * actually got (#3140, #3102):
- *   - `workTracker` — traceability
- *   - `worktreeChangesExpected` — the PLAN.md path commits checklist items
- *     (dirty tree); the github/gitlab/jira paths file issues/tickets out of band
- *     and legitimately leave the tree CLEAN.
- *
- * Mirrors `triggerReferenceAnalysis` (referenceRepos.js, the on-commit path)
- * rather than restating its block table — both run `resolveAppWorkTracker` →
- * `formatTrackerInstructions` / `isFileTracker`.
- *
- * A TRACKER-FILING type reads the app read-only and delivers its findings as
- * items in the app's tracker rather than as a commit. The set is derived from
- * `TRACKER_FILING_PRESETS`, so a type is gated in exactly when it has wording.
- *
- * Returns `{ trackerInstructions: '', workTracker: null }` for every other type.
- */
-async function resolveTrackerFilingBlock(app, taskType) {
-  if (!TRACKER_FILING_TASK_TYPES.has(taskType)) return { trackerInstructions: '', workTracker: null };
-  // Never throws — degrades to the PLAN.md block, same as the on-commit path.
-  const workTracker = await resolveAppWorkTracker(app).catch(() => ({ resolved: 'plan' }));
-  return {
-    trackerInstructions: formatTrackerInstructions(workTracker.resolved, TRACKER_FILING_PRESETS[taskType]),
-    workTracker: workTracker.resolved,
-    worktreeChangesExpected: isFileTracker(workTracker.resolved),
-  };
 }
 
 /**

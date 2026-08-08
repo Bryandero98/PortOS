@@ -33,6 +33,8 @@ import ConfidenceBadge from '../ConfidenceBadge';
 import { timeAgo } from '../../../utils/formatters';
 import { parseBareUrl } from '../../../lib/bareUrl';
 import VoiceCapture from '../VoiceCapture';
+import RepoIntakeOptions from '../RepoIntakeOptions';
+import { useRepoIntake } from '../../../hooks';
 
 // Where a filed entry's "View" button points. A bare-URL capture is filed to the
 // links collection (see captureUrlAsLink) and lives in the Links tab; every
@@ -54,6 +56,9 @@ export default function InboxTab({ onRefresh, settings }) {
   // when on, captured thoughts are flagged so they can later be batch-sent to the
   // creative catalog (vs todos/refs that stay out).
   const [creative, setCreative] = useLocalStorageBool('brain.captureCreative', false);
+  // A bare GitHub repo URL is cloned on capture, which unlocks the two post-clone
+  // agent opt-ins (malware scan / repo study) — shared with Quick Capture.
+  const repoIntake = useRepoIntake(inputText);
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showNeedsReview, setShowNeedsReview] = useState(true);
@@ -125,7 +130,12 @@ export default function InboxTab({ onRefresh, settings }) {
     setInputText('');
     setEntries(prev => [optimisticEntry, ...prev]);
 
-    const result = await api.captureBrainThought(text, undefined, undefined, { creative: asCreative }, { silent: true }).catch(err => {
+    // `intakeFor` re-derives from the submitted text, so a sticky tick can't ride
+    // along on a capture that is no longer a repo URL.
+    const result = await api.captureBrainThought(text, undefined, undefined, {
+      creative: asCreative,
+      repoIntake: repoIntake.intakeFor(text),
+    }, { silent: true }).catch(err => {
       toast.error(err.message || 'Failed to capture thought');
       setEntries(prev => prev.filter(e => e.id !== tempId));
       return null;
@@ -343,12 +353,20 @@ export default function InboxTab({ onRefresh, settings }) {
         </div>
         <p className="mt-2 text-xs text-gray-500">
           Capture a thought — type or use the mic. AI will classify and route it automatically.
-          {inputIsUrl && <span className="text-cyan-400"> That&rsquo;s a URL — it will be saved to Links.</span>}
+          {inputIsUrl && (repoIntake.repo
+            ? <span className="text-cyan-400"> That&rsquo;s a GitHub repo — it will be saved to Links and cloned.</span>
+            : <span className="text-cyan-400"> That&rsquo;s a URL — it will be saved to Links.</span>)}
           {!inputIsUrl && creative && <span className="text-port-accent-2"> Creative mode on — captures are flagged for the Catalog.</span>}
           {settings?.confidenceThreshold && (
             <span> Confidence threshold: {Math.round(settings.confidenceThreshold * 100)}%</span>
           )}
         </p>
+        <RepoIntakeOptions
+          idPrefix="inbox-capture-repo"
+          repo={repoIntake.repo}
+          options={repoIntake.options}
+          onToggle={repoIntake.toggle}
+        />
       </form>
 
       {/* Creative batch action — appears once any captured note is flagged

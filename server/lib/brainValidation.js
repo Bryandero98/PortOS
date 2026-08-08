@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { partialWithoutDefaults } from './zodCompat.js';
+import { partialWithoutDefaults, optionalBooleanMap } from './zodCompat.js';
+import { REPO_INTAKE_KEYS } from './repoIntakeActions.js';
 
 // Destination enum. `links` is reachable only from the bare-URL capture
 // short-circuit (a pasted URL is filed straight to the links collection) — the
@@ -186,6 +187,12 @@ export const reviewRecordSchema = z.object({
 
 // --- Input schemas for API endpoints ---
 
+// Opt-in post-clone agent actions for a captured GitHub repo URL. Keys derive
+// from REPO_INTAKE_KEYS so the wire contract can't drift from the normalizer
+// that reads it (server/lib/repoIntakeActions.js).
+export const repoIntakeSchema = z.object(optionalBooleanMap(REPO_INTAKE_KEYS));
+const repoIntakeInputSchema = repoIntakeSchema.optional();
+
 // Capture input schema
 export const captureInputSchema = z.object({
   text: z.string().min(1).max(10000),
@@ -194,7 +201,11 @@ export const captureInputSchema = z.object({
   // Opt-in flag: the user marked this note as a creative idea at capture time
   // (vs a todo/reference). Creative notes are later batch-sendable into the
   // creative catalog as ingredients (see catalog brain-bridge ingest).
-  creative: z.boolean().optional()
+  creative: z.boolean().optional(),
+  // Post-clone agent actions for a bare GitHub repo URL. Ignored for every other
+  // capture — only a repo URL gets cloned, and only a clone can be scanned or
+  // studied (services/brain.js#createLinkFromUrl).
+  repoIntake: repoIntakeInputSchema
 });
 
 // Resolve review input schema
@@ -389,9 +400,18 @@ export const linkRecordSchema = z.object({
   malwareScan: z.object({
     reportId: z.string().uuid(),
     taskId: z.string().optional(),
-    status: z.enum(['completed', 'failed']).optional(),
+    // `queued` is stamped when the capture-time checkbox dispatches the scan
+    // right after the clone; finalizeMalwareScan replaces it on completion.
+    status: z.enum(['queued', 'completed', 'failed']).optional(),
     verdict: z.enum(['CLEAN', 'CAUTION', 'DANGEROUS']).nullable().optional(),
     completedAt: z.string().datetime().optional()
+  }).optional(),
+  // What the user asked to happen after the clone lands (capture-time checkboxes).
+  repoIntake: repoIntakeSchema.optional(),
+  // The queued `repo-study` run, once dispatched.
+  repoStudy: z.object({
+    taskId: z.string().optional(),
+    queuedAt: z.string().datetime().optional()
   }).optional(),
   // Bucket grouping (nullable = ungrouped)
   bucketId: z.string().guid().nullable().optional(),
@@ -410,7 +430,9 @@ export const linkInputSchema = z.object({
   tags: z.array(z.string().max(50)).optional(),
   bucketId: z.string().guid().nullable().optional(),
   bucketOrder: z.number().int().optional(),
-  autoClone: z.boolean().optional().default(true)
+  autoClone: z.boolean().optional().default(true),
+  // Post-clone agent actions, same contract as the capture box's checkboxes.
+  repoIntake: repoIntakeInputSchema
 });
 
 // Update Link input schema (partial)

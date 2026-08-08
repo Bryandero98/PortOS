@@ -404,6 +404,16 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     if (taskData.malwareScan && typeof taskData.malwareScan === 'object' && !Array.isArray(taskData.malwareScan)) {
       metadata.malwareScan = taskData.malwareScan;
     }
+    // Brain link a `repo-study` run was queued from, so the completed task can be
+    // traced back to the captured repo it studied.
+    if (isPlainObject(taskData.repoStudy)) metadata.repoStudy = taskData.repoStudy;
+    // Which tracker the prompt told the agent to file into (PLAN.md / GitHub /
+    // GitLab / JIRA), mirroring the raw reference-watch dispatch in
+    // referenceRepos.js#triggerReferenceAnalysis. Beyond traceability this is
+    // what marks a ONE-OFF tracker-filing run as such, so it reaches the
+    // no-commit gate without having to masquerade as a scheduled task type —
+    // see taskTypeHooks.js#isTrackerFilingDispatch.
+    if (taskData.workTracker) metadata.workTracker = taskData.workTracker;
     if (taskData.jiraTicketId) metadata.jiraTicketId = taskData.jiraTicketId;
     if (taskData.jiraTicketUrl) metadata.jiraTicketUrl = taskData.jiraTicketUrl;
     if (taskData.screenshots?.length > 0) metadata.screenshots = taskData.screenshots;

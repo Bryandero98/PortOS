@@ -21,9 +21,8 @@ import {
   bucketReorderSchema
 } from '../lib/brainValidation.js';
 import * as githubCloner from '../services/githubCloner.js';
-import * as cos from '../services/cos.js';
-import { randomUUID } from 'crypto';
-import { prepareScanReportDirectory, reportPathForId, getScanReport } from '../services/malwareScanReports.js';
+import { queueMalwareScan } from '../services/repoIntake.js';
+import { getScanReport } from '../services/malwareScanReports.js';
 
 const router = Router();
 
@@ -241,9 +240,8 @@ router.post('/links/:id/open-folder', asyncHandler(async (req, res) => {
 /**
  * POST /api/brain/links/:id/scan
  * Queue a read-only malware/risk scan (do:scan) against the cloned repo.
- * Creates a CoS user task whose context inlines the do:scan command body
- * with the repo's localPath baked in as SCAN_DIR. The agent writes its
- * markdown report to ~/.claude/scans/.
+ * The task shape lives in services/repoIntake.js so this button and the
+ * capture-time "scan for malware" checkbox queue exactly the same run.
  */
 router.post('/links/:id/scan', asyncHandler(async (req, res) => {
   const link = await brainService.getLinkById(req.params.id);
@@ -256,51 +254,22 @@ router.post('/links/:id/scan', asyncHandler(async (req, res) => {
       code: 'NOT_CLONED'
     });
   }
-  if (!existsSync(link.localPath)) {
-    throw new ServerError('Local clone folder does not exist', {
-      status: 400,
-      code: 'PATH_NOT_FOUND'
-    });
+
+  // `not-cloned` here means the recorded localPath is gone from disk — the
+  // service re-checks existence so the background capture path can't queue a
+  // scan against a directory that was deleted after the clone.
+  const result = await queueMalwareScan(link);
+  if (!result.queued) {
+    throw result.reason === 'duplicate'
+      ? new ServerError('A scan for this repo is already pending or in progress', { status: 409, code: 'DUPLICATE_TASK' })
+      : new ServerError('Local clone folder does not exist', { status: 400, code: 'PATH_NOT_FOUND' });
   }
+  // Record the pending scan the same way the capture-time path does, so a
+  // reload shows the "Scan queued" chip instead of re-arming the button (whose
+  // second click would 409 as a duplicate).
+  await brainService.updateLink(link.id, result.linkPatch);
 
-  const reportId = randomUUID();
-  const reportPath = reportPathForId(reportId);
-  await prepareScanReportDirectory();
-  const repoLabel = link.title || link.url;
-  const description = `Malware scan: ${repoLabel}`;
-  // Carry the BARE command (`metadata.slashdoCommand`) rather than inlining the
-  // ~65KB expanded body here: the prompt builder renders the right invocation
-  // shape once the provider is known AND inlines the body then (a codex host gets
-  // a skill, not `/do:scan`). Inlining here also persisted the whole body as one
-  // line of TASKS.md, rewritten on every task mutation and shipped in each
-  // peer-sync payload. Matches POST /api/cos/tasks/slashdo (#3114).
-  const context = `Run the scan workflow against the cloned repository at: \`${link.localPath}\`
-
-Use that path as SCAN_DIR. Adhere to every Operational Invariant in the workflow body — this is a hostile-until-proven-safe audit. End the report with exactly one verdict heading: \`## Verdict: CLEAN\`, \`## Verdict: CAUTION\`, or \`## Verdict: DANGEROUS\`. When complete, summarize the verdict and top findings in your final response.`;
-
-  const result = await cos.addTask(
-    {
-      description,
-      context,
-      slashdoCommand: 'scan',
-      slashdoArgs: `--report-path-allow-anywhere --report-path ${JSON.stringify(reportPath)}`,
-      malwareScan: { linkId: link.id, reportId },
-      useWorktree: false,
-      openPR: false,
-      simplify: false,
-      reviewLoop: false
-    },
-    'user'
-  );
-  if (result?.duplicate) {
-    throw new ServerError('A scan for this repo is already pending or in progress', {
-      status: 409,
-      code: 'DUPLICATE_TASK'
-    });
-  }
-
-  console.log(`🛡️ Queued malware scan: link=${link.id} path=${link.localPath} task=${result.id}`);
-  res.json({ message: 'Scan queued', taskId: result.id, linkId: link.id, scanPath: link.localPath });
+  res.json({ message: 'Scan queued', taskId: result.taskId, linkId: link.id, scanPath: link.localPath });
 }));
 
 router.get('/links/:id/scan-report', asyncHandler(async (req, res) => {

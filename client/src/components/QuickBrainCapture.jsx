@@ -3,9 +3,11 @@ import { Link } from 'react-router';
 import { ChevronDown, Film, Send, Sliders, Sparkles, X } from 'lucide-react';
 import toast from './ui/Toast';
 import * as api from '../services/api';
-import { useLocalStorageBool, useYoutubeIngest } from '../hooks';
+import { useLocalStorageBool, useRepoIntake, useYoutubeIngest } from '../hooks';
 import { parseBareUrl } from '../lib/bareUrl';
 import { INGEST_OPTIONS, defaultIngestOptions, ingestOptionsFromSettings, isYoutubeVideoUrl } from '../lib/youtubeUrl';
+import RepoIntakeOptions from './brain/RepoIntakeOptions';
+import ToggleChip from './ui/ToggleChip';
 
 export default function QuickBrainCapture() {
   const [input, setInput] = useState('');
@@ -21,6 +23,9 @@ export default function QuickBrainCapture() {
   // A single-video YouTube URL takes a different path entirely (ingest, not
   // capture) and unlocks the advanced panel below.
   const isYoutube = useMemo(() => isYoutubeVideoUrl(input), [input]);
+  // A bare GitHub repo URL is cloned on capture, which unlocks the two post-clone
+  // agent opt-ins (malware scan / repo study).
+  const repoIntake = useRepoIntake(input);
 
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [ingestOpts, setIngestOpts] = useState(defaultIngestOptions);
@@ -87,7 +92,12 @@ export default function QuickBrainCapture() {
     // erroring), so this surface doesn't need its own link-vs-thought branch.
     // It ignores the sticky Creative flag for a URL; dropping it here too keeps
     // the request honest about what will be stored.
-    const result = await api.captureBrainThought(text, undefined, undefined, { creative: creative && !isUrl }, { silent: true }).catch(err => {
+    // `intakeFor` re-derives from the submitted text, so a sticky tick can't ride
+    // along on a capture that is no longer a repo URL.
+    const result = await api.captureBrainThought(text, undefined, undefined, {
+      creative: creative && !isUrl,
+      repoIntake: repoIntake.intakeFor(text),
+    }, { silent: true }).catch(err => {
       toast.error(err.message || 'Failed to capture');
       setInput(prev => prev || text);
       return null;
@@ -162,23 +172,14 @@ export default function QuickBrainCapture() {
         <div id="quick-brain-advanced" className="mt-3 pt-3 border-t border-port-border space-y-3">
           <div className="flex flex-wrap gap-2">
             {INGEST_OPTIONS.map(({ key, label, hint }) => (
-              <label
+              <ToggleChip
                 key={key}
-                htmlFor={`quick-brain-${key}`}
-                title={hint}
-                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs cursor-pointer transition-colors ${ingestOpts[key]
-                  ? 'bg-port-accent/20 text-port-accent border-port-accent/40'
-                  : 'bg-port-bg text-gray-400 border-port-border hover:text-gray-200'}`}
-              >
-                <input
-                  id={`quick-brain-${key}`}
-                  type="checkbox"
-                  checked={ingestOpts[key]}
-                  onChange={() => toggleOption(key)}
-                  className="accent-port-accent"
-                />
-                {label}
-              </label>
+                id={`quick-brain-${key}`}
+                label={label}
+                hint={hint}
+                checked={ingestOpts[key]}
+                onToggle={() => toggleOption(key)}
+              />
             ))}
           </div>
 
@@ -212,6 +213,13 @@ export default function QuickBrainCapture() {
         </div>
       )}
 
+      <RepoIntakeOptions
+        idPrefix="quick-brain-repo"
+        repo={repoIntake.repo}
+        options={repoIntake.options}
+        onToggle={repoIntake.toggle}
+      />
+
       {ingest.active && (
         <div className="mt-3 flex items-center gap-2 text-xs text-gray-400">
           <Film size={14} className="text-red-400 shrink-0" />
@@ -241,7 +249,7 @@ export default function QuickBrainCapture() {
               Will ingest {INGEST_OPTIONS.filter(o => ingestOpts[o.key]).map(o => o.label.toLowerCase()).join(' + ') || 'nothing — pick an option'}
               <ChevronDown size={12} className={showAdvanced ? 'rotate-180 transition-transform' : 'transition-transform'} />
             </button>
-          ) : isUrl ? 'Will save as link' : creative ? 'Will capture as a creative thought' : 'Will capture as thought'}
+          ) : repoIntake.repo ? 'Will save as link and clone the repo' : isUrl ? 'Will save as link' : creative ? 'Will capture as a creative thought' : 'Will capture as thought'}
         </p>
       )}
     </div>

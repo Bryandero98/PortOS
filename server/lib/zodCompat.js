@@ -78,6 +78,19 @@ export function partialWithoutDefaults(objectSchema) {
 export const emptyToUndefined = (v) => (v === '' ? undefined : v);
 
 /**
+ * Build a sparse-map Zod shape from a string array of boolean-typed keys.
+ * Returns the raw record so callers can either spread it (...optionalBooleanMap(KEYS))
+ * into a larger object schema or wrap it directly (z.object(optionalBooleanMap(KEYS))).
+ * Mirrors the `{ field?: boolean }` shape used for per-field lock maps.
+ *
+ * Lives here (and is re-exported by validation.js for its existing callers) for
+ * the same TDZ-cycle reason as `emptyToUndefined` above: per-domain schema files
+ * like `brainValidation.js` need it and must not import validation.js.
+ */
+export const optionalBooleanMap = (keys) =>
+  Object.fromEntries(keys.map((k) => [k, z.boolean().optional()]));
+
+/**
  * Preprocess helper: treat an empty-string UI sentinel as an explicit `null`
  * (a *clear*), distinct from `emptyToUndefined`'s "not sent". Use this when an
  * absent key must preserve the existing value on a PATCH/PUT while an empty

@@ -332,6 +332,88 @@ describe('brain service', () => {
         expect.objectContaining({ status: 'classifying' })
       );
     });
+
+    // The post-clone agent opt-ins (malware scan / repo study). The dispatch
+    // itself lives in services/repoIntake.js and is tested there; what matters
+    // here is that a request only survives the capture path when a clone will
+    // actually happen, since the agents read the clone.
+    describe('repoIntake', () => {
+      const asGitHub = () => {
+        githubCloner.parseGitHubUrl.mockReturnValue({ owner: 'acme', repo: 'widgets', isGitHub: true });
+        githubCloner.cloneRepo.mockResolvedValue({ localPath: '/repos/acme/widgets' });
+      };
+
+      it('records the requested actions on a newly captured repo link', async () => {
+        asGitHub();
+        const result = await captureThought('https://github.com/acme/widgets', undefined, undefined, {
+          repoIntake: { malwareScan: true, learn: true },
+        });
+
+        expect(storage.createLink).toHaveBeenCalledWith(expect.objectContaining({
+          repoIntake: { malwareScan: true, learn: true }
+        }));
+        expect(result.message).toMatch(/malware scan \+ repo study/);
+      });
+
+      it('normalizes a partial request so an absent action is explicitly off', async () => {
+        asGitHub();
+        await captureThought('https://github.com/acme/widgets', undefined, undefined, {
+          repoIntake: { learn: true },
+        });
+
+        expect(storage.createLink).toHaveBeenCalledWith(expect.objectContaining({
+          repoIntake: { malwareScan: false, learn: true }
+        }));
+      });
+
+      it('stores nothing when every box is unticked', async () => {
+        asGitHub();
+        await captureThought('https://github.com/acme/widgets', undefined, undefined, {
+          repoIntake: { malwareScan: false, learn: false },
+        });
+
+        expect(storage.createLink).toHaveBeenCalledWith(
+          expect.not.objectContaining({ repoIntake: expect.anything() })
+        );
+      });
+
+      it('drops the request for a non-GitHub URL, which is never cloned', async () => {
+        await captureThought('https://example.com', undefined, undefined, {
+          repoIntake: { malwareScan: true, learn: true },
+        });
+
+        expect(storage.createLink).toHaveBeenCalledWith(
+          expect.not.objectContaining({ repoIntake: expect.anything() })
+        );
+      });
+
+      // The intent is persisted on the link and read back off it, so the Links
+      // tab's Clone/Retry button (which calls cloneRepoInBackground with no
+      // intake argument) honors a request whose first clone failed.
+      it('is stored on the link, not only threaded through the first clone', async () => {
+        asGitHub();
+        await captureThought('https://github.com/acme/widgets', undefined, undefined, {
+          repoIntake: { malwareScan: true, learn: false },
+        });
+
+        const [created] = storage.createLink.mock.calls[0];
+        expect(created.repoIntake).toEqual({ malwareScan: true, learn: false });
+      });
+
+      it('does not re-run agents when a saved repo URL is pasted again', async () => {
+        asGitHub();
+        storage.getLinkByUrl.mockResolvedValue({ id: 'link-existing', isGitHubRepo: true });
+
+        const result = await captureThought('https://github.com/acme/widgets', undefined, undefined, {
+          repoIntake: { malwareScan: true, learn: true },
+        });
+
+        // No new link, so no new clone — and nothing for the agents to read.
+        expect(storage.createLink).not.toHaveBeenCalled();
+        expect(githubCloner.cloneRepo).not.toHaveBeenCalled();
+        expect(result.message).toMatch(/already saved/i);
+      });
+    });
   });
 
   // ===========================================================================
