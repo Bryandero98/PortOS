@@ -190,6 +190,19 @@ export const TRACKER_FILING_PRESETS = {
     bodyRequirements: 'the screen/route audited and the date, what the user is trying to do there, why the current design impedes it, a concrete proposed change naming the component file(s) in {appName}, and a `Scope:` of small/medium/large',
     planCommitMessage: 'docs(ux): propose <N> UX finding(s)',
   },
+  // One-shot study of a repo the user captured into the Brain (services/repoIntake.js),
+  // as opposed to `reference-watch`'s recurring commit-diff review of a repo
+  // configured on the app. Same clean-room contract: propose reimplementation in
+  // the app's OWN code, never copy upstream source.
+  'repo-study': {
+    slugPrefix: 'repo-study-',
+    label: 'repo-study',
+    issueLabel: 'repo-study',
+    labelDescription: 'Proposed from a study of a captured reference repository',
+    planItemBody: 'From the `repo-study` of <owner/repo> (<today\'s date>). <What the upstream does and why it is worth having, 1–2 sentences.> Fix: <files + functions in {appName}>. <Estimated scope.>',
+    bodyRequirements: 'the provenance (the studied repo\'s owner/repo + its license + today\'s date), the 1–2 sentence rationale for {appName}, the `Fix:` line naming the {appName} files/functions to change, and the estimated scope',
+    planCommitMessage: 'docs(repo-study): propose <N> item(s) from <owner/repo>',
+  },
 };
 
 /**
@@ -257,6 +270,41 @@ export function formatTrackerInstructions(tracker, options = {}) {
   };
 
   return blocks[tracker] || blocks.plan;
+}
+
+/**
+ * Resolve the {trackerInstructions} block naming where a tracker-filing task
+ * records what it found, plus the two metadata signals derived from the SAME
+ * resolved tracker so they can never disagree with the instructions the agent
+ * actually got (#3140, #3102):
+ *   - `workTracker` — traceability, and the marker that lets a ONE-OFF
+ *     tracker-filing run reach `declaresNoCommitCriterion` without masquerading
+ *     as a scheduled task type (see taskTypeHooks.js#isTrackerFilingDispatch)
+ *   - `worktreeChangesExpected` — the PLAN.md path commits checklist items
+ *     (dirty tree); the github/gitlab/jira paths file issues/tickets out of band
+ *     and legitimately leave the tree CLEAN.
+ *
+ * A TRACKER-FILING type reads the app read-only and delivers its findings as
+ * items in the app's tracker rather than as a commit. The set is derived from
+ * `TRACKER_FILING_PRESETS`, so a type is gated in exactly when it has wording.
+ *
+ * Returns `{ trackerInstructions: '', workTracker: null }` for every other type.
+ *
+ * Lives here rather than in one of its callers because all three tracker-filing
+ * dispatch paths need the identical four-part resolution: the SCHEDULED types
+ * (cosTaskGenerator.js), the on-commit reference-watch trigger
+ * (referenceRepos.js), and the one-off `repo-study` (repoIntake.js).
+ */
+export async function resolveTrackerFilingBlock(app, taskType) {
+  if (!TRACKER_FILING_TASK_TYPES.has(taskType)) return { trackerInstructions: '', workTracker: null };
+  // Never throws — degrades to the PLAN.md block, which `isFileTracker` then
+  // agrees with, so the flag and the instructions stay consistent.
+  const workTracker = await resolveAppWorkTracker(app).catch(() => ({ resolved: 'plan' }));
+  return {
+    trackerInstructions: formatTrackerInstructions(workTracker.resolved, TRACKER_FILING_PRESETS[taskType]),
+    workTracker: workTracker.resolved,
+    worktreeChangesExpected: isFileTracker(workTracker.resolved),
+  };
 }
 
 /**

@@ -18,6 +18,7 @@ import {
   Tag,
   ShieldCheck,
   Skull,
+  Lightbulb,
   Search,
   ChevronDown,
   ChevronUp,
@@ -34,6 +35,14 @@ import BucketBoard from '../links/BucketBoard';
 import { LINK_DND_TYPE } from '../links/bucketColors';
 import { reorderLinksInBucket } from '../links/bucketReorder';
 import { normalizeUrl as normalizeUrlShared } from '../../../utils/urlNormalize';
+
+/**
+ * True once a link has a malware-scan report that can actually be opened. A
+ * capture-time scan is stamped `queued` before the agent runs — it has a
+ * reportId but no file yet, so the "Scan Reports" filter must not offer it.
+ * Legacy records carry no `status` at all and are treated as readable.
+ */
+const hasScanReport = (link) => Boolean(link.malwareScan?.reportId) && link.malwareScan.status !== 'queued';
 
 /** Normalize a user-entered URL the way the quick-add form does. */
 function normalizeUrl(raw) {
@@ -99,7 +108,7 @@ export default function LinksTab({ onRefresh }) {
   // Client-side filter (type / bucket membership) then keyword search.
   const matchesFilter = (link) => {
     if (filter === 'github') return link.isGitHubRepo;
-    if (filter === 'scanned') return Boolean(link.malwareScan?.reportId);
+    if (filter === 'scanned') return hasScanReport(link);
     if (filter === 'other') return !link.isGitHubRepo;
     if (filter === 'ungrouped') return !link.bucketId;
     return true;
@@ -419,7 +428,7 @@ export default function LinksTab({ onRefresh }) {
         {[
           { id: 'all', label: 'All', count: links.length },
           { id: 'github', label: 'GitHub Repos', icon: GitBranch, count: links.filter(l => l.isGitHubRepo).length },
-          { id: 'scanned', label: 'Scan Reports', icon: FileText, count: links.filter(l => l.malwareScan?.reportId).length },
+          { id: 'scanned', label: 'Scan Reports', icon: FileText, count: links.filter(hasScanReport).length },
           { id: 'other', label: 'Other Links', icon: Link2, count: links.filter(l => !l.isGitHubRepo).length },
           { id: 'ungrouped', label: 'Ungrouped', icon: FolderClosed, count: links.filter(l => !l.bucketId).length }
         ].map(tab => {
@@ -683,7 +692,15 @@ export default function LinksTab({ onRefresh }) {
                       </span>
                     )}
 
-                    {link.malwareScan?.reportId && (
+                    {/* A capture-time scan is stamped `queued` before the agent runs,
+                        so there is no report to open yet — say so instead of linking
+                        at a 404. finalizeMalwareScan flips it once the run lands. */}
+                    {link.malwareScan?.status === 'queued' ? (
+                      <span className="flex items-center gap-1 text-xs text-gray-400" title="Malware scan queued — track it in Chief of Staff">
+                        <ShieldCheck size={12} />
+                        Scan queued
+                      </span>
+                    ) : link.malwareScan?.reportId && (
                       <Link
                         to={api.brainScanReportPath(link.id)}
                         className={`flex items-center gap-1 text-xs ${link.malwareScan.verdict === 'DANGEROUS' ? 'text-port-error' : 'text-port-accent'} hover:underline`}
@@ -691,6 +708,17 @@ export default function LinksTab({ onRefresh }) {
                       >
                         {link.malwareScan.verdict === 'DANGEROUS' ? <Skull size={12} /> : <ShieldCheck size={12} />}
                         {link.malwareScan.verdict || 'Scan report'}
+                      </Link>
+                    )}
+
+                    {link.repoStudy?.taskId && (
+                      <Link
+                        to="/cos/tasks"
+                        className="flex items-center gap-1 text-xs text-gray-400 hover:text-port-accent transition-colors"
+                        title={`Repo study queued as ${link.repoStudy.taskId} — track it in Chief of Staff`}
+                      >
+                        <Lightbulb size={12} />
+                        Repo study
                       </Link>
                     )}
 

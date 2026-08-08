@@ -9,53 +9,15 @@ import { spawn } from 'child_process';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { ensureDir, PATHS } from '../lib/fileUtils.js';
+import { parseGitHubUrl, isGitHubRepoUrl } from '../lib/githubRepoUrl.js';
 
 // Default directory for cloned repos (can be configured in settings)
 const DEFAULT_CLONE_DIR = PATHS.repos;
 
-/**
- * Parse GitHub URL to extract owner and repo name
- * Supports formats:
- * - https://github.com/owner/repo
- * - https://github.com/owner/repo.git
- * - git@github.com:owner/repo.git
- * - github.com/owner/repo
- */
-export function parseGitHubUrl(url) {
-  if (!url) return null;
-
-  // Normalize URL
-  let normalized = url.trim();
-
-  // Handle SSH format: git@github.com:owner/repo.git
-  const sshMatch = normalized.match(/git@github\.com:([^/]+)\/([^/.]+)(?:\.git)?$/i);
-  if (sshMatch) {
-    return {
-      owner: sshMatch[1],
-      repo: sshMatch[2],
-      isGitHub: true
-    };
-  }
-
-  // Handle HTTPS format: https://github.com/owner/repo or github.com/owner/repo
-  const httpsMatch = normalized.match(/(?:https?:\/\/)?github\.com\/([^/]+)\/([^/?#]+)/i);
-  if (httpsMatch) {
-    return {
-      owner: httpsMatch[1],
-      repo: httpsMatch[2].replace(/\.git$/, ''),
-      isGitHub: true
-    };
-  }
-
-  return null;
-}
-
-/**
- * Check if a URL is a GitHub repository URL
- */
-export function isGitHubRepoUrl(url) {
-  return parseGitHubUrl(url) !== null;
-}
+// The owner/repo parse rule lives in lib/ so the client can mirror it — the
+// Brain capture boxes have to predict "this URL will be cloned" before submit.
+// Re-exported here so existing `githubCloner.parseGitHubUrl` callers keep working.
+export { parseGitHubUrl, isGitHubRepoUrl };
 
 /**
  * Get clone directory path
