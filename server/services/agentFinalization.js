@@ -628,10 +628,15 @@ export async function finalizeAgent({
     // promptRunner) picks the window and declines to bench request-specific
     // failures; the cooldown then routes the retry to a fallback
     // (agentProviderResolution.js) and auto-expires without anyone intervening.
-    const isProviderFault = errorAnalysis.origin === 'provider'
-      || errorAnalysis.category === 'usage-limit'
-      || errorAnalysis.category === 'rate-limit';
-    const bench = isProviderFault ? resolveProviderBench(errorAnalysis) : null;
+    // Provenance is the WHOLE gate — deliberately not `|| category === 'usage-limit'
+    // || category === 'rate-limit'`, which is what this used to key on. Those
+    // categories have loose alternatives (a bare "rate limit" / "quota exceeded" an
+    // agent's own failing test can print), so a category-only check benches a
+    // healthy provider off the agent's transcript. Genuine limits already carry
+    // `origin: 'provider'` via their `structuredMarker`, so nothing real is lost.
+    // Every finalizeAgent caller analyzes through analyzeAgentFailure or
+    // detectImmediateFallbackSignal, and both stamp an origin on every branch.
+    const bench = errorAnalysis.origin === 'provider' ? resolveProviderBench(errorAnalysis) : null;
     // Lazy provider lookup — resolve the active provider only when a marker
     // fires AND the caller didn't already know the id, keeping the ordinary
     // failure path free of a settings-file read.

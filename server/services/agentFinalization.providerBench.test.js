@@ -125,13 +125,20 @@ describe('finalizeAgent provider sidelining', () => {
   // The provenance gate (#2642): a repainted TUI transcript is a whole session
   // of text the agent itself wrote, so a loose keyword match must never bench a
   // healthy provider — only structured provider chrome does.
-  it('does not bench an output-scan failure that merely looks provider-ish', async () => {
-    await failedRun({ hasError: true, category: 'auth-error', origin: 'output-scan', message: 'unauthorized' });
-    expect(markProviderUnavailableMock).not.toHaveBeenCalled();
-    expect(markProviderUsageLimitMock).not.toHaveBeenCalled();
-    // No marker fired, so the lazy active-provider lookup must stay unread.
-    expect(getActiveProviderMock).not.toHaveBeenCalled();
-  });
+  // `rate-limit` and `usage-limit` are the load-bearing cases: their patterns have
+  // loose alternatives (a bare "rate limit" / "quota exceeded" a failing test in
+  // the agent's own workspace can print), and this gate used to key on the
+  // category alone — so an agent's transcript could bench a healthy provider.
+  it.each(['auth-error', 'rate-limit', 'usage-limit'])(
+    'does not bench an output-scan %s that merely looks provider-ish',
+    async (category) => {
+      await failedRun({ hasError: true, category, origin: 'output-scan', message: 'looks provider-ish', requiresFallback: true });
+      expect(markProviderUnavailableMock).not.toHaveBeenCalled();
+      expect(markProviderUsageLimitMock).not.toHaveBeenCalled();
+      // No marker fired, so the lazy active-provider lookup must stay unread.
+      expect(getActiveProviderMock).not.toHaveBeenCalled();
+    }
+  );
 
   it('does not bench an ordinary agent-work failure', async () => {
     await failedRun({ hasError: true, category: 'test-failure', origin: 'output-scan', message: 'suite failed' });
