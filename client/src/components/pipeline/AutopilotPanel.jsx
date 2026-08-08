@@ -312,6 +312,13 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
     overrideModel: modelOverride,
     activeProviderId,
   });
+  // What a BLANK model selection resolves to — the series model, but only while
+  // the chosen provider still owns it. Names the "Series default (…)" option so
+  // it can't claim a model the run wouldn't actually use.
+  const { model: inheritedModel } = resolveSeriesRunLlm(series, {
+    overrideProvider: providerOverride,
+    activeProviderId,
+  });
   // A pin naming a provider that is gone or disabled is a SOFT default server
   // side — the run quietly falls back to the active provider. Say so rather than
   // asserting a provider that won't run (only once the list has loaded, or a
@@ -628,7 +635,7 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
                 compact
                 alwaysShowModel
                 emptyProviderOption={`Series default (${providerDisplayName(providers, seriesProviderId || activeProviderId, '—')})`}
-                emptyModelOption={series?.llm?.model && !providerOverride ? `Series default (${series.llm.model})` : 'Default model'}
+                emptyModelOption={inheritedModel ? `Series default (${inheritedModel})` : 'Default model'}
               />
             </div>
           </div>
@@ -807,10 +814,14 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
             {liveLabel}
           </div>
           {/* Name the provider/model this run resolved to, so an in-flight run
-              (including one the scheduler started) says what it is spending on. */}
-          <div className="mt-1 text-[11px] text-gray-500">
-            on {providerModelLabel(providers, runLlm?.provider || activeProviderId, runLlm?.model)}
-          </div>
+              (including one the scheduler started) says what it is spending on.
+              A null run provider means it fell through to the active provider;
+              with neither known there is nothing truthful to name, so say nothing. */}
+          {runLlm?.provider || activeProviderId ? (
+            <div className="mt-1 text-[11px] text-gray-500">
+              on {providerModelLabel(providers, runLlm?.provider || activeProviderId, runLlm?.model)}
+            </div>
+          ) : null}
           {frames?.length ? (
             <div className="mt-2 max-h-28 overflow-y-auto text-[11px] text-gray-500 space-y-0.5">
               {frames.slice(-6).map((f, i) => <div key={i}>{frameLabel(f)}</div>)}
