@@ -763,6 +763,37 @@ export const resolveEffectiveProvider = (providers, pinnedId, activeProviderId) 
 };
 
 /**
+ * Effective provider/model for a run against a Pipeline series — CLIENT MIRROR
+ * of `resolveSeriesLlmOverride` (server/lib/seriesLlmOverride.js; the precedence
+ * rationale lives there), extended with the install's active provider as the
+ * final fallback so the UI can NAME what a run will call instead of a blank.
+ *
+ * Used by the Autopilot Options picker and the scheduled-run consent card so
+ * both name the same thing the server's `resolveAutopilotLlm` will resolve.
+ *
+ * @returns {{provider: string, model: string}}
+ */
+export const resolveSeriesRunLlm = (series, { overrideProvider, overrideModel, activeProviderId } = {}) => {
+  const seriesProvider = series?.llm?.provider || '';
+  // The series model belongs to the series provider — an override naming a
+  // different provider must resolve THAT provider's default instead.
+  const inheritsSeriesModel = !overrideProvider || overrideProvider === seriesProvider;
+  return {
+    provider: overrideProvider || seriesProvider || activeProviderId || '',
+    model: overrideModel || (inheritsSeriesModel ? series?.llm?.model || '' : ''),
+  };
+};
+
+/**
+ * "Claude Code / claude-opus-5" — or "Claude Code (provider default model)"
+ * when no model is pinned. The one phrasing for "which AI will this run call",
+ * so the Autopilot Options copy, its live-progress line and the scheduled-run
+ * consent card can't word the same fact three different ways.
+ */
+export const providerModelLabel = (providers, id, model) =>
+  `${providerDisplayName(providers, id, '—')}${model ? ` / ${model}` : ' (provider default model)'}`;
+
+/**
  * Tailwind chip classes for the provider type badge ('cli' / 'tui' / 'api').
  * Lifted out of AIProviders.jsx so other components can render the same
  * color treatment without redefining it.

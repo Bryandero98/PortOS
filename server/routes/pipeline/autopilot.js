@@ -12,7 +12,10 @@
  *                                          immediately; the active step/LLM call
  *                                          finishes before the terminal `canceled`
  *                                          frame (cooperative, between-step cancel).
- *   GET  /series/:id/autopilot/status   → { autopilot }   (resume / paused UI)
+ *   GET  /series/:id/autopilot/status   → { autopilot, active, start }
+ *                                          (resume / paused UI; `start` is the
+ *                                          in-flight run's start frame, which
+ *                                          names its provider/model)
  */
 
 import { Router } from 'express';
@@ -137,7 +140,14 @@ router.post('/series/:id/autopilot/cancel', asyncHandler(async (req, res) => {
 
 router.get('/series/:id/autopilot/status', asyncHandler(async (req, res) => {
   const series = await seriesSvc.getSeries(req.params.id).catch((err) => { throw mapServiceError(err); });
-  res.json({ autopilot: series.autopilot || null, active: autopilot.isAutopilotActive(req.params.id) });
+  res.json({
+    autopilot: series.autopilot || null,
+    active: autopilot.isAutopilotActive(req.params.id),
+    // The in-flight run's `start` frame (mode, target, resolved provider/model),
+    // so a client attaching mid-run can describe a run it never saw begin — SSE
+    // replays only the last frame. null when no run is active.
+    start: autopilot.activeRunStart(req.params.id),
+  });
 }));
 
 export default router;

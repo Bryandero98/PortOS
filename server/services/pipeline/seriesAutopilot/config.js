@@ -4,6 +4,7 @@
  */
 
 import { readReadinessGate } from '../../../lib/editorial/index.js';
+import { resolveSeriesLlmOverride } from '../../../lib/seriesLlmOverride.js';
 import { READINESS_GATES } from '../editorialScore.js';
 
 // Bounded convergence loops — re-verify/re-review at most this many rounds, then
@@ -182,6 +183,26 @@ export function resolveAutopilotRevision(options = {}, settings = null) {
     revisionMaxCycles: Math.max(Math.max(1, minCycles), maxCycles),
     revisionPlateauDelta: Math.max(0, num(options?.revisionPlateauDelta, pec?.revisionPlateauDelta, DEFAULT_REVISION_PLATEAU_DELTA)),
   };
+}
+
+// Which provider/model do this run's LLM calls use? An explicit per-run
+// `providerOverride`/`modelOverride` wins (the Options picker, or the scheduler
+// mapping a schedule's provider/model); otherwise the run inherits the series'
+// own configured `series.llm` — the provider named in the series header, which
+// every other Pipeline LLM action already honors. Both absent stays undefined,
+// so stageRunner resolves stage pin → active provider as before. The precedence
+// (including why a foreign model id is dropped) lives in the shared
+// `resolveSeriesLlmOverride`; this only renames its keys to the run-option ones.
+//
+// Threaded as SOFT defaults (`providerDefault`/`modelDefault`, see
+// session.js#providerOverrideOpts), so a deliberate per-stage pin on the Prompts
+// page still wins and an unavailable provider falls through instead of throwing.
+export function resolveAutopilotLlm(options = {}, series = null) {
+  const { provider, model } = resolveSeriesLlmOverride(series, {
+    overrideProvider: options?.providerOverride,
+    overrideModel: options?.modelOverride,
+  });
+  return { providerOverride: provider, modelOverride: model };
 }
 
 // Effective "produce draft visuals?" decision. The `target` option overrides
