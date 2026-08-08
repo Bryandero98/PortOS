@@ -517,7 +517,7 @@ export default function Pipeline() {
           {series.map((s) => {
             const shapeDef = s.arc?.shape ? getStoryShape(s.arc.shape) : null;
             return (
-            <li key={s.id} className="flex items-start justify-between gap-3 p-3 bg-port-card border border-port-border rounded-lg hover:border-port-accent/40 transition-colors">
+            <li key={s.id} className="flex flex-col sm:flex-row sm:items-start gap-3 p-3 bg-port-card border border-port-border rounded-lg hover:border-port-accent/40 transition-colors">
               <Link to={`/pipeline/series/${s.id}`} className="flex-1 min-w-0 flex items-start gap-3">
                 <ImageThumb imageRef={s.coverImage} FallbackIcon={BookOpen} sizeClass="w-12 h-[4.5rem]" />
                 <div className="min-w-0 flex-1">
@@ -546,30 +546,33 @@ export default function Pipeline() {
                   ) : null}
                 </div>
               </Link>
-              <SyncBadge
-                status={syncBadgeStatus(sync, s.id)}
-                onClick={() => navigate(`/pipeline/series/${encodeURIComponent(s.id)}/sync`)}
-              />
-              <ShareToButton kind="series" ids={[s.id]} compact />
-              <SyncToPeerButton recordKind="series" recordId={s.id} compact />
-              {isConfirming(s.id) ? (
-                <ConfirmButtonPair
-                  prompt="Delete?"
-                  ariaLabel={`Confirm delete series ${s.name}`}
-                  onConfirm={() => handleDelete(s)}
-                  onCancel={cancelDelete}
+              {/* Actions wrap to their own row under sm so the logline gets the full card width */}
+              <div className="flex items-center gap-1 flex-wrap shrink-0">
+                <SyncBadge
+                  status={syncBadgeStatus(sync, s.id)}
+                  onClick={() => navigate(`/pipeline/series/${encodeURIComponent(s.id)}/sync`)}
                 />
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => requestDelete(s.id)}
-                  className="p-2 text-gray-500 hover:text-port-error"
-                  aria-label={`Delete series ${s.name}`}
-                  title="Delete series"
-                >
-                  <Trash2 size={16} />
-                </button>
-              )}
+                <ShareToButton kind="series" ids={[s.id]} compact />
+                <SyncToPeerButton recordKind="series" recordId={s.id} compact />
+                {isConfirming(s.id) ? (
+                  <ConfirmButtonPair
+                    prompt="Delete?"
+                    ariaLabel={`Confirm delete series ${s.name}`}
+                    onConfirm={() => handleDelete(s)}
+                    onCancel={cancelDelete}
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => requestDelete(s.id)}
+                    className="p-2 text-gray-500 hover:text-port-error"
+                    aria-label={`Delete series ${s.name}`}
+                    title="Delete series"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                )}
+              </div>
             </li>
             );
           })}
