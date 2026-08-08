@@ -34,6 +34,8 @@ import {
   isOllamaBackedProvider,
   isGrokBuildCli,
   isKimiProvider,
+  isCodexProvider,
+  supportsModelRefresh,
   isAntigravityProvider,
   effortLevelsForProvider,
   resolveCliEffort,
@@ -57,6 +59,11 @@ import {
   seedModelEffort,
 } from './providers.js';
 import { PROVIDER_TYPES as SERVER_PROVIDER_TYPES } from '../../../server/lib/aiToolkit/constants.js';
+import SHIPPED_PROVIDERS from '../../../data.reference/providers.json';
+// The server's own payload decorator, so the shipped-catalog walk below tests
+// the REAL derivation instead of a hand transcription of it (#3620). Pure and
+// dependency-free — it imports nothing outside the vendored aiToolkit.
+import { withRefreshCapabilityList } from '../../../server/lib/aiToolkit/internal/modelFetchers.js';
 import {
   effortLevelsForProvider as serverEffortLevelsForProvider,
   isAntigravityProvider as serverIsAntigravityProvider,
@@ -727,6 +734,79 @@ describe('isKimiProvider (mirror of server providerModels)', () => {
   it('treats the kimi configured-default sentinel as a configured default', () => {
     expect(isConfiguredDefaultModel(KIMI_CONFIGURED_DEFAULT)).toBe(true);
     expect(filterSelectableModels([KIMI_CONFIGURED_DEFAULT, 'kimi-k2'])).toEqual(['kimi-k2']);
+  });
+});
+
+describe('supportsModelRefresh', () => {
+  // Guards the AI Providers page's "Refresh Models" button. It is now a READ of
+  // the server-derived `canRefreshModels` field — the server owns the one
+  // per-vendor fetcher table (server/lib/aiToolkit/internal/modelFetchers.js)
+  // and the providers route decorates every payload with the answer.
+  //
+  // What used to be here was a ~40-line hand-written mirror of both server
+  // dispatch arms, "kept in lockstep" by a comment, plus a parity test that
+  // re-implemented the server dispatch a SECOND time — so it only proved the
+  // mirror matched the test's own copy. Both are gone with #3620/#3616.
+  it('reads the flag the server put on the payload', () => {
+    expect(supportsModelRefresh({ id: 'claude-code', canRefreshModels: true })).toBe(true);
+    expect(supportsModelRefresh({ id: 'codex', canRefreshModels: false })).toBe(false);
+  });
+
+  it('ignores the command/name/type shapes it used to sniff', () => {
+    // The whole point: the client no longer has an opinion. A codex provider
+    // the server says it CAN refresh gets a button; a claude provider the
+    // server says it cannot, does not.
+    expect(supportsModelRefresh({ type: 'cli', command: 'codex', name: 'Codex CLI', canRefreshModels: true })).toBe(true);
+    expect(supportsModelRefresh({ type: 'cli', command: 'claude', name: 'Claude Code CLI', canRefreshModels: false })).toBe(false);
+    expect(supportsModelRefresh({ type: 'api', endpoint: 'http://localhost:1234/v1', canRefreshModels: false })).toBe(false);
+  });
+
+  it('hides the button when the field is absent — an older server, not a hint to guess', () => {
+    // Strict `=== true`: guessing from the shape is what produced a button that
+    // 404'd on every click. Absent means "this server does not say", so stay quiet.
+    expect(supportsModelRefresh({ id: 'claude-code', type: 'cli', command: 'claude', name: 'Claude Code CLI' })).toBe(false);
+    expect(supportsModelRefresh({ id: 'x', canRefreshModels: 'yes' })).toBe(false);
+    expect(supportsModelRefresh({ id: 'x', canRefreshModels: 1 })).toBe(false);
+  });
+
+  it('does not throw on a nullish provider', () => {
+    expect(supportsModelRefresh(null)).toBe(false);
+    expect(supportsModelRefresh(undefined)).toBe(false);
+  });
+
+  // The shipped-catalog walk, retargeted at the payload field. It used to
+  // compare this predicate against a hand transcription of the server dispatch;
+  // now it runs the SERVER's own decorator over the shipped seed and asserts the
+  // button visibility that produces. That is the real lockstep gate: a provider
+  // added to the seed without a fetcher-table row (how codex and kimi-cli ended
+  // up with a 404ing button) shows up here.
+  it('agrees with the server decorator for every shipped provider', () => {
+    const decorated = withRefreshCapabilityList(Object.values(SHIPPED_PROVIDERS.providers));
+    expect(decorated.length).toBeGreaterThan(20);
+
+    const withButton = decorated.filter(supportsModelRefresh).map((p) => p.id).sort();
+    // Frozen from the pre-#3620 dispatch chains — the refactor must not change
+    // WHICH shipped provider offers the button.
+    expect(withButton).toEqual([
+      'antigravity-cli', 'antigravity-tui', 'cerebras', 'claude-code',
+      'claude-code-bedrock', 'claude-ollama', 'claude-ollama-tui', 'cursor-cli',
+      'cursor-tui', 'grok', 'lmstudio', 'nvidia-kimi', 'ollama',
+      'opencode-ollama', 'opencode-ollama-tui',
+    ]);
+  });
+});
+
+describe('cursor providers', () => {
+  it('offers no effort ladder — cursor bakes the reasoning tier into the model id', () => {
+    expect(effortLevelsForProvider({ id: 'cursor-cli', command: 'cursor-agent' })).toBeNull();
+    expect(effortLevelsForProvider({ id: 'cursor-tui', command: 'cursor-agent' }, 'claude-opus-5-thinking-high')).toBeNull();
+  });
+
+  it('is not mistaken for a claude/codex/antigravity provider by its model ids', () => {
+    const cursor = { id: 'cursor-cli', command: 'cursor-agent', models: ['claude-opus-5-thinking-high'] };
+    expect(isCodexProvider(cursor)).toBe(false);
+    expect(isAntigravityProvider(cursor)).toBe(false);
+    expect(isKimiProvider(cursor)).toBe(false);
   });
 });
 

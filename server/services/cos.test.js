@@ -716,12 +716,46 @@ describe('cos.js source — priority + capacity invariants', () => {
 
     // evaluateTasks: Priority 0 runs unconditionally; Priorities 1+ are wrapped in
     // an `if (!paused)` block that begins after spawnPriority0OnDemand.
+    //
+    // Anchor on the LAST `if (!paused)` preceding the user tier, not the first in
+    // the function: `evaluateTasks` legitimately carries other pause-gated work
+    // that runs before Priority 0 (the pending-merge sweep, which claims no agent
+    // lane and so must not sit behind the slot gate). A plain `.search()` matched
+    // that one instead and read as "the tier gate moved to the top" — a false
+    // positive on the exact regression this pins.
     const evOnDemandIdx = evalFn.indexOf('spawnPriority0OnDemand(ctx)');
-    const evPauseGateIdx = evalFn.search(/if\s*\(\s*!\s*paused\s*\)/);
     const evUserIdx = evalFn.indexOf('spawnPriority1UserTasks(ctx)');
+    const pauseGates = [...evalFn.matchAll(/if\s*\(\s*!\s*paused\s*\)/g)].map(m => m.index);
+    const evPauseGateIdx = pauseGates.filter(i => i < evUserIdx).pop() ?? -1;
     expect(evOnDemandIdx, 'evaluateTasks must invoke spawnPriority0OnDemand').toBeGreaterThan(-1);
+    expect(evUserIdx, 'evaluateTasks must invoke spawnPriority1UserTasks').toBeGreaterThan(-1);
     expect(evPauseGateIdx, 'evaluateTasks must gate the lower tiers on !paused').toBeGreaterThan(evOnDemandIdx);
     expect(evUserIdx, 'user/autonomous tiers must sit inside the !paused gate').toBeGreaterThan(evPauseGateIdx);
+  });
+
+  it('pending-merge sweep is gated on CoS auto-run being in execute mode', () => {
+    // The sweep is the ONE tier in evaluateTasks that writes to a default branch
+    // (git.mergePR). It deliberately sits ABOVE the agent-slot gate — a merge
+    // claims no lane — which also puts it above `resolveAutonomyBudget`, so it
+    // must read the auto-run mode itself. It shipped gated on `!paused` alone,
+    // which meant `off` / `dry-run` still merged PRs, including on the boot-time
+    // `evaluateTasks({ initialStartup: true })`.
+    const evalFn = extractFnBody(GEN_SRC, GEN_SRC.indexOf('export async function evaluateTasks'));
+    const sweepIdx = evalFn.indexOf('sweepPendingMergePrs()');
+    expect(sweepIdx, 'evaluateTasks must invoke sweepPendingMergePrs').toBeGreaterThan(-1);
+
+    // The gate is the `if (...)` immediately preceding the sweep call.
+    const gateIdx = evalFn.lastIndexOf('if (', sweepIdx);
+    const gate = evalFn.slice(gateIdx, sweepIdx);
+    expect(gate, 'the merge sweep must stay gated on !paused').toMatch(/!\s*paused/);
+    expect(gate, 'the merge sweep must also gate on auto-run being in execute mode')
+      .toMatch(/getDomainMode\(\s*state\.config\s*,\s*'cos'\s*\)\s*===\s*'execute'/);
+
+    // …and it must still run before the agent-slot early-return, or a full agent
+    // roster wedges the merge queue (the reason it is not folded into the tiers).
+    const slotGateIdx = evalFn.indexOf('if (availableSlots <= 0)');
+    expect(slotGateIdx, 'evaluateTasks must keep its agent-slot gate').toBeGreaterThan(-1);
+    expect(sweepIdx, 'the merge sweep must run before the agent-slot gate').toBeLessThan(slotGateIdx);
   });
 
   it('per-project cap defaults to global cap when unset', () => {

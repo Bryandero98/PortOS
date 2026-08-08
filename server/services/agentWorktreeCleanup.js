@@ -26,7 +26,7 @@ import { isRetryHoldOwner, clearedRetryHoldMetadata } from '../lib/taskRetryHold
 import { RECOVERY_TASK_PREFIX } from './recoveryTasks.js';
 import { detectForgeCli } from '../lib/gitForge.js';
 import { PR_COMPLETIONS, PR_COMPLETION_VALUES, leavesPrForHuman } from '../lib/prDisposition.js';
-import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, MODEL_SELECTABLE_REVIEWERS, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds } from '../lib/validation.js';
+import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, MODEL_SELECTABLE_REVIEWERS, EFFORT_SELECTABLE_REVIEWERS, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds } from '../lib/validation.js';
 
 // In-flight cleanup per agentId, so two completion paths racing to clean the
 // SAME agent coalesce onto one run instead of tripping over each other.
@@ -79,7 +79,7 @@ export async function cleanupAgentWorktree(agentId, success, options = {}) {
   return run;
 }
 
-async function runCleanupAgentWorktree(agentId, success, { openPR = false, prCompletion = null, requestCopilotReview: legacyRequestCopilotReview = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, reviewerModels = null, skipMerge = false, description = null, agentOutput = null, originalTask = null } = {}) {
+async function runCleanupAgentWorktree(agentId, success, { openPR = false, prCompletion = null, requestCopilotReview: legacyRequestCopilotReview = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, reviewerModels = null, reviewerEfforts = null, skipMerge = false, description = null, agentOutput = null, originalTask = null } = {}) {
   const { getAgent: getAgentState } = await import('./cos.js');
   const agentState = await getAgentState(agentId).catch(() => null);
   if (!agentState?.metadata?.isWorktree) return [];
@@ -274,6 +274,7 @@ async function runCleanupAgentWorktree(agentId, success, { openPR = false, prCom
             reviewStopMode,
             reviewerApplies,
             reviewerModels,
+            reviewerEfforts,
             leaveOpen
           }).catch(err => {
             emitLog('warn', `🤖 Failed to spawn PR follow-up for ${prResult.url}: ${err.message}`, { agentId, prUrl: prResult.url });
@@ -648,7 +649,7 @@ export async function releaseRetryHold({ agentId, task, success, agentMetadata }
  * branch (via createWorktree's `existingBranch` option) so it can fix-and-push
  * without trampling concurrent agents.
  */
-export async function spawnReviewLoopFollowUp({ originalAgentId, originalTask, prUrl, prBranch, sourceWorkspace, prCompletion = PR_COMPLETIONS.REVIEW_THEN_MERGE, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, reviewerModels = null, leaveOpen = false }) {
+export async function spawnReviewLoopFollowUp({ originalAgentId, originalTask, prUrl, prBranch, sourceWorkspace, prCompletion = PR_COMPLETIONS.REVIEW_THEN_MERGE, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, reviewerModels = null, reviewerEfforts = null, leaveOpen = false }) {
   if (!prUrl || !prBranch) return null;
   if (prCompletion === PR_COMPLETIONS.LEAVE_OPEN) return null;
 
@@ -693,10 +694,19 @@ export async function spawnReviewLoopFollowUp({ originalAgentId, originalTask, p
   // local-LLM reviewer's as the `model` field of its `/api/code-review/local` body.
   // `reviewerModels` is already coerced to string values upstream
   // (resolveReviewLoopOptions).
-  const narrowedReviewerModels = {};
-  for (const r of effectiveReviewers) {
-    if (MODEL_SELECTABLE_REVIEWERS.includes(r) && reviewerModels?.[r]) narrowedReviewerModels[r] = reviewerModels[r];
-  }
+  // Empty → null so the prompt builder's "nothing configured" path is unambiguous.
+  const narrowPins = (pins, roster) => {
+    const out = Object.fromEntries(effectiveReviewers
+      .filter(r => roster.includes(r) && pins?.[r])
+      .map(r => [r, pins[r]]));
+    return Object.keys(out).length ? out : null;
+  };
+  const narrowedReviewerModels = narrowPins(reviewerModels, MODEL_SELECTABLE_REVIEWERS);
+  // Reviewer-keyed reasoning-effort map, narrowed the same way. The prompt turns a
+  // CLI reviewer's effort into a flag on its command line (`--effort high` /
+  // `-c model_reasoning_effort=high`) and a local-LLM reviewer's into the
+  // `reasoning_effort` field of its `/api/code-review/local` body.
+  const narrowedReviewerEfforts = narrowPins(reviewerEfforts, EFFORT_SELECTABLE_REVIEWERS);
 
   // One place that names the mode, so the title, the log line, and the warning
   // can't drift apart as the two follow-up kinds evolve.
@@ -771,13 +781,13 @@ export async function spawnReviewLoopFollowUp({ originalAgentId, originalTask, p
       reviewLoopReviewerMaxRounds: effectiveReviewerMaxRounds,
       reviewLoopStopMode: reviewStopMode,
       reviewLoopReviewerApplies: reviewerApplies,
-      // Empty → null so the prompt builder's "no models configured" path is unambiguous.
-      reviewLoopReviewerModels: Object.keys(narrowedReviewerModels).length ? narrowedReviewerModels : null,
+      reviewLoopReviewerModels: narrowedReviewerModels,
+      reviewLoopReviewerEfforts: narrowedReviewerEfforts,
       // Back-compat: older installs' prompt builder reads only the codex-scalar key.
       // Mirror the (already-narrowed) codex entry so a follow-up task persisted by this
       // version still threads a codex model after a downgrade. Remove once no supported
       // peer reads it.
-      reviewLoopCodexModel: narrowedReviewerModels.codex || null,
+      reviewLoopCodexModel: narrowedReviewerModels?.codex || null,
       sourceTaskId: originalTask?.id || null,
       sourceAgentId: originalAgentId || null,
       // This follow-up may legitimately exit with zero new commits when every

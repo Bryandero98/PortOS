@@ -81,8 +81,15 @@ export const SLASHDO_REVIEWER_INCLUDES = Object.freeze({
 /** Every reviewer-variant include name — the prunable universe. */
 export const SLASHDO_REVIEWER_INCLUDE_NAMES = Object.freeze(Object.values(SLASHDO_REVIEWER_INCLUDES));
 
-/** Reviewer slugs that drive slashdo's shared local-agent (spawnable CLI) loop. */
-const LOCAL_AGENT_REVIEWERS = new Set(['claude', 'codex', 'antigravity', 'grok']);
+/**
+ * Reviewer slugs that drive slashdo's shared local-agent (spawnable CLI) loop.
+ *
+ * Kept here rather than imported from cosValidation.js, which imports THIS
+ * module — an import back would be a cycle. Exported so cosValidation.test.js
+ * can pin it against `REVIEWER_CLI_BINARIES` (whose keys are the same roster);
+ * a reviewer added to one and not the other is a drift the test catches.
+ */
+export const LOCAL_AGENT_REVIEWERS = new Set(['claude', 'codex', 'antigravity', 'grok']);
 /** Reviewer slugs that drive slashdo's local-model (Ollama-style) loop. */
 const LOCAL_MODEL_REVIEWERS = new Set(['ollama', 'lmstudio']);
 
@@ -327,9 +334,14 @@ export function resolveSlashdoInvocation({
  *   `body`. Pass only when the host has file tools.
  * @param {string} [opts.reviewWith=''] - reviewer CSV to pin (`codex,copilot`).
  *   Required when `body` had reviewer variants pruned out of it.
+ * @param {string} [opts.reviewerEffortNote=''] - the per-reviewer reasoning-effort
+ *   instruction (`buildReviewerEffortNote`). Emitted independently of `reviewWith`:
+ *   this workflow runs its OWN review loop, so an effort pinned on the task has no
+ *   other way to reach the reviewer CLI the workflow spawns — and unlike the CSV it
+ *   applies whether or not the body was pruned.
  * @returns {string} markdown section, or '' when `resolved` is null
  */
-export function buildSlashdoSection(resolved, body = null, { bodyPath = null, reviewWith = '' } = {}) {
+export function buildSlashdoSection(resolved, body = null, { bodyPath = null, reviewWith = '', reviewerEffortNote = '' } = {}) {
   if (!resolved) return '';
 
   // Without explicit args the workflow operates on the task described above —
@@ -356,6 +368,9 @@ export function buildSlashdoSection(resolved, body = null, { bodyPath = null, re
       '',
       `Run this workflow with \`--review-with ${reviewWith}\` — the procedure you were given carries ONLY those reviewers' loops (the others were omitted as unreachable). Do not substitute a different reviewer from a saved slashdo default.`
     );
+  }
+  if (reviewerEffortNote) {
+    lines.push('', reviewerEffortNote);
   }
   if (body && bodyPath && body.length > SLASHDO_INLINE_BUDGET_CHARS) {
     lines.push(

@@ -69,7 +69,7 @@ describe('buildCosTasksPayload', () => {
     vi.mocked(getUserTasks).mockResolvedValue({ tasks: [task('task-a', 'pending')] });
     vi.mocked(getCosTasks).mockResolvedValue({ tasks: [task('sys-b', 'in_progress', { metadata: { claimedBy: 'i1' } })] });
     const p = await buildCosTasksPayload();
-    expect(p.schemaVersion).toBe(3); // v3: PR-follow-up disposition markers (mergeOnly / leaveOpen)
+    expect(p.schemaVersion).toBe(4); // v4: workTracker dispatch marker + reviewerEfforts pins
     expect(p.listHash).toMatch(/^[a-f0-9]{64}$/);
     expect(p.tasks).toHaveLength(2);
     const user = p.tasks.find((t) => t.id === 'task-a');
@@ -104,7 +104,7 @@ describe('buildCosTasksPayload', () => {
   it('returns an empty payload when there are no tasks', async () => {
     const p = await buildCosTasksPayload();
     expect(p.tasks).toEqual([]);
-    expect(p.schemaVersion).toBe(3); // v3: PR-follow-up disposition markers (mergeOnly / leaveOpen)
+    expect(p.schemaVersion).toBe(4); // v4: workTracker dispatch marker + reviewerEfforts pins
   });
 });
 

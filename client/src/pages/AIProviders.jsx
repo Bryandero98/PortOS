@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import toast from '../components/ui/Toast';
 import * as api from '../services/api';
 import socket from '../services/socket';
-import { filterSelectableModels, filterGenerationModels, isEmbeddingModel, mergeModelLists, configuredDefaultIn, localBackendForProvider, modelOptionLabel, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider, isOllamaBackedProvider, isAntigravityProvider, isGrokBuildCli, isLocalEndpoint, effectiveModelContextWindow } from '../utils/providers';
+import { filterSelectableModels, filterGenerationModels, isEmbeddingModel, mergeModelLists, configuredDefaultIn, localBackendForProvider, modelOptionLabel, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider, supportsModelRefresh, isGrokBuildCli, isLocalEndpoint, effectiveModelContextWindow } from '../utils/providers';
 import useLocalModels from '../hooks/useLocalModels';
 import BrailleSpinner from '../components/BrailleSpinner';
 import EmptyState from '../components/EmptyState';
@@ -154,32 +154,6 @@ export default function AIProviders() {
     loadData();
   };
 
-  const supportsModelRefresh = (provider) => {
-    // Claude Ollama (ollama-backed claude CLI/TUI) refreshes its model list from
-    // the local Ollama daemon — including the TUI variant, which the server now
-    // refreshes via the type==='tui' && ollamaBacked branch. Check this before
-    // the generic TUI gate so the TUI variant's Refresh Models button shows.
-    if (isOllamaBackedProvider(provider)) {
-      return true;
-    }
-    // Antigravity (`agy`) exposes a per-session `--model` flag and an
-    // `agy models` catalog, so BOTH its CLI and TUI providers refresh (the
-    // server has a type==='tui' branch for it) — checked before the generic
-    // TUI gate, same as Claude Ollama above.
-    if (isAntigravityProvider(provider)) {
-      return true;
-    }
-    if (isTuiProvider(provider)) {
-      return false;
-    }
-    // Gemini/Grok Build CLIs use their own local model configuration (no PortOS
-    // model list to refresh — same as the configured-default sentinel).
-    if (provider.type === 'cli' && (provider.command === 'gemini' || provider.command === 'grok')) {
-      return false;
-    }
-    // All other providers support refresh (API and CLI)
-    return true;
-  };
 
   const handleRefreshModels = async (id) => {
     setRefreshing(prev => ({ ...prev, [id]: true }));

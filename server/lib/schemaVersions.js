@@ -521,7 +521,20 @@ export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // back onto the v3 peer, which is exactly the bump trigger (see the
   // `creativeDirectorProjects` 2→3 precedent). Per-category gate → only cos-tasks
   // sync pauses until the peer upgrades.
-  cosTasks: 3,
+  // v4 = the `workTracker` dispatch marker (repo-study / tracker-filing tasks) and
+  // the `reviewerEfforts` per-reviewer effort pins. Same EXECUTION-semantics break
+  // as v3, for the same reason: both ride the permissive `metadata` map, so a ≤v3
+  // receiver validates and stores the task fine — and then MIS-RUNS it.
+  // `taskTypeHooks.isTrackerFilingDispatch` reads `metadata.workTracker` to decide
+  // that a run which filed issues and left the tree clean SATISFIED its criterion;
+  // a ≤v3 peer only knows the `TRACKER_FILING_TASK_TYPES` set, so it grades that
+  // same run a validation miss, finalizes it failed, poisons the provider/model
+  // learning bucket, and LWW-pushes the damaged state back onto the v4 peer.
+  // `reviewerEfforts` is the milder instance: a ≤v3 peer runs the review at the
+  // reviewer CLI's default effort instead of the pinned tier, silently downgrading
+  // a review the user deliberately strengthened. Per-category gate → only cos-tasks
+  // sync pauses until the peer upgrades.
+  cosTasks: 4,
   // NOTE: `videoHistory` is intentionally NOT listed here. The version gate
   // rejects the ENTIRE snapshot/push payload on ANY ahead-mismatch (the
   // comparator walks the union of keys), so declaring a brand-new key would

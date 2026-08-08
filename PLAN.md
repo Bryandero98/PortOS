@@ -26,7 +26,7 @@ embedding budget) was fixed in that PR by debouncing the journal re-embed
 (`queueJournalResync` in `server/services/brainMemoryBridge.js`). These are the
 rest — each is a perf/cleanup item, none is a correctness bug:
 
-- [ ] Delete the dead `journals:changed` event. `server/services/brainJournal.js`
+- [x] Delete the dead `journals:changed` event. `server/services/brainJournal.js`
   emits it at lines ~259/298/335/356 as `{ records: await rawRecords() }`, and
   `rawRecords()` (line ~142) rebuilds the entire date→entry map (two full object
   copies of every journal day) — awaited inline before the save returns, so it
@@ -36,13 +36,13 @@ rest — each is a perf/cleanup item, none is a correctness bug:
   (`brainStorage.js`) with no cross-install surface, so removal is compat-safe.
   `server/services/brainJournal.test.js:141` asserts the emit and must be updated.
   Skipped in the autosave PR as pre-existing dead-code cleanup outside its scope.
-- [ ] Cache the Obsidian sidecar. `loadObsidianLocations()`
+- [x] Cache the Obsidian sidecar. `loadObsidianLocations()`
   (`server/services/brainJournal.js:85`) is `ensureDir` + `readJSONFile` with no
   cache, called from `getEntry`, `putEntry`, and `rawRecords` — ~3 uncached file
   reads + 3 `mkdir` syscalls per save, now once per autosave. Mirror the
   write-through cache `brainStorage` already uses (`CACHE_TTL_MS = 2000`). Fixing
   the item above removes one of the three call sites for free.
-- [ ] Serialize `scheduleObsidianSync` per date (`server/services/brainJournal.js:238`).
+- [x] Serialize `scheduleObsidianSync` per date (`server/services/brainJournal.js:238`).
   It rewrites the day's full markdown note fire-and-forget on every save, and its
   own comment notes Obsidian lives on iCloud where "writes can stall for hundreds
   of ms" — so at autosave cadence, overlapping writes to one file are possible and
@@ -255,6 +255,10 @@ The `kimi-cli`/`kimi-tui` providers shipped without a live `kimi` binary in the 
 - [ ] **Structured-output contamination.** If plain `kimi --print` interleaves intermediate tool/assistant activity with the final message, a pipeline stage parsing stdout as JSON could choke on the chatter. If the live `kimi` exposes a "final message only" flag, add it to `ensureKimiHeadlessArgs` in `server/lib/kimi.js`. NOT added blind: an unrecognized flag would make every headless run fail at startup.
 - [ ] **Confirm the TUI auto-approve + print flags.** Verify `--yolo` (TUI auto-approve), `--print`/`--afk` (headless), and `--prompt`/`-p` (prompt value) are the real flag names, and that `--print` implies `--afk`. Adjust `ensureKimiTuiArgs`/`ensureKimiHeadlessArgs` if the CLI differs.
 - [ ] **Kimi usage/quota family (out of scope of issue-2815).** Once the `kimi` usage command is confirmed, add a `FAMILIES` entry in `server/services/providerUsage.js` so the provider surfaces a quota card (currently maps to no family, like ollama-backed wrappers).
+
+### Warn at provider-save time when a command the CoS Runner can't spawn is configured
+
+- [ ] **Surface `isAllowedCommand` in the provider editor.** The runner's hand-curated allowlist (`server/cos-runner/allowedCommands.js`) is the exec boundary for `/spawn` and `/spawn-tui`, and it must stay hand-curated — `data/providers.json` is user-writable at runtime through `POST/PUT /api/providers` with an unconstrained `z.string()` command (`server/lib/validation.js` `providerSchema`), so deriving the allowlist from it would let a config write choose the exec target. A parity test now covers every SHIPPED provider (`server/cos-runner/allowedCommands.test.js`), but a **user-created** provider whose command isn't allowlisted still saves fine and then fails at spawn time — now with a legible "Command not allowed: X. Permitted commands: …" on the agent record rather than a mystery, which is why this is polish rather than a bug. Do NOT hard-reject on save: direct (non-runner) spawn does not consult this allowlist at all, so a custom provider can legitimately work today in direct mode, and rejecting would break that config. Right shape is an informational warning in the provider editor (and/or a badge like the "not installed" reviewer badge) when `command` is outside the runner allowlist, explaining that the provider will only run in direct-spawn mode. Deferred from the grok/kimi allowlist fix to keep that PR scoped to the paths that were actually broken.
 
 ### Loading-skeleton rollout follow-ups (#2843)
 

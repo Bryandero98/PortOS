@@ -102,6 +102,70 @@ describe('QuickBrainCapture', () => {
     expect(screen.getByText('Will capture as thought')).toBeInTheDocument();
   });
 
+  describe('GitHub repo intake', () => {
+    const REPO = 'https://github.com/example-owner/example-repo';
+
+    it('offers the post-clone agent options only for a bare repo URL', () => {
+      renderWidget();
+      type('https://example.com/article');
+      expect(screen.queryByLabelText('Scan for malware')).toBeNull();
+
+      type(REPO);
+      expect(screen.getByLabelText('Scan for malware')).toBeInTheDocument();
+      expect(screen.getByLabelText('Study for PortOS ideas')).toBeInTheDocument();
+      expect(screen.getByText(/will be cloned locally/)).toBeInTheDocument();
+      expect(screen.getByText('Will save as link and clone the repo')).toBeInTheDocument();
+    });
+
+    // The server files this as a thought (parseBareUrl rejects prose), so no
+    // clone happens and the options would be a lie.
+    it('hides the options for a repo URL wrapped in prose', () => {
+      renderWidget();
+      type(`worth reading ${REPO}`);
+      expect(screen.queryByLabelText('Scan for malware')).toBeNull();
+    });
+
+    it('hides the options for a non-repo github.com URL', () => {
+      renderWidget();
+      type('https://github.com/settings');
+      expect(screen.queryByLabelText('Scan for malware')).toBeNull();
+    });
+
+    it('sends the ticked actions with the capture', async () => {
+      renderWidget();
+      type(REPO);
+      fireEvent.click(screen.getByLabelText('Study for PortOS ideas'));
+      fireEvent.click(screen.getByLabelText('Capture'));
+
+      await waitFor(() => expect(captureBrainThought).toHaveBeenCalled());
+      expect(captureBrainThought.mock.calls[0][3].repoIntake).toEqual({ malwareScan: false, learn: true });
+    });
+
+    it('remembers the choice across mounts', () => {
+      const { unmount } = renderWidget();
+      type(REPO);
+      fireEvent.click(screen.getByLabelText('Scan for malware'));
+      expect(screen.getByLabelText('Scan for malware').checked).toBe(true);
+      unmount();
+
+      renderWidget();
+      type(REPO);
+      expect(screen.getByLabelText('Scan for malware').checked).toBe(true);
+    });
+
+    // A sticky tick must not ride along on a capture the user retyped into
+    // something the server will never clone.
+    it('omits the intake when the text is no longer a repo URL at submit time', async () => {
+      localStorage.setItem('brain.repoIntake.malwareScan', 'true');
+      renderWidget();
+      type(REPO);
+      submit('call mom');
+
+      await waitFor(() => expect(captureBrainThought).toHaveBeenCalled());
+      expect(captureBrainThought.mock.calls[0][3].repoIntake).toBeUndefined();
+    });
+  });
+
   describe('YouTube ingest path', () => {
     it('offers ingest options only for a single-video YouTube URL', async () => {
       renderWidget();

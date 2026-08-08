@@ -16,7 +16,8 @@ import { readFile, writeFile, stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { parseTasksMarkdown, groupTasksByStatus, getAutoApprovedTasks, getAwaitingApprovalTasks, generateTasksMarkdown, hasKnownPrefix } from '../lib/taskParser.js';
-import { REVIEW_STOP_MODES, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds, normalizeReviewerModels } from '../lib/validation.js';
+import { REVIEW_STOP_MODES, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers, KEYED_REVIEWER_PINS } from '../lib/validation.js';
+import { isPlainObject } from '../lib/objects.js';
 import { PR_COMPLETIONS, PR_COMPLETION_VALUES } from '../lib/prDisposition.js';
 import { RETRY_HOLD_KEY, RETRY_HOLD_SINCE_KEY } from '../lib/taskRetryHold.js';
 import { REQUEUED_AT_KEY } from '../lib/taskRequeue.js';
@@ -382,20 +383,15 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     if (Array.isArray(taskData.optionalReviewers)) {
       metadata.optionalReviewers = normalizeOptionalReviewers(taskData.optionalReviewers) || [];
     }
-    // Per-reviewer `~max=<n>` iteration caps, keyed by emitted `--review-with`
-    // token. An explicitly empty MAP overrides the Code Review Defaults' caps;
-    // an entry with no usable cap is dropped rather than coerced to `0`, which
-    // slashdo reads as "loop until clean" (absent ≠ 0).
-    if (taskData.reviewerMaxRounds && typeof taskData.reviewerMaxRounds === 'object' && !Array.isArray(taskData.reviewerMaxRounds)) {
-      metadata.reviewerMaxRounds = normalizeReviewerMaxRounds(taskData.reviewerMaxRounds) || {};
-    }
-    // Per-reviewer model pins, keyed by the same emitted token. Same
-    // explicit-empty semantics as the caps above: an empty MAP is a real "use each
+    // The token-keyed per-reviewer pins (caps / model / effort), keyed by the
+    // emitted `--review-with` token. An explicitly empty MAP is a real "use each
     // reviewer's own default for this task" choice that overrides the Code Review
-    // Defaults' pins. An entry naming a reviewer that takes no model, or a blank
-    // id, is dropped by the normalizer.
-    if (taskData.reviewerModels && typeof taskData.reviewerModels === 'object' && !Array.isArray(taskData.reviewerModels)) {
-      metadata.reviewerModels = normalizeReviewerModels(taskData.reviewerModels) || {};
+    // Defaults; unvalidatable entries are dropped rather than coerced. Iterates
+    // the shared table so this persist path can't drift from
+    // `sanitizeTaskMetadata`'s — see KEYED_REVIEWER_PINS.
+    for (const [key, normalizeMap] of KEYED_REVIEWER_PINS) {
+      if (!isPlainObject(taskData[key])) continue;
+      metadata[key] = normalizeMap(taskData[key]) || {};
     }
     if (REVIEW_STOP_MODES.includes(taskData.reviewStopMode)) metadata.reviewStopMode = taskData.reviewStopMode;
     if (taskData.reviewerApplies === true) metadata.reviewerApplies = true;
@@ -408,6 +404,16 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     if (taskData.malwareScan && typeof taskData.malwareScan === 'object' && !Array.isArray(taskData.malwareScan)) {
       metadata.malwareScan = taskData.malwareScan;
     }
+    // Brain link a `repo-study` run was queued from, so the completed task can be
+    // traced back to the captured repo it studied.
+    if (isPlainObject(taskData.repoStudy)) metadata.repoStudy = taskData.repoStudy;
+    // Which tracker the prompt told the agent to file into (PLAN.md / GitHub /
+    // GitLab / JIRA), mirroring the raw reference-watch dispatch in
+    // referenceRepos.js#triggerReferenceAnalysis. Beyond traceability this is
+    // what marks a ONE-OFF tracker-filing run as such, so it reaches the
+    // no-commit gate without having to masquerade as a scheduled task type —
+    // see taskTypeHooks.js#isTrackerFilingDispatch.
+    if (taskData.workTracker) metadata.workTracker = taskData.workTracker;
     if (taskData.jiraTicketId) metadata.jiraTicketId = taskData.jiraTicketId;
     if (taskData.jiraTicketUrl) metadata.jiraTicketUrl = taskData.jiraTicketUrl;
     if (taskData.screenshots?.length > 0) metadata.screenshots = taskData.screenshots;
@@ -1129,10 +1135,20 @@ export async function resolveTaskChallengeWithRecheck(taskId, { recheck, resolve
   }
   const backend = recheck?.backend;
   // Model: explicit override wins, else the Code Review Defaults for this backend.
+  // Effort has no per-request override (a re-check re-runs the SAME reviewer
+  // configuration, it doesn't reconfigure it), so it always comes from the
+  // defaults — but it must come from somewhere: this verdict decides whether a
+  // disputed rejection is upheld or escalated to the user, and deriving it from a
+  // pass run at a weaker effort than the user configured is the same silent
+  // downgrade the pin exists to prevent.
+  // Read straight off the picked defaults: `pickCodeReviewDefaults` already ran
+  // every `<reviewer>Effort` scalar through `reviewerEffortsFromDefaults`, so a
+  // stale level is null by the time it reaches here — same as the model read below.
+  const recheckDefaults = await getCodeReviewDefaults().catch(() => null);
+  const effort = recheckDefaults?.[`${backend}Effort`] || null;
   let model = recheck?.model;
   if (!model) {
-    const defaults = await getCodeReviewDefaults().catch(() => null);
-    model = backend === 'ollama' ? defaults?.ollamaModel : defaults?.lmstudioModel;
+    model = backend === 'ollama' ? recheckDefaults?.ollamaModel : recheckDefaults?.lmstudioModel;
   }
   // A missing model is a config problem (no Code Review Defaults set), not an
   // upstream-reviewer failure — surface it as a 4xx (RECHECK_NO_MODEL → 400), not
@@ -1140,8 +1156,8 @@ export async function resolveTaskChallengeWithRecheck(taskId, { recheck, resolve
   if (!model) {
     return { error: `No model configured for the ${backend} reviewer — set one on the AI Providers → Code Review Defaults panel.`, code: 'RECHECK_NO_MODEL' };
   }
-  console.log(`⚖️ Re-checking challenge on ${taskId} via ${backend} (${model})`);
-  const review = await runLocalCodeReview({ backend, model, diff: recheck?.diff });
+  console.log(`⚖️ Re-checking challenge on ${taskId} via ${backend} (${model}${effort ? `, ${effort} effort` : ''})`);
+  const review = await runLocalCodeReview({ backend, model, effort, diff: recheck?.diff });
   if (!review?.ok) {
     return { error: `Re-check failed: ${review?.error || 'unknown reviewer error'}`, code: 'RECHECK_FAILED' };
   }

@@ -832,6 +832,47 @@ describe('cleanupAgentWorktree - openPR path', () => {
     expect(followUp.metadata.reviewLoopCodexModel).toBeNull();
   });
 
+  // The effort map narrows against EFFORT_SELECTABLE_REVIEWERS, a DIFFERENT roster
+  // than the model map's — `antigravity` takes an effort but no PortOS-pinnable
+  // model. Passing the model roster here would silently drop every agy pin at this
+  // hop with the rest of the suite still green, so pin the distinction explicitly.
+  it('narrows the effort map against the effort roster, keeping an antigravity pin the model roster excludes', async () => {
+    git.push.mockResolvedValue(undefined);
+    git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/61' });
+    git.requestCopilotReview.mockResolvedValue({ success: true });
+    addTask.mockResolvedValue({ id: 'sys-rl-eff' });
+
+    await cleanupAgentWorktree('agent-1', true, {
+      openPR: true, requestCopilotReview: true, reviewers: ['copilot', 'antigravity', 'claude'],
+      reviewerModels: { claude: 'qwen2.5:7b' },
+      // `codex` isn't in the reviewer list; `copilot` has no effort control at all.
+      reviewerEfforts: { antigravity: 'high', claude: 'xhigh', codex: 'low', copilot: 'high' },
+      description: 'Build',
+      originalTask: { id: 'task-orig', priority: 'MEDIUM', metadata: { app: 'sparsetree' }, description: 'Build' }
+    });
+
+    const [followUp] = addTask.mock.calls[0];
+    expect(followUp.metadata.reviewLoopReviewerEfforts).toEqual({ antigravity: 'high', claude: 'xhigh' });
+    // The model map narrows on its own roster and is unaffected by the effort pins.
+    expect(followUp.metadata.reviewLoopReviewerModels).toEqual({ claude: 'qwen2.5:7b' });
+  });
+
+  it('drops the effort map entirely when no effort-capable reviewer is in the list', async () => {
+    git.push.mockResolvedValue(undefined);
+    git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/62' });
+    git.requestCopilotReview.mockResolvedValue({ success: true });
+    addTask.mockResolvedValue({ id: 'sys-rl-noeff' });
+
+    await cleanupAgentWorktree('agent-1', true, {
+      openPR: true, requestCopilotReview: true, reviewers: ['copilot'],
+      reviewerEfforts: { claude: 'high' }, description: 'Build',
+      originalTask: { id: 'task-orig', priority: 'MEDIUM', metadata: { app: 'sparsetree' }, description: 'Build' }
+    });
+
+    // Empty → null, so the prompt builder's "nothing configured" path is unambiguous.
+    const [followUp] = addTask.mock.calls[0];
+    expect(followUp.metadata.reviewLoopReviewerEfforts).toBeNull();
+  });
   it('drops the model map entirely when no model-capable reviewer is in the list', async () => {
     git.push.mockResolvedValue(undefined);
     git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/59' });

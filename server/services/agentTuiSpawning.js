@@ -13,7 +13,7 @@ import * as shellService from './shell.js';
 import { emitLog } from './cosEvents.js';
 import { updateAgent } from './cosAgentLifecycle.js';
 import { createOutputSpooler } from './agentTuiSpawning/outputSpooler.js';
-import { captureWorktreeDiff, worktreeHasChanges, resolveErrorAnalysis } from './agentTuiSpawning/finalizeHelpers.js';
+import { captureWorktreeDiff, worktreeHasWorkEvidence, resolveErrorAnalysis } from './agentTuiSpawning/finalizeHelpers.js';
 import { finalizeAgent, releaseAgentLane } from './agentFinalization.js';
 import { activeAgents, userTerminatedAgents, pausedAgents, isFalsyMeta, registerSpawnedAgent, unregisterSpawnedAgent } from './agentState.js';
 import { PATHS } from '../lib/fileUtils.js';
@@ -27,11 +27,11 @@ import * as git from './git.js';
 import { resolveReviewLoopOptions } from './codeReview.js';
 import { spawnTuiSessionViaRunner } from './cosRunnerClient.js';
 import { shellQuote } from '../lib/shellQuote.js';
-import { resolveCliModel, buildEffortArgs, resolveBedrockCliModel, prefixOpencodeModel, hasModelFlag, isOpencodeCommand, isClaudeCommand, applyLeanClaudeArgs, providerSuppliesGithubToken } from '../lib/providerModels.js';
+import { isClaudeCommand, applyLeanClaudeArgs, providerSuppliesGithubToken } from '../lib/providerModels.js';
 import { createStreamingAnsiStripper, stripAnsi } from '../lib/ansiStrip.js';
 import { createImmediateFallbackSignalDetector } from '../lib/aiToolkit/errorDetection.js';
 import { isMachineOnline } from '../lib/connectivity.js';
-import { isAntigravityCommand, resolveAntigravityModelAndEffort } from '../lib/antigravity.js';
+import { isAntigravityCommand } from '../lib/antigravity.js';
 import {
   DEFAULT_TUI_PROMPT_DELAY_MS,
   DEFAULT_TUI_IDLE_TIMEOUT_MS,
@@ -67,6 +67,7 @@ import {
   extractVerifiablePromptPrefix,
   isPasteConfirmed,
 } from '../lib/tuiHandshake.js';
+import { injectTuiModelAndEffort } from '../lib/providerVendors.js';
 import { agentGuardEnv } from '../lib/agentGuard/index.js';
 import { composeProviderEnv } from '../lib/cliChildEnv.js';
 import { execFile } from 'child_process';
@@ -99,8 +100,9 @@ const CONNECTIVITY_RECHECK_MS = 10000;
 const CONNECTIVITY_PROBE_LEAD_MS = 20000;
 
 // Output buffering/spooling (createOutputSpooler) and failure-analysis /
-// worktree-inspection helpers (readFileTail, worktreeHasChanges,
-// captureWorktreeDiff, resolveErrorAnalysis, RAW_TAIL_ANALYSIS_BYTES) live in
+// worktree-inspection helpers (readFileTail, worktreeHasChanges, commitsSince,
+// worktreeHasWorkEvidence, captureWorktreeDiff, resolveErrorAnalysis,
+// RAW_TAIL_ANALYSIS_BYTES) live in
 // ./agentTuiSpawning/ so spawnTuiAgent stays a thin orchestrator.
 
 // Sentinel-file polling. TUI agents write `.agent-done` in their workspace
@@ -222,46 +224,14 @@ function shellHasLiveChild(shellPid) {
   });
 }
 
-function appendModelArgs(args, model, command, provider) {
-  const effectiveModel = resolveCliModel(model);
-  if (!effectiveModel) return args;
-  // OpenCode TUI launches with `opencode --model ollama/<id>` (the top-level
-  // flag preselects the model). Namespace the bare Ollama id; no Bedrock mapping.
-  // Respect a user-baked --model/-m pin (mirrors buildTuiInvocation/buildCliArgs)
-  // rather than appending a second flag that overrides it.
-  if (isOpencodeCommand(command)) {
-    if (hasModelFlag(args)) return args;
-    return [...args, '--model', prefixOpencodeModel(provider, effectiveModel)];
-  }
-  // Antigravity never reaches here: buildTuiSpawnConfig resolves its model and
-  // effort together up front (agy validates the pair) — see antigravity.js.
-
-  // Bedrock box: map a bare Claude id to its region-prefixed form just-in-time
-  // (no-op off Bedrock / for non-Claude ids).
-  const injectedModel = resolveBedrockCliModel(effectiveModel, {
-    env: { ...process.env, ...provider?.envVars },
-    providerId: provider?.id,
-  });
-  return [...args, '--model', injectedModel];
-}
-
 export function buildTuiSpawnConfig(provider, model, { systemPromptFile = null, effort = null } = {}) {
   const command = provider?.command || inferTuiCommand(provider?.id);
   const baseArgs = applyCommandDefaults(command, [...(provider?.args || [])]);
-  let args;
-  if (isAntigravityCommand(command)) {
-    // agy validates the (model, effort) PAIR — `gemini-3.1-pro` has no `medium`
-    // tier — and a legacy suffixed id carries its own effort, so the two are
-    // resolved together against the provider's catalog (see antigravity.js).
-    const resolved = resolveAntigravityModelAndEffort(baseArgs, { model, effort, models: provider?.models });
-    args = resolved.model ? [...baseArgs, '--model', resolved.model] : baseArgs;
-    args = [...args, ...buildEffortArgs(resolved.effort, resolved.provider, args, resolved.base)];
-  } else {
-    args = appendModelArgs(baseArgs, model, command, provider);
-    // Reasoning-effort override — the provider is re-keyed on the RESOLVED launch
-    // command so an inferred command (blank provider.command) still qualifies.
-    args = [...args, ...buildEffortArgs(effort, { id: provider?.id, command }, args)];
-  }
+  // Model+effort injection (including the antigravity-validates-the-pair special
+  // case) is shared with tuiHandshake.js#buildTuiInvocation via
+  // providerVendors.js#injectTuiModelAndEffort, so the two spawn paths can't
+  // drift — they already had once, on cursor, before #3618.
+  let args = injectTuiModelAndEffort(command, baseArgs, provider, model, effort);
   // Lean mode for Ollama-backed claude sessions (no-op otherwise) — must come
   // before the system-prompt flag so `--bare` is present when the contract
   // file rides along.
@@ -894,20 +864,41 @@ export async function spawnTuiAgent({
     ? {}
     : await git.resolveForgeTokenEnv(cwd);
 
-  const session = await createAgentTuiSession({
-    agentId,
-    taskId: task.id,
-    provider,
-    model,
-    tuiConfig,
-    cwd,
-    forgeTokenEnv,
-    doneSentinelPath,
-    useDurableRunner,
-    onData: handleData,
-    onExit: handleExit,
-    onInitialCommandSent: () => { commandInjected = true; },
-  });
+  // A spawn failure here (a runner 400 for a command missing from its allowlist,
+  // an unreachable runner, a PTY that won't open) used to propagate raw out of
+  // spawnTuiAgent. The caller in subAgentSpawner only logs it, so the agent
+  // record stayed `initializing` with the real error nowhere but the server log
+  // until the zombie reaper finalized it ~a minute later as the generic "Agent
+  // process terminated unexpectedly". Finalize it here instead, carrying the
+  // spawn error into the record. Runs outside the Express request lifecycle, so
+  // there is no middleware to bubble to.
+  let session;
+  try {
+    session = await createAgentTuiSession({
+      agentId,
+      taskId: task.id,
+      provider,
+      model,
+      tuiConfig,
+      cwd,
+      forgeTokenEnv,
+      doneSentinelPath,
+      useDurableRunner,
+      onData: handleData,
+      onExit: handleExit,
+      onInitialCommandSent: () => { commandInjected = true; },
+    });
+  } catch (err) {
+    const message = err?.message || String(err);
+    appendLine(`❌ Failed to start ${provider.name || provider.id} TUI: ${message}`);
+    await finish({
+      success: false,
+      exitCode: 1,
+      error: `Failed to start TUI session: ${message}`,
+      reason: 'spawn-error',
+    });
+    return null;
+  }
   sessionId = session.sessionId;
 
   if (!sessionId) {
@@ -1453,6 +1444,9 @@ export async function spawnTuiAgent({
         // An agent that shows activity counters but makes no file changes
         // (rambled, invalid tool calls, hit an error) should fail, not succeed.
         //
+        // "Evidence of work" is a dirty tree OR a commit made during the run,
+        // not a dirty tree alone — see worktreeHasWorkEvidence for why.
+        //
         // ...UNLESS the task declares its work product isn't files (#3102).
         // `worktreeChangesExpected: false` marks a task type whose deliverable
         // lands OUTSIDE the repo — a reference-watch run against a GitHub/GitLab/
@@ -1463,7 +1457,7 @@ export async function spawnTuiAgent({
         // distinguishes "prompt never submitted" → idle-no-activity either way.
         const worktreeChangesExpected = !isFalsyMeta(task?.metadata?.worktreeChangesExpected);
         (async () => {
-          const hasChanges = !worktreeChangesExpected || await worktreeHasChanges(cwd);
+          const hasChanges = !worktreeChangesExpected || await worktreeHasWorkEvidence(cwd, startedAt);
           // Capture any uncommitted changes for post-mortem analysis regardless
           // of outcome — the diff is useful even on success for debugging, and is
           // a no-op on a clean tree.
@@ -1472,7 +1466,7 @@ export async function spawnTuiAgent({
             finish({
               success: false,
               exitCode: 1,
-              error: 'TUI agent idled out with zero uncommitted file changes — the model may have processed but produced no work.',
+              error: 'TUI agent idled out with zero uncommitted file changes and no new commits — the model may have processed but produced no work.',
               reason: 'idle-no-changes',
             }).catch(err => {
               emitLog('error', `Failed to finalize TUI agent ${agentId}: ${err.message}`, { agentId });

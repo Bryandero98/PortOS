@@ -368,6 +368,40 @@
       "secretEnvVars": [],
       "tuiPromptDelayMs": 2500,
       "tuiIdleTimeoutMs": 180000
+    },
+    "cursor-cli": {
+      "id": "cursor-cli",
+      "name": "Cursor Agent CLI",
+      "type": "cli",
+      "command": "cursor-agent",
+      "args": ["--print", "--force"],
+      "models": ["auto", "composer-2.5", "claude-opus-5-high", "claude-opus-5-thinking-high", "claude-opus-5-thinking-xhigh", "claude-opus-5-thinking-max", "claude-sonnet-5-high", "claude-sonnet-5-thinking-high", "claude-sonnet-5-thinking-xhigh", "claude-fable-5-high", "claude-fable-5-thinking-high", "claude-opus-4-8-high", "claude-opus-4-8-thinking-high", "claude-4.6-sonnet-medium", "gpt-5.6-sol-high", "gpt-5.6-sol-xhigh", "gpt-5.6-luna-high", "gpt-5.6-terra-high", "gpt-5.5-high", "gpt-5.4-high", "gpt-5.4-mini-high", "gpt-5.3-codex", "gpt-5.3-codex-high", "gpt-5.3-codex-xhigh", "gpt-5.2-high", "gemini-3.1-pro", "gemini-3.5-flash"],
+      "defaultModel": "auto",
+      "lightModel": "composer-2.5",
+      "mediumModel": "claude-sonnet-5-thinking-high",
+      "heavyModel": "claude-opus-5-thinking-high",
+      "timeout": 300000,
+      "enabled": false,
+      "envVars": {},
+      "secretEnvVars": []
+    },
+    "cursor-tui": {
+      "id": "cursor-tui",
+      "name": "Cursor Agent TUI",
+      "type": "tui",
+      "command": "cursor-agent",
+      "args": ["--force"],
+      "models": ["auto", "composer-2.5", "claude-opus-5-high", "claude-opus-5-thinking-high", "claude-opus-5-thinking-xhigh", "claude-opus-5-thinking-max", "claude-sonnet-5-high", "claude-sonnet-5-thinking-high", "claude-sonnet-5-thinking-xhigh", "claude-fable-5-high", "claude-fable-5-thinking-high", "claude-opus-4-8-high", "claude-opus-4-8-thinking-high", "claude-4.6-sonnet-medium", "gpt-5.6-sol-high", "gpt-5.6-sol-xhigh", "gpt-5.6-luna-high", "gpt-5.6-terra-high", "gpt-5.5-high", "gpt-5.4-high", "gpt-5.4-mini-high", "gpt-5.3-codex", "gpt-5.3-codex-high", "gpt-5.3-codex-xhigh", "gpt-5.2-high", "gemini-3.1-pro", "gemini-3.5-flash"],
+      "defaultModel": "auto",
+      "lightModel": "composer-2.5",
+      "mediumModel": "claude-sonnet-5-thinking-high",
+      "heavyModel": "claude-opus-5-thinking-high",
+      "timeout": 600000,
+      "enabled": false,
+      "envVars": {},
+      "secretEnvVars": [],
+      "tuiPromptDelayMs": 2500,
+      "tuiIdleTimeoutMs": 180000
     }
   }
 }

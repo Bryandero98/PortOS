@@ -177,6 +177,7 @@ export * from './useGoalDetail.js';
 export * from './usePostSession.js';
 export * from './useRecordMerge.js';
 export * from './useRenderJobQueue.js';
+export * from './useRepoIntake.js';
 export * from './useSyncIntegrity.js';
 export * from './useTwinEvaluationSuite.js';
 export * from './useUniverseNav.js';

@@ -1036,6 +1036,49 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).toMatch(/claude --model qwen2\.5:7b/);
     });
 
+    it('threads a reviewer-keyed effort map onto each CLI invocation, in that CLI-specific flag form', () => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: {
+          reviewLoopFollowUp: true,
+          reviewLoopPRUrl: 'https://github.com/o/r/pull/9',
+          reviewLoopPRBranch: 'b',
+          reviewLoopPRNumber: 9,
+          reviewLoopReviewers: ['codex', 'claude', 'antigravity'],
+          reviewLoopReviewerModels: { codex: 'gpt-5.6-sol' },
+          reviewLoopReviewerEfforts: { codex: 'high', claude: 'xhigh', antigravity: 'low' },
+          sourceTaskId: 'task-src-effort',
+        }}),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta);
+      // codex takes a config pair; claude and agy take --effort. The model pin
+      // and the effort ride the SAME command line when both are set.
+      expect(prompt).toMatch(/codex --model gpt-5\.6-sol -c model_reasoning_effort=high/);
+      expect(prompt).toMatch(/claude --effort xhigh/);
+      // `antigravity` names no executable — the invocation must say `agy`.
+      expect(prompt).toMatch(/agy --effort low/);
+      expect(prompt).not.toMatch(/antigravity --effort/);
+    });
+
+    it('names a pinned local-LLM effort as an /api/code-review/local body key', () => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: {
+          reviewLoopFollowUp: true,
+          reviewLoopPRUrl: 'https://github.com/o/r/pull/9',
+          reviewLoopPRBranch: 'b',
+          reviewLoopPRNumber: 9,
+          reviewLoopReviewers: ['ollama'],
+          reviewLoopReviewerEfforts: { ollama: 'high' },
+          sourceTaskId: 'task-src-local-effort',
+        }}),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta);
+      expect(prompt).toContain('"effort": "high"');
+      // The effort has no slashdo suffix, so it must NOT leak into the flag string.
+      expect(prompt).not.toMatch(/--review-with[^\n]*effort/);
+    });
+
     it('spells out per-reviewer ~max round caps in the follow-up loop instructions', () => {
       const prompt = buildLightContextPrompt(
         makeTask({ metadata: {
@@ -1896,6 +1939,68 @@ describe('buildReviewLoopFollowUpSection — CLI reviewer procedure inlining', (
   });
 });
 
+describe('buildReviewLoopFollowUpSection — reviewer slug → CLI binary', () => {
+  // `antigravity` is the stored, federated reviewer slug; the executable is
+  // `agy`. The prompt used to say "Invoke the `antigravity` CLI" and list a
+  // fixed "codex / antigravity / claude / grok" bullet, so a follow-up agent ran
+  // `command -v antigravity`, found nothing, announced "the only configured
+  // reviewer is antigravity … isn't available", self-reviewed, and merged.
+  const baseMeta = {
+    reviewLoopFollowUp: true,
+    sourceTaskId: 't1',
+    reviewLoopPRUrl: 'https://github.com/o/r/pull/1',
+    reviewLoopPRBranch: 'feature-b',
+  };
+  const build = (reviewers, verbose = false) => buildReviewLoopFollowUpSection(
+    { ...baseMeta, reviewLoopReviewers: reviewers },
+    { verbose, localAgentLoopBody: null },
+  );
+
+  for (const verbose of [false, true]) {
+    it(`names \`agy\`, not \`antigravity\`, as the command to invoke (verbose=${verbose})`, () => {
+      const out = build(['antigravity'], verbose);
+      expect(out).toContain('Invoke `agy` (the `antigravity` reviewer) to review');
+      expect(out).not.toMatch(/Invoke the `antigravity` CLI/);
+    });
+  }
+
+  it('heads the multi-reviewer bullet with the configured binaries and maps the slug', () => {
+    const out = build(['antigravity', 'codex']);
+    expect(out).toContain('**agy / codex**');
+    expect(out).toContain('the `antigravity` reviewer runs the `agy` binary (there is no `antigravity` command)');
+    // The old hardcoded roster listed reviewers this loop never configured.
+    expect(out).not.toContain('codex / antigravity / claude / grok');
+  });
+
+  it('omits the slug→binary note when every reviewer names its own binary', () => {
+    const out = build(['codex', 'claude']);
+    expect(out).toContain('**codex / claude**');
+    expect(out).not.toContain('Reviewer slug → command');
+  });
+
+  it('titles the inlined CLI procedure with the configured binaries', () => {
+    const out = buildReviewLoopFollowUpSection(
+      { ...baseMeta, reviewLoopReviewers: ['antigravity'] },
+      { verbose: false, localAgentLoopBody: 'BODY' },
+    );
+    expect(out).toContain('### CLI Reviewer Procedure (agy)');
+  });
+
+  // The second half of the failure: a reviewer that cannot run is not a clean
+  // review, but the agent substituted its own self-review and merged anyway.
+  it('forbids merging on a self-review when a reviewer binary is missing', () => {
+    const out = build(['antigravity']);
+    expect(out).toContain('command -v agy');
+    expect(out).toMatch(/do NOT substitute your own self-review and do NOT merge/);
+  });
+
+  it('emits no missing-CLI note for a loop with no spawnable CLI reviewer', () => {
+    const out = build(['copilot', 'ollama']);
+    expect(out).not.toContain('Missing reviewer CLI');
+    expect(out).not.toContain('command -v');
+  });
+});
+
 // -----------------------------------------------------------------------------
 // Slashdo-backed tasks (#3089)
 // -----------------------------------------------------------------------------
@@ -2066,6 +2171,35 @@ describe('buildAgentPrompt — slashdo prompt-size controls', () => {
     warn.mockRestore();
   });
 
+  // The workflow drives its OWN review loop, so an effort pinned on the task has
+  // no other route to the reviewer CLI it spawns — `--review-with` carries a
+  // `[<model>]` bracket but has no effort suffix.
+  it('states a pinned reviewer effort in the slashdo section', async () => {
+    const prompt = await buildAgentPrompt(
+      slashdoTask({ reviewers: ['codex'], reviewerEfforts: { codex: 'high' } }),
+      {}, '/r', null, isTruthyMeta,
+      { providerType: 'cli', providerId: 'codex' });
+    expect(prompt).toContain('`codex -c model_reasoning_effort=high`');
+  });
+
+  it('names only the reviewers this run actually resolved', async () => {
+    // A stale pin for a reviewer that isn't in the list (set on another task, or
+    // left behind by the Code Review Defaults) must not tell the agent to pass a
+    // flag to a CLI it never invokes.
+    const prompt = await buildAgentPrompt(
+      slashdoTask({ reviewers: ['codex'], reviewerEfforts: { codex: 'high', claude: 'xhigh' } }),
+      {}, '/r', null, isTruthyMeta,
+      { providerType: 'cli', providerId: 'codex' });
+    expect(prompt).toContain('`codex -c model_reasoning_effort=high`');
+    expect(prompt).not.toContain('--effort xhigh');
+  });
+
+  it('adds no effort sentence when no reviewer pins one', async () => {
+    const prompt = await buildAgentPrompt(
+      slashdoTask({ reviewers: ['codex'] }), {}, '/r', null, isTruthyMeta,
+      { providerType: 'cli', providerId: 'codex' });
+    expect(prompt).not.toContain('pinned reasoning effort');
+  });
   describe('reviewer-variant pruning', () => {
     const skipArg = () => vi.mocked(loadSlashdoFile).mock.calls.at(-1)[1].skipIncludes;
 

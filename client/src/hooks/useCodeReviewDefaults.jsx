@@ -1,16 +1,26 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import * as api from '../services/api';
-import { DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE } from '../components/cos/constants';
+import { DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, EFFORT_SELECTABLE_REVIEWERS, MODEL_SELECTABLE_REVIEWERS } from '../components/cos/constants';
+
+// The per-reviewer scalars, generated from the same rosters the picker renders
+// Model and Effort cells for. Generated rather than hand-listed because a
+// reviewer missing from this context silently blanks its configured pin on every
+// consumer — with nothing failing to say so.
+const pinScalars = (source) => Object.fromEntries([
+  ...MODEL_SELECTABLE_REVIEWERS.map((reviewer) => [`${reviewer}Model`, source?.[`${reviewer}Model`] || null]),
+  ...EFFORT_SELECTABLE_REVIEWERS.map((reviewer) => [`${reviewer}Effort`, source?.[`${reviewer}Effort`] || null]),
+]);
 
 // Resolved "Code Review Defaults" (AI Providers panel) — used by TaskAddForm
 // and ScheduleTab's per-task-type config to seed the picker's fallback state
 // instead of the hardcoded `['copilot']`. Returned shape mirrors the server's
 // `getCodeReviewDefaults()` so a consumer can rely on the same field names
 // regardless of whether it reads context or calls the API directly.
-// Mirrors the server's `pickCodeReviewDefaults` shape, including all four
-// `<reviewer>Model` scalars — the reviewer table's Model column reads them via
-// `reviewerModelsFromDefaults`, so omitting the two CLI scalars here would silently
-// blank a configured codex/claude pin on every consumer of this context.
+// Mirrors the server's `pickCodeReviewDefaults` shape, including every
+// `<reviewer>Model` / `<reviewer>Effort` scalar — the reviewer table's Model and
+// Effort columns read them via `reviewerModelsFromDefaults` /
+// `reviewerEffortsFromDefaults`, so omitting one here would silently blank a
+// configured pin on every consumer of this context.
 const FALLBACK = Object.freeze({
   reviewers: DEFAULT_REVIEWERS,
   usernames: [],
@@ -18,10 +28,11 @@ const FALLBACK = Object.freeze({
   reviewerMaxRounds: {},
   stopMode: DEFAULT_REVIEW_STOP_MODE,
   reviewerApplies: false,
-  lmstudioModel: null,
-  ollamaModel: null,
-  codexModel: null,
-  claudeModel: null,
+  ...pinScalars(null),
+  // Per-CLI-reviewer install probe (#3606) — absent/empty means "not fetched
+  // yet", not "nothing installed"; ReviewerPicker only warns on an explicit
+  // `false`.
+  installed: {},
 });
 
 const CodeReviewDefaultsContext = createContext(FALLBACK);
@@ -47,10 +58,8 @@ export function CodeReviewDefaultsProvider({ children }) {
             : {},
           stopMode: d.stopMode || DEFAULT_REVIEW_STOP_MODE,
           reviewerApplies: d.reviewerApplies === true,
-          lmstudioModel: d.lmstudioModel || null,
-          ollamaModel: d.ollamaModel || null,
-          codexModel: d.codexModel || null,
-          claudeModel: d.claudeModel || null,
+          ...pinScalars(d),
+          installed: d.installed && typeof d.installed === 'object' && !Array.isArray(d.installed) ? d.installed : {},
         });
       })
       .catch(() => {});

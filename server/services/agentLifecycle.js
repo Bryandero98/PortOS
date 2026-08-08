@@ -49,7 +49,7 @@ import { ensureDir, PATHS, sleep, tryReadFile } from '../lib/fileUtils.js';
 import { createToolExecution, startExecution, completeExecution, errorExecution } from './toolStateMachine.js';
 import { determineLane, acquire, release } from './executionLanes.js';
 import { analyzeAgentFailure } from './agentErrorAnalysis.js';
-import { createAgentRun, checkForTaskCommit } from './agentRunTracking.js';
+import { createAgentRun, checkForTaskCommit, completeAgentRun } from './agentRunTracking.js';
 import { buildAgentPrompt, getAppWorkspace } from './agentPromptBuilder.js';
 import { isOllamaClaudeProvider, isClaudeCommand, providerSuppliesGithubToken } from '../lib/providerModels.js';
 import { canTypeSlashCommands } from '../lib/slashdoInvocation.js';
@@ -73,7 +73,7 @@ import { resolveAgentProviderAndModel } from './agentProviderResolution.js';
 import { prepareAgentWorkspace } from './agentWorkspacePrep.js';
 import { cleanupAgentWorktree } from './agentWorktreeCleanup.js';
 import { runAgentCompletionCleanup } from './agentCompletionCleanup.js';
-import { dispatchRecoveredTaskOutputHook, finalizeAgent, stampLiExecutionVerdict } from './agentFinalization.js';
+import { dispatchRecoveredTaskOutputHook, finalizeAgent, releaseAgentLane, stampLiExecutionVerdict } from './agentFinalization.js';
 import { extractFinalSummary } from './agentSummaryExtraction.js';
 import { handleOrphanedTask } from './agentManagement.js';
 
@@ -733,26 +733,52 @@ export async function spawnViaRunner(agentId, task, opts) {
     providerSuppliesGithubToken(provider) ? Promise.resolve({}) : resolveForgeTokenEnv(workspacePath),
   ]);
 
-  const result = await spawnAgentViaRunner({
-    agentId,
-    taskId: task.id,
-    prompt,
-    workspacePath,
-    model,
-    // A DELTA, not a full env — the cos-runner bases it on its own process.env
-    // and does the PWD pin / CLAUDECODE strip. composeProviderEnv owns the layer
-    // order: forgeTokenEnv before provider.envVars so an explicit provider
-    // override wins, and the OpenCode declared-models map after it so the
-    // injected `--model ollama/<id>` is accepted (#2243/#2190 — this path was
-    // the site that sweep originally missed).
-    envVars: composeProviderEnv({
-      before: { ...forgeTokenEnv, ...claudeSettingsEnv },
-      provider,
+  // The runner can reject the spawn outright — a command missing from its
+  // allowlist, malformed cliArgs — or be unreachable. No child ever exists, so
+  // NO runner event will ever arrive to complete this agent. Left unhandled the
+  // throw reaches subAgentSpawner's `task:ready` listener, which only logs; and
+  // because `runnerAgents` still holds the entry, `isAgentOwnedLocally` makes
+  // the orphan sweep skip the record too, so the 3s timer above flips it to
+  // `working` and it sits there for the life of the process. Finalize with the
+  // real error instead — same shape as the runner's own `agent:error` handling
+  // in subAgentSpawner.js. (The TUI arm of this dispatch owns the equivalent
+  // handling inside spawnTuiAgent, where `finish()` is the idempotent finalizer.)
+  let result;
+  try {
+    result = await spawnAgentViaRunner({
+      agentId,
+      taskId: task.id,
+      prompt,
+      workspacePath,
       model,
-    }),
-    cliCommand: cliConfig.command,
-    cliArgs: cliConfig.args
-  });
+      // A DELTA, not a full env — the cos-runner bases it on its own process.env
+      // and does the PWD pin / CLAUDECODE strip. composeProviderEnv owns the layer
+      // order: forgeTokenEnv before provider.envVars so an explicit provider
+      // override wins, and the OpenCode declared-models map after it so the
+      // injected `--model ollama/<id>` is accepted (#2243/#2190 — this path was
+      // the site that sweep originally missed).
+      envVars: composeProviderEnv({
+        before: { ...forgeTokenEnv, ...claudeSettingsEnv },
+        provider,
+        model,
+      }),
+      cliCommand: cliConfig.command,
+      cliArgs: cliConfig.args
+    });
+  } catch (err) {
+    const message = err?.message || String(err);
+    clearTimeout(agentInfo.initializationTimeout);
+    runnerAgents.delete(agentId);
+    releaseAgentLane({ agentId, success: false, exitCode: 1, executionId, laneName, errorExecutionMessage: message });
+    // validationPassed is the null sentinel (#2344): no success criterion was
+    // ever evaluated, so this records "not declared" rather than a false
+    // "declared and failed".
+    await completeAgent(agentId, { success: false, validationPassed: null, error: message });
+    await completeAgentRun(runId, '', 1, 0, { message, category: 'runner-error' });
+    emitLog('error', `Agent ${agentId} failed to spawn via runner: ${message}`, { agentId, taskId: task.id });
+    cosEvents.emit('agent:error', { agentId, taskId: task.id, error: message });
+    return null;
+  }
 
   // Store PID in persisted state for zombie detection
   await updateAgent(agentId, { pid: result.pid });

@@ -243,8 +243,9 @@ export function VoiceTab() {
     if (!providerId || refreshingModels) return;
     setRefreshingModels(true);
     try {
-      // Silent: the route 404s when the provider returns no models, so the
-      // catch below owns the error toast (avoids a double toast).
+      // Silent: the route errors when the refresh fails (502 with the probe's
+      // real message, or 400 when that CLI has no fetcher), so the catch below
+      // owns the error toast (avoids a double toast).
       const updated = await refreshProviderModels(providerId, { silent: true });
       setApiProviders((prev) => prev.map((p) => (p.id === providerId ? { ...p, models: updated.models || [] } : p)));
       toast.success(`Refreshed models for ${updated.name || providerId} (${updated.models?.length || 0})`);

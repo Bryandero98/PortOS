@@ -52,6 +52,20 @@ export function isProviderAvailable(providerId) {
 }
 
 /**
+ * Mark a provider unavailable for an arbitrary reason + cooldown — the generic
+ * marker the category-specific ones below are wrappers over. Callers resolve
+ * `options` via `lib/providerCooldown.js#resolveProviderBench`.
+ *
+ * @param {string} providerId
+ * @param {{ reason?: string, message?: string, waitTimeMs?: number, extras?: object }} options
+ */
+export async function markProviderUnavailable(providerId, options = {}) {
+  const status = await providerStatusService.markUnavailable(providerId, options);
+  console.log(`⚠️ Provider ${providerId} sidelined: ${options.reason || 'unknown'} (retry in ${Math.round((options.waitTimeMs || 0) / 60000)}m)`);
+  return status;
+}
+
+/**
  * Mark a provider as unavailable due to usage limit
  */
 export async function markProviderUsageLimit(providerId, errorInfo) {

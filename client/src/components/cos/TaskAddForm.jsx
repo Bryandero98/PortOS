@@ -14,7 +14,7 @@ import { slashdoLabel } from '../../lib/slashdoCatalog';
 import ReviewerPicker from './ReviewerPicker';
 import EffortSelect from './EffortSelect';
 import useReviewerModelOptions from '../../hooks/useReviewerModelOptions';
-import { reviewerModelsFromDefaults } from '../../lib/reviewerModels';
+import { reviewerModelsFromDefaults, reviewerEffortsFromDefaults } from '../../lib/reviewerModels';
 
 export default function TaskAddForm({ providers, apps, onTaskAdded, compact = false, defaultExpanded = false, defaultApp = '' }) {
   const [newTask, setNewTask] = useState({ description: '', model: '', provider: '', effort: '', app: defaultApp });
@@ -30,8 +30,10 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
   const [optionalReviewers, setOptionalReviewers] = useState([]);
   const [reviewerMaxRounds, setReviewerMaxRounds] = useState({});
   const [reviewerModels, setReviewerModels] = useState({});
+  const [reviewerEfforts, setReviewerEfforts] = useState({});
   const [reviewStopMode, setReviewStopMode] = useState(DEFAULT_REVIEW_STOP_MODE);
   const [reviewerApplies, setReviewerApplies] = useState(false);
+  const [reviewerCliInstalled, setReviewerCliInstalled] = useState({});
   const [createJiraTicket, setCreateJiraTicket] = useState(false);
   const [screenshots, setScreenshots] = useState([]);
   const [attachments, setAttachments] = useState([]);
@@ -80,8 +82,10 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
         // The defaults persist per-reviewer models as scalars; the picker takes the
         // token-keyed map (see client/src/lib/reviewerModels.js).
         setReviewerModels(reviewerModelsFromDefaults(d));
+        setReviewerEfforts(reviewerEffortsFromDefaults(d));
         if (d.stopMode) setReviewStopMode(d.stopMode);
         if (d.reviewerApplies === true) setReviewerApplies(true);
+        if (d.installed && typeof d.installed === 'object' && !Array.isArray(d.installed)) setReviewerCliInstalled(d.installed);
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -327,13 +331,18 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
       openPR: useWorktree && openPR,
       simplify,
       prCompletion: useWorktree && openPR ? prCompletion : undefined,
-      reviewers: openPR && prCompletion === 'review-then-merge' ? reviewers : undefined,
-      usernames: openPR && prCompletion === 'review-then-merge' ? reviewUsernames : undefined,
-      optionalReviewers: openPR && prCompletion === 'review-then-merge' ? optionalReviewers : undefined,
-      reviewerMaxRounds: openPR && prCompletion === 'review-then-merge' ? reviewerMaxRounds : undefined,
-      reviewerModels: openPR && prCompletion === 'review-then-merge' ? reviewerModels : undefined,
-      reviewStopMode: openPR && prCompletion === 'review-then-merge' ? reviewStopMode : undefined,
-      reviewerApplies: openPR && prCompletion === 'review-then-merge' ? reviewerApplies : undefined,
+      // One gate for every per-reviewer field: they only apply when this task
+      // opens a PR that PortOS reviews before merging.
+      ...(openPR && prCompletion === 'review-then-merge' ? {
+        reviewers,
+        usernames: reviewUsernames,
+        optionalReviewers,
+        reviewerMaxRounds,
+        reviewerModels,
+        reviewerEfforts,
+        reviewStopMode,
+        reviewerApplies,
+      } : {}),
       screenshots: screenshots.length > 0 ? screenshots.map(s => s.path) : undefined,
       attachments: attachments.length > 0 ? attachments.map(a => ({
         filename: a.filename,
@@ -588,15 +597,18 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
                 optionalReviewers={optionalReviewers}
                 reviewerMaxRounds={reviewerMaxRounds}
                 reviewerModels={reviewerModels}
+                reviewerEfforts={reviewerEfforts}
                 modelOptions={reviewerModelOptions}
+                installed={reviewerCliInstalled}
                 stopMode={reviewStopMode}
                 reviewerApplies={reviewerApplies}
-                onChange={({ reviewers: r, usernames: u, optionalReviewers: o, reviewerMaxRounds: m, reviewerModels: rm, stopMode, reviewerApplies: ra }) => {
+                onChange={({ reviewers: r, usernames: u, optionalReviewers: o, reviewerMaxRounds: m, reviewerModels: rm, reviewerEfforts: re, stopMode, reviewerApplies: ra }) => {
                   setReviewers(r);
                   setReviewUsernames(u);
                   setOptionalReviewers(o);
                   setReviewerMaxRounds(m);
                   setReviewerModels(rm);
+                  setReviewerEfforts(re);
                   setReviewStopMode(stopMode);
                   setReviewerApplies(ra);
                 }}

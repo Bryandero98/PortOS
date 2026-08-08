@@ -122,7 +122,7 @@ router.post('/tasks/enhance', asyncHandler(async (req, res) => {
 router.post('/tasks/slashdo', asyncHandler(async (req, res) => {
   const {
     command, app, provider, model, effort, simplify,
-    target, issueAuthorFilter, reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels
+    target, issueAuthorFilter, reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels, reviewerEfforts
   } = validateRequest(slashdoTaskSchema, req.body);
 
   const workflow = getSlashdoWorkflow(command);
@@ -172,7 +172,7 @@ router.post('/tasks/slashdo', asyncHandler(async (req, res) => {
   const { useWorktree, openPR } = workflow.settings;
   let shape;
   if (command === 'next') {
-    const claim = await buildClaimWorkTask(appObj, { target, issueAuthorFilter, reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels });
+    const claim = await buildClaimWorkTask(appObj, { target, issueAuthorFilter, reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels, reviewerEfforts });
     const scope = claim.target
       ? `claim ${workTrackerLabel(claim.tracker)} item ${claim.target}`
       : `claim next ${workTrackerLabel(claim.tracker)} item`;

@@ -21,6 +21,7 @@ import { getDomainBudgetStatus, recordDomainUsage } from './domainUsage.js';
 import { deleteMemoryAssets } from './chatgptImport.js';
 import * as githubCloner from './githubCloner.js';
 import { parseBareUrl } from '../lib/bareUrl.js';
+import { normalizeRepoIntake } from '../lib/repoIntakeActions.js';
 import {
   classifierOutputSchema,
   digestOutputSchema,
@@ -135,7 +136,7 @@ function safeParseJsonResponse(content) {
  * Returns immediately after creating the inbox entry.
  * AI classification runs in the background and emits a socket event on completion.
  */
-export async function captureThought(text, providerOverride, modelOverride, { creative = false } = {}) {
+export async function captureThought(text, providerOverride, modelOverride, { creative = false, repoIntake = null } = {}) {
   // A capture that is nothing but a URL is a bookmark, not a thought: file it
   // straight to Links exactly as the Links tab would, and skip the classifier
   // LLM call entirely. This outranks the creative flag — a bare URL carries no
@@ -143,7 +144,7 @@ export async function captureThought(text, providerOverride, modelOverride, { cr
   // Creative toggle for a URL rather than the two rules disagreeing.
   const bareUrl = parseBareUrl(text);
   if (bareUrl) {
-    return captureUrlAsLink(bareUrl, text);
+    return captureUrlAsLink(bareUrl, text, repoIntake);
   }
 
   const meta = await storage.loadMeta();
@@ -211,10 +212,15 @@ export async function captureThought(text, providerOverride, modelOverride, { cr
  * inbox entry (so the capture is still auditable from the inbox, showing where
  * it went). Re-pasting a URL that's already saved reuses that link instead of
  * failing the capture — the inbox entry then points at the existing bookmark.
+ *
+ * `repoIntake` carries the capture box's opt-in post-clone agent actions
+ * (malware scan / repo study). It applies only to a NEW GitHub link: re-pasting
+ * an already-saved URL performs no clone, so there is no fresh clone for the
+ * agents to read and re-queueing them silently would be a surprise.
  */
-async function captureUrlAsLink(url, capturedText) {
+async function captureUrlAsLink(url, capturedText, repoIntake = null) {
   const existing = await storage.getLinkByUrl(url);
-  const link = existing || await createLinkFromUrl(url);
+  const link = existing || await createLinkFromUrl(url, { repoIntake });
 
   // No `classification` block: nothing classified this — the destination was
   // decided by shape, not by a model, so there is no confidence or extraction to
@@ -236,8 +242,23 @@ async function captureUrlAsLink(url, capturedText) {
     link,
     message: existing
       ? 'Already saved in Links.'
-      : (link.isGitHubRepo ? 'GitHub repo saved to Links!' : 'Saved to Links!')
+      : (link.isGitHubRepo ? repoCaptureMessage(link.repoIntake) : 'Saved to Links!')
   };
+}
+
+/**
+ * What a freshly-captured GitHub repo link tells the user will happen next. The
+ * clone is always implied; the agent runs only when they ticked the boxes, and
+ * they only start once the clone lands.
+ */
+function repoCaptureMessage(repoIntake) {
+  const queued = [
+    repoIntake?.malwareScan && 'malware scan',
+    repoIntake?.learn && 'repo study',
+  ].filter(Boolean);
+  return queued.length
+    ? `GitHub repo saved — cloning, then queueing ${queued.join(' + ')}.`
+    : 'GitHub repo saved to Links — cloning now.';
 }
 
 /**
@@ -930,18 +951,40 @@ function hostnameFromUrl(url) {
  * Clone a GitHub repo in the background, tracking progress on the link record.
  * Runs outside the request lifecycle, so every failure is caught and recorded
  * on the link rather than left to bubble.
+ *
+ * The opt-in agent actions the user ticked at capture time are read off the
+ * link's own `repoIntake` field, not passed in — so EVERY path that reaches a
+ * successful clone honors them, including the Links tab's Clone/Retry button
+ * after a first clone failed. They dispatch only after the clone SUCCEEDS:
+ * there is nothing on disk to read before that, and a failed clone must not
+ * queue an agent against a path that doesn't exist.
  */
 export async function cloneRepoInBackground(linkId, url) {
   await storage.updateLink(linkId, { cloneStatus: 'cloning' });
 
   githubCloner.cloneRepo(url)
     .then(async (result) => {
-      await storage.updateLink(linkId, {
+      const link = await storage.updateLink(linkId, {
         localPath: result.localPath,
         cloneStatus: 'cloned',
         cloneError: null
       });
       console.log(`✅ Background clone complete: ${linkId}`);
+      // `link` is null when the user deleted the bookmark mid-clone — nothing
+      // left to scan or study. The whole intake is chained off its OWN catch, so
+      // a queueing failure can't rewrite a clone that genuinely succeeded as
+      // `failed` via the outer handler below.
+      if (!link?.repoIntake) return;
+      // Dynamic on purpose, and NOT for boot cost — routes/brainLinks.js already
+      // imports repoIntake.js statically, so the CoS task graph is loaded either
+      // way. It keeps that graph out of *brain.js's own module graph*, which the
+      // heavily-mocked brain.test.js suite instantiates; a static edge drags
+      // cos.js → taskSchedule.js in and the suite dies on an incomplete mock.
+      // Same reason malwareScanReports.js imports brain.js this way.
+      await import('./repoIntake.js')
+        .then(({ runRepoIntake }) => runRepoIntake(link, link.repoIntake))
+        .then(patch => (Object.keys(patch).length ? storage.updateLink(linkId, patch) : null))
+        .catch(err => console.error(`❌ Post-clone intake failed for ${linkId}: ${err.message}`));
     })
     .catch(async (err) => {
       await storage.updateLink(linkId, {
@@ -962,11 +1005,15 @@ export async function cloneRepoInBackground(linkId, url) {
  * link) — this always creates.
  */
 export async function createLinkFromUrl(url, {
-  title, description, linkType, tags, bucketId, bucketOrder, autoClone
+  title, description, linkType, tags, bucketId, bucketOrder, autoClone, repoIntake
 } = {}) {
   const parsed = githubCloner.parseGitHubUrl(url);
   const isGitHubRepo = !!parsed;
   const shouldClone = isGitHubRepo && autoClone !== false;
+  // Opt-in post-clone agent actions. Only meaningful when a clone will actually
+  // happen, and persisted on the link so the record says what was asked for even
+  // if the clone is still running.
+  const intake = shouldClone ? normalizeRepoIntake(repoIntake) : null;
 
   // Derive a readable default title: repo slug for GitHub, hostname for plain
   // URLs (so quick-added bucket chips read "example.com" instead of the full URL).
@@ -986,6 +1033,7 @@ export async function createLinkFromUrl(url, {
     localPath: null,
     cloneStatus: shouldClone ? 'pending' : 'none',
     cloneError: null,
+    ...(intake ? { repoIntake: intake } : {}),
     ...(bucketId !== undefined ? { bucketId } : {}),
     ...(bucketOrder !== undefined ? { bucketOrder } : {})
   });

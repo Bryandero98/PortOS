@@ -14,6 +14,31 @@ describe('ReviewerPicker', () => {
     expect(screen.getByRole('button', { name: /Claude/ })).toBeInTheDocument();
   });
 
+  describe('installed badge (#3606)', () => {
+    it('flags a selected reviewer whose CLI probe came back false', () => {
+      render(<ReviewerPicker reviewers={['antigravity']} installed={{ antigravity: false }} onChange={() => {}} />);
+      expect(screen.getByText('not installed')).toBeInTheDocument();
+    });
+
+    it('does not flag a selected reviewer with no probe entry (not a CLI reviewer, or not fetched)', () => {
+      render(<ReviewerPicker reviewers={['copilot']} installed={{ antigravity: false }} onChange={() => {}} />);
+      // copilot has no `installed` entry (it's not a CLI reviewer) — its row
+      // stays unbadged even though the map has an entry for a different reviewer.
+      expect(screen.getByText('Copilot').closest('div')).not.toHaveTextContent('not installed');
+    });
+
+    it('does not flag anything when installed is absent', () => {
+      render(<ReviewerPicker reviewers={['codex', 'antigravity']} onChange={() => {}} />);
+      expect(screen.queryByText('not installed')).not.toBeInTheDocument();
+    });
+
+    it('flags an unselected reviewer in the Add row too', () => {
+      render(<ReviewerPicker reviewers={['copilot']} installed={{ antigravity: false }} onChange={() => {}} />);
+      const addButton = screen.getByRole('button', { name: /Antigravity/ });
+      expect(addButton).toHaveTextContent('not installed');
+    });
+  });
+
   it('shows the empty-state hint when no reviewers are selected', () => {
     render(<ReviewerPicker reviewers={[]} onChange={() => {}} />);
     expect(screen.getByText(/none — defaults to Copilot/)).toBeInTheDocument();
@@ -396,4 +421,61 @@ describe('ReviewerPicker', () => {
       expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ reviewerModels: { claude: 'Some Model (High)' } }));
     });
   });
+  describe('Effort column', () => {
+      it('offers each reviewer only the tiers its own CLI accepts', () => {
+        render(<ReviewerPicker reviewers={['antigravity']} onChange={() => {}} />);
+        const select = screen.getByLabelText('Reasoning effort for Antigravity');
+        expect(select.tagName).toBe('SELECT');
+        expect(screen.getByRole('option', { name: 'high' })).toBeInTheDocument();
+        // agy rejects `--effort max`, so the picker must not offer it.
+        expect(screen.queryByRole('option', { name: 'max' })).not.toBeInTheDocument();
+      });
+
+      it('offers the wider claude ladder on a claude row', () => {
+        render(<ReviewerPicker reviewers={['claude']} onChange={() => {}} />);
+        expect(screen.getByRole('option', { name: 'xhigh' })).toBeInTheDocument();
+      });
+
+      it('renders no Effort control for a reviewer with no effort knob', () => {
+        render(<ReviewerPicker reviewers={['copilot', 'grok']} usernames={['flaky-bot']} onChange={() => {}} />);
+        expect(screen.queryByLabelText('Reasoning effort for Copilot')).not.toBeInTheDocument();
+        expect(screen.queryByLabelText('Reasoning effort for Grok')).not.toBeInTheDocument();
+        expect(screen.queryByLabelText('Reasoning effort for @flaky-bot')).not.toBeInTheDocument();
+      });
+
+      it('shows an existing pin and emits a picked tier', () => {
+        const onChange = vi.fn();
+        render(<ReviewerPicker reviewers={['codex']} reviewerEfforts={{ codex: 'low' }} onChange={onChange} />);
+        const select = screen.getByLabelText('Reasoning effort for Codex');
+        expect(select).toHaveValue('low');
+        fireEvent.change(select, { target: { value: 'high' } });
+        expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ reviewerEfforts: { codex: 'high' } }));
+      });
+
+      it('clearing DELETES the key rather than writing an empty string', () => {
+        const onChange = vi.fn();
+        render(<ReviewerPicker reviewers={['codex']} reviewerEfforts={{ codex: 'high' }} onChange={onChange} />);
+        fireEvent.change(screen.getByLabelText('Reasoning effort for Codex'), { target: { value: '' } });
+        expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ reviewerEfforts: {} }));
+      });
+
+      it('keeps a stored tier the ladder no longer lists visible instead of reading as unset', () => {
+        render(<ReviewerPicker reviewers={['antigravity']} reviewerEfforts={{ antigravity: 'max' }} onChange={() => {}} />);
+        const select = screen.getByLabelText('Reasoning effort for Antigravity');
+        expect(select).toHaveValue('max');
+        expect(screen.getByRole('option', { name: 'max (unsupported)' })).toBeInTheDocument();
+      });
+
+      it('prunes the effort pin when its reviewer is removed', () => {
+        const onChange = vi.fn();
+        render(<ReviewerPicker reviewers={['codex', 'ollama']} reviewerEfforts={{ ollama: 'high' }} onChange={onChange} />);
+        fireEvent.click(screen.getByLabelText('Remove Ollama'));
+        expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ reviewers: ['codex'], reviewerEfforts: {} }));
+      });
+
+      it('reads a pin case-insensitively, like the sibling maps', () => {
+        render(<ReviewerPicker reviewers={['codex']} reviewerEfforts={{ Codex: 'high' }} onChange={() => {}} />);
+        expect(screen.getByLabelText('Reasoning effort for Codex')).toHaveValue('high');
+      });
+    });
 });

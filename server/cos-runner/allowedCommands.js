@@ -6,16 +6,24 @@
  */
 
 import { basename } from 'path';
+import { PROVIDER_VENDORS, EXTRA_ALLOWED_COMMANDS } from '../lib/providerVendors.js';
 
-/** Commands permitted to be spawned by the runner. */
+/**
+ * Commands permitted to be spawned by the runner.
+ *
+ * Every `command` of a shipped provider in `data.reference/providers.json` (and
+ * the toolkit's `providers.sample.json`) MUST appear here — a provider whose
+ * command is missing 400s at `/spawn-tui` and the agent dies before it ever gets
+ * a shell. `allowedCommands.test.js` enforces that parity.
+ *
+ * Derived from PROVIDER_VENDORS (#3618) so a new vendor row automatically
+ * becomes spawnable here without a second hand-maintained list, plus
+ * EXTRA_ALLOWED_COMMANDS for legacy/custom commands with no vendor row
+ * (aider, copilot).
+ */
 export const ALLOWED_COMMANDS = new Set([
-  'claude',
-  'aider',
-  'codex',
-  'copilot',
-  'agy',
-  'gemini',
-  'opencode'
+  ...PROVIDER_VENDORS.map((vendor) => vendor.inferredCommand),
+  ...EXTRA_ALLOWED_COMMANDS,
 ]);
 
 /**

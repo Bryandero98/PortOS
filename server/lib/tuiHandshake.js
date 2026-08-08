@@ -12,10 +12,11 @@
  * No cycle risk: this module imports nothing from either consumer.
  */
 
-import { resolveCliModel, hasModelFlag, resolveBedrockCliModel, prefixOpencodeModel, isOpencodeCommand, buildCodexStartupArgs, buildEffortArgs, commandBasename } from './providerModels.js';
-import { ensureAntigravityTuiArgs, isAntigravityCommand, resolveAntigravityModelAndEffort } from './antigravity.js';
-import { ensureGrokTuiArgs, isGrokCommand } from './grok.js';
-import { ensureKimiTuiArgs, isKimiCommand } from './kimi.js';
+// inferTuiCommand / applyCommandDefaults are RE-EXPORTED below (not defined
+// here) — the per-vendor dispatch they used to hand-roll now lives in the
+// PROVIDER_VENDORS registry (#3618), consumed by every dispatch site that
+// used to duplicate its own vendor if-chain.
+import { inferTuiCommand, applyCommandDefaults, injectTuiModelAndEffort } from './providerVendors.js';
 
 // ─── Paste handshake constants ────────────────────────────────────────────
 
@@ -859,19 +860,13 @@ export const RAW_SPOOL_MAX_BYTES = 256 * 1024 * 1024;
  * asks "which command will actually be spawned?" before deciding whether the
  * session can type `/do:pr` — so a missing signature here means a provider is
  * told to run slash commands its real binary doesn't have.
+ *
+ * Defined in providerVendors.js (the PROVIDER_VENDORS registry, #3618);
+ * re-exported here for existing importers of this module.
  * @param {string|null|undefined} id - provider id
  * @returns {string}
  */
-export function inferTuiCommand(id) {
-  if (!id) return 'claude';
-  if (id.includes('codex')) return 'codex';
-  if (id.includes('antigravity')) return 'agy';
-  if (id.includes('gemini')) return 'gemini';
-  if (id.includes('kimi')) return 'kimi';
-  if (id.includes('grok')) return 'grok';
-  if (id.includes('opencode')) return 'opencode';
-  return 'claude';
-}
+export { inferTuiCommand };
 
 /**
  * True when the given TUI command renders the elapsed working counter
@@ -894,60 +889,12 @@ export function rendersWorkCounter(commandName) {
   return lower.includes('claude') || lower.includes('codex');
 }
 
-// Codex TUI blocks on every tool approval AND sandboxes file/network writes
-// unless we run it fully bypassed. There's no human-at-keyboard for headless
-// calls (one-shot OR agent), so inject the full-yolo flag — the same posture
-// the CLI/exec path uses in `agentCliSpawning.js`. The bypass flag is mutually
-// exclusive with `--ask-for-approval` / `--sandbox`, so don't add it when the
-// provider config already pins an approval/sandbox/bypass policy of its own.
-// We ALSO disable codex's startup update check (see ensureCodexTuiArgs) —
-// independent of the approval posture, so it's injected even when a provider
-// pins its own policy. Match codex by BASENAME (`commandBasename`), not a strict
-// `=== 'codex'`: a provider commonly configures the absolute binary path
-// (`/opt/homebrew/bin/codex`, what `which codex` returns), and a strict match
-// would skip both the bypass flag and the update-check disable — leaving that
-// headless TUI to wedge on the update modal. A wrapper like `my-codex-wrapper`
-// has a non-`codex` basename and still (correctly) owns its own argv.
-export function applyCommandDefaults(command, args) {
-  if (commandBasename(command) === 'codex') {
-    return ensureCodexTuiArgs(args);
-  }
-  if (isAntigravityCommand(command)) {
-    return ensureAntigravityTuiArgs(args);
-  }
-  if (isGrokCommand(command)) {
-    return ensureGrokTuiArgs(args);
-  }
-  if (isKimiCommand(command)) {
-    return ensureKimiTuiArgs(args);
-  }
-  return args;
-}
-
-// Disable codex's startup update check (see buildCodexStartupArgs in
-// providerModels.js for the full "Update available!" modal failure mode) and
-// inject the full-yolo bypass. Both are prepended; the update-check disable is
-// independent of the approval posture (the modal is orthogonal to sandboxing),
-// so it rides even when a provider pins its own policy, while the bypass flag is
-// skipped when the argv already declares an approval/sandbox posture.
-function ensureCodexTuiArgs(args) {
-  const prefix = [];
-  if (!codexHasApprovalPolicy(args)) {
-    prefix.push('--dangerously-bypass-approvals-and-sandbox');
-  }
-  prefix.push(...buildCodexStartupArgs(args));
-  return prefix.length ? [...prefix, ...args] : args;
-}
-
-// True when the codex argv already declares an approval/sandbox posture, so
-// injecting `--dangerously-bypass-approvals-and-sandbox` would collide with it.
-function codexHasApprovalPolicy(args) {
-  return args.some(arg =>
-    arg === '--ask-for-approval' || arg === '-a' || arg.startsWith('-a=') || arg.startsWith('--ask-for-approval=') ||
-    arg === '--sandbox' || arg === '-s' || arg.startsWith('-s=') || arg.startsWith('--sandbox=') ||
-    arg === '--dangerously-bypass-approvals-and-sandbox' || arg === '--yolo'
-  );
-}
+/**
+ * TUI posture-flag dispatch (approval/trust bypass per vendor). Defined in
+ * providerVendors.js (the PROVIDER_VENDORS registry, #3618); re-exported here
+ * for existing importers of this module.
+ */
+export { applyCommandDefaults };
 
 /**
  * Build the spawn args for a TUI invocation. When `provider.args` already
@@ -960,46 +907,18 @@ function codexHasApprovalPolicy(args) {
  * the provider with it pinned, same as `defaultModel`) and becomes
  * `--effort <level>` / codex's `-c model_reasoning_effort=<level>`. For agy an
  * effort-suffixed model id is split so the base rides `--model` and its baked
- * tier becomes the `--effort` — see antigravity.js for why.
+ * tier becomes the `--effort` — see antigravity.js for why. The antigravity-
+ * vs-everyone-else split lives in providerVendors.js#injectTuiModelAndEffort,
+ * shared with agentTuiSpawning.js#buildTuiSpawnConfig so the two spawn paths
+ * can't diverge (they already had once, before #3618).
  */
 export function buildTuiInvocation(provider, model) {
   const command = provider?.command || inferTuiCommand(provider?.id);
   const baseArgs = applyCommandDefaults(command, [...(provider?.args || [])]);
   const effort = provider?.effort || null;
-
-  // Antigravity pairs `--model` with `--effort` under its own rules (an
-  // effort-suffixed id is split; agy validates the pair) — see antigravity.js.
-  if (isAntigravityCommand(command)) {
-    const resolved = resolveAntigravityModelAndEffort(baseArgs, {
-      model,
-      effort,
-      models: provider?.models,
-    });
-    const withModel = resolved.model ? [...baseArgs, '--model', resolved.model] : baseArgs;
-    return {
-      command,
-      args: [...withModel, ...buildEffortArgs(resolved.effort, resolved.provider, withModel, resolved.base)],
-    };
-  }
-
-  const effectiveModel = resolveCliModel(model);
-  const shouldInject = !!effectiveModel && !hasModelFlag(baseArgs);
-  // OpenCode TUI: namespace the bare Ollama id (`opencode --model ollama/<id>`).
-  // Otherwise map a bare Claude id to its Bedrock form when the box is in Bedrock
-  // mode (no-op otherwise / for non-Claude ids) — mirrors buildCliArgs for the
-  // claude-code-tui runner.
-  const injectedModel = !shouldInject
-    ? effectiveModel
-    : isOpencodeCommand(command)
-      ? prefixOpencodeModel(provider, effectiveModel)
-      : resolveBedrockCliModel(effectiveModel, {
-        env: { ...process.env, ...provider?.envVars },
-        providerId: provider?.id,
-      });
-  const withModel = shouldInject ? [...baseArgs, '--model', injectedModel] : baseArgs;
   return {
     command,
-    args: [...withModel, ...buildEffortArgs(effort, { id: provider?.id, command }, withModel)],
+    args: injectTuiModelAndEffort(command, baseArgs, provider, model, effort),
   };
 }
 

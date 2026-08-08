@@ -94,6 +94,10 @@ vi.mock('./git.js', () => ({
   // to exercise the idle-no-changes failure path override via mockResolvedValueOnce.
   getStatus: vi.fn().mockResolvedValue({ clean: false, files: [{ path: 'file.txt', status: 'M' }] }),
   getDiff: vi.fn().mockResolvedValue('diff content here'),
+  // `git rev-list --count --since=…` for the commit half of the work-evidence
+  // probe. Default: zero commits during the run, so a clean tree still fails —
+  // the commit-and-push test overrides this to a non-zero count.
+  execGit: vi.fn().mockResolvedValue({ exitCode: 0, stdout: '0\n', stderr: '' }),
   // No owner-matched gh account by default → empty overlay (ambient auth kept).
   resolveForgeTokenEnv: vi.fn().mockResolvedValue({}),
 }));
@@ -144,15 +148,14 @@ vi.mock('../lib/providerModels.js', async (importOriginal) => ({
   // Mirror the real behaviour: pass through the model string, return null for
   // the codex-configured-default sentinel or null/undefined input.
   resolveCliModel: vi.fn((m) => (m === 'codex-configured-default' || !m) ? null : m),
-  // Bedrock map is a no-op off Bedrock — mirror that pass-through here (the
-  // mapper itself is unit-tested in providerModels.test.js).
-  resolveBedrockCliModel: vi.fn((m) => m),
-  // Mirror the real opencode-command basename match (fully unit-tested in
-  // providerModels.test.js).
-  isOpencodeCommand: vi.fn((c) => typeof c === 'string' && c.split(/[\\/]/).pop().toLowerCase().replace(/\.exe$/, '') === 'opencode'),
-  // Mirror the real ollama/ namespacing for opencode providers (fully unit-
-  // tested in providerModels.test.js).
-  prefixOpencodeModel: vi.fn((p, m) => (typeof p?.command === 'string' && p.command.split(/[\\/]/).pop().toLowerCase().replace(/\.exe$/, '') === 'opencode' && p?.ollamaBacked === true && m && !String(m).startsWith('ollama/')) ? `ollama/${m}` : m),
+  // NOTE: `appendModelArgs` calls `resolveInjectedTuiModel`, which is pulled in
+  // REAL via importOriginal above and calls `resolveBedrockCliModel` /
+  // `prefixOpencodeModel` as module-INTERNAL references — a vi.mock override of
+  // those two names cannot intercept an internal call, so stubbing them here
+  // would be dead weight that reads as protection. Instead the suite pins the
+  // one input the real mapper keys on (`CLAUDE_CODE_USE_BEDROCK`, cleared in
+  // beforeEach below), so these assertions are deterministic regardless of the
+  // ambient env on a developer's Bedrock box or a CI runner.
   // Mirror hasModelFlag (real impl unit-tested in providerModels.test.js).
   hasModelFlag: vi.fn((a) => Array.isArray(a) && a.some((x) => x === '--model' || x === '-m' || (typeof x === 'string' && (x.startsWith('--model=') || x.startsWith('-m=')))))
 }));
@@ -203,6 +206,62 @@ import { MAX_RUNTIME_WRAP_UP_GRACE_MS } from '../lib/tuiHandshake.js';
 import { markHostShuttingDown, resetHostShutdownFlagForTests } from '../lib/hostShutdown.js';
 
 describe('agent TUI spawning', () => {
+  // `buildTuiSpawnConfig` → `appendModelArgs` → the REAL `resolveInjectedTuiModel`,
+  // whose Bedrock arm reads process.env directly (see the vi.mock note above on why
+  // stubbing the mapper can't intercept that internal call). Pin the var here so a
+  // developer's Bedrock box — or a CI runner that exports it — can't flip these
+  // assertions; the tests that WANT Bedrock set it explicitly.
+  const bedrockBefore = process.env.CLAUDE_CODE_USE_BEDROCK;
+  beforeEach(() => { delete process.env.CLAUDE_CODE_USE_BEDROCK; });
+  afterEach(() => {
+    if (bedrockBefore === undefined) delete process.env.CLAUDE_CODE_USE_BEDROCK;
+    else process.env.CLAUDE_CODE_USE_BEDROCK = bedrockBefore;
+  });
+
+  // Regression guard for the drift this path actually shipped: `appendModelArgs`
+  // was a second, open-coded copy of the model-injection ladder, so cursor's
+  // Bedrock exemption landed only in `buildTuiInvocation` and a cursor CoS agent
+  // on a Bedrock box launched with a rewritten, unroutable model id. Both copies
+  // now delegate to `resolveInjectedTuiModel`; re-inlining the mapper here would
+  // break this test.
+  it('does not Bedrock-map a cursor TUI model id that merely contains "claude"', () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = '1';
+    const config = buildTuiSpawnConfig({
+      id: 'cursor-tui',
+      type: 'tui',
+      command: 'cursor-agent',
+      args: ['--force'],
+    }, 'claude-opus-5-thinking-high');
+    expect(config.args).toEqual(['--force', '--model', 'claude-opus-5-thinking-high']);
+    expect(config.args.join(' ')).not.toContain('anthropic.');
+  });
+
+  it('still Bedrock-maps a claude TUI model id on a Bedrock box', () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = '1';
+    const config = buildTuiSpawnConfig({
+      id: 'claude-code-tui',
+      type: 'tui',
+      command: 'claude',
+      args: ['--dangerously-skip-permissions'],
+    }, 'claude-opus-4-8');
+    expect(config.args).toContain('global.anthropic.claude-opus-4-8');
+  });
+
+  // A user-baked --model pin used to be honored only for opencode here, so a
+  // pinned claude/codex/cursor TUI spawned `--model <pin> --model <ui-choice>`
+  // and last-flag-wins silently discarded the pin.
+  it('honors a user-baked --model pin instead of appending a second flag', () => {
+    const config = buildTuiSpawnConfig({
+      id: 'cursor-tui',
+      type: 'tui',
+      command: 'cursor-agent',
+      args: ['--force', '--model', 'composer-2.5'],
+    }, 'auto');
+    expect(config.args.filter((a) => a === '--model')).toHaveLength(1);
+    expect(config.args).toContain('composer-2.5');
+    expect(config.args).not.toContain('auto');
+  });
+
   it('builds a codex TUI command without a model flag for the configured-default sentinel', () => {
     const config = buildTuiSpawnConfig({
       id: 'codex-tui',
@@ -503,6 +562,7 @@ describe('spawnTuiAgent runtime', () => {
     // Tests that want to exercise the idle-no-changes failure path override this.
     vi.mocked(gitService.getStatus).mockResolvedValue({ clean: false, files: [{ path: 'file.txt', status: 'M' }] });
     vi.mocked(gitService.getDiff).mockResolvedValue('diff content here');
+    vi.mocked(gitService.execGit).mockResolvedValue({ exitCode: 0, stdout: '0\n', stderr: '' });
 
     // Reset input-recency state: no input recorded by default. The
     // recent-input test overrides this — clearAllMocks doesn't undo a
@@ -957,6 +1017,33 @@ describe('spawnTuiAgent runtime', () => {
 
     expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
       expect.objectContaining({ success: false, completionReason: 'idle-no-changes' })
+    );
+  });
+
+  // ── 1a-quinquies. A COMMIT during the run is evidence of work ────────────────
+  // The #2191 gate above read only UNCOMMITTED changes, so a job whose
+  // deliverable is a commit — `/do:release`, `/do:pr` — idled out on a clean
+  // tree *because it succeeded* and was scored a failure. Rationale and the
+  // 2026-08-08 release incident: worktreeHasWorkEvidence. The clean-tree +
+  // zero-commit failure stays covered by the sibling tests above, which run on
+  // the beforeEach default of `rev-list --count` → 0.
+  it('idle-complete: a commit made during the run counts as work on a clean tree (release/do:pr jobs)', async () => {
+    vi.mocked(gitService.execGit).mockResolvedValue({ exitCode: 0, stdout: '2\n', stderr: '' });
+    await driveIdleWithWorkOnCleanTree();
+
+    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: 'agent-1',
+        success: true,
+        completionReason: 'idle-complete',
+      })
+    );
+    // The probe is scoped to the run window by committer date, so commits that
+    // were already on the branch at spawn can't launder a no-op into a success.
+    expect(gitService.execGit).toHaveBeenCalledWith(
+      ['rev-list', '--count', expect.stringMatching(/^--since=\d{4}-/), 'HEAD'],
+      '/tmp/ws',
+      { ignoreExitCode: true }
     );
   });
 
@@ -2115,6 +2202,33 @@ describe('spawnTuiAgent runtime', () => {
 
       expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
         expect.objectContaining({ success: true, completionReason: 'shell-exit' })
+      );
+    });
+  });
+
+  // A session that never spawns at all. The runner rejects the spawn (e.g. its
+  // command allowlist doesn't carry the provider's CLI), createAgentTuiSession
+  // throws, and before this was handled the throw propagated out of
+  // spawnTuiAgent to a caller that only logs — leaving the agent record stuck in
+  // `initializing` until the zombie reaper finalized it a minute later with a
+  // generic message, so the real cause never reached the user.
+  describe('spawn failure', () => {
+    it('finalizes with the spawn error instead of throwing', async () => {
+      vi.mocked(spawnTuiSessionViaRunner).mockRejectedValueOnce(
+        new Error('Command not allowed: grok. Permitted commands: claude, codex')
+      );
+
+      // Resolves, does not reject.
+      await expect(runSpawn({ useDurableRunner: true })).resolves.toBeNull();
+      await flushMicrotasks();
+
+      expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: 'agent-1',
+          success: false,
+          completionReason: 'spawn-error',
+          error: expect.stringContaining('Command not allowed: grok'),
+        })
       );
     });
   });

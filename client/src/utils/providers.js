@@ -114,6 +114,27 @@ export const isAntigravityProvider = (provider) => {
   return base === 'agy' || base === 'antigravity';
 };
 
+/**
+ * Whether the AI Providers page should offer a "Refresh Models" button for this
+ * provider — i.e. whether the server has a model fetcher that can answer for it.
+ *
+ * Reads the server's own answer off the payload. `canRefreshModels` is derived
+ * on read from the per-vendor fetcher table
+ * (`server/lib/aiToolkit/internal/modelFetchers.js`) and decorated onto every
+ * provider-shaped response in `routes/providers.js`, so there is exactly one
+ * definition of "refreshable" and it lives next to the dispatch that has to
+ * honor it.
+ *
+ * This used to be a ~40-line hand-written mirror of both server dispatch arms,
+ * kept in lockstep by a comment. It drifted in both directions: too generous
+ * showed a button that 404'd, too stingy hid the feature with no error at all.
+ * Strict `=== true` so a legacy payload from an older server (no such field)
+ * hides the button rather than offering one that 404s.
+ * @param {{canRefreshModels?:boolean}|null|undefined} provider
+ * @returns {boolean}
+ */
+export const supportsModelRefresh = (provider) => provider?.canRefreshModels === true;
+
 export const knownProviderContextWindow = (provider) => {
   if (!isProcessProvider(provider)) return null;
   const id = String(provider?.id || '').toLowerCase();

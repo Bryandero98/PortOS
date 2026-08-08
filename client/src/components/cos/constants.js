@@ -208,36 +208,23 @@ export const REVIEWER_OPTIONS = [
   { value: 'lmstudio', label: 'LM Studio', description: 'Local LM Studio model reviews the diff (set model on AI Providers)' },
   { value: 'ollama', label: 'Ollama', description: 'Local Ollama model reviews the diff (set model on AI Providers)' }
 ];
-export const LOCAL_LLM_REVIEWERS = ['lmstudio', 'ollama'];
-
-// CLI reviewers whose binary takes a `--model <id>` tier. Client mirror of
-// MODEL_CAPABLE_CLI_REVIEWERS in server/lib/cosValidation.js.
-export const MODEL_CAPABLE_CLI_REVIEWERS = ['codex', 'claude'];
-
-// Every reviewer whose model the user can pick per row in ReviewerPicker — the
-// model-capable CLIs plus the local-LLM backends. Client mirror of
-// MODEL_SELECTABLE_REVIEWERS in server/lib/cosValidation.js; keep in sync so the
-// picker only offers a Model cell where the server would keep the pin.
-// `copilot` and `@username` reviewers take no model.
-export const MODEL_SELECTABLE_REVIEWERS = [...MODEL_CAPABLE_CLI_REVIEWERS, ...LOCAL_LLM_REVIEWERS];
-
-// Upper bound on a pinned reviewer model id. Client mirror of
-// MAX_REVIEWER_MODEL_LENGTH in server/lib/cosValidation.js — a longer id is
-// dropped server-side, so the input must not accept one.
-export const MAX_REVIEWER_MODEL_LENGTH = 200;
-
-// Characters that are STRUCTURAL in slashdo's emitted `--review-with` token and
-// have no escape inside the `[<model>]` selector, so the server drops an id
-// containing one (mirror of REVIEWER_MODEL_FORBIDDEN_RE in
-// server/lib/cosValidation.js). Stripped as the user types rather than silently
-// accepted, so the field can't display a pin the server would refuse to store.
-// A space is deliberately legal — `agy[Gemini 3.5 Flash (High)]` is a valid entry.
-const REVIEWER_MODEL_FORBIDDEN_RE = /[[\],\r\n\t]/g;
-
-// Strip the structural characters from a typed model id. Trimming is left to the
-// caller: an id being typed may legitimately have a trailing space mid-entry.
-export const sanitizeReviewerModelInput = (raw) =>
-  typeof raw === 'string' ? raw.replace(REVIEWER_MODEL_FORBIDDEN_RE, '') : '';
+// The per-reviewer PIN vocabularies (which reviewers take a model or an effort,
+// and the values each accepts) live in `client/src/lib/reviewerPins.js` and are
+// re-exported here so existing imports keep working. They are NOT defined in this
+// file because the server suite pins them against the server's own ladders, and
+// this module's `lucide-react` icon import isn't installed in that workspace —
+// see the leaf module's header for the full rationale.
+export {
+  MODEL_CAPABLE_CLI_REVIEWERS,
+  LOCAL_LLM_REVIEWERS,
+  MODEL_SELECTABLE_REVIEWERS,
+  MAX_REVIEWER_MODEL_LENGTH,
+  LOCAL_LLM_EFFORT_LEVELS,
+  REVIEWER_EFFORT_LEVELS,
+  EFFORT_SELECTABLE_REVIEWERS,
+  reviewerEffortLevels,
+  sanitizeReviewerModelInput
+} from '../../lib/reviewerPins';
 
 // pr-watcher author gate (taskMetadata.prAuthorFilter). Mirrors
 // PR_AUTHOR_FILTERS in server/lib/validation.js. 'self' = PRs opened by the
@@ -252,9 +239,12 @@ export const PR_AUTHOR_FILTER_OPTIONS = [
 // claim-issue author gate (taskMetadata.issueAuthorFilter). Mirrors
 // ISSUE_AUTHOR_FILTERS in server/lib/validation.js. 'self' = only claim issues
 // YOU filed (the slashdo /do:next --self security boundary; the default);
-// 'owner' = only claim issues the repo owner filed; 'any' = claim any open issue.
+// 'collaborators' = you plus everyone with repo/project access; 'owner' = only
+// claim issues the repo owner filed; 'any' = claim any open issue. Listed
+// narrowest-first so the dropdown reads as a widening scale.
 export const ISSUE_AUTHOR_FILTER_OPTIONS = [
   { value: 'self', label: 'Filed by me only', description: 'Only claim open issues you filed (the /do:next --self security boundary — avoids acting on work embedded in a third party\'s issue)' },
+  { value: 'collaborators', label: 'Me + collaborators', description: 'Claim open issues filed by you or by any account with access to the repo (GitHub collaborators / GitLab project members, including group-inherited access)' },
   { value: 'owner', label: 'Owner-filed only', description: 'Only claim open issues filed by the repository owner/creator' },
   { value: 'any', label: 'Any author', description: 'Claim the next eligible open issue regardless of who filed it' }
 ];

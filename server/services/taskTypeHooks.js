@@ -43,7 +43,7 @@
  */
 
 import { isFalsyMeta, isTruthyMeta } from './agentState.js';
-import { TRACKER_FILING_TASK_TYPES } from '../lib/workTracker.js';
+import { TRACKER_FILING_TASK_TYPES, CONCRETE_WORK_TRACKERS } from '../lib/workTracker.js';
 
 // taskType → () => import('./path/to/hookModule.js'). A module may export either
 // or both hooks; a missing export means "no hook of that kind for this type".
@@ -198,12 +198,37 @@ export function declaresNoCommitCriterion(task) {
   // SUCCESSFUL run a validation miss and drags that provider/model's learning
   // bucket toward 0% — the #2696/#3273 artifact, arriving by a third route.
   if (isTruthyMeta(task?.metadata?.discardWorktree)) return true;
-  // Resolved the same way isNonCommittingCoordinatorTask (and the learning
-  // bucket) resolves it, so a LIVE queue task (`analysisType`) and the archived
-  // agent projection (`taskAnalysisType`) agree.
-  const type = task?.metadata?.analysisType || task?.metadata?.taskAnalysisType || task?.taskType || null;
-  if (!TRACKER_FILING_TASK_TYPES.has(type)) return false;
+  if (!isTrackerFilingDispatch(task)) return false;
   return isFalsyMeta(task?.metadata?.worktreeChangesExpected);
+}
+
+/**
+ * Whether this task was dispatched by a TRACKER-FILING path — the gate in front
+ * of the `worktreeChangesExpected` read above (see that doc comment for why the
+ * flag alone is not enough).
+ *
+ * Two shapes qualify, because tracker-filing runs arrive two ways:
+ *
+ *   1. A SCHEDULED type in `TRACKER_FILING_PRESETS` (`reference-watch`, `ux`).
+ *      Resolved the same way isNonCommittingCoordinatorTask (and the learning
+ *      bucket) resolves it, so a LIVE queue task (`analysisType`) and the
+ *      archived agent projection (`taskAnalysisType`) agree.
+ *   2. A one-off task whose dispatch stamped `metadata.workTracker` — the
+ *      concrete tracker the `{trackerInstructions}` block told the agent to file
+ *      into. Only a tracker-filing dispatch writes it (repoIntake.js's
+ *      `repo-study`, referenceRepos.js#triggerReferenceAnalysis), and it is NOT
+ *      in cosValidation's per-app `taskMetadata` ALLOWED keys, so unlike
+ *      `worktreeChangesExpected` a user cannot set it on an unrelated task type.
+ *
+ * Without (2), a hand-queued tracker-filing run could only reach this gate by
+ * masquerading as a scheduled type — which would also enroll it in
+ * taskSchedule's per-type consecutive-failure ledger (agentFinalization.js) and
+ * auto-park a "type" no schedule owns.
+ */
+function isTrackerFilingDispatch(task) {
+  const type = task?.metadata?.analysisType || task?.metadata?.taskAnalysisType || task?.taskType || null;
+  if (TRACKER_FILING_TASK_TYPES.has(type)) return true;
+  return CONCRETE_WORK_TRACKERS.includes(task?.metadata?.workTracker);
 }
 
 /**

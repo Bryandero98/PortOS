@@ -15,6 +15,10 @@ vi.mock('./settings.js', () => ({
 // does, and those tests stub `global.fetch` directly.
 vi.mock('./lmStudioManager.js', () => ({ getBaseUrl: () => 'http://localhost:1234' }))
 vi.mock('./ollamaManager.js', () => ({ getBaseUrl: () => 'http://localhost:11434' }))
+// Reviewer-CLI-installed probe: stub the shared execFile-based helper so the
+// test controls per-binary results without touching the real PATH.
+const commandExistsMock = { impl: async () => true }
+vi.mock('../lib/commandExists.js', () => ({ commandExists: (...args) => commandExistsMock.impl(...args) }))
 
 import { mockJsonResponse, mockTextResponse } from '../lib/testHelper.js'
 import {
@@ -23,7 +27,9 @@ import {
   getCodeReviewDefaults,
   resolveReviewLoopOptions,
   runLocalCodeReview,
+  getReviewerCliInstalled,
   __resetCodeReviewDefaultsCache,
+  __resetReviewerCliInstalledCache,
 } from './codeReview.js'
 
 // Minimal stand-ins for the deps resolveReviewLoopOptions is handed by its
@@ -38,6 +44,8 @@ describe('codeReview helpers', () => {
   afterEach(() => {
     mockedSettings.current = {}
     __resetCodeReviewDefaultsCache()
+    __resetReviewerCliInstalledCache()
+    commandExistsMock.impl = async () => true
     vi.restoreAllMocks()
   })
 
@@ -53,6 +61,15 @@ describe('codeReview helpers', () => {
   })
 
   describe('pickCodeReviewDefaults', () => {
+    // Every effort-capable reviewer reports `null` when nothing is configured;
+    // spread rather than pasted so the roster only has to change in one place.
+    const NO_EFFORTS = {
+      claudeEffort: null,
+      codexEffort: null,
+      antigravityEffort: null,
+      lmstudioEffort: null,
+      ollamaEffort: null,
+    }
     it('returns the hardcoded fallback when settings has no codeReview slice', () => {
       expect(pickCodeReviewDefaults(null)).toEqual({
         reviewers: ['copilot'],
@@ -65,6 +82,7 @@ describe('codeReview helpers', () => {
         ollamaModel: null,
         codexModel: null,
         claudeModel: null,
+        ...NO_EFFORTS,
       })
       expect(pickCodeReviewDefaults({})).toEqual({
         reviewers: ['copilot'],
@@ -77,6 +95,7 @@ describe('codeReview helpers', () => {
         ollamaModel: null,
         codexModel: null,
         claudeModel: null,
+        ...NO_EFFORTS,
       })
     })
 
@@ -142,6 +161,7 @@ describe('codeReview helpers', () => {
         ollamaModel: 'codellama',
         codexModel: 'gpt-5.6-sol',
         claudeModel: 'qwen2.5:7b',
+        ...NO_EFFORTS,
       })
     })
 
@@ -168,6 +188,31 @@ describe('codeReview helpers', () => {
       expect(out.reviewers).toEqual(['ollama'])
       expect(out.ollamaModel).toBe('codellama')
       expect(out.stopMode).toBe('all')
+    })
+  })
+
+  describe('getReviewerCliInstalled', () => {
+    it('probes only CLI reviewers, resolving each through reviewerCliBinary', async () => {
+      const probed = []
+      commandExistsMock.impl = async (binary) => { probed.push(binary); return binary !== 'agy' }
+      const out = await getReviewerCliInstalled()
+      expect(out).toEqual({ claude: true, antigravity: false, codex: true, grok: true })
+      expect(probed.sort()).toEqual(['agy', 'claude', 'codex', 'grok'])
+    })
+
+    it('caches the result within the TTL — a second call does not re-probe', async () => {
+      let calls = 0
+      commandExistsMock.impl = async () => { calls += 1; return true }
+      await getReviewerCliInstalled()
+      await getReviewerCliInstalled()
+      expect(calls).toBe(4) // one probe per CLI reviewer, only on the first call
+    })
+
+    it('probes with the longer 15s timeout these heavier agentic CLIs need', async () => {
+      const seenOpts = []
+      commandExistsMock.impl = async (_binary, _args, opts) => { seenOpts.push(opts); return true }
+      await getReviewerCliInstalled()
+      expect(seenOpts).toEqual(seenOpts.map(() => ({ timeoutMs: 15_000 })))
     })
   })
 
@@ -264,9 +309,28 @@ describe('codeReview helpers', () => {
       expect(r.error).toMatch(/Empty diff/)
     })
 
+    it('omits reasoning_effort entirely when no effort is pinned — absent is the only spelling of the model default', async () => {
+      await runLocalCodeReview({ backend: 'ollama', model: 'codellama', diff: 'd' })
+      const body = JSON.parse(global.fetch.mock.calls[0][1].body)
+      expect('reasoning_effort' in body).toBe(false)
+    })
+
+    it('sends a pinned effort as the OpenAI-compatible reasoning_effort field', async () => {
+      const r = await runLocalCodeReview({ backend: 'lmstudio', model: 'm', diff: 'd', effort: 'high' })
+      expect(JSON.parse(global.fetch.mock.calls[0][1].body).reasoning_effort).toBe('high')
+      expect(r.effort).toBe('high')
+    })
+
+    it('drops an effort outside the local ladder rather than letting the backend 400 on it', async () => {
+      // `xhigh`/`ultra` are vendor-CLI tiers; an OpenAI-shaped backend rejects them.
+      const r = await runLocalCodeReview({ backend: 'ollama', model: 'm', diff: 'd', effort: 'ultra' })
+      const body = JSON.parse(global.fetch.mock.calls[0][1].body)
+      expect('reasoning_effort' in body).toBe(false)
+      expect(r.effort).toBeNull()
+    })
     it('posts to the backend chat-completions endpoint and returns the response content', async () => {
       const r = await runLocalCodeReview({ backend: 'ollama', model: 'codellama', diff: 'diff --git a b' })
-      expect(r).toEqual({ ok: true, backend: 'ollama', model: 'codellama', findings: 'No findings.' })
+      expect(r).toEqual({ ok: true, backend: 'ollama', model: 'codellama', effort: null, findings: 'No findings.' })
       expect(global.fetch).toHaveBeenCalledTimes(1)
       const [url, init] = global.fetch.mock.calls[0]
       expect(url).toMatch(/\/v1\/chat\/completions$/)

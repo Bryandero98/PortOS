@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ServerError } from './errorHandler.js';
-import { partialWithoutDefaults, emptyToUndefined, emptyToNull } from './zodCompat.js';
+import { partialWithoutDefaults, emptyToUndefined, emptyToNull, optionalBooleanMap } from './zodCompat.js';
 import { WORK_TRACKERS } from './workTracker.js';
 import { SPRITE_ID_PATTERN, SPRITE_RECORD_KINDS } from '../services/sprites/recordsLogic.js';
 import { ANCHOR_DIRECTIONS, SPRITE_DIRECTIONS, TURNAROUND_ID } from '../services/sprites/prompts.js';
@@ -57,12 +57,9 @@ export const isSafeRecordId = (id) =>
   && id !== '.' && id !== '..'
   && !id.includes('/') && !id.includes('\\') && !id.includes('\0');
 
-// Build a sparse-map Zod shape from a string array of boolean-typed keys.
-// Returns the raw record so callers can either spread it (...optionalBooleanMap(KEYS))
-// into a larger object schema or wrap it directly (z.object(optionalBooleanMap(KEYS))).
-// Mirrors the `{ field?: boolean }` shape used for per-field lock maps.
-export const optionalBooleanMap = (keys) =>
-  Object.fromEntries(keys.map((k) => [k, z.boolean().optional()]));
+// `optionalBooleanMap` now lives in zodCompat.js (so per-domain schema files can
+// use it without a cycle through this module) — re-exported for deep imports.
+export { optionalBooleanMap };
 
 // =============================================================================
 // EXISTING SCHEMAS

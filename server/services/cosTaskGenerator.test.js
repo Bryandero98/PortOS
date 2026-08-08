@@ -416,12 +416,35 @@ describe('resolveIssueAuthorFilterBlock', () => {
     expect(resolveIssueAuthorFilterBlock('claim-issue-gitlab', 'self')).toContain('glab api user');
   });
 
+  it('tells the agent to build a trusted set and filter the listing in collaborators mode', () => {
+    // Neither CLI's `--author` takes more than one account, so a prompt that
+    // implied a multi-author query would send the agent in circles. Both blocks
+    // must name the two-step recipe AND keep the boundary hard on failure.
+    for (const [type, endpoint] of [
+      ['claim-issue', 'repos/{owner}/{repo}/collaborators'],
+      // members/all, so group-inherited members count as project members.
+      ['claim-issue-gitlab', 'projects/:id/members/all']
+    ]) {
+      const block = resolveIssueAuthorFilterBlock(type, 'collaborators');
+      expect(block).toContain(endpoint);
+      expect(block).toContain('takes exactly ONE account');
+      expect(block).toContain('do NOT silently fall back');
+      // The endpoint the AGENT is told to call must be the one the work detector
+      // actually calls — otherwise the claimable count PortOS shows and the set
+      // the agent claims from silently diverge.
+      expect(readFileSync(join(__dirname, 'perpetualWork.js'), 'utf-8')).toContain(endpoint);
+    }
+  });
+
   it('defaults to the gh block (harmless no-op) for plan/jira bodies and to self mode', () => {
     expect(resolveIssueAuthorFilterBlock('plan-task')).toContain('gh issue list');
     // Default (no mode) is the --self security boundary.
     expect(resolveIssueAuthorFilterBlock('claim-issue')).toContain('--author "@me"');
-    // Unknown mode collapses to self, not owner/any.
+    // Unknown mode collapses to self, not owner/any/collaborators.
     expect(resolveIssueAuthorFilterBlock('claim-issue', 'bogus')).toContain('--author "@me"');
+    // Including an inherited Object.prototype key, which a bare map lookup would
+    // hand back as a "block".
+    expect(resolveIssueAuthorFilterBlock('claim-issue', 'constructor')).toContain('--author "@me"');
   });
 });
 

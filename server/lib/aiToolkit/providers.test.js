@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdir, rm, writeFile } from 'fs/promises';
+import { chmod, mkdir, rm, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { createProviderService, isOllamaBackedProvider } from './providers.js';
@@ -620,11 +620,13 @@ describe('Provider Service', () => {
       });
 
       const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-      const result = await providerService.refreshProviderModels('antigravity-cli');
+      // Throws with the REAL reason (and a 502) rather than collapsing to null,
+      // which the route would have reported as "Provider not found or not an
+      // API type" — misleading, since the provider exists and its type is fine.
+      await expect(providerService.refreshProviderModels('antigravity-cli'))
+        .rejects.toThrow(/'\/nonexistent\/path\/to\/agy models' failed/);
       errSpy.mockRestore();
 
-      // null = "nothing to persist"; the routes layer turns this into an error.
-      expect(result).toBeNull();
       // And the previously-stored list is untouched on disk.
       const after = await providerService.getProviderById('antigravity-cli');
       expect(after.models).toEqual(stored);
@@ -804,9 +806,10 @@ describe('Provider Service', () => {
       expect(updated.models).toEqual(['qwen2.5:7b']);
     });
 
-    it('does not refresh a non-ollama-backed TUI provider (returns null)', async () => {
-      // A plain claude TUI provider has no Ollama backing — refresh is a no-op
-      // for tui type, so it returns null (models left as configured).
+    it('reports a non-ollama-backed TUI provider as unsupported, not as missing', async () => {
+      // A plain claude TUI provider has no Ollama backing and no catalog to
+      // fetch. It must say THAT — not fall out as null and get rendered as
+      // "Provider not found", which is false: it exists and its type is fine.
       const p = await providerService.createProvider({
         name: 'Claude Code TUI',
         type: 'tui',
@@ -814,8 +817,294 @@ describe('Provider Service', () => {
         models: ['claude-opus-4-8'],
       });
 
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const err = await providerService.refreshProviderModels(p.id).catch(e => e);
+      errSpy.mockRestore();
+
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).toMatch(/not supported for tui provider/i);
+      expect(err.status).toBe(400);
+      // The configured list is untouched.
+      const after = await providerService.getProviderById(p.id);
+      expect(after.models).toEqual(['claude-opus-4-8']);
+    });
+
+    it('returns null only for a provider that does not exist', async () => {
+      // The one remaining meaning of null — what lets the route's 404 say
+      // plainly "Provider not found" rather than guessing at a reason.
+      expect(await providerService.refreshProviderModels('no-such-provider')).toBeNull();
+    });
+
+    // Pins the `provider.id === ANTIGRAVITY_TUI_ID` half of that arm's OR — the
+    // same gap that was open on CURSOR_TUI_ID. Every other antigravity-TUI test
+    // matches on the `agy` command, so deleting the id clause left the suite
+    // green while a shipped antigravity-tui repointed at a wrapper lost refresh.
+    it('reaches the agy fetcher for a shipped antigravity-tui repointed at a wrapper', async () => {
+      await writeFile(join(TEST_DATA_DIR, 'providers.json'), JSON.stringify({
+        activeProvider: 'antigravity-tui',
+        providers: {
+          'antigravity-tui': {
+            id: 'antigravity-tui', name: 'Antigravity TUI', type: 'tui',
+            command: '/nonexistent/path/to/agy-wrap', contextWindow: 1048576,
+            models: ['antigravity-configured-default'],
+            defaultModel: 'antigravity-configured-default',
+          },
+        },
+      }, null, 2));
+
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const err = await providerService.refreshProviderModels('antigravity-tui').catch(e => e);
+      errSpy.mockRestore();
+
+      // Reached the agy fetcher (which then failed on the bogus path). Without
+      // the id clause it would fall to the `else` and report "not supported".
+      expect(err.message).toMatch(/agy-wrap models' failed/);
+      expect(err.message).not.toMatch(/not supported/i);
+    });
+  });
+
+  describe('Cursor Agent model refresh (`cursor-agent models`)', () => {
+    // Stand in for the real binary with a script that prints a captured excerpt
+    // of `cursor-agent models` — header line, blank line, `<id> - <Label>` rows,
+    // trailing `Tip:` paragraph. Shell-script based, so POSIX only; CI is
+    // ubuntu-latest and the assertions below are about parsing, not spawning.
+    const writeFakeCursor = async (body) => {
+      const path = join(TEST_DATA_DIR, 'cursor-agent');
+      await writeFile(path, `#!/bin/sh\ncat <<'EOF'\n${body}\nEOF\n`);
+      await chmod(path, 0o755);
+      return path;
+    };
+
+    const SAMPLE = [
+      'Available models',
+      '',
+      'auto - Auto (current, default)',
+      'gpt-5.3-codex-low - Codex 5.3 Low',
+      'gpt-5.3-codex-low-fast - Codex 5.3 Low Fast',
+      'composer-2.5 - Composer 2.5',
+      'claude-opus-5-thinking-high - Opus 5 1M Thinking',
+      '',
+      "Tip: use --model <id> (or /model <id> in interactive mode) to switch. Parameterized models also accept quoted overrides, e.g. --model 'claude-opus-4-8[context=1m,effort=high,fast=false]'.",
+    ].join('\n');
+
+    it.skipIf(process.platform === 'win32')('persists the live catalog for a cursor CLI provider', async () => {
+      const command = await writeFakeCursor(SAMPLE);
+      const p = await providerService.createProvider({
+        name: 'Cursor Agent CLI',
+        type: 'cli',
+        command,
+        models: ['auto', 'composer-2.5'],
+        defaultModel: 'auto',
+      });
+
       const updated = await providerService.refreshProviderModels(p.id);
-      expect(updated).toBeNull();
+      expect(updated).not.toBeNull();
+      // The full list as reported — `-fast` priority-compute twins included, and
+      // `auto` retained (cursor's real router id, not a synthetic sentinel).
+      expect(updated.models).toEqual([
+        'auto',
+        'gpt-5.3-codex-low',
+        'gpt-5.3-codex-low-fast',
+        'composer-2.5',
+        'claude-opus-5-thinking-high',
+      ]);
+    });
+
+    it.skipIf(process.platform === 'win32')('refreshes a cursor TUI provider too', async () => {
+      // `cursor-agent --model` applies to the interactive session as well, so
+      // the TUI arm must reach the fetcher rather than no-op to null.
+      const command = await writeFakeCursor(SAMPLE);
+      const p = await providerService.createProvider({
+        name: 'Cursor Agent TUI',
+        type: 'tui',
+        command,
+        models: ['auto'],
+        defaultModel: 'auto',
+      });
+
+      const updated = await providerService.refreshProviderModels(p.id);
+      expect(updated).not.toBeNull();
+      expect(updated.models).toContain('gpt-5.3-codex-low-fast');
+    });
+
+    // Pins the `provider.id === CURSOR_TUI_ID` half of the TUI arm's OR. Every
+    // other test reaches that arm via the COMMAND (writeFakeCursor's script is
+    // named `cursor-agent`), so deleting the id clause left the whole suite
+    // green while this case — a shipped cursor-tui the user repointed at a
+    // wrapper script — silently lost its refresh.
+    it.skipIf(process.platform === 'win32')('refreshes a shipped cursor-tui repointed at a wrapper command', async () => {
+      const cursorPath = await writeFakeCursor(SAMPLE);
+      const wrapper = join(TEST_DATA_DIR, 'cursor-wrap');
+      await writeFile(wrapper, `#!/bin/sh\nexec "${cursorPath}" "$@"\n`);
+      await chmod(wrapper, 0o755);
+
+      await writeFile(join(TEST_DATA_DIR, 'providers.json'), JSON.stringify({
+        activeProvider: 'cursor-tui',
+        providers: {
+          'cursor-tui': {
+            id: 'cursor-tui', name: 'Cursor Agent TUI', type: 'tui',
+            command: wrapper, models: ['auto'], defaultModel: 'auto',
+          },
+        },
+      }, null, 2));
+
+      const updated = await providerService.refreshProviderModels('cursor-tui');
+      expect(updated, 'the id clause on the TUI arm no longer matches').not.toBeNull();
+      expect(updated.models).toContain('gpt-5.3-codex-low');
+    });
+
+    // The mirror of the cursor ordering fix, for antigravity: its COMMAND test
+    // used to sit fused to its name test BELOW the claude name test, so an `agy`
+    // provider named "Antigravity Claude Sonnet 4.6" (a natural name — agy's own
+    // catalog carries claude ids) got Anthropic's static list persisted onto it
+    // and lost the configured-default sentinel while defaultModel still pointed
+    // at it, blanking the model <select>.
+    it('routes an agy provider on its command even when the NAME says claude', async () => {
+      const stored = ['antigravity-configured-default', 'gemini-3.1-pro-high'];
+      await writeFile(join(TEST_DATA_DIR, 'providers.json'), JSON.stringify({
+        activeProvider: 'antigravity-cli',
+        providers: {
+          'antigravity-cli': {
+            id: 'antigravity-cli', name: 'Antigravity Claude Sonnet 4.6', type: 'cli',
+            command: '/nonexistent/path/to/agy', contextWindow: 1048576,
+            models: [...stored], defaultModel: 'antigravity-configured-default',
+          },
+        },
+      }, null, 2));
+
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const err = await providerService.refreshProviderModels('antigravity-cli').catch(e => e);
+      errSpy.mockRestore();
+
+      // Reached the AGY fetcher (which then failed on the bogus path) rather
+      // than _fetchAnthropicModels, which would have succeeded and persisted
+      // claude ids onto an agy provider.
+      expect(err.message).toMatch(/agy models' failed/);
+      const after = await providerService.getProviderById('antigravity-cli');
+      expect(after.models).toEqual(stored);
+      expect(after.models[0]).toBe('antigravity-configured-default');
+    });
+
+    // The name test still applies once no command has claimed the provider, and
+    // a `claude` command still beats an "antigravity" name — the split must not
+    // invert that.
+    it('still routes a claude-commanded provider named "antigravity" to Anthropic', async () => {
+      const p = await providerService.createProvider({
+        name: 'Claude via Antigravity', type: 'cli', command: 'claude', models: ['x'],
+      });
+      const updated = await providerService.refreshProviderModels(p.id);
+      expect(updated).not.toBeNull();
+      expect(updated.models).toContain('claude-opus-5');
+      expect(updated.models).not.toContain('antigravity-configured-default');
+    });
+
+    // …and the residual NAME half of that same split is pinned too. Left
+    // unpinned, a future cleanup deletes it as apparently-redundant while the
+    // client's mirrored `name.includes('antigravity')` keeps offering the
+    // button — every click then 400s. That is precisely the client/server drift
+    // the parity apparatus exists to prevent.
+    it('still routes an antigravity-NAMED provider with an unrelated command to the agy fetcher', async () => {
+      const p = await providerService.createProvider({
+        name: 'Antigravity Nightly', type: 'cli', command: '/nonexistent/path/to/weird-wrapper', models: ['x'],
+      });
+
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const err = await providerService.refreshProviderModels(p.id).catch(e => e);
+      errSpy.mockRestore();
+
+      expect(err.message).toMatch(/weird-wrapper models' failed/);
+      expect(err.message).not.toMatch(/not supported/i);
+    });
+
+    // A failed `cursor-agent models` probe must be distinguishable from a real
+    // fetch. Returning the shipped 27-id seed here would persist it and toast
+    // "Models refreshed", so a user whose service PATH can't resolve the binary
+    // would pick a model their account may not have and only discover it when
+    // the run dies.
+    it('reports a failed probe as a refresh failure, leaving the stored list intact', async () => {
+      const stored = ['auto', 'composer-2.5'];
+      const p = await providerService.createProvider({
+        name: 'Cursor Agent CLI',
+        type: 'cli',
+        command: '/nonexistent/path/to/cursor-agent',
+        models: [...stored],
+        defaultModel: 'auto',
+      });
+
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      // The thrown message names the binary and the spawn failure, so the user's
+      // toast says why — not "Provider not found or not an API type".
+      const err = await providerService.refreshProviderModels(p.id).catch(e => e);
+      errSpy.mockRestore();
+
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).toMatch(/'\/nonexistent\/path\/to\/cursor-agent models' failed/);
+      expect(err.status).toBe(502);
+      const after = await providerService.getProviderById(p.id);
+      expect(after.models).toEqual(stored);
+    });
+
+    it.skipIf(process.platform === 'win32')('treats a prose-only response as a failure, not an empty catalog', async () => {
+      // e.g. an auth/upgrade banner printed in place of the list. Persisting []
+      // here would silently empty the user's model picker.
+      const stored = ['auto', 'composer-2.5'];
+      const command = await writeFakeCursor('Please run cursor-agent login first.');
+      const p = await providerService.createProvider({
+        name: 'Cursor Agent CLI',
+        type: 'cli',
+        command,
+        models: [...stored],
+        defaultModel: 'auto',
+      });
+
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      await expect(providerService.refreshProviderModels(p.id))
+        .rejects.toThrow(/returned no model ids/);
+      errSpy.mockRestore();
+
+      const after = await providerService.getProviderById(p.id);
+      expect(after.models).toEqual(stored);
+    });
+
+    // Regression: the command-keyed cursor branch must sit ABOVE the
+    // name-substring branches. When it sat below them, a cursor provider the
+    // user renamed "Cursor Claude Opus" matched `name.includes('claude')` first
+    // and had Anthropic's 15 static ids persisted onto it — ids cursor-agent
+    // rejects — written silently, because the client's gate is command-keyed and
+    // showed the Refresh button.
+    it.skipIf(process.platform === 'win32')('routes on the command even when the NAME contains another vendor', async () => {
+      const command = await writeFakeCursor(SAMPLE);
+      for (const name of ['Cursor Claude Opus', 'Cursor Antigravity', 'Cursor Gemini 3.5']) {
+        const p = await providerService.createProvider({
+          name, type: 'cli', command, models: ['auto'], defaultModel: 'auto',
+        });
+        const updated = await providerService.refreshProviderModels(p.id);
+        expect(updated, `${name}: refresh returned null`).not.toBeNull();
+        expect(updated.models, `${name}: got another vendor's catalog`).toContain('gpt-5.3-codex-low');
+        expect(updated.models).not.toContain('claude-opus-5');
+      }
+    });
+
+    it('does not hijack an unrelated provider that merely has "cursor" in its name', async () => {
+      // The cursor arm is command-keyed on purpose — "cursor" is an ordinary
+      // English word, so a name test would claim a refresh for a provider whose
+      // binary knows nothing about `models`.
+      const p = await providerService.createProvider({
+        name: 'Cursor Notes',
+        type: 'cli',
+        command: 'some-other-binary',
+        models: ['x'],
+      });
+
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const err = await providerService.refreshProviderModels(p.id).catch(e => e);
+      errSpy.mockRestore();
+
+      // Falls through to the 'not supported for this CLI provider' throw — 400,
+      // not the 502 default, because nothing upstream failed.
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).toMatch(/not supported/i);
+      expect(err.status).toBe(400);
     });
   });
 
@@ -861,7 +1150,7 @@ describe('Provider Service', () => {
       expect(updated.models).toEqual(['model-a', 'model-b']);
     });
 
-    it('returns null when the generic endpoint rejects (timeout / unreachable)', async () => {
+    it('throws the reason when the generic endpoint rejects (timeout / unreachable)', async () => {
       vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new DOMException('The operation was aborted.', 'TimeoutError')));
 
       const p = await providerService.createProvider({
@@ -870,8 +1159,14 @@ describe('Provider Service', () => {
         endpoint: 'https://dead.example.com/v1',
       });
 
-      const result = await providerService.refreshProviderModels(p.id);
-      expect(result).toBeNull();
+      // Surfaced, not collapsed to null — `null` means "no refreshable branch
+      // matched" and the route renders it as "Provider not found or not an API
+      // type", which is false here: the provider exists and IS an API type.
+      // Pairs with the next test: a FAILED fetch throws, a legitimately EMPTY
+      // one persists. Those two must never share a return value.
+      const err = await providerService.refreshProviderModels(p.id).catch(e => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(err.status).toBe(502);
     });
 
     it('persists a legitimately empty model list rather than treating it as a failed fetch', async () => {

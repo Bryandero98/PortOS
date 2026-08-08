@@ -155,7 +155,7 @@ export const ERROR_PATTERNS = [
   },
   {
     // Catches both "hit your usage limit" and session limits like "hit your limit · resets 6am"
-    pattern: /(?:hit your (?:usage )?limit|usage.?limit|quota exceeded|Upgrade to Pro|plan.?limit|daily.?limit|session.?limit|(?:^|\n)\s*(?:\[stderr\]\s*)?Now using extra usage\s*(?:\r?\n|$))/i,
+    pattern: /(?:hit your (?:usage )?limit|usage.?limit|quota exceeded|Upgrade to Pro|plan.?limit|daily.?limit|session.?limit|\d+-hour limit reached|(?:^|\n)\s*(?:\[stderr\]\s*)?Now using extra usage\s*(?:\r?\n|$))/i,
     category: 'usage-limit',
     actionable: true, // Need to switch provider
     // Promote only the distinctive provider-billing idioms (the matched
@@ -163,7 +163,15 @@ export const ERROR_PATTERNS = [
     // phrasings like "quota exceeded" / "plan limit" / "daily limit" that a task's
     // own output can print stay output-scan and count as genuine failures (#2642).
     origin: 'provider',
-    structuredMarker: /hit your (?:usage )?limit|Upgrade to Pro|Now using extra usage/i,
+    // The vendor-branded "<Product> usage limit reached" and "<N>-hour limit
+    // reached" banners belong here too: they are the wordings Claude Code and its
+    // siblings actually print, and WITHOUT them a genuine 5-hour window stayed
+    // `origin: 'output-scan'` — which agentFinalization's provenance gate does not
+    // bench, so every subsequent dequeue re-picked the dead provider and died the
+    // same way. They stay distinctive enough that a task's own output does not
+    // trip them (unlike the bare `quota exceeded` / `plan limit` alternatives,
+    // which remain deliberately unpromoted).
+    structuredMarker: /hit your (?:usage )?limit|(?:usage|session) limit reached|\d+-hour limit reached|Upgrade to Pro|Now using extra usage/i,
     extract: (match, output) => {
       const timeMatch = output.match(/(?:try again in|resets?)\s+(.+?)(?:\.|·|\n|$)/im);
       const waitTime = timeMatch ? timeMatch[1].trim() : null;
@@ -578,7 +586,7 @@ export const COMPLETION_REASON_ANALYSES = {
     category: 'no-changes',
     actionable: false,
     message: 'Agent idled out with no file changes',
-    suggestedFix: 'The agent stopped producing output before writing any files. Check the raw transcript for where it stalled — a provider retry loop or a long-running command can outlast the idle reaper.'
+    suggestedFix: 'The agent stopped producing output without writing any files OR committing anything during the run. Check the raw transcript for where it stalled — a provider retry loop or a long-running command can outlast the idle reaper.'
   },
   'idle-no-activity': {
     category: 'startup-failure',
