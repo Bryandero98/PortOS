@@ -586,7 +586,7 @@ export const COMPLETION_REASON_ANALYSES = {
     category: 'no-changes',
     actionable: false,
     message: 'Agent idled out with no file changes',
-    suggestedFix: 'The agent stopped producing output before writing any files. Check the raw transcript for where it stalled — a provider retry loop or a long-running command can outlast the idle reaper.'
+    suggestedFix: 'The agent stopped producing output without writing any files OR committing anything during the run. Check the raw transcript for where it stalled — a provider retry loop or a long-running command can outlast the idle reaper.'
   },
   'idle-no-activity': {
     category: 'startup-failure',
