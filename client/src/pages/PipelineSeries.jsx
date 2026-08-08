@@ -175,7 +175,10 @@ export default function PipelineSeries() {
   const desktopGridCols = sidebarCollapsed ? '0px minmax(0, 1fr)' : '360px minmax(0, 1fr)';
 
   return (
-    <div className="flex flex-col h-full">
+    // The full-bleed route removes Layout's default scroll container. On
+    // mobile the bible and canvas reflow into one column, so this page owns
+    // that single scroll region; desktop keeps its independent pane scrollers.
+    <div className="flex flex-col h-full overflow-y-auto lg:overflow-hidden">
       <div
         className="relative flex-1 flex flex-col lg:grid min-h-0 transition-[grid-template-columns] duration-200"
         style={{ gridTemplateColumns: desktopGridCols }}
