@@ -750,6 +750,22 @@ describe('analyzeAgentFailure — runner completion reason (COMPLETION_REASON_AN
     expect(analysis.snippet).toContain('idled out');
   });
 
+  // A programmatic-I/O run (layered-intelligence) is told NOT to touch the repo,
+  // so "no file changes" was the wrong diagnosis and the wrong advice. Same
+  // `no-changes` category so the downstream taxonomies keep classifying it, but
+  // the prose has to name the payload that never landed.
+  it('explains a programmatic-I/O idle-out as a missing payload, not a clean tree', () => {
+    const analysis = analyzeAgentFailure(noisyTranscript, { id: 't' }, 'x', {
+      completionReason: 'idle-no-deliverable',
+      completionError: 'TUI agent idled out without writing its .agent-done payload',
+    });
+    expect(analysis.category).toBe('no-changes');
+    expect(analysis.origin).toBe('runner');
+    expect(analysis.completionReason).toBe('idle-no-deliverable');
+    expect(analysis.message).toBe(COMPLETION_REASON_ANALYSES['idle-no-deliverable'].message);
+    expect(analysis.suggestedFix).toContain('.agent-done');
+  });
+
   it('still yields to a STRUCTURED provider signal in the transcript', () => {
     const analysis = analyzeAgentFailure(withLead('API Error: 429 Too Many Requests — backing off'), { id: 't' }, 'x', {
       completionReason: 'idle-no-changes',
