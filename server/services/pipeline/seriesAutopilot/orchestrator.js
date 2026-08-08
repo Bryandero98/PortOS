@@ -20,7 +20,7 @@ import {
   resolveAutopilotProduceTeaser, resolveAutopilotRevision, resolveAutopilotLlm,
 } from './config.js';
 import { VISUAL_DRAFT_ENABLED, summarizePlanCost } from './convergence.js';
-import { broadcast, persistMarker, clearPauseNotice, notifyPause, fileGap, scheduleCleanup } from './session.js';
+import { broadcast, broadcastStart, persistMarker, clearPauseNotice, notifyPause, fileGap, scheduleCleanup } from './session.js';
 import { resolveNextStep } from './stepResolver.js';
 import { editorialSubsetIds } from './editorialSteps.js';
 import { dispatchStep } from './dispatch.js';
@@ -145,6 +145,16 @@ export async function startSeriesAutopilot(sId, options = {}) {
   };
   runs.set(sId, record);
 
+  // Shared `start` frame for both modes. `provider`/`model` are the run's
+  // resolved soft defaults — what the panel shows as "this run calls X / Y"; a
+  // stage pinned on the Prompts page still overrides them for that stage.
+  const startFrame = (target, extra = {}) => ({
+    type: 'start', runId, mode, target,
+    provider: runOptions.providerOverride ?? null,
+    model: runOptions.modelOverride ?? null,
+    ...extra,
+  });
+
   // Fire-and-forget coordinator. The try/catch is the permitted boundary use —
   // an unhandled LLM rejection here would crash the process on Node ≥15.
   (async () => {
@@ -161,10 +171,7 @@ export async function startSeriesAutopilot(sId, options = {}) {
         const editorialLlmCheckCount = checkPlan ? checkPlan.checks.filter((c) => c.kind === 'llm').length : undefined;
         const plan = buildDryRunPlan(series, issues, runOptions, { editorialLlmCheckCount });
         const planTotals = summarizePlanCost(plan);
-        broadcast(sId, {
-          type: 'start', runId, mode, target: series.targetFormat, plan, planTotals,
-          provider: runOptions.providerOverride, model: runOptions.modelOverride,
-        });
+        broadcastStart(sId, startFrame(series.targetFormat, { plan, planTotals }));
         // Carry the plan on the terminal frame too: a dry-run emits start +
         // complete synchronously, often before the client attaches, and
         // attachSseClient replays only the LAST frame — so the plan would be
@@ -176,13 +183,7 @@ export async function startSeriesAutopilot(sId, options = {}) {
 
       // EXECUTE.
       const series0 = await getSeries(sId);
-      // The `provider`/`model` on the start frame are the run's resolved soft
-      // defaults — what the panel shows as "this run calls X / Y". A stage
-      // pinned on the Prompts page still overrides them for that stage.
-      broadcast(sId, {
-        type: 'start', runId, mode, target: series0.targetFormat,
-        provider: runOptions.providerOverride, model: runOptions.modelOverride,
-      });
+      broadcastStart(sId, startFrame(series0.targetFormat));
       await persistMarker(sId, { status: 'running', runId, currentStep: null, residualFindings: [], lastError: null });
       // A resume is a fresh start: drop any stale pause banner up front so a run
       // that completes/errors without re-pausing doesn't leave a dead resume link.

@@ -18,7 +18,7 @@ import {
   getSettings,
   patchSettingsSlice,
 } from '../../services/api';
-import { providerDisplayName, assignmentModelOptions, resolveSeriesRunLlm } from '../../utils/providers';
+import { providerDisplayName, providerModelLabel, assignmentModelOptions, resolveSeriesRunLlm } from '../../utils/providers';
 import ProviderModelSelector from '../ProviderModelSelector';
 import SeriesAutopilotSchedule from './SeriesAutopilotSchedule';
 
@@ -312,6 +312,13 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
     overrideModel: modelOverride,
     activeProviderId,
   });
+  // A pin naming a provider that is gone or disabled is a SOFT default server
+  // side — the run quietly falls back to the active provider. Say so rather than
+  // asserting a provider that won't run (only once the list has loaded, or a
+  // slow fetch would flash the warning on a perfectly good pin).
+  const effProvider = providers.find((p) => p.id === effProviderId);
+  const effProviderUnavailable = !!effProviderId && providers.length > 0
+    && (!effProvider || effProvider.enabled === false);
   const providerModels = useMemo(
     () => assignmentModelOptions(null, providers, effProviderId),
     [providers, effProviderId],
@@ -407,6 +414,16 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
   // the new run down. Terminal frames whose runId doesn't match are ignored.
   const activeRunIdRef = useRef(null);
 
+  // Read a run's `start` frame — mode (the dry-run badge), the resolved run
+  // provider/model, and a dry-run's plan. Shared by the SSE frame and the
+  // status payload's copy of it (see the re-attach effect below).
+  const applyStartFrame = useCallback((f) => {
+    setMode(f.mode || null);
+    setRunLlm({ provider: f.provider || null, model: f.model || null });
+    if (Array.isArray(f.plan)) setPlan(f.plan);
+    if (f.planTotals) setPlanTotals(f.planTotals);
+  }, []);
+
   // Re-attach to an in-flight run on (re)mount.
   useEffect(() => {
     if (!seriesId) return undefined;
@@ -415,31 +432,26 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
       .then((s) => {
         if (canceled || !s?.active) return;
         activeRunIdRef.current = s.autopilot?.runId || null;
-        // The start frame is long gone for an in-flight run, so take the
-        // resolved provider/model from the status payload instead.
-        if (s.runLlm) setRunLlm(s.runLlm);
+        // SSE replays only the last frame, so the run's `start` frame comes back
+        // on the status payload instead — same shape, same reader.
+        if (s.start) applyStartFrame(s.start);
         setActive(true);
       })
       .catch(() => null);
     return () => { canceled = true; };
-  }, [seriesId]);
+  }, [seriesId, applyStartFrame]);
 
   // Capture dry-run plan + mode. The plan rides the start frame, but a fast
   // dry-run can complete before the client attaches and only the terminal frame
   // is replayed — so also read the plan off a dry-run complete frame.
   useEffect(() => {
     if (latest?.type === 'start') {
-      setMode(latest.mode || null);
-      // Resolved run provider/model (null when the run falls through to the
-      // active provider) — the live line names what this run is spending on.
-      setRunLlm({ provider: latest.provider || null, model: latest.model || null });
-      if (Array.isArray(latest.plan)) setPlan(latest.plan);
-      if (latest.planTotals) setPlanTotals(latest.planTotals);
+      applyStartFrame(latest);
     } else if (latest?.type === 'complete' && latest.dryRun && Array.isArray(latest.plan)) {
       setPlan(latest.plan);
       if (latest.planTotals) setPlanTotals(latest.planTotals);
     }
-  }, [latest]);
+  }, [latest, applyStartFrame]);
 
   // Run-ended handling: refresh series (for the marker) + issues, toast outcome.
   useEffect(() => {
@@ -590,16 +602,19 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
           <div className="rounded-lg border border-port-border bg-port-bg/60 p-2.5 flex flex-col gap-2">
             <p className="text-[11px] text-gray-400 leading-relaxed">
               This run calls{' '}
-              <span className="text-gray-200 font-medium">{providerDisplayName(providers, effProviderId, '—')}</span>
-              {effModel ? <> / <span className="text-gray-200 font-medium">{effModel}</span></> : <> (provider default model)</>}
-              . Stages pinned to their own provider/model in{' '}
+              <span className="text-gray-200 font-medium">{providerModelLabel(providers, effProviderId, effModel)}</span>
+              . Stages pinned in{' '}
               <Link to="/prompts" className="text-port-accent hover:underline">Prompts</Link>{' '}
-              keep that pin; everything else uses the provider above. Reasoning
-              effort isn&apos;t a per-run pipeline control — it comes from the
-              provider&apos;s own CLI configuration (or a model id that bakes in a
-              tier) on the{' '}
-              <Link to="/ai" className="text-port-accent hover:underline">AI Providers</Link> page.
+              keep their own provider/model; reasoning effort isn&apos;t a per-run
+              control here — it comes from the provider&apos;s config on{' '}
+              <Link to="/ai" className="text-port-accent hover:underline">AI Providers</Link>.
             </p>
+            {effProviderUnavailable ? (
+              <p className="text-[11px] text-port-warning">
+                That provider is disabled or missing — the run falls back to{' '}
+                {providerDisplayName(providers, activeProviderId, 'the active provider')}.
+              </p>
+            ) : null}
             <div className="max-w-md">
               <ProviderModelSelector
                 providers={providers}
@@ -794,8 +809,7 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
           {/* Name the provider/model this run resolved to, so an in-flight run
               (including one the scheduler started) says what it is spending on. */}
           <div className="mt-1 text-[11px] text-gray-500">
-            on {providerDisplayName(providers, runLlm?.provider || activeProviderId, '—')}
-            {runLlm?.model ? ` / ${runLlm.model}` : ' (provider default model)'}
+            on {providerModelLabel(providers, runLlm?.provider || activeProviderId, runLlm?.model)}
           </div>
           {frames?.length ? (
             <div className="mt-2 max-h-28 overflow-y-auto text-[11px] text-gray-500 space-y-0.5">
@@ -882,7 +896,9 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
       })() : null}
 
       {/* Scheduled unattended runs (#2174) — hidden while a run is active. */}
-      {!active ? <SeriesAutopilotSchedule series={series} /> : null}
+      {!active ? (
+        <SeriesAutopilotSchedule series={series} providers={providers} activeProviderId={activeProviderId} />
+      ) : null}
 
       {/* Production readiness (canon descriptive integrity) */}
       <div className="px-3 pb-3 border-t border-port-border pt-2">

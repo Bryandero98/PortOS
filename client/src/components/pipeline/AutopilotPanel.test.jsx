@@ -193,14 +193,16 @@ describe('AutopilotPanel', () => {
     ));
   });
 
-  it('names the in-flight run provider when re-attaching mid-run', async () => {
+  it('describes an in-flight run from the status payload start frame when re-attaching', async () => {
     getPipelineAutopilotStatus.mockResolvedValue({
       autopilot: { status: 'running', runId: 'r1' },
       active: true,
-      runLlm: { provider: 'codex', model: 'gpt-5-codex' },
+      start: { type: 'start', runId: 'r1', mode: 'dry-run', provider: 'codex', model: 'gpt-5-codex' },
     });
     renderPanel({ id: 's1', targetFormat: 'comic' });
     expect(await screen.findByText(/on Codex \/ gpt-5-codex/)).toBeInTheDocument();
+    // mode rides the same frame, so the dry-run badge survives a mid-run attach.
+    expect(screen.getByText('dry-run')).toBeInTheDocument();
   });
 
   it('clears to the default (not 0) when a round input is emptied', async () => {

@@ -189,25 +189,20 @@ export function resolveAutopilotRevision(options = {}, settings = null) {
 // `providerOverride`/`modelOverride` wins (the Options picker, or the scheduler
 // mapping a schedule's provider/model); otherwise the run inherits the series'
 // own configured `series.llm` — the provider named in the series header, which
-// every other Pipeline LLM action already honors via resolveSeriesLlmOverride.
-// Both absent leaves them undefined, so stageRunner resolves stage pin → active
-// provider as before.
+// every other Pipeline LLM action already honors. Both absent stays undefined,
+// so stageRunner resolves stage pin → active provider as before. The precedence
+// (including why a foreign model id is dropped) lives in the shared
+// `resolveSeriesLlmOverride`; this only renames its keys to the run-option ones.
 //
 // Threaded as SOFT defaults (`providerDefault`/`modelDefault`, see
 // session.js#providerOverrideOpts), so a deliberate per-stage pin on the Prompts
 // page still wins and an unavailable provider falls through instead of throwing.
-//
-// A model id is provider-specific, so the series model is only inherited when
-// the effective provider is still the series provider — an override that names a
-// different provider without a model resolves that provider's own default.
-// Returns `null` (not `undefined`) for an unresolved value so the stamped run
-// options can be read back for display without re-deriving the fallback chain.
 export function resolveAutopilotLlm(options = {}, series = null) {
   const { provider, model } = resolveSeriesLlmOverride(series, {
     overrideProvider: options?.providerOverride,
     overrideModel: options?.modelOverride,
   });
-  return { providerOverride: provider || null, modelOverride: model || null };
+  return { providerOverride: provider, modelOverride: model };
 }
 
 // Effective "produce draft visuals?" decision. The `target` option overrides

@@ -275,35 +275,25 @@ describe('provider/model threading helpers (#1514 provider + #1558 model — bot
   });
 });
 
+// The precedence itself is covered by server/lib/seriesLlmOverride.test.js —
+// what's specific here is that the autopilot delegates to it and renames the
+// keys to the run-option ones.
 describe('resolveAutopilotLlm — run provider/model resolution', () => {
   const series = { llm: { provider: 'codex', model: 'gpt-x' } };
 
-  it('inherits the series llm when the run pins nothing', () => {
+  it('inherits the series llm under the run-option key names', () => {
     expect(autopilot.resolveAutopilotLlm({}, series))
       .toEqual({ providerOverride: 'codex', modelOverride: 'gpt-x' });
   });
 
-  it('lets a per-run override win over the series llm', () => {
-    expect(autopilot.resolveAutopilotLlm({ providerOverride: 'claude', modelOverride: 'opus' }, series))
-      .toEqual({ providerOverride: 'claude', modelOverride: 'opus' });
-  });
-
-  it('drops the series model when the override names a DIFFERENT provider', () => {
-    // A model id is provider-specific — forwarding codex's model to claude would fail.
+  it('lets a per-run override win, dropping the series model when the provider differs', () => {
     expect(autopilot.resolveAutopilotLlm({ providerOverride: 'claude' }, series))
-      .toEqual({ providerOverride: 'claude', modelOverride: null });
+      .toEqual({ providerOverride: 'claude', modelOverride: undefined });
   });
 
-  it('keeps the series model when the override names the SAME provider', () => {
-    expect(autopilot.resolveAutopilotLlm({ providerOverride: 'codex' }, series))
-      .toEqual({ providerOverride: 'codex', modelOverride: 'gpt-x' });
-  });
-
-  it('resolves to null/null with no series llm and no override (active provider downstream)', () => {
-    expect(autopilot.resolveAutopilotLlm({}, { llm: null }))
-      .toEqual({ providerOverride: null, modelOverride: null });
+  it('resolves to nothing with no series llm and no override (active provider downstream)', () => {
     expect(autopilot.resolveAutopilotLlm({}, null))
-      .toEqual({ providerOverride: null, modelOverride: null });
+      .toEqual({ providerOverride: undefined, modelOverride: undefined });
   });
 });
 
@@ -1284,6 +1274,9 @@ describe('autopilot conductor', () => {
       seriesId,
       expect.objectContaining({ providerDefault: 'codex', modelDefault: 'gpt-x' }),
     );
+    // The same values ride the retained start frame, so a client attaching
+    // mid-run can name what the run is spending on.
+    expect(run.startPayload).toMatchObject({ type: 'start', provider: 'codex', model: 'gpt-x' });
   });
 
   it('lets a per-run provider override beat the series-configured provider', async () => {
@@ -1294,7 +1287,7 @@ describe('autopilot conductor', () => {
     const run = autopilot.__testing.runs.get(seriesId);
     expect(run.options.providerOverride).toBe('claude');
     // codex's model must NOT ride along to claude.
-    expect(run.options.modelOverride).toBeNull();
+    expect(run.options.modelOverride).toBeUndefined();
   });
 
   it('pauses for review when arc verify never converges', async () => {

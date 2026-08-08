@@ -22,15 +22,16 @@ export function isAutopilotActive(seriesId) {
   return !!run && !run.finished;
 }
 
-// Provider/model an IN-FLIGHT run resolved to (null when no run is active, or
-// when the run fell through to the install's active provider). The values ride
-// the `start` SSE frame too, but attachSseClient replays only the LAST frame —
-// so a client re-attaching mid-run would otherwise never learn which provider
-// the run is spending on. Read through the status route.
-export function activeRunLlm(seriesId) {
+// The `start` frame of an IN-FLIGHT run (null when none is active). Everything
+// a client needs to describe a run it didn't watch begin — mode (the dry-run
+// badge), target, the resolved run provider/model — lives on that frame, but
+// attachSseClient replays only the LAST payload, so a client attaching mid-run
+// never sees it. Kept whole (rather than rescuing one field at a time through
+// bespoke status keys) so a new start-frame field needs no new plumbing.
+export function activeRunStart(seriesId) {
   const run = runs.get(seriesId);
   if (!run || run.finished) return null;
-  return { provider: run.options?.providerOverride || null, model: run.options?.modelOverride || null };
+  return run.startPayload || null;
 }
 
 export function attachClient(seriesId, res) {
@@ -68,6 +69,14 @@ export function broadcast(seriesId, payload) {
   } catch (err) {
     console.log(`⚠️ autopilot: event emit failed for ${seriesId.slice(0, 12)}: ${err.message}`);
   }
+}
+
+// Broadcast the run's `start` frame AND retain it on the run record, so a
+// client attaching mid-run can still read it back via `activeRunStart`.
+export function broadcastStart(seriesId, payload) {
+  const run = runs.get(seriesId);
+  if (run) run.startPayload = payload;
+  broadcast(seriesId, payload);
 }
 
 export function scheduleCleanup(seriesId, record) {
