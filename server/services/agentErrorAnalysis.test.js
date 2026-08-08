@@ -843,6 +843,16 @@ describe('analyzeAgentFailure — runner completion reason (COMPLETION_REASON_AN
     expect(analysis.message).toMatch(/interactive prompt/i);
   });
 
+  // A programmatic-I/O run parked on a selector never got far enough to write
+  // its payload, so the prompt IS the proximate cause and outranks "no payload".
+  it('names the unanswered prompt as the cause of an idle-no-deliverable run too', () => {
+    const analysis = analyzeAgentFailure(parkedOnSelector, { id: 't' }, 'x', {
+      completionReason: 'idle-no-deliverable',
+    });
+    expect(analysis.message).toMatch(/interactive prompt/i);
+    expect(analysis.category).toBe(COMPLETION_REASON_ANALYSES['idle-no-deliverable'].category);
+  });
+
   it('leaves a plain idle-out alone when no prompt is on screen', () => {
     const analysis = analyzeAgentFailure(withLead('Ran 4 shell commands and read 2 files.'), { id: 't' }, 'x', {
       completionReason: 'idle-no-changes',

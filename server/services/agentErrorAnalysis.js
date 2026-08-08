@@ -697,8 +697,13 @@ export function endsAwaitingUserInput(analysisOutput) {
   return AWAITING_INPUT_MARKERS.some(marker => marker.test(tail));
 }
 
-/** Idle-out reasons worth re-explaining as an unanswered prompt. */
-const AWAITING_INPUT_REFINABLE_REASONS = new Set(['idle-no-changes', 'idle-no-activity']);
+/**
+ * Idle-out reasons worth re-explaining as an unanswered prompt. All three are
+ * "the reaper killed it" verdicts, so when the tail shows a selector or approval
+ * gate that IS the proximate cause — including for a programmatic-I/O run, whose
+ * payload went unwritten precisely because it never got past the prompt.
+ */
+const AWAITING_INPUT_REFINABLE_REASONS = new Set(['idle-no-changes', 'idle-no-activity', 'idle-no-deliverable']);
 
 /**
  * Re-word an idle-out whose transcript ends on an unanswered prompt. The
