@@ -723,7 +723,10 @@ export default function PipelineManuscriptEditor() {
   if (loading) return <div className="p-6 text-gray-500 text-sm">Loading manuscript…</div>;
 
   return (
-    <div className="flex flex-col h-full">
+    // The full-bleed route removes Layout's default scroll container. The
+    // manuscript and review controls stack on mobile, so the page needs one
+    // shared scroll region until the desktop panes take over at lg.
+    <div className="flex flex-col h-full overflow-y-auto lg:overflow-hidden">
       <div className="flex-1 flex flex-col lg:grid min-h-0" style={{ gridTemplateColumns: 'minmax(0, 1fr) 380px' }}>
         {/* Manuscript pane */}
         <section className="flex flex-col min-h-0 lg:overflow-y-auto p-4 md:p-6 space-y-5">
