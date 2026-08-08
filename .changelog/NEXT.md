@@ -1,6 +1,12 @@
 # Unreleased
 
+## Added
+
+- Series Pipeline **Autonomous mode** now says which AI it will spend on. The Options popover names the provider and model the run resolves to, links to where per-stage pins and reasoning effort are configured, and offers a per-run provider/model override (never persisted — a one-off run can't silently re-point the whole series). The live progress line names the provider of an in-flight run too, including one the scheduler started.
+
 ## Fixed
+
+- A manual Autonomous-mode run now uses the series' own configured AI provider (the picker in the series header), matching scheduled runs and every other Pipeline action. It previously ignored `series.llm` and ran on the install's active provider, so the series header said one thing and the run did another. It stays a *soft* default: a stage pinned in Prompts keeps its pin, and an unavailable provider falls back instead of failing the run.
 
 - Series Pipeline and Manuscript Editor pages can now scroll through their full content on mobile.
 

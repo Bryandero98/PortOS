@@ -10,6 +10,7 @@ vi.mock('../../services/api', () => ({
   getPipelineSeriesCanonReadiness: vi.fn(),
   getPipelineSeries: vi.fn(),
   listPipelineIssues: vi.fn(),
+  getProviders: vi.fn(),
   getSettings: vi.fn(),
   patchSettingsSlice: vi.fn(),
 }));
@@ -26,6 +27,7 @@ import {
   startPipelineAutopilot,
   getPipelineAutopilotStatus,
   getPipelineSeriesCanonReadiness,
+  getProviders,
   getSettings,
   patchSettingsSlice,
 } from '../../services/api';
@@ -47,6 +49,13 @@ beforeEach(() => {
   startPipelineAutopilot.mockResolvedValue({ runId: 'r1', mode: 'execute', alreadyRunning: false });
   getSettings.mockResolvedValue({ pipelineEditorialChecks: {} });
   patchSettingsSlice.mockResolvedValue({});
+  getProviders.mockResolvedValue({
+    activeProvider: 'claude',
+    providers: [
+      { id: 'claude', name: 'Claude Code', type: 'cli', enabled: true, models: ['claude-opus-5'] },
+      { id: 'codex', name: 'Codex', type: 'cli', enabled: true, models: ['gpt-5-codex'] },
+    ],
+  });
 });
 
 describe('AutopilotPanel', () => {
@@ -133,6 +142,65 @@ describe('AutopilotPanel', () => {
     await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
       's1', { includeVisual: true, fileGaps: false }, { silent: true },
     ));
+  });
+
+  it('names the provider/model the run will call — the series llm', async () => {
+    renderPanel({ id: 's1', targetFormat: 'comic', llm: { provider: 'codex', model: 'gpt-5-codex' } });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    const summary = await screen.findByText(/This run calls/i);
+    await waitFor(() => expect(summary).toHaveTextContent('Codex / gpt-5-codex'));
+  });
+
+  it('falls back to the active provider when the series pins no llm', async () => {
+    renderPanel({ id: 's1', targetFormat: 'comic' });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    const summary = await screen.findByText(/This run calls/i);
+    await waitFor(() => expect(summary).toHaveTextContent('Claude Code (provider default model)'));
+  });
+
+  it('sends a picked provider/model as a per-run override without persisting it', async () => {
+    renderPanel({ id: 's1', targetFormat: 'comic', llm: { provider: 'claude', model: 'claude-opus-5' } });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    const providerSelect = await screen.findByLabelText('Override provider for this run');
+    fireEvent.change(providerSelect, { target: { value: 'codex' } });
+    // Switching providers drops the series model — it belongs to the old provider.
+    await waitFor(() => expect(screen.getByLabelText('Model')).toHaveValue(''));
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'gpt-5-codex' } });
+    fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
+    await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
+      's1',
+      { includeVisual: true, fileGaps: false, providerOverride: 'codex', modelOverride: 'gpt-5-codex' },
+      { silent: true },
+    ));
+    expect(patchSettingsSlice).not.toHaveBeenCalledWith(
+      'pipelineEditorialChecks',
+      expect.objectContaining({ providerOverride: expect.anything() }),
+      expect.anything(),
+    );
+  });
+
+  it('omits the provider override when left on the series default', async () => {
+    renderPanel({ id: 's1', targetFormat: 'comic', llm: { provider: 'codex', model: 'gpt-5-codex' } });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
+    // Nothing pinned → the server resolves series.llm itself.
+    await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
+      's1', { includeVisual: true, fileGaps: false }, { silent: true },
+    ));
+  });
+
+  it('names the in-flight run provider when re-attaching mid-run', async () => {
+    getPipelineAutopilotStatus.mockResolvedValue({
+      autopilot: { status: 'running', runId: 'r1' },
+      active: true,
+      runLlm: { provider: 'codex', model: 'gpt-5-codex' },
+    });
+    renderPanel({ id: 's1', targetFormat: 'comic' });
+    expect(await screen.findByText(/on Codex \/ gpt-5-codex/)).toBeInTheDocument();
   });
 
   it('clears to the default (not 0) when a round input is emptied', async () => {

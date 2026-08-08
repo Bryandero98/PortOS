@@ -22,6 +22,17 @@ export function isAutopilotActive(seriesId) {
   return !!run && !run.finished;
 }
 
+// Provider/model an IN-FLIGHT run resolved to (null when no run is active, or
+// when the run fell through to the install's active provider). The values ride
+// the `start` SSE frame too, but attachSseClient replays only the LAST frame —
+// so a client re-attaching mid-run would otherwise never learn which provider
+// the run is spending on. Read through the status route.
+export function activeRunLlm(seriesId) {
+  const run = runs.get(seriesId);
+  if (!run || run.finished) return null;
+  return { provider: run.options?.providerOverride || null, model: run.options?.modelOverride || null };
+}
+
 export function attachClient(seriesId, res) {
   return attachSseClient(runs, seriesId, res);
 }

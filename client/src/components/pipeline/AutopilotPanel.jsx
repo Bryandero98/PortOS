@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import {
   Rocket, Loader2, X, Sliders, ShieldCheck, AlertCircle, CheckCircle2,
@@ -14,9 +14,12 @@ import {
   getPipelineSeriesCanonReadiness,
   getPipelineSeries,
   listPipelineIssues,
+  getProviders,
   getSettings,
   patchSettingsSlice,
 } from '../../services/api';
+import { providerDisplayName, assignmentModelOptions, resolveSeriesRunLlm } from '../../utils/providers';
+import ProviderModelSelector from '../ProviderModelSelector';
 import SeriesAutopilotSchedule from './SeriesAutopilotSchedule';
 
 // Convergence-round bounds — mirror the server (seriesAutopilot.js + the
@@ -273,6 +276,46 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
   const foundationRoundsEditedRef = useRef(false);
   const [canon, setCanon] = useState(null);
   const [canonLoading, setCanonLoading] = useState(false);
+  // Per-run provider/model override. '' = "use the series default", i.e. the
+  // provider picked in the series header (`series.llm`), falling back to the
+  // install's active provider — the same chain the server resolves in
+  // resolveAutopilotLlm, so the copy below names what will actually run. Per-run
+  // only (never persisted, like the readiness gate): pinning a different model
+  // for one run must not silently re-point every other action on the series.
+  const [providerOverride, setProviderOverride] = useState('');
+  const [modelOverride, setModelOverride] = useState('');
+  const [providers, setProviders] = useState([]);
+  const [activeProviderId, setActiveProviderId] = useState(null);
+  // Provider/model the ACTIVE run reported on its start frame — what the live
+  // progress line names, so a run started elsewhere (or by the scheduler) still
+  // says which provider it is spending on.
+  const [runLlm, setRunLlm] = useState(null);
+
+  useEffect(() => {
+    let canceled = false;
+    getProviders({ silent: true })
+      .then((data) => {
+        if (canceled) return;
+        setProviders(data?.providers || []);
+        setActiveProviderId(data?.activeProvider || null);
+      })
+      .catch(() => null); // picker degrades to the "series default" option only
+    return () => { canceled = true; };
+  }, []);
+
+  // Effective provider/model this run will use: per-run override → series.llm →
+  // active provider (the client mirror of the server's resolveAutopilotLlm), so
+  // the Options copy names what will actually run.
+  const seriesProviderId = series?.llm?.provider || '';
+  const { provider: effProviderId, model: effModel } = resolveSeriesRunLlm(series, {
+    overrideProvider: providerOverride,
+    overrideModel: modelOverride,
+    activeProviderId,
+  });
+  const providerModels = useMemo(
+    () => assignmentModelOptions(null, providers, effProviderId),
+    [providers, effProviderId],
+  );
 
   // Load the persisted convergence-round defaults so the Options inputs reflect
   // the install's setting. The autopilot reads the same setting server-side, so
@@ -372,6 +415,9 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
       .then((s) => {
         if (canceled || !s?.active) return;
         activeRunIdRef.current = s.autopilot?.runId || null;
+        // The start frame is long gone for an in-flight run, so take the
+        // resolved provider/model from the status payload instead.
+        if (s.runLlm) setRunLlm(s.runLlm);
         setActive(true);
       })
       .catch(() => null);
@@ -384,6 +430,9 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
   useEffect(() => {
     if (latest?.type === 'start') {
       setMode(latest.mode || null);
+      // Resolved run provider/model (null when the run falls through to the
+      // active provider) — the live line names what this run is spending on.
+      setRunLlm({ provider: latest.provider || null, model: latest.model || null });
       if (Array.isArray(latest.plan)) setPlan(latest.plan);
       if (latest.planTotals) setPlanTotals(latest.planTotals);
     } else if (latest?.type === 'complete' && latest.dryRun && Array.isArray(latest.plan)) {
@@ -448,7 +497,15 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
     // specific gate. Unlike the round inputs we never persist it — '' leaves the
     // server to resolve the gate from the saved setting (then the default).
     const gateOverride = READINESS_GATE_LABELS[readinessGate] ? { readinessGate } : {};
-    const res = await startPipelineAutopilot(seriesId, { includeVisual, fileGaps, ...roundOverrides, ...gateOverride }, { silent: true })
+    // Per-run provider/model override, sent ONLY when the user picked one —
+    // otherwise the server resolves the series' own llm (then the active
+    // provider). Never persisted, like the readiness gate. Picking a provider
+    // clears the model, so a sent model always belongs to the effective provider.
+    const llmOverride = {
+      ...(providerOverride ? { providerOverride } : {}),
+      ...(modelOverride ? { modelOverride } : {}),
+    };
+    const res = await startPipelineAutopilot(seriesId, { includeVisual, fileGaps, ...roundOverrides, ...gateOverride, ...llmOverride }, { silent: true })
       .catch((err) => { toast.error(err.message || 'Could not start autopilot'); return null; });
     setStarting(false);
     if (!res) return;
@@ -458,7 +515,7 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
     // effect can reject a stale terminal frame from the previous run.
     activeRunIdRef.current = res.runId || null;
     setActive(true);
-  }, [seriesId, includeVisual, fileGaps, arcRounds, editorialRounds, beatContinuityRounds, checkPauseThreshold, notifyOnPause, revisionEnabled, revisionMinCycles, revisionMaxCycles, revisionPlateauDelta, foundationGate, foundationThreshold, foundationRounds, readinessGate, persistRounds]);
+  }, [seriesId, includeVisual, fileGaps, arcRounds, editorialRounds, beatContinuityRounds, checkPauseThreshold, notifyOnPause, revisionEnabled, revisionMinCycles, revisionMaxCycles, revisionPlateauDelta, foundationGate, foundationThreshold, foundationRounds, readinessGate, providerOverride, modelOverride, persistRounds]);
 
   const cancel = useCallback(async () => {
     await cancelPipelineAutopilot(seriesId).catch(() => null);
@@ -528,6 +585,38 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
       {/* Options popover */}
       {showOpts && !active ? (
         <div className="px-3 pb-3 flex flex-col gap-2 border-t border-port-border pt-3">
+          {/* Which AI actually runs. The panel used to name none of this, so the
+              only way to know what a run would spend on was to read the code. */}
+          <div className="rounded-lg border border-port-border bg-port-bg/60 p-2.5 flex flex-col gap-2">
+            <p className="text-[11px] text-gray-400 leading-relaxed">
+              This run calls{' '}
+              <span className="text-gray-200 font-medium">{providerDisplayName(providers, effProviderId, '—')}</span>
+              {effModel ? <> / <span className="text-gray-200 font-medium">{effModel}</span></> : <> (provider default model)</>}
+              . Stages pinned to their own provider/model in{' '}
+              <Link to="/prompts" className="text-port-accent hover:underline">Prompts</Link>{' '}
+              keep that pin; everything else uses the provider above. Reasoning
+              effort isn&apos;t a per-run pipeline control — it comes from the
+              provider&apos;s own CLI configuration (or a model id that bakes in a
+              tier) on the{' '}
+              <Link to="/ai" className="text-port-accent hover:underline">AI Providers</Link> page.
+            </p>
+            <div className="max-w-md">
+              <ProviderModelSelector
+                providers={providers}
+                selectedProviderId={providerOverride}
+                effectiveProviderId={effProviderId}
+                selectedModel={modelOverride}
+                availableModels={providerModels}
+                onProviderChange={(id) => { setProviderOverride(id); setModelOverride(''); }}
+                onModelChange={setModelOverride}
+                label="Override provider for this run"
+                compact
+                alwaysShowModel
+                emptyProviderOption={`Series default (${providerDisplayName(providers, seriesProviderId || activeProviderId, '—')})`}
+                emptyModelOption={series?.llm?.model && !providerOverride ? `Series default (${series.llm.model})` : 'Default model'}
+              />
+            </div>
+          </div>
           <label className="flex items-center gap-2 text-xs text-gray-300">
             <input type="checkbox" checked={includeVisual} onChange={(e) => setIncludeVisual(e.target.checked)} />
             Draft cover + all interior pages (comic targets)
@@ -701,6 +790,12 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
             <Loader2 size={12} className="animate-spin text-port-accent" />
             {mode === 'dry-run' ? <span className="uppercase tracking-wider text-[10px] text-port-accent">dry-run</span> : null}
             {liveLabel}
+          </div>
+          {/* Name the provider/model this run resolved to, so an in-flight run
+              (including one the scheduler started) says what it is spending on. */}
+          <div className="mt-1 text-[11px] text-gray-500">
+            on {providerDisplayName(providers, runLlm?.provider || activeProviderId, '—')}
+            {runLlm?.model ? ` / ${runLlm.model}` : ' (provider default model)'}
           </div>
           {frames?.length ? (
             <div className="mt-2 max-h-28 overflow-y-auto text-[11px] text-gray-500 space-y-0.5">

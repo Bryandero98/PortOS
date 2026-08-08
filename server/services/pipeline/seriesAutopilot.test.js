@@ -275,6 +275,38 @@ describe('provider/model threading helpers (#1514 provider + #1558 model — bot
   });
 });
 
+describe('resolveAutopilotLlm — run provider/model resolution', () => {
+  const series = { llm: { provider: 'codex', model: 'gpt-x' } };
+
+  it('inherits the series llm when the run pins nothing', () => {
+    expect(autopilot.resolveAutopilotLlm({}, series))
+      .toEqual({ providerOverride: 'codex', modelOverride: 'gpt-x' });
+  });
+
+  it('lets a per-run override win over the series llm', () => {
+    expect(autopilot.resolveAutopilotLlm({ providerOverride: 'claude', modelOverride: 'opus' }, series))
+      .toEqual({ providerOverride: 'claude', modelOverride: 'opus' });
+  });
+
+  it('drops the series model when the override names a DIFFERENT provider', () => {
+    // A model id is provider-specific — forwarding codex's model to claude would fail.
+    expect(autopilot.resolveAutopilotLlm({ providerOverride: 'claude' }, series))
+      .toEqual({ providerOverride: 'claude', modelOverride: null });
+  });
+
+  it('keeps the series model when the override names the SAME provider', () => {
+    expect(autopilot.resolveAutopilotLlm({ providerOverride: 'codex' }, series))
+      .toEqual({ providerOverride: 'codex', modelOverride: 'gpt-x' });
+  });
+
+  it('resolves to null/null with no series llm and no override (active provider downstream)', () => {
+    expect(autopilot.resolveAutopilotLlm({}, { llm: null }))
+      .toEqual({ providerOverride: null, modelOverride: null });
+    expect(autopilot.resolveAutopilotLlm({}, null))
+      .toEqual({ providerOverride: null, modelOverride: null });
+  });
+});
+
 describe('resolveNextStep (pure)', () => {
   const comic = { targetFormat: 'comic', arc: { logline: 'L', summary: 'S' }, seasons: [{ id: 'se1', number: 1 }] };
   const issue = (over = {}) => ({ id: 'iss1', seasonId: 'se1', number: 1, arcPosition: 1, stages: {}, ...over });
@@ -1236,6 +1268,33 @@ describe('autopilot conductor', () => {
     expect(arcSpies.analyzeManuscriptCompleteness).toHaveBeenCalled();
     const series = await seriesSvc.getSeries(seriesId);
     expect(series.autopilot?.status).toBe('done');
+  });
+
+  it('runs on the series-configured provider/model and names it on the start frame', async () => {
+    const { seriesId } = await seedComplete();
+    await seriesSvc.updateSeries(seriesId, { llm: { provider: 'codex', model: 'gpt-x' } });
+    await autopilot.startSeriesAutopilot(seriesId, {});
+    await waitFor(runFinished(seriesId));
+    const run = autopilot.__testing.runs.get(seriesId);
+    // Stamped once at start, so every delegated call threads the same soft default.
+    expect(run.options.providerOverride).toBe('codex');
+    expect(run.options.modelOverride).toBe('gpt-x');
+    // Delegated arc verify receives it as a SOFT default (a stage pin still wins).
+    expect(arcSpies.verifyArc).toHaveBeenCalledWith(
+      seriesId,
+      expect.objectContaining({ providerDefault: 'codex', modelDefault: 'gpt-x' }),
+    );
+  });
+
+  it('lets a per-run provider override beat the series-configured provider', async () => {
+    const { seriesId } = await seedComplete();
+    await seriesSvc.updateSeries(seriesId, { llm: { provider: 'codex', model: 'gpt-x' } });
+    await autopilot.startSeriesAutopilot(seriesId, { providerOverride: 'claude' });
+    await waitFor(runFinished(seriesId));
+    const run = autopilot.__testing.runs.get(seriesId);
+    expect(run.options.providerOverride).toBe('claude');
+    // codex's model must NOT ride along to claude.
+    expect(run.options.modelOverride).toBeNull();
   });
 
   it('pauses for review when arc verify never converges', async () => {

@@ -4,7 +4,7 @@ import { getSettings, patchSettingsSlice } from '../../services/apiSystem';
 import { getProviders } from '../../services/apiProviders';
 import { getCosConfig } from '../../services/apiAgents';
 import { describeCron } from '../../utils/cronHelpers';
-import { providerDisplayName, assignmentModelOptions } from '../../utils/providers';
+import { providerDisplayName, assignmentModelOptions, resolveSeriesRunLlm } from '../../utils/providers';
 import BrailleSpinner from '../BrailleSpinner';
 import CronInput from '../CronInput';
 import ProviderModelSelector from '../ProviderModelSelector';
@@ -75,14 +75,14 @@ export default function SeriesAutopilotSchedule({ series }) {
   }, [seriesId]);
 
   // Effective provider/model the scheduled run will use: schedule override →
-  // series' own llm → the active provider. Mirrors startSeriesAutopilot's
-  // provider resolution so the consent copy names what will actually run. Only
-  // inherit the series' MODEL when the effective provider IS the series provider
-  // — an override to a different provider uses that provider's default model, so
-  // showing the series' model would misname what runs.
-  const effProviderId = entry?.provider || series?.llm?.provider || activeProviderId || '';
-  const inheritsSeriesLlm = !entry?.provider || entry.provider === series?.llm?.provider;
-  const effModel = entry?.model || (inheritsSeriesLlm ? series?.llm?.model || '' : '');
+  // series' own llm → the active provider. Shares `resolveSeriesRunLlm` with the
+  // Autopilot Options picker (and mirrors startSeriesAutopilot's own resolution)
+  // so both surfaces name the same thing.
+  const { provider: effProviderId, model: effModel } = resolveSeriesRunLlm(series, {
+    overrideProvider: entry?.provider,
+    overrideModel: entry?.model,
+    activeProviderId,
+  });
   const providerLabel = (id) => providerDisplayName(providers, id, '—');
   const providerModels = useMemo(
     () => assignmentModelOptions(null, providers, effProviderId),
