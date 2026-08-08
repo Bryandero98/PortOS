@@ -27,7 +27,8 @@ import { emitLog } from './cosEvents.js';
 import { getAgent, updateAgent, completeAgent } from './cosAgentLifecycle.js';
 import { updateTask } from './cos.js';
 import { getActiveProvider } from './providers.js';
-import { markProviderUsageLimit, markProviderRateLimited } from './providerStatus.js';
+import { markProviderUsageLimit, markProviderUnavailable } from './providerStatus.js';
+import { resolveProviderBench } from '../lib/providerCooldown.js';
 import { release } from './executionLanes.js';
 import { completeExecution, errorExecution } from './toolStateMachine.js';
 import { resolveFailedTaskUpdate, resolveTypeFailureSignal } from './agentErrorAnalysis.js';
@@ -617,20 +618,36 @@ export async function finalizeAgent({
   }
 
   if (!success && !terminatedByUser && errorAnalysis) {
-    // Lazy provider lookup — only resolve the active provider when a marker
-    // fires AND the caller didn't already know the id. This keeps the
-    // successful-completion hot path free of a settings-file read.
-    const markerProviderId = errorAnalysis.category === 'usage-limit' || errorAnalysis.category === 'rate-limit'
-      ? providerId || (await getActiveProvider())?.id
-      : null;
-    if (markerProviderId && errorAnalysis.category === 'usage-limit' && errorAnalysis.requiresFallback) {
-      await markProviderUsageLimit(markerProviderId, errorAnalysis).catch(err => {
-        emitLog('warn', `Failed to mark provider unavailable: ${err.message}`, { providerId: markerProviderId });
-      });
-    }
-    if (markerProviderId && errorAnalysis.category === 'rate-limit') {
-      await markProviderRateLimited(markerProviderId).catch(err => {
-        emitLog('warn', `Failed to mark provider rate limited: ${err.message}`, { providerId: markerProviderId });
+    // Bench the provider when the PROVIDER is what failed — not the agent's
+    // work. `origin: 'provider'` is agentErrorAnalysis's provenance flag (#2642),
+    // set only for structured provider chrome, never for a loose keyword sweep of
+    // a transcript the agent itself wrote. Without a bench the provider stays
+    // "available", so the very next dequeue picks it again and dies identically:
+    // that is how one `agy` account-verification block could take down a whole
+    // queue of tasks in under a minute. `resolveProviderBench` (shared with
+    // promptRunner) picks the window and declines to bench request-specific
+    // failures; the cooldown then routes the retry to a fallback
+    // (agentProviderResolution.js) and auto-expires without anyone intervening.
+    const isProviderFault = errorAnalysis.origin === 'provider'
+      || errorAnalysis.category === 'usage-limit'
+      || errorAnalysis.category === 'rate-limit';
+    const bench = isProviderFault ? resolveProviderBench(errorAnalysis) : null;
+    // Lazy provider lookup — resolve the active provider only when a marker
+    // fires AND the caller didn't already know the id, keeping the ordinary
+    // failure path free of a settings-file read.
+    const markerProviderId = bench ? providerId || (await getActiveProvider())?.id : null;
+    if (markerProviderId) {
+      // `markUsageLimit` parses its own window out of the provider's message
+      // ("resets 5pm"), so a usage limit keeps its dedicated marker.
+      const mark = bench.marker === 'usage-limit'
+        ? markProviderUsageLimit(markerProviderId, errorAnalysis)
+        : markProviderUnavailable(markerProviderId, {
+          reason: bench.category,
+          message: bench.message || 'Provider unavailable',
+          waitTimeMs: bench.waitTimeMs
+        });
+      await mark.catch(err => {
+        emitLog('warn', `Failed to sideline provider: ${err.message}`, { providerId: markerProviderId, category: bench.category });
       });
     }
   }

@@ -110,10 +110,20 @@ const IMMEDIATE_FALLBACK_SIGNALS = [
     // do no work until the idle reaper eventually kills it. This exact two-line
     // banner is provider chrome (not a generic auth word an agent may print),
     // making it safe to fail immediately and let the task select a fallback.
+    //
+    // NOT actionable: the account is fine and nothing in PortOS config is wrong
+    // — Google is mid-verification and says so ("try again shortly"). Marking it
+    // actionable would BLOCK the task outright (see
+    // agentErrorAnalysis#resolveFailedTaskDecision) over a condition that clears
+    // itself, so it takes the ordinary retry path instead. The host still
+    // sidelines the provider for the auth-error cooldown (providerCooldown.js)
+    // so that retry resolves onto a fallback rather than re-dying on the same
+    // banner three seconds later.
     pattern: /We're finishing verifying your account eligibility\.\s*This usually takes a moment\. Please try again shortly\./i,
     category: ERROR_CATEGORIES.AUTH_ERROR,
     message: 'Antigravity account eligibility is still being verified',
-    suggestedFix: 'Wait for the Antigravity account verification to complete, or select another provider and retry.'
+    suggestedFix: 'Antigravity account verification is still in progress — sidelining the provider briefly and retrying on a fallback.',
+    actionable: false
   },
   {
     pattern: /^\s*(?:\[stderr\]\s*)?Now using extra usage\s*(?:\r?\n|$)/im,
@@ -265,8 +275,14 @@ export function detectImmediateFallbackSignal(text) {
       message: line || signal.message,
       waitTime: extractWaitTime(value),
       requiresFallback: true,
-      actionable: true,
-      suggestedFix: signal.suggestedFix
+      // Signals are actionable-by-default (a human has to do something); a
+      // signal opts out when the provider says the condition clears on its own.
+      actionable: signal.actionable !== false,
+      suggestedFix: signal.suggestedFix,
+      // These banners are provider CHROME, not text an agent could have printed
+      // — the host benches the provider on a provider-origin failure, so saying
+      // so here is what routes the retry to a fallback (agentFinalization.js).
+      origin: 'provider'
     };
   }
 
