@@ -313,7 +313,12 @@ export function requestMaterialization(path, options = {}) {
   child.on('exit', (code, signal) => {
     settle();
     if (code === 0) {
-      console.log(`📥 ${label} materialized from iCloud: ${path}`);
+      // brctl exit 0 means the download was ACCEPTED AND QUEUED, not that the
+      // bytes are local yet — brctl returns immediately and materializes async
+      // (and returns 0 even when the sync layer ultimately can't fetch the file).
+      // Log a request, not a completion, so an operator reading these during an
+      // outage doesn't conclude the file is now readable when it isn't.
+      console.log(`📥 ${label} iCloud download requested: ${path}`);
       return;
     }
     notifyFailure();
