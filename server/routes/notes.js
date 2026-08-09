@@ -91,7 +91,10 @@ router.get('/vaults/:id/scan', asyncHandler(async (req, res) => {
 
   const total = result.notes.length;
   const notes = result.notes.slice(offset, offset + limit);
-  res.json({ vault: result.vault, notes, total });
+  // Forward the skipped-because-unavailable count (the other readers pass their
+  // whole result through; this one reshapes for pagination and would otherwise
+  // drop it, leaving the client unable to tell a short vault from an offloaded one).
+  res.json({ vault: result.vault, notes, total, skippedUnavailable: result.skippedUnavailable ?? 0 });
 }));
 
 router.get('/vaults/:id/note', asyncHandler(async (req, res) => {

@@ -57,6 +57,15 @@ export function MortalLoomTab() {
     }
   };
 
+// The server reports a machine-readable `reason`; these are the ones worth
+// rewriting for a human. An evicted (iCloud-offloaded) store is deliberately
+// distinct from a missing one — telling the user the file is "not found" would
+// invite them to repoint the path or re-seed on top of real data.
+const IMPORT_FAILURE_MESSAGES = {
+  'mortalloom-file-not-found': 'MortalLoom.json was not found at the configured path.',
+  'mortalloom-file-unreadable': 'MortalLoom.json is in iCloud but has not been downloaded to this Mac yet. A download was requested — try again shortly.',
+};
+
   const handleImport = async () => {
     if (!status?.exists) {
       toast.error('MortalLoom.json not found at configured path');
@@ -66,7 +75,7 @@ export function MortalLoomTab() {
     const res = await importMortalLoom({ silent: true }).catch(() => null);
     setImporting(false);
     if (!res?.ok) {
-      toast.error('Import failed: ' + (res?.reason || 'unknown'));
+      toast.error('Import failed: ' + (IMPORT_FAILURE_MESSAGES[res?.reason] || res?.reason || 'unknown'));
       return;
     }
     const totalAdded = Object.values(res.added || {}).reduce((a, b) => a + b, 0);

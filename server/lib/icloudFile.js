@@ -26,48 +26,124 @@
  * on a dataless file. Node exposes `Stats.blocks`, so a dataless file is
  * detectable with no native code and no subprocess: `size > 0 && blocks === 0`.
  *
- * The screen is deliberately scoped to darwin AND paths inside a ubiquity
- * container. An ordinary APFS file can also report `blocks === 0` when it is
- * transparently compressed (data lives in a `com.apple.decmpfs` xattr), so
- * applying the screen repo-wide could refuse to read a perfectly good file.
- * Inside `~/Library/Mobile Documents/` the two coincide in practice — macOS
- * represents "no local data" *via* the compression mechanism, which is why an
- * evicted file reports `compressed,dataless` together — and user JSON/markdown
- * in iCloud Drive is not otherwise compressed by the OS.
+ * The screen is deliberately scoped to darwin AND paths that resolve into a
+ * cloud-file root. An ordinary APFS file also reports `blocks === 0` when it is
+ * sparse or transparently compressed (data in a `com.apple.decmpfs` xattr), and
+ * other filesystems do the same for inline extents — so an unscoped screen would
+ * refuse to read perfectly good files. Inside a cloud root the two coincide in
+ * practice: macOS represents "no local data" *via* the compression mechanism,
+ * which is why an evicted file reports `compressed,dataless` together, and user
+ * JSON/markdown in iCloud Drive is not otherwise compressed by the OS.
  *
- * If the screen ever did misfire, the cost is a degraded read (callers surface
- * "temporarily unavailable" and a background `brctl download` is kicked off,
- * after which the next read succeeds) — never a truncating write. Callers that
- * write keep their own refuse-to-overwrite guards.
+ * **Cost if the screen ever does misfire** (a genuinely sparse or compressed file
+ * that lives inside a cloud root): reads of that file report "temporarily
+ * unavailable" and `brctl download` cannot fix it, because the bytes were never
+ * evicted — so it does NOT self-heal on the next read. Data is never lost: write
+ * paths keep their own refuse-to-overwrite guards, so the failure mode is a
+ * persistent read/write outage for that one file, not corruption. Callers that
+ * must degrade gracefully (a vault walk) skip the file and report a skipped
+ * count; callers that must not silently succeed (a store write) fail loudly.
  */
 
 import { readFile, stat } from 'fs/promises';
+import { realpathSync } from 'fs';
+import { dirname } from 'path';
 import { spawn } from 'child_process';
 import { createSingleFlight } from './singleFlight.js';
 
 /** `err.code` on the rejection `readIfMaterialized` throws for an evicted file. */
 export const ICLOUD_NOT_MATERIALIZED = 'ICLOUD_NOT_MATERIALIZED';
 
-// Every macOS app ubiquity container lives under this path segment.
-const UBIQUITY_MARKER = '/Library/Mobile Documents/';
+// macOS cloud-file roots whose contents can be evicted to the cloud and whose
+// first `read(2)` therefore blocks: iCloud's per-app ubiquity containers, and the
+// File Provider mounts macOS 12+ gives third parties (Dropbox / Google Drive /
+// OneDrive "online-only"). `brctl` only heals the iCloud one — but *refusing* the
+// read is what prevents the outage, so both are screened.
+const CLOUD_MARKERS = ['/Library/Mobile Documents/', '/Library/CloudStorage/'];
 
-/** True when `path` sits inside a macOS iCloud ubiquity container. */
+// Only iCloud paths can be healed with `brctl download`.
+const ICLOUD_MARKER = CLOUD_MARKERS[0];
+
+// A literal substring test is not enough: `~/Documents` is a SYMLINK into
+// `~/Library/Mobile Documents/com~apple~CloudDocs/Documents` when macOS
+// "Desktop & Documents Folders" sync is on, so a vault stored as
+// `/Users/x/Documents/Vault` is in iCloud while its path string says nothing of
+// the sort. Resolving the real path is what closes that hole — but a `realpath`
+// per read would tax every ordinary file read in the process, so resolve the
+// containing DIRECTORY once and memoize it (a vault walk reads many files per
+// directory). Bounded so a long-lived process can't grow it without limit; a
+// symlink that is repointed after boot is not re-resolved until the entry is
+// evicted, which is an acceptable trade for the cost saved.
+const dirCloudCache = new Map();
+const DIR_CACHE_MAX = 512;
+
+function markerMatch(path) {
+  return CLOUD_MARKERS.some(marker => path.includes(marker));
+}
+
+/**
+ * True when `path` resolves into a macOS cloud-file root whose contents can be
+ * evicted. Checks the literal string first (the common, allocation-free case),
+ * then falls back to the memoized real path of the containing directory so a
+ * symlinked route into iCloud (`~/Documents/...`) is still recognized.
+ */
 export function isUbiquityPath(path) {
-  return typeof path === 'string' && path.includes(UBIQUITY_MARKER);
+  if (typeof path !== 'string' || !path) return false;
+  if (markerMatch(path)) return true;
+  const dir = dirname(path);
+  const cached = dirCloudCache.get(dir);
+  if (cached !== undefined) return cached;
+  // realpathSync throws for a missing/unreadable directory; a path we can't
+  // resolve is not one we can claim is in the cloud.
+  let resolved = false;
+  try {
+    resolved = markerMatch(realpathSync(dir));
+  } catch {
+    resolved = false;
+  }
+  if (dirCloudCache.size >= DIR_CACHE_MAX) dirCloudCache.clear();
+  dirCloudCache.set(dir, resolved);
+  return resolved;
+}
+
+/** True when `path` is an iCloud ubiquity path, the only kind `brctl` can heal. */
+function isHealablePath(path) {
+  if (typeof path !== 'string' || !path) return false;
+  if (path.includes(ICLOUD_MARKER)) return true;
+  try {
+    return realpathSync(dirname(path)).includes(ICLOUD_MARKER);
+  } catch {
+    return false;
+  }
 }
 
 /**
  * True when a `fs.Stats` looks dataless (evicted): a real byte length with zero
- * blocks allocated locally. Pure, so callers that already hold a `Stats` (e.g. a
- * status endpoint) can reuse it instead of paying a second `stat()`.
+ * blocks allocated locally.
+ *
+ * **Not sufficient on its own** — an ordinary APFS file reports `blocks === 0`
+ * when it is sparse or transparently compressed, and other filesystems do the
+ * same for inline/compressed extents. Always pair it with the platform + cloud-root
+ * scoping (`isEvictedStats`, or `isSuspectedDataless` which does the `stat` too);
+ * a bare call would refuse to read perfectly good files. Kept exported because a
+ * caller that already holds a `Stats` should not pay a second `stat()`.
  */
 export function isDatalessStats(stats) {
   return Boolean(stats) && stats.size > 0 && stats.blocks === 0;
 }
 
 /**
+ * The correctly-scoped verdict for a caller that already holds a `Stats`:
+ * dataless-looking AND on darwin AND inside a cloud-file root. Use this rather
+ * than `isDatalessStats` alone.
+ */
+export function isEvictedStats(path, stats) {
+  return process.platform === 'darwin' && isDatalessStats(stats) && isUbiquityPath(path);
+}
+
+/**
  * True when reading `path` would risk a permanently-blocked `read(2)`. Cheap:
- * one `stat()`, and only on darwin for ubiquity paths. A `stat()` failure
+ * one `stat()`, and only on darwin for cloud-root paths. A `stat()` failure
  * (ENOENT/EACCES) resolves `false` — absent and unreadable are the caller's
  * existing error paths, not this guard's business.
  */
@@ -101,6 +177,14 @@ const pendingDownloads = new Set();
 // later reads pick up where this one stopped.
 const MAX_PENDING_DOWNLOADS = 4;
 
+// Every background download gets a deadline. `brctl` is exactly what hangs when
+// iCloud is wedged — the very condition this module exists for — and without a
+// deadline four hung children would hold all MAX_PENDING_DOWNLOADS slots for the
+// life of the process, silently ending all healing and leaking the children.
+// Exposed (not const) so tests don't wait on it.
+export let DOWNLOAD_DEADLINE_MS = 120_000;
+export function _setDownloadDeadlineForTest(ms) { DOWNLOAD_DEADLINE_MS = ms; }
+
 /**
  * Fire-and-forget `brctl download <path>` so an evicted file heals in the
  * background. Detached + unref'd so a slow download can't keep the process
@@ -109,6 +193,10 @@ const MAX_PENDING_DOWNLOADS = 4;
  */
 export function requestMaterialization(path, label = 'iCloud file') {
   if (process.platform !== 'darwin' || !path) return false;
+  // `brctl` speaks iCloud only. A third-party File Provider file (Dropbox /
+  // Google Drive / OneDrive under ~/Library/CloudStorage) is still screened and
+  // refused above — we just can't heal it, so don't spawn a doomed child.
+  if (!isHealablePath(path)) return false;
   if (pendingDownloads.has(path)) return false;
   if (pendingDownloads.size >= MAX_PENDING_DOWNLOADS) return false;
   pendingDownloads.add(path);
@@ -127,10 +215,25 @@ export function requestMaterialization(path, label = 'iCloud file') {
     console.warn(`⚠️ could not spawn brctl download for ${label}: ${err.message}`);
     return false;
   }
+  // Kill the child if it outlives its deadline, so a wedged `brctl` frees its slot
+  // instead of holding it forever. `unref` so the timer itself never keeps the
+  // process alive; the 'exit' handler below clears the slot once the kill lands.
+  const deadline = setTimeout(() => {
+    console.warn(`⚠️ brctl download exceeded ${DOWNLOAD_DEADLINE_MS}ms for ${label}; killing: ${path}`);
+    // The child is detached (its own process group), so a bare kill would leave
+    // any grandchildren behind — signal the group.
+    try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
+    // A killed-but-unreaped child would strand the slot; drop it now so healing
+    // can resume even if 'exit' never fires.
+    pendingDownloads.delete(path);
+  }, DOWNLOAD_DEADLINE_MS);
+  deadline.unref?.();
+  const settle = () => { clearTimeout(deadline); pendingDownloads.delete(path); };
+
   // Capture `path` in each handler so a late exit from one child can't clear the
   // dedupe entry for a different path.
   child.on('error', (err) => {
-    pendingDownloads.delete(path);
+    settle();
     if (err.code === 'ENOENT') {
       if (markBrctlMissing()) {
         console.warn(`⚠️ brctl not found on PATH; ${label} materialization disabled`);
@@ -140,7 +243,7 @@ export function requestMaterialization(path, label = 'iCloud file') {
     console.warn(`⚠️ brctl download failed for ${label}: ${err.message}`);
   });
   child.on('exit', (code, signal) => {
-    pendingDownloads.delete(path);
+    settle();
     if (code === 0) {
       console.log(`📥 ${label} materialized from iCloud: ${path}`);
     } else if (code !== null) {
@@ -197,4 +300,5 @@ export function _resetICloudFileStateForTest() {
   brctlMissingWarned = false;
   pendingDownloads.clear();
   readFlight = createSingleFlight();
+  dirCloudCache.clear();
 }

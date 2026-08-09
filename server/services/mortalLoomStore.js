@@ -16,7 +16,7 @@ import { randomUUID } from 'crypto';
 import { spawn } from 'child_process';
 import { atomicWrite, safeJSONParse, readJSONFile, dataPath, ensureDir } from '../lib/fileUtils.js';
 import { bufferedSpawn } from '../lib/bufferedSpawn.js';
-import { ICLOUD_NOT_MATERIALIZED, isDatalessStats, readIfMaterialized } from '../lib/icloudFile.js';
+import { ICLOUD_NOT_MATERIALIZED, isEvictedStats, readIfMaterialized, requestMaterialization } from '../lib/icloudFile.js';
 import { isPlainObject } from '../lib/objects.js';
 import { getSettings, settingsEvents } from './settings.js';
 
@@ -689,9 +689,15 @@ export async function getStatus() {
   // already have rather than paying a second one. `size`/`mtime` stay accurate
   // for a dataless file, so the UI still reports a real file with a null
   // summary — the same "store unavailable" shape it already renders.
-  const evicted = Boolean(st) && isDatalessStats(st);
+  // `isEvictedStats`, not the bare `isDatalessStats`: the dataless signal alone
+  // also matches a sparse/compressed ordinary file, so an unscoped check would
+  // permanently report "unavailable" for a store that `readStore()` is reading
+  // fine. Kick the same background heal the read path does, so a user staring at
+  // the Settings page isn't waiting on some unrelated code path to trigger it.
+  const evicted = isEvictedStats(path, st);
   if (evicted) {
     console.warn(`⚠️ MortalLoom store evicted from local storage; status summary unavailable: ${path}`);
+    requestMaterialization(path, 'MortalLoom store');
   }
   const raw = st && !evicted ? await withTransientRetry(() => readIfMaterialized(path, { label: 'MortalLoom store' })).catch((err) => {
     if (err.code === 'ENOENT') { readEnoent = true; return null; }
@@ -730,7 +736,12 @@ export async function getStatus() {
 
 /** Non-destructive import: append MortalLoom records missing from PortOS local files. */
 export async function importToPortOS() {
-  const store = await readStore();
+  // Use the {present, ok} result, not readStore()'s store-or-null: an evicted
+  // store is present-but-unreadable, and reporting it as "file not found" is the
+  // one message most likely to make the user repoint the path or re-seed — burying
+  // the real data this module works to protect.
+  const { present, ok, store } = await readStoreAtPathResult(await resolvePath());
+  if (present && !ok) return { ok: false, reason: 'mortalloom-file-unreadable' };
   if (!store) return { ok: false, reason: 'mortalloom-file-not-found' };
 
   const report = { added: {}, skipped: {} };

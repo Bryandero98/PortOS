@@ -298,3 +298,107 @@ describe('background-download safety caps', () => {
     expect(b64).toBe('body-as-base64');
   });
 });
+
+describe('cloud-root detection beyond a literal path match', () => {
+  // ~/Documents is a SYMLINK into the CloudDocs ubiquity container when macOS
+  // "Desktop & Documents Folders" sync is on, so a path string can say nothing
+  // about iCloud while the file is very much in it. Real dirs + a real symlink
+  // here: `fs.realpathSync` is not mocked in this suite (only `fs/promises` is).
+  const { mkdtempSync, mkdirSync, symlinkSync, rmSync, writeFileSync } = require('fs');
+  const { tmpdir } = require('os');
+  const { join } = require('path');
+
+  let root, cloudDir, linkDir;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'portos-icloud-link-'));
+    cloudDir = join(root, 'Library', 'Mobile Documents', 'iCloud~md~obsidian', 'Documents', 'Vault');
+    mkdirSync(cloudDir, { recursive: true });
+    writeFileSync(join(cloudDir, 'note.md'), 'x');
+    linkDir = join(root, 'Documents');
+    symlinkSync(join(root, 'Library', 'Mobile Documents', 'iCloud~md~obsidian', 'Documents'), linkDir);
+  });
+
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it('recognizes a symlinked route into a ubiquity container', () => {
+    const viaLink = join(linkDir, 'Vault', 'note.md');
+    // The literal string test fails here — only realpath resolution catches it.
+    expect(viaLink.includes('/Library/Mobile Documents/')).toBe(false);
+    expect(icloud.isUbiquityPath(viaLink)).toBe(true);
+  });
+
+  it('guards a read reached through that symlink', async () => {
+    statMock.mockResolvedValue(datalessStats);
+    const viaLink = join(linkDir, 'Vault', 'note.md');
+
+    await expect(icloud.readIfMaterialized(viaLink)).rejects.toMatchObject({
+      code: icloud.ICLOUD_NOT_MATERIALIZED,
+    });
+    // Pre-fix this fell through to a plain readFile — the original hang.
+    expect(readFileMock).not.toHaveBeenCalled();
+  });
+
+  it('still rejects an ordinary directory that resolves nowhere near a cloud root', () => {
+    expect(icloud.isUbiquityPath(join(root, 'plain', 'file.md'))).toBe(false);
+  });
+
+  it('screens ~/Library/CloudStorage (Dropbox/Drive online-only) but does not spawn brctl for it', async () => {
+    statMock.mockResolvedValue(datalessStats);
+    const p = '/Users/example/Library/CloudStorage/Dropbox/Notes/a.md';
+
+    await expect(icloud.readIfMaterialized(p)).rejects.toMatchObject({
+      code: icloud.ICLOUD_NOT_MATERIALIZED,
+    });
+    // Refusing prevents the outage; `brctl` only speaks iCloud, so spawning it
+    // for a third-party File Provider path would be a guaranteed-useless child.
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('isEvictedStats', () => {
+  it('requires a cloud root, not just the dataless-looking numbers', () => {
+    // A sparse or transparently-compressed ordinary file reports blocks:0 with a
+    // real size; treating it as evicted would refuse a readable file forever.
+    expect(icloud.isDatalessStats(datalessStats)).toBe(true);
+    expect(icloud.isEvictedStats(LOCAL_PATH, datalessStats)).toBe(false);
+    expect(icloud.isEvictedStats(ICLOUD_PATH, datalessStats)).toBe(true);
+  });
+
+  it('is false off darwin', () => {
+    platformSpy.mockReturnValue('linux');
+    expect(icloud.isEvictedStats(ICLOUD_PATH, datalessStats)).toBe(false);
+  });
+
+  it('is false for a materialized file in a cloud root', () => {
+    expect(icloud.isEvictedStats(ICLOUD_PATH, materializedStats)).toBe(false);
+  });
+});
+
+describe('background download deadline', () => {
+  it('kills a hung brctl and frees its slot so healing resumes', async () => {
+    const originalDeadline = icloud.DOWNLOAD_DEADLINE_MS;
+    icloud._setDownloadDeadlineForTest(10);
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    try {
+      statMock.mockResolvedValue(datalessStats);
+      // Four children that never exit would otherwise hold every slot forever —
+      // which is exactly what a wedged iCloud does to `brctl`.
+      for (let i = 0; i < 4; i++) {
+        await icloud.readIfMaterialized(`${UBIQUITY_DIR}/hung-${i}.md`).catch(() => {});
+      }
+      expect(spawnMock).toHaveBeenCalledTimes(4);
+      await icloud.readIfMaterialized(`${UBIQUITY_DIR}/blocked.md`).catch(() => {});
+      expect(spawnMock).toHaveBeenCalledTimes(4);   // capped, as designed
+
+      await new Promise(r => setTimeout(r, 40));    // let the deadlines fire
+
+      expect(killSpy).toHaveBeenCalled();
+      await icloud.readIfMaterialized(`${UBIQUITY_DIR}/after.md`).catch(() => {});
+      expect(spawnMock).toHaveBeenCalledTimes(5);   // slots freed, healing resumed
+    } finally {
+      killSpy.mockRestore();
+      icloud._setDownloadDeadlineForTest(originalDeadline);
+    }
+  });
+});
