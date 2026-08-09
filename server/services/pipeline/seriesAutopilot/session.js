@@ -199,6 +199,17 @@ export const providerIdOpts = (record) => ({
   },
 });
 
+// Non-deletion guarantee for every arc-rewriting call this run makes. Once the
+// unlock pre-pass has cleared the per-season locks (see ./unlockPass.js), those
+// locks can no longer stop an LLM-proposed arc from DROPPING a volume — and
+// "unlock so the autopilot can edit" must never become "unlock so it can
+// delete". Lives here beside the other record→options fragments so every arc
+// path (generateArc, arc auto-resolve, the foundation gate's structure fix)
+// spreads the SAME rule instead of each inlining its own copy.
+export const seasonPreserveOpts = (record) => ({
+  preserveDroppedSeasons: record.options.unlockForRun === true,
+});
+
 // Pause result when the cos action budget is exhausted, else null. Used to gate
 // EACH billable call inside the multi-call verify/editorial convergence loops —
 // the conductor's per-step budget check only fires once before the step, so

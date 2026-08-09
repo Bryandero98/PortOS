@@ -255,6 +255,12 @@ export const pipelineEditorialChecksSettingsSchema = z.object({
   revisionMinCycles: z.number().int().min(1).max(MAX_CONVERGENCE_ROUNDS).optional(),
   revisionMaxCycles: z.number().int().min(1).max(MAX_CONVERGENCE_ROUNDS).optional(),
   revisionPlateauDelta: z.number().min(0).max(10).optional(),
+  // NOTE: the autopilot's `unlockForRun` option is deliberately NOT stored here.
+  // Every knob in this slice is a spend/quality default that is harmless to
+  // reuse unattended; unlocking rewrites protection state the user set by hand,
+  // and `seriesAutopilotScheduler` reads this slice — so a saved default would
+  // arm lock-clearing for every scheduled run of every series. It is a per-run
+  // option only (see seriesAutopilot/config.js#resolveAutopilotUnlockForRun).
 }).strict();
 
 // Cursor-context payload for the CD-bridge suggest route — identical shape to

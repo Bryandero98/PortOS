@@ -1744,6 +1744,12 @@ describe('validation.js', () => {
       expect(pipelineEditorialChecksSettingsSchema.safeParse({ checkFindingsPauseThreshold: 2.5 }).success).toBe(false);
     });
 
+    it('rejects a saved unlockForRun default — the option is per-run only', () => {
+      // Persisting it would let `seriesAutopilotScheduler` (which reads this
+      // slice) arm lock-clearing on every unattended run of every series.
+      expect(pipelineEditorialChecksSettingsSchema.safeParse({ unlockForRun: true }).success).toBe(false);
+    });
+
     it('the settings slice accepts forward/older-peer custom-check shapes (lenient)', () => {
       // A def carrying a future field (or a not-yet-known scope) must not 400 an
       // unrelated settings save — runtime buildCustomCheck decides runnability.

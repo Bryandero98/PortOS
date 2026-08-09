@@ -133,6 +133,7 @@ const SEVERITY_COLORS = {
 
 // Human labels for each conductor step kind (matches seriesAutopilot.js).
 const STEP_LABELS = {
+  unlockLocks: 'Unlocking series records',
   generateArc: 'Generating arc',
   generateEpisodes: 'Generating episodes',
   verifyArc: 'Verifying arc',
@@ -174,6 +175,23 @@ function frameLabel(f) {
       const s = f.bySeverity;
       const sev = s && (s.high || s.medium || s.low) ? ` (${s.high}H/${s.medium}M/${s.low}L)` : '';
       return `Editorial check: ${name} — ${f.count} finding(s)${sev}`;
+    }
+    // Unlock pre-pass: report what it actually cleared (and what it deliberately
+    // left frozen), so "unlocked everything" is never an unverifiable claim.
+    case 'unlock:applied': {
+      const parts = [];
+      if (f.arc) parts.push('arc');
+      if (f.arcFields) parts.push(`${f.arcFields} arc field(s)`);
+      if (f.seasons) parts.push(`${f.seasons} volume(s)`);
+      if (f.stages) parts.push(`${f.stages} stage(s)`);
+      if (f.canon) parts.push(`${f.canon} canon entr${f.canon === 1 ? 'y' : 'ies'}`);
+      if (f.worldFields) parts.push(`${f.worldFields} world field(s)`);
+      if (parts.length === 0) return 'Unlock — nothing was locked';
+      const kept = [
+        f.canonForeignKept ? `${f.canonForeignKept} other series' canon` : '',
+        f.worldFieldsKept ? `${f.worldFieldsKept} shared world field(s)` : '',
+      ].filter(Boolean);
+      return `Unlocked ${parts.join(', ')}${kept.length ? ` · kept ${kept.join(' + ')} locked` : ''}`;
     }
     case 'render:queued': return `Queued draft render: ${f.target}`;
     case 'gap:filed': return `Filed CoS task (${f.gapKind})`;
@@ -252,6 +270,12 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
   const [revisionMinCycles, setRevisionMinCycles] = useState(DEFAULT_REVISION_MIN_CYCLES);
   const [revisionMaxCycles, setRevisionMaxCycles] = useState(DEFAULT_REVISION_MAX_CYCLES);
   const [revisionPlateauDelta, setRevisionPlateauDelta] = useState(DEFAULT_REVISION_PLATEAU_DELTA);
+  // Unlock-everything pre-pass. PER-RUN ONLY and never persisted (like
+  // `readinessGate` below, unlike every other option here): it rewrites lock
+  // state the user set by hand, and a saved default would be picked up by
+  // scheduled unattended runs of every series. Always starts unticked, so
+  // clearing locks is a fresh, deliberate choice each run.
+  const [unlockForRun, setUnlockForRun] = useState(false);
   // Foundation-quality gate (#2176) — enable toggle + weighted threshold + round
   // bound. Persisted like the other options (saved default + per-run override).
   const [foundationGate, setFoundationGate] = useState(DEFAULT_FOUNDATION_GATE);
@@ -302,6 +326,13 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
       .catch(() => null); // picker degrades to the "series default" option only
     return () => { canceled = true; };
   }, []);
+
+  // Disarm the unlock consent whenever the panel switches series. This
+  // component is reused across `seriesId` changes rather than remounted, so
+  // without this a box ticked for series A would still be armed — invisibly,
+  // since the Options popover is collapsed — when the user lands on series B
+  // and hits Run. Consent is per series AND per run; never inherited.
+  useEffect(() => { setUnlockForRun(false); }, [seriesId]);
 
   // Effective provider/model this run will use: per-run override → series.llm →
   // active provider (the client mirror of the server's resolveAutopilotLlm), so
@@ -516,6 +547,10 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
     // specific gate. Unlike the round inputs we never persist it — '' leaves the
     // server to resolve the gate from the saved setting (then the default).
     const gateOverride = READINESS_GATE_LABELS[readinessGate] ? { readinessGate } : {};
+    // Per-run unlock pre-pass — sent only when ticked, and never persisted (see
+    // the state declaration): a saved default would reach unattended scheduled
+    // runs of every series, and this one rewrites user-set lock state.
+    const unlockOverride = unlockForRun ? { unlockForRun: true } : {};
     // Per-run provider/model override, sent ONLY when the user picked one —
     // otherwise the server resolves the series' own llm (then the active
     // provider). Never persisted, like the readiness gate. Picking a provider
@@ -524,17 +559,23 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
       ...(providerOverride ? { providerOverride } : {}),
       ...(modelOverride ? { modelOverride } : {}),
     };
-    const res = await startPipelineAutopilot(seriesId, { includeVisual, fileGaps, ...roundOverrides, ...gateOverride, ...llmOverride }, { silent: true })
+    const res = await startPipelineAutopilot(seriesId, { includeVisual, fileGaps, ...roundOverrides, ...gateOverride, ...unlockOverride, ...llmOverride }, { silent: true })
       .catch((err) => { toast.error(err.message || 'Could not start autopilot'); return null; });
     setStarting(false);
     if (!res) return;
     setMode(res.mode || null);
     setShowOpts(false);
+    // Spend the unlock consent — it authorizes exactly the run just started.
+    // Without this it stays armed behind a now-collapsed Options popover while
+    // the Run button remains visible, so the next click would silently clear
+    // locks again with no checkbox on screen to reveal it. Re-arming is one
+    // deliberate tick, which is the whole contract of this option.
+    setUnlockForRun(false);
     // Track this run's id BEFORE enabling the stream so the terminal-frame
     // effect can reject a stale terminal frame from the previous run.
     activeRunIdRef.current = res.runId || null;
     setActive(true);
-  }, [seriesId, includeVisual, fileGaps, arcRounds, editorialRounds, beatContinuityRounds, checkPauseThreshold, notifyOnPause, revisionEnabled, revisionMinCycles, revisionMaxCycles, revisionPlateauDelta, foundationGate, foundationThreshold, foundationRounds, readinessGate, providerOverride, modelOverride, persistRounds]);
+  }, [seriesId, includeVisual, fileGaps, arcRounds, editorialRounds, beatContinuityRounds, checkPauseThreshold, notifyOnPause, unlockForRun, revisionEnabled, revisionMinCycles, revisionMaxCycles, revisionPlateauDelta, foundationGate, foundationThreshold, foundationRounds, readinessGate, providerOverride, modelOverride, persistRounds]);
 
   const cancel = useCallback(async () => {
     await cancelPipelineAutopilot(seriesId).catch(() => null);
@@ -655,6 +696,15 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
             <input type="checkbox" checked={foundationGate} onChange={(e) => editFoundationGate(e.target.checked)} />
             Judge the foundation (world / characters / arc) before drafting
           </label>
+          <label className="flex items-center gap-2 text-xs text-gray-300">
+            <input type="checkbox" checked={unlockForRun} onChange={(e) => setUnlockForRun(e.target.checked)} />
+            Unlock everything this series owns first (full edit control)
+          </label>
+          {unlockForRun ? (
+            <p className="text-[11px] text-gray-500">
+              Clears the arc freeze, arc-field locks, volume locks and issue stage locks — so the run can actually apply the fixes its editorial passes find. Universe canon is only unlocked when this is the universe&apos;s <em>only</em> series: once another series shares the universe, its cast and setting stay locked, because a character this series introduced may well be one the other series is built on. Nothing is ever deleted: characters, objects and volumes can be rewritten in full but stay in the Universe and the Catalog. Locks are <em>not</em> restored when the run ends. Applies to this run only — it is never saved as a default and the box clears itself after you launch, so a scheduled or repeat run can&apos;t inherit it.
+            </p>
+          ) : null}
           <div className="flex flex-wrap gap-4 pt-1">
             <RoundInput
               id="autopilot-arc-rounds"

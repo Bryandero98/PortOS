@@ -27,6 +27,8 @@ import {
   startPipelineAutopilot,
   getPipelineAutopilotStatus,
   getPipelineSeriesCanonReadiness,
+  getPipelineSeries,
+  listPipelineIssues,
   getProviders,
   getSettings,
   patchSettingsSlice,
@@ -110,6 +112,109 @@ describe('AutopilotPanel', () => {
       expect.objectContaining({ maxEditorialRounds: expect.anything() }),
       expect.anything(),
     );
+  });
+
+  it('sends unlockForRun as a per-run override and never persists it', async () => {
+    renderPanel({ id: 's1', targetFormat: 'comic' });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /unlock everything this series owns/i }));
+    // The explainer only appears once armed — it carries the two guarantees.
+    expect(screen.getByText(/nothing is ever deleted/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
+    await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
+      's1', { includeVisual: true, fileGaps: false, unlockForRun: true }, { silent: true },
+    ));
+    // Saving it would let a scheduled unattended run inherit lock-clearing.
+    expect(patchSettingsSlice).not.toHaveBeenCalledWith(
+      'pipelineEditorialChecks',
+      expect.objectContaining({ unlockForRun: expect.anything() }),
+      expect.anything(),
+    );
+  });
+
+  // The consent authorizes ONE run. It must not stay armed behind the collapsed
+  // Options popover while the Run button is still on screen.
+  it('clears the unlock consent after launching, so the next run does not inherit it', async () => {
+    const { rerender } = renderPanel({ id: 's1', targetFormat: 'comic' });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /unlock everything this series owns/i }));
+    fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
+    await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
+      's1', expect.objectContaining({ unlockForRun: true }), { silent: true },
+    ));
+    // Finish the run so the Run/Options controls come back, then launch again:
+    // the consent was spent by the first launch and must not silently re-apply.
+    // The terminal-frame effect refetches the series + issues, so give those
+    // mocks a resolved value or the effect throws on `undefined.then`.
+    getPipelineSeries.mockResolvedValue(null);
+    listPipelineIssues.mockResolvedValue(null);
+    sseLatest = { type: 'complete', runId: 'r1' };
+    rerender(
+      <MemoryRouter>
+        <AutopilotPanel series={{ id: 's1', targetFormat: 'comic' }} onSeriesUpdate={vi.fn()} onIssuesUpdate={vi.fn()} />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByRole('button', { name: /run autopilot/i })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    expect(screen.getByRole('checkbox', { name: /unlock everything this series owns/i })).not.toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
+    await waitFor(() => expect(startPipelineAutopilot).toHaveBeenLastCalledWith(
+      's1', { includeVisual: true, fileGaps: false }, { silent: true },
+    ));
+  });
+
+  // The panel is reused across seriesId changes rather than remounted, so a box
+  // ticked for one series must not still be armed — invisibly — on the next.
+  it('clears the unlock consent when the panel switches series', async () => {
+    const { rerender } = renderPanel({ id: 's1', targetFormat: 'comic' });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /unlock everything this series owns/i }));
+    expect(screen.getByRole('checkbox', { name: /unlock everything this series owns/i })).toBeChecked();
+    rerender(
+      <MemoryRouter>
+        <AutopilotPanel series={{ id: 's2', targetFormat: 'comic' }} onSeriesUpdate={vi.fn()} onIssuesUpdate={vi.fn()} />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(
+      screen.getByRole('checkbox', { name: /unlock everything this series owns/i }),
+    ).not.toBeChecked());
+    fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
+    await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
+      's2', { includeVisual: true, fileGaps: false }, { silent: true },
+    ));
+  });
+
+  it('starts unticked even when settings carry a stale unlockForRun value', async () => {
+    getSettings.mockResolvedValue({ pipelineEditorialChecks: { unlockForRun: true } });
+    renderPanel({ id: 's1', targetFormat: 'comic' });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    expect(screen.getByRole('checkbox', { name: /unlock everything this series owns/i })).not.toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
+    await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
+      's1', { includeVisual: true, fileGaps: false }, { silent: true },
+    ));
+  });
+
+  it('reports what the unlock pass cleared and what it left frozen', async () => {
+    sseFrames = [{ type: 'unlock:applied', arc: 1, arcFields: 0, seasons: 2, stages: 3, canon: 4, canonForeignKept: 5, worldFields: 0, worldFieldsKept: 2 }];
+    sseLatest = sseFrames[0];
+    getPipelineAutopilotStatus.mockResolvedValue({ autopilot: { runId: 'r1', status: 'running' }, active: true });
+    renderPanel({ id: 's1', targetFormat: 'comic' });
+    await waitFor(() => expect(
+      screen.getAllByText(/Unlocked arc, 2 volume\(s\), 3 stage\(s\), 4 canon entries · kept 5 other series' canon \+ 2 shared world field\(s\) locked/).length,
+    ).toBeGreaterThan(0));
+  });
+
+  it('reads an already-unlocked series as a no-op rather than "unlocked 0 things"', async () => {
+    sseFrames = [{ type: 'unlock:applied', arc: 0, arcFields: 0, seasons: 0, stages: 0, canon: 0, canonForeignKept: 0, worldFields: 0, worldFieldsKept: 0 }];
+    sseLatest = sseFrames[0];
+    getPipelineAutopilotStatus.mockResolvedValue({ autopilot: { runId: 'r1', status: 'running' }, active: true });
+    renderPanel({ id: 's1', targetFormat: 'comic' });
+    await waitFor(() => expect(screen.getAllByText(/Unlock — nothing was locked/).length).toBeGreaterThan(0));
   });
 
   it('sends a chosen readiness gate as a per-run override without persisting it (#1580)', async () => {

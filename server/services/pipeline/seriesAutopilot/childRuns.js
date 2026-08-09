@@ -17,7 +17,7 @@ import {
   CHILD_POLL_MS, DIVERGENCE_PATIENCE, trackConvergence, convergencePauseReason,
   divergencePauseReason, foundationPauseReason, foundationDivergenceReason,
 } from './convergence.js';
-import { broadcast, budgetPause, providerOverrideOpts, providerIdOpts } from './session.js';
+import { broadcast, budgetPause, providerOverrideOpts, providerIdOpts, seasonPreserveOpts } from './session.js';
 import { requiredScriptStages, textReady } from './stepResolver.js';
 
 // ---------------------------------------------------------------------------
@@ -69,7 +69,11 @@ export async function runArcVerify(seriesId, record) {
     // step can't overspend the daily cap mid-loop.
     const beforeResolve = await budgetPause();
     if (beforeResolve) return beforeResolve;
-    const resolved = await resolveVerifyIssues(seriesId, { findings: blocking, ...providerOverrideOpts(record) });
+    const resolved = await resolveVerifyIssues(seriesId, {
+      findings: blocking,
+      ...providerOverrideOpts(record),
+      ...seasonPreserveOpts(record),
+    });
     await recordDomainUsage('cos', { actions: 1 });
     broadcast(seriesId, {
       type: 'resolve:round', scope: 'arc', round,
@@ -212,6 +216,7 @@ export async function runFoundationGate(seriesId, record) {
       finding: snap.dimensions?.[weak.dimension] || {},
       providerOverride: providerId,
       modelOverride: model,
+      ...seasonPreserveOpts(record),
     });
     await recordDomainUsage('cos', { actions: 1 });
     broadcast(seriesId, {

@@ -6,20 +6,27 @@
 import { recordDomainUsage } from '../../domainUsage.js';
 import { getSeries } from '../series.js';
 import { generateArcOverview, commitSeasonsWithRemap, generateSeasonEpisodes, commitEpisodesToIssues } from '../arcPlanner.js';
-import { providerOverrideOpts } from './session.js';
+import { providerOverrideOpts, seasonPreserveOpts } from './session.js';
 import { runArcVerify, runBeats, runBeatContinuity, runFoundationGate, runText } from './childRuns.js';
 import { runScriptVerify, runEditorial, runReverseOutlineRefresh, runEditorialChecksPass, runEditorialHealthGate } from './editorialSteps.js';
 import { runCanonVerify, runVisualDraft, runProduceTeaser } from './visualSteps.js';
 import { runRevisionCycle } from './revisionSteps.js';
+import { runUnlockPass } from './unlockPass.js';
 
 export async function dispatchStep(sId, step, record) {
   switch (step.kind) {
+    case 'unlockLocks':
+      return runUnlockPass(sId, record);
     case 'generateArc': {
       // Mark attempted up front so the resolver won't re-route here if arc
       // generation yields no seasons (avoids an infinite generateArc loop).
       record.runState.arcAttempted = true;
       const r = await generateArcOverview(sId, providerOverrideOpts(record));
-      const committed = await commitSeasonsWithRemap(await getSeries(sId), { arc: r.arc, seasons: r.seasons });
+      const committed = await commitSeasonsWithRemap(
+        await getSeries(sId),
+        { arc: r.arc, seasons: r.seasons },
+        seasonPreserveOpts(record),
+      );
       await recordDomainUsage('cos', { actions: 1 });
       const seasonCount = committed?.series?.seasons?.length ?? (await getSeries(sId)).seasons?.length ?? 0;
       if (seasonCount === 0) {

@@ -81,6 +81,7 @@ export * from './seriesAutopilot/childRuns.js';
 export * from './seriesAutopilot/editorialSteps.js';
 export * from './seriesAutopilot/visualSteps.js';
 export * from './seriesAutopilot/revisionSteps.js';
+export * from './seriesAutopilot/unlockPass.js';
 export * from './seriesAutopilot/dispatch.js';
 export * from './seriesAutopilot/dryRun.js';
 export * from './seriesAutopilot/orchestrator.js';

@@ -145,6 +145,25 @@ export function wantsTeaser(options = {}) {
   return options.produceTeaser === true && wantsVisual(options);
 }
 
+// Unlock-everything-first (see ./unlockPass.js). When on, the run's FIRST step
+// clears every lock this series owns — the arc freeze + per-field arc locks,
+// each volume's lock, every issue stage lock, and the universe-side records
+// this series owns — so the autopilot can actually apply the fixes the
+// editorial passes surface instead of pausing on findings it isn't allowed to
+// resolve.
+//
+// PER-RUN ONLY, deliberately — the one autopilot option with NO persisted
+// default (mirrors `readinessGate`, and unlike every other gate here). The rest
+// of this file's options are spend/quality knobs where a saved default is
+// harmless; this one rewrites protection state the user set by hand. A saved
+// default would be read by `seriesAutopilotScheduler`, so ticking the box once
+// in one series' panel would silently arm lock-clearing for every future
+// unattended scheduled run of EVERY series. Stamped onto run options at start
+// so the resolver, the dry-run plan and a resume all read the same flag.
+export function resolveAutopilotUnlockForRun(options = {}) {
+  return options?.unlockForRun === true;
+}
+
 // Iterate-to-quality revision loop (CWQE Phase 7, #2171). Opt-in per run; when
 // enabled the autopilot cycles the weakest issue through adversarial cuts +
 // judge-gated keep/revert instead of stopping at the editorial-health gate.

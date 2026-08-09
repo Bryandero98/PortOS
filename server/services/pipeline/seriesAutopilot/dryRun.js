@@ -13,6 +13,7 @@ import {
 import { roundsNote, convergenceLoopActions, VISUAL_DRAFT_ENABLED } from './convergence.js';
 import { orderedIssues, byNumber, issueHasBeats, textReady, wantsComic, visualReady } from './stepResolver.js';
 import { editorialSubsetIds } from './editorialSteps.js';
+import { countSeriesLocks } from './unlockPass.js';
 
 // ---------------------------------------------------------------------------
 // Dry-run planning — enumerate what execute WOULD do, no side effects.
@@ -32,6 +33,20 @@ export function buildDryRunPlan(series, issues, options, costContext = {}) {
   const plan = [];
   const ordered = orderedIssues(issues);
   const seasons = Array.isArray(series?.seasons) ? [...series.seasons].sort(byNumber) : [];
+  // Unlock pre-pass (opt-in). Costs nothing — it only clears lock bits — but it
+  // is the one step that MUTATES records the user froze by hand, so the dry-run
+  // plan must name it (and how many locks it would clear) before they commit.
+  // The count comes from the pass's own `countSeriesLocks` so the promise can't
+  // drift from what actually gets cleared; universe-side locks aren't included
+  // (they need an async read, and this builder is synchronous).
+  if (options?.unlockForRun === true) {
+    plan.push({
+      kind: 'unlockLocks',
+      count: 1,
+      note: `unlock ${countSeriesLocks(series, ordered)} series-record lock(s) + this series' universe canon — other series' canon stays locked; nothing is deleted`,
+      estActions: 0,
+    });
+  }
   // Mirror the resolver: generateArc runs when arc text is missing OR there are
   // no volumes at all (an arc-only series), so a dry-run plan must show it too.
   const noArc = !series?.arc?.logline && !series?.arc?.summary;

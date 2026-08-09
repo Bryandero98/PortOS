@@ -524,7 +524,7 @@ async function refineWorld(universeId, { providerId, model }) {
  * `finding` is the judge's `{ gap, fix }` for the targeted dimension, threaded
  * into the structure resolve as a synthesized arc finding.
  */
-export async function applyFoundationFix(seriesId, dimension, { finding = {}, providerOverride, modelOverride } = {}) {
+export async function applyFoundationFix(seriesId, dimension, { finding = {}, providerOverride, modelOverride, preserveDroppedSeasons = false } = {}) {
   assertValidSeriesId(seriesId);
   const series = await getSeries(seriesId);
   const universeId = series?.universeId || null;
@@ -564,6 +564,11 @@ export async function applyFoundationFix(seriesId, dimension, { finding = {}, pr
       findings,
       providerDefault: providerOverride,
       modelDefault: modelOverride,
+      // The autopilot's unlock-for-run mode clears both `series.locked.arc`
+      // (disarming the short-circuit above) and every per-season lock, so this
+      // is the third arc-rewriting path that could otherwise delete a volume.
+      // Carry the same non-deletion guarantee the other two do.
+      preserveDroppedSeasons,
     });
     return { dimension, applied: r?.applied !== false };
   }

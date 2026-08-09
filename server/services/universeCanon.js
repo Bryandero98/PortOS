@@ -8,7 +8,7 @@ import { getUniverse, updateUniverse, listUniverses, joinInfluenceList } from '.
 import { extractBible } from '../lib/bibleExtractor.js';
 import {
   BIBLE_KIND, BIBLE_KINDS, BIBLE_FIELD, BIBLE_KEYS, BIBLE_SOURCE, BIBLE_LIMITS, mergeExtractedBible,
-  listSheetPointers, applySheetPointerToCharacter,
+  listSheetPointers, applySheetPointerToCharacter, isSeriesScopedCanonEntry,
 } from '../lib/storyBible.js';
 import { runStagedLLM } from '../lib/stageRunner.js';
 import { runPromptRefine } from './pipeline/refineHelpers.js';
@@ -639,6 +639,63 @@ export async function setCanonKindLockAll(universeId, kind, locked) {
     return { [field]: nextList };
   });
   return { universe: updated, kind, locked, changed, total };
+}
+
+/**
+ * Set the `locked` flag on every canon entry — across ALL kinds — that a given
+ * SERIES owns, leaving every other entry untouched. The series-scoped sibling
+ * of `setCanonKindLockAll`: same mutator-form write-queue contract, but the
+ * selector is ownership (`isSeriesScopedCanonEntry`) rather than kind, and it
+ * covers all three buckets in ONE patch instead of one write per kind.
+ *
+ * `soleSeries` is the caller's assertion that this series is the universe's
+ * only one — the condition under which an entry carrying no `sourceSeriesId`
+ * (universe-authored / legacy) is safe to touch. Entries owned by another
+ * series are never touched, and are reported back as `foreignKept` so the
+ * caller can say what it deliberately left alone.
+ *
+ * `clearWorldLocks` additionally empties the universe's OWN `locked` map (the
+ * world-field locks: logline / premise / styleNotes / influence lists). It
+ * rides this call rather than a second `updateUniverse` because both land on
+ * the same record — a separate write would re-read and re-sanitize the whole
+ * universe and emit a second peer-sync `recordUpdated` for one user action.
+ * Those fields have no per-series owner, so only pass it with `soleSeries`.
+ *
+ * Non-destructive by construction: only `locked` bits are written. Nothing is
+ * removed from the universe — an entry that should leave is a catalog archive
+ * performed by a human, never a side effect of a bulk lock change.
+ *
+ * Returns `{ universe, changed, foreignKept }` (`changed` counts canon entries;
+ * the caller already knows how many world locks it asked to clear).
+ */
+export async function setCanonLocksForSeries(universeId, seriesId, locked, { soleSeries = false, clearWorldLocks = false } = {}) {
+  const scope = { seriesId, soleSeries };
+  let changed = 0;
+  let foreignKept = 0;
+  const universe = await updateUniverse(universeId, (cur) => {
+    changed = 0; // reset so a retried mutator can't double-count
+    foreignKept = 0;
+    const patch = {};
+    for (const key of BIBLE_KEYS) {
+      const list = Array.isArray(cur[key]) ? cur[key] : null;
+      if (!list) continue;
+      let keyTouched = false;
+      const nextList = list.map((entry) => {
+        if ((entry?.locked === true) === (locked === true)) return entry;
+        if (!isSeriesScopedCanonEntry(entry, scope)) {
+          if (entry?.locked === true) foreignKept += 1;
+          return entry;
+        }
+        changed += 1;
+        keyTouched = true;
+        return { ...entry, locked };
+      });
+      if (keyTouched) patch[key] = nextList;
+    }
+    if (clearWorldLocks && Object.values(cur.locked || {}).some((v) => v === true)) patch.locked = {};
+    return Object.keys(patch).length > 0 ? patch : null;
+  });
+  return { universe, changed, foreignKept };
 }
 
 /**

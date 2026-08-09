@@ -444,7 +444,14 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
 
   const seasons = sanitizeSeasonList(seasonEntries.map((e) => e.season));
 
-  const { series: updated } = await commitSeasonsWithRemap(series, { arc, seasons });
+  // `preserveDroppedSeasons` (autopilot unlock-for-run) rides through so an
+  // auto-resolve can rewrite a volume but never delete one — see the option's
+  // contract on commitSeasonsWithRemap.
+  const { series: updated } = await commitSeasonsWithRemap(
+    series,
+    { arc, seasons },
+    { preserveDroppedSeasons: options.preserveDroppedSeasons === true },
+  );
 
   // Apply any episode-level synopsis corrections the resolver returned. This is
   // the heal capability that lets episode-scoped findings converge: when a
@@ -576,6 +583,33 @@ export function mergeSeasonsWithLocks(currentSeasons, nextSeasons) {
   return merged;
 }
 
+// Re-insert every EXISTING season the rewrite dropped, without freezing the
+// ones it kept. Distinct from `mergeSeasonsWithLocks`: that one restores a
+// locked season's CONTENT verbatim (the user froze it); this one only
+// guarantees the record survives, so a same-id rewrite still applies in full.
+//
+// Used by the autopilot's `unlockForRun` mode — once that pass clears the
+// per-season locks, nothing else stops an LLM-proposed arc from silently
+// deleting a volume, and unlocking for EDITING must not become a licence to
+// DELETE (see seriesAutopilot/unlockPass.js).
+//
+// The preserved records go FIRST, and that ordering is load-bearing rather than
+// cosmetic: `sanitizeSeasonList` caps the list at SEASONS_PER_SERIES_MAX by
+// keeping the first N it sees. Appending them would mean an LLM that returned a
+// full cap's worth of brand-new volumes silently pushed every existing volume
+// past the cap — the sanitizer would drop them and `commitSeasonsWithRemap`
+// would then treat them as deleted and reassign their issues, which is exactly
+// the deletion this helper exists to refuse. Existing records therefore win the
+// cap; the rewrite's surplus new volumes are what gets trimmed. Final display
+// order is unaffected — `sanitizeSeasonList` sorts by `number` at the end.
+export function preserveDroppedSeasonRecords(currentSeasons, nextSeasons) {
+  if (!Array.isArray(nextSeasons)) return nextSeasons;
+  if (!Array.isArray(currentSeasons)) return nextSeasons;
+  const keptIds = new Set(nextSeasons.map((s) => s?.id).filter(Boolean));
+  const dropped = currentSeasons.filter((s) => s?.id && !keptIds.has(s.id));
+  return dropped.length === 0 ? nextSeasons : [...dropped, ...nextSeasons];
+}
+
 /**
  * Persist a new `arc` + `seasons[]` onto a series, migrating any child issues
  * whose `seasonId` referenced a season that the new shape dropped or renamed.
@@ -594,8 +628,14 @@ export function mergeSeasonsWithLocks(currentSeasons, nextSeasons) {
  * `currentSeries` identifies the target series. The helper refreshes the
  * latest snapshot before writing so locks toggled while an LLM run is in
  * flight are honored at commit time.
+ *
+ * `options.preserveDroppedSeasons` additionally re-inserts any existing season
+ * the new shape omitted, whether or not it was locked — the non-destructive
+ * guarantee the autopilot's `unlockForRun` mode relies on (it clears the very
+ * per-season locks that would otherwise have preserved them). Content rewrites
+ * to surviving seasons still apply; only deletion is refused.
  */
-export async function commitSeasonsWithRemap(currentSeries, { arc, seasons }) {
+export async function commitSeasonsWithRemap(currentSeries, { arc, seasons }, options = {}) {
   const seriesId = currentSeries.id;
   const latestSeries = await getSeries(seriesId);
   if (latestSeries.locked?.arc === true) {
@@ -608,8 +648,11 @@ export async function commitSeasonsWithRemap(currentSeries, { arc, seasons }) {
   // Per-season locks: restore any locked existing seasons over LLM-proposed
   // rewrites, and re-insert any locked seasons the LLM dropped. Re-sanitize
   // so the locked records merge with the new shape (sort by number, dedup).
+  const lockMerged = mergeSeasonsWithLocks(latestSeries.seasons, seasons);
   const mergedSeasons = sanitizeSeasonList(
-    mergeSeasonsWithLocks(latestSeries.seasons, seasons),
+    options.preserveDroppedSeasons === true
+      ? preserveDroppedSeasonRecords(latestSeries.seasons, lockMerged)
+      : lockMerged,
   );
   const newIds = new Set(mergedSeasons.map((s) => s.id));
   const droppedOldSeasons = (latestSeries.seasons || []).filter((s) => !newIds.has(s.id));

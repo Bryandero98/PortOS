@@ -761,6 +761,40 @@ describe('resolveAutopilotProduceTeaser (config gate, #2185)', () => {
   });
 });
 
+describe('resolveAutopilotUnlockForRun (config gate)', () => {
+  it('defaults OFF — it mutates lock state the user set by hand', () => {
+    expect(autopilot.resolveAutopilotUnlockForRun({})).toBe(false);
+    expect(autopilot.resolveAutopilotUnlockForRun({ unlockForRun: false })).toBe(false);
+  });
+  it('is on only when the run explicitly asks for it', () => {
+    expect(autopilot.resolveAutopilotUnlockForRun({ unlockForRun: true })).toBe(true);
+  });
+  // The one autopilot option with NO persisted default: `seriesAutopilotScheduler`
+  // resolves unattended runs from the settings slice, so a saved value would arm
+  // lock-clearing on every scheduled run of every series.
+  it('ignores a persisted setting entirely — per-run only', () => {
+    expect(autopilot.resolveAutopilotUnlockForRun({}, { pipelineEditorialChecks: { unlockForRun: true } })).toBe(false);
+  });
+});
+
+describe('resolveNextStep — unlock pre-pass ordering', () => {
+  // A locked arc makes generateArc/resolveVerifyIssues throw and a locked stage
+  // makes text generation skip, so the unlock MUST precede every generation step
+  // — pin that it sorts ahead of even the very first one.
+  const bare = { targetFormat: 'comic', arc: null, seasons: [] };
+
+  it('runs before generateArc when enabled', () => {
+    expect(resolveNextStep(bare, [], {}, { unlockForRun: true }).kind).toBe('unlockLocks');
+  });
+  it('is skipped entirely when not enabled', () => {
+    expect(resolveNextStep(bare, [], {}, {}).kind).toBe('generateArc');
+    expect(resolveNextStep(bare, [], {}, { unlockForRun: false }).kind).toBe('generateArc');
+  });
+  it('runs at most once per run (latched by runState.locksUnlocked)', () => {
+    expect(resolveNextStep(bare, [], { locksUnlocked: true }, { unlockForRun: true }).kind).toBe('generateArc');
+  });
+});
+
 // CWQE Phase 7 (#2171) — iterate-to-quality revision loop.
 describe('resolveAutopilotRevision (config gate, #2171)', () => {
   const {
@@ -930,6 +964,7 @@ describe('dry-run plan ↔ resolveNextStep drift guard (#1577)', () => {
   // parity is covered separately by the dedicated cases above.
 
   const freshRunState = () => ({
+    locksUnlocked: false,
     arcAttempted: false, arcVerified: false, foundationGated: false, beatContinuityChecked: false,
     editorialReviewed: false, reverseOutlineRefreshed: false,
     editorialChecksReviewed: false, editorialHealthReady: false, canonVerified: false,
@@ -944,6 +979,9 @@ describe('dry-run plan ↔ resolveNextStep drift guard (#1577)', () => {
   // rendered pages) so the resolver actually advances past them.
   const completeStep = (step, issues, runState, edRounds) => {
     switch (step.kind) {
+      case 'unlockLocks':
+        runState.locksUnlocked = true;
+        break;
       case 'generateArc':
       case 'generateEpisodes':
         // These steps CREATE downstream work (seasons / issues) that buildDryRunPlan
@@ -1071,6 +1109,7 @@ describe('dry-run plan ↔ resolveNextStep drift guard (#1577)', () => {
     { name: 'comic, editorial rounds 0 (skips editorial gate)', series: baseComic(), issues: bareIssue(), options: { maxEditorialRounds: 0 } },
     { name: 'tv (no comic script / canon / visual)', series: baseTv(), issues: bareIssue(), options: {} },
     { name: 'comic + visual, 2 seasons × 1 issue (per-step multiplicity)', series: twoSeasonComic(), issues: twoIssues(), options: {} },
+    { name: 'comic + unlock-for-run pre-pass', series: baseComic(), issues: bareIssue(), options: { unlockForRun: true } },
   ];
 
   for (const c of cases) {
