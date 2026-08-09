@@ -359,6 +359,13 @@
       "returnsJson": true,
       "variables": []
     },
+    "pipeline-character-foundation": {
+      "name": "Pipeline — Character Foundation",
+      "description": "Character-first planning pass used before the macro arc and again for post-arc reconciliation. It completes causal Ghost/Wound/Lie/Want/Need engines, distinct voices, relationships, secrets, and provisional whole-series transitions before plot generation; afterward it preserves that foundation while permitting only necessary refinements and a small additive set of story-required characters.",
+      "model": "heavy",
+      "returnsJson": true,
+      "variables": ["phase", "foundationFindingJson", "seriesJson", "outline", "charactersJson"]
+    },
     "pipeline-foundation-repair": {
       "name": "Pipeline — Foundation Repair",
       "description": "Judge-directed pre-draft repair for the weak character or craft dimension. It strengthens the referenced core cast and whole-series character arcs as an ensemble, or writes an actionable series voice with concrete exemplars, while preserving established identities and story structure.",

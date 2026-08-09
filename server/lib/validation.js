@@ -22,6 +22,7 @@ import { RENDER_TARGETS, RENDER_TARGET_BACKEND_AUTO, RECORD_RENDER_MODEL_MAX } f
 import { GROK_VIDEO_DURATIONS } from './grokVideoClip.js';
 import { PR_COMPLETION_VALUES } from './prDisposition.js';
 import { EFFORT_LEVELS } from './providerModels.js';
+import { MAX_TIMEOUT as AI_RUN_TIMEOUT_MAX_MS, MIN_TIMEOUT as AI_RUN_TIMEOUT_MIN_MS } from './aiToolkit/constants.js';
 
 // Clip lengths grok's image_to_video delivers, as a Zod union built from the
 // single shared list (see grokVideoClip.js). `z.literal` per value rather than
@@ -415,7 +416,7 @@ export const providerSchema = z.object({
   apiKey: z.string().optional(),
   models: z.array(z.string()).optional(),
   defaultModel: z.string().nullable().optional(),
-  timeout: z.number().int().min(1000).max(600000).optional(),
+  timeout: z.number().int().min(AI_RUN_TIMEOUT_MIN_MS).max(AI_RUN_TIMEOUT_MAX_MS).optional(),
   enabled: z.boolean().optional(),
   // Explicit opt-in to attach the API key to an arbitrary (non-local,
   // non-allowlisted) endpoint — mirrors the aiToolkit providerSchema. Guards
@@ -439,7 +440,7 @@ export const runSchema = z.object({
   workspaceId: z.string(),
   command: z.string().optional(),
   prompt: z.string().optional(),
-  timeout: z.number().int().min(1000).max(600000).optional()
+  timeout: z.number().int().min(AI_RUN_TIMEOUT_MIN_MS).max(AI_RUN_TIMEOUT_MAX_MS).optional()
 });
 
 // =============================================================================

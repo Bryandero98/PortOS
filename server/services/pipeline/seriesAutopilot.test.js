@@ -156,6 +156,7 @@ vi.mock('./canonReadiness.js', () => ({ checkSeriesCanonReadiness }));
 let foundationScore = 10;
 let foundationDimensionScores = null;
 let foundationFixApplied = true;
+const establishCharacterFoundation = vi.fn(async () => ({ applied: true, ran: true }));
 const judgeFoundation = vi.fn(async () => ({
   seriesId: 'ser-uuid-1', status: 'complete', weightedScore: foundationScore,
   dimensions: {
@@ -173,6 +174,7 @@ vi.mock('./foundationJudge.js', async (importOriginal) => {
     ...actual,
     judgeFoundation: (...args) => judgeFoundation(...args),
     applyFoundationFix: (...args) => applyFoundationFix(...args),
+    establishCharacterFoundation: (...args) => establishCharacterFoundation(...args),
   };
 });
 
@@ -234,6 +236,7 @@ beforeEach(() => {
   foundationScore = 10;
   foundationDimensionScores = null;
   foundationFixApplied = true;
+  establishCharacterFoundation.mockClear();
   reverseOutlineConsumed = false;
   reverseOutlineConsumedGated = null;
   reverseOutlineState = { status: 'complete', stale: false };
@@ -321,7 +324,9 @@ describe('resolveNextStep (pure)', () => {
   const issue = (over = {}) => ({ id: 'iss1', seasonId: 'se1', number: 1, arcPosition: 1, stages: {}, ...over });
 
   it('asks for arc generation when there is no arc', () => {
-    expect(resolveNextStep({ targetFormat: 'comic', seasons: [] }, []).kind).toBe('generateArc');
+    const bare = { targetFormat: 'comic', seasons: [] };
+    expect(resolveNextStep(bare, []).kind).toBe('characterFoundation');
+    expect(resolveNextStep(bare, [], { characterFoundationEstablished: true }).kind).toBe('generateArc');
   });
 
   it('treats a present arc summary (no logline) as having an arc', () => {
@@ -422,7 +427,8 @@ describe('resolveNextStep (pure)', () => {
 
   it('regenerates the arc for an arc-only series with no volumes', () => {
     const arcOnly = { targetFormat: 'comic', arc: { logline: 'L', summary: 'S' }, seasons: [] };
-    expect(resolveNextStep(arcOnly, []).kind).toBe('generateArc');
+    expect(resolveNextStep(arcOnly, []).kind).toBe('characterFoundation');
+    expect(resolveNextStep(arcOnly, [], { characterFoundationEstablished: true }).kind).toBe('generateArc');
     // once arc generation has been attempted, it does not re-loop into generateArc
     expect(resolveNextStep(arcOnly, [], { arcAttempted: true }).kind).not.toBe('generateArc');
   });
@@ -456,7 +462,7 @@ describe('resolveNextStep (pure)', () => {
     const plan = autopilot.__testing.buildDryRunPlan(
       { targetFormat: 'comic', arc: { logline: 'L', summary: 'S' }, seasons: [] }, [], {},
     );
-    expect(plan[0].kind).toBe('generateArc');
+    expect(plan.slice(0, 2).map((step) => step.kind)).toEqual(['characterFoundation', 'generateArc']);
   });
 
   it('dry-run plan omits editorialChecks + editorialHealthGate when editorial rounds are 0', () => {
@@ -832,11 +838,12 @@ describe('resolveNextStep — unlock pre-pass ordering', () => {
     expect(resolveNextStep(bare, [], {}, { unlockForRun: true }).kind).toBe('unlockLocks');
   });
   it('is skipped entirely when not enabled', () => {
-    expect(resolveNextStep(bare, [], {}, {}).kind).toBe('generateArc');
-    expect(resolveNextStep(bare, [], {}, { unlockForRun: false }).kind).toBe('generateArc');
+    expect(resolveNextStep(bare, [], {}, {}).kind).toBe('characterFoundation');
+    expect(resolveNextStep(bare, [], {}, { unlockForRun: false }).kind).toBe('characterFoundation');
   });
   it('runs at most once per run (latched by runState.locksUnlocked)', () => {
-    expect(resolveNextStep(bare, [], { locksUnlocked: true }, { unlockForRun: true }).kind).toBe('generateArc');
+    expect(resolveNextStep(bare, [], { locksUnlocked: true }, { unlockForRun: true }).kind).toBe('characterFoundation');
+    expect(resolveNextStep(bare, [], { locksUnlocked: true, characterFoundationEstablished: true }, { unlockForRun: true }).kind).toBe('generateArc');
   });
   it('unlocks before repairing duplicate volume structure', () => {
     const duplicate = {
@@ -1033,7 +1040,7 @@ describe('dry-run plan ↔ resolveNextStep drift guard (#1577)', () => {
 
   const freshRunState = () => ({
     locksUnlocked: false,
-    arcAttempted: false, arcVerified: false, foundationGated: false, beatContinuityChecked: false,
+    characterFoundationEstablished: false, arcAttempted: false, arcVerified: false, foundationGated: false, beatContinuityChecked: false,
     editorialReviewed: false, reverseOutlineRefreshed: false,
     editorialChecksReviewed: false, editorialHealthReady: false, canonVerified: false,
     episodesAttempted: new Set(), beatsAttempted: new Set(), textAttempted: new Set(),
@@ -1049,6 +1056,9 @@ describe('dry-run plan ↔ resolveNextStep drift guard (#1577)', () => {
     switch (step.kind) {
       case 'unlockLocks':
         runState.locksUnlocked = true;
+        break;
+      case 'characterFoundation':
+        runState.characterFoundationEstablished = true;
         break;
       case 'generateArc':
       case 'generateEpisodes':

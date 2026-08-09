@@ -20,7 +20,13 @@ export const RUN_TYPES = {
 };
 
 export const DEFAULT_TIMEOUT = 300000;
-export const MAX_TIMEOUT = 1800000;
+// Explicit per-call safety ceiling. High-effort creative planning and repair
+// stages can legitimately reason for well over 30 minutes; the old cap killed
+// active TUI work and then repeated the same expensive prompt on a fallback.
+// Match the long-running TUI-agent ceiling so a user can grant a quality-first
+// run enough wall time while every individual provider still keeps its own,
+// normally much smaller, configured timeout.
+export const MAX_TIMEOUT = 43_200_000;
 export const MIN_TIMEOUT = 1000;
 
 export const DEFAULT_TEMPERATURE = 0.1;

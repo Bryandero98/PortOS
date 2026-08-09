@@ -83,6 +83,9 @@
   "pipeline-character-differentiate-cast": [
     "server/services/universeCanon.js"
   ],
+  "pipeline-character-foundation": [
+    "server/services/pipeline/foundationJudge.js"
+  ],
   "pipeline-character-refine": [
     "server/services/universeCanon.js"
   ],

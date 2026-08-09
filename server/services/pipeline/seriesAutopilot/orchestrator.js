@@ -126,6 +126,9 @@ export async function startSeriesAutopilot(sId, options = {}) {
       // run. Boolean latch like arcVerified so the resolver routes there at
       // most once, and a resume re-runs it (idempotent) against fresh state.
       locksUnlocked: false,
+      // Character-first preflight. A new arc is generated only after the core
+      // cast has causal wants/needs/relationships to drive it.
+      characterFoundationEstablished: false,
       arcAttempted: false,
       arcVerified: false,
       // #2176 — foundation-quality gate satisfied this run (threshold cleared,

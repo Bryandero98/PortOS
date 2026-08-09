@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { basename, extname } from 'path';
+import { MAX_TIMEOUT, MIN_TIMEOUT } from './constants.js';
 
 // Image extensions a vision screenshot may carry. Mirrors the runner's
 // getMimeType keys — anything else (or a no-extension path like `passwd`) is
@@ -76,7 +77,7 @@ export const providerSchema = z.object({
   // this provider — distinct from numCtx (what we *ask Ollama for*). For cloud
   // providers numCtx stays null and this reflects the model's real ceiling.
   contextWindow: z.number().int().min(512).max(2097152).nullable().optional(),
-  timeout: z.number().int().min(1000).max(1800000).optional(),
+  timeout: z.number().int().min(MIN_TIMEOUT).max(MAX_TIMEOUT).optional(),
   enabled: z.boolean().optional(),
   // Marks a `claude` CLI/TUI provider whose ANTHROPIC_BASE_URL points at a
   // local Ollama daemon — the "Claude Ollama" pattern. Drives model refresh to
@@ -118,7 +119,7 @@ export const runSchema = z.object({
   command: z.string().optional(),
   prompt: z.string().optional(),
   screenshots: z.array(z.string()).optional(),
-  timeout: z.number().int().min(1000).max(1800000).optional()
+  timeout: z.number().int().min(MIN_TIMEOUT).max(MAX_TIMEOUT).optional()
 });
 
 export function validate(schema, data) {

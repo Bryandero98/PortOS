@@ -66,7 +66,7 @@ export const ANALYZE_STAGES = [
 // chars) to a heavy-tier model in one shot, so the toolkit's 5-min default
 // (DEFAULT_TIMEOUT) is too tight — a false timeout triggers an expensive
 // from-scratch fallback re-run. 20 min gives real headroom while staying
-// under the toolkit's 30-min MAX_TIMEOUT ceiling. Passed as `timeoutOverride`
+// under the toolkit's configurable MAX_TIMEOUT ceiling. Passed as `timeoutOverride`
 // on every analyze stage call.
 export const ANALYZE_STAGE_TIMEOUT_MS = 1_200_000;
 
@@ -1485,4 +1485,3 @@ export async function commitImport({
     remappedIssues,
   };
 }
-

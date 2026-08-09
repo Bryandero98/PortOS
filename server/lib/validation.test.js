@@ -617,8 +617,8 @@ describe('validation.js', () => {
       expect(result.success).toBe(false);
     });
 
-    it('should reject timeout above 600000', () => {
-      const provider = { name: 'Test', type: 'cli', timeout: 700000 };
+    it('should reject timeout above the 12-hour ceiling', () => {
+      const provider = { name: 'Test', type: 'cli', timeout: 43_200_001 };
       const result = providerSchema.safeParse(provider);
       expect(result.success).toBe(false);
     });
@@ -1603,9 +1603,9 @@ describe('validation.js', () => {
       expect(stageConfigUpdateSchema.parse({ timeout: 1000 }).timeout).toBe(1000);
     });
 
-    it('enforces the 30-minute upper bound', () => {
-      expect(stageConfigUpdateSchema.parse({ timeout: 1800000 }).timeout).toBe(1800000);
-      expect(stageConfigUpdateSchema.safeParse({ timeout: 1800001 }).success).toBe(false);
+    it('enforces the 12-hour upper bound', () => {
+      expect(stageConfigUpdateSchema.parse({ timeout: 43_200_000 }).timeout).toBe(43_200_000);
+      expect(stageConfigUpdateSchema.safeParse({ timeout: 43_200_001 }).success).toBe(false);
     });
 
     it('strips unknown keys (no prototype-pollution leak via spread merge)', () => {

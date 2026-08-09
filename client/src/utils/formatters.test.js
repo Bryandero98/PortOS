@@ -232,12 +232,12 @@ describe('parseTimeoutMs', () => {
     expect(parseTimeoutMs('1000')).toBe(1000);
   });
 
-  it('accepts the maximum boundary (1800000)', () => {
-    expect(parseTimeoutMs('1800000')).toBe(1800000);
+  it('accepts the maximum boundary (12 hours)', () => {
+    expect(parseTimeoutMs('43200000')).toBe(43200000);
   });
 
-  it('returns null for values above the 1800000ms ceiling', () => {
-    expect(parseTimeoutMs('1800001')).toBeNull();
+  it('returns null for values above the 12-hour ceiling', () => {
+    expect(parseTimeoutMs('43200001')).toBeNull();
   });
 
   it('rejects scientific notation ("1e3") — digit-only gate', () => {

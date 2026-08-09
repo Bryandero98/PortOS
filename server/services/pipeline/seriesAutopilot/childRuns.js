@@ -13,7 +13,7 @@ import {
   snapshotArcState, restoreArcState,
 } from '../arcPlanner.js';
 import {
-  judgeFoundation, applyFoundationFix, foundationGateStatus, foundationFixTarget,
+  judgeFoundation, applyFoundationFix, establishCharacterFoundation, foundationGateStatus, foundationFixTarget,
   residualFindings, DEFAULT_FOUNDATION_THRESHOLD,
 } from '../foundationJudge.js';
 import * as volumeBeatsRunner from '../volumeBeatsRunner.js';
@@ -214,6 +214,49 @@ export async function runBeatContinuity(seriesId, record) {
         ? resolved.episodesResolved.filter((e) => e?.corrected).length
         : 0,
     });
+  }
+  return {};
+}
+
+// Character-first preflight. This runs only when a macro arc still needs to be
+// generated; the later whole-foundation gate remains the post-arc reconciliation
+// pass after the full synopsis plan exists.
+export async function runCharacterFoundation(seriesId, record) {
+  // Latch before the call so a no-op/skip cannot route back into the same stage
+  // forever. A failed call pauses the run; resume starts a fresh record/latch.
+  record.runState.characterFoundationEstablished = true;
+  const before = await budgetPause();
+  if (before) return before;
+  let result;
+  try {
+    result = await establishCharacterFoundation(seriesId, providerOverrideOpts(record));
+  } catch (err) {
+    const detail = (err?.message || String(err)).slice(0, 300);
+    console.error(`❌ pre-arc character foundation failed — series=${seriesId.slice(0, 12)}: ${detail}`);
+    await recordDomainUsage('cos', { actions: 1 });
+    broadcast(seriesId, {
+      type: 'foundation:fix', phase: 'pre-arc', dimension: 'character', applied: false, reason: detail,
+    });
+    return {
+      pause: true,
+      pauseKind: 'providerFailed',
+      reason: `The pre-arc character foundation could not complete: ${detail}. Resume after fixing the provider; no plot arc was generated from an unfinished cast.`,
+      residual: [],
+    };
+  }
+  if (result?.ran) await recordDomainUsage('cos', { actions: 1 });
+  broadcast(seriesId, {
+    type: 'foundation:fix', phase: 'pre-arc', dimension: 'character',
+    applied: result?.applied === true, reason: result?.reason || null,
+    charactersAdded: result?.charactersAdded || 0,
+  });
+  if (result?.ran && result?.applied !== true) {
+    return {
+      pause: true,
+      pauseKind: 'inapplicable',
+      reason: `The pre-arc character pass returned no usable foundation: ${result?.reason || 'no character changes were applied'}. The run stopped before spending on a plot arc.`,
+      residual: [],
+    };
   }
   return {};
 }

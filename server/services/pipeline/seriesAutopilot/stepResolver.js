@@ -154,18 +154,31 @@ export function resolveNextStep(series, issues, runState = {}, options = {}) {
     return { kind: 'unlockLocks', reason: 'unlock series-owned records before the run' };
   }
 
-  // STEP 1 — arc. Also (re)generate when there are no seasons at all: an
+  // STEP 1 — character foundation, then arc. When the macro arc does not exist
+  // yet, establish the causal core cast first so the expensive arc call grows
+  // external events from character wants/needs/relationships instead of asking
+  // a late repair pass to retrofit people around a settled plot. The later
+  // whole-foundation gate still reconciles story-specific discoveries.
+  const noArc = !series?.arc?.logline && !series?.arc?.summary;
+  const needsArc = !runState.arcAttempted && (noArc || seasons.length === 0);
+  if (needsArc
+    && !runState.characterFoundationEstablished
+    && options.foundationGate !== false
+    && options.maxFoundationRounds !== 0) {
+    return { kind: 'characterFoundation', reason: 'establish the core cast before generating the plot arc' };
+  }
+
+  // STEP 1.5 — arc. Also (re)generate when there are no seasons at all: an
   // arc-only series (arc text present, seasons: []) has nothing for the
   // episode/issue steps to expand, and would otherwise sail through verify/
   // review of an empty issue list and be marked done with no volumes. The
   // attempted-guard stops a re-loop if arc generation yields no seasons (the
   // dispatch pauses in that case).
-  const noArc = !series?.arc?.logline && !series?.arc?.summary;
-  if (!runState.arcAttempted && (noArc || seasons.length === 0)) {
+  if (needsArc) {
     return { kind: 'generateArc', reason: seasons.length === 0 && !noArc ? 'series has no volumes' : 'series has no arc' };
   }
 
-  // STEP 1.5 — deterministic structural preflight. A prior arc rewrite could
+  // STEP 1.75 — deterministic structural preflight. A prior arc rewrite could
   // leave two records with the same volume number; some of those duplicates are
   // commonly empty. Seeding their episodes first would manufacture throwaway
   // issues before arc verification eventually reports the duplicate. Normalize

@@ -574,8 +574,8 @@ describe('stageRunner — runStagedLLM dispatch', () => {
     expect(runner.executeCliRun.mock.calls[0][0].timeout).toBe(5000);
   });
 
-  it('rejects a too-large timeoutOverride (above 30-min cap) and falls back', async () => {
-    // Matches the route validator's max: anything > 1_800_000 is invalid,
+  it('rejects a too-large timeoutOverride (above 12-hour cap) and falls back', async () => {
+    // Matches the route validator's max: anything > 43_200_000 is invalid,
     // not silently clamped. Falls through to provider.timeout.
     prompts.getStage.mockReturnValue(null);
     providers.getActiveProvider.mockResolvedValue(cliProvider({ timeout: 5000 }));

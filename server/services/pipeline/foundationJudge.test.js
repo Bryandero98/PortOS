@@ -63,6 +63,7 @@ const {
   isFoundationStale,
   residualFindings,
   applyFoundationFix,
+  establishCharacterFoundation,
   thinnestCharacter,
   rankFoundationCharacters,
   foundationInputsHash,
@@ -383,9 +384,72 @@ describe('applyFoundationFix — dimension → owning-service routing table', ()
       },
     });
     const r = await applyFoundationFix('ser-1', 'character', { finding: { gap: 'blank lead', fix: 'build the causal chain' } });
-    expect(stageRunner.runStagedLLM).toHaveBeenCalledWith('pipeline-foundation-repair', expect.objectContaining({ dimension: 'character' }), expect.any(Object));
+    expect(stageRunner.runStagedLLM).toHaveBeenCalledWith('pipeline-character-foundation', expect.objectContaining({
+      dimension: 'character',
+      phase: 'post-arc reconciliation',
+    }), expect.any(Object));
     expect(seriesSvc.updateSeries).toHaveBeenCalledWith('ser-1', expect.objectContaining({ characterArcs: expect.any(Array) }));
     expect(r).toMatchObject({ dimension: 'character', applied: true, characterArcsUpdated: true });
+  });
+
+  it('adds a genuinely missing story character and links its authored arc', async () => {
+    const uni = { id: 'uni-1', characters: [] };
+    seriesSvc.getSeries.mockResolvedValue({
+      id: 'ser-1', name: 'S', logline: 'L', premise: 'P', universeId: 'uni-1',
+      characterArcs: [{
+        characterName: 'The Foil', want: 'Control the expedition', need: 'Share authority',
+        startState: 'guarded', endState: 'tentatively collaborative', transitions: [], status: 'draft',
+      }],
+    });
+    universeBuilder.getUniverse.mockResolvedValue(uni);
+    universeBuilder.updateUniverse.mockImplementation(async (id, mutator) => ({ id, ...(mutator(uni) || {}) }));
+    stageRunner.runStagedLLM.mockResolvedValue({
+      content: {
+        newCharacters: [{
+          name: 'The Foil', role: 'antagonistic confidant',
+          ghost: 'Abandoned during an evacuation', wound: 'Equates dependence with danger',
+          lie: 'Only control prevents loss', want: 'Control the expedition', need: 'Share authority',
+          coreTheme: 'control versus trust', motivations: 'Protect the crew and prove indispensability',
+          speechPattern: 'measured questions that conceal commands', arcType: 'positive',
+          secrets: ['Withheld the failed route data'], relationships: 'Needs the lead and resents needing them',
+        }],
+        characterArcs: [{
+          characterName: 'The Foil', want: 'Control the expedition', need: 'Share authority',
+          startState: 'controlling', endState: 'collaborative',
+          transitions: [{ kind: 'sacrifice', atIssue: 8, label: 'cedes the decisive vote' }],
+        }],
+      },
+    });
+    const r = await applyFoundationFix('ser-1', 'character', { finding: { gap: 'missing foil', fix: 'add the required foil' } });
+    expect(r).toMatchObject({ dimension: 'character', applied: true, charactersAdded: 1, characterArcsUpdated: true });
+    const seriesPatch = seriesSvc.updateSeries.mock.calls.at(-1)[1];
+    expect(seriesPatch.characterArcs).toHaveLength(1);
+    expect(seriesPatch.characterArcs[0]).toMatchObject({ characterName: 'The Foil' });
+    expect(seriesPatch.characterArcs[0].characterId).toMatch(/^chr-/);
+  });
+
+  it('establishes the character foundation before an arc exists', async () => {
+    const uni = { id: 'uni-1', characters: [{ id: 'chr-thin', name: 'Lead', role: 'protagonist' }] };
+    universeBuilder.getUniverse.mockResolvedValue(uni);
+    universeBuilder.updateUniverse.mockImplementation(async (id, mutator) => ({ id, ...(mutator(uni) || {}) }));
+    stageRunner.runStagedLLM.mockResolvedValue({ content: {
+      characters: [{
+        id: 'chr-thin', name: 'Lead', ghost: 'A rescue failed', wound: 'Fears relying on others',
+        lie: 'Trust creates casualties', want: 'Act alone', need: 'Choose interdependence',
+        coreTheme: 'trust', motivations: 'Protect others while hiding fear',
+        speechPattern: 'clipped observations', arcType: 'positive', secrets: ['Caused the failure'],
+      }],
+      characterArcs: [{
+        characterId: 'chr-thin', characterName: 'Lead', want: 'Act alone', need: 'Choose interdependence',
+        startState: 'isolated', endState: 'connected',
+        transitions: [{ kind: 'decision', atIssue: 2, label: 'asks for help' }],
+      }],
+    } });
+    const r = await establishCharacterFoundation('ser-1', { providerDefault: 'codex', modelDefault: 'gpt-x', effortDefault: 'high' });
+    expect(r).toMatchObject({ ran: true, applied: true });
+    expect(stageRunner.runStagedLLM).toHaveBeenCalledWith('pipeline-character-foundation', expect.objectContaining({
+      phase: 'pre-arc character foundation',
+    }), expect.objectContaining({ providerDefault: 'codex', modelDefault: 'gpt-x', effortDefault: 'high' }));
   });
 
   it('routes worldbuilding → expandWorldTemplate + a lock-aware updateUniverse write', async () => {

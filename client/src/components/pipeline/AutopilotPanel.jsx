@@ -237,6 +237,7 @@ const SEVERITY_COLORS = {
 // Human labels for each conductor step kind (matches seriesAutopilot.js).
 const STEP_LABELS = {
   unlockLocks: 'Unlocking series records',
+  characterFoundation: 'Establishing character foundation',
   generateArc: 'Generating arc',
   repairArcStructure: 'Repairing volume structure',
   generateEpisodes: 'Generating episodes',
@@ -273,7 +274,7 @@ function frameLabel(f) {
       + `${f.reverted ? 'reverted that round' : 'could not revert that round'}`;
     // #2176 — foundation-gate telemetry.
     case 'foundation:round': return `Foundation round ${f.round} — weighted ${f.weightedScore}/${f.threshold}${f.weakest ? ` · weakest: ${f.weakest}` : ''}`;
-    case 'foundation:fix': return `Foundation fix — ${f.dimension}${f.applied ? ' applied' : ` skipped${f.reason ? ` (${f.reason})` : ''}`}`;
+    case 'foundation:fix': return `${f.phase === 'pre-arc' ? 'Pre-arc foundation' : 'Foundation fix'} — ${f.dimension}${f.applied ? ' applied' : ` skipped${f.reason ? ` (${f.reason})` : ''}`}`;
     // #1578 — per-check telemetry forwarded from the editorial-checks runner.
     case 'check:start': return `Editorial check: ${f.label || f.checkId}…`;
     case 'check:complete': {

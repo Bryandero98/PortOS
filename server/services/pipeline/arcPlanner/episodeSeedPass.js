@@ -11,7 +11,7 @@ import { composeStyleNotes } from '../../../lib/styleGuide.js';
 import { extractCanonFromProse } from '../../universeCanon.js';
 import { resolveSeriesLlmOverride } from '../../../lib/seriesLlmOverride.js';
 import { getSeriesCanon } from '../seriesCanon.js';
-import { ARC_ROLES, ERR_VALIDATION, SEASON_LENGTH_PRESETS, SHAPE_GUIDANCE_NONE, appendTickingClock, lengthProfileForArcRole, makeErr, renderPriorSeason, resolveWorldContext } from './context.js';
+import { ARC_ROLES, ERR_VALIDATION, SEASON_LENGTH_PRESETS, SHAPE_GUIDANCE_NONE, appendCharacterFirstArcGuidance, appendTickingClock, lengthProfileForArcRole, makeErr, renderPriorSeason, resolveWorldContext } from './context.js';
 
 /**
  * Build the context for one season's episode breakdown. `priorSeasonsContext`
@@ -29,7 +29,11 @@ export async function buildSeasonEpisodesContext(series, season, priorSeasons, p
     getSeriesCanon(series),
   ]);
   const totalSeasons = (series.seasons || []).length || 1;
-  const arcGuidance = appendTickingClock(renderArcShapeGuidance(arc.shape) || SHAPE_GUIDANCE_NONE, arc);
+  const arcGuidance = appendCharacterFirstArcGuidance(
+    appendTickingClock(renderArcShapeGuidance(arc.shape) || SHAPE_GUIDANCE_NONE, arc),
+    world.worldCharacterFoundationText,
+    series.characterArcs,
+  );
   const shapePosition = renderArcShapePositionSummary(arc.shape, season.number, totalSeasons)
     || '(no story shape selected — pace episode beats by arcRole only)';
   return {

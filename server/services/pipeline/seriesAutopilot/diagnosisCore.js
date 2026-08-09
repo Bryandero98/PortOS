@@ -135,10 +135,11 @@ export function terminalWarrantsDiagnosis(record, outcome) {
 // resolveNextStep's STEP comments — a step added there should gain a line here
 // so the model isn't told to add something that already exists.
 export const STEP_SEQUENCE = [
+  'characterFoundation — establish core wants/needs/relationships before plot generation',
   'generateArc — draft the whole-series arc + volumes',
   'generateEpisodes — break each volume into issues',
-  'verifyArc — cross-volume synopsis continuity verify → resolve loop',
   'foundationGate — weighted judge of world/characters/arc before drafting',
+  'verifyArc — cross-volume synopsis continuity verify → resolve loop',
   'beatSheet — per-volume beat sheets',
   'beatContinuity — whole-manuscript beat-level continuity loop',
   'textStages — per-issue prose + scripts',

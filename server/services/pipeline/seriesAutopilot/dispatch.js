@@ -10,7 +10,7 @@ import {
   hasDuplicateSeasonNumbers,
 } from '../arcPlanner.js';
 import { providerOverrideOpts, seasonPreserveOpts } from './session.js';
-import { runArcVerify, runBeats, runBeatContinuity, runFoundationGate, runText } from './childRuns.js';
+import { runArcVerify, runBeats, runBeatContinuity, runCharacterFoundation, runFoundationGate, runText } from './childRuns.js';
 import { runScriptVerify, runEditorial, runReverseOutlineRefresh, runEditorialChecksPass, runEditorialHealthGate } from './editorialSteps.js';
 import { runCanonVerify, runVisualDraft, runProduceTeaser } from './visualSteps.js';
 import { runRevisionCycle } from './revisionSteps.js';
@@ -20,6 +20,8 @@ export async function dispatchStep(sId, step, record) {
   switch (step.kind) {
     case 'unlockLocks':
       return runUnlockPass(sId, record);
+    case 'characterFoundation':
+      return runCharacterFoundation(sId, record);
     case 'generateArc': {
       // Mark attempted up front so the resolver won't re-route here if arc
       // generation yields no seasons (avoids an infinite generateArc loop).

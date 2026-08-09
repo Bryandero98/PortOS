@@ -51,7 +51,15 @@ export function buildDryRunPlan(series, issues, options, costContext = {}) {
   // Mirror the resolver: generateArc runs when arc text is missing OR there are
   // no volumes at all (an arc-only series), so a dry-run plan must show it too.
   const noArc = !series?.arc?.logline && !series?.arc?.summary;
-  if (noArc || seasons.length === 0) plan.push({ kind: 'generateArc', count: 1, estActions: 1 });
+  if (noArc || seasons.length === 0) {
+    if (options?.foundationGate !== false && options?.maxFoundationRounds !== 0) {
+      plan.push({
+        kind: 'characterFoundation', count: 1, estActions: 1,
+        note: 'complete the causal core cast before spending on the macro plot arc',
+      });
+    }
+    plan.push({ kind: 'generateArc', count: 1, estActions: 1 });
+  }
   // A present arc with duplicate volume numbers takes the deterministic repair
   // path before any empty-volume episode generation. Preview that collapse so
   // the plan does not advertise LLM calls for malformed records that execute
