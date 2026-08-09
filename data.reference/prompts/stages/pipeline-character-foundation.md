@@ -27,20 +27,24 @@ You are the senior character architect for a long-form series. Build the human e
 {{outline}}
 ~~~~~~~~~~~~~~~~
 
-## Candidate core cast
+## Series cast workset
 
 ```json
 {{charactersJson}}
 ```
 
+- `targetCharacters` is the exhaustive batch you must author in this response.
+- `fullSeriesRoster` is the complete story-referenced ensemble. Use it to keep values, voices, secrets, and relationship pressures distinct, but do not return a non-target existing character.
+
 ## Character doctrine
 
 - Preserve the `id`, name, physical identity, and established history of every supplied character. Existing canon is a constraint, not raw material to replace.
 - Make Ghost → Wound → Lie → Want → Need causal and specific. The Want must create external action; the Need must demand a costly contradiction of the Lie.
-- Give each core character distinct values, contradictions, motivation, speech rhythm, secrets, and relationships that exert pressure in both directions.
+- Give each target character distinct values, contradictions, motivation, speech rhythm, secrets, and relationships that exert pressure in both directions.
+- Return every supplied target whose framework is incomplete or whose existing engine needs the requested editorial repair. Never silently omit a target merely because the batch is large; later batches handle the rest of the roster.
 - A provisional character arc describes choices and state changes, not moods. Place transitions at concrete issue numbers within the series target when one is known.
 - `newCharacters` is additive and capped at three. Use it only for a missing protagonist/foil/intimate/mentor role before the arc, or a named story function the current arc truly requires afterward. Never return a replacement or near-duplicate of an existing character.
-- Return only existing characters whose framework materially improves. Never delete a character or character arc.
+- Return only target existing characters whose framework materially improves. Never delete a character or character arc.
 - Character arc types: `positive|negative|flat`. Transition kinds: `decision|realization|point-of-no-return|relapse|sacrifice`.
 
 ## Output contract

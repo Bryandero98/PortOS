@@ -66,6 +66,7 @@ const {
   establishCharacterFoundation,
   thinnestCharacter,
   rankFoundationCharacters,
+  seriesFoundationCharacters,
   foundationInputsHash,
   FOUNDATION_DIMENSIONS,
   FOUNDATION_WEIGHTS,
@@ -194,6 +195,25 @@ describe('foundationInputsHash + staleness — fast-pass pinning', () => {
     const uni2 = { characters: [{ id: 'c1', name: 'Ana', wound: 'abandoned as a child' }] };
     expect(foundationInputsHash({}, uni1)).not.toBe(foundationInputsHash({}, uni2));
   });
+  it('ignores unrelated universe-only characters once the series cast is identifiable', () => {
+    const series = { premise: 'Lead crosses the flooded city.' };
+    const base = {
+      characters: [
+        { id: 'lead', name: 'Lead', wound: 'abandoned' },
+        { id: 'extra', name: 'Unrelated Extra', wound: '' },
+      ],
+    };
+    const unrelatedEdit = {
+      characters: [
+        base.characters[0],
+        { ...base.characters[1], wound: 'changed outside this series' },
+      ],
+    };
+    expect(foundationInputsHash(series, base)).toBe(foundationInputsHash(series, unrelatedEdit));
+    expect(foundationInputsHash(series, base)).not.toBe(foundationInputsHash(series, {
+      characters: [{ ...base.characters[0], wound: 'changed in this series' }, base.characters[1]],
+    }));
+  });
   it('changes when episode synopses, character arcs, or series voice changes', () => {
     const series = {
       seasons: [{ id: 'sea-1', number: 1, synopsis: 'Volume plan' }],
@@ -242,6 +262,28 @@ describe('rankFoundationCharacters — core-cast repair targets', () => {
     const series = { characterArcs: [{ characterId: 'chr-lead', characterName: 'Lead', want: 'win' }] };
     const issues = [{ stages: { idea: { input: 'Lead risks everything.' } } }];
     expect(rankFoundationCharacters(characters, series, issues)[0].character.id).toBe('chr-lead');
+  });
+
+  it('keeps every story-referenced character instead of truncating after six', () => {
+    const characters = Array.from({ length: 9 }, (_, index) => ({
+      id: `chr-${index + 1}`,
+      name: `Cast ${index + 1}`,
+    }));
+    const series = {
+      characterArcs: characters.map((character) => ({
+        characterId: character.id,
+        characterName: character.name,
+      })),
+    };
+    expect(seriesFoundationCharacters(characters, series)).toHaveLength(9);
+  });
+
+  it('uses a six-character fallback only before story references exist', () => {
+    const characters = Array.from({ length: 9 }, (_, index) => ({
+      id: `chr-${index + 1}`,
+      name: `Cast ${index + 1}`,
+    }));
+    expect(seriesFoundationCharacters(characters, {})).toHaveLength(6);
   });
 });
 
@@ -334,6 +376,29 @@ describe('foundation judge context — complete planning altitude', () => {
     expect(ctx.worldEntitiesSummary).toContain('rituals: The Naming Tax');
     expect(ctx.characterRoster).toContain('wound: Abandoned during the Naming Tax');
   });
+
+  it('judges the complete story-referenced cast and excludes unrelated universe assets', () => {
+    const storyCast = Array.from({ length: 8 }, (_, index) => ({
+      id: `chr-${index + 1}`,
+      name: `Story Cast ${index + 1}`,
+      wound: `Wound ${index + 1}`,
+    }));
+    const unrelated = { id: 'chr-unrelated', name: 'Universe Only', wound: '' };
+    const ctx = __testing.buildFoundationContext({
+      series: {
+        name: 'Example Series',
+        characterArcs: storyCast.map((character) => ({ characterId: character.id })),
+        seasons: [],
+      },
+      universe: {},
+      canon: { characters: [...storyCast, unrelated] },
+      issues: [],
+      contentMax: 30_000,
+    });
+    expect(ctx.characterCount).toBe(8);
+    expect(ctx.characterRoster).toContain('Story Cast 8');
+    expect(ctx.characterRoster).not.toContain('Universe Only');
+  });
 });
 
 describe('judgeFoundation — cache / fast-pass', () => {
@@ -390,6 +455,51 @@ describe('applyFoundationFix — dimension → owning-service routing table', ()
     }), expect.any(Object));
     expect(seriesSvc.updateSeries).toHaveBeenCalledWith('ser-1', expect.objectContaining({ characterArcs: expect.any(Array) }));
     expect(r).toMatchObject({ dimension: 'character', applied: true, characterArcsUpdated: true });
+  });
+
+  it('repairs a large referenced cast through exhaustive sequential batches', async () => {
+    const characters = Array.from({ length: 8 }, (_, index) => ({
+      id: `chr-${index + 1}`,
+      name: `Cast ${index + 1}`,
+    }));
+    const series = {
+      id: 'ser-1', name: 'S', premise: 'P', universeId: 'uni-1',
+      characterArcs: characters.map((character) => ({
+        characterId: character.id,
+        characterName: character.name,
+      })),
+    };
+    const uni = { id: 'uni-1', characters };
+    seriesSvc.getSeries.mockResolvedValue(series);
+    universeBuilder.getUniverse.mockResolvedValue(uni);
+    universeBuilder.updateUniverse.mockImplementation(async (id, mutator) => ({ id, ...(mutator(uni) || {}) }));
+    stageRunner.runStagedLLM.mockImplementation(async (_stage, vars) => {
+      const payload = JSON.parse(vars.charactersJson);
+      return {
+        content: {
+          characters: payload.targetCharacters.map((character) => ({
+            ...character,
+            ghost: 'A failed rescue', wound: 'Fears dependence', lie: 'Trust kills',
+            want: 'Work alone', need: 'Choose interdependence', coreTheme: 'trust',
+            motivations: 'Protect the crew', speechPattern: 'clipped clauses',
+            arcType: 'positive', secrets: ['Caused the breach'],
+          })),
+        },
+      };
+    });
+
+    const r = await applyFoundationFix('ser-1', 'character', {
+      finding: { gap: 'incomplete ensemble', fix: 'complete every referenced character' },
+    });
+
+    const calls = stageRunner.runStagedLLM.mock.calls
+      .filter(([stage]) => stage === 'pipeline-character-foundation');
+    expect(calls).toHaveLength(2);
+    expect(calls.map(([, vars]) => JSON.parse(vars.charactersJson).targetCharacters.length)).toEqual([6, 2]);
+    expect(calls.every(([, vars]) => JSON.parse(vars.charactersJson).fullSeriesRoster.length === 8)).toBe(true);
+    const secondRoster = JSON.parse(calls[1][1].charactersJson).fullSeriesRoster;
+    expect(secondRoster.find((character) => character.id === 'chr-1').wound).toBe('Fears dependence');
+    expect(r).toMatchObject({ applied: true, entryIds: characters.map((character) => character.id) });
   });
 
   it('adds a genuinely missing story character and links its authored arc', async () => {

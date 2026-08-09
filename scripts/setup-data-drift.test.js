@@ -50,6 +50,7 @@ const EXPECTED_STAGE_OLD = {
   'cd-treatment.md': ['2ffa482e7bfb6fe8b7224505fedbf712', '16d0ef6a7fd2533719a846019122ebee', '95b7685690ecfee4f682b0293b790277'],
   'cd-plan.md': ['3ce871196a8fd04781b71b6780e89c86', '0768d6809645c2c1fe73cacae9740fe9'],
   'pipeline-series-generate.md': ['bc72731124a2bd6304362f4402c6305d'],
+  'pipeline-character-foundation.md': ['f1c0b75a8161c0bc7f26752d148a5c1c'],
 };
 const EXPECTED_STAGE_NEW = {
   'pipeline-idea-expansion.md': 'd6fa86a435f978336661dcabca67258f',
@@ -78,6 +79,7 @@ const EXPECTED_STAGE_NEW = {
   'cd-treatment.md': 'd940eadfb406ce584f0e244032f33382',
   'cd-plan.md': 'ef0d96f6ebde43af6c4579969d31cfb7',
   'pipeline-series-generate.md': '21352c21ed6d4edb7a4b7c32704eff55',
+  'pipeline-character-foundation.md': 'cda34127b40754ddbcc8544e3d82572b',
 };
 const EXPECTED_PARTIAL_OLD = {
   'bible-deference.md': ['218f0e85643609ed85a12b1ccc7b5a8d'],

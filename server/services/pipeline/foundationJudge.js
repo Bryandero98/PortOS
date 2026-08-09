@@ -117,6 +117,7 @@ const snapshotPath = (seriesId) => join(foundationDir(), `${seriesId}.json`);
 // render slot) doesn't needlessly invalidate the score.
 export function foundationInputs(series, universe, issues = []) {
   const characters = Array.isArray(universe?.characters) ? universe.characters : [];
+  const seriesCharacters = seriesFoundationCharacters(characters, series, issues);
   const episodeInputs = [...(Array.isArray(issues) ? issues : [])]
     .sort((a, b) => String(a?.seasonId || '').localeCompare(String(b?.seasonId || ''))
       || (a?.number ?? 9999) - (b?.number ?? 9999)
@@ -143,7 +144,11 @@ export function foundationInputs(series, universe, issues = []) {
         objects: Array.isArray(universe.objects) ? universe.objects : [],
       }
       : null,
-    characters: characters.map((c) => ({
+    // A linked universe can contain characters belonging to other stories. Only
+    // the cast referenced by THIS series is judged and hashed; otherwise an
+    // unrelated blank universe asset can keep an otherwise-ready series trapped
+    // in the character repair loop forever.
+    characters: seriesCharacters.map((c) => ({
       id: c.id,
       name: c.name,
       role: c.role || '',
@@ -364,7 +369,7 @@ function countOccurrences(text, value) {
   return count;
 }
 
-export function rankFoundationCharacters(characters, series, issues = []) {
+export function rankFoundationCharacters(characters, series, issues = [], { includeLocked = false } = {}) {
   const list = Array.isArray(characters) ? characters : [];
   const storyText = JSON.stringify({
     logline: series?.logline || '',
@@ -384,7 +389,7 @@ export function rankFoundationCharacters(characters, series, issues = []) {
     ])
     .filter(Boolean));
   return list
-    .filter((character) => character && character.locked !== true)
+    .filter((character) => character && (includeLocked || character.locked !== true))
     .map((character, index) => {
       const blanks = FRAMEWORK_STRING_FIELDS.filter((field) => isBlankString(character[field])).length
         + (isBlankArray(character.secrets) ? 1 : 0);
@@ -401,12 +406,27 @@ export function rankFoundationCharacters(characters, series, issues = []) {
       || a.index - b.index);
 }
 
-function coreFoundationCharacters(characters, series, issues = []) {
-  const ranked = rankFoundationCharacters(characters, series, issues);
+/**
+ * Resolve the cast that belongs to this series from actual story references.
+ * Once a plot exists, every named/arc-linked character is retained: there is no
+ * arbitrary top-N cap. Before a plot exists, a small ranked fallback gives the
+ * character architect enough principals to start from without drafting every
+ * unrelated person in a shared universe.
+ *
+ * Locked referenced characters remain in this returned roster because the
+ * judge still has to see constraints it cannot repair. Repair callers filter
+ * them separately.
+ */
+export function seriesFoundationCharacters(characters, series, issues = []) {
+  const ranked = rankFoundationCharacters(characters, series, issues, { includeLocked: true });
   const referenced = ranked.filter(({ authoredArc, mentions }) => authoredArc || mentions > 0);
-  return (referenced.length > 0 ? referenced : ranked)
-    .slice(0, 6)
-    .map(({ character }) => character);
+  const selected = referenced.length > 0 ? referenced : ranked.slice(0, 6);
+  return selected.map(({ character }) => character);
+}
+
+function repairableSeriesFoundationCharacters(characters, series, issues = []) {
+  return seriesFoundationCharacters(characters, series, issues)
+    .filter((character) => character?.locked !== true);
 }
 
 const joinedLength = (lines) => lines.reduce((total, line) => total + line.length + 1, 0);
@@ -512,11 +532,10 @@ function renderWorldFoundation(universe) {
 // overflowing; a big-context judge gets the whole foundation).
 function buildFoundationContext({ series, universe, canon, issues = [], contentMax }) {
   const characters = Array.isArray(canon?.characters) ? canon.characters : [];
-  const coreIds = new Set(coreFoundationCharacters(characters, series, issues).map((character) => character.id));
+  const seriesCharacters = seriesFoundationCharacters(characters, series, issues);
   const worldEntitiesSummary = renderWorldFoundation(universe);
-  const orderedCharacters = [...characters].sort((a, b) => Number(coreIds.has(b.id)) - Number(coreIds.has(a.id)));
-  const characterRoster = orderedCharacters.length
-    ? orderedCharacters.map((character) => renderCharacterLine(character, { core: coreIds.has(character.id) })).join('\n')
+  const characterRoster = seriesCharacters.length
+    ? seriesCharacters.map((character) => renderCharacterLine(character, { core: true })).join('\n')
     : '(no canon characters)';
   const arcText = renderArc(series, issues);
   const sectionMax = Math.max(1_000, Math.floor(contentMax / 3));
@@ -538,7 +557,7 @@ function buildFoundationContext({ series, universe, canon, issues = [], contentM
     },
     worldEntitiesSummary: world,
     characterRoster: roster,
-    characterCount: characters.length,
+    characterCount: seriesCharacters.length,
     arc: arcContext,
   };
 }
@@ -686,6 +705,11 @@ const REPAIRABLE_CHARACTER_FIELDS = Object.freeze([
 ]);
 
 const MAX_FOUNDATION_NEW_CHARACTERS = 3;
+// Exhaustive, not restrictive: large casts are split across as many sequential
+// calls as necessary so every story-referenced character gets authored without
+// asking one response to carry an unbounded amount of JSON. Each batch sees the
+// full ensemble map for differentiation and relationship continuity.
+const CHARACTER_FOUNDATION_BATCH_SIZE = 6;
 
 // How much of the synopsis-level plan a repair prompt may carry. The judge
 // prompt this mirrors has always been budgeted (`buildFoundationContext` caps
@@ -704,6 +728,21 @@ const REPAIR_OUTLINE_MAX_CHARS = 12_000;
 
 async function runFoundationRepair(series, issues, dimension, finding, characters, options) {
   const stage = dimension === 'character' ? CHARACTER_FOUNDATION_STAGE : REPAIR_STAGE;
+  const renderPromptCharacter = (character) => ({
+    id: character.id,
+    name: character.name,
+    role: character.role,
+    personality: character.personality,
+    background: character.background,
+    relationships: character.relationships,
+    ...pickFrameworkFields(character),
+  });
+  const charactersPayload = dimension === 'character'
+    ? {
+      targetCharacters: characters.map(renderPromptCharacter),
+      fullSeriesRoster: (options.ensembleCharacters || characters).map(renderPromptCharacter),
+    }
+    : characters.map(renderPromptCharacter);
   const result = await runStagedLLM(stage, {
     dimension,
     phase: options.phase || (dimension === 'character' ? 'post-arc reconciliation' : 'foundation repair'),
@@ -719,15 +758,7 @@ async function runFoundationRepair(series, issues, dimension, finding, character
       characterArcs: series.characterArcs,
     }, null, 2),
     outline: renderArc(series, issues, { maxChars: REPAIR_OUTLINE_MAX_CHARS }),
-    charactersJson: JSON.stringify(characters.map((character) => ({
-      id: character.id,
-      name: character.name,
-      role: character.role,
-      personality: character.personality,
-      background: character.background,
-      relationships: character.relationships,
-      ...pickFrameworkFields(character),
-    })), null, 2),
+    charactersJson: JSON.stringify(charactersPayload, null, 2),
   }, {
     returnsJson: true,
     providerDefault: options.providerId,
@@ -739,9 +770,51 @@ async function runFoundationRepair(series, issues, dimension, finding, character
 }
 
 async function repairCharacters(series, issues, universe, finding, options) {
-  const targets = coreFoundationCharacters(universe?.characters, series, issues);
-  const proposal = await runFoundationRepair(series, issues, 'character', finding, targets, options);
-  const proposedCharacters = Array.isArray(proposal.characters) ? proposal.characters : [];
+  const seriesRoster = seriesFoundationCharacters(universe?.characters, series, issues);
+  const targets = seriesRoster.filter((character) => character?.locked !== true);
+  const targetBatches = targets.length > 0
+    ? Array.from({ length: Math.ceil(targets.length / CHARACTER_FOUNDATION_BATCH_SIZE) }, (_, index) => (
+      targets.slice(index * CHARACTER_FOUNDATION_BATCH_SIZE, (index + 1) * CHARACTER_FOUNDATION_BATCH_SIZE)
+    ))
+    : [[]];
+  const proposals = [];
+  let workingRoster = [...seriesRoster];
+  const workingNewCharacters = [];
+  for (const originalBatch of targetBatches) {
+    const batchIds = new Set(originalBatch.map((character) => character.id));
+    const targetBatch = workingRoster.filter((character) => batchIds.has(character.id));
+    const proposal = await runFoundationRepair(series, issues, 'character', finding, targetBatch, {
+      ...options,
+      // Locked cast members are immutable constraints, but the model still
+      // needs to see them when differentiating relationships and voices.
+      // Later batches also see the accepted shape of earlier proposals, so two
+      // batches cannot independently invent the same voice or relationship.
+      ensembleCharacters: [...workingRoster, ...workingNewCharacters],
+    });
+    proposals.push(proposal);
+
+    const proposedById = new Map((Array.isArray(proposal.characters) ? proposal.characters : [])
+      .filter((character) => typeof character?.id === 'string')
+      .map((character) => [character.id, character]));
+    workingRoster = workingRoster.map((character) => {
+      const raw = proposedById.get(character.id);
+      if (!raw) return character;
+      return sanitizeCharacter({ ...character, ...raw, id: character.id, name: character.name }) || character;
+    });
+    const knownNames = new Set([...workingRoster, ...workingNewCharacters]
+      .map((character) => String(character?.name || '').trim().toLowerCase())
+      .filter(Boolean));
+    for (const raw of Array.isArray(proposal.newCharacters) ? proposal.newCharacters : []) {
+      if (workingNewCharacters.length >= MAX_FOUNDATION_NEW_CHARACTERS) break;
+      const nameKey = String(raw?.name || '').trim().toLowerCase();
+      if (!nameKey || knownNames.has(nameKey)) continue;
+      workingNewCharacters.push(raw);
+      knownNames.add(nameKey);
+    }
+  }
+  const proposedCharacters = proposals.flatMap((proposal) => (
+    Array.isArray(proposal.characters) ? proposal.characters : []
+  ));
   const proposalById = new Map(proposedCharacters
     .filter((character) => typeof character?.id === 'string')
     .map((character) => [character.id, character]));
@@ -772,9 +845,9 @@ async function repairCharacters(series, issues, universe, finding, options) {
     const knownNames = new Set(characters
       .map((character) => String(character?.name || '').trim().toLowerCase())
       .filter(Boolean));
-    const proposedNewCharacters = Array.isArray(proposal.newCharacters)
-      ? proposal.newCharacters.slice(0, MAX_FOUNDATION_NEW_CHARACTERS)
-      : [];
+    const proposedNewCharacters = proposals
+      .flatMap((proposal) => (Array.isArray(proposal.newCharacters) ? proposal.newCharacters : []))
+      .slice(0, MAX_FOUNDATION_NEW_CHARACTERS);
     for (const raw of proposedNewCharacters) {
       const nameKey = String(raw?.name || '').trim().toLowerCase();
       if (!nameKey || knownNames.has(nameKey)) continue;
@@ -800,7 +873,8 @@ async function repairCharacters(series, issues, universe, finding, options) {
     ...(Array.isArray(universe?.characters) ? universe.characters : []),
     ...addedCharacters,
   ].map((character) => [String(character?.name || '').trim().toLowerCase(), character?.id]));
-  const proposedArcs = sanitizeCharacterArcList((Array.isArray(proposal.characterArcs) ? proposal.characterArcs : [])
+  const proposedArcs = sanitizeCharacterArcList(proposals
+    .flatMap((proposal) => (Array.isArray(proposal.characterArcs) ? proposal.characterArcs : []))
     .map((arc) => ({
       ...arc,
       characterId: characterIdByName.get(String(arc?.characterName || '').trim().toLowerCase()) || arc?.characterId,
@@ -866,7 +940,7 @@ export async function establishCharacterFoundation(seriesId, {
   if (!universe) {
     return { applied: false, skipped: true, ran: false, reason: 'linked universe not found' };
   }
-  const targets = coreFoundationCharacters(universe.characters, series, []);
+  const targets = repairableSeriesFoundationCharacters(universe.characters, series, []);
   const authoredArcs = Array.isArray(series.characterArcs) ? series.characterArcs : [];
   const arcKeys = new Set(authoredArcs.flatMap((arc) => [
     arc?.characterId || '',
@@ -1062,5 +1136,6 @@ export const __testing = {
   renderArc,
   renderCharacterLine,
   REPAIR_OUTLINE_MAX_CHARS,
+  CHARACTER_FOUNDATION_BATCH_SIZE,
   FRAMEWORK_STRING_FIELDS,
 };
