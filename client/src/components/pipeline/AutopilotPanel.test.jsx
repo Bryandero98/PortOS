@@ -375,6 +375,25 @@ describe('AutopilotPanel', () => {
     expect(screen.getByRole('button', { name: /resume autopilot/i })).toBeInTheDocument();
   });
 
+  it('restores run-local visual and gap choices when a paused run resumes', async () => {
+    renderPanel({
+      id: 's1',
+      targetFormat: 'comic',
+      autopilot: {
+        status: 'paused',
+        resumeOptions: { includeVisual: false, fileGaps: true },
+      },
+    });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    expect(screen.getByRole('checkbox', { name: /draft cover \+ all interior pages/i })).not.toBeChecked();
+    expect(screen.getByRole('checkbox', { name: /file CoS tasks for gaps/i })).toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: /resume autopilot/i }));
+    await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
+      's1', { includeVisual: false, fileGaps: true }, { silent: true },
+    ));
+  });
+
   it('flags a divergence pause with a "not converging" badge (#1571)', async () => {
     renderPanel({
       id: 's1',

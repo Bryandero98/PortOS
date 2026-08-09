@@ -96,8 +96,19 @@ export function scheduleCleanup(seriesId, record) {
 // Thin persisted marker for resume/paused UI + boot recovery. NOT a step
 // cursor — see module header. Best-effort; a marker write must never abort a run.
 export async function persistMarker(seriesId, patch) {
+  const run = runs.get(seriesId);
+  const resumable = ['running', 'paused', 'error'].includes(patch.status) && run?.options
+    ? {
+      includeVisual: run.options.includeVisual !== false,
+      fileGaps: run.options.fileGaps === true,
+    }
+    : null;
   await updateSeries(seriesId, {
-    autopilot: { ...patch, updatedAt: new Date().toISOString() },
+    autopilot: {
+      ...patch,
+      ...(resumable ? { resumeOptions: resumable } : {}),
+      updatedAt: new Date().toISOString(),
+    },
   }).catch((err) => {
     console.log(`⚠️ autopilot: marker write failed for ${seriesId.slice(0, 12)}: ${err.message}`);
   });

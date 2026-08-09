@@ -1682,6 +1682,20 @@ describe('autopilot conductor', () => {
     expect(removeByMetadata).toHaveBeenCalledWith('autopilotPauseSeriesId', seriesId);
   });
 
+  it('persists run-local visual and gap choices for a paused resume', async () => {
+    editorialFindings = [{ severity: 'high', problem: 'missing scene', issueNumber: 1 }];
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, {
+      includeVisual: false,
+      fileGaps: true,
+      maxEditorialRounds: 1,
+    });
+    await waitFor(runFinished(seriesId));
+    const series = await seriesSvc.getSeries(seriesId);
+    expect(series.autopilot?.status).toBe('paused');
+    expect(series.autopilot?.resumeOptions).toEqual({ includeVisual: false, fileGaps: true });
+  });
+
   it('does not notify on a clean complete (#1615)', async () => {
     const { seriesId } = await seedComplete();
     await autopilot.startSeriesAutopilot(seriesId, {});

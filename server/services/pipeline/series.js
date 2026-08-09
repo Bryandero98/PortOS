@@ -119,6 +119,21 @@ export const AUTOPILOT_STATUSES = Object.freeze(['idle', 'running', 'paused', 'd
 export const AUTOPILOT_STEP_MAX = 80;
 export const AUTOPILOT_ERROR_MAX = 1000;
 const AUTOPILOT_FINDING_SEVERITIES = ['high', 'medium', 'low'];
+
+// The two local Options toggles that must survive a pause/reload so "Resume"
+// continues the run the user actually launched. These are deliberately scoped
+// to the paused run marker instead of global settings: a future scheduled run
+// should not inherit one series' gap-filing choice, while a resume should not
+// silently turn it off. The destructive-consent `unlockForRun` flag is NOT
+// carried here — the unlock pass spends that consent once and leaves the
+// records unlocked, so re-arming it would only repeat a completed mutation.
+const sanitizeAutopilotResumeOptions = (raw) => {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const out = {};
+  if (typeof raw.includeVisual === 'boolean') out.includeVisual = raw.includeVisual;
+  if (typeof raw.fileGaps === 'boolean') out.fileGaps = raw.fileGaps;
+  return Object.keys(out).length ? out : null;
+};
 // Why a bounded-retry gate paused the run. Convergence gates (#1571):
 // `maxRounds` (the verify→resolve loop ran out of rounds) vs `divergence` (it
 // stopped converging early — the blocking count failed to drop). Child runners
@@ -174,6 +189,10 @@ export const sanitizeAutopilot = (raw) => {
     // strip is real data loss), a stale peer that drops pauseKind just briefly
     // shows a generic "paused" banner until the next run re-stamps it.
     pauseKind: AUTOPILOT_PAUSE_KINDS.includes(raw.pauseKind) ? raw.pauseKind : null,
+    // Run-local choices restored by the Options form on a paused resume. This is
+    // transient orchestration state, not creative content, so it shares the
+    // marker's no-schema-gate posture.
+    resumeOptions: sanitizeAutopilotResumeOptions(raw.resumeOptions),
     // #1572 — a `done` run that filed blocking script-craft gaps (the advisory
     // craft gate) carries the count here so the marker can qualify "complete"
     // instead of reporting clean while downstream rendering is still blocked.

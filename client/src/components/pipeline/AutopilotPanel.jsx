@@ -417,6 +417,18 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
   const [showOpts, setShowOpts] = useState(false);
   const [includeVisual, setIncludeVisual] = useState(true);
   const [fileGaps, setFileGaps] = useState(false);
+
+  // A paused run is a continuation, not a new configuration. Restore the two
+  // run-local toggles the server stamped onto its marker so a reload/restart
+  // cannot silently turn gap filing off (or visuals back on). A completed run
+  // and a different series intentionally return to the ordinary defaults.
+  const resumeIncludeVisual = series?.autopilot?.resumeOptions?.includeVisual;
+  const resumeFileGaps = series?.autopilot?.resumeOptions?.fileGaps;
+  useEffect(() => {
+    const paused = series?.autopilot?.status === 'paused';
+    setIncludeVisual(paused && typeof resumeIncludeVisual === 'boolean' ? resumeIncludeVisual : true);
+    setFileGaps(paused && typeof resumeFileGaps === 'boolean' ? resumeFileGaps : false);
+  }, [seriesId, series?.autopilot?.status, resumeIncludeVisual, resumeFileGaps]);
   // Persist a setting (clamped) so a later Resume picks it up server-side.
   // patchSettingsSlice is a GET-merge-PUT, so two overlapping calls (a blur save
   // racing start()'s save) can lose an update — a slow earlier PUT lands after a

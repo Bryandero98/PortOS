@@ -878,4 +878,21 @@ describe('pipeline series service', () => {
       expect(svc.sanitizeAutopilot({ status: 'paused', healthBreakdown: [] }).healthBreakdown).toBeNull();
     });
   });
+
+  describe('sanitizeAutopilot resumeOptions', () => {
+    it('preserves only the paused run toggles that the UI can safely restore', () => {
+      expect(svc.sanitizeAutopilot({
+        status: 'paused',
+        resumeOptions: { includeVisual: false, fileGaps: true, unlockForRun: true },
+      }).resumeOptions).toEqual({ includeVisual: false, fileGaps: true });
+    });
+
+    it('drops malformed resume options', () => {
+      expect(svc.sanitizeAutopilot({ status: 'paused' }).resumeOptions).toBeNull();
+      expect(svc.sanitizeAutopilot({
+        status: 'paused',
+        resumeOptions: { includeVisual: 'yes', fileGaps: 1 },
+      }).resumeOptions).toBeNull();
+    });
+  });
 });
