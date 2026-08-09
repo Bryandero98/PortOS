@@ -63,6 +63,22 @@ describe('resolveInputImages', () => {
     expect(out.paths).toEqual([abs('init.png'), abs('a.png'), abs('b.png')]);
   });
 
+  it('keeps every image for a backend whose tool declares no cap', async () => {
+    // codex/grok carry `maxInputImages: null`. The route's own
+    // MAX_REFERENCE_IMAGES is what bounds them, so this resolver must not
+    // invent a ceiling — a null cap that fell through to 0 would silently
+    // strip every reference from a codex render.
+    await stage('init.png', 'a.png', 'b.png', 'c.png', 'd.png');
+    expect(maxInputImages(IMAGE_GEN_MODE.CODEX)).toBeNull();
+    const out = resolveInputImages({
+      mode: IMAGE_GEN_MODE.CODEX,
+      initImagePath: 'init.png',
+      referenceImagePaths: ['a.png', 'b.png', 'c.png', 'd.png'],
+    });
+    expect(out.paths).toEqual([abs('init.png'), abs('a.png'), abs('b.png'), abs('c.png'), abs('d.png')]);
+    expect(out.referencePaths).toHaveLength(4);
+  });
+
   it('drops a path that escapes the approved roots instead of forwarding it', () => {
     const out = resolveInputImages({
       mode: IMAGE_GEN_MODE.CODEX,

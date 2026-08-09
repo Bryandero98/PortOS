@@ -59,7 +59,7 @@ import {
 // + a 0..1 strength weight. Slots are positional so the blob-URL revoke pairs
 // with the slot the user cleared. Local consumes all 4 (FLUX.2 only); a cloud
 // CLI takes however many its image tool accepts alongside the init image (see
-// MAX_INPUT_IMAGES), so the form offers only that many slots there.
+// referenceSlotsFor), so the form offers only that many slots there.
 const REFERENCE_SLOT_COUNT = 4;
 const EMPTY_REF_SLOT = { file: null, previewUrl: null, strength: 1.0 };
 

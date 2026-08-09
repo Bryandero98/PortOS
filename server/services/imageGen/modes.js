@@ -84,7 +84,8 @@ export const QUEUEABLE_IMAGE_MODES = Object.freeze([IMAGE_GEN_MODE.LOCAL, ...CLO
 // backend now can: local (mflux/diffusers `--image-path` + FLUX.2 references),
 // codex (`image_gen.referenced_image_paths`), grok (`image_edit.image`) and agy
 // (`generate_image.ImagePaths`) all accept an init image and/or reference
-// images — see MAX_INPUT_IMAGES above for the probed per-backend limits. Agy
+// images — see `maxInputImages` on CLOUD_PROVIDER_SPECS (cloudProviderConfig.js)
+// for the probed per-backend limits. Agy
 // was listed here until its tool schema was probed directly and turned out to
 // document ImagePaths as "images to use in generation… edit, combine, or use as
 // references".
