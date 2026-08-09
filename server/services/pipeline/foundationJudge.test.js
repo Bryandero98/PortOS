@@ -22,7 +22,6 @@ vi.mock('../universeBuilder.js', () => ({
 }));
 vi.mock('../universeCharacterExpand.js', async (importActual) => ({
   ...(await importActual()),
-  expandUniverseCharacter: vi.fn(async () => ({ updatedFields: ['wound'] })),
 }));
 vi.mock('../universeBuilderExpand.js', () => ({
   expandWorldTemplate: vi.fn(async () => ({ logline: 'L2', premise: 'P2', styleNotes: 'S2', influences: null })),
@@ -30,6 +29,11 @@ vi.mock('../universeBuilderExpand.js', () => ({
 vi.mock('./series.js', async (importActual) => ({
   ...(await importActual()),
   getSeries: vi.fn(async () => ({ id: 'ser-1', name: 'S', logline: 'L', premise: 'P', universeId: 'uni-1' })),
+  updateSeries: vi.fn(async (id, patch) => ({ id, ...patch })),
+}));
+vi.mock('./issues.js', async (importActual) => ({
+  ...(await importActual()),
+  listIssues: vi.fn(async () => []),
 }));
 vi.mock('./seriesCanon.js', async (importActual) => ({
   ...(await importActual()),
@@ -44,20 +48,23 @@ const fileUtils = await import('../../lib/fileUtils.js');
 const stageRunner = await import('../../lib/stageRunner.js');
 const seriesSvc = await import('./series.js');
 const universeBuilder = await import('../universeBuilder.js');
-const universeCharacterExpand = await import('../universeCharacterExpand.js');
 const universeBuilderExpand = await import('../universeBuilderExpand.js');
 const arcPlanner = await import('./arcPlanner.js');
+const issuesSvc = await import('./issues.js');
 const {
   judgeFoundation,
   getFoundationJudge,
   computeWeightedScore,
   weakestDimension,
+  foundationGateStatus,
+  foundationFixTarget,
   sanitizeFoundationJudge,
   isValidFoundationShape,
   isFoundationStale,
   residualFindings,
   applyFoundationFix,
   thinnestCharacter,
+  rankFoundationCharacters,
   foundationInputsHash,
   FOUNDATION_DIMENSIONS,
   FOUNDATION_WEIGHTS,
@@ -76,6 +83,7 @@ beforeEach(() => {
   stageRunner.resolveJudgeForStage.mockResolvedValue({ provider: { id: 'judge-x' }, model: 'jm-heavy' });
   seriesSvc.getSeries.mockResolvedValue({ id: 'ser-1', name: 'S', logline: 'L', premise: 'P', universeId: 'uni-1' });
   universeBuilder.getUniverse.mockResolvedValue(null);
+  issuesSvc.listIssues.mockResolvedValue([]);
   // Restore the default authored-scalar echo so a test that overrides it (blank
   // /null values) doesn't leak into later order-dependent tests.
   universeBuilderExpand.expandWorldTemplate.mockResolvedValue({ logline: 'L2', premise: 'P2', styleNotes: 'S2', influences: null });
@@ -117,6 +125,27 @@ describe('weakestDimension — leverage-based target', () => {
   });
   it('returns null when no dimension is present', () => {
     expect(weakestDimension({})).toBeNull();
+  });
+});
+
+describe('foundationGateStatus — weighted threshold + dimension floor', () => {
+  it('does not let a strong weighted average hide a critically thin dimension', () => {
+    const dimensions = dims({ worldbuilding: 10, character: 5, structure: 10, craft: 10 });
+    expect(computeWeightedScore(dimensions)).toBe(8.5);
+    expect(foundationGateStatus(dimensions, 8.5, 7.5)).toMatchObject({
+      passes: false,
+      dimensionFloor: 6,
+      failingDimensions: ['character'],
+    });
+    expect(foundationFixTarget(dimensions, 7.5).dimension).toBe('character');
+  });
+
+  it('respects an intentionally lowered threshold as the dimension floor', () => {
+    expect(foundationGateStatus(dims({ craft: 4.5 }), 5, 5)).toMatchObject({
+      passes: false,
+      dimensionFloor: 5,
+      failingDimensions: ['craft'],
+    });
   });
 });
 
@@ -164,6 +193,18 @@ describe('foundationInputsHash + staleness — fast-pass pinning', () => {
     const uni2 = { characters: [{ id: 'c1', name: 'Ana', wound: 'abandoned as a child' }] };
     expect(foundationInputsHash({}, uni1)).not.toBe(foundationInputsHash({}, uni2));
   });
+  it('changes when episode synopses, character arcs, or series voice changes', () => {
+    const series = {
+      seasons: [{ id: 'sea-1', number: 1, synopsis: 'Volume plan' }],
+      characterArcs: [{ characterId: 'chr-1', want: 'escape' }],
+      styleNotes: 'spare',
+    };
+    const issue = { id: 'iss-1', seasonId: 'sea-1', number: 1, stages: { idea: { input: 'Opening promise' } } };
+    const base = foundationInputsHash(series, null, [issue]);
+    expect(foundationInputsHash(series, null, [{ ...issue, stages: { idea: { input: 'Different promise' } } }])).not.toBe(base);
+    expect(foundationInputsHash({ ...series, characterArcs: [{ characterId: 'chr-1', want: 'belong' }] }, null, [issue])).not.toBe(base);
+    expect(foundationInputsHash({ ...series, styleNotes: 'lyrical' }, null, [issue])).not.toBe(base);
+  });
   it('isFoundationStale flags a complete snapshot whose pinned hash drifted', () => {
     expect(isFoundationStale({ status: 'complete', sourceInputsHash: 'a' }, 'b')).toBe(true);
     expect(isFoundationStale({ status: 'complete', sourceInputsHash: 'a' }, 'a')).toBe(false);
@@ -188,6 +229,37 @@ describe('thinnestCharacter — character fix target', () => {
   it('returns null when every character is complete or locked', () => {
     expect(thinnestCharacter([{ id: 'locked', name: 'A', locked: true }])).toBeNull();
     expect(thinnestCharacter([])).toBeNull();
+  });
+});
+
+describe('rankFoundationCharacters — core-cast repair targets', () => {
+  it('prioritizes authored arcs and synopsis mentions over unrelated blank extras', () => {
+    const characters = [
+      { id: 'chr-extra', name: 'Extra', role: 'bystander' },
+      { id: 'chr-lead', name: 'Lead', role: 'protagonist', wound: 'specific' },
+    ];
+    const series = { characterArcs: [{ characterId: 'chr-lead', characterName: 'Lead', want: 'win' }] };
+    const issues = [{ stages: { idea: { input: 'Lead risks everything.' } } }];
+    expect(rankFoundationCharacters(characters, series, issues)[0].character.id).toBe('chr-lead');
+  });
+});
+
+describe('foundation judge context — complete planning altitude', () => {
+  it('shows the world bible premise and design systems that world repair can change', () => {
+    const ctx = __testing.buildFoundationContext({
+      series: { name: 'Example Series', seasons: [] },
+      universe: {
+        logline: 'A city pays for magic with memory.',
+        premise: 'Every spell erases one shared fact.',
+        categories: { rituals: { variations: [{ label: 'The Naming Tax' }] } },
+      },
+      canon: { characters: [{ id: 'chr-1', name: 'Lead', wound: 'Abandoned during the Naming Tax' }] },
+      issues: [],
+      contentMax: 30_000,
+    });
+    expect(ctx.worldEntitiesSummary).toContain('Every spell erases one shared fact.');
+    expect(ctx.worldEntitiesSummary).toContain('rituals: The Naming Tax');
+    expect(ctx.characterRoster).toContain('wound: Abandoned during the Naming Tax');
   });
 });
 
@@ -228,11 +300,20 @@ describe('applyFoundationFix — dimension → owning-service routing table', ()
     expect(r).toMatchObject({ dimension: 'structure', applied: true });
   });
 
-  it('routes character → expandUniverseCharacter on the thinnest unlocked character', async () => {
-    universeBuilder.getUniverse.mockResolvedValue({ id: 'uni-1', characters: [{ id: 'thin', name: 'B' }] });
-    const r = await applyFoundationFix('ser-1', 'character', {});
-    expect(universeCharacterExpand.expandUniverseCharacter).toHaveBeenCalledWith('uni-1', 'thin', expect.any(Object));
-    expect(r).toMatchObject({ dimension: 'character', applied: true, entryId: 'thin' });
+  it('routes character → judge-directed core-cast and character-arc repair', async () => {
+    const uni = { id: 'uni-1', characters: [{ id: 'chr-thin', name: 'B' }] };
+    universeBuilder.getUniverse.mockResolvedValue(uni);
+    universeBuilder.updateUniverse.mockImplementation(async (id, mutator) => ({ id, ...(mutator(uni) || {}) }));
+    stageRunner.runStagedLLM.mockResolvedValue({
+      content: {
+        characters: [{ id: 'chr-thin', name: 'B', ghost: 'A failed rescue', wound: 'Fear of relying on anyone', lie: 'Trust kills', want: 'Work alone', need: 'Accept interdependence', coreTheme: 'trust', motivations: 'Protect the crew without admitting it', speechPattern: 'clipped technical clauses', arcType: 'positive', secrets: ['Caused the original breach'] }],
+        characterArcs: [{ characterId: 'chr-thin', characterName: 'B', want: 'Work alone', need: 'Accept interdependence', startState: 'isolated', endState: 'committed to the crew', transitions: [{ kind: 'decision', atIssue: 3, label: 'asks for help' }], status: 'draft' }],
+      },
+    });
+    const r = await applyFoundationFix('ser-1', 'character', { finding: { gap: 'blank lead', fix: 'build the causal chain' } });
+    expect(stageRunner.runStagedLLM).toHaveBeenCalledWith('pipeline-foundation-repair', expect.objectContaining({ dimension: 'character' }), expect.any(Object));
+    expect(seriesSvc.updateSeries).toHaveBeenCalledWith('ser-1', expect.objectContaining({ characterArcs: expect.any(Array) }));
+    expect(r).toMatchObject({ dimension: 'character', applied: true, characterArcsUpdated: true });
   });
 
   it('routes worldbuilding → expandWorldTemplate + a lock-aware updateUniverse write', async () => {
@@ -240,8 +321,11 @@ describe('applyFoundationFix — dimension → owning-service routing table', ()
     universeBuilder.getUniverse.mockResolvedValue(uni);
     let writtenPatch = null;
     universeBuilder.updateUniverse.mockImplementation(async (id, m) => { writtenPatch = typeof m === 'function' ? m(uni) : m; return { id, ...(writtenPatch || {}) }; });
-    const r = await applyFoundationFix('ser-1', 'worldbuilding', {});
-    expect(universeBuilderExpand.expandWorldTemplate).toHaveBeenCalledWith(expect.objectContaining({ starterPrompt: 'U' }));
+    const r = await applyFoundationFix('ser-1', 'worldbuilding', { finding: { gap: 'costless magic', fix: 'make memory the price' } });
+    expect(universeBuilderExpand.expandWorldTemplate).toHaveBeenCalledWith(expect.objectContaining({
+      starterPrompt: 'U',
+      foundationDirective: expect.stringContaining('costless magic'),
+    }));
     expect(writtenPatch).toMatchObject({ logline: 'L2', premise: 'P2', styleNotes: 'S2' });
     expect(r).toMatchObject({ dimension: 'worldbuilding', applied: true });
   });
@@ -297,12 +381,27 @@ describe('applyFoundationFix — dimension → owning-service routing table', ()
     expect(r.applied).toBe(true);
   });
 
-  it('routes craft → the same universe world refine as worldbuilding', async () => {
-    const uni = { id: 'uni-1', name: 'U' };
-    universeBuilder.getUniverse.mockResolvedValue(uni);
-    universeBuilder.updateUniverse.mockImplementation(async (id, m) => { const p = typeof m === 'function' ? m(uni) : m; return { id, ...(p || {}) }; });
-    await applyFoundationFix('ser-1', 'craft', {});
-    expect(universeBuilderExpand.expandWorldTemplate).toHaveBeenCalled();
+  it('routes craft → series voice repair with concrete exemplars', async () => {
+    stageRunner.runStagedLLM.mockResolvedValue({
+      content: {
+        styleNotes: 'Close third-person, spare and salt-dry, with dialogue that circles grief instead of naming it.',
+        styleGuide: {
+          tense: 'past',
+          povPerson: 'third-limited',
+          targetAudience: 'adult',
+          contentRating: 'PG-13',
+          voiceExemplars: [{ passage: 'The bell moved before the wind did.', note: 'compressed sensory unease' }],
+          voiceAntiExemplars: [{ passage: 'A mysterious feeling filled the air.', note: 'generic abstraction' }],
+        },
+      },
+    });
+    const r = await applyFoundationFix('ser-1', 'craft', { finding: { gap: 'generic voice', fix: 'add tuning forks' } });
+    expect(universeBuilderExpand.expandWorldTemplate).not.toHaveBeenCalled();
+    expect(seriesSvc.updateSeries).toHaveBeenCalledWith('ser-1', expect.objectContaining({
+      styleNotes: expect.stringContaining('Close third-person'),
+      styleGuide: expect.objectContaining({ voiceExemplars: expect.any(Array) }),
+    }));
+    expect(r).toMatchObject({ dimension: 'craft', applied: true });
   });
 
   it('reports applied:false (not a throw) when a world fix has no linked universe', async () => {

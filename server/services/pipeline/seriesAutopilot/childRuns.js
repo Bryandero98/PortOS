@@ -8,8 +8,11 @@ import { sleep } from '../../../lib/fileUtils.js';
 import { recordDomainUsage } from '../../domainUsage.js';
 import { getSeries } from '../series.js';
 import { listIssues, getIssue, isStageReady } from '../issues.js';
-import { verifyArc, resolveVerifyIssues, analyzeBeatContinuity, resolveBeatContinuity } from '../arcPlanner.js';
-import { judgeFoundation, applyFoundationFix, weakestDimension, residualFindings, DEFAULT_FOUNDATION_THRESHOLD } from '../foundationJudge.js';
+import { verifyArc, verifyVolume, resolveVerifyIssues, analyzeBeatContinuity, resolveBeatContinuity } from '../arcPlanner.js';
+import {
+  judgeFoundation, applyFoundationFix, foundationGateStatus, foundationFixTarget,
+  residualFindings, DEFAULT_FOUNDATION_THRESHOLD,
+} from '../foundationJudge.js';
 import * as volumeBeatsRunner from '../volumeBeatsRunner.js';
 import * as autoRunner from '../autoRunner.js';
 import { MAX_ARC_VERIFY_ROUNDS, MAX_BEAT_CONTINUITY_ROUNDS, MAX_FOUNDATION_ROUNDS, MAX_CHILD_RETRIES } from './config.js';
@@ -19,6 +22,14 @@ import {
 } from './convergence.js';
 import { broadcast, budgetPause, providerOverrideOpts, providerIdOpts, seasonPreserveOpts } from './session.js';
 import { requiredScriptStages, textReady } from './stepResolver.js';
+
+const MAX_PLANNING_GATE_HANDOFFS = 6;
+
+function finishPlanningMutation(record, peerLatch) {
+  record.runState[peerLatch] = false;
+  record.runState.planningGateHandoffs = (record.runState.planningGateHandoffs || 0) + 1;
+  return record.runState.planningGateHandoffs <= MAX_PLANNING_GATE_HANDOFFS;
+}
 
 // ---------------------------------------------------------------------------
 // Step dispatch.
@@ -41,18 +52,50 @@ export async function runArcVerify(seriesId, record) {
     return {};
   }
   let convergence = { best: null, sinceBest: 0 };
+  let changed = false;
   for (let round = 1; round <= maxRounds; round += 1) {
     if (record.cancelRequested) return { canceled: true };
     const beforeVerify = await budgetPause();
     if (beforeVerify) return beforeVerify;
-    const { issues } = await verifyArc(seriesId, providerOverrideOpts(record));
+    const { issues: arcFindings } = await verifyArc(seriesId, providerOverrideOpts(record));
     await recordDomainUsage('cos', { actions: 1 });
-    const blocking = issues.filter((i) => record.options.blockingSets.arc.has(i.severity));
+    const series = await getSeries(seriesId);
+    const volumeFindings = [];
+    for (const season of series.seasons || []) {
+      if (record.cancelRequested) return { canceled: true };
+      const beforeVolumeVerify = await budgetPause();
+      if (beforeVolumeVerify) return beforeVolumeVerify;
+      const { issues } = await verifyVolume(seriesId, season.id, {
+        ...providerOverrideOpts(record),
+        // This gate's resolver rewrites the synopsis-level arc/volumes, not
+        // issue beats. Existing beat sheets get their own continuity gate later.
+        synopsisOnly: true,
+      });
+      await recordDomainUsage('cos', { actions: 1 });
+      for (const finding of issues) {
+        volumeFindings.push({
+          ...finding,
+          volumeId: season.id,
+          location: `volume ${season.number ?? '?'}${finding.location ? ` — ${finding.location}` : ''}`,
+        });
+      }
+    }
+    const findings = [...arcFindings, ...volumeFindings];
+    const blocking = findings.filter((finding) => record.options.blockingSets.arc.has(finding.severity));
     broadcast(seriesId, {
-      type: 'verify:round', scope: 'arc', round, findings: issues.length, blocking: blocking.length,
+      type: 'verify:round', scope: 'arc', round, findings: findings.length,
+      blocking: blocking.length, volumesChecked: (series.seasons || []).length,
     });
     if (blocking.length === 0) {
       record.runState.arcVerified = true;
+      if (changed && !finishPlanningMutation(record, 'foundationGated')) {
+        return {
+          pause: true,
+          pauseKind: 'planningOscillation',
+          reason: `Foundation and arc verification could not jointly converge after ${MAX_PLANNING_GATE_HANDOFFS} repair handoffs. Review the remaining synopsis-level plan before drafting beats.`,
+          residual: [],
+        };
+      }
       return {};
     }
     if (round === maxRounds) {
@@ -74,6 +117,7 @@ export async function runArcVerify(seriesId, record) {
       ...providerOverrideOpts(record),
       ...seasonPreserveOpts(record),
     });
+    if (resolved?.applied !== false) changed = true;
     await recordDomainUsage('cos', { actions: 1 });
     broadcast(seriesId, {
       type: 'resolve:round', scope: 'arc', round,
@@ -171,6 +215,7 @@ export async function runFoundationGate(seriesId, record) {
   // to a "distance below 10" so trackConvergence's fewer-is-better minimum logic
   // applies unchanged (a new low distance = a new high score = progress).
   let convergence = { best: null, sinceBest: 0 };
+  let changed = false;
   for (let round = 1; round <= maxRounds; round += 1) {
     if (record.cancelRequested) return { canceled: true };
     const beforeJudge = await budgetPause();
@@ -184,29 +229,50 @@ export async function runFoundationGate(seriesId, record) {
     // A cached (content-hash unchanged) verdict did no LLM work — don't bill it.
     if (!snap.cached) await recordDomainUsage('cos', { actions: 1 });
     const score = snap.weightedScore ?? 0;
-    const weak = weakestDimension(snap.dimensions);
+    const gate = foundationGateStatus(snap.dimensions, score, threshold);
+    const weak = foundationFixTarget(snap.dimensions, threshold);
     broadcast(seriesId, {
-      type: 'foundation:round', round, weightedScore: score, threshold, weakest: weak?.dimension || null,
+      type: 'foundation:round', round, weightedScore: score, threshold,
+      dimensionFloor: gate.dimensionFloor, failingDimensions: gate.failingDimensions,
+      weakest: weak?.dimension || null,
     });
-    if (score >= threshold) {
+    if (gate.passes) {
       record.runState.foundationGated = true;
+      if (changed && !finishPlanningMutation(record, 'arcVerified')) {
+        return {
+          pause: true,
+          pauseKind: 'planningOscillation',
+          reason: `Foundation and arc verification could not jointly converge after ${MAX_PLANNING_GATE_HANDOFFS} repair handoffs. Review the remaining synopsis-level plan before drafting beats.`,
+          residual: residualFindings(snap.dimensions),
+        };
+      }
       return {};
     }
     if (round === maxRounds || !weak) {
+      const floorReason = gate.failingDimensions.length > 0
+        ? `Foundation quality left ${gate.failingDimensions.join(', ')} below the ${gate.dimensionFloor} dimension floor after ${maxRounds} round(s). Strengthen those foundations and resume.`
+        : foundationPauseReason(maxRounds, score, threshold);
       return {
         pause: true,
         pauseKind: 'maxRounds',
-        reason: foundationPauseReason(maxRounds, score, threshold),
+        reason: floorReason,
         residual: residualFindings(snap.dimensions),
       };
     }
     // Divergence guard (#1571): bail when fixes stop improving the score.
-    convergence = trackConvergence(convergence, 10 - score);
+    const floorDistance = gate.failingDimensions.reduce(
+      (total, dimension) => total + gate.dimensionFloor - (snap.dimensions?.[dimension]?.score || 0),
+      0,
+    );
+    convergence = trackConvergence(convergence, 10 - score + floorDistance);
     if (convergence.sinceBest >= DIVERGENCE_PATIENCE) {
+      const floorReason = gate.failingDimensions.length > 0
+        ? `Foundation quality stopped improving with ${gate.failingDimensions.join(', ')} below the ${gate.dimensionFloor} dimension floor. Review those foundations and resume.`
+        : foundationDivergenceReason(score, threshold, DIVERGENCE_PATIENCE);
       return {
         pause: true,
         pauseKind: 'divergence',
-        reason: foundationDivergenceReason(score, threshold, DIVERGENCE_PATIENCE),
+        reason: floorReason,
         residual: residualFindings(snap.dimensions),
       };
     }
@@ -237,6 +303,7 @@ export async function runFoundationGate(seriesId, record) {
         residual: residualFindings(snap.dimensions),
       };
     }
+    changed = true;
   }
   return {};
 }

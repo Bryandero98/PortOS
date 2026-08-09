@@ -53,14 +53,23 @@ export function buildDryRunPlan(series, issues, options, costContext = {}) {
   if (noArc || seasons.length === 0) plan.push({ kind: 'generateArc', count: 1, estActions: 1 });
   const emptySeasons = seasons.filter((s) => !ordered.some((i) => i.seasonId === s.id));
   if (emptySeasons.length) plan.push({ kind: 'generateEpisodes', count: emptySeasons.length, estActions: emptySeasons.length });
-  const arcRounds = Number.isInteger(options?.maxArcVerifyRounds) ? options.maxArcVerifyRounds : MAX_ARC_VERIFY_ROUNDS;
-  plan.push({ kind: 'verifyArc', count: 1, note: roundsNote(arcRounds), estActions: convergenceLoopActions(arcRounds) });
-  // foundationGate (#2176) runs once between arc verify and beats, unless
-  // disabled or 0-round. Bills judge + fix per round like the arc loop.
+  // Foundation runs first at synopsis altitude. Arc/volume repairs and
+  // foundation fixes may invalidate one another, so execute can re-check these
+  // two gates before moving on; the plan names the primary pass.
   const foundationRounds = Number.isInteger(options?.maxFoundationRounds) ? options.maxFoundationRounds : MAX_FOUNDATION_ROUNDS;
   if (options?.foundationGate !== false && foundationRounds !== 0) {
-    plan.push({ kind: 'foundationGate', count: 1, note: roundsNote(foundationRounds), estActions: convergenceLoopActions(foundationRounds) });
+    plan.push({ kind: 'foundationGate', count: 1, note: `${roundsNote(foundationRounds)}; re-checks after arc repairs`, estActions: convergenceLoopActions(foundationRounds) });
   }
+  const arcRounds = Number.isInteger(options?.maxArcVerifyRounds) ? options.maxArcVerifyRounds : MAX_ARC_VERIFY_ROUNDS;
+  const verificationActions = arcRounds === 0
+    ? 0
+    : arcRounds * (1 + seasons.length) + Math.max(0, arcRounds - 1);
+  plan.push({
+    kind: 'verifyArc',
+    count: 1,
+    note: `${roundsNote(arcRounds)}; whole arc + ${seasons.length} volume(s) per round`,
+    estActions: verificationActions,
+  });
   const beatsNeeded = seasons.filter((s) =>
     ordered.some((i) => i.seasonId === s.id && !isStageReady(i.stages?.idea))).length;
   if (beatsNeeded) plan.push({ kind: 'beatSheet', count: beatsNeeded, estActions: beatsNeeded });

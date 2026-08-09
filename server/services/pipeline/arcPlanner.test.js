@@ -567,6 +567,25 @@ describe('arcPlanner — verifyVolume', () => {
     expect(out.seasonId).toBe(sea.id);
   });
 
+  it('can force synopsis-only verification for the pre-beat autopilot planning gate', async () => {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, { arc: { logline: 'Whole arc' } });
+    const sea = await seasonsSvc.createSeason(s.id, { title: 'V1', logline: 'volume' });
+    await issuesSvc.createIssue({
+      seriesId: s.id,
+      title: 'Ep 1',
+      seasonId: sea.id,
+      stages: { idea: { input: 'synopsis seed', output: 'existing beat sheet', status: 'ready' } },
+    });
+    stageRunnerSpy = vi.fn(async () => ({ content: { issues: [] }, runId: 'r', providerId: 'p', model: 'm' }));
+
+    await planner.verifyVolume(s.id, sea.id, { synopsisOnly: true });
+
+    const [volumeIssue] = JSON.parse(stageRunnerSpy.mock.calls[0][1].volumeIssuesJson);
+    expect(volumeIssue.synopsis).toBe('synopsis seed');
+    expect(volumeIssue).not.toHaveProperty('beats');
+  });
+
   it('includes only the immediate-neighbor volumes (prior + next), excluding self', async () => {
     const s = await setupSeries();
     await seriesSvc.updateSeries(s.id, { arc: { logline: 'L' } });

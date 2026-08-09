@@ -240,6 +240,9 @@
   "pipeline-extract-scenes": [
     "server/lib/sceneExtractor.js"
   ],
+  "pipeline-foundation-repair": [
+    "server/services/pipeline/foundationJudge.js"
+  ],
   "pipeline-idea-expansion": [
     "server/services/pipeline/textStages.js"
   ],

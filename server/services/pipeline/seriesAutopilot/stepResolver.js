@@ -176,22 +176,22 @@ export function resolveNextStep(series, issues, runState = {}, options = {}) {
     }
   }
 
-  // STEP 3 — arc verification (once per run; bounded loop happens in dispatch).
-  if (!runState.arcVerified) {
-    return { kind: 'verifyArc', reason: 'arc not yet verified this run' };
-  }
-
-  // STEP 3.5 — foundation-quality gate (#2176). After the arc/volumes exist and
-  // arc structure is verified, judge the whole foundation (world / characters /
-  // arc) BEFORE the expensive beat/text stages and iterate on the weakest
-  // dimension until it clears the threshold. Once per run (bounded loop happens
-  // in dispatch). Gated on `foundationGate` being enabled AND a non-zero round
-  // budget — a disabled/0-round gate is treated as already satisfied so the
-  // resolver falls straight through to beats (the dispatch never runs).
+  // STEP 3 — foundation-quality gate (#2176). Once the complete synopsis-level
+  // plan exists, establish the world / core cast / structure / voice foundation
+  // BEFORE arc verification and any expensive beat/text work. A foundation fix
+  // can invalidate arc verification; an arc repair can invalidate this verdict,
+  // so the child drivers deliberately unlatch their peer after a mutation.
   if (!runState.foundationGated
     && options.foundationGate !== false
     && options.maxFoundationRounds !== 0) {
     return { kind: 'foundationGate', reason: 'foundation not yet judged this run' };
+  }
+
+  // STEP 3.5 — arc + per-volume verification. This runs after the initial
+  // foundation gate, then may hand control back to it if synopsis repairs alter
+  // the judged plan.
+  if (!runState.arcVerified) {
+    return { kind: 'verifyArc', reason: 'arc not yet verified this run' };
   }
 
   // STEP 4a — per-volume beat sheets (skip volumes already attempted this run).
