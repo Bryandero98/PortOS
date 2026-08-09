@@ -30,16 +30,18 @@
  * The primary checkout is a shared global resource — a concurrent coding-on-main
  * agent, the human's own terminal, `update.sh`'s `git pull --rebase --autostash`,
  * or any background flow can strand commits on it — so before blaming the run,
- * the guard asks whether THIS agent could have produced them (#3703). It
- * attributes the stranded commits to the agent's own worktree branch by PATCH-ID
- * (`git cherry`, not raw SHA, so a cherry-picked or rebased copy still matches).
- * Only an attributed drift downgrades a successful run; anything the agent
- * demonstrably did not author — a read-only reasoner that never branched, or
- * commits with no patch-equivalent on the agent's branch — is carried as
- * `{ drifted: false, unattributed: true }`: warn-logged (unreviewed commits on
- * `main` are worth surfacing) but not failed. The asymmetry is deliberate — a
- * missed branch-jack still leaves a warn log and recoverable commits, while a
- * false failure escalates to a human and dents the task type's success rate.
+ * the guard asks whether THIS agent could have produced them (#3703). When a run
+ * strands commits, they are attributed to the agent's own worktree branch by
+ * PATCH-ID (`git cherry`, not raw SHA, so a cherry-picked or rebased copy still
+ * matches). Stranded commits the agent demonstrably did not author — a read-only
+ * reasoner that never branched, or commits with no patch-equivalent on the
+ * agent's branch — are carried as `{ drifted: false, unattributed: true }`:
+ * warn-logged (unreviewed commits on `main` are worth surfacing) but not failed.
+ * The asymmetry is deliberate — a missed branch-jack still leaves a warn log and
+ * recoverable commits, while a false failure escalates to a human and dents the
+ * task type's success rate. (A checkout left on the WRONG BRANCH with nothing
+ * local-only strands no commit to attribute, and still reports its benign
+ * `git checkout <branch>` recovery as before — there is nothing to discard.)
  *
  * Two halves, deliberately split so they can sit on opposite ends of a run:
  * `capturePrimaryCheckoutState` stamps a baseline at spawn time (onto the agent
@@ -125,9 +127,12 @@ export async function capturePrimaryCheckoutState(checkoutPath) {
  * timed out — so the prose can say "moved" without asserting a count it doesn't
  * have.
  */
-async function countCommitsAhead(checkoutPath, baseHead, head) {
+async function countCommitsAhead(checkoutPath, baseHead, head, { noMerges = false } = {}) {
+  const args = ['rev-list', '--count'];
+  if (noMerges) args.push('--no-merges');
+  args.push(`${baseHead}..${head}`);
   const result = await execGit(
-    ['rev-list', '--count', `${baseHead}..${head}`],
+    args,
     checkoutPath,
     { ignoreExitCode: true, timeout: GIT_TIMEOUT_MS },
   ).catch(() => null);
@@ -185,19 +190,29 @@ async function resolveAgentBranchRef(checkoutPath, agentBranch) {
  * (unattributed), failing open by design. NON-THROWING, like the rest of the
  * module.
  */
-async function isDriftAttributableToAgent(checkoutPath, { strandedBase, driftedHead, strandedCount, agentBranch }) {
+async function isDriftAttributableToAgent(checkoutPath, { strandedBase, driftedHead, agentBranch }) {
   const agentRef = await resolveAgentBranchRef(checkoutPath, agentBranch);
   if (!agentRef) return false;
-  // A read-only reasoner's worktree branch resolves but carries no commit of its
-  // own (it never left the base), so it cannot have authored a stranded commit.
+  // Cheap short-circuit: a branch that carries no commit of its own past the
+  // stranded base (a read-only reasoner's untouched worktree branch) cannot have
+  // authored anything, so skip the cherry walk. `git cherry` reaches the same
+  // verdict on its own — this only avoids the extra call on the common case.
   const ownCommits = await countCommitsAhead(checkoutPath, strandedBase, agentRef);
   if (!ownCommits) return false;
-  // `git cherry <upstream> <head> <limit>` walks the stranded commits (`limit..head`)
-  // and prints a line for each that <upstream> (the agent's branch) does NOT already
-  // contain: `-` when a patch-equivalent copy exists there, `+` when the commit is
-  // foreign to it. Commits the agent's branch holds outright (same SHA) are omitted
-  // entirely. So a stranded commit is the agent's UNLESS git cherry marks it `+`;
-  // the drift is attributed unless EVERY stranded commit is foreign.
+  // Count the stranded NON-MERGE commits — matching what `git cherry` walks. A
+  // merge commit strays onto the primary via a human's `git merge` or a non-ff
+  // pull (never a `/do:pr` branch-jack), and `git cherry` skips it; counting it
+  // here would leave `stranded > foreign` true on arithmetic alone and re-blame
+  // the very false-positive this guard exists to prevent.
+  const strandedNonMerge = await countCommitsAhead(checkoutPath, strandedBase, driftedHead, { noMerges: true });
+  if (!strandedNonMerge) return false;
+  // `git cherry <upstream> <head> <limit>` walks the stranded non-merge commits
+  // (`limit..head`) and prints a line for each that <upstream> (the agent's
+  // branch) does NOT already contain: `-` when a patch-equivalent copy exists
+  // there, `+` when the commit is foreign to it. Commits the agent's branch holds
+  // outright (same SHA) are omitted entirely. So a stranded commit is the agent's
+  // UNLESS git cherry marks it `+`; the drift is attributed unless EVERY stranded
+  // non-merge commit is foreign.
   const cherry = await execGit(
     ['cherry', agentRef, driftedHead, strandedBase],
     checkoutPath,
@@ -205,7 +220,7 @@ async function isDriftAttributableToAgent(checkoutPath, { strandedBase, driftedH
   ).catch(() => null);
   if (!cherry || cherry.exitCode !== 0) return false;
   const foreign = (cherry.stdout || '').split('\n').filter(line => line.startsWith('+')).length;
-  return strandedCount > foreign;
+  return strandedNonMerge > foreign;
 }
 
 /** Short SHA for human-readable prose. */
@@ -273,7 +288,6 @@ export async function detectPrimaryCheckoutDrift(baseline, { agentBranch = null 
     const attributed = await isDriftAttributableToAgent(baseline.path, {
       strandedBase: upstream || baseline.head,
       driftedHead: current.head,
-      strandedCount,
       agentBranch,
     });
     if (!attributed) {

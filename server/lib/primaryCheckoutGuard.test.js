@@ -141,6 +141,30 @@ describe('detectPrimaryCheckoutDrift', () => {
     expect(verdict.suggestedFix).toBeUndefined();
   });
 
+  it('does not let a stranded MERGE commit inflate attribution into a false positive', async () => {
+    // A human `git merge` / non-ff pull strands `merge + N` commits on the primary,
+    // but `git cherry` only ever walks the N non-merge commits. Counting the merge
+    // among the stranded set would make `stranded > foreign` true on arithmetic
+    // alone and re-blame the agent for a merge it never made.
+    await addOrigin();
+    const agentBranch = 'cos/task-x/agent-y';
+    const baseline = await capturePrimaryCheckoutState(repo);
+    // The agent has a genuine commit of its own (passes the own-commits gate)...
+    await execGit(['checkout', '-b', agentBranch], repo);
+    await commit('the agent\'s own work');
+    // ...while a foreign branch is merged into the primary's main (non-ff → a merge
+    // commit), none of it patch-equivalent to the agent's commit.
+    await execGit(['checkout', 'main'], repo);
+    await execGit(['checkout', '-b', 'a-foreign-branch'], repo);
+    await commit('a foreign commit');
+    await execGit(['checkout', 'main'], repo);
+    await execGit(['merge', '--no-ff', '-m', 'Merge a-foreign-branch', 'a-foreign-branch'], repo);
+
+    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch });
+    expect(verdict.drifted).toBe(false);
+    expect(verdict.unattributed).toBe(true);
+  });
+
   it('never attributes a branch-jack to a read-only reasoner that never branched (Case A)', async () => {
     const baseline = await capturePrimaryCheckoutState(repo);
     // A 24-file commit lands on main mid-run, authored by another actor.
