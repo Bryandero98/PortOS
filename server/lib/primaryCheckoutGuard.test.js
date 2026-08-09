@@ -186,6 +186,33 @@ describe('detectPrimaryCheckoutDrift', () => {
     expect(verdict.unpushedCount).toBe(2);
   });
 
+  it('does not blame the agent for a shared upstream commit a pull brought in mid-run (#3703 regression)', async () => {
+    // The primary was BEHIND origin at spawn; the agent branch was cut from the newer
+    // origin (so it carries the shared commit R); during the run the primary pulls R and
+    // a foreign actor also strands F. R is on both the upstream and the agent branch, so
+    // `git cherry` omits it — anchoring only at the run baseline would still count it and
+    // blame the agent. Excluding upstream commits leaves F alone, which isn't the agent's.
+    await addOrigin();
+    const agentBranch = 'cos/task-x/agent-y';
+    const contributor = join(scratch, 'contributor-shared');
+    await execGit(['clone', join(scratch, 'origin.git'), contributor], scratch);
+    await execGit(['config', 'user.email', 'other@example.com'], contributor);
+    await execGit(['config', 'user.name', 'Other Contributor'], contributor);
+    await writeFile(join(contributor, 'shared-R.txt'), 'shared upstream R');
+    await execGit(['add', '-A'], contributor);
+    await execGit(['commit', '-m', 'shared upstream R'], contributor);
+    await execGit(['push', 'origin', 'main'], contributor);
+    await execGit(['fetch', 'origin'], repo);
+    await execGit(['branch', agentBranch, 'origin/main'], repo); // agent branch carries R
+    const baseline = await capturePrimaryCheckoutState(repo); // primary still BEHIND, at the initial commit
+    await execGit(['merge', '--ff-only', 'origin/main'], repo); // the run pulls R onto the primary
+    await commit('a foreign actor commit'); // ...and a foreign commit strands alongside it
+
+    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch });
+    expect(verdict.drifted).toBe(false);
+    expect(verdict.unattributed).toBe(true);
+  });
+
   it('never attributes a branch-jack to a read-only reasoner that never branched (Case A)', async () => {
     const baseline = await capturePrimaryCheckoutState(repo);
     // A 24-file commit lands on main mid-run, authored by another actor.
