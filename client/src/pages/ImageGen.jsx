@@ -649,6 +649,17 @@ export default function ImageGen() {
     () => activeReferenceImages.filter((s) => s.file != null),
     [activeReferenceImages],
   );
+  // Populated slots the active backend can't take, because the cap shrank after
+  // they were filled — an init image ate one of Agy's 3, or the user switched to
+  // a narrower backend. They deliberately stay in state (see above), but they
+  // are NOT submitted, and a reference the user picked disappearing from the
+  // render with no explanation is exactly the silent drop the server refuses to
+  // perform (it 400s TOO_MANY_INPUT_IMAGES rather than keeping the first N).
+  // The form must not do quietly what the server declines to do at all.
+  const droppedRefCount = useMemo(
+    () => referenceImages.slice(referenceSlotCount).filter((s) => s.file != null).length,
+    [referenceImages, referenceSlotCount],
+  );
   // Cloud text-to-image still needs a prompt — mirror the server rule
   // (cloudPromptRequired: codex/grok can run image-only, agy always needs a
   // Prompt) so the user sees a disabled button + hint instead of a failed job
@@ -1289,6 +1300,16 @@ export default function ImageGen() {
               onBrowse={(slot) => setGalleryPicker({ kind: 'reference', slot })}
               disabled={statusLoading}
             />
+          )}
+
+          {droppedRefCount > 0 && (
+            <p className="text-xs text-amber-400" role="status">
+              {droppedRefCount} reference image{droppedRefCount === 1 ? '' : 's'} you picked
+              {droppedRefCount === 1 ? " won't" : " won't"} be sent — {isLocalMode ? 'this model' : cloudModeLabel} takes {referenceSlotCount}
+              {referenceSlotCount === 1 ? ' reference' : ' references'} here
+              {initImage.source != null && referenceSlotCount > 0 ? ', and the init image already uses a slot' : ''}.
+              {' '}They stay selected if you clear the init image or switch backends.
+            </p>
           )}
 
           <div className="flex items-center gap-2 pt-1 flex-wrap">
