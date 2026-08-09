@@ -1,8 +1,8 @@
 // Inline "Available · 7.8 GB" / "Download (~8 GB)" badge for the image and
 // video gen model pickers. Drops below the model <select> so the user can
 // see — before hitting Render — whether their pick still needs a multi-GB
-// HF pull. Hitting Render is NOT blocked: lazy download remains the
-// fallback, so a user who just wants to fire and wait can keep doing that.
+// HF pull. Local generation forms block until required weights are present,
+// keeping downloads explicit and recoverable instead of hiding them in render.
 //
 // Three render states:
 //   1. cached     → green CheckCircle, "Available · <size>"

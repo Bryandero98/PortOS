@@ -51,7 +51,10 @@ vi.mock('../services/videoGen/local.js', () => ({
   BYOV_RUNTIME_INFO: { ltx2: { id: 'ltx2', label: 'LTX-2 MLX', venvPython: '/tmp/x.py', installEnvVar: 'X', repoUrl: 'x', repoDir: '/tmp' } },
   isByovRuntimeInstalled: vi.fn(() => false),
   isByovRuntimeReady: vi.fn(async () => false),
+  isByovRuntimeCurrent: vi.fn(async () => false),
   invalidateByovReadyCache: vi.fn(),
+  invalidateRuntimeFingerprintCache: vi.fn(),
+  resolveRuntimeFingerprint: vi.fn(async () => null),
 }));
 
 vi.mock('../services/mediaJobQueue/index.js', () => ({

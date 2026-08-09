@@ -151,6 +151,44 @@ export async function findCachedRepoFile(repoId, filename) {
   return stat && stat.size > 0 ? candidate : null;
 }
 
+// Verify an explicit file subset inside an aggregate HF repo without walking
+// unrelated siblings. Lightning repositories commonly contain many adapters;
+// a PortOS profile needs only its pinned high/low-noise pair.
+export async function verifyCachedRepoFiles(repoId, filenames, { deep = false } = {}) {
+  const base = {
+    repoId, status: 'missing', cached: false, sizeBytes: 0,
+    snapshotPath: null, checkedDeep: deep, files: [],
+  };
+  const wanted = Array.isArray(filenames)
+    ? filenames.filter((name) => typeof name === 'string' && name.length > 0)
+    : [];
+  if (!repoId || wanted.length === 0) return base;
+  const snapshotPath = await latestSnapshotDir(join(getHfCacheRoot(), repoToDirName(repoId)));
+  if (!snapshotPath) return base;
+  const files = await Promise.all(wanted.map((name) => verifyWeightFile({ name, path: join(snapshotPath, name) }, { deep })));
+  const anyBad = files.some((file) => !file.ok);
+  const anyMissing = files.some((file) => file.reason === 'missing-blob');
+  return {
+    repoId,
+    status: anyMissing ? 'missing' : (anyBad ? 'bad' : 'ok'),
+    cached: !anyBad,
+    sizeBytes: files.filter((file) => file.ok).reduce((sum, file) => sum + (file.sizeBytes || 0), 0),
+    snapshotPath,
+    checkedDeep: deep,
+    files,
+  };
+}
+
+export async function repairCachedRepoFiles(repoId, filenames, { deep = false } = {}) {
+  const verify = await verifyCachedRepoFiles(repoId, filenames, { deep });
+  if (verify.status !== 'bad') return { repoId, status: verify.status, deleted: [] };
+  const deleted = [];
+  for (const file of verify.files.filter((entry) => !entry.ok)) {
+    if (await repairCachedFile(file.path)) deleted.push(file.name);
+  }
+  return { repoId, status: 'bad', deleted };
+}
+
 // ---------------------------------------------------------------------------
 // Weight-integrity verification (issue #1324)
 //

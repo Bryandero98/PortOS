@@ -384,6 +384,33 @@ async function resolvePreparedParams({
       { status: 400, code: 'A2V_REQUIRES_LTX2' },
     );
   }
+  // Wan profiles have narrower mode + temporal-shape contracts than the
+  // shared request schema can express. Mirror the worker's guards here so a
+  // direct API caller cannot persist a job that is already known to fail.
+  // This runs before durable upload staging, keeping rejection cleanup cheap.
+  if (effectiveModel?.runtime === 'wan22') {
+    const requestedMode = body.mode
+      || (uploads.sourceImage || body.sourceImageFile ? 'image' : 'text');
+    const supportedModes = Array.isArray(effectiveModel.supportedModes)
+      ? effectiveModel.supportedModes
+      : [];
+    if (!supportedModes.includes(requestedMode)) {
+      await cleanupStaged();
+      throw new ServerError(
+        `${effectiveModel.name} does not support ${requestedMode}-to-video. Choose a compatible Wan model.`,
+        { status: 400, code: 'WAN22_MODE_UNSUPPORTED' },
+      );
+    }
+    const numFrames = body.numFrames != null ? Number(body.numFrames) : DEFAULT_NUM_FRAMES;
+    const frameStride = Number(effectiveModel.frameStride);
+    if (Number.isFinite(frameStride) && frameStride > 0 && (numFrames - 1) % frameStride !== 0) {
+      await cleanupStaged();
+      throw new ServerError(
+        `${effectiveModel.name} requires a ${frameStride}n+1 frame count; got ${numFrames}.`,
+        { status: 400, code: 'WAN22_INVALID_FRAME_COUNT' },
+      );
+    }
+  }
 
   let sourceImagePath = null;
   let lastImagePath = null;

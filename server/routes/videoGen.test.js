@@ -57,6 +57,7 @@ vi.mock('../services/videoGen/local.js', () => ({
   },
   isByovRuntimeInstalled: vi.fn(() => false),
   isByovRuntimeReady: vi.fn(async () => false),
+  isByovRuntimeCurrent: vi.fn(async () => false),
   invalidateByovReadyCache: vi.fn(),
   invalidateRuntimeFingerprintCache: vi.fn(),
   // /status now surfaces a runtime block (host chip/os + per-runtime versions).

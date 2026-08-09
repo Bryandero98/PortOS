@@ -12,6 +12,7 @@ import { VIDEO_TILING_ENUM_SET } from '../lib/videoTilingOptions';
 import {
   VIDEO_EDGE_BOUNDS,
   videoModelMemoryGb, computeFflfSafeFrames, isModelAllowedForMode,
+  normalizeFramesForModel, normalizeFpsForModel,
   icLoraSpecForMode, icResolutionIssue,
 } from '../lib/videoGenParams.js';
 
@@ -348,6 +349,15 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
 
   const currentModel = models.find((m) => m.id === modelId);
 
+  // Remix/deep-link/resume paths set model + sampler fields independently.
+  // Reconcile them once the model is known so a legacy LTX 8n+1 frame count
+  // cannot reach a Wan 4n+1 runner (and a model-specific fps stays selectable).
+  useEffect(() => {
+    if (!currentModel) return;
+    setNumFrames((current) => normalizeFramesForModel(current, currentModel));
+    setFps((current) => normalizeFpsForModel(current, currentModel));
+  }, [currentModel]);
+
   // Video-LoRA family for the selected model — 'ltx-video' on ltx2, else null.
   // When null the picker is hidden and no LoRAs ride along on submit (the
   // route would 400 with LORAS_REQUIRE_LTX2). Derived, not state, so it tracks
@@ -464,7 +474,12 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   // per-model defaults, and carrying one model's numbers onto another is
   // usually wrong.
   const handleModelChange = (nextId) => {
-    setModelId(nextId); setSteps(''); setGuidanceScale('');
+    const nextModel = models.find((model) => model.id === nextId);
+    setModelId(nextId);
+    setNumFrames((current) => normalizeFramesForModel(current, nextModel));
+    setFps((current) => normalizeFpsForModel(current, nextModel));
+    setSteps('');
+    setGuidanceScale('');
   };
 
   const dropSourceImageParam = () => {

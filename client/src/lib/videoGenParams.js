@@ -12,6 +12,20 @@
 // see the hint under the Frames dropdown.
 export const FRAME_OPTIONS = [25, 49, 73, 97, 121, 145, 169, 193, 217, 241, 265, 313, 361, 481];
 export const FPS_OPTIONS = [16, 24, 30];
+export const WAN_FRAME_OPTIONS = [25, 41, 49, 61, 81, 101, 121, 161, 201, 241, 321, 481];
+
+export const frameOptionsForModel = (model) => Number(model?.frameStride) === 4
+  ? WAN_FRAME_OPTIONS
+  : FRAME_OPTIONS;
+export const fpsOptionsForModel = (model) => Array.isArray(model?.fpsOptions) && model.fpsOptions.length > 0
+  ? model.fpsOptions
+  : FPS_OPTIONS;
+const nearestOption = (value, options) => options.reduce(
+  (best, option) => Math.abs(option - Number(value)) < Math.abs(best - Number(value)) ? option : best,
+  options[0],
+);
+export const normalizeFramesForModel = (value, model) => nearestOption(value, frameOptionsForModel(model));
+export const normalizeFpsForModel = (value, model) => nearestOption(value, fpsOptionsForModel(model));
 
 // Per-edge bounds for video: mirrors the videoGen route (64..2048) and the
 // server's floor-to-multiple-of-64 (generateVideo in local.js). Shared by the
@@ -127,5 +141,8 @@ export const icResolutionIssue = (spec, width, height) => {
 export const isModelAllowedForMode = (model, mode) => {
   if (!model) return false;
   if (mode === 'a2v' || isIcLoraMode(mode)) return model.runtime === 'ltx2';
+  if (model.runtime === 'wan22') {
+    return Array.isArray(model.supportedModes) && model.supportedModes.includes(mode);
+  }
   return true;
 };

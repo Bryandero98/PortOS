@@ -37,14 +37,14 @@ from pathlib import Path
 
 # `huggingface_hub` is installed in the FLUX.2 venv (and any mflux venv) —
 # the caller picks the python binary that has it. Import errors surface as
-# a USER_ERROR with a clear "venv missing huggingface_hub" message so the
-# UI can route the user to the FLUX.2 install banner.
+# a USER_ERROR with a clear "runtime missing huggingface_hub" message so the
+# UI can route the user to the applicable model setup panel.
 try:
     from huggingface_hub import HfApi, hf_hub_download
     from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
 except Exception as err:  # noqa: BLE001
     print(f"USER_ERROR:venv_missing_hf_hub:{err}", file=sys.stderr, flush=True)
-    print("❌ Python venv is missing huggingface_hub. Run the FLUX.2 install from Image Gen settings.", file=sys.stderr, flush=True)
+    print("❌ The selected model runtime is missing huggingface_hub. Use Install / Repair in the Media Generation UI.", file=sys.stderr, flush=True)
     sys.exit(2)
 
 
@@ -98,7 +98,7 @@ def main() -> int:
             files = api.list_repo_files(args.repo, revision=args.revision, token=token)
         except GatedRepoError:
             print(f"USER_ERROR:gated_repo:{args.repo}", file=sys.stderr, flush=True)
-            print(f"❌ Access to {args.repo} is gated. Accept the license at https://huggingface.co/{args.repo} and paste your HuggingFace token into Image Gen settings, then retry.", file=sys.stderr, flush=True)
+            print(f"❌ Access to {args.repo} is gated. Accept the license at https://huggingface.co/{args.repo} and save your Hugging Face token in Media Generation settings, then retry.", file=sys.stderr, flush=True)
             return 2
         except RepositoryNotFoundError:
             print(f"USER_ERROR:repo_not_found:{args.repo}", file=sys.stderr, flush=True)
@@ -109,7 +109,7 @@ def main() -> int:
             # as token-rejected so the UI can prompt for a new HF_TOKEN.
             if "401" in str(err) or "Unauthorized" in str(err):
                 print(f"USER_ERROR:hf_unauthorized:{args.repo}", file=sys.stderr, flush=True)
-                print(f"❌ HuggingFace rejected the token. Update HF_TOKEN in Image Gen settings.", file=sys.stderr, flush=True)
+                print("❌ Hugging Face rejected the token. Replace it in Media Generation settings, then retry.", file=sys.stderr, flush=True)
                 return 2
             print(f"USER_ERROR:list_failed:{args.repo}", file=sys.stderr, flush=True)
             print(f"❌ Failed to list {args.repo}: {err}", file=sys.stderr, flush=True)
@@ -152,7 +152,7 @@ def main() -> int:
             resolved = hf_hub_download(**download_kwargs)
         except GatedRepoError:
             print(f"USER_ERROR:gated_repo:{args.repo}", file=sys.stderr, flush=True)
-            print(f"❌ {args.repo} is gated. Accept the license + paste your HF token.", file=sys.stderr, flush=True)
+            print(f"❌ {args.repo} is gated. Accept its license, save your Hugging Face token in Media Generation settings, then retry.", file=sys.stderr, flush=True)
             return 2
         except Exception as err:  # noqa: BLE001
             print(f"USER_ERROR:download_failed:{filename}", file=sys.stderr, flush=True)

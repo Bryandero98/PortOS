@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('./hfCache.js', () => ({
   inspectModelCache: vi.fn(async () => ({ cached: true, sizeBytes: 100, snapshotPath: '/snap' })),
+  findCachedRepoFile: vi.fn(async () => null),
 }));
 
 vi.mock('./hfDownload.js', () => ({
@@ -358,5 +359,25 @@ describe('startHfDownloadStream repos (ALL must succeed)', () => {
 
     const parsed = parseFrames(frames);
     expect(parsed.at(-1)).toMatchObject({ type: 'complete', repos: ['org/repo-a', 'org/repo-b'], sizeBytes: 200 });
+  });
+
+  it('downloads only the exact files declared by a required aggregate target', async () => {
+    downloadHfRepo.mockReturnValue({ promise: Promise.resolve({ ok: true, sizeBytes: 50 }), kill: vi.fn() });
+    const { req, res, frames } = makeReqRes();
+    await startHfDownloadStream({
+      req,
+      res,
+      repos: [
+        { repo: 'org/base', only: [] },
+        { repo: 'org/adapters', only: ['profile/high.safetensors', 'profile/low.safetensors'] },
+      ],
+      pythonPath: '/runtime/bin/python3',
+    });
+    expect(downloadHfRepo).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      repo: 'org/adapters',
+      only: ['profile/high.safetensors', 'profile/low.safetensors'],
+      pythonPath: '/runtime/bin/python3',
+    }));
+    expect(parseFrames(frames).at(-1)).toMatchObject({ type: 'complete' });
   });
 });

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import {
   inspectModelCache, getHfCacheRoot, isModelCached,
   verifyModelCache, repairModelCache, findCachedRepoFile, repairCachedFile,
+  verifyCachedRepoFiles, repairCachedRepoFiles,
 } from './hfCache.js';
 
 // Build a minimal *valid* .safetensors buffer: 8-byte LE header length, a JSON
@@ -433,5 +434,60 @@ describe('repairCachedFile', () => {
   it('reports false for a path that is not there', async () => {
     expect(await repairCachedFile('/nope/missing.safetensors')).toBe(false);
     expect(await repairCachedFile(null)).toBe(false);
+  });
+});
+
+describe('exact-file aggregate verification', () => {
+  const cleanup = [];
+  let previousCache;
+  beforeEach(() => { previousCache = process.env.HF_HUB_CACHE; });
+  afterEach(() => {
+    if (previousCache === undefined) delete process.env.HF_HUB_CACHE;
+    else process.env.HF_HUB_CACHE = previousCache;
+    for (const dir of cleanup.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('requires every pinned file without inspecting unrelated siblings', async () => {
+    const { root } = buildContentCache({
+      repoId: 'org/lightning',
+      files: {
+        'high.safetensors': { content: buildSafetensors() },
+        'low.safetensors': { content: buildSafetensors() },
+        'unrelated.safetensors': { content: Buffer.from('not safetensors') },
+      },
+    });
+    cleanup.push(root);
+    process.env.HF_HUB_CACHE = root;
+    const result = await verifyCachedRepoFiles('org/lightning', ['high.safetensors', 'low.safetensors']);
+    expect(result.status).toBe('ok');
+    expect(result.files.map((file) => file.name)).toEqual(['high.safetensors', 'low.safetensors']);
+  });
+
+  it('reports a missing pinned file as not cached', async () => {
+    const { root } = buildContentCache({
+      repoId: 'org/lightning',
+      files: { 'high.safetensors': { content: buildSafetensors() } },
+    });
+    cleanup.push(root);
+    process.env.HF_HUB_CACHE = root;
+    const result = await verifyCachedRepoFiles('org/lightning', ['high.safetensors', 'low.safetensors']);
+    expect(result.status).toBe('missing');
+    expect(result.cached).toBe(false);
+  });
+
+  it('repairs only a corrupt pinned file', async () => {
+    const { root, snapDir } = buildContentCache({
+      repoId: 'org/lightning',
+      files: {
+        'high.safetensors': { content: buildSafetensors({ truncateBy: 4 }) },
+        'low.safetensors': { content: buildSafetensors() },
+      },
+    });
+    cleanup.push(root);
+    process.env.HF_HUB_CACHE = root;
+    const result = await repairCachedRepoFiles('org/lightning', ['high.safetensors', 'low.safetensors']);
+    expect(result.deleted).toEqual(['high.safetensors']);
+    expect(existsSync(join(snapDir, 'high.safetensors'))).toBe(false);
+    expect(existsSync(join(snapDir, 'low.safetensors'))).toBe(true);
   });
 });

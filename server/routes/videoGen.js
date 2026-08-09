@@ -27,6 +27,7 @@ import {
   BYOV_RUNTIME_INFO,
   isByovRuntimeInstalled,
   isByovRuntimeReady,
+  isByovRuntimeCurrent,
   invalidateByovReadyCache,
   invalidateRuntimeFingerprintCache,
   resolveRuntimeFingerprint,
@@ -45,7 +46,10 @@ import {
   IC_LORA_MODE_VALUES, icLoraSpecForMode, icLoraRepos, listIcLoraWeights,
   icLoraWeightCandidates, findCachedIcLoraWeight,
 } from '../lib/icLoraWeights.js';
-import { inspectModelCache, verifyModelCache, repairModelCache, repairCachedFile, summarizeVerify } from '../lib/hfCache.js';
+import {
+  inspectModelCache, verifyModelCache, repairModelCache, repairCachedFile,
+  verifyCachedRepoFiles, repairCachedRepoFiles, summarizeVerify, aggregateVerifies,
+} from '../lib/hfCache.js';
 import { startHfDownloadStream, openSseStream } from '../lib/sseDownload.js';
 import { createInstallLogger } from '../lib/installLogger.js';
 
@@ -343,12 +347,15 @@ router.get('/setup/runtime-status', asyncHandler(async (req, res) => {
   }
   const binaryPresent = isByovRuntimeInstalled(info.id);
   const packagesReady = binaryPresent ? await isByovRuntimeReady(info.id) : false;
+  const current = packagesReady ? await isByovRuntimeCurrent(info.id) : false;
   res.json({
     runtime: info.id,
     label: info.label,
-    installed: binaryPresent && packagesReady,
+    installed: binaryPresent && packagesReady && current,
     binaryPresent,
     packagesReady,
+    current,
+    upgradeAvailable: binaryPresent && packagesReady && !current,
     venvPath: info.venvPython,
     repoDir: info.repoDir,
     repoUrl: info.repoUrl,
@@ -387,10 +394,14 @@ router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
     return safeEnd();
   }
   runtimeInstallInFlight.set(info.id, null);
-  // Skip ONLY when both the binary AND the import probe pass. A venv with a
-  // python binary but no torch is the partial-install case the user is
-  // explicitly re-triggering us to fix — short-circuiting would strand them.
-  if (isByovRuntimeInstalled(info.id) && await isByovRuntimeReady(info.id)) {
+  // Skip ONLY when the binary, import probe, AND immutable revision all pass.
+  // A partial install needs Repair, while a healthy checkout on an older pin
+  // needs Upgrade; treating either as "already installed" strands the user
+  // behind a button that can never perform the action it advertises.
+  const alreadyInstalled = isByovRuntimeInstalled(info.id);
+  const alreadyReady = alreadyInstalled && await isByovRuntimeReady(info.id);
+  const alreadyCurrent = alreadyReady && await isByovRuntimeCurrent(info.id);
+  if (alreadyInstalled && alreadyReady && alreadyCurrent) {
     runtimeInstallInFlight.delete(info.id);
     send({ type: 'log', message: `${info.label} already installed at ${info.venvPython}` });
     send({ type: 'complete', message: 'Already installed — nothing to do.' });
@@ -455,12 +466,15 @@ router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
     // success message can't lie. The banner gate uses the same probe.
     const binaryPresent = isByovRuntimeInstalled(info.id);
     const packagesReady = binaryPresent && await isByovRuntimeReady(info.id);
-    if (code === 0 && binaryPresent && packagesReady) {
+    const current = packagesReady && await isByovRuntimeCurrent(info.id);
+    if (code === 0 && binaryPresent && packagesReady && current) {
       emit({ type: 'complete', message: `${info.label} ready: ${info.venvPython}` });
     } else if (code === 0 && !binaryPresent) {
-      emit({ type: 'error', message: `Installer exited 0 but ${info.venvPython} is still missing. Re-run from a terminal to see what happened.` });
+      emit({ type: 'error', message: `Installer exited 0 but the runtime is still missing. Review the log above, then use Repair in this panel.` });
     } else if (code === 0) {
-      emit({ type: 'error', message: `Installer exited 0 but the venv can't import its core packages. Check the log above for pip errors; re-run from a terminal if needed.` });
+      emit({ type: 'error', message: packagesReady
+        ? 'Installer exited 0 but the runtime is still on an outdated revision. Review the source-update log above, then use Repair in this panel.'
+        : `Installer exited 0 but the runtime can't import its core packages. Review the package errors above, then use Repair in this panel.` });
     } else {
       emit({ type: 'error', message: `Installer exited with code ${code}.` });
     }
@@ -506,20 +520,39 @@ router.get('/models', (_req, res) => {
 // Resolve the repo set an integrity scan should cover. A specific `modelId`
 // scopes to that model's repo; no modelId scans every model repo plus the
 // shared text encoder.
+const modelDownloadTargets = (model) => {
+  const repo = repoForModel(model);
+  if (!repo) return [];
+  const targets = [{ repo, only: [] }];
+  for (const dep of Array.isArray(model?.requiredWeights) ? model.requiredWeights : []) {
+    if (typeof dep?.repo !== 'string') continue;
+    const only = Array.isArray(dep.files) ? dep.files.filter((file) => typeof file === 'string' && file.length > 0) : [];
+    if (only.length > 0) targets.push({ repo: dep.repo, only });
+  }
+  return targets;
+};
+
+const targetKey = (target) => `${target.repo}::${target.only.join(',')}`;
+const verifyDownloadTarget = (target, { deep = false } = {}) => target.only.length > 0
+  ? verifyCachedRepoFiles(target.repo, target.only, { deep })
+  : verifyModelCache(target.repo, { deep });
+const repairDownloadTarget = (target, { deep = false } = {}) => target.only.length > 0
+  ? repairCachedRepoFiles(target.repo, target.only, { deep })
+  : repairModelCache(target.repo, { deep });
+
 const reposToVerify = (modelId) => {
   if (modelId) {
     const m = listVideoModels().find((x) => x.id === modelId);
-    const repo = m ? repoForModel(m) : null;
-    return repo ? [repo] : [];
+    return m ? modelDownloadTargets(m) : [];
   }
-  const repos = listVideoModels().map(repoForModel).filter(Boolean);
+  const targets = listVideoModels().flatMap(modelDownloadTargets);
   const enc = getTextEncoderRepo();
-  if (isHfRepoId(enc)) repos.push(enc);
+  if (isHfRepoId(enc)) targets.push({ repo: enc, only: [] });
   // IC-LoRA remix weights are separate HF pulls that the render path depends
   // on, so an unscoped integrity scan must cover them too — otherwise a
   // corrupt IC weight only surfaces as a garbled render.
-  repos.push(...icLoraRepos());
-  return [...new Set(repos)];
+  targets.push(...icLoraRepos().map((repo) => ({ repo, only: [] })));
+  return [...new Map(targets.map((target) => [targetKey(target), target])).values()];
 };
 
 // Per-model download status — see /api/image-gen/models/status for the
@@ -536,17 +569,35 @@ const repoCacheStatus = async (repo) => {
   return { cached, sizeBytes, integrity: cached ? summarizeVerify(await verifyModelCache(repo)) : null };
 };
 
+const modelCacheStatus = async (model, cache = null) => {
+  const targets = modelDownloadTargets(model);
+  if (targets.length === 0) return { repo: null, cached: null, sizeBytes: 0, integrity: null };
+  const readTarget = (target) => {
+    if (!cache) return verifyDownloadTarget(target);
+    const key = targetKey(target);
+    if (!cache.has(key)) cache.set(key, verifyDownloadTarget(target));
+    return cache.get(key);
+  };
+  const verifies = await Promise.all(targets.map(readTarget));
+  return {
+    repo: targets[0].repo,
+    requiredRepos: [...new Set(targets.map((target) => target.repo))],
+    cached: verifies.every((verify) => verify.status === 'ok'),
+    sizeBytes: verifies.reduce((sum, verify) => sum + (verify.sizeBytes || 0), 0),
+    integrity: aggregateVerifies(verifies),
+  };
+};
+
 router.get('/models/status', asyncHandler(async (_req, res) => {
   // Text encoder is shared across all video renders. A registry entry with
   // `localPath` (e.g. an LM Studio install) trumps the HF cache check, so
   // surface both the repo-cache status and the resolved local path so the UI
   // can distinguish "not downloaded" from "served from LM Studio".
   const encoderRepo = getTextEncoderRepo();
+  const verifyCache = new Map();
   const [models, textEncoder, icLoras] = await Promise.all([
     Promise.all(listVideoModels().map(async (m) => {
-      const repo = repoForModel(m);
-      if (!repo) return { id: m.id, repo: null, cached: null, sizeBytes: 0, integrity: null };
-      return { id: m.id, repo, ...await repoCacheStatus(repo) };
+      return { id: m.id, ...await modelCacheStatus(m, verifyCache) };
     })),
     (async () => {
       if (!isHfRepoId(encoderRepo)) return { repo: encoderRepo, cached: true, sizeBytes: 0, integrity: null };
@@ -604,7 +655,7 @@ router.post('/models/verify', asyncHandler(async (req, res) => {
   if (modelId && repos.length === 0) {
     throw new ServerError(`Unknown video model: ${modelId}`, { status: 404, code: 'UNKNOWN_MODEL' });
   }
-  const results = await Promise.all(repos.map(async (repo) => verifyModelCache(repo, { deep })));
+  const results = await Promise.all(repos.map((target) => verifyDownloadTarget(target, { deep })));
   res.json({ deep, models: results.map((r) => ({ repo: r.repoId, ...summarizeVerify(r) })) });
 }));
 
@@ -623,17 +674,19 @@ router.post('/models/:modelId/repair', asyncHandler(async (req, res) => {
   if (repos.length === 0) {
     throw new ServerError(`Model "${model.id}" has no HuggingFace repo on file.`, { status: 400, code: 'NO_REPO_FOR_MODEL' });
   }
-  const repaired = await Promise.all(repos.map((repo) => repairModelCache(repo, { deep })));
+  const repaired = await Promise.all(repos.map((target) => repairDownloadTarget(target, { deep })));
   const deleted = repaired.flatMap((r) => r.deleted.map((name) => ({ repo: r.repoId, name })));
-  res.json({ deep, deleted, repos });
+  res.json({ deep, deleted, repos: [...new Set(repos.map((target) => target.repo))] });
 }));
 
 router.get('/models/:modelId/download', asyncHandler(async (req, res) => {
   const model = listVideoModels().find((m) => m.id === req.params.modelId);
   if (!model) throw new ServerError(`Unknown video model: ${req.params.modelId}`, { status: 404 });
-  const repo = repoForModel(model);
-  if (!repo) throw new ServerError(`Model "${model.id}" has no HuggingFace repo on file.`, { status: 400, code: 'NO_REPO_FOR_MODEL' });
-  await startHfDownloadStream({ req, res, repo, force: req.query.force === '1' });
+  const repos = modelDownloadTargets(model);
+  if (repos.length === 0) throw new ServerError(`Model "${model.id}" has no HuggingFace repo on file.`, { status: 400, code: 'NO_REPO_FOR_MODEL' });
+  const runtimeInfo = BYOV_RUNTIME_INFO[model.runtime];
+  const pythonPath = runtimeInfo && await isByovRuntimeReady(model.runtime) ? runtimeInfo.venvPython : null;
+  await startHfDownloadStream({ req, res, repos, pythonPath, force: req.query.force === '1' });
 }));
 
 // IC-LoRA remix weights (issue #3100) get their own download/repair pair for

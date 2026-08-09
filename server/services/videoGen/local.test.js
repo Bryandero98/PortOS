@@ -42,6 +42,23 @@ vi.mock('../../lib/mediaModels.js', () => ({
     { id: 'ltx23_unified', name: 'LTX-2.3 Unified Beta', runtime: 'mlx_video', repo: 'notapalindrome/ltx23-mlx-av', steps: 25, guidance: 3.0 },
     // quantized mlx_video model — NOT LoRA-capable (out of scope).
     { id: 'ltx23_distilled_q4', name: 'LTX-2.3 Distilled Q4', runtime: 'mlx_video', repo: 'notapalindrome/ltx23-mlx-av-q4', steps: 25, guidance: 3.0 },
+    {
+      id: 'wan22_ti2v_5b', name: 'Wan TI2V', runtime: 'wan22',
+      repo: 'AbstractFramework/wan2.2-ti2v-5b-diffusers-8bit',
+      supportedModes: ['text', 'image'], frameStride: 4, steps: 25, guidance: 5,
+      guidance2: null, flowShift: 3, solver: 'unipc',
+    },
+    {
+      id: 'wan22_t2v_a14b_lightning', name: 'Wan T2V Lightning', runtime: 'wan22',
+      repo: 'AbstractFramework/wan2.2-t2v-a14b-diffusers-8bit',
+      supportedModes: ['text'], frameStride: 4, steps: 4, guidance: 1,
+      guidance2: 1, flowShift: 5, solver: 'euler', samplerLocked: true,
+      requiredWeights: [{
+        repo: 'lightx2v/Wan2.2-Lightning',
+        files: ['profile/high.safetensors', 'profile/low.safetensors'],
+        targetRoles: ['high_noise_transformer', 'low_noise_transformer'],
+      }],
+    },
   ]),
   getDefaultVideoModelId: vi.fn(() => 'ltx2_unified'),
   getTextEncoderRepo: vi.fn(() => 'some/text-encoder'),
@@ -1451,6 +1468,47 @@ describe('generateVideo — close-handler resilience (issue #1334)', () => {
     expect(evt.error).toMatch(/boom finalize/);
 
     vi.doUnmock('./generateVideoHelpers.js');
+  });
+});
+
+describe('generateVideo — Wan MLX-Gen contract', () => {
+  it('passes the locked Lightning sampler and exact high/low adapter pair', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+    await generateVideo({
+      jobId: 'wan-lightning-args',
+      modelId: 'wan22_t2v_a14b_lightning',
+      prompt: 'a starship lifts off',
+      negativePrompt: 'blur',
+      width: 480, height: 256, numFrames: 81, fps: 20,
+      steps: 99, guidanceScale: 9, mode: 'text',
+    });
+    const call = spawnMock.mock.calls.find(([, args]) => Array.isArray(args) && args.some((arg) => String(arg).endsWith('/generate_wan22.py')));
+    expect(call).toBeDefined();
+    const args = call[1];
+    expect(args[args.indexOf('--steps') + 1]).toBe('4');
+    expect(args[args.indexOf('--guidance') + 1]).toBe('1');
+    expect(args[args.indexOf('--guidance-2') + 1]).toBe('1');
+    expect(args[args.indexOf('--flow-shift') + 1]).toBe('5');
+    expect(args[args.indexOf('--solver') + 1]).toBe('euler');
+    expect(args.filter((arg) => arg === '--lora-path')).toHaveLength(2);
+    expect(args).toContain('lightx2v/Wan2.2-Lightning:profile/high.safetensors');
+    expect(args).toContain('high_noise_transformer');
+  });
+
+  it('rejects a Wan model in an unsupported mode before spawn', async () => {
+    await expect(generateVideo({
+      modelId: 'wan22_t2v_a14b_lightning', prompt: 'test',
+      width: 480, height: 256, numFrames: 81, fps: 20, mode: 'image',
+    })).rejects.toMatchObject({ code: 'WAN22_MODE_UNSUPPORTED' });
+  });
+
+  it('rejects a non-4n+1 Wan frame count', async () => {
+    await expect(generateVideo({
+      modelId: 'wan22_ti2v_5b', prompt: 'test',
+      width: 480, height: 256, numFrames: 82, fps: 20, mode: 'text',
+    })).rejects.toMatchObject({ code: 'WAN22_INVALID_FRAME_COUNT' });
   });
 });
 

@@ -6,7 +6,7 @@
 // FLUX-family repos referenced by both image and video gen would otherwise
 // spawn two concurrent children.
 
-import { inspectModelCache } from './hfCache.js';
+import { findCachedRepoFile, inspectModelCache } from './hfCache.js';
 import { downloadHfRepo } from './hfDownload.js';
 import { SSE_HEADERS } from './sseHeaders.js';
 
@@ -29,7 +29,7 @@ export function openSseStream(res) {
   return { send, safeEnd };
 }
 
-export async function startHfDownloadStream({ req, res, repo, repos, fallbacks, cachedFile = null, alreadyDownloadedMessage, force = false }) {
+export async function startHfDownloadStream({ req, res, repo, repos, fallbacks, cachedFile = null, alreadyDownloadedMessage, force = false, pythonPath = null }) {
   // Three input shapes, two semantics:
   //  - `repo` (single string) / `repos` (ordered array) — ALL must succeed. Used
   //    when a model has auxiliary repos that must be present alongside the main
@@ -51,14 +51,17 @@ export async function startHfDownloadStream({ req, res, repo, repos, fallbacks, 
   // user doesn't have. Callers pass an async `() => boolean` that checks the one
   // file instead.
   const normalizeOnly = (v) => (Array.isArray(v) ? v.filter((f) => typeof f === 'string' && f.length > 0) : []);
+  const normalizeTarget = (target) => {
+    if (typeof target === 'string' && target.length > 0) return { repo: target, only: [] };
+    if (!target || typeof target.repo !== 'string' || target.repo.length === 0) return null;
+    return { repo: target.repo, only: normalizeOnly(target.only) };
+  };
   const firstSuccessWins = Array.isArray(fallbacks);
   const targets = firstSuccessWins
     ? fallbacks
       .filter((t) => t && typeof t.repo === 'string' && t.repo.length > 0)
       .map((t) => ({ repo: t.repo, only: normalizeOnly(t.only) }))
-    : (Array.isArray(repos) ? repos : [repo])
-      .filter((r) => typeof r === 'string' && r.length > 0)
-      .map((r) => ({ repo: r, only: [] }));
+    : (Array.isArray(repos) ? repos : [repo]).map(normalizeTarget).filter(Boolean);
   const { send, safeEnd } = openSseStream(res);
 
   if (targets.length === 0) {
@@ -105,7 +108,9 @@ export async function startHfDownloadStream({ req, res, repo, repos, fallbacks, 
       : await inspectModelCache(r);
     if (aborted) return;
     const alreadyHave = singleFile
-      ? (typeof cachedFile === 'function' ? await cachedFile() : false)
+      ? (typeof cachedFile === 'function'
+        ? await cachedFile({ repo: r, only: onlyFiles })
+        : (await Promise.all(onlyFiles.map((file) => findCachedRepoFile(r, file)))).every(Boolean))
       : existing.cached;
     if (aborted) return;
     // `force` is set by a repair-initiated re-download: repairModelCache()
@@ -148,6 +153,7 @@ export async function startHfDownloadStream({ req, res, repo, repos, fallbacks, 
     const handle = downloadHfRepo({
       repo: r,
       only: singleFile ? onlyFiles : null,
+      pythonPath,
       onEvent: (ev) => {
         if (ev.type === 'progress' && ev.file) {
           console.log(`⬇️  ${r}: ${ev.file} (${ev.step}/${ev.total})`);

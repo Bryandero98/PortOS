@@ -1,27 +1,13 @@
 #!/usr/bin/env python3
-"""
-PortOS Wan 2.2 MLX helper.
+"""Stable PortOS wrapper for the pinned MLX-Gen Wan 2.2 CLI.
 
-Subprocesses upstream osama-ata/Wan2.2-mlx generate.py from the cloned repo
-at --repo-dir. PortOS releases an arg shape it controls (--prompt, --width,
---output) and this helper translates to upstream's --task / --size / --ckpt_dir
-form. Done this way (subprocess, not import) because upstream isn't packaged
-as a pip module — it's a repo clone whose internal module layout can shift.
-
-Spawned by server/services/videoGen/local.js when model.runtime === 'wan22'.
-The STAGE: / STATUS: SSE protocol matches generate_ltx2.py so the JS side
-needs no per-runtime parser. Progress hints from upstream tqdm bars are
-forwarded as-is — local.js handleLine() already understands the percentage
-regex.
-
-EXPERIMENTAL: upstream Wan2.2-mlx CLI surface isn't pinned. If a future
-upstream commit renames --task or --ckpt_dir, set the broken flag in
-data/media-models.json (`wan22_t2v_a14b`, `wan22_i2v_a14b`) and grep for
-this helper to update the translation.
+The runner is intentionally cache-only. PortOS downloads the base model and
+exact Lightning files through the Video Gen UI before this helper is launched;
+MLX-Gen returns a typed download-required failure if anything is absent.
 """
 
 import argparse
-import os
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -34,18 +20,23 @@ from _runner_common import emit_runtime_fingerprint  # noqa: E402
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="PortOS Wan 2.2 MLX helper")
-    p.add_argument("--repo-dir", required=True, help="Cloned osama-ata/Wan2.2-mlx repo root")
-    p.add_argument("--task", required=True, help="t2v-A14B | i2v-A14B")
-    p.add_argument("--model-repo", required=True, help="HF repo of the Wan 2.2 weights (Wan-AI/Wan2.2-T2V-A14B etc.)")
+    p.add_argument("--model-repo", required=True)
     p.add_argument("--prompt", required=True)
     p.add_argument("--width", type=int, required=True)
     p.add_argument("--height", type=int, required=True)
     p.add_argument("--num-frames", type=int, default=81)
+    p.add_argument("--fps", type=int, default=16)
     p.add_argument("--steps", type=int, default=25)
     p.add_argument("--guidance", type=float, default=5.0)
+    p.add_argument("--guidance-2", type=float, default=None)
+    p.add_argument("--flow-shift", type=float, default=None)
+    p.add_argument("--solver", choices=("unipc", "euler"), default=None)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--output", required=True)
-    p.add_argument("--image", default=None, help="i2v source image path")
+    p.add_argument("--image", default=None)
+    p.add_argument("--negative-prompt", default="")
+    p.add_argument("--lora-path", action="append", default=[])
+    p.add_argument("--lora-target-role", action="append", default=[])
     return p.parse_args()
 
 
@@ -54,61 +45,72 @@ def main() -> int:
 
     # Runtime fingerprint at startup — recorded by PortOS so output can be tied
     # to a specific wan/mlx/torch stack on this chip.
-    emit_runtime_fingerprint("wan22", ["wan", "mlx", "mlx_metal", "torch"])
-
-    repo_dir = Path(args.repo_dir).expanduser().resolve()
-    if not repo_dir.is_dir():
-        print(f"❌ Wan 2.2 repo not found at {repo_dir}", file=sys.stderr)
-        return 64
-    generate_py = repo_dir / "generate.py"
-    if not generate_py.exists():
-        print(f"❌ {generate_py} missing — upstream layout changed?", file=sys.stderr)
-        return 64
-
-    # Upstream caches weights under ~/.cache/huggingface/ on the first run.
-    # The --ckpt_dir convention in upstream's README points at a local
-    # snapshot, but `huggingface_hub.snapshot_download(model_repo)` resolves
-    # to the same canonical cache path either way.
-    print(f"STAGE:download-weights:{args.model_repo}", file=sys.stderr, flush=True)
-    try:
-        from huggingface_hub import snapshot_download
-    except Exception as err:
-        print(f"❌ huggingface_hub import failed: {err}", file=sys.stderr)
-        return 64
-    ckpt_dir = snapshot_download(args.model_repo)
-    print(f"🔧 wan22: weights ← {ckpt_dir}", file=sys.stderr)
+    emit_runtime_fingerprint("wan22", ["mlx-gen", "mlx", "mlx_metal", "huggingface-hub"])
 
     upstream_args = [
         sys.executable,
-        str(generate_py),
-        "--task", args.task,
-        "--size", f"{args.width}*{args.height}",
-        "--ckpt_dir", ckpt_dir,
+        "-m", "mflux.models.wan.cli.wan_generate",
+        "--json-events",
+        "--low-ram",
+        "--model", args.model_repo,
         "--prompt", args.prompt,
-        "--num_frames", str(args.num_frames),
-        "--sample_steps", str(args.steps),
-        "--sample_guide_scale", str(args.guidance),
-        "--base_seed", str(args.seed),
-        "--save_file", args.output,
+        "--width", str(args.width),
+        "--height", str(args.height),
+        "--frames", str(args.num_frames),
+        "--fps", str(args.fps),
+        "--steps", str(args.steps),
+        "--guidance", str(args.guidance),
+        "--seed", str(args.seed),
+        "--output", args.output,
     ]
+    if args.negative_prompt:
+        upstream_args.extend(["--negative-prompt", args.negative_prompt])
+    if args.guidance_2 is not None:
+        upstream_args.extend(["--guidance-2", str(args.guidance_2)])
+    if args.flow_shift is not None:
+        upstream_args.extend(["--flow-shift", str(args.flow_shift)])
+    if args.solver:
+        upstream_args.extend(["--solver", args.solver])
     if args.image:
-        upstream_args.extend(["--image", args.image])
+        upstream_args.extend(["--image-path", args.image])
+    if args.lora_path:
+        upstream_args.extend(["--lora-paths", *args.lora_path])
+    if args.lora_target_role:
+        upstream_args.extend(["--lora-target-roles", *args.lora_target_role])
 
     print(f"STAGE:inference", file=sys.stderr, flush=True)
-    print(f"🎬 wan22 generate task={args.task} {args.width}x{args.height} steps={args.steps} seed={args.seed}", file=sys.stderr)
+    print(f"🎬 wan22 generate {args.width}x{args.height} steps={args.steps} seed={args.seed}", file=sys.stderr)
 
-    # cwd = repo_dir so upstream's relative imports work. Forward stderr
-    # unchanged — upstream emits tqdm progress bars which local.js's
-    # handleLine() already parses for the percentage SSE event.
-    proc = subprocess.run(
+    # Human diagnostics remain on inherited stderr. JSONL progress on stdout
+    # is translated into PortOS's existing STAGE:/STATUS: protocol below.
+    proc = subprocess.Popen(
         upstream_args,
-        cwd=str(repo_dir),
-        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        stdout=subprocess.PIPE,
+        text=True,
     )
+    assert proc.stdout is not None
+    for raw in proc.stdout:
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError:
+            print(raw.rstrip(), file=sys.stderr, flush=True)
+            continue
+        phase = str(event.get("phase", "working"))
+        step = event.get("step")
+        total = event.get("total_steps")
+        if isinstance(step, int) and isinstance(total, int) and total > 0:
+            print(f"STAGE:wan-{phase}:step:{step}:{total}:{phase}", file=sys.stderr, flush=True)
+        else:
+            print(f"STATUS:Wan {phase}", file=sys.stderr, flush=True)
+        remediation = event.get("remediation")
+        if isinstance(remediation, dict) and remediation.get("kind") == "download-required":
+            repo = remediation.get("repo_id") or args.model_repo
+            print(f"❌ Required Wan weight is not cached: {repo}. Use Download in Video Gen.", file=sys.stderr, flush=True)
+    return_code = proc.wait()
 
-    if proc.returncode != 0:
-        print(f"❌ wan22 upstream exited {proc.returncode}", file=sys.stderr)
-        return proc.returncode
+    if return_code != 0:
+        print(f"❌ wan22 upstream exited {return_code}", file=sys.stderr)
+        return return_code
 
     if not Path(args.output).exists():
         print(f"❌ wan22 finished but {args.output} missing", file=sys.stderr)

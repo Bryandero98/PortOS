@@ -412,12 +412,18 @@ export default function VideoGen() {
   // pull before hitting Render.
   const modelDownload = useModelDownloadStatus({ kind: 'video' });
   const modelStatus = modelId ? modelDownload.getStatus(modelId) : null;
+  const usesSharedTextEncoder = currentModel?.runtime === 'mlx_video' || currentModel?.runtime === 'ltx2';
   const textEncoderInfo = modelDownload.extra.textEncoder || null;
   const textEncoderStatus = textEncoderInfo
     ? (modelDownload.activeModelId === TEXT_ENCODER_DOWNLOAD_ID
       ? { ...textEncoderInfo, downloading: true, progress: modelDownload.progress }
       : textEncoderInfo)
     : null;
+  const modelWeightsBlocked = !isGrok && !!modelId
+    && (modelDownload.loading || modelStatus === null || modelStatus?.cached === false);
+  const textEncoderWeightsBlocked = !isGrok && usesSharedTextEncoder
+    && (modelDownload.loading || textEncoderStatus === null || textEncoderStatus?.cached === false);
+  const weightsGateBlocked = modelWeightsBlocked || textEncoderWeightsBlocked;
 
   // Weight-integrity (issue #1324). A corrupt/truncated model decodes to
   // garbled "mosaic" video that a clean re-download fixes; surface a Repair
@@ -523,7 +529,7 @@ export default function VideoGen() {
     // Without these guards the user could press Enter in the prompt
     // textarea and fire a request the disabled button would otherwise
     // have prevented.
-    if (!prompt.trim() || generating || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || keyframesBlocked))) return;
+    if (!prompt.trim() || generating || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked))) return;
     await runGeneration(buildGeneratePayload()).catch(() => {});
   };
 
@@ -532,7 +538,7 @@ export default function VideoGen() {
     // would silently queue a doomed job that fails late in the worker with
     // VENV_MISSING, hiding the installer banner from the user. Block at
     // enqueue time so the only path forward is the install banner above.
-    if (!prompt.trim() || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || keyframesBlocked))) return;
+    if (!prompt.trim() || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked))) return;
     // useVideoGenQueue strips the File blobs into `_blobs` and snapshots the
     // rest as a stable summary for the queue UI.
     enqueue(buildGeneratePayload());
@@ -575,7 +581,7 @@ export default function VideoGen() {
   // configured" error from the unrelated legacy probe.
   const notConnected = !!status && status.connected === false && !needsByovProbe;
 
-  const canEnqueue = prompt.trim() && (isGrok || (!notConnected && !extendModeBlocked && !a2vModeBlocked && !byovGateBlocked && !keyframesBlocked));
+  const canEnqueue = prompt.trim() && (isGrok || (!notConnected && !extendModeBlocked && !a2vModeBlocked && !byovGateBlocked && !weightsGateBlocked && !keyframesBlocked));
 
   return (
     <div className="space-y-3">
@@ -700,8 +706,8 @@ export default function VideoGen() {
           {!isGrok && byovRuntimeMissing && (
             <div className="rounded-lg border border-port-warning/40 bg-port-warning/10 px-3 py-3 text-xs text-port-warning flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
               <div>
-                <strong className="font-semibold">{byovStatus.label}</strong> isn't installed yet.
-                PortOS can fetch and install it from {byovStatus.repoUrl?.replace('https://', '')} (~5-15 min, multi-GB on first run).
+                <strong className="font-semibold">{byovStatus.label}</strong> {byovStatus.upgradeAvailable ? 'has an update available.' : "isn't installed yet."}
+                {' '}PortOS can {byovStatus.upgradeAvailable ? 'upgrade' : 'fetch and install'} it from {byovStatus.repoUrl?.replace('https://', '')} on demand.
               </div>
               <button
                 type="button"
@@ -710,7 +716,7 @@ export default function VideoGen() {
                 className="self-start sm:self-auto whitespace-nowrap inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-port-accent text-white text-xs font-medium hover:bg-port-accent/80 disabled:opacity-50"
               >
                 <Sparkles size={14} />
-                Install {byovStatus.label}
+                {byovStatus.upgradeAvailable ? 'Upgrade' : 'Install'} {byovStatus.label}
               </button>
             </div>
           )}
@@ -909,7 +915,35 @@ export default function VideoGen() {
                     estimateLabel={deriveSizeEstimate(currentModel?.name)}
                   />
                 )}
-                {textEncoderStatus && (textEncoderStatus.cached === false || textEncoderStatus.downloading) && (
+                {modelDownload.lastError?.modelId === modelId && (
+                  <div className="mt-2 rounded-lg border border-port-error/40 bg-port-error/10 px-3 py-2 text-[11px] text-port-error">
+                    <p>{modelDownload.lastError.message}</p>
+                    <div className="mt-1 flex flex-wrap gap-2">
+                      <button type="button" onClick={openSettings} className="underline hover:text-white">
+                        Open Hugging Face settings
+                      </button>
+                      {modelDownload.lastError.repo && (
+                        <a
+                          href={`https://huggingface.co/${modelDownload.lastError.repo}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="underline hover:text-white"
+                        >
+                          Open repository access page
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {modelDownload.statusError && (
+                  <div className="mt-2 rounded-lg border border-port-warning/40 bg-port-warning/10 px-3 py-2 text-[11px] text-port-warning flex flex-wrap items-center justify-between gap-2">
+                    <span>{modelDownload.statusError}</span>
+                    <button type="button" onClick={modelDownload.refresh} className="underline hover:text-white">
+                      Retry cache check
+                    </button>
+                  </div>
+                )}
+                {usesSharedTextEncoder && textEncoderStatus && (textEncoderStatus.cached === false || textEncoderStatus.downloading) && (
                   <div className="mt-1">
                     <p className="text-[10px] text-gray-500">Text encoder ({textEncoderStatus.repo}) is also required:</p>
                     <ModelDownloadBadge
@@ -1000,11 +1034,13 @@ export default function VideoGen() {
             ) : (
               <button
                 type="submit"
-                disabled={!prompt.trim() || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || keyframesBlocked))}
+                disabled={!prompt.trim() || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked))}
                 className="flex items-center gap-2 px-4 py-2 bg-port-accent hover:bg-port-accent/80 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg min-h-[40px]"
                 title={
                   byovRuntimeMissing ? `${byovStatus?.label || byovRuntime} runtime is not installed — use the install banner above`
                     : byovGateBlocked ? `Checking ${byovRuntime} runtime status…`
+                    : modelWeightsBlocked ? 'Download the selected model weights before generating'
+                    : textEncoderWeightsBlocked ? 'Download the shared text encoder before generating'
                     : extendModeBlocked ? 'Pick a prior render and wait for the last frame to extract before generating'
                     : a2vModeBlocked ? (currentModel?.runtime !== 'ltx2'
                       ? 'a2v mode requires an ltx2-runtime model — pick one from the Model dropdown'
