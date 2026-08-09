@@ -950,12 +950,6 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
       return next;
     });
   };
-  // What actually rides to the server: exactly `chunks` entries, blanks kept in
-  // place as explicit "use the main prompt" markers, and the whole list dropped
-  // when chaining is off or every beat is blank.
-  const activeChunkPrompts = chainingActive
-    ? Array.from({ length: chunks }, (_, i) => chunkPrompts[i] || '')
-    : [];
 
   // Snapshot the current form into a generate-payload. Used both by the
   // inline Generate button and by enqueue, so the two paths stay in lockstep.
@@ -963,6 +957,11 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
 
   const buildGeneratePayload = () => {
     const composed = composeStyledPrompt(prompt, negativePrompt, stylePreset);
+    // Beats for the LIVE chunks only — the backing array is never truncated on
+    // a chunk-count change, so slicing here is what keeps a stale tail off the
+    // wire. A short list is fine: the server falls back to the main prompt for
+    // any chunk the list doesn't cover.
+    const beats = chainingActive ? chunkPrompts.slice(0, chunks) : [];
     if (isGrok) {
       // Grok's image-first flow reads only these fields; width/height ride
       // along so the server maps them to the closest supported aspect ratio.
@@ -1059,8 +1058,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
       // one-entry list to a bare string server-side and — worse — lose the
       // POSITION of a blank middle beat. Omitted entirely when chaining is off
       // or every beat is blank, so a non-chained submit sends nothing.
-      chunkPrompts: activeChunkPrompts.some((p) => p.trim())
-        ? JSON.stringify(activeChunkPrompts) : '',
+      chunkPrompts: beats.some((p) => p.trim()) ? JSON.stringify(beats) : '',
     };
   };
 

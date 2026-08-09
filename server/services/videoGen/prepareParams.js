@@ -763,7 +763,7 @@ async function resolvePreparedParams({
     ? body.chunkPrompts.slice(0, effectiveChunks)
       .map((p) => (typeof p === 'string' && p.trim() !== '' ? p.trim() : null))
     : undefined;
-  const effectiveChunkPrompts = normalizedChunkPrompts?.some((p) => p != null)
+  const effectiveChunkPrompts = normalizedChunkPrompts?.some(Boolean)
     ? normalizedChunkPrompts
     : undefined;
 

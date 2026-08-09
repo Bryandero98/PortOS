@@ -1565,7 +1565,7 @@ export async function generateChainedVideo({ chunks, chunkPrompts, jobId: outerJ
     // null) by prepareVideoGenParams, but re-guard on emptiness here too so a
     // direct service caller can't hand a chunk an empty prompt — an absent beat
     // must always resolve to the main prompt, never to ''.
-    const beat = Array.isArray(chunkPrompts) ? chunkPrompts[i] : null;
+    const beat = chunkPrompts?.[i];
     const chunkPrompt = (typeof beat === 'string' && beat.trim() !== '') ? beat : rest.prompt;
 
     generateVideo({
@@ -1660,7 +1660,7 @@ export async function generateChainedVideo({ chunks, chunkPrompts, jobId: outerJ
       // a Remix off it) carries the same source of truth the chain rendered
       // from — the individual chunk entries only ever hold their own resolved
       // prompt, which loses which of them were explicit beats vs. fallbacks.
-      ...(Array.isArray(chunkPrompts) && chunkPrompts.some((p) => p) ? { extraMeta: { chunkPrompts } } : {}),
+      chunkPrompts: chunkPrompts?.some(Boolean) ? chunkPrompts : null,
     }).catch((err) => ({ error: err.message }));
     if (stitched?.error) {
       await setHistoryItemsHidden(chunkIds, true);
@@ -1835,20 +1835,17 @@ export async function sampleEvaluationFrames(jobId, count = 5) {
 // lets users stitch from a single model so this holds in practice.
 //
 // `opts` lets the chained-render code reuse the same ffmpeg path with a
-// different identity (id, filename prefix, history-link key, prompt) and extra
-// history metadata without duplicating the validation + concat-manifest
-// plumbing.
+// different identity (id, filename prefix, history-link key, prompt, per-chunk
+// beats) without duplicating the validation + concat-manifest plumbing.
 export async function stitchVideos(videoIds, opts = {}) {
   const {
     id = randomUUID(),
     filenamePrefix = 'stitched',
     historyKey = 'stitchedFrom',
     promptOverride = null,
-    // Extra fields merged into the stitched history entry (chained renders use
-    // it for per-chunk prompt beats). Spread FIRST below so the derived fields
-    // win — a caller can annotate the entry but never overwrite the identity
-    // fields (id/filename/thumbnail/…) this function is responsible for.
-    extraMeta = null,
+    // Per-chunk prompt beats to record on the stitched entry (#3695) — chained
+    // renders only; a hand-stitched clip has no beats.
+    chunkPrompts = null,
   } = opts;
   if (!Array.isArray(videoIds) || videoIds.length < 2) {
     throw new ServerError('Need at least 2 videos to stitch', { status: 400, code: 'VALIDATION_ERROR' });
@@ -1898,7 +1895,6 @@ export async function stitchVideos(videoIds, opts = {}) {
 
   const thumb = await generateThumbnail(outPath, id);
   const stitchedMeta = {
-    ...(extraMeta && typeof extraMeta === 'object' ? extraMeta : {}),
     id,
     prompt: promptOverride != null
       ? promptOverride
@@ -1913,6 +1909,7 @@ export async function stitchVideos(videoIds, opts = {}) {
     thumbnail: thumb,
     createdAt: new Date().toISOString(),
     [historyKey]: videoIds,
+    ...(Array.isArray(chunkPrompts) ? { chunkPrompts } : {}),
     // Inherit applied LoRAs from the first constituent clip (a chunk chain
     // shares one LoRA set across all chunks), so the visible stitched entry
     // round-trips LoRAs on Remix the same way a single render does — mirrors

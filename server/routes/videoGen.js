@@ -127,7 +127,19 @@ const MAX_IC_REFERENCES = Math.max(...listIcLoraWeights().map((s) => s.maxRefere
 // Chain ceiling — 8 × ~5min ≈ 40min on an M3 Max keeps the worst-case wall time
 // bounded. Shared by `chunks` and the per-chunk prompt list so the two can never
 // drift apart.
-export const MAX_VIDEO_CHUNKS = 8;
+const MAX_VIDEO_CHUNKS = 8;
+
+// Coerce a multipart/JSON list field to an array. Multipart sends a SINGLE value
+// as a bare string and repeated keys as an array; a JSON client may send an
+// encoded list, and a client that must preserve blank entries' POSITIONS (see
+// `chunkPrompts`) has to. Shared by every list field below so the coercion rule
+// can't drift between them.
+const listPreprocess = (v) => {
+  if (v == null || v === '') return undefined;
+  if (typeof v !== 'string') return v;
+  if (v.trim().startsWith('[')) { try { return JSON.parse(v); } catch { return [v]; } }
+  return [v];
+};
 
 // Render controls that only the local runtimes understand. Keep their schemas
 // together so Grok eligibility and request validation cannot drift when a new
@@ -188,17 +200,7 @@ const generateBodySchema = z.object({
   // keep their position and a one-element list can't collapse to the bare
   // string multipart sends for a single repeated key — a bare string is still
   // accepted as a one-entry list for hand-rolled/JSON clients.
-  chunkPrompts: z.preprocess(
-    (v) => {
-      if (v == null || v === '') return undefined;
-      if (typeof v === 'string') {
-        if (v.trim().startsWith('[')) { try { return JSON.parse(v); } catch { return [v]; } }
-        return [v];
-      }
-      return v;
-    },
-    z.array(z.string().max(8000)).max(MAX_VIDEO_CHUNKS).optional(),
-  ),
+  chunkPrompts: z.preprocess(listPreprocess, z.array(z.string().max(8000)).max(MAX_VIDEO_CHUNKS).optional()),
   // History id of a prior render to extend natively (ltx2 runtime only —
   // routes through ExtendPipeline.extend_from_video which conditions on
   // the entire source video's latent rather than a single last frame).
@@ -208,36 +210,15 @@ const generateBodySchema = z.object({
   // (the `icReference` multipart upload wins when both are present, mirroring
   // the sourceImage/sourceImageFile precedence). Control/Colorize take exactly
   // one reference; Ingredients (a later phase) will take 2-8, hence the array.
-  icReferenceVideoIds: z.preprocess(
-    (v) => {
-      if (v == null || v === '') return undefined;
-      if (typeof v === 'string') {
-        // Multipart sends a SINGLE value as a bare string and repeated keys as
-        // an array; also accept a JSON-encoded list from a JSON client.
-        if (v.trim().startsWith('[')) { try { return JSON.parse(v); } catch { return [v]; } }
-        return [v];
-      }
-      return v;
-    },
-    z.array(z.string().guid()).min(1).max(MAX_IC_REFERENCES).optional(),
-  ),
+  icReferenceVideoIds: z.preprocess(listPreprocess, z.array(z.string().guid()).min(1).max(MAX_IC_REFERENCES).optional()),
   // Ingredients-style IC references: 2-8 gallery STILLS, not clips. A separate
   // field from icReference / icReferenceVideoIds on purpose — those are
   // `video/*` and resolve against render history, and overloading them would
   // let a video ride into an image-kind weight (or vice versa) and produce
   // plausible-looking garbage. Gallery-only, exactly like `keyframes`: the
-  // route resolves each basename under PATHS.images. Multipart sends a single
-  // value as a bare string and repeated keys as an array; also accept a
-  // JSON-encoded list from a JSON client (mirrors icReferenceVideoIds).
+  // route resolves each basename under PATHS.images.
   icReferenceImageFiles: z.preprocess(
-    (v) => {
-      if (v == null || v === '') return undefined;
-      if (typeof v === 'string') {
-        if (v.trim().startsWith('[')) { try { return JSON.parse(v); } catch { return [v]; } }
-        return [v];
-      }
-      return v;
-    },
+    listPreprocess,
     // Ceiling derived from the registry (the largest maxReferences any weight
     // declares), NOT a hardcoded 8 — a second literal here would silently
     // pre-empt the per-mode registry check with a 422 the moment a weight raised

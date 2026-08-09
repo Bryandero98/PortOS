@@ -524,8 +524,7 @@ describe('generateChainedVideo — per-chunk prompt beats (#3695)', () => {
       .find((item) => Array.isArray(item?.chainedFrom));
     expect(stitched).toBeTruthy();
     expect(stitched.chunkPrompts).toEqual(['a beat', '', 'a later beat']);
-    // The stitched entry keeps its own derived identity — extraMeta annotates,
-    // it never overwrites.
+    // The stitched entry keeps its own derived identity alongside the beats.
     expect(stitched.filename).toMatch(/^chained-/);
   });
 });
