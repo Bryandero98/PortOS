@@ -747,14 +747,24 @@ const TRANSCRIPT_RESCUE_TAIL_BYTES = 256 * 1024;
  */
 async function rescueTranscriptPayload({ agentId, taskType }) {
   if (!agentId || !isProgrammaticIoTaskType(taskType)) return null;
-  const isPayload = await getTaskOutputPayloadPredicate(taskType);
-  if (!isPayload) return null;
-  const { PATHS, readFileTail } = await import('../lib/fileUtils.js');
-  const transcript = await readFileTail(join(PATHS.cosAgents, agentId, 'raw.txt'), TRANSCRIPT_RESCUE_TAIL_BYTES);
-  if (!transcript) return null;
-  const { extractSentinelPayloadFromTranscript } = await import('../lib/agentSentinel.js');
-  const { payload } = await extractSentinelPayloadFromTranscript(transcript, isPayload);
-  return payload ?? null;
+  // Sanctioned try/catch (see CLAUDE.md — this runs outside the request
+  // lifecycle): a best-effort salvage must never be able to make the outcome
+  // WORSE than not attempting it. A hook whose own shape predicate throws would
+  // otherwise abort the dispatch and skip the hook entirely, turning "we
+  // couldn't recover the payload" into "the hook never ran".
+  try {
+    const isPayload = await getTaskOutputPayloadPredicate(taskType);
+    if (!isPayload) return null;
+    const { PATHS, readFileTail } = await import('../lib/fileUtils.js');
+    const transcript = await readFileTail(join(PATHS.cosAgents, agentId, 'raw.txt'), TRANSCRIPT_RESCUE_TAIL_BYTES);
+    if (!transcript) return null;
+    const { extractSentinelPayloadFromTranscript } = await import('../lib/agentSentinel.js');
+    const { payload } = await extractSentinelPayloadFromTranscript(transcript, isPayload);
+    return payload ?? null;
+  } catch (err) {
+    emitLog('warn', `⚠️ Transcript payload rescue failed for ${agentId} (${taskType}): ${err.message}`, { agentId });
+    return null;
+  }
 }
 
 /**

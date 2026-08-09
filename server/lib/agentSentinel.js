@@ -135,7 +135,10 @@ export async function extractSentinelPayloadFromTranscript(transcript, isPayload
 
   for (let i = blocks.length - 1; i >= 0; i -= 1) {
     const parsed = safeJSONParse(blocks[i], null, { allowArray: false });
-    if (!parsed) continue;
+    // `typeof` guard, not just truthiness: the `in` check below throws on a
+    // primitive, and a best-effort salvage must never be the thing that breaks
+    // finalize.
+    if (!parsed || typeof parsed !== 'object') continue;
     // Two shapes reach a transcript: the documented `{ summary, payload }`
     // envelope the agent should have written to the sentinel, and the BARE
     // payload object — what a model answering in the terminal actually prints.

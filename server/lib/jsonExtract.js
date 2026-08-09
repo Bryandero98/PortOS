@@ -91,7 +91,8 @@ export function findBalancedBlocks(s, { startChar = '{', endChar = '}' } = {}) {
  *      object of the last-printed block before any of its children.
  *
  * Still one linear pass (an unmatched `}` with an empty stack is dropped), so
- * scanning a large tail stays cheap.
+ * scanning a large tail stays cheap. String tracking resets at every line break
+ * — see the note in the loop for why a transcript needs that.
  *
  * @param {string} s — input text
  * @param {object} [options]
@@ -107,6 +108,12 @@ export function findAllBalancedBlocks(s, { startChar = '{', endChar = '}' } = {}
   let escaped = false;
   for (let i = 0; i < s.length; i += 1) {
     const ch = s[i];
+    // A line break ends string tracking. JSON forbids a raw newline inside a
+    // string literal, so nothing valid is lost — but a transcript is full of
+    // stray quotes (a truncated redraw, an echoed `echo "…`, a log message),
+    // and without this ONE of them would leave the walker "inside a string"
+    // for the rest of the scan, hiding every brace in the JSON that follows.
+    if (ch === '\n' || ch === '\r') { inString = false; escaped = false; continue; }
     if (inString) {
       if (escaped) escaped = false;
       else if (ch === '\\') escaped = true;

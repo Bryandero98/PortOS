@@ -273,6 +273,13 @@ describe('findAllBalancedBlocks', () => {
     expect(findAllBalancedBlocks('{"a":"{ not a brace \\" }"}')).toEqual(['{"a":"{ not a brace \\" }"}']);
   });
 
+  it('does not let a stray quote on one line swallow the JSON on the next', () => {
+    // A truncated PTY redraw leaves an unmatched `"`; without the line-break
+    // reset the walker would treat the rest of the transcript as string content.
+    const transcript = '\u2502 renaming "foo to bar\n{"a":1}\n';
+    expect(findAllBalancedBlocks(transcript)).toEqual(['{"a":1}']);
+  });
+
   it('returns [] for non-string or empty input', () => {
     expect(findAllBalancedBlocks(null)).toEqual([]);
     expect(findAllBalancedBlocks('')).toEqual([]);

@@ -161,6 +161,11 @@ describe('extractSentinelPayloadFromTranscript', () => {
         .toEqual({ summary: '', payload: null });
     });
 
+    it('recovers the answer even when an earlier line left an unmatched quote', async () => {
+      const { payload } = await extractSentinelPayloadFromTranscript(`\u2502 renaming "foo\n${ANSWER}`, isReasonerPayload);
+      expect(payload).not.toBeNull();
+    });
+
     it('yields no payload for JSON that is not the hook deliverable', async () => {
       expect((await extractSentinelPayloadFromTranscript('{"tokens":1200}', isReasonerPayload)).payload).toBeNull();
     });
