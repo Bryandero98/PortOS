@@ -268,7 +268,14 @@ export function requestMaterialization(path, options = {}) {
   const notifyFailure = () => {
     if (failureNotified) return;
     failureNotified = true;
-    onFailure?.();
+    // try/catch at a child-process/timer boundary (permitted by the repo's
+    // no-try/catch rule): this runs from the unref'd deadline timer and the
+    // 'error'/'exit' handlers — all *outside* the request lifecycle — and
+    // `onFailure` is a caller-supplied hook on a public API. An uncaught throw
+    // here would crash the process with no `next(err)` to bubble to.
+    try { onFailure?.(); } catch (err) {
+      console.error(`❌ brctl onFailure hook threw for ${label}: ${err.message}`);
+    }
   };
   // Kill the child if it outlives its deadline, so a wedged `brctl` frees its slot
   // instead of holding it forever. `unref` so the timer itself never keeps the

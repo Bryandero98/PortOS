@@ -953,6 +953,40 @@ describe('initMortalLoomStore — brctl pinning', () => {
       settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: null } });
     }).not.toThrow();
   });
+
+  it('does not spawn brctl for a non-iCloud (non-healable) configured path', async () => {
+    // The shared helper only spawns `brctl download` for genuinely healable iCloud
+    // paths. A configured path outside `/Library/Mobile Documents/` (here the
+    // suite's ordinary `/icloud/...` fixture, which isHealablePath declines) must
+    // not be handed a doomed download.
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+
+    spawnMock.mockReturnValue(makeFakeChild());
+    settings = { mortalloom: { enabled: true, path: '/icloud/MortalLoom.json' } };
+    await store.initMortalLoomStore();
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('clears the sticky path when the helper declines to spawn, so the same path can retry', async () => {
+    // Regression for the `if (!spawned && lastPinnedPath === path) lastPinnedPath = null`
+    // guard: when requestMaterialization declines (here a synchronous spawn failure —
+    // EMFILE — but equally a path that is non-healable at boot and healable once its
+    // ubiquity container syncs in), the pin must NOT leave its sticky path set, or the
+    // SAME path would be deduped as "already pinned" forever and never retry.
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+
+    // First spawn throws → the helper catches it and returns false (declined).
+    spawnMock.mockImplementationOnce(() => { throw Object.assign(new Error('EMFILE'), { code: 'EMFILE' }); });
+    settings = { mortalloom: { enabled: true, path: ubiq('MortalLoom.json') } };
+    await store.initMortalLoomStore();
+    expect(spawnMock).toHaveBeenCalledTimes(1); // attempted, threw — nothing in flight
+
+    // A later settings:updated for the SAME path must re-attempt (not be deduped).
+    spawnMock.mockReturnValue(makeFakeChild());
+    settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: ubiq('MortalLoom.json') } });
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    expect(spawnMock).toHaveBeenLastCalledWith('brctl', ['download', ubiq('MortalLoom.json')], expect.any(Object));
+  });
 });
 
 // =============================================================================
