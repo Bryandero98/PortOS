@@ -32,7 +32,7 @@
  */
 
 import { join } from 'path';
-import { IMAGE_GEN_MODE, CLOUD_IMAGE_GEN_MODES, IMAGE_TOOL_NAMES } from './imageGen/modes.js';
+import { CLOUD_IMAGE_GEN_MODES, IMAGE_TOOL_NAMES, modeLabel } from './imageGen/modes.js';
 import { imageGenEvents } from './imageGenEvents.js';
 import { atomicWrite, PATHS, readJSONFileStrict } from '../lib/fileUtils.js';
 import { createFileWriteQueue } from '../lib/fileWriteQueue.js';
@@ -54,14 +54,8 @@ const UNKNOWN_BLOCK_TTL_MS = 60 * 60 * 1000;
 // user's own GPU and external hits their own SD endpoint, so neither has
 // anything to report. Keyed off CLOUD_IMAGE_GEN_MODES rather than a second
 // hand-maintained list, so a 4th cloud backend is tracked the moment it is
-// added there. Labels mirror the client's MODE_LABELS so one backend doesn't
-// appear under two names across the UI.
-const MODE_LABELS = Object.freeze({
-  [IMAGE_GEN_MODE.AGY]: 'Agy',
-  [IMAGE_GEN_MODE.GROK]: 'Grok',
-  [IMAGE_GEN_MODE.CODEX]: 'Codex',
-});
-
+// added there. Display names come from `modeLabel` for the same reason — one
+// backend must not appear under two names across the UI.
 export const isQuotaTrackedImageMode = (mode) => CLOUD_IMAGE_GEN_MODES.includes(mode);
 
 /** Card id for the image-gen quota card, in the same namespace as the provider
@@ -69,7 +63,7 @@ export const isQuotaTrackedImageMode = (mode) => CLOUD_IMAGE_GEN_MODES.includes(
 export const IMAGE_GEN_FAMILY = 'imagegen';
 
 const rowLabel = (mode) =>
-  `${MODE_LABELS[mode] || mode} · ${IMAGE_TOOL_NAMES[mode] || 'image tool'}`;
+  `${modeLabel(mode)} · ${IMAGE_TOOL_NAMES[mode] || 'image tool'}`;
 
 // Single tail: two renders finishing together must not interleave their
 // read-modify-write on the shared ledger file.
@@ -249,7 +243,7 @@ export async function getImageGenQuota({ enabledModes = [], now = Date.now() } =
         key,
         label,
         scope: 'image',
-        model: MODE_LABELS[mode] || mode,
+        model: modeLabel(mode),
         percentUsed: 100,
         percentRemaining: 0,
         // Null when the provider didn't state one — the meter renders without a

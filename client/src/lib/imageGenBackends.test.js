@@ -28,10 +28,11 @@ describe('I2I_CAPABLE_MODES / isI2iCapableMode', () => {
 describe('input-image capability helpers', () => {
   it('caps agy at the 3 images its generate_image tool accepts', () => {
     expect(MAX_INPUT_IMAGES[IMAGE_GEN_MODE.AGY]).toBe(3);
-    // The other two declare no maximum, so PortOS's own ceiling applies:
-    // 1 init image + 4 reference slots.
-    expect(MAX_INPUT_IMAGES[IMAGE_GEN_MODE.CODEX]).toBe(5);
-    expect(MAX_INPUT_IMAGES[IMAGE_GEN_MODE.GROK]).toBe(5);
+    // The other two declare no maximum, so they carry no entry at all — the
+    // form's own slot count is their only ceiling. Restating it here as a
+    // "capability" would make a form change look like a provider limit.
+    expect(MAX_INPUT_IMAGES[IMAGE_GEN_MODE.CODEX]).toBeUndefined();
+    expect(MAX_INPUT_IMAGES[IMAGE_GEN_MODE.GROK]).toBeUndefined();
   });
 
   it('lets codex/grok render image-only but always demands a prompt for agy', () => {

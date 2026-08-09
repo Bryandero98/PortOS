@@ -157,25 +157,26 @@ export const noImageReason = (stdoutTail = '') => buildNoImageReason(stdoutTail,
  * to use in generation. You can pass in images here if you would like to edit,
  * combine, or use as references… you cannot pass in more than 3 images" (schema
  * probed 2026-08-09). The 3-image ceiling is enforced upstream by
- * resolveInputImages, which also fixes the order — hence `inputImagePaths` +
- * `hasInit` here rather than re-deriving "init leads" a second time.
+ * resolveInputImages, which also fixes the order and splits out the init image
+ * — so this takes that resolver's `{ paths, initPath, referencePaths }` shape
+ * directly rather than re-deriving "init leads" a second time.
  *
  * Naming the paths on their own line keeps them out of the tool's `Prompt`, for
  * the same reason the AspectRatio directive is separated: anything that lands
  * inside `Prompt` becomes part of what gets drawn.
  */
-const agyImagePathsDirective = ({ inputImagePaths, hasInit, initImageStrength }) => {
-  if (!inputImagePaths.length) return '';
-  const refCount = hasInit ? inputImagePaths.length - 1 : inputImagePaths.length;
-  const role = hasInit
+const agyImagePathsDirective = ({ paths, initPath, referencePaths, initImageStrength }) => {
+  if (!paths.length) return '';
+  const refCount = referencePaths.length;
+  const role = initPath
     ? `The first is the source image to edit — ${describeFidelity(initImageStrength)}.${refCount ? ` The rest are ${visualReferenceRole(refCount)}.` : ''}`
     : `Use ${refCount === 1 ? 'it' : 'them'} as ${visualReferenceRole(refCount)}.`;
-  return `\nPass these absolute paths to the tool's ImagePaths parameter, in this order: ${inputImagePaths.join(', ')}\n${role}`;
+  return `\nPass these absolute paths to the tool's ImagePaths parameter, in this order: ${paths.join(', ')}\n${role}`;
 };
 
 export function buildAgyPrompt({
   prompt, negativePrompt, width, height, stagingPath,
-  inputImagePaths = [], hasInit = false, initImageStrength,
+  inputImages = { paths: [], initPath: null, referencePaths: [] }, initImageStrength,
 }) {
   const avoid = negativePrompt?.trim() ? `\nAvoid: ${negativePrompt.trim()}` : '';
   // `AspectRatio` is a real generate_image parameter and it defaults to '1:1'.
@@ -192,7 +193,7 @@ export function buildAgyPrompt({
   // exposed this failure mode captioned itself "DIMENSIONS: 832 x 1216 (2:3)".
   const ratio = nearestAgyAspectRatio(width, height);
   const aspect = ratio ? `\nPass AspectRatio "${ratio}" to the tool.` : '';
-  const images = agyImagePathsDirective({ inputImagePaths, hasInit, initImageStrength });
+  const images = agyImagePathsDirective({ ...inputImages, initImageStrength });
   return `Use your built-in ${AGY_TOOL} tool to generate exactly one image.
 Image prompt: ${prompt.trim()}${avoid}${aspect}${images}
 Save the generated image as a PNG file at exactly this path: ${stagingPath}
@@ -238,8 +239,7 @@ export async function generateImage({
   await mkdir(scratchDir, { recursive: true });
 
   const fullPrompt = buildAgyPrompt({
-    prompt, negativePrompt, width, height, stagingPath,
-    inputImagePaths: inputImages.paths, hasInit: Boolean(inputImages.initPath), initImageStrength,
+    prompt, negativePrompt, width, height, stagingPath, inputImages, initImageStrength,
   });
   const baseArgs = ensureAntigravityPrintArgs([], { model });
   const { args } = prepareAntigravityPrompt(baseArgs, fullPrompt);

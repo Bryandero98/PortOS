@@ -40,8 +40,12 @@ import {
  *                   `image_gen` tool runs on a fixed xAI backend with no model
  *                   knob at all, so accepting an override there would be a lie.
  *  - `maxInputImages` — how many input images (init image + reference images,
- *                   combined) the provider's image tool accepts. Probed from
- *                   the live tool schemas on 2026-08-09 — do NOT raise one on a
+ *                   combined) the provider's image tool accepts, or `null` when
+ *                   its schema declares no maximum (PortOS's own form ceiling —
+ *                   MAX_REFERENCE_IMAGES in routes/imageGen.js — is then the
+ *                   only bound, expressed once where it is defined rather than
+ *                   restated here as a fake capability). Probed from the live
+ *                   tool schemas on 2026-08-09 — do NOT raise one on a
  *                   provider's word, re-probe the schema. Applied in exactly one
  *                   place: `resolveInputImages` (inputImages.js).
  *  - `promptRequiredWithInputImage` — whether the provider still needs a text
@@ -59,9 +63,8 @@ export const CLOUD_PROVIDER_SPECS = Object.freeze({
     label: 'Codex Imagegen',
     errorCode: 'CODEX_IMAGEGEN_DISABLED',
     supportsModelOverride: true,
-    // `image_gen.referenced_image_paths` is a string[] with no declared
-    // maximum, so PortOS's own ceiling applies: 1 init image + 4 ref slots.
-    maxInputImages: 5,
+    // `image_gen.referenced_image_paths` is a string[] with no declared maximum.
+    maxInputImages: null,
     promptRequiredWithInputImage: false,
     modelId: (c, override) => override || c.model || CODEX_IMAGEGEN_DEFAULT_MODEL,
     params: (c, override) => ({
@@ -75,9 +78,8 @@ export const CLOUD_PROVIDER_SPECS = Object.freeze({
     errorCode: 'GROK_IMAGEGEN_DISABLED',
     // Grok's image tools run on xAI's fixed image backend — no model knob.
     supportsModelOverride: false,
-    // `image_edit.image` is a string[] with no declared maximum — same PortOS
-    // ceiling as codex.
-    maxInputImages: 5,
+    // `image_edit.image` is a string[] with no declared maximum — like codex.
+    maxInputImages: null,
     promptRequiredWithInputImage: false,
     modelId: () => 'grok-imagegen',
     params: (g) => ({ grokPath: g.grokPath, aspectRatio: g.aspectRatio }),

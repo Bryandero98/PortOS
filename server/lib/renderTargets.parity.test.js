@@ -90,7 +90,10 @@ describe('edit-capability client mirror parity (#3331)', () => {
 describe('cloud input-image capability client mirror parity', () => {
   it('every cloud CLI mirrors its server maxInputImages', () => {
     for (const mode of CLOUD_IMAGE_GEN_MODES) {
-      expect(CLIENT_MAX_INPUT_IMAGES[mode],
+      // An absent client entry and a null server cap are the same fact ("this
+      // tool declares no maximum"), so normalize before comparing — otherwise
+      // the mirror could drop a real cap and still pass.
+      expect(CLIENT_MAX_INPUT_IMAGES[mode] ?? null,
         `client MAX_INPUT_IMAGES["${mode}"] does not match the server spec's maxInputImages`)
         .toBe(maxInputImages(mode));
     }

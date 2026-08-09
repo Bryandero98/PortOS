@@ -171,16 +171,15 @@ describe('isModeUsable', () => {
   it('allows every queueable backend for an edit render — all take input images', () => {
     // Each backend feeds an input image to its own tool: local `--image-path`,
     // codex `referenced_image_paths`, grok `image_edit.image`, agy
-    // `ImagePaths`. The `edit` flag stays the single gate a future
-    // input-image-less backend would need, so it is asserted as a no-op rather
-    // than dropped.
+    // `ImagePaths`. So an i2i render walks this exact ladder with no edit
+    // variant — the sole edit-incapable backend (external) isn't queueable.
     const s = settingsWith({ agy: { enabled: true }, codex: { enabled: true }, grok: { enabled: true } });
     for (const mode of [IMAGE_GEN_MODE.AGY, IMAGE_GEN_MODE.CODEX, IMAGE_GEN_MODE.GROK, IMAGE_GEN_MODE.LOCAL]) {
-      expect(isModeUsable(s, mode, { edit: true })).toBe(isModeUsable(s, mode));
+      expect(isModeUsable(s, mode), `${mode} should be usable for an edit render`).toBe(true);
     }
-    // Disabled-ness still gates, independently of the edit flag.
+    // Disabled-ness still gates.
     const off = settingsWith({ agy: { enabled: false }, codex: { enabled: true } });
-    expect(isModeUsable(off, IMAGE_GEN_MODE.AGY, { edit: true })).toBe(false);
+    expect(isModeUsable(off, IMAGE_GEN_MODE.AGY)).toBe(false);
   });
 });
 
@@ -217,14 +216,13 @@ describe('pickUsableMode', () => {
     // edit render lands where the user asked for it.
     const s = settingsWith({ agy: { enabled: true }, codex: { enabled: true } });
     expect(pickUsableMode(s, [IMAGE_GEN_MODE.AGY])).toBe(IMAGE_GEN_MODE.AGY);
-    expect(pickUsableMode(s, [IMAGE_GEN_MODE.AGY], { edit: true })).toBe(IMAGE_GEN_MODE.AGY);
   });
 
   it('lands on local for an edit render when every cloud backend is off', () => {
     // LOCAL is edit-capable, so the auto tail always resolves — an edit render
     // can never fall off the end of the ladder.
     const allOff = settingsWith({ codex: { enabled: false }, grok: { enabled: false }, agy: { enabled: false } });
-    expect(pickUsableMode(allOff, [IMAGE_GEN_MODE.AGY], { edit: true })).toBe(IMAGE_GEN_MODE.LOCAL);
+    expect(pickUsableMode(allOff, [IMAGE_GEN_MODE.AGY])).toBe(IMAGE_GEN_MODE.LOCAL);
   });
 
   it('falls back to local when nothing else is usable', () => {

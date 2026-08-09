@@ -33,12 +33,16 @@ export default function ReferenceImagePicker({
   onBrowse,
   disabled = false,
   showStrength = true,
-  caption = 'up to 4 images for FLUX.2 multi-reference edit',
+  // Required: the slot count and the wording both vary per backend now, so
+  // there is no default that stays true (the old one named FLUX.2, which is
+  // wrong on all three cloud CLIs).
+  caption,
 }) {
   return (
     <div>
       <label className="block text-xs font-medium text-gray-400 mb-1">
-        Reference images <span className="text-gray-500 font-normal">({caption})</span>
+        Reference images
+        {caption ? <span className="text-gray-500 font-normal"> ({caption})</span> : null}
       </label>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
         {referenceImages.map((slot, i) => {

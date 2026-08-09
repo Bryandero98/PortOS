@@ -98,12 +98,27 @@ export const EDIT_INCAPABLE_IMAGE_MODES = Object.freeze([IMAGE_GEN_MODE.EXTERNAL
 export const isEditCapableMode = (mode) => !EDIT_INCAPABLE_IMAGE_MODES.includes(mode);
 
 /**
- * Sentence-case backend name for user-facing messages ('Codex', 'Agy', …).
- * The client mirror is `modeLabel` in client/src/lib/imageGenModes.js; this is
- * the server half, shared so error messages don't grow a per-backend ternary
- * ladder each time a backend is added.
+ * Human-facing backend names — the server half of the client's MODE_LABELS
+ * (client/src/lib/imageGenModes.js). A map rather than a capitalization of the
+ * mode id, so a backend whose id isn't a single lowercase word ('lm-studio')
+ * still gets a real name instead of 'Lm-studio'.
  */
-export const modeLabel = (mode) => (mode ? mode[0].toUpperCase() + mode.slice(1) : 'This');
+const MODE_LABELS = Object.freeze({
+  [IMAGE_GEN_MODE.LOCAL]: 'Local',
+  [IMAGE_GEN_MODE.CODEX]: 'Codex',
+  [IMAGE_GEN_MODE.GROK]: 'Grok',
+  [IMAGE_GEN_MODE.AGY]: 'Agy',
+  [IMAGE_GEN_MODE.EXTERNAL]: 'External',
+});
+
+/**
+ * Sentence-case backend name for user-facing messages ('Codex', 'Agy', …).
+ * Shared so error messages don't grow a per-backend ternary ladder each time a
+ * backend is added, and so one backend never appears under two names across
+ * the UI. Falls back to 'This' for an absent mode, which reads correctly in
+ * `editIncapableModeError`'s sentence.
+ */
+export const modeLabel = (mode) => MODE_LABELS[mode] || mode || 'This';
 
 /**
  * The one 400 for "this backend was handed an input image and cannot take one".

@@ -146,21 +146,28 @@ export function pickI2iMode(backends) {
 // CLOUD_PROVIDER_SPECS (imageGen/cloudProviderConfig.js) — how many input
 // images (init image + reference slots, combined) each cloud CLI's image tool
 // accepts. The form uses this to cap the reference slots it offers, so a user
-// never fills a slot the backend would silently drop. Local isn't listed:
-// FLUX.2 takes the init image plus all 4 reference slots.
+// never fills a slot the backend would silently drop. Only agy declares a
+// maximum; codex and grok are absent because their tool schemas declare none,
+// so the form's own slot count is their only bound. Local is absent for the
+// same reason: FLUX.2 takes the init image plus all 4 reference slots.
 // Bound to the server values by server/lib/renderTargets.parity.test.js.
 export const MAX_INPUT_IMAGES = Object.freeze({
   [IMAGE_GEN_MODE.AGY]: 3,
-  [IMAGE_GEN_MODE.CODEX]: 5,
-  [IMAGE_GEN_MODE.GROK]: 5,
 });
 
+// Client mirror of the server's `promptRequiredWithInputImage` spec flag
+// (imageGen/cloudProviderConfig.js) — cloud CLIs whose image tool lists the
+// prompt in its `required` parameters, so an image-only render still needs one.
+// Codex and grok are absent: their tools render from an input image alone.
+// Kept as data (like MODEL_OVERRIDE_CAPABLE_MODES) rather than a hand-rolled
+// `mode === AGY` comparison, so a new CLI backend is one entry here.
+export const PROMPT_REQUIRED_WITH_INPUT_IMAGE_MODES = Object.freeze([IMAGE_GEN_MODE.AGY]);
+
 // Client mirror of the server's cloudPromptRequired (imageGen/cloudProviderConfig.js).
-// Codex and grok can render from an input image alone; agy's generate_image
-// lists `Prompt` in its required parameters, so it always needs one. Bound to
-// the server predicate by server/lib/renderTargets.parity.test.js.
-export const cloudPromptRequired = (mode, hasInputImage) =>
-  isCloudCliMode(mode) && (!hasInputImage || mode === IMAGE_GEN_MODE.AGY);
+// Text-to-image always needs a prompt; with an input image it depends on the
+// backend. Bound to the server predicate by server/lib/renderTargets.parity.test.js.
+export const cloudPromptRequired = (mode, hasInputImage) => isCloudCliMode(mode)
+  && (!hasInputImage || PROMPT_REQUIRED_WITH_INPUT_IMAGE_MODES.includes(mode));
 
 /**
  * How many reference slots the form should offer for `mode`.
@@ -168,14 +175,16 @@ export const cloudPromptRequired = (mode, hasInputImage) =>
  * The client half of the server's input-image cap: a cloud CLI's tool caps the
  * COMBINED count, so an init image eats one of its slots — the same "init image
  * leads" rule `resolveInputImages` applies server-side, predicted here so the
- * form never offers a slot the backend would drop. Local FLUX.2 takes all of
- * them (its references ride a separate runner flag from the init image); a
- * non-FLUX.2 local model and external take none.
+ * form never offers a slot the backend would drop. A backend that declares no
+ * cap gets the form's full slot count. Local FLUX.2 takes all of them (its
+ * references ride a separate runner flag from the init image); a non-FLUX.2
+ * local model and external take none.
  */
 export function referenceSlotsFor(mode, { hasInitImage = false, maxSlots = 4, localSupportsReferences = false } = {}) {
   if (mode === IMAGE_GEN_MODE.LOCAL) return localSupportsReferences ? maxSlots : 0;
   if (!isCloudCliMode(mode)) return 0;
-  return Math.min(maxSlots, MAX_INPUT_IMAGES[mode] - (hasInitImage ? 1 : 0));
+  const cap = MAX_INPUT_IMAGES[mode] ?? Infinity;
+  return Math.min(maxSlots, cap - (hasInitImage ? 1 : 0));
 }
 
 // Backends that honor a NUMERIC per-reference strength. Only the local FLUX.2

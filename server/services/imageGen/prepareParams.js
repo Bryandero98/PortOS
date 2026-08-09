@@ -119,7 +119,13 @@ export async function prepareGenerateParams({ data, files, referenceImageFields 
     mode = resolved.mode;
     if (!data.cloudModel && resolved.cloud?.modelId) data.cloudModel = resolved.cloud.modelId;
   }
-  if (!isEditCapableMode(mode) && (initUpload || data.initImageFile)) {
+  // The render's input images, counted once: the init image (uploaded this
+  // request or named by an earlier one) plus every reference slot. Every gate
+  // below keys off these two, rather than respelling "carries input images"
+  // per gate and having to keep the spellings in sync.
+  const inputImageCount = (initUpload || data.initImageFile ? 1 : 0) + referenceUploads.length;
+
+  if (!isEditCapableMode(mode) && inputImageCount) {
     cleanupReqFilesTemp();
     throw editIncapableModeError(mode);
   }
@@ -131,7 +137,7 @@ export async function prepareGenerateParams({ data, files, referenceImageFields 
   // 400 forever. Same "reject up-front rather than copy-then-fail" rule the
   // reference gates below follow.
   const cloudConfig = resolveCloudProviderConfig(settings, mode);
-  if (cloudConfig && !cloudConfig.enabled && (initUpload || data.initImageFile || referenceUploads.length)) {
+  if (cloudConfig && !cloudConfig.enabled && inputImageCount) {
     cleanupReqFilesTemp();
     throw cloudConfig.disabledError;
   }
@@ -153,22 +159,16 @@ export async function prepareGenerateParams({ data, files, referenceImageFields 
   // copying the uploads to PATHS.imageRefs and silently dropping them
   // downstream — that would orphan files on disk and produce metadata sidecars
   // that lie about how the render was conditioned.
-  if (referenceUploads.length) {
-    if (!isEditCapableMode(mode)) {
+  if (referenceUploads.length && mode === IMAGE_GEN_MODE.LOCAL) {
+    const candidate = getImageModels().find((m) => m.id === data.modelId)
+      ?? getImageModels().find((m) => m.id === 'dev')
+      ?? getImageModels()[0];
+    if (!isFlux2(candidate)) {
       cleanupReqFilesTemp();
-      throw editIncapableModeError(mode);
-    }
-    if (mode === IMAGE_GEN_MODE.LOCAL) {
-      const candidate = getImageModels().find((m) => m.id === data.modelId)
-        ?? getImageModels().find((m) => m.id === 'dev')
-        ?? getImageModels()[0];
-      if (!isFlux2(candidate)) {
-        cleanupReqFilesTemp();
-        throw new ServerError(
-          'Reference images are only supported for FLUX.2 models on the local backend',
-          { status: 400, code: 'REFERENCE_IMAGES_FLUX2_ONLY' },
-        );
-      }
+      throw new ServerError(
+        'Reference images are only supported for FLUX.2 models on the local backend',
+        { status: 400, code: 'REFERENCE_IMAGES_FLUX2_ONLY' },
+      );
     }
   }
 
@@ -180,7 +180,6 @@ export async function prepareGenerateParams({ data, files, referenceImageFields 
   // so this only fires for direct API callers — but a silent drop is exactly
   // the failure the sidecar-honesty rule exists to prevent. `resolveInputImages`
   // keeps its own cap as the backstop for in-process callers that skip the route.
-  const inputImageCount = (initUpload || data.initImageFile ? 1 : 0) + referenceUploads.length;
   const inputImageCap = maxInputImages(mode);
   if (inputImageCap != null && inputImageCount > inputImageCap) {
     cleanupReqFilesTemp();
