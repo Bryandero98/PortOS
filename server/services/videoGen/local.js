@@ -1471,7 +1471,12 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
 // child is SIGTERM'd by cancel() and surfaces a 'failed' event we translate
 // into a chain-level failure. Already-completed inner chunks are hidden but
 // not deleted (the partial output is still on disk if the user wants it).
-export async function generateChainedVideo({ chunks, jobId: outerJobId, ...rest }) {
+//
+// `chunkPrompts` (#3695) optionally steers each chunk individually: entry i is
+// chunk i's prompt, and a null/blank/missing entry falls back to the main
+// `prompt`. It is destructured out of `rest` on purpose so the per-chunk
+// generateVideo() calls below never receive the whole list.
+export async function generateChainedVideo({ chunks, chunkPrompts, jobId: outerJobId, ...rest }) {
   const totalChunks = Number(chunks) || 1;
   if (totalChunks === 1) {
     return generateVideo({ jobId: outerJobId, ...rest });
@@ -1556,8 +1561,16 @@ export async function generateChainedVideo({ chunks, jobId: outerJobId, ...rest 
       : undefined;
 
     const isExtendChain = firstMode === 'extend' && i > 0;
+    // Per-chunk beat (#3695). `chunkPrompts` is already normalized (blank →
+    // null) by prepareVideoGenParams, but re-guard on emptiness here too so a
+    // direct service caller can't hand a chunk an empty prompt — an absent beat
+    // must always resolve to the main prompt, never to ''.
+    const beat = Array.isArray(chunkPrompts) ? chunkPrompts[i] : null;
+    const chunkPrompt = (typeof beat === 'string' && beat.trim() !== '') ? beat : rest.prompt;
+
     generateVideo({
       ...rest,
+      prompt: chunkPrompt,
       seed: chunkSeed,
       jobId: innerJobId,
       // extend chain: subsequent chunks condition on the prior clip's full
@@ -1643,6 +1656,11 @@ export async function generateChainedVideo({ chunks, jobId: outerJobId, ...rest 
       filenamePrefix: 'chained',
       historyKey: 'chainedFrom',
       promptOverride: rest.prompt || null,
+      // Persist the beats alongside the stitched clip so the gallery entry (and
+      // a Remix off it) carries the same source of truth the chain rendered
+      // from — the individual chunk entries only ever hold their own resolved
+      // prompt, which loses which of them were explicit beats vs. fallbacks.
+      ...(Array.isArray(chunkPrompts) && chunkPrompts.some((p) => p) ? { extraMeta: { chunkPrompts } } : {}),
     }).catch((err) => ({ error: err.message }));
     if (stitched?.error) {
       await setHistoryItemsHidden(chunkIds, true);
@@ -1817,14 +1835,20 @@ export async function sampleEvaluationFrames(jobId, count = 5) {
 // lets users stitch from a single model so this holds in practice.
 //
 // `opts` lets the chained-render code reuse the same ffmpeg path with a
-// different identity (id, filename prefix, history-link key, prompt) without
-// duplicating the validation + concat-manifest plumbing.
+// different identity (id, filename prefix, history-link key, prompt) and extra
+// history metadata without duplicating the validation + concat-manifest
+// plumbing.
 export async function stitchVideos(videoIds, opts = {}) {
   const {
     id = randomUUID(),
     filenamePrefix = 'stitched',
     historyKey = 'stitchedFrom',
     promptOverride = null,
+    // Extra fields merged into the stitched history entry (chained renders use
+    // it for per-chunk prompt beats). Spread FIRST below so the derived fields
+    // win — a caller can annotate the entry but never overwrite the identity
+    // fields (id/filename/thumbnail/…) this function is responsible for.
+    extraMeta = null,
   } = opts;
   if (!Array.isArray(videoIds) || videoIds.length < 2) {
     throw new ServerError('Need at least 2 videos to stitch', { status: 400, code: 'VALIDATION_ERROR' });
@@ -1874,6 +1898,7 @@ export async function stitchVideos(videoIds, opts = {}) {
 
   const thumb = await generateThumbnail(outPath, id);
   const stitchedMeta = {
+    ...(extraMeta && typeof extraMeta === 'object' ? extraMeta : {}),
     id,
     prompt: promptOverride != null
       ? promptOverride

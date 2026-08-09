@@ -191,6 +191,77 @@ describe('useVideoGenForm', () => {
     expect(result.current.buildGeneratePayload().chunks).toBe('');
   });
 
+  describe('per-chunk prompt beats (#3695)', () => {
+    const chained = async (count = 3) => {
+      const { result } = render();
+      await waitFor(() => expect(result.current.modelId).toBe(MLX.id));
+      act(() => { result.current.setPrompt('a long shot'); result.current.setChunks(count); });
+      return result;
+    };
+
+    it('serializes the beats as JSON, padded to the live chunk count', async () => {
+      const result = await chained(3);
+      act(() => result.current.setChunkPromptAt(0, 'she opens the door'));
+      act(() => result.current.setChunkPromptAt(2, 'the storm breaks'));
+
+      expect(result.current.chainingActive).toBe(true);
+      // A blank middle beat keeps its POSITION — that's what tells the server
+      // chunk 2 falls back to the main prompt rather than shifting beat 3 up.
+      expect(JSON.parse(result.current.buildGeneratePayload().chunkPrompts))
+        .toEqual(['she opens the door', '', 'the storm breaks']);
+    });
+
+    it('keeps text for chunks beyond the current count so lowering then raising restores it', async () => {
+      const result = await chained(3);
+      act(() => { result.current.setChunkPromptAt(0, 'first'); result.current.setChunkPromptAt(2, 'third'); });
+
+      act(() => result.current.setChunks(2));
+      expect(JSON.parse(result.current.buildGeneratePayload().chunkPrompts)).toEqual(['first', '']);
+
+      act(() => result.current.setChunks(3));
+      expect(JSON.parse(result.current.buildGeneratePayload().chunkPrompts))
+        .toEqual(['first', '', 'third']);
+    });
+
+    it('omits the beats when every one is blank', async () => {
+      const result = await chained(2);
+      act(() => result.current.setChunkPromptAt(0, '   '));
+      expect(result.current.buildGeneratePayload().chunkPrompts).toBe('');
+    });
+
+    it('omits the beats when the request does not chain', async () => {
+      const result = await chained(1);
+      act(() => result.current.setChunkPromptAt(0, 'a stale beat'));
+      expect(result.current.chainingActive).toBe(false);
+      expect(result.current.buildGeneratePayload().chunkPrompts).toBe('');
+    });
+
+    it('omits the beats for a mode the server pins to one chunk', async () => {
+      const result = await chained(3);
+      act(() => result.current.handleModelChange(LTX2.id));
+      act(() => result.current.handleModeChange('fflf'));
+      act(() => result.current.toggleKeyframesMode());
+      act(() => result.current.setChunkPromptAt(0, 'a beat'));
+
+      expect(result.current.keyframesActive).toBe(true);
+      expect(result.current.chainingActive).toBe(false);
+      expect(result.current.buildGeneratePayload().chunkPrompts).toBe('');
+    });
+
+    it('restores beats from a resumed job, mapping the server null back to blank', async () => {
+      const { result } = render();
+      await waitFor(() => expect(result.current.modelId).toBe(MLX.id));
+      act(() => result.current.applyResumedParams({
+        prompt: 'a long shot',
+        chunks: 3,
+        chunkPrompts: ['she opens the door', null, 'the storm breaks'],
+      }));
+      expect(result.current.chunkPrompts).toEqual(['she opens the door', '', 'the storm breaks']);
+      expect(JSON.parse(result.current.buildGeneratePayload().chunkPrompts))
+        .toEqual(['she opens the door', '', 'the storm breaks']);
+    });
+  });
+
   it('serializes keyframes as JSON and suppresses chunking while they are active', async () => {
     const { result } = render();
     act(() => result.current.handleModelChange(LTX2.id));

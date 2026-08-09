@@ -65,6 +65,13 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   const [numFrames, setNumFrames] = useState(121);
   const [fps, setFps] = useState(24);
   const [chunks, setChunks] = useState(1);
+  // Per-chunk prompt beats (#3695) — one editable string per chained chunk, so
+  // a longer shot can progress instead of replaying the same prompt at each
+  // seam. Kept as a plain sparse-by-blank array (index i steers chunk i); a
+  // blank entry means "use the main prompt for this chunk". Sized lazily by
+  // `chunkPromptAt`/`setChunkPromptAt` rather than eagerly resized on every
+  // chunk change, so lowering then raising the count doesn't lose typed text.
+  const [chunkPrompts, setChunkPrompts] = useState([]);
   const [steps, setSteps] = useState('');
   const [guidanceScale, setGuidanceScale] = useState('');
   const [imageStrength, setImageStrength] = useState('');
@@ -848,6 +855,11 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
       if (p.duration) setGrokDuration(p.duration);
     } else if (p.mode) setMode(p.mode);
     if (p.chunks && p.chunks > 1) setChunks(p.chunks);
+    // Per-chunk beats (#3695). The server normalizes an absent beat to null;
+    // the editor's shape is '' for the same thing, so map back on restore.
+    if (Array.isArray(p.chunkPrompts) && p.chunkPrompts.length) {
+      setChunkPrompts(p.chunkPrompts.map((cp) => (typeof cp === 'string' ? cp : '')));
+    }
     // Multi-keyframe FFLF: the route maps the stored { path, index } back to
     // { file, index } (gallery basename) for us, so restore the picker
     // state directly. >= 2 mirrors the server's accept floor; flipping
@@ -919,6 +931,31 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   );
   const modelSupportsChaining = currentModel?.runtime !== 'wan22'
     || currentModel?.supportedModes?.includes('image');
+  // The single predicate for "this request really chains" — keyframes, IC
+  // references and a2v each anchor a SINGLE clip, so the route pins them to one
+  // chunk (KEYFRAMES_CHUNKS_CONFLICT / IC_LORA_CHUNKS_CONFLICT). Derived once so
+  // the submitted `chunks`, the submitted `chunkPrompts`, and the per-chunk beat
+  // editor can never disagree about whether chaining is active.
+  const chainingActive = mode !== 'a2v' && !keyframesActive && !icModeActive
+    && modelSupportsChaining && chunks > 1;
+
+  // Edit one beat. The backing array is only ever GROWN (never truncated on a
+  // chunk-count change) so lowering the count and raising it again restores the
+  // text the user already typed; submit and the editor slice to the live count.
+  const setChunkPromptAt = (index, value) => {
+    setChunkPrompts((prev) => {
+      const next = prev.slice();
+      while (next.length <= index) next.push('');
+      next[index] = value;
+      return next;
+    });
+  };
+  // What actually rides to the server: exactly `chunks` entries, blanks kept in
+  // place as explicit "use the main prompt" markers, and the whole list dropped
+  // when chaining is off or every beat is blank.
+  const activeChunkPrompts = chainingActive
+    ? Array.from({ length: chunks }, (_, i) => chunkPrompts[i] || '')
+    : [];
 
   // Snapshot the current form into a generate-payload. Used both by the
   // inline Generate button and by enqueue, so the two paths stay in lockstep.
@@ -1016,8 +1053,14 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
       // Keyframes and IC references each anchor a single clip — the route
       // rejects chunks > 1 with KEYFRAMES_CHUNKS_CONFLICT /
       // IC_LORA_CHUNKS_CONFLICT, so suppress chunking for both.
-      chunks: mode !== 'a2v' && !keyframesActive && !icModeActive
-        && modelSupportsChaining && chunks > 1 ? chunks : '',
+      chunks: chainingActive ? chunks : '',
+      // Per-chunk beats (#3695) go as a JSON string, like `keyframes` above:
+      // buildFormData appends arrays as repeated keys, which would collapse a
+      // one-entry list to a bare string server-side and — worse — lose the
+      // POSITION of a blank middle beat. Omitted entirely when chaining is off
+      // or every beat is blank, so a non-chained submit sends nothing.
+      chunkPrompts: activeChunkPrompts.some((p) => p.trim())
+        ? JSON.stringify(activeChunkPrompts) : '',
     };
   };
 
@@ -1039,6 +1082,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     numFrames, setNumFrames,
     fps, setFps,
     chunks, setChunks,
+    chunkPrompts, setChunkPromptAt, chainingActive,
     steps, setSteps,
     guidanceScale, setGuidanceScale,
     imageStrength, setImageStrength,

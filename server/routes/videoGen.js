@@ -124,6 +124,11 @@ const optionalInt = (min, max, label) => z.preprocess(
 // still enforced against the mode's own spec (assertIcReferenceCount).
 const MAX_IC_REFERENCES = Math.max(...listIcLoraWeights().map((s) => s.maxReferences));
 
+// Chain ceiling — 8 × ~5min ≈ 40min on an M3 Max keeps the worst-case wall time
+// bounded. Shared by `chunks` and the per-chunk prompt list so the two can never
+// drift apart.
+export const MAX_VIDEO_CHUNKS = 8;
+
 // Render controls that only the local runtimes understand. Keep their schemas
 // together so Grok eligibility and request validation cannot drift when a new
 // local-only knob is added.
@@ -173,7 +178,27 @@ const generateBodySchema = z.object({
   // Chain N renders end-to-end: each chunk's last frame becomes the next
   // chunk's start frame, then ffmpeg concats them into one clip. 1..8 to
   // keep the worst-case wall time bounded (8 × ~5min ≈ 40min on M3 Max).
-  chunks: optionalInt(1, 8, 'chunks'),
+  chunks: optionalInt(1, MAX_VIDEO_CHUNKS, 'chunks'),
+  // Optional per-chunk prompt beats for a chained render (#3695). Entry i
+  // steers chunk i, so a longer shot can progress through an action instead of
+  // replaying the same prompt at every seam. A blank entry is an explicit
+  // fallback to the main `prompt` — that's why empty strings are accepted
+  // rather than filtered here; prepareVideoGenParams normalizes them to null.
+  // Rides as a JSON-encoded array (like `keyframes`) so blank middle entries
+  // keep their position and a one-element list can't collapse to the bare
+  // string multipart sends for a single repeated key — a bare string is still
+  // accepted as a one-entry list for hand-rolled/JSON clients.
+  chunkPrompts: z.preprocess(
+    (v) => {
+      if (v == null || v === '') return undefined;
+      if (typeof v === 'string') {
+        if (v.trim().startsWith('[')) { try { return JSON.parse(v); } catch { return [v]; } }
+        return [v];
+      }
+      return v;
+    },
+    z.array(z.string().max(8000)).max(MAX_VIDEO_CHUNKS).optional(),
+  ),
   // History id of a prior render to extend natively (ltx2 runtime only —
   // routes through ExtendPipeline.extend_from_video which conditions on
   // the entire source video's latent rather than a single last frame).
@@ -872,7 +897,7 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     pythonPath, effectiveModelId, mode,
     sourceImagePath, lastImagePath, audioFilePath, icReferencePaths,
     resolvedKeyframes, extendFromVideoPath,
-    uploadedTempPath, uploadedTempPaths, loras, effectiveChunks,
+    uploadedTempPath, uploadedTempPaths, loras, effectiveChunks, effectiveChunkPrompts,
   } = prepared;
 
   // Enqueue rather than spawn synchronously — the mediaJobQueue worker will
@@ -902,6 +927,10 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     mode,
     imageStrength: body.imageStrength,
     chunks: effectiveChunks,
+    // Undefined when the request doesn't chain (or every beat was blank) — the
+    // key is simply absent from job.params then, so a resumed form restores no
+    // stale beats. See prepareVideoGenParams for the normalization.
+    ...(effectiveChunkPrompts ? { chunkPrompts: effectiveChunkPrompts } : {}),
     loras,
     icReferencePaths,
     icStrength: body.icStrength,
@@ -936,7 +965,7 @@ const ACTIVE_JOB_PARAM_FIELDS = [
   'prompt', 'negativePrompt', 'modelId',
   'width', 'height', 'numFrames', 'fps',
   'steps', 'guidanceScale', 'seed',
-  'tiling', 'disableAudio', 'mode', 'chunks', 'imageStrength',
+  'tiling', 'disableAudio', 'mode', 'chunks', 'chunkPrompts', 'imageStrength',
   'audioStartSec',
   // Grok jobs (#2859 phase 2): the semantic t2v/i2v mode ('mode' holds the
   // 'grok' discriminator for them) and the clip duration — both plain

@@ -1,6 +1,7 @@
 /**
- * "Advanced" disclosure for the local-backend sampler knobs — frames, chunks,
- * fps, seed, steps, CFG scale, image strength, tiling and the audio flags.
+ * "Advanced" disclosure for the local-backend sampler knobs — frames, chunks
+ * (plus their optional per-chunk prompt beats), fps, seed, steps, CFG scale,
+ * image strength, tiling and the audio flags.
  *
  * Closed by default so the Generate button sits above the fold on /media/video
  * the way it already does on the sibling /media/image tab (issue #3279), which
@@ -31,6 +32,7 @@ export default function AdvancedParamsPanel({
   currentModel,
   numFrames, onNumFramesChange,
   chunks, onChunksChange, keyframesActive,
+  chunkPrompts = [], onChunkPromptChange, chainingActive = false,
   fps, onFpsChange,
   seed, onSeedChange, onRandomSeed,
   steps, onStepsChange,
@@ -106,6 +108,41 @@ export default function AdvancedParamsPanel({
                   </option>
                 ))}
               </select>
+            </div>
+          )}
+
+          {/* Per-chunk prompt beats (#3695). Only shown when the request really
+              chains — the parent derives `chainingActive` from the same
+              predicate that decides whether `chunks` is submitted at all, so
+              this editor can never appear for a mode the server pins to one
+              chunk. One row per LIVE chunk; the parent keeps text for chunks
+              beyond the current count, so lowering then raising the count
+              restores what was typed. */}
+          {chainingActive && (
+            <div className="col-span-2 sm:col-span-3">
+              <p className="block text-xs font-medium text-gray-400 mb-1">
+                Per-chunk beats <span className="font-normal text-gray-500">(optional — blank uses the main prompt)</span>
+              </p>
+              <div className="space-y-1.5">
+                {Array.from({ length: chunks }, (_, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <label htmlFor={`chunk-prompt-${i}`} className="text-[11px] text-gray-500 w-12 shrink-0">
+                      Chunk {i + 1}
+                    </label>
+                    <input
+                      id={`chunk-prompt-${i}`}
+                      type="text"
+                      value={chunkPrompts[i] || ''}
+                      onChange={(e) => onChunkPromptChange(i, e.target.value)}
+                      placeholder="Same as main prompt"
+                      className={inputCls}
+                    />
+                  </div>
+                ))}
+              </div>
+              <p className="text-[10px] text-gray-500 leading-snug mt-1">
+                Each chunk still continues from the previous chunk&apos;s last frame — beats steer what happens next rather than starting a new shot.
+              </p>
             </div>
           )}
 
