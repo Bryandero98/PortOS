@@ -61,6 +61,7 @@ function buildExpansionPrompt({
   priorPremise = '',
   priorStyleNotes = '',
   locked = {},
+  foundationDirective = '',
 }) {
   const embrace = Array.isArray(influences?.embrace)
     ? influences.embrace.filter(Boolean)
@@ -91,6 +92,12 @@ function buildExpansionPrompt({
   const currentStateSection = stateLines.length
     ? `\n# Current universe state — established context for this expansion${anyLocked ? '. Fields marked [LOCKED] MUST be echoed unchanged in your output' : ''}.
 ${stateLines.join('\n\n')}\n`
+    : '';
+  const safeFoundationDirective = typeof foundationDirective === 'string'
+    ? foundationDirective.trim().slice(0, 2_000)
+    : '';
+  const foundationSection = safeFoundationDirective
+    ? `\n# Foundation repair directive\nA whole-series foundation judge found the following concrete weakness. Repair it across the unlocked world-bible fields while preserving every locked field and established fact:\n${safeFoundationDirective}\n`
     : '';
 
   // Preserved items: the client extracted user-pinned variations and
@@ -123,7 +130,7 @@ ${preservedVariationLines.length ? `Pinned variations:\n${preservedVariationLine
 
 # Starter idea
 ${starterPrompt}
-${influencesSection}${currentStateSection}${preservedSection}
+${influencesSection}${currentStateSection}${foundationSection}${preservedSection}
 # Output contract
 Return a SINGLE JSON object. NO markdown, NO commentary. The object MUST have these top-level keys:
 
@@ -343,6 +350,7 @@ export async function expandWorldTemplate({
   premise: priorPremise = '',
   styleNotes: priorStyleNotes = '',
   locked = {},
+  foundationDirective = '',
   providerId,
   model,
 } = {}) {
@@ -367,6 +375,7 @@ export async function expandWorldTemplate({
     priorPremise,
     priorStyleNotes,
     locked,
+    foundationDirective,
   });
   const totalIn = safeInfluences.embrace.length + safeInfluences.avoid.length;
   const preservedVarCount = Object.values(preservedVariations || {}).reduce(

@@ -272,7 +272,7 @@ export async function verifyArc(seriesId, options = {}) {
   return { issues, raw: content, runId, providerId, model };
 }
 
-export async function buildVolumeVerifyContext(series, season, preloadedWorld) {
+export async function buildVolumeVerifyContext(series, season, preloadedWorld, { synopsisOnly = false } = {}) {
   const [allIssues, base] = await Promise.all([
     listIssues({ seriesId: series.id }),
     buildArcBaseContext(series, preloadedWorld),
@@ -280,7 +280,15 @@ export async function buildVolumeVerifyContext(series, season, preloadedWorld) {
   const volumeIssues = allIssues
     .filter((iss) => iss.seasonId === season.id)
     .sort(compareIssuesByPosition)
-    .map(renderVolumeIssue);
+    .map((issue) => (synopsisOnly
+      ? {
+        number: issue.number,
+        title: issue.title,
+        status: issue.status,
+        arcPosition: issue.arcPosition,
+        synopsis: (issue.stages?.idea?.input || '').trim() || null,
+      }
+      : renderVolumeIssue(issue)));
   // Volume-specific curve placement layered on top of base's arc-wide
   // shapeGuidance so the verifier can flag "this volume inverts the expected
   // fortune at its position."
@@ -319,7 +327,9 @@ export async function verifyVolume(seriesId, seasonId, options = {}) {
     );
   }
   const season = await getSeason(seriesId, seasonId);
-  const ctx = await buildVolumeVerifyContext(series, season, options.preloadedWorld);
+  const ctx = await buildVolumeVerifyContext(series, season, options.preloadedWorld, {
+    synopsisOnly: options.synopsisOnly === true,
+  });
   const { content, runId, providerId, model } = await runStagedLLM(
     'pipeline-volume-verify',
     ctx,

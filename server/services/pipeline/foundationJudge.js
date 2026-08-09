@@ -13,13 +13,14 @@
  * (#2167) off the `pipeline-arc-overview` writer stage — the model that scores
  * the foundation is deliberately different from the one that generated it. It
  * returns a per-dimension `{ score, gap, fix }` and a weighted composite the
- * autopilot gate spends: proceed to beat sheets once the weighted score clears a
- * configurable threshold; otherwise the bounded improve loop (in
+ * autopilot gate spends: proceed once the weighted score clears a configurable
+ * threshold AND every dimension clears its floor; otherwise the bounded improve loop (in
  * seriesAutopilot.js `runFoundationGate`) targets the weakest dimension, applies
  * the fix through the OWNING service (never a raw write, `force:false`
  * everywhere), and re-judges.
  *
- * Fast-pass / skip: the judged inputs (canon + character records + arc) are
+ * Fast-pass / skip: the judged inputs (canon + character records + full
+ * synopsis plan + character arcs + series voice) are
  * content-hashed and pinned on the snapshot, so a re-judge of an UNCHANGED
  * foundation returns the cached verdict with no LLM call — an already-clean
  * foundation re-reached after unrelated steps cannot loop (mirrors
@@ -40,16 +41,20 @@ import { PATHS, atomicWrite, ensureDir, tryReadFile, safeJSONParse } from '../..
 import { runStagedLLM, resolveStageContext, resolveJudgeForStage } from '../../lib/stageRunner.js';
 import { manuscriptContentBudgetChars, estimateTokens } from '../../lib/contextBudget.js';
 import { getStage } from '../promptService.js';
-import { composeStyleNotes } from '../../lib/styleGuide.js';
+import { composeStyleNotes, sanitizeStyleGuide } from '../../lib/styleGuide.js';
+import { sanitizeCharacterArcList } from '../../lib/seriesCharacterArc.js';
+import { sanitizeCharacter } from '../../lib/storyBible.js';
 import { renderEntitiesSummary } from '../../lib/universePromptRenderers.js';
 import { getUniverse, updateUniverse } from '../universeBuilder.js';
-import { expandUniverseCharacter, isBlankString, isBlankArray } from '../universeCharacterExpand.js';
+import { isBlankString, isBlankArray } from '../universeCharacterExpand.js';
 import { expandWorldTemplate } from '../universeBuilderExpand.js';
-import { getSeries } from './series.js';
+import { getSeries, updateSeries } from './series.js';
+import { listIssues } from './issues.js';
 import { getSeriesCanon } from './seriesCanon.js';
 import { resolveVerifyIssues } from './arcPlanner.js';
 
 const STAGE = 'pipeline-judge-foundation';
+const REPAIR_STAGE = 'pipeline-foundation-repair';
 // The writer stage whose judgeProvider/judgeModel pin drives the writer/judge
 // split — the arc overview is the foundation's authoring pass. Mirrors
 // pipelineJudge.js's WRITER_STAGE_TEMPLATE indirection (kept local + stable).
@@ -76,6 +81,10 @@ if (Math.abs(WEIGHT_SUM - 1) > 1e-9) {
 // before drafting. Mirrors autonovel's 7.5 foundation bar (design record
 // Phase 11). Overridable per-run + via the persisted setting.
 export const DEFAULT_FOUNDATION_THRESHOLD = 7.5;
+// A strong weighted world score must not hide a critically thin character or
+// craft foundation. The floor follows an intentionally lowered run threshold,
+// but otherwise keeps every dimension at a publishable planning baseline.
+export const DEFAULT_FOUNDATION_DIMENSION_FLOOR = 6;
 
 // Defensive caps on LLM output — never trust raw model JSON.
 const GAP_MAX = 600;
@@ -98,14 +107,26 @@ const snapshotPath = (seriesId) => join(foundationDir(), `${seriesId}.json`);
 
 // ---------- input hashing (fast-pass / staleness) ----------
 
-// The judged foundation as a stable, hashable projection: universe canon
-// (worldbuilding), character records, and the arc/seasons (structure). A change
+// The judged foundation as a stable, hashable projection: universe canon,
+// character records, the full synopsis plan, authored character arcs, and the
+// series voice. A change
 // to ANY of these flips the pinned hash so a re-judge re-runs; an unchanged
 // foundation short-circuits to the cached verdict. Kept deliberately narrow —
 // only the fields the judge actually reads — so an unrelated series edit (e.g. a
 // render slot) doesn't needlessly invalidate the score.
-export function foundationInputs(series, universe) {
+export function foundationInputs(series, universe, issues = []) {
   const characters = Array.isArray(universe?.characters) ? universe.characters : [];
+  const episodeInputs = [...(Array.isArray(issues) ? issues : [])]
+    .sort((a, b) => String(a?.seasonId || '').localeCompare(String(b?.seasonId || ''))
+      || (a?.number ?? 9999) - (b?.number ?? 9999)
+      || String(a?.id || '').localeCompare(String(b?.id || '')))
+    .map((issue) => ({
+      id: issue?.id || '',
+      seasonId: issue?.seasonId || '',
+      number: issue?.number ?? null,
+      title: issue?.title || '',
+      synopsis: issue?.stages?.idea?.input || '',
+    }));
   return {
     world: universe
       ? {
@@ -129,8 +150,21 @@ export function foundationInputs(series, universe) {
     })),
     arc: series?.arc || null,
     seasons: Array.isArray(series?.seasons)
-      ? series.seasons.map((s) => ({ id: s.id, number: s.number, logline: s.logline, endingHook: s.endingHook, summary: s.summary }))
+      ? series.seasons.map((s) => ({
+        id: s.id,
+        number: s.number,
+        title: s.title || '',
+        logline: s.logline || '',
+        synopsis: s.synopsis || '',
+        endingHook: s.endingHook || '',
+      }))
       : [],
+    episodes: episodeInputs,
+    characterArcs: Array.isArray(series?.characterArcs) ? series.characterArcs : [],
+    voice: {
+      styleNotes: series?.styleNotes || '',
+      styleGuide: series?.styleGuide || null,
+    },
   };
 }
 
@@ -147,7 +181,7 @@ function pickFrameworkFields(c) {
 }
 
 const contentHash = (value) => createHash('sha256').update(JSON.stringify(value ?? null)).digest('hex');
-export const foundationInputsHash = (series, universe) => contentHash(foundationInputs(series, universe));
+export const foundationInputsHash = (series, universe, issues = []) => contentHash(foundationInputs(series, universe, issues));
 
 // ---------- weighted composite math ----------
 
@@ -197,6 +231,33 @@ export function weakestDimension(dimensions) {
     }
   }
   return best;
+}
+
+export function foundationGateStatus(dimensions, weightedScore, threshold = DEFAULT_FOUNDATION_THRESHOLD) {
+  const dimensionFloor = Math.min(
+    Number.isFinite(threshold) ? threshold : DEFAULT_FOUNDATION_THRESHOLD,
+    DEFAULT_FOUNDATION_DIMENSION_FLOOR,
+  );
+  const failingDimensions = FOUNDATION_DIMENSIONS
+    .filter((dimension) => clampScore(dimensions?.[dimension]?.score) < dimensionFloor);
+  return {
+    dimensionFloor,
+    failingDimensions,
+    passes: Number(weightedScore) >= threshold && failingDimensions.length === 0,
+  };
+}
+
+export function foundationFixTarget(dimensions, threshold = DEFAULT_FOUNDATION_THRESHOLD) {
+  const { dimensionFloor, failingDimensions } = foundationGateStatus(dimensions, 0, threshold);
+  if (failingDimensions.length === 0) return weakestDimension(dimensions);
+  return failingDimensions
+    .map((dimension) => ({
+      dimension,
+      score: clampScore(dimensions?.[dimension]?.score),
+      deficit: Math.round((dimensionFloor - clampScore(dimensions?.[dimension]?.score)) * 100) / 100,
+    }))
+    .sort((a, b) => a.score - b.score
+      || FOUNDATION_DIMENSIONS.indexOf(a.dimension) - FOUNDATION_DIMENSIONS.indexOf(b.dimension))[0];
 }
 
 // ---------- sanitize LLM output ----------
@@ -274,19 +335,76 @@ export function isFoundationStale(snap, currentHash) {
 // Render one character's framework completeness so the judge can see which of
 // the Wound/Lie/Want/Need chain is present vs. blank (the character dimension's
 // core signal) without dumping the whole record.
-function renderCharacterLine(c) {
-  const present = FRAMEWORK_STRING_FIELDS.filter((f) => !isBlankString(c?.[f]));
-  const blanks = FRAMEWORK_STRING_FIELDS.filter((f) => isBlankString(c?.[f]));
-  const secretCount = Array.isArray(c?.secrets) ? c.secrets.length : 0;
+function renderCharacterLine(c, { core = false } = {}) {
   const role = c?.role ? ` (${c.role})` : '';
-  const has = present.length ? `has: ${present.join(', ')}` : 'has: —';
-  const missing = blanks.length ? ` | missing: ${blanks.join(', ')}` : '';
-  return `- **${c?.name || 'Unnamed'}**${role} — ${has}${missing} | secrets: ${secretCount}${c?.arcType ? ` | arcType: ${c.arcType}` : ''}`;
+  const concise = (value) => (typeof value === 'string' && value.trim()
+    ? value.trim().replace(/\s+/g, ' ').slice(0, 100)
+    : '—');
+  const framework = FRAMEWORK_STRING_FIELDS
+    .map((field) => `${field}: ${concise(c?.[field])}`)
+    .join(' | ');
+  const secrets = (Array.isArray(c?.secrets) ? c.secrets : [])
+    .map(concise)
+    .slice(0, 3)
+    .join('; ');
+  return `- ${core ? '[CORE] ' : ''}**${c?.name || 'Unnamed'}**${role} — ${framework} | arcType: ${c?.arcType || '—'} | secrets: ${secrets || '—'}`;
 }
 
-function renderArc(series) {
+function countOccurrences(text, value) {
+  const haystack = String(text || '').toLocaleLowerCase();
+  const needle = String(value || '').trim().toLocaleLowerCase();
+  if (!needle) return 0;
+  let count = 0;
+  let cursor = 0;
+  while ((cursor = haystack.indexOf(needle, cursor)) !== -1) {
+    count += 1;
+    cursor += needle.length;
+  }
+  return count;
+}
+
+export function rankFoundationCharacters(characters, series, issues = []) {
+  const list = Array.isArray(characters) ? characters : [];
+  const storyText = JSON.stringify({
+    arc: series?.arc || null,
+    seasons: series?.seasons || [],
+    characterArcs: series?.characterArcs || [],
+    episodes: (Array.isArray(issues) ? issues : []).map((issue) => ({
+      title: issue?.title || '',
+      synopsis: issue?.stages?.idea?.input || '',
+    })),
+  });
+  const authoredArcIds = new Set((Array.isArray(series?.characterArcs) ? series.characterArcs : [])
+    .map((arc) => arc?.characterId)
+    .filter(Boolean));
+  return list
+    .filter((character) => character && character.locked !== true)
+    .map((character, index) => {
+      const blanks = FRAMEWORK_STRING_FIELDS.filter((field) => isBlankString(character[field])).length
+        + (isBlankArray(character.secrets) ? 1 : 0);
+      const mentions = countOccurrences(storyText, character.name);
+      const authoredArc = authoredArcIds.has(character.id);
+      return { character, index, mentions, authoredArc, blanks };
+    })
+    .sort((a, b) => Number(b.authoredArc) - Number(a.authoredArc)
+      || b.mentions - a.mentions
+      || b.blanks - a.blanks
+      || a.index - b.index);
+}
+
+function coreFoundationCharacters(characters, series, issues = []) {
+  const ranked = rankFoundationCharacters(characters, series, issues);
+  const referenced = ranked.filter(({ authoredArc, mentions }) => authoredArc || mentions > 0);
+  return (referenced.length > 0 ? referenced : ranked)
+    .slice(0, 6)
+    .map(({ character }) => character);
+}
+
+function renderArc(series, issues = []) {
   const arc = series?.arc || {};
   const seasons = Array.isArray(series?.seasons) ? [...series.seasons].sort((a, b) => (a.number || 0) - (b.number || 0)) : [];
+  const orderedIssues = [...(Array.isArray(issues) ? issues : [])]
+    .sort((a, b) => (a?.number ?? 9999) - (b?.number ?? 9999));
   const themes = Array.isArray(arc.themes) ? arc.themes.join(', ') : (arc.themes || '');
   const lines = [
     `Logline: ${arc.logline || '(none)'}`,
@@ -296,28 +414,71 @@ function renderArc(series) {
     `Shape: ${arc.shape || '(unset)'}`,
     '',
     `Volumes (${seasons.length}):`,
-    ...seasons.map((s) => `  V${s.number ?? '?'}: ${s.logline || '(no logline)'}${s.endingHook ? ` → hook: ${s.endingHook}` : ''}`),
   ];
+  for (const season of seasons) {
+    lines.push(`  V${season.number ?? '?'} ${season.title || ''}: ${season.logline || '(no logline)'}`);
+    lines.push(`    Synopsis: ${season.synopsis || '(none)'}`);
+    if (season.endingHook) lines.push(`    Ending hook: ${season.endingHook}`);
+    const seasonIssues = orderedIssues.filter((issue) => issue?.seasonId === season.id);
+    for (const issue of seasonIssues) {
+      lines.push(`    #${issue.number ?? '?'} ${issue.title || 'Untitled'}: ${issue?.stages?.idea?.input || '(no synopsis)'}`);
+    }
+  }
+  const characterArcs = Array.isArray(series?.characterArcs) ? series.characterArcs : [];
+  lines.push('', `Authored character arcs (${characterArcs.length}):`);
+  for (const characterArc of characterArcs) {
+    lines.push(`  - ${characterArc.characterName || characterArc.characterId || 'Unnamed'}: ${characterArc.startState || '(no start)'} → ${characterArc.endState || '(no end)'}; want=${characterArc.want || '—'}; need=${characterArc.need || '—'}`);
+  }
   return lines.join('\n');
+}
+
+function renderWorldFoundation(universe) {
+  if (!universe) return '(no linked universe — worldbuilding cannot be judged from canon)';
+  const entities = renderEntitiesSummary(universe, { maxPerKind: { characters: 0 } }) || '(no named places or objects)';
+  const influences = universe.influences && typeof universe.influences === 'object'
+    ? `Embrace: ${(universe.influences.embrace || []).join(', ') || '—'}; Avoid: ${(universe.influences.avoid || []).join(', ') || '—'}`
+    : '(none)';
+  const categories = Object.entries(universe.categories || {})
+    .map(([name, category]) => {
+      const labels = (Array.isArray(category?.variations) ? category.variations : [])
+        .map((variation) => variation?.label)
+        .filter(Boolean)
+        .slice(0, 6);
+      return `${name}: ${labels.join(', ') || '(empty)'}`;
+    })
+    .join('\n');
+  return [
+    `Universe logline: ${universe.logline || '(none)'}`,
+    `Universe premise: ${universe.premise || '(none)'}`,
+    `Universe style: ${universe.styleNotes || '(none)'}`,
+    `Influences: ${influences}`,
+    `Design systems:\n${categories || '(none)'}`,
+    `Named canon: ${entities}`,
+  ].join('\n');
 }
 
 // Build the judge's variable bag from the whole foundation. Content is budgeted
 // to the judge model's window (a small/local judge trims to fit rather than
 // overflowing; a big-context judge gets the whole foundation).
-function buildFoundationContext({ series, universe, canon, contentMax }) {
+function buildFoundationContext({ series, universe, canon, issues = [], contentMax }) {
   const characters = Array.isArray(canon?.characters) ? canon.characters : [];
-  const worldEntitiesSummary = universe
-    ? (renderEntitiesSummary(universe, { maxPerKind: { characters: 0 } }) || '(none)')
-    : '(no linked universe — worldbuilding cannot be judged from canon)';
-  const characterRoster = characters.length
-    ? characters.map(renderCharacterLine).join('\n')
+  const coreIds = new Set(coreFoundationCharacters(characters, series, issues).map((character) => character.id));
+  const worldEntitiesSummary = renderWorldFoundation(universe);
+  const orderedCharacters = [...characters].sort((a, b) => Number(coreIds.has(b.id)) - Number(coreIds.has(a.id)));
+  const characterRoster = orderedCharacters.length
+    ? orderedCharacters.map((character) => renderCharacterLine(character, { core: coreIds.has(character.id) })).join('\n')
     : '(no canon characters)';
-  const arcText = renderArc(series);
-  // Truncate the coarsest, most variable section (world entities) first so the
-  // arc + character roster — the smaller, high-signal sections — always survive.
-  const world = worldEntitiesSummary.length > contentMax
-    ? `${worldEntitiesSummary.slice(0, contentMax)}\n\n[world summary truncated for judging]`
+  const arcText = renderArc(series, issues);
+  const sectionMax = Math.max(1_000, Math.floor(contentMax / 3));
+  const world = worldEntitiesSummary.length > sectionMax
+    ? `${worldEntitiesSummary.slice(0, sectionMax)}\n\n[world summary truncated for judging]`
     : worldEntitiesSummary;
+  const roster = characterRoster.length > sectionMax
+    ? `${characterRoster.slice(0, sectionMax)}\n\n[character roster truncated for judging]`
+    : characterRoster;
+  const arcContext = arcText.length > sectionMax
+    ? `${arcText.slice(0, sectionMax)}\n\n[series plan truncated for judging]`
+    : arcText;
   return {
     series: {
       name: series?.name || 'Untitled series',
@@ -326,9 +487,9 @@ function buildFoundationContext({ series, universe, canon, contentMax }) {
       styleNotes: composeStyleNotes(series, { proseCraft: true }),
     },
     worldEntitiesSummary: world,
-    characterRoster,
+    characterRoster: roster,
     characterCount: characters.length,
-    arc: arcText,
+    arc: arcContext,
   };
 }
 
@@ -365,8 +526,11 @@ async function runFoundationJudgeStage(ctx, runOptions) {
 export async function judgeFoundation(seriesId, { providerId, model, effort, force = false } = {}) {
   assertValidSeriesId(seriesId);
   const series = await getSeries(seriesId);
-  const universe = series?.universeId ? await getUniverse(series.universeId).catch(() => null) : null;
-  const hash = foundationInputsHash(series, universe);
+  const [universe, issues] = await Promise.all([
+    series?.universeId ? getUniverse(series.universeId).catch(() => null) : null,
+    listIssues({ seriesId }),
+  ]);
+  const hash = foundationInputsHash(series, universe, issues);
 
   const existing = await loadSnapshot(seriesId);
   if (!force && existing && existing.status === 'complete' && existing.sourceInputsHash === hash) {
@@ -395,7 +559,7 @@ export async function judgeFoundation(seriesId, { providerId, model, effort, for
     outputReserveTokens: JUDGE_OUTPUT_RESERVE_TOKENS,
   });
 
-  const ctx = buildFoundationContext({ series, universe, canon, contentMax });
+  const ctx = buildFoundationContext({ series, universe, canon, issues, contentMax });
   const result = await runFoundationJudgeStage(ctx, {
     returnsJson: true,
     providerOverride: judgeProvider.id,
@@ -435,9 +599,12 @@ export async function getFoundationJudge(seriesId) {
   const snap = await loadSnapshot(seriesId);
   if (!snap) return null;
   const series = await getSeries(seriesId).catch(() => null);
-  const universe = series?.universeId ? await getUniverse(series.universeId).catch(() => null) : null;
-  const hash = series ? foundationInputsHash(series, universe) : null;
-  return { ...snap, stale: hash ? isFoundationStale(snap, hash) : false };
+  const [universe, issues] = await Promise.all([
+    series?.universeId ? getUniverse(series.universeId).catch(() => null) : null,
+    series ? listIssues({ seriesId }).catch(() => null) : null,
+  ]);
+  const hash = series && issues ? foundationInputsHash(series, universe, issues) : null;
+  return { ...snap, stale: hash ? isFoundationStale(snap, hash) : true };
 }
 
 // ---------- fix router (dimension → owning service) ----------
@@ -459,13 +626,138 @@ export function thinnestCharacter(characters) {
   return best ? best.id : null;
 }
 
-// Refine the universe world bible (worldbuilding + craft dimensions) through the
+const REPAIRABLE_CHARACTER_FIELDS = Object.freeze([
+  ...FRAMEWORK_STRING_FIELDS,
+  'arcType',
+  'secrets',
+]);
+
+async function runFoundationRepair(series, issues, dimension, finding, characters, options) {
+  const result = await runStagedLLM(REPAIR_STAGE, {
+    dimension,
+    foundationFindingJson: JSON.stringify({ gap: finding?.gap || '', fix: finding?.fix || '' }, null, 2),
+    seriesJson: JSON.stringify({
+      id: series.id,
+      name: series.name,
+      premise: series.premise,
+      styleNotes: series.styleNotes,
+      styleGuide: series.styleGuide,
+      characterArcs: series.characterArcs,
+    }, null, 2),
+    outline: renderArc(series, issues),
+    charactersJson: JSON.stringify(characters.map((character) => ({
+      id: character.id,
+      name: character.name,
+      role: character.role,
+      ...pickFrameworkFields(character),
+    })), null, 2),
+  }, {
+    returnsJson: true,
+    providerDefault: options.providerId,
+    modelDefault: options.model,
+    effortDefault: options.effort,
+    source: REPAIR_STAGE,
+  });
+  return result?.content && typeof result.content === 'object' ? result.content : {};
+}
+
+async function repairCharacters(series, issues, universe, finding, options) {
+  const targets = coreFoundationCharacters(universe?.characters, series, issues);
+  if (targets.length === 0) {
+    return { applied: false, reason: 'no unlocked core-cast characters are available' };
+  }
+  const proposal = await runFoundationRepair(series, issues, 'character', finding, targets, options);
+  const proposedCharacters = Array.isArray(proposal.characters) ? proposal.characters : [];
+  const proposalById = new Map(proposedCharacters
+    .filter((character) => typeof character?.id === 'string')
+    .map((character) => [character.id, character]));
+  const targetIds = new Set(targets.map((character) => character.id));
+  const updatedFields = new Set();
+  let charactersApplied = false;
+  await updateUniverse(universe.id, (latest) => {
+    const latestCharacters = Array.isArray(latest?.characters) ? latest.characters : [];
+    let changed = false;
+    const characters = latestCharacters.map((character) => {
+      if (!targetIds.has(character.id) || character.locked === true) return character;
+      const raw = proposalById.get(character.id);
+      if (!raw) return character;
+      const sanitized = sanitizeCharacter({ ...character, ...raw, id: character.id, name: character.name });
+      if (!sanitized) return character;
+      const next = { ...character };
+      for (const field of REPAIRABLE_CHARACTER_FIELDS) {
+        const value = sanitized[field];
+        const authored = Array.isArray(value) ? value.length > 0 : !isBlankString(value);
+        if (!authored || JSON.stringify(value) === JSON.stringify(character[field])) continue;
+        next[field] = value;
+        updatedFields.add(field);
+        changed = true;
+      }
+      return next;
+    });
+    if (!changed) return null;
+    charactersApplied = true;
+    return { characters };
+  });
+
+  const proposedArcs = sanitizeCharacterArcList(proposal.characterArcs);
+  let arcsApplied = false;
+  if (proposedArcs.length > 0) {
+    const latestSeries = await getSeries(series.id);
+    const mergedArcs = sanitizeCharacterArcList([...(latestSeries.characterArcs || []), ...proposedArcs]);
+    if (JSON.stringify(mergedArcs) !== JSON.stringify(latestSeries.characterArcs || [])) {
+      await updateSeries(series.id, { characterArcs: mergedArcs });
+      arcsApplied = true;
+    }
+  }
+
+  const applied = charactersApplied || arcsApplied;
+  return applied
+    ? { applied: true, entryIds: targets.map((character) => character.id), updatedFields: [...updatedFields], characterArcsUpdated: arcsApplied }
+    : { applied: false, reason: 'repair model proposed no usable core-cast or character-arc changes' };
+}
+
+async function repairCraft(series, issues, finding, options) {
+  const proposal = await runFoundationRepair(series, issues, 'craft', finding, [], options);
+  const latestSeries = await getSeries(series.id);
+  const rawGuide = proposal.styleGuide && typeof proposal.styleGuide === 'object'
+    ? proposal.styleGuide
+    : null;
+  const existingGuide = latestSeries.styleGuide || {};
+  const mergedGuide = rawGuide
+    ? sanitizeStyleGuide({
+      ...existingGuide,
+      ...rawGuide,
+      conventions: rawGuide.conventions && typeof rawGuide.conventions === 'object'
+        ? { ...(existingGuide.conventions || {}), ...rawGuide.conventions }
+        : existingGuide.conventions,
+      voiceExemplars: Array.isArray(rawGuide.voiceExemplars) && rawGuide.voiceExemplars.length > 0
+        ? rawGuide.voiceExemplars
+        : existingGuide.voiceExemplars,
+      voiceAntiExemplars: Array.isArray(rawGuide.voiceAntiExemplars) && rawGuide.voiceAntiExemplars.length > 0
+        ? rawGuide.voiceAntiExemplars
+        : existingGuide.voiceAntiExemplars,
+    })
+    : latestSeries.styleGuide;
+  const styleNotes = typeof proposal.styleNotes === 'string' && proposal.styleNotes.trim()
+    ? proposal.styleNotes.trim()
+    : latestSeries.styleNotes;
+  const patch = {};
+  if (styleNotes !== latestSeries.styleNotes) patch.styleNotes = styleNotes;
+  if (JSON.stringify(mergedGuide) !== JSON.stringify(latestSeries.styleGuide)) patch.styleGuide = mergedGuide;
+  if (Object.keys(patch).length === 0) {
+    return { applied: false, reason: 'repair model proposed no usable series voice changes' };
+  }
+  await updateSeries(series.id, patch);
+  return { applied: true, updatedFields: Object.keys(patch) };
+}
+
+// Refine the universe world bible (worldbuilding dimension) through the
 // owning service: regenerate logline/premise/styleNotes/influences via
 // expandWorldTemplate — which ECHOES locked entries unchanged (force:false /
 // no-clobber) — then persist through updateUniverse (serialized write queue).
 // Mirrors storyBuilder.js's `universeAesthetic` step. Returns false when there's
 // no universe to refine.
-async function refineWorld(universeId, { providerId, model }) {
+async function refineWorld(universeId, { providerId, model, finding = {} }) {
   if (!universeId) return { applied: false, reason: 'no linked universe' };
   const universe = await getUniverse(universeId).catch(() => null);
   if (!universe) return { applied: false, reason: 'universe not found' };
@@ -476,6 +768,7 @@ async function refineWorld(universeId, { providerId, model }) {
     premise: universe.premise,
     styleNotes: universe.styleNotes,
     locked: universe.locked,
+    foundationDirective: [finding.gap, finding.fix].filter(Boolean).join('\nRequested repair: '),
     providerId,
     model,
   });
@@ -520,8 +813,8 @@ async function refineWorld(universeId, { providerId, model }) {
  *
  * Routing:
  *   worldbuilding → universe world refine (expandWorldTemplate → updateUniverse)
- *   craft         → universe world refine (styleNotes carries voice/craft)
- *   character     → expandUniverseCharacter on the thinnest unlocked character
+ *   craft         → series voice/style repair (including concrete exemplars)
+ *   character     → judge-directed core-cast framework + character-arc repair
  *   structure     → arc resolve (resolveVerifyIssues) with the judge's finding
  *
  * `finding` is the judge's `{ gap, fix }` for the targeted dimension, threaded
@@ -530,21 +823,26 @@ async function refineWorld(universeId, { providerId, model }) {
 export async function applyFoundationFix(seriesId, dimension, { finding = {}, providerOverride, modelOverride, effortOverride, preserveDroppedSeasons = false } = {}) {
   assertValidSeriesId(seriesId);
   const series = await getSeries(seriesId);
+  const issues = await listIssues({ seriesId });
   const universeId = series?.universeId || null;
-  const provider = { providerId: providerOverride, model: modelOverride };
+  const provider = { providerId: providerOverride, model: modelOverride, effort: effortOverride, finding };
 
-  if (dimension === 'worldbuilding' || dimension === 'craft') {
+  if (dimension === 'worldbuilding') {
     const r = await refineWorld(universeId, provider);
+    return { dimension, ...r };
+  }
+
+  if (dimension === 'craft') {
+    const r = await repairCraft(series, issues, finding, provider);
     return { dimension, ...r };
   }
 
   if (dimension === 'character') {
     if (!universeId) return { dimension, applied: false, reason: 'no linked universe' };
     const universe = await getUniverse(universeId).catch(() => null);
-    const targetId = thinnestCharacter(universe?.characters);
-    if (!targetId) return { dimension, applied: false, reason: 'no unlocked character with blank framework fields' };
-    const result = await expandUniverseCharacter(universeId, targetId, provider);
-    return { dimension, applied: (result?.updatedFields?.length || 0) > 0, entryId: targetId, updatedFields: result?.updatedFields || [] };
+    if (!universe) return { dimension, applied: false, reason: 'universe not found' };
+    const r = await repairCharacters(series, issues, universe, finding, provider);
+    return { dimension, ...r };
   }
 
   if (dimension === 'structure') {

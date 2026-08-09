@@ -37,6 +37,7 @@ vi.mock('../domainUsage.js', () => ({
 // arcPlanner: keep the REAL barrel (for compareIssuesByPosition) and override
 // only the LLM-calling passes with spies whose return values the tests drive.
 let verifyFindings = [];
+let volumeVerifyFindings = [];
 let beatContinuityFindings = [];
 let editorialFindings = [];
 const arcSpies = {
@@ -45,6 +46,7 @@ const arcSpies = {
   generateSeasonEpisodes: vi.fn(async () => ({ episodes: [] })),
   commitEpisodesToIssues: vi.fn(async () => []),
   verifyArc: vi.fn(async () => ({ issues: verifyFindings })),
+  verifyVolume: vi.fn(async () => ({ issues: volumeVerifyFindings })),
   resolveVerifyIssues: vi.fn(async () => ({ applied: true })),
   analyzeBeatContinuity: vi.fn(async () => ({ issues: beatContinuityFindings })),
   resolveBeatContinuity: vi.fn(async () => ({ applied: true, episodesResolved: [] })),
@@ -147,14 +149,15 @@ vi.mock('./canonReadiness.js', () => ({ checkSeriesCanonReadiness }));
 // router per test. Default: a clean foundation (10) so the gate passes on the
 // first round and existing downstream-step tests are unaffected.
 let foundationScore = 10;
+let foundationDimensionScores = null;
 let foundationFixApplied = true;
 const judgeFoundation = vi.fn(async () => ({
   seriesId: 'ser-uuid-1', status: 'complete', weightedScore: foundationScore,
   dimensions: {
-    worldbuilding: { score: foundationScore, gap: 'g', fix: 'f' },
-    character: { score: foundationScore, gap: 'g', fix: 'f' },
-    structure: { score: foundationScore, gap: 'g', fix: 'f' },
-    craft: { score: foundationScore, gap: 'g', fix: 'f' },
+    worldbuilding: { score: foundationDimensionScores?.worldbuilding ?? foundationScore, gap: 'g', fix: 'f' },
+    character: { score: foundationDimensionScores?.character ?? foundationScore, gap: 'g', fix: 'f' },
+    structure: { score: foundationDimensionScores?.structure ?? foundationScore, gap: 'g', fix: 'f' },
+    craft: { score: foundationDimensionScores?.craft ?? foundationScore, gap: 'g', fix: 'f' },
   },
   weakest: 'worldbuilding',
 }));
@@ -216,12 +219,14 @@ beforeEach(() => {
   cosMode = 'execute';
   budgetStatus = { withinBudget: true, exceeded: null };
   verifyFindings = [];
+  volumeVerifyFindings = [];
   beatContinuityFindings = [];
   editorialFindings = [];
   scriptVerifyFindings = [];
   canonReady = true;
   canonUndescribed = [];
   foundationScore = 10;
+  foundationDimensionScores = null;
   foundationFixApplied = true;
   reverseOutlineConsumed = false;
   reverseOutlineConsumedGated = null;
@@ -465,8 +470,9 @@ describe('resolveNextStep (pure)', () => {
     // Every step carries a numeric estimate.
     expect(plan.every((p) => Number.isFinite(p.estActions))).toBe(true);
     const byKind = Object.fromEntries(plan.map((p) => [p.kind, p]));
-    // verifyArc: convergence loop at the default 3 rounds → 2*3-1 = 5 actions.
-    expect(byKind.verifyArc.estActions).toBe(5);
+    // verifyArc: each round checks the whole arc + one volume, then resolves
+    // between rounds → 3*(1+1)+2 = 8 actions.
+    expect(byKind.verifyArc.estActions).toBe(8);
     // textStages: one child action per not-yet-text-ready issue (2 here).
     expect(byKind.textStages.estActions).toBe(2);
     // Pure-gate steps that bill nothing against the cap are zero-cost.
@@ -480,10 +486,10 @@ describe('resolveNextStep (pure)', () => {
       .find((p) => p.kind === kind)?.estActions;
     // 0 rounds → the loop is skipped → 0 actions.
     expect(actionsFor({ maxArcVerifyRounds: 0 }, 'verifyArc')).toBe(0);
-    // 1 round → a single verify, no resolve → 1 action.
-    expect(actionsFor({ maxArcVerifyRounds: 1 }, 'verifyArc')).toBe(1);
-    // 4 rounds → 4 verifies + 3 resolves → 7 actions.
-    expect(actionsFor({ maxArcVerifyRounds: 4 }, 'verifyArc')).toBe(7);
+    // 1 round → whole-arc + one-volume verify, no resolve → 2 actions.
+    expect(actionsFor({ maxArcVerifyRounds: 1 }, 'verifyArc')).toBe(2);
+    // 4 rounds → 4 arc verifies + 4 volume verifies + 3 resolves → 11 actions.
+    expect(actionsFor({ maxArcVerifyRounds: 4 }, 'verifyArc')).toBe(11);
     // Editorial review follows the same convergence shape.
     expect(actionsFor({ maxEditorialRounds: 2 }, 'editorialReview')).toBe(3);
   });
@@ -554,14 +560,14 @@ describe('resolveNextStep (pure)', () => {
     expect(step).toMatchObject({ kind: 'generateEpisodes', seasonId: 'se1' });
   });
 
-  it('verifies the arc before drafting issues', () => {
+  it('establishes the foundation before arc verification or drafting', () => {
     const step = resolveNextStep(comic, [issue()]);
-    expect(step.kind).toBe('verifyArc');
+    expect(step.kind).toBe('foundationGate');
   });
 
-  it('runs the foundation gate after arc verify, before beats (#2176)', () => {
-    const step = resolveNextStep(comic, [issue()], { arcVerified: true });
-    expect(step.kind).toBe('foundationGate');
+  it('runs arc verification after the foundation gate, before beats (#2176)', () => {
+    const step = resolveNextStep(comic, [issue()], { foundationGated: true });
+    expect(step.kind).toBe('verifyArc');
   });
 
   it('skips the foundation gate when disabled via options (#2176)', () => {
@@ -1317,6 +1323,7 @@ describe('autopilot conductor', () => {
     await waitFor(runFinished(seriesId));
     expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('complete');
     expect(arcSpies.verifyArc).toHaveBeenCalled();
+    expect(arcSpies.verifyVolume).toHaveBeenCalled();
     expect(arcSpies.analyzeManuscriptCompleteness).toHaveBeenCalled();
     const series = await seriesSvc.getSeries(seriesId);
     expect(series.autopilot?.status).toBe('done');
@@ -1368,6 +1375,22 @@ describe('autopilot conductor', () => {
     expect(series.autopilot?.residualFindings?.[0]?.problem).toBe('plot hole');
   });
 
+  it('includes per-volume verification before drafting beats', async () => {
+    volumeVerifyFindings = [{ severity: 'high', problem: 'the midpoint promise never pays off', location: 'issue 3' }];
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 1 });
+    await waitFor(runFinished(seriesId));
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.type).toBe('paused');
+    expect(last?.scope).toBe('verifyArc');
+    expect(arcSpies.verifyVolume).toHaveBeenCalledTimes(1);
+    expect(arcSpies.verifyVolume).toHaveBeenCalledWith(seriesId, expect.any(String), expect.objectContaining({ synopsisOnly: true }));
+    expect(last?.residualFindings?.[0]).toMatchObject({
+      problem: 'the midpoint promise never pays off',
+      location: expect.stringContaining('volume 1'),
+    });
+  });
+
   // Foundation-quality gate (#2176).
   it('foundation gate: a clean foundation (default mock ≥ threshold) passes through to completion', async () => {
     foundationScore = 10;
@@ -1378,6 +1401,18 @@ describe('autopilot conductor', () => {
     expect(judgeFoundation).toHaveBeenCalled();
     // clean on round 1 → no fix attempted
     expect(applyFoundationFix).not.toHaveBeenCalled();
+  });
+
+  it('re-judges the foundation after arc verification repairs the synopsis plan', async () => {
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => ({ issues: [{ severity: 'high', problem: 'missing setup', location: 'V1' }] }))
+      .mockImplementationOnce(async () => ({ issues: [] }));
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 2 });
+    await waitFor(runFinished(seriesId));
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('complete');
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(1);
+    expect(judgeFoundation).toHaveBeenCalledTimes(2);
   });
 
   it('foundation gate: iterates on the weakest dimension then pauses (maxRounds) when it never clears', async () => {
@@ -1396,6 +1431,19 @@ describe('autopilot conductor', () => {
     const series = await seriesSvc.getSeries(seriesId);
     expect(series.autopilot?.status).toBe('paused');
     expect(series.autopilot?.residualFindings?.length).toBeGreaterThan(0);
+  });
+
+  it('foundation gate: repairs a below-floor character dimension even when the weighted score passes', async () => {
+    foundationScore = 8.5;
+    foundationDimensionScores = { worldbuilding: 10, character: 5, structure: 10, craft: 10 };
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 2 });
+    await waitFor(runFinished(seriesId));
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.type).toBe('paused');
+    expect(last?.scope).toBe('foundationGate');
+    expect(last?.reason).toMatch(/character below the 6 dimension floor/);
+    expect(applyFoundationFix).toHaveBeenCalledWith(seriesId, 'character', expect.any(Object));
   });
 
   it('foundation gate: pauses immediately when the weakest dimension cannot be auto-fixed', async () => {
