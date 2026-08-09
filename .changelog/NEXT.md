@@ -6,6 +6,8 @@
 
 ## Fixed
 
+- **Universe Canon — "AI: differentiate cast" and per-character "AI: differentiate" now run.** Both threw `Stage pipeline-character-differentiate-cast not found` / `Stage pipeline-character-refine not found` on every install since they shipped: the prompt templates landed in `data.reference/prompts/stages/` but their `stage-config.json` entries were never authored, and `buildPrompt()` resolves the config entry first. Arc-verification **auto-resolve** (`pipeline-arc-resolve`) was dead the same way. All three entries now ship, migration 232 seeds them onto existing installs, and a new catalog-parity guard fails the build if a prompt template ever ships without its config entry again (or the reverse). The inverse gap on the Digital Twin side — ten stages whose config entry ships with no template, so each soul/twin AI pass silently runs its fallback — is tracked in #3644.
+
 - A manual Autonomous-mode run now uses the series' own configured AI provider (the picker in the series header), matching scheduled runs and every other Pipeline action. It previously ignored `series.llm` and ran on the install's active provider, so the series header said one thing and the run did another. It stays a *soft* default: a stage pinned in Prompts keeps its pin, and an unavailable provider falls back instead of failing the run.
 
 - Series Pipeline and Manuscript Editor pages can now scroll through their full content on mobile.

@@ -457,6 +457,13 @@
       "returnsJson": true,
       "variables": []
     },
+    "pipeline-arc-resolve": {
+      "name": "Pipeline — Arc Verification Auto-Resolve",
+      "description": "Rewrite an authored arc + its volume/season outlines so every finding from the arc verification pass is resolved, preserving as much of the user's original work as possible. Grounds rewrites in the linked universe's canon entities when the series has one. Returns the corrected arc + seasons plus a per-finding resolution note.",
+      "model": "heavy",
+      "returnsJson": true,
+      "variables": []
+    },
     "pipeline-volume-verify": {
       "name": "Pipeline — Volume / Season Verification",
       "description": "Deep continuity pass on a single volume / season: volume-internal arc shape, within-volume continuity, beat-level escalation (issues with beats), promise drift, boundary continuity with neighbor volumes, cast economy, volume-scope world-entity drift, and obvious length-vs-weight mismatches. Complement to the cross-volume arc verify, deeper because the scope is smaller. Returns actionable { severity, location, problem, suggestion } issues — empty list means clean.",
@@ -594,6 +601,20 @@
       "name": "Importer — Issue Proposal",
       "description": "Split a finished work into PortOS pipeline issues with titles + arcPosition + arcRole + verbatim prose excerpts. Honors source-marked issue / chapter / volume headers.",
       "model": "heavy",
+      "returnsJson": true,
+      "variables": []
+    },
+    "pipeline-character-refine": {
+      "name": "Pipeline — Differentiate One Character",
+      "description": "Rewrite one character's `physicalDescription` so they render visually distinct from every peer in the cast — ethnicity, age decade, build, hair, eye color, distinguishing features, signature wardrobe, posture. Sees the full peer cast so it can push away from collisions; preserves evidence and firstAppearance. Backs the per-character \"AI: differentiate\" button on the Universe Canon and series Nouns views.",
+      "model": "default",
+      "returnsJson": true,
+      "variables": []
+    },
+    "pipeline-character-differentiate-cast": {
+      "name": "Pipeline — Differentiate Cast (Universe-Wide)",
+      "description": "One call rewrites EVERY character's `physicalDescription` so the cast as a whole has no visually-colliding pairs — the cast-wide counterpart to the per-character refine. Backs the \"AI: differentiate cast\" button on the Universe Canon view; locked characters are still shown to the model for contrast but are skipped when the rewrites are applied.",
+      "model": "default",
       "returnsJson": true,
       "variables": []
     },
