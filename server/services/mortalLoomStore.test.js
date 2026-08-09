@@ -55,6 +55,11 @@ vi.mock('../lib/objects.js', () => ({
 }));
 
 const store = await import('./mortalLoomStore.js');
+// Same module instance mortalLoomStore.js imports (ESM singleton). The
+// once-per-process "brctl missing" flag and the in-flight/dedupe state live
+// here now, so reset them in the file-level beforeEach below for clean isolation
+// across every describe block (not just the pinning/evicted ones).
+const icloud = await import('../lib/icloudFile.js');
 // Tests must not pay the 50ms+100ms retry backoff on every transient-error
 // case. Zero delays keep the suite fast while still exercising the retry path.
 // Set up + restore the original through beforeAll/afterAll so the mutation
@@ -71,6 +76,7 @@ beforeEach(() => {
   statMock.mockReset();
   writeFileMock.mockReset();
   spawnMock.mockReset();
+  icloud._resetICloudFileStateForTest(); // clears the shared brctl-missing flag + in-flight/dedupe state
   settings = { mortalloom: { enabled: true, path: '/icloud/MortalLoom.json' } };
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -409,7 +415,7 @@ describe('updateStore — iCloud on-demand materialize (darwin)', () => {
     Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
     originalTimeout = store.MATERIALIZE_TIMEOUT_MS;
     store._setMaterializeTimeoutForTest(50);
-    store._resetMortalLoomInitForTest(); // clears brctlMissingWarned dedupe
+    store._resetMortalLoomInitForTest();
     writeFileMock.mockResolvedValue(undefined);
   });
   afterEach(() => {
@@ -689,14 +695,12 @@ describe('initMortalLoomStore — brctl pinning', () => {
   // afterEach so an assertion failure can't leak the mutated platform into
   // unrelated test files (mirrors the updateExecutor.test.js pattern).
   let originalPlatformDescriptor;
-  beforeEach(async () => {
+  beforeEach(() => {
     settingsEvents.removeAllListeners('settings:updated');
     store._resetMortalLoomInitForTest();
-    // The once-per-process "brctl missing" warning flag now lives in icloudFile
-    // (folded from the store's old local flag). Reset it here so the missing-brctl
-    // dedupe test starts from a clean slate regardless of test order.
-    const icloud = await import('../lib/icloudFile.js');
-    icloud._resetICloudFileStateForTest();
+    // The shared icloudFile state (including the once-per-process "brctl missing"
+    // flag folded from the store's old local flag) is reset in the file-level
+    // beforeEach above, so every block — this one included — starts clean.
     originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
   });
   afterEach(() => {
