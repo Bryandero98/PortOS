@@ -35,6 +35,7 @@ vi.mock('./agentPromptBuilder.js', () => ({
 }));
 
 import { prepareAgentWorkspace } from './agentWorkspacePrep.js';
+import { updateTask } from './cos.js';
 import { ensureLatest } from './git.js';
 import { detectConflicts } from './taskConflict.js';
 import { getAppWorkspace } from './agentPromptBuilder.js';
@@ -123,6 +124,33 @@ describe('prepareAgentWorkspace — workspace validation (#3180)', () => {
     const r = await prepareAgentWorkspace({ agentId: 'agent-ok', task });
     expect(r.outcome).toBe('ready');
     expect(r.workspacePath).toBe(process.cwd());
+  });
+
+  // Returning `blocked` without persisting it left the task `pending`, so the
+  // scheduler re-dequeued it every tick and re-logged the same ❌ forever — the
+  // instruction ("set it in Apps") only ever reachable from that log.
+  it('parks the task as blocked so it stops being re-dequeued every tick', async () => {
+    getAppWorkspace.mockResolvedValue(null);
+    const task = { id: 't-park', taskType: 'user', metadata: { app: 'pipeline', context: 'keep me' } };
+    await prepareAgentWorkspace({ agentId: 'agent-park', task });
+    expect(updateTask).toHaveBeenCalledWith('t-park', expect.objectContaining({
+      status: 'blocked',
+      metadata: expect.objectContaining({
+        blockedCategory: 'app-unresolved',
+        blockedReason: expect.stringContaining('Repository Path'),
+        context: 'keep me',
+      }),
+    }), 'user');
+  });
+
+  it('parks the task as blocked when the repo path exists in Apps but not on disk', async () => {
+    getAppWorkspace.mockResolvedValue('/definitely/not/a/real/repo/path');
+    const task = { id: 't-park2', taskType: 'user', metadata: { app: 'primes' } };
+    await prepareAgentWorkspace({ agentId: 'agent-park2', task });
+    expect(updateTask).toHaveBeenCalledWith('t-park2', expect.objectContaining({
+      status: 'blocked',
+      metadata: expect.objectContaining({ blockedCategory: 'app-unresolved' }),
+    }), 'user');
   });
 });
 

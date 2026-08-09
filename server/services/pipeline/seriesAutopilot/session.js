@@ -104,11 +104,20 @@ export async function persistMarker(seriesId, patch) {
 // issue) so cosTaskStore.addTask's pending/in_progress dedup collapses repeats
 // instead of spamming a task per page / per run. Best-effort — a task-store
 // failure must never abort the autopilot.
+//
+// No `app` is passed. `metadata.app` is WORKSPACE ROUTING — it must name a
+// record in `data/apps.json` — not a feature tag. These gaps are work on
+// PortOS's own pipeline code, so the correct workspace is the PortOS root,
+// which is exactly what an absent `app` resolves to. Passing the feature name
+// `'pipeline'` made every gap task unrunnable once the #3180 guard landed:
+// `prepareAgentWorkspace` refuses to spawn an agent whose app doesn't resolve
+// to a repo path, so the task was filed and then blocked at every spawn
+// attempt. Same reasoning as the investigation tasks in agentErrorAnalysis.js.
 export async function fileGap(record, sId, { gapKind, issueId = null, summary, context = '' }) {
   if (!record.options.fileGaps || record.mode !== 'execute') return;
   const idTag = `series ${sId}${issueId ? ` issue ${issueId}` : ''}`;
   const description = `Autopilot ${gapKind} gap — ${idTag}\n\n${summary}`;
-  const result = await cosTaskStore.addTask({ description, context, app: 'pipeline' }, 'user')
+  const result = await cosTaskStore.addTask({ description, context }, 'user')
     .catch((err) => { console.log(`⚠️ autopilot: fileGap (${gapKind}) failed: ${err.message}`); return null; });
   if (result && !result.duplicate) {
     broadcast(sId, { type: 'gap:filed', gapKind, issueId, taskId: result.id });

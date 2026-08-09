@@ -2209,6 +2209,21 @@ describe('autopilot conductor', () => {
     expect(addTask.mock.calls[0][0].description).toMatch(/verifyArc-stalled/);
   });
 
+  // `metadata.app` is workspace routing, not a feature tag: it must name a
+  // record in data/apps.json. Filing these at 'pipeline' made every gap task
+  // unspawnable once prepareAgentWorkspace started refusing an app that
+  // resolves to no repo path (#3180) — the task was filed, then blocked.
+  it('files gap tasks with no app so they run in the PortOS workspace', async () => {
+    verifyFindings = [{ severity: 'high', problem: 'unresolved plot hole' }];
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { fileGaps: true, maxArcVerifyRounds: 1 });
+    await waitFor(runFinished(seriesId));
+    expect(addTask).toHaveBeenCalled();
+    for (const [taskData] of addTask.mock.calls) {
+      expect(taskData.app).toBeUndefined();
+    }
+  });
+
   it('recoverStuckAutopilots demotes a running marker to paused', async () => {
     const series = await seriesSvc.createSeries({ name: 'S', logline: 'L', premise: 'P' });
     await seriesSvc.updateSeries(series.id, { autopilot: { status: 'running', runId: 'dead' } });
