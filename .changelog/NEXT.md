@@ -1,5 +1,9 @@
 # Unreleased
 
+## Stability
+
+- **[issue-3704] The UI no longer goes blank when iCloud offloads a synced file** — macOS "Optimize Mac Storage" can evict MortalLoom and Obsidian files to the cloud. Reading one of those offloaded files used to stall indefinitely, and a handful of stalls was enough to freeze every page in PortOS while the server still looked healthy — pages simply never loaded and only a restart brought them back. PortOS now detects an offloaded file up front, skips the read, asks iCloud to download it in the background, and reports "temporarily unavailable" for just that record until it arrives.
+
 ## Added
 
 - **Series Autopilot now builds characters before it spends on plot.** A new pre-arc planning stage completes the core cast's causal Ghost → Wound → Lie → Want → Need engines, distinct voices, secrets, relationships, and provisional whole-series transitions before the macro arc is generated. Arc planning then treats those foundations as plot engines: external turns must force character choices rather than inventing a plot and asking late repair passes to retrofit motivation. The existing full-foundation gate remains after the issue-level synopsis plan, where it acts as reconciliation—preserving established identities and adding at most a small number of genuinely story-required characters—so character and story can still change one another without repeatedly rebuilding the expensive arc.

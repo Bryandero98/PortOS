@@ -22,7 +22,15 @@ import {
 const router = Router();
 
 const NOT_FOUND_CODES = new Set(['VAULT_NOT_FOUND', 'NOTE_NOT_FOUND']);
-const errorStatus = (code) => NOT_FOUND_CODES.has(code) ? 404 : 400;
+// The note exists but iCloud has evicted its bytes — a transient condition that
+// heals once the background `brctl download` completes, so it's 503 (retry me),
+// not 404 (gone) or 400 (your request was wrong).
+const UNAVAILABLE_CODES = new Set(['NOTE_EVICTED']);
+const errorStatus = (code) => {
+  if (NOT_FOUND_CODES.has(code)) return 404;
+  if (UNAVAILABLE_CODES.has(code)) return 503;
+  return 400;
+};
 
 function throwOnError(result, fallbackMessage) {
   if (result?.error) {
@@ -83,7 +91,10 @@ router.get('/vaults/:id/scan', asyncHandler(async (req, res) => {
 
   const total = result.notes.length;
   const notes = result.notes.slice(offset, offset + limit);
-  res.json({ vault: result.vault, notes, total });
+  // Forward the skipped-because-unavailable count (the other readers pass their
+  // whole result through; this one reshapes for pagination and would otherwise
+  // drop it, leaving the client unable to tell a short vault from an offloaded one).
+  res.json({ vault: result.vault, notes, total, skippedUnavailable: result.skippedUnavailable ?? 0 });
 }));
 
 router.get('/vaults/:id/note', asyncHandler(async (req, res) => {

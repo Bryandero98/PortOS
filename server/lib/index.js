@@ -148,6 +148,7 @@ export * from './createNewestWinsGuard.js';
 export * from './dataRoot.js';
 export * from './fileUtils.js';
 export * from './fileWriteQueue.js';
+export * from './icloudFile.js';
 export * from './spawnCwd.js';
 export * from './schemaVersions.js';
 export * from './imageClean.js';

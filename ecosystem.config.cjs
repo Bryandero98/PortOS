@@ -73,6 +73,14 @@ module.exports = {
         // agents; fileUtils/resolveInstallRoot also refuse a leaked pin when the
         // executing code is itself in a worktree, as belt-and-suspenders.
         PORTOS_DATA_ROOT: __dirname,
+        // libuv's filesystem threadpool defaults to FOUR threads, so four slow
+        // or stuck fs operations starve every other fs call in the process —
+        // including the express.static stat/read that serves the UI bundle. An
+        // evicted iCloud file can block a read indefinitely (server/lib/
+        // icloudFile.js guards those reads; this is defense-in-depth, NOT the
+        // fix), and sharp/crypto/dns.lookup draw from the same pool. 16 gives
+        // real headroom at negligible cost — idle threads are just parked.
+        UV_THREADPOOL_SIZE: '16',
         PORT: PORTS.API,
         PORTOS_HTTP_PORT: PORTS.API_LOCAL, // Loopback HTTP mirror when HTTPS is active
         HOST: '0.0.0.0',

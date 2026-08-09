@@ -4,6 +4,7 @@ import * as api from '../../../services/api';
 import { RefreshCw, Network, ZoomIn, ZoomOut } from 'lucide-react';
 import { WIKI_CATEGORIES } from '../constants.jsx';
 import BrailleSpinner from '../../BrailleSpinner';
+import OfflineNotesNotice from '../../OfflineNotesNotice.jsx';
 
 export default function GraphTab({ vaultId }) {
   const navigate = useNavigate();
@@ -202,6 +203,7 @@ export default function GraphTab({ vaultId }) {
       {/* Controls */}
       <div className="absolute top-4 right-4 z-10 flex items-center gap-2">
         <span className="text-xs text-gray-500">{graphData.totalNodes} nodes, {graphData.totalEdges} edges</span>
+        <OfflineNotesNotice count={graphData.skippedUnavailable} className="w-full mt-2" />
         <button
           onClick={() => setZoom(z => Math.min(z + 0.2, 3))}
           aria-label="Zoom in"

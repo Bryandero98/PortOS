@@ -6,11 +6,12 @@
  * Notes stay in their original vault directories — PortOS indexes but doesn't copy.
  */
 
-import { readFile, writeFile, readdir, stat, unlink } from 'fs/promises';
+import { writeFile, readdir, stat, unlink } from 'fs/promises';
 import { existsSync, realpathSync } from 'fs';
 import { join, relative, resolve, basename, dirname, extname, isAbsolute } from 'path';
 import { v4 as uuidv4 } from '../lib/uuid.js';
 import { atomicWrite, ensureDir, readJSONFile, PATHS } from '../lib/fileUtils.js';
+import { ICLOUD_NOT_MATERIALIZED, readIfMaterialized } from '../lib/icloudFile.js';
 
 const VAULTS_FILE = join(PATHS.brain, 'obsidian-vaults.json');
 
@@ -142,6 +143,35 @@ export async function detectVaults() {
 // NOTE SCANNING & READING
 // =============================================================================
 
+// The default Obsidian vault location is an iCloud ubiquity container
+// (DEFAULT_ICLOUD_OBSIDIAN above), so every note read here can hit a file macOS
+// has evicted to the cloud. A plain `readFile` on an evicted file BLOCKS
+// forever in the kernel and strands a libuv threadpool thread — and a vault
+// walk fires one read per note, so a single evicted vault can exhaust the whole
+// pool and take the server's filesystem access (including the UI bundle) down
+// with it. See server/lib/icloudFile.js.
+//
+// Returns `null` for an evicted note so each caller can skip it and degrade to
+// partial results, rather than failing the whole scan/search. Every other error
+// still propagates unchanged.
+async function readNoteContent(fullPath, skipped) {
+  return readIfMaterialized(fullPath, { label: 'Obsidian note' }).catch((err) => {
+    if (err.code === ICLOUD_NOT_MATERIALIZED) {
+      console.warn(`⚠️ Obsidian note evicted from local storage; skipping: ${fullPath}`);
+      if (skipped) skipped.count += 1;
+      return null;
+    }
+    throw err;
+  });
+}
+
+// A vault-wide reader that silently drops evicted notes would report "no results"
+// for a query whose answer is sitting in an un-downloaded note — the exact
+// absent-vs-unavailable collapse the project forbids. Each public reader below
+// therefore carries its own tally and reports `skippedUnavailable` alongside its
+// results, so the UI can say "N notes not downloaded yet" instead of "none".
+const newSkipTally = () => ({ count: 0 });
+
 /**
  * Scan a vault for markdown files. Reads only frontmatter (not full content)
  * for performance. Full content is loaded on individual note reads.
@@ -152,17 +182,18 @@ export async function scanVault(vaultId, { folder } = {}) {
   if (!existsSync(vault.path)) return { error: 'PATH_NOT_FOUND' };
 
   const notes = [];
-  await walkDir(vault.path, vault.path, notes, folder);
+  const skipped = newSkipTally();
+  await walkDir(vault.path, vault.path, notes, folder, skipped);
 
   notes.sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt));
-  return { vault, notes, total: notes.length };
+  return { vault, notes, total: notes.length, skippedUnavailable: skipped.count };
 }
 
 /**
  * Light scan: reads only file stats and first ~1KB for frontmatter/tags.
  * Skips full content parsing for performance on large vaults.
  */
-async function walkDir(rootPath, currentPath, results, folderFilter) {
+async function walkDir(rootPath, currentPath, results, folderFilter, skipped) {
   const entries = await readdir(currentPath, { withFileTypes: true });
 
   for (const entry of entries) {
@@ -170,7 +201,7 @@ async function walkDir(rootPath, currentPath, results, folderFilter) {
     const fullPath = join(currentPath, entry.name);
 
     if (entry.isDirectory()) {
-      await walkDir(rootPath, fullPath, results, folderFilter);
+      await walkDir(rootPath, fullPath, results, folderFilter, skipped);
     } else if (entry.isFile() && extname(entry.name) === '.md') {
       const relativePath = relative(rootPath, fullPath);
       const noteFolder = dirname(relativePath) === '.' ? '' : dirname(relativePath);
@@ -183,7 +214,8 @@ async function walkDir(rootPath, currentPath, results, folderFilter) {
       const stats = await stat(fullPath);
 
       // Read only first 2KB for frontmatter + inline tags (skip full content)
-      const fd = await readFile(fullPath, { encoding: 'utf-8', flag: 'r' });
+      const fd = await readNoteContent(fullPath, skipped);
+      if (fd === null) continue;
       const header = fd.length > 2048 ? fd.slice(0, 2048) : fd;
       const { frontmatter, tags } = parseNoteMetadata(header);
 
@@ -211,7 +243,13 @@ export async function getNote(vaultId, notePath, { includeBacklinks = true } = {
   }
   if (!existsSync(fullPath)) return { error: 'NOTE_NOT_FOUND' };
 
-  const content = await readFile(fullPath, 'utf-8');
+  const content = await readNoteContent(fullPath);
+  // Evicted, not missing — a distinct code so the UI can say "iCloud hasn't
+  // downloaded this note yet" instead of claiming it doesn't exist. The read was
+  // never issued, and a background `brctl download` is already in flight.
+  if (content === null) {
+    return { error: 'NOTE_EVICTED', message: 'This note is stored in iCloud and has not been downloaded to this Mac yet. A download was requested — try again shortly.' };
+  }
   const stats = await stat(fullPath);
   const { frontmatter, tags, wikilinks, body } = parseNoteMetadata(content);
 
@@ -333,7 +371,8 @@ export async function searchNotes(vaultId, query) {
   const queryLower = query.toLowerCase();
   // Compile regex once for count matching
   const countRe = new RegExp(escapeRegex(queryLower), 'g');
-  await searchDir(vault.path, vault.path, queryLower, countRe, results);
+  const skipped = newSkipTally();
+  await searchDir(vault.path, vault.path, queryLower, countRe, results, skipped);
 
   results.sort((a, b) => {
     if (a.titleMatch && !b.titleMatch) return -1;
@@ -341,10 +380,10 @@ export async function searchNotes(vaultId, query) {
     return b.matchCount - a.matchCount;
   });
 
-  return { results, total: results.length, query };
+  return { results, total: results.length, query, skippedUnavailable: skipped.count };
 }
 
-async function searchDir(rootPath, currentPath, query, countRe, results) {
+async function searchDir(rootPath, currentPath, query, countRe, results, skipped) {
   const entries = await readdir(currentPath, { withFileTypes: true });
 
   // Kick off this directory's markdown reads concurrently (the disk-latency
@@ -355,7 +394,7 @@ async function searchDir(rootPath, currentPath, query, countRe, results) {
   for (const entry of entries) {
     if (entry.name.startsWith('.') || SKIP_DIRS.has(entry.name)) continue;
     if (entry.isFile() && extname(entry.name) === '.md') {
-      contentReads.set(entry.name, readFile(join(currentPath, entry.name), 'utf-8'));
+      contentReads.set(entry.name, readNoteContent(join(currentPath, entry.name), skipped));
     }
   }
 
@@ -364,9 +403,10 @@ async function searchDir(rootPath, currentPath, query, countRe, results) {
     const fullPath = join(currentPath, entry.name);
 
     if (entry.isDirectory()) {
-      await searchDir(rootPath, fullPath, query, countRe, results);
+      await searchDir(rootPath, fullPath, query, countRe, results, skipped);
     } else if (entry.isFile() && extname(entry.name) === '.md') {
       const content = await contentReads.get(entry.name);
+      if (content === null) continue;   // evicted from iCloud — skip, don't block
       const contentLower = content.toLowerCase();
       const nameLower = basename(entry.name, '.md').toLowerCase();
       const titleMatch = nameLower.includes(query);
@@ -413,7 +453,8 @@ export async function getVaultGraph(vaultId) {
   const edges = [];
   const noteMap = new Map();
 
-  await collectNotes(vault.path, vault.path, noteMap, nodes);
+  const skipped = newSkipTally();
+  await collectNotes(vault.path, vault.path, noteMap, nodes, skipped);
 
   // Build case-insensitive lookup for wikilink resolution
   const lowerMap = new Map();
@@ -434,11 +475,14 @@ export async function getVaultGraph(vaultId) {
     nodes: nodes.map(({ path, name, folder, tags }) => ({ path, name, folder, tags })),
     edges,
     totalNodes: nodes.length,
-    totalEdges: edges.length
+    totalEdges: edges.length,
+    // Evicted notes are missing from the graph entirely — and so is every edge
+    // into them, which would otherwise render a wrong topology as authoritative.
+    skippedUnavailable: skipped.count
   };
 }
 
-async function collectNotes(rootPath, currentPath, noteMap, nodes) {
+async function collectNotes(rootPath, currentPath, noteMap, nodes, skipped) {
   const entries = await readdir(currentPath, { withFileTypes: true });
 
   // Read this directory's markdown files concurrently, but apply them in the
@@ -449,7 +493,7 @@ async function collectNotes(rootPath, currentPath, noteMap, nodes) {
   for (const entry of entries) {
     if (entry.name.startsWith('.') || SKIP_DIRS.has(entry.name)) continue;
     if (entry.isFile() && extname(entry.name) === '.md') {
-      contentReads.set(entry.name, readFile(join(currentPath, entry.name), 'utf-8'));
+      contentReads.set(entry.name, readNoteContent(join(currentPath, entry.name), skipped));
     }
   }
 
@@ -458,9 +502,10 @@ async function collectNotes(rootPath, currentPath, noteMap, nodes) {
     const fullPath = join(currentPath, entry.name);
 
     if (entry.isDirectory()) {
-      await collectNotes(rootPath, fullPath, noteMap, nodes);
+      await collectNotes(rootPath, fullPath, noteMap, nodes, skipped);
     } else if (entry.isFile() && extname(entry.name) === '.md') {
       const content = await contentReads.get(entry.name);
+      if (content === null) continue;   // evicted from iCloud — skip, don't block
       const relativePath = relative(rootPath, fullPath);
       const noteName = basename(entry.name, '.md');
       const { tags, wikilinks } = parseNoteMetadata(content);
@@ -577,7 +622,11 @@ async function findBacklinksInDir(rootPath, currentPath, targetLower, results) {
     if (entry.isDirectory()) {
       await findBacklinksInDir(rootPath, fullPath, targetLower, results);
     } else if (entry.isFile() && extname(entry.name) === '.md') {
-      const content = await readFile(fullPath, 'utf-8');
+      // findBacklinks is supplementary to a note that already loaded, so an
+      // evicted neighbour is logged by readNoteContent but not surfaced as a
+      // count — the note itself is not misreported as empty.
+      const content = await readNoteContent(fullPath);
+      if (content === null) continue;   // evicted from iCloud — skip, don't block
       WIKILINK_RE.lastIndex = 0;
       let match;
       while ((match = WIKILINK_RE.exec(content)) !== null) {
@@ -599,16 +648,17 @@ export async function getVaultTags(vaultId) {
   if (!existsSync(vault.path)) return { error: 'PATH_NOT_FOUND' };
 
   const tagCounts = new Map();
-  await collectTags(vault.path, vault.path, tagCounts);
+  const skipped = newSkipTally();
+  await collectTags(vault.path, vault.path, tagCounts, skipped);
 
   const tags = [...tagCounts.entries()]
     .map(([tag, count]) => ({ tag, count }))
     .sort((a, b) => b.count - a.count);
 
-  return { tags, total: tags.length };
+  return { tags, total: tags.length, skippedUnavailable: skipped.count };
 }
 
-async function collectTags(rootPath, currentPath, tagCounts) {
+async function collectTags(rootPath, currentPath, tagCounts, skipped) {
   const entries = await readdir(currentPath, { withFileTypes: true });
 
   for (const entry of entries) {
@@ -616,9 +666,10 @@ async function collectTags(rootPath, currentPath, tagCounts) {
     const fullPath = join(currentPath, entry.name);
 
     if (entry.isDirectory()) {
-      await collectTags(rootPath, fullPath, tagCounts);
+      await collectTags(rootPath, fullPath, tagCounts, skipped);
     } else if (entry.isFile() && extname(entry.name) === '.md') {
-      const content = await readFile(fullPath, 'utf-8');
+      const content = await readNoteContent(fullPath, skipped);
+      if (content === null) continue;   // evicted from iCloud — skip, don't block
       const { tags } = parseNoteMetadata(content);
       for (const tag of tags) {
         tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
