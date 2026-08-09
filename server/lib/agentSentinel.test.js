@@ -146,6 +146,14 @@ describe('extractSentinelPayloadFromTranscript', () => {
       expect(payload).not.toBeNull();
     });
 
+    it('keeps a bare deliverable that merely carries its own \`payload\` key', async () => {
+      // Unwrapping unconditionally would hand the hook the nested value and drop
+      // the answer the model actually printed.
+      const transcript = '{"analysis":"a","proposal":null,"payload":"unrelated"}';
+      const { payload } = await extractSentinelPayloadFromTranscript(transcript, isReasonerPayload);
+      expect(payload).toEqual({ analysis: 'a', proposal: null, payload: 'unrelated' });
+    });
+
     it('yields no payload for malformed or partial JSON', async () => {
       expect(await extractSentinelPayloadFromTranscript('{"analysis":"cut off mid-thoug', isReasonerPayload))
         .toEqual({ summary: '', payload: null });

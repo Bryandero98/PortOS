@@ -139,7 +139,11 @@ export async function extractSentinelPayloadFromTranscript(transcript, isPayload
     // Two shapes reach a transcript: the documented `{ summary, payload }`
     // envelope the agent should have written to the sentinel, and the BARE
     // payload object — what a model answering in the terminal actually prints.
-    const candidate = 'payload' in parsed ? parsed.payload : parsed;
+    // Unwrap only when the inner value is ITSELF a valid payload: a bare
+    // deliverable that merely happens to carry a `payload` key would otherwise
+    // be discarded in favour of a nested value the hook can't use.
+    const unwrap = 'payload' in parsed && isPayload(parsed.payload);
+    const candidate = unwrap ? parsed.payload : parsed;
     if (!isPayload(candidate)) continue;
     const summary = typeof parsed.summary === 'string' ? parsed.summary : '';
     return { summary, payload: candidate };
