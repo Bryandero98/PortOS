@@ -156,15 +156,17 @@ function icloudPlaceholderPath(path) {
 // dataless (Optimize-Mac-Storage-evicted) file or an `.icloud` placeholder.
 //
 // CRITICAL: exit 0 means the download was ACCEPTED/QUEUED, NOT that the bytes are
-// local. brctl returns 0 as soon as it queues the request — it does not block
-// until materialization completes, and it returns 0 even when the sync layer
-// ultimately can't fetch the file (device offline / iCloud wedged). So a `true`
-// here is NOT proof the file is readable. What makes the caller's subsequent
-// re-read safe is the `stat()` re-screen in `readIfMaterialized` (see
-// readStoreAtPathResult): it re-checks st_blocks and rejects with
-// ICLOUD_NOT_MATERIALIZED again if the bytes still aren't local, so a false-
-// positive `true` from here just falls back through to refuse-to-overwrite
-// rather than issuing a read that would hang the libuv threadpool.
+// local. brctl can return 0 before materialization completes, and returns 0 even
+// when the sync layer ultimately can't fetch the file (device offline / iCloud
+// wedged); under a wedged iCloud it can instead hang, which is why we await it
+// with a timeout below. So a `true` here is NOT proof the file is readable. What
+// keeps the caller's subsequent re-read safe is that it routes through
+// `readIfMaterialized` (see readStoreAtPathResult), which returns a store it could
+// NOT actually read as null instead of issuing a blocking read: a still-dataless
+// file rejects on the `Stats.blocks` re-screen with ICLOUD_NOT_MATERIALIZED, and
+// an absent path shadowed by a legacy `.icloud` placeholder rejects on ENOENT.
+// Either way the store stays null and the caller refuses to overwrite, so a
+// false-positive `true` from here can never truncate data (nor hang the pool).
 //
 // We await brctl's exit (bounded by a timeout) and let the caller re-read.
 // Resolves `true` only on a clean exit-0 — non-darwin, missing brctl, spawn
@@ -444,11 +446,12 @@ export async function updateStore(mutator) {
   if (unsafeToSeed) {
     // `materializeNow` resolving `true` only means brctl ACCEPTED the download
     // request (exit 0), NOT that the bytes are local — see its docblock. Do NOT
-    // remove the re-read's re-screen on the strength of that `true`: `readStoreAtPath`
-    // routes through `readIfMaterialized`, whose `stat()` check re-verifies the file
-    // is actually materialized and rejects again (→ store stays null → refuse to
-    // overwrite) if it isn't. That re-screen is the authority that keeps this path
-    // failing closed instead of issuing a read that would hang the threadpool.
+    // remove the re-read's screening on the strength of that `true`: `readStoreAtPath`
+    // routes through `readIfMaterialized`, which returns null for a store it could
+    // not actually read instead of issuing a blocking read — a still-dataless file
+    // rejects on the `stat()` re-screen, an absent-but-placeholder-shadowed path
+    // rejects on ENOENT. Either way store stays null and we refuse to overwrite
+    // rather than issuing a read that would hang the threadpool.
     const materialized = await materializeNow(path);
     if (materialized) {
       store = await readStoreAtPath(path);
