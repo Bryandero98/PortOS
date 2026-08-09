@@ -1132,7 +1132,10 @@ CREATE INDEX IF NOT EXISTS idx_lora_training_runs_character ON lora_training_run
 -- identity facts — `value_enc` is AES-256-GCM ciphertext (`v1:<iv>:<tag>:<ct>`,
 -- key from PRIVACY_VAULT_KEY; see server/lib/vaultCrypto.js). Plaintext is
 -- NEVER stored; `masked_value` is the display form. Machine-local — no
--- federation, no tombstones (deferred, #2148); a delete is a hard DELETE.
+-- federation, no tombstones. NEVER federated by decision, not deferral (ADR
+-- docs/decisions/2026-08-08-privacy-records-machine-local.md, #2148); adding a
+-- sync cursor trips services/sharing/privacyNeverFederates.test.js.
+-- A delete is a hard DELETE.
 -- `use_for_scans` gates which facts the broker scan engine may disclose
 -- (hard-false for ssn/passport/drivers_license/financial_account — enforced
 -- app-side). Mirrors the privacy blocks in server/lib/db.js ensureSchema().
@@ -1168,8 +1171,9 @@ CREATE TABLE IF NOT EXISTS privacy_consents (
 -- and per-org holdings linking to the exact vault records each org holds.
 -- Data backbone for the change-of-address inventory (Phase 4) and the "who
 -- has my PII" view. Machine-local — no federation, no tombstones (same
--- deferred scope as the vault, #2148). Mirrors the privacy blocks in
--- server/lib/db.js ensureSchema().
+-- guarantee as the vault — NEVER federated; ADR
+-- docs/decisions/2026-08-08-privacy-records-machine-local.md, #2148). Mirrors
+-- the privacy blocks in server/lib/db.js ensureSchema().
 CREATE TABLE IF NOT EXISTS privacy_orgs (
   id UUID PRIMARY KEY,
   name TEXT NOT NULL,
@@ -1207,8 +1211,9 @@ CREATE INDEX IF NOT EXISTS idx_privacy_org_holdings_vault_record ON privacy_org_
 -- at boot). `source`/`confidence` gate the refresh: curated rows are never
 -- clobbered by an auto refresh. `cluster_parent` groups sibling brands under one
 -- suppression; `disclosure_fields` caps what the engine may submit. Machine-local
--- — no federation, no tombstones (#2148). Mirrors the privacy blocks in
--- server/lib/db.js ensureSchema().
+-- — no federation, no tombstones; NEVER federated (ADR
+-- docs/decisions/2026-08-08-privacy-records-machine-local.md, #2148). Mirrors
+-- the privacy blocks in server/lib/db.js ensureSchema().
 CREATE TABLE IF NOT EXISTS privacy_brokers (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -1258,8 +1263,10 @@ CREATE INDEX IF NOT EXISTS idx_privacy_broker_cases_recheck ON privacy_broker_ca
 -- (nullable for a removal-only change). Declaring an event flips every `current`
 -- holding of the old record to `update_pending` (see privacyChanges.js). Both
 -- FKs cascade-delete so removing a vault record cleans up its change events.
--- Machine-local — no federation, no tombstones (same deferred scope as the
--- vault, #2148). Mirrors the block in server/lib/db.js ensureSchema().
+-- Machine-local — no federation, no tombstones; NEVER federated, same
+-- guarantee as the vault (ADR
+-- docs/decisions/2026-08-08-privacy-records-machine-local.md, #2148). Mirrors
+-- the block in server/lib/db.js ensureSchema().
 CREATE TABLE IF NOT EXISTS privacy_change_events (
   id UUID PRIMARY KEY,
   vault_record_id UUID NOT NULL REFERENCES privacy_vault_records (id) ON DELETE CASCADE,

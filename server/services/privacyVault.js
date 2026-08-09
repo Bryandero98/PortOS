@@ -4,7 +4,10 @@
  * db-primary Postgres per docs/STORAGE.md: one row per identity fact in
  * `privacy_vault_records` (dedicated columns — the records are relational and
  * queried by type), consent audit rows in `privacy_consents`. Machine-local:
- * NO federation, NO tombstones (deferred child issue #2148).
+ * NO federation, NO tombstones. This is a product GUARANTEE, not a deferred
+ * feature — the vault's contents have never traversed a network from PortOS.
+ * See ADR docs/decisions/2026-08-08-privacy-records-machine-local.md (#2148);
+ * a second machine gets the vault via backup restore + a manual key copy.
  *
  * Encryption contract:
  * - plaintext is NEVER stored — every write computes `value_enc` (AES-256-GCM
