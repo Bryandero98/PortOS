@@ -40,6 +40,29 @@ import { getAppWorkspace, getAppDataForTask, createJiraTicketForTask } from './a
 const ROOT_DIR = PATHS.root;
 
 /**
+ * Park a task this module refuses to spawn, so the refusal is durable and
+ * visible rather than a log line the scheduler reprints every tick.
+ *
+ * An un-persisted `blocked` outcome leaves the task `pending`: it is
+ * re-dequeued, re-prepped and re-rejected forever, and the thing that would fix
+ * it ("set the Repository Path in Apps") is only reachable from that task's own
+ * log. Blocking puts it in the Blocked list carrying the instruction and leaves
+ * it revivable once the config is fixed. Best-effort — the caller's block
+ * outcome must stand even if the write fails.
+ */
+async function blockTask(task, reason, blockedCategory) {
+  await updateTask(task.id, {
+    status: 'blocked',
+    metadata: {
+      ...task.metadata,
+      blockedReason: reason,
+      blockedCategory,
+      blockedAt: new Date().toISOString(),
+    },
+  }, task.taskType || 'user').catch(() => {});
+}
+
+/**
  * Prepare the workspace (and any worktree/JIRA branch) for an agent task.
  *
  * @param {{ agentId: string, task: object }} params
@@ -63,9 +86,16 @@ export async function prepareAgentWorkspace({ agentId, task }) {
   // each of the three spawn helpers (TUI / runner / direct), which all take
   // their cwd from this function.
   if (task.metadata?.app && !workspacePath) {
-    const reason = `App '${task.metadata.app}' has no usable Repository Path — set it in Apps, then re-run this task. `
+    // The reason line is now the whole Blocked card, so it has to cover both
+    // ways this resolves to nothing: the app is registered but carries no
+    // Repository Path, OR nothing in Apps matches that id/name at all (the
+    // shape a task gets when a producer used `app` as a feature tag rather
+    // than as routing — see migration 234).
+    const reason = `App '${task.metadata.app}' didn't resolve to a repository directory — it must name an app in Apps `
+      + `that has a Repository Path set. Fix the app (or clear it from the task), then re-run this task. `
       + `(The agent was not started, so it could not write into the PortOS directory by mistake.)`;
     emitLog('error', `❌ ${reason}`, { taskId: task.id });
+    await blockTask(task, reason, 'app-unresolved');
     return { outcome: 'blocked', reason };
   }
   // Same resolver the /runs spawn paths use, so a `~/Projects/App` repoPath
@@ -78,6 +108,10 @@ export async function prepareAgentWorkspace({ agentId, task }) {
   } catch (err) {
     const reason = `${err.message} (Task blocked before the agent started, so it could not write into the PortOS directory by mistake.)`;
     emitLog('error', `❌ ${reason}`, { taskId: task.id, workspace: workspacePath });
+    // A task with no `app` lands here only if the PortOS root itself is
+    // unusable, which is a different problem than a mis-configured app record —
+    // don't file it under the app category.
+    await blockTask(task, reason, task.metadata?.app ? 'app-unresolved' : 'workspace-invalid');
     return { outcome: 'blocked', reason };
   }
 
@@ -281,15 +315,7 @@ export async function prepareAgentWorkspace({ agentId, task }) {
         // since there the worktree was only a recommendation, not a request.)
         const reason = `Worktree creation failed for task ${task.id}; refusing to run in the shared workspace because isolation was explicitly requested`;
         emitLog('warn', `🌳 ${reason}`, { taskId: task.id });
-        await updateTask(task.id, {
-          status: 'blocked',
-          metadata: {
-            ...task.metadata,
-            blockedReason: 'Worktree creation failed — isolation was explicitly requested',
-            blockedCategory: 'worktree-failed',
-            blockedAt: new Date().toISOString(),
-          },
-        }, task.taskType || 'user').catch(() => {});
+        await blockTask(task, 'Worktree creation failed — isolation was explicitly requested', 'worktree-failed');
         return { outcome: 'blocked', reason };
       }
     } else if (!jiraBranchName && !isFalsyMeta(task.metadata?.useWorktree)) {

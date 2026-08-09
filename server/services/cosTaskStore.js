@@ -44,6 +44,17 @@ export const PRIORITY_VALUES = {
 
 const CLAIM_KEY_SET = new Set(CLAIM_METADATA_KEYS);
 
+// Blocked categories that mean "paused until something outside the task
+// changes", not "this task is finished with". A pause keeps the resume pointer
+// (see updateTask) and is never auto-expired by the failure reaper (see
+// NON_REAPABLE_BLOCKED_CATEGORIES, which includes these) — the task is expected
+// to run again once the cooldown lapses or the user fixes the config.
+export const PAUSED_BLOCKED_CATEGORIES = new Set([
+  'orphan-cooldown',   // timed cooldown; unblockExpiredOrphanCooldowns revives it
+  'app-unresolved',    // the task's app has no usable Repository Path
+  'workspace-invalid'  // the resolved workspace isn't a usable directory
+]);
+
 // A task is terminal once it is completed or blocked — the same set cosTaskMerge's
 // release-on-transition uses. Consumed by the LI cross-peer verdict consume (#2779) to
 // spot a non-terminal→terminal ADOPTION (a failed hand-off blocks, a clean one completes;
@@ -545,12 +556,16 @@ export async function updateTask(taskId, updates, taskType = 'user', { now = Dat
   // long-merged branch. Only cleared on terminal statuses — a `pending` retry is
   // exactly who needs the pointer intact.
   //
-  // An `orphan-cooldown` block is the exception: it is a TIMED PAUSE, not a
-  // terminal state — `unblockExpiredOrphanCooldowns` (cosTaskGenerator.js) flips it
-  // back to `pending` on its own once `cooldownUntil` passes. Stripping the pointer
-  // there means the revived task starts clean and abandons the worktree its dead
-  // agent left behind, which is exactly the recovery this mechanism exists for.
-  if (isTerminalTaskStatus(updates.status) && updatedMetadata.blockedCategory !== 'orphan-cooldown') {
+  // PAUSE-shaped blocks are the exception (`PAUSED_BLOCKED_CATEGORIES`): the task
+  // is waiting on something outside itself and is expected to run again, so its
+  // pointer is not spent. `orphan-cooldown` is a TIMED pause —
+  // `unblockExpiredOrphanCooldowns` (cosTaskGenerator.js) flips it back to
+  // `pending` once `cooldownUntil` passes. The workspace blocks are a CONFIG pause:
+  // the app's Repository Path is missing/unreachable, and the user fixes it and
+  // revives the task. Stripping the pointer in either case means the revived task
+  // starts clean and abandons the worktree its dead agent left behind — which is
+  // exactly the recovery this mechanism exists for.
+  if (isTerminalTaskStatus(updates.status) && !PAUSED_BLOCKED_CATEGORIES.has(updatedMetadata.blockedCategory)) {
     delete updatedMetadata.existingBranch;
     delete updatedMetadata.resumedFromAgentId;
     delete updatedMetadata.resumeWorktreePath;
@@ -805,7 +820,14 @@ export const DEFAULT_REAP_LIMIT = 50;
 const NON_REAPABLE_BLOCKED_CATEGORIES = new Set([
   'user-terminated',      // user explicitly stopped the agent
   'agent-paused',         // user paused; resumable on demand
-  'challenge-escalation'  // parked awaiting the user's arbitration
+  'challenge-escalation', // parked awaiting the user's arbitration
+  // The workspace blocks are an OPEN user decision, not a stale failure: the task
+  // is waiting for the app's Repository Path to be fixed, and auto-completing it
+  // at 14 days would silently retire work nobody decided to drop. (The third
+  // pause category, `orphan-cooldown`, stays reapable — it revives itself in
+  // ~30 minutes, so one still sitting there after 14 days IS stale.)
+  'app-unresolved',
+  'workspace-invalid'
 ]);
 
 // Durable marker + legacy-headline fallback for an investigation task. Kept

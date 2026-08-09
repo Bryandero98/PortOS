@@ -528,7 +528,15 @@ async function createAIProviderInvestigationTask(error) {
     priority: 'MEDIUM',
     context,
     diagnostics,
-    app: 'portos', // Associate with PortOS app
+    // No `app`. `metadata.app` is WORKSPACE ROUTING — it must name a record in
+    // `data/apps.json` — and 'portos' matches neither the seeded id
+    // ('portos-default') nor its name ('PortOS'), so it resolved to nothing.
+    // That was harmless while an unresolvable app fell through to the PortOS
+    // root, which is where this work belongs anyway; since the #3180 guard,
+    // `prepareAgentWorkspace` refuses to spawn an agent whose app doesn't
+    // resolve to a repo path, so every provider investigation was filed and
+    // then rejected. Absent `app` resolves to that same PortOS root, and
+    // matches the other two task producers in this file.
     approvalRequired: true // Require user approval before investigating
   };
 

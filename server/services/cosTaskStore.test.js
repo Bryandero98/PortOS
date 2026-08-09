@@ -713,6 +713,23 @@ describe('cosTaskStore.updateTask', () => {
     expect(cooled.metadata.resumeWorktreePath).toBe('/w/agent-x');
   });
 
+  // A workspace block is a CONFIG pause on the same footing: the app's Repository
+  // Path is missing/unreachable, the user fixes it and revives the task. Dropping
+  // the pointer there abandons the uncommitted work in the leftover worktree for a
+  // problem that had nothing to do with the task.
+  it('keeps the resume pointer through an app-unresolved block', async () => {
+    await addTask({ description: 'unrouted', id: 'task-unrouted' }, 'user');
+    await updateTask('task-unrouted', {
+      metadata: { existingBranch: 'cos/b', resumedFromAgentId: 'agent-x', resumeWorktreePath: '/w/agent-x' }
+    }, 'user');
+    const blocked = await updateTask('task-unrouted', {
+      status: 'blocked',
+      metadata: { blockedCategory: 'app-unresolved' }
+    }, 'user');
+    expect(blocked.metadata.existingBranch).toBe('cos/b');
+    expect(blocked.metadata.resumeWorktreePath).toBe('/w/agent-x');
+  });
+
   it('releases the federation claim/lease when a task leaves in_progress (#1563)', async () => {
     await addTask({ description: 'claimed', id: 'task-claimed' }, 'user');
     // Spawn-time claim: status in_progress carries the claim metadata.
@@ -1095,7 +1112,10 @@ describe('cosTaskStore — stale failure-artifact reaper (#2619)', () => {
     });
 
     it('leaves user-intent / open-decision categories alone', () => {
-      for (const cat of ['user-terminated', 'agent-paused', 'challenge-escalation']) {
+      // The workspace blocks are an open decision too: the task waits for the
+      // user to fix the app's Repository Path, so auto-completing it at 14 days
+      // would silently retire work nobody decided to drop.
+      for (const cat of ['user-terminated', 'agent-paused', 'challenge-escalation', 'app-unresolved', 'workspace-invalid']) {
         expect(blockedFailureAgeMs(blocked(cat, daysAgo(30)), NOW)).toBeNull();
         expect(isReapableBlockedFailure(blocked(cat, daysAgo(30)), { now: NOW })).toBe(false);
       }
