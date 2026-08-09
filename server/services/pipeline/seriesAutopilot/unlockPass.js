@@ -72,7 +72,10 @@ export function countSeriesLocks(series, issues) {
 async function unlockSeriesRecord(series) {
   const locked = series.locked || {};
   const arc = locked.arc === true ? 1 : 0;
-  const arcFields = Object.keys(locked.arcFields || {}).length;
+  // `=== true`, matching countSeriesLocks — the sanitizer only persists `true`,
+  // but an unsanitized record must not make the dry-run promise and the pass's
+  // own report disagree.
+  const arcFields = Object.values(locked.arcFields || {}).filter((v) => v === true).length;
   const seasons = Array.isArray(series.seasons) ? series.seasons : [];
   const lockedSeasons = seasons.filter((s) => s?.locked === true).length;
   if (arc === 0 && arcFields === 0 && lockedSeasons === 0) return { arc: 0, arcFields: 0, seasons: 0 };
