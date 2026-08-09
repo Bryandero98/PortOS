@@ -44,7 +44,8 @@ const HELPER_SCRIPT = join(PATHS.root, 'scripts', 'hf_download_repo.py');
 // place but no packages, and resolveFlux2Python() alone would still return
 // that broken interpreter. Every download would then fail on the broken
 // venv before reaching the working fallback.
-export async function resolveHfDownloadPython() {
+export async function resolveHfDownloadPython(preferredPython = null) {
+  if (preferredPython) return preferredPython;
   const flux2 = resolveFlux2Python();
   if (flux2 && await isFlux2VenvHealthy()) return flux2;
   const settings = await getSettings();
@@ -62,7 +63,7 @@ export async function resolveHfDownloadPython() {
 // files. This is MANDATORY for aggregate repos — `DeepBeepMeep/LTX-2` mirrors
 // every LTX weight in one ~708 GB repo, so a snapshot would fill the user's
 // disk to pull one 1.3 GB IC-LoRA (see server/lib/icLoraWeights.js).
-export function downloadHfRepo({ repo, revision = null, only = null, onEvent }) {
+export function downloadHfRepo({ repo, revision = null, only = null, pythonPath: preferredPython = null, onEvent }) {
   let proc = null;
   let killed = false;
   let errorKind = null;
@@ -70,7 +71,7 @@ export function downloadHfRepo({ repo, revision = null, only = null, onEvent }) 
   let sizeBytes = 0;
 
   const promise = (async () => {
-    const pythonPath = await resolveHfDownloadPython();
+    const pythonPath = await resolveHfDownloadPython(preferredPython);
     // Cancel-before-spawn check. resolveHfDownloadPython runs an
     // isFlux2VenvHealthy() probe (several hundred ms cold) and getHfTokenInfo
     // does file I/O; a kill() landing inside either await otherwise still
@@ -79,7 +80,7 @@ export function downloadHfRepo({ repo, revision = null, only = null, onEvent }) 
     // the whole snapshot finishes.
     if (killed) return { ok: false, errorKind: 'cancelled', errorMessage: 'Cancelled' };
     if (!pythonPath) {
-      const msg = 'No Python venv with huggingface_hub found. Install the FLUX.2 venv from Image Gen settings first.';
+      const msg = 'No Python runtime with huggingface_hub is ready. Install or repair the selected runtime from the model setup panel.';
       onEvent({ type: 'error', message: msg, kind: 'venv_missing' });
       return { ok: false, errorKind: 'venv_missing', errorMessage: msg };
     }

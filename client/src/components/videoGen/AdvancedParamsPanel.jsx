@@ -19,7 +19,7 @@
 import { useState } from 'react';
 import { ChevronDown, Dice5 } from 'lucide-react';
 import { FormField } from '../ui/FormField';
-import { FRAME_OPTIONS, FPS_OPTIONS } from '../../lib/videoGenParams.js';
+import { frameOptionsForModel, fpsOptionsForModel } from '../../lib/videoGenParams.js';
 import { VIDEO_TILING_OPTIONS } from '../../lib/videoTilingOptions';
 
 const CHUNK_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8];
@@ -44,10 +44,15 @@ export default function AdvancedParamsPanel({
   // a2v derives its length + audio track from the uploaded audio, so chunking
   // and the audio flags don't apply there.
   const showAudioFlags = mode !== 'a2v';
-  const showChunks = mode !== 'a2v';
+  const showChunks = mode !== 'a2v'
+    && !(currentModel?.runtime === 'wan22'
+      && !currentModel?.supportedModes?.includes('image'));
   // ltx2 extend conditions on the source's latent rather than a single frame,
   // so image strength is meaningless for it.
   const showImageStrength = mode === 'image' || (mode === 'extend' && currentModel?.runtime !== 'ltx2');
+  const frameOptions = frameOptionsForModel(currentModel, numFrames);
+  const fpsOptions = fpsOptionsForModel(currentModel);
+  const samplerLocked = currentModel?.samplerLocked === true;
 
   const summary = `${numFrames}f @ ${fps}fps · ${(numFrames / fps).toFixed(1)}s · seed ${seed === '' || seed == null ? 'random' : seed}`;
 
@@ -73,7 +78,7 @@ export default function AdvancedParamsPanel({
               onChange={(e) => onNumFramesChange(Number(e.target.value))}
               className={inputCls}
             >
-              {FRAME_OPTIONS.map((f) => <option key={f} value={f}>{f} ({(f / fps).toFixed(1)}s @ {fps}fps)</option>)}
+              {frameOptions.map((f) => <option key={f} value={f}>{f} ({(f / fps).toFixed(1)}s @ {fps}fps)</option>)}
             </select>
             {numFrames > 241 && (
               <p className="text-[10px] text-gray-500 leading-snug mt-1">
@@ -110,7 +115,7 @@ export default function AdvancedParamsPanel({
               onChange={(e) => onFpsChange(Number(e.target.value))}
               className={inputCls}
             >
-              {FPS_OPTIONS.map((f) => <option key={f} value={f}>{f}</option>)}
+              {fpsOptions.map((f) => <option key={f} value={f}>{f}</option>)}
             </select>
           </FormField>
 
@@ -144,6 +149,8 @@ export default function AdvancedParamsPanel({
               type="number" min={1} max={150}
               value={steps}
               onChange={(e) => onStepsChange(e.target.value)}
+              disabled={samplerLocked}
+              title={samplerLocked ? 'This validated Lightning profile locks its sampler settings.' : undefined}
               placeholder={String(currentModel?.steps || 25)}
               className={inputCls}
             />
@@ -157,10 +164,18 @@ export default function AdvancedParamsPanel({
               type="number" min={0} max={20} step={0.5}
               value={guidanceScale}
               onChange={(e) => onGuidanceScaleChange(e.target.value)}
+              disabled={samplerLocked}
+              title={samplerLocked ? 'This validated Lightning profile locks its sampler settings.' : undefined}
               placeholder={String(currentModel?.guidance ?? 3.0)}
               className={inputCls}
             />
           </FormField>
+
+          {samplerLocked && (
+            <p className="col-span-2 sm:col-span-3 text-[10px] text-port-accent leading-snug">
+              Lightning keeps its validated {currentModel.steps}-step sampler, CFG {currentModel.guidance}, and model-specific schedule locked.
+            </p>
+          )}
 
           {showImageStrength && (
             <div className="col-span-2 sm:col-span-3">

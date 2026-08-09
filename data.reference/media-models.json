@@ -44,22 +44,103 @@
         "guidance": 3
       },
       {
-        "id": "wan22_t2v_a14b",
-        "name": "Wan 2.2 T2V A14B (~28 GB, MoE-14B-active)",
-        "repo": "Wan-AI/Wan2.2-T2V-A14B",
+        "id": "wan22_ti2v_5b",
+        "name": "Wan 2.2 TI2V 5B Q8 (~17 GiB download, text + image)",
+        "repo": "AbstractFramework/wan2.2-ti2v-5b-diffusers-8bit",
+        "revision": "6875952a110b6bdbcfc00d72b1d89a8e02ab0fc3",
         "runtime": "wan22",
-        "mode": "t2v",
+        "supportedModes": ["text", "image"],
+        "frameStride": 4,
+        "fpsOptions": [16, 20, 24],
+        "memoryGb": 24,
         "steps": 25,
-        "guidance": 5
+        "guidance": 5,
+        "flowShift": 3,
+        "solver": "unipc"
+      },
+      {
+        "id": "wan22_t2v_a14b",
+        "name": "Wan 2.2 T2V A14B Q8 (~40 GiB download, 64+ GB RAM)",
+        "repo": "AbstractFramework/wan2.2-t2v-a14b-diffusers-8bit",
+        "revision": "39ee5f1f630789956f29f40b5c2c6d48c6e9a798",
+        "runtime": "wan22",
+        "supportedModes": ["text"],
+        "frameStride": 4,
+        "fpsOptions": [16, 20, 24],
+        "memoryGb": 48,
+        "steps": 20,
+        "guidance": 4,
+        "guidance2": 3,
+        "flowShift": 3,
+        "solver": "unipc"
       },
       {
         "id": "wan22_i2v_a14b",
-        "name": "Wan 2.2 I2V A14B (~28 GB, image-to-video)",
-        "repo": "Wan-AI/Wan2.2-I2V-A14B",
+        "name": "Wan 2.2 I2V A14B Q8 (~40 GiB download, 64+ GB RAM)",
+        "repo": "AbstractFramework/wan2.2-i2v-a14b-diffusers-8bit",
+        "revision": "1a17fbea2649c576de844e08e79fe56296751efa",
         "runtime": "wan22",
-        "mode": "i2v",
-        "steps": 25,
-        "guidance": 5
+        "supportedModes": ["image"],
+        "frameStride": 4,
+        "fpsOptions": [16, 20, 24],
+        "memoryGb": 48,
+        "steps": 20,
+        "guidance": 3.5,
+        "guidance2": 3.5,
+        "flowShift": 3,
+        "solver": "unipc"
+      },
+      {
+        "id": "wan22_t2v_a14b_lightning",
+        "name": "Wan 2.2 T2V A14B Lightning Q8 (~40 GiB download, 64+ GB RAM, 4-step)",
+        "repo": "AbstractFramework/wan2.2-t2v-a14b-diffusers-8bit",
+        "revision": "39ee5f1f630789956f29f40b5c2c6d48c6e9a798",
+        "runtime": "wan22",
+        "supportedModes": ["text"],
+        "frameStride": 4,
+        "fpsOptions": [16, 20, 24],
+        "memoryGb": 48,
+        "steps": 4,
+        "guidance": 1,
+        "guidance2": 1,
+        "flowShift": 5,
+        "solver": "euler",
+        "samplerLocked": true,
+        "requiredWeights": [{
+          "repo": "lightx2v/Wan2.2-Lightning",
+          "revision": "18bccf8884ec0a078eed79785eb4ef13ea16ce1e",
+          "files": [
+            "Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/high_noise_model.safetensors",
+            "Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/low_noise_model.safetensors"
+          ],
+          "targetRoles": ["high_noise_transformer", "low_noise_transformer"]
+        }]
+      },
+      {
+        "id": "wan22_i2v_a14b_lightning",
+        "name": "Wan 2.2 I2V A14B Lightning Q8 (~40 GiB download, 64+ GB RAM, 4-step)",
+        "repo": "AbstractFramework/wan2.2-i2v-a14b-diffusers-8bit",
+        "revision": "1a17fbea2649c576de844e08e79fe56296751efa",
+        "runtime": "wan22",
+        "supportedModes": ["image"],
+        "frameStride": 4,
+        "fpsOptions": [16, 20, 24],
+        "memoryGb": 48,
+        "steps": 4,
+        "guidance": 1,
+        "guidance2": 1,
+        "flowShift": 5,
+        "solver": "euler",
+        "samplerLocked": true,
+        "requiredWeights": [{
+          "repo": "lightx2v/Wan2.2-Lightning",
+          "revision": "18bccf8884ec0a078eed79785eb4ef13ea16ce1e",
+          "files": [
+            "Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/high_noise_model.safetensors",
+            "Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/low_noise_model.safetensors"
+          ],
+          "targetRoles": ["high_noise_transformer", "low_noise_transformer"]
+        }]
       },
       {
         "id": "hunyuan_video",

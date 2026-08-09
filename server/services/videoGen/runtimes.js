@@ -25,13 +25,11 @@ import { safeChildProcessEnv } from '../../lib/processEnv.js';
 export const LTX2_VENV_PYTHON = join(homedir(), '.portos', 'ltx-2-mlx', '.venv', 'bin', 'python3');
 export const LTX2_HELPER_SCRIPT = join(PATHS.root, 'scripts', 'generate_ltx2.py');
 
-// Wan 2.2 MLX runtime — osama-ata/Wan2.2-mlx cloned at
-// ~/.portos/wan2.2-mlx/. The wrapper at scripts/generate_wan22.py
-// subprocesses upstream generate.py so PortOS releases don't drift from
-// upstream's CLI. Provisioned via `INSTALL_WAN22=1 bash scripts/setup-image-video.sh`.
-export const WAN22_VENV_PYTHON = join(homedir(), '.portos', 'wan2.2-mlx', '.venv', 'bin', 'python3');
+// Wan 2.2 MLX runtime — pinned MLX-Gen checkout provisioned on demand.
+export const WAN22_VENV_PYTHON = join(homedir(), '.portos', 'mlx-gen', '.venv', 'bin', 'python3');
 export const WAN22_HELPER_SCRIPT = join(PATHS.root, 'scripts', 'generate_wan22.py');
-export const WAN22_REPO_DIR = join(homedir(), '.portos', 'wan2.2-mlx');
+export const WAN22_REPO_DIR = join(homedir(), '.portos', 'mlx-gen');
+export const WAN22_EXPECTED_REVISION = '2452f0c12edcc8886eebf15772205ce9c417a618';
 
 // HunyuanVideo MLX runtime — gaurav-nelson/HunyuanVideo_MLX cloned at
 // ~/.portos/hunyuan-video-mlx/. ~60 GB resident at bf16 so practical only
@@ -80,13 +78,12 @@ export const BYOV_RUNTIME_INFO = Object.freeze({
     venvPython: WAN22_VENV_PYTHON,
     repoDir: WAN22_REPO_DIR,
     installEnvVar: 'INSTALL_WAN22',
-    repoUrl: 'https://github.com/osama-ata/Wan2.2-mlx',
-    // Walks the package's __init__ chain so transitive deps absent from
-    // upstream's pyproject.toml (e.g. einops, imported by wan/modules/vae2_1.py)
-    // fail the probe instead of slipping past a flat torch/transformers check.
-    importProbe: 'import wan',
+    repoUrl: 'https://github.com/lpalbou/mlx-gen',
+    expectedRevision: WAN22_EXPECTED_REVISION,
+    pinEnvVar: 'WAN22_PIN',
+    importProbe: 'import mflux.models.wan.cli.wan_generate',
     // Mirror scripts/generate_wan22.py's emit_runtime_fingerprint package list.
-    fingerprintPackages: ['wan', 'mlx', 'mlx_metal', 'torch'],
+    fingerprintPackages: ['mlx-gen', 'mlx', 'mlx_metal', 'huggingface-hub'],
   },
   ltx2: {
     id: 'ltx2',
@@ -142,6 +139,26 @@ export async function isByovRuntimeReady(runtimeId) {
   return probeOk;
 }
 
+// Resolve a checkout's exact revision without trusting a mutable tag/branch.
+// Runtimes without an expectedRevision remain current by definition. A stale
+// pinned checkout makes the UI offer Repair / Upgrade; nothing runs at boot.
+export async function isByovRuntimeCurrent(runtimeId) {
+  const info = BYOV_RUNTIME_INFO[runtimeId];
+  if (!info?.expectedRevision) return true;
+  if (!existsSync(join(info.repoDir, '.git'))) return false;
+  return new Promise((resolve) => {
+    let stdout = '';
+    const child = spawn('git', ['-C', info.repoDir, 'rev-parse', 'HEAD'], {
+      env: safeChildProcessEnv(),
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const timer = setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); resolve(false); }, 10000);
+    child.stdout.on('data', (chunk) => { if (stdout.length < 128) stdout += chunk.toString(); });
+    child.on('close', (code) => { clearTimeout(timer); resolve(code === 0 && stdout.trim() === info.expectedRevision); });
+    child.on('error', () => { clearTimeout(timer); resolve(false); });
+  });
+}
+
 // Throws the same shape the per-runtime buildArgs used to throw inline — a
 // 500 with a stable runtime-specific code the route layer and tests already
 // match against. The error codes are LTX2_VENV_MISSING / WAN22_VENV_MISSING
@@ -151,7 +168,7 @@ export function assertByovRuntimeInstalled(runtimeId) {
   if (!info) return;
   if (existsSync(info.venvPython)) return;
   throw new ServerError(
-    `${info.label} venv not found at ${info.venvPython}. Run \`${info.installEnvVar}=1 bash scripts/setup-image-video.sh\` to install.`,
+    `${info.label} runtime is not installed. Install or repair it from Video Gen's model setup panel.`,
     { status: 500, code: `${runtimeId.toUpperCase()}_VENV_MISSING` },
   );
 }

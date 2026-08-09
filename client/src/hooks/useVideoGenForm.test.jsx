@@ -15,6 +15,8 @@ const { useVideoGenForm } = await import('./useVideoGenForm.js');
 // legacy path that extends from an extracted last frame.
 const LTX2 = { id: 'ltx2-model', name: 'LTX-2.3', runtime: 'ltx2' };
 const MLX = { id: 'mlx-model', name: 'LTX distilled', runtime: 'mlx_video' };
+const WAN_T2V = { id: 'wan-t2v', name: 'Wan T2V', runtime: 'wan22', supportedModes: ['text'], frameStride: 4 };
+const WAN_TI2V = { id: 'wan-ti2v', name: 'Wan TI2V', runtime: 'wan22', supportedModes: ['text', 'image'], frameStride: 4 };
 const MODELS = [MLX, LTX2];
 const STATUS = { connected: true, defaultModel: MLX.id };
 
@@ -158,6 +160,35 @@ describe('useVideoGenForm', () => {
     act(() => result.current.setAudioFile(wav));
     expect(result.current.a2vModeBlocked).toBe(false);
     expect(result.current.buildGeneratePayload().audioFile).toBe(wav);
+  });
+
+  it('clears sampler overrides on an automatic mode-compatible model fallback', async () => {
+    const { result } = render({
+      models: [WAN_T2V, WAN_TI2V],
+      status: { connected: true, defaultModel: WAN_T2V.id },
+    });
+    await waitFor(() => expect(result.current.modelId).toBe(WAN_T2V.id));
+    act(() => {
+      result.current.setSteps('17');
+      result.current.setGuidanceScale('6');
+      result.current.handleModeChange('image');
+    });
+    await waitFor(() => expect(result.current.modelId).toBe(WAN_TI2V.id));
+    expect(result.current.steps).toBe('');
+    expect(result.current.guidanceScale).toBe('');
+  });
+
+  it('does not submit chunks for a T2V-only Wan profile', async () => {
+    const { result } = render({
+      models: [WAN_T2V],
+      status: { connected: true, defaultModel: WAN_T2V.id },
+    });
+    await waitFor(() => expect(result.current.modelId).toBe(WAN_T2V.id));
+    act(() => {
+      result.current.setPrompt('a test');
+      result.current.setChunks(3);
+    });
+    expect(result.current.buildGeneratePayload().chunks).toBe('');
   });
 
   it('serializes keyframes as JSON and suppresses chunking while they are active', async () => {

@@ -61,6 +61,10 @@ describe('spawnDetached', () => {
     const n = Number.parseInt(stdout.trim(), 10);
     return Number.isFinite(n) ? n : 0;
   };
+  const aliveByPs = async (pid) => {
+    const { stdout } = await execFileAsync('ps', ['-o', 'pid=', '-p', String(pid)]).catch(() => ({ stdout: '' }));
+    return stdout.trim().length > 0;
+  };
   // Walk a process's ancestor chain to the root (PPID 1 / 0).
   const ancestorsOf = async (pid) => {
     const chain = [];
@@ -104,6 +108,36 @@ describe('spawnDetached', () => {
     expect(signal).toBe('SIGKILL');
     expect(code).toBeNull();
     expect(handle.signalCode).toBe('SIGKILL');
+  });
+
+  it.skipIf(process.platform === 'win32')('killProcessGroup terminates a wrapper and its runtime child', async () => {
+    const controlDir = await tmpControlDir();
+    const handle = await spawnDetached('python3', ['-c', [
+      'import os, subprocess, time',
+      'os.setpgid(0, 0)',
+      "child = subprocess.Popen(['sleep', '30'])",
+      'print(child.pid, flush=True)',
+      'time.sleep(30)',
+    ].join('; ')], { controlDir, pollMs: 25, killProcessGroup: true });
+    const getOut = collect(handle.stdout);
+    let runtimePid = 0;
+    for (let i = 0; i < 80; i += 1) {
+      runtimePid = Number.parseInt(getOut().trim(), 10);
+      if (runtimePid > 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(runtimePid).toBeGreaterThan(0);
+    expect(await aliveByPs(runtimePid)).toBe(true);
+    const closed = onClose(handle);
+    expect(handle.kill('SIGKILL')).toBe(true);
+    await closed;
+    let alive = true;
+    for (let i = 0; i < 80; i += 1) {
+      alive = await aliveByPs(runtimePid);
+      if (!alive) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(alive).toBe(false);
   });
 
   it('rejects (via close=1) when the control dir is reused with stale files cleared', async () => {
@@ -176,11 +210,6 @@ describe('spawnDetached', () => {
   });
 
   describe('reapDetached', () => {
-    const aliveByPs = async (pid) => {
-      const { stdout } = await execFileAsync('ps', ['-o', 'pid=', '-p', String(pid)]).catch(() => ({ stdout: '' }));
-      return stdout.trim().length > 0;
-    };
-
     it('SIGTERMs a surviving orphan and reports it reaped', async () => {
       const controlDir = await tmpControlDir();
       const handle = await spawnDetached('sh', ['-c', 'sleep 30'], { controlDir, pollMs: 25 });

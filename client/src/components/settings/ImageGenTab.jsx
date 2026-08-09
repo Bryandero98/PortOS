@@ -1133,8 +1133,8 @@ export function ImageGenTab() {
           <h2 className="text-lg font-semibold">HuggingFace Token</h2>
         </div>
         <p className="text-xs text-gray-500">
-          Required for gated local models — currently <code className="text-gray-400">FLUX.1-dev</code> and the{' '}
-          <code className="text-gray-400">FLUX.2-klein</code> family. Accept each model's license on HuggingFace, then create a read token at{' '}
+          Used for gated local models and model downloads — including <code className="text-gray-400">FLUX.1-dev</code>, the{' '}
+          <code className="text-gray-400">FLUX.2-klein</code> family, and gated video sources. Accept each model's license on HuggingFace, then create a read token at{' '}
           <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noreferrer" className="text-port-accent hover:underline">
             huggingface.co/settings/tokens
           </a>{' '}and paste it below. PortOS reads stored tokens first, then falls back to the{' '}

@@ -384,6 +384,57 @@ async function resolvePreparedParams({
       { status: 400, code: 'A2V_REQUIRES_LTX2' },
     );
   }
+  // Wan profiles have narrower mode + temporal-shape contracts than the
+  // shared request schema can express. Mirror the worker's guards here so a
+  // direct API caller cannot persist a job that is already known to fail.
+  // This runs before durable upload staging, keeping rejection cleanup cheap.
+  let wanRequestedMode = null;
+  if (effectiveModel?.runtime === 'wan22') {
+    const hasDeclaredSource = Boolean(uploads.sourceImage || body.sourceImageFile);
+    const requestedMode = body.mode
+      || (uploads.sourceImage || body.sourceImageFile ? 'image' : 'text');
+    wanRequestedMode = requestedMode;
+    const supportedModes = Array.isArray(effectiveModel.supportedModes)
+      ? effectiveModel.supportedModes
+      : [];
+    if (!supportedModes.includes(requestedMode)) {
+      await cleanupStaged();
+      throw new ServerError(
+        `${effectiveModel.name} does not support ${requestedMode}-to-video. Choose a compatible Wan model.`,
+        { status: 400, code: 'WAN22_MODE_UNSUPPORTED' },
+      );
+    }
+    if (requestedMode === 'image' && !hasDeclaredSource) {
+      await cleanupStaged();
+      throw new ServerError(
+        'Wan 2.2 image-to-video requires a source image — upload one before running this model.',
+        { status: 400, code: 'WAN22_I2V_REQUIRES_IMAGE' },
+      );
+    }
+    if (requestedMode === 'text' && hasDeclaredSource) {
+      await cleanupStaged();
+      throw new ServerError(
+        'Wan 2.2 text-to-video cannot consume a source image — switch to image mode or remove the source.',
+        { status: 400, code: 'WAN22_TEXT_MODE_SOURCE_CONFLICT' },
+      );
+    }
+    if (body.chunks != null && Number(body.chunks) > 1 && !supportedModes.includes('image')) {
+      await cleanupStaged();
+      throw new ServerError(
+        `${effectiveModel.name} cannot generate chunks > 1 because continuation requires image-to-video support.`,
+        { status: 400, code: 'WAN22_CHAIN_REQUIRES_IMAGE_MODE' },
+      );
+    }
+    const numFrames = body.numFrames != null ? Number(body.numFrames) : DEFAULT_NUM_FRAMES;
+    const frameStride = Number(effectiveModel.frameStride);
+    if (Number.isFinite(frameStride) && frameStride > 0 && (numFrames - 1) % frameStride !== 0) {
+      await cleanupStaged();
+      throw new ServerError(
+        `${effectiveModel.name} requires a ${frameStride}n+1 frame count; got ${numFrames}.`,
+        { status: 400, code: 'WAN22_INVALID_FRAME_COUNT' },
+      );
+    }
+  }
 
   let sourceImagePath = null;
   let lastImagePath = null;
@@ -410,6 +461,13 @@ async function resolvePreparedParams({
     uploadedTempPath = sourceImagePath;
   } else if (body.sourceImageFile) {
     sourceImagePath = resolveGalleryImage(body.sourceImageFile);
+  }
+  if (effectiveModel?.runtime === 'wan22' && wanRequestedMode === 'image' && !sourceImagePath) {
+    await cleanupStaged();
+    throw new ServerError(
+      'Wan 2.2 image-to-video requires a resolvable source image — choose an existing gallery image or upload one.',
+      { status: 400, code: 'WAN22_I2V_REQUIRES_IMAGE' },
+    );
   }
   // Music Video director-board renders are always i2v FROM the scene's reference
   // frame (#1760 Phase 1). resolveGalleryImage returns null for a missing/invalid

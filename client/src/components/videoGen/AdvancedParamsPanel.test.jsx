@@ -97,6 +97,14 @@ describe('AdvancedParamsPanel', () => {
     expect(screen.getByLabelText('Frames')).toBeTruthy();
   });
 
+  it('hides chunks for a Wan profile that cannot continue via image mode', () => {
+    renderPanel({
+      currentModel: { runtime: 'wan22', supportedModes: ['text'], frameStride: 4 },
+    });
+    fireEvent.click(toggle());
+    expect(screen.queryByLabelText('Chunks')).toBeNull();
+  });
+
   it('locks chunks to 1 while multi-keyframe mode is active', () => {
     renderPanel({ chunks: 4, keyframesActive: true });
     fireEvent.click(toggle());

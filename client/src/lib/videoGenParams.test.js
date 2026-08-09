@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   videoModelMemoryGb, computeFflfSafeFrames, isModelAllowedForMode,
   VIDEO_EDGE_BOUNDS, FRAME_OPTIONS, FPS_OPTIONS,
+  WAN_FRAME_OPTIONS, frameOptionsForModel, fpsOptionsForModel,
+  normalizeFramesForModel, normalizeFpsForModel,
   IC_LORA_MODES, IC_LORA_MODE_VALUES, isIcLoraMode, icLoraSpecForMode,
   icResolutionIssue,
 } from './videoGenParams.js';
@@ -12,6 +14,7 @@ describe('videoModelMemoryGb', () => {
   });
   it('falls back to a "~NN GB" hint in the name', () => {
     expect(videoModelMemoryGb({ name: 'LTX 2.3 (~12.5 GB)' })).toBe(12.5);
+    expect(videoModelMemoryGb({ name: 'Wan 2.2 (~17 GiB)' })).toBe(17);
   });
   it('returns +Infinity when neither is present so it never spuriously fits a budget', () => {
     expect(videoModelMemoryGb({ name: 'mystery model' })).toBe(Number.POSITIVE_INFINITY);
@@ -47,9 +50,18 @@ describe('isModelAllowedForMode', () => {
   it('rejects a null model', () => {
     expect(isModelAllowedForMode(null, 'text')).toBe(false);
   });
-  it('allows any runtime for non-a2v modes', () => {
+  it('allows general runtimes for non-a2v modes', () => {
     expect(isModelAllowedForMode({ runtime: 'mlx_video' }, 'text')).toBe(true);
     expect(isModelAllowedForMode({ runtime: 'ltx2' }, 'image')).toBe(true);
+  });
+  it('filters Wan models by their declared text/image capabilities', () => {
+    const ti2v = { runtime: 'wan22', supportedModes: ['text', 'image'] };
+    const i2v = { runtime: 'wan22', supportedModes: ['image'] };
+    expect(isModelAllowedForMode(ti2v, 'text')).toBe(true);
+    expect(isModelAllowedForMode(ti2v, 'image')).toBe(true);
+    expect(isModelAllowedForMode(i2v, 'text')).toBe(false);
+    expect(isModelAllowedForMode(i2v, 'image')).toBe(true);
+    expect(isModelAllowedForMode(ti2v, 'fflf')).toBe(false);
   });
   it('requires the ltx2 runtime for a2v', () => {
     expect(isModelAllowedForMode({ runtime: 'ltx2' }, 'a2v')).toBe(true);
@@ -65,6 +77,17 @@ describe('constants', () => {
     expect(FRAME_OPTIONS[0]).toBe(25);
     expect(FRAME_OPTIONS.every((f) => (f - 1) % 8 === 0)).toBe(true);
     expect(FPS_OPTIONS).toEqual([16, 24, 30]);
+    expect(WAN_FRAME_OPTIONS.every((f) => (f - 1) % 4 === 0)).toBe(true);
+  });
+  it('selects and normalizes model-aware Wan frame/fps values', () => {
+    const wan = { frameStride: 4, fpsOptions: [16, 20, 24] };
+    expect(frameOptionsForModel(wan)).toBe(WAN_FRAME_OPTIONS);
+    expect(fpsOptionsForModel(wan)).toEqual([16, 20, 24]);
+    expect(normalizeFramesForModel(97, wan)).toBe(97);
+    expect(normalizeFramesForModel(109, wan)).toBe(109);
+    expect(frameOptionsForModel(wan, 109)).toContain(109);
+    expect(normalizeFramesForModel(98, wan)).toBe(97);
+    expect(normalizeFpsForModel(30, wan)).toBe(24);
   });
 });
 
