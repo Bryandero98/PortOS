@@ -13,10 +13,9 @@ import { join, dirname, basename } from 'path';
 import { stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { randomUUID } from 'crypto';
-import { spawn } from 'child_process';
 import { atomicWrite, safeJSONParse, readJSONFile, dataPath, ensureDir } from '../lib/fileUtils.js';
 import { bufferedSpawn } from '../lib/bufferedSpawn.js';
-import { ICLOUD_NOT_MATERIALIZED, isEvictedStats, readIfMaterialized, requestMaterialization } from '../lib/icloudFile.js';
+import { ICLOUD_NOT_MATERIALIZED, claimBrctlMissingWarning, isEvictedStats, readIfMaterialized, requestMaterialization } from '../lib/icloudFile.js';
 import { isPlainObject } from '../lib/objects.js';
 import { getSettings, settingsEvents } from './settings.js';
 
@@ -98,60 +97,43 @@ export function defaultStorePath() { return DEFAULT_ICLOUD_PATH; }
 // on-EAGAIN path handles that case. Best-effort, fire-and-forget; on
 // non-macOS we never spawn brctl, and on macOS when brctl is unexpectedly
 // missing (sandboxed env, removed binary) we warn ONCE and then fall
-// through to the retry path silently — without the dedupe, every
-// settings:updated would re-warn.
+// through to the retry path silently.
 
 let lastPinnedPath = null;
-let brctlMissingWarned = false;
+// Monotonic pin-attempt counter. Each pin captures its own generation so a stale
+// child's late failure can be told apart from the CURRENT pin even when both share
+// the same path (an A → B → A settings churn re-pins A while A's first child is
+// still in flight). A path-only guard can't distinguish those two A children, so
+// the first one's late failure would wrongly clear the second's sticky state and
+// let the next event spawn a duplicate pin.
+let pinGeneration = 0;
 
+// The boot/settings-change pin. The spawn + detach/unref + error/exit handler
+// plumbing (and the shared once-per-process "brctl missing" warning) all live in
+// the shared `requestMaterialization` helper now — this call site only owns the
+// pin's distinct dedupe policy: a single sticky `lastPinnedPath` that persists
+// after a *successful* pin (one configured path at a time; re-pin only when the
+// path changes). `retryAfterExit: false` keeps the shared helper from tracking
+// the pin in its in-flight read-heal map. `onFailure` clears the sticky path so a
+// failed / signal-killed pin can be retried on the next settings:updated — gated
+// on the captured generation so only the CURRENT pin's own failure clears it (a
+// superseded pin's late failure is ignored).
 function pinAgainstEviction(path) {
   if (process.platform !== 'darwin') return;
   if (!path || lastPinnedPath === path) return;
   lastPinnedPath = path;
-
-  // detached + unref so a long-running `brctl download` (large evicted file,
-  // slow network) can't keep the Node process alive on shutdown. Matches the
-  // repo's fire-and-forget spawn pattern in server/routes/apps/launch.js +
-  // server/routes/brain.js.
-  const child = spawn('brctl', ['download', path], { detached: true, stdio: 'ignore' });
-  child.unref();
-  // Capture `path` in each handler so a late-arriving error/exit from a stale
-  // child (one whose path has since been replaced by a newer pinAgainstEviction
-  // call) doesn't clear the dedupe cache for the *current* path. Without this
-  // capture, the stale exit would null out lastPinnedPath even though the new
-  // path's child is still in flight (or has already succeeded), defeating
-  // dedupe and causing repeated spawns on subsequent settings:updated events.
-  child.on('error', (err) => {
-    if (lastPinnedPath === path) lastPinnedPath = null;
-    if (err.code === 'ENOENT') {
-      // brctl isn't in PATH. On darwin this is extremely unusual; surface it
-      // once so operators in a sandbox aren't left wondering why pinning is
-      // a silent no-op, then dedupe so we don't spam on every settings change.
-      if (!brctlMissingWarned) {
-        brctlMissingWarned = true;
-        console.warn('⚠️ brctl not found on PATH; MortalLoom store pinning disabled (retry-on-EAGAIN path remains)');
-      }
-      return;
-    }
-    console.warn(`⚠️ brctl download failed for MortalLoom store: ${err.message}`);
+  const myGeneration = ++pinGeneration;
+  const stillCurrent = () => pinGeneration === myGeneration;
+  const spawned = requestMaterialization(path, {
+    label: 'MortalLoom store',
+    retryAfterExit: false,
+    onFailure: () => { if (stillCurrent()) lastPinnedPath = null; },
   });
-  child.on('exit', (code, signal) => {
-    if (code === 0) {
-      console.log(`📥 MortalLoom store pinned for download: ${path}`);
-      return;
-    }
-    // Non-zero exit OR signal-kill (code===null,signal set). Either way the
-    // pin didn't complete, so clear the dedupe cache to allow a retry on the
-    // next settings:updated event. Without this, a SIGTERM'd brctl would
-    // permanently mask its own retry. Guard with the captured `path` so a
-    // stale child can't clear cache for a path that has already moved on.
-    if (lastPinnedPath === path) lastPinnedPath = null;
-    if (code !== null) {
-      console.warn(`⚠️ brctl download exited ${code} for MortalLoom store: ${path}`);
-    } else {
-      console.warn(`⚠️ brctl download killed by ${signal} for MortalLoom store: ${path}`);
-    }
-  });
+  // The helper declined to spawn (a non-iCloud configured path, or a synchronous
+  // spawn failure — the non-darwin case is already handled above). Clear the
+  // sticky path so a corrected/healable path on the next settings:updated isn't
+  // wrongly deduped as "already pinned".
+  if (!spawned && stillCurrent()) lastPinnedPath = null;
 }
 
 // === On-demand (blocking) materialization for the write path ===
@@ -195,10 +177,10 @@ async function materializeNow(path) {
   });
   if (result.success) return true;
   if (result.error?.code === 'ENOENT') {
-    // brctl missing — share the dedupe flag with pinAgainstEviction so we
-    // surface the missing-binary warning at most once per process.
-    if (!brctlMissingWarned) {
-      brctlMissingWarned = true;
+    // brctl missing — claim the shared once-per-process flag in icloudFile so the
+    // "brctl not found" warning fires at most once across BOTH this write path and
+    // the fire-and-forget pin/read paths in requestMaterialization.
+    if (claimBrctlMissingWarning()) {
       console.warn('⚠️ brctl not found on PATH; MortalLoom on-demand materialize disabled (refuse-to-overwrite guard remains)');
     }
   } else if (result.timedOut) {
@@ -225,7 +207,9 @@ export function _resetMortalLoomInitForTest() {
   listenerAttached = false;
   didInitialPin = false;
   lastPinnedPath = null;
-  brctlMissingWarned = false;
+  pinGeneration = 0;
+  // The once-per-process "brctl missing" flag now lives in icloudFile; tests that
+  // need it cleared reset it via icloudFile._resetICloudFileStateForTest().
 }
 
 /**
@@ -697,7 +681,7 @@ export async function getStatus() {
   const evicted = isEvictedStats(path, st);
   if (evicted) {
     console.warn(`⚠️ MortalLoom store evicted from local storage; status summary unavailable: ${path}`);
-    requestMaterialization(path, 'MortalLoom store');
+    requestMaterialization(path, { label: 'MortalLoom store' });
   }
   const raw = st && !evicted ? await withTransientRetry(() => readIfMaterialized(path, { label: 'MortalLoom store' })).catch((err) => {
     if (err.code === 'ENOENT') { readEnoent = true; return null; }

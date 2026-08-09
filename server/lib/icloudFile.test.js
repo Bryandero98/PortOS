@@ -256,6 +256,80 @@ describe('requestMaterialization', () => {
     expect(icloud.requestMaterialization(ICLOUD_PATH)).toBe(false);
     expect(spawnMock).not.toHaveBeenCalled();
   });
+
+  // The pin path (mortalLoomStore) passes retryAfterExit:false: it owns its own
+  // single-sticky-path dedupe, so the shared helper must NOT dedupe it in the
+  // in-flight map, must NOT count it against the concurrency cap, and must route
+  // its failures through onFailure so the pin can clear its sticky path.
+  describe('retryAfterExit:false (the pin path)', () => {
+    it('does not dedupe on the in-flight map — a second call for the same path spawns again', () => {
+      spawnMock.mockImplementation(() => makeFakeChild());
+      expect(icloud.requestMaterialization(ICLOUD_PATH, { retryAfterExit: false })).toBe(true);
+      expect(icloud.requestMaterialization(ICLOUD_PATH, { retryAfterExit: false })).toBe(true);
+      expect(spawnMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('neither consumes a concurrency slot nor is blocked by the cap', async () => {
+      statMock.mockResolvedValue(datalessStats);
+      // Fill all four tracked (read) slots with in-flight downloads.
+      for (let i = 0; i < 4; i++) {
+        await icloud.readIfMaterialized(`${UBIQUITY_DIR}/read-${i}.md`).catch(() => {});
+      }
+      expect(spawnMock).toHaveBeenCalledTimes(4);
+      // An untracked (pin) request still spawns even though the cap is full…
+      expect(icloud.requestMaterialization(`${UBIQUITY_DIR}/pin.json`, { retryAfterExit: false })).toBe(true);
+      expect(spawnMock).toHaveBeenCalledTimes(5);
+      // …and it did NOT occupy a slot: a fresh tracked read for a new path is
+      // still refused because the four read slots remain full.
+      await icloud.readIfMaterialized(`${UBIQUITY_DIR}/read-blocked.md`).catch(() => {});
+      expect(spawnMock).toHaveBeenCalledTimes(5);
+    });
+
+    it('fires onFailure on a non-zero exit, a signal-kill, and an error — never on exit 0', () => {
+      const runOne = (emit) => {
+        const child = makeFakeChild();
+        spawnMock.mockReturnValueOnce(child);
+        const onFailure = vi.fn();
+        icloud.requestMaterialization(ICLOUD_PATH, { retryAfterExit: false, onFailure });
+        emit(child);
+        return onFailure;
+      };
+      expect(runOne((c) => c.emit('exit', 0, null))).not.toHaveBeenCalled();
+      expect(runOne((c) => c.emit('exit', 1, null))).toHaveBeenCalledTimes(1);
+      expect(runOne((c) => c.emit('exit', null, 'SIGKILL'))).toHaveBeenCalledTimes(1);
+      expect(runOne((c) => c.emit('error', Object.assign(new Error('boom'), { code: 'EAGAIN' })))).toHaveBeenCalledTimes(1);
+    });
+
+    it('fires onFailure at most once even if error is followed by exit', () => {
+      const child = makeFakeChild();
+      spawnMock.mockReturnValue(child);
+      const onFailure = vi.fn();
+      icloud.requestMaterialization(ICLOUD_PATH, { retryAfterExit: false, onFailure });
+      child.emit('error', Object.assign(new Error('boom'), { code: 'EAGAIN' }));
+      child.emit('exit', null, 'SIGKILL');
+      expect(onFailure).toHaveBeenCalledTimes(1);
+    });
+
+    it('fires onFailure when the deadline kills a hung child that never exits', async () => {
+      const originalDeadline = icloud.DOWNLOAD_DEADLINE_MS;
+      icloud._setDownloadDeadlineForTest(10);
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+      try {
+        const child = makeFakeChild();
+        child.pid = 5150;
+        spawnMock.mockReturnValue(child);
+        const onFailure = vi.fn();
+        icloud.requestMaterialization(ICLOUD_PATH, { retryAfterExit: false, onFailure });
+        // The child never emits 'exit'; only the deadline can clear the sticky path.
+        await new Promise((r) => setTimeout(r, 30));
+        expect(killSpy).toHaveBeenCalled();
+        expect(onFailure).toHaveBeenCalledTimes(1);
+      } finally {
+        killSpy.mockRestore();
+        icloud._setDownloadDeadlineForTest(originalDeadline);
+      }
+    });
+  });
 });
 
 describe('background-download safety caps', () => {

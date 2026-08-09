@@ -55,6 +55,11 @@ vi.mock('../lib/objects.js', () => ({
 }));
 
 const store = await import('./mortalLoomStore.js');
+// Same module instance mortalLoomStore.js imports (ESM singleton). The
+// once-per-process "brctl missing" flag and the in-flight/dedupe state live
+// here now, so reset them in the file-level beforeEach below for clean isolation
+// across every describe block (not just the pinning/evicted ones).
+const icloud = await import('../lib/icloudFile.js');
 // Tests must not pay the 50ms+100ms retry backoff on every transient-error
 // case. Zero delays keep the suite fast while still exercising the retry path.
 // Set up + restore the original through beforeAll/afterAll so the mutation
@@ -71,6 +76,7 @@ beforeEach(() => {
   statMock.mockReset();
   writeFileMock.mockReset();
   spawnMock.mockReset();
+  icloud._resetICloudFileStateForTest(); // clears the shared brctl-missing flag + in-flight/dedupe state
   settings = { mortalloom: { enabled: true, path: '/icloud/MortalLoom.json' } };
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -409,7 +415,7 @@ describe('updateStore — iCloud on-demand materialize (darwin)', () => {
     Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
     originalTimeout = store.MATERIALIZE_TIMEOUT_MS;
     store._setMaterializeTimeoutForTest(50);
-    store._resetMortalLoomInitForTest(); // clears brctlMissingWarned dedupe
+    store._resetMortalLoomInitForTest();
     writeFileMock.mockResolvedValue(undefined);
   });
   afterEach(() => {
@@ -665,6 +671,15 @@ describe('readStore — EAGAIN retry', () => {
 });
 
 describe('initMortalLoomStore — brctl pinning', () => {
+  // The pin now delegates to icloudFile.requestMaterialization, which only spawns
+  // `brctl download` for genuinely healable iCloud paths (a path inside
+  // `/Library/Mobile Documents/`). Use REAL ubiquity paths here — the ordinary
+  // `/icloud/...` fixture the rest of this suite uses is deliberately NOT a
+  // ubiquity path, so it would be (correctly) declined and never spawn. The
+  // literal `/Library/Mobile Documents/` substring makes isHealablePath resolve
+  // without a `realpath` (fs is mocked here), so these paths spawn as expected.
+  const ubiq = (name) => `/Users/example/Library/Mobile Documents/iCloud~net~example~App/Documents/${name}`;
+
   const makeFakeChild = () => {
     const handlers = {};
     const child = {
@@ -683,6 +698,9 @@ describe('initMortalLoomStore — brctl pinning', () => {
   beforeEach(() => {
     settingsEvents.removeAllListeners('settings:updated');
     store._resetMortalLoomInitForTest();
+    // The shared icloudFile state (including the once-per-process "brctl missing"
+    // flag folded from the store's old local flag) is reset in the file-level
+    // beforeEach above, so every block — this one included — starts clean.
     originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
   });
   afterEach(() => {
@@ -697,7 +715,7 @@ describe('initMortalLoomStore — brctl pinning', () => {
 
     const child = makeFakeChild();
     spawnMock.mockReturnValue(child);
-    settings = { mortalloom: { enabled: true, path: '/icloud/MortalLoom.json' } };
+    settings = { mortalloom: { enabled: true, path: ubiq('MortalLoom.json') } };
 
     await store.initMortalLoomStore();
 
@@ -706,7 +724,7 @@ describe('initMortalLoomStore — brctl pinning', () => {
     // pattern. Without both, a slow brctl download blocks process exit.
     expect(spawnMock).toHaveBeenCalledWith(
       'brctl',
-      ['download', '/icloud/MortalLoom.json'],
+      ['download', ubiq('MortalLoom.json')],
       expect.objectContaining({ detached: true, stdio: 'ignore' })
     );
     expect(child.unref).toHaveBeenCalledTimes(1);
@@ -716,17 +734,17 @@ describe('initMortalLoomStore — brctl pinning', () => {
     Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
 
     spawnMock.mockReturnValue(makeFakeChild());
-    settings = { mortalloom: { enabled: true, path: '/icloud/MortalLoom.json' } };
+    settings = { mortalloom: { enabled: true, path: ubiq('MortalLoom.json') } };
     await store.initMortalLoomStore();
     const initialCalls = spawnMock.mock.calls.length;
 
     // Same path: deduped, no new spawn.
-    settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: '/icloud/MortalLoom.json' } });
+    settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: ubiq('MortalLoom.json') } });
     expect(spawnMock.mock.calls.length).toBe(initialCalls);
 
     // New path: re-pins.
-    settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: '/icloud/other/MortalLoom.json' } });
-    expect(spawnMock).toHaveBeenLastCalledWith('brctl', ['download', '/icloud/other/MortalLoom.json'], expect.any(Object));
+    settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: ubiq('other/MortalLoom.json') } });
+    expect(spawnMock).toHaveBeenLastCalledWith('brctl', ['download', ubiq('other/MortalLoom.json')], expect.any(Object));
   });
 
   it('no-ops on non-darwin platforms (init pin AND settings-change re-pin both guarded)', async () => {
@@ -737,11 +755,11 @@ describe('initMortalLoomStore — brctl pinning', () => {
     // thing under test on both the immediate-pin and the event-driven path.
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
 
-    settings = { mortalloom: { enabled: true, path: '/icloud/MortalLoom.json' } };
+    settings = { mortalloom: { enabled: true, path: ubiq('MortalLoom.json') } };
     await store.initMortalLoomStore();
     expect(spawnMock).not.toHaveBeenCalled();
 
-    settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: '/icloud/MortalLoom.json' } });
+    settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: ubiq('MortalLoom.json') } });
     expect(spawnMock).not.toHaveBeenCalled();
   });
 
@@ -762,8 +780,8 @@ describe('initMortalLoomStore — brctl pinning', () => {
 
     // Listener was attached before the failing await, so a later event still
     // fires pinAgainstEviction.
-    settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: '/icloud/MortalLoom.json' } });
-    expect(spawnMock).toHaveBeenCalledWith('brctl', ['download', '/icloud/MortalLoom.json'], expect.any(Object));
+    settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: ubiq('MortalLoom.json') } });
+    expect(spawnMock).toHaveBeenCalledWith('brctl', ['download', ubiq('MortalLoom.json')], expect.any(Object));
   });
 
   it('reads settings exactly once during init (no half-fail window)', async () => {
@@ -779,12 +797,12 @@ describe('initMortalLoomStore — brctl pinning', () => {
     // Other tests in this file accumulate calls on the shared getSettings
     // mock — clear before asserting count to isolate this test's call pattern.
     getSettings.mockClear();
-    settings = { mortalloom: { enabled: true, path: '/icloud/MortalLoom.json' } };
+    settings = { mortalloom: { enabled: true, path: ubiq('MortalLoom.json') } };
 
     await store.initMortalLoomStore();
 
     expect(getSettings).toHaveBeenCalledTimes(1);
-    expect(spawnMock).toHaveBeenCalledWith('brctl', ['download', '/icloud/MortalLoom.json'], expect.any(Object));
+    expect(spawnMock).toHaveBeenCalledWith('brctl', ['download', ubiq('MortalLoom.json')], expect.any(Object));
   });
 
   it('retries the initial pin on a subsequent call when the first attempt threw', async () => {
@@ -802,15 +820,15 @@ describe('initMortalLoomStore — brctl pinning', () => {
     expect(spawnMock).not.toHaveBeenCalled();
 
     // Second call: getSettings recovers, initial pin proceeds.
-    settings = { mortalloom: { enabled: true, path: '/icloud/MortalLoom.json' } };
+    settings = { mortalloom: { enabled: true, path: ubiq('MortalLoom.json') } };
     await store.initMortalLoomStore();
     expect(spawnMock).toHaveBeenCalledTimes(1);
-    expect(spawnMock).toHaveBeenCalledWith('brctl', ['download', '/icloud/MortalLoom.json'], expect.any(Object));
+    expect(spawnMock).toHaveBeenCalledWith('brctl', ['download', ubiq('MortalLoom.json')], expect.any(Object));
 
     // Listener was attached on the first call, not the second — emitting once
     // must fire pinAgainstEviction once, not twice.
     spawnMock.mockClear();
-    settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: '/icloud/other/MortalLoom.json' } });
+    settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: ubiq('other/MortalLoom.json') } });
     expect(spawnMock).toHaveBeenCalledTimes(1);
   });
 
@@ -822,18 +840,18 @@ describe('initMortalLoomStore — brctl pinning', () => {
     Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
 
     spawnMock.mockReturnValue(makeFakeChild());
-    settings = { mortalloom: { enabled: true, path: '/icloud/MortalLoom.json' } };
+    settings = { mortalloom: { enabled: true, path: ubiq('MortalLoom.json') } };
     await store.initMortalLoomStore();
     expect(spawnMock).toHaveBeenCalledTimes(1);
 
     // User disables sync — no spawn, but the dedup cache must clear.
-    settingsEvents.emit('settings:updated', { mortalloom: { enabled: false, path: '/icloud/MortalLoom.json' } });
+    settingsEvents.emit('settings:updated', { mortalloom: { enabled: false, path: ubiq('MortalLoom.json') } });
     expect(spawnMock).toHaveBeenCalledTimes(1);
 
     // Re-enable with the SAME path — should re-spawn brctl, not be deduped.
-    settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: '/icloud/MortalLoom.json' } });
+    settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: ubiq('MortalLoom.json') } });
     expect(spawnMock).toHaveBeenCalledTimes(2);
-    expect(spawnMock).toHaveBeenLastCalledWith('brctl', ['download', '/icloud/MortalLoom.json'], expect.any(Object));
+    expect(spawnMock).toHaveBeenLastCalledWith('brctl', ['download', ubiq('MortalLoom.json')], expect.any(Object));
   });
 
   it('clears lastPinnedPath when brctl is signal-killed so a later event can retry', async () => {
@@ -841,7 +859,7 @@ describe('initMortalLoomStore — brctl pinning', () => {
 
     const child = makeFakeChild();
     spawnMock.mockReturnValue(child);
-    settings = { mortalloom: { enabled: true, path: '/icloud/MortalLoom.json' } };
+    settings = { mortalloom: { enabled: true, path: ubiq('MortalLoom.json') } };
     await store.initMortalLoomStore();
     expect(spawnMock).toHaveBeenCalledTimes(1);
 
@@ -850,7 +868,7 @@ describe('initMortalLoomStore — brctl pinning', () => {
     // would stay poisoned and a subsequent settings:updated for the same path
     // would no-op forever.
     child._emit('exit', null, 'SIGTERM');
-    settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: '/icloud/MortalLoom.json' } });
+    settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: ubiq('MortalLoom.json') } });
     expect(spawnMock).toHaveBeenCalledTimes(2);
   });
 
@@ -865,7 +883,7 @@ describe('initMortalLoomStore — brctl pinning', () => {
     const child1 = makeFakeChild();
     const child2 = makeFakeChild();
     spawnMock.mockReturnValueOnce(child1).mockReturnValueOnce(child2);
-    settings = { mortalloom: { enabled: true, path: '/icloud/MortalLoom.json' } };
+    settings = { mortalloom: { enabled: true, path: ubiq('MortalLoom.json') } };
     await store.initMortalLoomStore();
 
     // First brctl process fires error with ENOENT.
@@ -876,7 +894,7 @@ describe('initMortalLoomStore — brctl pinning', () => {
     );
 
     // Re-emit settings:updated with a DIFFERENT path so dedupe doesn't gate.
-    settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: '/icloud/other.json' } });
+    settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: ubiq('other.json') } });
     child2._emit('error', Object.assign(new Error('not found'), { code: 'ENOENT' }));
     // No second warning — the missing-binary dedupe held.
     expect(console.warn).toHaveBeenCalledTimes(1);
@@ -895,21 +913,49 @@ describe('initMortalLoomStore — brctl pinning', () => {
     const child1 = makeFakeChild();
     const child2 = makeFakeChild();
     spawnMock.mockReturnValueOnce(child1).mockReturnValueOnce(child2);
-    settings = { mortalloom: { enabled: true, path: '/icloud/A.json' } };
+    settings = { mortalloom: { enabled: true, path: ubiq('A.json') } };
     await store.initMortalLoomStore();
     expect(spawnMock).toHaveBeenCalledTimes(1);
 
     // Newer pin for path B kicks off (e.g. user changed path before A's
     // child finished). Cache now points to B, child2 is in flight.
-    settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: '/icloud/B.json' } });
+    settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: ubiq('B.json') } });
     expect(spawnMock).toHaveBeenCalledTimes(2);
 
     // Stale child1 finally errors. Must NOT clear the B cache.
     child1._emit('error', Object.assign(new Error('boom'), { code: 'EAGAIN' }));
 
     // Re-emit settings:updated for B — dedupe should still hold (no spawn).
-    settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: '/icloud/B.json' } });
+    settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: ubiq('B.json') } });
     expect(spawnMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('a superseded pin for the SAME path does not clear the current pin (A → B → A)', async () => {
+    // Path alone can't tell two children for the same path apart: with an
+    // A → B → A settings churn, the FIRST A child is still in flight when the
+    // second A pin starts. A path-only guard would let the first A child's late
+    // failure clear the second A pin's sticky state, so the next settings:updated
+    // for A would wrongly spawn a duplicate. The per-attempt generation guard
+    // confines each failure's cache-clear to the pin that is still current.
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+
+    const childA1 = makeFakeChild();
+    const childB = makeFakeChild();
+    const childA2 = makeFakeChild();
+    spawnMock.mockReturnValueOnce(childA1).mockReturnValueOnce(childB).mockReturnValueOnce(childA2);
+    settings = { mortalloom: { enabled: true, path: ubiq('A.json') } };
+    await store.initMortalLoomStore();                                                                 // childA1 (gen 1)
+    settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: ubiq('B.json') } });  // childB  (gen 2)
+    settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: ubiq('A.json') } });  // childA2 (gen 3), sticky = A
+    expect(spawnMock).toHaveBeenCalledTimes(3);
+
+    // The FIRST A child now fails — it is superseded, so it must NOT clear the
+    // sticky path that belongs to the live second A pin.
+    childA1._emit('exit', 1, null);
+
+    // Re-emit A: still deduped by childA2's intact sticky, so no fourth spawn.
+    settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: ubiq('A.json') } });
+    expect(spawnMock).toHaveBeenCalledTimes(3);
   });
 
   it('tolerates non-string path in settings without throwing in the listener', async () => {
@@ -920,7 +966,7 @@ describe('initMortalLoomStore — brctl pinning', () => {
     Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
 
     spawnMock.mockReturnValue(makeFakeChild());
-    settings = { mortalloom: { enabled: true, path: '/icloud/MortalLoom.json' } };
+    settings = { mortalloom: { enabled: true, path: ubiq('MortalLoom.json') } };
     await store.initMortalLoomStore();
     spawnMock.mockClear();
 
@@ -938,6 +984,40 @@ describe('initMortalLoomStore — brctl pinning', () => {
     expect(() => {
       settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: null } });
     }).not.toThrow();
+  });
+
+  it('does not spawn brctl for a non-iCloud (non-healable) configured path', async () => {
+    // The shared helper only spawns `brctl download` for genuinely healable iCloud
+    // paths. A configured path outside `/Library/Mobile Documents/` (here the
+    // suite's ordinary `/icloud/...` fixture, which isHealablePath declines) must
+    // not be handed a doomed download.
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+
+    spawnMock.mockReturnValue(makeFakeChild());
+    settings = { mortalloom: { enabled: true, path: '/icloud/MortalLoom.json' } };
+    await store.initMortalLoomStore();
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('clears the sticky path when the helper declines to spawn, so the same path can retry', async () => {
+    // Regression for the `if (!spawned && lastPinnedPath === path) lastPinnedPath = null`
+    // guard: when requestMaterialization declines (here a synchronous spawn failure —
+    // EMFILE — but equally a path that is non-healable at boot and healable once its
+    // ubiquity container syncs in), the pin must NOT leave its sticky path set, or the
+    // SAME path would be deduped as "already pinned" forever and never retry.
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+
+    // First spawn throws → the helper catches it and returns false (declined).
+    spawnMock.mockImplementationOnce(() => { throw Object.assign(new Error('EMFILE'), { code: 'EMFILE' }); });
+    settings = { mortalloom: { enabled: true, path: ubiq('MortalLoom.json') } };
+    await store.initMortalLoomStore();
+    expect(spawnMock).toHaveBeenCalledTimes(1); // attempted, threw — nothing in flight
+
+    // A later settings:updated for the SAME path must re-attempt (not be deduped).
+    spawnMock.mockReturnValue(makeFakeChild());
+    settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: ubiq('MortalLoom.json') } });
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    expect(spawnMock).toHaveBeenLastCalledWith('brctl', ['download', ubiq('MortalLoom.json')], expect.any(Object));
   });
 });
 

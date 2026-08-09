@@ -158,8 +158,15 @@ export async function isSuspectedDataless(path) {
 // materialization is a silent no-op, without spamming on every read.
 let brctlMissingWarned = false;
 
-// Claim the one-shot "brctl is missing" warning. True on the first call only.
-function markBrctlMissing() {
+/**
+ * Claim the one-shot "brctl is missing" warning. Returns true on the first call
+ * only, false thereafter. Exported so every brctl caller in the process — the
+ * fire-and-forget `requestMaterialization` read/pin path AND awaited write-path
+ * variants like `mortalLoomStore.materializeNow` — shares ONE flag and the
+ * "brctl not found on PATH" warning fires at most once per process across all of
+ * them (rather than once per caller).
+ */
+export function claimBrctlMissingWarning() {
   if (brctlMissingWarned) return false;
   brctlMissingWarned = true;
   return true;
@@ -192,16 +199,39 @@ export function _setDownloadDeadlineForTest(ms) { DOWNLOAD_DEADLINE_MS = ms; }
  * Fire-and-forget `brctl download <path>` so an evicted file heals in the
  * background. Detached + unref'd so a slow download can't keep the process
  * alive at shutdown. Never throws and never blocks the caller — read paths use
- * this and then refuse the read for *this* cycle.
+ * this and then refuse the read for *this* cycle. Returns `true` when a child
+ * was spawned, `false` when the request was declined (non-darwin, non-iCloud
+ * path, deduped, or capped).
+ *
+ * @param {string} path
+ * @param {object} [options]
+ * @param {string} [options.label='iCloud file'] - Label for log lines.
+ * @param {boolean} [options.retryAfterExit=true] - Dedupe policy. The read paths
+ *   pass `true`: the request is tracked in the shared in-flight map (deduped
+ *   while a download runs, cleared on exit) so a later read can retry, and it
+ *   counts against the concurrency cap. The boot/settings pin passes `false`: it
+ *   owns a single-sticky-path dedupe at its call site (re-pin only when the
+ *   configured path changes), so it is NOT tracked here — that keeps a churn of
+ *   configured-path changes from parking stale pin entries in the shared set and
+ *   starving the read-heal slots.
+ * @param {() => void} [options.onFailure] - Called when the child errors, exits
+ *   non-zero, or is killed (never on a clean exit-0). Lets an untracked caller
+ *   (the pin) clear its own sticky dedupe so a failed pin can be retried.
  */
-export function requestMaterialization(path, label = 'iCloud file') {
+export function requestMaterialization(path, options = {}) {
+  const { label = 'iCloud file', retryAfterExit = true, onFailure } = options;
   if (process.platform !== 'darwin' || !path) return false;
   // `brctl` speaks iCloud only. A third-party File Provider file (Dropbox /
   // Google Drive / OneDrive under ~/Library/CloudStorage) is still screened and
   // refused above — we just can't heal it, so don't spawn a doomed child.
   if (!isHealablePath(path)) return false;
-  if (pendingDownloads.has(path)) return false;
-  if (pendingDownloads.size >= MAX_PENDING_DOWNLOADS) return false;
+  // Only the tracked (read) path uses the shared in-flight dedupe + cap; the pin
+  // deduplicates at its own call site, so it neither reserves a slot nor is
+  // blocked by the cap (its single configured path can't flood).
+  if (retryAfterExit) {
+    if (pendingDownloads.has(path)) return false;
+    if (pendingDownloads.size >= MAX_PENDING_DOWNLOADS) return false;
+  }
 
   // try/catch at a child-process boundary (permitted by the repo's no-try/catch
   // rule): `spawn` can throw synchronously on resource exhaustion (EMFILE), and
@@ -220,10 +250,32 @@ export function requestMaterialization(path, label = 'iCloud file') {
   }
   // `spawn` is synchronous, so no other read can interleave between the size
   // check above and this reservation.
-  pendingDownloads.set(path, child);
-  // Release only the entry THIS child owns (see the map's comment above).
+  if (retryAfterExit) pendingDownloads.set(path, child);
+  // Release only the entry THIS child owns (see the map's comment above). A no-op
+  // for an untracked (pin) request, which was never added to the set.
   const release = () => {
-    if (pendingDownloads.get(path) === child) pendingDownloads.delete(path);
+    if (retryAfterExit && pendingDownloads.get(path) === child) pendingDownloads.delete(path);
+  };
+  // Notify the caller's failure hook AT MOST once per child. `'error'` may be
+  // followed by `'exit'` (Node makes no guarantee either way), and the deadline
+  // handler below fires it too — a child that is SIGKILL'd but never reaped emits
+  // no `'exit'`, so without invoking it from the deadline an untracked (pin)
+  // caller's sticky dedupe would stay set forever and never re-pin. The once-guard
+  // means a stale child's late `'exit'` can't fire the hook a second time and
+  // clear a live replacement child's sticky path (both share the same `path`, so
+  // the hook's own path guard can't tell them apart).
+  let failureNotified = false;
+  const notifyFailure = () => {
+    if (failureNotified) return;
+    failureNotified = true;
+    // try/catch at a child-process/timer boundary (permitted by the repo's
+    // no-try/catch rule): this runs from the unref'd deadline timer and the
+    // 'error'/'exit' handlers — all *outside* the request lifecycle — and
+    // `onFailure` is a caller-supplied hook on a public API. An uncaught throw
+    // here would crash the process with no `next(err)` to bubble to.
+    try { onFailure?.(); } catch (err) {
+      console.error(`❌ brctl onFailure hook threw for ${label}: ${err.message}`);
+    }
   };
   // Kill the child if it outlives its deadline, so a wedged `brctl` frees its slot
   // instead of holding it forever. `unref` so the timer itself never keeps the
@@ -231,11 +283,16 @@ export function requestMaterialization(path, label = 'iCloud file') {
   const deadline = setTimeout(() => {
     console.warn(`⚠️ brctl download exceeded ${DOWNLOAD_DEADLINE_MS}ms for ${label}; killing: ${path}`);
     // The child is detached (its own process group), so a bare kill would leave
-    // any grandchildren behind — signal the group.
-    try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
-    // A killed-but-unreaped child would strand the slot; drop it now so healing
-    // can resume even if 'exit' never fires.
+    // any grandchildren behind — signal the group. `child.kill?.` because this
+    // runs in an unref'd timer *outside* any request lifecycle: an uncaught throw
+    // here would crash the process with no `next(err)` to catch it, and `child`
+    // may not be a real ChildProcess with a `kill` method (e.g. a test double).
+    try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill?.('SIGKILL'); }
+    // A killed-but-unreaped child would strand the slot AND (for an untracked pin)
+    // leave the sticky dedupe set forever; drop both now so healing can resume even
+    // if 'exit' never fires.
     release();
+    notifyFailure();
   }, DOWNLOAD_DEADLINE_MS);
   deadline.unref?.();
   const settle = () => { clearTimeout(deadline); release(); };
@@ -244,8 +301,9 @@ export function requestMaterialization(path, label = 'iCloud file') {
   // dedupe entry for a different path.
   child.on('error', (err) => {
     settle();
+    notifyFailure();
     if (err.code === 'ENOENT') {
-      if (markBrctlMissing()) {
+      if (claimBrctlMissingWarning()) {
         console.warn(`⚠️ brctl not found on PATH; ${label} materialization disabled`);
       }
       return;
@@ -256,7 +314,10 @@ export function requestMaterialization(path, label = 'iCloud file') {
     settle();
     if (code === 0) {
       console.log(`📥 ${label} materialized from iCloud: ${path}`);
-    } else if (code !== null) {
+      return;
+    }
+    notifyFailure();
+    if (code !== null) {
       console.warn(`⚠️ brctl download exited ${code} for ${label}: ${path}`);
     } else {
       console.warn(`⚠️ brctl download killed by ${signal} for ${label}: ${path}`);
@@ -297,7 +358,7 @@ export async function readIfMaterialized(path, options = {}) {
 async function guardedRead(path, options) {
   const { encoding = 'utf-8', label = 'iCloud file' } = options;
   if (await isSuspectedDataless(path)) {
-    requestMaterialization(path, label);
+    requestMaterialization(path, { label });
     const err = new Error(`${label} is evicted from local storage (iCloud); refusing to block on read`);
     err.code = ICLOUD_NOT_MATERIALIZED;
     throw err;
