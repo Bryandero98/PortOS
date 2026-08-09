@@ -20,6 +20,7 @@ import {
   patchSettingsSlice,
 } from '../../services/api';
 import { providerDisplayName, providerModelLabel, assignmentModelOptions, resolveSeriesRunLlm, resolveCliEffort } from '../../utils/providers';
+import Pill from '../ui/Pill';
 import ProviderModelSelector from '../ProviderModelSelector';
 import SeriesAutopilotSchedule from './SeriesAutopilotSchedule';
 
@@ -265,6 +266,10 @@ function frameLabel(f) {
     case 'step:complete': return `${stepLabel(f.kind)} done`;
     case 'step:skip': return `Skipped ${stepLabel(f.kind)}${f.reason ? ` — ${f.reason}` : ''}`;
     case 'verify:round': return `${f.scope} check — ${f.blocking} blocking of ${f.findings} finding(s)${f.errored > 0 ? ` · ⚠️ ${f.errored} errored` : ''}`;
+    // An auto-resolve round that left the draft worse was undone — say so live,
+    // or the round's edits appear to still be in place while the run pauses.
+    case 'resolve:rollback': return `${f.scope} auto-resolve went from ${f.before} to ${f.after} blocking finding(s) — `
+      + `${f.reverted ? 'reverted that round' : 'could not revert that round'}`;
     // #2176 — foundation-gate telemetry.
     case 'foundation:round': return `Foundation round ${f.round} — weighted ${f.weightedScore}/${f.threshold}${f.weakest ? ` · weakest: ${f.weakest}` : ''}`;
     case 'foundation:fix': return `Foundation fix — ${f.dimension}${f.applied ? ' applied' : ` skipped${f.reason ? ` (${f.reason})` : ''}`}`;
@@ -316,6 +321,24 @@ function frameLabel(f) {
 }
 
 const RUN_ENDED = new Set(['complete', 'canceled', 'error', 'paused']);
+
+// Pause kinds worth calling out beside the status line — the ones where "Paused"
+// alone doesn't tell the user what state the draft is in. A kind with no entry
+// (maxRounds, childFailed) is fully explained by the reason text below it.
+const PAUSE_BADGES = {
+  divergence: {
+    label: 'not converging',
+    title: 'Auto-resolve stopped reducing blocking findings — needs a human edit, not more rounds',
+  },
+  regression: {
+    label: 'round reverted',
+    title: 'An auto-resolve round left more blocking findings than it was given — its edits were reverted and the draft is back to its pre-round state',
+  },
+  checkFindings: {
+    label: 'high findings',
+    title: 'Editorial checks surfaced too many High findings — address them (or raise the threshold) and resume',
+  },
+};
 
 // #1572 — shared caution tail for a `done` run that filed blocking script-craft
 // gaps, so the completion toast and the persisted-status banner can't drift.
@@ -977,21 +1000,10 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
                   : doneWithCheckErrors ? `Completed — ${editorialCheckCaution(ap.editorialCheckErrors)}`
                     : ap.status === 'done' ? 'Last run completed — draft is production-ready' : 'Last run errored'}
             </span>
-            {ap.status === 'paused' && ap.pauseKind === 'divergence' ? (
-              <span
-                className="px-1.5 py-0.5 rounded text-[10px] bg-port-warning/15 text-port-warning border border-port-warning/30"
-                title="Auto-resolve stopped reducing blocking findings — needs a human edit, not more rounds"
-              >
-                not converging
-              </span>
-            ) : null}
-            {ap.status === 'paused' && ap.pauseKind === 'checkFindings' ? (
-              <span
-                className="px-1.5 py-0.5 rounded text-[10px] bg-port-warning/15 text-port-warning border border-port-warning/30"
-                title="Editorial checks surfaced too many High findings — address them (or raise the threshold) and resume"
-              >
-                high findings
-              </span>
+            {ap.status === 'paused' && PAUSE_BADGES[ap.pauseKind] ? (
+              <Pill tone="warning" size="xs" title={PAUSE_BADGES[ap.pauseKind].title}>
+                {PAUSE_BADGES[ap.pauseKind].label}
+              </Pill>
             ) : null}
           </div>
           {ap.lastError && ap.status !== 'done' ? <p className="text-[11px] text-gray-400 mt-1">{ap.lastError}</p> : null}

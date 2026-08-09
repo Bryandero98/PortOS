@@ -127,7 +127,10 @@ const AUTOPILOT_FINDING_SEVERITIES = ['high', 'medium', 'low'];
 // reason text. Any other pause (budget, error, a capability gap) leaves this null.
 // Editorial checks (#1613): `checkFindings` (the editorial-checks pass surfaced ≥
 // the armed high-finding threshold, so the run paused for human review).
-export const AUTOPILOT_PAUSE_KINDS = Object.freeze(['maxRounds', 'divergence', 'childFailed', 'checkFindings']);
+// Resolve rollback: `regression` (an auto-resolve round came back with MORE
+// blocking findings than it was handed while leaving those standing, so its
+// edits were reverted and the run paused on the pre-round residual).
+export const AUTOPILOT_PAUSE_KINDS = Object.freeze(['maxRounds', 'divergence', 'regression', 'childFailed', 'checkFindings']);
 
 export const sanitizeAutopilot = (raw) => {
   if (!raw || typeof raw !== 'object') return null;

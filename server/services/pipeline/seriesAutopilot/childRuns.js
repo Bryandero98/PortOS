@@ -8,7 +8,10 @@ import { sleep } from '../../../lib/fileUtils.js';
 import { recordDomainUsage } from '../../domainUsage.js';
 import { getSeries } from '../series.js';
 import { listIssues, getIssue, isStageReady } from '../issues.js';
-import { verifyArc, verifyVolume, resolveVerifyIssues, analyzeBeatContinuity, resolveBeatContinuity } from '../arcPlanner.js';
+import {
+  verifyArc, verifyVolume, resolveVerifyIssues, analyzeBeatContinuity, resolveBeatContinuity,
+  snapshotArcState, restoreArcState,
+} from '../arcPlanner.js';
 import {
   judgeFoundation, applyFoundationFix, foundationGateStatus, foundationFixTarget,
   residualFindings, DEFAULT_FOUNDATION_THRESHOLD,
@@ -19,6 +22,7 @@ import { MAX_ARC_VERIFY_ROUNDS, MAX_BEAT_CONTINUITY_ROUNDS, MAX_FOUNDATION_ROUND
 import {
   CHILD_POLL_MS, DIVERGENCE_PATIENCE, trackConvergence, convergencePauseReason,
   divergencePauseReason, foundationPauseReason, foundationDivergenceReason,
+  isResolveRegression, regressionPauseReason,
 } from './convergence.js';
 import { broadcast, budgetPause, providerOverrideOpts, providerIdOpts, seasonPreserveOpts } from './session.js';
 import { requiredScriptStages, textReady } from './stepResolver.js';
@@ -53,6 +57,10 @@ export async function runArcVerify(seriesId, record) {
   }
   let convergence = { best: null, sinceBest: 0 };
   let changed = false;
+  // The findings the previous round's auto-resolve was handed, plus the state of
+  // the arc just before it ran — the two halves the regression guard below needs
+  // to decide whether that round earned its edits.
+  let lastResolve = null;
   for (let round = 1; round <= maxRounds; round += 1) {
     if (record.cancelRequested) return { canceled: true };
     const beforeVerify = await budgetPause();
@@ -98,6 +106,29 @@ export async function runArcVerify(seriesId, record) {
       }
       return {};
     }
+    // Regression guard: the previous round's resolve came back with MORE
+    // blocking findings than it was handed and still hadn't closed them — its
+    // rewrite damaged the arc. Put the pre-resolve state back and pause on the
+    // residual the user actually had, rather than committing the worse arc and
+    // pausing on that (the shape observed on the 2026-08-09 divergence pause,
+    // where 1 blocking finding became 3 and then 5). Checked BEFORE the
+    // maxRounds/divergence exits so the rollback happens whichever pause the
+    // round would otherwise land on.
+    if (lastResolve && isResolveRegression(lastResolve.blocking, blocking)) {
+      const rollback = await restoreArcState(seriesId, lastResolve.snapshot);
+      broadcast(seriesId, {
+        type: 'resolve:rollback', scope: 'arc', round,
+        before: lastResolve.blocking.length, after: blocking.length,
+        reverted: rollback.restored,
+        episodesReverted: rollback.episodesRestored,
+      });
+      return {
+        pause: true,
+        pauseKind: 'regression',
+        reason: regressionPauseReason('arc', lastResolve.blocking.length, blocking.length),
+        residual: lastResolve.blocking,
+      };
+    }
     if (round === maxRounds) {
       return { pause: true, pauseKind: 'maxRounds', reason: convergencePauseReason('arc', maxRounds, blocking.length), residual: blocking };
     }
@@ -112,12 +143,16 @@ export async function runArcVerify(seriesId, record) {
     // step can't overspend the daily cap mid-loop.
     const beforeResolve = await budgetPause();
     if (beforeResolve) return beforeResolve;
+    // Snapshot before the rewrite lands (two record reads, no LLM spend) so the
+    // regression guard at the top of the next round can undo it.
+    const snapshot = await snapshotArcState(seriesId);
     const resolved = await resolveVerifyIssues(seriesId, {
       findings: blocking,
       ...providerOverrideOpts(record),
       ...seasonPreserveOpts(record),
     });
     if (resolved?.applied !== false) changed = true;
+    lastResolve = { blocking, snapshot };
     await recordDomainUsage('cos', { actions: 1 });
     broadcast(seriesId, {
       type: 'resolve:round', scope: 'arc', round,

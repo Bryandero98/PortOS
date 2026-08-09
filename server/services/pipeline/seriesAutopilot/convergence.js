@@ -62,6 +62,66 @@ export function divergencePauseReason(gate, blockingCount, rounds) {
     + `${rounds} consecutive ${plural} of auto-resolve. Paused for review. ${fix}, then resume.`;
 }
 
+// ---------------------------------------------------------------------------
+// Auto-resolve REGRESSION guard — one altitude tighter than the divergence
+// guard above. Divergence asks "is the loop still making progress?" over several
+// rounds and pauses on the state it finds; this asks "did THIS round's edits
+// make the draft worse?" so the caller can put the pre-resolve state back before
+// pausing. Without it, a resolve pass that rewrites the arc into MORE blocking
+// findings than it was handed is committed permanently, and the run pauses on
+// damage it caused itself.
+// ---------------------------------------------------------------------------
+
+// Normalizer behind `findingFingerprint`, hoisted so the regexes aren't rebuilt
+// per finding per round.
+const normFindingText = (v) => String(v ?? '')
+  .toLowerCase()
+  .replace(/[^a-z0-9 ]+/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim();
+
+// Deliberately COARSE identity for a verify finding: the verifier re-words its
+// prose between calls, so a raw-string match would read every round's findings
+// as brand new. Severity + location carry the stable identity; a short prefix of
+// the normalized problem separates two findings filed at the same location.
+// Coarse is the safe direction here — collapsing two similar findings into one
+// print only makes the regression check MORE forgiving (it is a "did anything I
+// targeted survive?" set test, not a diff).
+export function findingFingerprint(finding) {
+  return `${normFindingText(finding?.severity)}|${normFindingText(finding?.location)}`
+    + `|${normFindingText(finding?.problem).slice(0, 60)}`;
+}
+
+/**
+ * True when the round that produced `after` REGRESSED: it left more blocking
+ * findings than the `before` set it was asked to close, AND at least one of
+ * those targeted findings is still standing. Pure.
+ *
+ * That second half is what keeps this from rejecting good work: a round that
+ * closed everything it targeted and merely exposed findings that were latent
+ * underneath is progress, even when the raw count went up, so it is allowed to
+ * stand (the divergence guard still catches it if the loop stalls from there).
+ * A round that closed nothing and added more is damage.
+ */
+export function isResolveRegression(before, after) {
+  const targeted = Array.isArray(before) ? before : [];
+  const current = Array.isArray(after) ? after : [];
+  if (current.length <= targeted.length) return false;
+  const currentPrints = new Set(current.map(findingFingerprint));
+  return targeted.some((f) => currentPrints.has(findingFingerprint(f)));
+}
+
+// Pause reason for a gate whose auto-resolve round was reverted — distinct from
+// both "ran out of rounds" and "stopped converging": the state the user is being
+// handed is the one from BEFORE the round, and saying so is the difference
+// between a trustworthy pause and an unexplained rewind.
+export function regressionPauseReason(gate, beforeCount, afterCount) {
+  const { label, fix } = PAUSE_GATES[gate];
+  return `${label} auto-resolve made the draft worse — the round it ran on ${beforeCount} blocking finding(s) `
+    + `came back with ${afterCount} and still hadn't closed what it was given, so its edits were reverted. `
+    + `Paused for review with the original ${beforeCount} finding(s). ${fix}, then resume.`;
+}
+
 // Foundation gate pause reasons (#2176) — the gate converges on a WEIGHTED
 // SCORE, not a finding count, so it needs its own wording (score vs. threshold)
 // rather than the finding-count phrasing of convergencePauseReason. Shares

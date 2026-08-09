@@ -11,7 +11,7 @@ import { runStagedLLM } from '../../../lib/stageRunner.js';
 import { ServerError } from '../../../lib/errorHandler.js';
 import { stripAnsi } from '../../../lib/ansiStrip.js';
 import { ARC_LOCKABLE_FIELDS, getSeries, updateSeries } from '../series.js';
-import { listIssues, recomputeIssueNumbersForSeries, updateIssue, updateStageWithLatest } from '../issues.js';
+import { listIssues, listIssuesForSeries, recomputeIssueNumbersForSeries, updateIssue, updateStageWithLatest, updateStagesWithLatest } from '../issues.js';
 import { emitRecordUpdated, withReexportSuppressed } from '../../sharing/recordEvents.js';
 import { getSeason } from '../seasons.js';
 import { READER_MAP_BEAT_KINDS, buildSeason, cleanThemes, renderArcShapeGuidance, renderArcShapePositionSummary, sanitizeArc, sanitizeReaderMap, sanitizeSeason, sanitizeSeasonList } from '../../../lib/storyArc.js';
@@ -550,6 +550,107 @@ export async function applyEpisodeResolutions(seriesId, series, episodes) {
     console.log(`📝 arc-resolve: corrected ${fixed} episode synopsis(es) for series ${seriesId.slice(0, 12)}`);
   }
   return applied;
+}
+
+// The three `idea`-stage fields an auto-resolve round can rewrite, normalized so
+// the snapshot and the restore's dirty-check read the record the same way — a
+// fourth field would otherwise have to be added to two hand-rolled default lists
+// kept in lockstep.
+const ideaSnapshotOf = (stage) => ({
+  input: stage?.input ?? '',
+  output: stage?.output ?? '',
+  status: stage?.status ?? 'empty',
+});
+
+// Every issue in the series, without per-stage run history: `listIssues` caps at
+// 1000 (a longer series would lose its tail from the snapshot, making those
+// episodes unrestorable) and carries history payloads this projection throws
+// away. Shared by the snapshot and the restore.
+const listEpisodesForSnapshot = (seriesId) => listIssuesForSeries(seriesId, { withHistory: false });
+
+/**
+ * Capture everything ONE auto-resolve round can rewrite — the arc, the volume
+ * records, and each episode's planning synopsis (plus which volume it sits
+ * under) — so a round that leaves verification WORSE can be reverted instead of
+ * committed. Read-only; the caller holds the snapshot for the duration of the
+ * round (see `runArcVerify`'s regression guard).
+ *
+ * Deep-cloned: `getSeries` hands back the store record un-cloned, and a snapshot
+ * that aliases the record it is meant to restore is no snapshot at all.
+ */
+export async function snapshotArcState(seriesId) {
+  const [series, issues] = await Promise.all([getSeries(seriesId), listEpisodesForSnapshot(seriesId)]);
+  return {
+    seriesId,
+    arc: structuredClone(series.arc ?? null),
+    seasons: structuredClone(series.seasons || []),
+    episodes: issues.map((iss) => ({
+      id: iss.id,
+      seasonId: iss.seasonId ?? null,
+      idea: ideaSnapshotOf(iss.stages?.idea),
+    })),
+  };
+}
+
+/**
+ * Put a `snapshotArcState` capture back, restoring only what actually differs:
+ * the arc + volume list, any episode whose volume the round re-pointed, and any
+ * episode synopsis the round rewrote. Returns what it touched.
+ *
+ * Deliberately NOT routed through `commitSeasonsWithRemap`: that path merges,
+ * preserves and re-mints, which is right for applying a rewrite and wrong for
+ * undoing one — a rollback wants the exact prior record back, and it restores
+ * the child issues' `seasonId` itself so a volume the round minted can't strand
+ * the episodes it took. For the same reason it doesn't re-check `locked.arc`:
+ * the arc was writable when the round ran, and refusing to undo that round's
+ * damage because a lock flipped mid-run would strand the user with the damage.
+ * A locked `idea` stage IS skipped — the resolve pass never touched it.
+ *
+ * Only the autopilot's convergence loop calls this: it is the one caller that
+ * re-verifies after every resolve, so it is the only one that can tell a
+ * regressive round from a good one without paying for an extra verify. The
+ * manual `/arc/resolve` route and the foundation gate's structure fix run the
+ * same resolver with no rollback, deliberately.
+ */
+export async function restoreArcState(seriesId, snapshot) {
+  if (!snapshot || snapshot.seriesId !== seriesId || !Array.isArray(snapshot.episodes)) {
+    return { restored: false, episodesRestored: 0, reassignedIssueCount: 0 };
+  }
+  const issues = await listEpisodesForSnapshot(seriesId);
+  const byId = new Map(issues.map((iss) => [iss.id, iss]));
+  const stageUpdates = [];
+  const reassign = [];
+  for (const snap of snapshot.episodes) {
+    const cur = byId.get(snap.id);
+    // Gone since the snapshot — nothing to restore onto (auto-resolve never
+    // deletes issues, so this is a concurrent user edit, not the round).
+    if (!cur) continue;
+    if ((cur.seasonId ?? null) !== snap.seasonId) reassign.push(snap);
+    if (cur.stages?.idea?.locked === true) continue;
+    const idea = ideaSnapshotOf(cur.stages?.idea);
+    if (idea.input === snap.idea.input
+      && idea.output === snap.idea.output
+      && idea.status === snap.idea.status) continue;
+    stageUpdates.push({
+      issueId: snap.id,
+      stageId: 'idea',
+      computeFn: () => ({ ...snap.idea, errorMessage: '' }),
+    });
+  }
+  // Same write ordering as `commitSeasonsWithRemap`: seasons first, so a crash
+  // between writes can't leave an issue pointing at a volume that isn't in
+  // `series.seasons[]`.
+  await withReexportSuppressed('series', seriesId, async () => {
+    await updateSeries(seriesId, { arc: snapshot.arc, seasons: snapshot.seasons });
+    for (const snap of reassign) {
+      await updateIssue(snap.id, { seasonId: snap.seasonId }, { skipRenumber: true });
+    }
+    if (reassign.length) await recomputeIssueNumbersForSeries(seriesId);
+    await updateStagesWithLatest(seriesId, stageUpdates);
+  });
+  emitRecordUpdated('series', seriesId);
+  console.log(`↩️ arc-resolve: reverted a regressive round for series ${seriesId.slice(0, 12)} — ${stageUpdates.length} episode synopsis(es), ${reassign.length} reassignment(s)`);
+  return { restored: true, episodesRestored: stageUpdates.length, reassignedIssueCount: reassign.length };
 }
 
 // Preserve per-field arc locks. When `currentSeries.locked.arcFields[k]` is

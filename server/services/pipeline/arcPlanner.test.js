@@ -1032,6 +1032,83 @@ describe('arcPlanner — resolveVerifyIssues', () => {
   });
 });
 
+describe('arcPlanner — snapshotArcState / restoreArcState (resolve-round rollback)', () => {
+  beforeEach(() => {
+    fileStore.clear();
+    uuidCounter = 0;
+    stageRunnerSpy = undefined;
+  });
+
+  // Stand up the shape one auto-resolve round can touch: an arc, two volumes,
+  // and an episode under each carrying a planning synopsis.
+  async function seedArc() {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, { arc: { logline: 'original logline', summary: 'original summary' } });
+    const v1 = await seasonsSvc.createSeason(s.id, { title: 'Volume 1', synopsis: 'v1 synopsis', episodeCountTarget: 2 });
+    const v2 = await seasonsSvc.createSeason(s.id, { title: 'Volume 2', synopsis: 'v2 synopsis', episodeCountTarget: 2 });
+    const e1 = await issuesSvc.createIssue({ seriesId: s.id, seasonId: v1.id, title: 'Ep 1' });
+    const e2 = await issuesSvc.createIssue({ seriesId: s.id, seasonId: v2.id, title: 'Ep 2' });
+    await issuesSvc.updateStage(e1.id, 'idea', { input: 'e1 planning synopsis' });
+    await issuesSvc.updateStage(e2.id, 'idea', { input: 'e2 planning synopsis' });
+    return { s, v1, v2, e1, e2 };
+  }
+
+  it('puts back the arc, the volume list and the episode synopses a round rewrote', async () => {
+    const { s, v1, v2, e1, e2 } = await seedArc();
+    const snapshot = await planner.snapshotArcState(s.id);
+
+    // Simulate the damage a regressive resolve round does: rewrite the arc,
+    // rewrite a volume, mint a third one, move an episode onto it, and rewrite
+    // the other episode's synopsis (clearing its beats the way
+    // applyEpisodeResolutions does).
+    const minted = await seasonsSvc.createSeason(s.id, { title: 'Volume 1', synopsis: 'duplicate', episodeCountTarget: 2 });
+    await seriesSvc.updateSeries(s.id, {
+      arc: { logline: 'rewritten logline', summary: 'rewritten summary' },
+      seasons: [{ ...v1, synopsis: 'rewritten v1' }, v2, minted],
+    });
+    await issuesSvc.updateIssue(e2.id, { seasonId: minted.id });
+    await issuesSvc.updateStage(e1.id, 'idea', { input: 'rewritten e1 synopsis', output: '', status: 'empty' });
+
+    const result = await planner.restoreArcState(s.id, snapshot);
+    expect(result).toMatchObject({ restored: true, episodesRestored: 1, reassignedIssueCount: 1 });
+
+    const series = await seriesSvc.getSeries(s.id);
+    expect(series.arc.logline).toBe('original logline');
+    expect(series.seasons.map((x) => x.id)).toEqual([v1.id, v2.id]);
+    expect(series.seasons[0].synopsis).toBe('v1 synopsis');
+    // The minted volume is gone, so the episode it took has to come back with
+    // it — otherwise the rollback strands it in the ungrouped bucket.
+    expect((await issuesSvc.getIssue(e2.id)).seasonId).toBe(v2.id);
+    expect((await issuesSvc.getIssue(e1.id)).stages.idea.input).toBe('e1 planning synopsis');
+  });
+
+  it('leaves a locked idea stage alone (the resolve pass never touched it)', async () => {
+    const { s, e1 } = await seedArc();
+    const snapshot = await planner.snapshotArcState(s.id);
+    await issuesSvc.updateStage(e1.id, 'idea', { input: 'user edit after the snapshot', locked: true });
+
+    const result = await planner.restoreArcState(s.id, snapshot);
+    expect(result.episodesRestored).toBe(0);
+    expect((await issuesSvc.getIssue(e1.id)).stages.idea.input).toBe('user edit after the snapshot');
+  });
+
+  it('refuses a snapshot that belongs to another series, and a missing one', async () => {
+    const { s } = await seedArc();
+    const other = await planner.snapshotArcState((await seedArc()).s.id);
+    expect(await planner.restoreArcState(s.id, other)).toMatchObject({ restored: false });
+    expect(await planner.restoreArcState(s.id, null)).toMatchObject({ restored: false });
+    // Untouched by the refused restores.
+    expect((await seriesSvc.getSeries(s.id)).arc.logline).toBe('original logline');
+  });
+
+  it('snapshots by value — a later write cannot mutate what was captured', async () => {
+    const { s } = await seedArc();
+    const snapshot = await planner.snapshotArcState(s.id);
+    await seriesSvc.updateSeries(s.id, { arc: { logline: 'mutated', summary: 'mutated' } });
+    expect(snapshot.arc.logline).toBe('original logline');
+  });
+});
+
 describe('arcPlanner — shapeEpisodeResolutions', () => {
   it('keeps well-formed entries and drops malformed ones', () => {
     const out = planner.shapeEpisodeResolutions([
