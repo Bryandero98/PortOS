@@ -654,13 +654,21 @@ export async function setCanonKindLockAll(universeId, kind, locked) {
  * series are never touched, and are reported back as `foreignKept` so the
  * caller can say what it deliberately left alone.
  *
- * Non-destructive by construction: only the `locked` bit is written. Nothing is
+ * `clearWorldLocks` additionally empties the universe's OWN `locked` map (the
+ * world-field locks: logline / premise / styleNotes / influence lists). It
+ * rides this call rather than a second `updateUniverse` because both land on
+ * the same record — a separate write would re-read and re-sanitize the whole
+ * universe and emit a second peer-sync `recordUpdated` for one user action.
+ * Those fields have no per-series owner, so only pass it with `soleSeries`.
+ *
+ * Non-destructive by construction: only `locked` bits are written. Nothing is
  * removed from the universe — an entry that should leave is a catalog archive
  * performed by a human, never a side effect of a bulk lock change.
  *
- * Returns `{ universe, changed, foreignKept }`.
+ * Returns `{ universe, changed, foreignKept }` (`changed` counts canon entries;
+ * the caller already knows how many world locks it asked to clear).
  */
-export async function setCanonLocksForSeries(universeId, seriesId, locked, { soleSeries = false } = {}) {
+export async function setCanonLocksForSeries(universeId, seriesId, locked, { soleSeries = false, clearWorldLocks = false } = {}) {
   const scope = { seriesId, soleSeries };
   let changed = 0;
   let foreignKept = 0;
@@ -684,6 +692,7 @@ export async function setCanonLocksForSeries(universeId, seriesId, locked, { sol
       });
       if (keyTouched) patch[key] = nextList;
     }
+    if (clearWorldLocks && Object.values(cur.locked || {}).some((v) => v === true)) patch.locked = {};
     return Object.keys(patch).length > 0 ? patch : null;
   });
   return { universe, changed, foreignKept };

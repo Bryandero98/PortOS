@@ -203,6 +203,24 @@ describe('unlockPass — end-to-end over the real series/issue services', () => 
     expect(universe.locked).toEqual({});
   });
 
+  // Canon locks and world-field locks live on the SAME record, so they must go
+  // out as one patch — a second updateUniverse would re-read/re-sanitize the
+  // whole universe and emit a second peer-sync recordUpdated for one action.
+  it('clears owned canon and the world fields in a SINGLE universe write', async () => {
+    const mine = await buildSeries({ universeId: 'uni-solo' });
+    universe = {
+      id: 'uni-solo',
+      characters: [charEntry({ id: 'mine', locked: true, sourceSeriesId: mine.id })],
+      places: [], objects: [],
+      locked: { logline: true },
+    };
+    const counts = await unlockSeriesForAutopilot(mine.id);
+    expect(counts).toMatchObject({ canon: 1, worldFields: 1, worldFieldsKept: 0 });
+    expect(universe.characters[0].locked).toBe(false);
+    expect(universe.locked).toEqual({});
+    expect(updateUniverse).toHaveBeenCalledTimes(1);
+  });
+
   it('leaves the universe world-field locks alone when a sibling series shares the universe', async () => {
     const mine = await buildSeries({ universeId: 'uni-1' });
     const other = await seriesSvc.createSeries({ name: 'Sibling', targetFormat: 'comic' });

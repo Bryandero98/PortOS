@@ -41,28 +41,41 @@
  */
 
 import { BIBLE_KEYS, isSeriesScopedCanonEntry } from '../../../lib/storyBible.js';
-import { getUniverse, updateUniverse } from '../../universeBuilder.js';
+import { getUniverse } from '../../universeBuilder.js';
 import { setCanonLocksForSeries } from '../../universeCanon.js';
 import { getSeries, updateSeries, listSeries } from '../series.js';
 import { listIssues, updateStagesWithLatest, STAGE_IDS } from '../issues.js';
 import { broadcast } from './session.js';
 
-// Every lock on the SERIES records this pass would clear: the arc freeze, each
-// per-field arc lock, each volume lock, each issue stage lock. Exported so the
-// dry-run plan can promise the same number the pass reports — one definition,
-// so a new lock surface can't be counted in one place and cleared in the other.
-// Universe-side locks are deliberately excluded: they live on another record
-// that only an async read could reach, and the dry-run plan is synchronous.
-export function countSeriesLocks(series, issues) {
+// THE definition of "which of this issue's stages are frozen". Both the
+// dry-run's promised count and the sweep that actually clears them read it, so
+// they cannot enumerate different stage sets (walking `Object.values(stages)`
+// on one side and `STAGE_IDS` on the other would let a stage key outside
+// STAGE_IDS be promised and never cleared).
+const lockedStageIds = (issue) => STAGE_IDS.filter((id) => issue?.stages?.[id]?.locked === true);
+
+// Every lock on the SERIES records this pass would clear, split by scope: the
+// arc freeze, each per-field arc lock, each volume lock, each issue stage lock.
+// ONE definition, consumed by both the dry-run plan (as a total) and the pass
+// itself (as the per-scope counts it reports) — so a new lock surface can't be
+// counted in one place and cleared in the other. Universe-side locks are
+// deliberately excluded: they live on another record that only an async read
+// could reach, and the dry-run plan is synchronous.
+//
+// `=== true` throughout: the sanitizer only persists `true`, but an unsanitized
+// record must not make the promise and the report disagree.
+export function seriesLockBreakdown(series, issues) {
   const locked = series?.locked || {};
-  let n = locked.arc === true ? 1 : 0;
-  n += Object.values(locked.arcFields || {}).filter((v) => v === true).length;
-  n += (Array.isArray(series?.seasons) ? series.seasons : []).filter((s) => s?.locked === true).length;
-  for (const issue of Array.isArray(issues) ? issues : []) {
-    n += Object.values(issue?.stages || {}).filter((st) => st?.locked === true).length;
-  }
-  return n;
+  return {
+    arc: locked.arc === true ? 1 : 0,
+    arcFields: Object.values(locked.arcFields || {}).filter((v) => v === true).length,
+    seasons: (Array.isArray(series?.seasons) ? series.seasons : []).filter((s) => s?.locked === true).length,
+    stages: (Array.isArray(issues) ? issues : []).reduce((n, issue) => n + lockedStageIds(issue).length, 0),
+  };
 }
+
+export const countSeriesLocks = (series, issues) =>
+  Object.values(seriesLockBreakdown(series, issues)).reduce((a, b) => a + b, 0);
 
 // Clear `series.locked` (the binary arc freeze + every per-field arc lock) AND
 // every volume's lock in ONE patch. `updateSeries` applies `locked` and
@@ -70,15 +83,9 @@ export function countSeriesLocks(series, issues) {
 // its write queue, so a single call costs one read/write/peer-emit instead of
 // two — and there is no re-read window between them.
 async function unlockSeriesRecord(series) {
-  const locked = series.locked || {};
-  const arc = locked.arc === true ? 1 : 0;
-  // `=== true`, matching countSeriesLocks — the sanitizer only persists `true`,
-  // but an unsanitized record must not make the dry-run promise and the pass's
-  // own report disagree.
-  const arcFields = Object.values(locked.arcFields || {}).filter((v) => v === true).length;
-  const seasons = Array.isArray(series.seasons) ? series.seasons : [];
-  const lockedSeasons = seasons.filter((s) => s?.locked === true).length;
+  const { arc, arcFields, seasons: lockedSeasons } = seriesLockBreakdown(series, null);
   if (arc === 0 && arcFields === 0 && lockedSeasons === 0) return { arc: 0, arcFields: 0, seasons: 0 };
+  const seasons = Array.isArray(series.seasons) ? series.seasons : [];
   await updateSeries(series.id, {
     ...(arc || arcFields ? { locked: {} } : {}),
     ...(lockedSeasons ? { seasons: seasons.map((s) => (s?.locked === true ? { ...s, locked: false } : s)) } : {}),
@@ -89,23 +96,22 @@ async function unlockSeriesRecord(series) {
 // Clear `locked` on every stage of every issue in the series. Batched through
 // updateStagesWithLatest so the whole sweep is a single serialized write.
 async function unlockIssueStages(seriesId, issues) {
-  const updates = [];
-  for (const issue of issues) {
-    for (const stageId of STAGE_IDS) {
-      if (issue?.stages?.[stageId]?.locked !== true) continue;
-      // computeFn re-reads the freshest stage inside the write queue — a stage
-      // unlocked between our read and the write yields `{}` (a no-op).
-      updates.push({
-        issueId: issue.id,
-        stageId,
-        computeFn: (cur) => (cur?.locked === true ? { locked: false } : {}),
-      });
-    }
-  }
+  const updates = issues.flatMap((issue) => lockedStageIds(issue).map((stageId) => ({
+    issueId: issue.id,
+    stageId,
+    // computeFn re-reads the freshest stage inside the write queue — a stage
+    // unlocked between our read and the write yields `{}` (a no-op).
+    computeFn: (cur) => (cur?.locked === true ? { locked: false } : {}),
+  })));
   if (updates.length === 0) return 0;
   await updateStagesWithLatest(seriesId, updates);
   return updates.length;
 }
+
+// Nothing to unlock on the universe side. Named so the two paths that return it
+// (no universe linked / the universe read failed) can't drift into reporting
+// different key sets on an SSE frame the client reads field by field.
+const NO_UNIVERSE_UNLOCKS = Object.freeze({ canon: 0, canonForeignKept: 0, worldFields: 0, worldFieldsKept: 0 });
 
 // Is this series the ONLY one linked to `universeId`? Decides whether records
 // with no per-series owner (unowned canon, the universe's world fields) are
@@ -116,43 +122,42 @@ async function isSoleSeriesOfUniverse(seriesId, universeId) {
   return !all.some((s) => s.id !== seriesId && s.universeId === universeId);
 }
 
-// Does the universe hold a locked canon entry with no owning series? Only then
-// does `soleSeries` change any outcome — every owned entry is decided by its
-// own `sourceSeriesId`.
-const hasUnownedLockedCanon = (universe) => BIBLE_KEYS.some((key) =>
-  (Array.isArray(universe?.[key]) ? universe[key] : [])
-    .some((e) => e?.locked === true && !e?.sourceSeriesId));
-
-// Clear the universe's own world-field locks (logline / premise / styleNotes /
-// influence lists). These have no per-series owner, so they are only this
-// series' to clear when it is the universe's sole series. Worth covering: the
-// foundation gate's world + craft fixes report "every refinable world field is
-// locked" and pause the run — exactly the stall this option exists to remove.
-async function unlockUniverseWorldFields(universe, soleSeries) {
-  const lockedCount = Object.values(universe?.locked || {}).filter((v) => v === true).length;
-  if (lockedCount === 0 || !soleSeries) return { cleared: 0, kept: soleSeries ? 0 : lockedCount };
-  await updateUniverse(universe.id, { locked: {} });
-  return { cleared: lockedCount, kept: 0 };
-}
+// Does the universe hold a locked canon entry whose fate depends on this series
+// being the universe's only one? Asks `isSeriesScopedCanonEntry` rather than
+// re-testing `sourceSeriesId` here, so the ownership rule keeps exactly one
+// definition (see storyBible.js).
+const hasSoleSeriesDependentCanon = (universe, seriesId) => BIBLE_KEYS.some((key) =>
+  (Array.isArray(universe?.[key]) ? universe[key] : []).some((e) => e?.locked === true
+    && !isSeriesScopedCanonEntry(e, { seriesId })
+    && isSeriesScopedCanonEntry(e, { seriesId, soleSeries: true })));
 
 // Clear the locks on the universe-side records this series owns: its canon
-// entries, plus the world fields when this series is the universe's only one.
+// entries, plus the universe's own world fields (logline / premise / styleNotes
+// / influence lists) when this series is the universe's only one. Those world
+// fields are worth covering because the foundation gate's world + craft fixes
+// report "every refinable world field is locked" and pause the run — exactly
+// the stall this option exists to remove.
+//
+// BOTH live on the universe record, so they go out as ONE write: a second
+// updateUniverse would re-read and re-sanitize the whole record and emit a
+// second peer-sync `recordUpdated` for one user action.
 async function unlockUniverseFor(seriesId, universeId) {
   const universe = await getUniverse(universeId).catch(() => null);
-  if (!universe) return { canon: 0, canonForeignKept: 0, worldFields: 0, worldFieldsKept: 0 };
-  const worldLocked = Object.values(universe.locked || {}).some((v) => v === true);
+  if (!universe) return NO_UNIVERSE_UNLOCKS;
+  const worldLocked = Object.values(universe.locked || {}).filter((v) => v === true).length;
   // One install-wide read at most, and only when an unowned record's fate
   // actually depends on it.
-  const soleSeries = (hasUnownedLockedCanon(universe) || worldLocked)
-    ? await isSoleSeriesOfUniverse(seriesId, universeId)
-    : false;
-  const canon = await setCanonLocksForSeries(universeId, seriesId, false, { soleSeries });
-  const world = await unlockUniverseWorldFields(universe, soleSeries);
+  const soleSeries = (worldLocked > 0 || hasSoleSeriesDependentCanon(universe, seriesId))
+    && await isSoleSeriesOfUniverse(seriesId, universeId);
+  const canon = await setCanonLocksForSeries(universeId, seriesId, false, {
+    soleSeries,
+    clearWorldLocks: worldLocked > 0 && soleSeries,
+  });
   return {
     canon: canon.changed,
     canonForeignKept: canon.foreignKept,
-    worldFields: world.cleared,
-    worldFieldsKept: world.kept,
+    worldFields: soleSeries ? worldLocked : 0,
+    worldFieldsKept: soleSeries ? 0 : worldLocked,
   };
 }
 
@@ -171,7 +176,7 @@ export async function unlockSeriesForAutopilot(seriesId) {
     unlockIssueStages(seriesId, issues),
     series.universeId
       ? unlockUniverseFor(seriesId, series.universeId)
-      : Promise.resolve({ canon: 0, canonForeignKept: 0, worldFields: 0, worldFieldsKept: 0 }),
+      : Promise.resolve(NO_UNIVERSE_UNLOCKS),
   ]);
   return { ...record, stages, ...universe };
 }
