@@ -183,51 +183,70 @@ async function resolveAgentBranchSha(checkoutPath, agentBranch) {
 }
 
 /**
- * Was the drift plausibly THIS agent's doing (#3703)? Compares the stranded
- * commits (everything the drifted checkout carries past `strandedBase`) against
- * the agent's own worktree branch by PATCH-ID via `git cherry`, so a
- * cherry-picked or rebased copy still matches — a raw-SHA check would miss
- * exactly the case the original #3680 incident could have produced.
+ * Was the drift plausibly THIS agent's doing (#3703)? Compares the commits that
+ * appeared on the primary DURING THE RUN (`runBase..driftedHead`, where `runBase`
+ * is the checkout's HEAD at spawn) against the agent's own worktree branch by
+ * PATCH-ID via `git cherry`, so a cherry-picked or rebased copy still matches — a
+ * raw-SHA check would miss exactly the case the original #3680 incident could have
+ * produced.
  *
- * Returns true when AT LEAST ONE stranded commit is the agent's own — either
+ * The window is anchored at `runBase`, NOT at the branch's upstream: a commit that
+ * was ALREADY stranded on the primary at spawn (and happens to also live on the
+ * agent's branch — a fresh worktree branch is cut from the primary's `main`, so it
+ * inherits the primary's unpushed commits) would otherwise be counted as stranded
+ * yet omitted from the foreign tally by `git cherry` (same SHA), silently supplying
+ * the `+1` that flips `stranded > foreign` and re-blaming the agent for a drift
+ * another actor caused — the very #3703 regression. Only a commit created after
+ * spawn can be this run's branch-jack, so pre-run history is excluded from
+ * attribution (the reported `unpushedCount` still measures against the upstream —
+ * that is what a human recovers).
+ *
+ * Returns true when AT LEAST ONE run-window commit is the agent's own — either
  * literally on its branch (same SHA) or patch-equivalent to one there (a
  * cherry-picked / rebased copy). Every uncertain outcome — no branch name, a
  * branch that does not resolve, a branch with no commits of its own (Case A: a
  * read-only reasoner that never branched), or a failed git call — returns FALSE
  * (unattributed), failing open by design. NON-THROWING, like the rest of the
  * module.
+ *
+ * Residual (documented, not guarded): a `git pull --rebase` on the primary that
+ * REWRITES a commit the agent's branch also carries produces a post-spawn copy
+ * patch-equivalent to the agent's, which still attributes. Closing it would mean
+ * excluding the agent's own inherited commits from the patch-id set first; the
+ * scenario needs the agent branch to already carry a primary-local commit, which
+ * a fresh worktree branch (based on `origin/<default>`) does not.
  */
-async function isDriftAttributableToAgent(checkoutPath, { strandedBase, driftedHead, agentBranch }) {
+async function isDriftAttributableToAgent(checkoutPath, { runBase, driftedHead, agentBranch }) {
   const agentSha = await resolveAgentBranchSha(checkoutPath, agentBranch);
   if (!agentSha) return false;
-  // Cheap short-circuit: a branch that carries no commit of its own past the
-  // stranded base (a read-only reasoner's untouched worktree branch) cannot have
+  // Cheap short-circuit: a branch that carries no commit of its own past the run
+  // baseline (a read-only reasoner's untouched worktree branch) cannot have
   // authored anything, so skip the cherry walk. `git cherry` reaches the same
   // verdict on its own — this only avoids the extra call on the common case.
-  const ownCommits = await countCommitsAhead(checkoutPath, strandedBase, agentSha);
+  const ownCommits = await countCommitsAhead(checkoutPath, runBase, agentSha);
   if (!ownCommits) return false;
-  // Count the stranded NON-MERGE commits — matching what `git cherry` walks. A
+  // Count the run-window NON-MERGE commits — matching what `git cherry` walks. A
   // merge commit strays onto the primary via a human's `git merge` or a non-ff
   // pull (never a `/do:pr` branch-jack), and `git cherry` skips it; counting it
   // here would leave `stranded > foreign` true on arithmetic alone and re-blame
   // the very false-positive this guard exists to prevent.
-  const strandedNonMerge = await countCommitsAhead(checkoutPath, strandedBase, driftedHead, { noMerges: true });
-  if (!strandedNonMerge) return false;
-  // `git cherry <upstream> <head> <limit>` walks the stranded non-merge commits
+  const runWindowNonMerge = await countCommitsAhead(checkoutPath, runBase, driftedHead, { noMerges: true });
+  if (!runWindowNonMerge) return false;
+  // `git cherry <upstream> <head> <limit>` walks the run-window non-merge commits
   // (`limit..head`) and prints a line for each that <upstream> (the agent's
   // branch) does NOT already contain: `-` when a patch-equivalent copy exists
   // there, `+` when the commit is foreign to it. Commits the agent's branch holds
-  // outright (same SHA) are omitted entirely. So a stranded commit is the agent's
-  // UNLESS git cherry marks it `+`; the drift is attributed unless EVERY stranded
+  // outright (same SHA) are omitted entirely. So a run-window commit is the agent's
+  // UNLESS git cherry marks it `+`; the drift is attributed unless EVERY run-window
   // non-merge commit is foreign.
   const cherry = await execGit(
-    ['cherry', agentSha, driftedHead, strandedBase],
+    ['cherry', agentSha, driftedHead, runBase],
     checkoutPath,
     { ignoreExitCode: true, timeout: GIT_TIMEOUT_MS },
   ).catch(() => null);
   if (!cherry || cherry.exitCode !== 0) return false;
   const foreign = (cherry.stdout || '').split('\n').filter(line => line.startsWith('+')).length;
-  return strandedNonMerge > foreign;
+  return runWindowNonMerge > foreign;
 }
 
 /** Short SHA for human-readable prose. */
@@ -301,7 +320,7 @@ export async function detectPrimaryCheckoutDrift(baseline, { agentBranch = null 
   const strandedCount = unpushedCount === null ? commitCount : unpushedCount;
   if (strandedCount === null || strandedCount > 0) {
     const attributed = await isDriftAttributableToAgent(baseline.path, {
-      strandedBase: upstream || baseline.head,
+      runBase: baseline.head,
       driftedHead: current.head,
       agentBranch,
     });

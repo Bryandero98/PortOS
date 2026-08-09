@@ -165,6 +165,27 @@ describe('detectPrimaryCheckoutDrift', () => {
     expect(verdict.unattributed).toBe(true);
   });
 
+  it('does not blame an agent that inherited the primary\'s pre-run unpushed commit (#3703 regression)', async () => {
+    // The primary already carried an unpushed commit at spawn, and the agent branch
+    // was cut from that HEAD (so it "inherits" that commit) while the agent committed
+    // NOTHING. A foreign actor then strands its own commit during the run. Anchoring
+    // attribution at the branch upstream would count the inherited commit as stranded
+    // yet omit it from the foreign tally (same SHA) — flipping stranded > foreign and
+    // failing a read-only agent. Anchoring at the run baseline excludes it.
+    await addOrigin();
+    const agentBranch = 'cos/task-x/agent-y';
+    await commit('primary local unpushed commit'); // on main, ahead of origin/main
+    const baseline = await capturePrimaryCheckoutState(repo);
+    await execGit(['branch', agentBranch], repo); // agent branch at the inherited HEAD, no own commits
+    await commit('a foreign actor\'s commit'); // strands during the run
+
+    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch });
+    expect(verdict.drifted).toBe(false);
+    expect(verdict.unattributed).toBe(true);
+    // Both the inherited and the foreign commit are unpushed, but neither is the agent's.
+    expect(verdict.unpushedCount).toBe(2);
+  });
+
   it('never attributes a branch-jack to a read-only reasoner that never branched (Case A)', async () => {
     const baseline = await capturePrimaryCheckoutState(repo);
     // A 24-file commit lands on main mid-run, authored by another actor.
