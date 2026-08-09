@@ -15,12 +15,9 @@ vi.mock('./cos.js', () => ({
 // readdir. Without a PATHS redirect that dir is the checkout's own
 // `data/cos/missions`, so the suite both read the developer's live missions (one
 // with no `subTasks` crashed getStats) and wrote its own fixtures into it — the
-// same leak class as #3683. `PATHS.missions` is anchored on the install root
-// rather than derived from `PATHS.data`, so it needs an override of its own.
-const { tempRoot, makeProxy, cleanup } = mockPathsDataRoot({
-  prefix: 'portos-missions-',
-  extraOverrides: (root) => ({ missions: path.join(root, 'cos', 'missions') }),
-});
+// same leak class as #3683. `mockPathsDataRoot` re-roots every data-rooted
+// `PATHS` member (#3689), so `PATHS.missions` lands under `tempRoot` on its own.
+const { tempRoot, makeProxy, cleanup } = mockPathsDataRoot({ prefix: 'portos-missions-' });
 vi.mock('../lib/fileUtils.js', async (importOriginal) => makeProxy(await importOriginal()));
 
 afterAll(cleanup);
