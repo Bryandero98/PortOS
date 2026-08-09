@@ -25,6 +25,7 @@ import FolderPicker from '../../FolderPicker';
 import { timeAgo, formatBytes } from '../../../utils/formatters';
 import { useConfirmDelete } from '../../../hooks/useConfirmDelete';
 import { clickableProps } from '../../../lib/a11yKeyboard.js';
+import OfflineNotesNotice from '../../OfflineNotesNotice.jsx';
 
 export default function NotesTab() {
   // Vault state
@@ -38,6 +39,9 @@ export default function NotesTab() {
   // Notes state
   const [notes, setNotes] = useState([]);
   const [totalNotes, setTotalNotes] = useState(0);
+  // Notes the server skipped because iCloud hasn't downloaded them — surfaced so
+  // an incomplete list isn't presented as the whole vault.
+  const [skippedNotes, setSkippedNotes] = useState(0);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
 
@@ -109,6 +113,7 @@ export default function NotesTab() {
     if (data) {
       setNotes(data.notes);
       setTotalNotes(data.total);
+      setSkippedNotes(data.skippedUnavailable || 0);
     }
     setScanning(false);
   };
@@ -338,6 +343,8 @@ export default function NotesTab() {
             </div>
           )}
         </div>
+
+        <OfflineNotesNotice count={skippedNotes + (searchResults?.skippedUnavailable || 0)} className="mx-3 mt-2" />
 
         {/* Stats bar */}
         <div className="px-3 py-1.5 border-b border-port-border flex items-center gap-3 text-xs text-gray-500">

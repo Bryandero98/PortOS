@@ -9,6 +9,7 @@ import InlineConfirmRow from '../../ui/InlineConfirmRow';
 import { timeAgo, formatBytes } from '../../../utils/formatters';
 import { WIKI_CATEGORIES } from '../constants.jsx';
 import BrailleSpinner from '../../BrailleSpinner';
+import OfflineNotesNotice from '../../OfflineNotesNotice.jsx';
 
 const WIKI_FOLDERS = WIKI_CATEGORIES.map(c => ({ key: c.folder, label: c.label, icon: c.icon, color: c.textClass }));
 const RAW_FOLDERS = [{ key: 'raw', label: 'Raw Sources', icon: FolderOpen, color: 'text-gray-400' }];
@@ -23,6 +24,8 @@ export default function BrowseTab({ vaultId, notes, rawNotes, allNotes, onRefres
   const [expandedFolders, setExpandedFolders] = useState(new Set(['wiki/sources', 'wiki/entities', 'wiki/concepts']));
   const [activeSection, setActiveSection] = useState('wiki');
   const [tags, setTags] = useState([]);
+  // Tag counts under-report when iCloud hasn't downloaded some notes.
+  const [skippedTagNotes, setSkippedTagNotes] = useState(0);
   const [showTags, setShowTags] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const editorRef = useRef(null);
@@ -69,6 +72,7 @@ export default function BrowseTab({ vaultId, notes, rawNotes, allNotes, onRefres
   const loadTags = async () => {
     const data = await api.getNotesVaultTags(vaultId).catch(() => null);
     if (data?.tags) setTags(data.tags);
+    setSkippedTagNotes(data?.skippedUnavailable || 0);
   };
 
   const toggleFolder = (folder) => {
@@ -130,6 +134,7 @@ export default function BrowseTab({ vaultId, notes, rawNotes, allNotes, onRefres
         </div>
 
         {/* Tags */}
+        {showTags && <OfflineNotesNotice count={skippedTagNotes} className="mx-3 mt-2" />}
         {showTags && tags.length > 0 && (
           <div className="px-3 py-2 border-b border-port-border flex flex-wrap gap-1 max-h-24 overflow-auto">
             {tags.map(t => (

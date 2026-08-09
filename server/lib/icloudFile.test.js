@@ -402,3 +402,41 @@ describe('background download deadline', () => {
     }
   });
 });
+
+describe('background download slot ownership', () => {
+  it("a timed-out child's late exit must not release a replacement's slot", async () => {
+    const originalDeadline = icloud.DOWNLOAD_DEADLINE_MS;
+    icloud._setDownloadDeadlineForTest(10);
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    try {
+      statMock.mockResolvedValue(datalessStats);
+      const children = [];
+      spawnMock.mockImplementation(() => { const c = makeFakeChild(); c.pid = 1000 + children.length; children.push(c); return c; });
+
+      const P = `${UBIQUITY_DIR}/contested.md`;
+      await icloud.readIfMaterialized(P).catch(() => {});
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+
+      // Deadline fires and frees the slot; a fresh read then starts a REPLACEMENT
+      // child for the same path.
+      await new Promise(r => setTimeout(r, 30));
+      await icloud.readIfMaterialized(P).catch(() => {});
+      expect(spawnMock).toHaveBeenCalledTimes(2);
+
+      // Now the ORIGINAL child finally exits. Without identity-guarded cleanup it
+      // would delete the replacement's entry, letting the next read spawn a
+      // duplicate for a path already downloading — and eroding the 4-child cap.
+      children[0].emit('exit', null, 'SIGKILL');
+      await icloud.readIfMaterialized(P).catch(() => {});
+      expect(spawnMock).toHaveBeenCalledTimes(2);
+
+      // The replacement's own exit does release it.
+      children[1].emit('exit', 0, null);
+      await icloud.readIfMaterialized(P).catch(() => {});
+      expect(spawnMock).toHaveBeenCalledTimes(3);
+    } finally {
+      killSpy.mockRestore();
+      icloud._setDownloadDeadlineForTest(originalDeadline);
+    }
+  });
+});

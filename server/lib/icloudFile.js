@@ -165,10 +165,13 @@ function markBrctlMissing() {
   return true;
 }
 
-// Dedupe of in-flight background materializations, keyed by path, so repeated
-// reads of the same evicted file don't spawn a `brctl` per request. Entries clear
-// when the child exits, so a later read can retry.
-const pendingDownloads = new Set();
+// In-flight background materializations, `path -> child`. The child doubles as an
+// identity token: cleanup must only clear the entry it owns. A deadline kill frees
+// the slot before that child's 'exit' fires, so a read arriving in between can
+// legitimately start a REPLACEMENT for the same path — and the old child's late
+// 'exit' must not then delete the replacement's entry, which would let the next
+// read spawn a duplicate and break the concurrency cap.
+const pendingDownloads = new Map();
 
 // Hard cap on concurrent background downloads. Without it, a vault-wide walk over
 // an evicted Obsidian vault (one read per note) would spawn one `brctl` child per
@@ -199,7 +202,6 @@ export function requestMaterialization(path, label = 'iCloud file') {
   if (!isHealablePath(path)) return false;
   if (pendingDownloads.has(path)) return false;
   if (pendingDownloads.size >= MAX_PENDING_DOWNLOADS) return false;
-  pendingDownloads.add(path);
 
   // try/catch at a child-process boundary (permitted by the repo's no-try/catch
   // rule): `spawn` can throw synchronously on resource exhaustion (EMFILE), and
@@ -211,10 +213,18 @@ export function requestMaterialization(path, label = 'iCloud file') {
     child = spawn('brctl', ['download', path], { detached: true, stdio: 'ignore' });
     child.unref();
   } catch (err) {
-    pendingDownloads.delete(path);
+    // Nothing was reserved yet — the slot is claimed below, after a successful
+    // spawn — so there is nothing to release here.
     console.warn(`⚠️ could not spawn brctl download for ${label}: ${err.message}`);
     return false;
   }
+  // `spawn` is synchronous, so no other read can interleave between the size
+  // check above and this reservation.
+  pendingDownloads.set(path, child);
+  // Release only the entry THIS child owns (see the map's comment above).
+  const release = () => {
+    if (pendingDownloads.get(path) === child) pendingDownloads.delete(path);
+  };
   // Kill the child if it outlives its deadline, so a wedged `brctl` frees its slot
   // instead of holding it forever. `unref` so the timer itself never keeps the
   // process alive; the 'exit' handler below clears the slot once the kill lands.
@@ -225,10 +235,10 @@ export function requestMaterialization(path, label = 'iCloud file') {
     try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
     // A killed-but-unreaped child would strand the slot; drop it now so healing
     // can resume even if 'exit' never fires.
-    pendingDownloads.delete(path);
+    release();
   }, DOWNLOAD_DEADLINE_MS);
   deadline.unref?.();
-  const settle = () => { clearTimeout(deadline); pendingDownloads.delete(path); };
+  const settle = () => { clearTimeout(deadline); release(); };
 
   // Capture `path` in each handler so a late exit from one child can't clear the
   // dedupe entry for a different path.
