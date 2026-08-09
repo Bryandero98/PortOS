@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { enqueueJob } from '../../mediaJobQueue/index.js';
 import { ASPECT_PRESETS, QUALITY_PRESETS, presetToRenderParams } from '../../../lib/creativeDirectorPresets.js';
 import { getSettings } from '../../settings.js';
-import { IMAGE_GEN_MODE, resolveQueueImageMode, resolveQueueImageEditMode } from '../../imageGen/modes.js';
+import { IMAGE_GEN_MODE, resolveQueueImageMode } from '../../imageGen/modes.js';
 import { renderTargetDefaults, resolveRenderTargetConfig } from '../../imageGen/cloudProviderConfig.js';
 import { RENDER_TARGET } from '../../../lib/renderTargets.js';
 import { VIDEO_GEN_MODE, VIDEO_GEN_MODES, resolveVideoMode, hasVideoPin } from '../../videoGen/modes.js';
@@ -187,14 +187,11 @@ async function enforceRenderBackendPin(kind, params, project) {
     };
   }
 
-  const wantsEdit = !!params?.initImagePath || params?.referenceImagePaths?.length > 0;
   // Project pin (explicit, per-record) → creative-agent renderDefaults pin —
   // both usability-laddered so a disabled backend degrades instead of failing
-  // a nightly commission.
-  const requested = pin?.mode || targetDefaults.imageMode;
-  const mode = wantsEdit
-    ? resolveQueueImageEditMode(requested, settings)
-    : resolveQueueImageMode(requested, settings);
+  // a nightly commission. One ladder covers text-to-image and edit/reference
+  // renders alike: every queueable backend accepts input images.
+  const mode = resolveQueueImageMode(pin?.mode || targetDefaults.imageMode, settings);
   // Mode is laddered above; this threads the creative-agent renderDefaults
   // imageModel into the cloud job params (#3231). The project's own
   // `pin.modelId` is deliberately NOT passed as the cloud model override —

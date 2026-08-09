@@ -1,10 +1,14 @@
 /**
  * Image Gen — Antigravity (`agy`) CLI provider.
  *
- * Agy is an opt-in, text-to-image-only cloud CLI backend. Each request runs
- * in a throwaway scratch directory and directs the built-in `generate_image`
- * tool to one PortOS-owned staging path. Only signature-verified image bytes
- * are moved into the gallery.
+ * Agy is an opt-in cloud CLI backend. Each request runs in a throwaway scratch
+ * directory and directs the built-in `generate_image` tool to one PortOS-owned
+ * staging path. Only signature-verified image bytes are moved into the gallery.
+ *
+ * `generate_image` takes input images through its `ImagePaths` parameter — up
+ * to 3, usable to "edit, combine, or use as references" — so an init image and
+ * the reference slots both reach it. Unlike codex/grok, `Prompt` is a REQUIRED
+ * tool parameter, so an image-only agy render is rejected up front.
  */
 
 import { spawn } from 'child_process';
@@ -27,8 +31,11 @@ import { imageGenEvents } from '../imageGenEvents.js';
 import { buildNoImageReason } from './noImageReason.js';
 import { checkFabrication, noFabricationClause } from './fabricationGuard.js';
 import {
-  AGY_IMAGEGEN_IMAGE_MODEL, IMAGE_GEN_MODE, IMAGE_TOOL_NAMES, editIncapableModeError, nearestAgyAspectRatio,
+  AGY_IMAGEGEN_IMAGE_MODEL, IMAGE_GEN_MODE, IMAGE_TOOL_NAMES, describeFidelity,
+  nearestAgyAspectRatio, visualReferenceRole,
 } from './modes.js';
+import { resolveInputImages } from './inputImages.js';
+import { cloudPromptRequired } from './cloudProviderConfig.js';
 import { withSpawnCwdEnv } from '../../lib/spawnCwd.js';
 
 const AGY_TIMEOUT_MS = (() => {
@@ -143,7 +150,34 @@ export const noImageReason = (stdoutTail = '') => buildNoImageReason(stdoutTail,
   describe: (said) => `Agy did not produce an image at the directed path. Agy said: "${said}"`,
 });
 
-export function buildAgyPrompt({ prompt, negativePrompt, width, height, stagingPath }) {
+/**
+ * Directs agy's `generate_image` at whatever input images the render carries.
+ *
+ * `ImagePaths` is a real tool parameter — "Optional absolute paths to the images
+ * to use in generation. You can pass in images here if you would like to edit,
+ * combine, or use as references… you cannot pass in more than 3 images" (schema
+ * probed 2026-08-09). The 3-image ceiling is enforced upstream by
+ * resolveInputImages, which also fixes the order and splits out the init image
+ * — so this takes that resolver's `{ paths, initPath, referencePaths }` shape
+ * directly rather than re-deriving "init leads" a second time.
+ *
+ * Naming the paths on their own line keeps them out of the tool's `Prompt`, for
+ * the same reason the AspectRatio directive is separated: anything that lands
+ * inside `Prompt` becomes part of what gets drawn.
+ */
+const agyImagePathsDirective = ({ paths, initPath, referencePaths, initImageStrength }) => {
+  if (!paths.length) return '';
+  const refCount = referencePaths.length;
+  const role = initPath
+    ? `The first is the source image to edit — ${describeFidelity(initImageStrength)}.${refCount ? ` The rest are ${visualReferenceRole(refCount)}.` : ''}`
+    : `Use ${refCount === 1 ? 'it' : 'them'} as ${visualReferenceRole(refCount)}.`;
+  return `\nPass these absolute paths to the tool's ImagePaths parameter, in this order: ${paths.join(', ')}\n${role}`;
+};
+
+export function buildAgyPrompt({
+  prompt, negativePrompt, width, height, stagingPath,
+  inputImages = { paths: [], initPath: null, referencePaths: [] }, initImageStrength,
+}) {
   const avoid = negativePrompt?.trim() ? `\nAvoid: ${negativePrompt.trim()}` : '';
   // `AspectRatio` is a real generate_image parameter and it defaults to '1:1'.
   // Naming the pixel dimensions alone is not enough — the agent has to be told
@@ -159,8 +193,9 @@ export function buildAgyPrompt({ prompt, negativePrompt, width, height, stagingP
   // exposed this failure mode captioned itself "DIMENSIONS: 832 x 1216 (2:3)".
   const ratio = nearestAgyAspectRatio(width, height);
   const aspect = ratio ? `\nPass AspectRatio "${ratio}" to the tool.` : '';
+  const images = agyImagePathsDirective({ ...inputImages, initImageStrength });
   return `Use your built-in ${AGY_TOOL} tool to generate exactly one image.
-Image prompt: ${prompt.trim()}${avoid}${aspect}
+Image prompt: ${prompt.trim()}${avoid}${aspect}${images}
 Save the generated image as a PNG file at exactly this path: ${stagingPath}
 ${noFabricationClause(AGY_TOOL)}
 Do not create any other files, do not modify any code or workspace content, and do not run unrelated tools. When the file is written, you are done.`;
@@ -174,13 +209,21 @@ export async function generateImage({
   height,
   negativePrompt,
   initImagePath,
-  referenceImagePaths,
+  initImageStrength,
+  referenceImagePaths = [],
   jobId: providedJobId = null,
   cleanC2PA = false,
   denoise = false,
 }) {
-  if (initImagePath || referenceImagePaths?.length) throw editIncapableModeError(IMAGE_GEN_MODE.AGY);
-  if (!prompt.trim()) {
+  // Re-anchors every path to the approved image roots and caps at agy's
+  // 3-image ImagePaths ceiling — see inputImages.js.
+  const inputImages = resolveInputImages({
+    mode: IMAGE_GEN_MODE.AGY, initImagePath, referenceImagePaths,
+  });
+  // Unlike codex/grok, agy always needs a prompt even with input images:
+  // `Prompt` is in generate_image's `required` list, which the provider spec
+  // records as `promptRequiredWithInputImage`.
+  if (cloudPromptRequired(IMAGE_GEN_MODE.AGY, inputImages.paths.length > 0) && !prompt.trim()) {
     throw new ServerError('Prompt is required', { status: 400, code: 'VALIDATION_ERROR' });
   }
   if (model && !MODEL_ID_RE.test(model)) {
@@ -195,7 +238,9 @@ export async function generateImage({
   const stagingPath = join(scratchDir, 'output.png');
   await mkdir(scratchDir, { recursive: true });
 
-  const fullPrompt = buildAgyPrompt({ prompt, negativePrompt, width, height, stagingPath });
+  const fullPrompt = buildAgyPrompt({
+    prompt, negativePrompt, width, height, stagingPath, inputImages, initImageStrength,
+  });
   const baseArgs = ensureAntigravityPrintArgs([], { model });
   const { args } = prepareAntigravityPrompt(baseArgs, fullPrompt);
   const bin = agyPath || DEFAULT_BIN;

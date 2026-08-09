@@ -297,10 +297,10 @@ describe('POST /api/image-gen/generate — multipart reference-image packing', (
     expect(refDirContents.filter((f) => f.startsWith('ref-'))).toHaveLength(0);
   });
 
-  it('rejects refs when the effective backend is not local (codex/external) — even with a FLUX.2 modelId', async () => {
-    // FLUX.2 model selected, but settings.imageGen.mode flips to a backend
-    // that doesn't consume `referenceImagePaths`. The gate must fire BEFORE
-    // any file is staged into PATHS.imageRefs.
+  it('rejects refs on the external backend, which has no input-image wiring', async () => {
+    // FLUX.2 model selected, but settings.imageGen.mode flips to the one
+    // backend that can't consume `referenceImagePaths`. The gate must fire
+    // BEFORE any file is staged into PATHS.imageRefs.
     mockedSettings = { imageGen: { mode: 'external' } };
     const res = await postMultipart(app, '/api/image-gen/generate', [
       { name: 'prompt', value: 'flux2 ref on wrong backend' },
@@ -309,10 +309,133 @@ describe('POST /api/image-gen/generate — multipart reference-image packing', (
     ]);
 
     expect(res.status).toBe(400);
-    expect(res.body.error || res.body).toMatch(/local/i);
+    expect(res.body.error || res.body).toMatch(/text-to-image only/i);
     expect(enqueueJob).not.toHaveBeenCalled();
     const refDirContents = await readdir(refsSandbox).catch(() => []);
     expect(refDirContents.filter((f) => f.startsWith('ref-'))).toHaveLength(0);
+  });
+
+  it.each(['codex', 'grok', 'agy'])('stages refs for the %s backend and threads the paths into the job', async (mode) => {
+    // The cloud CLIs each feed reference images to their own image tool, so a
+    // ref upload is honored rather than 400'd — the "local FLUX.2 only" gate
+    // that used to reject these was the bug.
+    mockedSettings = { imageGen: { mode, [mode]: { enabled: true } } };
+    const res = await postMultipart(app, '/api/image-gen/generate', [
+      { name: 'prompt', value: 'a fox in this style' },
+      { name: 'referenceImage1', filename: 'a.png', contentType: 'image/png', value: PNG_FIXTURE },
+      { name: 'referenceImage2', filename: 'b.png', contentType: 'image/png', value: PNG_FIXTURE },
+    ]);
+
+    expect(res.status).toBe(200);
+    const { params } = enqueueJob.mock.calls.at(-1)[0];
+    expect(params.mode).toBe(mode);
+    expect(params.referenceImagePaths).toHaveLength(2);
+    for (const p of params.referenceImagePaths) expect(p.startsWith(refsSandbox)).toBe(true);
+  });
+
+  it('rejects an upload for a DISABLED cloud backend before staging it', async () => {
+    // The route throws the same disabledError a few steps later, but by then
+    // the copy is in PATHS.imageRefs and the route's res.on('close') sweep
+    // covers only multer temps — so a late rejection strands the staged file.
+    mockedSettings = { imageGen: { mode: 'agy', agy: { enabled: false } } };
+    const res = await postMultipart(app, '/api/image-gen/generate', [
+      { name: 'prompt', value: 'a fox' },
+      { name: 'referenceImage1', filename: 'a.png', contentType: 'image/png', value: PNG_FIXTURE },
+    ]);
+
+    expect(res.status).toBe(400);
+    expect(res.body.code || res.body.error).toMatch(/AGY_IMAGEGEN_DISABLED|disabled/i);
+    expect(enqueueJob).not.toHaveBeenCalled();
+    await new Promise((r) => setTimeout(r, 50));
+    const refDirContents = await readdir(refsSandbox).catch(() => []);
+    expect(refDirContents.filter((f) => f.startsWith('ref-'))).toHaveLength(0);
+  });
+
+  it('rejects more input images than the backend accepts instead of silently dropping them', async () => {
+    // Agy's generate_image takes at most 3 images total. A direct API caller
+    // sending 4 used to 200 while the provider quietly kept the first 3 — and
+    // the dropped copies stayed on disk. The form caps its own slots, so this
+    // guards the non-form callers.
+    mockedSettings = { imageGen: { mode: 'agy', agy: { enabled: true } } };
+    const res = await postMultipart(app, '/api/image-gen/generate', [
+      { name: 'prompt', value: 'a fox' },
+      { name: 'referenceImage1', filename: 'a.png', contentType: 'image/png', value: PNG_FIXTURE },
+      { name: 'referenceImage2', filename: 'b.png', contentType: 'image/png', value: PNG_FIXTURE },
+      { name: 'referenceImage3', filename: 'c.png', contentType: 'image/png', value: PNG_FIXTURE },
+      { name: 'referenceImage4', filename: 'd.png', contentType: 'image/png', value: PNG_FIXTURE },
+    ]);
+
+    expect(res.status).toBe(400);
+    expect(res.body.code || res.body.error).toMatch(/TOO_MANY_INPUT_IMAGES|at most 3/i);
+    expect(enqueueJob).not.toHaveBeenCalled();
+    await new Promise((r) => setTimeout(r, 50));
+    const refDirContents = await readdir(refsSandbox).catch(() => []);
+    expect(refDirContents.filter((f) => f.startsWith('ref-'))).toHaveLength(0);
+  });
+
+  it('accepts exactly the backend cap — 3 references on agy with no init image', async () => {
+    // The boundary the gate above must NOT reject.
+    mockedSettings = { imageGen: { mode: 'agy', agy: { enabled: true } } };
+    const res = await postMultipart(app, '/api/image-gen/generate', [
+      { name: 'prompt', value: 'a fox' },
+      { name: 'referenceImage1', filename: 'a.png', contentType: 'image/png', value: PNG_FIXTURE },
+      { name: 'referenceImage2', filename: 'b.png', contentType: 'image/png', value: PNG_FIXTURE },
+      { name: 'referenceImage3', filename: 'c.png', contentType: 'image/png', value: PNG_FIXTURE },
+    ]);
+
+    expect(res.status).toBe(200);
+    expect(enqueueJob.mock.calls.at(-1)[0].params.referenceImagePaths).toHaveLength(3);
+  });
+
+  it('unlinks an already-staged ref when the prompt gate rejects a prompt-less agy render', async () => {
+    // The one throw that can fire with an upload ALREADY copied into
+    // PATHS.imageRefs: agy's tool lists `Prompt` as required, so a prompt-less
+    // agy render carrying a reference gets past the pre-stage gates, stages the
+    // file, and only then is rejected. Nothing downstream knows that file
+    // exists — the route's res.on('close') sweep is wired from the return value
+    // this throw prevents — so the throw itself has to unlink it.
+    mockedSettings = { imageGen: { mode: 'agy', agy: { enabled: true } } };
+    const tmpRoot = tmpdir();
+    const beforeTmp = new Set((await readdir(tmpRoot).catch(() => []))
+      .filter((f) => f.startsWith('upload-')));
+
+    const res = await postMultipart(app, '/api/image-gen/generate', [
+      { name: 'referenceImage1', filename: 'a.png', contentType: 'image/png', value: PNG_FIXTURE },
+    ]);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error || res.body).toMatch(/prompt is required/i);
+    expect(enqueueJob).not.toHaveBeenCalled();
+    await new Promise((r) => setTimeout(r, 50));
+    const refDirContents = await readdir(refsSandbox).catch(() => []);
+    expect(refDirContents.filter((f) => f.startsWith('ref-'))).toHaveLength(0);
+    const afterTmp = new Set((await readdir(tmpRoot).catch(() => []))
+      .filter((f) => f.startsWith('upload-')));
+    expect([...afterTmp].filter((f) => !beforeTmp.has(f))).toEqual([]);
+  });
+
+  it('deletes the multer temp when the gallery init image is missing', async () => {
+    // Same family, smaller blast radius: `initImageFile` naming a nonexistent
+    // gallery image throws BEFORE the reference loop stages anything, so only
+    // the multer temps are at risk. Reachable on every cloud backend now that
+    // they accept reference uploads.
+    mockedSettings = { imageGen: { mode: 'codex', codex: { enabled: true } } };
+    const tmpRoot = tmpdir();
+    const before = new Set((await readdir(tmpRoot).catch(() => []))
+      .filter((f) => f.startsWith('upload-')));
+
+    const res = await postMultipart(app, '/api/image-gen/generate', [
+      { name: 'prompt', value: 'a fox' },
+      { name: 'initImageFile', value: 'does-not-exist.png' },
+      { name: 'referenceImage1', filename: 'a.png', contentType: 'image/png', value: PNG_FIXTURE },
+    ]);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error || res.body).toMatch(/init image not found/i);
+    await new Promise((r) => setTimeout(r, 50));
+    const after = new Set((await readdir(tmpRoot).catch(() => []))
+      .filter((f) => f.startsWith('upload-')));
+    expect([...after].filter((f) => !before.has(f))).toEqual([]);
   });
 
   it('rejecting a non-FLUX.2 ref upload deletes the multer-staged tmp file (no os.tmpdir leak)', async () => {

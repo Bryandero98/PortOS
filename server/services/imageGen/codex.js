@@ -35,15 +35,20 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { randomUUID } from 'crypto';
-import { atomicWrite, ensureDir, PATHS, resolveImageInputPath } from '../../lib/fileUtils.js';
+import { atomicWrite, ensureDir, PATHS } from '../../lib/fileUtils.js';
 import { ServerError } from '../../lib/errorHandler.js';
 import { autoCleanGeneratedImage } from '../../lib/imageClean.js';
 import { imageGenEvents } from '../imageGenEvents.js';
 import { broadcastSse, attachSseClient as attachSse, closeJobAfterDelay } from '../../lib/sseUtils.js';
 import { killWithEscalation } from '../../lib/killWithEscalation.js';
 import { buildCodexStartupArgs, buildEffortArgs, CODEX_EFFORT_LEVELS } from '../../lib/providerModels.js';
-import { IMAGE_GEN_MODE, CODEX_IMAGEGEN_DEFAULT_MODEL, CODEX_IMAGEGEN_DEFAULT_EFFORT, describeFidelity } from './modes.js';
+import {
+  IMAGE_GEN_MODE, CODEX_IMAGEGEN_DEFAULT_MODEL, CODEX_IMAGEGEN_DEFAULT_EFFORT,
+  describeFidelity, visualReferenceRole,
+} from './modes.js';
 import { buildNoImageReason } from './noImageReason.js';
+import { resolveInputImages } from './inputImages.js';
+import { cloudPromptRequired } from './cloudProviderConfig.js';
 
 // 20 minutes — built-in `image_gen` typically returns in 30–90s, but with the
 // parallel codex lane several renders share OpenAI throughput and a single
@@ -132,14 +137,40 @@ export async function checkConnection({ codexPath } = {}) {
 const SESSION_ID_RE = /^session id:\s*([0-9a-f-]{36})/im;
 
 
-// When `initImagePath` is set we attach the file via codex CLI's `-i <FILE>`
-// flag and reshape the prompt so the `$imagegen` skill feeds the attachment
-// to `image_gen` as an input image (gpt-image-2's image-edit mode).
-// `initImageStrength` is mapped to a fidelity phrase via describeFidelity —
-// codex CLI exposes no numeric denoise knob.
+/**
+ * The `$imagegen` directive describing however many images are attached.
+ *
+ * Codex's `image_gen` tool takes `referenced_image_paths` — an ARRAY of
+ * references (probed 2026-08-09) — so an init image and the reference slots are
+ * the same kind of thing to the tool; only the wording differs. The init image
+ * leads and gets the fidelity phrase (`initImageStrength` mapped via
+ * describeFidelity — codex CLI exposes no numeric denoise knob); the rest are
+ * named as additional visual references so the model doesn't try to edit all of
+ * them at once.
+ */
+export function buildCodexAttachmentPrefix({ initPath, referenceCount, initImageStrength }) {
+  if (initPath) {
+    // Single attachment keeps the wording it has always shipped with; naming a
+    // position only makes sense once there is more than one to disambiguate.
+    const subject = referenceCount > 0 ? 'the FIRST attached image' : 'the attached reference image';
+    const refs = referenceCount > 0
+      ? ` Use the other ${referenceCount === 1 ? 'attached image' : `${referenceCount} attached images`} as ${visualReferenceRole(referenceCount)}.`
+      : '';
+    return `Edit ${subject} — ${describeFidelity(initImageStrength)}.${refs} Render target:\n`;
+  }
+  if (referenceCount > 0) {
+    const subject = referenceCount === 1 ? 'the attached image' : `all ${referenceCount} attached images`;
+    return `Generate a new image conditioned on ${subject} — use ${referenceCount === 1 ? 'it' : 'them'} as ${visualReferenceRole(referenceCount)}. Render target:\n`;
+  }
+  return '';
+}
+
+// Input images are attached via codex CLI's `-i <FILE>` flag (variadic, so all
+// of them ride one flag) and the prompt is reshaped so the `$imagegen` skill
+// feeds the attachments to `image_gen` as references.
 export async function generateImage({
   codexPath, model, effort, prompt = '', width, height, negativePrompt,
-  initImagePath, initImageStrength,
+  initImagePath, initImageStrength, referenceImagePaths = [],
   jobId: providedJobId = null,
   cleanC2PA = false,
   denoise = false,
@@ -160,18 +191,16 @@ export async function generateImage({
   const requestedEffort = (typeof effort === 'string' && effort.trim()) ? effort.trim() : CODEX_IMAGEGEN_DEFAULT_EFFORT;
   const effectiveEffort = CODEX_EFFORT_LEVELS.includes(requestedEffort) ? requestedEffort : CODEX_IMAGEGEN_DEFAULT_EFFORT;
 
-  // Defense-in-depth: HTTP routes already resolve basenames to absolute paths,
-  // but re-anchor here so any future caller can't attach an arbitrary local
-  // file via the codex CLI's `-i` flag. Mirrors imageGen/local.js — accepts
-  // the gallery, the image-refs upload dir (where init uploads are staged), and
-  // shipped visual templates.
-  const validInitImagePath = (initImagePath && typeof initImagePath === 'string')
-    ? resolveImageInputPath(initImagePath)
-    : null;
+  // Re-anchors every path to the approved image roots and caps the list at what
+  // codex's image_gen accepts — see inputImages.js.
+  const inputImages = resolveInputImages({
+    mode: IMAGE_GEN_MODE.CODEX, initImagePath, referenceImagePaths,
+  });
 
-  // An empty prompt is fine when editing an init image (the attached image is
-  // the instruction); a pure text-to-image codex render still needs a prompt.
-  if (!validInitImagePath && !prompt?.trim()) {
+  // An empty prompt is fine when an image is attached (the attachment is the
+  // instruction); a pure text-to-image codex render still needs a prompt. The
+  // per-provider rule lives on the provider spec — see cloudPromptRequired.
+  if (cloudPromptRequired(IMAGE_GEN_MODE.CODEX, inputImages.paths.length > 0) && !prompt?.trim()) {
     throw new ServerError('Prompt is required', { status: 400, code: 'VALIDATION_ERROR' });
   }
 
@@ -188,9 +217,11 @@ export async function generateImage({
   const sizeHint = (width && height) ? ` (${width}x${height})` : '';
   const qualityHint = (width >= 1536 || height >= 1536) ? ' (high quality)' : '';
   const avoidHint = negativePrompt?.trim() ? `\nAvoid: ${negativePrompt.trim()}` : '';
-  const editPrefix = validInitImagePath
-    ? `Edit the attached reference image — ${describeFidelity(initImageStrength)}. Render target:\n`
-    : '';
+  const editPrefix = buildCodexAttachmentPrefix({
+    initPath: inputImages.initPath,
+    referenceCount: inputImages.referencePaths.length,
+    initImageStrength,
+  });
   const fullPrompt = `$imagegen ${editPrefix}${prompt.trim()}${sizeHint}${qualityHint}${avoidHint}`;
 
   const bin = codexPath || DEFAULT_BIN;
@@ -212,9 +243,10 @@ export async function generateImage({
     // to `low` — also before the variadic `-i`. A user who baked an effort pin
     // into their config is respected via hasEffortFlag inside buildEffortArgs.
     ...buildEffortArgs(effectiveEffort, { command: 'codex' }),
-    ...(validInitImagePath ? ['-i', validInitImagePath] : []),
+    // `-i` is variadic, so every input image rides one flag.
+    ...(inputImages.paths.length ? ['-i', ...inputImages.paths] : []),
     '-m', effectiveModel,
-    ...(validInitImagePath ? ['--'] : []),
+    ...(inputImages.paths.length ? ['--'] : []),
     fullPrompt,
   ];
 

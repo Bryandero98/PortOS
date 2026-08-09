@@ -10,7 +10,6 @@ import {
   AGY_IMAGEGEN_DEFAULT_MODEL,
   CODEX_IMAGEGEN_DEFAULT_MODEL,
   IMAGE_GEN_MODE,
-  resolveQueueImageEditMode,
   resolveQueueImageMode,
 } from './modes.js';
 import { recordRenderPin } from '../../lib/renderTargets.js';
@@ -169,17 +168,18 @@ describe('isModeUsable', () => {
     expect(isModeUsable(settingsWith({}), 'nonsense')).toBe(false);
   });
 
-  it('refuses an edit-incapable backend for an edit render, enabled or not (#3243)', () => {
-    // Agy's generate_image takes no input image, so an i2i render routed there
-    // throws AGY_IMAGE_EDIT_UNSUPPORTED — asynchronously, inside the queue, long
-    // after the request 200'd. Enabled-ness is irrelevant: it is a capability,
-    // not a toggle.
-    const s = settingsWith({ agy: { enabled: true }, codex: { enabled: true } });
-    expect(isModeUsable(s, IMAGE_GEN_MODE.AGY)).toBe(true);
-    expect(isModeUsable(s, IMAGE_GEN_MODE.AGY, { edit: true })).toBe(false);
-    // Edit-capable backends are unaffected by the flag.
-    expect(isModeUsable(s, IMAGE_GEN_MODE.CODEX, { edit: true })).toBe(true);
-    expect(isModeUsable(s, IMAGE_GEN_MODE.LOCAL, { edit: true })).toBe(true);
+  it('allows every queueable backend for an edit render — all take input images', () => {
+    // Each backend feeds an input image to its own tool: local `--image-path`,
+    // codex `referenced_image_paths`, grok `image_edit.image`, agy
+    // `ImagePaths`. So an i2i render walks this exact ladder with no edit
+    // variant — the sole edit-incapable backend (external) isn't queueable.
+    const s = settingsWith({ agy: { enabled: true }, codex: { enabled: true }, grok: { enabled: true } });
+    for (const mode of [IMAGE_GEN_MODE.AGY, IMAGE_GEN_MODE.CODEX, IMAGE_GEN_MODE.GROK, IMAGE_GEN_MODE.LOCAL]) {
+      expect(isModeUsable(s, mode), `${mode} should be usable for an edit render`).toBe(true);
+    }
+    // Disabled-ness still gates.
+    const off = settingsWith({ agy: { enabled: false }, codex: { enabled: true } });
+    expect(isModeUsable(off, IMAGE_GEN_MODE.AGY)).toBe(false);
   });
 });
 
@@ -209,22 +209,20 @@ describe('pickUsableMode', () => {
     )).toBe(IMAGE_GEN_MODE.CODEX);
   });
 
-  it('falls a record pinned to an edit-incapable backend through to the next usable one (#3243)', () => {
-    // The bug: a series pinned to Agy rendered plain text-to-image fine, but
-    // every redraw ("use proof as base", a reference page, a refine pass)
-    // enqueued and then failed async. Falling through is the right answer, not
-    // an error — a pin is a preference, and the surrounding pins already degrade
-    // this way when a pinned backend is disabled.
+  it('keeps a record pin on an edit render — every queueable backend takes input images', () => {
+    // Agy used to fall through here (#3243) because its generate_image was
+    // believed to take no input image. Its tool schema documents `ImagePaths`
+    // ("edit, combine, or use as references"), so the pin is now honored and an
+    // edit render lands where the user asked for it.
     const s = settingsWith({ agy: { enabled: true }, codex: { enabled: true } });
     expect(pickUsableMode(s, [IMAGE_GEN_MODE.AGY])).toBe(IMAGE_GEN_MODE.AGY);
-    expect(pickUsableMode(s, [IMAGE_GEN_MODE.AGY], { edit: true })).toBe(IMAGE_GEN_MODE.CODEX);
   });
 
-  it('lands on local for an edit render when every cloud backend is edit-incapable or off (#3243)', () => {
+  it('lands on local for an edit render when every cloud backend is off', () => {
     // LOCAL is edit-capable, so the auto tail always resolves — an edit render
     // can never fall off the end of the ladder.
-    const agyOnly = settingsWith({ codex: { enabled: false }, grok: { enabled: false }, agy: { enabled: true } });
-    expect(pickUsableMode(agyOnly, [IMAGE_GEN_MODE.AGY], { edit: true })).toBe(IMAGE_GEN_MODE.LOCAL);
+    const allOff = settingsWith({ codex: { enabled: false }, grok: { enabled: false }, agy: { enabled: false } });
+    expect(pickUsableMode(allOff, [IMAGE_GEN_MODE.AGY])).toBe(IMAGE_GEN_MODE.LOCAL);
   });
 
   it('falls back to local when nothing else is usable', () => {
@@ -250,8 +248,8 @@ describe('queue mode resolution with Agy', () => {
     expect(resolveQueueImageMode(undefined, settings)).toBe(IMAGE_GEN_MODE.AGY);
   });
 
-  it('excludes Agy from image-edit fallback', () => {
-    expect(resolveQueueImageEditMode(IMAGE_GEN_MODE.AGY, settings)).toBe(IMAGE_GEN_MODE.CODEX);
+  it('uses the same ladder for image-edit work — Agy takes input images too', () => {
+    expect(resolveQueueImageMode(IMAGE_GEN_MODE.AGY, settings)).toBe(IMAGE_GEN_MODE.AGY);
   });
 });
 

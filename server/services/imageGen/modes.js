@@ -41,15 +41,29 @@ export const CLOUD_IMAGE_GEN_MODES = Object.freeze([
 // source: the prompt builders name it, the fabrication guard names it when it
 // rejects a code-drawn stand-in, and the usage card labels its quota row with
 // it — six string literals before this existed. Grok is the one backend with
-// two, picked by whether the render has a source image.
+// two, picked by whether the render has any input image.
 export const IMAGE_TOOL_NAMES = Object.freeze({
   [IMAGE_GEN_MODE.AGY]: 'generate_image',
   [IMAGE_GEN_MODE.GROK]: 'image_gen',
   [IMAGE_GEN_MODE.CODEX]: 'image_gen',
 });
 
-/** Grok's tool depends on the direction: i2i edits go to `image_edit`. */
-export const grokImageTool = (initImagePath) => (initImagePath ? 'image_edit' : IMAGE_TOOL_NAMES[IMAGE_GEN_MODE.GROK]);
+/**
+ * Grok's tool depends on the direction: anything with an input image goes to
+ * `image_edit`. Grok's `image_gen` schema has NO image parameter at all (probed
+ * 2026-08-09), so a reference-only render must route to `image_edit` too — its
+ * `image` parameter is an array of references, not a single source.
+ */
+export const grokImageTool = (hasInputImage) => (hasInputImage ? 'image_edit' : IMAGE_TOOL_NAMES[IMAGE_GEN_MODE.GROK]);
+
+/**
+ * The clause every cloud-CLI prompt uses to say what a reference image is FOR.
+ * Shared (like describeFidelity) so the three prompt builders describe
+ * reference conditioning identically and agree on singular/plural.
+ */
+export const visualReferenceRole = (count) => (count === 1
+  ? 'a visual reference for style, characters, and subject matter'
+  : 'visual references for style, characters, and subject matter');
 
 /**
  * Cloud image backends the user has enabled in Settings → Image Gen. Hoisted
@@ -66,20 +80,46 @@ export const enabledCloudImageModes = (settings) =>
 // future backend is one edit here instead of a sweep of enum literals.
 export const QUEUEABLE_IMAGE_MODES = Object.freeze([IMAGE_GEN_MODE.LOCAL, ...CLOUD_IMAGE_GEN_MODES]);
 
-// Backends that cannot take an input image at all (#3243). Agy's `generate_image`
-// tool accepts prompt / image name / aspect ratio / reference paths and exposes
-// no edit mode, so `agy.js` throws AGY_IMAGE_EDIT_UNSUPPORTED the moment an
-// initImagePath or referenceImagePaths arrives.
+// Backends that cannot take an input image at all (#3243). Every *queueable*
+// backend now can: local (mflux/diffusers `--image-path` + FLUX.2 references),
+// codex (`image_gen.referenced_image_paths`), grok (`image_edit.image`) and agy
+// (`generate_image.ImagePaths`) all accept an init image and/or reference
+// images — see `maxInputImages` on CLOUD_PROVIDER_SPECS (cloudProviderConfig.js)
+// for the probed per-backend limits. Agy
+// was listed here until its tool schema was probed directly and turned out to
+// document ImagePaths as "images to use in generation… edit, combine, or use as
+// references".
 //
-// This is the SINGLE source for that fact. It was previously encoded implicitly,
-// by `resolveQueueImageEditMode` simply never listing AGY — which is invisible to
-// any other ladder, and is why the pipeline's `pickUsableMode` ladder could route
-// an i2i redraw to Agy and fail asynchronously in the queue. A future
-// edit-incapable backend belongs here and nowhere else.
-export const EDIT_INCAPABLE_IMAGE_MODES = Object.freeze([IMAGE_GEN_MODE.AGY]);
+// The external SD-API backend is the one that genuinely has no input-image
+// wiring in this codebase, so it inherits the slot. This is the SINGLE source
+// for the fact — a future edit-incapable backend belongs here and nowhere else.
+export const EDIT_INCAPABLE_IMAGE_MODES = Object.freeze([IMAGE_GEN_MODE.EXTERNAL]);
 
-/** Can `mode` accept an input image (i2i / edit)? */
+/** Can `mode` accept an input image (i2i / edit / reference)? */
 export const isEditCapableMode = (mode) => !EDIT_INCAPABLE_IMAGE_MODES.includes(mode);
+
+/**
+ * Human-facing backend names — the server half of the client's MODE_LABELS
+ * (client/src/lib/imageGenModes.js). A map rather than a capitalization of the
+ * mode id, so a backend whose id isn't a single lowercase word ('lm-studio')
+ * still gets a real name instead of 'Lm-studio'.
+ */
+const MODE_LABELS = Object.freeze({
+  [IMAGE_GEN_MODE.LOCAL]: 'Local',
+  [IMAGE_GEN_MODE.CODEX]: 'Codex',
+  [IMAGE_GEN_MODE.GROK]: 'Grok',
+  [IMAGE_GEN_MODE.AGY]: 'Agy',
+  [IMAGE_GEN_MODE.EXTERNAL]: 'External',
+});
+
+/**
+ * Sentence-case backend name for user-facing messages ('Codex', 'Agy', …).
+ * Shared so error messages don't grow a per-backend ternary ladder each time a
+ * backend is added, and so one backend never appears under two names across
+ * the UI. Falls back to 'This' for an absent mode, which reads correctly in
+ * `editIncapableModeError`'s sentence.
+ */
+export const modeLabel = (mode) => MODE_LABELS[mode] || mode || 'This';
 
 /**
  * The one 400 for "this backend was handed an input image and cannot take one".
@@ -89,14 +129,10 @@ export const isEditCapableMode = (mode) => !EDIT_INCAPABLE_IMAGE_MODES.includes(
  * needed a fifth (#3331), so it now lives beside the predicate that decides it.
  * Every caller gates on `isEditCapableMode`, so adding a backend to
  * EDIT_INCAPABLE_IMAGE_MODES still stays a one-line change.
- *
- * The `AGY_IMAGE_EDIT_UNSUPPORTED` code keeps the name it shipped under (it is
- * the only edit-incapable backend today) so existing clients and docs still
- * match; the message names whichever backend was actually asked for.
  */
 export const editIncapableModeError = (mode) => new ServerError(
-  `${mode ? mode[0].toUpperCase() + mode.slice(1) : 'This'} Imagegen supports text-to-image only`,
-  { status: 400, code: 'AGY_IMAGE_EDIT_UNSUPPORTED' },
+  `${modeLabel(mode)} image generation supports text-to-image only`,
+  { status: 400, code: 'IMAGE_EDIT_UNSUPPORTED_MODE' },
 );
 
 // Cloud-CLI providers expose no numeric i2i denoise knob, so map the
@@ -210,10 +246,14 @@ export const LOCAL_IMAGEGEN_DEFAULT_MODEL = 'dev';
 /**
  * Resolve the queue-capable image mode for a render request: the per-request
  * override (honored only when that backend is enabled/available), else the
- * saved dispatcher default, else codex → grok → local. External never queues.
- * Hoisted from the pipeline visual stages (#2896) so sprite renders and any
- * future queued surface share one enable-gating ladder — see issue #2881 for
- * the wider param-assembly consolidation.
+ * saved dispatcher default, else codex → grok → agy → local. External never
+ * queues. Hoisted from the pipeline visual stages (#2896) so sprite renders and
+ * any future queued surface share one enable-gating ladder — see issue #2881
+ * for the wider param-assembly consolidation.
+ *
+ * There is no separate edit-mode ladder: every queueable backend accepts input
+ * images (see EDIT_INCAPABLE_IMAGE_MODES), so an i2i render resolves through
+ * this exact same ladder.
  */
 export function resolveQueueImageMode(requested, settings) {
   const codexEnabled = settings?.imageGen?.codex?.enabled === true;
@@ -231,20 +271,5 @@ export function resolveQueueImageMode(requested, settings) {
   if (codexEnabled) return IMAGE_GEN_MODE.CODEX;
   if (grokEnabled) return IMAGE_GEN_MODE.GROK;
   if (agyEnabled) return IMAGE_GEN_MODE.AGY;
-  return IMAGE_GEN_MODE.LOCAL;
-}
-
-export function resolveQueueImageEditMode(requested, settings) {
-  const codexEnabled = settings?.imageGen?.codex?.enabled === true;
-  const grokEnabled = settings?.imageGen?.grok?.enabled === true;
-  if (requested === IMAGE_GEN_MODE.CODEX && codexEnabled) return IMAGE_GEN_MODE.CODEX;
-  if (requested === IMAGE_GEN_MODE.GROK && grokEnabled) return IMAGE_GEN_MODE.GROK;
-  if (requested === IMAGE_GEN_MODE.LOCAL) return IMAGE_GEN_MODE.LOCAL;
-  const saved = settings?.imageGen?.mode;
-  if (saved === IMAGE_GEN_MODE.CODEX && codexEnabled) return IMAGE_GEN_MODE.CODEX;
-  if (saved === IMAGE_GEN_MODE.GROK && grokEnabled) return IMAGE_GEN_MODE.GROK;
-  if (saved === IMAGE_GEN_MODE.LOCAL) return IMAGE_GEN_MODE.LOCAL;
-  if (codexEnabled) return IMAGE_GEN_MODE.CODEX;
-  if (grokEnabled) return IMAGE_GEN_MODE.GROK;
   return IMAGE_GEN_MODE.LOCAL;
 }

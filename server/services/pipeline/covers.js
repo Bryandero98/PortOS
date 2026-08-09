@@ -155,7 +155,7 @@ async function enqueueComicCoverLike(issueId, target, options = {}) {
     : null;
   // Resolved AFTER the init image so a proof-as-base render skips edit-incapable
   // backends instead of failing asynchronously in the queue (#3243).
-  const mode = resolveMode(options, settings, series, { edit: Boolean(initImagePath) });
+  const mode = resolveMode(options, settings, series);
   const initImageStrength = fromProof
     ? (Number.isFinite(options.initImageStrength) ? options.initImageStrength : PROOF_AS_BASE_DEFAULT_STRENGTH)
     : undefined;
@@ -351,7 +351,7 @@ async function enqueueVolumeCoverLike(seriesId, seasonId, target, options = {}) 
     ? resolveProofInitImage(record?.proofImage, `volume ${target}`)
     : null;
   // Resolved AFTER the init image — see the issue-cover path above (#3243).
-  const mode = resolveMode(options, settings, series, { edit: Boolean(initImagePath) });
+  const mode = resolveMode(options, settings, series);
   const initImageStrength = fromProof
     ? (Number.isFinite(options.initImageStrength) ? options.initImageStrength : PROOF_AS_BASE_DEFAULT_STRENGTH)
     : undefined;

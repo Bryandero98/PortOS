@@ -103,11 +103,57 @@ describe('agy image provider', () => {
     await closeChild();
   });
 
-  it('rejects image-edit inputs before spawning', async () => {
-    await expect(agy.generateImage({
+  // resolveImageInputPath requires the file to exist under PATHS.images.
+  const stageGalleryImages = async (...names) => {
+    await mkdir(FAKE_IMAGES_DIR, { recursive: true });
+    for (const name of names) await writeFile(join(FAKE_IMAGES_DIR, name), 'fake');
+  };
+
+  it('directs an init image at the tool ImagePaths parameter with a fidelity phrase', async () => {
+    await stageGalleryImages('source.png');
+    await agy.generateImage({
       prompt: 'edit this',
       initImagePath: 'source.png',
-    })).rejects.toMatchObject({ code: 'AGY_IMAGE_EDIT_UNSUPPORTED', status: 400 });
+      initImageStrength: 0.1,
+    });
+    expect(spawnCalls).toHaveLength(1);
+    const { args } = spawnCalls[0];
+    const prompt = args[args.indexOf('--print') + 1];
+    expect(prompt).toContain('ImagePaths');
+    expect(prompt).toContain(join(FAKE_IMAGES_DIR, 'source.png'));
+    expect(prompt).toContain('the source image to edit');
+    // Low strength → composition-preserving fidelity phrase.
+    expect(prompt).toMatch(/preserve composition/i);
+    await closeChild();
+  });
+
+  it('passes reference images through in order and caps at the tool 3-image limit', async () => {
+    await stageGalleryImages('source.png', 'ref-a.png', 'ref-b.png', 'ref-c.png', 'ref-d.png');
+    await agy.generateImage({
+      prompt: 'a fox',
+      initImagePath: 'source.png',
+      referenceImagePaths: ['ref-a.png', 'ref-b.png', 'ref-c.png', 'ref-d.png'],
+    });
+    const { args } = spawnCalls[0];
+    const prompt = args[args.indexOf('--print') + 1];
+    const listed = prompt.slice(prompt.indexOf('ImagePaths parameter, in this order: ')).split('\n')[0];
+    expect(listed).toContain(join(FAKE_IMAGES_DIR, 'source.png'));
+    expect(listed).toContain(join(FAKE_IMAGES_DIR, 'ref-a.png'));
+    expect(listed).toContain(join(FAKE_IMAGES_DIR, 'ref-b.png'));
+    // generate_image accepts at most 3 — the trailing references drop out
+    // rather than being sent and silently ignored.
+    expect(listed).not.toContain('ref-c.png');
+    expect(listed).not.toContain('ref-d.png');
+    expect(prompt).toContain('visual references');
+    await closeChild();
+  });
+
+  it('still requires a prompt even with input images (Prompt is a required tool param)', async () => {
+    await stageGalleryImages('source.png');
+    await expect(agy.generateImage({
+      prompt: '',
+      initImagePath: 'source.png',
+    })).rejects.toMatchObject({ code: 'VALIDATION_ERROR', status: 400 });
     expect(spawnCalls).toHaveLength(0);
   });
 
