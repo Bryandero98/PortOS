@@ -79,7 +79,7 @@ describe('expandWorldTemplate reasoning effort', () => {
       .mockResolvedValueOnce({
         text: JSON.stringify({
           logline: 'A repaired world.',
-          premise: 'x'.repeat(4_001),
+          premise: 'x'.repeat(8_001),
           styleNotes: 'Specific and tactile.',
         }),
         runId: 'run-oversized',
@@ -103,9 +103,9 @@ describe('expandWorldTemplate reasoning effort', () => {
     });
 
     expect(runPromptThroughProviderMock).toHaveBeenCalledTimes(2);
-    expect(runPromptThroughProviderMock.mock.calls[1][0].prompt).toContain('premise exceeds 4000 characters (got 4001)');
+    expect(runPromptThroughProviderMock.mock.calls[1][0].prompt).toContain('premise exceeds 8000 characters (got 8001)');
     expect(runPromptThroughProviderMock.mock.calls[1][0].prompt).toContain(`"premise": "${'x'.repeat(200)}`);
-    expect(runPromptThroughProviderMock.mock.calls[1][0].prompt).toContain('premise: at most 3600 characters');
+    expect(runPromptThroughProviderMock.mock.calls[1][0].prompt).toContain('premise: at most 7200 characters');
     expect(runPromptThroughProviderMock.mock.calls[1][0].prompt).toContain('Do not cut off a sentence');
     expect(runPromptThroughProviderMock.mock.calls[1][0].prompt).not.toContain('# Starter idea');
     expect(result.premise).toBe('Trade, authority, and travel now end in a complete rule.');
@@ -117,7 +117,7 @@ describe('expandWorldTemplate reasoning effort', () => {
       .mockResolvedValueOnce({
         text: JSON.stringify({
           logline: 'A repaired world.',
-          premise: 'a'.repeat(5_000),
+          premise: 'a'.repeat(9_000),
           styleNotes: 'Specific and tactile.',
         }),
         runId: 'run-oversized',
@@ -125,7 +125,7 @@ describe('expandWorldTemplate reasoning effort', () => {
       .mockResolvedValueOnce({
         text: JSON.stringify({
           logline: 'A repaired world.',
-          premise: 'b'.repeat(4_200),
+          premise: 'b'.repeat(8_200),
           styleNotes: 'Specific and tactile.',
         }),
         runId: 'run-still-oversized',
@@ -150,7 +150,7 @@ describe('expandWorldTemplate reasoning effort', () => {
 
     expect(runPromptThroughProviderMock).toHaveBeenCalledTimes(3);
     expect(runPromptThroughProviderMock.mock.calls[2][0].prompt).toContain(`"premise": "${'b'.repeat(200)}`);
-    expect(runPromptThroughProviderMock.mock.calls[2][0].prompt).toContain('premise: at most 3200 characters');
+    expect(runPromptThroughProviderMock.mock.calls[2][0].prompt).toContain('premise: at most 6400 characters');
     expect(runPromptThroughProviderMock.mock.calls[2][0].prompt).not.toContain(`"premise": "${'a'.repeat(200)}`);
     expect(result.premise).toBe('A complete, compact operating rule.');
   });

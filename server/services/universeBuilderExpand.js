@@ -118,9 +118,9 @@ ${influencesSection}${currentStateSection}${foundationSection}
 # Output contract
 Return one JSON object with exactly these top-level keys and no others:
 
-- logline: string, one sentence (max 500 characters).
-- premise: string, 1-3 concise paragraphs (max 4000 characters) defining the setting, conflict, stakes, and every operational rule needed to satisfy the repair directive.
-- styleNotes: string (max 4000 characters) preserving the established tonal and sensory identity while making any worldbuilding guidance concrete enough for writers to apply.
+- logline: string, one sentence (max ${LOGLINE_MAX} characters).
+- premise: string, 1-3 concise paragraphs (max ${PREMISE_MAX} characters) defining the setting, conflict, stakes, and every operational rule needed to satisfy the repair directive.
+- styleNotes: string (max ${STYLE_NOTES_MAX} characters) preserving the established tonal and sensory identity while making any worldbuilding guidance concrete enough for writers to apply.
 
 # Repair rules
 - Resolve the judge's exact contradiction or omission. Do not answer it with extra lore that leaves the named causal problem intact.
@@ -165,9 +165,9 @@ ${influencesSection}${currentStateSection}${foundationSection}${preservedSection
 # Output contract
 Return a SINGLE JSON object. NO markdown, NO commentary. The object MUST have these top-level keys:
 
-- logline:        string. ONE sentence (≤500 chars) capturing the universe's central tension/hook — protagonist-agnostic if no protagonist is implied. Example: "A foundry city goes silent — and the only survivor is a child."
-- premise:        string. 1-3 short paragraphs (≤4000 chars total) describing the setting, the central conflict or situation, the stakes, and the tone. Write it as the elevator pitch a showrunner would hand to a writers' room. No bullet points; prose only.
-- styleNotes:     string. A prose paragraph (≤4000 chars) describing the visual + tonal style for the story bible — references (artists, films, comics, games), mood, palette, pacing, narrative voice. This is read by writers + creative directors, not the image model, so use full sentences instead of comma-separated tokens.
+- logline:        string. ONE sentence (≤${LOGLINE_MAX} chars) capturing the universe's central tension/hook — protagonist-agnostic if no protagonist is implied. Example: "A foundry city goes silent — and the only survivor is a child."
+- premise:        string. 1-3 short paragraphs (≤${PREMISE_MAX} chars total) describing the setting, the central conflict or situation, the stakes, and the tone. Write it as the elevator pitch a showrunner would hand to a writers' room. No bullet points; prose only.
+- styleNotes:     string. A prose paragraph (≤${STYLE_NOTES_MAX} chars) describing the visual + tonal style for the story bible — references (artists, films, comics, games), mood, palette, pacing, narrative voice. This is read by writers + creative directors, not the image model, so use full sentences instead of comma-separated tokens.
 - influences:     object { "embrace": [string], "avoid": [string] }. THIS IS THE UNIVERSE'S STYLE + NEGATIVE PROMPT. Each list is a set of short prompt tokens (max 120 chars each, max 30 per list). The "embrace" list is joined verbatim as the positive style prompt prepended to every render (palette, lighting, render quality, artist references — e.g. "moebius linework", "cel-shading", "dust palette"). The "avoid" list is joined verbatim as the negative prompt (e.g. "blurry", "lowres", "watermark", "extra fingers"). Use short token-style labels, NOT full sentences. When influence input is provided above, preserve those entries unless the starter idea explicitly contradicts them.
 - characters: array. Named cast members central to this universe. Each item has { "name": string (max 120 chars), "physicalDescription": string (max 1000 chars, what they look like — face, build, age range, distinguishing marks), "personality": string (max 600 chars), "background": string (max 800 chars, where they come from + role in the world), "prompt": string (max 400 chars, the render-prompt fragment used for reference images), "tags": [string] (1-3 short labels like "protagonist", "antagonist", "supporting") }. Generate 0-8 leads. Distinct from category "variations" (which are exploratory render prompts) — these are first-class entities that downstream pipeline stages address by name.
 - places: array. Named recurring places in this universe. Each item has { "name": string (max 120 chars, human label like "Foundry City"), "slugline": string (max 120 chars, screenplay-style location header like "EXT. FOUNDRY CITY — DAY"), "description": string (max 1000 chars), "palette": string (max 300 chars, dominant colors), "recurringDetails": string (max 600 chars, recognizable motifs that recur across scenes), "prompt": string (max 400 chars, render-prompt fragment), "tags": [string] }. Generate 0-8 key places.
