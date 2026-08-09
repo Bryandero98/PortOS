@@ -48,6 +48,11 @@ const arcSpies = {
   verifyArc: vi.fn(async () => ({ issues: verifyFindings })),
   verifyVolume: vi.fn(async () => ({ issues: volumeVerifyFindings })),
   resolveVerifyIssues: vi.fn(async () => ({ applied: true })),
+  // Resolve-round rollback. The real snapshot/restore pair is covered
+  // against the store in arcPlanner.test.js; here they're stubbed so the
+  // conductor tests assert the LOOP's decision — when a round gets reverted.
+  snapshotArcState: vi.fn(async (sId) => ({ seriesId: sId, arc: null, seasons: [], episodes: [] })),
+  restoreArcState: vi.fn(async () => ({ restored: true, episodesRestored: 0, reassignedIssueCount: 0 })),
   analyzeBeatContinuity: vi.fn(async () => ({ issues: beatContinuityFindings })),
   resolveBeatContinuity: vi.fn(async () => ({ applied: true, episodesResolved: [] })),
   analyzeManuscriptCompleteness: vi.fn(async () => ({ issues: editorialFindings, runId: 'run-comp' })),
@@ -1291,6 +1296,51 @@ describe('trackConvergence (pure divergence/oscillation guard — #1571)', () =>
   });
 });
 
+describe('isResolveRegression (pure resolve-round damage check)', () => {
+  const { isResolveRegression, findingFingerprint } = autopilot;
+  const f = (problem, location = 'V1', severity = 'high') => ({ severity, location, problem });
+
+  it('flags a round that grew the blocking set while leaving what it targeted standing', () => {
+    // The observed shape: one finding in, three out, the original still there.
+    expect(isResolveRegression([f('both volumes stage the first eclipse')], [
+      f('both volumes stage the first eclipse'),
+      f('volume 3 drops the mentor subplot', 'V3'),
+      f('finale hook never pays off', 'V4'),
+    ])).toBe(true);
+  });
+
+  it('lets a round stand when it closed everything it targeted, even if latent findings surfaced', () => {
+    // Growth alone is not damage — this round did its job and exposed work that
+    // was already there. The divergence guard picks it up if the loop stalls.
+    expect(isResolveRegression([f('both volumes stage the first eclipse')], [
+      f('volume 3 drops the mentor subplot', 'V3'),
+      f('finale hook never pays off', 'V4'),
+    ])).toBe(false);
+  });
+
+  it('never flags a round that held the line or improved', () => {
+    const before = [f('a'), f('b', 'V2')];
+    expect(isResolveRegression(before, before)).toBe(false);          // stalled → divergence guard's job
+    expect(isResolveRegression(before, [f('a')])).toBe(false);        // improved
+    expect(isResolveRegression(before, [])).toBe(false);              // cleared
+  });
+
+  it('tolerates missing/garbage inputs', () => {
+    expect(isResolveRegression(undefined, undefined)).toBe(false);
+    expect(isResolveRegression(null, [f('a')])).toBe(false);
+  });
+
+  it('fingerprints through the verifier re-wording its prose', () => {
+    // Same finding, re-punctuated and re-cased between two verify calls — a raw
+    // string match would read the second as brand new and miss the regression.
+    expect(findingFingerprint({ severity: 'high', location: 'V1', problem: 'Both volumes stage the first eclipse.' }))
+      .toBe(findingFingerprint({ severity: 'HIGH', location: 'v1', problem: 'both   volumes stage the first eclipse' }));
+    // Different location is a different finding.
+    expect(findingFingerprint({ severity: 'high', location: 'V1', problem: 'x' }))
+      .not.toBe(findingFingerprint({ severity: 'high', location: 'V2', problem: 'x' }));
+  });
+});
+
 describe('autopilot conductor', () => {
   it('rejects start when the cos domain is off (no run created)', async () => {
     cosMode = 'off';
@@ -1613,6 +1663,71 @@ describe('autopilot conductor', () => {
     expect(series.autopilot?.status).toBe('paused');
     // Persisted through sanitizeAutopilot so the resume banner survives a reload.
     expect(series.autopilot?.pauseKind).toBe('divergence');
+  });
+
+  it('reverts an arc-resolve round that introduced blocking findings and pauses on the pre-round residual', async () => {
+    // The 2026-08-09 non-convergence, replayed: the loop hands the resolver ONE
+    // blocking finding and gets 3 back, then 5 — with the original still
+    // standing every round. Before this guard all of that damage was committed
+    // and the run paused on 5 findings the user never had. Now round 2's verify sees the
+    // regression, puts the pre-resolve arc back, and pauses on the original 1.
+    const original = { severity: 'high', problem: 'volume 1 and volume 2 both stage the first eclipse', location: 'V1' };
+    const extra = (i) => ({ severity: 'high', problem: `collateral break ${i}`, location: `V${i + 2}` });
+    const round = (n) => ({ issues: [original, ...Array.from({ length: n - 1 }, (_, i) => extra(i))] });
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => round(1))
+      .mockImplementationOnce(async () => round(3))
+      .mockImplementationOnce(async () => round(5));
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6 });
+    await waitFor(runFinished(seriesId));
+
+    // Bailed at round 2 — the 5-finding third round never runs, so neither the
+    // verify nor another resolve is billed against the budget.
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(2);
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(1);
+    // The snapshot taken before that resolve is what gets handed back.
+    expect(arcSpies.snapshotArcState).toHaveBeenCalledTimes(1);
+    expect(arcSpies.restoreArcState).toHaveBeenCalledWith(
+      seriesId,
+      await arcSpies.snapshotArcState.mock.results[0].value,
+    );
+
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.type).toBe('paused');
+    expect(last?.scope).toBe('verifyArc');
+    expect(last?.pauseKind).toBe('regression');
+    expect(last?.reason).toMatch(/reverted/);
+    // Residual is what the user had BEFORE the round, not the 3 it manufactured.
+    expect(last?.residualFindings).toEqual([original]);
+    const series = await seriesSvc.getSeries(seriesId);
+    expect(series.autopilot?.status).toBe('paused');
+    expect(series.autopilot?.pauseKind).toBe('regression');
+    expect(series.autopilot?.residualFindings).toHaveLength(1);
+  });
+
+  it('keeps a round that closed what it targeted, even when new findings surface', async () => {
+    // Guard against the over-strict rollback: this round DID clear the finding
+    // it was handed, and the two that follow were latent underneath. Reverting
+    // it would throw away real progress, so the loop keeps the edits and falls
+    // through to the existing divergence guard when it stops improving.
+    const first = { severity: 'high', problem: 'first eclipse staged twice', location: 'V1' };
+    const latent = [
+      { severity: 'high', problem: 'mentor subplot never pays off', location: 'V3' },
+      { severity: 'high', problem: 'finale hook is unresolved', location: 'V4' },
+    ];
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => ({ issues: [first] }))
+      .mockImplementationOnce(async () => ({ issues: latent }))
+      .mockImplementationOnce(async () => ({ issues: latent }));
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6 });
+    await waitFor(runFinished(seriesId));
+
+    expect(arcSpies.restoreArcState).not.toHaveBeenCalled();
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.pauseKind).toBe('divergence');
+    expect(last?.residualFindings).toEqual(latent);
   });
 
   it('a default-cap arc run is unaffected by the divergence guard (maxRounds still wins)', async () => {

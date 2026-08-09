@@ -395,6 +395,19 @@ describe('AutopilotPanel', () => {
     expect(screen.queryByText(/not converging/i)).not.toBeInTheDocument();
   });
 
+  it('flags a reverted auto-resolve round with a "round reverted" badge', async () => {
+    // The draft is back to its pre-round state — say so, or the user has no way
+    // to tell this pause apart from one that left the round's edits in place.
+    renderPanel({
+      id: 's1',
+      targetFormat: 'comic',
+      autopilot: { status: 'paused', currentStep: 'verifyArc', pauseKind: 'regression' },
+    });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    expect(screen.getByText(/round reverted/i)).toBeInTheDocument();
+    expect(screen.queryByText(/not converging/i)).not.toBeInTheDocument();
+  });
+
   it('flags an editorial-checks pause with a "high findings" badge (#1613)', async () => {
     renderPanel({
       id: 's1',
