@@ -5,7 +5,10 @@
 
 import { recordDomainUsage } from '../../domainUsage.js';
 import { getSeries } from '../series.js';
-import { generateArcOverview, commitSeasonsWithRemap, generateSeasonEpisodes, commitEpisodesToIssues } from '../arcPlanner.js';
+import {
+  generateArcOverview, commitSeasonsWithRemap, generateSeasonEpisodes, commitEpisodesToIssues,
+  hasDuplicateSeasonNumbers,
+} from '../arcPlanner.js';
 import { providerOverrideOpts, seasonPreserveOpts } from './session.js';
 import { runArcVerify, runBeats, runBeatContinuity, runFoundationGate, runText } from './childRuns.js';
 import { runScriptVerify, runEditorial, runReverseOutlineRefresh, runEditorialChecksPass, runEditorialHealthGate } from './editorialSteps.js';
@@ -35,6 +38,39 @@ export async function dispatchStep(sId, step, record) {
           pause: true,
           reason: 'arc generation produced no volumes — cannot create issues; review the series bible and regenerate the arc',
           residual: [{ severity: 'high', location: 'arc', problem: 'arc overview returned zero seasons/volumes' }],
+        };
+      }
+      return {};
+    }
+    case 'repairArcStructure': {
+      const current = await getSeries(sId);
+      // commitSeasonsWithRemap owns the safe duplicate-collapse + child remap,
+      // but correctly refuses every arc write while the arc freeze is set. Pause
+      // here with an actionable reason rather than turning a deterministic
+      // preflight into a generic run error (or, worse, seeding duplicate volumes).
+      if (current.locked?.arc === true) {
+        return {
+          pause: true,
+          pauseKind: 'inapplicable',
+          reason: 'Duplicate volume records must be normalized before issue generation, but the arc is locked. Resume with full edit control enabled.',
+          residual: [{ severity: 'high', location: 'series volumes', problem: 'duplicate volume numbers are blocked from repair by the arc lock' }],
+        };
+      }
+      const committed = await commitSeasonsWithRemap(
+        current,
+        { arc: current.arc, seasons: current.seasons },
+        seasonPreserveOpts(record),
+      );
+      const repaired = committed?.series ?? await getSeries(sId);
+      // Two user-locked duplicates are deliberately not collapsed by the shared
+      // helper. Stop before generation and ask for the same explicit full-control
+      // consent that clears those locks; never fill malformed records with work.
+      if (hasDuplicateSeasonNumbers(repaired.seasons)) {
+        return {
+          pause: true,
+          pauseKind: 'inapplicable',
+          reason: 'Duplicate volume records are still locked and could not be normalized. Resume with full edit control enabled.',
+          residual: [{ severity: 'high', location: 'series volumes', problem: 'multiple locked records share a volume number' }],
         };
       }
       return {};

@@ -6,7 +6,7 @@
 
 import { parseComicScript } from '../../../lib/comicScriptParser.js';
 import { isStageReady } from '../issues.js';
-import { compareIssuesByPosition } from '../arcPlanner.js';
+import { compareIssuesByPosition, hasDuplicateSeasonNumbers } from '../arcPlanner.js';
 import { wantsTeaser, wantsVisual } from './config.js';
 import { VISUAL_DRAFT_ENABLED } from './convergence.js';
 
@@ -163,6 +163,17 @@ export function resolveNextStep(series, issues, runState = {}, options = {}) {
   const noArc = !series?.arc?.logline && !series?.arc?.summary;
   if (!runState.arcAttempted && (noArc || seasons.length === 0)) {
     return { kind: 'generateArc', reason: seasons.length === 0 && !noArc ? 'series has no volumes' : 'series has no arc' };
+  }
+
+  // STEP 1.5 — deterministic structural preflight. A prior arc rewrite could
+  // leave two records with the same volume number; some of those duplicates are
+  // commonly empty. Seeding their episodes first would manufacture throwaway
+  // issues before arc verification eventually reports the duplicate. Normalize
+  // the records before ANY empty-volume generation instead. The dispatcher uses
+  // commitSeasonsWithRemap, whose duplicate collapse keeps the issue-bearing
+  // survivor and re-points any children from absorbed records.
+  if (hasDuplicateSeasonNumbers(seasons)) {
+    return { kind: 'repairArcStructure', reason: 'duplicate volume numbers must be normalized before issue generation' };
   }
 
   // STEP 2 — a season with zero issues (in season order). Skip volumes already

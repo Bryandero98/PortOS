@@ -238,6 +238,7 @@ const SEVERITY_COLORS = {
 const STEP_LABELS = {
   unlockLocks: 'Unlocking series records',
   generateArc: 'Generating arc',
+  repairArcStructure: 'Repairing volume structure',
   generateEpisodes: 'Generating episodes',
   verifyArc: 'Verifying arc',
   foundationGate: 'Judging foundation',

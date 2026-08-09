@@ -199,6 +199,7 @@ const seasonsSvc = await import('./seasons.js');
 const issuesSvc = await import('./issues.js');
 const autopilot = await import('./seriesAutopilot.js');
 const arcPlanner = await import('./arcPlanner.js');
+const { commitSeasonsWithRemap: realCommitSeasonsWithRemap } = await import('./arcPlanner/arcCore.js');
 const { stageContentOf } = await import('./textStages.js');
 const { resolveNextStep, requiredScriptStages, scriptStructurallyReady, visualReady, wantsComic } = autopilot;
 
@@ -424,6 +425,31 @@ describe('resolveNextStep (pure)', () => {
     expect(resolveNextStep(arcOnly, []).kind).toBe('generateArc');
     // once arc generation has been attempted, it does not re-loop into generateArc
     expect(resolveNextStep(arcOnly, [], { arcAttempted: true }).kind).not.toBe('generateArc');
+  });
+
+  it('repairs duplicate volume numbers before generating episodes for empty duplicates', () => {
+    const duplicate = {
+      targetFormat: 'comic', arc: { logline: 'L', summary: 'S' },
+      seasons: [{ id: 'se1', number: 1 }, { id: 'dup1', number: 1 }, { id: 'dup2', number: 1 }],
+    };
+    const step = resolveNextStep(duplicate, [
+      { id: 'i1', seasonId: 'se1', number: 1, arcPosition: 1, stages: {} },
+    ]);
+    expect(step.kind).toBe('repairArcStructure');
+  });
+
+  it('dry-run previews duplicate-volume repair without charging episode generation for absorbed records', () => {
+    const duplicate = {
+      targetFormat: 'comic', arc: { logline: 'L', summary: 'S' },
+      // A lock makes the empty first record the survivor; the issue-bearing
+      // duplicate is absorbed and its issue must be projected onto that survivor.
+      seasons: [{ id: 'se1', number: 1, locked: true }, { id: 'dup1', number: 1 }],
+    };
+    const plan = autopilot.__testing.buildDryRunPlan(duplicate, [
+      { id: 'i1', seasonId: 'dup1', number: 1, arcPosition: 1, stages: {} },
+    ], {});
+    expect(plan[0]).toMatchObject({ kind: 'repairArcStructure', estActions: 0 });
+    expect(plan.some((entry) => entry.kind === 'generateEpisodes')).toBe(false);
   });
 
   it('dry-run plan includes generateArc for an arc-only series (parity with execute)', () => {
@@ -811,6 +837,14 @@ describe('resolveNextStep — unlock pre-pass ordering', () => {
   });
   it('runs at most once per run (latched by runState.locksUnlocked)', () => {
     expect(resolveNextStep(bare, [], { locksUnlocked: true }, { unlockForRun: true }).kind).toBe('generateArc');
+  });
+  it('unlocks before repairing duplicate volume structure', () => {
+    const duplicate = {
+      targetFormat: 'comic', arc: { logline: 'L', summary: 'S' },
+      seasons: [{ id: 'se1', number: 1, locked: true }, { id: 'dup1', number: 1, locked: true }],
+    };
+    expect(resolveNextStep(duplicate, [], {}, { unlockForRun: true }).kind).toBe('unlockLocks');
+    expect(resolveNextStep(duplicate, [], { locksUnlocked: true }, { unlockForRun: true }).kind).toBe('repairArcStructure');
   });
 });
 
@@ -1256,6 +1290,33 @@ async function seedComplete({ script = VALID_SCRIPT } = {}) {
   await issuesSvc.updateStage(issue.id, 'comicScript', ready(script));
   return { seriesId: series.id, seasonId, issueId: issue.id };
 }
+
+it('normalizes duplicate volume records before the conductor can seed their empty copies', async () => {
+  const { seriesId, seasonId } = await seedComplete();
+  const current = await seriesSvc.getSeries(seriesId);
+  const canonical = current.seasons.find((season) => season.id === seasonId);
+  await seriesSvc.updateSeries(seriesId, {
+    seasons: [
+      ...current.seasons,
+      { ...canonical, id: 'duplicate-volume-a', locked: false },
+      { ...canonical, id: 'duplicate-volume-b', locked: false },
+    ],
+  });
+  // The suite normally stubs this persistence boundary so conductor tests can
+  // isolate LLM behavior. Use the real deterministic commit once here: the
+  // arcPlanner store tests cover the collapse itself, while this pins the new
+  // resolver → dispatcher ordering around it.
+  arcSpies.commitSeasonsWithRemap.mockImplementationOnce(realCommitSeasonsWithRemap);
+
+  await autopilot.startSeriesAutopilot(seriesId, { includeVisual: false });
+  await waitFor(runFinished(seriesId));
+
+  const repaired = await seriesSvc.getSeries(seriesId);
+  expect(repaired.seasons).toHaveLength(1);
+  expect(repaired.seasons[0].id).toBe(seasonId);
+  expect(arcSpies.generateSeasonEpisodes).not.toHaveBeenCalled();
+  expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('complete');
+});
 
 describe('trackConvergence (pure divergence/oscillation guard — #1571)', () => {
   const { trackConvergence, DIVERGENCE_PATIENCE } = autopilot;

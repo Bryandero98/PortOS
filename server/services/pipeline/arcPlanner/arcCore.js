@@ -859,7 +859,7 @@ export function hasDuplicateSeasonNumbers(seasons) {
  * which freeze was intended. Those groups keep warning every write, which is
  * the correct nag.
  */
-export function collapseDuplicateSeasonNumbers(seasons, issueCountBySeasonId = new Map()) {
+export function collapseDuplicateSeasonNumbers(seasons, issueCountBySeasonId = new Map(), { log = true } = {}) {
   const absorbed = new Map();
   if (!Array.isArray(seasons)) return { seasons, absorbed };
   const byNumber = new Map();
@@ -878,9 +878,11 @@ export function collapseDuplicateSeasonNumbers(seasons, issueCountBySeasonId = n
     }
     const lockedCount = group.filter((s) => s.locked === true).length;
     if (lockedCount > 1) {
-      console.warn(
-        `⚠️ collapseDuplicateSeasonNumbers: volume ${number} has ${group.length} records including ${lockedCount} locked — left intact, unlock all but one to collapse`,
-      );
+      if (log) {
+        console.warn(
+          `⚠️ collapseDuplicateSeasonNumbers: volume ${number} has ${group.length} records including ${lockedCount} locked — left intact, unlock all but one to collapse`,
+        );
+      }
       survivors.push(...group);
       continue;
     }
@@ -894,9 +896,11 @@ export function collapseDuplicateSeasonNumbers(seasons, issueCountBySeasonId = n
     for (const s of group) {
       if (s.id !== survivor.id) absorbed.set(s.id, survivor.id);
     }
-    console.warn(
-      `⚠️ collapseDuplicateSeasonNumbers: volume ${number} had ${group.length} records — kept ${survivor.id} (${episodes(survivor)} episode(s)), absorbed ${group.length - 1} into it`,
-    );
+    if (log) {
+      console.warn(
+        `⚠️ collapseDuplicateSeasonNumbers: volume ${number} had ${group.length} records — kept ${survivor.id} (${episodes(survivor)} episode(s)), absorbed ${group.length - 1} into it`,
+      );
+    }
   }
   // Re-sort: `sanitizeSeasonList`'s number ordering is the contract consumers
   // render straight from, and the group walk above emits in first-seen order.

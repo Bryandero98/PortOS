@@ -5,6 +5,7 @@
  */
 
 import { isStageReady } from '../issues.js';
+import { collapseDuplicateSeasonNumbers, hasDuplicateSeasonNumbers } from '../arcPlanner.js';
 import { resolveReadinessGate } from '../editorialScore.js';
 import {
   MAX_ARC_VERIFY_ROUNDS, MAX_FOUNDATION_ROUNDS, MAX_BEAT_CONTINUITY_ROUNDS, MAX_EDITORIAL_ROUNDS,
@@ -31,8 +32,8 @@ import { countSeriesLocks } from './unlockPass.js';
 // estimates a single LLM check.
 export function buildDryRunPlan(series, issues, options, costContext = {}) {
   const plan = [];
-  const ordered = orderedIssues(issues);
-  const seasons = Array.isArray(series?.seasons) ? [...series.seasons].sort(byNumber) : [];
+  let ordered = orderedIssues(issues);
+  let seasons = Array.isArray(series?.seasons) ? [...series.seasons].sort(byNumber) : [];
   // Unlock pre-pass (opt-in). Costs nothing — it only clears lock bits — but it
   // is the one step that MUTATES records the user froze by hand, so the dry-run
   // plan must name it (and how many locks it would clear) before they commit.
@@ -51,6 +52,43 @@ export function buildDryRunPlan(series, issues, options, costContext = {}) {
   // no volumes at all (an arc-only series), so a dry-run plan must show it too.
   const noArc = !series?.arc?.logline && !series?.arc?.summary;
   if (noArc || seasons.length === 0) plan.push({ kind: 'generateArc', count: 1, estActions: 1 });
+  // A present arc with duplicate volume numbers takes the deterministic repair
+  // path before any empty-volume episode generation. Preview that collapse so
+  // the plan does not advertise LLM calls for malformed records that execute
+  // will absorb. When locks would block the repair, the execute run pauses at
+  // this step, so downstream work is intentionally omitted from the plan.
+  if (!noArc && seasons.length > 0 && hasDuplicateSeasonNumbers(seasons)) {
+    const issueCounts = new Map();
+    for (const issue of ordered) {
+      if (issue.seasonId) issueCounts.set(issue.seasonId, (issueCounts.get(issue.seasonId) || 0) + 1);
+    }
+    const previewInput = options?.unlockForRun === true
+      ? seasons.map((season) => ({ ...season, locked: false }))
+      : seasons;
+    const preview = collapseDuplicateSeasonNumbers(previewInput, issueCounts, { log: false });
+    const blocked = (series?.locked?.arc === true && options?.unlockForRun !== true)
+      || hasDuplicateSeasonNumbers(preview.seasons);
+    plan.push({
+      kind: 'repairArcStructure',
+      count: 1,
+      note: blocked
+        ? 'normalize duplicate volume numbers before issue generation — pauses until full edit control clears the blocking locks'
+        : 'normalize duplicate volume numbers and keep their existing issues attached before generation',
+      estActions: 0,
+    });
+    if (blocked) return plan;
+    seasons = preview.seasons;
+    // Execute re-points children of an absorbed duplicate to the survivor in the
+    // same commit. Mirror that projected identity here so the later empty-volume
+    // and beat-sheet counts do not charge work for a survivor that will already
+    // own those issues once the repair lands.
+    if (preview.absorbed.size) {
+      ordered = ordered.map((issue) => {
+        const survivorId = preview.absorbed.get(issue.seasonId);
+        return survivorId ? { ...issue, seasonId: survivorId } : issue;
+      });
+    }
+  }
   const emptySeasons = seasons.filter((s) => !ordered.some((i) => i.seasonId === s.id));
   if (emptySeasons.length) plan.push({ kind: 'generateEpisodes', count: emptySeasons.length, estActions: emptySeasons.length });
   // Foundation runs first at synopsis altitude. Arc/volume repairs and
