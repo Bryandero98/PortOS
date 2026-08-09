@@ -41,8 +41,8 @@ import { PATHS, atomicWrite, ensureDir, tryReadFile, safeJSONParse } from '../..
 import { runStagedLLM, resolveStageContext, resolveJudgeForStage } from '../../lib/stageRunner.js';
 import { manuscriptContentBudgetChars, estimateTokens } from '../../lib/contextBudget.js';
 import { getStage } from '../promptService.js';
-import { composeStyleNotes, sanitizeStyleGuide } from '../../lib/styleGuide.js';
-import { sanitizeCharacterArcList } from '../../lib/seriesCharacterArc.js';
+import { composeStyleNotes, sanitizeStyleGuide, STYLE_GUIDE_LIMITS } from '../../lib/styleGuide.js';
+import { renderCharacterArcsForPrompt, sanitizeCharacterArcList } from '../../lib/seriesCharacterArc.js';
 import { BIBLE_SOURCE, sanitizeCharacter } from '../../lib/storyBible.js';
 import { renderEntitiesSummary } from '../../lib/universePromptRenderers.js';
 import { getUniverse, updateUniverse } from '../universeBuilder.js';
@@ -447,7 +447,7 @@ const joinedLength = (lines) => lines.reduce((total, line) => total + line.lengt
  * Unbudgeted (the default) the output is byte-identical to the pre-budget
  * render, so the foundation judge's own section-level truncation is unchanged.
  */
-function renderArc(series, issues = [], { maxChars = Infinity } = {}) {
+function renderArc(series, issues = [], { maxChars = Infinity, includeArcTransitions = false } = {}) {
   const arc = series?.arc || {};
   const seasons = Array.isArray(series?.seasons) ? [...series.seasons].sort((a, b) => (a.number || 0) - (b.number || 0)) : [];
   const orderedIssues = [...(Array.isArray(issues) ? issues : [])]
@@ -475,8 +475,12 @@ function renderArc(series, issues = [], { maxChars = Infinity } = {}) {
   });
   const characterArcs = Array.isArray(series?.characterArcs) ? series.characterArcs : [];
   const tail = ['', `Authored character arcs (${characterArcs.length}):`];
-  for (const characterArc of characterArcs) {
-    tail.push(`  - ${characterArc.characterName || characterArc.characterId || 'Unnamed'}: ${characterArc.startState || '(no start)'} → ${characterArc.endState || '(no end)'}; want=${characterArc.want || '—'}; need=${characterArc.need || '—'}`);
+  if (includeArcTransitions) {
+    tail.push(renderCharacterArcsForPrompt(characterArcs) || '(none)');
+  } else {
+    for (const characterArc of characterArcs) {
+      tail.push(`  - ${characterArc.characterName || characterArc.characterId || 'Unnamed'}: ${characterArc.startState || '(no start)'} → ${characterArc.endState || '(no end)'}; want=${characterArc.want || '—'}; need=${characterArc.need || '—'}`);
+    }
   }
 
   // The spine is unconditional; episodes fill whatever is left. `remaining` goes
@@ -537,8 +541,13 @@ function buildFoundationContext({ series, universe, canon, issues = [], contentM
   const characterRoster = seriesCharacters.length
     ? seriesCharacters.map((character) => renderCharacterLine(character, { core: true })).join('\n')
     : '(no canon characters)';
-  const arcText = renderArc(series, issues);
   const sectionMax = Math.max(1_000, Math.floor(contentMax / 3));
+  // Character quality lives in the choices between start and end, not merely
+  // the endpoints. Reuse the canonical authored-arc renderer here so the judge
+  // sees decisions, relapses, sacrifices, and their issue placement. The
+  // repair prompt keeps the legacy compact summary because it already receives
+  // the full `series.characterArcs` JSON separately.
+  const arcText = renderArc(series, issues, { includeArcTransitions: true });
   const world = worldEntitiesSummary.length > sectionMax
     ? `${worldEntitiesSummary.slice(0, sectionMax)}\n\n[world summary truncated for judging]`
     : worldEntitiesSummary;
@@ -725,6 +734,38 @@ const CHARACTER_FOUNDATION_BATCH_SIZE = 6;
 // material a reasoning model will chew through before the wall clock runs out,
 // not how much its context can hold.
 const REPAIR_OUTLINE_MAX_CHARS = 12_000;
+const CRAFT_REPAIR_MAX_ATTEMPTS = 2;
+
+function craftRepairViolations(proposal) {
+  const guide = proposal?.styleGuide;
+  if (!guide || typeof guide !== 'object') return ['styleGuide is missing'];
+  const violations = [];
+  const validateEntries = (key, { min, max }) => {
+    const entries = guide[key];
+    if (!Array.isArray(entries)) {
+      violations.push(`${key} must be an array`);
+      return;
+    }
+    if (entries.length < min || entries.length > max) {
+      violations.push(`${key} must contain ${min}-${max} entries`);
+    }
+    for (const [index, entry] of entries.entries()) {
+      const passage = typeof entry?.passage === 'string' ? entry.passage.trim() : '';
+      const note = typeof entry?.note === 'string' ? entry.note.trim() : '';
+      if (!passage) violations.push(`${key}[${index}].passage is required`);
+      else if (passage.length > STYLE_GUIDE_LIMITS.EXEMPLAR_PASSAGE_MAX) {
+        violations.push(`${key}[${index}].passage exceeds ${STYLE_GUIDE_LIMITS.EXEMPLAR_PASSAGE_MAX} characters`);
+      }
+      if (!note) violations.push(`${key}[${index}].note is required`);
+      else if (note.length > STYLE_GUIDE_LIMITS.EXEMPLAR_NOTE_MAX) {
+        violations.push(`${key}[${index}].note exceeds ${STYLE_GUIDE_LIMITS.EXEMPLAR_NOTE_MAX} characters`);
+      }
+    }
+  };
+  validateEntries('voiceExemplars', { min: 1, max: 2 });
+  validateEntries('voiceAntiExemplars', { min: 1, max: STYLE_GUIDE_LIMITS.EXEMPLARS_MAX });
+  return violations;
+}
 
 async function runFoundationRepair(series, issues, dimension, finding, characters, options) {
   const stage = dimension === 'character' ? CHARACTER_FOUNDATION_STAGE : REPAIR_STAGE;
@@ -743,30 +784,51 @@ async function runFoundationRepair(series, issues, dimension, finding, character
       fullSeriesRoster: (options.ensembleCharacters || characters).map(renderPromptCharacter),
     }
     : characters.map(renderPromptCharacter);
-  const result = await runStagedLLM(stage, {
-    dimension,
-    phase: options.phase || (dimension === 'character' ? 'post-arc reconciliation' : 'foundation repair'),
-    foundationFindingJson: JSON.stringify({ gap: finding?.gap || '', fix: finding?.fix || '' }, null, 2),
-    seriesJson: JSON.stringify({
-      id: series.id,
-      name: series.name,
-      premise: series.premise,
-      targetFormat: series.targetFormat,
-      issueCountTarget: series.issueCountTarget,
-      styleNotes: series.styleNotes,
-      styleGuide: series.styleGuide,
-      characterArcs: series.characterArcs,
-    }, null, 2),
-    outline: renderArc(series, issues, { maxChars: REPAIR_OUTLINE_MAX_CHARS }),
-    charactersJson: JSON.stringify(charactersPayload, null, 2),
-  }, {
-    returnsJson: true,
-    providerDefault: options.providerId,
-    modelDefault: options.model,
-    effortDefault: options.effort,
-    source: stage,
-  });
-  return result?.content && typeof result.content === 'object' ? result.content : {};
+  let violations = [];
+  const maxAttempts = dimension === 'craft' ? CRAFT_REPAIR_MAX_ATTEMPTS : 1;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const findingPayload = { gap: finding?.gap || '', fix: finding?.fix || '' };
+    if (dimension === 'craft') {
+      findingPayload.hardStorageContract = {
+        voiceExemplars: '1-2 entries',
+        voiceAntiExemplars: `1-${STYLE_GUIDE_LIMITS.EXEMPLARS_MAX} entries`,
+        passageMaxChars: STYLE_GUIDE_LIMITS.EXEMPLAR_PASSAGE_MAX,
+        noteMaxChars: STYLE_GUIDE_LIMITS.EXEMPLAR_NOTE_MAX,
+        requirement: 'Every passage and note must end as complete prose within these limits; storage never preserves overflow.',
+      };
+      if (violations.length > 0) {
+        findingPayload.retryReason = `The previous proposal violated the hard storage contract: ${violations.join('; ')}. Rewrite it shorter; do not merely cut it off.`;
+      }
+    }
+    const result = await runStagedLLM(stage, {
+      dimension,
+      phase: options.phase || (dimension === 'character' ? 'post-arc reconciliation' : 'foundation repair'),
+      foundationFindingJson: JSON.stringify(findingPayload, null, 2),
+      seriesJson: JSON.stringify({
+        id: series.id,
+        name: series.name,
+        premise: series.premise,
+        targetFormat: series.targetFormat,
+        issueCountTarget: series.issueCountTarget,
+        styleNotes: series.styleNotes,
+        styleGuide: series.styleGuide,
+        characterArcs: series.characterArcs,
+      }, null, 2),
+      outline: renderArc(series, issues, { maxChars: REPAIR_OUTLINE_MAX_CHARS }),
+      charactersJson: JSON.stringify(charactersPayload, null, 2),
+    }, {
+      returnsJson: true,
+      providerDefault: options.providerId,
+      modelDefault: options.model,
+      effortDefault: options.effort,
+      source: stage,
+    });
+    const proposal = result?.content && typeof result.content === 'object' ? result.content : {};
+    if (dimension !== 'craft') return proposal;
+    violations = craftRepairViolations(proposal);
+    if (violations.length === 0) return proposal;
+  }
+  throw new Error(`foundation craft repair failed its storage contract after ${CRAFT_REPAIR_MAX_ATTEMPTS} attempts: ${violations.join('; ')}`);
 }
 
 async function repairCharacters(series, issues, universe, finding, options) {

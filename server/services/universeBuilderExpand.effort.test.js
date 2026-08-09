@@ -73,4 +73,39 @@ describe('expandWorldTemplate reasoning effort', () => {
     expect(call.prompt).not.toContain('Generate 5-12 categories');
     expect(call.prompt).not.toContain('world_pitch_poster');
   });
+
+  it('retries an oversized narrative repair before persistence can clip it mid-sentence', async () => {
+    runPromptThroughProviderMock
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          logline: 'A repaired world.',
+          premise: 'x'.repeat(4_001),
+          styleNotes: 'Specific and tactile.',
+        }),
+        runId: 'run-oversized',
+      })
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          logline: 'A repaired world.',
+          premise: 'Trade, authority, and travel now end in a complete rule.',
+          styleNotes: 'Specific and tactile.',
+        }),
+        runId: 'run-bounded',
+      });
+
+    const result = await expandWorldTemplate({
+      starterPrompt: 'Example Universe',
+      foundationDirective: 'Define ordinary governance.',
+      providerId: 'codex-tui',
+      model: 'gpt-5.6-sol',
+      effort: 'ultra',
+      narrativeOnly: true,
+    });
+
+    expect(runPromptThroughProviderMock).toHaveBeenCalledTimes(2);
+    expect(runPromptThroughProviderMock.mock.calls[1][0].prompt).toContain('premise exceeds 4000 characters (got 4001)');
+    expect(runPromptThroughProviderMock.mock.calls[1][0].prompt).toContain('Do not cut a sentence');
+    expect(result.premise).toBe('Trade, authority, and travel now end in a complete rule.');
+    expect(result.llm).toMatchObject({ provider: 'codex-tui', model: 'gpt-5.6-sol' });
+  });
 });

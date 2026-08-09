@@ -346,7 +346,14 @@ describe('foundation repair prompt — bounded outline', () => {
       number: i + 1, seasonId: 'sea-1', title: `Ep ${i + 1}`,
       stages: { idea: { input: 'y'.repeat(500) } },
     })));
-    stageRunner.runStagedLLM.mockResolvedValue({ content: {} });
+    stageRunner.runStagedLLM.mockResolvedValue({
+      content: {
+        styleGuide: {
+          voiceExemplars: [{ passage: 'Example passage.', note: 'example constraint' }],
+          voiceAntiExemplars: [{ passage: 'Infinity shimmered.', note: 'generic abstraction' }],
+        },
+      },
+    });
 
     await applyFoundationFix('ser-1', 'craft', { finding: { gap: 'g', fix: 'f' } });
 
@@ -398,6 +405,30 @@ describe('foundation judge context — complete planning altitude', () => {
     expect(ctx.characterCount).toBe(8);
     expect(ctx.characterRoster).toContain('Story Cast 8');
     expect(ctx.characterRoster).not.toContain('Universe Only');
+  });
+
+  it('shows authored character transition beats instead of judging endpoints alone', () => {
+    const ctx = __testing.buildFoundationContext({
+      series: {
+        name: 'Example Series',
+        seasons: [],
+        characterArcs: [{
+          characterId: 'chr-1',
+          characterName: 'Captain Example',
+          want: 'Keep sole command',
+          need: 'Become answerable to the crew',
+          startState: 'Hides a fatal log entry',
+          endState: 'Accepts conditional trust',
+          transitions: [{ kind: 'point-of-no-return', atIssue: 7, label: 'Confesses the altered log to the crew and yields crisis authority.' }],
+        }],
+      },
+      universe: {},
+      canon: { characters: [{ id: 'chr-1', name: 'Captain Example' }] },
+      issues: [],
+      contentMax: 30_000,
+    });
+    expect(ctx.arc).toContain('point-of-no-return (issue 7)');
+    expect(ctx.arc).toContain('Confesses the altered log to the crew and yields crisis authority.');
   });
 });
 
@@ -655,6 +686,41 @@ describe('applyFoundationFix — dimension → owning-service routing table', ()
     expect(seriesSvc.updateSeries).toHaveBeenCalledWith('ser-1', expect.objectContaining({
       styleNotes: expect.stringContaining('Close third-person'),
       styleGuide: expect.objectContaining({ voiceExemplars: expect.any(Array) }),
+    }));
+    expect(r).toMatchObject({ dimension: 'craft', applied: true });
+  });
+
+  it('retries an oversized craft proposal instead of silently truncating its evidence', async () => {
+    stageRunner.runStagedLLM
+      .mockResolvedValueOnce({
+        content: {
+          styleGuide: {
+            voiceExemplars: [{ passage: 'x'.repeat(2_001), note: 'too long to persist intact' }],
+            voiceAntiExemplars: [{ passage: 'Flat prose.', note: 'generic' }],
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        content: {
+          styleNotes: 'Concrete, controlled omniscience.',
+          styleGuide: {
+            voiceExemplars: [{ passage: 'The bell moved. Captain Example felt its answer in the rope.', note: 'complete material handoff' }],
+            voiceAntiExemplars: [{ passage: 'Infinity shimmered sadly.', note: 'unearned abstraction' }],
+          },
+        },
+      });
+
+    const r = await applyFoundationFix('ser-1', 'craft', { finding: { gap: 'truncated proof', fix: 'complete the relay' } });
+
+    expect(stageRunner.runStagedLLM).toHaveBeenCalledTimes(2);
+    const firstFinding = JSON.parse(stageRunner.runStagedLLM.mock.calls[0][1].foundationFindingJson);
+    const retryFinding = JSON.parse(stageRunner.runStagedLLM.mock.calls[1][1].foundationFindingJson);
+    expect(firstFinding.hardStorageContract).toMatchObject({ passageMaxChars: 2_000, noteMaxChars: 200 });
+    expect(retryFinding.retryReason).toMatch(/exceeds 2000 characters/);
+    expect(seriesSvc.updateSeries).toHaveBeenCalledWith('ser-1', expect.objectContaining({
+      styleGuide: expect.objectContaining({
+        voiceExemplars: [expect.objectContaining({ passage: expect.stringContaining('Captain Example felt') })],
+      }),
     }));
     expect(r).toMatchObject({ dimension: 'craft', applied: true });
   });

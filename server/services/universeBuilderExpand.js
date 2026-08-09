@@ -40,6 +40,7 @@ import {
 } from "../lib/promptRunner.js";
 
 const LABEL_MAX = 80;
+const NARRATIVE_REPAIR_MAX_ATTEMPTS = 2;
 
 // Bible/prompt fields the LLM sees as "current universe state" so re-expansion
 // stays consistent with prior refinements. Derived from LOCKABLE_FIELDS so a
@@ -261,6 +262,16 @@ const extractJson = (raw) => {
   );
 };
 
+const narrativeRepairViolations = (parsed) => [
+  ['logline', LOGLINE_MAX],
+  ['premise', PREMISE_MAX],
+  ['styleNotes', STYLE_NOTES_MAX],
+].flatMap(([key, max]) => {
+  const value = typeof parsed?.[key] === 'string' ? parsed[key].trim() : '';
+  if (!value) return [`${key} is missing`];
+  return value.length > max ? [`${key} exceeds ${max} characters (got ${value.length})`] : [];
+});
+
 const normalizeCategories = (raw) => {
   // The LLM occasionally returns variations as a flat array of strings or
   // skips the wrapping `{ variations: [...] }` object. Coerce both shapes
@@ -423,25 +434,53 @@ export async function expandWorldTemplate({
     `🌍 Universe Builder ${narrativeOnly ? 'repairing narrative bible' : 'expanding'} via ${provider.name}/${selectedModel || "default"} — influences in: ${totalIn ? `embrace=${safeInfluences.embrace.length} avoid=${safeInfluences.avoid.length}` : "none"} preserved: variations=${preservedVarCount} sheets=${preservedSheetCount}`,
   );
 
-  // runId is logged so a user debugging an empty expansion can find the
-  // raw stdout at data/runs/<runId>/output.txt.
-  const { text: raw, runId } = await runPromptThroughProvider({
-    provider,
-    model: selectedModel,
-    effort,
-    prompt: fullPrompt,
-    source: narrativeOnly ? "universe-builder-narrative-repair" : "universe-builder-expansion",
-  });
-  // Log raw response shape so a "0 variations" outcome is debuggable from
-  // the server console alone — the runId points at data/runs/<id>/output.txt
-  // for the full transcript.
-  console.log(
-    `🌍 Universe Builder raw response — runId=${runId} length=${raw?.length || 0}`,
-  );
-  const parsed = extractJson(raw);
-  console.log(
-    `🌍 Universe Builder parsed JSON — keys=[${Object.keys(parsed || {}).join(",")}] categoryKeys=[${Object.keys(parsed?.categories || {}).join(",")}] compositeSheets=${Array.isArray(parsed?.compositeSheets) ? parsed.compositeSheets.length : 0}`,
-  );
+  // runId is logged so a user debugging an empty expansion can find the raw
+  // stdout at data/runs/<runId>/output.txt. Narrative repairs are prose canon:
+  // silently slicing one at the persistence boundary can leave a sentence and
+  // an operating rule half-written while still reporting success. Validate the
+  // model's raw scalar lengths before normalization and spend one focused retry
+  // that asks it to rewrite/compress within the already-declared limits.
+  let raw;
+  let runId;
+  let parsed;
+  let narrativeViolations = [];
+  const maxAttempts = narrativeOnly ? NARRATIVE_REPAIR_MAX_ATTEMPTS : 1;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const retrySection = narrativeViolations.length > 0
+      ? `\n\n# Storage-contract retry\nThe previous proposal could not be persisted intact: ${narrativeViolations.join('; ')}. Rewrite and compress the complete JSON fields within their declared limits. Do not cut a sentence, paragraph, rule, or list item off at the boundary.`
+      : '';
+    const result = await runPromptThroughProvider({
+      provider,
+      model: selectedModel,
+      effort,
+      prompt: `${fullPrompt}${retrySection}`,
+      source: narrativeOnly ? "universe-builder-narrative-repair" : "universe-builder-expansion",
+    });
+    raw = result.text;
+    runId = result.runId;
+    // Log raw response shape so a "0 variations" outcome is debuggable from
+    // the server console alone — the runId points at data/runs/<id>/output.txt
+    // for the full transcript.
+    console.log(
+      `🌍 Universe Builder raw response — runId=${runId} length=${raw?.length || 0}`,
+    );
+    parsed = extractJson(raw);
+    console.log(
+      `🌍 Universe Builder parsed JSON — keys=[${Object.keys(parsed || {}).join(",")}] categoryKeys=[${Object.keys(parsed?.categories || {}).join(",")}] compositeSheets=${Array.isArray(parsed?.compositeSheets) ? parsed.compositeSheets.length : 0}`,
+    );
+    if (!narrativeOnly) break;
+    narrativeViolations = narrativeRepairViolations(parsed);
+    if (narrativeViolations.length === 0) break;
+    if (attempt + 1 < maxAttempts) {
+      console.warn(`⚠️ Universe Builder narrative repair exceeded its storage contract — retrying once: ${narrativeViolations.join('; ')}`);
+    }
+  }
+  if (narrativeViolations.length > 0) {
+    throw new ServerError(
+      `Universe Builder narrative repair failed its storage contract after ${NARRATIVE_REPAIR_MAX_ATTEMPTS} attempts: ${narrativeViolations.join('; ')}`,
+      { status: 502, code: 'LLM_OUTPUT_CONTRACT' },
+    );
+  }
 
   // Distinguish "LLM omitted this key" (return null → client keeps draft)
   // from "LLM returned ''" (return "" → client applies the clear). The
