@@ -160,13 +160,17 @@ function icloudPlaceholderPath(path) {
 // when the sync layer ultimately can't fetch the file (device offline / iCloud
 // wedged); under a wedged iCloud it can instead hang, which is why we await it
 // with a timeout below. So a `true` here is NOT proof the file is readable. What
-// keeps the caller's subsequent re-read safe is that it routes through
-// `readIfMaterialized` (see readStoreAtPathResult), which returns a store it could
-// NOT actually read as null instead of issuing a blocking read: a still-dataless
-// file rejects on the `Stats.blocks` re-screen with ICLOUD_NOT_MATERIALIZED, and
-// an absent path shadowed by a legacy `.icloud` placeholder rejects on ENOENT.
-// Either way the store stays null and the caller refuses to overwrite, so a
-// false-positive `true` from here can never truncate data (nor hang the pool).
+// keeps the caller's subsequent re-read safe is `readStoreAtPathResult`: it calls
+// `readIfMaterialized`, which REJECTS rather than issuing a blocking read for a
+// file it can't safely read — a still-dataless file rejects with
+// ICLOUD_NOT_MATERIALIZED (its `Stats.blocks` screen); an absent path shadowed by
+// a legacy `.icloud` placeholder surfaces as ENOENT — and `readStoreAtPathResult`
+// catches both and yields `store: null` (which `readStoreAtPath` unwraps). Either
+// way the store stays null and the caller refuses to overwrite, so a false-
+// positive `true` from here can't truncate data. (It does not eliminate the
+// bounded eviction race documented in `readIfMaterialized`, which can still
+// strand one threadpool slot per path — see server/lib/icloudFile.js — but this
+// path never makes that worse.)
 //
 // We await brctl's exit (bounded by a timeout) and let the caller re-read.
 // Resolves `true` only on a clean exit-0 — non-darwin, missing brctl, spawn
@@ -447,11 +451,12 @@ export async function updateStore(mutator) {
     // `materializeNow` resolving `true` only means brctl ACCEPTED the download
     // request (exit 0), NOT that the bytes are local — see its docblock. Do NOT
     // remove the re-read's screening on the strength of that `true`: `readStoreAtPath`
-    // routes through `readIfMaterialized`, which returns null for a store it could
-    // not actually read instead of issuing a blocking read — a still-dataless file
+    // → `readStoreAtPathResult` calls `readIfMaterialized`, which REJECTS instead of
+    // issuing a blocking read for a file it can't safely read — a still-dataless file
     // rejects on the `stat()` re-screen, an absent-but-placeholder-shadowed path
-    // rejects on ENOENT. Either way store stays null and we refuse to overwrite
-    // rather than issuing a read that would hang the threadpool.
+    // surfaces as ENOENT — and `readStoreAtPathResult` catches both and returns
+    // `store: null`. Either way store stays null and we refuse to overwrite rather
+    // than reading blindly (which is what would risk stranding a threadpool slot).
     const materialized = await materializeNow(path);
     if (materialized) {
       store = await readStoreAtPath(path);

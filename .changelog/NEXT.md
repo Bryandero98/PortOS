@@ -36,7 +36,7 @@
 
 ## Fixed
 
-- **iCloud materialization logs now say a download was *requested*, not that the file is local.** `brctl download` returns exit 0 the moment it accepts and queues the request — it does not block until the bytes arrive, and it returns 0 even when the sync layer ultimately can't fetch the file. The on-demand materialize path logged that exit 0 as "materialized from iCloud", so an operator reading these lines during an iCloud outage would conclude a file was readable when it was still dataless. The logs now report the request, and the code comments spell out that the authoritative check is the `stat()` re-screen in `readIfMaterialized` — the reason the subsequent re-read stays safe and must not be removed. No behavior change.
+- **iCloud materialization logs now say a download was *requested*, not that the file is local.** `brctl download` returns exit 0 the moment it accepts and queues the request — it does not block until the bytes arrive, and it returns 0 even when the sync layer ultimately can't fetch the file. The on-demand materialize path logged that exit 0 as "materialized from iCloud", so an operator reading these lines during an iCloud outage would conclude a file was readable when it was still dataless. The logs now report the request, and the code comments spell out that the read path (`readStoreAtPathResult`/`readIfMaterialized`) fails closed — rejecting a dataless file rather than reading it — which is the reason the subsequent re-read stays safe and must not be removed. No behavior change.
 
 - Preserve a Series Autopilot run's reasoning-effort override when the foundation gate delegates a worldbuilding repair to Universe Builder.
 
