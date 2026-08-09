@@ -160,13 +160,15 @@ async function resolveUpstreamSha(checkoutPath, branch) {
 }
 
 /**
- * Resolve the agent's own worktree branch to a ref that exists in the primary
- * checkout — the local branch first, then its `origin/<branch>` remote-tracking
- * form (the agent may have pushed and had its local ref pruned). Returns null
- * when neither resolves, the name is empty, or git could not be run — every one
- * of which the caller treats as "cannot attribute, so do not blame".
+ * Resolve the agent's own worktree branch to an IMMUTABLE commit SHA — trying the
+ * local branch first, then its `origin/<branch>` remote-tracking form (the agent
+ * may have pushed and had its local ref pruned). Returns the SHA (not the ref
+ * name) so the count and the `git cherry` walk pin to the same commit even if the
+ * shared branch ref is moved or pruned between the two calls. Returns null when
+ * neither resolves, the name is empty, or git could not be run — every one of
+ * which the caller treats as "cannot attribute, so do not blame".
  */
-async function resolveAgentBranchRef(checkoutPath, agentBranch) {
+async function resolveAgentBranchSha(checkoutPath, agentBranch) {
   if (!agentBranch || typeof agentBranch !== 'string') return null;
   for (const ref of [agentBranch, `refs/remotes/origin/${agentBranch}`]) {
     const result = await execGit(
@@ -174,7 +176,8 @@ async function resolveAgentBranchRef(checkoutPath, agentBranch) {
       checkoutPath,
       { ignoreExitCode: true, timeout: GIT_TIMEOUT_MS },
     ).catch(() => null);
-    if (firstLine(result)) return ref;
+    const sha = firstLine(result);
+    if (sha) return sha;
   }
   return null;
 }
@@ -195,13 +198,13 @@ async function resolveAgentBranchRef(checkoutPath, agentBranch) {
  * module.
  */
 async function isDriftAttributableToAgent(checkoutPath, { strandedBase, driftedHead, agentBranch }) {
-  const agentRef = await resolveAgentBranchRef(checkoutPath, agentBranch);
-  if (!agentRef) return false;
+  const agentSha = await resolveAgentBranchSha(checkoutPath, agentBranch);
+  if (!agentSha) return false;
   // Cheap short-circuit: a branch that carries no commit of its own past the
   // stranded base (a read-only reasoner's untouched worktree branch) cannot have
   // authored anything, so skip the cherry walk. `git cherry` reaches the same
   // verdict on its own — this only avoids the extra call on the common case.
-  const ownCommits = await countCommitsAhead(checkoutPath, strandedBase, agentRef);
+  const ownCommits = await countCommitsAhead(checkoutPath, strandedBase, agentSha);
   if (!ownCommits) return false;
   // Count the stranded NON-MERGE commits — matching what `git cherry` walks. A
   // merge commit strays onto the primary via a human's `git merge` or a non-ff
@@ -218,7 +221,7 @@ async function isDriftAttributableToAgent(checkoutPath, { strandedBase, driftedH
   // UNLESS git cherry marks it `+`; the drift is attributed unless EVERY stranded
   // non-merge commit is foreign.
   const cherry = await execGit(
-    ['cherry', agentRef, driftedHead, strandedBase],
+    ['cherry', agentSha, driftedHead, strandedBase],
     checkoutPath,
     { ignoreExitCode: true, timeout: GIT_TIMEOUT_MS },
   ).catch(() => null);
