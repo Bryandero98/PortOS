@@ -56,7 +56,7 @@ const { writeFile, readFile } = await import('fs/promises');
 const { atomicWrite } = await import('../lib/fileUtils.js');
 const runner = await import('./runner.js');
 const { analyzeError, ERROR_CATEGORIES } = await import('../lib/aiToolkit/errorDetection.js');
-const { setAIToolkit, executeCliRun, buildCliArgs, hasModelFlag, extractBakedModel, emitRunStarted } = runner;
+const { setAIToolkit, executeCliRun, buildCliArgs, hasModelFlag, extractBakedModel, emitRunStarted, finalizeRunRecord } = runner;
 
 // Minimal toolkit stub that satisfies executeCliRun's expectations. Mirrors the
 // real toolkit runner's declared external-run registry (registerExternalRun /
@@ -94,6 +94,27 @@ function makeChild() {
 beforeEach(() => {
   vi.clearAllMocks();
   setAIToolkit(fakeToolkit(), { dataDir: '/tmp/test-runner' });
+});
+
+describe('finalizeRunRecord — authoritative timeout classification', () => {
+  it('does not let story text misclassify exit 124 as a provider quota failure', async () => {
+    setAIToolkit(fakeToolkit({ analyzeError }), { dataDir: '/tmp/test-runner' });
+
+    const metadata = await finalizeRunRecord({
+      runId: 'run-story-timeout',
+      output: 'A character debates billing, payment, and insufficient credit.',
+      exitCode: 124,
+      success: false,
+      error: 'TUI run timed out after 600000ms',
+      startTime: Date.now(),
+    });
+
+    expect(metadata).toMatchObject({
+      success: false,
+      errorCategory: ERROR_CATEGORIES.TIMEOUT,
+      errorAnalysis: expect.objectContaining({ category: ERROR_CATEGORIES.TIMEOUT }),
+    });
+  });
 });
 
 describe('executeCliRun — Codex sentinel suppression', () => {

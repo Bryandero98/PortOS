@@ -109,7 +109,14 @@ export async function finalizeRunRecord({ runId, output, exitCode, success, erro
   if (extras && typeof extras === 'object') Object.assign(metadata, extras);
 
   if (!success && toolkit.services.errorDetection) {
-    const errorAnalysis = toolkit.services.errorDetection.analyzeError(output, exitCode);
+    // Exit 124 is the host's authoritative wall-clock timeout. Do not scan the
+    // model's entire TUI screen/prompt for a competing category in that case:
+    // story text can legitimately contain words such as "credit" or
+    // "billing", which used to turn a plain timeout into quota-exceeded and
+    // bench a healthy provider for an hour. Other failures still analyze the
+    // output because their provider banner is often the only useful signal.
+    const analysisInput = exitCode === 124 ? (error || 'Process timed out') : output;
+    const errorAnalysis = toolkit.services.errorDetection.analyzeError(analysisInput, exitCode);
     metadata.error = metadata.error || errorAnalysis.message || `Process exited with code ${exitCode}`;
     metadata.errorCategory = errorAnalysis.category;
     metadata.errorAnalysis = errorAnalysis;
