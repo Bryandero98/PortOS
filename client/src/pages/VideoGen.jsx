@@ -419,11 +419,23 @@ export default function VideoGen() {
       ? { ...textEncoderInfo, downloading: true, progress: modelDownload.progress }
       : textEncoderInfo)
     : null;
-  const modelWeightsBlocked = !isGrok && !!modelId
-    && (modelDownload.loading || modelStatus === null || modelStatus?.cached === false);
+  const icWeightStatus = icSpec ? modelDownload.getStatus(icSpec.mode) : null;
+  const modelWeightsBlocked = !isGrok
+    && (statusLoading || !modelId || !currentModel || modelDownload.loading
+      || modelStatus === null || modelStatus?.cached === false);
   const textEncoderWeightsBlocked = !isGrok && usesSharedTextEncoder
     && (modelDownload.loading || textEncoderStatus === null || textEncoderStatus?.cached === false);
-  const weightsGateBlocked = modelWeightsBlocked || textEncoderWeightsBlocked;
+  const icWeightsBlocked = !isGrok && icModeActive
+    && (modelDownload.loading || icWeightStatus === null || icWeightStatus?.cached === false);
+  const weightsGateBlocked = modelWeightsBlocked || textEncoderWeightsBlocked || icWeightsBlocked;
+  const activeWeightErrorIds = [
+    modelId,
+    usesSharedTextEncoder ? TEXT_ENCODER_DOWNLOAD_ID : null,
+    icModeActive ? icSpec?.mode : null,
+  ].filter(Boolean);
+  const activeWeightError = activeWeightErrorIds.includes(modelDownload.lastError?.modelId)
+    ? modelDownload.lastError
+    : null;
 
   // Weight-integrity (issue #1324). A corrupt/truncated model decodes to
   // garbled "mosaic" video that a clean re-download fixes; surface a Repair
@@ -446,6 +458,19 @@ export default function VideoGen() {
   const encoderIntegrityKey = encoderIntegrityBad ? `text-encoder:${(encoderIntegrity.badFiles || []).map((f) => f.name).join(',')}` : null;
   const [dismissedEncoderIntegrityKey, setDismissedEncoderIntegrityKey] = useState(null);
   const showEncoderIntegrityBanner = encoderIntegrityBad && dismissedEncoderIntegrityKey !== encoderIntegrityKey && !modelDownload.downloading;
+
+  // IC-LoRA weights are independent downloads too. Keep their corruption
+  // recovery on the originating Video Gen surface instead of requiring a CLI
+  // cache purge or leaving the user with a disabled Generate button.
+  const icIntegrity = icWeightStatus && !icWeightStatus.downloading ? icWeightStatus.integrity : null;
+  const icIntegrityBad = icIntegrity?.status === 'bad';
+  const icIntegrityBadCount = icIntegrityBad ? (icIntegrity.badFiles || []).length : 0;
+  const icIntegrityKey = icIntegrityBad
+    ? `${icSpec?.mode}:${(icIntegrity.badFiles || []).map((file) => file.name).join(',')}`
+    : null;
+  const [dismissedIcIntegrityKey, setDismissedIcIntegrityKey] = useState(null);
+  const showIcIntegrityBanner = icIntegrityBad
+    && dismissedIcIntegrityKey !== icIntegrityKey && !modelDownload.downloading;
 
   const progressPct = progress?.progress != null ? Math.round(progress.progress * 100) : null;
 
@@ -581,7 +606,9 @@ export default function VideoGen() {
   // configured" error from the unrelated legacy probe.
   const notConnected = !!status && status.connected === false && !needsByovProbe;
 
-  const canEnqueue = prompt.trim() && (isGrok || (!notConnected && !extendModeBlocked && !a2vModeBlocked && !byovGateBlocked && !weightsGateBlocked && !keyframesBlocked));
+  const canEnqueue = prompt.trim() && (isGrok || (!notConnected && !extendModeBlocked
+    && !a2vModeBlocked && !icLoraModeBlocked && !byovGateBlocked
+    && !weightsGateBlocked && !keyframesBlocked));
 
   return (
     <div className="space-y-3">
@@ -746,6 +773,19 @@ export default function VideoGen() {
               repairing={modelDownload.repairing}
             />
           )}
+          {showIcIntegrityBanner && (
+            <ModelRepairBanner
+              message={<>
+                The <strong className="font-semibold">{icSpec?.label || 'IC-LoRA'}</strong> weight has {icIntegrityBadCount || 'corrupt'} damaged file{icIntegrityBadCount === 1 ? '' : 's'}.
+                Repair deletes the bad file{icIntegrityBadCount === 1 ? '' : 's'} and re-downloads a clean copy.
+              </>}
+              repairLabel={`Repair ${icSpec?.label || 'IC-LoRA'}`}
+              onRepair={() => { setDismissedIcIntegrityKey(icIntegrityKey); modelDownload.repair(icSpec.mode); }}
+              onDismiss={() => setDismissedIcIntegrityKey(icIntegrityKey)}
+              disabled={modelDownload.repairing || modelDownload.downloading}
+              repairing={modelDownload.repairing}
+            />
+          )}
           <StylePresetPicker
             value={stylePreset?.id || ''}
             onChange={setStylePreset}
@@ -861,7 +901,7 @@ export default function VideoGen() {
               icSkipStage2={icSkipStage2}
               width={width}
               height={height}
-              weightStatus={modelDownload.getStatus(icSpec.mode)}
+              weightStatus={icWeightStatus}
               hasCompatibleModel={visibleModels.length > 0}
               onPickFile={pickIcReferenceFile}
               onClearFile={() => pickIcReferenceFile(null)}
@@ -915,16 +955,16 @@ export default function VideoGen() {
                     estimateLabel={deriveSizeEstimate(currentModel?.name)}
                   />
                 )}
-                {modelDownload.lastError?.modelId === modelId && (
+                {activeWeightError && (
                   <div className="mt-2 rounded-lg border border-port-error/40 bg-port-error/10 px-3 py-2 text-[11px] text-port-error">
-                    <p>{modelDownload.lastError.message}</p>
+                    <p>{activeWeightError.message}</p>
                     <div className="mt-1 flex flex-wrap gap-2">
                       <button type="button" onClick={openSettings} className="underline hover:text-white">
                         Open Hugging Face settings
                       </button>
-                      {modelDownload.lastError.repo && (
+                      {activeWeightError.repo && (
                         <a
-                          href={`https://huggingface.co/${modelDownload.lastError.repo}`}
+                          href={`https://huggingface.co/${activeWeightError.repo}`}
                           target="_blank"
                           rel="noreferrer"
                           className="underline hover:text-white"
@@ -1041,6 +1081,7 @@ export default function VideoGen() {
                     : byovGateBlocked ? `Checking ${byovRuntime} runtime status…`
                     : modelWeightsBlocked ? 'Download the selected model weights before generating'
                     : textEncoderWeightsBlocked ? 'Download the shared text encoder before generating'
+                    : icWeightsBlocked ? `Download the ${icSpec?.label || 'IC-LoRA'} weight before generating`
                     : extendModeBlocked ? 'Pick a prior render and wait for the last frame to extract before generating'
                     : a2vModeBlocked ? (currentModel?.runtime !== 'ltx2'
                       ? 'a2v mode requires an ltx2-runtime model — pick one from the Model dropdown'
@@ -1057,7 +1098,10 @@ export default function VideoGen() {
               onClick={handleEnqueue}
               disabled={!canEnqueue}
               className="flex items-center gap-2 px-4 py-2 border border-port-border text-gray-200 hover:text-white hover:bg-port-border/40 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium rounded-lg min-h-[40px]"
-              title="Add this configuration to the batch queue"
+              title={canEnqueue ? 'Add this configuration to the batch queue'
+                : icWeightsBlocked ? `Download the ${icSpec?.label || 'IC-LoRA'} weight before queueing`
+                  : weightsGateBlocked ? 'Finish required model downloads before queueing'
+                    : 'Complete the required inputs before queueing'}
             >
               <ListPlus className="w-4 h-4" /> Add to queue
             </button>

@@ -27,6 +27,7 @@ import { broadcastSse, attachSseClient as attachSse, closeJobAfterDelay, PYTHON_
 import { getVideoModels, getDefaultVideoModelId, getTextEncoderRepo } from '../../lib/mediaModels.js';
 import { findFfmpeg, safeUnder, generateThumbnail, optimizeForStreaming, upscaleVideo2x, extractEvaluationFrames } from '../../lib/ffmpeg.js';
 import { hfChildEnv } from '../../lib/hfToken.js';
+import { inspectModelCache, findCachedRepoFile } from '../../lib/hfCache.js';
 import { safeChildProcessEnv } from '../../lib/processEnv.js';
 import { makeVideoGenLineHandler, finalizeGeneratedVideo, isWatchdogSuccess, describeSignalDeath } from './generateVideoHelpers.js';
 import { assertSafeLoraFilename } from '../loras.js';
@@ -518,7 +519,7 @@ const buildLtx2Args = ({ model, prompt, negativePrompt, width, height, numFrames
 
 // Build args for the pinned MLX-Gen Wan CLI. The helper itself never downloads:
 // all base + profile weights must already be present through the UI flow.
-const buildWan22Args = ({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, sourceImagePath, mode, outputPath }) => {
+const buildWan22Args = ({ model, wanModelPath, wanRequiredWeights, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, sourceImagePath, mode, outputPath }) => {
   assertByovRuntimeInstalled('wan22');
   const requestedMode = mode || (sourceImagePath ? 'image' : 'text');
   const supportedModes = Array.isArray(model.supportedModes) ? model.supportedModes : [];
@@ -528,9 +529,15 @@ const buildWan22Args = ({ model, prompt, negativePrompt, width, height, numFrame
       { status: 400, code: 'WAN22_MODE_UNSUPPORTED' },
     );
   }
+  if (requestedMode === 'text' && sourceImagePath) {
+    throw new ServerError(
+      'Wan 2.2 text-to-video cannot consume a source image — switch to image mode or remove the source.',
+      { status: 400, code: 'WAN22_TEXT_MODE_SOURCE_CONFLICT' },
+    );
+  }
   const args = [
     WAN22_HELPER_SCRIPT,
-    '--model-repo', model.repo,
+    '--model-repo', wanModelPath,
     '--prompt', prompt,
     '--width', String(width),
     '--height', String(height),
@@ -554,11 +561,9 @@ const buildWan22Args = ({ model, prompt, negativePrompt, width, height, numFrame
     }
     args.push('--image', sourceImagePath);
   }
-  for (const dep of Array.isArray(model.requiredWeights) ? model.requiredWeights : []) {
-    const files = Array.isArray(dep?.files) ? dep.files : [];
-    const roles = Array.isArray(dep?.targetRoles) ? dep.targetRoles : [];
-    for (const file of files) args.push('--lora-path', `${dep.repo}:${file}`);
-    for (const role of roles) args.push('--lora-target-role', role);
+  for (const weight of wanRequiredWeights) {
+    args.push('--lora-path', weight.path);
+    args.push('--lora-target-role', weight.role);
   }
   return { bin: WAN22_VENV_PYTHON, args };
 };
@@ -601,7 +606,7 @@ const buildHunyuanArgs = ({ model, prompt, negativePrompt, width, height, numFra
   return { bin: HUNYUAN_VENV_PYTHON, args };
 };
 
-const buildArgs = ({ pythonPath, modelId, model, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, tiling, disableAudio, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, textEncoderRepo, outputPath, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2 }) => {
+const buildArgs = ({ pythonPath, modelId, model, wanModelPath, wanRequiredWeights, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, tiling, disableAudio, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, textEncoderRepo, outputPath, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2 }) => {
   // Route to the dgrauet/ltx-2-mlx helper when the model declares the new
   // runtime. Existing notapalindrome models default to runtime: 'mlx_video'
   // (or undefined in legacy registries — see backfillRuntime in mediaModels.js).
@@ -635,7 +640,7 @@ const buildArgs = ({ pythonPath, modelId, model, prompt, negativePrompt, width, 
     );
   }
   if (model.runtime === 'wan22') {
-    return buildWan22Args({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, sourceImagePath, mode, outputPath });
+    return buildWan22Args({ model, wanModelPath, wanRequiredWeights, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, sourceImagePath, mode, outputPath });
   }
   if (model.runtime === 'hunyuan') {
     return buildHunyuanArgs({ model, prompt, negativePrompt, width, height, numFrames, steps, guidance, seed, outputPath });
@@ -740,12 +745,27 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
 
   const model = resolveVideoModel(modelId);
   if (!model) throw new ServerError(`Unknown video model: ${modelId}`, { status: 400, code: 'VALIDATION_ERROR' });
+  let wanModelPath = null;
+  const wanRequiredWeights = [];
   if (model.runtime === 'wan22') {
-    const requestedMode = mode || (sourceImagePath || uploadedTempPath ? 'image' : 'text');
+    sourceImagePath ||= uploadedTempPath;
+    const requestedMode = mode || (sourceImagePath ? 'image' : 'text');
     if (!Array.isArray(model.supportedModes) || !model.supportedModes.includes(requestedMode)) {
       throw new ServerError(
         `${model.name} does not support ${requestedMode}-to-video. Choose a compatible Wan model.`,
         { status: 400, code: 'WAN22_MODE_UNSUPPORTED' },
+      );
+    }
+    if (requestedMode === 'image' && !sourceImagePath) {
+      throw new ServerError(
+        'Wan 2.2 image-to-video requires a source image — upload one before running this model.',
+        { status: 400, code: 'WAN22_I2V_REQUIRES_IMAGE' },
+      );
+    }
+    if (requestedMode === 'text' && sourceImagePath) {
+      throw new ServerError(
+        'Wan 2.2 text-to-video cannot consume a source image — switch to image mode or remove the source.',
+        { status: 400, code: 'WAN22_TEXT_MODE_SOURCE_CONFLICT' },
       );
     }
     const frameStride = Number(model.frameStride);
@@ -754,6 +774,42 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
         `${model.name} requires a ${frameStride}n+1 frame count; got ${numFrames}.`,
         { status: 400, code: 'WAN22_INVALID_FRAME_COUNT' },
       );
+    }
+    if (typeof model.revision !== 'string' || !model.revision) {
+      throw new ServerError(
+        `Wan model "${modelId}" is missing an immutable Hugging Face revision.`,
+        { status: 500, code: 'VIDEO_MODEL_MISCONFIGURED' },
+      );
+    }
+    const baseCache = await inspectModelCache(model.repo, { revision: model.revision });
+    if (!baseCache.cached || !baseCache.snapshotPath) {
+      throw new ServerError(
+        `${model.name} revision ${model.revision.slice(0, 8)} is not fully cached. Download or repair it in Video Gen before rendering.`,
+        { status: 400, code: 'WAN22_MODEL_NOT_CACHED' },
+      );
+    }
+    wanModelPath = baseCache.snapshotPath;
+    for (const dep of Array.isArray(model.requiredWeights) ? model.requiredWeights : []) {
+      const files = Array.isArray(dep?.files) ? dep.files : [];
+      const roles = Array.isArray(dep?.targetRoles) ? dep.targetRoles : [];
+      if (!dep?.repo || !dep?.revision || files.length === 0 || files.length !== roles.length) {
+        throw new ServerError(
+          `Wan model "${modelId}" has an invalid requiredWeights entry.`,
+          { status: 500, code: 'VIDEO_MODEL_MISCONFIGURED' },
+        );
+      }
+      const paths = await Promise.all(files.map((file) => findCachedRepoFile(
+        dep.repo, file, { revision: dep.revision },
+      )));
+      for (let i = 0; i < files.length; i += 1) {
+        if (!paths[i]) {
+          throw new ServerError(
+            `${model.name} is missing required weight ${files[i]}. Download or repair its dependencies in Video Gen.`,
+            { status: 400, code: 'WAN22_REQUIRED_WEIGHT_NOT_CACHED' },
+          );
+        }
+        wanRequiredWeights.push({ path: paths[i], role: roles[i] });
+      }
     }
   }
   // Only require the legacy mlx_video pythonPath when the chosen runtime
@@ -1061,7 +1117,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   // logic of the spawn-error handler so failure modes converge.
   let bin, args;
   try {
-    ({ bin, args } = buildArgs({ pythonPath, modelId, model, prompt, negativePrompt, width: w, height: h, numFrames: parsedNumFrames, fps: parsedFps, steps: actualSteps, stage2Steps: actualStage2Steps, guidance: actualGuidance, seed: actualSeed, tiling, disableAudio, sourceImagePath: resolvedSourceImage, lastImagePath: resolvedLastImage, keyframes: resolvedKeyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength: actualImageStrength, textEncoderRepo: actualTextEncoderRepo, outputPath, loras: resolvedLoras, icReferencePaths: resolvedIcReferencePaths, icLoraWeightPath, icStrength: actualIcStrength, icAttentionStrength: actualIcAttentionStrength, icSkipStage2 }));
+    ({ bin, args } = buildArgs({ pythonPath, modelId, model, wanModelPath, wanRequiredWeights, prompt, negativePrompt, width: w, height: h, numFrames: parsedNumFrames, fps: parsedFps, steps: actualSteps, stage2Steps: actualStage2Steps, guidance: actualGuidance, seed: actualSeed, tiling, disableAudio, sourceImagePath: resolvedSourceImage, lastImagePath: resolvedLastImage, keyframes: resolvedKeyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength: actualImageStrength, textEncoderRepo: actualTextEncoderRepo, outputPath, loras: resolvedLoras, icReferencePaths: resolvedIcReferencePaths, icLoraWeightPath, icStrength: actualIcStrength, icAttentionStrength: actualIcAttentionStrength, icSkipStage2 }));
   } catch (err) {
     job.status = 'error';
     const reason = err.message || 'Failed to build video gen args';
@@ -1112,6 +1168,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
     env: childEnv,
     controlDir: join(PATHS.videos, '.detached', jobId),
     cleanup: true,
+    killProcessGroup: model.runtime === 'wan22',
   });
   activeProcess = proc;
 
@@ -1420,6 +1477,15 @@ export async function generateChainedVideo({ chunks, jobId: outerJobId, ...rest 
     return generateVideo({ jobId: outerJobId, ...rest });
   }
   if (!outerJobId) throw new ServerError('generateChainedVideo requires jobId', { status: 500, code: 'INTERNAL' });
+
+  const chainModel = resolveVideoModel(rest.modelId || defaultVideoModelId());
+  if (chainModel?.runtime === 'wan22'
+    && !(Array.isArray(chainModel.supportedModes) && chainModel.supportedModes.includes('image'))) {
+    throw new ServerError(
+      `${chainModel.name} cannot generate chunks > 1 because continuation requires image-to-video support.`,
+      { status: 400, code: 'WAN22_CHAIN_REQUIRES_IMAGE_MODE' },
+    );
+  }
 
   const chainState = { stopped: false };
   activeChain = chainState;

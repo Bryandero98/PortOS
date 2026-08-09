@@ -3,6 +3,31 @@ import express from 'express';
 import { request } from '../lib/testHelper.js';
 import { errorMiddleware } from '../lib/errorHandler.js';
 
+const installProcess = vi.hoisted(() => {
+  const spawn = vi.fn();
+  const makeChild = () => {
+    const listeners = {};
+    const child = {
+      pid: 4242,
+      killed: false,
+      stdout: { on: vi.fn() },
+      stderr: { on: vi.fn() },
+      kill: vi.fn(() => true),
+      on: vi.fn((event, handler) => {
+        listeners[event] = handler;
+        if (event === 'close') setImmediate(() => handler(0));
+        return child;
+      }),
+    };
+    return child;
+  };
+  return { spawn, makeChild };
+});
+vi.mock('child_process', async (importOriginal) => ({
+  ...(await importOriginal()),
+  spawn: installProcess.spawn,
+}));
+
 vi.mock('../services/settings.js', () => ({
   getSettings: vi.fn(async () => ({ imageGen: { local: { pythonPath: '/usr/bin/python3' } } })),
 }));
@@ -52,7 +77,12 @@ vi.mock('../services/videoGen/local.js', () => ({
   // `id` and a couple of UI-display fields are read by /status.
   BYOV_RUNTIME_INFO: {
     ltx2: { id: 'ltx2', label: 'LTX-2 MLX', venvPython: '/tmp/ltx2.py', installEnvVar: 'INSTALL_LTX2', repoUrl: 'x', repoDir: '/tmp' },
-    wan22: { id: 'wan22', label: 'Wan 2.2 MLX', venvPython: '/tmp/wan22.py', installEnvVar: 'INSTALL_WAN22', repoUrl: 'x', repoDir: '/tmp' },
+    wan22: {
+      id: 'wan22', label: 'Wan 2.2 MLX', venvPython: '/tmp/wan22.py',
+      installEnvVar: 'INSTALL_WAN22', pinEnvVar: 'WAN22_PIN',
+      expectedRevision: '2452f0c12edcc8886eebf15772205ce9c417a618',
+      repoUrl: 'x', repoDir: '/tmp',
+    },
     hunyuan: { id: 'hunyuan', label: 'HunyuanVideo MLX', venvPython: '/tmp/hunyuan.py', installEnvVar: 'INSTALL_HUNYUAN', repoUrl: 'x', repoDir: '/tmp' },
   },
   isByovRuntimeInstalled: vi.fn(() => false),
@@ -207,6 +237,7 @@ describe('videoGen routes', () => {
     // Reset the upload holder so a test that set a pending upload but
     // bailed before the route consumed it can't leak into the next test.
     pendingUpload.current = null;
+    installProcess.spawn.mockReset().mockImplementation(() => installProcess.makeChild());
   });
 
   describe('GET /status', () => {
@@ -245,6 +276,81 @@ describe('videoGen routes', () => {
       expect(r.body.pythonPath).toBe('/usr/bin/python3');
       expect(r.body.missingPackages).toEqual(['mflux', 'mlx', 'mlx_video']);
       expect(r.body.reason).toMatch(/3 python packages missing/);
+    });
+  });
+
+  describe('GET /setup/runtime-status', () => {
+    it('reports a missing runtime without probing readiness or revision', async () => {
+      const r = await request(app).get('/api/video-gen/setup/runtime-status?runtime=wan22');
+      expect(r.status).toBe(200);
+      expect(r.body).toMatchObject({
+        runtime: 'wan22', installed: false, binaryPresent: false,
+        packagesReady: false, current: false, upgradeAvailable: false,
+      });
+      expect(videoGenService.isByovRuntimeReady).not.toHaveBeenCalled();
+      expect(videoGenService.isByovRuntimeCurrent).not.toHaveBeenCalled();
+    });
+
+    it('reports a ready runtime as installed only when its checkout is current', async () => {
+      videoGenService.isByovRuntimeInstalled.mockReturnValueOnce(true);
+      videoGenService.isByovRuntimeReady.mockResolvedValueOnce(true);
+      videoGenService.isByovRuntimeCurrent.mockResolvedValueOnce(true);
+      const r = await request(app).get('/api/video-gen/setup/runtime-status?runtime=wan22');
+      expect(r.body).toMatchObject({
+        installed: true, binaryPresent: true, packagesReady: true,
+        current: true, upgradeAvailable: false,
+      });
+    });
+
+    it('offers an upgrade for a ready runtime on an outdated checkout', async () => {
+      videoGenService.isByovRuntimeInstalled.mockReturnValueOnce(true);
+      videoGenService.isByovRuntimeReady.mockResolvedValueOnce(true);
+      videoGenService.isByovRuntimeCurrent.mockResolvedValueOnce(false);
+      const r = await request(app).get('/api/video-gen/setup/runtime-status?runtime=wan22');
+      expect(r.body).toMatchObject({
+        installed: false, binaryPresent: true, packagesReady: true,
+        current: false, upgradeAvailable: true,
+      });
+    });
+  });
+
+  describe('GET /setup/runtime-install', () => {
+    it('short-circuits only when the runtime packages and pinned revision are current', async () => {
+      videoGenService.isByovRuntimeInstalled.mockReturnValueOnce(true);
+      videoGenService.isByovRuntimeReady.mockResolvedValueOnce(true);
+      videoGenService.isByovRuntimeCurrent.mockResolvedValueOnce(true);
+      const r = await request(app).get('/api/video-gen/setup/runtime-install?runtime=wan22');
+      expect(r.status).toBe(200);
+      expect(r.text).toContain('"type":"complete"');
+      expect(r.text).toContain('Already installed');
+      expect(videoGenService.invalidateByovReadyCache).not.toHaveBeenCalled();
+    });
+
+    it('upgrades an outdated checkout with the pinned revision in the installer environment', async () => {
+      videoGenService.isByovRuntimeInstalled
+        .mockReturnValueOnce(true)
+        .mockReturnValueOnce(true);
+      videoGenService.isByovRuntimeReady
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(true);
+      videoGenService.isByovRuntimeCurrent
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(true);
+      const r = await request(app).get('/api/video-gen/setup/runtime-install?runtime=wan22');
+      expect(r.status).toBe(200);
+      expect(r.text).toContain('"type":"complete"');
+      expect(r.text).toContain('Wan 2.2 MLX ready');
+      expect(installProcess.spawn).toHaveBeenCalledWith(
+        'bash',
+        ['/mock/scripts/setup-image-video.sh'],
+        expect.objectContaining({
+          detached: true,
+          env: expect.objectContaining({
+            INSTALL_WAN22: '1',
+            WAN22_PIN: '2452f0c12edcc8886eebf15772205ce9c417a618',
+          }),
+        }),
+      );
     });
   });
 

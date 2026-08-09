@@ -10,21 +10,26 @@ import { atomicWrite } from '../../server/lib/fileUtils.js';
 
 const REL_PATH = 'data/media-models.json';
 const LIGHTNING_REPO = 'lightx2v/Wan2.2-Lightning';
+const LIGHTNING_REVISION = '18bccf8884ec0a078eed79785eb4ef13ea16ce1e';
+const TI2V_REVISION = '6875952a110b6bdbcfc00d72b1d89a8e02ab0fc3';
+const T2V_REVISION = '39ee5f1f630789956f29f40b5c2c6d48c6e9a798';
+const I2V_REVISION = '1a17fbea2649c576de844e08e79fe56296751efa';
+const USER_TUNABLE_FIELDS = ['name', 'steps', 'guidance', 'guidance2', 'flowShift', 'solver', 'memoryGb'];
 
 const NEW_ENTRIES = [
   {
-    id: 'wan22_ti2v_5b', name: 'Wan 2.2 TI2V 5B Q8 (~17 GB, text + image)',
-    repo: 'AbstractFramework/wan2.2-ti2v-5b-diffusers-8bit', runtime: 'wan22',
+    id: 'wan22_ti2v_5b', name: 'Wan 2.2 TI2V 5B Q8 (~17 GiB download, text + image)',
+    repo: 'AbstractFramework/wan2.2-ti2v-5b-diffusers-8bit', revision: TI2V_REVISION, runtime: 'wan22',
     supportedModes: ['text', 'image'], frameStride: 4, fpsOptions: [16, 20, 24],
     memoryGb: 24, steps: 25, guidance: 5, flowShift: 3, solver: 'unipc',
   },
   {
-    id: 'wan22_t2v_a14b_lightning', name: 'Wan 2.2 T2V A14B Lightning Q8 (~14 GB, 4-step)',
-    repo: 'AbstractFramework/wan2.2-t2v-a14b-diffusers-8bit', runtime: 'wan22',
-    supportedModes: ['text'], frameStride: 4, fpsOptions: [16, 20, 24], memoryGb: 16,
+    id: 'wan22_t2v_a14b_lightning', name: 'Wan 2.2 T2V A14B Lightning Q8 (~40 GiB download, 64+ GB RAM, 4-step)',
+    repo: 'AbstractFramework/wan2.2-t2v-a14b-diffusers-8bit', revision: T2V_REVISION, runtime: 'wan22',
+    supportedModes: ['text'], frameStride: 4, fpsOptions: [16, 20, 24], memoryGb: 48,
     steps: 4, guidance: 1, guidance2: 1, flowShift: 5, solver: 'euler', samplerLocked: true,
     requiredWeights: [{
-      repo: LIGHTNING_REPO,
+      repo: LIGHTNING_REPO, revision: LIGHTNING_REVISION,
       files: [
         'Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/high_noise_model.safetensors',
         'Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/low_noise_model.safetensors',
@@ -33,12 +38,12 @@ const NEW_ENTRIES = [
     }],
   },
   {
-    id: 'wan22_i2v_a14b_lightning', name: 'Wan 2.2 I2V A14B Lightning Q8 (~14 GB, 4-step)',
-    repo: 'AbstractFramework/wan2.2-i2v-a14b-diffusers-8bit', runtime: 'wan22',
-    supportedModes: ['image'], frameStride: 4, fpsOptions: [16, 20, 24], memoryGb: 16,
+    id: 'wan22_i2v_a14b_lightning', name: 'Wan 2.2 I2V A14B Lightning Q8 (~40 GiB download, 64+ GB RAM, 4-step)',
+    repo: 'AbstractFramework/wan2.2-i2v-a14b-diffusers-8bit', revision: I2V_REVISION, runtime: 'wan22',
+    supportedModes: ['image'], frameStride: 4, fpsOptions: [16, 20, 24], memoryGb: 48,
     steps: 4, guidance: 1, guidance2: 1, flowShift: 5, solver: 'euler', samplerLocked: true,
     requiredWeights: [{
-      repo: LIGHTNING_REPO,
+      repo: LIGHTNING_REPO, revision: LIGHTNING_REVISION,
       files: [
         'Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/high_noise_model.safetensors',
         'Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/low_noise_model.safetensors',
@@ -53,10 +58,11 @@ const UPGRADES = {
     oldRepo: 'Wan-AI/Wan2.2-T2V-A14B',
     oldName: 'Wan 2.2 T2V A14B (~28 GB, MoE-14B-active)',
     next: {
-      name: 'Wan 2.2 T2V A14B Q8 (~14 GB runtime)',
+      name: 'Wan 2.2 T2V A14B Q8 (~40 GiB download, 64+ GB RAM)',
       repo: 'AbstractFramework/wan2.2-t2v-a14b-diffusers-8bit',
+      revision: T2V_REVISION,
       runtime: 'wan22', supportedModes: ['text'], frameStride: 4,
-      fpsOptions: [16, 20, 24], memoryGb: 16, steps: 20, guidance: 4,
+      fpsOptions: [16, 20, 24], memoryGb: 48, steps: 20, guidance: 4,
       guidance2: 3, flowShift: 3, solver: 'unipc',
     },
   },
@@ -64,10 +70,11 @@ const UPGRADES = {
     oldRepo: 'Wan-AI/Wan2.2-I2V-A14B',
     oldName: 'Wan 2.2 I2V A14B (~28 GB, image-to-video)',
     next: {
-      name: 'Wan 2.2 I2V A14B Q8 (~14 GB runtime)',
+      name: 'Wan 2.2 I2V A14B Q8 (~40 GiB download, 64+ GB RAM)',
       repo: 'AbstractFramework/wan2.2-i2v-a14b-diffusers-8bit',
+      revision: I2V_REVISION,
       runtime: 'wan22', supportedModes: ['image'], frameStride: 4,
-      fpsOptions: [16, 20, 24], memoryGb: 16, steps: 20, guidance: 3.5,
+      fpsOptions: [16, 20, 24], memoryGb: 48, steps: 20, guidance: 3.5,
       guidance2: 3.5, flowShift: 3, solver: 'unipc',
     },
   },
@@ -82,7 +89,11 @@ export default {
     });
     if (raw == null) return;
     let config;
-    try { config = JSON.parse(raw); } catch { return; }
+    try {
+      config = JSON.parse(raw);
+    } catch (err) {
+      throw new Error(`Cannot migrate ${REL_PATH}: invalid JSON (${err.message})`, { cause: err });
+    }
     const macos = Array.isArray(config?.video?.macos) ? config.video.macos : null;
     if (!macos) return;
 
@@ -90,16 +101,14 @@ export default {
     for (const entry of macos) {
       const spec = UPGRADES[entry?.id];
       if (!spec || entry.repo !== spec.oldRepo) continue;
-      const priorName = entry.name;
-      const priorSteps = entry.steps;
-      const priorGuidance = entry.guidance;
-      const preserveSteps = entry.steps !== 25;
-      const preserveGuidance = entry.guidance !== 5;
-      const oldName = entry.name === spec.oldName;
+      const preserved = Object.fromEntries(USER_TUNABLE_FIELDS
+        .filter((field) => Object.prototype.hasOwnProperty.call(entry, field))
+        .map((field) => [field, entry[field]]));
+      if (entry.name === spec.oldName) delete preserved.name;
+      if (entry.steps === 25) delete preserved.steps;
+      if (entry.guidance === 5) delete preserved.guidance;
       Object.assign(entry, spec.next);
-      if (!oldName) entry.name = priorName;
-      if (preserveSteps) entry.steps = priorSteps;
-      if (preserveGuidance) entry.guidance = priorGuidance;
+      Object.assign(entry, preserved);
       if (entry.mode === 't2v' || entry.mode === 'i2v') delete entry.mode;
       changed = true;
     }

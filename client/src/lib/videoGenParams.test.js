@@ -14,6 +14,7 @@ describe('videoModelMemoryGb', () => {
   });
   it('falls back to a "~NN GB" hint in the name', () => {
     expect(videoModelMemoryGb({ name: 'LTX 2.3 (~12.5 GB)' })).toBe(12.5);
+    expect(videoModelMemoryGb({ name: 'Wan 2.2 (~17 GiB)' })).toBe(17);
   });
   it('returns +Infinity when neither is present so it never spuriously fits a budget', () => {
     expect(videoModelMemoryGb({ name: 'mystery model' })).toBe(Number.POSITIVE_INFINITY);
@@ -82,7 +83,10 @@ describe('constants', () => {
     const wan = { frameStride: 4, fpsOptions: [16, 20, 24] };
     expect(frameOptionsForModel(wan)).toBe(WAN_FRAME_OPTIONS);
     expect(fpsOptionsForModel(wan)).toEqual([16, 20, 24]);
-    expect(normalizeFramesForModel(97, wan)).toBe(101);
+    expect(normalizeFramesForModel(97, wan)).toBe(97);
+    expect(normalizeFramesForModel(109, wan)).toBe(109);
+    expect(frameOptionsForModel(wan, 109)).toContain(109);
+    expect(normalizeFramesForModel(98, wan)).toBe(97);
     expect(normalizeFpsForModel(30, wan)).toBe(24);
   });
 });

@@ -44,11 +44,13 @@ export default function AdvancedParamsPanel({
   // a2v derives its length + audio track from the uploaded audio, so chunking
   // and the audio flags don't apply there.
   const showAudioFlags = mode !== 'a2v';
-  const showChunks = mode !== 'a2v';
+  const showChunks = mode !== 'a2v'
+    && !(currentModel?.runtime === 'wan22'
+      && !currentModel?.supportedModes?.includes('image'));
   // ltx2 extend conditions on the source's latent rather than a single frame,
   // so image strength is meaningless for it.
   const showImageStrength = mode === 'image' || (mode === 'extend' && currentModel?.runtime !== 'ltx2');
-  const frameOptions = frameOptionsForModel(currentModel);
+  const frameOptions = frameOptionsForModel(currentModel, numFrames);
   const fpsOptions = fpsOptionsForModel(currentModel);
   const samplerLocked = currentModel?.samplerLocked === true;
 

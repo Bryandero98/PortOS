@@ -80,6 +80,7 @@ export const BYOV_RUNTIME_INFO = Object.freeze({
     installEnvVar: 'INSTALL_WAN22',
     repoUrl: 'https://github.com/lpalbou/mlx-gen',
     expectedRevision: WAN22_EXPECTED_REVISION,
+    pinEnvVar: 'WAN22_PIN',
     importProbe: 'import mflux.models.wan.cli.wan_generate',
     // Mirror scripts/generate_wan22.py's emit_runtime_fingerprint package list.
     fingerprintPackages: ['mlx-gen', 'mlx', 'mlx_metal', 'huggingface-hub'],

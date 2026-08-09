@@ -45,17 +45,39 @@ vi.mock('../../lib/mediaModels.js', () => ({
     {
       id: 'wan22_ti2v_5b', name: 'Wan TI2V', runtime: 'wan22',
       repo: 'AbstractFramework/wan2.2-ti2v-5b-diffusers-8bit',
+      revision: '6875952a110b6bdbcfc00d72b1d89a8e02ab0fc3',
       supportedModes: ['text', 'image'], frameStride: 4, steps: 25, guidance: 5,
       guidance2: null, flowShift: 3, solver: 'unipc',
     },
     {
       id: 'wan22_t2v_a14b_lightning', name: 'Wan T2V Lightning', runtime: 'wan22',
       repo: 'AbstractFramework/wan2.2-t2v-a14b-diffusers-8bit',
+      revision: '39ee5f1f630789956f29f40b5c2c6d48c6e9a798',
       supportedModes: ['text'], frameStride: 4, steps: 4, guidance: 1,
       guidance2: 1, flowShift: 5, solver: 'euler', samplerLocked: true,
       requiredWeights: [{
         repo: 'lightx2v/Wan2.2-Lightning',
-        files: ['profile/high.safetensors', 'profile/low.safetensors'],
+        revision: '18bccf8884ec0a078eed79785eb4ef13ea16ce1e',
+        files: [
+          'Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/high_noise_model.safetensors',
+          'Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/low_noise_model.safetensors',
+        ],
+        targetRoles: ['high_noise_transformer', 'low_noise_transformer'],
+      }],
+    },
+    {
+      id: 'wan22_i2v_a14b_lightning', name: 'Wan I2V Lightning', runtime: 'wan22',
+      repo: 'AbstractFramework/wan2.2-i2v-a14b-diffusers-8bit',
+      revision: '1a17fbea2649c576de844e08e79fe56296751efa',
+      supportedModes: ['image'], frameStride: 4, steps: 4, guidance: 1,
+      guidance2: 1, flowShift: 5, solver: 'euler', samplerLocked: true,
+      requiredWeights: [{
+        repo: 'lightx2v/Wan2.2-Lightning',
+        revision: '18bccf8884ec0a078eed79785eb4ef13ea16ce1e',
+        files: [
+          'Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/high_noise_model.safetensors',
+          'Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/low_noise_model.safetensors',
+        ],
         targetRoles: ['high_noise_transformer', 'low_noise_transformer'],
       }],
     },
@@ -1492,23 +1514,109 @@ describe('generateVideo — Wan MLX-Gen contract', () => {
     expect(args[args.indexOf('--guidance-2') + 1]).toBe('1');
     expect(args[args.indexOf('--flow-shift') + 1]).toBe('5');
     expect(args[args.indexOf('--solver') + 1]).toBe('euler');
-    expect(args.filter((arg) => arg === '--lora-path')).toHaveLength(2);
-    expect(args).toContain('lightx2v/Wan2.2-Lightning:profile/high.safetensors');
-    expect(args).toContain('high_noise_transformer');
+    expect(args[args.indexOf('--model-repo') + 1]).toBe('/mock/hf/snap');
+    expect(args.flatMap((arg, i) => arg === '--lora-path' ? [args[i + 1]] : [])).toEqual([
+      '/mock/hf/snap/Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/high_noise_model.safetensors',
+      '/mock/hf/snap/Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/low_noise_model.safetensors',
+    ]);
+    expect(args.flatMap((arg, i) => arg === '--lora-target-role' ? [args[i + 1]] : [])).toEqual([
+      'high_noise_transformer',
+      'low_noise_transformer',
+    ]);
+    expect(spawnMock.mock.calls.find(([, childArgs]) => childArgs === args)?.[2]).toMatchObject({
+      killProcessGroup: true,
+    });
+    expect(mockInspectModelCache).toHaveBeenCalledWith(
+      'AbstractFramework/wan2.2-t2v-a14b-diffusers-8bit',
+      { revision: '39ee5f1f630789956f29f40b5c2c6d48c6e9a798' },
+    );
+    expect(mockFindCachedRepoFile).toHaveBeenCalledWith(
+      'lightx2v/Wan2.2-Lightning',
+      expect.any(String),
+      { revision: '18bccf8884ec0a078eed79785eb4ef13ea16ce1e' },
+    );
+  });
+
+  it('passes the exact ordered I2V Lightning adapter pair', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+    await generateVideo({
+      jobId: 'wan-i2v-lightning-args',
+      modelId: 'wan22_i2v_a14b_lightning', prompt: 'a boat crosses a lake',
+      sourceImagePath: '/mock/data/images/boat.png',
+      width: 480, height: 256, numFrames: 81, fps: 20, mode: 'image',
+    });
+    const args = spawnMock.mock.calls.find(([, childArgs]) => childArgs.some((arg) => String(arg).endsWith('/generate_wan22.py')))[1];
+    expect(args.flatMap((arg, i) => arg === '--lora-path' ? [args[i + 1]] : [])).toEqual([
+      '/mock/hf/snap/Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/high_noise_model.safetensors',
+      '/mock/hf/snap/Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/low_noise_model.safetensors',
+    ]);
+    expect(args.flatMap((arg, i) => arg === '--lora-target-role' ? [args[i + 1]] : [])).toEqual([
+      'high_noise_transformer',
+      'low_noise_transformer',
+    ]);
   });
 
   it('rejects a Wan model in an unsupported mode before spawn', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
     await expect(generateVideo({
       modelId: 'wan22_t2v_a14b_lightning', prompt: 'test',
       width: 480, height: 256, numFrames: 81, fps: 20, mode: 'image',
     })).rejects.toMatchObject({ code: 'WAN22_MODE_UNSUPPORTED' });
+    expect(spawnDetached).not.toHaveBeenCalled();
   });
 
   it('rejects a non-4n+1 Wan frame count', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
     await expect(generateVideo({
       modelId: 'wan22_ti2v_5b', prompt: 'test',
       width: 480, height: 256, numFrames: 82, fps: 20, mode: 'text',
     })).rejects.toMatchObject({ code: 'WAN22_INVALID_FRAME_COUNT' });
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  it('rejects image mode without a source before cache or spawn work', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
+    await expect(generateVideo({
+      modelId: 'wan22_i2v_a14b_lightning', prompt: 'test',
+      width: 480, height: 256, numFrames: 81, fps: 20, mode: 'image',
+    })).rejects.toMatchObject({ code: 'WAN22_I2V_REQUIRES_IMAGE' });
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  it('rejects text mode with a source before cache or spawn work', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
+    await expect(generateVideo({
+      modelId: 'wan22_ti2v_5b', prompt: 'test', sourceImagePath: '/mock/source.png',
+      width: 480, height: 256, numFrames: 81, fps: 20, mode: 'text',
+    })).rejects.toMatchObject({ code: 'WAN22_TEXT_MODE_SOURCE_CONFLICT' });
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  it('rejects a missing immutable base snapshot before spawn', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
+    mockInspectModelCache.mockResolvedValueOnce({ cached: false, snapshotPath: null, sizeBytes: 0 });
+    await expect(generateVideo({
+      modelId: 'wan22_ti2v_5b', prompt: 'test',
+      width: 480, height: 256, numFrames: 81, fps: 20, mode: 'text',
+    })).rejects.toMatchObject({ code: 'WAN22_MODEL_NOT_CACHED' });
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  it('rejects a T2V-only Wan chain before rendering chunk one', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
+    await expect(generateChainedVideo({
+      chunks: 2, jobId: 'wan-chain-reject', modelId: 'wan22_t2v_a14b_lightning',
+      prompt: 'test', width: 480, height: 256, numFrames: 81, fps: 20, mode: 'text',
+    })).rejects.toMatchObject({ code: 'WAN22_CHAIN_REQUIRES_IMAGE_MODE' });
+    expect(spawnDetached).not.toHaveBeenCalled();
   });
 });
 

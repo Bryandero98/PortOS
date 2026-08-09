@@ -8,6 +8,7 @@ MLX-Gen returns a typed download-required failure if anything is absent.
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -80,6 +81,12 @@ def main() -> int:
 
     print(f"STAGE:inference", file=sys.stderr, flush=True)
     print(f"🎬 wan22 generate {args.width}x{args.height} steps={args.steps} seed={args.seed}", file=sys.stderr)
+
+    # PortOS cancels this wrapper by process group so the MLX-Gen subprocess
+    # cannot survive as an orphan while holding unified memory. Establish the
+    # group before spawning it; the detached launcher records this wrapper PID.
+    if hasattr(os, "setpgid"):
+        os.setpgid(0, 0)
 
     # Human diagnostics remain on inherited stderr. JSONL progress on stdout
     # is translated into PortOS's existing STAGE:/STATUS: protocol below.

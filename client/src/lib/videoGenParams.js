@@ -12,11 +12,25 @@
 // see the hint under the Frames dropdown.
 export const FRAME_OPTIONS = [25, 49, 73, 97, 121, 145, 169, 193, 217, 241, 265, 313, 361, 481];
 export const FPS_OPTIONS = [16, 24, 30];
-export const WAN_FRAME_OPTIONS = [25, 41, 49, 61, 81, 101, 121, 161, 201, 241, 321, 481];
+export const WAN_FRAME_OPTIONS = [...new Set([
+  ...FRAME_OPTIONS,
+  41, 61, 81, 101, 161, 201, 321,
+])].sort((a, b) => a - b);
 
-export const frameOptionsForModel = (model) => Number(model?.frameStride) === 4
-  ? WAN_FRAME_OPTIONS
-  : FRAME_OPTIONS;
+export const isValidFrameCountForModel = (value, model) => {
+  const stride = Number(model?.frameStride);
+  const frames = Number(value);
+  return Number.isInteger(frames) && frames > 0
+    && Number.isFinite(stride) && stride > 0
+    && (frames - 1) % stride === 0;
+};
+export const frameOptionsForModel = (model, currentValue = null) => {
+  const options = Number(model?.frameStride) === 4 ? WAN_FRAME_OPTIONS : FRAME_OPTIONS;
+  const frames = Number(currentValue);
+  return isValidFrameCountForModel(frames, model) && !options.includes(frames)
+    ? [...options, frames].sort((a, b) => a - b)
+    : options;
+};
 export const fpsOptionsForModel = (model) => Array.isArray(model?.fpsOptions) && model.fpsOptions.length > 0
   ? model.fpsOptions
   : FPS_OPTIONS;
@@ -24,7 +38,9 @@ const nearestOption = (value, options) => options.reduce(
   (best, option) => Math.abs(option - Number(value)) < Math.abs(best - Number(value)) ? option : best,
   options[0],
 );
-export const normalizeFramesForModel = (value, model) => nearestOption(value, frameOptionsForModel(model));
+export const normalizeFramesForModel = (value, model) => isValidFrameCountForModel(value, model)
+  ? Number(value)
+  : nearestOption(value, frameOptionsForModel(model));
 export const normalizeFpsForModel = (value, model) => nearestOption(value, fpsOptionsForModel(model));
 
 // Per-edge bounds for video: mirrors the videoGen route (64..2048) and the
@@ -34,12 +50,12 @@ export const normalizeFpsForModel = (value, model) => nearestOption(value, fpsOp
 export const VIDEO_EDGE_BOUNDS = { min: 64, max: 2048, step: 64 };
 
 // Resolve a video model's memory footprint in GB. Prefers the explicit
-// `memoryGb` field, falling back to a "~NN GB" hint in the display name, then
+// `memoryGb` field, falling back to a "~NN GB/GiB" hint in the display name, then
 // +Infinity so an unknown model never spuriously "fits" a memory budget.
 export const videoModelMemoryGb = (model) => {
   const explicit = Number(model?.memoryGb);
   if (Number.isFinite(explicit) && explicit > 0) return explicit;
-  const match = String(model?.name || '').match(/~\s*(\d+(?:\.\d+)?)\s*GB/i);
+  const match = String(model?.name || '').match(/~\s*(\d+(?:\.\d+)?)\s*Gi?B/i);
   return match ? Number(match[1]) : Number.POSITIVE_INFINITY;
 };
 

@@ -277,15 +277,16 @@ if [[ "$INSTALL_WAN22" == "1" ]]; then
   # a BYOV model should gain no global package or tool. If uv is not already
   # available, bootstrap a pinned copy inside ~/.portos using the Python that
   # PortOS already validated above; all output streams back to the install UI.
-  WAN22_UV="$(command -v uv || true)"
   WAN22_UV_TOOL_DIR="${HOME}/.portos/tools/uv-0.8.14"
-  if [[ -z "$WAN22_UV" ]]; then
-    WAN22_UV="${WAN22_UV_TOOL_DIR}/bin/uv"
-    if [[ ! -x "$WAN22_UV" ]]; then
-      echo "📦 Bootstrapping pinned uv 0.8.14 for MLX-Gen..."
-      "$PYTHON_BIN" -m venv "$WAN22_UV_TOOL_DIR"
-      "${WAN22_UV_TOOL_DIR}/bin/python3" -m pip install --disable-pip-version-check "uv==0.8.14"
-    fi
+  WAN22_UV="${WAN22_UV_TOOL_DIR}/bin/uv"
+  # Always use the PortOS-owned exact uv version. A random PATH copy can be too
+  # old for this lockfile or a future release with different sync semantics,
+  # which would defeat the reproducible runtime pin even though MLX-Gen itself
+  # is checked out at an immutable commit.
+  if [[ ! -x "$WAN22_UV" ]] || [[ "$("$WAN22_UV" --version 2>/dev/null || true)" != "uv 0.8.14" ]]; then
+    echo "📦 Bootstrapping pinned uv 0.8.14 for MLX-Gen..."
+    "$PYTHON_BIN" -m venv --clear "$WAN22_UV_TOOL_DIR"
+    "${WAN22_UV_TOOL_DIR}/bin/python3" -m pip install --disable-pip-version-check "uv==0.8.14"
   fi
   # v0.25.0 exact commit, statically audited before integration. Keep the full
   # SHA so existing installs get an explicit, reproducible UI-driven upgrade.

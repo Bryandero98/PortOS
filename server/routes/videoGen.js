@@ -49,6 +49,7 @@ import {
 import {
   inspectModelCache, verifyModelCache, repairModelCache, repairCachedFile,
   verifyCachedRepoFiles, repairCachedRepoFiles, summarizeVerify, aggregateVerifies,
+  isSafeHfRepoRelativePath,
 } from '../lib/hfCache.js';
 import { startHfDownloadStream, openSseStream } from '../lib/sseDownload.js';
 import { createInstallLogger } from '../lib/installLogger.js';
@@ -378,6 +379,23 @@ router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
   const runtime = String(req.query?.runtime || '');
   const info = BYOV_RUNTIME_INFO[runtime];
   const { send, safeEnd } = openSseStream(res);
+  let child = null;
+  let aborted = false;
+
+  // Register disconnect handling before any readiness/revision await. Those
+  // probes can take tens of seconds on a damaged venv; closing the modal during
+  // that window must prevent the large installer from starting unattended.
+  res.on('close', () => {
+    if (res.writableEnded) return;
+    aborted = true;
+    if (info && runtimeInstallInFlight.get(info.id) === null) {
+      runtimeInstallInFlight.delete(info.id);
+    }
+    if (child && !child.killed && child.pid) {
+      try { process.kill(-child.pid, 'SIGTERM'); }
+      catch { child.kill('SIGTERM'); }
+    }
+  });
 
   if (!info) {
     send({ type: 'error', message: `Unknown runtime: ${runtime}` });
@@ -400,7 +418,9 @@ router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
   // behind a button that can never perform the action it advertises.
   const alreadyInstalled = isByovRuntimeInstalled(info.id);
   const alreadyReady = alreadyInstalled && await isByovRuntimeReady(info.id);
+  if (aborted) return safeEnd();
   const alreadyCurrent = alreadyReady && await isByovRuntimeCurrent(info.id);
+  if (aborted) return safeEnd();
   if (alreadyInstalled && alreadyReady && alreadyCurrent) {
     runtimeInstallInFlight.delete(info.id);
     send({ type: 'log', message: `${info.label} already installed at ${info.venvPython}` });
@@ -432,8 +452,12 @@ router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
   // bash leaves a multi-GB `git clone` (and any subsequent pip downloads)
   // orphaned to init — the user sees the modal close but the bandwidth keeps
   // burning until the network drops or the snapshot completes.
-  const child = spawn('bash', [scriptPath], {
-    env: safeChildProcessEnv({ [info.installEnvVar]: '1' }),
+  const installEnv = {
+    [info.installEnvVar]: '1',
+    ...(info.pinEnvVar && info.expectedRevision ? { [info.pinEnvVar]: info.expectedRevision } : {}),
+  };
+  child = spawn('bash', [scriptPath], {
+    env: safeChildProcessEnv(installEnv),
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
   });
@@ -481,20 +505,7 @@ router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
     safeEnd();
   });
 
-  req.on('close', () => {
-    installLog.cancel();
-    if (!child.killed && child.pid) {
-      // Negative pid signals the whole process group — required because
-      // `setup-image-video.sh` shells out to `uv pip install` / `git clone`,
-      // and a plain `child.kill('SIGTERM')` only signals bash itself, leaving
-      // the slow children running in the background. Wrap in try/catch so an
-      // already-dead group (race with the close handler) doesn't crash the
-      // server with ESRCH.
-      try { process.kill(-child.pid, 'SIGTERM'); }
-      catch { child.kill('SIGTERM'); }
-    }
-    safeEnd();
-  });
+  res.on('close', () => { if (!res.writableEnded) installLog.cancel(); });
 }));
 
 async function resolveLocalPythonHealth(py) {
@@ -523,22 +534,32 @@ router.get('/models', (_req, res) => {
 const modelDownloadTargets = (model) => {
   const repo = repoForModel(model);
   if (!repo) return [];
-  const targets = [{ repo, only: [] }];
+  const targets = [{ repo, revision: model?.revision || null, only: [] }];
   for (const dep of Array.isArray(model?.requiredWeights) ? model.requiredWeights : []) {
     if (typeof dep?.repo !== 'string') continue;
     const only = Array.isArray(dep.files) ? dep.files.filter((file) => typeof file === 'string' && file.length > 0) : [];
-    if (only.length > 0) targets.push({ repo: dep.repo, only });
+    if (only.some((file) => !isSafeHfRepoRelativePath(file))) {
+      throw new ServerError(
+        `Video model "${model.id}" has an unsafe required-weight path. Use repo-relative POSIX filenames only.`,
+        { status: 500, code: 'VIDEO_MODEL_MISCONFIGURED' },
+      );
+    }
+    if (only.length > 0) targets.push({ repo: dep.repo, revision: dep.revision || null, only });
   }
   return targets;
 };
 
-const targetKey = (target) => `${target.repo}::${target.only.join(',')}`;
+const targetKey = (target) => `${target.repo}@${target.revision || 'latest'}::${target.only.join(',')}`;
+const targetVerifyOptions = (target, deep) => ({
+  deep,
+  ...(target.revision ? { revision: target.revision } : {}),
+});
 const verifyDownloadTarget = (target, { deep = false } = {}) => target.only.length > 0
-  ? verifyCachedRepoFiles(target.repo, target.only, { deep })
-  : verifyModelCache(target.repo, { deep });
+  ? verifyCachedRepoFiles(target.repo, target.only, targetVerifyOptions(target, deep))
+  : verifyModelCache(target.repo, targetVerifyOptions(target, deep));
 const repairDownloadTarget = (target, { deep = false } = {}) => target.only.length > 0
-  ? repairCachedRepoFiles(target.repo, target.only, { deep })
-  : repairModelCache(target.repo, { deep });
+  ? repairCachedRepoFiles(target.repo, target.only, targetVerifyOptions(target, deep))
+  : repairModelCache(target.repo, targetVerifyOptions(target, deep));
 
 const reposToVerify = (modelId) => {
   if (modelId) {

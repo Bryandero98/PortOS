@@ -51,16 +51,17 @@ export async function startHfDownloadStream({ req, res, repo, repos, fallbacks, 
   // user doesn't have. Callers pass an async `() => boolean` that checks the one
   // file instead.
   const normalizeOnly = (v) => (Array.isArray(v) ? v.filter((f) => typeof f === 'string' && f.length > 0) : []);
+  const normalizeRevision = (v) => (typeof v === 'string' && v.length > 0 ? v : null);
   const normalizeTarget = (target) => {
-    if (typeof target === 'string' && target.length > 0) return { repo: target, only: [] };
+    if (typeof target === 'string' && target.length > 0) return { repo: target, only: [], revision: null };
     if (!target || typeof target.repo !== 'string' || target.repo.length === 0) return null;
-    return { repo: target.repo, only: normalizeOnly(target.only) };
+    return { repo: target.repo, only: normalizeOnly(target.only), revision: normalizeRevision(target.revision) };
   };
   const firstSuccessWins = Array.isArray(fallbacks);
   const targets = firstSuccessWins
     ? fallbacks
       .filter((t) => t && typeof t.repo === 'string' && t.repo.length > 0)
-      .map((t) => ({ repo: t.repo, only: normalizeOnly(t.only) }))
+      .map((t) => ({ repo: t.repo, only: normalizeOnly(t.only), revision: normalizeRevision(t.revision) }))
     : (Array.isArray(repos) ? repos : [repo]).map(normalizeTarget).filter(Boolean);
   const { send, safeEnd } = openSseStream(res);
 
@@ -93,7 +94,7 @@ export async function startHfDownloadStream({ req, res, repo, repos, fallbacks, 
   let succeededRepo = null;
   const attemptErrors = [];
   for (let i = 0; i < targets.length; i += 1) {
-    const { repo: r, only: onlyFiles } = targets[i];
+    const { repo: r, only: onlyFiles, revision } = targets[i];
     const isLastTarget = i === targets.length - 1;
     if (aborted) return;
     // For a single-file pull the repo-wide cache verdict is both the wrong
@@ -105,12 +106,12 @@ export async function startHfDownloadStream({ req, res, repo, repos, fallbacks, 
     const singleFile = onlyFiles.length > 0;
     const existing = singleFile
       ? { cached: false, sizeBytes: 0 }
-      : await inspectModelCache(r);
+      : await inspectModelCache(r, { revision });
     if (aborted) return;
     const alreadyHave = singleFile
       ? (typeof cachedFile === 'function'
-        ? await cachedFile({ repo: r, only: onlyFiles })
-        : (await Promise.all(onlyFiles.map((file) => findCachedRepoFile(r, file)))).every(Boolean))
+        ? await cachedFile({ repo: r, only: onlyFiles, revision })
+        : (await Promise.all(onlyFiles.map((file) => findCachedRepoFile(r, file, { revision })))).every(Boolean))
       : existing.cached;
     if (aborted) return;
     // `force` is set by a repair-initiated re-download: repairModelCache()
@@ -140,7 +141,8 @@ export async function startHfDownloadStream({ req, res, repo, repos, fallbacks, 
     // Dedupe key includes the filenames: an aggregate repo hosts many unrelated
     // weights, so two single-file pulls of DIFFERENT files from the same repo are
     // not duplicates and must not block each other.
-    const flightKey = singleFile ? `${r}::${onlyFiles.join(',')}` : r;
+    const revisionKey = revision ? `@${revision}` : '';
+    const flightKey = singleFile ? `${r}${revisionKey}::${onlyFiles.join(',')}` : `${r}${revisionKey}`;
     if (inFlight.has(flightKey)) {
       console.log(`⏭️  HuggingFace download already running for ${flightKey} — refusing duplicate`);
       send({ type: 'error', message: `Another download for ${r} is already running.`, kind: 'already_running', repo: r });
@@ -152,6 +154,7 @@ export async function startHfDownloadStream({ req, res, repo, repos, fallbacks, 
     console.log(`⬇️  Downloading HuggingFace repo: ${r}${singleFile ? ` (${onlyFiles.length} file(s) only)` : ''}${force ? ' (forced re-fetch)' : ''}`);
     const handle = downloadHfRepo({
       repo: r,
+      revision,
       only: singleFile ? onlyFiles : null,
       pythonPath,
       onEvent: (ev) => {
@@ -161,8 +164,12 @@ export async function startHfDownloadStream({ req, res, repo, repos, fallbacks, 
         // A failure that we're about to retry against the next candidate isn't a
         // user-facing error — downgrade it to a log so the UI doesn't flash a red
         // "gated repo" banner for something the mirror then delivers fine.
-        if (firstSuccessWins && !isLastTarget && ev.type === 'error') {
-          send({ type: 'log', message: `${r}: ${ev.message} — trying the next source.`, repo: r });
+        if (firstSuccessWins && ev.type === 'error') {
+          send({
+            type: 'log',
+            message: `${r}: ${ev.message}${isLastTarget ? '' : ' — trying the next source.'}`,
+            repo: r,
+          });
           return;
         }
         send({ ...ev, repo: r });

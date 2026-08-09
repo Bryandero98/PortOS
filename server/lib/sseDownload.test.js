@@ -64,6 +64,20 @@ describe('startHfDownloadStream force', () => {
     const events = parseFrames(frames);
     expect(events.at(-1)).toMatchObject({ type: 'complete', message: 'org/encoder downloaded.' });
   });
+
+  it('uses the immutable revision for cache inspection and download', async () => {
+    inspectModelCache.mockResolvedValueOnce({ cached: false, sizeBytes: 0, snapshotPath: null });
+    const revision = '1111111111111111111111111111111111111111';
+    const { req, res } = makeReqRes();
+    await startHfDownloadStream({
+      req, res,
+      repos: [{ repo: 'org/pinned', revision, only: [] }],
+    });
+    expect(inspectModelCache).toHaveBeenCalledWith('org/pinned', { revision });
+    expect(downloadHfRepo).toHaveBeenCalledWith(expect.objectContaining({
+      repo: 'org/pinned', revision,
+    }));
+  });
 });
 
 // The download flow used to surface progress ONLY on the SSE stream to the
@@ -240,14 +254,20 @@ describe('startHfDownloadStream single-file + fallbacks (#3112)', () => {
   });
 
   it('reports every attempt when all sources fail', async () => {
-    downloadHfRepo.mockImplementation(({ repo }) => ({
-      promise: Promise.resolve({ ok: false, errorKind: 'x', errorMessage: `${repo} broke` }),
-      kill: vi.fn(),
-    }));
+    downloadHfRepo.mockImplementation(({ repo, onEvent }) => {
+      onEvent({ type: 'error', kind: 'x', message: `${repo} broke` });
+      return {
+        promise: Promise.resolve({ ok: false, errorKind: 'x', errorMessage: `${repo} broke` }),
+        kill: vi.fn(),
+      };
+    });
 
     const { req, res, frames } = makeReqRes();
     await startHfDownloadStream({ req, res, fallbacks: CANDIDATES, cachedFile: async () => false });
-    const last = parseFrames(frames).at(-1);
+    const events = parseFrames(frames);
+    const terminal = events.filter((event) => event.type === 'error');
+    expect(terminal).toHaveLength(1);
+    const last = terminal[0];
     expect(last).toMatchObject({ type: 'error', kind: 'all_sources_failed' });
     expect(last.message).toContain('org/official broke');
     expect(last.message).toContain('org/mirror-708gb broke');

@@ -42,6 +42,7 @@ vi.mock('fs/promises', () => ({
 }));
 
 import { unlink } from 'fs/promises';
+import { resolveGalleryImage } from '../../lib/fileUtils.js';
 import { getProject as getMusicVideoProject } from '../musicVideo/projects.js';
 import { getTrack } from '../tracks/index.js';
 import { listVideoModels, loadHistory } from './local.js';
@@ -256,6 +257,53 @@ describe('prepareVideoGenParams', () => {
 
       await expect(prepare({ modelId: 'wan_ti2v', mode: 'text', numFrames: 120 }))
         .rejects.toMatchObject({ status: 400, code: 'WAN22_INVALID_FRAME_COUNT' });
+    });
+
+    it('rejects Wan image mode without a declared source before staging', async () => {
+      listVideoModels.mockReturnValue([{
+        id: 'wan_ti2v', name: 'Wan TI2V', runtime: 'wan22',
+        supportedModes: ['text', 'image'], frameStride: 4,
+      }]);
+
+      await expect(prepare({ modelId: 'wan_ti2v', mode: 'image', numFrames: 121 }))
+        .rejects.toMatchObject({ status: 400, code: 'WAN22_I2V_REQUIRES_IMAGE' });
+      expect(unlinkedDurablePaths()).toEqual([]);
+    });
+
+    it('rejects Wan image mode when its gallery source no longer resolves', async () => {
+      listVideoModels.mockReturnValue([{
+        id: 'wan_ti2v', name: 'Wan TI2V', runtime: 'wan22',
+        supportedModes: ['text', 'image'], frameStride: 4,
+      }]);
+      vi.mocked(resolveGalleryImage).mockReturnValueOnce(null);
+
+      await expect(prepare({
+        modelId: 'wan_ti2v', mode: 'image', numFrames: 121, sourceImageFile: 'missing.png',
+      })).rejects.toMatchObject({ status: 400, code: 'WAN22_I2V_REQUIRES_IMAGE' });
+    });
+
+    it('rejects an explicit Wan text render that also supplies a source', async () => {
+      listVideoModels.mockReturnValue([{
+        id: 'wan_ti2v', name: 'Wan TI2V', runtime: 'wan22',
+        supportedModes: ['text', 'image'], frameStride: 4,
+      }]);
+
+      await expect(prepare(
+        { modelId: 'wan_ti2v', mode: 'text', numFrames: 121 },
+        { sourceImage: upload('sourceImage') },
+      )).rejects.toMatchObject({ status: 400, code: 'WAN22_TEXT_MODE_SOURCE_CONFLICT' });
+      expect(unlink).toHaveBeenCalledWith('/tmp/multipart-sourceImage-frame.png');
+    });
+
+    it('rejects chunks on a T2V-only Wan model before staging', async () => {
+      listVideoModels.mockReturnValue([{
+        id: 'wan_t2v', name: 'Wan T2V', runtime: 'wan22',
+        supportedModes: ['text'], frameStride: 4,
+      }]);
+
+      await expect(prepare({ modelId: 'wan_t2v', mode: 'text', numFrames: 121, chunks: 2 }))
+        .rejects.toMatchObject({ status: 400, code: 'WAN22_CHAIN_REQUIRES_IMAGE_MODE' });
+      expect(unlinkedDurablePaths()).toEqual([]);
     });
   });
 });

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useSearchParams } from 'react-router';
 import toast from '../components/ui/Toast';
 import { extractLastFrame } from '../services/api';
@@ -288,6 +288,18 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     [models, mode],
   );
 
+  // Every model transition — including automatic compatibility fallback —
+  // drops sampler overrides from the prior model. Keeping one transition path
+  // prevents a mode change from carrying LTX/Wan steps or CFG to its fallback.
+  const applyModelSelection = useCallback((nextId) => {
+    const nextModel = models.find((model) => model.id === nextId);
+    setModelId(nextId);
+    setNumFrames((current) => normalizeFramesForModel(current, nextModel));
+    setFps((current) => normalizeFpsForModel(current, nextModel));
+    setSteps('');
+    setGuidanceScale('');
+  }, [models]);
+
   // Validate `modelId` once models are loaded. Two failure modes covered:
   //  1. A Remix URL (or hand-edited link) carries a `modelId` that no longer
   //     exists in the catalog — <ModelSelect> shows nothing and `currentModel`
@@ -344,8 +356,8 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
       const fallbackName = models.find((m) => m.id === fallback)?.name || fallback;
       toast(`Original model "${modelId}" is no longer available — switched to "${fallbackName}"`);
     }
-    setModelId(fallback);
-  }, [modelId, models, status?.defaultModel, status?.systemMemoryGb, mode, visibleModels]);
+    applyModelSelection(fallback);
+  }, [modelId, models, status?.defaultModel, status?.systemMemoryGb, mode, visibleModels, applyModelSelection]);
 
   const currentModel = models.find((m) => m.id === modelId);
 
@@ -473,14 +485,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   // Switching model drops the sampler overrides — steps/guidanceScale are
   // per-model defaults, and carrying one model's numbers onto another is
   // usually wrong.
-  const handleModelChange = (nextId) => {
-    const nextModel = models.find((model) => model.id === nextId);
-    setModelId(nextId);
-    setNumFrames((current) => normalizeFramesForModel(current, nextModel));
-    setFps((current) => normalizeFpsForModel(current, nextModel));
-    setSteps('');
-    setGuidanceScale('');
-  };
+  const handleModelChange = applyModelSelection;
 
   const dropSourceImageParam = () => {
     if (!incomingSourceImage) return;
@@ -912,6 +917,8 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     || currentModel?.runtime !== 'ltx2'
     || !!icResolutionIssue(icSpec, width, height)
   );
+  const modelSupportsChaining = currentModel?.runtime !== 'wan22'
+    || currentModel?.supportedModes?.includes('image');
 
   // Snapshot the current form into a generate-payload. Used both by the
   // inline Generate button and by enqueue, so the two paths stay in lockstep.
@@ -1009,7 +1016,8 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
       // Keyframes and IC references each anchor a single clip — the route
       // rejects chunks > 1 with KEYFRAMES_CHUNKS_CONFLICT /
       // IC_LORA_CHUNKS_CONFLICT, so suppress chunking for both.
-      chunks: mode !== 'a2v' && !keyframesActive && !icModeActive && chunks > 1 ? chunks : '',
+      chunks: mode !== 'a2v' && !keyframesActive && !icModeActive
+        && modelSupportsChaining && chunks > 1 ? chunks : '',
     };
   };
 

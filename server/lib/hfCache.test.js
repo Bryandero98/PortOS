@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   inspectModelCache, getHfCacheRoot, isModelCached,
-  verifyModelCache, repairModelCache, findCachedRepoFile, repairCachedFile,
+  verifyModelCache, repairModelCache, findCachedRepoFile, findCachedRepoSnapshot, repairCachedFile,
   verifyCachedRepoFiles, repairCachedRepoFiles,
 } from './hfCache.js';
 
@@ -435,6 +435,21 @@ describe('repairCachedFile', () => {
     expect(await repairCachedFile('/nope/missing.safetensors')).toBe(false);
     expect(await repairCachedFile(null)).toBe(false);
   });
+
+  it('never follows a snapshot symlink outside the repository blob directory', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'hfcache-escape-'));
+    cleanup.push(root);
+    const snap = join(root, 'models--org--escape', 'snapshots', 'a'.repeat(40));
+    mkdirSync(snap, { recursive: true });
+    const outside = join(root, 'outside.safetensors');
+    writeFileSync(outside, Buffer.from('must survive'));
+    const link = join(snap, 'escape.safetensors');
+    symlinkSync(outside, link);
+
+    expect(await repairCachedFile(link)).toBe(true);
+    expect(existsSync(link)).toBe(false);
+    expect(existsSync(outside)).toBe(true);
+  });
 });
 
 describe('exact-file aggregate verification', () => {
@@ -489,5 +504,42 @@ describe('exact-file aggregate verification', () => {
     expect(result.deleted).toEqual(['high.safetensors']);
     expect(existsSync(join(snapDir, 'high.safetensors'))).toBe(false);
     expect(existsSync(join(snapDir, 'low.safetensors'))).toBe(true);
+  });
+
+  it('rejects traversal filenames without reading or deleting the outside file', async () => {
+    const { root } = buildContentCache({
+      repoId: 'org/lightning',
+      files: { 'inside.safetensors': { content: buildSafetensors() } },
+    });
+    cleanup.push(root);
+    process.env.HF_HUB_CACHE = root;
+    const outside = join(root, 'outside.safetensors');
+    writeFileSync(outside, Buffer.from('must survive'));
+
+    expect(await findCachedRepoFile('org/lightning', '../../../outside.safetensors')).toBeNull();
+    const verify = await verifyCachedRepoFiles('org/lightning', ['../../../outside.safetensors']);
+    expect(verify.files[0]).toMatchObject({ ok: false, reason: 'unsafe-path' });
+    const repaired = await repairCachedRepoFiles('org/lightning', ['../../../outside.safetensors']);
+    expect(repaired.deleted).toEqual([]);
+    expect(existsSync(outside)).toBe(true);
+  });
+
+  it('pins cache inspection to the requested immutable snapshot revision', async () => {
+    const wanted = 'a'.repeat(40);
+    const other = 'b'.repeat(40);
+    const { root } = buildFakeCache({
+      repoId: 'org/pinned',
+      snapshots: {
+        [wanted]: { 'wanted.safetensors': 1024 },
+        [other]: { 'other.safetensors': 2048 },
+      },
+    });
+    cleanup.push(root);
+    process.env.HF_HUB_CACHE = root;
+
+    expect(await findCachedRepoSnapshot('org/pinned', wanted)).toMatch(new RegExp(`/snapshots/${wanted}$`));
+    expect(await findCachedRepoFile('org/pinned', 'wanted.safetensors', { revision: wanted })).toBeTruthy();
+    expect(await findCachedRepoFile('org/pinned', 'other.safetensors', { revision: wanted })).toBeNull();
+    expect((await inspectModelCache('org/pinned', { revision: wanted })).sizeBytes).toBe(1024);
   });
 });

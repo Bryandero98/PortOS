@@ -31,10 +31,14 @@ describe('migration 233 — Wan MLX-Gen models', () => {
     const byId = new Map(config.video.macos.map((entry) => [entry.id, entry]));
     expect(byId.get('wan22_t2v_a14b')).toMatchObject({
       repo: 'AbstractFramework/wan2.2-t2v-a14b-diffusers-8bit',
-      supportedModes: ['text'], frameStride: 4, steps: 20, guidance: 4,
+      revision: '39ee5f1f630789956f29f40b5c2c6d48c6e9a798',
+      supportedModes: ['text'], frameStride: 4, memoryGb: 48, steps: 20, guidance: 4,
     });
     expect(byId.get('wan22_t2v_a14b').mode).toBeUndefined();
     expect(byId.get('wan22_ti2v_5b').supportedModes).toEqual(['text', 'image']);
+    expect(byId.get('wan22_t2v_a14b_lightning').requiredWeights[0]).toMatchObject({
+      revision: '18bccf8884ec0a078eed79785eb4ef13ea16ce1e',
+    });
     expect(byId.get('wan22_t2v_a14b_lightning').requiredWeights[0].files).toHaveLength(2);
     expect(byId.get('wan22_i2v_a14b_lightning').samplerLocked).toBe(true);
     expect(config._shippedDefaults.video.macos).toContain('wan22_ti2v_5b');
@@ -57,6 +61,10 @@ describe('migration 233 — Wan MLX-Gen models', () => {
       name: 'My Wan profile',
       steps: 17,
       guidance: 6,
+      guidance2: 7,
+      flowShift: 4,
+      solver: 'euler',
+      memoryGb: 96,
     });
     write(config);
     await migration.up({ rootDir });
@@ -66,7 +74,16 @@ describe('migration 233 — Wan MLX-Gen models', () => {
       repo: 'AbstractFramework/wan2.2-t2v-a14b-diffusers-8bit',
       steps: 17,
       guidance: 6,
+      guidance2: 7,
+      flowShift: 4,
+      solver: 'euler',
+      memoryGb: 96,
     });
+  });
+
+  it('rejects malformed JSON instead of silently marking the migration applied', async () => {
+    writeFileSync(path, '{not-json');
+    await expect(migration.up({ rootDir })).rejects.toThrow(/invalid JSON/);
   });
 
   it('is idempotent', async () => {
