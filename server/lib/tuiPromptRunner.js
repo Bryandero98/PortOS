@@ -58,6 +58,7 @@ import {
   detectMissingTuiBinary,
 } from './tuiHandshake.js';
 import { buildCliChildEnv } from './cliChildEnv.js';
+import { isCodexCommand } from './codex.js';
 
 // One-shot defaults that don't apply to the long-running agent path:
 //   - hard run cap (5 min vs unbounded for agents)
@@ -66,6 +67,22 @@ import { buildCliChildEnv } from './cliChildEnv.js';
 //     to stop talking)
 const DEFAULT_TIMEOUT_MS = 300000;
 const DEFAULT_ONE_SHOT_IDLE_MS = 8000;
+
+// A one-shot prompt must return one machine-consumed answer. Codex's general
+// interactive TUI inherits the user's multi-agent feature flag, which can turn
+// that bounded request into agent fan-out + wait loops that consume the entire
+// timeout before the fallback provider repeats the work. Long-running CoS
+// agents use agentTuiSpawning.js and keep their configured collaboration
+// posture; only this synchronous prompt runner pins the feature off.
+function buildOneShotTuiArgs(command, args) {
+  if (!isCodexCommand(command)) return args;
+  const alreadyDisabled = args.some((arg, index) => (
+    arg === '--disable=multi_agent'
+    || (arg === '--disable' && args[index + 1] === 'multi_agent')
+    || (arg === '-c' && args[index + 1] === 'features.multi_agent=false')
+  ));
+  return alreadyDisabled ? args : [...args, '--disable', 'multi_agent'];
+}
 
 // Wide PTY so TUI doesn't wrap responses at narrow widths, which makes
 // downstream parsing harder.
@@ -118,7 +135,9 @@ export async function executeTuiRun({ runId, provider, prompt, workspacePath, on
     throw new Error('executeTuiRun: prompt must be a non-empty string');
   }
 
-  const { command, args } = buildTuiInvocation(provider, provider.defaultModel);
+  const invocation = buildTuiInvocation(provider, provider.defaultModel);
+  const { command } = invocation;
+  const args = buildOneShotTuiArgs(command, invocation.args);
   const promptDelayMs = provider.tuiPromptDelayMs ?? DEFAULT_TUI_PROMPT_DELAY_MS;
   const idleThresholdMs = idleMs ?? provider.tuiOneShotIdleMs ?? DEFAULT_ONE_SHOT_IDLE_MS;
   const totalTimeoutMs = timeout ?? provider.timeout ?? DEFAULT_TIMEOUT_MS;

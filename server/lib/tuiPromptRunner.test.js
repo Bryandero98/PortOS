@@ -316,6 +316,40 @@ describe('executeTuiRun', () => {
   });
 
   describe('startup hooks', () => {
+    it('disables Codex multi-agent fan-out for one-shot prompt runs', async () => {
+      const provider = {
+        id: 'codex-tui', type: 'tui', command: '/opt/homebrew/bin/codex', defaultModel: 'gpt-x',
+      };
+      const promise = executeTuiRun({
+        runId: 'run-codex-one-shot', provider, prompt: 'return one structured response',
+        workspacePath: TEST_WORKSPACE,
+      });
+      await flushAsync();
+
+      const args = ptySpawnMock.mock.calls[0][1];
+      expect(args).toContain('--disable');
+      expect(args[args.indexOf('--disable') + 1]).toBe('multi_agent');
+
+      ptyInstances[0].emitExit({ exitCode: 0 });
+      await promise;
+    });
+
+    it('does not add Codex feature flags to other one-shot TUI providers', async () => {
+      const provider = {
+        id: 'claude-tui', type: 'tui', command: 'claude', defaultModel: 'claude-fable-5',
+      };
+      const promise = executeTuiRun({
+        runId: 'run-claude-one-shot', provider, prompt: 'return one structured response',
+        workspacePath: TEST_WORKSPACE,
+      });
+      await flushAsync();
+
+      expect(ptySpawnMock.mock.calls[0][1]).not.toContain('--disable');
+
+      ptyInstances[0].emitExit({ exitCode: 0 });
+      await promise;
+    });
+
     it('registers the PTY in the active-runs map and fires emitRunStarted with provider + defaultModel', async () => {
       const provider = {
         id: 'claude', type: 'tui', command: 'echo', defaultModel: 'claude-3.5',
