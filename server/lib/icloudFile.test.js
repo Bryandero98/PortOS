@@ -6,7 +6,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const statMock = vi.fn();
 const readFileMock = vi.fn();
 const spawnMock = vi.fn();
-const bufferedSpawnMock = vi.fn();
 
 vi.mock('fs/promises', () => ({
   stat: (...args) => statMock(...args),
@@ -15,10 +14,6 @@ vi.mock('fs/promises', () => ({
 
 vi.mock('child_process', () => ({
   spawn: (...args) => spawnMock(...args),
-}));
-
-vi.mock('./bufferedSpawn.js', () => ({
-  bufferedSpawn: (...args) => bufferedSpawnMock(...args),
 }));
 
 const UBIQUITY_DIR = '/Users/example/Library/Mobile Documents/iCloud~com~example~App/Documents';
@@ -49,7 +44,6 @@ beforeEach(async () => {
   statMock.mockReset();
   readFileMock.mockReset();
   spawnMock.mockReset();
-  bufferedSpawnMock.mockReset();
   // The guard is macOS-only; pin the platform so the suite is deterministic on
   // Linux CI as well as a developer Mac.
   platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin');
@@ -261,43 +255,5 @@ describe('requestMaterialization', () => {
     platformSpy.mockReturnValue('linux');
     expect(icloud.requestMaterialization(ICLOUD_PATH)).toBe(false);
     expect(spawnMock).not.toHaveBeenCalled();
-  });
-});
-
-describe('materializeICloudFile', () => {
-  it('resolves true on a clean brctl exit', async () => {
-    bufferedSpawnMock.mockResolvedValue({ success: true, code: 0 });
-    await expect(icloud.materializeICloudFile(ICLOUD_PATH)).resolves.toBe(true);
-    expect(bufferedSpawnMock).toHaveBeenCalledWith(
-      'brctl',
-      ['download', ICLOUD_PATH],
-      expect.objectContaining({ shell: false })
-    );
-  });
-
-  it('resolves false (never throws) on a timeout, so the caller keeps its own guard', async () => {
-    bufferedSpawnMock.mockResolvedValue({ success: false, code: -1, timedOut: true });
-    await expect(icloud.materializeICloudFile(ICLOUD_PATH, { timeoutMs: 50 })).resolves.toBe(false);
-  });
-
-  it('resolves false on a non-zero exit', async () => {
-    bufferedSpawnMock.mockResolvedValue({ success: false, code: 1, timedOut: false });
-    await expect(icloud.materializeICloudFile(ICLOUD_PATH)).resolves.toBe(false);
-  });
-
-  it('honors the caller-supplied timeout', async () => {
-    bufferedSpawnMock.mockResolvedValue({ success: true, code: 0 });
-    await icloud.materializeICloudFile(ICLOUD_PATH, { timeoutMs: 1234 });
-    expect(bufferedSpawnMock).toHaveBeenCalledWith(
-      'brctl',
-      expect.any(Array),
-      expect.objectContaining({ timeoutMs: 1234 })
-    );
-  });
-
-  it('is a no-op off darwin', async () => {
-    platformSpy.mockReturnValue('linux');
-    await expect(icloud.materializeICloudFile(ICLOUD_PATH)).resolves.toBe(false);
-    expect(bufferedSpawnMock).not.toHaveBeenCalled();
   });
 });

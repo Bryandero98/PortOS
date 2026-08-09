@@ -43,16 +43,13 @@
 
 import { readFile, stat } from 'fs/promises';
 import { spawn } from 'child_process';
-import { bufferedSpawn } from './bufferedSpawn.js';
+import { createSingleFlight } from './singleFlight.js';
 
 /** `err.code` on the rejection `readIfMaterialized` throws for an evicted file. */
 export const ICLOUD_NOT_MATERIALIZED = 'ICLOUD_NOT_MATERIALIZED';
 
-/** Every macOS app ubiquity container lives under this path segment. */
-export const UBIQUITY_MARKER = '/Library/Mobile Documents/';
-
-/** Default bound on an awaited `brctl download` (write paths only). */
-export const DEFAULT_MATERIALIZE_TIMEOUT_MS = 20000;
+// Every macOS app ubiquity container lives under this path segment.
+const UBIQUITY_MARKER = '/Library/Mobile Documents/';
 
 /** True when `path` sits inside a macOS iCloud ubiquity container. */
 export function isUbiquityPath(path) {
@@ -85,8 +82,8 @@ export async function isSuspectedDataless(path) {
 // materialization is a silent no-op, without spamming on every read.
 let brctlMissingWarned = false;
 
-/** Claim the one-shot "brctl is missing" warning. True on the first call only. */
-export function markBrctlMissing() {
+// Claim the one-shot "brctl is missing" warning. True on the first call only.
+function markBrctlMissing() {
   if (brctlMissingWarned) return false;
   brctlMissingWarned = true;
   return true;
@@ -147,41 +144,11 @@ export function requestMaterialization(path, label = 'iCloud file') {
   return true;
 }
 
-/**
- * Awaited `brctl download <path>`, bounded by `timeoutMs`. For **write** paths
- * that must know whether the bytes are local before deciding it's safe to
- * overwrite. Resolves `true` only on a clean exit-0; every failure mode
- * (non-darwin, missing brctl, spawn error, timeout, non-zero exit) resolves
- * `false` so the caller falls through to its own refuse-to-overwrite guard —
- * this can only improve the situation, never worsen it.
- *
- * Read paths must NOT use this: a wedged iCloud makes every read pay the full
- * timeout. They use `requestMaterialization` (background) instead.
- */
-export async function materializeICloudFile(path, options = {}) {
-  const { timeoutMs = DEFAULT_MATERIALIZE_TIMEOUT_MS, label = 'iCloud file' } = options;
-  if (process.platform !== 'darwin' || !path) return false;
-  const result = await bufferedSpawn('brctl', ['download', path], { timeoutMs, shell: false });
-  if (result.success) return true;
-  if (result.error?.code === 'ENOENT') {
-    if (markBrctlMissing()) {
-      console.warn(`⚠️ brctl not found on PATH; ${label} on-demand materialize disabled`);
-    }
-  } else if (result.timedOut) {
-    console.warn(`⚠️ brctl download timed out after ${timeoutMs}ms for ${label}: ${path}`);
-  } else if (result.error) {
-    console.warn(`⚠️ brctl download failed for ${label}: ${result.error.message}`);
-  } else {
-    console.warn(`⚠️ brctl download exited ${result.code} for ${label}: ${path}`);
-  }
-  return false;
-}
-
-// Single-flight map so N concurrent callers for the same path share ONE
-// underlying read and can occupy at most one threadpool slot between them.
-// Entries are removed as soon as the read settles, so a later call re-reads
-// (this coalesces concurrency, it does not cache content).
-const inFlightReads = new Map();
+// N concurrent callers for the same path share ONE underlying read, so they
+// occupy at most one threadpool slot between them. The shared coalescer clears
+// each slot as soon as the read settles, so a later call re-reads — this
+// coalesces concurrency, it does not cache content.
+let readFlight = createSingleFlight();
 
 /**
  * `readFile`, but never against an evicted iCloud file.
@@ -200,11 +167,7 @@ const inFlightReads = new Map();
  * doesn't starve the process.
  */
 export async function readIfMaterialized(path, options = {}) {
-  const existing = inFlightReads.get(path);
-  if (existing) return existing;
-  const pending = guardedRead(path, options).finally(() => inFlightReads.delete(path));
-  inFlightReads.set(path, pending);
-  return pending;
+  return readFlight.run(path, () => guardedRead(path, options));
 }
 
 async function guardedRead(path, options) {
@@ -222,5 +185,5 @@ async function guardedRead(path, options) {
 export function _resetICloudFileStateForTest() {
   brctlMissingWarned = false;
   pendingDownloads.clear();
-  inFlightReads.clear();
+  readFlight = createSingleFlight();
 }
