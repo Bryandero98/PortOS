@@ -20,7 +20,10 @@
 import { useState } from 'react';
 import { ChevronDown, Dice5 } from 'lucide-react';
 import { FormField } from '../ui/FormField';
-import { frameOptionsForModel, fpsOptionsForModel, CHUNK_OPTIONS } from '../../lib/videoGenParams.js';
+import {
+  frameOptionsForModel, fpsOptionsForModel, CHUNK_OPTIONS,
+  isModelAllowedForMode, supportsVideoAudioControls,
+} from '../../lib/videoGenParams.js';
 import { VIDEO_TILING_OPTIONS } from '../../lib/videoTilingOptions';
 
 const inputCls = 'w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50';
@@ -44,9 +47,10 @@ export default function AdvancedParamsPanel({
   // a2v derives its length + audio track from the uploaded audio, so chunking
   // and the audio flags don't apply there.
   const showAudioFlags = mode !== 'a2v';
+  const showModelAudioControls = showAudioFlags && supportsVideoAudioControls(currentModel);
   const showChunks = mode !== 'a2v'
-    && !(currentModel?.runtime === 'wan22'
-      && !currentModel?.supportedModes?.includes('image'));
+    && (!Array.isArray(currentModel?.supportedModes)
+      || currentModel.supportedModes.includes('image'));
   // ltx2 extend conditions on the source's latent rather than a single frame,
   // so image strength is meaningless for it.
   const showImageStrength = mode === 'image' || (mode === 'extend' && currentModel?.runtime !== 'ltx2');
@@ -80,7 +84,7 @@ export default function AdvancedParamsPanel({
             >
               {frameOptions.map((f) => <option key={f} value={f}>{f} ({(f / fps).toFixed(1)}s @ {fps}fps)</option>)}
             </select>
-            {numFrames > 241 && (
+            {numFrames > 241 && isModelAllowedForMode(currentModel, 'extend') && (
               <p className="text-[10px] text-gray-500 leading-snug mt-1">
                 Past 241 frames a single-pass render may swap or OOM at 48 GB. For reliable longer clips, render up to ~10s and then use <strong>Extend</strong> on the result — it conditions on the source&apos;s full latent rather than a single last frame.
               </p>
@@ -208,7 +212,8 @@ export default function AdvancedParamsPanel({
 
           {samplerLocked && (
             <p className="col-span-2 sm:col-span-3 text-[10px] text-port-accent leading-snug">
-              Lightning keeps its validated {currentModel.steps}-step sampler, CFG {currentModel.guidance}, and model-specific schedule locked.
+              {currentModel?.samplerNote
+                || `Lightning keeps its validated ${currentModel.steps}-step sampler, CFG ${currentModel.guidance}, and model-specific schedule locked.`}
             </p>
           )}
 
@@ -229,17 +234,19 @@ export default function AdvancedParamsPanel({
             </div>
           )}
 
-          <FormField className="col-span-2 sm:col-span-3" label="Tiling" labelClassName="block text-xs font-medium text-gray-400 mb-1">
-            <select
-              value={tiling}
-              onChange={(e) => onTilingChange(e.target.value)}
-              className={inputCls}
-            >
-              {VIDEO_TILING_OPTIONS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
-            </select>
-          </FormField>
+          {currentModel?.supportsTiling !== false && (
+            <FormField className="col-span-2 sm:col-span-3" label="Tiling" labelClassName="block text-xs font-medium text-gray-400 mb-1">
+              <select
+                value={tiling}
+                onChange={(e) => onTilingChange(e.target.value)}
+                className={inputCls}
+              >
+                {VIDEO_TILING_OPTIONS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+            </FormField>
+          )}
 
-          {showAudioFlags && (
+          {showModelAudioControls && (
             <label className="col-span-2 sm:col-span-3 flex items-center gap-2 text-xs text-gray-400 cursor-pointer">
               <input
                 type="checkbox"
@@ -250,7 +257,7 @@ export default function AdvancedParamsPanel({
               Disable audio (LTX-2 only — speeds up generation)
             </label>
           )}
-          {showAudioFlags && (
+          {showModelAudioControls && (
             <label
               className={`col-span-2 sm:col-span-3 flex items-center gap-2 text-xs cursor-pointer ${disableAudio ? 'text-gray-600 cursor-not-allowed' : 'text-gray-400'}`}
               title="LTX-2 conditions audio on the prompt — appending 'no music, no soundtrack' at submit time pushes the model toward ambient/diegetic sound only"

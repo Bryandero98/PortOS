@@ -32,6 +32,7 @@ import { safeChildProcessEnv } from '../../lib/processEnv.js';
 import { makeVideoGenLineHandler, finalizeGeneratedVideo, isWatchdogSuccess, describeSignalDeath, describeRenderConditioning, RENDER_INPUTS_VERSION } from './generateVideoHelpers.js';
 import { assertSafeLoraFilename } from '../loras.js';
 import { isMlxVideoLtxLoraCapable } from '../../lib/runners.js';
+import { isVideoModelTermsAccepted } from '../../lib/videoDisclosure.js';
 import {
   isIcLoraMode, icLoraSpecForMode, resolveIcLoraWeight,
   assertIcReferenceCount, icResolutionIssue,
@@ -41,6 +42,10 @@ import {
   LTX2_HELPER_SCRIPT,
   WAN22_VENV_PYTHON,
   WAN22_HELPER_SCRIPT,
+  MINIMAX_H3_VENV_PYTHON,
+  MINIMAX_H3_HELPER_SCRIPT,
+  MINIMAX_H3_REPO_DIR,
+  MINIMAX_H3_EXPECTED_REVISION,
   HUNYUAN_VENV_PYTHON,
   HUNYUAN_HELPER_SCRIPT,
   HUNYUAN_REPO_DIR,
@@ -568,6 +573,122 @@ const buildWan22Args = ({ model, wanModelPath, wanRequiredWeights, prompt, negat
   return { bin: WAN22_VENV_PYTHON, args };
 };
 
+// Build args for PipeNetwork's pinned MiniMax H3 MLX port. The helper resolves
+// only exact, already-cached HF revisions; every network download remains an
+// explicit Video Gen UI action guarded by the model's terms acknowledgement.
+const assertMiniMaxH3TextOnly = ({
+  mode,
+  sourceImagePath,
+  uploadedTempPath,
+  uploadedTempPaths,
+  lastImagePath,
+  keyframes,
+  extendFromVideoPath,
+  audioFilePath,
+  audioStartSec,
+  icReferencePaths,
+}) => {
+  const requestedMode = mode || ((sourceImagePath || uploadedTempPath) ? 'image' : 'text');
+  const hasUploadedKeyframes = Array.isArray(uploadedTempPaths) && uploadedTempPaths.length > 0;
+  const hasIcReferences = Array.isArray(icReferencePaths)
+    ? icReferencePaths.length > 0
+    : icReferencePaths != null;
+  if (
+    requestedMode !== 'text'
+    || sourceImagePath
+    || uploadedTempPath
+    || hasUploadedKeyframes
+    || lastImagePath
+    || keyframes != null
+    || extendFromVideoPath
+    || audioFilePath
+    || audioStartSec != null
+    || hasIcReferences
+  ) {
+    throw new ServerError(
+      'MiniMax H3 MLX currently supports text-to-video only; remove image, keyframe, video, audio, or reference conditioning.',
+      { status: 400, code: 'MINIMAX_H3_MODE_UNSUPPORTED' },
+    );
+  }
+};
+
+const buildMiniMaxH3Args = ({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, icReferencePaths, mode, tiling, disableAudio, outputPath }) => {
+  assertByovRuntimeInstalled('minimax_h3');
+  assertMiniMaxH3TextOnly({
+    mode,
+    sourceImagePath,
+    lastImagePath,
+    keyframes,
+    extendFromVideoPath,
+    audioFilePath,
+    audioStartSec,
+    icReferencePaths,
+  });
+  if (negativePrompt?.trim()) {
+    throw new ServerError(
+      'MiniMax H3 is CFG-distilled and does not accept a negative prompt.',
+      { status: 400, code: 'MINIMAX_H3_NEGATIVE_PROMPT_UNSUPPORTED' },
+    );
+  }
+  if (disableAudio) {
+    throw new ServerError(
+      'MiniMax H3 jointly generates video and audio; its audio track cannot be disabled.',
+      { status: 400, code: 'MINIMAX_H3_AUDIO_REQUIRED' },
+    );
+  }
+  if (tiling && tiling !== 'auto') {
+    throw new ServerError(
+      'MiniMax H3 does not expose a tiling mode.',
+      { status: 400, code: 'MINIMAX_H3_TILING_UNSUPPORTED' },
+    );
+  }
+  if (!Array.isArray(model.frameOptions) || !model.frameOptions.includes(Number(numFrames))) {
+    throw new ServerError(
+      `MiniMax H3 requires a 17n+5 frame count between 124 and 362; got ${numFrames}.`,
+      { status: 400, code: 'MINIMAX_H3_INVALID_FRAME_COUNT' },
+    );
+  }
+  if (Number(fps) !== 24) {
+    throw new ServerError(
+      `MiniMax H3 runs at a fixed 24 fps; got ${fps}.`,
+      { status: 400, code: 'MINIMAX_H3_INVALID_FPS' },
+    );
+  }
+  if (typeof model.repo !== 'string' || typeof model.revision !== 'string') {
+    throw new ServerError(
+      `MiniMax H3 model "${model.id}" is missing its pinned transformer repo or revision.`,
+      { status: 500, code: 'VIDEO_MODEL_MISCONFIGURED' },
+    );
+  }
+  const checkpoint = Array.isArray(model.requiredWeights) ? model.requiredWeights[0] : null;
+  const files = Array.isArray(checkpoint?.files) ? checkpoint.files : [];
+  if (!checkpoint?.repo || !checkpoint?.revision || files.length === 0) {
+    throw new ServerError(
+      `MiniMax H3 model "${model.id}" is missing its pinned upstream checkpoint files.`,
+      { status: 500, code: 'VIDEO_MODEL_MISCONFIGURED' },
+    );
+  }
+  const args = [
+    MINIMAX_H3_HELPER_SCRIPT,
+    '--runtime-dir', MINIMAX_H3_REPO_DIR,
+    '--runtime-revision', MINIMAX_H3_EXPECTED_REVISION,
+    '--model-repo', model.repo,
+    '--model-revision', model.revision,
+    '--checkpoint-repo', checkpoint.repo,
+    '--checkpoint-revision', checkpoint.revision,
+    '--prompt', prompt,
+    '--width', String(width),
+    '--height', String(height),
+    '--num-frames', String(numFrames),
+    '--fps', String(fps),
+    '--steps', String(steps),
+    '--seed', String(seed),
+    '--output', outputPath,
+  ];
+  for (const file of files) args.push('--checkpoint-file', file);
+  return { bin: MINIMAX_H3_VENV_PYTHON, args };
+};
+
 // Allowed precision tokens for runners that expose dtype as a CLI flag. The
 // Python side already gates argparse with `choices=`, but a bogus value in
 // data/media-models.json would otherwise reach the helper and surface as a
@@ -641,6 +762,9 @@ const buildArgs = ({ pythonPath, modelId, model, wanModelPath, wanRequiredWeight
   }
   if (model.runtime === 'wan22') {
     return buildWan22Args({ model, wanModelPath, wanRequiredWeights, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, sourceImagePath, mode, outputPath });
+  }
+  if (model.runtime === 'minimax_h3') {
+    return buildMiniMaxH3Args({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, icReferencePaths, mode, tiling, disableAudio, outputPath });
   }
   if (model.runtime === 'hunyuan') {
     return buildHunyuanArgs({ model, prompt, negativePrompt, width, height, numFrames, steps, guidance, seed, outputPath });
@@ -735,7 +859,7 @@ export const DEFAULT_NUM_FRAMES = 121;
 // a still regardless of how many frames carry it.
 export const IC_STILL_REFERENCE_FRAMES = 9;
 
-export async function generateVideo({ pythonPath, prompt, negativePrompt = '', modelId = defaultVideoModelId(), width = 768, height = 512, numFrames = DEFAULT_NUM_FRAMES, fps = 24, steps, guidanceScale, seed, tiling = 'auto', disableAudio = false, sourceImagePath = null, uploadedTempPath = null, uploadedTempPaths = [], lastImagePath = null, keyframes = null, extendFromVideoPath = null, audioFilePath = null, audioStartSec = null, mode = null, imageStrength = null, loras = null, icReferencePaths = null, icStrength = null, icAttentionStrength = null, icSkipStage2 = false, hidden = false, jobId: providedJobId = null }) {
+export async function generateVideo({ pythonPath, prompt, negativePrompt = '', termsAcceptance = null, modelId = defaultVideoModelId(), width = 768, height = 512, numFrames = null, fps = 24, steps, guidanceScale, seed, tiling = 'auto', disableAudio = false, sourceImagePath = null, uploadedTempPath = null, uploadedTempPaths = [], lastImagePath = null, keyframes = null, extendFromVideoPath = null, audioFilePath = null, audioStartSec = null, mode = null, imageStrength = null, loras = null, icReferencePaths = null, icStrength = null, icAttentionStrength = null, icSkipStage2 = false, hidden = false, jobId: providedJobId = null }) {
   uploadedTempPaths = Array.isArray(uploadedTempPaths) ? uploadedTempPaths : [];
   if (!prompt?.trim()) throw new ServerError('Prompt is required', { status: 400, code: 'VALIDATION_ERROR' });
   // Single-flight is now enforced by the mediaJobQueue worker upstream — only
@@ -745,6 +869,35 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
 
   const model = resolveVideoModel(modelId);
   if (!model) throw new ServerError(`Unknown video model: ${modelId}`, { status: 400, code: 'VALIDATION_ERROR' });
+  // Final execution-boundary gate. Route preparation also rejects early, but
+  // internal producers, persisted jobs, and retry all reach this function
+  // directly. The exact versioned key makes old queued jobs fail closed after
+  // a future license revision instead of inheriting stale acceptance.
+  if (!isVideoModelTermsAccepted(model, termsAcceptance)) {
+    throw new ServerError(
+      `${model.name} requires acknowledgement of its territory restrictions, Community License, and Acceptable Use Policy before generation.`,
+      { status: 403, code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED' },
+    );
+  }
+  // Validate H3's strict T2V-only contract before cache lookups, image resize,
+  // or staging-file work. Internal producers and persisted/retried jobs bypass
+  // route preparation, so silently dropping one of these inputs here would
+  // render a materially different video than the caller requested.
+  if (model.runtime === 'minimax_h3') {
+    assertMiniMaxH3TextOnly({
+      mode,
+      sourceImagePath,
+      uploadedTempPath,
+      uploadedTempPaths,
+      lastImagePath,
+      keyframes,
+      extendFromVideoPath,
+      audioFilePath,
+      audioStartSec,
+      icReferencePaths,
+    });
+  }
+  numFrames = numFrames ?? model.defaultFrames ?? DEFAULT_NUM_FRAMES;
   let wanModelPath = null;
   const wanRequiredWeights = [];
   if (model.runtime === 'wan22') {
@@ -1165,13 +1318,24 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   // python helpers can authenticate snapshot_download() against gated repos
   // (mirrors the imageGen child-spawn pattern). LTX-2 doesn't currently use
   // a gated repo, but the merge is harmless when no token is configured.
-  const childEnv = await hfChildEnv();
+  const childEnv = model.runtime === 'minimax_h3'
+    ? safeChildProcessEnv()
+    : await hfChildEnv();
   delete childEnv.PYTHONPATH;
   // Force unbuffered Python I/O so tqdm + loguru + our own STAGE: prints flush
   // immediately. Without this, child stdio is line-buffered against a pipe and
   // long inference loops emit nothing to handleLine() for minutes — the UI
   // looks dead even when the model is making progress.
   childEnv.PYTHONUNBUFFERED = '1';
+  if (model.runtime === 'minimax_h3') {
+    // The H3 repositories are public and the runner is cache-only. Do not hand
+    // it an ambient saved HF credential it neither needs nor may transmit.
+    delete childEnv.HF_TOKEN;
+    delete childEnv.HUGGING_FACE_HUB_TOKEN;
+    childEnv.HF_HUB_DISABLE_IMPLICIT_TOKEN = '1';
+    childEnv.HF_HUB_OFFLINE = '1';
+    childEnv.TRANSFORMERS_OFFLINE = '1';
+  }
   // `spawnDetached` double-forks the render child so it reparents to init
   // (PPID=1) and leaves pm2's process tree — without this a `pm2 restart
   // portos-server` (e.g. on the memory ceiling) SIGINTs the in-flight render
@@ -1185,7 +1349,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
     env: childEnv,
     controlDir: join(PATHS.videos, '.detached', jobId),
     cleanup: true,
-    killProcessGroup: model.runtime === 'wan22',
+    killProcessGroup: model.runtime === 'wan22' || model.runtime === 'minimax_h3',
   });
   activeProcess = proc;
 
@@ -1501,11 +1665,15 @@ export async function generateChainedVideo({ chunks, chunkPrompts, jobId: outerJ
   if (!outerJobId) throw new ServerError('generateChainedVideo requires jobId', { status: 500, code: 'INTERNAL' });
 
   const chainModel = resolveVideoModel(rest.modelId || defaultVideoModelId());
-  if (chainModel?.runtime === 'wan22'
-    && !(Array.isArray(chainModel.supportedModes) && chainModel.supportedModes.includes('image'))) {
+  if (Array.isArray(chainModel?.supportedModes) && !chainModel.supportedModes.includes('image')) {
     throw new ServerError(
       `${chainModel.name} cannot generate chunks > 1 because continuation requires image-to-video support.`,
-      { status: 400, code: 'WAN22_CHAIN_REQUIRES_IMAGE_MODE' },
+      {
+        status: 400,
+        code: chainModel.runtime === 'wan22'
+          ? 'WAN22_CHAIN_REQUIRES_IMAGE_MODE'
+          : 'VIDEO_CHAIN_REQUIRES_IMAGE_MODE',
+      },
     );
   }
 

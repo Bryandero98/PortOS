@@ -13,7 +13,7 @@ vi.mock('./local.js', () => ({
   listVideoModels: vi.fn(() => [{ id: 'ltx2_unified', name: 'LTX-2 Unified', runtime: 'ltx2' }]),
   defaultVideoModelId: vi.fn(() => 'ltx2_unified'),
   loadHistory: vi.fn(async () => []),
-  BYOV_VIDEO_RUNTIMES: new Set(['ltx2', 'wan22', 'hunyuan']),
+  BYOV_VIDEO_RUNTIMES: new Set(['ltx2', 'wan22', 'minimax_h3', 'hunyuan']),
   DEFAULT_NUM_FRAMES: 121,
 }));
 
@@ -45,7 +45,7 @@ import { unlink } from 'fs/promises';
 import { resolveGalleryImage } from '../../lib/fileUtils.js';
 import { getProject as getMusicVideoProject } from '../musicVideo/projects.js';
 import { getTrack } from '../tracks/index.js';
-import { listVideoModels, loadHistory } from './local.js';
+import { listVideoModels, defaultVideoModelId, loadHistory } from './local.js';
 import { prepareVideoGenParams, withStagedRollback, cleanupMultipartTemp } from './prepareParams.js';
 
 // Field names the route owns Zod schemas for; the service only needs the keys
@@ -63,6 +63,18 @@ const prepare = (body, uploads = {}) => prepareVideoGenParams({
   uploads,
   localOnlyParamKeys: LOCAL_ONLY_KEYS,
 });
+
+const H3_TERMS = 'minimax-h3-community-license-2026-08-02';
+const H3_MODEL = {
+  id: 'minimax_h3_8bit',
+  name: 'MiniMax H3 MLX 8-bit',
+  runtime: 'minimax_h3',
+  supportedModes: ['text'],
+  defaultFrames: 124,
+  frameOptions: [124, 141, 158],
+  fpsOptions: [24],
+  termsGate: { id: H3_TERMS },
+};
 
 // Paths unlinked under PATHS.uploads — i.e. the durable copies the service
 // staged, as opposed to the OS temp files the multipart parser wrote.
@@ -354,5 +366,60 @@ describe('prepareVideoGenParams', () => {
         .rejects.toMatchObject({ status: 400, code: 'WAN22_CHAIN_REQUIRES_IMAGE_MODE' });
       expect(unlinkedDurablePaths()).toEqual([]);
     });
+  });
+});
+
+describe('prepareVideoGenParams — MiniMax H3 contract', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    listVideoModels.mockReturnValue([H3_MODEL]);
+    loadHistory.mockResolvedValue([]);
+  });
+
+  it('requires the exact reviewed terms key before generation', async () => {
+    await expect(prepare({ modelId: H3_MODEL.id, mode: 'text' }))
+      .rejects.toMatchObject({ status: 403, code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED' });
+    await expect(prepare({ modelId: H3_MODEL.id, mode: 'text', termsAcceptance: 'wrong' }))
+      .rejects.toMatchObject({ status: 403, code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED' });
+
+    const prepared = await prepare({ modelId: H3_MODEL.id, mode: 'text', termsAcceptance: H3_TERMS });
+    expect(prepared.effectiveModelId).toBe(H3_MODEL.id);
+    expect(prepared.effectiveChunks).toBe(1);
+  });
+
+  it('does not apply the local MiniMax gate to an explicit Grok render', async () => {
+    defaultVideoModelId.mockReturnValueOnce(H3_MODEL.id);
+    const prepared = await prepare({ backend: 'grok' });
+    expect(prepared.backend).toBe('grok');
+    expect(prepared.grok).toMatchObject({ grokPath: '/usr/bin/grok' });
+  });
+
+  it.each([
+    [{ mode: 'image' }, 'MINIMAX_H3_MODE_UNSUPPORTED'],
+    [{ extendFromVideoId: '00000000-0000-4000-8000-000000000001' }, 'MINIMAX_H3_MODE_UNSUPPORTED'],
+    [{ negativePrompt: 'blur' }, 'MINIMAX_H3_NEGATIVE_PROMPT_UNSUPPORTED'],
+    [{ disableAudio: true }, 'MINIMAX_H3_AUDIO_REQUIRED'],
+    [{ tiling: 'full' }, 'MINIMAX_H3_TILING_UNSUPPORTED'],
+    [{ chunks: 2 }, 'VIDEO_CHAIN_REQUIRES_IMAGE_MODE'],
+    [{ numFrames: 125 }, 'MINIMAX_H3_INVALID_FRAME_COUNT'],
+    [{ fps: 30 }, 'MINIMAX_H3_INVALID_FPS'],
+  ])('rejects an unsupported H3 request (%o)', async (fields, code) => {
+    await expect(prepare({
+      modelId: H3_MODEL.id,
+      mode: 'text',
+      termsAcceptance: H3_TERMS,
+      ...fields,
+    })).rejects.toMatchObject({ status: 400, code });
+  });
+
+  it('accepts another supported temporal shape at fixed 24 fps', async () => {
+    const prepared = await prepare({
+      modelId: H3_MODEL.id,
+      mode: 'text',
+      termsAcceptance: H3_TERMS,
+      numFrames: 158,
+      fps: 24,
+    });
+    expect(prepared.effectiveModelId).toBe(H3_MODEL.id);
   });
 });

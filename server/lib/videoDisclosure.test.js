@@ -4,6 +4,7 @@ import {
   VIDEO_BACKEND_DISCLOSURES,
   VIDEO_DISCLOSURE_REVIEWED_AT,
   applyVideoDisclosures,
+  isVideoModelTermsAccepted,
   videoBackendDisclosure,
 } from './videoDisclosure.js';
 
@@ -74,6 +75,19 @@ describe('VIDEO_MODEL_DISCLOSURES', () => {
     expect(() => { VIDEO_MODEL_DISCLOSURES.wan22_ti2v_5b.disclosure.weightsLicense.name = 'hacked'; }).toThrow();
     expect(VIDEO_MODEL_DISCLOSURES.wan22_ti2v_5b.disclosure.weightsLicense.name).toBe(before);
   });
+
+  it('publishes the exact MiniMax H3 territory gate and pinned license', () => {
+    const h3 = VIDEO_MODEL_DISCLOSURES.minimax_h3_8bit;
+    expect(h3.disclosure.estimatedDownloadGb).toBe(103.3);
+    expect(h3.termsGate.id).toBe('minimax-h3-community-license-2026-08-02');
+    expect(h3.termsGate.excludedTerritories).toEqual([
+      'European Union',
+      'United Kingdom',
+      'Republic of Korea',
+      'United States of America',
+    ]);
+    expect(h3.termsGate.licenseUrl).toContain('/blob/6818f6c32d12b210915e44ad56a4228c2608f160/LICENSE');
+  });
 });
 
 describe('applyVideoDisclosures', () => {
@@ -119,6 +133,31 @@ describe('applyVideoDisclosures', () => {
   it('tolerates malformed rows and non-array input', () => {
     expect(applyVideoDisclosures(null)).toBe(null);
     expect(applyVideoDisclosures([null, 42, { name: 'no id' }])).toEqual([null, 42, { name: 'no id' }]);
+  });
+
+  it('reattaches the shipped H3 execution gate even if an old registry omitted it', () => {
+    const [entry] = applyVideoDisclosures([{
+      id: 'minimax_h3_8bit',
+      repo: 'pipenetwork/MiniMax-H3-MLX-8bit',
+      runtime: 'minimax_h3',
+    }]);
+    expect(entry.termsGate).toBe(VIDEO_MODEL_DISCLOSURES.minimax_h3_8bit.termsGate);
+  });
+});
+
+describe('isVideoModelTermsAccepted', () => {
+  const restricted = { termsGate: VIDEO_MODEL_DISCLOSURES.minimax_h3_8bit.termsGate };
+
+  it('requires the exact versioned key for a restricted model', () => {
+    expect(isVideoModelTermsAccepted(restricted)).toBe(false);
+    expect(isVideoModelTermsAccepted(restricted, true)).toBe(false);
+    expect(isVideoModelTermsAccepted(restricted, 'another-license')).toBe(false);
+    expect(isVideoModelTermsAccepted(restricted, restricted.termsGate.id)).toBe(true);
+  });
+
+  it('does not gate an unrestricted or malformed model entry', () => {
+    expect(isVideoModelTermsAccepted({})).toBe(true);
+    expect(isVideoModelTermsAccepted(null)).toBe(true);
   });
 });
 

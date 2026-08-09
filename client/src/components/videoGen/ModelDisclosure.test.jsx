@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import ModelDisclosure from './ModelDisclosure.jsx';
 
 const BACKENDS = [
@@ -132,5 +132,33 @@ describe('ModelDisclosure', () => {
     expect(container.querySelector('details')).not.toBeNull();
     const { container: empty } = render(<ModelDisclosure backend="grok" backendDisclosures={[]} model={null} />);
     expect(empty.querySelector('details')).toBeNull();
+  });
+
+  it('renders and controls a restricted model terms gate', () => {
+    const onChange = vi.fn();
+    const restricted = {
+      ...SHIPPED_MODEL,
+      termsGate: {
+        id: 'example-license-v1',
+        title: 'Territory and terms',
+        summary: 'This model is available only in its applicable territory.',
+        acknowledgement: 'I confirm I am eligible and accept the license.',
+        licenseUrl: 'https://example.com/license',
+      },
+    };
+    renderDisclosure({
+      backend: 'local',
+      model: restricted,
+      termsAccepted: false,
+      onTermsAcceptedChange: onChange,
+      termsDescriptionId: 'model-terms',
+    });
+    const gate = screen.getByLabelText('Model terms acceptance');
+    expect(gate).toHaveAttribute('id', 'model-terms');
+    expect(within(gate).getByText(/cannot determine your location or legal eligibility/i)).toBeInTheDocument();
+    expect(within(gate).getByRole('link', { name: /Community License/i }))
+      .toHaveAttribute('href', 'https://example.com/license');
+    fireEvent.click(within(gate).getByRole('checkbox'));
+    expect(onChange).toHaveBeenCalledWith(true);
   });
 });

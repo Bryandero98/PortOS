@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
-import { deriveSizeEstimate } from './ModelDownloadBadge.jsx';
+import { describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import ModelDownloadBadge, { deriveSizeEstimate } from './ModelDownloadBadge.jsx';
 
 describe('deriveSizeEstimate', () => {
   it('preserves decimal and binary gigabyte labels', () => {
@@ -10,5 +11,24 @@ describe('deriveSizeEstimate', () => {
   it('returns null when no estimate is embedded', () => {
     expect(deriveSizeEstimate('Example model')).toBeNull();
     expect(deriveSizeEstimate(null)).toBeNull();
+  });
+});
+
+describe('ModelDownloadBadge', () => {
+  it('disables a gated download and explains why', () => {
+    const onDownload = vi.fn();
+    render(<ModelDownloadBadge
+      status={{ repo: 'example/model', cached: false }}
+      onDownload={onDownload}
+      disabled
+      disabledReason="Accept the model terms first"
+      disabledReasonId="model-terms"
+    />);
+    const button = screen.getByRole('button', { name: /Download/ });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute('title', 'Accept the model terms first');
+    expect(button).toHaveAttribute('aria-describedby', 'model-terms');
+    fireEvent.click(button);
+    expect(onDownload).not.toHaveBeenCalled();
   });
 });

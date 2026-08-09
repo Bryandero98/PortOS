@@ -12,6 +12,7 @@ import { VIDEO_TILING_ENUM_SET } from '../lib/videoTilingOptions';
 import {
   VIDEO_EDGE_BOUNDS, MAX_CHUNKS,
   videoModelMemoryGb, computeFflfSafeFrames, isModelAllowedForMode,
+  supportsVideoAudioControls,
   normalizeFramesForModel, normalizeFpsForModel,
   icLoraSpecForMode, icResolutionIssue,
 } from '../lib/videoGenParams.js';
@@ -966,8 +967,8 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     || currentModel?.runtime !== 'ltx2'
     || !!icResolutionIssue(icSpec, width, height)
   );
-  const modelSupportsChaining = currentModel?.runtime !== 'wan22'
-    || currentModel?.supportedModes?.includes('image');
+  const modelSupportsChaining = !Array.isArray(currentModel?.supportedModes)
+    || currentModel.supportedModes.includes('image');
   // The single predicate for "this request really chains" — keyframes, IC
   // references and a2v each anchor a SINGLE clip, so the route pins them to one
   // chunk (KEYFRAMES_CHUNKS_CONFLICT / IC_LORA_CHUNKS_CONFLICT). Derived once so
@@ -1003,7 +1004,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     // Idempotent on "no music": if the text already says it, don't double-append.
     const withEnvelope = (text) => {
       const c = composeStyledPrompt(text, negativePrompt, stylePreset);
-      return (noMusic && !disableAudio && !/no music/i.test(c.prompt))
+      return (supportsVideoAudioControls(currentModel) && noMusic && !disableAudio && !/no music/i.test(c.prompt))
         ? `${c.prompt}\n\nno music, no soundtrack`
         : c.prompt;
     };
@@ -1045,7 +1046,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
       // pinned grok backend behind the UI's back.
       backend: 'local',
       prompt: promptOut,
-      negativePrompt: composed.negativePrompt,
+      negativePrompt: currentModel?.supportsNegativePrompt === false ? '' : composed.negativePrompt,
       modelId,
       // Clamp/floor to the runner's edge bounds so a transient 0 (field cleared
       // mid-edit) or off-grid value can't 400 the server — mirrors ImageGen's
@@ -1057,8 +1058,8 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
       steps: steps || '',
       guidanceScale: guidanceScale || '',
       seed: seed || '',
-      tiling,
-      disableAudio: disableAudio ? 'true' : 'false',
+      tiling: currentModel?.supportsTiling === false ? 'auto' : tiling,
+      disableAudio: supportsVideoAudioControls(currentModel) ? (disableAudio ? 'true' : 'false') : 'false',
       mode,
       imageStrength: imageStrength || '',
       // ltx2-extend bypasses the last-frame i2v path: we send the source

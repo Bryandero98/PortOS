@@ -16,7 +16,7 @@ import { asyncHandler, ServerError, failValidation } from '../lib/errorHandler.j
 import { uploadFields } from '../lib/multipart.js';
 import { PATHS } from '../lib/fileUtils.js';
 import { grokVideoDurationSchema } from '../lib/validation.js';
-import { VIDEO_BACKEND_DISCLOSURES } from '../lib/videoDisclosure.js';
+import { VIDEO_BACKEND_DISCLOSURES, isVideoModelTermsAccepted } from '../lib/videoDisclosure.js';
 import { IMAGE_GEN_MODE } from '../services/imageGen/modes.js';
 import { getSettings } from '../services/settings.js';
 import { checkPackages, isAllowedPython } from '../lib/pythonSetup.js';
@@ -170,6 +170,10 @@ const generateBodySchema = z.object({
   ),
   prompt: z.string().min(1).max(8000),
   negativePrompt: z.string().max(8000).optional(),
+  // Exact, versioned acceptance key for a model carrying `termsGate`. A
+  // boolean is deliberately insufficient: accepting one reviewed license must
+  // not authorize a later license revision or an unrelated restricted model.
+  termsAcceptance: z.string().min(1).max(128).optional(),
   modelId: z.string().max(64).optional(),
   width: optionalNum(64, 2048, 'width'),
   height: optionalNum(64, 2048, 'height'),
@@ -361,8 +365,11 @@ router.get('/setup/runtime-status', asyncHandler(async (req, res) => {
     );
   }
   const binaryPresent = isByovRuntimeInstalled(info.id);
-  const packagesReady = binaryPresent ? await isByovRuntimeReady(info.id) : false;
-  const current = packagesReady ? await isByovRuntimeCurrent(info.id) : false;
+  // Check the immutable source pin before the import probe. Source-only
+  // runtimes execute checkout code while importing, so an outdated or dirty
+  // checkout must surface Upgrade / Repair without being loaded first.
+  const current = binaryPresent ? await isByovRuntimeCurrent(info.id) : false;
+  const packagesReady = current ? await isByovRuntimeReady(info.id) : false;
   res.json({
     runtime: info.id,
     label: info.label,
@@ -370,7 +377,7 @@ router.get('/setup/runtime-status', asyncHandler(async (req, res) => {
     binaryPresent,
     packagesReady,
     current,
-    upgradeAvailable: binaryPresent && packagesReady && !current,
+    upgradeAvailable: binaryPresent && !current,
     venvPath: info.venvPython,
     repoDir: info.repoDir,
     repoUrl: info.repoUrl,
@@ -431,9 +438,9 @@ router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
   // needs Upgrade; treating either as "already installed" strands the user
   // behind a button that can never perform the action it advertises.
   const alreadyInstalled = isByovRuntimeInstalled(info.id);
-  const alreadyReady = alreadyInstalled && await isByovRuntimeReady(info.id);
+  const alreadyCurrent = alreadyInstalled && await isByovRuntimeCurrent(info.id);
   if (aborted) return safeEnd();
-  const alreadyCurrent = alreadyReady && await isByovRuntimeCurrent(info.id);
+  const alreadyReady = alreadyCurrent && await isByovRuntimeReady(info.id);
   if (aborted) return safeEnd();
   if (alreadyInstalled && alreadyReady && alreadyCurrent) {
     runtimeInstallInFlight.delete(info.id);
@@ -503,8 +510,8 @@ router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
     // packages. Probe both the binary AND the import surface so the
     // success message can't lie. The banner gate uses the same probe.
     const binaryPresent = isByovRuntimeInstalled(info.id);
-    const packagesReady = binaryPresent && await isByovRuntimeReady(info.id);
-    const current = packagesReady && await isByovRuntimeCurrent(info.id);
+    const current = binaryPresent && await isByovRuntimeCurrent(info.id);
+    const packagesReady = current && await isByovRuntimeReady(info.id);
     if (code === 0 && binaryPresent && packagesReady && current) {
       emit({ type: 'complete', message: `${info.label} ready: ${info.venvPython}` });
     } else if (code === 0 && !binaryPresent) {
@@ -717,6 +724,12 @@ router.post('/models/:modelId/repair', asyncHandler(async (req, res) => {
 router.get('/models/:modelId/download', asyncHandler(async (req, res) => {
   const model = listVideoModels().find((m) => m.id === req.params.modelId);
   if (!model) throw new ServerError(`Unknown video model: ${req.params.modelId}`, { status: 404 });
+  if (!isVideoModelTermsAccepted(model, req.query.termsAcceptance)) {
+    throw new ServerError(
+      `${model.name} requires acknowledgement of its territory restrictions, Community License, and Acceptable Use Policy before download.`,
+      { status: 403, code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED' },
+    );
+  }
   const repos = modelDownloadTargets(model);
   if (repos.length === 0) throw new ServerError(`Model "${model.id}" has no HuggingFace repo on file.`, { status: 400, code: 'NO_REPO_FOR_MODEL' });
   const runtimeInfo = BYOV_RUNTIME_INFO[model.runtime];
@@ -887,6 +900,7 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     pythonPath,
     prompt: body.prompt,
     negativePrompt: body.negativePrompt || '',
+    ...(body.termsAcceptance ? { termsAcceptance: body.termsAcceptance } : {}),
     modelId: body.modelId,
     width: body.width,
     height: body.height,

@@ -33,6 +33,7 @@ import { ServerError } from '../../lib/errorHandler.js';
 import { PATHS, ensureDir, resolveGalleryImage } from '../../lib/fileUtils.js';
 import { safeUnder } from '../../lib/ffmpeg.js';
 import { RENDER_TARGET } from '../../lib/renderTargets.js';
+import { isVideoModelTermsAccepted } from '../../lib/videoDisclosure.js';
 import { videoLoraFamily } from '../../lib/runners.js';
 import {
   IC_LORA_MODE_VALUES, icLoraSpecForMode,
@@ -151,6 +152,13 @@ export async function prepareVideoGenParams({ body, uploads, localOnlyParamKeys 
     throw new ServerError(
       `Unknown modelId: ${body.modelId}`,
       { status: 400, code: 'VIDEO_GEN_UNKNOWN_MODEL' },
+    );
+  }
+  if (backend !== VIDEO_GEN_MODE.GROK && effectiveModel && !isVideoModelTermsAccepted(effectiveModel, body.termsAcceptance)) {
+    await cleanupMultipartTemp(uploads);
+    throw new ServerError(
+      `${effectiveModel.name} requires acknowledgement of its territory restrictions, Community License, and Acceptable Use Policy before generation.`,
+      { status: 403, code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED' },
     );
   }
   // Reject up-front when the local python isn't configured AND the model's
@@ -384,6 +392,66 @@ async function resolvePreparedParams({
       `a2v mode requires an ltx2-runtime model. Model "${effectiveModelId}" runs on "${effectiveModel.runtime || 'mlx_video'}".`,
       { status: 400, code: 'A2V_REQUIRES_LTX2' },
     );
+  }
+  // MiniMax H3's released MLX path is text-only, fixed-24fps, joint A/V and
+  // CFG-distilled. Fail before queue persistence so a direct API caller cannot
+  // enqueue a request whose controls the runtime would silently ignore.
+  if (effectiveModel?.runtime === 'minimax_h3') {
+    const hasImageInput = Boolean(
+      uploads.sourceImage || uploads.lastImage || body.sourceImageFile
+      || body.lastImageFile || body.keyframes?.length || body.extendFromVideoId,
+    );
+    if ((body.mode && body.mode !== 'text') || hasImageInput) {
+      await cleanupStaged();
+      throw new ServerError(
+        'MiniMax H3 MLX currently supports text-to-video only; remove image/keyframe conditioning.',
+        { status: 400, code: 'MINIMAX_H3_MODE_UNSUPPORTED' },
+      );
+    }
+    if (body.negativePrompt?.trim()) {
+      await cleanupStaged();
+      throw new ServerError(
+        'MiniMax H3 is CFG-distilled and does not accept a negative prompt.',
+        { status: 400, code: 'MINIMAX_H3_NEGATIVE_PROMPT_UNSUPPORTED' },
+      );
+    }
+    if (body.disableAudio === true || body.disableAudio === 'true') {
+      await cleanupStaged();
+      throw new ServerError(
+        'MiniMax H3 jointly generates video and audio; its audio track cannot be disabled.',
+        { status: 400, code: 'MINIMAX_H3_AUDIO_REQUIRED' },
+      );
+    }
+    if (body.tiling && body.tiling !== 'auto') {
+      await cleanupStaged();
+      throw new ServerError(
+        'MiniMax H3 does not expose a tiling mode.',
+        { status: 400, code: 'MINIMAX_H3_TILING_UNSUPPORTED' },
+      );
+    }
+    if (body.chunks != null && Number(body.chunks) > 1) {
+      await cleanupStaged();
+      throw new ServerError(
+        `${effectiveModel.name} cannot generate chunks > 1 because continuation requires image-to-video support.`,
+        { status: 400, code: 'VIDEO_CHAIN_REQUIRES_IMAGE_MODE' },
+      );
+    }
+    const frames = Number(body.numFrames ?? effectiveModel.defaultFrames);
+    if (!Array.isArray(effectiveModel.frameOptions) || !effectiveModel.frameOptions.includes(frames)) {
+      await cleanupStaged();
+      throw new ServerError(
+        `MiniMax H3 requires a 17n+5 frame count between 124 and 362; got ${frames}.`,
+        { status: 400, code: 'MINIMAX_H3_INVALID_FRAME_COUNT' },
+      );
+    }
+    const fps = Number(body.fps ?? 24);
+    if (fps !== 24) {
+      await cleanupStaged();
+      throw new ServerError(
+        `MiniMax H3 runs at a fixed 24 fps; got ${fps}.`,
+        { status: 400, code: 'MINIMAX_H3_INVALID_FPS' },
+      );
+    }
   }
   // Wan profiles have narrower mode + temporal-shape contracts than the
   // shared request schema can express. Mirror the worker's guards here so a

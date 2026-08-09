@@ -4,6 +4,7 @@ import {
   VIDEO_EDGE_BOUNDS, FRAME_OPTIONS, FPS_OPTIONS,
   WAN_FRAME_OPTIONS, frameOptionsForModel, fpsOptionsForModel,
   normalizeFramesForModel, normalizeFpsForModel,
+  supportsVideoAudioControls,
   IC_LORA_MODES, IC_LORA_MODE_VALUES, isIcLoraMode, icLoraSpecForMode,
   icResolutionIssue,
 } from './videoGenParams.js';
@@ -63,6 +64,12 @@ describe('isModelAllowedForMode', () => {
     expect(isModelAllowedForMode(i2v, 'image')).toBe(true);
     expect(isModelAllowedForMode(ti2v, 'fflf')).toBe(false);
   });
+  it('filters any model with an explicit supportedModes contract', () => {
+    const h3 = { runtime: 'minimax_h3', supportedModes: ['text'] };
+    expect(isModelAllowedForMode(h3, 'text')).toBe(true);
+    expect(isModelAllowedForMode(h3, 'image')).toBe(false);
+    expect(isModelAllowedForMode(h3, 'fflf')).toBe(false);
+  });
   it('requires the ltx2 runtime for a2v', () => {
     expect(isModelAllowedForMode({ runtime: 'ltx2' }, 'a2v')).toBe(true);
     expect(isModelAllowedForMode({ runtime: 'mlx_video' }, 'a2v')).toBe(false);
@@ -88,6 +95,17 @@ describe('constants', () => {
     expect(frameOptionsForModel(wan, 109)).toContain(109);
     expect(normalizeFramesForModel(98, wan)).toBe(97);
     expect(normalizeFpsForModel(30, wan)).toBe(24);
+  });
+  it('uses an explicit model frame list and fixed fps for MiniMax H3', () => {
+    const h3 = { frameOptions: [124, 141, 158], fpsOptions: [24] };
+    expect(frameOptionsForModel(h3)).toEqual([124, 141, 158]);
+    expect(frameOptionsForModel(h3, 175)).toEqual([124, 141, 158]);
+    expect(normalizeFramesForModel(140, h3)).toBe(141);
+    expect(normalizeFpsForModel(30, h3)).toBe(24);
+  });
+  it('uses one explicit capability for visible and submitted audio controls', () => {
+    expect(supportsVideoAudioControls({ runtime: 'mlx_video' })).toBe(true);
+    expect(supportsVideoAudioControls({ supportsDisableAudio: false })).toBe(false);
   });
 });
 

@@ -23,14 +23,19 @@ export const WAN_FRAME_OPTIONS = [...new Set([
 ])].sort((a, b) => a - b);
 
 export const isValidFrameCountForModel = (value, model) => {
-  const stride = Number(model?.frameStride);
   const frames = Number(value);
+  if (Array.isArray(model?.frameOptions) && model.frameOptions.length > 0) {
+    return Number.isInteger(frames) && model.frameOptions.includes(frames);
+  }
+  const stride = Number(model?.frameStride);
   return Number.isInteger(frames) && frames > 0
     && Number.isFinite(stride) && stride > 0
     && (frames - 1) % stride === 0;
 };
 export const frameOptionsForModel = (model, currentValue = null) => {
-  const options = Number(model?.frameStride) === 4 ? WAN_FRAME_OPTIONS : FRAME_OPTIONS;
+  const options = Array.isArray(model?.frameOptions) && model.frameOptions.length > 0
+    ? model.frameOptions
+    : Number(model?.frameStride) === 4 ? WAN_FRAME_OPTIONS : FRAME_OPTIONS;
   const frames = Number(currentValue);
   return isValidFrameCountForModel(frames, model) && !options.includes(frames)
     ? [...options, frames].sort((a, b) => a - b)
@@ -47,6 +52,12 @@ export const normalizeFramesForModel = (value, model) => isValidFrameCountForMod
   ? Number(value)
   : nearestOption(value, frameOptionsForModel(model));
 export const normalizeFpsForModel = (value, model) => nearestOption(value, fpsOptionsForModel(model));
+
+// One capability predicate for both the Advanced audio controls and prompt
+// shaping. A model that cannot disable its jointly-generated audio (MiniMax
+// H3) also cannot honor LTX's "No music" prompt-envelope control; hidden state
+// must never continue altering the payload after a model switch.
+export const supportsVideoAudioControls = (model) => model?.supportsDisableAudio !== false;
 
 // Per-edge bounds for video: mirrors the videoGen route (64..2048) and the
 // server's floor-to-multiple-of-64 (generateVideo in local.js). Shared by the
@@ -162,7 +173,7 @@ export const icResolutionIssue = (spec, width, height) => {
 export const isModelAllowedForMode = (model, mode) => {
   if (!model) return false;
   if (mode === 'a2v' || isIcLoraMode(mode)) return model.runtime === 'ltx2';
-  if (model.runtime === 'wan22') {
+  if (Array.isArray(model.supportedModes) && model.supportedModes.length > 0) {
     return Array.isArray(model.supportedModes) && model.supportedModes.includes(mode);
   }
   return true;

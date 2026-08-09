@@ -43,6 +43,20 @@ vi.mock('../../lib/mediaModels.js', () => ({
     // quantized mlx_video model — NOT LoRA-capable (out of scope).
     { id: 'ltx23_distilled_q4', name: 'LTX-2.3 Distilled Q4', runtime: 'mlx_video', repo: 'notapalindrome/ltx23-mlx-av-q4', steps: 25, guidance: 3.0 },
     {
+      id: 'minimax_h3_8bit', name: 'MiniMax H3 MLX 8-bit', runtime: 'minimax_h3',
+      repo: 'pipenetwork/MiniMax-H3-MLX-8bit',
+      revision: '3ac52081470b0488921c3ec3ba84a39097bf2361',
+      supportedModes: ['text'], defaultFrames: 124,
+      frameOptions: [124, 141, 158], fpsOptions: [24],
+      steps: 8, guidance: 0, samplerLocked: true,
+      termsGate: { id: 'minimax-h3-community-license-2026-08-02' },
+      requiredWeights: [{
+        repo: 'MiniMaxAI/MiniMax-H3',
+        revision: '6818f6c32d12b210915e44ad56a4228c2608f160',
+        files: ['LICENSE', 'FL2VA/vae/video/config.json'],
+      }],
+    },
+    {
       id: 'wan22_ti2v_5b', name: 'Wan TI2V', runtime: 'wan22',
       repo: 'AbstractFramework/wan2.2-ti2v-5b-diffusers-8bit',
       revision: '6875952a110b6bdbcfc00d72b1d89a8e02ab0fc3',
@@ -1731,6 +1745,104 @@ describe('generateVideo — Wan MLX-Gen contract', () => {
       prompt: 'test', width: 480, height: 256, numFrames: 81, fps: 20, mode: 'text',
     })).rejects.toMatchObject({ code: 'WAN22_CHAIN_REQUIRES_IMAGE_MODE' });
     expect(spawnDetached).not.toHaveBeenCalled();
+  });
+});
+
+describe('generateVideo — MiniMax H3 MLX contract', () => {
+  it('requires the exact reviewed terms key at the render boundary', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
+    const base = {
+      jobId: 'h3-terms',
+      modelId: 'minimax_h3_8bit',
+      prompt: 'a fox watches the rain',
+      width: 512, height: 320, numFrames: 141, fps: 24,
+      mode: 'text',
+    };
+
+    await expect(generateVideo(base)).rejects.toMatchObject({
+      status: 403,
+      code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED',
+    });
+    await expect(generateVideo({ ...base, termsAcceptance: 'old-license' })).rejects.toMatchObject({
+      status: 403,
+      code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED',
+    });
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['uploaded image', { uploadedTempPath: '/mock/source.png' }],
+    ['keyframes', { keyframes: [{ path: '/mock/first.png', frame: 0 }, { path: '/mock/last.png', frame: 140 }] }],
+    ['extension video', { extendFromVideoPath: '/mock/prior.mp4' }],
+    ['audio file', { audioFilePath: '/mock/audio.wav' }],
+    ['IC reference', { icReferencePaths: ['/mock/reference.mp4'] }],
+  ])('rejects direct %s conditioning before any child is spawned', async (_label, conditioning) => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
+
+    await expect(generateVideo({
+      jobId: 'h3-conditioning',
+      modelId: 'minimax_h3_8bit',
+      termsAcceptance: 'minimax-h3-community-license-2026-08-02',
+      prompt: 'a fox watches the rain',
+      width: 512, height: 320, numFrames: 141, fps: 24,
+      ...conditioning,
+    })).rejects.toMatchObject({ code: 'MINIMAX_H3_MODE_UNSUPPORTED' });
+
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  it('uses the pinned cache-only helper, locked sampler and credential-free environment', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const { hfChildEnv } = await import('../../lib/hfToken.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+    vi.mocked(hfChildEnv).mockClear();
+    const priorToken = process.env.HF_TOKEN;
+    const priorHubToken = process.env.HUGGING_FACE_HUB_TOKEN;
+    process.env.HF_TOKEN = 'test-secret';
+    process.env.HUGGING_FACE_HUB_TOKEN = 'test-secret-2';
+
+    try {
+      await generateVideo({
+        jobId: 'h3-args',
+        modelId: 'minimax_h3_8bit',
+        termsAcceptance: 'minimax-h3-community-license-2026-08-02',
+        prompt: 'a fox watches the rain',
+        width: 512, height: 320, numFrames: 141, fps: 24,
+        steps: 99, guidanceScale: 12, mode: 'text',
+      });
+    } finally {
+      if (priorToken === undefined) delete process.env.HF_TOKEN; else process.env.HF_TOKEN = priorToken;
+      if (priorHubToken === undefined) delete process.env.HUGGING_FACE_HUB_TOKEN;
+      else process.env.HUGGING_FACE_HUB_TOKEN = priorHubToken;
+    }
+
+    const call = spawnMock.mock.calls.find(([, args]) => (
+      Array.isArray(args) && args.some((arg) => String(arg).endsWith('/generate_minimax_h3.py'))
+    ));
+    expect(call).toBeDefined();
+    const [bin, args, options] = call;
+    expect(bin).toMatch(/\.portos\/minimax-h3-mlx\/\.venv\/bin\/python3$/);
+    expect(args[args.indexOf('--model-repo') + 1]).toBe('pipenetwork/MiniMax-H3-MLX-8bit');
+    expect(args[args.indexOf('--model-revision') + 1]).toBe('3ac52081470b0488921c3ec3ba84a39097bf2361');
+    expect(args[args.indexOf('--runtime-revision') + 1]).toBe('fcd9e9b79a1d6018d91ac477c0968de1fa067e49');
+    expect(args[args.indexOf('--checkpoint-repo') + 1]).toBe('MiniMaxAI/MiniMax-H3');
+    expect(args[args.indexOf('--checkpoint-revision') + 1]).toBe('6818f6c32d12b210915e44ad56a4228c2608f160');
+    expect(args[args.indexOf('--steps') + 1]).toBe('8');
+    expect(args.flatMap((arg, i) => arg === '--checkpoint-file' ? [args[i + 1]] : []))
+      .toEqual(['LICENSE', 'FL2VA/vae/video/config.json']);
+    expect(options.killProcessGroup).toBe(true);
+    expect(options.env).toMatchObject({
+      HF_HUB_DISABLE_IMPLICIT_TOKEN: '1',
+      HF_HUB_OFFLINE: '1',
+      TRANSFORMERS_OFFLINE: '1',
+      PYTHONUNBUFFERED: '1',
+    });
+    expect(options.env).not.toHaveProperty('HF_TOKEN');
+    expect(options.env).not.toHaveProperty('HUGGING_FACE_HUB_TOKEN');
+    expect(hfChildEnv).not.toHaveBeenCalled();
   });
 });
 
