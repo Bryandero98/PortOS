@@ -333,6 +333,60 @@ describe('POST /api/image-gen/generate — multipart reference-image packing', (
     for (const p of params.referenceImagePaths) expect(p.startsWith(refsSandbox)).toBe(true);
   });
 
+  it('rejects an upload for a DISABLED cloud backend before staging it', async () => {
+    // The route throws the same disabledError a few steps later, but by then
+    // the copy is in PATHS.imageRefs and the route's res.on('close') sweep
+    // covers only multer temps — so a late rejection strands the staged file.
+    mockedSettings = { imageGen: { mode: 'agy', agy: { enabled: false } } };
+    const res = await postMultipart(app, '/api/image-gen/generate', [
+      { name: 'prompt', value: 'a fox' },
+      { name: 'referenceImage1', filename: 'a.png', contentType: 'image/png', value: PNG_FIXTURE },
+    ]);
+
+    expect(res.status).toBe(400);
+    expect(res.body.code || res.body.error).toMatch(/AGY_IMAGEGEN_DISABLED|disabled/i);
+    expect(enqueueJob).not.toHaveBeenCalled();
+    await new Promise((r) => setTimeout(r, 50));
+    const refDirContents = await readdir(refsSandbox).catch(() => []);
+    expect(refDirContents.filter((f) => f.startsWith('ref-'))).toHaveLength(0);
+  });
+
+  it('rejects more input images than the backend accepts instead of silently dropping them', async () => {
+    // Agy's generate_image takes at most 3 images total. A direct API caller
+    // sending 4 used to 200 while the provider quietly kept the first 3 — and
+    // the dropped copies stayed on disk. The form caps its own slots, so this
+    // guards the non-form callers.
+    mockedSettings = { imageGen: { mode: 'agy', agy: { enabled: true } } };
+    const res = await postMultipart(app, '/api/image-gen/generate', [
+      { name: 'prompt', value: 'a fox' },
+      { name: 'referenceImage1', filename: 'a.png', contentType: 'image/png', value: PNG_FIXTURE },
+      { name: 'referenceImage2', filename: 'b.png', contentType: 'image/png', value: PNG_FIXTURE },
+      { name: 'referenceImage3', filename: 'c.png', contentType: 'image/png', value: PNG_FIXTURE },
+      { name: 'referenceImage4', filename: 'd.png', contentType: 'image/png', value: PNG_FIXTURE },
+    ]);
+
+    expect(res.status).toBe(400);
+    expect(res.body.code || res.body.error).toMatch(/TOO_MANY_INPUT_IMAGES|at most 3/i);
+    expect(enqueueJob).not.toHaveBeenCalled();
+    await new Promise((r) => setTimeout(r, 50));
+    const refDirContents = await readdir(refsSandbox).catch(() => []);
+    expect(refDirContents.filter((f) => f.startsWith('ref-'))).toHaveLength(0);
+  });
+
+  it('accepts exactly the backend cap — 3 references on agy with no init image', async () => {
+    // The boundary the gate above must NOT reject.
+    mockedSettings = { imageGen: { mode: 'agy', agy: { enabled: true } } };
+    const res = await postMultipart(app, '/api/image-gen/generate', [
+      { name: 'prompt', value: 'a fox' },
+      { name: 'referenceImage1', filename: 'a.png', contentType: 'image/png', value: PNG_FIXTURE },
+      { name: 'referenceImage2', filename: 'b.png', contentType: 'image/png', value: PNG_FIXTURE },
+      { name: 'referenceImage3', filename: 'c.png', contentType: 'image/png', value: PNG_FIXTURE },
+    ]);
+
+    expect(res.status).toBe(200);
+    expect(enqueueJob.mock.calls.at(-1)[0].params.referenceImagePaths).toHaveLength(3);
+  });
+
   it('unlinks an already-staged ref when the prompt gate rejects a prompt-less agy render', async () => {
     // The one throw that can fire with an upload ALREADY copied into
     // PATHS.imageRefs: agy's tool lists `Prompt` as required, so a prompt-less

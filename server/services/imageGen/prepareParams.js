@@ -3,7 +3,8 @@
  *
  * Handles everything between Zod validation and the final dispatch branch:
  *   - resolve effective backend mode + per-render cleaners
- *   - gate reference-image uploads to backends that can consume them
+ *   - gate input-image uploads to backends that can consume them, are enabled,
+ *     and can take that many — all BEFORE anything is staged to disk
  *   - stage multer temp uploads into PATHS.images / PATHS.imageRefs
  *   - resolve initImagePath from upload or gallery filename
  *   - enforce each cloud CLI's prompt requirement
@@ -29,7 +30,9 @@ import { PATHS, ensureDir, resolveGalleryImage } from '../../lib/fileUtils.js';
 import { getSettings } from '../settings.js';
 import { IMAGE_GEN_MODE, resolveImageCleaners } from './index.js';
 import { editIncapableModeError, isEditCapableMode, modeLabel } from './modes.js';
-import { cloudPromptRequired, resolveRenderTargetConfig } from './cloudProviderConfig.js';
+import {
+  cloudPromptRequired, maxInputImages, resolveCloudProviderConfig, resolveRenderTargetConfig,
+} from './cloudProviderConfig.js';
 import { RENDER_TARGET, recordRenderPin } from '../../lib/renderTargets.js';
 import { getProject as getMusicVideoProject } from '../musicVideo/projects.js';
 import { getImageModels, isFlux2 } from '../../lib/mediaModels.js';
@@ -121,6 +124,18 @@ export async function prepareGenerateParams({ data, files, referenceImageFields 
     throw editIncapableModeError(mode);
   }
 
+  // A disabled cloud CLI is rejected BEFORE anything is staged. The route
+  // throws the same `disabledError` a few steps later, but by then the uploads
+  // have been copied into PATHS.imageRefs and the route's `res.on('close')`
+  // sweep only covers multer temps — so the staged copies would survive the
+  // 400 forever. Same "reject up-front rather than copy-then-fail" rule the
+  // reference gates below follow.
+  const cloudConfig = resolveCloudProviderConfig(settings, mode);
+  if (cloudConfig && !cloudConfig.enabled && (initUpload || data.initImageFile || referenceUploads.length)) {
+    cleanupReqFilesTemp();
+    throw cloudConfig.disabledError;
+  }
+
   // Resolve cleaners ONCE at the route layer so all three dispatch paths
   // (synchronous external, codex queue, local queue) see the same values.
   // Stamp onto `data` so they flow through the spread-into-params calls
@@ -155,6 +170,24 @@ export async function prepareGenerateParams({ data, files, referenceImageFields 
         );
       }
     }
+  }
+
+  // Reject an over-cap request instead of staging every upload and letting
+  // `resolveInputImages` silently keep the first N. Same reasoning as the
+  // gates above: the extra copies would be orphaned in PATHS.imageRefs, and
+  // the render would 200 while quietly ignoring images the caller submitted.
+  // The Image Gen form already caps its slots per backend (referenceSlotsFor),
+  // so this only fires for direct API callers — but a silent drop is exactly
+  // the failure the sidecar-honesty rule exists to prevent. `resolveInputImages`
+  // keeps its own cap as the backstop for in-process callers that skip the route.
+  const inputImageCount = (initUpload || data.initImageFile ? 1 : 0) + referenceUploads.length;
+  const inputImageCap = maxInputImages(mode);
+  if (inputImageCap != null && inputImageCount > inputImageCap) {
+    cleanupReqFilesTemp();
+    throw new ServerError(
+      `${modeLabel(mode)} accepts at most ${inputImageCap} input images (init image + references); received ${inputImageCount}`,
+      { status: 400, code: 'TOO_MANY_INPUT_IMAGES' },
+    );
   }
 
   if (initUpload || referenceUploads.length) await ensureDir(PATHS.imageRefs);
