@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findBalancedBlocks, tryParseWithRepair, extractJson } from './jsonExtract.js';
+import { findAllBalancedBlocks, findBalancedBlocks, tryParseWithRepair, extractJson } from './jsonExtract.js';
 
 describe('jsonExtract.findBalancedBlocks', () => {
   it('returns the single top-level brace-balanced block', () => {
@@ -250,5 +250,31 @@ describe('jsonExtract.extractJson', () => {
   it('does not misparse `}` inside string values (string-aware brace walker)', () => {
     const raw = 'banner {"a":"close-brace-} inside"}';
     expect(extractJson(raw).value).toEqual({ a: 'close-brace-} inside' });
+  });
+});
+
+describe('findAllBalancedBlocks', () => {
+  it('returns nested blocks in closing order, so a reverse walk sees the outer object first', () => {
+    const blocks = findAllBalancedBlocks('{"a":{"b":1}}');
+    expect(blocks).toEqual(['{"b":1}', '{"a":{"b":1}}']);
+  });
+
+  it('keeps scanning past an unmatched opening brace (findBalancedBlocks bails there)', () => {
+    const noisy = 'repaint fragment { then the answer {"a":1}';
+    expect(findBalancedBlocks(noisy)).toEqual([]);
+    expect(findAllBalancedBlocks(noisy)).toEqual(['{"a":1}']);
+  });
+
+  it('ignores an unmatched closing brace', () => {
+    expect(findAllBalancedBlocks('} {"a":1} }')).toEqual(['{"a":1}']);
+  });
+
+  it('is string-aware, so braces inside string values do not shift the depth', () => {
+    expect(findAllBalancedBlocks('{"a":"{ not a brace \\" }"}')).toEqual(['{"a":"{ not a brace \\" }"}']);
+  });
+
+  it('returns [] for non-string or empty input', () => {
+    expect(findAllBalancedBlocks(null)).toEqual([]);
+    expect(findAllBalancedBlocks('')).toEqual([]);
   });
 });

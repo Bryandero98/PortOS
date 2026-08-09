@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { DONE_SENTINEL_NAME, parseSentinelPayload, salvageSentinelPayload } from './agentSentinel.js';
+import { DONE_SENTINEL_NAME, extractSentinelPayloadFromTranscript, parseSentinelPayload, salvageSentinelPayload } from './agentSentinel.js';
 
 describe('agentSentinel', () => {
   it('exposes the sentinel filename', () => {
@@ -110,6 +110,57 @@ describe('agentSentinel', () => {
     it('surfaces an explicit null payload from a fenced envelope', async () => {
       const fenced = '```json\n{"summary":"nothing to file","payload":null}\n```';
       expect(await salvageSentinelPayload(fenced)).toEqual({ summary: 'nothing to file', payload: null });
+    });
+  });
+describe('extractSentinelPayloadFromTranscript', () => {
+    const isReasonerPayload = (p) => !!p && typeof p === 'object' && !Array.isArray(p)
+      && ['analysis', 'proposal', 'pause'].some(k => Object.hasOwn(p, k));
+    const ANSWER = '{"analysis":"quiet cycle","proposal":null,"pause":null}';
+
+    it('recovers a bare payload object the model printed, ANSI and all', async () => {
+      const transcript = `\u001b[32m\u25cf\u001b[0m ${ANSWER}\u001b[0m\r\n`;
+      const { payload } = await extractSentinelPayloadFromTranscript(transcript, isReasonerPayload);
+      expect(payload).toEqual({ analysis: 'quiet cycle', proposal: null, pause: null });
+    });
+
+    it('unwraps the documented { summary, payload } envelope when that is what was printed', async () => {
+      const transcript = 'done: {"summary":"nothing to file","payload":{"proposal":null}}';
+      expect(await extractSentinelPayloadFromTranscript(transcript, isReasonerPayload))
+        .toEqual({ summary: 'nothing to file', payload: { proposal: null } });
+    });
+
+    it('takes the LAST matching object, so the final answer beats an earlier prompt echo', async () => {
+      const transcript = `schema: {"analysis":"<example>","proposal":null}\nanswer: ${ANSWER}`;
+      const { payload } = await extractSentinelPayloadFromTranscript(transcript, isReasonerPayload);
+      expect(payload.analysis).toBe('quiet cycle');
+    });
+
+    it('prefers the enclosing object over its own nested children', async () => {
+      const transcript = '{"analysis":"a","proposal":{"scope":"self-improve","title":"t"}}';
+      const { payload } = await extractSentinelPayloadFromTranscript(transcript, isReasonerPayload);
+      expect(payload.proposal.title).toBe('t');
+    });
+
+    it('survives a truncated repaint that leaves an unmatched brace before the answer', async () => {
+      const { payload } = await extractSentinelPayloadFromTranscript(`{ half a redraw ${ANSWER}`, isReasonerPayload);
+      expect(payload).not.toBeNull();
+    });
+
+    it('yields no payload for malformed or partial JSON', async () => {
+      expect(await extractSentinelPayloadFromTranscript('{"analysis":"cut off mid-thoug', isReasonerPayload))
+        .toEqual({ summary: '', payload: null });
+      expect(await extractSentinelPayloadFromTranscript('{analysis: not json}', isReasonerPayload))
+        .toEqual({ summary: '', payload: null });
+    });
+
+    it('yields no payload for JSON that is not the hook deliverable', async () => {
+      expect((await extractSentinelPayloadFromTranscript('{"tokens":1200}', isReasonerPayload)).payload).toBeNull();
+    });
+
+    it('yields no payload without a predicate, or for empty/brace-free text', async () => {
+      expect((await extractSentinelPayloadFromTranscript(ANSWER, null)).payload).toBeNull();
+      expect((await extractSentinelPayloadFromTranscript('no json here', isReasonerPayload)).payload).toBeNull();
+      expect((await extractSentinelPayloadFromTranscript(null, isReasonerPayload)).payload).toBeNull();
     });
   });
 });

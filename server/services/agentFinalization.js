@@ -34,7 +34,7 @@ import { completeExecution, errorExecution } from './toolStateMachine.js';
 import { resolveFailedTaskUpdate, resolveTypeFailureSignal } from './agentErrorAnalysis.js';
 import { completeAgentRun } from './agentRunTracking.js';
 import { committedDuringRun } from '../lib/gitCommitProbe.js';
-import { canRunTaskOutputHookWithoutPayload, isProgrammaticIoTaskType, resolveTaskHookType, declaresNoCommitCriterion } from './taskTypeHooks.js';
+import { canRunTaskOutputHookWithoutPayload, getTaskOutputPayloadPredicate, isProgrammaticIoTaskType, resolveTaskHookType, declaresNoCommitCriterion } from './taskTypeHooks.js';
 import { processAgentCompletion } from './agentCompletion.js';
 import { extractSimplifySummaries } from './agentSummaryExtraction.js';
 
@@ -726,6 +726,37 @@ export async function finalizeAgent({
   return { success, prVerdict };
 }
 
+// Tail of the agent's raw PTY spool scanned by the transcript rescue. The
+// deliverable, when printed, is the LAST thing the model emits, and a reasoner
+// envelope is a few KB at most — but a repaint-heavy TUI spends most of its
+// bytes on escape sequences, so the window is generous relative to the payload.
+// Bounded for the same reason RAW_TAIL_ANALYSIS_BYTES is: raw.txt has no upper
+// size limit on a long run.
+const TRANSCRIPT_RESCUE_TAIL_BYTES = 256 * 1024;
+
+/**
+ * Recover a programmatic-I/O deliverable the agent PRINTED to its terminal
+ * instead of writing to `.agent-done` (#3640). Returns the payload, or null
+ * when the type opts out (no shape predicate), the spool is unreadable, or
+ * nothing in the transcript matches the hook's expected shape — in which case
+ * the caller behaves exactly as it did before this existed.
+ *
+ * Gated to programmatic-I/O types on purpose: everywhere else the sentinel is a
+ * completion SIGNAL rather than the product, and scraping a transcript for one
+ * would let an agent that merely discussed finishing be treated as finished.
+ */
+async function rescueTranscriptPayload({ agentId, taskType }) {
+  if (!agentId || !isProgrammaticIoTaskType(taskType)) return null;
+  const isPayload = await getTaskOutputPayloadPredicate(taskType);
+  if (!isPayload) return null;
+  const { PATHS, readFileTail } = await import('../lib/fileUtils.js');
+  const transcript = await readFileTail(join(PATHS.cosAgents, agentId, 'raw.txt'), TRANSCRIPT_RESCUE_TAIL_BYTES);
+  if (!transcript) return null;
+  const { extractSentinelPayloadFromTranscript } = await import('../lib/agentSentinel.js');
+  const { payload } = await extractSentinelPayloadFromTranscript(transcript, isPayload);
+  return payload ?? null;
+}
+
 /**
  * Read the finished agent's `.agent-done` payload and run the task type's
  * `processTaskOutput` hook, if it registers one. No-op for the vast majority of
@@ -758,6 +789,18 @@ async function dispatchTaskOutputHook({ agentId, task, success, workspacePath, r
       if (salvaged.payload != null) {
         payload = salvaged.payload;
         emitLog('info', `Recovered structured .agent-done payload for ${agentId} (${taskType}) via lenient JSON extraction`, { agentId });
+      }
+    }
+    // No sentinel at all: the model may have PRINTED its deliverable into the
+    // TUI instead of writing the file (#3640). `contents == null` — not just a
+    // null payload — so a sentinel the agent DID write, whose content simply
+    // isn't a payload, keeps its own (correct) missing-output verdict instead of
+    // being overridden by something older in the transcript.
+    if (payload == null && contents == null) {
+      const rescued = await rescueTranscriptPayload({ agentId, taskType });
+      if (rescued != null) {
+        payload = rescued;
+        emitLog('info', `Recovered printed payload for ${agentId} (${taskType}) from the transcript — no .agent-done was written`, { agentId });
       }
     }
   }

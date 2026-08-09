@@ -91,3 +91,58 @@ export async function salvageSentinelPayload(contents) {
   const summary = typeof value.summary === 'string' ? value.summary : '';
   return { summary, payload: value.payload };
 }
+
+/**
+ * Last-resort rescue for a programmatic-I/O deliverable the agent PRINTED into
+ * its terminal instead of writing to `.agent-done` (#3640).
+ *
+ * For these task types the sentinel JSON *is* the product of the run — a
+ * Layered Intelligence proposal becomes a filed tracker issue. A weaker model
+ * (typically a local one) commonly answers in the TUI rather than through the
+ * tool call, and the run is then discarded with `payload: undefined` even
+ * though the reasoning completed. Scanning the transcript recovers it.
+ *
+ * Deliberately predicate-gated and scoped to programmatic-I/O callers: for
+ * every other task type the sentinel is a COMPLETION SIGNAL, not a deliverable,
+ * and scraping a transcript for one would let an agent that merely *discussed*
+ * finishing be treated as finished. `isPayload` is the owning hook's own shape
+ * check (see taskTypeHooks' `getTaskOutputPayloadPredicate`), so a transcript
+ * that only contains chatter, a schema example, or partial JSON yields nothing
+ * rather than a garbage payload.
+ *
+ * Blocks are walked in REVERSE closing order — the model's final answer wins
+ * over an earlier prompt echo of the same schema, and an enclosing object wins
+ * over its own nested children. Strict `safeJSONParse` per block (no lenient
+ * repair): a transcript is not a file the agent committed to, so "almost JSON"
+ * there stays a miss.
+ *
+ * Async + LAZY imports for the same reason as `salvageSentinelPayload` — the
+ * barrel re-export of this module must not statically pull jsonExtract's
+ * transitive chain into every lib consumer / mocked suite.
+ *
+ * @param {string|null|undefined} transcript — ANSI-bearing raw PTY text
+ * @param {(payload:unknown)=>boolean} isPayload — the hook's shape predicate
+ * @returns {Promise<{ summary: string, payload: unknown }>}
+ */
+export async function extractSentinelPayloadFromTranscript(transcript, isPayload) {
+  const none = { summary: '', payload: null };
+  if (typeof transcript !== 'string' || !transcript.includes('{')) return none;
+  if (typeof isPayload !== 'function') return none;
+
+  const { stripAnsi } = await import('./ansiStrip.js');
+  const { findAllBalancedBlocks } = await import('./jsonExtract.js');
+  const blocks = findAllBalancedBlocks(stripAnsi(transcript));
+
+  for (let i = blocks.length - 1; i >= 0; i -= 1) {
+    const parsed = safeJSONParse(blocks[i], null, { allowArray: false });
+    if (!parsed) continue;
+    // Two shapes reach a transcript: the documented `{ summary, payload }`
+    // envelope the agent should have written to the sentinel, and the BARE
+    // payload object — what a model answering in the terminal actually prints.
+    const candidate = 'payload' in parsed ? parsed.payload : parsed;
+    if (!isPayload(candidate)) continue;
+    const summary = typeof parsed.summary === 'string' ? parsed.summary : '';
+    return { summary, payload: candidate };
+  }
+  return none;
+}
