@@ -68,9 +68,9 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   // Per-chunk prompt beats (#3695) — one editable string per chained chunk, so
   // a longer shot can progress instead of replaying the same prompt at each
   // seam. Kept as a plain sparse-by-blank array (index i steers chunk i); a
-  // blank entry means "use the main prompt for this chunk". Sized lazily by
-  // `chunkPromptAt`/`setChunkPromptAt` rather than eagerly resized on every
-  // chunk change, so lowering then raising the count doesn't lose typed text.
+  // blank entry means "use the main prompt for this chunk". Grown on demand by
+  // `setChunkPromptAt` rather than eagerly resized on every chunk change, so
+  // lowering then raising the count doesn't lose typed text.
   const [chunkPrompts, setChunkPrompts] = useState([]);
   const [steps, setSteps] = useState('');
   const [guidanceScale, setGuidanceScale] = useState('');

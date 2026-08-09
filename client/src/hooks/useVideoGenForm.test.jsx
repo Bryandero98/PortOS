@@ -199,7 +199,7 @@ describe('useVideoGenForm', () => {
       return result;
     };
 
-    it('serializes the beats as JSON, padded to the live chunk count', async () => {
+    it('serializes the beats as JSON, keeping a blank beat in position', async () => {
       const result = await chained(3);
       act(() => result.current.setChunkPromptAt(0, 'she opens the door'));
       act(() => result.current.setChunkPromptAt(2, 'the storm breaks'));
