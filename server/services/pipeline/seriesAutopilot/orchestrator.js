@@ -18,6 +18,7 @@ import {
   resolveAutopilotRounds, resolveAutopilotFoundationGate, resolveAutopilotFoundationThreshold,
   resolveAutopilotReadinessGate, resolveAutopilotCheckPauseThreshold, resolveAutopilotNotifyOnPause,
   resolveAutopilotProduceTeaser, resolveAutopilotRevision, resolveAutopilotLlm,
+  resolveAutopilotUnlockForRun,
 } from './config.js';
 import { VISUAL_DRAFT_ENABLED, summarizePlanCost } from './convergence.js';
 import { broadcast, broadcastStart, persistMarker, clearPauseNotice, notifyPause, fileGap, scheduleCleanup } from './session.js';
@@ -69,6 +70,7 @@ export async function startSeriesAutopilot(sId, options = {}) {
     checkFindingsPauseThreshold: resolveAutopilotCheckPauseThreshold(options, settings),
     notifyOnPause: resolveAutopilotNotifyOnPause(options, settings),
     produceTeaser: resolveAutopilotProduceTeaser(options, settings),
+    unlockForRun: resolveAutopilotUnlockForRun(options, settings),
     ...resolveAutopilotRevision(options, settings),
     // Run provider/model: per-run override → the series' own `series.llm` →
     // unset (stage pin / active provider downstream). Resolved ONCE here so the
@@ -102,6 +104,10 @@ export async function startSeriesAutopilot(sId, options = {}) {
     mode,
     options: runOptions,
     runState: {
+      // Unlock-everything pre-pass (opt-in, see unlockPass.js) has run this
+      // run. Boolean latch like arcVerified so the resolver routes there at
+      // most once, and a resume re-runs it (idempotent) against fresh state.
+      locksUnlocked: false,
       arcAttempted: false,
       arcVerified: false,
       // #2176 — foundation-quality gate satisfied this run (threshold cleared,
@@ -241,9 +247,14 @@ export async function startSeriesAutopilot(sId, options = {}) {
           || (step.kind === 'beatContinuity' && runOptions.maxBeatContinuityRounds === 0)
           || (step.kind === 'editorialReview' && runOptions.maxEditorialRounds === 0)
           || (step.kind === 'foundationGate' && (runOptions.maxFoundationRounds === 0 || runOptions.foundationGate === false));
+        // `unlockLocks` is exempt for a simpler reason than the self-gating
+        // steps: it makes no LLM call and bills nothing (it only clears lock
+        // bits), so pausing it on an exhausted budget would strand the run
+        // before its first real step for no spend at all.
         const selfGatingStep = step.kind === 'editorialChecks'
           || step.kind === 'editorialHealthGate'
-          || step.kind === 'reverseOutline';
+          || step.kind === 'reverseOutline'
+          || step.kind === 'unlockLocks';
         if (!selfGatingStep && !zeroRoundSkip) {
           const budget = await getDomainBudgetStatus('cos');
           if (!budget.withinBudget) {

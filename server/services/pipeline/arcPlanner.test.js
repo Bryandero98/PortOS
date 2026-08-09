@@ -1247,6 +1247,71 @@ describe('arcPlanner — commitSeasonsWithRemap (season locks)', () => {
   });
 });
 
+// Non-destructive guarantee behind the autopilot's unlock-for-run mode: once
+// that pass clears the per-season locks, nothing else stops an LLM-proposed arc
+// from deleting a volume — so the commit re-inserts dropped records while still
+// applying content rewrites to the ones that survived.
+describe('arcPlanner — preserveDroppedSeasonRecords', () => {
+  const { preserveDroppedSeasonRecords } = planner.__testing;
+
+  it('re-appends a dropped season without freezing the ones that survived', () => {
+    const current = [{ id: 'sea-a', number: 1, title: 'Drop me' }, { id: 'sea-b', number: 2, title: 'Old' }];
+    const next = [{ id: 'sea-b', number: 2, title: 'Rewritten' }];
+    const merged = preserveDroppedSeasonRecords(current, next);
+    expect(merged).toHaveLength(2);
+    expect(merged.find((s) => s.id === 'sea-b').title).toBe('Rewritten');
+    expect(merged.find((s) => s.id === 'sea-a')).toBe(current[0]);
+  });
+
+  it('returns next untouched when nothing was dropped', () => {
+    const current = [{ id: 'sea-a', number: 1 }];
+    const next = [{ id: 'sea-a', number: 1, title: 'x' }];
+    expect(preserveDroppedSeasonRecords(current, next)).toBe(next);
+  });
+
+  it('is a no-op for a missing/empty current list or a non-array next', () => {
+    const next = [{ id: 'a' }];
+    expect(preserveDroppedSeasonRecords([], next)).toBe(next);
+    expect(preserveDroppedSeasonRecords(null, next)).toBe(next);
+    expect(preserveDroppedSeasonRecords([{ id: 'a' }], null)).toBeNull();
+  });
+});
+
+describe('arcPlanner — commitSeasonsWithRemap (preserveDroppedSeasons)', () => {
+  beforeEach(() => {
+    fileStore.clear();
+    uuidCounter = 0;
+    stageRunnerSpy = undefined;
+  });
+
+  it('keeps an UNLOCKED season the rewrite dropped, and still applies rewrites to survivors', async () => {
+    const s = await setupSeries();
+    const dropped = await seasonsSvc.createSeason(s.id, { title: 'Would vanish', episodeCountTarget: 3, number: 1 });
+    const kept = await seasonsSvc.createSeason(s.id, { title: 'Old title', episodeCountTarget: 3, number: 2 });
+    const i1 = await issuesSvc.createIssue({ seriesId: s.id, seasonId: dropped.id, title: 'Pilot' });
+    const cur = await seriesSvc.getSeries(s.id);
+    const out = await planner.commitSeasonsWithRemap(cur, {
+      arc: { logline: 'L', summary: '', themes: [], protagonistArc: '', shape: null, status: 'draft' },
+      seasons: [{ id: kept.id, number: 2, title: 'New title', logline: '', synopsis: '', endingHook: '', episodeCountTarget: 4, themes: [] }],
+    }, { preserveDroppedSeasons: true });
+    expect(out.series.seasons.map((x) => x.id)).toContain(dropped.id);
+    expect(out.series.seasons.find((x) => x.id === kept.id).title).toBe('New title');
+    // The dropped volume's issue stays attached — nothing was reassigned away.
+    expect(await issuesSvc.getIssue(i1.id).then((i) => i.seasonId)).toBe(dropped.id);
+  });
+
+  it('still drops an unlocked season when the flag is off (default behavior unchanged)', async () => {
+    const s = await setupSeries();
+    const dropped = await seasonsSvc.createSeason(s.id, { title: 'Would vanish', episodeCountTarget: 3, number: 1 });
+    const cur = await seriesSvc.getSeries(s.id);
+    const out = await planner.commitSeasonsWithRemap(cur, {
+      arc: { logline: 'L', summary: '', themes: [], protagonistArc: '', shape: null, status: 'draft' },
+      seasons: [],
+    });
+    expect(out.series.seasons.map((x) => x.id)).not.toContain(dropped.id);
+  });
+});
+
 describe('arcPlanner — mergeArcWithLocks', () => {
   it('replaces locked fields with the current arc values', () => {
     const current = { logline: 'a', summary: 'b', themes: ['t1'], protagonistArc: 'c', shape: 's1' };

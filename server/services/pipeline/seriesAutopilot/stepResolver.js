@@ -144,6 +144,16 @@ export function resolveNextStep(series, issues, runState = {}, options = {}) {
   const seasons = Array.isArray(series?.seasons) ? [...series.seasons].sort(byNumber) : [];
   const ordered = orderedIssues(issues);
 
+  // STEP 0 — unlock everything this series owns (opt-in, see unlockPass.js).
+  // Must run BEFORE any generation step: a locked arc makes generateArc /
+  // resolveVerifyIssues throw, a locked stage makes text generation skip, and a
+  // locked canon entry makes the describe/refine fixes no-op — so unlocking
+  // after the fact would leave the run pausing on findings it could have fixed.
+  // Latched by `runState.locksUnlocked` so it runs at most once per run.
+  if (options.unlockForRun === true && !runState.locksUnlocked) {
+    return { kind: 'unlockLocks', reason: 'unlock series-owned records before the run' };
+  }
+
   // STEP 1 — arc. Also (re)generate when there are no seasons at all: an
   // arc-only series (arc text present, seasons: []) has nothing for the
   // episode/issue steps to expand, and would otherwise sail through verify/

@@ -1744,6 +1744,14 @@ describe('validation.js', () => {
       expect(pipelineEditorialChecksSettingsSchema.safeParse({ checkFindingsPauseThreshold: 2.5 }).success).toBe(false);
     });
 
+    it('accepts an optional boolean unlockForRun and rejects a non-boolean', () => {
+      expect(pipelineEditorialChecksSettingsSchema.safeParse({ unlockForRun: true }).success).toBe(true);
+      expect(pipelineEditorialChecksSettingsSchema.safeParse({ unlockForRun: false }).success).toBe(true);
+      // additive + optional: an older peer that never set it still validates
+      expect(pipelineEditorialChecksSettingsSchema.safeParse({}).success).toBe(true);
+      expect(pipelineEditorialChecksSettingsSchema.safeParse({ unlockForRun: 'yes' }).success).toBe(false);
+    });
+
     it('the settings slice accepts forward/older-peer custom-check shapes (lenient)', () => {
       // A def carrying a future field (or a not-yet-known scope) must not 400 an
       // unrelated settings save — runtime buildCustomCheck decides runnability.

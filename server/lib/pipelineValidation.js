@@ -255,6 +255,15 @@ export const pipelineEditorialChecksSettingsSchema = z.object({
   revisionMinCycles: z.number().int().min(1).max(MAX_CONVERGENCE_ROUNDS).optional(),
   revisionMaxCycles: z.number().int().min(1).max(MAX_CONVERGENCE_ROUNDS).optional(),
   revisionPlateauDelta: z.number().min(0).max(10).optional(),
+  // Unlock-everything pre-pass. When on, an autopilot run first clears every
+  // lock the SERIES owns (arc freeze + per-field arc locks, volume locks, issue
+  // stage locks, and the universe-canon entries this series owns) so the run can
+  // actually apply the fixes its editorial passes surface. Canon owned by — or
+  // shared with — another series in the same universe stays locked, and the pass
+  // is never destructive: it clears lock bits only. Defaults OFF (opt-in) since
+  // it mutates lock state the user set by hand. Optional + additive so older
+  // peers fall through to off.
+  unlockForRun: z.boolean().optional(),
 }).strict();
 
 // Cursor-context payload for the CD-bridge suggest route — identical shape to

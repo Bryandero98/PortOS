@@ -46,6 +46,10 @@ const DEFAULT_REVISION_PLATEAU_DELTA = 0.3;
 // defaults ON (the point of the phase); the weighted [0,10] threshold the
 // foundation must clear before drafting mirrors autonovel's 7.5 bar; the improve
 // loop is bounded by MAX_FOUNDATION_ROUNDS (3).
+// Unlock-everything pre-pass — mirror the server default (off). Opt-in because
+// it mutates lock state the user set by hand; it only ever CLEARS locks (and
+// only on records this series owns), never deletes anything.
+const DEFAULT_UNLOCK_FOR_RUN = false;
 const DEFAULT_FOUNDATION_GATE = true;
 const DEFAULT_FOUNDATION_THRESHOLD = 7.5;
 const DEFAULT_FOUNDATION_ROUNDS = 3;
@@ -133,6 +137,7 @@ const SEVERITY_COLORS = {
 
 // Human labels for each conductor step kind (matches seriesAutopilot.js).
 const STEP_LABELS = {
+  unlockLocks: 'Unlocking series records',
   generateArc: 'Generating arc',
   generateEpisodes: 'Generating episodes',
   verifyArc: 'Verifying arc',
@@ -174,6 +179,19 @@ function frameLabel(f) {
       const s = f.bySeverity;
       const sev = s && (s.high || s.medium || s.low) ? ` (${s.high}H/${s.medium}M/${s.low}L)` : '';
       return `Editorial check: ${name} — ${f.count} finding(s)${sev}`;
+    }
+    // Unlock pre-pass: report what it actually cleared (and what it deliberately
+    // left frozen), so "unlocked everything" is never an unverifiable claim.
+    case 'unlock:applied': {
+      if (!f.unlockedAny) return 'Unlock — nothing was locked';
+      const parts = [];
+      if (f.arc) parts.push('arc');
+      if (f.arcFields) parts.push(`${f.arcFields} arc field(s)`);
+      if (f.seasons) parts.push(`${f.seasons} volume(s)`);
+      if (f.stages) parts.push(`${f.stages} stage(s)`);
+      if (f.canon) parts.push(`${f.canon} canon entr${f.canon === 1 ? 'y' : 'ies'}`);
+      const kept = f.canonForeignKept ? ` · kept ${f.canonForeignKept} other series' canon locked` : '';
+      return `Unlocked ${parts.join(', ')}${kept}`;
     }
     case 'render:queued': return `Queued draft render: ${f.target}`;
     case 'gap:filed': return `Filed CoS task (${f.gapKind})`;
@@ -254,6 +272,10 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
   const [revisionPlateauDelta, setRevisionPlateauDelta] = useState(DEFAULT_REVISION_PLATEAU_DELTA);
   // Foundation-quality gate (#2176) — enable toggle + weighted threshold + round
   // bound. Persisted like the other options (saved default + per-run override).
+  // Unlock-everything pre-pass. Persisted like the other booleans (saved default
+  // + per-run override) so a series the user drives unlocked stays that way on
+  // Resume.
+  const [unlockForRun, setUnlockForRun] = useState(DEFAULT_UNLOCK_FOR_RUN);
   const [foundationGate, setFoundationGate] = useState(DEFAULT_FOUNDATION_GATE);
   const [foundationThreshold, setFoundationThreshold] = useState(DEFAULT_FOUNDATION_THRESHOLD);
   const [foundationRounds, setFoundationRounds] = useState(DEFAULT_FOUNDATION_ROUNDS);
@@ -271,6 +293,7 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
   const revisionMinEditedRef = useRef(false);
   const revisionMaxEditedRef = useRef(false);
   const revisionDeltaEditedRef = useRef(false);
+  const unlockForRunEditedRef = useRef(false);
   const foundationGateEditedRef = useRef(false);
   const foundationThresholdEditedRef = useRef(false);
   const foundationRoundsEditedRef = useRef(false);
@@ -351,6 +374,7 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
         if (!revisionMinEditedRef.current) setRevisionMinCycles(Number.isInteger(pec.revisionMinCycles) ? pec.revisionMinCycles : DEFAULT_REVISION_MIN_CYCLES);
         if (!revisionMaxEditedRef.current) setRevisionMaxCycles(Number.isInteger(pec.revisionMaxCycles) ? pec.revisionMaxCycles : DEFAULT_REVISION_MAX_CYCLES);
         if (!revisionDeltaEditedRef.current) setRevisionPlateauDelta(Number.isFinite(pec.revisionPlateauDelta) ? pec.revisionPlateauDelta : DEFAULT_REVISION_PLATEAU_DELTA);
+        if (!unlockForRunEditedRef.current) setUnlockForRun(typeof pec.unlockForRun === 'boolean' ? pec.unlockForRun : DEFAULT_UNLOCK_FOR_RUN);
         if (!foundationGateEditedRef.current) setFoundationGate(typeof pec.foundationGate === 'boolean' ? pec.foundationGate : DEFAULT_FOUNDATION_GATE);
         if (!foundationThresholdEditedRef.current) setFoundationThreshold(Number.isFinite(pec.foundationThreshold) ? pec.foundationThreshold : DEFAULT_FOUNDATION_THRESHOLD);
         if (!foundationRoundsEditedRef.current) setFoundationRounds(Number.isInteger(pec.maxFoundationRounds) ? pec.maxFoundationRounds : DEFAULT_FOUNDATION_ROUNDS);
@@ -386,6 +410,11 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
   const editFoundationRounds = useCallback((v) => { foundationRoundsEditedRef.current = true; setFoundationRounds(v); }, []);
   // Boolean toggle — persist immediately (like notifyOnPause) so the saved
   // default tracks the choice and Resume reuses it.
+  const editUnlockForRun = useCallback((v) => {
+    unlockForRunEditedRef.current = true;
+    setUnlockForRun(v);
+    persistRounds({ unlockForRun: v });
+  }, [persistRounds]);
   const editFoundationGate = useCallback((v) => {
     foundationGateEditedRef.current = true;
     setFoundationGate(v);
@@ -508,6 +537,9 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
     // #2176 — foundation gate. Persist + override like the other options, only
     // when edited (untouched → server resolves from the persisted setting, then
     // the default: gate ON / threshold 7.5 / 3 rounds).
+    // Unlock pre-pass — persists + overrides like the other booleans. Untouched
+    // sends nothing → the server resolves it from the persisted setting, then off.
+    if (unlockForRunEditedRef.current) roundOverrides.unlockForRun = unlockForRun;
     if (foundationGateEditedRef.current) roundOverrides.foundationGate = foundationGate;
     if (foundationThresholdEditedRef.current) roundOverrides.foundationThreshold = clampFoundationThreshold(foundationThreshold, DEFAULT_FOUNDATION_THRESHOLD);
     if (foundationRoundsEditedRef.current) roundOverrides.maxFoundationRounds = clampRound(foundationRounds, DEFAULT_FOUNDATION_ROUNDS);
@@ -534,7 +566,7 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
     // effect can reject a stale terminal frame from the previous run.
     activeRunIdRef.current = res.runId || null;
     setActive(true);
-  }, [seriesId, includeVisual, fileGaps, arcRounds, editorialRounds, beatContinuityRounds, checkPauseThreshold, notifyOnPause, revisionEnabled, revisionMinCycles, revisionMaxCycles, revisionPlateauDelta, foundationGate, foundationThreshold, foundationRounds, readinessGate, providerOverride, modelOverride, persistRounds]);
+  }, [seriesId, includeVisual, fileGaps, arcRounds, editorialRounds, beatContinuityRounds, checkPauseThreshold, notifyOnPause, unlockForRun, revisionEnabled, revisionMinCycles, revisionMaxCycles, revisionPlateauDelta, foundationGate, foundationThreshold, foundationRounds, readinessGate, providerOverride, modelOverride, persistRounds]);
 
   const cancel = useCallback(async () => {
     await cancelPipelineAutopilot(seriesId).catch(() => null);
@@ -655,6 +687,15 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
             <input type="checkbox" checked={foundationGate} onChange={(e) => editFoundationGate(e.target.checked)} />
             Judge the foundation (world / characters / arc) before drafting
           </label>
+          <label className="flex items-center gap-2 text-xs text-gray-300">
+            <input type="checkbox" checked={unlockForRun} onChange={(e) => editUnlockForRun(e.target.checked)} />
+            Unlock everything this series owns first (full edit control)
+          </label>
+          {unlockForRun ? (
+            <p className="text-[11px] text-gray-500">
+              Clears the arc freeze, arc-field locks, volume locks, issue stage locks, and the locks on the universe canon this series owns — so the run can actually apply the fixes its editorial passes find. Canon belonging to (or shared with) another series in the same universe stays locked, and nothing is ever deleted: characters and objects can be rewritten but stay in the Universe and the Catalog. Locks are <em>not</em> restored when the run ends. Saved as the default and reused on Resume.
+            </p>
+          ) : null}
           <div className="flex flex-wrap gap-4 pt-1">
             <RoundInput
               id="autopilot-arc-rounds"

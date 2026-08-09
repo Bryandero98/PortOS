@@ -2,6 +2,8 @@
 
 ## Added
 
+- Series Pipeline **Autonomous mode** gains an **"Unlock everything this series owns first"** option. A locked arc, volume, issue stage, or canon entry makes the corresponding fix path throw or silently skip, so a run would surface an editorial finding and then pause on a problem it was never allowed to resolve — leaving you to hunt down every lock toggle by hand before re-running. With the option on, the run's first step clears the arc freeze, the per-field arc locks, every volume lock, every issue stage lock, and the locks on the universe canon **this series owns**, then reports exactly what it cleared. Two boundaries are hard: canon belonging to (or shared with) another series in the same universe stays locked, and the pass is never destructive — it clears lock bits only, so characters and objects can be rewritten in full but stay in the Universe and the Catalog. Because unlocking the volume locks also removes the only thing that used to stop a regenerated arc from *dropping* a volume, arc rewrites in this mode now re-insert any volume the rewrite omitted. Off by default, saved as the default once toggled, and shown in the dry-run plan before you commit.
+
 - Series Pipeline **Autonomous mode** now says which AI it will spend on. The Options popover names the provider and model the run resolves to, links to where per-stage pins and reasoning effort are configured, and offers a per-run provider/model override (never persisted — a one-off run can't silently re-point the whole series). The live progress line names the provider of an in-flight run too, including one the scheduler started.
 
 ## Fixed

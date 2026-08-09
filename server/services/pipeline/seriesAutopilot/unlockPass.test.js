@@ -1,0 +1,220 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readdirSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import { mockNoPeerSync, mockNoPeers } from '../../../lib/mockPathsDataRoot.js';
+
+// File-backed store (same idiom as seriesAutopilot.test.js) so the REAL
+// series/issues services run against an in-memory map, not Postgres. Partial
+// mock — this suite loads `./session.js` transitively (for `broadcast`), which
+// pulls in the cos/apps graph, and those modules read fileUtils members the
+// autopilot itself never touches.
+const fileStore = new Map();
+vi.mock('../../../lib/fileUtils.js', async (importOriginal) => ({
+  ...(await importOriginal()),
+  tryReadFile: vi.fn().mockResolvedValue(null),
+  ensureDir: vi.fn().mockResolvedValue(undefined),
+  atomicWrite: vi.fn(async (path, data) => { fileStore.set(path, data); }),
+  readJSONFile: vi.fn(async (path, fallback) => (fileStore.has(path) ? fileStore.get(path) : fallback)),
+}));
+
+let uuidCounter = 0;
+vi.mock('crypto', async () => {
+  const actual = await vi.importActual('crypto');
+  return { ...actual, randomUUID: () => `uuid-${++uuidCounter}` };
+});
+
+vi.mock('../../instances.js', () => mockNoPeers());
+vi.mock('../../sharing/peerSync.js', () => mockNoPeerSync());
+
+// Stand-in universe record the pass reads + writes through the mutator form.
+let universe = null;
+const getUniverse = vi.fn(async (id) => (universe?.id === id ? universe : null));
+const updateUniverse = vi.fn(async (id, patchOrMutator) => {
+  const patch = typeof patchOrMutator === 'function' ? await patchOrMutator(universe) : patchOrMutator;
+  if (!patch) return universe;
+  universe = { ...universe, ...patch };
+  return universe;
+});
+// Partial mock — other modules in the transitive graph import constants off the
+// real barrel; only the two functions this pass uses are replaced.
+vi.mock('../../universeBuilder.js', async (importOriginal) => ({
+  ...(await importOriginal()),
+  getUniverse: (...a) => getUniverse(...a),
+  updateUniverse: (...a) => updateUniverse(...a),
+}));
+
+const seriesSvc = await import('../series.js');
+const issuesSvc = await import('../issues.js');
+const { isSeriesScopedCanonEntry, partitionLockedCanon, unlockSeriesForAutopilot } = await import('./unlockPass.js');
+
+const charEntry = (over = {}) => ({ id: 'c1', name: 'Kai', physicalDescription: 'Tall.', ...over });
+
+beforeEach(() => {
+  fileStore.clear();
+  uuidCounter = 0;
+  universe = null;
+  getUniverse.mockClear();
+  updateUniverse.mockClear();
+});
+
+describe('unlockPass — series-scoped canon predicate', () => {
+  it('unlocks an entry this series minted', () => {
+    expect(isSeriesScopedCanonEntry(charEntry({ sourceSeriesId: 's1' }), { seriesId: 's1' })).toBe(true);
+  });
+
+  it('refuses an entry another series minted, even when this series is the only one left linked', () => {
+    expect(isSeriesScopedCanonEntry(charEntry({ sourceSeriesId: 's2' }), { seriesId: 's1', soleSeries: true })).toBe(false);
+  });
+
+  it('unlocks an unowned entry ONLY when this series is the universe\'s only series', () => {
+    const unowned = charEntry();
+    expect(isSeriesScopedCanonEntry(unowned, { seriesId: 's1', soleSeries: true })).toBe(true);
+    expect(isSeriesScopedCanonEntry(unowned, { seriesId: 's1', soleSeries: false })).toBe(false);
+  });
+
+  it('partitions only LOCKED entries — unlocked ones are neither unlockable nor foreign', () => {
+    const { unlockable, foreign } = partitionLockedCanon([
+      charEntry({ id: 'a', locked: true, sourceSeriesId: 's1' }),
+      charEntry({ id: 'b', locked: true, sourceSeriesId: 's2' }),
+      charEntry({ id: 'c', locked: false, sourceSeriesId: 's1' }),
+      charEntry({ id: 'd', sourceSeriesId: 's1' }),
+    ], { seriesId: 's1' });
+    expect(unlockable.map((e) => e.id)).toEqual(['a']);
+    expect(foreign.map((e) => e.id)).toEqual(['b']);
+  });
+});
+
+describe('unlockPass — end-to-end over the real series/issue services', () => {
+  const buildSeries = async ({ universeId = null } = {}) => {
+    const s = await seriesSvc.createSeries({ name: 'Test Series', targetFormat: 'comic' });
+    if (universeId) await seriesSvc.updateSeries(s.id, { universeId });
+    return seriesSvc.getSeries(s.id);
+  };
+
+  it('clears the arc freeze, every arc-field lock, every volume lock and every stage lock', async () => {
+    const s = await buildSeries();
+    const seasons = [
+      { id: 'sea-a', number: 1, title: 'One', locked: true },
+      { id: 'sea-b', number: 2, title: 'Two', locked: false },
+    ];
+    await seriesSvc.updateSeries(s.id, {
+      seasons,
+      arc: { logline: 'L', summary: 'S' },
+      locked: { arc: true, arcFields: { logline: true, themes: true } },
+    });
+    const issue = await issuesSvc.createIssue({ seriesId: s.id, title: 'I1' });
+    await issuesSvc.updateStage(issue.id, 'idea', { locked: true });
+    await issuesSvc.updateStage(issue.id, 'comicScript', { locked: true });
+    // Visual stages carry the same lock bit and gate their own enqueue paths —
+    // the sweep must cover every STAGE_ID, not just the text ones.
+    await issuesSvc.updateStage(issue.id, 'comicPages', { locked: true });
+
+    const counts = await unlockSeriesForAutopilot(s.id);
+    expect(counts).toMatchObject({ arc: 1, arcFields: 2, seasons: 1, stages: 3, canon: 0 });
+
+    const after = await seriesSvc.getSeries(s.id);
+    expect(after.locked).toEqual({});
+    expect(after.seasons.every((x) => x.locked !== true)).toBe(true);
+    // Volume content survives the unlock — the pass only clears the lock bit.
+    expect(after.seasons.find((x) => x.id === 'sea-a').title).toBe('One');
+    const afterIssue = await issuesSvc.getIssue(issue.id);
+    expect(afterIssue.stages.idea.locked).toBe(false);
+    expect(afterIssue.stages.comicScript.locked).toBe(false);
+    expect(afterIssue.stages.comicPages.locked).toBe(false);
+  });
+
+  it('is idempotent — a second pass finds nothing locked and reports zero', async () => {
+    const s = await buildSeries();
+    await seriesSvc.updateSeries(s.id, { locked: { arc: true } });
+    await unlockSeriesForAutopilot(s.id);
+    const second = await unlockSeriesForAutopilot(s.id);
+    expect(second).toMatchObject({ arc: 0, arcFields: 0, seasons: 0, stages: 0, canon: 0 });
+  });
+
+  it('unlocks only the canon this series owns and keeps another series\' canon frozen', async () => {
+    const mine = await buildSeries({ universeId: 'uni-1' });
+    const other = await seriesSvc.createSeries({ name: 'Sibling', targetFormat: 'comic' });
+    await seriesSvc.updateSeries(other.id, { universeId: 'uni-1' });
+    universe = {
+      id: 'uni-1',
+      characters: [
+        charEntry({ id: 'mine', locked: true, sourceSeriesId: mine.id }),
+        charEntry({ id: 'theirs', locked: true, sourceSeriesId: other.id }),
+        charEntry({ id: 'shared', locked: true }), // unowned + a sibling series exists
+      ],
+      places: [charEntry({ id: 'p1', locked: true, sourceSeriesId: mine.id })],
+      objects: [],
+    };
+
+    const counts = await unlockSeriesForAutopilot(mine.id);
+    expect(counts.canon).toBe(2); // 'mine' + 'p1'
+    expect(counts.canonForeignKept).toBe(2); // 'theirs' + 'shared'
+    const byId = Object.fromEntries(universe.characters.map((e) => [e.id, e]));
+    expect(byId.mine.locked).toBe(false);
+    expect(byId.theirs.locked).toBe(true);
+    expect(byId.shared.locked).toBe(true);
+    expect(universe.places[0].locked).toBe(false);
+    // Never destructive: every entry is still present in the universe.
+    expect(universe.characters).toHaveLength(3);
+    expect(universe.places).toHaveLength(1);
+  });
+
+  it('unlocks unowned canon when this series is the universe\'s only series', async () => {
+    const mine = await buildSeries({ universeId: 'uni-solo' });
+    universe = { id: 'uni-solo', characters: [charEntry({ id: 'legacy', locked: true })], places: [], objects: [] };
+    const counts = await unlockSeriesForAutopilot(mine.id);
+    expect(counts.canon).toBe(1);
+    expect(counts.canonForeignKept).toBe(0);
+    expect(universe.characters[0].locked).toBe(false);
+  });
+
+  it('skips the universe read entirely for an orphan series (no universeId)', async () => {
+    const s = await buildSeries();
+    const counts = await unlockSeriesForAutopilot(s.id);
+    expect(counts.canon).toBe(0);
+    expect(counts.universeId).toBeNull();
+    expect(getUniverse).not.toHaveBeenCalled();
+  });
+
+  it('writes nothing to the universe when no owned canon entry is locked', async () => {
+    const mine = await buildSeries({ universeId: 'uni-1' });
+    universe = { id: 'uni-1', characters: [charEntry({ id: 'mine', sourceSeriesId: mine.id })], places: [], objects: [] };
+    await unlockSeriesForAutopilot(mine.id);
+    // The mutator still runs (that is how the freshest state is read), but it
+    // must return null so updateUniverse short-circuits with no write.
+    expect(universe.characters[0].locked).toBeUndefined();
+  });
+});
+
+// Source-level guard, not a behavioral one: unlocking is what lets the autopilot
+// FULLY EDIT a character/object/volume, and the standing rule is that it must
+// never turn into permission to DELETE one. A record that has to leave is a
+// catalog archive (soft-delete/tombstone) performed by a human. Nothing in the
+// conductor calls a destructive service today; this fails the moment something
+// does, so the decision is made deliberately rather than by an innocent import.
+describe('unlockPass — the conductor has no destructive canon/record path', () => {
+  const DIR = dirname(fileURLToPath(import.meta.url));
+  const DESTRUCTIVE = ['removeCanonEntry', 'deleteSeason', 'deleteIssue', 'deleteSeries', 'deleteUniverse'];
+  const sources = readdirSync(DIR)
+    .filter((f) => f.endsWith('.js') && !f.endsWith('.test.js'))
+    .map((f) => [f, readFileSync(join(DIR, f), 'utf8')]);
+
+  it('reads every conductor module (guard would pass vacuously on an empty list)', () => {
+    expect(sources.length).toBeGreaterThan(5);
+  });
+
+  it.each(DESTRUCTIVE)('never calls %s', (fn) => {
+    // Match a CALL (`fn(`), not a mention — the module headers name these
+    // deliberately when explaining the policy, and prose must not fail the guard.
+    const callSite = new RegExp(`\\b${fn}\\s*\\(`);
+    const offenders = sources.filter(([, src]) => callSite.test(src)).map(([f]) => f);
+    expect(offenders).toEqual([]);
+  });
+
+  it('the guard actually detects a call (bypass probe)', () => {
+    const callSite = new RegExp('\\bremoveCanonEntry\\s*\\(');
+    expect(callSite.test('await removeCanonEntry(universeId, kind, id);')).toBe(true);
+    expect(callSite.test('// removeCanonEntry is deliberately never used here')).toBe(false);
+  });
+});

@@ -69,7 +69,14 @@ export async function runArcVerify(seriesId, record) {
     // step can't overspend the daily cap mid-loop.
     const beforeResolve = await budgetPause();
     if (beforeResolve) return beforeResolve;
-    const resolved = await resolveVerifyIssues(seriesId, { findings: blocking, ...providerOverrideOpts(record) });
+    const resolved = await resolveVerifyIssues(seriesId, {
+      findings: blocking,
+      ...providerOverrideOpts(record),
+      // Unlock-for-run cleared the per-season locks that used to stop an
+      // auto-resolve from dropping a volume — keep the records regardless, so
+      // "unlocked for editing" never means "deletable" (see unlockPass.js).
+      preserveDroppedSeasons: record.options.unlockForRun === true,
+    });
     await recordDomainUsage('cos', { actions: 1 });
     broadcast(seriesId, {
       type: 'resolve:round', scope: 'arc', round,

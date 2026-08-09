@@ -28,12 +28,39 @@ import { editorialSubsetIds } from './editorialSteps.js';
 // When provided it drives the editorialChecks step's estLlmCalls (issues × LLM
 // checks) and whether that pass bills a cos action at all; absent, the step
 // estimates a single LLM check.
+// How many locks the unlock pre-pass would clear on the SERIES records — the
+// arc freeze, each locked arc field, each locked volume, each locked issue
+// stage. Universe-canon locks are deliberately excluded: they live on another
+// record that only an async read could reach, and buildDryRunPlan is pure +
+// synchronous. The plan note says so rather than implying this is the total.
+export function countSeriesRecordLocks(series, issues) {
+  const locked = series?.locked || {};
+  let n = locked.arc === true ? 1 : 0;
+  n += Object.values(locked.arcFields || {}).filter((v) => v === true).length;
+  n += (Array.isArray(series?.seasons) ? series.seasons : []).filter((s) => s?.locked === true).length;
+  for (const issue of Array.isArray(issues) ? issues : []) {
+    n += Object.values(issue?.stages || {}).filter((st) => st?.locked === true).length;
+  }
+  return n;
+}
+
 export function buildDryRunPlan(series, issues, options, costContext = {}) {
   const plan = [];
   const ordered = orderedIssues(issues);
   const seasons = Array.isArray(series?.seasons) ? [...series.seasons].sort(byNumber) : [];
   // Mirror the resolver: generateArc runs when arc text is missing OR there are
   // no volumes at all (an arc-only series), so a dry-run plan must show it too.
+  // Unlock pre-pass (opt-in). Costs nothing — it only clears lock bits — but it
+  // is the one step that MUTATES records the user froze by hand, so the dry-run
+  // plan must name it (and how many locks it would clear) before they commit.
+  if (options?.unlockForRun === true) {
+    plan.push({
+      kind: 'unlockLocks',
+      count: 1,
+      note: `unlock ${countSeriesRecordLocks(series, ordered)} series-record lock(s) + this series' universe canon — other series' canon stays locked; nothing is deleted`,
+      estActions: 0,
+    });
+  }
   const noArc = !series?.arc?.logline && !series?.arc?.summary;
   if (noArc || seasons.length === 0) plan.push({ kind: 'generateArc', count: 1, estActions: 1 });
   const emptySeasons = seasons.filter((s) => !ordered.some((i) => i.seasonId === s.id));

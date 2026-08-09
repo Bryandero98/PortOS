@@ -94,6 +94,15 @@ const autopilotStartSchema = z.object({
   // comic issue is drafted the run mints + starts a Creative Director teaser video
   // per issue. Falls back to pipelineEditorialChecks.produceTeaser, then off.
   produceTeaser: z.boolean().optional(),
+  // Unlock-everything pre-pass. When true, the run's first step clears every
+  // lock this SERIES owns — the arc freeze + per-field arc locks, each volume's
+  // lock, every issue stage lock, and the universe-canon entries this series
+  // owns — so the autopilot can apply the fixes its editorial passes surface
+  // instead of pausing on findings it isn't allowed to resolve. Canon owned by
+  // (or shared with) another series in the same universe stays locked, and the
+  // pass never deletes anything. Falls back to
+  // pipelineEditorialChecks.unlockForRun, then off.
+  unlockForRun: z.boolean().optional(),
   // Iterate-to-quality revision loop (CWQE Phase 7, #2171). When true, after the
   // editorial-health gate the run cycles the weakest drafted issue through
   // adversarial cuts + a judge-gated keep/revert, stopping on plateau /

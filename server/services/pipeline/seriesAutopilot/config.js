@@ -145,6 +145,23 @@ export function wantsTeaser(options = {}) {
   return options.produceTeaser === true && wantsVisual(options);
 }
 
+// Unlock-everything-first (see ./unlockPass.js). When on, the run's FIRST step
+// clears every lock this series owns — the arc freeze + per-field arc locks,
+// each volume's lock, every issue stage lock, and the universe-canon entries
+// this series owns — so the autopilot can actually apply the fixes the
+// editorial passes surface instead of pausing on findings it isn't allowed to
+// resolve. Defaults OFF: it mutates persisted lock state the user set by hand,
+// so it must be an explicit choice. Per-run option wins, then the persisted
+// setting, then false. Stamped onto run options once at start so the resolver,
+// the dry-run plan and a later resume all read the same effective flag.
+export const DEFAULT_UNLOCK_FOR_RUN = false;
+export function resolveAutopilotUnlockForRun(options = {}, settings = null) {
+  if (typeof options?.unlockForRun === 'boolean') return options.unlockForRun;
+  const pec = settings?.pipelineEditorialChecks || {};
+  if (typeof pec?.unlockForRun === 'boolean') return pec.unlockForRun;
+  return DEFAULT_UNLOCK_FOR_RUN;
+}
+
 // Iterate-to-quality revision loop (CWQE Phase 7, #2171). Opt-in per run; when
 // enabled the autopilot cycles the weakest issue through adversarial cuts +
 // judge-gated keep/revert instead of stopping at the editorial-health gate.
