@@ -57,6 +57,41 @@ describe('mediaModels registry', () => {
     expect(list.every((m) => m.id && m.name)).toBe(true);
   });
 
+  it('ships MiniMax H3 as a pinned, text-only 128 GB BYOV profile', async () => {
+    const { getVideoModels } = await import('./mediaModels.js');
+    const h3 = getVideoModels().find((model) => model.id === 'minimax_h3_8bit');
+    expect(h3).toMatchObject({
+      runtime: 'minimax_h3',
+      repo: 'pipenetwork/MiniMax-H3-MLX-8bit',
+      revision: '3ac52081470b0488921c3ec3ba84a39097bf2361',
+      supportedModes: ['text'],
+      defaultFrames: 124,
+      fpsOptions: [24],
+      memoryGb: 128,
+      samplerLocked: true,
+      steps: 8,
+    });
+    expect(h3.frameOptions).toEqual([124, 141, 158, 175, 192, 209, 226, 243, 260, 277, 294, 311, 328, 345, 362]);
+    expect(h3.requiredWeights[0]).toMatchObject({
+      repo: 'MiniMaxAI/MiniMax-H3',
+      revision: '6818f6c32d12b210915e44ad56a4228c2608f160',
+    });
+    // The pinned port builds only decoder layers 0-49. Shards 12/13 contain
+    // only layers 53-63, which its _wanted() loader deliberately skips; shard
+    // 14 remains required for the final norm. Keep this selective 12-shard
+    // contract explicit so a generic "download every index shard" rewrite
+    // does not add roughly 10 GB of weights the H3 text path never loads.
+    expect(h3.requiredWeights[0].files.filter((file) => /model-\d{5}-of-00014\.safetensors$/.test(file)))
+      .toEqual([
+        ...Array.from(
+          { length: 11 },
+          (_, index) => `FL2VA/text_encoder/model-${String(index + 1).padStart(5, '0')}-of-00014.safetensors`,
+        ),
+        'FL2VA/text_encoder/model-00014-of-00014.safetensors',
+      ]);
+    expect(h3.termsGate.id).toBe('minimax-h3-community-license-2026-08-02');
+  });
+
   it('hides models with broken === current platform', async () => {
     const here = process.platform === 'win32' ? 'windows' : 'macos';
     const elsewhere = process.platform === 'win32' ? 'macos' : 'windows';
@@ -381,8 +416,10 @@ describe('mediaModels registry', () => {
     // ltx23_dgrauet_q8 is a current DEFAULT_REGISTRY entry not yet shipped →
     // should be added to the user's list
     expect(reg.video.macos.some((e) => e.id === 'ltx23_dgrauet_q8')).toBe(true);
+    expect(reg.video.macos.some((e) => e.id === 'minimax_h3_8bit')).toBe(true);
     // And should now be recorded in _shippedDefaults
     expect(reg._shippedDefaults.video.macos).toContain('ltx23_dgrauet_q8');
+    expect(reg._shippedDefaults.video.macos).toContain('minimax_h3_8bit');
     // Persisted to disk
     const onDisk = JSON.parse(readFileSync(registryFile, 'utf-8'));
     expect(onDisk._shippedDefaults.video.macos).toContain('ltx23_dgrauet_q8');

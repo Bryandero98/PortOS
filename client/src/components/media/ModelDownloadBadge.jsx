@@ -24,6 +24,9 @@ export default function ModelDownloadBadge({
   onDownload,     // () => void
   onCancel,       // () => void
   estimateLabel,  // e.g. "~8 GB" — caller derives from model entry name
+  disabled = false,
+  disabledReason,
+  disabledReasonId,
 }) {
   if (!status) {
     return <p className="text-[10px] text-gray-500 mt-1">Checking model cache…</p>;
@@ -87,8 +90,12 @@ export default function ModelDownloadBadge({
     <button
       type="button"
       onClick={onDownload}
-      className="mt-1 inline-flex items-center gap-1.5 text-[11px] text-port-accent hover:text-white border border-port-border hover:border-port-accent rounded px-2 py-1"
-      title={status.repo ? `Pre-download ${status.repo} into ~/.cache/huggingface/hub/` : 'Pre-download model weights'}
+      disabled={disabled}
+      aria-describedby={disabled && disabledReason ? disabledReasonId : undefined}
+      className="mt-1 inline-flex items-center gap-1.5 text-[11px] text-port-accent hover:text-white border border-port-border hover:border-port-accent rounded px-2 py-1 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-port-accent disabled:hover:border-port-border"
+      title={disabled
+        ? disabledReason
+        : status.repo ? `Pre-download ${status.repo} into ~/.cache/huggingface/hub/` : 'Pre-download model weights'}
     >
       <Download className="w-3.5 h-3.5" />
       <span>Download{estimateLabel ? ` (${estimateLabel})` : ''}</span>

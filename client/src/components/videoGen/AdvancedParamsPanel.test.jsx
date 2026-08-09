@@ -142,6 +142,28 @@ describe('AdvancedParamsPanel', () => {
     expect(screen.getByLabelText(/No music/).disabled).toBe(true);
   });
 
+  it('hides LTX audio controls and Extend advice for a text-only joint-A/V model', () => {
+    renderPanel({
+      numFrames: 362,
+      currentModel: {
+        runtime: 'minimax_h3',
+        supportedModes: ['text'],
+        frameOptions: [124, 243, 362],
+        supportsDisableAudio: false,
+      },
+    });
+    fireEvent.click(toggle());
+    expect(screen.queryByText(/Disable audio/)).toBeNull();
+    expect(screen.queryByText(/No music/)).toBeNull();
+    expect(screen.queryByText(/use Extend/i)).toBeNull();
+  });
+
+  it('keeps the long-render Extend guidance for models that support Extend', () => {
+    renderPanel({ numFrames: 313, currentModel: { runtime: 'ltx2' } });
+    fireEvent.click(toggle());
+    expect(screen.getByText(/Past 241 frames/i)).toBeInTheDocument();
+  });
+
   describe('per-chunk prompt beats (#3695)', () => {
     it('hides the beat editor when the request does not chain', () => {
       renderPanel({ chunks: 4, chainingActive: false });

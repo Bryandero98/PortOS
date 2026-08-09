@@ -31,6 +31,15 @@ export const WAN22_HELPER_SCRIPT = join(PATHS.root, 'scripts', 'generate_wan22.p
 export const WAN22_REPO_DIR = join(homedir(), '.portos', 'mlx-gen');
 export const WAN22_EXPECTED_REVISION = '2452f0c12edcc8886eebf15772205ce9c417a618';
 
+// MiniMax H3 MLX runtime — PipeNetwork's Apple-Silicon port, provisioned only
+// after the user selects Install in Video Gen. The model weights remain a
+// separate, explicitly accepted/downloaded Hugging Face operation.
+export const MINIMAX_H3_VENV_PYTHON = join(homedir(), '.portos', 'minimax-h3-mlx', '.venv', 'bin', 'python3');
+export const MINIMAX_H3_HELPER_SCRIPT = join(PATHS.root, 'scripts', 'generate_minimax_h3.py');
+export const MINIMAX_H3_RUNTIME_PROBE_SCRIPT = join(PATHS.root, 'scripts', 'minimax_h3_runtime_probe.py');
+export const MINIMAX_H3_REPO_DIR = join(homedir(), '.portos', 'minimax-h3-mlx');
+export const MINIMAX_H3_EXPECTED_REVISION = 'fcd9e9b79a1d6018d91ac477c0968de1fa067e49';
+
 // HunyuanVideo MLX runtime — gaurav-nelson/HunyuanVideo_MLX cloned at
 // ~/.portos/hunyuan-video-mlx/. ~60 GB resident at bf16 so practical only
 // with the 4-bit Gemma text encoder + everything else evicted. Provisioned
@@ -51,13 +60,32 @@ const RUNTIME_FINGERPRINT_SCRIPT = join(PATHS.root, 'scripts', 'runtime_fingerpr
 // source of truth: the BYOV_VIDEO_RUNTIMES Set + the /setup/runtime-* routes
 // + the client install banner all derive from this map's keys.
 //
-// `importProbe` is a tiny Python expression run by isByovRuntimeReady() to
+// `importProbe` (or `probeArgs` for a dedicated script) is run by
+// isByovRuntimeReady() to
 // confirm the venv's *packages* are actually installed (not just the venv
 // binary). A partial install (e.g. setup script aborted after `uv venv`
 // before `uv pip install`) leaves the binary present but no torch — without
 // this probe the UI would hide the install banner and renders would fail
 // with a deep ImportError inside the runner script.
 export const BYOV_RUNTIME_INFO = Object.freeze({
+  minimax_h3: {
+    id: 'minimax_h3',
+    label: 'MiniMax H3 MLX',
+    venvPython: MINIMAX_H3_VENV_PYTHON,
+    repoDir: MINIMAX_H3_REPO_DIR,
+    installEnvVar: 'INSTALL_MINIMAX_H3',
+    repoUrl: 'https://github.com/PipeNetwork/minimax-h3-mlx',
+    expectedRevision: MINIMAX_H3_EXPECTED_REVISION,
+    // Source-only runtime: both status and the render helper verify this
+    // package is clean so a modified/untracked module cannot shadow the pin.
+    sourcePath: 'minimax_h3_mlx',
+    pinEnvVar: 'MINIMAX_H3_PIN',
+    // The port is source-only rather than pip-installed. The dedicated probe
+    // registers only the source package namespace; it never prepends the whole
+    // checkout, where an untracked root module could shadow a locked venv dep.
+    probeArgs: [MINIMAX_H3_RUNTIME_PROBE_SCRIPT, MINIMAX_H3_REPO_DIR],
+    fingerprintPackages: ['mlx', 'mlx-metal', 'mlx-vlm', 'transformers', 'huggingface-hub'],
+  },
   hunyuan: {
     id: 'hunyuan',
     label: 'HunyuanVideo MLX',
@@ -125,9 +153,14 @@ export async function isByovRuntimeReady(runtimeId) {
   const info = BYOV_RUNTIME_INFO[runtimeId];
   if (!info) return false;
   if (!existsSync(info.venvPython)) return false;
+  // Never execute a source checkout until its immutable revision and scoped
+  // executable package have passed the clean-status check. Keep this ahead of
+  // the positive readiness cache too: a checkout can be edited after an
+  // earlier successful probe.
+  if (info.expectedRevision && !await isByovRuntimeCurrent(runtimeId)) return false;
   if (readyCache.get(runtimeId) === true) return true;
   const probeOk = await new Promise((resolve) => {
-    const child = spawn(info.venvPython, ['-c', info.importProbe], {
+    const child = spawn(info.venvPython, info.probeArgs || ['-c', info.importProbe], {
       env: safeChildProcessEnv(),
       stdio: ['ignore', 'ignore', 'ignore'],
     });
@@ -142,19 +175,34 @@ export async function isByovRuntimeReady(runtimeId) {
 // Resolve a checkout's exact revision without trusting a mutable tag/branch.
 // Runtimes without an expectedRevision remain current by definition. A stale
 // pinned checkout makes the UI offer Repair / Upgrade; nothing runs at boot.
+export function isPinnedSourceStatusClean(stdout, expectedRevision) {
+  const lines = String(stdout).split(/\r?\n/).filter(Boolean);
+  const oid = lines.find((line) => line.startsWith('# branch.oid '))?.slice('# branch.oid '.length);
+  return oid === expectedRevision && lines.every((line) => line.startsWith('# '));
+}
+
 export async function isByovRuntimeCurrent(runtimeId) {
   const info = BYOV_RUNTIME_INFO[runtimeId];
   if (!info?.expectedRevision) return true;
   if (!existsSync(join(info.repoDir, '.git'))) return false;
   return new Promise((resolve) => {
     let stdout = '';
-    const child = spawn('git', ['-C', info.repoDir, 'rev-parse', 'HEAD'], {
+    const args = info.sourcePath
+      ? ['-C', info.repoDir, 'status', '--porcelain=v2', '--branch', '--untracked-files=all', '--', info.sourcePath]
+      : ['-C', info.repoDir, 'rev-parse', 'HEAD'];
+    const child = spawn('git', args, {
       env: safeChildProcessEnv(),
       stdio: ['ignore', 'pipe', 'ignore'],
     });
     const timer = setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); resolve(false); }, 10000);
     child.stdout.on('data', (chunk) => { if (stdout.length < 128) stdout += chunk.toString(); });
-    child.on('close', (code) => { clearTimeout(timer); resolve(code === 0 && stdout.trim() === info.expectedRevision); });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      const current = info.sourcePath
+        ? isPinnedSourceStatusClean(stdout, info.expectedRevision)
+        : stdout.trim() === info.expectedRevision;
+      resolve(code === 0 && current);
+    });
     child.on('error', () => { clearTimeout(timer); resolve(false); });
   });
 }

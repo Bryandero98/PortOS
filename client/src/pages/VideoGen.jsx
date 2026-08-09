@@ -89,6 +89,7 @@ import { GROK_VIDEO_DURATIONS, GROK_VIDEO_DEFAULT_DURATION } from '../lib/grokVi
 import ResolutionField from '../components/media/ResolutionField';
 import { VIDEO_EDGE_BOUNDS, IC_LORA_MODES } from '../lib/videoGenParams.js';
 import { finishTargetForRecord } from '../lib/videoFinish.js';
+import { safeReadStorage, safeWriteStorage } from '../lib/safeStorage.js';
 
 const MODES = [
   { id: 'text',   label: 'Text',   icon: Type,       desc: 'Text-to-video' },
@@ -164,6 +165,31 @@ export default function VideoGen() {
     icStrength, setIcStrength, icSkipStage2, setIcSkipStage2,
     applyRemix, applyFinish, applyResumedParams, buildGeneratePayload,
   } = useVideoGenForm({ models, status, availableLoras, grokEnabled });
+
+  // Restricted model terms are accepted per exact reviewed license id. Keep
+  // the convenience bit in guarded localStorage, but send the versioned id on
+  // every download/generation request so the server enforces the same gate.
+  const termsGate = !isGrok && currentModel?.termsGate ? currentModel.termsGate : null;
+  const [acceptedTermsId, setAcceptedTermsId] = useState(null);
+  useEffect(() => {
+    const key = termsGate?.id ? `video-gen:terms:${termsGate.id}` : null;
+    setAcceptedTermsId(key && safeReadStorage(key) === '1' ? termsGate.id : null);
+  }, [termsGate?.id]);
+  // Key state by the accepted license, not a shared boolean. That makes a
+  // model switch fail closed during the effect boundary: acceptance for one
+  // terms id can never be momentarily applied to another id.
+  const termsAccepted = !!termsGate?.id && acceptedTermsId === termsGate.id;
+  const handleTermsAcceptedChange = (accepted) => {
+    setAcceptedTermsId(accepted ? termsGate?.id || null : null);
+    if (termsGate?.id) safeWriteStorage(`video-gen:terms:${termsGate.id}`, accepted ? '1' : '0');
+  };
+  const termsGateBlocked = !!termsGate && !termsAccepted;
+  const termsDescriptionId = termsGate ? 'video-model-terms-requirement' : undefined;
+  const acceptedTermsKey = termsGate && termsAccepted ? termsGate.id : null;
+  const buildAcceptedGeneratePayload = () => ({
+    ...buildGeneratePayload(),
+    ...(acceptedTermsKey ? { termsAcceptance: acceptedTermsKey } : {}),
+  });
 
   // Image gallery — used by both the start and end frame pickers so the
   // user can pull from any prior render in either slot.
@@ -567,8 +593,8 @@ export default function VideoGen() {
     // Without these guards the user could press Enter in the prompt
     // textarea and fire a request the disabled button would otherwise
     // have prevented.
-    if (!prompt.trim() || generating || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked))) return;
-    await runGeneration(buildGeneratePayload()).catch(() => {});
+    if (!prompt.trim() || generating || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked || termsGateBlocked))) return;
+    await runGeneration(buildAcceptedGeneratePayload()).catch(() => {});
   };
 
   const handleEnqueue = () => {
@@ -576,10 +602,10 @@ export default function VideoGen() {
     // would silently queue a doomed job that fails late in the worker with
     // VENV_MISSING, hiding the installer banner from the user. Block at
     // enqueue time so the only path forward is the install banner above.
-    if (!prompt.trim() || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked))) return;
+    if (!prompt.trim() || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked || termsGateBlocked))) return;
     // useVideoGenQueue strips the File blobs into `_blobs` and snapshots the
     // rest as a stable summary for the queue UI.
-    enqueue(buildGeneratePayload());
+    enqueue(buildAcceptedGeneratePayload());
   };
 
   const handleCancel = async () => {
@@ -621,7 +647,7 @@ export default function VideoGen() {
 
   const canEnqueue = prompt.trim() && (isGrok || (!notConnected && !extendModeBlocked
     && !a2vModeBlocked && !icLoraModeBlocked && !byovGateBlocked
-    && !weightsGateBlocked && !keyframesBlocked));
+    && !weightsGateBlocked && !keyframesBlocked && !termsGateBlocked));
 
   return (
     <div className="space-y-3">
@@ -767,9 +793,13 @@ export default function VideoGen() {
                 Repair deletes the bad file{integrityBadCount === 1 ? '' : 's'} and re-downloads clean copies.
               </>}
               repairLabel="Repair model"
-              onRepair={() => { setDismissedIntegrityKey(integrityKey); modelDownload.repair(modelId); }}
+              onRepair={() => {
+                setDismissedIntegrityKey(integrityKey);
+                modelDownload.repair(modelId, { termsAcceptance: acceptedTermsKey });
+              }}
               onDismiss={() => setDismissedIntegrityKey(integrityKey)}
-              disabled={modelDownload.repairing || modelDownload.downloading}
+              disabled={termsGateBlocked || modelDownload.repairing || modelDownload.downloading}
+              disabledReasonId={termsGateBlocked ? termsDescriptionId : undefined}
               repairing={modelDownload.repairing}
             />
           )}
@@ -818,9 +848,12 @@ export default function VideoGen() {
               <textarea
                 value={negativePrompt}
                 onChange={(e) => setNegativePrompt(e.target.value)}
+                disabled={!isGrok && currentModel?.supportsNegativePrompt === false}
                 rows={3}
                 className="w-full bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50 resize-y"
-                placeholder="What to avoid..."
+                placeholder={!isGrok && currentModel?.supportsNegativePrompt === false
+                  ? 'This CFG-distilled model does not use a negative prompt.'
+                  : 'What to avoid...'}
               />
             </FormField>
           </div>
@@ -963,9 +996,12 @@ export default function VideoGen() {
                 {modelStatus && (
                   <ModelDownloadBadge
                     status={modelStatus}
-                    onDownload={() => modelDownload.start(modelId)}
+                    onDownload={() => modelDownload.start(modelId, { termsAcceptance: acceptedTermsKey })}
                     onCancel={modelDownload.cancel}
                     estimateLabel={deriveSizeEstimate(currentModel?.name)}
+                    disabled={termsGateBlocked}
+                    disabledReason="Accept the selected model's eligibility and license terms below before downloading."
+                    disabledReasonId={termsDescriptionId}
                   />
                 )}
                 {activeWeightError && (
@@ -1055,15 +1091,17 @@ export default function VideoGen() {
           </div>
           )}
 
-          {/* Provenance / licensing / policy-scope disclosure for the selected
-              backend + model (#3674). Sits directly below the backend and model
-              controls and updates with them; purely informational — it never
-              gates or alters a render. */}
+          {/* Provenance / licensing / policy scope for the selected backend +
+              model (#3674). Restricted models also render their explicit,
+              server-enforced terms gate here before Advanced / Generate. */}
           <ModelDisclosure
             backend={backend}
             backendDisclosures={status?.backendDisclosures}
             model={isGrok ? null : currentModel}
             systemMemoryGb={status?.systemMemoryGb}
+            termsAccepted={termsAccepted}
+            onTermsAcceptedChange={handleTermsAcceptedChange}
+            termsDescriptionId={termsDescriptionId}
           />
 
           {/* Sampler/output knobs live behind a closed-by-default disclosure so
@@ -1099,11 +1137,13 @@ export default function VideoGen() {
             ) : (
               <button
                 type="submit"
-                disabled={!prompt.trim() || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked))}
+                disabled={!prompt.trim() || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked || termsGateBlocked))}
+                aria-describedby={termsGateBlocked ? termsDescriptionId : undefined}
                 className="flex items-center gap-2 px-4 py-2 bg-port-accent hover:bg-port-accent/80 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg min-h-[40px]"
                 title={
                   byovRuntimeMissing ? `${byovStatus?.label || byovRuntime} runtime is not installed — use the install banner above`
                     : byovGateBlocked ? `Checking ${byovRuntime} runtime status…`
+                    : termsGateBlocked ? 'Confirm the selected model eligibility and license terms above before generating'
                     : modelWeightsBlocked ? 'Download the selected model weights before generating'
                     : textEncoderWeightsBlocked ? 'Download the shared text encoder before generating'
                     : icWeightsBlocked ? `Download the ${icSpec?.label || 'IC-LoRA'} weight before generating`
@@ -1122,9 +1162,11 @@ export default function VideoGen() {
               type="button"
               onClick={handleEnqueue}
               disabled={!canEnqueue}
+              aria-describedby={termsGateBlocked ? termsDescriptionId : undefined}
               className="flex items-center gap-2 px-4 py-2 border border-port-border text-gray-200 hover:text-white hover:bg-port-border/40 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium rounded-lg min-h-[40px]"
               title={canEnqueue ? 'Add this configuration to the batch queue'
                 : icWeightsBlocked ? `Download the ${icSpec?.label || 'IC-LoRA'} weight before queueing`
+                  : termsGateBlocked ? 'Confirm the selected model eligibility and license terms above before queueing'
                   : weightsGateBlocked ? 'Finish required model downloads before queueing'
                     : 'Complete the required inputs before queueing'}
             >

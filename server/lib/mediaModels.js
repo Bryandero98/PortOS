@@ -68,6 +68,66 @@ const DEFAULT_REGISTRY = {
       // via `INSTALL_LTX2=1 bash scripts/setup-image-video.sh`.
       { id: 'ltx23_dgrauet_q4',   name: 'LTX-2.3 dgrauet Q4 (~16 GB, true keyframes)', repo: 'dgrauet/ltx-2.3-mlx-q4', runtime: 'ltx2', steps: 8, guidance: 3.0 },
       { id: 'ltx23_dgrauet_q8',   name: 'LTX-2.3 dgrauet Q8 (~25 GB, true keyframes)', repo: 'dgrauet/ltx-2.3-mlx-q8', runtime: 'ltx2', steps: 8, guidance: 3.0 },
+      // MiniMax H3 joint video+audio through PipeNetwork's pinned MLX port.
+      // The quantized DiT is one HF snapshot; the released conditioner + VAEs
+      // are an exact selective file set from MiniMax's upstream snapshot. Both
+      // downloads are explicit in Video Gen, and render-time resolution is
+      // cache-only. The server-owned disclosure attaches the mandatory,
+      // versioned territory/license acceptance gate.
+      {
+        id: 'minimax_h3_8bit',
+        name: 'MiniMax H3 MLX 8-bit (joint video + audio, ~103 GB download, 128 GB RAM)',
+        repo: 'pipenetwork/MiniMax-H3-MLX-8bit',
+        revision: '3ac52081470b0488921c3ec3ba84a39097bf2361',
+        runtime: 'minimax_h3',
+        supportedModes: ['text'],
+        defaultFrames: 124,
+        frameOptions: [124, 141, 158, 175, 192, 209, 226, 243, 260, 277, 294, 311, 328, 345, 362],
+        fpsOptions: [24],
+        memoryGb: 128,
+        steps: 8,
+        guidance: 0,
+        samplerLocked: true,
+        samplerNote: 'MiniMax H3 is CFG-distilled; this profile locks the validated 8-point sigma schedule and does not use CFG.',
+        supportsNegativePrompt: false,
+        supportsTiling: false,
+        supportsDisableAudio: false,
+        requiredWeights: [{
+          repo: 'MiniMaxAI/MiniMax-H3',
+          revision: '6818f6c32d12b210915e44ad56a4228c2608f160',
+          files: [
+            'LICENSE',
+            'FL2VA/model_index.json',
+            'FL2VA/audio_vae/config.json',
+            'FL2VA/audio_vae/metadata.json',
+            'FL2VA/audio_vae/model.safetensors',
+            'FL2VA/text_encoder/config.json',
+            'FL2VA/text_encoder/model-00001-of-00014.safetensors',
+            'FL2VA/text_encoder/model-00002-of-00014.safetensors',
+            'FL2VA/text_encoder/model-00003-of-00014.safetensors',
+            'FL2VA/text_encoder/model-00004-of-00014.safetensors',
+            'FL2VA/text_encoder/model-00005-of-00014.safetensors',
+            'FL2VA/text_encoder/model-00006-of-00014.safetensors',
+            'FL2VA/text_encoder/model-00007-of-00014.safetensors',
+            'FL2VA/text_encoder/model-00008-of-00014.safetensors',
+            'FL2VA/text_encoder/model-00009-of-00014.safetensors',
+            'FL2VA/text_encoder/model-00010-of-00014.safetensors',
+            'FL2VA/text_encoder/model-00011-of-00014.safetensors',
+            // The pinned port truncates Qwen3-VL at layer 50. Index shards
+            // 12/13 contain only layers 53-63 and are intentionally omitted;
+            // shard 14 remains necessary for the final norm tensor.
+            'FL2VA/text_encoder/model-00014-of-00014.safetensors',
+            'FL2VA/text_encoder/model.safetensors.index.json',
+            'FL2VA/tokenizer/merges.txt',
+            'FL2VA/tokenizer/tokenizer.json',
+            'FL2VA/tokenizer/tokenizer_config.json',
+            'FL2VA/tokenizer/vocab.json',
+            'FL2VA/video_vae/config.json',
+            'FL2VA/video_vae/source/config.json',
+            'FL2VA/video_vae/source/model.safetensors',
+          ],
+        }],
+      },
       // Wan 2.2 through pinned MLX-Gen. Generation is cache-only: PortOS owns
       // the explicit base/adaptor downloads and uses the saved HF token.
       {

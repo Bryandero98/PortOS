@@ -17,6 +17,11 @@ const LTX2 = { id: 'ltx2-model', name: 'LTX-2.3', runtime: 'ltx2' };
 const MLX = { id: 'mlx-model', name: 'LTX distilled', runtime: 'mlx_video' };
 const WAN_T2V = { id: 'wan-t2v', name: 'Wan T2V', runtime: 'wan22', supportedModes: ['text'], frameStride: 4 };
 const WAN_TI2V = { id: 'wan-ti2v', name: 'Wan TI2V', runtime: 'wan22', supportedModes: ['text', 'image'], frameStride: 4 };
+const H3 = {
+  id: 'minimax-h3', name: 'MiniMax H3', runtime: 'minimax_h3', supportedModes: ['text'],
+  frameOptions: [124, 141, 158], fpsOptions: [24], defaultFrames: 124,
+  supportsNegativePrompt: false, supportsTiling: false, supportsDisableAudio: false,
+};
 const MODELS = [MLX, LTX2];
 const STATUS = { connected: true, defaultModel: MLX.id };
 
@@ -189,6 +194,42 @@ describe('useVideoGenForm', () => {
       result.current.setChunks(3);
     });
     expect(result.current.buildGeneratePayload().chunks).toBe('');
+  });
+
+  it('normalizes MiniMax H3 to its text-only temporal and sampler contract', async () => {
+    const { result } = render({
+      models: [MLX, H3],
+      status: { connected: true, defaultModel: MLX.id },
+    });
+    await waitFor(() => expect(result.current.modelId).toBe(MLX.id));
+    act(() => {
+      result.current.setPrompt('a fox watches the rain');
+      result.current.setNegativePrompt('blurry');
+      result.current.setNumFrames(129);
+      result.current.setFps(30);
+      result.current.setChunks(3);
+      result.current.setTiling('full');
+      result.current.setDisableAudio(true);
+      result.current.setNoMusic(true);
+      result.current.handleModelChange(H3.id);
+    });
+    await waitFor(() => expect(result.current.modelId).toBe(H3.id));
+    await waitFor(() => expect(result.current.numFrames).toBe(124));
+
+    expect(result.current.mode).toBe('text');
+    expect(result.current.chainingActive).toBe(false);
+    const payload = result.current.buildGeneratePayload();
+    expect(payload).toMatchObject({
+      modelId: H3.id,
+      mode: 'text',
+      negativePrompt: '',
+      numFrames: 124,
+      fps: 24,
+      chunks: '',
+      tiling: 'auto',
+      disableAudio: 'false',
+    });
+    expect(payload.prompt).toBe('a fox watches the rain');
   });
 
   describe('per-chunk prompt beats (#3695)', () => {

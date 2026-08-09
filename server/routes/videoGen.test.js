@@ -71,11 +71,17 @@ vi.mock('../services/videoGen/local.js', () => ({
   // hunyuan bring their own venv). Mirror the real export so the
   // "accepts BYOV-runtime when pythonPath missing" case passes and the
   // negative case (legacy mlx_video model) still 400s.
-  BYOV_VIDEO_RUNTIMES: new Set(['ltx2', 'wan22', 'hunyuan']),
+  BYOV_VIDEO_RUNTIMES: new Set(['ltx2', 'wan22', 'minimax_h3', 'hunyuan']),
   // The route's /status response now surfaces the BYOV runtime list so the
   // client can drop its hardcoded copy. Mirror the real shape — only the
   // `id` and a couple of UI-display fields are read by /status.
   BYOV_RUNTIME_INFO: {
+    minimax_h3: {
+      id: 'minimax_h3', label: 'MiniMax H3 MLX', venvPython: '/tmp/minimax-h3.py',
+      installEnvVar: 'INSTALL_MINIMAX_H3', pinEnvVar: 'MINIMAX_H3_PIN',
+      expectedRevision: 'fcd9e9b79a1d6018d91ac477c0968de1fa067e49',
+      repoUrl: 'x', repoDir: '/tmp',
+    },
     ltx2: { id: 'ltx2', label: 'LTX-2 MLX', venvPython: '/tmp/ltx2.py', installEnvVar: 'INSTALL_LTX2', repoUrl: 'x', repoDir: '/tmp' },
     wan22: {
       id: 'wan22', label: 'Wan 2.2 MLX', venvPython: '/tmp/wan22.py',
@@ -96,6 +102,23 @@ vi.mock('../services/videoGen/local.js', () => ({
     host: { chip: 'Apple M5 Max', os: 'Darwin 25.5.0', platform: 'darwin', arch: 'arm64', node: 'v22' },
     runtimes: { ltx2: { runtime: 'ltx2', versions: { mlx: '0.22.0' }, chip: 'Apple M5 Max' } },
   })),
+}));
+
+const sseDownload = vi.hoisted(() => ({
+  start: vi.fn(async ({ res }) => {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    res.end('data: {"type":"complete"}\n\n');
+  }),
+}));
+vi.mock('../lib/sseDownload.js', () => ({
+  startHfDownloadStream: sseDownload.start,
+  openSseStream: (res) => {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    return {
+      send: (event) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(event)}\n\n`); },
+      safeEnd: () => { if (!res.writableEnded) res.end(); },
+    };
+  },
 }));
 
 // Render submissions go through the mediaJobQueue. Mock its surface so the
@@ -340,15 +363,15 @@ describe('videoGen routes', () => {
       });
     });
 
-    it('offers an upgrade for a ready runtime on an outdated checkout', async () => {
+    it('offers an upgrade without importing an outdated checkout', async () => {
       videoGenService.isByovRuntimeInstalled.mockReturnValueOnce(true);
-      videoGenService.isByovRuntimeReady.mockResolvedValueOnce(true);
       videoGenService.isByovRuntimeCurrent.mockResolvedValueOnce(false);
       const r = await request(app).get('/api/video-gen/setup/runtime-status?runtime=wan22');
       expect(r.body).toMatchObject({
-        installed: false, binaryPresent: true, packagesReady: true,
+        installed: false, binaryPresent: true, packagesReady: false,
         current: false, upgradeAvailable: true,
       });
+      expect(videoGenService.isByovRuntimeReady).not.toHaveBeenCalled();
     });
   });
 
@@ -397,6 +420,85 @@ describe('videoGen routes', () => {
       const r = await request(app).get('/api/video-gen/models');
       expect(r.status).toBe(200);
       expect(r.body).toEqual([{ id: 'ltx2_unified', name: 'LTX-2 Unified', runtime: 'ltx2' }]);
+    });
+  });
+
+  describe('GET /models/:modelId/download — restricted terms', () => {
+    const h3CheckpointFiles = ['LICENSE', 'FL2VA/model_index.json', 'FL2VA/video_vae/source/model.safetensors'];
+    const h3 = {
+      id: 'minimax_h3_8bit',
+      name: 'MiniMax H3 MLX 8-bit',
+      runtime: 'minimax_h3',
+      repo: 'pipenetwork/MiniMax-H3-MLX-8bit',
+      revision: '3ac52081470b0488921c3ec3ba84a39097bf2361',
+      termsGate: { id: 'minimax-h3-community-license-2026-08-02' },
+      supportedModes: ['text'],
+      defaultFrames: 124,
+      frameOptions: [124, 141, 158],
+      fpsOptions: [24],
+      steps: 8,
+      guidance: 0,
+      samplerLocked: true,
+      requiredWeights: [{
+        repo: 'MiniMaxAI/MiniMax-H3',
+        revision: '6818f6c32d12b210915e44ad56a4228c2608f160',
+        files: h3CheckpointFiles,
+      }],
+    };
+
+    it('rejects a missing or stale acceptance key before opening a download stream', async () => {
+      videoGenService.listVideoModels
+        .mockReturnValueOnce([h3])
+        .mockReturnValueOnce([h3]);
+
+      const missing = await request(app).get('/api/video-gen/models/minimax_h3_8bit/download');
+      expect(missing.status).toBe(403);
+      expect(missing.body.code).toBe('VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED');
+
+      const stale = await request(app)
+        .get('/api/video-gen/models/minimax_h3_8bit/download?termsAcceptance=old-license');
+      expect(stale.status).toBe(403);
+      expect(stale.body.code).toBe('VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED');
+    });
+
+    it('downloads both exact snapshots after the exact acceptance key', async () => {
+      videoGenService.listVideoModels.mockReturnValueOnce([h3]);
+      const accepted = await request(app).get(
+        '/api/video-gen/models/minimax_h3_8bit/download?termsAcceptance=minimax-h3-community-license-2026-08-02',
+      );
+      expect(accepted.status).toBe(200);
+      expect(sseDownload.start).toHaveBeenCalledWith(expect.objectContaining({
+        repos: [
+          {
+            repo: 'pipenetwork/MiniMax-H3-MLX-8bit',
+            revision: '3ac52081470b0488921c3ec3ba84a39097bf2361',
+            only: [],
+          },
+          {
+            repo: 'MiniMaxAI/MiniMax-H3',
+            revision: '6818f6c32d12b210915e44ad56a4228c2608f160',
+            only: h3CheckpointFiles,
+          },
+        ],
+      }));
+    });
+
+    it('persists the exact acceptance key on the queued render', async () => {
+      videoGenService.listVideoModels.mockReturnValueOnce([h3]);
+      const accepted = await request(app).post('/api/video-gen/').send({
+        prompt: 'a fox watches the rain',
+        modelId: h3.id,
+        mode: 'text',
+        termsAcceptance: h3.termsGate.id,
+      });
+      expect(accepted.status).toBe(200);
+      expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'video',
+        params: expect.objectContaining({
+          modelId: h3.id,
+          termsAcceptance: h3.termsGate.id,
+        }),
+      }));
     });
   });
 

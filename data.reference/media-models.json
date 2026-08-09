@@ -101,6 +101,105 @@
         }
       },
       {
+        "id": "minimax_h3_8bit",
+        "name": "MiniMax H3 MLX 8-bit (joint video + audio, ~103 GB download, 128 GB RAM)",
+        "repo": "pipenetwork/MiniMax-H3-MLX-8bit",
+        "revision": "3ac52081470b0488921c3ec3ba84a39097bf2361",
+        "runtime": "minimax_h3",
+        "supportedModes": [
+          "text"
+        ],
+        "defaultFrames": 124,
+        "frameOptions": [
+          124,
+          141,
+          158,
+          175,
+          192,
+          209,
+          226,
+          243,
+          260,
+          277,
+          294,
+          311,
+          328,
+          345,
+          362
+        ],
+        "fpsOptions": [
+          24
+        ],
+        "memoryGb": 128,
+        "steps": 8,
+        "guidance": 0,
+        "samplerLocked": true,
+        "samplerNote": "MiniMax H3 is CFG-distilled; this profile locks the validated 8-point sigma schedule and does not use CFG.",
+        "supportsNegativePrompt": false,
+        "supportsTiling": false,
+        "supportsDisableAudio": false,
+        "requiredWeights": [
+          {
+            "repo": "MiniMaxAI/MiniMax-H3",
+            "revision": "6818f6c32d12b210915e44ad56a4228c2608f160",
+            "files": [
+              "LICENSE",
+              "FL2VA/model_index.json",
+              "FL2VA/audio_vae/config.json",
+              "FL2VA/audio_vae/metadata.json",
+              "FL2VA/audio_vae/model.safetensors",
+              "FL2VA/text_encoder/config.json",
+              "FL2VA/text_encoder/model-00001-of-00014.safetensors",
+              "FL2VA/text_encoder/model-00002-of-00014.safetensors",
+              "FL2VA/text_encoder/model-00003-of-00014.safetensors",
+              "FL2VA/text_encoder/model-00004-of-00014.safetensors",
+              "FL2VA/text_encoder/model-00005-of-00014.safetensors",
+              "FL2VA/text_encoder/model-00006-of-00014.safetensors",
+              "FL2VA/text_encoder/model-00007-of-00014.safetensors",
+              "FL2VA/text_encoder/model-00008-of-00014.safetensors",
+              "FL2VA/text_encoder/model-00009-of-00014.safetensors",
+              "FL2VA/text_encoder/model-00010-of-00014.safetensors",
+              "FL2VA/text_encoder/model-00011-of-00014.safetensors",
+              "FL2VA/text_encoder/model-00014-of-00014.safetensors",
+              "FL2VA/text_encoder/model.safetensors.index.json",
+              "FL2VA/tokenizer/merges.txt",
+              "FL2VA/tokenizer/tokenizer.json",
+              "FL2VA/tokenizer/tokenizer_config.json",
+              "FL2VA/tokenizer/vocab.json",
+              "FL2VA/video_vae/config.json",
+              "FL2VA/video_vae/source/config.json",
+              "FL2VA/video_vae/source/model.safetensors"
+            ]
+          }
+        ],
+        "disclosure": {
+          "modelCardUrl": "https://huggingface.co/pipenetwork/MiniMax-H3-MLX-8bit",
+          "weightsLicense": {
+            "name": "MiniMax H3 Community License",
+            "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/6818f6c32d12b210915e44ad56a4228c2608f160/LICENSE"
+          },
+          "runtimeLicense": {
+            "name": "Apache-2.0",
+            "url": "https://github.com/PipeNetwork/minimax-h3-mlx/blob/fcd9e9b79a1d6018d91ac477c0968de1fa067e49/LICENSE"
+          },
+          "estimatedDownloadGb": 103.3,
+          "reviewedAt": "2026-08-09"
+        },
+        "termsGate": {
+          "id": "minimax-h3-community-license-2026-08-02",
+          "title": "MiniMax H3 eligibility and terms",
+          "summary": "MiniMax grants use only in its Applicable Territory. The license excludes the European Union, United Kingdom, Republic of Korea, and United States of America.",
+          "acknowledgement": "I confirm I am in the Applicable Territory and agree to the MiniMax H3 Community License and its Acceptable Use Policy.",
+          "licenseUrl": "https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/6818f6c32d12b210915e44ad56a4228c2608f160/LICENSE",
+          "excludedTerritories": [
+            "European Union",
+            "United Kingdom",
+            "Republic of Korea",
+            "United States of America"
+          ]
+        }
+      },
+      {
         "id": "wan22_ti2v_5b",
         "name": "Wan 2.2 TI2V 5B Q8 (~17 GiB download, text + image)",
         "repo": "AbstractFramework/wan2.2-ti2v-5b-diffusers-8bit",

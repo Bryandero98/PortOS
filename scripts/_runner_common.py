@@ -19,6 +19,7 @@ walker that turns a buried `GatedRepoError` into a friendly link — belongs her
 """
 
 import json
+import importlib.util
 import logging
 import os
 import platform
@@ -34,6 +35,27 @@ from pathlib import Path
 # Lightweight helpers — heartbeat, install_hf_error_handler, write_sidecar —
 # stay usable from venvs that haven't pip-installed torch yet (e.g. the
 # Hunyuan venv during a partial bootstrap).
+
+
+def register_source_namespace(package_name: str, package_dir: "str | Path"):
+    """Register one source-only namespace package without exposing its parent.
+
+    Adding a third-party checkout root to ``sys.path`` lets unrelated files at
+    that root (for example an untracked ``numpy.py``) shadow packages from the
+    locked venv. A namespace package needs only its own directory in
+    ``__path__``; relative imports keep working while sibling checkout files are
+    never considered as top-level modules.
+    """
+    source_dir = Path(package_dir).absolute()
+    if not source_dir.is_dir():
+        raise RuntimeError(f"Source package directory is missing: {source_dir}")
+    spec = importlib.util.spec_from_loader(package_name, loader=None, is_package=True)
+    if spec is None:
+        raise RuntimeError(f"Could not register source package: {package_name}")
+    spec.submodule_search_locations = [str(source_dir)]
+    package = importlib.util.module_from_spec(spec)
+    sys.modules[package_name] = package
+    return package
 
 
 @contextmanager

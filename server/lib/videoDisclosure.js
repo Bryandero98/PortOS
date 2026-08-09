@@ -36,6 +36,11 @@ const TENCENT_HUNYUAN_WEIGHTS = {
   name: 'Tencent Hunyuan Community License',
   url: 'https://huggingface.co/tencent/HunyuanVideo/blob/main/LICENSE',
 };
+const MINIMAX_H3_LICENSE_URL = 'https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/6818f6c32d12b210915e44ad56a4228c2608f160/LICENSE';
+const MINIMAX_H3_WEIGHTS = {
+  name: 'MiniMax H3 Community License',
+  url: MINIMAX_H3_LICENSE_URL,
+};
 
 // Runtime (inference code) licenses, keyed by the registry's `runtime` value.
 // Distinct from the weights license — a permissively-licensed runtime does not
@@ -46,6 +51,10 @@ const RUNTIME_LICENSE = {
   mlx_video: { name: 'MIT', url: 'https://pypi.org/project/mlx-video-with-audio/' },
   ltx2: { name: 'MIT', url: 'https://github.com/dgrauet/ltx-2-mlx/blob/main/LICENSE' },
   wan22: { name: 'MIT', url: 'https://github.com/lpalbou/mlx-gen/blob/main/LICENSE' },
+  minimax_h3: {
+    name: 'Apache-2.0',
+    url: 'https://github.com/PipeNetwork/minimax-h3-mlx/blob/fcd9e9b79a1d6018d91ac477c0968de1fa067e49/LICENSE',
+  },
   hunyuan: {
     name: 'Tencent Hunyuan Community License',
     url: 'https://github.com/gaurav-nelson/HunyuanVideo_MLX/blob/main/LICENSE.txt',
@@ -75,6 +84,35 @@ const customLicense = (repo) => ({ name: 'Custom — see model card', url: hfMod
  * LoRA files.
  */
 export const VIDEO_MODEL_DISCLOSURES = Object.freeze({
+  minimax_h3_8bit: {
+    shippedRepo: 'pipenetwork/MiniMax-H3-MLX-8bit',
+    disclosure: {
+      modelCardUrl: hfModelCard('pipenetwork/MiniMax-H3-MLX-8bit'),
+      weightsLicense: MINIMAX_H3_WEIGHTS,
+      runtimeLicense: RUNTIME_LICENSE.minimax_h3,
+      // 35.302 GB quantized transformer + 67.996 GB selective upstream
+      // conditioner / video VAE / audio VAE files used by text-to-video.
+      estimatedDownloadGb: 103.3,
+      reviewedAt: VIDEO_DISCLOSURE_REVIEWED_AT,
+    },
+    // Unlike an informational disclosure, this is an execution gate. The
+    // upstream license grants rights solely in its Applicable Territory and
+    // makes use itself acceptance, so PortOS requires the exact versioned key
+    // on both download and generation requests.
+    termsGate: {
+      id: 'minimax-h3-community-license-2026-08-02',
+      title: 'MiniMax H3 eligibility and terms',
+      summary: 'MiniMax grants use only in its Applicable Territory. The license excludes the European Union, United Kingdom, Republic of Korea, and United States of America.',
+      acknowledgement: 'I confirm I am in the Applicable Territory and agree to the MiniMax H3 Community License and its Acceptable Use Policy.',
+      licenseUrl: MINIMAX_H3_LICENSE_URL,
+      excludedTerritories: [
+        'European Union',
+        'United Kingdom',
+        'Republic of Korea',
+        'United States of America',
+      ],
+    },
+  },
   ltx2_unified: {
     shippedRepo: 'notapalindrome/ltx2-mlx-av',
     disclosure: {
@@ -207,6 +245,10 @@ for (const spec of Object.values(VIDEO_MODEL_DISCLOSURES)) {
     if (value && typeof value === 'object') Object.freeze(value);
   }
   Object.freeze(spec.disclosure);
+  if (spec.termsGate) {
+    Object.freeze(spec.termsGate.excludedTerritories);
+    Object.freeze(spec.termsGate);
+  }
   Object.freeze(spec);
 }
 
@@ -224,12 +266,26 @@ export const applyVideoDisclosures = (list) => {
   if (!Array.isArray(list)) return list;
   return list.map((entry) => {
     if (!entry || typeof entry !== 'object' || typeof entry.id !== 'string') return entry;
-    if ('disclosure' in entry) return entry;
     const spec = VIDEO_MODEL_DISCLOSURES[entry.id];
     if (!spec) return entry;
     if (spec.shippedRepo !== null && entry.repo !== spec.shippedRepo) return entry;
-    return { ...entry, disclosure: spec.disclosure };
+    return {
+      ...entry,
+      ...(!('disclosure' in entry) ? { disclosure: spec.disclosure } : {}),
+      // A shipped restricted model cannot silently lose its required gate
+      // through an old/user-edited registry entry. Forked repos are excluded by
+      // the guard above because PortOS has not established their terms.
+      ...(spec.termsGate ? { termsGate: spec.termsGate } : {}),
+    };
   });
+};
+
+// Exact-key comparison keeps acceptance scoped to one reviewed license
+// version. A true-ish boolean from an old UI (or another model's acceptance)
+// cannot authorize a newly reviewed terms block by accident.
+export const isVideoModelTermsAccepted = (model, acceptanceKey) => {
+  const required = model?.termsGate?.id;
+  return typeof required !== 'string' || required.length === 0 || acceptanceKey === required;
 };
 
 /**

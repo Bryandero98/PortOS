@@ -6,7 +6,7 @@ import { AlertTriangle, RefreshCw } from 'lucide-react';
 // Repair affordance keyed on the cheap structural check the status poll already
 // ran. `message` is the case-specific copy; `onRepair`/`onDismiss` and the
 // button label/disabled/spinner state come from the caller.
-export default function ModelRepairBanner({ message, repairLabel, onRepair, onDismiss, disabled, repairing }) {
+export default function ModelRepairBanner({ message, repairLabel, onRepair, onDismiss, disabled, repairing, disabledReasonId }) {
   return (
     <div className="rounded-lg border border-port-error/40 bg-port-error/10 px-3 py-3 text-xs text-port-error flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
       <div className="flex items-start gap-2">
@@ -18,6 +18,7 @@ export default function ModelRepairBanner({ message, repairLabel, onRepair, onDi
           type="button"
           onClick={onRepair}
           disabled={disabled}
+          aria-describedby={disabled ? disabledReasonId : undefined}
           className="whitespace-nowrap inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-port-error text-white text-xs font-medium hover:bg-port-error/80 disabled:opacity-50"
         >
           <RefreshCw className={`w-3.5 h-3.5 ${repairing ? 'animate-spin' : ''}`} />

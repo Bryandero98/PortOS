@@ -10,6 +10,7 @@
 #   PORTOS_DATA    Path to PortOS data dir (default: ./data, resolved from $REPO_ROOT)
 #   INSTALL_VIDEO  '1' to also install mlx_video for LTX video generation (default: 1 on macOS, 0 on Windows)
 #   INSTALL_LTX2   '1' to also clone + uv-sync dgrauet/ltx-2-mlx at ~/.portos/ltx-2-mlx for the second-gen LTX-2.3 pipeline (proper keyframe interpolation, true video extend, audio-to-video). Default: 0; opt in with INSTALL_LTX2=1.
+#   INSTALL_MINIMAX_H3 '1' to install the pinned MiniMax H3 MLX runtime at ~/.portos/minimax-h3-mlx. Weights remain a separate explicit Video Gen download. Default: 0.
 #   INSTALL_FLUX2  '1' to also bootstrap a separate venv at ~/.portos/venv-flux2 for FLUX.2-klein (default: 1 on macOS, 0 elsewhere)
 #   INSTALL_MUSICGEN '1' to bootstrap a venv at ~/.portos/venv-musicgen + clone ml-explore/mlx-examples to ~/.portos/mlx-examples for local MusicGen (MLX) background-music generation (pipeline audio stage). Default: 0; opt in with INSTALL_MUSICGEN=1 (macOS / Apple Silicon only).
 #   MLX_EXAMPLES_PIN  commit SHA of ml-explore/mlx-examples to check out for MusicGen (default: main).
@@ -53,7 +54,7 @@ mkdir -p "${PORTOS_DATA}/videos"
 mkdir -p "${PORTOS_DATA}/video-thumbnails"
 
 # When the user only wants a specific BYOV runtime (set via INSTALL_LTX2 /
-# INSTALL_WAN22 / INSTALL_HUNYUAN — or one of the self-contained MUSIC venvs
+# INSTALL_WAN22 / INSTALL_HUNYUAN / INSTALL_MINIMAX_H3 — or one of the self-contained MUSIC venvs
 # INSTALL_MUSICGEN / INSTALL_AUDIOLDM2 / INSTALL_ACESTEP — typically from the
 # in-app installer), skip the mflux + legacy mlx_video preamble. Those
 # bring-your-own-venv runtimes are self-contained and don't depend on mflux;
@@ -62,8 +63,8 @@ mkdir -p "${PORTOS_DATA}/video-thumbnails"
 # install ever starts — which on Linux/CPU/CUDA blocks the advertised
 # `INSTALL_ACESTEP=1 bash …` path. A bare `bash setup-image-video.sh` still
 # installs mflux as before.
-ANY_BYOV="${INSTALL_LTX2:-0}${INSTALL_WAN22:-0}${INSTALL_HUNYUAN:-0}${INSTALL_MUSICGEN:-0}${INSTALL_AUDIOLDM2:-0}${INSTALL_ACESTEP:-0}${INSTALL_MUSCRIPTOR:-0}"
-if [[ "$ANY_BYOV" == "0000000" ]]; then
+ANY_BYOV="${INSTALL_LTX2:-0}${INSTALL_WAN22:-0}${INSTALL_HUNYUAN:-0}${INSTALL_MINIMAX_H3:-0}${INSTALL_MUSICGEN:-0}${INSTALL_AUDIOLDM2:-0}${INSTALL_ACESTEP:-0}${INSTALL_MUSCRIPTOR:-0}"
+if [[ "$ANY_BYOV" == "00000000" ]]; then
   DEFAULT_INSTALL_MFLUX=1
   DEFAULT_INSTALL_VIDEO=$(is_macos && echo 1 || echo 0)
   DEFAULT_INSTALL_FLUX2=$(is_macos && echo 1 || echo 0)
@@ -314,6 +315,65 @@ if [[ "$INSTALL_WAN22" == "1" ]]; then
     exit 1
   fi
   echo "✅ MLX-Gen Wan runtime ready: ${WAN22_PY}"
+fi
+
+INSTALL_MINIMAX_H3="${INSTALL_MINIMAX_H3:-0}"
+if [[ "$INSTALL_MINIMAX_H3" == "1" ]]; then
+  # PipeNetwork/minimax-h3-mlx is a source checkout rather than a wheel. Keep
+  # both its commit and the complete Python dependency graph immutable; an MLX
+  # or transformers drift on a ~100 GB model is expensive to diagnose after a
+  # long render. This block is reached only from the explicit runtime Install /
+  # Repair action (or the matching terminal opt-in), never from PortOS boot.
+  if ! is_macos || [[ "$(uname -m)" != "arm64" ]]; then
+    echo "❌ MiniMax H3 MLX requires an Apple-Silicon Mac." >&2
+    exit 1
+  fi
+  if ! have git; then
+    echo "❌ INSTALL_MINIMAX_H3=1 requires git." >&2
+    exit 1
+  fi
+
+  MINIMAX_H3_UV_TOOL_DIR="${HOME}/.portos/tools/uv-0.8.14"
+  MINIMAX_H3_UV="${MINIMAX_H3_UV_TOOL_DIR}/bin/uv"
+  if [[ ! -x "$MINIMAX_H3_UV" ]] || [[ "$("$MINIMAX_H3_UV" --version 2>/dev/null || true)" != "uv 0.8.14" ]]; then
+    echo "📦 Bootstrapping pinned uv 0.8.14 for MiniMax H3 MLX..."
+    "$PYTHON_BIN" -m venv --clear "$MINIMAX_H3_UV_TOOL_DIR"
+    "${MINIMAX_H3_UV_TOOL_DIR}/bin/python3" -m pip install --disable-pip-version-check "uv==0.8.14"
+  fi
+
+  MINIMAX_H3_PIN="${MINIMAX_H3_PIN:-fcd9e9b79a1d6018d91ac477c0968de1fa067e49}"
+  MINIMAX_H3_DIR="${HOME}/.portos/minimax-h3-mlx"
+  MINIMAX_H3_PY="${MINIMAX_H3_DIR}/.venv/bin/python3"
+  MINIMAX_H3_LOCK="${SCRIPT_DIR}/requirements-minimax-h3-mlx.lock.txt"
+  mkdir -p "${HOME}/.portos"
+  if [[ ! -d "${MINIMAX_H3_DIR}/.git" ]]; then
+    echo "📦 Cloning MiniMax H3 MLX..."
+    git clone https://github.com/PipeNetwork/minimax-h3-mlx.git "$MINIMAX_H3_DIR"
+  else
+    echo "📦 Fetching MiniMax H3 MLX updates..."
+    git -C "$MINIMAX_H3_DIR" fetch origin
+  fi
+  git_checkout_pin "$MINIMAX_H3_DIR" "$MINIMAX_H3_PIN"
+  # This runtime imports directly from the checkout, so HEAD alone is not an
+  # integrity guarantee: tracked edits or an untracked Python module inside
+  # the package would execute ahead of the pinned source. Install / Repair is
+  # an explicit user action, so restore and clean only the executable package
+  # (never the whole checkout, where large model/output folders may live).
+  git -C "$MINIMAX_H3_DIR" restore --source=HEAD --staged --worktree -- minimax_h3_mlx
+  git -C "$MINIMAX_H3_DIR" clean -fd -- minimax_h3_mlx
+  if [[ ! -x "$MINIMAX_H3_PY" ]]; then
+    echo "📦 Creating MiniMax H3 MLX venv with Python 3.11..."
+    "$MINIMAX_H3_UV" venv --python 3.11 "${MINIMAX_H3_DIR}/.venv"
+  fi
+  echo "📦 Syncing pinned MiniMax H3 MLX packages..."
+  "$MINIMAX_H3_UV" pip sync --python "$MINIMAX_H3_PY" "$MINIMAX_H3_LOCK"
+  if ! "$MINIMAX_H3_PY" "${SCRIPT_DIR}/minimax_h3_runtime_probe.py" "$MINIMAX_H3_DIR" 2>/dev/null; then
+    echo "❌ MiniMax H3 MLX synced but its pipeline import failed." >&2
+    echo "   Use Repair / Upgrade from the Video Gen runtime panel to retry." >&2
+    exit 1
+  fi
+  echo "✅ MiniMax H3 MLX runtime ready: ${MINIMAX_H3_PY}"
+  echo "   Weights remain uninstalled until you accept the model terms and choose Download in Video Gen."
 fi
 
 INSTALL_HUNYUAN="${INSTALL_HUNYUAN:-0}"
@@ -642,6 +702,10 @@ fi
 if [[ "$INSTALL_WAN22" == "1" ]]; then
   echo "   Wan 2.2:  ${HOME}/.portos/mlx-gen/.venv/bin/python3 (MLX-Gen @ ${WAN22_PIN:0:12})"
   echo "              Weights remain uninstalled until Download is chosen in Video Gen."
+fi
+if [[ "$INSTALL_MINIMAX_H3" == "1" ]]; then
+  echo "   MiniMax H3: ${HOME}/.portos/minimax-h3-mlx/.venv/bin/python3 (MLX port @ ${MINIMAX_H3_PIN:0:12})"
+  echo "                Weights remain uninstalled until accepted and downloaded in Video Gen."
 fi
 if [[ "$INSTALL_MUSICGEN" == "1" ]] && is_macos; then
   echo "   MusicGen:  ${HOME}/.portos/venv-musicgen/bin/python3 (separate venv, MLX runtime @ ${HOME}/.portos/mlx-examples/musicgen)"
