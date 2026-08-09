@@ -1269,6 +1269,27 @@ describe('arcPlanner — commitSeasonsWithRemap (season locks)', () => {
     expect(await issuesSvc.getIssue(i1.id).then((i) => i.seasonId)).toBe(dropped.id);
   });
 
+  // Regression: preserved records must survive `sanitizeSeasonList`'s
+  // first-N cap. Appending them meant a rewrite returning a full cap's worth of
+  // brand-new volumes pushed every existing volume past the cap, the sanitizer
+  // dropped them, and the remap then reassigned their issues — the exact
+  // deletion `preserveDroppedSeasons` exists to refuse.
+  it('keeps existing volumes when the rewrite returns a full cap of brand-new ones', async () => {
+    const s = await setupSeries();
+    const existing = await seasonsSvc.createSeason(s.id, { title: 'Must survive', episodeCountTarget: 3, number: 1 });
+    const i1 = await issuesSvc.createIssue({ seriesId: s.id, seasonId: existing.id, title: 'Pilot' });
+    const cur = await seriesSvc.getSeries(s.id);
+    // SEASONS_PER_SERIES_MAX brand-new volumes, none reusing the existing id.
+    const flood = Array.from({ length: 50 }, (_, i) => ({
+      id: `sea-new-${i}`, number: i + 10, title: `New ${i}`,
+      logline: '', synopsis: '', endingHook: '', episodeCountTarget: 3, themes: [],
+    }));
+    const out = await planner.commitSeasonsWithRemap(cur, { arc: DRAFT_ARC, seasons: flood }, { preserveDroppedSeasons: true });
+    expect(out.series.seasons.map((x) => x.id)).toContain(existing.id);
+    // Its issue was never reassigned to a surviving volume.
+    expect(await issuesSvc.getIssue(i1.id).then((i) => i.seasonId)).toBe(existing.id);
+  });
+
   it('still drops an unlocked season when the flag is off (default behavior unchanged)', async () => {
     const s = await setupSeries();
     const dropped = await seasonsSvc.createSeason(s.id, { title: 'Would vanish', episodeCountTarget: 3, number: 1 });

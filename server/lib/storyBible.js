@@ -850,25 +850,43 @@ function applyCanonExtras(raw) {
 }
 
 /**
- * PURE: does `sourceSeriesId` make this canon entry a given series' to edit?
+ * PURE: is this canon entry safe for a given series to bulk-unlock?
  *
  * Universe canon is shared by every series linked to that universe, so a
  * series-scoped bulk operation (the autopilot's unlock-for-run pre-pass, and
- * any future "reset what this series introduced" affordance) must not touch
- * another series' cast. Lives here, next to the sanitizer that owns and caps
- * `sourceSeriesId`, so the meaning of that field has one definition:
+ * any future "reset what this series introduced" affordance) must not remove
+ * protection from a record another series depends on. Lives here, next to the
+ * sanitizer that owns and caps `sourceSeriesId`, so the rule has one
+ * definition.
  *
- *   - `sourceSeriesId === seriesId`  → this series minted it. In scope.
- *   - `sourceSeriesId` names another series → out of scope, always.
- *   - no `sourceSeriesId` (universe-authored / legacy) → in scope ONLY when
- *     `soleSeries`, i.e. the caller has established that this series is the
- *     universe's only one, so there is no other association to damage.
+ * **`sourceSeriesId` is PROVENANCE, not exclusivity** — it records which series
+ * first minted the entry, and nothing stops a sibling series from referencing
+ * that same character/place/object (`getSeriesCanon` hands every linked series
+ * the whole universe canon). So "series A minted it" does NOT mean "only series
+ * A uses it", and treating it that way would let A's autopilot rewrite a
+ * character B's issues are built on. Proving actual exclusivity would need the
+ * prose cross-reference in `canonUsage.js` — O(series × issues × matchers) and
+ * still only a text-match heuristic, not a sound proof.
+ *
+ * So the rule is deliberately conservative, and `soleSeries` is REQUIRED:
+ *
+ *   - not `soleSeries` (a sibling series shares this universe) → out of scope,
+ *     always. Nothing is unlocked, whoever minted it.
+ *   - `soleSeries` + `sourceSeriesId` naming a DIFFERENT series → still out of
+ *     scope. A stale stamp pointing at an unlinked/deleted series is not a
+ *     licence to unfreeze.
+ *   - `soleSeries` + minted by this series, or unstamped (universe-authored /
+ *     legacy) → in scope. There is no other series left to damage.
+ *
+ * Note this only governs clearing the `locked` BIT. An already-unlocked canon
+ * entry stays editable by any series exactly as before — this never widens
+ * access, it only refuses to narrow protection.
  */
 export function isSeriesScopedCanonEntry(entry, { seriesId, soleSeries = false } = {}) {
   if (!entry || typeof entry !== 'object') return false;
+  if (soleSeries !== true) return false;
   const owner = typeof entry.sourceSeriesId === 'string' ? entry.sourceSeriesId : '';
-  if (owner) return owner === seriesId;
-  return soleSeries === true;
+  return !owner || owner === seriesId;
 }
 
 // Pipeline + writers-room shapes both use `physicalDescription`. Migration 019

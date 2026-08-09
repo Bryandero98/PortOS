@@ -327,6 +327,13 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
     return () => { canceled = true; };
   }, []);
 
+  // Disarm the unlock consent whenever the panel switches series. This
+  // component is reused across `seriesId` changes rather than remounted, so
+  // without this a box ticked for series A would still be armed — invisibly,
+  // since the Options popover is collapsed — when the user lands on series B
+  // and hits Run. Consent is per series AND per run; never inherited.
+  useEffect(() => { setUnlockForRun(false); }, [seriesId]);
+
   // Effective provider/model this run will use: per-run override → series.llm →
   // active provider (the client mirror of the server's resolveAutopilotLlm), so
   // the Options copy names what will actually run.
@@ -558,6 +565,12 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
     if (!res) return;
     setMode(res.mode || null);
     setShowOpts(false);
+    // Spend the unlock consent — it authorizes exactly the run just started.
+    // Without this it stays armed behind a now-collapsed Options popover while
+    // the Run button remains visible, so the next click would silently clear
+    // locks again with no checkbox on screen to reveal it. Re-arming is one
+    // deliberate tick, which is the whole contract of this option.
+    setUnlockForRun(false);
     // Track this run's id BEFORE enabling the stream so the terminal-frame
     // effect can reject a stale terminal frame from the previous run.
     activeRunIdRef.current = res.runId || null;
@@ -689,7 +702,7 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
           </label>
           {unlockForRun ? (
             <p className="text-[11px] text-gray-500">
-              Clears the arc freeze, arc-field locks, volume locks, issue stage locks, and the locks on the universe canon this series owns — so the run can actually apply the fixes its editorial passes find. Canon belonging to (or shared with) another series in the same universe stays locked, and the universe&apos;s own world fields are only cleared when this is its only series. Nothing is ever deleted: characters, objects and volumes can be rewritten in full but stay in the Universe and the Catalog. Locks are <em>not</em> restored when the run ends. Applies to this run only — never saved as a default, so a scheduled run can&apos;t inherit it.
+              Clears the arc freeze, arc-field locks, volume locks and issue stage locks — so the run can actually apply the fixes its editorial passes find. Universe canon is only unlocked when this is the universe&apos;s <em>only</em> series: once another series shares the universe, its cast and setting stay locked, because a character this series introduced may well be one the other series is built on. Nothing is ever deleted: characters, objects and volumes can be rewritten in full but stay in the Universe and the Catalog. Locks are <em>not</em> restored when the run ends. Applies to this run only — it is never saved as a default and the box clears itself after you launch, so a scheduled or repeat run can&apos;t inherit it.
             </p>
           ) : null}
           <div className="flex flex-wrap gap-4 pt-1">

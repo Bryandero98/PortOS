@@ -60,8 +60,14 @@ beforeEach(() => {
 });
 
 describe('unlockPass — series-scoped canon predicate', () => {
-  it('unlocks an entry this series minted', () => {
-    expect(isSeriesScopedCanonEntry(charEntry({ sourceSeriesId: 's1' }), { seriesId: 's1' })).toBe(true);
+  it('unlocks an entry this series minted, when it is the universe\'s only series', () => {
+    expect(isSeriesScopedCanonEntry(charEntry({ sourceSeriesId: 's1' }), { seriesId: 's1', soleSeries: true })).toBe(true);
+  });
+
+  // `sourceSeriesId` is PROVENANCE, not exclusivity — every linked series can
+  // reference any canon entry, so "s1 minted it" does not make it s1's alone.
+  it('refuses even an entry this series minted once a sibling series shares the universe', () => {
+    expect(isSeriesScopedCanonEntry(charEntry({ sourceSeriesId: 's1' }), { seriesId: 's1', soleSeries: false })).toBe(false);
   });
 
   it('refuses an entry another series minted, even when this series is the only one left linked', () => {
@@ -160,16 +166,75 @@ describe('unlockPass — end-to-end over the real series/issue services', () => 
     };
 
     const counts = await unlockSeriesForAutopilot(mine.id);
-    expect(counts.canon).toBe(2); // 'mine' + 'p1'
-    expect(counts.canonForeignKept).toBe(2); // 'theirs' + 'shared'
+    // A sibling series shares the universe, so NOTHING is unlocked — not even
+    // the entries this series minted. `sourceSeriesId` is provenance, not
+    // exclusivity: the sibling can be built on 'mine' just as easily.
+    expect(counts.canon).toBe(0);
+    expect(counts.canonForeignKept).toBe(4);
     const byId = Object.fromEntries(universe.characters.map((e) => [e.id, e]));
-    expect(byId.mine.locked).toBe(false);
+    expect(byId.mine.locked).toBe(true);
     expect(byId.theirs.locked).toBe(true);
     expect(byId.shared.locked).toBe(true);
-    expect(universe.places[0].locked).toBe(false);
+    expect(universe.places[0].locked).toBe(true);
     // Never destructive: every entry is still present in the universe.
     expect(universe.characters).toHaveLength(3);
     expect(universe.places).toHaveLength(1);
+  });
+
+  it('unlocks the canon this series minted once it is the universe\'s only series', async () => {
+    const mine = await buildSeries({ universeId: 'uni-solo' });
+    universe = {
+      id: 'uni-solo',
+      characters: [
+        charEntry({ id: 'mine', locked: true, sourceSeriesId: mine.id }),
+        // A stale stamp pointing at a series that is no longer linked is still
+        // not a licence to unfreeze — sole-series is necessary, not sufficient.
+        charEntry({ id: 'stale', locked: true, sourceSeriesId: 'ser-long-gone' }),
+      ],
+      places: [], objects: [],
+    };
+    const counts = await unlockSeriesForAutopilot(mine.id);
+    expect(counts).toMatchObject({ canon: 1, canonForeignKept: 1 });
+    const byId = Object.fromEntries(universe.characters.map((e) => [e.id, e]));
+    expect(byId.mine.locked).toBe(false);
+    expect(byId.stale.locked).toBe(true);
+  });
+
+  // Fails CLOSED: a listSeries() that throws must never read as "no siblings".
+  it('keeps universe locks frozen when the sole-series lookup fails', async () => {
+    const mine = await buildSeries({ universeId: 'uni-solo' });
+    universe = {
+      id: 'uni-solo',
+      characters: [charEntry({ id: 'mine', locked: true, sourceSeriesId: mine.id })],
+      places: [], objects: [],
+      locked: { logline: true },
+    };
+    const spy = vi.spyOn(seriesSvc, 'listSeries').mockRejectedValueOnce(new Error('db down'));
+    const counts = await unlockSeriesForAutopilot(mine.id);
+    spy.mockRestore();
+    expect(counts).toMatchObject({ canon: 0, worldFields: 0, worldFieldsKept: 1 });
+    expect(universe.characters[0].locked).toBe(true);
+    expect(universe.locked).toEqual({ logline: true });
+  });
+
+  // A rejecting scope must not make the report claim nothing was unlocked while
+  // another scope has already permanently cleared its locks.
+  it('reports the scopes that succeeded when another scope throws', async () => {
+    const s = await buildSeries({ universeId: 'uni-boom' });
+    await seriesSvc.updateSeries(s.id, { locked: { arc: true } });
+    universe = null; // getUniverse resolves null -> universe scope is a clean zero
+    const spy = vi.spyOn(issuesSvc, 'updateStagesWithLatest').mockRejectedValueOnce(new Error('stale issue'));
+    const issue = await issuesSvc.createIssue({ seriesId: s.id, title: 'I1' });
+    await issuesSvc.updateStage(issue.id, 'idea', { locked: true });
+    const counts = await unlockSeriesForAutopilot(s.id);
+    spy.mockRestore();
+    // The series record really was unlocked — say so, instead of reporting a
+    // blanket failure that would leave the run lying about its own state.
+    expect(counts.arc).toBe(1);
+    expect(counts.stages).toBe(0);
+    expect(counts.failures).toHaveLength(1);
+    expect(counts.failures[0]).toContain('issue stages');
+    expect((await seriesSvc.getSeries(s.id)).locked).toEqual({});
   });
 
   it('unlocks unowned canon when this series is the universe\'s only series', async () => {

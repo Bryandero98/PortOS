@@ -113,41 +113,47 @@ async function unlockIssueStages(seriesId, issues) {
 // different key sets on an SSE frame the client reads field by field.
 const NO_UNIVERSE_UNLOCKS = Object.freeze({ canon: 0, canonForeignKept: 0, worldFields: 0, worldFieldsKept: 0 });
 
-// Is this series the ONLY one linked to `universeId`? Decides whether records
-// with no per-series owner (unowned canon, the universe's world fields) are
-// safe to unlock. `listSeries()` loads every series in the install, so callers
-// gate it on there actually being an unowned locked record to decide about.
+// Is this series the ONLY one linked to `universeId`? EVERY universe-side
+// unlock is gated on this (see `isSeriesScopedCanonEntry`), so it decides
+// whether shared records get unfrozen — and it therefore FAILS CLOSED. A
+// `listSeries()` that throws on a storage/DB read error must never be read as
+// "no siblings found": `[]` would report sole-series and hand the pass
+// permission to clear locks on canon a sibling series depends on. Uncertain
+// linkage returns false — the run just keeps those locks, which is the
+// recoverable direction. `listSeries()` loads every series in the install, so
+// callers gate it on there actually being a locked record to decide about.
 async function isSoleSeriesOfUniverse(seriesId, universeId) {
-  const all = await listSeries().catch(() => []);
+  const all = await listSeries().catch((err) => {
+    console.log(`⚠️ autopilot unlock: could not list series to prove sole-universe ownership (${err.message}) — keeping universe-side locks`);
+    return null;
+  });
+  if (!Array.isArray(all)) return false;
   return !all.some((s) => s.id !== seriesId && s.universeId === universeId);
 }
 
-// Does the universe hold a locked canon entry whose fate depends on this series
-// being the universe's only one? Asks `isSeriesScopedCanonEntry` rather than
-// re-testing `sourceSeriesId` here, so the ownership rule keeps exactly one
-// definition (see storyBible.js).
-const hasSoleSeriesDependentCanon = (universe, seriesId) => BIBLE_KEYS.some((key) =>
-  (Array.isArray(universe?.[key]) ? universe[key] : []).some((e) => e?.locked === true
-    && !isSeriesScopedCanonEntry(e, { seriesId })
-    && isSeriesScopedCanonEntry(e, { seriesId, soleSeries: true })));
+// Does the universe hold ANY locked canon entry? Only then is the install-wide
+// sole-series read worth paying for — with no locked canon and no locked world
+// field there is nothing for `soleSeries` to decide.
+const hasLockedCanon = (universe) => BIBLE_KEYS.some((key) =>
+  (Array.isArray(universe?.[key]) ? universe[key] : []).some((e) => e?.locked === true));
 
 // Clear the locks on the universe-side records this series owns: its canon
 // entries, plus the universe's own world fields (logline / premise / styleNotes
-// / influence lists) when this series is the universe's only one. Those world
-// fields are worth covering because the foundation gate's world + craft fixes
-// report "every refinable world field is locked" and pause the run — exactly
-// the stall this option exists to remove.
+// / influence lists). Those world fields are worth covering because the
+// foundation gate's world + craft fixes report "every refinable world field is
+// locked" and pause the run — exactly the stall this option exists to remove.
 //
-// BOTH live on the universe record, so they go out as ONE write: a second
-// updateUniverse would re-read and re-sanitize the whole record and emit a
-// second peer-sync `recordUpdated` for one user action.
+// BOTH are gated on this series being the universe's only one, and both live on
+// the universe record, so they go out as ONE write: a second updateUniverse
+// would re-read and re-sanitize the whole record and emit a second peer-sync
+// `recordUpdated` for one user action.
 async function unlockUniverseFor(seriesId, universeId) {
   const universe = await getUniverse(universeId).catch(() => null);
   if (!universe) return NO_UNIVERSE_UNLOCKS;
   const worldLocked = Object.values(universe.locked || {}).filter((v) => v === true).length;
-  // One install-wide read at most, and only when an unowned record's fate
-  // actually depends on it.
-  const soleSeries = (worldLocked > 0 || hasSoleSeriesDependentCanon(universe, seriesId))
+  // One install-wide read at most, and only when a locked record's fate
+  // actually depends on the answer.
+  const soleSeries = (worldLocked > 0 || hasLockedCanon(universe))
     && await isSoleSeriesOfUniverse(seriesId, universeId);
   const canon = await setCanonLocksForSeries(universeId, seriesId, false, {
     soleSeries,
@@ -162,40 +168,64 @@ async function unlockUniverseFor(seriesId, universeId) {
 }
 
 /**
- * Run the unlock pass for a series. Returns the per-scope counts (also
- * broadcast as an `unlock:applied` SSE frame by the step handler). Idempotent
- * — a second run finds nothing locked and writes nothing.
+ * Run the unlock pass for a series. Returns the per-scope counts plus a
+ * `failures[]` of the scopes that threw (both ride the `unlock:applied` SSE
+ * frame). Idempotent — a second run finds nothing locked and writes nothing.
+ *
+ * The three scopes are SEPARATELY settled, not `Promise.all`-ed. They write to
+ * three independent stores, so one rejecting does NOT undo the two that already
+ * committed — and a rejection that propagated out of here would make the step
+ * handler report "locked records stay frozen" while some locks were in fact
+ * permanently cleared. The run would then continue with mixed protection and no
+ * frame naming what actually changed. Each scope reports its own outcome
+ * instead, so the report always matches the disk.
  */
 export async function unlockSeriesForAutopilot(seriesId) {
   const [series, issues] = await Promise.all([getSeries(seriesId), listIssues({ seriesId })]);
   // Three independent stores (series / issues / universe), so run them
   // concurrently rather than paying three sequential round-trips at the top of
   // every unlock-enabled run.
-  const [record, stages, universe] = await Promise.all([
+  const [record, stages, universe] = await Promise.allSettled([
     unlockSeriesRecord(series),
     unlockIssueStages(seriesId, issues),
     series.universeId
       ? unlockUniverseFor(seriesId, series.universeId)
       : Promise.resolve(NO_UNIVERSE_UNLOCKS),
   ]);
-  return { ...record, stages, ...universe };
+  const failures = [];
+  const settled = (result, scope, zero) => {
+    if (result.status === 'fulfilled') return result.value;
+    failures.push(`${scope} (${result.reason?.message || 'unknown error'})`);
+    return zero;
+  };
+  return {
+    ...settled(record, 'series record', { arc: 0, arcFields: 0, seasons: 0 }),
+    stages: settled(stages, 'issue stages', 0),
+    ...settled(universe, 'universe canon', NO_UNIVERSE_UNLOCKS),
+    failures,
+  };
 }
 
 /**
  * Autopilot step handler. Unlocks the series, marks the run state so the
  * resolver routes past this step, and reports what changed. Never pauses — an
  * unlock failure is not worth stopping a run over, but it IS surfaced as a note
- * so the user knows the locks are still in place.
+ * so the user knows which locks are still in place.
  */
 export async function runUnlockPass(seriesId, record) {
   record.runState.locksUnlocked = true;
   const counts = await unlockSeriesForAutopilot(seriesId).catch((err) => {
+    // Only the pre-read (series / issues) can land here — the three write
+    // scopes settle individually above — so nothing was cleared.
     broadcast(seriesId, { type: 'note', message: `Could not unlock series records: ${err.message} — locked records stay frozen for this run.` });
     console.log(`⚠️ autopilot: unlock pass failed for ${seriesId.slice(0, 12)}: ${err.message}`);
     return null;
   });
   if (!counts) return {};
   broadcast(seriesId, { type: 'unlock:applied', ...counts });
-  console.log(`🔓 autopilot unlock — series=${seriesId.slice(0, 12)} arc=${counts.arc} arcFields=${counts.arcFields} seasons=${counts.seasons} stages=${counts.stages} canon=${counts.canon} world=${counts.worldFields} foreignKept=${counts.canonForeignKept}`);
+  if (counts.failures.length) {
+    broadcast(seriesId, { type: 'note', message: `Unlock was partial — ${counts.failures.join('; ')} failed, so those records stay frozen for this run.` });
+  }
+  console.log(`🔓 autopilot unlock — series=${seriesId.slice(0, 12)} arc=${counts.arc} arcFields=${counts.arcFields} seasons=${counts.seasons} stages=${counts.stages} canon=${counts.canon} world=${counts.worldFields} foreignKept=${counts.canonForeignKept} failed=${counts.failures.length}`);
   return {};
 }

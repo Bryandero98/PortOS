@@ -591,14 +591,23 @@ export function mergeSeasonsWithLocks(currentSeasons, nextSeasons) {
 // Used by the autopilot's `unlockForRun` mode — once that pass clears the
 // per-season locks, nothing else stops an LLM-proposed arc from silently
 // deleting a volume, and unlocking for EDITING must not become a licence to
-// DELETE (see seriesAutopilot/unlockPass.js). Appended dropped seasons are
-// re-sorted by `number` in `sanitizeSeasonList` at the call site.
+// DELETE (see seriesAutopilot/unlockPass.js).
+//
+// The preserved records go FIRST, and that ordering is load-bearing rather than
+// cosmetic: `sanitizeSeasonList` caps the list at SEASONS_PER_SERIES_MAX by
+// keeping the first N it sees. Appending them would mean an LLM that returned a
+// full cap's worth of brand-new volumes silently pushed every existing volume
+// past the cap — the sanitizer would drop them and `commitSeasonsWithRemap`
+// would then treat them as deleted and reassign their issues, which is exactly
+// the deletion this helper exists to refuse. Existing records therefore win the
+// cap; the rewrite's surplus new volumes are what gets trimmed. Final display
+// order is unaffected — `sanitizeSeasonList` sorts by `number` at the end.
 export function preserveDroppedSeasonRecords(currentSeasons, nextSeasons) {
   if (!Array.isArray(nextSeasons)) return nextSeasons;
   if (!Array.isArray(currentSeasons)) return nextSeasons;
   const keptIds = new Set(nextSeasons.map((s) => s?.id).filter(Boolean));
   const dropped = currentSeasons.filter((s) => s?.id && !keptIds.has(s.id));
-  return dropped.length === 0 ? nextSeasons : [...nextSeasons, ...dropped];
+  return dropped.length === 0 ? nextSeasons : [...dropped, ...nextSeasons];
 }
 
 /**
