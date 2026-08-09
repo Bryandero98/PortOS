@@ -10,12 +10,13 @@
 
 import { homedir } from 'os';
 import { join, dirname, basename } from 'path';
-import { readFile, stat } from 'fs/promises';
+import { stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { spawn } from 'child_process';
 import { atomicWrite, safeJSONParse, readJSONFile, dataPath, ensureDir } from '../lib/fileUtils.js';
 import { bufferedSpawn } from '../lib/bufferedSpawn.js';
+import { ICLOUD_NOT_MATERIALIZED, isDatalessStats, readIfMaterialized } from '../lib/icloudFile.js';
 import { isPlainObject } from '../lib/objects.js';
 import { getSettings, settingsEvents } from './settings.js';
 
@@ -347,7 +348,23 @@ async function readStoreAtPathResult(path) {
   // closes the existsSync→readFile TOCTOU where iCloud offloads the file between
   // the check and the read. `readFile`'s ENOENT is the ONLY genuine "absent".
   let unreadable = false;
-  const raw = await withTransientRetry(() => readFile(path, 'utf-8')).catch((err) => {
+  // `readIfMaterialized` — NOT a bare `readFile`. On modern macOS an evicted
+  // (dataless) iCloud file does not fail with EAGAIN the way the retry logic
+  // below assumes; the read BLOCKS forever in the kernel and strands a libuv
+  // threadpool thread, and four of those take the entire server's filesystem
+  // access down with them (see server/lib/icloudFile.js). The guard screens with
+  // a `stat()` — which never materializes — and rejects with
+  // ICLOUD_NOT_MATERIALIZED instead of issuing the read, kicking a background
+  // `brctl download` so the next cycle succeeds.
+  const raw = await withTransientRetry(() => readIfMaterialized(path, { label: 'MortalLoom store' })).catch((err) => {
+    if (err.code === ICLOUD_NOT_MATERIALIZED) {
+      // Present but evicted — never a trustworthy empty. Same classification as
+      // the legacy `.icloud` placeholder case below, so a strict read reports
+      // `unavailable` and updateStore's guard refuses to seed over real data.
+      console.warn(`⚠️ MortalLoom store evicted from local storage; skipping read until iCloud materializes it: ${path}`);
+      unreadable = true;
+      return null;
+    }
     if (err.code === 'ENOENT') {
       // Genuinely absent — UNLESS a legacy `.MortalLoom.json.icloud` placeholder
       // shadows the real path, which means the store EXISTS but is offloaded under
@@ -666,7 +683,17 @@ export async function getStatus() {
   });
   if (!st && !statTransient) return missingResponse;
   let readEnoent = false;
-  const raw = st ? await withTransientRetry(() => readFile(path, 'utf-8')).catch((err) => {
+  // An evicted (dataless) store must NOT be read — the read would block forever
+  // and strand a libuv threadpool thread, taking the whole server's filesystem
+  // access down with it (see server/lib/icloudFile.js). Reuse the `stat` we
+  // already have rather than paying a second one. `size`/`mtime` stay accurate
+  // for a dataless file, so the UI still reports a real file with a null
+  // summary — the same "store unavailable" shape it already renders.
+  const evicted = Boolean(st) && isDatalessStats(st);
+  if (evicted) {
+    console.warn(`⚠️ MortalLoom store evicted from local storage; status summary unavailable: ${path}`);
+  }
+  const raw = st && !evicted ? await withTransientRetry(() => readIfMaterialized(path, { label: 'MortalLoom store' })).catch((err) => {
     if (err.code === 'ENOENT') { readEnoent = true; return null; }
     console.warn(`⚠️ MortalLoom status read unavailable (${err.code || err.errno || 'unknown'}): ${path}`);
     return null;

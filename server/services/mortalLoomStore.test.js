@@ -940,3 +940,85 @@ describe('initMortalLoomStore — brctl pinning', () => {
     }).not.toThrow();
   });
 });
+
+// =============================================================================
+// Evicted (dataless) iCloud store — #3704
+// =============================================================================
+//
+// Regression cover for the incident where a dataless MortalLoom.json blocked
+// four libuv threadpool threads in an uncancellable read(2) and took the entire
+// UI offline (express.static could no longer serve the client bundle). The fix
+// is in server/lib/icloudFile.js: screen with stat() and refuse the read.
+//
+// These tests use a REAL ubiquity-container path — the guard is deliberately
+// scoped to `/Library/Mobile Documents/` so it can't misfire on the ordinary
+// `/icloud/...` fixture path the rest of this suite uses.
+describe('evicted (dataless) iCloud store', () => {
+  const UBIQUITY_PATH = '/Users/example/Library/Mobile Documents/iCloud~net~example~App/Documents/MortalLoom.json';
+  // Dataless: real byte length, zero blocks allocated locally.
+  const DATALESS_STATS = { size: 503098, blocks: 0, mtime: new Date('2026-08-08T14:35:00Z') };
+  let platformSpy;
+
+  function fakeBrctlChild() {
+    const handlers = {};
+    return {
+      unref: vi.fn(),
+      on(event, cb) { handlers[event] = cb; return this; },
+      emit(event, ...args) { handlers[event]?.(...args); },
+    };
+  }
+
+  beforeEach(async () => {
+    platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin');
+    settings = { mortalloom: { enabled: true, path: UBIQUITY_PATH } };
+    statMock.mockResolvedValue(DATALESS_STATS);
+    spawnMock.mockReturnValue(fakeBrctlChild());
+    const icloud = await import('../lib/icloudFile.js');
+    icloud._resetICloudFileStateForTest();
+  });
+
+  afterEach(() => platformSpy.mockRestore());
+
+  it('never issues a readFile against the evicted store', async () => {
+    // THE regression assertion: pre-fix this called readFile and (on a real
+    // wedged iCloud) never returned, stranding a threadpool thread forever.
+    await store.readStore();
+    expect(readFileMock).not.toHaveBeenCalled();
+  });
+
+  it('reads as present-but-unreadable, never as a trustworthy empty', async () => {
+    // Classifying an evicted store as "absent" would let a strict read report a
+    // trustworthy 0 (and updateStore seed a fresh store on top of the user's
+    // real, merely-offloaded data). Present-but-unreadable throws instead.
+    await expect(store.mlArrayIfEnabled('goals', { strict: true }))
+      .rejects.toThrow(/unreadable for key: goals/);
+    // A non-strict read of the same state falls through to local data.
+    await expect(store.mlArrayIfEnabled('goals')).resolves.toBeNull();
+  });
+
+  it('kicks a background brctl download so the next read can succeed', async () => {
+    await store.readStore();
+    expect(spawnMock).toHaveBeenCalledWith(
+      'brctl',
+      ['download', UBIQUITY_PATH],
+      expect.objectContaining({ detached: true })
+    );
+  });
+
+  it('reports the file in getStatus with a null summary, without reading it', async () => {
+    const status = await store.getStatus();
+    expect(status.exists).toBe(true);
+    expect(status.size).toBe(503098);
+    expect(status.summary).toBeNull();
+    expect(readFileMock).not.toHaveBeenCalled();
+  });
+
+  it('reads normally once iCloud materializes the file', async () => {
+    statMock.mockResolvedValue({ size: 40, blocks: 8, mtime: new Date() });
+    readFileMock.mockResolvedValue(JSON.stringify({ goals: [{ id: 'A' }] }));
+
+    const result = await store.readStore();
+    expect(result).toEqual({ goals: [{ id: 'A' }] });
+    expect(readFileMock).toHaveBeenCalledWith(UBIQUITY_PATH, 'utf-8');
+  });
+});
