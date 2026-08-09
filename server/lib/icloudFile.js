@@ -207,7 +207,7 @@ export function _setDownloadDeadlineForTest(ms) { DOWNLOAD_DEADLINE_MS = ms; }
  * @param {object} [options]
  * @param {string} [options.label='iCloud file'] - Label for log lines.
  * @param {boolean} [options.retryAfterExit=true] - Dedupe policy. The read paths
- *   pass `true`: the request is tracked in the shared in-flight `Set` (deduped
+ *   pass `true`: the request is tracked in the shared in-flight map (deduped
  *   while a download runs, cleared on exit) so a later read can retry, and it
  *   counts against the concurrency cap. The boot/settings pin passes `false`: it
  *   owns a single-sticky-path dedupe at its call site (re-pin only when the
@@ -256,6 +256,20 @@ export function requestMaterialization(path, options = {}) {
   const release = () => {
     if (retryAfterExit && pendingDownloads.get(path) === child) pendingDownloads.delete(path);
   };
+  // Notify the caller's failure hook AT MOST once per child. `'error'` may be
+  // followed by `'exit'` (Node makes no guarantee either way), and the deadline
+  // handler below fires it too — a child that is SIGKILL'd but never reaped emits
+  // no `'exit'`, so without invoking it from the deadline an untracked (pin)
+  // caller's sticky dedupe would stay set forever and never re-pin. The once-guard
+  // means a stale child's late `'exit'` can't fire the hook a second time and
+  // clear a live replacement child's sticky path (both share the same `path`, so
+  // the hook's own path guard can't tell them apart).
+  let failureNotified = false;
+  const notifyFailure = () => {
+    if (failureNotified) return;
+    failureNotified = true;
+    onFailure?.();
+  };
   // Kill the child if it outlives its deadline, so a wedged `brctl` frees its slot
   // instead of holding it forever. `unref` so the timer itself never keeps the
   // process alive; the 'exit' handler below clears the slot once the kill lands.
@@ -264,12 +278,14 @@ export function requestMaterialization(path, options = {}) {
     // The child is detached (its own process group), so a bare kill would leave
     // any grandchildren behind — signal the group. `child.kill?.` because this
     // runs in an unref'd timer *outside* any request lifecycle: an uncaught throw
-    // here (e.g. the fallback firing against a child that has already been reaped
-    // and lost its `kill`) would crash the process with no `next(err)` to catch it.
+    // here would crash the process with no `next(err)` to catch it, and `child`
+    // may not be a real ChildProcess with a `kill` method (e.g. a test double).
     try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill?.('SIGKILL'); }
-    // A killed-but-unreaped child would strand the slot; drop it now so healing
-    // can resume even if 'exit' never fires.
+    // A killed-but-unreaped child would strand the slot AND (for an untracked pin)
+    // leave the sticky dedupe set forever; drop both now so healing can resume even
+    // if 'exit' never fires.
     release();
+    notifyFailure();
   }, DOWNLOAD_DEADLINE_MS);
   deadline.unref?.();
   const settle = () => { clearTimeout(deadline); release(); };
@@ -278,7 +294,7 @@ export function requestMaterialization(path, options = {}) {
   // dedupe entry for a different path.
   child.on('error', (err) => {
     settle();
-    onFailure?.();
+    notifyFailure();
     if (err.code === 'ENOENT') {
       if (claimBrctlMissingWarning()) {
         console.warn(`⚠️ brctl not found on PATH; ${label} materialization disabled`);
@@ -293,7 +309,7 @@ export function requestMaterialization(path, options = {}) {
       console.log(`📥 ${label} materialized from iCloud: ${path}`);
       return;
     }
-    onFailure?.();
+    notifyFailure();
     if (code !== null) {
       console.warn(`⚠️ brctl download exited ${code} for ${label}: ${path}`);
     } else {

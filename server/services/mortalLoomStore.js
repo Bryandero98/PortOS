@@ -107,7 +107,7 @@ let lastPinnedPath = null;
 // pin's distinct dedupe policy: a single sticky `lastPinnedPath` that persists
 // after a *successful* pin (one configured path at a time; re-pin only when the
 // path changes). `retryAfterExit: false` keeps the shared helper from tracking
-// the pin in its in-flight read-heal set. `onFailure` clears the sticky path so a
+// the pin in its in-flight read-heal map. `onFailure` clears the sticky path so a
 // failed / signal-killed pin can be retried on the next settings:updated — and
 // the captured `path` guard confines that clear to the pin's own path, so a stale
 // child's late failure can't null the cache for a path that has since moved on.
