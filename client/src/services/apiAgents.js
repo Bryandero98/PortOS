@@ -39,9 +39,10 @@ export const getAgentActivityStats = (agentId, days = 7) =>
 export const getCosStatus = () => request('/cos');
 export const startCos = (options = {}) => request('/cos/start', { method: 'POST', ...options });
 export const stopCos = (options = {}) => request('/cos/stop', { method: 'POST', ...options });
-export const pauseCos = (reason) => request('/cos/pause', {
+export const pauseCos = (reason, options = {}) => request('/cos/pause', {
   method: 'POST',
-  body: JSON.stringify({ reason })
+  body: JSON.stringify({ reason }),
+  ...options,
 });
 export const resumeCos = (options = {}) => request('/cos/resume', { method: 'POST', ...options });
 export const getCosConfig = (options) => request('/cos/config', options);
