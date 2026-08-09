@@ -930,6 +930,34 @@ describe('initMortalLoomStore — brctl pinning', () => {
     expect(spawnMock).toHaveBeenCalledTimes(2);
   });
 
+  it('a superseded pin for the SAME path does not clear the current pin (A → B → A)', async () => {
+    // Path alone can't tell two children for the same path apart: with an
+    // A → B → A settings churn, the FIRST A child is still in flight when the
+    // second A pin starts. A path-only guard would let the first A child's late
+    // failure clear the second A pin's sticky state, so the next settings:updated
+    // for A would wrongly spawn a duplicate. The per-attempt generation guard
+    // confines each failure's cache-clear to the pin that is still current.
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+
+    const childA1 = makeFakeChild();
+    const childB = makeFakeChild();
+    const childA2 = makeFakeChild();
+    spawnMock.mockReturnValueOnce(childA1).mockReturnValueOnce(childB).mockReturnValueOnce(childA2);
+    settings = { mortalloom: { enabled: true, path: ubiq('A.json') } };
+    await store.initMortalLoomStore();                                                                 // childA1 (gen 1)
+    settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: ubiq('B.json') } });  // childB  (gen 2)
+    settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: ubiq('A.json') } });  // childA2 (gen 3), sticky = A
+    expect(spawnMock).toHaveBeenCalledTimes(3);
+
+    // The FIRST A child now fails — it is superseded, so it must NOT clear the
+    // sticky path that belongs to the live second A pin.
+    childA1._emit('exit', 1, null);
+
+    // Re-emit A: still deduped by childA2's intact sticky, so no fourth spawn.
+    settingsEvents.emit('settings:updated', { mortalloom: { enabled: true, path: ubiq('A.json') } });
+    expect(spawnMock).toHaveBeenCalledTimes(3);
+  });
+
   it('tolerates non-string path in settings without throwing in the listener', async () => {
     // Regression: settings.json is shallow-merged and not schema-validated, so
     // mortalloom.path can land as a number / array / object. Calling .trim()

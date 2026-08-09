@@ -100,6 +100,13 @@ export function defaultStorePath() { return DEFAULT_ICLOUD_PATH; }
 // through to the retry path silently.
 
 let lastPinnedPath = null;
+// Monotonic pin-attempt counter. Each pin captures its own generation so a stale
+// child's late failure can be told apart from the CURRENT pin even when both share
+// the same path (an A → B → A settings churn re-pins A while A's first child is
+// still in flight). A path-only guard can't distinguish those two A children, so
+// the first one's late failure would wrongly clear the second's sticky state and
+// let the next event spawn a duplicate pin.
+let pinGeneration = 0;
 
 // The boot/settings-change pin. The spawn + detach/unref + error/exit handler
 // plumbing (and the shared once-per-process "brctl missing" warning) all live in
@@ -108,23 +115,25 @@ let lastPinnedPath = null;
 // after a *successful* pin (one configured path at a time; re-pin only when the
 // path changes). `retryAfterExit: false` keeps the shared helper from tracking
 // the pin in its in-flight read-heal map. `onFailure` clears the sticky path so a
-// failed / signal-killed pin can be retried on the next settings:updated — and
-// the captured `path` guard confines that clear to the pin's own path, so a stale
-// child's late failure can't null the cache for a path that has since moved on.
+// failed / signal-killed pin can be retried on the next settings:updated — gated
+// on the captured generation so only the CURRENT pin's own failure clears it (a
+// superseded pin's late failure is ignored).
 function pinAgainstEviction(path) {
   if (process.platform !== 'darwin') return;
   if (!path || lastPinnedPath === path) return;
   lastPinnedPath = path;
+  const myGeneration = ++pinGeneration;
+  const stillCurrent = () => pinGeneration === myGeneration;
   const spawned = requestMaterialization(path, {
     label: 'MortalLoom store',
     retryAfterExit: false,
-    onFailure: () => { if (lastPinnedPath === path) lastPinnedPath = null; },
+    onFailure: () => { if (stillCurrent()) lastPinnedPath = null; },
   });
   // The helper declined to spawn (a non-iCloud configured path, or a synchronous
   // spawn failure — the non-darwin case is already handled above). Clear the
   // sticky path so a corrected/healable path on the next settings:updated isn't
   // wrongly deduped as "already pinned".
-  if (!spawned && lastPinnedPath === path) lastPinnedPath = null;
+  if (!spawned && stillCurrent()) lastPinnedPath = null;
 }
 
 // === On-demand (blocking) materialization for the write path ===
@@ -198,6 +207,7 @@ export function _resetMortalLoomInitForTest() {
   listenerAttached = false;
   didInitialPin = false;
   lastPinnedPath = null;
+  pinGeneration = 0;
   // The once-per-process "brctl missing" flag now lives in icloudFile; tests that
   // need it cleared reset it via icloudFile._resetICloudFileStateForTest().
 }
