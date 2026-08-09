@@ -4,8 +4,9 @@
  * db-primary Postgres per docs/STORAGE.md: `privacy_orgs` (one row per
  * organization that has or had the user's PII) and `privacy_org_holdings`
  * (which vault records each org holds, with a per-holding status). Machine-
- * local: NO federation, NO tombstones (same deferred scope as the vault,
- * #2148) — deletes are hard DELETEs with cascading holdings cleanup.
+ * local: NO federation, NO tombstones — NEVER federated, by decision rather
+ * than deferral (ADR docs/decisions/2026-08-08-privacy-records-machine-local.md,
+ * #2148). Deletes are hard DELETEs with cascading holdings cleanup.
  *
  * Holdings responses join masked vault values ONLY — never plaintext. The
  * one decrypt path stays `revealValue()` in privacyVault.js; this service

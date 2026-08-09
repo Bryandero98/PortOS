@@ -5,7 +5,10 @@
  * (+ later BADBOOL / CA-registry) database of people-search brokers the
  * exposure-scan / opt-out engine works; `privacy_broker_cases` is the per-broker
  * ledger with a SERVICE-ENFORCED state machine. Machine-local — no federation,
- * no tombstones (same deferred scope as the vault, #2148).
+ * no tombstones. NEVER federated, by decision rather than deferral: ADR
+ * docs/decisions/2026-08-08-privacy-records-machine-local.md (#2148). The case
+ * ledger is additionally single-writer — two peers working the same broker
+ * would double-submit opt-outs against it.
  *
  * Boot policy (CLAUDE.md — no cold-bootstrap network/LLM): NOTHING here runs at
  * server boot. The curated seed is loaded LAZILY from

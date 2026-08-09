@@ -6,7 +6,10 @@ export const privacyDdl = [
     // Encrypted-at-rest identity facts. `value_enc` is AES-256-GCM ciphertext
     // (`v1:<iv>:<tag>:<ct>`, key from PRIVACY_VAULT_KEY — lib/vaultCrypto.js);
     // plaintext is NEVER stored, `masked_value` is the display form. Machine-
-    // local: no federation, no tombstones (deferred, #2148) — a delete is a
+    // local: no federation, no tombstones — NEVER federated by decision, not
+    // deferral (ADR docs/decisions/2026-08-08-privacy-records-machine-local.md,
+    // #2148); adding a sync cursor here trips
+    // services/sharing/privacyNeverFederates.test.js. A delete is a
     // hard DELETE. `use_for_scans` gates which facts the broker scan engine
     // may disclose (hard-false for ssn/passport/drivers_license/
     // financial_account — enforced app-side). Mirrors the privacy blocks in
@@ -44,8 +47,9 @@ export const privacyDdl = [
     // stance and per-org holdings linking to the exact vault records each org
     // holds. Data backbone for the change-of-address inventory (Phase 4) and
     // the "who has my PII" view. Machine-local: no federation, no tombstones
-    // (same deferred scope as the vault, #2148). Mirrors the privacy blocks
-    // in init-db.sql.
+    // — NEVER federated, same guarantee as the vault (ADR
+    // docs/decisions/2026-08-08-privacy-records-machine-local.md, #2148).
+    // Mirrors the privacy blocks in init-db.sql.
     `CREATE TABLE IF NOT EXISTS privacy_orgs (
       id UUID PRIMARY KEY,
       name TEXT NOT NULL,
@@ -85,8 +89,10 @@ export const privacyDdl = [
     // (field_verified/documented) are never clobbered by an auto refresh.
     // `cluster_parent` groups sibling brands under one suppression;
     // `disclosure_fields` caps what the engine may ever submit to that broker.
-    // Machine-local — no federation, no tombstones (same deferred scope as the
-    // vault, #2148). Mirrors the privacy blocks in init-db.sql.
+    // Machine-local — no federation, no tombstones; NEVER federated, same
+    // guarantee as the vault (ADR
+    // docs/decisions/2026-08-08-privacy-records-machine-local.md, #2148).
+    // Mirrors the privacy blocks in init-db.sql.
     `CREATE TABLE IF NOT EXISTS privacy_brokers (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -138,8 +144,10 @@ export const privacyDdl = [
     // is the NEW one (nullable for a removal-only change). Declaring an event
     // flips every `current` holding of the old record to `update_pending` (see
     // privacyChanges.js). Both FKs cascade so removing a vault record cleans up
-    // its change events. Machine-local — no federation, no tombstones (same
-    // deferred scope as the vault, #2148). Mirrors the block in init-db.sql.
+    // its change events. Machine-local — no federation, no tombstones; NEVER
+    // federated, same guarantee as the vault (ADR
+    // docs/decisions/2026-08-08-privacy-records-machine-local.md, #2148).
+    // Mirrors the block in init-db.sql.
     `CREATE TABLE IF NOT EXISTS privacy_change_events (
       id UUID PRIMARY KEY,
       vault_record_id UUID NOT NULL REFERENCES privacy_vault_records (id) ON DELETE CASCADE,

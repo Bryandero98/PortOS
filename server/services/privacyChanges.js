@@ -8,8 +8,9 @@
  * record flips to `update_pending`. The Changes tab then works that per-org
  * checklist to done (zero `update_pending`).
  *
- * Machine-local: NO federation, NO tombstones (same deferred scope as the
- * vault, #2148). Plaintext PII is NEVER stored here and NEVER logged — the
+ * Machine-local: NO federation, NO tombstones — NEVER federated, by decision
+ * rather than deferral (ADR
+ * docs/decisions/2026-08-08-privacy-records-machine-local.md, #2148). Plaintext PII is NEVER stored here and NEVER logged — the
  * inventory joins masked vault values only. The ONE place plaintext surfaces is
  * `draftUpdateEmail`, which decrypts the NEW value into an email draft the user
  * explicitly requested and must still approve before it sends (never auto-send

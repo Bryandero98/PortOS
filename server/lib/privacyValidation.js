@@ -102,7 +102,8 @@ export const privacyVaultIdParamsSchema = z.object({
 // TRUSTED ORGANIZATIONS REGISTRY SCHEMAS (issue #2141, epic #2138)
 // =============================================================================
 // Zod schemas for `privacy_orgs` / `privacy_org_holdings` — db-primary Postgres,
-// machine-local (same federation-deferred scope as the vault, #2148).
+// machine-local and NEVER federated (same guarantee as the vault — ADR
+// docs/decisions/2026-08-08-privacy-records-machine-local.md, #2148).
 
 export const PRIVACY_ORG_CATEGORIES = Object.freeze([
   'bank', 'utility', 'government', 'employer', 'subscription',
@@ -172,7 +173,8 @@ export const privacyOrgHoldingsSetSchema = z.object({
 // CHANGE-OF-ADDRESS EVENTS + INVENTORY SCHEMAS (issue #2143, epic #2138)
 // =============================================================================
 // Zod schemas for `privacy_change_events` — db-primary Postgres, machine-local
-// (same federation-deferred scope as the vault, #2148). Declaring a change flips
+// and NEVER federated (same guarantee as the vault — ADR
+// docs/decisions/2026-08-08-privacy-records-machine-local.md, #2148). Declaring a change flips
 // every `current` holding of the old vault record to `update_pending`; the
 // Changes tab then works that per-org checklist.
 
@@ -222,7 +224,8 @@ export const privacyChangeOrgParamsSchema = z.object({
 // DATA-BROKER DATABASE + CASE LEDGER SCHEMAS (issue #2144, epic #2138)
 // =============================================================================
 // Zod schemas for `privacy_brokers` / `privacy_broker_cases` — db-primary
-// Postgres, machine-local (same federation-deferred scope as the vault, #2148).
+// Postgres, machine-local and NEVER federated (same guarantee as the vault —
+// ADR docs/decisions/2026-08-08-privacy-records-machine-local.md, #2148).
 // The broker rows themselves are curated seed / auto-refresh, not user-created,
 // so there is no broker create/update input schema — only read filters and the
 // scan/refresh action bodies.
