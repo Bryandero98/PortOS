@@ -1006,7 +1006,7 @@ async function repairCraft(series, issues, finding, options) {
 // no-clobber) — then persist through updateUniverse (serialized write queue).
 // Mirrors storyBuilder.js's `universeAesthetic` step. Returns false when there's
 // no universe to refine.
-async function refineWorld(universeId, { providerId, model, finding = {} }) {
+async function refineWorld(universeId, { providerId, model, effort, finding = {} }) {
   if (!universeId) return { applied: false, reason: 'no linked universe' };
   const universe = await getUniverse(universeId).catch(() => null);
   if (!universe) return { applied: false, reason: 'universe not found' };
@@ -1020,6 +1020,7 @@ async function refineWorld(universeId, { providerId, model, finding = {} }) {
     foundationDirective: [finding.gap, finding.fix].filter(Boolean).join('\nRequested repair: '),
     providerId,
     model,
+    effort,
   });
   // Persist through the write-queue mutator against the FRESHEST record, and
   // defensively DROP any field the user has locked — expandWorldTemplate is

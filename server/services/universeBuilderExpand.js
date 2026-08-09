@@ -337,6 +337,7 @@ const normalizeCanonArray = (raw, kind) => {
  * @param {string} options.starterPrompt
  * @param {string} [options.providerId]   — optional override; falls back to active.
  * @param {string} [options.model]        — optional override; falls back to provider default.
+ * @param {string} [options.effort]       — optional reasoning-effort override for capable providers.
  */
 export async function expandWorldTemplate({
   starterPrompt,
@@ -353,6 +354,7 @@ export async function expandWorldTemplate({
   foundationDirective = '',
   providerId,
   model,
+  effort,
 } = {}) {
   if (!starterPrompt || !starterPrompt.trim()) {
     throw new Error("starterPrompt is required");
@@ -394,6 +396,7 @@ export async function expandWorldTemplate({
   const { text: raw, runId } = await runPromptThroughProvider({
     provider,
     model: selectedModel,
+    effort,
     prompt: fullPrompt,
     source: "universe-builder-expansion",
   });

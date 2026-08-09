@@ -567,10 +567,18 @@ describe('applyFoundationFix — dimension → owning-service routing table', ()
     universeBuilder.getUniverse.mockResolvedValue(uni);
     let writtenPatch = null;
     universeBuilder.updateUniverse.mockImplementation(async (id, m) => { writtenPatch = typeof m === 'function' ? m(uni) : m; return { id, ...(writtenPatch || {}) }; });
-    const r = await applyFoundationFix('ser-1', 'worldbuilding', { finding: { gap: 'costless magic', fix: 'make memory the price' } });
+    const r = await applyFoundationFix('ser-1', 'worldbuilding', {
+      finding: { gap: 'costless magic', fix: 'make memory the price' },
+      providerOverride: 'codex-tui',
+      modelOverride: 'gpt-5.6-sol',
+      effortOverride: 'ultra',
+    });
     expect(universeBuilderExpand.expandWorldTemplate).toHaveBeenCalledWith(expect.objectContaining({
       starterPrompt: 'U',
       foundationDirective: expect.stringContaining('costless magic'),
+      providerId: 'codex-tui',
+      model: 'gpt-5.6-sol',
+      effort: 'ultra',
     }));
     expect(writtenPatch).toMatchObject({ logline: 'L2', premise: 'P2', styleNotes: 'S2' });
     expect(r).toMatchObject({ dimension: 'worldbuilding', applied: true });
