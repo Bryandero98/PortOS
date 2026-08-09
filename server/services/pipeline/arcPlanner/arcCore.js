@@ -411,12 +411,19 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
   // brand-new entry (no `id`), otherwise preserve the existing `id` so child
   // issues still join their season cleanly. The sanitizer enforces the
   // canonical shape regardless.
-  const existingById = new Map((series.seasons || []).map((s) => [s.id, s]));
   const proposedSeasons = Array.isArray(content?.seasons) ? content.seasons : [];
+  // Resolve each proposal to an existing record BEFORE minting. The resolve
+  // prompt frequently returns a rewritten volume WITHOUT echoing its `id`;
+  // matching on id alone read that as a brand-new season and minted one. With
+  // `preserveDroppedSeasons` on (the autopilot's unlock-for-run mode) the
+  // original was then re-inserted alongside the mint — so every auto-resolve
+  // round ADDED a duplicate "Volume 1" instead of clearing a finding, and
+  // arc-verify could never converge. See the divergence pause on 2026-08-09.
+  const matchedExisting = matchProposedSeasons(series.seasons, proposedSeasons);
   // Track each entry's provenance (existing id vs freshly minted) so we can
   // remap orphaned child issues after sanitization.
-  const seasonEntries = proposedSeasons.map((raw) => {
-    const existing = raw?.id ? existingById.get(raw.id) : null;
+  const seasonEntries = proposedSeasons.map((raw, idx) => {
+    const existing = matchedExisting[idx];
     if (existing) {
       return {
         season: sanitizeSeason({
@@ -615,6 +622,176 @@ export function preserveDroppedSeasonRecords(currentSeasons, nextSeasons) {
   return dropped.length === 0 ? nextSeasons : [...dropped, ...nextSeasons];
 }
 
+// Normalized title comparison, shared by the two season matchers below.
+const normTitle = (s) => (typeof s === 'string' ? s.trim().toLowerCase() : '');
+
+/**
+ * Resolve each LLM-proposed season to the EXISTING season record it is a
+ * rewrite of, so a rewrite lands on that record instead of minting a sibling.
+ * Returns an array parallel to `proposedSeasons` holding the matched existing
+ * season (or `null` when the proposal is genuinely new).
+ *
+ * Match priority mirrors `buildSeasonRemap`, and runs as three ordered passes
+ * rather than one greedy sweep so a proposal that DOES carry an `id` always
+ * wins its own record: a same-titled sibling processed earlier must not claim
+ * it and push the id-carrying proposal into minting a duplicate.
+ *   1. explicit `id`
+ *   2. normalized title (the resolve prompt is told to preserve titles)
+ *   3. `number`, only when exactly one unclaimed existing season has it
+ *
+ * Deliberately NOT a positional fallback — unlike `buildSeasonRemap`'s 1↔1
+ * pass, a wrong guess here doesn't just misfile child issues, it overwrites a
+ * volume's prose with another volume's rewrite. Unmatched proposals mint, which
+ * is the recoverable outcome.
+ */
+export function matchProposedSeasons(existingSeasons, proposedSeasons) {
+  const existing = Array.isArray(existingSeasons) ? existingSeasons.filter((s) => s?.id) : [];
+  const proposed = Array.isArray(proposedSeasons) ? proposedSeasons : [];
+  const matched = new Array(proposed.length).fill(null);
+  if (existing.length === 0) return matched;
+  const byId = new Map(existing.map((s) => [s.id, s]));
+  const claimed = new Set();
+
+  const claim = (idx, season) => {
+    matched[idx] = season;
+    claimed.add(season.id);
+  };
+
+  // Pass 1 — explicit id.
+  proposed.forEach((raw, idx) => {
+    const hit = raw?.id ? byId.get(raw.id) : null;
+    if (hit && !claimed.has(hit.id)) claim(idx, hit);
+  });
+
+  // Pass 2 — normalized title.
+  proposed.forEach((raw, idx) => {
+    if (matched[idx]) return;
+    const title = normTitle(raw?.title);
+    if (!title) return;
+    const hit = existing.find((s) => normTitle(s.title) === title && !claimed.has(s.id));
+    if (hit) claim(idx, hit);
+  });
+
+  // Pass 3 — unambiguous `number`.
+  proposed.forEach((raw, idx) => {
+    if (matched[idx]) return;
+    if (!Number.isFinite(raw?.number)) return;
+    const hits = existing.filter((s) => s.number === raw.number && !claimed.has(s.id));
+    if (hits.length === 1) claim(idx, hits[0]);
+  });
+
+  return matched;
+}
+
+// Prose fields a collapse may back-fill onto the surviving record. Only ever
+// used to fill a field that is EMPTY on the survivor — never to overwrite.
+const SEASON_FILLABLE_FIELDS = ['logline', 'synopsis', 'endingHook'];
+
+// Rescue content that only exists on the records being absorbed, so collapsing
+// a duplicate can't silently delete the one revision that had a synopsis.
+function backfillSeasonGaps(survivor, group) {
+  // Newest first — if several duplicates could fill a gap, the latest rewrite
+  // is the one the user last saw.
+  const donors = group
+    .filter((s) => s.id !== survivor.id)
+    .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+  let next = survivor;
+  for (const key of SEASON_FILLABLE_FIELDS) {
+    if (next[key]) continue;
+    const donor = donors.find((d) => d[key]);
+    if (donor) next = { ...next, [key]: donor[key] };
+  }
+  if (!next.themes?.length) {
+    const donor = donors.find((d) => d.themes?.length);
+    if (donor) next = { ...next, themes: donor.themes };
+  }
+  if (!next.episodeCountTarget) {
+    const donor = donors.find((d) => d.episodeCountTarget);
+    if (donor) next = { ...next, episodeCountTarget: donor.episodeCountTarget };
+  }
+  return next;
+}
+
+/** True when two or more seasons in the list share a `number`. Pure. */
+export function hasDuplicateSeasonNumbers(seasons) {
+  if (!Array.isArray(seasons)) return false;
+  const seen = new Set();
+  for (const s of seasons) {
+    if (!s) continue;
+    if (seen.has(s.number)) return true;
+    seen.add(s.number);
+  }
+  return false;
+}
+
+/**
+ * Collapse seasons that share a `number` down to one record per number, and
+ * report which ids were absorbed so the caller can re-point their child issues.
+ * Returns `{ seasons, absorbed: Map<absorbedId, survivorId> }`.
+ *
+ * Two volumes numbered the same is never a state a user can act on — the Arc
+ * Canvas renders both, a volume export can't tell which is canonical, and
+ * arc-verify files it as a blocking finding every round. Before
+ * `matchProposedSeasons` existed, auto-resolve manufactured exactly this shape,
+ * so the collapse doubles as the self-heal for installs that already diverged:
+ * the next arc write repairs the record without a migration (the file-migration
+ * runner executes before the Postgres pool, and series are db-primary).
+ *
+ * Survivor preference — the record with the strongest claim to the child
+ * issues, so a collapse never strands episodes:
+ *   1. `locked` (the user froze it)
+ *   2. most child issues
+ *   3. oldest `createdAt` (the original, not the bug's mint)
+ *
+ * A group holding TWO OR MORE locked records is left intact: silently deleting
+ * a user-frozen volume is worse than the duplicate, and only a human can say
+ * which freeze was intended. Those groups keep warning every write, which is
+ * the correct nag.
+ */
+export function collapseDuplicateSeasonNumbers(seasons, issueCountBySeasonId = new Map()) {
+  const absorbed = new Map();
+  if (!Array.isArray(seasons)) return { seasons, absorbed };
+  const byNumber = new Map();
+  for (const s of seasons) {
+    if (!s) continue;
+    const group = byNumber.get(s.number);
+    if (group) group.push(s);
+    else byNumber.set(s.number, [s]);
+  }
+
+  const survivors = [];
+  for (const [number, group] of byNumber) {
+    if (group.length === 1) {
+      survivors.push(group[0]);
+      continue;
+    }
+    const lockedCount = group.filter((s) => s.locked === true).length;
+    if (lockedCount > 1) {
+      console.warn(
+        `⚠️ collapseDuplicateSeasonNumbers: volume ${number} has ${group.length} records including ${lockedCount} locked — left intact, unlock all but one to collapse`,
+      );
+      survivors.push(...group);
+      continue;
+    }
+    const episodes = (s) => issueCountBySeasonId.get(s.id) || 0;
+    const [survivor] = [...group].sort((a, b) => (
+      (b.locked === true ? 1 : 0) - (a.locked === true ? 1 : 0)
+      || episodes(b) - episodes(a)
+      || String(a.createdAt || '').localeCompare(String(b.createdAt || ''))
+    ));
+    survivors.push(backfillSeasonGaps(survivor, group));
+    for (const s of group) {
+      if (s.id !== survivor.id) absorbed.set(s.id, survivor.id);
+    }
+    console.warn(
+      `⚠️ collapseDuplicateSeasonNumbers: volume ${number} had ${group.length} records — kept ${survivor.id} (${episodes(survivor)} episode(s)), absorbed ${group.length - 1} into it`,
+    );
+  }
+  // Re-sort: `sanitizeSeasonList`'s number ordering is the contract consumers
+  // render straight from, and the group walk above emits in first-seen order.
+  return { seasons: survivors.sort((a, b) => (a.number || 0) - (b.number || 0)), absorbed };
+}
+
 /**
  * Persist a new `arc` + `seasons[]` onto a series, migrating any child issues
  * whose `seasonId` referenced a season that the new shape dropped or renamed.
@@ -654,19 +831,47 @@ export async function commitSeasonsWithRemap(currentSeries, { arc, seasons }, op
   // rewrites, and re-insert any locked seasons the LLM dropped. Re-sanitize
   // so the locked records merge with the new shape (sort by number, dedup).
   const lockMerged = mergeSeasonsWithLocks(latestSeries.seasons, seasons);
-  const mergedSeasons = sanitizeSeasonList(
+  let mergedSeasons = sanitizeSeasonList(
     options.preserveDroppedSeasons === true
       ? preserveDroppedSeasonRecords(latestSeries.seasons, lockMerged)
       : lockMerged,
   );
+
+  // One `listIssues` for the whole commit — the collapse below needs per-season
+  // episode counts and the reassign sweep needs the same list.
+  let allIssues = null;
+  const loadIssues = async () => {
+    if (allIssues === null) allIssues = await listIssues({ seriesId });
+    return allIssues;
+  };
+
+  // Self-heal duplicate volume numbers on the way through. `sanitizeSeasonList`
+  // dedupes by `id` only, so two records both numbered 1 survive it happily —
+  // and that shape is a blocking arc-verify finding no amount of LLM rewriting
+  // can clear. Absorbed ids are threaded into the remap below so their episodes
+  // follow the survivor instead of falling into the ungrouped bucket.
+  let absorbed = new Map();
+  if (hasDuplicateSeasonNumbers(mergedSeasons)) {
+    const counts = new Map();
+    for (const iss of await loadIssues()) {
+      if (iss.seasonId) counts.set(iss.seasonId, (counts.get(iss.seasonId) || 0) + 1);
+    }
+    ({ seasons: mergedSeasons, absorbed } = collapseDuplicateSeasonNumbers(mergedSeasons, counts));
+  }
+
   const newIds = new Set(mergedSeasons.map((s) => s.id));
   const droppedOldSeasons = (latestSeries.seasons || []).filter((s) => !newIds.has(s.id));
   const oldIds = new Set((latestSeries.seasons || []).map((s) => s.id));
   const newlyMintedSeasons = mergedSeasons.filter((s) => !oldIds.has(s.id));
   const remap = buildSeasonRemap(droppedOldSeasons, newlyMintedSeasons);
+  // An absorbed duplicate has a KNOWN survivor, which beats buildSeasonRemap's
+  // title/number inference — that pass only considers freshly-minted seasons as
+  // targets, so a duplicate absorbed into an existing record would otherwise
+  // map to null and orphan every episode under it.
+  for (const [absorbedId, survivorId] of absorbed) remap.set(absorbedId, survivorId);
   const droppedIdSet = new Set(droppedOldSeasons.map((s) => s.id));
   const reassignList = droppedIdSet.size
-    ? (await listIssues({ seriesId })).filter((iss) => droppedIdSet.has(iss.seasonId))
+    ? (await loadIssues()).filter((iss) => droppedIdSet.has(iss.seasonId))
     : [];
 
   // Mirrors `deleteSeason`'s bulk-reassign idiom — `skipRenumber` per call +
