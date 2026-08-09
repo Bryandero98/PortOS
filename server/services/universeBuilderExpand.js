@@ -40,7 +40,8 @@ import {
 } from "../lib/promptRunner.js";
 
 const LABEL_MAX = 80;
-const NARRATIVE_REPAIR_MAX_ATTEMPTS = 2;
+const NARRATIVE_REPAIR_MAX_ATTEMPTS = 3;
+const NARRATIVE_REPAIR_HEADROOM = [0.9, 0.8];
 
 // Bible/prompt fields the LLM sees as "current universe state" so re-expansion
 // stays consistent with prior refinements. Derived from LOCKABLE_FIELDS so a
@@ -272,6 +273,50 @@ const narrativeRepairViolations = (parsed) => [
   return value.length > max ? [`${key} exceeds ${max} characters (got ${value.length})`] : [];
 });
 
+const hasCompleteNarrativeCandidate = (candidate) => (
+  ['logline', 'premise', 'styleNotes'].every((key) => (
+    typeof candidate?.[key] === 'string' && candidate[key].trim()
+  ))
+);
+
+function buildNarrativeCompressionPrompt({ candidate, violations, compressionAttempt }) {
+  const headroom = NARRATIVE_REPAIR_HEADROOM[Math.min(
+    compressionAttempt - 1,
+    NARRATIVE_REPAIR_HEADROOM.length - 1,
+  )];
+  const targets = {
+    logline: Math.floor(LOGLINE_MAX * headroom),
+    premise: Math.floor(PREMISE_MAX * headroom),
+    styleNotes: Math.floor(STYLE_NOTES_MAX * headroom),
+  };
+  const source = Object.fromEntries(['logline', 'premise', 'styleNotes'].map((key) => [
+    key,
+    typeof candidate?.[key] === 'string' ? candidate[key].trim() : '',
+  ]));
+  return `You are a senior story-bible compression editor. Shorten the supplied candidate in place; do not rebuild the world from its original prompt.
+
+# Why this rewrite is required
+The candidate failed persistence validation: ${violations.join('; ')}.
+
+# Hard output contract with safety headroom
+Return one JSON object with exactly these string keys and no others:
+- logline: at most ${targets.logline} characters.
+- premise: at most ${targets.premise} characters.
+- styleNotes: at most ${targets.styleNotes} characters.
+
+The application rejects the entire response if any field exceeds its target. Aim comfortably below each target and silently count before answering.
+
+# Compression priorities
+- Preserve proper nouns, character identities and roles, causal rules, hard limits, costs, failure modes, jurisdictions, and distinct site-specific operations.
+- Preserve the setting's conflict, stakes, tone, and every detail that makes a later plot choice possible or constrained.
+- Remove repetition, ornamental restatement, redundant examples, and throat-clearing first. Combine parallel rules into precise sentences.
+- Do not replace concrete mechanics with vague summary. Do not invent new lore. Do not cut off a sentence, paragraph, rule, or list item.
+- Return only valid JSON. No markdown or commentary.
+
+# Candidate to compress
+${JSON.stringify(source, null, 2)}`;
+}
+
 const normalizeCategories = (raw) => {
   // The LLM occasionally returns variations as a flat array of strings or
   // skips the wrapping `{ variations: [...] }` object. Coerce both shapes
@@ -438,22 +483,31 @@ export async function expandWorldTemplate({
   // stdout at data/runs/<runId>/output.txt. Narrative repairs are prose canon:
   // silently slicing one at the persistence boundary can leave a sentence and
   // an operating rule half-written while still reporting success. Validate the
-  // model's raw scalar lengths before normalization and spend one focused retry
-  // that asks it to rewrite/compress within the already-declared limits.
+  // model's raw scalar lengths before normalization. An over-limit retry
+  // receives the rejected draft itself and a progressively smaller headroom
+  // target; asking the original worldbuilding prompt to start over just
+  // reproduces the same long answer without converging. A missing-field retry
+  // still receives the source task because there is no complete draft to edit.
   let raw;
   let runId;
   let parsed;
   let narrativeViolations = [];
   const maxAttempts = narrativeOnly ? NARRATIVE_REPAIR_MAX_ATTEMPTS : 1;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const retrySection = narrativeViolations.length > 0
-      ? `\n\n# Storage-contract retry\nThe previous proposal could not be persisted intact: ${narrativeViolations.join('; ')}. Rewrite and compress the complete JSON fields within their declared limits. Do not cut a sentence, paragraph, rule, or list item off at the boundary.`
-      : '';
+    const prompt = narrativeViolations.length > 0
+      ? hasCompleteNarrativeCandidate(parsed)
+        ? buildNarrativeCompressionPrompt({
+          candidate: parsed,
+          violations: narrativeViolations,
+          compressionAttempt: attempt,
+        })
+        : `${fullPrompt}\n\n# Storage-contract retry\nThe previous response was incomplete: ${narrativeViolations.join('; ')}. Return a complete replacement with every required field; do not omit or leave any field blank.`
+      : fullPrompt;
     const result = await runPromptThroughProvider({
       provider,
       model: selectedModel,
       effort,
-      prompt: `${fullPrompt}${retrySection}`,
+      prompt,
       source: narrativeOnly ? "universe-builder-narrative-repair" : "universe-builder-expansion",
     });
     raw = result.text;
@@ -472,7 +526,10 @@ export async function expandWorldTemplate({
     narrativeViolations = narrativeRepairViolations(parsed);
     if (narrativeViolations.length === 0) break;
     if (attempt + 1 < maxAttempts) {
-      console.warn(`⚠️ Universe Builder narrative repair exceeded its storage contract — retrying once: ${narrativeViolations.join('; ')}`);
+      const retryMode = hasCompleteNarrativeCandidate(parsed)
+        ? 'compressing prior draft'
+        : 'regenerating incomplete response';
+      console.warn(`⚠️ Universe Builder narrative repair exceeded its storage contract — ${retryMode} (attempt ${attempt + 2}/${maxAttempts}): ${narrativeViolations.join('; ')}`);
     }
   }
   if (narrativeViolations.length > 0) {

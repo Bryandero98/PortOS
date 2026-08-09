@@ -74,7 +74,7 @@ describe('expandWorldTemplate reasoning effort', () => {
     expect(call.prompt).not.toContain('world_pitch_poster');
   });
 
-  it('retries an oversized narrative repair before persistence can clip it mid-sentence', async () => {
+  it('compresses the actual oversized narrative draft before persistence can clip it', async () => {
     runPromptThroughProviderMock
       .mockResolvedValueOnce({
         text: JSON.stringify({
@@ -104,8 +104,86 @@ describe('expandWorldTemplate reasoning effort', () => {
 
     expect(runPromptThroughProviderMock).toHaveBeenCalledTimes(2);
     expect(runPromptThroughProviderMock.mock.calls[1][0].prompt).toContain('premise exceeds 4000 characters (got 4001)');
-    expect(runPromptThroughProviderMock.mock.calls[1][0].prompt).toContain('Do not cut a sentence');
+    expect(runPromptThroughProviderMock.mock.calls[1][0].prompt).toContain(`"premise": "${'x'.repeat(200)}`);
+    expect(runPromptThroughProviderMock.mock.calls[1][0].prompt).toContain('premise: at most 3600 characters');
+    expect(runPromptThroughProviderMock.mock.calls[1][0].prompt).toContain('Do not cut off a sentence');
+    expect(runPromptThroughProviderMock.mock.calls[1][0].prompt).not.toContain('# Starter idea');
     expect(result.premise).toBe('Trade, authority, and travel now end in a complete rule.');
     expect(result.llm).toMatchObject({ provider: 'codex-tui', model: 'gpt-5.6-sol' });
+  });
+
+  it('tightens headroom while carrying the latest rejected draft into a final compression pass', async () => {
+    runPromptThroughProviderMock
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          logline: 'A repaired world.',
+          premise: 'a'.repeat(5_000),
+          styleNotes: 'Specific and tactile.',
+        }),
+        runId: 'run-oversized',
+      })
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          logline: 'A repaired world.',
+          premise: 'b'.repeat(4_200),
+          styleNotes: 'Specific and tactile.',
+        }),
+        runId: 'run-still-oversized',
+      })
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          logline: 'A repaired world.',
+          premise: 'A complete, compact operating rule.',
+          styleNotes: 'Specific and tactile.',
+        }),
+        runId: 'run-bounded',
+      });
+
+    const result = await expandWorldTemplate({
+      starterPrompt: 'Example Universe',
+      foundationDirective: 'Define ordinary governance.',
+      providerId: 'codex-tui',
+      model: 'gpt-5.6-sol',
+      effort: 'ultra',
+      narrativeOnly: true,
+    });
+
+    expect(runPromptThroughProviderMock).toHaveBeenCalledTimes(3);
+    expect(runPromptThroughProviderMock.mock.calls[2][0].prompt).toContain(`"premise": "${'b'.repeat(200)}`);
+    expect(runPromptThroughProviderMock.mock.calls[2][0].prompt).toContain('premise: at most 3200 characters');
+    expect(runPromptThroughProviderMock.mock.calls[2][0].prompt).not.toContain(`"premise": "${'a'.repeat(200)}`);
+    expect(result.premise).toBe('A complete, compact operating rule.');
+  });
+
+  it('retries the source task when there is no complete draft to compress', async () => {
+    runPromptThroughProviderMock
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          premise: 'A world without its required pitch.',
+          styleNotes: 'Specific and tactile.',
+        }),
+        runId: 'run-missing-field',
+      })
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          logline: 'A repaired world.',
+          premise: 'A complete operating rule.',
+          styleNotes: 'Specific and tactile.',
+        }),
+        runId: 'run-complete',
+      });
+
+    await expandWorldTemplate({
+      starterPrompt: 'Example Universe',
+      foundationDirective: 'Define ordinary governance.',
+      providerId: 'codex-tui',
+      model: 'gpt-5.6-sol',
+      effort: 'ultra',
+      narrativeOnly: true,
+    });
+
+    expect(runPromptThroughProviderMock.mock.calls[1][0].prompt).toContain('# Starter idea');
+    expect(runPromptThroughProviderMock.mock.calls[1][0].prompt).toContain('logline is missing');
+    expect(runPromptThroughProviderMock.mock.calls[1][0].prompt).toContain('Return a complete replacement');
   });
 });
