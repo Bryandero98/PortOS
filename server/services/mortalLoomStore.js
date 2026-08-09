@@ -152,13 +152,31 @@ function icloudPlaceholderPath(path) {
 
 // Unlike the fire-and-forget pinAgainstEviction() at boot, the write path needs
 // to KNOW an evicted file is materialized before deciding whether refusing to
-// overwrite is warranted. `brctl download <path>` materializes a dataless
-// (Optimize-Mac-Storage-evicted) file or an `.icloud` placeholder and exits 0
-// once the bytes are local; we await that exit (bounded by a timeout) and let
-// the caller re-read. Resolves `true` only on a clean exit-0 — non-darwin,
-// missing brctl, spawn error, timeout, and non-zero exit all resolve `false`,
-// every one of which falls through to the caller's existing refuse-to-overwrite
-// guard. So this can only ever recover the situation, never worsen it.
+// overwrite is warranted. `brctl download <path>` asks iCloud to materialize a
+// dataless (Optimize-Mac-Storage-evicted) file or an `.icloud` placeholder.
+//
+// CRITICAL: exit 0 means the download was ACCEPTED/QUEUED, NOT that the bytes are
+// local. brctl can return 0 before materialization completes, and returns 0 even
+// when the sync layer ultimately can't fetch the file (device offline / iCloud
+// wedged); under a wedged iCloud it can instead hang, which is why we await it
+// with a timeout below. So a `true` here is NOT proof the file is readable. What
+// keeps the caller's subsequent re-read safe is `readStoreAtPathResult`: it calls
+// `readIfMaterialized`, which REJECTS rather than issuing a blocking read for a
+// file it can't safely read — a still-dataless file rejects with
+// ICLOUD_NOT_MATERIALIZED (its `Stats.blocks` screen); an absent path shadowed by
+// a legacy `.icloud` placeholder surfaces as ENOENT — and `readStoreAtPathResult`
+// catches both and yields `store: null` (which `readStoreAtPath` unwraps). Either
+// way the store stays null and the caller refuses to overwrite, so a false-
+// positive `true` from here can't truncate data. (It does not eliminate the
+// bounded eviction race documented in `readIfMaterialized`, which can still
+// strand one threadpool slot per path — see server/lib/icloudFile.js — but this
+// path never makes that worse.)
+//
+// We await brctl's exit (bounded by a timeout) and let the caller re-read.
+// Resolves `true` only on a clean exit-0 — non-darwin, missing brctl, spawn
+// error, timeout, and non-zero exit all resolve `false`, every one of which
+// falls through to the caller's existing refuse-to-overwrite guard. So this can
+// only ever recover the situation, never worsen it.
 //
 // Exposed (not const) so tests can drop the timeout without waiting on it.
 export let MATERIALIZE_TIMEOUT_MS = 20000;
@@ -430,10 +448,19 @@ export async function updateStore(mutator) {
     ? !isPlainObject(store)
     : existsSync(icloudPlaceholderPath(path));
   if (unsafeToSeed) {
+    // `materializeNow` resolving `true` only means brctl ACCEPTED the download
+    // request (exit 0), NOT that the bytes are local — see its docblock. Do NOT
+    // remove the re-read's screening on the strength of that `true`: `readStoreAtPath`
+    // → `readStoreAtPathResult` calls `readIfMaterialized`, which REJECTS instead of
+    // issuing a blocking read for a file it can't safely read — a still-dataless file
+    // rejects on the `stat()` re-screen, an absent-but-placeholder-shadowed path
+    // surfaces as ENOENT — and `readStoreAtPathResult` catches both and returns
+    // `store: null`. Either way store stays null and we refuse to overwrite rather
+    // than reading blindly (which is what would risk stranding a threadpool slot).
     const materialized = await materializeNow(path);
     if (materialized) {
       store = await readStoreAtPath(path);
-      console.log(`📥 MortalLoom store materialized from iCloud before write: ${path}`);
+      console.log(`📥 MortalLoom store iCloud download requested before write: ${path}`);
     }
     if (!isPlainObject(store)) {
       // Log the resolved path server-side for diagnostics; keep the thrown
