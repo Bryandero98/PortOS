@@ -269,8 +269,11 @@ export async function runCharacterFoundation(seriesId, record) {
 // content-hash-cached, so an unchanged foundation short-circuits (no LLM) and
 // can't loop. Bounded; pauses with the residual per-dimension findings on
 // non-convergence. Each judge + each fix bills one cos action, budget-gated like
-// the arc loop. The improve-loop convergence is tracked on the weighted score
-// (higher = better), so divergence = the score failing to reach a NEW HIGH.
+// the arc loop. Convergence is tracked PER TARGET DIMENSION: foundation work can
+// legitimately expose a different weak layer (a new antagonist can reveal a
+// structure gap; a repaired structure can expose missing craft). Comparing all
+// of those owned repairs to one global weighted-score high-water mark made a
+// newly surfaced dimension look like divergence before its editor ran once.
 export async function runFoundationGate(seriesId, record) {
   const maxRounds = Number.isInteger(record.options.maxFoundationRounds)
     ? record.options.maxFoundationRounds
@@ -289,10 +292,12 @@ export async function runFoundationGate(seriesId, record) {
   const model = record.options.modelOverride;
   const effort = record.options.effortOverride;
 
-  // Convergence tracker keyed on the weighted score (higher is better) — invert
-  // to a "distance below 10" so trackConvergence's fewer-is-better minimum logic
-  // applies unchanged (a new low distance = a new high score = progress).
-  let convergence = { best: null, sinceBest: 0 };
+  // Each owning editor gets its own convergence history. Invert the target's
+  // raw score to a distance below 10 so trackConvergence's fewer-is-better
+  // minimum logic applies unchanged. A target seen for the first time always
+  // receives at least one repair attempt; repeated no-improvement in that same
+  // dimension still trips the bounded divergence guard.
+  const convergenceByDimension = new Map();
   let changed = false;
   for (let round = 1; round <= maxRounds; round += 1) {
     if (record.cancelRequested) return { canceled: true };
@@ -337,13 +342,16 @@ export async function runFoundationGate(seriesId, record) {
         residual: residualFindings(snap.dimensions),
       };
     }
-    // Divergence guard (#1571): bail when fixes stop improving the score.
-    const floorDistance = gate.failingDimensions.reduce(
-      (total, dimension) => total + gate.dimensionFloor - (snap.dimensions?.[dimension]?.score || 0),
-      0,
+    // Divergence guard (#1571): bail only when repeated repairs fail to improve
+    // THEIR OWN target. A global weighted high-water mark is not comparable
+    // across different targets: improving character can make a previously
+    // latent structure or craft gap judgeable and lower the aggregate score.
+    const targetConvergence = trackConvergence(
+      convergenceByDimension.get(weak.dimension) || { best: null, sinceBest: 0 },
+      10 - weak.score,
     );
-    convergence = trackConvergence(convergence, 10 - score + floorDistance);
-    if (convergence.sinceBest >= DIVERGENCE_PATIENCE) {
+    convergenceByDimension.set(weak.dimension, targetConvergence);
+    if (targetConvergence.sinceBest >= DIVERGENCE_PATIENCE) {
       const floorReason = gate.failingDimensions.length > 0
         ? `Foundation quality stopped improving with ${gate.failingDimensions.join(', ')} below the ${gate.dimensionFloor} dimension floor. Review those foundations and resume.`
         : foundationDivergenceReason(score, threshold, DIVERGENCE_PATIENCE);

@@ -1567,6 +1567,51 @@ describe('autopilot conductor', () => {
     expect(applyFoundationFix).toHaveBeenCalledWith(seriesId, 'character', expect.any(Object));
   });
 
+  it('foundation gate: lets a newly surfaced target run before applying divergence patience', async () => {
+    const snap = (weightedScore, scores) => ({
+      seriesId: 'ser-example', status: 'complete', weightedScore,
+      dimensions: {
+        worldbuilding: { score: scores.worldbuilding, gap: 'g', fix: 'f' },
+        character: { score: scores.character, gap: 'g', fix: 'f' },
+        structure: { score: scores.structure, gap: 'g', fix: 'f' },
+        craft: { score: scores.craft, gap: 'g', fix: 'f' },
+      },
+    });
+    judgeFoundation
+      .mockImplementationOnce(async () => snap(7.4, {
+        worldbuilding: 7.4, character: 7.4, structure: 7.4, craft: 7.4,
+      }))
+      .mockImplementationOnce(async () => snap(6.6, {
+        worldbuilding: 7, character: 7, structure: 5, craft: 7,
+      }))
+      .mockImplementationOnce(async () => snap(6.8, {
+        worldbuilding: 7, character: 7, structure: 7, craft: 5,
+      }))
+      .mockImplementationOnce(async () => snap(8, {
+        worldbuilding: 8, character: 8, structure: 8, craft: 8,
+      }));
+
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 4 });
+    await waitFor(runFinished(seriesId));
+
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('complete');
+    expect(applyFoundationFix.mock.calls.slice(0, 3).map(([, dimension]) => dimension))
+      .toEqual(['worldbuilding', 'structure', 'craft']);
+  });
+
+  it('foundation gate: still stops after the same target repeatedly fails to improve', async () => {
+    foundationScore = 7;
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 5 });
+    await waitFor(runFinished(seriesId));
+
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last).toMatchObject({ type: 'paused', scope: 'foundationGate', pauseKind: 'divergence' });
+    expect(judgeFoundation).toHaveBeenCalledTimes(3);
+    expect(applyFoundationFix).toHaveBeenCalledTimes(2);
+  });
+
   it('foundation gate: pauses immediately when the weakest dimension cannot be auto-fixed', async () => {
     foundationScore = 3;
     foundationFixApplied = false; // owning service can't apply a fix
