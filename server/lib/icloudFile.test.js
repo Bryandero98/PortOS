@@ -257,3 +257,44 @@ describe('requestMaterialization', () => {
     expect(spawnMock).not.toHaveBeenCalled();
   });
 });
+
+describe('background-download safety caps', () => {
+  it('caps concurrent brctl children so an evicted vault walk cannot fork thousands', async () => {
+    statMock.mockResolvedValue(datalessStats);
+    // A vault walk hits a distinct path per note. Without a cap this would be one
+    // `brctl download` child per note.
+    for (let i = 0; i < 50; i++) {
+      await icloud.readIfMaterialized(`${UBIQUITY_DIR}/note-${i}.md`).catch(() => {});
+    }
+    expect(spawnMock.mock.calls.length).toBeLessThanOrEqual(4);
+  });
+
+  it('resumes healing later notes once earlier downloads exit', async () => {
+    statMock.mockResolvedValue(datalessStats);
+    const children = [];
+    spawnMock.mockImplementation(() => { const c = makeFakeChild(); children.push(c); return c; });
+
+    for (let i = 0; i < 10; i++) {
+      await icloud.readIfMaterialized(`${UBIQUITY_DIR}/a-${i}.md`).catch(() => {});
+    }
+    expect(spawnMock).toHaveBeenCalledTimes(4);
+
+    // Drain the in-flight set; the next read is free to kick a download again.
+    children.forEach(c => c.emit('exit', 0, null));
+    await icloud.readIfMaterialized(`${UBIQUITY_DIR}/b.md`).catch(() => {});
+    expect(spawnMock).toHaveBeenCalledTimes(5);
+  });
+
+  it('does not hand a base64 caller the utf-8 caller\'s result', async () => {
+    statMock.mockResolvedValue(materializedStats);
+    readFileMock.mockImplementation((_p, enc) => Promise.resolve(`body-as-${enc}`));
+
+    const [utf8, b64] = await Promise.all([
+      icloud.readIfMaterialized(ICLOUD_PATH),
+      icloud.readIfMaterialized(ICLOUD_PATH, { encoding: 'base64' }),
+    ]);
+
+    expect(utf8).toBe('body-as-utf-8');
+    expect(b64).toBe('body-as-base64');
+  });
+});

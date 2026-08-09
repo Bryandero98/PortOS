@@ -90,9 +90,16 @@ function markBrctlMissing() {
 }
 
 // Dedupe of in-flight background materializations, keyed by path, so repeated
-// reads of the same evicted file don't spawn a `brctl` per request. Cleared when
-// the child fails or exits non-zero so a later read can retry.
+// reads of the same evicted file don't spawn a `brctl` per request. Entries clear
+// when the child exits, so a later read can retry.
 const pendingDownloads = new Set();
+
+// Hard cap on concurrent background downloads. Without it, a vault-wide walk over
+// an evicted Obsidian vault (one read per note) would spawn one `brctl` child per
+// note — thousands of processes for a large vault. Skipping the heal past the cap
+// is safe: the read is refused either way, and the set drains as children exit so
+// later reads pick up where this one stopped.
+const MAX_PENDING_DOWNLOADS = 4;
 
 /**
  * Fire-and-forget `brctl download <path>` so an evicted file heals in the
@@ -103,6 +110,7 @@ const pendingDownloads = new Set();
 export function requestMaterialization(path, label = 'iCloud file') {
   if (process.platform !== 'darwin' || !path) return false;
   if (pendingDownloads.has(path)) return false;
+  if (pendingDownloads.size >= MAX_PENDING_DOWNLOADS) return false;
   pendingDownloads.add(path);
 
   // try/catch at a child-process boundary (permitted by the repo's no-try/catch
@@ -167,7 +175,10 @@ let readFlight = createSingleFlight();
  * doesn't starve the process.
  */
 export async function readIfMaterialized(path, options = {}) {
-  return readFlight.run(path, () => guardedRead(path, options));
+  const { encoding = 'utf-8' } = options;
+  // Key on encoding too: two concurrent callers asking for different encodings
+  // must not share one result (a utf-8 string is not a base64 string).
+  return readFlight.run(`${encoding}\u0000${path}`, () => guardedRead(path, options));
 }
 
 async function guardedRead(path, options) {

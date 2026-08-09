@@ -238,7 +238,9 @@ export async function getNote(vaultId, notePath, { includeBacklinks = true } = {
   // Evicted, not missing — a distinct code so the UI can say "iCloud hasn't
   // downloaded this note yet" instead of claiming it doesn't exist. The read was
   // never issued, and a background `brctl download` is already in flight.
-  if (content === null) return { error: 'NOTE_EVICTED' };
+  if (content === null) {
+    return { error: 'NOTE_EVICTED', message: 'This note is stored in iCloud and has not been downloaded to this Mac yet. A download was requested — try again shortly.' };
+  }
   const stats = await stat(fullPath);
   const { frontmatter, tags, wikilinks, body } = parseNoteMetadata(content);
 
