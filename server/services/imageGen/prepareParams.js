@@ -74,6 +74,19 @@ export async function prepareGenerateParams({ data, files, referenceImageFields 
     }
   };
 
+  // Every file THIS request copied into PATHS.imageRefs. A throw AFTER staging
+  // has to unlink these or they are orphaned forever: nothing downstream knows
+  // they exist, and the route's `res.on('close')` sweep only covers multer
+  // temps — it is wired from `uploadedTempPaths`, which a throw prevents
+  // prepareGenerateParams from ever returning. Only staged COPIES go in here,
+  // never a gallery path resolved by `resolveGalleryImage` (that's a real
+  // gallery image the user still owns).
+  const stagedRefPaths = [];
+  const cleanupStagedAndTemp = () => {
+    cleanupReqFilesTemp();
+    for (const p of stagedRefPaths) unlink(p).catch(() => {});
+  };
+
   // Resolve the effective backend BEFORE staging reference uploads — an
   // `external` request that uploaded refs would otherwise stage files under
   // `PATHS.imageRefs` and write sidecar metadata claiming references were used,
@@ -158,10 +171,12 @@ export async function prepareGenerateParams({ data, files, referenceImageFields 
     // resolveImageInputPath, which accepts the refs dir.
     initImagePath = join(PATHS.imageRefs, initFilename);
     await copyFile(initUpload.path, initImagePath);
+    stagedRefPaths.push(initImagePath);
     uploadedTempPaths.push(initUpload.path);
   } else if (data.initImageFile) {
     const resolved = resolveGalleryImage(data.initImageFile);
     if (!resolved) {
+      cleanupStagedAndTemp();
       throw new ServerError('Init image not found in gallery', { status: 400, code: 'INIT_IMAGE_NOT_FOUND' });
     }
     initImagePath = resolved;
@@ -176,6 +191,7 @@ export async function prepareGenerateParams({ data, files, referenceImageFields 
     const refFilename = `ref-${randomUUID()}${ext}`;
     const refPath = join(PATHS.imageRefs, refFilename);
     await copyFile(upload.path, refPath);
+    stagedRefPaths.push(refPath);
     uploadedTempPaths.push(upload.path);
     referenceImagePaths.push(refPath);
     // Default to 1.0 when the client didn't send a parallel strength entry,
@@ -198,8 +214,13 @@ export async function prepareGenerateParams({ data, files, referenceImageFields 
   // tool schema). Reject synchronously here so direct API callers get a 400
   // instead of a 200-then-async-job-failure. Mirrors the guards in
   // codex.js/grok.js/agy.js and the client's needs-prompt gate.
+  // This is the one throw that can fire with an input image already staged:
+  // agy requires a prompt even then, so a prompt-less agy render with a
+  // reference upload reaches here having already copied it into
+  // PATHS.imageRefs. Unlink before throwing or it is orphaned on disk.
   const hasInputImage = Boolean(initImagePath) || referenceImagePaths.length > 0;
   if (cloudPromptRequired(mode, hasInputImage) && !data.prompt?.trim()) {
+    cleanupStagedAndTemp();
     // Naming "text-to-image" would be wrong for the agy-with-input-images case,
     // which is precisely the one that isn't.
     const what = hasInputImage ? 'an image render' : 'text-to-image';
