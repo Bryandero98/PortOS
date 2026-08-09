@@ -75,6 +75,7 @@ vi.mock('./agentCompletion.js', () => ({ processAgentCompletion: vi.fn(async () 
 vi.mock('./agentSummaryExtraction.js', () => ({ extractSimplifySummaries: vi.fn(() => null) }));
 
 import { checkPrimaryCheckoutDrift, finalizeAgent } from './agentFinalization.js';
+import { emitLog } from './cosEvents.js';
 import { PRIMARY_CHECKOUT_MUTATED_CATEGORY, PRIMARY_CHECKOUT_MUTATED_REASON } from '../lib/primaryCheckoutGuard.js';
 
 const BASELINE = { path: '/example/repo', branch: 'main', head: 'a'.repeat(40) };
@@ -88,6 +89,18 @@ const DRIFT = {
   commitCount: 3,
   message: 'Worktree agent mutated the primary checkout /example/repo: branch main, HEAD aaaaaaaaa → bbbbbbbbb (3 new commits)',
   suggestedFix: 'git -C /example/repo reset --hard origin/main',
+};
+
+// #3703: commits were stranded on the primary, but none are patch-equivalent to
+// this agent's own branch — a concurrent actor moved it. Warn-logged, not failed.
+const UNATTRIBUTED_DRIFT = {
+  drifted: false,
+  unattributed: true,
+  baseline: BASELINE,
+  current: { path: '/example/repo', branch: 'main', head: 'b'.repeat(40) },
+  commitCount: 1,
+  unpushedCount: 1,
+  message: 'Worktree agent mutated the primary checkout /example/repo: branch main, HEAD aaaaaaaaa → bbbbbbbbb (1 new commit)',
 };
 
 const task = () => ({ id: 'task-1', taskType: 'internal', description: 'ship something', metadata: {} });
@@ -190,5 +203,20 @@ describe('finalizeAgent — a worktree run that mutated the primary is not a suc
     detectPrimaryCheckoutDriftMock.mockRejectedValue(new Error('git wedged'));
     await finalize();
     expect(completeAgentMock).toHaveBeenCalledWith('agent-1', expect.objectContaining({ success: true }));
+  });
+
+  it('warn-logs an unattributed drift but does NOT downgrade a successful run', async () => {
+    // #3703: the primary moved and stranded commits, but they are not this agent's
+    // (no patch-equivalent on its branch). Surfacing without failing the run is the
+    // whole point — a false failure escalates to a human and dents the success rate.
+    detectPrimaryCheckoutDriftMock.mockResolvedValue(UNATTRIBUTED_DRIFT);
+    await finalize({ runId: 'run-1' });
+
+    expect(completeAgentMock).toHaveBeenCalledWith('agent-1', expect.objectContaining({ success: true }));
+    expect(updateTaskMock).toHaveBeenCalledWith('task-1', expect.objectContaining({ status: 'completed' }), 'internal');
+    // The run record is a clean success — no error analysis, not force-failed.
+    expect(completeAgentRunMock).toHaveBeenCalledWith('run-1', 'done', 0, 1000, null, null);
+    // ...but the unreviewed commits are still surfaced.
+    expect(emitLog).toHaveBeenCalledWith('warn', expect.stringContaining('not attributable to agent-1'), expect.anything());
   });
 });

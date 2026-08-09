@@ -26,6 +26,21 @@
  * A branch with no upstream to compare against can't be cleared, so it still
  * reports (an unpushed commit is unreviewed by definition).
  *
+ * Movement that survives the checks above is still not enough to FAIL the run.
+ * The primary checkout is a shared global resource — a concurrent coding-on-main
+ * agent, the human's own terminal, `update.sh`'s `git pull --rebase --autostash`,
+ * or any background flow can strand commits on it — so before blaming the run,
+ * the guard asks whether THIS agent could have produced them (#3703). It
+ * attributes the stranded commits to the agent's own worktree branch by PATCH-ID
+ * (`git cherry`, not raw SHA, so a cherry-picked or rebased copy still matches).
+ * Only an attributed drift downgrades a successful run; anything the agent
+ * demonstrably did not author — a read-only reasoner that never branched, or
+ * commits with no patch-equivalent on the agent's branch — is carried as
+ * `{ drifted: false, unattributed: true }`: warn-logged (unreviewed commits on
+ * `main` are worth surfacing) but not failed. The asymmetry is deliberate — a
+ * missed branch-jack still leaves a warn log and recoverable commits, while a
+ * false failure escalates to a human and dents the task type's success rate.
+ *
  * Two halves, deliberately split so they can sit on opposite ends of a run:
  * `capturePrimaryCheckoutState` stamps a baseline at spawn time (onto the agent
  * metadata, in `agentLifecycle.js`), and `detectPrimaryCheckoutDrift` re-reads it
@@ -136,15 +151,61 @@ async function resolveUpstreamRef(checkoutPath, branch) {
 }
 
 /**
- * Commits the branch carries that its upstream does not — the only commits a
- * branch-jack actually leaves stranded, and the number the recovery prose is
- * about. Returns null (not 0) when there is no upstream to compare against, so
- * "verified clean" never masquerades as "could not check".
+ * Resolve the agent's own worktree branch to a ref that exists in the primary
+ * checkout — the local branch first, then its `origin/<branch>` remote-tracking
+ * form (the agent may have pushed and had its local ref pruned). Returns null
+ * when neither resolves, the name is empty, or git could not be run — every one
+ * of which the caller treats as "cannot attribute, so do not blame".
  */
-async function countUnpushedCommits(checkoutPath, branch) {
-  const upstream = await resolveUpstreamRef(checkoutPath, branch);
-  if (!upstream) return null;
-  return await countCommitsAhead(checkoutPath, upstream, branch);
+async function resolveAgentBranchRef(checkoutPath, agentBranch) {
+  if (!agentBranch || typeof agentBranch !== 'string') return null;
+  for (const ref of [agentBranch, `refs/remotes/origin/${agentBranch}`]) {
+    const result = await execGit(
+      ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`],
+      checkoutPath,
+      { ignoreExitCode: true, timeout: GIT_TIMEOUT_MS },
+    ).catch(() => null);
+    if (firstLine(result)) return ref;
+  }
+  return null;
+}
+
+/**
+ * Was the drift plausibly THIS agent's doing (#3703)? Compares the stranded
+ * commits (everything the drifted checkout carries past `strandedBase`) against
+ * the agent's own worktree branch by PATCH-ID via `git cherry`, so a
+ * cherry-picked or rebased copy still matches — a raw-SHA check would miss
+ * exactly the case the original #3680 incident could have produced.
+ *
+ * Returns true when AT LEAST ONE stranded commit is the agent's own — either
+ * literally on its branch (same SHA) or patch-equivalent to one there (a
+ * cherry-picked / rebased copy). Every uncertain outcome — no branch name, a
+ * branch that does not resolve, a branch with no commits of its own (Case A: a
+ * read-only reasoner that never branched), or a failed git call — returns FALSE
+ * (unattributed), failing open by design. NON-THROWING, like the rest of the
+ * module.
+ */
+async function isDriftAttributableToAgent(checkoutPath, { strandedBase, driftedHead, strandedCount, agentBranch }) {
+  const agentRef = await resolveAgentBranchRef(checkoutPath, agentBranch);
+  if (!agentRef) return false;
+  // A read-only reasoner's worktree branch resolves but carries no commit of its
+  // own (it never left the base), so it cannot have authored a stranded commit.
+  const ownCommits = await countCommitsAhead(checkoutPath, strandedBase, agentRef);
+  if (!ownCommits) return false;
+  // `git cherry <upstream> <head> <limit>` walks the stranded commits (`limit..head`)
+  // and prints a line for each that <upstream> (the agent's branch) does NOT already
+  // contain: `-` when a patch-equivalent copy exists there, `+` when the commit is
+  // foreign to it. Commits the agent's branch holds outright (same SHA) are omitted
+  // entirely. So a stranded commit is the agent's UNLESS git cherry marks it `+`;
+  // the drift is attributed unless EVERY stranded commit is foreign.
+  const cherry = await execGit(
+    ['cherry', agentRef, driftedHead, strandedBase],
+    checkoutPath,
+    { ignoreExitCode: true, timeout: GIT_TIMEOUT_MS },
+  ).catch(() => null);
+  if (!cherry || cherry.exitCode !== 0) return false;
+  const foreign = (cherry.stdout || '').split('\n').filter(line => line.startsWith('+')).length;
+  return strandedCount > foreign;
 }
 
 /** Short SHA for human-readable prose. */
@@ -162,13 +223,20 @@ const short = sha => String(sha || '').slice(0, 9);
  *     branch but every commit is already on that branch's upstream. That is a
  *     `git pull`, not a branch-jack; carried as a distinct shape (rather than a
  *     bare `false`) so a caller can log what it observed.
- *   - `{ drifted: true, … }` — the checkout ended on a different branch, or its
- *     branch carries commits the upstream does not have.
+ *   - `{ drifted: false, unattributed: true, … }` — commits WERE stranded, but
+ *     none are patch-equivalent to a commit on the agent's own branch, so this
+ *     run demonstrably did not put them there (a concurrent actor did). Carries
+ *     the `message` so the caller can warn-log the unreviewed commits without
+ *     failing the run. See the module header on the fail-open asymmetry.
+ *   - `{ drifted: true, … }` — the checkout ended on a different branch, or it
+ *     carries commits the upstream does not have AND those commits are
+ *     attributable to the agent's own branch by patch-id.
  *
  * @param {{path: string, branch: string, head: string}|null} baseline stamped by
  *   `capturePrimaryCheckoutState` at spawn time
  * @param {{ agentBranch?: string|null }} [options] the agent's own worktree
- *   branch, named in the recovery prose because it is where the same commits
+ *   branch, used both to ATTRIBUTE the stranded commits by patch-id and, once
+ *   attributed, named in the recovery prose because it is where the same commits
  *   almost certainly also live
  */
 export async function detectPrimaryCheckoutDrift(baseline, { agentBranch = null } = {}) {
@@ -179,9 +247,13 @@ export async function detectPrimaryCheckoutDrift(baseline, { agentBranch = null 
   if (!current) return { drifted: false };
   if (current.branch === baseline.branch && current.head === baseline.head) return { drifted: false };
 
+  const upstream = await resolveUpstreamRef(baseline.path, current.branch);
   const [commitCount, unpushedCount] = await Promise.all([
     countCommitsAhead(baseline.path, baseline.head, current.head),
-    countUnpushedCommits(baseline.path, current.branch),
+    // Commits the branch carries that its upstream does not — the only commits a
+    // branch-jack actually strands. Null (not 0) when there is no upstream to
+    // compare against, so "verified clean" never masquerades as "could not check".
+    upstream ? countCommitsAhead(baseline.path, upstream, current.branch) : Promise.resolve(null),
   ]);
 
   // Same branch, nothing local-only: the checkout was pulled forward onto commits
@@ -189,6 +261,24 @@ export async function detectPrimaryCheckoutDrift(baseline, { agentBranch = null 
   // there is nothing for a human to recover.
   if (current.branch === baseline.branch && unpushedCount === 0) {
     return { drifted: false, fastForwarded: true, baseline, current, commitCount };
+  }
+
+  const message = formatDriftMessage({ baseline, current, commitCount });
+
+  // Second gate (#3703): stranded commits are only a failure if THIS agent could
+  // have produced them. A pure branch switch strands nothing (nothing to blame on
+  // anyone), so attribution runs only when there is a resolvable stranded commit.
+  const strandedCount = unpushedCount === null ? commitCount : unpushedCount;
+  if (strandedCount > 0) {
+    const attributed = await isDriftAttributableToAgent(baseline.path, {
+      strandedBase: upstream || baseline.head,
+      driftedHead: current.head,
+      strandedCount,
+      agentBranch,
+    });
+    if (!attributed) {
+      return { drifted: false, unattributed: true, baseline, current, commitCount, unpushedCount, message };
+    }
   }
 
   return {
@@ -199,7 +289,7 @@ export async function detectPrimaryCheckoutDrift(baseline, { agentBranch = null 
     current,
     commitCount,
     unpushedCount,
-    message: formatDriftMessage({ baseline, current, commitCount }),
+    message,
     suggestedFix: formatDriftRecovery({ current, baseline, commitCount, unpushedCount, agentBranch }),
   };
 }

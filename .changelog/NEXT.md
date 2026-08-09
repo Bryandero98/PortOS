@@ -2,6 +2,8 @@
 
 ## Stability
 
+- **[issue-3703] A worktree agent is no longer failed for commits it didn't write.** The primary-checkout guard used to fail any worktree agent whose run window overlapped commits landing on the shared primary checkout — but a concurrent coding-on-main agent, your own terminal, or `update.sh`'s pull can move it too, so read-only reasoners and correctly-behaved agents were being blamed and escalated to you. The guard now attributes the stranded commits by patch-id (`git cherry`, so a cherry-picked or rebased copy still counts) to the agent's own branch: only commits actually traceable to that agent fail the run. Everything else is warn-logged — the unreviewed commits on the primary are still surfaced — but a run that didn't cause them stays a success.
+
 - **[issue-3704] The UI no longer goes blank when iCloud offloads a synced file** — macOS "Optimize Mac Storage" can evict MortalLoom and Obsidian files to the cloud. Reading one of those offloaded files used to stall indefinitely, and a handful of stalls was enough to freeze every page in PortOS while the server still looked healthy — pages simply never loaded and only a restart brought them back. PortOS now detects an offloaded file up front, skips the read, asks iCloud to download it in the background, and reports "temporarily unavailable" for just that record until it arrives.
 
 ## Added

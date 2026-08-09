@@ -595,6 +595,15 @@ export async function finalizeAgent({
     emitLog('warn', `⚠️ ${drift.message} — reported by ${agentId}; PortOS will not repair it automatically`, {
       agentId, taskId: task?.id, category: drift.category
     });
+  } else if (drift.unattributed) {
+    // #3703: commits WERE stranded on the primary, but none are patch-equivalent
+    // to this agent's own branch — another actor (a coding-on-main agent, the
+    // human's terminal, `update.sh`'s pull) moved it. Unreviewed commits on the
+    // primary are still worth surfacing, but this run did not cause them, so it is
+    // warn-logged WITHOUT downgrading an otherwise-successful run to a failure.
+    emitLog('warn', `⚠️ ${drift.message} — not attributable to ${agentId}; surfacing without failing the run`, {
+      agentId, taskId: task?.id
+    });
   } else if (drift.fastForwarded) {
     // Movement without stranded commits — a pull, not a branch-jack. Logged so
     // "the primary moved during this run" stays visible without being a failure.

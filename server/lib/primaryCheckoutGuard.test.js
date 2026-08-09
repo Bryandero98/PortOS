@@ -94,12 +94,21 @@ describe('detectPrimaryCheckoutDrift', () => {
     expect(verdict).toEqual({ drifted: false });
   });
 
-  it('detects commits landed on the primary checkout during the run', async () => {
+  it('detects commits landed on the primary checkout when they are the agent\'s own', async () => {
+    const agentBranch = 'cos/task-x/agent-y';
     const baseline = await capturePrimaryCheckoutState(repo);
+    // The agent made its two commits on its OWN worktree branch...
+    await execGit(['checkout', '-b', agentBranch], repo);
     await commit('branch jacked one');
     await commit('branch jacked two');
+    const agentTip = (await capturePrimaryCheckoutState(repo)).head;
+    // ...and a stray `/do:pr` from the worktree applied patch-equivalent copies
+    // onto the PRIMARY's main (cherry-pick → different SHAs, so only the patch-id
+    // gate attributes them — a raw-SHA check would miss this).
+    await execGit(['checkout', 'main'], repo);
+    await execGit(['cherry-pick', `${baseline.head}..${agentTip}`], repo);
 
-    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch: 'cos/task-x/agent-y' });
+    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch });
     expect(verdict.drifted).toBe(true);
     expect(verdict.reason).toBe(PRIMARY_CHECKOUT_MUTATED_REASON);
     expect(verdict.category).toBe(PRIMARY_CHECKOUT_MUTATED_CATEGORY);
@@ -108,8 +117,65 @@ describe('detectPrimaryCheckoutDrift', () => {
     expect(verdict.message).toContain('main');
     expect(verdict.message).toContain('2 new commits');
     // ...and the fix names the agent branch plus the exact recovery command.
-    expect(verdict.suggestedFix).toContain('cos/task-x/agent-y');
+    expect(verdict.suggestedFix).toContain(agentBranch);
     expect(verdict.suggestedFix).toContain(`git -C ${repo} reset --hard origin/main`);
+  });
+
+  it('does NOT blame the agent for a stranded commit it did not author (unattributed)', async () => {
+    await addOrigin();
+    const agentBranch = 'cos/task-x/agent-y';
+    const baseline = await capturePrimaryCheckoutState(repo);
+    // The agent's own branch carries an UNRELATED commit of its own...
+    await execGit(['checkout', '-b', agentBranch], repo);
+    await commit('the agent\'s actual work');
+    await execGit(['checkout', 'main'], repo);
+    // ...while a different actor stranded a commit on the primary's main.
+    await commit('someone else\'s commit');
+
+    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch });
+    // Stranded, but no patch-equivalent on the agent branch → surfaced, not failed.
+    expect(verdict.drifted).toBe(false);
+    expect(verdict.unattributed).toBe(true);
+    expect(verdict.unpushedCount).toBe(1);
+    expect(verdict.message).toContain('main');
+    expect(verdict.suggestedFix).toBeUndefined();
+  });
+
+  it('never attributes a branch-jack to a read-only reasoner that never branched (Case A)', async () => {
+    const baseline = await capturePrimaryCheckoutState(repo);
+    // A 24-file commit lands on main mid-run, authored by another actor.
+    await commit('a big commit from elsewhere');
+
+    // The reasoner carried no worktree branch at all — it is structurally
+    // impossible for it to have authored the commit, so it must not be blamed.
+    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch: null });
+    expect(verdict.drifted).toBe(false);
+    expect(verdict.unattributed).toBe(true);
+    expect(verdict.commitCount).toBe(1);
+  });
+
+  it('never attributes when the agent branch has zero commits of its own', async () => {
+    await addOrigin();
+    const agentBranch = 'cos/task-x/agent-y';
+    // Branch exists but points at the same commit as origin/main — no own commits.
+    await execGit(['branch', agentBranch, 'origin/main'], repo);
+    const baseline = await capturePrimaryCheckoutState(repo);
+    await commit('a commit from another actor');
+
+    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch });
+    expect(verdict.drifted).toBe(false);
+    expect(verdict.unattributed).toBe(true);
+  });
+
+  it('degrades to unattributed when the agent branch cannot be resolved', async () => {
+    await addOrigin();
+    const baseline = await capturePrimaryCheckoutState(repo);
+    await commit('stranded by an unknown actor');
+
+    // A branch name that resolves to nothing is uncertainty, not proof — fail open.
+    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch: 'cos/never-created' });
+    expect(verdict.drifted).toBe(false);
+    expect(verdict.unattributed).toBe(true);
   });
 
   it('detects a branch switch even with no new commits', async () => {
@@ -139,11 +205,19 @@ describe('detectPrimaryCheckoutDrift', () => {
 
   it('still reports the agent\'s own commit when a pull landed alongside it', async () => {
     await addOrigin();
+    const agentBranch = 'cos/task-x/agent-y';
     const baseline = await capturePrimaryCheckoutState(repo);
-    await pullFromOrigin('landed via a merged PR');
+    // The agent's real commit lives on its own branch...
+    await execGit(['checkout', '-b', agentBranch], repo);
     await commit('branch jacked');
+    const agentTip = (await capturePrimaryCheckoutState(repo)).head;
+    await execGit(['checkout', 'main'], repo);
+    // ...a pull brought an unrelated merged commit onto main...
+    await pullFromOrigin('landed via a merged PR');
+    // ...and the agent's own commit was (wrongly) applied to main too.
+    await execGit(['cherry-pick', agentTip], repo);
 
-    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch: 'cos/task-x/agent-y' });
+    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch });
     expect(verdict.drifted).toBe(true);
     // HEAD moved 2, but only 1 is stranded — the recovery prose quotes the
     // stranded count, not the movement.
@@ -166,13 +240,18 @@ describe('detectPrimaryCheckoutDrift', () => {
     expect(verdict.suggestedFix).not.toContain('reset --hard');
   });
 
-  it('reports movement on a branch with no upstream to clear it against', async () => {
+  it('reports an attributed commit on a branch with no upstream to clear it against', async () => {
     // No `origin` at all: an unpushed commit is unreviewed by definition, so the
-    // narrowed guard must not go quiet just because it cannot compare.
+    // guard must not go quiet just because it cannot compare against an upstream —
+    // it attributes against the run baseline instead. The commit IS the agent's.
+    const agentBranch = 'cos/task-x/agent-y';
     const baseline = await capturePrimaryCheckoutState(repo);
+    await execGit(['checkout', '-b', agentBranch], repo);
     await commit('branch jacked, nowhere to push');
+    await execGit(['checkout', 'main'], repo);
+    await execGit(['merge', '--ff-only', agentBranch], repo);
 
-    const verdict = await detectPrimaryCheckoutDrift(baseline);
+    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch });
     expect(verdict.drifted).toBe(true);
     expect(verdict.unpushedCount).toBeNull();
     expect(verdict.commitCount).toBe(1);
