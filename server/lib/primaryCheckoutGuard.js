@@ -220,6 +220,9 @@ async function isDriftAttributableToAgent(checkoutPath, { runBase, upstream, dri
   // so detect them by reachability: if excluding the agent's branch drops the count,
   // some candidate commit is the agent's.
   const strandedNotOnAgent = await countCommitsAhead(checkoutPath, runBase, driftedHead, { noMerges: true, excludes: [...strandedExcludes, agentSha] });
+  // A failed count is null; `null < n` coerces to `0 < n` and would falsely attribute
+  // (a false failure), so treat an unresolvable count as "cannot determine" and fail open.
+  if (strandedNotOnAgent === null) return false;
   if (strandedNotOnAgent < strandedTotal) return true;
   // Patch-equivalent branch-jack: a cherry-picked / rebased copy (different SHA, missed
   // by the reachability check). `git cherry <upstream> <head> <limit>` marks such a
