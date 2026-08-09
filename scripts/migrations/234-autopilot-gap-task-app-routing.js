@@ -59,9 +59,26 @@ const METADATA_LINE = /^(\s+)-\s*(\w+):\s*(.*)$/;
 // `fileGap` (seriesAutopilot/session.js) names a gap kind and a series uuid;
 // `createAIProviderInvestigationTask` (autoFixer.js) names the provider/model.
 const STRANDED = [
-  { file: 'TASKS.md', headline: /^Autopilot \S+ gap — series \S+/, app: 'pipeline' },
-  { file: 'COS-TASKS.md', headline: /^Investigate AI provider failure:/, app: 'portos' },
+  { configKey: 'userTasksFile', file: 'data/TASKS.md', headline: /^Autopilot \S+ gap — series \S+/, app: 'pipeline' },
+  { configKey: 'cosTasksFile', file: 'data/COS-TASKS.md', headline: /^Investigate AI provider failure:/, app: 'portos' },
 ];
+
+/**
+ * Repo-relative path of a queue file, honouring an install that moved it in
+ * `data/cos/state.json` (`config.userTasksFile` / `config.cosTasksFile` — the
+ * same values `cosTaskStore` reads). Migrating only the defaults would record
+ * this migration as applied while the live queue stayed stranded.
+ */
+async function queuePaths(rootDir) {
+  const raw = await readFile(join(rootDir, 'data', 'cos', 'state.json'), 'utf-8').catch(() => null);
+  const config = raw ? JSON.parse(raw)?.config ?? {} : {};
+  return STRANDED.map((producer) => ({
+    ...producer,
+    file: typeof config[producer.configKey] === 'string' && config[producer.configKey]
+      ? config[producer.configKey]
+      : producer.file,
+  }));
+}
 
 /**
  * Delete the mis-routed app line from every non-completed task of one producer,
@@ -75,13 +92,14 @@ export function unrouteTasks(markdown, { headline, app, stamp }) {
   const lines = markdown.split('\n');
   const out = [];
   const unrouted = [];
-  // Id of the task whose metadata block we are currently inside, when that task
-  // is one this producer stranded; null everywhere else.
+  // Id of the task whose block we are currently inside, when that task is one
+  // this producer stranded; null everywhere else.
   let target = null;
-  // Indices in `out` of the current target's app / updatedAt lines, so the
-  // rewrite happens once the whole block has been seen.
+  // Indices in `out` of the current target's app / updatedAt / last metadata
+  // lines, so the rewrite happens once the whole block has been seen.
   let appAt = -1;
   let stampAt = -1;
+  let lastMetaAt = -1;
   let indent = '  ';
 
   // Drop the app line and refresh (or add) the LWW stamp on the block we just
@@ -89,32 +107,48 @@ export function unrouteTasks(markdown, { headline, app, stamp }) {
   const finish = () => {
     if (target && appAt >= 0) {
       out.splice(appAt, 1);
+      const shift = (i) => (i > appAt ? i - 1 : i);
       const stampLine = `${indent}- updatedAt: ${stamp}`;
-      if (stampAt >= 0) out[stampAt > appAt ? stampAt - 1 : stampAt] = stampLine;
-      else out.push(stampLine);
+      if (stampAt >= 0) out[shift(stampAt)] = stampLine;
+      // No stamp yet — insert one directly after the last metadata line rather
+      // than at the end of the block, so it can't land after a description that
+      // spilled onto its own lines (see the block-scan note below). `lastMetaAt`
+      // is the right index post-splice either way: when a later metadata line
+      // exists it shifted down one, so inserting there lands just after it; when
+      // the app line WAS the last metadata line, that index is the hole it left.
+      else out.splice(lastMetaAt, 0, stampLine);
       unrouted.push(target);
     }
     target = null;
     appAt = -1;
     stampAt = -1;
+    lastMetaAt = -1;
   };
 
   for (const line of lines) {
+    const header = line.match(TASK_LINE);
+    // A task's block runs to the NEXT task header or section heading — not to
+    // the first non-metadata line. A description written with embedded newlines
+    // is interpolated into the file verbatim by `generateTasksMarkdown`, so a
+    // freshly-filed task can carry blank/prose lines between its header and its
+    // metadata (they are dropped on the next parse round-trip, but a migration
+    // may well run before that happens). Ending the block at those lines would
+    // walk right past the `app:` line this migration exists to remove.
+    if (header || line.startsWith('#')) {
+      finish();
+      out.push(line);
+      // Completed tasks already ran; their metadata is history, not routing.
+      if (header && header[1] !== 'x' && headline.test(header[3].trim())) target = header[2];
+      continue;
+    }
     const meta = target ? line.match(METADATA_LINE) : null;
     if (meta) {
       indent = meta[1];
+      lastMetaAt = out.length;
       if (meta[2] === 'app' && meta[3].trim() === app) appAt = out.length;
       else if (meta[2] === 'updatedAt') stampAt = out.length;
-      out.push(line);
-      continue;
     }
-    // Any non-metadata line ends the block: the next task, a section heading,
-    // or a blank line.
-    finish();
     out.push(line);
-    const header = line.match(TASK_LINE);
-    // Completed tasks already ran; their metadata is history, not routing.
-    if (header && header[1] !== 'x' && headline.test(header[3].trim())) target = header[2];
   }
   finish();
 
@@ -126,8 +160,8 @@ export default {
     const unrouted = [];
     let seenAFile = false;
 
-    for (const producer of STRANDED) {
-      const file = join(rootDir, 'data', producer.file);
+    for (const producer of await queuePaths(rootDir)) {
+      const file = join(rootDir, producer.file);
       const raw = await readFile(file, 'utf-8').catch((err) => {
         if (err.code === 'ENOENT') return null;
         throw err;

@@ -69,6 +69,37 @@ describe('unrouteTasks', () => {
     const md = queue(gapTask('task-1', { app: null }));
     expect(unrouteTasks(md, GAP)).toEqual({ markdown: md, unrouted: [] });
   });
+
+  // `generateTasksMarkdown` interpolates the description verbatim, so a task
+  // filed with embedded newlines sits in the file with prose/blank lines between
+  // its header and its metadata until the next parse round-trip flattens it. A
+  // scan that stopped at the first non-metadata line would walk right past the
+  // `app:` line and leave the task stranded.
+  it('reaches the metadata past a description that spilled onto its own lines', () => {
+    const spilled = [
+      '- [ ] #task-1 | MEDIUM | Autopilot script-unparseable gap — series 11111111-2222-3333-4444-555555555555',
+      '',
+      'The comic script has no parseable pages.',
+      '  - app: pipeline',
+      '  - updatedAt: 2026-08-01T00:00:00.000Z',
+    ].join('\n');
+    const { markdown, unrouted } = unrouteTasks(queue(spilled), GAP);
+    expect(unrouted).toEqual(['task-1']);
+    expect(markdown).not.toContain('- app: pipeline');
+    expect(markdown).toContain(`- updatedAt: ${STAMP}`);
+    expect(markdown).toContain('The comic script has no parseable pages.');
+  });
+
+  it('inserts a missing stamp with the metadata, not after trailing prose', () => {
+    const spilled = [
+      '- [ ] #task-1 | MEDIUM | Autopilot script-unparseable gap — series 11111111-2222-3333-4444-555555555555',
+      '  - app: pipeline',
+      'trailing prose line',
+    ].join('\n');
+    const { markdown } = unrouteTasks(queue(spilled), GAP);
+    const lines = markdown.split('\n');
+    expect(lines[lines.indexOf('trailing prose line') - 1]).toBe(`  - updatedAt: ${STAMP}`);
+  });
 });
 
 describe('migration 234 up()', () => {
@@ -104,6 +135,21 @@ describe('migration 234 up()', () => {
     await expect(migration.up({ rootDir })).resolves.toMatchObject({ ok: true, unrouted: 1 });
     const [task] = parseTasksMarkdown(await readFile(cosTasks(), 'utf-8'));
     expect(task.metadata.app).toBeUndefined();
+  });
+
+  // An install that moved its queue in data/cos/state.json must be migrated
+  // there — migrating only the default path records this as applied while the
+  // live queue stays stranded.
+  it('follows a relocated queue path from the CoS config', async () => {
+    await mkdir(join(rootDir, 'data', 'cos'), { recursive: true });
+    await writeFile(join(rootDir, 'data', 'cos', 'state.json'),
+      JSON.stringify({ config: { userTasksFile: 'data/cos/MY-TASKS.md' } }));
+    const relocated = join(rootDir, 'data', 'cos', 'MY-TASKS.md');
+    await writeFile(relocated, queue(gapTask('task-1')));
+    await writeFile(userTasks(), queue(gapTask('task-untouched')));
+    await expect(migration.up({ rootDir })).resolves.toMatchObject({ ok: true, unrouted: 1 });
+    expect(parseTasksMarkdown(await readFile(relocated, 'utf-8'))[0].metadata.app).toBeUndefined();
+    expect(parseTasksMarkdown(await readFile(userTasks(), 'utf-8'))[0].metadata.app).toBe('pipeline');
   });
 
   it('is idempotent — a second run leaves the file byte-identical', async () => {
