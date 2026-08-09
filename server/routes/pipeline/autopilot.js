@@ -100,8 +100,10 @@ const autopilotStartSchema = z.object({
   // owns — so the autopilot can apply the fixes its editorial passes surface
   // instead of pausing on findings it isn't allowed to resolve. Canon owned by
   // (or shared with) another series in the same universe stays locked, and the
-  // pass never deletes anything. Falls back to
-  // pipelineEditorialChecks.unlockForRun, then off.
+  // pass never deletes anything. UNLIKE every other option here there is NO
+  // saved-setting fallback: it defaults to off on every run, so ticking it once
+  // can't arm lock-clearing for an unattended scheduled run (see
+  // seriesAutopilot/config.js#resolveAutopilotUnlockForRun).
   unlockForRun: z.boolean().optional(),
   // Iterate-to-quality revision loop (CWQE Phase 7, #2171). When true, after the
   // editorial-health gate the run cycles the weakest drafted issue through
