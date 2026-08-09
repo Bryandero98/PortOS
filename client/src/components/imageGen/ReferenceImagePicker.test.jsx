@@ -13,6 +13,28 @@ describe('ReferenceImagePicker', () => {
     expect(screen.getByText('Ref 4')).toBeTruthy();
   });
 
+  it('renders one tile per slot it is given, so a capped backend shows no droppable slot', () => {
+    render(<ReferenceImagePicker referenceImages={fourEmpty().slice(0, 2)} onPick={vi.fn()} onClear={vi.fn()} onStrengthChange={vi.fn()} />);
+    expect(screen.getAllByText('Upload')).toHaveLength(2);
+    expect(screen.queryByText('Ref 3')).toBeNull();
+  });
+
+  it('hides the strength slider on backends with no numeric per-reference weight', () => {
+    const slots = fourEmpty();
+    slots[0] = { file: null, previewUrl: 'blob:one', strength: 0.5 };
+    const { container } = render(
+      <ReferenceImagePicker referenceImages={slots} showStrength={false} onPick={vi.fn()} onClear={vi.fn()} onStrengthChange={vi.fn()} />,
+    );
+    // The thumbnail and its clear button stay — only the inert control goes.
+    expect(screen.getByTitle('Remove reference 1')).toBeTruthy();
+    expect(container.querySelector('input[type="range"]')).toBeNull();
+  });
+
+  it('renders the caller-supplied caption', () => {
+    render(<ReferenceImagePicker referenceImages={fourEmpty()} caption="up to 2 more images Agy will use as visual references" onPick={vi.fn()} onClear={vi.fn()} onStrengthChange={vi.fn()} />);
+    expect(screen.getByText('(up to 2 more images Agy will use as visual references)')).toBeTruthy();
+  });
+
   it('renders a per-slot Gallery button when onBrowse is set and fires it with the slot index', () => {
     const onBrowse = vi.fn();
     render(<ReferenceImagePicker referenceImages={fourEmpty()} onPick={vi.fn()} onClear={vi.fn()} onStrengthChange={vi.fn()} onBrowse={onBrowse} />);

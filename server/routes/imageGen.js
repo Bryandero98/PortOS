@@ -19,7 +19,6 @@ import {
 import { optionalUploadFields } from '../lib/multipart.js';
 import * as imageGen from '../services/imageGen/index.js';
 import { local, IMAGE_GEN_MODE, IMAGE_GEN_MODES } from '../services/imageGen/index.js';
-import { editIncapableModeError, isEditCapableMode } from '../services/imageGen/modes.js';
 import { resolveCloudProviderConfig } from '../services/imageGen/cloudProviderConfig.js';
 import setupRouter from './imageGenSetup.js';
 import { enqueueJob, attachSseClient as attachQueueSseClient, cancelJob, listJobs } from '../services/mediaJobQueue/index.js';
@@ -94,12 +93,14 @@ const generateSchema = z.object({
   // upload. Strength: 0.0 = ignore source, 1.0 = max influence.
   initImageFile: z.string().max(256).regex(/^[^/\\]+\.(png|jpg|jpeg|webp)$/i, 'init image must be a basename ending in png/jpg/jpeg/webp').optional(),
   initImageStrength: z.number().min(0).max(1).optional(),
-  // Multi-reference image editing (FLUX.2). Up to 4 reference images are
-  // uploaded as separate multipart fields `referenceImage1` … `referenceImage4`;
+  // Multi-reference image conditioning. Up to 4 reference images are uploaded
+  // as separate multipart fields `referenceImage1` … `referenceImage4`;
   // `referenceStrengths` is a parallel array of weights (0.0 = ignore the
   // reference, 1.0 = full influence). The schema only constrains the strengths
   // array — file presence is enforced at the upload layer, and the route
-  // pairs filled slots with their strengths positionally.
+  // pairs filled slots with their strengths positionally. Strengths are honored
+  // numerically only by local FLUX.2; the cloud CLIs expose no per-reference
+  // weight, so they receive the paths alone.
   referenceStrengths: z.array(z.number().min(0).max(1)).max(MAX_REFERENCE_IMAGES).optional(),
   // Per-render override of the cleaners. When omitted, the route inherits
   // from `settings.imageGen.{mode}.{cleanC2PA,denoise}`. Explicit booleans
@@ -416,9 +417,6 @@ router.post('/generate', imageGenUploads, asyncHandler(async (req, res) => {
     // gated behind an explicit toggle each (not every Codex account has access
     // to the image_gen tool, and grok spends the user's Grok quota).
     if (!cloud.enabled) throw cloud.disabledError;
-    if (!isEditCapableMode(mode) && (params.initImagePath || params.referenceImagePaths?.length)) {
-      throw editIncapableModeError(mode);
-    }
     // `mode` inside jobParams is the queue's discriminator — laneForJob()
     // routes cloud jobs to the parallel cloud lane, and runJob's image branch
     // dispatches to the matching imageGen provider module when it sees it.

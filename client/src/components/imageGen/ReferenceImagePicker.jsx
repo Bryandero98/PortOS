@@ -1,15 +1,22 @@
-// FLUX.2 multi-reference uploader — up to 4 fixed, positional slots, each
-// carrying an uploaded File + a 0..1 strength weight. The caller owns the
-// `referenceImages` array (`[{ file, previewUrl, strength }]`) and the slot
-// mutations; this component only renders the grid of thumbnails / Add tiles /
-// strength sliders.
+// Multi-reference uploader — up to 4 fixed, positional slots, each carrying an
+// uploaded File + a 0..1 strength weight. The caller owns the `referenceImages`
+// array (`[{ file, previewUrl, strength }]`) and the slot mutations; this
+// component only renders the grid of thumbnails / Add tiles / strength sliders.
 //
-// References are conditioned via diffusers' Flux2KleinKVPipeline (K/V-cache
-// reference-token attention). First-time use prompts the user to accept the
-// FLUX.2-klein-9B-kv license on Hugging Face. Per-reference strengths are
-// honored end-to-end: scripts/flux2_macos.py patches Flux2KVLayerCache.store +
+// On the LOCAL backend, references are conditioned via diffusers'
+// Flux2KleinKVPipeline (K/V-cache reference-token attention). First-time use
+// prompts the user to accept the FLUX.2-klein-9B-kv license on Hugging Face.
+// Per-reference strengths are honored end-to-end there:
+// scripts/flux2_macos.py patches Flux2KVLayerCache.store +
 // _flux2_kv_causal_attention so each reference's V slice is scaled by its
 // strength (1.0 = full influence, 0.0 = ignored).
+//
+// The cloud CLIs feed the same references to their own image tools (codex
+// `referenced_image_paths`, grok `image_edit.image`, agy `ImagePaths`), which
+// expose NO numeric per-reference weight — so `showStrength={false}` hides the
+// sliders there rather than offering a control the backend ignores. The caller
+// passes only the slots the active backend accepts (see `referenceSlotsFor`),
+// so this renders one tile per element it is given.
 //
 // `onPick(slotIndex, event)` receives the raw file-input change event so the
 // caller can run EXIF orientation normalization before storing the File.
@@ -25,11 +32,13 @@ export default function ReferenceImagePicker({
   onStrengthChange,
   onBrowse,
   disabled = false,
+  showStrength = true,
+  caption = 'up to 4 images for FLUX.2 multi-reference edit',
 }) {
   return (
     <div>
       <label className="block text-xs font-medium text-gray-400 mb-1">
-        Reference images <span className="text-gray-500 font-normal">(up to 4 images for FLUX.2 multi-reference edit)</span>
+        Reference images <span className="text-gray-500 font-normal">({caption})</span>
       </label>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
         {referenceImages.map((slot, i) => {
@@ -57,17 +66,21 @@ export default function ReferenceImagePicker({
                       <X className="w-3 h-3" />
                     </button>
                   </div>
-                  <label htmlFor={strengthId} className="block text-[10px] text-gray-500">
-                    Strength {slot.strength.toFixed(2)}
-                  </label>
-                  <input
-                    id={strengthId}
-                    type="range" min={0} max={1} step={0.05}
-                    value={slot.strength}
-                    disabled={disabled}
-                    onChange={(e) => onStrengthChange(i, Number(e.target.value))}
-                    className="w-full accent-port-accent"
-                  />
+                  {showStrength && (
+                    <>
+                      <label htmlFor={strengthId} className="block text-[10px] text-gray-500">
+                        Strength {slot.strength.toFixed(2)}
+                      </label>
+                      <input
+                        id={strengthId}
+                        type="range" min={0} max={1} step={0.05}
+                        value={slot.strength}
+                        disabled={disabled}
+                        onChange={(e) => onStrengthChange(i, Number(e.target.value))}
+                        className="w-full accent-port-accent"
+                      />
+                    </>
+                  )}
                 </>
               ) : (
                 <div className="flex flex-col gap-1">

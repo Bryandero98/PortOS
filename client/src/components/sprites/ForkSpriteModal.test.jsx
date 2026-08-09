@@ -139,18 +139,36 @@ describe('ForkSpriteModal submit gating', () => {
  */
 describe('ForkSpriteModal backend filtering', () => {
   const WITH_AGY = [...BACKENDS, { id: 'agy', label: 'Agy' }];
+  const WITH_EXTERNAL = [...BACKENDS, { id: 'external', label: 'External' }];
 
-  it('omits a text-to-image-only backend from the picker', () => {
+  // A fork always seeds from the source reference, so the picker lists only
+  // backends that take an input image. Every configured generation backend now
+  // does (agy included, via its tool's ImagePaths parameter) — external is the
+  // one that doesn't.
+  it('offers every input-image-capable backend, including agy', () => {
     renderModal({ backends: WITH_AGY });
+    const options = [...screen.getByRole('combobox').options].map((o) => o.value);
+    expect(options).toEqual(['codex', 'grok', 'agy']);
+  });
+
+  it('omits the external backend, which cannot take an input image', () => {
+    renderModal({ backends: WITH_EXTERNAL });
     const options = [...screen.getByRole('combobox').options].map((o) => o.value);
     expect(options).toEqual(['codex', 'grok']);
   });
 
-  it('ignores a text-to-image-only page mode instead of adopting it', async () => {
+  it('adopts an input-image-capable page mode', async () => {
     renderModal({ backends: WITH_AGY, mode: 'agy' });
     await userEvent.type(promptBox(), 'now with a red coat');
+    await userEvent.click(forkButton());
+    expect(forkSpriteRecord.mock.calls[0][1].mode).toBe('agy');
+  });
+
+  it('ignores an input-image-incapable page mode instead of adopting it', async () => {
+    renderModal({ backends: WITH_EXTERNAL, mode: 'external' });
+    await userEvent.type(promptBox(), 'now with a red coat');
     // An adopted mode satisfies the backend half of the submit gate, so a still
-    // disabled button with a written prompt is exactly "agy was not adopted".
+    // disabled button with a written prompt is exactly "external was not adopted".
     expect(forkButton()).toBeDisabled();
 
     await userEvent.selectOptions(screen.getByRole('combobox'), 'grok');
@@ -158,8 +176,8 @@ describe('ForkSpriteModal backend filtering', () => {
     expect(forkSpriteRecord.mock.calls[0][1].mode).toBe('grok');
   });
 
-  it('warns instead of offering a picker when every backend is text-to-image-only', () => {
-    renderModal({ backends: [{ id: 'agy', label: 'Agy' }], mode: 'agy' });
+  it('warns instead of offering a picker when no backend takes an input image', () => {
+    renderModal({ backends: [{ id: 'external', label: 'External' }], mode: 'external' });
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
     expect(screen.getByText(/No image-to-image backend configured/)).toBeInTheDocument();
   });

@@ -3,10 +3,10 @@
  *
  * Handles everything between Zod validation and the final dispatch branch:
  *   - resolve effective backend mode + per-render cleaners
- *   - gate reference-image uploads to local FLUX.2 only
+ *   - gate reference-image uploads to backends that can consume them
  *   - stage multer temp uploads into PATHS.images / PATHS.imageRefs
  *   - resolve initImagePath from upload or gallery filename
- *   - enforce the Codex text-to-image prompt requirement
+ *   - enforce each cloud CLI's prompt requirement
  *
  * Returns:
  *   {
@@ -27,9 +27,9 @@ import { join } from 'node:path';
 import { ServerError } from '../../lib/errorHandler.js';
 import { PATHS, ensureDir, resolveGalleryImage } from '../../lib/fileUtils.js';
 import { getSettings } from '../settings.js';
-import { IMAGE_GEN_MODE, CLOUD_IMAGE_GEN_MODES, resolveImageCleaners } from './index.js';
-import { editIncapableModeError, isEditCapableMode } from './modes.js';
-import { resolveRenderTargetConfig } from './cloudProviderConfig.js';
+import { IMAGE_GEN_MODE, resolveImageCleaners } from './index.js';
+import { editIncapableModeError, isEditCapableMode, modeLabel } from './modes.js';
+import { cloudPromptRequired, resolveRenderTargetConfig } from './cloudProviderConfig.js';
 import { RENDER_TARGET, recordRenderPin } from '../../lib/renderTargets.js';
 import { getProject as getMusicVideoProject } from '../musicVideo/projects.js';
 import { getImageModels, isFlux2 } from '../../lib/mediaModels.js';
@@ -66,7 +66,7 @@ export async function prepareGenerateParams({ data, files, referenceImageFields 
   // The multipart parser writes uploads to `os.tmpdir()` as they stream in,
   // so a 400 thrown from validation BEFORE we've registered the `res.on('close')`
   // sweep would otherwise leak those temp files. Call this from any pre-stage
-  // throw site (FLUX.2-only gate, non-local-backend gate).
+  // throw site (the local-FLUX.2 gate, the edit-incapable-backend gate).
   const cleanupReqFilesTemp = () => {
     if (!files) return;
     for (const f of Object.values(files)) {
@@ -74,9 +74,8 @@ export async function prepareGenerateParams({ data, files, referenceImageFields 
     }
   };
 
-  // Resolve the effective backend BEFORE staging reference uploads — only the
-  // local FLUX.2 runner consumes `referenceImagePaths`; an `external` or `codex`
-  // request that uploaded refs would otherwise stage files under
+  // Resolve the effective backend BEFORE staging reference uploads — an
+  // `external` request that uploaded refs would otherwise stage files under
   // `PATHS.imageRefs` and write sidecar metadata claiming references were used,
   // while the actual generation silently ignored them. (Reading settings here
   // is cheap — it's already read again below for the per-mode dispatch.)
@@ -118,29 +117,30 @@ export async function prepareGenerateParams({ data, files, referenceImageFields 
   data.denoise = cleaners.denoise;
   delete data.autoClean; // legacy field — already mapped into both flags above
 
-  // Multi-reference is a FLUX.2-only, local-backend-only feature — local.js's
-  // buildArgs only emits --reference-images/--reference-strengths inside the
-  // isFlux2 branch, and codex/external backends don't read these fields at all.
-  // Reject up-front rather than copying the uploads to PATHS.imageRefs and
-  // silently dropping them downstream (which would orphan files on disk and
-  // produce metadata sidecars that lie about how the render was conditioned).
+  // Reference images reach every backend that can consume them: local via
+  // local.js's buildArgs (--reference-images/--reference-strengths, emitted
+  // only inside the isFlux2 branch) and each cloud CLI via its own tool's
+  // reference array (codex `referenced_image_paths`, grok `image_edit.image`,
+  // agy `ImagePaths`). The two that CAN'T are rejected up-front rather than
+  // copying the uploads to PATHS.imageRefs and silently dropping them
+  // downstream — that would orphan files on disk and produce metadata sidecars
+  // that lie about how the render was conditioned.
   if (referenceUploads.length) {
-    if (mode !== IMAGE_GEN_MODE.LOCAL) {
+    if (!isEditCapableMode(mode)) {
       cleanupReqFilesTemp();
-      throw new ServerError(
-        'Reference images are only supported for local FLUX.2 renders',
-        { status: 400, code: 'REFERENCE_IMAGES_LOCAL_ONLY' },
-      );
+      throw editIncapableModeError(mode);
     }
-    const candidate = getImageModels().find((m) => m.id === data.modelId)
-      ?? getImageModels().find((m) => m.id === 'dev')
-      ?? getImageModels()[0];
-    if (!isFlux2(candidate)) {
-      cleanupReqFilesTemp();
-      throw new ServerError(
-        'Reference images are only supported for FLUX.2 models',
-        { status: 400, code: 'REFERENCE_IMAGES_FLUX2_ONLY' },
-      );
+    if (mode === IMAGE_GEN_MODE.LOCAL) {
+      const candidate = getImageModels().find((m) => m.id === data.modelId)
+        ?? getImageModels().find((m) => m.id === 'dev')
+        ?? getImageModels()[0];
+      if (!isFlux2(candidate)) {
+        cleanupReqFilesTemp();
+        throw new ServerError(
+          'Reference images are only supported for FLUX.2 models on the local backend',
+          { status: 400, code: 'REFERENCE_IMAGES_FLUX2_ONLY' },
+        );
+      }
     }
   }
 
@@ -192,14 +192,18 @@ export async function prepareGenerateParams({ data, files, referenceImageFields 
     data.referenceImageStrengths = referenceImageStrengths;
   }
 
-  // Empty prompt is allowed for i2i / local / external, but cloud-CLI
-  // text-to-image (no init image) still needs one — reject
-  // synchronously here so direct API callers get a 400 instead of a
-  // 200-then-async-job-failure. Mirrors the guards in codex.js/grok.js and
-  // the client's needs-prompt gate.
-  if (CLOUD_IMAGE_GEN_MODES.includes(mode) && !initImagePath && !data.prompt?.trim()) {
-    const label = mode === IMAGE_GEN_MODE.CODEX ? 'Codex' : mode === IMAGE_GEN_MODE.GROK ? 'Grok' : 'Agy';
-    throw new ServerError(`Prompt is required for ${label} text-to-image`, { status: 400, code: 'VALIDATION_ERROR' });
+  // Empty prompt is allowed for i2i / local / external, but a cloud-CLI render
+  // still needs one whenever its tool can't run image-only — text-to-image
+  // everywhere, plus agy even with input images (`Prompt` is required by its
+  // tool schema). Reject synchronously here so direct API callers get a 400
+  // instead of a 200-then-async-job-failure. Mirrors the guards in
+  // codex.js/grok.js/agy.js and the client's needs-prompt gate.
+  const hasInputImage = Boolean(initImagePath) || referenceImagePaths.length > 0;
+  if (cloudPromptRequired(mode, hasInputImage) && !data.prompt?.trim()) {
+    // Naming "text-to-image" would be wrong for the agy-with-input-images case,
+    // which is precisely the one that isn't.
+    const what = hasInputImage ? 'an image render' : 'text-to-image';
+    throw new ServerError(`Prompt is required for ${modeLabel(mode)} ${what}`, { status: 400, code: 'VALIDATION_ERROR' });
   }
 
   if (data.guidance == null && data.cfgScale != null) {

@@ -256,7 +256,7 @@ export async function enqueueVisualComicPage(issueId, options = {}) {
   // Resolved AFTER the init image, so an i2i render skips edit-incapable
   // backends rather than resolving to one that rejects the job in the queue
   // (#3243).
-  const mode = resolveMode(options, settings, series, { edit: Boolean(initImagePath) });
+  const mode = resolveMode(options, settings, series);
 
   // Build a free-text haystack from every panel's prose (description +
   // caption + sfx). Dialogue lines feed character matching via CAPS names
@@ -480,7 +480,7 @@ export async function refineComicPageRender(issueId, options = {}) {
 
   // A refine render always redraws from `initImagePath`, so it is unconditionally
   // an edit — edit-incapable backends are skipped (#3243).
-  const mode = resolveMode(options, settings, series, { edit: true });
+  const mode = resolveMode(options, settings, series);
   const initImageStrength = Number.isFinite(options.initImageStrength)
     ? Math.min(Math.max(options.initImageStrength, 0), 1)
     : REFINE_RENDER_DEFAULT_STRENGTH;

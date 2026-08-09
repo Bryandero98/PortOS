@@ -37,7 +37,7 @@ import {
   AlertTriangle, X, Film,
 } from 'lucide-react';
 import { composeStyledPrompt } from '../lib/composeStyledPrompt';
-import { isCloudCliMode, deriveAvailableBackends, AGY_IMAGEGEN_DEFAULT_MODEL, IMAGE_GEN_MODE, isI2iCapableMode, pickI2iMode, modeLabel } from '../lib/imageGenBackends';
+import { isCloudCliMode, deriveAvailableBackends, AGY_IMAGEGEN_DEFAULT_MODEL, IMAGE_GEN_MODE, cloudPromptRequired, isI2iCapableMode, pickI2iMode, modeLabel, referenceSlotsFor, supportsReferenceStrength } from '../lib/imageGenBackends';
 import { clampImageDimensions, clampImageEdge } from '../lib/imageGenResolutions';
 import { DEFAULT_NEGATIVE_PROMPT } from '../lib/imageGenDefaults';
 import { resolveCleanersFromConfig } from '../lib/imageCleaners';
@@ -55,9 +55,11 @@ import {
   getFlux2Status,
 } from '../services/api';
 
-// Multi-reference editing (FLUX.2 only) — 4 fixed slots, each carrying an
-// uploaded File + a 0..1 strength weight. Slots are positional so the
-// blob-URL revoke pairs with the slot the user cleared.
+// Multi-reference conditioning — 4 fixed slots, each carrying an uploaded File
+// + a 0..1 strength weight. Slots are positional so the blob-URL revoke pairs
+// with the slot the user cleared. Local consumes all 4 (FLUX.2 only); a cloud
+// CLI takes however many its image tool accepts alongside the init image (see
+// MAX_INPUT_IMAGES), so the form offers only that many slots there.
 const REFERENCE_SLOT_COUNT = 4;
 const EMPTY_REF_SLOT = { file: null, previewUrl: null, strength: 1.0 };
 
@@ -405,7 +407,7 @@ export default function ImageGen() {
 
   // Deferred i2i mode nudge: once backends resolve, flip to an i2i-capable
   // backend so the URL-supplied init image actually takes effect (the picker +
-  // generate payload are local/codex only). Give up quietly if neither exists.
+  // generate payload skip external). Give up quietly if none exists.
   useEffect(() => {
     if (!wantI2iModeRef.current) return;
     if (i2iCapable) { wantI2iModeRef.current = false; return; }
@@ -629,11 +631,36 @@ export default function ImageGen() {
   // submit button + show a hint rather than letting the user hit a failed job.
   const isEditOnlyModel = currentModel?.editOnly === true;
   const editImageMissing = isLocalMode && isEditOnlyModel && initImage.source == null;
-  // Codex text-to-image (no init image) still needs a prompt — mirror the server
-  // rule (codex.js requires a prompt only when there's no init image) so the user
-  // sees a disabled button + hint instead of a failed job toast. Local runs
-  // unconditionally and external (A1111) accepts an empty prompt, so neither gates.
-  const cloudNeedsPrompt = isCloudMode && initImage.source == null && !prompt.trim();
+  // The reference slots the active backend can actually consume, and the
+  // populated subset of them. Slots past the cap stay in state (a backend
+  // switch shouldn't destroy an upload the user can get back by switching
+  // again) but are neither rendered nor submitted — every consumer reads these
+  // two derived views rather than re-slicing `referenceImages`.
+  const referenceSlotCount = referenceSlotsFor(effectiveMode, {
+    hasInitImage: initImage.source != null,
+    maxSlots: REFERENCE_SLOT_COUNT,
+    localSupportsReferences: isFlux2Model,
+  });
+  const activeReferenceImages = useMemo(
+    () => referenceImages.slice(0, referenceSlotCount),
+    [referenceImages, referenceSlotCount],
+  );
+  const populatedRefs = useMemo(
+    () => activeReferenceImages.filter((s) => s.file != null),
+    [activeReferenceImages],
+  );
+  // Cloud text-to-image still needs a prompt — mirror the server rule
+  // (cloudPromptRequired: codex/grok can run image-only, agy always needs a
+  // Prompt) so the user sees a disabled button + hint instead of a failed job
+  // toast. Local runs unconditionally and external (A1111) accepts an empty
+  // prompt, so neither gates.
+  const hasCloudInputImage = initImage.source != null || populatedRefs.length > 0;
+  const cloudNeedsPrompt = cloudPromptRequired(effectiveMode, hasCloudInputImage) && !prompt.trim();
+  // Agy needs a prompt even WITH an input image (its tool requires one), so the
+  // "text-to-image" framing would be wrong there.
+  const cloudPromptHint = hasCloudInputImage
+    ? `${cloudModeLabel} always needs a prompt, even with a reference image`
+    : `${cloudModeLabel} text-to-image needs a prompt`;
   // mflux is the default runner for entries with no explicit `runner` field.
   // LoraPicker filters compatible weights itself; we pass the family (for the
   // "install one matching X" copy) and the fine-grained compat key (which
@@ -760,15 +787,11 @@ export default function ImageGen() {
       mode: IMAGE_GEN_MODE.LOCAL,
       cleanC2PA, denoise,
     };
-    // i2i works on local (mflux/FLUX) and codex (gpt-image edit) — not external.
+    // i2i works on local (mflux/FLUX) and every cloud CLI — not external.
     const hasInitImage = i2iCapable && initImage.source != null;
-    // Multi-reference editing is FLUX.2-only; gate the slot read so it can't
-    // accidentally fire on mflux or codex, and pack the populated slots so a
-    // gap (e.g. slots 1,3 filled, 2 empty) collapses to a packed two-image
-    // submit that aligns with the server's positional pairing.
-    const populatedRefs = (isLocalMode && isFlux2Model)
-      ? referenceImages.filter((s) => s.file != null)
-      : [];
+    // `populatedRefs` is already packed (a gap — slots 1,3 filled, 2 empty —
+    // collapses to a two-image submit) and already limited to what the backend
+    // accepts, which is what the server's positional strength pairing expects.
     const hasReferenceImages = populatedRefs.length > 0;
     if (hasInitImage || hasReferenceImages) {
       const initFields = hasInitImage ? {
@@ -1253,9 +1276,13 @@ export default function ImageGen() {
             />
           )}
 
-          {isLocalMode && isFlux2Model && (
+          {referenceSlotCount > 0 && (
             <ReferenceImagePicker
-              referenceImages={referenceImages}
+              referenceImages={activeReferenceImages}
+              showStrength={supportsReferenceStrength(effectiveMode)}
+              caption={isLocalMode
+                ? `up to ${referenceSlotCount} images for FLUX.2 multi-reference edit`
+                : `up to ${referenceSlotCount} more image${referenceSlotCount === 1 ? '' : 's'} ${cloudModeLabel} will use as visual references`}
               onPick={handlePickReferenceImage}
               onClear={handleClearReferenceImage}
               onStrengthChange={handleReferenceStrengthChange}
@@ -1268,7 +1295,7 @@ export default function ImageGen() {
             <button
               type="submit"
               disabled={notConnected || editImageMissing || cloudNeedsPrompt}
-              title={editImageMissing ? 'This image-edit model needs a source image — upload one below first' : cloudNeedsPrompt ? `${cloudModeLabel} text-to-image needs a prompt` : undefined}
+              title={editImageMissing ? 'This image-edit model needs a source image — upload one below first' : cloudNeedsPrompt ? cloudPromptHint : undefined}
               className="flex items-center gap-2 px-4 py-2 bg-port-accent hover:bg-port-accent/80 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg min-h-[40px]"
             >
               <Sparkles className="w-4 h-4" /> {generating ? 'Queue' : 'Generate'}
@@ -1278,7 +1305,7 @@ export default function ImageGen() {
               <span className="text-xs text-port-warning">Upload a source image to use this edit model</span>
             )}
             {cloudNeedsPrompt && (
-              <span className="text-xs text-port-warning">{cloudModeLabel} text-to-image needs a prompt</span>
+              <span className="text-xs text-port-warning">{cloudPromptHint}</span>
             )}
             {isAsyncMode && (
               <label className="flex items-center gap-1.5 text-xs text-gray-400" title="Batch size: number of renders to queue per submit">

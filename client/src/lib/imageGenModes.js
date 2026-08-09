@@ -120,15 +120,20 @@ export const supportsCloudModelOverride = (mode) => MODEL_OVERRIDE_CAPABLE_MODES
 // MODE_LABELS already holds and grow a branch per backend.
 export const modeLabel = (mode) => MODE_LABELS[mode] || mode || '';
 
-// Backends that support image-to-image (init image / reference editing). The
-// external SD-API path does not. Single source of truth for i2i gating in the UI.
-export const I2I_CAPABLE_MODES = Object.freeze([IMAGE_GEN_MODE.LOCAL, IMAGE_GEN_MODE.CODEX, IMAGE_GEN_MODE.GROK]);
+// Backends that support image-to-image (init image / reference conditioning).
+// The external SD-API path does not. Client mirror of the server's
+// EDIT_INCAPABLE_IMAGE_MODES complement (imageGen/modes.js), bound to it by
+// server/lib/renderTargets.parity.test.js. Ordered best-first — pickI2iMode
+// walks this list.
+export const I2I_CAPABLE_MODES = Object.freeze([
+  IMAGE_GEN_MODE.LOCAL, IMAGE_GEN_MODE.CODEX, IMAGE_GEN_MODE.GROK, IMAGE_GEN_MODE.AGY,
+]);
 
 // True when a mode can run image-to-image.
 export const isI2iCapableMode = (mode) => I2I_CAPABLE_MODES.includes(mode);
 
 // Pick the best available i2i backend from a list of `{ id }` backends,
-// preferring local (its form exposes strength + LoRAs), else codex, else grok.
+// preferring local (its form exposes strength + LoRAs), then codex, grok, agy.
 // Returns null when none is installed.
 export function pickI2iMode(backends) {
   for (const mode of I2I_CAPABLE_MODES) {
@@ -136,3 +141,47 @@ export function pickI2iMode(backends) {
   }
   return null;
 }
+
+// Client mirror of the `maxInputImages` field on the server's
+// CLOUD_PROVIDER_SPECS (imageGen/cloudProviderConfig.js) — how many input
+// images (init image + reference slots, combined) each cloud CLI's image tool
+// accepts. The form uses this to cap the reference slots it offers, so a user
+// never fills a slot the backend would silently drop. Local isn't listed:
+// FLUX.2 takes the init image plus all 4 reference slots.
+// Bound to the server values by server/lib/renderTargets.parity.test.js.
+export const MAX_INPUT_IMAGES = Object.freeze({
+  [IMAGE_GEN_MODE.AGY]: 3,
+  [IMAGE_GEN_MODE.CODEX]: 5,
+  [IMAGE_GEN_MODE.GROK]: 5,
+});
+
+// Client mirror of the server's cloudPromptRequired (imageGen/cloudProviderConfig.js).
+// Codex and grok can render from an input image alone; agy's generate_image
+// lists `Prompt` in its required parameters, so it always needs one. Bound to
+// the server predicate by server/lib/renderTargets.parity.test.js.
+export const cloudPromptRequired = (mode, hasInputImage) =>
+  isCloudCliMode(mode) && (!hasInputImage || mode === IMAGE_GEN_MODE.AGY);
+
+/**
+ * How many reference slots the form should offer for `mode`.
+ *
+ * The client half of the server's input-image cap: a cloud CLI's tool caps the
+ * COMBINED count, so an init image eats one of its slots — the same "init image
+ * leads" rule `resolveInputImages` applies server-side, predicted here so the
+ * form never offers a slot the backend would drop. Local FLUX.2 takes all of
+ * them (its references ride a separate runner flag from the init image); a
+ * non-FLUX.2 local model and external take none.
+ */
+export function referenceSlotsFor(mode, { hasInitImage = false, maxSlots = 4, localSupportsReferences = false } = {}) {
+  if (mode === IMAGE_GEN_MODE.LOCAL) return localSupportsReferences ? maxSlots : 0;
+  if (!isCloudCliMode(mode)) return 0;
+  return Math.min(maxSlots, MAX_INPUT_IMAGES[mode] - (hasInitImage ? 1 : 0));
+}
+
+// Backends that honor a NUMERIC per-reference strength. Only the local FLUX.2
+// runner does (its K/V reference-attention scales each reference's V slice by
+// its weight); the cloud CLIs expose no such knob, so their forms must not show
+// a slider that does nothing. The single init image is the exception — its
+// strength maps to a fidelity PHRASE in the cloud prompts (describeFidelity),
+// so that slider stays meaningful everywhere.
+export const supportsReferenceStrength = (mode) => mode === IMAGE_GEN_MODE.LOCAL;

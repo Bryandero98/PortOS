@@ -1130,24 +1130,26 @@ describe('listSpriteThumbnails', () => {
 });
 
 /**
- * #3331 — a backend that cannot take an input image (agy) may still render a
- * from-scratch turnaround, but nothing downstream of it. The distinction the
- * service draws is not "which target" but "where did the mode come from":
- * an explicit request-level pick fails loudly, a pin degrades quietly.
+ * #3331 — the seeded reference paths (main, anchors, forks) are all i2i, so
+ * they used to be closed to agy. Its `generate_image` tool takes input images
+ * through `ImagePaths`, so every queueable backend can now run them: neither an
+ * explicit request-level pick nor a record pin is diverted.
  */
-describe('edit-incapable backends on the seeded reference paths (#3331)', () => {
-  it('400s an explicitly requested edit-incapable mode on a seeded render', async () => {
+describe('input-image backends on the seeded reference paths (#3331)', () => {
+  it('runs an explicitly requested agy render on a seeded (i2i) target', async () => {
     const id = newId();
     await createCharacter(id);
     await lockTurnaround(id);
     enqueueJob.mockClear();
     // The main always derives from the locked sheet, so this render is i2i.
-    await expect(startReferenceGeneration(id, { target: 'main', mode: 'agy' }))
-      .rejects.toMatchObject({ code: 'AGY_IMAGE_EDIT_UNSUPPORTED', status: 400 });
-    expect(enqueueJob).not.toHaveBeenCalled();
+    const { mode } = await startReferenceGeneration(id, { target: 'main', mode: 'agy' });
+    expect(mode).toBe('agy');
+    expect(enqueueJob.mock.calls.at(-1)[0].params.mode).toBe('agy');
+    // The seed still rides along — the backend consumes it as its input image.
+    expect(enqueueJob.mock.calls.at(-1)[0].params.initImagePath).toBeTruthy();
   });
 
-  it('still runs an explicitly requested edit-incapable mode for a from-scratch turnaround', async () => {
+  it('runs an explicitly requested agy render for a from-scratch turnaround', async () => {
     const id = newId();
     await createCharacter(id);
     const result = await startReferenceGeneration(id, { target: 'turnaround', designPrompt: 'a wiry ranger', mode: 'agy' });
@@ -1155,16 +1157,14 @@ describe('edit-incapable backends on the seeded reference paths (#3331)', () => 
     expect(enqueueJob.mock.calls.at(-1)[0].params.mode).toBe('agy');
   });
 
-  it('degrades a record PIN to an edit-capable backend rather than failing the render', async () => {
+  it('honors a record PIN on a seeded render instead of diverting it', async () => {
     const id = newId();
     await createCharacter(id, { imageMode: 'agy' });
     await lockTurnaround(id);
     enqueueJob.mockClear();
     const { mode } = await startReferenceGeneration(id, { target: 'main' });
-    // A pin is a preference — the same way pickUsableMode degrades a pin whose
-    // backend was switched off, rather than 400ing a request the user didn't make.
-    expect(mode).toBe('codex');
-    expect(enqueueJob.mock.calls.at(-1)[0].params.mode).toBe('codex');
+    expect(mode).toBe('agy');
+    expect(enqueueJob.mock.calls.at(-1)[0].params.mode).toBe('agy');
   });
 });
 
@@ -1192,20 +1192,19 @@ describe('forkSprite', () => {
     expect(call.params.initImagePath).toBe(join(TEST_ROOT, 'sprites', source, `reference/${source}-turnaround-v1.png`));
   });
 
-  it('400s a fork onto a text-to-image-only backend and creates no orphan record', async () => {
+  it('forks onto agy, seeding the render from the source reference', async () => {
     const source = newId();
     await createCharacter(source, { name: 'Origin' });
     await lockMain(source);
     enqueueJob.mockClear();
-    const before = (await records.listRecords()).length;
-    // A fork ALWAYS seeds from the source reference, so agy can never run one —
-    // and the picker used to offer it, accept the request, and only diverge
-    // later (#3331). The refusal must land before createCharacter, or the doomed
-    // backend is persisted as the new record's render pin on the way past.
-    await expect(forkSprite(source, { name: 'Agy Fork', designPrompt: 'x', mode: 'agy' }))
-      .rejects.toMatchObject({ code: 'AGY_IMAGE_EDIT_UNSUPPORTED', status: 400 });
-    expect((await records.listRecords()).length).toBe(before);
-    expect(enqueueJob).not.toHaveBeenCalled();
+    // A fork ALWAYS seeds from the source reference, which used to close agy
+    // out of the fork picker entirely (#3331). Its ImagePaths parameter takes
+    // that seed, so the fork runs and the chosen backend is persisted as the
+    // new record's render pin.
+    const { record } = await forkSprite(source, { name: 'Agy Fork', designPrompt: 'x', mode: 'agy' });
+    expect(record.imageMode).toBe('agy');
+    expect(enqueueJob.mock.calls.at(-1)[0].params.mode).toBe('agy');
+    expect(enqueueJob.mock.calls.at(-1)[0].params.initImagePath).toBeTruthy();
   });
 
   it('400s forking a source with no locked main and creates no orphan record', async () => {

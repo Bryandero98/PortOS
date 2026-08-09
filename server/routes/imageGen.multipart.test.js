@@ -297,10 +297,10 @@ describe('POST /api/image-gen/generate — multipart reference-image packing', (
     expect(refDirContents.filter((f) => f.startsWith('ref-'))).toHaveLength(0);
   });
 
-  it('rejects refs when the effective backend is not local (codex/external) — even with a FLUX.2 modelId', async () => {
-    // FLUX.2 model selected, but settings.imageGen.mode flips to a backend
-    // that doesn't consume `referenceImagePaths`. The gate must fire BEFORE
-    // any file is staged into PATHS.imageRefs.
+  it('rejects refs on the external backend, which has no input-image wiring', async () => {
+    // FLUX.2 model selected, but settings.imageGen.mode flips to the one
+    // backend that can't consume `referenceImagePaths`. The gate must fire
+    // BEFORE any file is staged into PATHS.imageRefs.
     mockedSettings = { imageGen: { mode: 'external' } };
     const res = await postMultipart(app, '/api/image-gen/generate', [
       { name: 'prompt', value: 'flux2 ref on wrong backend' },
@@ -309,10 +309,28 @@ describe('POST /api/image-gen/generate — multipart reference-image packing', (
     ]);
 
     expect(res.status).toBe(400);
-    expect(res.body.error || res.body).toMatch(/local/i);
+    expect(res.body.error || res.body).toMatch(/text-to-image only/i);
     expect(enqueueJob).not.toHaveBeenCalled();
     const refDirContents = await readdir(refsSandbox).catch(() => []);
     expect(refDirContents.filter((f) => f.startsWith('ref-'))).toHaveLength(0);
+  });
+
+  it.each(['codex', 'grok', 'agy'])('stages refs for the %s backend and threads the paths into the job', async (mode) => {
+    // The cloud CLIs each feed reference images to their own image tool, so a
+    // ref upload is honored rather than 400'd — the "local FLUX.2 only" gate
+    // that used to reject these was the bug.
+    mockedSettings = { imageGen: { mode, [mode]: { enabled: true } } };
+    const res = await postMultipart(app, '/api/image-gen/generate', [
+      { name: 'prompt', value: 'a fox in this style' },
+      { name: 'referenceImage1', filename: 'a.png', contentType: 'image/png', value: PNG_FIXTURE },
+      { name: 'referenceImage2', filename: 'b.png', contentType: 'image/png', value: PNG_FIXTURE },
+    ]);
+
+    expect(res.status).toBe(200);
+    const { params } = enqueueJob.mock.calls.at(-1)[0];
+    expect(params.mode).toBe(mode);
+    expect(params.referenceImagePaths).toHaveLength(2);
+    for (const p of params.referenceImagePaths) expect(p.startsWith(refsSandbox)).toBe(true);
   });
 
   it('rejecting a non-FLUX.2 ref upload deletes the multer-staged tmp file (no os.tmpdir leak)', async () => {

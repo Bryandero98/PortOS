@@ -37,7 +37,7 @@ import { copyFile, mkdir, open, rename, rm, stat, unlink } from 'fs/promises';
 import { isAbsolute, join, resolve as pathResolve, sep } from 'path';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
-import { atomicWrite, detectImageFormat, ensureDir, PATHS, resolveImageInputPath } from '../../lib/fileUtils.js';
+import { atomicWrite, detectImageFormat, ensureDir, PATHS } from '../../lib/fileUtils.js';
 import { ServerError } from '../../lib/errorHandler.js';
 import { autoCleanGeneratedImage } from '../../lib/imageClean.js';
 import { imageGenEvents } from '../imageGenEvents.js';
@@ -48,7 +48,11 @@ import { checkFabrication, noFabricationClause } from './fabricationGuard.js';
 import sharp from 'sharp';
 import { bufferedSpawn, killProcessTree, prepareCliSpawn } from '../../lib/bufferedSpawn.js';
 import { ensureGrokHeadlessArgs, prepareGrokPromptFile } from '../../lib/grok.js';
-import { IMAGE_GEN_MODE, describeFidelity, grokImageTool, nearestAspectRatio } from './modes.js';
+import {
+  IMAGE_GEN_MODE, describeFidelity, grokImageTool, nearestAspectRatio, visualReferenceRole,
+} from './modes.js';
+import { resolveInputImages } from './inputImages.js';
+import { cloudPromptRequired } from './cloudProviderConfig.js';
 import { withSpawnCwdEnv } from '../../lib/spawnCwd.js';
 
 // 20 minutes — grok's image_gen typically returns in well under a minute, but
@@ -157,39 +161,72 @@ export const noImageReason = (stdoutTail = '') => buildNoImageReason(stdoutTail,
 });
 
 // Build the single-turn agent prompt that triggers image_gen (or image_edit
-// for i2i) and directs the output to a PortOS-chosen path. Grok is a general
-// coding agent, so the prompt is explicit about the tool, the save path, and
-// staying out of everything else.
-export function buildGrokPrompt({ prompt, negativePrompt, aspectRatio, stagingPath, initImagePath, initImageStrength }) {
-  const avoid = negativePrompt?.trim() ? `\nAvoid: ${negativePrompt.trim()}` : '';
-  const ratio = aspectRatio ? `\nUse aspect_ratio "${aspectRatio}".` : '';
-  const task = initImagePath
-    ? `Use your built-in image_edit tool to transform the source image at ${initImagePath} — ${describeFidelity(initImageStrength)}.\nEdit instruction: ${prompt.trim()}${avoid}`
-    : `Use your built-in image_gen tool to generate exactly one image.\nImage prompt: ${prompt.trim()}${avoid}`;
-  return `${task}${ratio}\nSave the generated image as a PNG file at exactly this path: ${stagingPath}\n${noFabricationClause(grokImageTool(initImagePath))}\nDo not create any other files, do not modify any code, and do not run any other tools beyond what is needed to generate the image and write it to that path. When the file is written, you are done.`;
+// whenever the render carries any input image) and directs the output to a
+// PortOS-chosen path. Grok is a general coding agent, so the prompt is explicit
+// about the tool, the save path, and staying out of everything else.
+//
+// grok's `image_gen` has NO image parameter at all, so reference images route
+// to `image_edit` too — its `image` parameter is an ARRAY of references (probed
+// 2026-08-09: "Reference image(s) to condition the edit on"), which is exactly
+// how PortOS's reference slots are fed. The init image, when present, leads the
+// array and is the one the fidelity phrase describes.
+export function buildGrokPrompt({
+  prompt, negativePrompt, aspectRatio, stagingPath,
+  initImagePath, initImageStrength, referenceImagePaths = [],
+}) {
+  const refCount = referenceImagePaths.length;
+  const refList = referenceImagePaths.join(', ');
+  const refNoun = refCount === 1 ? 'this reference image' : `these ${refCount} reference images`;
+  const inOrder = refCount > 1 ? ', in this order,' : '';
+  const toolName = grokImageTool(Boolean(initImagePath || refCount));
+
+  // One clause per line, assembled in the order grok reads them: what to call,
+  // what to pass it, then what to draw.
+  const lines = [];
+  if (initImagePath) {
+    lines.push(`Use your built-in image_edit tool to transform the source image at ${initImagePath} — ${describeFidelity(initImageStrength)}. Pass that source image FIRST in the tool's \`image\` array.`);
+    if (refCount) {
+      lines.push(`Also pass ${refNoun} to the tool's \`image\` array after it${inOrder} as ${visualReferenceRole(refCount)}: ${refList}`);
+    }
+  } else if (refCount) {
+    lines.push(`Use your built-in image_edit tool to generate exactly one image conditioned on ${refNoun}.`);
+    lines.push(`Pass ${refCount === 1 ? 'it' : 'them'} to the tool's \`image\` array${inOrder} as ${visualReferenceRole(refCount)}: ${refList}`);
+  } else {
+    lines.push('Use your built-in image_gen tool to generate exactly one image.');
+  }
+  // An edit reads as an instruction ON the source image; everything else is a
+  // description OF the image to make.
+  lines.push(`${initImagePath ? 'Edit instruction' : 'Image prompt'}: ${prompt.trim()}`);
+  if (negativePrompt?.trim()) lines.push(`Avoid: ${negativePrompt.trim()}`);
+  if (aspectRatio) lines.push(`Use aspect_ratio "${aspectRatio}".`);
+  lines.push(`Save the generated image as a PNG file at exactly this path: ${stagingPath}`);
+  lines.push(noFabricationClause(toolName));
+  lines.push('Do not create any other files, do not modify any code, and do not run any other tools beyond what is needed to generate the image and write it to that path. When the file is written, you are done.');
+  return lines.join('\n');
 }
 
 // `initImageStrength` maps to a fidelity phrase (grok's image_edit has no
 // numeric denoise knob, same constraint as codex).
 export async function generateImage({
   grokPath, aspectRatio, prompt = '', width, height, negativePrompt,
-  initImagePath, initImageStrength,
+  initImagePath, initImageStrength, referenceImagePaths = [],
   jobId: providedJobId = null,
   cleanC2PA = false,
   denoise = false,
 }) {
   await ensureDir(PATHS.images);
 
-  // Defense-in-depth: re-anchor the init image to the allowed input roots so
-  // no caller can point grok's image_edit at an arbitrary local file. Mirrors
-  // imageGen/codex.js.
-  const validInitImagePath = (initImagePath && typeof initImagePath === 'string')
-    ? resolveImageInputPath(initImagePath)
-    : null;
+  // Re-anchors every path to the allowed input roots (so no caller can point
+  // grok's image_edit at an arbitrary local file) and caps the list — see
+  // inputImages.js.
+  const inputImages = resolveInputImages({
+    mode: IMAGE_GEN_MODE.GROK, initImagePath, referenceImagePaths,
+  });
 
-  // An empty prompt is fine when editing an init image; a pure text-to-image
-  // grok render still needs one.
-  if (!validInitImagePath && !prompt?.trim()) {
+  // An empty prompt is fine when an input image is present; a pure
+  // text-to-image grok render still needs one. The per-provider rule lives on
+  // the provider spec — see cloudPromptRequired.
+  if (cloudPromptRequired(IMAGE_GEN_MODE.GROK, inputImages.paths.length > 0) && !prompt?.trim()) {
     throw new ServerError('Prompt is required', { status: 400, code: 'VALIDATION_ERROR' });
   }
 
@@ -215,7 +252,8 @@ export async function generateImage({
 
   const fullPrompt = buildGrokPrompt({
     prompt, negativePrompt, aspectRatio: effectiveRatio, stagingPath,
-    initImagePath: validInitImagePath, initImageStrength,
+    initImagePath: inputImages.initPath, initImageStrength,
+    referenceImagePaths: inputImages.referencePaths,
   });
 
   const bin = grokPath || DEFAULT_BIN;
@@ -245,7 +283,7 @@ export async function generateImage({
   // attaches to the per-job SSE stream (mirrors codex.js/local.js).
   runGrok(job, jobId, bin, args, {
     useStdin, fullPrompt, cleanupPromptFile, scratchDir, stagingPath, outputPath, filename, meta, cleanC2PA, denoise,
-    toolName: grokImageTool(validInitImagePath),
+    toolName: grokImageTool(inputImages.paths.length > 0),
   }).catch((err) => {
     console.log(`❌ grok run failed [${jobId.slice(0, 8)}]: ${err?.message}`);
   });
@@ -261,7 +299,7 @@ export async function generateImage({
 
 async function runGrok(job, jobId, bin, args, {
   useStdin, fullPrompt, cleanupPromptFile, scratchDir, stagingPath, outputPath, filename, meta, cleanC2PA = false, denoise = false,
-  toolName = grokImageTool(null),
+  toolName = grokImageTool(false),
 }) {
   // A path-shaped grokPath (contains a separator) must resolve against the
   // PortOS working directory NOW — the child spawns with cwd set to the
