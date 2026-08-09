@@ -17,7 +17,7 @@ import {
   CHILD_POLL_MS, DIVERGENCE_PATIENCE, trackConvergence, convergencePauseReason,
   divergencePauseReason, foundationPauseReason, foundationDivergenceReason,
 } from './convergence.js';
-import { broadcast, budgetPause, providerOverrideOpts, providerIdOpts } from './session.js';
+import { broadcast, budgetPause, providerOverrideOpts, providerIdOpts, seasonPreserveOpts } from './session.js';
 import { requiredScriptStages, textReady } from './stepResolver.js';
 
 // ---------------------------------------------------------------------------
@@ -72,10 +72,7 @@ export async function runArcVerify(seriesId, record) {
     const resolved = await resolveVerifyIssues(seriesId, {
       findings: blocking,
       ...providerOverrideOpts(record),
-      // Unlock-for-run cleared the per-season locks that used to stop an
-      // auto-resolve from dropping a volume — keep the records regardless, so
-      // "unlocked for editing" never means "deletable" (see unlockPass.js).
-      preserveDroppedSeasons: record.options.unlockForRun === true,
+      ...seasonPreserveOpts(record),
     });
     await recordDomainUsage('cos', { actions: 1 });
     broadcast(seriesId, {
@@ -219,6 +216,7 @@ export async function runFoundationGate(seriesId, record) {
       finding: snap.dimensions?.[weak.dimension] || {},
       providerOverride: providerId,
       modelOverride: model,
+      ...seasonPreserveOpts(record),
     });
     await recordDomainUsage('cos', { actions: 1 });
     broadcast(seriesId, {

@@ -46,10 +46,6 @@ const DEFAULT_REVISION_PLATEAU_DELTA = 0.3;
 // defaults ON (the point of the phase); the weighted [0,10] threshold the
 // foundation must clear before drafting mirrors autonovel's 7.5 bar; the improve
 // loop is bounded by MAX_FOUNDATION_ROUNDS (3).
-// Unlock-everything pre-pass — mirror the server default (off). Opt-in because
-// it mutates lock state the user set by hand; it only ever CLEARS locks (and
-// only on records this series owns), never deletes anything.
-const DEFAULT_UNLOCK_FOR_RUN = false;
 const DEFAULT_FOUNDATION_GATE = true;
 const DEFAULT_FOUNDATION_THRESHOLD = 7.5;
 const DEFAULT_FOUNDATION_ROUNDS = 3;
@@ -183,15 +179,19 @@ function frameLabel(f) {
     // Unlock pre-pass: report what it actually cleared (and what it deliberately
     // left frozen), so "unlocked everything" is never an unverifiable claim.
     case 'unlock:applied': {
-      if (!f.unlockedAny) return 'Unlock — nothing was locked';
       const parts = [];
       if (f.arc) parts.push('arc');
       if (f.arcFields) parts.push(`${f.arcFields} arc field(s)`);
       if (f.seasons) parts.push(`${f.seasons} volume(s)`);
       if (f.stages) parts.push(`${f.stages} stage(s)`);
       if (f.canon) parts.push(`${f.canon} canon entr${f.canon === 1 ? 'y' : 'ies'}`);
-      const kept = f.canonForeignKept ? ` · kept ${f.canonForeignKept} other series' canon locked` : '';
-      return `Unlocked ${parts.join(', ')}${kept}`;
+      if (f.worldFields) parts.push(`${f.worldFields} world field(s)`);
+      if (parts.length === 0) return 'Unlock — nothing was locked';
+      const kept = [
+        f.canonForeignKept ? `${f.canonForeignKept} other series' canon` : '',
+        f.worldFieldsKept ? `${f.worldFieldsKept} shared world field(s)` : '',
+      ].filter(Boolean);
+      return `Unlocked ${parts.join(', ')}${kept.length ? ` · kept ${kept.join(' + ')} locked` : ''}`;
     }
     case 'render:queued': return `Queued draft render: ${f.target}`;
     case 'gap:filed': return `Filed CoS task (${f.gapKind})`;
@@ -270,12 +270,14 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
   const [revisionMinCycles, setRevisionMinCycles] = useState(DEFAULT_REVISION_MIN_CYCLES);
   const [revisionMaxCycles, setRevisionMaxCycles] = useState(DEFAULT_REVISION_MAX_CYCLES);
   const [revisionPlateauDelta, setRevisionPlateauDelta] = useState(DEFAULT_REVISION_PLATEAU_DELTA);
+  // Unlock-everything pre-pass. PER-RUN ONLY and never persisted (like
+  // `readinessGate` below, unlike every other option here): it rewrites lock
+  // state the user set by hand, and a saved default would be picked up by
+  // scheduled unattended runs of every series. Always starts unticked, so
+  // clearing locks is a fresh, deliberate choice each run.
+  const [unlockForRun, setUnlockForRun] = useState(false);
   // Foundation-quality gate (#2176) — enable toggle + weighted threshold + round
   // bound. Persisted like the other options (saved default + per-run override).
-  // Unlock-everything pre-pass. Persisted like the other booleans (saved default
-  // + per-run override) so a series the user drives unlocked stays that way on
-  // Resume.
-  const [unlockForRun, setUnlockForRun] = useState(DEFAULT_UNLOCK_FOR_RUN);
   const [foundationGate, setFoundationGate] = useState(DEFAULT_FOUNDATION_GATE);
   const [foundationThreshold, setFoundationThreshold] = useState(DEFAULT_FOUNDATION_THRESHOLD);
   const [foundationRounds, setFoundationRounds] = useState(DEFAULT_FOUNDATION_ROUNDS);
@@ -293,7 +295,6 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
   const revisionMinEditedRef = useRef(false);
   const revisionMaxEditedRef = useRef(false);
   const revisionDeltaEditedRef = useRef(false);
-  const unlockForRunEditedRef = useRef(false);
   const foundationGateEditedRef = useRef(false);
   const foundationThresholdEditedRef = useRef(false);
   const foundationRoundsEditedRef = useRef(false);
@@ -374,7 +375,6 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
         if (!revisionMinEditedRef.current) setRevisionMinCycles(Number.isInteger(pec.revisionMinCycles) ? pec.revisionMinCycles : DEFAULT_REVISION_MIN_CYCLES);
         if (!revisionMaxEditedRef.current) setRevisionMaxCycles(Number.isInteger(pec.revisionMaxCycles) ? pec.revisionMaxCycles : DEFAULT_REVISION_MAX_CYCLES);
         if (!revisionDeltaEditedRef.current) setRevisionPlateauDelta(Number.isFinite(pec.revisionPlateauDelta) ? pec.revisionPlateauDelta : DEFAULT_REVISION_PLATEAU_DELTA);
-        if (!unlockForRunEditedRef.current) setUnlockForRun(typeof pec.unlockForRun === 'boolean' ? pec.unlockForRun : DEFAULT_UNLOCK_FOR_RUN);
         if (!foundationGateEditedRef.current) setFoundationGate(typeof pec.foundationGate === 'boolean' ? pec.foundationGate : DEFAULT_FOUNDATION_GATE);
         if (!foundationThresholdEditedRef.current) setFoundationThreshold(Number.isFinite(pec.foundationThreshold) ? pec.foundationThreshold : DEFAULT_FOUNDATION_THRESHOLD);
         if (!foundationRoundsEditedRef.current) setFoundationRounds(Number.isInteger(pec.maxFoundationRounds) ? pec.maxFoundationRounds : DEFAULT_FOUNDATION_ROUNDS);
@@ -410,11 +410,6 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
   const editFoundationRounds = useCallback((v) => { foundationRoundsEditedRef.current = true; setFoundationRounds(v); }, []);
   // Boolean toggle — persist immediately (like notifyOnPause) so the saved
   // default tracks the choice and Resume reuses it.
-  const editUnlockForRun = useCallback((v) => {
-    unlockForRunEditedRef.current = true;
-    setUnlockForRun(v);
-    persistRounds({ unlockForRun: v });
-  }, [persistRounds]);
   const editFoundationGate = useCallback((v) => {
     foundationGateEditedRef.current = true;
     setFoundationGate(v);
@@ -537,9 +532,6 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
     // #2176 — foundation gate. Persist + override like the other options, only
     // when edited (untouched → server resolves from the persisted setting, then
     // the default: gate ON / threshold 7.5 / 3 rounds).
-    // Unlock pre-pass — persists + overrides like the other booleans. Untouched
-    // sends nothing → the server resolves it from the persisted setting, then off.
-    if (unlockForRunEditedRef.current) roundOverrides.unlockForRun = unlockForRun;
     if (foundationGateEditedRef.current) roundOverrides.foundationGate = foundationGate;
     if (foundationThresholdEditedRef.current) roundOverrides.foundationThreshold = clampFoundationThreshold(foundationThreshold, DEFAULT_FOUNDATION_THRESHOLD);
     if (foundationRoundsEditedRef.current) roundOverrides.maxFoundationRounds = clampRound(foundationRounds, DEFAULT_FOUNDATION_ROUNDS);
@@ -548,6 +540,10 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
     // specific gate. Unlike the round inputs we never persist it — '' leaves the
     // server to resolve the gate from the saved setting (then the default).
     const gateOverride = READINESS_GATE_LABELS[readinessGate] ? { readinessGate } : {};
+    // Per-run unlock pre-pass — sent only when ticked, and never persisted (see
+    // the state declaration): a saved default would reach unattended scheduled
+    // runs of every series, and this one rewrites user-set lock state.
+    const unlockOverride = unlockForRun ? { unlockForRun: true } : {};
     // Per-run provider/model override, sent ONLY when the user picked one —
     // otherwise the server resolves the series' own llm (then the active
     // provider). Never persisted, like the readiness gate. Picking a provider
@@ -556,7 +552,7 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
       ...(providerOverride ? { providerOverride } : {}),
       ...(modelOverride ? { modelOverride } : {}),
     };
-    const res = await startPipelineAutopilot(seriesId, { includeVisual, fileGaps, ...roundOverrides, ...gateOverride, ...llmOverride }, { silent: true })
+    const res = await startPipelineAutopilot(seriesId, { includeVisual, fileGaps, ...roundOverrides, ...gateOverride, ...unlockOverride, ...llmOverride }, { silent: true })
       .catch((err) => { toast.error(err.message || 'Could not start autopilot'); return null; });
     setStarting(false);
     if (!res) return;
@@ -688,12 +684,12 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
             Judge the foundation (world / characters / arc) before drafting
           </label>
           <label className="flex items-center gap-2 text-xs text-gray-300">
-            <input type="checkbox" checked={unlockForRun} onChange={(e) => editUnlockForRun(e.target.checked)} />
+            <input type="checkbox" checked={unlockForRun} onChange={(e) => setUnlockForRun(e.target.checked)} />
             Unlock everything this series owns first (full edit control)
           </label>
           {unlockForRun ? (
             <p className="text-[11px] text-gray-500">
-              Clears the arc freeze, arc-field locks, volume locks, issue stage locks, and the locks on the universe canon this series owns — so the run can actually apply the fixes its editorial passes find. Canon belonging to (or shared with) another series in the same universe stays locked, and nothing is ever deleted: characters and objects can be rewritten but stay in the Universe and the Catalog. Locks are <em>not</em> restored when the run ends. Saved as the default and reused on Resume.
+              Clears the arc freeze, arc-field locks, volume locks, issue stage locks, and the locks on the universe canon this series owns — so the run can actually apply the fixes its editorial passes find. Canon belonging to (or shared with) another series in the same universe stays locked, and the universe&apos;s own world fields are only cleared when this is its only series. Nothing is ever deleted: characters, objects and volumes can be rewritten in full but stay in the Universe and the Catalog. Locks are <em>not</em> restored when the run ends. Applies to this run only — never saved as a default, so a scheduled run can&apos;t inherit it.
             </p>
           ) : null}
           <div className="flex flex-wrap gap-4 pt-1">

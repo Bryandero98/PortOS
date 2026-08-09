@@ -46,7 +46,8 @@ vi.mock('../../universeBuilder.js', async (importOriginal) => ({
 
 const seriesSvc = await import('../series.js');
 const issuesSvc = await import('../issues.js');
-const { isSeriesScopedCanonEntry, partitionLockedCanon, unlockSeriesForAutopilot } = await import('./unlockPass.js');
+const { isSeriesScopedCanonEntry } = await import('../../../lib/storyBible.js');
+const { unlockSeriesForAutopilot, countSeriesLocks } = await import('./unlockPass.js');
 
 const charEntry = (over = {}) => ({ id: 'c1', name: 'Kai', physicalDescription: 'Tall.', ...over });
 
@@ -73,15 +74,26 @@ describe('unlockPass — series-scoped canon predicate', () => {
     expect(isSeriesScopedCanonEntry(unowned, { seriesId: 's1', soleSeries: false })).toBe(false);
   });
 
-  it('partitions only LOCKED entries — unlocked ones are neither unlockable nor foreign', () => {
-    const { unlockable, foreign } = partitionLockedCanon([
-      charEntry({ id: 'a', locked: true, sourceSeriesId: 's1' }),
-      charEntry({ id: 'b', locked: true, sourceSeriesId: 's2' }),
-      charEntry({ id: 'c', locked: false, sourceSeriesId: 's1' }),
-      charEntry({ id: 'd', sourceSeriesId: 's1' }),
-    ], { seriesId: 's1' });
-    expect(unlockable.map((e) => e.id)).toEqual(['a']);
-    expect(foreign.map((e) => e.id)).toEqual(['b']);
+});
+
+// The dry-run plan promises this number; the pass clears exactly these locks.
+// One definition, so the two can't drift when a lock surface is added.
+describe('unlockPass — countSeriesLocks', () => {
+  it('counts the arc freeze, each arc field, each volume and each issue stage', () => {
+    const series = {
+      locked: { arc: true, arcFields: { logline: true, themes: true } },
+      seasons: [{ id: 'a', locked: true }, { id: 'b' }],
+    };
+    const issues = [
+      { stages: { idea: { locked: true }, prose: { locked: false }, comicPages: { locked: true } } },
+      { stages: { idea: {} } },
+    ];
+    expect(countSeriesLocks(series, issues)).toBe(1 + 2 + 1 + 2);
+  });
+
+  it('is 0 for a fully-unlocked series and tolerates missing shapes', () => {
+    expect(countSeriesLocks({ seasons: [{ id: 'a' }] }, [{ stages: {} }])).toBe(0);
+    expect(countSeriesLocks(null, null)).toBe(0);
   });
 });
 
@@ -173,8 +185,33 @@ describe('unlockPass — end-to-end over the real series/issue services', () => 
     const s = await buildSeries();
     const counts = await unlockSeriesForAutopilot(s.id);
     expect(counts.canon).toBe(0);
-    expect(counts.universeId).toBeNull();
+    expect(counts.worldFields).toBe(0);
     expect(getUniverse).not.toHaveBeenCalled();
+  });
+
+  // The foundation gate's world + craft fixes report "every refinable world
+  // field is locked" and pause the run — the exact stall this option removes.
+  it('clears the universe world-field locks when this series is its only series', async () => {
+    const mine = await buildSeries({ universeId: 'uni-solo' });
+    universe = {
+      id: 'uni-solo', characters: [], places: [], objects: [],
+      locked: { logline: true, styleNotes: true },
+    };
+    const counts = await unlockSeriesForAutopilot(mine.id);
+    expect(counts.worldFields).toBe(2);
+    expect(counts.worldFieldsKept).toBe(0);
+    expect(universe.locked).toEqual({});
+  });
+
+  it('leaves the universe world-field locks alone when a sibling series shares the universe', async () => {
+    const mine = await buildSeries({ universeId: 'uni-1' });
+    const other = await seriesSvc.createSeries({ name: 'Sibling', targetFormat: 'comic' });
+    await seriesSvc.updateSeries(other.id, { universeId: 'uni-1' });
+    universe = { id: 'uni-1', characters: [], places: [], objects: [], locked: { logline: true } };
+    const counts = await unlockSeriesForAutopilot(mine.id);
+    expect(counts.worldFields).toBe(0);
+    expect(counts.worldFieldsKept).toBe(1);
+    expect(universe.locked).toEqual({ logline: true });
   });
 
   it('writes nothing to the universe when no owned canon entry is locked', async () => {

@@ -112,27 +112,31 @@ describe('AutopilotPanel', () => {
     );
   });
 
-  it('sends AND persists unlockForRun once the unlock checkbox is toggled', async () => {
+  it('sends unlockForRun as a per-run override and never persists it', async () => {
     renderPanel({ id: 's1', targetFormat: 'comic' });
     await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
     fireEvent.click(screen.getByRole('button', { name: /options/i }));
     fireEvent.click(screen.getByRole('checkbox', { name: /unlock everything this series owns/i }));
     // The explainer only appears once armed — it carries the two guarantees.
     expect(screen.getByText(/nothing is ever deleted/i)).toBeInTheDocument();
-    // The persist rides the serialized tail promise, so it lands a tick later.
-    await waitFor(() => expect(patchSettingsSlice).toHaveBeenCalledWith('pipelineEditorialChecks', { unlockForRun: true }, { silent: true }));
     fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
     await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
       's1', { includeVisual: true, fileGaps: false, unlockForRun: true }, { silent: true },
     ));
+    // Saving it would let a scheduled unattended run inherit lock-clearing.
+    expect(patchSettingsSlice).not.toHaveBeenCalledWith(
+      'pipelineEditorialChecks',
+      expect.objectContaining({ unlockForRun: expect.anything() }),
+      expect.anything(),
+    );
   });
 
-  it('omits unlockForRun when the checkbox is untouched (server resolves the saved default)', async () => {
+  it('starts unticked even when settings carry a stale unlockForRun value', async () => {
     getSettings.mockResolvedValue({ pipelineEditorialChecks: { unlockForRun: true } });
     renderPanel({ id: 's1', targetFormat: 'comic' });
     await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
     fireEvent.click(screen.getByRole('button', { name: /options/i }));
-    await waitFor(() => expect(screen.getByRole('checkbox', { name: /unlock everything this series owns/i })).toBeChecked());
+    expect(screen.getByRole('checkbox', { name: /unlock everything this series owns/i })).not.toBeChecked();
     fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
     await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
       's1', { includeVisual: true, fileGaps: false }, { silent: true },
@@ -140,13 +144,21 @@ describe('AutopilotPanel', () => {
   });
 
   it('reports what the unlock pass cleared and what it left frozen', async () => {
-    sseFrames = [{ type: 'unlock:applied', unlockedAny: true, arc: 1, arcFields: 0, seasons: 2, stages: 3, canon: 4, canonForeignKept: 5 }];
+    sseFrames = [{ type: 'unlock:applied', arc: 1, arcFields: 0, seasons: 2, stages: 3, canon: 4, canonForeignKept: 5, worldFields: 0, worldFieldsKept: 2 }];
     sseLatest = sseFrames[0];
     getPipelineAutopilotStatus.mockResolvedValue({ autopilot: { runId: 'r1', status: 'running' }, active: true });
     renderPanel({ id: 's1', targetFormat: 'comic' });
     await waitFor(() => expect(
-      screen.getAllByText(/Unlocked arc, 2 volume\(s\), 3 stage\(s\), 4 canon entries · kept 5 other series' canon locked/).length,
+      screen.getAllByText(/Unlocked arc, 2 volume\(s\), 3 stage\(s\), 4 canon entries · kept 5 other series' canon \+ 2 shared world field\(s\) locked/).length,
     ).toBeGreaterThan(0));
+  });
+
+  it('reads an already-unlocked series as a no-op rather than "unlocked 0 things"', async () => {
+    sseFrames = [{ type: 'unlock:applied', arc: 0, arcFields: 0, seasons: 0, stages: 0, canon: 0, canonForeignKept: 0, worldFields: 0, worldFieldsKept: 0 }];
+    sseLatest = sseFrames[0];
+    getPipelineAutopilotStatus.mockResolvedValue({ autopilot: { runId: 'r1', status: 'running' }, active: true });
+    renderPanel({ id: 's1', targetFormat: 'comic' });
+    await waitFor(() => expect(screen.getAllByText(/Unlock — nothing was locked/).length).toBeGreaterThan(0));
   });
 
   it('sends a chosen readiness gate as a per-run override without persisting it (#1580)', async () => {

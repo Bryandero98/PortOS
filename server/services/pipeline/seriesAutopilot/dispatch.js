@@ -6,22 +6,12 @@
 import { recordDomainUsage } from '../../domainUsage.js';
 import { getSeries } from '../series.js';
 import { generateArcOverview, commitSeasonsWithRemap, generateSeasonEpisodes, commitEpisodesToIssues } from '../arcPlanner.js';
-import { providerOverrideOpts } from './session.js';
+import { providerOverrideOpts, seasonPreserveOpts } from './session.js';
 import { runArcVerify, runBeats, runBeatContinuity, runFoundationGate, runText } from './childRuns.js';
 import { runScriptVerify, runEditorial, runReverseOutlineRefresh, runEditorialChecksPass, runEditorialHealthGate } from './editorialSteps.js';
 import { runCanonVerify, runVisualDraft, runProduceTeaser } from './visualSteps.js';
 import { runRevisionCycle } from './revisionSteps.js';
 import { runUnlockPass } from './unlockPass.js';
-
-// Once the unlock pass has cleared the per-season locks, those locks can no
-// longer stop an LLM-proposed arc from DROPPING a volume — and "unlock so the
-// autopilot can edit" must never become "unlock so the autopilot can delete"
-// (see the unlockPass module header). `preserveDroppedSeasons` re-inserts any
-// existing season the rewrite omitted while still letting same-id rewrites
-// through, so content is fully editable and the record itself survives.
-const seasonPreserveOpts = (record) => ({
-  preserveDroppedSeasons: record.options.unlockForRun === true,
-});
 
 export async function dispatchStep(sId, step, record) {
   switch (step.kind) {
@@ -32,7 +22,11 @@ export async function dispatchStep(sId, step, record) {
       // generation yields no seasons (avoids an infinite generateArc loop).
       record.runState.arcAttempted = true;
       const r = await generateArcOverview(sId, providerOverrideOpts(record));
-      const committed = await commitSeasonsWithRemap(await getSeries(sId), { arc: r.arc, seasons: r.seasons }, seasonPreserveOpts(record));
+      const committed = await commitSeasonsWithRemap(
+        await getSeries(sId),
+        { arc: r.arc, seasons: r.seasons },
+        seasonPreserveOpts(record),
+      );
       await recordDomainUsage('cos', { actions: 1 });
       const seasonCount = committed?.series?.seasons?.length ?? (await getSeries(sId)).seasons?.length ?? 0;
       if (seasonCount === 0) {

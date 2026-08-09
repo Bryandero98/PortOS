@@ -70,7 +70,7 @@ export async function startSeriesAutopilot(sId, options = {}) {
     checkFindingsPauseThreshold: resolveAutopilotCheckPauseThreshold(options, settings),
     notifyOnPause: resolveAutopilotNotifyOnPause(options, settings),
     produceTeaser: resolveAutopilotProduceTeaser(options, settings),
-    unlockForRun: resolveAutopilotUnlockForRun(options, settings),
+    unlockForRun: resolveAutopilotUnlockForRun(options),
     ...resolveAutopilotRevision(options, settings),
     // Run provider/model: per-run override → the series' own `series.llm` →
     // unset (stage pin / active provider downstream). Resolved ONCE here so the
@@ -247,15 +247,15 @@ export async function startSeriesAutopilot(sId, options = {}) {
           || (step.kind === 'beatContinuity' && runOptions.maxBeatContinuityRounds === 0)
           || (step.kind === 'editorialReview' && runOptions.maxEditorialRounds === 0)
           || (step.kind === 'foundationGate' && (runOptions.maxFoundationRounds === 0 || runOptions.foundationGate === false));
-        // `unlockLocks` is exempt for a simpler reason than the self-gating
-        // steps: it makes no LLM call and bills nothing (it only clears lock
-        // bits), so pausing it on an exhausted budget would strand the run
-        // before its first real step for no spend at all.
         const selfGatingStep = step.kind === 'editorialChecks'
           || step.kind === 'editorialHealthGate'
-          || step.kind === 'reverseOutline'
-          || step.kind === 'unlockLocks';
-        if (!selfGatingStep && !zeroRoundSkip) {
+          || step.kind === 'reverseOutline';
+        // Distinct from the self-gating steps (which bill, but decide for
+        // themselves when): `unlockLocks` makes no LLM call and bills nothing at
+        // all — it only clears lock bits — so pausing it on an exhausted budget
+        // would strand the run before its first real step for zero spend.
+        const costFreeStep = step.kind === 'unlockLocks';
+        if (!selfGatingStep && !costFreeStep && !zeroRoundSkip) {
           const budget = await getDomainBudgetStatus('cos');
           if (!budget.withinBudget) {
             const budgetReason = `daily cos ${budget.exceeded} budget reached`;

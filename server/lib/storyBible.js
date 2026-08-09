@@ -849,6 +849,28 @@ function applyCanonExtras(raw) {
   return out;
 }
 
+/**
+ * PURE: does `sourceSeriesId` make this canon entry a given series' to edit?
+ *
+ * Universe canon is shared by every series linked to that universe, so a
+ * series-scoped bulk operation (the autopilot's unlock-for-run pre-pass, and
+ * any future "reset what this series introduced" affordance) must not touch
+ * another series' cast. Lives here, next to the sanitizer that owns and caps
+ * `sourceSeriesId`, so the meaning of that field has one definition:
+ *
+ *   - `sourceSeriesId === seriesId`  → this series minted it. In scope.
+ *   - `sourceSeriesId` names another series → out of scope, always.
+ *   - no `sourceSeriesId` (universe-authored / legacy) → in scope ONLY when
+ *     `soleSeries`, i.e. the caller has established that this series is the
+ *     universe's only one, so there is no other association to damage.
+ */
+export function isSeriesScopedCanonEntry(entry, { seriesId, soleSeries = false } = {}) {
+  if (!entry || typeof entry !== 'object') return false;
+  const owner = typeof entry.sourceSeriesId === 'string' ? entry.sourceSeriesId : '';
+  if (owner) return owner === seriesId;
+  return soleSeries === true;
+}
+
 // Pipeline + writers-room shapes both use `physicalDescription`. Migration 019
 // rewrites the legacy `description` alias forward, but the read-side fallback
 // stays in place so a load-before-migration doesn't silently drop the text on

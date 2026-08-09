@@ -147,19 +147,21 @@ export function wantsTeaser(options = {}) {
 
 // Unlock-everything-first (see ./unlockPass.js). When on, the run's FIRST step
 // clears every lock this series owns — the arc freeze + per-field arc locks,
-// each volume's lock, every issue stage lock, and the universe-canon entries
+// each volume's lock, every issue stage lock, and the universe-side records
 // this series owns — so the autopilot can actually apply the fixes the
 // editorial passes surface instead of pausing on findings it isn't allowed to
-// resolve. Defaults OFF: it mutates persisted lock state the user set by hand,
-// so it must be an explicit choice. Per-run option wins, then the persisted
-// setting, then false. Stamped onto run options once at start so the resolver,
-// the dry-run plan and a later resume all read the same effective flag.
-export const DEFAULT_UNLOCK_FOR_RUN = false;
-export function resolveAutopilotUnlockForRun(options = {}, settings = null) {
-  if (typeof options?.unlockForRun === 'boolean') return options.unlockForRun;
-  const pec = settings?.pipelineEditorialChecks || {};
-  if (typeof pec?.unlockForRun === 'boolean') return pec.unlockForRun;
-  return DEFAULT_UNLOCK_FOR_RUN;
+// resolve.
+//
+// PER-RUN ONLY, deliberately — the one autopilot option with NO persisted
+// default (mirrors `readinessGate`, and unlike every other gate here). The rest
+// of this file's options are spend/quality knobs where a saved default is
+// harmless; this one rewrites protection state the user set by hand. A saved
+// default would be read by `seriesAutopilotScheduler`, so ticking the box once
+// in one series' panel would silently arm lock-clearing for every future
+// unattended scheduled run of EVERY series. Stamped onto run options at start
+// so the resolver, the dry-run plan and a resume all read the same flag.
+export function resolveAutopilotUnlockForRun(options = {}) {
+  return options?.unlockForRun === true;
 }
 
 // Iterate-to-quality revision loop (CWQE Phase 7, #2171). Opt-in per run; when

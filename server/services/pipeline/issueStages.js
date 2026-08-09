@@ -66,8 +66,13 @@ export function updateStagesWithLatest(seriesId, updates = [], { snapshotPrior =
     const state = await readState();
     const results = [];
     let changed = false;
+    // Index once: `state.issues` is the INSTALL-wide list, and a bulk caller can
+    // pass one update per (issue, stage) — a per-update findIndex would make the
+    // write O(updates × issues in the install). Rebuilt in step with the
+    // in-place `state.issues[idx] = …` writes below (index positions are stable).
+    const indexById = new Map(state.issues.map((i, idx) => [i.id, idx]));
     for (const update of updates) {
-      const idx = state.issues.findIndex((i) => i.id === update.issueId);
+      const idx = indexById.get(update.issueId) ?? -1;
       if (idx < 0) throw makeErr(`Issue not found: ${update.issueId}`, ERR_NOT_FOUND);
       const cur = state.issues[idx];
       if (cur.deleted || cur.seriesId !== seriesId) throw makeErr(`Issue not found: ${update.issueId}`, ERR_NOT_FOUND);

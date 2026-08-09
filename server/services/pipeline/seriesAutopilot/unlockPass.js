@@ -11,14 +11,13 @@
  *
  * TWO HARD BOUNDARIES — both are the point of the feature, not incidental:
  *
- * 1. SERIES SCOPE. Universe canon (characters / places / objects) is shared
- *    across every series linked to that universe, so a blanket unlock would
- *    hand the autopilot edit rights over another series' cast. An entry is
- *    unlocked only when it is provably THIS series' to edit:
- *      - `sourceSeriesId === seriesId`  → this series minted it. Unlock.
- *      - `sourceSeriesId` names another series → foreign. Stays locked.
- *      - no `sourceSeriesId` at all → unlock ONLY when this series is the sole
- *        series linked to the universe (nothing else can be affected).
+ * 1. SERIES SCOPE. Universe canon (characters / places / objects) and the
+ *    universe's own world fields are shared across every series linked to that
+ *    universe, so a blanket unlock would hand the autopilot edit rights over
+ *    another series' cast and setting. Canon is filtered by ownership
+ *    (`isSeriesScopedCanonEntry`, which owns the `sourceSeriesId` rule); the
+ *    universe's world-field locks have no per-series ownership at all, so they
+ *    are cleared ONLY when this series is the universe's sole series.
  *    Everything else the pass touches (arc, arc fields, seasons, issue stages)
  *    is wholly series-owned, so it unlocks unconditionally.
  *
@@ -31,72 +30,57 @@
  *    autopilot has no canon/catalog deletion path and must not grow one here.
  *    Season records get the same treatment: see `preserveDroppedSeasons` in
  *    `arcPlanner/arcCore.js#commitSeasonsWithRemap`, which the autopilot sets
- *    on its arc-rewriting calls whenever this pass has run, so a regenerated
- *    arc can rewrite a volume's content but can never make the volume vanish
- *    (the per-season lock used to be the only thing preventing that).
+ *    on every arc-rewriting call once this pass has run, so a regenerated arc
+ *    can rewrite a volume's content but can never make the volume vanish (the
+ *    per-season lock used to be the only thing preventing that).
  *
  * Locks are NOT restored when the run ends. The user opted into an unlocked
  * series; silently re-freezing records the autopilot just rewrote would leave
  * the lock state lying about what is user-frozen. The pass reports exactly what
- * it changed (SSE frame + run marker) so re-locking is an informed choice.
+ * it changed (SSE frame + log) so re-locking is an informed choice.
  */
 
-import { BIBLE_KEYS } from '../../../lib/storyBible.js';
+import { BIBLE_KEYS, isSeriesScopedCanonEntry } from '../../../lib/storyBible.js';
 import { getUniverse, updateUniverse } from '../../universeBuilder.js';
+import { setCanonLocksForSeries } from '../../universeCanon.js';
 import { getSeries, updateSeries, listSeries } from '../series.js';
 import { listIssues, updateStagesWithLatest, STAGE_IDS } from '../issues.js';
 import { broadcast } from './session.js';
 
-/**
- * PURE: is this universe-canon entry this series' to unlock?
- *
- * `soleSeries` is true when `seriesId` is the ONLY series linked to the
- * universe — the case where an unowned (legacy / universe-authored) entry has
- * no other series association to damage.
- */
-export function isSeriesScopedCanonEntry(entry, { seriesId, soleSeries = false } = {}) {
-  if (!entry || typeof entry !== 'object') return false;
-  const owner = typeof entry.sourceSeriesId === 'string' ? entry.sourceSeriesId : '';
-  if (owner) return owner === seriesId;
-  return soleSeries === true;
-}
-
-/**
- * PURE: split a canon list into the locked entries this series may unlock and
- * the locked entries that must stay frozen (owned by, or shared with, another
- * series). Unlocked entries are ignored by both buckets — nothing to do.
- */
-export function partitionLockedCanon(list, scope) {
-  const unlockable = [];
-  const foreign = [];
-  for (const entry of Array.isArray(list) ? list : []) {
-    if (entry?.locked !== true) continue;
-    if (isSeriesScopedCanonEntry(entry, scope)) unlockable.push(entry);
-    else foreign.push(entry);
+// Every lock on the SERIES records this pass would clear: the arc freeze, each
+// per-field arc lock, each volume lock, each issue stage lock. Exported so the
+// dry-run plan can promise the same number the pass reports — one definition,
+// so a new lock surface can't be counted in one place and cleared in the other.
+// Universe-side locks are deliberately excluded: they live on another record
+// that only an async read could reach, and the dry-run plan is synchronous.
+export function countSeriesLocks(series, issues) {
+  const locked = series?.locked || {};
+  let n = locked.arc === true ? 1 : 0;
+  n += Object.values(locked.arcFields || {}).filter((v) => v === true).length;
+  n += (Array.isArray(series?.seasons) ? series.seasons : []).filter((s) => s?.locked === true).length;
+  for (const issue of Array.isArray(issues) ? issues : []) {
+    n += Object.values(issue?.stages || {}).filter((st) => st?.locked === true).length;
   }
-  return { unlockable, foreign };
+  return n;
 }
 
-// Clear `series.locked` (the binary arc freeze + every per-field arc lock).
-// `locked: {}` is a wholesale replace in updateSeries, so this drops both.
-async function unlockSeriesArc(seriesId, series) {
+// Clear `series.locked` (the binary arc freeze + every per-field arc lock) AND
+// every volume's lock in ONE patch. `updateSeries` applies `locked` and
+// `seasons` as independent wholesale replaces over the freshest record inside
+// its write queue, so a single call costs one read/write/peer-emit instead of
+// two — and there is no re-read window between them.
+async function unlockSeriesRecord(series) {
   const locked = series.locked || {};
-  const arcLocked = locked.arc === true ? 1 : 0;
-  const arcFieldsLocked = Object.keys(locked.arcFields || {}).length;
-  if (arcLocked === 0 && arcFieldsLocked === 0) return { arc: 0, arcFields: 0 };
-  await updateSeries(seriesId, { locked: {} });
-  return { arc: arcLocked, arcFields: arcFieldsLocked };
-}
-
-// Clear every season's `locked`. Written as ONE series patch rather than N
-// `updateSeason` calls: updateSeason refuses a content patch on a locked season
-// and re-derives issue numbers per call, neither of which we want N times.
-async function unlockSeasons(seriesId, series) {
+  const arc = locked.arc === true ? 1 : 0;
+  const arcFields = Object.keys(locked.arcFields || {}).length;
   const seasons = Array.isArray(series.seasons) ? series.seasons : [];
-  const lockedCount = seasons.filter((s) => s?.locked === true).length;
-  if (lockedCount === 0) return 0;
-  await updateSeries(seriesId, { seasons: seasons.map((s) => (s?.locked === true ? { ...s, locked: false } : s)) });
-  return lockedCount;
+  const lockedSeasons = seasons.filter((s) => s?.locked === true).length;
+  if (arc === 0 && arcFields === 0 && lockedSeasons === 0) return { arc: 0, arcFields: 0, seasons: 0 };
+  await updateSeries(series.id, {
+    ...(arc || arcFields ? { locked: {} } : {}),
+    ...(lockedSeasons ? { seasons: seasons.map((s) => (s?.locked === true ? { ...s, locked: false } : s)) } : {}),
+  });
+  return { arc, arcFields, seasons: lockedSeasons };
 }
 
 // Clear `locked` on every stage of every issue in the series. Batched through
@@ -120,68 +104,73 @@ async function unlockIssueStages(seriesId, issues) {
   return updates.length;
 }
 
-// Clear `locked` on the series-scoped canon entries of the linked universe.
-// Foreign entries (another series' cast, or shared entries in a multi-series
-// universe) are counted and reported but left frozen — see boundary 1.
-async function unlockSeriesCanon(seriesId, series) {
-  if (!series.universeId) return { unlocked: 0, foreign: 0, universeId: null };
-  const universe = await getUniverse(series.universeId).catch(() => null);
-  if (!universe) return { unlocked: 0, foreign: 0, universeId: null };
-  // "Sole series" decides whether an UNOWNED entry (no sourceSeriesId) is safe
-  // to unlock. Deleted series don't count — listSeries already excludes them.
-  const siblings = await listSeries().catch(() => []);
-  const soleSeries = !siblings.some((s) => s.id !== seriesId && s.universeId === series.universeId);
-  const scope = { seriesId, soleSeries };
+// Is this series the ONLY one linked to `universeId`? Decides whether records
+// with no per-series owner (unowned canon, the universe's world fields) are
+// safe to unlock. `listSeries()` loads every series in the install, so callers
+// gate it on there actually being an unowned locked record to decide about.
+async function isSoleSeriesOfUniverse(seriesId, universeId) {
+  const all = await listSeries().catch(() => []);
+  return !all.some((s) => s.id !== seriesId && s.universeId === universeId);
+}
 
-  let unlocked = 0;
-  let foreign = 0;
-  // Mutator form so the patch is built from the freshest persisted canon inside
-  // updateUniverse's write queue — a read-modify-write split would replace the
-  // whole array from a stale read and clobber a concurrent render-completion
-  // `imageRefs[]` append (the same reason setCanonKindLockAll uses it).
-  await updateUniverse(series.universeId, (cur) => {
-    unlocked = 0;
-    foreign = 0;
-    const patch = {};
-    for (const key of BIBLE_KEYS) {
-      const list = Array.isArray(cur[key]) ? cur[key] : null;
-      if (!list) continue;
-      const { unlockable, foreign: frozen } = partitionLockedCanon(list, scope);
-      foreign += frozen.length;
-      if (unlockable.length === 0) continue;
-      const unlockIds = new Set(unlockable.map((e) => e.id));
-      unlocked += unlockable.length;
-      patch[key] = list.map((e) => (unlockIds.has(e.id) ? { ...e, locked: false } : e));
-    }
-    return Object.keys(patch).length > 0 ? patch : null;
-  });
-  return { unlocked, foreign, universeId: series.universeId };
+// Does the universe hold a locked canon entry with no owning series? Only then
+// does `soleSeries` change any outcome — every owned entry is decided by its
+// own `sourceSeriesId`.
+const hasUnownedLockedCanon = (universe) => BIBLE_KEYS.some((key) =>
+  (Array.isArray(universe?.[key]) ? universe[key] : [])
+    .some((e) => e?.locked === true && !e?.sourceSeriesId));
+
+// Clear the universe's own world-field locks (logline / premise / styleNotes /
+// influence lists). These have no per-series owner, so they are only this
+// series' to clear when it is the universe's sole series. Worth covering: the
+// foundation gate's world + craft fixes report "every refinable world field is
+// locked" and pause the run — exactly the stall this option exists to remove.
+async function unlockUniverseWorldFields(universe, soleSeries) {
+  const lockedCount = Object.values(universe?.locked || {}).filter((v) => v === true).length;
+  if (lockedCount === 0 || !soleSeries) return { cleared: 0, kept: soleSeries ? 0 : lockedCount };
+  await updateUniverse(universe.id, { locked: {} });
+  return { cleared: lockedCount, kept: 0 };
+}
+
+// Clear the locks on the universe-side records this series owns: its canon
+// entries, plus the world fields when this series is the universe's only one.
+async function unlockUniverseFor(seriesId, universeId) {
+  const universe = await getUniverse(universeId).catch(() => null);
+  if (!universe) return { canon: 0, canonForeignKept: 0, worldFields: 0, worldFieldsKept: 0 };
+  const worldLocked = Object.values(universe.locked || {}).some((v) => v === true);
+  // One install-wide read at most, and only when an unowned record's fate
+  // actually depends on it.
+  const soleSeries = (hasUnownedLockedCanon(universe) || worldLocked)
+    ? await isSoleSeriesOfUniverse(seriesId, universeId)
+    : false;
+  const canon = await setCanonLocksForSeries(universeId, seriesId, false, { soleSeries });
+  const world = await unlockUniverseWorldFields(universe, soleSeries);
+  return {
+    canon: canon.changed,
+    canonForeignKept: canon.foreignKept,
+    worldFields: world.cleared,
+    worldFieldsKept: world.kept,
+  };
 }
 
 /**
  * Run the unlock pass for a series. Returns the per-scope counts (also
- * broadcast as an `unlock:applied` SSE frame by the dispatch step). Idempotent
+ * broadcast as an `unlock:applied` SSE frame by the step handler). Idempotent
  * — a second run finds nothing locked and writes nothing.
  */
 export async function unlockSeriesForAutopilot(seriesId) {
-  const series = await getSeries(seriesId);
-  const issues = await listIssues({ seriesId });
-  const arcResult = await unlockSeriesArc(seriesId, series);
-  // Re-read: unlockSeriesArc may have rewritten the record, and unlockSeasons
-  // patches the whole `seasons` array (a stale copy would resurrect the locks
-  // the arc patch just cleared alongside it).
-  const seasons = await unlockSeasons(seriesId, await getSeries(seriesId));
-  const stages = await unlockIssueStages(seriesId, issues);
-  const canon = await unlockSeriesCanon(seriesId, series);
-  return {
-    arc: arcResult.arc,
-    arcFields: arcResult.arcFields,
-    seasons,
-    stages,
-    canon: canon.unlocked,
-    canonForeignKept: canon.foreign,
-    universeId: canon.universeId,
-  };
+  const [series, issues] = await Promise.all([getSeries(seriesId), listIssues({ seriesId })]);
+  // Three independent stores (series / issues / universe), so run them
+  // concurrently rather than paying three sequential round-trips at the top of
+  // every unlock-enabled run.
+  const [record, stages, universe] = await Promise.all([
+    unlockSeriesRecord(series),
+    unlockIssueStages(seriesId, issues),
+    series.universeId
+      ? unlockUniverseFor(seriesId, series.universeId)
+      : Promise.resolve({ canon: 0, canonForeignKept: 0, worldFields: 0, worldFieldsKept: 0 }),
+  ]);
+  return { ...record, stages, ...universe };
 }
 
 /**
@@ -198,10 +187,7 @@ export async function runUnlockPass(seriesId, record) {
     return null;
   });
   if (!counts) return {};
-  // `unlockedAny` drives the UI copy: a run on an already-unlocked series should
-  // read as a no-op, not as "unlocked 0 things".
-  const unlockedAny = counts.arc + counts.arcFields + counts.seasons + counts.stages + counts.canon > 0;
-  broadcast(seriesId, { type: 'unlock:applied', ...counts, unlockedAny });
-  console.log(`🔓 autopilot unlock — series=${seriesId.slice(0, 12)} arc=${counts.arc} arcFields=${counts.arcFields} seasons=${counts.seasons} stages=${counts.stages} canon=${counts.canon} foreignKept=${counts.canonForeignKept}`);
+  broadcast(seriesId, { type: 'unlock:applied', ...counts });
+  console.log(`🔓 autopilot unlock — series=${seriesId.slice(0, 12)} arc=${counts.arc} arcFields=${counts.arcFields} seasons=${counts.seasons} stages=${counts.stages} canon=${counts.canon} world=${counts.worldFields} foreignKept=${counts.canonForeignKept}`);
   return {};
 }

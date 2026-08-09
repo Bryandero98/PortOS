@@ -763,14 +763,17 @@ describe('resolveAutopilotProduceTeaser (config gate, #2185)', () => {
 
 describe('resolveAutopilotUnlockForRun (config gate)', () => {
   it('defaults OFF — it mutates lock state the user set by hand', () => {
-    expect(autopilot.resolveAutopilotUnlockForRun({}, null)).toBe(false);
+    expect(autopilot.resolveAutopilotUnlockForRun({})).toBe(false);
+    expect(autopilot.resolveAutopilotUnlockForRun({ unlockForRun: false })).toBe(false);
   });
-  it('per-run option wins over the persisted setting', () => {
-    expect(autopilot.resolveAutopilotUnlockForRun({ unlockForRun: true }, { pipelineEditorialChecks: { unlockForRun: false } })).toBe(true);
-    expect(autopilot.resolveAutopilotUnlockForRun({ unlockForRun: false }, { pipelineEditorialChecks: { unlockForRun: true } })).toBe(false);
+  it('is on only when the run explicitly asks for it', () => {
+    expect(autopilot.resolveAutopilotUnlockForRun({ unlockForRun: true })).toBe(true);
   });
-  it('falls back to the persisted setting when no per-run option', () => {
-    expect(autopilot.resolveAutopilotUnlockForRun({}, { pipelineEditorialChecks: { unlockForRun: true } })).toBe(true);
+  // The one autopilot option with NO persisted default: `seriesAutopilotScheduler`
+  // resolves unattended runs from the settings slice, so a saved value would arm
+  // lock-clearing on every scheduled run of every series.
+  it('ignores a persisted setting entirely — per-run only', () => {
+    expect(autopilot.resolveAutopilotUnlockForRun({}, { pipelineEditorialChecks: { unlockForRun: true } })).toBe(false);
   });
 });
 

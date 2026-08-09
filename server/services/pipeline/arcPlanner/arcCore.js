@@ -595,7 +595,7 @@ export function mergeSeasonsWithLocks(currentSeasons, nextSeasons) {
 // re-sorted by `number` in `sanitizeSeasonList` at the call site.
 export function preserveDroppedSeasonRecords(currentSeasons, nextSeasons) {
   if (!Array.isArray(nextSeasons)) return nextSeasons;
-  if (!Array.isArray(currentSeasons) || currentSeasons.length === 0) return nextSeasons;
+  if (!Array.isArray(currentSeasons)) return nextSeasons;
   const keptIds = new Set(nextSeasons.map((s) => s?.id).filter(Boolean));
   const dropped = currentSeasons.filter((s) => s?.id && !keptIds.has(s.id));
   return dropped.length === 0 ? nextSeasons : [...nextSeasons, ...dropped];

@@ -1001,6 +1001,10 @@ describe('arcPlanner — shapeEpisodeResolutions', () => {
   });
 });
 
+// Shared by every commitSeasonsWithRemap case below — they all commit a fresh
+// draft arc and vary only the seasons.
+const DRAFT_ARC = Object.freeze({ logline: 'L', summary: '', themes: [], protagonistArc: '', shape: null, status: 'draft' });
+
 describe('arcPlanner — commitSeasonsWithRemap', () => {
   beforeEach(() => {
     fileStore.clear();
@@ -1023,7 +1027,7 @@ describe('arcPlanner — commitSeasonsWithRemap', () => {
       { id: 'sea-fresh-2', number: 2, title: 'Six Blocks Down', logline: '', synopsis: '', endingHook: '', episodeCountTarget: 3, themes: [] },
     ];
     const out = await planner.commitSeasonsWithRemap(cur, {
-      arc: { logline: 'L', summary: '', themes: [], protagonistArc: '', shape: null, status: 'draft' },
+      arc: DRAFT_ARC,
       seasons: freshSeasons,
     });
 
@@ -1043,7 +1047,7 @@ describe('arcPlanner — commitSeasonsWithRemap', () => {
 
     const cur = await seriesSvc.getSeries(s.id);
     const out = await planner.commitSeasonsWithRemap(cur, {
-      arc: { logline: 'L', summary: '', themes: [], protagonistArc: '', shape: null, status: 'draft' },
+      arc: DRAFT_ARC,
       seasons: [{ ...oldS1, logline: 'updated' }],
     });
     expect(out.reassignedIssueCount).toBe(0);
@@ -1058,7 +1062,7 @@ describe('arcPlanner — commitSeasonsWithRemap', () => {
 
     const cur = await seriesSvc.getSeries(s.id);
     const out = await planner.commitSeasonsWithRemap(cur, {
-      arc: { logline: 'L', summary: '', themes: [], protagonistArc: '', shape: null, status: 'draft' },
+      arc: DRAFT_ARC,
       seasons: [],
     });
     expect(out.reassignedIssueCount).toBe(1);
@@ -1194,7 +1198,7 @@ describe('arcPlanner — commitSeasonsWithRemap (season locks)', () => {
     await seasonsSvc.updateSeason(s.id, s1.id, { locked: true });
     const cur = await seriesSvc.getSeries(s.id);
     const out = await planner.commitSeasonsWithRemap(cur, {
-      arc: { logline: 'L', summary: '', themes: [], protagonistArc: '', shape: null, status: 'draft' },
+      arc: DRAFT_ARC,
       seasons: [
         // LLM tries to rewrite the locked season's content under the same id.
         { id: s1.id, number: 1, title: 'LLM rewrite', logline: 'LLM logline', synopsis: 'LLM synopsis', endingHook: '', episodeCountTarget: 9, themes: [] },
@@ -1215,7 +1219,7 @@ describe('arcPlanner — commitSeasonsWithRemap (season locks)', () => {
     const i1 = await issuesSvc.createIssue({ seriesId: s.id, seasonId: s1.id, title: 'Pilot' });
     const cur = await seriesSvc.getSeries(s.id);
     const out = await planner.commitSeasonsWithRemap(cur, {
-      arc: { logline: 'L', summary: '', themes: [], protagonistArc: '', shape: null, status: 'draft' },
+      arc: DRAFT_ARC,
       // LLM proposed dropping the locked season entirely.
       seasons: [],
     });
@@ -1232,7 +1236,7 @@ describe('arcPlanner — commitSeasonsWithRemap (season locks)', () => {
     const unlocked = await seasonsSvc.createSeason(s.id, { title: 'Editable', episodeCountTarget: 4, number: 2 });
     const cur = await seriesSvc.getSeries(s.id);
     const out = await planner.commitSeasonsWithRemap(cur, {
-      arc: { logline: 'L', summary: '', themes: [], protagonistArc: '', shape: null, status: 'draft' },
+      arc: DRAFT_ARC,
       seasons: [
         { id: locked.id, number: 1, title: 'LLM rewrite of frozen', logline: '', synopsis: '', endingHook: '', episodeCountTarget: 1, themes: [] },
         { id: unlocked.id, number: 2, title: 'Editable v2', logline: 'updated', synopsis: '', endingHook: '', episodeCountTarget: 5, themes: [] },
@@ -1244,6 +1248,33 @@ describe('arcPlanner — commitSeasonsWithRemap (season locks)', () => {
     expect(frozenAfter.locked).toBe(true);
     expect(editableAfter.title).toBe('Editable v2');
     expect(editableAfter.episodeCountTarget).toBe(5);
+  });
+
+  // `preserveDroppedSeasons` — the autopilot's unlock-for-run mode clears the
+  // per-season locks above, so this is what keeps a rewrite from DELETING a
+  // volume once they're gone.
+  it('keeps an UNLOCKED season the rewrite dropped, and still applies rewrites to survivors', async () => {
+    const s = await setupSeries();
+    const dropped = await seasonsSvc.createSeason(s.id, { title: 'Would vanish', episodeCountTarget: 3, number: 1 });
+    const kept = await seasonsSvc.createSeason(s.id, { title: 'Old title', episodeCountTarget: 3, number: 2 });
+    const i1 = await issuesSvc.createIssue({ seriesId: s.id, seasonId: dropped.id, title: 'Pilot' });
+    const cur = await seriesSvc.getSeries(s.id);
+    const out = await planner.commitSeasonsWithRemap(cur, {
+      arc: DRAFT_ARC,
+      seasons: [{ id: kept.id, number: 2, title: 'New title', logline: '', synopsis: '', endingHook: '', episodeCountTarget: 4, themes: [] }],
+    }, { preserveDroppedSeasons: true });
+    expect(out.series.seasons.map((x) => x.id)).toContain(dropped.id);
+    expect(out.series.seasons.find((x) => x.id === kept.id).title).toBe('New title');
+    // The dropped volume's issue stays attached — nothing was reassigned away.
+    expect(await issuesSvc.getIssue(i1.id).then((i) => i.seasonId)).toBe(dropped.id);
+  });
+
+  it('still drops an unlocked season when the flag is off (default behavior unchanged)', async () => {
+    const s = await setupSeries();
+    const dropped = await seasonsSvc.createSeason(s.id, { title: 'Would vanish', episodeCountTarget: 3, number: 1 });
+    const cur = await seriesSvc.getSeries(s.id);
+    const out = await planner.commitSeasonsWithRemap(cur, { arc: DRAFT_ARC, seasons: [] });
+    expect(out.series.seasons.map((x) => x.id)).not.toContain(dropped.id);
   });
 });
 
@@ -1274,41 +1305,6 @@ describe('arcPlanner — preserveDroppedSeasonRecords', () => {
     expect(preserveDroppedSeasonRecords([], next)).toBe(next);
     expect(preserveDroppedSeasonRecords(null, next)).toBe(next);
     expect(preserveDroppedSeasonRecords([{ id: 'a' }], null)).toBeNull();
-  });
-});
-
-describe('arcPlanner — commitSeasonsWithRemap (preserveDroppedSeasons)', () => {
-  beforeEach(() => {
-    fileStore.clear();
-    uuidCounter = 0;
-    stageRunnerSpy = undefined;
-  });
-
-  it('keeps an UNLOCKED season the rewrite dropped, and still applies rewrites to survivors', async () => {
-    const s = await setupSeries();
-    const dropped = await seasonsSvc.createSeason(s.id, { title: 'Would vanish', episodeCountTarget: 3, number: 1 });
-    const kept = await seasonsSvc.createSeason(s.id, { title: 'Old title', episodeCountTarget: 3, number: 2 });
-    const i1 = await issuesSvc.createIssue({ seriesId: s.id, seasonId: dropped.id, title: 'Pilot' });
-    const cur = await seriesSvc.getSeries(s.id);
-    const out = await planner.commitSeasonsWithRemap(cur, {
-      arc: { logline: 'L', summary: '', themes: [], protagonistArc: '', shape: null, status: 'draft' },
-      seasons: [{ id: kept.id, number: 2, title: 'New title', logline: '', synopsis: '', endingHook: '', episodeCountTarget: 4, themes: [] }],
-    }, { preserveDroppedSeasons: true });
-    expect(out.series.seasons.map((x) => x.id)).toContain(dropped.id);
-    expect(out.series.seasons.find((x) => x.id === kept.id).title).toBe('New title');
-    // The dropped volume's issue stays attached — nothing was reassigned away.
-    expect(await issuesSvc.getIssue(i1.id).then((i) => i.seasonId)).toBe(dropped.id);
-  });
-
-  it('still drops an unlocked season when the flag is off (default behavior unchanged)', async () => {
-    const s = await setupSeries();
-    const dropped = await seasonsSvc.createSeason(s.id, { title: 'Would vanish', episodeCountTarget: 3, number: 1 });
-    const cur = await seriesSvc.getSeries(s.id);
-    const out = await planner.commitSeasonsWithRemap(cur, {
-      arc: { logline: 'L', summary: '', themes: [], protagonistArc: '', shape: null, status: 'draft' },
-      seasons: [],
-    });
-    expect(out.series.seasons.map((x) => x.id)).not.toContain(dropped.id);
   });
 });
 
