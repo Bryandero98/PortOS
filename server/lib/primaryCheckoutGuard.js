@@ -16,6 +16,16 @@
  *     of running it — and notes that the same work also exists on the agent's
  *     own branch, which is what makes the reset safe.
  *
+ * Movement alone is NOT the signal. The primary checkout legitimately moves
+ * during a run — a `git pull` on `main`, another PortOS flow fast-forwarding it
+ * to commits that already merged upstream. Reporting those as branch-jacks fired
+ * a false failure whose recovery prose ("commits PortOS never reviewed", `reset
+ * --hard origin/main`) was actively wrong: the commits WERE `origin/main`. So the
+ * guard reports only what a branch-jack actually leaves behind — commits the
+ * branch's upstream does not have, or the checkout parked on a different branch.
+ * A branch with no upstream to compare against can't be cleared, so it still
+ * reports (an unpushed commit is unreviewed by definition).
+ *
  * Two halves, deliberately split so they can sit on opposite ends of a run:
  * `capturePrimaryCheckoutState` stamps a baseline at spawn time (onto the agent
  * metadata, in `agentLifecycle.js`), and `detectPrimaryCheckoutDrift` re-reads it
@@ -111,6 +121,32 @@ async function countCommitsAhead(checkoutPath, baseHead, head) {
   return Number.isFinite(count) ? count : null;
 }
 
+/**
+ * The branch's upstream tracking ref (`origin/main`), or null when it has none
+ * configured — or when git could not be run. Both collapse to null on purpose:
+ * the caller treats "no comparison available" identically either way.
+ */
+async function resolveUpstreamRef(checkoutPath, branch) {
+  const result = await execGit(
+    ['rev-parse', '--abbrev-ref', '--symbolic-full-name', `${branch}@{upstream}`],
+    checkoutPath,
+    { ignoreExitCode: true, timeout: GIT_TIMEOUT_MS },
+  ).catch(() => null);
+  return firstLine(result);
+}
+
+/**
+ * Commits the branch carries that its upstream does not — the only commits a
+ * branch-jack actually leaves stranded, and the number the recovery prose is
+ * about. Returns null (not 0) when there is no upstream to compare against, so
+ * "verified clean" never masquerades as "could not check".
+ */
+async function countUnpushedCommits(checkoutPath, branch) {
+  const upstream = await resolveUpstreamRef(checkoutPath, branch);
+  if (!upstream) return null;
+  return await countCommitsAhead(checkoutPath, upstream, branch);
+}
+
 /** Short SHA for human-readable prose. */
 const short = sha => String(sha || '').slice(0, 9);
 
@@ -118,11 +154,16 @@ const short = sha => String(sha || '').slice(0, 9);
  * Re-read the baseline and report whether the primary checkout moved during the
  * run.
  *
- * Three outcomes, never collapsed:
+ * Outcomes, never collapsed:
  *   - `{ drifted: false }` — it didn't move, OR there was nothing to check, OR
  *     the checkout could not be read (nothing was verified, so nothing is
  *     claimed).
- *   - `{ drifted: true, … }` — the branch or HEAD moved.
+ *   - `{ drifted: false, fastForwarded: true, … }` — HEAD moved on the SAME
+ *     branch but every commit is already on that branch's upstream. That is a
+ *     `git pull`, not a branch-jack; carried as a distinct shape (rather than a
+ *     bare `false`) so a caller can log what it observed.
+ *   - `{ drifted: true, … }` — the checkout ended on a different branch, or its
+ *     branch carries commits the upstream does not have.
  *
  * @param {{path: string, branch: string, head: string}|null} baseline stamped by
  *   `capturePrimaryCheckoutState` at spawn time
@@ -138,7 +179,18 @@ export async function detectPrimaryCheckoutDrift(baseline, { agentBranch = null 
   if (!current) return { drifted: false };
   if (current.branch === baseline.branch && current.head === baseline.head) return { drifted: false };
 
-  const commitCount = await countCommitsAhead(baseline.path, baseline.head, current.head);
+  const [commitCount, unpushedCount] = await Promise.all([
+    countCommitsAhead(baseline.path, baseline.head, current.head),
+    countUnpushedCommits(baseline.path, current.branch),
+  ]);
+
+  // Same branch, nothing local-only: the checkout was pulled forward onto commits
+  // that are already upstream (reviewed, merged, pushed). Nothing was stranded, so
+  // there is nothing for a human to recover.
+  if (current.branch === baseline.branch && unpushedCount === 0) {
+    return { drifted: false, fastForwarded: true, baseline, current, commitCount };
+  }
+
   return {
     drifted: true,
     reason: PRIMARY_CHECKOUT_MUTATED_REASON,
@@ -146,8 +198,9 @@ export async function detectPrimaryCheckoutDrift(baseline, { agentBranch = null 
     baseline,
     current,
     commitCount,
+    unpushedCount,
     message: formatDriftMessage({ baseline, current, commitCount }),
-    suggestedFix: formatDriftRecovery({ current, commitCount, agentBranch }),
+    suggestedFix: formatDriftRecovery({ current, baseline, commitCount, unpushedCount, agentBranch }),
   };
 }
 
@@ -165,13 +218,27 @@ export function formatDriftMessage({ baseline, current, commitCount }) {
 /**
  * The recovery advice. Names the exact commands and is explicit that the reset
  * discards commits — PortOS deliberately does not run it (see the module header).
- * Pure.
+ *
+ * Two shapes, because the two failures need different commands: a checkout left
+ * on the WRONG BRANCH with nothing local-only just needs checking back out (no
+ * reset, nothing to discard, no reason to scare the reader with `--hard`), while
+ * stranded commits need the inspect-then-reset flow. Pure.
  */
-export function formatDriftRecovery({ current, commitCount, agentBranch }) {
+export function formatDriftRecovery({ current, baseline = null, commitCount, unpushedCount = null, agentBranch }) {
+  if (unpushedCount === 0 && baseline?.branch && baseline.branch !== current.branch) {
+    return [
+      `A worktree-isolated agent left the PRIMARY checkout on \`${current.branch}\` instead of \`${baseline.branch}\`.`,
+      `No commits were stranded — \`${current.branch}\` carries nothing its upstream lacks — so restore it with \`git -C ${current.path} checkout ${baseline.branch}\`.`,
+    ].join(' ');
+  }
   const alsoOn = agentBranch
     ? `The same commits were almost certainly pushed on the agent's own branch \`${agentBranch}\` too, so check there (and for an open PR) before discarding anything.`
     : 'Check the agent\'s own branch (and for an open PR) for the same commits before discarding anything.';
-  const countPhrase = commitCount === null ? 'commits' : `${commitCount} commit${commitCount === 1 ? '' : 's'}`;
+  // The actionable number is what the upstream is MISSING, not how far HEAD moved
+  // — a pull that also carried the agent's commit moves HEAD further than the
+  // damage goes.
+  const strandedCount = unpushedCount === null ? commitCount : unpushedCount;
+  const countPhrase = strandedCount === null ? 'commits' : `${strandedCount} commit${strandedCount === 1 ? '' : 's'}`;
   return [
     `A worktree-isolated agent committed to the PRIMARY checkout instead of its worktree, leaving \`${current.branch}\` carrying ${countPhrase} PortOS never reviewed.`,
     alsoOn,

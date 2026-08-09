@@ -595,6 +595,12 @@ export async function finalizeAgent({
     emitLog('warn', `⚠️ ${drift.message} — reported by ${agentId}; PortOS will not repair it automatically`, {
       agentId, taskId: task?.id, category: drift.category
     });
+  } else if (drift.fastForwarded) {
+    // Movement without stranded commits — a pull, not a branch-jack. Logged so
+    // "the primary moved during this run" stays visible without being a failure.
+    emitLog('info', `↪️ Primary checkout moved ${drift.commitCount ?? '?'} commit(s) during ${agentId}, all already upstream — not a branch-jack`, {
+      agentId, taskId: task?.id
+    });
   }
   // A drift downgrade only OVERRIDES a run that would otherwise have been
   // recorded a success. On a run that already failed, the original analysis is

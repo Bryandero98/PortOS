@@ -30,6 +30,32 @@ async function commit(subject) {
   await execGit(['commit', '-m', subject], repo);
 }
 
+/**
+ * Give `repo` a real upstream to compare against — the guard now clears movement
+ * only when the branch carries nothing its upstream lacks, so the benign cases
+ * are untestable without one. A bare clone on disk keeps this real git (no
+ * network, no mocked `rev-parse`).
+ */
+async function addOrigin() {
+  const remote = join(scratch, 'origin.git');
+  await execGit(['init', '--bare', '-b', 'main', remote], scratch);
+  await execGit(['remote', 'add', 'origin', remote], repo);
+  await execGit(['push', '-u', 'origin', 'main'], repo);
+}
+
+/** Land a commit on the remote and fast-forward `repo` onto it, as a pull would. */
+async function pullFromOrigin(subject) {
+  const clone = join(scratch, `contributor-${subject.replace(/\W+/g, '-')}`);
+  await execGit(['clone', join(scratch, 'origin.git'), clone], scratch);
+  await execGit(['config', 'user.email', 'other@example.com'], clone);
+  await execGit(['config', 'user.name', 'Other Contributor'], clone);
+  await writeFile(join(clone, `${subject.replace(/\W+/g, '-')}.txt`), subject);
+  await execGit(['add', '-A'], clone);
+  await execGit(['commit', '-m', subject], clone);
+  await execGit(['push', 'origin', 'main'], clone);
+  await execGit(['pull', '--ff-only'], repo);
+}
+
 beforeEach(async () => {
   scratch = await mkdtemp(join(tmpdir(), 'portos-branch-jack-'));
   repo = join(scratch, 'primary');
@@ -94,6 +120,62 @@ describe('detectPrimaryCheckoutDrift', () => {
     expect(verdict.drifted).toBe(true);
     expect(verdict.commitCount).toBe(0);
     expect(verdict.message).toContain('main → someone-elses-branch');
+  });
+
+  it('clears a plain pull: HEAD moved but every commit is already upstream', async () => {
+    await addOrigin();
+    const baseline = await capturePrimaryCheckoutState(repo);
+    await pullFromOrigin('landed via a merged PR');
+
+    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch: 'cos/task-x/agent-y' });
+    // The false failure this guard used to raise (#3702 follow-up): the commit is
+    // origin/main's, so `reset --hard origin/main` would have been a no-op the
+    // user was told to consider.
+    expect(verdict.drifted).toBe(false);
+    expect(verdict.fastForwarded).toBe(true);
+    expect(verdict.commitCount).toBe(1);
+    expect(verdict.message).toBeUndefined();
+  });
+
+  it('still reports the agent\'s own commit when a pull landed alongside it', async () => {
+    await addOrigin();
+    const baseline = await capturePrimaryCheckoutState(repo);
+    await pullFromOrigin('landed via a merged PR');
+    await commit('branch jacked');
+
+    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch: 'cos/task-x/agent-y' });
+    expect(verdict.drifted).toBe(true);
+    // HEAD moved 2, but only 1 is stranded — the recovery prose quotes the
+    // stranded count, not the movement.
+    expect(verdict.commitCount).toBe(2);
+    expect(verdict.unpushedCount).toBe(1);
+    expect(verdict.suggestedFix).toContain('1 commit ');
+    expect(verdict.suggestedFix).toContain(`git -C ${repo} reset --hard origin/main`);
+  });
+
+  it('advises checkout, not reset, for a branch switch that stranded nothing', async () => {
+    await addOrigin();
+    await execGit(['push', 'origin', 'main:someone-elses-branch'], repo);
+    const baseline = await capturePrimaryCheckoutState(repo);
+    await execGit(['checkout', '-b', 'someone-elses-branch', '--track', 'origin/someone-elses-branch'], repo);
+
+    const verdict = await detectPrimaryCheckoutDrift(baseline);
+    expect(verdict.drifted).toBe(true);
+    expect(verdict.unpushedCount).toBe(0);
+    expect(verdict.suggestedFix).toContain(`git -C ${repo} checkout main`);
+    expect(verdict.suggestedFix).not.toContain('reset --hard');
+  });
+
+  it('reports movement on a branch with no upstream to clear it against', async () => {
+    // No `origin` at all: an unpushed commit is unreviewed by definition, so the
+    // narrowed guard must not go quiet just because it cannot compare.
+    const baseline = await capturePrimaryCheckoutState(repo);
+    await commit('branch jacked, nowhere to push');
+
+    const verdict = await detectPrimaryCheckoutDrift(baseline);
+    expect(verdict.drifted).toBe(true);
+    expect(verdict.unpushedCount).toBeNull();
+    expect(verdict.commitCount).toBe(1);
   });
 
   it('reports no drift when there is nothing to check', async () => {
