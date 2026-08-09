@@ -291,10 +291,15 @@ describe('detectPrimaryCheckoutDrift', () => {
     expect(await detectPrimaryCheckoutDrift(baseline)).toEqual({ drifted: false });
   });
 
-  it('still reports the drift when the commit count is unresolvable', async () => {
+  it('fails OPEN (unattributed, not a failure) when the stranded count is unresolvable', async () => {
+    // A pruned/rewritten baseline commit or a wedged git leaves the stranded count
+    // null — a check that could not run. Attribution cannot confirm the agent
+    // authored anything, so the guard surfaces the movement without manufacturing a
+    // failure out of it (the module's fail-open contract).
     const baseline = { path: repo, branch: 'main', head: 'f'.repeat(40) };
-    const verdict = await detectPrimaryCheckoutDrift(baseline);
-    expect(verdict.drifted).toBe(true);
+    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch: 'cos/task-x/agent-y' });
+    expect(verdict.drifted).toBe(false);
+    expect(verdict.unattributed).toBe(true);
     expect(verdict.commitCount).toBeNull();
     expect(verdict.message).toContain('commit count unresolved');
   });

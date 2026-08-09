@@ -142,13 +142,17 @@ async function countCommitsAhead(checkoutPath, baseHead, head, { noMerges = fals
 }
 
 /**
- * The branch's upstream tracking ref (`origin/main`), or null when it has none
- * configured — or when git could not be run. Both collapse to null on purpose:
- * the caller treats "no comparison available" identically either way.
+ * The branch's upstream tracking ref (`origin/main`), resolved to an IMMUTABLE
+ * SHA — or null when it has none configured, or git could not be run. Pinning to
+ * a SHA (rather than returning the symbolic `origin/main`) means the count and the
+ * later `git cherry` walk compare against the same history even if a concurrent
+ * fetch moves the tracking ref between calls — this guard runs against a shared
+ * checkout that other actors are actively moving. Both failure modes collapse to
+ * null on purpose: the caller treats "no comparison available" identically.
  */
-async function resolveUpstreamRef(checkoutPath, branch) {
+async function resolveUpstreamSha(checkoutPath, branch) {
   const result = await execGit(
-    ['rev-parse', '--abbrev-ref', '--symbolic-full-name', `${branch}@{upstream}`],
+    ['rev-parse', `${branch}@{upstream}`],
     checkoutPath,
     { ignoreExitCode: true, timeout: GIT_TIMEOUT_MS },
   ).catch(() => null);
@@ -262,13 +266,17 @@ export async function detectPrimaryCheckoutDrift(baseline, { agentBranch = null 
   if (!current) return { drifted: false };
   if (current.branch === baseline.branch && current.head === baseline.head) return { drifted: false };
 
-  const upstream = await resolveUpstreamRef(baseline.path, current.branch);
+  // Pin the upstream to a SHA and count everything against `current.head` (the SHA
+  // captured above), never the live `current.branch` — a concurrent commit or
+  // fetch on the shared checkout must not make the two counts and the cherry walk
+  // read different histories.
+  const upstream = await resolveUpstreamSha(baseline.path, current.branch);
   const [commitCount, unpushedCount] = await Promise.all([
     countCommitsAhead(baseline.path, baseline.head, current.head),
     // Commits the branch carries that its upstream does not — the only commits a
     // branch-jack actually strands. Null (not 0) when there is no upstream to
     // compare against, so "verified clean" never masquerades as "could not check".
-    upstream ? countCommitsAhead(baseline.path, upstream, current.branch) : Promise.resolve(null),
+    upstream ? countCommitsAhead(baseline.path, upstream, current.head) : Promise.resolve(null),
   ]);
 
   // Same branch, nothing local-only: the checkout was pulled forward onto commits
@@ -281,10 +289,14 @@ export async function detectPrimaryCheckoutDrift(baseline, { agentBranch = null 
   const message = formatDriftMessage({ baseline, current, commitCount });
 
   // Second gate (#3703): stranded commits are only a failure if THIS agent could
-  // have produced them. A pure branch switch strands nothing (nothing to blame on
-  // anyone), so attribution runs only when there is a resolvable stranded commit.
+  // have produced them. Attribution runs whenever there is (or should be) a
+  // stranded commit — a resolvable positive count, OR an UNRESOLVABLE count
+  // (`null`: a pruned baseline or a wedged git), which must fail OPEN rather than
+  // manufacture a failure out of a check that could not run. Only a pure branch
+  // switch that stranded exactly zero commits skips it (nothing to blame on
+  // anyone) and keeps its benign `git checkout` report.
   const strandedCount = unpushedCount === null ? commitCount : unpushedCount;
-  if (strandedCount > 0) {
+  if (strandedCount === null || strandedCount > 0) {
     const attributed = await isDriftAttributableToAgent(baseline.path, {
       strandedBase: upstream || baseline.head,
       driftedHead: current.head,
