@@ -28,6 +28,8 @@
 
 ## Fixed
 
+- **Recovering an AI provider now affects the very next routed run.** PortOS accidentally kept two in-memory provider-status services over the same JSON file: the Providers UI updated one while the AI Toolkit's runner consulted the other. A manual “Recover now” therefore looked successful and persisted correctly, yet a run started moments later could still bypass the recovered primary and spend time on a fallback. All legacy callers and the PortOS status routes now delegate to the Toolkit-owned singleton, and provider status socket events have one broadcast path instead of being emitted twice.
+
 - **A timed-out creative stage no longer benches its provider as “quota exceeded.”** TUI finalization previously classified a hard timeout by scanning the whole terminal response, which includes the story prompt; ordinary narrative words such as “credit,” “payment,” or “billing” could therefore override exit 124 and sideline a healthy provider for an hour. The host's timeout signal is now authoritative, while non-timeout failures continue to use provider-output analysis for real usage, auth, model, and network banners.
 
 - **Quality-first AI stages are no longer forced off at 30 minutes.** Provider, prompt-stage, and one-off run timeouts may now be configured up to 12 hours, matching the existing long-running TUI safety ceiling. The default stays five minutes and every provider keeps its own explicit cap, but an opted-in, high-effort story-planning or repair pass can be given enough wall time to finish instead of being killed while active and then repeated from scratch on a fallback.

@@ -52,6 +52,7 @@ import { ensureProviderReady as ensureOllamaProviderReady, ensureRunning as ensu
 import { recordSession } from './usage.js';
 import { recordCompletedRunUsage } from './usageReconciler.js';
 import { setAIToolkit as setProvidersToolkit } from './providers.js';
+import { setAIToolkit as setProviderStatusToolkit } from './providerStatus.js';
 import { setAIToolkit as setRunnerToolkit, executeCliRun as executeCliRunFixed } from './runner.js';
 import { setAIToolkit as setPromptsToolkit } from './promptService.js';
 import { executeTuiRun as executeTuiRunFixed } from '../lib/tuiPromptRunner.js';
@@ -236,6 +237,7 @@ export const bootstrapServices = async ({ io, dataDir, dataReferenceDir, serverD
     // Compatibility shims for services that import from the old service files.
     registerToolkitShims: (aiToolkit) => {
       setProvidersToolkit(aiToolkit);
+      setProviderStatusToolkit(aiToolkit);
       setRunnerToolkit(aiToolkit, { dataDir, hooks: aiToolkitHooks });
       setPromptsToolkit(aiToolkit);
       // Note: the prompts service is initialized automatically by createAIToolkit().

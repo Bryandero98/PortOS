@@ -19,7 +19,6 @@ vi.mock('../lib/errorHandler.js', () => ({ errorEvents: { on: vi.fn() } }));
 vi.mock('./autoFixer.js', () => ({ handleErrorRecovery: vi.fn() }));
 vi.mock('./pm2Standardizer.js', () => ({ analyzeApp: vi.fn(), createGitBackup: vi.fn(), applyStandardization: vi.fn(), runStandardizeFlow: vi.fn() }));
 vi.mock('./notifications.js', () => ({ notificationEvents: { on: vi.fn() } }));
-vi.mock('./providerStatus.js', () => ({ providerStatusEvents: { on: vi.fn() } }));
 vi.mock('./agentPersonalities.js', () => ({ agentPersonalityEvents: { on: vi.fn() } }));
 vi.mock('./platformAccounts.js', () => ({ platformAccountEvents: { on: vi.fn() } }));
 vi.mock('./updateChecker.js', () => ({ updateEvents: { on: vi.fn() } }));

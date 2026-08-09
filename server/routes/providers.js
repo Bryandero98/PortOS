@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import { testVision, runVisionTestSuite, checkVisionHealth } from '../services/visionTest.js';
-import { getAllProviderStatuses, getProviderStatus, markProviderAvailable, getTimeUntilRecovery } from '../services/providerStatus.js';
 import { providerSchema, providerActiveSchema, validate } from '../lib/aiToolkit/validation.js';
 import { withRefreshCapability } from '../lib/aiToolkit/internal/modelFetchers.js';
 
@@ -53,6 +52,7 @@ const presentProvider = (provider) => sanitizeProvider(withRefreshCapability(pro
 export function createPortOSProviderRoutes(aiToolkit) {
   const router = Router();
   const providerService = aiToolkit.services.providers;
+  const providerStatusService = aiToolkit.services.providerStatus;
 
   // Sanitized GET routes — intercept toolkit GET endpoints to strip secrets
   router.get('/', asyncHandler(async (req, res) => {
@@ -91,28 +91,28 @@ export function createPortOSProviderRoutes(aiToolkit) {
   // Provider status routes MUST be defined before toolkit routes,
   // because the toolkit has a GET /:id route that would catch /status
   router.get('/status', asyncHandler(async (req, res) => {
-    const statuses = getAllProviderStatuses();
+    const statuses = providerStatusService.getAllStatuses();
     // Enrich with time until recovery
     const enriched = { ...statuses };
     for (const [providerId, status] of Object.entries(enriched.providers)) {
       enriched.providers[providerId] = {
         ...status,
-        timeUntilRecovery: getTimeUntilRecovery(providerId)
+        timeUntilRecovery: providerStatusService.getTimeUntilRecovery(providerId)
       };
     }
     res.json(enriched);
   }));
 
   router.get('/:id/status', asyncHandler(async (req, res) => {
-    const status = getProviderStatus(req.params.id);
+    const status = providerStatusService.getStatus(req.params.id);
     res.json({
       ...status,
-      timeUntilRecovery: getTimeUntilRecovery(req.params.id)
+      timeUntilRecovery: providerStatusService.getTimeUntilRecovery(req.params.id)
     });
   }));
 
   router.post('/:id/status/recover', asyncHandler(async (req, res) => {
-    const status = await markProviderAvailable(req.params.id);
+    const status = await providerStatusService.markAvailable(req.params.id);
     res.json({ success: true, status });
   }));
 

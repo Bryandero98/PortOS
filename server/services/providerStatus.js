@@ -1,54 +1,71 @@
 /**
- * Provider Status Service
+ * Compatibility shim for PortOS services that import from providerStatus.js.
  *
- * Thin wrapper around the in-tree aiToolkit's createProviderStatusService
- * that provides backwards-compatible exports for PortOS.
+ * Provider routing and the recovery UI must share one in-memory status cache.
+ * The AI Toolkit owns that cache; this module only delegates to it. Creating a
+ * second service over the same JSON file leaves two caches that disagree until
+ * restart, so a manual recovery can look successful while new runs still skip
+ * the recovered provider.
  */
 
-import { createProviderStatusService } from '../lib/aiToolkit/index.js';
-import { PATHS } from '../lib/fileUtils.js';
+import { EventEmitter } from 'events';
+import { requireToolkit, setAIToolkitInstance } from '../lib/aiToolkitState.js';
 
-// Create the provider status service from ai-toolkit
-const providerStatusService = createProviderStatusService({
-  dataDir: PATHS.data,
-  statusFile: 'provider-status.json',
-  defaultFallbackPriority: ['claude-code', 'codex', 'lmstudio', 'local-lm-studio', 'ollama', 'antigravity-cli', 'gemini-cli'],
-  onStatusChange: (eventData) => {
-    // Re-emit on the exported events emitter for backwards compatibility
-    providerStatusEvents.emit('status:changed', eventData);
-  }
-});
+export const providerStatusEvents = new EventEmitter();
 
-// Export the events emitter for Socket.IO integration
-export const providerStatusEvents = providerStatusService.events;
+let boundStatusEvents = null;
+
+const forwardStatusChanged = (data) => {
+  providerStatusEvents.emit('status:changed', data);
+};
+
+function getProviderStatusService() {
+  return requireToolkit().services.providerStatus;
+}
+
+function bindProviderStatusEvents(toolkit) {
+  const nextEvents = toolkit?.services?.providerStatus?.events || null;
+  if (nextEvents === boundStatusEvents) return;
+
+  boundStatusEvents?.off('status:changed', forwardStatusChanged);
+  nextEvents?.on('status:changed', forwardStatusChanged);
+  boundStatusEvents = nextEvents;
+}
+
+// Keep the named setter stable for bootstrap while sharing the singleton held
+// by aiToolkitState with the providers, runner, and prompt-service shims.
+export function setAIToolkit(toolkit) {
+  setAIToolkitInstance(toolkit);
+  bindProviderStatusEvents(toolkit);
+}
 
 /**
- * Initialize status cache
+ * Initialize the toolkit-owned status cache.
  */
 export async function initProviderStatus() {
-  await providerStatusService.init();
+  await getProviderStatusService().init();
   console.log('📊 Provider status service initialized');
 }
 
 /**
- * Get status for a specific provider
+ * Get status for a specific provider.
  */
 export function getProviderStatus(providerId) {
-  return providerStatusService.getStatus(providerId);
+  return getProviderStatusService().getStatus(providerId);
 }
 
 /**
- * Get all provider statuses
+ * Get all provider statuses.
  */
 export function getAllProviderStatuses() {
-  return providerStatusService.getAllStatuses();
+  return getProviderStatusService().getAllStatuses();
 }
 
 /**
- * Check if a provider is available
+ * Check if a provider is available.
  */
 export function isProviderAvailable(providerId) {
-  return providerStatusService.isAvailable(providerId);
+  return getProviderStatusService().isAvailable(providerId);
 }
 
 /**
@@ -60,58 +77,58 @@ export function isProviderAvailable(providerId) {
  * @param {{ reason?: string, message?: string, waitTimeMs?: number, extras?: object }} options
  */
 export async function markProviderUnavailable(providerId, options = {}) {
-  const status = await providerStatusService.markUnavailable(providerId, options);
+  const status = await getProviderStatusService().markUnavailable(providerId, options);
   console.log(`⚠️ Provider ${providerId} sidelined: ${options.reason || 'unknown'} (retry in ${Math.round((options.waitTimeMs || 0) / 60000)}m)`);
   return status;
 }
 
 /**
- * Mark a provider as unavailable due to usage limit
+ * Mark a provider as unavailable due to usage limit.
  */
 export async function markProviderUsageLimit(providerId, errorInfo) {
-  const status = await providerStatusService.markUsageLimit(providerId, errorInfo);
+  const status = await getProviderStatusService().markUsageLimit(providerId, errorInfo);
   console.log(`⚠️ Provider ${providerId} marked unavailable: usage limit (retry after ${errorInfo?.waitTime || '24h'})`);
   return status;
 }
 
 /**
- * Mark a provider as unavailable due to rate limiting (temporary)
+ * Mark a provider as unavailable due to rate limiting (temporary).
  */
 export async function markProviderRateLimited(providerId) {
-  return providerStatusService.markRateLimited(providerId);
+  return getProviderStatusService().markRateLimited(providerId);
 }
 
 /**
- * Mark a provider as available (recovered)
+ * Mark a provider as available (recovered).
  */
 export async function markProviderAvailable(providerId) {
-  const status = await providerStatusService.markAvailable(providerId);
+  const status = await getProviderStatusService().markAvailable(providerId);
   console.log(`✅ Provider ${providerId} marked available`);
   return status;
 }
 
 /**
- * Get the best available fallback provider
+ * Get the best available fallback provider.
  * Returns `{ provider, source, model }` (or null if no fallback is available).
- * `model` is the configured fallback model to run on the chosen provider (the
- * task-level pin, the primary's `fallbackModel`, or null = use the fallback's
- * own default) — never the primary's model.
- *
- * Priority order:
- * 1. Task-level fallback (task.metadata.fallbackProvider / fallbackModel)
- * 2. Provider-level fallback (provider.fallbackProvider / fallbackModel)
- * 3. System default priority list
  */
 export function getFallbackProvider(primaryProviderId, providers, taskFallbackId = null, taskFallbackModelId = null) {
-  return providerStatusService.getFallbackProvider(primaryProviderId, providers, taskFallbackId, taskFallbackModelId);
+  return getProviderStatusService().getFallbackProvider(primaryProviderId, providers, taskFallbackId, taskFallbackModelId);
 }
 
 /**
- * Get human-readable time until provider recovery
+ * Get human-readable time until provider recovery.
  */
 export function getTimeUntilRecovery(providerId) {
-  return providerStatusService.getTimeUntilRecovery(providerId);
+  return getProviderStatusService().getTimeUntilRecovery(providerId);
 }
 
-// Export the underlying service for direct access if needed
-export { providerStatusService };
+// Backwards-compatible direct-service facade. Property access resolves against
+// the current toolkit, and methods are bound so implementations using `this`
+// (such as isAvailable -> getStatus) continue to work.
+export const providerStatusService = new Proxy({}, {
+  get(_target, property) {
+    const service = getProviderStatusService();
+    const value = service[property];
+    return typeof value === 'function' ? value.bind(service) : value;
+  }
+});
