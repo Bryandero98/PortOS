@@ -76,6 +76,7 @@ vi.mock('./taskTypeHooks.js', () => ({
   resolveTaskHookType: vi.fn(() => null),
   declaresNoCommitCriterion: vi.fn(() => false),
   getTaskOutputHook: vi.fn(async () => null),
+  getTaskOutputPayloadPredicate: vi.fn(async () => null),
 }));
 
 vi.mock('./agentCompletion.js', () => ({ processAgentCompletion: vi.fn(async () => null) }));

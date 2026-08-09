@@ -30,6 +30,10 @@
  *     the hook does deterministic work on it (e.g. filing a tracker issue) and
  *     returns an outcome. `deps` is an injectable seam for tests.
  *
+ *   - `isTaskOutputPayload(payload)` — pure shape check for that hook's own
+ *     deliverable. Optional, but a type that omits it forfeits the transcript
+ *     rescue for a payload the model printed instead of writing (#3640).
+ *
  * The agent itself runs through the NORMAL path (visible in the CoS queue +
  * Active Agents, TUI-capable), so a programmatic-I/O task differs from any other
  * scheduled task only in these two slots. See
@@ -248,4 +252,19 @@ export async function getTaskInputHook(taskType) {
 export async function getTaskOutputHook(taskType) {
   const mod = await loadHookModule(taskType);
   return mod && typeof mod.processTaskOutput === 'function' ? mod.processTaskOutput : null;
+}
+
+/**
+ * Resolve the hook's own payload SHAPE predicate, or null if it declares none.
+ * `isTaskOutputPayload(payload)` → boolean.
+ *
+ * Only the hook knows what its deliverable looks like, so the transcript rescue
+ * in `agentFinalization` (#3640) — which recovers a payload the model printed to
+ * the terminal instead of writing to `.agent-done` — asks the hook rather than
+ * guessing. A type that exports no predicate simply gets no rescue: without a
+ * shape to check against, any JSON-ish blob in the transcript would qualify.
+ */
+export async function getTaskOutputPayloadPredicate(taskType) {
+  const mod = await loadHookModule(taskType);
+  return mod && typeof mod.isTaskOutputPayload === 'function' ? mod.isTaskOutputPayload : null;
 }

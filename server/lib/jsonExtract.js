@@ -75,6 +75,59 @@ export function findBalancedBlocks(s, { startChar = '{', endChar = '}' } = {}) {
 }
 
 /**
+ * Every brace-balanced block in the string — nested ones included — in the
+ * order they CLOSE. String-aware like `findBalancedBlocks`, but built on a
+ * stack instead of a restart-from-scratch scan, which buys two properties the
+ * transcript rescue in `agentSentinel.extractSentinelPayloadFromTranscript`
+ * needs and `findBalancedBlocks` deliberately does not provide:
+ *
+ *   1. An unmatched opening brace does NOT end the walk. `findBalancedBlocks`
+ *      bails at the first unbalanced segment (see its note); a repaint-heavy
+ *      PTY transcript is full of stray braces from truncated redraws, and
+ *      bailing there would discard the complete JSON object the model printed
+ *      at the very end — the whole point of the scan.
+ *   2. Closing order means an enclosing object is emitted AFTER the objects it
+ *      contains, so a caller walking the result in REVERSE sees the outermost
+ *      object of the last-printed block before any of its children.
+ *
+ * Still one linear pass (an unmatched `}` with an empty stack is dropped), so
+ * scanning a large tail stays cheap. String tracking resets at every line break
+ * — see the note in the loop for why a transcript needs that.
+ *
+ * @param {string} s — input text
+ * @param {object} [options]
+ * @param {string} [options.startChar='{'] — opening delimiter
+ * @param {string} [options.endChar='}']   — matching closing delimiter
+ * @returns {string[]} — every balanced block, in the order they close
+ */
+export function findAllBalancedBlocks(s, { startChar = '{', endChar = '}' } = {}) {
+  if (typeof s !== 'string' || !s) return [];
+  const blocks = [];
+  const opens = [];
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i];
+    // A line break ends string tracking. JSON forbids a raw newline inside a
+    // string literal, so nothing valid is lost — but a transcript is full of
+    // stray quotes (a truncated redraw, an echoed `echo "…`, a log message),
+    // and without this ONE of them would leave the walker "inside a string"
+    // for the rest of the scan, hiding every brace in the JSON that follows.
+    if (ch === '\n' || ch === '\r') { inString = false; escaped = false; continue; }
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === startChar) opens.push(i);
+    else if (ch === endChar && opens.length) blocks.push(s.slice(opens.pop(), i + 1));
+  }
+  return blocks;
+}
+
+/**
  * Apply a regex `replace()` to the input ONLY OUTSIDE quoted JSON
  * string regions. Walks the input with the same string/escape awareness
  * as `findBalancedBlocks`, splits into alternating "code" and "string"
