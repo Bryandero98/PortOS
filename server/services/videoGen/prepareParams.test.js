@@ -157,6 +157,55 @@ describe('prepareVideoGenParams', () => {
     });
   });
 
+  describe('per-chunk prompt beats (#3695)', () => {
+    it('normalizes beats and keeps a blank entry in position as a fallback marker', async () => {
+      const prepared = await prepare({ mode: 'image', chunks: 3, chunkPrompts: ['  opens the door  ', '', 'the storm breaks'] });
+      expect(prepared.effectiveChunkPrompts).toEqual(['opens the door', null, 'the storm breaks']);
+    });
+
+    it('truncates a stale overlong list to the resolved chunk count', async () => {
+      // The user typed four beats, then lowered Chunks to 2 — the extra beats
+      // must not ride along and desync the list from the chain.
+      const prepared = await prepare({ mode: 'image', chunks: 2, chunkPrompts: ['a', 'b', 'c', 'd'] });
+      expect(prepared.effectiveChunkPrompts).toEqual(['a', 'b']);
+    });
+
+    it('leaves a short list short — uncovered chunks fall back to the main prompt', async () => {
+      const prepared = await prepare({ mode: 'image', chunks: 3, chunkPrompts: ['a'] });
+      expect(prepared.effectiveChunkPrompts).toEqual(['a']);
+    });
+
+    it('drops the list entirely for a single-chunk render', async () => {
+      const prepared = await prepare({ mode: 'image', chunks: 1, chunkPrompts: ['a', 'b'] });
+      expect(prepared.effectiveChunkPrompts).toBeUndefined();
+    });
+
+    it('drops the list for a mode pinned to one chunk', async () => {
+      // An IC remix anchors a single clip, so chunks is pinned to 1 — a beat
+      // list sent anyway must not persist into job params.
+      loadHistory.mockResolvedValue([{ id: '11111111-1111-4111-8111-111111111111', filename: 'prior.mp4' }]);
+      const prepared = await prepare({
+        mode: 'ic-control',
+        icReferenceVideoIds: ['11111111-1111-4111-8111-111111111111'],
+        chunkPrompts: ['a', 'b'],
+      });
+      expect(prepared.effectiveChunks).toBe(1);
+      expect(prepared.effectiveChunkPrompts).toBeUndefined();
+    });
+
+    it('collapses an all-blank list to undefined', async () => {
+      // "every beat cleared" and "no beats sent" must persist identically —
+      // otherwise a resume replays an array of nulls into the form.
+      const prepared = await prepare({ mode: 'image', chunks: 3, chunkPrompts: ['', '  ', ''] });
+      expect(prepared.effectiveChunkPrompts).toBeUndefined();
+    });
+
+    it('is undefined when no beats were supplied', async () => {
+      const prepared = await prepare({ mode: 'image', chunks: 2 });
+      expect(prepared.effectiveChunkPrompts).toBeUndefined();
+    });
+  });
+
   describe('rejected-await rollback (#3326)', () => {
     // Each case stages a durable copy, then makes the NEXT await reject. Without
     // the withStagedRollback guard the rejection bubbles past every explicit

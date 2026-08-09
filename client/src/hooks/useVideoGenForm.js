@@ -10,7 +10,7 @@ import { clampImageEdge } from '../lib/imageGenResolutions';
 import { GROK_VIDEO_DEFAULT_DURATION } from '../lib/grokVideoClip.js';
 import { VIDEO_TILING_ENUM_SET } from '../lib/videoTilingOptions';
 import {
-  VIDEO_EDGE_BOUNDS,
+  VIDEO_EDGE_BOUNDS, MAX_CHUNKS,
   videoModelMemoryGb, computeFflfSafeFrames, isModelAllowedForMode,
   normalizeFramesForModel, normalizeFpsForModel,
   icLoraSpecForMode, icResolutionIssue,
@@ -65,6 +65,13 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   const [numFrames, setNumFrames] = useState(121);
   const [fps, setFps] = useState(24);
   const [chunks, setChunks] = useState(1);
+  // Per-chunk prompt beats (#3695) — one editable string per chained chunk, so
+  // a longer shot can progress instead of replaying the same prompt at each
+  // seam. Kept as a plain sparse-by-blank array (index i steers chunk i); a
+  // blank entry means "use the main prompt for this chunk". Grown on demand by
+  // `setChunkPromptAt` rather than eagerly resized on every chunk change, so
+  // lowering then raising the count doesn't lose typed text.
+  const [chunkPrompts, setChunkPrompts] = useState([]);
   const [steps, setSteps] = useState('');
   const [guidanceScale, setGuidanceScale] = useState('');
   const [imageStrength, setImageStrength] = useState('');
@@ -784,6 +791,21 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     // toggle stuck ON when the user remixes a clip that had audio enabled.
     const remixDisableAudio = item.disableAudio ?? item.disable_audio;
     setDisableAudio(remixDisableAudio === true);
+    // Per-chunk beats (#3695): ALWAYS set explicitly, like prompt/negativePrompt
+    // above. A stitched chain entry carries the beats it rendered with; anything
+    // else carries none, and leaving the form's beats behind would steer a
+    // "faithful reproduction" remix with text from the render the user was
+    // previously composing. `null` (an absent beat) maps back to the editor's ''.
+    setChunkPrompts(Array.isArray(item.chunkPrompts)
+      ? item.chunkPrompts.map((cp) => (typeof cp === 'string' ? cp : ''))
+      : []);
+    // Chunk count comes from the stitched entry's own chunk list — beats only
+    // ride to the server while `chunks > 1`, so restoring the beats without the
+    // count would leave them typed-but-inert. A non-chained entry resets to 1
+    // rather than inheriting whatever the form last had.
+    setChunks(Array.isArray(item.chainedFrom) && item.chainedFrom.length > 1
+      ? Math.min(item.chainedFrom.length, MAX_CHUNKS)
+      : 1);
     // Reset to text-to-video mode and clear any stale conditioning inputs from
     // image / fflf / extend / a2v / IC-remix modes. Without this, clicking Remix
     // while currently in (e.g.) image mode would carry the old source image into
@@ -848,6 +870,11 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
       if (p.duration) setGrokDuration(p.duration);
     } else if (p.mode) setMode(p.mode);
     if (p.chunks && p.chunks > 1) setChunks(p.chunks);
+    // Per-chunk beats (#3695). The server normalizes an absent beat to null;
+    // the editor's shape is '' for the same thing, so map back on restore.
+    if (Array.isArray(p.chunkPrompts) && p.chunkPrompts.length) {
+      setChunkPrompts(p.chunkPrompts.map((cp) => (typeof cp === 'string' ? cp : '')));
+    }
     // Multi-keyframe FFLF: the route maps the stored { path, index } back to
     // { file, index } (gallery basename) for us, so restore the picker
     // state directly. >= 2 mirrors the server's accept floor; flipping
@@ -919,6 +946,25 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   );
   const modelSupportsChaining = currentModel?.runtime !== 'wan22'
     || currentModel?.supportedModes?.includes('image');
+  // The single predicate for "this request really chains" — keyframes, IC
+  // references and a2v each anchor a SINGLE clip, so the route pins them to one
+  // chunk (KEYFRAMES_CHUNKS_CONFLICT / IC_LORA_CHUNKS_CONFLICT). Derived once so
+  // the submitted `chunks`, the submitted `chunkPrompts`, and the per-chunk beat
+  // editor can never disagree about whether chaining is active.
+  const chainingActive = mode !== 'a2v' && !keyframesActive && !icModeActive
+    && modelSupportsChaining && chunks > 1;
+
+  // Edit one beat. The backing array is only ever GROWN (never truncated on a
+  // chunk-count change) so lowering the count and raising it again restores the
+  // text the user already typed; submit and the editor slice to the live count.
+  const setChunkPromptAt = (index, value) => {
+    setChunkPrompts((prev) => {
+      const next = prev.slice();
+      while (next.length <= index) next.push('');
+      next[index] = value;
+      return next;
+    });
+  };
 
   // Snapshot the current form into a generate-payload. Used both by the
   // inline Generate button and by enqueue, so the two paths stay in lockstep.
@@ -926,6 +972,27 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
 
   const buildGeneratePayload = () => {
     const composed = composeStyledPrompt(prompt, negativePrompt, stylePreset);
+    // The style preset and the no-music constraint are ENVELOPE, not content —
+    // they have to wrap a per-chunk beat exactly as they wrap the main prompt.
+    // Shipping a beat raw would render the chunks the user steered in a
+    // different style (and with the soundtrack they disabled) than the chunks
+    // that fall back to the main prompt — a visible change at every seam, which
+    // is the artifact chaining exists to avoid.
+    // Idempotent on "no music": if the text already says it, don't double-append.
+    const withEnvelope = (text) => {
+      const c = composeStyledPrompt(text, negativePrompt, stylePreset);
+      return (noMusic && !disableAudio && !/no music/i.test(c.prompt))
+        ? `${c.prompt}\n\nno music, no soundtrack`
+        : c.prompt;
+    };
+    // Beats for the LIVE chunks only — the backing array is never truncated on
+    // a chunk-count change, so slicing here is what keeps a stale tail off the
+    // wire. A short list is fine: the server falls back to the main prompt for
+    // any chunk the list doesn't cover. A blank beat stays blank (NOT enveloped)
+    // so it still reads as "absent" and triggers that same fallback.
+    const beats = chainingActive
+      ? chunkPrompts.slice(0, chunks).map((b) => (b?.trim() ? withEnvelope(b) : ''))
+      : [];
     if (isGrok) {
       // Grok's image-first flow reads only these fields; width/height ride
       // along so the server maps them to the closest supported aspect ratio.
@@ -945,9 +1012,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     // generation is itself active — there's no point steering audio output
     // when audio is disabled outright. Idempotent: if the user already
     // typed "no music" we avoid double-appending.
-    const promptOut = (noMusic && !disableAudio && !/no music/i.test(composed.prompt))
-      ? `${composed.prompt}\n\nno music, no soundtrack`
-      : composed.prompt;
+    const promptOut = withEnvelope(prompt);
     // Legacy first/last-frame fflf: the two-image picker is mutually exclusive
     // with multi-keyframe mode on the server, so its image fields only ride
     // along when keyframes aren't active.
@@ -1016,8 +1081,13 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
       // Keyframes and IC references each anchor a single clip — the route
       // rejects chunks > 1 with KEYFRAMES_CHUNKS_CONFLICT /
       // IC_LORA_CHUNKS_CONFLICT, so suppress chunking for both.
-      chunks: mode !== 'a2v' && !keyframesActive && !icModeActive
-        && modelSupportsChaining && chunks > 1 ? chunks : '',
+      chunks: chainingActive ? chunks : '',
+      // Per-chunk beats (#3695) go as a JSON string, like `keyframes` above:
+      // buildFormData appends arrays as repeated keys, which would collapse a
+      // one-entry list to a bare string server-side and — worse — lose the
+      // POSITION of a blank middle beat. Omitted entirely when chaining is off
+      // or every beat is blank, so a non-chained submit sends nothing.
+      chunkPrompts: beats.some((p) => p.trim()) ? JSON.stringify(beats) : '',
     };
   };
 
@@ -1039,6 +1109,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     numFrames, setNumFrames,
     fps, setFps,
     chunks, setChunks,
+    chunkPrompts, setChunkPromptAt, chainingActive,
     steps, setSteps,
     guidanceScale, setGuidanceScale,
     imageStrength, setImageStrength,

@@ -144,6 +144,7 @@ export default function VideoGen() {
     selectedLoras, setSelectedLoras,
     width, height, handleResolutionChange,
     numFrames, setNumFrames, fps, setFps, chunks, setChunks,
+    chunkPrompts, setChunkPromptAt, chainingActive,
     steps, setSteps, guidanceScale, setGuidanceScale, imageStrength, setImageStrength,
     seed, setSeed, handleRandomSeed, tiling, setTiling,
     disableAudio, setDisableAudio, noMusic, setNoMusic,
@@ -1063,6 +1064,7 @@ export default function VideoGen() {
               currentModel={currentModel}
               numFrames={numFrames} onNumFramesChange={setNumFrames}
               chunks={chunks} onChunksChange={setChunks} keyframesActive={keyframesActive}
+              chunkPrompts={chunkPrompts} onChunkPromptChange={setChunkPromptAt} chainingActive={chainingActive}
               fps={fps} onFpsChange={setFps}
               seed={seed} onSeedChange={setSeed} onRandomSeed={handleRandomSeed}
               steps={steps} onStepsChange={setSteps}

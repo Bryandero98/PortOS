@@ -7,6 +7,7 @@ const baseProps = {
   currentModel: { steps: 30, guidance: 3.0 },
   numFrames: 121, onNumFramesChange: vi.fn(),
   chunks: 1, onChunksChange: vi.fn(), keyframesActive: false,
+  chunkPrompts: [], onChunkPromptChange: vi.fn(), chainingActive: false,
   fps: 24, onFpsChange: vi.fn(),
   seed: '', onSeedChange: vi.fn(), onRandomSeed: vi.fn(),
   steps: '', onStepsChange: vi.fn(),
@@ -139,5 +140,39 @@ describe('AdvancedParamsPanel', () => {
     renderPanel({ disableAudio: true });
     fireEvent.click(toggle());
     expect(screen.getByLabelText(/No music/).disabled).toBe(true);
+  });
+
+  describe('per-chunk prompt beats (#3695)', () => {
+    it('hides the beat editor when the request does not chain', () => {
+      renderPanel({ chunks: 4, chainingActive: false });
+      fireEvent.click(toggle());
+      expect(screen.queryByLabelText('Chunk 1')).toBeNull();
+    });
+
+    it('renders one beat row per live chunk, prefilled from the parent', () => {
+      renderPanel({ chunks: 3, chainingActive: true, chunkPrompts: ['first', '', 'third'] });
+      fireEvent.click(toggle());
+      expect(screen.getByLabelText('Chunk 1').value).toBe('first');
+      expect(screen.getByLabelText('Chunk 2').value).toBe('');
+      expect(screen.getByLabelText('Chunk 3').value).toBe('third');
+      expect(screen.queryByLabelText('Chunk 4')).toBeNull();
+    });
+
+    it('shows only the live chunks even when the parent holds text for more', () => {
+      // The parent never truncates its array (so raising the count restores the
+      // text) — the editor is what scopes the view to the current chunk count.
+      renderPanel({ chunks: 2, chainingActive: true, chunkPrompts: ['a', 'b', 'c'] });
+      fireEvent.click(toggle());
+      expect(screen.getByLabelText('Chunk 2').value).toBe('b');
+      expect(screen.queryByLabelText('Chunk 3')).toBeNull();
+    });
+
+    it('reports edits by chunk index', () => {
+      const onChunkPromptChange = vi.fn();
+      renderPanel({ chunks: 2, chainingActive: true, onChunkPromptChange });
+      fireEvent.click(toggle());
+      fireEvent.change(screen.getByLabelText('Chunk 2'), { target: { value: 'the storm breaks' } });
+      expect(onChunkPromptChange).toHaveBeenCalledWith(1, 'the storm breaks');
+    });
   });
 });

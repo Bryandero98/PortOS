@@ -420,6 +420,115 @@ describe('generateChainedVideo — extend chain arg routing', () => {
   });
 });
 
+describe('generateChainedVideo — per-chunk prompt beats (#3695)', () => {
+  /**
+   * Drive a text chain of `totalChunks` and return the `--prompt` value each
+   * inner render was spawned with, in chunk order. Prompts are read off the
+   * spawn args rather than the 'started' event because that event carries
+   * sampler metadata, not the prompt — the spawn args are what the runner
+   * actually renders.
+   */
+  async function runChainAndCapturePrompts(chainParams, totalChunks) {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+
+    // Between chunks the chain extracts the prior chunk's last frame, which
+    // looks the chunk up in history — feed it the ids as they start so the
+    // chain can advance past chunk 0.
+    const { readJSONFile } = await import('../../lib/fileUtils.js');
+    const innerJobIds = [];
+    vi.mocked(readJSONFile).mockImplementation(async () =>
+      innerJobIds.map((id) => ({ id, filename: `${id}.mp4` })),
+    );
+    videoGenEvents.on('started', (e) => innerJobIds.push(e.generationId));
+
+    generateChainedVideo({
+      chunks: totalChunks,
+      jobId: randomUUID(),
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx2_unified',
+      prompt: 'main prompt',
+      width: 512,
+      height: 512,
+      numFrames: 25,
+      fps: 24,
+      mode: 'image',
+      sourceImagePath: '/mock/source.png',
+      extendFromVideoPath: null,
+      lastImagePath: null,
+      ...chainParams,
+    });
+
+    for (let i = 0; i < totalChunks; i++) {
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((resolve) => {
+        const check = () => {
+          if (innerJobIds.length > i) { resolve(); return; }
+          setTimeout(check, 10);
+        };
+        check();
+      });
+      const id = innerJobIds[i];
+      videoGenEvents.emit('completed', { generationId: id, filename: `${id}.mp4`, path: `/data/videos/${id}.mp4` });
+    }
+    await new Promise((r) => setTimeout(r, 100));
+    videoGenEvents.removeAllListeners('started');
+
+    return spawnMock.mock.calls
+      .map(([, args]) => (Array.isArray(args) && args.includes('--prompt')
+        ? args[args.indexOf('--prompt') + 1] : null))
+      .filter((p) => p != null);
+  }
+
+  it('renders each chunk with its own beat', async () => {
+    const prompts = await runChainAndCapturePrompts(
+      { chunkPrompts: ['she opens the door', 'she steps into the rain'] },
+      2,
+    );
+    expect(prompts).toEqual(['she opens the door', 'she steps into the rain']);
+  });
+
+  it('falls back to the main prompt for a blank beat', async () => {
+    // A blank middle entry is the explicit "no beat here" marker — it must
+    // render the MAIN prompt, never an empty prompt.
+    const prompts = await runChainAndCapturePrompts(
+      { chunkPrompts: ['she opens the door', '', '   '] },
+      3,
+    );
+    expect(prompts).toEqual(['she opens the door', 'main prompt', 'main prompt']);
+  });
+
+  it('falls back to the main prompt for a null beat and for indices past the list', async () => {
+    const prompts = await runChainAndCapturePrompts(
+      { chunkPrompts: [null, 'the storm breaks'] },
+      3,
+    );
+    expect(prompts).toEqual(['main prompt', 'the storm breaks', 'main prompt']);
+  });
+
+  it('renders the main prompt for every chunk when no beats are supplied', async () => {
+    const prompts = await runChainAndCapturePrompts({}, 2);
+    expect(prompts).toEqual(['main prompt', 'main prompt']);
+  });
+
+  it('persists the beat list on the stitched history entry', async () => {
+    // The individual chunk entries only record their own RESOLVED prompt, which
+    // loses which chunks carried an explicit beat — so the visible stitched
+    // entry has to carry the list for a Remix to round-trip it.
+    const { atomicWrite } = await import('../../lib/fileUtils.js');
+    await runChainAndCapturePrompts({ chunkPrompts: ['a beat', '', 'a later beat'] }, 3);
+
+    const stitched = vi.mocked(atomicWrite).mock.calls
+      .flatMap(([, payload]) => (Array.isArray(payload) ? payload : []))
+      .find((item) => Array.isArray(item?.chainedFrom));
+    expect(stitched).toBeTruthy();
+    expect(stitched.chunkPrompts).toEqual(['a beat', '', 'a later beat']);
+    // The stitched entry keeps its own derived identity alongside the beats.
+    expect(stitched.filename).toMatch(/^chained-/);
+  });
+});
+
 describe('generateVideo — ltx2 FFLF image resizing', () => {
   it('resizes both start and end frames before passing them to the ltx2 helper', async () => {
     const { execFile } = await import('child_process');

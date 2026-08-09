@@ -12,6 +12,11 @@
 // see the hint under the Frames dropdown.
 export const FRAME_OPTIONS = [25, 49, 73, 97, 121, 145, 169, 193, 217, 241, 265, 313, 361, 481];
 export const FPS_OPTIONS = [16, 24, 30];
+// Chain ceiling — mirrors the route's own 1..8 cap on `chunks` (and on the
+// per-chunk prompt list), which bounds worst-case wall time at 8 × ~5min.
+// Exported so the Chunks picker and the Remix restore can't drift from it.
+export const MAX_CHUNKS = 8;
+export const CHUNK_OPTIONS = Array.from({ length: MAX_CHUNKS }, (_, i) => i + 1);
 export const WAN_FRAME_OPTIONS = [...new Set([
   ...FRAME_OPTIONS,
   41, 61, 81, 101, 161, 201, 321,

@@ -936,6 +936,54 @@ describe('videoGen routes', () => {
       expect(r.body.error).toMatch(/chunks/i);
     });
 
+    it('forwards per-chunk prompt beats, keeping a blank entry as a fallback marker', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a long shot',
+        chunks: 3,
+        chunkPrompts: ['she opens the door', '', 'the storm breaks'],
+      });
+      expect(r.status).toBe(200);
+      expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
+        params: expect.objectContaining({
+          chunks: 3,
+          chunkPrompts: ['she opens the door', null, 'the storm breaks'],
+        }),
+      }));
+    });
+
+    it('accepts a JSON-encoded beat list (the multipart submit shape)', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a long shot',
+        chunks: 2,
+        chunkPrompts: JSON.stringify(['first beat', 'second beat']),
+      });
+      expect(r.status).toBe(200);
+      expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
+        params: expect.objectContaining({ chunkPrompts: ['first beat', 'second beat'] }),
+      }));
+    });
+
+    it('omits beats entirely from a single-chunk render', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a single render',
+        chunkPrompts: ['a stale beat'],
+      });
+      expect(r.status).toBe(200);
+      const { params } = mediaJobQueue.enqueueJob.mock.calls.at(-1)[0];
+      expect(params.chunks).toBe(1);
+      expect('chunkPrompts' in params).toBe(false);
+    });
+
+    it('rejects a beat list longer than the chunk cap', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'too many beats',
+        chunks: 2,
+        chunkPrompts: Array.from({ length: 9 }, (_, i) => `beat ${i}`),
+      });
+      expect(r.status).toBe(400);
+      expect(r.body.error).toMatch(/chunkPrompts/i);
+    });
+
     it('forwards extendFromVideoId by resolving to a real disk path under data/videos/', async () => {
       const id = '11111111-1111-4111-8111-111111111111';
       const videoSvc = await import('../services/videoGen/local.js');

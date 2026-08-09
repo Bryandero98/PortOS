@@ -99,7 +99,8 @@ export const withStagedRollback = async (cleanupStaged, fn) => {
  *   `{ backend, grok, sourceImagePath, uploadedTempPath, cleanupStaged }`.
  *   On the local lane, additionally `{ pythonPath, effectiveModelId, mode,
  *   lastImagePath, audioFilePath, icReferencePaths, resolvedKeyframes,
- *   extendFromVideoPath, uploadedTempPaths, loras, effectiveChunks }`.
+ *   extendFromVideoPath, uploadedTempPaths, loras, effectiveChunks,
+ *   effectiveChunkPrompts }`.
  *   `cleanupStaged` is the caller's rollback hook for anything that can still
  *   throw after this resolves (today: `enqueueJob`) — pass it to
  *   `withStagedRollback`.
@@ -745,6 +746,27 @@ async function resolvePreparedParams({
   // also hard-rejects an explicit chunks>1 above; this covers the default.
   const effectiveChunks = (body.mode === 'a2v' || icSpec) ? 1 : (body.chunks ?? 1);
 
+  // Per-chunk prompt beats (#3695) — only meaningful once the RESOLVED request
+  // really chains, so a single-chunk render (or an a2v/IC one pinned to 1 above)
+  // drops the list entirely rather than persisting a stale array into job params
+  // that a resume would replay into the form.
+  //
+  // Sizing is forgiving in both directions: a stale overlong list (the user
+  // typed beats, then lowered the chunk count) is truncated to the resolved
+  // count, and a short list is left short — generateChainedVideo falls back to
+  // the main prompt for any index the list doesn't cover. Blank entries become
+  // an explicit null (absent beat → main prompt) rather than an empty string the
+  // runner would render as an empty prompt. An all-blank list collapses to
+  // undefined so "the user cleared every beat" and "no beats were sent" persist
+  // identically instead of storing a useless array of nulls.
+  const normalizedChunkPrompts = effectiveChunks > 1 && Array.isArray(body.chunkPrompts)
+    ? body.chunkPrompts.slice(0, effectiveChunks)
+      .map((p) => (typeof p === 'string' && p.trim() !== '' ? p.trim() : null))
+    : undefined;
+  const effectiveChunkPrompts = normalizedChunkPrompts?.some(Boolean)
+    ? normalizedChunkPrompts
+    : undefined;
+
   return {
     backend,
     pythonPath,
@@ -760,6 +782,7 @@ async function resolvePreparedParams({
     uploadedTempPaths: extraUploadedTempPaths,
     loras,
     effectiveChunks,
+    effectiveChunkPrompts,
     cleanupStaged,
   };
 }
