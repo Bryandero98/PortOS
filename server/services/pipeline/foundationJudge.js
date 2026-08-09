@@ -1021,6 +1021,7 @@ async function refineWorld(universeId, { providerId, model, effort, finding = {}
     providerId,
     model,
     effort,
+    narrativeOnly: true,
   });
   // Persist through the write-queue mutator against the FRESHEST record, and
   // defensively DROP any field the user has locked — expandWorldTemplate is

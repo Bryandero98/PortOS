@@ -579,6 +579,7 @@ describe('applyFoundationFix — dimension → owning-service routing table', ()
       providerId: 'codex-tui',
       model: 'gpt-5.6-sol',
       effort: 'ultra',
+      narrativeOnly: true,
     }));
     expect(writtenPatch).toMatchObject({ logline: 'L2', premise: 'P2', styleNotes: 'S2' });
     expect(r).toMatchObject({ dimension: 'worldbuilding', applied: true });

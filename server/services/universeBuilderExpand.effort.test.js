@@ -51,4 +51,26 @@ describe('expandWorldTemplate reasoning effort', () => {
       source: 'universe-builder-expansion',
     }));
   });
+
+  it('uses a narrative-only contract for foundation world repairs', async () => {
+    await expandWorldTemplate({
+      starterPrompt: 'Example Universe',
+      foundationDirective: 'Define the relay hops and their metabolic cost.',
+      providerId: 'codex-tui',
+      model: 'gpt-5.6-sol',
+      effort: 'ultra',
+      narrativeOnly: true,
+    });
+
+    const call = runPromptThroughProviderMock.mock.calls[0][0];
+    expect(call).toMatchObject({
+      effort: 'ultra',
+      source: 'universe-builder-narrative-repair',
+    });
+    expect(call.prompt).toContain('exact costs');
+    expect(call.prompt).toContain('Define the relay hops and their metabolic cost.');
+    expect(call.prompt).toContain('Do not emit influences, categories, compositeSheets, characters, places, objects');
+    expect(call.prompt).not.toContain('Generate 5-12 categories');
+    expect(call.prompt).not.toContain('world_pitch_poster');
+  });
 });

@@ -6,8 +6,8 @@
  * and asks the chosen LLM to return a structured JSON blob:
  *   { influences: { embrace, avoid }, categories: { ... }, compositeSheets: [{ kind, label, prompt }] }
  *
- * The LLM choice is per-call: caller passes { providerId, model }. If
- * either is missing we fall back to the active provider / its default
+ * The LLM choice is per-call: caller passes { providerId, model, effort }. If
+ * provider/model is missing we fall back to the active provider / its default
  * model so the UI still works for users who haven't configured a stage.
  */
 
@@ -55,6 +55,7 @@ function buildExpansionPrompt({
   influences,
   preservedVariations,
   preservedCompositeSheets,
+  narrativeOnly = false,
   // Prior bible state — locked entries echo back unchanged; unlocked entries
   // seed the LLM. Empty/missing fields are skipped.
   priorLogline = '',
@@ -99,6 +100,34 @@ ${stateLines.join('\n\n')}\n`
   const foundationSection = safeFoundationDirective
     ? `\n# Foundation repair directive\nA whole-series foundation judge found the following concrete weakness. Repair it across the unlocked world-bible fields while preserving every locked field and established fact:\n${safeFoundationDirective}\n`
     : '';
+
+  // Foundation convergence persists only the narrative bible scalars. Asking
+  // the normal Universe Builder contract for dozens of image variations,
+  // composite sheets, and canon candidates makes the model spend most of its
+  // time authoring output this caller must discard. Keep ordinary expansion
+  // unchanged, but give judge-directed repairs the narrow contract they can
+  // actually apply.
+  if (narrativeOnly) {
+    return `You are a senior speculative-fiction worldbuilder repairing the narrative bible for a comic/TV series. This is a focused continuity repair, not a visual-exploration or canon-invention pass.
+
+# Starter idea
+${starterPrompt}
+${influencesSection}${currentStateSection}${foundationSection}
+# Output contract
+Return one JSON object with exactly these top-level keys and no others:
+
+- logline: string, one sentence (max 500 characters).
+- premise: string, 1-3 concise paragraphs (max 4000 characters) defining the setting, conflict, stakes, and every operational rule needed to satisfy the repair directive.
+- styleNotes: string (max 4000 characters) preserving the established tonal and sensory identity while making any worldbuilding guidance concrete enough for writers to apply.
+
+# Repair rules
+- Resolve the judge's exact contradiction or omission. Do not answer it with extra lore that leaves the named causal problem intact.
+- State capabilities together with hard limits, exact costs, recharge or recovery conditions, failure modes, information loss, and who pays each price.
+- Make the repaired rule exert plot pressure: identify the kinds of choices it forces and the societal, political, economic, or ritual consequences it creates.
+- Preserve established facts. Fields marked [LOCKED] must be echoed verbatim. Change an unlocked field only as much as the repair requires.
+- Do not emit influences, categories, compositeSheets, characters, places, objects, render prompts, reference boards, or markdown.
+- Return only the JSON object. No prose before or after.`;
+  }
 
   // Preserved items: the client extracted user-pinned variations and
   // composite boards. List them by category + label so the LLM can avoid
@@ -338,6 +367,7 @@ const normalizeCanonArray = (raw, kind) => {
  * @param {string} [options.providerId]   — optional override; falls back to active.
  * @param {string} [options.model]        — optional override; falls back to provider default.
  * @param {string} [options.effort]       — optional reasoning-effort override for capable providers.
+ * @param {boolean} [options.narrativeOnly] — limit output to the story-bible fields a foundation repair persists.
  */
 export async function expandWorldTemplate({
   starterPrompt,
@@ -355,6 +385,7 @@ export async function expandWorldTemplate({
   providerId,
   model,
   effort,
+  narrativeOnly = false,
 } = {}) {
   if (!starterPrompt || !starterPrompt.trim()) {
     throw new Error("starterPrompt is required");
@@ -378,6 +409,7 @@ export async function expandWorldTemplate({
     priorStyleNotes,
     locked,
     foundationDirective,
+    narrativeOnly,
   });
   const totalIn = safeInfluences.embrace.length + safeInfluences.avoid.length;
   const preservedVarCount = Object.values(preservedVariations || {}).reduce(
@@ -388,7 +420,7 @@ export async function expandWorldTemplate({
     ? preservedCompositeSheets.length
     : 0;
   console.log(
-    `🌍 Universe Builder expanding via ${provider.name}/${selectedModel || "default"} — influences in: ${totalIn ? `embrace=${safeInfluences.embrace.length} avoid=${safeInfluences.avoid.length}` : "none"} preserved: variations=${preservedVarCount} sheets=${preservedSheetCount}`,
+    `🌍 Universe Builder ${narrativeOnly ? 'repairing narrative bible' : 'expanding'} via ${provider.name}/${selectedModel || "default"} — influences in: ${totalIn ? `embrace=${safeInfluences.embrace.length} avoid=${safeInfluences.avoid.length}` : "none"} preserved: variations=${preservedVarCount} sheets=${preservedSheetCount}`,
   );
 
   // runId is logged so a user debugging an empty expansion can find the
@@ -398,7 +430,7 @@ export async function expandWorldTemplate({
     model: selectedModel,
     effort,
     prompt: fullPrompt,
-    source: "universe-builder-expansion",
+    source: narrativeOnly ? "universe-builder-narrative-repair" : "universe-builder-expansion",
   });
   // Log raw response shape so a "0 variations" outcome is debuggable from
   // the server console alone — the runId points at data/runs/<id>/output.txt
@@ -496,9 +528,9 @@ export async function expandWorldTemplate({
     0,
   );
   console.log(
-    `🌍 Universe Builder expansion complete — runId=${runId} ${totalVariations} variations, ${compositeSheets.length} composite sheets, canon=${characters.length}/${places.length}/${objects.length} (chars/places/objs), bible=${logline ? "yes" : "no"} (${perCat})`,
+    `🌍 Universe Builder ${narrativeOnly ? 'narrative repair' : 'expansion'} complete — runId=${runId} ${totalVariations} variations, ${compositeSheets.length} composite sheets, canon=${characters.length}/${places.length}/${objects.length} (chars/places/objs), bible=${logline ? "yes" : "no"} (${perCat})`,
   );
-  if (totalVariations === 0 && compositeSheets.length === 0 && characters.length === 0 && places.length === 0 && objects.length === 0) {
+  if (!narrativeOnly && totalVariations === 0 && compositeSheets.length === 0 && characters.length === 0 && places.length === 0 && objects.length === 0) {
     console.warn(
       `⚠️ Universe Builder expansion produced 0 variations + 0 canon — inspect data/runs/${runId}/output.txt for the raw LLM response`,
     );
