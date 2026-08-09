@@ -314,13 +314,41 @@ export async function runFoundationGate(seriesId, record) {
     if (record.cancelRequested) return { canceled: true };
     const beforeFix = await budgetPause();
     if (beforeFix) return beforeFix;
-    const fix = await applyFoundationFix(seriesId, weak.dimension, {
-      finding: snap.dimensions?.[weak.dimension] || {},
-      providerOverride: providerId,
-      modelOverride: model,
-      ...seasonPreserveOpts(record),
-      effortOverride: effort,
-    });
+    // Deliberate catch (the one in this module): the repair is an LLM call, and
+    // an LLM call fails for reasons that have nothing to do with the foundation
+    // — a provider timeout, a dead CLI binary, a rate limit. Uncaught, it left
+    // the orchestrator's catch to mark the WHOLE run `error` and stop, throwing
+    // away every step the run had already completed, even though the failure is
+    // transient and the next attempt would very likely succeed. Every other
+    // dead end in this gate (locked arc, fully-locked cast, non-convergence)
+    // pauses instead — a resumable state that keeps the run's position and
+    // names what went wrong. A provider failure is the MOST transient of them,
+    // so it gets the same treatment rather than the harshest one. The
+    // promptRunner has already walked its full fallback cascade by the time
+    // this throws, so there is no retry left to attempt here.
+    let fix;
+    try {
+      fix = await applyFoundationFix(seriesId, weak.dimension, {
+        finding: snap.dimensions?.[weak.dimension] || {},
+        providerOverride: providerId,
+        modelOverride: model,
+        ...seasonPreserveOpts(record),
+        effortOverride: effort,
+      });
+    } catch (err) {
+      const detail = (err?.message || String(err)).slice(0, 300);
+      console.error(`❌ foundation repair failed (${weak.dimension}) — series=${seriesId.slice(0, 12)}: ${detail}`);
+      await recordDomainUsage('cos', { actions: 1 });
+      broadcast(seriesId, {
+        type: 'foundation:fix', round, dimension: weak.dimension, applied: false, reason: detail,
+      });
+      return {
+        pause: true,
+        pauseKind: 'providerFailed',
+        reason: `The foundation repair for ${weak.dimension} could not complete: ${detail}. The run kept everything it had finished — resume to retry, or switch the repair provider/model first.`,
+        residual: residualFindings(snap.dimensions),
+      };
+    }
     await recordDomainUsage('cos', { actions: 1 });
     broadcast(seriesId, {
       type: 'foundation:fix', round, dimension: weak.dimension, applied: fix?.applied === true, reason: fix?.reason || null,

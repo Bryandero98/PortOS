@@ -347,8 +347,8 @@ export async function startSeriesAutopilot(sId, options = {}) {
           const budget = await getDomainBudgetStatus('cos');
           if (!budget.withinBudget) {
             const budgetReason = `daily cos ${budget.exceeded} budget reached`;
-            await persistMarker(sId, { status: 'paused', runId, currentStep: step.kind, lastError: budgetReason });
-            broadcast(sId, { type: 'paused', runId, reason: budgetReason, completedAt: new Date().toISOString() });
+            await persistMarker(sId, { status: 'paused', runId, currentStep: step.kind, lastError: budgetReason, pauseKind: 'budget' });
+            broadcast(sId, { type: 'paused', runId, reason: budgetReason, pauseKind: 'budget', completedAt: new Date().toISOString() });
             await notifyPause(record, sId, { reason: budgetReason, pauseKind: 'budget', currentStep: step.kind });
             console.log(`⏸️  autopilot paused (budget) — series=${sId.slice(0, 12)} after ${ordinal} steps`);
             return;

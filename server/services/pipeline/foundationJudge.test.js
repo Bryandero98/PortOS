@@ -244,6 +244,78 @@ describe('rankFoundationCharacters — core-cast repair targets', () => {
   });
 });
 
+describe('renderArc — episode-list budget', () => {
+  const bigSeries = {
+    arc: { logline: 'AL', summary: 'AS', themes: ['t1'], protagonistArc: 'PA', shape: 'rise' },
+    seasons: [{ id: 'sea-1', number: 1, title: 'V1', logline: 'VL', synopsis: 'VS', endingHook: 'EH' }],
+    characterArcs: [{ characterId: 'chr-1', characterName: 'Lead', startState: 'a', endState: 'b', want: 'w', need: 'n' }],
+  };
+  const manyIssues = Array.from({ length: 40 }, (_, i) => ({
+    number: i + 1, seasonId: 'sea-1', title: `Ep ${i + 1}`,
+    stages: { idea: { input: 'x'.repeat(400) } },
+  }));
+
+  it('renders every episode when unbudgeted', () => {
+    const out = __testing.renderArc(bigSeries, manyIssues);
+    expect(out).toContain('#1 Ep 1:');
+    expect(out).toContain('#40 Ep 40:');
+    expect(out).not.toContain('omitted to fit the prompt budget');
+  });
+
+  it('drops whole trailing episode lines to fit, keeping the plan spine intact', () => {
+    const out = __testing.renderArc(bigSeries, manyIssues, { maxChars: 4_000 });
+    // Spine survives: arc header, volume logline/synopsis/hook, authored arcs.
+    expect(out).toContain('Logline: AL');
+    expect(out).toContain('  V1 V1: VL');
+    expect(out).toContain('    Synopsis: VS');
+    expect(out).toContain('    Ending hook: EH');
+    expect(out).toContain('Authored character arcs (1):');
+    // Earliest episodes are the ones kept; the tail is dropped by whole lines
+    // (never sliced mid-sentence) and the omitted count is named.
+    expect(out).toContain('#1 Ep 1:');
+    expect(out).not.toContain('#40 Ep 40:');
+    expect(out).toMatch(/\[\d+ later episode synopsis lines omitted to fit the prompt budget\]/);
+    for (const line of out.split('\n')) {
+      if (line.startsWith('    #')) expect(line.endsWith('x'.repeat(20))).toBe(true);
+    }
+  });
+
+  it('drops every episode rather than throwing when the spine alone overruns the budget', () => {
+    const out = __testing.renderArc(bigSeries, manyIssues, { maxChars: 10 });
+    expect(out).toContain('Logline: AL');
+    expect(out).not.toContain('#1 Ep 1:');
+    expect(out).toContain('[40 later episode synopsis lines omitted to fit the prompt budget]');
+  });
+
+  it('keeps the singular form when exactly one episode is dropped', () => {
+    const oneOver = __testing.renderArc(bigSeries, manyIssues.slice(0, 2), { maxChars: 800 });
+    expect(oneOver).toContain('[1 later episode synopsis line omitted to fit the prompt budget]');
+  });
+});
+
+describe('foundation repair prompt — bounded outline', () => {
+  it('caps the synopsis-level plan so the prompt cannot grow without bound with the episode count', async () => {
+    seriesSvc.getSeries.mockResolvedValue({
+      id: 'ser-1', name: 'S', premise: 'P', universeId: 'uni-1',
+      seasons: [{ id: 'sea-1', number: 1, title: 'V1', logline: 'VL', synopsis: 'VS' }],
+    });
+    issuesSvc.listIssues.mockResolvedValue(Array.from({ length: 60 }, (_, i) => ({
+      number: i + 1, seasonId: 'sea-1', title: `Ep ${i + 1}`,
+      stages: { idea: { input: 'y'.repeat(500) } },
+    })));
+    stageRunner.runStagedLLM.mockResolvedValue({ content: {} });
+
+    await applyFoundationFix('ser-1', 'craft', { finding: { gap: 'g', fix: 'f' } });
+
+    const [, vars] = stageRunner.runStagedLLM.mock.calls.at(-1);
+    // 60 × ~500 chars of synopsis would be ~30KB unbudgeted — the exact shape
+    // that burned both the primary and fallback TUI provider's full timeout.
+    expect(vars.outline.length).toBeLessThanOrEqual(__testing.REPAIR_OUTLINE_MAX_CHARS + 200);
+    expect(vars.outline).toContain('omitted to fit the prompt budget');
+    expect(vars.outline).toContain('  V1 V1: VL');
+  });
+});
+
 describe('foundation judge context — complete planning altitude', () => {
   it('shows the world bible premise and design systems that world repair can change', () => {
     const ctx = __testing.buildFoundationContext({

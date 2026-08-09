@@ -231,5 +231,5 @@ export const seasonPreserveOpts = (record) => ({
 export async function budgetPause() {
   const budget = await getDomainBudgetStatus('cos');
   if (budget.withinBudget) return null;
-  return { pause: true, gapFiled: true, reason: `daily cos ${budget.exceeded || 'actions'} budget reached` };
+  return { pause: true, gapFiled: true, pauseKind: 'budget', reason: `daily cos ${budget.exceeded || 'actions'} budget reached` };
 }

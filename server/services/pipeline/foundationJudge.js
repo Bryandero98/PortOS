@@ -400,13 +400,31 @@ function coreFoundationCharacters(characters, series, issues = []) {
     .map(({ character }) => character);
 }
 
-function renderArc(series, issues = []) {
+const joinedLength = (lines) => lines.reduce((total, line) => total + line.length + 1, 0);
+
+/**
+ * Render the synopsis-level series plan: arc header, per-volume loglines and
+ * synopses, the episode list under each volume, and the authored character arcs.
+ *
+ * `maxChars` bounds the result. The per-episode synopsis list is the ONLY part
+ * that grows without bound — a series gains episodes forever, and everything
+ * else is fixed by the volume count — so the budget is spent by dropping WHOLE
+ * episode lines from the end, keeping the plan spine (arc, volumes, authored
+ * character arcs) intact and naming how many were left out. That degrades to a
+ * coherent outline the model can still reason over, unlike slicing the rendered
+ * text mid-sentence. Earliest episodes survive a tight budget because that's
+ * where a character arc's opening transitions hang.
+ *
+ * Unbudgeted (the default) the output is byte-identical to the pre-budget
+ * render, so the foundation judge's own section-level truncation is unchanged.
+ */
+function renderArc(series, issues = [], { maxChars = Infinity } = {}) {
   const arc = series?.arc || {};
   const seasons = Array.isArray(series?.seasons) ? [...series.seasons].sort((a, b) => (a.number || 0) - (b.number || 0)) : [];
   const orderedIssues = [...(Array.isArray(issues) ? issues : [])]
     .sort((a, b) => (a?.number ?? 9999) - (b?.number ?? 9999));
   const themes = Array.isArray(arc.themes) ? arc.themes.join(', ') : (arc.themes || '');
-  const lines = [
+  const head = [
     `Logline: ${arc.logline || '(none)'}`,
     `Summary: ${arc.summary || '(none)'}`,
     `Themes: ${themes || '(none)'}`,
@@ -415,20 +433,43 @@ function renderArc(series, issues = []) {
     '',
     `Volumes (${seasons.length}):`,
   ];
-  for (const season of seasons) {
-    lines.push(`  V${season.number ?? '?'} ${season.title || ''}: ${season.logline || '(no logline)'}`);
-    lines.push(`    Synopsis: ${season.synopsis || '(none)'}`);
-    if (season.endingHook) lines.push(`    Ending hook: ${season.endingHook}`);
-    const seasonIssues = orderedIssues.filter((issue) => issue?.seasonId === season.id);
-    for (const issue of seasonIssues) {
-      lines.push(`    #${issue.number ?? '?'} ${issue.title || 'Untitled'}: ${issue?.stages?.idea?.input || '(no synopsis)'}`);
+  const volumes = seasons.map((season) => {
+    const spine = [
+      `  V${season.number ?? '?'} ${season.title || ''}: ${season.logline || '(no logline)'}`,
+      `    Synopsis: ${season.synopsis || '(none)'}`,
+    ];
+    if (season.endingHook) spine.push(`    Ending hook: ${season.endingHook}`);
+    const episodes = orderedIssues
+      .filter((issue) => issue?.seasonId === season.id)
+      .map((issue) => `    #${issue.number ?? '?'} ${issue.title || 'Untitled'}: ${issue?.stages?.idea?.input || '(no synopsis)'}`);
+    return { spine, episodes };
+  });
+  const characterArcs = Array.isArray(series?.characterArcs) ? series.characterArcs : [];
+  const tail = ['', `Authored character arcs (${characterArcs.length}):`];
+  for (const characterArc of characterArcs) {
+    tail.push(`  - ${characterArc.characterName || characterArc.characterId || 'Unnamed'}: ${characterArc.startState || '(no start)'} → ${characterArc.endState || '(no end)'}; want=${characterArc.want || '—'}; need=${characterArc.need || '—'}`);
+  }
+
+  // The spine is unconditional; episodes fill whatever is left. `remaining` goes
+  // negative when the spine alone overruns the budget, which drops every episode
+  // rather than throwing — a caller that set a budget wants a smaller prompt, not
+  // a failed render.
+  let remaining = maxChars - joinedLength([...head, ...volumes.flatMap((v) => v.spine), ...tail]);
+  let omitted = 0;
+  const lines = [...head];
+  for (const volume of volumes) {
+    lines.push(...volume.spine);
+    for (const episode of volume.episodes) {
+      if (episode.length + 1 <= remaining) {
+        lines.push(episode);
+        remaining -= episode.length + 1;
+      } else {
+        omitted += 1;
+      }
     }
   }
-  const characterArcs = Array.isArray(series?.characterArcs) ? series.characterArcs : [];
-  lines.push('', `Authored character arcs (${characterArcs.length}):`);
-  for (const characterArc of characterArcs) {
-    lines.push(`  - ${characterArc.characterName || characterArc.characterId || 'Unnamed'}: ${characterArc.startState || '(no start)'} → ${characterArc.endState || '(no end)'}; want=${characterArc.want || '—'}; need=${characterArc.need || '—'}`);
-  }
+  if (omitted > 0) lines.push(`  [${omitted} later episode synopsis line${omitted === 1 ? '' : 's'} omitted to fit the prompt budget]`);
+  lines.push(...tail);
   return lines.join('\n');
 }
 
@@ -632,6 +673,21 @@ const REPAIRABLE_CHARACTER_FIELDS = Object.freeze([
   'secrets',
 ]);
 
+// How much of the synopsis-level plan a repair prompt may carry. The judge
+// prompt this mirrors has always been budgeted (`buildFoundationContext` caps
+// each section at a third of the model's usable input); repair alone sent the
+// whole plan raw, so its prompt grew with every episode the series gained. On a
+// long-running series that section reached 28KB of a 35KB prompt and BOTH the
+// primary and the fallback TUI provider burned their full 10-minute timeout on
+// it without emitting a response — which errored the entire autonomous run.
+// ~12K chars (~3K tokens) keeps the arc spine plus the early episodes a
+// character arc's transitions hang off, and still fits alongside the rest of the
+// prompt inside a small local model's window. A fixed cap rather than a
+// window-derived one on purpose: the binding constraint here is how much
+// material a reasoning model will chew through before the wall clock runs out,
+// not how much its context can hold.
+const REPAIR_OUTLINE_MAX_CHARS = 12_000;
+
 async function runFoundationRepair(series, issues, dimension, finding, characters, options) {
   const result = await runStagedLLM(REPAIR_STAGE, {
     dimension,
@@ -644,7 +700,7 @@ async function runFoundationRepair(series, issues, dimension, finding, character
       styleGuide: series.styleGuide,
       characterArcs: series.characterArcs,
     }, null, 2),
-    outline: renderArc(series, issues),
+    outline: renderArc(series, issues, { maxChars: REPAIR_OUTLINE_MAX_CHARS }),
     charactersJson: JSON.stringify(characters.map((character) => ({
       id: character.id,
       name: character.name,
@@ -884,6 +940,8 @@ export const __testing = {
   contentHash,
   isFoundationStale,
   buildFoundationContext,
+  renderArc,
   renderCharacterLine,
+  REPAIR_OUTLINE_MAX_CHARS,
   FRAMEWORK_STRING_FIELDS,
 };

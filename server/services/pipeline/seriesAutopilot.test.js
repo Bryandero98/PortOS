@@ -1571,6 +1571,25 @@ describe('autopilot conductor', () => {
     expect(applyFoundationFix).toHaveBeenCalledTimes(1);
   });
 
+  it('foundation gate: a repair that throws pauses the run instead of erroring it away', async () => {
+    foundationScore = 3;
+    applyFoundationFix.mockRejectedValueOnce(new Error('TUI run timed out after 600000ms'));
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 3 });
+    await waitFor(runFinished(seriesId));
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    // The whole point: an LLM transport failure is transient and has nothing to
+    // do with the foundation, so it must NOT discard the run the way `error` does.
+    expect(last?.type).toBe('paused');
+    expect(last?.pauseKind).toBe('providerFailed');
+    expect(last?.reason).toMatch(/TUI run timed out after 600000ms/);
+    const series = await seriesSvc.getSeries(seriesId);
+    expect(series.autopilot?.status).toBe('paused');
+    // Survives the sanitizer — an unlisted kind would be silently nulled and the
+    // UI badge would vanish.
+    expect(series.autopilot?.pauseKind).toBe('providerFailed');
+  });
+
   it('foundation gate: disabled via option runs no judge and proceeds', async () => {
     foundationScore = 3;
     const { seriesId } = await seedComplete();

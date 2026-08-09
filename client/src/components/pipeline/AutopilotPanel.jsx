@@ -325,7 +325,8 @@ const RUN_ENDED = new Set(['complete', 'canceled', 'error', 'paused']);
 
 // Pause kinds worth calling out beside the status line — the ones where "Paused"
 // alone doesn't tell the user what state the draft is in. A kind with no entry
-// (maxRounds, childFailed) is fully explained by the reason text below it.
+// (maxRounds, childFailed, planningOscillation) is fully explained by the reason
+// text below it.
 const PAUSE_BADGES = {
   divergence: {
     label: 'not converging',
@@ -338,6 +339,18 @@ const PAUSE_BADGES = {
   checkFindings: {
     label: 'high findings',
     title: 'Editorial checks surfaced too many High findings — address them (or raise the threshold) and resume',
+  },
+  providerFailed: {
+    label: 'provider failed',
+    title: 'An AI repair call failed outright (provider timeout, dead CLI, rate limit) — the run kept everything it had finished; resume to retry, or switch the provider/model first',
+  },
+  inapplicable: {
+    label: 'nothing to fix',
+    title: "The owning service had nothing it was allowed to change — no linked universe, or every target is locked. Auto-resolve can't proceed without a human edit",
+  },
+  budget: {
+    label: 'budget reached',
+    title: 'The daily spend cap was reached mid-run — the run stopped where it was and resumes once the budget resets or is raised',
   },
 };
 

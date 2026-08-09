@@ -408,6 +408,36 @@ describe('AutopilotPanel', () => {
     expect(screen.queryByText(/not converging/i)).not.toBeInTheDocument();
   });
 
+  it('flags a failed AI repair call with a "provider failed" badge', async () => {
+    // A provider timeout / dead CLI is transient and says nothing about the
+    // draft — the badge has to separate it from a pause the user must edit for.
+    renderPanel({
+      id: 's1',
+      targetFormat: 'comic',
+      autopilot: { status: 'paused', currentStep: 'foundationGate', pauseKind: 'providerFailed' },
+    });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    expect(screen.getByText(/provider failed/i)).toBeInTheDocument();
+  });
+
+  it('flags an unfixable dimension and a spent budget with their own badges', async () => {
+    const { unmount } = renderPanel({
+      id: 's1',
+      targetFormat: 'comic',
+      autopilot: { status: 'paused', currentStep: 'foundationGate', pauseKind: 'inapplicable' },
+    });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    expect(screen.getByText(/nothing to fix/i)).toBeInTheDocument();
+    unmount();
+
+    renderPanel({
+      id: 's1',
+      targetFormat: 'comic',
+      autopilot: { status: 'paused', currentStep: 'foundationGate', pauseKind: 'budget' },
+    });
+    await waitFor(() => expect(screen.getByText(/budget reached/i)).toBeInTheDocument());
+  });
+
   it('flags an editorial-checks pause with a "high findings" badge (#1613)', async () => {
     renderPanel({
       id: 's1',

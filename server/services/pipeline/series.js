@@ -124,13 +124,25 @@ const AUTOPILOT_FINDING_SEVERITIES = ['high', 'medium', 'low'];
 // stopped converging early — the blocking count failed to drop). Child runners
 // (#1574): `childFailed` (a delegated beats/text run produced no output after
 // its retry budget). Lets the UI classify the pause without string-matching the
-// reason text. Any other pause (budget, error, a capability gap) leaves this null.
+// reason text. Any other pause (error, a capability gap) leaves this null.
 // Editorial checks (#1613): `checkFindings` (the editorial-checks pass surfaced ≥
 // the armed high-finding threshold, so the run paused for human review).
 // Resolve rollback: `regression` (an auto-resolve round came back with MORE
 // blocking findings than it was handed while leaving those standing, so its
 // edits were reverted and the run paused on the pre-round residual).
-export const AUTOPILOT_PAUSE_KINDS = Object.freeze(['maxRounds', 'divergence', 'regression', 'childFailed', 'checkFindings']);
+// Dead ends the run can't fix itself: `inapplicable` (the owning service had
+// nothing it was allowed to change — no linked universe, a fully-locked cast),
+// `planningOscillation` (the foundation and arc gates kept handing repairs back
+// to each other without settling), `budget` (the daily spend cap was reached
+// mid-run), `providerFailed` (an LLM repair call failed outright — a provider
+// timeout, a dead CLI, a rate limit — after the prompt runner's own fallback
+// cascade was exhausted). This list must carry EVERY kind the autopilot emits:
+// sanitizeAutopilot drops an unlisted one to null, which silently strips the
+// badge the UI would otherwise show.
+export const AUTOPILOT_PAUSE_KINDS = Object.freeze([
+  'maxRounds', 'divergence', 'regression', 'childFailed', 'checkFindings',
+  'inapplicable', 'planningOscillation', 'budget', 'providerFailed',
+]);
 
 export const sanitizeAutopilot = (raw) => {
   if (!raw || typeof raw !== 'object') return null;
