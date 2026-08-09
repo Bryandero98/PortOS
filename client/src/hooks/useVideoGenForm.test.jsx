@@ -248,6 +248,48 @@ describe('useVideoGenForm', () => {
       expect(result.current.buildGeneratePayload().chunkPrompts).toBe('');
     });
 
+    it('wraps each beat in the same style/no-music envelope as the main prompt', async () => {
+      // A raw beat would render its chunk without the style preset (and with the
+      // soundtrack the user disabled) while the fallback chunks keep both — a
+      // visible change at exactly the seams chaining exists to smooth over.
+      const result = await chained(2);
+      act(() => {
+        result.current.setStylePreset({ prompt: 'film noir', negativePrompt: 'blurry' });
+        result.current.setNoMusic(true);
+        result.current.setChunkPromptAt(1, 'the storm breaks');
+      });
+
+      const payload = result.current.buildGeneratePayload();
+      expect(payload.prompt).toBe('film noir. a long shot\n\nno music, no soundtrack');
+      expect(JSON.parse(payload.chunkPrompts)).toEqual([
+        '',
+        'film noir. the storm breaks\n\nno music, no soundtrack',
+      ]);
+    });
+
+    it('restores the beats and the chunk count when remixing a chained clip', async () => {
+      const { result } = render();
+      await waitFor(() => expect(result.current.modelId).toBe(MLX.id));
+      act(() => result.current.applyRemix({
+        prompt: 'a long shot',
+        chainedFrom: ['a', 'b', 'c'],
+        chunkPrompts: ['she opens the door', null, 'the storm breaks'],
+      }));
+      expect(result.current.chunks).toBe(3);
+      expect(result.current.chunkPrompts).toEqual(['she opens the door', '', 'the storm breaks']);
+    });
+
+    it('clears stale beats when remixing a clip that never chained', async () => {
+      // Otherwise a "faithful reproduction" remix is steered by beats the user
+      // typed for a render they never submitted.
+      const result = await chained(3);
+      act(() => result.current.setChunkPromptAt(0, 'a stale beat'));
+      act(() => result.current.applyRemix({ prompt: 'an unrelated clip' }));
+      expect(result.current.chunks).toBe(1);
+      expect(result.current.chunkPrompts).toEqual([]);
+      expect(result.current.buildGeneratePayload().chunkPrompts).toBe('');
+    });
+
     it('restores beats from a resumed job, mapping the server null back to blank', async () => {
       const { result } = render();
       await waitFor(() => expect(result.current.modelId).toBe(MLX.id));

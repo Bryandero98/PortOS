@@ -20,10 +20,8 @@
 import { useState } from 'react';
 import { ChevronDown, Dice5 } from 'lucide-react';
 import { FormField } from '../ui/FormField';
-import { frameOptionsForModel, fpsOptionsForModel } from '../../lib/videoGenParams.js';
+import { frameOptionsForModel, fpsOptionsForModel, CHUNK_OPTIONS } from '../../lib/videoGenParams.js';
 import { VIDEO_TILING_OPTIONS } from '../../lib/videoTilingOptions';
-
-const CHUNK_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8];
 
 const inputCls = 'w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50';
 
