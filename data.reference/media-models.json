@@ -107,7 +107,9 @@
         "revision": "3ac52081470b0488921c3ec3ba84a39097bf2361",
         "runtime": "minimax_h3",
         "supportedModes": [
-          "text"
+          "text",
+          "image",
+          "fflf"
         ],
         "defaultFrames": 124,
         "frameOptions": [
@@ -162,6 +164,13 @@
               "FL2VA/text_encoder/model-00011-of-00014.safetensors",
               "FL2VA/text_encoder/model-00014-of-00014.safetensors",
               "FL2VA/text_encoder/model.safetensors.index.json",
+              "FL2VA/processor/chat_template.json",
+              "FL2VA/processor/merges.txt",
+              "FL2VA/processor/preprocessor_config.json",
+              "FL2VA/processor/tokenizer.json",
+              "FL2VA/processor/tokenizer_config.json",
+              "FL2VA/processor/video_preprocessor_config.json",
+              "FL2VA/processor/vocab.json",
               "FL2VA/tokenizer/merges.txt",
               "FL2VA/tokenizer/tokenizer.json",
               "FL2VA/tokenizer/tokenizer_config.json",

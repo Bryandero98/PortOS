@@ -26,8 +26,8 @@ import {
  */
 
 // CLI reviewers whose binary takes a `--model <id>` tier. Mirror of
-// MODEL_CAPABLE_CLI_REVIEWERS.
-export const MODEL_CAPABLE_CLI_REVIEWERS = ['codex', 'claude'];
+// MODEL_CAPABLE_CLI_REVIEWERS (`antigravity` runs `agy --model <id>`).
+export const MODEL_CAPABLE_CLI_REVIEWERS = ['codex', 'claude', 'antigravity'];
 
 // The local-LLM backends, which take both a model and an effort.
 export const LOCAL_LLM_REVIEWERS = ['lmstudio', 'ollama'];

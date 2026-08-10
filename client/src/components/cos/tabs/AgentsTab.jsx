@@ -120,22 +120,29 @@ export default function AgentsTab({ agents, onRefresh, liveOutputs, providers, a
     onRefresh();
   }, [onRefresh]);
 
+  // A PAUSED agent resumes IN PLACE (see `resumeAgent` in agentManagement.js):
+  // the server requeues that agent's own task on the worktree its run left behind.
+  // A COMPLETED agent's task is long settled, so it still gets a fresh one.
   const handleResumeSubmit = async ({ description, context, model, provider, effort, app, type = 'user', screenshots }) => {
-    const result = await api.addCosTask({
+    const payload = {
       description,
       context,
       model: model || undefined,
       provider: provider || undefined,
       effort: effort || undefined,
       app: app || undefined,
-      type,
       screenshots
-    }, { silent: true }).catch(err => {
-      toast.error(err.message);
-      return null;
-    });
-    if (!result) return;
-    toast.success(`Created ${type === 'internal' ? 'system ' : ''}resume task`);
+    };
+    const result = await (resumingAgent?.status === 'paused'
+      ? api.resumeCosAgent(resumingAgent.id, payload, { silent: true })
+      : api.addCosTask({ ...payload, type }, { silent: true })
+    );
+    // Errors propagate to the modal, which owns the failure toast and re-enables
+    // its submit button — swallowing them here closed the dialog on failure and
+    // left the user believing the resume was queued.
+    toast.success(result.mode === 'requeued'
+      ? 'Resumed — the paused task is queued on its preserved worktree'
+      : `Created ${type === 'internal' ? 'system ' : ''}resume task`);
     setResumingAgent(null);
     onRefresh();
   };

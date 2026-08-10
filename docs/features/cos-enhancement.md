@@ -107,6 +107,7 @@ Comprehensive upgrade from reactive task executor to proactive autonomous agent 
 1. **Mission Autonomy**: Full autonomy - COS can implement changes, run tests, commit without approval for managed apps
 2. **Model Usage**: Local-first with LM Studio, no cloud API costs for thinking
 3. **Self-Modification**: Full autonomy - COS can change its own base thinking model without user approval
+4. **Failure Investigation**: Unattended by default - an `[Auto] Investigate agent failure` task runs without approval, because an isolated agent failure is exactly the work CoS exists to diagnose for itself. Approval is reserved for a failure *loop*, where another unattended agent would only repeat what already didn't work: the same cause investigated again within 24h (`repeat-fingerprint`), or the circuit-breaker hour already one slot from its cap (`failure-storm`). The reason is stamped on the task as the producer-agnostic `metadata.approvalReason` (`investigation-loop:<signal>`), which the Tasks UI turns into a hint on the APPROVE button. See `resolveInvestigationApproval` in `server/services/agentErrorAnalysis.js`.
 
 ## Test Coverage
 

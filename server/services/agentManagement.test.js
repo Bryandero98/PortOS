@@ -46,6 +46,7 @@ vi.mock('./cos.js', () => ({
   addTask: vi.fn().mockResolvedValue({ id: 'sys-mocked' }),
   getTaskById: vi.fn(),
   getAllTasks: vi.fn(),
+  reviveBlockedTask: vi.fn().mockResolvedValue(true),
   evaluateTasks: vi.fn().mockResolvedValue(undefined)
 }));
 
@@ -69,6 +70,7 @@ vi.mock('./cosAgentLifecycle.js', () => ({
   completeAgent: vi.fn().mockResolvedValue(undefined),
   updateAgent: vi.fn().mockResolvedValue(undefined),
   getAgents: vi.fn().mockResolvedValue([]),
+  getAgentRecord: vi.fn().mockResolvedValue(null),
 }));
 vi.mock('./cosRunnerClient.js', () => ({
   terminateAgentViaRunner: vi.fn(),
@@ -102,13 +104,13 @@ vi.mock('./creativeDirector/local.js', () => ({
 vi.mock('./creativeDirector/planAdvance.js', () => ({ advanceAfterPlanStepSettled: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('./creativeDirector/completionHook.js', () => ({ advanceAfterSceneSettled: vi.fn().mockResolvedValue(undefined) }));
 
-import { handleOrphanedTask, pauseAgent, settleOrphanedCreativeDirectorRun, cleanupOrphanedAgents } from './agentManagement.js';
+import { handleOrphanedTask, pauseAgent, resumeAgent, settleOrphanedCreativeDirectorRun, cleanupOrphanedAgents } from './agentManagement.js';
 import { cleanupAgentWorktree, resolveTaskResumePatch } from './agentWorktreeCleanup.js';
-import { getAgents, updateAgent, completeAgent as markAgentComplete } from './cosAgentLifecycle.js';
+import { getAgents, updateAgent, getAgentRecord, completeAgent as markAgentComplete } from './cosAgentLifecycle.js';
 import { updateRun, getProject } from './creativeDirector/local.js';
 import { advanceAfterPlanStepSettled } from './creativeDirector/planAdvance.js';
 import { advanceAfterSceneSettled } from './creativeDirector/completionHook.js';
-import { updateTask, addTask, getTaskById } from './cos.js';
+import { updateTask, addTask, getTaskById, reviveBlockedTask } from './cos.js';
 import { pauseAgentViaRunner } from './cosRunnerClient.js';
 import * as shellService from './shell.js';
 import { readHostShutdownMarker, clearHostShutdownMarker } from '../lib/hostShutdown.js';
@@ -636,6 +638,166 @@ describe('pauseAgent — agent not found', () => {
       status: 404,
       code: 'NOT_FOUND',
     });
+  });
+});
+
+// ─── resumeAgent ──────────────────────────────────────────────────────────────
+//
+// Resuming used to be a client-side illusion: the UI queued a brand-new
+// `[Resume] <description>` task, so a SECOND agent spawned on a clean worktree,
+// the paused agent's own task stayed `blocked` as `agent-paused` forever, and
+// the paused record was never retired. These lock the real transition.
+
+describe('resumeAgent — requeues the paused agent\'s own task', () => {
+  const PAUSED_AGENT = {
+    id: 'agent-paused-1',
+    status: 'paused',
+    taskId: 'task-abc',
+    metadata: {
+      isWorktree: true,
+      worktreeBranch: 'cos/task-abc/agent-paused-1',
+      workspacePath: '/tmp/worktrees/agent-paused-1',
+      sourceWorkspace: '/tmp/repo',
+      taskType: 'user',
+    },
+  };
+  const PAUSED_TASK = {
+    id: 'task-abc',
+    taskType: 'user',
+    description: 'Do the thing',
+    status: 'blocked',
+    metadata: {
+      blockedCategory: 'agent-paused',
+      pausedAgentId: 'agent-paused-1',
+      pausedAt: '2026-08-10T00:00:00.000Z',
+      resumeWorkspacePath: '/tmp/worktrees/agent-paused-1',
+      resumeRunId: 'run-1',
+      context: 'original context',
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    pausedAgents.clear();
+    getAgentRecord.mockResolvedValue(PAUSED_AGENT);
+    getTaskById.mockResolvedValue(PAUSED_TASK);
+    resolveTaskResumePatch.mockResolvedValue({
+      existingBranch: 'cos/task-abc/agent-paused-1',
+      resumedFromAgentId: 'agent-paused-1',
+      resumeWorktreePath: '/tmp/worktrees/agent-paused-1',
+    });
+  });
+
+  it('flips the SAME task back to pending carrying the resume pointer — no new task', async () => {
+    const result = await resumeAgent('agent-paused-1');
+
+    expect(result).toMatchObject({ success: true, taskId: 'task-abc', mode: 'requeued' });
+    expect(addTask).not.toHaveBeenCalled();
+    expect(reviveBlockedTask).toHaveBeenCalledWith('task-abc', {
+      metadata: expect.objectContaining({
+        existingBranch: 'cos/task-abc/agent-paused-1',
+        resumedFromAgentId: 'agent-paused-1',
+        resumeWorktreePath: '/tmp/worktrees/agent-paused-1',
+      }),
+    }, 'user');
+    // Through reviveBlockedTask, NOT a raw updateTask: it also resets the
+    // spawn/orphan budgets, so a task paused near MAX_TOTAL_SPAWNS doesn't resume
+    // straight into `max-spawns`.
+    expect(updateTask).not.toHaveBeenCalled();
+  });
+
+  it('clears the spent pause bookkeeping with undefined (which updateTask deletes), not null', async () => {
+    await resumeAgent('agent-paused-1');
+    const { metadata } = reviveBlockedTask.mock.calls[0][1];
+    for (const key of ['pausedAt', 'pausedAgentId', 'resumeWorkspacePath', 'resumeRunId']) {
+      expect(metadata).toHaveProperty(key);
+      expect(metadata[key]).toBeUndefined();
+    }
+  });
+
+  it('retires the paused agent record so it stops showing as paused', async () => {
+    await resumeAgent('agent-paused-1');
+    expect(markAgentComplete).toHaveBeenCalledWith('agent-paused-1', expect.objectContaining({
+      success: false,
+      resumed: true,
+      resumedTaskId: 'task-abc',
+    }));
+  });
+
+  it('requeues BEFORE retiring the record — the dequeue completeAgent triggers must see a pointed task', async () => {
+    const order = [];
+    reviveBlockedTask.mockImplementationOnce(async () => { order.push('reviveBlockedTask'); return true; });
+    markAgentComplete.mockImplementationOnce(async () => { order.push('completeAgent'); });
+    await resumeAgent('agent-paused-1');
+    expect(order).toEqual(['reviveBlockedTask', 'completeAgent']);
+  });
+
+  it('appends dialog context to the task\'s own and applies provider/model/effort overrides', async () => {
+    await resumeAgent('agent-paused-1', {
+      context: 'extra guidance', provider: 'claude', model: 'claude-opus-5', effort: 'high',
+    });
+    const { metadata } = reviveBlockedTask.mock.calls[0][1];
+    expect(metadata.context).toBe('original context\n\nextra guidance');
+    expect(metadata).toMatchObject({ provider: 'claude', model: 'claude-opus-5', effort: 'high' });
+  });
+
+  it('leaves unspecified run settings alone — a blank dialog field is absence, not a clear', async () => {
+    await resumeAgent('agent-paused-1', { provider: '', model: undefined, context: '' });
+    const { metadata } = reviveBlockedTask.mock.calls[0][1];
+    expect(metadata).not.toHaveProperty('provider');
+    expect(metadata).not.toHaveProperty('model');
+    expect(metadata).not.toHaveProperty('context');
+  });
+
+  it('still requeues (clean) when the paused run left nothing resumable behind', async () => {
+    resolveTaskResumePatch.mockResolvedValue({});
+    const result = await resumeAgent('agent-paused-1');
+    expect(result).toMatchObject({ mode: 'requeued', branchName: null });
+    expect(reviveBlockedTask.mock.calls[0][1].metadata).not.toHaveProperty('existingBranch');
+  });
+
+  it('requeues clean rather than failing when the pointer cannot be resolved', async () => {
+    resolveTaskResumePatch.mockRejectedValue(new Error('git exploded'));
+    await expect(resumeAgent('agent-paused-1')).resolves.toMatchObject({ mode: 'requeued' });
+    expect(reviveBlockedTask).toHaveBeenCalled();
+  });
+
+  it('throws 404 for an unknown agent and 409 for one that is not paused', async () => {
+    getAgentRecord.mockResolvedValueOnce(null);
+    await expect(resumeAgent('nope')).rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
+
+    getAgentRecord.mockResolvedValueOnce({ ...PAUSED_AGENT, status: 'running' });
+    await expect(resumeAgent('agent-paused-1')).rejects.toMatchObject({ status: 409, code: 'AGENT_NOT_PAUSED' });
+    expect(reviveBlockedTask).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a fresh task when the pause is spent — and still retires the record', async () => {
+    // The task was revived and completed while the agent sat paused; requeueing
+    // it would stomp that outcome.
+    getTaskById.mockResolvedValue({ ...PAUSED_TASK, status: 'completed' });
+    const result = await resumeAgent('agent-paused-1', { description: '[Resume] Do the thing' });
+
+    expect(result).toMatchObject({ mode: 'new-task', taskId: 'sys-mocked' });
+    expect(reviveBlockedTask).not.toHaveBeenCalled();
+    expect(addTask).toHaveBeenCalledWith(
+      expect.objectContaining({ description: '[Resume] Do the thing' }),
+      'user',
+    );
+    expect(markAgentComplete).toHaveBeenCalled();
+  });
+
+  it('falls back to a fresh task when a LATER agent owns the pause', async () => {
+    getTaskById.mockResolvedValue({
+      ...PAUSED_TASK,
+      metadata: { ...PAUSED_TASK.metadata, pausedAgentId: 'agent-someone-else' },
+    });
+    await expect(resumeAgent('agent-paused-1')).resolves.toMatchObject({ mode: 'new-task' });
+    expect(reviveBlockedTask).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a fresh task when the task was deleted outright', async () => {
+    getTaskById.mockResolvedValue(null);
+    await expect(resumeAgent('agent-paused-1')).resolves.toMatchObject({ mode: 'new-task' });
   });
 });
 

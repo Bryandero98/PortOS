@@ -11,7 +11,7 @@
 import { z } from 'zod';
 import { emptyToUndefined, emptyToNull } from './zodCompat.js';
 import { isPlainObject } from './objects.js';
-import { EFFORT_LEVELS, effortLevelsForProvider, buildEffortArgs } from './providerModels.js';
+import { EFFORT_LEVELS, effortLevelsForProvider, buildEffortArgs, splitAntigravityModel } from './providerModels.js';
 import { ANTIGRAVITY_COMMAND } from './antigravity.js';
 import { isValidSlashdoCommand } from './slashdoInvocation.js';
 import { PR_COMPLETION_VALUES } from './prDisposition.js';
@@ -36,15 +36,18 @@ export const DEFAULT_REVIEWERS = ['copilot'];
 export const LOCAL_LLM_REVIEWERS = ['lmstudio', 'ollama'];
 // CLI reviewers whose binary accepts a `--model <id>` tier the user can pin on
 // the Code Review Defaults panel (stored as a `<reviewer>Model` settings scalar,
-// e.g. `codexModel` / `claudeModel`). The review-loop follow-up threads each as a
-// reviewer-keyed model map (`reviewLoopReviewerModels`) so the prompt emits
-// `<reviewer> --model <id>` per configured reviewer. `claude` covers both a
-// normal Claude tier and an Ollama-backed `claude` (see isOllamaClaudeProvider)
-// where `--model` selects the local Ollama model. Copilot/local-LLM reviewers are
-// excluded — the former has no CLI, the latter get their model injected
-// server-side by `POST /api/code-review/local`. Add a reviewer here (and a
-// matching `<reviewer>Model` schema field) when its CLI gains model selection.
-export const MODEL_CAPABLE_CLI_REVIEWERS = ['codex', 'claude'];
+// e.g. `codexModel` / `claudeModel` / `antigravityModel`). The review-loop
+// follow-up threads each as a reviewer-keyed model map
+// (`reviewLoopReviewerModels`) so the prompt emits `<reviewer> --model <id>` per
+// configured reviewer. `claude` covers both a normal Claude tier and an
+// Ollama-backed `claude` (see isOllamaClaudeProvider) where `--model` selects the
+// local Ollama model. `antigravity` runs `agy --model <id>`; an effort-suffixed
+// agy id is reconciled with the effort pin by `pairReviewerModelsAndEfforts`.
+// Copilot/local-LLM reviewers are excluded — the former has no CLI, the latter
+// get their model injected server-side by `POST /api/code-review/local`. Add a
+// reviewer here when its CLI gains model selection; the `<reviewer>Model`
+// settings scalar is generated from this roster (codeReviewSettingsSchema).
+export const MODEL_CAPABLE_CLI_REVIEWERS = ['codex', 'claude', 'antigravity'];
 // Every reviewer whose model the user can PICK in the UI: the model-capable CLIs
 // above (threaded into the follow-up prompt as `<reviewer> --model <id>`) plus the
 // local-LLM backends (whose id is injected server-side by
@@ -566,9 +569,66 @@ export function resolveReviewerConfig(metadata, codeReviewDefaults, defaultRevie
     usernames: resolveReviewUsernames(metadata?.usernames, codeReviewDefaults?.usernames),
     optionalReviewers: resolveOptionalReviewers(metadata?.optionalReviewers, codeReviewDefaults?.optionalReviewers),
     reviewerMaxRounds: resolveReviewerMaxRounds(metadata?.reviewerMaxRounds, codeReviewDefaults?.reviewerMaxRounds),
-    reviewerModels: resolveReviewerModels(metadata?.reviewerModels, reviewerModelsFromDefaults(codeReviewDefaults)),
-    reviewerEfforts: resolveReviewerEfforts(metadata?.reviewerEfforts, reviewerEffortsFromDefaults(codeReviewDefaults))
+    ...resolveReviewerPins(metadata, codeReviewDefaults)
   };
+}
+
+/**
+ * Resolve the model and effort pins TOGETHER — `{ reviewerModels, reviewerEfforts }`
+ * with task-over-default precedence, already reconciled into a pair the reviewer's
+ * CLI accepts (`pairReviewerModelsAndEfforts`).
+ *
+ * The two are never legitimately resolved apart: an `antigravity` model id can
+ * carry its effort as a suffix, so whoever resolves the models must also be
+ * holding the efforts to hand the suffix to. Resolving them separately is the
+ * footgun — three prompt-building sites in `cosTaskGenerator.js` had already
+ * hand-copied the pair of calls, and each would have emitted an
+ * `agy --model <suffixed-id> --effort <tier>` invocation agy rejects. This is the
+ * one call every site makes instead.
+ *
+ * @param {Object} [pins] - task metadata (or explicit options) carrying
+ *   `reviewerModels` / `reviewerEfforts` maps; an absent map falls back to the
+ *   Code Review Defaults, an explicitly empty one overrides them.
+ * @param {Object} [codeReviewDefaults] - the `<reviewer>Model` / `<reviewer>Effort` scalars
+ * @returns {{reviewerModels: Object<string,string>, reviewerEfforts: Object<string,string>}}
+ */
+export function resolveReviewerPins(pins, codeReviewDefaults) {
+  return pairReviewerModelsAndEfforts(
+    resolveReviewerModels(pins?.reviewerModels, reviewerModelsFromDefaults(codeReviewDefaults)),
+    resolveReviewerEfforts(pins?.reviewerEfforts, reviewerEffortsFromDefaults(codeReviewDefaults))
+  );
+}
+
+/**
+ * Reconcile the resolved model and effort pins into a pair the reviewer's CLI
+ * will actually accept, and return them as `{ reviewerModels, reviewerEfforts }`.
+ *
+ * Only `antigravity` needs reconciling. `agy models` enumerates its reasoning
+ * tiers as separate model ids (`gemini-3.6-flash-high`), so a hand-typed pin can
+ * carry an effort inside the model — and `agy` validates the PAIR, so
+ * `--model gemini-3.6-flash-high --effort high` is not the same thing as the
+ * `--model <base> --effort high` it expects. Splitting here mirrors what
+ * `resolveAntigravityModelAndEffort` already does for PortOS's own agy spawns:
+ * the base id becomes the model, and the baked tier supplies the effort ONLY when
+ * the user pinned none (an explicit pick always wins).
+ *
+ * Applied once inside `resolveReviewerPins` rather than at each emission site, so
+ * the slashdo `agy[<model>]` bracket, the effort instruction, and the review-loop
+ * prompt's literal command line all describe the same invocation.
+ *
+ * @param {Object<string,string>} [reviewerModels]
+ * @param {Object<string,string>} [reviewerEfforts]
+ * @returns {{reviewerModels: Object<string,string>, reviewerEfforts: Object<string,string>}}
+ */
+export function pairReviewerModelsAndEfforts(reviewerModels, reviewerEfforts) {
+  const models = { ...(reviewerModels || {}) };
+  const efforts = { ...(reviewerEfforts || {}) };
+  const { base, effort } = splitAntigravityModel(models.antigravity);
+  if (effort && base) {
+    models.antigravity = base;
+    if (!normalizeReviewerEffort(efforts.antigravity, 'antigravity')) efforts.antigravity = effort;
+  }
+  return { reviewerModels: models, reviewerEfforts: efforts };
 }
 
 /**
@@ -1208,9 +1268,10 @@ export const taskTemplateFromTaskSchema = z.object({
 // up spawner reads it as the fallback for `reviewers` when none are passed in.
 // `lmstudioModel` / `ollamaModel` are the installed model ids the local-LLM
 // reviewer should run with (empty/undefined = pick the active default model).
-// `codexModel` / `claudeModel` are per-CLI-reviewer model tiers (see
-// MODEL_CAPABLE_CLI_REVIEWERS) threaded into the review-loop follow-up prompt as
-// `<reviewer> --model <id>` (empty/undefined = let that CLI pick its own default).
+// `codexModel` / `claudeModel` / `antigravityModel` are per-CLI-reviewer model
+// tiers (see MODEL_CAPABLE_CLI_REVIEWERS) threaded into the review-loop follow-up
+// prompt as `<reviewer> --model <id>` (empty/undefined = let that CLI pick its
+// own default).
 // `claudeModel` doubles as the Ollama model id when the user runs an
 // Ollama-backed `claude` (isOllamaClaudeProvider) as their reviewer.
 export const codeReviewSettingsSchema = z.object({
@@ -1247,21 +1308,23 @@ export const codeReviewSettingsSchema = z.object({
   // builders would silently drop — the picker would otherwise DISPLAY a pin that
   // never reaches a reviewer. An unusable value clears the field (undefined)
   // rather than persisting: same "absent = that reviewer's own default" contract.
-  lmstudioModel: z.preprocess(v => normalizeReviewerModel(v, 'lmstudio'), z.string().optional()),
-  ollamaModel: z.preprocess(v => normalizeReviewerModel(v, 'ollama'), z.string().optional()),
-  codexModel: z.preprocess(v => normalizeReviewerModel(v, 'codex'), z.string().optional()),
-  claudeModel: z.preprocess(v => normalizeReviewerModel(v, 'claude'), z.string().optional()),
+  //
+  // GENERATED from the roster, not hand-listed: this object is `.strict()`, so a
+  // reviewer that gains model selection (`antigravity`, #3728) would have its
+  // PATCH REJECTED until someone remembered to add a line here — while every other
+  // site derives its `<reviewer>Model` key from MODEL_SELECTABLE_REVIEWERS and
+  // would already be carrying the pin.
+  ...Object.fromEntries(MODEL_SELECTABLE_REVIEWERS.map(reviewer => [
+    `${reviewer}Model`,
+    z.preprocess(v => normalizeReviewerModel(v, reviewer), z.string().optional()),
+  ])),
   // Per-reviewer reasoning-effort defaults, one scalar per effort-capable reviewer
   // (the model scalars' twin — same rationale for staying scalars: the encoding
   // crosses installs). Each is checked against that reviewer's OWN ladder, so
   // `antigravityEffort: 'max'` — a level `agy` rejects — clears rather than
   // persisting a pin no invocation would carry.
   //
-  // GENERATED from the roster rather than hand-listed like the model scalars
-  // above: this object is `.strict()`, so a reviewer that later gains an effort
-  // ladder would have its PATCH REJECTED until someone remembered to add a line
-  // here. Every other site that builds a `<reviewer>Effort` key derives it the
-  // same way.
+  // Generated from the roster for the same reason as the model scalars above.
   ...Object.fromEntries(EFFORT_SELECTABLE_REVIEWERS.map(reviewer => [
     `${reviewer}Effort`,
     z.preprocess(v => normalizeReviewerEffort(v, reviewer), z.string().optional()),
@@ -1352,6 +1415,17 @@ export const slashdoTaskSchema = createCosTaskSchema
     target: z.preprocess(emptyToUndefined, z.string().trim().max(80).optional()),
     issueAuthorFilter: z.enum(ISSUE_AUTHOR_FILTERS).optional(),
   });
+
+// POST /api/cos/agents/:id/resume — the resume dialog's edits for a paused
+// agent's next run. PICKED from createCosTaskSchema for the same reason
+// slashdoTaskSchema is: one vocabulary and one set of preprocessors for the
+// provider/model/effort knobs, whichever form supplied them. Every field is
+// optional — the resume requeues the paused agent's OWN task, so an untouched
+// dialog is a valid "resume exactly as it was". `description` only matters on
+// the fallback path where the paused task is gone and a fresh one is queued.
+export const resumeCosAgentSchema = createCosTaskSchema
+  .pick({ description: true, context: true, model: true, provider: true, effort: true, app: true, screenshots: true })
+  .partial();
 
 /**
  * Sanitize taskMetadata to an allow-list of agent-option keys. Boolean flags

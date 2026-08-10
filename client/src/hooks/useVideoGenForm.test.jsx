@@ -13,12 +13,15 @@ const { useVideoGenForm } = await import('./useVideoGenForm.js');
 // Two runtimes matter to the payload shape: `ltx2` unlocks keyframes / LoRAs /
 // a2v / IC remix and routes extend through the video id, `mlx_video` is the
 // legacy path that extends from an extracted last frame.
-const LTX2 = { id: 'ltx2-model', name: 'LTX-2.3', runtime: 'ltx2' };
-const MLX = { id: 'mlx-model', name: 'LTX distilled', runtime: 'mlx_video' };
+// `lastFrameAnchored` is server-decorated onto every model by listVideoModels()
+// (from LAST_FRAME_ANCHORED_RUNTIMES) — fixtures carry it as the payload does.
+const LTX2 = { id: 'ltx2-model', name: 'LTX-2.3', runtime: 'ltx2', lastFrameAnchored: true };
+const MLX = { id: 'mlx-model', name: 'LTX distilled', runtime: 'mlx_video', lastFrameAnchored: false };
 const WAN_T2V = { id: 'wan-t2v', name: 'Wan T2V', runtime: 'wan22', supportedModes: ['text'], frameStride: 4 };
 const WAN_TI2V = { id: 'wan-ti2v', name: 'Wan TI2V', runtime: 'wan22', supportedModes: ['text', 'image'], frameStride: 4 };
 const H3 = {
-  id: 'minimax-h3', name: 'MiniMax H3', runtime: 'minimax_h3', supportedModes: ['text'],
+  id: 'minimax-h3', name: 'MiniMax H3', runtime: 'minimax_h3', supportedModes: ['text', 'image', 'fflf'],
+  lastFrameAnchored: true,
   frameOptions: [124, 141, 158], fpsOptions: [24], defaultFrames: 124,
   supportsNegativePrompt: false, supportsTiling: false, supportsDisableAudio: false,
 };
@@ -196,7 +199,7 @@ describe('useVideoGenForm', () => {
     expect(result.current.buildGeneratePayload().chunks).toBe('');
   });
 
-  it('normalizes MiniMax H3 to its text-only temporal and sampler contract', async () => {
+  it('normalizes MiniMax H3 to its fixed temporal and sampler contract', async () => {
     const { result } = render({
       models: [MLX, H3],
       status: { connected: true, defaultModel: MLX.id },
@@ -207,7 +210,6 @@ describe('useVideoGenForm', () => {
       result.current.setNegativePrompt('blurry');
       result.current.setNumFrames(129);
       result.current.setFps(30);
-      result.current.setChunks(3);
       result.current.setTiling('full');
       result.current.setDisableAudio(true);
       result.current.setNoMusic(true);
@@ -217,7 +219,6 @@ describe('useVideoGenForm', () => {
     await waitFor(() => expect(result.current.numFrames).toBe(124));
 
     expect(result.current.mode).toBe('text');
-    expect(result.current.chainingActive).toBe(false);
     const payload = result.current.buildGeneratePayload();
     expect(payload).toMatchObject({
       modelId: H3.id,
@@ -225,11 +226,40 @@ describe('useVideoGenForm', () => {
       negativePrompt: '',
       numFrames: 124,
       fps: 24,
-      chunks: '',
       tiling: 'auto',
       disableAudio: 'false',
     });
     expect(payload.prompt).toBe('a fox watches the rain');
+  });
+
+  // H3's fl2va path anchors keyframes at the first/last latent frame, so image
+  // mode (and therefore chunk chaining, which re-seeds from the prior chunk's
+  // last frame) is available — and its last frame is a real anchor, not a hint.
+  it('offers MiniMax H3 image mode, chaining and a non-advisory last frame', async () => {
+    const { result } = render({
+      models: [MLX, H3],
+      status: { connected: true, defaultModel: MLX.id },
+    });
+    await waitFor(() => expect(result.current.modelId).toBe(MLX.id));
+    act(() => {
+      result.current.setPrompt('a fox watches the rain');
+      result.current.setChunks(3);
+      result.current.handleModelChange(H3.id);
+    });
+    await waitFor(() => expect(result.current.modelId).toBe(H3.id));
+
+    expect(result.current.chainingActive).toBe(true);
+    expect(result.current.buildGeneratePayload().chunks).toBe(3);
+    expect(result.current.lastFrameIsAdvisory).toBe(false);
+    act(() => result.current.handleModeChange('image'));
+    await waitFor(() => expect(result.current.mode).toBe('image'));
+    expect(result.current.modelId).toBe(H3.id);
+  });
+
+  it('keeps the advisory last-frame note on a single-frame mlx_video runtime', async () => {
+    const { result } = render({ models: [MLX, H3] });
+    await waitFor(() => expect(result.current.modelId).toBe(MLX.id));
+    expect(result.current.lastFrameIsAdvisory).toBe(true);
   });
 
   describe('per-chunk prompt beats (#3695)', () => {

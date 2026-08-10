@@ -241,6 +241,25 @@ describe('render-backend pin — video (#3135)', () => {
     expect(enqueued().params.modelId).toBe('pinned-video-model');
   });
 
+  it('applies a model-only pin that names no backend', async () => {
+    // The scene path reads the model pin unconditionally, so dropping it here
+    // (via the no-pin early return) would make the two surfaces render the
+    // same commission with different models.
+    getSettings.mockResolvedValue({ imageGen: {} });
+    getProject.mockResolvedValue(projectWithPin({ video: { modelId: 'pinned-video-model' } }));
+    await run('media_enqueueVideoJob', { prompt: 'p' }, { projectId: 'cd-1' });
+    expect(enqueued().params).toEqual({ prompt: 'p', modelId: 'pinned-video-model' });
+  });
+
+  it('still passes params through untouched when nothing at all is pinned', async () => {
+    // The byte-identical contract: broadening `pinned` to cover a model-only
+    // pin must not start perturbing jobs for an unconfigured install.
+    getSettings.mockResolvedValue({ imageGen: {} });
+    getProject.mockResolvedValue({ id: 'cd-1' });
+    await run('media_enqueueVideoJob', { prompt: 'p', durationSeconds: 8 }, { projectId: 'cd-1' });
+    expect(enqueued().params).toEqual({ prompt: 'p', durationSeconds: 8 });
+  });
+
   describe('grok clip length crosses a contract boundary', () => {
     // The local lane derives frames from `durationSeconds`; grok's worker reads
     // `duration` and silently falls back to 6s for anything absent. Without the

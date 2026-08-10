@@ -226,6 +226,41 @@ async function resolveWorkspaceBranch(workspacePath) {
 }
 
 /**
+ * How many commits the finished branch holds that its base does not — or `null`
+ * when we could not work it out.
+ *
+ * The `null` sentinel matters: it is the difference between "we looked and the
+ * agent committed nothing" and "we could not look". Only a confirmed `0` is
+ * allowed to excuse a missing PR (see `verifyPrClaim`); an unreadable count
+ * leaves the miss standing rather than inventing an excuse for it.
+ *
+ * Compares against `origin/<default>` in preference to the local branch. A
+ * worktree's local `main` is routinely STALE — it is whatever the primary
+ * checkout last pulled, which can sit well behind the commit the worktree was
+ * actually branched from. Counting against it reports the merge commits the
+ * agent inherited as commits the agent authored, which is precisely backwards
+ * for a check that exists to recognize "this agent wrote nothing".
+ */
+async function countCommitsAhead(workspacePath) {
+  const { getDefaultBranch } = await import('./git.js');
+  // `allowRemote: false` — finalize must not block on a network round-trip to
+  // answer a bookkeeping question; the local fallbacks resolve main/master fine.
+  const defaultBranch = await getDefaultBranch(workspacePath, { allowRemote: false }).catch(() => null);
+  if (!defaultBranch) return null;
+
+  const remoteRef = `refs/remotes/origin/${defaultBranch}`;
+  const hasRemote = await execGit(['rev-parse', '--verify', '--quiet', remoteRef], workspacePath, { ignoreExitCode: true })
+    .then(r => !!(r?.stdout || '').trim())
+    .catch(() => false);
+
+  const base = hasRemote ? `origin/${defaultBranch}` : defaultBranch;
+  const result = await execGit(['rev-list', '--count', `${base}..HEAD`], workspacePath, { ignoreExitCode: true })
+    .catch(() => null);
+  const count = Number.parseInt((result?.stdout || '').trim(), 10);
+  return Number.isInteger(count) ? count : null;
+}
+
+/**
  * Verify that a run whose task shape PROMISED a pull request actually produced
  * one (#3358).
  *
@@ -245,12 +280,16 @@ async function resolveWorkspaceBranch(workspacePath) {
  * `glab` split `createPR` already makes. Asking `gh` about a GitLab remote
  * would fail and record every correct MR run as `forge-unreachable`.
  *
- * Three outcomes, never collapsed:
+ * Four outcomes, never collapsed:
  *   - `ok: true`  — a PR exists, or there was nothing to check
- *   - `ok: false, category: 'pr-missing'` — the forge answered: no PR
+ *   - `ok: true, noChangesToShip: true` — the forge answered "no PR" and the
+ *     branch holds no commits, so there was nothing a PR could have been opened
+ *     for; the run concluded that no change was warranted
+ *   - `ok: false, category: 'pr-missing'` — the forge answered "no PR" for a
+ *     branch that DOES hold commits
  *   - `ok: false, category: 'forge-unreachable'` — we could not ask
  *
- * @returns {Promise<{ ok: boolean, category?: string, message?: string, branch?: string|null }>}
+ * @returns {Promise<{ ok: boolean, category?: string, message?: string, branch?: string|null, noChangesToShip?: boolean, commitsAhead?: number|null }>}
  */
 export async function verifyPrClaim({ task, workspacePath, success, prExpected }) {
   // Only a run that CLAIMED success has a claim to verify; a failed run is
@@ -276,9 +315,24 @@ export async function verifyPrClaim({ task, workspacePath, success, prExpected }
   const noun = cli === 'glab' ? 'merge request' : 'pull request';
   if (found.status === 'found') return { ok: true, branch };
   if (found.status === 'none') {
+    // "No PR" is only a MISS if there was something to open one for. An agent
+    // that investigated its task, found the defect already fixed on main, and
+    // stopped without touching a file leaves a branch with zero commits — and
+    // `gh pr create` on a zero-commit branch does not fail because the agent
+    // slipped, it fails because there is no diff. Recording that as `pr-missing`
+    // failed a correct run and, being non-actionable, re-ran the whole
+    // investigation twice more to reach the same conclusion (agent-446c4f47).
+    //
+    // Deliberately gated on an EXPLICIT 0: an unreadable count is not evidence
+    // of an empty branch, so it leaves the miss standing.
+    const ahead = await countCommitsAhead(workspacePath).catch(() => null);
+    if (ahead === 0) {
+      return { ok: true, branch, noChangesToShip: true };
+    }
     return {
       ok: false,
       branch,
+      commitsAhead: ahead,
       category: PR_MISSING_CATEGORY,
       message: `Agent reported success but no ${noun} exists for branch ${branch}`
     };
@@ -344,7 +398,7 @@ function prVerificationAnalysis(verdict) {
     message: verdict.message,
     actionable: false,
     suggestedFix: verdict.category === PR_MISSING_CATEGORY
-      ? `The branch ${verdict.branch} is pushed but has no open change request. Re-run the task, or open it by hand (\`gh pr create --head ${verdict.branch}\` / \`glab mr create --source-branch ${verdict.branch}\`).`
+      ? `The branch ${verdict.branch} holds ${verdict.commitsAhead ?? 'unreviewed'} commit(s) but has no open change request. Re-run the task, or open it by hand (\`gh pr create --head ${verdict.branch}\` / \`glab mr create --source-branch ${verdict.branch}\`).`
       : 'Check the forge probe on the System Health page — the forge CLI could not reach the forge, so the run\'s change request could not be confirmed.'
   };
 }
@@ -625,6 +679,12 @@ export async function finalizeAgent({
   if (!prVerdict.ok) {
     emitLog('warn', `⚠️ ${prVerdict.message} — recording ${agentId} as needs-attention (${prVerdict.category}) rather than complete`, {
       agentId, taskId: task?.id, branch: prVerdict.branch, category: prVerdict.category
+    });
+  } else if (prVerdict.noChangesToShip) {
+    // A no-op run is a legitimate completion, not a silent one — the human still
+    // wants to know a task burned an agent and concluded there was nothing to do.
+    emitLog('info', `🫧 ${agentId} opened no change request and committed nothing to ${prVerdict.branch} — recording the run as complete with no change warranted`, {
+      agentId, taskId: task?.id, branch: prVerdict.branch
     });
   }
 

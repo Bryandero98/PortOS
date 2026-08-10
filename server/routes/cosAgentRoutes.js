@@ -8,7 +8,7 @@ import * as cos from '../services/cos.js';
 // Lifecycle transitions go through the facade (#3450), not the `cos.js` barrel.
 import * as agentOrchestrator from '../services/agentOrchestrator.js';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
-import { validateRequest } from '../lib/validation.js';
+import { validateRequest, resumeCosAgentSchema } from '../lib/validation.js';
 
 const router = Router();
 
@@ -91,6 +91,16 @@ router.post('/agents/:id/terminate', asyncHandler(async (req, res) => {
 router.post('/agents/:id/pause', asyncHandler(async (req, res) => {
   const { reason } = validateRequest(pauseBodySchema, req.body ?? {});
   const result = await agentOrchestrator.pauseAgent(req.params.id, reason || null);
+  res.json(result);
+}));
+
+// POST /api/cos/agents/:id/resume - Requeue a paused agent's own task on the
+// branch/worktree its run left behind, and retire the paused record.
+// resumeAgent throws a ServerError — 404 when the agent is missing, 409 when it
+// isn't paused, 500 when the requeue write fails.
+router.post('/agents/:id/resume', asyncHandler(async (req, res) => {
+  const overrides = validateRequest(resumeCosAgentSchema, req.body ?? {});
+  const result = await agentOrchestrator.resumeAgent(req.params.id, overrides);
   res.json(result);
 }));
 

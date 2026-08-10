@@ -426,6 +426,11 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   // file, indices strictly ascending and within [0, numFrames-1].
   const keyframesSupported = currentModel?.runtime === 'ltx2';
   const keyframesActive = mode === 'fflf' && keyframesMode && keyframesSupported;
+  // Whether an FFLF last frame is a real anchor or just a hint. The server
+  // decorates each model with `lastFrameAnchored` from the one runtime list
+  // (server/services/videoGen/runtimes.js), so this can't drift from the
+  // resize/forwarding decision the render path makes off the same flag.
+  const lastFrameIsAdvisory = !currentModel?.lastFrameAnchored;
   // IC-LoRA remix mode is on. `icSpec` is the registry entry (reference count +
   // the resolution-divisibility rule its encoder imposes); null outside the
   // family, so every consumer gates on `icModeActive` first.
@@ -1144,7 +1149,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     sourceImageFile, sourceImageUpload, sourceUploadUrl,
     pickSourceImage, uploadSourceImage, clearSourceImage,
     lastImageFile, lastImageUpload, lastUploadUrl,
-    pickLastImage, uploadLastImage, clearLastImage,
+    pickLastImage, uploadLastImage, clearLastImage, lastFrameIsAdvisory,
     // Keyframes
     keyframesMode, keyframes, keyframesSupported, keyframesActive, keyframesError, keyframesBlocked,
     toggleKeyframesMode, addKeyframe, updateKeyframe, removeKeyframe,

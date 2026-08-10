@@ -51,14 +51,17 @@ import {
   HUNYUAN_REPO_DIR,
   BYOV_RUNTIME_INFO,
   BYOV_VIDEO_RUNTIMES,
+  modelAnchorsLastFrame,
   assertByovRuntimeInstalled,
   invalidateByovReadyCache,
   pickDeathFingerprint,
 } from './runtimes.js';
 import { loadHistory, saveHistory, mutateVideoHistory } from './history.js';
+import { miniMaxH3InputError, videoChainUnsupportedError } from './modeContract.js';
 // Re-export the extracted runtime + history surface so existing deep imports
 // (`from '../videoGen/local.js'`) keep resolving every symbol they used to.
 export * from './runtimes.js';
+export * from './modeContract.js';
 export { loadHistory, saveHistory, mutateVideoHistory };
 
 // LoRA wrapper for the notapalindrome `mlx_video` runtime. The stock
@@ -137,7 +140,11 @@ export const VIDEO_MODELS = Object.fromEntries(getVideoModels().map((m) => [m.id
 export const resolveVideoModel = (modelId) =>
   getVideoModels().find((m) => m.id === modelId) || VIDEO_MODELS[modelId] || null;
 
-export const listVideoModels = () => getVideoModels();
+// Decorated with the one runtime capability the client can't derive: whether an
+// FFLF last frame is a real anchor. Declared in runtimes.js, surfaced here so
+// the Video Gen form reads it off the model instead of keeping its own list.
+export const listVideoModels = () => getVideoModels()
+  .map((m) => ({ ...m, lastFrameAnchored: modelAnchorsLastFrame(m) }));
 
 export const defaultVideoModelId = () => getDefaultVideoModelId();
 
@@ -576,45 +583,28 @@ const buildWan22Args = ({ model, wanModelPath, wanRequiredWeights, prompt, negat
 // Build args for PipeNetwork's pinned MiniMax H3 MLX port. The helper resolves
 // only exact, already-cached HF revisions; every network download remains an
 // explicit Video Gen UI action guarded by the model's terms acknowledgement.
-const assertMiniMaxH3TextOnly = ({
-  mode,
-  sourceImagePath,
-  uploadedTempPath,
-  uploadedTempPaths,
-  lastImagePath,
-  keyframes,
-  extendFromVideoPath,
-  audioFilePath,
-  audioStartSec,
-  icReferencePaths,
+const assertMiniMaxH3SupportedInputs = ({
+  model, mode, sourceImagePath, lastImagePath, keyframes,
+  extendFromVideoPath, audioFilePath, audioStartSec, icReferencePaths,
 }) => {
-  const requestedMode = mode || ((sourceImagePath || uploadedTempPath) ? 'image' : 'text');
-  const hasUploadedKeyframes = Array.isArray(uploadedTempPaths) && uploadedTempPaths.length > 0;
-  const hasIcReferences = Array.isArray(icReferencePaths)
-    ? icReferencePaths.length > 0
-    : icReferencePaths != null;
-  if (
-    requestedMode !== 'text'
-    || sourceImagePath
-    || uploadedTempPath
-    || hasUploadedKeyframes
-    || lastImagePath
-    || keyframes != null
-    || extendFromVideoPath
-    || audioFilePath
-    || audioStartSec != null
-    || hasIcReferences
-  ) {
-    throw new ServerError(
-      'MiniMax H3 MLX currently supports text-to-video only; remove image, keyframe, video, audio, or reference conditioning.',
-      { status: 400, code: 'MINIMAX_H3_MODE_UNSUPPORTED' },
-    );
-  }
+  const err = miniMaxH3InputError({
+    mode,
+    hasFirstImage: !!sourceImagePath,
+    hasLastImage: !!lastImagePath,
+    supportedModes: model?.supportedModes,
+    keyframes,
+    extendFromVideo: extendFromVideoPath,
+    audioFile: audioFilePath,
+    audioStartSec,
+    icReferences: icReferencePaths,
+  });
+  if (err) throw err;
 };
 
 const buildMiniMaxH3Args = ({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, icReferencePaths, mode, tiling, disableAudio, outputPath }) => {
   assertByovRuntimeInstalled('minimax_h3');
-  assertMiniMaxH3TextOnly({
+  assertMiniMaxH3SupportedInputs({
+    model,
     mode,
     sourceImagePath,
     lastImagePath,
@@ -686,6 +676,10 @@ const buildMiniMaxH3Args = ({ model, prompt, negativePrompt, width, height, numF
     '--output', outputPath,
   ];
   for (const file of files) args.push('--checkpoint-file', file);
+  // Anchor order is packed order: the helper stretches the FIRST keyframe onto
+  // the canvas as the geometry anchor, so a first-frame image must lead.
+  if (sourceImagePath) args.push('--image', sourceImagePath, '--anchor', 'first');
+  if (lastImagePath) args.push('--image', lastImagePath, '--anchor', 'last');
   return { bin: MINIMAX_H3_VENV_PYTHON, args };
 };
 
@@ -879,16 +873,20 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', t
       { status: 403, code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED' },
     );
   }
-  // Validate H3's strict T2V-only contract before cache lookups, image resize,
-  // or staging-file work. Internal producers and persisted/retried jobs bypass
-  // route preparation, so silently dropping one of these inputs here would
-  // render a materially different video than the caller requested.
+  // Validate H3's mode contract before cache lookups, image resize, or staging
+  // work. Internal producers and persisted/retried jobs bypass route
+  // preparation, so silently dropping one of these inputs here would render a
+  // materially different video than the caller requested.
   if (model.runtime === 'minimax_h3') {
-    assertMiniMaxH3TextOnly({
+    // Promote before checking, mirroring wan22 below: the route sets both
+    // fields, but a direct caller that only staged `uploadedTempPath` would
+    // otherwise pass the mode guard and then render text-only with its image
+    // dropped.
+    sourceImagePath ||= uploadedTempPath;
+    assertMiniMaxH3SupportedInputs({
+      model,
       mode,
       sourceImagePath,
-      uploadedTempPath,
-      uploadedTempPaths,
       lastImagePath,
       keyframes,
       extendFromVideoPath,
@@ -1058,8 +1056,10 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', t
   //
   // Skip the last-image resize when buildArgs / the Python child won't
   // actually consume it:
-  //  - ltx2 true-FFLF consumes both --image and --last-image, so resize the
-  //    last frame even when a source image is also present.
+  //  - A last-frame-anchored runtime (see LAST_FRAME_ANCHORED_RUNTIMES) really
+  //    consumes both frames — ltx2 via --image/--last-image, MiniMax H3 via
+  //    --image/--anchor pairs — so resize the last frame even when a source
+  //    image is also present.
   //  - On macOS/mlx_video the FFLF fallback only consumes the last image when
   //    no source image is also provided (single conditioning frame only).
   //    Anything else is a no-op, so resizing is wasted ffmpeg work.
@@ -1067,7 +1067,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', t
   //    status, but the diffusers pipeline only reads --image — the script
   //    never opens the last-frame file, so no resize is needed there either.
   const lastImageWillBeUsed = !!lastImagePath && !IS_WIN && mode === 'fflf'
-    && (model.runtime === 'ltx2' || !sourceImagePath);
+    && (modelAnchorsLastFrame(model) || !sourceImagePath);
   // A non-null `keyframes` that ISN'T a length-≥2 array is malformed —
   // fail fast instead of silently dropping it (which would produce an
   // unexpected text/i2v render with the user's anchors ignored). The
@@ -1096,10 +1096,17 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', t
     }
     return { resolved: resizedPath, tempPath: resizedPath };
   };
-  const { resolved: resolvedSourceImage, tempPath: resizedSrcTempPath } = await resizeImage(sourceImagePath, 'src');
-  const { resolved: resolvedLastImage, tempPath: resizedLastTempPath } = lastImageWillBeUsed
-    ? await resizeImage(lastImagePath, 'last')
-    : { resolved: lastImagePath, tempPath: null };
+  // Two independent ffmpeg spawns — fan out for the same reason the keyframe
+  // loop below does, so a true-FFLF render doesn't pay them back to back.
+  const [
+    { resolved: resolvedSourceImage, tempPath: resizedSrcTempPath },
+    { resolved: resolvedLastImage, tempPath: resizedLastTempPath },
+  ] = await Promise.all([
+    resizeImage(sourceImagePath, 'src'),
+    lastImageWillBeUsed
+      ? resizeImage(lastImagePath, 'last')
+      : { resolved: lastImagePath, tempPath: null },
+  ]);
   // Resize each multi-keyframe image to the target resolution (the helper
   // requires exact W×H, same as i2v). Indices pass through unchanged.
   // Each ffmpeg subprocess is independent — fan out so 8 keyframes don't
@@ -1665,17 +1672,8 @@ export async function generateChainedVideo({ chunks, chunkPrompts, jobId: outerJ
   if (!outerJobId) throw new ServerError('generateChainedVideo requires jobId', { status: 500, code: 'INTERNAL' });
 
   const chainModel = resolveVideoModel(rest.modelId || defaultVideoModelId());
-  if (Array.isArray(chainModel?.supportedModes) && !chainModel.supportedModes.includes('image')) {
-    throw new ServerError(
-      `${chainModel.name} cannot generate chunks > 1 because continuation requires image-to-video support.`,
-      {
-        status: 400,
-        code: chainModel.runtime === 'wan22'
-          ? 'WAN22_CHAIN_REQUIRES_IMAGE_MODE'
-          : 'VIDEO_CHAIN_REQUIRES_IMAGE_MODE',
-      },
-    );
-  }
+  const chainError = videoChainUnsupportedError(chainModel);
+  if (chainError) throw chainError;
 
   const chainState = { stopped: false };
   activeChain = chainState;

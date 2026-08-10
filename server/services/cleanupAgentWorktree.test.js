@@ -832,11 +832,12 @@ describe('cleanupAgentWorktree - openPR path', () => {
     expect(followUp.metadata.reviewLoopCodexModel).toBeNull();
   });
 
-  // The effort map narrows against EFFORT_SELECTABLE_REVIEWERS, a DIFFERENT roster
-  // than the model map's — `antigravity` takes an effort but no PortOS-pinnable
-  // model. Passing the model roster here would silently drop every agy pin at this
-  // hop with the rest of the suite still green, so pin the distinction explicitly.
-  it('narrows the effort map against the effort roster, keeping an antigravity pin the model roster excludes', async () => {
+  // The two maps narrow against SEPARATE rosters (EFFORT_SELECTABLE_REVIEWERS vs
+  // MODEL_SELECTABLE_REVIEWERS). Their memberships coincide today — they last
+  // diverged over `antigravity`, which took an effort but no model until #3728 —
+  // so this pins that each map is narrowed independently: an effort pin on a
+  // reviewer with no model pin (and vice versa) must survive this hop intact.
+  it('narrows each pin map on its own roster', async () => {
     git.push.mockResolvedValue(undefined);
     git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/61' });
     git.requestCopilotReview.mockResolvedValue({ success: true });

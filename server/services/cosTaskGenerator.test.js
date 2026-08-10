@@ -232,10 +232,20 @@ describe('{reviewers} interpolation honors Code Review Defaults', () => {
     // claim flows, so a pinned model only reaches slashdo (as its `[<model>]`
     // bracket) if the CSV carries it. Both paths resolve with task-over-default
     // precedence off the Code Review Defaults' `<reviewer>Model` scalars.
-    expect(GEN_SRC).toContain('resolveReviewerModels(metadata.reviewerModels, reviewerModelsFromDefaults(codeReviewDefaults))');
-    expect(GEN_SRC).toContain('resolveReviewerModels(reviewerModels ?? metadata.reviewerModels, reviewerModelsFromDefaults(codeReviewDefaults))');
+    //
+    // All three prompt paths go through `resolveReviewerPins`, which resolves the
+    // model map TOGETHER with the effort map and reconciles the two (#3728) — an
+    // agy model id can carry its effort as a suffix, so a path that resolved the
+    // models alone would emit `--model <suffixed> --effort <tier>`, a pair agy
+    // rejects, while the other paths emitted the split form.
+    expect(GEN_SRC).toContain('resolveReviewerPins(metadata, codeReviewDefaults)');
+    expect(GEN_SRC).toContain('reviewerModels: reviewerModels ?? metadata.reviewerModels');
+    expect(GEN_SRC).toContain('reviewerEfforts: reviewerEfforts ?? metadata.reviewerEfforts');
     // The play-button path reads the defaults directly (no task metadata to layer).
-    expect(GEN_SRC).toContain('codeReviewDefaults?.reviewerMaxRounds, reviewerModelsFromDefaults(codeReviewDefaults)');
+    expect(GEN_SRC).toContain('resolveReviewerPins(null, codeReviewDefaults)');
+    // No path may resolve one map without the other.
+    expect(GEN_SRC).not.toContain('resolveReviewerModels(');
+    expect(GEN_SRC).not.toContain('resolveReviewerEfforts(');
   });
 });
 
