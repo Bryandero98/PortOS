@@ -36,7 +36,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { useSearchParams, useNavigate } from 'react-router';
+import { useSearchParams } from 'react-router';
 import Drawer from '../components/Drawer';
 import { ImageGenTab } from '../components/settings/ImageGenTab';
 import LocalSetupPanel from '../components/settings/LocalSetupPanel';
@@ -72,11 +72,12 @@ import { useMediaJobSse } from '../hooks/useMediaJobSse';
 import { useMediaCompletionRefresh } from '../hooks/useMediaCompletionRefresh';
 import { useMediaAnnotations } from '../hooks/useMediaAnnotations';
 import usePreviewRoute from '../hooks/usePreviewRoute';
+import useMediaPreviewActions from '../hooks/useMediaPreviewActions';
 import { useVideoGenQueue } from '../hooks/useVideoGenQueue.js';
 import { useVideoGenForm } from '../hooks/useVideoGenForm.js';
 import {
   getVideoGenStatus, generateVideo, cancelVideoGen,
-  listVideoHistory, deleteVideoHistoryItem, setVideoHidden, extractLastFrame,
+  listVideoHistory, deleteVideoHistoryItem, setVideoHidden,
   upscaleVideo,
   patchSettingsSlice,
   getActiveVideoJob,
@@ -222,7 +223,6 @@ export default function VideoGen() {
   // `preview` is URL-driven via `usePreviewRoute(previewItems)` — declared
   // after `previewItems` below so the resolver can match against it.
   const [showHidden, setShowHidden] = useState(false);
-  const navigate = useNavigate();
 
   const refreshHistory = useCallback(() => {
     listVideoHistory().then((items) => setHistory(Array.isArray(items) ? items : [])).catch(() => {});
@@ -236,6 +236,11 @@ export default function VideoGen() {
   }), [history]);
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const { annotations, updateAnnotation, getCardProps } = useMediaAnnotations();
+  // "Continue" is the same action here as on every other media surface (extract
+  // the last frame, open the form on it with the source's prompt), so it comes
+  // from the shared hook rather than a page-local copy. It takes the normalized
+  // shape — gallery callers hand over raw history records, so they normalize.
+  const { handleContinue } = useMediaPreviewActions();
   // Gallery sections respect the favorites filter; the extend-mode dropdown
   // (which reads visibleHistory directly) intentionally does not, since
   // hiding non-favorites from the "pick a previous video" picker would
@@ -286,18 +291,6 @@ export default function VideoGen() {
       setHistory((h) => [result.video, ...h]);
       toast.success('Upscaled 2×');
     }
-  };
-
-  const handleContinueHistory = async (item) => {
-    const { filename } = await extractLastFrame(item.id, { silent: true }).catch((err) => {
-      toast.error(err.message || 'Failed to extract last frame');
-      return {};
-    });
-    if (!filename) return;
-    const params = new URLSearchParams({ sourceImageFile: filename });
-    if (item?.width) params.set('w', String(item.width));
-    if (item?.height) params.set('h', String(item.height));
-    navigate(`/media/video?${params.toString()}`);
   };
 
   // Remix a prior render: hand all its params back into the form (the hook
@@ -1233,7 +1226,7 @@ export default function VideoGen() {
         onToggleFavorites={() => setFavoritesOnly((v) => !v)}
         onToggleShowHidden={() => setShowHidden((s) => !s)}
         onPreview={setPreview}
-        onContinue={handleContinueHistory}
+        onContinue={(v) => handleContinue(normalizeVideo(v))}
         onUpscale={handleUpscaleHistory}
         onDelete={handleDeleteHistory}
         onToggleHidden={handleToggleHistoryHidden}
@@ -1248,7 +1241,7 @@ export default function VideoGen() {
         items={previewItems}
         annotations={annotations}
         updateAnnotation={updateAnnotation}
-        onContinue={(item) => handleContinueHistory(item.raw)}
+        onContinue={handleContinue}
         onRemix={(item) => item?.raw && handleRemixVideo(item.raw)}
       />
 

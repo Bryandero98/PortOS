@@ -11,7 +11,7 @@ vi.mock('../services/apiImageVideo', () => ({
   removeImageWatermark: vi.fn(),
 }));
 
-import { removeImageWatermark, cleanGalleryImage } from '../services/apiImageVideo';
+import { removeImageWatermark, cleanGalleryImage, extractLastFrame } from '../services/apiImageVideo';
 
 const parseNav = () => {
   const url = navigate.mock.calls.at(-1)?.[0] || '';
@@ -55,6 +55,34 @@ describe('useMediaPreviewActions.handleSendToImage', () => {
     result.current.handleSendToImage({ kind: 'video', filename: 'clip.mp4' });
     result.current.handleSendToImage({ kind: 'image' });
     expect(navigate).not.toHaveBeenCalled();
+  });
+});
+
+describe('useMediaPreviewActions.handleContinue', () => {
+  beforeEach(() => { navigate.mockReset(); extractLastFrame.mockReset(); });
+
+  it('carries the source clip prompt into the continuation form', async () => {
+    extractLastFrame.mockResolvedValue({ filename: 'last.png' });
+    const { result } = renderHook(() => useMediaPreviewActions());
+    await result.current.handleContinue({
+      kind: 'video', id: 'vid-1', prompt: 'a neon alley, rain', width: 768, height: 512,
+      raw: { negative_prompt: 'blurry' },
+    });
+    const { path, params } = parseNav();
+    expect(path).toBe('/media/video');
+    expect(params.get('sourceImageFile')).toBe('last.png');
+    expect(params.get('prompt')).toBe('a neon alley, rain');
+    expect(params.get('negativePrompt')).toBe('blurry');
+    expect(params.get('w')).toBe('768');
+  });
+
+  it('leaves the prompt out for a clip we did not generate', async () => {
+    extractLastFrame.mockResolvedValue({ filename: 'last.png' });
+    const { result } = renderHook(() => useMediaPreviewActions());
+    await result.current.handleContinue({ kind: 'video', id: 'vid-2', prompt: '(no prompt)' });
+    const { params } = parseNav();
+    expect(params.get('sourceImageFile')).toBe('last.png');
+    expect(params.get('prompt')).toBeNull();
   });
 });
 

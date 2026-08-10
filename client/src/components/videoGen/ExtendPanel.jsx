@@ -5,6 +5,10 @@
  * Presentational — the picked video id, in-flight extract flag, extracted
  * source-image filename, and the visible history list are owned by the
  * VideoGen page. `onPick('')` clears the selection.
+ *
+ * `onPick` also receives the picked record itself, since this is where the
+ * option list lives: the form prefills its prompt from it, and looking it up
+ * here beats handing the whole history array down into the form hook.
  */
 import ImagePreview from './ImagePreview';
 
@@ -26,7 +30,7 @@ export default function ExtendPanel({
       <select
         value={extendFromVideoId}
         disabled={extendingFrame}
-        onChange={(e) => onPick(e.target.value)}
+        onChange={(e) => onPick(e.target.value, visibleHistory.find((v) => v.id === e.target.value))}
         aria-label="Pick a previous video to extend"
         className="w-full bg-port-bg border border-port-border rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-port-accent disabled:opacity-50"
       >
