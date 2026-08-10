@@ -169,10 +169,11 @@ export default function VideoGen() {
   } = useVideoGenForm({ models, status, availableLoras, grokEnabled });
 
   // Restricted model terms are accepted per exact reviewed license id, and the
-  // acceptance is persisted server-side so it authorizes every other render
+  // acceptance is recorded server-side so it authorizes every other render
   // surface (music video board, pipeline, agent runs) — not just this page in
-  // this browser. The versioned id still rides every download/generation
-  // request so the server enforces the same gate on both inputs.
+  // this browser. That record is the ONLY authorization: no request carries an
+  // acceptance of its own, so the gates below are a UI mirror of what the
+  // server independently enforces on every download and render.
   const termsGate = !isGrok && currentModel?.termsGate ? currentModel.termsGate : null;
   const modelTerms = useVideoModelTerms();
   // Key acceptance by the exact license id, never a shared boolean, so a model
