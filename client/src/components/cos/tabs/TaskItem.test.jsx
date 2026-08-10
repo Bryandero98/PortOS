@@ -252,3 +252,26 @@ describe('TaskItem challenge resolve controls (#2471)', () => {
     expect(screen.queryByRole('button', { name: 'Escalate' })).not.toBeInTheDocument();
   });
 });
+
+describe('TaskItem investigation approval hint (#3714)', () => {
+  const held = {
+    ...task,
+    id: 'sys-inv-held',
+    description: '[Auto] Investigate agent failure [startup-failure:user:none]: Agent exited during startup',
+    approvalRequired: true,
+    metadata: { isInvestigation: true, approvalReason: 'investigation-loop:repeat-fingerprint' },
+  };
+
+  it('names the loop signal on the APPROVE button so the hold is explainable in place', () => {
+    render(<TaskItem task={held} isSystem onRefresh={vi.fn()} providers={providers} />);
+    const approve = screen.getByRole('button', { name: /^Approve task sys-inv-held — / });
+    expect(approve).toHaveAttribute('title', expect.stringContaining('last 24 hours'));
+  });
+
+  it('leaves the plain approve label on an approval-required task that is not a failure loop', () => {
+    const plain = { ...held, id: 'sys-approve-plain', metadata: {} };
+    render(<TaskItem task={plain} isSystem onRefresh={vi.fn()} providers={providers} />);
+    const approve = screen.getByRole('button', { name: 'Approve task sys-approve-plain' });
+    expect(approve).not.toHaveAttribute('title');
+  });
+});

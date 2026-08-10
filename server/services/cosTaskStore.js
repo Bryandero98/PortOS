@@ -332,6 +332,11 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     // affectedTasks names every task blocked on the cause (later dedup hits union in).
     if (taskData.isInvestigation === true) metadata.isInvestigation = true;
     if (taskData.investigationFingerprint) metadata.investigationFingerprint = taskData.investigationFingerprint;
+    // Why an approval-required task is waiting on the user, as a namespaced token
+    // (e.g. `investigation-loop:repeat-fingerprint`). Producer-agnostic on purpose
+    // — any producer that holds a task can write it and the UI explains the hold
+    // without a per-producer key. Absent on auto-approved tasks.
+    if (taskData.approvalReason) metadata.approvalReason = taskData.approvalReason;
     if (Array.isArray(taskData.affectedTasks) && taskData.affectedTasks.length > 0) metadata.affectedTasks = taskData.affectedTasks;
     if (taskData.createJiraTicket) metadata.createJiraTicket = true;
     // Boolean flags: persist both true and false so users can explicitly override defaults.
