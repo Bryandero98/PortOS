@@ -8,7 +8,33 @@
 
 import { z } from 'zod';
 import { produceVideoFromIssue } from '../../creativeDirector/bridgeFromIssue.js';
+import { getProject } from '../../creativeDirector/local.js';
 import { COST_LLM } from './shared.js';
+
+/**
+ * The calling project's render pin (#3135), inherited by the teaser this tool
+ * mints. A creative commission stamps its `generation.videoMode`/`.videoModelId`
+ * onto the project it runs in (creativeCommissions/abilityAdapters.js), but the
+ * teaser is a SEPARATE project — without this the pin stops at that boundary and
+ * the teaser renders on the install default.
+ *
+ * Deliberately NOT in the tool schema: the planner LLM must not be able to pick
+ * a render backend. The pin is the user's configured choice, so it's read from
+ * the project record and spread UNDER the parsed args, which carry no
+ * `renderBackend`/`modelId` keys for the model to override it with.
+ *
+ * Best-effort — a project-less dispatch or an unreadable record just means "no
+ * inherited pin", the same as before pins existed.
+ */
+async function inheritedRenderSettings(ctx) {
+  if (!ctx?.projectId) return {};
+  const project = await getProject(ctx.projectId).catch(() => null);
+  if (!project) return {};
+  return {
+    ...(project.renderBackend ? { renderBackend: project.renderBackend } : {}),
+    ...(project.modelId ? { modelId: project.modelId } : {}),
+  };
+}
 
 export const CD_TOOLS = [
   {
@@ -36,6 +62,7 @@ export const CD_TOOLS = [
       },
       required: ['issueId'],
     },
-    execute: ({ issueId, ...options }) => produceVideoFromIssue(issueId, options),
+    execute: async ({ issueId, ...options }, ctx) =>
+      produceVideoFromIssue(issueId, { ...await inheritedRenderSettings(ctx), ...options }),
   },
 ];

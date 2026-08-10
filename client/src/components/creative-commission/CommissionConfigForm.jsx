@@ -344,7 +344,9 @@ function RenderBackendSection({ ability, generation, patchForm }) {
       <h3 className="text-sm font-semibold text-gray-200">Render backend</h3>
       <p className="text-xs text-gray-500">
         Which backend actually renders each run. Leave on <strong className="text-gray-400">Auto</strong> to
-        follow your install&apos;s Image Gen default.
+        follow your install&apos;s Settings → Image Gen defaults. Pin{' '}
+        <strong className="text-gray-400">Local</strong> to also choose the model each render uses; the cloud
+        backends pick their own.
       </p>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {fields.map((field) => {
