@@ -53,6 +53,7 @@ import ModelTermsGate from '../components/videoGen/ModelTermsGate';
 import ModelRepairBanner from '../components/videoGen/ModelRepairBanner';
 import VideoPreviewPanel from '../components/videoGen/VideoPreviewPanel';
 import VideoGenGallery from '../components/videoGen/VideoGenGallery';
+import GalleryImagePicker from '../components/imageGen/GalleryImagePicker';
 import MediaPreview from '../components/media/MediaPreview';
 import StylePresetPicker from '../components/media/StylePresetPicker';
 import { normalizeVideo } from '../components/media/normalize';
@@ -77,7 +78,6 @@ import {
   getVideoGenStatus, generateVideo, cancelVideoGen,
   listVideoHistory, deleteVideoHistoryItem, setVideoHidden, extractLastFrame,
   upscaleVideo,
-  listImageGallery,
   patchSettingsSlice,
   getActiveVideoJob,
   getSettings,
@@ -201,16 +201,21 @@ export default function VideoGen() {
   const termsGateBlocked = !!termsGate && !termsAccepted;
   const termsDescriptionId = termsGate ? 'video-model-terms-requirement' : undefined;
 
-  // Image gallery — used by both the start and end frame pickers so the
-  // user can pull from any prior render in either slot.
-  const [imageGallery, setImageGallery] = useState([]);
-  // Visible gallery options, shared by every gallery <select> (the frame
-  // panels and each multi-keyframe row) so the filter+slice runs once per
-  // gallery change rather than once per picker per render.
-  const visibleGallery = useMemo(
-    () => imageGallery.filter((img) => !img.hidden).slice(0, 50),
-    [imageGallery],
-  );
+  // Every gallery-image slot on this page (both frame panels, each multi-keyframe
+  // row, each IC-LoRA reference row) opens the SAME GalleryImagePicker modal the
+  // Image Gen i2i form uses — a searchable thumbnail grid over the whole gallery.
+  // `null` = closed; otherwise `{ kind, index? }` records which slot the pick
+  // lands in, since one modal serves every slot.
+  const [galleryPicker, setGalleryPicker] = useState(null);
+  const handleGalleryPick = (item) => {
+    const filename = item?.filename;
+    if (!filename || !galleryPicker) return;
+    const { kind, index } = galleryPicker;
+    if (kind === 'source') pickSourceImage(filename);
+    else if (kind === 'last') pickLastImage(filename);
+    else if (kind === 'keyframe') updateKeyframe(index, { file: filename });
+    else if (kind === 'icReference') updateIcReferenceImage(index, filename);
+  };
 
   const [history, setHistory] = useState([]);
   // `preview` is URL-driven via `usePreviewRoute(previewItems)` — declared
@@ -223,7 +228,6 @@ export default function VideoGen() {
   }, []);
   useMediaCompletionRefresh({ onVideoCompleted: refreshHistory });
   useEffect(() => { refreshHistory(); }, [refreshHistory]);
-  useEffect(() => { listImageGallery().then(setImageGallery).catch(() => {}); }, []);
 
   const { visibleHistory, hiddenHistory } = useMemo(() => ({
     visibleHistory: history.filter((v) => !v.hidden),
@@ -874,10 +878,10 @@ export default function VideoGen() {
               keyframesActive={keyframesActive}
               keyframes={keyframes}
               numFrames={numFrames}
-              visibleGallery={visibleGallery}
               keyframesError={keyframesError}
               onToggleMode={toggleKeyframesMode}
               onAddKeyframe={addKeyframe}
+              onBrowseKeyframe={(index) => setGalleryPicker({ kind: 'keyframe', index })}
               onUpdateKeyframe={updateKeyframe}
               onRemoveKeyframe={removeKeyframe}
             />
@@ -890,8 +894,7 @@ export default function VideoGen() {
                 file={sourceImageFile}
                 upload={sourceImageUpload}
                 uploadUrl={sourceUploadUrl}
-                visibleGallery={visibleGallery}
-                onPickGallery={pickSourceImage}
+                onBrowseGallery={() => setGalleryPicker({ kind: 'source' })}
                 onUpload={uploadSourceImage}
                 onClear={clearSourceImage}
                 alt="Source"
@@ -902,8 +905,7 @@ export default function VideoGen() {
                   file={lastImageFile}
                   upload={lastImageUpload}
                   uploadUrl={lastUploadUrl}
-                  visibleGallery={visibleGallery}
-                  onPickGallery={pickLastImage}
+                  onBrowseGallery={() => setGalleryPicker({ kind: 'last' })}
                   onUpload={uploadLastImage}
                   onClear={clearLastImage}
                   alt="End frame"
@@ -949,9 +951,8 @@ export default function VideoGen() {
               inFlightReferenceNames={icReferenceNames}
               visibleHistory={visibleHistory}
               referenceImageFiles={icReferenceImageFiles}
-              visibleGallery={visibleGallery}
               onAddReferenceImage={addIcReferenceImage}
-              onUpdateReferenceImage={updateIcReferenceImage}
+              onBrowseReferenceImage={(index) => setGalleryPicker({ kind: 'icReference', index })}
               onRemoveReferenceImage={removeIcReferenceImage}
               icStrength={icStrength}
               icSkipStage2={icSkipStage2}
@@ -1247,6 +1248,12 @@ export default function VideoGen() {
         updateAnnotation={updateAnnotation}
         onContinue={(item) => handleContinueHistory(item.raw)}
         onRemix={(item) => item?.raw && handleRemixVideo(item.raw)}
+      />
+
+      <GalleryImagePicker
+        open={!!galleryPicker}
+        onClose={() => setGalleryPicker(null)}
+        onSelect={handleGalleryPick}
       />
 
       <Drawer open={settingsOpen} onClose={closeSettings} title="Media Generation Settings" size="lg">

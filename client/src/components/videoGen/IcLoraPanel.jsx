@@ -24,6 +24,7 @@ import { formatBytes } from '../../utils/formatters';
 import { icResolutionIssue } from '../../lib/videoGenParams';
 import FilePickerButton from '../ui/FilePickerButton';
 import ModelDownloadBadge from '../media/ModelDownloadBadge';
+import GalleryPickButton from './GalleryPickButton';
 import ImagePreview from './ImagePreview';
 import Ltx2RuntimeMissingNotice from './Ltx2RuntimeMissingNotice';
 
@@ -36,9 +37,8 @@ export default function IcLoraPanel({
   // Image-kind (Ingredients) reference rows: gallery basenames, min/max enforced
   // by the registry spec. The page owns the array and the three mutators.
   referenceImageFiles = [],
-  visibleGallery = [],
   onAddReferenceImage,
-  onUpdateReferenceImage,
+  onBrowseReferenceImage,
   onRemoveReferenceImage,
   icStrength,
   icSkipStage2,
@@ -92,18 +92,11 @@ export default function IcLoraPanel({
           {referenceImageFiles.map((file, i) => (
             <div key={i} className="flex items-start gap-2">
               <div className="flex-1 space-y-1">
-                <label htmlFor={`ic-ref-img-${i}`} className="sr-only">{`${spec.label} reference ${i + 1} gallery image`}</label>
-                <select
-                  id={`ic-ref-img-${i}`}
-                  value={file}
-                  onChange={(e) => onUpdateReferenceImage(i, e.target.value)}
-                  className="w-full bg-port-bg border border-port-border rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-port-accent"
-                >
-                  <option value="">Pick from gallery…</option>
-                  {visibleGallery.map((img) => (
-                    <option key={img.filename} value={img.filename}>{img.filename}</option>
-                  ))}
-                </select>
+                <GalleryPickButton
+                  label={`${spec.label} reference ${i + 1}`}
+                  filled={!!file}
+                  onClick={() => onBrowseReferenceImage(i)}
+                />
                 {file && (
                   <ImagePreview src={`/data/images/${file}`} alt={`${spec.label} reference ${i + 1}`} label={file} />
                 )}

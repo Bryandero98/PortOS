@@ -2,17 +2,15 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import KeyframePanel from './KeyframePanel';
 
-const GALLERY = [{ filename: 'a.png' }, { filename: 'b.png' }];
-
 const baseProps = {
   keyframesMode: false,
   keyframesActive: false,
   keyframes: [],
   numFrames: 121,
-  visibleGallery: GALLERY,
   keyframesError: null,
   onToggleMode: vi.fn(),
   onAddKeyframe: vi.fn(),
+  onBrowseKeyframe: vi.fn(),
   onUpdateKeyframe: vi.fn(),
   onRemoveKeyframe: vi.fn(),
 };
@@ -58,6 +56,24 @@ describe('KeyframePanel', () => {
     );
     expect(screen.getByText(/Add keyframe/i).closest('button').disabled).toBe(true);
     expect(screen.getByText('8/8')).toBeTruthy();
+  });
+
+  it('opens the gallery picker for the clicked row', () => {
+    const onBrowseKeyframe = vi.fn();
+    render(
+      <KeyframePanel
+        {...baseProps}
+        keyframesMode
+        keyframesActive
+        keyframes={[{ file: 'a.png', index: 0 }, { file: '', index: 10 }]}
+        onBrowseKeyframe={onBrowseKeyframe}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText('Keyframe 2 — pick from gallery'));
+    expect(onBrowseKeyframe).toHaveBeenCalledWith(1);
+    // A filled row offers a swap, an empty one invites a first pick — and the
+    // accessible name tracks the visible copy so voice control can say either.
+    expect(screen.getByLabelText('Keyframe 1 — change image').textContent).toMatch(/Change image/i);
   });
 
   it('surfaces the validation error when present', () => {
