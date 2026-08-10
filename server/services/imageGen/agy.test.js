@@ -79,6 +79,25 @@ describe('agy image provider', () => {
     });
   });
 
+  // agy 2026-08 prints `<id>\t<Label>` rows, not the bare ids this parser was
+  // originally written against — so every row failed the id test and the picker
+  // reported "agy models returned no model ids" with a full, healthy catalog on
+  // stdout. Transcribed verbatim from the real binary.
+  it('lists models from the tab-labelled output agy prints today', async () => {
+    const pending = agy.listModels({ agyPath: '/opt/agy' });
+    spawnCalls[0].child.stdout.emit('data', [
+      'gemini-3.6-flash-high\tGemini 3.6 Flash (High)',
+      'gemini-3.1-pro-high\tGemini 3.1 Pro (High)',
+      'claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)',
+      '',
+    ].join('\n'));
+    spawnCalls[0].child.emit('close', 0, null);
+    await expect(pending).resolves.toEqual({
+      models: ['gemini-3.6-flash-high', 'gemini-3.1-pro-high', 'claude-sonnet-4-6'],
+      error: null,
+    });
+  });
+
   it('spawns headlessly with the selected model and a directed one-image prompt', async () => {
     const job = await agy.generateImage({
       prompt: 'a fox beneath the stars',
